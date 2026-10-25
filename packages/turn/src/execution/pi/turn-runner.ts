@@ -355,6 +355,7 @@ export async function buildTurnHarness(runState: PiRunState, {
   runState.requestRetry.outage = "outage" in retry && retry.outage === true;
   // Codex auto transport can resend via SSE even with a zero retry budget.
   const harness = await createHarnessAdapter(session, {
+    ...(options.continuityRecording ? { continuityRecording: true, onCompactionPreparing: options.onCompactionPreparing } : {}),
     session,
     models: piModels,
     model,

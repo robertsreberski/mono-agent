@@ -1,3 +1,4 @@
+import { inspectContinuityPurges, pendingContinuityPurges } from "./continuity-purge.js";
 import { redactJsonValue } from "@mono-agent/observability";
 import type { RuntimeToolLifecycleTerminalState } from "@mono-agent/turn/host/types";
 import { existsSync } from "node:fs";
@@ -10,6 +11,10 @@ import { ToolHistoryWriterError } from "./errors.js";
 import { assertSecureReadableDirectory, assertSecureReadableFile, normalizeId } from "./paths.js";
 import { reasonOf } from "./writer.js";
 
+import { CONTINUITY_USER_VERSION, type ContinuityCoverageGap, type ContinuityGapReason, type ContinuityGetInput, type ContinuityGetResult, type ContinuityRecordMetadata, type ContinuityScope, type ContinuitySearchInput, type ContinuitySearchPage } from "./continuity-contracts.js";
+import { getContinuity, latestContinuitySummary, searchContinuity } from "./continuity-reader.js";
+import { assertContinuitySchema, hasContinuitySchema, readContinuityStats } from "./continuity-storage.js";
+
 /** Read-only bounded query surface used by projection, SessionHistory, purge, and doctor. */
 export class ToolHistoryReader {
   readonly root: string;
@@ -19,6 +24,75 @@ export class ToolHistoryReader {
     if (!isAbsolute(root)) throw new TypeError("tool history root must be absolute.");
     this.root = resolve(root);
     this.databasePath = join(this.root, TOOL_HISTORY_DIRECTORY, TOOL_HISTORY_DATABASE);
+  }
+
+  /** Read-only, content-free doctor surface, independent of runtime enablement. */
+  continuityPurgeStatus(): { pending: number; invalid: number } {
+    const result = inspectContinuityPurges(this.root);
+    return { pending: result.pending.length, invalid: result.invalid };
+  }
+
+  protectedContinuityConversations(): readonly string[] {
+    const database = this.openReadOnly();
+    if (database === undefined) return [];
+    try {
+      if (!hasContinuitySchema(database)) return [];
+      // Canonical active markers / dirty fences protect in-flight preparations.
+      // A stranded preparation alone is not an indefinite retention lease.
+      const rows = database.prepare(`SELECT DISTINCT g.conversation_id FROM continuity_generations g WHERE EXISTS (SELECT 1 FROM continuity_records r JOIN continuity_pins p USING(record_id) WHERE r.generation_id=g.generation_id AND p.owner_kind<>'summary')`).all() as Record<string, unknown>[];
+      return rows.map((r) => r.conversation_id as string);
+    } finally { database.close(); }
+  }
+
+  continuityGaps(logicalConversationId: string, limit = 10): { total: number; items: readonly ContinuityCoverageGap[] } {
+    normalizeId(logicalConversationId, "logicalConversationId");
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 10) throw new TypeError("Invalid continuity gap limit.");
+    const database = this.openReadOnly();
+    if (database === undefined) return { total: 0, items: [] };
+    try {
+      if (!hasContinuitySchema(database)) return { total: 0, items: [] };
+      const total = Number((database.prepare("SELECT count(*) count FROM continuity_generations WHERE logical_id=? AND state='abandoned'").get(logicalConversationId) as Record<string, unknown>).count);
+      const rows = database.prepare("SELECT generation_id,before_digest,after_digest,observed_digest,abandoned_at_ms,gap_reason FROM continuity_generations WHERE logical_id=? AND state='abandoned' ORDER BY abandoned_at_ms DESC,generation_id DESC LIMIT ?").all(logicalConversationId, limit) as Record<string, unknown>[];
+      return { total, items: rows.map((r) => ({ generationId: r.generation_id as string, beforeDigest: r.before_digest as string | null,
+        afterDigest: r.after_digest as string | null, observedDigest: r.observed_digest as string | null,
+        detectedAtMs: Number(r.abandoned_at_ms), reason: r.gap_reason as ContinuityGapReason })) };
+    } finally { database.close(); }
+  }
+
+  searchContinuity(input: ContinuitySearchInput): ContinuitySearchPage {
+    if (this.continuityPurgePending(input)) return { available: false, items: [] };
+    const database = this.openReadOnly();
+    if (database === undefined) return { available: false, items: [] };
+    try { return searchContinuity(database, input); } finally { database.close(); }
+  }
+
+  getContinuity(input: ContinuityGetInput): ContinuityGetResult {
+    if (this.continuityPurgePending(input)) return { status: "unavailable", untrusted: true };
+    const database = this.openReadOnly();
+    if (database === undefined) return { status: "unavailable", untrusted: true };
+    try { return getContinuity(database, input); } finally { database.close(); }
+  }
+
+  latestContinuitySummary(scope: ContinuityScope): ContinuityRecordMetadata | undefined {
+    if (this.continuityPurgePending(scope)) return undefined;
+    const database = this.openReadOnly();
+    if (database === undefined) return undefined;
+    try { return latestContinuitySummary(database, scope); } finally { database.close(); }
+  }
+
+  private continuityPurgePending(scope: ContinuityScope): boolean {
+    try {
+      const purges = pendingContinuityPurges(this.root);
+      if (purges.some(purge => purge.conversationId === (purge.scope === "logical" ? scope.logicalConversationId : scope.currentConversationId))) return true;
+      if (!purges.some(purge => purge.scope === "physical")) return false;
+      const database = this.openReadOnly();
+      if (!database) return false;
+      try {
+        return hasContinuitySchema(database) && purges.some(purge => purge.scope === "physical" && database.prepare(
+          "SELECT 1 FROM continuity_generations WHERE conversation_id=? AND logical_id=? LIMIT 1"
+        ).get(purge.conversationId, scope.logicalConversationId) !== undefined);
+      } finally { database.close(); }
+    } catch { return true; } // An unreadable purge intent cannot authorize disclosure.
   }
 
   async exists(): Promise<boolean> {
@@ -275,15 +349,17 @@ export class ToolHistoryReader {
   }
 
   private openReadOnly(options: { readonly zeroLengthAsAbsent?: boolean } = {}): DatabaseSync | undefined {
+    let database: DatabaseSync | undefined;
     try {
       assertSecureReadableDirectory(join(this.root, TOOL_HISTORY_DIRECTORY));
       const fileSize = assertSecureReadableFile(this.databasePath);
       if (options.zeroLengthAsAbsent === true && fileSize === 0) return undefined;
-      const database = new DatabaseSync(this.databasePath, { readOnly: true });
+      database = new DatabaseSync(this.databasePath, { readOnly: true });
       database.exec("PRAGMA busy_timeout=250");
       validateDatabase(database);
       return database;
     } catch (error) {
+      database?.close();
       if ((error as NodeJS.ErrnoException).code === "ENOENT" || reasonOf(error).includes("unable to open database")) return undefined;
       throw error;
     }
@@ -384,12 +460,13 @@ function validateDatabase(database: DatabaseSync): void {
       `Tool history schema version ${String(userVersion)} is upgrade-pending; a writer must upgrade it to ${String(TOOL_HISTORY_USER_VERSION)} before read-only access.`,
     );
   }
-  if (applicationId !== TOOL_HISTORY_APPLICATION_ID || userVersion !== TOOL_HISTORY_USER_VERSION) {
+  if (applicationId !== TOOL_HISTORY_APPLICATION_ID || (userVersion < TOOL_HISTORY_USER_VERSION || userVersion > CONTINUITY_USER_VERSION)) {
     throw new ToolHistoryWriterError(
       "history_schema_unsupported",
       "Tool history schema is unsupported because it is newer or foreign. Downgrade is blocked until persisted conversation state is purged.",
     );
   }
+  if (userVersion === CONTINUITY_USER_VERSION) assertContinuitySchema(database);
 }
 
 function readStats(database: DatabaseSync, path: string): ToolHistoryStats {
@@ -423,7 +500,8 @@ function readStats(database: DatabaseSync, path: string): ToolHistoryStats {
     idempotencyConflicts: numberField(counts, "idempotency_conflicts"),
     maintenanceFailures: numberField(counts, "maintenance_failures"),
     recoveryFailures: numberField(counts, "recovery_failures"),
-    retainedBytes: numberField(counts, "retained_bytes"),
+    retainedBytes: numberField(counts, "retained_bytes") + (hasContinuitySchema(database) ? readContinuityStats(database).retainedBytes : 0),
+    ...(hasContinuitySchema(database) ? { continuity: readContinuityStats(database) } : {}),
     bytes,
     journalPresent: existsSync(`${path}-journal`),
     limits: {

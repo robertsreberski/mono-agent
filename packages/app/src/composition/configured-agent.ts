@@ -32,6 +32,7 @@ import type {
 } from "@mono-agent/turn/host/types";
 
 import { agentArtifactDerivedRoots } from "../artifacts/agent-artifact-paths.js";
+import { createConversationHistoryRuntimeExtension, isConversationHistoryToolAllowed } from "../request-tools/conversation-history.js";
 import { createToolOutputArtifactsRuntimeExtension } from "../artifacts/tool-output-artifacts.js";
 import {
   acquireAgentRootOwnership,
@@ -267,6 +268,12 @@ async function createConfiguredConversationHarnessInternal(
     channelId: internalHooks.processJobs?.channelId,
     conversationScheme: internalHooks.processJobs?.conversationScheme,
   });
+  const conversationHistory = internalHooks.conversationHistoryExtension === null || config.runtime.session.continuity?.enabled === false || !isConversationHistoryToolAllowed(config.tools)
+    ? undefined : internalHooks.conversationHistoryExtension ?? createConversationHistoryRuntimeExtension({
+      historyRoot: artifactDerivedRoots.history,
+      rollover: internalHooks.sessionRollover ?? config.runtime.session.rollover ?? "none",
+      onUnavailable: () => options.onToolHistoryWarning?.("ConversationHistory endpoint could not start; retained evidence is unavailable this run."),
+    });
   const composedRuntimeOptionsForRequest = composeRuntimeOptionExtensions([
     ({ request }) => {
       const admitted = () => {
@@ -283,6 +290,7 @@ async function createConfiguredConversationHarnessInternal(
         : {};
     },
     peerAgent,
+    conversationHistory,
     memoryRecall,
     memoryJournal,
     memoryRemember,
@@ -347,8 +355,19 @@ async function createConfiguredConversationHarnessInternal(
   const sessionsRoot = config.runtime.session.root;
   const retireDurableSession = runtime.retireDurableSession?.bind(runtime);
   const historyRoot = artifactDerivedRoots.history;
+  const rollover = internalHooks.sessionRollover ?? config.runtime.session.rollover;
+  const toolHistory = lazyConfiguredToolHistory({
+    root: historyRoot,
+    continuityEnabled: options.historyStore === undefined && config.runtime.session.continuity?.enabled !== false,
+    artifactRoot: toolOutputArtifactRoot,
+    rollover,
+    ...(options.onToolHistoryWarning === undefined
+      ? {}
+      : { onWarning: options.onToolHistoryWarning }),
+  });
   const baseHistoryStore = options.historyStore ?? createDurableHistoryStore({
     root: historyRoot,
+    ...(toolHistory.continuity === undefined ? {} : { continuity: toolHistory.continuity }),
     maxMessages: DEFAULT_HISTORY_MAX_MESSAGES,
     ...(nativeModelSwitch === undefined ? {} : { nativeJournalStorage: nativeModelSwitch.native }),
     ...(sessionsRoot === undefined || retireDurableSession === undefined
@@ -360,6 +379,7 @@ async function createConfiguredConversationHarnessInternal(
               if (owner.sessionTurnReconciliation !== "v1" || owner.reconcileSessionTurn === undefined) throw new Error("Session owner cannot reconcile native turn evidence.");
               const selected = parseMonoRuntimeModelReference(request.modelKey);
               return await owner.reconcileSessionTurn({ descriptor: request.descriptor, purpose: request.purpose,
+                ...(request.includeContinuity ? { includeContinuity: true } : {}),
                 expectedInputs: request.expectedInputs, sessionsRoot: sessionsRoot,
                 expectedModel: { provider: selected.provider, id: selected.model } });
             },
@@ -378,20 +398,12 @@ async function createConfiguredConversationHarnessInternal(
         }),
   });
   const historyStore = internalHooks.wrapHistoryStore?.(baseHistoryStore) ?? baseHistoryStore;
-  const rollover = internalHooks.sessionRollover ?? config.runtime.session.rollover;
   // Conversation history and managed-tool history are distinct contracts. A
   // caller-supplied message store remains the sole message-history owner, while
   // the configured app keeps its independent lifecycle sidecar and
-  // SessionHistory capability. Acquisition stays lazy so tool-free runs do not
-  // create either the sidecar or its owner database.
-  const toolHistory = lazyConfiguredToolHistory({
-    root: historyRoot,
-    artifactRoot: toolOutputArtifactRoot,
-    rollover,
-    ...(options.onToolHistoryWarning === undefined
-      ? {}
-      : { onWarning: options.onToolHistoryWarning }),
-  });
+  // SessionHistory capability. Continuity borrows the default store owner;
+  // acquisition stays lazy until a canonical mutation or managed-tool event.
+
 
   try {
     const harnessOptions: ConversationHarnessOptions = {

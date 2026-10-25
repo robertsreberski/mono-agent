@@ -1,3 +1,6 @@
+import { acknowledgeContinuityPurge, claimContinuityPurge, inspectContinuityPurges } from "./continuity-purge.js";
+import { continuityGenerationId, recordContinuityGap } from "./continuity-storage.js";
+import type { ContinuityGapInput } from "./continuity-contracts.js";
 import { createHash, randomBytes } from "node:crypto";
 import {
   chmodSync,
@@ -37,8 +40,14 @@ import {
   TOOL_HISTORY_RESULT_MAX_BYTES,
   type BoundedToolHistoryPayload,
 } from "./payload.js";
+import { captureFinalizedToolText } from "./continuity-lifecycle.js";
+import { isNestedHistoryTool, NESTED_HISTORY_OMISSION } from "./nested-history.js";
+import { ToolHistoryWriterError } from "./errors.js";
 import { continueToolHistoryOperationTail } from "./worker-queue.js";
 import { TOOL_HISTORY_APPLICATION_ID, TOOL_HISTORY_DATABASE, TOOL_HISTORY_DIRECTORY, TOOL_HISTORY_OWNER_ACQUIRE_CEILING_MS, TOOL_HISTORY_OWNER_DATABASE, TOOL_HISTORY_SCHEMA, TOOL_HISTORY_USER_VERSION, toolHistoryRecordId, type ToolHistoryRetentionOptions, type ToolHistoryRunBinding } from "./contracts.js";
+
+import { CONTINUITY_USER_VERSION, type ContinuityPin, type ContinuityPreparation, type ContinuityPublication, type ContinuityReconciliation } from "./continuity-contracts.js";
+import { assertContinuitySchema, purgeContinuityRows, commitContinuity, continuityRetainedBytes, createContinuitySchema, hasContinuitySchema, pinContinuity, prepareContinuity, reconcileContinuity, resetContinuity, retainContinuity, readContinuityStats, unpinContinuity } from "./continuity-storage.js";
 
 const DEFAULT_RETENTION: Required<ToolHistoryRetentionOptions> = {
   maxCompletedCalls: 100_000,
@@ -70,14 +79,16 @@ class RunBindingConflictError extends WorkerHistoryError {
   readonly incidentKey: string;
   readonly detail: string;
 
-  constructor(incidentKey: string, detail: string) {
-    super("history_idempotency_conflict", "Run binding changed after tool history opened.");
+  constructor(incidentKey: string, detail: string, message = "Run binding changed after tool history opened.") {
+    super("history_idempotency_conflict", message);
     this.incidentKey = incidentKey;
     this.detail = detail;
   }
 }
 
 const input = workerData as WorkerInput;
+let continuityEnabled = input.continuityEnabled === true;
+let continuityPurgeBlocked = false;
 const root = resolve(input.root);
 const artifactRoot = canonicalToolArtifactRoot(input.artifactRoot);
 const artifactRootAliases = input.artifactRootAliases.map((value) => resolve(value));
@@ -101,7 +112,7 @@ try {
 } catch (error) {
   respondError(
     0,
-    error instanceof WorkerHistoryError ? error.code : "history_writer_start_failed",
+    (error instanceof WorkerHistoryError || error instanceof ToolHistoryWriterError) ? error.code : "history_writer_start_failed",
     reasonOf(error),
   );
   throw error;
@@ -125,7 +136,7 @@ try {
   try { owner?.release(); } catch { /* startup error remains authoritative */ }
   respondError(
     0,
-    error instanceof WorkerHistoryError ? error.code : "history_writer_start_failed",
+    (error instanceof WorkerHistoryError || error instanceof ToolHistoryWriterError) ? error.code : "history_writer_start_failed",
     reasonOf(error),
   );
   throw error;
@@ -146,10 +157,60 @@ parentPort.on("message", (request: WorkerRequest) => {
       return;
     }
     try {
+      // Also service intents created after this writer acquired its owner.
+      if (continuityEnabled) continuityPurgeBlocked = applyPendingContinuityPurges(database);
       switch (request.operation) {
         case "ready":
           respond(request.id, { schema: TOOL_HISTORY_SCHEMA, recovered: statValue(database, "recovered_calls") });
           break;
+        case "enable_continuity":
+          transaction(database, () => {
+            if (pragmaNumber(database, "user_version") >= CONTINUITY_USER_VERSION) assertContinuitySchema(database);
+            else createContinuitySchema(database);
+            database.exec(`PRAGMA user_version=${String(CONTINUITY_USER_VERSION)}`);
+          });
+          continuityEnabled = true;
+          continuityPurgeBlocked = applyPendingContinuityPurges(database);
+          respond(request.id, null);
+          break;
+        case "continuity_gap":
+        case "continuity_prepare":
+        case "continuity_commit":
+        case "continuity_reconcile":
+        case "continuity_pin":
+        case "continuity_unpin": {
+          if (!continuityEnabled) throw new WorkerHistoryError("continuity_disabled", "Continuity capture is not enabled.");
+          if (continuityPurgeBlocked) throw new WorkerHistoryError("continuity_purge_unavailable", "Continuity is unavailable while a purge journal is invalid or cannot be applied.");
+          let result: unknown;
+          try {
+            transaction(database, () => {
+              switch (request.operation) {
+                case "continuity_gap": recordContinuityGap(database, request.payload as ContinuityGapInput); retainContinuity(database, retention, Date.now()); break;
+                case "continuity_prepare": result = prepareContinuity(database, request.payload as ContinuityPreparation, retention, (bytes, records) => applyRetentionInTransaction(database, retention, bytes, records)); break;
+                case "continuity_commit": commitContinuity(database, request.payload as ContinuityPublication); break;
+                case "continuity_reconcile": result = reconcileContinuity(database, request.payload as ContinuityReconciliation); break;
+                case "continuity_pin": pinContinuity(database, request.payload as ContinuityPin); break;
+                case "continuity_unpin": unpinContinuity(database, request.payload as ContinuityPin); break;
+              }
+              const generationId = (request.payload as { generationId?: string }).generationId;
+              if (generationId !== undefined) clearIncident(database, "idempotency_conflicts", `continuity:${generationId}`);
+            });
+          } catch (error) {
+            const code = (error as { code?: string }).code;
+            if (code === "continuity_conflict" || code === "continuity_publication_mismatch") {
+              const generationId = (error as { conflictingGenerationId?: string }).conflictingGenerationId ?? (request.payload as { generationId?: string }).generationId;
+              if (generationId !== undefined && database.prepare("SELECT 1 FROM continuity_generations WHERE generation_id=?").get(generationId)) {
+                transaction(database, () => recordIncident(database, "idempotency_conflicts", `continuity:${generationId}`, `${code}: contradictory continuity generation`));
+              }
+            }
+            if (code === "continuity_quota_exhausted") {
+              transaction(database, () => { database.prepare("INSERT OR REPLACE INTO metadata(key,value) VALUES ('continuity_degraded','quota')").run(); });
+            }
+            throw error;
+          }
+          respond(request.id, result ?? null);
+          break;
+        }
         case "invocation":
           respond(request.id, recordInvocation(database, lifecyclePayload(request.payload)));
           break;
@@ -238,7 +299,7 @@ parentPort.on("message", (request: WorkerRequest) => {
     } catch (error) {
       respondError(
         request.id,
-        error instanceof WorkerHistoryError ? error.code : "history_write_failed",
+        (error instanceof WorkerHistoryError || error instanceof ToolHistoryWriterError) ? error.code : "history_write_failed",
         reasonOf(error),
       );
     }
@@ -351,7 +412,7 @@ function recordResult(database: DatabaseSync, payload: LifecyclePayload): Runtim
   const detailCode = event.detailCode === undefined ? null : boundedCode(event.detailCode);
   const executionMs = event.executionMs === undefined ? null : nonNegativeInteger(event.executionMs);
   const artifactIds = normalizedArtifactIds(event.artifacts ?? [], binding);
-  const bounded = boundedToolHistoryPayload(event.content ?? null, TOOL_HISTORY_RESULT_MAX_BYTES);
+  const original = boundedToolHistoryPayload(event.content ?? null, TOOL_HISTORY_RESULT_MAX_BYTES);
   return lifecycleTransaction(database, () => {
     ensureRun(database, binding);
     const recordId = toolHistoryRecordId(binding.conversationId, binding.runId, toolCallId, "result");
@@ -399,6 +460,9 @@ function recordResult(database: DatabaseSync, payload: LifecyclePayload): Runtim
       );
       return { persistence: "failed", errorCode: "history_idempotency_conflict" };
     }
+    const bounded = binding.continuityEnabled === true && isNestedHistoryTool(String(call.tool_name))
+      ? { ...boundedToolHistoryPayload({ omitted: NESTED_HISTORY_OMISSION }, TOOL_HISTORY_RESULT_MAX_BYTES), originalBytes: original.originalBytes, truncated: true }
+      : original;
     const existing = database.prepare(`
       SELECT record_id,seq,payload_sha256,truncated,original_bytes,retained_bytes
       FROM tool_records WHERE conversation_id=? AND run_id=? AND tool_call_id=? AND phase='result'
@@ -437,6 +501,7 @@ function recordResult(database: DatabaseSync, payload: LifecyclePayload): Runtim
         database.prepare("DELETE FROM artifact_refs WHERE conversation_id=? AND run_id=? AND tool_call_id=?")
           .run(binding.conversationId, binding.runId, toolCallId);
         const artifacts = insertArtifacts(database, binding, toolCallId, event.artifacts ?? [], now);
+        recordFinalizedText(database, binding, event, String(call.tool_name));
         resolveLifecycleIncidents(database, binding, toolCallId, "result");
         return persistence(recordId, sequence, bounded, artifacts);
       }
@@ -458,6 +523,7 @@ function recordResult(database: DatabaseSync, payload: LifecyclePayload): Runtim
         );
         return { persistence: "failed", errorCode: "history_idempotency_conflict" };
       }
+      recordFinalizedText(database, binding, event, String(call.tool_name));
       resolveLifecycleIncidents(database, binding, toolCallId, "result");
       return persistenceFromRow(existing, artifactRefs(database, binding, toolCallId));
     }
@@ -481,9 +547,33 @@ function recordResult(database: DatabaseSync, payload: LifecyclePayload): Runtim
       recordId, binding, toolCallId, phase: "result", sequence, bounded,
     });
     const artifacts = insertArtifacts(database, binding, toolCallId, event.artifacts ?? [], now);
+    recordFinalizedText(database, binding, event, String(call.tool_name));
     resolveLifecycleIncidents(database, binding, toolCallId, "result");
     return persistence(recordId, sequence, bounded, artifacts);
   }, () => applyRetention(database, retention));
+}
+
+function recordFinalizedText(database: DatabaseSync, binding: ToolHistoryRunBinding,
+  event: Extract<RuntimeToolLifecycleEvent, { phase: "result" }>, toolName: string): void {
+  if (!continuityEnabled || continuityPurgeBlocked || binding.continuityEnabled !== true) return;
+  try {
+    captureFinalizedToolText(database, binding, event, toolName, retention,
+      (bytes, records) => applyRetentionInTransaction(database, retention, bytes, records));
+  } catch (error) {
+    if ((error as { code?: string }).code === "continuity_quota_exhausted") {
+      // Ordinary tool execution must not fail because optional capture is full.
+      recordContinuityGap(database, { generationId: continuityGenerationId(), conversationId: binding.conversationId,
+        logicalConversationId: binding.logicalConversationId, beforeDigest: null, afterDigest: null, reason: "capture_quota" });
+      return;
+    }
+    if ((error as { code?: string }).code === "continuity_conflict") {
+      // Roll the entire lifecycle transaction back; count the incident in the
+      // existing post-rollback path, never publish a contradictory legacy row.
+      throw new RunBindingConflictError(lifecycleIncidentKey(binding, event.toolCallId, "result"),
+        "continuity:finalized_tool_identity_changed", "Retained tool text changed for an existing lifecycle identity.");
+    }
+    throw error;
+  }
 }
 
 function closeDangling(
@@ -538,6 +628,7 @@ function closeDanglingInTransaction(
 }
 
 function resetLogicalConversation(database: DatabaseSync, logicalConversationId: string): void {
+  if (hasContinuitySchema(database)) resetContinuity(database, logicalConversationId);
   const runs = database.prepare(`
     SELECT conversation_id,run_id FROM runs WHERE logical_id=?
     ORDER BY conversation_id,run_id
@@ -672,8 +763,14 @@ function normalizedArtifactIds(
 }
 
 function applyRetention(database: DatabaseSync, limits: Required<ToolHistoryRetentionOptions>): void {
-  transaction(database, () => {
+  transaction(database, () => applyRetentionInTransaction(database, limits));
+}
+
+function applyRetentionInTransaction(database: DatabaseSync, limits: Required<ToolHistoryRetentionOptions>, reservedBytes = 0, reservedRecords = 0): void {
     const now = Date.now();
+    const extended = hasContinuitySchema(database);
+    if (extended) retainContinuity(database, limits, now, reservedBytes, reservedRecords);
+    const continuityBytes = extended ? continuityRetainedBytes(database) : 0;
     const ageCutoff = now - limits.maxAgeMs;
     const old = database.prepare(`
       SELECT conversation_id,run_id,tool_call_id FROM tool_calls
@@ -689,7 +786,7 @@ function applyRetention(database: DatabaseSync, limits: Required<ToolHistoryRete
     `).all(limits.maxCompletedCalls) as Record<string, unknown>[];
     pruneCalls(database, overflow, "count", now);
     let retainedBytes = Number((database.prepare("SELECT coalesce(sum(retained_bytes),0) bytes FROM tool_records").get() as Record<string, unknown>).bytes);
-    while (retainedBytes > limits.maxBytes) {
+    while (retainedBytes + continuityBytes + reservedBytes > limits.maxBytes) {
       const rows = database.prepare(`
         SELECT conversation_id,run_id,tool_call_id FROM tool_calls
         WHERE end_seq IS NOT NULL
@@ -728,7 +825,6 @@ function applyRetention(database: DatabaseSync, limits: Required<ToolHistoryRete
         .run(conversationId, runId);
     }
     clearStat(database, "maintenance_failures");
-  });
 }
 
 function pruneCalls(database: DatabaseSync, rows: Record<string, unknown>[], reason: string, now: number): void {
@@ -777,7 +873,7 @@ function openContentDatabase(
   const pristine = existingApplication === 0 && existingVersion === 0 && existingTables.length === 0;
   const compatible = existingApplication === TOOL_HISTORY_APPLICATION_ID
     && existingVersion >= 0
-    && existingVersion <= TOOL_HISTORY_USER_VERSION;
+    && existingVersion <= CONTINUITY_USER_VERSION;
   if (!pristine && !compatible) {
     database.close();
     throw new WorkerHistoryError(
@@ -790,6 +886,13 @@ function openContentDatabase(
   database.exec("PRAGMA secure_delete=ON");
   database.exec("PRAGMA foreign_keys=ON");
   database.exec(`PRAGMA busy_timeout=${String(TOOL_HISTORY_WRITER_BUSY_TIMEOUT_MS)}`);
+  // Owner/schema identity and FULL durability are established. This separate
+  // transaction deletes only continuity rows/incident keys, never stored paths.
+  // It must commit before the later artifact-root guard can reject startup.
+  if (continuityEnabled) {
+    assertContentIntegrity(database, "quick_check");
+    continuityPurgeBlocked = applyPendingContinuityPurges(database);
+  }
   transaction(database, () => {
     database.exec(`PRAGMA application_id=${String(TOOL_HISTORY_APPLICATION_ID)}`);
     database.exec(`
@@ -878,7 +981,9 @@ function openContentDatabase(
     sanitizePersistedWriterStatDetails(database);
     migrateSyntheticResultMarker(database, existingVersion);
     migrateLegacyIncidentKeys(database);
-    database.exec(`PRAGMA user_version=${String(TOOL_HISTORY_USER_VERSION)}`);
+    if (existingVersion >= CONTINUITY_USER_VERSION) assertContinuitySchema(database);
+    else if (continuityEnabled) createContinuitySchema(database);
+    database.exec(`PRAGMA user_version=${String(continuityEnabled ? CONTINUITY_USER_VERSION : Math.max(existingVersion, TOOL_HISTORY_USER_VERSION))}`);
     const metadata = database.prepare("INSERT OR REPLACE INTO metadata (key,value) VALUES (?,?)");
     const existingArtifactRoot = database.prepare("SELECT value FROM metadata WHERE key='artifact_root'").get() as Record<string, unknown> | undefined;
     if (existingArtifactRoot !== undefined && existingArtifactRoot.value !== configuredArtifactRoot) {
@@ -895,14 +1000,19 @@ function openContentDatabase(
     metadata.run("limit_max_tombstones", String(limits.maxTombstones));
     metadata.run("limit_tombstone_max_age_ms", String(limits.tombstoneMaxAgeMs));
   });
-  const integrity = database.prepare("PRAGMA integrity_check").get() as Record<string, unknown>;
-  if (String(Object.values(integrity)[0]) !== "ok") {
-    database.close();
-    throw new WorkerHistoryError("history_integrity_failed", "Tool history database failed integrity_check.");
-  }
+  assertContentIntegrity(database, "integrity_check");
   assertSecureFile(path);
   assertToolDirectoryEntries();
   return database;
+}
+
+/** Preserve the existing integrity failure contract before any purge can commit. */
+function assertContentIntegrity(database: DatabaseSync, pragma: "quick_check" | "integrity_check"): void {
+  const result = database.prepare(`PRAGMA ${pragma}`).get() as Record<string, unknown>;
+  if (String(Object.values(result)[0]) !== "ok") {
+    database.close();
+    throw new WorkerHistoryError("history_integrity_failed", "Tool history database failed integrity_check.");
+  }
 }
 
 function migrateSyntheticResultMarker(database: DatabaseSync, priorVersion: number): void {
@@ -1409,6 +1519,7 @@ function workerStats(database: DatabaseSync): Record<string, unknown> {
   `).get() as Record<string, unknown>;
   return {
     ...counts,
+    ...(hasContinuitySchema(database) ? { retainedBytes: Number(counts.retainedBytes) + continuityRetainedBytes(database), continuity: readContinuityStats(database) } : {}),
     writeFailures: incidentStatValue(database, "write_failures"),
     idempotencyConflicts: incidentStatValue(database, "idempotency_conflicts"),
     maintenanceFailures: statValue(database, "maintenance_failures"),
@@ -1437,6 +1548,8 @@ function bindingOf(value: unknown): ToolHistoryRunBinding {
     logicalConversationId: normalizeId(record.logicalConversationId, "logicalConversationId"),
     runId: normalizeId(record.runId, "runId"),
     isolated: record.isolated === true,
+    ...(record.continuityEnabled === true ? { continuityEnabled: true as const } : {}),
+    ...(record.finalizedContinuity === true ? { finalizedContinuity: true as const } : {}),
   };
 }
 
@@ -1601,4 +1714,26 @@ function nonNegativeInteger(value: number): number {
 
 function reasonOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/** Returns a continuity-only failure; independent lifecycle requests stay usable. */
+function applyPendingContinuityPurges(database: DatabaseSync): boolean {
+  let result: ReturnType<typeof inspectContinuityPurges>;
+  try { result = inspectContinuityPurges(root); } catch { return true; }
+  let blocked = result.invalid > 0;
+  for (const purge of result.pending) {
+    try {
+      const claimed = claimContinuityPurge(root, purge.path);
+      transaction(database, () => {
+        if (hasContinuitySchema(database)) {
+          assertContinuitySchema(database);
+          purgeContinuityRows(database, purge.scope, purge.conversationId);
+        }
+      });
+      acknowledgeContinuityPurge(root, claimed);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") blocked = true;
+    }
+  }
+  return blocked;
 }

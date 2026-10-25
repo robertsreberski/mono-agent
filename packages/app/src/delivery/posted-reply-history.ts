@@ -112,7 +112,7 @@ const forwardedHistoryKeys = {
   readProviderSessionBinding: true,
 } satisfies Record<keyof ConversationHistoryStore, true>;
 void forwardedHistoryKeys;
-const forwardedExclusiveTurnKeys = { history: true, historyVersion: true, prepareCommit: true, abort: true } satisfies Record<keyof import("@mono-agent/conversation").ConversationHistoryExclusiveTurn, true>;
+const forwardedExclusiveTurnKeys = { history: true, historyVersion: true, prepareCommit: true, abort: true, prepareCompaction: true, recordCompaction: true, withContinuityOwner: true } satisfies Record<keyof import("@mono-agent/conversation").ConversationHistoryExclusiveTurn, true>;
 void forwardedExclusiveTurnKeys;
 
 function wrapHistoryStore(
@@ -154,6 +154,9 @@ function wrapHistoryStore(
               return {
                 history,
                 historyVersion: turn.historyVersion,
+                ...(turn.withContinuityOwner ? { withContinuityOwner: turn.withContinuityOwner.bind(turn) } : {}),
+                ...(turn.prepareCompaction ? { prepareCompaction: turn.prepareCompaction.bind(turn) } : {}),
+                ...(turn.recordCompaction ? { recordCompaction: turn.recordCompaction.bind(turn) } : {}),
                 prepareCommit: turn.prepareCommit.bind(turn),
                 abort: turn.abort.bind(turn),
               };

@@ -13,6 +13,7 @@ import { createDurableHistoryStore } from "../history/canonical/store.js";
 import { acquireToolHistoryWriter, assertToolHistoryWorkerBuildFresh, ToolHistoryWriter } from "../tool-history/writer.js";
 import { ToolHistoryReader } from "../tool-history/reader.js";
 import { TOOL_HISTORY_DATABASE, TOOL_HISTORY_DIRECTORY, TOOL_HISTORY_OWNER_ACQUIRE_CEILING_MS, TOOL_HISTORY_OWNER_DATABASE, TOOL_HISTORY_PERSISTENCE_CEILING_MS, TOOL_HISTORY_USER_VERSION, toolHistoryRecordId, type ToolHistoryRunBinding, type ToolHistoryWriterOptions } from "../tool-history/contracts.js";
+import { CONTINUITY_USER_VERSION } from "../tool-history/continuity-contracts.js";
 import { buildToolHistoryProjection } from "../tool-history/projection.js";
 
 const tempDirs: string[] = [];
@@ -67,6 +68,13 @@ beforeAll(async () => {
     "tool-history/busy-wait",
     "tool-history/persistence-coordinator",
     "tool-history/contracts",
+    "tool-history/continuity-contracts",
+    "tool-history/continuity-lifecycle",
+    "tool-history/nested-history",
+    "tool-history/continuity-payload",
+    "tool-history/continuity-purge",
+    "tool-history/continuity-storage",
+    "tool-history/continuity-reader",
     "tool-history/reader",
     "tool-history/writer",
     "tool-history/paths",
@@ -2331,7 +2339,7 @@ describe("tool-history ownership, recovery, and scanner coexistence", () => {
     await writer.close();
     const newerPath = join(newerRoot, TOOL_HISTORY_DIRECTORY, TOOL_HISTORY_DATABASE);
     const newer = new DatabaseSync(newerPath);
-    newer.exec(`PRAGMA user_version=${String(TOOL_HISTORY_USER_VERSION + 1)}`);
+    newer.exec(`PRAGMA user_version=${String(CONTINUITY_USER_VERSION + 1)}`);
     newer.close();
     await expect(ToolHistoryWriter.open({ root: newerRoot, ownerAcquireCeilingMs: 500 }))
       .rejects.toMatchObject({ code: "history_schema_unsupported" });

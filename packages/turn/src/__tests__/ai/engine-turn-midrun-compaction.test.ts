@@ -279,7 +279,7 @@ function entriesFor(messages: FixtureMessage[]) {
   }));
 }
 
-function controllerFixture({ policy: policyOverrides = {}, summary = "## Goal\nshort summary" } = {}) {
+function controllerFixture({ policy: policyOverrides = {}, summary = "## Goal\nshort summary", recordingBarrier = undefined as (() => Promise<void>) | undefined } = {}) {
   const policy = {
     enabled: true,
     contextWindow: 100_000,
@@ -361,7 +361,7 @@ function controllerFixture({ policy: policyOverrides = {}, summary = "## Goal\ns
   }
   const controller = createMidRunCompaction(runState, {
     harness,
-    options: { onCompactionRecorded: (row: CompactionRecordedPayload) => recorded.push(row), runId: "r1" },
+    options: { onCompactionRecorded: (row: CompactionRecordedPayload) => { recorded.push(row); return recordingBarrier?.(); }, runId: "r1" },
     reference: "faux:m",
     onEvent: (event: CompactionEvent) => events.push(event),
     runtimeWarnings,
@@ -505,6 +505,16 @@ describe("mid-run compaction guards", () => {
     await runReactiveCompaction(fixture.runState, params);
     expect(fixture.harness.compact).toHaveBeenCalledTimes(shouldRecover ? 1 : 0);
     expect(fixture.harness.prompt).toHaveBeenCalledTimes(shouldRecover ? 1 : 0);
+  });
+
+  it("drains asynchronous mid-run recording before disarming even for synchronous event buses", async () => {
+    let entered!: () => void, release!: () => void, settled = false;
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    const barrier = new Promise<void>((resolve) => { release = resolve; });
+    const fixture = controllerFixture({ recordingBarrier: async () => { entered(); await barrier; } });
+    await fixture.controller.arm(); fixture.setTranscript(growingTranscript(2)); await fixture.checkpoint(); await started;
+    const disarming = fixture.controller.disarm().then(() => { settled = true; });
+    await Promise.resolve(); expect(settled).toBe(false); release(); await disarming; expect(settled).toBe(true);
   });
 
   it("requires additional growth after a skipped attempt instead of re-paying each round", async () => {

@@ -34,7 +34,7 @@ Boundary rules:
 | Telegram `/new` | Current chat's warm provider session plus message and tool history for its logical session across daily rollover | All unrelated conversations, durable memory, run artifacts, and the chat's model/effort override | Telegram confirmation; the next message rebuilds startup context and reloads skills |
 | Idle eviction / replaced / disposed provider session | Warm runtime continuity for that conversation id | Durable session transcripts, durable history, memory, and run artifacts | App log line and status metadata event (`evicted`) with reason |
 | Detached status read | Nothing | All runtime/session state | No runtime event; status reads the latest published config + store snapshot |
-| `mono-agent restart --clear-sessions` / explicit purge | Durable session transcripts under `runtime.session.root`, persistent child registries and transcripts under `subagents.instances.root`, message-history files, the tool-history sidecar, and ACP session authorizations beside `artifacts.dir` | Durable memory under `memory.path`, recorded run artifacts, and process-job records/output; nonterminal jobs are interrupted by any restart | Restart/status output reports message-history and tool-history counts/bytes plus ACP authorization counts separately |
+| `mono-agent restart --clear-sessions` / explicit purge | Durable session transcripts under `runtime.session.root`, persistent child registries and transcripts under `subagents.instances.root`, message-history files, the tool-history sidecar, and ACP session authorizations beside `artifacts.dir` | Durable memory under `memory.path`, recorded run artifacts, and process-job records/output; nonterminal jobs are interrupted by any restart | Restart/status output reports message-history and tool-history counts/bytes, v3 continuity record/pin/generation counts, and ACP authorization counts separately |
 | Browser disconnect or reload | Only that SSE/browser connection | Web service turn, source-bound thread, messages, committed attachments, provider/harness work | Reconnect receives current state and subsequent events |
 | Web service restart | Any web-owned active upstream connection | Terminal messages, archived/active threads, committed attachments, queued live follow-ups, submission receipts, agent memory/history, recorded runs | Active web turn is projected as `interrupted`; unmarked live offers become queued normal turns, dispatch-marked offers become uncertain, and browsers recover a known submission with `GET` instead of repeating `POST` |
 | `mono-agent web reset --all --yes` | Entire stopped web-console SQLite/settings/upload state | Agent configs, provider/harness history, memory, and recorded-run artifacts | CLI confirmation/result only |
@@ -75,6 +75,65 @@ history as version 3; read-only loading does not. Before upgrading, stop all
 writers and back up the canonical history directory and any sessions root as a
 consistent snapshot. Older binaries cannot read version 3. Rollback requires
 stopping writers and restoring the backup, not disabling model switching.
+
+## Retained conversation evidence (default on)
+
+`runtime.session.continuity.enabled` defaults to `true`. Continuity retains
+sanitized user and assistant text, permitted tool text and the latest portable
+compaction summary in the existing conversation tool-history sidecar. It does
+not require a memory backend or a durable provider-session root. This is
+retrievable evidence, not an active-state ledger, automatic recall or permission
+to repeat an old action.
+
+```json
+{ "runtime": { "session": { "continuity": { "enabled": false } } } }
+```
+
+This partial configuration opts out; keep the usual model and identity settings.
+Explicit false preserves legacy paths: no participant, sidecar probe or v3
+upgrade for continuity. Under normal tool policy every default-enabled agent
+gets `ConversationHistory`: `"*"` allows it, a restrictive allowlist must include
+its name, and an explicit deny wins. The tool is constructed for standalone
+configured harnesses as well as channel controllers. Denying retrieval alone
+does not turn capture off. Unlike SessionHistory's prior-run tool evidence,
+positively finalized/fsynced current-run conversation records are eligible;
+partial streams and prepared publications remain unavailable.
+Stop older writers and back up canonical history and the sidecar together before
+the first enabled start: the first capable writer upgrades the sidecar from SQLite v2 to v3 in place; older binaries refuse the upgraded store.
+Disabled operation does not perform that upgrade. Existing v3 evidence stays on disk for doctor, stats and purge;
+ConversationHistory is not registered while capture is disabled. Binary rollback requires stopped writers
+and a consistent backup; disabling a flag does not downgrade storage.
+
+`ConversationHistory`, when allowed by tool policy, searches and retrieves only
+the current logical conversation (including configured rollover buckets).
+Chunks are at most 8192 UTF-8 bytes and identify the retained text's digest,
+redaction and truncation. Retained records are bounded at 1 MiB; oversized text
+is explicitly omitted, never presented as lossless original text. Continuity and
+tool-lifecycle payloads share the existing 256 MiB retention budget. Live pins
+never silently expire: exhausted pinned capacity reports degraded continuity
+rather than invalidating references. Conversation reset and
+`restart --clear-sessions` remove this evidence with the existing sidecar.
+
+The latest portable summary is generated evidence, not a user instruction.
+Recording is awaited across manual, pre-turn, reactive and mid-run compaction.
+Storage reservation is attempted before reduction, but sidecar outages, full
+capacity or an oversized summary never block compaction or the run. They warn
+and degrade retained evidence coverage, with content-free gaps when storage is
+reachable again. A prepared summary is invisible until the owner verifies
+the actual synced native checkpoint and its covered-source/retained-text digests.
+An interrupted acknowledgement can recover without another summary call.
+Canonical hashes alone cannot prove a native reduction occurred.
+`SessionHistory` keeps its prior-run tool-lifecycle contract.
+
+Moving or forking an agent root with an existing sidecar preserves its pinned
+artifact root. Tool-history and continuity writes degrade if that root differs;
+compaction and canonical history continue. Use a fresh store for the moved root;
+this release does not rebind stored artifact paths.
+
+Custom preparer/recorder callbacks must be bounded local operations. They are
+awaited under the owner; cancellation cannot forcibly interrupt a callback that
+does not settle. Initial exclusive-mode input has no native input identity and
+remains `user`/unknown rather than inventing host-owner attestation.
 
 ## Web-only durable model-switch opt-in
 
@@ -882,7 +941,7 @@ Warm process-local handles carry the canonical history version and are retired
 before the next Send when a reset/import advanced it.
 
 :::caution
-`mono-agent restart --clear-sessions` purges `runtime.session.root`, canonical message-history files, the separate canonical tool-history sidecar, and ACP session authorizations, so the agent neither resumes a provider transcript nor replays or searches an earlier chat turn — a fresh start. Previously issued ACP session ids are revoked. Output reports message-history files/bytes separately from tool-history calls/records/bytes and ACP authorization counts. Durable memory under `memory.path`, recorded run artifacts, and process-job records/output remain untouched. Any nonterminal process job is interrupted by restart independently of the flag. A missing store is a no-op.
+`mono-agent restart --clear-sessions` purges `runtime.session.root`, canonical message-history files, the separate canonical tool-history sidecar, and ACP session authorizations, so the agent neither resumes a provider transcript nor replays or searches an earlier chat turn — a fresh start. Previously issued ACP session ids are revoked. Output reports message-history files/bytes separately from tool-history calls/records/bytes, v3 continuity records/pins/retained text bytes/generations, and ACP authorization counts. Durable memory under `memory.path`, recorded run artifacts, and process-job records/output remain untouched. Any nonterminal process job is interrupted by restart independently of the flag. A missing store is a no-op.
 :::
 
 For retry behavior across *different* models (provider failover, not transport retries), see [Fallback & failover](/runtime/fallback/). Transport retries here follow provider SDK policy before a response starts within a single model. A failed started stream is not automatically repeated by that layer; router fallback moves to the next model under its separate rules.

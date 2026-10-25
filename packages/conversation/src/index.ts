@@ -19,6 +19,12 @@ export { ToolHistoryReader, toolHistoryDiskUsage } from "./tool-history/reader.j
 export { toolHistoryLogicalConversationId, TOOL_HISTORY_APPLICATION_ID, TOOL_HISTORY_DATABASE, TOOL_HISTORY_DIRECTORY, TOOL_HISTORY_OWNER_DATABASE, TOOL_HISTORY_USER_VERSION } from "./tool-history/contracts.js";
 export type { ToolHistoryRunBinding, ToolHistorySearchInput, ToolHistorySearchCursor, ToolHistorySearchItem, ToolHistoryWriterOptions } from "./tool-history/contracts.js";
 export type { ToolHistoryWriterHandle } from "./tool-history/writer.js";
+export { createContinuityParticipant } from "./tool-history/continuity-participant.js";
+export type { ContinuityPublicationWriter } from "./tool-history/continuity-participant.js";
+export type { CanonicalContinuityState, ConversationHistoryContinuityParticipant, OwnedContinuityContext, OwnedContinuityMutation, PreparedContinuityPublication } from "./history/continuity-contracts.js";
+export { continuityGenerationId, continuityRecordId } from "./tool-history/continuity-storage.js";
+export { CONTINUITY_USER_VERSION } from "./tool-history/continuity-contracts.js";
+export type { ContinuityGapInput, ContinuityGapReason, ContinuityCheckpointProof, ContinuityCoverageGap, ContinuityPreparation, ContinuityPublication, ContinuityReconciliation, ContinuityReconciliationResult, ContinuityRecordInput, ContinuityRecordMetadata, ContinuityReceipt, ContinuityPin, ContinuityScope, ContinuitySource, ContinuitySummary, ContinuitySearchInput, ContinuitySearchPage, ContinuityGetInput, ContinuityGetResult } from "./tool-history/continuity-contracts.js";
 export { CONVERSATION_HISTORY_VERSION_MAX_BYTES } from "./sessions/warm-store.js";
 export { classifyContinuationMcpServerTransport, isStdioMcpServerSpec } from "./mcp-server-transport.js";
 export { ConversationHarnessFailureError, createConversationResponder } from "./responder.js";

@@ -35,7 +35,7 @@ export function createHarnessAdapter(session: any, options: any): Promise<{
     cancelQueued: (entryId: any) => Promise<any>;
     abort(): Promise<void>;
     waitForIdle: () => Promise<void>;
-    compact: () => Promise<any>;
+    compact: (options?: { continuityTrigger?: string }) => Promise<any>;
     on(type: any, handler: any): () => any;
     subscribe: (listener: any) => () => boolean;
     abortOpenOperations(): Promise<void>;
@@ -126,7 +126,7 @@ export async function createHarnessAdapter(session: PiSession, options: PiHarnes
     cancelQueued: (entryId: string) => driver.cancelQueued(entryId),
     async abort() { stopTools(); await driver.abort(); },
     waitForIdle: () => driver.waitForIdle(),
-    compact: () => driver.compact(),
+    compact: (options?: { continuityTrigger?: string }) => driver.compact(options),
     on(type: string, handler: (event: any) => any) {
       if (type === "before_tool") return driver.hooks.on(type, handler);
       if (type === "tool_result") return driver.hooks.on("after_tool", handler);

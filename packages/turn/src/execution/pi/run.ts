@@ -839,6 +839,7 @@ async function executeTrackedPiNativeResponse(systemPrompt: string, options: PiO
         },
         runtimeWarnings,
         onCompactionRecorded: options.onCompactionRecorded,
+        continuityRecording: options.continuityRecording,
         runId: options.runId,
         model: reference,
         session: runState.session,

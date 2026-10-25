@@ -1,3 +1,4 @@
+import { compactionEvidence } from "./compaction-evidence.js";
 import { assertNativeSessionAccess, assertNativeSessionHeader, assertNativeProjectionBinding } from "./session-authority.js";
 import { inspectCurrentEvidence, inspectCurrentLifecycle, projectContext } from "./request-projection.js";
 // @ts-check
@@ -579,6 +580,14 @@ export async function reconcileNativeSessionTurn(request: any): Promise<any> {
     await raw.prepareReconciliation();
     await repairInterruptedSession(raw);
     const evidence = await readTurnEvidence(raw, request.descriptor.turnId);
+    if (request.includeContinuity === true) {
+      const cut = evidence.context.filter((entry: any) => entry.kind === "compaction").at(-1);
+      const operation = cut && evidence.operations.find((op: any) => op.operationId === cut.operationId);
+      if (operation) {
+        const checkpoint = compactionEvidence(await raw.getEntry(cut.id), evidence.journalId, operation);
+        if (checkpoint) evidence.latestCompaction = checkpoint;
+      }
+    }
     const outcome = evidence.seal?.outcome ?? "interrupted";
     return { ...evidence, status: "matched", outcome,
       ...(outcome === "completed" && request.purpose === "execution" && evidence.seal?.result ? { commitCandidate: evidence.seal.result } : {}) };

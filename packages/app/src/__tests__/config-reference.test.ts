@@ -48,6 +48,7 @@ const EXPECTED_CORE_FIELD_TYPES: Record<keyof typeof CORE_CONFIG_FIELD_IDS, Conf
   "runtime.session.rolloverNotice": "boolean",
   "runtime.session.isolateProactive": "boolean",
   "runtime.session.modelSwitch.enabled": "boolean",
+  "runtime.session.continuity.enabled": "boolean",
   "concurrency.maxConcurrentRuns": "integer",
   "concurrency.maxPendingRuns": "integer",
   "context.identityPath": "string",
@@ -810,4 +811,13 @@ it("publishes switching prerequisites without a stopped-writer config acknowledg
   expect(schemaForField(enabled)).toMatchObject({ type: "boolean", default: false });
   expect(JSON.stringify(buildMonoAgentConfigSchema())).not.toContain("olderWritersStopped");
   expect(enabled.description).toContain("Web");
+});
+
+it("publishes the default-on continuity capability without adding B2 or B3 settings", () => {
+  const field = allConfigReferenceFields().find((f) => f.jsonPath === "runtime.session.continuity.enabled")!;
+  expect(schemaForField(field)).toMatchObject({ type: "boolean", default: true });
+  expect(field.description).toContain("ConversationHistory");
+  expect(findUnknownAppConfigPaths({ runtime: { session: { continuity: { enabled: true } } } })).toEqual([]);
+  expect(findUnknownAppConfigPaths({ runtime: { session: { continuity: { maintenanceMode: "boundary" } } } }))
+    .toContain("runtime.session.continuity.maintenanceMode");
 });

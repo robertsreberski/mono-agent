@@ -217,6 +217,17 @@ individual WebFetch call may use `render: "always"` for a strict browser-first
 request.
 
 
+### Retained conversation evidence
+
+`runtime.session.continuity.enabled` defaults to true. It gives the configured
+host sanitized retained conversation evidence and policy-gated `ConversationHistory`,
+independent of memory and provider-session persistence. Set it to false to opt
+out: no participant, continuity sidecar probe or v3 upgrade occurs. Enabling
+upgrades v2 sidecars to v3 in place; older binaries refuse v3. Back up and stop
+older writers before the first enabled start; rollback needs that pre-upgrade
+backup. Disabling capture does not downgrade existing evidence: doctor, stats and purge still inspect it, but ConversationHistory is not registered.
+See [retained evidence](../../docs/runtime/sessions-concurrency.md#retained-conversation-evidence-default-on).
+
 ### Dated conversation evidence
 
 `tools.conversationSearch.datedSnippets` defaults off and requires local BuJo
@@ -466,3 +477,5 @@ pnpm --filter @mono-agent/config run build
 pnpm --filter @mono-agent/config run typecheck
 pnpm --filter @mono-agent/config run test
 ```
+
+Disabling continuity leaves previously retained evidence and any pending purges at rest until continuity is re-enabled or storage is purged via session admin or `restart --clear-sessions`. That evidence is never served while a purge is pending.

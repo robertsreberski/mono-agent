@@ -5,7 +5,7 @@ sidebar:
   order: 2
 ---
 
-This page covers how mono-agent attaches [Model Context Protocol](https://modelcontextprotocol.io) (MCP) servers to your agent through `tools.mcpConfigPath`, how the path is resolved and forwarded to the runtime, and the one rule that surprises people: **external MCP-server tools are not gated by `tools.allowedTools`**. App-owned MCP tools can define a narrower policy boundary; `RunHistory`, `SessionHistory`, `MemoryJournal`, `SetConversationTitle`, `Remember`, and the adapter send tools do. Coverage type: `config`.
+This page covers how mono-agent attaches [Model Context Protocol](https://modelcontextprotocol.io) (MCP) servers to your agent through `tools.mcpConfigPath`, how the path is resolved and forwarded to the runtime, and the one rule that surprises people: **external MCP-server tools are not gated by `tools.allowedTools`**. App-owned MCP tools can define a narrower policy boundary; `RunHistory`, `SessionHistory`, `ConversationHistory`, `MemoryJournal`, `SetConversationTitle`, `Remember`, and the adapter send tools do. Coverage type: `config`.
 
 ## What `tools.mcpConfigPath` does
 
@@ -26,8 +26,8 @@ Point `tools.mcpConfigPath` at an `mcp.json` file describing one or more MCP ser
 | `tools.mcpConfigPath` | string | Path to an `mcp.json`. Resolved against the workspace, not the config file. |
 | `tools.mcpRequestContextServers` | string[] | Opt-in stdio server names that receive trusted per-run producing-conversation, run-id, output-directory, current-request attachment, and scoped progress context. HTTP/SSE and unlisted servers are unchanged. |
 | `tools.continuationServers` | string[] | Opt-in stdio or loopback-HTTP server names that receive a host-bound claim capability for durable asynchronous results. Remote HTTP, SSE, and unlisted servers fail closed or remain unchanged. |
-| `tools.allowedTools` | string[] | Allowlist for **built-in** runtime tools (`Read`, `Write`, `Edit`, `Glob`, `Grep`, `Exec`, `Bash`, `NodeRepl`, `WebFetch`, `WebSearch`) and policy-gated app-owned tools such as `RunHistory`, `SessionHistory`, `MemoryJournal`, `SetConversationTitle`, `Remember`, and adapter send tools. Omit (or `["*"]`) for allow-all; a specific list narrows to those names. Does not affect external MCP-server tools. |
-| `tools.disallowedTools` | string[] | Denylist; deny always wins, even under allow-all. Filters built-ins, `ReadSkill`, `RunHistory`, `SessionHistory`, `MemoryJournal`, `SetConversationTitle`, `Remember`, and adapter send tools. On the engine-turn runtime it does **not** filter external MCP-server tools (see below). |
+| `tools.allowedTools` | string[] | Allowlist for **built-in** runtime tools (`Read`, `Write`, `Edit`, `Glob`, `Grep`, `Exec`, `Bash`, `NodeRepl`, `WebFetch`, `WebSearch`) and policy-gated app-owned tools such as `RunHistory`, `SessionHistory`, `ConversationHistory`, `MemoryJournal`, `SetConversationTitle`, `Remember`, and adapter send tools. Omit (or `["*"]`) for allow-all; a specific list narrows to those names. Does not affect external MCP-server tools. |
+| `tools.disallowedTools` | string[] | Denylist; deny always wins, even under allow-all. Filters built-ins, `ReadSkill`, `RunHistory`, `SessionHistory`, `ConversationHistory`, `MemoryJournal`, `SetConversationTitle`, `Remember`, and adapter send tools. On the engine-turn runtime it does **not** filter external MCP-server tools (see below). |
 
 Configure MCP paths and server selections in the JSON `tools` block. Reserved runtime `MONO_AGENT_MCP_*` values used by child processes are protocol plumbing, not config.
 
@@ -160,7 +160,7 @@ Consequences:
 - Under allow-all (the default) MCP tools are available because their server is declared, not because of the wildcard. Setting `tools.allowedTools: []` ("no built-in tools") still leaves every MCP tool available.
 - An MCP tool's availability is governed by whether its server is **declared** in `mcp.json` / `tools.mcpServers`, not by the allowlist. To withhold an MCP tool, remove or don't declare its server.
 - On the **engine-turn runtime**, `disallowedTools` does **not** filter external MCP-server tools — declaring the server is the only lever. To hard-restrict an external MCP tool on pi, don't declare its server.
-- App-injected MCP tools define their own boundary. `MemoryRecall` and `AskCollaborator` are gated by their own enablement/composition switches; `RunHistory`, `SessionHistory`, `SetConversationTitle`, `Remember`, and adapter send tools are deliberately governed by the normal tool policy. `MemoryJournal` requires both memory-read enablement/capability and normal app-tool policy.
+- App-injected MCP tools define their own boundary. `MemoryRecall` and `AskCollaborator` are gated by their own enablement/composition switches; `RunHistory`, `SessionHistory`, `ConversationHistory`, `SetConversationTitle`, `Remember`, and adapter send tools are deliberately governed by the normal tool policy. `MemoryJournal` requires both memory-read enablement/capability and normal app-tool policy.
 
 The `MemoryRecall` description directs proactive recall of intentionally captured
 durable facts, while explicitly routing requests to pick up, continue, or
@@ -401,6 +401,56 @@ a targeted intentionally captured durable fact, `MemoryJournal` for a broad
 date-bounded curated summary, and `RunHistory` for exact settled evidence from an
 earlier run or tool call, including interrupted-work recovery. See
 [Artifacts and traces](/observability/artifacts-and-traces/#agent-facing-prior-run-evidence-runhistory).
+
+## `ConversationHistory`: retained conversation evidence
+
+Unattested user text has kind `user` with unknown speaker provenance, not
+`other-user`. Only host-attested foreign speakers may use `other-user`;
+context imports have kind `imported` and unknown provenance. None renews approval.
+
+Configured agents expose this read-only request-scoped tool by default under
+normal tool policy, independently of memory and durable provider sessions.
+`runtime.session.continuity.enabled: false` omits both its producer and tool;
+a policy deny removes retrieval without turning capture off. Global `"*"`,
+canonical/legacy names and the exact/server-wildcard MCP spellings follow
+[tool policy](/tools/policy/#conversationhistory), with deny winning.
+
+```json
+{ "action": "search", "query": "cobalt", "limit": 5 }
+```
+
+Search returns at most ten bounded previews plus exact
+`navigation.nextActions[].arguments` for `get` and subsequent search pages.
+A latest portable-summary reference may also be returned. A preview is not a
+full record. Follow every get cursor until none remains; concatenate the
+retained UTF-8 chunks (4–8192 bytes requested per chunk) and compare their SHA-256
+with the record metadata. Cursors bind the request's logical/physical/run scope,
+filters, record generation and retained digest; a changed/removed anchor refuses
+continuation. They are navigation, not authority to select another conversation.
+Navigation is provided in model-visible text as well as structured content.
+
+Only committed evidence or positively finalized/fsynced current-run evidence is
+readable. Prepared publications, partial assistant streams, reasoning and foreign
+conversations are unavailable. Metadata identifies provenance, source coordinates,
+redaction/truncation and original/retained sizes. Oversized text is replaced with
+an explicit omission representation, never clipped and called lossless. Removed
+payloads report tombstones or unavailability. Retained coverage gaps are reported;
+no result, empty search or gap count promises complete coverage. Nested history
+retrieval bodies are omitted from enabled capture and cold projections.
+
+Automatic tool-text capture requires the store's positive borrowed-owner
+capability. Successful, non-isolated plain-text results commit atomically with
+finalized lifecycle receipts, before the run ends and independently of the
+legacy JSON projection's smaller clipping limits. Multiple plain text blocks
+are joined with a single newline. Mixed/image/opaque/signed results, unfinished
+or interrupted results and nested history-tool bodies are not captured this
+way. Custom stores without that capability do not get an unowned fallback.
+
+This is historical evidence, not active-state maintenance. A generated summary
+cannot become an owner quotation or renew permission. Use `RunHistory` for run
+settlement/recovery, and `SessionHistory` for its unchanged prior-run tool-lifecycle
+contract. Reading evidence does not resume a provider session, replay tools,
+rerun work or authorize fresh effects. Reset/purge removes retained evidence.
 
 ## `SessionHistory`: retained tool lifecycles
 

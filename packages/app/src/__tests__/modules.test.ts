@@ -116,12 +116,15 @@ describe("known-tools", () => {
     expect(isKnownToolName("NodeRepl")).toBe(true);
     expect(isKnownToolName("read")).toBe(false);
     expect(isKnownToolName("AskUser")).toBe(true);
-    expect(APP_TOOL_NAMES).toEqual(["RunHistory", "SessionHistory", "SetConversationTitle",
+    expect(APP_TOOL_NAMES).toEqual(["RunHistory", "SessionHistory", "ConversationHistory", "SetConversationTitle",
       "SuggestReplies", "ListTags", "CreateTag", "UpdateTag", "DeleteTag", "UpdateConversationTags", "MarkConversationRead", "GetWakeSchedule", "SetWakeSchedule", "ClearWakeSchedule", "ListProjects", "GetProject", "CreateProject", "UpdateProject", "DeleteProject", "ListConversations", "SearchConversations", "CreateConversation", "SetConversationProject", "MemoryJournal", "PeerAgent", "Remember"]);
     expect(isKnownToolName("RunHistory")).toBe(true);
     expect(isKnownToolName("run_history")).toBe(true);
     expect(isKnownToolName("SessionHistory")).toBe(true);
     expect(isKnownToolName("session_history")).toBe(true);
+    expect(isKnownToolName("ConversationHistory")).toBe(true);
+    expect(isKnownToolName("conversation_history")).toBe(true);
+    expect(DEFAULT_SAFE_TOOLS).toContain("ConversationHistory");
     expect(isKnownToolName("SetConversationTitle")).toBe(true);
     expect(isKnownToolName("MemoryJournal")).toBe(true);
     expect(isKnownToolName("Remember")).toBe(true);

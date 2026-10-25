@@ -255,6 +255,28 @@ describe("tryCompact", () => {
     expect(fixture.handlerCount()).toBe(0);
   });
 
+  it.each(["manual", "proactive", "reactive_overflow"])("awaits asynchronous %s recording before returning", async (trigger) => {
+    const fixture = hookHarness();
+    let entered!: () => void, release!: () => void, settled = false;
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    const barrier = new Promise<void>((resolve) => { release = resolve; });
+    const pending = (tryCompact as TryCompact)(fixture.harness, { trigger, onEvent: () => {}, runtimeWarnings: [],
+      session: fixture.session, policy: { keepRecentTokens: 4_000, summaryMaxTokens: 2_000, compactionMinSavingsTokens: 0 },
+      onCompactionRecorded: async () => { entered(); await barrier; } });
+    void pending.then(() => { settled = true; });
+    await started; expect(settled).toBe(false); release();
+    expect(await pending).toMatchObject({ applied: true }); expect(settled).toBe(true);
+  });
+
+  it("classifies asynchronous recorder failure without undoing an already durable cut", async () => {
+    const fixture = hookHarness(), warnings: Warning[] = [];
+    const result = await (tryCompact as TryCompact)(fixture.harness, { trigger: "manual", onEvent: () => {}, runtimeWarnings: warnings,
+      session: fixture.session, policy: { keepRecentTokens: 4_000, summaryMaxTokens: 2_000, compactionMinSavingsTokens: 0 },
+      onCompactionRecorded: async () => { throw new Error("Fictional recorder outage"); } });
+    expect(result).toMatchObject({ applied: true });
+    expect(warnings).toContainEqual(expect.objectContaining({ warning_kind: "context_compaction_record_failed" }));
+  });
+
   it("cancels a non-reducing compaction before it is persisted", async () => {
     const warnings: Warning[] = [];
     const events: CompactionEvent[] = [];

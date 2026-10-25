@@ -144,6 +144,16 @@ automatic trigger (including `compaction.enabled:false`). No new user prompt or
 assistant turn is generated. The host coordinates the provider transcript with
 its canonical history revision and reports only bounded counts to the operator.
 
+Compaction recorders may be synchronous or awaitable. Normal, reactive and
+mid-run paths await recording before continuing; mid-run teardown drains any
+outstanding recording. An owned `onCompactionPreparing` callback stages evidence
+before the native cut and may refuse it. The later `onCompactionRecorded` runs
+after checkpoint sync. Its failure is a warning, not a rollback of the native
+cut; owner-held recovery can request the marked durable checkpoint with
+`includeContinuity`. A request-bound recorder composes with, rather than
+replaces, the runtime host's recorder. No additional provider or summary call
+is made during checkpoint evidence recovery.
+
 One-hour writes cost **2× normal input**, reads **0.1×**, versus **1.25×** for
 short-cache writes. Model support is required, and no cache hit is guaranteed.
 Metadata-only diagnostics record the requested setting and observed cache TTL;
@@ -847,6 +857,7 @@ ProcessJobsController
 ProviderDefinition
 RuntimeCompactionPolicy
 RuntimeDispatchProgress
+RuntimeDurableCompactionCheckpoint
 RuntimeEventLike
 RuntimeHandoffBudget
 RuntimeHandoffFit

@@ -200,6 +200,9 @@ export function buildRuntimeSection(input: BuildMonoAgentConfigViewInput): Confi
         value: session.rolloverNotice === true ? "yes" : "no",
         jsonPresent: json.runtime?.session?.rolloverNotice !== undefined,
       }),
+      toField({ id: "runtime.session.continuity.enabled", label: "Retained conversation evidence",
+        value: session.continuity?.enabled === false ? "no" : "yes",
+        jsonPresent: json.runtime?.session?.continuity?.enabled !== undefined }),
       ...(session.modelSwitch?.enabled ? [
         toField({ id: "runtime.session.modelSwitch.enabled", label: "Web model switching", value: "yes",
           jsonPresent: json.runtime?.session?.modelSwitch?.enabled !== undefined }),

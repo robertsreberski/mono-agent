@@ -20,6 +20,7 @@ idempotency key and a 4096-byte conversation id.
 | Same-model retries before failover | config | `runtime.retry.primaryAttempts` (default 2) gives the primary a second attempt before the chain advances; per-route `runtime.fallbacks[].attempts` opts a backup in. Only transient provider failures retry — context overflow and bad credentials still advance. Set `primaryAttempts` to 1 to disable | `runtime.retry` |
 | Backup models on retryable provider failure | config | `runtime.fallbacks[]`, each route owning optional exact effort (omission = provider default) | `runtime.fallback-models` |
 | Effort, max turns, workspace | config + cli | `runtime.effort` (`none` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max` / `ultra`; `mono-agent init --effort <level>`). Reasoning-capable models map `ultra` to LOW; models without reasoning use OFF. `max` degrades to `xhigh` unless the resolved model advertises it. `mono-agent doctor` validates effort against the model's advertised levels and warns, naming the nearest supported level, when a configured value is outside that set. Message text never changes effort. `runtime.maxTurns`, `runtime.workspace` | `runtime.effort`, `runtime.max-turns`, `runtime.workspace` |
+| Default-on retained conversation evidence and scoped ConversationHistory, independent of memory; normal wildcard allow and explicit deny, digest-bound ≤8 KiB chunks and incomplete-coverage markers | config + auto | `runtime.session.continuity.enabled`; `ConversationHistory` under normal tool policy (`conversation_history` policy alias) | `runtime.continuity`, `agent-app.conversation-history-tool` |
 | OFF-default Web-only durable model switching; requires stopped older writers and consistent backups | config | `runtime.session.modelSwitch.enabled`, `runtime.session.root` | `runtime.web-model-switch` |
 | Continuous provider sessions with idle eviction and optional daily rollover | config | `runtime.session.{mode,idleTimeoutMs,rollover,rolloverTimezone,rolloverNotice}` | `runtime.provider-sessions` |
 | Per-channel run admission/execution bounds | config | `concurrency.maxConcurrentRuns`, `concurrency.maxPendingRuns` | `runtime.concurrency` |
@@ -267,3 +268,19 @@ unchanged-failure suppression). `summaryMaxTokens` is the combined text target;
 adaptive thinking has separately accounted bounded headroom. Context-limit
 fallback skips known too-small windows. Compaction costs, even rejected summary
 requests with usage, are included in the run total and shown separately in web.
+
+### Retained conversation evidence
+
+`runtime.session.continuity.enabled` defaults to true. Set false to opt out
+with legacy paths (no participant, sidecar probe or v3 upgrade). It retains
+sanitized evidence and portable
+summaries in the existing sidecar for scoped `ConversationHistory` search/get;
+it does not add a ledger, automatic recall or tool-result clearing. No memory
+backend or durable provider-session root is required. Stop older writers and
+back up the canonical history and sidecar before the first enabled start
+upgrades v2 to v3 in place. Older binaries refuse it; rollback requires the
+pre-upgrade backup.
+Disabling capture retains doctor, stats and purge access, not the ConversationHistory tool; rollback requires a consistent backup.
+Records are at most 1 MiB and retrieval chunks at most 8192 UTF-8 bytes, with
+explicit retained-text digests/redaction/truncation. Pins do not expire; quota
+exhaustion reports degraded continuity. Reset/clear-sessions remove this evidence.

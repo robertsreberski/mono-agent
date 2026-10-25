@@ -285,6 +285,16 @@ export function readSessionConfig(value: unknown, cwd: string): MonoAgentConfig[
   // Unset stays undefined so the harness default (false, no behavior change) is
   // preserved byte-for-byte; only parse the boolean when an operator opts in.
   const isolateProactive = jsonOptionalBoolean(session.isolateProactive, "runtime.session.isolateProactive");
+  const continuityJson = jsonRecord(session.continuity, "runtime.session.continuity");
+  if (continuityJson) {
+    const unknownKeys = Object.keys(continuityJson).filter(key => key !== "enabled").sort();
+    if (unknownKeys.length) throw new MonoAgentConfigError("invalid_json", "runtime.session.continuity supports only enabled.", {
+      path: "runtime.session.continuity", unknownKeys,
+    });
+    assertJsonScalarFields(continuityJson, "runtime.session.continuity", { enabled: "boolean" });
+  }
+  const continuityEnabled = continuityJson === undefined ? undefined
+    : jsonOptionalBoolean(continuityJson.enabled, "runtime.session.continuity.enabled");
   const switchJson = jsonRecord(session.modelSwitch, "runtime.session.modelSwitch");
   if (switchJson) assertJsonScalarFields(switchJson, "runtime.session.modelSwitch", { enabled: "boolean" });
   const enabled = switchJson === undefined ? undefined : jsonOptionalBoolean(switchJson.enabled, "runtime.session.modelSwitch.enabled");
@@ -295,6 +305,7 @@ export function readSessionConfig(value: unknown, cwd: string): MonoAgentConfig[
     idleTimeoutMs,
     ...(root === undefined ? {} : { root }),
     ...(enabled === true ? { modelSwitch: { enabled } } : {}),
+    ...(continuityEnabled === undefined ? {} : { continuity: { enabled: continuityEnabled } }),
     rollover,
     ...(rolloverTimezone === undefined ? {} : { rolloverTimezone }),
     ...(rolloverNotice === undefined ? {} : { rolloverNotice }),

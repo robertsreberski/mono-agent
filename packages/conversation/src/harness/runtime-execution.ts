@@ -1,3 +1,5 @@
+import { stageContinuityInput, continuityOwnerTextCandidate, clearContinuityInput } from "../tool-history/continuity-input.js";
+import { memoryUserText } from "./memory-persistence.js";
 import { loadToolHistoryProjection, type prepareHarnessContext } from "./context-preparation.js";
 import { reconstructionFacts } from "./session-events.js";
 import { randomUUID } from "node:crypto";
@@ -38,6 +40,9 @@ interface HarnessRuntimeRouting {
   readonly recoveryRevision?: number | undefined;
   readonly turnRevision?: number | undefined;
   readonly reconciliation?: ConversationHistoryTurnReconciliation | undefined;
+  readonly withContinuityOwner?: ConversationHistoryTurnReconciliation["withContinuityOwner"] | undefined;
+  readonly prepareCompaction?: ConversationHistoryTurnReconciliation["prepareCompaction"] | undefined;
+  readonly recordCompaction?: ConversationHistoryTurnReconciliation["recordCompaction"] | undefined;
   readonly detachedHistoryOverride?: readonly HistoryMessage[];
   readonly onRuntimeSelected: (modelKey: string) => void;
 }
@@ -306,6 +311,9 @@ async function executeHarnessRuntime(preparation: PreparationControl | undefined
       delete merged.nativeSessionProjection;
       delete merged.sessionTurn;
       delete merged.onSessionTurnDetached;
+      delete merged.onCompactionRecorded;
+      delete merged.onCompactionPreparing;
+      delete (merged as Record<string, unknown>).continuityRecording;
       delete merged.detachedContext;
       // Lifecycle persistence is host-owned and cannot be injected or replaced
       // by static/request extensions.
@@ -429,11 +437,23 @@ async function executeHarnessRuntime(preparation: PreparationControl | undefined
           memory,
         )),
       };
+      const captureInputs = options.toolHistory?.continuityEnabled === true && !sessionIsolated;
+      const ownerRequest = request.captureSpeakerKind === "human-turn" && request.continuation === undefined
+        && ["web", "tui", "acp"].includes(String(request.metadata?.source))
+        && (request.metadata as Record<PropertyKey, unknown> | undefined)?.[Symbol.for("mono-agent.process-job-wake.delivery-key.v1")] === undefined;
+      const admitInitial = async () => {
+        const id = reconciliation!.descriptor.reconciliation!.initialInputId!;
+        const input = createPendingInitialInput({ id, persistText: request.userMessage, timestamp: new Date().toISOString() }, currentUserMessage.content);
+        const web = request.metadata?.web;
+        const webOwner = typeof web === "object" && web !== null && !Array.isArray(web) ? (web as Record<string, unknown>).ownerText : undefined;
+        const boundOwner = webOwner === undefined || (typeof webOwner === "string" && (request.userMessage === webOwner || request.userMessage.endsWith(`\n\n${webOwner}`)));
+        if (captureInputs) stageContinuityInput(input, ownerRequest && boundOwner ? memoryUserText(request) : undefined);
+        await reconciliation!.admit(input);
+      };
       let reconciliation = routing.reconciliation;
       if (!preparation && reconciliation !== undefined && routing.turnRevision !== undefined && durableSessionsRoot !== undefined) {
-        const id = reconciliation.descriptor.reconciliation!.initialInputId!;
-        // Replace the provisional pre-context digest before any native dispatch.
-        await reconciliation.admit(createPendingInitialInput({ id, persistText: request.userMessage, timestamp: new Date().toISOString() }, currentUserMessage.content));
+        // Stage against the final decorated digest, not the provisional payload.
+        await admitInitial();
       }
       let contextOwned = true;
       let detachedReplay: Promise<readonly RuntimeMessage[]> | undefined;
@@ -491,15 +511,20 @@ async function executeHarnessRuntime(preparation: PreparationControl | undefined
           recordEvent: (event: RuntimeEventLike) => turnContinuityCollector.observeNativeEvent(event),
           recordToolLifecycle: (event: import("@mono-agent/turn/host/types").RuntimeToolLifecycleEvent) => turnContinuityCollector.admitToolLifecycle(event),
         }],
-        toolLifecycleSink: turnContinuityCollector.wrapToolLifecycleSink(
-          options.toolHistory?.writer.createSink({
-              conversationId: request.conversationId,
-              logicalConversationId: options.toolHistory?.logicalConversationId(request.conversationId)
-                ?? request.conversationId,
-              runId,
-              isolated: sessionIsolated,
-          }),
-        ),
+        toolLifecycleSink: turnContinuityCollector.wrapToolLifecycleSink(options.toolHistory === undefined ? undefined : async (event) => {
+          const persist = async (owned: boolean) => await options.toolHistory!.writer.createSink({
+            conversationId: request.conversationId,
+            logicalConversationId: options.toolHistory!.logicalConversationId(request.conversationId),
+            runId, isolated: sessionIsolated,
+            ...(options.toolHistory?.continuityEnabled === true ? { continuityEnabled: true as const } : {}),
+            ...(owned ? { finalizedContinuity: true as const } : {}),
+          })(event);
+          const owner = routing.withContinuityOwner ?? reconciliation?.withContinuityOwner;
+          // Borrow the owner through admission to the existing worker queue.
+          // Deferred writes precede canonical prepare/reset barriers. Custom stores
+          // without this positive capability get no unowned capture fallback.
+          return options.toolHistory?.continuityEnabled === true && owner ? await owner(() => persist(true)) : await persist(false);
+        }),
         // Durable provider-session root is forwarded only for a host-history
         // coordinated turn. Custom stores and isolated runs cannot safely make
         // provider JSONL authoritative across a crash, so they stay in-memory.
@@ -540,32 +565,49 @@ async function executeHarnessRuntime(preparation: PreparationControl | undefined
           emitRuntimeEvent(event);
         },
       };
-      if (reconciliation !== undefined || preparation) {
+      if (reconciliation !== undefined || preparation || (captureInputs && useManagedLiveInput && liveInputMailbox !== undefined)) {
         const nativeOptions = runtimeOptions, live = nativeOptions.liveInput;
         runtimeOptions = { ...nativeOptions,
-          onSessionTurnDetached: async (attempt) => {
+          ...(reconciliation !== undefined || preparation ? { onSessionTurnDetached: async (attempt: Parameters<NonNullable<RuntimeRunOptions["onSessionTurnDetached"]>>[0]) => {
             assertDetachedTurnDescriptor(attempt.descriptor, reconciliation!.descriptor);
             await reconciliation!.claim("detached");
-          },
+          } } : {}),
           ...(live === undefined ? {} : { liveInput: { async *[Symbol.asyncIterator]() {
             for await (const message of live) {
-              const input = useManagedLiveInput && liveInputMailbox ? liveInputMailbox.durableAdmission(message, nativeOptions.prompts)
-                : createPendingLiveInput({ id: message.id ?? `wake:${randomUUID()}`, persistText: "", receivedAt: message.receivedAt ?? new Date().toISOString() }, message.body, "wake", nativeOptions.prompts);
-              try { await reconciliation!.admit(input); } // Durable before yielding to native bridge.
+              let input: ReturnType<typeof createPendingLiveInput>;
+              try {
+                input = useManagedLiveInput && liveInputMailbox ? liveInputMailbox.durableAdmission(message, nativeOptions.prompts)
+                  : createPendingLiveInput({ id: message.id ?? `wake:${randomUUID()}`, persistText: "", receivedAt: message.receivedAt ?? new Date().toISOString() }, message.body, "wake", nativeOptions.prompts);
+              } catch (error) {
+                // Archival identity constraints must not become a new live-input
+                // contract for uncoordinated channels. They remain unknown.
+                if (reconciliation || preparation) throw error;
+                if (message.logicalOwner) clearContinuityInput(message.logicalOwner);
+                yield message; continue;
+              }
+              if (captureInputs) {
+                const ownerText = ownerRequest && request.metadata?.source === "web" && message.kind === "user"
+                  ? continuityOwnerTextCandidate(input) : undefined;
+                stageContinuityInput(input, ownerText, message.logicalOwner);
+              }
+              try { if (reconciliation) await reconciliation.admit(input); } // Before native handoff.
               catch (error) { try { message.reject?.(); } catch { /* No native handoff occurred. */ } throw error; }
               yield { ...message, id: input.id };
             }
           } } }),
         };
       }
+      const prepareCompaction = routing.prepareCompaction ?? reconciliation?.prepareCompaction ?? (preparation && options.toolHistory?.continuityEnabled ? async (checkpoint: import("@mono-agent/turn/host/types").RuntimeDurableCompactionCheckpoint) => { if (!reconciliation?.prepareCompaction) throw new Error("Owned checkpoint preparation unavailable."); await reconciliation.prepareCompaction(checkpoint); } : undefined);
+      const recordCompaction = routing.recordCompaction ?? reconciliation?.recordCompaction ?? (preparation && options.toolHistory?.continuityEnabled ? async (record: import("@mono-agent/turn/host/types").MonoRuntimeCompactionRecord) => { if (!reconciliation?.recordCompaction) throw new Error("Owned checkpoint recording unavailable."); await reconciliation.recordCompaction(record); } : undefined);
+      if (prepareCompaction && recordCompaction) runtimeOptions = { ...runtimeOptions,
+        onCompactionPreparing: prepareCompaction, onCompactionRecorded: recordCompaction };
       if (preparation) {
         if (!runtime.prepareNativeDispatch) throw new Error("Native prepared dispatch capability unavailable");
         nativeLease = await runtime.prepareNativeDispatch(context.systemPrompt, runtimeOptions);
         await preparation.assertOwned();
         const bound = await preparation.ready(nativeLease, preparedContext!);
         await bound.assertOwned(); reconciliation = bound.reconciliation;
-        const id = reconciliation.descriptor.reconciliation!.initialInputId!;
-        await reconciliation.admit(createPendingInitialInput({ id, persistText: request.userMessage, timestamp: new Date().toISOString() }, currentUserMessage.content));
+        await admitInitial();
         const { assertOwned: _owned, reconciliation: _reconciliation, turnRevision: _revision, recoveryRevision, ...keys } = bound;
         runtimeOptions = { ...runtimeOptions, ...keys, sessionTurn: reconciliation.descriptor,
           ...(recoveryRevision === undefined ? {} : { sessionRecovery: { runId, revision: recoveryRevision } }) };

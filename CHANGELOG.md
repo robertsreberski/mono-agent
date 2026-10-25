@@ -2,6 +2,62 @@
 
 ## Unreleased
 
+- Clear continuity conflict diagnostics with purged evidence, recover same-scope
+  interrupted purge writes despite wall-clock rollback, and validate SQLite
+  integrity before applying pending privacy purges.
+
+- Bound continuity purge journals per scope, drain owed SQLite-only purges even
+  when an artifact-root mismatch blocks capture, and report pending or invalid
+  journals without disrupting tool-history persistence. Disabled continuity
+  leaves owed purges at rest until re-enabled or session storage is purged.
+
+- Keep reset and retention purges durable through continuity writer outages;
+  suppress affected history until the owed purge succeeds, and let inactive
+  stranded preparations expire with canonical age and quota retention.
+
+- Turn conversation continuity on by default, with policy-gated
+  `ConversationHistory` retrieval. Set `runtime.session.continuity.enabled` to
+  `false` to opt out and keep legacy capture/storage behavior. Before first
+  starting this release, stop older writers and back up the tool-history store:
+  default-on capture upgrades it to v3 in place, older binaries refuse it, and
+  rollback requires that pre-upgrade backup. Continuity publication borrows the canonical
+  conversation owner, keeps preparations hidden, and recovers interrupted
+  acknowledgements before another mutation. Re-enabling after an off interval
+  abandons stale preparations with explicit coverage gaps, not permanent blocks.
+  Reset purges evidence; canonical age/quota eviction clears summary pins,
+  which protect retained evidence but do not lease canonical conversations.
+  Sidecar outages warn and degrade evidence coverage, not canonical publication
+  or fence cleanup; skipped bounded/quota capture records content-free gaps.
+  Unavailable summary preparation never blocks compaction on any trigger.
+  Unfinished assistant accounts remain reconstruction data, not retrievable
+  completed-answer evidence. Portable summaries reserve storage before compaction;
+  awaitable recording and exact native-checkpoint recovery retain them without
+  repeating a summary call. `ConversationHistory` search/get now follows normal
+  wildcard/deny policy in configured harnesses and controllers, with scoped,
+  digest-bound UTF-8 navigation and explicit incomplete/redacted evidence;
+  enabled capture omits nested retrieval bodies. SessionHistory keeps its
+  prior-run contract.
+- Distinguish host-attested owner quotations from unknown history using existing
+  admitted input identities, without adding a channel contract. Archive completed
+  turn evidence before canonical message truncation; anonymous steers and recovery
+  without an original host stamp remain unknown, never renewed approval.
+  Unattested user quotations have a neutral user kind; imported context is
+  labelled separately from generated assistant text.
+- Retain permitted successful tool text under the existing conversation owner;
+  publish it atomically with finalized lifecycle receipts, independently of
+  clipped lifecycle JSON. Current-run retrieval never exposes a partial stream
+  or uses an unowned custom-store fallback.
+
+- Report conversation continuity in `validate`/`doctor` and
+  `restart --clear-sessions`. Doctor accepts the v3 tool-history store with the
+  same ownership, mode, journal and integrity checks as v2, and reports
+  continuity records, tombstones, pins, retained text bytes, and committed,
+  unresolved and abandoned generations. Unresolved generations and
+  quota-degraded continuity are `waiting`; abandoned coverage gaps are
+  informational only. Missing continuity tables or a schema newer than v3 are
+  errors. Clear-sessions output adds the same counts
+  for a v3 sidecar. v2 stores are reported as before.
+
 - Fix detached `Agent` and `AgentManage` completions to save full final results
   and lead completion wakes with their artifact paths; report persistence failures
   explicitly and preserve ordinary prose and JSON syntax during output redaction.

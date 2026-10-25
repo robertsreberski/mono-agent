@@ -827,7 +827,11 @@ export function formatConversationStatePurgeResult(result: PurgeConversationStat
     const toolCounts = result.history.toolHistory.countsKnown
       ? `; ${result.history.toolHistory.calls ?? 0} calls, ${result.history.toolHistory.records ?? 0} records, ${result.history.toolHistory.tombstones ?? 0} tombstones`
       : "; record counts unavailable";
-    cleared.push(`tool history (${result.history.toolHistory.files} files, ${result.history.toolHistory.bytes} bytes${toolCounts})`);
+    const continuity = result.history.toolHistory.continuity;
+    const continuityCounts = continuity === undefined
+      ? ""
+      : `; continuity ${continuity.records} records, ${continuity.tombstones} tombstones, ${continuity.pins} pins, ${continuity.retainedBytes} retained text bytes, ${continuity.generations} generations (${continuity.unresolvedGenerations} unresolved, ${continuity.abandonedGenerations} abandoned)${continuity.degraded ? ", quota-degraded" : ""}`;
+    cleared.push(`tool history (${result.history.toolHistory.files} files, ${result.history.toolHistory.bytes} bytes${toolCounts}${continuityCounts})`);
   }
   if (result.acpSessions.removed) {
     const count = result.acpSessions.files === 0

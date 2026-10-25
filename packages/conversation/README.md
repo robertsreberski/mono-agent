@@ -362,6 +362,139 @@ and root drain/serialization remain prerequisites for a supported opt-in.
 
 ## Architecture
 
+The tool-history writer also provides a positively enabled continuity-storage
+substrate (`ToolHistoryWriterOptions.continuityEnabled`, default false). Ordinary
+writers keep SQLite v2; enabled writers migrate the same owner-private database
+to v3. Readers support both versions; older binaries cannot read v3. This is a
+storage capability, not permission to mutate a canonical conversation without
+its existing owner. `createContinuityParticipant` is an optional port on the
+canonical store. The configured host supplies the same lazy sidecar writer,
+borrows its existing canonical owner, and enables capture by default;
+`runtime.session.continuity.enabled=false` omits that participant entirely.
+A caller-supplied canonical store must provide its own owned producer; a reader
+without a producer honestly has no captured evidence.
+
+Continuity preparation stores immutable sanitized text (at most 1 MiB per
+record) and an expected canonical before/after digest. Prepared records are not
+readable evidence. After canonical publication, `commitContinuity` verifies the
+target digest and makes records readable. Before another mutation, the same
+conversation owner must reconcile an interrupted preparation: a matching target
+commits and an unchanged source discards. If canonical state has advanced past
+both (for example during an explicitly disabled interval), reconciliation
+abandons the preparation, releases its text/pins/reservation, and records a
+content-free coverage gap. Abandoned generations cannot be revived or read;
+`continuityGaps` reports retained gaps with their expected/observed digests. Gap
+metadata uses the tombstone count/age bounds; retrieval never claims complete
+coverage. Contradictory generations still refuse and appear in sidecar
+idempotency-conflict diagnostics. Storage primitives do not acquire canonical
+ownership. Canonical retention protects active markers, dirty fences and non-summary
+reference pins. A stranded preparation without an active owner is not an age/quota
+retention lease. Summary pins protect retained text, not canonical retention.
+Sidecar outages warn and degrade coverage rather than blocking compaction, canonical
+publication or cleanup. Digest-bound reconciliation remains the only way to
+publish a stranded preparation. Bounds, quota and outage gaps are content-free
+and use tombstone count/age retention; diagnostics queued during a complete
+outage are process-local until the writer recovers. Unattested user text is
+`user`/unknown; imported context is `imported`/unknown. Initial exclusive-mode
+input has no native input identity and cannot acquire owner attestation. Custom
+preparer/recorder callbacks must settle within a bounded local operation:
+cancellation does not interrupt a callback that never settles. Moving/forking
+an existing sidecar retains its artifact-root pin; mismatched roots degrade
+capture until a fresh store is used, without preventing compaction.
+Reset and retention deletion first durably write a content-free purge intent
+(`.continuity-purge-<scope-id-hash>.json`, scope and conversation ID only) under the canonical
+root, independently of sidecar availability. Readers suppress the covered scope
+while an intent exists. The next continuity-enabled writer acquisition/request applies
+its purge before admitting any mutation and removes the intent only after the
+SQLite commit. A fixed `.applying` claim prevents an older acknowledgement from
+unlinking a newer intent; repeated requests reuse the deterministic base name.
+Under the canonical root transaction, the next marker write removes its secure
+same-key interrupted `.json.tmp` regardless of wall-clock changes; other keys
+retain an older-than-write mtime guard. Invalid markers block continuity only, not
+SessionHistory or lifecycle persistence; doctor reports pending/invalid counts.
+After `PRAGMA quick_check` succeeds, privacy recovery may delete SQLite continuity
+rows and their content-free conflict incident keys before an artifact-root mismatch
+refuses startup, without following any stored artifact path.
+These journals must be preserved with canonical-root backups;
+do not remove them to recover a sidecar outage. A reset interrupted after intent
+publication may conservatively purge evidence even if the canonical reset fails.
+This is a privacy intent, never proof that a summary may be published.
+If doctor reports an invalid marker, continuity stays blocked for **every scope**
+until it is fixed; SessionHistory and lifecycle persistence remain available.
+With retrieval traffic paused and canonical writers stopped, inspect
+`.continuity-purge-*.json` and `*.json.applying` under the configured history root.
+Check owner-only permissions and the scope/ID JSON; restore a valid intent if its
+scope can be established. Alternatively, if the affected conversation is known,
+remove the invalid file and re-run its reset **before resuming traffic**. If the
+scope cannot be established, use `restart --clear-sessions` to purge all session
+storage. Removing an invalid file alone can expose evidence
+whose purge is still owed, so it is not a recovery by itself.
+
+The built-in worker's startup readiness request defaults to 11 seconds (10-second
+owner acquisition plus one second); explicit v2-to-v3 upgrades and each continuity
+or reset request have a 10-second host wait ceiling. A shared-writer acquisition
+may wait for startup and then the upgrade. These are per-request host waits, not
+cancellation of already queued SQLite work or an overall canonical-transaction
+budget. Outage diagnostics do not issue a second failing gap write: at most one
+queued content-free gap is flushed after a later successful operation.
+The canonical text adapter omits cancelled/failed account envelopes and
+unfinished detached candidates: durable reconstruction metadata is not proof of
+a completed assistant answer, and can contain partial streams/nested retrieval.
+
+Portable summaries use a separate checkpoint preparation: a matching canonical
+hash alone never exposes one. The owned producer reserves the sanitized summary
+before the native cut, then acknowledges the synced journal/operation, covered
+source digest and retained-summary digest. Recovery checks the actual durable
+checkpoint; an absent cut discards its preparation. For non-durable runs,
+an interrupted preparation stays unpublished and is discarded at the next
+owned recovery. Capture unavailability (including quota or summary bounds)
+never vetoes compaction: native reduction continues with warnings and incomplete
+retained coverage, and only exact durable proof can later promote a summary.
+Explicit reset can supersede a pending cut: its durable purge intent removes
+the preparation with the other physical evidence, without promoting it.
+
+Successful non-isolated plain-text lifecycle results can be retained independently
+of the smaller legacy JSON projection. The configured harness borrows
+`withContinuityOwner` on the owned exclusive/provider/reconciliation turn, so
+lifecycle admission is serialized with commit/abort. Its callback must not
+reenter that turn. The fresh per-run `finalizedContinuity` worker capability is
+not persisted or inferred during recovery; custom stores without the positive
+owner port do not get an unowned fallback. The finalized receipt and retained
+text commit in the same FULL SQLite transaction. Mixed, opaque, signed,
+interrupted and nested-history results are not candidates for this capture.
+
+Owner quotations use only process-local host stamps staged against the actual
+input ID/digest **before** native admission, not speaker names or parsed text.
+Coordinated initial Web/TUI/ACP human inputs require matching consumed native
+receipts. Web steers additionally require their own bound `ownerText` and actual
+mailbox acknowledgement; anonymous/other-user steers never inherit the initial
+speaker. Quotes exclude the Web envelope/attachment expansion. These stamps add
+no pending/canonical fields, transport contract, table or enrollment file.
+Canonical publication archives the full completed batch before the 64-message
+retention cut (up to the existing 100-steer host bound); public append validation
+is unchanged. A host-generated completed batch has an internal non-serializable
+marker, never a caller-controlled JSON capability.
+
+Conservative unknown sources: initial requests without coordinated admitted IDs;
+TUI/ACP live inputs without per-input owner attribution; unmanaged live sources;
+inputs that cannot satisfy the existing identity constraints; and recovery after
+process-local stamps were lost before archival preparation. Already prepared
+immutable evidence still uses ordinary canonical reconciliation. No source is
+promoted during recovery. User evidence becomes visible only after canonical
+durability; this does not introduce a new pre-admission/consumption callback.
+Owner provenance identifies a historical quotation, **not renewed approval**.
+
+`searchContinuity` / `getContinuity` return scoped evidence, not instructions or
+new approval. Chunks contain at most 8192 UTF-8 bytes with retained-text digests
+and explicit redaction/truncation/tombstone status. Retained text uses the same
+credential/private-path sanitation as lifecycle persistence, independently of
+its smaller JSON projection. Oversized text is explicitly omitted rather than
+risking retention of a clipped credential. Lifecycle and continuity text share
+the existing 256 MiB retained-payload budget. Pins do not expire; a full pinned
+budget reports degraded continuity instead of deleting referenced evidence.
+Logical tool-history reset clears the continuity generations and pins too.
+
+
 Session boundaries carry an additive `context` disposition (`retained`,
 `reconstructed`, or `handoff`) independently of historical `kind` and
 `reason`. Cancelled/failed warm resumes retain context; cold replay boundaries
@@ -794,7 +927,29 @@ Every symbol exported by each public code entrypoint is listed below.
 
 ```text
 BuiltAgentContext
+CONTINUITY_USER_VERSION
 CONVERSATION_HISTORY_VERSION_MAX_BYTES
+CanonicalContinuityState
+ContinuityCheckpointProof
+ContinuityCoverageGap
+ContinuityGapInput
+ContinuityGapReason
+ContinuityGetInput
+ContinuityGetResult
+ContinuityPin
+ContinuityPreparation
+ContinuityPublication
+ContinuityPublicationWriter
+ContinuityReceipt
+ContinuityReconciliation
+ContinuityReconciliationResult
+ContinuityRecordInput
+ContinuityRecordMetadata
+ContinuityScope
+ContinuitySearchInput
+ContinuitySearchPage
+ContinuitySource
+ContinuitySummary
 ConversationHarness
 ConversationHarnessError
 ConversationHarnessFailureError
@@ -805,6 +960,7 @@ ConversationHarnessRuntimeOptionsExtension
 ConversationHarnessRuntimeOptionsInput
 ConversationHarnessToolHistoryOptions
 ConversationHarnessTurnHistoryEnricher
+ConversationHistoryContinuityParticipant
 ConversationHistoryExclusiveTurn
 ConversationHistoryStore
 ConversationHistoryTurnInspection
@@ -812,6 +968,9 @@ ExternalRunSummary
 HOST_TURN_CONTEXT_GUIDANCE
 HistoryMessage
 LiveInputMailbox
+OwnedContinuityContext
+OwnedContinuityMutation
+PreparedContinuityPublication
 ProcessIncarnation
 ProviderSessionHandle
 ProviderSessionTurnBinding
@@ -837,6 +996,9 @@ acquireToolHistoryWriter
 bindProcessJobLiveInput
 classifyContinuationMcpServerTransport
 composeHostTurnEnvelope
+continuityGenerationId
+continuityRecordId
+createContinuityParticipant
 createConversationHarness
 createConversationResponder
 createDurableHistoryStore
@@ -1166,3 +1328,5 @@ recoverable, while another free LRU victim can be pruned in the same commit.
 Accepted limits: a native victim's logical owner may be busy in another process after
 admission credits it, leaving maintenance pending; the replan budget is fixed
 from the entry count at maintenance start, not extended by concurrent arrivals.
+
+Disabling continuity leaves previously retained evidence and any pending purges at rest until continuity is re-enabled or storage is purged via session admin or `restart --clear-sessions`. That evidence is never served while a purge is pending.

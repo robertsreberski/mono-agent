@@ -1,3 +1,4 @@
+import type { MonoRuntimeCompactionRecord, RuntimeDurableCompactionCheckpoint } from "@mono-agent/turn/host/types";
 import type { AgentContextImportRequest, AgentContextImportResult } from "@mono-agent/contracts";
 import type { RuntimeSessionTurnDescriptor, RuntimeSessionTurnReconciliationResult, RuntimeNativeJournalAuthority } from "@mono-agent/turn/host/types";
 import type { HistoryMessage } from "../context/types.js";
@@ -22,6 +23,7 @@ export interface ConversationHistoryTurnInspection {
   readonly descriptor: RuntimeSessionTurnDescriptor;
   readonly purpose: "execution" | "compaction";
   readonly modelKey: string;
+  readonly includeContinuity?: true;
   readonly expectedInputs: readonly { readonly id: string; readonly requestDigest: string; readonly placement: "initial" | "live" }[];
 }
 export interface ConversationHistoryTurnRecovery {
@@ -32,6 +34,12 @@ export interface ConversationHistoryTurnRecovery {
   readonly providerSessionRevision?: number;
 }
 export interface ConversationHistoryTurnReconciliation {
+  /** Serialize sidecar evidence admission with commit/abort under this owner.
+   * The callback must not reenter the turn. */
+  withContinuityOwner?<T>(operation: () => Promise<T>): Promise<T>;
+  /** Borrow this turn's owner for prepared/committed durable checkpoint evidence. */
+  prepareCompaction?(checkpoint: RuntimeDurableCompactionCheckpoint): Promise<void>;
+  recordCompaction?(record: MonoRuntimeCompactionRecord): Promise<void>;
   /** Native fsync/matching proof populated by prepareCommit; canonical commit still required. */
   readonly settlement?: { readonly nativeReusable: boolean } | undefined;
   readonly descriptor: RuntimeSessionTurnDescriptor;
@@ -56,6 +64,12 @@ export interface ProviderSessionTurnBinding {
 
 /** A conversation-exclusive provider turn owned by durable history state. */
 export interface ConversationHistoryProviderSessionTurn {
+  /** Serialize sidecar evidence admission with commit/abort under this owner.
+   * The callback must not reenter the turn. */
+  withContinuityOwner?<T>(operation: () => Promise<T>): Promise<T>;
+  /** Borrow this turn's owner for prepared/committed durable checkpoint evidence. */
+  prepareCompaction?(checkpoint: RuntimeDurableCompactionCheckpoint): Promise<void>;
+  recordCompaction?(record: MonoRuntimeCompactionRecord): Promise<void>;
   readonly reconciliation?: ConversationHistoryTurnReconciliation;
   readonly recovery?: ConversationHistoryTurnRecovery;
   readonly modelKey?: string;
@@ -82,6 +96,12 @@ export interface ConversationHistoryProviderSessionTurn {
 
 /** Short-transaction exclusive turn used outside durable provider-session mode. */
 export interface ConversationHistoryExclusiveTurn {
+  /** Serialize sidecar evidence admission with commit/abort under this owner.
+   * The callback must not reenter the turn. */
+  withContinuityOwner?<T>(operation: () => Promise<T>): Promise<T>;
+  /** Borrow this turn's owner for prepared/committed durable checkpoint evidence. */
+  prepareCompaction?(checkpoint: RuntimeDurableCompactionCheckpoint): Promise<void>;
+  recordCompaction?(record: MonoRuntimeCompactionRecord): Promise<void>;
   readonly history: readonly HistoryMessage[];
   /** Opaque, non-empty UTF-8 token capped by CONVERSATION_HISTORY_VERSION_MAX_BYTES. */
   readonly historyVersion: string;

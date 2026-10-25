@@ -47,6 +47,7 @@ export type RuntimeSessionTurnReconciliationRequest = {
     readonly api?: string;
   };
   readonly expectedBaseTip?: string | null;
+  readonly includeContinuity?: true;
   readonly expectedInputs: readonly {
     readonly id: string;
     readonly requestDigest: string;
@@ -117,6 +118,7 @@ export type RuntimeSessionTurnReconciliationResult = {
     readonly status: "completed" | "failed" | "aborted" | "interrupted" | null;
     readonly suspended: boolean;
   }[];
+  readonly latestCompaction?: RuntimeDurableCompactionCheckpoint;
   readonly commitCandidate?: RuntimeSessionTurnResultSeal;
   readonly interruptionEvidence: readonly {
     readonly cause: string;
@@ -175,3 +177,15 @@ export type RuntimeNativeSessionProjection = {
     readonly historyAllowance: number;
   };
 };
+
+/** Fsynced checkpoint text and exact native coverage, not an assistant stream. */
+export interface RuntimeDurableCompactionCheckpoint {
+  readonly version: 1;
+  readonly journalId: string;
+  readonly checkpointId: string;
+  readonly operationId: string;
+  readonly model: string;
+  readonly trigger: "manual" | "pre-turn" | "reactive" | "mid-run";
+  readonly summary: string;
+  readonly sourceDigest: string;
+}

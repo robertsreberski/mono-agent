@@ -1,3 +1,4 @@
+import { markContinuityTurnBatch } from "../tool-history/continuity-input.js";
 import { isAgentCompactionAccounting } from "@mono-agent/contracts";
 import { ModelSwitchPendingError, OrdinaryNativeDispatchUnavailableError } from "../history/canonical/store.js";
 import { DurableTurnAlreadyCommittedError, assertDetachedTurnDescriptor } from "../history/pending-turn/contract.js";
@@ -339,10 +340,13 @@ export class ConversationHarnessImpl implements ConversationHarness {
       if (controller.signal.aborted) throw new ConversationHarnessError("compaction_failed", "Context compaction was cancelled.");
       const manualRuntimeOptions = mergeRuntimeOptions(this.options.runtimeOptions, endpoint);
       delete manualRuntimeOptions.onSessionTurnDetached;
+      delete manualRuntimeOptions.onCompactionRecorded;
+      delete manualRuntimeOptions.onCompactionPreparing;
       delete manualRuntimeOptions.sessionRecovery;
       const compactionReconciliation = providerTurn.reconciliation;
       const run = runtime.run(MANUAL_COMPACTION_SYSTEM_PROMPT, {
         ...manualRuntimeOptions,
+        ...(providerTurn.prepareCompaction && providerTurn.recordCompaction ? { onCompactionPreparing: providerTurn.prepareCompaction, onCompactionRecorded: providerTurn.recordCompaction } : {}),
         ...(compactionReconciliation === undefined ? {} : { onSessionTurnDetached: async (attempt) => {
           assertDetachedTurnDescriptor(attempt.descriptor, compactionReconciliation.descriptor);
           await compactionReconciliation.claim("detached");
@@ -592,7 +596,7 @@ export class ConversationHarnessImpl implements ConversationHarness {
     const continuationIsolated = request.continuation !== undefined;
     const isolated = proactiveIsolated || continuationIsolated;
     const mailboxEligible = !isolated;
-    const turnContinuityCollector = new UncommittedTurnCollector();
+    const turnContinuityCollector = new UncommittedTurnCollector(this.options.toolHistory?.continuityEnabled === true);
     let liveInputMailbox: LiveInputMailbox | undefined;
     let liveInputCloseReason: "closed" | "failed" = "failed";
     let toolHistoryStatus: "succeeded" | "failed" | "cancelled" = "failed";
@@ -1439,6 +1443,9 @@ export class ConversationHarnessImpl implements ConversationHarness {
           providerHistoryTurn === undefined ? undefined : this.options.sessionsRoot,
           isolated,
           { modelKey: requestedModelKey, runtimeForSession: this.runtimeForSession, reconciliation: p2Turn,
+            withContinuityOwner: providerHistoryTurn?.withContinuityOwner ?? exclusiveHistoryTurn?.withContinuityOwner,
+            prepareCompaction: providerHistoryTurn?.prepareCompaction ?? exclusiveHistoryTurn?.prepareCompaction,
+            recordCompaction: providerHistoryTurn?.recordCompaction ?? exclusiveHistoryTurn?.recordCompaction,
             ...(exclusiveCapturedHistory === undefined ? {} : { detachedHistoryOverride: exclusiveCapturedHistory }),
             ...(coordinatedProviderAttemptEligibleForSync ? { turnRevision: coordinatedProviderSessionRevision } : {}),
             ...(this.options.historyStore?.readProviderSessionBinding !== undefined && coordinatedProviderAttemptEligibleForSync
@@ -1514,6 +1521,9 @@ export class ConversationHarnessImpl implements ConversationHarness {
           undefined,
           isolated,
           { modelKey: requestedModelKey, runtimeForSession: this.runtimeForSession, reconciliation: p2Turn,
+            withContinuityOwner: providerHistoryTurn?.withContinuityOwner ?? exclusiveHistoryTurn?.withContinuityOwner,
+            prepareCompaction: providerHistoryTurn?.prepareCompaction ?? exclusiveHistoryTurn?.prepareCompaction,
+            recordCompaction: providerHistoryTurn?.recordCompaction ?? exclusiveHistoryTurn?.recordCompaction,
             ...(exclusiveCapturedHistory === undefined ? {} : { detachedHistoryOverride: exclusiveCapturedHistory }),
             onRuntimeSelected: (key) => { activeAttemptModelKey = key; } },
           prepared.skillDisclosureEntries,
@@ -1759,11 +1769,10 @@ export class ConversationHarnessImpl implements ConversationHarness {
                 runtimeResult.providerSessionId,
               );
             }
-            preparedHistoryAppend = await providerHistoryTurn.prepareCommit(
-              p2Turn === undefined ? completedMessages : completedMessages.filter((_message, index) =>
-                index === 0 || index === completedMessages.length - 1 || appliedLiveInputs[index - 1]?.deliveryKey === undefined),
-              { providerSessionSynced },
-            );
+            const commitMessages = p2Turn === undefined ? completedMessages : completedMessages.filter((_message, index) =>
+              index === 0 || index === completedMessages.length - 1 || appliedLiveInputs[index - 1]?.deliveryKey === undefined);
+            markContinuityTurnBatch(commitMessages);
+            preparedHistoryAppend = await providerHistoryTurn.prepareCommit(commitMessages, { providerSessionSynced });
             if (p2Turn !== undefined) providerSessionSynced = p2Turn.settlement?.nativeReusable === true;
             providerHistoryOwnershipTransferred = true;
             if (p2Turn === undefined) providerHistoryTurn = undefined;

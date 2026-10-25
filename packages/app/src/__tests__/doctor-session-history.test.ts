@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { createHash } from "node:crypto";
 import { once } from "node:events";
 import { chmod, lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -7,15 +8,22 @@ import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 
 import {
+  continuityGenerationId,
+  continuityRecordId,
+  CONTINUITY_USER_VERSION,
+  ToolHistoryReader,
   ToolHistoryWriter,
   TOOL_HISTORY_APPLICATION_ID,
   TOOL_HISTORY_DATABASE,
   TOOL_HISTORY_DIRECTORY,
   TOOL_HISTORY_OWNER_DATABASE,
   TOOL_HISTORY_USER_VERSION,
+  type ContinuityPreparation,
+  type ToolHistoryWriterOptions,
 } from "@mono-agent/conversation";
 import { afterEach, describe, expect, it } from "vitest";
 
+import { lazyConfiguredToolHistory } from "../composition/configured-tool-history.js";
 import { sessionToolHistorySection } from "../doctor/doctor-session-history.js";
 
 const tempDirs: string[] = [];
@@ -31,8 +39,50 @@ const tempDirs: string[] = [];
  */
 const HISTORY_CEILING_MS = 30_000;
 
-async function openWriter(root: string): Promise<ToolHistoryWriter> {
-  return await ToolHistoryWriter.open({ root, persistenceCeilingMs: HISTORY_CEILING_MS });
+async function openWriter(
+  root: string,
+  options: Omit<ToolHistoryWriterOptions, "root" | "persistenceCeilingMs"> = {},
+): Promise<ToolHistoryWriter> {
+  return await ToolHistoryWriter.open({ ...options, root, persistenceCeilingMs: HISTORY_CEILING_MS });
+}
+
+const digest = (value: string): string => createHash("sha256").update(value).digest("hex");
+
+/** Fictional continuity generation for one logical conversation. */
+function continuityPreparation(conversationId: string, texts: readonly string[]): ContinuityPreparation {
+  return {
+    generationId: continuityGenerationId(),
+    conversationId,
+    logicalConversationId: conversationId,
+    beforeDigest: digest(`${conversationId}:before`),
+    afterDigest: digest(`${conversationId}:after`),
+    records: texts.map((text, sequence) => ({
+      recordId: continuityRecordId(conversationId, `source-${String(sequence)}`),
+      runId: "fiction-run",
+      kind: "assistant" as const,
+      sequence,
+      text,
+      provenance: "assistant" as const,
+    })),
+  };
+}
+
+async function publishContinuity(writer: ToolHistoryWriter, input: ContinuityPreparation): Promise<void> {
+  await writer.prepareContinuity(input);
+  await writer.commitContinuity({
+    generationId: input.generationId,
+    conversationId: input.conversationId,
+    canonicalDigest: input.afterDigest,
+  });
+}
+
+async function pinFirstRecord(writer: ToolHistoryWriter, input: ContinuityPreparation): Promise<void> {
+  await writer.pinContinuity({
+    logicalConversationId: input.logicalConversationId,
+    recordId: input.records[0]!.recordId,
+    ownerKind: "handoff",
+    ownerId: `fictional-${input.conversationId}`,
+  });
 }
 
 async function tempRoot(): Promise<string> {
@@ -53,6 +103,42 @@ const binding = {
 } as const;
 
 describe("sessionToolHistorySection", () => {
+  it("reports pending and invalid purge counts without ids or paths, even with no active continuity writer", async () => {
+    const root = await tempRoot(); await mkdir(root, { recursive: true, mode: 0o700 });
+    const pending = join(root, ".continuity-purge-" + "a".repeat(64) + ".json");
+    const invalid = join(root, ".continuity-purge-" + "b".repeat(64) + ".json");
+    await writeFile(pending, JSON.stringify({ scope: "logical", conversationId: "web:purge-doctor-fixture" }), { mode: 0o600 });
+    await writeFile(invalid, "{invalid", { mode: 0o600 });
+    const section = await sessionToolHistorySection({ historyRoot: root, requestScopedToolSupported: true });
+    expect(section.status).toBe("waiting");
+    expect(section.details).toContain("Continuity purge journals: 1 pending, 1 invalid. Coverage is degraded; affected evidence is unavailable until purged.");
+    expect(section.details.join(" ")).not.toContain("purge-doctor-fixture");
+    expect(section.details.join(" ")).not.toContain(root);
+    await rm(pending); await rm(invalid);
+    const clean = await sessionToolHistorySection({ historyRoot: root, requestScopedToolSupported: true });
+    expect(clean.status).toBe("ok"); expect(clean.details.join(" ")).not.toContain("purge journals");
+  });
+
+  it.each(["logical", "physical"] as const)("does not report a stale conflict after a %s purge", async purgeScope => {
+    const root = await tempRoot(), writer = await openWriter(root, { continuityEnabled: true });
+    const input = continuityPreparation("web:purged-conflict", ["An original fictional quotation."]);
+    await publishContinuity(writer, input);
+    await expect(writer.prepareContinuity({ ...input, records: input.records.map(record => ({ ...record, text: "A conflicting fictional quotation." })) }))
+      .rejects.toMatchObject({ code: "continuity_conflict" });
+    expect((await writer.stats()).idempotencyConflicts).toBe(1);
+    await writer.close();
+    const before = await sessionToolHistorySection({ historyRoot: root, requestScopedToolSupported: true });
+    expect(before.status).toBe("error");
+    const key = digest(JSON.stringify([purgeScope, input.conversationId]));
+    await writeFile(join(root, `.continuity-purge-${key}.json`), JSON.stringify({ scope: purgeScope, conversationId: input.conversationId }), { mode: 0o600 });
+    const recovered = await openWriter(root, { continuityEnabled: true });
+    try { expect((await recovered.stats()).idempotencyConflicts).toBe(0); }
+    finally { await recovered.close(); }
+    const after = await sessionToolHistorySection({ historyRoot: root, requestScopedToolSupported: true });
+    expect(after.status).toBe("ok");
+    expect(after.details.join(" ")).not.toContain("unresolved lifecycle idempotency conflict");
+  });
+
   it("reports separate zero-byte stores before first use and flags only unsupported direct routes", async () => {
     const root = await tempRoot();
     const supported = await sessionToolHistorySection({ historyRoot: root, requestScopedToolSupported: true });
@@ -79,6 +165,8 @@ describe("sessionToolHistorySection", () => {
     expect(section.details).toContain("Message history: 1 files, 3 bytes.");
     expect(section.details.join("\n")).toMatch(/Tool history physical storage: 2 files, \d+ bytes/iu);
     expect(section.details.join("\n")).toMatch(/Tool history: 1 calls, 2 records, 0 tombstones, \d+ retained payload bytes, \d+ database bytes/iu);
+    // A v2 sidecar keeps today's report: no continuity lines at all.
+    expect(section.details.join("\n")).not.toMatch(/continuity/iu);
   });
 
   it("returns a bounded path-safe diagnostic when the configured history parent is not a directory", async () => {
@@ -477,11 +565,15 @@ describe("sessionToolHistorySection", () => {
     await writer.close();
     const path = join(root, TOOL_HISTORY_DIRECTORY, TOOL_HISTORY_DATABASE);
     const database = new DatabaseSync(path);
-    database.exec(`PRAGMA user_version=${String(TOOL_HISTORY_USER_VERSION + 1)}`);
+    // v3 (continuity) is supported; the first unsupported schema is v3 + 1.
+    database.exec(`PRAGMA user_version=${String(CONTINUITY_USER_VERSION + 1)}`);
     database.close();
 
     const section = await sessionToolHistorySection({ historyRoot: root, requestScopedToolSupported: true });
     expect(section.status).toBe("error");
+    expect(section.details.join("\n")).toContain(
+      `Tool-history schema is newer (user_version=${String(CONTINUITY_USER_VERSION + 1)}, current=${String(CONTINUITY_USER_VERSION)}).`,
+    );
     expect(section.details.join("\n")).toContain("Downgrade hard-fails until persisted conversation state is purged.");
   });
 
@@ -514,6 +606,177 @@ describe("sessionToolHistorySection", () => {
     const section = await sessionToolHistorySection({ historyRoot: root, requestScopedToolSupported: true });
     expect(section.status).toBe("error");
     expect(section.details).toContain("Tool history database must be a single-link regular current-user file with mode 0600.");
+  });
+});
+
+describe("sessionToolHistorySection continuity (schema v3)", () => {
+  it("accepts a clean v3 store and reports continuity counts, bytes and pins", async () => {
+    const root = await tempRoot();
+    const writer = await openWriter(root, { continuityEnabled: true });
+    await writer.persist(binding, { phase: "invocation", toolCallId: "call-1", toolName: "Read", arguments: { path: "README.md" } });
+    await writer.persist(binding, { phase: "result", toolCallId: "call-1", state: "success", content: "ok" });
+    const alpha = continuityPreparation("web:alpha", ["Morgan chose the cobalt design.", "Avery agreed."]);
+    await publishContinuity(writer, alpha);
+    await pinFirstRecord(writer, alpha);
+    await writer.close();
+    const schema = new DatabaseSync(join(root, TOOL_HISTORY_DIRECTORY, TOOL_HISTORY_DATABASE), { readOnly: true });
+    expect(schema.prepare("PRAGMA user_version").get()).toEqual({ user_version: CONTINUITY_USER_VERSION });
+    schema.close();
+    const retainedText = Buffer.byteLength("Morgan chose the cobalt design.") + Buffer.byteLength("Avery agreed.");
+
+    const section = await sessionToolHistorySection({ historyRoot: root, requestScopedToolSupported: true });
+    expect(section.status, section.details.join("\n")).toBe("ok");
+    expect(section.details.join("\n")).toMatch(/Tool history: 1 calls, 2 records, 0 tombstones, \d+ retained payload bytes, \d+ database bytes/iu);
+    expect(section.details).toContain(
+      `Conversation continuity: 2 records, 0 tombstones, 1 pins, ${String(retainedText)} retained text bytes (counted in the shared retained payload budget).`,
+    );
+    expect(section.details).toContain("Continuity generations: 1 committed, 0 unresolved, 0 abandoned (coverage gaps).");
+    expect(section.details.join("\n")).not.toMatch(/upgrade is pending|newer|downgrade|Morgan|Avery|web:alpha/iu);
+  });
+
+  it("reports unresolved generations as waiting and abandoned gaps without exposing content", async () => {
+    const root = await tempRoot();
+    const writer = await openWriter(root, { continuityEnabled: true });
+    await publishContinuity(writer, continuityPreparation("web:alpha", ["Morgan chose the cobalt design."]));
+    await writer.prepareContinuity(continuityPreparation("web:beta", ["Unpublished fictional reply."]));
+    const abandoned = continuityPreparation("web:gamma", ["Superseded fictional reply."]);
+    await writer.prepareContinuity(abandoned);
+    await expect(writer.reconcileContinuity({ conversationId: abandoned.conversationId, canonicalDigest: digest("web:gamma:advanced") }))
+      .resolves.toMatchObject({ status: "abandoned" });
+    await writer.close();
+
+    const section = await sessionToolHistorySection({ historyRoot: root, requestScopedToolSupported: true });
+    expect(section.status, section.details.join("\n")).toBe("waiting");
+    expect(section.details).toContain("Continuity generations: 1 committed, 1 unresolved, 1 abandoned (coverage gaps).");
+    expect(section.details.join("\n")).toContain("1 unresolved continuity generation(s) are prepared but not committed");
+    expect(section.details.join("\n")).toContain("1 abandoned continuity generation(s) are retained as content-free coverage gaps");
+    expect(section.details.join("\n")).not.toMatch(/Unpublished fictional|Superseded fictional|web:beta|web:gamma/u);
+  });
+
+  it("keeps coverage gaps informational: abandoned generations alone leave the section ok", async () => {
+    const root = await tempRoot();
+    const writer = await openWriter(root, { continuityEnabled: true });
+    await publishContinuity(writer, continuityPreparation("web:alpha", ["Morgan chose the cobalt design."]));
+    const abandoned = continuityPreparation("web:gamma", ["Superseded fictional reply."]);
+    await writer.prepareContinuity(abandoned);
+    await expect(writer.reconcileContinuity({ conversationId: abandoned.conversationId, canonicalDigest: digest("web:gamma:advanced") }))
+      .resolves.toMatchObject({ status: "abandoned" });
+    await writer.close();
+
+    const section = await sessionToolHistorySection({ historyRoot: root, requestScopedToolSupported: true });
+    expect(section.status, section.details.join("\n")).toBe("ok");
+    expect(section.details).toContain("Continuity generations: 1 committed, 0 unresolved, 1 abandoned (coverage gaps).");
+    expect(section.details.join("\n")).toContain("1 abandoned continuity generation(s) are retained as content-free coverage gaps (informational)");
+    expect(section.details.join("\n")).not.toMatch(/Superseded fictional|web:gamma/u);
+  });
+
+  it("reports quota-degraded continuity as waiting while pinned evidence stays counted", async () => {
+    const root = await tempRoot();
+    const writer = await openWriter(root, { continuityEnabled: true, retention: { maxBytes: 200 } });
+    const pinned = continuityPreparation("web:alpha", ["a".repeat(150)]);
+    await publishContinuity(writer, pinned);
+    await pinFirstRecord(writer, pinned);
+    await expect(writer.prepareContinuity(continuityPreparation("web:beta", ["b".repeat(100)])))
+      .rejects.toMatchObject({ code: "continuity_quota_exhausted" });
+    await writer.close();
+
+    const section = await sessionToolHistorySection({ historyRoot: root, requestScopedToolSupported: true });
+    expect(section.status, section.details.join("\n")).toBe("waiting");
+    expect(section.details).toContain(
+      "Conversation continuity: 1 records, 0 tombstones, 1 pins, 150 retained text bytes (counted in the shared retained payload budget).",
+    );
+    expect(section.details).toContain(
+      "Conversation continuity is degraded: retained evidence was skipped because storage, capacity or capture bounds were unavailable. Compaction and canonical publication continue; existing references stay readable when the store is accessible.",
+    );
+  });
+
+  it.skipIf(process.platform === "win32")("applies the v2 ownership and mode checks to a v3 store before reading continuity", async () => {
+    const root = await tempRoot();
+    const writer = await openWriter(root, { continuityEnabled: true });
+    await publishContinuity(writer, continuityPreparation("web:alpha", ["Morgan chose the cobalt design."]));
+    await writer.close();
+    const contentPath = join(root, TOOL_HISTORY_DIRECTORY, TOOL_HISTORY_DATABASE);
+
+    await chmod(contentPath, 0o644);
+    const insecureFile = await sessionToolHistorySection({ historyRoot: root, requestScopedToolSupported: true });
+    expect(insecureFile.status).toBe("error");
+    expect(insecureFile.details).toContain("Tool history database must be a single-link regular current-user file with mode 0600.");
+    expect(insecureFile.details.join("\n")).not.toContain("Conversation continuity:");
+    await chmod(contentPath, 0o600);
+
+    await chmod(join(root, TOOL_HISTORY_DIRECTORY), 0o755);
+    const insecureDirectory = await sessionToolHistorySection({ historyRoot: root, requestScopedToolSupported: true });
+    expect(insecureDirectory.status).toBe("error");
+    expect(insecureDirectory.details).toContain("Tool history directory must be owned by the current user with mode 0700.");
+    await chmod(join(root, TOOL_HISTORY_DIRECTORY), 0o700);
+
+    const healthy = await sessionToolHistorySection({ historyRoot: root, requestScopedToolSupported: true });
+    expect(healthy.status, healthy.details.join("\n")).toBe("ok");
+    expect(healthy.details.join("\n")).toContain("Conversation continuity: 1 records");
+  });
+
+  it("hard-fails a v3 store whose continuity tables are missing", async () => {
+    const root = await tempRoot();
+    const writer = await openWriter(root, { continuityEnabled: true });
+    await writer.close();
+    const database = new DatabaseSync(join(root, TOOL_HISTORY_DIRECTORY, TOOL_HISTORY_DATABASE));
+    database.exec("DROP TABLE continuity_pins");
+    database.close();
+
+    const section = await sessionToolHistorySection({ historyRoot: root, requestScopedToolSupported: true });
+    expect(section.status).toBe("error");
+    expect(section.details.join("\n")).toContain(
+      `Tool-history schema v${String(CONTINUITY_USER_VERSION)} is missing continuity table(s): continuity_pins.`,
+    );
+    expect(section.details.join("\n")).not.toContain("Conversation continuity:");
+  });
+
+  it("logical reset through the configured app path clears one conversation's continuity rows and pins", async () => {
+    const root = await tempRoot();
+    const seed = await openWriter(root, { continuityEnabled: true });
+    const alpha = continuityPreparation("web:alpha", ["Morgan chose the cobalt design.", "Avery agreed."]);
+    const beta = continuityPreparation("web:beta", ["Riley kept the sibling note."]);
+    for (const input of [alpha, beta]) {
+      await publishContinuity(seed, input);
+      await pinFirstRecord(seed, input);
+    }
+    await seed.close();
+    const before = await sessionToolHistorySection({ historyRoot: root, requestScopedToolSupported: true });
+    expect(before.details.join("\n")).toContain("Conversation continuity: 3 records, 0 tombstones, 2 pins");
+
+    const history = lazyConfiguredToolHistory({
+      root,
+      // The writer's default artifact root, so the shared store is reused unchanged.
+      artifactRoot: join(root, "..", "artifacts", "tool-output"),
+      rollover: undefined,
+      continuityEnabled: true,
+    });
+    try {
+      await history.writer.resetConversation!("web:alpha");
+    } finally {
+      await history.release?.();
+    }
+
+    const after = await sessionToolHistorySection({ historyRoot: root, requestScopedToolSupported: true });
+    expect(after.status, after.details.join("\n")).toBe("ok");
+    expect(after.details).toContain(
+      `Conversation continuity: 1 records, 0 tombstones, 1 pins, ${String(Buffer.byteLength("Riley kept the sibling note."))} retained text bytes (counted in the shared retained payload budget).`,
+    );
+    expect(after.details).toContain("Continuity generations: 1 committed, 0 unresolved, 0 abandoned (coverage gaps).");
+    const reader = new ToolHistoryReader(root);
+    const scope = (id: string) => ({ logicalConversationId: id, currentConversationId: id, currentRunId: "fiction-later-run" });
+    expect(reader.searchContinuity(scope("web:alpha")).items).toEqual([]);
+    expect(reader.getContinuity({ ...scope("web:alpha"), recordId: alpha.records[0]!.recordId }).status).toBe("unavailable");
+    expect(reader.searchContinuity(scope("web:beta")).items.map((item) => item.preview)).toEqual(["Riley kept the sibling note."]);
+    const database = new DatabaseSync(join(root, TOOL_HISTORY_DIRECTORY, TOOL_HISTORY_DATABASE), { readOnly: true });
+    try {
+      expect(database.prepare("SELECT count(*) count FROM continuity_generations WHERE logical_id='web:alpha'").get()).toEqual({ count: 0 });
+      expect(database.prepare(`SELECT count(*) count FROM continuity_records WHERE record_id IN (${alpha.records.map(() => "?").join(",")})`)
+        .get(...alpha.records.map((record) => record.recordId))).toEqual({ count: 0 });
+      expect(database.prepare("SELECT owner_id FROM continuity_pins").all()).toEqual([{ owner_id: "fictional-web:beta" }]);
+    } finally {
+      database.close();
+    }
   });
 });
 
@@ -560,3 +823,15 @@ async function waitForChildOutput(
     child.on("exit", onExit);
   });
 }
+
+it("reports a moved sidecar's artifact-root degradation without rebinding or writing", async () => {
+  const root = await tempRoot(), oldRoot = join(root, "old-artifacts", "tool-output"), newRoot = join(root, "new-artifacts", "tool-output");
+  const writer = await openWriter(root, { artifactRoot: oldRoot, continuityEnabled: true }); await writer.close();
+  const path = join(root, TOOL_HISTORY_DIRECTORY, TOOL_HISTORY_DATABASE), before = await readFile(path);
+  const section = await sessionToolHistorySection({ historyRoot: root, artifactRoot: newRoot, requestScopedToolSupported: true });
+  expect(section.status).toBe("waiting");
+  expect(section.details).toContainEqual(expect.stringContaining("history_artifact_root_mismatch"));
+  expect(section.details).toContainEqual(expect.stringContaining("Compaction and canonical history continue"));
+  expect(await readFile(path)).toEqual(before);
+  expect(JSON.stringify(section)).not.toContain(oldRoot); expect(JSON.stringify(section)).not.toContain(newRoot);
+});

@@ -111,3 +111,5 @@ export type { DiscoveredLocalModel, LocalProviderDefinition, LocalProviderModelD
 export type { DiscoveredProvider } from "./providers/contracts.js";
 
 export type { OwnedForegroundProcessRequest, OwnedForegroundProcesses } from "./owned-foreground-processes.js";
+
+export type { RuntimeDurableCompactionCheckpoint } from "#turn/contracts/session";

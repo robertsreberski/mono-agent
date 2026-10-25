@@ -59,7 +59,8 @@ effort. `runtime.fallbackModels` and `MONO_AGENT_FALLBACK_MODELS` were retired i
     "session": {
       "root": ".mono-agent/sessions", // durable JSONL sessions; unset = in-memory
       "mode": "continuous", // or "per-message"
-      "idleTimeoutMs": 1800000
+      "idleTimeoutMs": 1800000,
+      "continuity": { "enabled": true } // default on; false opts out. Back up before the in-place v3 upgrade; older binaries refuse it
     }
   },
 

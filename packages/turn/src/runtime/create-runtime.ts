@@ -220,9 +220,16 @@ export function createRuntime(host: TurnHostOptions = {}): AgentRuntimeInstance 
             ...(options.webFetchConfig === undefined ? {} : { webFetchConfig: options.webFetchConfig }),
           })),
         };
+    const { onCompactionRecorded: ownedRecorder, ...requestOptions } = options;
+    delete (requestOptions as Record<string, unknown>).continuityRecording;
     const request = {
         ...hostDefaults,
-        ...options,
+        ...requestOptions,
+        ...(ownedRecorder === undefined ? {} : { ...(options.onCompactionPreparing === undefined ? {} : { continuityRecording: true as const }),
+          onCompactionRecorded: async (record: Parameters<NonNullable<TurnHostOptions["onCompactionRecorded"]>>[0]) => {
+            try { await ownedRecorder(record); }
+            finally { if (hostDefaults.onCompactionRecorded !== ownedRecorder) await hostDefaults.onCompactionRecorded?.(record); }
+          } }),
         webSearchState,
         ...(subagents === undefined ? {} : { subagents }),
         // `...options` alone doesn't carry the `options.model` narrowing above

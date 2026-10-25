@@ -2,10 +2,13 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { ToolHistoryWriter, type ToolHistoryWriterHandle } from "@mono-agent/conversation";
+import { createDurableHistoryStore, ToolHistoryWriter, type ToolHistoryWriterHandle } from "@mono-agent/conversation";
 import { describe, expect, it, vi } from "vitest";
 
+import { resolveJsonMonoAgentConfig } from "@mono-agent/config";
 import { lazyConfiguredToolHistory } from "../composition/configured-tool-history.js";
+
+const configuredContinuity = (enabled?: boolean) => resolveJsonMonoAgentConfig({ cwd: "/home/example", json: { runtime: { model: "openai-codex:gpt-5.5", session: { ...(enabled === undefined ? {} : { continuity: { enabled } }) } }, context: { identityPath: "IDENTITY.md" } } }).runtime.session.continuity?.enabled !== false;
 
 describe("configured tool-history acquisition", () => {
   it("releases an unused resource repeatedly without acquiring a writer", async () => {
@@ -14,6 +17,33 @@ describe("configured tool-history acquisition", () => {
       rollover: undefined, acquireWriter });
     await Promise.all([history.release?.(), history.release?.()]);
     expect(acquireWriter).not.toHaveBeenCalled();
+  });
+
+  it("omits the participant and positive writer capability under explicit false", async () => {
+    const persist = vi.fn(async () => ({ persistence: "persisted" as const }));
+    const acquireWriter = vi.fn(async (_options: { readonly root: string }) => ({ writer: { persist } as unknown as ToolHistoryWriter, release: async () => {} }));
+    const history = lazyConfiguredToolHistory({ root: "/fictional/history", artifactRoot: "/fictional/artifacts",
+      rollover: undefined, continuityEnabled: configuredContinuity(false), acquireWriter });
+    expect(history.continuity).toBeUndefined(); expect(acquireWriter).not.toHaveBeenCalled();
+    await history.writer.createSink({ conversationId: "web:fiction", logicalConversationId: "web:fiction", runId: "fiction-run", isolated: false })({ phase: "invocation", toolCallId: "fiction-call", toolName: "Read", arguments: {} });
+    expect(acquireWriter.mock.calls[0]?.[0]).not.toHaveProperty("continuityEnabled");
+    await history.release?.();
+  });
+
+  it("defaults on, lazily supplies the participant under the canonical owner and reads after restart", async () => {
+    const root = await mkdtemp(join(tmpdir(), "configured-continuity-"));
+    const options = { root, artifactRoot: join(root, "artifacts"), rollover: "daily" as const, continuityEnabled: configuredContinuity() };
+    let history = lazyConfiguredToolHistory(options);
+    try {
+      expect(await history.reader.exists()).toBe(false);
+      const store = createDurableHistoryStore({ root, continuity: history.continuity! });
+      await store.append("web:fiction#2026-10-01", [{ role: "assistant", content: "Morgan chose cobalt." }]);
+      await history.release?.(); history = lazyConfiguredToolHistory(options);
+      const scope = { logicalConversationId: "web:fiction", currentConversationId: "web:fiction#2026-10-02", currentRunId: "fiction-retrieving" };
+      expect(history.reader.searchContinuity(scope).items.map((r) => r.preview)).toEqual(["Morgan chose cobalt."]);
+      await createDurableHistoryStore({ root, continuity: history.continuity! }).resetLogicalConversation("web:fiction");
+      expect(history.reader.searchContinuity(scope).items).toEqual([]);
+    } finally { await history.release?.(); await rm(root, { recursive: true, force: true }); }
   });
 
   it("waits for a pending acquisition and retires its handle exactly once", async () => {

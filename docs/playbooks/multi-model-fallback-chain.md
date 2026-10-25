@@ -117,3 +117,13 @@ If accounting reports `insufficient_summary_headroom`, no summary provider call
 was made: the context/model cap could not preserve the useful answer minimum
 after reasoning reserves. Raising a genuinely supported model/output ceiling or
 reducing the request can help; do not repeatedly retry the same doomed summary.
+
+## Optional retained evidence
+
+Conversation continuity is on by default; set
+`runtime.session.continuity.enabled=false` to opt out with legacy storage and
+capture paths. It gives `ConversationHistory` scoped access to
+sanitized text and portable summaries without a memory backend, but does not
+change fallback reconstruction or prove improved semantic continuity. Back up
+canonical history and the sidecar and stop older writers before the one-way v3
+migration. See [retained evidence](/runtime/sessions-concurrency/#retained-conversation-evidence-default-on).

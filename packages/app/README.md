@@ -93,6 +93,12 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
 - Expose the request-scoped read-only `RunHistory` tool for safe normalized
   recovery, search, and paged evidence from settled prior runs in the logical
   conversation, independent of daily rollover buckets.
+- Retain owned conversation evidence by default with
+  `runtime.session.continuity.enabled` (set false to opt out), independent of memory.
+  `ConversationHistory` retrieves sanitized text and portable summaries within
+  the current logical conversation. Stop older writers and back up before the
+  in-place v3 sidecar migration; older binaries refuse it, so rollback needs a
+  pre-upgrade backup. Disabling capture does not downgrade it.
 - Expose the sibling request-scoped read-only `SessionHistory` tool over the
   harness's canonical retained managed-tool lifecycle sidecar.
 - Expose the request-scoped `SetConversationTitle` definition across turns, admitting calls only on writable
@@ -836,6 +842,24 @@ conversations or threads, system prompts, reasoning, recalled memory,
 turn-context payloads, and raw artifact paths; historical text is marked
 untrusted.
 
+### Retained conversation evidence
+
+Configured harnesses and channel controllers expose `ConversationHistory` by
+normal tool policy when `runtime.session.continuity.enabled` is not false
+(default true). `"*"` allows it; an explicit deny wins; a restrictive list must
+include `ConversationHistory` (legacy policy alias `conversation_history`). No
+memory backend or external MCP configuration is needed. Explicit false omits
+capture and registration; denying the tool alone does not disable capture.
+
+Search/get returns scoped sanitized evidence with generation/digest-bound cursors,
+≤8192-byte UTF-8 chunks, provenance and explicit redaction/truncation/tombstone/
+unavailable states. Follow exact model-visible navigation to fetch complete
+retained bytes and verify their digest. Coverage is not guaranteed complete;
+generated summaries are not owner authority or fresh permission. Finalized,
+fsynced current-run evidence can be read; partial streams cannot. SessionHistory
+still excludes current-run tool records. Enabled capture/projection omits nested
+history-result bodies. See [MCP evidence bounds](../../docs/tools/mcp.md#conversationhistory-retained-conversation-evidence).
+
 ### Session tool history
 
 `SessionHistory` requires no config key. It is available under allow-all on
@@ -933,13 +957,19 @@ The durable store holds one cross-process logical-session fence across discovery
 and every bucket reset, and appends take that same fence before their physical
 bucket lock.
 `restart --clear-sessions` purges all provider transcripts, message history, and
-tool history while reporting message/tool counts and bytes separately. This is
+tool history (including v3 continuity records, generations and pins) while
+reporting message/tool counts and bytes separately, plus continuity counts for a
+v3 sidecar. This is
 an explicit stopped-writer operator wipe of the complete attested roots, not
 per-conversation retirement: it removes native canonical records, root
 markers, switch payloads/artifacts/crash evidence, and every native journal.
 The existing quarantine manifests keep whole-root deletion restartable. Doctor
 audits schema, ownership, journal/integrity state, recovery, quota, and distinct
-unresolved fail-soft incidents. Repeating the same failed lifecycle retry does
+unresolved fail-soft incidents. It accepts schema v2 and v3; a v3 store gets the
+same ownership/mode/integrity checks plus content-free continuity record, pin,
+retained-byte and generation counts, required continuity tables, and `waiting`
+for unresolved generations and quota-degraded continuity; coverage gaps are
+informational only. Repeating the same failed lifecycle retry does
 not inflate the count, and unrelated writes or run finalization cannot hide lost
 evidence; only the matching tool phase, its durable synthetic terminal closure,
 or canonical run-binding retry clears its incident while it remains retryable.
