@@ -11,7 +11,7 @@ import { withOwnerLockMutationGate } from "../durable-state/owner-lock-mutation-
 
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
-  return { ...actual, readdir: vi.fn(actual.readdir) };
+  return { ...actual, readdir: vi.fn(actual.readdir), readlink: vi.fn(actual.readlink) };
 });
 
 const NOW = Date.parse("2026-01-10T12:00:00Z");
@@ -238,25 +238,24 @@ describe("conservative absent-root lease sweep", () => {
 
 describe("process-namespace admission", () => {
   it.each([
-    ["one entry", "Name:\tfictional\nNSpid:\t123\n", true],
-    ["several entries", "NSpid:\t123\t1\n", false],
-    ["missing line", "Name:\tfictional\nPid:\t123\n", false],
-    ["empty line", "NSpid:\t\nPid:\t123\n", false],
-    ["malformed entry", "NSpid:\tunknown\n", false],
-    ["duplicate lines", "NSpid:\t123\nNSpid:\t123\n", false],
-  ] as const)("admits Linux with %s only when exactly one PID is visible", async (_label, status, admitted) => {
+    ["initial namespace", "pid:[4026531836]", true],
+    ["container namespace", "pid:[4026532500]", false],
+    ["malformed link", "pid:4026531836", false],
+    ["empty link", "", false],
+    ["unexpected suffix", "pid:[4026531836]\n", false],
+  ] as const)("admits Linux's %s only when it matches the initial namespace identity", async (_label, link, admitted) => {
     const f = await fixture(); await f.seed();
-    const readProcessStatus = vi.fn(async () => status);
-    await sweepAgentRootLeases({ ...f.options, platform: "linux", readProcessStatus });
-    expect(readProcessStatus).toHaveBeenCalledOnce();
+    const readNamespaceLink = vi.fn(async () => link);
+    await sweepAgentRootLeases({ ...f.options, platform: "linux", readNamespaceLink });
+    expect(readNamespaceLink).toHaveBeenCalledExactlyOnceWith("/proc/self/ns/pid");
     expect(await exists(f.lease)).toBe(!admitted);
     expect(f.options.isSameProcessIncarnation).toHaveBeenCalledTimes(admitted ? 1 : 0);
     expect(files.readdir).toHaveBeenCalledTimes(admitted ? 1 : 0);
   });
 
-  it("skips Linux without listing leases when procfs is unreadable", async () => {
+  it.each(["ENOENT", "EACCES"])("skips Linux without listing leases when the namespace link returns %s", async (code) => {
     const f = await fixture(); await f.seed();
-    await sweepAgentRootLeases({ ...f.options, platform: "linux", readProcessStatus: async () => { throw new Error("procfs unavailable"); } });
+    await sweepAgentRootLeases({ ...f.options, platform: "linux", readNamespaceLink: async () => { throw Object.assign(new Error("namespace unavailable"), { code }); } });
     expect(await exists(f.lease)).toBe(true);
     expect(files.readdir).not.toHaveBeenCalled(); expect(f.options.isSameProcessIncarnation).not.toHaveBeenCalled();
     expect(f.options.onDiagnostic).not.toHaveBeenCalled();
@@ -265,16 +264,16 @@ describe("process-namespace admission", () => {
   it("does not inspect leases after namespace admission exhausts the budget", async () => {
     const f = await fixture(); await f.seed(); let clock = 0;
     await sweepAgentRootLeases({ ...f.options, platform: "linux", monotonicNow: () => clock,
-      readProcessStatus: async () => { clock = 101; return "NSpid:\t123\n"; } });
+      readNamespaceLink: async () => { clock = 101; return "pid:[4026531836]"; } });
     expect(await exists(f.lease)).toBe(true);
     expect(files.readdir).not.toHaveBeenCalled(); expect(f.options.isSameProcessIncarnation).not.toHaveBeenCalled();
   });
 
   it.each(["darwin", "win32"] as const)("does not consult Linux procfs on %s", async (platform) => {
     const f = await fixture(); await f.seed();
-    const readProcessStatus = vi.fn(async () => "NSpid:\t123\n");
-    await sweepAgentRootLeases({ ...f.options, platform, readProcessStatus });
-    expect(readProcessStatus).not.toHaveBeenCalled();
+    const readNamespaceLink = vi.fn(async () => "pid:[4026531836]");
+    await sweepAgentRootLeases({ ...f.options, platform, readNamespaceLink });
+    expect(readNamespaceLink).not.toHaveBeenCalled();
     expect(await exists(f.lease)).toBe(platform !== "darwin");
     expect(files.readdir).toHaveBeenCalledTimes(platform === "darwin" ? 1 : 0);
   });
@@ -298,6 +297,8 @@ describe("host-only asynchronous scheduling", () => {
     const f = await fixture(); await files.mkdir(f.root);
     const listing = vi.mocked(files.readdir).mockRejectedValueOnce(new Error(f.dir));
     const warning = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+    // Exercise scheduler failure containment even if this suite runs inside a Linux container.
+    vi.mocked(files.readlink).mockResolvedValueOnce("pid:[4026531836]");
     // Raw and explicitly sandboxed acquisitions do not opt into maintenance.
     const first = await acquireAgentRootOwnership(f.root, { homeDir: f.home });
     const sandboxed = await acquireAgentRootOwnership(f.root, { homeDir: f.home, sweepContext: "sandbox" });

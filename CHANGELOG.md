@@ -125,7 +125,8 @@
 - Reclaim sampled abandoned agent-root leases after host startup when their
   verified root is absent and their owner is provably dead; retain legacy,
   live and uncertain leases without delaying startup for the sweep. Skip
-  maintenance when Linux process-namespace visibility is uncertain.
+  maintenance outside Linux's initial PID namespace or when its identity
+  cannot be verified.
 - Fix a race where two processes reclaiming the same crashed agent-root lease
   could both end up owning that agent root. Agent-root lease changes now pass
   through an owner-only `.mutation-gate.sqlite` file in

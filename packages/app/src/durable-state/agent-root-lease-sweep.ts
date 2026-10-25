@@ -1,11 +1,13 @@
 import { randomInt } from "node:crypto";
-import { lstat, readdir, readFile } from "node:fs/promises";
+import { lstat, readdir, readlink } from "node:fs/promises";
 import { resolve } from "node:path";
 import { isProcessIncarnationLive, type SameProcessIncarnation } from "@mono-agent/conversation/process-incarnation";
 import { agentRootDigest, agentRootLeaseLockOptions } from "./agent-root-lease-policy.js";
 import { OwnerLockCoordinationBusyError } from "./owner-lock-mutation-gate.js";
 import { reclaimOwnerPrivateLock, type OwnerPrivateLockMutationStep } from "./owner-private-lock.js";
 
+// Linux include/linux/proc_ns.h: PROC_PID_INIT_INO = 0xEFFFFFFC.
+const INITIAL_PID_NAMESPACE = "pid:[4026531836]";
 const SAMPLE_LIMIT = 16;
 const BUDGET_MS = 100;
 // An age filter reduces startup churn, not a proof that a process is dead.
@@ -17,7 +19,7 @@ interface SweepOptions {
   /** App startup admission is necessary, but process-namespace visibility is checked independently. */
   readonly context: "host" | "sandbox";
   readonly platform?: NodeJS.Platform;
-  readonly readProcessStatus?: () => Promise<string>;
+  readonly readNamespaceLink?: (path: string) => Promise<string>;
   readonly now?: () => number;
   readonly monotonicNow?: () => number;
   readonly budgetMs?: number;
@@ -130,10 +132,6 @@ async function hasUsableProcessNamespace(options: SweepOptions): Promise<boolean
   if (platform === "darwin") return true;
   if (platform !== "linux") return false;
   try {
-    const status = await (options.readProcessStatus ?? (() => readFile("/proc/self/status", "utf8")))();
-    const lines = status.match(/^NSpid:[^\r\n]*$/gmu);
-    if (lines?.length !== 1) return false;
-    const entries = lines[0]!.slice("NSpid:".length).trim().split(/\s+/u);
-    return entries.length === 1 && /^[1-9]\d*$/u.test(entries[0]!);
+    return await (options.readNamespaceLink ?? readlink)("/proc/self/ns/pid") === INITIAL_PID_NAMESPACE;
   } catch { return false; } // Missing/unreadable procfs is not evidence of host PID visibility.
 }

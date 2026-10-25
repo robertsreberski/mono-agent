@@ -544,9 +544,12 @@ After the first successful ownership acquisition during host app startup, one
 best-effort asynchronous sweep samples at most 16 lease names with a 100 ms
 monotonic inspection/probe budget. Acquisition never awaits it. App startup opts
 in, but the public app entrypoint can itself run inside a sandbox. On Linux the
-sweep therefore requires exactly one PID in `/proc/self/status`'s `NSpid` line;
-multiple entries, a missing/malformed line or unreadable procfs skip maintenance
-before listing leases. Darwin has no PID namespaces and retains conservative
+sweep requires `/proc/self/ns/pid` to resolve via `readlink` to the kernel's initial
+PID namespace identity, exactly `pid:[4026531836]`. A different identity, missing
+or unreadable link, or unexpected format skips maintenance before listing leases.
+Agents in containers (including Docker) with non-initial PID namespaces therefore
+never sweep, even when they have their own procfs mount. This is intentionally
+conservative. Darwin has no PID namespaces and retains conservative
 liveness probing (including treating sandbox `EPERM` and probe errors as live).
 Other platforms do not sweep. Raw coordinator callers do not opt in by default,
 and explicitly sandboxed callers are skipped. Tool sandbox configuration is not
