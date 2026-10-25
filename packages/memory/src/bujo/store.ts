@@ -738,10 +738,10 @@ export class BujoMemoryStore implements MemoryStore {
             createdAt: bullet.createdAt,
             accessCount: 0,
             tags: [],
-            // A new line records the storable host conversation id canonically,
-            // so rebuild restores it. Recovered or unstorable provenance stays
-            // live-index telemetry that a rebuild does not reconstruct.
-            source: { session: conversationId, file: relativePath },
+            // The index mirrors the canonical line's own provenance: a recovered
+            // bullet keeps the session that wrote it (never the retrying
+            // caller's), and an unstorable id stays unknown in both stores.
+            source: { ...sourceOf(bullet), file: relativePath },
           };
           // Never record a content hash off the Journal tier: a non-Journal
           // index carrying content_hashes fails safe-rebuild validation.
@@ -877,7 +877,8 @@ export class BujoMemoryStore implements MemoryStore {
           createdAt: bullet.createdAt,
           accessCount: 0,
           tags: [],
-          source: { session: turn.conversationId, file: relativePath },
+          // An adopted retry line keeps its own canonical provenance.
+          source: { ...sourceOf(matches[0] ?? bullet), file: relativePath },
         };
         if (this._tier === "journal") {
           const outcome = this.db.insertJournalLexical(record, hash);
@@ -1286,7 +1287,7 @@ export class BujoMemoryStore implements MemoryStore {
           createdAt: bullet.createdAt,
           accessCount: 0,
           tags: [],
-          source: { file: `daily/${file}`, line: line.lineNumber },
+          source: { ...sourceOf(bullet), file: `daily/${file}`, line: line.lineNumber },
           ...(bullet.dueAt === undefined ? {} : { dueAt: bullet.dueAt }),
         };
         this.db.recoverJournalLexical(record, hash, bullet.id);
@@ -1422,6 +1423,11 @@ function assertTierPrerequisites(tier: BujoTier, options: BujoOptions): void {
   if (options.llm === undefined && options.readOnly !== true) {
     throw new Error("memory-bujo: bujo tier requires a capture LLM.");
   }
+}
+
+/** The index `source.session` projection of one canonical line: its own recorded session, or none. */
+function sourceOf(bullet: Bullet): { session?: string } {
+  return bullet.sourceSession === undefined ? {} : { session: bullet.sourceSession };
 }
 
 /** Canonical source-session metadata for a line appended on behalf of a host conversation. */

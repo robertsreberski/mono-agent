@@ -198,6 +198,10 @@ describe("optional source-session provenance", () => {
     ["an oversized value", `source_session=${"a".repeat(513)}`],
     ["a repeated key", "source_session=chat:one source_session=chat:two"],
     ["a raw unsafe character", "source_session=chat'x"],
+    ["a raw space inside the tail", "source_session=chat:one suffix"],
+    ["Unicode whitespace inside the tail", "source_session=chat:one\u2003suffix"],
+    ["a trailing no-break space", "source_session=chat:one\u00a0"],
+    ["a base-looking token after the tail", "source_session=chat:one due=2030-01-01"],
   ])("keeps the memory and treats %s as unknown provenance", (_name, metadata) => {
     const raw = `- – ${base.text}\n${META} ${metadata}-->`;
     const parsed = parseBullet(raw);

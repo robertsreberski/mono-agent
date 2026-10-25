@@ -49,7 +49,11 @@ export function parseBullet(line: string): Bullet | undefined {
   const match = parseBulletParts(line);
   if (match === undefined) return undefined;
   const [, marker, text, meta] = match;
-  const fields = parseMeta(meta ?? "");
+  // The optional provenance tail is validated as a unit before the generic
+  // whitespace tokenizer sees the base fields, so a malformed tail can neither
+  // yield a truncated session nor leak stray tokens into the base metadata.
+  const { base: baseMeta, sourceSession } = splitSourceSessionMetadata(meta ?? "");
+  const fields = parseMeta(baseMeta);
   const base = MARKERS[marker ?? ""];
   if (base === undefined) return undefined;
   // Validate enum membership before trusting metadata; an empty OR invalid value (e.g. `status=` or
@@ -77,9 +81,28 @@ export function parseBullet(line: string): Bullet | undefined {
   };
   // Optional provenance: a missing, repeated, oversized or malformed value is
   // unknown, never a reason to drop the memory line itself.
-  const sourceSession = countMetaKey(meta ?? "", SOURCE_SESSION_KEY) === 1
-    ? decodeSourceSession(fields[SOURCE_SESSION_KEY] ?? "") : undefined;
   return sourceSession === undefined ? bullet : { ...bullet, sourceSession };
+}
+
+const SOURCE_SESSION_TAIL = /(?:^|\s)source_session=/u;
+const SOURCE_SESSION_TAIL_EXACT = /^source_session=(\S+)$/u;
+
+/**
+ * Split a `<!--mem ...-->` payload into its base fields and the optional
+ * provenance tail. The tail starts at the first whitespace-delimited
+ * `source_session=` key and runs to the end of the payload; the serializer
+ * always writes it last. Only a tail that is exactly one canonical
+ * `source_session=<value>` token yields a known session. Anything else
+ * (repeated key, embedded ASCII or Unicode whitespace, trailing tokens, invalid
+ * encoding) is unknown provenance, and the base fields before it are unaffected.
+ */
+export function splitSourceSessionMetadata(meta: string): { readonly base: string; readonly sourceSession?: string } {
+  const found = SOURCE_SESSION_TAIL.exec(meta);
+  if (found === null) return { base: meta };
+  const start = found.index + found[0].length - `${SOURCE_SESSION_KEY}=`.length;
+  const value = SOURCE_SESSION_TAIL_EXACT.exec(meta.slice(start))?.[1];
+  const sourceSession = value === undefined ? undefined : decodeSourceSession(value);
+  return { base: meta.slice(0, start), ...(sourceSession === undefined ? {} : { sourceSession }) };
 }
 
 /** Optional canonical metadata key carrying {@link Bullet.sourceSession}. */
@@ -121,9 +144,6 @@ function decodeSourceSession(encoded: string): string | undefined {
   return storable !== undefined && encodeSourceSession(storable) === encoded ? storable : undefined;
 }
 
-function countMetaKey(meta: string, key: string): number {
-  return meta.trim().split(/\s+/u).filter((pair) => pair.startsWith(`${key}=`)).length;
-}
 
 export function serializeBullet(bullet: Bullet): string {
   labelsOf(bullet);

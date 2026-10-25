@@ -1,5 +1,5 @@
 import { isRememberedMemoryId } from "./canonical-lookup.js";
-import { SOURCE_SESSION_KEY } from "./grammar.js";
+import { splitSourceSessionMetadata } from "./grammar.js";
 import { isLegacyHostObservation } from "./graph.js";
 
 /** The same BuJo raw-record exclusion used by rebuild and read-only curation. */
@@ -14,7 +14,9 @@ const VALID_BULLET_STATUSES = new Set(["open", "done", "scheduled", "migrated", 
 export function assertStrictBulletRaw(raw: string, file: string, line: number): void {
   const match = /<!--mem\s+(.+?)-->/u.exec(raw);
   if (match === null) throw new Error(`memory-rebuild: canonical bullet metadata is missing at ${file}:${line}.`);
-  const fields = parseMetadataFields(match[1] ?? "", file, line);
+  // Optional provenance is validated as a unit by the shared grammar; a
+  // malformed tail is unknown provenance, never a malformed base field.
+  const fields = parseMetadataFields(splitSourceSessionMetadata(match[1] ?? "").base, file, line);
   const required = ["id", "type", "status", "salience", "isInsight", "created", "refs"];
   if (required.some((key) => !fields.has(key))) {
     throw new Error(`memory-rebuild: incomplete bullet metadata at ${file}:${line}.`);
@@ -41,7 +43,7 @@ export function isMissingOnlyIdentity(raw: string): boolean {
   if (!CANONICAL_VISIBLE_BULLET.test(raw)) return false;
   const match = /<!--mem\s+(.+?)-->/u.exec(raw);
   if (match === null) return false;
-  const fields = tryParseMetadataFields(match[1] ?? "");
+  const fields = tryParseMetadataFields(splitSourceSessionMetadata(match[1] ?? "").base);
   if (fields === undefined || (fields.get("id") ?? "") !== "") return false;
   const requiredWithoutIdentity = ["type", "status", "salience", "isInsight", "created", "refs"];
   if (requiredWithoutIdentity.some((key) => !fields.has(key))) return false;
@@ -80,9 +82,6 @@ function parseMetadataFields(raw: string, file: string, line: number): Map<strin
         fields.set(key, `${fields.get(key)},${pair.slice(separator + 1)}`);
         continue;
       }
-      // Optional provenance: a repeated value is ambiguous, so the line is read
-      // with an unknown source session rather than rejected.
-      if (key === SOURCE_SESSION_KEY) continue;
       throw new Error(`memory-rebuild: duplicate bullet metadata key ${key} at ${file}:${line}.`);
     }
     fields.set(key, pair.slice(separator + 1));

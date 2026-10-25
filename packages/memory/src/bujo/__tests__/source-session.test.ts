@@ -3,17 +3,18 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setImmediate } from "node:timers";
 
-import { afterEach, describe, expect, it } from "vitest";
+import BetterSqlite3 from "better-sqlite3";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { openMemoryDb, type MemoryDb } from "../../store/index.js";
 import { auditBujoMemoryHealth } from "../audit.js";
 import { appendBullet, dailyFilePath } from "../daily.js";
 import { parseDailyFile } from "../grammar.js";
-import { assertCanonicalGraphRepairBaseParity, safeRebuildMemoryIndex } from "../rebuild.js";
+import { assertCanonicalGraphRepairBaseParity, auditCanonicalIndexHealth, safeRebuildMemoryIndex } from "../rebuild.js";
 import { reconcile, type ReconcileDeps } from "../reconcile.js";
 import { createBujoMemoryStore } from "../store.js";
-import type { Bullet, CandidateMemory } from "../types.js";
-import { fakeEmbeddings, fakeLlm } from "./helpers.js";
+import type { Bullet, BujoTier, CandidateMemory } from "../types.js";
+import { fakeEmbeddings, fakeLlm, projectSummary } from "./helpers.js";
 
 const DIM = 64;
 const FIXED = new Date("2031-05-17T12:00:00.000Z");
@@ -33,11 +34,28 @@ function newRoot(): string {
 }
 
 async function rebuildAndOpen(root: string): Promise<MemoryDb> {
+  return (await rebuildAndOpenAt(root)).db;
+}
+
+async function rebuildAndOpenAt(root: string): Promise<{ readonly db: MemoryDb; readonly path: string }> {
   const provider = fakeEmbeddings(DIM);
   const rebuilt = await safeRebuildMemoryIndex({ root, tier: "bujo", embeddings: provider, dim: DIM });
   const db = openMemoryDb({ path: rebuilt.active, embeddings: provider, dim: DIM });
   dbs.push(db);
-  return db;
+  return { db, path: rebuilt.active };
+}
+
+/** A conversation id longer than the 512-byte canonical bound. */
+const UNSTORABLE = `web:${"x".repeat(600)}`;
+
+function storeFor(root: string, tier: BujoTier, llm = fakeLlm([])) {
+  return createBujoMemoryStore({ root, clock: () => FIXED,
+    ...(tier === "lite" ? {} : { embeddings: fakeEmbeddings(DIM), dim: DIM }),
+    ...(tier === "bujo" ? { tier: "bujo" as const, llm } : {}) });
+}
+
+function storeDb(store: ReturnType<typeof createBujoMemoryStore>): MemoryDb {
+  return (store as unknown as { readonly db: MemoryDb }).db;
 }
 
 function canonicalBullets(root: string): Bullet[] {
@@ -113,6 +131,14 @@ describe("durable source-session provenance", () => {
     expect(canonicalBullets(root).find((bullet) => bullet.id === "LEGACY-A")).toMatchObject({ text: merged, sourceSession: "web:chat-four" });
     expect(db.get("LEGACY-A")?.source.session).toBe("web:chat-four");
 
+    // UPDATE whose merged text is unchanged contributes nothing: provenance stays.
+    db.findSimilar = async () => [{ record: db.get("LEGACY-A")!, distance: 0.1 }];
+    expect(await reconcile([note("Morgan keeps paddles and life vests in the shed.")], deps("web:chat-five",
+      fakeLlm([["CLASSIFY", JSON.stringify({ action: "update", targetId: "LEGACY-A", text: merged })]]))))
+      .toEqual([{ kind: "update", id: "LEGACY-A" }]);
+    expect(canonicalBullets(root).find((bullet) => bullet.id === "LEGACY-A")?.sourceSession).toBe("web:chat-four");
+    expect(db.get("LEGACY-A")?.source.session).toBe("web:chat-four");
+
     // Without a host conversation id nothing is invented.
     db.findSimilar = async () => [];
     const anonymous = await reconcile([note("Morgan repainted the fictional gate.")], deps(undefined, fakeLlm([])));
@@ -124,8 +150,10 @@ describe("durable source-session provenance", () => {
       configuredDimension: DIM, now: FIXED }).issues).not.toContain("canonical_mismatch");
 
     // A safe rebuild restores every recorded session from markdown alone and backfills none.
-    db = await rebuildAndOpen(root);
+    const rebuilt = await rebuildAndOpenAt(root);
+    db = rebuilt.db;
     expectIndexAgreesWithCanonical(root, db);
+    expect(auditCanonicalIndexHealth(root, "bujo", db)).toEqual({ status: "match" });
     expect(db.get("LEGACY-B")?.source.session).toBeUndefined();
     expect(db.get(addedId)?.source.session).toBe("web:chat-one");
     expect(db.get(replacementId)?.source.session).toBe("web:chat-three");
@@ -141,11 +169,18 @@ describe("durable source-session provenance", () => {
       "- – Morgan prefers tomatoes over peppers.", meta("REPEATED", "source_session=web:one source_session=web:two"),
       "- – Morgan uses a blue watering can.", meta("MALFORMED", "source_session=web%ZZ"),
       "- – Morgan harvests basil in July.", meta("VALID", "source_session=web:three"),
+      "- – Morgan dries oregano in August.", meta("RAW-SPACE", "source_session=web:four suffix"),
+      "- – Morgan freezes parsley in May.", meta("UNICODE-SPACE", "source_session=web:five\u2003suffix"),
+      "- – Morgan sows chives in April.", meta("TRAILING-NBSP", "source_session=web:six\u00a0"),
     ].join("\n")}\n`);
     const db = await rebuildAndOpen(root);
     expect(db.get("REPEATED")?.source.session).toBeUndefined();
     expect(db.get("MALFORMED")?.source.session).toBeUndefined();
     expect(db.get("VALID")?.source.session).toBe("web:three");
+    for (const id of ["RAW-SPACE", "UNICODE-SPACE", "TRAILING-NBSP"]) {
+      expect(db.get(id), id).toMatchObject({ status: "open", createdAt: FIXED.toISOString() });
+      expect(db.get(id)?.source.session, id).toBeUndefined();
+    }
     expect(db.get("REPEATED")?.text).toBe("Morgan prefers tomatoes over peppers.");
   });
 
@@ -176,5 +211,125 @@ describe("durable source-session provenance", () => {
     }
     const db = await rebuildAndOpen(root);
     expectIndexAgreesWithCanonical(root, db);
+  });
+});
+
+describe("runtime parity of canonical source sessions", () => {
+  it("reports an index session that disagrees with Markdown, but tolerates legacy live telemetry", async () => {
+    const root = newRoot();
+    appendBullet(root, legacy("LEGACY", "Morgan keeps a fictional bicycle pump in the garage."), FIXED);
+    appendBullet(root, { ...legacy("KNOWN", "Morgan bought a fictional tandem bicycle."), sourceSession: "web:chat-a" }, FIXED);
+    const { db, path } = await rebuildAndOpenAt(root);
+    expect(auditCanonicalIndexHealth(root, "bujo", db)).toEqual({ status: "match" });
+    const raw = new BetterSqlite3(path);
+    try {
+      const setSession = raw.prepare("UPDATE memories SET source_session = ? WHERE id = ?");
+      // Live telemetry on a line without canonical provenance is not a disagreement.
+      setSession.run("web:telemetry", "LEGACY");
+      expect(auditCanonicalIndexHealth(root, "bujo", db)).toEqual({ status: "match" });
+      // A retry caller's session on a line that records its own is.
+      setSession.run("web:chat-b", "KNOWN");
+      expect(auditCanonicalIndexHealth(root, "bujo", db)).toEqual({ status: "mismatch" });
+      setSession.run(null, "KNOWN");
+      expect(auditCanonicalIndexHealth(root, "bujo", db)).toEqual({ status: "mismatch" });
+      setSession.run("web:chat-a", "KNOWN");
+      expect(auditCanonicalIndexHealth(root, "bujo", db)).toEqual({ status: "match" });
+    } finally {
+      raw.close();
+    }
+  });
+});
+
+describe("Remember and summary projections mirror canonical provenance", () => {
+  const text = "Morgan stores the fictional kayak at the boathouse.";
+
+  it.each([
+    ["lite", "upsertLexical"],
+    ["journal", "insertJournalLexical"],
+    ["bujo", "commitPreparedUpserts"],
+  ] as const)("recovers a %s partial write with the line's own session, not the retrying caller's", async (tier, method) => {
+    const root = newRoot();
+    const store = storeFor(root, tier);
+    try {
+      const db = storeDb(store);
+      const spy = vi.spyOn(db, method).mockImplementationOnce(() => { throw new Error("simulated index crash"); });
+      await expect(store.remember("web:a", text)).rejects.toThrow(/simulated index crash/u);
+      spy.mockRestore();
+      const retry = await store.remember("web:b", text);
+      expect(retry.recovered).toBe(true);
+      expect(canonicalBullets(root).map((bullet) => bullet.sourceSession)).toEqual(["web:a"]);
+      expect(db.get(retry.id)?.source.session).toBe("web:a");
+      if (tier === "bujo") expect(auditCanonicalIndexHealth(root, "bujo", db)).toEqual({ status: "match" });
+    } finally {
+      await store.close();
+    }
+  });
+
+  it.each(["lite", "journal", "bujo"] as const)("keeps an unstorable conversation id unknown in both stores for %s Remember", async (tier) => {
+    const root = newRoot();
+    const store = storeFor(root, tier);
+    try {
+      const result = await store.remember(UNSTORABLE, text);
+      expect(canonicalBullets(root)).toHaveLength(1);
+      expect(canonicalBullets(root)[0]).not.toHaveProperty("sourceSession");
+      expect(storeDb(store).get(result.id)?.source.session).toBeUndefined();
+    } finally {
+      await store.close();
+    }
+  });
+
+  it("keeps an unstorable conversation id unknown for enhanced Remember and records a storable one", async () => {
+    const root = newRoot();
+    const store = storeFor(root, "bujo");
+    try {
+      const unknown = await store.rememberDetails(UNSTORABLE, "Morgan's fictional kayak is green.", {});
+      const known = await store.rememberDetails("web:details", "Morgan's fictional canoe is red.", {});
+      const bullets = canonicalBullets(root);
+      expect(bullets.find((bullet) => bullet.id === unknown.id)).not.toHaveProperty("sourceSession");
+      expect(bullets.find((bullet) => bullet.id === known.id)?.sourceSession).toBe("web:details");
+      expect(storeDb(store).get(unknown.id)?.source.session).toBeUndefined();
+      expect(storeDb(store).get(known.id)?.source.session).toBe("web:details");
+    } finally {
+      await store.close();
+    }
+  });
+
+  it.each(["lite", "journal"] as const)("keeps an unstorable conversation id unknown for %s completed-turn summaries", async (tier) => {
+    const root = newRoot();
+    const store = storeFor(root, tier);
+    try {
+      await projectSummary(store, UNSTORABLE, "A fictional kayak trip was planned.");
+      await projectSummary(store, "web:summary", "A fictional canoe trip was planned.");
+      const bullets = canonicalBullets(root);
+      const unknown = bullets.find((bullet) => bullet.text.includes("kayak"))!;
+      const known = bullets.find((bullet) => bullet.text.includes("canoe"))!;
+      expect(unknown).not.toHaveProperty("sourceSession");
+      expect(known.sourceSession).toBe("web:summary");
+      const rows = (await store.recallWithOutcome("fictional trip was planned", { topK: 5, trackAccess: false })).hits;
+      expect(rows.find((row) => row.record.text.includes("kayak"))?.record.source.session).toBeUndefined();
+      expect(rows.find((row) => row.record.text.includes("canoe"))?.record.source.session).toBe("web:summary");
+    } finally {
+      await store.close();
+    }
+  });
+
+  it("keeps an unstorable conversation id unknown for BuJo capture", async () => {
+    const root = newRoot();
+    const extraction = JSON.stringify({ memories: [{ type: "note", text: "Owner prefers early fictional kayak trips.", source: "user",
+      salience: 0.8, isInsight: false, entityIds: [], labels: [{ v: 1, kind: "preference", scope: "agent", attribution: "user-stated" }] }],
+    entities: [], relations: [] });
+    const store = storeFor(root, "bujo", { id: "fictional-capture", complete: async () => extraction });
+    try {
+      await store.persistCompletedTurn({ runId: "fictional-run-long", conversationId: UNSTORABLE,
+        summary: "A kayak trip was discussed.", captureText: "User: Owner prefers early fictional kayak trips.",
+        captureSpeakerKind: "human-turn", captureEvidence: { ownerTurn: true, userText: "Owner prefers early fictional kayak trips.", toolOutcomes: [] } });
+      await store.flush();
+      const [captured] = canonicalBullets(root);
+      expect(captured?.text).toBe("Owner prefers early fictional kayak trips.");
+      expect(captured).not.toHaveProperty("sourceSession");
+      expect(storeDb(store).get(captured!.id)?.source.session).toBeUndefined();
+    } finally {
+      await store.close();
+    }
   });
 });

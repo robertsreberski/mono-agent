@@ -700,6 +700,11 @@ authored every historical claim, and it comes only from the host-supplied
 conversation id, never from model output. Rebuild restores it from Markdown, so
 it survives restart, reconcile and safe rebuild.
 
+The index mirrors each line's own recorded value: a Remember retried from
+another conversation after a partial write keeps the original session, and an id
+that cannot be stored is unknown in Markdown and SQLite alike. Memory health
+reports an index session that disagrees with the Markdown provenance.
+
 Records without a known source conversation (lines written before this metadata,
 ids longer than 512 UTF-8 bytes, or malformed/duplicated metadata) stay eligible
 for automatic and explicit recall. They are labelled `source conversation
@@ -708,6 +713,10 @@ Known other-conversation hits render as before, and a known source conversation 
 is never shown to the model. Old lines are not backfilled: nothing is guessed from
 text, file names or earlier index rows. Label/card readers do not expose
 provenance. This is not a content-based staleness detector.
+
+Daily files that are not rewritten stay byte-for-byte unchanged. Rewriting a
+daily file re-serializes all of its bullets, which (as before) also normalizes
+legacy one-line bullets to the two-line form.
 
 Downgrade limitation: older releases ignore `source_session` when reading, but
 any rewrite of a daily file by an older writer (for example a status change,

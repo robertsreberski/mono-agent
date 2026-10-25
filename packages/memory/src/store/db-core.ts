@@ -965,5 +965,7 @@ function journalRecordChanged(current: MemoryRecord, next: MemoryRecord): boolea
     || current.type !== next.type
     || current.salience !== next.salience
     || current.isInsight !== next.isInsight
-    || current.dueAt !== next.dueAt;
+    || current.dueAt !== next.dueAt
+    // Canonical provenance replaces older live telemetry; its absence never erases it.
+    || (next.source.session !== undefined && current.source.session !== next.source.session);
 }

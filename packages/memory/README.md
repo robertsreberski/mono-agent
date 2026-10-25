@@ -202,12 +202,26 @@ contributed to the line (ADD, SUPERSEDE replacement, text-changing UPDATE,
 Remember and completed-turn summaries); NOOP and a superseded old line keep
 theirs. It is never taken from model output. Bytes outside `[A-Za-z0-9._~:#@/+-]`
 are percent-encoded with upper-case hex; ids over 512 UTF-8 bytes or containing
-control, format, separator or unpaired surrogate code points are not recorded.
-A missing, repeated, malformed, non-canonically encoded or oversized value reads
-as unknown and never drops the memory. Lines without it serialize byte-for-byte
-as before, rebuild copies the value into SQLite `source_session` (no schema
-change) and does not backfill old lines. Older writers ignore the key on read
-but strip it from every bullet of a daily file they rewrite.
+control, format, separator or unpaired surrogate code points are not recorded,
+in Markdown or in SQLite. The key is always the last metadata field: everything
+from the first whitespace-delimited `source_session=` to the end of the comment
+is one provenance tail, and only a single canonical token is a known session. A
+missing, repeated, malformed (including embedded ASCII or Unicode whitespace),
+non-canonically encoded or oversized tail reads as unknown and never drops the
+memory or invalidates its base fields. SQLite mirrors the line's own canonical
+value: a recovered Remember or retried summary keeps the session that wrote it,
+not the retrying caller's, and runtime index parity reports a row whose session
+disagrees with one recorded in Markdown (legacy live telemetry on lines without
+canonical provenance stays tolerated). Rebuild copies the value into SQLite
+`source_session` (no schema change) and does not backfill old lines.
+
+Byte stability applies to daily files that are not rewritten: such files are
+never touched, and a line without the key serializes exactly as before. Any
+rewrite of a daily file (status change, update, curation, migration) still
+re-serializes every bullet in it, which, as before this metadata existed,
+normalizes legacy one-line inline bullets to the split form. Older writers
+ignore the key on read but strip it from every bullet of a daily file they
+rewrite.
 
 ### BuJo memory labels
 

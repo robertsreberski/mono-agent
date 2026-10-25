@@ -133,7 +133,8 @@ export async function rememberWithDetails(
     about === undefined ? [] : [{ v: 1, kind: "fact", entityId: about, attribution: "assistant-inferred" }]);
     const record: MemoryRecord = { id, type: bullet.type, status: bullet.status, text: stored,
       salience: bullet.salience, isInsight: false, createdAt: at, accessCount: 0, tags: [],
-      source: { session: conversationId, file } };
+      // The index mirrors the canonical line: an unstorable id is unknown in both.
+      source: { ...(sourceSession === undefined ? {} : { session: sourceSession }), file } };
     // Prepare embeddings before publishing the intent or changing canonical source.
     const [vector] = await db.prepareUpsertVectors([record]);
     details.abortSignal?.throwIfAborted();
