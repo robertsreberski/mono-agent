@@ -14,7 +14,7 @@ registerHooks({ resolve(specifier, context, nextResolve) {
 const { resolveJsonMonoAgentConfig } = await import("@mono-agent/config");
 const { createMonoRuntime } = await import("@mono-agent/turn/host");
 const { JsonlSessionRepo, projectContext } = await import("@mono-agent/turn/engine");
-const { acquireAgentRootOwnership } = await import("../../../dist/durable-state/agent-root-coordinator.js");
+const { acquireAgentRootOwnership, releaseAgentRootOwnershipWhenIdle } = await import("../../../dist/durable-state/agent-root-coordinator.js");
 const { registerProcessJobsRoot } = await import("../../../dist/process-jobs/process-jobs-root-registry.js");
 const { openProcessJobsService } = await import("../../../dist/process-jobs/process-jobs-service.js");
 const { PROCESS_JOBS_DEFAULTS } = await import("../../../dist/process-jobs/process-jobs-config.js");
@@ -36,7 +36,8 @@ await pruneVerificationScratch(verification, "managed-built-", "managed-built", 
 const root = await mkdtemp(resolve(verification, "managed-built-"));
 let ownership;
 try {
-  ownership = await acquireAgentRootOwnership(root);
+  await mkdir(resolve(root, "lease-home"), { recursive: true, mode: 0o700 });
+  ownership = await acquireAgentRootOwnership(root, { homeDir: resolve(root, "lease-home") });
 } catch (error) {
   await removeVerificationScratch(root, { keep: keepScratch, label: "managed-built" });
   throw error;
@@ -125,7 +126,7 @@ try {
 } finally {
   await runtime?.disposeAllSessions?.();
   await service?.stop();
-  ownership.release();
+  await releaseAgentRootOwnershipWhenIdle(ownership);
   // Only this fixture creates the root, so only it removes it — after the
   // service stopped and ownership released. Cleanup failures are reported,
   // never thrown, so they cannot mask the proof verdict.

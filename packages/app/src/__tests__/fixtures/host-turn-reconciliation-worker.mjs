@@ -1,4 +1,5 @@
 // Finite IPC-controlled built configured-host smoke, real native journal, faux provider only.
+import { acquireTestAgentRootOwnership } from "./test-agent-root-ownership.mjs";
 import { readFile, writeFile, readdir, rm } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
@@ -8,6 +9,7 @@ import { createDurableHistoryStore } from "@mono-agent/conversation";
 import { createMonoRuntime } from "@mono-agent/turn/host";
 import { parseMonoRuntimeModelReference } from "@mono-agent/turn/host/config";
 const root = process.argv[2], bucket = "fictional-reconcile-bucket";
+await acquireTestAgentRootOwnership(root);
 const historyRoot = join(root, ".mono-agent", "history"), sessionsRoot = join(root, "pi");
 const historyKey = createHash("sha256").update("mono-agent-history-v1\0").update(bucket).digest("hex");
 const faux = fauxProvider({ provider: "faux", models: [{ id: "reconcile-fixture", reasoning: true, contextWindow: 100_000, maxTokens: 8_000 }], tokensPerSecond: process.env.MONO_AGENT_FIXTURE_CRASH_PHASE === "mid-stream" ? 100 : undefined });

@@ -10,7 +10,7 @@
 // paid mode and a scripted contract reader offline.
 import { createHash } from "node:crypto";
 import { cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { armById, checkpointKey, mergePatch, pressureMetrics, verifyBoundary, verifyPressure, verifyStore } from "./continuity-arms.mjs";
@@ -44,13 +44,14 @@ export async function productionModules(root) {
   const piPackage = JSON.parse(await readFile(join(root, "packages/turn/node_modules/@earendil-works/pi-ai/package.json"), "utf8"));
   const entry = piPackage.exports?.["."]?.import;
   if (typeof entry !== "string") throw new ContinuityError("pi_ai_entry_unavailable");
-  const [config, app, hostRuntime, hostConfig, turnRoot, pi] = await Promise.all([
+  const [config, app, hostRuntime, hostConfig, turnRoot, pi, coordinator] = await Promise.all([
     import(pathToFileURL(join(root, "packages/config/dist/index.js")).href),
     import(pathToFileURL(join(root, "packages/app/dist/index.js")).href),
     import("@mono-agent/turn/host"),
     import("@mono-agent/turn/host/config"),
     import("@mono-agent/turn"),
     import(pathToFileURL(join(root, "packages/turn/node_modules/@earendil-works/pi-ai", entry)).href),
+    import(pathToFileURL(join(root, "packages/app/dist/durable-state/agent-root-coordinator.js")).href),
   ]);
   for (const name of ["createConfiguredConversationHarness", "createConfiguredAgentRuntime"]) {
     if (typeof app[name] !== "function") throw new ContinuityError("production_module_missing", name);
@@ -63,7 +64,7 @@ export async function productionModules(root) {
   if (typeof config.resolveJsonMonoAgentConfig !== "function" || typeof pi.fauxProvider !== "function") throw new ContinuityError("production_module_missing");
   const conversation = await import("@mono-agent/conversation");
   if (typeof conversation.ToolHistoryReader !== "function") throw new ContinuityError("production_module_missing", "ToolHistoryReader");
-  return { config, app, host, pi, conversation };
+  return { config, app, host, pi, conversation, coordinator };
 }
 
 /** Faux models posing as the given bound references (one faux provider per provider id). */
@@ -129,15 +130,32 @@ export function configJson({ work, authPath, model, effort, tools, configPatch }
 async function openHarness({ modules, work, authPath, model, effort, tools, configPatch, route, clock, onHistoryWarning = () => {} }) {
   const json = configJson({ work, authPath, model, effort, tools, configPatch });
   const config = modules.config.resolveJsonMonoAgentConfig({ json, cwd: work });
-  const runtime = controlledRuntime(modules.app.createConfiguredAgentRuntime({ config, cwd: work, model: config.runtime.model }), route);
-  // Tool-history/continuity outages are fail-open in production (warnings only);
-  // the benchmark counts them so a degraded store invalidates the sample.
-  const harness = await modules.app.createConfiguredConversationHarness({ config, cwd: work, runtime, now: () => clock.value,
-    onToolHistoryWarning: () => onHistoryWarning() });
-  // The configured runtime holds the agent-root lease until disposeAllSessions;
-  // the harness does not own an injected runtime, so close both.
-  const close = async () => { try { await harness.dispose?.(); } finally { await runtime.disposeAllSessions?.(); } };
-  return { harness, config, close };
+  // Existing reentrant ownership seam: establish the isolated physical lease
+  // before either configured runtime can lazily acquire its own reference.
+  const homeDir = join(dirname(work), "lease-home");
+  await mkdir(homeDir, { recursive: true, mode: 0o700 });
+  const ownership = await modules.coordinator.acquireAgentRootOwnership(work, { homeDir });
+  let runtime, harness, closing;
+  // The harness does not own an injected runtime. Close both exactly once,
+  // then release the isolated physical lease, including failed setup paths.
+  const close = () => closing ??= (async () => {
+    try { await harness?.dispose?.(); }
+    finally {
+      try { await runtime?.disposeAllSessions?.(); }
+      finally { await modules.coordinator.releaseAgentRootOwnershipWhenIdle(ownership); }
+    }
+  })();
+  try {
+    runtime = controlledRuntime(modules.app.createConfiguredAgentRuntime({ config, cwd: work, model: config.runtime.model }), route);
+    // Tool-history/continuity outages are fail-open in production (warnings only);
+    // the benchmark counts them so a degraded store invalidates the sample.
+    harness = await modules.app.createConfiguredConversationHarness({ config, cwd: work, runtime, now: () => clock.value,
+      onToolHistoryWarning: () => onHistoryWarning() });
+    return { harness, config, close };
+  } catch (error) {
+    await close();
+    throw error;
+  }
 }
 
 /** Retained-evidence statistics for a workspace's sidecar (content-free counts only). */
@@ -393,8 +411,8 @@ export async function buildCheckpoint({ modules, trace, arm, repeat, dir, plan, 
       record.turns += 1; record.toolCalls += result.toolCalls; record.steers += result.steers;
     }
   } finally {
-    if (open) await open.close();
-    await tools.close();
+    try { if (open) await open.close(); }
+    finally { await tools.close(); }
     record.durationMs = Math.round(performance.now() - started);
   }
   if (arm.sessionConfig?.runtime?.session?.continuity?.enabled === true) {

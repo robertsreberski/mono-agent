@@ -529,6 +529,15 @@ name the canonical config. Readiness requires one live launchd-owned trace PID a
 the exact durable snapshot.
 Stop succeeds only after both launchd unload and worker death are proven.
 
+### Agent-root leases in tests and benchmarks
+
+Tests mock the OS-account-home module on the source and built app graphs; changing
+`HOME` alone does not isolate private agent-root leases. Child fixtures explicitly
+pre-acquire ownership with a temporary `homeDir`, before configured runtimes take
+reentrant references. Benchmarks use the same seam and dispose both their harness
+and supplied runtime before releasing the final ownership reference. Production
+account-home resolution is unchanged.
+
 ### macOS process identity: upgrade and rollback
 
 Locks, leases, process jobs and subagent ownership record which process owns

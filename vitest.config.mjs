@@ -12,6 +12,7 @@ import { configDefaults, defineConfig } from "vitest/config";
 // discovered by any root invocation.
 export default defineConfig({
   test: {
+    setupFiles: ["./packages/app/src/__tests__/setup-account-home.ts"],
     /**
      * The root invocations (`release:test`, `scripts:test`) drive real subprocesses —
      * npm installs into throwaway consumers, pnpm config probes, packed-tarball smoke tests. Those

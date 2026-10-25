@@ -7,6 +7,7 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { startMonoAgentApp } from "../../../dist/host/app-controller.js";
+import { acquireAgentRootOwnership, releaseAgentRootOwnershipWhenIdle } from "../../../dist/durable-state/agent-root-coordinator.js";
 import { WorkerActivityTracker } from "../../../dist/durable-state/worker-activity.js";
 import { probeWorkerActivity, publishWorkerActivity } from "../../../dist/durable-state/activity-snapshot.js";
 import { allowUnattendedMaintenanceStop, readLaunchdMaintenanceActivityStatus } from "../../../dist/service/launchd/launchd-maintenance-activity.js";
@@ -19,6 +20,7 @@ const wait = (ms) => new Promise((done) => setTimeout(done, ms));
 
 if (process.argv[2] === "--worker") {
   const root = process.argv[3];
+  const ownership = await acquireAgentRootOwnership(root, { homeDir: resolve(root, "../home") });
   const tracker = new WorkerActivityTracker();
   let app;
   const publisher = await publishWorkerActivity(target(root), tracker, () => { throw new Error("Activity publication failed"); });
@@ -36,10 +38,13 @@ if (process.argv[2] === "--worker") {
     process.send({ event: "running", pid: process.pid });
     await new Promise((done) => process.once("message", done));
   } finally {
-    await app?.stop(); await publisher.stop(); process.disconnect();
+    await app?.stop(); await publisher.stop(); await releaseAgentRootOwnershipWhenIdle(ownership); process.disconnect();
   }
 } else {
-  const root = await mkdtemp(resolve(process.cwd(), "node_modules/.worker-maintenance-smoke-"));
+  const scratch = await mkdtemp(resolve(process.cwd(), "node_modules/.worker-maintenance-smoke-"));
+  const root = resolve(scratch, "agent");
+  await mkdir(root);
+  await mkdir(resolve(scratch, "home"), { mode: 0o700 });
   let child;
   try {
     await mkdir(resolve(root, "logs"));
@@ -79,6 +84,6 @@ if (process.argv[2] === "--worker") {
     child.send({ stop: true }); assert.equal(await exited, 0);
   } finally {
     if (child?.connected) { child.send({ stop: true }); await new Promise((done) => child.once("exit", done)); }
-    await rm(root, { recursive: true, force: true });
+    await rm(scratch, { recursive: true, force: true });
   }
 }

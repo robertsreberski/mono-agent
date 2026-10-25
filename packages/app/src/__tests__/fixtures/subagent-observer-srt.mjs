@@ -18,7 +18,7 @@ const { createSandboxPolicy, createSrtSandboxEngine } = await import("@mono-agen
 const { monoSandboxImpl } = await import("../../../../turn/dist/host/sandbox/implementation.js");
 const { createToolContext } = await import("../../../../turn/dist/tools/shared/tool-context.js");
 const { getPiBuiltinTools } = await import("../../../../turn/dist/tools/pi-tools.js");
-const { acquireAgentRootOwnership } = await import("../../../dist/durable-state/agent-root-coordinator.js");
+const { acquireAgentRootOwnership, releaseAgentRootOwnershipWhenIdle } = await import("../../../dist/durable-state/agent-root-coordinator.js");
 const { registerProcessJobsRoot } = await import("../../../dist/process-jobs/process-jobs-root-registry.js");
 const { openProcessJobsService } = await import("../../../dist/process-jobs/process-jobs-service.js");
 const { PROCESS_JOBS_DEFAULTS } = await import("../../../dist/process-jobs/process-jobs-config.js");
@@ -75,7 +75,7 @@ try {
   // Only repository authority is declared here. The existing sandbox engine
   // grants the selected native executable's separate read-only runtime access.
   const extraReadRoots = [common];
-  const ownership = await acquireAgentRootOwnership(agentRoot);
+  const ownership = await acquireAgentRootOwnership(agentRoot, { homeDir: resolve(local, "home") });
   const keepAlive = setInterval(() => {}, 1000);
   let service;
   try {
@@ -225,7 +225,7 @@ try {
       dirtyInitializedSubmodule: true, nativeControlExecutedFilter, observerExecutedFilter: false, providerCommitLostAnswer: true, policyRevocation: true,
       unsafeAlternates: true, privateReportEscape: true, deniedRuntime: true, inspectionProviderCalls: 0 }));
   } finally {
-    try { await service?.stop(); ownership.release(); } finally { clearInterval(keepAlive); }
+    try { await service?.stop(); await releaseAgentRootOwnershipWhenIdle(ownership); } finally { clearInterval(keepAlive); }
   }
 } finally {
   // Only this fixture creates the root, so only it removes it — after the

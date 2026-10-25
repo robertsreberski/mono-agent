@@ -21,7 +21,7 @@ const { JournalReader } = await import("../../../../turn/dist/engine/journal-rea
 const { salvageDurableNativeSession } = await import("../../../../turn/dist/engine/sessions.js");
 const { loadMonoAgentConfig } = await import("@mono-agent/config");
 const { createMonoRuntime } = await import("../../../../turn/dist/host/index.js");
-const { acquireAgentRootOwnership } = await import("../../../dist/durable-state/agent-root-coordinator.js");
+const { acquireAgentRootOwnership, releaseAgentRootOwnershipWhenIdle } = await import("../../../dist/durable-state/agent-root-coordinator.js");
 const { registerProcessJobsRoot } = await import("../../../dist/process-jobs/process-jobs-root-registry.js");
 const { openProcessJobsService } = await import("../../../dist/process-jobs/process-jobs-service.js");
 const { PROCESS_JOBS_DEFAULTS } = await import("../../../dist/process-jobs/process-jobs-config.js");
@@ -48,7 +48,8 @@ async function until(operation, timeout = 20_000) {
 }
 async function open(root, options = {}) {
   assert(root.startsWith(verification + sep));
-  const ownership = await acquireAgentRootOwnership(root);
+  await mkdir(resolve(root, "lease-home"), { recursive: true, mode: 0o700 });
+  const ownership = await acquireAgentRootOwnership(root, { homeDir: resolve(root, "lease-home") });
   const stateDir = resolve(root, "jobs");
   const registration = await registerProcessJobsRoot({ agentRoot: root, workspace: root, stateDir, coordinator: ownership.coordinator });
   let wakes = 0;
@@ -91,7 +92,7 @@ async function open(root, options = {}) {
   });
   await service.activateWakes();
   const instances = await registry.open(origin.conversationId, mode === "recover" ? { existingOnly: true } : {});
-  return { service, instances, store, certificate: () => certificate, wakes: () => wakes, wakePrompts, close: async () => { await service.stop(); ownership.release(); } };
+  return { service, instances, store, certificate: () => certificate, wakes: () => wakes, wakePrompts, close: async () => { await service.stop(); await releaseAgentRootOwnershipWhenIdle(ownership); } };
 }
 async function sessionFile(instances) {
   const instance = await instances.get("proof");
