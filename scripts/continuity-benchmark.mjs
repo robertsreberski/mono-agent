@@ -225,7 +225,8 @@ async function execute({ flags, plan, traces, mode, output, piAuthPath, head, di
       return { traceId: unit.trace.id, arm: unit.arm.id, repeat: unit.repeat, probeId: probe.id, category: probe.category, status: "failed", failure: checkpoint?.error ?? "checkpoint_missing", score: null };
     }
     state.liveTurns += 1;
-    const trial = await runProbe({ modules, trace: unit.trace, arm: unit.arm, repeat: unit.repeat, probe, checkpointWork: checkpoint.work, checkpointConversationId: checkpoint.record.conversationId, mid: checkpoint.record.mid, root: ROOT,
+    const trial = await runProbe({ modules, trace: unit.trace, arm: unit.arm, repeat: unit.repeat, probe, checkpointWork: checkpoint.work, checkpointSnapshot: checkpoint.snapshot ?? null, checkpointContinuity: checkpoint.record.continuity ?? null,
+      checkpointConversationId: checkpoint.record.conversationId, mid: checkpoint.record.mid, root: ROOT,
       forkDir: join(scratch, `probe-${index}`), plan, mode, authPath, keepWork: flags["keep-work"] === true });
     account(trial.usage);
     if (isFatalFailure(trial)) state.stop = trial.failure;

@@ -4,7 +4,8 @@ import { mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/pro
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { ARMS, AVAILABLE_ARM_IDS, BASELINE_ARM, DEFAULT_ARMS, NOT_AVAILABLE, ORIGINAL_ARM_IDS, SMALL_PROACTIVE_COMPACTION, armById, checkpointKey, mergePatch, pressureMetrics, verifyBoundary, verifyPressure } from "../lib/continuity-arms.mjs";
+import { ARMS, AVAILABLE_ARM_IDS, BASELINE_ARM, CONTINUITY_OFF, DEFAULT_ARMS, NOT_AVAILABLE, ORIGINAL_ARM_IDS, SMALL_PROACTIVE_COMPACTION, armById, checkpointKey, mergePatch, pressureMetrics, verifyBoundary, verifyPressure, verifyStore } from "../lib/continuity-arms.mjs";
+import { classifyHistoryResult } from "../lib/continuity-runner.mjs";
 import { estimateCost, inventory, loadTraces, makePlan, parseSeeds, sourceOnly, validateTrace } from "../lib/continuity-dataset.mjs";
 import { COLD_BOUNDS, GENERATOR_VERSION, HARD_SEEDS, LONG_RULES, generateTrace, mulberry32, outsideColdBounds, traceShape } from "../lib/continuity-generator.mjs";
 import { ABSTAIN_INSTRUCTION, ORIGINAL_CATEGORIES, isAbstention, parseJudgeVerdict, probePrompt, renderMarkdown, scoreAnswer, summarize } from "../lib/continuity-score.mjs";
@@ -140,7 +141,7 @@ describe("continuity scoring (deterministic)", () => {
     expect(summary.arms.native.categories.abstention).toMatchObject({ accuracy: 0.5, repeatSd: 0.7071 });
     expect(summary.arms["cold-rebuild"].categories.tool_identifier.accuracy).toBe(0.5);
     expect(summary.arms["cold-rebuild"].deltaVsBaseline.categories.tool_identifier).toBe(-0.5);
-    expect(summary.arms["cold-rebuild"].excluded).toEqual({ boundaryUnverified: 1, pressureUnverified: 0, failed: 1 });
+    expect(summary.arms["cold-rebuild"].excluded).toEqual({ boundaryUnverified: 1, pressureUnverified: 0, storeDegraded: 0, failed: 1 });
     expect(summary.arms.native.flipRate).toBe(0.6667);
     expect(summary.arms["cold-rebuild"].usage).toMatchObject({ calls: 3, unknownCostCalls: 1, unknownTokenCalls: 1 });
     expect(summary.judge).toMatchObject({ judgedSamples: 2, agreementWithDeterministicProxy: 0.5, judgePassOnlyCount: 1 });
@@ -152,8 +153,8 @@ describe("continuity scoring (deterministic)", () => {
 
 describe("continuity arms and plan", () => {
   it("declares production-config arms with the native baseline first and planned B arms unavailable", () => {
-    expect(AVAILABLE_ARM_IDS).toEqual(["native", "cold-rebuild", "compaction-1", "compaction-2", "ceiling", "restart-switch-compact"]);
-    expect(ARMS.filter((arm) => !arm.available).map((arm) => arm.id)).toEqual(["continuity-store", "continuity-pack-boundary", "continuity-pack-per-turn", "pack+stubs"]);
+    expect(AVAILABLE_ARM_IDS).toEqual(["native", "cold-rebuild", "compaction-1", "compaction-2", "ceiling", "restart-switch-compact", "continuity-store", "continuity-store-compaction"]);
+    expect(ARMS.filter((arm) => !arm.available).map((arm) => arm.id)).toEqual(["continuity-pack-boundary", "continuity-pack-per-turn", "pack+stubs"]);
     for (const arm of ARMS) {
       expect(arm.probeConfig).toBeTypeOf("object");
       expect(arm.expect).toBeTypeOf("object");
@@ -184,6 +185,38 @@ describe("continuity arms and plan", () => {
     expect(verifyBoundary({ boundary: null, compactions: 0, restart: true }, none).reasons).toContain("expected_process_restart");
   });
 
+  it("pins retained conversation evidence off for every pre-B1 arm and on for the B arms", () => {
+    const bArms = new Set(["continuity-store", "continuity-store-compaction", "continuity-pack-boundary", "continuity-pack-per-turn", "pack+stubs"]);
+    for (const arm of ARMS) {
+      const enabled = arm.sessionConfig?.runtime?.session?.continuity?.enabled;
+      expect(enabled, arm.id).toBe(!bArms.has(arm.id) ? false : true);
+      // A runnable arm's probe patch never overrides the session pin.
+      if (arm.available) expect(arm.probeConfig.runtime?.session, arm.id).toBeUndefined();
+    }
+    expect(CONTINUITY_OFF).toEqual({ runtime: { session: { continuity: { enabled: false } } } });
+    const store = armById("continuity-store");
+    expect(store).toMatchObject({ available: true, replayBinding: "alternate", fork: "in-place", expect: { probeBoundary: "model_change", probeCompactions: 0 } });
+    expect(store.probeConfig).toEqual({ tools: { allowedTools: ["ConversationHistory"] } });
+    expect(armById("continuity-store-compaction").probeConfig).toEqual({ tools: { allowedTools: ["ConversationHistory"] }, runtime: { compaction: SMALL_PROACTIVE_COMPACTION } });
+  });
+
+  it("treats a degraded store as an invalid trial and classifies ConversationHistory results", () => {
+    const store = armById("continuity-store");
+    const healthy = { toolsOffered: ["ConversationHistory"], historyWarnings: 0, conversationHistory: { unavailable: 0 } };
+    expect(verifyStore(store, { checkpointContinuity: { records: 10, degraded: false }, observed: healthy }).healthy).toBe(true);
+    expect(verifyStore(store, { checkpointContinuity: { records: 0, degraded: false }, observed: healthy }).reasons).toContain("no_retained_records");
+    expect(verifyStore(store, { checkpointContinuity: { records: 5, degraded: true }, observed: healthy }).reasons).toContain("checkpoint_store_degraded");
+    expect(verifyStore(store, { checkpointContinuity: { records: 5, degraded: false }, observed: { ...healthy, historyWarnings: 2 } }).reasons).toContain("tool_history_warnings:2");
+    expect(verifyStore(store, { checkpointContinuity: { records: 5, degraded: false }, observed: { ...healthy, toolsOffered: [] } }).reasons).toContain("conversation_history_not_offered");
+    expect(verifyStore(store, { checkpointContinuity: { records: 5, degraded: false }, observed: { ...healthy, conversationHistory: { unavailable: 1 } } }).healthy).toBe(false);
+    expect(verifyStore(armById("cold-rebuild"), { checkpointContinuity: null, observed: {} })).toEqual({ applicable: false, healthy: true, reasons: [] });
+    expect(classifyHistoryResult('{"action":"search","status":"available","available":true,"count":3}', false)).toEqual({ outcome: "success", count: 3 });
+    expect(classifyHistoryResult('{"action":"search","status":"unavailable","available":false,"count":0}', false).outcome).toBe("unavailable");
+    expect(classifyHistoryResult('{"status":"unavailable","error":{"code":"history_unavailable"}}', true).outcome).toBe("unavailable");
+    expect(classifyHistoryResult('{"status":"unavailable","error":{"code":"invalid_query"}}', true).outcome).toBe("error");
+    expect(verifyBoundary({ boundary: null, compactions: 1 }, { boundaries: [], compactions: [{ status: "succeeded" }, { status: "succeeded", midRun: true }] }).verified).toBe(true);
+  });
+
   it("verifies per-sample pressure on long traces only", () => {
     const observed = { boundaries: [{ kind: "resume_replay", reason: "model_change", replayedMessageCount: 64, toolProjectionRecords: 9 }], compactions: [{ status: "succeeded", tokensBefore: 221_000 }] };
     const metrics = pressureMetrics(observed, { usage: { inputTokens: 1000, cacheReadTokens: 181_000, cacheWriteTokens: 0 }, traceToolRecords: 70, mid: { tokensBefore: 120_000 } });
@@ -205,7 +238,7 @@ describe("continuity arms and plan", () => {
     expect(pilot.workload).toEqual({ probeTurns: probes * 4 * 2, midCheckpointCompactions: 4 * 2, liveTurns: probes * 8,
       expectedCompactions: 2 * (probes * 2 + 4), judgeCalls: 4 * 4 * 2 });
     expect(pilot.arms.map((arm) => arm.id)).toEqual(ORIGINAL_ARM_IDS);
-    expect(() => makePlan({ traces, sha256, arms: ["native", "continuity-store"] })).toThrow("arm_not_available_at_revision:continuity-store");
+    expect(() => makePlan({ traces, sha256, arms: ["native", "continuity-pack-boundary"] })).toThrow("arm_not_available_at_revision:continuity-pack-boundary");
     expect(() => makePlan({ traces, sha256, arms: ["native", "pack+stubs"] })).toThrow("arm_not_available_at_revision:pack+stubs");
     expect(() => makePlan({ traces, sha256, arms: ["native", "ceiling"] })).toThrow("arm_not_applicable_to_family:ceiling:original");
     const estimate = estimateCost(pilot, traces, { "openai-codex:gpt-6-luna": { input: 0.1, output: 0.5, cacheRead: 0.01 }, "openai-codex:gpt-6.1-sol": { input: 2, output: 10, cacheRead: 0.1 } });
@@ -258,11 +291,11 @@ describe("continuity offline contract run (production harness, scripted provider
   it("replays one trace through every arm and verifies each boundary", async () => {
     const output = await scratch();
     const lines = [];
-    const arms = [...ORIGINAL_ARM_IDS, "restart-switch-compact"];
+    const arms = [...ORIGINAL_ARM_IDS, "restart-switch-compact", "continuity-store"];
     const code = await main(["--trace", "brightline-return", "--probe-limit", "1", "--concurrency", "5", "--arms", arms.join(","), "--output", output], { env: {}, stdout: (line) => lines.push(line) });
-    expect(code).toBe(1); // 5 of 20 units: the other traces were not selected.
+    expect(code).toBe(1); // 6 of 24 units: the other traces were not selected.
     const results = JSON.parse(await readFile(join(output, "results.json"), "utf8"));
-    expect(results).toMatchObject({ executionKind: "offline", qualityMeasured: false, coverage: { unitsComplete: 5, unitsExpected: 20 } });
+    expect(results).toMatchObject({ executionKind: "offline", qualityMeasured: false, coverage: { unitsComplete: 6, unitsExpected: 24 } });
     const units = Object.fromEntries(await Promise.all((await readdir(join(output, "units"))).map(async (name) => {
       const unit = JSON.parse(await readFile(join(output, "units", name), "utf8"));
       return [unit.arm, unit];
@@ -286,6 +319,17 @@ describe("continuity offline contract run (production harness, scripted provider
     expect(restart.restart.processRestart).toBe(true);
     expect(restart.boundaries[0]).toMatchObject({ reason: "model_change" });
     expect(restart.compactions).toEqual([expect.objectContaining({ status: "succeeded" })]);
+    // B1 store arm: healthy in-place fork, retained records, ConversationHistory offered and used.
+    const store = units["continuity-store"];
+    expect(store.checkpoint.continuity).toMatchObject({ degraded: false, replayHistoryWarnings: 0 });
+    expect(store.checkpoint.continuity.records).toBeGreaterThan(0);
+    const storeTrial = store.trials[0];
+    expect(storeTrial.store).toEqual({ applicable: true, healthy: true, reasons: [] });
+    expect(storeTrial.boundary.observed).toMatchObject({ toolsOffered: ["ConversationHistory"], historyWarnings: 0,
+      conversationHistory: { calls: 1, search: 1, success: 1, unavailable: 0, error: 0 } });
+    expect(storeTrial.boundary.observed.boundaries[0]).toMatchObject({ kind: "resume_replay", reason: "model_change" });
+    expect(units["cold-rebuild"].trials[0].boundary.observed.toolsOffered).toEqual([]);
+    expect(results.summary.arms["continuity-store"].toolUse).toMatchObject({ offered: 1, used: 1, rate: 1 });
     expect(await readFile(join(output, "summary.md"), "utf8")).toContain("NOT model quality");
     expect(await readdir(output)).not.toContain("work");
   }, 180_000);

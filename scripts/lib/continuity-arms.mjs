@@ -32,12 +32,23 @@ export const NOT_AVAILABLE = "not available at this revision";
 
 const runtime = (patch) => Object.freeze({ runtime: Object.freeze(patch) });
 
+/**
+ * Retained conversation evidence (`runtime.session.continuity`) defaults to on
+ * since B1. Every pre-B1 arm pins it off in replay, mid-trace and probe configs
+ * so its results stay comparable with baselines recorded before the feature.
+ */
+export const CONTINUITY_OFF = runtime({ session: { continuity: { enabled: false } } });
+export const CONTINUITY_ON = runtime({ session: { continuity: { enabled: true } } });
+export const CONVERSATION_HISTORY_TOOL = "ConversationHistory";
+/** The reader may call only ConversationHistory: no built-in tools, as in every other probe. */
+const HISTORY_TOOL_ONLY = Object.freeze({ tools: Object.freeze({ allowedTools: Object.freeze([CONVERSATION_HISTORY_TOOL]) }) });
+
 export const ARMS = Object.freeze([
   Object.freeze({
     id: "native",
     label: "(a) full native context",
     description: "Scripted history is replayed into the reader's own durable Pi session; each probe resumes that native transcript (tool calls and results included). The default 200k proactive ceiling is disabled so the probe crosses no boundary.",
-    available: true, families: ["original", "long"],
+    available: true, sessionConfig: CONTINUITY_OFF, fork: "copy", families: ["original", "long"],
     replayBinding: "reader", midCheckpoint: null, restart: false,
     probeConfig: runtime({ compaction: { maxInputTokens: 0 } }),
     expect: Object.freeze({ probeBoundary: null, probeCompactions: 0, midCompactions: 0 }),
@@ -47,7 +58,7 @@ export const ARMS = Object.freeze([
     id: "cold-rebuild",
     label: "(b) cold model-change rebuild",
     description: "History is bound to a different configured model; the probe turn runs on the reader model, so the production default model-change path reseeds from canonical text (last 64 messages) plus the bounded tool-history projection.",
-    available: true, families: ["original", "long"],
+    available: true, sessionConfig: CONTINUITY_OFF, fork: "copy", families: ["original", "long"],
     replayBinding: "alternate", midCheckpoint: null, restart: false,
     probeConfig: Object.freeze({}),
     expect: Object.freeze({ probeBoundary: "model_change", probeCompactions: 0, midCompactions: 0 }),
@@ -57,7 +68,7 @@ export const ARMS = Object.freeze([
     id: "compaction-1",
     label: "(c) one proactive compaction",
     description: "Native session as in (a); the probe turn runs with the smallest runtime.compaction trigger so production proactive compaction summarizes the history before answering (one summary per probe).",
-    available: true, families: ["original", "long"],
+    available: true, sessionConfig: CONTINUITY_OFF, fork: "copy", families: ["original", "long"],
     replayBinding: "reader", midCheckpoint: null, restart: false,
     probeConfig: runtime({ compaction: SMALL_PROACTIVE_COMPACTION }),
     expect: Object.freeze({ probeBoundary: null, probeCompactions: 1, midCompactions: 0 }),
@@ -67,7 +78,7 @@ export const ARMS = Object.freeze([
     id: "compaction-2",
     label: "(d) two successive compactions",
     description: "A promptless manual compaction (the same guarded production summary driver, no live reply) runs before the designated mid-trace turn; scripted history continues; the probe turn compacts proactively again.",
-    available: true, families: ["original", "long"],
+    available: true, sessionConfig: CONTINUITY_OFF, fork: "copy", families: ["original", "long"],
     replayBinding: "reader",
     midCheckpoint: Object.freeze({ kind: "manual-compaction", config: runtime({ compaction: SMALL_PROACTIVE_COMPACTION }) }),
     restart: false,
@@ -79,7 +90,7 @@ export const ARMS = Object.freeze([
     id: "ceiling",
     label: "(e) default 200k ceiling",
     description: "Native session with production default compaction: the merged runtime.compaction.maxInputTokens ceiling (200k) is reached naturally by the long trace and compacts before the probe answers.",
-    available: true, families: ["long"],
+    available: true, sessionConfig: CONTINUITY_OFF, fork: "copy", families: ["long"],
     replayBinding: "reader", midCheckpoint: null, restart: false,
     probeConfig: Object.freeze({}),
     expect: Object.freeze({ probeBoundary: null, probeCompactions: 1, midCompactions: 0 }),
@@ -89,7 +100,7 @@ export const ARMS = Object.freeze([
     id: "restart-switch-compact",
     label: "(f) restart + model switch + compaction",
     description: "History bound to the alternate model; the probe runs in a fresh process (restart over the durable roots), on the reader model (production model-change reseed), with the smallest proactive trigger (compaction of the reseeded context), in that order.",
-    available: true, families: ["original", "long"],
+    available: true, sessionConfig: CONTINUITY_OFF, fork: "copy", families: ["original", "long"],
     replayBinding: "alternate", midCheckpoint: null, restart: true,
     probeConfig: runtime({ compaction: SMALL_PROACTIVE_COMPACTION }),
     expect: Object.freeze({ probeBoundary: "model_change", probeCompactions: 1, midCompactions: 0 }),
@@ -97,23 +108,38 @@ export const ARMS = Object.freeze([
   }),
   // Planned continuity-state arms (B children). Patches and evidence are the
   // intended contract; they stay unavailable until the production feature lands.
+  // B1 (#1337): durable retained evidence plus the read-only ConversationHistory
+  // tool. Nothing is injected; any gain depends on the reader calling the tool.
+  // The sidecar pins its absolute artifact root, so these arms fork in place
+  // (restore the snapshot at the checkpoint's own path, probe in a fresh process)
+  // instead of copying to a new root, which production correctly degrades.
   Object.freeze({
     id: "continuity-store",
-    label: "(B) continuity store",
-    description: "Durable continuity store recording constraints, identifiers, commitments and artifacts alongside canonical history; cold rebuild reads it.",
-    available: false, unavailableReason: NOT_AVAILABLE, families: ["original", "long"],
+    label: "(g) continuity store (B1)",
+    description: "As cold-rebuild (history bound to the alternate model, probe on the reader through the default model-change reseed), with runtime.session.continuity enabled throughout and ConversationHistory offered to the reader.",
+    available: true, sessionConfig: CONTINUITY_ON, fork: "in-place", families: ["original", "long"],
     replayBinding: "alternate", midCheckpoint: null, restart: false,
-    probeConfig: runtime({ continuity: { store: { enabled: true } } }),
-    expect: Object.freeze({ probeBoundary: "model_change", probeCompactions: 0, midCompactions: 0, evidence: ["continuity_store_read"] }),
-    pressure: Object.freeze([{ metric: "replayedMessages", min: 64 }]),
+    probeConfig: HISTORY_TOOL_ONLY,
+    expect: Object.freeze({ probeBoundary: "model_change", probeCompactions: 0, midCompactions: 0, evidence: ["continuity_records_retained", "conversation_history_offered", "store_healthy"] }),
+    pressure: Object.freeze([{ metric: "replayedMessages", min: 64 }, { metric: "projectionDroppedRecords", min: 32 }]),
+  }),
+  Object.freeze({
+    id: "continuity-store-compaction",
+    label: "(h) continuity store + one compaction (B1)",
+    description: "As compaction-1 (native session, smallest proactive trigger at the probe), with runtime.session.continuity enabled throughout and ConversationHistory offered to the reader.",
+    available: true, sessionConfig: CONTINUITY_ON, fork: "in-place", families: ["original", "long"],
+    replayBinding: "reader", midCheckpoint: null, restart: false,
+    probeConfig: Object.freeze({ ...HISTORY_TOOL_ONLY, runtime: Object.freeze({ compaction: SMALL_PROACTIVE_COMPACTION }) }),
+    expect: Object.freeze({ probeBoundary: null, probeCompactions: 1, midCompactions: 0, evidence: ["continuity_records_retained", "conversation_history_offered", "store_healthy"] }),
+    pressure: Object.freeze([{ metric: "compactionTokensBefore", min: 150_000 }]),
   }),
   Object.freeze({
     id: "continuity-pack-boundary",
     label: "(B) continuity pack at boundaries",
     description: "Continuity pack injected only when a boundary (reseed or compaction) occurs.",
-    available: false, unavailableReason: NOT_AVAILABLE, families: ["original", "long"],
+    available: false, unavailableReason: NOT_AVAILABLE, sessionConfig: CONTINUITY_ON, fork: "in-place", families: ["original", "long"],
     replayBinding: "reader", midCheckpoint: null, restart: false,
-    probeConfig: runtime({ continuity: { store: { enabled: true }, pack: { inject: "boundary" } }, compaction: SMALL_PROACTIVE_COMPACTION }),
+    probeConfig: runtime({ session: { continuity: { enabled: true, pack: { inject: "boundary" } } }, compaction: SMALL_PROACTIVE_COMPACTION }),
     expect: Object.freeze({ probeBoundary: null, probeCompactions: 1, midCompactions: 0, evidence: ["continuity_pack_injected"] }),
     pressure: Object.freeze([{ metric: "compactionTokensBefore", min: 60_000 }]),
   }),
@@ -121,9 +147,9 @@ export const ARMS = Object.freeze([
     id: "continuity-pack-per-turn",
     label: "(B) continuity pack every turn",
     description: "Continuity pack injected on every turn regardless of boundaries.",
-    available: false, unavailableReason: NOT_AVAILABLE, families: ["original", "long"],
+    available: false, unavailableReason: NOT_AVAILABLE, sessionConfig: CONTINUITY_ON, fork: "in-place", families: ["original", "long"],
     replayBinding: "reader", midCheckpoint: null, restart: false,
-    probeConfig: runtime({ continuity: { store: { enabled: true }, pack: { inject: "per-turn" } }, compaction: SMALL_PROACTIVE_COMPACTION }),
+    probeConfig: runtime({ session: { continuity: { enabled: true, pack: { inject: "per-turn" } } }, compaction: SMALL_PROACTIVE_COMPACTION }),
     expect: Object.freeze({ probeBoundary: null, probeCompactions: 1, midCompactions: 0, evidence: ["continuity_pack_injected"] }),
     pressure: Object.freeze([{ metric: "compactionTokensBefore", min: 60_000 }]),
   }),
@@ -131,9 +157,9 @@ export const ARMS = Object.freeze([
     id: "pack+stubs",
     label: "(B) continuity pack + tool-result stubs",
     description: "Boundary continuity pack plus stubbed historical tool results that keep identifiers and status but drop bulk.",
-    available: false, unavailableReason: NOT_AVAILABLE, families: ["original", "long"],
+    available: false, unavailableReason: NOT_AVAILABLE, sessionConfig: CONTINUITY_ON, fork: "in-place", families: ["original", "long"],
     replayBinding: "reader", midCheckpoint: null, restart: false,
-    probeConfig: runtime({ continuity: { store: { enabled: true }, pack: { inject: "boundary" }, toolResultStubs: true }, compaction: SMALL_PROACTIVE_COMPACTION }),
+    probeConfig: runtime({ session: { continuity: { enabled: true, pack: { inject: "boundary" }, toolResultStubs: true } }, compaction: SMALL_PROACTIVE_COMPACTION }),
     expect: Object.freeze({ probeBoundary: null, probeCompactions: 1, midCompactions: 0, evidence: ["continuity_pack_injected", "tool_result_stubbed"] }),
     pressure: Object.freeze([{ metric: "compactionTokensBefore", min: 60_000 }]),
   }),
@@ -195,12 +221,31 @@ export function verifyBoundary(expected, observed) {
     const matching = replays.filter((row) => row.reason === expected.boundary && row.context !== "retained");
     if (matching.length !== 1 || replays.length !== 1) reasons.push(`expected_one_${expected.boundary}_got_${replays.length}`);
   }
-  const succeeded = observed.compactions.filter((row) => row.status === "succeeded").length;
-  const failed = observed.compactions.filter((row) => !["running", "succeeded"].includes(row.status)).length;
+  // The boundary under test is the pre-turn compaction. A mid-run compaction can
+  // only follow a tool round (ConversationHistory arms) and is reported, not counted.
+  const preTurn = observed.compactions.filter((row) => row.midRun !== true);
+  const succeeded = preTurn.filter((row) => row.status === "succeeded").length;
+  const failed = preTurn.filter((row) => !["running", "succeeded"].includes(row.status)).length;
   if (succeeded !== expected.compactions) reasons.push(`expected_${expected.compactions}_compactions_got_${succeeded}`);
   if (failed > 0) reasons.push(`compaction_not_succeeded:${failed}`);
   if (expected.restart === true && observed.restart?.processRestart !== true) reasons.push("expected_process_restart");
   return { verified: reasons.length === 0, reasons };
+}
+
+/**
+ * Store-arm evidence: the replay retained records, the reader was offered
+ * ConversationHistory, and nothing degraded the store. A degraded store makes
+ * the sample invalid (excluded), never a scored miss.
+ */
+export function verifyStore(arm, { checkpointContinuity, observed }) {
+  if (!arm.expect.evidence?.includes("store_healthy")) return { applicable: false, healthy: true, reasons: [] };
+  const reasons = [];
+  if (!checkpointContinuity || !(checkpointContinuity.records > 0)) reasons.push("no_retained_records");
+  if (checkpointContinuity?.degraded) reasons.push("checkpoint_store_degraded");
+  if (!observed.toolsOffered?.includes(CONVERSATION_HISTORY_TOOL)) reasons.push("conversation_history_not_offered");
+  if ((observed.historyWarnings ?? 0) > 0) reasons.push(`tool_history_warnings:${observed.historyWarnings}`);
+  if ((observed.conversationHistory?.unavailable ?? 0) > 0) reasons.push(`conversation_history_unavailable:${observed.conversationHistory.unavailable}`);
+  return { applicable: true, healthy: reasons.length === 0, reasons };
 }
 
 /** Per-sample pressure metrics from observed evidence (null when not observable). */

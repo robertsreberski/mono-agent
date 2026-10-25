@@ -210,6 +210,30 @@ function accuracyBlock(trials, repeats) {
   };
 }
 
+/**
+ * ConversationHistory use among scored samples: how often the reader called
+ * it, and accuracy with versus without a call (observational, not causal).
+ */
+export function toolUseBlock(trials) {
+  const offered = trials.filter((trial) => trial.boundary?.observed?.toolsOffered?.includes("ConversationHistory"));
+  if (offered.length === 0) return null;
+  const used = offered.filter((trial) => (trial.boundary.observed.conversationHistory?.calls ?? 0) > 0);
+  const unused = offered.filter((trial) => (trial.boundary.observed.conversationHistory?.calls ?? 0) === 0);
+  const acc = (rows) => (rows.length ? round(rows.filter((trial) => trial.score.pass).length / rows.length) : null);
+  const sum = (key) => offered.reduce((total, trial) => total + (trial.boundary.observed.conversationHistory?.[key] ?? 0), 0);
+  const byCategory = Object.fromEntries(CATEGORIES.map((category) => {
+    const rows = offered.filter((trial) => trial.category === category);
+    const withCall = rows.filter((trial) => (trial.boundary.observed.conversationHistory?.calls ?? 0) > 0);
+    return [category, { n: rows.length, used: withCall.length, accuracyWithCall: acc(withCall), accuracyWithoutCall: acc(rows.filter((trial) => !withCall.includes(trial))) }];
+  }));
+  return {
+    offered: offered.length, used: used.length, rate: round(used.length / offered.length),
+    accuracyWithCall: acc(used), accuracyWithoutCall: acc(unused),
+    calls: sum("calls"), search: sum("search"), get: sum("get"), success: sum("success"), unavailable: sum("unavailable"), error: sum("error"), hits: sum("hits"),
+    byCategory,
+  };
+}
+
 /** Aggregate scored trials into per-arm, per-category accuracy with deltas, variance and spend. */
 export function summarize(trials, { arms, baselineArm, repeats, extraUsage = [] }) {
   const scored = trials.filter((trial) => trial.status === "completed");
@@ -247,10 +271,12 @@ export function summarize(trials, { arms, baselineArm, repeats, extraUsage = [] 
       excluded: {
         boundaryUnverified: allArm.filter((trial) => trial.status === "boundary_unverified").length,
         pressureUnverified: allArm.filter((trial) => trial.status === "pressure_unverified").length,
-        failed: allArm.filter((trial) => !["completed", "boundary_unverified", "pressure_unverified"].includes(trial.status)).length,
+        storeDegraded: allArm.filter((trial) => trial.status === "store_degraded").length,
+        failed: allArm.filter((trial) => !["completed", "boundary_unverified", "pressure_unverified", "store_degraded"].includes(trial.status)).length,
       },
       usage,
       compactionUsage,
+      toolUse: toolUseBlock(armTrials),
     };
   }
   const baseline = byArm[baselineArm];
@@ -289,11 +315,11 @@ export function renderMarkdown(summary, { qualityMeasured, armLabels = {}, judge
   lines.push("");
   lines.push(`Baseline arm: \`${summary.baselineArm}\`. Repeats: ${summary.repeats.join(", ")}. Accuracy is the mean of per-repeat accuracies; SD is across repeats.`);
   lines.push("");
-  lines.push("| Arm | n | Accuracy | Δ vs baseline (pp) | Repeat SD | Flip rate | Boundary-unverified | Pressure-unverified | Failed |");
-  lines.push("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |");
+  lines.push("| Arm | n | Accuracy | Δ vs baseline (pp) | Repeat SD | Flip rate | Boundary-unverified | Pressure-unverified | Store-degraded | Failed |");
+  lines.push("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |");
   for (const arm of arms) {
     const row = summary.arms[arm];
-    lines.push(`| ${armLabels[arm] ?? arm} | ${row.overall.n} | ${pct(row.overall.accuracy)} | ${pp(row.deltaVsBaseline.overall)} | ${pct(row.overall.repeatSd)} | ${pct(row.flipRate)} | ${row.excluded.boundaryUnverified} | ${row.excluded.pressureUnverified ?? 0} | ${row.excluded.failed} |`);
+    lines.push(`| ${armLabels[arm] ?? arm} | ${row.overall.n} | ${pct(row.overall.accuracy)} | ${pp(row.deltaVsBaseline.overall)} | ${pct(row.overall.repeatSd)} | ${pct(row.flipRate)} | ${row.excluded.boundaryUnverified} | ${row.excluded.pressureUnverified ?? 0} | ${row.excluded.storeDegraded ?? 0} | ${row.excluded.failed} |`);
   }
   lines.push("");
   lines.push(`| Category | ${arms.map((arm) => armLabels[arm] ?? arm).join(" | ")} |`);
@@ -314,6 +340,16 @@ export function renderMarkdown(summary, { qualityMeasured, armLabels = {}, judge
   }
   if (judgeUsage) lines.push(`| judge | ${judgeUsage.calls} | ${judgeUsage.inputTokens} | ${judgeUsage.cacheReadTokens} | ${judgeUsage.cacheWriteTokens} | ${judgeUsage.outputTokens} | ${judgeUsage.estimatedCostUsd.toFixed(4)} | ${judgeUsage.unknownCostCalls} | – |`);
   lines.push("");
+  const toolArms = arms.filter((arm) => summary.arms[arm].toolUse);
+  if (toolArms.length > 0) {
+    lines.push("| Arm | Samples offered ConversationHistory | Used | Rate | Accuracy with call | Accuracy without call | Calls (search/get) | Unavailable | Errors |");
+    lines.push("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |");
+    for (const arm of toolArms) {
+      const use = summary.arms[arm].toolUse;
+      lines.push(`| ${armLabels[arm] ?? arm} | ${use.offered} | ${use.used} | ${pct(use.rate)} | ${pct(use.accuracyWithCall)} | ${pct(use.accuracyWithoutCall)} | ${use.calls} (${use.search}/${use.get}) | ${use.unavailable} | ${use.error} |`);
+    }
+    lines.push("");
+  }
   const judge = summary.judge;
   lines.push(`Judge (next_action only): ${judge.judgedSamples} judged, ${judge.invalidOrMissing} invalid/missing, agreement with deterministic proxy ${pct(judge.agreementWithDeterministicProxy)} (judge-only pass ${judge.judgePassOnlyCount}, proxy-only pass ${judge.proxyPassOnlyCount}).`);
   lines.push("");
