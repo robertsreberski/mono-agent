@@ -19,6 +19,7 @@ import {
   processIncarnationFromJson,
 } from "@mono-agent/conversation/process-incarnation";
 import { acquireOwnerPrivateLock, legacyLockHolderMessage, type LegacyLockHolder } from "../../durable-state/owner-private-lock.js";
+import { ownerLockMutationGatePath } from "../../durable-state/owner-lock-mutation-gate.js";
 import type { OwnerPrivateLock } from "../../durable-state/owner-private-lock.js";
 import {
   decodeManagedRuntimeLaunchProof,
@@ -726,10 +727,7 @@ async function acquireRuntimeLock(
     runtimePreparationProgress.getStore()?.checkFailure();
     legacyHolder = undefined;
     const held = await acquireOwnerPrivateLock({
-      path: layout.lockDir,
-      label: "Managed runtime lock",
-      schemaTag: "mono-agent.managed-runtime-lock.v1",
-      ownerlessGraceMs: LOCK_STALE_AFTER_MS,
+      ...managedRuntimeLockProtocol(layout, identity),
       waitTimeoutMs: Math.max(1, Math.min(LOCK_WAIT_SLICE_MS, deadline - deps.now())),
       pollIntervalMs: LOCK_POLL_INTERVAL_MS,
       now: deps.now,
@@ -744,26 +742,8 @@ async function acquireRuntimeLock(
         }
         return live;
       },
-      ownerFields: () => ({ ...identity }),
-      validateOwnerFields: (record) => Object.entries(identity)
-        .every(([key, value]) => record[key] === value),
-      parseLegacyOwner: (record) => {
-        const legacyIncarnation = processIncarnationFromJson(record.incarnation);
-        return typeof record.pid === "number"
-          && Number.isSafeInteger(record.pid)
-          && record.pid > 0
-          && legacyIncarnation !== undefined
-          ? { pid: record.pid, incarnation: legacyIncarnation }
-          : undefined;
-      },
-      invalidOwner: "ownerless",
       isSatisfied: async () => { satisfied = await isSatisfied(); return satisfied; },
       sleep: deps.sleep,
-      staleRace: "retry",
-      beforeStaleRename: async () => {
-        await mkdir(dirname(layout.quarantineDir), { recursive: true, mode: 0o700 });
-      },
-      stalePath: () => `${layout.quarantineDir}-stale-lock`,
     });
     if (held !== undefined || satisfied) return held;
     if (deps.now() >= deadline) {
@@ -776,6 +756,46 @@ async function acquireRuntimeLock(
     // A dead owner may have just been quarantined. Retry acquisition, rather
     // than mistaking that safe recovery for an installation-lock timeout.
   }
+}
+
+/**
+ * The fixed lock protocol for one runtime closure. The gate sits beside the
+ * lock in the version/ABI directory, where only prefix-matched staging and
+ * closure directories are ever listed. A busy gate inside a 10 s wait slice is
+ * reported as "held", so the caller simply takes its next slice; a busy release
+ * finishes in the background.
+ */
+export function managedRuntimeLockProtocol(
+  layout: Pick<RuntimeLayout, "lockDir" | "quarantineDir">,
+  identity: RuntimeIdentity,
+): Parameters<typeof acquireOwnerPrivateLock>[0] {
+  return {
+    path: layout.lockDir,
+    label: "Managed runtime lock",
+    schemaTag: "mono-agent.managed-runtime-lock.v1",
+    ownerlessGraceMs: LOCK_STALE_AFTER_MS,
+    ownerFields: () => ({ ...identity }),
+    validateOwnerFields: (record) => Object.entries(identity)
+      .every(([key, value]) => record[key] === value),
+    parseLegacyOwner: (record) => {
+      const legacyIncarnation = processIncarnationFromJson(record.incarnation);
+      return typeof record.pid === "number"
+        && Number.isSafeInteger(record.pid)
+        && record.pid > 0
+        && legacyIncarnation !== undefined
+        ? { pid: record.pid, incarnation: legacyIncarnation }
+        : undefined;
+    },
+    invalidOwner: "ownerless",
+    staleRace: "retry",
+    beforeStaleRename: async () => {
+      await mkdir(dirname(layout.quarantineDir), { recursive: true, mode: 0o700 });
+    },
+    stalePath: () => `${layout.quarantineDir}-stale-lock`,
+    mutationGate: { path: ownerLockMutationGatePath(layout.lockDir) },
+    onGateBusy: () => undefined,
+    releaseGateBusy: "background",
+  };
 }
 
 /** Reclaim only this locked closure's abandoned private staging, never retained runtimes. */

@@ -1,6 +1,6 @@
 import { type BigIntStats } from "node:fs";
 import { lstat, open } from "node:fs/promises";
-import { resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import process from "node:process";
 
 /**
@@ -24,6 +24,14 @@ const SQLITE_BUSY = 5;
 const SQLITE_LOCKED = 6;
 /** SQLite sidecars that must never exist beside a never-written, in-memory-journal gate. */
 const GATE_SIDECARS = ["-journal", "-wal"] as const;
+
+/** Per-directory convention: one permanent gate beside the lock directories it serializes. */
+export const OWNER_LOCK_MUTATION_GATE = ".mutation-gate.sqlite";
+
+/** The gate for a lock directory: `<parent>/.mutation-gate.sqlite`, shared by sibling locks. */
+export function ownerLockMutationGatePath(lockPath: string): string {
+  return join(dirname(resolve(lockPath)), OWNER_LOCK_MUTATION_GATE);
+}
 
 export interface OwnerLockMutationGate {
   /** Gate file path, normally a dot-file beside the lock directories it serializes. */

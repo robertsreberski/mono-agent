@@ -1,3 +1,4 @@
+import { spawn, type ChildProcess } from "node:child_process";
 import { chmod, lstat, mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,6 +12,7 @@ import {
   activateProcessJobWakes,
   ensureProcessJobsService,
   prepareProcessJobsProtection,
+  startProcessJobsIfConfigured,
   stopProcessJobsService,
   type ProcessJobsControllerPort,
 } from "../host/app-controller-process-jobs.js";
@@ -51,9 +53,11 @@ vi.mock("../process-jobs/process-jobs-service.js", async (importOriginal) => ({
 }));
 
 const temporaryDirectories: string[] = [];
+const gateHolders: ChildProcess[] = [];
 const ownerships: Array<{ ownership: AgentRootOwnership; leasePath: string }> = [];
 
 afterEach(async () => {
+  for (const child of gateHolders.splice(0)) child.kill("SIGKILL");
   processJobsService.open.mockReset();
   const held = ownerships.splice(0);
   for (const { ownership } of held) ownership.release();
@@ -221,6 +225,65 @@ describe("process-job lifecycle surface routing", () => {
     expect(controller.processJobsStateDir).toBeUndefined();
     expect(controller.processJobsDegradation).toBeUndefined();
   });
+
+  it("reopens process jobs on reload when the previous release met a busy gate and was deferred", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "mono-agent-process-job-deferred-release-"));
+    temporaryDirectories.push(cwd);
+    const configReadPath = join(cwd, "mono-agent.config.json");
+    await writeFile(configReadPath, JSON.stringify({
+      runtime: { model: "openai-codex:gpt-5.6-sol", workspace: "." },
+      context: { identityPath: "./IDENTITY.md", selectedSkills: [] },
+      tools: { allowedTools: [], disallowedTools: [] },
+      artifacts: { dir: "./artifacts" },
+      processJobs: { enabled: true, stateDir: ".state/jobs" },
+    }));
+    const actual = await vi.importActual<typeof import("../process-jobs/process-jobs-service.js")>(
+      "../process-jobs/process-jobs-service.js",
+    );
+    // The real service and its real owner lock; only process identity is mocked (always live).
+    processJobsService.open.mockImplementation(actual.openProcessJobsService);
+    const agentRootOwnership = await ownershipFor(cwd);
+    const controller: ProcessJobsControllerPort = {
+      cwd,
+      configReadPath,
+      env: {},
+      logger: undefined,
+      drivers: [],
+      running: new Map(),
+      statuses: new Map(),
+      stopped: false,
+      agentRootOwnership,
+      processJobsService: undefined,
+      processJobsServiceStart: undefined,
+      processJobsStateDir: undefined,
+      processJobsDegradation: undefined,
+      processJobsRegistry: undefined,
+      preparedProcessJobs: undefined,
+      observabilityContext: async () => ({}),
+      setStatus: (_id, status) => status,
+      refreshTraceSource: async () => undefined,
+    };
+    await startProcessJobsIfConfigured(controller, "test-startup");
+    expect(controller.processJobsService).toBeDefined();
+    const stateDir = join(await realpath(cwd), ".state/jobs");
+    const lockPath = join(stateDir, ".process-jobs-owner");
+
+    // Reload, in the app's order: prepare, then stop while another process
+    // holds the state-directory gate past the release's whole gate wait.
+    await prepareProcessJobsProtection(controller, "test-reload:prepare");
+    const holder = await holdGateInAnotherProcess(join(stateDir, ".mutation-gate.sqlite"));
+    await stopProcessJobsService(controller);
+    // The release was deferred: this process's own lock is still on disk.
+    expect((await lstat(lockPath)).isDirectory()).toBe(true);
+    // The gate frees before the deferred retry fires, and reload reopens at once.
+    await holder.release();
+    await startProcessJobsIfConfigured(controller, "test-reload");
+
+    expect(controller.processJobsDegradation).toBeUndefined();
+    expect(controller.processJobsService).toBeDefined();
+    await stopProcessJobsService(controller);
+    await expect(lstat(lockPath)).rejects.toMatchObject({ code: "ENOENT" });
+  }, 20_000);
 
   it("recovers a failed protection generation after the unsafe root is repaired and disabled", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "mono-agent-process-job-generation-recovery-"));
@@ -451,6 +514,27 @@ describe("process-job lifecycle surface routing", () => {
     expect(telegramUpdate).toHaveBeenCalledWith(42, telegramProjection, undefined);
   });
 });
+
+/** Hold an existing owner-lock gate with a raw exclusive SQLite transaction in another process. */
+async function holdGateInAnotherProcess(gatePath: string): Promise<{ release(): Promise<void> }> {
+  const child = spawn(process.execPath, ["--no-warnings", "--input-type=module", "--eval", `
+    import { DatabaseSync } from "node:sqlite";
+    const db = new DatabaseSync(${JSON.stringify(gatePath)}, { timeout: 0 });
+    db.exec("PRAGMA journal_mode=MEMORY");
+    db.exec("BEGIN EXCLUSIVE");
+    process.stdout.write("held\\n");
+    process.stdin.once("data", () => { db.exec("ROLLBACK"); db.close(); process.exit(0); });
+  `], { stdio: ["pipe", "pipe", "inherit"] });
+  gateHolders.push(child);
+  const exited = new Promise<void>((resolvePromise) => child.once("exit", () => resolvePromise()));
+  await new Promise<void>((resolvePromise, rejectPromise) => {
+    child.stdout!.once("data", (chunk) => String(chunk).includes("held")
+      ? resolvePromise()
+      : rejectPromise(new Error(`unexpected holder output: ${String(chunk)}`)));
+    child.once("exit", () => rejectPromise(new Error("gate holder exited early")));
+  });
+  return { async release() { child.stdin!.write("release\n"); await exited; } };
+}
 
 function deferred<T>(): {
   readonly promise: Promise<T>;

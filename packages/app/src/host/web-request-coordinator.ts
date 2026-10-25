@@ -4,10 +4,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import type { RuntimeRunOptions } from "@mono-agent/turn/host/types";
-import {
-  acquireOwnerPrivateLock, type OwnerPrivateLock, type OwnerPrivateLockMutationStep,
-} from "../durable-state/owner-private-lock.js";
-import { OwnerLockCoordinationBusyError } from "../durable-state/owner-lock-mutation-gate.js";
+import { acquireOwnerPrivateLock, type OwnerPrivateLockMutationStep } from "../durable-state/owner-private-lock.js";
 import {
   HISTORY_PROCESS_INCARNATION_SCHEMA, PROCESS_INCARNATION_SCHEMA, currentProcessIncarnation, isProcessIncarnationLive,
   processIncarnationFromJson, type ProcessIncarnation,
@@ -24,8 +21,6 @@ const MAX_STATE_BYTES = 256 * 1024;
 const MAX_BUCKETS = 512;
 /** Same bounded wait for the lock and for its mutation gate; both end in `coordination_unavailable`. */
 const LOCK_WAIT_MS = 2000;
-const LOCK_RELEASE_RETRY_BASE_MS = 250;
-const LOCK_RELEASE_RETRY_MAX_MS = 30_000;
 /** Permanent cross-process gate beside the lock; never removed by reset. */
 export const WEB_CONTROL_MUTATION_GATE = ".mutation-gate.sqlite";
 const defaults: Readonly<Record<string, readonly [number, number]>> = { searxng: [1, 2000], ollama: [1, 2000], duckduckgo: [1, 3000], startpage: [1, 3000], codex: [1, 0], fetch: [2, 500] } as const;
@@ -48,32 +43,13 @@ export function webControlLockOptions(
     schemaTag: "mono-agent.web-control-lock.v1", ownerlessGraceMs: 5000,
     waitTimeoutMs: LOCK_WAIT_MS, pollIntervalMs: 25, invalidOwner: "error",
     mutationGate: { path: join(directory, WEB_CONTROL_MUTATION_GATE), busyTimeoutMs: seams.gateBusyTimeoutMs ?? LOCK_WAIT_MS },
+    // A busy gate during release proves nothing moved: this process still
+    // validly holds the lock and its state change is already committed. The
+    // primitive finishes the release in the background with capped backoff,
+    // and this process's next transaction finishes it first.
+    releaseGateBusy: "background",
     ...(seams.mutationStep === undefined ? {} : { mutationStep: seams.mutationStep }),
   };
-}
-
-/**
- * A busy gate during release proves nothing moved: this process still validly
- * holds the lock and its state change is already committed. Finish the release
- * in the background with capped backoff instead of failing the transaction.
- */
-async function releaseLock(lock: OwnerPrivateLock): Promise<void> {
-  try {
-    await lock.release();
-  } catch (error) {
-    if (!(error instanceof OwnerLockCoordinationBusyError)) throw error;
-    retryLockRelease(lock, 0);
-  }
-}
-
-function retryLockRelease(lock: OwnerPrivateLock, deferrals: number): void {
-  const timer = setTimeout(() => {
-    lock.release().catch((error: unknown) => {
-      // Any other failure leaves the lock to the normal live/dead-owner policy.
-      if (error instanceof OwnerLockCoordinationBusyError) retryLockRelease(lock, deferrals + 1);
-    });
-  }, Math.min(LOCK_RELEASE_RETRY_MAX_MS, LOCK_RELEASE_RETRY_BASE_MS * 2 ** Math.min(deferrals, 16)));
-  timer.unref?.();
 }
 
 /** Host-owned operational state only: no queries, documents, or credentials. */
@@ -132,7 +108,7 @@ export function createHostWebRequestCoordinator(options: {
       return result;
     } finally {
       await options.lockSeams?.beforeRelease?.();
-      await releaseLock(lock);
+      await lock.release();
     }
   }
 

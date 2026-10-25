@@ -956,6 +956,25 @@ describe("managed SRT setup", () => {
     }
   });
 
+  it("fails closed as managed_srt_lock_unsafe on an insecure install-lock mutation gate", async () => {
+    const cacheRoot = await tempDir();
+    const lockPath = installLockPath(cacheRoot);
+    await mkdir(dirname(lockPath), { recursive: true, mode: 0o700 });
+    await chmod(dirname(lockPath), 0o700);
+    const gatePath = resolve(dirname(lockPath), ".mutation-gate.sqlite");
+    await writeFile(gatePath, "", { mode: 0o644 });
+    await chmod(gatePath, 0o644);
+
+    await expect(setupManagedSrt({ ...options(cacheRoot), verify: false })).rejects.toMatchObject({
+      code: "managed_srt_lock_unsafe",
+      details: { lockPath, lockFailure: "mutation-gate" },
+    });
+    // Nothing ran unguarded: no lock and no install were created.
+    expect(existsSync(lockPath)).toBe(false);
+    expect(existsSync(managedSrtInstallRoot({ cacheRoot, platform: "darwin" }))).toBe(false);
+    expect((await lstat(gatePath)).mode & 0o777).toBe(0o644);
+  });
+
   it("leaves symlinked, permissive, and hard-linked permanent guards untouched", async () => {
     const fixtures: Array<{
       readonly label: string;

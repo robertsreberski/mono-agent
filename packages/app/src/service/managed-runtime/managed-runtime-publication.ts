@@ -3,7 +3,8 @@ import { join, resolve } from "node:path";
 import process from "node:process";
 
 import { acquireOwnerPrivateLock } from "../../durable-state/owner-private-lock.js";
-import type { OwnerPrivateLock } from "../../durable-state/owner-private-lock.js";
+import type { OwnerPrivateLock, OwnerPrivateLockMutationStep } from "../../durable-state/owner-private-lock.js";
+import { ownerLockMutationGatePath } from "../../durable-state/owner-lock-mutation-gate.js";
 import type { ProcessIncarnation, SameProcessIncarnation } from "@mono-agent/conversation/process-incarnation";
 
 const BARRIER_SCHEMA = "mono-agent.managed-runtime-publication-barrier.v1";
@@ -20,6 +21,9 @@ interface ManagedRuntimePublicationBarrierOptions {
   readonly sleep?: (ms: number) => Promise<void>;
   readonly processIncarnation?: ProcessIncarnation;
   readonly isSameProcessIncarnation?: SameProcessIncarnation;
+  /** Test-only seams for the mutation gate. */
+  readonly mutationStep?: (step: OwnerPrivateLockMutationStep, path: string) => void | Promise<void>;
+  readonly gateBusyTimeoutMs?: number;
 }
 
 export function managedRuntimePublicationBarrierPath(
@@ -87,6 +91,16 @@ async function acquireBarrier(
     ownerFields: () => ({ label: options.label }),
     validateOwnerFields: (record) => record.label === options.label,
     livenessError: () => "assume-live",
+    // Shares the locks-directory gate with lifecycle locks. The controller's
+    // single acquisition reports a busy gate as a held barrier; waiting workers
+    // stay inside their 2 s slice and simply take another slice.
+    mutationGate: {
+      path: ownerLockMutationGatePath(path),
+      ...(options.gateBusyTimeoutMs === undefined ? {} : { busyTimeoutMs: options.gateBusyTimeoutMs }),
+    },
+    onGateBusy: () => undefined,
+    releaseGateBusy: "background",
+    ...(options.mutationStep === undefined ? {} : { mutationStep: options.mutationStep }),
     staleRace: "retry",
     stalePath: ({ now, pid, token }) => join(locksRoot, `.${options.label}.runtime-install-${now}-${pid}-${token}.stale`),
     releasedPath: ({ pid, token }) => join(locksRoot, `.${options.label}.runtime-install-${pid}-${token}.released`),

@@ -162,6 +162,12 @@
   passes through `~/.mono-agent/web-control/.mutation-gate.sqlite`. A gate that
   stays busy through the two-second lock wait, or an unsafe gate, returns the
   existing `coordination_unavailable` outcome.
+- Apply the same stale-lock fix to every remaining owner lock: launchd lifecycle
+  and shared log locks, runtime publication barriers, the background worker
+  lease, the managed runtime and SRT install locks, and the process-job registry
+  and state locks. Each uses a `.mutation-gate.sqlite` beside its lock; a gate
+  that stays busy is reported as the lock's existing "held" or "unavailable"
+  outcome, and an unsafe gate fails closed.
 - Keep the source conversation of new memories durably: BuJo capture, Remember
   and completed-turn summaries add optional `source_session` metadata to their
   daily bullets, which survives reconcile, restart and rebuild. Memories without
