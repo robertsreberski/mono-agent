@@ -577,7 +577,7 @@ are normal there. If an agent reports web coordination as unavailable, run
 `mono-agent web-control reset` from the upgraded CLI once no web request is
 active; it clears leases and cooldowns.
 
-### Stale lock reclaim and the agent-root mutation gate
+### Stale lock reclaim and the owner-lock mutation gates
 
 Agent-root leases live in `~/.mono-agent/agent-root-leases/`. When two
 processes reclaim the same crashed lease, they serialize the risky step through
@@ -614,9 +614,22 @@ detached leases run outside the gate.
   the record stays under 3 KiB. Older readers ignore the field, and new readers
   still accept records without it.
 
+Host web-request coordination (`tools.web.coordination: "host"`) uses the same
+kind of gate for its lock: `~/.mono-agent/web-control/.mutation-gate.sqlite`.
+
+- A busy gate is retried within the coordinator's existing two-second lock
+  wait. If it is still busy, the request gets the usual
+  `coordination_unavailable` outcome, exactly like a lock that stays held.
+- An insecure or modified web gate also ends in `coordination_unavailable`. The
+  same repair applies: stop every mono-agent process for this account, then
+  remove the gate file.
+- A release that meets a busy gate keeps the already committed state change and
+  finishes the release in the background.
+- `mono-agent web-control reset` clears state only. It never removes the gate.
+
 Compatibility: this is never worse than before. An older binary does not take
 the gate, so it can still trigger the original race until it is upgraded.
-Other owner locks get the move-back protection but not the gate yet.
+The other owner locks get the move-back protection but not the gate yet.
 
 The gate coordinates cooperating mono-agent processes. It does not defend
 against a hostile process running as the same user that replaces the gate

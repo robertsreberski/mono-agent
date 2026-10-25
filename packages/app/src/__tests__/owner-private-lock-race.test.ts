@@ -505,6 +505,26 @@ describe("owner-lock mutation gate", () => {
   });
 });
 
+describe("mutation gate wait budget", () => {
+  it("never waits on the gate past the caller's own acquisition wait", async () => {
+    const dir = await directory("gate-budget");
+    const gatePath = join(dir, ".mutation-gate.sqlite");
+    await (await open(gatePath, "wx", 0o600)).close();
+    const holder = rawGateHolder(gatePath);
+    await holder.line("held");
+    const started = performance.now();
+    await expect(acquireOwnerPrivateLock(lockOptions(join(dir, "shared.lock"), "owner", {
+      mutationGate: { path: gatePath, busyTimeoutMs: 5_000 },
+      waitTimeoutMs: 300,
+      pollIntervalMs: 10,
+    }))).rejects.toThrow(OwnerLockCoordinationBusyError);
+    // Clamped to the 300 ms acquisition budget, not the 5 s gate timeout.
+    expect(performance.now() - started).toBeLessThan(2_500);
+    holder.child.kill("SIGKILL");
+    await holder.exited;
+  });
+});
+
 describe("killed gate holders", () => {
   const cases: ReadonlyArray<{ readonly step: string; readonly stale: boolean; readonly release: boolean }> = [
     { step: "gate-acquired", stale: false, release: false },
