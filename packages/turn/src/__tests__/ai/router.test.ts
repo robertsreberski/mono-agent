@@ -55,6 +55,14 @@ beforeEach(() => {
 
 
 describe("createRouterRuntime — basic", () => {
+  it("keeps the real configured Pi/Codex primary eligible for cold upkeep", async () => {
+    const coldContext = vi.fn(async () => ({ messages: [] }));
+    executeMock.mockImplementation(async (_system, options) => { await (options.coldContext as NonNullable<RuntimeRunOptions["coldContext"]>)({ maxTokens: 8000, reason: "created_on_miss", primaryAttempt: true }); return { text: "ok", events: [] }; });
+    const primary = modelRef("openai-codex", "gpt-6-luna");
+    const router = createRouterRuntime({ chain: [{ model: primary, attempts: 2 }] });
+    await router.run("sys", { model: primary, coldContext });
+    expect(coldContext).toHaveBeenCalledWith(expect.objectContaining({ primaryAttempt: true }));
+  });
   it("never transfers upkeep eligibility to a backup without detached replay", async () => {
     const seen: boolean[] = [];
     executeMock.mockImplementation(async (_system, options) => {

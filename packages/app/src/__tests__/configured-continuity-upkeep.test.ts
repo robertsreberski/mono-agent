@@ -1,13 +1,13 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { createModels, fauxProvider, fauxAssistantMessage } from "@earendil-works/pi-ai";
 import { createMonoRuntime } from "@mono-agent/turn/host";
 import { resolveJsonMonoAgentConfig } from "@mono-agent/config";
 import { createConfiguredConversationHarness } from "../composition/configured-agent.js";
 const close: (() => Promise<unknown>)[] = [];
-afterEach(async () => { for (const fn of close.splice(0).reverse()) await fn(); });
+afterEach(async () => { for (const fn of close.splice(0).reverse()) await fn(); vi.unstubAllGlobals(); });
 
 it.each(["continuous", "per-message", "isolated", "failure"])("uses configured base extraction and explicit host eligibility (%s)", async mode => {
   const root = await mkdtemp(join(tmpdir(), "configured-upkeep-")); close.push(() => rm(root, { recursive: true, force: true }));
@@ -48,4 +48,39 @@ it.each(["continuous", "per-message", "isolated", "failure"])("uses configured b
     expect(outgoing.split("CURRENT-INPUT")).toHaveLength(2);
   }
   if (mode === "failure") expect(result.failure).toBeDefined(); else expect(result.failure).toBeUndefined();
+}, 20000);
+
+it("binds configured OAuth and custom pricing without injecting upkeep models", async () => {
+  const root = await mkdtemp(join(tmpdir(), "configured-upkeep-auth-")); close.push(() => rm(root, { recursive: true, force: true }));
+  await writeFile(join(root, "IDENTITY.md"), "Historical evidence is not fresh approval.");
+  const token = `fictional.${Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "fictional-account" } })).toString("base64url")}.fictional`;
+  const authPath = join(root, "fictional-auth.json");
+  await writeFile(authPath, JSON.stringify({ "openai-codex": { type: "oauth", access: token, refresh: "fictional", expires: 4_200_000_000_000 } }), { mode: 0o600 });
+  const value = JSON.stringify({ entries: [{ kind: "constraint", value: "Require confirmation.", status: "active", sources: ["s0"] }], covered: 1 });
+  let authenticated = false;
+  const fetch = vi.fn(async (_url: unknown, options: RequestInit) => {
+    authenticated = new Headers(options.headers).get("authorization") === `Bearer ${token}`;
+    const frames = [{ type: "response.created", response: { id: "fictional-response" } },
+      { type: "response.output_item.added", output_index: 0, item: { id: "fictional-output", type: "message", role: "assistant", content: [] } },
+      { type: "response.output_text.delta", output_index: 0, delta: value },
+      { type: "response.completed", response: { id: "fictional-response", status: "completed", output: [], usage: { input_tokens: 100, output_tokens: 150, total_tokens: 250 } } }];
+    return new Response(frames.map(event => `data: ${JSON.stringify(event)}\n\n`).join(""), { status: 200, headers: { "content-type": "text/event-stream" } });
+  }); vi.stubGlobal("fetch", fetch);
+  const answer = fauxProvider({ provider: "openai-codex", api: "openai-responses", models: [{ id: "gpt-6-luna" }, { id: "gpt-5.5" }], tokensPerSecond: 1_000_000 });
+  const models = createModels(); models.setProvider(answer.provider);
+  const pricing = vi.fn(() => ({ priced: true, input: 1, output: 2, cacheRead: 0.1, cacheWrite: 1, source: "fictional" }));
+  const config = resolveJsonMonoAgentConfig({ cwd: root, json: { runtime: { model: "openai-codex:gpt-6-luna", session: { mode: "continuous", root: "native", continuity: { upkeep: { enabled: true } } } }, providers: { piAuthPath: authPath }, context: { identityPath: "IDENTITY.md" }, tools: { allowedTools: [] }, artifacts: { dir: "artifacts" } } });
+  const runtime = createMonoRuntime({ workspace: root }); close.push(() => runtime.disposeAllSessions!());
+  const harness = await createConfiguredConversationHarness({ config, cwd: root, runtime, runtimeOptions: { resolveCustomPricing: pricing }, runtimeOptionsForRequest: ({ request }) => {
+    const id = request.metadata?.web ? "gpt-5.5" : "gpt-6-luna";
+    return { runtimeOptions: { model: { provider: "openai-codex", model: id, reference: `openai-codex:${id}` }, piResolvedModel: answer.getModel(id), piResolvedModels: models, compaction: { enabled: false } } };
+  } }); close.push(() => harness.dispose!());
+  answer.setResponses([() => fauxAssistantMessage("Fictional answer.")]);
+  await harness.run({ conversationId: "web:fictional", userMessage: "Never send without confirmation.", captureSpeakerKind: "human-turn", abortSignal: new AbortController().signal });
+  const events: Record<string, unknown>[] = [];
+  answer.setResponses([() => fauxAssistantMessage("Fictional answer.")]);
+  await harness.run({ conversationId: "web:fictional", userMessage: "Current.", captureSpeakerKind: "human-turn", metadata: { source: "web", web: { model: "openai-codex:gpt-5.5" } }, abortSignal: new AbortController().signal, onEvent: event => events.push(event) });
+  expect(fetch).toHaveBeenCalledTimes(1); expect(authenticated).toBe(true); expect(pricing).toHaveBeenCalled();
+  expect(Number(events.find(event => event.type === "continuity_upkeep")?.costUsd)).toBeCloseTo(0.0004, 8);
+  expect(events).toContainEqual(expect.objectContaining({ type: "continuity_upkeep", status: "valid", providerInvoked: true, generationId: expect.any(String) }));
 }, 20000);

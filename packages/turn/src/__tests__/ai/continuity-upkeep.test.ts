@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { fauxProvider } from "@earendil-works/pi-ai";
+import { fauxProvider, normalizeContext } from "@earendil-works/pi-ai";
 import { completeContinuityUpkeep, constrainUpkeepPayload, upkeepCapEnforcement } from "../../execution/pi/continuity-upkeep.js";
 const apis = ["anthropic-messages", "openai-completions", "openai-responses", "openai-codex-responses", "azure-openai-responses", "google-generative-ai", "google-vertex", "bedrock-converse-stream", "mistral-conversations", "pi-messages"];
 const token = `fictional.${Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "fictional-account" } })).toString("base64url")}.fictional`;
@@ -24,17 +24,17 @@ it.each(apis)("proves one real %s request builder, enforcement class and inclusi
 
 async function codex(events: unknown[], strict = false, abortSignal = new AbortController().signal) {
   const adapter = await import("@earendil-works/pi-ai/api/openai-codex-responses");
-  let signal: AbortSignal | undefined, optionsSeen: any;
+  let signal: AbortSignal | undefined, optionsSeen: any, payloadSeen: any;
   const wire = events.map(event => `data: ${JSON.stringify(event)}\n\n`).join("");
   const transport = vi.fn(async (_url: unknown, options: RequestInit) => {
     signal = options.signal ?? undefined;
     return new Response(wire, { status: 200, headers: { "content-type": "text/event-stream" } });
   }); vi.stubGlobal("fetch", transport);
   const selected = { ...model("openai-codex-responses"), reasoning: true, thinkingLevelMap: { off: null, minimal: "low", low: "low", medium: "medium", high: "high" } };
-  const stream = vi.fn((m: any, context: any, options: any) => { optionsSeen = options; return adapter.streamSimple(m, context, { ...options, apiKey: token }); });
+  const stream = vi.fn((m: any, context: any, options: any) => { optionsSeen = options; return adapter.streamSimple(m, context, { ...options, apiKey: token, onPayload(payload: any) { options.onPayload(payload); payloadSeen = payload; } }); });
   const models = { getModel: () => selected, streamSimple: stream };
   const result = await completeContinuityUpkeep("Fictional source selection.", { model: reference, messages: [], abortSignal, piResolvedModels: models as never }, strict);
-  return { result, transport, stream, signal, optionsSeen };
+  return { result, transport, stream, signal, optionsSeen, payloadSeen };
 }
 const created = { type: "response.created", response: { id: "fictional-response" } };
 const added = { type: "response.output_item.added", output_index: 0, item: { id: "fictional-output", type: "message", role: "assistant", content: [] } };
@@ -86,4 +86,37 @@ it("guards full visible Codex items even when a stream omits incremental deltas"
   expect(transport).toHaveBeenCalledTimes(1); expect(signal?.aborted).toBe(true);
   expect(result.receipt).toMatchObject({ status: "invalid", reason: "output_aborted" });
   expect(result.receipt.visibleEstimate).toBeGreaterThanOrEqual(5000); expect(result.text).toBeUndefined();
+});
+
+it("reaches an actual local-provider builder without injected resolved models", async () => {
+  const fetch = vi.fn(async () => new Response(JSON.stringify({ choices: [{ finish_reason: "stop", message: { role: "assistant", content: "{}" } }] }), { status: 200, headers: { "content-type": "application/json" } })); vi.stubGlobal("fetch", fetch);
+  const result = await completeContinuityUpkeep("Fictional local input.", { model: { provider: "ollama", model: "fixture", reference: "ollama:fixture" }, messages: [], abortSignal: new AbortController().signal,
+    customProvider: { id: "ollama", enabled: true, provider_type: "ollama", base_url: "http://127.0.0.1:1" }, modelCapabilities: { context_window: 128000, max_tokens: 8192 }, isPrivateProvider: true } as never);
+  expect(fetch).toHaveBeenCalledTimes(1); expect(result.receipt.reason).not.toBe("model_identity"); expect(result.receipt.providerInvoked).toBe(true);
+});
+it("classifies a swallowed onPayload cap refusal as a zero-dispatch skip", async () => {
+  const stream = vi.fn((m, c, options) => {
+    const finish = async () => { try { options.onPayload({}); } catch {} return { stopReason: "error" }; };
+    return { async *[Symbol.asyncIterator]() {}, result: finish };
+  });
+  const result = await completeContinuityUpkeep("Fictional.", { model: reference, messages: [], abortSignal: new AbortController().signal, piResolvedModels: { getModel: () => model("openai-responses"), streamSimple: stream } as never });
+  expect(result.receipt).toMatchObject({ status: "skipped", reason: "cap_unsupported", providerInvoked: false, inputTokens: 0, costUsd: 0 });
+});
+it("overwrites a real reasoning builder cap when maxTokens is omitted", async () => {
+  const adapter = await import("@earendil-works/pi-ai/api/anthropic-messages"); let before: number | undefined, after: number | undefined;
+  const network = vi.fn(); vi.stubGlobal("fetch", network);
+  await adapter.streamSimple({ ...model("anthropic-messages"), api: "anthropic-messages", reasoning: true }, normalizeContext({ messages: [{ role: "user", content: "Fictional.", timestamp: 0 }] }), {
+    apiKey: "fictional", reasoning: "low", onPayload(payload: any) { before = payload.max_tokens; constrainUpkeepPayload("anthropic-messages", payload); after = payload.max_tokens; throw new Error("OFFLINE_CAPTURE_STOP"); },
+  }).result();
+  expect(before).toBeGreaterThan(4096); expect(after).toBe(4096); expect(network).not.toHaveBeenCalled();
+});
+it("requests guard-sized Codex output and suppresses reasoning summaries", async () => {
+  const text = JSON.stringify({ entries: Array.from({ length: 8 }, () => ({ kind: "open_work", value: "x".repeat(96), status: "unknown", sources: ["s0"] })), covered: 256 });
+  const { result, payloadSeen } = await codex([created, added, { type: "response.output_text.delta", output_index: 0, delta: text }, done(600)]);
+  expect(result.receipt.status).toBe("valid"); expect(Buffer.byteLength(text)).toBeLessThan(3072);
+  const body = payloadSeen; expect(body.reasoning.summary).toBeUndefined(); expect(JSON.stringify(body)).toContain("OUTPUT LIMIT OVERRIDE");
+});
+it("retains a distinct estimated paid input cost after a Codex abort", async () => {
+  const { result } = await codex([created, added, { type: "response.output_text.delta", output_index: 0, delta: "x".repeat(5000) }]);
+  expect(result.receipt).toMatchObject({ providerInvoked: true, status: "invalid" }); expect(result.receipt.estimatedInputTokens).toBeGreaterThan(0); expect(result.receipt.estimatedInputCostUsd).not.toBeNull();
 });

@@ -487,7 +487,7 @@ export interface ConversationHarnessToolHistoryOptions {
   /** Default-on deterministic cold rebuild evidence; false retains recording/retrieval. */
   readonly packEnabled?: boolean;
   readonly ledgerEnabled?: boolean;
-  readonly upkeep?: { readonly enabled: boolean; readonly complete: (prompt: string, signal: AbortSignal) => Promise<ContinuityUpkeepResult> };
+  readonly upkeep?: { readonly enabled: boolean; readonly model?: string; readonly complete: (prompt: string, signal: AbortSignal) => Promise<ContinuityUpkeepResult> };
   readonly publishLedger?: (generation: LedgerGeneration) => Promise<void>;
   readonly conversationHistoryAvailable?: boolean;
   readonly writer: Pick<ToolHistoryWriter, "createSink" | "finishRun" | "resetConversation">;
