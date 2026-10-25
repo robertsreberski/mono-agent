@@ -40,6 +40,7 @@ import { type ProcessJobsSettings } from "./process-jobs-config.js";
 import { ProcessJobOutputTail } from "./process-job-output-tail.js";
 import { offerClaimedProcessJobLiveInput, recordProcessJobWakeAdmission, revokeProcessJobWakeAdmission } from "./process-jobs-context.js";
 import { acquireOwnerPrivateLock, legacyLockHolderMessage, type LegacyLockHolder, type OwnerPrivateLock } from "../durable-state/owner-private-lock.js";
+import { ownerLockMutationGatePath } from "../durable-state/owner-lock-mutation-gate.js";
 import {
   attestProcessJobsRootRegistration,
   type ProcessJobsRootRegistrationProof,
@@ -189,6 +190,28 @@ export interface ProcessJobsServiceHandle {
   stop(shutdownDeadline?: number): Promise<void>;
 }
 
+/**
+ * The process-job state owner-lock protocol. Its gate sits in the state
+ * directory beside the lock. Directory creation through owner publication runs
+ * under the gate, so the tight 1 s ownerless grace can never reclaim a
+ * publication in progress. A gate still busy after its bounded wait reports the
+ * existing controller-unavailable outcome (`undefined`); a busy release at stop
+ * finishes in the background.
+ */
+export function processJobsOwnerLockProtocol(stateDir: string): Parameters<typeof acquireOwnerPrivateLock>[0] {
+  const path = join(stateDir, ".process-jobs-owner");
+  return {
+    path,
+    label: "Process-job state",
+    schemaTag: PROCESS_JOB_OWNER_SCHEMA,
+    ownerlessGraceMs: 1_000,
+    invalidOwner: "error",
+    mutationGate: { path: ownerLockMutationGatePath(path) },
+    onGateBusy: () => undefined,
+    releaseGateBusy: "background",
+  };
+}
+
 /** Acquire exclusive ownership, recover interrupted work, and expose one host controller. */
 export async function openProcessJobsService(
   options: OpenProcessJobsServiceOptions,
@@ -216,11 +239,7 @@ export async function openProcessJobsService(
     : { ...options, settings: { ...options.settings, stateDir } };
   let legacyHolder: LegacyLockHolder | undefined;
   const lock = await (options.acquireLock?.() ?? acquireOwnerPrivateLock({
-    path: join(stateDir, ".process-jobs-owner"),
-    label: "Process-job state",
-    schemaTag: PROCESS_JOB_OWNER_SCHEMA,
-    ownerlessGraceMs: 1_000,
-    invalidOwner: "error",
+    ...processJobsOwnerLockProtocol(stateDir),
     onLegacyOwnerHeld: (holder) => { legacyHolder = holder; },
   }));
   if (lock === undefined) {

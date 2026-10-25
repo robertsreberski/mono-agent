@@ -14,7 +14,9 @@ import {
   acquireOwnerPrivateLock,
   validateOwnerPrivateLockInputs,
   type LegacyLockHolder,
+  type OwnerPrivateLockMutationStep,
 } from "../../durable-state/owner-private-lock.js";
+import { ownerLockMutationGatePath } from "../../durable-state/owner-lock-mutation-gate.js";
 import type { ProcessIncarnation, SameProcessIncarnation } from "@mono-agent/conversation/process-incarnation";
 
 const LEASE_SCHEMA = "mono-agent.background-worker-lease.v2";
@@ -45,6 +47,8 @@ interface BackgroundWorkerLeaseOptions {
   readonly hooks?: {
     readonly afterLeaseDirectoryCreated?: () => Promise<void>;
     readonly beforeStaleLeaseRename?: () => Promise<void>;
+    readonly leaseMutationStep?: (step: OwnerPrivateLockMutationStep, path: string) => void | Promise<void>;
+    readonly gateBusyTimeoutMs?: number;
   };
 }
 
@@ -111,6 +115,16 @@ export async function acquireBackgroundWorkerLease(
     ...(options.hooks?.beforeStaleLeaseRename === undefined
       ? {}
       : { beforeStaleRename: options.hooks.beforeStaleLeaseRename }),
+    // A gate still busy after its bounded wait means another process is mid
+    // acquisition or release: report it as held, like a live owner. A busy
+    // release at shutdown finishes in the background.
+    mutationGate: {
+      path: ownerLockMutationGatePath(leasePath),
+      ...(options.hooks?.gateBusyTimeoutMs === undefined ? {} : { busyTimeoutMs: options.hooks.gateBusyTimeoutMs }),
+    },
+    onGateBusy: () => undefined,
+    releaseGateBusy: "background",
+    ...(options.hooks?.leaseMutationStep === undefined ? {} : { mutationStep: options.hooks.leaseMutationStep }),
     staleRace: "return",
     stalePath: ({ now: staleAt, pid: stalePid, token }) =>
       join(leasesRoot, `.${leaseId}-${staleAt}-${stalePid}-${token}.stale`),

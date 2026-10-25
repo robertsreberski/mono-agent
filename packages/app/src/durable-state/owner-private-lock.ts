@@ -13,7 +13,9 @@ import {
 } from "@mono-agent/conversation/process-incarnation";
 import type { ProcessIncarnation, SameProcessIncarnation } from "@mono-agent/conversation/process-incarnation";
 import { secureFileReplace } from "./secure-file-replace.js";
-import { withOwnerLockMutationGate, type OwnerLockMutationGate } from "./owner-lock-mutation-gate.js";
+import {
+  OwnerLockCoordinationBusyError, withOwnerLockMutationGate, type OwnerLockMutationGate,
+} from "./owner-lock-mutation-gate.js";
 
 const OWNER_MAX_BYTES = 4 * 1024;
 const OWNER_PUBLICATION_TEMPORARY = ".owner.mono-agent-publication.tmp";
@@ -105,6 +107,19 @@ export interface OwnerPrivateLockOptions {
    * or unavailable gate fails closed; the mutation never runs unguarded.
    */
   readonly mutationGate?: OwnerLockMutationGate;
+  /**
+   * Maps a gate that stays busy during acquisition onto the caller's existing
+   * outcome: `undefined` means "held", an Error is thrown instead. With a
+   * `waitTimeoutMs`, a busy gate is waited out like a held lock until that
+   * deadline first. Without this option the busy error propagates unchanged.
+   */
+  readonly onGateBusy?: () => Error | undefined;
+  /**
+   * A busy gate during release moved nothing, so the lock is still validly held.
+   * `background` resolves release and retries it with capped backoff; the
+   * default throws the busy error so the caller decides.
+   */
+  readonly releaseGateBusy?: "throw" | "background";
   readonly isSatisfied?: () => boolean | Promise<boolean>;
   readonly sleep?: (milliseconds: number) => Promise<void>;
   readonly stalePath?: (input: ArtifactInput) => string;
@@ -146,6 +161,17 @@ export function validateOwnerPrivateLockInputs(label: string, pid: number, owner
 
 /** Shared private-directory lock with atomic ownership, liveness, quarantine, and exact release. */
 export async function acquireOwnerPrivateLock(options: OwnerPrivateLockOptions): Promise<OwnerPrivateLock | undefined> {
+  try {
+    return await acquireUnmapped(options);
+  } catch (error) {
+    if (!(error instanceof OwnerLockCoordinationBusyError) || options.onGateBusy === undefined) throw error;
+    const mapped = options.onGateBusy();
+    if (mapped !== undefined) throw mapped;
+    return undefined;
+  }
+}
+
+async function acquireUnmapped(options: OwnerPrivateLockOptions): Promise<OwnerPrivateLock | undefined> {
   validateOptions(options);
   const pid = options.pid ?? process.pid;
   const now = options.now ?? Date.now;
@@ -163,13 +189,22 @@ export async function acquireOwnerPrivateLock(options: OwnerPrivateLockOptions):
   let retriedMissingAtDeadline = false;
   // A caller with a wait budget never waits on the mutation gate past it.
   const gateBudget = timeout > 0 ? () => Math.max(0, deadline - now()) : undefined;
+  // Within that budget a busy gate is waited out like a held lock (the gate
+  // itself caps one wait at 5 s); only a gate still busy at the deadline, or
+  // any busy gate for a caller without a wait, reaches `onGateBusy`.
+  const waitOutBusyGate = async (error: unknown, observed?: Observed): Promise<boolean> => {
+    if (!(error instanceof OwnerLockCoordinationBusyError) || timeout === 0 || now() >= deadline) return false;
+    await closeObserved(observed);
+    await (options.sleep ?? sleep)(Math.min(options.pollIntervalMs ?? 100, Math.max(0, deadline - now())));
+    return true;
+  };
 
   for (;;) {
     if (options.maxAcquireAttempts !== undefined && attempts >= options.maxAcquireAttempts) return undefined;
     options.beforeIteration?.();
     attempts += 1;
     const token = checkedToken(randomToken(), options.label);
-    const held = await gated(options, gateBudget, async () => {
+    const held = await gated(options, gateBudget, async (): Promise<OwnerPrivateLock | undefined> => {
       let created: Identity | undefined;
       try {
         await mkdir(options.path, { mode: 0o700 });
@@ -209,7 +244,11 @@ export async function acquireOwnerPrivateLock(options: OwnerPrivateLockOptions):
         if (!isErrno(error, "EEXIST")) throw error;
         return undefined;
       }
+    }).catch(async (error: unknown): Promise<typeof BUSY_GATE_RETRY> => {
+      if (await waitOutBusyGate(error)) return BUSY_GATE_RETRY;
+      throw error;
     });
+    if (held === BUSY_GATE_RETRY) continue;
     if (held !== undefined) return held;
 
     if (await options.isSatisfied?.()) return undefined;
@@ -232,7 +271,12 @@ export async function acquireOwnerPrivateLock(options: OwnerPrivateLockOptions):
         }
       }
       if (stale) {
-        if (await quarantine(options, observed, pid, now, randomToken, gateBudget === undefined ? {} : { gateBudget }) === "retry") continue;
+        const outcome = await quarantine(options, observed, pid, now, randomToken, gateBudget === undefined ? {} : { gateBudget })
+          .catch(async (error: unknown) => {
+            if (await waitOutBusyGate(error, observed)) return "retry" as const;
+            throw error;
+          });
+        if (outcome === "retry") continue;
         return undefined;
       }
       if ((options.maxAcquireAttempts !== undefined && attempts >= options.maxAcquireAttempts)
@@ -316,42 +360,68 @@ function makeHeld(
   randomToken: () => string,
 ): OwnerPrivateLock {
   let released = false;
-  return {
-    path: options.path,
-    ownerPid: expectedOwner.pid,
-    async release(releaseOptions = {}) {
-      if (released) return;
-      const expected: Observed = { kind: "owned", identity: expectedIdentity, owner: expectedOwner };
-      if (!await matchesObserved(options.path, options, expected)) {
-        throw unsafe(options, `${options.label} identity or owner changed before release; the replacement was left untouched.`);
+  let inflight: Promise<void> | undefined;
+  let retry: ReturnType<typeof setTimeout> | undefined;
+  let deferrals = 0;
+  const release = async (releaseOptions: ReleaseOptions = {}): Promise<void> => {
+    if (released) return;
+    if (inflight !== undefined) return await inflight;
+    if (retry !== undefined) { clearTimeout(retry); retry = undefined; }
+    inflight = (async () => {
+      try {
+        await releaseOnce(releaseOptions);
+      } catch (error) {
+        if (!(error instanceof OwnerLockCoordinationBusyError) || options.releaseGateBusy !== "background") throw error;
+        // Nothing moved: finish later. Process exit leaves a dead owner, reclaimed normally.
+        retry = setTimeout(() => {
+          retry = undefined;
+          // Any other later failure leaves the lock to the normal live/dead-owner policy.
+          void release(releaseOptions).catch(() => undefined);
+        }, Math.min(RELEASE_RETRY_MAX_MS, RELEASE_RETRY_BASE_MS * 2 ** Math.min(deferrals, 16)));
+        retry.unref?.();
+        deferrals += 1;
       }
-      await releaseOptions.beforeRename?.(options.path);
-      const releasedPath = await gated(options, undefined, async () => {
-        if (!await matchesObserved(options.path, options, expected)) {
-          throw unsafe(options, `${options.label} changed at the release boundary; the replacement was left untouched.`);
-        }
-        await options.mutationStep?.("release-verified", options.path);
-        const detachedPath = artifactPath(options, "released", pid, now, randomToken);
-        try {
-          await rename(options.path, detachedPath);
-        } catch (error) {
-          if (isErrno(error, "ENOENT")) throw unsafe(options, `${options.label} disappeared during release.`);
-          throw error;
-        }
-        await options.mutationStep?.("release-detached", detachedPath);
-        const verification = await verifyDetached(() => matchesObserved(detachedPath, options, expected));
-        if (verification !== true) {
-          await restoreDisplaced(options, detachedPath, "release", { releasedPath: detachedPath });
-          if (verification instanceof Failure) throw verification.error;
-          throw unsafe(options, `${options.label} changed across release; the replacement was moved back to ${options.path}.`);
-        }
-        return detachedPath;
-      });
-      released = true;
-      await rm(releasedPath, { recursive: true, force: true });
-    },
+    })().finally(() => { inflight = undefined; });
+    return await inflight;
   };
+  const releaseOnce = async (releaseOptions: ReleaseOptions): Promise<void> => {
+    if (released) return;
+    const expected: Observed = { kind: "owned", identity: expectedIdentity, owner: expectedOwner };
+    if (!await matchesObserved(options.path, options, expected)) {
+      throw unsafe(options, `${options.label} identity or owner changed before release; the replacement was left untouched.`);
+    }
+    await releaseOptions.beforeRename?.(options.path);
+    const releasedPath = await gated(options, undefined, async () => {
+      if (!await matchesObserved(options.path, options, expected)) {
+        throw unsafe(options, `${options.label} changed at the release boundary; the replacement was left untouched.`);
+      }
+      await options.mutationStep?.("release-verified", options.path);
+      const detachedPath = artifactPath(options, "released", pid, now, randomToken);
+      try {
+        await rename(options.path, detachedPath);
+      } catch (error) {
+        if (isErrno(error, "ENOENT")) throw unsafe(options, `${options.label} disappeared during release.`);
+        throw error;
+      }
+      await options.mutationStep?.("release-detached", detachedPath);
+      const verification = await verifyDetached(() => matchesObserved(detachedPath, options, expected));
+      if (verification !== true) {
+        await restoreDisplaced(options, detachedPath, "release", { releasedPath: detachedPath });
+        if (verification instanceof Failure) throw verification.error;
+        throw unsafe(options, `${options.label} changed across release; the replacement was moved back to ${options.path}.`);
+      }
+      return detachedPath;
+    });
+    released = true;
+    await rm(releasedPath, { recursive: true, force: true });
+  };
+  return { path: options.path, ownerPid: expectedOwner.pid, release };
 }
+
+const BUSY_GATE_RETRY: unique symbol = Symbol("busy-gate-retry");
+type ReleaseOptions = { readonly beforeRename?: (path: string) => void | Promise<void> };
+const RELEASE_RETRY_BASE_MS = 250;
+const RELEASE_RETRY_MAX_MS = 30_000;
 
 async function publishOwner(
   options: OwnerPrivateLockOptions,

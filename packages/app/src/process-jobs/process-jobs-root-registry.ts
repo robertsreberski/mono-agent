@@ -10,6 +10,7 @@ import {
 } from "../durable-state/agent-root-coordinator.js";
 import { clearSessionsRegistryRoot } from "../conversation-admin/conversation-state-roots.js";
 import { acquireOwnerPrivateLock, type OwnerPrivateLock } from "../durable-state/owner-private-lock.js";
+import { ownerLockMutationGatePath } from "../durable-state/owner-lock-mutation-gate.js";
 import { readVerifiedFile, secureFileReplace } from "../durable-state/secure-file-replace.js";
 import { syncDirectory } from "../durable-state/private-files.js";
 
@@ -182,7 +183,9 @@ export function failedProcessJobsRootRegistryProtection(
       rootKeys: Object.freeze([]),
     }),
     roots: [],
-    protectedRoots: Object.freeze([paths.registryDir, paths.recoveryDir, paths.mutationLockPath]),
+    protectedRoots: Object.freeze([
+      paths.registryDir, paths.recoveryDir, paths.mutationLockPath, ownerLockMutationGatePath(paths.mutationLockPath),
+    ]),
     error: PROCESS_JOBS_REGISTRY_UNAVAILABLE_ERROR,
   };
 }
@@ -344,6 +347,7 @@ export function assertProcessJobsRegistryDisjointFromPaths(
 ): void {
   if (snapshot.kind === "empty") return;
   const privatePaths = [snapshot.registryDir, snapshot.recoveryDir, snapshot.mutationLockPath,
+    ownerLockMutationGatePath(snapshot.mutationLockPath),
     ...snapshot.roots.flatMap((root) => root.protectedPaths)];
   for (const privatePath of privatePaths) {
     for (const candidate of paths) {
@@ -392,6 +396,7 @@ async function loadStrict(
     paths.registryDir,
     paths.recoveryDir,
     paths.mutationLockPath,
+    ownerLockMutationGatePath(paths.mutationLockPath),
     ...roots.flatMap((root) => root.protectedPaths),
   ]);
   return {
@@ -648,6 +653,7 @@ function validateRegisteredRoot(input: {
     || pathsOverlap(lexicalPath, input.registryDir)
     || pathsOverlap(lexicalPath, input.recoveryDir)
     || pathsOverlap(lexicalPath, input.mutationLockPath)
+    || pathsOverlap(lexicalPath, ownerLockMutationGatePath(input.mutationLockPath))
     || pathsOverlap(lexicalPath, clearSessionsRegistryRoot(input.agentRoot))
     || stateRootContainsWorkspace(lexicalPath, lexicalWorkspace, canonicalWorkspace)) {
     throw new Error(PROCESS_JOBS_REGISTRY_UNAVAILABLE_ERROR);
@@ -683,6 +689,7 @@ function validateRegisteredRoot(input: {
     || pathsOverlap(canonicalPath, input.registryDir)
     || pathsOverlap(canonicalPath, input.recoveryDir)
     || pathsOverlap(canonicalPath, input.mutationLockPath)
+    || pathsOverlap(canonicalPath, ownerLockMutationGatePath(input.mutationLockPath))
     || pathsOverlap(canonicalPath, clearSessionsRegistryRoot(input.agentRoot))
     || stateRootContainsWorkspace(canonicalPath, lexicalWorkspace, canonicalWorkspace)) {
     throw new Error(PROCESS_JOBS_REGISTRY_UNAVAILABLE_ERROR);
@@ -980,13 +987,26 @@ function encodeManifest(manifest: RegistryManifest): Buffer {
 }
 
 async function acquireRegistryLock(path: string): Promise<OwnerPrivateLock | undefined> {
-  return await acquireOwnerPrivateLock({
+  return await acquireOwnerPrivateLock(processJobsRegistryLockProtocol(path));
+}
+
+/**
+ * The registry mutation-lock protocol. Its gate sits beside the lock in the
+ * agent root's `.mono-agent` and is sandbox-protected with it. A gate still busy
+ * after its bounded wait reports the existing registry-unavailable outcome
+ * (`undefined`); a busy release finishes in the background.
+ */
+export function processJobsRegistryLockProtocol(path: string): Parameters<typeof acquireOwnerPrivateLock>[0] {
+  return {
     path,
     label: "Process-job root registry",
     schemaTag: REGISTRY_LOCK_SCHEMA,
     ownerlessGraceMs: REGISTRY_LOCK_OWNERLESS_GRACE_MS,
     invalidOwner: "error",
-  });
+    mutationGate: { path: ownerLockMutationGatePath(path) },
+    onGateBusy: () => undefined,
+    releaseGateBusy: "background",
+  };
 }
 
 /** Remove only the exact owner-private empty artifact left by first registration. */

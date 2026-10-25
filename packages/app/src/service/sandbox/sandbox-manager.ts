@@ -35,6 +35,7 @@ import {
 import type { ProcessIncarnation, SameProcessIncarnation } from "@mono-agent/conversation/process-incarnation";
 import { acquireOwnerPrivateLock } from "../../durable-state/owner-private-lock.js";
 import type { OwnerPrivateLock } from "../../durable-state/owner-private-lock.js";
+import { OwnerLockGateUnavailableError, ownerLockMutationGatePath } from "../../durable-state/owner-lock-mutation-gate.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -1012,9 +1013,7 @@ async function acquireInstallLock(options: SandboxManagerOptions): Promise<HeldI
     await waitForLegacyInstallLock(lockPath, deadline, options);
     try {
       lock = await acquireOwnerPrivateLock({
-        path: lockPath,
-        label: "SRT install lock",
-        schemaTag: "mono-agent.managed-srt-install-lock.v1",
+        ...srtInstallLockProtocol(lockPath),
         ownerlessGraceMs,
         waitTimeoutMs: Math.max(0, deadline - now()),
         pollIntervalMs: INSTALL_LOCK_POLL_MS,
@@ -1023,19 +1022,6 @@ async function acquireInstallLock(options: SandboxManagerOptions): Promise<HeldI
         ...(options.hooks?.isSameProcessIncarnation === undefined
           ? {}
           : { isSameProcessIncarnation: options.hooks.isSameProcessIncarnation }),
-        ownerFields: (base) => ({
-          schemaVersion: 2,
-          uid: process.getuid?.() ?? null,
-          startedAt: base.createdAt,
-        }),
-        validateOwnerFields: (record) => validInstallLockRecordFields(record, 2),
-        parseLegacyOwner: (record) => {
-          const legacyIncarnation = processIncarnationFromJson(record.incarnation);
-          return validInstallLockRecordFields(record, 2) && legacyIncarnation !== undefined
-            ? { pid: record.pid as number, incarnation: legacyIncarnation }
-            : undefined;
-        },
-        invalidOwner: "error",
         livenessError: (error) => installLockUnsafe(
           lockPath,
           `Cannot prove the SRT install lock owner's process incarnation: ${errorMessage(error)}`,
@@ -1049,7 +1035,6 @@ async function acquireInstallLock(options: SandboxManagerOptions): Promise<HeldI
           ? {}
           : { beforeStaleRename: () => options.hooks!.beforeStaleInstallLockRename!(lockPath) }),
         sleep: (milliseconds) => (options.hooks?.sleep ?? abortableSleep)(milliseconds, options.signal),
-        staleRace: "error",
         timeoutError: (observed) => observed.kind === "ownerless"
           ? installLockUnsafe(
               lockPath,
@@ -1060,13 +1045,13 @@ async function acquireInstallLock(options: SandboxManagerOptions): Promise<HeldI
               `Another live process incarnation (PID ${observed.owner.pid}) still owns the SRT install lock.`,
               { pid: observed.owner.pid },
             ),
-        unsafeError: (cause, details) => installLockUnsafe(lockPath, cause, details),
-        stalePath: ({ pid, token }) => `${lockPath}.stale.${pid}.${token}`,
-        releasedPath: ({ pid, token }) => `${lockPath}.released.${pid}.${token}`,
-        abandonedPath: ({ pid, token }) => `${lockPath}.abandoned.${pid}.${token}`,
       });
       break;
     } catch (error) {
+      // An unsafe or unusable gate fails closed with the lock's existing code.
+      if (error instanceof OwnerLockGateUnavailableError) {
+        throw installLockUnsafe(lockPath, error.message, { lockFailure: "mutation-gate" });
+      }
       const current = await inspectLegacyInstallLock(lockPath);
       const wasNonDirectory = error instanceof SandboxManagerError
         && error.details.lockFailure === "not-directory";
@@ -1082,6 +1067,47 @@ async function acquireInstallLock(options: SandboxManagerOptions): Promise<HeldI
     ...(options.hooks?.beforeInstallLockReleaseRename === undefined
       ? {}
       : { beforeRelease: options.hooks.beforeInstallLockReleaseRename }),
+  };
+}
+
+/**
+ * The fixed SRT install-lock protocol. Its gate sits in the same version root
+ * as the lock, so it is writable exactly where the lock is. Installers already
+ * serialize on the OS install guard; the gate also covers any direct acquirer.
+ * A gate still busy at the end of the install wait reports the existing
+ * `managed_srt_lock_unsafe` "still owned" outcome; a busy release finishes in
+ * the background.
+ */
+export function srtInstallLockProtocol(lockPath: string): Parameters<typeof acquireOwnerPrivateLock>[0] {
+  return {
+    path: lockPath,
+    label: "SRT install lock",
+    schemaTag: "mono-agent.managed-srt-install-lock.v1",
+    ownerlessGraceMs: INSTALL_LOCK_OWNERLESS_GRACE_MS,
+    ownerFields: (base) => ({
+      schemaVersion: 2,
+      uid: process.getuid?.() ?? null,
+      startedAt: base.createdAt,
+    }),
+    validateOwnerFields: (record) => validInstallLockRecordFields(record, 2),
+    parseLegacyOwner: (record) => {
+      const legacyIncarnation = processIncarnationFromJson(record.incarnation);
+      return validInstallLockRecordFields(record, 2) && legacyIncarnation !== undefined
+        ? { pid: record.pid as number, incarnation: legacyIncarnation }
+        : undefined;
+    },
+    invalidOwner: "error",
+    staleRace: "error",
+    unsafeError: (cause, details) => installLockUnsafe(lockPath, cause, details),
+    stalePath: ({ pid, token }) => `${lockPath}.stale.${pid}.${token}`,
+    releasedPath: ({ pid, token }) => `${lockPath}.released.${pid}.${token}`,
+    abandonedPath: ({ pid, token }) => `${lockPath}.abandoned.${pid}.${token}`,
+    mutationGate: { path: ownerLockMutationGatePath(lockPath) },
+    onGateBusy: () => installLockUnsafe(
+      lockPath,
+      "Another process kept the SRT install-lock coordination busy until the install wait ended.",
+    ),
+    releaseGateBusy: "background",
   };
 }
 

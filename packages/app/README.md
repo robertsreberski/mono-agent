@@ -664,9 +664,35 @@ kind of gate for its lock: `~/.mono-agent/web-control/.mutation-gate.sqlite`.
   finishes the release in the background.
 - `mono-agent web-control reset` clears state only. It never removes the gate.
 
+Every other owner lock uses a gate too: one `.mutation-gate.sqlite` per lock
+directory, beside the lock, sharing that directory's ownership and writability.
+
+| Lock | Gate location | Busy gate means |
+|---|---|---|
+| Launchd lifecycle and shared launchd-log locks, runtime publication barriers | `~/.mono-agent/locks/` | lock held: another lifecycle command or maintenance is active |
+| Background worker lease | `~/.mono-agent/worker-leases/` | another worker holds the config |
+| Managed runtime install lock | the runtime version/ABI directory | still installing: wait for the next slice |
+| Managed SRT install lock | the SRT version directory | the existing `managed_srt_lock_unsafe` error, at the end of the install wait |
+| Process-job root registry lock | `<agent root>/.mono-agent/` (sandbox-protected) | registry unavailable |
+| Process-job state owner lock | the process-job `stateDir` | process-job controller unavailable |
+
+- A caller with a wait (the shared launchd-log lock, runtime publication and
+  install, SRT install) waits out a busy gate like a held lock, but never past
+  that wait. A caller without one waits at most about three seconds. In both
+  cases a gate still busy at the end is reported exactly like a held lock, so
+  installs, uninstalls and restarts never block on it.
+- A release that meets a busy gate finishes in the background. If the process
+  exits first, the lock is left with a dead owner and the next process reclaims
+  it normally.
+- An insecure or modified gate fails closed for that lock (for the SRT install
+  lock, as `managed_srt_lock_unsafe`) with the same repair: stop every
+  mono-agent process for this account, then remove the gate file.
+- Directory creation through owner publication runs under the gate. The
+  process-job state lock's one-second ownerless grace therefore can no longer
+  reclaim a publication that is still in progress.
+
 Compatibility: this is never worse than before. An older binary does not take
 the gate, so it can still trigger the original race until it is upgraded.
-The other owner locks get the move-back protection but not the gate yet.
 
 The gate coordinates cooperating mono-agent processes. It does not defend
 against a hostile process running as the same user that replaces the gate

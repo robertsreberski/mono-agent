@@ -5,7 +5,10 @@ import process from "node:process";
 import { deriveLaunchdMaintenanceLabel } from "./launchd.js";
 import type { LaunchdPaths } from "./launchd.js";
 import { ensureOwnerPrivateLaunchdDirectory } from "./launchd-private-files.js";
-import { acquireOwnerPrivateLock, validateOwnerPrivateLockInputs } from "../../durable-state/owner-private-lock.js";
+import {
+  acquireOwnerPrivateLock, validateOwnerPrivateLockInputs, type OwnerPrivateLockMutationStep,
+} from "../../durable-state/owner-private-lock.js";
+import { ownerLockMutationGatePath } from "../../durable-state/owner-lock-mutation-gate.js";
 import { processIncarnationFromJson } from "@mono-agent/conversation/process-incarnation";
 import type { ProcessIncarnation, SameProcessIncarnation } from "@mono-agent/conversation/process-incarnation";
 
@@ -33,6 +36,9 @@ interface FilesystemLifecycleLockOptions extends BackgroundLockAcquireOptions {
   readonly randomToken?: () => string;
   /** Deterministic seam immediately after the final identity check. */
   readonly beforeStaleLockRename?: () => Promise<void>;
+  /** Test-only seams for the mutation gate. */
+  readonly mutationStep?: (step: OwnerPrivateLockMutationStep, path: string) => void | Promise<void>;
+  readonly gateBusyTimeoutMs?: number;
 }
 
 interface LifecycleLockDependencies {
@@ -123,6 +129,17 @@ export async function acquireFilesystemLifecycleLock(
     ...(options.beforeStaleLockRename === undefined
       ? {}
       : { beforeStaleRename: options.beforeStaleLockRename }),
+    // One gate per locks directory, shared with the runtime publication barriers.
+    // A gate still busy after its bounded wait is reported exactly like a held
+    // lock, so install/uninstall and restarts never block on it; a busy release
+    // finishes in the background instead of failing the lifecycle command.
+    mutationGate: {
+      path: ownerLockMutationGatePath(lockDir),
+      ...(options.gateBusyTimeoutMs === undefined ? {} : { busyTimeoutMs: options.gateBusyTimeoutMs }),
+    },
+    onGateBusy: () => undefined,
+    releaseGateBusy: "background",
+    ...(options.mutationStep === undefined ? {} : { mutationStep: options.mutationStep }),
     staleRace: "return",
     ...(shared && (options.waitTimeoutMs ?? 0) > 0
       ? { timeoutError: (observed) => sharedLaunchdLogLockTimeoutError(observed) }
