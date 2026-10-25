@@ -1,5 +1,5 @@
 import { randomInt } from "node:crypto";
-import { lstat, readdir } from "node:fs/promises";
+import { lstat, readdir, readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { isProcessIncarnationLive, type SameProcessIncarnation } from "@mono-agent/conversation/process-incarnation";
 import { agentRootDigest, agentRootLeaseLockOptions } from "./agent-root-lease-policy.js";
@@ -14,8 +14,10 @@ const DIAGNOSTIC = "Agent-root lease sweep could not finish safely; uncertain le
 
 interface SweepOptions {
   readonly leaseRoot: string;
-  /** Only trusted host app composition opts in. Never infer this from sandbox.mode (a tool policy). */
+  /** App startup admission is necessary, but process-namespace visibility is checked independently. */
   readonly context: "host" | "sandbox";
+  readonly platform?: NodeJS.Platform;
+  readonly readProcessStatus?: () => Promise<string>;
   readonly now?: () => number;
   readonly monotonicNow?: () => number;
   readonly budgetMs?: number;
@@ -39,6 +41,7 @@ export async function sweepAgentRootLeases(options: SweepOptions): Promise<void>
     const clock = options.monotonicNow ?? (() => performance.now());
     const deadline = clock() + Math.min(BUDGET_MS, Math.max(0, options.budgetMs ?? BUDGET_MS));
     const hasTime = (): boolean => clock() < deadline;
+    if (!await hasUsableProcessNamespace(options) || !hasTime()) return;
     const now = options.now ?? Date.now;
     const index = options.randomIndex ?? randomInt;
     // Listing names is cheap; only the random sample gets owner reads/probes.
@@ -119,4 +122,18 @@ function report(options: SweepOptions): void {
     if (options.onDiagnostic !== undefined) options.onDiagnostic(DIAGNOSTIC);
     else process.emitWarning(DIAGNOSTIC, "AgentRootLeaseSweepWarning");
   } catch { /* Best effort diagnostics must never affect acquisition or escape the sweep. */ }
+}
+
+/** A public app entrypoint may itself run inside a tool's PID/mount sandbox. */
+async function hasUsableProcessNamespace(options: SweepOptions): Promise<boolean> {
+  const platform = options.platform ?? process.platform;
+  if (platform === "darwin") return true;
+  if (platform !== "linux") return false;
+  try {
+    const status = await (options.readProcessStatus ?? (() => readFile("/proc/self/status", "utf8")))();
+    const lines = status.match(/^NSpid:[^\r\n]*$/gmu);
+    if (lines?.length !== 1) return false;
+    const entries = lines[0]!.slice("NSpid:".length).trim().split(/\s+/u);
+    return entries.length === 1 && /^[1-9]\d*$/u.test(entries[0]!);
+  } catch { return false; } // Missing/unreadable procfs is not evidence of host PID visibility.
 }

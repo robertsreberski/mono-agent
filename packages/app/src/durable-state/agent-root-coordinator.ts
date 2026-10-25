@@ -66,7 +66,7 @@ export interface AgentRootOwnership {
 
 interface AcquireAgentRootOwnershipOptions {
   readonly homeDir?: string;
-  /** Trusted host app startup only; raw/sandboxed coordinator callers never sweep by default. */
+  /** App startup opts in; the sweep independently checks process-namespace visibility. */
   readonly sweepContext?: "host" | "sandbox";
   readonly pid?: number;
   readonly now?: () => number;

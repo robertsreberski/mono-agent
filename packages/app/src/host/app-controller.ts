@@ -175,8 +175,8 @@ async function startMonoAgentAppInternal(
     }
   };
   const cwd = resolve(options.cwd ?? process.cwd());
-  // Only this trusted host composition boundary opts into absent-root maintenance.
-  // A configured tool sandbox is not the filesystem view of this host process.
+  // App startup opts in, but may itself run inside a tool sandbox.
+  // The sweep independently checks whether process-namespace visibility is safe.
   const agentRootOwnership = await acquireAgentRootOwnership(cwd, { sweepContext: "host" });
   let controller: MonoAgentAppController | undefined;
   try {

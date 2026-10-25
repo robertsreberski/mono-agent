@@ -124,7 +124,8 @@
   continuity benchmark runtimes during teardown.
 - Reclaim sampled abandoned agent-root leases after host startup when their
   verified root is absent and their owner is provably dead; retain legacy,
-  live and uncertain leases without delaying startup for the sweep.
+  live and uncertain leases without delaying startup for the sweep. Skip
+  maintenance when Linux process-namespace visibility is uncertain.
 - Fix a race where two processes reclaiming the same crashed agent-root lease
   could both end up owning that agent root. Agent-root lease changes now pass
   through an owner-only `.mutation-gate.sqlite` file in

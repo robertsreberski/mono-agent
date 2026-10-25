@@ -542,10 +542,15 @@ account-home resolution is unchanged.
 
 After the first successful ownership acquisition during host app startup, one
 best-effort asynchronous sweep samples at most 16 lease names with a 100 ms
-monotonic inspection/probe budget. Acquisition never awaits it. Only trusted host
-app composition opts in: raw coordinator callers and sandboxed contexts do not
-sweep, because a sandbox may hide an existing root as `ENOENT`. The configured
-sandbox mode describes tools, not the host process, and is not used as proof.
+monotonic inspection/probe budget. Acquisition never awaits it. App startup opts
+in, but the public app entrypoint can itself run inside a sandbox. On Linux the
+sweep therefore requires exactly one PID in `/proc/self/status`'s `NSpid` line;
+multiple entries, a missing/malformed line or unreadable procfs skip maintenance
+before listing leases. Darwin has no PID namespaces and retains conservative
+liveness probing (including treating sandbox `EPERM` and probe errors as live).
+Other platforms do not sweep. Raw coordinator callers do not opt in by default,
+and explicitly sandboxed callers are skipped. Tool sandbox configuration is not
+used as proof of the current process's PID or mount view.
 
 The sweep only considers validated new records whose canonical `agentRoot` hashes
 to both the recorded and filename digest. It first checks that the root is absent

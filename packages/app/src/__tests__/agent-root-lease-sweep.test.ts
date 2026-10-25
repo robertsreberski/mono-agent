@@ -37,7 +37,7 @@ async function fixture() {
     await files.writeFile(join(path, "owner.json"), JSON.stringify(record) + "\n", { mode: 0o600 });
     return path;
   };
-  const options = { leaseRoot, context: "host" as const, now: () => NOW, monotonicNow: () => 0, isSameProcessIncarnation: vi.fn(async () => false), onDiagnostic: vi.fn() };
+  const options = { leaseRoot, context: "host" as const, platform: "darwin" as const, now: () => NOW, monotonicNow: () => 0, isSameProcessIncarnation: vi.fn(async () => false), onDiagnostic: vi.fn() };
   return { dir, home, root, lease, leaseRoot, seed, options };
 }
 const exists = async (path: string) => files.lstat(path).then(() => true, (error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return false; throw error; });
@@ -122,6 +122,35 @@ describe("conservative absent-root lease sweep", () => {
     } finally { release(); await held; }
   });
 
+  it("skips SQLite BUSY while another process holds the agent-root gate", async () => {
+    const f = await fixture(); await f.seed();
+    const moduleUrl = new URL("../../dist/durable-state/owner-lock-mutation-gate.js", import.meta.url).href;
+    const source = `
+      import { withOwnerLockMutationGate } from ${JSON.stringify(moduleUrl)};
+      await withOwnerLockMutationGate({ path: ${JSON.stringify(join(f.leaseRoot, AGENT_ROOT_LEASE_MUTATION_GATE))} }, "Fictional child holder", async () => {
+        process.send("held");
+        await new Promise((done) => process.once("message", done));
+      });
+      process.disconnect();
+    `;
+    const child = spawn(process.execPath, ["--input-type=module", "--eval", source], { stdio: ["ignore", "ignore", "pipe", "ipc"] });
+    const ready = once(child, "message"), exited = once(child, "exit");
+    let stderr = ""; child.stderr!.on("data", (chunk) => { stderr += String(chunk); });
+    try {
+      expect((await Promise.race([ready, exited.then(() => { throw new Error(stderr || "gate holder exited early"); })]))[0]).toBe("held");
+      const step = vi.fn();
+      await sweepAgentRootLeases({ ...f.options, mutationStep: step });
+      expect(f.options.isSameProcessIncarnation).toHaveBeenCalledOnce();
+      expect(step).not.toHaveBeenCalled(); expect(f.options.onDiagnostic).not.toHaveBeenCalled();
+      expect(await exists(f.lease)).toBe(true); expect(child.exitCode).toBeNull();
+      child.send("release"); expect((await exited)[0], stderr).toBe(0);
+      await sweepAgentRootLeases(f.options);
+      expect(await exists(f.lease)).toBe(false);
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) { child.kill("SIGKILL"); await exited; }
+    }
+  });
+
   it("never mutates on a liveness result arriving after the monotonic budget", async () => {
     const f = await fixture(); await f.seed();
     let finish!: (alive: boolean) => void;
@@ -204,6 +233,50 @@ describe("conservative absent-root lease sweep", () => {
     const listing = vi.mocked(files.readdir);
     await sweepAgentRootLeases({ ...f.options, context: "sandbox" });
     expect(listing).not.toHaveBeenCalled(); expect(f.options.isSameProcessIncarnation).not.toHaveBeenCalled();
+  });
+});
+
+describe("process-namespace admission", () => {
+  it.each([
+    ["one entry", "Name:\tfictional\nNSpid:\t123\n", true],
+    ["several entries", "NSpid:\t123\t1\n", false],
+    ["missing line", "Name:\tfictional\nPid:\t123\n", false],
+    ["empty line", "NSpid:\t\nPid:\t123\n", false],
+    ["malformed entry", "NSpid:\tunknown\n", false],
+    ["duplicate lines", "NSpid:\t123\nNSpid:\t123\n", false],
+  ] as const)("admits Linux with %s only when exactly one PID is visible", async (_label, status, admitted) => {
+    const f = await fixture(); await f.seed();
+    const readProcessStatus = vi.fn(async () => status);
+    await sweepAgentRootLeases({ ...f.options, platform: "linux", readProcessStatus });
+    expect(readProcessStatus).toHaveBeenCalledOnce();
+    expect(await exists(f.lease)).toBe(!admitted);
+    expect(f.options.isSameProcessIncarnation).toHaveBeenCalledTimes(admitted ? 1 : 0);
+    expect(files.readdir).toHaveBeenCalledTimes(admitted ? 1 : 0);
+  });
+
+  it("skips Linux without listing leases when procfs is unreadable", async () => {
+    const f = await fixture(); await f.seed();
+    await sweepAgentRootLeases({ ...f.options, platform: "linux", readProcessStatus: async () => { throw new Error("procfs unavailable"); } });
+    expect(await exists(f.lease)).toBe(true);
+    expect(files.readdir).not.toHaveBeenCalled(); expect(f.options.isSameProcessIncarnation).not.toHaveBeenCalled();
+    expect(f.options.onDiagnostic).not.toHaveBeenCalled();
+  });
+
+  it("does not inspect leases after namespace admission exhausts the budget", async () => {
+    const f = await fixture(); await f.seed(); let clock = 0;
+    await sweepAgentRootLeases({ ...f.options, platform: "linux", monotonicNow: () => clock,
+      readProcessStatus: async () => { clock = 101; return "NSpid:\t123\n"; } });
+    expect(await exists(f.lease)).toBe(true);
+    expect(files.readdir).not.toHaveBeenCalled(); expect(f.options.isSameProcessIncarnation).not.toHaveBeenCalled();
+  });
+
+  it.each(["darwin", "win32"] as const)("does not consult Linux procfs on %s", async (platform) => {
+    const f = await fixture(); await f.seed();
+    const readProcessStatus = vi.fn(async () => "NSpid:\t123\n");
+    await sweepAgentRootLeases({ ...f.options, platform, readProcessStatus });
+    expect(readProcessStatus).not.toHaveBeenCalled();
+    expect(await exists(f.lease)).toBe(platform !== "darwin");
+    expect(files.readdir).toHaveBeenCalledTimes(platform === "darwin" ? 1 : 0);
   });
 });
 
