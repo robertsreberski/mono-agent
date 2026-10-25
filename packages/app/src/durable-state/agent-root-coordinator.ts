@@ -8,7 +8,9 @@ import {
   acquireOwnerPrivateLock,
   validateOwnerPrivateLockInputs,
   type OwnerPrivateLock,
+  type OwnerPrivateLockMutationStep,
 } from "./owner-private-lock.js";
+import { OwnerLockCoordinationBusyError } from "./owner-lock-mutation-gate.js";
 import type { ProcessIncarnation, SameProcessIncarnation } from "@mono-agent/conversation/process-incarnation";
 import { accountHomeDirectory } from "../host/account-home.js";
 
@@ -16,9 +18,17 @@ const AGENT_ROOT_LEASE_SCHEMA = "mono-agent.agent-root-lease.v1";
 const AGENT_ROOT_LEASE_OWNERLESS_GRACE_MS = 5 * 60_000;
 const AGENT_ROOT_LEASE_ACQUIRE_ATTEMPTS = 4;
 const PROCESS_JOBS_GENERATION_DRAIN_TIMEOUT_MS = 30_000;
+/** Older readers reject owner records over 4 KiB; new records stay well below. */
+const AGENT_ROOT_OWNER_RECORD_TARGET_BYTES = 3 * 1024;
+/** A busy gate during release moved nothing, so release may safely try again. */
+const AGENT_ROOT_RELEASE_BUSY_ATTEMPTS = 3;
+/** One cross-process mutation gate for every lease in the lease root. Never removed. */
+export const AGENT_ROOT_LEASE_MUTATION_GATE = ".mutation-gate.sqlite";
 
 export const AGENT_ROOT_OWNED_ELSEWHERE_ERROR =
   "Another mono-agent process is already using this agent root. Stop that local agent before trying again.";
+export const AGENT_ROOT_COORDINATION_BUSY_ERROR =
+  "Another mono-agent process is updating agent-root ownership right now. Retry in a moment.";
 export const AGENT_ROOT_REQUIRED_ERROR =
   "A configured local runtime requires an explicit agent-root cwd.";
 export const AGENT_ROOT_WORKSPACE_REQUIRED_ERROR =
@@ -58,9 +68,13 @@ interface AcquireAgentRootOwnershipOptions {
   readonly processIncarnation?: ProcessIncarnation;
   readonly isSameProcessIncarnation?: SameProcessIncarnation;
   readonly ownerlessGraceMs?: number;
+  /** Bounded wait for the lease-root mutation gate (clamped to 5 s). Defaults to 3 s. */
+  readonly mutationGateBusyTimeoutMs?: number;
   readonly hooks?: {
     readonly afterLeaseDirectoryCreated?: () => Promise<void>;
     readonly beforeStaleLeaseRename?: () => Promise<void>;
+    /** Test-only seam at each canonical lease mutation checkpoint. */
+    readonly leaseMutationStep?: (step: OwnerPrivateLockMutationStep) => void | Promise<void>;
     /** Test-only fault seam for the final physical owner-lock release. */
     readonly beforeLeaseRelease?: () => Promise<void>;
   };
@@ -380,7 +394,15 @@ async function createEntry(
       ...(options.isSameProcessIncarnation === undefined
         ? {}
         : { isSameProcessIncarnation: options.isSameProcessIncarnation }),
-      ownerFields: () => ({ rootDigest: digest }),
+      mutationGate: {
+        path: join(leaseRoot, AGENT_ROOT_LEASE_MUTATION_GATE),
+        ...(options.mutationGateBusyTimeoutMs === undefined ? {} : { busyTimeoutMs: options.mutationGateBusyTimeoutMs }),
+      },
+      ...(options.hooks?.leaseMutationStep === undefined
+        ? {}
+        : { mutationStep: options.hooks.leaseMutationStep }),
+      ownerFields: (base) => agentRootLeaseOwnerFields(base, digest, canonicalRoot),
+      // Acquisition keeps accepting legacy records without `agentRoot`.
       validateOwnerFields: (record) => record.rootDigest === digest,
       invalidOwner: "error",
       livenessError: () => "assume-live",
@@ -415,6 +437,9 @@ async function createEntry(
     };
   } catch (error) {
     if (error instanceof Error && error.message === AGENT_ROOT_OWNED_ELSEWHERE_ERROR) throw error;
+    if (error instanceof OwnerLockCoordinationBusyError) {
+      throw new Error(AGENT_ROOT_COORDINATION_BUSY_ERROR, { cause: error });
+    }
     throw new Error(
       "Mono-agent could not establish private ownership of this agent root. Check the local owner and permissions, then retry.",
       { cause: error },
@@ -422,16 +447,38 @@ async function createEntry(
   }
 }
 
+/**
+ * New lease records name their canonical root so a later sweep can prove the
+ * root is gone. The field is omitted when the whole record would exceed the
+ * 3 KiB target, keeping it far inside older readers' 4 KiB limit.
+ */
+export function agentRootLeaseOwnerFields(
+  base: object,
+  digest: string,
+  canonicalRoot: string,
+): Readonly<Record<string, unknown>> {
+  const withRoot = { rootDigest: digest, agentRoot: canonicalRoot };
+  const bytes = Buffer.byteLength(`${JSON.stringify({ ...withRoot, ...base })}\n`, "utf8");
+  return bytes <= AGENT_ROOT_OWNER_RECORD_TARGET_BYTES ? withRoot : { rootDigest: digest };
+}
+
 function scheduleFinalRelease(entry: CoordinatorEntry): void {
   if (entry.ownerRefs !== 0 || entry.active.size !== 0 || entry.mutationPending || entry.closing) return;
   entry.closing = true;
   void (async () => {
     try {
-      await entry.lease.release(
-        entry.beforeLeaseRelease === undefined
-          ? undefined
-          : { beforeRename: entry.beforeLeaseRelease },
-      );
+      for (let attempt = 1; ; attempt += 1) {
+        try {
+          await entry.lease.release(
+            entry.beforeLeaseRelease === undefined
+              ? undefined
+              : { beforeRename: entry.beforeLeaseRelease },
+          );
+          break;
+        } catch (error) {
+          if (!(error instanceof OwnerLockCoordinationBusyError) || attempt >= AGENT_ROOT_RELEASE_BUSY_ATTEMPTS) throw error;
+        }
+      }
       if (entries.get(entry.agentRoot) === entry) entries.delete(entry.agentRoot);
     } catch (error) {
       // The physical lock may be in an indeterminate release state. Keep this

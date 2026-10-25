@@ -577,6 +577,36 @@ are normal there. If an agent reports web coordination as unavailable, run
 `mono-agent web-control reset` from the upgraded CLI once no web request is
 active; it clears leases and cooldowns.
 
+### Stale lock reclaim and the agent-root mutation gate
+
+Agent-root leases live in `~/.mono-agent/agent-root-leases/`. When two
+processes reclaim the same crashed lease, they serialize the risky step through
+one owner-only gate file in that directory, `.mutation-gate.sqlite`. Creating
+and publishing a lease, and the final check-then-rename of a stale, released or
+abandoned lease, run while holding an SQLite exclusive lock on that empty file.
+The gate is never written to and is never removed. The operating system drops
+the lock when its holder exits or is killed. Liveness probes and removal of
+detached leases run outside the gate.
+
+- If another process holds the gate for more than about three seconds, startup
+  reports that another process is updating agent-root ownership. It is a retry
+  condition, not a claim that the root is owned.
+- If the gate is a symlink, has extra hard links, is not owned by you, is not
+  mode `0600` or holds non-SQLite content, acquisition fails closed. It
+  never falls back to unguarded reclaim. Remove the gate file only when no
+  mono-agent process is running.
+- Every owner lock checks what it moved after the rename, gate or not. If that
+  was a live lease rather than the stale one, it moves it back. If the pathname
+  was taken again in the meantime, both directories are left in place and the
+  acquisition, release or cleanup fails with an error naming both paths.
+- New agent-root lease records also carry the canonical `agentRoot` path when
+  the record stays under 3 KiB. Older readers ignore the field, and new readers
+  still accept records without it.
+
+Compatibility: this is never worse than before. An older binary does not take
+the gate, so it can still trigger the original race until it is upgraded.
+Other owner locks get the move-back protection but not the gate yet.
+
 ### Validation, recovery, and managed logs
 
 `mono-agent validate` (and its `doctor` alias) reports the provenance of the CLI

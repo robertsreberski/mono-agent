@@ -13,6 +13,7 @@ import {
 } from "@mono-agent/conversation/process-incarnation";
 import type { ProcessIncarnation, SameProcessIncarnation } from "@mono-agent/conversation/process-incarnation";
 import { secureFileReplace } from "./secure-file-replace.js";
+import { withOwnerLockMutationGate, type OwnerLockMutationGate } from "./owner-lock-mutation-gate.js";
 
 const OWNER_MAX_BYTES = 4 * 1024;
 const OWNER_PUBLICATION_TEMPORARY = ".owner.mono-agent-publication.tmp";
@@ -41,6 +42,20 @@ type Observed =
       readonly [OWNER_PUBLICATION_IN_PROGRESS]?: PublicationPin }
   | { readonly kind: "owned"; readonly identity: Identity; readonly owner: Owner };
 interface ArtifactInput { readonly path: string; readonly pid: number; readonly now: number; readonly token: string }
+
+/**
+ * Test-only mutation checkpoints. `gate-acquired` fires only for gated callers;
+ * `*-verified` fires between the final identity check and the canonical
+ * rename; `*-detached` fires after that rename, before post-rename verification.
+ */
+export type OwnerPrivateLockMutationStep =
+  | "gate-acquired"
+  | "stale-verified"
+  | "stale-detached"
+  | "release-verified"
+  | "release-detached"
+  | "abandon-verified"
+  | "abandon-detached";
 
 interface OwnerPrivateLockOptions {
   readonly path: string;
@@ -81,6 +96,15 @@ interface OwnerPrivateLockOptions {
   readonly afterDirectoryCreated?: (path: string) => void | Promise<void>;
   readonly afterInspected?: (observed: Observed) => void | Promise<void>;
   readonly beforeStaleRename?: (path: string) => void | Promise<void>;
+  /** Test-only seam at each canonical-path mutation checkpoint. */
+  readonly mutationStep?: (step: OwnerPrivateLockMutationStep, path: string) => void | Promise<void>;
+  /**
+   * Opt-in cross-process gate. When present, directory creation through owner
+   * publication and every final check-then-rename (stale quarantine, release,
+   * failed-acquisition abandon) run while holding it. A busy, insecure, corrupt
+   * or unavailable gate fails closed; the mutation never runs unguarded.
+   */
+  readonly mutationGate?: OwnerLockMutationGate;
   readonly isSatisfied?: () => boolean | Promise<boolean>;
   readonly sleep?: (milliseconds: number) => Promise<void>;
   readonly stalePath?: (input: ArtifactInput) => string;
@@ -144,43 +168,48 @@ export async function acquireOwnerPrivateLock(options: OwnerPrivateLockOptions):
     options.beforeIteration?.();
     attempts += 1;
     const token = checkedToken(randomToken(), options.label);
-    let created: Identity | undefined;
-    try {
-      await mkdir(options.path, { mode: 0o700 });
-      created = identity(await privateDirectory(options.path, options));
-      await options.afterDirectoryCreated?.(options.path);
-      await sameDirectoryRequired(options.path, created, options);
-      const base: BaseOwner = {
-        schema: options.schemaTag,
-        pid,
-        token,
-        createdAt: new Date(now()).toISOString(),
-        ...(legacyIncarnation === undefined
-          ? { incarnation }
-          : { incarnation: legacyIncarnation, stableIncarnation: incarnation }),
-      };
-      const record = { ...options.ownerFields?.(base), ...base };
-      const owner = await publishOwner(options, created, record);
-      await syncDirectory(options.path, created, options);
-      return makeHeld(options, created, owner, pid, now, randomToken);
-    } catch (error) {
-      if (created !== undefined) {
-        // An exclusive owner publication can lose to a same-user contender
-        // inside the directory we just created. Preserve that record and let
-        // normal inspection decide whether it is live, stale, or unsafe.
-        if (!isErrno(error, "EEXIST")) {
-          try {
-            await abandon(options, created, pid, now, randomToken);
-          } catch (cleanupError) {
-            throw new AggregateError(
-              [error, cleanupError],
-              `${options.label} acquisition and failed-acquisition cleanup both failed.`,
-            );
+    const held = await gated(options, async () => {
+      let created: Identity | undefined;
+      try {
+        await mkdir(options.path, { mode: 0o700 });
+        created = identity(await privateDirectory(options.path, options));
+        await options.afterDirectoryCreated?.(options.path);
+        await sameDirectoryRequired(options.path, created, options);
+        const base: BaseOwner = {
+          schema: options.schemaTag,
+          pid,
+          token,
+          createdAt: new Date(now()).toISOString(),
+          ...(legacyIncarnation === undefined
+            ? { incarnation }
+            : { incarnation: legacyIncarnation, stableIncarnation: incarnation }),
+        };
+        const record = { ...options.ownerFields?.(base), ...base };
+        const owner = await publishOwner(options, created, record);
+        await syncDirectory(options.path, created, options);
+        return makeHeld(options, created, owner, pid, now, randomToken);
+      } catch (error) {
+        if (created !== undefined) {
+          // An exclusive owner publication can lose to a same-user contender
+          // inside the directory we just created. Preserve that record and let
+          // normal inspection decide whether it is live, stale, or unsafe.
+          if (!isErrno(error, "EEXIST")) {
+            try {
+              // Still inside the same gate hold as the publication.
+              await abandon(options, created, pid, now, randomToken);
+            } catch (cleanupError) {
+              throw new AggregateError(
+                [error, cleanupError],
+                `${options.label} acquisition and failed-acquisition cleanup both failed.`,
+              );
+            }
           }
         }
+        if (!isErrno(error, "EEXIST")) throw error;
+        return undefined;
       }
-      if (!isErrno(error, "EEXIST")) throw error;
-    }
+    });
+    if (held !== undefined) return held;
 
     if (await options.isSatisfied?.()) return undefined;
     const observed = await inspect(options.path, options);
@@ -269,19 +298,27 @@ function makeHeld(
         throw unsafe(options, `${options.label} identity or owner changed before release; the replacement was left untouched.`);
       }
       await releaseOptions.beforeRename?.(options.path);
-      if (!await matchesObserved(options.path, options, expected)) {
-        throw unsafe(options, `${options.label} changed at the release boundary; the replacement was left untouched.`);
-      }
-      const releasedPath = artifactPath(options, "released", pid, now, randomToken);
-      try {
-        await rename(options.path, releasedPath);
-      } catch (error) {
-        if (isErrno(error, "ENOENT")) throw unsafe(options, `${options.label} disappeared during release.`);
-        throw error;
-      }
-      if (!await matchesObserved(releasedPath, options, expected)) {
-        throw unsafe(options, `${options.label} changed across release and was retained at ${releasedPath}.`, { releasedPath });
-      }
+      const releasedPath = await gated(options, async () => {
+        if (!await matchesObserved(options.path, options, expected)) {
+          throw unsafe(options, `${options.label} changed at the release boundary; the replacement was left untouched.`);
+        }
+        await options.mutationStep?.("release-verified", options.path);
+        const detachedPath = artifactPath(options, "released", pid, now, randomToken);
+        try {
+          await rename(options.path, detachedPath);
+        } catch (error) {
+          if (isErrno(error, "ENOENT")) throw unsafe(options, `${options.label} disappeared during release.`);
+          throw error;
+        }
+        await options.mutationStep?.("release-detached", detachedPath);
+        const verification = await verifyDetached(() => matchesObserved(detachedPath, options, expected));
+        if (verification !== true) {
+          await restoreDisplaced(options, detachedPath, "release", { releasedPath: detachedPath });
+          if (verification instanceof Failure) throw verification.error;
+          throw unsafe(options, `${options.label} changed across release; the replacement was moved back to ${options.path}.`);
+        }
+        return detachedPath;
+      });
       released = true;
       await rm(releasedPath, { recursive: true, force: true });
     },
@@ -492,46 +529,111 @@ async function quarantine(
   now: () => number,
   randomToken: () => string,
 ): Promise<"retry" | "return"> {
+  // Liveness was decided outside the gate. Under it, the exact observed
+  // directory and owner identity must still match before that cached death
+  // proof is used; a dead incarnation never resurrects.
   await options.beforeStaleRename?.(options.path);
-  const current = await compareObserved(options.path, options, expected);
-  if (current === undefined) return "retry";
-  if (!current) {
-    return staleRace(options, `${options.label} changed during stale-lock verification; the replacement was left untouched.`);
-  }
-  const stalePath = artifactPath(options, "stale", pid, now, randomToken);
-  try {
-    await rename(options.path, stalePath);
-  } catch (error) {
-    if (isErrno(error, "ENOENT")) {
-      const current = await compareObserved(options.path, options, expected);
-      if (current === undefined) return "retry";
-      if (!current) {
-        return staleRace(
+  const outcome = await gated(options, async (): Promise<"retry" | "return" | { readonly detached: string }> => {
+    const current = await compareObserved(options.path, options, expected);
+    if (current === undefined) return "retry";
+    if (!current) {
+      return staleRace(options, `${options.label} changed during stale-lock verification; the replacement was left untouched.`);
+    }
+    await options.mutationStep?.("stale-verified", options.path);
+    const stalePath = artifactPath(options, "stale", pid, now, randomToken);
+    try {
+      await rename(options.path, stalePath);
+    } catch (error) {
+      if (isErrno(error, "ENOENT")) {
+        const current = await compareObserved(options.path, options, expected);
+        if (current === undefined) return "retry";
+        if (!current) {
+          return staleRace(
+            options,
+            `${options.label} changed while stale-lock quarantine was attempted; the replacement was left untouched.`,
+          );
+        }
+        throw unsafe(
           options,
-          `${options.label} changed while stale-lock quarantine was attempted; the replacement was left untouched.`,
+          `${options.label} could not be quarantined at ${stalePath}; the source lock was left untouched.`,
+          { stalePath },
         );
       }
-      throw unsafe(
+      if (isErrno(error, "EEXIST")) {
+        throw unsafe(
+          options,
+          `${options.label} quarantine destination already exists; both paths were left untouched.`,
+          { stalePath },
+        );
+      }
+      throw error;
+    }
+    await options.mutationStep?.("stale-detached", stalePath);
+    const verification = await verifyDetached(async () => await compareObserved(stalePath, options, expected) === true);
+    if (verification !== true) {
+      // We moved something other than the stale lock we judged dead, such as
+      // a fresh live lease. Put it back before anyone can take the pathname.
+      await restoreDisplaced(options, stalePath, "stale-lock quarantine", { stalePath });
+      if (verification instanceof Failure) throw verification.error;
+      return staleRace(
         options,
-        `${options.label} could not be quarantined at ${stalePath}; the source lock was left untouched.`,
+        `${options.label} changed across stale-lock quarantine; the replacement was moved back to ${options.path}.`,
         { stalePath },
       );
     }
-    if (isErrno(error, "EEXIST")) {
-      throw unsafe(
-        options,
-        `${options.label} quarantine destination already exists; both paths were left untouched.`,
-        { stalePath },
-      );
-    }
-    throw error;
-  }
-  if (await compareObserved(stalePath, options, expected) !== true) {
-    return staleRace(options, `${options.label} changed across stale-lock quarantine and was retained at ${stalePath}.`, { stalePath });
-  }
+    return { detached: stalePath };
+  });
+  if (typeof outcome === "string") return outcome;
   await closeObserved(expected);
-  await rm(stalePath, { recursive: true, force: true });
+  // Recursive removal of the verified detached directory needs no gate.
+  await rm(outcome.detached, { recursive: true, force: true });
   return "retry";
+}
+
+/** Holds a post-rename verification error so the moved directory is restored before it is rethrown. */
+class Failure { constructor(readonly error: unknown) {} }
+
+async function verifyDetached(check: () => Promise<boolean>): Promise<boolean | Failure> {
+  try {
+    return await check();
+  } catch (error) {
+    return new Failure(error);
+  }
+}
+
+/**
+ * Move a wrongly detached directory back to the canonical pathname. If the
+ * pathname was taken again (`ENOTEMPTY`/`EEXIST`) or the move fails otherwise,
+ * leave both directories untouched and fail closed with a bounded diagnostic.
+ */
+async function restoreDisplaced(
+  options: OwnerPrivateLockOptions,
+  movedPath: string,
+  operation: string,
+  details: Readonly<Record<string, string>>,
+): Promise<void> {
+  let moved: Identity;
+  try {
+    moved = identity(await lstat(movedPath, { bigint: true }));
+    await rename(movedPath, options.path);
+  } catch (error) {
+    const code = errnoCode(error) ?? "unknown";
+    const occupied = code === "ENOTEMPTY" || code === "EEXIST";
+    throw unsafe(
+      options,
+      `${options.label} ${operation} moved an unexpected directory to ${movedPath} and could not move it back `
+        + `(${occupied ? `${options.path} was taken again` : code}); both paths were left untouched.`,
+      { ...details, retainedPath: movedPath, restoreFailure: code },
+    );
+  }
+  const restored = await lstatExisting(options.path).catch(() => undefined);
+  if (restored === undefined || !sameIdentity(restored, moved)) {
+    throw unsafe(
+      options,
+      `${options.label} ${operation} moved an unexpected directory back to ${options.path}, but could not confirm it.`,
+      { ...details, restoreFailure: "unconfirmed" },
+    );
+  }
 }
 
 function staleRace(options: OwnerPrivateLockOptions, cause: string, details = {}): "retry" | "return" {
@@ -546,7 +648,9 @@ async function abandon(
   now: () => number,
   randomToken: () => string,
 ): Promise<void> {
+  // Gated callers reach this only inside the publication's gate hold.
   if (!(await sameDirectory(options.path, expected, options))) return;
+  await options.mutationStep?.("abandon-verified", options.path);
   const path = artifactPath(options, "abandoned", pid, now, randomToken);
   try {
     await rename(options.path, path);
@@ -554,8 +658,12 @@ async function abandon(
     if (isErrno(error, "ENOENT")) return;
     throw error;
   }
-  if (!sameIdentity(await lstat(path, { bigint: true }), expected)) {
-    throw unsafe(options, `${options.label} changed across failed-acquisition cleanup and was retained at ${path}.`);
+  await options.mutationStep?.("abandon-detached", path);
+  const verification = await verifyDetached(async () => sameIdentity(await lstat(path, { bigint: true }), expected));
+  if (verification !== true) {
+    await restoreDisplaced(options, path, "failed-acquisition cleanup", { abandonedPath: path });
+    if (verification instanceof Failure) throw verification.error;
+    throw unsafe(options, `${options.label} changed across failed-acquisition cleanup; the replacement was moved back to ${options.path}.`);
   }
   await rm(path, { recursive: true, force: true });
 }
@@ -697,6 +805,17 @@ function checkedToken(value: string, label: string): string {
 }
 function unsafe(options: OwnerPrivateLockOptions, cause: string, details: Readonly<Record<string, unknown>> = {}): Error {
   return options.unsafeError?.(cause, details) ?? new Error(cause);
+}
+async function gated<T>(options: OwnerPrivateLockOptions, operation: () => Promise<T>): Promise<T> {
+  if (options.mutationGate === undefined) return await operation();
+  return await withOwnerLockMutationGate(options.mutationGate, options.label, async () => {
+    await options.mutationStep?.("gate-acquired", options.path);
+    return await operation();
+  });
+}
+function errnoCode(error: unknown): string | undefined {
+  const code = typeof error === "object" && error !== null ? (error as { code?: unknown }).code : undefined;
+  return typeof code === "string" && /^[A-Z0-9_]{1,32}$/u.test(code) ? code : undefined;
 }
 function message(error: unknown): string { return error instanceof Error ? error.message : String(error); }
 function isErrno(error: unknown, code: string): boolean {

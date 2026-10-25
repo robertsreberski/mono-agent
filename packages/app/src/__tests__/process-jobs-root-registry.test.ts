@@ -37,6 +37,7 @@ vi.mock("@mono-agent/conversation/process-incarnation", async (importOriginal) =
 }));
 
 import {
+  AGENT_ROOT_LEASE_MUTATION_GATE,
   acquireAgentRootOwnership,
   agentRootLeasePath,
 } from "../durable-state/agent-root-coordinator.js";
@@ -71,7 +72,8 @@ afterEach(async () => {
   for (const { ownership } of held) ownership.release();
   await Promise.all(held.map(async ({ leasePath }) => {
     await vi.waitFor(async () => {
-      await expect(readdir(dirname(leasePath))).resolves.toEqual([]);
+      expect((await readdir(dirname(leasePath))).filter((name) => name !== AGENT_ROOT_LEASE_MUTATION_GATE))
+        .toEqual([]);
     }, { timeout: 2_000, interval: 10 });
   }));
   await Promise.all(temporaryDirectories.splice(0).map(async (path) =>
