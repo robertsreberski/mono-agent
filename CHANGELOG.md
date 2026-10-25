@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Skip empty optional continuity evidence without adding a blank user turn to
+  cold native-session seeds or empty replay replacements.
+
 - Deduplicate fully replayed owner runs after reload, reserve cold continuity
   space for finalized tool outcomes, and distinguish requests from completed
   actions; retain partial or unproven overlap without guessing.

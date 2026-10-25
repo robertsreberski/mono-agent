@@ -220,6 +220,9 @@ describe("configured durable session history", () => {
         expect.stringMatching(/^assistant:(?:[\s\S]*\n\n)?seed-assistant$/u),
         expect.stringMatching(/^user:(?:[\s\S]*\n\n)?turn-1-user$/u),
       ]);
+      // Default-on continuity has no extra evidence on this fully replayed
+      // seed. A skipped supplier must not become a blank provider user turn.
+      expect(transcriptOf(createOnMissContext)).not.toContain("user:");
       expect(transcriptOf(createOnMissContext)).toEqual([
         expect.stringMatching(/^user:(?:[\s\S]*\n\n)?seed-user$/u),
         expect.stringMatching(/^assistant:(?:[\s\S]*\n\n)?seed-assistant$/u),
