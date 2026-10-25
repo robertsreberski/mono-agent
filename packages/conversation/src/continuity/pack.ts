@@ -170,7 +170,8 @@ function renderEntry(record: ContinuitySnapshotRecord, category: Section): strin
 
 /** One immutable source snapshot per host turn, reused by resume retry and every
  * detached attempt. Rendering may shrink for the actual target's headroom. No
- * paid calls; purge suppression is rechecked before every reuse. */
+ * paid calls during rendering; optional prepare performs bounded upkeep. Purge
+ * suppression is rechecked before every reuse. */
 export function createContinuityPackSupplier(options: ConversationHarnessOptions, request: ConversationHarnessRequest, runId: string) {
   const toolHistory = options.toolHistory;
   if ((toolHistory?.continuityEnabled !== true || toolHistory.packEnabled === false) && !toolHistory?.upkeep?.enabled) return undefined;
