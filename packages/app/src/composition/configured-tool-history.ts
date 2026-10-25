@@ -6,6 +6,8 @@ interface LazyConfiguredToolHistoryOptions {
   readonly artifactRoot: string;
   readonly continuityEnabled?: boolean;
   readonly packEnabled?: boolean;
+  readonly ledgerEnabled?: boolean;
+  readonly upkeep?: ConversationHarnessToolHistoryOptions["upkeep"];
   readonly conversationHistoryAvailable?: boolean;
   readonly rollover: "none" | "daily" | undefined;
   readonly onWarning?: (message: string) => void;
@@ -309,6 +311,8 @@ export function lazyConfiguredToolHistory(
       logicalConversationId: (id) => toolHistoryLogicalConversationId(id, options.rollover),
       protectedConversations: () => reader.protectedContinuityConversations(), onWarning: warn }) } : {}),
     ...(options.packEnabled === undefined ? {} : { packEnabled: options.packEnabled }),
+    ...(options.ledgerEnabled ? { ledgerEnabled: true } : {}),
+    ...(options.upkeep ? { upkeep: options.upkeep, publishLedger: async (generation: Parameters<ToolHistoryWriterHandle["writer"]["publishLedger"]>[0]) => await continuityCall(async writer => await writer.publishLedger(generation)) } : {}),
     ...(options.conversationHistoryAvailable === undefined ? {} : { conversationHistoryAvailable: options.conversationHistoryAvailable }),
     writer,
     reader,

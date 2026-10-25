@@ -155,7 +155,7 @@ export function snapshotContinuity(database: DatabaseSync, input: ContinuitySnap
   const candidates = database.prepare(`SELECT r.record_id,length(CAST(r.retained_text AS BLOB)) snapshot_bytes,r.kind,r.ordinal FROM continuity_records r
     JOIN continuity_generations g USING(generation_id) WHERE ${where} AND r.retained_text IS NOT NULL
     AND (r.kind IN ('owner','user','other-user','imported','tool') OR r.record_id=?)
-    ORDER BY CASE WHEN r.kind='owner' AND r.provenance='host-owner' THEN 0 WHEN r.kind='tool' THEN 1
+    ORDER BY CASE WHEN ${input.selection === 'upkeep' ? "r.kind='tool'" : "0"} THEN -1 WHEN r.kind='owner' AND r.provenance='host-owner' THEN 0 WHEN r.kind='tool' THEN 1
       WHEN r.kind='summary' THEN 2 ELSE 3 END, r.ordinal ASC LIMIT 513`).all(...values, pinnedSummaryId ?? '') as Row[];
   const records: ContinuitySnapshotRecord[] = [];
   let bytes = 0, bounded = candidates.length > 512, unavailable = false;

@@ -1,3 +1,4 @@
+import type { LedgerGeneration } from "../continuity/ledger.js";
 import type { ContinuityGapInput } from "./continuity-contracts.js";
 import type { RuntimeToolLifecycleEvent, RuntimeToolLifecyclePersistence, RuntimeToolLifecycleSink } from "@mono-agent/turn/host/types";
 import { statSync } from "node:fs";
@@ -238,6 +239,11 @@ export class ToolHistoryWriter {
 
   async recordContinuityGap(input: ContinuityGapInput): Promise<void> {
     await this.request("continuity_gap", input, TOOL_HISTORY_MAINTENANCE_CEILING_MS);
+  }
+
+  async publishLedger(input: LedgerGeneration): Promise<void> {
+    if (Buffer.byteLength(JSON.stringify(input)) > 128 * 1024) throw new TypeError("Ledger payload bound.");
+    await this.request("continuity_ledger", input, TOOL_HISTORY_MAINTENANCE_CEILING_MS);
   }
 
   async prepareContinuity(input: ContinuityPreparation): Promise<ContinuityReceipt> {

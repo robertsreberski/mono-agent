@@ -317,3 +317,48 @@ is recorded, not treated as a missing treatment. Ordinary request usage includes
 pack input tokens. The planning estimate allows the full 8k pack on each reader
 request, with the same retrieval allowance as store-only and no upkeep call. No quality improvement is claimed from offline runs, and the
 paid paired comparison is a separate operator action.
+
+## Ledger first slice
+
+`continuity-ledger-cold` buys **one upkeep per trace/repeat**, not per probe. Its
+checkpoint replays only source history, performs an eligible production cold
+upkeep, and scripts the preparation answer (not paid answer quality). The answer
+binding switches to the alternate while configured `runtime.model` remains the
+reader. Probe forks switch back to the reader and enable read-only `ledgerEnabled`
+with upkeep explicitly disabled. They require a valid committed generation and
+actual ledger entries in the provider-facing pack, with no second paid upkeep.
+Legacy/store/deterministic controls explicitly keep ledger/upkeep disabled.
+
+```sh
+pnpm benchmark:continuity:dry-run -- --suite hard-distractors --repeats 2 --arms native,cold-rebuild,continuity-pack-cold,continuity-ledger-cold --no-judge
+```
+
+The `hard-distractors` suite replaces only neutral filler paragraphs with labelled
+hypothetical corrections, decoy IDs and amounts. Actual facts, answers, byte sizes
+and pressure are unchanged. It tests nontrivial selection without editing probe
+rubrics or leaking expected answers into the upkeep source.
+
+Extraction defaults to configured reader model; `--extraction-model REF` is an
+explicit override, never an automatic cheaper model. `--require-request-cap`
+skips unsupported adapters before dispatch. Plan digest, dry-run workload and
+cost estimate include that model and one 64k-input/4096-output upkeep planning
+budget per trace/repeat. **Codex stream_abort is not a hard output/billing bound**:
+hidden reasoning/remote work may overrun; subscription/quota is not dollar
+metering. Catalog planning estimates are not an invoice or a spending guarantee.
+
+Results retain content-free host `upkeep` receipts, enforcement class, reported
+actual output tokens, coverage omissions and committed generation identity.
+Upkeep cost/tokens are added once through checkpoint accounting, even when a
+failed extraction invalidates the treatment. Its input count includes cached
+input; cache-class breakdown and whole-turn answer/upkeep reconciliation remain
+future work. Provider-facing offline ledger counts verify treatment, not model
+quality. Invalid/skipped extraction is excluded rather than scored as a quality
+miss. Only a separately authorized paid comparison can establish quality gains.
+
+Built offline mechanism proof: the existing
+`node packages/app/scripts/smoke-continuity-pack.mjs --ledger` fixture verifies
+that a buried retained tool ID and corrected amount reach the actual upkeep input
+and outgoing cold provider request, while current input and effects remain once.
+Add `--fail-upkeep` to verify invalid JSON leaves the deterministic fallback and
+a content-free gap, with no repair. These are scripted local fixtures, not live
+provider or mailbox tests. See [ledger trust and bounds](/runtime/continuity-ledger/).

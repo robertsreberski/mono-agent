@@ -156,7 +156,7 @@ describe("continuity scoring (deterministic)", () => {
 
 describe("continuity arms and plan", () => {
   it("declares production-config arms with the native baseline first and planned B arms unavailable", () => {
-    expect(AVAILABLE_ARM_IDS).toEqual(["native", "cold-rebuild", "compaction-1", "compaction-2", "ceiling", "restart-switch-compact", "continuity-store", "continuity-store-compaction", "continuity-pack-cold", "continuity-pack-boundary"]);
+    expect(AVAILABLE_ARM_IDS).toEqual(["native", "cold-rebuild", "compaction-1", "compaction-2", "ceiling", "restart-switch-compact", "continuity-store", "continuity-ledger-cold", "continuity-store-compaction", "continuity-pack-cold", "continuity-pack-boundary"]);
     expect(ARMS.filter((arm) => !arm.available).map((arm) => arm.id)).toEqual(["continuity-pack-per-turn", "pack+stubs"]);
     for (const arm of ARMS) {
       expect(arm.probeConfig).toBeTypeOf("object");
@@ -189,12 +189,13 @@ describe("continuity arms and plan", () => {
   });
 
   it("pins retained conversation evidence off for every pre-B1 arm and on for the B arms", () => {
-    const bArms = new Set(["continuity-store", "continuity-store-compaction", "continuity-pack-cold", "continuity-pack-boundary", "continuity-pack-per-turn", "pack+stubs"]);
+    const bArms = new Set(["continuity-ledger-cold", "continuity-store", "continuity-store-compaction", "continuity-pack-cold", "continuity-pack-boundary", "continuity-pack-per-turn", "pack+stubs"]);
     for (const arm of ARMS) {
       const enabled = arm.sessionConfig?.runtime?.session?.continuity?.enabled;
       expect(enabled, arm.id).toBe(!bArms.has(arm.id) ? false : true);
       // A runnable arm's probe patch never overrides the session pin.
-      if (arm.available) expect(arm.probeConfig.runtime?.session, arm.id).toBeUndefined();
+      if (arm.available && !arm.ledgerUpkeep) expect(arm.probeConfig.runtime?.session, arm.id).toBeUndefined();
+      if (arm.ledgerUpkeep) expect(arm.probeConfig.runtime.session.continuity).toEqual({ ledgerEnabled: true, upkeep: { enabled: false } });
     }
     expect(CONTINUITY_OFF).toEqual({ runtime: { session: { continuity: { enabled: false } } } });
     const store = armById("continuity-store");
@@ -315,11 +316,11 @@ describe("continuity offline contract run (production harness, scripted provider
   it("replays one trace through every arm and verifies each boundary", async () => {
     const output = await scratch();
     const lines = [];
-    const arms = [...ORIGINAL_ARM_IDS, "restart-switch-compact", "continuity-store", "continuity-pack-cold"];
+    const arms = [...ORIGINAL_ARM_IDS, "restart-switch-compact", "continuity-store", "continuity-pack-cold", "continuity-ledger-cold"];
     const code = await main(["--trace", "brightline-return", "--probe-limit", "1", "--concurrency", "5", "--arms", arms.join(","), "--output", output], { env: {}, stdout: (line) => lines.push(line) });
-    expect(code).toBe(1); // 7 of 28 units: the other traces were not selected.
+    expect(code).toBe(1); // 8 of 32 units: the other traces were not selected.
     const results = JSON.parse(await readFile(join(output, "results.json"), "utf8"));
-    expect(results).toMatchObject({ executionKind: "offline", qualityMeasured: false, coverage: { unitsComplete: 7, unitsExpected: 28 } });
+    expect(results).toMatchObject({ executionKind: "offline", qualityMeasured: false, coverage: { unitsComplete: 8, unitsExpected: 32 } });
     const units = Object.fromEntries(await Promise.all((await readdir(join(output, "units"))).map(async (name) => {
       const unit = JSON.parse(await readFile(join(output, "units", name), "utf8"));
       return [unit.arm, unit];
@@ -365,6 +366,12 @@ describe("continuity offline contract run (production harness, scripted provider
     expect(storeTrial.boundary.observed.continuityPacks).toEqual([]);
     expect(storeTrial.boundary.observed.offlineProviderPackCounts).toEqual([0, 0]);
     expect(units["cold-rebuild"].trials[0].boundary.observed.offlineProviderPackCounts).toEqual([0]);
+    const ledger = units["continuity-ledger-cold"];
+    expect(ledger.checkpoint.upkeep).toMatchObject({ valid: true, receipt: { status: "valid", providerInvoked: true, capEnforcement: "stream_abort" }, usage: { calls: 1 } });
+    expect(ledger.trials[0].boundary.observed.offlineLedgerCounts).toEqual([1, 1]);
+    expect(ledger.trials[0].boundary.observed.upkeep.some(row => row.providerInvoked)).toBe(false);
+    expect(results.upkeep).toHaveLength(1);
+    expect(results.summary.arms["continuity-ledger-cold"].usage.calls).toBe(2); // one upkeep plus one probe, not upkeep per tool call.
     expect(await readFile(join(output, "summary.md"), "utf8")).toContain("NOT model quality");
     expect(await readdir(output)).not.toContain("work");
   }, 180_000);
@@ -467,4 +474,19 @@ describe("continuity lease isolation and runtime disposal", () => {
     expect((await readdir(join(dir, "lease-home/.mono-agent/agent-root-leases")))
       .filter((name) => name !== ".mutation-gate.sqlite")).toEqual([]);
   });
+});
+
+it("keeps distractor actual facts and byte pressure identical while pricing one explicit upkeep per trace/repeat", async () => {
+  const base = await loadTraces({ suite: "hard", seeds: [101] });
+  const harder = await loadTraces({ suite: "hard-distractors", seeds: [101] });
+  expect(harder.traces[0].probes).toEqual(base.traces[0].probes);
+  expect(traceShape(harder.traces[0])).toEqual(traceShape(base.traces[0]));
+  expect(JSON.stringify(harder.traces[0].turns)).toContain("DECOY-");
+  const plan = makePlan({ ...harder, repeats: 2, profile: { extractionModel: "openai:gpt-4o-mini" } });
+  expect(plan.workload.upkeepCalls).toBe(2);
+  expect(checkpointKey(armById("continuity-ledger-cold"), 1)).not.toBe(checkpointKey(armById("continuity-ledger-cold"), 2));
+  expect(plan.upkeep).toMatchObject({ model: "openai:gpt-4o-mini", maxOutputTokens: 4096 });
+  const price = { input: 1, output: 2, cacheRead: 0.1 };
+  const cost = estimateCost(plan, harder.traces, { [plan.reader.model]: price, [plan.upkeep.model]: price, [plan.judge.model]: price });
+  expect(cost.arms["continuity-ledger-cold"]).toMatchObject({ upkeepCalls: 2, upkeepBudgetUsd: 0.1444 });
 });

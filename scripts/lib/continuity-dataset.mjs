@@ -4,13 +4,13 @@ import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ARMS, BASELINE_ARM, DEFAULT_ARMS, assertRunnableArms } from "./continuity-arms.mjs";
-import { GENERATOR_VERSION, HARD_SEEDS, LONG_RULES, generateTrace, outsideColdBounds, traceShape } from "./continuity-generator.mjs";
+import { GENERATOR_VERSION, HARD_SEEDS, LONG_RULES, generateTrace, generateDistractorTrace, outsideColdBounds, traceShape } from "./continuity-generator.mjs";
 import { CATEGORIES, ORIGINAL_CATEGORIES, probePrompt, validateProbeScore } from "./continuity-score.mjs";
 import { TOOL_NAMES } from "./continuity-tools.mjs";
 
 export const CORPUS_DIR = fileURLToPath(new URL("../fixtures/continuity/", import.meta.url));
 export const PLAN_SCHEMA = "continuity-benchmark-plan-v2";
-export const SUITES = Object.freeze(["original", "hard"]);
+export const SUITES = Object.freeze(["original", "hard", "hard-distractors"]);
 export const DEFAULT_READER = "openai-codex:gpt-6-luna";
 export const DEFAULT_ALTERNATE = "openai-codex:gpt-6.1-sol";
 export const DEFAULT_JUDGE = "openai-codex:gpt-6.1-sol";
@@ -182,9 +182,9 @@ export function parseSeeds(text) {
 export async function loadTraces({ dir = CORPUS_DIR, suite = "original", seeds = HARD_SEEDS } = {}) {
   if (!SUITES.includes(suite)) fail("invalid_suite");
   if (suite === "original") return { suite, ...(await loadOriginal(dir)) };
-  const traces = seeds.map((seed) => generateTrace(seed));
+  const traces = seeds.map((seed) => suite === "hard-distractors" ? generateDistractorTrace(seed) : generateTrace(seed));
   for (const trace of traces) validateTrace(trace);
-  return { suite, traces, sha256: digest({ generator: GENERATOR_VERSION, traces }), source: { kind: "generated", generator: GENERATOR_VERSION, seeds: [...seeds] } };
+  return { suite, traces, sha256: digest({ generator: GENERATOR_VERSION, traces }), source: { kind: "generated", generator: GENERATOR_VERSION, seeds: [...seeds], ...(suite === "hard-distractors" ? { variant: "distractors" } : {}) } };
 }
 
 export function inventory(traces) {
@@ -229,7 +229,7 @@ export function makePlan({ traces, sha256, suite = "original", source = null, co
   const reader = profile.reader ?? DEFAULT_READER;
   const alternate = profile.alternate ?? DEFAULT_ALTERNATE;
   const judge = profile.judge === undefined ? DEFAULT_JUDGE : profile.judge;
-  for (const ref of [reader, alternate, ...(judge === null ? [] : [judge])]) if (!MODEL_REF.test(ref)) fail("invalid_model_reference");
+  for (const ref of [reader, alternate, profile.extractionModel ?? reader, ...(judge === null ? [] : [judge])]) if (!MODEL_REF.test(ref)) fail("invalid_model_reference");
   if (reader === alternate) fail("alternate_must_differ_from_reader");
   const readerEffort = profile.readerEffort ?? "low";
   const judgeEffort = profile.judgeEffort ?? "low";
@@ -238,6 +238,7 @@ export function makePlan({ traces, sha256, suite = "original", source = null, co
     probes: trace.probes.slice(0, probeLimit ?? undefined).map((probe) => probe.id) }));
   const probeCount = probesPerTrace.reduce((sum, row) => sum + row.probes.length, 0);
   const nextActionCount = traces.reduce((sum, trace) => sum + trace.probes.slice(0, probeLimit ?? undefined).filter((probe) => probe.category === "next_action").length, 0);
+  const upkeepCalls = traces.length * selectedArms.filter(arm => arm.ledgerUpkeep).length * repeats;
   const midArms = selectedArms.filter((arm) => arm.midCheckpoint !== null).length;
   const probeTurns = probeCount * selectedArms.length * repeats;
   const midCompactions = traces.length * midArms * repeats;
@@ -249,16 +250,18 @@ export function makePlan({ traces, sha256, suite = "original", source = null, co
     schema: PLAN_SCHEMA,
     suite,
     corpus: { sha256, source, traces: probesPerTrace, probeLimit },
-    arms: selectedArms.map((arm) => ({ id: arm.id, label: arm.label, replayBinding: arm.replayBinding, midCheckpoint: arm.midCheckpoint,
+    arms: selectedArms.map((arm) => ({ id: arm.id, label: arm.label, replayBinding: arm.replayBinding, ...(arm.ledgerUpkeep ? { ledgerUpkeep: true } : {}), midCheckpoint: arm.midCheckpoint,
       restart: arm.restart, probeConfig: arm.probeConfig, expect: arm.expect, pressure: arm.pressure })),
     baselineArm: BASELINE_ARM,
     repeats,
     reader: { model: reader, effort: readerEffort },
+    upkeep: { model: profile.extractionModel ?? reader, requireRequestCap: profile.requireRequestCap === true, maxInputTokens: 64000, maxOutputTokens: 4096, timeoutMs: 60000,
+      capEnforcement: (profile.extractionModel ?? reader).startsWith("openai-codex:") ? "stream_abort" : "request_or_skip", reasoning: "lowest_supported", callsPerTraceRepeat: 1 },
     alternateBinding: { model: alternate, servedBy: "scripted-history-only" },
     judge: judge === null ? null : { model: judge, effort: judgeEffort, scope: "next_action" },
-    workload: { probeTurns, midCheckpointCompactions: midCompactions, liveTurns: probeTurns, expectedCompactions: compactions, judgeCalls },
+    workload: { ...(upkeepCalls ? { upkeepCalls } : {}), probeTurns, midCheckpointCompactions: midCompactions, liveTurns: probeTurns, expectedCompactions: compactions, judgeCalls },
     limits: {
-      maxLiveTurns: probeTurns + midCompactions,
+      maxLiveTurns: probeTurns + midCompactions + upkeepCalls,
       perLiveTurnTimeoutMs: long ? 600000 : 240000,
       // Observed (not reserved) uncached+cached input per invocation; admission stops when crossed.
       maxObservedInputTokensPerInvocation: long ? 400_000_000 : 6_000_000,
@@ -302,12 +305,14 @@ export function traceTokenShape(trace) {
  */
 export function estimateCost(plan, traces, prices) {
   const reader = prices[plan.reader.model] ?? null;
+  const upkeepPrice = prices[plan.upkeep?.model] ?? null;
+  if (plan.arms.some(arm => arm.ledgerUpkeep) && !upkeepPrice) return { status: "unknown_price", upkeep: plan.upkeep?.model };
   const judgePrice = plan.judge ? prices[plan.judge.model] ?? null : null;
   if (reader === null) return { status: "unknown_price", reader: plan.reader.model };
   const usd = (input, output, cacheRead = 0, price = reader) => (input * price.input + output * price.output + cacheRead * price.cacheRead) / 1_000_000;
   const rows = {};
   for (const armRow of plan.arms) {
-    let upper = 0; let expected = 0; let inputTokens = 0;
+    let upper = 0; let expected = 0; let inputTokens = 0; let upkeepBudgetUsd = 0;
     for (const trace of traces) {
       const t = traceTokenShape(trace);
       const probes = plan.corpus.traces.find((row) => row.id === trace.id).probes.length * plan.repeats;
@@ -322,6 +327,7 @@ export function estimateCost(plan, traces, prices) {
           // Store arms: the cold or compacted context plus up to two ConversationHistory rounds.
           case "continuity-store": return { input: t.cold * 3 + 4000, output: 3 * ANSWER_OUTPUT_TOKENS, cacheable: t.cold * 3 };
           // Same retrieval allowance, plus the bounded 8k pack on each request; no upkeep call.
+          case "continuity-ledger-cold":
           case "continuity-pack-cold":
           case "continuity-pack-boundary": return { input: (t.cold + 8000) * 3 + 4000, output: 3 * ANSWER_OUTPUT_TOKENS, cacheable: (t.cold + 8000) * 3 };
           case "continuity-store-compaction": return { input: t.serialized + 3 * (2000 + 4000 + OVERHEAD_TOKENS) + 4000, output: 2000 + 3 * ANSWER_OUTPUT_TOKENS, cacheable: t.serialized };
@@ -334,13 +340,16 @@ export function estimateCost(plan, traces, prices) {
       expected += repeatsWithCold * usd(perProbe.input, perProbe.output)
         + (probes - repeatsWithCold) * usd(perProbe.input - perProbe.cacheable, perProbe.output, perProbe.cacheable)
         + mid * usd(Math.ceil(t.serialized * 0.6), 2000);
-      inputTokens += probes * perProbe.input;
+      const upkeep = armRow.ledgerUpkeep ? plan.repeats * usd(64000, 4096, 0, upkeepPrice) : 0;
+      upper += upkeep; expected += upkeep; upkeepBudgetUsd += upkeep;
+      inputTokens += probes * perProbe.input + (armRow.ledgerUpkeep ? 64000 * plan.repeats : 0);
     }
-    rows[armRow.id] = { inputTokens, upperUsd: Number(upper.toFixed(4)), expectedUsd: Number(expected.toFixed(4)) };
+    rows[armRow.id] = { ...(armRow.ledgerUpkeep ? { upkeepBudgetUsd: Number(upkeepBudgetUsd.toFixed(4)), upkeepCalls: traces.length * plan.repeats } : {}), inputTokens, upperUsd: Number(upper.toFixed(4)), expectedUsd: Number(expected.toFixed(4)) };
   }
   const judgeUsd = judgePrice ? plan.workload.judgeCalls * (600 * judgePrice.input + 20 * judgePrice.output) / 1_000_000 : null;
   const sum = (key) => Object.values(rows).reduce((total, row) => total + row[key], 0) + (judgeUsd ?? 0);
   return { status: "estimated", basis: "Pi catalog list prices; chars/4 token heuristic; summaries at their output cap and deterministic packs at 8k for the upper bound",
+    upkeepCaveat: "4096 is a planning output budget, not a hard server limit under Codex stream_abort: hidden reasoning/remote work can overrun. Subscription/quota is not dollar metering.",
     arms: rows, judgeUsd: judgeUsd === null ? null : Number(judgeUsd.toFixed(4)),
     upperUsd: Number(sum("upperUsd").toFixed(2)), expectedUsd: Number(sum("expectedUsd").toFixed(2)) };
 }

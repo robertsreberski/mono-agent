@@ -494,6 +494,43 @@
                   ],
                   "type": "boolean",
                   "default": true
+                },
+                "ledgerEnabled": {
+                  "description": "Opt-in read-only reuse of a verified ledger, without buying upkeep. Upkeep also enables ledger reading. False by default; deterministic controls leave both switches off.",
+                  "examples": [
+                    true
+                  ],
+                  "type": "boolean",
+                  "default": false
+                },
+                "upkeep": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "enabled": {
+                      "description": "Opt-in boundary ledger upkeep. One no-tools completion on configured runtime.model or extractionModel, no fallback; up to 64k estimated selected input, 4k output including reasoning, 60 seconds before first token. Only primary owned continuous cold seeds. Disabled by default in P3a.",
+                      "examples": [
+                        true
+                      ],
+                      "type": "boolean",
+                      "default": false
+                    },
+                    "requireRequestCap": {
+                      "description": "Skip before dispatch when the adapter cannot emit a server output cap. Default false. Codex otherwise uses conservative visible-stream abort; hidden reasoning/quota cannot be client-capped. Reported overrun invalidates extraction.",
+                      "examples": [
+                        true
+                      ],
+                      "type": "boolean",
+                      "default": false
+                    },
+                    "extractionModel": {
+                      "description": "Explicit upkeep model override; otherwise configured runtime.model, never the switched-to answer model. No fallback. Benchmark estimates use this actual model's prices.",
+                      "examples": [
+                        "openai:gpt-4o-mini"
+                      ],
+                      "type": "string"
+                    }
+                  }
                 }
               }
             },

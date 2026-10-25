@@ -47,3 +47,14 @@ it.each([true, false])("resolves packEnabled=%s independently, including disable
 it.each([null, 1, "false"])("rejects invalid packEnabled=%j", packEnabled => {
   expect(() => resolve({ packEnabled })).toThrow(/runtime.session.continuity.packEnabled/);
 });
+
+it("keeps ledger and upkeep off by default and resolves an explicit model/strict override", () => {
+  expect(resolve().runtime.session.continuity?.upkeep?.enabled ?? false).toBe(false);
+  expect(resolve().runtime.session.continuity?.ledgerEnabled ?? false).toBe(false);
+  expect(resolve({ upkeep: { enabled: true } }).runtime.session.continuity?.upkeep).toEqual({ enabled: true, requireRequestCap: false });
+  const config = resolve({ ledgerEnabled: true, upkeep: { enabled: true, requireRequestCap: true, extractionModel: "openai:gpt-4o-mini" } });
+  expect(config.runtime.session.continuity?.upkeep).toMatchObject({ enabled: true, requireRequestCap: true, extractionModel: { provider: "openai", model: "gpt-4o-mini" } });
+});
+it.each([{ enabled: "true" }, { requireRequestCap: 1 }, { extractionModel: false }, { unknown: true }, null])("rejects invalid upkeep %j", upkeep => {
+  expect(() => resolve({ upkeep })).toThrow();
+});

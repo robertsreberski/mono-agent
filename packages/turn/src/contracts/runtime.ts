@@ -79,8 +79,11 @@ export type RuntimeRunOptions = {
    * Protected lazy host replay prefix; never returned or included in telemetry.
    */
   detachedContext?: () => Promise<ReadonlyArray<any>>;
-  /** Optional local evidence, invoked only at actual seed time, never on native resume. */
-  coldContext?: (budget: { maxTokens: number; reason: string }) => Promise<{ messages: ReadonlyArray<any>; replayMessages?: ReadonlyArray<any> }>;
+  /** Host-owned asynchronous fail-open cold-seed hook, never a true native resume.
+   * primaryAttempt=false forbids buying upkeep. Explicit upkeep may hold the
+   * exclusive conversation up to 60s; default is local-only. The target headroom
+   * excludes the returned prefix; returned evidence must fit maxTokens. */
+  coldContext?: (budget: { maxTokens: number; reason: string; primaryAttempt: boolean }) => Promise<{ messages: ReadonlyArray<any>; replayMessages?: ReadonlyArray<any> }>;
   /**
    * Protected awaited host claim before stateless replay.
    */

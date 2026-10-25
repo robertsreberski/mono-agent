@@ -335,7 +335,7 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
               return { ...failure, runtimeWarnings: [... ((failure.runtimeWarnings || []) as readonly unknown[]), warning], failoverHistory };
             }
             callOptions.messages = [...detachedMessages, ...(options.messages ?? []).slice(-1)];
-            if (options.coldContext) callOptions.coldContext = (budget: { maxTokens: number; reason: string }) => options.coldContext!({ ...budget, reason: "detached_context" });
+            if (options.coldContext) callOptions.coldContext = (budget: { maxTokens: number; reason: string; primaryAttempt: boolean }) => options.coldContext!({ ...budget, reason: "detached_context", primaryAttempt: false });
           }
           admission = checkedAdmission();
           if (admission) return admission;

@@ -1,3 +1,5 @@
+import { createLedgerSupplier } from "./upkeep.js";
+import { renderLedger, type LedgerGeneration } from "./ledger.js";
 import type { RuntimeMessage } from "@mono-agent/turn/host/types";
 import type { RuntimeEventLike } from "@mono-agent/observability";
 import type { HistoryMessage } from "../context/types.js";
@@ -21,13 +23,14 @@ export interface ContinuityPack {
   readonly ownerDeduped: number;
   /** Tool entries admitted from the reserved 40% of usable content space. */
   readonly toolReserved: number;
+  readonly ledgerEntries: number;
   readonly degradedReason?: string;
 }
 
 /** Pure, deterministic rendering. No clipping of owner entries or identifiers.
  * A tool result head consists of complete paragraphs only; an oversized first paragraph
  * is omitted rather than turning an identifier or negation into a partial fact. */
-export function renderContinuityPack(snapshot: ContinuitySnapshot, history: readonly HistoryMessage[], maxTokens = 8000): ContinuityPack {
+export function renderContinuityPack(snapshot: ContinuitySnapshot, history: readonly HistoryMessage[], maxTokens = 8000, ledger?: { generation: LedgerGeneration; records: readonly { recordId: string; text: string }[] }, upkeepGap = false): ContinuityPack {
   const counts: Record<Section, number> = { owner: 0, tool: 0, summary: 0, evidence: 0 };
   const toolIds = representedContinuityToolRecordIds(history);
   const inputIds = new Set(history.flatMap(message => {
@@ -45,20 +48,25 @@ export function renderContinuityPack(snapshot: ContinuitySnapshot, history: read
     }
     return !(record.tool && (toolIds.has(record.tool.invocationId) || record.tool.resultId && toolIds.has(record.tool.resultId)));
   });
+  const limit = Math.max(0, Math.min(8000, Math.floor(maxTokens)));
+  const derived = ledger?.generation.entries.length ? renderLedger(ledger.generation, ledger.records) : "";
+  // An oversized ledger never displaces the whole deterministic fallback.
+  const prefix = estimate(HEADER + derived) + 700 <= Math.min(limit, 4000) ? HEADER + derived : HEADER;
+  const demoted = new Set(prefix !== HEADER ? ledger?.generation.coveredOwners ?? [] : []);
   const rank: Record<Section, number> = { owner: 0, tool: 1, summary: 2, evidence: 3 };
   const toolRank = (record: ContinuitySnapshotRecord) => effectPriority(record.tool?.name ?? "") ? 0 : 1;
-  entries.sort((a, b) => rank[section(a)] - rank[section(b)]
+  entries.sort((a, b) => (demoted.has(a.recordId) ? 4 : rank[section(a)]) - (demoted.has(b.recordId) ? 4 : rank[section(b)])
     || (section(a) === "tool" ? toolRank(a) - toolRank(b) : 0) || a.ordinal - b.ordinal);
-  const limit = Math.max(0, Math.min(8000, Math.floor(maxTokens)));
   const renderedToolIds = new Set<string>();
   const selected = new Map<ContinuitySnapshotRecord, string>();
-  let body = HEADER, unknownOverlap = 0, toolReserved = 0;
-  let degradedReason: string | undefined = snapshot.degradedReason ?? (snapshot.gaps > 0 ? "coverage_gap" : undefined);
+  const ledgerEntries = prefix !== HEADER ? ledger?.generation.entries.length ?? 0 : 0;
+  let body = prefix, unknownOverlap = 0, toolReserved = 0;
+  let degradedReason: string | undefined = snapshot.degradedReason ?? (snapshot.gaps > 0 ? "coverage_gap" : upkeepGap ? "upkeep_gap" : undefined);
   // Reserve the marker, then 40% of the remaining content space for tools.
   // Effect-like names get first claim; reads/unknown names use the remainder.
   // Unused reservation returns to owners. Remaining tools may backfill after
   // owners, but neither phase can insert text outside the actual target limit.
-  const toolBudget = Math.floor(Math.max(0, limit - estimate(HEADER) - 220) * 0.4);
+  const toolBudget = Math.floor(Math.max(0, limit - estimate(prefix) - 220) * 0.4);
   let toolTokens = 0;
   const select = (record: ContinuitySnapshotRecord, reserved = false) => {
     if (selected.has(record) || contentFreeRead(record)) return;
@@ -74,7 +82,7 @@ export function renderContinuityPack(snapshot: ContinuitySnapshot, history: read
   for (const record of entries) select(record);
   // Selection priority does not change section layout: owner requests first,
   // tools effect-first, then summary/neutral evidence; ordinal within groups.
-  body = HEADER;
+  body = prefix;
   for (const record of entries) {
     const entry = selected.get(record); if (entry === undefined) continue;
     body += entry; counts[section(record)]++;
@@ -83,11 +91,11 @@ export function renderContinuityPack(snapshot: ContinuitySnapshot, history: read
   }
   const omitted = snapshot.omitted + entries.length - selected.size;
   if (selected.size < entries.length) degradedReason ??= "overflow";
-  if (!Object.values(counts).some(Boolean) && omitted === 0 && snapshot.gaps === 0 && !degradedReason) return { tokens: 0, counts, omitted, unknownOverlap, ownerDeduped, toolReserved };
-  const marker = `Coverage: physical-bucket canonical replay scope; retained finalized v3 evidence only; gaps=${snapshot.gaps}; omitted=${omitted}; unknown_overlap=${unknownOverlap}; degraded=${degradedReason ?? "none"}. Omission is not proof that an old request or effect no longer applies.\n`;
+  if (prefix === HEADER && !Object.values(counts).some(Boolean) && omitted === 0 && snapshot.gaps === 0 && !degradedReason) return { tokens: 0, counts, omitted, unknownOverlap, ownerDeduped, toolReserved, ledgerEntries };
+  const marker = `${upkeepGap ? "Upkeep coverage gap: deterministic evidence below remains independently verified.\n" : ""}Coverage: physical-bucket canonical replay scope; retained finalized v3 evidence only; gaps=${snapshot.gaps}; omitted=${omitted}; unknown_overlap=${unknownOverlap}; degraded=${degradedReason ?? "none"}. Omission is not proof that an old request or effect no longer applies.\n`;
   const text = body + marker;
-  if (estimate(text) > limit) return { tokens: 0, counts: { owner: 0, tool: 0, summary: 0, evidence: 0 }, omitted: snapshot.omitted + entries.length, unknownOverlap: 0, ownerDeduped, toolReserved: 0, degradedReason: "headroom" };
-  return { text, toolRecordIds: renderedToolIds, tokens: estimate(text), counts, omitted, unknownOverlap, ownerDeduped, toolReserved, ...(degradedReason ? { degradedReason } : {}) };
+  if (estimate(text) > limit) return { tokens: 0, counts: { owner: 0, tool: 0, summary: 0, evidence: 0 }, omitted: snapshot.omitted + entries.length, unknownOverlap: 0, ownerDeduped, toolReserved: 0, ledgerEntries: 0, degradedReason: "headroom" };
+  return { text, toolRecordIds: renderedToolIds, tokens: estimate(text), counts, omitted, unknownOverlap, ownerDeduped, toolReserved, ledgerEntries, ...(degradedReason ? { degradedReason } : {}) };
 }
 
 /** Equality proves full replay only with a complete source and all-user owner
@@ -165,13 +173,15 @@ function renderEntry(record: ContinuitySnapshotRecord, category: Section): strin
  * paid calls; purge suppression is rechecked before every reuse. */
 export function createContinuityPackSupplier(options: ConversationHarnessOptions, request: ConversationHarnessRequest, runId: string) {
   const toolHistory = options.toolHistory;
-  if (toolHistory?.continuityEnabled !== true || toolHistory.packEnabled === false) return undefined;
+  if ((toolHistory?.continuityEnabled !== true || toolHistory.packEnabled === false) && !toolHistory?.upkeep?.enabled) return undefined;
+  const upkeep = createLedgerSupplier(options, request, runId);
   let scope: ContinuitySnapshotInput | undefined;
   let snapshot: ContinuitySnapshot | undefined;
-  return (history: readonly HistoryMessage[], maxTokens: number, reason: string, emit: (event: RuntimeEventLike) => void, onRenderedTools?: (ids: ReadonlySet<string>) => void): readonly RuntimeMessage[] => {
+  const supply = (history: readonly HistoryMessage[], maxTokens: number, reason: string, emit: (event: RuntimeEventLike) => void, onRenderedTools?: (ids: ReadonlySet<string>) => void): readonly RuntimeMessage[] => {
+    if (toolHistory?.continuityEnabled !== true || toolHistory.packEnabled === false) return [];
     let pack: ContinuityPack;
     if (maxTokens < 500) {
-      pack = { tokens: 0, counts: { owner: 0, tool: 0, summary: 0, evidence: 0 }, omitted: 0, unknownOverlap: 0, ownerDeduped: 0, toolReserved: 0, degradedReason: "trigger_headroom" };
+      pack = { tokens: 0, counts: { owner: 0, tool: 0, summary: 0, evidence: 0 }, omitted: 0, unknownOverlap: 0, ownerDeduped: 0, toolReserved: 0, ledgerEntries: 0, degradedReason: "trigger_headroom" };
     } else try {
       scope ??= { logicalConversationId: toolHistory.logicalConversationId(request.conversationId), currentConversationId: request.conversationId, currentRunId: runId,
         ...(request.continuation?.historyBoundary === undefined ? {} : { historyBoundary: request.continuation.historyBoundary }) };
@@ -183,11 +193,12 @@ export function createContinuityPackSupplier(options: ConversationHarnessOptions
         ? { records: [], omitted: 0, gaps: 1, degradedReason: "purge_pending" } : snapshot;
       // Purge/outage must not produce a pack. The gap is a separate content-free
       // context marker, so legacy reconstruction and router fallback stay usable.
+      const ledger = upkeep.current();
       pack = source.degradedReason === "source_changed" || source.degradedReason === "purge_pending" || source.degradedReason === "unavailable" || source.degradedReason === "boundary_unavailable"
-        ? { tokens: 0, counts: { owner: 0, tool: 0, summary: 0, evidence: 0 }, omitted: source.omitted, unknownOverlap: 0, ownerDeduped: 0, toolReserved: 0, degradedReason: source.degradedReason }
-        : renderContinuityPack(source, history, maxTokens);
+        ? { tokens: 0, counts: { owner: 0, tool: 0, summary: 0, evidence: 0 }, omitted: source.omitted, unknownOverlap: 0, ownerDeduped: 0, toolReserved: 0, ledgerEntries: 0, degradedReason: source.degradedReason }
+        : renderContinuityPack(source, history, maxTokens, ledger, upkeep.gap);
     } catch {
-      pack = { tokens: 0, counts: { owner: 0, tool: 0, summary: 0, evidence: 0 }, omitted: 0, unknownOverlap: 0, ownerDeduped: 0, toolReserved: 0, degradedReason: "unavailable" };
+      pack = { tokens: 0, counts: { owner: 0, tool: 0, summary: 0, evidence: 0 }, omitted: 0, unknownOverlap: 0, ownerDeduped: 0, toolReserved: 0, ledgerEntries: 0, degradedReason: "unavailable" };
       snapshot = { records: [], omitted: 0, gaps: 1, degradedReason: "unavailable" };
     }
     // Diagnostic callbacks cannot turn a continuity failure into a failed turn.
@@ -196,11 +207,12 @@ export function createContinuityPackSupplier(options: ConversationHarnessOptions
         message: "Continuity pack coverage is incomplete; canonical reconstruction continues." });
       emit({ type: pack.text ? "continuity_pack_injected" : "continuity_pack_skipped", reason, ownerEntries: pack.counts.owner, toolEntries: pack.counts.tool,
         summaryEntries: pack.counts.summary, evidenceEntries: pack.counts.evidence, omittedCount: pack.omitted,
-        unknownOverlap: pack.unknownOverlap, ownerDeduped: pack.ownerDeduped, toolReserved: pack.toolReserved, tokens: pack.tokens, degradedReason: pack.degradedReason ?? (pack.text ? "none" : "empty") });
+        unknownOverlap: pack.unknownOverlap, ownerDeduped: pack.ownerDeduped, toolReserved: pack.toolReserved, ledgerEntries: pack.ledgerEntries, tokens: pack.tokens, degradedReason: pack.degradedReason ?? (pack.text ? "none" : "empty") });
     } catch { /* diagnostics are content-free and best effort */ }
     onRenderedTools?.(pack.toolRecordIds ?? new Set());
     if (pack.text) return [{ role: "user", content: pack.text, timestamp: "1970-01-01T00:00:00.000Z" }];
     const gap = "Continuity coverage gap: retained evidence unavailable or omitted; use permitted canonical history. No historical evidence supplied. ";
     return pack.degradedReason && pack.degradedReason !== "trigger_headroom" && maxTokens >= estimate(gap) ? [{ role: "user", content: gap, timestamp: "1970-01-01T00:00:00.000Z" }] : [];
   };
+  return Object.assign(supply, { prepare: upkeep.prepare });
 }

@@ -175,6 +175,7 @@ export interface ContinuityGapInput {
 
 /** Bounded, one-transaction pack source; no search previews or derived storage. */
 export interface ContinuitySnapshotInput extends ContinuityScope {
+  readonly selection?: "upkeep";
   readonly historyBoundary?: string;
 }
 export interface ContinuitySnapshotRecord extends ContinuityRecordMetadata {

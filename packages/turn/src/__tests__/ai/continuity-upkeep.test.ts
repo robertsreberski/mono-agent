@@ -1,0 +1,81 @@
+import { afterEach, expect, it, vi } from "vitest";
+import { fauxProvider } from "@earendil-works/pi-ai";
+import { completeContinuityUpkeep, constrainUpkeepPayload, upkeepCapEnforcement } from "../../execution/pi/continuity-upkeep.js";
+const apis = ["anthropic-messages", "openai-completions", "openai-responses", "openai-codex-responses", "azure-openai-responses", "google-generative-ai", "google-vertex", "bedrock-converse-stream", "mistral-conversations", "pi-messages"];
+const token = `fictional.${Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "fictional-account" } })).toString("base64url")}.fictional`;
+const reference = { provider: "fictional", model: "fixture", reference: "fictional:fixture" };
+function model(api: string) { return { ...fauxProvider({ models: [{ id: "fixture", contextWindow: 128000, maxTokens: 8192 }] }).getModel(), provider: "fictional", id: "fixture", api, baseUrl: "https://fixture.invalid/v1" }; }
+afterEach(() => vi.unstubAllGlobals());
+
+it.each(apis)("proves one real %s request builder, enforcement class and inclusive cap without transport", async api => {
+  const network = vi.fn(async () => { throw new Error("OFFLINE_NETWORK_FORBIDDEN"); }); vi.stubGlobal("fetch", network);
+  const adapter = await import(`@earendil-works/pi-ai/api/${api}`);
+  let captured: any, calls = 0;
+  await adapter.streamSimple(model(api), { systemPrompt: "Fictional extraction.", messages: [{ role: "user", content: "Fictional evidence.", timestamp: 0 }] }, {
+    apiKey: api === "openai-codex-responses" ? token : "synthetic-test-value", env: { AWS_REGION: "us-east-1" }, transport: "sse", maxRetries: 0, maxTokens: 4096,
+    onPayload(payload: any) { calls++; constrainUpkeepPayload(api, payload); captured = payload; throw new Error("OFFLINE_CAPTURE_STOP"); },
+  }).result();
+  expect(calls).toBe(1); expect(network).not.toHaveBeenCalled();
+  const cap = JSON.stringify(captured);
+  expect(upkeepCapEnforcement(api)).toBe(api === "openai-codex-responses" ? "stream_abort" : "request");
+  if (api === "openai-codex-responses") expect(cap).not.toMatch(/max_output_tokens|maxTokens|max_tokens/);
+  else expect(cap).toContain("4096");
+});
+
+async function codex(events: unknown[], strict = false, abortSignal = new AbortController().signal) {
+  const adapter = await import("@earendil-works/pi-ai/api/openai-codex-responses");
+  let signal: AbortSignal | undefined, optionsSeen: any;
+  const wire = events.map(event => `data: ${JSON.stringify(event)}\n\n`).join("");
+  const transport = vi.fn(async (_url: unknown, options: RequestInit) => {
+    signal = options.signal ?? undefined;
+    return new Response(wire, { status: 200, headers: { "content-type": "text/event-stream" } });
+  }); vi.stubGlobal("fetch", transport);
+  const selected = { ...model("openai-codex-responses"), reasoning: true, thinkingLevelMap: { off: null, minimal: "low", low: "low", medium: "medium", high: "high" } };
+  const stream = vi.fn((m: any, context: any, options: any) => { optionsSeen = options; return adapter.streamSimple(m, context, { ...options, apiKey: token }); });
+  const models = { getModel: () => selected, streamSimple: stream };
+  const result = await completeContinuityUpkeep("Fictional source selection.", { model: reference, messages: [], abortSignal, piResolvedModels: models as never }, strict);
+  return { result, transport, stream, signal, optionsSeen };
+}
+const created = { type: "response.created", response: { id: "fictional-response" } };
+const added = { type: "response.output_item.added", output_index: 0, item: { id: "fictional-output", type: "message", role: "assistant", content: [] } };
+const done = (output: number, input = 100, cached = 0) => ({ type: "response.completed", response: { id: "fictional-response", status: "completed", output: [], usage: { input_tokens: input, input_tokens_details: { cached_tokens: cached }, output_tokens: output, total_tokens: output + input } } });
+
+it("aborts Codex visible output at the cap even when scripted SSE keeps emitting, and rejects all output", async () => {
+  const frames = [created, added, ...Array.from({ length: 20 }, () => ({ type: "response.output_text.delta", output_index: 0, delta: "x".repeat(1024) })), done(6000)];
+  const { result, transport, stream, signal, optionsSeen } = await codex(frames);
+  expect(stream).toHaveBeenCalledTimes(1); expect(transport).toHaveBeenCalledTimes(1);
+  expect(optionsSeen).toMatchObject({ transport: "sse", maxRetries: 0, maxTokens: 4096, reasoning: "minimal" });
+  expect(signal?.aborted).toBe(true); expect(result.receipt.capEnforcement).toBe("stream_abort");
+  expect(result.receipt.status).toBe("invalid"); expect(result.receipt.visibleEstimate).toBeGreaterThanOrEqual(4096);
+  expect(result.text).toBeUndefined();
+});
+
+it("strict mode skips Codex before any completion or mocked transport invocation", async () => {
+  const { result, transport, stream } = await codex([], true);
+  expect(stream).not.toHaveBeenCalled(); expect(transport).not.toHaveBeenCalled();
+  expect(result.receipt).toMatchObject({ status: "skipped", reason: "cap_unsupported", capEnforcement: "stream_abort", providerInvoked: false, costUsd: 0 });
+});
+
+it("retains reported output overrun in the content-free receipt without a repair call", async () => {
+  const { result, transport } = await codex([created, added, done(5000)]);
+  expect(transport).toHaveBeenCalledTimes(1); expect(result.receipt.outputOverrun).toBe(true);
+  expect(result.receipt.outputTokens).toBe(5000); expect(result.receipt.status).toBe("invalid");
+});
+
+it("rejects reported cached-plus-uncached input overruns before publication", async () => {
+  const { result, transport } = await codex([created, added, { type: "response.output_text.delta", output_index: 0, delta: "{}" }, done(1, 66000, 65000)]);
+  expect(transport).toHaveBeenCalledTimes(1); expect(result.receipt).toMatchObject({ status: "invalid", reason: "input_overrun", inputTokens: 66000 });
+  expect(result.text).toBeUndefined();
+});
+it("honors an already aborted caller without dispatch", async () => {
+  const controller = new AbortController(); controller.abort();
+  const { result, stream, transport } = await codex([], false, controller.signal);
+  expect(stream).not.toHaveBeenCalled(); expect(transport).not.toHaveBeenCalled();
+  expect(result.receipt).toMatchObject({ status: "skipped", reason: "aborted", providerInvoked: false });
+});
+it("refuses a mismatched resolved model rather than silently substituting it", async () => {
+  const stream = vi.fn();
+  const result = await completeContinuityUpkeep("Fictional input.", { model: reference, messages: [], abortSignal: new AbortController().signal,
+    piResolvedModels: { getModel: () => ({ ...model("openai-responses"), id: "wrong" }), streamSimple: stream } as never });
+  expect(stream).not.toHaveBeenCalled(); expect(result.receipt).toMatchObject({ status: "skipped", reason: "model_identity" });
+});

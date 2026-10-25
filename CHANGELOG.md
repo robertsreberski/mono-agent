@@ -22,6 +22,10 @@
   finalized tool evidence in the cold projection. Preserve healthy evidence
   when another retained payload is malformed.
 
+- Add opt-in boundary continuity ledgers with source-validated derived entries,
+  purge-cascaded lineage, bounded one-call upkeep and ledger-first packs. Keep
+  upkeep off by default; expose strict request caps and Codex stream-abort limits.
+
 - Add real deterministic cold-pack benchmark arms, paired with recording-only
   and legacy cold-rebuild controls; offline contracts check actual provider
   contexts without measuring paid model quality.

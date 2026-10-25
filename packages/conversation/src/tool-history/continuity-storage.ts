@@ -1,3 +1,4 @@
+import { ledgerBytes } from "../continuity/ledger-storage.js";
 import { createHash, randomBytes } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { sanitizeVisibleText } from "@mono-agent/observability";
@@ -295,7 +296,7 @@ export function resetContinuity(database: DatabaseSync, logicalId: string): void
 }
 
 export function continuityRetainedBytes(database: DatabaseSync): number {
-  return Number((database.prepare("SELECT coalesce(sum(retained_bytes),0) bytes FROM continuity_records WHERE retained_text IS NOT NULL").get() as Record<string, unknown>).bytes);
+  return ledgerBytes(database) + Number((database.prepare("SELECT coalesce(sum(retained_bytes),0) bytes FROM continuity_records WHERE retained_text IS NOT NULL").get() as Record<string, unknown>).bytes);
 }
 export function toolRetainedBytes(database: DatabaseSync): number {
   return Number((database.prepare("SELECT coalesce(sum(retained_bytes),0) bytes FROM tool_records").get() as Record<string, unknown>).bytes);

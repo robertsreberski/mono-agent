@@ -206,7 +206,7 @@ export function createDynamicCredentialStore(apiKeys: Map<string, string> | unde
 // resolved model. `piResolvedModels` is an advanced/test seam mirroring
 // `piResolvedModel`: when supplied it is used verbatim (the model dispatched via
 // `piResolvedModel` may live outside pi's builtin catalog, e.g. a faux model).
-function buildRunModels(runtime: PiRuntime, options: PiOptions, runtimeWarnings: PiWarning[]) {
+export function buildRunModels(runtime: PiRuntime, options: PiOptions, runtimeWarnings: PiWarning[]) {
   let models;
   if (options.piResolvedModels) {
     models = options.piResolvedModels;
@@ -796,7 +796,7 @@ async function executeTrackedPiNativeResponse(systemPrompt: string, options: PiO
           const window = Math.min(policy.contextWindow, Number(options.compaction?.contextWindowOverride) || runtime.model.contextWindow);
           const reserve = Math.max(4096, Number(runtime.model.maxTokens) || 0) + 4096;
           const maxTokens = Math.max(0, Math.min(8000, Math.floor(Math.min(window, policy.triggerTokens) - fixed - input - reserve)));
-          const cold = await options.coldContext({ maxTokens: maxTokens < 500 ? 0 : maxTokens, reason: runState.createdOnMiss ? "created_on_miss" : "cold_rebuild" });
+          const cold = await options.coldContext({ maxTokens: maxTokens < 500 ? 0 : maxTokens, reason: runState.createdOnMiss ? "created_on_miss" : "cold_rebuild", primaryAttempt: true });
           // The general converter invents a blank user placeholder for [].
           // Optional cold evidence has no prompt to fill: empty/non-text entries
           // must be omitted rather than persisted into a fresh native seed.

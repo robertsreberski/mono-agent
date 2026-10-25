@@ -192,7 +192,7 @@ async function executeHarnessRuntime(preparation: PreparationControl | undefined
 ): Promise<RuntimeResult> {
   const hostOnEvent = request.onEvent;
   const emitRuntimeEvent = (event: RuntimeEventLike): void => {
-    if (!turnContinuityCollector.observeRuntimeEvent(event)) return;
+    if (!["continuity_upkeep", "upkeep_output_overrun"].includes(String(event.type)) && !turnContinuityCollector.observeRuntimeEvent(event)) return;
     recorder.onEvent(event);
     hostOnEvent?.(event);
   };
@@ -495,9 +495,13 @@ async function executeHarnessRuntime(preparation: PreparationControl | undefined
         catch { /* Optional continuity cannot block the turn. */ }
       }
       const coldContext = !preparation && routing.continuityPack
-        && (continuityHistory.length > 0 || routing.boundaryReason !== undefined) ? async (budget: { maxTokens: number; reason: string }) => {
+        && (continuityHistory.length > 0 || routing.boundaryReason !== undefined || options.toolHistory?.upkeep?.enabled || options.toolHistory?.ledgerEnabled) ? async (budget: { maxTokens: number; reason: string; primaryAttempt: boolean }) => {
         try {
           let toolIds: ReadonlySet<string> = new Set();
+          await routing.continuityPack!.prepare({ sessionsEnabled, isolated: sessionIsolated,
+            ownedStore: typeof routing.withContinuityOwner === "function", primaryAttempt: budget.primaryAttempt, maxTokens: budget.maxTokens,
+            ...(routing.withContinuityOwner ? { withOwner: routing.withContinuityOwner } : {}) }, budget.reason, emitRuntimeEvent);
+          if (continuityHistory.length === 0 && routing.boundaryReason === undefined) return { messages: [] };
           // A warm clean-break reopen seeds only current input, not canonical
           // history. Deduplicate against what this attempt actually replays.
           const hasCanonicalReplay = !historyOmitted || budget.reason === "detached_context";

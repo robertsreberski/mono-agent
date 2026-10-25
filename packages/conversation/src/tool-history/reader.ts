@@ -1,3 +1,4 @@
+import { readLedger } from "../continuity/ledger-storage.js";
 import { inspectContinuityPurges, pendingContinuityPurges } from "./continuity-purge.js";
 import { redactJsonValue } from "@mono-agent/observability";
 import type { RuntimeToolLifecycleTerminalState } from "@mono-agent/turn/host/types";
@@ -67,6 +68,14 @@ export class ToolHistoryReader {
     const database = this.openReadOnly();
     if (!database) return false;
     try { return continuitySnapshotVisible(database, input, snapshot); } finally { database.close(); }
+  }
+
+  ledger(scope: ContinuityScope): ReturnType<typeof readLedger> {
+    if (this.continuityPurgePending(scope)) return undefined;
+    const database = this.openReadOnly(); if (!database) return undefined;
+    try { database.exec("BEGIN"); const result = readLedger(database, scope); database.exec("COMMIT");
+      return this.continuityPurgePending(scope) ? undefined : result;
+    } finally { database.close(); }
   }
 
   snapshotContinuity(input: ContinuitySnapshotInput): ContinuitySnapshot {
