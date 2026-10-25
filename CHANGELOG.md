@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add real deterministic cold-pack benchmark arms, paired with recording-only
+  and legacy cold-rebuild controls; offline contracts check actual provider
+  contexts without measuring paid model quality.
+
 - Clear continuity conflict diagnostics with purged evidence, recover same-scope
   interrupted purge writes despite wall-clock rollback, and validate SQLite
   integrity before applying pending privacy purges.

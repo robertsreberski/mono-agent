@@ -159,7 +159,8 @@ Legacy canonical messages lack durable continuity record identities. Deduplicati
 uses exact shared identities only (such as managed tool record references in
 interruption accounts); otherwise overlapping evidence is retained, never matched
 by text, run/role or position. The `unknownOverlap` count reports rendered entries
-whose run also occurs in the replay window, not proved duplication. Oldest-first
+whose run also occurs in the replay window (or whose overlap cannot be ruled out
+because replay run identities are absent), not proved duplication. Oldest-first
 selection favors evidence outside the 64-message window. Revisiting this overlap
 requires a later ledger identity model, not a canonical-format migration here.
 

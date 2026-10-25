@@ -98,6 +98,8 @@ it("prioritizes whole oldest owner entries, discloses omissions/uncertain overla
   expect(Buffer.from(pack.text!).toString("utf8")).toBe(pack.text);
   expect(pack.tokens).toBeLessThanOrEqual(700);
   expect(renderContinuityPack(source, history, 700)).toEqual(pack);
+  // Missing replay identities cannot prove non-overlap; retain and count both entries.
+  expect(renderContinuityPack(source, [{ role: "user", content: "Legacy replay without an identity." }], 700).unknownOverlap).toBe(2);
   expect(renderContinuityPack(source, [], 0)).toMatchObject({ tokens: 0, degradedReason: "headroom" });
 });
 

@@ -29,6 +29,7 @@ export function renderContinuityPack(snapshot: ContinuitySnapshot, history: read
     const stamp = continuityQuotation(message); return stamp ? [stamp.inputId] : [];
   }));
   const runs = new Set(history.map(message => message.runId).filter(Boolean));
+  const unidentifiedHistory = history.some(message => message.runId === undefined);
   const entries = snapshot.records.filter(record => !(record.inputId && inputIds.has(record.inputId))
     && !(record.tool && (toolIds.has(record.tool.invocationId) || record.tool.resultId && toolIds.has(record.tool.resultId))));
   const rank: Record<Section, number> = { owner: 0, tool: 1, summary: 2, evidence: 3 };
@@ -43,7 +44,7 @@ export function renderContinuityPack(snapshot: ContinuitySnapshot, history: read
     body += entry; counts[category]++;
     // This is overlap uncertainty, NOT deduplication by run/role/text. Legacy
     // canonical messages carry no durable continuity record identity.
-    if (runs.has(record.runId)) unknownOverlap++;
+    if (unidentifiedHistory || runs.has(record.runId)) unknownOverlap++;
   }
   const marker = `Coverage: physical-bucket canonical replay scope; retained finalized v3 evidence only; gaps=${snapshot.gaps}; omitted=${omitted}; unknown_overlap=${unknownOverlap}; degraded=${degradedReason ?? "none"}. Omission is not proof that an old request or effect no longer applies.\n`;
   const text = body + marker;

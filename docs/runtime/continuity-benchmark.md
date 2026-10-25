@@ -129,19 +129,25 @@ provider-session identity, so they never run concurrently.
 | `compaction-2` (d) | A promptless manual compaction before the mid-trace turn, then a proactive one at the probe | `compactConversation()` on the same guarded summary driver, no live reply; same policy at the probe |
 | `ceiling` (e, hard only) | The merged default 200k `maxInputTokens` ceiling, reached by the long trace | Production default compaction policy |
 | `restart-switch-compact` (f) | Fresh process, then model-change reseed, then compaction, in that order | The probe runs in a child Node process over the forked durable roots, on the reader (reseed) with the smallest trigger (compaction of the reseeded context) |
-| `continuity-store` (g) | As (b): model-change reseed | `runtime.session.continuity.enabled: true` for replay and probe; the reader is offered only `ConversationHistory` (`tools.allowedTools: ["ConversationHistory"]`) |
-| `continuity-store-compaction` (h) | As (c): one proactive compaction | Continuity on throughout, `ConversationHistory` offered |
+| `continuity-store` (g) | As (b): model-change reseed | `runtime.session.continuity: { enabled: true, packEnabled: false }` for replay and probe; the reader is offered only `ConversationHistory` (`tools.allowedTools: ["ConversationHistory"]`) |
+| `continuity-store-compaction` (h) | As (c): one proactive compaction | Recording on, packs off throughout, `ConversationHistory` offered |
+| `continuity-pack-cold` (i) / `continuity-pack-boundary` (alias) | As (b) and (g): cold `model_change`, no compaction | `runtime.session.continuity: { enabled: true, packEnabled: true }` throughout; deterministic bounded pack and `ConversationHistory`, no paid upkeep |
 
 Retained conversation evidence (`runtime.session.continuity`) defaults to on.
 Every arm from (a) to (f) pins `runtime.session.continuity.enabled: false` in its
 replay, mid-trace and probe configs. Those arms therefore stay comparable with
-baselines recorded before the feature existed. The B1 arms (g) and (h) turn it on.
-Nothing is injected into the context: any gain depends on the reader choosing to
-call `ConversationHistory`.
+baselines recorded before the feature existed. The B1 arms (g) and (h) turn
+recording on but explicitly pin `packEnabled: false`; any gain there depends on
+the reader choosing to call `ConversationHistory`. The deterministic pack arm
+pins `packEnabled: true` and uses the same cold boundary and tool offer as (g).
+Replay inputs are explicitly host-classified human turns, so provenance is captured
+by production code rather than guessed from a speaker name. The projection hint
+now names `ConversationHistory` when offered, so rerun the store-only control
+rather than attributing that hint correction to pack quality.
 
 The tool-history sidecar pins its absolute artifact root, and production correctly
 degrades continuity in a copy at another root (`history_artifact_root_mismatch`).
-The store arms therefore fork in place:
+The store and pack arms therefore fork in place:
 
 1. After replay, a pristine snapshot of the checkpoint is kept.
 2. Each probe restores that snapshot at the checkpoint's own path.
@@ -149,9 +155,9 @@ The store arms therefore fork in place:
 
 Forks of one checkpoint never overlap. The artifact-root guard is not bypassed.
 
-Remaining planned arms are declared with their intended config patch and
-evidence, but they are not runnable yet: `continuity-pack-boundary`,
-`continuity-pack-per-turn` and `pack+stubs`. Selecting one fails plan creation
+Remaining planned arms are declared with intended evidence but are not runnable:
+`continuity-pack-per-turn` reserves later opt-in per-turn **maintenance** (not
+injection), and `pack+stubs` waits for tool-result clearing. Selecting one fails plan creation
 with `arm_not_available_at_revision:<id>`. To enable one, set `available: true`
 once the production feature lands, and confirm its patch keys and evidence event
 names against the implementation. Unknown config keys still fail in production
@@ -292,3 +298,22 @@ usage), and the aggregate `results.json` and `summary.md`:
   deltas.
 - The benchmark measures retention at the probe turn. It does not measure
   memory capture, recall tools or long-term memory.
+
+### Deterministic cold-pack comparison
+
+Pair the real cold treatments explicitly:
+
+```bash
+pnpm benchmark:continuity --dry-run --suite hard --arms native,cold-rebuild,continuity-store,continuity-pack-cold
+```
+
+The offline contract test exercises all three through built configured harnesses,
+checks the cold `model_change` boundary, and inspects actual scripted-provider
+contexts: no packs for either control, exactly one pack on both requests when
+the pack arm calls `ConversationHistory`. Content-free pack receipts retain
+section counts, omissions, token estimates and uncertain overlap for inspection.
+Source or headroom failures invalidate the pack sample; expected budget overflow
+is recorded, not treated as a missing treatment. Ordinary request usage includes
+pack input tokens. The planning estimate allows the full 8k pack on each reader
+request, with the same retrieval allowance as store-only and no upkeep call. No quality improvement is claimed from offline runs, and the
+paid paired comparison is a separate operator action.
