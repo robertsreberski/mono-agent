@@ -683,7 +683,11 @@ directory, beside the lock, sharing that directory's ownership and writability.
   installs, uninstalls and restarts never block on it.
 - A release that meets a busy gate finishes in the background. If the process
   exits first, the lock is left with a dead owner and the next process reclaims
-  it normally.
+  it normally. If the same process takes that lock again first, for example on
+  a config reload, it finishes its own pending release before deciding whether
+  the lock is held, so it never reports itself as the other holder. That
+  attempt is bounded by the caller's wait, or by one gate wait when it has none;
+  a gate still busy then gives the usual busy outcome.
 - An insecure or modified gate fails closed for that lock (for the SRT install
   lock, as `managed_srt_lock_unsafe`) with the same repair: stop every
   mono-agent process for this account, then remove the gate file.

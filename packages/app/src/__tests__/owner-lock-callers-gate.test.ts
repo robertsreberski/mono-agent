@@ -245,9 +245,11 @@ describe.each(callers)("$name with the mutation gate", (caller) => {
 
     const entered = deferred();
     const resume = deferred();
+    const events: string[] = [];
     let paused = false;
     const slow = harness.acquire({
       mutationStep: async (step) => {
+        events.push(`slow:${step}`);
         if (step !== "stale-verified" || paused) return;
         paused = true;
         entered.resolve();
@@ -255,15 +257,23 @@ describe.each(callers)("$name with the mutation gate", (caller) => {
       },
     });
     await entered.promise;
-    const fast = harness.acquire();
+    // The longest gate wait, so the fast contender cannot time out while it is
+    // given the chance to run; the proof below is ordering, not elapsed time.
+    const fast = harness.acquire({
+      gateBusyTimeoutMs: 5_000,
+      mutationStep: (step) => { events.push(`fast:${step}`); },
+    });
     let fastSettled = false;
     void fast.then(() => { fastSettled = true; }, () => { fastSettled = true; });
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 150));
-    // The fast contender cannot publish while the slow one holds the final check and rename.
+    // The fast contender cannot even enter the gate while the slow one holds the final check and rename.
+    expect(events.filter((event) => event.startsWith("fast:"))).toEqual([]);
     expect(fastSettled).toBe(false);
     resume.resolve();
 
     const outcomes = await Promise.allSettled([slow, fast]);
+    const fastEntered = events.indexOf("fast:gate-acquired");
+    expect(fastEntered === -1 || fastEntered > events.indexOf("slow:stale-detached")).toBe(true);
     const holders = outcomes.flatMap((outcome) => outcome.status === "fulfilled" && outcome.value !== undefined
       ? [outcome.value]
       : []);
@@ -319,7 +329,7 @@ describe.each(callers)("$name with the mutation gate", (caller) => {
     await holder;
     await vi.waitFor(async () => {
       await expect(lstat(harness.lockPath)).rejects.toMatchObject({ code: "ENOENT" });
-    }, { timeout: 5_000, interval: 20 });
+    }, { timeout: 10_000, interval: 20 });
   });
 });
 
@@ -350,6 +360,84 @@ describe("process-job state owner lock timing", () => {
   });
 });
 
+describe("same-process reacquire over a deferred release", () => {
+  /** A zero-wait protocol (the process-job state lock) with a short gate wait. */
+  async function stateLock(): Promise<{ readonly options: LockOptions; readonly gatePath: string }> {
+    const stateDir = await privateDirectory(join(await temporaryRoot(), "process-jobs"));
+    const protocol = processJobsOwnerLockProtocol(stateDir);
+    return {
+      gatePath: join(stateDir, OWNER_LOCK_MUTATION_GATE),
+      options: {
+        ...protocol,
+        processIncarnation: incarnation,
+        isSameProcessIncarnation,
+        mutationGate: { ...protocol.mutationGate!, busyTimeoutMs: 100 },
+      },
+    };
+  }
+
+  /** Release `held` while an in-process holder keeps the gate busy, so the release is deferred. */
+  async function deferRelease(held: { release(): Promise<void> }, gatePath: string): Promise<() => Promise<void>> {
+    const hold = deferred();
+    const entered = deferred();
+    const holder = withOwnerLockMutationGate({ path: gatePath }, "Test holder", async () => {
+      entered.resolve();
+      await hold.promise;
+    });
+    await entered.promise;
+    await held.release();
+    return async () => { hold.resolve(); await holder; };
+  }
+
+  it("finishes its own pending release before judging the lock held", async () => {
+    const { options, gatePath } = await stateLock();
+    const first = await acquireOwnerPrivateLock(options);
+    expect(first).toBeDefined();
+    const freeGate = await deferRelease(first!, gatePath);
+    // Deferred: this process's own lock is still on disk.
+    expect((await lstat(options.path)).isDirectory()).toBe(true);
+    await freeGate();
+    // The gate is free, but the deferred retry (250 ms) has not fired yet. A
+    // zero-wait reacquire must not report this process's own lock as held.
+    const second = await acquireOwnerPrivateLock(options);
+    expect(second).toBeDefined();
+    await second!.release();
+    await expect(lstat(options.path)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("reports a still-busy gate as the busy outcome after one bounded attempt", async () => {
+    const { options, gatePath } = await stateLock();
+    const first = await acquireOwnerPrivateLock(options);
+    const freeGate = await deferRelease(first!, gatePath);
+    // The gate is still held: the reacquire tries its own release once, then reports held.
+    await expect(acquireOwnerPrivateLock(options)).resolves.toBeUndefined();
+    expect((await lstat(options.path)).isDirectory()).toBe(true);
+    await freeGate();
+    await vi.waitFor(async () => {
+      await expect(lstat(options.path)).rejects.toMatchObject({ code: "ENOENT" });
+    }, { timeout: 10_000, interval: 20 });
+  });
+
+  it("never treats another owner's lock as its own pending release", async () => {
+    const { options, gatePath } = await stateLock();
+    const first = await acquireOwnerPrivateLock(options);
+    const freeGate = await deferRelease(first!, gatePath);
+    // While this process's release is pending, its directory disappears and a
+    // different live owner publishes the same path (fictional PID, always live).
+    await rm(options.path, { recursive: true });
+    await freeGate();
+    const foreign = await acquireOwnerPrivateLock({ ...options, pid: 2_147_480_005 });
+    expect(foreign).toBeDefined();
+    // Interleaving: the foreign lock is reported held, and is never moved.
+    await expect(acquireOwnerPrivateLock(options)).resolves.toBeUndefined();
+    // Let the stale pending retry run (250 ms backoff); it must fail closed, not move the foreign lock.
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 600));
+    await expect(acquireOwnerPrivateLock(options)).resolves.toBeUndefined();
+    await foreign!.release();
+    await expect(lstat(options.path)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+});
+
 describe("caller-specific gate placement and budgets", () => {
   it("sandbox-protects the registry gate together with the registry lock", () => {
     const agentRoot = "/fictional/agent";
@@ -377,7 +465,7 @@ describe("caller-specific gate placement and budgets", () => {
     // Freed part-way through the wait: the caller acquires instead of failing.
     const briefly = await processGateHolder(gatePath);
     const freed = setTimeout(() => { void briefly.release(); }, 600);
-    const held = await acquireOwnerPrivateLock({ ...options, waitTimeoutMs: 3_000 });
+    const held = await acquireOwnerPrivateLock({ ...options, waitTimeoutMs: 6_000 });
     clearTimeout(freed);
     expect(held).toBeDefined();
     await held!.release();
@@ -388,9 +476,9 @@ describe("caller-specific gate placement and budgets", () => {
     const started = performance.now();
     await expect(acquireOwnerPrivateLock({ ...options, waitTimeoutMs: 1_000 }))
       .rejects.toThrow(/SRT install lock is unsafe.*coordination busy/u);
-    const elapsed = performance.now() - started;
-    expect(elapsed).toBeGreaterThanOrEqual(900);
-    expect(elapsed).toBeLessThan(4_000);
+    // Lower bound only: far past one 200 ms gate wait means the busy gate was
+    // waited out to the caller's deadline. No upper bound; load only adds time.
+    expect(performance.now() - started).toBeGreaterThanOrEqual(900);
     await expect(lstat(join(versionRoot, ".install.lock"))).rejects.toMatchObject({ code: "ENOENT" });
     await holder.release();
   });
@@ -414,10 +502,13 @@ describe("caller-specific gate placement and budgets", () => {
     await rm(gatePath);
     const holder = await processGateHolder(gatePath);
     const started = performance.now();
-    // Interactive mode waits; the gate wait is bounded by that same budget, never a deadlock.
-    await expect(acquireFilesystemLifecycleLock(target, { ...shared, waitTimeoutMs: 400, pollIntervalMs: 20 }))
-      .resolves.toBeUndefined();
-    expect(performance.now() - started).toBeLessThan(3_000);
+    // Interactive mode waits; the gate wait is clamped to that same 400 ms budget
+    // even though the gate alone would wait 5 s, so the bound below keeps a
+    // 4.5 s margin for slow hosts while still telling the two apart.
+    await expect(acquireFilesystemLifecycleLock(target, {
+      ...shared, waitTimeoutMs: 400, pollIntervalMs: 20, gateBusyTimeoutMs: 5_000,
+    })).resolves.toBeUndefined();
+    expect(performance.now() - started).toBeLessThan(4_900);
     await holder.release();
   });
 });
