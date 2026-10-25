@@ -223,7 +223,7 @@ function observer() {
           replayedMessageCount: finite(event.replayedMessageCount), toolProjectionRecords: finite(event.toolProjectionRecords), toolProjectionBytes: finite(event.toolProjectionBytes) });
       } else if (event?.type === "context_compaction" && event.status !== "running") {
         observed.compactions.push({ status: event.status ?? null, trigger: event.trigger ?? null, tokensBefore: finite(event.tokensBefore), tokensAfter: finite(event.tokensAfter),
-          ...(typeof event.reason === "string" ? { reason: event.reason } : {}), ...(event.midRun === true ? { midRun: true } : {}) });
+          ...(typeof event.reason === "string" ? { reason: event.reason } : {}), ...(event.midRun === true || event.accounting?.midRun === true ? { midRun: true } : {}) });
         if (process.env.CONTINUITY_DEBUG === "1" && event.status !== "succeeded") process.stderr.write(`compaction ${JSON.stringify(event).slice(0, 1500)}\n`);
       } else if (event?.type === "runtime_warning") {
         observed.warnings += 1;
