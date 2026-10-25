@@ -1,5 +1,5 @@
 import type { DatabaseSync } from "node:sqlite";
-import { ledgerHash, LEDGER_PAYLOAD_BYTES, type LedgerGeneration } from "./ledger.js";
+import { ledgerHash, LEDGER_PAYLOAD_BYTES, LEDGER_LINEAGE_BYTES, type LedgerGeneration } from "./ledger.js";
 import type { ContinuityScope } from "../tool-history/continuity-contracts.js";
 
 type Row = Record<string, unknown>;
@@ -26,7 +26,7 @@ export function createLedgerSchema(database: DatabaseSync): void {
 /** Validate all inherited input links, not only citations. Latest-only storage
  * carries the union of ancestry inputs, so old-binary B1 purge/cascade also
  * removes every descendant. No indefinite source pins or hidden prompt copy. */
-export function readLedger(database: DatabaseSync, scope: ContinuityScope): { generation: LedgerGeneration; records: { recordId: string; text: string; tool?: { name: string } }[] } | undefined {
+export function readLedger(database: DatabaseSync, scope: ContinuityScope): { generation: LedgerGeneration; retainedBytes: number; payloadBytes: number; records: { recordId: string; text: string; tool?: { name: string } }[] } | undefined {
   if (!database.prepare("SELECT 1 FROM sqlite_master WHERE name='continuity_ledger'").get()) return undefined;
   const row = database.prepare("SELECT id,manifest,payload_sha256,CASE WHEN length(CAST(payload AS BLOB))<=131072 THEN payload ELSE NULL END payload FROM continuity_ledger WHERE conversation_id=? AND logical_id=?").get(scope.currentConversationId, scope.logicalConversationId) as Row | undefined;
   if (!row) return undefined;
@@ -36,19 +36,19 @@ export function readLedger(database: DatabaseSync, scope: ContinuityScope): { ge
   if (generation.id !== row.id || generation.conversationId !== scope.currentConversationId || generation.logicalId !== scope.logicalConversationId
     || !Array.isArray(generation.inputs) || !Array.isArray(generation.spans) || generation.spans.length > 256
     || !Array.isArray(generation.entries) || generation.entries.length > 24 || generation.manifest !== row.manifest || ledgerHash(JSON.stringify(generation.spans)) !== row.manifest) throw new Error("ledger_payload");
-  const records = verifyInputs(database, generation);
-  return { generation, records: [...records].map(([recordId, row]) => ({ recordId, text: row.retained_text as string })) };
+  const { records, retainedBytes } = verifyInputs(database, generation);
+  return { generation, retainedBytes, payloadBytes: Buffer.byteLength(row.payload as string), records: [...records].map(([recordId, row]) => ({ recordId, text: row.retained_text as string })) };
 }
-function verifyInputs(database: DatabaseSync, generation: LedgerGeneration): Map<string, Row> {
+function verifyInputs(database: DatabaseSync, generation: LedgerGeneration): { records: Map<string, Row>; retainedBytes: number } {
   const records = new Map<string, Row>(); let bytes = 0;
   for (const input of generation.inputs) {
     const row = database.prepare(`SELECT r.record_id,r.text_sha256,r.retained_text,r.kind,r.provenance,r.input_id,
       CASE WHEN length(CAST(r.source_json AS BLOB))<=65536 THEN r.source_json ELSE NULL END source_json,g.logical_id,g.conversation_id FROM continuity_records r JOIN continuity_generations g USING(generation_id)
       WHERE r.record_id=? AND g.logical_id=? AND g.conversation_id=? AND g.state='committed' AND r.finalized=1 AND r.retained_text IS NOT NULL AND length(CAST(r.retained_text AS BLOB))<=?`)
-      .get(input.recordId, generation.logicalId, generation.conversationId, 4 * 1024 * 1024 - bytes) as Row | undefined;
+      .get(input.recordId, generation.logicalId, generation.conversationId, LEDGER_LINEAGE_BYTES - bytes) as Row | undefined;
     if (!row || row.text_sha256 !== input.sha256 || ledgerHash(row.retained_text as string) !== input.sha256) throw new Error("ledger_source_changed");
     bytes += Buffer.byteLength(row.retained_text as string);
-    if (bytes > 4 * 1024 * 1024) throw new Error("ledger_lineage_bounds");
+    if (bytes > LEDGER_LINEAGE_BYTES) throw new Error("ledger_lineage_bounds");
     records.set(input.recordId, row);
   }
   for (const span of generation.spans) {
@@ -63,7 +63,7 @@ function verifyInputs(database: DatabaseSync, generation: LedgerGeneration): Map
         || span.end < bytes.length && bytes.subarray(span.end).toString().slice(0, 2) !== "\n\n") throw new Error("ledger_owner_span");
     }
   }
-  return records;
+  return { records, retainedBytes: bytes };
 }
 
 /** Called in the existing writer transaction, never around network I/O. */

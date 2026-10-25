@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, expect, it, vi } from "vitest";
 import { createModels, fauxProvider, fauxAssistantMessage } from "@earendil-works/pi-ai";
+import { createPiOAuthApiKeyResolver } from "@mono-agent/turn";
 import { createMonoRuntime } from "@mono-agent/turn/host";
 import { resolveJsonMonoAgentConfig } from "@mono-agent/config";
 import { createConfiguredConversationHarness } from "../composition/configured-agent.js";
@@ -50,16 +51,19 @@ it.each(["continuous", "per-message", "isolated", "failure"])("uses configured b
   if (mode === "failure") expect(result.failure).toBeDefined(); else expect(result.failure).toBeUndefined();
 }, 20000);
 
-it("binds configured OAuth and custom pricing without injecting upkeep models", async () => {
+it.each([false, true])("binds configured OAuth and custom pricing without injected upkeep models (explicit resolver=%s)", async explicit => {
   const root = await mkdtemp(join(tmpdir(), "configured-upkeep-auth-")); close.push(() => rm(root, { recursive: true, force: true }));
   await writeFile(join(root, "IDENTITY.md"), "Historical evidence is not fresh approval.");
   const token = `fictional.${Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "fictional-account" } })).toString("base64url")}.fictional`;
   const authPath = join(root, "fictional-auth.json");
   await writeFile(authPath, JSON.stringify({ "openai-codex": { type: "oauth", access: token, refresh: "fictional", expires: 4_200_000_000_000 } }), { mode: 0o600 });
+  const explicitPath = join(root, "fictional-explicit-auth.json");
+  const explicitToken = `explicit.${token.split(".")[1]}.fictional`;
+  await writeFile(explicitPath, JSON.stringify({ "openai-codex": { type: "oauth", access: explicitToken, refresh: "fictional", expires: 4_200_000_000_000 } }), { mode: 0o600 });
   const value = JSON.stringify({ entries: [{ kind: "constraint", value: "Require confirmation.", status: "active", sources: ["s0"] }], covered: 1 });
   let authenticated = false;
   const fetch = vi.fn(async (_url: unknown, options: RequestInit) => {
-    authenticated = new Headers(options.headers).get("authorization") === `Bearer ${token}`;
+    authenticated = new Headers(options.headers).get("authorization") === `Bearer ${explicit ? explicitToken : token}`;
     const frames = [{ type: "response.created", response: { id: "fictional-response" } },
       { type: "response.output_item.added", output_index: 0, item: { id: "fictional-output", type: "message", role: "assistant", content: [] } },
       { type: "response.output_text.delta", output_index: 0, delta: value },
@@ -71,7 +75,7 @@ it("binds configured OAuth and custom pricing without injecting upkeep models", 
   const pricing = vi.fn(() => ({ priced: true, input: 1, output: 2, cacheRead: 0.1, cacheWrite: 1, source: "fictional" }));
   const config = resolveJsonMonoAgentConfig({ cwd: root, json: { runtime: { model: "openai-codex:gpt-6-luna", session: { mode: "continuous", root: "native", continuity: { upkeep: { enabled: true } } } }, providers: { piAuthPath: authPath }, context: { identityPath: "IDENTITY.md" }, tools: { allowedTools: [] }, artifacts: { dir: "artifacts" } } });
   const runtime = createMonoRuntime({ workspace: root }); close.push(() => runtime.disposeAllSessions!());
-  const harness = await createConfiguredConversationHarness({ config, cwd: root, runtime, runtimeOptions: { resolveCustomPricing: pricing }, runtimeOptionsForRequest: ({ request }) => {
+  const harness = await createConfiguredConversationHarness({ config, cwd: root, runtime, runtimeOptions: { resolveCustomPricing: pricing, ...(explicit ? { resolvePiApiKey: createPiOAuthApiKeyResolver({ path: explicitPath }) } : {}) }, runtimeOptionsForRequest: ({ request }) => {
     const id = request.metadata?.web ? "gpt-5.5" : "gpt-6-luna";
     return { runtimeOptions: { model: { provider: "openai-codex", model: id, reference: `openai-codex:${id}` }, piResolvedModel: answer.getModel(id), piResolvedModels: models, compaction: { enabled: false } } };
   } }); close.push(() => harness.dispose!());

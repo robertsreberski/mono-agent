@@ -23,7 +23,12 @@ The first ledger slice is **off by default**. Deterministic cold packs and retai
 
 `upkeep.extractionModel` optionally names an explicit provider/model reference.
 Otherwise extraction uses configured `runtime.model`, not an answer-model switch.
-There is no fallback model. `ledgerEnabled: true` permits read-only reuse without
+There is no fallback model. Configured upkeep binds `providers.piAuthPath`;
+explicit `runtimeOptions.resolvePiApiKey` and `resolveCustomPricing` override
+configuration defaults. An injected `options.runtime` may keep different private
+host resolvers: upkeep cannot introspect them. Embedders must also supply those
+resolvers through `runtimeOptions` to use the same credentials/pricing for upkeep.
+`ledgerEnabled: true` permits read-only reuse without
 buying upkeep; upkeep also enables reading. Both switches default false. Disabling
 upkeep stops extraction, not storage/purge. Disabling ledger reading restores the
 deterministic renderer without changing additive storage or disabling owed purges.
@@ -67,7 +72,10 @@ omits that request field. Its default policy is `"stream_abort"`: count streamed
 text/thinking conservatively and abort when the visible estimate reaches 4,096.
 For Codex, the request asks for at most eight entries with values at most 96
 UTF-8 bytes and at most 3,072 serialized JSON bytes. `covered: N` compactly means
-the first N supplied span IDs were analyzed. Reasoning summaries are omitted from
+the first N supplied span IDs were analyzed. Preserved coverage in this mode
+counts **only entry-cited spans**, not the model's full analysis claim. Dropped
+spans remain uncovered in stored/rendered diagnostics; even a citation is not
+proof that every fact inside its span survived. Reasoning summaries are omitted from
 the native payload; effort stays at the lowest supported level. The conservative
 one-visible-byte-per-token guard remains 4,096, including any visible thinking.
 Incomplete/invalid output is discarded, without advancing coverage. Reported
@@ -100,32 +108,47 @@ Historical requests are not renewed approval; absent outcomes remain unknown.
 
 The renderer quotes escaped JSON strings (`<` and `>` are escaped), labels each
 source as `owner:sN`, `tool:<name>:sN` or neutral evidence, and explicitly labels
-tool-only constraint/decision/supersession interpretations as untrusted
-source-reported claims, not owner instructions. It prefixes a bounded verified
+constraint/decision/supersession interpretations with **any non-owner source** as
+untrusted source-reported claims, including mixed owner/tool citations. Merely
+adding an owner citation cannot turn a tool-reported portion into an owner
+instruction. It prefixes a bounded verified
 ledger and demotes a raw owner record **only when every paragraph is cited by an
 active entry and quoted byte-for-byte**; it does not delete owners on the model's assertion of coverage. An
 oversized/absent ledger leaves the deterministic fallback intact. Optional input
 still respects the target compaction trigger and current-input/output reserves.
 
-Storage is latest-only, additive inside schema v3. Serialized generation payloads (including the inherited input manifest) share
-the retained byte budget. Auxiliary SQLite lineage rows/index/file overhead are
-not separately charged; this is not a physical SQLite-file quota. The 128 KiB
-payload limit bounds lineage instead of promising an unreachable input count.
-Worst-case escaped payload growth is checked **before** completion; if it cannot
-fit, `ledger_payload_budget` skips without buying a call; publication cannot evict source evidence to
-make itself fit. Parent/source compare-and-swap prevents stale publication.
+Storage is latest-only, additive inside schema v3. Serialized generation payloads
+(including inherited input metadata) share the retained byte budget. Auxiliary
+SQLite lineage rows/index/file overhead are not separately charged; this is not
+a physical SQLite-file quota. The 128 KiB payload limit bounds serialized metadata,
+not contributing retained text: a separate **4 MiB retained-text lineage bound**
+applies to the union of inherited and newly selected records.
+
+Before completion, admission projects worst-case escaped payload size, sums the
+deduplicated retained-text union and checks shared-quota headroom after replacing
+the current payload. Refusals emit `ledger_payload_budget`,
+`ledger_lineage_budget` or `ledger_quota_budget` without buying a call. These
+preflights are not reservations: publication still rechecks quota, source and
+parent identity atomically, and cannot evict source evidence to make itself fit.
 Inherited input links invalidate descendants when **any** contributing ancestor
 source is deleted, tombstoned or changed, including a pre-ledger binary's normal
 B1 purge. Quota-retention tombstones likewise invalidate dependent generations;
 this slice introduces no checkpoint source leases. Pending purge intents suppress reuse immediately. Old binaries ignore
 the additive tables; no destructive migration is required for rollback.
 
-Identical failed/aborted selections are negatively cached in-process for the
-configured completion binding and physical/logical conversation, keyed by source
-manifest and prior generation. Subsequent boundaries emit
-`upkeep_repeat_suppressed` without paying again until selection, prior or model
-binding changes. The cache is not durable; process/configuration restart clears
-it. Fully analyzed selected spans skip as `already_covered`.
+Only failures with `providerInvoked: true` are negatively cached in-process for
+the configured completion binding and physical/logical conversation, keyed by
+source manifest, prior generation and selected model. Pre-dispatch aborts or
+unavailability do not suppress later eligible work. Each binding has a **256-scope
+LRU**; hits refresh recency. `upkeep_repeat_suppressed` avoids repeated payment
+while the key remains cached. Eviction, process/configuration restart or a changed
+key can admit work again.
+
+Represented selected spans skip as `already_covered`. An identical valid selection
+still skips as `unchanged`, preserving its prior uncovered count instead of
+claiming complete coverage or automatically paying to fill holes. The benchmark
+still buys just one upkeep per trace/repeat: compact output may leave many spans
+uncovered, which must remain visible when interpreting measured answer quality.
 
 Digest/integrity failure emits a content-free `ledger_integrity` warning whenever
 the ledger is skipped. There is no auto-repair or paid attempt against corrupt

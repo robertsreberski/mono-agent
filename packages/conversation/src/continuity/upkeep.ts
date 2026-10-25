@@ -1,13 +1,13 @@
 import type { RuntimeEventLike } from "@mono-agent/observability";
 import type { ContinuityUpkeepResult } from "@mono-agent/turn/host";
 import type { ConversationHarnessOptions, ConversationHarnessRequest } from "../harness/contracts.js";
-import { selectLedgerSources, validateLedgerOutput, ledgerPayloadFits, ledgerHash } from "./ledger.js";
+import { selectLedgerSources, validateLedgerOutput, projectedLedgerPayloadBytes, LEDGER_PAYLOAD_BYTES, LEDGER_LINEAGE_BYTES, ledgerHash } from "./ledger.js";
 
 export interface UpkeepEligibility {
   readonly sessionsEnabled: boolean; readonly isolated: boolean; readonly ownedStore: boolean; readonly primaryAttempt: boolean;
   readonly historyAvailable?: boolean; readonly maxTokens: number; readonly withOwner?: <T>(operation: () => Promise<T>) => Promise<T>;
 }
-// Host-lifetime, process-local negative cache; no historical prose or raw errors.
+// Host-lifetime, process-local per-binding LRU (256 scopes); no historical prose or raw errors.
 const failedSelections = new WeakMap<Function, Map<string, string>>();
 export function createLedgerSupplier(options: ConversationHarnessOptions, request: ConversationHarnessRequest, runId: string) {
   const history = options.toolHistory, config = history?.upkeep;
@@ -40,29 +40,43 @@ export function createLedgerSupplier(options: ConversationHarnessOptions, reques
         let published: string | undefined, localSkip: string | undefined, uncovered: number | undefined, fingerprint: string | undefined;
         const failures = failedSelections.get(config.complete) ?? new Map<string, string>(); failedSelections.set(config.complete, failures);
         const cacheScope = ledgerHash(JSON.stringify([scope.currentConversationId, scope.logicalConversationId]));
+        const rememberPaidFailure = () => {
+          if (!fingerprint || !completion?.receipt.providerInvoked) return;
+          failures.delete(cacheScope); failures.set(cacheScope, fingerprint);
+          if (failures.size > 256) failures.delete(failures.keys().next().value!);
+        };
         try {
           if (history!.reader.continuitySuppressed(scope) || !history!.publishLedger || !eligibility.withOwner) throw new Error("unavailable");
           const source = history!.reader.snapshotContinuity({ ...scope, selection: "upkeep" });
           if (["unavailable", "purge_pending", "source_unavailable"].includes(source.degradedReason ?? "")) throw new Error("source_unavailable");
           const selection = selectLedgerSources(source, frozen?.generation); uncovered = selection.uncovered;
           if (!selection.spans.length || selection.manifest === frozen?.generation.manifest) {
+            if (frozen && selection.manifest === frozen.generation.manifest) uncovered = frozen.generation.uncovered;
             localSkip = selection.spans.length ? "unchanged" : "no_source"; return;
           }
           const covered = new Set(frozen?.generation.coveredSpans ?? frozen?.generation.entries.flatMap(entry => entry.sources));
           if (frozen && selection.spans.every(span => frozen!.generation.spans.some(old => covered.has(old.id) && old.recordId === span.recordId && old.sha256 === span.sha256 && old.start === span.start && old.end === span.end && old.digest === span.digest))) { localSkip = "already_covered"; return; }
-          if (!ledgerPayloadFits(selection, scope, frozen?.generation)) { localSkip = "ledger_payload_budget"; return; }
+          const projectedBytes = projectedLedgerPayloadBytes(selection, scope, frozen?.generation);
+          if (projectedBytes > LEDGER_PAYLOAD_BYTES) { localSkip = "ledger_payload_budget"; return; }
+          const inherited = new Map(frozen?.records.map(record => [record.recordId, Buffer.byteLength(record.text)]) ?? []);
+          let lineageBytes = frozen?.retainedBytes ?? 0;
+          for (const record of selection.records) lineageBytes += Buffer.byteLength(record.text) - (inherited.get(record.recordId) ?? 0);
+          if (lineageBytes > LEDGER_LINEAGE_BYTES) { localSkip = "ledger_lineage_budget"; return; }
+          const stats = history!.reader.stats();
+          if (!stats) throw new Error("quota_unavailable");
+          if (stats.retainedBytes - (frozen?.payloadBytes ?? 0) + projectedBytes > stats.limits.maxBytes) { localSkip = "ledger_quota_budget"; return; }
           fingerprint = ledgerHash(JSON.stringify([selection.manifest, frozen?.generation.id ?? null, config.model ?? "bound-completion"]));
-          if (failures.get(cacheScope) === fingerprint) { localSkip = "upkeep_repeat_suppressed"; gap = true; return; }
+          if (failures.get(cacheScope) === fingerprint) { failures.delete(cacheScope); failures.set(cacheScope, fingerprint); localSkip = "upkeep_repeat_suppressed"; gap = true; return; }
           failures.delete(cacheScope);
           completion = await config.complete(selection.prompt, request.abortSignal);
-          if (completion.receipt.status !== "valid" || !completion.text) { gap = true; if (completion.receipt.status === "invalid") failures.set(cacheScope, fingerprint); return; }
-          const generation = validateLedgerOutput(completion.text, selection, scope, frozen?.generation);
+          if (completion.receipt.status !== "valid" || !completion.text) { gap = true; if (completion.receipt.status === "invalid") rememberPaidFailure(); return; }
+          const generation = validateLedgerOutput(completion.text, selection, scope, frozen?.generation, completion.receipt.capEnforcement); uncovered = generation.uncovered;
           await eligibility.withOwner(async () => { request.abortSignal.throwIfAborted(); await history!.publishLedger!(generation); });
           frozen = history!.reader.ledger(scope); published = frozen?.generation.id;
           if (!published) throw new Error("publication_unavailable");
         } catch {
           gap = true;
-          if (completion) { if (fingerprint) failures.set(cacheScope, fingerprint); completion = { receipt: { ...completion.receipt, status: "invalid", reason: "validation_or_publication" } }; }
+          if (completion) { rememberPaidFailure(); completion = { receipt: { ...completion.receipt, status: "invalid", reason: "validation_or_publication" } }; }
         } finally {
           // This host callback records before the provider attempt can fail over;
           // it is deliberately not attached to an attempt's return value.

@@ -26,7 +26,9 @@
   purge-cascaded lineage, bounded one-call upkeep and ledger-first packs. Keep
   upkeep off by default; expose strict request caps and Codex stream-abort limits.
   Bind configured credentials, suppress repeated failures and preserve uncited
-  owner rules. Keep benchmark aggregation execution-free.
+  owner rules. Preflight inherited text and shared quota, mark mixed-source claims
+  and incomplete compact coverage, and retain paid failed-checkpoint accounting.
+  Keep benchmark aggregation execution-free.
 
 - Add real deterministic cold-pack benchmark arms, paired with recording-only
   and legacy cold-rebuild controls; offline contracts check actual provider

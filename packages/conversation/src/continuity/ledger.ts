@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type { ContinuitySnapshot, ContinuitySnapshotRecord } from "../tool-history/continuity-contracts.js";
 
 export const quote = (text: string) => JSON.stringify(text).replaceAll("<", "\\u003c").replaceAll(">", "\\u003e");
+export const LEDGER_LINEAGE_BYTES = 4 * 1024 * 1024;
 export const LEDGER_PAYLOAD_BYTES = 128 * 1024;
 export const ledgerHash = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
 export interface LedgerSource { readonly recordId: string; readonly sha256: string }
@@ -66,7 +67,7 @@ export function selectLedgerSources(snapshot: ContinuitySnapshot, prior?: Ledger
 
 /** Reject the whole completion on any forged reference, digest, span or schema.
  * No invalid completion advances even partial coverage. */
-export function validateLedgerOutput(text: string, selection: LedgerSelection, scope: { currentConversationId: string; logicalConversationId: string }, prior?: LedgerGeneration): LedgerGeneration {
+export function validateLedgerOutput(text: string, selection: LedgerSelection, scope: { currentConversationId: string; logicalConversationId: string }, prior?: LedgerGeneration, capEnforcement: "request" | "stream_abort" = "request"): LedgerGeneration {
   const output = JSON.parse(text) as { entries: LedgerEntry[]; covered: string[] | number };
   if (Number.isSafeInteger(output.covered) && Number(output.covered) > 0 && Number(output.covered) <= selection.spans.length) output.covered = selection.spans.slice(0, Number(output.covered)).map(span => span.id);
   if (!output || Object.keys(output).some(key => !["entries", "covered"].includes(key)) || !Array.isArray(output.entries) || output.entries.length > 24
@@ -94,12 +95,13 @@ export function validateLedgerOutput(text: string, selection: LedgerSelection, s
     if (["commitment", "artifact"].includes(entry.kind) && ["confirmed", "failed"].includes(entry.status)
       && !entry.sources.some(id => selection.records.find(record => record.recordId === spans.get(id)!.recordId)?.kind === "tool")) throw new Error("request_not_outcome");
   }
+  const represented = capEnforcement === "stream_abort" ? new Set(output.entries.flatMap(entry => entry.sources)) : covered;
   const inputs = new Map((prior?.inputs ?? []).map(source => [source.recordId, source]));
   // Lineage includes EVERY selected input, not merely model-cited references.
   for (const span of selection.spans) inputs.set(span.recordId, { recordId: span.recordId, sha256: span.sha256 });
   const generation: LedgerGeneration = { id: randomUUID(), parent: prior?.id ?? null, conversationId: scope.currentConversationId, logicalId: scope.logicalConversationId,
     manifest: selection.manifest, inputs: [...inputs.values()], entries: output.entries,
-    coveredSpans: [...covered], spans: selection.spans.map(({ text: _text, ...span }) => span), coveredOwners: [], uncovered: selection.uncovered + selection.spans.length - covered.size };
+    coveredSpans: [...represented], spans: selection.spans.map(({ text: _text, ...span }) => span), coveredOwners: [], uncovered: selection.uncovered + selection.spans.length - represented.size };
   return { ...generation, coveredOwners: [...quotedOwnerRecords(generation, selection.records)] };
 }
 
@@ -111,8 +113,9 @@ export function renderLedger(generation: LedgerGeneration, records: readonly (Pi
       const span = generation.spans.find(span => span.id === id), record = records.find(record => record.recordId === span?.recordId);
       return span?.owner ? `owner:${id}` : span?.kind === "tool" || span?.toolName || record?.tool ? `tool:${span?.toolName ?? record?.tool?.name ?? "unknown"}:${id}` : `evidence:${span?.kind ?? "unknown"}:${id}`;
     });
-    const untrustedClaim = ["constraint", "decision", "supersession"].includes(entry.kind) && !entry.sources.some(id => generation.spans.find(span => span.id === id)?.owner);
-    lines.push(`Derived ${entry.kind}${untrustedClaim ? entry.sources.some(id => generation.spans.find(span => span.id === id)?.kind === "tool") ? " (tool-reported claim, not an owner instruction)" : " (evidence-reported claim, not an owner instruction)" : ""} status=${entry.status}: ${quote(entry.value)} sources=${quote(provenance.join(","))}\n`);
+    const untrustedClaim = ["constraint", "decision", "supersession"].includes(entry.kind) && entry.sources.some(id => !generation.spans.find(span => span.id === id)?.owner);
+    const mixed = untrustedClaim && entry.sources.some(id => generation.spans.find(span => span.id === id)?.owner);
+    lines.push(`Derived ${entry.kind}${mixed ? " (mixed owner/tool or evidence sources; non-owner portion is not an owner instruction)" : untrustedClaim ? entry.sources.some(id => generation.spans.find(span => span.id === id)?.kind === "tool") ? " (tool-reported claim, not an owner instruction)" : " (evidence-reported claim, not an owner instruction)" : ""} status=${entry.status}: ${quote(entry.value)} sources=${quote(provenance.join(","))}\n`);
     for (const id of entry.sources) {
       const span = generation.spans.find(span => span.id === id), record = records.find(record => record.recordId === span?.recordId);
       if (span?.owner && record && !quoted.has(id)) { quoted.add(id); lines.push(`Historical owner paragraph (not renewed approval): ${quote(Buffer.from(record.text).subarray(span.start, span.end).toString("utf8"))}\n`); }
@@ -137,8 +140,8 @@ export function quotedOwnerRecords(generation: LedgerGeneration, records: readon
 
 /** Bound the serialized worst case BEFORE dispatch, including 6x JSON escaping
  * of value bytes and every inherited input. The payload limit, not an unreachable
- * input-count promise, bounds lineage. Conservative refusal never buys a call. */
-export function ledgerPayloadFits(selection: LedgerSelection, scope: { currentConversationId: string; logicalConversationId: string }, prior?: LedgerGeneration): boolean {
+ * input-count promise, bounds serialized lineage metadata (not retained text). Conservative refusal never buys a call. */
+export function projectedLedgerPayloadBytes(selection: LedgerSelection, scope: { currentConversationId: string; logicalConversationId: string }, prior?: LedgerGeneration): number {
   const inputs = new Map((prior?.inputs ?? []).map(input => [input.recordId, input]));
   for (const span of selection.spans) inputs.set(span.recordId, { recordId: span.recordId, sha256: span.sha256 });
   const longest = selection.spans.map(span => span.id).sort((a, b) => b.length - a.length)[0] ?? "s255";
@@ -146,5 +149,5 @@ export function ledgerPayloadFits(selection: LedgerSelection, scope: { currentCo
     logicalId: scope.logicalConversationId, manifest: selection.manifest, inputs: [...inputs.values()],
     entries: Array.from({ length: 24 }, () => ({ kind: "supersession", value: "\0".repeat(512), status: "superseded", sources: Array(8).fill(longest) })),
     spans: selection.spans.map(({ text: _text, ...span }) => span), coveredSpans: selection.spans.map(span => span.id),
-    coveredOwners: selection.records.map(record => record.recordId), uncovered: Number.MAX_SAFE_INTEGER })) <= LEDGER_PAYLOAD_BYTES;
+    coveredOwners: selection.records.map(record => record.recordId), uncovered: Number.MAX_SAFE_INTEGER }));
 }
