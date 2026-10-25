@@ -8,7 +8,7 @@ import { ARMS, AVAILABLE_ARM_IDS, BASELINE_ARM, CONTINUITY_OFF, CONTINUITY_ON, C
 import { classifyHistoryResult } from "../lib/continuity-runner.mjs";
 import { estimateCost, inventory, loadTraces, makePlan, parseSeeds, sourceOnly, validateTrace } from "../lib/continuity-dataset.mjs";
 import { COLD_BOUNDS, GENERATOR_VERSION, HARD_SEEDS, LONG_RULES, generateTrace, mulberry32, outsideColdBounds, traceShape } from "../lib/continuity-generator.mjs";
-import { ABSTAIN_INSTRUCTION, ORIGINAL_CATEGORIES, isAbstention, parseJudgeVerdict, probePrompt, renderMarkdown, scoreAnswer, summarize } from "../lib/continuity-score.mjs";
+import { ABSTAIN_INSTRUCTION, ORIGINAL_CATEGORIES, emptyUsage, addUsage, isAbstention, parseJudgeVerdict, probePrompt, renderMarkdown, scoreAnswer, summarize } from "../lib/continuity-score.mjs";
 import { callKey } from "../lib/continuity-tools.mjs";
 import { main, parseArguments } from "../continuity-benchmark.mjs";
 
@@ -283,6 +283,16 @@ describe("continuity arms and plan", () => {
 });
 
 describe("continuity CLI guards", () => {
+  it("aggregate-only never loads execution, whereas strict cap executes with its plan flag", async () => {
+    const aggregate = await scratch(); let calls = 0;
+    const modulesLoader = async () => { calls++; throw new Error("execution_reached"); };
+    await main(["--aggregate-only", "--output", aggregate], { env: {}, stdout: () => {}, modulesLoader });
+    expect(calls).toBe(0);
+    const strict = await scratch();
+    await expect(main(["--require-request-cap", "--output", strict], { env: {}, stdout: () => {}, modulesLoader })).rejects.toThrow("execution_reached");
+    expect(calls).toBe(1); expect(JSON.parse(await readFile(join(strict, "plan.json"), "utf8")).upkeep.requireRequestCap).toBe(true);
+  });
+
   it("parses flags strictly", () => {
     expect(() => parseArguments(["--unknown"])).toThrow("invalid_arguments");
     expect(() => parseArguments(["--repeats"])).toThrow("missing_argument");
@@ -489,4 +499,26 @@ it("keeps distractor actual facts and byte pressure identical while pricing one 
   const price = { input: 1, output: 2, cacheRead: 0.1 };
   const cost = estimateCost(plan, harder.traces, { [plan.reader.model]: price, [plan.upkeep.model]: price, [plan.judge.model]: price });
   expect(cost.arms["continuity-ledger-cold"]).toMatchObject({ upkeepCalls: 2, upkeepBudgetUsd: 0.1444 });
+});
+
+it.each(["harness", "ledger", "skip"])("retains upkeep receipt/accounting after %s preparation", async point => {
+  const { prepareLedgerCheckpoint } = await import("../lib/continuity-runner.mjs");
+  const work = await scratch();
+  const receipt = { type: "continuity_upkeep", providerInvoked: point !== "skip", status: "invalid", costUsd: null, inputTokens: null, outputTokens: null, estimatedInputCostUsd: 0.02 };
+  const modules = {
+    config: { resolveJsonMonoAgentConfig: () => ({ runtime: { model: {} } }) },
+    coordinator: { acquireAgentRootOwnership: async () => ({}), releaseAgentRootOwnershipWhenIdle: async () => {} },
+    app: { createConfiguredAgentRuntime: () => ({}), createConfiguredConversationHarness: async () => ({ run: async ({ onEvent }) => { onEvent(receipt); if (point === "harness") throw new Error("fictional"); return {}; } }) },
+    conversation: { ToolHistoryReader: class { ledger() { throw new Error("fictional"); } } },
+  };
+  const result = await prepareLedgerCheckpoint({ modules, work, mode: "real", reader: { reference: "openai-codex:gpt-6-luna" }, alternate: { reference: "openai:gpt-4o-mini" }, scripted: { respondWith() {} }, clock: {}, plan: { upkeep: { model: "openai-codex:gpt-6-luna" }, limits: { perLiveTurnTimeoutMs: 10000 } } });
+  expect(result.receipt).toEqual(receipt); expect(result.valid).toBe(false);
+  expect(result.usage).toMatchObject(point === "skip" ? { calls: 0, inputTokens: 0, outputTokens: 0, estimatedCostUsd: 0 } : { calls: 1, estimatedCostUsd: 0.02, estimatedPaidCalls: 1, estimatedPaidInputCostUsd: 0.02 });
+});
+
+it("zero-call and estimated-paid upkeep accounting do not inflate unknown cost counters", () => {
+  const usage = emptyUsage(); addUsage(usage, { calls: 0 });
+  expect(usage).toMatchObject({ unknownCostCalls: 0, unknownTokenCalls: 0 });
+  addUsage(usage, { calls: 1, inputTokens: null, outputTokens: null, cacheReadTokens: 0, cacheWriteTokens: 0, estimatedCostUsd: 0.02, estimatedPaidCalls: 1, estimatedPaidInputCostUsd: 0.02 });
+  expect(usage).toMatchObject({ calls: 1, estimatedPaidCalls: 1, estimatedPaidInputCostUsd: 0.02, estimatedCostUsd: 0.02, unknownCostCalls: 0, unknownTokenCalls: 1 });
 });

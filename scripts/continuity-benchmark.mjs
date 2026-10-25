@@ -156,7 +156,7 @@ export async function main(argv = process.argv.slice(2), { stdout = console.log,
     if (error instanceof CliError) throw error;
     await writeFile(planPath, `${JSON.stringify({ ...plan, executionKind: mode }, null, 2)}\n`, { mode: 0o600 });
   }
-  if (!flags["aggregate-only", "require-request-cap"]) {
+  if (!flags["aggregate-only"]) {
     await execute({ flags, plan, traces, mode, output, piAuthPath, head, dirty, modulesLoader });
   }
   const results = await aggregate({ plan, traces, output, mode });

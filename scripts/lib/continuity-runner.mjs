@@ -441,7 +441,7 @@ export async function buildCheckpoint({ modules, trace, arm, repeat, dir, plan, 
 }
 
 /** One upkeep, no real answer call, before read-only probe forks. No probe/answer data enter extraction. */
-async function prepareLedgerCheckpoint({ modules, work, authPath, plan, mode, reader, alternate, scripted, route, clock, conversationId }) {
+export async function prepareLedgerCheckpoint({ modules, work, authPath, plan, mode, reader, alternate, scripted, route, clock, conversationId }) {
   const watch = observer(); const hostOptions = {};
   if (mode === "offline") {
     const ref = modules.host.parseMonoRuntimeModelReference(plan.upkeep.model);
@@ -460,16 +460,24 @@ async function prepareLedgerCheckpoint({ modules, work, authPath, plan, mode, re
   // Only the scripted answer switches binding, leaving probes a real cold boundary.
   hostOptions.runtimeOptionsForRequest = () => ({ runtimeOptions: { model: alternate, piResolvedModel: scripted.route({ model: alternate }).model, piResolvedModels: scripted.models } });
   scripted.respondWith(alternate, () => modules.pi.fauxAssistantMessage("Continuity preparation complete."));
-  const { harness, close } = await openHarness({ modules, work, authPath, model: reader.reference, tools: false, route, clock, hostOptions,
-    configPatch: { runtime: { compaction: { enabled: false }, session: { continuity: { enabled: true, packEnabled: true, upkeep: { enabled: true, requireRequestCap: plan.upkeep.requireRequestCap, extractionModel: plan.upkeep.model } } } } } });
-  let failure = null;
-  try { const response = await harness.run({ conversationId, userMessage: "Prepare continuity for the next request.", captureSpeakerKind: "human-turn", metadata: { source: "web", web: { model: alternate.reference } }, abortSignal: AbortSignal.timeout(plan.limits.perLiveTurnTimeoutMs), onEvent: watch.onEvent }); failure = response.failure?.kind ?? null; }
-  finally { await close(); }
-  const receipt = watch.observed.upkeep.find(row => row.providerInvoked) ?? watch.observed.upkeep[0] ?? null;
-  const generation = new modules.conversation.ToolHistoryReader(join(work, "history")).ledger({ logicalConversationId: conversationId, currentConversationId: conversationId, currentRunId: "benchmark" });
+  let opened, failure = null, generation, receipt = null;
+  try {
+    opened = await openHarness({ modules, work, authPath, model: reader.reference, tools: false, route, clock, hostOptions,
+      configPatch: { runtime: { compaction: { enabled: false }, session: { continuity: { enabled: true, packEnabled: true, upkeep: { enabled: true, requireRequestCap: plan.upkeep.requireRequestCap, extractionModel: plan.upkeep.model } } } } } });
+    const response = await opened.harness.run({ conversationId, userMessage: "Prepare continuity for the next request.", captureSpeakerKind: "human-turn", metadata: { source: "web", web: { model: alternate.reference } }, abortSignal: AbortSignal.timeout(plan.limits.perLiveTurnTimeoutMs), onEvent: watch.onEvent });
+    failure = response.failure?.kind ?? null;
+    generation = new modules.conversation.ToolHistoryReader(join(work, "history")).ledger({ logicalConversationId: conversationId, currentConversationId: conversationId, currentRunId: "benchmark" });
+  } catch { failure = "upkeep_preparation_failed"; }
+  finally {
+    try { await opened?.close(); } catch { failure ??= "upkeep_close_failed"; }
+    receipt = watch.observed.upkeep.find(row => row.providerInvoked) ?? watch.observed.upkeep[0] ?? null;
+  }
+  const calls = receipt?.providerInvoked ? 1 : 0;
+  const estimatedPaid = calls > 0 && receipt.costUsd == null && typeof receipt.estimatedInputCostUsd === "number";
   return { valid: !failure && receipt?.status === "valid" && !!generation?.generation.entries.length && generation.generation.id === receipt.generationId,
-    failure, receipt, usage: { calls: receipt?.providerInvoked ? 1 : 0, inputTokens: receipt?.inputTokens ?? null, outputTokens: receipt?.outputTokens ?? null,
-      cacheReadTokens: 0, cacheWriteTokens: 0, estimatedCostUsd: receipt?.costUsd ?? null } };
+    failure, receipt, usage: { calls, inputTokens: calls ? receipt?.inputTokens ?? null : 0, outputTokens: calls ? receipt?.outputTokens ?? null : 0,
+      cacheReadTokens: 0, cacheWriteTokens: 0, estimatedCostUsd: calls ? receipt?.costUsd ?? receipt?.estimatedInputCostUsd ?? null : 0,
+      estimatedPaidCalls: estimatedPaid ? 1 : 0, estimatedPaidInputCostUsd: estimatedPaid ? receipt.estimatedInputCostUsd : 0 } };
 }
 
 /** `harness.compactConversation()` through a tool-free configured harness on the bound model. */

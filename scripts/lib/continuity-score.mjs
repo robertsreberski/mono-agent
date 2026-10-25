@@ -179,16 +179,18 @@ const round = (value, digits = 4) => (value === null ? null : Number(value.toFix
 
 const USAGE_FIELDS = ["inputTokens", "outputTokens", "cacheReadTokens", "cacheWriteTokens"];
 export function emptyUsage() {
-  return { calls: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, estimatedCostUsd: 0, unknownCostCalls: 0, unknownTokenCalls: 0 };
+  return { calls: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, estimatedCostUsd: 0, unknownCostCalls: 0, unknownTokenCalls: 0, estimatedPaidCalls: 0, estimatedPaidInputCostUsd: 0 };
 }
 export function addUsage(total, usage) {
-  if (!usage) return total;
+  if (!usage || usage.calls === 0) return total;
   total.calls += usage.calls ?? 1;
   let unknownTokens = false;
   for (const field of USAGE_FIELDS) {
     if (typeof usage[field] === "number") total[field] += usage[field]; else unknownTokens = true;
   }
   if (unknownTokens) total.unknownTokenCalls += usage.unknownTokenCalls ?? 1;
+  total.estimatedPaidCalls += usage.estimatedPaidCalls ?? 0;
+  total.estimatedPaidInputCostUsd += usage.estimatedPaidInputCostUsd ?? 0;
   if (typeof usage.estimatedCostUsd === "number") total.estimatedCostUsd += usage.estimatedCostUsd;
   else total.unknownCostCalls += usage.unknownCostCalls ?? 1;
   return total;
