@@ -6,8 +6,8 @@
 //               providers; NOT model quality
 //   --real      paid run on the real provider; refused when CI is set
 import { createHash } from "node:crypto";
-import { lstat, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
-import { isAbsolute, join, relative, resolve } from "node:path";
+import { lstat, mkdir, readdir, readFile, rm, writeFile, realpath } from "node:fs/promises";
+import { isAbsolute, join, relative, resolve, sep, dirname } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { ARMS, AVAILABLE_ARM_IDS, DEFAULT_ARMS, armById, checkpointKey } from "./lib/continuity-arms.mjs";
 import { estimateCost, inventory, loadTraces, makePlan, parseSeeds } from "./lib/continuity-dataset.mjs";
@@ -15,7 +15,7 @@ import { HARD_SEEDS } from "./lib/continuity-generator.mjs";
 import { addUsage, emptyUsage, renderMarkdown, summarize } from "./lib/continuity-score.mjs";
 
 const ROOT = fileURLToPath(new URL("../", import.meta.url)).replace(/\/$/u, "");
-const BOOLEAN = new Set(["dry-run", "real", "help", "no-judge", "keep-work", "aggregate-only", "require-request-cap"]);
+const BOOLEAN = new Set(["dry-run", "real", "help", "no-judge", "keep-work", "aggregate-only", "require-request-cap", "capture-upkeep-output"]);
 const VALUED = new Set(["suite", "seeds", "reader", "extraction-model", "alternate", "judge", "reader-effort", "judge-effort", "repeats", "arms", "probe-limit", "confirm-plan", "pi-auth-path", "output", "concurrency"]);
 const REPEATABLE = new Set(["trace", "repeat"]);
 const EFFORTS = ["none", "minimal", "low", "medium", "high"];
@@ -95,7 +95,7 @@ function gitState() {
 
 function insideRoot(path) {
   const rel = relative(ROOT, path);
-  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+  return rel === "" || (!(rel === ".." || rel.startsWith(`..${sep}`)) && !isAbsolute(rel));
 }
 
 async function validatePiAuthPath(value) {
@@ -116,7 +116,7 @@ Plan (bound into the digest): --suite original|hard|hard-distractors (default or
   --reader REF (default openai-codex:gpt-6-luna) --alternate REF --judge REF | --no-judge
   --extraction-model REF (default configured reader) --require-request-cap
   --reader-effort LEVEL --judge-effort LEVEL --repeats N --arms ${AVAILABLE_ARM_IDS.join(",")} --probe-limit N
-Execution only: --trace ID (repeatable) --repeat N (repeatable) --concurrency N --output DIR --keep-work --aggregate-only
+Execution only: --trace ID (repeatable) --repeat N (repeatable) --concurrency N --output DIR --keep-work --aggregate-only --capture-upkeep-output
 See docs/runtime/continuity-benchmark.md.`;
 
 export async function main(argv = process.argv.slice(2), { stdout = console.log, env = process.env, modulesLoader } = {}) {
@@ -147,6 +147,14 @@ export async function main(argv = process.argv.slice(2), { stdout = console.log,
     ? join(ROOT, ".worklab-tmp", "continuity", `run-${new Date().toISOString().replace(/[:.]/gu, "-")}`)
     : resolve(flags.output);
   if (flags.output !== undefined && (!isAbsolute(flags.output) || (mode === "real" && insideRoot(output)))) throw new CliError("invalid_output");
+  if (flags["capture-upkeep-output"] && (flags.output === undefined || insideRoot(output))) throw new CliError("capture_requires_external_output");
+  if (flags["capture-upkeep-output"]) {
+    let ancestor = output;
+    for (;;) {
+      try { if (insideRoot(await realpath(ancestor))) throw new CliError("capture_requires_external_output"); break; }
+      catch (error) { if (error.code !== "ENOENT") throw error; ancestor = dirname(ancestor); }
+    }
+  }
   await mkdir(join(output, "units"), { recursive: true, mode: 0o700 });
   const planPath = join(output, "plan.json");
   try {
@@ -214,7 +222,7 @@ async function execute({ flags, plan, traces, mode, output, piAuthPath, head, di
     await rm(dir, { recursive: true, force: true });
     try {
       if (unit.arm.midCheckpoint !== null || unit.arm.ledgerUpkeep) state.liveTurns += 1;
-      const built = await buildCheckpoint({ modules, trace: unit.trace, arm: unit.arm, repeat: unit.repeat, dir, plan, mode, authPath });
+      const built = await buildCheckpoint({ modules, trace: unit.trace, arm: unit.arm, repeat: unit.repeat, dir, plan, mode, authPath, ...(flags["capture-upkeep-output"] ? { captureUpkeepOutput: join(output, "upkeep-output", `r${unit.repeat}-${unit.trace.id}.json`) } : {}) });
       if (built.record.mid) account(built.record.mid.usage);
       if (built.record.upkeep) account(built.record.upkeep.usage);
       checkpoints.set(key, built);

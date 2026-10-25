@@ -74,7 +74,7 @@ it("publishes only the latest generation with parent/manifest CAS and inherited-
   await owner(f, "Other fictional evidence.");
   const second = selectLedgerSources(f.reader.snapshotContinuity(scope), parent);
   const next = validateLedgerOutput(output(second), second, scope, parent); await f.writer.publishLedger(next);
-  await expect(f.writer.publishLedger({ ...next, id: "stale", parent: parent.id })).rejects.toThrow();
+  await expect(f.writer.publishLedger({ ...next, id: "stale", parent: parent.id })).rejects.toMatchObject({ code: "publish_cas", message: "publish_cas" });
   const db = new DatabaseSync(f.reader.databasePath); db.exec("PRAGMA foreign_keys=ON");
   expect(db.prepare("PRAGMA user_version").get()).toEqual({ user_version: 3 });
   expect(db.prepare("SELECT count(*) n FROM continuity_ledger").get()).toEqual({ n: 1 });
@@ -87,7 +87,7 @@ it.each(["tombstone", "changed", "quota"])("invalidates or refuses %s without ad
   const f = await fixture(mode === "quota" ? 512 : undefined); await owner(f);
   const selection = selectLedgerSources(f.reader.snapshotContinuity(scope));
   const generation = validateLedgerOutput(output(selection), selection, scope);
-  if (mode === "quota") { await expect(f.writer.publishLedger(generation)).rejects.toThrow(); expect(f.reader.ledger(scope)).toBeUndefined(); return; }
+  if (mode === "quota") { await expect(f.writer.publishLedger(generation)).rejects.toMatchObject({ code: "publish_quota", message: "publish_quota" }); expect(f.reader.ledger(scope)).toBeUndefined(); return; }
   await f.writer.publishLedger(generation);
   const db = new DatabaseSync(f.reader.databasePath);
   db.exec(mode === "tombstone" ? "UPDATE continuity_records SET retained_text=NULL" : "UPDATE continuity_records SET retained_text='Changed fictional source.'"); db.close();
@@ -277,11 +277,11 @@ it("rejects serialized value and whole-entry overflow as whole completions", asy
   expect(Buffer.byteLength(JSON.stringify(boundary.value))).toBe(LEDGER_VALUE_JSON_BYTES);
   expect(validateLedgerOutput(JSON.stringify({ entries: [boundary], covered: ["s0"] }), selection, scope).entries).toHaveLength(1);
   expect(Buffer.byteLength(entry.value)).toBeLessThan(512); expect(Buffer.byteLength(JSON.stringify(entry.value))).toBeGreaterThan(LEDGER_VALUE_JSON_BYTES);
-  expect(() => validateLedgerOutput(JSON.stringify({ entries: [entry], covered: ["s0"] }), selection, scope)).toThrow("invalid_entry");
+  expect(() => validateLedgerOutput(JSON.stringify({ entries: [entry], covered: ["s0"] }), selection, scope)).toThrow("value_bounds");
   const spans = Array.from({ length: 8 }, (_, i) => ({ ...selection.spans[0]!, id: `s${i}-` + "x".repeat(35) }));
   const whole = { ...entry, value: "v".repeat(512), sources: spans.map(s => s.id) };
   expect(Buffer.byteLength(JSON.stringify(whole.value))).toBeLessThan(LEDGER_VALUE_JSON_BYTES); expect(Buffer.byteLength(JSON.stringify(whole))).toBeGreaterThan(LEDGER_ENTRY_JSON_BYTES);
-  expect(() => validateLedgerOutput(JSON.stringify({ entries: [whole], covered: spans.map(s => s.id) }), { ...selection, spans }, scope)).toThrow("invalid_entry");
+  expect(() => validateLedgerOutput(JSON.stringify({ entries: [whole], covered: spans.map(s => s.id) }), { ...selection, spans }, scope)).toThrow("entry_bounds");
 });
 it("fits a 205-span selection, dispatches once, and prioritizes trimmed spans at the next boundary", async () => {
   const f = await fixture(); await owner(f, "Fictional rule."); const base = f.reader.snapshotContinuity(scope), first = base.records[0]!;
@@ -328,4 +328,31 @@ it("trims whole contributing records to the lineage limit, preserving the oldest
   const fit = fitLedgerSelection(selection, scope, { generation, records: [{ recordId: "inherited", text }], retainedBytes: Buffer.byteLength(text) });
   expect(fit.reason).toBeUndefined(); expect(fit.trimmedSpans).toBe(1); expect(fit.selection.records.map(r => r.recordId)).toEqual([oldest.recordId]);
   expect(fit.lineageBytes).toBe(LEDGER_LINEAGE_BYTES - 1); expect(fit.selection.uncovered).toBe(1);
+});
+
+it.each([
+  ["output_json", "not JSON"], ["output_schema", "null"], ["output_schema", '{"entries":[],"covered":["s0"],"extra":true}'],
+  ["covered_invalid", '{"entries":[],"covered":0}'], ["unknown_source", '{"entries":[],"covered":["missing"]}'],
+  ["unknown_source", JSON.stringify({ entries: [{ kind: "open_work", status: "unknown", value: "Fictional", sources: ["missing"] }], covered: ["s0"] })],
+  ["identifier_not_in_span", JSON.stringify({ entries: [{ kind: "identifier", status: "active", value: "NOT-IN-SOURCE", sources: ["s0"] }], covered: ["s0"] })],
+  ["request_not_outcome", JSON.stringify({ entries: [{ kind: "commitment", status: "confirmed", value: "sent", sources: ["s0"] }], covered: ["s0"] })],
+])("returns stable %s without carrying evidence in the error", async (code, text) => {
+  const f = await fixture(); await owner(f); const selection = selectLedgerSources(f.reader.snapshotContinuity(scope));
+  try { validateLedgerOutput(text, selection, scope); expect.fail("must reject"); } catch (error) { expect(error).toMatchObject({ name: "LedgerError", code, message: code }); }
+});
+it("carries publisher source and bounds failures across the worker with stable codes", async () => {
+  const f = await fixture(); await owner(f); const selection = selectLedgerSources(f.reader.snapshotContinuity(scope)), generation = validateLedgerOutput(output(selection), selection, scope);
+  await expect(f.writer.publishLedger({ ...generation, entries: Array(25).fill(generation.entries[0]) })).rejects.toMatchObject({ code: "publish_bounds", message: "publish_bounds" });
+  const db = new DatabaseSync(f.reader.databasePath); db.exec("UPDATE continuity_records SET retained_text='Changed fictional source.'"); db.close();
+  await expect(f.writer.publishLedger(generation)).rejects.toMatchObject({ code: "publish_source_changed", message: "publish_source_changed" });
+});
+it.each([false, true])("emits only stable failure codes in host receipts/warnings (cancelled=%s)", async cancelled => {
+  const f = await fixture(); await owner(f); const selection = selectLedgerSources(f.reader.snapshotContinuity(scope)), signal = new AbortController(), events: any[] = [];
+  const complete = async () => { if (cancelled) signal.abort(); return { text: cancelled ? output(selection) : "fictional raw rejected text", receipt: { status: "valid", providerInvoked: true } }; };
+  const options = { toolHistory: { ...f, logicalConversationId: (id: string) => id, continuityEnabled: true, upkeep: { enabled: true, complete }, publishLedger: f.writer.publishLedger.bind(f.writer) } } as unknown as ConversationHarnessOptions;
+  await createContinuityPackSupplier(options, { conversationId: "fictional", userMessage: "Current.", abortSignal: signal.signal }, "current")!.prepare(eligible, "cold_rebuild", e => events.push(e));
+  const code = cancelled ? "publish_cancelled" : "output_json";
+  expect(events).toContainEqual(expect.objectContaining({ type: "continuity_upkeep", failure: code }));
+  expect(events).toContainEqual(expect.objectContaining({ warning_kind: "continuity_upkeep_degraded", error_code: code }));
+  expect(JSON.stringify(events)).not.toContain("fictional raw rejected text"); expect(JSON.stringify(events)).not.toContain("Never send");
 });

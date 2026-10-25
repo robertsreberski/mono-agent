@@ -185,3 +185,10 @@ This slice provides host receipts and benchmark upkeep accounting, **not** merge
 answer/upkeep billing reconciliation, cancellation/restart-complete accounting,
 coverage-hole/incremental scheduling, default-on upkeep, or a claim of paid
 quality improvement. Those require subsequent evaluation and implementation.
+
+Validation and publication failures carry an allowlisted, content-free `failure`
+code in the upkeep receipt and warning `error_code`: JSON/schema/coverage,
+source/citation, value/entry bounds, owner/outcome integrity, publication
+CAS/quota/bounds/source/cancellation/unavailability. Raw text, values, IDs and
+exception messages are never included in that discriminator. Production has no
+completion capture path.

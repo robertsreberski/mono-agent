@@ -1,3 +1,4 @@
+import { LedgerError } from "./ledger-error.js";
 import type { DatabaseSync } from "node:sqlite";
 import { ledgerHash, LEDGER_PAYLOAD_BYTES, LEDGER_LINEAGE_BYTES, type LedgerGeneration } from "./ledger.js";
 import type { ContinuityScope } from "../tool-history/continuity-contracts.js";
@@ -70,12 +71,12 @@ function verifyInputs(database: DatabaseSync, generation: LedgerGeneration): { r
 export function publishLedger(database: DatabaseSync, generation: LedgerGeneration, maxBytes: number, existingBytes: number): void {
   const payload = JSON.stringify(generation), bytes = Buffer.byteLength(payload);
   if (!generation.id || !generation.conversationId || !generation.logicalId || bytes > LEDGER_PAYLOAD_BYTES
-    || generation.spans.length > 256 || generation.entries.length > 24 || ledgerHash(JSON.stringify(generation.spans)) !== generation.manifest) throw new Error("ledger_bounds");
+    || generation.spans.length > 256 || generation.entries.length > 24 || ledgerHash(JSON.stringify(generation.spans)) !== generation.manifest) throw new LedgerError("publish_bounds");
   createLedgerSchema(database);
   const old = database.prepare("SELECT id,bytes FROM continuity_ledger WHERE conversation_id=?").get(generation.conversationId) as Row | undefined;
-  if ((old?.id ?? null) !== generation.parent) throw new Error("ledger_parent_conflict");
-  if (existingBytes - Number(old?.bytes ?? 0) + bytes > maxBytes) throw new Error("ledger_quota");
-  verifyInputs(database, generation);
+  if ((old?.id ?? null) !== generation.parent) throw new LedgerError("publish_cas");
+  if (existingBytes - Number(old?.bytes ?? 0) + bytes > maxBytes) throw new LedgerError("publish_quota");
+  try { verifyInputs(database, generation); } catch { throw new LedgerError("publish_source_changed"); }
   database.prepare("DELETE FROM continuity_ledger WHERE conversation_id=?").run(generation.conversationId);
   database.prepare("INSERT INTO continuity_ledger VALUES (?,?,?,?,?,?,?,?)").run(generation.id, generation.conversationId, generation.logicalId, generation.parent, generation.manifest, payload, ledgerHash(payload), bytes);
   for (const input of generation.inputs) database.prepare("INSERT INTO continuity_ledger_inputs VALUES (?,?,?)").run(generation.id, input.recordId, input.sha256);

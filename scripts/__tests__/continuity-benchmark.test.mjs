@@ -329,7 +329,8 @@ describe("continuity offline contract run (production harness, scripted provider
     const arms = [...ORIGINAL_ARM_IDS, "restart-switch-compact", "continuity-store", "continuity-pack-cold", "continuity-ledger-cold"];
     const code = await main(["--trace", "brightline-return", "--probe-limit", "1", "--concurrency", "5", "--arms", arms.join(","), "--output", output], { env: {}, stdout: (line) => lines.push(line) });
     expect(code).toBe(1); // 8 of 32 units: the other traces were not selected.
-    const results = JSON.parse(await readFile(join(output, "results.json"), "utf8"));
+    expect((await readdir(output)).includes("upkeep-output")).toBe(false);
+  const results = JSON.parse(await readFile(join(output, "results.json"), "utf8"));
     expect(results).toMatchObject({ executionKind: "offline", qualityMeasured: false, coverage: { unitsComplete: 8, unitsExpected: 32 } });
     const units = Object.fromEntries(await Promise.all((await readdir(join(output, "units"))).map(async (name) => {
       const unit = JSON.parse(await readFile(join(output, "units", name), "utf8"));
@@ -542,4 +543,31 @@ it("keeps paid upkeep in failed checkpoints, aggregate usage and observed input"
   expect(unit.checkpoint.error).toBe("checkpoint_failed"); expect(unit.checkpoint.upkeep.receipt.providerInvoked).toBe(true);
   const baseline = JSON.parse(await readFile(join(output, "units", "r1-brightline-return-native.json"), "utf8"));
   expect(unit.manifest.observedInput).toBe(observedInputTokens(unit.checkpoint.upkeep.usage) + baseline.trials.reduce((n, trial) => n + observedInputTokens(trial.usage), 0));
+}, 180_000);
+
+it("tees only completion output without changing the model stream", async () => {
+  const { captureUpkeepModels } = await import("../lib/continuity-runner.mjs");
+  const message = { content: [{ type: "text", text: "fictional JSON" }] }, capture = vi.fn();
+  const model = {}, stream = { async *[Symbol.asyncIterator]() { yield { type: "done", message }; }, async result() { return message; } };
+  const models = { getModel: () => model, streamSimple: vi.fn(() => stream) }, wrapped = captureUpkeepModels(models, capture);
+  expect(wrapped.getModel()).toBe(model); const result = wrapped.streamSimple(model, {}, { maxTokens: 4096 });
+  for await (const event of result) expect(event.message).toBe(message);
+  expect(await result.result()).toBe(message); expect(capture).toHaveBeenCalledWith("fictional JSON");
+  expect(models.streamSimple).toHaveBeenCalledWith(model, {}, { maxTokens: 4096 });
+});
+it("requires an external output path for opt-in capture", async () => {
+  await expect(main(["--capture-upkeep-output"], { env: {}, stdout: () => {} })).rejects.toThrow("capture_requires_external_output");
+  await expect(main(["--capture-upkeep-output", "--output", join(root, "..capture")], { env: {}, stdout: () => {} })).rejects.toThrow("capture_requires_external_output");
+});
+it("captures fictional completion and stable validation failure only when explicitly enabled", async () => {
+  const { productionModules } = await import("../lib/continuity-runner.mjs");
+  const real = await productionModules(root.replace(/\/$/u, ""));
+  const modules = { ...real, pi: { ...real.pi, fauxAssistantMessage(text, options) {
+    if (typeof text === "string" && text.includes("Offline scripted ledger;")) text = JSON.stringify({ ...JSON.parse(text), forbidden: true });
+    return real.pi.fauxAssistantMessage(text, options);
+  } } };
+  const output = await scratch();
+  await main(["--trace", "brightline-return", "--probe-limit", "1", "--arms", "native,continuity-ledger-cold", "--output", output, "--capture-upkeep-output"], { env: {}, stdout: () => {}, modulesLoader: async () => modules });
+  const captured = JSON.parse(await readFile(join(output, "upkeep-output", "r1-brightline-return.json"), "utf8"));
+  expect(captured).toMatchObject({ failure: "output_schema", status: "invalid" }); expect(JSON.parse(captured.text)).toMatchObject({ forbidden: true });
 }, 180_000);

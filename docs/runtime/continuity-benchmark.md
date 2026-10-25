@@ -387,3 +387,11 @@ fork publication) preserves the partial checkpoint's upkeep in unit errors,
 `results.upkeep` and aggregate usage. Compact Codex coverage counts only cited
 spans, so the one-upkeep treatment may remain explicitly incomplete; no extra
 coverage-hole calls are added to its measurement budget.
+
+For fictional-only diagnostics, `--capture-upkeep-output` opts into saving the
+raw extraction completion plus its stable validation `failure` code under
+`OUTPUT/upkeep-output/r<repeat>-<trace>.json`. It requires an explicit output
+outside the checkout (also offline), uses owner-only files, refuses existing
+capture files, and is **off by default**. Captures are benchmark artifacts, never
+written into the continuity store or exposed by production runtime configuration.
+No prompt or credentials are captured; model, auth, SSE and caps remain unchanged.

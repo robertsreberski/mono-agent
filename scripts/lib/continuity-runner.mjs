@@ -9,8 +9,8 @@
 // Live turns (probes, the mid-trace checkpoint of arm d) use the real provider in
 // paid mode and a scripted contract reader offline.
 import { createHash } from "node:crypto";
-import { cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { cp, mkdir, readFile, rm, writeFile, realpath, lstat } from "node:fs/promises";
+import { dirname, join, isAbsolute, relative, resolve, sep } from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { armById, checkpointKey, mergePatch, pressureMetrics, verifyBoundary, verifyPressure, verifyStore } from "./continuity-arms.mjs";
@@ -381,7 +381,7 @@ export async function runLiveTurn({ modules, work, authPath, plan, mode, configP
  * Replay a trace into a fresh workspace up to its checkpoint. Arms without a
  * live mid-trace turn produce identical scripted state and share one checkpoint.
  */
-export async function buildCheckpoint({ modules, trace, arm, repeat, dir, plan, mode, authPath }) {
+export async function buildCheckpoint({ modules, trace, arm, repeat, dir, plan, mode, authPath, captureUpkeepOutput }) {
   const source = sourceOnly(trace);
   const work = join(dir, "work");
   await prepareWorkspace(work);
@@ -422,7 +422,7 @@ export async function buildCheckpoint({ modules, trace, arm, repeat, dir, plan, 
       }
       if (arm.ledgerUpkeep) {
         if (open) { await open.close(); open = null; }
-        record.upkeep = await prepareLedgerCheckpoint({ modules, work, authPath, plan, mode, reader, alternate, scripted, route, clock, conversationId });
+        record.upkeep = await prepareLedgerCheckpoint({ modules, work, authPath, plan, mode, reader, alternate, scripted, route, clock, conversationId, captureUpkeepOutput });
       }
     } finally {
       try { if (open) await open.close(); }
@@ -447,9 +447,38 @@ export async function buildCheckpoint({ modules, trace, arm, repeat, dir, plan, 
   }
 }
 
+async function prepareCapturePath(path) {
+  if (!isAbsolute(path)) throw new ContinuityError("capture_requires_external_output");
+  const root = await realpath(fileURLToPath(new URL("../../", import.meta.url)));
+  const outside = value => { const rel = relative(root, value); return rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel); };
+  let ancestor = dirname(resolve(path));
+  for (;;) {
+    try { if (!outside(await realpath(ancestor))) throw new ContinuityError("capture_requires_external_output"); break; }
+    catch (error) { if (error.code !== "ENOENT") throw error; ancestor = dirname(ancestor); }
+  }
+  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+  if (!outside(await realpath(dirname(path)))) throw new ContinuityError("capture_requires_external_output");
+  try { await lstat(path); throw new ContinuityError("capture_already_exists"); } catch (error) { if (error.code !== "ENOENT") throw error; }
+}
+
+/** Benchmark-only tee: keeps the real model, auth, cap options and SSE unchanged. */
+export function captureUpkeepModels(models, capture) {
+  return new Proxy(models, { get(target, key) {
+    if (key === "streamSimple") return (...args) => {
+      const stream = target.streamSimple(...args);
+      return new Proxy(stream, { get(source, field) {
+        if (field === "result") return async () => { const message = await source.result(); capture(textOfContent(message?.content)); return message; };
+        const value = Reflect.get(source, field, source); return typeof value === "function" ? value.bind(source) : value;
+      } });
+    };
+    const value = Reflect.get(target, key, target); return typeof value === "function" ? value.bind(target) : value;
+  } });
+}
+
 /** One upkeep, no real answer call, before read-only probe forks. No probe/answer data enter extraction. */
-export async function prepareLedgerCheckpoint({ modules, work, authPath, plan, mode, reader, alternate, scripted, route, clock, conversationId }) {
-  const watch = observer(); const hostOptions = {};
+export async function prepareLedgerCheckpoint({ modules, work, authPath, plan, mode, reader, alternate, scripted, route, clock, conversationId, captureUpkeepOutput }) {
+  if (captureUpkeepOutput) await prepareCapturePath(captureUpkeepOutput);
+  const watch = observer(); const hostOptions = {}; let capturedText;
   if (mode === "offline") {
     const ref = modules.host.parseMonoRuntimeModelReference(plan.upkeep.model);
     const faux = modules.pi.fauxProvider({ provider: ref.provider, api: ref.provider === "openai-codex" ? "openai-codex-responses" : "openai-responses",
@@ -462,6 +491,14 @@ export async function prepareLedgerCheckpoint({ modules, work, authPath, plan, m
       return modules.pi.fauxAssistantMessage(JSON.stringify({ entries: [{ kind: "open_work", value: "Offline scripted ledger; not model quality.", status: "unknown", sources: [spans[0].id] }], covered: spans.map(span => span.id) }));
     }]);
     hostOptions.runtimeOptions = { piResolvedModels: models };
+  }
+  if (captureUpkeepOutput) {
+    let models = hostOptions.runtimeOptions?.piResolvedModels;
+    if (!models) {
+      const resolver = modules.host.createPiOAuthApiKeyResolver({ path: authPath });
+      models = modules.pi.builtinModels({ credentials: { read: resolver.readCredential, modify: resolver.modifyCredential, delete: resolver.deleteCredential } });
+    }
+    hostOptions.runtimeOptions = { ...(hostOptions.runtimeOptions ?? {}), piResolvedModels: captureUpkeepModels(models, text => { capturedText = text; }) };
   }
   // Configured runtime.model remains reader (or explicit extractionModel).
   // Only the scripted answer switches binding, leaving probes a real cold boundary.
@@ -478,6 +515,12 @@ export async function prepareLedgerCheckpoint({ modules, work, authPath, plan, m
   finally {
     try { await opened?.close(); } catch { failure ??= "upkeep_close_failed"; }
     receipt = watch.observed.upkeep.find(row => row.providerInvoked) ?? watch.observed.upkeep[0] ?? null;
+  }
+  if (captureUpkeepOutput) {
+    try {
+      await mkdir(dirname(captureUpkeepOutput), { recursive: true, mode: 0o700 });
+      await writeFile(captureUpkeepOutput, JSON.stringify({ text: capturedText ?? null, failure: receipt?.failure ?? null, status: receipt?.status ?? null }, null, 2) + "\n", { mode: 0o600, flag: "wx" });
+    } catch { failure ??= "upkeep_capture_failed"; }
   }
   const calls = receipt?.providerInvoked ? 1 : 0;
   const estimatedPaid = calls > 0 && receipt.costUsd == null && typeof receipt.estimatedInputCostUsd === "number";

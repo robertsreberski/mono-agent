@@ -1,3 +1,4 @@
+import { LedgerError, ledgerFailure } from "./ledger-error.js";
 import type { RuntimeEventLike } from "@mono-agent/observability";
 import type { ContinuityUpkeepResult } from "@mono-agent/turn/host";
 import type { ConversationHarnessOptions, ConversationHarnessRequest } from "../harness/contracts.js";
@@ -37,6 +38,7 @@ export function createLedgerSupplier(options: ConversationHarnessOptions, reques
         }
         if (skip || integrityFailed || !config?.enabled) { emitSafe(emit, { type: "continuity_upkeep", status: "skipped", reason: skip ?? (integrityFailed ? "ledger_integrity" : "read_only"), providerInvoked: false }); return; }
         let completion: ContinuityUpkeepResult | undefined;
+        let publishing = false;
         let published: string | undefined, localSkip: string | undefined, uncovered: number | undefined, fingerprint: string | undefined;
         const failures = failedSelections.get(config.complete) ?? new Map<string, string>(); failedSelections.set(config.complete, failures);
         const cacheScope = ledgerHash(JSON.stringify([scope.currentConversationId, scope.logicalConversationId]));
@@ -67,19 +69,20 @@ export function createLedgerSupplier(options: ConversationHarnessOptions, reques
           completion = await config.complete(selection.prompt, request.abortSignal);
           if (completion.receipt.status !== "valid" || !completion.text) { gap = true; if (completion.receipt.status === "invalid") rememberPaidFailure(); return; }
           const generation = validateLedgerOutput(completion.text, selection, scope, frozen?.generation, completion.receipt.capEnforcement); uncovered = generation.uncovered;
-          await eligibility.withOwner(async () => { request.abortSignal.throwIfAborted(); await history!.publishLedger!(generation); });
+          publishing = true;
+          await eligibility.withOwner(async () => { if (request.abortSignal.aborted) throw new LedgerError("publish_cancelled"); await history!.publishLedger!(generation); });
           frozen = history!.reader.ledger(scope); published = frozen?.generation.id;
-          if (!published) throw new Error("publication_unavailable");
-        } catch {
+          if (!published) throw new LedgerError("publish_unavailable");
+        } catch (error) {
           gap = true;
-          if (completion) { rememberPaidFailure(); completion = { receipt: { ...completion.receipt, status: "invalid", reason: "validation_or_publication" } }; }
+          if (completion) { rememberPaidFailure(); completion = { receipt: { ...completion.receipt, status: "invalid", reason: "validation_or_publication", failure: request.abortSignal.aborted ? "publish_cancelled" : ledgerFailure(error, publishing ? "publish_unavailable" : "output_schema") } }; }
         } finally {
           // This host callback records before the provider attempt can fail over;
           // it is deliberately not attached to an attempt's return value.
           emitSafe(emit, { type: "continuity_upkeep", ...(completion?.receipt ?? { status: "skipped", reason: localSkip ?? "unavailable", providerInvoked: false }),
             ...(published ? { generationId: published } : {}), uncovered: uncovered ?? frozen?.generation.uncovered ?? 0 });
           if (completion?.receipt.outputOverrun) emitSafe(emit, { type: "upkeep_output_overrun", outputTokens: completion.receipt.outputTokens });
-          if (gap) emitSafe(emit, { type: "runtime_warning", warning_kind: "continuity_upkeep_degraded", error_code: completion?.receipt.reason ?? localSkip ?? "unavailable",
+          if (gap) emitSafe(emit, { type: "runtime_warning", warning_kind: "continuity_upkeep_degraded", error_code: completion?.receipt.failure ?? completion?.receipt.reason ?? localSkip ?? "unavailable",
             message: "Continuity upkeep incomplete; deterministic evidence remains available." });
         }
       })();

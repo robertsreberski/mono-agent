@@ -75,6 +75,7 @@ beforeAll(async () => {
     "tool-history/continuity-purge",
     "continuity/ledger",
     "continuity/ledger-storage",
+    "continuity/ledger-error",
     "tool-history/continuity-storage",
     "tool-history/continuity-reader",
     "tool-history/reader",

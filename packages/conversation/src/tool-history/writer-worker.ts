@@ -1,3 +1,4 @@
+import { LedgerError } from "../continuity/ledger-error.js";
 import { publishLedger } from "../continuity/ledger-storage.js";
 import type { LedgerGeneration } from "../continuity/ledger.js";
 import { toolRetainedBytes } from "./continuity-storage.js";
@@ -115,7 +116,7 @@ try {
 } catch (error) {
   respondError(
     0,
-    (error instanceof WorkerHistoryError || error instanceof ToolHistoryWriterError) ? error.code : "history_writer_start_failed",
+    (error instanceof WorkerHistoryError || error instanceof ToolHistoryWriterError || error instanceof LedgerError) ? error.code : "history_writer_start_failed",
     reasonOf(error),
   );
   throw error;
@@ -139,7 +140,7 @@ try {
   try { owner?.release(); } catch { /* startup error remains authoritative */ }
   respondError(
     0,
-    (error instanceof WorkerHistoryError || error instanceof ToolHistoryWriterError) ? error.code : "history_writer_start_failed",
+    (error instanceof WorkerHistoryError || error instanceof ToolHistoryWriterError || error instanceof LedgerError) ? error.code : "history_writer_start_failed",
     reasonOf(error),
   );
   throw error;
@@ -304,7 +305,7 @@ parentPort.on("message", (request: WorkerRequest) => {
     } catch (error) {
       respondError(
         request.id,
-        (error instanceof WorkerHistoryError || error instanceof ToolHistoryWriterError) ? error.code : "history_write_failed",
+        (error instanceof WorkerHistoryError || error instanceof ToolHistoryWriterError || error instanceof LedgerError) ? error.code : "history_write_failed",
         reasonOf(error),
       );
     }

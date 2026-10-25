@@ -1,3 +1,4 @@
+import { LedgerError } from "./ledger-error.js";
 import { createHash, randomUUID } from "node:crypto";
 import type { ContinuitySnapshot, ContinuitySnapshotRecord } from "../tool-history/continuity-contracts.js";
 
@@ -34,7 +35,7 @@ export function selectLedgerSources(snapshot: ContinuitySnapshot, prior?: Ledger
   type Candidate = { record: ContinuitySnapshotRecord; start: number; end: number; text: string; score: number; covered: boolean };
   const buckets = new Map<number, Candidate[]>(), covered = coveredKeys(prior); let candidateCount = 0;
   for (const record of snapshot.records) {
-    const bytes = Buffer.from(record.text); if (ledgerHash(bytes) !== record.sha256) throw new Error("source_digest");
+    const bytes = Buffer.from(record.text); if (ledgerHash(bytes) !== record.sha256) throw new LedgerError("source_changed");
     let start = 0;
     for (const paragraph of record.text.split("\n\n")) {
       const end = start + Buffer.byteLength(paragraph);
@@ -80,32 +81,39 @@ export function selectLedgerSources(snapshot: ContinuitySnapshot, prior?: Ledger
 /** Reject the whole completion on any forged reference, digest, span or schema.
  * No invalid completion advances even partial coverage. */
 export function validateLedgerOutput(text: string, selection: LedgerSelection, scope: { currentConversationId: string; logicalConversationId: string }, prior?: LedgerGeneration, capEnforcement: "request" | "stream_abort" = "request"): LedgerGeneration {
-  const output = JSON.parse(text) as { entries: LedgerEntry[]; covered: string[] | number };
+  let output: { entries: LedgerEntry[]; covered: string[] | number };
+  try { output = JSON.parse(text); } catch { throw new LedgerError("output_json"); }
+  if (!output || typeof output !== "object" || Array.isArray(output) || Object.keys(output).some(key => !["entries", "covered"].includes(key)) || !Array.isArray(output.entries) || output.entries.length > 24) throw new LedgerError("output_schema");
   if (Number.isSafeInteger(output.covered) && Number(output.covered) > 0 && Number(output.covered) <= selection.spans.length) output.covered = selection.spans.slice(0, Number(output.covered)).map(span => span.id);
-  if (!output || Object.keys(output).some(key => !["entries", "covered"].includes(key)) || !Array.isArray(output.entries) || output.entries.length > 24
-    || !Array.isArray(output.covered) || !output.covered.length || new Set(output.covered).size !== output.covered.length) throw new Error("invalid_output");
+  if (!Array.isArray(output.covered) || !output.covered.length || output.covered.some(id => typeof id !== "string") || new Set(output.covered).size !== output.covered.length) throw new LedgerError("covered_invalid");
   const spans = new Map(selection.spans.map(span => [span.id, span]));
   const covered = new Set(output.covered);
   for (const id of covered) {
     const span = spans.get(id), record = selection.records.find(record => record.recordId === span?.recordId);
-    if (!span || !record || !Number.isSafeInteger(span.start) || !Number.isSafeInteger(span.end) || span.start < 0 || span.end <= span.start) throw new Error("invalid_span");
+    if (!span) throw new LedgerError("unknown_source");
+    if (!record || !Number.isSafeInteger(span.start) || !Number.isSafeInteger(span.end) || span.start < 0 || span.end <= span.start) throw new LedgerError("source_changed");
     const bytes = Buffer.from(record.text), slice = bytes.subarray(span.start, span.end);
-    if (span.end > bytes.length || ledgerHash(bytes) !== span.sha256 || ledgerHash(slice) !== span.digest || slice.toString("utf8") !== span.text || !Buffer.from(slice.toString("utf8")).equals(slice)) throw new Error("source_digest");
+    if (span.end > bytes.length || ledgerHash(bytes) !== span.sha256 || ledgerHash(slice) !== span.digest || slice.toString("utf8") !== span.text || !Buffer.from(slice.toString("utf8")).equals(slice)) throw new LedgerError("source_changed");
     if (span.owner) {
-      if (record.kind !== "owner" || record.provenance !== "host-owner" || !record.inputId || record.source.attestation?.inputId !== record.inputId) throw new Error("owner_authority");
+      if (record.kind !== "owner" || record.provenance !== "host-owner" || !record.inputId || record.source.attestation?.inputId !== record.inputId) throw new LedgerError("owner_span");
       const before = bytes.subarray(0, span.start).toString("utf8"), after = bytes.subarray(span.end).toString("utf8");
-      if (before && !before.endsWith("\n\n") || after && !after.startsWith("\n\n")) throw new Error("owner_paragraph");
+      if (before && !before.endsWith("\n\n") || after && !after.startsWith("\n\n")) throw new LedgerError("owner_span");
     }
   }
-  for (const entry of output.entries) if (!entry || Object.keys(entry).sort().join() !== "kind,sources,status,value"
-    || !["identifier", "constraint", "decision", "commitment", "artifact", "open_work", "supersession"].includes(entry.kind)
-    || !["active", "requested", "confirmed", "failed", "unknown", "superseded", "conflicted"].includes(entry.status)
-    || typeof entry.value !== "string" || !entry.value.trim() || Buffer.byteLength(entry.value) > 512 || Buffer.byteLength(JSON.stringify(entry.value)) > LEDGER_VALUE_JSON_BYTES || Buffer.byteLength(JSON.stringify(entry)) > LEDGER_ENTRY_JSON_BYTES
-    || !Array.isArray(entry.sources) || new Set(entry.sources).size !== entry.sources.length || !entry.sources.length || entry.sources.length > 8 || entry.sources.some(id => !covered.has(id))) throw new Error("invalid_entry");
   for (const entry of output.entries) {
-    if (entry.kind === "identifier" && !entry.sources.some(id => spans.get(id)!.text.includes(entry.value))) throw new Error("identifier_not_quoted");
+    if (!entry || typeof entry !== "object" || Object.keys(entry).sort().join() !== "kind,sources,status,value"
+      || !["identifier", "constraint", "decision", "commitment", "artifact", "open_work", "supersession"].includes(entry.kind)
+      || !["active", "requested", "confirmed", "failed", "unknown", "superseded", "conflicted"].includes(entry.status)
+      || typeof entry.value !== "string" || !Array.isArray(entry.sources) || entry.sources.some(id => typeof id !== "string")
+      || new Set(entry.sources).size !== entry.sources.length || !entry.sources.length || entry.sources.length > 8) throw new LedgerError("output_schema");
+    if (!entry.value.trim() || Buffer.byteLength(entry.value) > 512 || Buffer.byteLength(JSON.stringify(entry.value)) > LEDGER_VALUE_JSON_BYTES) throw new LedgerError("value_bounds");
+    if (Buffer.byteLength(JSON.stringify(entry)) > LEDGER_ENTRY_JSON_BYTES) throw new LedgerError("entry_bounds");
+    if (entry.sources.some(id => !spans.has(id) || !covered.has(id))) throw new LedgerError("unknown_source");
+  }
+  for (const entry of output.entries) {
+    if (entry.kind === "identifier" && !entry.sources.some(id => spans.get(id)!.text.includes(entry.value))) throw new LedgerError("identifier_not_in_span");
     if (["commitment", "artifact"].includes(entry.kind) && ["confirmed", "failed"].includes(entry.status)
-      && !entry.sources.some(id => selection.records.find(record => record.recordId === spans.get(id)!.recordId)?.kind === "tool")) throw new Error("request_not_outcome");
+      && !entry.sources.some(id => selection.records.find(record => record.recordId === spans.get(id)!.recordId)?.kind === "tool")) throw new LedgerError("request_not_outcome");
   }
   const represented = capEnforcement === "stream_abort" ? new Set(output.entries.flatMap(entry => entry.sources)) : covered;
   const inputs = new Map((prior?.inputs ?? []).map(source => [source.recordId, source]));
