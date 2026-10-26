@@ -54,16 +54,22 @@ export function writeRetired(db: DatabaseSync, logical: string, physical: string
 function rewrite(where: string, expression: string): string {
   return `UPDATE continuity_upkeep_retired SET data=(WITH RECURSIVE slots(i) AS
     (SELECT 1 UNION ALL SELECT i+17 FROM slots WHERE i+17<=length(data))
-    SELECT unhex(coalesce(group_concat(fragment,''),'')) FROM
-      (SELECT ${expression} fragment FROM slots ORDER BY i)) WHERE ${where};
+    SELECT unhex(coalesce(group_concat(fragment,'' ORDER BY i),'')) FROM
+      (SELECT i,${expression} fragment FROM slots)) WHERE ${where};
     DELETE FROM continuity_upkeep_retired WHERE length(data)=0;`;
 }
 export function eraseRetiredSql(where: string, ordinalHexPredicate: string): string {
   return rewrite(where, `CASE WHEN ${ordinalHexPredicate.replaceAll("$ordinal", "hex(substr(data,i,8))")} THEN '' ELSE hex(substr(data,i,17)) END`);
 }
-export function invalidateRetiredRepresentationSql(): string {
+function invalidateRetiredRepresentationSql(): string {
   return rewrite("ledger_id=OLD.id", `hex(substr(data,i,16))||CASE hex(substr(data,i+16,1)) WHEN '01' THEN '0D' WHEN '02' THEN '16' ELSE hex(substr(data,i+16,1)) END`)
     + "UPDATE continuity_upkeep_retired SET ledger_id=NULL WHERE ledger_id=OLD.id;";
+}
+/** Shared by fresh schema creation and the ordered-rewrite migration. */
+export function representationDeleteSql(): string {
+  return `DROP TRIGGER IF EXISTS continuity_upkeep_representation_delete;
+    CREATE TRIGGER continuity_upkeep_representation_delete AFTER DELETE ON continuity_ledger
+    BEGIN UPDATE continuity_upkeep_offers SET state=CASE WHEN offer_count<2 THEN 'unrepresented' ELSE 'lost' END,ledger_id=NULL WHERE ledger_id=OLD.id AND state='represented'; ${invalidateRetiredRepresentationSql()} END;`;
 }
 /** Compact only a settled scope. Keeping representation's opaque ledger binding
  * permits exact reconstruction after later invalidation, including after restart. */

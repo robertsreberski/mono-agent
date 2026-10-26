@@ -1,7 +1,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import type { LedgerGeneration } from "./ledger.js";
 import type { LedgerCursor, LedgerProgress } from "../tool-history/continuity-contracts.js";
-import { compactRetired, eraseRetiredSql, geometryKey, readRetired, writeRetired, RETIRED_IDENTITY_LIMIT } from "./retirement.js";
+import { compactRetired, eraseRetiredSql, geometryKey, readRetired, writeRetired, representationDeleteSql, RETIRED_IDENTITY_LIMIT } from "./retirement.js";
 import { advanceFrontier, progressKey, progressSource, validateProgressSpan } from "./frontier.js";
 type Row = Record<string, any>;
 
@@ -36,7 +36,7 @@ export function createProgressSchema(db: DatabaseSync): void {
     db.exec(scrubOperations("json_type(reservation,'$.progress') IS NULL"));
     db.exec("INSERT INTO continuity_upkeep_migrations VALUES (2)");
   }
-  if (db.prepare("SELECT 1 FROM sqlite_master WHERE name='continuity_records'").get() && !db.prepare("SELECT 1 FROM continuity_upkeep_migrations WHERE version=5").get()) {
+  if (db.prepare("SELECT 1 FROM sqlite_master WHERE name='continuity_records'").get() && !db.prepare("SELECT 1 FROM continuity_upkeep_migrations WHERE version=6").get()) {
     const scope = "(logical_id,conversation_id) IN (SELECT logical_id,conversation_id FROM continuity_generations WHERE generation_id=OLD.generation_id UNION SELECT logical_id,conversation_id FROM continuity_upkeep_offers WHERE ordinal=OLD.ordinal)";
     const active = `(EXISTS (SELECT 1 FROM continuity_upkeep_progress WHERE ${scope}) OR EXISTS (SELECT 1 FROM continuity_upkeep_offers WHERE ordinal=OLD.ordinal) OR EXISTS (SELECT 1 FROM continuity_upkeep_retired WHERE ${scope}))`;
     const affected = "operation_id IN (SELECT operation_id FROM continuity_upkeep_operations o,json_each(o.reservation,'$.progress.spans') s WHERE json_extract(s.value,'$.ordinal')=OLD.ordinal)";
@@ -61,7 +61,8 @@ export function createProgressSchema(db: DatabaseSync): void {
         WHEN ${active} AND OLD.retained_text IS NOT NULL AND (NEW.retained_text IS NULL OR NEW.retained_text<>OLD.retained_text OR NEW.text_sha256<>OLD.text_sha256) BEGIN ${erase} END;
       CREATE TRIGGER continuity_upkeep_privacy_tombstone AFTER UPDATE OF retained_text ON continuity_records
         WHEN ${active} AND NEW.retained_text IS NULL BEGIN UPDATE continuity_records SET text_sha256='',source_json='{}',summary_json=NULL WHERE ordinal=NEW.ordinal; END;
-      INSERT INTO continuity_upkeep_migrations VALUES (5);`);
+      INSERT INTO continuity_upkeep_migrations VALUES (6);`);
+    if (db.prepare("SELECT 1 FROM sqlite_master WHERE name='continuity_ledger'").get()) db.exec(representationDeleteSql());
   }
 }
 export function purgeUpkeepProgress(db: DatabaseSync, kind: "logical" | "physical", id: string): void {
@@ -122,11 +123,14 @@ export function dispatchProgress(db: DatabaseSync, r: { logicalId: string; conve
   if (!r.progress) return;
   const { cursor, spans } = r.progress, args = [r.logicalId, r.conversationId] as const;
   if (!Number.isSafeInteger(cursor.ordinal) || cursor.ordinal < 1 || !Number.isSafeInteger(cursor.offset) || cursor.offset < 0 || !Number.isSafeInteger(cursor.watermark) || cursor.watermark < 0 || !(cursor.offset === 0 && cursor.digest === "" || /^[a-f0-9]{64}$/u.test(cursor.digest)) || spans.length > 256) throw new Error("upkeep_progress_bounds");
+  const saved = db.prepare("SELECT cursor FROM continuity_upkeep_progress WHERE logical_id=? AND conversation_id=?").get(...args) as Row | undefined;
+  const floor = saved ? Number(JSON.parse(saved.cursor).retiredThrough ?? 0) : 0;
   const retired = readRetired(db, ...args), remaining = new Map(retired.map(s => [geometryKey(s), s]));
   const identities = new Set([...retired.map(geometryKey), ...(db.prepare("SELECT ordinal,start,end FROM continuity_upkeep_offers WHERE logical_id=? AND conversation_id=?").all(...args) as Row[]).map(s => geometryKey({ ordinal: s.ordinal, start: s.start, end: s.end }))]);
   const sources = new Map<number, Row>(); let bytes = 0;
   for (const span of spans) {
     if (!/^[a-f0-9]{64}$/u.test(span.digest) || !/^[a-f0-9]{64}$/u.test(span.key) || !Number.isSafeInteger(span.ordinal) || span.ordinal < 1 || span.ordinal > cursor.watermark || !Number.isSafeInteger(span.start) || !Number.isSafeInteger(span.end) || span.start < 0 || span.end <= span.start || span.end > 1024 * 1024) throw new Error("upkeep_progress_bounds");
+    if (span.ordinal <= floor) throw new Error("upkeep_progress_repeat");
     let source = sources.get(span.ordinal);
     if (!source) { source = progressSource(db, r.logicalId, r.conversationId, span.ordinal); sources.set(span.ordinal, source); bytes += Buffer.byteLength(source.retained_text); }
     if (bytes > 4 * 1024 * 1024) throw new Error("upkeep_progress_bounds");
@@ -195,7 +199,17 @@ export function reclaimUpkeepQuota(db: DatabaseSync, fits: () => boolean): void 
   for (const scope of scopes) {
     if (fits()) break;
     const args = [scope.logical_id, scope.conversation_id];
-    if (offers) reclaimProgress(db, scope.logical_id, scope.conversation_id);
+    if (offers) {
+      // Decode before any scope mutation. Corrupt scope evidence stays closed to
+      // admission, but must not prevent unrelated retention/source eviction.
+      try { readRetired(db, scope.logical_id, scope.conversation_id); }
+      catch (error) {
+        if (!(error instanceof Error) || !/^upkeep_(?:retirement_|progress_capacity$)/u.test(error.message)) throw error;
+        process.emitWarning("Skipping upkeep compaction for invalid retirement state.", { code: "UPKEEP_RETIREMENT_CORRUPT" });
+        continue;
+      }
+      reclaimProgress(db, scope.logical_id, scope.conversation_id);
+    }
     const working = offers && !!db.prepare("SELECT 1 FROM continuity_upkeep_offers WHERE logical_id=? AND conversation_id=?").get(...args);
     if (offers) compactRetired(db, scope.logical_id, scope.conversation_id);
     const removed = db.prepare("DELETE FROM continuity_upkeep_operations WHERE logical_id=? AND conversation_id=? AND state IN ('terminal','released')").run(...args).changes;

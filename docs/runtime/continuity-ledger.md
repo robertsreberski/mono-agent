@@ -168,7 +168,8 @@ A full 64-entry aggregate instead reports `ledger_aggregate_capacity`.
 Actual merged rendering is checked again before publication; overflow rejects
 the delta, not the prior.
 
-Storage is latest-only, additive inside schema v3. Aggregate payload metadata
+Storage is latest-only, additive inside schema v3. Downgrading upkeep state to a
+pre-c-1 binary after upgrade is unsupported; rollback means disabling the features. Aggregate payload metadata
 must fit **128 KiB**, and the union of inherited/new retained source text must fit
 **4 MiB**. Quota is also preflighted and rechecked atomically at publication.
 There are no retention pins. Selection/admission manifests are separate from the
@@ -210,6 +211,8 @@ Surviving successful sources may be reconstructed **once per span**. The existin
 and reconstruction. It increments atomically at acknowledged dispatch, caps at
 **two**, and is unchanged by acknowledgement replay. Uncertain dispatch counts
 conservatively; an allowlisted proven non-invocation refunds that dispatch.
+At first progress creation, current legacy ledger citations seed represented
+canonical spans with one consumed offer; uncited analysis is not seeded.
 Migration treats already-retried legacy rows as having consumed both offers. If it is not represented, it becomes analyzed/failed; later
 invalidation of an already reconstructed span makes it terminal **lost**. At most
 one reconstruction extraction runs per boundary. Known non-invocation releases
@@ -225,7 +228,9 @@ progress and compact-record bytes count against the shared retention `maxBytes`*
 metadata and row overhead. Normal cleanup keeps the recent 64-operation tail;
 quota pressure compacts inactive terminal working sets in **least-recently-used
 scope order** before evicting source text. Active/pending and uncertain work is
-not reclaimed. Exact sparse retirement preserves count and eligibility state in
+not reclaimed. A claim followed by compaction under quota pressure may transiently lose one boundary.
+Corrupt retirement scopes are skipped with a content-free warning, not a store-wide retention failure.
+Exact sparse retirement preserves count and eligibility state in
 sorted **17-byte tuples** (8-byte immutable ordinal, two 4-byte byte offsets,
 one count/state byte). Tuples contain no text, hash or digest. Source geometry
 and canonical keys are revalidated before dispatch; alternate keys/coordinates

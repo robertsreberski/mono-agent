@@ -4,14 +4,15 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { ToolHistoryWriter } from "../tool-history/writer.js";
 import { ToolHistoryReader } from "../tool-history/reader.js";
 import { continuityGenerationId, continuityRecordId } from "../tool-history/continuity-storage.js";
-import { createProgressSchema, readProgress, reclaimUpkeepQuota, upkeepBytes } from "../continuity/progress.js";
+import { createProgressSchema, dispatchProgress, readProgress, reclaimUpkeepQuota, upkeepBytes } from "../continuity/progress.js";
 import { readRetired, writeRetired } from "../continuity/retirement.js";
 import { ledgerHash, selectLedgerSources, spanKey, validateLedgerOutput } from "../continuity/ledger.js";
 import type { UpkeepReservation } from "../continuity/admission.js";
+import { retainContinuity } from "../tool-history/continuity-storage.js";
 import { persistContinuityPurge } from "../tool-history/continuity-purge.js";
 
 const scope = { logicalConversationId: "fictional", currentConversationId: "fictional", currentRunId: "next" };
@@ -37,7 +38,7 @@ async function fixture(text = "Neutral source.", count = 4) {
     const snapshot = reader.snapshotContinuity({ ...scope, currentConversationId: physical, selection: "upkeep" });
     // Explicit sparse request exercises the future caller contract without enabling
     // ranking/re-eligibility in the production chronological selector.
-    return selectLedgerSources({ ...snapshot, records: ordinals ? snapshot.records.filter(r => ordinals.includes(r.ordinal)) : snapshot.records }, undefined, 128000);
+    return selectLedgerSources({ ...snapshot, records: ordinals ? snapshot.records.filter(r => ordinals.includes(r.ordinal)) : snapshot.records }, reader.ledger({ ...scope, currentConversationId: physical })?.generation, 128000);
   };
   const reserve = async (selection = choose(), physical = "fictional") => {
     const expected = (await f.writer.mutateUpkeep({ kind: "inspect", scope: { logicalId: "fictional", conversationId: physical } }))!;
@@ -248,4 +249,77 @@ it("compacts an oversized-only scope even before any reservation or cursor was c
   expect(x.db(d => readRetired(d, "fictional", "fictional"))).toMatchObject([{ ordinal: 4, count: 0, state: "oversized" }]);
   expect(x.db(d => d.prepare("SELECT count(*) n FROM continuity_upkeep_offers").get())).toEqual({ n: 0 });
   expect(x.choose().spans.map(s => s.ordinal)).toEqual([1, 2, 3]);
+});
+
+it("seeds legacy representation once, crosses the first source page, and permits only one reconstruction", async () => {
+  const x = await fixture("Neutral.", 103);
+  for (let i = 0; i < 4; i++) await x.capture();
+  const original = x.choose([1]);
+  const legacy = validateLedgerOutput(JSON.stringify({ entries: [{ kind: "open_work", value: "Legacy state.", status: "unknown", sources: ["s0"] }], covered: ["s0"] }), original, scope);
+  await x.f.writer.publishLedger(legacy); // P3b1: no progressive rows or purchases.
+  expect(x.counts()).toEqual([]);
+  expect(x.reader.snapshotContinuity({ ...scope, selection: "upkeep" }).records).toHaveLength(512);
+  let reached = false;
+  for (let i = 0; i < 12 && !reached; i++) {
+    const selected = x.choose(), r = await x.reserve(selected);
+    if (!i) {
+      expect(x.counts()).toMatchObject([{ ordinal: 1, state: "represented", count: 1 }]);
+      const colliding = { ...r, operationId: legacy.id, manifest: ledgerHash("legacy-refund-collision") };
+      await x.f.writer.mutateUpkeep({ kind: "reserve", reservation: colliding }); await x.dispatch(colliding);
+      await x.f.writer.mutateUpkeep({ kind: "outcome", reservation: colliding, receipt: receipt(colliding, { providerInvoked: false, status: "skipped", reason: "cap_unsupported" }) });
+      expect(x.counts().find(s => s.ordinal === 1)).toMatchObject({ state: "represented", count: 1 });
+    }
+    await x.dispatch(r); await x.finish(r);
+    reached = selected.spans.some(span => span.ordinal === 515);
+  }
+  expect(reached).toBe(true);
+  expect(x.db(d => readProgress(d, "fictional", "fictional", 515).cursor?.ordinal)).toBe(516);
+  x.db(d => d.exec("DELETE FROM continuity_ledger"));
+  const reconstruction = await x.reserve(x.choose([1])); await x.dispatch(reconstruction); await x.finish(reconstruction); x.compact();
+  const forged = await x.reserve({ ...original, manifest: ledgerHash("legacy-third-offer") });
+  await expect(x.dispatch(forged)).rejects.toMatchObject({ code: "upkeep_dispatch_rejected" });
+  expect(x.counts().find(s => s.ordinal === 1)).toMatchObject({ count: 2 });
+});
+
+it("rejects source-valid forged dispatch at or below an inherited retirement floor", async () => {
+  const x = await fixture(), r = await x.reserve(x.choose([1]));
+  x.db(d => d.exec("UPDATE continuity_upkeep_progress SET cursor=json_set(cursor,'$.retiredThrough',1)"));
+  expect(() => x.db(d => dispatchProgress(d, r))).toThrow("upkeep_progress_repeat");
+  await expect(x.dispatch(r)).rejects.toMatchObject({ code: "upkeep_dispatch_rejected" });
+  expect(x.counts()).toEqual([]);
+  expect((await x.f.writer.mutateUpkeep({ kind: "inspect", scope: { logicalId: "fictional", conversationId: "fictional" } }))!.bootstrap).toBe(true);
+});
+
+it("migrates stored rewrites to explicitly ordered aggregates and preserves tuple order during purge/invalidation", async () => {
+  const x = await fixture(), selected = x.choose(), r = await x.reserve(selected); await x.dispatch(r); await x.finish(r);
+  const ledger = validateLedgerOutput(JSON.stringify({ entries: [{ kind: "open_work", value: "Retained state.", status: "unknown", sources: selected.spans.map(s => s.id) }], covered: selected.spans.map(s => s.id) }), selected, scope);
+  await x.f.writer.publishLedger(ledger, r); x.compact();
+  x.db(d => {
+    const triggers = d.prepare("SELECT name,sql FROM sqlite_master WHERE type='trigger' AND name LIKE 'continuity_upkeep_%'").all() as { name: string; sql: string }[];
+    for (const trigger of triggers) d.exec(`DROP TRIGGER ${trigger.name}; ${trigger.sql.replaceAll("group_concat(fragment,'' ORDER BY i)", "group_concat(fragment,'')")}`);
+    d.exec("DELETE FROM continuity_upkeep_migrations WHERE version=6; INSERT OR IGNORE INTO continuity_upkeep_migrations VALUES(5)");
+    createProgressSchema(d);
+    const rewritten = d.prepare("SELECT sql FROM sqlite_master WHERE type='trigger' AND sql LIKE '%group_concat%'").all() as { sql: string }[];
+    expect(rewritten).toHaveLength(4);
+    expect(rewritten.every(t => t.sql.includes("group_concat(fragment,'' ORDER BY i)"))).toBe(true);
+    d.exec("PRAGMA reverse_unordered_selects=ON; UPDATE continuity_records SET retained_text=NULL WHERE ordinal=2");
+    expect(readRetired(d, "fictional", "fictional")).toMatchObject([1, 3, 4].map(ordinal => ({ ordinal, count: 1, state: "unrepresented" })));
+  });
+});
+
+it("skips corrupt-scope compaction with a content-free warning while other retention and source eviction finish", async () => {
+  const x = await fixture(), r = await x.reserve(); await x.dispatch(r); await x.finish(r); x.compact();
+  await x.capture("other"); const other = await x.reserve(x.choose(undefined, "other"), "other"); await x.dispatch(other); await x.finish(other);
+  const limits = (await x.f.writer.stats()).limits;
+  const warning = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+  try {
+    x.db(d => {
+      d.exec("UPDATE continuity_upkeep_retired SET version=2 WHERE conversation_id='fictional'; UPDATE continuity_upkeep_progress SET cursor=json_set(cursor,'$.touchedAt',CASE conversation_id WHEN 'fictional' THEN 1 ELSE 2 END)");
+      expect(() => retainContinuity(d, { ...limits, maxBytes: 1 }, Date.now())).not.toThrow();
+      expect(d.prepare("SELECT count(*) n FROM continuity_records WHERE retained_text IS NOT NULL").get()).toEqual({ n: 0 });
+      expect(d.prepare("SELECT count(*) n FROM continuity_upkeep_operations WHERE conversation_id='other'").get()).toEqual({ n: 0 });
+      expect(d.prepare("SELECT count(*) n FROM continuity_upkeep_offers WHERE conversation_id='other'").get()).toEqual({ n: 0 });
+    });
+    expect(warning).toHaveBeenCalledExactlyOnceWith("Skipping upkeep compaction for invalid retirement state.", { code: "UPKEEP_RETIREMENT_CORRUPT" });
+  } finally { warning.mockRestore(); }
 });
