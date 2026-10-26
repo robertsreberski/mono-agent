@@ -125,8 +125,8 @@ export const ARMS = Object.freeze([
     pressure: Object.freeze([{ metric: "replayedMessages", min: 64 }, { metric: "projectionDroppedRecords", min: 32 }]),
   }),
   Object.freeze({
-    id: "continuity-ledger-cold", label: "Cold rebuild + one boundary ledger upkeep + retained evidence",
-    description: "One capped upkeep per trace/repeat before read-only probe forks; configured reader extracts, alternate scripted answer establishes the cold reader boundary.",
+    id: "continuity-ledger-cold", label: "Cold rebuild + progressive boundary ledger upkeep + retained evidence",
+    description: "Three fresh preparation children (A → R → A) per trace/repeat; the configured reader extracts at each real model-change boundary before read-only reader probes.",
     available: true, families: ["original", "long"], replayBinding: "reader", midCheckpoint: null, restart: false,
     ledgerUpkeep: true, fork: "in-place", sessionConfig: CONTINUITY_PACK_ON,
     probeConfig: Object.freeze(mergePatch(HISTORY_TOOL_ONLY, runtime({ session: { continuity: { ledgerEnabled: true, upkeep: { enabled: false } } }, compaction: { enabled: false } }))),

@@ -264,7 +264,7 @@ affected state before rebuilding, after preserving any needed diagnostics.
 
 ## Measurement boundary
 
-See the [ledger benchmark arm](/runtime/continuity-benchmark/#ledger-first-slice).
+See the [ledger benchmark arm](/runtime/continuity-benchmark/#progressive-ledger-boundaries).
 This slice provides host receipts and benchmark upkeep accounting, **not** merged
 answer/upkeep billing reconciliation, cancellation/restart-complete accounting,
 the multi-boundary benchmark protocol, default-on upkeep, or a claim of paid
