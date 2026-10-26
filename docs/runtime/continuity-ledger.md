@@ -273,8 +273,7 @@ affected state before rebuilding, after preserving any needed diagnostics.
 See the [ledger benchmark arm](/runtime/continuity-benchmark/#progressive-ledger-boundaries).
 This slice provides host receipts and benchmark upkeep accounting, **not** merged
 answer/upkeep billing reconciliation, cancellation/restart-complete accounting,
-the multi-boundary benchmark protocol, default-on upkeep, or a claim of paid
-quality improvement. Those require subsequent evaluation and implementation.
+default-on upkeep, or a general claim of paid quality improvement. Those require subsequent evaluation and implementation.
 
 Validation and publication failures carry an allowlisted, content-free `failure`
 code in the upkeep receipt and warning `error_code`: JSON/schema/coverage,

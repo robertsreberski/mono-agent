@@ -586,6 +586,8 @@ it.each(["request", "stream_abort"] as const)("settles an empty %s delta as anal
   });
   const result = await f.prepare();
   expect(result.events).toContainEqual(expect.objectContaining({ status: "valid", reason: "analyzed", inputTokens: 25, outputTokens: 5, costUsd: 0.002 }));
+  // Valid "nothing new" analysis is not a degraded ledger: no warning is emitted.
+  expect(result.events).not.toContainEqual(expect.objectContaining({ type: "runtime_warning" }));
   expect(publish).not.toHaveBeenCalled(); expect(f.reader.ledger(scope)!.generation).toEqual(prior);
   expect(result.pack()).toContain(prior.entries[0]!.value);
   const row = f.db(db => db.prepare("SELECT state,outcome,operation_id FROM continuity_upkeep_operations ORDER BY rowid DESC LIMIT 1").get()) as any;

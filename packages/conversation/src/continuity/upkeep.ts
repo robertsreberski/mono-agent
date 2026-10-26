@@ -102,7 +102,9 @@ export function createLedgerSupplier(options: ConversationHarnessOptions, reques
           await eligibility.withOwner(async () => { await history!.mutateUpkeep!({ kind: "settle", reservation: reservation!, saturated: deltaEntries === selection.maxEntries, analysisOnly: deltaEntries === 0 }); });
           if (!deltaEntries) {
             completion = { ...completion, receipt: { ...completion.receipt, reason: "analyzed" } };
-            gap ||= uncovered > 0; return;
+            // A valid "nothing new" result is normal analysis, not a degraded ledger:
+            // like a publishing delta, it discloses uncovered counts without a warning.
+            return;
           }
           publishing = true;
           await eligibility.withOwner(async () => { if (request.abortSignal.aborted) throw new LedgerError("publish_cancelled"); await history!.publishLedger!(generation, reservation); });
