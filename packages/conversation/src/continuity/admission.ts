@@ -96,6 +96,7 @@ export function mutateUpkeep(db: DatabaseSync, root: string, request: UpkeepMuta
     if (identity(db, root) === expected.databaseId && row.incarnation === expected.incarnation && row.fence === expected.fence + 1 && row.owner_token === ownerToken) return view(db, root, expected);
     assertUpkeepFence(db, root, expected);
     db.prepare("UPDATE continuity_upkeep_scopes SET fence=fence+1,owner_token=? WHERE logical_id=? AND conversation_id=?").run(ownerToken, expected.logicalId, expected.conversationId);
+    db.prepare("UPDATE continuity_upkeep_progress SET cursor=json_set(cursor,'$.touchedAt',?) WHERE logical_id=? AND conversation_id=?").run(Date.now(), expected.logicalId, expected.conversationId);
     // Only this newly installed fence can release pre-barrier reservations.
     db.prepare("UPDATE continuity_upkeep_operations SET state='released' WHERE logical_id=? AND conversation_id=? AND incarnation=? AND state='reserved'").run(expected.logicalId, expected.conversationId, expected.incarnation);
     return view(db, root, expected);

@@ -521,3 +521,14 @@ it("erases a reserved first operation before the first dispatch without advancin
   expect((await f.writer.mutateUpkeep({ kind: "inspect", scope: { logicalId: "fictional", conversationId: "fictional" } }))!.bootstrap).toBe(true);
   expect(f.complete).not.toHaveBeenCalled();
 });
+
+it("counts an idle scope claim as LRU use without buying its analyzed evidence again", async () => {
+  const f = await fixture(); f.respond(() => []); await f.capture(); await f.prepare();
+  await f.capture(1, "Newer scope.", "newer"); await f.prepare(8000, "newer");
+  f.db(db => db.exec("UPDATE continuity_upkeep_progress SET cursor=json_set(cursor,'$.touchedAt',CASE WHEN conversation_id='fictional' THEN 0 ELSE 1 END)"));
+  await f.prepare(); expect(f.complete).toHaveBeenCalledTimes(2);
+  const stats = f.reader.stats()!;
+  f.db(db => retainContinuity(db, { ...stats.limits, maxBytes: stats.retainedBytes - 1 }, Date.now()));
+  expect(f.db(db => db.prepare("SELECT conversation_id FROM continuity_upkeep_operations").all())).toEqual([{ conversation_id: "fictional" }]);
+  expect(f.db(db => db.prepare("SELECT count(*) n FROM continuity_upkeep_admissions WHERE bootstrap_operation IS NOT NULL").get())).toEqual({ n: 2 });
+});
