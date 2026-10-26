@@ -1,3 +1,4 @@
+import { readProgress, offeredKeys } from "../continuity/progress.js";
 import { createHash } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import {
@@ -144,6 +145,11 @@ export function snapshotContinuity(database: DatabaseSync, input: ContinuitySnap
     if (boundary.ordinal === null) return { records: [], omitted: 0, gaps: 1, degradedReason: "boundary_unavailable" };
     clauses.push("r.ordinal<=?"); values.push(Number(boundary.ordinal));
   }
+  const progress = input.selection === "upkeep" ? readProgress(database, input.logicalConversationId, input.currentConversationId) : undefined;
+  const watermark = progress ? Number((database.prepare(`SELECT coalesce(max(r.ordinal),0) n FROM continuity_records r JOIN continuity_generations g USING(generation_id) WHERE ${clauses.join(" AND ")}`).get(...values) as Row).n) : 0;
+  if (progress) {
+    clauses.push("r.ordinal>=?", "r.ordinal<=?"); values.push(progress.cursor?.ordinal ?? 1, watermark);
+  }
   const where = clauses.join(" AND ");
   const gaps = Number((database.prepare("SELECT count(*) count FROM continuity_generations WHERE logical_id=? AND conversation_id=? AND state='abandoned'")
     .get(input.logicalConversationId, input.currentConversationId) as Row).count);
@@ -155,13 +161,12 @@ export function snapshotContinuity(database: DatabaseSync, input: ContinuitySnap
   const candidates = database.prepare(`SELECT r.record_id,length(CAST(r.retained_text AS BLOB)) snapshot_bytes,r.kind,r.ordinal FROM continuity_records r
     JOIN continuity_generations g USING(generation_id) WHERE ${where} AND r.retained_text IS NOT NULL
     AND (r.kind IN ('owner','user','other-user','imported','tool') OR r.record_id=?)
-    ORDER BY CASE WHEN ${input.selection === 'upkeep' ? "r.kind='tool'" : "0"} THEN -1 WHEN r.kind='owner' AND r.provenance='host-owner' THEN 0 WHEN r.kind='tool' THEN 1
-      WHEN r.kind='summary' THEN 2 ELSE 3 END, r.ordinal ASC LIMIT 513`).all(...values, pinnedSummaryId ?? '') as Row[];
+    ORDER BY ${progress ? "r.ordinal" : "CASE WHEN r.kind='owner' AND r.provenance='host-owner' THEN 0 WHEN r.kind='tool' THEN 1 WHEN r.kind='summary' THEN 2 ELSE 3 END"}, r.ordinal ASC LIMIT 513`).all(...values, pinnedSummaryId ?? '') as Row[];
   const records: ContinuitySnapshotRecord[] = [];
   let bytes = 0, bounded = candidates.length > 512, unavailable = false;
   for (const candidate of candidates.slice(0, 512)) {
     const size = Number(candidate.snapshot_bytes);
-    if (bytes + size > 4 * 1024 * 1024) { bounded = true; continue; }
+    if (bytes + size > 4 * 1024 * 1024) { bounded = true; if (progress) break; continue; }
     bytes += size;
     try {
       const row = database.prepare(`SELECT r.*,g.conversation_id FROM continuity_records r
@@ -181,15 +186,16 @@ export function snapshotContinuity(database: DatabaseSync, input: ContinuitySnap
             AND continuity_tool_operation(c.conversation_id,c.run_id,c.tool_call_id)=?
             AND length(CAST(i.payload_json AS BLOB))<=? LIMIT 1`)
           .get(record.conversationId, record.runId, record.source.operationId ?? "", 4 * 1024 * 1024 - bytes) as Row | undefined;
-        if (!call || typeof call.payload_json !== "string" || createHash("sha256").update(call.payload_json).digest("hex") !== call.payload_sha256) { unavailable = true; continue; }
+        if (!call || typeof call.payload_json !== "string" || createHash("sha256").update(call.payload_json).digest("hex") !== call.payload_sha256) { unavailable = true; if (progress) break; continue; }
         bytes += Buffer.byteLength(call.payload_json);
-        if (bytes > 4 * 1024 * 1024) { bounded = true; continue; }
+        if (bytes > 4 * 1024 * 1024) { bounded = true; if (progress) break; continue; }
         records.push({ ...record, tool: { name: call.tool_name as string, state: call.state as string,
           arguments: JSON.stringify(JSON.parse(call.payload_json)), invocationId: call.invocation_id as string,
           ...(typeof call.result_id === "string" ? { resultId: call.result_id } : {}) } });
       } else records.push(record);
-    } catch { unavailable = true; } // A malformed record cannot discard its healthy siblings.
+    } catch { unavailable = true; if (progress) break; } // A malformed record cannot discard its healthy siblings.
   }
-  return { records, omitted: Math.max(0, total - records.length), gaps,
+  return { records, omitted: Math.max(0, total - records.length), gaps: gaps + (progress?.failed ?? 0),
+    ...(progress ? { upkeep: { cursor: progress.cursor, watermark, excluded: offeredKeys(database, input.logicalConversationId, input.currentConversationId, records.map(record => record.ordinal)) } } : {}),
     ...(bounded ? { degradedReason: "snapshot_bounds" as const } : unavailable ? { degradedReason: "source_unavailable" as const } : {}) };
 }

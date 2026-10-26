@@ -76,6 +76,8 @@ beforeAll(async () => {
     "continuity/ledger",
     "continuity/ledger-storage",
     "continuity/admission",
+    "continuity/progress",
+    "continuity/render-fit",
     "continuity/ledger-error",
     "tool-history/continuity-storage",
     "tool-history/continuity-reader",

@@ -1,3 +1,5 @@
+import type { LedgerProgress } from "../tool-history/continuity-contracts.js";
+import { createProgressSchema, dispatchProgress } from "./progress.js";
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import type { ContinuityUpkeepReceipt } from "@mono-agent/turn/host";
@@ -8,11 +10,11 @@ export interface UpkeepScope { readonly logicalId: string; readonly conversation
 export interface UpkeepFence extends UpkeepScope {
   readonly databaseId: string; readonly incarnation: string; readonly fence: number; readonly ownerToken: string;
 }
-export interface UpkeepAdmission extends UpkeepFence { readonly bootstrap: boolean }
+export interface UpkeepAdmission extends UpkeepFence { readonly bootstrap: boolean; readonly uncertain?: boolean }
 export interface UpkeepReservation extends UpkeepFence {
   readonly operationId: string; readonly runId: string; readonly recorderNamespace: string;
   readonly model: string; readonly manifest: string; readonly parent: string | null;
-  readonly budget: "bootstrap" | "incremental";
+  readonly budget: "bootstrap" | "incremental"; readonly progress?: LedgerProgress;
 }
 export type UpkeepMutation =
   | { readonly kind: "inspect"; readonly scope: UpkeepScope }
@@ -27,6 +29,7 @@ function fail(): never { throw new Error("upkeep_admission_conflict"); }
 /** Additive v3 tables. Never attached to ledger/source cascades or retention.
  * Exhaustion stops admission rather than discarding anti-repurchase evidence. */
 export function createUpkeepSchema(db: DatabaseSync): void {
+  createProgressSchema(db);
   db.exec(`CREATE TABLE IF NOT EXISTS continuity_upkeep_identity (id TEXT PRIMARY KEY);
     CREATE TABLE IF NOT EXISTS continuity_upkeep_scopes (
       logical_id TEXT NOT NULL, conversation_id TEXT NOT NULL, incarnation TEXT NOT NULL,
@@ -51,7 +54,7 @@ function identity(db: DatabaseSync, root: string): string {
 }
 function view(db: DatabaseSync, root: string, scope: UpkeepScope): UpkeepAdmission {
   const row = scopeRow(db, scope);
-  return { ...scope, databaseId: identity(db, root), incarnation: row.incarnation, fence: row.fence, ownerToken: row.owner_token, bootstrap: row.bootstrap_operation === null };
+  return { ...scope, databaseId: identity(db, root), incarnation: row.incarnation, fence: row.fence, ownerToken: row.owner_token, bootstrap: row.bootstrap_operation === null, ...(db.prepare("SELECT 1 FROM continuity_upkeep_operations WHERE logical_id=? AND conversation_id=? AND incarnation=? AND state IN ('dispatch_started','uncertain')").get(scope.logicalId, scope.conversationId, row.incarnation) ? { uncertain: true } : {}) };
 }
 export function assertUpkeepFence(db: DatabaseSync, root: string, fence: UpkeepFence): Row {
   const row = scopeRow(db, fence);
@@ -96,8 +99,9 @@ export function mutateUpkeep(db: DatabaseSync, root: string, request: UpkeepMuta
     return view(db, root, expected);
   }
   const r = request.reservation, scope = assertUpkeepFence(db, root, r), serialized = JSON.stringify(r);
-  if (Buffer.byteLength(serialized) > 16384 || !r.operationId || !r.runId || !r.recorderNamespace || !r.model || !/^[a-f0-9]{64}$/u.test(r.manifest)) fail();
+  if (Buffer.byteLength(serialized) > 131072 || !r.operationId || !r.runId || !r.recorderNamespace || !r.model || !/^[a-f0-9]{64}$/u.test(r.manifest)) fail();
   if (request.kind === "reserve") {
+    if (Number((db.prepare("SELECT coalesce(sum(length(reservation)+length(coalesce(outcome,''))),0) n FROM continuity_upkeep_operations").get() as Row).n) + Buffer.byteLength(serialized) > 32 * 1024 * 1024) fail();
     const old = db.prepare("SELECT reservation FROM continuity_upkeep_operations WHERE operation_id=?").get(r.operationId) as Row | undefined;
     if (old) { if (old.reservation !== serialized) fail(); return null; }
     if (r.budget !== (scope.bootstrap_operation === null ? "bootstrap" : "incremental")) fail();
@@ -120,6 +124,7 @@ export function mutateUpkeep(db: DatabaseSync, root: string, request: UpkeepMuta
       if (scope.bootstrap_operation !== null) fail();
       db.prepare("UPDATE continuity_upkeep_admissions SET bootstrap_operation=? WHERE logical_id=? AND conversation_id=?").run(r.operationId, r.logicalId, r.conversationId);
     }
+    dispatchProgress(db, r);
     db.prepare("UPDATE continuity_upkeep_operations SET state='dispatch_started' WHERE operation_id=?").run(r.operationId);
     return null;
   }
@@ -130,6 +135,7 @@ export function mutateUpkeep(db: DatabaseSync, root: string, request: UpkeepMuta
   if (row.state !== "dispatch_started") fail();
   const released = !request.receipt.providerInvoked && request.receipt.status === "skipped" && NON_INVOCATION.has(request.receipt.reason);
   db.prepare("UPDATE continuity_upkeep_operations SET state=?,outcome=? WHERE operation_id=?").run(released ? "released" : request.receipt.providerInvoked ? "terminal" : "uncertain", outcome, r.operationId);
+  db.prepare("UPDATE continuity_upkeep_offers SET state=? WHERE operation_id=?").run(released ? "unrepresented" : request.receipt.providerInvoked ? "failed" : "uncertain", r.operationId);
   if (released && scope.bootstrap_operation === r.operationId) db.prepare("UPDATE continuity_upkeep_admissions SET bootstrap_operation=NULL WHERE logical_id=? AND conversation_id=?").run(r.logicalId, r.conversationId);
   return null;
 }
@@ -139,6 +145,8 @@ export function mutateUpkeep(db: DatabaseSync, root: string, request: UpkeepMuta
 export function resetUpkeep(db: DatabaseSync, kind: "logical" | "physical", id: string): void {
   if (!db.prepare("SELECT 1 FROM sqlite_master WHERE name='continuity_upkeep_scopes'").get()) return;
   const column = kind === "logical" ? "logical_id" : "conversation_id";
+  db.prepare(`DELETE FROM continuity_upkeep_offers WHERE ${column}=?`).run(id);
+  db.prepare(`DELETE FROM continuity_upkeep_progress WHERE ${column}=?`).run(id);
   db.prepare(`DELETE FROM continuity_upkeep_operations WHERE ${column}=?`).run(id);
   db.prepare(`DELETE FROM continuity_upkeep_admissions WHERE ${column}=?`).run(id);
   db.prepare(`UPDATE continuity_upkeep_scopes SET incarnation=?,fence=fence+1,owner_token='' WHERE ${column}=?`).run(randomUUID(), id);

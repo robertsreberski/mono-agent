@@ -197,7 +197,7 @@ parentPort.on("message", (request: WorkerRequest) => {
                   const { generation, reservation } = request.payload as { generation: LedgerGeneration; reservation?: UpkeepReservation };
                   if (reservation) {
                     assertUpkeepPublication(database, root, reservation);
-                    if (generation.conversationId !== reservation.conversationId || generation.logicalId !== reservation.logicalId || generation.parent !== reservation.parent || generation.manifest !== reservation.manifest) throw new Error("upkeep_publication_conflict");
+                    if (generation.conversationId !== reservation.conversationId || generation.logicalId !== reservation.logicalId || generation.parent !== reservation.parent || (generation.selectionManifest ?? generation.manifest) !== reservation.manifest) throw new Error("upkeep_publication_conflict");
                   }
                   publishLedger(database, generation, retention.maxBytes, continuityRetainedBytes(database) + toolRetainedBytes(database)); break;
                 }

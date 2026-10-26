@@ -28,6 +28,9 @@
   only explicit reset clears the bootstrap marker. Match confirmed benchmark
   reservations to bootstrap limits and keep interrupted unreported usage unknown.
   Upkeep stays off by default.
+- Preserve opt-in continuity ledger entries across bounded progressive upkeep,
+  with durable source cursors, conservative correction status and shared rendered
+  capacity checks. Keep prior ledgers on capacity gaps and upkeep off by default.
 - Add opt-in boundary continuity ledgers with source-validated derived entries,
   purge-cascaded lineage, bounded one-call upkeep and ledger-first packs. Keep
   upkeep off by default; expose strict request caps and Codex stream-abort limits.

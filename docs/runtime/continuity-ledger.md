@@ -94,87 +94,99 @@ metered dollar spend; catalog cost estimates are not an invoice.
 
 ## Evidence, trust and deletion
 
-An independent bounded source query includes retained tool interiors, rather than
-reusing the owner-first deterministic shortlist or clipped result heads. Signal
-ranking favors identifiers/outcomes/corrections and active owner rules; labelled
-hypotheticals are lower priority. Ranking is not proof of truth or effect. Input
-is capped; uncovered span/record counts are explicit, not evidence of supersession.
+An independent source query pages retained evidence by **AUTOINCREMENT ordinal**,
+not the deterministic pack shortlist or clipped tool result heads. Each eligible
+preparation freezes its committed physical-bucket watermark. A durable cursor
+records the next ordinal, UTF-8 offset and continuation source digest; its anchor
+need not survive. Changed digests restart that record's enumeration. A later
+eligible boundary may extend the watermark; rollover never inherits progress.
+Each query materializes at most 512 records/4 MiB and each progressive selection
+at most 64 spans, inside the cumulative input allowance. Tool interiors use
+UTF-8-safe overlapping windows; owner paragraphs are indivisible. Bounded span
+enumeration leaves unscanned evidence disclosed, never counted as preserved.
+The disabled deterministic-pack query is unchanged.
 
-The host validates the whole JSON completion, exact source IDs, UTF-8 byte spans,
+The host validates the whole delta, exact source IDs, UTF-8 byte spans,
 whole-record and span digests, entry bounds and coverage references. Values must
 fit **512 raw UTF-8 bytes and 640 JSON-serialized bytes including quotes**; each
-whole entry must fit **832 JSON-serialized bytes**. Ordinary 512-byte text fits;
-control/quote-heavy expansion has bounded headroom. Any excess rejects the whole
-completion, never partially accepts entries. Identifier
-values must occur exactly in cited evidence. The extractor is explicitly told to
-return the **bare identifier only**, with no entity name, label or explanatory
-prefix; surrounding labels are not silently removed by validation. A confirmed action/artifact cannot
-cite only an owner request. Invalid output publishes nothing. All model prose is
-**derived interpretation**, never host-owner authority. Cited host-owner text is
-reconstructed as whole original paragraphs with qualifications/negations intact.
+model entry must fit **832 JSON-serialized bytes**, and each escaped rendered
+derived line must fit **1024 UTF-8 bytes including its newline**. Any excess
+rejects the whole completion. Identifier values must occur exactly in cited
+evidence and contain only the bare identifier, not an explanatory prefix.
+A confirmed action/artifact cannot cite only an owner request. All prose is
+**derived interpretation**, never host-owner authority. Cited owner text is
+reconstructed as whole paragraphs with qualifications and negations intact.
 Historical requests are not renewed approval; absent outcomes remain unknown.
 
-The renderer quotes escaped JSON strings (`<` and `>` are escaped), labels each
-source as `owner:sN`, `tool:<name>:sN` or neutral evidence, and explicitly labels
-constraint/decision/supersession interpretations with **any non-owner source** as
-untrusted source-reported claims, including mixed owner/tool citations. Merely
-adding an owner citation cannot turn a tool-reported portion into an owner
-instruction. It prefixes a bounded verified
-ledger and demotes a raw owner record **only when every paragraph is cited by an
-active entry and quoted byte-for-byte**; it does not delete owners on the model's assertion of coverage. An
-oversized/absent ledger leaves the deterministic fallback intact. Optional input
-still respects the target compaction trigger and current-input/output reserves.
+### Delta preservation and conservative relations
 
-Storage is latest-only, additive inside schema v3. Serialized generation payloads
-(including inherited input metadata) share the retained byte budget. Auxiliary
-SQLite lineage rows/index/file overhead are not separately charged; this is not
-a physical SQLite-file quota. The 128 KiB payload limit bounds serialized metadata,
-not contributing retained text: a separate **4 MiB retained-text lineage bound**
-applies to the union of inherited and newly selected records.
+A completion proposes only new entries. Prior entries and their citations remain;
+source IDs are rebased to stable host identities. Entries have host-assigned
+stable IDs, with deterministic source-bound IDs for legacy entries. The aggregate
+is capped at **64 entries**. Validation enforces **24 per delta** for request-cap
+adapters, **8 for Codex**, and any smaller admitted rendering limit.
 
-Before completion, admission reserves the general **24 × 832-byte entry bound**
-plus array commas, selected span metadata and inherited input links. This one
-projection applies to both profiles; Codex's smaller output is safely below it.
-It no longer reserves sixfold escaping of every raw value byte.
+Optional relations bind an existing target ID, exact target value/citations and a
+distinct proposed successor ID. The host enforces bounded relations and strictly
+later source ordinals, not effective-date chronology. These structural checks
+**cannot establish same-fact semantic correction**. Prior state is never silently
+retired: unestablished relations become conflicted, self-`superseded` proposals
+become unknown, and legacy unverified retirement labels receive the same
+conservative treatment. Unrelated, hypothetical, quoted and decoy correction
+language grants no retirement authority. Interpretation still needs offline audit.
 
-Within the input-bounded shortlist, fitting considers **unrepresented spans
-first, oldest record ordinal then earliest byte offset**; prior-covered spans
-follow in the same oldest-first order. This favors early evidence outside the
-cold window while letting spans trimmed at one boundary lead the next. The input
-shortlist retains its signal ranking within represented/unrepresented groups.
-A span whose full contributing record or metadata cannot fit is skipped; smaller
-later candidates can still fit. Selected spans, prompt and admission manifest all use the fitted set. Every removed span increments uncovered;
-no trim advances coverage or drops inherited purge links.
+The renderer escapes JSON strings (including `<` and `>`), labels host-owner,
+tool and neutral provenance, and labels mixed-source claims explicitly. Adding
+an owner citation cannot promote a tool-reported portion into an instruction.
+Raw owner evidence is demoted only when every paragraph is cited by an active
+entry and quoted exactly. Missing or oversized ledgers leave deterministic
+evidence available.
 
-The deduplicated retained-text union must stay within 4 MiB, and projected payload
-within 128 KiB. Only if **no minimal selection fits** does admission skip
-`ledger_payload_budget` or `ledger_lineage_budget`. Shared-quota headroom after
-replacing the current payload remains a separate unchanged check, with
-`ledger_quota_budget` refusal without buying a call. These
-preflights are not reservations: publication still rechecks quota, source and
-parent identity atomically, and cannot evict source evidence to make itself fit.
-Inherited input links invalidate descendants when **any** contributing ancestor
-source is deleted, tombstoned or changed, including a pre-ledger binary's normal
-B1 purge. Quota-retention tombstones likewise invalidate dependent generations;
-this slice introduces no checkpoint source leases. Pending purge intents suppress reuse immediately. Old binaries ignore
-the additive tables; pending explicit-reset intents must drain before rollback.
-No destructive storage downgrade is required.
+### Shared rendered admission
 
-Paid-failure suppression is durable, keyed by source/parent manifest within the
-scope incarnation, independent of model changes. `upkeep_repeat_suppressed`
-avoids repeat purchase. Unresolved dispatch conservatively stops further
-purchases in that scope, including a smaller incremental selection of an
-uncertain bootstrap, until explicit reset or durable non-invocation proof.
-Restart and quota pressure never evict this evidence. See durable admission below.
+Admission and the pack renderer use the **same prefix-fit calculation**: prefix
+plus 700-token reserve must fit `min(actual headroom, 4000)` tokens. Before paying,
+admission reserves the prior rendering, worst-case bounded delta lines and all
+potential complete owner quotations. It reduces the delta/selection to fit,
+without dropping the prior. If even one addition cannot fit, it makes **zero
+calls**, retains the prior ledger and records `ledger_render_budget` as a capacity
+gap. A smaller new boundary may still have insufficient headroom to inject that
+prior; the ordinary deterministic fallback and headroom diagnostic remain honest.
+Actual merged rendering is checked again before publication; overflow rejects
+the delta, not the prior.
 
-Represented selected spans skip as `already_covered`. An identical valid selection
-still skips as `unchanged`, preserving its prior uncovered count. Unrepresented
-spans (including prior trims) get priority at a later eligible boundary, not an
-extra completion in the current turn. Coverage describes the **current latest
-generation**, not a permanent all-history coverage index; replacement can leave
-older facts uncovered again. The benchmark
-still buys just one upkeep per trace/repeat: compact output may leave many spans
-uncovered, which must remain visible when interpreting measured answer quality.
+Storage is latest-only, additive inside schema v3. Aggregate payload metadata
+must fit **128 KiB**, and the union of inherited/new retained source text must fit
+**4 MiB**. Quota is also preflighted and rechecked atomically at publication.
+There are no retention pins. Selection/admission manifests are separate from the
+merged payload manifest; publication checks both, the owner fence, parent CAS,
+prior-entry preservation and inherited input links. A failed validation or
+publication never advances representation.
+
+### Offered is not represented
+
+The fenced dispatch transaction durably records offers and advances the cursor.
+A pending or unacknowledged result remains uncertain; a known paid failure or an
+uncited offered span remains failed, not preserved. Successful publication alone
+associates entry-cited spans with the latest ledger. Analysis-only `covered`
+claims do not establish representation in either profile. Unknown batches are
+not resubmitted; unresolved dispatch conservatively blocks the scope.
+
+Deleting, tombstoning or changing **any** contributing source invalidates the
+latest ledger and its representation associations in the same transaction.
+Surviving successful sources become unrepresented and eligible for bounded
+reconstruction. Failed/uncertain offers remain suppressed. Deleted cursor
+anchors do not block keyset progress. Explicit reset/delete clears scoped
+progress and rotates admission; retention does not renew bootstrap. Persistent
+metadata is bounded (65536 offered spans, plus the existing operation/scope
+limits and a 32 MiB operation-payload ceiling); exhaustion stops new purchases
+rather than pruning anti-repurchase evidence. Pending purge intents suppress
+reuse immediately. No destructive downgrade is needed; pending explicit-reset
+intents must drain before an old-binary rollback.
+
+The existing benchmark still buys **one** preparation per trace/repeat. This
+production slice does not claim the later multi-child A→R→A preparation proof or
+new paid quality results.
 
 Digest/integrity failure emits a content-free `ledger_integrity` warning whenever
 the ledger is skipped. There is no auto-repair or paid attempt against corrupt
@@ -186,7 +198,7 @@ affected state before rebuilding, after preserving any needed diagnostics.
 See the [ledger benchmark arm](/runtime/continuity-benchmark/#ledger-first-slice).
 This slice provides host receipts and benchmark upkeep accounting, **not** merged
 answer/upkeep billing reconciliation, cancellation/restart-complete accounting,
-coverage-hole/incremental scheduling, default-on upkeep, or a claim of paid
+the multi-boundary benchmark protocol, default-on upkeep, or a claim of paid
 quality improvement. Those require subsequent evaluation and implementation.
 
 Validation and publication failures carry an allowlisted, content-free `failure`

@@ -173,6 +173,10 @@ export interface ContinuityGapInput {
   readonly reason: ContinuityGapReason;
 }
 
+export interface LedgerCursor { readonly ordinal: number; readonly offset: number; readonly digest: string; readonly watermark: number }
+export interface LedgerOffer { readonly key: string; readonly ordinal: number; readonly digest: string; readonly start: number; readonly end: number }
+export interface LedgerProgress { readonly cursor: LedgerCursor; readonly spans: readonly LedgerOffer[] }
+
 /** Bounded, one-transaction pack source; no search previews or derived storage. */
 export interface ContinuitySnapshotInput extends ContinuityScope {
   readonly selection?: "upkeep";
@@ -186,5 +190,6 @@ export interface ContinuitySnapshot {
   readonly records: readonly ContinuitySnapshotRecord[];
   readonly omitted: number;
   readonly gaps: number;
+  readonly upkeep?: { readonly cursor?: LedgerCursor | undefined; readonly watermark: number; readonly excluded: readonly string[] };
   readonly degradedReason?: "unavailable" | "purge_pending" | "boundary_unavailable" | "snapshot_bounds" | "source_unavailable" | "source_changed";
 }
