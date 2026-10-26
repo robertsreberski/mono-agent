@@ -1,3 +1,4 @@
+import { invalidateRetiredRepresentationSql } from "./retirement.js";
 import { createProgressSchema, representProgress } from "./progress.js";
 import { LedgerError } from "./ledger-error.js";
 import type { DatabaseSync } from "node:sqlite";
@@ -26,7 +27,7 @@ export function createLedgerSchema(database: DatabaseSync): void {
       BEGIN DELETE FROM continuity_ledger WHERE id IN
         (SELECT generation_id FROM continuity_ledger_inputs WHERE record_id=NEW.record_id); END;
     CREATE TRIGGER IF NOT EXISTS continuity_upkeep_representation_delete AFTER DELETE ON continuity_ledger
-      BEGIN UPDATE continuity_upkeep_offers SET state=CASE WHEN attempt=0 THEN 'unrepresented' ELSE 'lost' END,ledger_id=NULL WHERE ledger_id=OLD.id AND state='represented'; END;`);
+      BEGIN UPDATE continuity_upkeep_offers SET state=CASE WHEN offer_count<2 THEN 'unrepresented' ELSE 'lost' END,ledger_id=NULL WHERE ledger_id=OLD.id AND state='represented'; ${invalidateRetiredRepresentationSql()} END;`);
 }
 
 /** Validate all inherited input links, not only citations. Latest-only storage
@@ -91,6 +92,7 @@ export function publishLedger(database: DatabaseSync, generation: LedgerGenerati
   try { verifyInputs(database, generation); } catch { throw new LedgerError("publish_source_changed"); }
   // Transfer prior representation before replacing the latest row; rollback is atomic.
   database.prepare("UPDATE continuity_upkeep_offers SET ledger_id=? WHERE ledger_id=? AND state='represented'").run(generation.id, String(old?.id ?? ""));
+  database.prepare("UPDATE continuity_upkeep_retired SET ledger_id=? WHERE ledger_id=?").run(generation.id, String(old?.id ?? ""));
   database.prepare("DELETE FROM continuity_ledger WHERE conversation_id=?").run(generation.conversationId);
   database.prepare("INSERT INTO continuity_ledger VALUES (?,?,?,?,?,?,?,?)").run(generation.id, generation.conversationId, generation.logicalId, generation.parent, generation.manifest, payload, ledgerHash(payload), bytes);
   representProgress(database, generation, spanKey, operationId);

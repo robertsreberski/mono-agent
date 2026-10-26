@@ -175,6 +175,8 @@ export interface ContinuityGapInput {
 
 export interface LedgerCursor { readonly ordinal: number; readonly offset: number; readonly digest: string; readonly watermark: number }
 export interface LedgerOffer { readonly key: string; readonly ordinal: number; readonly digest: string; readonly start: number; readonly end: number }
+/** Cursor is a proposed upper bound: the writer advances only a verified
+ * contiguous offered/oversized prefix. Caller keys cannot override source geometry. */
 export interface LedgerProgress { readonly cursor: LedgerCursor; readonly spans: readonly LedgerOffer[] }
 
 /** Bounded, one-transaction pack source; no search previews or derived storage. */

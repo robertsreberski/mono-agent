@@ -1,3 +1,4 @@
+import { ledgerWindows } from "./span-geometry.js";
 import { fitsLedgerPrefix, fitsLedgerPrefixBytes } from "./render-fit.js";
 import { LedgerError } from "./ledger-error.js";
 import { createHash, randomUUID } from "node:crypto";
@@ -24,6 +25,8 @@ const coveredKeys = (prior?: LedgerGeneration) => new Set(prior?.spans.filter(sp
 const sourcePrefix = (prior?: LedgerGeneration, maxEntries = 24) => INSTRUCTIONS + `Delta limit: ${maxEntries} entries; every rendered derived line must be <=1024 UTF-8 bytes.\n` + JSON.stringify({ prior: prior ? { generationId: prior.id, entries: prior.entries, spans: prior.spans } : null }) + "\nSources:\n";
 const sourceLine = (span: LedgerSpan, record: ContinuitySnapshotRecord) => JSON.stringify({ ...span, kind: record.kind, tool: record.tool ? { name: record.tool.name, finalState: record.tool.state } : undefined }) + "\n";
 function sourceProgress(spans: readonly LedgerSpan[], records: readonly ContinuitySnapshotRecord[], watermark: number): LedgerProgress | undefined {
+  // This cursor is a proposed upper bound; the writer verifies the actual
+  // contiguous frontier against canonical geometry and durable offer evidence.
   const last = spans.at(-1), record = records.find(record => record.recordId === last?.recordId);
   if (!last || !record) return undefined;
   const bytes = Buffer.from(record.text); let offset = last.end;
@@ -51,36 +54,24 @@ export function selectLedgerSources(snapshot: ContinuitySnapshot, prior?: Ledger
   const buckets = new Map<number, Candidate[]>(), covered = coveredKeys(prior), excluded = new Set(snapshot.upkeep?.excluded); let candidateCount = 0;
   recordLoop: for (const record of snapshot.records) {
     const bytes = Buffer.from(record.text); if (ledgerHash(bytes) !== record.sha256) throw new LedgerError("source_changed");
-    let start = 0;
-    for (const paragraph of record.text.split("\n\n")) {
-      const end = start + Buffer.byteLength(paragraph);
-      const owner = record.kind === "owner" && record.provenance === "host-owner" && !!record.inputId && record.inputId === record.source.attestation?.inputId;
-      // Owners are indivisible paragraphs. Tool interiors may use UTF-8-safe
-      // overlapping windows: these are evidence spans, never owner quotations.
-      const cursor = snapshot.upkeep?.cursor;
-      const resume = cursor?.ordinal === record.ordinal && cursor.digest === record.sha256 ? cursor.offset : 0;
-      for (let offset = start; offset < end;) {
-        let stop = owner ? end : Math.min(end, offset + 8192);
-        while (stop < end && (bytes[stop]! & 0xc0) === 0x80) stop--;
-        const text = bytes.subarray(offset, stop).toString("utf8");
-        const score = owner ? (/never|must|always|without|do not|don't|only if|confirm|approval/iu.test(text) ? 13 : 11)
-          : record.kind !== "tool" ? 0 : /hypothetical|quotation only|example only/iu.test(text) ? -1
-          : /correct|revis|supersed|instead|draft|sent|failed|[A-Za-z_-]+\d|[$€£]\s*\d/iu.test(text) ? 14 : 5;
-        if (text.trim() && offset >= resume) {
-          const represented = covered.has(spanKey({ id: "", recordId: record.recordId, sha256: record.sha256, start: offset, end: stop, digest: ledgerHash(text), owner,
-            kind: record.kind, ...(record.tool ? { toolName: record.tool.name } : {}) }));
-          const key = spanKey({ id: "", recordId: record.recordId, sha256: record.sha256, start: offset, end: stop, digest: ledgerHash(text), owner, kind: record.kind, ...(record.tool ? { toolName: record.tool.name } : {}) });
-          if (!excluded.has(key) && !(snapshot.upkeep && represented)) {
+    const owner = record.kind === "owner" && record.provenance === "host-owner" && !!record.inputId && record.inputId === record.source.attestation?.inputId;
+    const cursor = snapshot.upkeep?.cursor;
+    const resume = cursor?.ordinal === record.ordinal && cursor.digest === record.sha256 ? cursor.offset : 0;
+    for (const { start: offset, end: stop, text } of ledgerWindows(record.text, owner)) {
+      const score = owner ? (/never|must|always|without|do not|don't|only if|confirm|approval/iu.test(text) ? 13 : 11)
+        : record.kind !== "tool" ? 0 : /hypothetical|quotation only|example only/iu.test(text) ? -1
+        : /correct|revis|supersed|instead|draft|sent|failed|[A-Za-z_-]+\d|[$€£]\s*\d/iu.test(text) ? 14 : 5;
+      if (text.trim() && offset >= resume) {
+        const represented = covered.has(spanKey({ id: "", recordId: record.recordId, sha256: record.sha256, start: offset, end: stop, digest: ledgerHash(text), owner,
+          kind: record.kind, ...(record.tool ? { toolName: record.tool.name } : {}) }));
+        const key = spanKey({ id: "", recordId: record.recordId, sha256: record.sha256, start: offset, end: stop, digest: ledgerHash(text), owner, kind: record.kind, ...(record.tool ? { toolName: record.tool.name } : {}) });
+        if (!excluded.has(key) && !(snapshot.upkeep && represented)) {
           candidateCount++; const bucketKey = score + (represented ? 0 : 100), bucket = buckets.get(bucketKey) ?? [];
           if (bucket.length < (snapshot.upkeep ? 512 : 256)) bucket.push({ record, start: offset, end: stop, text, score, covered: represented });
           buckets.set(bucketKey, bucket);
           if (snapshot.upkeep && candidateCount >= 4096) break recordLoop;
-          }
         }
-        if (stop === end) break;
-        offset = stop - 256; while ((bytes[offset]! & 0xc0) === 0x80) offset++;
       }
-      start = end + 2;
     }
   }
   const candidates = [...buckets.values()].flat();

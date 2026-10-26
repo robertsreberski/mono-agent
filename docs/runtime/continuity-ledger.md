@@ -107,8 +107,10 @@ enumeration leaves unscanned evidence disclosed, never counted as preserved.
 The disabled deterministic-pack query is unchanged. An indivisible owner paragraph
 that cannot fit a minimal delta alongside the **actual prior** at this boundary's
 headroom is recorded
-as an **oversized offer**, never represented. Its cursor advances with **zero
-paid calls**, so a pasted log cannot permanently stall later evidence. The gap
+as an **oversized offer**, never represented. It consumes **zero paid offers**.
+The cursor advances only across a verified contiguous offered/oversized prefix;
+an intervening unpaid hole stops advancement. A late oversized span cannot jump
+a hole or overwrite a later frontier. The gap
 remains disclosed. A tool whose arguments exceed the remaining page budget ends
 that page as bounded, not as a corrupt/unavailable source.
 
@@ -181,7 +183,9 @@ publication never advances representation.
 
 ### Offered is not represented
 
-The fenced dispatch transaction durably records offers and advances the cursor.
+The fenced dispatch transaction durably records offers and verifies the cursor
+frontier independently of the last selected span. A sparse late offer never
+retires earlier unpaid holes.
 A pending or unacknowledged result is not representation. Invalid operations keep
 failed offers suppressed. Valid uncited spans become terminal **analyzed**: they
 remain disclosed but are neither represented nor purchased at idle boundaries.
@@ -202,32 +206,48 @@ not resubmitted; unresolved dispatch conservatively blocks the scope.
 Deleting, tombstoning or changing **any** contributing source invalidates the
 latest ledger and its representation associations in the same transaction.
 Surviving successful sources may be reconstructed **once per span**. The existing
-attempt counter is shared with deferred re-offers; reconstruction consumes the
-remaining attempt. If it is not represented, it becomes analyzed/failed; later
+**total offer count** is shared with saturation, transient publication retry
+and reconstruction. It increments atomically at acknowledged dispatch, caps at
+**two**, and is unchanged by acknowledgement replay. Uncertain dispatch counts
+conservatively; an allowlisted proven non-invocation refunds that dispatch.
+Migration treats already-retried legacy rows as having consumed both offers. If it is not represented, it becomes analyzed/failed; later
 invalidation of an already reconstructed span makes it terminal **lost**. At most
 one reconstruction extraction runs per boundary. Known non-invocation releases
-availability without spending an attempt. Failed/uncertain offers remain suppressed. Deleted cursor
+availability without consuming a provider offer. Failed/uncertain offers remain suppressed. Deleted cursor
 anchors do not block keyset progress. A retention tombstone never rewinds the
 cursor: only its own continuation digest/offset can be reset. Explicit reset/delete
 clears scoped progress and rotates admission; retention does not renew bootstrap.
 
-Local safety limits remain 65536 offers, 16384 operations and a 32MiB journal
+Local safety limits remain **65536 distinct live span identities across working
+rows and compact records combined**, 16384 operations and a 32MiB journal
 reservation per logical/physical scope. In addition, **operations, offers and
-progress bytes count against the shared retention `maxBytes`**, including UTF-8
+progress and compact-record bytes count against the shared retention `maxBytes`**, including UTF-8
 metadata and row overhead. Normal cleanup keeps the recent 64-operation tail;
-quota pressure retires inactive terminal working sets in **least-recently-used
+quota pressure compacts inactive terminal working sets in **least-recently-used
 scope order** before evicting source text. Active/pending and uncertain work is
-not reclaimed. A content-free ordinal floor keeps retired evidence from being
-purchased again even if representation is later invalidated; retired coverage is
-reported as a gap, not as representation. Partial-record retirement can leave an
-unscanned remainder disclosed. This is not an indefinite accounting archive.
+not reclaimed. Exact sparse retirement preserves count and eligibility state in
+sorted **17-byte tuples** (8-byte immutable ordinal, two 4-byte byte offsets,
+one count/state byte). Tuples contain no text, hash or digest. Source geometry
+and canonical keys are revalidated before dispatch; alternate keys/coordinates
+cannot bypass counts. Working rows and compact records share the identity cap.
+
+Versioned chunks contain at most **128 KiB** each (7710 tuples /131070 bytes).
+At the identity limit, tuple data is **1114112 bytes**, in at most nine chunks,
+plus charged UTF-8 scope/incarnation/opaque ledger metadata and fixed row overhead.
+Compaction expires the settled owner fence before forgetting operation IDs,
+so delayed reserve/dispatch replays cannot recreate a purchase. Normal tail
+cleanup likewise keeps the current fence's acknowledgements. Compaction
+preserves all count evidence, never retires unpaid holes and never
+creates or extends an ordinal floor. Pre-existing legacy floors remain a
+conservative inherited gap: deleted historical evidence cannot be recovered.
+The chronological selector, fitter and existing first-pass analyzed suppression
+are unchanged; this storage contract does not activate broader re-eligibility.
 
 Bootstrap/identity rows are never reclaimed (UUID operation IDs in normal use,
 4096-code-unit scope identifiers and the bounded reservation ID at the hard limit).
 A native scope has at most one unresolved purchase: at most a 128KiB input reservation plus its opaque identity stamp,
 16KiB receipt and 256 offer rows (64 in the production selection path). All such
-unknown rows remain protected and charged. Compact retirement floors are also
-charged. If protected state alone fills the quota, admission stops without buying
+unknown rows remain protected and charged. Compact records and their projected compaction result are also charged. If protected state alone fills the quota, admission stops without buying
 more work. Lineage/render/payload/aggregate saturation likewise reports a gap;
 future checkpoint work owns that limitation. Outcome, settle and reject transitions
 are quota-exempt: receipt space was reserved at dispatch, and a paid result must
@@ -235,8 +255,9 @@ remain recordable even if protected data later fills the shared quota.
 
 In scopes with P3b2 progress, purge/tombstone transactions erase source digests
 and span fingerprints. They scrub **only reservations citing the erased ordinal**,
-not unrelated in-flight work. Unknown offers keep opaque identity/state/ordinal
-information; bootstrap is not refunded. Source tombstones in those scopes also
+not unrelated in-flight work. Compact tuples for the affected records are removed without clearing unrelated
+records. Unknown offers keep only opaque accounting identity/state/count;
+source coordinates are scrubbed as well, and bootstrap is not refunded. Source tombstones in those scopes also
 lose retained-text digests and attestation copies. P3b1 disabled scopes do not
 install progress triggers or alter checkpoint metadata. On first enabled progress
 creation, an idempotent migration strips legacy content fingerprints without
