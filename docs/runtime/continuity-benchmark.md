@@ -318,16 +318,22 @@ pack input tokens. The planning estimate allows the full 8k pack on each reader
 request, with the same retrieval allowance as store-only and no upkeep call. No quality improvement is claimed from offline runs, and the
 paid paired comparison is a separate operator action.
 
-## Ledger first slice
+## Progressive ledger boundaries
 
-`continuity-ledger-cold` buys **one upkeep per trace/repeat**, not per probe. Its
-checkpoint replays only source history, performs an eligible production cold
-upkeep, and scripts the preparation answer (not paid answer quality). The answer
-binding switches to the alternate while configured `runtime.model` remains the
-reader. Probe forks switch back to the reader and enable read-only `ledgerEnabled`
-with upkeep explicitly disabled. They require a valid committed generation and
-actual ledger entries in the provider-facing pack, with no second paid upkeep.
-Legacy/store/deterministic controls explicitly keep ledger/upkeep disabled.
+`continuity-ledger-cold` plans **three extractions per trace/repeat**, never per
+probe. Source history replays on reader R. Tagged `preparation` child requests
+recreate scripted providers in three distinct processes, answering through
+**A → R → A** while the configured extractor remains R. Every preparation must
+prove a production model-change boundary, a new selection and preserved earlier
+entries. A valid analysis-only stage can preserve the same generation without
+adding entries; it still consumes and accounts one admitted operation. The offline
+fixture deliberately returns an empty second delta to exercise that path. All processes use the same absolute durable roots and normal ownership;
+no native journal is deleted to manufacture eligibility.
+
+Tagged `probe` children switch back to the real reader R, cold relative to final
+A. They require the committed final ledger in the provider request and have
+upkeep explicitly disabled. Native, cold-rebuild and deterministic-pack controls
+are unchanged and buy no upkeep.
 
 ```sh
 pnpm benchmark:continuity:dry-run -- --suite hard-distractors --repeats 2 --arms native,cold-rebuild,continuity-pack-cold,continuity-ledger-cold --no-judge
@@ -341,10 +347,11 @@ rubrics or leaking expected answers into the upkeep source.
 Extraction defaults to configured reader model; `--extraction-model REF` is an
 explicit override, never an automatic cheaper model. `--require-request-cap`
 skips unsupported adapters before dispatch. Plan digest, dry-run workload and
-cost estimate include that model and one **128k-input/4096-output bootstrap**
-planning budget per trace/repeat. The digest also binds the 64k incremental
-allowance, but this protocol plans no incremental preparations. Execution rejects
-old under-reserved 64k bootstrap plans before opening the configured harness. **Codex stream_abort is not a hard output/billing bound**:
+cost estimate include that model, the binding sequence, and an explicit reservation
+for every extraction: **128k bootstrap +64k incremental +64k incremental** input,
+each with 4096 output tokens. Both hard corpora, two repeats and all four arms
+plan **1920 answer calls +96 extractions =2016 completions**, without a judge.
+Execution rejects old single-preparation or under-reserved bootstrap plans before opening the configured harness. **Codex stream_abort is not a hard output/billing bound**:
 hidden reasoning/remote work may overrun; subscription/quota is not dollar
 metering. Catalog planning estimates are not an invoice or a spending guarantee.
 
@@ -387,12 +394,16 @@ for invocation admission and `observedInput`; cache tokens are not added twice.
 A failure after paid preparation (including checkpoint statistics, cleanup or
 fork publication) preserves the partial checkpoint's upkeep in unit errors,
 `results.upkeep` and aggregate usage. Compact Codex coverage counts only cited
-spans, so the one-upkeep treatment may remain explicitly incomplete; no extra
-coverage-hole calls are added to its measurement budget.
+spans; the three-boundary treatment can still be incomplete. It never adds
+coverage-hole or repair calls beyond the confirmed three reservations.
+Per-preparation receipts and usage components retain known subtotals and unknown
+calls separately, without counting the aggregate again. A lost child acknowledgement
+retains its conservative input allowance and invalidates the unit; an external
+spend controller must retain the corresponding monetary reservation.
 
 For fictional-only diagnostics, `--capture-upkeep-output` opts into saving the
-raw extraction completion plus its stable validation `failure` code under
-`OUTPUT/upkeep-output/r<repeat>-<trace>.json`. It requires an explicit output
+raw extraction completion, stable validation `failure` code and merged validated
+ledger under `OUTPUT/upkeep-output/r<repeat>-<trace>-p<1|2|3>.json`. It requires an explicit output
 outside the checkout (also offline), uses owner-only files, refuses existing
 capture files, and is **off by default**. Captures are benchmark artifacts, never
 written into the continuity store or exposed by production runtime configuration.

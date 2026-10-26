@@ -177,6 +177,7 @@ function unitName({ repeat, traceId, armId }) { return `r${repeat}-${traceId}-${
 
 /** Estimated input is inclusive; do not add cache again when reported input is absent. */
 export function observedInputTokens(usage) {
+  if (Array.isArray(usage?.components)) return usage.components.reduce((sum, part) => sum + observedInputTokens(part), 0);
   return usage?.inputTokens == null && typeof usage?.estimatedInputTokens === "number" ? usage.estimatedInputTokens
     : (usage?.inputTokens ?? 0) + (usage?.cacheReadTokens ?? 0) + (usage?.cacheWriteTokens ?? 0);
 }
@@ -221,7 +222,7 @@ async function execute({ flags, plan, traces, mode, output, piAuthPath, head, di
     const dir = join(scratch, `cp-${key.replace(/[^a-z0-9-]/giu, "_")}`);
     await rm(dir, { recursive: true, force: true });
     try {
-      if (unit.arm.midCheckpoint !== null || unit.arm.ledgerUpkeep) state.liveTurns += 1;
+      state.liveTurns += unit.arm.ledgerUpkeep ? plan.upkeep.callsPerTraceRepeat : unit.arm.midCheckpoint !== null ? 1 : 0;
       const built = await buildCheckpoint({ modules, trace: unit.trace, arm: unit.arm, repeat: unit.repeat, dir, plan, mode, authPath, ...(flags["capture-upkeep-output"] ? { captureUpkeepOutput: join(output, "upkeep-output", `r${unit.repeat}-${unit.trace.id}.json`) } : {}) });
       if (built.record.mid) account(built.record.mid.usage);
       if (built.record.upkeep) account(built.record.upkeep.usage);

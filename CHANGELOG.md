@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Accept well-formed empty continuity deltas as accounted analysis without
+  republishing or losing the prior ledger; require explicit coverage IDs.
+
+- Add three genuine progressive ledger benchmark boundaries with per-extraction
+  reservations and fresh-process preparation before read-only probes.
+
 - Skip empty optional continuity evidence without adding a blank user turn to
   cold native-session seeds or empty replay replacements.
 

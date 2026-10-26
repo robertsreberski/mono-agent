@@ -435,7 +435,7 @@ it("never purchases empty analyzed evidence again at idle boundaries", async () 
   for (let i = 0; i < 3; i++) await f.prepare();
   expect(f.complete).toHaveBeenCalledTimes(1);
   expect(f.db(db => db.prepare("SELECT DISTINCT state FROM continuity_upkeep_offers").all())).toEqual([{ state: "analyzed" }]);
-  expect(f.reader.ledger(scope)!.generation.coveredSpans).toEqual([]);
+  expect(f.reader.ledger(scope)).toBeUndefined();
 });
 
 it("allows only one re-offer when the admitted cap was saturated", async () => {
@@ -574,4 +574,52 @@ it("bounds reconstruction per span across five successive retention invalidation
   expect(f.db(db => db.prepare("SELECT count(*) n FROM continuity_upkeep_offers WHERE state='lost'").get())).toEqual({ n: 4 });
   expect(f.db(db => db.prepare("SELECT max(attempt) n FROM continuity_upkeep_offers").get())).toEqual({ n: 1 });
   await f.prepare(); expect(f.complete).toHaveBeenCalledTimes(6);
+});
+
+it.each(["request", "stream_abort"] as const)("settles an empty %s delta as analyzed without publishing or losing its prior", async mode => {
+  const f = await fixture(); await f.capture(); await f.prepare(); const prior = f.reader.ledger(scope)!.generation;
+  await f.capture(1, "Unrelated neutral archive text.", "fictional", true);
+  const publish = vi.spyOn(f.ports, "publishLedger"), complete = f.complete.getMockImplementation()!;
+  f.complete.mockImplementationOnce(async (...args) => {
+    const result = await complete(...args);
+    return { ...result, text: '{"entries":[],"covered":[]}', receipt: { ...result.receipt, capEnforcement: mode, inputTokens: 25, outputTokens: 5, costUsd: 0.002 } };
+  });
+  const result = await f.prepare();
+  expect(result.events).toContainEqual(expect.objectContaining({ status: "valid", reason: "analyzed", inputTokens: 25, outputTokens: 5, costUsd: 0.002 }));
+  // Valid "nothing new" analysis is not a degraded ledger: no warning is emitted.
+  expect(result.events).not.toContainEqual(expect.objectContaining({ type: "runtime_warning" }));
+  expect(publish).not.toHaveBeenCalled(); expect(f.reader.ledger(scope)!.generation).toEqual(prior);
+  expect(result.pack()).toContain(prior.entries[0]!.value);
+  const row = f.db(db => db.prepare("SELECT state,outcome,operation_id FROM continuity_upkeep_operations ORDER BY rowid DESC LIMIT 1").get()) as any;
+  expect(row.state).toBe("terminal"); expect(JSON.parse(row.outcome)).toMatchObject({ inputTokens: 25, outputTokens: 5, costUsd: 0.002 });
+  expect(f.db(db => db.prepare("SELECT DISTINCT state FROM continuity_upkeep_offers WHERE operation_id=?").all(row.operation_id))).toEqual([{ state: "analyzed" }]);
+  await f.prepare(); await f.prepare(); expect(f.complete).toHaveBeenCalledTimes(2);
+});
+
+it("accepts the captured nothing-new delta without treating omitted evidence as represented", async () => {
+  const f = await fixture(); await f.capture(1, "Unrelated neutral archive text.", "fictional", true);
+  const selection = selectLedgerSources(f.reader.snapshotContinuity({ ...scope, selection: "upkeep" }));
+  // Exact content-free fictional response from the failed progressive boundary.
+  const captured = '{"entries":[],"covered":[]}';
+  const generation = validateLedgerOutput(captured, selection, scope, undefined, "stream_abort");
+  expect(generation.entries).toEqual([]); expect(generation.coveredSpans).toEqual([]);
+  expect(generation.uncovered).toBeGreaterThan(0);
+});
+
+it.each(["request", "stream_abort"] as const)("requires strict offered-id subset coverage for empty %s deltas", async mode => {
+  const f = await fixture(); await f.capture(1, "Neutral archive.", "fictional", true);
+  const selection = selectLedgerSources(f.reader.snapshotContinuity(scope)), id = selection.spans[0]!.id;
+  for (const covered of [[], [id]]) expect(validateLedgerOutput(JSON.stringify({ entries: [], covered }), selection, scope, undefined, mode)).toMatchObject({ entries: [], coveredSpans: [] });
+  for (const covered of [null, {}, 1, "s0", [id, id], ["not-offered"]]) expect(() => validateLedgerOutput(JSON.stringify({ entries: [], covered }), selection, scope, undefined, mode)).toThrow();
+  expect(() => validateLedgerOutput('{"entries":[],"covered":[],"extra":true}', selection, scope, undefined, mode)).toThrow("output_schema");
+});
+
+it("consumes an analysis-only bootstrap without a generation or idle repurchase", async () => {
+  const f = await fixture(); await f.capture(1, "Neutral archive.", "fictional", true); f.respond(() => []);
+  const publish = vi.spyOn(f.ports, "publishLedger"), result = await f.prepare();
+  expect(result.events).toContainEqual(expect.objectContaining({ status: "valid", reason: "analyzed" }));
+  expect(publish).not.toHaveBeenCalled(); expect(f.reader.ledger(scope)).toBeUndefined();
+  await f.prepare(); expect(f.complete).toHaveBeenCalledTimes(1);
+  await f.capture(1, "New fictional evidence.", "fictional", true); await f.prepare();
+  expect(f.budgets).toEqual([128000, 64000]); expect(publish).not.toHaveBeenCalled();
 });

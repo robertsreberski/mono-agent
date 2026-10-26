@@ -183,6 +183,7 @@ export function emptyUsage() {
 }
 export function addUsage(total, usage) {
   if (!usage || usage.calls === 0) return total;
+  if (Array.isArray(usage.components)) { for (const part of usage.components) addUsage(total, part); return total; }
   total.calls += usage.calls ?? 1;
   let unknownTokens = false;
   for (const field of USAGE_FIELDS) {

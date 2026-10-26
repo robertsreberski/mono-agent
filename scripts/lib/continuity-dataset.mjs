@@ -238,7 +238,12 @@ export function makePlan({ traces, sha256, suite = "original", source = null, co
     probes: trace.probes.slice(0, probeLimit ?? undefined).map((probe) => probe.id) }));
   const probeCount = probesPerTrace.reduce((sum, row) => sum + row.probes.length, 0);
   const nextActionCount = traces.reduce((sum, trace) => sum + trace.probes.slice(0, probeLimit ?? undefined).filter((probe) => probe.category === "next_action").length, 0);
-  const upkeepCalls = traces.length * selectedArms.filter(arm => arm.ledgerUpkeep).length * repeats;
+  const preparations = [
+    { binding: alternate, maxInputTokens: 128000, maxOutputTokens: 4096, budget: "bootstrap" },
+    { binding: reader, maxInputTokens: 64000, maxOutputTokens: 4096, budget: "incremental" },
+    { binding: alternate, maxInputTokens: 64000, maxOutputTokens: 4096, budget: "incremental" },
+  ];
+  const upkeepCalls = traces.length * selectedArms.filter(arm => arm.ledgerUpkeep).length * repeats * preparations.length;
   const midArms = selectedArms.filter((arm) => arm.midCheckpoint !== null).length;
   const probeTurns = probeCount * selectedArms.length * repeats;
   const midCompactions = traces.length * midArms * repeats;
@@ -256,7 +261,8 @@ export function makePlan({ traces, sha256, suite = "original", source = null, co
     repeats,
     reader: { model: reader, effort: readerEffort },
     upkeep: { model: profile.extractionModel ?? reader, requireRequestCap: profile.requireRequestCap === true, maxInputTokens: 128000, incrementalMaxInputTokens: 64000, maxOutputTokens: 4096, timeoutMs: 60000,
-      capEnforcement: (profile.extractionModel ?? reader).startsWith("openai-codex:") ? "stream_abort" : "request_or_skip", reasoning: "lowest_supported", callsPerTraceRepeat: 1 },
+      capEnforcement: (profile.extractionModel ?? reader).startsWith("openai-codex:") ? "stream_abort" : "request_or_skip", reasoning: "lowest_supported", callsPerTraceRepeat: preparations.length, preparations,
+      reservations: upkeepCalls ? traces.flatMap(trace => Array.from({ length: repeats }, (_, repeat) => preparations.map((step, index) => ({ traceId: trace.id, repeat: repeat + 1, preparation: index + 1, ...step }))).flat()) : [] },
     alternateBinding: { model: alternate, servedBy: "scripted-history-only" },
     judge: judge === null ? null : { model: judge, effort: judgeEffort, scope: "next_action" },
     workload: { ...(upkeepCalls ? { upkeepCalls } : {}), probeTurns, midCheckpointCompactions: midCompactions, liveTurns: probeTurns, expectedCompactions: compactions, judgeCalls },
@@ -340,11 +346,11 @@ export function estimateCost(plan, traces, prices) {
       expected += repeatsWithCold * usd(perProbe.input, perProbe.output)
         + (probes - repeatsWithCold) * usd(perProbe.input - perProbe.cacheable, perProbe.output, perProbe.cacheable)
         + mid * usd(Math.ceil(t.serialized * 0.6), 2000);
-      const upkeep = armRow.ledgerUpkeep ? plan.repeats * usd(plan.upkeep.maxInputTokens, plan.upkeep.maxOutputTokens, 0, upkeepPrice) : 0;
+      const upkeep = armRow.ledgerUpkeep ? plan.repeats * plan.upkeep.preparations.reduce((sum, step) => sum + usd(step.maxInputTokens, step.maxOutputTokens, 0, upkeepPrice), 0) : 0;
       upper += upkeep; expected += upkeep; upkeepBudgetUsd += upkeep;
-      inputTokens += probes * perProbe.input + (armRow.ledgerUpkeep ? plan.upkeep.maxInputTokens * plan.repeats : 0);
+      inputTokens += probes * perProbe.input + (armRow.ledgerUpkeep ? plan.upkeep.preparations.reduce((sum, step) => sum + step.maxInputTokens, 0) * plan.repeats : 0);
     }
-    rows[armRow.id] = { ...(armRow.ledgerUpkeep ? { upkeepBudgetUsd: Number(upkeepBudgetUsd.toFixed(4)), upkeepCalls: traces.length * plan.repeats } : {}), inputTokens, upperUsd: Number(upper.toFixed(4)), expectedUsd: Number(expected.toFixed(4)) };
+    rows[armRow.id] = { ...(armRow.ledgerUpkeep ? { upkeepBudgetUsd: Number(upkeepBudgetUsd.toFixed(4)), upkeepCalls: traces.length * plan.repeats * plan.upkeep.callsPerTraceRepeat } : {}), inputTokens, upperUsd: Number(upper.toFixed(4)), expectedUsd: Number(expected.toFixed(4)) };
   }
   const judgeUsd = judgePrice ? plan.workload.judgeCalls * (600 * judgePrice.input + 20 * judgePrice.output) / 1_000_000 : null;
   const sum = (key) => Object.values(rows).reduce((total, row) => total + row[key], 0) + (judgeUsd ?? 0);

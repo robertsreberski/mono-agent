@@ -188,6 +188,12 @@ remain disclosed but are neither represented nor purchased at idle boundaries.
 Only a response that **saturates the admitted entry cap** may leave uncited spans
 re-offerable, **once**. Transient `publish_cas`/`publish_cancelled` failures also
 allow at most one re-offer; quota/bounds failures become failed immediately.
+A strictly formed empty delta is a valid **analysis-only** result in both cap
+modes: `entries: []`, with `covered` a unique array of offered IDs (possibly
+empty). Counts, unknown IDs and extra keys remain invalid. All offered spans
+settle analyzed without publishing a generation or renewing bootstrap; the prior
+ledger remains injectable. Usage is recorded, and idle boundaries do not rebuy
+the analysis. A valid host receipt uses reason `analyzed` without a generation ID.
 Fresh evidence takes priority over that single deferred opportunity. Successful publication alone
 associates entry-cited spans with the latest ledger. Analysis-only `covered`
 claims do not establish representation in either profile. Unknown batches are
@@ -264,11 +270,10 @@ affected state before rebuilding, after preserving any needed diagnostics.
 
 ## Measurement boundary
 
-See the [ledger benchmark arm](/runtime/continuity-benchmark/#ledger-first-slice).
+See the [ledger benchmark arm](/runtime/continuity-benchmark/#progressive-ledger-boundaries).
 This slice provides host receipts and benchmark upkeep accounting, **not** merged
 answer/upkeep billing reconciliation, cancellation/restart-complete accounting,
-the multi-boundary benchmark protocol, default-on upkeep, or a claim of paid
-quality improvement. Those require subsequent evaluation and implementation.
+default-on upkeep, or a general claim of paid quality improvement. Those require subsequent evaluation and implementation.
 
 Validation and publication failures carry an allowlisted, content-free `failure`
 code in the upkeep receipt and warning `error_code`: JSON/schema/coverage,

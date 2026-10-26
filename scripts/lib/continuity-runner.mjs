@@ -8,6 +8,7 @@
 // `piResolvedModel` seam; tools are real MCP calls to a loopback fixture server.
 // Live turns (probes, the mid-trace checkpoint of arm d) use the real provider in
 // paid mode and a scripted contract reader offline.
+import { DatabaseSync } from "node:sqlite";
 import { createHash } from "node:crypto";
 import { cp, mkdir, readFile, rm, writeFile, realpath, lstat } from "node:fs/promises";
 import { dirname, join, isAbsolute, relative, resolve, sep } from "node:path";
@@ -15,7 +16,7 @@ import { performance } from "node:perf_hooks";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { armById, checkpointKey, mergePatch, pressureMetrics, verifyBoundary, verifyPressure, verifyStore } from "./continuity-arms.mjs";
 import { traceShape } from "./continuity-generator.mjs";
-import { probePrompt, scoreAnswer, judgePrompt, parseJudgeVerdict } from "./continuity-score.mjs";
+import { probePrompt, scoreAnswer, judgePrompt, parseJudgeVerdict, emptyUsage, addUsage } from "./continuity-score.mjs";
 import { sourceOnly, traceFamily } from "./continuity-dataset.mjs";
 import { FIXTURE_SERVER_NAME, startFixtureTools } from "./continuity-tools.mjs";
 
@@ -423,7 +424,31 @@ export async function buildCheckpoint({ modules, trace, arm, repeat, dir, plan, 
       }
       if (arm.ledgerUpkeep) {
         if (open) { await open.close(); open = null; }
-        record.upkeep = await prepareLedgerCheckpoint({ modules, work, authPath, plan, mode, reader, alternate, scripted, route, clock, conversationId, captureUpkeepOutput });
+        const preparations = [];
+        record.upkeep = { valid: false, preparations, usage: { calls: 0 } };
+        for (const [index, step] of plan.upkeep.preparations.entries()) {
+          const capture = captureUpkeepOutput?.replace(/\.json$/u, `-p${index + 1}.json`);
+          let result;
+          try { result = await runBoundaryChild({ type: "preparation", root: fileURLToPath(new URL("../../", import.meta.url)), work, authPath, plan, mode,
+            clockIso: clock.value.toISOString(), conversationId, step, preparation: index + 1, captureUpkeepOutput: capture }, { timeoutMs: plan.limits.perLiveTurnTimeoutMs }); }
+          catch (error) {
+            // A lost child acknowledgement cannot prove non-invocation. Keep
+            // its whole input allowance; the controller retains its reservation.
+            result = { valid: false, boundary: { verified: false }, failure: codeOf(error), receipt: null,
+              usage: { calls: 1, inputTokens: null, outputTokens: null, estimatedInputTokens: step.maxInputTokens, estimatedCostUsd: null } };
+          }
+          preparations.push(result);
+          record.upkeep.usage = sumPreparationUsage(preparations);
+          if (!result.valid || !result.boundary.verified) break;
+        }
+        const seen = new Set();
+        record.upkeep.valid = preparations.length === 3 && preparations.every((step, index) => {
+          const selection = step.journal?.selection ?? [];
+          const fresh = selection.some(key => !seen.has(key)); selection.forEach(key => seen.add(key));
+          return step.valid && step.boundary.verified && fresh && step.journal.operations === index + 1
+            && step.journal.bootstrap === 1 && step.journal.budget === plan.upkeep.preparations[index].budget;
+        }) && new Set(preparations.map(step => step.pid)).size === 3 && preparations.at(-1).entriesAfter > 0;
+        record.upkeep.receipt = preparations.at(-1)?.receipt ?? null;
       }
     } finally {
       try { if (open) await open.close(); }
@@ -476,14 +501,25 @@ export function captureUpkeepModels(models, capture) {
   } });
 }
 
+/** Sum each extraction once; reported totals and estimated unknown-call input remain separate. */
+function sumPreparationUsage(steps) {
+  const total = emptyUsage();
+  for (const step of steps) addUsage(total, step.usage);
+  return { ...total, components: steps.map(step => step.usage) };
+}
+
 /** One upkeep, no real answer call, before read-only probe forks. No probe/answer data enter extraction. */
-export async function prepareLedgerCheckpoint({ modules, work, authPath, plan, mode, reader, alternate, scripted, route, clock, conversationId, captureUpkeepOutput }) {
-  // This protocol plans one fresh-scope bootstrap, not P3b2's multi-boundary run.
-  // Reject old confirmed 64k plans before opening a harness or resolving auth.
+export async function prepareLedgerCheckpoint({ modules, work, authPath, plan, mode, reader, alternate, scripted, route, clock, conversationId, captureUpkeepOutput, step = plan.upkeep.preparations?.[0], preparation = 1 }) {
+  // Reject stale single-preparation plans before opening a harness or resolving auth.
   if (plan.upkeep.maxInputTokens !== 128000 || plan.upkeep.incrementalMaxInputTokens !== 64000
-    || plan.upkeep.maxOutputTokens !== 4096 || plan.upkeep.callsPerTraceRepeat !== 1) throw new ContinuityError("upkeep_plan_budget_mismatch");
+    || plan.upkeep.maxOutputTokens !== 4096 || plan.upkeep.callsPerTraceRepeat !== 3
+    || !step || ![128000, 64000].includes(step.maxInputTokens)) throw new ContinuityError("upkeep_plan_budget_mismatch");
   if (captureUpkeepOutput) await prepareCapturePath(captureUpkeepOutput);
   const watch = observer(); const hostOptions = {}; let capturedText;
+  const binding = modules.host.parseMonoRuntimeModelReference(step.binding);
+  const history = new modules.conversation.ToolHistoryReader(join(work, "history"));
+  const scope = { logicalConversationId: conversationId, currentConversationId: conversationId, currentRunId: "benchmark" };
+  const previous = history.ledger(scope)?.generation.entries ?? [];
   if (mode === "offline") {
     const ref = modules.host.parseMonoRuntimeModelReference(plan.upkeep.model);
     const faux = modules.pi.fauxProvider({ provider: ref.provider, api: ref.provider === "openai-codex" ? "openai-codex-responses" : "openai-responses",
@@ -493,6 +529,7 @@ export async function prepareLedgerCheckpoint({ modules, work, authPath, plan, m
       const prompt = textOfContent(context.messages.at(-1)?.content);
       const spans = prompt.split("\n").flatMap(line => { try { const row = JSON.parse(line); return typeof row.id === "string" && typeof row.text === "string" ? [row] : []; } catch { return []; } });
       if (!spans.length) throw new ContinuityError("offline_upkeep_source_missing");
+      if (preparation === 2) return modules.pi.fauxAssistantMessage('{"entries":[],"covered":[]}');
       return modules.pi.fauxAssistantMessage(JSON.stringify({ entries: [{ kind: "open_work", value: "Offline scripted ledger; not model quality.", status: "unknown", sources: [spans[0].id] }], covered: spans.map(span => span.id) }));
     }]);
     hostOptions.runtimeOptions = { piResolvedModels: models };
@@ -507,13 +544,13 @@ export async function prepareLedgerCheckpoint({ modules, work, authPath, plan, m
   }
   // Configured runtime.model remains reader (or explicit extractionModel).
   // Only the scripted answer switches binding, leaving probes a real cold boundary.
-  hostOptions.runtimeOptionsForRequest = () => ({ runtimeOptions: { model: alternate, piResolvedModel: scripted.route({ model: alternate }).model, piResolvedModels: scripted.models } });
-  scripted.respondWith(alternate, () => modules.pi.fauxAssistantMessage("Continuity preparation complete."));
+  hostOptions.runtimeOptionsForRequest = () => ({ runtimeOptions: { model: binding, piResolvedModel: scripted.route({ model: binding }).model, piResolvedModels: scripted.models } });
+  scripted.respondWith(binding, () => modules.pi.fauxAssistantMessage("Continuity preparation complete."));
   let opened, failure = null, generation, receipt = null;
   try {
     opened = await openHarness({ modules, work, authPath, model: reader.reference, tools: false, route, clock, hostOptions,
       configPatch: { runtime: { compaction: { enabled: false }, session: { continuity: { enabled: true, packEnabled: true, upkeep: { enabled: true, requireRequestCap: plan.upkeep.requireRequestCap, extractionModel: plan.upkeep.model } } } } } });
-    const response = await opened.harness.run({ conversationId, userMessage: "Prepare continuity for the next request.", captureSpeakerKind: "human-turn", metadata: { source: "web", web: { model: alternate.reference } }, abortSignal: AbortSignal.timeout(plan.limits.perLiveTurnTimeoutMs), onEvent: watch.onEvent });
+    const response = await opened.harness.run({ conversationId, userMessage: "Prepare continuity for the next request.", captureSpeakerKind: "human-turn", metadata: { source: "web", web: { model: binding.reference } }, abortSignal: AbortSignal.timeout(plan.limits.perLiveTurnTimeoutMs), onEvent: watch.onEvent });
     failure = response.failure?.kind ?? null;
     generation = new modules.conversation.ToolHistoryReader(join(work, "history")).ledger({ logicalConversationId: conversationId, currentConversationId: conversationId, currentRunId: "benchmark" });
   } catch { failure = "upkeep_preparation_failed"; }
@@ -524,12 +561,29 @@ export async function prepareLedgerCheckpoint({ modules, work, authPath, plan, m
   if (captureUpkeepOutput) {
     try {
       await mkdir(dirname(captureUpkeepOutput), { recursive: true, mode: 0o700 });
-      await writeFile(captureUpkeepOutput, JSON.stringify({ text: capturedText ?? null, failure: receipt?.failure ?? null, status: receipt?.status ?? null }, null, 2) + "\n", { mode: 0o600, flag: "wx" });
+      await writeFile(captureUpkeepOutput, JSON.stringify({ text: capturedText ?? null, failure: receipt?.failure ?? null, status: receipt?.status ?? null, ledger: generation?.generation ?? null }, null, 2) + "\n", { mode: 0o600, flag: "wx" });
     } catch { failure ??= "upkeep_capture_failed"; }
   }
   const calls = receipt?.providerInvoked ? 1 : 0;
   const estimatedPaid = calls > 0 && receipt.costUsd == null && typeof receipt.estimatedInputCostUsd === "number";
-  return { valid: !failure && receipt?.status === "valid" && !!generation?.generation.entries.length && generation.generation.id === receipt.generationId,
+  let journal = null;
+  if (typeof history.databasePath === "string") {
+    const db = new DatabaseSync(history.databasePath, { readOnly: true });
+    try {
+      const rows = db.prepare("SELECT operation_id,reservation,state FROM continuity_upkeep_operations ORDER BY rowid").all();
+      const latest = rows.find(row => row.operation_id === receipt?.operationId);
+      const reservation = latest ? JSON.parse(latest.reservation) : null;
+      journal = { operations: rows.length, bootstrap: rows.filter(row => JSON.parse(row.reservation).budget === "bootstrap").length,
+        budget: reservation?.budget ?? null, selection: reservation?.progress?.spans.map(span => span.key) ?? [],
+        spans: db.prepare("SELECT state,count(*) count FROM continuity_upkeep_offers GROUP BY state").all() };
+    } finally { db.close(); }
+  }
+  const entries = generation?.generation.entries ?? [];
+  const preserved = previous.every(old => entries.some(entry => entry.id === old.id && entry.value === old.value && entry.status === old.status));
+  return { valid: !failure && preserved && receipt?.status === "valid"
+      && (receipt.reason === "analyzed" && !receipt.generationId || !!entries.length && generation.generation.id === receipt.generationId),
+    boundary: verifyBoundary({ boundary: "model_change", compactions: 0 }, watch.observed), observed: watch.observed,
+    entriesBefore: previous.length, entriesAfter: entries.length, preserved, journal,
     failure, receipt, usage: { calls, estimatedInputTokens: calls ? receipt?.estimatedInputTokens ?? null : 0, inputTokens: calls ? receipt?.inputTokens ?? null : 0, outputTokens: calls ? receipt?.outputTokens ?? null : 0,
       cacheReadTokens: 0, cacheWriteTokens: 0, estimatedCostUsd: calls ? receipt?.costUsd ?? receipt?.estimatedInputCostUsd ?? null : 0,
       estimatedPaidCalls: estimatedPaid ? 1 : 0, estimatedPaidInputCostUsd: estimatedPaid ? receipt.estimatedInputCostUsd : 0 } };
@@ -561,7 +615,7 @@ async function manualCompaction({ modules, work, authPath, plan, mode, binding, 
  * Run a live turn in a fresh Node process over the same durable roots: an
  * actual process restart, so no in-process runtime, session or cache survives.
  */
-async function runLiveTurnInChild(input, { timeoutMs }) {
+async function runBoundaryChild(input, { timeoutMs }) {
   const { spawn } = await import("node:child_process");
   const child = spawn(process.execPath, [CHILD_ENTRY], { stdio: ["pipe", "pipe", "pipe"], env: process.env });
   const chunks = [];
@@ -599,7 +653,7 @@ export async function runProbe({ modules, trace, arm, repeat, probe, checkpointW
     const turn = { work, authPath, plan, mode, configPatch: mergePatch(arm.sessionConfig ?? {}, arm.probeConfig), userMessage: probePrompt(probe),
       conversationId: checkpointConversationId, owner: trace.owner.displayName };
     const live = arm.restart || inPlace
-      ? await runLiveTurnInChild({ ...turn, root, clockIso: clock.value.toISOString() }, { timeoutMs: plan.limits.perLiveTurnTimeoutMs })
+      ? await runBoundaryChild({ type: "probe", ...turn, root, clockIso: clock.value.toISOString() }, { timeoutMs: plan.limits.perLiveTurnTimeoutMs })
       : await runLiveTurn({ modules, ...turn, clock });
     trial.usage = live.usage; trial.compactionUsage = live.compactionUsage; trial.durationMs = live.durationMs;
     const boundary = verifyBoundary({ boundary: arm.expect.probeBoundary, compactions: arm.expect.probeCompactions, restart: arm.restart }, live.observed);

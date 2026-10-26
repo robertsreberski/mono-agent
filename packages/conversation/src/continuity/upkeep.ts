@@ -97,8 +97,15 @@ export function createLedgerSupplier(options: ConversationHarnessOptions, reques
             gap = true; return;
           }
           const generation = validateLedgerOutput(completion.text, selection, scope, frozen?.generation, completion.receipt.capEnforcement); uncovered = generation.uncovered;
-          if (!fitsLedgerPrefix(renderLedger(generation, [...(frozen?.records ?? []), ...selection.records]), eligibility.maxTokens)) throw new LedgerError("ledger_render_budget");
-          await eligibility.withOwner(async () => { await history!.mutateUpkeep!({ kind: "settle", reservation: reservation!, saturated: JSON.parse(completion!.text!).entries.length === selection.maxEntries }); });
+          const deltaEntries = JSON.parse(completion.text).entries.length as number;
+          if (deltaEntries && !fitsLedgerPrefix(renderLedger(generation, [...(frozen?.records ?? []), ...selection.records]), eligibility.maxTokens)) throw new LedgerError("ledger_render_budget");
+          await eligibility.withOwner(async () => { await history!.mutateUpkeep!({ kind: "settle", reservation: reservation!, saturated: deltaEntries === selection.maxEntries, analysisOnly: deltaEntries === 0 }); });
+          if (!deltaEntries) {
+            completion = { ...completion, receipt: { ...completion.receipt, reason: "analyzed" } };
+            // A valid "nothing new" result is normal analysis, not a degraded ledger:
+            // like a publishing delta, it discloses uncovered counts without a warning.
+            return;
+          }
           publishing = true;
           await eligibility.withOwner(async () => { if (request.abortSignal.aborted) throw new LedgerError("publish_cancelled"); await history!.publishLedger!(generation, reservation); });
           frozen = history!.reader.ledger(scope); published = frozen?.generation.id;
