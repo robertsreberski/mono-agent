@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { persistContinuityPurge } from "../../tool-history/continuity-purge.js";
 import { bindContinuityQuotation, copyContinuityQuotation, isContinuityTurnBatch, stagedContinuityInput, type StagedContinuityInput } from "../../tool-history/continuity-input.js";
 import { AGENT_CONTEXT_IMPORT_MAX_CONVERSATION_ID_BYTES, AGENT_CONTEXT_IMPORT_MAX_IDEMPOTENCY_KEY_BYTES, AGENT_CONTEXT_IMPORT_MAX_TEXT_BYTES, AGENT_CONTEXT_IMPORT_SYSTEM_PROVENANCE, AGENT_CONTEXT_IMPORT_VERSION, type AgentContextImportRequest, type AgentContextImportResult } from "@mono-agent/contracts";
@@ -985,7 +986,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         await heldLogical.assertOwned();
         // Fail before resetting any sibling, not midway through logical reset.
         for (const id of orderedIds) { await this.assertResetReadable(id, rootIdentity); await this.requireNoModelSwitch(id, rootIdentity); }
-        await this.journalContinuityPurge("logical", logicalId, rootIdentity, () => heldLogical.assertOwned());
+        await this.journalContinuityPurge("logical", logicalId, rootIdentity, () => heldLogical.assertOwned(), true);
       } finally { await releaseDiscovery(); }
       if (orderedIds.includes(logicalId)) {
         await this.resetPhysicalConversation(logicalId, heldLogical, heldExact);
@@ -1079,7 +1080,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
           next: { version: 3, conversationId, messages: [], providerSession: { epoch: createProviderSessionEpoch(), revision: 0, ...modelBinding(existing.providerSession?.modelKey) } } };
         let releaseRoot = await this.acquireRootTransaction(rootIdentity);
         const nativeIo = this.nativeIoOutsideRoot(rootIdentity, () => releaseRoot(), (release) => { releaseRoot = release; });
-        try { await this.requireNoModelSwitch(conversationId, rootIdentity); await this.publishNativeOperation(operation, rootIdentity); await this.finishNativeOperation(operation, rootIdentity, () => held.assertOwned(), nativeIo); }
+        try { await this.requireNoModelSwitch(conversationId, rootIdentity); await this.journalContinuityPurge("physical", conversationId, rootIdentity, () => held.assertOwned(), true); await this.publishNativeOperation(operation, rootIdentity); await this.finishNativeOperation(operation, rootIdentity, () => held.assertOwned(), nativeIo); }
         finally { await releaseRoot(); }
         await this.releaseConversation(held, rootIdentity); return;
       }
@@ -1088,6 +1089,9 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         throw new Error("Reset of pending turn payloads requires fail-closed provider retirement.");
       }
       const retirementFence = await this.prepareProviderRetirement(existing, rootIdentity, true);
+      const releaseResetRoot = await this.acquireRootTransaction(rootIdentity);
+      try { await this.journalContinuityPurge("physical", conversationId, rootIdentity, () => held.assertOwned(), true); }
+      finally { await releaseResetRoot(); }
       prepared = await this.prepareRecord({
         version: STORE_VERSION,
         conversationId,
@@ -1203,11 +1207,12 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       }
       const existing = await this.readRecord(normalizedId, heldLogical.rootIdentity);
       const historyVersion = historyRecordVersion(existing);
+      const continuityOwnerToken = randomUUID();
       const assertCheckpointOwner = async () => { if (settled || prepared) throw new Error("Exclusive turn has settled."); await heldLogical.assertOwned(); };
       return {
         ...(this.continuity ? {
-          withContinuityOwner: async <T>(operation: () => Promise<T>): Promise<T> => await serialize(async () => {
-            await assertCheckpointOwner(); const result = await operation(); await assertCheckpointOwner(); return result;
+          withContinuityOwner: async <T>(operation: (ownerToken: string) => Promise<T>): Promise<T> => await serialize(async () => {
+            await assertCheckpointOwner(); const result = await operation(continuityOwnerToken); await assertCheckpointOwner(); return result;
           }),
           prepareCompaction: async (checkpoint: RuntimeDurableCompactionCheckpoint) => await serialize(async () => await this.recordCheckpoint(normalizedId, heldLogical.rootIdentity, assertCheckpointOwner, `exclusive:${historyVersion}`, "prepare", checkpoint)),
           recordCompaction: async (record: MonoRuntimeCompactionRecord) => await serialize(async () => { if (record.checkpoint) await this.recordCheckpoint(normalizedId, heldLogical.rootIdentity, assertCheckpointOwner, `exclusive:${historyVersion}`, "committed", record.checkpoint); }),
@@ -1620,11 +1625,12 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         if (turnSettled || prepared) throw new Error("Prepared provider turn no longer owns executable storage");
         await held.assertOwned();
       }), existing.native ? structuredClone(existing.native) : undefined);
+      const continuityOwnerToken = randomUUID();
       const checkpointOwner = async () => { if (turnSettled || prepared) throw new Error("Provider turn has settled."); await held.assertOwned(); };
       const inputStamps = new Map<string, StagedContinuityInput>();
       const compactionRecording = this.continuity ? {
-        withContinuityOwner: async <T>(operation: () => Promise<T>): Promise<T> => await serializeTurn(async () => {
-          await checkpointOwner(); const result = await operation(); await checkpointOwner(); return result;
+        withContinuityOwner: async <T>(operation: (ownerToken: string) => Promise<T>): Promise<T> => await serializeTurn(async () => {
+          await checkpointOwner(); const result = await operation(continuityOwnerToken); await checkpointOwner(); return result;
         }),
         prepareCompaction: async (checkpoint: RuntimeDurableCompactionCheckpoint) => await serializeTurn(async () => await this.recordCheckpoint(normalizedId, rootIdentity, checkpointOwner, normalizedRunId, "prepare", checkpoint)),
         recordCompaction: async (record: MonoRuntimeCompactionRecord) => await serializeTurn(async () => { if (record.checkpoint) await this.recordCheckpoint(normalizedId, rootIdentity, checkpointOwner, normalizedRunId, "committed", record.checkpoint); }),
@@ -2130,12 +2136,12 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     await assertOwned();
   }
   /** Always called under the canonical root transaction and scope owner. */
-  private async journalContinuityPurge(scope: "logical" | "physical", id: string, rootIdentity: DirectoryIdentity, assertOwned: () => Promise<void>): Promise<void> {
+  private async journalContinuityPurge(scope: "logical" | "physical", id: string, rootIdentity: DirectoryIdentity, assertOwned: () => Promise<void>, resetUpkeep = false): Promise<void> {
     if (!this.continuity) return;
     await assertOwned();
     await assertDirectoryIdentity(this.root, rootIdentity);
     const conversationId = scope === "logical" ? this.continuity.logicalConversationId?.(id) ?? id : id;
-    persistContinuityPurge(this.root, { scope, conversationId });
+    persistContinuityPurge(this.root, { scope, conversationId, ...(resetUpkeep ? { resetUpkeep: true } : {}) });
     await this.continuityAvailable(async () => this.continuity!.purging?.(scope, conversationId));
   }
   private async prepareContinuity(record: CanonicalHistoryFile | null, id: string, rootIdentity: DirectoryIdentity,

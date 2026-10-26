@@ -312,7 +312,7 @@ export function lazyConfiguredToolHistory(
       protectedConversations: () => reader.protectedContinuityConversations(), onWarning: warn }) } : {}),
     ...(options.packEnabled === undefined ? {} : { packEnabled: options.packEnabled }),
     ...(options.ledgerEnabled ? { ledgerEnabled: true } : {}),
-    ...(options.upkeep ? { upkeep: options.upkeep, publishLedger: async (generation: Parameters<ToolHistoryWriterHandle["writer"]["publishLedger"]>[0]) => await continuityCall(async writer => await writer.publishLedger(generation)) } : {}),
+    ...(options.upkeep ? { upkeep: options.upkeep, mutateUpkeep: async (input: Parameters<ToolHistoryWriterHandle["writer"]["mutateUpkeep"]>[0]) => await continuityCall(async writer => await writer.mutateUpkeep(input)), publishLedger: async (generation: Parameters<ToolHistoryWriterHandle["writer"]["publishLedger"]>[0], reservation?: Parameters<ToolHistoryWriterHandle["writer"]["publishLedger"]>[1]) => await continuityCall(async writer => await writer.publishLedger(generation, reservation)) } : {}),
     ...(options.conversationHistoryAvailable === undefined ? {} : { conversationHistoryAvailable: options.conversationHistoryAvailable }),
     writer,
     reader,

@@ -36,7 +36,7 @@ export interface ConversationHistoryTurnRecovery {
 export interface ConversationHistoryTurnReconciliation {
   /** Serialize sidecar evidence admission with commit/abort under this owner.
    * The callback must not reenter the turn. */
-  withContinuityOwner?<T>(operation: () => Promise<T>): Promise<T>;
+  withContinuityOwner?<T>(operation: (ownerToken: string) => Promise<T>): Promise<T>;
   /** Borrow this turn's owner for prepared/committed durable checkpoint evidence. */
   prepareCompaction?(checkpoint: RuntimeDurableCompactionCheckpoint): Promise<void>;
   recordCompaction?(record: MonoRuntimeCompactionRecord): Promise<void>;
@@ -66,7 +66,7 @@ export interface ProviderSessionTurnBinding {
 export interface ConversationHistoryProviderSessionTurn {
   /** Serialize sidecar evidence admission with commit/abort under this owner.
    * The callback must not reenter the turn. */
-  withContinuityOwner?<T>(operation: () => Promise<T>): Promise<T>;
+  withContinuityOwner?<T>(operation: (ownerToken: string) => Promise<T>): Promise<T>;
   /** Borrow this turn's owner for prepared/committed durable checkpoint evidence. */
   prepareCompaction?(checkpoint: RuntimeDurableCompactionCheckpoint): Promise<void>;
   recordCompaction?(record: MonoRuntimeCompactionRecord): Promise<void>;
@@ -98,7 +98,7 @@ export interface ConversationHistoryProviderSessionTurn {
 export interface ConversationHistoryExclusiveTurn {
   /** Serialize sidecar evidence admission with commit/abort under this owner.
    * The callback must not reenter the turn. */
-  withContinuityOwner?<T>(operation: () => Promise<T>): Promise<T>;
+  withContinuityOwner?<T>(operation: (ownerToken: string) => Promise<T>): Promise<T>;
   /** Borrow this turn's owner for prepared/committed durable checkpoint evidence. */
   prepareCompaction?(checkpoint: RuntimeDurableCompactionCheckpoint): Promise<void>;
   recordCompaction?(record: MonoRuntimeCompactionRecord): Promise<void>;

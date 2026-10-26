@@ -30,8 +30,8 @@ function selectionFrom(spans: readonly LedgerSpan[], records: readonly Continuit
 const tokens = (value: string) => Math.ceil(Buffer.byteLength(value) / 2) + 16;
 
 /** Independent source query supplies tool-first records, never the pack shortlist.
- * 25% estimate margin; prompt, prior and metadata all count inside 64k. */
-export function selectLedgerSources(snapshot: ContinuitySnapshot, prior?: LedgerGeneration): LedgerSelection {
+ * 25% estimate margin; prompt, prior and metadata count inside the cumulative budget. */
+export function selectLedgerSources(snapshot: ContinuitySnapshot, prior?: LedgerGeneration, inputTokens: 64000 | 128000 = 64000): LedgerSelection {
   type Candidate = { record: ContinuitySnapshotRecord; start: number; end: number; text: string; score: number; covered: boolean };
   const buckets = new Map<number, Candidate[]>(), covered = coveredKeys(prior); let candidateCount = 0;
   for (const record of snapshot.records) {
@@ -72,7 +72,7 @@ export function selectLedgerSources(snapshot: ContinuitySnapshot, prior?: Ledger
       kind: candidate.record.kind, ...(candidate.record.tool ? { toolName: candidate.record.tool.name } : {}), start: candidate.start, end: candidate.end, digest: ledgerHash(candidate.text), text: candidate.text,
       owner: candidate.record.kind === "owner" && candidate.record.provenance === "host-owner" && candidate.record.inputId === candidate.record.source.attestation?.inputId };
     const input = sourceLine(span, candidate.record);
-    if (tokens(prompt + input) * 1.25 > 61952 || spans.length >= 256) continue;
+    if (tokens(prompt + input) * 1.25 > inputTokens - 2048 || spans.length >= 256) continue;
     spans.push(span); prompt += input;
   }
   return selectionFrom(spans, snapshot.records, snapshot.omitted + candidateCount - spans.length, prior);

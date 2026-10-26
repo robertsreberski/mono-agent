@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ARMS, AVAILABLE_ARM_IDS, BASELINE_ARM, CONTINUITY_OFF, CONTINUITY_ON, CONTINUITY_PACK_ON, DEFAULT_ARMS, NOT_AVAILABLE, ORIGINAL_ARM_IDS, SMALL_PROACTIVE_COMPACTION, armById, checkpointKey, mergePatch, pressureMetrics, verifyBoundary, verifyPressure, verifyStore } from "../lib/continuity-arms.mjs";
 import { classifyHistoryResult } from "../lib/continuity-runner.mjs";
-import { estimateCost, inventory, loadTraces, makePlan, parseSeeds, sourceOnly, validateTrace } from "../lib/continuity-dataset.mjs";
+import { digest, estimateCost, inventory, loadTraces, makePlan, parseSeeds, sourceOnly, validateTrace } from "../lib/continuity-dataset.mjs";
 import { COLD_BOUNDS, GENERATOR_VERSION, HARD_SEEDS, LONG_RULES, generateTrace, mulberry32, outsideColdBounds, traceShape } from "../lib/continuity-generator.mjs";
 import { ABSTAIN_INSTRUCTION, ORIGINAL_CATEGORIES, emptyUsage, addUsage, isAbstention, parseJudgeVerdict, probePrompt, renderMarkdown, scoreAnswer, summarize } from "../lib/continuity-score.mjs";
 import { callKey } from "../lib/continuity-tools.mjs";
@@ -497,10 +497,16 @@ it("keeps distractor actual facts and byte pressure identical while pricing one 
   const plan = makePlan({ ...harder, repeats: 2, profile: { extractionModel: "openai:gpt-4o-mini" } });
   expect(plan.workload.upkeepCalls).toBe(2);
   expect(checkpointKey(armById("continuity-ledger-cold"), 1)).not.toBe(checkpointKey(armById("continuity-ledger-cold"), 2));
-  expect(plan.upkeep).toMatchObject({ model: "openai:gpt-4o-mini", maxOutputTokens: 4096 });
+  expect(plan.upkeep).toMatchObject({ model: "openai:gpt-4o-mini", maxInputTokens: 128000, incrementalMaxInputTokens: 64000, maxOutputTokens: 4096 });
+  const { confirmation, ...confirmed } = plan;
+  expect(digest(confirmed)).toBe(confirmation);
+  for (const field of ["maxInputTokens", "incrementalMaxInputTokens"]) {
+    expect(digest({ ...confirmed, upkeep: { ...confirmed.upkeep, [field]: confirmed.upkeep[field] / 2 } })).not.toBe(confirmation);
+  }
   const price = { input: 1, output: 2, cacheRead: 0.1 };
   const cost = estimateCost(plan, harder.traces, { [plan.reader.model]: price, [plan.upkeep.model]: price, [plan.judge.model]: price });
-  expect(cost.arms["continuity-ledger-cold"]).toMatchObject({ upkeepCalls: 2, upkeepBudgetUsd: 0.1444 });
+  expect(cost.arms["continuity-ledger-cold"]).toMatchObject({ upkeepCalls: 2, upkeepBudgetUsd: 0.2724 });
+  expect(cost.arms["continuity-ledger-cold"].inputTokens - cost.arms["continuity-pack-cold"].inputTokens).toBe(2 * 128000);
 });
 
 it.each(["harness", "ledger", "skip"])("retains upkeep receipt/accounting after %s preparation", async point => {
@@ -513,7 +519,7 @@ it.each(["harness", "ledger", "skip"])("retains upkeep receipt/accounting after 
     app: { createConfiguredAgentRuntime: () => ({}), createConfiguredConversationHarness: async () => ({ run: async ({ onEvent }) => { onEvent(receipt); if (point === "harness") throw new Error("fictional"); return {}; } }) },
     conversation: { ToolHistoryReader: class { ledger() { throw new Error("fictional"); } } },
   };
-  const result = await prepareLedgerCheckpoint({ modules, work, mode: "real", reader: { reference: "openai-codex:gpt-6-luna" }, alternate: { reference: "openai:gpt-4o-mini" }, scripted: { respondWith() {} }, clock: {}, plan: { upkeep: { model: "openai-codex:gpt-6-luna" }, limits: { perLiveTurnTimeoutMs: 10000 } } });
+  const result = await prepareLedgerCheckpoint({ modules, work, mode: "real", reader: { reference: "openai-codex:gpt-6-luna" }, alternate: { reference: "openai:gpt-4o-mini" }, scripted: { respondWith() {} }, clock: {}, plan: { upkeep: { model: "openai-codex:gpt-6-luna", maxInputTokens: 128000, incrementalMaxInputTokens: 64000, maxOutputTokens: 4096, callsPerTraceRepeat: 1 }, limits: { perLiveTurnTimeoutMs: 10000 } } });
   expect(result.receipt).toEqual(receipt); expect(result.valid).toBe(false);
   expect(result.usage).toMatchObject(point === "skip" ? { calls: 0, inputTokens: 0, outputTokens: 0, estimatedCostUsd: 0 } : { calls: 1, estimatedInputTokens: 15000, estimatedCostUsd: 0.02, estimatedPaidCalls: 1, estimatedPaidInputCostUsd: 0.02 });
 });
@@ -579,4 +585,9 @@ it("loads the exact SDK builtin model collection for real capture without dispat
   const wrapped = captureUpkeepModels(models, () => { throw new Error("must not dispatch"); });
   expect(wrapped.getModel("openai-codex", "gpt-6-luna")).toBe(models.getModel("openai-codex", "gpt-6-luna"));
   expect(typeof wrapped.streamSimple).toBe("function");
+});
+
+it("refuses stale under-reserved upkeep plans before opening the configured harness", async () => {
+  const { prepareLedgerCheckpoint } = await import("../lib/continuity-runner.mjs");
+  await expect(prepareLedgerCheckpoint({ plan: { upkeep: { maxInputTokens: 64000, maxOutputTokens: 4096, callsPerTraceRepeat: 1 } } })).rejects.toThrow("upkeep_plan_budget_mismatch");
 });

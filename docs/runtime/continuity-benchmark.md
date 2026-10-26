@@ -341,8 +341,10 @@ rubrics or leaking expected answers into the upkeep source.
 Extraction defaults to configured reader model; `--extraction-model REF` is an
 explicit override, never an automatic cheaper model. `--require-request-cap`
 skips unsupported adapters before dispatch. Plan digest, dry-run workload and
-cost estimate include that model and one 64k-input/4096-output upkeep planning
-budget per trace/repeat. **Codex stream_abort is not a hard output/billing bound**:
+cost estimate include that model and one **128k-input/4096-output bootstrap**
+planning budget per trace/repeat. The digest also binds the 64k incremental
+allowance, but this protocol plans no incremental preparations. Execution rejects
+old under-reserved 64k bootstrap plans before opening the configured harness. **Codex stream_abort is not a hard output/billing bound**:
 hidden reasoning/remote work may overrun; subscription/quota is not dollar
 metering. Catalog planning estimates are not an invoice or a spending guarantee.
 

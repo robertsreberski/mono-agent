@@ -364,10 +364,11 @@ async function createConfiguredConversationHarnessInternal(
     ledgerEnabled: config.runtime.session.continuity?.ledgerEnabled === true,
     ...(config.runtime.session.continuity?.upkeep?.enabled ? { upkeep: { enabled: true,
       get model() { return (config.runtime.session.continuity?.upkeep?.extractionModel ?? config.runtime.model).reference; },
-      complete: async (prompt: string, signal: AbortSignal) => {
+      recorderNamespace: recording.artifactDir,
+      complete: async (prompt: string, signal: AbortSignal, budget?: { operationId: string; inputTokens: 64000 | 128000 }) => {
         const selected = config.runtime.session.continuity?.upkeep?.extractionModel ?? config.runtime.model;
         return await completeContinuityUpkeep(prompt, { ...runtimeHostOptionsForConfig(config), ...mergeStaticRuntimeOptions(runtimeOptionsForLocalProvider(selected, config.providers?.local), configRuntimeFlags(config), options.runtimeOptions),
-          model: selected, abortSignal: signal, messages: [] }, config.runtime.session.continuity?.upkeep?.requireRequestCap === true);
+          model: selected, abortSignal: signal, messages: [] }, config.runtime.session.continuity?.upkeep?.requireRequestCap === true, budget);
       } } } : {}),
     conversationHistoryAvailable: conversationHistory !== undefined,
     artifactRoot: toolOutputArtifactRoot,
