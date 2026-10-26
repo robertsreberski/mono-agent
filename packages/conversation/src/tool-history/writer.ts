@@ -243,7 +243,11 @@ export class ToolHistoryWriter {
   }
 
   async mutateUpkeep(input: UpkeepMutation): Promise<UpkeepAdmission | null> {
-    if (Buffer.byteLength(JSON.stringify(input)) > 32768) throw new TypeError("Upkeep payload bound.");
+    // Fit the worker's 128 KiB reservation plus 16 KiB terminal receipt.
+    if (Buffer.byteLength(JSON.stringify(input)) > 160 * 1024) {
+      if (input.kind === "dispatch") throw new ToolHistoryWriterError("upkeep_dispatch_rejected", "Upkeep payload bound.");
+      throw new TypeError("Upkeep payload bound.");
+    }
     return await this.request("continuity_upkeep", input, TOOL_HISTORY_MAINTENANCE_CEILING_MS) as UpkeepAdmission | null;
   }
 

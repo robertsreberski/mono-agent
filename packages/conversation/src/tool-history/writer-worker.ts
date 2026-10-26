@@ -192,14 +192,28 @@ parentPort.on("message", (request: WorkerRequest) => {
           try {
             transaction(database, () => {
               switch (request.operation) {
-                case "continuity_upkeep": result = mutateUpkeep(database, root, request.payload as UpkeepMutation); break;
+                case "continuity_upkeep": {
+                  const input = request.payload as UpkeepMutation;
+                  result = mutateUpkeep(database, root, input);
+                  const reserve = input.kind === "dispatch" ? (input.reservation.payloadReserve ?? 0) + 16384 : 0;
+                  applyRetentionInTransaction(database, retention, reserve);
+                  if (input.kind === "reserve" || input.kind === "dispatch") {
+                    try {
+                      mutateUpkeep(database, root, input); // Revalidate after retention; replay is free.
+                      const parent = database.prepare("SELECT 1 FROM sqlite_master WHERE name='continuity_ledger'").get() ? database.prepare("SELECT id FROM continuity_ledger WHERE conversation_id=?").get(input.reservation.conversationId) as { id: string } | undefined : undefined;
+                      if ((parent?.id ?? null) !== input.reservation.parent) throw new Error("upkeep_parent_changed");
+                    } catch { throw new WorkerHistoryError(input.kind === "dispatch" ? "upkeep_dispatch_rejected" : "continuity_quota_exhausted", "Continuity evidence changed during retention."); }
+                  }
+                  if (!["outcome", "settle", "reject"].includes(input.kind) && reserve + continuityRetainedBytes(database) + toolRetainedBytes(database) > retention.maxBytes) throw new WorkerHistoryError(input.kind === "dispatch" ? "upkeep_dispatch_rejected" : "continuity_quota_exhausted", "Continuity metadata exceeds retention quota.");
+                  break;
+                }
                 case "continuity_ledger": {
                   const { generation, reservation } = request.payload as { generation: LedgerGeneration; reservation?: UpkeepReservation };
                   if (reservation) {
                     assertUpkeepPublication(database, root, reservation);
-                    if (generation.conversationId !== reservation.conversationId || generation.logicalId !== reservation.logicalId || generation.parent !== reservation.parent || generation.manifest !== reservation.manifest) throw new Error("upkeep_publication_conflict");
+                    if (generation.conversationId !== reservation.conversationId || generation.logicalId !== reservation.logicalId || generation.parent !== reservation.parent || (generation.selectionManifest ?? generation.manifest) !== reservation.manifest) throw new Error("upkeep_publication_conflict");
                   }
-                  publishLedger(database, generation, retention.maxBytes, continuityRetainedBytes(database) + toolRetainedBytes(database)); break;
+                  publishLedger(database, generation, retention.maxBytes, continuityRetainedBytes(database) + toolRetainedBytes(database), reservation?.operationId); break;
                 }
                 case "continuity_gap": recordContinuityGap(database, request.payload as ContinuityGapInput); retainContinuity(database, retention, Date.now()); break;
                 case "continuity_prepare": result = prepareContinuity(database, request.payload as ContinuityPreparation, retention, (bytes, records) => applyRetentionInTransaction(database, retention, bytes, records)); break;

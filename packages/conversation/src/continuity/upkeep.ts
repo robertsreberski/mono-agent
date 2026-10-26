@@ -1,10 +1,11 @@
+import { fitsLedgerPrefix } from "./render-fit.js";
 import { randomUUID } from "node:crypto";
 import type { UpkeepAdmission, UpkeepReservation } from "./admission.js";
 import { LedgerError, ledgerFailure } from "./ledger-error.js";
 import type { RuntimeEventLike } from "@mono-agent/observability";
 import type { ContinuityUpkeepResult } from "@mono-agent/turn/host";
 import type { ConversationHarnessOptions, ConversationHarnessRequest } from "../harness/contracts.js";
-import { selectLedgerSources, validateLedgerOutput, fitLedgerSelection } from "./ledger.js";
+import { selectLedgerSources, validateLedgerOutput, fitLedgerSelection, renderLedger } from "./ledger.js";
 
 export interface UpkeepEligibility {
   readonly sessionsEnabled: boolean; readonly isolated: boolean; readonly ownedStore: boolean; readonly primaryAttempt: boolean;
@@ -51,15 +52,22 @@ export function createLedgerSupplier(options: ConversationHarnessOptions, reques
             if (!expected) throw new Error("scope_unavailable");
             return await history!.mutateUpkeep!({ kind: "claim", expected, ownerToken }) as UpkeepAdmission;
           });
+          if (fence.uncertain) throw new LedgerError("upkeep_repeat_suppressed");
           const inputTokens = fence.bootstrap ? 128000 : 64000;
           const source = history!.reader.snapshotContinuity({ ...scope, selection: "upkeep" });
           if (["unavailable", "purge_pending", "source_unavailable"].includes(source.degradedReason ?? "")) throw new Error("source_unavailable");
-          const admission = fitLedgerSelection(selectLedgerSources(source, frozen?.generation, inputTokens), scope, frozen);
+          const selected = selectLedgerSources(source, frozen?.generation, inputTokens, { maxTokens: eligibility.maxTokens, priorRecords: frozen?.records });
+          if (selected.oversizedProgress) {
+            await eligibility.withOwner(async () => { await history!.mutateUpkeep!({ kind: "oversized", fence, progress: selected.oversizedProgress!, operationId: randomUUID(), advance: selected.oversizedAdvance === true }); });
+            gap = true;
+          }
+          const admission = fitLedgerSelection(selected, scope, frozen, { maxTokens: eligibility.maxTokens, deltaEntries: config.model.startsWith("openai-codex:") ? 8 : 24 });
           const { selection, projectedBytes } = admission; uncovered = selection.uncovered;
-          if (admission.reason) { localSkip = admission.reason; return; }
+          if (admission.reason) { gap = true; localSkip = admission.reason; return; }
           if (!selection.spans.length || selection.manifest === frozen?.generation.manifest) {
             if (frozen && selection.manifest === frozen.generation.manifest) uncovered = frozen.generation.uncovered;
-            localSkip = selection.spans.length ? "unchanged" : "no_source"; return;
+            gap ||= selection.uncovered > 0;
+            localSkip = selection.spans.length ? "unchanged" : selected.oversizedProgress ? "source_oversized" : source.gaps > 0 ? "upkeep_repeat_suppressed" : "no_source"; return;
           }
           const covered = new Set(frozen?.generation.coveredSpans ?? frozen?.generation.entries.flatMap(entry => entry.sources));
           if (frozen && selection.spans.every(span => frozen!.generation.spans.some(old => covered.has(old.id) && old.recordId === span.recordId && old.sha256 === span.sha256 && old.start === span.start && old.end === span.end && old.digest === span.digest))) { localSkip = "already_covered"; return; }
@@ -70,7 +78,7 @@ export function createLedgerSupplier(options: ConversationHarnessOptions, reques
             incarnation: fence.incarnation, fence: fence.fence, ownerToken: fence.ownerToken,
             operationId: randomUUID(), runId, recorderNamespace: config.recorderNamespace ?? "default",
             model: config.model, manifest: selection.manifest, parent: frozen?.generation.id ?? null,
-            budget: fence.bootstrap ? "bootstrap" : "incremental" };
+            budget: fence.bootstrap ? "bootstrap" : "incremental", payloadReserve: Math.max(0, projectedBytes - (frozen?.payloadBytes ?? 0)), ...(selection.progress ? { progress: selection.progress } : {}) };
           await eligibility.withOwner(async () => {
             await history!.mutateUpkeep!({ kind: "reserve", reservation: reservation! });
             request.abortSignal.throwIfAborted();
@@ -79,19 +87,28 @@ export function createLedgerSupplier(options: ConversationHarnessOptions, reques
           });
           // No invocation until BOTH the durable acknowledgement and canonical
           // owner's post-check succeed. Lost waiters never speculate or retry.
-          completion = await config.complete(selection.prompt, request.abortSignal, { operationId: reservation.operationId, inputTokens });
+          completion = await config.complete(selection.prompt, request.abortSignal, { operationId: reservation.operationId, inputTokens, maxEntries: selection.maxEntries });
           await eligibility.withOwner(async () => {
             await history!.mutateUpkeep!({ kind: "outcome", reservation: reservation!, receipt: completion!.receipt });
           });
           outcomeRecorded = true;
-          if (completion.receipt.status !== "valid" || !completion.text) { gap = true; return; }
+          if (completion.receipt.status !== "valid" || !completion.text) {
+            if (completion.receipt.providerInvoked && completion.receipt.status === "valid") await eligibility.withOwner(async () => { await history!.mutateUpkeep!({ kind: "reject", reservation: reservation! }); });
+            gap = true; return;
+          }
           const generation = validateLedgerOutput(completion.text, selection, scope, frozen?.generation, completion.receipt.capEnforcement); uncovered = generation.uncovered;
+          if (!fitsLedgerPrefix(renderLedger(generation, [...(frozen?.records ?? []), ...selection.records]), eligibility.maxTokens)) throw new LedgerError("ledger_render_budget");
+          await eligibility.withOwner(async () => { await history!.mutateUpkeep!({ kind: "settle", reservation: reservation!, saturated: JSON.parse(completion!.text!).entries.length === selection.maxEntries }); });
           publishing = true;
           await eligibility.withOwner(async () => { if (request.abortSignal.aborted) throw new LedgerError("publish_cancelled"); await history!.publishLedger!(generation, reservation); });
           frozen = history!.reader.ledger(scope); published = frozen?.generation.id;
           if (!published) throw new LedgerError("publish_unavailable");
         } catch (error) {
           gap = true;
+          if ((error as { code?: string }).code === "upkeep_dispatch_rejected") { barrierRequested = false; localSkip = "upkeep_dispatch_rejected"; }
+          if (completion && outcomeRecorded && reservation && completion.receipt.providerInvoked && completion.receipt.status === "valid") {
+            try { await eligibility.withOwner!(async () => { await history!.mutateUpkeep!({ kind: "reject", reservation: reservation!, retry: ["publish_cas", "publish_cancelled"].includes(request.abortSignal.aborted ? "publish_cancelled" : ledgerFailure(error, publishing ? "publish_unavailable" : "output_schema")) }); }); } catch { /* pending offers remain suppressed if invalidation loses ownership */ }
+          }
           if ((error as { code?: string }).code === "upkeep_repeat_suppressed") localSkip = "upkeep_repeat_suppressed";
           if (completion && outcomeRecorded) { completion = { receipt: { ...completion.receipt, status: "invalid", reason: "validation_or_publication", failure: request.abortSignal.aborted ? "publish_cancelled" : ledgerFailure(error, publishing ? "publish_unavailable" : "output_schema") } }; }
         } finally {

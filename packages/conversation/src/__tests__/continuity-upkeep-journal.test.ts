@@ -48,6 +48,8 @@ it("replays identical transitions but refuses conflicting payloads and duplicate
   for (let i = 0; i < 2; i++) f.mutate({ kind: "outcome", reservation: r, receipt: receipt(r) });
   expect(() => f.mutate({ kind: "outcome", reservation: r, receipt: receipt(r, { costUsd: 1 }) })).toThrow();
   expect(() => f.mutate({ kind: "dispatch", reservation: r })).toThrow();
+  expect(() => assertUpkeepPublication(f.db, "fictional-root", { ...r, manifest: "b".repeat(64) })).toThrow("publish_source_changed");
+  expect(() => f.mutate({ kind: "outcome", reservation: { ...r, model: "fictional:other" }, receipt: receipt(r) })).toThrow();
   expect(f.inspect().bootstrap).toBe(false);
 });
 
@@ -86,19 +88,19 @@ it("binds admission to database/root, logical and physical identity", () => {
   expect(other.bootstrap).toBe(true); expect(other.incarnation).not.toBe(fence.incarnation);
 });
 
-it("stops at bounded operation capacity without discarding the bootstrap marker", () => {
+it("isolates operation capacity to its scope without discarding bootstrap markers", () => {
   const f = memory(), r = reservation(f.claim("owner")); f.mutate({ kind: "reserve", reservation: r }); f.mutate({ kind: "dispatch", reservation: r });
   f.mutate({ kind: "outcome", reservation: r, receipt: receipt(r) });
   f.db.exec(`WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<16383)
     INSERT INTO continuity_upkeep_operations SELECT 'filled-'||x,'other','other','old',0,'old','{}','key','incremental','released',NULL FROM n`);
-  expect(() => f.mutate({ kind: "reserve", reservation: { ...reservation(f.claim("new"), "new"), manifest: "b".repeat(64) } })).toThrow();
+  expect(() => f.mutate({ kind: "reserve", reservation: { ...reservation(f.claim("new"), "new"), manifest: "b".repeat(64) } })).not.toThrow();
   expect(f.inspect().bootstrap).toBe(false);
-  expect(f.db.prepare("SELECT count(*) n FROM continuity_upkeep_operations").get()).toMatchObject({ n: 16384 });
+  expect(f.db.prepare("SELECT count(*) n FROM continuity_upkeep_operations").get()).toMatchObject({ n: 16385 });
 });
 
-async function fixture() {
+async function fixture(maxBytes?: number) {
   const root = await mkdtemp(join(tmpdir(), "upkeep-journal-")); cleanups.push(() => rm(root, { recursive: true, force: true }));
-  const writer = await ToolHistoryWriter.open({ root, continuityEnabled: true }); cleanups.push(() => writer.close());
+  const writer = await ToolHistoryWriter.open({ root, continuityEnabled: true, ...(maxBytes === undefined ? {} : { retention: { maxBytes } }) }); cleanups.push(() => writer.close());
   const reader = new ToolHistoryReader(root), generationId = continuityGenerationId(), digest = ledgerHash(generationId);
   await writer.prepareContinuity({ generationId, conversationId: "fictional", logicalConversationId: "fictional", beforeDigest: null, afterDigest: digest,
     records: [{ recordId: continuityRecordId("fictional", generationId), runId: "historical-run", inputId: "owner-input", kind: "owner", provenance: "host-owner", sequence: 0,
@@ -149,7 +151,7 @@ it("records outcome and origin identity before publication and before the receip
     return undefined;
   });
   await h.prepare(); expect(h.fetches).toBe(1); expect(h.complete.mock.calls[0]![2]).toMatchObject({ inputTokens: 128000 });
-  expect(calls).toEqual(["inspect", "claim", "reserve", "dispatch", "outcome"]);
+  expect(calls).toEqual(["inspect", "claim", "reserve", "dispatch", "outcome", "settle", "reject"]);
   expect(f.db.prepare("SELECT id FROM continuity_ledger").all()).toHaveLength(1);
   expect(h.events).toContainEqual(expect.objectContaining({ providerInvoked: true })); publish.mockRestore();
 });
@@ -266,3 +268,41 @@ it.each(["dispatch_started", "provider_return"])("production supplier does not r
     expect((await readFile(counter, "utf8")).trim().split("\n")).toEqual(["provider-call"]);
   }
 }, 15000);
+
+it("bounds UTF-8 journal bytes including future outcomes without rejecting identical reserve acknowledgements", () => {
+  const f = memory(), r = reservation(f.claim("owner")); f.mutate({ kind: "reserve", reservation: r });
+  f.db.prepare(`WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM seq WHERE n<234)
+    INSERT INTO continuity_upkeep_operations SELECT printf('filler-%d',n),logical_id,conversation_id,incarnation,fence,owner_token,?,printf('selection-%d',n),budget,'uncertain',NULL
+    FROM continuity_upkeep_operations CROSS JOIN seq WHERE operation_id=?`).run(JSON.stringify({ padding: "Ω".repeat(64000) }), r.operationId);
+  expect(Number((f.db.prepare("SELECT sum(length(CAST(reservation AS BLOB))) n FROM continuity_upkeep_operations").get() as { n: number }).n)).toBeLessThan(32 * 1024 * 1024);
+  expect(f.mutate({ kind: "reserve", reservation: r })).toBeNull();
+  expect(() => f.mutate({ kind: "reserve", reservation: { ...r, operationId: "new-operation", manifest: "b".repeat(64) } })).toThrow("upkeep_admission_conflict");
+});
+
+it("resets a legacy admission scope before any progress tables exist, without enabling upkeep", () => {
+  const f = memory(), r = reservation(f.claim("old-owner")); f.mutate({ kind: "reserve", reservation: r }); f.mutate({ kind: "dispatch", reservation: r });
+  f.db.exec("DROP TABLE continuity_upkeep_offers; DROP TABLE continuity_upkeep_progress");
+  resetUpkeep(f.db, "physical", "fictional");
+  expect(f.db.prepare("SELECT name FROM sqlite_master WHERE name IN ('continuity_upkeep_offers','continuity_upkeep_progress')").all()).toEqual([]);
+  expect(f.inspect()).toMatchObject({ bootstrap: true }); expect(f.inspect().incarnation).not.toBe(r.incarnation);
+});
+
+it("allows a bounded reservation and terminal receipt through the same worker transport envelope", async () => {
+  const f = await fixture(), r = { ...reservation(await f.claim("owner")), recorderNamespace: "n".repeat(80000) };
+  await f.mutate({ kind: "reserve", reservation: r }); await f.mutate({ kind: "dispatch", reservation: r });
+  await f.mutate({ kind: "outcome", reservation: r, receipt: receipt(r) });
+  expect(f.db.prepare("SELECT state FROM continuity_upkeep_operations").get()).toEqual({ state: "terminal" });
+});
+
+it("records paid outcomes and terminal transitions even above a protected quota", async () => {
+  const f = await fixture(64000), r = reservation(await f.claim("owner"));
+  await f.mutate({ kind: "reserve", reservation: r }); await f.mutate({ kind: "dispatch", reservation: r });
+  f.db.prepare(`INSERT INTO continuity_upkeep_operations SELECT 'protected',logical_id,conversation_id,incarnation,fence,owner_token,?,'protected',budget,'uncertain',NULL
+    FROM continuity_upkeep_operations WHERE operation_id=?`).run(JSON.stringify({ padding: "q".repeat(70000) }), r.operationId);
+  const paid = receipt(r, { inputTokens: 25, outputTokens: 5, costUsd: 0.002 });
+  await expect(f.mutate({ kind: "outcome", reservation: r, receipt: paid })).resolves.toBeNull();
+  await expect(f.mutate({ kind: "settle", reservation: r, saturated: false })).resolves.toBeNull();
+  await expect(f.mutate({ kind: "reject", reservation: r })).resolves.toBeNull();
+  const row = f.db.prepare("SELECT state,outcome FROM continuity_upkeep_operations WHERE operation_id=?").get(r.operationId) as any;
+  expect(row.state).toBe("terminal"); expect(JSON.parse(row.outcome)).toEqual(paid);
+});

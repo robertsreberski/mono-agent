@@ -43,7 +43,7 @@ export function constrainUpkeepPayload(api: string, payload: any): void {
 
 /** One SSE completion, no session/tools/router/repair. Codex lacks a wire cap in
  * pi-ai 1.2.0; its visible stream is guarded, not its hidden reasoning/quota. */
-export async function completeContinuityUpkeep(prompt: string, options: RuntimeRunOptions, requireRequestCap = false, budget?: { readonly operationId: string; readonly inputTokens: 64000 | 128000 }): Promise<ContinuityUpkeepResult> {
+export async function completeContinuityUpkeep(prompt: string, options: RuntimeRunOptions, requireRequestCap = false, budget?: { readonly operationId: string; readonly inputTokens: 64000 | 128000; maxEntries?: number | undefined }): Promise<ContinuityUpkeepResult> {
   const started = performance.now(), operationId = budget?.operationId ?? randomUUID();
   const inputBudget = budget?.inputTokens === 128000 ? 128000 : 64000;
   const abort = new AbortController(), deadline = AbortSignal.timeout(60000);
@@ -78,6 +78,7 @@ export async function completeContinuityUpkeep(prompt: string, options: RuntimeR
     costUsd: providerInvoked ? (hasUsage() ? (options.resolveCustomPricing ? price(Number(usage?.input || 0), Number(usage?.output || 0), Number(usage?.cacheRead || 0), Number(usage?.cacheWrite || 0)) : number(usage?.cost?.total)) : null) : 0, visibleEstimate, outputOverrun: Number(usage?.output) > 4096,
   } });
   try {
+    if (budget?.maxEntries !== undefined && (!Number.isInteger(budget.maxEntries) || budget.maxEntries < 1 || budget.maxEntries > 24)) return result("skipped", "input_budget");
     const resolved = (options.piResolvedModels as any)?.getModel(options.model.provider, options.model.model);
     const pinned = options.piResolvedModel as any;
     const runtime = resolved ? { model: resolved, apiKeys: new Map() }
@@ -89,7 +90,7 @@ export async function completeContinuityUpkeep(prompt: string, options: RuntimeR
       ? `${(options.toolContext as { runtimeBrand?: { providerModelPrefix?: string } } | undefined)?.runtimeBrand?.providerModelPrefix ?? DEFAULT_RUNTIME_BRAND.providerModelPrefix}-${custom.id}` : options.model.provider;
     if (model.id !== options.model.model || model.provider !== mappedProvider) return result("skipped", "model_identity");
     api = model.api; capEnforcement = upkeepCapEnforcement(api);
-    if (capEnforcement === "stream_abort") prompt += '\nOUTPUT LIMIT OVERRIDE: at most 8 entries, each value at most 96 UTF-8 bytes, total serialized JSON at most 3072 UTF-8 bytes. covered must be the deduplicated array of exactly the span IDs cited in entries, e.g. ["s58","s0"] when those are your citations. Never use a count or numeric prefix. Cite only supplied span IDs. Identifier values must be exact bare identifiers copied from a cited span, with no entity name, label or explanatory prefix. The host records preserved coverage only for entry-cited spans; omitted facts remain uncovered. No reasoning summary.\n';
+    if (capEnforcement === "stream_abort") prompt += `\nOUTPUT LIMIT OVERRIDE: at most ${Math.min(8, budget?.maxEntries ?? 8)} entries, each value at most 96 UTF-8 bytes, total serialized JSON at most 3072 UTF-8 bytes. covered must be the deduplicated array of exactly the span IDs cited in entries, e.g. ["s58","s0"] when those are your citations. Never use a count or numeric prefix. Cite only supplied span IDs. Identifier values must be exact bare identifiers copied from a cited span, with no entity name, label or explanatory prefix. The host records preserved coverage only for entry-cited spans; omitted facts remain uncovered. No reasoning summary.\n`;
     estimatedInputTokens = Math.ceil(Buffer.byteLength(prompt) / 2 * 1.25 + 1024);
     if (estimatedInputTokens > inputBudget) return result("skipped", "input_budget");
     if (requireRequestCap && capEnforcement !== "request") return result("skipped", "cap_unsupported");

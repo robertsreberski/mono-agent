@@ -1,3 +1,4 @@
+import { purgeUpkeepProgress, upkeepBytes, reclaimUpkeepQuota } from "../continuity/progress.js";
 import { ledgerBytes } from "../continuity/ledger-storage.js";
 import { createHash, randomBytes } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
@@ -190,8 +191,8 @@ export function commitContinuity(database: DatabaseSync, input: ContinuityPublic
   const row = database.prepare("SELECT * FROM continuity_generations WHERE generation_id=? AND conversation_id=?")
     .get(input.generationId, input.conversationId) as Record<string, unknown> | undefined;
   if (!row || row.after_digest !== input.canonicalDigest) fail("continuity_publication_mismatch", "Canonical publication does not match the prepared continuity target.");
-  if (row.action === "checkpoint" && !matchesCheckpoint(database, row.generation_id as string, input.checkpoint)) fail("continuity_publication_mismatch", "A checkpoint preparation requires exact durable native evidence.");
   if (row.state === "committed") return;
+  if (row.action === "checkpoint" && !matchesCheckpoint(database, row.generation_id as string, input.checkpoint)) fail("continuity_publication_mismatch", "A checkpoint preparation requires exact durable native evidence.");
   if (row.state !== "prepared") fail("continuity_conflict", "Only a prepared continuity generation may commit.");
   if (row.action === "reset" || row.action === "delete") clearPhysicalContinuity(database, input.conversationId, input.generationId);
   database.prepare("UPDATE continuity_generations SET state='committed',committed_at_ms=? WHERE generation_id=?")
@@ -247,8 +248,9 @@ function matchesCheckpoint(database: DatabaseSync, generationId: string, proof: 
   if (proof?.status !== "published") return false;
   const records = database.prepare("SELECT source_json,summary_json,text_sha256 FROM continuity_records WHERE generation_id=?").all(generationId) as Record<string, unknown>[];
   return records.length === 1 && records.every((record) => {
+    if (record.source_json === null || record.summary_json === null) return false;
     const source = JSON.parse(record.source_json as string), summary = JSON.parse(record.summary_json as string);
-    return source.journalId === proof.journalId && source.operationId === proof.operationId && summary.coverage.sourceDigest === proof.sourceDigest && record.text_sha256 === proof.summaryDigest;
+    return source.journalId === proof.journalId && source.operationId === proof.operationId && summary?.coverage?.sourceDigest === proof.sourceDigest && record.text_sha256 === proof.summaryDigest;
   });
 }
 
@@ -279,6 +281,7 @@ export function clearPhysicalContinuity(database: DatabaseSync, conversationId: 
  * incident keys, never lifecycle incidents/rows, artifact references or paths. */
 export function purgeContinuityRows(database: DatabaseSync, scope: "logical" | "physical", id: string): void {
   const column = scope === "logical" ? "logical_id" : "conversation_id";
+  purgeUpkeepProgress(database, scope, id);
   database.prepare(`DELETE FROM writer_stats WHERE key IN
     (SELECT 'idempotency_conflicts:continuity:' || generation_id FROM continuity_generations WHERE ${column}=?)`).run(id);
   database.prepare(`DELETE FROM continuity_pins WHERE record_id IN
@@ -296,7 +299,7 @@ export function resetContinuity(database: DatabaseSync, logicalId: string): void
 }
 
 export function continuityRetainedBytes(database: DatabaseSync): number {
-  return ledgerBytes(database) + Number((database.prepare("SELECT coalesce(sum(retained_bytes),0) bytes FROM continuity_records WHERE retained_text IS NOT NULL").get() as Record<string, unknown>).bytes);
+  return ledgerBytes(database) + upkeepBytes(database) + Number((database.prepare("SELECT coalesce(sum(retained_bytes),0) bytes FROM continuity_records WHERE retained_text IS NOT NULL").get() as Record<string, unknown>).bytes);
 }
 export function toolRetainedBytes(database: DatabaseSync): number {
   return Number((database.prepare("SELECT coalesce(sum(retained_bytes),0) bytes FROM tool_records").get() as Record<string, unknown>).bytes);
@@ -312,6 +315,7 @@ export function retainContinuity(database: DatabaseSync, limits: Required<ToolHi
     + reservedRecords - limits.maxCompletedCalls);
   database.prepare(`UPDATE continuity_records SET retained_text=NULL,tombstone_reason='count',removed_at_ms=? WHERE record_id IN
     (SELECT record_id FROM continuity_records WHERE ${eligible} ORDER BY ordinal LIMIT ?)`).run(now, countOverflow);
+  reclaimUpkeepQuota(database, () => continuityRetainedBytes(database) + toolRetainedBytes(database) + reservedBytes <= limits.maxBytes);
   while (continuityRetainedBytes(database) + toolRetainedBytes(database) + reservedBytes > limits.maxBytes) {
     const row = database.prepare(`SELECT record_id FROM continuity_records WHERE ${eligible} ORDER BY ordinal LIMIT 1`).get() as Record<string, unknown> | undefined;
     if (!row) break;
@@ -405,7 +409,7 @@ function validateRecord(r: ContinuityRecordInput): void {
     const summary = r.summary;
     if (!summary || !["manual", "pre-turn", "reactive", "mid-run"].includes(summary.trigger)) fail("continuity_invalid_record", "Summary coverage is required.");
     safeMetadata(summary.model); safeMetadata(summary.operationId);
-    validateDigest(summary.coverage.sourceDigest);
+    validateDigest(summary?.coverage?.sourceDigest);
     for (const id of [summary.coverage.firstRecordId, summary.coverage.lastRecordId]) if (id !== undefined && !RECORD_ID.test(id)) fail("continuity_invalid_record", "Invalid summary coverage reference.");
     if (Object.keys(summary).some((k) => !["model", "operationId", "trigger", "coverage"].includes(k))
       || Object.keys(summary.coverage).some((k) => !["sourceDigest", "firstRecordId", "lastRecordId"].includes(k))) fail("continuity_invalid_record", "Unsupported summary metadata.");
