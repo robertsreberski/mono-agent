@@ -32,7 +32,8 @@
   with durable source cursors, conservative correction status and shared rendered
   capacity checks. Advance past oversized evidence without paid calls, bound
   metadata per conversation and shared retention quota, bound deferred re-offers,
-  and erase only affected upkeep fingerprints on purge. Keep prior
+  and erase only affected upkeep fingerprints on purge. Preserve paid outcomes
+  through purge or quota pressure and bound reconstruction after invalidation. Keep prior
   ledgers on capacity gaps and upkeep off by default.
 - Add opt-in boundary continuity ledgers with source-validated derived entries,
   purge-cascaded lineage, bounded one-call upkeep and ledger-first packs. Keep

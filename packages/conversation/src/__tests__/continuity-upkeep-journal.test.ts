@@ -48,6 +48,8 @@ it("replays identical transitions but refuses conflicting payloads and duplicate
   for (let i = 0; i < 2; i++) f.mutate({ kind: "outcome", reservation: r, receipt: receipt(r) });
   expect(() => f.mutate({ kind: "outcome", reservation: r, receipt: receipt(r, { costUsd: 1 }) })).toThrow();
   expect(() => f.mutate({ kind: "dispatch", reservation: r })).toThrow();
+  expect(() => assertUpkeepPublication(f.db, "fictional-root", { ...r, manifest: "b".repeat(64) })).toThrow("publish_source_changed");
+  expect(() => f.mutate({ kind: "outcome", reservation: { ...r, model: "fictional:other" }, receipt: receipt(r) })).toThrow();
   expect(f.inspect().bootstrap).toBe(false);
 });
 
@@ -96,9 +98,9 @@ it("isolates operation capacity to its scope without discarding bootstrap marker
   expect(f.db.prepare("SELECT count(*) n FROM continuity_upkeep_operations").get()).toMatchObject({ n: 16385 });
 });
 
-async function fixture() {
+async function fixture(maxBytes?: number) {
   const root = await mkdtemp(join(tmpdir(), "upkeep-journal-")); cleanups.push(() => rm(root, { recursive: true, force: true }));
-  const writer = await ToolHistoryWriter.open({ root, continuityEnabled: true }); cleanups.push(() => writer.close());
+  const writer = await ToolHistoryWriter.open({ root, continuityEnabled: true, ...(maxBytes === undefined ? {} : { retention: { maxBytes } }) }); cleanups.push(() => writer.close());
   const reader = new ToolHistoryReader(root), generationId = continuityGenerationId(), digest = ledgerHash(generationId);
   await writer.prepareContinuity({ generationId, conversationId: "fictional", logicalConversationId: "fictional", beforeDigest: null, afterDigest: digest,
     records: [{ recordId: continuityRecordId("fictional", generationId), runId: "historical-run", inputId: "owner-input", kind: "owner", provenance: "host-owner", sequence: 0,
@@ -290,4 +292,17 @@ it("allows a bounded reservation and terminal receipt through the same worker tr
   await f.mutate({ kind: "reserve", reservation: r }); await f.mutate({ kind: "dispatch", reservation: r });
   await f.mutate({ kind: "outcome", reservation: r, receipt: receipt(r) });
   expect(f.db.prepare("SELECT state FROM continuity_upkeep_operations").get()).toEqual({ state: "terminal" });
+});
+
+it("records paid outcomes and terminal transitions even above a protected quota", async () => {
+  const f = await fixture(64000), r = reservation(await f.claim("owner"));
+  await f.mutate({ kind: "reserve", reservation: r }); await f.mutate({ kind: "dispatch", reservation: r });
+  f.db.prepare(`INSERT INTO continuity_upkeep_operations SELECT 'protected',logical_id,conversation_id,incarnation,fence,owner_token,?,'protected',budget,'uncertain',NULL
+    FROM continuity_upkeep_operations WHERE operation_id=?`).run(JSON.stringify({ padding: "q".repeat(70000) }), r.operationId);
+  const paid = receipt(r, { inputTokens: 25, outputTokens: 5, costUsd: 0.002 });
+  await expect(f.mutate({ kind: "outcome", reservation: r, receipt: paid })).resolves.toBeNull();
+  await expect(f.mutate({ kind: "settle", reservation: r, saturated: false })).resolves.toBeNull();
+  await expect(f.mutate({ kind: "reject", reservation: r })).resolves.toBeNull();
+  const row = f.db.prepare("SELECT state,outcome FROM continuity_upkeep_operations WHERE operation_id=?").get(r.operationId) as any;
+  expect(row.state).toBe("terminal"); expect(JSON.parse(row.outcome)).toEqual(paid);
 });

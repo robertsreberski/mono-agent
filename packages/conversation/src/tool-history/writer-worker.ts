@@ -204,7 +204,7 @@ parentPort.on("message", (request: WorkerRequest) => {
                       if ((parent?.id ?? null) !== input.reservation.parent) throw new Error("upkeep_parent_changed");
                     } catch { throw new WorkerHistoryError(input.kind === "dispatch" ? "upkeep_dispatch_rejected" : "continuity_quota_exhausted", "Continuity evidence changed during retention."); }
                   }
-                  if (reserve + continuityRetainedBytes(database) + toolRetainedBytes(database) > retention.maxBytes) throw new WorkerHistoryError(input.kind === "dispatch" ? "upkeep_dispatch_rejected" : "continuity_quota_exhausted", "Continuity metadata exceeds retention quota.");
+                  if (!["outcome", "settle", "reject"].includes(input.kind) && reserve + continuityRetainedBytes(database) + toolRetainedBytes(database) > retention.maxBytes) throw new WorkerHistoryError(input.kind === "dispatch" ? "upkeep_dispatch_rejected" : "continuity_quota_exhausted", "Continuity metadata exceeds retention quota.");
                   break;
                 }
                 case "continuity_ledger": {

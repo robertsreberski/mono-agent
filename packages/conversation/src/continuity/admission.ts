@@ -28,6 +28,16 @@ export type UpkeepMutation =
 type Row = Record<string, any>;
 const NON_INVOCATION = new Set(["model_identity", "input_budget", "cap_unsupported", "model_headroom"]);
 function fail(): never { throw new Error("upkeep_admission_conflict"); }
+// No source digest, manifest, cursor or content-derived field participates.
+const reservationIdentity = (r: UpkeepReservation) => ledgerHash(JSON.stringify([
+  r.databaseId, r.logicalId, r.conversationId, r.incarnation, r.fence, r.ownerToken,
+  r.operationId, r.runId, r.recorderNamespace, r.model, r.parent, r.budget,
+]));
+const serializeReservation = (r: UpkeepReservation) => JSON.stringify({ ...r, reservationIdentity: reservationIdentity(r) });
+function contentMatches(stored: Row, r: UpkeepReservation): boolean {
+  return !stored.purged && stored.manifest === r.manifest && stored.payloadReserve === r.payloadReserve
+    && JSON.stringify(stored.progress ?? null) === JSON.stringify(r.progress ?? null);
+}
 
 /** Additive v3 identity/markers survive retention. Terminal working sets are
  * quota-managed; exhaustion never discards uncertain admission evidence. */
@@ -47,6 +57,13 @@ export function createUpkeepSchema(db: DatabaseSync): void {
       state TEXT NOT NULL, outcome TEXT);
     CREATE INDEX IF NOT EXISTS continuity_upkeep_scope_operations ON continuity_upkeep_operations(logical_id,conversation_id,incarnation);`);
   createProgressSchema(db);
+  if (!db.prepare("SELECT 1 FROM continuity_upkeep_migrations WHERE version=4").get()) {
+    for (const row of db.prepare("SELECT operation_id,reservation FROM continuity_upkeep_operations").all() as Row[]) {
+      const r = JSON.parse(row.reservation) as UpkeepReservation;
+      db.prepare("UPDATE continuity_upkeep_operations SET reservation=? WHERE operation_id=?").run(serializeReservation(r), row.operation_id);
+    }
+    db.exec("INSERT INTO continuity_upkeep_migrations VALUES (4)");
+  }
   if (!db.prepare("SELECT id FROM continuity_upkeep_identity").get()) db.prepare("INSERT INTO continuity_upkeep_identity VALUES (?)").run(randomUUID());
 }
 function scopeRow(db: DatabaseSync, scope: UpkeepScope): Row {
@@ -67,11 +84,13 @@ export function assertUpkeepFence(db: DatabaseSync, root: string, fence: UpkeepF
 function operation(db: DatabaseSync, root: string, reservation: UpkeepReservation): Row {
   assertUpkeepFence(db, root, reservation);
   const row = db.prepare("SELECT * FROM continuity_upkeep_operations WHERE operation_id=?").get(reservation.operationId) as Row;
-  if (!row || row.reservation !== JSON.stringify(reservation)) fail();
+  if (!row || JSON.parse(row.reservation).reservationIdentity !== reservationIdentity(reservation)) fail();
   return row;
 }
 export function assertUpkeepPublication(db: DatabaseSync, root: string, reservation: UpkeepReservation): void {
-  if (operation(db, root, reservation).state !== "terminal") fail();
+  const row = operation(db, root, reservation);
+  if (row.state !== "terminal") fail();
+  if (!contentMatches(JSON.parse(row.reservation), reservation)) throw new LedgerError("publish_source_changed");
 }
 
 /** All calls run in the writer's FULL transaction. Claim requires canonical
@@ -105,12 +124,12 @@ export function mutateUpkeep(db: DatabaseSync, root: string, request: UpkeepMuta
     assertUpkeepFence(db, root, request.fence);
     dispatchProgress(db, { ...request.fence, operationId: request.operationId, progress: request.progress }, "oversized", request.advance); return null;
   }
-  const r = request.reservation, scope = assertUpkeepFence(db, root, r), serialized = JSON.stringify(r);
-  if (Buffer.byteLength(serialized) > 131072 || !r.operationId || !r.runId || !r.recorderNamespace || !r.model || !/^[a-f0-9]{64}$/u.test(r.manifest)) fail();
+  const r = request.reservation, scope = assertUpkeepFence(db, root, r), serialized = serializeReservation(r);
+  if (Buffer.byteLength(JSON.stringify(r)) > 131072 || !r.operationId || !r.runId || !r.recorderNamespace || !r.model || !/^[a-f0-9]{64}$/u.test(r.manifest)) fail();
   if (r.payloadReserve !== undefined && (!Number.isSafeInteger(r.payloadReserve) || r.payloadReserve < 0 || r.payloadReserve > 131072)) fail();
   if (request.kind === "reserve") {
     const old = db.prepare("SELECT reservation FROM continuity_upkeep_operations WHERE operation_id=?").get(r.operationId) as Row | undefined;
-    if (old) { if (old.reservation !== serialized) fail(); return null; }
+    if (old) { const stored = JSON.parse(old.reservation); if (stored.reservationIdentity !== reservationIdentity(r) || !contentMatches(stored, r)) fail(); return null; }
     reclaimProgress(db, r.logicalId, r.conversationId);
     // Reserve bytes for the largest future outcome; acknowledgement replay is free.
     if (Number((db.prepare("SELECT coalesce(sum(length(CAST(reservation AS BLOB))+16384),0) n FROM continuity_upkeep_operations WHERE logical_id=? AND conversation_id=?").get(r.logicalId, r.conversationId) as Row).n) + Buffer.byteLength(serialized) + 16384 > 32 * 1024 * 1024) fail();
@@ -130,6 +149,7 @@ export function mutateUpkeep(db: DatabaseSync, root: string, request: UpkeepMuta
   }
   const row = operation(db, root, r);
   if (request.kind === "dispatch") {
+    if (!contentMatches(JSON.parse(row.reservation), r)) throw new LedgerError("upkeep_dispatch_rejected");
     if (row.state === "dispatch_started") return null;
     if (row.state !== "reserved") fail();
     if (r.budget === "bootstrap") {
@@ -155,7 +175,7 @@ export function mutateUpkeep(db: DatabaseSync, root: string, request: UpkeepMuta
   if (row.state !== "dispatch_started") fail();
   const released = !request.receipt.providerInvoked && request.receipt.status === "skipped" && NON_INVOCATION.has(request.receipt.reason);
   db.prepare("UPDATE continuity_upkeep_operations SET state=?,outcome=? WHERE operation_id=?").run(released ? "released" : request.receipt.providerInvoked ? "terminal" : "uncertain", outcome, r.operationId);
-  db.prepare("UPDATE continuity_upkeep_offers SET state=? WHERE operation_id=?").run(released ? "unrepresented" : request.receipt.providerInvoked ? request.receipt.status === "valid" ? "pending" : "failed" : "uncertain", r.operationId);
+  db.prepare("UPDATE continuity_upkeep_offers SET state=? WHERE operation_id=?").run(released ? "available" : request.receipt.providerInvoked ? request.receipt.status === "valid" ? "pending" : "failed" : "uncertain", r.operationId);
   if (released && scope.bootstrap_operation === r.operationId) db.prepare("UPDATE continuity_upkeep_admissions SET bootstrap_operation=NULL WHERE logical_id=? AND conversation_id=?").run(r.logicalId, r.conversationId);
   return null;
 }

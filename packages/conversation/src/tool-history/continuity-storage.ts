@@ -191,8 +191,8 @@ export function commitContinuity(database: DatabaseSync, input: ContinuityPublic
   const row = database.prepare("SELECT * FROM continuity_generations WHERE generation_id=? AND conversation_id=?")
     .get(input.generationId, input.conversationId) as Record<string, unknown> | undefined;
   if (!row || row.after_digest !== input.canonicalDigest) fail("continuity_publication_mismatch", "Canonical publication does not match the prepared continuity target.");
-  if (row.action === "checkpoint" && !matchesCheckpoint(database, row.generation_id as string, input.checkpoint)) fail("continuity_publication_mismatch", "A checkpoint preparation requires exact durable native evidence.");
   if (row.state === "committed") return;
+  if (row.action === "checkpoint" && !matchesCheckpoint(database, row.generation_id as string, input.checkpoint)) fail("continuity_publication_mismatch", "A checkpoint preparation requires exact durable native evidence.");
   if (row.state !== "prepared") fail("continuity_conflict", "Only a prepared continuity generation may commit.");
   if (row.action === "reset" || row.action === "delete") clearPhysicalContinuity(database, input.conversationId, input.generationId);
   database.prepare("UPDATE continuity_generations SET state='committed',committed_at_ms=? WHERE generation_id=?")

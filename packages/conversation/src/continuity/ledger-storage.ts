@@ -11,6 +11,7 @@ export function ledgerBytes(database: DatabaseSync): number {
 }
 export function createLedgerSchema(database: DatabaseSync): void {
   createProgressSchema(database);
+  database.exec("DROP TRIGGER IF EXISTS continuity_upkeep_representation_delete");
   database.exec(`CREATE TABLE IF NOT EXISTS continuity_ledger (
     id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL UNIQUE, logical_id TEXT NOT NULL,
     parent TEXT, manifest TEXT NOT NULL, payload TEXT NOT NULL, payload_sha256 TEXT NOT NULL, bytes INTEGER NOT NULL);
@@ -25,7 +26,7 @@ export function createLedgerSchema(database: DatabaseSync): void {
       BEGIN DELETE FROM continuity_ledger WHERE id IN
         (SELECT generation_id FROM continuity_ledger_inputs WHERE record_id=NEW.record_id); END;
     CREATE TRIGGER IF NOT EXISTS continuity_upkeep_representation_delete AFTER DELETE ON continuity_ledger
-      BEGIN UPDATE continuity_upkeep_offers SET state='unrepresented',ledger_id=NULL WHERE ledger_id=OLD.id AND state='represented'; END;`);
+      BEGIN UPDATE continuity_upkeep_offers SET state=CASE WHEN attempt=0 THEN 'unrepresented' ELSE 'lost' END,ledger_id=NULL WHERE ledger_id=OLD.id AND state='represented'; END;`);
 }
 
 /** Validate all inherited input links, not only citations. Latest-only storage

@@ -3,7 +3,7 @@ import type { LedgerGeneration } from "./ledger.js";
 import type { LedgerCursor, LedgerProgress } from "../tool-history/continuity-contracts.js";
 type Row = Record<string, any>;
 
-/** A scrub fences only the operation that actually referenced erased evidence. */
+/** Invalidate publication for affected evidence, preserving opaque accounting identity. */
 const scrubOperations = (where: string) => `UPDATE continuity_upkeep_operations SET
   reservation=json_set(json_remove(reservation,'$.progress','$.legacy_opaque'),'$.manifest',operation_id,'$.purged',1),selection_key=operation_id WHERE ${where};`;
 export function createProgressSchema(db: DatabaseSync): void {
@@ -20,6 +20,7 @@ export function createProgressSchema(db: DatabaseSync): void {
   if (!(db.prepare("PRAGMA table_info(continuity_upkeep_offers)").all() as Row[]).some(row => row.name === "attempt")) {
     db.exec("ALTER TABLE continuity_upkeep_offers ADD COLUMN attempt INTEGER NOT NULL DEFAULT 0; UPDATE continuity_upkeep_offers SET state='analyzed' WHERE state='reofferable'");
   }
+  db.exec("UPDATE continuity_upkeep_offers SET state='lost' WHERE state='unrepresented' AND attempt>=1");
   if (!db.prepare("SELECT 1 FROM sqlite_master WHERE name='continuity_upkeep_operations'").get()) return;
   if (!db.prepare("SELECT 1 FROM continuity_upkeep_migrations WHERE version=2").get()) {
     db.exec(scrubOperations("json_type(reservation,'$.progress') IS NULL"));
@@ -81,16 +82,16 @@ export function readProgress(db: DatabaseSync, logicalId: string, conversationId
   const floor = Number((cursor as Row | undefined)?.retiredThrough ?? 0);
   if (cursor && floor >= cursor.ordinal) cursor = { ...cursor, ordinal: floor + 1, offset: 0, digest: "" };
   const rewind = db.prepare(`SELECT min(o.ordinal) ordinal FROM continuity_upkeep_offers o JOIN continuity_records r ON r.ordinal=o.ordinal AND r.text_sha256=o.source_digest AND r.retained_text IS NOT NULL
-    WHERE o.logical_id=? AND o.conversation_id=? AND o.ordinal>? AND (o.state='unrepresented' OR o.state='reofferable' AND ?)`)
+    WHERE o.logical_id=? AND o.conversation_id=? AND o.ordinal>? AND (o.state='unrepresented' AND o.attempt=0 OR o.state='available' OR o.state='reofferable' AND ?)`)
     .get(...args, floor, Number(!!cursor && cursor.ordinal > watermark)) as Row;
   if (rewind.ordinal !== null && cursor && rewind.ordinal <= cursor.ordinal) cursor = { ...cursor, ordinal: rewind.ordinal, offset: 0, digest: "" };
   const failed = Number((db.prepare(`SELECT count(*) n FROM continuity_upkeep_offers o JOIN continuity_records r ON r.ordinal=o.ordinal AND r.text_sha256=o.source_digest
-    WHERE o.logical_id=? AND o.conversation_id=? AND o.state IN ('failed','uncertain','pending','pending_retry','reofferable','oversized','analyzed') AND r.retained_text IS NOT NULL`).get(...args) as Row).n);
+    WHERE o.logical_id=? AND o.conversation_id=? AND (o.state IN ('failed','uncertain','pending','pending_retry','reofferable','oversized','analyzed','lost') OR o.state='unrepresented' AND o.attempt>=1) AND r.retained_text IS NOT NULL`).get(...args) as Row).n);
   return { cursor, failed: failed + Number(floor > 0) };
 }
 export function offeredKeys(db: DatabaseSync, logicalId: string, conversationId: string, ordinals: readonly number[]): string[] {
   if (!ordinals.length || !db.prepare("SELECT 1 FROM sqlite_master WHERE name='continuity_upkeep_offers'").get()) return [];
-  return (db.prepare(`SELECT span_key FROM continuity_upkeep_offers WHERE logical_id=? AND conversation_id=? AND state NOT IN ('unrepresented','reofferable') AND ordinal IN (${ordinals.map(() => "?").join(",")})`).all(logicalId, conversationId, ...ordinals) as Row[]).map(row => row.span_key);
+  return (db.prepare(`SELECT span_key FROM continuity_upkeep_offers WHERE logical_id=? AND conversation_id=? AND (state NOT IN ('unrepresented','available','reofferable') OR state='unrepresented' AND attempt>=1) AND ordinal IN (${ordinals.map(() => "?").join(",")})`).all(logicalId, conversationId, ...ordinals) as Row[]).map(row => row.span_key);
 }
 export function dispatchProgress(db: DatabaseSync, r: { logicalId: string; conversationId: string; incarnation: string; operationId: string; progress?: LedgerProgress }, state = "uncertain", advance = true): void {
   if (!r.progress) return;
@@ -104,8 +105,8 @@ export function dispatchProgress(db: DatabaseSync, r: { logicalId: string; conve
     if (source?.text_sha256 !== span.digest) throw new Error("upkeep_progress_source_changed");
     const old = db.prepare("SELECT state,operation_id,attempt FROM continuity_upkeep_offers WHERE logical_id=? AND conversation_id=? AND span_key=?").get(r.logicalId, r.conversationId, span.key) as Row | undefined;
     if (old?.state === state && old.operation_id === r.operationId) continue;
-    if (old && !["unrepresented", "reofferable"].includes(old.state)) throw new Error("upkeep_progress_repeat");
-    db.prepare("INSERT INTO continuity_upkeep_offers VALUES (?,?,?,?,?,?,?,?,?,?,NULL,?) ON CONFLICT(logical_id,conversation_id,span_key) DO UPDATE SET operation_id=excluded.operation_id,state=excluded.state,ledger_id=NULL,attempt=excluded.attempt").run(r.logicalId, r.conversationId, r.incarnation, span.key, span.ordinal, span.digest, span.start, span.end, r.operationId, state, Number(old?.attempt ?? 0) + Number(old?.state === "reofferable"));
+    if (old && (!["unrepresented", "available", "reofferable"].includes(old.state) || old.state === "unrepresented" && old.attempt >= 1)) throw new Error("upkeep_progress_repeat");
+    db.prepare("INSERT INTO continuity_upkeep_offers VALUES (?,?,?,?,?,?,?,?,?,?,NULL,?) ON CONFLICT(logical_id,conversation_id,span_key) DO UPDATE SET operation_id=excluded.operation_id,state=excluded.state,ledger_id=NULL,attempt=excluded.attempt").run(r.logicalId, r.conversationId, r.incarnation, span.key, span.ordinal, span.digest, span.start, span.end, r.operationId, state, Number(old?.attempt ?? 0) + Number(old?.state === "reofferable" || old?.state === "unrepresented"));
   }
   if (advance) db.prepare("INSERT INTO continuity_upkeep_progress VALUES (?,?,?,?) ON CONFLICT(logical_id,conversation_id) DO UPDATE SET incarnation=excluded.incarnation,cursor=json_set(excluded.cursor,'$.retiredThrough',coalesce(json_extract(continuity_upkeep_progress.cursor,'$.retiredThrough'),0))").run(r.logicalId, r.conversationId, r.incarnation, JSON.stringify({ ...cursor, touchedAt: Date.now() }));
 }

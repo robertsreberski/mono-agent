@@ -350,6 +350,26 @@ it("leaves disabled P3b1 checkpoint metadata untouched during tombstoning and re
     expect(db.prepare("SELECT count(*) n FROM continuity_upkeep_operations").get()).toEqual({ n: 0 });
     expect(db.prepare("SELECT bootstrap_operation FROM continuity_upkeep_admissions").get()).toEqual({ bootstrap_operation: "legacy" });
     db.exec("UPDATE continuity_records SET summary_json=NULL");
-    await expect(writer.commitContinuity(publication)).rejects.toMatchObject({ code: "continuity_publication_mismatch" });
+    await expect(writer.commitContinuity(publication)).resolves.toBeUndefined();
+  } finally { db.close(); }
+});
+
+it("replays an enabled committed checkpoint after retention erases its summary proof", async () => {
+  const path = await root(), writer = await open(path), reader = new ToolHistoryReader(path);
+  const record: ContinuityRecordInput = { ...row("enabled-summary", "Completed fictional summary."), kind: "summary", provenance: "generated",
+    source: { journalId: "fiction-journal", operationId: "fiction-operation" },
+    summary: { model: "faux:m", operationId: "fiction-operation", trigger: "manual", coverage: { sourceDigest: digest("coverage") } } };
+  const input = { ...preparation([record]), action: "checkpoint" as const, beforeDigest: null, afterDigest: null, latestSummaryRecordId: record.recordId };
+  const publication = { conversationId: input.conversationId, generationId: input.generationId, canonicalDigest: null,
+    checkpoint: { status: "published" as const, journalId: "fiction-journal", operationId: "fiction-operation", sourceDigest: digest("coverage"), summaryDigest: digest(record.text) } };
+  await writer.prepareContinuity(input); await writer.commitContinuity(publication);
+  const db = new DatabaseSync(dbPath(path));
+  try {
+    createUpkeepSchema(db);
+    db.prepare("INSERT INTO continuity_upkeep_progress VALUES (?,?,?,?)").run(scope.logicalConversationId, scope.currentConversationId, "fixture", JSON.stringify({ ordinal: 1, offset: 0, digest: "", watermark: 1 }));
+    db.exec("DELETE FROM continuity_pins");
+    retainContinuity(db, { ...reader.stats()!.limits, maxAgeMs: 1 }, Date.now() + 10000);
+    expect(db.prepare("SELECT retained_text,summary_json,text_sha256 FROM continuity_records").get()).toEqual({ retained_text: null, summary_json: null, text_sha256: "" });
+    await expect(writer.commitContinuity(publication)).resolves.toBeUndefined();
   } finally { db.close(); }
 });

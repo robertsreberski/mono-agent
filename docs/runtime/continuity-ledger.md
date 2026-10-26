@@ -195,8 +195,12 @@ not resubmitted; unresolved dispatch conservatively blocks the scope.
 
 Deleting, tombstoning or changing **any** contributing source invalidates the
 latest ledger and its representation associations in the same transaction.
-Surviving successful sources become unrepresented and eligible for bounded
-reconstruction. Failed/uncertain offers remain suppressed. Deleted cursor
+Surviving successful sources may be reconstructed **once per span**. The existing
+attempt counter is shared with deferred re-offers; reconstruction consumes the
+remaining attempt. If it is not represented, it becomes analyzed/failed; later
+invalidation of an already reconstructed span makes it terminal **lost**. At most
+one reconstruction extraction runs per boundary. Known non-invocation releases
+availability without spending an attempt. Failed/uncertain offers remain suppressed. Deleted cursor
 anchors do not block keyset progress. A retention tombstone never rewinds the
 cursor: only its own continuation digest/offset can be reset. Explicit reset/delete
 clears scoped progress and rotates admission; retention does not renew bootstrap.
@@ -214,12 +218,14 @@ unscanned remainder disclosed. This is not an indefinite accounting archive.
 
 Bootstrap/identity rows are never reclaimed (UUID operation IDs in normal use,
 4096-code-unit scope identifiers and the bounded reservation ID at the hard limit).
-A native scope has at most one unresolved purchase: at most a 128KiB reservation,
+A native scope has at most one unresolved purchase: at most a 128KiB input reservation plus its opaque identity stamp,
 16KiB receipt and 256 offer rows (64 in the production selection path). All such
 unknown rows remain protected and charged. Compact retirement floors are also
 charged. If protected state alone fills the quota, admission stops without buying
 more work. Lineage/render/payload/aggregate saturation likewise reports a gap;
-future checkpoint work owns that limitation.
+future checkpoint work owns that limitation. Outcome, settle and reject transitions
+are quota-exempt: receipt space was reserved at dispatch, and a paid result must
+remain recordable even if protected data later fills the shared quota.
 
 In scopes with P3b2 progress, purge/tombstone transactions erase source digests
 and span fingerprints. They scrub **only reservations citing the erased ordinal**,
@@ -231,6 +237,15 @@ creation, an idempotent migration strips legacy content fingerprints without
 blocking terminal scopes; legacy uncertainty remains uncertain. A definite
 dispatch rollback reports skipped/non-invoked; lost acknowledgements and owner
 post-check failures remain uncertain.
+
+Operation accounting uses the operation ID plus a reserve-time identity hash of
+opaque scope/owner/run/model/budget fields only, never source digests or raw
+reservation bytes. A related source tombstone preserves usage/cost recording;
+publication then fails `publish_source_changed` and becomes terminal failed,
+not uncertain. Admission/publication still verify content bindings, and stale
+ownership remains fenced. Already-committed checkpoint replays acknowledge the
+matching canonical generation without requiring erased summary proof or restoring
+its text; uncommitted checkpoints still require exact native proof.
 
 Pending purge intents suppress reuse immediately. No destructive downgrade is
 needed, but **older binaries reject merged ledgers above their 24-entry/256-span

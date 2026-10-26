@@ -38,9 +38,10 @@ async function fixture() {
     }
   };
   const db = <T>(fn: (db: DatabaseSync) => T): T => { const database = new DatabaseSync(reader.databasePath); try { database.exec("PRAGMA foreign_keys=ON"); return fn(database); } finally { database.close(); } };
-  const prepare = async (maxTokens = 8000, physical = "fictional") => {
+  const prepare = async (maxTokens = 8000, physical = "fictional", twice = false) => {
     const events: any[] = [], supplier = createContinuityPackSupplier({ toolHistory: ports } as unknown as ConversationHarnessOptions, { conversationId: physical, userMessage: "Current fictional boundary.", abortSignal: new AbortController().signal }, randomUUID())!;
     await supplier.prepare({ ...eligibility, maxTokens }, "cold_rebuild", event => events.push(event));
+    if (twice) await supplier.prepare({ ...eligibility, maxTokens }, "cold_rebuild", event => events.push(event));
     return { events, pack: () => JSON.stringify(supplier([], maxTokens, "cold_rebuild", () => {})) };
   };
   return { root, writer, reader, complete, capture, prepare, selections, budgets, caps, db, ports, respond: (fn: typeof response) => { response = fn; } };
@@ -531,4 +532,46 @@ it("counts an idle scope claim as LRU use without buying its analyzed evidence a
   f.db(db => retainContinuity(db, { ...stats.limits, maxBytes: stats.retainedBytes - 1 }, Date.now()));
   expect(f.db(db => db.prepare("SELECT conversation_id FROM continuity_upkeep_operations").all())).toEqual([{ conversation_id: "fictional" }]);
   expect(f.db(db => db.prepare("SELECT count(*) n FROM continuity_upkeep_admissions WHERE bootstrap_operation IS NOT NULL").get())).toEqual({ n: 2 });
+});
+
+it("accounts a paid related-source tombstone without publishing or blocking the scope", async () => {
+  const f = await fixture(); await f.capture(); const complete = f.complete.getMockImplementation()!; let identity: string | undefined;
+  f.complete.mockImplementationOnce(async (...args) => {
+    const result = await complete(...args);
+    identity = f.db(db => JSON.parse((db.prepare("SELECT reservation FROM continuity_upkeep_operations").get() as any).reservation).reservationIdentity);
+    f.db(db => db.exec("UPDATE continuity_records SET retained_text=NULL WHERE ordinal=1"));
+    return { ...result, receipt: { ...result.receipt, inputTokens: 25, outputTokens: 5, costUsd: 0.002 } };
+  });
+  const result = await f.prepare(); expect(result.events).toContainEqual(expect.objectContaining({ status: "invalid", failure: "publish_source_changed", costUsd: 0.002 }));
+  const row = f.db(db => db.prepare("SELECT reservation,state,outcome FROM continuity_upkeep_operations").get()) as any;
+  expect(row.state).toBe("terminal"); expect(JSON.parse(row.outcome)).toMatchObject({ inputTokens: 25, outputTokens: 5, costUsd: 0.002 });
+  expect(JSON.parse(row.reservation)).toMatchObject({ reservationIdentity: identity, purged: 1 }); expect(JSON.parse(row.reservation)).not.toHaveProperty("progress");
+  expect(f.db(db => db.prepare("SELECT DISTINCT state FROM continuity_upkeep_offers").all())).toEqual([{ state: "failed" }]);
+  expect(f.reader.ledger(scope)).toBeUndefined();
+  expect((await f.writer.mutateUpkeep({ kind: "inspect", scope: { logicalId: "fictional", conversationId: "fictional" } }))!.uncertain).not.toBe(true);
+  await f.prepare(); await f.prepare(); expect(f.complete).toHaveBeenCalledTimes(1);
+  await f.capture(1, "Fresh after erasure."); await f.prepare();
+  expect(f.complete).toHaveBeenCalledTimes(2); expect(f.budgets[1]).toBe(64000);
+});
+
+it("bounds reconstruction per span across five successive retention invalidations", async () => {
+  const f = await fixture(); await f.capture(6, "Retained neutral evidence.", "fictional", true);
+  f.respond(rows => [{ kind: "open_work", value: `Retained state ${rows[0].ordinal}.`, status: "unknown", sources: rows.map(row => row.id) }]);
+  await f.prepare(8000, "fictional", true);
+  for (let boundary = 0; boundary < 5; boundary++) {
+    await f.capture(1, `Fresh neutral ${boundary}.`, "fictional", true);
+    f.db(db => {
+      const now = Date.now(); db.prepare("UPDATE continuity_records SET created_at_ms=? WHERE retained_text IS NOT NULL").run(now + 1000);
+      db.exec("UPDATE continuity_records SET created_at_ms=0 WHERE record_id=(SELECT i.record_id FROM continuity_ledger_inputs i JOIN continuity_records r USING(record_id) ORDER BY r.ordinal LIMIT 1)");
+      retainContinuity(db, { ...f.reader.stats()!.limits, maxAgeMs: 1000 }, now);
+    });
+    expect(f.reader.ledger(scope)).toBeUndefined();
+    await f.prepare(8000, "fictional", true); expect(f.complete).toHaveBeenCalledTimes(boundary + 2);
+  }
+  const counts = new Map<string, number>();
+  for (const rows of f.selections) for (const row of rows) counts.set(spanKey(row), (counts.get(spanKey(row)) ?? 0) + 1);
+  expect(Math.max(...counts.values())).toBe(2);
+  expect(f.db(db => db.prepare("SELECT count(*) n FROM continuity_upkeep_offers WHERE state='lost'").get())).toEqual({ n: 4 });
+  expect(f.db(db => db.prepare("SELECT max(attempt) n FROM continuity_upkeep_offers").get())).toEqual({ n: 1 });
+  await f.prepare(); expect(f.complete).toHaveBeenCalledTimes(6);
 });
