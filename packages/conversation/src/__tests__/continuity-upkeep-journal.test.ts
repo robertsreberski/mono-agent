@@ -276,3 +276,11 @@ it("bounds UTF-8 journal bytes including future outcomes without rejecting ident
   expect(f.mutate({ kind: "reserve", reservation: r })).toBeNull();
   expect(() => f.mutate({ kind: "reserve", reservation: { ...r, operationId: "new-operation", manifest: "b".repeat(64) } })).toThrow("upkeep_admission_conflict");
 });
+
+it("resets a legacy admission scope before any progress tables exist, without enabling upkeep", () => {
+  const f = memory(), r = reservation(f.claim("old-owner")); f.mutate({ kind: "reserve", reservation: r }); f.mutate({ kind: "dispatch", reservation: r });
+  f.db.exec("DROP TABLE continuity_upkeep_offers; DROP TABLE continuity_upkeep_progress");
+  resetUpkeep(f.db, "physical", "fictional");
+  expect(f.db.prepare("SELECT name FROM sqlite_master WHERE name IN ('continuity_upkeep_offers','continuity_upkeep_progress')").all()).toEqual([]);
+  expect(f.inspect()).toMatchObject({ bootstrap: true }); expect(f.inspect().incarnation).not.toBe(r.incarnation);
+});

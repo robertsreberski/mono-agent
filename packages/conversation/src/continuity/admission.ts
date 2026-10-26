@@ -146,8 +146,10 @@ export function mutateUpkeep(db: DatabaseSync, root: string, request: UpkeepMuta
 export function resetUpkeep(db: DatabaseSync, kind: "logical" | "physical", id: string): void {
   if (!db.prepare("SELECT 1 FROM sqlite_master WHERE name='continuity_upkeep_scopes'").get()) return;
   const column = kind === "logical" ? "logical_id" : "conversation_id";
-  db.prepare(`DELETE FROM continuity_upkeep_offers WHERE ${column}=?`).run(id);
-  db.prepare(`DELETE FROM continuity_upkeep_progress WHERE ${column}=?`).run(id);
+  // A disabled-upkeep upgrade can reset a P3b1 scope before progress exists.
+  for (const table of ["continuity_upkeep_offers", "continuity_upkeep_progress"]) {
+    if (db.prepare("SELECT 1 FROM sqlite_master WHERE name=?").get(table)) db.prepare(`DELETE FROM ${table} WHERE ${column}=?`).run(id);
+  }
   db.prepare(`DELETE FROM continuity_upkeep_operations WHERE ${column}=?`).run(id);
   db.prepare(`DELETE FROM continuity_upkeep_admissions WHERE ${column}=?`).run(id);
   db.prepare(`UPDATE continuity_upkeep_scopes SET incarnation=?,fence=fence+1,owner_token='' WHERE ${column}=?`).run(randomUUID(), id);
