@@ -10,7 +10,7 @@ import { continuityGenerationId, continuityRecordId } from "../../../dist/tool-h
 const [root, phase, counterPath] = process.argv.slice(2);
 const calls = () => { try { return readFileSync(counterPath, "utf8").trim().split("\n").filter(Boolean).length; } catch (error) { if (error.code === "ENOENT") return 0; throw error; } };
 process.on("message", () => {}); // Keep the announced crash window alive.
-const checkpoint = async () => { process.send({ phase, calls: calls() }); await new Promise(() => {}); };
+const checkpoint = async () => { process.send({ phase, calls: calls() }); await new Promise(() => { setInterval(() => {}, 1_000); }); }; // Parent SIGKILLs this child here.
 const history = createDurableHistoryStore({ root, continuity: {} });
 const turn = await history.contextImport.beginExclusiveTurn("fictional");
 const writer = await ToolHistoryWriter.open({ root, continuityEnabled: true });
