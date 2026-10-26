@@ -59,7 +59,7 @@
     "zod": "^4.6.6"
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "1.2.0",
+    "@earendil-works/pi-ai": "1.4.0",
     "@mono-agent/channel-a2a": "workspace:0.26.0",
     "@mono-agent/channel-whatsapp": "workspace:0.26.0"
   },
