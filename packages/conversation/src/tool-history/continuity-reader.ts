@@ -145,8 +145,8 @@ export function snapshotContinuity(database: DatabaseSync, input: ContinuitySnap
     if (boundary.ordinal === null) return { records: [], omitted: 0, gaps: 1, degradedReason: "boundary_unavailable" };
     clauses.push("r.ordinal<=?"); values.push(Number(boundary.ordinal));
   }
-  const progress = input.selection === "upkeep" ? readProgress(database, input.logicalConversationId, input.currentConversationId) : undefined;
-  const watermark = progress ? Number((database.prepare(`SELECT coalesce(max(r.ordinal),0) n FROM continuity_records r JOIN continuity_generations g USING(generation_id) WHERE ${clauses.join(" AND ")}`).get(...values) as Row).n) : 0;
+  const watermark = input.selection === "upkeep" ? Number((database.prepare(`SELECT coalesce(max(r.ordinal),0) n FROM continuity_records r JOIN continuity_generations g USING(generation_id) WHERE ${clauses.join(" AND ")}`).get(...values) as Row).n) : 0;
+  const progress = input.selection === "upkeep" ? readProgress(database, input.logicalConversationId, input.currentConversationId, watermark) : undefined;
   if (progress) {
     clauses.push("r.ordinal>=?", "r.ordinal<=?"); values.push(progress.cursor?.ordinal ?? 1, watermark);
   }
@@ -177,15 +177,16 @@ export function snapshotContinuity(database: DatabaseSync, input: ContinuitySnap
         // Join only that exact lifecycle, not a similar tool name or result body.
         database.function("continuity_tool_operation", { deterministic: true }, (conversation, run, call) =>
           `tool:${createHash("sha256").update(JSON.stringify([conversation, run, call])).digest("hex")}`);
-        const call = database.prepare(`SELECT c.tool_name,c.state,i.payload_json,i.payload_sha256,i.record_id invocation_id,o.record_id result_id
+        const call = database.prepare(`SELECT c.tool_name,c.state,length(CAST(i.payload_json AS BLOB)) payload_bytes,CASE WHEN length(CAST(i.payload_json AS BLOB))<=? THEN i.payload_json ELSE NULL END payload_json,i.payload_sha256,i.record_id invocation_id,o.record_id result_id
           FROM tool_calls c JOIN tool_records i ON i.conversation_id=c.conversation_id AND i.run_id=c.run_id
             AND i.tool_call_id=c.tool_call_id AND i.phase='invocation'
           LEFT JOIN tool_records o ON o.conversation_id=c.conversation_id AND o.run_id=c.run_id
             AND o.tool_call_id=c.tool_call_id AND o.phase='result'
           WHERE c.conversation_id=? AND c.run_id=? AND c.end_seq IS NOT NULL
             AND continuity_tool_operation(c.conversation_id,c.run_id,c.tool_call_id)=?
-            AND length(CAST(i.payload_json AS BLOB))<=? LIMIT 1`)
-          .get(record.conversationId, record.runId, record.source.operationId ?? "", 4 * 1024 * 1024 - bytes) as Row | undefined;
+            LIMIT 1`)
+          .get(4 * 1024 * 1024 - bytes, record.conversationId, record.runId, record.source.operationId ?? "") as Row | undefined;
+        if (call && Number(call.payload_bytes) > 4 * 1024 * 1024 - bytes && progress) { bounded = true; break; }
         if (!call || typeof call.payload_json !== "string" || createHash("sha256").update(call.payload_json).digest("hex") !== call.payload_sha256) { unavailable = true; if (progress) break; continue; }
         bytes += Buffer.byteLength(call.payload_json);
         if (bytes > 4 * 1024 * 1024) { bounded = true; if (progress) break; continue; }

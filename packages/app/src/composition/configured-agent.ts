@@ -365,7 +365,7 @@ async function createConfiguredConversationHarnessInternal(
     ...(config.runtime.session.continuity?.upkeep?.enabled ? { upkeep: { enabled: true,
       get model() { return (config.runtime.session.continuity?.upkeep?.extractionModel ?? config.runtime.model).reference; },
       recorderNamespace: recording.artifactDir,
-      complete: async (prompt: string, signal: AbortSignal, budget?: { operationId: string; inputTokens: 64000 | 128000 }) => {
+      complete: async (prompt: string, signal: AbortSignal, budget?: { operationId: string; inputTokens: 64000 | 128000; maxEntries?: number | undefined }) => {
         const selected = config.runtime.session.continuity?.upkeep?.extractionModel ?? config.runtime.model;
         return await completeContinuityUpkeep(prompt, { ...runtimeHostOptionsForConfig(config), ...mergeStaticRuntimeOptions(runtimeOptionsForLocalProvider(selected, config.providers?.local), configRuntimeFlags(config), options.runtimeOptions),
           model: selected, abortSignal: signal, messages: [] }, config.runtime.session.continuity?.upkeep?.requireRequestCap === true, budget);

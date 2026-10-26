@@ -73,7 +73,7 @@ function verifyInputs(database: DatabaseSync, generation: LedgerGeneration): { r
 }
 
 /** Called in the existing writer transaction, never around network I/O. */
-export function publishLedger(database: DatabaseSync, generation: LedgerGeneration, maxBytes: number, existingBytes: number): void {
+export function publishLedger(database: DatabaseSync, generation: LedgerGeneration, maxBytes: number, existingBytes: number, operationId?: string): void {
   const payload = JSON.stringify(generation), bytes = Buffer.byteLength(payload);
   if (!generation.id || !generation.conversationId || !generation.logicalId || bytes > LEDGER_PAYLOAD_BYTES
     || generation.spans.length > 1024 || generation.entries.length > 64 || ledgerHash(JSON.stringify(generation.spans)) !== generation.manifest) throw new LedgerError("publish_bounds");
@@ -92,6 +92,6 @@ export function publishLedger(database: DatabaseSync, generation: LedgerGenerati
   database.prepare("UPDATE continuity_upkeep_offers SET ledger_id=? WHERE ledger_id=? AND state='represented'").run(generation.id, String(old?.id ?? ""));
   database.prepare("DELETE FROM continuity_ledger WHERE conversation_id=?").run(generation.conversationId);
   database.prepare("INSERT INTO continuity_ledger VALUES (?,?,?,?,?,?,?,?)").run(generation.id, generation.conversationId, generation.logicalId, generation.parent, generation.manifest, payload, ledgerHash(payload), bytes);
-  representProgress(database, generation, spanKey);
+  representProgress(database, generation, spanKey, operationId);
   for (const input of generation.inputs) database.prepare("INSERT INTO continuity_ledger_inputs VALUES (?,?,?)").run(generation.id, input.recordId, input.sha256);
 }

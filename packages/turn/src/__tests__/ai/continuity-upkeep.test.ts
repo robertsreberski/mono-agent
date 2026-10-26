@@ -22,7 +22,7 @@ it.each(apis)("proves one real %s request builder, enforcement class and inclusi
   else expect(cap).toContain("4096");
 });
 
-async function codex(events: unknown[], strict = false, abortSignal = new AbortController().signal, budget?: { operationId: string; inputTokens: 64000 | 128000 }, prompt = "Fictional source selection.", api = "openai-codex-responses") {
+async function codex(events: unknown[], strict = false, abortSignal = new AbortController().signal, budget?: { operationId: string; inputTokens: 64000 | 128000; maxEntries?: number }, prompt = "Fictional source selection.", api = "openai-codex-responses") {
   const adapter = await import(`@earendil-works/pi-ai/api/${api}`);
   let signal: AbortSignal | undefined, optionsSeen: any, payloadSeen: any;
   const usageSamples: any[] = [];
@@ -162,4 +162,16 @@ it.each(["openai-codex-responses", "openai-responses"])("keeps interrupted %s in
   expect(transport).toHaveBeenCalledTimes(1);
   expect(result.receipt).toMatchObject({ providerInvoked: true, status: "invalid", inputTokens: null, outputTokens: null, costUsd: null,
     providerUsage: { input: null, output: null, cacheRead: null, cacheWrite: null } });
+});
+
+it("keeps the admitted delta cap in the real Codex payload override", async () => {
+  const { payloadSeen } = await codex([created, added, done(0, 0, 0)], false, undefined, { operationId: "bounded-delta", inputTokens: 64000, maxEntries: 1 });
+  expect(JSON.stringify(payloadSeen)).toContain("at most 1 entries");
+  expect(JSON.stringify(payloadSeen)).not.toContain("at most 8 entries");
+});
+
+it("rejects an invalid admitted entry cap before transport", async () => {
+  const { result, transport } = await codex([], false, undefined, { operationId: "invalid-delta", inputTokens: 64000, maxEntries: 0 });
+  expect(result.receipt).toMatchObject({ status: "skipped", reason: "input_budget", providerInvoked: false });
+  expect(transport).not.toHaveBeenCalled();
 });

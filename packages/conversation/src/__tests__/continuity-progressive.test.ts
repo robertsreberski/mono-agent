@@ -6,11 +6,12 @@ import { DatabaseSync } from "node:sqlite";
 import { afterEach, expect, it, vi } from "vitest";
 import { ToolHistoryWriter } from "../tool-history/writer.js";
 import { ToolHistoryReader } from "../tool-history/reader.js";
-import { continuityGenerationId, continuityRecordId } from "../tool-history/continuity-storage.js";
+import { continuityGenerationId, continuityRecordId, retainContinuity } from "../tool-history/continuity-storage.js";
 import { persistContinuityPurge } from "../tool-history/continuity-purge.js";
 import { createContinuityPackSupplier } from "../continuity/pack.js";
+import { reclaimProgress } from "../continuity/progress.js";
 import { fitsLedgerPrefix } from "../continuity/render-fit.js";
-import { ledgerHash, normalizeLedger, renderLedger, selectLedgerSources, spanKey, validateLedgerOutput, type LedgerEntry } from "../continuity/ledger.js";
+import { ledgerHash, fitLedgerSelection, projectedLedgerPayloadBytes, LEDGER_PAYLOAD_BYTES, normalizeLedger, renderLedger, selectLedgerSources, spanKey, validateLedgerOutput, type LedgerEntry } from "../continuity/ledger.js";
 import type { ConversationHarnessOptions } from "../harness/contracts.js";
 
 const scope = { logicalConversationId: "fictional", currentConversationId: "fictional", currentRunId: "new-turn" };
@@ -21,11 +22,11 @@ const parse = (prompt: string) => prompt.split("\nSources:\n")[1]!.trim().split(
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), "progressive-ledger-")), writer = await ToolHistoryWriter.open({ root, continuityEnabled: true, persistenceCeilingMs: 5000 });
   resources.push({ root, writer });
-  const reader = new ToolHistoryReader(root), selections: any[][] = [], budgets: number[] = [];
-  let response = (rows: any[]) => [{ kind: "open_work", value: `Fictional state ${rows[0].ordinal}/${rows[0].start}.`, status: "unknown", sources: [rows[0].id] }];
-  const complete = vi.fn(async (prompt: string, _signal: AbortSignal, budget: { operationId: string; inputTokens: number }) => {
-    const rows = parse(prompt); selections.push(rows); budgets.push(budget.inputTokens);
-    return { text: JSON.stringify({ entries: response(rows), covered: rows.map(row => row.id) }), receipt: { operationId: budget.operationId, model: "fictional:base", status: "valid", reason: "completed", providerInvoked: true, capEnforcement: "request" } };
+  const reader = new ToolHistoryReader(root), selections: any[][] = [], budgets: number[] = [], caps: number[] = [];
+  let response = (rows: any[], _cap: number) => [{ kind: "open_work", value: `Fictional state ${rows[0].ordinal}/${rows[0].start}.`, status: "unknown", sources: [rows[0].id] }];
+  const complete = vi.fn(async (prompt: string, _signal: AbortSignal, budget: { operationId: string; inputTokens: number; maxEntries?: number }) => {
+    const rows = parse(prompt); selections.push(rows); budgets.push(budget.inputTokens); caps.push(budget.maxEntries ?? 24);
+    return { text: JSON.stringify({ entries: response(rows, budget.maxEntries ?? 24), covered: rows.map(row => row.id) }), receipt: { operationId: budget.operationId, model: "fictional:base", status: "valid", reason: "completed", providerInvoked: true, capEnforcement: "request" } };
   });
   const ports = { writer, reader, mutateUpkeep: writer.mutateUpkeep.bind(writer), publishLedger: writer.publishLedger.bind(writer), continuityEnabled: true, logicalConversationId: () => "fictional", upkeep: { enabled: true, model: "fictional:base", complete } };
   const capture = async (count = 1, text = "Rule.", physical = "fictional", neutral = false) => {
@@ -42,16 +43,16 @@ async function fixture() {
     await supplier.prepare({ ...eligibility, maxTokens }, "cold_rebuild", event => events.push(event));
     return { events, pack: () => JSON.stringify(supplier([], maxTokens, "cold_rebuild", () => {})) };
   };
-  return { root, writer, reader, complete, capture, prepare, selections, budgets, db, ports, respond: (fn: typeof response) => { response = fn; } };
+  return { root, writer, reader, complete, capture, prepare, selections, budgets, caps, db, ports, respond: (fn: typeof response) => { response = fn; } };
 }
 
 it("progresses beyond 512 records, preserves earlier stable entries, and reaches actual tool interiors", async () => {
-  const f = await fixture(); await f.capture(640);
+  const f = await fixture(); await f.capture(640, "Rule.", "fictional", true);
   const binding = { conversationId: "fictional", logicalConversationId: "fictional", runId: "tool-run", isolated: false, continuityEnabled: true as const, finalizedContinuity: true as const };
   await f.writer.persist(binding, { phase: "invocation", toolCallId: "lookup", toolName: "mail_read", arguments: {} });
   await f.writer.persist(binding, { phase: "result", toolCallId: "lookup", toolName: "mail_read", state: "success", content: "Fictional heading.\n\n" + "neutral prose ".repeat(1600) + "FABLE-Z91" }); await f.writer.finishRun(binding, "completed");
   let first: LedgerEntry | undefined;
-  for (let i = 0; i < 14; i++) {
+  for (let i = 0; i < 24; i++) {
     const result = await f.prepare(), generation = f.reader.ledger(scope)!.generation;
     expect(result.events).toContainEqual(expect.objectContaining({ status: "valid", generationId: generation.id }));
     first ??= generation.entries[0]; expect(generation.entries).toContainEqual(first);
@@ -62,7 +63,7 @@ it("progresses beyond 512 records, preserves earlier stable entries, and reaches
   const keys = f.selections.flat().map(spanKey); expect(new Set(keys).size).toBe(keys.length);
   expect(f.budgets[0]).toBe(128000); expect(f.budgets.slice(1).every(budget => budget === 64000)).toBe(true);
   expect(f.db(db => db.prepare("SELECT count(*) n FROM continuity_upkeep_operations WHERE budget='bootstrap'").get())).toEqual({ n: 1 });
-  expect(f.db(db => db.prepare("SELECT count(*) n FROM continuity_upkeep_offers WHERE state='failed'").get())).not.toEqual({ n: 0 });
+  expect(f.db(db => db.prepare("SELECT count(*) n FROM continuity_upkeep_offers WHERE state='reofferable'").get())).not.toEqual({ n: 0 });
 }, 20000);
 
 it("resumes a UTF-8 interior cursor without reoffering windows or relying on a source anchor", async () => {
@@ -94,13 +95,14 @@ it("restarts span enumeration on changed source digest rather than inheriting it
 it("atomically invalidates all representation on a contributing tombstone but reconstructs only successful survivors", async () => {
   const f = await fixture(); await f.capture(130); await f.prepare(); await f.prepare();
   const successes = f.db(db => db.prepare("SELECT ordinal FROM continuity_upkeep_offers WHERE state='represented'").all()) as { ordinal: number }[];
-  const victim = f.db(db => db.prepare("SELECT ordinal FROM continuity_upkeep_offers WHERE state='failed' LIMIT 1").get()) as { ordinal: number };
+  const victim = f.db(db => db.prepare("SELECT ordinal FROM continuity_upkeep_offers WHERE state='reofferable' LIMIT 1").get()) as { ordinal: number };
   f.db(db => db.prepare("UPDATE continuity_records SET retained_text=NULL WHERE ordinal=?").run(victim.ordinal));
   expect(f.reader.ledger(scope)).toBeUndefined();
   expect(f.db(db => db.prepare("SELECT count(*) n FROM continuity_upkeep_offers WHERE state='represented'").get())).toEqual({ n: 0 });
   expect(f.db(db => db.prepare("SELECT ordinal FROM continuity_upkeep_offers WHERE state='unrepresented' ORDER BY ordinal").all())).toEqual(successes);
   f.respond(rows => rows.filter(row => successes.some(old => old.ordinal === row.ordinal)).map(row => ({ kind: "open_work", value: `Reconstructed ${row.ordinal}.`, status: "unknown", sources: [row.id] })));
-  await f.prepare(); const next = f.selections[2]!;
+  for (let i = 0; i < 4; i++) { await f.prepare(); if (f.reader.ledger(scope)!.generation.entries.length === successes.length) break; }
+  const next = f.selections.slice(2).flat();
   for (const success of successes) expect(next.some(row => row.ordinal === success.ordinal)).toBe(true);
   expect(next.some(row => row.ordinal === victim.ordinal)).toBe(false);
   expect(f.reader.ledger(scope)!.generation.entries).toHaveLength(successes.length);
@@ -119,7 +121,7 @@ it("never reoffers an uncertain batch even after new evidence arrives", async ()
 it("clears scoped progress only on explicit reset and keeps rollover progress independent", async () => {
   const f = await fixture(); await f.capture(2); await f.prepare();
   persistContinuityPurge(f.root, { scope: "physical", conversationId: "fictional" }); await f.writer.stats();
-  expect(f.db(db => db.prepare("SELECT count(*) n FROM continuity_upkeep_offers").get())).toEqual({ n: 2 });
+  expect(f.db(db => db.prepare("SELECT count(*) n FROM continuity_upkeep_offers").get())).toEqual({ n: 0 });
   expect((await f.writer.mutateUpkeep({ kind: "inspect", scope: { logicalId: "fictional", conversationId: "fictional" } }))!.bootstrap).toBe(false);
   persistContinuityPurge(f.root, { scope: "physical", conversationId: "fictional", resetUpkeep: true }); await f.writer.stats();
   expect(f.db(db => db.prepare("SELECT count(*) n FROM continuity_upkeep_offers").get())).toEqual({ n: 0 });
@@ -186,6 +188,7 @@ it("enforces 64 aggregate and 24/request or 8/Codex delta bounds, with stable le
   await f.writer.publishLedger(prior); await f.capture(1, "Additional rule.");
   await f.writer.publishLedger({ ...sixtyFour, parent: prior.id });
   f.complete.mockClear(); const result = await f.prepare(); expect(f.complete).not.toHaveBeenCalled(); expect(result.pack()).toContain("### Continuity ledger");
+  expect(result.events).toContainEqual(expect.objectContaining({ reason: "ledger_aggregate_capacity" }));
 });
 
 it("keeps known failed offers separate from represented state and never repurchases them", async () => {
@@ -198,13 +201,13 @@ it("keeps known failed offers separate from represented state and never repurcha
   expect(f.selections[1]!.every(span => span.ordinal === 3)).toBe(true);
 });
 
-it("stops before invocation at metadata capacity without deleting anti-repurchase evidence", async () => {
+it("isolates offer capacity to its own scope without deleting another scope's uncertain evidence", async () => {
   const f = await fixture(); await f.capture();
   await f.writer.mutateUpkeep({ kind: "inspect", scope: { logicalId: "fictional", conversationId: "fictional" } });
   f.db(db => db.exec(`WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM seq WHERE n<65536)
     INSERT INTO continuity_upkeep_offers SELECT 'other','other','incarnation',printf('%064x',n),1,printf('%064x',0),0,1,printf('op-%d',n),'uncertain',NULL FROM seq;`));
-  await f.prepare(); expect(f.complete).not.toHaveBeenCalled();
-  expect(f.db(db => db.prepare("SELECT count(*) n FROM continuity_upkeep_offers").get())).toEqual({ n: 65536 });
+  await f.prepare(); expect(f.complete).toHaveBeenCalledTimes(1);
+  expect(f.db(db => db.prepare("SELECT count(*) n FROM continuity_upkeep_offers WHERE logical_id='other'").get())).toEqual({ n: 65536 });
 });
 
 it("leaves the disabled path without progress/admission tables or a completion", async () => {
@@ -250,4 +253,178 @@ it("does not inherit legacy analyzed-but-uncited coverage as representation", as
   await f.prepare(); expect(f.complete).toHaveBeenCalledTimes(1);
   expect(f.selections[0]!.map(row => row.ordinal)).toEqual([2]);
   expect(f.reader.ledger(scope)!.generation.entries).toContainEqual(base.entries[0]);
+});
+
+it("skips an intrinsically oversized owner paragraph durably without paying for it or stalling later evidence", async () => {
+  const f = await fixture(); await f.capture(1, "Before."); await f.capture(1, "Fictional pasted log ".repeat(600)); await f.capture(1, "After.");
+  const result = await f.prepare(); expect(f.complete).toHaveBeenCalledTimes(1);
+  expect(f.selections[0]!.map(row => row.text)).toEqual(["Before.", "After."]);
+  expect(f.db(db => db.prepare("SELECT ordinal,state FROM continuity_upkeep_offers WHERE state='oversized'").all())).toEqual([{ ordinal: 2, state: "oversized" }]);
+  expect(result.pack()).toContain("Upkeep coverage gap");
+  await f.capture(1, "Later."); await f.prepare(); expect(f.selections[1]!.some(row => row.text === "Later.")).toBe(true);
+});
+
+it("advances an all-oversized boundary with zero calls and preserves bootstrap", async () => {
+  const f = await fixture(); await f.capture(1, "Fictional log ".repeat(30000));
+  const result = await f.prepare(); expect(f.complete).not.toHaveBeenCalled();
+  expect(result.events).toContainEqual(expect.objectContaining({ reason: "source_oversized", providerInvoked: false }));
+  expect((await f.writer.mutateUpkeep({ kind: "inspect", scope: { logicalId: "fictional", conversationId: "fictional" } }))!.bootstrap).toBe(true);
+  await f.capture(1, "Reachable later."); await f.prepare(); expect(f.selections[0]![0].text).toBe("Reachable later.");
+});
+
+it("admits a balanced dense delta and preserves it at the next real supplier boundary", async () => {
+  const f = await fixture(); await f.capture(100);
+  f.respond((rows, cap) => Array.from({ length: Math.ceil(rows.length / 8) }, (_, i) => ({ kind: "open_work", value: `Dense ${rows[i * 8].ordinal}.`, status: "unknown", sources: rows.slice(i * 8, i * 8 + 8).map(row => row.id) })).slice(0, cap));
+  await f.prepare(); const prior = f.reader.ledger(scope)!.generation;
+  expect(prior.entries.length).toBeGreaterThan(1); expect(f.caps[0]).toBeGreaterThan(1);
+  await f.prepare(); const merged = f.reader.ledger(scope)!.generation;
+  for (const entry of prior.entries) expect(merged.entries).toContainEqual(entry);
+  for (let i = 0; i < 2; i++) {
+    expect(f.selections[i]!.length).toBeLessThanOrEqual(8 * f.caps[i]!);
+    expect(f.complete.mock.calls[i]![0]).toContain(`Delta limit: ${f.caps[i]} entries`);
+    expect(f.complete.mock.calls[i]![0]).not.toContain("At most 24");
+  }
+  expect(f.db(db => db.prepare("SELECT DISTINCT state FROM continuity_upkeep_offers").all())).toEqual([{ state: "represented" }]);
+});
+
+it("keeps valid uncited spans re-offerable, after fresh evidence rather than burning or starving it", async () => {
+  const f = await fixture(); await f.capture(3); await f.prepare();
+  expect(f.db(db => db.prepare("SELECT count(*) n FROM continuity_upkeep_offers WHERE state='reofferable'").get())).toEqual({ n: 2 });
+  await f.capture(1, "Fresh."); await f.prepare(); expect(f.selections[1]!.map(row => row.ordinal)).toEqual([4]);
+  await f.prepare(); expect(f.selections[2]!.map(row => row.ordinal)).toEqual([2, 3]);
+  expect(f.reader.ledger(scope)!.generation.entries).toHaveLength(3);
+});
+
+it("projects the merged shape conservatively at the payload edge, including eight remapped citations per delta entry", async () => {
+  const f = await fixture(); await f.capture(8); const source = f.reader.snapshotContinuity(scope), selection = selectLedgerSources(source);
+  const entry = (i: number) => ({ kind: "open_work", value: "\0".repeat(106) + String(i).padStart(2, "0"), status: "unknown", sources: selection.spans.map(span => span.id) });
+  const prior = validateLedgerOutput(JSON.stringify({ entries: [entry(0)], covered: selection.spans.map(span => span.id) }), selection, scope);
+  let edge = { ...prior, inputs: [...prior.inputs] };
+  while (projectedLedgerPayloadBytes({ ...selection, maxEntries: 8 }, scope, edge) < LEDGER_PAYLOAD_BYTES - 400) edge = { ...edge, inputs: [...edge.inputs, { recordId: `reserved-${edge.inputs.length}-` + "x".repeat(160), sha256: "a".repeat(64) }] };
+  const fitted = fitLedgerSelection(selection, scope, { generation: edge, records: [...source.records], retainedBytes: 40 });
+  expect(fitted.selection.spans.length).toBeGreaterThan(0); expect(fitted.projectedBytes).toBeLessThanOrEqual(LEDGER_PAYLOAD_BYTES);
+  const text = JSON.stringify({ entries: Array.from({ length: fitted.selection.maxEntries! }, (_, i) => ({ ...entry(i + 1), sources: fitted.selection.spans.slice(0, 8).map(span => span.id) })), covered: fitted.selection.spans.map(span => span.id) });
+  const actual = validateLedgerOutput(text, fitted.selection, scope, edge);
+  expect(Buffer.byteLength(JSON.stringify(actual))).toBeLessThanOrEqual(fitted.projectedBytes);
+  expect(actual.selectionManifest).toBe(fitted.selection.manifest); expect(actual.coveredSpans!.some(id => id.startsWith("p"))).toBe(true);
+});
+
+it("bounds fit work without rebuilding the source prompt at every prefix", async () => {
+  const f = await fixture(); await f.capture(64, "Fictional owner paragraph. ".repeat(4));
+  const source = f.reader.snapshotContinuity(scope), selection = selectLedgerSources(source, undefined, 128000);
+  const prior = validateLedgerOutput(JSON.stringify({ entries: [{ kind: "open_work", value: "Prior.", status: "unknown", sources: ["s0"] }], covered: ["s0"] }), selection, scope);
+  let projections = 0; const stringify = JSON.stringify;
+  vi.spyOn(JSON, "stringify").mockImplementation((value: any, replacer?: any, space?: any) => { if (value?.inputs && value?.entries && value?.spans) projections++; return stringify(value, replacer, space); });
+  const started = performance.now();
+  const fit = fitLedgerSelection(selection, scope, { generation: prior, records: [...source.records], retainedBytes: source.records.reduce((n, record) => n + Buffer.byteLength(record.text), 0) });
+  expect(performance.now() - started).toBeLessThan(5000); expect(projections).toBeLessThanOrEqual(200);
+  expect(fit.selection.spans.length).toBeGreaterThan(0);
+}, 10000);
+
+it("keeps a near-limit legacy ledger injectable without rendering newly assigned identities", async () => {
+  const f = await fixture(); await f.capture(); const source = f.reader.snapshotContinuity(scope), selection = selectLedgerSources(source);
+  const base = validateLedgerOutput(JSON.stringify({ entries: [{ kind: "open_work", value: "Prior.", status: "unknown", sources: ["s0"] }], covered: ["s0"] }), selection, scope);
+  let prior = base;
+  for (let length = 1; length <= 512; length++) {
+    const candidate = { ...base, entries: Array.from({ length: 64 }, (_, i) => ({ kind: "open_work", value: `${i}:` + "v".repeat(length), status: "unknown", sources: base.entries[0]!.sources })) };
+    if (!fitsLedgerPrefix(renderLedger(candidate, source.records), 8000)) break;
+    prior = candidate;
+  }
+  const rendered = renderLedger(prior, source.records); expect(rendered).not.toContain(" id=");
+  expect(fitsLedgerPrefix(rendered, 8000)).toBe(true); expect(fitsLedgerPrefix(rendered + "x".repeat(28 * 64), 8000)).toBe(false);
+  await f.writer.publishLedger(prior); const result = await f.prepare(); expect(result.pack()).toContain("### Continuity ledger");
+});
+
+it("rechecks actual headroom after the provider returns and rejects only the delta", async () => {
+  const f = await fixture(); await f.capture(); await f.prepare(); const prior = f.reader.ledger(scope)!.generation;
+  await f.capture(1, "Additional rule."); const context = { ...eligibility }, complete = f.complete.getMockImplementation()!;
+  f.complete.mockImplementationOnce(async (...args) => { const result = await complete(...args); context.maxTokens = 500; return result; });
+  const events: any[] = [], publish = vi.spyOn(f.ports, "publishLedger");
+  const supplier = createContinuityPackSupplier({ toolHistory: f.ports } as unknown as ConversationHarnessOptions, { conversationId: "fictional", userMessage: "Current.", abortSignal: new AbortController().signal }, randomUUID())!;
+  await supplier.prepare(context, "cold_rebuild", event => events.push(event));
+  expect(events).toContainEqual(expect.objectContaining({ failure: "ledger_render_budget" }));
+  expect(publish).not.toHaveBeenCalled(); expect(f.reader.ledger(scope)!.generation.id).toBe(prior.id);
+});
+
+it("reports a definitive rolled-back dispatch as skipped without consuming bootstrap", async () => {
+  const f = await fixture(); await f.capture(); await f.writer.mutateUpkeep({ kind: "inspect", scope: { logicalId: "fictional", conversationId: "fictional" } });
+  f.db(db => db.exec(`WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM seq WHERE n<65536)
+    INSERT INTO continuity_upkeep_offers SELECT 'fictional','fictional','incarnation',printf('%064x',n),1,printf('%064x',0),0,1,printf('op-%d',n),'uncertain',NULL FROM seq;`));
+  const result = await f.prepare(); expect(f.complete).not.toHaveBeenCalled();
+  expect(result.events).toContainEqual(expect.objectContaining({ status: "skipped", reason: "upkeep_dispatch_rejected", providerInvoked: false }));
+  expect(result.events.some(event => event.status === "uncertain")).toBe(false);
+  expect((await f.writer.mutateUpkeep({ kind: "inspect", scope: { logicalId: "fictional", conversationId: "fictional" } }))!.bootstrap).toBe(true);
+});
+
+it("reclaims terminal progress journals and proof-obsolete offers, but never uncertain rows or markers", async () => {
+  const f = await fixture(); f.respond(() => []);
+  for (let i = 0; i < 72; i++) { await f.capture(1, `New fictional ${i}.`); await f.prepare(); }
+  expect(f.db(db => db.prepare("SELECT count(*) n FROM continuity_upkeep_operations").get())).toEqual({ n: 64 });
+  expect((await f.writer.mutateUpkeep({ kind: "inspect", scope: { logicalId: "fictional", conversationId: "fictional" } }))!.bootstrap).toBe(false);
+  f.db(db => { db.prepare("INSERT INTO continuity_upkeep_offers VALUES ('fictional','fictional','incarnation','obsolete',9999,'gone',0,1,'obsolete','failed',NULL)").run(); reclaimProgress(db, "fictional", "fictional"); });
+  expect(f.db(db => db.prepare("SELECT count(*) n FROM continuity_upkeep_offers WHERE span_key='obsolete'").get())).toEqual({ n: 0 });
+  const mutate = f.ports.mutateUpkeep; f.ports.mutateUpkeep = async input => { if (input.kind === "outcome") throw new Error("Lost outcome."); return mutate(input); };
+  await f.capture(1, "Uncertain."); await f.prepare();
+  const operation = f.db(db => db.prepare("SELECT operation_id FROM continuity_upkeep_operations WHERE state='dispatch_started'").get()) as { operation_id: string };
+  f.db(db => { db.exec(`WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM seq WHERE n<80)
+    INSERT INTO continuity_upkeep_operations SELECT 'tail-'||n,'fictional','fictional','incarnation',0,'owner','{"progress":{}}','tail-'||n,'incremental','terminal',NULL FROM seq;`); reclaimProgress(db, "fictional", "fictional"); });
+  expect(f.db(db => db.prepare("SELECT state FROM continuity_upkeep_operations WHERE operation_id=?").get(operation.operation_id))).toEqual({ state: "dispatch_started" });
+  expect((await f.writer.mutateUpkeep({ kind: "inspect", scope: { logicalId: "fictional", conversationId: "fictional" } }))!.bootstrap).toBe(false);
+}, 15000);
+
+it.each(["physical", "logical", "tombstone", "delete", "generation"] as const)("erases text-derived upkeep fingerprints on %s while retaining opaque uncertainty", async kind => {
+  const f = await fixture(); await f.capture(1, "Fictional private code ".repeat(17000), "fictional", true);
+  const mutate = f.ports.mutateUpkeep; f.ports.mutateUpkeep = async input => { if (input.kind === "outcome") throw new Error("Lost outcome."); return mutate(input); };
+  await f.prepare(); const digest = f.selections[0]![0].sha256, keys = f.selections[0]!.map(spanKey);
+  if (kind === "physical" || kind === "logical") { persistContinuityPurge(f.root, { scope: kind, conversationId: "fictional" }); await f.writer.stats(); }
+  else f.db(db => db.exec(kind === "tombstone" ? "UPDATE continuity_records SET retained_text=NULL" : kind === "generation" ? "DELETE FROM continuity_generations" : "DELETE FROM continuity_records"));
+  const dump = f.db(db => JSON.stringify((db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").all() as { name: string }[]).map(row => db.prepare(`SELECT * FROM "${row.name}"`).all())));
+  expect(dump).not.toContain(digest); for (const key of keys) expect(dump).not.toContain(key);
+  const operation = f.db(db => db.prepare("SELECT operation_id,state,reservation,selection_key FROM continuity_upkeep_operations").get()) as any;
+  expect(operation.state).toBe("dispatch_started"); expect(operation.selection_key).toBe(operation.operation_id);
+  expect(JSON.parse(operation.reservation)).not.toHaveProperty("progress");
+  expect(f.db(db => db.prepare("SELECT DISTINCT source_digest,state FROM continuity_upkeep_offers").all())).toEqual([{ source_digest: "", state: "uncertain" }]);
+  await f.capture(1, "New evidence."); await f.prepare(); expect(f.complete).toHaveBeenCalledTimes(1);
+});
+
+it("ends a materialization page before a tool whose arguments exceed the remaining byte budget", async () => {
+  const f = await fixture(); await f.capture(4, "Fictional neutral ".padEnd(1000000, "n"), "fictional", true);
+  const binding = { conversationId: "fictional", logicalConversationId: "fictional", runId: "large-tool", isolated: false, continuityEnabled: true as const, finalizedContinuity: true as const };
+  await f.writer.persist(binding, { phase: "invocation", toolCallId: "large", toolName: "lookup", arguments: {} });
+  await f.writer.persist(binding, { phase: "result", toolCallId: "large", toolName: "lookup", state: "success", content: "Fictional tool record." }); await f.writer.finishRun(binding, "completed");
+  const fence = (await f.writer.mutateUpkeep({ kind: "inspect", scope: { logicalId: "fictional", conversationId: "fictional" } }))!;
+  const payload = JSON.stringify({ value: "x".repeat(250000) });
+  f.db(db => db.prepare("UPDATE tool_records SET payload_json=?,payload_sha256=?,retained_bytes=? WHERE phase='invocation'").run(payload, ledgerHash(payload), Buffer.byteLength(payload)));
+  const first = f.reader.snapshotContinuity({ ...scope, selection: "upkeep" });
+  expect(first.records).toHaveLength(4); expect(first.degradedReason).toBe("snapshot_bounds");
+  const ordinal = f.db(db => (db.prepare("SELECT ordinal FROM continuity_records WHERE kind='tool'").get() as { ordinal: number }).ordinal);
+  f.db(db => db.prepare("INSERT INTO continuity_upkeep_progress VALUES (?,?,?,?)").run("fictional", "fictional", fence.incarnation, JSON.stringify({ ordinal, offset: 0, digest: "", watermark: ordinal })));
+  const next = f.reader.snapshotContinuity({ ...scope, selection: "upkeep" });
+  expect(next.degradedReason).toBeUndefined(); expect(next.records[0]!.tool!.arguments.length).toBeGreaterThan(200000);
+});
+
+it("purges terminal fingerprints without refunding bootstrap or blocking genuinely new evidence", async () => {
+  const f = await fixture(); await f.capture(); await f.prepare(); const digest = f.selections[0]![0].sha256;
+  persistContinuityPurge(f.root, { scope: "physical", conversationId: "fictional" }); await f.writer.stats();
+  const journal = f.db(db => db.prepare("SELECT state,reservation,selection_key FROM continuity_upkeep_operations").all());
+  expect(JSON.stringify(journal)).not.toContain(digest); expect(journal[0]).toMatchObject({ state: "terminal" });
+  await f.capture(1, "New evidence."); await f.prepare(); expect(f.budgets).toEqual([128000, 64000]);
+});
+
+it("installs privacy guards for disabled legacy retention and keeps unlocatable anti-repurchase evidence", async () => {
+  const f = await fixture(); await f.capture();
+  const expected = (await f.writer.mutateUpkeep({ kind: "inspect", scope: { logicalId: "fictional", conversationId: "fictional" } }))!;
+  const fence = (await f.writer.mutateUpkeep({ kind: "claim", expected, ownerToken: "legacy-owner" }))!;
+  const reservation = { ...fence, operationId: randomUUID(), runId: "legacy-run", recorderNamespace: "fictional", model: "fictional:base", manifest: "a".repeat(64), parent: null, budget: "bootstrap" as const };
+  await f.writer.mutateUpkeep({ kind: "reserve", reservation }); await f.writer.mutateUpkeep({ kind: "dispatch", reservation });
+  await f.writer.mutateUpkeep({ kind: "outcome", reservation, receipt: { operationId: reservation.operationId, model: reservation.model, providerInvoked: true, status: "invalid" } as any });
+  const limits = f.reader.stats()!.limits; f.ports.upkeep.enabled = false;
+  f.db(db => { db.exec("DROP TRIGGER continuity_upkeep_privacy_delete; DROP TRIGGER continuity_upkeep_privacy_update; DROP TRIGGER continuity_upkeep_privacy_tombstone; DROP TRIGGER continuity_upkeep_privacy_generation; DROP TABLE continuity_upkeep_offers; DROP TABLE continuity_upkeep_progress");
+    retainContinuity(db, { ...limits, maxAgeMs: 1 }, Date.now() + 10000); });
+  f.ports.upkeep.enabled = true;
+  await f.capture(1, "New evidence."); const result = await f.prepare(); expect(f.complete).not.toHaveBeenCalled();
+  expect(result.events).toContainEqual(expect.objectContaining({ reason: "upkeep_repeat_suppressed" }));
+  expect(f.db(db => db.prepare("SELECT state FROM continuity_upkeep_operations").get())).toEqual({ state: "terminal" });
+  persistContinuityPurge(f.root, { scope: "physical", conversationId: "fictional", resetUpkeep: true }); await f.writer.stats();
+  await f.capture(); await f.prepare(); expect(f.complete).toHaveBeenCalledTimes(1);
 });

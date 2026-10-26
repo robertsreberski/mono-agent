@@ -1,3 +1,4 @@
+import { createProgressSchema, purgeUpkeepProgress } from "../continuity/progress.js";
 import { ledgerBytes } from "../continuity/ledger-storage.js";
 import { createHash, randomBytes } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
@@ -279,6 +280,7 @@ export function clearPhysicalContinuity(database: DatabaseSync, conversationId: 
  * incident keys, never lifecycle incidents/rows, artifact references or paths. */
 export function purgeContinuityRows(database: DatabaseSync, scope: "logical" | "physical", id: string): void {
   const column = scope === "logical" ? "logical_id" : "conversation_id";
+  purgeUpkeepProgress(database, scope, id);
   database.prepare(`DELETE FROM writer_stats WHERE key IN
     (SELECT 'idempotency_conflicts:continuity:' || generation_id FROM continuity_generations WHERE ${column}=?)`).run(id);
   database.prepare(`DELETE FROM continuity_pins WHERE record_id IN
@@ -304,6 +306,7 @@ export function toolRetainedBytes(database: DatabaseSync): number {
 
 /** Never removes pinned or prepared evidence, even if the configured quota shrinks. */
 export function retainContinuity(database: DatabaseSync, limits: Required<ToolHistoryRetentionOptions>, now: number, reservedBytes = 0, reservedRecords = 0): void {
+  if (database.prepare("SELECT 1 FROM sqlite_master WHERE name='continuity_upkeep_operations'").get()) createProgressSchema(database);
   const eligible = `retained_text IS NOT NULL AND NOT EXISTS (SELECT 1 FROM continuity_pins p WHERE p.record_id=continuity_records.record_id)
     AND generation_id IN (SELECT generation_id FROM continuity_generations WHERE state='committed')`;
   database.prepare(`UPDATE continuity_records SET retained_text=NULL,tombstone_reason='age',removed_at_ms=?

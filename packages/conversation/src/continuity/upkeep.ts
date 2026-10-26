@@ -56,13 +56,18 @@ export function createLedgerSupplier(options: ConversationHarnessOptions, reques
           const inputTokens = fence.bootstrap ? 128000 : 64000;
           const source = history!.reader.snapshotContinuity({ ...scope, selection: "upkeep" });
           if (["unavailable", "purge_pending", "source_unavailable"].includes(source.degradedReason ?? "")) throw new Error("source_unavailable");
-          const admission = fitLedgerSelection(selectLedgerSources(source, frozen?.generation, inputTokens), scope, frozen, { maxTokens: eligibility.maxTokens, deltaEntries: config.model.startsWith("openai-codex:") ? 8 : 24 });
+          const selected = selectLedgerSources(source, frozen?.generation, inputTokens);
+          if (selected.oversizedProgress) {
+            await eligibility.withOwner(async () => { await history!.mutateUpkeep!({ kind: "oversized", fence, progress: selected.oversizedProgress!, operationId: randomUUID(), advance: selected.oversizedAdvance === true }); });
+            gap = true;
+          }
+          const admission = fitLedgerSelection(selected, scope, frozen, { maxTokens: eligibility.maxTokens, deltaEntries: config.model.startsWith("openai-codex:") ? 8 : 24 });
           const { selection, projectedBytes } = admission; uncovered = selection.uncovered;
           if (admission.reason) { gap = true; localSkip = admission.reason; return; }
           if (!selection.spans.length || selection.manifest === frozen?.generation.manifest) {
             if (frozen && selection.manifest === frozen.generation.manifest) uncovered = frozen.generation.uncovered;
             gap ||= selection.uncovered > 0;
-            localSkip = selection.spans.length ? "unchanged" : source.gaps > 0 ? "upkeep_repeat_suppressed" : "no_source"; return;
+            localSkip = selection.spans.length ? "unchanged" : selected.oversizedProgress ? "source_oversized" : source.gaps > 0 ? "upkeep_repeat_suppressed" : "no_source"; return;
           }
           const covered = new Set(frozen?.generation.coveredSpans ?? frozen?.generation.entries.flatMap(entry => entry.sources));
           if (frozen && selection.spans.every(span => frozen!.generation.spans.some(old => covered.has(old.id) && old.recordId === span.recordId && old.sha256 === span.sha256 && old.start === span.start && old.end === span.end && old.digest === span.digest))) { localSkip = "already_covered"; return; }
@@ -82,12 +87,15 @@ export function createLedgerSupplier(options: ConversationHarnessOptions, reques
           });
           // No invocation until BOTH the durable acknowledgement and canonical
           // owner's post-check succeed. Lost waiters never speculate or retry.
-          completion = await config.complete(selection.prompt, request.abortSignal, { operationId: reservation.operationId, inputTokens });
+          completion = await config.complete(selection.prompt, request.abortSignal, { operationId: reservation.operationId, inputTokens, maxEntries: selection.maxEntries });
           await eligibility.withOwner(async () => {
             await history!.mutateUpkeep!({ kind: "outcome", reservation: reservation!, receipt: completion!.receipt });
           });
           outcomeRecorded = true;
-          if (completion.receipt.status !== "valid" || !completion.text) { gap = true; return; }
+          if (completion.receipt.status !== "valid" || !completion.text) {
+            if (completion.receipt.providerInvoked && completion.receipt.status === "valid") await eligibility.withOwner(async () => { await history!.mutateUpkeep!({ kind: "reject", reservation: reservation! }); });
+            gap = true; return;
+          }
           const generation = validateLedgerOutput(completion.text, selection, scope, frozen?.generation, completion.receipt.capEnforcement); uncovered = generation.uncovered;
           if (!fitsLedgerPrefix(renderLedger(generation, [...(frozen?.records ?? []), ...selection.records]), eligibility.maxTokens)) throw new LedgerError("ledger_render_budget");
           publishing = true;
@@ -96,6 +104,10 @@ export function createLedgerSupplier(options: ConversationHarnessOptions, reques
           if (!published) throw new LedgerError("publish_unavailable");
         } catch (error) {
           gap = true;
+          if ((error as { code?: string }).code === "upkeep_dispatch_rejected") { barrierRequested = false; localSkip = "upkeep_dispatch_rejected"; }
+          if (completion && outcomeRecorded && reservation && completion.receipt.providerInvoked && completion.receipt.status === "valid") {
+            try { await eligibility.withOwner!(async () => { await history!.mutateUpkeep!({ kind: "reject", reservation: reservation! }); }); } catch { /* pending offers remain suppressed if invalidation loses ownership */ }
+          }
           if ((error as { code?: string }).code === "upkeep_repeat_suppressed") localSkip = "upkeep_repeat_suppressed";
           if (completion && outcomeRecorded) { completion = { receipt: { ...completion.receipt, status: "invalid", reason: "validation_or_publication", failure: request.abortSignal.aborted ? "publish_cancelled" : ledgerFailure(error, publishing ? "publish_unavailable" : "output_schema") } }; }
         } finally {

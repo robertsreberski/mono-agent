@@ -199,7 +199,7 @@ parentPort.on("message", (request: WorkerRequest) => {
                     assertUpkeepPublication(database, root, reservation);
                     if (generation.conversationId !== reservation.conversationId || generation.logicalId !== reservation.logicalId || generation.parent !== reservation.parent || (generation.selectionManifest ?? generation.manifest) !== reservation.manifest) throw new Error("upkeep_publication_conflict");
                   }
-                  publishLedger(database, generation, retention.maxBytes, continuityRetainedBytes(database) + toolRetainedBytes(database)); break;
+                  publishLedger(database, generation, retention.maxBytes, continuityRetainedBytes(database) + toolRetainedBytes(database), reservation?.operationId); break;
                 }
                 case "continuity_gap": recordContinuityGap(database, request.payload as ContinuityGapInput); retainContinuity(database, retention, Date.now()); break;
                 case "continuity_prepare": result = prepareContinuity(database, request.payload as ContinuityPreparation, retention, (bytes, records) => applyRetentionInTransaction(database, retention, bytes, records)); break;

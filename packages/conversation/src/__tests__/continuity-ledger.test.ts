@@ -219,13 +219,9 @@ it("never buys upkeep with unavailable canonical history or fully covered select
 });
 
 it.each(["lineage", "quota"])("preflights inherited %s capacity with zero completion calls", async mode => {
-  const f = await fixture(mode === "quota" ? 35_000 : undefined);
+  const f = await fixture(mode === "quota" ? 27_000 : undefined);
   await owner(f, "Never send.\n\n" + "Fictional neutral filler. ".repeat(1000));
   const source = f.reader.snapshotContinuity(scope), selection = selectLedgerSources(source);
-  if (mode === "quota") {
-    const stats = f.reader.stats()!;
-    vi.spyOn(f.reader, "stats").mockReturnValue({ ...stats, limits: { ...stats.limits, maxBytes: stats.retainedBytes + 512 } });
-  }
   if (mode === "lineage") {
     const text = "x".repeat(20_900);
     const records = Array.from({ length: 200 }, (_, i) => ({ recordId: `fictional-prior-${i}`, text }));
@@ -312,13 +308,13 @@ it("refuses inherited lineage alone over its bound before completion", async () 
 });
 
 it("trims whole contributing records to the lineage limit, preserving the oldest fitting source", async () => {
-  const f = await fixture(); await owner(f, "Old rule."); await owner(f, "New rule.");
-  const source = f.reader.snapshotContinuity(scope), selection = selectLedgerSources(source), oldest = [...source.records].sort((a, b) => a.ordinal - b.ordinal)[0]!;
+  const f = await fixture(); await owner(f, "Old rule.\n\n" + "Fictional filler words. ".repeat(950)); await owner(f, "New rule.\n\n" + "Fictional filler words. ".repeat(950));
+  const source = f.reader.snapshotContinuity({ ...scope, selection: "upkeep" }), selection = selectLedgerSources(source), oldest = [...source.records].sort((a, b) => a.ordinal - b.ordinal)[0]!;
   const text = "x".repeat(LEDGER_LINEAGE_BYTES - Buffer.byteLength(oldest.text) - 1);
   const generation = { ...validateLedgerOutput(output(selection), selection, scope), entries: [], spans: [], coveredSpans: [], inputs: [{ recordId: "inherited", sha256: ledgerHash(text) }] };
   const fit = fitLedgerSelection(selection, scope, { generation, records: [{ recordId: "inherited", text }], retainedBytes: Buffer.byteLength(text) });
   expect(fit.reason).toBeUndefined(); expect(fit.trimmedSpans).toBe(1); expect(fit.selection.records.map(r => r.recordId)).toEqual([oldest.recordId]);
-  expect(fit.lineageBytes).toBe(LEDGER_LINEAGE_BYTES - 1); expect(fit.selection.uncovered).toBe(1);
+  expect(fit.lineageBytes).toBe(LEDGER_LINEAGE_BYTES - 1); expect(fit.selection.uncovered).toBe(3);
 });
 
 it.each([

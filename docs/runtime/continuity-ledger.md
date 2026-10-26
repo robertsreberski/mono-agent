@@ -104,7 +104,12 @@ Each query materializes at most 512 records/4 MiB and each progressive selection
 at most 64 spans, inside the cumulative input allowance. Tool interiors use
 UTF-8-safe overlapping windows; owner paragraphs are indivisible. Bounded span
 enumeration leaves unscanned evidence disclosed, never counted as preserved.
-The disabled deterministic-pack query is unchanged.
+The disabled deterministic-pack query is unchanged. An indivisible owner paragraph
+that cannot ever fit a minimal delta at the maximum prefix allowance is recorded
+as an **oversized offer**, never represented. Its cursor advances with **zero
+paid calls**, so a pasted log cannot permanently stall later evidence. The gap
+remains disclosed. A tool whose arguments exceed the remaining page budget ends
+that page as bounded, not as a corrupt/unavailable source.
 
 The host validates the whole delta, exact source IDs, UTF-8 byte spans,
 whole-record and span digests, entry bounds and coverage references. Values must
@@ -147,11 +152,14 @@ evidence available.
 Admission and the pack renderer use the **same prefix-fit calculation**: prefix
 plus 700-token reserve must fit `min(actual headroom, 4000)` tokens. Before paying,
 admission reserves the prior rendering, worst-case bounded delta lines and all
-potential complete owner quotations. It reduces the delta/selection to fit,
+potential complete owner quotations. The prior rendering and quote/lineage prefix costs are computed once; bounded
+binary prefix probes measure merged metadata without rebuilding the source prompt.
+It reduces the delta/selection to fit,
 without dropping the prior. If even one addition cannot fit, it makes **zero
 calls**, retains the prior ledger and records `ledger_render_budget` as a capacity
 gap. A smaller new boundary may still have insufficient headroom to inject that
 prior; the ordinary deterministic fallback and headroom diagnostic remain honest.
+A full 64-entry aggregate instead reports `ledger_aggregate_capacity`.
 Actual merged rendering is checked again before publication; overflow rejects
 the delta, not the prior.
 
@@ -160,14 +168,21 @@ must fit **128 KiB**, and the union of inherited/new retained source text must f
 **4 MiB**. Quota is also preflighted and rechecked atomically at publication.
 There are no retention pins. Selection/admission manifests are separate from the
 merged payload manifest; publication checks both, the owner fence, parent CAS,
-prior-entry preservation and inherited input links. A failed validation or
+prior-entry preservation and inherited input links. The payload reservation
+serializes the actual merged shape at validator maxima, including inherited
+coverage, stable remapped citations, host IDs and the separate selection manifest.
+Host IDs remain available in the model's prior metadata, not in rendered lines,
+so upgrading a nearly-full legacy ledger does not add per-entry rendering cost.
+A failed validation or
 publication never advances representation.
 
 ### Offered is not represented
 
 The fenced dispatch transaction durably records offers and advances the cursor.
-A pending or unacknowledged result remains uncertain; a known paid failure or an
-uncited offered span remains failed, not preserved. Successful publication alone
+A pending or unacknowledged result is not representation. Invalid operations keep
+failed offers suppressed; a valid published response leaves uncited spans
+**re-offerable**, not failed or represented. New evidence gets priority before
+revisiting those spans at a later boundary. Successful publication alone
 associates entry-cited spans with the latest ledger. Analysis-only `covered`
 claims do not establish representation in either profile. Unknown batches are
 not resubmitted; unresolved dispatch conservatively blocks the scope.
@@ -178,11 +193,31 @@ Surviving successful sources become unrepresented and eligible for bounded
 reconstruction. Failed/uncertain offers remain suppressed. Deleted cursor
 anchors do not block keyset progress. Explicit reset/delete clears scoped
 progress and rotates admission; retention does not renew bootstrap. Persistent
-metadata is bounded (65536 offered spans, plus the existing operation/scope
-limits and a 32 MiB operation-payload ceiling); exhaustion stops new purchases
-rather than pruning anti-repurchase evidence. Pending purge intents suppress
-reuse immediately. No destructive downgrade is needed; pending explicit-reset
-intents must drain before an old-binary rollback.
+metadata limits are **per logical/physical scope**, not shared across all
+conversations: 65536 live offers, a 32 MiB journal reservation (including 16 KiB
+for each possible outcome), and the existing per-scope operation count bound.
+The recent 64-operation tail is retained; older terminal/released progressive
+operations and offers whose sources no longer exist can be reclaimed. Every
+uncertain operation/offer and the independent bootstrap marker survive. Live
+failed fingerprints, representation/re-offer associations and unlocatable legacy
+anti-repurchase evidence are retained when still needed, never evicted to buy
+more work. A scope that fills its required working set stops with a gap; it does
+not poison other scopes. This journal is not an indefinite accounting archive.
+
+Purge/tombstone transactions remove source digests and span fingerprints from
+upkeep state, strip content-bound reservation manifests/progress, and clear the
+cursor digest. Unknown operations keep only opaque identity/state/ordinal evidence;
+bootstrap is not refunded. Source tombstones also lose their retained-text digest
+and attestation copy. Legacy operations without source ordinals cannot safely
+match offers once their fingerprints are erased: those scopes conservatively
+stop purchasing until an explicit reset. A definite dispatch rollback reports
+skipped/non-invoked; a lost acknowledgement or owner post-check remains uncertain.
+
+Pending purge intents suppress reuse immediately. No destructive downgrade is
+needed, but **older binaries reject merged ledgers above their 24-entry/256-span
+read limits** (this version accepts 64/1024). Disable upkeep/ledger reading before
+rollback and expect deterministic fallback, not backward-compatible injection of
+those aggregates. Pending explicit-reset intents must drain before rollback.
 
 The existing benchmark still buys **one** preparation per trace/repeat. This
 production slice does not claim the later multi-child A→R→A preparation proof or
