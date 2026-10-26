@@ -105,7 +105,8 @@ at most 64 spans, inside the cumulative input allowance. Tool interiors use
 UTF-8-safe overlapping windows; owner paragraphs are indivisible. Bounded span
 enumeration leaves unscanned evidence disclosed, never counted as preserved.
 The disabled deterministic-pack query is unchanged. An indivisible owner paragraph
-that cannot ever fit a minimal delta at the maximum prefix allowance is recorded
+that cannot fit a minimal delta alongside the **actual prior** at this boundary's
+headroom is recorded
 as an **oversized offer**, never represented. Its cursor advances with **zero
 paid calls**, so a pasted log cannot permanently stall later evidence. The gap
 remains disclosed. A tool whose arguments exceed the remaining page budget ends
@@ -129,7 +130,9 @@ A completion proposes only new entries. Prior entries and their citations remain
 source IDs are rebased to stable host identities. Entries have host-assigned
 stable IDs, with deterministic source-bound IDs for legacy entries. The aggregate
 is capped at **64 entries**. Validation enforces **24 per delta** for request-cap
-adapters, **8 for Codex**, and any smaller admitted rendering limit.
+adapters, **8 for Codex**, and any smaller admitted rendering limit. Admission
+chooses the largest usable delta cap, then a fitting prefix of at most **8 × cap**
+spans. Only the admitted cap appears in the provider instructions.
 
 Optional relations bind an existing target ID, exact target value/citations and a
 distinct proposed successor ID. The host enforces bounded relations and strictly
@@ -180,9 +183,12 @@ publication never advances representation.
 
 The fenced dispatch transaction durably records offers and advances the cursor.
 A pending or unacknowledged result is not representation. Invalid operations keep
-failed offers suppressed; a valid published response leaves uncited spans
-**re-offerable**, not failed or represented. New evidence gets priority before
-revisiting those spans at a later boundary. Successful publication alone
+failed offers suppressed. Valid uncited spans become terminal **analyzed**: they
+remain disclosed but are neither represented nor purchased at idle boundaries.
+Only a response that **saturates the admitted entry cap** may leave uncited spans
+re-offerable, **once**. Transient `publish_cas`/`publish_cancelled` failures also
+allow at most one re-offer; quota/bounds failures become failed immediately.
+Fresh evidence takes priority over that single deferred opportunity. Successful publication alone
 associates entry-cited spans with the latest ledger. Analysis-only `covered`
 claims do not establish representation in either profile. Unknown batches are
 not resubmitted; unresolved dispatch conservatively blocks the scope.
@@ -191,27 +197,40 @@ Deleting, tombstoning or changing **any** contributing source invalidates the
 latest ledger and its representation associations in the same transaction.
 Surviving successful sources become unrepresented and eligible for bounded
 reconstruction. Failed/uncertain offers remain suppressed. Deleted cursor
-anchors do not block keyset progress. Explicit reset/delete clears scoped
-progress and rotates admission; retention does not renew bootstrap. Persistent
-metadata limits are **per logical/physical scope**, not shared across all
-conversations: 65536 live offers, a 32 MiB journal reservation (including 16 KiB
-for each possible outcome), and the existing per-scope operation count bound.
-The recent 64-operation tail is retained; older terminal/released progressive
-operations and offers whose sources no longer exist can be reclaimed. Every
-uncertain operation/offer and the independent bootstrap marker survive. Live
-failed fingerprints, representation/re-offer associations and unlocatable legacy
-anti-repurchase evidence are retained when still needed, never evicted to buy
-more work. A scope that fills its required working set stops with a gap; it does
-not poison other scopes. This journal is not an indefinite accounting archive.
+anchors do not block keyset progress. A retention tombstone never rewinds the
+cursor: only its own continuation digest/offset can be reset. Explicit reset/delete
+clears scoped progress and rotates admission; retention does not renew bootstrap.
 
-Purge/tombstone transactions remove source digests and span fingerprints from
-upkeep state, strip content-bound reservation manifests/progress, and clear the
-cursor digest. Unknown operations keep only opaque identity/state/ordinal evidence;
-bootstrap is not refunded. Source tombstones also lose their retained-text digest
-and attestation copy. Legacy operations without source ordinals cannot safely
-match offers once their fingerprints are erased: those scopes conservatively
-stop purchasing until an explicit reset. A definite dispatch rollback reports
-skipped/non-invoked; a lost acknowledgement or owner post-check remains uncertain.
+Local safety limits remain 65536 offers, 16384 operations and a 32MiB journal
+reservation per logical/physical scope. In addition, **operations, offers and
+progress bytes count against the shared retention `maxBytes`**, including UTF-8
+metadata and row overhead. Normal cleanup keeps the recent 64-operation tail;
+quota pressure retires inactive terminal working sets in **least-recently-used
+scope order** before evicting source text. Active/pending and uncertain work is
+not reclaimed. A content-free ordinal floor keeps retired evidence from being
+purchased again even if representation is later invalidated; retired coverage is
+reported as a gap, not as representation. Partial-record retirement can leave an
+unscanned remainder disclosed. This is not an indefinite accounting archive.
+
+Bootstrap/identity rows are never reclaimed (UUID operation IDs in normal use,
+4096-code-unit scope identifiers and the bounded reservation ID at the hard limit).
+A native scope has at most one unresolved purchase: at most a 128KiB reservation,
+16KiB receipt and 256 offer rows (64 in the production selection path). All such
+unknown rows remain protected and charged. Compact retirement floors are also
+charged. If protected state alone fills the quota, admission stops without buying
+more work. Lineage/render/payload/aggregate saturation likewise reports a gap;
+future checkpoint work owns that limitation.
+
+In scopes with P3b2 progress, purge/tombstone transactions erase source digests
+and span fingerprints. They scrub **only reservations citing the erased ordinal**,
+not unrelated in-flight work. Unknown offers keep opaque identity/state/ordinal
+information; bootstrap is not refunded. Source tombstones in those scopes also
+lose retained-text digests and attestation copies. P3b1 disabled scopes do not
+install progress triggers or alter checkpoint metadata. On first enabled progress
+creation, an idempotent migration strips legacy content fingerprints without
+blocking terminal scopes; legacy uncertainty remains uncertain. A definite
+dispatch rollback reports skipped/non-invoked; lost acknowledgements and owner
+post-check failures remain uncertain.
 
 Pending purge intents suppress reuse immediately. No destructive downgrade is
 needed, but **older binaries reject merged ledgers above their 24-entry/256-span

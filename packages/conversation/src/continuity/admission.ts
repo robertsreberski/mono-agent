@@ -14,24 +14,24 @@ export interface UpkeepAdmission extends UpkeepFence { readonly bootstrap: boole
 export interface UpkeepReservation extends UpkeepFence {
   readonly operationId: string; readonly runId: string; readonly recorderNamespace: string;
   readonly model: string; readonly manifest: string; readonly parent: string | null;
-  readonly budget: "bootstrap" | "incremental"; readonly progress?: LedgerProgress;
+  readonly budget: "bootstrap" | "incremental"; readonly payloadReserve?: number; readonly progress?: LedgerProgress;
 }
 export type UpkeepMutation =
   | { readonly kind: "inspect"; readonly scope: UpkeepScope }
   | { readonly kind: "claim"; readonly expected: UpkeepFence; readonly ownerToken: string }
   | { readonly kind: "reserve"; readonly reservation: UpkeepReservation }
   | { readonly kind: "oversized"; readonly fence: UpkeepFence; readonly progress: LedgerProgress; readonly operationId: string; readonly advance: boolean }
-  | { readonly kind: "reject"; readonly reservation: UpkeepReservation }
+  | { readonly kind: "reject"; readonly reservation: UpkeepReservation; readonly retry?: boolean }
+  | { readonly kind: "settle"; readonly reservation: UpkeepReservation; readonly saturated: boolean }
   | { readonly kind: "dispatch"; readonly reservation: UpkeepReservation }
   | { readonly kind: "outcome"; readonly reservation: UpkeepReservation; readonly receipt: ContinuityUpkeepReceipt };
 type Row = Record<string, any>;
 const NON_INVOCATION = new Set(["model_identity", "input_budget", "cap_unsupported", "model_headroom"]);
 function fail(): never { throw new Error("upkeep_admission_conflict"); }
 
-/** Additive v3 tables. Never attached to ledger/source cascades or retention.
- * Exhaustion stops admission rather than discarding anti-repurchase evidence. */
+/** Additive v3 identity/markers survive retention. Terminal working sets are
+ * quota-managed; exhaustion never discards uncertain admission evidence. */
 export function createUpkeepSchema(db: DatabaseSync): void {
-  createProgressSchema(db);
   db.exec(`CREATE TABLE IF NOT EXISTS continuity_upkeep_identity (id TEXT PRIMARY KEY);
     CREATE TABLE IF NOT EXISTS continuity_upkeep_scopes (
       logical_id TEXT NOT NULL, conversation_id TEXT NOT NULL, incarnation TEXT NOT NULL,
@@ -57,7 +57,7 @@ function identity(db: DatabaseSync, root: string): string {
 }
 function view(db: DatabaseSync, root: string, scope: UpkeepScope): UpkeepAdmission {
   const row = scopeRow(db, scope);
-  return { ...scope, databaseId: identity(db, root), incarnation: row.incarnation, fence: row.fence, ownerToken: row.owner_token, bootstrap: row.bootstrap_operation === null, ...(db.prepare("SELECT 1 FROM continuity_upkeep_operations WHERE logical_id=? AND conversation_id=? AND incarnation=? AND (state IN ('dispatch_started','uncertain') OR json_extract(reservation,'$.legacy_opaque')=1)").get(scope.logicalId, scope.conversationId, row.incarnation) ? { uncertain: true } : {}) };
+  return { ...scope, databaseId: identity(db, root), incarnation: row.incarnation, fence: row.fence, ownerToken: row.owner_token, bootstrap: row.bootstrap_operation === null, ...(db.prepare("SELECT 1 FROM continuity_upkeep_operations WHERE logical_id=? AND conversation_id=? AND incarnation=? AND state IN ('dispatch_started','uncertain')").get(scope.logicalId, scope.conversationId, row.incarnation) ? { uncertain: true } : {}) };
 }
 export function assertUpkeepFence(db: DatabaseSync, root: string, fence: UpkeepFence): Row {
   const row = scopeRow(db, fence);
@@ -106,6 +106,7 @@ export function mutateUpkeep(db: DatabaseSync, root: string, request: UpkeepMuta
   }
   const r = request.reservation, scope = assertUpkeepFence(db, root, r), serialized = JSON.stringify(r);
   if (Buffer.byteLength(serialized) > 131072 || !r.operationId || !r.runId || !r.recorderNamespace || !r.model || !/^[a-f0-9]{64}$/u.test(r.manifest)) fail();
+  if (r.payloadReserve !== undefined && (!Number.isSafeInteger(r.payloadReserve) || r.payloadReserve < 0 || r.payloadReserve > 131072)) fail();
   if (request.kind === "reserve") {
     const old = db.prepare("SELECT reservation FROM continuity_upkeep_operations WHERE operation_id=?").get(r.operationId) as Row | undefined;
     if (old) { if (old.reservation !== serialized) fail(); return null; }
@@ -116,11 +117,13 @@ export function mutateUpkeep(db: DatabaseSync, root: string, request: UpkeepMuta
     // Until progressive source reconciliation exists, conservatively stop this
     // scope on unresolved dispatch. A smaller incremental selection must not
     // repurchase part of an uncertain 128k bootstrap after restart.
-    if (db.prepare("SELECT 1 FROM continuity_upkeep_operations WHERE logical_id=? AND conversation_id=? AND incarnation=? AND (state IN ('dispatch_started','uncertain') OR json_extract(reservation,'$.legacy_opaque')=1)").get(r.logicalId, r.conversationId, r.incarnation)) throw new LedgerError("upkeep_repeat_suppressed");
+    if (db.prepare("SELECT 1 FROM continuity_upkeep_operations WHERE logical_id=? AND conversation_id=? AND incarnation=? AND state IN ('dispatch_started','uncertain')").get(r.logicalId, r.conversationId, r.incarnation)) throw new LedgerError("upkeep_repeat_suppressed");
     const key = ledgerHash(JSON.stringify([r.manifest, r.parent]));
     // Model changes, lost receipts and restarts do not repurchase uncertain work.
-    if (db.prepare("SELECT 1 FROM continuity_upkeep_operations WHERE logical_id=? AND conversation_id=? AND incarnation=? AND selection_key=? AND state<>'released'").get(r.logicalId, r.conversationId, r.incarnation, key)) throw new LedgerError("upkeep_repeat_suppressed");
+    if (db.prepare("SELECT 1 FROM continuity_upkeep_operations WHERE logical_id=? AND conversation_id=? AND incarnation=? AND selection_key=? AND state<>'released'").get(r.logicalId, r.conversationId, r.incarnation, key)
+      && !(r.progress?.spans.length && r.progress.spans.every(span => db.prepare("SELECT 1 FROM continuity_upkeep_offers WHERE logical_id=? AND conversation_id=? AND span_key=? AND state='reofferable' AND attempt=0").get(r.logicalId, r.conversationId, span.key)))) throw new LedgerError("upkeep_repeat_suppressed");
     if (Number((db.prepare("SELECT count(*) n FROM continuity_upkeep_operations WHERE logical_id=? AND conversation_id=?").get(r.logicalId, r.conversationId) as Row).n) >= 16384) fail();
+    if (r.progress) db.prepare("INSERT OR IGNORE INTO continuity_upkeep_progress VALUES (?,?,?,?)").run(r.logicalId, r.conversationId, r.incarnation, JSON.stringify({ ordinal: 1, offset: 0, digest: "", watermark: 0 }));
     db.prepare("INSERT INTO continuity_upkeep_operations VALUES (?,?,?,?,?,?,?,?,?,'reserved',NULL)").run(r.operationId, r.logicalId, r.conversationId, r.incarnation, r.fence, r.ownerToken, serialized, key, r.budget);
     return null;
   }
@@ -136,9 +139,13 @@ export function mutateUpkeep(db: DatabaseSync, root: string, request: UpkeepMuta
     db.prepare("UPDATE continuity_upkeep_operations SET state='dispatch_started' WHERE operation_id=?").run(r.operationId);
     return null;
   }
+  if (request.kind === "settle") {
+    if (row.state !== "terminal") fail();
+    db.prepare("UPDATE continuity_upkeep_offers SET state=CASE WHEN ? AND attempt=0 THEN 'pending_retry' ELSE 'pending' END WHERE operation_id=? AND state='pending'").run(Number(request.saturated), r.operationId); return null;
+  }
   if (request.kind === "reject") {
     if (row.state !== "terminal") fail();
-    db.prepare("UPDATE continuity_upkeep_offers SET state='failed' WHERE operation_id=? AND state='pending'").run(r.operationId); return null;
+    db.prepare("UPDATE continuity_upkeep_offers SET state=CASE WHEN ? THEN CASE WHEN attempt=0 THEN 'reofferable' ELSE 'analyzed' END ELSE 'failed' END WHERE operation_id=? AND state IN ('pending','pending_retry')").run(Number(request.retry === true), r.operationId); return null;
   }
   if (request.receipt.operationId !== r.operationId || request.receipt.model !== r.model) fail();
   const outcome = JSON.stringify(request.receipt);

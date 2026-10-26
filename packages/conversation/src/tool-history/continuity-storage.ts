@@ -1,4 +1,4 @@
-import { createProgressSchema, purgeUpkeepProgress } from "../continuity/progress.js";
+import { purgeUpkeepProgress, upkeepBytes, reclaimUpkeepQuota } from "../continuity/progress.js";
 import { ledgerBytes } from "../continuity/ledger-storage.js";
 import { createHash, randomBytes } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
@@ -248,8 +248,9 @@ function matchesCheckpoint(database: DatabaseSync, generationId: string, proof: 
   if (proof?.status !== "published") return false;
   const records = database.prepare("SELECT source_json,summary_json,text_sha256 FROM continuity_records WHERE generation_id=?").all(generationId) as Record<string, unknown>[];
   return records.length === 1 && records.every((record) => {
+    if (record.source_json === null || record.summary_json === null) return false;
     const source = JSON.parse(record.source_json as string), summary = JSON.parse(record.summary_json as string);
-    return source.journalId === proof.journalId && source.operationId === proof.operationId && summary.coverage.sourceDigest === proof.sourceDigest && record.text_sha256 === proof.summaryDigest;
+    return source.journalId === proof.journalId && source.operationId === proof.operationId && summary?.coverage?.sourceDigest === proof.sourceDigest && record.text_sha256 === proof.summaryDigest;
   });
 }
 
@@ -298,7 +299,7 @@ export function resetContinuity(database: DatabaseSync, logicalId: string): void
 }
 
 export function continuityRetainedBytes(database: DatabaseSync): number {
-  return ledgerBytes(database) + Number((database.prepare("SELECT coalesce(sum(retained_bytes),0) bytes FROM continuity_records WHERE retained_text IS NOT NULL").get() as Record<string, unknown>).bytes);
+  return ledgerBytes(database) + upkeepBytes(database) + Number((database.prepare("SELECT coalesce(sum(retained_bytes),0) bytes FROM continuity_records WHERE retained_text IS NOT NULL").get() as Record<string, unknown>).bytes);
 }
 export function toolRetainedBytes(database: DatabaseSync): number {
   return Number((database.prepare("SELECT coalesce(sum(retained_bytes),0) bytes FROM tool_records").get() as Record<string, unknown>).bytes);
@@ -306,7 +307,6 @@ export function toolRetainedBytes(database: DatabaseSync): number {
 
 /** Never removes pinned or prepared evidence, even if the configured quota shrinks. */
 export function retainContinuity(database: DatabaseSync, limits: Required<ToolHistoryRetentionOptions>, now: number, reservedBytes = 0, reservedRecords = 0): void {
-  if (database.prepare("SELECT 1 FROM sqlite_master WHERE name='continuity_upkeep_operations'").get()) createProgressSchema(database);
   const eligible = `retained_text IS NOT NULL AND NOT EXISTS (SELECT 1 FROM continuity_pins p WHERE p.record_id=continuity_records.record_id)
     AND generation_id IN (SELECT generation_id FROM continuity_generations WHERE state='committed')`;
   database.prepare(`UPDATE continuity_records SET retained_text=NULL,tombstone_reason='age',removed_at_ms=?
@@ -315,6 +315,7 @@ export function retainContinuity(database: DatabaseSync, limits: Required<ToolHi
     + reservedRecords - limits.maxCompletedCalls);
   database.prepare(`UPDATE continuity_records SET retained_text=NULL,tombstone_reason='count',removed_at_ms=? WHERE record_id IN
     (SELECT record_id FROM continuity_records WHERE ${eligible} ORDER BY ordinal LIMIT ?)`).run(now, countOverflow);
+  reclaimUpkeepQuota(database, () => continuityRetainedBytes(database) + toolRetainedBytes(database) + reservedBytes <= limits.maxBytes);
   while (continuityRetainedBytes(database) + toolRetainedBytes(database) + reservedBytes > limits.maxBytes) {
     const row = database.prepare(`SELECT record_id FROM continuity_records WHERE ${eligible} ORDER BY ordinal LIMIT 1`).get() as Record<string, unknown> | undefined;
     if (!row) break;
@@ -408,7 +409,7 @@ function validateRecord(r: ContinuityRecordInput): void {
     const summary = r.summary;
     if (!summary || !["manual", "pre-turn", "reactive", "mid-run"].includes(summary.trigger)) fail("continuity_invalid_record", "Summary coverage is required.");
     safeMetadata(summary.model); safeMetadata(summary.operationId);
-    validateDigest(summary.coverage.sourceDigest);
+    validateDigest(summary?.coverage?.sourceDigest);
     for (const id of [summary.coverage.firstRecordId, summary.coverage.lastRecordId]) if (id !== undefined && !RECORD_ID.test(id)) fail("continuity_invalid_record", "Invalid summary coverage reference.");
     if (Object.keys(summary).some((k) => !["model", "operationId", "trigger", "coverage"].includes(k))
       || Object.keys(summary.coverage).some((k) => !["sourceDigest", "firstRecordId", "lastRecordId"].includes(k))) fail("continuity_invalid_record", "Unsupported summary metadata.");

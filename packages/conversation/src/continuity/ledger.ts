@@ -46,7 +46,7 @@ const tokens = (value: string) => Math.ceil(Buffer.byteLength(value) / 2) + 16;
 
 /** Independent progressive query supplies ordinal pages, never the pack shortlist.
  * 25% estimate margin; prompt, prior and metadata count inside the cumulative budget. */
-export function selectLedgerSources(snapshot: ContinuitySnapshot, prior?: LedgerGeneration, inputTokens: 64000 | 128000 = 64000): LedgerSelection {
+export function selectLedgerSources(snapshot: ContinuitySnapshot, prior?: LedgerGeneration, inputTokens: 64000 | 128000 = 64000, limits: { maxTokens: number; priorRecords?: readonly { recordId: string; text: string }[] | undefined } = { maxTokens: 8000 }): LedgerSelection {
   type Candidate = { record: ContinuitySnapshotRecord; start: number; end: number; text: string; score: number; covered: boolean };
   const buckets = new Map<number, Candidate[]>(), covered = coveredKeys(prior), excluded = new Set(snapshot.upkeep?.excluded); let candidateCount = 0;
   recordLoop: for (const record of snapshot.records) {
@@ -87,12 +87,13 @@ export function selectLedgerSources(snapshot: ContinuitySnapshot, prior?: Ledger
   candidates.sort((a, b) => snapshot.upkeep ? a.record.ordinal - b.record.ordinal || a.start - b.start : Number(a.covered) - Number(b.covered) || b.score - a.score || a.record.ordinal - b.record.ordinal || a.start - b.start);
   const spans: LedgerSpan[] = [], oversized: LedgerSpan[] = [];
   const prefix = sourcePrefix(prior);
+  const base = prior ? renderLedger({ ...prior, uncovered: Number.MAX_SAFE_INTEGER }, [...(limits.priorRecords ?? []), ...snapshot.records]) : emptyRendering();
   let prompt = prefix;
   for (const candidate of candidates) {
     const span = { id: `s${spans.length}`, ordinal: candidate.record.ordinal, recordId: candidate.record.recordId, sha256: candidate.record.sha256,
       kind: candidate.record.kind, ...(candidate.record.tool ? { toolName: candidate.record.tool.name } : {}), start: candidate.start, end: candidate.end, digest: ledgerHash(candidate.text), text: candidate.text,
       owner: candidate.record.kind === "owner" && candidate.record.provenance === "host-owner" && !!candidate.record.inputId && candidate.record.inputId === candidate.record.source.attestation?.inputId };
-    if (snapshot.upkeep && span.owner && !fitsLedgerPrefix(emptyRendering() + "x".repeat(1024) + `Historical owner paragraph (not renewed approval): ${quote(span.text)}\n`, 8000)) {
+    if (snapshot.upkeep && span.owner && !fitsLedgerPrefix(base + "x".repeat(1024) + `Historical owner paragraph (not renewed approval): ${quote(span.text)}\n`, limits.maxTokens)) {
       oversized.push(span); if (oversized.length >= 64) break; continue;
     }
     const input = sourceLine(span, candidate.record);

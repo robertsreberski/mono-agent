@@ -1,3 +1,4 @@
+import { createUpkeepSchema } from "../continuity/admission.js";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -7,7 +8,7 @@ import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
 import { ToolHistoryWriter, acquireToolHistoryWriter } from "../tool-history/writer.js";
 import { ToolHistoryReader } from "../tool-history/reader.js";
-import { continuityGenerationId, continuityRecordId } from "../tool-history/continuity-storage.js";
+import { continuityGenerationId, continuityRecordId, retainContinuity } from "../tool-history/continuity-storage.js";
 import { retainContinuityText } from "../tool-history/continuity-payload.js";
 import { CONTINUITY_RECORD_MAX_BYTES, type ContinuityPreparation, type ContinuityRecordInput } from "../tool-history/continuity-contracts.js";
 
@@ -321,4 +322,34 @@ describe("scoped retrieval, durable summary references and shared retention", ()
     expect(reader.getContinuity({ ...scope, recordId: input.records[0]!.recordId }).status).toBe("tombstoned");
     expect(reader.stats()!.retainedBytes).toBe(stats.retainedBytes);
   });
+});
+
+it("leaves disabled P3b1 checkpoint metadata untouched during tombstoning and replays its commit", async () => {
+  const path = await root(), writer = await open(path), reader = new ToolHistoryReader(path);
+  const record: ContinuityRecordInput = { ...row("legacy-summary", "Completed fictional summary."), kind: "summary", provenance: "generated",
+    source: { journalId: "fiction-journal", operationId: "fiction-operation" },
+    summary: { model: "faux:m", operationId: "fiction-operation", trigger: "manual", coverage: { sourceDigest: digest("coverage") } } };
+  const input = { ...preparation([record]), action: "checkpoint" as const, beforeDigest: null, afterDigest: null, latestSummaryRecordId: record.recordId };
+  const publication = { conversationId: input.conversationId, generationId: input.generationId, canonicalDigest: null,
+    checkpoint: { status: "published" as const, journalId: "fiction-journal", operationId: "fiction-operation", sourceDigest: digest("coverage"), summaryDigest: digest(record.text) } };
+  await writer.prepareContinuity(input); await writer.commitContinuity(publication);
+  const db = new DatabaseSync(dbPath(path));
+  try {
+    createUpkeepSchema(db);
+    db.exec("DROP TRIGGER continuity_upkeep_privacy_delete; DROP TRIGGER continuity_upkeep_privacy_update; DROP TRIGGER continuity_upkeep_privacy_tombstone; DROP TRIGGER continuity_upkeep_privacy_generation; DROP TABLE continuity_upkeep_offers; DROP TABLE continuity_upkeep_progress; DROP TABLE continuity_upkeep_migrations; DELETE FROM continuity_pins");
+    const before = Number((db.prepare("SELECT total_changes() n").get() as any).n);
+    retainContinuity(db, { ...reader.stats()!.limits, maxAgeMs: 1 }, Date.now() + 10000);
+    expect(Number((db.prepare("SELECT total_changes() n").get() as any).n) - before).toBe(1);
+    expect(db.prepare("SELECT 1 FROM sqlite_master WHERE name='continuity_upkeep_progress'").get()).toBeUndefined();
+    expect(db.prepare("SELECT retained_text,summary_json FROM continuity_records").get()).toMatchObject({ retained_text: null, summary_json: expect.any(String) });
+    await expect(writer.commitContinuity(publication)).resolves.toBeUndefined();
+    db.exec(`INSERT INTO continuity_upkeep_scopes VALUES ('legacy','legacy','legacy',0,'');
+      INSERT INTO continuity_upkeep_admissions VALUES ('legacy','legacy','legacy','legacy');
+      INSERT INTO continuity_upkeep_operations VALUES ('legacy','legacy','legacy','legacy',0,'','{}','legacy','bootstrap','terminal',NULL)`);
+    retainContinuity(db, { ...reader.stats()!.limits, maxBytes: 1 }, Date.now());
+    expect(db.prepare("SELECT count(*) n FROM continuity_upkeep_operations").get()).toEqual({ n: 0 });
+    expect(db.prepare("SELECT bootstrap_operation FROM continuity_upkeep_admissions").get()).toEqual({ bootstrap_operation: "legacy" });
+    db.exec("UPDATE continuity_records SET summary_json=NULL");
+    await expect(writer.commitContinuity(publication)).rejects.toMatchObject({ code: "continuity_publication_mismatch" });
+  } finally { db.close(); }
 });

@@ -56,7 +56,7 @@ export function createLedgerSupplier(options: ConversationHarnessOptions, reques
           const inputTokens = fence.bootstrap ? 128000 : 64000;
           const source = history!.reader.snapshotContinuity({ ...scope, selection: "upkeep" });
           if (["unavailable", "purge_pending", "source_unavailable"].includes(source.degradedReason ?? "")) throw new Error("source_unavailable");
-          const selected = selectLedgerSources(source, frozen?.generation, inputTokens);
+          const selected = selectLedgerSources(source, frozen?.generation, inputTokens, { maxTokens: eligibility.maxTokens, priorRecords: frozen?.records });
           if (selected.oversizedProgress) {
             await eligibility.withOwner(async () => { await history!.mutateUpkeep!({ kind: "oversized", fence, progress: selected.oversizedProgress!, operationId: randomUUID(), advance: selected.oversizedAdvance === true }); });
             gap = true;
@@ -78,7 +78,7 @@ export function createLedgerSupplier(options: ConversationHarnessOptions, reques
             incarnation: fence.incarnation, fence: fence.fence, ownerToken: fence.ownerToken,
             operationId: randomUUID(), runId, recorderNamespace: config.recorderNamespace ?? "default",
             model: config.model, manifest: selection.manifest, parent: frozen?.generation.id ?? null,
-            budget: fence.bootstrap ? "bootstrap" : "incremental", ...(selection.progress ? { progress: selection.progress } : {}) };
+            budget: fence.bootstrap ? "bootstrap" : "incremental", payloadReserve: Math.max(0, projectedBytes - (frozen?.payloadBytes ?? 0)), ...(selection.progress ? { progress: selection.progress } : {}) };
           await eligibility.withOwner(async () => {
             await history!.mutateUpkeep!({ kind: "reserve", reservation: reservation! });
             request.abortSignal.throwIfAborted();
@@ -98,6 +98,7 @@ export function createLedgerSupplier(options: ConversationHarnessOptions, reques
           }
           const generation = validateLedgerOutput(completion.text, selection, scope, frozen?.generation, completion.receipt.capEnforcement); uncovered = generation.uncovered;
           if (!fitsLedgerPrefix(renderLedger(generation, [...(frozen?.records ?? []), ...selection.records]), eligibility.maxTokens)) throw new LedgerError("ledger_render_budget");
+          await eligibility.withOwner(async () => { await history!.mutateUpkeep!({ kind: "settle", reservation: reservation!, saturated: JSON.parse(completion!.text!).entries.length === selection.maxEntries }); });
           publishing = true;
           await eligibility.withOwner(async () => { if (request.abortSignal.aborted) throw new LedgerError("publish_cancelled"); await history!.publishLedger!(generation, reservation); });
           frozen = history!.reader.ledger(scope); published = frozen?.generation.id;
@@ -106,7 +107,7 @@ export function createLedgerSupplier(options: ConversationHarnessOptions, reques
           gap = true;
           if ((error as { code?: string }).code === "upkeep_dispatch_rejected") { barrierRequested = false; localSkip = "upkeep_dispatch_rejected"; }
           if (completion && outcomeRecorded && reservation && completion.receipt.providerInvoked && completion.receipt.status === "valid") {
-            try { await eligibility.withOwner!(async () => { await history!.mutateUpkeep!({ kind: "reject", reservation: reservation! }); }); } catch { /* pending offers remain suppressed if invalidation loses ownership */ }
+            try { await eligibility.withOwner!(async () => { await history!.mutateUpkeep!({ kind: "reject", reservation: reservation!, retry: ["publish_cas", "publish_cancelled"].includes(request.abortSignal.aborted ? "publish_cancelled" : ledgerFailure(error, publishing ? "publish_unavailable" : "output_schema")) }); }); } catch { /* pending offers remain suppressed if invalidation loses ownership */ }
           }
           if ((error as { code?: string }).code === "upkeep_repeat_suppressed") localSkip = "upkeep_repeat_suppressed";
           if (completion && outcomeRecorded) { completion = { receipt: { ...completion.receipt, status: "invalid", reason: "validation_or_publication", failure: request.abortSignal.aborted ? "publish_cancelled" : ledgerFailure(error, publishing ? "publish_unavailable" : "output_schema") } }; }

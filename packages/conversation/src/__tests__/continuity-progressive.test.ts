@@ -9,7 +9,7 @@ import { ToolHistoryReader } from "../tool-history/reader.js";
 import { continuityGenerationId, continuityRecordId, retainContinuity } from "../tool-history/continuity-storage.js";
 import { persistContinuityPurge } from "../tool-history/continuity-purge.js";
 import { createContinuityPackSupplier } from "../continuity/pack.js";
-import { reclaimProgress } from "../continuity/progress.js";
+import { reclaimProgress, upkeepBytes } from "../continuity/progress.js";
 import { fitsLedgerPrefix } from "../continuity/render-fit.js";
 import { ledgerHash, fitLedgerSelection, projectedLedgerPayloadBytes, LEDGER_PAYLOAD_BYTES, normalizeLedger, renderLedger, selectLedgerSources, spanKey, validateLedgerOutput, type LedgerEntry } from "../continuity/ledger.js";
 import type { ConversationHarnessOptions } from "../harness/contracts.js";
@@ -63,7 +63,7 @@ it("progresses beyond 512 records, preserves earlier stable entries, and reaches
   const keys = f.selections.flat().map(spanKey); expect(new Set(keys).size).toBe(keys.length);
   expect(f.budgets[0]).toBe(128000); expect(f.budgets.slice(1).every(budget => budget === 64000)).toBe(true);
   expect(f.db(db => db.prepare("SELECT count(*) n FROM continuity_upkeep_operations WHERE budget='bootstrap'").get())).toEqual({ n: 1 });
-  expect(f.db(db => db.prepare("SELECT count(*) n FROM continuity_upkeep_offers WHERE state='reofferable'").get())).not.toEqual({ n: 0 });
+  expect(f.db(db => db.prepare("SELECT count(*) n FROM continuity_upkeep_offers WHERE state='analyzed'").get())).not.toEqual({ n: 0 });
 }, 20000);
 
 it("resumes a UTF-8 interior cursor without reoffering windows or relying on a source anchor", async () => {
@@ -95,7 +95,7 @@ it("restarts span enumeration on changed source digest rather than inheriting it
 it("atomically invalidates all representation on a contributing tombstone but reconstructs only successful survivors", async () => {
   const f = await fixture(); await f.capture(130); await f.prepare(); await f.prepare();
   const successes = f.db(db => db.prepare("SELECT ordinal FROM continuity_upkeep_offers WHERE state='represented'").all()) as { ordinal: number }[];
-  const victim = f.db(db => db.prepare("SELECT ordinal FROM continuity_upkeep_offers WHERE state='reofferable' LIMIT 1").get()) as { ordinal: number };
+  const victim = f.db(db => db.prepare("SELECT ordinal FROM continuity_upkeep_offers WHERE state='analyzed' LIMIT 1").get()) as { ordinal: number };
   f.db(db => db.prepare("UPDATE continuity_records SET retained_text=NULL WHERE ordinal=?").run(victim.ordinal));
   expect(f.reader.ledger(scope)).toBeUndefined();
   expect(f.db(db => db.prepare("SELECT count(*) n FROM continuity_upkeep_offers WHERE state='represented'").get())).toEqual({ n: 0 });
@@ -135,7 +135,7 @@ it("preserves the injectable prior and makes zero calls when smaller boundary he
   const f = await fixture(); await f.capture(); await f.prepare(); const prior = f.reader.ledger(scope)!;
   await f.capture(1, "Additional rule."); f.complete.mockClear(); const result = await f.prepare(1100);
   expect(f.complete).not.toHaveBeenCalled(); expect(f.reader.ledger(scope)!.generation.id).toBe(prior.generation.id);
-  expect(result.events).toContainEqual(expect.objectContaining({ reason: "ledger_render_budget", providerInvoked: false }));
+  expect(result.events).toContainEqual(expect.objectContaining({ reason: "source_oversized", providerInvoked: false }));
   expect(result.pack()).toContain("### Continuity ledger"); expect(result.pack()).toContain("Upkeep coverage gap");
 });
 
@@ -205,7 +205,7 @@ it("isolates offer capacity to its own scope without deleting another scope's un
   const f = await fixture(); await f.capture();
   await f.writer.mutateUpkeep({ kind: "inspect", scope: { logicalId: "fictional", conversationId: "fictional" } });
   f.db(db => db.exec(`WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM seq WHERE n<65536)
-    INSERT INTO continuity_upkeep_offers SELECT 'other','other','incarnation',printf('%064x',n),1,printf('%064x',0),0,1,printf('op-%d',n),'uncertain',NULL FROM seq;`));
+    INSERT INTO continuity_upkeep_offers SELECT 'other','other','incarnation',printf('%064x',n),1,printf('%064x',0),0,1,printf('op-%d',n),'uncertain',NULL,0 FROM seq;`));
   await f.prepare(); expect(f.complete).toHaveBeenCalledTimes(1);
   expect(f.db(db => db.prepare("SELECT count(*) n FROM continuity_upkeep_offers WHERE logical_id='other'").get())).toEqual({ n: 65536 });
 });
@@ -287,12 +287,12 @@ it("admits a balanced dense delta and preserves it at the next real supplier bou
   expect(f.db(db => db.prepare("SELECT DISTINCT state FROM continuity_upkeep_offers").all())).toEqual([{ state: "represented" }]);
 });
 
-it("keeps valid uncited spans re-offerable, after fresh evidence rather than burning or starving it", async () => {
+it("terminates unsaturated valid uncited spans without idle payments and still reaches fresh evidence", async () => {
   const f = await fixture(); await f.capture(3); await f.prepare();
-  expect(f.db(db => db.prepare("SELECT count(*) n FROM continuity_upkeep_offers WHERE state='reofferable'").get())).toEqual({ n: 2 });
+  expect(f.db(db => db.prepare("SELECT count(*) n FROM continuity_upkeep_offers WHERE state='analyzed'").get())).toEqual({ n: 2 });
   await f.capture(1, "Fresh."); await f.prepare(); expect(f.selections[1]!.map(row => row.ordinal)).toEqual([4]);
-  await f.prepare(); expect(f.selections[2]!.map(row => row.ordinal)).toEqual([2, 3]);
-  expect(f.reader.ledger(scope)!.generation.entries).toHaveLength(3);
+  await f.prepare(); expect(f.complete).toHaveBeenCalledTimes(2);
+  expect(f.reader.ledger(scope)!.generation.entries).toHaveLength(2);
 });
 
 it("projects the merged shape conservatively at the payload edge, including eight remapped citations per delta entry", async () => {
@@ -349,7 +349,7 @@ it("rechecks actual headroom after the provider returns and rejects only the del
 it("reports a definitive rolled-back dispatch as skipped without consuming bootstrap", async () => {
   const f = await fixture(); await f.capture(); await f.writer.mutateUpkeep({ kind: "inspect", scope: { logicalId: "fictional", conversationId: "fictional" } });
   f.db(db => db.exec(`WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM seq WHERE n<65536)
-    INSERT INTO continuity_upkeep_offers SELECT 'fictional','fictional','incarnation',printf('%064x',n),1,printf('%064x',0),0,1,printf('op-%d',n),'uncertain',NULL FROM seq;`));
+    INSERT INTO continuity_upkeep_offers SELECT 'fictional','fictional','incarnation',printf('%064x',n),1,printf('%064x',0),0,1,printf('op-%d',n),'uncertain',NULL,0 FROM seq;`));
   const result = await f.prepare(); expect(f.complete).not.toHaveBeenCalled();
   expect(result.events).toContainEqual(expect.objectContaining({ status: "skipped", reason: "upkeep_dispatch_rejected", providerInvoked: false }));
   expect(result.events.some(event => event.status === "uncertain")).toBe(false);
@@ -361,7 +361,7 @@ it("reclaims terminal progress journals and proof-obsolete offers, but never unc
   for (let i = 0; i < 72; i++) { await f.capture(1, `New fictional ${i}.`); await f.prepare(); }
   expect(f.db(db => db.prepare("SELECT count(*) n FROM continuity_upkeep_operations").get())).toEqual({ n: 64 });
   expect((await f.writer.mutateUpkeep({ kind: "inspect", scope: { logicalId: "fictional", conversationId: "fictional" } }))!.bootstrap).toBe(false);
-  f.db(db => { db.prepare("INSERT INTO continuity_upkeep_offers VALUES ('fictional','fictional','incarnation','obsolete',9999,'gone',0,1,'obsolete','failed',NULL)").run(); reclaimProgress(db, "fictional", "fictional"); });
+  f.db(db => { db.prepare("INSERT INTO continuity_upkeep_offers VALUES ('fictional','fictional','incarnation','obsolete',9999,'gone',0,1,'obsolete','failed',NULL,0)").run(); reclaimProgress(db, "fictional", "fictional"); });
   expect(f.db(db => db.prepare("SELECT count(*) n FROM continuity_upkeep_offers WHERE span_key='obsolete'").get())).toEqual({ n: 0 });
   const mutate = f.ports.mutateUpkeep; f.ports.mutateUpkeep = async input => { if (input.kind === "outcome") throw new Error("Lost outcome."); return mutate(input); };
   await f.capture(1, "Uncertain."); await f.prepare();
@@ -411,20 +411,113 @@ it("purges terminal fingerprints without refunding bootstrap or blocking genuine
   await f.capture(1, "New evidence."); await f.prepare(); expect(f.budgets).toEqual([128000, 64000]);
 });
 
-it("installs privacy guards for disabled legacy retention and keeps unlocatable anti-repurchase evidence", async () => {
+it.each([false, true])("migrates legacy reservations once without a retention barrier (uncertain=%s)", async uncertain => {
   const f = await fixture(); await f.capture();
   const expected = (await f.writer.mutateUpkeep({ kind: "inspect", scope: { logicalId: "fictional", conversationId: "fictional" } }))!;
   const fence = (await f.writer.mutateUpkeep({ kind: "claim", expected, ownerToken: "legacy-owner" }))!;
   const reservation = { ...fence, operationId: randomUUID(), runId: "legacy-run", recorderNamespace: "fictional", model: "fictional:base", manifest: "a".repeat(64), parent: null, budget: "bootstrap" as const };
   await f.writer.mutateUpkeep({ kind: "reserve", reservation }); await f.writer.mutateUpkeep({ kind: "dispatch", reservation });
-  await f.writer.mutateUpkeep({ kind: "outcome", reservation, receipt: { operationId: reservation.operationId, model: reservation.model, providerInvoked: true, status: "invalid" } as any });
+  if (!uncertain) await f.writer.mutateUpkeep({ kind: "outcome", reservation, receipt: { operationId: reservation.operationId, model: reservation.model, providerInvoked: true, status: "invalid" } as any });
+  f.db(db => db.exec("DROP TRIGGER continuity_upkeep_privacy_delete; DROP TRIGGER continuity_upkeep_privacy_update; DROP TRIGGER continuity_upkeep_privacy_tombstone; DROP TRIGGER continuity_upkeep_privacy_generation; DROP TABLE continuity_upkeep_offers; DROP TABLE continuity_upkeep_progress; DROP TABLE continuity_upkeep_migrations"));
   const limits = f.reader.stats()!.limits; f.ports.upkeep.enabled = false;
-  f.db(db => { db.exec("DROP TRIGGER continuity_upkeep_privacy_delete; DROP TRIGGER continuity_upkeep_privacy_update; DROP TRIGGER continuity_upkeep_privacy_tombstone; DROP TRIGGER continuity_upkeep_privacy_generation; DROP TABLE continuity_upkeep_offers; DROP TABLE continuity_upkeep_progress");
-    retainContinuity(db, { ...limits, maxAgeMs: 1 }, Date.now() + 10000); });
-  f.ports.upkeep.enabled = true;
-  await f.capture(1, "New evidence."); const result = await f.prepare(); expect(f.complete).not.toHaveBeenCalled();
-  expect(result.events).toContainEqual(expect.objectContaining({ reason: "upkeep_repeat_suppressed" }));
-  expect(f.db(db => db.prepare("SELECT state FROM continuity_upkeep_operations").get())).toEqual({ state: "terminal" });
-  persistContinuityPurge(f.root, { scope: "physical", conversationId: "fictional", resetUpkeep: true }); await f.writer.stats();
-  await f.capture(); await f.prepare(); expect(f.complete).toHaveBeenCalledTimes(1);
+  f.db(db => retainContinuity(db, { ...limits, maxAgeMs: 1 }, Date.now() + 10000));
+  expect(f.db(db => db.prepare("SELECT 1 FROM sqlite_master WHERE name='continuity_upkeep_progress'").get())).toBeUndefined();
+  f.ports.upkeep.enabled = true; await f.capture(1, "New evidence."); await f.prepare();
+  expect(f.complete).toHaveBeenCalledTimes(uncertain ? 0 : 1); expect(f.budgets).toEqual(uncertain ? [] : [64000]);
+  const old = f.db(db => db.prepare("SELECT reservation,state FROM continuity_upkeep_operations WHERE operation_id=?").get(reservation.operationId)) as any;
+  expect(old.state).toBe(uncertain ? "dispatch_started" : "terminal"); expect(JSON.parse(old.reservation).manifest).toBe(reservation.operationId);
+  await f.prepare(); expect(f.db(db => db.prepare("SELECT reservation FROM continuity_upkeep_operations WHERE operation_id=?").get(reservation.operationId))).toEqual({ reservation: old.reservation });
+});
+
+it("never purchases empty analyzed evidence again at idle boundaries", async () => {
+  const f = await fixture(); await f.capture(3); f.respond(() => []);
+  for (let i = 0; i < 3; i++) await f.prepare();
+  expect(f.complete).toHaveBeenCalledTimes(1);
+  expect(f.db(db => db.prepare("SELECT DISTINCT state FROM continuity_upkeep_offers").all())).toEqual([{ state: "analyzed" }]);
+  expect(f.reader.ledger(scope)!.generation.coveredSpans).toEqual([]);
+});
+
+it("allows only one re-offer when the admitted cap was saturated", async () => {
+  const f = await fixture(); await f.capture(12, "Neutral.", "fictional", true);
+  f.respond((rows, cap) => Array.from({ length: cap }, (_, i) => ({ kind: "open_work", value: `Saturated ${rows[0].ordinal} ${i}.`, status: "unknown", sources: [rows[0].id] })));
+  for (let i = 0; i < 4; i++) await f.prepare();
+  expect(f.complete).toHaveBeenCalledTimes(2);
+  expect(f.db(db => db.prepare("SELECT max(attempt) n FROM continuity_upkeep_offers").get())).toEqual({ n: 1 });
+  expect(f.db(db => db.prepare("SELECT count(*) n FROM continuity_upkeep_offers WHERE state='reofferable'").get())).toEqual({ n: 0 });
+});
+
+it.each(["publish_cas", "publish_cancelled", "publish_quota", "publish_bounds"])("bounds post-payment publication failure %s", async code => {
+  const f = await fixture(); await f.capture(2); f.ports.publishLedger = async () => { throw Object.assign(new Error("Fictional publication failure."), { code }); };
+  for (let i = 0; i < 4; i++) await f.prepare();
+  const transient = code === "publish_cas" || code === "publish_cancelled";
+  expect(f.complete).toHaveBeenCalledTimes(transient ? 2 : 1);
+  expect(f.db(db => db.prepare("SELECT DISTINCT state FROM continuity_upkeep_offers").all())).toEqual([{ state: transient ? "analyzed" : "failed" }]);
+});
+
+it("does not rewind a frontier beyond 512 represented anchors on an old tombstone", async () => {
+  const f = await fixture(); await f.capture(640, "Anchor.", "fictional", true);
+  const fence = (await f.writer.mutateUpkeep({ kind: "inspect", scope: { logicalId: "fictional", conversationId: "fictional" } }))!;
+  f.db(db => { db.prepare("INSERT INTO continuity_upkeep_progress VALUES (?,?,?,?)").run("fictional", "fictional", fence.incarnation, JSON.stringify({ ordinal: 641, offset: 0, digest: "", watermark: 640 }));
+    db.exec(`INSERT INTO continuity_upkeep_offers SELECT 'fictional','fictional','incarnation',printf('%064x',ordinal),ordinal,text_sha256,0,7,'historical','represented','historical',0 FROM continuity_records;
+      UPDATE continuity_records SET retained_text=NULL WHERE ordinal=1;`); });
+  expect(f.db(db => JSON.parse((db.prepare("SELECT cursor FROM continuity_upkeep_progress").get() as any).cursor).ordinal)).toBe(641);
+  await f.capture(1, "Later tool evidence.", "fictional", true); await f.prepare(); await f.prepare();
+  expect(f.complete).toHaveBeenCalledTimes(1); expect(f.selections[0]!.map(row => row.ordinal)).toEqual([641]);
+});
+
+it("does not scrub an unrelated in-flight reservation between dispatch and outcome", async () => {
+  const f = await fixture(); await f.capture(); f.respond(() => [{ kind: "identifier", value: "forged", status: "active", sources: ["forged"] }]); await f.prepare();
+  await f.capture(1, "New evidence."); f.respond(rows => { f.db(db => db.exec("UPDATE continuity_records SET retained_text=NULL WHERE ordinal=1")); return [{ kind: "open_work", value: "Valid new evidence.", status: "unknown", sources: [rows[0].id] }]; });
+  await f.prepare(); expect(f.complete).toHaveBeenCalledTimes(2);
+  expect(f.reader.ledger(scope)!.generation.entries[0]!.value).toBe("Valid new evidence.");
+  expect(f.db(db => db.prepare("SELECT state FROM continuity_upkeep_operations ORDER BY rowid DESC LIMIT 1").get())).toEqual({ state: "terminal" });
+});
+
+it("skips a leading owner paragraph relative to the actual grown prior and reaches tool evidence", async () => {
+  const f = await fixture(); await f.capture(); const source = f.reader.snapshotContinuity(scope), selection = selectLedgerSources(source);
+  const prior = validateLedgerOutput(JSON.stringify({ entries: Array.from({ length: 11 }, (_, i) => ({ kind: "open_work", value: `${i}:` + "v".repeat(490), status: "unknown", sources: ["s0"] })), covered: ["s0"] }), selection, scope);
+  await f.writer.publishLedger(prior); await f.capture(1, "x".repeat(4000));
+  const binding = { conversationId: "fictional", logicalConversationId: "fictional", runId: "later-tool", isolated: false, continuityEnabled: true as const, finalizedContinuity: true as const };
+  await f.writer.persist(binding, { phase: "invocation", toolCallId: "lookup", toolName: "lookup", arguments: {} });
+  await f.writer.persist(binding, { phase: "result", toolCallId: "lookup", toolName: "lookup", state: "success", content: "Fictional actual tool evidence." }); await f.writer.finishRun(binding, "completed");
+  await f.prepare(); expect(f.complete).toHaveBeenCalledTimes(1); expect(f.selections[0]!.some(row => row.kind === "tool")).toBe(true);
+  expect(f.selections[0]!.some(row => row.ordinal === 2)).toBe(false);
+  expect(f.db(db => db.prepare("SELECT ordinal FROM continuity_upkeep_offers WHERE state='oversized'").all())).toEqual([{ ordinal: 2 }]);
+  for (const entry of prior.entries) expect(f.reader.ledger(scope)!.generation.entries).toContainEqual(entry);
+});
+
+it("reclaims LRU working sets under the shared quota without losing unknowns or markers", async () => {
+  const f = await fixture(); f.respond(() => []); await f.capture(); await f.prepare();
+  const oldMarker = f.db(db => db.prepare("SELECT bootstrap_operation FROM continuity_upkeep_admissions").get());
+  await f.capture(1, "Newer working set.", "newer"); await f.prepare(8000, "newer");
+  const expected = (await f.writer.mutateUpkeep({ kind: "inspect", scope: { logicalId: "other", conversationId: "other" } }))!;
+  const fence = (await f.writer.mutateUpkeep({ kind: "claim", expected, ownerToken: "other-owner" }))!;
+  const reservation = { ...fence, operationId: randomUUID(), runId: "other-run", recorderNamespace: "fictional", model: "fictional:base", manifest: "a".repeat(64), parent: null, budget: "bootstrap" as const };
+  await f.writer.mutateUpkeep({ kind: "reserve", reservation }); await f.writer.mutateUpkeep({ kind: "dispatch", reservation });
+  const before = f.reader.stats()!, metadata = f.db(upkeepBytes); expect(metadata).toBeGreaterThan(0);
+  const unknown = f.db(db => db.prepare("SELECT * FROM continuity_upkeep_operations WHERE operation_id=?").get(reservation.operationId));
+  f.db(db => retainContinuity(db, { ...before.limits, maxBytes: before.retainedBytes - 1 }, Date.now()));
+  expect(f.db(db => db.prepare("SELECT count(*) n FROM continuity_upkeep_operations WHERE logical_id='fictional' AND conversation_id='fictional'").get())).toEqual({ n: 0 });
+  expect(f.db(db => db.prepare("SELECT * FROM continuity_upkeep_operations WHERE operation_id=?").get(reservation.operationId))).toEqual(unknown);
+  expect(f.db(db => db.prepare("SELECT bootstrap_operation FROM continuity_upkeep_admissions WHERE logical_id='fictional' AND conversation_id='fictional'").get())).toEqual(oldMarker);
+  expect(f.db(db => db.prepare("SELECT count(*) n FROM continuity_upkeep_operations WHERE conversation_id='newer'").get())).toEqual({ n: 1 });
+  expect(f.db(db => db.prepare("SELECT bootstrap_operation FROM continuity_upkeep_admissions WHERE logical_id='other'").get())).toEqual({ bootstrap_operation: reservation.operationId });
+  expect(f.db(upkeepBytes)).toBeLessThan(metadata); expect(f.reader.stats()!.retainedBytes).toBeLessThan(before.retainedBytes);
+  await f.prepare(); expect(f.complete).toHaveBeenCalledTimes(2); // Retired analyzed evidence cannot be bought again.
+  await f.capture(1, "Fresh after reclamation."); await f.prepare(); expect(f.complete).toHaveBeenCalledTimes(3); expect(f.budgets[2]).toBe(64000);
+});
+
+it("erases a reserved first operation before the first dispatch without advancing or consuming bootstrap", async () => {
+  const f = await fixture(); await f.capture();
+  const expected = (await f.writer.mutateUpkeep({ kind: "inspect", scope: { logicalId: "fictional", conversationId: "fictional" } }))!;
+  const fence = (await f.writer.mutateUpkeep({ kind: "claim", expected, ownerToken: "owner" }))!;
+  const selection = selectLedgerSources(f.reader.snapshotContinuity({ ...scope, selection: "upkeep" }));
+  const reservation = { ...fence, operationId: randomUUID(), runId: "reserved", recorderNamespace: "fictional", model: "fictional:base", manifest: selection.manifest, parent: null, budget: "bootstrap" as const, progress: selection.progress! };
+  await f.writer.mutateUpkeep({ kind: "reserve", reservation });
+  f.db(db => db.exec("UPDATE continuity_records SET retained_text=NULL"));
+  const row = f.db(db => db.prepare("SELECT reservation,state FROM continuity_upkeep_operations").get()) as any;
+  expect(row.state).toBe("reserved"); expect(JSON.parse(row.reservation)).not.toHaveProperty("progress");
+  expect(f.db(db => db.prepare("SELECT text_sha256 FROM continuity_records").get())).toEqual({ text_sha256: "" });
+  expect((await f.writer.mutateUpkeep({ kind: "inspect", scope: { logicalId: "fictional", conversationId: "fictional" } }))!.bootstrap).toBe(true);
+  expect(f.complete).not.toHaveBeenCalled();
 });

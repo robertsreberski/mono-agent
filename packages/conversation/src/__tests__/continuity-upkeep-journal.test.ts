@@ -149,7 +149,7 @@ it("records outcome and origin identity before publication and before the receip
     return undefined;
   });
   await h.prepare(); expect(h.fetches).toBe(1); expect(h.complete.mock.calls[0]![2]).toMatchObject({ inputTokens: 128000 });
-  expect(calls).toEqual(["inspect", "claim", "reserve", "dispatch", "outcome", "reject"]);
+  expect(calls).toEqual(["inspect", "claim", "reserve", "dispatch", "outcome", "settle", "reject"]);
   expect(f.db.prepare("SELECT id FROM continuity_ledger").all()).toHaveLength(1);
   expect(h.events).toContainEqual(expect.objectContaining({ providerInvoked: true })); publish.mockRestore();
 });

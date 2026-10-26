@@ -192,7 +192,21 @@ parentPort.on("message", (request: WorkerRequest) => {
           try {
             transaction(database, () => {
               switch (request.operation) {
-                case "continuity_upkeep": result = mutateUpkeep(database, root, request.payload as UpkeepMutation); break;
+                case "continuity_upkeep": {
+                  const input = request.payload as UpkeepMutation;
+                  result = mutateUpkeep(database, root, input);
+                  const reserve = input.kind === "dispatch" ? (input.reservation.payloadReserve ?? 0) + 16384 : 0;
+                  applyRetentionInTransaction(database, retention, reserve);
+                  if (input.kind === "reserve" || input.kind === "dispatch") {
+                    try {
+                      mutateUpkeep(database, root, input); // Revalidate after retention; replay is free.
+                      const parent = database.prepare("SELECT 1 FROM sqlite_master WHERE name='continuity_ledger'").get() ? database.prepare("SELECT id FROM continuity_ledger WHERE conversation_id=?").get(input.reservation.conversationId) as { id: string } | undefined : undefined;
+                      if ((parent?.id ?? null) !== input.reservation.parent) throw new Error("upkeep_parent_changed");
+                    } catch { throw new WorkerHistoryError(input.kind === "dispatch" ? "upkeep_dispatch_rejected" : "continuity_quota_exhausted", "Continuity evidence changed during retention."); }
+                  }
+                  if (reserve + continuityRetainedBytes(database) + toolRetainedBytes(database) > retention.maxBytes) throw new WorkerHistoryError(input.kind === "dispatch" ? "upkeep_dispatch_rejected" : "continuity_quota_exhausted", "Continuity metadata exceeds retention quota.");
+                  break;
+                }
                 case "continuity_ledger": {
                   const { generation, reservation } = request.payload as { generation: LedgerGeneration; reservation?: UpkeepReservation };
                   if (reservation) {
