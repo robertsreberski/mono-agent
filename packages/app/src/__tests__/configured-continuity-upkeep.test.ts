@@ -60,7 +60,7 @@ it.each([false, true])("binds configured OAuth and custom pricing without inject
   const explicitPath = join(root, "fictional-explicit-auth.json");
   const explicitToken = `explicit.${token.split(".")[1]}.fictional`;
   await writeFile(explicitPath, JSON.stringify({ "openai-codex": { type: "oauth", access: explicitToken, refresh: "fictional", expires: 4_200_000_000_000 } }), { mode: 0o600 });
-  const value = JSON.stringify({ entries: [{ kind: "constraint", value: "Require confirmation.", status: "active", sources: ["s0"] }], covered: 1 });
+  const value = JSON.stringify({ entries: [{ kind: "constraint", value: "Require confirmation.", status: "active", sources: ["s0"] }], covered: ["s0"] });
   let authenticated = false;
   const fetch = vi.fn(async (_url: unknown, options: RequestInit) => {
     authenticated = new Headers(options.headers).get("authorization") === `Bearer ${explicit ? explicitToken : token}`;

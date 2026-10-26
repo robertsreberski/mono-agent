@@ -22,7 +22,7 @@ export type UpkeepMutation =
   | { readonly kind: "reserve"; readonly reservation: UpkeepReservation }
   | { readonly kind: "oversized"; readonly fence: UpkeepFence; readonly progress: LedgerProgress; readonly operationId: string; readonly advance: boolean }
   | { readonly kind: "reject"; readonly reservation: UpkeepReservation; readonly retry?: boolean }
-  | { readonly kind: "settle"; readonly reservation: UpkeepReservation; readonly saturated: boolean }
+  | { readonly kind: "settle"; readonly reservation: UpkeepReservation; readonly saturated: boolean; readonly analysisOnly?: boolean }
   | { readonly kind: "dispatch"; readonly reservation: UpkeepReservation }
   | { readonly kind: "outcome"; readonly reservation: UpkeepReservation; readonly receipt: ContinuityUpkeepReceipt };
 type Row = Record<string, any>;
@@ -162,7 +162,9 @@ export function mutateUpkeep(db: DatabaseSync, root: string, request: UpkeepMuta
   }
   if (request.kind === "settle") {
     if (row.state !== "terminal") fail();
-    db.prepare("UPDATE continuity_upkeep_offers SET state=CASE WHEN ? AND attempt=0 THEN 'pending_retry' ELSE 'pending' END WHERE operation_id=? AND state='pending'").run(Number(request.saturated), r.operationId); return null;
+    db.prepare("UPDATE continuity_upkeep_offers SET state=CASE WHEN ? AND attempt=0 THEN ? ELSE ? END WHERE operation_id=? AND state='pending'").run(Number(request.saturated), request.analysisOnly ? "reofferable" : "pending_retry", request.analysisOnly ? "analyzed" : "pending", r.operationId);
+    if (request.analysisOnly) reclaimProgress(db, r.logicalId, r.conversationId);
+    return null;
   }
   if (request.kind === "reject") {
     if (row.state !== "terminal") fail();

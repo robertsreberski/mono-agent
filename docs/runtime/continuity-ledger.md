@@ -188,6 +188,12 @@ remain disclosed but are neither represented nor purchased at idle boundaries.
 Only a response that **saturates the admitted entry cap** may leave uncited spans
 re-offerable, **once**. Transient `publish_cas`/`publish_cancelled` failures also
 allow at most one re-offer; quota/bounds failures become failed immediately.
+A strictly formed empty delta is a valid **analysis-only** result in both cap
+modes: `entries: []`, with `covered` a unique array of offered IDs (possibly
+empty). Counts, unknown IDs and extra keys remain invalid. All offered spans
+settle analyzed without publishing a generation or renewing bootstrap; the prior
+ledger remains injectable. Usage is recorded, and idle boundaries do not rebuy
+the analysis. A valid host receipt uses reason `analyzed` without a generation ID.
 Fresh evidence takes priority over that single deferred opportunity. Successful publication alone
 associates entry-cited spans with the latest ledger. Analysis-only `covered`
 claims do not establish representation in either profile. Unknown batches are

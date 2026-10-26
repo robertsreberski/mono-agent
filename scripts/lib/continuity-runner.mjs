@@ -430,7 +430,7 @@ export async function buildCheckpoint({ modules, trace, arm, repeat, dir, plan, 
           const capture = captureUpkeepOutput?.replace(/\.json$/u, `-p${index + 1}.json`);
           let result;
           try { result = await runBoundaryChild({ type: "preparation", root: fileURLToPath(new URL("../../", import.meta.url)), work, authPath, plan, mode,
-            clockIso: clock.value.toISOString(), conversationId, step, captureUpkeepOutput: capture }, { timeoutMs: plan.limits.perLiveTurnTimeoutMs }); }
+            clockIso: clock.value.toISOString(), conversationId, step, preparation: index + 1, captureUpkeepOutput: capture }, { timeoutMs: plan.limits.perLiveTurnTimeoutMs }); }
           catch (error) {
             // A lost child acknowledgement cannot prove non-invocation. Keep
             // its whole input allowance; the controller retains its reservation.
@@ -447,7 +447,7 @@ export async function buildCheckpoint({ modules, trace, arm, repeat, dir, plan, 
           const fresh = selection.some(key => !seen.has(key)); selection.forEach(key => seen.add(key));
           return step.valid && step.boundary.verified && fresh && step.journal.operations === index + 1
             && step.journal.bootstrap === 1 && step.journal.budget === plan.upkeep.preparations[index].budget;
-        }) && new Set(preparations.map(step => step.pid)).size === 3;
+        }) && new Set(preparations.map(step => step.pid)).size === 3 && preparations.at(-1).entriesAfter > 0;
         record.upkeep.receipt = preparations.at(-1)?.receipt ?? null;
       }
     } finally {
@@ -509,7 +509,7 @@ function sumPreparationUsage(steps) {
 }
 
 /** One upkeep, no real answer call, before read-only probe forks. No probe/answer data enter extraction. */
-export async function prepareLedgerCheckpoint({ modules, work, authPath, plan, mode, reader, alternate, scripted, route, clock, conversationId, captureUpkeepOutput, step = plan.upkeep.preparations?.[0] }) {
+export async function prepareLedgerCheckpoint({ modules, work, authPath, plan, mode, reader, alternate, scripted, route, clock, conversationId, captureUpkeepOutput, step = plan.upkeep.preparations?.[0], preparation = 1 }) {
   // Reject stale single-preparation plans before opening a harness or resolving auth.
   if (plan.upkeep.maxInputTokens !== 128000 || plan.upkeep.incrementalMaxInputTokens !== 64000
     || plan.upkeep.maxOutputTokens !== 4096 || plan.upkeep.callsPerTraceRepeat !== 3
@@ -529,6 +529,7 @@ export async function prepareLedgerCheckpoint({ modules, work, authPath, plan, m
       const prompt = textOfContent(context.messages.at(-1)?.content);
       const spans = prompt.split("\n").flatMap(line => { try { const row = JSON.parse(line); return typeof row.id === "string" && typeof row.text === "string" ? [row] : []; } catch { return []; } });
       if (!spans.length) throw new ContinuityError("offline_upkeep_source_missing");
+      if (preparation === 2) return modules.pi.fauxAssistantMessage('{"entries":[],"covered":[]}');
       return modules.pi.fauxAssistantMessage(JSON.stringify({ entries: [{ kind: "open_work", value: "Offline scripted ledger; not model quality.", status: "unknown", sources: [spans[0].id] }], covered: spans.map(span => span.id) }));
     }]);
     hostOptions.runtimeOptions = { piResolvedModels: models };
@@ -579,7 +580,8 @@ export async function prepareLedgerCheckpoint({ modules, work, authPath, plan, m
   }
   const entries = generation?.generation.entries ?? [];
   const preserved = previous.every(old => entries.some(entry => entry.id === old.id && entry.value === old.value && entry.status === old.status));
-  return { valid: !failure && preserved && receipt?.status === "valid" && !!entries.length && generation.generation.id === receipt.generationId,
+  return { valid: !failure && preserved && receipt?.status === "valid"
+      && (receipt.reason === "analyzed" && !receipt.generationId || !!entries.length && generation.generation.id === receipt.generationId),
     boundary: verifyBoundary({ boundary: "model_change", compactions: 0 }, watch.observed), observed: watch.observed,
     entriesBefore: previous.length, entriesAfter: entries.length, preserved, journal,
     failure, receipt, usage: { calls, estimatedInputTokens: calls ? receipt?.estimatedInputTokens ?? null : 0, inputTokens: calls ? receipt?.inputTokens ?? null : 0, outputTokens: calls ? receipt?.outputTokens ?? null : 0,

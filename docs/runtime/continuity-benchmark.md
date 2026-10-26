@@ -325,7 +325,9 @@ probe. Source history replays on reader R. Tagged `preparation` child requests
 recreate scripted providers in three distinct processes, answering through
 **A → R → A** while the configured extractor remains R. Every preparation must
 prove a production model-change boundary, a new selection and preserved earlier
-entries. All processes use the same absolute durable roots and normal ownership;
+entries. A valid analysis-only stage can preserve the same generation without
+adding entries; it still consumes and accounts one admitted operation. The offline
+fixture deliberately returns an empty second delta to exercise that path. All processes use the same absolute durable roots and normal ownership;
 no native journal is deleted to manufacture eligibility.
 
 Tagged `probe` children switch back to the real reader R, cold relative to final

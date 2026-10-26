@@ -384,11 +384,11 @@ describe("continuity offline contract run (production harness, scripted provider
     expect(new Set(steps.map(step => step.pid)).size).toBe(3);
     expect(steps.map(step => step.journal.operations)).toEqual([1, 2, 3]);
     expect(steps.map(step => step.journal.bootstrap)).toEqual([1, 1, 1]);
-    expect(steps.map(step => step.entriesAfter)).toEqual([1, 2, 3]);
+    expect(steps.map(step => step.entriesAfter)).toEqual([1, 1, 2]);
     expect(steps.every(step => step.preserved && step.boundary.verified)).toBe(true);
     expect(ledger.trials[0].boundary.observed.upkeep).toEqual([expect.objectContaining({ providerInvoked: false, reason: "read_only" })]);
     expect(ledger.trials[0].boundary.observed.offlineLedgerCounts).toEqual([1, 1]);
-    expect(ledger.trials[0].boundary.observed.continuityPacks.some(pack => pack.ledgerEntries === 3)).toBe(true);
+    expect(ledger.trials[0].boundary.observed.continuityPacks.some(pack => pack.ledgerEntries === 2)).toBe(true);
     expect(ledger.trials[0].boundary.observed.upkeep.some(row => row.providerInvoked)).toBe(false);
     expect(results.upkeep).toHaveLength(1);
     expect(results.summary.arms["continuity-ledger-cold"].usage.calls).toBe(4); // three extractions plus one probe, counted once.
@@ -580,7 +580,7 @@ it("captures each child completion and its merged ledger only when explicitly en
   for (let step = 1; step <= 3; step++) {
     const captured = JSON.parse(await readFile(join(output, "upkeep-output", `r1-brightline-return-p${step}.json`), "utf8"));
     expect(captured).toMatchObject({ status: "valid", failure: null });
-    expect(JSON.parse(captured.text).entries).toHaveLength(1); expect(captured.ledger.entries).toHaveLength(step);
+    expect(JSON.parse(captured.text).entries).toHaveLength(step === 2 ? 0 : 1); expect(captured.ledger.entries).toHaveLength(step === 3 ? 2 : 1);
   }
 }, 180_000);
 
