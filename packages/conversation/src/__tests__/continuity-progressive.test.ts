@@ -238,3 +238,16 @@ it("storage rejects dropping prior entries or lineage even with a valid parent C
   await expect(f.writer.publishLedger({ ...next, inputs: [] })).rejects.toMatchObject({ code: "publish_source_changed" });
   expect(f.reader.ledger(scope)!.generation.id).toBe(prior.id);
 });
+
+it("does not inherit legacy analyzed-but-uncited coverage as representation", async () => {
+  const f = await fixture(); await f.capture(2);
+  const source = f.reader.snapshotContinuity(scope), selection = selectLedgerSources(source);
+  const base = validateLedgerOutput(JSON.stringify({ entries: [{ kind: "open_work", value: "Prior fact.", status: "unknown", sources: ["s0"] }], covered: ["s0", "s1"] }), selection, scope);
+  const legacy = { ...base, coveredSpans: base.spans.map(span => span.id), uncovered: 0 };
+  await f.writer.publishLedger(legacy);
+  const read = f.reader.ledger(scope)!.generation;
+  expect(read.coveredSpans).toEqual([base.spans[0]!.id]); expect(read.uncovered).toBe(1);
+  await f.prepare(); expect(f.complete).toHaveBeenCalledTimes(1);
+  expect(f.selections[0]!.map(row => row.ordinal)).toEqual([2]);
+  expect(f.reader.ledger(scope)!.generation.entries).toContainEqual(base.entries[0]);
+});

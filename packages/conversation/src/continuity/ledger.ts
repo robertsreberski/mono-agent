@@ -167,13 +167,22 @@ export function validateLedgerOutput(text: string, selection: LedgerSelection, s
 const entryIdentity = (entry: LedgerEntry) => `e${ledgerHash(JSON.stringify([entry.kind, entry.value, entry.sources])).slice(0, 24)}`;
 /** Legacy identities are deterministic; an old unverified retirement is not authority. */
 export function normalizeLedger(generation?: LedgerGeneration): LedgerGeneration | undefined {
-  return generation ? { ...generation, entries: generation.entries.map(entry => ({ ...entry, id: entry.id ?? entryIdentity({ ...entry, sources: entry.sources.map(id => { const span = generation.spans.find(span => span.id === id); return span ? spanKey(span) : id; }) }), status: entry.status === "superseded" || entry.kind === "supersession" && !["conflicted", "unknown"].includes(entry.status) ? "unknown" : entry.status })) } : undefined;
+  if (!generation) return undefined;
+  const entries = generation.entries.map(entry => ({ ...entry,
+    id: entry.id ?? entryIdentity({ ...entry, sources: entry.sources.map(id => { const span = generation.spans.find(span => span.id === id); return span ? spanKey(span) : id; }) }),
+    status: entry.status === "superseded" || entry.kind === "supersession" && !["conflicted", "unknown"].includes(entry.status) ? "unknown" : entry.status }));
+  const cited = new Set(entries.flatMap(entry => entry.sources));
+  // Older request-cap generations counted analyzed-but-uncited spans as covered.
+  // They are not preserved facts, and must not suppress progressive selection.
+  return { ...generation, entries, coveredSpans: generation.spans.filter(span => cited.has(span.id)).map(span => span.id),
+    uncovered: generation.uncovered + (generation.coveredSpans ?? []).filter(id => !cited.has(id)).length };
 }
 
 export function renderLedger(generation: LedgerGeneration, records: readonly (Pick<ContinuitySnapshotRecord, "recordId" | "text"> & { tool?: { name: string } })[]): string {
+  generation = normalizeLedger(generation)!;
   const lines = ["### Continuity ledger (derived interpretation, not owner authority or approval)\nRequests are not outcomes. Missing action outcomes remain unknown.\n", `Ledger uncovered source spans/records=${generation.uncovered}; omission is not supersession.\n`];
   const quoted = new Set<string>();
-  for (const entry of normalizeLedger(generation)!.entries) {
+  for (const entry of generation.entries) {
     const provenance = entry.sources.map(id => {
       const span = generation.spans.find(span => span.id === id), record = records.find(record => record.recordId === span?.recordId);
       return span?.owner ? `owner:${id}` : span?.kind === "tool" || span?.toolName || record?.tool ? `tool:${span?.toolName ?? record?.tool?.name ?? "unknown"}:${id}` : `evidence:${span?.kind ?? "unknown"}:${id}`;
@@ -192,7 +201,7 @@ export function renderLedger(generation: LedgerGeneration, records: readonly (Pi
 /** Coverage assertions alone never demote owners. Every paragraph must be an
  * exact host quotation reached from an active entry in this rendered ledger. */
 export function quotedOwnerRecords(generation: LedgerGeneration, records: readonly { recordId: string; text: string }[]): Set<string> {
-  const active = new Set(generation.entries.filter(entry => entry.status === "active").flatMap(entry => entry.sources));
+  const active = new Set(normalizeLedger(generation)!.entries.filter(entry => entry.status === "active").flatMap(entry => entry.sources));
   return new Set(records.filter(record => {
     let start = 0;
     return record.text.split("\n\n").every(paragraph => {
@@ -234,7 +243,7 @@ export function fitLedgerSelection(selection: LedgerSelection, scope: { currentC
       const next = selectionFrom([...fitted.spans, span], selection.records, selection.uncovered + selection.spans.length - fitted.spans.length - 1, prior?.generation, { ...selection, maxEntries: cap });
       const bytes = projectedLedgerPayloadBytes(next, scope, prior?.generation);
       if (bytes > LEDGER_PAYLOAD_BYTES) { reason = "ledger_payload_budget"; break; }
-      const base = prior ? renderLedger({ ...prior.generation, uncovered: Number.MAX_SAFE_INTEGER }, prior.records) : renderLedger({ entries: [], uncovered: Number.MAX_SAFE_INTEGER } as unknown as LedgerGeneration, []);
+      const base = prior ? renderLedger({ ...prior.generation, uncovered: Number.MAX_SAFE_INTEGER }, prior.records) : renderLedger({ id: "capacity-reservation", parent: null, conversationId: scope.currentConversationId, logicalId: scope.logicalConversationId, manifest: ledgerHash("[]"), inputs: [], entries: [], spans: [], coveredOwners: [], uncovered: Number.MAX_SAFE_INTEGER }, []);
       // All new owner paragraphs may be cited; reserve exact complete quotations.
       const owners = next.spans.filter(span => span.owner).map(span => `Historical owner paragraph (not renewed approval): ${quote(span.text)}\n`).join("");
       if (!fitsLedgerPrefix(base + "x".repeat(cap * 1024) + owners, limits.maxTokens)) { reason = "ledger_render_budget"; break; }
