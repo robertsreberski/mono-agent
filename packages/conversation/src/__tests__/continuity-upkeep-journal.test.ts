@@ -266,3 +266,13 @@ it.each(["dispatch_started", "provider_return"])("production supplier does not r
     expect((await readFile(counter, "utf8")).trim().split("\n")).toEqual(["provider-call"]);
   }
 }, 15000);
+
+it("bounds UTF-8 journal bytes including future outcomes without rejecting identical reserve acknowledgements", () => {
+  const f = memory(), r = reservation(f.claim("owner")); f.mutate({ kind: "reserve", reservation: r });
+  f.db.prepare(`WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM seq WHERE n<234)
+    INSERT INTO continuity_upkeep_operations SELECT printf('filler-%d',n),logical_id,conversation_id,incarnation,fence,owner_token,?,printf('selection-%d',n),budget,'released',NULL
+    FROM continuity_upkeep_operations CROSS JOIN seq WHERE operation_id=?`).run("Ω".repeat(64000), r.operationId);
+  expect(Number((f.db.prepare("SELECT sum(length(CAST(reservation AS BLOB))) n FROM continuity_upkeep_operations").get() as { n: number }).n)).toBeLessThan(32 * 1024 * 1024);
+  expect(f.mutate({ kind: "reserve", reservation: r })).toBeNull();
+  expect(() => f.mutate({ kind: "reserve", reservation: { ...r, operationId: "new-operation", manifest: "b".repeat(64) } })).toThrow("upkeep_admission_conflict");
+});

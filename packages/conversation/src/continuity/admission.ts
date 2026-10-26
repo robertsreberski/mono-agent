@@ -101,9 +101,10 @@ export function mutateUpkeep(db: DatabaseSync, root: string, request: UpkeepMuta
   const r = request.reservation, scope = assertUpkeepFence(db, root, r), serialized = JSON.stringify(r);
   if (Buffer.byteLength(serialized) > 131072 || !r.operationId || !r.runId || !r.recorderNamespace || !r.model || !/^[a-f0-9]{64}$/u.test(r.manifest)) fail();
   if (request.kind === "reserve") {
-    if (Number((db.prepare("SELECT coalesce(sum(length(reservation)+length(coalesce(outcome,''))),0) n FROM continuity_upkeep_operations").get() as Row).n) + Buffer.byteLength(serialized) > 32 * 1024 * 1024) fail();
     const old = db.prepare("SELECT reservation FROM continuity_upkeep_operations WHERE operation_id=?").get(r.operationId) as Row | undefined;
     if (old) { if (old.reservation !== serialized) fail(); return null; }
+    // Reserve bytes for the largest future outcome; acknowledgement replay is free.
+    if (Number((db.prepare("SELECT coalesce(sum(length(CAST(reservation AS BLOB))+16384),0) n FROM continuity_upkeep_operations").get() as Row).n) + Buffer.byteLength(serialized) + 16384 > 32 * 1024 * 1024) fail();
     if (r.budget !== (scope.bootstrap_operation === null ? "bootstrap" : "incremental")) fail();
     // Until progressive source reconciliation exists, conservatively stop this
     // scope on unresolved dispatch. A smaller incremental selection must not
