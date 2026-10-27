@@ -700,3 +700,53 @@ it("counts repeated shapes over the complete native scan before choosing diverse
   expect(source.upkeep?.candidates?.some(s => s.ordinal === 26 && s.start > 0 && Buffer.from(r.text).subarray(s.start, s.end).toString().includes("RIVET-123"))).toBe(true);
   expect(f.complete).not.toHaveBeenCalled();
 });
+
+it("owns a distinct BEGIN/COMMIT pair for each of three history pages", async () => {
+  const f = await fixture(); await f.capture(150);
+  const exec = DatabaseSync.prototype.exec, prepare = DatabaseSync.prototype.prepare;
+  const active = new Map<DatabaseSync, { pages: number }>(), completed: { pages: number }[] = [];
+  vi.spyOn(DatabaseSync.prototype, "exec").mockImplementation(function(this: DatabaseSync, sql: string) {
+    const result = exec.call(this, sql);
+    if (sql === "BEGIN") { expect(active.has(this)).toBe(false); active.set(this, { pages: 0 }); }
+    if (sql === "COMMIT") { const transaction = active.get(this); expect(transaction).toBeDefined(); completed.push(transaction!); active.delete(this); }
+    return result;
+  });
+  vi.spyOn(DatabaseSync.prototype, "prepare").mockImplementation(function(this: DatabaseSync, sql: string) {
+    if (sql.includes("ORDER BY r.ordinal LIMIT 64")) { expect(active.has(this)).toBe(true); active.get(this)!.pages++; }
+    return prepare.call(this, sql);
+  });
+  const snapshot = f.reader.snapshotContinuity({ ...scope, selection: "upkeep" });
+  expect(snapshot.upkeep?.scan).toMatchObject({ complete: true, rows: 150, pages: 3 });
+  expect(completed.filter(transaction => transaction.pages)).toEqual([{ pages: 1 }, { pages: 1 }, { pages: 1 }]);
+  expect(active.size).toBe(0);
+});
+// validateRecord closes source keys; safeMetadata caps three strings at512bytes,
+// normalizeId caps the attested input at4096bytes,and requestDigest is64hex.
+// Even6x JSON escaping plus keys/safe revision stays below36KiB (<64KiB scan cap).
+it("bounds source metadata at admission and keeps healthy history scannable", async () => {
+  const f = await fixture(), generationId = continuityGenerationId(), digest = ledgerHash(generationId);
+  const inputId = '"'.repeat(4096), source = { epoch: '"'.repeat(512), journalId: '"'.repeat(512), operationId: '"'.repeat(512), revision: Number.MAX_SAFE_INTEGER, attestation: { inputId, requestDigest: digest } };
+  expect(Buffer.byteLength(JSON.stringify(source))).toBeLessThan(36 * 1024);
+  const record = { recordId: continuityRecordId("fictional", "bound"), runId: generationId, inputId, kind: "owner" as const, provenance: "host-owner" as const, sequence: 0, text: "Bounded evidence.", source };
+  const input = { generationId, conversationId: "fictional", logicalConversationId: "fictional", beforeDigest: null, afterDigest: digest, records: [record] };
+  await expect(f.writer.prepareContinuity({ ...input, records: [{ ...record, source: { ...source, epoch: "x".repeat(65537) } }] })).rejects.toMatchObject({ code: "continuity_invalid_provenance" });
+  await expect(f.writer.prepareContinuity({ ...input, records: [{ ...record, inputId: "x".repeat(65537), source: { attestation: { inputId: "x".repeat(65537), requestDigest: digest } } }] })).rejects.toThrow("4096");
+  await f.writer.prepareContinuity(input); await f.writer.commitContinuity({ generationId, conversationId: "fictional", canonicalDigest: digest });
+  await f.capture(3);
+  const snapshot = f.reader.snapshotContinuity({ ...scope, selection: "upkeep" });
+  expect(snapshot.upkeep?.scan).toMatchObject({ complete: true, rows: 4 });
+  expect(snapshot.degradedReason).toBeUndefined(); expect(snapshot.gaps).toBe(0);
+  expect(snapshot.records).toHaveLength(4);
+});
+it("releases a non-invoked bootstrap and admits a fresh bootstrap then incremental operation", async () => {
+  const f = await fixture(); await f.capture(3);
+  f.complete.mockImplementationOnce(async (_prompt, _signal, budget) => ({ text: "", receipt: { operationId: budget.operationId, model: "fictional:base", status: "skipped", reason: "model_headroom", providerInvoked: false, capEnforcement: "request" } }));
+  await f.prepare();
+  expect(f.db(db => db.prepare("SELECT state,budget FROM continuity_upkeep_operations").all())).toEqual([{ state: "released", budget: "bootstrap" }]);
+  expect((await f.writer.mutateUpkeep({ kind: "inspect", scope: { logicalId: "fictional", conversationId: "fictional" } }))!.bootstrap).toBe(true);
+  await f.prepare(); await f.prepare();
+  const rows = f.db(db => db.prepare("SELECT state,budget FROM continuity_upkeep_operations ORDER BY rowid").all());
+  expect(rows).toHaveLength(3); expect(rows[0]).toEqual({ state: "released", budget: "bootstrap" });
+  expect(rows[1]).toMatchObject({ budget: "bootstrap" }); expect(rows[2]).toMatchObject({ budget: "incremental" });
+  expect(f.budgets).toEqual([128000, 64000]);
+});

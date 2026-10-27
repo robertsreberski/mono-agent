@@ -165,19 +165,32 @@ config resolution.
 
 ### Ledger preparation degradation and integrity
 
-The ledger arm runs all three fresh-child preparations even when upkeep is
-aborted, times out, returns invalid output, or is skipped. These are **degraded
-stages**, not invalid checkpoints: probes use the last published ledger, or the
-deterministic evidence pack if no ledger was published. Results include stage
-counts and degradation reasons per arm (and per suite/output directory). A failed
-model response never becomes a successful extraction or a fabricated generation.
+The ledger arm continues all three fresh-child preparations after allowlisted
+product degradation, using the last published ledger or deterministic evidence.
+Provider/validation reasons are `output_aborted`, `aborted`, `provider_output`,
+`empty_output`, `validation_or_publication`, `input_overrun`, and `unavailable`
+**after invocation**; an unacknowledged dispatch/outcome is `uncertain`.
+Capacity reasons are `input_budget`, `model_headroom`, `ledger_scan_capacity`,
+`ledger_render_budget`, `ledger_quota_budget`, `upkeep_repeat_suppressed`,
+`already_covered`, `unchanged`, and `no_source`. Results report degradation
+reasons and a separate `d6InputOverruns` counter. Failed output is never a
+successful extraction or a fabricated generation.
+
+Configuration/eligibility skips (including `read_only`, `disabled`,
+`detached_attempt`, `continuation_boundary`, `per_message`, `isolated`,
+`unowned_store`, `history_unavailable`, `model_unavailable`, `model_identity`)
+and unrecognized reasons are **protocol-integrity failures**, not degradations.
+At least one preparation must be non-config-skipped; an all-`read_only`
+checkpoint is invalid, not an untreated sample scored as the ledger arm.
 
 The boundary and journal protocol remain fail-closed: unverified model changes,
-missing/extra operations, a second bootstrap, duplicate preparation children,
-lost prior entries, excessive/repeated offers, upkeep during probes, or mismatched
-injection invalidate the checkpoint/sample. A skipped non-invocation can add no
-operation; every observed new reservation must be unique and budgeted correctly.
-An all-skipped preparation has no bootstrap, not a manufactured paid operation.
+missing/extra operations, a second consumed bootstrap, duplicate preparation
+children, lost prior entries, excessive/repeated offers, upkeep during probes,
+or mismatched injection invalidate the checkpoint/sample. A proven non-invocation
+may add one unique **released** journal row. Released rows are reported by state
+but consume neither bootstrap nor provider offers; the next actual reservation
+can still be bootstrap. Conservative reserves use non-released bootstrap rows.
+Every new row must match its receipt and the appropriate budget.
 
 Known catalog usage/cost and unknown-call conservative charges are separate.
 An unknown upkeep call reserves the full input allowance (128k bootstrap or 64k
@@ -406,16 +419,21 @@ answer path; no injected fixture models are used for real extraction.
 
 Preparation keeps its receipt even when the harness, ledger read or close fails.
 A zero-dispatch preparation contributes zero calls/tokens/cost, not an unknown
-call. If an abort loses reported usage, the separately recorded conservative input
-cost is counted as `estimatedPaidCalls` / `estimatedPaidInputCostUsd` and included
-in estimated spend. It is **input-only**, not reported usage, full output cost or
-a spending guarantee; output/hidden work can remain unknown. Strict request-cap
-mode remains available. Codex requests compact output within its unchanged byte
-guard; this does not reduce the 4,096-token planning allowance or claim a hard
-server cap.
+call. If reported input, output, or cost is missing, a potentially invoked call
+is unknown and receives a full conservative reservation: 128k bootstrap or64k
+incremental input plus4096 output tokens at catalog prices. `conservativeCalls`,
+`conservativeCostUsd` and `unpricedConservativeCalls` are separate from known
+`estimatedCostUsd`. A partial finite cost is NOT added on top of that full
+reservation. Missing catalog pricing remains explicitly unpriced, not free.
+These reservations are accounting, not an invoice/remote-output guarantee;
+Codex `stream_abort` cannot cap hidden reasoning or remote work. This limitation
+also applies to earlier runs. Strict request-cap mode remains available.
 
-Reported-null upkeep input falls back to the separate inclusive input estimate
-for invocation admission and `observedInput`; cache tokens are not added twice.
+`conservativeInputTokens` carries the full inclusive unknown input reserve into
+invocation admission and `observedInput`, even when a smaller partial input count
+was reported. Otherwise reported input/cache counts or the inclusive input
+estimate apply. The larger observed input wins on overrun; cache tokens are not
+added twice. Stale input-only estimated-paid fields have been removed.
 A failure after paid preparation (including checkpoint statistics, cleanup or
 fork publication) preserves the partial checkpoint's upkeep in unit errors,
 `results.upkeep` and aggregate usage. Compact Codex coverage counts only cited
@@ -433,3 +451,23 @@ outside the checkout (also offline), uses owner-only files, refuses existing
 capture files, and is **off by default**. Captures are benchmark artifacts, never
 written into the continuity store or exposed by production runtime configuration.
 No prompt or credentials are captured; model, auth, SSE and caps remain unchanged.
+
+### Evaluation independence limitation
+
+The label-kind rules were introduced after inspecting category findings in this
+benchmark's audit: this is **dev-set tuning**. Worked examples from its scenario
+families have been removed, leaving generic kind/tense definitions. A regression
+test rejects stopword-stripped three-word overlaps from generator template
+literals in the production prompt and ranking constants, including fragments
+separated by interpolations. This check cannot establish conceptual independence.
+Label-precision numbers remain optimistic; neither an independent holdout result
+nor a causal ablation is claimed.
+
+Source metadata admission is already bounded: `validateRecord` closes the keys,
+`safeMetadata` caps the three optional metadata strings at512bytes each,
+`normalizeId` caps the attested input ID at4096bytes, and the request digest is
+64hex characters. Even pessimistic sixfold JSON escaping plus the fixed keys and
+safe-integer revision stays below36KiB, less than the scan's64KiB source cap.
+Oversized writes are rejected before publication; admission-boundary and healthy
+scan tests cover this. Corrupted on-disk rows still fail closed rather than being
+accepted as authentic source metadata.

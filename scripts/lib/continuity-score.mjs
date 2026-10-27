@@ -179,7 +179,7 @@ const round = (value, digits = 4) => (value === null ? null : Number(value.toFix
 
 const USAGE_FIELDS = ["inputTokens", "outputTokens", "cacheReadTokens", "cacheWriteTokens"];
 export function emptyUsage() {
-  return { calls: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, estimatedCostUsd: 0, unknownCostCalls: 0, unknownTokenCalls: 0, estimatedPaidCalls: 0, estimatedPaidInputCostUsd: 0, conservativeCostUsd: 0, conservativeCalls: 0, unpricedConservativeCalls: 0 };
+  return { calls: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, estimatedCostUsd: 0, unknownCostCalls: 0, unknownTokenCalls: 0, conservativeInputTokens: 0, conservativeCostUsd: 0, conservativeCalls: 0, unpricedConservativeCalls: 0 };
 }
 export function addUsage(total, usage) {
   if (!usage || usage.calls === 0) return total;
@@ -193,8 +193,7 @@ export function addUsage(total, usage) {
   total.conservativeCostUsd += usage.conservativeCostUsd ?? 0;
   total.conservativeCalls += usage.conservativeCalls ?? 0;
   total.unpricedConservativeCalls += usage.unpricedConservativeCalls ?? 0;
-  total.estimatedPaidCalls += usage.estimatedPaidCalls ?? 0;
-  total.estimatedPaidInputCostUsd += usage.estimatedPaidInputCostUsd ?? 0;
+  total.conservativeInputTokens += usage.conservativeInputTokens ?? 0;
   if (typeof usage.estimatedCostUsd === "number") total.estimatedCostUsd += usage.estimatedCostUsd;
   else total.estimatedCostUsd += usage.knownCatalogCostUsd ?? 0;
   total.unknownCostCalls += usage.unknownCostCalls ?? (typeof usage.estimatedCostUsd === "number" ? 0 : 1);

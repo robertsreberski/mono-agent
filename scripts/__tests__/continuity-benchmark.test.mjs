@@ -530,27 +530,30 @@ it("keeps distractor actual facts and byte pressure identical while pricing all 
   expect(cost.arms["continuity-ledger-cold"].inputTokens - cost.arms["continuity-pack-cold"].inputTokens).toBe(2 * (128000 + 64000 + 64000));
 });
 
-it.each(["harness", "ledger", "skip"])("retains upkeep receipt/accounting after %s preparation", async point => {
+it.each(["harness", "ledger", "skip", "read_only", "overrun"])("retains upkeep receipt/accounting after %s preparation", async point => {
   const { prepareLedgerCheckpoint } = await import("../lib/continuity-runner.mjs");
-  const work = await scratch();
-  const receipt = { type: "continuity_upkeep", providerInvoked: point !== "skip", status: "invalid", costUsd: null, inputTokens: null, outputTokens: null, estimatedInputCostUsd: 0.02, estimatedInputTokens: 15000 };
+  const work = await scratch(); let ledgerReads = 0;
+  const receipt = { type: "continuity_upkeep", reason: point === "skip" ? "input_budget" : point === "read_only" ? "read_only" : point === "overrun" ? "input_overrun" : "provider_output", providerInvoked: !["skip", "read_only"].includes(point), status: ["skip", "read_only"].includes(point) ? "skipped" : "invalid", costUsd: null, inputTokens: null, outputTokens: null, estimatedInputCostUsd: 0.02, estimatedInputTokens: 15000 };
   const modules = {
     config: { resolveJsonMonoAgentConfig: () => ({ runtime: { model: {} } }) },
     coordinator: { acquireAgentRootOwnership: async () => ({}), releaseAgentRootOwnershipWhenIdle: async () => {} },
     app: { createConfiguredAgentRuntime: () => ({}), createConfiguredConversationHarness: async () => ({ run: async ({ onEvent }) => { onEvent(receipt); if (point === "harness") throw new Error("fictional"); return {}; } }) },
     host: { parseMonoRuntimeModelReference: reference => ({ reference }) },
-    conversation: { ToolHistoryReader: class { n = 0; ledger() { if (this.n++ > 0) throw new Error("fictional"); } } },
+    conversation: { ToolHistoryReader: class { ledger() { if (++ledgerReads === 2 && point === "ledger") throw new Error("fictional second ledger read"); } } },
   };
   const result = await prepareLedgerCheckpoint({ modules, work, mode: "real", reader: { reference: "openai-codex:gpt-6-luna" }, alternate: { reference: "openai:gpt-4o-mini" }, scripted: { respondWith() {} }, clock: {}, plan: { upkeep: { model: "openai-codex:gpt-6-luna", maxInputTokens: 128000, incrementalMaxInputTokens: 64000, maxOutputTokens: 4096, callsPerTraceRepeat: 3, preparations: [{ binding: "openai:gpt-4o-mini", maxInputTokens: 128000 }] }, limits: { perLiveTurnTimeoutMs: 10000 } } });
-  expect(result.receipt).toEqual(receipt); expect(result.valid).toBe(point !== "harness");
-  expect(result.usage).toMatchObject(point === "skip" ? { calls: 0, inputTokens: 0, outputTokens: 0, estimatedCostUsd: 0 } : { calls: 1, estimatedInputTokens: 128000, estimatedCostUsd: null, conservativeCalls: 1, unpricedConservativeCalls: 1 });
+  expect(result.receipt).toEqual(receipt); expect(result.valid).toBe(["skip", "overrun"].includes(point));
+  expect(result.d6InputOverrun).toBe(point === "overrun");
+  if (point === "read_only") expect(result.degraded).toBe(false);
+  if (point === "ledger") { expect(ledgerReads).toBe(2); expect(result.failure).toBe("upkeep_preparation_failed"); }
+  expect(result.usage).toMatchObject(["skip", "read_only"].includes(point) ? { calls: 0, inputTokens: 0, outputTokens: 0, estimatedCostUsd: 0 } : { calls: 1, estimatedInputTokens: 128000, estimatedCostUsd: null, conservativeCalls: 1, unpricedConservativeCalls: 1 });
 });
 
-it("zero-call and estimated-paid upkeep accounting do not inflate unknown cost counters", () => {
+it("zero-call and known-cost upkeep accounting do not inflate unknown cost counters", () => {
   const usage = emptyUsage(); addUsage(usage, { calls: 0 });
   expect(usage).toMatchObject({ unknownCostCalls: 0, unknownTokenCalls: 0 });
-  addUsage(usage, { calls: 1, inputTokens: null, outputTokens: null, cacheReadTokens: 0, cacheWriteTokens: 0, estimatedCostUsd: 0.02, estimatedPaidCalls: 1, estimatedPaidInputCostUsd: 0.02 });
-  expect(usage).toMatchObject({ calls: 1, estimatedPaidCalls: 1, estimatedPaidInputCostUsd: 0.02, estimatedCostUsd: 0.02, unknownCostCalls: 0, unknownTokenCalls: 1 });
+  addUsage(usage, { calls: 1, inputTokens: null, outputTokens: null, cacheReadTokens: 0, cacheWriteTokens: 0, estimatedCostUsd: 0.02 });
+  expect(usage).toMatchObject({ calls: 1, estimatedCostUsd: 0.02, unknownCostCalls: 0, unknownTokenCalls: 1 });
 });
 
 it("accounts inclusive estimated paid input for admission when reported input is absent", () => {
@@ -679,7 +682,7 @@ it("distinguishes degraded stages from boundary, bootstrap, operation and inject
   expect(verifyLedgerTreatment({ valid: true, expectedEntries: 1 }, { ...observed, upkeep: [{ providerInvoked: true }] })).toBe(false);
   expect(verifyLedgerTreatment({ valid: true, expectedEntries: 0 }, { continuityPacks: [{ ledgerEntries: 0, evidenceEntries: 3 }] })).toBe(true);
   expect(verifyLedgerTreatment({ valid: true, expectedEntries: 0 }, { continuityPacks: [{ ledgerEntries: 0, evidenceEntries: 0 }] })).toBe(false);
-  const skipped = structuredClone(steps); skipped[1].receipt = { status: "skipped", providerInvoked: false }; skipped[1].journal = { ...skipped[0].journal }; skipped[2].journal.operations = 2;
+  const skipped = structuredClone(steps); skipped[1].receipt = { status: "skipped", reason: "input_budget", providerInvoked: false }; skipped[1].journal = { ...skipped[0].journal }; skipped[2].journal.operations = 2;
   expect(preparationIntegrity(skipped)).toBe(true);
 });
 
@@ -705,3 +708,65 @@ it.each([false, true])("continues stage3 and probes after aborted stage2 (no led
   expect(trial.boundary.observed.offlineLedgerCounts).toEqual(noLedger ? [0, 0] : [1, 1]);
   expect(trial.boundary.observed.upkeep.every(row => !row.providerInvoked)).toBe(true);
 }, 180_000);
+
+it("invalidates every configuration/eligibility skip rather than calling it degraded", async () => {
+  const { preparationDisposition } = await import("../lib/continuity-runner.mjs");
+  for (const reason of ["read_only", "disabled", "detached_attempt", "continuation_boundary", "per_message", "isolated", "unowned_store", "history_unavailable", "model_unavailable", "model_identity", "trigger_headroom", "cap_unsupported", "ledger_integrity", "unexpected"]) {
+    const receipt = { status: "skipped", reason, providerInvoked: false };
+    expect(preparationDisposition(receipt), reason).toBe("integrity");
+    expect(preparationIntegrity([1, 2, 3].map(pid => ({ pid, valid: true, boundary: { verified: true }, preserved: true, receipt, journal: { operations: 0, released: 0, bootstrap: 0 } }))), reason).toBe(false);
+  }
+  expect(preparationDisposition({ status: "valid", reason: "completed", providerInvoked: false })).toBe("integrity");
+  expect(preparationDisposition({ status: "skipped", reason: "unavailable", providerInvoked: false })).toBe("integrity");
+  expect(preparationDisposition({ status: "invalid", reason: "unavailable", providerInvoked: true })).toBe("degraded");
+  expect(preparationDisposition({ status: "invalid", reason: "input_overrun", providerInvoked: true })).toBe("degraded");
+  expect(preparationIntegrity([])).toBe(false);
+});
+it("allows a released non-invoked bootstrap row before the first real bootstrap", () => {
+  const first = { pid: 10, valid: true, preserved: true, boundary: { verified: true },
+    receipt: { status: "skipped", reason: "input_budget", providerInvoked: false, operationId: "released" },
+    journal: { operations: 0, released: 1, state: "released", bootstrap: 0, budget: "bootstrap", operationId: "released", selection: ["shared"] } };
+  const second = { pid: 11, valid: true, preserved: true, boundary: { verified: true },
+    receipt: { status: "valid", reason: "completed", providerInvoked: true, operationId: "bootstrap" },
+    journal: { operations: 1, released: 1, state: "settled", bootstrap: 1, budget: "bootstrap", operationId: "bootstrap", selection: ["shared"] } };
+  expect(preparationIntegrity([first, second])).toBe(true);
+  const invoked = structuredClone(first); invoked.receipt.providerInvoked = true;
+  expect(preparationIntegrity([invoked])).toBe(false);
+  const wrongBudget = structuredClone(second); wrongBudget.journal.budget = "incremental";
+  expect(preparationIntegrity([first, wrongBudget])).toBe(false);
+});
+it("charges only the full reserve for a partial known-cost call and carries inclusive input into admission", () => {
+  const usage = preparationUsage({ providerInvoked: true, inputTokens: 30, outputTokens: null, costUsd: 0.01 }, 128000, { input: 2, output: 4 });
+  expect(usage).toMatchObject({ estimatedCostUsd: null, conservativeCostUsd: 0.272384, conservativeInputTokens: 128000 });
+  expect(observedInputTokens(usage)).toBe(128000);
+  expect(addUsage(emptyUsage(), usage)).toMatchObject({ estimatedCostUsd: 0, conservativeCostUsd: 0.272384, unknownCostCalls: 1 });
+});
+
+it("reads released journal states and reserves bootstrap input again after a proven non-invocation", async () => {
+  const { DatabaseSync } = await import("node:sqlite");
+  const { prepareLedgerCheckpoint } = await import("../lib/continuity-runner.mjs");
+  const work = await scratch(), path = join(work, "journal.sqlite"), db = new DatabaseSync(path);
+  db.exec("CREATE TABLE continuity_upkeep_operations(operation_id TEXT,reservation TEXT,state TEXT); CREATE TABLE continuity_upkeep_progress(logical_id TEXT,conversation_id TEXT,cursor TEXT); CREATE TABLE continuity_upkeep_offers(offer_count INTEGER,state TEXT); CREATE TABLE continuity_upkeep_retired(data BLOB)");
+  let stage = 0;
+  const modules = {
+    config: { resolveJsonMonoAgentConfig: () => ({ runtime: { model: {} } }) },
+    coordinator: { acquireAgentRootOwnership: async () => ({}), releaseAgentRootOwnershipWhenIdle: async () => {} },
+    host: { parseMonoRuntimeModelReference: reference => ({ reference }) },
+    conversation: { ToolHistoryReader: class { databasePath = path; ledger() {} } },
+    app: { createConfiguredAgentRuntime: () => ({}), createConfiguredConversationHarness: async () => ({ run: async ({ onEvent }) => {
+      const operationId = `operation-${++stage}`;
+      db.prepare("INSERT INTO continuity_upkeep_operations VALUES (?,?,?)").run(operationId, JSON.stringify({ budget: "bootstrap", progress: { spans: [{ key: "same-source" }] } }), stage === 1 ? "released" : "analyzed");
+      onEvent({ type: "continuity_upkeep", operationId, status: stage === 1 ? "skipped" : "valid", reason: stage === 1 ? "model_headroom" : "analyzed", providerInvoked: stage !== 1 }); return {};
+    } }) },
+  };
+  const plan = { upkeep: { model: "fictional:base", maxInputTokens: 128000, incrementalMaxInputTokens: 64000, maxOutputTokens: 4096, callsPerTraceRepeat: 3 }, limits: { perLiveTurnTimeoutMs: 10000 } };
+  try {
+    const run = maxInputTokens => prepareLedgerCheckpoint({ modules, work, conversationId: "fictional", plan, step: { binding: "fictional:base", maxInputTokens }, mode: "real", reader: { reference: "fictional:base" }, scripted: { respondWith() {} }, clock: {} });
+    const first = await run(128000), second = await run(64000);
+    expect(first.journal).toMatchObject({ operations: 0, released: 1, bootstrap: 0, states: { released: 1 }, state: "released" });
+    expect(first.usage.calls).toBe(0);
+    expect(second.journal).toMatchObject({ operations: 1, released: 1, bootstrap: 1, states: { released: 1, analyzed: 1 }, budget: "bootstrap" });
+    expect(second.usage).toMatchObject({ estimatedInputTokens: 128000, conservativeInputTokens: 128000 });
+    expect(preparationIntegrity([first, second].map((step, i) => ({ ...step, pid: i + 100, boundary: { verified: true } })))).toBe(true);
+  } finally { db.close(); }
+});

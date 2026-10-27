@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Fix continuity benchmark integrity checks to reject ineligible preparations,
+  distinguish released non-invocations, and avoid double-counting unknown usage.
+  Keep extraction kind guidance generic and disclose its evaluation limitations.
+
 - Keep received continuity facts without inventing owner decisions: relabel new
   decisions lacking owner citations as marked artifacts and count the relabels.
   Clarify pending work, reminders and historical facts without changing ranking.

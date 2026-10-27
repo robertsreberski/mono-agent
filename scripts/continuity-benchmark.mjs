@@ -178,8 +178,9 @@ function unitName({ repeat, traceId, armId }) { return `r${repeat}-${traceId}-${
 /** Estimated input is inclusive; do not add cache again when reported input is absent. */
 export function observedInputTokens(usage) {
   if (Array.isArray(usage?.components)) return usage.components.reduce((sum, part) => sum + observedInputTokens(part), 0);
-  return usage?.inputTokens == null && typeof usage?.estimatedInputTokens === "number" ? usage.estimatedInputTokens
+  const input = usage?.inputTokens == null && typeof usage?.estimatedInputTokens === "number" ? usage.estimatedInputTokens
     : (usage?.inputTokens ?? 0) + (usage?.cacheReadTokens ?? 0) + (usage?.cacheWriteTokens ?? 0);
+  return Math.max(input, usage?.conservativeInputTokens ?? 0);
 }
 
 async function execute({ flags, plan, traces, mode, output, piAuthPath, head, dirty, modulesLoader }) {
@@ -305,11 +306,11 @@ export async function aggregate({ plan, traces, output, mode }) {
   const preparationHealth = Object.fromEntries(plan.arms.map(arm => {
     const stages = units.filter(unit => unit.arm === arm.id).flatMap(unit => unit.checkpoint?.upkeep?.preparations ?? []);
     const degraded = stages.filter(step => step.degraded);
-    return [arm.id, { stages: stages.length, degradedStages: degraded.length, reasons: Object.fromEntries([...new Set(degraded.map(step => step.degradedReason))].map(reason => [reason, degraded.filter(step => step.degradedReason === reason).length])) }];
+    return [arm.id, { stages: stages.length, d6InputOverruns: stages.filter(step => step.d6InputOverrun).length, degradedStages: degraded.length, reasons: Object.fromEntries([...new Set(degraded.map(step => step.degradedReason))].map(reason => [reason, degraded.filter(step => step.degradedReason === reason).length])) }];
   }));
   const results = { preparationHealth, plan, executionKind: mode, qualityMeasured: mode === "real", inventory: inventory(traces), coverage, summary, judgeUsage, midCheckpoints, upkeep: units.filter(unit => unit.checkpoint?.upkeep).map(unit => ({ traceId: unit.traceId, repeat: unit.repeat, arm: unit.arm, ...unit.checkpoint.upkeep })), pressure: pressureSummary };
   await writeFile(join(output, "results.json"), `${JSON.stringify(results, null, 2)}\n`, { mode: 0o600 });
-  const degradation = Object.entries(preparationHealth).map(([arm, health]) => `- ${arm}: ${health.degradedStages}/${health.stages} degraded preparation stages; reasons ${JSON.stringify(health.reasons)}.`).join("\n");
+  const degradation = Object.entries(preparationHealth).map(([arm, health]) => `- ${arm}: ${health.degradedStages}/${health.stages} degraded preparation stages; D6 input overruns ${health.d6InputOverruns}; reasons ${JSON.stringify(health.reasons)}.`).join("\n");
   const header = `Preparation health (degraded stages remain scored):\n${degradation}\n\nCoverage: ${coverage.unitsComplete}/${coverage.unitsExpected} trace×arm×repeat units. Code revision ${plan.codeRevision ?? "unknown"}. Plan ${plan.confirmation}.\n\n`;
   await writeFile(join(output, "summary.md"), `${header}${renderMarkdown(summary, { qualityMeasured: mode === "real", armLabels, judgeUsage: plan.judge ? judgeUsage : null })}`, { mode: 0o600 });
   return results;
