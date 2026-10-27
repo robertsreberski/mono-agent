@@ -143,7 +143,7 @@ export function mutateUpkeep(db: DatabaseSync, root: string, request: UpkeepMuta
     const key = ledgerHash(JSON.stringify([r.manifest, r.parent]));
     // Model changes, lost receipts and restarts do not repurchase uncertain work.
     if (db.prepare("SELECT 1 FROM continuity_upkeep_operations WHERE logical_id=? AND conversation_id=? AND incarnation=? AND selection_key=? AND state<>'released'").get(r.logicalId, r.conversationId, r.incarnation, key)
-      && !(r.progress?.spans.length && r.progress.spans.every(span => db.prepare("SELECT 1 FROM continuity_upkeep_offers WHERE logical_id=? AND conversation_id=? AND span_key=? AND state IN ('reofferable','available','unrepresented') AND offer_count<2").get(r.logicalId, r.conversationId, span.key)))) throw new LedgerError("upkeep_repeat_suppressed");
+      && !(r.progress?.spans.length && r.progress.spans.every(span => db.prepare("SELECT 1 FROM continuity_upkeep_offers WHERE logical_id=? AND conversation_id=? AND span_key=? AND state IN ('reofferable','available','unrepresented','analyzed') AND offer_count<2").get(r.logicalId, r.conversationId, span.key)))) throw new LedgerError("upkeep_repeat_suppressed");
     if (Number((db.prepare("SELECT count(*) n FROM continuity_upkeep_operations WHERE logical_id=? AND conversation_id=?").get(r.logicalId, r.conversationId) as Row).n) >= 16384) fail();
     if (r.progress) initializeLedgerProgress(db, r);
     db.prepare("INSERT INTO continuity_upkeep_operations VALUES (?,?,?,?,?,?,?,?,?,'reserved',NULL)").run(r.operationId, r.logicalId, r.conversationId, r.incarnation, r.fence, r.ownerToken, serialized, key, r.budget);

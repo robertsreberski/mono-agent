@@ -1344,4 +1344,6 @@ visible rather than being deduplicated by text. Default operation performs no pa
 Explicit [ledger upkeep](../../docs/runtime/continuity-ledger.md) adds one bounded
 primary cold-boundary extraction; continuations and detached attempts retain the
 deterministic fallback. Ledger prose is derived interpretation, never owner
-authority; covered owners are demoted rather than deleted.
+authority; covered owners are demoted rather than deleted. Upkeep ranks a complete
+bounded history scan, greedily fits cited-only deltas and shares a two-offer ceiling
+across analysis/reconstruction. Scan exhaustion makes no extraction call.

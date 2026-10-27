@@ -54,14 +54,14 @@ it("progresses beyond 512 records, preserves earlier stable entries, and reaches
   await f.writer.persist(binding, { phase: "result", toolCallId: "lookup", toolName: "mail_read", state: "success", content: "Fictional heading.\n\n" + "neutral prose ".repeat(1600) + "FABLE-Z91" }); await f.writer.finishRun(binding, "completed");
   let first: LedgerEntry | undefined;
   for (let i = 0; i < 24; i++) {
-    const result = await f.prepare(), generation = f.reader.ledger(scope)!.generation;
+    const result = await f.prepare(); expect(f.reader.ledger(scope), JSON.stringify(result.events)).toBeDefined(); const generation = f.reader.ledger(scope)!.generation;
     expect(result.events).toContainEqual(expect.objectContaining({ status: "valid", generationId: generation.id }));
     first ??= generation.entries[0]; expect(generation.entries).toContainEqual(first);
     expect(result.pack()).toContain("### Continuity ledger");
     if (f.selections.at(-1)!.some(row => row.text.includes("FABLE-Z91"))) break;
   }
   expect(f.selections.flat().some(row => row.ordinal > 512 && row.start > 0 && row.text.includes("FABLE-Z91"))).toBe(true);
-  const keys = f.selections.flat().map(spanKey); expect(new Set(keys).size).toBe(keys.length);
+  const keys = f.selections.flat().map(spanKey); expect(Math.max(...keys.map(key => keys.filter(other => other === key).length))).toBeLessThanOrEqual(2);
   expect(f.budgets[0]).toBe(128000); expect(f.budgets.slice(1).every(budget => budget === 64000)).toBe(true);
   expect(f.db(db => db.prepare("SELECT count(*) n FROM continuity_upkeep_operations WHERE budget='bootstrap'").get())).toEqual({ n: 1 });
   expect(f.db(db => db.prepare("SELECT count(*) n FROM continuity_upkeep_offers WHERE state='analyzed'").get())).not.toEqual({ n: 0 });
@@ -102,7 +102,7 @@ it("atomically invalidates all representation on a contributing tombstone but re
   expect(f.db(db => db.prepare("SELECT count(*) n FROM continuity_upkeep_offers WHERE state='represented'").get())).toEqual({ n: 0 });
   expect(f.db(db => db.prepare("SELECT ordinal FROM continuity_upkeep_offers WHERE state='unrepresented' ORDER BY ordinal").all())).toEqual(successes);
   f.respond(rows => rows.filter(row => successes.some(old => old.ordinal === row.ordinal)).map(row => ({ kind: "open_work", value: `Reconstructed ${row.ordinal}.`, status: "unknown", sources: [row.id] })));
-  for (let i = 0; i < 4; i++) { await f.prepare(); if (f.reader.ledger(scope)!.generation.entries.length === successes.length) break; }
+  for (let i = 0; i < 4; i++) { const result = await f.prepare(); expect(f.reader.ledger(scope), JSON.stringify(result.events)).toBeDefined(); if (f.reader.ledger(scope)!.generation.entries.length === successes.length) break; }
   const next = f.selections.slice(2).flat();
   for (const success of successes) expect(next.some(row => row.ordinal === success.ordinal)).toBe(true);
   expect(next.some(row => row.ordinal === victim.ordinal)).toBe(false);
@@ -219,9 +219,9 @@ it("leaves the disabled path without progress/admission tables or a completion",
 
 it("continues after deletion of the actual interior cursor record without renewing bootstrap", async () => {
   const f = await fixture(); await f.capture(1, "Fictional neutral prose ".repeat(18000), "fictional", true); await f.capture(1, "Surviving rule.");
-  await f.prepare(); expect(f.selections[0]!.every(span => span.ordinal === 1)).toBe(true);
+  await f.prepare(); expect(f.selections[0]!.some(span => span.ordinal === 1)).toBe(true);
   f.db(db => db.prepare("DELETE FROM continuity_records WHERE ordinal=1").run());
-  await f.prepare(); expect(f.selections[1]![0]).toMatchObject({ ordinal: 2, start: 0, text: "Surviving rule." });
+  await f.prepare(); expect(f.selections[1]!.some(span => span.ordinal === 2 && span.start === 0 && span.text === "Surviving rule.")).toBe(true);
   expect(f.budgets).toEqual([128000, 64000]);
 });
 
@@ -245,9 +245,12 @@ it("storage rejects dropping prior entries or lineage even with a valid parent C
 
 it("does not inherit legacy analyzed-but-uncited coverage as representation", async () => {
   const f = await fixture(); await f.capture(2);
-  const source = f.reader.snapshotContinuity(scope), selection = selectLedgerSources(source);
-  const base = validateLedgerOutput(JSON.stringify({ entries: [{ kind: "open_work", value: "Prior fact.", status: "unknown", sources: ["s0"] }], covered: ["s0", "s1"] }), selection, scope);
-  const legacy = { ...base, coveredSpans: base.spans.map(span => span.id), uncovered: 0 };
+  const source = f.reader.snapshotContinuity(scope), selection = selectLedgerSources({ ...source, records: [source.records[0]!] });
+  const base = validateLedgerOutput(JSON.stringify({ entries: [{ kind: "open_work", value: "Prior fact.", status: "unknown", sources: ["s0"] }], covered: ["s0"] }), selection, scope);
+  const extra = selectLedgerSources({ ...source, records: [source.records[1]!] }).spans[0]!;
+  const { text: _text, ...uncited } = extra;
+  const spans = [...base.spans, { ...uncited, id: "legacy-uncited" }];
+  const legacy = { ...base, spans, manifest: ledgerHash(JSON.stringify(spans)), inputs: source.records.map(r => ({ recordId: r.recordId, sha256: r.sha256 })), coveredSpans: spans.map(span => span.id), uncovered: 0 };
   await f.writer.publishLedger(legacy);
   const read = f.reader.ledger(scope)!.generation;
   expect(read.coveredSpans).toEqual([base.spans[0]!.id]); expect(read.uncovered).toBe(1);
@@ -259,7 +262,7 @@ it("does not inherit legacy analyzed-but-uncited coverage as representation", as
 it("skips an intrinsically oversized owner paragraph durably without paying for it or stalling later evidence", async () => {
   const f = await fixture(); await f.capture(1, "Before."); await f.capture(1, "Fictional pasted log ".repeat(600)); await f.capture(1, "After.");
   const result = await f.prepare(); expect(f.complete).toHaveBeenCalledTimes(1);
-  expect(f.selections[0]!.map(row => row.text)).toEqual(["Before.", "After."]);
+  expect(f.selections[0]!.map(row => row.text).sort()).toEqual(["After.", "Before."]);
   expect(f.db(db => db.prepare("SELECT ordinal,state FROM continuity_upkeep_offers WHERE state='oversized'").all())).toEqual([{ ordinal: 2, state: "oversized" }]);
   expect(result.pack()).toContain("Upkeep coverage gap");
   await f.capture(1, "Later."); await f.prepare(); expect(f.selections[1]!.some(row => row.text === "Later.")).toBe(true);
@@ -288,10 +291,10 @@ it("admits a balanced dense delta and preserves it at the next real supplier bou
   expect(f.db(db => db.prepare("SELECT DISTINCT state FROM continuity_upkeep_offers").all())).toEqual([{ state: "represented" }]);
 });
 
-it("terminates unsaturated valid uncited spans without idle payments and still reaches fresh evidence", async () => {
+it("gives unsaturated uncited spans one second chance alongside fresh evidence, then stops idle payments", async () => {
   const f = await fixture(); await f.capture(3); await f.prepare();
   expect(f.db(db => db.prepare("SELECT count(*) n FROM continuity_upkeep_offers WHERE state='analyzed'").get())).toEqual({ n: 2 });
-  await f.capture(1, "Fresh."); await f.prepare(); expect(f.selections[1]!.map(row => row.ordinal)).toEqual([4]);
+  await f.capture(1, "Fresh."); await f.prepare(); expect(f.selections[1]!.some(row => row.ordinal === 4)).toBe(true); expect(f.selections[1]).toHaveLength(3);
   await f.prepare(); expect(f.complete).toHaveBeenCalledTimes(2);
   expect(f.reader.ledger(scope)!.generation.entries).toHaveLength(2);
 });
@@ -388,7 +391,7 @@ it.each(["physical", "logical", "tombstone", "delete", "generation"] as const)("
   await f.capture(1, "New evidence."); await f.prepare(); expect(f.complete).toHaveBeenCalledTimes(1);
 });
 
-it("ends a materialization page before a tool whose arguments exceed the remaining byte budget", async () => {
+it("bounds selected materialization including tool arguments without truncating the completed scan", async () => {
   const f = await fixture(); await f.capture(4, "Fictional neutral ".padEnd(1000000, "n"), "fictional", true);
   const binding = { conversationId: "fictional", logicalConversationId: "fictional", runId: "large-tool", isolated: false, continuityEnabled: true as const, finalizedContinuity: true as const };
   await f.writer.persist(binding, { phase: "invocation", toolCallId: "large", toolName: "lookup", arguments: {} });
@@ -397,11 +400,12 @@ it("ends a materialization page before a tool whose arguments exceed the remaini
   const payload = JSON.stringify({ value: "x".repeat(250000) });
   f.db(db => db.prepare("UPDATE tool_records SET payload_json=?,payload_sha256=?,retained_bytes=? WHERE phase='invocation'").run(payload, ledgerHash(payload), Buffer.byteLength(payload)));
   const first = f.reader.snapshotContinuity({ ...scope, selection: "upkeep" });
-  expect(first.records).toHaveLength(4); expect(first.degradedReason).toBe("snapshot_bounds");
+  expect(first.records).toHaveLength(4); expect(first.upkeep?.scan).toMatchObject({ complete: true, materializationSkipped: 1 });
+  expect(first.records.some(r => r.kind === "tool")).toBe(true);
   const ordinal = f.db(db => (db.prepare("SELECT ordinal FROM continuity_records WHERE kind='tool'").get() as { ordinal: number }).ordinal);
   f.db(db => db.prepare("INSERT INTO continuity_upkeep_progress VALUES (?,?,?,?)").run("fictional", "fictional", fence.incarnation, JSON.stringify({ ordinal, offset: 0, digest: "", watermark: ordinal })));
   const next = f.reader.snapshotContinuity({ ...scope, selection: "upkeep" });
-  expect(next.degradedReason).toBeUndefined(); expect(next.records[0]!.tool!.arguments.length).toBeGreaterThan(200000);
+  expect(next.degradedReason).toBeUndefined(); expect(next.records.find(r => r.kind === "tool")!.tool!.arguments.length).toBeGreaterThan(200000);
 });
 
 it("purges terminal fingerprints without refunding bootstrap or blocking genuinely new evidence", async () => {
@@ -430,10 +434,10 @@ it.each([false, true])("migrates legacy reservations once without a retention ba
   await f.prepare(); expect(f.db(db => db.prepare("SELECT reservation FROM continuity_upkeep_operations WHERE operation_id=?").get(reservation.operationId))).toEqual({ reservation: old.reservation });
 });
 
-it("never purchases empty analyzed evidence again at idle boundaries", async () => {
+it("reoffers empty analyzed evidence once, then makes zero idle purchases", async () => {
   const f = await fixture(); await f.capture(3); f.respond(() => []);
   for (let i = 0; i < 3; i++) await f.prepare();
-  expect(f.complete).toHaveBeenCalledTimes(1);
+  expect(f.complete).toHaveBeenCalledTimes(2);
   expect(f.db(db => db.prepare("SELECT DISTINCT state FROM continuity_upkeep_offers").all())).toEqual([{ state: "analyzed" }]);
   expect(f.reader.ledger(scope)).toBeUndefined();
 });
@@ -504,8 +508,8 @@ it("reclaims LRU working sets under the shared quota without losing unknowns or 
   expect(f.db(db => db.prepare("SELECT count(*) n FROM continuity_upkeep_operations WHERE conversation_id='newer'").get())).toEqual({ n: 1 });
   expect(f.db(db => db.prepare("SELECT bootstrap_operation FROM continuity_upkeep_admissions WHERE logical_id='other'").get())).toEqual({ bootstrap_operation: reservation.operationId });
   expect(f.db(upkeepBytes)).toBeLessThan(metadata); expect(f.reader.stats()!.retainedBytes).toBeLessThan(before.retainedBytes);
-  await f.prepare(); expect(f.complete).toHaveBeenCalledTimes(2); // Retired analyzed evidence cannot be bought again.
-  await f.capture(1, "Fresh after reclamation."); await f.prepare(); expect(f.complete).toHaveBeenCalledTimes(3); expect(f.budgets[2]).toBe(64000);
+  await f.prepare(); expect(f.complete).toHaveBeenCalledTimes(3); // Exact compact count preserves its one remaining offer.
+  await f.capture(1, "Fresh after reclamation."); await f.prepare(); expect(f.complete).toHaveBeenCalledTimes(4); expect(f.budgets.slice(2)).toEqual([64000, 64000]);
 });
 
 it("erases a reserved first operation before the first dispatch without advancing or consuming bootstrap", async () => {
@@ -523,14 +527,14 @@ it("erases a reserved first operation before the first dispatch without advancin
   expect(f.complete).not.toHaveBeenCalled();
 });
 
-it("counts an idle scope claim as LRU use without buying its analyzed evidence again", async () => {
-  const f = await fixture(); f.respond(() => []); await f.capture(); await f.prepare();
+it("counts an idle scope claim as LRU use after its analyzed allowance is exhausted", async () => {
+  const f = await fixture(); f.respond(() => []); await f.capture(); await f.prepare(); await f.prepare();
   await f.capture(1, "Newer scope.", "newer"); await f.prepare(8000, "newer");
   f.db(db => db.exec("UPDATE continuity_upkeep_progress SET cursor=json_set(cursor,'$.touchedAt',CASE WHEN conversation_id='fictional' THEN 0 ELSE 1 END)"));
-  await f.prepare(); expect(f.complete).toHaveBeenCalledTimes(2);
+  await f.prepare(); expect(f.complete).toHaveBeenCalledTimes(3);
   const stats = f.reader.stats()!;
   f.db(db => retainContinuity(db, { ...stats.limits, maxBytes: stats.retainedBytes - 1 }, Date.now()));
-  expect(f.db(db => db.prepare("SELECT conversation_id FROM continuity_upkeep_operations").all())).toEqual([{ conversation_id: "fictional" }]);
+  expect(f.db(db => db.prepare("SELECT conversation_id FROM continuity_upkeep_operations").all())).toEqual([{ conversation_id: "fictional" }, { conversation_id: "fictional" }]);
   expect(f.db(db => db.prepare("SELECT count(*) n FROM continuity_upkeep_admissions WHERE bootstrap_operation IS NOT NULL").get())).toEqual({ n: 2 });
 });
 
@@ -594,7 +598,7 @@ it.each(["request", "stream_abort"] as const)("settles an empty %s delta as anal
   const row = f.db(db => db.prepare("SELECT state,outcome,operation_id FROM continuity_upkeep_operations ORDER BY rowid DESC LIMIT 1").get()) as any;
   expect(row.state).toBe("terminal"); expect(JSON.parse(row.outcome)).toMatchObject({ inputTokens: 25, outputTokens: 5, costUsd: 0.002 });
   expect(f.db(db => db.prepare("SELECT DISTINCT state FROM continuity_upkeep_offers WHERE operation_id=?").all(row.operation_id))).toEqual([{ state: "analyzed" }]);
-  await f.prepare(); await f.prepare(); expect(f.complete).toHaveBeenCalledTimes(2);
+  await f.prepare(); await f.prepare(); expect(f.complete).toHaveBeenCalledTimes(3);
 });
 
 it("accepts the captured nothing-new delta without treating omitted evidence as represented", async () => {
@@ -615,12 +619,67 @@ it.each(["request", "stream_abort"] as const)("requires strict offered-id subset
   expect(() => validateLedgerOutput('{"entries":[],"covered":[],"extra":true}', selection, scope, undefined, mode)).toThrow("output_schema");
 });
 
-it("consumes an analysis-only bootstrap without a generation or idle repurchase", async () => {
+it("consumes an analysis-only bootstrap and one bounded second offer without a generation", async () => {
   const f = await fixture(); await f.capture(1, "Neutral archive.", "fictional", true); f.respond(() => []);
   const publish = vi.spyOn(f.ports, "publishLedger"), result = await f.prepare();
   expect(result.events).toContainEqual(expect.objectContaining({ status: "valid", reason: "analyzed" }));
   expect(publish).not.toHaveBeenCalled(); expect(f.reader.ledger(scope)).toBeUndefined();
-  await f.prepare(); expect(f.complete).toHaveBeenCalledTimes(1);
+  await f.prepare(); expect(f.complete).toHaveBeenCalledTimes(2);
   await f.capture(1, "New fictional evidence.", "fictional", true); await f.prepare();
-  expect(f.budgets).toEqual([128000, 64000]); expect(publish).not.toHaveBeenCalled();
+  expect(f.budgets).toEqual([128000, 64000, 64000]); expect(publish).not.toHaveBeenCalled();
+});
+
+
+it("completes a ranked scan beyond 512 records and 4MiB and reaches high-signal tool interiors immediately", async () => {
+  const f = await fixture(); await f.capture(540, "Archival prose.", "fictional", true);
+  await f.capture(5, "n".repeat(1000000), "fictional", true);
+  const binding = { conversationId: "fictional", logicalConversationId: "fictional", runId: "late-tool", isolated: false, continuityEnabled: true as const, finalizedContinuity: true as const };
+  await f.writer.persist(binding, { phase: "invocation", toolCallId: "late", toolName: "read_notes", arguments: {} });
+  await f.writer.persist(binding, { phase: "result", toolCallId: "late", state: "success", content: "Header.\n\n" + "filler prose ".repeat(1700) + "REF-Z120" }); await f.writer.finishRun(binding, "completed");
+  const result = await f.prepare();
+  expect(f.complete).toHaveBeenCalledTimes(1);
+  expect(f.selections[0]!.some(s => s.ordinal > 512 && s.start > 0 && s.text.includes("REF-Z120"))).toBe(true);
+  expect(result.events).toContainEqual(expect.objectContaining({ type: "continuity_upkeep_scan", complete: true, rows: 546, bindingQueries: 1 }));
+  expect(result.events.find(e => e.type === "continuity_upkeep_scan").bytes).toBeGreaterThan(4 * 1024 * 1024);
+});
+it.each([{ rows: 1 }, { bytes: 1 }, { windows: 1 }, { ms: 0 }])("fails closed with zero calls when a whole-history scan budget expires: %j", async scanBudget => {
+  const f = await fixture(); await f.capture(3);
+  const snapshot = f.reader.snapshotContinuity.bind(f.reader);
+  vi.spyOn(f.reader, "snapshotContinuity").mockImplementation(input => snapshot({ ...input, ...(input.selection ? { scanBudget } : {}) }));
+  const result = await f.prepare(); expect(f.complete).not.toHaveBeenCalled();
+  expect(result.events).toContainEqual(expect.objectContaining({ status: "skipped", reason: "ledger_scan_capacity", providerInvoked: false }));
+  expect((await f.writer.mutateUpkeep({ kind: "inspect", scope: { logicalId: "fictional", conversationId: "fictional" } }))!.bootstrap).toBe(true);
+});
+it("batches lifecycle bindings once per run across read pages", async () => {
+  const f = await fixture(), binding = { conversationId: "fictional", logicalConversationId: "fictional", runId: "one-run", isolated: false, continuityEnabled: true as const, finalizedContinuity: true as const };
+  for (let i = 0; i < 130; i++) {
+    await f.writer.persist(binding, { phase: "invocation", toolCallId: `call-${i}`, toolName: "read_notes", arguments: {} });
+    await f.writer.persist(binding, { phase: "result", toolCallId: `call-${i}`, state: "success", content: `Reference REF-${i}.` });
+  }
+  await f.writer.finishRun(binding, "completed");
+  const source = f.reader.snapshotContinuity({ ...scope, selection: "upkeep" });
+  expect(source.upkeep?.scan).toMatchObject({ complete: true, rows: 130, pages: 3, bindingQueries: 1, bindings: 130 });
+  expect(source.records.every(r => r.tool?.name === "read_notes")).toBe(true);
+});
+it("releases each page transaction and rejects a selected source deleted between pages", async () => {
+  const f = await fixture(); await f.capture(150);
+  const prepare = DatabaseSync.prototype.prepare, exec = DatabaseSync.prototype.exec;
+  let page = false, mutated = false;
+  vi.spyOn(DatabaseSync.prototype, "prepare").mockImplementation(function(this: DatabaseSync, sql: string) { if (sql.includes("ORDER BY r.ordinal LIMIT 64")) page = true; return prepare.call(this, sql); });
+  vi.spyOn(DatabaseSync.prototype, "exec").mockImplementation(function(this: DatabaseSync, sql: string) {
+    const result = exec.call(this, sql);
+    if (sql === "COMMIT" && page && !mutated) { page = false; mutated = true; f.db(db => db.exec("DELETE FROM continuity_records WHERE ordinal=1")); }
+    return result;
+  });
+  await f.prepare(); expect(mutated).toBe(true); expect(f.complete).not.toHaveBeenCalled();
+});
+
+it("excludes legacy current citations before the oldest-never-offered fairness queue", async () => {
+  const f = await fixture(); await f.capture(64, "Archival prose.");
+  const covered = selectLedgerSources(f.reader.snapshotContinuity({ ...scope, selection: "upkeep" })).spans.map(spanKey);
+  await f.capture(256, "Reference REF-120.");
+  const source = f.reader.snapshotContinuity({ ...scope, selection: "upkeep", priorCovered: covered });
+  expect(source.upkeep?.scan).toMatchObject({ complete: true, rows: 320, excluded: 64 });
+  expect(source.upkeep?.candidates?.some(s => s.ordinal === 65)).toBe(true);
+  expect(source.upkeep?.candidates?.every(s => s.ordinal > 64)).toBe(true);
 });

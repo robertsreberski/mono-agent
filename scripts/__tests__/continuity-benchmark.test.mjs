@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ARMS, AVAILABLE_ARM_IDS, BASELINE_ARM, CONTINUITY_OFF, CONTINUITY_ON, CONTINUITY_PACK_ON, DEFAULT_ARMS, NOT_AVAILABLE, ORIGINAL_ARM_IDS, SMALL_PROACTIVE_COMPACTION, armById, checkpointKey, mergePatch, pressureMetrics, verifyBoundary, verifyPressure, verifyStore } from "../lib/continuity-arms.mjs";
-import { classifyHistoryResult } from "../lib/continuity-runner.mjs";
+import { classifyHistoryResult, boundedOfferHistory } from "../lib/continuity-runner.mjs";
 import { digest, estimateCost, inventory, loadTraces, makePlan, parseSeeds, sourceOnly, validateTrace } from "../lib/continuity-dataset.mjs";
 import { COLD_BOUNDS, GENERATOR_VERSION, HARD_SEEDS, LONG_RULES, generateTrace, mulberry32, outsideColdBounds, traceShape } from "../lib/continuity-generator.mjs";
 import { ABSTAIN_INSTRUCTION, ORIGINAL_CATEGORIES, emptyUsage, addUsage, isAbstention, parseJudgeVerdict, probePrompt, renderMarkdown, scoreAnswer, summarize } from "../lib/continuity-score.mjs";
@@ -341,7 +341,7 @@ describe("continuity offline contract run (production harness, scripted provider
       expect(unit.complete).toBe(true);
       expect(unit.checkpoint).toMatchObject({ turns: 38, toolCalls: 29, steers: 1 });
       expect(unit.trials).toHaveLength(1);
-      expect(unit.trials[0]).toMatchObject({ status: "completed", answer: "Scripted contract response; semantic correctness is not evaluated." });
+      expect(unit.trials[0], JSON.stringify({ arm, trial: unit.trials[0], upkeepValid: unit.checkpoint.upkeep?.valid })).toMatchObject({ status: "completed", answer: "Scripted contract response; semantic correctness is not evaluated." });
       expect(unit.trials[0].boundary.verified).toBe(true);
     }
     expect(units.native.trials[0].boundary.observed).toMatchObject({ boundaries: [], compactions: [] });
@@ -384,8 +384,21 @@ describe("continuity offline contract run (production harness, scripted provider
     expect(new Set(steps.map(step => step.pid)).size).toBe(3);
     expect(steps.map(step => step.journal.operations)).toEqual([1, 2, 3]);
     expect(steps.map(step => step.journal.bootstrap)).toEqual([1, 1, 1]);
+    const offered = steps.flatMap(step => step.journal.selection);
+    expect(offered.every(key => offered.filter(other => other === key).length <= 2)).toBe(true);
     expect(steps.map(step => step.entriesAfter)).toEqual([1, 1, 2]);
     expect(steps.every(step => step.preserved && step.boundary.verified)).toBe(true);
+    expect(new Set(steps.map(step => step.journal.operationId)).size).toBe(3);
+    expect(new Set(steps.map(step => step.journal.databaseId)).size).toBe(1);
+    expect(steps.map(step => step.journal.budget)).toEqual(["bootstrap", "incremental", "incremental"]);
+    for (const step of steps) {
+      expect(step.observed.upkeepScans).toEqual([expect.objectContaining({ complete: true, limits: { rows: 4096, bytes: 33554432, windows: 65536, ms: 5000 } })]);
+      expect(step.observed.upkeepSelections).toEqual([expect.objectContaining({ reason: "fitted", deltaCap: 8 })]);
+      expect(step.journal.offered.length).toBeGreaterThan(0); expect(step.journal.offered.length).toBeLessThanOrEqual(64);
+      expect(step.journal.offerCounts.every(row => row.offer_count <= 2)).toBe(true);
+      expect(step.journal.compact.identities).toBe(0);
+      expect(JSON.parse(step.journal.frontier).ordinal).toBeGreaterThan(0);
+    }
     expect(ledger.trials[0].boundary.observed.upkeep).toEqual([expect.objectContaining({ providerInvoked: false, reason: "read_only" })]);
     expect(ledger.trials[0].boundary.observed.offlineLedgerCounts).toEqual([1, 1]);
     expect(ledger.trials[0].boundary.observed.continuityPacks.some(pack => pack.ledgerEntries === 2)).toBe(true);
@@ -630,3 +643,10 @@ it("does not manufacture another cold boundary by restarting the same answer bin
   expect(checkpoint.record.upkeep.usage.calls).toBe(1);
   expect(checkpoint.record.upkeep.preparations[1].boundary.verified).toBe(false);
 }, 180_000);
+
+it("keeps three-child offer validation aligned with the shared two-offer policy", () => {
+  expect(boundedOfferHistory([["first", "second"], ["first", "third"], ["second", "third"]])).toBe(true);
+  expect(boundedOfferHistory([["first"], ["first"], ["first"]])).toBe(false);
+  expect(boundedOfferHistory([["first", "first"]])).toBe(false);
+  expect(boundedOfferHistory([["first"], []])).toBe(false);
+});

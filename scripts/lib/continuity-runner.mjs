@@ -212,7 +212,7 @@ export function compactionUsageOf(usage) {
 
 function observer() {
   const observed = { boundaries: [], compactions: [], warnings: 0, steersAccepted: 0, historyWarnings: 0, toolsOffered: [],
-    conversationHistory: { calls: 0, search: 0, get: 0, success: 0, unavailable: 0, error: 0, hits: 0 }, continuityPacks: [], upkeep: [], offlineProviderPackCounts: [], offlineLedgerCounts: [] };
+    conversationHistory: { calls: 0, search: 0, get: 0, success: 0, unavailable: 0, error: 0, hits: 0 }, continuityPacks: [], upkeep: [], upkeepScans: [], upkeepSelections: [], offlineProviderPackCounts: [], offlineLedgerCounts: [] };
   const historyCalls = new Map();
   let steerWaiter = null;
   return {
@@ -244,6 +244,10 @@ function observer() {
       }
       if (event?.type === "continuity_pack_injected") {
         observed.continuityPacks.push(Object.fromEntries(["reason", "ownerEntries", "toolEntries", "summaryEntries", "evidenceEntries", "omittedCount", "unknownOverlap", "ownerDeduped", "toolReserved", "ledgerEntries", "tokens", "degradedReason"].map(key => [key, event[key]])));
+      } else if (event?.type === "continuity_upkeep_scan") {
+        observed.upkeepScans.push({ ...event });
+      } else if (event?.type === "continuity_upkeep_selection") {
+        observed.upkeepSelections.push({ ...event });
       } else if (event?.type === "continuity_upkeep") {
         observed.upkeep.push({ ...event });
       } else if (event?.type === "session_boundary") {
@@ -441,13 +445,10 @@ export async function buildCheckpoint({ modules, trace, arm, repeat, dir, plan, 
           record.upkeep.usage = sumPreparationUsage(preparations);
           if (!result.valid || !result.boundary.verified) break;
         }
-        const seen = new Set();
-        record.upkeep.valid = preparations.length === 3 && preparations.every((step, index) => {
-          const selection = step.journal?.selection ?? [];
-          const fresh = selection.some(key => !seen.has(key)); selection.forEach(key => seen.add(key));
-          return step.valid && step.boundary.verified && fresh && step.journal.operations === index + 1
-            && step.journal.bootstrap === 1 && step.journal.budget === plan.upkeep.preparations[index].budget;
-        }) && new Set(preparations.map(step => step.pid)).size === 3 && preparations.at(-1).entriesAfter > 0;
+        record.upkeep.valid = preparations.length === 3 && boundedOfferHistory(preparations.map(step => step.journal?.selection ?? [])) && preparations.every((step, index) =>
+          step.valid && step.boundary.verified && step.journal.operations === index + 1
+            && step.journal.bootstrap === 1 && step.journal.budget === plan.upkeep.preparations[index].budget
+        ) && new Set(preparations.map(step => step.pid)).size === 3 && preparations.at(-1).entriesAfter > 0;
         record.upkeep.receipt = preparations.at(-1)?.receipt ?? null;
       }
     } finally {
@@ -499,6 +500,15 @@ export function captureUpkeepModels(models, capture) {
     };
     const value = Reflect.get(target, key, target); return typeof value === "function" ? value.bind(target) : value;
   } });
+}
+
+/** A valid uncited second offer need not contain an unseen key. The three-child
+ * protocol still rejects a third/duplicate/empty offer. */
+export function boundedOfferHistory(selections) {
+  const counts = new Map();
+  return selections.every(selection => selection.length > 0 && new Set(selection).size === selection.length && selection.every(key => {
+    const count = (counts.get(key) ?? 0) + 1; counts.set(key, count); return count <= 2;
+  }));
 }
 
 /** Sum each extraction once; reported totals and estimated unknown-call input remain separate. */
@@ -574,6 +584,11 @@ export async function prepareLedgerCheckpoint({ modules, work, authPath, plan, m
       const latest = rows.find(row => row.operation_id === receipt?.operationId);
       const reservation = latest ? JSON.parse(latest.reservation) : null;
       journal = { operations: rows.length, bootstrap: rows.filter(row => JSON.parse(row.reservation).budget === "bootstrap").length,
+        operationId: latest?.operation_id ?? null, databaseId: reservation?.databaseId ?? null, incarnation: reservation?.incarnation ?? null, fence: reservation?.fence ?? null,
+        frontier: db.prepare("SELECT cursor FROM continuity_upkeep_progress WHERE logical_id=? AND conversation_id=?").get(conversationId, conversationId)?.cursor ?? null,
+        offered: reservation?.progress?.spans ?? [],
+        offerCounts: db.prepare("SELECT offer_count,state,count(*) count FROM continuity_upkeep_offers GROUP BY offer_count,state").all(),
+        compact: db.prepare("SELECT coalesce(sum(length(data)),0) bytes,coalesce(sum(length(data)/17),0) identities FROM continuity_upkeep_retired").get(),
         budget: reservation?.budget ?? null, selection: reservation?.progress?.spans.map(span => span.key) ?? [],
         spans: db.prepare("SELECT state,count(*) count FROM continuity_upkeep_offers GROUP BY state").all() };
     } finally { db.close(); }

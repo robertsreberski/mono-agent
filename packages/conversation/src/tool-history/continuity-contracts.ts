@@ -179,9 +179,13 @@ export interface LedgerOffer { readonly key: string; readonly ordinal: number; r
  * contiguous offered/oversized prefix. Caller keys cannot override source geometry. */
 export interface LedgerProgress { readonly cursor: LedgerCursor; readonly spans: readonly LedgerOffer[] }
 
-/** Bounded, one-transaction pack source; no search previews or derived storage. */
+/** Bounded legacy pack snapshot or independently paged ranked upkeep scan. */
 export interface ContinuitySnapshotInput extends ContinuityScope {
   readonly selection?: "upkeep";
+  /** Already validated current-ledger citations, excluded before fairness queues. */
+  readonly priorCovered?: readonly string[] | undefined;
+  /** Internal test/preflight ceilings; may only lower the fixed runtime limits. */
+  readonly scanBudget?: Partial<{ rows: number; bytes: number; windows: number; ms: number }>;
   readonly historyBoundary?: string;
 }
 export interface ContinuitySnapshotRecord extends ContinuityRecordMetadata {
@@ -192,6 +196,8 @@ export interface ContinuitySnapshot {
   readonly records: readonly ContinuitySnapshotRecord[];
   readonly omitted: number;
   readonly gaps: number;
-  readonly upkeep?: { readonly cursor?: LedgerCursor | undefined; readonly watermark: number; readonly excluded: readonly string[] };
-  readonly degradedReason?: "unavailable" | "purge_pending" | "boundary_unavailable" | "snapshot_bounds" | "source_unavailable" | "source_changed";
+  readonly upkeep?: { readonly cursor?: LedgerCursor | undefined; readonly watermark: number; readonly excluded: readonly string[];
+    readonly candidates?: readonly { key: string; ordinal: number; start: number; end: number; score: number; offers: number }[];
+    readonly scan?: { limits?: { rows: number; bytes: number; windows: number; ms: number }; complete: boolean; rows: number; bytes: number; windows: number; pages: number; bindingQueries: number; bindings: number; elapsedMs: number; excluded: number; materializationSkipped: number; deadline: number } };
+  readonly degradedReason?: "unavailable" | "purge_pending" | "boundary_unavailable" | "snapshot_bounds" | "source_unavailable" | "source_changed" | "scan_capacity";
 }

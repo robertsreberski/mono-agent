@@ -35,7 +35,7 @@ async function tool(f: Awaited<ReturnType<typeof fixture>>, text: string) {
 const output = (selection: LedgerSelection) => JSON.stringify({ entries: [{ kind: "open_work", value: "Derived fictional state.", status: "unknown", sources: [selection.spans[0]!.id] }], covered: selection.spans.map(s => s.id) });
 const eligible = { sessionsEnabled: true, isolated: false, ownedStore: true, primaryAttempt: true, maxTokens: 8000, withOwner: async <T>(op: (ownerToken: string) => Promise<T>) => await op("fictional-owner") };
 
-it("reaches tool interiors beyond the first page through an ordinal cursor under the cumulative input estimate", async () => {
+it("reaches ranked tool interiors beyond the legacy first page without using the cursor as a lower bound", async () => {
   const f = await fixture(); for (let i = 0; i < 5; i++) await owner(f, "Fictional filler.", 128);
   await tool(f, "Fictional head.\n\n" + "lookup prose ".repeat(1600) + "BURIED-42\n\nRevised actual amount: $725.");
   expect(f.reader.snapshotContinuity(scope).records.every(r => r.kind !== "tool")).toBe(true);
@@ -44,8 +44,8 @@ it("reaches tool interiors beyond the first page through an ordinal cursor under
   const db = new DatabaseSync(f.reader.databasePath), ordinal = Number((db.prepare("SELECT max(ordinal) n FROM continuity_records WHERE kind='tool'").get() as { n: number }).n);
   db.prepare("INSERT INTO continuity_upkeep_progress VALUES (?,?,?,?)").run("fictional", "fictional", fence!.incarnation, JSON.stringify({ ordinal, offset: 0, digest: "", watermark: ordinal })); db.close();
   const source = f.reader.snapshotContinuity({ ...scope, selection: "upkeep" });
-  expect(source.records[0]!.kind).toBe("tool");
-  const selected = selectLedgerSources(source);
+  expect(source.records.some(r => r.kind === "tool")).toBe(true); expect(source.upkeep?.scan).toMatchObject({ complete: true, rows: 641 });
+  const selected = fitLedgerSelection(selectLedgerSources(source), scope).selection;
   expect(selected.prompt).toContain("BURIED-42"); expect(selected.prompt).toContain("$725");
   expect((Buffer.byteLength(selected.prompt) / 2 + 16) * 1.25).toBeLessThanOrEqual(64000);
   expect(selected.spans.some(span => span.start > 0)).toBe(true);
@@ -207,8 +207,8 @@ it("negative-caches identical failed selections across boundaries until sources 
 });
 it("never buys upkeep with unavailable canonical history or fully covered selected spans", async () => {
   const f = await fixture(); await owner(f); await owner(f, "Second fictional rule."); const source = f.reader.snapshotContinuity(scope), selection = selectLedgerSources(source);
-  await f.writer.publishLedger(validateLedgerOutput(output(selection), selection, scope));
-  vi.spyOn(f.reader, "snapshotContinuity").mockReturnValue({ ...source, records: [source.records[0]!] });
+  const covered = validateLedgerOutput(output(selection), selection, scope); await f.writer.publishLedger(covered);
+  vi.spyOn(f.reader, "snapshotContinuity").mockReturnValue({ ...source, records: [source.records.find(r => r.recordId === covered.spans[0]!.recordId)!] });
   const complete = vi.fn(), events: any[] = [];
   const options = { toolHistory: { ...f, logicalConversationId: (id: string) => id, continuityEnabled: true, upkeep: { enabled: true, model: "bound-completion", complete }, publishLedger: f.writer.publishLedger.bind(f.writer) } } as unknown as ConversationHarnessOptions;
   for (const historyAvailable of [false, true]) {
@@ -266,6 +266,7 @@ it.each(["invalid", "skipped"])("releases only proved pre-dispatch skips, not an
 it("preserves durable paid-failure suppression beyond the old 256-scope LRU", async () => {
   const f = await fixture(); await owner(f); const source = f.reader.snapshotContinuity(scope);
   vi.spyOn(f.reader, "snapshotContinuity").mockReturnValue(source);
+  vi.spyOn(f.reader, "continuitySnapshotVisible").mockReturnValue(true); // Explicit synthetic source seam across 257 fake physical scopes.
   const complete = vi.fn(async (_prompt, _signal, budget) => ({ receipt: { operationId: budget.operationId, model: "bound-completion", status: "invalid", providerInvoked: true } }));
   const options = { toolHistory: { ...f, logicalConversationId: (id: string) => id, continuityEnabled: true, upkeep: { enabled: true, model: "bound-completion", complete }, publishLedger: f.writer.publishLedger.bind(f.writer) } } as unknown as ConversationHarnessOptions;
   const prepare = async (i: number) => await createContinuityPackSupplier(options, { conversationId: `fictional-${i}`, userMessage: "Current.", abortSignal: new AbortController().signal }, "current")!.prepare(eligible, "cold_rebuild", () => {});
@@ -295,7 +296,9 @@ it("fits a 205-span selection to payload, lineage and shared rendered capacity",
   expect(fitted.projectedBytes).toBeLessThanOrEqual(LEDGER_PAYLOAD_BYTES); expect(fitted.selection.uncovered).toBe(fitted.trimmedSpans);
   expect(fitted.selection.maxEntries).toBeLessThan(24);
   expect(fitted.selection.manifest).not.toBe(initial.manifest);
-  expect(fitted.selection.spans.map(span => records.find(record => record.recordId === span.recordId)!.ordinal)).toEqual(Array.from({ length: fitted.selection.spans.length }, (_, i) => i + 1));
+  const quota = Math.floor(fitted.selection.spans.length / 4);
+  expect(fitted.selection.spans.slice(0, quota).map(span => span.ordinal)).toEqual(Array.from({ length: quota }, (_, i) => i + 1));
+  expect(fitted.selection.spans[quota]!.ordinal).toBe(205);
 });
 it("refuses inherited lineage alone over its bound before completion", async () => {
   const f = await fixture(); await owner(f); const source = f.reader.snapshotContinuity(scope), selection = selectLedgerSources(source);
@@ -307,13 +310,13 @@ it("refuses inherited lineage alone over its bound before completion", async () 
   expect(complete).not.toHaveBeenCalled(); expect(events).toContainEqual(expect.objectContaining({ reason: "ledger_lineage_budget", providerInvoked: false }));
 });
 
-it("trims whole contributing records to the lineage limit, preserving the oldest fitting source", async () => {
+it("trims whole contributing records to the lineage limit, preserving the ranked fitting source", async () => {
   const f = await fixture(); await owner(f, "Old rule.\n\n" + "Fictional filler words. ".repeat(950)); await owner(f, "New rule.\n\n" + "Fictional filler words. ".repeat(950));
   const source = f.reader.snapshotContinuity({ ...scope, selection: "upkeep" }), selection = selectLedgerSources(source), oldest = [...source.records].sort((a, b) => a.ordinal - b.ordinal)[0]!;
   const text = "x".repeat(LEDGER_LINEAGE_BYTES - Buffer.byteLength(oldest.text) - 1);
   const generation = { ...validateLedgerOutput(output(selection), selection, scope), entries: [], spans: [], coveredSpans: [], inputs: [{ recordId: "inherited", sha256: ledgerHash(text) }] };
   const fit = fitLedgerSelection(selection, scope, { generation, records: [{ recordId: "inherited", text }], retainedBytes: Buffer.byteLength(text) });
-  expect(fit.reason).toBeUndefined(); expect(fit.trimmedSpans).toBe(1); expect(fit.selection.records.map(r => r.recordId)).toEqual([oldest.recordId]);
+  expect(fit.reason).toBeUndefined(); expect(fit.trimmedSpans).toBe(1); expect(fit.selection.records.map(r => r.ordinal)).toEqual([2]);
   expect(fit.lineageBytes).toBe(LEDGER_LINEAGE_BYTES - 1); expect(fit.selection.uncovered).toBe(3);
 });
 
@@ -361,7 +364,7 @@ it("rejects the captured partial-prefix coverage but accepts explicit cited IDs"
   const initial = selectLedgerSources(f.reader.snapshotContinuity({ ...scope, selection: "upkeep" })), selection = fitLedgerSelection(initial, scope).selection;
   const ownerSpan = selection.spans.find(s => s.owner)!, identifier = selection.spans.find(s => s.text.includes("DEMO-42"))!;
   const captured = { entries: [{ kind: "constraint", value: "Require confirmation.", status: "active", sources: [ownerSpan.id] }, { kind: "identifier", value: "DEMO-42", status: "confirmed", sources: [identifier.id] }], covered: 1 };
-  expect(selection.spans[0]!.id).toBe(ownerSpan.id);
+  expect(selection.spans).toHaveLength(2);
   expect(() => validateLedgerOutput(JSON.stringify(captured), selection, scope, undefined, "stream_abort")).toThrow("covered_invalid");
   const compliant = { ...captured, covered: [ownerSpan.id, identifier.id] };
   expect(validateLedgerOutput(JSON.stringify(compliant), selection, scope, undefined, "stream_abort").entries).toHaveLength(2);

@@ -64,7 +64,7 @@ it("keeps sparse late offers exact across LRU/restart/replay, leaves early holes
   expect(x.db(upkeepBytes)).toBeLessThan(before);
   expect(x.db(d => d.prepare("SELECT count(*) n FROM continuity_upkeep_offers").get())).toEqual({ n: 0 });
   expect(x.db(d => JSON.parse((d.prepare("SELECT cursor FROM continuity_upkeep_progress").get() as any).cursor))).toMatchObject({ ordinal: 1, offset: 0 });
-  expect(x.choose().spans.map(s => s.ordinal)).toEqual([1, 2, 3, 4]); // Existing reofferability, not the new policy.
+  expect(x.choose().spans.map(s => s.ordinal).sort()).toEqual([1, 2, 3, 4]); // Existing reofferability, not the new policy.
   await x.f.writer.close(); x.f.writer = await ToolHistoryWriter.open({ root: x.f.root, continuityEnabled: true });
   const second = await x.reserve(x.choose([4])); await x.dispatch(second); await x.dispatch(second); await x.finish(second); x.compact();
   expect(x.counts()).toMatchObject([{ ordinal: 4, count: 2, state: "analyzed" }]);
@@ -155,7 +155,7 @@ it.each(["update", "delete", "generation", "logical", "physical"] as const)("pur
 
 it("retains compact representation through publication and reconstructs only once after invalidation", async () => {
   const x = await fixture(), selection = x.choose(), r = await x.reserve(selection); await x.dispatch(r); await x.finish(r);
-  const generation = validateLedgerOutput(JSON.stringify({ entries: [{ kind: "open_work", value: "Retained state.", status: "unknown", sources: ["s0"] }], covered: ["s0"] }), selection, scope);
+  const generation = validateLedgerOutput(JSON.stringify({ entries: [{ kind: "open_work", value: "Retained state.", status: "unknown", sources: [selection.spans.find(s => s.ordinal === 1)!.id] }], covered: [selection.spans.find(s => s.ordinal === 1)!.id] }), selection, scope);
   await x.f.writer.publishLedger(generation, r); x.compact();
   expect(x.db(d => readRetired(d, "fictional", "fictional")).find(s => s.ordinal === 1)).toMatchObject({ state: "represented", count: 1 });
   await x.capture(); const extra = x.choose([5]), next = await x.reserve(extra); await x.dispatch(next); await x.finish(next);
@@ -248,7 +248,7 @@ it("compacts an oversized-only scope even before any reservation or cursor was c
   x.compact();
   expect(x.db(d => readRetired(d, "fictional", "fictional"))).toMatchObject([{ ordinal: 4, count: 0, state: "oversized" }]);
   expect(x.db(d => d.prepare("SELECT count(*) n FROM continuity_upkeep_offers").get())).toEqual({ n: 0 });
-  expect(x.choose().spans.map(s => s.ordinal)).toEqual([1, 2, 3]);
+  expect(x.choose().spans.map(s => s.ordinal).sort()).toEqual([1, 2, 3]);
 });
 
 it("seeds legacy representation once, crosses the first source page, and permits only one reconstruction", async () => {
@@ -258,7 +258,7 @@ it("seeds legacy representation once, crosses the first source page, and permits
   const legacy = validateLedgerOutput(JSON.stringify({ entries: [{ kind: "open_work", value: "Legacy state.", status: "unknown", sources: ["s0"] }], covered: ["s0"] }), original, scope);
   await x.f.writer.publishLedger(legacy); // P3b1: no progressive rows or purchases.
   expect(x.counts()).toEqual([]);
-  expect(x.reader.snapshotContinuity({ ...scope, selection: "upkeep" }).records).toHaveLength(512);
+  expect(x.reader.snapshotContinuity({ ...scope, selection: "upkeep" }).upkeep?.scan).toMatchObject({ complete: true, rows: 515 });
   let reached = false;
   for (let i = 0; i < 12 && !reached; i++) {
     const selected = x.choose(), r = await x.reserve(selected);
@@ -270,7 +270,7 @@ it("seeds legacy representation once, crosses the first source page, and permits
       expect(x.counts().find(s => s.ordinal === 1)).toMatchObject({ state: "represented", count: 1 });
     }
     await x.dispatch(r); await x.finish(r);
-    reached = selected.spans.some(span => span.ordinal === 515);
+    reached = x.db(d => readProgress(d, "fictional", "fictional", 515).cursor?.ordinal) === 516;
   }
   expect(reached).toBe(true);
   expect(x.db(d => readProgress(d, "fictional", "fictional", 515).cursor?.ordinal)).toBe(516);

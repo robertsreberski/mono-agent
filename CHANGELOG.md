@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Rank complete bounded history scans for opt-in continuity upkeep, greedily fit
+  cited-only ledger deltas, and allow valid uncited evidence one remaining offer
+  within the shared two-offer ceiling. Keep scan exhaustion zero-call and the
+  disabled deterministic-pack path unchanged.
+
 - Seed legacy continuity representation into shared offer accounting so progress
   reaches later pages; isolate corrupt retirement scopes during retention.
 
