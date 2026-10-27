@@ -1,4 +1,5 @@
 import { createUpkeepAccountingSchema, queueUpkeepAccounting, upkeepAccounting } from "./accounting-outbox.js";
+import { assertUpkeepAccountingNamespace } from "@mono-agent/observability";
 import { initializeLedgerProgress } from "./ledger-storage.js";
 import type { LedgerProgress } from "../tool-history/continuity-contracts.js";
 import { createProgressSchema, dispatchProgress, reclaimProgress } from "./progress.js";
@@ -129,9 +130,12 @@ export function mutateUpkeep(db: DatabaseSync, root: string, request: UpkeepMuta
     dispatchProgress(db, { ...request.fence, operationId: request.operationId, progress: request.progress }, "oversized", request.advance); return null;
   }
   const r = request.reservation, scope = assertUpkeepFence(db, root, r), serialized = serializeReservation(r);
-  if (Buffer.byteLength(JSON.stringify(r)) > 131072 || !r.operationId || !r.runId || !r.recorderNamespace || !r.model || !/^[a-f0-9]{64}$/u.test(r.manifest)) fail();
+  if (Buffer.byteLength(JSON.stringify(r)) > 131072 || !r.operationId || !r.runId || !r.model || !/^[a-f0-9]{64}$/u.test(r.manifest)) fail();
   if (r.payloadReserve !== undefined && (!Number.isSafeInteger(r.payloadReserve) || r.payloadReserve < 0 || r.payloadReserve > 131072)) fail();
   if (request.kind === "reserve") {
+    // Validate the exact accounting identity before buying an admission slot.
+    try { assertUpkeepAccountingNamespace(r.recorderNamespace); } catch { throw new LedgerError("namespace_invalid"); }
+    upkeepAccounting(r);
     const old = db.prepare("SELECT reservation FROM continuity_upkeep_operations WHERE operation_id=?").get(r.operationId) as Row | undefined;
     if (old) { const stored = JSON.parse(old.reservation); if (stored.reservationIdentity !== reservationIdentity(r) || !contentMatches(stored, r)) fail(); return null; }
     reclaimProgress(db, r.logicalId, r.conversationId);

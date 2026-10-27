@@ -30,10 +30,13 @@ export class ToolHistoryReader {
 
   /** Startup discovery only: never creates a database, schema, or paid work. */
   hasPendingUpkeepAccounting(): boolean {
-    const db = this.openReadOnly();
+    const db = this.openReadOnly({ zeroLengthAsAbsent: true, upgradePendingAsAbsent: true });
     if (!db) return false;
     try {
-      if (db.prepare("SELECT 1 FROM sqlite_master WHERE name='continuity_upkeep_accounting'").get()) return !!db.prepare("SELECT 1 FROM continuity_upkeep_accounting WHERE exported IS NULL LIMIT 1").get();
+      if (db.prepare("SELECT 1 FROM sqlite_master WHERE name='continuity_upkeep_accounting'").get()) {
+        const migrated = (db.prepare("PRAGMA table_info(continuity_upkeep_accounting)").all() as { name: string }[]).some(c => c.name === "next_attempt_ms");
+        return !!db.prepare(`SELECT 1 FROM continuity_upkeep_accounting WHERE exported IS NULL${migrated ? " AND (attempts>=3 OR next_attempt_ms<=?)" : ""} LIMIT 1`).get(...(migrated ? [Date.now()] : []));
+      }
       if (!db.prepare("SELECT 1 FROM sqlite_master WHERE name='continuity_upkeep_operations'").get()) return false;
       return !!db.prepare("SELECT 1 FROM continuity_upkeep_operations WHERE state IN ('dispatch_started','uncertain','terminal') OR outcome IS NOT NULL LIMIT 1").get();
     } finally { db.close(); }
@@ -391,7 +394,7 @@ export class ToolHistoryReader {
     };
   }
 
-  private openReadOnly(options: { readonly zeroLengthAsAbsent?: boolean } = {}): DatabaseSync | undefined {
+  private openReadOnly(options: { readonly zeroLengthAsAbsent?: boolean; readonly upgradePendingAsAbsent?: boolean } = {}): DatabaseSync | undefined {
     let database: DatabaseSync | undefined;
     try {
       assertSecureReadableDirectory(join(this.root, TOOL_HISTORY_DIRECTORY));
@@ -403,6 +406,7 @@ export class ToolHistoryReader {
       return database;
     } catch (error) {
       database?.close();
+      if (options.upgradePendingAsAbsent && error instanceof ToolHistoryWriterError && error.code === "history_schema_unsupported" && error.message.includes("upgrade-pending")) return undefined;
       if ((error as NodeJS.ErrnoException).code === "ENOENT" || reasonOf(error).includes("unable to open database")) return undefined;
       throw error;
     }

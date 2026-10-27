@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, expect, it, vi } from "vitest";
@@ -29,7 +29,7 @@ async function fixture() {
     const rows = parse(prompt); selections.push(rows); budgets.push(budget.inputTokens); caps.push(budget.maxEntries ?? 24);
     return { text: JSON.stringify({ entries: response(rows, budget.maxEntries ?? 24), covered: rows.map(row => row.id) }), receipt: { operationId: budget.operationId, model: "fictional:base", status: "valid", reason: "completed", providerInvoked: true, capEnforcement: "request" } };
   });
-  const ports = { writer, reader, mutateUpkeep: writer.mutateUpkeep.bind(writer), publishLedger: writer.publishLedger.bind(writer), continuityEnabled: true, logicalConversationId: () => "fictional", upkeep: { enabled: true, model: "fictional:base", complete } };
+  const ports = { writer, reader, mutateUpkeep: writer.mutateUpkeep.bind(writer), publishLedger: writer.publishLedger.bind(writer), continuityEnabled: true, logicalConversationId: () => "fictional", upkeep: { enabled: true, recorderNamespace: resolve("/fictional-recorder"), model: "fictional:base", complete } };
   let serial = 0; // Accounting fixtures are distinct evidence, not one repeated template.
   const capture = async (count = 1, text = "Rule.", physical = "fictional", neutral = false) => {
     for (let left = count; left > 0; left -= 128) {
@@ -39,7 +39,7 @@ async function fixture() {
       await writer.commitContinuity({ generationId, conversationId: physical, canonicalDigest: digest });
     }
   };
-  const db = <T>(fn: (db: DatabaseSync) => T): T => { const database = new DatabaseSync(reader.databasePath); try { database.exec("PRAGMA foreign_keys=ON"); return fn(database); } finally { database.close(); } };
+  const db = <T>(fn: (db: DatabaseSync) => T): T => { const database = new DatabaseSync(reader.databasePath); try { database.exec("PRAGMA busy_timeout=5000;PRAGMA foreign_keys=ON"); return fn(database); } finally { database.close(); } };
   const prepare = async (maxTokens = 8000, physical = "fictional", twice = false) => {
     const events: any[] = [], supplier = createContinuityPackSupplier({ toolHistory: ports } as unknown as ConversationHarnessOptions, { conversationId: physical, userMessage: "Current fictional boundary.", abortSignal: new AbortController().signal }, randomUUID())!;
     await supplier.prepare({ ...eligibility, maxTokens }, "cold_rebuild", event => events.push(event));
@@ -425,7 +425,7 @@ it.each([false, true])("migrates legacy reservations once without a retention ba
   const f = await fixture(); await f.capture();
   const expected = (await f.writer.mutateUpkeep({ kind: "inspect", scope: { logicalId: "fictional", conversationId: "fictional" } }))!;
   const fence = (await f.writer.mutateUpkeep({ kind: "claim", expected, ownerToken: "legacy-owner" }))!;
-  const reservation = { ...fence, operationId: randomUUID(), runId: "legacy-run", recorderNamespace: "fictional", model: "fictional:base", manifest: "a".repeat(64), parent: null, budget: "bootstrap" as const };
+  const reservation = { ...fence, operationId: randomUUID(), runId: "legacy-run", recorderNamespace: resolve("/fictional"), model: "fictional:base", manifest: "a".repeat(64), parent: null, budget: "bootstrap" as const };
   await f.writer.mutateUpkeep({ kind: "reserve", reservation }); await f.writer.mutateUpkeep({ kind: "dispatch", reservation });
   if (!uncertain) await f.writer.mutateUpkeep({ kind: "outcome", reservation, receipt: { operationId: reservation.operationId, model: reservation.model, providerInvoked: true, status: "invalid" } as any });
   f.db(db => db.exec("DROP TRIGGER continuity_upkeep_privacy_delete; DROP TRIGGER continuity_upkeep_privacy_update; DROP TRIGGER continuity_upkeep_privacy_tombstone; DROP TRIGGER continuity_upkeep_privacy_generation; DROP TABLE continuity_upkeep_offers; DROP TABLE continuity_upkeep_progress; DROP TABLE continuity_upkeep_migrations"));
@@ -502,7 +502,7 @@ it("reclaims LRU working sets under the shared quota without losing unknowns or 
   await f.capture(1, "Newer working set.", "newer"); await f.prepare(8000, "newer");
   const expected = (await f.writer.mutateUpkeep({ kind: "inspect", scope: { logicalId: "other", conversationId: "other" } }))!;
   const fence = (await f.writer.mutateUpkeep({ kind: "claim", expected, ownerToken: "other-owner" }))!;
-  const reservation = { ...fence, operationId: randomUUID(), runId: "other-run", recorderNamespace: "fictional", model: "fictional:base", manifest: "a".repeat(64), parent: null, budget: "bootstrap" as const };
+  const reservation = { ...fence, operationId: randomUUID(), runId: "other-run", recorderNamespace: resolve("/fictional"), model: "fictional:base", manifest: "a".repeat(64), parent: null, budget: "bootstrap" as const };
   await f.writer.mutateUpkeep({ kind: "reserve", reservation }); await f.writer.mutateUpkeep({ kind: "dispatch", reservation });
   const before = f.reader.stats()!, metadata = f.db(upkeepBytes); expect(metadata).toBeGreaterThan(0);
   const unknown = f.db(db => db.prepare("SELECT * FROM continuity_upkeep_operations WHERE operation_id=?").get(reservation.operationId));
@@ -522,7 +522,7 @@ it("erases a reserved first operation before the first dispatch without advancin
   const expected = (await f.writer.mutateUpkeep({ kind: "inspect", scope: { logicalId: "fictional", conversationId: "fictional" } }))!;
   const fence = (await f.writer.mutateUpkeep({ kind: "claim", expected, ownerToken: "owner" }))!;
   const selection = selectLedgerSources(f.reader.snapshotContinuity({ ...scope, selection: "upkeep" }));
-  const reservation = { ...fence, operationId: randomUUID(), runId: "reserved", recorderNamespace: "fictional", model: "fictional:base", manifest: selection.manifest, parent: null, budget: "bootstrap" as const, progress: selection.progress! };
+  const reservation = { ...fence, operationId: randomUUID(), runId: "reserved", recorderNamespace: resolve("/fictional"), model: "fictional:base", manifest: selection.manifest, parent: null, budget: "bootstrap" as const, progress: selection.progress! };
   await f.writer.mutateUpkeep({ kind: "reserve", reservation });
   f.db(db => db.exec("UPDATE continuity_records SET retained_text=NULL"));
   const row = f.db(db => db.prepare("SELECT reservation,state FROM continuity_upkeep_operations").get()) as any;

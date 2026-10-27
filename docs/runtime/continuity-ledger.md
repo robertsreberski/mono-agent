@@ -414,9 +414,17 @@ operation ID, with result precedence. Uncached input, cache read, cache write an
 output counters stay separate and nullable; estimates never become billed usage.
 Pending exports replay on startup/writer recovery even when upkeep is disabled,
 without invoking a provider or charging a new answer. With no pending journal
-work, startup discovery is read-only. Export failures surface accounting
-degradation and remain pending. Artifact retention removes companions with their
-origin run; late exports never recreate pruned runs. Readers expose this as
+work, startup discovery is read-only. Permanent parse/identity/origin/companion
+failures are terminal degraded records, not startup work. Transient I/O failures
+retry at most three times with exponential backoff starting at one second;
+recovery batches are capped at 32 rows. Mutation exports target only their own
+queued phase and run independently of admission replies. A not-yet-written origin
+stays pending within those retry bounds. Only an origin durably observed and then
+removed is pruned. Invalid or non-normalized recorder namespaces are rejected
+before admission and recorded as `namespace_invalid` accounting degradation.
+`RunHistory` inspection surfaces applicable degraded artifact warnings too.
+Artifact retention removes companions with their origin run; late exports never
+recreate pruned runs. Readers expose this as
 separate, explicitly non-aggregate `upkeepAccounting` evidence. Existing run and
 session usage/cost totals are unchanged and remain inference-only.
 

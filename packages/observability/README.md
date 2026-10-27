@@ -109,8 +109,14 @@ totals remain inference-only; this separate evidence is **not** included in them
 
 Exports never create run summaries or namespaces. Retention deletes the origin
 summary before companions; exporters recheck the origin after writing, preventing
-late recovery from recreating a pruned run. Failed exports remain pending in the
-host's journal outbox and surface accounting degradation rather than zero cost.
+late recovery from recreating a pruned run. A not-yet-observed origin stays
+pending, never pruned; the outbox durably records whether an origin was seen. Only a previously observed, now missing origin counts
+as pruned. Permanent validation/identity failures are terminal degraded records.
+Transient failures have three attempts with exponential backoff (starting at one
+second), and recovery batches contain at most 32 rows. They then become terminal
+failures, never zero cost. Export I/O runs separately from admission replies.
+These degradation diagnostics also appear as artifact warnings in `RunHistory`
+inspection when the applicable run evidence is degraded.
 
 ### Recorder checkpoints and reads
 
@@ -290,7 +296,9 @@ TraceSourceRegistryErrorDetails
 TraceSourceRegistryOptions
 TraceSourceStatus
 UpdateTraceSourceOptions
+UpkeepAccountingExportError
 VisibleTextSanitizationOptions
+assertUpkeepAccountingNamespace
 auditRecordedRuns
 cacheUsageMetrics
 canonicalToolArtifactRoot

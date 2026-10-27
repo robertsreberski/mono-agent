@@ -213,3 +213,13 @@ it("keeps initialized zero categories and cost unknown on a positive partial rep
     piResolvedModels: { getModel: () => model("openai-responses"), streamSimple: stream } as never });
   expect(result.receipt).toMatchObject({ providerInvoked: true, inputTokens: 3, outputTokens: null, cacheReadTokens: null, cacheWriteTokens: null, costUsd: null });
 });
+
+it("sanitizes fractional/unsafe provider counters before persisting the paid outcome", async () => {
+  const response = { stopReason: "stop", content: [{ type: "text", text: "{}" }], usage: { input: 1.5, cacheRead: Number.MAX_SAFE_INTEGER + 1, cacheWrite: 0, output: 2.5 } };
+  const stream = vi.fn((_m, _c, options) => {
+    options.onPayload({ max_output_tokens: 4096 });
+    return { async *[Symbol.asyncIterator]() { yield { type: "done", message: response }; }, result: async () => response };
+  });
+  const result = await completeContinuityUpkeep("Fictional input.", { model: reference, messages: [], abortSignal: new AbortController().signal, piResolvedModels: { getModel: () => model("openai-responses"), streamSimple: stream } as never });
+  expect(result.receipt).toMatchObject({ providerInvoked: true, inputTokens: null, cacheReadTokens: null, cacheWriteTokens: 0, outputTokens: null, costUsd: null });
+});

@@ -58,6 +58,7 @@ export async function completeContinuityUpkeep(prompt: string, options: RuntimeR
   let usage: any, usageReported = false, usageTerminal = false, stopped = false, streamedBytes = 0, capUnsupported = false;
   let estimatedInputTokens = 0;
   const number = (value: unknown) => typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+  const tokens = (value: unknown) => typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
   const visibleBytes = (message: any): number => Array.isArray(message?.content) ? message.content.reduce((sum: number, part: any) => {
     const text = part.type === "text" ? part.text : part.type === "thinking" ? part.thinking : undefined;
     return sum + (typeof text === "string" ? Buffer.byteLength(text) : 0);
@@ -70,7 +71,7 @@ export async function completeContinuityUpkeep(prompt: string, options: RuntimeR
       // Adapter-initialized zero fields on partial/error messages are not
       // evidence that a category was reported. Explicit usage/done can prove 0.
       usage = terminal ? candidate : { ...candidate, ...Object.fromEntries(
-        ["input", "output", "cacheRead", "cacheWrite"].map(key => [key, number(candidate[key]) !== null && candidate[key] > 0 ? candidate[key] : undefined])),
+        ["input", "output", "cacheRead", "cacheWrite"].map(key => [key, tokens(candidate[key]) !== null && candidate[key] > 0 ? candidate[key] : undefined])),
         cost: Number(candidate.cost?.total) > 0 ? candidate.cost : undefined };
       usageReported = true; usageTerminal = terminal;
     }
@@ -83,18 +84,18 @@ export async function completeContinuityUpkeep(prompt: string, options: RuntimeR
   const reportedCost = (): number | null => {
     if (!providerInvoked) return 0;
     if (!hasUsage()) return null;
-    const complete = [usage?.input, usage?.output, usage?.cacheRead, usage?.cacheWrite].every(value => number(value) !== null);
+    const complete = [usage?.input, usage?.output, usage?.cacheRead, usage?.cacheWrite].every(value => tokens(value) !== null);
     if (options.resolveCustomPricing) return complete ? price(usage.input, usage.output, usage.cacheRead, usage.cacheWrite) : null;
     const total = number(usage?.cost?.total);
     return total !== null && (total > 0 || usageTerminal && complete) ? total : null;
   };
   const result = (status: ContinuityUpkeepReceipt["status"], reason: string, text?: string): ContinuityUpkeepResult => ({ ...(text === undefined ? {} : { text }), receipt: {
     operationId, model: options.model.reference, api, providerInvoked, capEnforcement, status, reason,
-    elapsedMs: Math.round(performance.now() - started), inputTokens: providerInvoked ? (hasUsage() ? number(usage?.input) : null) : 0, outputTokens: !providerInvoked ? 0 : hasUsage() ? number(usage?.output) : null,
-    cacheReadTokens: !providerInvoked ? 0 : hasUsage() ? number(usage?.cacheRead) : null,
-    cacheWriteTokens: !providerInvoked ? 0 : hasUsage() ? number(usage?.cacheWrite) : null,
+    elapsedMs: Math.round(performance.now() - started), inputTokens: providerInvoked ? (hasUsage() ? tokens(usage?.input) : null) : 0, outputTokens: !providerInvoked ? 0 : hasUsage() ? tokens(usage?.output) : null,
+    cacheReadTokens: !providerInvoked ? 0 : hasUsage() ? tokens(usage?.cacheRead) : null,
+    cacheWriteTokens: !providerInvoked ? 0 : hasUsage() ? tokens(usage?.cacheWrite) : null,
     estimatedInputTokens: providerInvoked ? estimatedInputTokens : 0, estimatedInputCostUsd: !providerInvoked ? 0 : price(estimatedInputTokens) ?? (number(model?.cost?.input) === null ? null : estimatedInputTokens * model.cost.input / 1_000_000),
-    providerUsage: { input: providerInvoked && usageReported ? number(usage?.input) : null, output: providerInvoked && usageReported ? number(usage?.output) : null, cacheRead: providerInvoked && usageReported ? number(usage?.cacheRead) : null, cacheWrite: providerInvoked && usageReported ? number(usage?.cacheWrite) : null },
+    providerUsage: { input: providerInvoked && usageReported ? tokens(usage?.input) : null, output: providerInvoked && usageReported ? tokens(usage?.output) : null, cacheRead: providerInvoked && usageReported ? tokens(usage?.cacheRead) : null, cacheWrite: providerInvoked && usageReported ? tokens(usage?.cacheWrite) : null },
     costUsd: reportedCost(), visibleEstimate, outputOverrun: Number(usage?.output) > 4096,
   } });
   try {

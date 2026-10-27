@@ -1,3 +1,4 @@
+import { resolve } from "node:path";
 import { appendFileSync, closeSync, fsyncSync, openSync, readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { ToolHistoryWriter } from "../../../dist/tool-history/writer.js";
@@ -31,7 +32,7 @@ globalThis.fetch = async () => {
 };
 const events = [];
 const supplier = createLedgerSupplier({ toolHistory: { writer, reader, continuityEnabled: true, logicalConversationId: id => id,
-  upkeep: { enabled: true, model: "fictional:base", recorderNamespace: "fictional-recorder", complete: async (_prompt, _signal, budget) => {
+  upkeep: { enabled: true, model: "fictional:base", recorderNamespace: resolve("/fictional-recorder"), complete: async (_prompt, _signal, budget) => {
     await fetch("https://fictional.invalid");
     return { text: JSON.stringify({ entries: [{ kind: "open_work", status: "unknown", value: "Fictional state.", sources: ["s0"] }], covered: ["s0"] }),
       receipt: { operationId: budget.operationId, model: "fictional:base", providerInvoked: true, status: "valid", reason: "completed", api: "openai-responses", capEnforcement: "request",

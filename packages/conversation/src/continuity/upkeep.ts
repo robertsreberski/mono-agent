@@ -80,7 +80,7 @@ export function createLedgerSupplier(options: ConversationHarnessOptions, reques
           if (stats.retainedBytes - (frozen?.payloadBytes ?? 0) + projectedBytes > stats.limits.maxBytes) { localSkip = "ledger_quota_budget"; return; }
           reservation = { databaseId: fence.databaseId, logicalId: fence.logicalId, conversationId: fence.conversationId,
             incarnation: fence.incarnation, fence: fence.fence, ownerToken: fence.ownerToken,
-            operationId: randomUUID(), runId, recorderNamespace: config.recorderNamespace ?? "default",
+            operationId: randomUUID(), runId, recorderNamespace: config.recorderNamespace ?? "",
             model: config.model, manifest: selection.manifest, parent: frozen?.generation.id ?? null,
             budget: fence.bootstrap ? "bootstrap" : "incremental", payloadReserve: Math.max(0, projectedBytes - (frozen?.payloadBytes ?? 0)), ...(selection.progress ? { progress: selection.progress } : {}) };
           await eligibility.withOwner(async () => {
@@ -133,6 +133,7 @@ export function createLedgerSupplier(options: ConversationHarnessOptions, reques
           if (completion && outcomeRecorded && reservation && completion.receipt.providerInvoked && completion.receipt.status === "valid") {
             try { await eligibility.withOwner!(async () => { await history!.mutateUpkeep!({ kind: "reject", reservation: reservation!, retry: ["publish_cas", "publish_cancelled"].includes(request.abortSignal.aborted ? "publish_cancelled" : ledgerFailure(error, publishing ? "publish_unavailable" : "output_schema")) }); }); } catch { /* pending offers remain suppressed if invalidation loses ownership */ }
           }
+          if ((error as { code?: string }).code === "namespace_invalid") localSkip = "namespace_invalid";
           if ((error as { code?: string }).code === "upkeep_repeat_suppressed") localSkip = "upkeep_repeat_suppressed";
           if ((error as { code?: string }).code === "ledger_scan_capacity") localSkip = "ledger_scan_capacity";
           if (completion && outcomeRecorded) { completion = { receipt: { ...completion.receipt, status: "invalid", reason: "validation_or_publication", failure: request.abortSignal.aborted ? "publish_cancelled" : ledgerFailure(error, publishing ? "publish_unavailable" : "output_schema") } }; }

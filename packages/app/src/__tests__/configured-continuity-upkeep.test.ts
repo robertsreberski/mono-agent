@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -16,8 +17,11 @@ it.each(["continuous", "per-message", "isolated", "failure"])("uses configured b
   const answer = fauxProvider({ provider: "faux", api: "openai-responses", models: [{ id: "base" }, { id: "other" }], tokensPerSecond: 1_000_000 });
   const extraction = fauxProvider({ provider: "faux", api: "openai-responses", models: [{ id: "base" }], tokensPerSecond: 1_000_000 });
   const answerModels = createModels(), extractionModels = createModels(); answerModels.setProvider(answer.provider); extractionModels.setProvider(extraction.provider);
-  let calls = 0;
+  let calls = 0, currentRunId = "";
   extraction.setResponses([context => {
+    // Q1: production provider dispatch sees its own already-written running origin.
+    const origin = JSON.parse(readFileSync(join(root, "artifacts", `${currentRunId}.summary.json`), "utf8"));
+    expect(origin).toMatchObject({ runId: currentRunId, conversationId: "web:fictional", status: "running" });
     calls++; const prompt = JSON.stringify(context);
     expect(prompt).toContain("Never send without confirmation.");
     return fauxAssistantMessage(JSON.stringify({ entries: [{ kind: "constraint", value: "Keep the original approval rule.", status: "active", sources: ["s0"] }], covered: ["s0"] }));
@@ -28,7 +32,8 @@ it.each(["continuous", "per-message", "isolated", "failure"])("uses configured b
   const config = resolveJsonMonoAgentConfig({ json, cwd: root });
   const runtime = createMonoRuntime({ workspace: root }); close.push(() => runtime.disposeAllSessions!());
   const harness = await createConfiguredConversationHarness({ config, cwd: root, runtime,
-    runtimeOptions: { piResolvedModels: extractionModels }, runtimeOptionsForRequest: ({ request }) => {
+    runtimeOptions: { piResolvedModels: extractionModels }, runtimeOptionsForRequest: ({ request, runId }) => {
+      currentRunId = runId;
       const web = request.metadata?.web as { readonly model?: string } | undefined;
       const model = web?.model === "faux:other" ? "other" : "base";
       return { runtimeOptions: { model: { provider: "faux", model, reference: `faux:${model}` }, piResolvedModel: answer.getModel(model), piResolvedModels: answerModels, compaction: { enabled: false } } };

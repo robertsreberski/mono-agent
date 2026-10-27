@@ -1,9 +1,16 @@
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { link, lstat, open, readdir, readFile, unlink } from "node:fs/promises";
-import { join } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { parseAgentUpkeepAccounting, mergeAgentUpkeepAccounting, type AgentUpkeepAccounting } from "@mono-agent/contracts";
 import { safeArtifactName, isErrno } from "./artifact-fs.js";
+
+export class UpkeepAccountingExportError extends Error {
+  constructor(readonly code: "invalid_payload" | "namespace_invalid" | "origin_invalid" | "origin_conflict" | "companion_invalid" | "companion_conflict") { super(code); this.name = "UpkeepAccountingExportError"; }
+}
+export function assertUpkeepAccountingNamespace(namespace: string): void {
+  if (!isAbsolute(namespace) || resolve(namespace) !== namespace) throw new UpkeepAccountingExportError("namespace_invalid");
+}
 
 export function upkeepCompanionPrefix(runId: string): string { return `${safeArtifactName(runId)}.upkeep.`; }
 function companionName(a: AgentUpkeepAccounting): string {
@@ -13,19 +20,26 @@ async function originExists(a: AgentUpkeepAccounting): Promise<boolean> {
   const path = join(a.recorderNamespace, `${safeArtifactName(a.runId)}.summary.json`);
   try {
     const info = await lstat(path);
-    if (!info.isFile() || info.size > 16 * 1024 * 1024) throw new Error("Invalid upkeep origin");
-    const summary = JSON.parse(await readFile(path, "utf8"));
-    if (summary.runId !== a.runId || summary.conversationId !== a.conversationId) throw new Error("Conflicting upkeep origin");
+    if (!info.isFile() || info.size > 16 * 1024 * 1024) throw new UpkeepAccountingExportError("origin_invalid");
+    const raw = await readFile(path, "utf8");
+    let summary;
+    try { summary = JSON.parse(raw); } catch { throw new UpkeepAccountingExportError("origin_invalid"); }
+    if (summary?.runId !== a.runId || summary?.conversationId !== a.conversationId) throw new UpkeepAccountingExportError("origin_conflict");
     return true;
   } catch (error) { if (isErrno(error, "ENOENT")) return false; throw error; }
 }
 
-/** Never creates a namespace or summary. A missing origin is permanently pruned.
+/** Never creates a namespace or summary. Absence alone is not pruning proof.
  * Retention removes the summary BEFORE companions; the post-write check closes
  * the opposing race (export after retention's directory scan). */
-export async function exportUpkeepAccounting(value: unknown): Promise<"exported" | "pruned"> {
-  const a = parseAgentUpkeepAccounting(value);
-  if (!await originExists(a)) return "pruned";
+export async function exportUpkeepAccounting(value: unknown, options: {
+  readonly originPreviouslySeen?: boolean; readonly onOriginSeen?: () => void;
+} = {}): Promise<"exported" | "pruned" | "pending"> {
+  let a: AgentUpkeepAccounting;
+  try { a = parseAgentUpkeepAccounting(value); } catch { throw new UpkeepAccountingExportError("invalid_payload"); }
+  assertUpkeepAccountingNamespace(a.recorderNamespace);
+  if (!await originExists(a)) return options.originPreviouslySeen ? "pruned" : "pending";
+  options.onOriginSeen?.();
   const path = join(a.recorderNamespace, companionName(a));
   const temp = `${path}.${randomUUID()}.tmp`;
   try {
@@ -33,12 +47,19 @@ export async function exportUpkeepAccounting(value: unknown): Promise<"exported"
     try { await handle.writeFile(`${JSON.stringify(a)}\n`, "utf8"); await handle.sync(); } finally { await handle.close(); }
     try { await link(temp, path); } catch (error) {
       if (!isErrno(error, "EEXIST")) throw error;
-      const old = parseAgentUpkeepAccounting(JSON.parse(await readFile(path, "utf8")));
-      if (JSON.stringify(old) !== JSON.stringify(a)) throw new Error("Conflicting upkeep companion");
+      const info = await lstat(path);
+      if (!info.isFile() || info.size > 32768) throw new UpkeepAccountingExportError("companion_invalid");
+      const raw = await readFile(path, "utf8");
+      let old: AgentUpkeepAccounting;
+      try { old = parseAgentUpkeepAccounting(JSON.parse(raw)); } catch { throw new UpkeepAccountingExportError("companion_invalid"); }
+      if (JSON.stringify(old) !== JSON.stringify(a)) throw new UpkeepAccountingExportError("companion_conflict");
     }
     if (!await originExists(a)) { await unlink(path).catch(error => { if (!isErrno(error, "ENOENT")) throw error; }); return "pruned"; }
-    const directory = await open(a.recorderNamespace, constants.O_RDONLY);
-    try { await directory.sync(); } finally { await directory.close(); }
+    // Windows cannot open/fsync directory handles (same guard as retention).
+    if (process.platform !== "win32") {
+      const directory = await open(a.recorderNamespace, constants.O_RDONLY);
+      try { await directory.sync(); } finally { await directory.close(); }
+    }
     return "exported";
   } finally { await unlink(temp).catch(error => { if (!isErrno(error, "ENOENT")) throw error; }); }
 }
@@ -47,8 +68,9 @@ export async function exportUpkeepAccounting(value: unknown): Promise<"exported"
 export async function readUpkeepAccounting(artifactDir: string, runId: string, conversationId: string, candidates: readonly unknown[], warnings: string[]): Promise<readonly AgentUpkeepAccounting[]> {
   const values = new Map<string, AgentUpkeepAccounting>();
   const accept = (value: unknown) => {
-    const a = parseAgentUpkeepAccounting(value);
-    if (a.runId !== runId || a.conversationId !== conversationId || a.recorderNamespace !== artifactDir) throw new Error("Conflicting upkeep origin");
+    const parsed = parseAgentUpkeepAccounting(value);
+    const a = { ...parsed, recorderNamespace: resolve(parsed.recorderNamespace) };
+    if (a.runId !== runId || a.conversationId !== conversationId || resolve(a.recorderNamespace) !== resolve(artifactDir)) throw new Error("Conflicting upkeep origin");
     // Check each contribution so a corrupt/conflicting record cannot hide good evidence.
     const old = values.get(a.operationId);
     values.set(a.operationId, mergeAgentUpkeepAccounting(old ? [old, a] : [a])[0]!);

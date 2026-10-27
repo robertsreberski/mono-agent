@@ -1,4 +1,4 @@
-import { createUpkeepAccountingSchema, replayUpkeepAccounting } from "../continuity/accounting-outbox.js";
+import { createUpkeepAccountingSchema, prepareUpkeepAccounting, upkeepAccountingDegradation, createUpkeepAccountingExportQueue, failUpkeepAccounting } from "../continuity/accounting-outbox.js";
 import { LedgerError } from "../continuity/ledger-error.js";
 import { mutateUpkeep, resetUpkeep, assertUpkeepPublication, type UpkeepMutation, type UpkeepReservation } from "../continuity/admission.js";
 import { publishLedger } from "../continuity/ledger-storage.js";
@@ -131,7 +131,8 @@ try {
   owner = await acquireOwner(ownerPath, ownerAcquireCeilingMs);
   assertToolDirectoryEntries();
   database = openContentDatabase(databasePath, retention, artifactRoot);
-  accountingDegraded = await replayUpkeepAccounting(database);
+  prepareUpkeepAccounting(database);
+  accountingDegraded = upkeepAccountingDegradation(database);
   closeDangling(database, undefined, "interrupted", "process_death", "recovered_after_writer_restart", true);
   applyRetention(database, retention);
   const recoveredDatabase = database;
@@ -157,6 +158,10 @@ if (owner === undefined || database === undefined) {
 if (parentPort === null) throw new Error("Tool history writer requires a parent port.");
 
 let closed = false;
+const accountingExports = createUpkeepAccountingExportQueue(database, count => {
+  accountingDegraded = count;
+  if (count) respond(0, { accountingDegraded: count });
+});
 let operationTail = Promise.resolve();
 parentPort.on("message", (request: WorkerRequest) => {
   operationTail = continueToolHistoryOperationTail(operationTail, async () => {
@@ -169,11 +174,12 @@ parentPort.on("message", (request: WorkerRequest) => {
       if (continuityEnabled) continuityPurgeBlocked = applyPendingContinuityPurges(database);
       switch (request.operation) {
         case "upkeep_accounting_replay":
-          accountingDegraded = await replayUpkeepAccounting(database);
-          respond(request.id, accountingDegraded);
+          accountingExports.schedule();
+          void accountingExports.flush().then(() => respond(request.id, accountingDegraded));
           break;
         case "ready":
           respond(request.id, { schema: TOOL_HISTORY_SCHEMA, recovered: statValue(database, "recovered_calls"), accountingDegraded });
+          accountingExports.schedule();
           break;
         case "enable_continuity":
           transaction(database, () => {
@@ -240,13 +246,23 @@ parentPort.on("message", (request: WorkerRequest) => {
                 transaction(database, () => recordIncident(database, "idempotency_conflicts", `continuity:${generationId}`, `${code}: contradictory continuity generation`));
               }
             }
+            if (code === "namespace_invalid" && request.operation === "continuity_upkeep") {
+              const input = request.payload as UpkeepMutation;
+              if (input.kind === "reserve" && typeof input.reservation.operationId === "string" && input.reservation.operationId.trim() && input.reservation.operationId.length <= 4096) {
+                transaction(database, () => failUpkeepAccounting(database, input.reservation.operationId, "dispatch", "namespace_invalid"));
+                respond(0, { accountingDegraded: upkeepAccountingDegradation(database) });
+              }
+            }
             if (code === "continuity_quota_exhausted") {
               transaction(database, () => { database.prepare("INSERT OR REPLACE INTO metadata(key,value) VALUES ('continuity_degraded','quota')").run(); });
             }
             throw error;
           }
-          if (request.operation === "continuity_upkeep") accountingDegraded = await replayUpkeepAccounting(database);
-          respond(request.id, accountingDegraded > 0 && request.operation === "continuity_upkeep" ? { ...((result ?? {}) as object), accountingDegraded: true } : result ?? null);
+          respond(request.id, result ?? null);
+          if (request.operation === "continuity_upkeep") {
+            const input = request.payload as UpkeepMutation;
+            if (input.kind === "dispatch" || input.kind === "outcome") accountingExports.schedule({ operationId: input.reservation.operationId, phase: input.kind === "dispatch" ? "dispatch" : "result" });
+          }
           break;
         }
         case "invocation":
@@ -320,6 +336,7 @@ parentPort.on("message", (request: WorkerRequest) => {
               closeErrors.push(error);
             }
             closed = true;
+            await accountingExports.flush();
             try { database.close(); } catch (error) { closeErrors.push(error); }
             try { owner.release(); } catch (error) { closeErrors.push(error); }
             if (closeErrors.length === 1) throw closeErrors[0];

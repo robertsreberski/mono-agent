@@ -24,6 +24,10 @@
   downgrade, and preserve identifier roles with bounded, verified cited context.
   Integrity errors still reject the whole response; upkeep remains opt-in.
 
+- Bound continuity accounting retries and keep slow exports off admission replies.
+  Preserve pending origins until observed, reject invalid recorder namespaces
+  before admission, and include upkeep cache categories in benchmark spend gates.
+
 - Add separate, content-free continuity upkeep accounting with durable journal
   recovery, immutable per-operation companions and origin-run retention. Keep
   cache categories and unknown usage distinct; existing run/session totals remain

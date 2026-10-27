@@ -1,4 +1,4 @@
-import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rm, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
@@ -27,11 +27,40 @@ it("startup recovers pending origin-run exports without enabling continuity or e
   } finally { await writer.close(); }
   await recorder.finish({ model: "fictional:answer" });
   const reader = new ToolHistoryReader(root), db = new DatabaseSync(reader.databasePath);
-  db.exec("UPDATE continuity_upkeep_accounting SET exported=NULL"); db.close();
+  db.exec("UPDATE continuity_upkeep_accounting SET exported=NULL,next_attempt_ms=0"); db.close();
   for (const name of await readdir(artifactDir)) if (name.includes(".upkeep.")) await rm(join(artifactDir, name));
   const warning = vi.fn(); await recoverConfiguredUpkeepAccounting(root, artifactRoot, warning);
   expect(warning).not.toHaveBeenCalled(); expect(reader.hasPendingUpkeepAccounting()).toBe(false);
   expect((await readRecordedRun({ artifactDir }, "origin"))?.upkeepAccounting?.[0]).toMatchObject({ model: "fictional:extractor-override", invocation: "uncertain", costUsd: null, usageIncluded: false });
   const files = await readdir(artifactDir); await recoverConfiguredUpkeepAccounting(root, artifactRoot, warning);
   expect(await readdir(artifactDir)).toEqual(files);
+});
+
+it("treats zero-length and upgrade-pending stores as no startup accounting work", async () => {
+  const root = await fixture(), reader = new ToolHistoryReader(root), warning = vi.fn();
+  await mkdir(join(root, "tool-history"), { mode: 0o700 });
+  await writeFile(reader.databasePath, "", { mode: 0o600 });
+  const open = vi.spyOn(ToolHistoryWriter, "open");
+  await recoverConfiguredUpkeepAccounting(root, join(root, "tool-output"), warning);
+  expect(open).not.toHaveBeenCalled(); expect(warning).not.toHaveBeenCalled();
+  open.mockRestore();
+  const writer = await ToolHistoryWriter.open({ root }); await writer.close();
+  const db = new DatabaseSync(reader.databasePath); db.exec("PRAGMA user_version=1"); db.close();
+  const upgradeOpen = vi.spyOn(ToolHistoryWriter, "open");
+  await recoverConfiguredUpkeepAccounting(root, join(root, "tool-output"), warning);
+  expect(upgradeOpen).not.toHaveBeenCalled(); expect(warning).not.toHaveBeenCalled();
+  expect(() => reader.stats()).toThrow("upgrade-pending"); // explicit readers still fail closed
+});
+it("does not reacquire on every startup for permanently corrupt accounting rows", async () => {
+  const root = await fixture(), writer = await ToolHistoryWriter.open({ root, artifactRoot: join(root, "tool-output"), continuityEnabled: true });
+  try { await writer.mutateUpkeep({ kind: "inspect", scope: { logicalId: "logical", conversationId: "fictional" } }); } finally { await writer.close(); }
+  const reader = new ToolHistoryReader(root), db = new DatabaseSync(reader.databasePath);
+  db.exec("INSERT INTO continuity_upkeep_accounting(operation_id,phase,payload,error) VALUES ('corrupt','result','{}','invalid_journal')"); db.close();
+  const warning = vi.fn(); await recoverConfiguredUpkeepAccounting(root, join(root, "tool-output"), warning);
+  expect(reader.hasPendingUpkeepAccounting()).toBe(false);
+  const check = new DatabaseSync(reader.databasePath, { readOnly: true });
+  expect(check.prepare("SELECT exported,error FROM continuity_upkeep_accounting WHERE operation_id='corrupt'").get()).toEqual({ exported: "failed", error: "invalid_journal" }); check.close();
+  const open = vi.spyOn(ToolHistoryWriter, "open");
+  await recoverConfiguredUpkeepAccounting(root, join(root, "tool-output"), warning);
+  expect(open).not.toHaveBeenCalled();
 });

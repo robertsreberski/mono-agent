@@ -1,3 +1,4 @@
+import { resolve } from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
@@ -26,7 +27,7 @@ function receipt(r: UpkeepReservation, extra: Partial<ContinuityUpkeepReceipt> =
 }
 function reservation(fence: UpkeepAdmission, operationId = "operation"): UpkeepReservation {
   const { bootstrap, ...fields } = fence;
-  return { ...fields, operationId, runId: "origin-run", recorderNamespace: "fictional-recorder", model: "fictional:base", manifest: "a".repeat(64), parent: null, budget: bootstrap ? "bootstrap" : "incremental" };
+  return { ...fields, operationId, runId: "origin-run", recorderNamespace: resolve("/fictional-recorder"), model: "fictional:base", manifest: "a".repeat(64), parent: null, budget: bootstrap ? "bootstrap" : "incremental" };
 }
 function memory() {
   const db = new DatabaseSync(":memory:"); cleanups.push(() => db.close());
@@ -106,7 +107,7 @@ async function fixture(maxBytes?: number) {
     records: [{ recordId: continuityRecordId("fictional", generationId), runId: "historical-run", inputId: "owner-input", kind: "owner", provenance: "host-owner", sequence: 0,
       text: "Never send without confirmation.", source: { attestation: { inputId: "owner-input", requestDigest: digest } } }] });
   await writer.commitContinuity({ generationId, conversationId: "fictional", canonicalDigest: digest });
-  const db = new DatabaseSync(reader.databasePath); cleanups.push(() => db.close());
+  const db = new DatabaseSync(reader.databasePath); db.exec("PRAGMA busy_timeout=5000"); cleanups.push(() => db.close());
   const mutate = writer.mutateUpkeep.bind(writer);
   const inspect = async () => (await mutate({ kind: "inspect", scope: scopes }))!;
   const claim = async (ownerToken: string) => (await mutate({ kind: "claim", expected: await inspect(), ownerToken }))!;
@@ -122,7 +123,7 @@ function harness(f: Awaited<ReturnType<typeof fixture>>, mutation = f.mutate, ow
     return { text: JSON.stringify({ entries: [{ kind: "constraint", value: "Require confirmation.", status: "active", sources: [span.id] }], covered: [span.id] }), receipt: receipt(r) };
   });
   const options = { toolHistory: { continuityEnabled: true, reader: f.reader, writer: f.writer, logicalConversationId: (id: string) => id,
-    upkeep: { enabled: true, model: "fictional:base", recorderNamespace: "origin-recorder", complete }, mutateUpkeep: mutation,
+    upkeep: { enabled: true, model: "fictional:base", recorderNamespace: resolve("/origin-recorder"), complete }, mutateUpkeep: mutation,
     publishLedger: f.writer.publishLedger.bind(f.writer) } } as unknown as ConversationHarnessOptions;
   const events: any[] = [];
   return { complete, events, get fetches() { return fetches; }, prepare: async () => await createLedgerSupplier(options,
@@ -147,7 +148,7 @@ it("records outcome and origin identity before publication and before the receip
   // Production host publishes through the bound method, so inspect durable rows on read.
   vi.spyOn(f.reader, "ledger").mockImplementationOnce(() => undefined).mockImplementation(() => {
     const row = f.db.prepare("SELECT reservation,outcome,state FROM continuity_upkeep_operations").get() as any;
-    if (row) { expect(row.state).toBe("terminal"); expect(JSON.parse(row.reservation)).toMatchObject({ runId: "origin-run", recorderNamespace: "origin-recorder", budget: "bootstrap" }); expect(JSON.parse(row.outcome).inputTokens).toBe(25); }
+    if (row) { expect(row.state).toBe("terminal"); expect(JSON.parse(row.reservation)).toMatchObject({ runId: "origin-run", recorderNamespace: resolve("/origin-recorder"), budget: "bootstrap" }); expect(JSON.parse(row.outcome).inputTokens).toBe(25); }
     return undefined;
   });
   await h.prepare(); expect(h.fetches).toBe(1); expect(h.complete.mock.calls[0]![2]).toMatchObject({ inputTokens: 128000 });
@@ -235,7 +236,7 @@ it.each(["reserved", "dispatch_started", "provider_return", "outcome"])("recover
   expect(recovered.message.bootstrapRejected).toBe(phase !== "reserved");
   expect(recovered.message.incrementalRejected).toBe(["dispatch_started", "provider_return"].includes(phase));
   const [row] = recovered.message.rows; expect(row.state).toBe(phase === "reserved" ? "released" : phase === "outcome" ? "terminal" : "dispatch_started");
-  expect(JSON.parse(row.reservation)).toMatchObject({ runId: "origin-run", recorderNamespace: "fictional-recorder", model: "fictional:base", budget: "bootstrap" });
+  expect(JSON.parse(row.reservation)).toMatchObject({ runId: "origin-run", recorderNamespace: resolve("/fictional-recorder"), model: "fictional:base", budget: "bootstrap" });
   if (phase === "outcome") expect(JSON.parse(row.outcome)).toMatchObject({ costUsd: 0.0002, providerUsage: { input: 20, cacheRead: 5, cacheWrite: 0, output: 2 } });
   else expect(row.outcome).toBeNull(); // Unknown is not a zero-cost outcome.
 }, 15000);
@@ -305,4 +306,19 @@ it("records paid outcomes and terminal transitions even above a protected quota"
   await expect(f.mutate({ kind: "reject", reservation: r })).resolves.toBeNull();
   const row = f.db.prepare("SELECT state,outcome FROM continuity_upkeep_operations WHERE operation_id=?").get(r.operationId) as any;
   expect(row.state).toBe("terminal"); expect(JSON.parse(row.outcome)).toEqual(paid);
+});
+
+it("rejects oversized namespaces and invalid accounting identities at reserve, not after admission", async () => {
+  const f = await fixture(), r = reservation(await f.claim("owner"));
+  for (const extra of [{ recorderNamespace: resolve("/" + "n".repeat(80000)) }, { model: " " }, { runId: "bad\nidentity" }]) {
+    await expect(f.mutate({ kind: "reserve", reservation: { ...r, ...extra } })).rejects.toThrow();
+  }
+  expect(f.db.prepare("SELECT state FROM continuity_upkeep_operations").all()).toEqual([]);
+});
+it.each(["relative", "/fictional/../other", ""])("rejects %s namespace as durable accounting degradation without a purchase", async namespace => {
+  const f = await fixture(), r = { ...reservation(await f.claim("owner")), recorderNamespace: namespace };
+  await expect(f.mutate({ kind: "reserve", reservation: r })).rejects.toMatchObject({ code: "namespace_invalid" });
+  expect(f.db.prepare("SELECT state FROM continuity_upkeep_operations").all()).toEqual([]);
+  expect(f.db.prepare("SELECT exported,error FROM continuity_upkeep_accounting").get()).toEqual({ exported: "failed", error: "namespace_invalid" });
+  expect(f.reader.hasPendingUpkeepAccounting()).toBe(false);
 });

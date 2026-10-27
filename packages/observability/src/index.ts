@@ -166,4 +166,4 @@ export type {
 export * from "./cache-usage.js";
 export { NoopRunRecorder } from "./noop-recorder.js";
 
-export { exportUpkeepAccounting } from "./upkeep-accounting.js";
+export { exportUpkeepAccounting, UpkeepAccountingExportError, assertUpkeepAccountingNamespace } from "./upkeep-accounting.js";
