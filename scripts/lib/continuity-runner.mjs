@@ -439,7 +439,7 @@ export async function buildCheckpoint({ modules, trace, arm, repeat, dir, plan, 
             // A lost child acknowledgement cannot prove non-invocation. Keep
             // its whole input allowance; the controller retains its reservation.
             result = { valid: false, boundary: { verified: false }, failure: codeOf(error), receipt: null,
-              usage: preparationUsage({ providerInvoked: true }, preparations.some(previous => previous.journal?.bootstrap > 0) ? 64000 : 128000, upkeepPrice, plan.upkeep.maxOutputTokens) };
+              usage: preparationUsage({ providerInvoked: true }, preparationInputReserve(preparations), upkeepPrice, plan.upkeep.maxOutputTokens) };
           }
           preparations.push(result);
           record.upkeep.usage = sumPreparationUsage(preparations);
@@ -516,41 +516,56 @@ export function preparationDisposition(receipt) {
   const reason = receipt?.reason;
   if (receipt?.status === "valid" && receipt.providerInvoked === true && ["completed", "analyzed"].includes(reason)) return "applied";
   if (!["invalid", "skipped", "aborted", "timeout", "uncertain"].includes(receipt?.status)) return "integrity";
-  const capacity = ["input_budget", "model_headroom", "ledger_scan_capacity", "ledger_render_budget", "ledger_quota_budget", "upkeep_repeat_suppressed", "already_covered", "unchanged", "no_source"];
-  const provider = ["output_aborted", "aborted", "provider_output", "empty_output", "validation_or_publication", "input_overrun"];
+  const capacity = ["input_budget", "model_headroom", "ledger_scan_capacity", "ledger_render_budget", "ledger_payload_budget", "ledger_lineage_budget", "ledger_aggregate_capacity", "source_oversized", "upkeep_dispatch_rejected", "ledger_quota_budget", "upkeep_repeat_suppressed", "already_covered", "unchanged", "no_source"];
+  const provider = ["output_aborted", "aborted", "provider_output", "empty_output", "validation_or_publication", "input_overrun", "output_overrun"];
   return capacity.includes(reason) || provider.includes(reason)
     || reason === "unavailable" && receipt.providerInvoked === true
     || receipt.status === "uncertain" && ["uncertain", "dispatch_or_outcome_unacknowledged"].includes(reason)
     ? "degraded" : "integrity";
 }
 
-/** Released non-invocations create rows, but spend neither bootstrap nor offers. */
+const consumingOperation = row => ["dispatch_started", "uncertain", "terminal"].includes(row.state);
+/** Only a dispatched, non-released bootstrap consumes the larger allowance. */
+export function preparationInputReserve(steps) {
+  const rows = steps.findLast(step => Array.isArray(step.journal?.rows))?.journal.rows ?? [];
+  return rows.some(row => consumingOperation(row) && row.budget === "bootstrap") ? 64000 : 128000;
+}
+
+/** Reconcile identities, not count deltas: a later claim can release an older
+ * pre-dispatch reservation while admitting one new operation in the same stage. */
 export function preparationIntegrity(steps) {
-  let operations = 0, released = 0;
-  const selections = [], ids = new Set();
-  if (!steps.length || new Set(steps.map(step => step.pid)).size !== steps.length
-    || !steps.some(step => preparationDisposition(step.receipt) !== "integrity")) return false;
+  let previous = new Map();
+  if (!steps.length || new Set(steps.map(step => step.pid)).size !== steps.length) return false;
   for (const step of steps) {
-    const j = step.journal, delta = j?.operations - operations, releaseDelta = (j?.released ?? 0) - released;
-    if (!step.valid || preparationDisposition(step.receipt) === "integrity" || !step.boundary?.verified || !step.preserved
-      || ![0, 1].includes(delta) || ![0, 1].includes(releaseDelta) || delta + releaseDelta > 1
-      || j.bootstrap !== (j.operations ? 1 : 0)) return false;
-    if (delta || releaseDelta) {
-      if (!j.operationId || ids.has(j.operationId) || j.budget !== (operations ? "incremental" : "bootstrap")) return false;
-      ids.add(j.operationId);
-      if (releaseDelta) {
-        if (j.state !== "released" || step.receipt?.providerInvoked || step.receipt?.status === "uncertain"
-          || step.receipt?.operationId !== j.operationId) return false;
-      } else {
-        if (j.state === "released") return false;
-        selections.push(j.selection);
-      }
+    const j = step.journal, rows = j?.rows;
+    if (!step.valid || preparationDisposition(step.receipt) === "integrity" || !step.boundary?.verified || !step.preserved || !Array.isArray(rows)) return false;
+    const current = new Map(rows.map(row => [row.operationId, row]));
+    if (current.size !== rows.length || rows.some(row => typeof row.operationId !== "string" || !row.operationId || !["bootstrap", "incremental"].includes(row.budget)
+      || !["reserved", "released", "dispatch_started", "uncertain", "terminal"].includes(row.state) || !Array.isArray(row.selection))) return false;
+    for (const [id, old] of previous) {
+      const row = current.get(id);
+      if (!row || row.budget !== old.budget || JSON.stringify(row.selection) !== JSON.stringify(old.selection)
+        || row.state !== old.state && !(old.state === "reserved" && row.state === "released")) return false;
     }
-    if (step.receipt?.operationId && (!(delta || releaseDelta) || step.receipt.operationId !== j.operationId)) return false;
-    if ((step.receipt?.providerInvoked || step.receipt?.status === "uncertain") && !delta) return false;
-    operations = j.operations; released = j.released ?? 0;
+    const added = rows.filter(row => !previous.has(row.operationId)), consumed = rows.filter(consumingOperation);
+    if (added.length > 1 || j.operations !== consumed.length || (j.released ?? 0) !== rows.filter(row => row.state === "released").length
+      || (j.reserved ?? 0) !== rows.filter(row => row.state === "reserved").length
+      || j.bootstrap !== consumed.filter(row => row.budget === "bootstrap").length || j.bootstrap !== Number(consumed.length > 0)) return false;
+    const latest = current.get(j.operationId);
+    if (j.operationId && (!latest || j.state !== latest.state || j.budget !== latest.budget)) return false;
+    const row = added[0], receipt = step.receipt;
+    if (row && row.budget !== ([...previous.values()].some(consumingOperation) ? "incremental" : "bootstrap")) return false;
+    if (receipt.operationId && receipt.operationId !== row?.operationId) return false;
+    if (receipt.providerInvoked || receipt.status === "uncertain") {
+      if (!row || !consumingOperation(row) || receipt.operationId !== row.operationId) return false;
+    } else if (row && (consumingOperation(row)
+      // A dispatched operation without proven invocation can remain uncertain;
+      // only reserved/released rows are affirmative non-consuming evidence.
+      ? row.state !== "uncertain" || receipt.operationId !== row.operationId
+      : row.state === "released" && receipt.operationId !== row.operationId)) return false;
+    previous = current;
   }
-  return boundedOfferHistory(selections);
+  return boundedOfferHistory([...previous.values()].filter(consumingOperation).map(row => row.selection));
 }
 
 /** Exact expected injection; no-ledger stages must still inject deterministic evidence. */
@@ -648,9 +663,10 @@ export async function prepareLedgerCheckpoint({ modules, work, authPath, plan, m
       const rows = db.prepare("SELECT operation_id,reservation,state FROM continuity_upkeep_operations ORDER BY rowid").all();
       const latest = rows.find(row => row.operation_id === receipt?.operationId) ?? rows.at(-1);
       const reservation = latest ? JSON.parse(latest.reservation) : null;
-      const active = rows.filter(row => row.state !== "released");
-      journal = { operations: active.length, released: rows.length - active.length, states: Object.fromEntries([...new Set(rows.map(row => row.state))].map(state => [state, rows.filter(row => row.state === state).length])),
-        bootstrap: active.filter(row => JSON.parse(row.reservation).budget === "bootstrap").length, state: latest?.state ?? null,
+      const identities = rows.map(row => { const r = JSON.parse(row.reservation); return { operationId: row.operation_id, state: row.state, budget: r.budget, selection: r.progress?.spans.map(span => span.key) ?? [] }; });
+      const active = identities.filter(consumingOperation);
+      journal = { rows: identities, operations: active.length, released: identities.filter(row => row.state === "released").length, reserved: identities.filter(row => row.state === "reserved").length, states: Object.fromEntries([...new Set(rows.map(row => row.state))].map(state => [state, rows.filter(row => row.state === state).length])),
+        bootstrap: active.filter(row => row.budget === "bootstrap").length, state: latest?.state ?? null,
         operationId: latest?.operation_id ?? null, databaseId: reservation?.databaseId ?? null, incarnation: reservation?.incarnation ?? null, fence: reservation?.fence ?? null,
         frontier: db.prepare("SELECT cursor FROM continuity_upkeep_progress WHERE logical_id=? AND conversation_id=?").get(conversationId, conversationId)?.cursor ?? null,
         offered: reservation?.progress?.spans ?? [],
@@ -668,6 +684,7 @@ export async function prepareLedgerCheckpoint({ modules, work, authPath, plan, m
       : receipt.reason === "analyzed" && !receipt.generationId || !!entries.length && generation.generation.id === receipt.generationId),
     degraded, degradedReason: degraded ? receipt.status === "uncertain" ? "uncertain" : receipt.reason : null,
     d6InputOverrun: receipt?.reason === "input_overrun",
+    d6OutputOverrun: receipt?.reason === "output_overrun" || receipt?.outputOverrun === true,
     boundary: verifyBoundary({ boundary: "model_change", compactions: 0 }, watch.observed), observed: watch.observed,
     entriesBefore: previous.length, entriesAfter: entries.length, preserved, journal,
     failure, receipt, usage: preparationUsage(receipt, journal?.budget === "bootstrap" ? 128000 : step.maxInputTokens, upkeepPrice, plan.upkeep.maxOutputTokens) };

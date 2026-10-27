@@ -29,11 +29,12 @@ function literals(text: string, templatesOnly = false): string[] {
   };
   visit(file); return chunks;
 }
-it("rejects stopword-stripped generator template trigrams in the production prompt and ranking constants", () => {
+it("rejects stopword-stripped generator string/template trigrams in the production prompt and ranking constants", () => {
   const generator = readFileSync(new URL("../../../../scripts/lib/continuity-generator.mjs", import.meta.url), "utf8");
-  const templates = literals(generator, true), generatorGrams = new Set(templates.flatMap(grams));
-  expect(templates.length).toBeGreaterThan(20); expect(generatorGrams.size).toBeGreaterThan(100);
+  const generatorLiterals = literals(generator), generatorGrams = new Set(generatorLiterals.flatMap(grams));
+  expect(generatorLiterals.length).toBeGreaterThan(20); expect(generatorGrams.size).toBeGreaterThan(100);
   expect(literals("`alpha ${value} of beta ${other} gamma`", true).flatMap(grams)).toContain("alpha beta gamma");
+  expect(literals('"alpha of beta gamma"').flatMap(grams)).toContain("alpha beta gamma");
   // No exceptions currently needed. Any future entry requires a generic-grammar justification.
   const allowlist: Record<string, string> = {};
   const overlaps = (text: string) => grams(text).filter(gram => generatorGrams.has(gram) && !(gram in allowlist));

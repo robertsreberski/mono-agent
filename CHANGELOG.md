@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Fix continuity benchmark degradation and overrun reporting, and reconcile
+  pre-dispatch reservations by identity without changing runtime behavior.
+
 - Show cited host source order in continuity ledger entries and extractor inputs
   without reordering stored entries or treating prose as chronology evidence.
 

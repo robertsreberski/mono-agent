@@ -723,9 +723,9 @@ it("owns a distinct BEGIN/COMMIT pair for each of three history pages", async ()
   expect(completed.filter(transaction => transaction.pages)).toEqual([{ pages: 1 }, { pages: 1 }, { pages: 1 }]);
   expect(active.size).toBe(0);
 });
-// validateRecord closes source keys; safeMetadata caps three strings at512bytes,
-// normalizeId caps the attested input at4096bytes,and requestDigest is64hex.
-// Even6x JSON escaping plus keys/safe revision stays below36KiB (<64KiB scan cap).
+// validateRecord closes source keys; safeMetadata caps three strings at 512 bytes,
+// normalizeId caps the attested input at 4096 bytes, and requestDigest is 64 hex.
+// Even 6x JSON escaping plus keys/safe revision stays below 36 KiB (<64 KiB scan cap).
 it("bounds source metadata at admission and keeps healthy history scannable", async () => {
   const f = await fixture(), generationId = continuityGenerationId(), digest = ledgerHash(generationId);
   const inputId = '"'.repeat(4096), source = { epoch: '"'.repeat(512), journalId: '"'.repeat(512), operationId: '"'.repeat(512), revision: Number.MAX_SAFE_INTEGER, attestation: { inputId, requestDigest: digest } };

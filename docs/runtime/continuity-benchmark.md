@@ -168,13 +168,17 @@ config resolution.
 The ledger arm continues all three fresh-child preparations after allowlisted
 product degradation, using the last published ledger or deterministic evidence.
 Provider/validation reasons are `output_aborted`, `aborted`, `provider_output`,
-`empty_output`, `validation_or_publication`, `input_overrun`, and `unavailable`
-**after invocation**; an unacknowledged dispatch/outcome is `uncertain`.
+`empty_output`, `validation_or_publication`, `input_overrun`, `output_overrun`,
+and `unavailable` **after invocation**; an unacknowledged dispatch/outcome is
+`uncertain`.
 Capacity reasons are `input_budget`, `model_headroom`, `ledger_scan_capacity`,
-`ledger_render_budget`, `ledger_quota_budget`, `upkeep_repeat_suppressed`,
+`ledger_render_budget`, `ledger_payload_budget`, `ledger_lineage_budget`,
+`ledger_aggregate_capacity`, `ledger_quota_budget`, `source_oversized`,
+`upkeep_dispatch_rejected`, `upkeep_repeat_suppressed`,
 `already_covered`, `unchanged`, and `no_source`. Results report degradation
-reasons and a separate `d6InputOverruns` counter. Failed output is never a
-successful extraction or a fabricated generation.
+reasons and separate `d6InputOverruns` and `d6OutputOverruns` counters.
+Output overruns include the explicit reason or a reported `outputOverrun` flag.
+Failed output is never a successful extraction or a fabricated generation.
 
 Configuration/eligibility skips (including `read_only`, `disabled`,
 `detached_attempt`, `continuation_boundary`, `per_message`, `isolated`,
@@ -420,8 +424,8 @@ answer path; no injected fixture models are used for real extraction.
 Preparation keeps its receipt even when the harness, ledger read or close fails.
 A zero-dispatch preparation contributes zero calls/tokens/cost, not an unknown
 call. If reported input, output, or cost is missing, a potentially invoked call
-is unknown and receives a full conservative reservation: 128k bootstrap or64k
-incremental input plus4096 output tokens at catalog prices. `conservativeCalls`,
+is unknown and receives a full conservative reservation: 128k bootstrap or 64k
+incremental input plus 4096 output tokens at catalog prices. `conservativeCalls`,
 `conservativeCostUsd` and `unpricedConservativeCalls` are separate from known
 `estimatedCostUsd`. A partial finite cost is NOT added on top of that full
 reservation. Missing catalog pricing remains explicitly unpriced, not free.
@@ -443,6 +447,10 @@ Per-preparation receipts and usage components retain known subtotals and unknown
 calls separately, without counting the aggregate again. A lost child acknowledgement
 retains its conservative input allowance and invalidates the unit; an external
 spend controller must retain the corresponding monetary reservation.
+Journal snapshots reconcile operation IDs across stages, not just count deltas.
+A pre-dispatch `reserved` row may become `released` at the next claim without
+consuming bootstrap or offers. Both states are non-consuming; only dispatched,
+non-released rows determine whether lost-ack input reserves use 128k or 64k.
 
 For fictional-only diagnostics, `--capture-upkeep-output` opts into saving the
 raw extraction completion, stable validation `failure` code and merged validated
@@ -457,22 +465,23 @@ No prompt or credentials are captured; model, auth, SSE and caps remain unchange
 The label-kind rules were introduced after inspecting category findings in this
 benchmark's audit: this is **dev-set tuning**. Worked examples from its scenario
 families have been removed, leaving generic kind/tense definitions. A regression
-test rejects stopword-stripped three-word overlaps from generator template
-literals in the production prompt and ranking constants, including fragments
-separated by interpolations. This check cannot establish conceptual independence.
+test rejects stopword-stripped three-word overlaps from all generator string and
+template literals in the production prompt and ranking constants, including
+fragments separated by interpolations. This check cannot establish conceptual independence.
 Label-precision numbers remain optimistic; neither an independent holdout result
 nor a causal ablation is claimed.
 
 Chronology uses host-cited source positions: extraction inputs are source-ordered,
 and rendered entries carry their latest cited ordinal in ascending order. This
 does not prove event time or make derived relative-order prose authoritative.
-Chronology findings remain part of context findings and are also reported separately.
+The manual interpretation audit, not the scorer, reports chronology findings
+as part of context findings and also separately.
 
 Source metadata admission is already bounded: `validateRecord` closes the keys,
-`safeMetadata` caps the three optional metadata strings at512bytes each,
-`normalizeId` caps the attested input ID at4096bytes, and the request digest is
-64hex characters. Even pessimistic sixfold JSON escaping plus the fixed keys and
-safe-integer revision stays below36KiB, less than the scan's64KiB source cap.
+`safeMetadata` caps the three optional metadata strings at 512 bytes each,
+`normalizeId` caps the attested input ID at 4096 bytes, and the request digest is
+64 hex characters. Even pessimistic sixfold JSON escaping plus the fixed keys and
+safe-integer revision stays below 36 KiB, less than the scan's 64 KiB source cap.
 Oversized writes are rejected before publication; admission-boundary and healthy
 scan tests cover this. Corrupted on-disk rows still fail closed rather than being
 accepted as authentic source metadata.

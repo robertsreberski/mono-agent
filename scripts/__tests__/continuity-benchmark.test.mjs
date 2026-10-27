@@ -1,3 +1,4 @@
+import ts from "typescript";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { spawnSync } from "node:child_process";
 import { mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
@@ -5,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ARMS, AVAILABLE_ARM_IDS, BASELINE_ARM, CONTINUITY_OFF, CONTINUITY_ON, CONTINUITY_PACK_ON, DEFAULT_ARMS, NOT_AVAILABLE, ORIGINAL_ARM_IDS, SMALL_PROACTIVE_COMPACTION, armById, checkpointKey, mergePatch, pressureMetrics, verifyBoundary, verifyPressure, verifyStore } from "../lib/continuity-arms.mjs";
-import { classifyHistoryResult, boundedOfferHistory, preparationIntegrity, preparationUsage, verifyLedgerTreatment } from "../lib/continuity-runner.mjs";
+import { classifyHistoryResult, boundedOfferHistory, preparationDisposition, preparationInputReserve, preparationIntegrity, preparationUsage, verifyLedgerTreatment } from "../lib/continuity-runner.mjs";
 import { digest, estimateCost, inventory, loadTraces, makePlan, parseSeeds, sourceOnly, validateTrace } from "../lib/continuity-dataset.mjs";
 import { COLD_BOUNDS, GENERATOR_VERSION, HARD_SEEDS, LONG_RULES, generateTrace, mulberry32, outsideColdBounds, traceShape } from "../lib/continuity-generator.mjs";
 import { ABSTAIN_INSTRUCTION, ORIGINAL_CATEGORIES, emptyUsage, addUsage, isAbstention, parseJudgeVerdict, probePrompt, renderMarkdown, scoreAnswer, summarize } from "../lib/continuity-score.mjs";
@@ -403,7 +404,8 @@ describe("continuity offline contract run (production harness, scripted provider
     expect(ledger.trials[0].boundary.observed.offlineLedgerCounts).toEqual([1, 1]);
     expect(ledger.trials[0].boundary.observed.continuityPacks.some(pack => pack.ledgerEntries === 2)).toBe(true);
     expect(ledger.trials[0].boundary.observed.upkeep.some(row => row.providerInvoked)).toBe(false);
-    expect(results.upkeep).toHaveLength(1);
+    expect(results.preparationHealth["continuity-ledger-cold"]).toMatchObject({ d6InputOverruns: 0, d6OutputOverruns: 0 });
+  expect(results.upkeep).toHaveLength(1);
     expect(results.summary.arms["continuity-ledger-cold"].usage.calls).toBe(4); // three extractions plus one probe, counted once.
     expect(await readFile(join(output, "summary.md"), "utf8")).toContain("NOT model quality");
     expect(await readdir(output)).not.toContain("work");
@@ -530,10 +532,10 @@ it("keeps distractor actual facts and byte pressure identical while pricing all 
   expect(cost.arms["continuity-ledger-cold"].inputTokens - cost.arms["continuity-pack-cold"].inputTokens).toBe(2 * (128000 + 64000 + 64000));
 });
 
-it.each(["harness", "ledger", "skip", "read_only", "overrun"])("retains upkeep receipt/accounting after %s preparation", async point => {
+it.each(["harness", "ledger", "skip", "read_only", "overrun", "output_overrun", "output_flag"])("retains upkeep receipt/accounting after %s preparation", async point => {
   const { prepareLedgerCheckpoint } = await import("../lib/continuity-runner.mjs");
   const work = await scratch(); let ledgerReads = 0;
-  const receipt = { type: "continuity_upkeep", reason: point === "skip" ? "input_budget" : point === "read_only" ? "read_only" : point === "overrun" ? "input_overrun" : "provider_output", providerInvoked: !["skip", "read_only"].includes(point), status: ["skip", "read_only"].includes(point) ? "skipped" : "invalid", costUsd: null, inputTokens: null, outputTokens: null, estimatedInputCostUsd: 0.02, estimatedInputTokens: 15000 };
+  const receipt = { type: "continuity_upkeep", reason: point === "skip" ? "input_budget" : point === "read_only" ? "read_only" : point === "overrun" ? "input_overrun" : point === "output_overrun" ? "output_overrun" : "provider_output", providerInvoked: !["skip", "read_only"].includes(point), status: ["skip", "read_only"].includes(point) ? "skipped" : "invalid", costUsd: null, inputTokens: null, outputTokens: null, estimatedInputCostUsd: 0.02, estimatedInputTokens: 15000, outputOverrun: point === "output_flag" };
   const modules = {
     config: { resolveJsonMonoAgentConfig: () => ({ runtime: { model: {} } }) },
     coordinator: { acquireAgentRootOwnership: async () => ({}), releaseAgentRootOwnershipWhenIdle: async () => {} },
@@ -542,8 +544,9 @@ it.each(["harness", "ledger", "skip", "read_only", "overrun"])("retains upkeep r
     conversation: { ToolHistoryReader: class { ledger() { if (++ledgerReads === 2 && point === "ledger") throw new Error("fictional second ledger read"); } } },
   };
   const result = await prepareLedgerCheckpoint({ modules, work, mode: "real", reader: { reference: "openai-codex:gpt-6-luna" }, alternate: { reference: "openai:gpt-4o-mini" }, scripted: { respondWith() {} }, clock: {}, plan: { upkeep: { model: "openai-codex:gpt-6-luna", maxInputTokens: 128000, incrementalMaxInputTokens: 64000, maxOutputTokens: 4096, callsPerTraceRepeat: 3, preparations: [{ binding: "openai:gpt-4o-mini", maxInputTokens: 128000 }] }, limits: { perLiveTurnTimeoutMs: 10000 } } });
-  expect(result.receipt).toEqual(receipt); expect(result.valid).toBe(["skip", "overrun"].includes(point));
+  expect(result.receipt).toEqual(receipt); expect(result.valid).toBe(["skip", "overrun", "output_overrun", "output_flag"].includes(point));
   expect(result.d6InputOverrun).toBe(point === "overrun");
+  expect(result.d6OutputOverrun).toBe(["output_overrun", "output_flag"].includes(point));
   if (point === "read_only") expect(result.degraded).toBe(false);
   if (point === "ledger") { expect(ledgerReads).toBe(2); expect(result.failure).toBe("upkeep_preparation_failed"); }
   expect(result.usage).toMatchObject(["skip", "read_only"].includes(point) ? { calls: 0, inputTokens: 0, outputTokens: 0, estimatedCostUsd: 0 } : { calls: 1, estimatedInputTokens: 128000, estimatedCostUsd: null, conservativeCalls: 1, unpricedConservativeCalls: 1 });
@@ -671,7 +674,8 @@ it("charges unknown upkeep full reserved input plus output, separately from know
 it("distinguishes degraded stages from boundary, bootstrap, operation and injection integrity", () => {
   const steps = Array.from({ length: 3 }, (_, i) => ({ pid: i + 100, valid: true, preserved: true, boundary: { verified: true },
     receipt: { status: i === 1 ? "invalid" : "valid", reason: i === 1 ? "aborted" : "completed", providerInvoked: true, operationId: `op${i}` },
-    journal: { operations: i + 1, bootstrap: 1, budget: i ? "incremental" : "bootstrap", operationId: `op${i}`, selection: [`span${i}`] } }));
+    journal: { operations: i + 1, bootstrap: 1, state: "terminal", budget: i ? "incremental" : "bootstrap", operationId: `op${i}`, selection: [`span${i}`],
+      rows: Array.from({ length: i + 1 }, (_, n) => ({ operationId: `op${n}`, state: "terminal", budget: n ? "incremental" : "bootstrap", selection: [`span${n}`] })) } }));
   expect(preparationIntegrity(steps)).toBe(true);
   for (const mutate of [x => { x[1].boundary.verified = false; }, x => { x[1].journal.operations++; }, x => { x[2].journal.bootstrap++; }, x => { x[2].pid = x[1].pid; }, x => { x[2].preserved = false; }]) {
     const bad = structuredClone(steps); mutate(bad); expect(preparationIntegrity(bad)).toBe(false);
@@ -682,7 +686,7 @@ it("distinguishes degraded stages from boundary, bootstrap, operation and inject
   expect(verifyLedgerTreatment({ valid: true, expectedEntries: 1 }, { ...observed, upkeep: [{ providerInvoked: true }] })).toBe(false);
   expect(verifyLedgerTreatment({ valid: true, expectedEntries: 0 }, { continuityPacks: [{ ledgerEntries: 0, evidenceEntries: 3 }] })).toBe(true);
   expect(verifyLedgerTreatment({ valid: true, expectedEntries: 0 }, { continuityPacks: [{ ledgerEntries: 0, evidenceEntries: 0 }] })).toBe(false);
-  const skipped = structuredClone(steps); skipped[1].receipt = { status: "skipped", reason: "input_budget", providerInvoked: false }; skipped[1].journal = { ...skipped[0].journal }; skipped[2].journal.operations = 2;
+  const skipped = structuredClone(steps); skipped[1].receipt = { status: "skipped", reason: "input_budget", providerInvoked: false }; skipped[1].journal = { ...skipped[0].journal }; skipped[2].journal.rows.splice(1, 1); skipped[2].journal.operations = 2;
   expect(preparationIntegrity(skipped)).toBe(true);
 });
 
@@ -725,10 +729,10 @@ it("invalidates every configuration/eligibility skip rather than calling it degr
 it("allows a released non-invoked bootstrap row before the first real bootstrap", () => {
   const first = { pid: 10, valid: true, preserved: true, boundary: { verified: true },
     receipt: { status: "skipped", reason: "input_budget", providerInvoked: false, operationId: "released" },
-    journal: { operations: 0, released: 1, state: "released", bootstrap: 0, budget: "bootstrap", operationId: "released", selection: ["shared"] } };
+    journal: { operations: 0, released: 1, state: "released", bootstrap: 0, budget: "bootstrap", operationId: "released", selection: ["shared"], rows: [{ operationId: "released", state: "released", budget: "bootstrap", selection: ["shared"] }] } };
   const second = { pid: 11, valid: true, preserved: true, boundary: { verified: true },
     receipt: { status: "valid", reason: "completed", providerInvoked: true, operationId: "bootstrap" },
-    journal: { operations: 1, released: 1, state: "settled", bootstrap: 1, budget: "bootstrap", operationId: "bootstrap", selection: ["shared"] } };
+    journal: { operations: 1, released: 1, state: "terminal", bootstrap: 1, budget: "bootstrap", operationId: "bootstrap", selection: ["shared"], rows: [...first.journal.rows, { operationId: "bootstrap", state: "terminal", budget: "bootstrap", selection: ["shared"] }] } };
   expect(preparationIntegrity([first, second])).toBe(true);
   const invoked = structuredClone(first); invoked.receipt.providerInvoked = true;
   expect(preparationIntegrity([invoked])).toBe(false);
@@ -742,7 +746,7 @@ it("charges only the full reserve for a partial known-cost call and carries incl
   expect(addUsage(emptyUsage(), usage)).toMatchObject({ estimatedCostUsd: 0, conservativeCostUsd: 0.272384, unknownCostCalls: 1 });
 });
 
-it("reads released journal states and reserves bootstrap input again after a proven non-invocation", async () => {
+it.each(["released", "reserved"])("reconciles native journal rows after a %s pre-invocation bootstrap", async initialState => {
   const { DatabaseSync } = await import("node:sqlite");
   const { prepareLedgerCheckpoint } = await import("../lib/continuity-runner.mjs");
   const work = await scratch(), path = join(work, "journal.sqlite"), db = new DatabaseSync(path);
@@ -755,18 +759,86 @@ it("reads released journal states and reserves bootstrap input again after a pro
     conversation: { ToolHistoryReader: class { databasePath = path; ledger() {} } },
     app: { createConfiguredAgentRuntime: () => ({}), createConfiguredConversationHarness: async () => ({ run: async ({ onEvent }) => {
       const operationId = `operation-${++stage}`;
-      db.prepare("INSERT INTO continuity_upkeep_operations VALUES (?,?,?)").run(operationId, JSON.stringify({ budget: "bootstrap", progress: { spans: [{ key: "same-source" }] } }), stage === 1 ? "released" : "analyzed");
-      onEvent({ type: "continuity_upkeep", operationId, status: stage === 1 ? "skipped" : "valid", reason: stage === 1 ? "model_headroom" : "analyzed", providerInvoked: stage !== 1 }); return {};
+      db.prepare("UPDATE continuity_upkeep_operations SET state='released' WHERE state='reserved'").run();
+      db.prepare("INSERT INTO continuity_upkeep_operations VALUES (?,?,?)").run(operationId, JSON.stringify({ budget: stage < 3 ? "bootstrap" : "incremental", progress: { spans: [{ key: "same-source" }] } }), stage === 1 ? initialState : "terminal");
+      onEvent({ type: "continuity_upkeep", ...(stage === 1 && initialState === "reserved" ? {} : { operationId }), status: stage === 1 ? "skipped" : "valid", reason: stage === 1 ? initialState === "reserved" ? "ledger_scan_capacity" : "model_headroom" : "analyzed", providerInvoked: stage !== 1 }); return {};
     } }) },
   };
   const plan = { upkeep: { model: "fictional:base", maxInputTokens: 128000, incrementalMaxInputTokens: 64000, maxOutputTokens: 4096, callsPerTraceRepeat: 3 }, limits: { perLiveTurnTimeoutMs: 10000 } };
   try {
     const run = maxInputTokens => prepareLedgerCheckpoint({ modules, work, conversationId: "fictional", plan, step: { binding: "fictional:base", maxInputTokens }, mode: "real", reader: { reference: "fictional:base" }, scripted: { respondWith() {} }, clock: {} });
-    const first = await run(128000), second = await run(64000);
-    expect(first.journal).toMatchObject({ operations: 0, released: 1, bootstrap: 0, states: { released: 1 }, state: "released" });
+    const first = await run(128000);
+    expect(preparationInputReserve([first])).toBe(128000);
+    const second = await run(64000), third = await run(64000);
+    expect(first.journal).toMatchObject({ operations: 0, released: Number(initialState === "released"), reserved: Number(initialState === "reserved"), bootstrap: 0, states: { [initialState]: 1 }, state: initialState });
     expect(first.usage.calls).toBe(0);
-    expect(second.journal).toMatchObject({ operations: 1, released: 1, bootstrap: 1, states: { released: 1, analyzed: 1 }, budget: "bootstrap" });
+    expect(second.journal).toMatchObject({ operations: 1, released: 1, bootstrap: 1, states: { released: 1, terminal: 1 }, budget: "bootstrap" });
     expect(second.usage).toMatchObject({ estimatedInputTokens: 128000, conservativeInputTokens: 128000 });
-    expect(preparationIntegrity([first, second].map((step, i) => ({ ...step, pid: i + 100, boundary: { verified: true } })))).toBe(true);
+    expect(third.usage).toMatchObject({ conservativeInputTokens: 64000 });
+    expect(preparationIntegrity([first, second, third].map((step, i) => ({ ...step, pid: i + 100, boundary: { verified: true } })))).toBe(true);
   } finally { db.close(); }
+});
+
+
+// Inventory actual receipt-reason producers, not every exception/failure or scan diagnostic.
+function productReasonLiterals(source) {
+  const file = ts.createSourceFile("producer.ts", source, ts.ScriptTarget.Latest, true), reasons = new Set();
+  const values = node => {
+    if (!node) return;
+    if (ts.isStringLiteralLike(node)) reasons.add(node.text);
+    else if (ts.isConditionalExpression(node)) { values(node.whenTrue); values(node.whenFalse); }
+    else if (ts.isParenthesizedExpression(node)) values(node.expression);
+    else if (ts.isBinaryExpression(node)) { values(node.left); values(node.right); }
+    else if (ts.isArrayLiteralExpression(node)) node.elements.forEach(values);
+    else if (ts.isUnionTypeNode(node)) node.types.forEach(values);
+    else if (ts.isLiteralTypeNode(node)) values(node.literal);
+  };
+  const visit = node => {
+    if (ts.isVariableDeclaration(node) && node.name.getText(file) === "skip") values(node.initializer);
+    if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken && node.left.getText(file) === "localSkip") values(node.right);
+    if (ts.isVariableDeclaration(node) && node.name.getText(file) === "NON_INVOCATION") values(node.initializer?.arguments?.[0]);
+    if (ts.isCallExpression(node) && node.expression.getText(file) === "result") values(node.arguments[1]);
+    if (ts.isPropertySignature(node) && node.name.getText(file) === "reason") values(node.type);
+    if (ts.isPropertyAssignment(node) && node.name.getText(file) === "reason") {
+      const eventType = node.parent.properties.find(p => p.name?.getText(file) === "type")?.initializer;
+      if (!eventType || ts.isStringLiteral(eventType) && eventType.text === "continuity_upkeep") values(node.initializer);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(file); return reasons;
+}
+it("partitions every product-emitted non-success reason exactly once and rejects producer drift", async () => {
+  const files = ["packages/conversation/src/continuity/upkeep.ts", "packages/conversation/src/continuity/admission.ts", "packages/conversation/src/continuity/ledger.ts", "packages/turn/src/execution/pi/continuity-upkeep.ts"];
+  const reasons = new Set();
+  for (const file of files) for (const reason of productReasonLiterals(await readFile(join(root, file), "utf8"))) reasons.add(reason);
+  const degraded = new Set(["input_budget", "model_headroom", "ledger_scan_capacity", "ledger_render_budget", "ledger_payload_budget", "ledger_lineage_budget", "ledger_aggregate_capacity", "ledger_quota_budget", "source_oversized", "upkeep_dispatch_rejected", "upkeep_repeat_suppressed", "already_covered", "unchanged", "no_source", "output_aborted", "aborted", "provider_output", "empty_output", "validation_or_publication", "input_overrun", "output_overrun", "unavailable", "dispatch_or_outcome_unacknowledged"]);
+  const integrity = new Set(["disabled", "continuation_boundary", "history_unavailable", "per_message", "isolated", "unowned_store", "detached_attempt", "trigger_headroom", "ledger_integrity", "read_only", "model_unavailable", "model_identity", "cap_unsupported"]);
+  const success = new Set(["completed", "analyzed"]);
+  expect(reasons.size).toBeGreaterThan(30);
+  for (const reason of reasons) {
+    if (success.has(reason)) { expect(preparationDisposition({ reason, status: "valid", providerInvoked: true })).toBe("applied"); continue; }
+    expect(Number(degraded.has(reason)) + Number(integrity.has(reason)), reason).toBe(1);
+    const status = reason === "dispatch_or_outcome_unacknowledged" ? "uncertain" : "skipped";
+    expect(preparationDisposition({ reason, status, providerInvoked: true }), reason).toBe(degraded.has(reason) ? "degraded" : "integrity");
+  }
+  expect(preparationDisposition({ reason: "unavailable", status: "skipped", providerInvoked: false })).toBe("integrity");
+  expect(preparationDisposition({ reason: "dispatch_or_outcome_unacknowledged", status: "skipped", providerInvoked: true })).toBe("integrity");
+  const introduced = productReasonLiterals('const skip = condition ? "brand_new_reason" : undefined; const receipt = {reason: "another_reason"};');
+  expect([...introduced].filter(r => !success.has(r) && !degraded.has(r) && !integrity.has(r))).toEqual(["brand_new_reason", "another_reason"]);
+});
+
+it("reconciles a never-acknowledged reservation released by a later claim without consuming bootstrap or offers", () => {
+  const pending = { operationId: "unacknowledged", state: "reserved", budget: "bootstrap", selection: ["shared"] };
+  const first = { pid: 20, valid: true, preserved: true, boundary: { verified: true }, receipt: { status: "skipped", reason: "ledger_scan_capacity", providerInvoked: false }, journal: { rows: [pending], operations: 0, reserved: 1, released: 0, bootstrap: 0, ...pending } };
+  const boot = { operationId: "actual", state: "terminal", budget: "bootstrap", selection: ["shared"] };
+  const second = { pid: 21, valid: true, preserved: true, boundary: { verified: true }, receipt: { status: "valid", reason: "analyzed", providerInvoked: true, operationId: "actual" }, journal: { rows: [{ ...pending, state: "released" }, boot], operations: 1, reserved: 0, released: 1, bootstrap: 1, ...boot } };
+  const incremental = { operationId: "next", state: "terminal", budget: "incremental", selection: ["shared"] };
+  const third = { ...second, pid: 22, receipt: { ...second.receipt, operationId: "next" }, journal: { rows: [...second.journal.rows, incremental], operations: 2, reserved: 0, released: 1, bootstrap: 1, ...incremental } };
+  expect(preparationIntegrity([first, second, third])).toBe(true); // Only two dispatched offers, not three.
+  expect(preparationInputReserve([first])).toBe(128000); // Lost stage 2 acknowledgement cannot under-reserve 64k.
+  expect(preparationUsage({ providerInvoked: true }, preparationInputReserve([first]), { input: 2, output: 4 })).toMatchObject({ conservativeInputTokens: 128000, conservativeCostUsd: 0.272384 });
+  expect(preparationInputReserve([first, second])).toBe(64000);
+  for (const mutate of [x => { x[1].journal.rows[0].operationId = "replacement"; }, x => { x[1].journal.rows[1].budget = "incremental"; }, x => { x[1].journal.rows.push({ ...boot }); }, x => { x[2].journal.rows[1].state = "released"; }]) {
+    const bad = structuredClone([first, second, third]); mutate(bad); expect(preparationIntegrity(bad)).toBe(false);
+  }
 });
