@@ -898,8 +898,11 @@ permission to erase oversized evidence or cold-fallback after switch intent.
 
 Enabled host upkeep requires an explicit `recorderNamespace`; disabled upkeep
 may omit it. Accounting recovery runs independently of admission replies with
-bounded batches, timed retries and one-shot process warnings. Terminal failed
-rows are capped at 128 and reclaimed with their operation. Export metadata uses
+bounded batches and timed retries. Pending work is diagnostic-only, not a warning;
+readiness warns once per process about terminal failures or counted evidence loss.
+Metadata-write failures back off exponentially from one second to 60 seconds.
+Terminal failed rows are capped at 128 and reclaimed with their operation, with
+loss counted before removal. Export metadata uses
 the same secure-journal transaction as ordinary history writes; close abandons
 queued work and bounds the in-flight wait, leaving durable evidence for recovery.
 

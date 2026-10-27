@@ -23,7 +23,11 @@ if (mode === "parked") {
   await bounded(parked); assert.equal(await bounded(dispatch), null);
   assert.ok(secureWrites > 0); // includes the durable pre-I/O attempt inside mode-600 journal
   assert.equal(await bounded(writer.mutateUpkeep({ kind: "outcome", reservation: r, receipt: receipt(r) })), null);
-  const start = performance.now(); await writer.close(); assert.ok(performance.now() - start < 3000);
+  const replay = writer.replayUpkeepAccounting().then(() => "resolved", error => error.code);
+  await writer.stats(); // round-trip proves replay was admitted while its exporter remains parked
+  const start = performance.now(), closing = writer.close();
+  assert.equal(await bounded(replay), "history_writer_closed");
+  await closing; assert.ok(performance.now() - start < 3000);
   const ownerDb = new DatabaseSync(join(root, ".locks", TOOL_HISTORY_OWNER_DATABASE), { readOnly: true });
   assert.equal(ownerDb.prepare("SELECT count(*) n FROM writer_owner").get().n, 0); ownerDb.close();
   console.log(JSON.stringify({ dispatch: true, outcome: true, ownerReleased: true, secureWrites: true }));

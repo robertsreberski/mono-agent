@@ -419,17 +419,21 @@ failures are terminal degraded records, not startup work. Transient I/O failures
 retry at most three times with exponential backoff starting at one second;
 recovery batches are capped at 32 rows. Due recovery continues in cooperative
 200 ms slices independently of readiness. An unreferenced timer services later
-retries and is cancelled on close. Mutation exports target their own queued phase
-before sweeping other due work, independently of admission replies. A not-yet-written origin
-stays pending within those retry bounds. Only an origin durably observed and then
+retries and is cancelled on close. Failed metadata-write slices back off from one
+second exponentially up to 60 seconds, even when new work is scheduled. Mutation
+exports target their own queued phase before sweeping other due work,
+independently of admission replies. A not-yet-written origin stays pending within those retry bounds. Only an origin durably observed and then
 removed is pruned. Invalid or non-normalized recorder namespaces are rejected
 before admission and reported as a one-shot `namespace_invalid` configuration
 warning, not a permanent row for every boundary. Enabled host upkeep requires an
 explicit namespace at the type boundary too. Accounting warnings are deduplicated
 per process. Failed rows are removed when their operation is gone, and capped at
-128 oldest-first, with content-free eviction counts. Pending diagnostics include
-never-attempted rows. All metadata writes use the secure journal transaction and
-busy deadline. Close skips queued jobs and bounds the in-flight export wait to at
+128 oldest-first, with content-free loss counts recorded before either kind of
+reclamation. Readiness warns only about terminal failures or counted loss.
+Pending and never-attempted rows, including transient exports, are diagnostics-only
+and recover without warnings. An actual metadata transaction failure is reported
+once, separately from normal pending work. All metadata writes use the secure
+journal transaction and busy deadline. Close skips queued jobs and bounds the in-flight export wait to at
 most one second (less if the host's remaining close budget requires it), leaving
 durable work for recovery before releasing ownership.
 `RunHistory` inspection surfaces applicable degraded artifact warnings too.

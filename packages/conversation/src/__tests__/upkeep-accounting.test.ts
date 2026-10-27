@@ -50,7 +50,7 @@ it("keeps failed exports pending and visible, then recovers delayed exports with
   try {
     f.mutate({ kind: "dispatch", reservation: f.r });
     const exporter = vi.fn(async () => { throw Object.assign(new Error("synthetic I/O failure"), { code: "EACCES" }); });
-    expect(await replayUpkeepAccounting(f.db, { exporter, now: () => 0 })).toBe(1);
+    expect(await replayUpkeepAccounting(f.db, { exporter, now: () => 0 })).toBe(0);
     expect(f.db.prepare("SELECT exported,error FROM continuity_upkeep_accounting").get()).toEqual({ exported: null, error: "export_io" });
     expect(await replayUpkeepAccounting(f.db, { now: () => 1000 })).toBe(0);
     const next = createJsonlRunRecorder({ artifactDir: f.artifactDir, runId: "next", conversationId: "fictional" }); await next.start!(); await next.finish({});
@@ -173,7 +173,7 @@ it("durably distinguishes an unwritten origin from one observed and later pruned
     f.mutate({ kind: "dispatch", reservation: f.r });
     const path = join(f.artifactDir, "origin.summary.json"), summary = await readFile(path, "utf8");
     await rm(path);
-    expect(await replayUpkeepAccounting(f.db, { now: () => 0 })).toBe(1);
+    expect(await replayUpkeepAccounting(f.db, { now: () => 0 })).toBe(0);
     expect(f.db.prepare("SELECT exported,error,origin_seen FROM continuity_upkeep_accounting").get()).toEqual({ exported: null, error: "origin_pending", origin_seen: 0 });
     await writeFile(path, summary);
     expect(await replayUpkeepAccounting(f.db, { now: () => 1000 })).toBe(0);
@@ -207,7 +207,7 @@ it("bounds never-written origins without ever acknowledging them as pruned", asy
   } finally { await f.recorder.finish({}); f.db.close(); }
 });
 
-it("caps failed evidence oldest-first, counts evictions, and deletes reported orphan failures", async () => {
+it("caps failed evidence oldest-first and counts orphan failure reclamation", async () => {
   const f = await memory();
   try {
     for (let i = 0; i < 200; i++) {
@@ -219,10 +219,10 @@ it("caps failed evidence oldest-first, counts evictions, and deletes reported or
     expect(upkeepAccountingDiagnostics(f.db)).toEqual({ pending: 0, failed: 128, evicted: 72 });
     expect(f.db.prepare("SELECT operation_id FROM continuity_upkeep_accounting ORDER BY rowid LIMIT 1").get()).toEqual({ operation_id: "failed-72" });
     writeFor(f.db)(() => resetUpkeep(f.db, "logical", f.r.logicalId));
-    expect(upkeepAccountingDiagnostics(f.db)).toEqual({ pending: 0, failed: 0, evicted: 72 });
+    expect(upkeepAccountingDiagnostics(f.db)).toEqual({ pending: 0, failed: 0, evicted: 200 });
   } finally { await f.recorder.finish({}); f.db.close(); }
 });
-it("continues recovery beyond one batch and counts never-attempted rows as pending", async () => {
+it("drains overflowed recovery batches with pending diagnostics but no degradation warning", async () => {
   const f = await memory(), exporter = vi.fn(async () => "exported" as const);
   try {
     for (let i = 0; i < 81; i++) {
@@ -230,8 +230,9 @@ it("continues recovery beyond one batch and counts never-attempted rows as pendi
       f.db.prepare("INSERT INTO continuity_upkeep_accounting(operation_id,phase,payload) VALUES (?,'dispatch',?)").run(a.operationId, JSON.stringify(a));
     }
     expect(upkeepAccountingDiagnostics(f.db).pending).toBe(81);
-    const queue = createUpkeepAccountingExportQueue(f.db, vi.fn(), { exporter, write: writeFor(f.db) });
-    queue.schedule(); await queue.flush(); await queue.close();
+    const notice = vi.fn(), queue = createUpkeepAccountingExportQueue(f.db, notice, { exporter, write: writeFor(f.db) });
+    for (let i = 0; i < 81; i++) queue.schedule({ operationId: `pending-${i}`, phase: "dispatch" });
+    await queue.flush(); await queue.close(); expect(notice).not.toHaveBeenCalled();
     expect(exporter).toHaveBeenCalledTimes(81); expect(upkeepAccountingDiagnostics(f.db).pending).toBe(0);
   } finally { await f.recorder.finish({}); f.db.close(); }
 });
@@ -293,4 +294,40 @@ it("sweeps due untargeted rows after a targeted job instead of waiting for resta
     queue.schedule({ operationId: "unrelated-target", phase: "dispatch" }); await queue.flush();
     expect(exporter).toHaveBeenCalledTimes(1); expect(upkeepAccountingDiagnostics(f.db).pending).toBe(0);
   } finally { await queue.close(); await f.recorder.finish({}); f.db.close(); }
+});
+
+it.each(["schema", "attempt"])("backs off persistent %s write failures without repeated notifications", async mode => {
+  const f = await memory(); f.mutate({ kind: "dispatch", reservation: f.r }); vi.useFakeTimers();
+  const fail = vi.fn((): never => { throw Object.assign(new Error("synthetic metadata failure"), { code: "SQLITE_READONLY" }); });
+  if (mode === "attempt") {
+    const prepare = f.db.prepare.bind(f.db);
+    vi.spyOn(f.db, "prepare").mockImplementation(sql => {
+      const statement = prepare(sql);
+      if (sql.startsWith("UPDATE continuity_upkeep_accounting SET attempts=")) vi.spyOn(statement, "run").mockImplementation(fail);
+      return statement;
+    });
+  }
+  const write = mode === "schema" ? <T>(_operation: () => T): T => fail() : writeFor(f.db);
+  const notice = vi.fn(), exporter = vi.fn(async () => "exported" as const);
+  const queue = createUpkeepAccountingExportQueue(f.db, notice, { exporter, write });
+  try {
+    queue.schedule(); await queue.flush(); expect(fail).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(2000); expect(fail).toHaveBeenCalledTimes(2);
+    for (let i = 0; i < 10; i++) { queue.schedule(); await queue.flush(); }
+    expect(fail).toHaveBeenCalledTimes(2); // new schedules cannot bypass the failed-slice backoff
+    await vi.advanceTimersByTimeAsync(1000); expect(fail).toHaveBeenCalledTimes(3);
+    expect(notice).toHaveBeenCalledTimes(1); expect(exporter).not.toHaveBeenCalled();
+    expect(f.db.prepare("SELECT attempts,error FROM continuity_upkeep_accounting").get()).toEqual({ attempts: 0, error: null });
+  } finally { await queue.close(); vi.restoreAllMocks(); vi.useRealTimers(); await f.recorder.finish({}); f.db.close(); }
+});
+it("keeps transient pending evidence diagnostic-only until a terminal failure", async () => {
+  const f = await memory(); f.mutate({ kind: "dispatch", reservation: f.r }); vi.useFakeTimers();
+  const notice = vi.fn(), queue = createUpkeepAccountingExportQueue(f.db, notice, { write: writeFor(f.db), exporter: async () => "pending" });
+  try {
+    queue.schedule(); await queue.flush(); expect(notice).not.toHaveBeenCalled();
+    expect(upkeepAccountingDiagnostics(f.db).pending).toBe(1);
+    await vi.advanceTimersByTimeAsync(1000); expect(notice).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(2000); expect(notice).toHaveBeenCalledTimes(1);
+    expect(upkeepAccountingDiagnostics(f.db)).toEqual({ pending: 0, failed: 1, evicted: 0 });
+  } finally { await queue.close(); vi.useRealTimers(); await f.recorder.finish({}); f.db.close(); }
 });

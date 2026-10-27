@@ -116,8 +116,11 @@ Transient failures have three attempts with exponential backoff (starting at one
 second), and recovery batches contain at most 32 rows. They then become terminal
 failures, never zero cost. The host services due batches and timed retries without
 blocking readiness. Failed rows are bounded to 128, evicted oldest-first with a
-content-free count, and removed once their operation is gone. Host warnings are
-one-shot per process; an invalid namespace does not add a row per boundary.
+content-free loss count, and removed once their operation is gone. Orphan failure
+loss is counted before removal too. Normal pending work is diagnostic-only;
+readiness warnings cover terminal failures and counted loss, once per process.
+An invalid namespace does not add a row per boundary. Metadata-write failures
+back off exponentially from one second to 60 seconds and are reported once.
 Export I/O runs separately from admission replies and has a bounded close drain;
 all outbox writes use the host's secure journal transaction.
 These degradation diagnostics also appear as artifact warnings in `RunHistory`

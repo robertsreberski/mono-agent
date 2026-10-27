@@ -382,7 +382,7 @@ export class ToolHistoryWriter {
   private warnAccountingOnce(): void {
     if (accountingWarningReported || !this.onWarning) return;
     accountingWarningReported = true;
-    this.warnOnce("upkeep_accounting_degraded", "Upkeep accounting degraded: durable exports are pending or failed, or recorder configuration is invalid.");
+    this.warnOnce("upkeep_accounting_degraded", "Upkeep accounting degraded: exports failed, evidence was evicted, or recorder configuration is invalid.");
   }
 
   private handleResponse(response: WorkerResponse): void {

@@ -29,6 +29,8 @@
   before admission, and include upkeep cache categories in benchmark spend gates.
   Deduplicate degradation notices, bound failed evidence, service timed retries,
   and keep secure-journal writes and graceful ownership release during shutdown.
+  Back off storage-write failures, keep recoverable pending work warning-free,
+  and acknowledge active recovery requests before closing the writer.
 
 - Add separate, content-free continuity upkeep accounting with durable journal
   recovery, immutable per-operation companions and origin-run retention. Keep

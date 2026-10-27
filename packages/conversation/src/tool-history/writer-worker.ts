@@ -156,6 +156,7 @@ if (owner === undefined || database === undefined) {
 if (parentPort === null) throw new Error("Tool history writer requires a parent port.");
 
 let closed = false;
+const accountingReplayRequests = new Set<number>();
 const accountingExports = createUpkeepAccountingExportQueue(database, count => {
   if (count) respond(0, { accountingDegraded: count });
 }, { write: operation => transaction(database, operation) });
@@ -171,8 +172,13 @@ parentPort.on("message", (request: WorkerRequest) => {
       if (continuityEnabled) continuityPurgeBlocked = applyPendingContinuityPurges(database);
       switch (request.operation) {
         case "upkeep_accounting_replay":
+          accountingReplayRequests.add(request.id);
           accountingExports.schedule();
-          void accountingExports.flush().then(() => { if (!closed) respond(request.id, upkeepAccountingDegradation(database)); });
+          void accountingExports.flush().then(() => {
+            if (accountingReplayRequests.delete(request.id)) respond(request.id, upkeepAccountingDegradation(database));
+          }).catch(() => {
+            if (accountingReplayRequests.delete(request.id)) respondError(request.id, "history_write_failed", "Upkeep accounting replay failed.");
+          });
           break;
         case "ready":
           respond(request.id, { schema: TOOL_HISTORY_SCHEMA, recovered: statValue(database, "recovered_calls"), accountingDegraded: upkeepAccountingDegradation(database), accountingDiagnostics: upkeepAccountingDiagnostics(database) });
@@ -312,6 +318,10 @@ parentPort.on("message", (request: WorkerRequest) => {
         case "close":
           {
             closed = true;
+            for (const id of accountingReplayRequests) {
+              try { respondError(id, "history_writer_closed", "Tool history writer is closing."); } catch { /* cleanup must still release ownership */ }
+            }
+            accountingReplayRequests.clear();
             const deadline = Number((request.payload as { deadlineMs?: number } | undefined)?.deadlineMs ?? Date.now() + 1_500);
             const exportsClosing = accountingExports.close(Math.max(0, Math.min(1_000, deadline - Date.now() - 500)));
             const closeErrors: unknown[] = [];
