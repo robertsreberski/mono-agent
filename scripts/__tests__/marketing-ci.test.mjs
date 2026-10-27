@@ -14,7 +14,7 @@ describe("marketing CI contract", () => {
     expect(marketing).toEqual({
       name: "Marketing",
       "runs-on": "ubuntu-latest",
-      "timeout-minutes": 20,
+      "timeout-minutes": 40,
       defaults: { run: { "working-directory": "marketing" } },
       steps: [
         { name: "Checkout", uses: "actions/checkout@v4" },
@@ -25,7 +25,11 @@ describe("marketing CI contract", () => {
         },
         { name: "Install pinned pnpm", run: "npm install --global pnpm@11.18.0" },
         { name: "Install marketing dependencies", run: "pnpm install --frozen-lockfile" },
-        { name: "Install Chromium", run: "pnpm exec playwright install --with-deps chromium" },
+        {
+          name: "Install Chromium",
+          uses: "./.github/actions/install-chromium",
+          with: { directory: "marketing" },
+        },
         {
           name: "Build marketing site (astro build -> check-links)",
           run: "pnpm run build",

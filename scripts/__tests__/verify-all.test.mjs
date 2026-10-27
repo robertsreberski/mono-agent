@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 
 import { describe, expect, it } from "vitest";
@@ -261,18 +262,25 @@ describe("verify-all", () => {
     const releaseDryRun = workflow.jobs["release-dry-run"];
     const verdict = workflow.jobs.verdict;
 
-    expect(webappBrowser.name).toBe("Webapp browser");
-    expect(webappBrowser.defaults.run["working-directory"]).toBe("packages/web/webapp");
-    expect(webappBrowser.steps.map((step) => step.name)).toEqual([
-      "Checkout",
-      "Setup Node",
-      "Install pinned pnpm",
-      "Install webapp dependencies",
-      "Build web console Storybook",
-      "Install Chromium",
-      "Test webapp in Chromium",
-    ]);
-    expect(webappBrowser.steps.at(-1).run).toBe("pnpm run test:browser");
+    expect(webappBrowser).toEqual({
+      name: "Webapp browser",
+      "runs-on": "ubuntu-latest",
+      "timeout-minutes": 40,
+      defaults: { run: { "working-directory": "packages/web/webapp" } },
+      steps: [
+        { name: "Checkout", uses: "actions/checkout@v4" },
+        { name: "Setup Node", uses: "actions/setup-node@v4", with: { "node-version": "24" } },
+        { name: "Install pinned pnpm", run: "npm install --global pnpm@11.18.0" },
+        { name: "Install webapp dependencies", run: "pnpm install --frozen-lockfile" },
+        { name: "Build web console Storybook", run: "pnpm run build-storybook" },
+        {
+          name: "Install Chromium",
+          uses: "./.github/actions/install-chromium",
+          with: { directory: "packages/web/webapp" },
+        },
+        { name: "Test webapp in Chromium", run: "pnpm run test:browser" },
+      ],
+    });
 
     expect(releaseDryRun.name).toBe("Release dry run");
     expect(releaseDryRun.if).toBe("github.event_name == 'pull_request'");
@@ -289,6 +297,77 @@ describe("verify-all", () => {
     expect(verdict.steps[0].run).toContain("CI VERDICT: GREEN");
     expect(verdict.steps[0].run).toContain("CI VERDICT: FAILED");
     expect(Object.values(workflow.jobs).filter((job) => job.name === "Required verdict")).toHaveLength(1);
+  });
+
+  it("caches apt archives without dropping Playwright system dependencies", () => {
+    const action = readInstallChromiumAction();
+    expect(action.inputs.directory.required).toBe(true);
+    expect(action.runs.using).toBe("composite");
+    expect(action.runs.steps).toHaveLength(4);
+    const [key, restore, install, save] = action.runs.steps;
+    expect(key.id).toBe("key");
+    for (const step of [key, install]) {
+      expect(step.shell).toBe("bash");
+      // Job defaults do not propagate to a composite action.
+      expect(step["working-directory"]).toBe("${{ inputs.directory }}");
+      const syntax = spawnSync("bash", ["-n"], { input: step.run, encoding: "utf8" });
+      expect({ status: syntax.status, stderr: syntax.stderr }).toEqual({ status: 0, stderr: "" });
+    }
+    const cache = {
+      path: "${{ runner.temp }}/playwright-debs",
+      key: "${{ steps.key.outputs.cache-key }}",
+    };
+    expect(restore).toEqual({
+      name: "Restore apt archives", id: "restore", uses: "actions/cache/restore@v4",
+      "continue-on-error": true, with: cache,
+    });
+    expect(install.id).toBe("install");
+    expect(install.env).toEqual({ DEB_CACHE: cache.path });
+    expect(install.run).toContain("set -euo pipefail");
+    expect(install.run).toContain("shopt -s nullglob");
+    expect(install.run).toContain("sudo rm -f /etc/apt/apt.conf.d/docker-clean");
+    expect(install.run).toContain('APT::Keep-Downloaded-Packages "true";');
+    expect(install.run).toContain('Binary::apt-get::APT::Keep-Downloaded-Packages "true";');
+    const restoreCommand = 'sudo cp "${restored[@]}" /var/cache/apt/archives/';
+    const installCommand = "pnpm exec playwright install --with-deps chromium";
+    const collectCommand = 'cp "${collected[@]}" "$DEB_CACHE/"';
+    expect(install.run).toContain(restoreCommand);
+    expect(install.run).toContain(installCommand);
+    expect(install.run).toContain(collectCommand);
+    expect(install.run.indexOf(restoreCommand)).toBeLessThan(install.run.indexOf(installCommand));
+    expect(install.run.indexOf(installCommand)).toBeLessThan(install.run.indexOf(collectCommand));
+    expect(install.run).toContain('echo "Restored ${#restored[@]} apt archives');
+    expect(install.run).toContain('echo "Collected ${#collected[@]} apt archives');
+    expect(install.run).toContain('echo "has-debs=true" >> "$GITHUB_OUTPUT"');
+    expect(save).toEqual({
+      name: "Save apt archives", uses: "actions/cache/save@v4", "continue-on-error": true,
+      if: "steps.restore.outputs.cache-hit != 'true' && steps.install.outputs.has-debs == 'true'",
+      with: cache,
+    });
+  });
+
+  it.each([
+    ["website CLI", "ubuntu24", "20261025.1", "X64", "Version 1.61.1", "pw-debs-v1-ubuntu24-20261025.1-X64-1.61.1"],
+    ["marketing/webapp CLI", "ubuntu24", "20261025.1", "X64", "Version 1.63.0", "pw-debs-v1-ubuntu24-20261025.1-X64-1.63.0"],
+    ["different runner image/arch", "ubuntu26", "20261027.2", "ARM64", "Version 1.63.0", "pw-debs-v1-ubuntu26-20261027.2-ARM64-1.63.0"],
+    ["missing ImageOS", "", "20261025.1", "X64", "Version 1.63.0", null],
+    ["missing ImageVersion", "ubuntu24", "", "X64", "Version 1.63.0", null],
+    ["missing architecture", "ubuntu24", "20261025.1", "", "Version 1.63.0", null],
+    ["unexpected CLI output", "ubuntu24", "20261025.1", "X64", "not a version", null],
+  ])("keys apt archives by the installed CLI and hosted image: %s", (_label, ImageOS, ImageVersion, RUNNER_ARCH, version, expected) => {
+    const script = readInstallChromiumAction().runs.steps[0].run;
+    const result = spawnSync("bash", ["-c", 'pnpm() { printf "%s\\n" "$TEST_CLI_VERSION"; };\n' + script], {
+      encoding: "utf8",
+      env: { PATH: process.env.PATH, ImageOS, ImageVersion, RUNNER_ARCH, TEST_CLI_VERSION: version, GITHUB_OUTPUT: "/dev/stdout" },
+    });
+    if (expected === null) {
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toMatch(/required|Unexpected Playwright CLI version/u);
+      expect(result.stdout).toBe("");
+    } else {
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toBe(`cache-key=${expected}\n`);
+    }
   });
 
   it("rejects deleting, moving, or changing the pnpm policy gate", () => {
@@ -1606,4 +1685,11 @@ function sink() {
       return true;
     },
   };
+}
+
+function readInstallChromiumAction() {
+  const source = readFileSync(new URL("../../.github/actions/install-chromium/action.yml", import.meta.url), "utf8");
+  const document = parseDocument(source, { merge: false, strict: true, uniqueKeys: true, version: "1.2" });
+  expect([...document.errors, ...document.warnings]).toEqual([]);
+  return document.toJS({ mapAsMap: false });
 }
