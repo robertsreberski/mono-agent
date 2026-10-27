@@ -10,6 +10,12 @@ capability. `AGENT_CONTEXT_IMPORT_VERSION` and the shared 32 KiB text, 512-byte
 idempotency-key, and 4096-byte conversation-id limits define legal programmatic
 requests; legacy `deliverVerbatim` support never implies this capability.
 
+`AgentUpkeepAccounting` v1 is a closed, content-free, non-aggregate accounting
+envelope (`usageIncluded:false`). Its parser rejects invalid counters and its
+merge helper rejects conflicting operation/origin/model/budget identities.
+Dispatch uncertainty and terminal results have distinct immutable phases; results
+win independently of arrival order. Token counters and cost may remain null.
+
 ## Category
 
 <!-- package-metadata:start -->
@@ -345,6 +351,7 @@ AgentStreamWireFrame
 AgentSurface
 AgentSurfaceMessageBudget
 AgentToolEnvironment
+AgentUpkeepAccounting
 BoundedHttpResponseWriter
 BufferedMessageStream
 ChannelAskAnswer
@@ -529,11 +536,13 @@ isWildcardHost
 layerJsonOntoEnv
 listen
 markSilentTurnAlreadyVisible
+mergeAgentUpkeepAccounting
 normalizeHostForBind
 normalizeOptionalString
 normalizeProcessJobSubagentUsage
 normalizeTrailing
 parseAgentStreamFrame
+parseAgentUpkeepAccounting
 parseCronOperatorJob
 parseCronOperatorOverview
 parseCronOperatorRunDetail

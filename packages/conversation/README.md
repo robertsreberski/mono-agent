@@ -22,6 +22,13 @@ Catalog responsibility: Composes prompt context, selected skills, runtime, memor
 
 Composition spine for an agent request. It turns a communication request into context, calls a runtime, records structured run events, updates optional memory, and returns explicit success or failure responses.
 
+Continuity upkeep's fenced operation journal also owns a transactional,
+content-free accounting outbox. Dispatch and result evidence exports to the
+originating run's recorder namespace before receipt telemetry, and pending
+exports replay on writer recovery even when continuity/upkeep is disabled.
+Startup discovery with no pending journal work is read-only and invokes no
+provider. Retention never pins source records or recreates pruned run artifacts.
+
 ## Install / Usage
 
 ```bash

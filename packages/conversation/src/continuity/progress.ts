@@ -170,6 +170,7 @@ export function representProgress(db: DatabaseSync, generation: LedgerGeneration
 export function upkeepBytes(db: DatabaseSync): number {
   let bytes = 0;
   for (const [table, columns, fixed] of [
+    ["continuity_upkeep_accounting", "operation_id,phase,payload,exported,error", 64],
     ["continuity_upkeep_operations", "operation_id,logical_id,conversation_id,incarnation,owner_token,reservation,selection_key,budget,state,outcome", 72],
     ["continuity_upkeep_offers", "logical_id,conversation_id,incarnation,span_key,source_digest,operation_id,state,ledger_id", 104],
     ["continuity_upkeep_progress", "logical_id,conversation_id,incarnation,cursor", 64],

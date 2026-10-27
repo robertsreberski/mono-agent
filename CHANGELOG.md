@@ -24,6 +24,11 @@
   downgrade, and preserve identifier roles with bounded, verified cited context.
   Integrity errors still reject the whole response; upkeep remains opt-in.
 
+- Add separate, content-free continuity upkeep accounting with durable journal
+  recovery, immutable per-operation companions and origin-run retention. Keep
+  cache categories and unknown usage distinct; existing run/session totals remain
+  inference-only and upkeep remains disabled by default.
+
 - Rank complete bounded history scans for opt-in continuity upkeep, greedily fit
   cited-only ledger deltas, and allow valid uncited evidence one remaining offer
   within the shared two-offer ceiling. Keep scan exhaustion zero-call and the

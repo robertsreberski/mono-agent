@@ -288,7 +288,7 @@ it("resets a legacy admission scope before any progress tables exist, without en
 });
 
 it("allows a bounded reservation and terminal receipt through the same worker transport envelope", async () => {
-  const f = await fixture(), r = { ...reservation(await f.claim("owner")), recorderNamespace: "n".repeat(80000) };
+  const f = await fixture(), r = { ...reservation(await f.claim("owner")), transportPadding: "n".repeat(80000) };
   await f.mutate({ kind: "reserve", reservation: r }); await f.mutate({ kind: "dispatch", reservation: r });
   await f.mutate({ kind: "outcome", reservation: r, receipt: receipt(r) });
   expect(f.db.prepare("SELECT state FROM continuity_upkeep_operations").get()).toEqual({ state: "terminal" });

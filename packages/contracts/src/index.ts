@@ -351,3 +351,6 @@ export type { AgentResponseCancelledErrorOptions } from "./cancellation.js";
 
 export { isAgentCompactionAccounting } from "./compaction-accounting.js";
 export type { AgentCompactionAccounting } from "./compaction-accounting.js";
+
+export { parseAgentUpkeepAccounting, mergeAgentUpkeepAccounting } from "./upkeep-accounting.js";
+export type { AgentUpkeepAccounting } from "./upkeep-accounting.js";

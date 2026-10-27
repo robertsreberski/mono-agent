@@ -1,3 +1,4 @@
+import { createUpkeepAccountingSchema, replayUpkeepAccounting } from "../continuity/accounting-outbox.js";
 import { LedgerError } from "../continuity/ledger-error.js";
 import { mutateUpkeep, resetUpkeep, assertUpkeepPublication, type UpkeepMutation, type UpkeepReservation } from "../continuity/admission.js";
 import { publishLedger } from "../continuity/ledger-storage.js";
@@ -123,12 +124,14 @@ try {
   throw error;
 }
 
+let accountingDegraded = 0;
 let owner: { release(): void } | undefined;
 let database: DatabaseSync | undefined;
 try {
   owner = await acquireOwner(ownerPath, ownerAcquireCeilingMs);
   assertToolDirectoryEntries();
   database = openContentDatabase(databasePath, retention, artifactRoot);
+  accountingDegraded = await replayUpkeepAccounting(database);
   closeDangling(database, undefined, "interrupted", "process_death", "recovered_after_writer_restart", true);
   applyRetention(database, retention);
   const recoveredDatabase = database;
@@ -165,8 +168,12 @@ parentPort.on("message", (request: WorkerRequest) => {
       // Also service intents created after this writer acquired its owner.
       if (continuityEnabled) continuityPurgeBlocked = applyPendingContinuityPurges(database);
       switch (request.operation) {
+        case "upkeep_accounting_replay":
+          accountingDegraded = await replayUpkeepAccounting(database);
+          respond(request.id, accountingDegraded);
+          break;
         case "ready":
-          respond(request.id, { schema: TOOL_HISTORY_SCHEMA, recovered: statValue(database, "recovered_calls") });
+          respond(request.id, { schema: TOOL_HISTORY_SCHEMA, recovered: statValue(database, "recovered_calls"), accountingDegraded });
           break;
         case "enable_continuity":
           transaction(database, () => {
@@ -238,7 +245,8 @@ parentPort.on("message", (request: WorkerRequest) => {
             }
             throw error;
           }
-          respond(request.id, result ?? null);
+          if (request.operation === "continuity_upkeep") accountingDegraded = await replayUpkeepAccounting(database);
+          respond(request.id, accountingDegraded > 0 && request.operation === "continuity_upkeep" ? { ...((result ?? {}) as object), accountingDegraded: true } : result ?? null);
           break;
         }
         case "invocation":
@@ -922,6 +930,10 @@ function openContentDatabase(
   // It must commit before the later artifact-root guard can reject startup.
   if (continuityEnabled) {
     assertContentIntegrity(database, "quick_check");
+    // Snapshot legacy billing evidence before an explicit reset can erase its journal.
+    if (database.prepare("SELECT 1 FROM sqlite_master WHERE name='continuity_upkeep_operations'").get()) {
+      transaction(database, () => createUpkeepAccountingSchema(database));
+    }
     continuityPurgeBlocked = applyPendingContinuityPurges(database);
   }
   transaction(database, () => {

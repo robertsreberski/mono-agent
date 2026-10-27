@@ -10,7 +10,11 @@ export interface ContinuityUpkeepReceipt {
   readonly operationId: string; readonly model: string; readonly api: string; readonly providerInvoked: boolean;
   readonly capEnforcement: "request" | "stream_abort"; readonly status: "valid" | "invalid" | "skipped";
   readonly outcomeDowngrades?: number; readonly decisionRelabels?: number;
-  readonly failure?: string; readonly reason: string; readonly elapsedMs: number; readonly inputTokens: number | null; readonly outputTokens: number | null;
+  readonly failure?: string; readonly reason: string; readonly elapsedMs: number;
+  /** Uncached input; cache counters are never folded into this value. */
+  readonly inputTokens: number | null; readonly outputTokens: number | null;
+  /** Optional only for legacy receipt compatibility; the producer always sets these. */
+  readonly cacheReadTokens?: number | null; readonly cacheWriteTokens?: number | null;
   readonly estimatedInputTokens: number; readonly estimatedInputCostUsd: number | null;
   readonly providerUsage?: { readonly input: number | null; readonly output: number | null; readonly cacheRead: number | null; readonly cacheWrite: number | null };
   readonly costUsd: number | null; readonly visibleEstimate: number; readonly outputOverrun: boolean;
@@ -51,7 +55,7 @@ export async function completeContinuityUpkeep(prompt: string, options: RuntimeR
   const outerSignal = AbortSignal.any([options.abortSignal, deadline]);
   const signal = AbortSignal.any([outerSignal, abort.signal]);
   let model: any, api = "unknown", capEnforcement: "request" | "stream_abort" = "request", providerInvoked = false, visibleEstimate = 0;
-  let usage: any, usageReported = false, stopped = false, streamedBytes = 0, capUnsupported = false;
+  let usage: any, usageReported = false, usageTerminal = false, stopped = false, streamedBytes = 0, capUnsupported = false;
   let estimatedInputTokens = 0;
   const number = (value: unknown) => typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
   const visibleBytes = (message: any): number => Array.isArray(message?.content) ? message.content.reduce((sum: number, part: any) => {
@@ -62,8 +66,13 @@ export async function completeContinuityUpkeep(prompt: string, options: RuntimeR
   // not provider reports; successful terminal usage or an explicit usage event
   // can establish reported zeros. Positive partial usage is also real evidence.
   const captureUsage = (candidate: any, terminal = false) => {
-    if (candidate && (terminal || [candidate.totalTokens, candidate.input, candidate.output, candidate.cacheRead, candidate.cacheWrite].some(value => Number(value) > 0))) {
-      usage = candidate; usageReported = true;
+    if (candidate && (terminal || [candidate.totalTokens, candidate.input, candidate.output, candidate.cacheRead, candidate.cacheWrite, candidate.cost?.total].some(value => Number(value) > 0))) {
+      // Adapter-initialized zero fields on partial/error messages are not
+      // evidence that a category was reported. Explicit usage/done can prove 0.
+      usage = terminal ? candidate : { ...candidate, ...Object.fromEntries(
+        ["input", "output", "cacheRead", "cacheWrite"].map(key => [key, number(candidate[key]) !== null && candidate[key] > 0 ? candidate[key] : undefined])),
+        cost: Number(candidate.cost?.total) > 0 ? candidate.cost : undefined };
+      usageReported = true; usageTerminal = terminal;
     }
   };
   const hasUsage = () => usageReported;
@@ -71,12 +80,22 @@ export async function completeContinuityUpkeep(prompt: string, options: RuntimeR
     try { return estimateCost({ model: options.model.reference, resolveCustomPricing: options.resolveCustomPricing as NonNullable<Parameters<typeof estimateCost>[0]>["resolveCustomPricing"], inputTokens: input, outputTokens: output, cachedTokens: cacheRead, cacheWriteTokens: cacheWrite }); }
     catch { return null; }
   };
+  const reportedCost = (): number | null => {
+    if (!providerInvoked) return 0;
+    if (!hasUsage()) return null;
+    const complete = [usage?.input, usage?.output, usage?.cacheRead, usage?.cacheWrite].every(value => number(value) !== null);
+    if (options.resolveCustomPricing) return complete ? price(usage.input, usage.output, usage.cacheRead, usage.cacheWrite) : null;
+    const total = number(usage?.cost?.total);
+    return total !== null && (total > 0 || usageTerminal && complete) ? total : null;
+  };
   const result = (status: ContinuityUpkeepReceipt["status"], reason: string, text?: string): ContinuityUpkeepResult => ({ ...(text === undefined ? {} : { text }), receipt: {
     operationId, model: options.model.reference, api, providerInvoked, capEnforcement, status, reason,
-    elapsedMs: Math.round(performance.now() - started), inputTokens: providerInvoked ? (hasUsage() ? Number(usage.input || 0) + Number(usage.cacheRead || 0) + Number(usage.cacheWrite || 0) : null) : 0, outputTokens: !providerInvoked ? 0 : hasUsage() ? number(usage?.output) : null,
+    elapsedMs: Math.round(performance.now() - started), inputTokens: providerInvoked ? (hasUsage() ? number(usage?.input) : null) : 0, outputTokens: !providerInvoked ? 0 : hasUsage() ? number(usage?.output) : null,
+    cacheReadTokens: !providerInvoked ? 0 : hasUsage() ? number(usage?.cacheRead) : null,
+    cacheWriteTokens: !providerInvoked ? 0 : hasUsage() ? number(usage?.cacheWrite) : null,
     estimatedInputTokens: providerInvoked ? estimatedInputTokens : 0, estimatedInputCostUsd: !providerInvoked ? 0 : price(estimatedInputTokens) ?? (number(model?.cost?.input) === null ? null : estimatedInputTokens * model.cost.input / 1_000_000),
     providerUsage: { input: providerInvoked && usageReported ? number(usage?.input) : null, output: providerInvoked && usageReported ? number(usage?.output) : null, cacheRead: providerInvoked && usageReported ? number(usage?.cacheRead) : null, cacheWrite: providerInvoked && usageReported ? number(usage?.cacheWrite) : null },
-    costUsd: providerInvoked ? (hasUsage() ? (options.resolveCustomPricing ? price(Number(usage?.input || 0), Number(usage?.output || 0), Number(usage?.cacheRead || 0), Number(usage?.cacheWrite || 0)) : number(usage?.cost?.total)) : null) : 0, visibleEstimate, outputOverrun: Number(usage?.output) > 4096,
+    costUsd: reportedCost(), visibleEstimate, outputOverrun: Number(usage?.output) > 4096,
   } });
   try {
     if (budget?.maxEntries !== undefined && (!Number.isInteger(budget.maxEntries) || budget.maxEntries < 1 || budget.maxEntries > 24)) return result("skipped", "input_budget");

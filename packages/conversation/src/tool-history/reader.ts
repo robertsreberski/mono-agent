@@ -28,6 +28,17 @@ export class ToolHistoryReader {
     this.databasePath = join(this.root, TOOL_HISTORY_DIRECTORY, TOOL_HISTORY_DATABASE);
   }
 
+  /** Startup discovery only: never creates a database, schema, or paid work. */
+  hasPendingUpkeepAccounting(): boolean {
+    const db = this.openReadOnly();
+    if (!db) return false;
+    try {
+      if (db.prepare("SELECT 1 FROM sqlite_master WHERE name='continuity_upkeep_accounting'").get()) return !!db.prepare("SELECT 1 FROM continuity_upkeep_accounting WHERE exported IS NULL LIMIT 1").get();
+      if (!db.prepare("SELECT 1 FROM sqlite_master WHERE name='continuity_upkeep_operations'").get()) return false;
+      return !!db.prepare("SELECT 1 FROM continuity_upkeep_operations WHERE state IN ('dispatch_started','uncertain','terminal') OR outcome IS NOT NULL LIMIT 1").get();
+    } finally { db.close(); }
+  }
+
   /** Read-only, content-free doctor surface, independent of runtime enablement. */
   continuityPurgeStatus(): { pending: number; invalid: number } {
     const result = inspectContinuityPurges(this.root);

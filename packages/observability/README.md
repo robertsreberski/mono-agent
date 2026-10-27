@@ -97,6 +97,21 @@ stream.
 | `src/artifact-retention.ts` / `src/tool-output-path.ts` | Terminal-run and raw tool-output retention with shared canonical containment and run-directory naming. |
 | `src/trace-sources.ts` | File-backed source manifests, heartbeat updates, discovery, and per-source run reads. |
 
+### Separate upkeep evidence
+
+`readRecordedRun().upkeepAccounting` exposes validated, non-aggregate continuity
+upkeep evidence. Immutable `<run>.upkeep.<operation-hash>.dispatch.json` and
+`.result.json` companions belong to the originating recorder namespace. Readers
+merge companions, accounting envelopes in events, and legacy summary views by
+operation ID; a result wins over dispatch uncertainty regardless of write order.
+Unknown counters and cost remain null. Existing summary usage/cost and session
+totals remain inference-only; this separate evidence is **not** included in them.
+
+Exports never create run summaries or namespaces. Retention deletes the origin
+summary before companions; exporters recheck the origin after writing, preventing
+late recovery from recreating a pruned run. Failed exports remain pending in the
+host's journal outbox and surface accounting degradation rather than zero cost.
+
 ### Recorder checkpoints and reads
 
 The JSONL recorder writes an initial `running` snapshot, then schedules a
@@ -285,6 +300,7 @@ createCompositeRunRecorder
 createJsonlRunRecorder
 deriveRunSource
 describeRunFailureKind
+exportUpkeepAccounting
 isKnownArtifactFailureKind
 isSafeRunId
 listRecordedRuns

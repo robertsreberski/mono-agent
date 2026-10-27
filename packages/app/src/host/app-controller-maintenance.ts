@@ -1,3 +1,6 @@
+import { recoverConfiguredUpkeepAccounting } from "../composition/configured-tool-history.js";
+import { agentArtifactDerivedRoots } from "../artifacts/agent-artifact-paths.js";
+import { resolve } from "node:path";
 import { inspectEffectiveSandboxBoundary } from "../service/sandbox/effective-sandbox.js";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import type { NotifyDeliveryContext } from "@mono-agent/contracts";
@@ -182,7 +185,12 @@ export function restartArtifactRetentionScheduler(controller: MaintenanceControl
       memoryRetention: coreConfig.artifacts.memoryRetention,
       ...(coreConfig.memory === undefined ? {} : { memoryRoot: coreConfig.memory.path }),
       ...(controller.logger === undefined ? {} : { logger: controller.logger }),
-      beforeFirstRun: () => controller.reconcileStaleRunsOnce(artifactDir),
+      beforeFirstRun: async () => {
+        try {
+          await recoverConfiguredUpkeepAccounting(agentArtifactDerivedRoots(coreConfig.artifacts.dir).history, resolve(artifactDir, "tool-output"), message => controller.logger?.warn?.(message));
+        } catch { controller.logger?.warn?.("Upkeep accounting degraded: startup recovery unavailable."); }
+        await controller.reconcileStaleRunsOnce(artifactDir);
+      },
     });
     controller.logger?.info?.("Artifact retention scheduler started.", {
       reason,

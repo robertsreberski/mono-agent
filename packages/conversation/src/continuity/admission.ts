@@ -1,3 +1,4 @@
+import { createUpkeepAccountingSchema, queueUpkeepAccounting, upkeepAccounting } from "./accounting-outbox.js";
 import { initializeLedgerProgress } from "./ledger-storage.js";
 import type { LedgerProgress } from "../tool-history/continuity-contracts.js";
 import { createProgressSchema, dispatchProgress, reclaimProgress } from "./progress.js";
@@ -57,6 +58,7 @@ export function createUpkeepSchema(db: DatabaseSync): void {
       reservation TEXT NOT NULL, selection_key TEXT NOT NULL, budget TEXT NOT NULL,
       state TEXT NOT NULL, outcome TEXT);
     CREATE INDEX IF NOT EXISTS continuity_upkeep_scope_operations ON continuity_upkeep_operations(logical_id,conversation_id,incarnation);`);
+  createUpkeepAccountingSchema(db);
   createProgressSchema(db);
   if (!db.prepare("SELECT 1 FROM continuity_upkeep_migrations WHERE version=4").get()) {
     for (const row of db.prepare("SELECT operation_id,reservation FROM continuity_upkeep_operations").all() as Row[]) {
@@ -159,6 +161,7 @@ export function mutateUpkeep(db: DatabaseSync, root: string, request: UpkeepMuta
       db.prepare("UPDATE continuity_upkeep_admissions SET bootstrap_operation=? WHERE logical_id=? AND conversation_id=?").run(r.operationId, r.logicalId, r.conversationId);
     }
     try { dispatchProgress(db, r); } catch { throw new LedgerError("upkeep_dispatch_rejected"); }
+    queueUpkeepAccounting(db, upkeepAccounting(r));
     db.prepare("UPDATE continuity_upkeep_operations SET state='dispatch_started' WHERE operation_id=?").run(r.operationId);
     return null;
   }
@@ -173,10 +176,12 @@ export function mutateUpkeep(db: DatabaseSync, root: string, request: UpkeepMuta
     db.prepare("UPDATE continuity_upkeep_offers SET state=CASE WHEN ? THEN CASE WHEN offer_count<2 THEN 'reofferable' ELSE 'analyzed' END ELSE 'failed' END WHERE operation_id=? AND state IN ('pending','pending_retry')").run(Number(request.retry === true), r.operationId); return null;
   }
   if (request.receipt.operationId !== r.operationId || request.receipt.model !== r.model) fail();
+  const accounting = upkeepAccounting(r, request.receipt);
   const outcome = JSON.stringify(request.receipt);
   if (Buffer.byteLength(outcome) > 16384) fail();
   if (row.outcome !== null) { if (row.outcome !== outcome) fail(); return null; }
   if (row.state !== "dispatch_started") fail();
+  queueUpkeepAccounting(db, accounting);
   const released = !request.receipt.providerInvoked && request.receipt.status === "skipped" && NON_INVOCATION.has(request.receipt.reason);
   db.prepare("UPDATE continuity_upkeep_operations SET state=?,outcome=? WHERE operation_id=?").run(released ? "released" : request.receipt.providerInvoked ? "terminal" : "uncertain", outcome, r.operationId);
   if (released) {

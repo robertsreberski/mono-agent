@@ -72,7 +72,7 @@ it("retains reported output overrun in the content-free receipt without a repair
 
 it("rejects reported cached-plus-uncached input overruns before publication", async () => {
   const { result, transport } = await codex([created, added, { type: "response.output_text.delta", output_index: 0, delta: "{}" }, done(1, 66000, 65000)]);
-  expect(transport).toHaveBeenCalledTimes(1); expect(result.receipt).toMatchObject({ status: "invalid", reason: "input_overrun", inputTokens: 66000 });
+  expect(transport).toHaveBeenCalledTimes(1); expect(result.receipt).toMatchObject({ status: "invalid", reason: "input_overrun", inputTokens: 1000, cacheReadTokens: 65000 });
   expect(result.text).toBeUndefined();
 });
 it("honors an already aborted caller without dispatch", async () => {
@@ -135,7 +135,7 @@ it("uses the admitted bootstrap cap for both estimated and reported cumulative i
   const frames = [created, added, { type: "response.output_text.delta", output_index: 0, delta: "{}" }, done(2, 68000, 65000)];
   const bootstrap = await codex(frames, false, undefined, { operationId: "bootstrap-operation", inputTokens: 128000 }, "Fictional ".repeat(14000));
   expect(bootstrap.transport).toHaveBeenCalledTimes(1);
-  expect(bootstrap.result.receipt).toMatchObject({ operationId: "bootstrap-operation", status: "valid", inputTokens: 68000,
+  expect(bootstrap.result.receipt).toMatchObject({ operationId: "bootstrap-operation", status: "valid", inputTokens: 3000, cacheReadTokens: 65000,
     providerUsage: { input: 3000, cacheRead: 65000, cacheWrite: 0, output: 2 } });
   const incremental = await codex(frames, false, undefined, { operationId: "incremental-operation", inputTokens: 64000 }, "Fictional ".repeat(14000));
   expect(incremental.transport).not.toHaveBeenCalled(); expect(incremental.stream).not.toHaveBeenCalled();
@@ -144,7 +144,7 @@ it("uses the admitted bootstrap cap for both estimated and reported cumulative i
 it("rejects bootstrap input above 128k including cache and never repairs it", async () => {
   const overrun = await codex([created, added, { type: "response.output_text.delta", output_index: 0, delta: "{}" }, done(2, 129000, 125000)], false, undefined, { operationId: "bootstrap-operation", inputTokens: 128000 });
   expect(overrun.transport).toHaveBeenCalledTimes(1); expect(overrun.stream).toHaveBeenCalledTimes(1);
-  expect(overrun.result.receipt).toMatchObject({ status: "invalid", reason: "input_overrun", inputTokens: 129000 });
+  expect(overrun.result.receipt).toMatchObject({ status: "invalid", reason: "input_overrun", inputTokens: 4000, cacheReadTokens: 125000 });
   const estimate = await codex([], false, undefined, { operationId: "bootstrap-operation", inputTokens: 128000 }, "Fictional ".repeat(23000));
   expect(estimate.transport).not.toHaveBeenCalled(); expect(estimate.result.receipt.reason).toBe("input_budget");
 });
@@ -174,4 +174,42 @@ it("rejects an invalid admitted entry cap before transport", async () => {
   const { result, transport } = await codex([], false, undefined, { operationId: "invalid-delta", inputTokens: 64000, maxEntries: 0 });
   expect(result.receipt).toMatchObject({ status: "skipped", reason: "input_budget", providerInvoked: false });
   expect(transport).not.toHaveBeenCalled();
+});
+
+it.each([
+  { usage: { input: 3, cacheRead: 4, cacheWrite: 5, output: 2, cost: { total: 0.2 } }, expected: { inputTokens: 3, cacheReadTokens: 4, cacheWriteTokens: 5, outputTokens: 2, costUsd: 0.2 } },
+  { usage: { input: 3, output: 2 }, expected: { inputTokens: 3, cacheReadTokens: null, cacheWriteTokens: null, outputTokens: 2, costUsd: null } },
+  { usage: undefined, expected: { inputTokens: null, cacheReadTokens: null, cacheWriteTokens: null, outputTokens: null, costUsd: null } },
+])("preserves separate nullable counters without billing estimates: $expected", async ({ usage, expected }) => {
+  const stream = vi.fn((_m, _c, options) => {
+    options.onPayload({ max_output_tokens: 4096 });
+    const response = { stopReason: "stop", content: [{ type: "text", text: "{}" }], usage };
+    return { async *[Symbol.asyncIterator]() { yield { type: "done", message: response }; }, result: async () => response };
+  });
+  const result = await completeContinuityUpkeep("Fictional input.", { model: reference, messages: [], abortSignal: new AbortController().signal,
+    piResolvedModels: { getModel: () => model("openai-responses"), streamSimple: stream } as never });
+  expect(result.receipt).toMatchObject({ ...expected, providerInvoked: true, model: "fictional:fixture" });
+  expect(result.receipt.estimatedInputTokens).toBeGreaterThan(0); expect(stream).toHaveBeenCalledTimes(1);
+});
+it("does not price partial counters with a custom price by coercing missing cache usage to zero", async () => {
+  const price = vi.fn(() => ({ input: 1, output: 1, cacheRead: 1, cacheWrite: 1 }));
+  const stream = vi.fn((_m, _c, options) => {
+    options.onPayload({ max_output_tokens: 4096 });
+    const response = { stopReason: "stop", content: [{ type: "text", text: "{}" }], usage: { input: 3, output: 2 } };
+    return { async *[Symbol.asyncIterator]() { yield { type: "done", message: response }; }, result: async () => response };
+  });
+  const result = await completeContinuityUpkeep("Fictional input.", { model: reference, messages: [], abortSignal: new AbortController().signal,
+    resolveCustomPricing: price, piResolvedModels: { getModel: () => model("openai-responses"), streamSimple: stream } as never });
+  expect(result.receipt.costUsd).toBeNull(); expect(result.receipt.cacheReadTokens).toBeNull();
+});
+
+it("keeps initialized zero categories and cost unknown on a positive partial report", async () => {
+  const partial = { stopReason: "error", usage: { input: 3, output: 0, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } } };
+  const stream = vi.fn((_m, _c, options) => {
+    options.onPayload({ max_output_tokens: 4096 });
+    return { async *[Symbol.asyncIterator]() { yield { type: "text_delta", partial }; }, result: async () => partial };
+  });
+  const result = await completeContinuityUpkeep("Fictional input.", { model: reference, messages: [], abortSignal: new AbortController().signal,
+    piResolvedModels: { getModel: () => model("openai-responses"), streamSimple: stream } as never });
+  expect(result.receipt).toMatchObject({ providerInvoked: true, inputTokens: 3, outputTokens: null, cacheReadTokens: null, cacheWriteTokens: null, costUsd: null });
 });

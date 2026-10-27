@@ -363,9 +363,10 @@ affected state before rebuilding, after preserving any needed diagnostics.
 ## Measurement boundary
 
 See the [ledger benchmark arm](/runtime/continuity-benchmark/#progressive-ledger-boundaries).
-This slice provides host receipts and benchmark upkeep accounting, **not** merged
-answer/upkeep billing reconciliation, cancellation/restart-complete accounting,
-default-on upkeep, or a general claim of paid quality improvement. Those require subsequent evaluation and implementation.
+This slice provides host receipts, benchmark upkeep accounting and separate durable
+upkeep evidence, **not** inclusive answer/upkeep run or session totals, complete
+host receipt forwarding, default-on upkeep, or a general claim of paid quality
+improvement. Those require subsequent evaluation and implementation.
 
 Validation and publication failures carry an allowlisted, content-free `failure`
 code in the upkeep receipt and warning `error_code`: JSON/schema/coverage,
@@ -404,8 +405,20 @@ can release a committed barrier. Generic errors and cancellation are not proof.
 Provider outcome and available usage, including separate cache counters, commit
 before ledger publication and before the result receipt. The journal retains the
 originating run, recorder namespace, extraction model, source/parent manifest and
-budget kind. Missing terminal evidence means unknown usage/cost, never zero;
-accounting export/reconciliation is a separate follow-up capability.
+budget kind. Missing terminal evidence means unknown usage/cost, never zero.
+
+A transactional accounting outbox exports content-free `AgentUpkeepAccounting` v1
+companions under the originating run's recorder namespace. Dispatch uncertainty
+and terminal results have distinct immutable identities; readers merge by
+operation ID, with result precedence. Uncached input, cache read, cache write and
+output counters stay separate and nullable; estimates never become billed usage.
+Pending exports replay on startup/writer recovery even when upkeep is disabled,
+without invoking a provider or charging a new answer. With no pending journal
+work, startup discovery is read-only. Export failures surface accounting
+degradation and remain pending. Artifact retention removes companions with their
+origin run; late exports never recreate pruned runs. Readers expose this as
+separate, explicitly non-aggregate `upkeepAccounting` evidence. Existing run and
+session usage/cost totals are unchanged and remain inference-only.
 
 **Bootstrap marker lifetime:** quota pressure, source retention, ledger eviction,
 restart and model changes do not clear it. Only explicit user reset/delete of the

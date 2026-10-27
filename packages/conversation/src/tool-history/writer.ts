@@ -162,7 +162,8 @@ export class ToolHistoryWriter {
     // rejects and cannot reference the remaining cleanup await.
     const startupReference = setInterval(() => undefined, 60_000);
     try {
-      await writer.request("ready", undefined, (options.ownerAcquireCeilingMs ?? TOOL_HISTORY_OWNER_ACQUIRE_CEILING_MS) + 1_000);
+      const ready = await writer.request("ready", undefined, (options.ownerAcquireCeilingMs ?? TOOL_HISTORY_OWNER_ACQUIRE_CEILING_MS) + 1_000) as { accountingDegraded?: number };
+      if (ready.accountingDegraded) { try { options.onWarning?.("Upkeep accounting degraded: durable exports remain pending."); } catch { /* diagnostics only */ } }
       // request() unreferences the worker once its pending map drains, and the
       // outer startup reference is cleared when this public promise settles.
       // An idle sidecar must not prolong a one-shot CLI process; every later
@@ -233,6 +234,11 @@ export class ToolHistoryWriter {
     });
   }
 
+  async replayUpkeepAccounting(): Promise<void> {
+    const degraded = await this.request("upkeep_accounting_replay", undefined, TOOL_HISTORY_MAINTENANCE_CEILING_MS);
+    if (degraded) { try { this.onWarning?.("Upkeep accounting degraded: durable exports remain pending."); } catch { /* diagnostics only */ } }
+  }
+
   /** Upgrade only through an explicit host capability, using the existing worker owner. */
   async enableContinuity(): Promise<void> {
     await this.request("enable_continuity", undefined, TOOL_HISTORY_MAINTENANCE_CEILING_MS);
@@ -248,7 +254,9 @@ export class ToolHistoryWriter {
       if (input.kind === "dispatch") throw new ToolHistoryWriterError("upkeep_dispatch_rejected", "Upkeep payload bound.");
       throw new TypeError("Upkeep payload bound.");
     }
-    return await this.request("continuity_upkeep", input, TOOL_HISTORY_MAINTENANCE_CEILING_MS) as UpkeepAdmission | null;
+    const result = await this.request("continuity_upkeep", input, TOOL_HISTORY_MAINTENANCE_CEILING_MS) as (UpkeepAdmission & { accountingDegraded?: boolean }) | null;
+    if (result?.accountingDegraded) { try { this.onWarning?.("Upkeep accounting degraded: durable exports remain pending."); } catch { /* diagnostics only */ } }
+    return result;
   }
 
   async publishLedger(input: LedgerGeneration, reservation?: UpkeepReservation): Promise<void> {

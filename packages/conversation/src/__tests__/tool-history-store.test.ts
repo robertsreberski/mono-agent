@@ -56,6 +56,7 @@ beforeAll(async () => {
   const fixtureScope = join(sourceFixtureRoot, "node_modules", "@mono-agent");
   await mkdir(fixtureScope, { recursive: true, mode: 0o700 });
   await Promise.all([
+    symlink(fileURLToPath(new URL("../../../contracts", import.meta.url)), join(fixtureScope, "contracts"), "dir"),
     symlink(fileURLToPath(new URL("../../../observability", import.meta.url)), join(fixtureScope, "observability"), "dir"),
     symlink(fileURLToPath(new URL("../../../turn", import.meta.url)), join(fixtureScope, "turn"), "dir"),
   ]);
@@ -76,6 +77,7 @@ beforeAll(async () => {
     "continuity/ledger",
     "continuity/ledger-storage",
     "continuity/admission",
+    "continuity/accounting-outbox",
     "continuity/progress",
     "continuity/frontier",
     "continuity/retirement",
