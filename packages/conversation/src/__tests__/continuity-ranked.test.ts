@@ -13,11 +13,16 @@ function row(ordinal: number, text = "Neutral.", kind: ContinuitySnapshotRecord[
 const select = (records: ContinuitySnapshotRecord[], prior?: LedgerGeneration) => selectLedgerSources({ records, omitted: 0, gaps: 0, upkeep: { watermark: Math.max(...records.map(r => r.ordinal)), excluded: [] } }, prior, 128000);
 const fit = (records: ContinuitySnapshotRecord[], prior?: Parameters<typeof fitLedgerSelection>[2]) => fitLedgerSelection(select(records, prior?.generation), scope, prior, { maxTokens: 8000, deltaEntries: 8 });
 
-it("uses no annotation/probe words: production scoring patterns match none of the generator's verbatim natural-language phrases", () => {
+it("uses no annotation/probe words: production scoring and instructions do not copy generator phrases", () => {
   const generator = readFileSync(new URL("../../../../scripts/lib/continuity-generator.mjs", import.meta.url), "utf8");
   const phrases = generator.match(/[A-Za-z]{2,}(?: [A-Za-z]{2,}){2,}/g)!;
   expect(phrases.length).toBeGreaterThan(50);
-  for (const pattern of SCORE_SHAPES) for (const phrase of phrases) expect(pattern.test(phrase), `${pattern}: ${phrase}`).toBe(false);
+  const prompt = select([]).prompt.toLowerCase().replace(/\s+/gu, " ");
+  for (const phrase of phrases) {
+    for (const pattern of SCORE_SHAPES) expect(pattern.test(phrase), `${pattern}: ${phrase}`).toBe(false);
+    const words = phrase.toLowerCase().split(" ");
+    for (let i = 0; i + 7 <= words.length; i++) expect(prompt).not.toContain(words.slice(i, i + 7).join(" "));
+  }
 });
 it("ranks equivalently after renaming/permuting fictional identifiers and quotation labels", () => {
   const records = [row(1, "ID AB-120; 450.", "tool"), row(2, "ID CD-340; 670.", "tool"), row(3, "Neutral archival prose.")];

@@ -9,7 +9,7 @@ import { buildRunModels } from "./run.js";
 export interface ContinuityUpkeepReceipt {
   readonly operationId: string; readonly model: string; readonly api: string; readonly providerInvoked: boolean;
   readonly capEnforcement: "request" | "stream_abort"; readonly status: "valid" | "invalid" | "skipped";
-  readonly outcomeDowngrades?: number;
+  readonly outcomeDowngrades?: number; readonly decisionRelabels?: number;
   readonly failure?: string; readonly reason: string; readonly elapsedMs: number; readonly inputTokens: number | null; readonly outputTokens: number | null;
   readonly estimatedInputTokens: number; readonly estimatedInputCostUsd: number | null;
   readonly providerUsage?: { readonly input: number | null; readonly output: number | null; readonly cacheRead: number | null; readonly cacheWrite: number | null };

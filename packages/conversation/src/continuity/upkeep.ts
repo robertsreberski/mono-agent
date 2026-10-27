@@ -99,7 +99,7 @@ export function createLedgerSupplier(options: ConversationHarnessOptions, reques
           if (completion.receipt.status === "valid" && completion.text) {
             try {
               generation = validateLedgerOutput(completion.text, selection, scope, frozen?.generation, completion.receipt.capEnforcement);
-              completion = { ...completion, receipt: { ...completion.receipt, outcomeDowngrades: generation.outcomeDowngrades ?? 0 } };
+              completion = { ...completion, receipt: { ...completion.receipt, outcomeDowngrades: generation.outcomeDowngrades ?? 0, decisionRelabels: generation.decisionRelabels ?? 0 } };
             } catch (error) { validationError = error; }
           }
           // Record paid usage even when integrity validation rejects everything.

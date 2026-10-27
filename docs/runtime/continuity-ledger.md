@@ -152,12 +152,17 @@ binding is conservatively downgraded to `unknown`; values and citations stay int
 The host renders an outcome-not-verified marker and records a content-free
 `outcomeDowngrades` count in the receipt. Forged references, digest/span mismatches,
 schema errors and bounds violations still reject the whole completion.
+A new `decision` must cite an attested owner span. Without one, the host relabels
+it `artifact`, preserving value/citations, marks it as a reported fact with no
+owner decision cited, and records content-free `decisionRelabels` in the receipt.
+An owner citation is necessary, not proof that the owner adopted the choice.
+Prior entries remain preserved; this rule applies to newly validated deltas.
 Identifier lines also include escaped `context` extracted verbatim from the verified
 cited span at the first occurrence of the value, with at most 48 UTF-8 bytes on each
 side and inward word-boundary cuts where possible. No model-supplied context or
 uncited bytes are used. Context is re-derived, not separately persisted; existing
 source lineage/payload projections retain those verified bytes. The 1024-byte line
-ceiling and prefix projections include context and outcome markers. All prose is
+ceiling and prefix projections include context, outcome and relabel markers. All prose is
 **derived interpretation**, never host-owner authority. Cited owner text is
 reconstructed as whole paragraphs with qualifications and negations intact.
 Historical requests are not renewed approval; absent outcomes remain unknown.
@@ -247,7 +252,11 @@ cited-only metadata never weakens deletion ancestry.
 All five interpretation finding types remain **prompt-influenced, not structurally
 proven**: request-only absence claims, acknowledgement as decision, delivery as
 fulfilment, historical requests as current work, and overly broad kind labels.
-Missing evidence means unknown, not never. Owner provenance and a model annotation
+The prompt treats received facts as artifacts, conditional reminder requests as
+requested open work, and completed requests as historical rather than outstanding.
+It requires earlier replaced values to be phrased historically. Only the necessary
+owner-citation rule is structural; actual adoption and these distinctions remain
+prompt-influenced. Missing evidence means unknown, not never. Owner provenance and a model annotation
 cannot authoritatively classify a span as a request versus a declaration, so there
 is **no request-only citation label**. Offline audit must still check every category.
 

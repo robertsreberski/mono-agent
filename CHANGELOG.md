@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Keep received continuity facts without inventing owner decisions: relabel new
+  decisions lacking owner citations as marked artifacts and count the relabels.
+  Clarify pending work, reminders and historical facts without changing ranking.
+
 - Keep continuity benchmark probes after degraded upkeep stages, while rejecting
   broken boundary/journal/injection protocols and separately charging unknown
   usage at full catalog reservations (not an invoice guarantee).

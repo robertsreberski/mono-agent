@@ -450,3 +450,40 @@ it("accounts for context in exact render checks and in near-ceiling inherited pr
   expect(Buffer.byteLength(JSON.stringify(next))).toBeLessThanOrEqual(fit.projectedBytes);
   expect(renderContinuityPack(f.reader.snapshotContinuity(scope), [], 8000, { generation: next, records: [...first.records, ...fit.selection.records] }).ledgerEntries).toBe(15);
 });
+
+
+it("relabels a quote-only decision, preserves an owner-cited choice and rejects forged citations atomically", async () => {
+  const f = await fixture(); await owner(f, "I choose option A."); await tool(f, "Received quote: $120.");
+  const selection = selectLedgerSources(f.reader.snapshotContinuity({ ...scope, selection: "upkeep" }));
+  const ownerSpan = selection.spans.find(s => s.owner)!, quoteSpan = selection.spans.find(s => !s.owner)!;
+  const entries = [{ kind: "decision", value: "Received quote: $120.", status: "confirmed", sources: [quoteSpan.id] }, { kind: "decision", value: "Choose option A.", status: "active", sources: [ownerSpan.id] }];
+  const response = { entries, covered: [ownerSpan.id, quoteSpan.id] };
+  const generation = validateLedgerOutput(JSON.stringify(response), selection, scope);
+  expect(generation.decisionRelabels).toBe(1);
+  expect(Buffer.byteLength(JSON.stringify(generation))).toBeLessThanOrEqual(projectedLedgerPayloadBytes(selection, scope));
+  expect(generation.entries[0]).toMatchObject({ kind: "artifact", value: entries[0]!.value, status: "confirmed", decisionRelabelled: true });
+  expect(generation.entries[0]!.sources).toEqual([generation.spans.find(s => s.recordId === quoteSpan.recordId)!.id]);
+  expect(generation.entries[1]).toMatchObject({ kind: "decision", value: entries[1]!.value, status: "active" });
+  expect(generation.entries[1]).not.toHaveProperty("decisionRelabelled");
+  await f.writer.publishLedger(generation);
+  const stored = f.reader.ledger(scope)!;
+  expect(stored.generation.entries).toEqual(generation.entries);
+  expect(renderLedger(stored.generation, stored.records)).toContain("Derived artifact (reported fact; no owner decision cited)");
+  expect(() => validateLedgerOutput(JSON.stringify({ ...response, entries: [...entries, { ...entries[0], sources: ["forged"] }] }), selection, scope)).toThrow("unknown_source");
+  expect(() => validateLedgerOutput(JSON.stringify(response), { ...selection, spans: selection.spans.map(s => s.owner ? { ...s, owner: false } : { ...s, owner: true }) }, scope)).toThrow("owner_span");
+  expect(() => validateLedgerOutput(JSON.stringify({ ...response, entries: [{ ...entries[0], decisionRelabelled: true }] }), selection, scope)).toThrow("output_schema");
+  expect(f.reader.ledger(scope)!.generation.id).toBe(generation.id);
+});
+
+it("persists only a content-free decision relabel counter in upkeep receipts", async () => {
+  const f = await fixture(); await tool(f, "Received quote: $120."); const events: unknown[] = [];
+  const complete = async (_prompt: string, _signal: AbortSignal, budget: { operationId: string }) => ({ text: JSON.stringify({ entries: [{ kind: "decision", value: "Received quote: $120.", status: "confirmed", sources: ["s0"] }], covered: ["s0"] }), receipt: { operationId: budget.operationId, model: "fictional:base", status: "valid", reason: "completed", providerInvoked: true, capEnforcement: "request" } });
+  const options = { toolHistory: { ...f, logicalConversationId: (id: string) => id, continuityEnabled: true, upkeep: { enabled: true, model: "fictional:base", complete }, publishLedger: f.writer.publishLedger.bind(f.writer) } } as unknown as ConversationHarnessOptions;
+  const supplier = createContinuityPackSupplier(options, { conversationId: "fictional", userMessage: "Current.", abortSignal: new AbortController().signal }, "current")!;
+  await supplier.prepare(eligible, "cold_rebuild", e => events.push(e));
+  expect(events).toContainEqual(expect.objectContaining({ type: "continuity_upkeep", status: "valid", decisionRelabels: 1 }));
+  const db = new DatabaseSync(f.reader.databasePath); const row = db.prepare("SELECT outcome FROM continuity_upkeep_operations").get() as { outcome: string }; db.close();
+  expect(JSON.parse(row.outcome)).toMatchObject({ decisionRelabels: 1 });
+  expect(row.outcome).not.toContain("Received quote"); expect(JSON.stringify(events)).not.toContain("$120");
+  expect(f.reader.ledger(scope)!.generation.entries[0]).toMatchObject({ kind: "artifact", decisionRelabelled: true });
+});

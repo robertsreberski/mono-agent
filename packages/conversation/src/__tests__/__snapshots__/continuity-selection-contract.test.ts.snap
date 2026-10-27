@@ -5,7 +5,7 @@ exports[`freezes clean ranked selection and bounded greedy fitting (input=64000)
   "cap": 8,
   "count": 16,
   "fittedManifest": "b2038625fcaf588bfeaecbcb4c6b58b630e3ba07a7a1aa84315f586690cbad28",
-  "prompt": "3bc0c9fb023a4ee77c1a1d910b7b07393e260b7bcd4de1ec26fe5a4140fb0452",
+  "prompt": "202baddaeaa1b3b9cb56232fa64695b0e2890679747852de9abedd6dc1d86b10",
   "sourceManifest": "125d5fa79f665e05b72d18c5841c6d959ba98305d5c05491dd8b0297635f57fe",
 }
 `;
@@ -15,7 +15,7 @@ exports[`freezes clean ranked selection and bounded greedy fitting (input=128000
   "cap": 8,
   "count": 16,
   "fittedManifest": "b2038625fcaf588bfeaecbcb4c6b58b630e3ba07a7a1aa84315f586690cbad28",
-  "prompt": "3bc0c9fb023a4ee77c1a1d910b7b07393e260b7bcd4de1ec26fe5a4140fb0452",
+  "prompt": "202baddaeaa1b3b9cb56232fa64695b0e2890679747852de9abedd6dc1d86b10",
   "sourceManifest": "125d5fa79f665e05b72d18c5841c6d959ba98305d5c05491dd8b0297635f57fe",
 }
 `;

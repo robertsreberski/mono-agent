@@ -1347,6 +1347,9 @@ deterministic fallback. Ledger prose is derived interpretation, never owner
 authority; covered owners are demoted rather than deleted. Upkeep ranks a complete
 bounded history scan, greedily fits cited-only deltas and shares a two-offer ceiling
 across analysis/reconstruction. Scan exhaustion makes no extraction call.
-Unbound commitment/artifact outcome statuses are downgraded to unknown with a
+New decisions without an attested owner citation are relabelled as reported
+artifacts with a host marker and content-free `decisionRelabels` receipt count;
+owner citation alone does not prove adoption. Unbound commitment/artifact outcome
+statuses are downgraded to unknown with a
 host marker and content-free receipt count; integrity failures still reject the
 whole completion. Literal identifiers carry bounded host-derived cited context.
