@@ -157,6 +157,16 @@ it `artifact`, preserving value/citations, marks it as a reported fact with no
 owner decision cited, and records content-free `decisionRelabels` in the receipt.
 An owner citation is necessary, not proof that the owner adopted the choice.
 Prior entries remain preserved; this rule applies to newly validated deltas.
+Offered spans are presented in source-ordinal order, without changing ranking,
+selection identities or storage order. Each rendered entry carries `order=`, the
+latest **cited** host record ordinal, and entries render in ascending order.
+This is source order, not proof of event time or semantic replacement. Positions
+stay fixed for retained citations; legacy spans lacking ordinals explicitly show
+`order=unknown` after positioned entries. The prompt permits relative chronology
+only when cited host positions support it. No temporal-word heuristic is used.
+These markers fit inside the existing rendered-line and prefix bounds; payload
+projections already include the immutable cited span ordinals. Uncited records
+cannot supply an entry's position. Structural successor-order checks remain.
 Identifier lines also include escaped `context` extracted verbatim from the verified
 cited span at the first occurrence of the value, with at most 48 UTF-8 bytes on each
 side and inward word-boundary cuts where possible. No model-supplied context or

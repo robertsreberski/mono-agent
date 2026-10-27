@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Show cited host source order in continuity ledger entries and extractor inputs
+  without reordering stored entries or treating prose as chronology evidence.
+
 - Fix continuity benchmark integrity checks to reject ineligible preparations,
   distinguish released non-invocations, and avoid double-counting unknown usage.
   Keep extraction kind guidance generic and disclose its evaluation limitations.

@@ -437,7 +437,7 @@ it("keeps context UTF-8/word safe, bounded to48 bytes each side of the first lit
   expect(context.trimStart().startsWith("café") || context.trimStart().startsWith("récap") || context.trimStart().startsWith("🌲")).toBe(true);
 });
 
-it("accounts for context in exact render checks and in near-ceiling inherited prefix/payload fits", async () => {
+it("accounts for context and host order in exact render checks and near-ceiling prefix/payload fits", async () => {
   const f = await fixture(); await owner(f, "Support ticket RLY-84 is ready.");
   const first = selectLedgerSources(f.reader.snapshotContinuity(scope)); const parent = validateLedgerOutput(output(first), first, scope);
   const entries = Array.from({ length: 14 }, (_, i) => ({ ...parent.entries[0]!, id: `old-${i}`, value: "p".repeat(450) }));
@@ -446,7 +446,15 @@ it("accounts for context in exact render checks and in near-ceiling inherited pr
   expect(fit.reason).toBeUndefined(); expect(fit.selection.maxEntries).toBeLessThan(8);
   const id = fit.selection.spans.find(s => s.text.includes("CRN-93"))!.id;
   const next = validateLedgerOutput(JSON.stringify({ entries: [{ kind: "identifier", value: "CRN-93", status: "confirmed", sources: [id] }], covered: [id] }), fit.selection, scope, prior);
-  expect(renderLedger(next, [...first.records, ...fit.selection.records])).toContain('context="Order CRN-93 is scheduled."');
+  const rendered = renderLedger(next, [...first.records, ...fit.selection.records]);
+  expect(rendered).toContain('context="Order CRN-93 is scheduled."');
+  expect(rendered).toContain(`order=${first.spans[0]!.ordinal}`);
+  expect(rendered.split("\n").filter(l => l.startsWith("Derived ")).every(l => Buffer.byteLength(l + "\n") <= 1024)).toBe(true);
+  // Even a full admitted delta pays for each new host marker in the existing
+  // 1024-byte line projection, plus the measured inherited rendered prefix.
+  const full = validateLedgerOutput(JSON.stringify({ entries: Array.from({ length: fit.selection.maxEntries! }, (_, i) => ({ kind: "artifact", value: String(i) + "x".repeat(490), status: "unknown", sources: [id] })), covered: [id] }), fit.selection, scope, prior);
+  expect(Buffer.byteLength(JSON.stringify(full))).toBeLessThanOrEqual(fit.projectedBytes);
+  expect(renderContinuityPack(f.reader.snapshotContinuity(scope), [], 8000, { generation: full, records: [...first.records, ...fit.selection.records] }).ledgerEntries).toBe(14 + fit.selection.maxEntries!);
   expect(Buffer.byteLength(JSON.stringify(next))).toBeLessThanOrEqual(fit.projectedBytes);
   expect(renderContinuityPack(f.reader.snapshotContinuity(scope), [], 8000, { generation: next, records: [...first.records, ...fit.selection.records] }).ledgerEntries).toBe(15);
 });

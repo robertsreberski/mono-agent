@@ -73,7 +73,8 @@ it("resumes a UTF-8 interior cursor with bounded reoffers and without relying on
   const f = await fixture(); await f.capture(1, "Fictional Ω prose ".repeat(24000), "fictional", true);
   await f.prepare(); const cursor = f.db(db => JSON.parse((db.prepare("SELECT cursor FROM continuity_upkeep_progress").get() as { cursor: string }).cursor));
   expect(cursor.offset).toBeGreaterThan(0); expect(cursor.ordinal).toBe(1);
-  await f.prepare(); expect(f.selections[1]![0].start).toBe(cursor.offset);
+  await f.prepare(); expect(f.selections[1]!.some(span => span.start === cursor.offset)).toBe(true);
+  expect(f.selections[1]!.map(span => span.start)).toEqual(f.selections[1]!.map(span => span.start).sort((a, b) => a - b));
   const keys = f.selections.flat().map(spanKey); expect(Math.max(...keys.map(k => keys.filter(other => other === k).length))).toBeLessThanOrEqual(2);
   expect(f.selections[1]!.every(span => Buffer.from(span.text).toString("utf8") === span.text)).toBe(true);
   expect(f.reader.ledger(scope)!.generation.entries).toHaveLength(2);
@@ -296,6 +297,8 @@ it("admits a balanced dense delta and preserves it at the next real supplier bou
 it("gives unsaturated uncited spans one second chance alongside fresh evidence, then stops idle payments", async () => {
   const f = await fixture(); await f.capture(3); await f.prepare();
   expect(f.db(db => db.prepare("SELECT count(*) n FROM continuity_upkeep_offers WHERE state='analyzed'").get())).toEqual({ n: 2 });
+  // Cite the fresh evidence explicitly: prompt order is chronological, not rank.
+  f.respond(rows => [{ kind: "open_work", value: "Fresh state.", status: "unknown", sources: [rows.find(row => row.ordinal === 4).id] }]);
   await f.capture(1, "Fresh."); await f.prepare(); expect(f.selections[1]!.some(row => row.ordinal === 4)).toBe(true); expect(f.selections[1]).toHaveLength(3);
   await f.prepare(); expect(f.complete).toHaveBeenCalledTimes(2);
   expect(f.reader.ledger(scope)!.generation.entries).toHaveLength(2);

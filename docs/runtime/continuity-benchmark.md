@@ -463,6 +463,11 @@ separated by interpolations. This check cannot establish conceptual independence
 Label-precision numbers remain optimistic; neither an independent holdout result
 nor a causal ablation is claimed.
 
+Chronology uses host-cited source positions: extraction inputs are source-ordered,
+and rendered entries carry their latest cited ordinal in ascending order. This
+does not prove event time or make derived relative-order prose authoritative.
+Chronology findings remain part of context findings and are also reported separately.
+
 Source metadata admission is already bounded: `validateRecord` closes the keys,
 `safeMetadata` caps the three optional metadata strings at512bytes each,
 `normalizeId` caps the attested input ID at4096bytes, and the request digest is

@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import ts from "typescript";
 import { expect, it } from "vitest";
 import { SCORE_SHAPES, RankedQueue, signalScore, templateShape, TEMPLATE_REPRESENTATIVES, RECORD_SPAN_LIMIT } from "../continuity/ranking.js";
-import { fitLedgerSelection, ledgerHash, projectedLedgerPayloadBytes, selectLedgerSources, validateLedgerOutput, type LedgerGeneration } from "../continuity/ledger.js";
+import { fitLedgerSelection, ledgerHash, renderLedger, projectedLedgerPayloadBytes, selectLedgerSources, validateLedgerOutput, type LedgerGeneration } from "../continuity/ledger.js";
 import type { ContinuitySnapshotRecord } from "../tool-history/continuity-contracts.js";
 const word = (n: number) => String.fromCharCode(97 + Math.floor(n / 676) % 26, 97 + Math.floor(n / 26) % 26, 97 + n % 26);
 const scope = { currentConversationId: "fictional", logicalConversationId: "fictional" };
@@ -136,4 +136,48 @@ it("does not let untrusted matching text suppress a host-attested owner represen
   const text = "Routing condition for REF-451 is unchanged.";
   const owner = { ...row(3, text, "owner"), provenance: "host-owner" as const, inputId: "input", source: { attestation: { inputId: "input", requestDigest: ledgerHash("input") } } };
   expect(fit([row(1, text, "tool"), row(2, text, "tool"), owner]).selection.spans.some(s => s.owner)).toBe(true);
+});
+
+
+it("offers fitted sources chronologically without changing ranked selection or citations", () => {
+  const records = [row(19, "Reference OAK-891.", "tool"), row(3, "An archival observation."), row(8, "Reference ASH-452.", "tool")];
+  const selected = select(records), fitted = fit(records).selection;
+  for (const selection of [selected, fitted]) {
+    const before = JSON.stringify(selection.spans);
+    const offered = selection.prompt.split("\nSources:\n")[1]!.trim().split("\n").map(line => JSON.parse(line) as { id: string; ordinal: number });
+    expect(offered.map(s => s.ordinal)).toEqual([...selection.spans].map(s => s.ordinal).sort((a, b) => a! - b!));
+    expect(new Set(offered.map(s => s.id))).toEqual(new Set(selection.spans.map(s => s.id)));
+    expect(JSON.stringify(selection.spans)).toBe(before);
+    expect(selection.prompt).toContain("Source ordinal is host order.");
+  }
+});
+
+it("renders an earlier diagram sketch before its release regardless of model entry order", () => {
+  const records = [row(3, "Origami diagram saved with state DRAFT.", "tool"), row(9, "Origami diagram updated to state FINAL.", "tool"), row(90, "Uncited unrelated observation.")];
+  const selection = select(records), id = (ordinal: number) => selection.spans.find(s => s.ordinal === ordinal)!.id;
+  const entries = [
+    { kind: "artifact", value: "Diagram state FINAL.", status: "unknown", sources: [id(9)] },
+    { kind: "artifact", value: "Diagram state DRAFT (prose wrongly says later).", status: "unknown", sources: [id(3)] },
+    { kind: "artifact", value: "Combined observations.", status: "unknown", sources: [id(3), id(9)] },
+  ];
+  const generation = validateLedgerOutput(JSON.stringify({ entries, covered: [id(3), id(9)] }), selection, scope);
+  const before = JSON.stringify(generation), text = renderLedger(generation, records), lines = text.split("\n").filter(l => l.startsWith("Derived "));
+  expect(lines.map(l => l.match(/order=(\d+)/u)![1])).toEqual(["3", "9", "9"]);
+  expect(lines[0]).toContain(entries[1]!.value); expect(lines[1]).toContain(entries[0]!.value);
+  expect(text).not.toContain("order=90"); expect(JSON.stringify(generation)).toBe(before);
+  // Extending a generation cannot change an existing entry's cited position.
+  expect(renderLedger({ ...generation, entries: [...generation.entries].reverse() }, records).split("\n").find(l => l.includes(entries[1]!.value))).toBe(lines[0]);
+  const legacy = { ...generation, spans: generation.spans.map(({ ordinal: _ordinal, ...span }) => span) };
+  expect(renderLedger(legacy, records).split("\n").filter(l => l.startsWith("Derived ")).every(l => l.includes("order=unknown"))).toBe(true);
+});
+
+
+it("projects long host positions inside the existing rendered line and payload ceilings", () => {
+  const record = row(Number.MAX_SAFE_INTEGER - 1, "An archival observation.");
+  const fitted = fit([record]);
+  const generation = validateLedgerOutput(JSON.stringify({ entries: [{ kind: "artifact", value: "x".repeat(512), status: "unknown", sources: [fitted.selection.spans[0]!.id] }], covered: [fitted.selection.spans[0]!.id] }), fitted.selection, scope);
+  const text = renderLedger(generation, [record]);
+  expect(text).toContain(`order=${record.ordinal}`);
+  expect(text.split("\n").filter(l => l.startsWith("Derived ")).every(l => Buffer.byteLength(l + "\n") <= 1024)).toBe(true);
+  expect(Buffer.byteLength(JSON.stringify(generation))).toBeLessThanOrEqual(fitted.projectedBytes);
 });
