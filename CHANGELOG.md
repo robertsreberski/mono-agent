@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Keep valid continuity facts when an unverified action status needs a host
+  downgrade, and preserve identifier roles with bounded, verified cited context.
+  Integrity errors still reject the whole response; upkeep remains opt-in.
+
 - Rank complete bounded history scans for opt-in continuity upkeep, greedily fit
   cited-only ledger deltas, and allow valid uncited evidence one remaining offer
   within the shared two-offer ceiling. Keep scan exhaustion zero-call and the

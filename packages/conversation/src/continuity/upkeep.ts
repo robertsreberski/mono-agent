@@ -95,15 +95,25 @@ export function createLedgerSupplier(options: ConversationHarnessOptions, reques
           // No invocation until BOTH the durable acknowledgement and canonical
           // owner's post-check succeed. Lost waiters never speculate or retry.
           completion = await config.complete(selection.prompt, request.abortSignal, { operationId: reservation.operationId, inputTokens, maxEntries: selection.maxEntries });
+          let generation: ReturnType<typeof validateLedgerOutput> | undefined, validationError: unknown;
+          if (completion.receipt.status === "valid" && completion.text) {
+            try {
+              generation = validateLedgerOutput(completion.text, selection, scope, frozen?.generation, completion.receipt.capEnforcement);
+              completion = { ...completion, receipt: { ...completion.receipt, outcomeDowngrades: generation.outcomeDowngrades ?? 0 } };
+            } catch (error) { validationError = error; }
+          }
+          // Record paid usage even when integrity validation rejects everything.
           await eligibility.withOwner(async () => {
             await history!.mutateUpkeep!({ kind: "outcome", reservation: reservation!, receipt: completion!.receipt });
           });
           outcomeRecorded = true;
+          if (validationError) throw validationError;
           if (completion.receipt.status !== "valid" || !completion.text) {
             if (completion.receipt.providerInvoked && completion.receipt.status === "valid") await eligibility.withOwner(async () => { await history!.mutateUpkeep!({ kind: "reject", reservation: reservation! }); });
             gap = true; return;
           }
-          const generation = validateLedgerOutput(completion.text, selection, scope, frozen?.generation, completion.receipt.capEnforcement); uncovered = generation.uncovered;
+          if (!generation) throw new LedgerError("output_schema");
+          uncovered = generation.uncovered;
           const deltaEntries = JSON.parse(completion.text).entries.length as number;
           if (deltaEntries && !fitsLedgerPrefix(renderLedger(generation, [...(frozen?.records ?? []), ...selection.records]), eligibility.maxTokens)) throw new LedgerError("ledger_render_budget");
           await eligibility.withOwner(async () => { await history!.mutateUpkeep!({ kind: "settle", reservation: reservation!, saturated: deltaEntries === selection.maxEntries, analysisOnly: deltaEntries === 0 }); });

@@ -146,7 +146,18 @@ model entry must fit **832 JSON-serialized bytes**, and each escaped rendered
 derived line must fit **1024 UTF-8 bytes including its newline**. Any excess
 rejects the whole completion. Identifier values must occur exactly in cited
 evidence and contain only the bare identifier, not an explanatory prefix.
-A confirmed action/artifact cannot cite only an owner request. All prose is
+An owner promise or plan is `requested` or `active`, not an observed outcome.
+For commitment/artifact entries, `confirmed`/`failed` without a finalized tool-result
+binding is conservatively downgraded to `unknown`; values and citations stay intact.
+The host renders an outcome-not-verified marker and records a content-free
+`outcomeDowngrades` count in the receipt. Forged references, digest/span mismatches,
+schema errors and bounds violations still reject the whole completion.
+Identifier lines also include escaped `context` extracted verbatim from the verified
+cited span at the first occurrence of the value, with at most 48 UTF-8 bytes on each
+side and inward word-boundary cuts where possible. No model-supplied context or
+uncited bytes are used. Context is re-derived, not separately persisted; existing
+source lineage/payload projections retain those verified bytes. The 1024-byte line
+ceiling and prefix projections include context and outcome markers. All prose is
 **derived interpretation**, never host-owner authority. Cited owner text is
 reconstructed as whole paragraphs with qualifications and negations intact.
 Historical requests are not renewed approval; absent outcomes remain unknown.

@@ -7,7 +7,7 @@ import { ToolHistoryWriter } from "../tool-history/writer.js";
 import { ToolHistoryReader } from "../tool-history/reader.js";
 import { continuityGenerationId, continuityRecordId } from "../tool-history/continuity-storage.js";
 import { persistContinuityPurge } from "../tool-history/continuity-purge.js";
-import { ledgerHash, fitLedgerSelection, LEDGER_VALUE_JSON_BYTES, LEDGER_ENTRY_JSON_BYTES, projectedLedgerPayloadBytes, LEDGER_PAYLOAD_BYTES, LEDGER_LINEAGE_BYTES, selectLedgerSources, validateLedgerOutput, type LedgerSelection } from "../continuity/ledger.js";
+import { renderLedger, ledgerHash, fitLedgerSelection, LEDGER_VALUE_JSON_BYTES, LEDGER_ENTRY_JSON_BYTES, projectedLedgerPayloadBytes, LEDGER_PAYLOAD_BYTES, LEDGER_LINEAGE_BYTES, selectLedgerSources, validateLedgerOutput, type LedgerSelection } from "../continuity/ledger.js";
 import { createContinuityPackSupplier, renderContinuityPack } from "../continuity/pack.js";
 import type { ConversationHarnessOptions } from "../harness/contracts.js";
 const scope = { logicalConversationId: "fictional", currentConversationId: "fictional", currentRunId: "current" };
@@ -65,7 +65,7 @@ it("validates exact spans and quotes whole owner paragraphs without promoting de
   const bad = { ...selection, spans: [{ ...selection.spans[0]!, start: 1 }] };
   expect(() => validateLedgerOutput(output(bad), bad, scope)).toThrow();
   expect(() => validateLedgerOutput(JSON.stringify({ entries: [{ kind: "identifier", value: "INVENTED-99", status: "active", sources: ["s0"] }], covered: ["s0"] }), selection, scope)).toThrow();
-  expect(() => validateLedgerOutput(JSON.stringify({ entries: [{ kind: "commitment", value: "sent", status: "confirmed", sources: ["s0"] }], covered: ["s0"] }), selection, scope)).toThrow();
+  expect(validateLedgerOutput(JSON.stringify({ entries: [{ kind: "commitment", value: "sent", status: "confirmed", sources: ["s0"] }], covered: ["s0"] }), selection, scope).entries[0]).toMatchObject({ status: "unknown", outcomeUnverified: true });
 });
 
 it("publishes only the latest generation with parent/manifest CAS and inherited-source cascade on an old-binary B1 deletion", async () => {
@@ -325,7 +325,6 @@ it.each([
   ["covered_invalid", '{"entries":[],"covered":0}'], ["unknown_source", '{"entries":[],"covered":["missing"]}'],
   ["unknown_source", JSON.stringify({ entries: [{ kind: "open_work", status: "unknown", value: "Fictional", sources: ["missing"] }], covered: ["s0"] })],
   ["identifier_not_in_span", JSON.stringify({ entries: [{ kind: "identifier", status: "active", value: "NOT-IN-SOURCE", sources: ["s0"] }], covered: ["s0"] })],
-  ["request_not_outcome", JSON.stringify({ entries: [{ kind: "commitment", status: "confirmed", value: "sent", sources: ["s0"] }], covered: ["s0"] })],
 ])("returns stable %s without carrying evidence in the error", async (code, text) => {
   const f = await fixture(); await owner(f); const selection = selectLedgerSources(f.reader.snapshotContinuity(scope));
   try { validateLedgerOutput(text, selection, scope); expect.fail("must reject"); } catch (error) { expect(error).toMatchObject({ name: "LedgerError", code, message: code }); }
@@ -368,4 +367,86 @@ it("rejects the captured partial-prefix coverage but accepts explicit cited IDs"
   expect(() => validateLedgerOutput(JSON.stringify(captured), selection, scope, undefined, "stream_abort")).toThrow("covered_invalid");
   const compliant = { ...captured, covered: [ownerSpan.id, identifier.id] };
   expect(validateLedgerOutput(JSON.stringify(compliant), selection, scope, undefined, "stream_abort").entries).toHaveLength(2);
+});
+
+
+it("publishes a fictionalized captured multi-entry response with only the owner promise downgraded", async () => {
+  const f = await fixture(); await owner(f, "I will pack the spare cables by Thursday. Keep the message logistical. Save a draft, do not send. Revised quote is $275, replacing $490. Pickup is Friday.");
+  const selection = selectLedgerSources(f.reader.snapshotContinuity(scope));
+  const entries = [
+    { kind: "commitment", value: "Morgan plans to pack the spare cables by Thursday.", status: "confirmed", sources: ["s0"] },
+    { kind: "constraint", value: "Keep the message logistical.", status: "active", sources: ["s0"] },
+    { kind: "constraint", value: "Save a draft, do not send.", status: "requested", sources: ["s0"] },
+    { kind: "decision", value: "Revised quote is $275, replacing $490.", status: "confirmed", sources: ["s0"] },
+    { kind: "decision", value: "Pickup is Friday.", status: "confirmed", sources: ["s0"] },
+  ];
+  const generation = validateLedgerOutput(JSON.stringify({ entries, covered: ["s0"] }), selection, scope);
+  expect(generation.outcomeDowngrades).toBe(1); expect(generation.entries).toHaveLength(5);
+  expect(generation.entries[0]).toMatchObject({ value: entries[0]!.value, status: "unknown", outcomeUnverified: true });
+  await f.writer.publishLedger(generation);
+  const stored = f.reader.ledger(scope)!; expect(stored.generation.entries).toEqual(generation.entries);
+  expect(renderLedger(stored.generation, stored.records)).toContain("(outcome not verified by a tool result)");
+  expect(() => validateLedgerOutput(JSON.stringify({ entries: [...entries, { ...entries[0], sources: ["forged"] }], covered: ["s0", "forged"] }), selection, scope)).toThrow("unknown_source");
+  expect(f.reader.ledger(scope)!.generation.id).toBe(generation.id);
+});
+
+it.each(["commitment", "artifact"])("downgrades both outcome statuses for an unbound %s, not source integrity", async kind => {
+  const f = await fixture(); await tool(f, "The requested result is available.");
+  const selected = selectLedgerSources(f.reader.snapshotContinuity(scope));
+  for (const status of ["confirmed", "failed"]) {
+    const text = JSON.stringify({ entries: [{ kind, status, value: "Result reported.", sources: ["s0"] }], covered: ["s0"] });
+    expect(validateLedgerOutput(text, selected, scope).entries[0]).toMatchObject({ status });
+    for (const records of [selected.records.map(r => { const { tool: _tool, ...rest } = r; return rest; }), selected.records.map(r => ({ ...r, tool: { ...r.tool!, state: "running" } }))]) {
+      expect(validateLedgerOutput(text, { ...selected, records }, scope).entries[0]).toMatchObject({ status: "unknown", outcomeUnverified: true });
+    }
+    expect(() => validateLedgerOutput(text, { ...selected, spans: [{ ...selected.spans[0]!, digest: "forged" }] }, scope)).toThrow("source_changed");
+  }
+});
+
+it("persists a content-free downgrade counter in the paid receipt without rejecting the generation", async () => {
+  const f = await fixture(); await owner(f, "I plan to collect the spare cables."); const events: unknown[] = [];
+  const complete = async (_prompt: string, _signal: AbortSignal, budget: { operationId: string }) => ({ text: JSON.stringify({ entries: [{ kind: "commitment", value: "Collect the spare cables.", status: "confirmed", sources: ["s0"] }], covered: ["s0"] }), receipt: { operationId: budget.operationId, model: "fictional:base", status: "valid", reason: "completed", providerInvoked: true, capEnforcement: "request" } });
+  const options = { toolHistory: { ...f, logicalConversationId: (id: string) => id, continuityEnabled: true, upkeep: { enabled: true, model: "fictional:base", complete }, publishLedger: f.writer.publishLedger.bind(f.writer) } } as unknown as ConversationHarnessOptions;
+  const supplier = createContinuityPackSupplier(options, { conversationId: "fictional", userMessage: "Current.", abortSignal: new AbortController().signal }, "current")!;
+  await supplier.prepare(eligible, "cold_rebuild", e => events.push(e));
+  expect(events).toContainEqual(expect.objectContaining({ type: "continuity_upkeep", status: "valid", outcomeDowngrades: 1 }));
+  const db = new DatabaseSync(f.reader.databasePath); const row = db.prepare("SELECT outcome FROM continuity_upkeep_operations").get() as { outcome: string }; db.close();
+  expect(JSON.parse(row.outcome)).toMatchObject({ outcomeDowngrades: 1 });
+  expect(f.reader.ledger(scope)!.generation.entries[0]).toMatchObject({ status: "unknown" });
+});
+
+it("derives a ticket role only from the verified cited paragraph, escaped rather than model supplied", async () => {
+  const f = await fixture(); await owner(f, 'OUTSIDE_CONTEXT must not be included.\n\nSupport ticket RLY-84: keep the \"quoted\" café 🧩 receipt.');
+  const selection = selectLedgerSources(f.reader.snapshotContinuity(scope)), span = selection.spans.find(s => s.text.includes("RLY-84"))!;
+  const entry = { kind: "identifier", value: "RLY-84", status: "confirmed", sources: [span.id] }, text = JSON.stringify({ entries: [entry], covered: [span.id] });
+  const generation = validateLedgerOutput(text, selection, scope), rendered = renderLedger(generation, selection.records);
+  const line = rendered.split("\n").find(line => line.startsWith("Derived identifier"))!;
+  expect(line).toContain('context="Support ticket RLY-84:'); expect(rendered).not.toContain("OUTSIDE_CONTEXT");
+  expect(line).toContain('\\"quoted\\"'); expect(line).not.toContain("�");
+  expect(() => validateLedgerOutput(JSON.stringify({ entries: [{ ...entry, context: "model-invented role" }], covered: [span.id] }), selection, scope)).toThrow("output_schema");
+  expect(() => renderLedger(generation, selection.records.map(r => ({ ...r, text: r.text + "changed" })))).toThrow("source_changed");
+});
+
+it("keeps context UTF-8/word safe, bounded to48 bytes each side of the first literal occurrence", async () => {
+  const f = await fixture(); const text = "🌲 café récap ".repeat(12) + "ticket RLY-84 " + "confirmé 🌲 ".repeat(12) + "RLY-84 SECOND"; await owner(f, text);
+  const selection = selectLedgerSources(f.reader.snapshotContinuity(scope));
+  const generation = validateLedgerOutput(JSON.stringify({ entries: [{ kind: "identifier", value: "RLY-84", status: "confirmed", sources: ["s0"] }], covered: ["s0"] }), selection, scope);
+  const line = renderLedger(generation, selection.records).split("\n").find(l => l.startsWith("Derived identifier"))!, context = JSON.parse(line.split(" context=")[1]!.split(" sources=")[0]!) as string;
+  expect(text).toContain(context); expect(context).toContain("ticket RLY-84"); expect(context).not.toContain("SECOND"); expect(context).not.toContain("�");
+  expect(Buffer.byteLength(context)).toBeLessThanOrEqual(Buffer.byteLength("RLY-84") + 96);
+  expect(context.trimStart().startsWith("café") || context.trimStart().startsWith("récap") || context.trimStart().startsWith("🌲")).toBe(true);
+});
+
+it("accounts for context in exact render checks and in near-ceiling inherited prefix/payload fits", async () => {
+  const f = await fixture(); await owner(f, "Support ticket RLY-84 is ready.");
+  const first = selectLedgerSources(f.reader.snapshotContinuity(scope)); const parent = validateLedgerOutput(output(first), first, scope);
+  const entries = Array.from({ length: 14 }, (_, i) => ({ ...parent.entries[0]!, id: `old-${i}`, value: "p".repeat(450) }));
+  const prior = { ...parent, entries }; await owner(f, "Order CRN-93 is scheduled.");
+  const selected = selectLedgerSources(f.reader.snapshotContinuity(scope), prior), fit = fitLedgerSelection(selected, scope, { generation: prior, records: first.records, retainedBytes: Buffer.byteLength(first.records[0]!.text) }, { maxTokens: 8000, deltaEntries: 8 });
+  expect(fit.reason).toBeUndefined(); expect(fit.selection.maxEntries).toBeLessThan(8);
+  const id = fit.selection.spans.find(s => s.text.includes("CRN-93"))!.id;
+  const next = validateLedgerOutput(JSON.stringify({ entries: [{ kind: "identifier", value: "CRN-93", status: "confirmed", sources: [id] }], covered: [id] }), fit.selection, scope, prior);
+  expect(renderLedger(next, [...first.records, ...fit.selection.records])).toContain('context="Order CRN-93 is scheduled."');
+  expect(Buffer.byteLength(JSON.stringify(next))).toBeLessThanOrEqual(fit.projectedBytes);
+  expect(renderContinuityPack(f.reader.snapshotContinuity(scope), [], 8000, { generation: next, records: [...first.records, ...fit.selection.records] }).ledgerEntries).toBe(15);
 });
