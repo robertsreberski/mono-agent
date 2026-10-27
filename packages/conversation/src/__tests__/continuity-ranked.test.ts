@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import ts from "typescript";
 import { expect, it } from "vitest";
 import { SCORE_SHAPES, RankedQueue, signalScore, templateShape, TEMPLATE_REPRESENTATIVES, RECORD_SPAN_LIMIT } from "../continuity/ranking.js";
 import { fitLedgerSelection, ledgerHash, projectedLedgerPayloadBytes, selectLedgerSources, validateLedgerOutput, type LedgerGeneration } from "../continuity/ledger.js";
@@ -13,16 +14,37 @@ function row(ordinal: number, text = "Neutral.", kind: ContinuitySnapshotRecord[
 const select = (records: ContinuitySnapshotRecord[], prior?: LedgerGeneration) => selectLedgerSources({ records, omitted: 0, gaps: 0, upkeep: { watermark: Math.max(...records.map(r => r.ordinal)), excluded: [] } }, prior, 128000);
 const fit = (records: ContinuitySnapshotRecord[], prior?: Parameters<typeof fitLedgerSelection>[2]) => fitLedgerSelection(select(records, prior?.generation), scope, prior, { maxTokens: 8000, deltaEntries: 8 });
 
-it("uses no annotation/probe words: production scoring and instructions do not copy generator phrases", () => {
+// Fixed function-word list, not selected from benchmark content. Content words remain.
+const STOPWORDS = new Set("a an and are as at be been but by for from has have i if in is it its me my of on or our s so that the their them then there they this to was we were will with you your".split(" "));
+const grams = (text: string) => {
+  const words = (text.toLowerCase().match(/[a-z]+/gu) ?? []).filter(word => !STOPWORDS.has(word));
+  return words.slice(2).map((_, i) => words.slice(i, i + 3).join(" "));
+};
+function literals(text: string, templatesOnly = false): string[] {
+  const file = ts.createSourceFile("fixture.ts", text, ts.ScriptTarget.Latest, true), chunks: string[] = [];
+  const visit = (node: ts.Node) => {
+    if (ts.isTemplateExpression(node)) chunks.push([node.head.text, ...node.templateSpans.map(span => span.literal.text)].join(" "));
+    else if (ts.isNoSubstitutionTemplateLiteral(node) || !templatesOnly && ts.isStringLiteral(node)) chunks.push(node.text);
+    ts.forEachChild(node, visit);
+  };
+  visit(file); return chunks;
+}
+it("rejects stopword-stripped generator template trigrams in the production prompt and ranking constants", () => {
   const generator = readFileSync(new URL("../../../../scripts/lib/continuity-generator.mjs", import.meta.url), "utf8");
-  const phrases = generator.match(/[A-Za-z]{2,}(?: [A-Za-z]{2,}){2,}/g)!;
-  expect(phrases.length).toBeGreaterThan(50);
-  const prompt = select([]).prompt.toLowerCase().replace(/\s+/gu, " ");
-  for (const phrase of phrases) {
-    for (const pattern of SCORE_SHAPES) expect(pattern.test(phrase), `${pattern}: ${phrase}`).toBe(false);
-    const words = phrase.toLowerCase().split(" ");
-    for (let i = 0; i + 7 <= words.length; i++) expect(prompt).not.toContain(words.slice(i, i + 7).join(" "));
-  }
+  const templates = literals(generator, true), generatorGrams = new Set(templates.flatMap(grams));
+  expect(templates.length).toBeGreaterThan(20); expect(generatorGrams.size).toBeGreaterThan(100);
+  expect(literals("`alpha ${value} of beta ${other} gamma`", true).flatMap(grams)).toContain("alpha beta gamma");
+  // No exceptions currently needed. Any future entry requires a generic-grammar justification.
+  const allowlist: Record<string, string> = {};
+  const overlaps = (text: string) => grams(text).filter(gram => generatorGrams.has(gram) && !(gram in allowlist));
+  const prompt = select([]).prompt;
+  const ranking = readFileSync(new URL("../continuity/ranking.ts", import.meta.url), "utf8");
+  expect(overlaps(prompt)).toEqual([]);
+  expect(literals(ranking).flatMap(overlaps)).toEqual([]);
+  for (const phrase of generator.match(/[A-Za-z]{2,}(?: [A-Za-z]{2,}){2,}/gu)!) for (const pattern of SCORE_SHAPES) expect(pattern.test(phrase), `${pattern}: ${phrase}`).toBe(false);
+  const forbidden = [...generatorGrams].find(gram => !(gram in allowlist))!;
+  expect(overlaps(prompt + "\n" + forbidden)).toContain(forbidden); // Three words suffice, even across interpolations.
+  for (const reason of Object.values(allowlist)) expect(reason.length).toBeGreaterThan(20);
 });
 it("ranks equivalently after renaming/permuting fictional identifiers and quotation labels", () => {
   const records = [row(1, "ID AB-120; 450.", "tool"), row(2, "ID CD-340; 670.", "tool"), row(3, "Neutral archival prose.")];
