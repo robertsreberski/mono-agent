@@ -251,7 +251,7 @@ export function verifyBoundary(expected, observed) {
  * ConversationHistory, and nothing degraded the store. A degraded store makes
  * the sample invalid (excluded), never a scored miss.
  */
-export function verifyStore(arm, { checkpointContinuity, observed }) {
+export function verifyStore(arm, { checkpointContinuity, observed, expectedLedgerEntries }) {
   if (!arm.expect.evidence?.includes("store_healthy")) return { applicable: false, healthy: true, reasons: [] };
   const reasons = [];
   if (!checkpointContinuity || !(checkpointContinuity.records > 0)) reasons.push("no_retained_records");
@@ -266,7 +266,8 @@ export function verifyStore(arm, { checkpointContinuity, observed }) {
       || !(pack.ownerEntries + pack.toolEntries + pack.summaryEntries + pack.evidenceEntries + (pack.ledgerEntries ?? 0) > 0)) reasons.push("continuity_pack_not_injected");
     if (pack && !["none", "overflow", "snapshot_bounds"].includes(pack.degradedReason)) reasons.push(`continuity_pack_degraded:${pack.degradedReason}`);
   }
-  if (arm.expect.evidence.includes("ledger_injected") && !(observed.continuityPacks?.[0]?.ledgerEntries > 0)) reasons.push("ledger_not_injected");
+  if (arm.expect.evidence.includes("ledger_injected") && !(observed.continuityPacks?.[0]?.ledgerEntries > 0)
+    && !(expectedLedgerEntries === 0 && observed.continuityPacks?.[0]?.ledgerEntries === 0 && observed.continuityPacks?.[0]?.evidenceEntries > 0)) reasons.push("ledger_not_injected");
   return { applicable: true, healthy: reasons.length === 0, reasons };
 }
 

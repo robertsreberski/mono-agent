@@ -179,7 +179,7 @@ const round = (value, digits = 4) => (value === null ? null : Number(value.toFix
 
 const USAGE_FIELDS = ["inputTokens", "outputTokens", "cacheReadTokens", "cacheWriteTokens"];
 export function emptyUsage() {
-  return { calls: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, estimatedCostUsd: 0, unknownCostCalls: 0, unknownTokenCalls: 0, estimatedPaidCalls: 0, estimatedPaidInputCostUsd: 0 };
+  return { calls: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, estimatedCostUsd: 0, unknownCostCalls: 0, unknownTokenCalls: 0, estimatedPaidCalls: 0, estimatedPaidInputCostUsd: 0, conservativeCostUsd: 0, conservativeCalls: 0, unpricedConservativeCalls: 0 };
 }
 export function addUsage(total, usage) {
   if (!usage || usage.calls === 0) return total;
@@ -189,11 +189,15 @@ export function addUsage(total, usage) {
   for (const field of USAGE_FIELDS) {
     if (typeof usage[field] === "number") total[field] += usage[field]; else unknownTokens = true;
   }
-  if (unknownTokens) total.unknownTokenCalls += usage.unknownTokenCalls ?? 1;
+  total.unknownTokenCalls += usage.unknownTokenCalls ?? (unknownTokens ? 1 : 0);
+  total.conservativeCostUsd += usage.conservativeCostUsd ?? 0;
+  total.conservativeCalls += usage.conservativeCalls ?? 0;
+  total.unpricedConservativeCalls += usage.unpricedConservativeCalls ?? 0;
   total.estimatedPaidCalls += usage.estimatedPaidCalls ?? 0;
   total.estimatedPaidInputCostUsd += usage.estimatedPaidInputCostUsd ?? 0;
   if (typeof usage.estimatedCostUsd === "number") total.estimatedCostUsd += usage.estimatedCostUsd;
-  else total.unknownCostCalls += usage.unknownCostCalls ?? 1;
+  else total.estimatedCostUsd += usage.knownCatalogCostUsd ?? 0;
+  total.unknownCostCalls += usage.unknownCostCalls ?? (typeof usage.estimatedCostUsd === "number" ? 0 : 1);
   return total;
 }
 
@@ -342,6 +346,9 @@ export function renderMarkdown(summary, { qualityMeasured, armLabels = {}, judge
     lines.push(`| ${armLabels[arm] ?? arm} | ${usage.calls} | ${usage.inputTokens} | ${usage.cacheReadTokens} | ${usage.cacheWriteTokens} | ${usage.outputTokens} | ${usage.estimatedCostUsd.toFixed(4)} | ${usage.unknownCostCalls} | ${compaction.calls} / ${compaction.estimatedCostUsd.toFixed(4)} |`);
   }
   if (judgeUsage) lines.push(`| judge | ${judgeUsage.calls} | ${judgeUsage.inputTokens} | ${judgeUsage.cacheReadTokens} | ${judgeUsage.cacheWriteTokens} | ${judgeUsage.outputTokens} | ${judgeUsage.estimatedCostUsd.toFixed(4)} | ${judgeUsage.unknownCostCalls} | – |`);
+  lines.push("", "Known catalog estimates above exclude unknown-call reservations. Conservative charges below reserve full input plus maximum planned output; they are accounting, not an invoice guarantee. Codex stream_abort has no remote output cap; hidden reasoning/remote work can exceed reservations (also true of earlier runs).", "", "| Arm | Conservative calls | Conservative USD | Unpriced reservations |", "| --- | ---: | ---: | ---: |");
+  for (const [arm, row] of Object.entries(summary.arms)) lines.push(`| ${armLabels[arm] ?? arm} | ${row.usage.conservativeCalls} | ${row.usage.conservativeCostUsd.toFixed(6)} | ${row.usage.unpricedConservativeCalls} |`);
+
   lines.push("");
   const toolArms = arms.filter((arm) => summary.arms[arm].toolUse);
   if (toolArms.length > 0) {

@@ -260,7 +260,7 @@ export function makePlan({ traces, sha256, suite = "original", source = null, co
     baselineArm: BASELINE_ARM,
     repeats,
     reader: { model: reader, effort: readerEffort },
-    upkeep: { model: profile.extractionModel ?? reader, requireRequestCap: profile.requireRequestCap === true, maxInputTokens: 128000, incrementalMaxInputTokens: 64000, maxOutputTokens: 4096, timeoutMs: 60000,
+    upkeep: { degradedStagePolicy: "continue_with_ledger_or_pack", unknownUsagePolicy: "full_reserve_catalog_accounting", model: profile.extractionModel ?? reader, requireRequestCap: profile.requireRequestCap === true, maxInputTokens: 128000, incrementalMaxInputTokens: 64000, maxOutputTokens: 4096, timeoutMs: 60000,
       capEnforcement: (profile.extractionModel ?? reader).startsWith("openai-codex:") ? "stream_abort" : "request_or_skip", reasoning: "lowest_supported", callsPerTraceRepeat: preparations.length, preparations,
       reservations: upkeepCalls ? traces.flatMap(trace => Array.from({ length: repeats }, (_, repeat) => preparations.map((step, index) => ({ traceId: trace.id, repeat: repeat + 1, preparation: index + 1, ...step }))).flat()) : [] },
     alternateBinding: { model: alternate, servedBy: "scripted-history-only" },
@@ -272,7 +272,7 @@ export function makePlan({ traces, sha256, suite = "original", source = null, co
       // Observed (not reserved) uncached+cached input per invocation; admission stops when crossed.
       maxObservedInputTokensPerInvocation: long ? 400_000_000 : 6_000_000,
     },
-    accounting: "observed-runtime-usage; cost is the Pi catalog list-price estimate when reported, unknown otherwise; subscription billing is not metered per token",
+    accounting: "observed-runtime-usage; known cost is the Pi catalog list-price estimate; unknown upkeep usage charges full reserved input plus planned output separately; not an invoice guarantee",
     codeRevision,
     piAuthFingerprint,
   };

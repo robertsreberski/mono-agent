@@ -201,6 +201,7 @@ async function execute({ flags, plan, traces, mode, output, piAuthPath, head, di
   if (units.length === 0) return;
   const { productionModules, buildCheckpoint, runProbe, createJudge, pool, isFatalFailure } = await import("./lib/continuity-runner.mjs");
   const modules = await (modulesLoader ?? productionModules)(ROOT);
+  const upkeepPrice = (await listPrices([plan.upkeep.model]))[plan.upkeep.model];
   const scratch = join(output, "work");
   await mkdir(scratch, { recursive: true, mode: 0o700 });
   const authPath = piAuthPath ?? join(scratch, "no-credentials.json");
@@ -223,7 +224,7 @@ async function execute({ flags, plan, traces, mode, output, piAuthPath, head, di
     await rm(dir, { recursive: true, force: true });
     try {
       state.liveTurns += unit.arm.ledgerUpkeep ? plan.upkeep.callsPerTraceRepeat : unit.arm.midCheckpoint !== null ? 1 : 0;
-      const built = await buildCheckpoint({ modules, trace: unit.trace, arm: unit.arm, repeat: unit.repeat, dir, plan, mode, authPath, ...(flags["capture-upkeep-output"] ? { captureUpkeepOutput: join(output, "upkeep-output", `r${unit.repeat}-${unit.trace.id}.json`) } : {}) });
+      const built = await buildCheckpoint({ modules, trace: unit.trace, arm: unit.arm, repeat: unit.repeat, dir, plan, mode, authPath, upkeepPrice, ...(flags["capture-upkeep-output"] ? { captureUpkeepOutput: join(output, "upkeep-output", `r${unit.repeat}-${unit.trace.id}.json`) } : {}) });
       if (built.record.mid) account(built.record.mid.usage);
       if (built.record.upkeep) account(built.record.upkeep.usage);
       checkpoints.set(key, built);
@@ -301,9 +302,15 @@ export async function aggregate({ plan, traces, output, mode }) {
   }));
   const coverage = { unitsComplete: units.length, unitsExpected: plan.repeats * plan.corpus.traces.length * armIds.length };
   const armLabels = Object.fromEntries(ARMS.map((arm) => [arm.id, arm.label]));
-  const results = { plan, executionKind: mode, qualityMeasured: mode === "real", inventory: inventory(traces), coverage, summary, judgeUsage, midCheckpoints, upkeep: units.filter(unit => unit.checkpoint?.upkeep).map(unit => ({ traceId: unit.traceId, repeat: unit.repeat, arm: unit.arm, ...unit.checkpoint.upkeep })), pressure: pressureSummary };
+  const preparationHealth = Object.fromEntries(plan.arms.map(arm => {
+    const stages = units.filter(unit => unit.arm === arm.id).flatMap(unit => unit.checkpoint?.upkeep?.preparations ?? []);
+    const degraded = stages.filter(step => step.degraded);
+    return [arm.id, { stages: stages.length, degradedStages: degraded.length, reasons: Object.fromEntries([...new Set(degraded.map(step => step.degradedReason))].map(reason => [reason, degraded.filter(step => step.degradedReason === reason).length])) }];
+  }));
+  const results = { preparationHealth, plan, executionKind: mode, qualityMeasured: mode === "real", inventory: inventory(traces), coverage, summary, judgeUsage, midCheckpoints, upkeep: units.filter(unit => unit.checkpoint?.upkeep).map(unit => ({ traceId: unit.traceId, repeat: unit.repeat, arm: unit.arm, ...unit.checkpoint.upkeep })), pressure: pressureSummary };
   await writeFile(join(output, "results.json"), `${JSON.stringify(results, null, 2)}\n`, { mode: 0o600 });
-  const header = `Coverage: ${coverage.unitsComplete}/${coverage.unitsExpected} trace×arm×repeat units. Code revision ${plan.codeRevision ?? "unknown"}. Plan ${plan.confirmation}.\n\n`;
+  const degradation = Object.entries(preparationHealth).map(([arm, health]) => `- ${arm}: ${health.degradedStages}/${health.stages} degraded preparation stages; reasons ${JSON.stringify(health.reasons)}.`).join("\n");
+  const header = `Preparation health (degraded stages remain scored):\n${degradation}\n\nCoverage: ${coverage.unitsComplete}/${coverage.unitsExpected} trace×arm×repeat units. Code revision ${plan.codeRevision ?? "unknown"}. Plan ${plan.confirmation}.\n\n`;
   await writeFile(join(output, "summary.md"), `${header}${renderMarkdown(summary, { qualityMeasured: mode === "real", armLabels, judgeUsage: plan.judge ? judgeUsage : null })}`, { mode: 0o600 });
   return results;
 }

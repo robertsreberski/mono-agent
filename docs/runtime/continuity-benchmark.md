@@ -163,6 +163,31 @@ once the production feature lands, and confirm its patch keys and evidence event
 names against the implementation. Unknown config keys still fail in production
 config resolution.
 
+### Ledger preparation degradation and integrity
+
+The ledger arm runs all three fresh-child preparations even when upkeep is
+aborted, times out, returns invalid output, or is skipped. These are **degraded
+stages**, not invalid checkpoints: probes use the last published ledger, or the
+deterministic evidence pack if no ledger was published. Results include stage
+counts and degradation reasons per arm (and per suite/output directory). A failed
+model response never becomes a successful extraction or a fabricated generation.
+
+The boundary and journal protocol remain fail-closed: unverified model changes,
+missing/extra operations, a second bootstrap, duplicate preparation children,
+lost prior entries, excessive/repeated offers, upkeep during probes, or mismatched
+injection invalidate the checkpoint/sample. A skipped non-invocation can add no
+operation; every observed new reservation must be unique and budgeted correctly.
+An all-skipped preparation has no bootstrap, not a manufactured paid operation.
+
+Known catalog usage/cost and unknown-call conservative charges are separate.
+An unknown upkeep call reserves the full input allowance (128k bootstrap or 64k
+incremental) plus 4096 output tokens at catalog prices, never merely its visible
+input estimate. Unknown/unpriced reservations remain disclosed, not reported as
+zero-cost known calls. **This is accounting, not an invoice guarantee:** Codex
+`stream_abort` does not enforce a remote output cap; hidden reasoning or remote
+work can exceed reservations. This limitation also applies to earlier paid runs.
+See the [ledger budget limits](./continuity-ledger.md) for the unchanged D6 rules.
+
 ### Evidence checked per sample
 
 Each sample records the boundary actually observed: `session_boundary` events,

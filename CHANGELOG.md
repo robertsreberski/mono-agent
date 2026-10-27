@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Keep continuity benchmark probes after degraded upkeep stages, while rejecting
+  broken boundary/journal/injection protocols and separately charging unknown
+  usage at full catalog reservations (not an invoice guarantee).
+
 - Keep valid continuity facts when an unverified action status needs a host
   downgrade, and preserve identifier roles with bounded, verified cited context.
   Integrity errors still reject the whole response; upkeep remains opt-in.

@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ARMS, AVAILABLE_ARM_IDS, BASELINE_ARM, CONTINUITY_OFF, CONTINUITY_ON, CONTINUITY_PACK_ON, DEFAULT_ARMS, NOT_AVAILABLE, ORIGINAL_ARM_IDS, SMALL_PROACTIVE_COMPACTION, armById, checkpointKey, mergePatch, pressureMetrics, verifyBoundary, verifyPressure, verifyStore } from "../lib/continuity-arms.mjs";
-import { classifyHistoryResult, boundedOfferHistory } from "../lib/continuity-runner.mjs";
+import { classifyHistoryResult, boundedOfferHistory, preparationIntegrity, preparationUsage, verifyLedgerTreatment } from "../lib/continuity-runner.mjs";
 import { digest, estimateCost, inventory, loadTraces, makePlan, parseSeeds, sourceOnly, validateTrace } from "../lib/continuity-dataset.mjs";
 import { COLD_BOUNDS, GENERATOR_VERSION, HARD_SEEDS, LONG_RULES, generateTrace, mulberry32, outsideColdBounds, traceShape } from "../lib/continuity-generator.mjs";
 import { ABSTAIN_INSTRUCTION, ORIGINAL_CATEGORIES, emptyUsage, addUsage, isAbstention, parseJudgeVerdict, probePrompt, renderMarkdown, scoreAnswer, summarize } from "../lib/continuity-score.mjs";
@@ -542,8 +542,8 @@ it.each(["harness", "ledger", "skip"])("retains upkeep receipt/accounting after 
     conversation: { ToolHistoryReader: class { n = 0; ledger() { if (this.n++ > 0) throw new Error("fictional"); } } },
   };
   const result = await prepareLedgerCheckpoint({ modules, work, mode: "real", reader: { reference: "openai-codex:gpt-6-luna" }, alternate: { reference: "openai:gpt-4o-mini" }, scripted: { respondWith() {} }, clock: {}, plan: { upkeep: { model: "openai-codex:gpt-6-luna", maxInputTokens: 128000, incrementalMaxInputTokens: 64000, maxOutputTokens: 4096, callsPerTraceRepeat: 3, preparations: [{ binding: "openai:gpt-4o-mini", maxInputTokens: 128000 }] }, limits: { perLiveTurnTimeoutMs: 10000 } } });
-  expect(result.receipt).toEqual(receipt); expect(result.valid).toBe(false);
-  expect(result.usage).toMatchObject(point === "skip" ? { calls: 0, inputTokens: 0, outputTokens: 0, estimatedCostUsd: 0 } : { calls: 1, estimatedInputTokens: 15000, estimatedCostUsd: 0.02, estimatedPaidCalls: 1, estimatedPaidInputCostUsd: 0.02 });
+  expect(result.receipt).toEqual(receipt); expect(result.valid).toBe(point !== "harness");
+  expect(result.usage).toMatchObject(point === "skip" ? { calls: 0, inputTokens: 0, outputTokens: 0, estimatedCostUsd: 0 } : { calls: 1, estimatedInputTokens: 128000, estimatedCostUsd: null, conservativeCalls: 1, unpricedConservativeCalls: 1 });
 });
 
 it("zero-call and estimated-paid upkeep accounting do not inflate unknown cost counters", () => {
@@ -650,3 +650,58 @@ it("keeps three-child offer validation aligned with the shared two-offer policy"
   expect(boundedOfferHistory([["first", "first"]])).toBe(false);
   expect(boundedOfferHistory([["first"], []])).toBe(false);
 });
+
+
+it("charges unknown upkeep full reserved input plus output, separately from known catalog spend", () => {
+  const price = { input: 2, output: 4 };
+  const unknown = preparationUsage({ providerInvoked: true, estimatedInputTokens: 20, estimatedInputCostUsd: 0.00004 }, 64000, price);
+  expect(unknown).toMatchObject({ calls: 1, estimatedInputTokens: 64000, estimatedCostUsd: null, conservativeCostUsd: 0.144384, conservativeCalls: 1 });
+  const known = preparationUsage({ providerInvoked: true, inputTokens: 100, outputTokens: 20, costUsd: 0.01 }, 128000, price);
+  const sum = addUsage(addUsage(emptyUsage(), known), unknown);
+  expect(sum).toMatchObject({ calls: 2, estimatedCostUsd: 0.01, conservativeCostUsd: 0.144384, conservativeCalls: 1, unknownCostCalls: 1 });
+  expect(addUsage(emptyUsage(), sum)).toMatchObject({ estimatedCostUsd: 0.01, conservativeCostUsd: 0.144384, unknownCostCalls: 1, unknownTokenCalls: 1 });
+  expect(addUsage(emptyUsage(), { calls: 2, estimatedCostUsd: null, knownCatalogCostUsd: 0.02, unknownCostCalls: 1 })).toMatchObject({ estimatedCostUsd: 0.02, unknownCostCalls: 1 });
+  expect(preparationUsage({ status: "uncertain", providerInvoked: false }, 128000, price).conservativeCostUsd).toBe(0.272384);
+  expect(preparationUsage({ status: "skipped", providerInvoked: false }, 128000, price)).toMatchObject({ calls: 0, conservativeCostUsd: 0 });
+});
+
+it("distinguishes degraded stages from boundary, bootstrap, operation and injection integrity", () => {
+  const steps = Array.from({ length: 3 }, (_, i) => ({ pid: i + 100, valid: true, preserved: true, boundary: { verified: true },
+    receipt: { status: i === 1 ? "invalid" : "valid", reason: i === 1 ? "aborted" : "completed", providerInvoked: true, operationId: `op${i}` },
+    journal: { operations: i + 1, bootstrap: 1, budget: i ? "incremental" : "bootstrap", operationId: `op${i}`, selection: [`span${i}`] } }));
+  expect(preparationIntegrity(steps)).toBe(true);
+  for (const mutate of [x => { x[1].boundary.verified = false; }, x => { x[1].journal.operations++; }, x => { x[2].journal.bootstrap++; }, x => { x[2].pid = x[1].pid; }, x => { x[2].preserved = false; }]) {
+    const bad = structuredClone(steps); mutate(bad); expect(preparationIntegrity(bad)).toBe(false);
+  }
+  const observed = { continuityPacks: [{ ledgerEntries: 1 }], upkeep: [{ providerInvoked: false, reason: "read_only" }] };
+  expect(verifyLedgerTreatment({ valid: true, expectedEntries: 1 }, observed)).toBe(true);
+  expect(verifyLedgerTreatment({ valid: true, expectedEntries: 2 }, observed)).toBe(false);
+  expect(verifyLedgerTreatment({ valid: true, expectedEntries: 1 }, { ...observed, upkeep: [{ providerInvoked: true }] })).toBe(false);
+  expect(verifyLedgerTreatment({ valid: true, expectedEntries: 0 }, { continuityPacks: [{ ledgerEntries: 0, evidenceEntries: 3 }] })).toBe(true);
+  expect(verifyLedgerTreatment({ valid: true, expectedEntries: 0 }, { continuityPacks: [{ ledgerEntries: 0, evidenceEntries: 0 }] })).toBe(false);
+  const skipped = structuredClone(steps); skipped[1].receipt = { status: "skipped", providerInvoked: false }; skipped[1].journal = { ...skipped[0].journal }; skipped[2].journal.operations = 2;
+  expect(preparationIntegrity(skipped)).toBe(true);
+});
+
+it.each([false, true])("continues stage3 and probes after aborted stage2 (no ledger=%s)", async noLedger => {
+  const { productionModules, buildCheckpoint, runProbe } = await import("../lib/continuity-runner.mjs");
+  const corpus = await loadTraces(), plan = makePlan({ ...corpus, arms: ["native", "continuity-ledger-cold"], profile: { judge: null } });
+  plan.upkeep.preparations[1].offlineAbort = true;
+  if (noLedger) for (const step of plan.upkeep.preparations) step.offlineAbort = true;
+  const modules = await productionModules(root), trace = corpus.traces[0], arm = armById("continuity-ledger-cold"), dir = await scratch();
+  const checkpoint = await buildCheckpoint({ modules, trace, arm, repeat: 1, dir, plan, mode: "offline", upkeepPrice: { input: 2, output: 4 } });
+  const upkeep = checkpoint.record.upkeep;
+  expect(upkeep).toMatchObject({ valid: true, expectedEntries: noLedger ? 0 : 1 });
+  expect(upkeep.degradedStages).toBe(noLedger ? 3 : 2);
+  expect(upkeep.degradedReasons).toContain("output_aborted");
+  expect(upkeep.preparations).toHaveLength(3);
+  expect(upkeep.preparations.map(s => s.entriesAfter)).toEqual(noLedger ? [0, 0, 0] : [1, 1, 1]);
+  expect(upkeep.preparations.at(-1).journal.bootstrap).toBe(1);
+  expect(upkeep.preparations.every(s => s.preserved)).toBe(true);
+  const trial = await runProbe({ modules, trace, arm, repeat: 1, probe: trace.probes[0], checkpointWork: checkpoint.work, checkpointSnapshot: checkpoint.snapshot,
+    checkpointConversationId: checkpoint.record.conversationId, checkpointContinuity: checkpoint.record.continuity, checkpointUpkeep: upkeep,
+    forkDir: join(dir, "probe"), plan, mode: "offline", root });
+  expect(trial.status).toBe("completed");
+  expect(trial.boundary.observed.offlineLedgerCounts).toEqual(noLedger ? [0, 0] : [1, 1]);
+  expect(trial.boundary.observed.upkeep.every(row => !row.providerInvoked)).toBe(true);
+}, 180_000);

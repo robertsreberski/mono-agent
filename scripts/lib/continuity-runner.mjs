@@ -387,7 +387,7 @@ export async function runLiveTurn({ modules, work, authPath, plan, mode, configP
  * Replay a trace into a fresh workspace up to its checkpoint. Arms without a
  * live mid-trace turn produce identical scripted state and share one checkpoint.
  */
-export async function buildCheckpoint({ modules, trace, arm, repeat, dir, plan, mode, authPath, captureUpkeepOutput }) {
+export async function buildCheckpoint({ modules, trace, arm, repeat, dir, plan, mode, authPath, captureUpkeepOutput, upkeepPrice }) {
   const source = sourceOnly(trace);
   const work = join(dir, "work");
   await prepareWorkspace(work);
@@ -434,21 +434,21 @@ export async function buildCheckpoint({ modules, trace, arm, repeat, dir, plan, 
           const capture = captureUpkeepOutput?.replace(/\.json$/u, `-p${index + 1}.json`);
           let result;
           try { result = await runBoundaryChild({ type: "preparation", root: fileURLToPath(new URL("../../", import.meta.url)), work, authPath, plan, mode,
-            clockIso: clock.value.toISOString(), conversationId, step, preparation: index + 1, captureUpkeepOutput: capture }, { timeoutMs: plan.limits.perLiveTurnTimeoutMs }); }
+            clockIso: clock.value.toISOString(), conversationId, step, preparation: index + 1, upkeepPrice, captureUpkeepOutput: capture }, { timeoutMs: plan.limits.perLiveTurnTimeoutMs }); }
           catch (error) {
             // A lost child acknowledgement cannot prove non-invocation. Keep
             // its whole input allowance; the controller retains its reservation.
             result = { valid: false, boundary: { verified: false }, failure: codeOf(error), receipt: null,
-              usage: { calls: 1, inputTokens: null, outputTokens: null, estimatedInputTokens: step.maxInputTokens, estimatedCostUsd: null } };
+              usage: preparationUsage({ providerInvoked: true }, preparations.some(previous => previous.journal?.operations > 0) ? 64000 : 128000, upkeepPrice, plan.upkeep.maxOutputTokens) };
           }
           preparations.push(result);
           record.upkeep.usage = sumPreparationUsage(preparations);
-          if (!result.valid || !result.boundary.verified) break;
+          if (!preparationIntegrity(preparations)) break;
         }
-        record.upkeep.valid = preparations.length === 3 && boundedOfferHistory(preparations.map(step => step.journal?.selection ?? [])) && preparations.every((step, index) =>
-          step.valid && step.boundary.verified && step.journal.operations === index + 1
-            && step.journal.bootstrap === 1 && step.journal.budget === plan.upkeep.preparations[index].budget
-        ) && new Set(preparations.map(step => step.pid)).size === 3 && preparations.at(-1).entriesAfter > 0;
+        record.upkeep.valid = preparations.length === plan.upkeep.preparations.length && preparationIntegrity(preparations);
+        record.upkeep.expectedEntries = preparations.at(-1)?.entriesAfter ?? null;
+        record.upkeep.degradedStages = preparations.filter(step => step.degraded).length;
+        record.upkeep.degradedReasons = preparations.filter(step => step.degraded).map(step => step.degradedReason);
         record.upkeep.receipt = preparations.at(-1)?.receipt ?? null;
       }
     } finally {
@@ -506,12 +506,54 @@ export function captureUpkeepModels(models, capture) {
  * protocol still rejects a third/duplicate/empty offer. */
 export function boundedOfferHistory(selections) {
   const counts = new Map();
-  return selections.every(selection => selection.length > 0 && new Set(selection).size === selection.length && selection.every(key => {
+  return selections.every(selection => Array.isArray(selection) && selection.length > 0 && new Set(selection).size === selection.length && selection.every(key => {
     const count = (counts.get(key) ?? 0) + 1; counts.set(key, count); return count <= 2;
   }));
 }
 
-/** Sum each extraction once; reported totals and estimated unknown-call input remain separate. */
+/** Receipt quality does not prove or disprove the cold boundary/journal protocol. */
+export function preparationIntegrity(steps) {
+  let operations = 0;
+  const selections = [], ids = new Set();
+  if (new Set(steps.map(step => step.pid)).size !== steps.length) return false;
+  for (const step of steps) {
+    const j = step.journal, delta = j?.operations - operations;
+    if (!step.valid || !step.boundary?.verified || !step.preserved || ![0, 1].includes(delta)
+      || j.bootstrap !== (j.operations ? 1 : 0)) return false;
+    if (delta) {
+      if (!j.operationId || ids.has(j.operationId) || j.budget !== (operations ? "incremental" : "bootstrap")) return false;
+      ids.add(j.operationId); selections.push(j.selection);
+    }
+    if ((step.receipt?.providerInvoked || step.receipt?.status === "uncertain") && (!delta || step.receipt.operationId !== j.operationId)) return false;
+    operations = j.operations;
+  }
+  return boundedOfferHistory(selections);
+}
+
+/** Exact expected injection; no-ledger stages must still inject deterministic evidence. */
+export function verifyLedgerTreatment(upkeep, observed) {
+  const packs = observed.continuityPacks ?? [];
+  return !!upkeep?.valid && Number.isInteger(upkeep.expectedEntries) && packs.length > 0
+    && packs.every(pack => pack.ledgerEntries === upkeep.expectedEntries && (upkeep.expectedEntries > 0 || pack.evidenceEntries > 0))
+    && !(observed.upkeep ?? []).some(row => row.providerInvoked || row.operationId);
+}
+
+/** Unknown usage is charged the full input reservation plus output allowance.
+ * This is catalog accounting, NOT a remote output/billing maximum (D6). */
+export function preparationUsage(receipt, inputReserve, price, outputReserve = 4096) {
+  const calls = receipt?.providerInvoked || receipt?.status === "uncertain" ? 1 : 0;
+  const finite = value => typeof value === "number" && Number.isFinite(value) && value >= 0;
+  const unknown = !!calls && ![receipt?.inputTokens, receipt?.outputTokens, receipt?.costUsd].every(finite);
+  const conservative = unknown && finite(price?.input) && finite(price?.output)
+    ? (inputReserve * price.input + outputReserve * price.output) / 1_000_000 : unknown ? null : 0;
+  return { calls, inputTokens: calls ? receipt?.inputTokens ?? null : 0, outputTokens: calls ? receipt?.outputTokens ?? null : 0,
+    estimatedInputTokens: calls ? unknown ? inputReserve : receipt?.estimatedInputTokens ?? null : 0,
+    cacheReadTokens: 0, cacheWriteTokens: 0, estimatedCostUsd: calls ? receipt?.costUsd ?? null : 0,
+    conservativeCostUsd: conservative, conservativeCalls: unknown ? 1 : 0,
+    unpricedConservativeCalls: unknown && conservative === null ? 1 : 0 };
+}
+
+/** Sum each extraction once; known catalog cost and unknown-call reserves stay separate. */
 function sumPreparationUsage(steps) {
   const total = emptyUsage();
   for (const step of steps) addUsage(total, step.usage);
@@ -519,7 +561,7 @@ function sumPreparationUsage(steps) {
 }
 
 /** One upkeep, no real answer call, before read-only probe forks. No probe/answer data enter extraction. */
-export async function prepareLedgerCheckpoint({ modules, work, authPath, plan, mode, reader, alternate, scripted, route, clock, conversationId, captureUpkeepOutput, step = plan.upkeep.preparations?.[0], preparation = 1 }) {
+export async function prepareLedgerCheckpoint({ modules, work, authPath, plan, mode, reader, alternate, scripted, route, clock, conversationId, captureUpkeepOutput, step = plan.upkeep.preparations?.[0], preparation = 1, upkeepPrice }) {
   // Reject stale single-preparation plans before opening a harness or resolving auth.
   if (plan.upkeep.maxInputTokens !== 128000 || plan.upkeep.incrementalMaxInputTokens !== 64000
     || plan.upkeep.maxOutputTokens !== 4096 || plan.upkeep.callsPerTraceRepeat !== 3
@@ -539,6 +581,7 @@ export async function prepareLedgerCheckpoint({ modules, work, authPath, plan, m
       const prompt = textOfContent(context.messages.at(-1)?.content);
       const spans = prompt.split("\n").flatMap(line => { try { const row = JSON.parse(line); return typeof row.id === "string" && typeof row.text === "string" ? [row] : []; } catch { return []; } });
       if (!spans.length) throw new ContinuityError("offline_upkeep_source_missing");
+      if (step.offlineAbort) return modules.pi.fauxAssistantMessage("x".repeat(5000));
       if (preparation === 2) return modules.pi.fauxAssistantMessage('{"entries":[],"covered":[]}');
       return modules.pi.fauxAssistantMessage(JSON.stringify({ entries: [{ kind: "open_work", value: "Offline scripted ledger; not model quality.", status: "unknown", sources: [spans[0].id] }], covered: spans.map(span => span.id) }));
     }]);
@@ -574,14 +617,12 @@ export async function prepareLedgerCheckpoint({ modules, work, authPath, plan, m
       await writeFile(captureUpkeepOutput, JSON.stringify({ text: capturedText ?? null, failure: receipt?.failure ?? null, status: receipt?.status ?? null, ledger: generation?.generation ?? null }, null, 2) + "\n", { mode: 0o600, flag: "wx" });
     } catch { failure ??= "upkeep_capture_failed"; }
   }
-  const calls = receipt?.providerInvoked ? 1 : 0;
-  const estimatedPaid = calls > 0 && receipt.costUsd == null && typeof receipt.estimatedInputCostUsd === "number";
   let journal = null;
   if (typeof history.databasePath === "string") {
     const db = new DatabaseSync(history.databasePath, { readOnly: true });
     try {
       const rows = db.prepare("SELECT operation_id,reservation,state FROM continuity_upkeep_operations ORDER BY rowid").all();
-      const latest = rows.find(row => row.operation_id === receipt?.operationId);
+      const latest = rows.find(row => row.operation_id === receipt?.operationId) ?? rows.at(-1);
       const reservation = latest ? JSON.parse(latest.reservation) : null;
       journal = { operations: rows.length, bootstrap: rows.filter(row => JSON.parse(row.reservation).budget === "bootstrap").length,
         operationId: latest?.operation_id ?? null, databaseId: reservation?.databaseId ?? null, incarnation: reservation?.incarnation ?? null, fence: reservation?.fence ?? null,
@@ -595,13 +636,15 @@ export async function prepareLedgerCheckpoint({ modules, work, authPath, plan, m
   }
   const entries = generation?.generation.entries ?? [];
   const preserved = previous.every(old => entries.some(entry => entry.id === old.id && entry.value === old.value && entry.status === old.status));
-  return { valid: !failure && preserved && receipt?.status === "valid"
-      && (receipt.reason === "analyzed" && !receipt.generationId || !!entries.length && generation.generation.id === receipt.generationId),
+  const degraded = !!receipt && receipt.status !== "valid";
+  return { valid: !failure && preserved && !!receipt && receipt.reason !== "ledger_integrity" && (degraded
+      ? ["invalid", "skipped", "aborted", "timeout", "uncertain"].includes(receipt.status)
+      : receipt.reason === "analyzed" && !receipt.generationId || !!entries.length && generation.generation.id === receipt.generationId),
+    degraded, degradedReason: degraded ? receipt.failure ?? receipt.reason ?? receipt.status : null,
     boundary: verifyBoundary({ boundary: "model_change", compactions: 0 }, watch.observed), observed: watch.observed,
     entriesBefore: previous.length, entriesAfter: entries.length, preserved, journal,
-    failure, receipt, usage: { calls, estimatedInputTokens: calls ? receipt?.estimatedInputTokens ?? null : 0, inputTokens: calls ? receipt?.inputTokens ?? null : 0, outputTokens: calls ? receipt?.outputTokens ?? null : 0,
-      cacheReadTokens: 0, cacheWriteTokens: 0, estimatedCostUsd: calls ? receipt?.costUsd ?? receipt?.estimatedInputCostUsd ?? null : 0,
-      estimatedPaidCalls: estimatedPaid ? 1 : 0, estimatedPaidInputCostUsd: estimatedPaid ? receipt.estimatedInputCostUsd : 0 } };
+    failure, receipt, usage: preparationUsage(receipt, journal?.budget === "bootstrap" ? 128000 : step.maxInputTokens, upkeepPrice, plan.upkeep.maxOutputTokens) };
+
 }
 
 /** `harness.compactConversation()` through a tool-free configured harness on the bound model. */
@@ -621,7 +664,8 @@ async function manualCompaction({ modules, work, authPath, plan, mode, binding, 
     tokensBefore: finite(result?.tokensBefore), tokensAfter: finite(result?.tokensAfter),
     boundary: { ...verifyBoundary({ boundary: null, compactions: 1 }, observed), observed },
     usage: { calls: usage.calls, inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, cacheReadTokens: usage.cacheReadTokens, cacheWriteTokens: usage.cacheWriteTokens,
-      estimatedCostUsd: usage.unknownCostCalls > 0 ? null : usage.estimatedCostUsd },
+      estimatedCostUsd: usage.unknownCostCalls > 0 ? null : usage.estimatedCostUsd,
+      knownCatalogCostUsd: usage.estimatedCostUsd, unknownCostCalls: usage.unknownCostCalls, unknownTokenCalls: usage.unknownTokenCalls },
     compactionUsage: usage, durationMs: Math.round(performance.now() - started),
   };
 }
@@ -672,12 +716,12 @@ export async function runProbe({ modules, trace, arm, repeat, probe, checkpointW
       : await runLiveTurn({ modules, ...turn, clock });
     trial.usage = live.usage; trial.compactionUsage = live.compactionUsage; trial.durationMs = live.durationMs;
     const boundary = verifyBoundary({ boundary: arm.expect.probeBoundary, compactions: arm.expect.probeCompactions, restart: arm.restart }, live.observed);
-    if (arm.ledgerUpkeep && (!checkpointUpkeep?.valid || !live.observed.continuityPacks.some(pack => pack.ledgerEntries > 0) || live.observed.upkeep.some(row => row.providerInvoked))) { boundary.reasons.push("ledger_treatment_unverified"); boundary.verified = false; }
+    if (arm.ledgerUpkeep && !verifyLedgerTreatment(checkpointUpkeep, live.observed)) { boundary.reasons.push("ledger_treatment_unverified"); boundary.verified = false; }
     const metrics = pressureMetrics(live.observed, { usage: live.usage, traceToolRecords: traceShape(trace).toolCalls, mid });
     const pressure = verifyPressure(arm, traceFamily(trace), metrics);
     trial.boundary = { ...boundary, observed: live.observed };
     trial.pressure = { ...pressure, metrics };
-    trial.store = verifyStore(arm, { checkpointContinuity, observed: live.observed });
+    trial.store = verifyStore(arm, { checkpointContinuity, observed: live.observed, expectedLedgerEntries: checkpointUpkeep?.valid ? checkpointUpkeep.expectedEntries : undefined });
     if (live.failureKind !== null || live.text === null) {
       trial.status = "failed"; trial.failure = live.failureKind ?? "empty_answer";
       return trial;
