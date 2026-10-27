@@ -7,10 +7,16 @@ import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, expect, it, vi } from "vitest";
 import { createJsonlRunRecorder, readRecordedRun, pruneRunArtifacts, UpkeepAccountingExportError } from "@mono-agent/observability";
-import { mutateUpkeep, type UpkeepReservation } from "../continuity/admission.js";
-import { replayUpkeepAccounting, upkeepAccounting, createUpkeepAccountingExportQueue } from "../continuity/accounting-outbox.js";
+import { mutateUpkeep, resetUpkeep, type UpkeepReservation } from "../continuity/admission.js";
+import { replayUpkeepAccounting as replayTransactional, upkeepAccounting, createUpkeepAccountingExportQueue, pruneFailedUpkeepAccounting, upkeepAccountingDiagnostics } from "../continuity/accounting-outbox.js";
+import type { ConversationHarnessToolHistoryOptions } from "../harness/contracts.js";
 import { ToolHistoryWriter } from "../tool-history/writer.js";
 import { ToolHistoryReader } from "../tool-history/reader.js";
+const writeFor = (db: DatabaseSync) => <T>(operation: () => T): T => {
+  db.exec("BEGIN IMMEDIATE");
+  try { const result = operation(); db.exec("COMMIT"); return result; } catch (error) { db.exec("ROLLBACK"); throw error; }
+};
+const replayUpkeepAccounting = (db: DatabaseSync, options?: Parameters<typeof replayTransactional>[2]) => replayTransactional(db, writeFor(db), options);
 const roots: string[] = [];
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
 async function rootDir() { const root = await mkdtemp(join(tmpdir(), "upkeep-outbox-")); roots.push(root); return root; }
@@ -79,7 +85,7 @@ it.each(["dispatch", "result", "pending"])("recovers %s after process death befo
     for (const name of await readdir(artifactDir)) if (name.includes(".upkeep.")) await rm(join(artifactDir, name));
     expect(reader.hasPendingUpkeepAccounting()).toBe(true);
     const writer = await ToolHistoryWriter.open({ root }); // continuity AND upkeep disabled
-    await writer.close(); expect(reader.hasPendingUpkeepAccounting()).toBe(false);
+    await writer.replayUpkeepAccounting(); await writer.close(); expect(reader.hasPendingUpkeepAccounting()).toBe(false);
     const detail = await readRecordedRun({ artifactDir }, "origin");
     expect(detail?.events).toEqual([]);
     expect(detail?.upkeepAccounting).toHaveLength(1);
@@ -138,7 +144,7 @@ it("does not let a slow serialized exporter delay either dispatch or outcome mut
   const f = await memory(); let release!: () => void;
   const paused = new Promise<void>(resolve => { release = resolve; });
   const exporter = vi.fn(async () => { await paused; return "exported" as const; });
-  const queue = createUpkeepAccountingExportQueue(f.db, () => {}, { exporter });
+  const queue = createUpkeepAccountingExportQueue(f.db, () => {}, { exporter, write: writeFor(f.db) });
   try {
     f.mutate({ kind: "dispatch", reservation: f.r }); queue.schedule({ operationId: f.r.operationId, phase: "dispatch" });
     await vi.waitFor(() => expect(exporter).toHaveBeenCalledTimes(1));
@@ -182,7 +188,7 @@ it("upgrades legacy outbox retry metadata without reviving invalid_journal", asy
   const f = await memory();
   try {
     f.mutate({ kind: "dispatch", reservation: f.r });
-    f.db.exec("DROP TABLE continuity_upkeep_accounting; CREATE TABLE continuity_upkeep_accounting(operation_id TEXT,phase TEXT,payload TEXT,exported TEXT,error TEXT,PRIMARY KEY(operation_id,phase)); INSERT INTO continuity_upkeep_accounting VALUES ('legacy','result','{}',NULL,'invalid_journal')");
+    f.db.exec("DROP TABLE continuity_upkeep_accounting; CREATE TABLE continuity_upkeep_accounting(operation_id TEXT,phase TEXT,payload TEXT,exported TEXT,error TEXT,PRIMARY KEY(operation_id,phase)); INSERT INTO continuity_upkeep_accounting VALUES ('operation','result','{}',NULL,'invalid_journal')");
     const exporter = vi.fn();
     expect(await replayUpkeepAccounting(f.db, { exporter })).toBe(1);
     expect(await replayUpkeepAccounting(f.db, { exporter })).toBe(1);
@@ -199,4 +205,92 @@ it("bounds never-written origins without ever acknowledging them as pruned", asy
     expect(exporter).toHaveBeenCalledTimes(3);
     expect(f.db.prepare("SELECT exported,error,origin_seen FROM continuity_upkeep_accounting").get()).toEqual({ exported: "failed", error: "origin_pending", origin_seen: 0 });
   } finally { await f.recorder.finish({}); f.db.close(); }
+});
+
+it("caps failed evidence oldest-first, counts evictions, and deletes reported orphan failures", async () => {
+  const f = await memory();
+  try {
+    for (let i = 0; i < 200; i++) {
+      const id = `failed-${i}`;
+      f.db.prepare("INSERT INTO continuity_upkeep_operations SELECT ?,logical_id,conversation_id,incarnation,fence,owner_token,reservation,selection_key,budget,'terminal',outcome FROM continuity_upkeep_operations WHERE operation_id=?").run(id, f.r.operationId);
+      f.db.prepare("INSERT INTO continuity_upkeep_accounting(operation_id,phase,payload,exported,error) VALUES (?,'result','{}','failed','invalid_payload')").run(id);
+    }
+    writeFor(f.db)(() => pruneFailedUpkeepAccounting(f.db));
+    expect(upkeepAccountingDiagnostics(f.db)).toEqual({ pending: 0, failed: 128, evicted: 72 });
+    expect(f.db.prepare("SELECT operation_id FROM continuity_upkeep_accounting ORDER BY rowid LIMIT 1").get()).toEqual({ operation_id: "failed-72" });
+    writeFor(f.db)(() => resetUpkeep(f.db, "logical", f.r.logicalId));
+    expect(upkeepAccountingDiagnostics(f.db)).toEqual({ pending: 0, failed: 0, evicted: 72 });
+  } finally { await f.recorder.finish({}); f.db.close(); }
+});
+it("continues recovery beyond one batch and counts never-attempted rows as pending", async () => {
+  const f = await memory(), exporter = vi.fn(async () => "exported" as const);
+  try {
+    for (let i = 0; i < 81; i++) {
+      const a = { ...upkeepAccounting(f.r), operationId: `pending-${i}` };
+      f.db.prepare("INSERT INTO continuity_upkeep_accounting(operation_id,phase,payload) VALUES (?,'dispatch',?)").run(a.operationId, JSON.stringify(a));
+    }
+    expect(upkeepAccountingDiagnostics(f.db).pending).toBe(81);
+    const queue = createUpkeepAccountingExportQueue(f.db, vi.fn(), { exporter, write: writeFor(f.db) });
+    queue.schedule(); await queue.flush(); await queue.close();
+    expect(exporter).toHaveBeenCalledTimes(81); expect(upkeepAccountingDiagnostics(f.db).pending).toBe(0);
+  } finally { await f.recorder.finish({}); f.db.close(); }
+});
+it("automatically services due untargeted retries with an unreferenced cancellable timer", async () => {
+  const f = await memory(); vi.useFakeTimers();
+  const exporter = vi.fn().mockRejectedValueOnce(new Error("synthetic I/O failure")).mockResolvedValue("exported");
+  const queue = createUpkeepAccountingExportQueue(f.db, vi.fn(), { exporter, write: writeFor(f.db) });
+  try {
+    f.mutate({ kind: "dispatch", reservation: f.r }); queue.schedule({ operationId: f.r.operationId, phase: "dispatch" }); await queue.flush();
+    expect(exporter).toHaveBeenCalledTimes(1); expect(upkeepAccountingDiagnostics(f.db).pending).toBe(1);
+    await vi.advanceTimersByTimeAsync(999); expect(exporter).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1); await queue.flush(); expect(exporter).toHaveBeenCalledTimes(2);
+    expect(upkeepAccountingDiagnostics(f.db).pending).toBe(0);
+    await queue.close(); expect(vi.getTimerCount()).toBe(0);
+  } finally { await queue.close(); vi.useRealTimers(); await f.recorder.finish({}); f.db.close(); }
+});
+it("bounds close with a parked exporter, skips queued work, and prevents late writes after DB close", async () => {
+  const f = await memory(); let release!: () => void;
+  const exporter = vi.fn(async () => { await new Promise<void>(resolve => { release = resolve; }); return "exported" as const; });
+  const writeSpy = vi.fn();
+  const write = <T>(operation: () => T): T => { writeSpy(); return writeFor(f.db)(operation); };
+  const queue = createUpkeepAccountingExportQueue(f.db, vi.fn(), { exporter, write });
+  f.mutate({ kind: "dispatch", reservation: f.r }); queue.schedule();
+  await vi.waitFor(() => expect(exporter).toHaveBeenCalledTimes(1)); queue.schedule();
+  const started = performance.now(); await queue.close(20); expect(performance.now() - started).toBeLessThan(500);
+  const writes = writeSpy.mock.calls.length; f.db.close(); release(); await new Promise(resolve => setTimeout(resolve, 10));
+  expect(writeSpy).toHaveBeenCalledTimes(writes); expect(exporter).toHaveBeenCalledTimes(1); await f.recorder.finish({});
+});
+it("routes every export-path SQL write through the caller transaction wrapper", async () => {
+  const f = await memory(); f.mutate({ kind: "dispatch", reservation: f.r });
+  let inWrite = false;
+  const prepare = f.db.prepare.bind(f.db), exec = f.db.exec.bind(f.db);
+  vi.spyOn(f.db, "prepare").mockImplementation(sql => {
+    const statement = prepare(sql), run = statement.run.bind(statement);
+    vi.spyOn(statement, "run").mockImplementation((...args) => { expect(inWrite, sql).toBe(true); return run(...args); });
+    return statement;
+  });
+  vi.spyOn(f.db, "exec").mockImplementation(sql => { if (/^(CREATE|ALTER|UPDATE|DELETE|INSERT)/u.test(sql)) expect(inWrite, sql).toBe(true); exec(sql); });
+  const write = <T>(operation: () => T): T => writeFor(f.db)(() => { inWrite = true; try { return operation(); } finally { inWrite = false; } });
+  try { expect(await replayTransactional(f.db, write)).toBe(0); }
+  finally { vi.restoreAllMocks(); await f.recorder.finish({}); f.db.close(); }
+});
+
+it("requires an explicit namespace for enabled upkeep at the type boundary", () => {
+  type Upkeep = NonNullable<ConversationHarnessToolHistoryOptions["upkeep"]>;
+  const complete = async (): Promise<never> => { throw new Error("not invoked"); };
+  const disabled: Upkeep = { enabled: false, complete };
+  const enabled: Upkeep = { enabled: true, recorderNamespace: "/fictional", complete };
+  // @ts-expect-error Enabled upkeep cannot omit its namespace.
+  const missing: Upkeep = { enabled: true, complete };
+  expect(disabled.enabled).toBe(false); expect(enabled.recorderNamespace).toBe("/fictional"); expect(missing.enabled).toBe(true);
+});
+
+it("sweeps due untargeted rows after a targeted job instead of waiting for restart", async () => {
+  const f = await memory(), exporter = vi.fn(async () => "exported" as const);
+  const queue = createUpkeepAccountingExportQueue(f.db, vi.fn(), { exporter, write: writeFor(f.db) });
+  try {
+    f.mutate({ kind: "dispatch", reservation: f.r });
+    queue.schedule({ operationId: "unrelated-target", phase: "dispatch" }); await queue.flush();
+    expect(exporter).toHaveBeenCalledTimes(1); expect(upkeepAccountingDiagnostics(f.db).pending).toBe(0);
+  } finally { await queue.close(); await f.recorder.finish({}); f.db.close(); }
 });

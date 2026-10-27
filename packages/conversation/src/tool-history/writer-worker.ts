@@ -1,4 +1,4 @@
-import { createUpkeepAccountingSchema, prepareUpkeepAccounting, upkeepAccountingDegradation, createUpkeepAccountingExportQueue, failUpkeepAccounting } from "../continuity/accounting-outbox.js";
+import { createUpkeepAccountingSchema, prepareUpkeepAccounting, upkeepAccountingDegradation, createUpkeepAccountingExportQueue, pruneFailedUpkeepAccounting, upkeepAccountingDiagnostics } from "../continuity/accounting-outbox.js";
 import { LedgerError } from "../continuity/ledger-error.js";
 import { mutateUpkeep, resetUpkeep, assertUpkeepPublication, type UpkeepMutation, type UpkeepReservation } from "../continuity/admission.js";
 import { publishLedger } from "../continuity/ledger-storage.js";
@@ -124,15 +124,13 @@ try {
   throw error;
 }
 
-let accountingDegraded = 0;
 let owner: { release(): void } | undefined;
 let database: DatabaseSync | undefined;
 try {
   owner = await acquireOwner(ownerPath, ownerAcquireCeilingMs);
   assertToolDirectoryEntries();
   database = openContentDatabase(databasePath, retention, artifactRoot);
-  prepareUpkeepAccounting(database);
-  accountingDegraded = upkeepAccountingDegradation(database);
+  prepareUpkeepAccounting(database, operation => transaction(database!, operation));
   closeDangling(database, undefined, "interrupted", "process_death", "recovered_after_writer_restart", true);
   applyRetention(database, retention);
   const recoveredDatabase = database;
@@ -159,9 +157,8 @@ if (parentPort === null) throw new Error("Tool history writer requires a parent 
 
 let closed = false;
 const accountingExports = createUpkeepAccountingExportQueue(database, count => {
-  accountingDegraded = count;
   if (count) respond(0, { accountingDegraded: count });
-});
+}, { write: operation => transaction(database, operation) });
 let operationTail = Promise.resolve();
 parentPort.on("message", (request: WorkerRequest) => {
   operationTail = continueToolHistoryOperationTail(operationTail, async () => {
@@ -175,10 +172,10 @@ parentPort.on("message", (request: WorkerRequest) => {
       switch (request.operation) {
         case "upkeep_accounting_replay":
           accountingExports.schedule();
-          void accountingExports.flush().then(() => respond(request.id, accountingDegraded));
+          void accountingExports.flush().then(() => { if (!closed) respond(request.id, upkeepAccountingDegradation(database)); });
           break;
         case "ready":
-          respond(request.id, { schema: TOOL_HISTORY_SCHEMA, recovered: statValue(database, "recovered_calls"), accountingDegraded });
+          respond(request.id, { schema: TOOL_HISTORY_SCHEMA, recovered: statValue(database, "recovered_calls"), accountingDegraded: upkeepAccountingDegradation(database), accountingDiagnostics: upkeepAccountingDiagnostics(database) });
           accountingExports.schedule();
           break;
         case "enable_continuity":
@@ -246,13 +243,7 @@ parentPort.on("message", (request: WorkerRequest) => {
                 transaction(database, () => recordIncident(database, "idempotency_conflicts", `continuity:${generationId}`, `${code}: contradictory continuity generation`));
               }
             }
-            if (code === "namespace_invalid" && request.operation === "continuity_upkeep") {
-              const input = request.payload as UpkeepMutation;
-              if (input.kind === "reserve" && typeof input.reservation.operationId === "string" && input.reservation.operationId.trim() && input.reservation.operationId.length <= 4096) {
-                transaction(database, () => failUpkeepAccounting(database, input.reservation.operationId, "dispatch", "namespace_invalid"));
-                respond(0, { accountingDegraded: upkeepAccountingDegradation(database) });
-              }
-            }
+            if (code === "namespace_invalid") respond(0, { accountingDegraded: 1 }); // one-shot host configuration warning, no per-boundary rows
             if (code === "continuity_quota_exhausted") {
               transaction(database, () => { database.prepare("INSERT OR REPLACE INTO metadata(key,value) VALUES ('continuity_degraded','quota')").run(); });
             }
@@ -320,6 +311,9 @@ parentPort.on("message", (request: WorkerRequest) => {
           break;
         case "close":
           {
+            closed = true;
+            const deadline = Number((request.payload as { deadlineMs?: number } | undefined)?.deadlineMs ?? Date.now() + 1_500);
+            const exportsClosing = accountingExports.close(Math.max(0, Math.min(1_000, deadline - Date.now() - 500)));
             const closeErrors: unknown[] = [];
             try {
               lifecycleTransaction(database, () => {
@@ -335,8 +329,7 @@ parentPort.on("message", (request: WorkerRequest) => {
             } catch (error) {
               closeErrors.push(error);
             }
-            closed = true;
-            await accountingExports.flush();
+            await exportsClosing;
             try { database.close(); } catch (error) { closeErrors.push(error); }
             try { owner.release(); } catch (error) { closeErrors.push(error); }
             if (closeErrors.length === 1) throw closeErrors[0];
@@ -825,7 +818,7 @@ function applyRetention(database: DatabaseSync, limits: Required<ToolHistoryRete
 function applyRetentionInTransaction(database: DatabaseSync, limits: Required<ToolHistoryRetentionOptions>, reservedBytes = 0, reservedRecords = 0): void {
     const now = Date.now();
     const extended = hasContinuitySchema(database);
-    if (extended) retainContinuity(database, limits, now, reservedBytes, reservedRecords);
+    if (extended) { retainContinuity(database, limits, now, reservedBytes, reservedRecords); pruneFailedUpkeepAccounting(database); }
     const continuityBytes = extended ? continuityRetainedBytes(database) : 0;
     const ageCutoff = now - limits.maxAgeMs;
     const old = database.prepare(`
@@ -1789,6 +1782,7 @@ function applyPendingContinuityPurges(database: DatabaseSync): boolean {
           assertContinuitySchema(database);
           purgeContinuityRows(database, purge.scope, purge.conversationId);
           if (purge.resetUpkeep === true) resetUpkeep(database, purge.scope, purge.conversationId);
+          pruneFailedUpkeepAccounting(database);
         }
       });
       acknowledgeContinuityPurge(root, claimed);

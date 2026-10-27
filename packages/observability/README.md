@@ -114,7 +114,12 @@ pending, never pruned; the outbox durably records whether an origin was seen. On
 as pruned. Permanent validation/identity failures are terminal degraded records.
 Transient failures have three attempts with exponential backoff (starting at one
 second), and recovery batches contain at most 32 rows. They then become terminal
-failures, never zero cost. Export I/O runs separately from admission replies.
+failures, never zero cost. The host services due batches and timed retries without
+blocking readiness. Failed rows are bounded to 128, evicted oldest-first with a
+content-free count, and removed once their operation is gone. Host warnings are
+one-shot per process; an invalid namespace does not add a row per boundary.
+Export I/O runs separately from admission replies and has a bounded close drain;
+all outbox writes use the host's secure journal transaction.
 These degradation diagnostics also appear as artifact warnings in `RunHistory`
 inspection when the applicable run evidence is degraded.
 

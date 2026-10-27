@@ -1,4 +1,4 @@
-import { createUpkeepAccountingSchema, queueUpkeepAccounting, upkeepAccounting } from "./accounting-outbox.js";
+import { createUpkeepAccountingSchema, queueUpkeepAccounting, upkeepAccounting, pruneFailedUpkeepAccounting } from "./accounting-outbox.js";
 import { assertUpkeepAccountingNamespace } from "@mono-agent/observability";
 import { initializeLedgerProgress } from "./ledger-storage.js";
 import type { LedgerProgress } from "../tool-history/continuity-contracts.js";
@@ -209,6 +209,7 @@ export function resetUpkeep(db: DatabaseSync, kind: "logical" | "physical", id: 
     if (db.prepare("SELECT 1 FROM sqlite_master WHERE name=?").get(table)) db.prepare(`DELETE FROM ${table} WHERE ${column}=?`).run(id);
   }
   db.prepare(`DELETE FROM continuity_upkeep_operations WHERE ${column}=?`).run(id);
+  pruneFailedUpkeepAccounting(db);
   db.prepare(`DELETE FROM continuity_upkeep_admissions WHERE ${column}=?`).run(id);
   db.prepare(`UPDATE continuity_upkeep_scopes SET incarnation=?,fence=fence+1,owner_token='' WHERE ${column}=?`).run(randomUUID(), id);
   db.prepare(`INSERT INTO continuity_upkeep_admissions SELECT logical_id,conversation_id,incarnation,NULL FROM continuity_upkeep_scopes WHERE ${column}=?`).run(id);

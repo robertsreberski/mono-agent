@@ -896,6 +896,13 @@ is explicit `ERR_NATIVE_EVIDENCE_CAPTURE_LIMIT`, never truncation. A journal tha
 changes between the two streamed passes is refused. These are preparation limits, not
 permission to erase oversized evidence or cold-fallback after switch intent.
 
+Enabled host upkeep requires an explicit `recorderNamespace`; disabled upkeep
+may omit it. Accounting recovery runs independently of admission replies with
+bounded batches, timed retries and one-shot process warnings. Terminal failed
+rows are capped at 128 and reclaimed with their operation. Export metadata uses
+the same secure-journal transaction as ordinary history writes; close abandons
+queued work and bounds the in-flight wait, leaving durable evidence for recovery.
+
 ## Public API
 
 ### Start here

@@ -417,11 +417,21 @@ without invoking a provider or charging a new answer. With no pending journal
 work, startup discovery is read-only. Permanent parse/identity/origin/companion
 failures are terminal degraded records, not startup work. Transient I/O failures
 retry at most three times with exponential backoff starting at one second;
-recovery batches are capped at 32 rows. Mutation exports target only their own
-queued phase and run independently of admission replies. A not-yet-written origin
+recovery batches are capped at 32 rows. Due recovery continues in cooperative
+200 ms slices independently of readiness. An unreferenced timer services later
+retries and is cancelled on close. Mutation exports target their own queued phase
+before sweeping other due work, independently of admission replies. A not-yet-written origin
 stays pending within those retry bounds. Only an origin durably observed and then
 removed is pruned. Invalid or non-normalized recorder namespaces are rejected
-before admission and recorded as `namespace_invalid` accounting degradation.
+before admission and reported as a one-shot `namespace_invalid` configuration
+warning, not a permanent row for every boundary. Enabled host upkeep requires an
+explicit namespace at the type boundary too. Accounting warnings are deduplicated
+per process. Failed rows are removed when their operation is gone, and capped at
+128 oldest-first, with content-free eviction counts. Pending diagnostics include
+never-attempted rows. All metadata writes use the secure journal transaction and
+busy deadline. Close skips queued jobs and bounds the in-flight export wait to at
+most one second (less if the host's remaining close budget requires it), leaving
+durable work for recovery before releasing ownership.
 `RunHistory` inspection surfaces applicable degraded artifact warnings too.
 Artifact retention removes companions with their origin run; late exports never
 recreate pruned runs. Readers expose this as

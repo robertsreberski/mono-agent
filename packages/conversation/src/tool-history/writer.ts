@@ -31,6 +31,7 @@ interface RegistryEntry {
   references: number;
 }
 
+let accountingWarningReported = false;
 const PROCESS_WRITERS = new Map<string, Promise<RegistryEntry>>();
 
 export interface ToolHistoryWriterHandle {
@@ -163,7 +164,7 @@ export class ToolHistoryWriter {
     const startupReference = setInterval(() => undefined, 60_000);
     try {
       const ready = await writer.request("ready", undefined, (options.ownerAcquireCeilingMs ?? TOOL_HISTORY_OWNER_ACQUIRE_CEILING_MS) + 1_000) as { accountingDegraded?: number };
-      if (ready.accountingDegraded) { try { options.onWarning?.("Upkeep accounting degraded: durable exports are pending or failed."); } catch { /* diagnostics only */ } }
+      if (ready.accountingDegraded) writer.warnAccountingOnce();
       // request() unreferences the worker once its pending map drains, and the
       // outer startup reference is cleared when this public promise settles.
       // An idle sidecar must not prolong a one-shot CLI process; every later
@@ -236,7 +237,7 @@ export class ToolHistoryWriter {
 
   async replayUpkeepAccounting(): Promise<void> {
     const degraded = await this.request("upkeep_accounting_replay", undefined, TOOL_HISTORY_MAINTENANCE_CEILING_MS);
-    if (degraded) { try { this.onWarning?.("Upkeep accounting degraded: durable exports are pending or failed."); } catch { /* diagnostics only */ } }
+    if (degraded) this.warnAccountingOnce();
   }
 
   /** Upgrade only through an explicit host capability, using the existing worker owner. */
@@ -308,7 +309,7 @@ export class ToolHistoryWriter {
     );
     const remainingMs = remainingCeilingMs(startedAt, TOOL_HISTORY_MAINTENANCE_CEILING_MS);
     if (drained && remainingMs > 0) {
-      await this.request("close", undefined, remainingMs).catch(() => undefined);
+      await this.request("close", { deadlineMs: Date.now() + remainingMs }, remainingMs).catch(() => undefined);
     }
     await this.worker.terminate().catch(() => undefined);
   }
@@ -378,9 +379,15 @@ export class ToolHistoryWriter {
     catch { /* a failed writer cannot persist its own degradation counter */ }
   }
 
+  private warnAccountingOnce(): void {
+    if (accountingWarningReported || !this.onWarning) return;
+    accountingWarningReported = true;
+    this.warnOnce("upkeep_accounting_degraded", "Upkeep accounting degraded: durable exports are pending or failed, or recorder configuration is invalid.");
+  }
+
   private handleResponse(response: WorkerResponse): void {
     if (response.id === 0 && response.ok && (response.value as { accountingDegraded?: unknown } | undefined)?.accountingDegraded) {
-      try { this.onWarning?.("Upkeep accounting degraded: durable exports are pending or failed."); } catch { /* diagnostics only */ }
+      this.warnAccountingOnce();
       return;
     }
     if (response.id === 0 && !response.ok) {

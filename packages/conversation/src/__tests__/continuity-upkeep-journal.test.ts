@@ -258,7 +258,7 @@ it.each(["dispatch_started", "provider_return"])("production supplier does not r
   const root = join(directory, "history"), counter = join(directory, "provider-calls");
   const first = await child(root, phase, SUPPLIER_CRASH_CHILD, [counter]);
   expect(first.message).toMatchObject({ phase, calls: 1 });
-  const db = new DatabaseSync(join(root, "tool-history", "tool-lifecycles.sqlite"), { readOnly: true });
+  const db = new DatabaseSync(join(root, "tool-history", "tool-lifecycles.sqlite"), { readOnly: true }); db.exec("PRAGMA busy_timeout=5000");
   expect(db.prepare("SELECT state,outcome FROM continuity_upkeep_operations").get()).toMatchObject({ state: "dispatch_started", outcome: null }); db.close();
   first.process.kill("SIGKILL"); await first.exit;
   for (let i = 0; i < 2; i++) {
@@ -315,10 +315,10 @@ it("rejects oversized namespaces and invalid accounting identities at reserve, n
   }
   expect(f.db.prepare("SELECT state FROM continuity_upkeep_operations").all()).toEqual([]);
 });
-it.each(["relative", "/fictional/../other", ""])("rejects %s namespace as durable accounting degradation without a purchase", async namespace => {
+it.each(["relative", "/fictional/../other", ""])("rejects %s namespace as one-shot configuration degradation without a purchase", async namespace => {
   const f = await fixture(), r = { ...reservation(await f.claim("owner")), recorderNamespace: namespace };
   await expect(f.mutate({ kind: "reserve", reservation: r })).rejects.toMatchObject({ code: "namespace_invalid" });
   expect(f.db.prepare("SELECT state FROM continuity_upkeep_operations").all()).toEqual([]);
-  expect(f.db.prepare("SELECT exported,error FROM continuity_upkeep_accounting").get()).toEqual({ exported: "failed", error: "namespace_invalid" });
+  expect(f.db.prepare("SELECT exported,error FROM continuity_upkeep_accounting").get()).toBeUndefined();
   expect(f.reader.hasPendingUpkeepAccounting()).toBe(false);
 });

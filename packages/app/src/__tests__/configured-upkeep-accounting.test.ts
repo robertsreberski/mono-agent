@@ -30,7 +30,7 @@ it("startup recovers pending origin-run exports without enabling continuity or e
   db.exec("UPDATE continuity_upkeep_accounting SET exported=NULL,next_attempt_ms=0"); db.close();
   for (const name of await readdir(artifactDir)) if (name.includes(".upkeep.")) await rm(join(artifactDir, name));
   const warning = vi.fn(); await recoverConfiguredUpkeepAccounting(root, artifactRoot, warning);
-  expect(warning).not.toHaveBeenCalled(); expect(reader.hasPendingUpkeepAccounting()).toBe(false);
+  expect(warning).toHaveBeenCalledTimes(1); expect(reader.hasPendingUpkeepAccounting()).toBe(false);
   expect((await readRecordedRun({ artifactDir }, "origin"))?.upkeepAccounting?.[0]).toMatchObject({ model: "fictional:extractor-override", invocation: "uncertain", costUsd: null, usageIncluded: false });
   const files = await readdir(artifactDir); await recoverConfiguredUpkeepAccounting(root, artifactRoot, warning);
   expect(await readdir(artifactDir)).toEqual(files);
@@ -59,7 +59,7 @@ it("does not reacquire on every startup for permanently corrupt accounting rows"
   const warning = vi.fn(); await recoverConfiguredUpkeepAccounting(root, join(root, "tool-output"), warning);
   expect(reader.hasPendingUpkeepAccounting()).toBe(false);
   const check = new DatabaseSync(reader.databasePath, { readOnly: true });
-  expect(check.prepare("SELECT exported,error FROM continuity_upkeep_accounting WHERE operation_id='corrupt'").get()).toEqual({ exported: "failed", error: "invalid_journal" }); check.close();
+  expect(check.prepare("SELECT exported,error FROM continuity_upkeep_accounting WHERE operation_id='corrupt'").get()).toBeUndefined(); // reported orphan evidence is reclaimed check.close();
   const open = vi.spyOn(ToolHistoryWriter, "open");
   await recoverConfiguredUpkeepAccounting(root, join(root, "tool-output"), warning);
   expect(open).not.toHaveBeenCalled();

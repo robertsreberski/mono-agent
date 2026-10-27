@@ -488,7 +488,7 @@ export interface ConversationHarnessToolHistoryOptions {
   /** Default-on deterministic cold rebuild evidence; false retains recording/retrieval. */
   readonly packEnabled?: boolean;
   readonly ledgerEnabled?: boolean;
-  readonly upkeep?: { readonly enabled: boolean; readonly model?: string; readonly recorderNamespace?: string; readonly complete: (prompt: string, signal: AbortSignal, budget?: { readonly operationId: string; readonly inputTokens: 64000 | 128000; maxEntries?: number | undefined }) => Promise<ContinuityUpkeepResult> };
+  readonly upkeep?: ({ readonly enabled: true; readonly recorderNamespace: string } | { readonly enabled: false; readonly recorderNamespace?: string }) & { readonly model?: string; readonly complete: (prompt: string, signal: AbortSignal, budget?: { readonly operationId: string; readonly inputTokens: 64000 | 128000; maxEntries?: number | undefined }) => Promise<ContinuityUpkeepResult> };
   readonly mutateUpkeep?: (input: UpkeepMutation) => Promise<UpkeepAdmission | null>;
   readonly publishLedger?: (generation: LedgerGeneration, reservation?: UpkeepReservation) => Promise<void>;
   readonly conversationHistoryAvailable?: boolean;

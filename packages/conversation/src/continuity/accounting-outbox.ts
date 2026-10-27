@@ -7,7 +7,8 @@ import type { UpkeepReservation } from "./admission.js";
 type Row = { operation_id: string; phase: string; payload: string; attempts: number; origin_seen: number };
 const tableExists = (db: DatabaseSync, name: string) => !!db.prepare("SELECT 1 FROM sqlite_master WHERE name=?").get(name);
 const tokenCount = (n: unknown): number | null => typeof n === "number" && Number.isSafeInteger(n) && n >= 0 ? n : null;
-const MAX_ATTEMPTS = 3, BATCH_LIMIT = 32, BACKOFF_MS = 1_000;
+const MAX_ATTEMPTS = 3, BATCH_LIMIT = 32, BACKOFF_MS = 1_000, FAILED_LIMIT = 128;
+type AccountingWrite = <T>(operation: () => T) => T;
 
 export function upkeepAccounting(r: UpkeepReservation, receipt?: ContinuityUpkeepReceipt): AgentUpkeepAccounting {
   if (receipt && (receipt.operationId !== r.operationId || receipt.model !== r.model)) throw new TypeError("Conflicting upkeep identity");
@@ -38,19 +39,20 @@ export function queueUpkeepAccounting(db: DatabaseSync, a: AgentUpkeepAccounting
 }
 
 /** A rejected namespace or corrupt legacy row is terminal degradation, not work. */
-export function failUpkeepAccounting(db: DatabaseSync, operationId: string, phase: string, code: "invalid_journal" | "namespace_invalid"): void {
+export function failUpkeepAccounting(db: DatabaseSync, operationId: string, phase: string, code: "invalid_journal"): void {
   db.prepare("INSERT OR IGNORE INTO continuity_upkeep_accounting(operation_id,phase,payload,exported,error) VALUES (?,?,'{}','failed',?)").run(operationId, phase, code);
 }
 
 /** Additive retry metadata; upgrades do not reset an operation's attempt budget. */
 export function createUpkeepAccountingSchema(db: DatabaseSync): void {
+  db.exec("CREATE TABLE IF NOT EXISTS continuity_upkeep_accounting_counters (key TEXT PRIMARY KEY,value INTEGER NOT NULL)");
   if (tableExists(db, "continuity_upkeep_accounting")) {
     const columns = db.prepare("PRAGMA table_info(continuity_upkeep_accounting)").all() as { name: string }[];
     if (!columns.some(c => c.name === "attempts")) db.exec("ALTER TABLE continuity_upkeep_accounting ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0; ALTER TABLE continuity_upkeep_accounting ADD COLUMN next_attempt_ms INTEGER NOT NULL DEFAULT 0;");
     if (!columns.some(c => c.name === "origin_seen")) db.exec("ALTER TABLE continuity_upkeep_accounting ADD COLUMN origin_seen INTEGER NOT NULL DEFAULT 0");
     // The previous version left these permanent failures pending as '{}'.
     db.exec("UPDATE continuity_upkeep_accounting SET exported='failed',error='invalid_journal' WHERE exported IS NULL AND payload='{}'");
-    return;
+    pruneFailedUpkeepAccounting(db); return;
   }
   db.exec(`CREATE TABLE continuity_upkeep_accounting (
     operation_id TEXT NOT NULL,phase TEXT NOT NULL,payload TEXT NOT NULL,
@@ -66,69 +68,138 @@ export function createUpkeepAccountingSchema(db: DatabaseSync): void {
       if (row.outcome) { phase = "result"; queueUpkeepAccounting(db, upkeepAccounting(r, JSON.parse(row.outcome))); }
     } catch { failUpkeepAccounting(db, row.operation_id, phase, "invalid_journal"); }
   }
+  pruneFailedUpkeepAccounting(db);
 }
 
+/** Called only inside the caller's secure transaction. Retain no orphan failures. */
+export function pruneFailedUpkeepAccounting(db: DatabaseSync): void {
+  if (!tableExists(db, "continuity_upkeep_accounting")) return;
+  db.exec("DELETE FROM continuity_upkeep_accounting WHERE exported IN ('exported','pruned','failed') AND operation_id NOT IN (SELECT operation_id FROM continuity_upkeep_operations)");
+  const removed = Number(db.prepare("DELETE FROM continuity_upkeep_accounting WHERE rowid IN (SELECT rowid FROM continuity_upkeep_accounting WHERE exported='failed' ORDER BY rowid DESC LIMIT -1 OFFSET ?)").run(FAILED_LIMIT).changes);
+  if (removed) db.prepare("INSERT INTO continuity_upkeep_accounting_counters VALUES ('failed_evicted',?) ON CONFLICT(key) DO UPDATE SET value=value+excluded.value").run(removed);
+}
+export function upkeepAccountingDiagnostics(db: DatabaseSync): { pending: number; failed: number; evicted: number } {
+  if (!tableExists(db, "continuity_upkeep_accounting")) return { pending: 0, failed: 0, evicted: 0 };
+  const counts = db.prepare("SELECT count(CASE WHEN exported IS NULL THEN 1 END) pending,count(CASE WHEN exported='failed' THEN 1 END) failed FROM continuity_upkeep_accounting").get() as { pending: number; failed: number };
+  const evicted = tableExists(db, "continuity_upkeep_accounting_counters") ? Number((db.prepare("SELECT value FROM continuity_upkeep_accounting_counters WHERE key='failed_evicted'").get() as { value: number } | undefined)?.value ?? 0) : 0;
+  return { ...counts, evicted };
+}
 export function upkeepAccountingDegradation(db: DatabaseSync): number {
-  return tableExists(db, "continuity_upkeep_accounting") ? Number((db.prepare("SELECT count(*) n FROM continuity_upkeep_accounting WHERE error IS NOT NULL").get() as { n: number }).n) : 0;
+  const { pending, failed } = upkeepAccountingDiagnostics(db); return pending + failed;
 }
-
-/** Recovery batches are bounded; mutations target only their own queued phase.
- * Attempts are durably consumed BEFORE I/O, including process death during I/O. */
-export async function replayUpkeepAccounting(db: DatabaseSync, options: {
+type ReplayOptions = {
   readonly operationId?: string; readonly phase?: "dispatch" | "result";
   readonly now?: () => number; readonly exporter?: typeof exportUpkeepAccounting;
-} = {}): Promise<number> {
-  prepareUpkeepAccounting(db);
+  readonly closing?: () => boolean; readonly stopped?: () => boolean; readonly onFailure?: () => void;
+};
+/** Every write, including migration and pre-I/O attempts, uses the owner's secure
+ * transaction/busy deadline. Never hold that transaction across filesystem I/O. */
+export async function replayUpkeepAccounting(db: DatabaseSync, write: AccountingWrite, options: ReplayOptions = {}): Promise<number> {
+  prepareUpkeepAccounting(db, write);
   if (!tableExists(db, "continuity_upkeep_accounting")) return 0;
   const now = options.now ?? Date.now, timestamp = now();
-  db.prepare("UPDATE continuity_upkeep_accounting SET exported='failed',error=coalesce(error,'export_interrupted') WHERE exported IS NULL AND attempts>=?").run(MAX_ATTEMPTS);
+  write(() => {
+    const changed = db.prepare("UPDATE continuity_upkeep_accounting SET exported='failed',error=coalesce(error,'export_interrupted') WHERE exported IS NULL AND attempts>=?").run(MAX_ATTEMPTS).changes;
+    pruneFailedUpkeepAccounting(db);
+    if (changed) options.onFailure?.();
+  });
   const target = options.operationId === undefined ? "" : " AND operation_id=? AND phase=?";
   const args = options.operationId === undefined ? [timestamp, BATCH_LIMIT] : [timestamp, options.operationId, options.phase!, BATCH_LIMIT];
   for (const row of db.prepare(`SELECT operation_id,phase,payload,attempts,origin_seen FROM continuity_upkeep_accounting WHERE exported IS NULL AND next_attempt_ms<=?${target} ORDER BY rowid LIMIT ?`).all(...args) as Row[]) {
+    if (options.closing?.() || options.stopped?.()) return 0;
     const attempts = row.attempts + 1;
-    db.prepare("UPDATE continuity_upkeep_accounting SET attempts=?,next_attempt_ms=?,error=coalesce(error,'export_interrupted') WHERE operation_id=? AND phase=?").run(attempts, now() + BACKOFF_MS * 2 ** (attempts - 1), row.operation_id, row.phase);
+    write(() => db.prepare("UPDATE continuity_upkeep_accounting SET attempts=?,next_attempt_ms=?,error=coalesce(error,'export_interrupted') WHERE operation_id=? AND phase=?").run(attempts, now() + BACKOFF_MS * 2 ** (attempts - 1), row.operation_id, row.phase));
     try {
       let accounting: AgentUpkeepAccounting;
       try { accounting = parseAgentUpkeepAccounting(JSON.parse(row.payload)); } catch { throw new UpkeepAccountingExportError("invalid_payload"); }
       const result = await (options.exporter ?? exportUpkeepAccounting)(accounting, {
         originPreviouslySeen: row.origin_seen === 1,
-        onOriginSeen: () => { db.prepare("UPDATE continuity_upkeep_accounting SET origin_seen=1 WHERE operation_id=? AND phase=?").run(row.operation_id, row.phase); },
+        onOriginSeen: () => { if (!options.stopped?.()) write(() => db.prepare("UPDATE continuity_upkeep_accounting SET origin_seen=1 WHERE operation_id=? AND phase=?").run(row.operation_id, row.phase)); },
       });
-      if (result === "pending") {
-        db.prepare("UPDATE continuity_upkeep_accounting SET exported=?,error='origin_pending' WHERE operation_id=? AND phase=?").run(attempts >= MAX_ATTEMPTS ? "failed" : null, row.operation_id, row.phase);
-      } else db.prepare("UPDATE continuity_upkeep_accounting SET exported=?,error=NULL WHERE operation_id=? AND phase=?").run(result, row.operation_id, row.phase);
+      if (options.stopped?.()) return 0;
+      write(() => {
+        if (result === "pending") {
+          db.prepare("UPDATE continuity_upkeep_accounting SET exported=?,error='origin_pending' WHERE operation_id=? AND phase=?").run(attempts >= MAX_ATTEMPTS ? "failed" : null, row.operation_id, row.phase);
+          pruneFailedUpkeepAccounting(db); options.onFailure?.();
+        } else db.prepare("UPDATE continuity_upkeep_accounting SET exported=?,error=NULL WHERE operation_id=? AND phase=?").run(result, row.operation_id, row.phase);
+      });
     } catch (error) {
-      const permanent = error instanceof UpkeepAccountingExportError;
-      const code = permanent ? error.code : "export_io";
-      db.prepare("UPDATE continuity_upkeep_accounting SET exported=?,error=? WHERE operation_id=? AND phase=?").run(permanent || attempts >= MAX_ATTEMPTS ? "failed" : null, code, row.operation_id, row.phase);
+      if (options.stopped?.()) return 0;
+      const permanent = error instanceof UpkeepAccountingExportError, code = permanent ? error.code : "export_io";
+      write(() => { db.prepare("UPDATE continuity_upkeep_accounting SET exported=?,error=? WHERE operation_id=? AND phase=?").run(permanent || attempts >= MAX_ATTEMPTS ? "failed" : null, code, row.operation_id, row.phase); pruneFailedUpkeepAccounting(db); });
+      options.onFailure?.();
     }
   }
-  db.exec("DELETE FROM continuity_upkeep_accounting WHERE exported IN ('exported','pruned') AND operation_id NOT IN (SELECT operation_id FROM continuity_upkeep_operations)");
+  if (options.stopped?.()) return 0;
+  write(() => pruneFailedUpkeepAccounting(db));
   return upkeepAccountingDegradation(db);
 }
-
 /** Backfill before retention/reset can erase legacy operation evidence. */
-export function prepareUpkeepAccounting(db: DatabaseSync): void {
+export function prepareUpkeepAccounting(db: DatabaseSync, write: AccountingWrite): void {
   if (!tableExists(db, "continuity_upkeep_operations")) return;
   if (!tableExists(db, "continuity_upkeep_accounting") && !db.prepare("SELECT 1 FROM continuity_upkeep_operations WHERE state IN ('dispatch_started','uncertain','terminal') OR outcome IS NOT NULL LIMIT 1").get()) return;
-  db.exec("BEGIN IMMEDIATE");
-  try { createUpkeepAccountingSchema(db); db.exec("COMMIT"); } catch (error) { db.exec("ROLLBACK"); throw error; }
+  write(() => createUpkeepAccountingSchema(db));
 }
 
-/** Serialized exports, independent of the admission/RPC tail. Slow filesystem
- * work cannot change a dispatch/outcome acknowledgement or block the next one.
- * Overflow remains durable for recovery, rather than growing an in-memory tail. */
+/** One in-flight batch, 32 queued targets, cooperative recovery slices and an
+ * unref'ed retry timer. Closing abandons durable queued work, never ownership. */
 export function createUpkeepAccountingExportQueue(db: DatabaseSync, onDegradation: (count: number) => void,
-  defaults: Pick<Parameters<typeof replayUpkeepAccounting>[1] & {}, "now" | "exporter"> = {}) {
-  let tail = Promise.resolve(), queued = 0;
-  const report = (count: number) => { try { onDegradation(count); } catch { /* diagnostics only */ } };
+  defaults: Pick<ReplayOptions, "now" | "exporter"> & { write: AccountingWrite }) {
+  const now = defaults.now ?? Date.now;
+  let running: Promise<void> | undefined, timer: ReturnType<typeof setTimeout> | undefined;
+  let closing = false, abandoned = false, sweep = false, lastCount = upkeepAccountingDegradation(db);
+  const targets: { operationId?: string; phase?: "dispatch" | "result" }[] = [];
+  const report = (count: number, failure = false, increase = false) => {
+    if (!closing && count && (failure || increase && count > lastCount)) { try { onDegradation(count); } catch { /* diagnostics only */ } }
+    lastCount = count;
+  };
+  const dueAt = (): number | undefined => {
+    if (!tableExists(db, "continuity_upkeep_accounting")) return undefined;
+    const row = db.prepare("SELECT min(CASE WHEN attempts>=3 THEN 0 ELSE next_attempt_ms END) n FROM continuity_upkeep_accounting WHERE exported IS NULL").get() as { n: number | null };
+    return row.n ?? undefined;
+  };
+  const clearTimer = () => { if (timer) clearTimeout(timer); timer = undefined; };
+  const arm = () => {
+    if (closing || running) return;
+    clearTimer(); const next = targets.length || sweep ? now() : dueAt();
+    if (next === undefined) return;
+    timer = setTimeout(() => { timer = undefined; sweep = true; kick(); }, Math.min(2_147_483_647, Math.max(0, next - now()))); timer.unref();
+  };
+  const kick = () => {
+    if (closing || running) return;
+    running = Promise.resolve().then(async () => {
+      const started = performance.now();
+      while (!closing && (targets.length || sweep)) {
+        const target = targets.shift(); if (!target) sweep = false;
+        let failure = false;
+        const count = await replayUpkeepAccounting(db, defaults.write, { ...defaults, ...target, closing: () => closing, stopped: () => abandoned, onFailure: () => { failure = true; } });
+        if (closing) return;
+        report(count, failure);
+        if ((dueAt() ?? Infinity) <= now()) sweep = true;
+        if (performance.now() - started >= 200) break;
+      }
+    }).catch(() => { if (!closing) report(Math.max(1, upkeepAccountingDegradation(db)), true); })
+      .finally(() => { running = undefined; arm(); });
+  };
   return {
     schedule(target: { operationId?: string; phase?: "dispatch" | "result" } = {}) {
-      if (queued >= BATCH_LIMIT) { report(Math.max(1, upkeepAccountingDegradation(db))); return; }
-      queued++;
-      tail = tail.then(async () => { report(await replayUpkeepAccounting(db, { ...defaults, ...target })); })
-        .catch(() => report(1)).finally(() => { queued--; });
+      if (closing) return;
+      clearTimer();
+      if (target.operationId && targets.length < BATCH_LIMIT) targets.push(target);
+      else { sweep = true; if (target.operationId) report(upkeepAccountingDegradation(db), false, true); }
+      kick();
     },
-    async flush() { await tail; },
+    async flush() {
+      while (!closing && (running || targets.length || sweep)) { kick(); await running; }
+    },
+    async close(waitMs = 1_000) {
+      closing = true; clearTimer(); targets.length = 0; sweep = false;
+      if (running) {
+        let timeout: ReturnType<typeof setTimeout> | undefined;
+        try { await Promise.race([running, new Promise<void>(resolve => { timeout = setTimeout(resolve, Math.max(0, waitMs)); })]); }
+        finally { if (timeout) clearTimeout(timeout); }
+      }
+      abandoned = true; // No late origin observation/ack may touch a closed DB.
+    },
   };
 }
