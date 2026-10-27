@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Seed legacy continuity representation into shared offer accounting so progress
+  reaches later pages; isolate corrupt retirement scopes during retention.
+
+- Keep continuity upkeep purchases bounded across sparse retirement and restarts
+  with exact shared offer counts and verified contiguous cursor advancement;
+  preserve chronological selection and default-off behavior.
+
 - Accept well-formed empty continuity deltas as accounted analysis without
   republishing or losing the prior ledger; require explicit coverage IDs.
 

@@ -1,3 +1,4 @@
+import { initializeLedgerProgress } from "./ledger-storage.js";
 import type { LedgerProgress } from "../tool-history/continuity-contracts.js";
 import { createProgressSchema, dispatchProgress, reclaimProgress } from "./progress.js";
 import { randomUUID } from "node:crypto";
@@ -122,6 +123,7 @@ export function mutateUpkeep(db: DatabaseSync, root: string, request: UpkeepMuta
   }
   if (request.kind === "oversized") {
     assertUpkeepFence(db, root, request.fence);
+    if (request.advance) initializeLedgerProgress(db, request.fence);
     dispatchProgress(db, { ...request.fence, operationId: request.operationId, progress: request.progress }, "oversized", request.advance); return null;
   }
   const r = request.reservation, scope = assertUpkeepFence(db, root, r), serialized = serializeReservation(r);
@@ -141,9 +143,9 @@ export function mutateUpkeep(db: DatabaseSync, root: string, request: UpkeepMuta
     const key = ledgerHash(JSON.stringify([r.manifest, r.parent]));
     // Model changes, lost receipts and restarts do not repurchase uncertain work.
     if (db.prepare("SELECT 1 FROM continuity_upkeep_operations WHERE logical_id=? AND conversation_id=? AND incarnation=? AND selection_key=? AND state<>'released'").get(r.logicalId, r.conversationId, r.incarnation, key)
-      && !(r.progress?.spans.length && r.progress.spans.every(span => db.prepare("SELECT 1 FROM continuity_upkeep_offers WHERE logical_id=? AND conversation_id=? AND span_key=? AND state='reofferable' AND attempt=0").get(r.logicalId, r.conversationId, span.key)))) throw new LedgerError("upkeep_repeat_suppressed");
+      && !(r.progress?.spans.length && r.progress.spans.every(span => db.prepare("SELECT 1 FROM continuity_upkeep_offers WHERE logical_id=? AND conversation_id=? AND span_key=? AND state IN ('reofferable','available','unrepresented') AND offer_count<2").get(r.logicalId, r.conversationId, span.key)))) throw new LedgerError("upkeep_repeat_suppressed");
     if (Number((db.prepare("SELECT count(*) n FROM continuity_upkeep_operations WHERE logical_id=? AND conversation_id=?").get(r.logicalId, r.conversationId) as Row).n) >= 16384) fail();
-    if (r.progress) db.prepare("INSERT OR IGNORE INTO continuity_upkeep_progress VALUES (?,?,?,?)").run(r.logicalId, r.conversationId, r.incarnation, JSON.stringify({ ordinal: 1, offset: 0, digest: "", watermark: 0 }));
+    if (r.progress) initializeLedgerProgress(db, r);
     db.prepare("INSERT INTO continuity_upkeep_operations VALUES (?,?,?,?,?,?,?,?,?,'reserved',NULL)").run(r.operationId, r.logicalId, r.conversationId, r.incarnation, r.fence, r.ownerToken, serialized, key, r.budget);
     return null;
   }
@@ -162,13 +164,13 @@ export function mutateUpkeep(db: DatabaseSync, root: string, request: UpkeepMuta
   }
   if (request.kind === "settle") {
     if (row.state !== "terminal") fail();
-    db.prepare("UPDATE continuity_upkeep_offers SET state=CASE WHEN ? AND attempt=0 THEN ? ELSE ? END WHERE operation_id=? AND state='pending'").run(Number(request.saturated), request.analysisOnly ? "reofferable" : "pending_retry", request.analysisOnly ? "analyzed" : "pending", r.operationId);
+    db.prepare("UPDATE continuity_upkeep_offers SET state=CASE WHEN ? AND offer_count<2 THEN ? ELSE ? END WHERE operation_id=? AND state='pending'").run(Number(request.saturated), request.analysisOnly ? "reofferable" : "pending_retry", request.analysisOnly ? "analyzed" : "pending", r.operationId);
     if (request.analysisOnly) reclaimProgress(db, r.logicalId, r.conversationId);
     return null;
   }
   if (request.kind === "reject") {
     if (row.state !== "terminal") fail();
-    db.prepare("UPDATE continuity_upkeep_offers SET state=CASE WHEN ? THEN CASE WHEN attempt=0 THEN 'reofferable' ELSE 'analyzed' END ELSE 'failed' END WHERE operation_id=? AND state IN ('pending','pending_retry')").run(Number(request.retry === true), r.operationId); return null;
+    db.prepare("UPDATE continuity_upkeep_offers SET state=CASE WHEN ? THEN CASE WHEN offer_count<2 THEN 'reofferable' ELSE 'analyzed' END ELSE 'failed' END WHERE operation_id=? AND state IN ('pending','pending_retry')").run(Number(request.retry === true), r.operationId); return null;
   }
   if (request.receipt.operationId !== r.operationId || request.receipt.model !== r.model) fail();
   const outcome = JSON.stringify(request.receipt);
@@ -177,6 +179,12 @@ export function mutateUpkeep(db: DatabaseSync, root: string, request: UpkeepMuta
   if (row.state !== "dispatch_started") fail();
   const released = !request.receipt.providerInvoked && request.receipt.status === "skipped" && NON_INVOCATION.has(request.receipt.reason);
   db.prepare("UPDATE continuity_upkeep_operations SET state=?,outcome=? WHERE operation_id=?").run(released ? "released" : request.receipt.providerInvoked ? "terminal" : "uncertain", outcome, r.operationId);
+  if (released) {
+    db.prepare("UPDATE continuity_upkeep_offers SET offer_count=max(0,offer_count-1),attempt=max(0,offer_count-2) WHERE operation_id=?").run(r.operationId);
+    const hole = db.prepare("SELECT min(ordinal) ordinal FROM continuity_upkeep_offers WHERE operation_id=? AND offer_count=0 AND ordinal>0").get(r.operationId) as Row;
+    if (hole.ordinal !== null) db.prepare(`UPDATE continuity_upkeep_progress SET cursor=json_set(cursor,'$.ordinal',?,'$.offset',0,'$.digest','')
+      WHERE logical_id=? AND conversation_id=? AND json_extract(cursor,'$.ordinal')>=?`).run(hole.ordinal, r.logicalId, r.conversationId, hole.ordinal);
+  }
   db.prepare("UPDATE continuity_upkeep_offers SET state=? WHERE operation_id=?").run(released ? "available" : request.receipt.providerInvoked ? request.receipt.status === "valid" ? "pending" : "failed" : "uncertain", r.operationId);
   if (released && scope.bootstrap_operation === r.operationId) db.prepare("UPDATE continuity_upkeep_admissions SET bootstrap_operation=NULL WHERE logical_id=? AND conversation_id=?").run(r.logicalId, r.conversationId);
   return null;
@@ -188,7 +196,7 @@ export function resetUpkeep(db: DatabaseSync, kind: "logical" | "physical", id: 
   if (!db.prepare("SELECT 1 FROM sqlite_master WHERE name='continuity_upkeep_scopes'").get()) return;
   const column = kind === "logical" ? "logical_id" : "conversation_id";
   // A disabled-upkeep upgrade can reset a P3b1 scope before progress exists.
-  for (const table of ["continuity_upkeep_offers", "continuity_upkeep_progress"]) {
+  for (const table of ["continuity_upkeep_offers", "continuity_upkeep_progress", "continuity_upkeep_retired"]) {
     if (db.prepare("SELECT 1 FROM sqlite_master WHERE name=?").get(table)) db.prepare(`DELETE FROM ${table} WHERE ${column}=?`).run(id);
   }
   db.prepare(`DELETE FROM continuity_upkeep_operations WHERE ${column}=?`).run(id);

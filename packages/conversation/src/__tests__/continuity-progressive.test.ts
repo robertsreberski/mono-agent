@@ -206,7 +206,7 @@ it("isolates offer capacity to its own scope without deleting another scope's un
   const f = await fixture(); await f.capture();
   await f.writer.mutateUpkeep({ kind: "inspect", scope: { logicalId: "fictional", conversationId: "fictional" } });
   f.db(db => db.exec(`WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM seq WHERE n<65536)
-    INSERT INTO continuity_upkeep_offers SELECT 'other','other','incarnation',printf('%064x',n),1,printf('%064x',0),0,1,printf('op-%d',n),'uncertain',NULL,0 FROM seq;`));
+    INSERT INTO continuity_upkeep_offers SELECT 'other','other','incarnation',printf('%064x',n),n,printf('%064x',0),0,1,printf('op-%d',n),'uncertain',NULL,0,1 FROM seq;`));
   await f.prepare(); expect(f.complete).toHaveBeenCalledTimes(1);
   expect(f.db(db => db.prepare("SELECT count(*) n FROM continuity_upkeep_offers WHERE logical_id='other'").get())).toEqual({ n: 65536 });
 });
@@ -350,7 +350,7 @@ it("rechecks actual headroom after the provider returns and rejects only the del
 it("reports a definitive rolled-back dispatch as skipped without consuming bootstrap", async () => {
   const f = await fixture(); await f.capture(); await f.writer.mutateUpkeep({ kind: "inspect", scope: { logicalId: "fictional", conversationId: "fictional" } });
   f.db(db => db.exec(`WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM seq WHERE n<65536)
-    INSERT INTO continuity_upkeep_offers SELECT 'fictional','fictional','incarnation',printf('%064x',n),1,printf('%064x',0),0,1,printf('op-%d',n),'uncertain',NULL,0 FROM seq;`));
+    INSERT INTO continuity_upkeep_offers SELECT 'fictional','fictional','incarnation',printf('%064x',n),n,printf('%064x',0),0,1,printf('op-%d',n),'uncertain',NULL,0,1 FROM seq;`));
   const result = await f.prepare(); expect(f.complete).not.toHaveBeenCalled();
   expect(result.events).toContainEqual(expect.objectContaining({ status: "skipped", reason: "upkeep_dispatch_rejected", providerInvoked: false }));
   expect(result.events.some(event => event.status === "uncertain")).toBe(false);
@@ -362,7 +362,7 @@ it("reclaims terminal progress journals and proof-obsolete offers, but never unc
   for (let i = 0; i < 72; i++) { await f.capture(1, `New fictional ${i}.`); await f.prepare(); }
   expect(f.db(db => db.prepare("SELECT count(*) n FROM continuity_upkeep_operations").get())).toEqual({ n: 64 });
   expect((await f.writer.mutateUpkeep({ kind: "inspect", scope: { logicalId: "fictional", conversationId: "fictional" } }))!.bootstrap).toBe(false);
-  f.db(db => { db.prepare("INSERT INTO continuity_upkeep_offers VALUES ('fictional','fictional','incarnation','obsolete',9999,'gone',0,1,'obsolete','failed',NULL,0)").run(); reclaimProgress(db, "fictional", "fictional"); });
+  f.db(db => { db.prepare("INSERT INTO continuity_upkeep_offers VALUES ('fictional','fictional','incarnation','obsolete',9999,'gone',0,1,'obsolete','failed',NULL,0,1)").run(); reclaimProgress(db, "fictional", "fictional"); });
   expect(f.db(db => db.prepare("SELECT count(*) n FROM continuity_upkeep_offers WHERE span_key='obsolete'").get())).toEqual({ n: 0 });
   const mutate = f.ports.mutateUpkeep; f.ports.mutateUpkeep = async input => { if (input.kind === "outcome") throw new Error("Lost outcome."); return mutate(input); };
   await f.capture(1, "Uncertain."); await f.prepare();
@@ -459,7 +459,7 @@ it("does not rewind a frontier beyond 512 represented anchors on an old tombston
   const f = await fixture(); await f.capture(640, "Anchor.", "fictional", true);
   const fence = (await f.writer.mutateUpkeep({ kind: "inspect", scope: { logicalId: "fictional", conversationId: "fictional" } }))!;
   f.db(db => { db.prepare("INSERT INTO continuity_upkeep_progress VALUES (?,?,?,?)").run("fictional", "fictional", fence.incarnation, JSON.stringify({ ordinal: 641, offset: 0, digest: "", watermark: 640 }));
-    db.exec(`INSERT INTO continuity_upkeep_offers SELECT 'fictional','fictional','incarnation',printf('%064x',ordinal),ordinal,text_sha256,0,7,'historical','represented','historical',0 FROM continuity_records;
+    db.exec(`INSERT INTO continuity_upkeep_offers SELECT 'fictional','fictional','incarnation',printf('%064x',ordinal),ordinal,text_sha256,0,7,'historical','represented','historical',0,1 FROM continuity_records;
       UPDATE continuity_records SET retained_text=NULL WHERE ordinal=1;`); });
   expect(f.db(db => JSON.parse((db.prepare("SELECT cursor FROM continuity_upkeep_progress").get() as any).cursor).ordinal)).toBe(641);
   await f.capture(1, "Later tool evidence.", "fictional", true); await f.prepare(); await f.prepare();
@@ -573,6 +573,7 @@ it("bounds reconstruction per span across five successive retention invalidation
   expect(Math.max(...counts.values())).toBe(2);
   expect(f.db(db => db.prepare("SELECT count(*) n FROM continuity_upkeep_offers WHERE state='lost'").get())).toEqual({ n: 4 });
   expect(f.db(db => db.prepare("SELECT max(attempt) n FROM continuity_upkeep_offers").get())).toEqual({ n: 1 });
+  expect(f.db(db => db.prepare("SELECT max(offer_count) n FROM continuity_upkeep_offers").get())).toEqual({ n: 2 });
   await f.prepare(); expect(f.complete).toHaveBeenCalledTimes(6);
 });
 

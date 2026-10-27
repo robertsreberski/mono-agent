@@ -1,3 +1,6 @@
+import { ledgerWindows } from "./span-geometry.js";
+import { geometryKey, readRetired, RETIRED_IDENTITY_LIMIT } from "./retirement.js";
+import { representationDeleteSql } from "./retirement.js";
 import { createProgressSchema, representProgress } from "./progress.js";
 import { LedgerError } from "./ledger-error.js";
 import type { DatabaseSync } from "node:sqlite";
@@ -11,7 +14,6 @@ export function ledgerBytes(database: DatabaseSync): number {
 }
 export function createLedgerSchema(database: DatabaseSync): void {
   createProgressSchema(database);
-  database.exec("DROP TRIGGER IF EXISTS continuity_upkeep_representation_delete");
   database.exec(`CREATE TABLE IF NOT EXISTS continuity_ledger (
     id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL UNIQUE, logical_id TEXT NOT NULL,
     parent TEXT, manifest TEXT NOT NULL, payload TEXT NOT NULL, payload_sha256 TEXT NOT NULL, bytes INTEGER NOT NULL);
@@ -25,8 +27,7 @@ export function createLedgerSchema(database: DatabaseSync): void {
       WHEN NEW.retained_text IS NULL OR NEW.text_sha256<>OLD.text_sha256 OR NEW.retained_text<>OLD.retained_text
       BEGIN DELETE FROM continuity_ledger WHERE id IN
         (SELECT generation_id FROM continuity_ledger_inputs WHERE record_id=NEW.record_id); END;
-    CREATE TRIGGER IF NOT EXISTS continuity_upkeep_representation_delete AFTER DELETE ON continuity_ledger
-      BEGIN UPDATE continuity_upkeep_offers SET state=CASE WHEN attempt=0 THEN 'unrepresented' ELSE 'lost' END,ledger_id=NULL WHERE ledger_id=OLD.id AND state='represented'; END;`);
+    ${representationDeleteSql()}`);
 }
 
 /** Validate all inherited input links, not only citations. Latest-only storage
@@ -73,6 +74,31 @@ function verifyInputs(database: DatabaseSync, generation: LedgerGeneration): { r
   return { records, retainedBytes: bytes };
 }
 
+/** Upgrade published P3b1 representation before the first progressive purchase.
+ * Only cited/normalized coverage is paid evidence; uncited legacy coverage is not.
+ * Do not overwrite working/packed accounting that already exists. */
+export function initializeLedgerProgress(database: DatabaseSync, scope: { logicalId: string; conversationId: string; incarnation: string }): void {
+  const args = [scope.logicalId, scope.conversationId] as const;
+  if (database.prepare("SELECT 1 FROM continuity_upkeep_progress WHERE logical_id=? AND conversation_id=?").get(...args)) return;
+  const ledger = readLedger(database, { logicalConversationId: scope.logicalId, currentConversationId: scope.conversationId, currentRunId: "" });
+  const identities = new Set([...readRetired(database, ...args).map(geometryKey),
+    ...(database.prepare("SELECT ordinal,start,end FROM continuity_upkeep_offers WHERE logical_id=? AND conversation_id=?").all(...args) as Record<string, number>[]).map(s => geometryKey({ ordinal: s.ordinal!, start: s.start!, end: s.end! }))]);
+  const texts = new Map(ledger?.records.map(record => [record.recordId, record.text]));
+  for (const span of ledger?.generation.spans ?? []) if (ledger!.generation.coveredSpans?.includes(span.id)) {
+    const ordinal = span.ordinal!, identity = geometryKey({ ...span, ordinal });
+    if (identities.has(identity)) continue;
+    let canonical = false;
+    for (const window of ledgerWindows(texts.get(span.recordId)!, span.owner)) if (window.start === span.start && window.end === span.end) { canonical = true; break; }
+    if (!canonical) throw new Error("upkeep_progress_source_changed");
+    identities.add(identity); if (identities.size > RETIRED_IDENTITY_LIMIT) throw new Error("upkeep_progress_capacity");
+    // No valid reservation has an empty ID: a forged legacy-ledger ID must not
+    // let an unrelated non-invocation refund this historical purchase.
+    database.prepare("INSERT INTO continuity_upkeep_offers VALUES (?,?,?,?,?,?,?,?,?,'represented',?,0,1)")
+      .run(...args, scope.incarnation, spanKey(span), ordinal, span.sha256, span.start, span.end, "", ledger!.generation.id);
+  }
+  database.prepare("INSERT INTO continuity_upkeep_progress VALUES (?,?,?,?)").run(...args, scope.incarnation, JSON.stringify({ ordinal: 1, offset: 0, digest: "", watermark: 0 }));
+}
+
 /** Called in the existing writer transaction, never around network I/O. */
 export function publishLedger(database: DatabaseSync, generation: LedgerGeneration, maxBytes: number, existingBytes: number, operationId?: string): void {
   const payload = JSON.stringify(generation), bytes = Buffer.byteLength(payload);
@@ -91,6 +117,7 @@ export function publishLedger(database: DatabaseSync, generation: LedgerGenerati
   try { verifyInputs(database, generation); } catch { throw new LedgerError("publish_source_changed"); }
   // Transfer prior representation before replacing the latest row; rollback is atomic.
   database.prepare("UPDATE continuity_upkeep_offers SET ledger_id=? WHERE ledger_id=? AND state='represented'").run(generation.id, String(old?.id ?? ""));
+  database.prepare("UPDATE continuity_upkeep_retired SET ledger_id=? WHERE ledger_id=?").run(generation.id, String(old?.id ?? ""));
   database.prepare("DELETE FROM continuity_ledger WHERE conversation_id=?").run(generation.conversationId);
   database.prepare("INSERT INTO continuity_ledger VALUES (?,?,?,?,?,?,?,?)").run(generation.id, generation.conversationId, generation.logicalId, generation.parent, generation.manifest, payload, ledgerHash(payload), bytes);
   representProgress(database, generation, spanKey, operationId);
