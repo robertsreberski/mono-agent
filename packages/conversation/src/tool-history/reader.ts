@@ -1,3 +1,4 @@
+import { scanLedgerHistory } from "./ranked-scan.js";
 import { readLedger } from "../continuity/ledger-storage.js";
 import { inspectContinuityPurges, pendingContinuityPurges } from "./continuity-purge.js";
 import { redactJsonValue } from "@mono-agent/observability";
@@ -83,9 +84,9 @@ export class ToolHistoryReader {
     const database = this.openReadOnly();
     if (!database) return { records: [], omitted: 0, gaps: 1, degradedReason: "unavailable" };
     try {
-      database.exec("BEGIN");
-      const snapshot = snapshotContinuity(database, input);
-      database.exec("COMMIT");
+      let snapshot: ContinuitySnapshot;
+      if (input.selection === "upkeep") snapshot = scanLedgerHistory(database, input);
+      else { database.exec("BEGIN"); snapshot = snapshotContinuity(database, input); database.exec("COMMIT"); }
       return this.continuityPurgePending(input) ? { records: [], omitted: 0, gaps: 1, degradedReason: "purge_pending" } : snapshot;
     } finally { database.close(); }
   }

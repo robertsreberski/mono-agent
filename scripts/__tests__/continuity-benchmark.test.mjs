@@ -1,3 +1,4 @@
+import ts from "typescript";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { spawnSync } from "node:child_process";
 import { mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
@@ -5,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ARMS, AVAILABLE_ARM_IDS, BASELINE_ARM, CONTINUITY_OFF, CONTINUITY_ON, CONTINUITY_PACK_ON, DEFAULT_ARMS, NOT_AVAILABLE, ORIGINAL_ARM_IDS, SMALL_PROACTIVE_COMPACTION, armById, checkpointKey, mergePatch, pressureMetrics, verifyBoundary, verifyPressure, verifyStore } from "../lib/continuity-arms.mjs";
-import { classifyHistoryResult } from "../lib/continuity-runner.mjs";
+import { classifyHistoryResult, boundedOfferHistory, preparationDisposition, preparationInputReserve, preparationIntegrity, preparationUsage, verifyLedgerTreatment } from "../lib/continuity-runner.mjs";
 import { digest, estimateCost, inventory, loadTraces, makePlan, parseSeeds, sourceOnly, validateTrace } from "../lib/continuity-dataset.mjs";
 import { COLD_BOUNDS, GENERATOR_VERSION, HARD_SEEDS, LONG_RULES, generateTrace, mulberry32, outsideColdBounds, traceShape } from "../lib/continuity-generator.mjs";
 import { ABSTAIN_INSTRUCTION, ORIGINAL_CATEGORIES, emptyUsage, addUsage, isAbstention, parseJudgeVerdict, probePrompt, renderMarkdown, scoreAnswer, summarize } from "../lib/continuity-score.mjs";
@@ -341,7 +342,7 @@ describe("continuity offline contract run (production harness, scripted provider
       expect(unit.complete).toBe(true);
       expect(unit.checkpoint).toMatchObject({ turns: 38, toolCalls: 29, steers: 1 });
       expect(unit.trials).toHaveLength(1);
-      expect(unit.trials[0]).toMatchObject({ status: "completed", answer: "Scripted contract response; semantic correctness is not evaluated." });
+      expect(unit.trials[0], JSON.stringify({ arm, trial: unit.trials[0], upkeepValid: unit.checkpoint.upkeep?.valid })).toMatchObject({ status: "completed", answer: "Scripted contract response; semantic correctness is not evaluated." });
       expect(unit.trials[0].boundary.verified).toBe(true);
     }
     expect(units.native.trials[0].boundary.observed).toMatchObject({ boundaries: [], compactions: [] });
@@ -384,13 +385,27 @@ describe("continuity offline contract run (production harness, scripted provider
     expect(new Set(steps.map(step => step.pid)).size).toBe(3);
     expect(steps.map(step => step.journal.operations)).toEqual([1, 2, 3]);
     expect(steps.map(step => step.journal.bootstrap)).toEqual([1, 1, 1]);
+    const offered = steps.flatMap(step => step.journal.selection);
+    expect(offered.every(key => offered.filter(other => other === key).length <= 2)).toBe(true);
     expect(steps.map(step => step.entriesAfter)).toEqual([1, 1, 2]);
     expect(steps.every(step => step.preserved && step.boundary.verified)).toBe(true);
+    expect(new Set(steps.map(step => step.journal.operationId)).size).toBe(3);
+    expect(new Set(steps.map(step => step.journal.databaseId)).size).toBe(1);
+    expect(steps.map(step => step.journal.budget)).toEqual(["bootstrap", "incremental", "incremental"]);
+    for (const step of steps) {
+      expect(step.observed.upkeepScans).toEqual([expect.objectContaining({ complete: true, limits: { rows: 4096, bytes: 33554432, windows: 65536, ms: 5000 } })]);
+      expect(step.observed.upkeepSelections).toEqual([expect.objectContaining({ reason: "fitted", deltaCap: 8 })]);
+      expect(step.journal.offered.length).toBeGreaterThan(0); expect(step.journal.offered.length).toBeLessThanOrEqual(64);
+      expect(step.journal.offerCounts.every(row => row.offer_count <= 2)).toBe(true);
+      expect(step.journal.compact.identities).toBe(0);
+      expect(JSON.parse(step.journal.frontier).ordinal).toBeGreaterThan(0);
+    }
     expect(ledger.trials[0].boundary.observed.upkeep).toEqual([expect.objectContaining({ providerInvoked: false, reason: "read_only" })]);
     expect(ledger.trials[0].boundary.observed.offlineLedgerCounts).toEqual([1, 1]);
     expect(ledger.trials[0].boundary.observed.continuityPacks.some(pack => pack.ledgerEntries === 2)).toBe(true);
     expect(ledger.trials[0].boundary.observed.upkeep.some(row => row.providerInvoked)).toBe(false);
-    expect(results.upkeep).toHaveLength(1);
+    expect(results.preparationHealth["continuity-ledger-cold"]).toMatchObject({ d6InputOverruns: 0, d6OutputOverruns: 0 });
+  expect(results.upkeep).toHaveLength(1);
     expect(results.summary.arms["continuity-ledger-cold"].usage.calls).toBe(4); // three extractions plus one probe, counted once.
     expect(await readFile(join(output, "summary.md"), "utf8")).toContain("NOT model quality");
     expect(await readdir(output)).not.toContain("work");
@@ -517,27 +532,31 @@ it("keeps distractor actual facts and byte pressure identical while pricing all 
   expect(cost.arms["continuity-ledger-cold"].inputTokens - cost.arms["continuity-pack-cold"].inputTokens).toBe(2 * (128000 + 64000 + 64000));
 });
 
-it.each(["harness", "ledger", "skip"])("retains upkeep receipt/accounting after %s preparation", async point => {
+it.each(["harness", "ledger", "skip", "read_only", "overrun", "output_overrun", "output_flag"])("retains upkeep receipt/accounting after %s preparation", async point => {
   const { prepareLedgerCheckpoint } = await import("../lib/continuity-runner.mjs");
-  const work = await scratch();
-  const receipt = { type: "continuity_upkeep", providerInvoked: point !== "skip", status: "invalid", costUsd: null, inputTokens: null, outputTokens: null, estimatedInputCostUsd: 0.02, estimatedInputTokens: 15000 };
+  const work = await scratch(); let ledgerReads = 0;
+  const receipt = { type: "continuity_upkeep", reason: point === "skip" ? "input_budget" : point === "read_only" ? "read_only" : point === "overrun" ? "input_overrun" : point === "output_overrun" ? "output_overrun" : "provider_output", providerInvoked: !["skip", "read_only"].includes(point), status: ["skip", "read_only"].includes(point) ? "skipped" : "invalid", costUsd: null, inputTokens: null, outputTokens: null, estimatedInputCostUsd: 0.02, estimatedInputTokens: 15000, outputOverrun: point === "output_flag" };
   const modules = {
     config: { resolveJsonMonoAgentConfig: () => ({ runtime: { model: {} } }) },
     coordinator: { acquireAgentRootOwnership: async () => ({}), releaseAgentRootOwnershipWhenIdle: async () => {} },
     app: { createConfiguredAgentRuntime: () => ({}), createConfiguredConversationHarness: async () => ({ run: async ({ onEvent }) => { onEvent(receipt); if (point === "harness") throw new Error("fictional"); return {}; } }) },
     host: { parseMonoRuntimeModelReference: reference => ({ reference }) },
-    conversation: { ToolHistoryReader: class { n = 0; ledger() { if (this.n++ > 0) throw new Error("fictional"); } } },
+    conversation: { ToolHistoryReader: class { ledger() { if (++ledgerReads === 2 && point === "ledger") throw new Error("fictional second ledger read"); } } },
   };
   const result = await prepareLedgerCheckpoint({ modules, work, mode: "real", reader: { reference: "openai-codex:gpt-6-luna" }, alternate: { reference: "openai:gpt-4o-mini" }, scripted: { respondWith() {} }, clock: {}, plan: { upkeep: { model: "openai-codex:gpt-6-luna", maxInputTokens: 128000, incrementalMaxInputTokens: 64000, maxOutputTokens: 4096, callsPerTraceRepeat: 3, preparations: [{ binding: "openai:gpt-4o-mini", maxInputTokens: 128000 }] }, limits: { perLiveTurnTimeoutMs: 10000 } } });
-  expect(result.receipt).toEqual(receipt); expect(result.valid).toBe(false);
-  expect(result.usage).toMatchObject(point === "skip" ? { calls: 0, inputTokens: 0, outputTokens: 0, estimatedCostUsd: 0 } : { calls: 1, estimatedInputTokens: 15000, estimatedCostUsd: 0.02, estimatedPaidCalls: 1, estimatedPaidInputCostUsd: 0.02 });
+  expect(result.receipt).toEqual(receipt); expect(result.valid).toBe(["skip", "overrun", "output_overrun", "output_flag"].includes(point));
+  expect(result.d6InputOverrun).toBe(point === "overrun");
+  expect(result.d6OutputOverrun).toBe(["output_overrun", "output_flag"].includes(point));
+  if (point === "read_only") expect(result.degraded).toBe(false);
+  if (point === "ledger") { expect(ledgerReads).toBe(2); expect(result.failure).toBe("upkeep_preparation_failed"); }
+  expect(result.usage).toMatchObject(["skip", "read_only"].includes(point) ? { calls: 0, inputTokens: 0, outputTokens: 0, estimatedCostUsd: 0 } : { calls: 1, estimatedInputTokens: 128000, estimatedCostUsd: null, conservativeCalls: 1, unpricedConservativeCalls: 1 });
 });
 
-it("zero-call and estimated-paid upkeep accounting do not inflate unknown cost counters", () => {
+it("zero-call and known-cost upkeep accounting do not inflate unknown cost counters", () => {
   const usage = emptyUsage(); addUsage(usage, { calls: 0 });
   expect(usage).toMatchObject({ unknownCostCalls: 0, unknownTokenCalls: 0 });
-  addUsage(usage, { calls: 1, inputTokens: null, outputTokens: null, cacheReadTokens: 0, cacheWriteTokens: 0, estimatedCostUsd: 0.02, estimatedPaidCalls: 1, estimatedPaidInputCostUsd: 0.02 });
-  expect(usage).toMatchObject({ calls: 1, estimatedPaidCalls: 1, estimatedPaidInputCostUsd: 0.02, estimatedCostUsd: 0.02, unknownCostCalls: 0, unknownTokenCalls: 1 });
+  addUsage(usage, { calls: 1, inputTokens: null, outputTokens: null, cacheReadTokens: 0, cacheWriteTokens: 0, estimatedCostUsd: 0.02 });
+  expect(usage).toMatchObject({ calls: 1, estimatedCostUsd: 0.02, unknownCostCalls: 0, unknownTokenCalls: 1 });
 });
 
 it("accounts inclusive estimated paid input for admission when reported input is absent", () => {
@@ -630,3 +649,196 @@ it("does not manufacture another cold boundary by restarting the same answer bin
   expect(checkpoint.record.upkeep.usage.calls).toBe(1);
   expect(checkpoint.record.upkeep.preparations[1].boundary.verified).toBe(false);
 }, 180_000);
+
+it("keeps three-child offer validation aligned with the shared two-offer policy", () => {
+  expect(boundedOfferHistory([["first", "second"], ["first", "third"], ["second", "third"]])).toBe(true);
+  expect(boundedOfferHistory([["first"], ["first"], ["first"]])).toBe(false);
+  expect(boundedOfferHistory([["first", "first"]])).toBe(false);
+  expect(boundedOfferHistory([["first"], []])).toBe(false);
+});
+
+
+it("charges unknown upkeep full reserved input plus output, separately from known catalog spend", () => {
+  const price = { input: 2, output: 4 };
+  const unknown = preparationUsage({ providerInvoked: true, estimatedInputTokens: 20, estimatedInputCostUsd: 0.00004 }, 64000, price);
+  expect(unknown).toMatchObject({ calls: 1, estimatedInputTokens: 64000, estimatedCostUsd: null, conservativeCostUsd: 0.144384, conservativeCalls: 1 });
+  const known = preparationUsage({ providerInvoked: true, inputTokens: 100, outputTokens: 20, costUsd: 0.01 }, 128000, price);
+  const sum = addUsage(addUsage(emptyUsage(), known), unknown);
+  expect(sum).toMatchObject({ calls: 2, estimatedCostUsd: 0.01, conservativeCostUsd: 0.144384, conservativeCalls: 1, unknownCostCalls: 1 });
+  expect(addUsage(emptyUsage(), sum)).toMatchObject({ estimatedCostUsd: 0.01, conservativeCostUsd: 0.144384, unknownCostCalls: 1, unknownTokenCalls: 1 });
+  expect(addUsage(emptyUsage(), { calls: 2, estimatedCostUsd: null, knownCatalogCostUsd: 0.02, unknownCostCalls: 1 })).toMatchObject({ estimatedCostUsd: 0.02, unknownCostCalls: 1 });
+  expect(preparationUsage({ status: "uncertain", providerInvoked: false }, 128000, price).conservativeCostUsd).toBe(0.272384);
+  expect(preparationUsage({ status: "skipped", providerInvoked: false }, 128000, price)).toMatchObject({ calls: 0, conservativeCostUsd: 0 });
+});
+
+it("distinguishes degraded stages from boundary, bootstrap, operation and injection integrity", () => {
+  const steps = Array.from({ length: 3 }, (_, i) => ({ pid: i + 100, valid: true, preserved: true, boundary: { verified: true },
+    receipt: { status: i === 1 ? "invalid" : "valid", reason: i === 1 ? "aborted" : "completed", providerInvoked: true, operationId: `op${i}` },
+    journal: { operations: i + 1, bootstrap: 1, state: "terminal", budget: i ? "incremental" : "bootstrap", operationId: `op${i}`, selection: [`span${i}`],
+      rows: Array.from({ length: i + 1 }, (_, n) => ({ operationId: `op${n}`, state: "terminal", budget: n ? "incremental" : "bootstrap", selection: [`span${n}`] })) } }));
+  expect(preparationIntegrity(steps)).toBe(true);
+  for (const mutate of [x => { x[1].boundary.verified = false; }, x => { x[1].journal.operations++; }, x => { x[2].journal.bootstrap++; }, x => { x[2].pid = x[1].pid; }, x => { x[2].preserved = false; }]) {
+    const bad = structuredClone(steps); mutate(bad); expect(preparationIntegrity(bad)).toBe(false);
+  }
+  const observed = { continuityPacks: [{ ledgerEntries: 1 }], upkeep: [{ providerInvoked: false, reason: "read_only" }] };
+  expect(verifyLedgerTreatment({ valid: true, expectedEntries: 1 }, observed)).toBe(true);
+  expect(verifyLedgerTreatment({ valid: true, expectedEntries: 2 }, observed)).toBe(false);
+  expect(verifyLedgerTreatment({ valid: true, expectedEntries: 1 }, { ...observed, upkeep: [{ providerInvoked: true }] })).toBe(false);
+  expect(verifyLedgerTreatment({ valid: true, expectedEntries: 0 }, { continuityPacks: [{ ledgerEntries: 0, evidenceEntries: 3 }] })).toBe(true);
+  expect(verifyLedgerTreatment({ valid: true, expectedEntries: 0 }, { continuityPacks: [{ ledgerEntries: 0, evidenceEntries: 0 }] })).toBe(false);
+  const skipped = structuredClone(steps); skipped[1].receipt = { status: "skipped", reason: "input_budget", providerInvoked: false }; skipped[1].journal = { ...skipped[0].journal }; skipped[2].journal.rows.splice(1, 1); skipped[2].journal.operations = 2;
+  expect(preparationIntegrity(skipped)).toBe(true);
+});
+
+it.each([false, true])("continues stage3 and probes after aborted stage2 (no ledger=%s)", async noLedger => {
+  const { productionModules, buildCheckpoint, runProbe } = await import("../lib/continuity-runner.mjs");
+  const corpus = await loadTraces(), plan = makePlan({ ...corpus, arms: ["native", "continuity-ledger-cold"], profile: { judge: null } });
+  plan.upkeep.preparations[1].offlineAbort = true;
+  if (noLedger) for (const step of plan.upkeep.preparations) step.offlineAbort = true;
+  const modules = await productionModules(root), trace = corpus.traces[0], arm = armById("continuity-ledger-cold"), dir = await scratch();
+  const checkpoint = await buildCheckpoint({ modules, trace, arm, repeat: 1, dir, plan, mode: "offline", upkeepPrice: { input: 2, output: 4 } });
+  const upkeep = checkpoint.record.upkeep;
+  expect(upkeep).toMatchObject({ valid: true, expectedEntries: noLedger ? 0 : 1 });
+  expect(upkeep.degradedStages).toBe(noLedger ? 3 : 2);
+  expect(upkeep.degradedReasons).toContain("output_aborted");
+  expect(upkeep.preparations).toHaveLength(3);
+  expect(upkeep.preparations.map(s => s.entriesAfter)).toEqual(noLedger ? [0, 0, 0] : [1, 1, 1]);
+  expect(upkeep.preparations.at(-1).journal.bootstrap).toBe(1);
+  expect(upkeep.preparations.every(s => s.preserved)).toBe(true);
+  const trial = await runProbe({ modules, trace, arm, repeat: 1, probe: trace.probes[0], checkpointWork: checkpoint.work, checkpointSnapshot: checkpoint.snapshot,
+    checkpointConversationId: checkpoint.record.conversationId, checkpointContinuity: checkpoint.record.continuity, checkpointUpkeep: upkeep,
+    forkDir: join(dir, "probe"), plan, mode: "offline", root });
+  expect(trial.status).toBe("completed");
+  expect(trial.boundary.observed.offlineLedgerCounts).toEqual(noLedger ? [0, 0] : [1, 1]);
+  expect(trial.boundary.observed.upkeep.every(row => !row.providerInvoked)).toBe(true);
+}, 180_000);
+
+it("invalidates every configuration/eligibility skip rather than calling it degraded", async () => {
+  const { preparationDisposition } = await import("../lib/continuity-runner.mjs");
+  for (const reason of ["read_only", "disabled", "detached_attempt", "continuation_boundary", "per_message", "isolated", "unowned_store", "history_unavailable", "model_unavailable", "model_identity", "trigger_headroom", "cap_unsupported", "ledger_integrity", "unexpected"]) {
+    const receipt = { status: "skipped", reason, providerInvoked: false };
+    expect(preparationDisposition(receipt), reason).toBe("integrity");
+    expect(preparationIntegrity([1, 2, 3].map(pid => ({ pid, valid: true, boundary: { verified: true }, preserved: true, receipt, journal: { operations: 0, released: 0, bootstrap: 0 } }))), reason).toBe(false);
+  }
+  expect(preparationDisposition({ status: "valid", reason: "completed", providerInvoked: false })).toBe("integrity");
+  expect(preparationDisposition({ status: "skipped", reason: "unavailable", providerInvoked: false })).toBe("integrity");
+  expect(preparationDisposition({ status: "invalid", reason: "unavailable", providerInvoked: true })).toBe("degraded");
+  expect(preparationDisposition({ status: "invalid", reason: "input_overrun", providerInvoked: true })).toBe("degraded");
+  expect(preparationIntegrity([])).toBe(false);
+});
+it("allows a released non-invoked bootstrap row before the first real bootstrap", () => {
+  const first = { pid: 10, valid: true, preserved: true, boundary: { verified: true },
+    receipt: { status: "skipped", reason: "input_budget", providerInvoked: false, operationId: "released" },
+    journal: { operations: 0, released: 1, state: "released", bootstrap: 0, budget: "bootstrap", operationId: "released", selection: ["shared"], rows: [{ operationId: "released", state: "released", budget: "bootstrap", selection: ["shared"] }] } };
+  const second = { pid: 11, valid: true, preserved: true, boundary: { verified: true },
+    receipt: { status: "valid", reason: "completed", providerInvoked: true, operationId: "bootstrap" },
+    journal: { operations: 1, released: 1, state: "terminal", bootstrap: 1, budget: "bootstrap", operationId: "bootstrap", selection: ["shared"], rows: [...first.journal.rows, { operationId: "bootstrap", state: "terminal", budget: "bootstrap", selection: ["shared"] }] } };
+  expect(preparationIntegrity([first, second])).toBe(true);
+  const invoked = structuredClone(first); invoked.receipt.providerInvoked = true;
+  expect(preparationIntegrity([invoked])).toBe(false);
+  const wrongBudget = structuredClone(second); wrongBudget.journal.budget = "incremental";
+  expect(preparationIntegrity([first, wrongBudget])).toBe(false);
+});
+it("charges only the full reserve for a partial known-cost call and carries inclusive input into admission", () => {
+  const usage = preparationUsage({ providerInvoked: true, inputTokens: 30, outputTokens: null, costUsd: 0.01 }, 128000, { input: 2, output: 4 });
+  expect(usage).toMatchObject({ estimatedCostUsd: null, conservativeCostUsd: 0.272384, conservativeInputTokens: 128000 });
+  expect(observedInputTokens(usage)).toBe(128000);
+  expect(addUsage(emptyUsage(), usage)).toMatchObject({ estimatedCostUsd: 0, conservativeCostUsd: 0.272384, unknownCostCalls: 1 });
+});
+
+it.each(["released", "reserved"])("reconciles native journal rows after a %s pre-invocation bootstrap", async initialState => {
+  const { DatabaseSync } = await import("node:sqlite");
+  const { prepareLedgerCheckpoint } = await import("../lib/continuity-runner.mjs");
+  const work = await scratch(), path = join(work, "journal.sqlite"), db = new DatabaseSync(path);
+  db.exec("CREATE TABLE continuity_upkeep_operations(operation_id TEXT,reservation TEXT,state TEXT); CREATE TABLE continuity_upkeep_progress(logical_id TEXT,conversation_id TEXT,cursor TEXT); CREATE TABLE continuity_upkeep_offers(offer_count INTEGER,state TEXT); CREATE TABLE continuity_upkeep_retired(data BLOB)");
+  let stage = 0;
+  const modules = {
+    config: { resolveJsonMonoAgentConfig: () => ({ runtime: { model: {} } }) },
+    coordinator: { acquireAgentRootOwnership: async () => ({}), releaseAgentRootOwnershipWhenIdle: async () => {} },
+    host: { parseMonoRuntimeModelReference: reference => ({ reference }) },
+    conversation: { ToolHistoryReader: class { databasePath = path; ledger() {} } },
+    app: { createConfiguredAgentRuntime: () => ({}), createConfiguredConversationHarness: async () => ({ run: async ({ onEvent }) => {
+      const operationId = `operation-${++stage}`;
+      db.prepare("UPDATE continuity_upkeep_operations SET state='released' WHERE state='reserved'").run();
+      db.prepare("INSERT INTO continuity_upkeep_operations VALUES (?,?,?)").run(operationId, JSON.stringify({ budget: stage < 3 ? "bootstrap" : "incremental", progress: { spans: [{ key: "same-source" }] } }), stage === 1 ? initialState : "terminal");
+      onEvent({ type: "continuity_upkeep", ...(stage === 1 && initialState === "reserved" ? {} : { operationId }), status: stage === 1 ? "skipped" : "valid", reason: stage === 1 ? initialState === "reserved" ? "ledger_scan_capacity" : "model_headroom" : "analyzed", providerInvoked: stage !== 1 }); return {};
+    } }) },
+  };
+  const plan = { upkeep: { model: "fictional:base", maxInputTokens: 128000, incrementalMaxInputTokens: 64000, maxOutputTokens: 4096, callsPerTraceRepeat: 3 }, limits: { perLiveTurnTimeoutMs: 10000 } };
+  try {
+    const run = maxInputTokens => prepareLedgerCheckpoint({ modules, work, conversationId: "fictional", plan, step: { binding: "fictional:base", maxInputTokens }, mode: "real", reader: { reference: "fictional:base" }, scripted: { respondWith() {} }, clock: {} });
+    const first = await run(128000);
+    expect(preparationInputReserve([first])).toBe(128000);
+    const second = await run(64000), third = await run(64000);
+    expect(first.journal).toMatchObject({ operations: 0, released: Number(initialState === "released"), reserved: Number(initialState === "reserved"), bootstrap: 0, states: { [initialState]: 1 }, state: initialState });
+    expect(first.usage.calls).toBe(0);
+    expect(second.journal).toMatchObject({ operations: 1, released: 1, bootstrap: 1, states: { released: 1, terminal: 1 }, budget: "bootstrap" });
+    expect(second.usage).toMatchObject({ estimatedInputTokens: 128000, conservativeInputTokens: 128000 });
+    expect(third.usage).toMatchObject({ conservativeInputTokens: 64000 });
+    expect(preparationIntegrity([first, second, third].map((step, i) => ({ ...step, pid: i + 100, boundary: { verified: true } })))).toBe(true);
+  } finally { db.close(); }
+});
+
+
+// Inventory actual receipt-reason producers, not every exception/failure or scan diagnostic.
+function productReasonLiterals(source) {
+  const file = ts.createSourceFile("producer.ts", source, ts.ScriptTarget.Latest, true), reasons = new Set();
+  const values = node => {
+    if (!node) return;
+    if (ts.isStringLiteralLike(node)) reasons.add(node.text);
+    else if (ts.isConditionalExpression(node)) { values(node.whenTrue); values(node.whenFalse); }
+    else if (ts.isParenthesizedExpression(node)) values(node.expression);
+    else if (ts.isBinaryExpression(node)) { values(node.left); values(node.right); }
+    else if (ts.isArrayLiteralExpression(node)) node.elements.forEach(values);
+    else if (ts.isUnionTypeNode(node)) node.types.forEach(values);
+    else if (ts.isLiteralTypeNode(node)) values(node.literal);
+  };
+  const visit = node => {
+    if (ts.isVariableDeclaration(node) && node.name.getText(file) === "skip") values(node.initializer);
+    if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken && node.left.getText(file) === "localSkip") values(node.right);
+    if (ts.isVariableDeclaration(node) && node.name.getText(file) === "NON_INVOCATION") values(node.initializer?.arguments?.[0]);
+    if (ts.isCallExpression(node) && node.expression.getText(file) === "result") values(node.arguments[1]);
+    if (ts.isPropertySignature(node) && node.name.getText(file) === "reason") values(node.type);
+    if (ts.isPropertyAssignment(node) && node.name.getText(file) === "reason") {
+      const eventType = node.parent.properties.find(p => p.name?.getText(file) === "type")?.initializer;
+      if (!eventType || ts.isStringLiteral(eventType) && eventType.text === "continuity_upkeep") values(node.initializer);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(file); return reasons;
+}
+it("partitions every product-emitted non-success reason exactly once and rejects producer drift", async () => {
+  const files = ["packages/conversation/src/continuity/upkeep.ts", "packages/conversation/src/continuity/admission.ts", "packages/conversation/src/continuity/ledger.ts", "packages/turn/src/execution/pi/continuity-upkeep.ts"];
+  const reasons = new Set();
+  for (const file of files) for (const reason of productReasonLiterals(await readFile(join(root, file), "utf8"))) reasons.add(reason);
+  const degraded = new Set(["input_budget", "model_headroom", "ledger_scan_capacity", "ledger_render_budget", "ledger_payload_budget", "ledger_lineage_budget", "ledger_aggregate_capacity", "ledger_quota_budget", "source_oversized", "upkeep_dispatch_rejected", "upkeep_repeat_suppressed", "already_covered", "unchanged", "no_source", "output_aborted", "aborted", "provider_output", "empty_output", "validation_or_publication", "input_overrun", "output_overrun", "unavailable", "dispatch_or_outcome_unacknowledged"]);
+  const integrity = new Set(["disabled", "continuation_boundary", "history_unavailable", "per_message", "isolated", "unowned_store", "detached_attempt", "trigger_headroom", "ledger_integrity", "read_only", "model_unavailable", "model_identity", "cap_unsupported"]);
+  const success = new Set(["completed", "analyzed"]);
+  expect(reasons.size).toBeGreaterThan(30);
+  for (const reason of reasons) {
+    if (success.has(reason)) { expect(preparationDisposition({ reason, status: "valid", providerInvoked: true })).toBe("applied"); continue; }
+    expect(Number(degraded.has(reason)) + Number(integrity.has(reason)), reason).toBe(1);
+    const status = reason === "dispatch_or_outcome_unacknowledged" ? "uncertain" : "skipped";
+    expect(preparationDisposition({ reason, status, providerInvoked: true }), reason).toBe(degraded.has(reason) ? "degraded" : "integrity");
+  }
+  expect(preparationDisposition({ reason: "unavailable", status: "skipped", providerInvoked: false })).toBe("integrity");
+  expect(preparationDisposition({ reason: "dispatch_or_outcome_unacknowledged", status: "skipped", providerInvoked: true })).toBe("integrity");
+  const introduced = productReasonLiterals('const skip = condition ? "brand_new_reason" : undefined; const receipt = {reason: "another_reason"};');
+  expect([...introduced].filter(r => !success.has(r) && !degraded.has(r) && !integrity.has(r))).toEqual(["brand_new_reason", "another_reason"]);
+});
+
+it("reconciles a never-acknowledged reservation released by a later claim without consuming bootstrap or offers", () => {
+  const pending = { operationId: "unacknowledged", state: "reserved", budget: "bootstrap", selection: ["shared"] };
+  const first = { pid: 20, valid: true, preserved: true, boundary: { verified: true }, receipt: { status: "skipped", reason: "ledger_scan_capacity", providerInvoked: false }, journal: { rows: [pending], operations: 0, reserved: 1, released: 0, bootstrap: 0, ...pending } };
+  const boot = { operationId: "actual", state: "terminal", budget: "bootstrap", selection: ["shared"] };
+  const second = { pid: 21, valid: true, preserved: true, boundary: { verified: true }, receipt: { status: "valid", reason: "analyzed", providerInvoked: true, operationId: "actual" }, journal: { rows: [{ ...pending, state: "released" }, boot], operations: 1, reserved: 0, released: 1, bootstrap: 1, ...boot } };
+  const incremental = { operationId: "next", state: "terminal", budget: "incremental", selection: ["shared"] };
+  const third = { ...second, pid: 22, receipt: { ...second.receipt, operationId: "next" }, journal: { rows: [...second.journal.rows, incremental], operations: 2, reserved: 0, released: 1, bootstrap: 1, ...incremental } };
+  expect(preparationIntegrity([first, second, third])).toBe(true); // Only two dispatched offers, not three.
+  expect(preparationInputReserve([first])).toBe(128000); // Lost stage 2 acknowledgement cannot under-reserve 64k.
+  expect(preparationUsage({ providerInvoked: true }, preparationInputReserve([first]), { input: 2, output: 4 })).toMatchObject({ conservativeInputTokens: 128000, conservativeCostUsd: 0.272384 });
+  expect(preparationInputReserve([first, second])).toBe(64000);
+  for (const mutate of [x => { x[1].journal.rows[0].operationId = "replacement"; }, x => { x[1].journal.rows[1].budget = "incremental"; }, x => { x[1].journal.rows.push({ ...boot }); }, x => { x[2].journal.rows[1].state = "released"; }]) {
+    const bad = structuredClone([first, second, third]); mutate(bad); expect(preparationIntegrity(bad)).toBe(false);
+  }
+});

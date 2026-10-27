@@ -1,0 +1,49 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`freezes clean ranked selection and bounded greedy fitting (input=64000) 1`] = `
+{
+  "cap": 8,
+  "count": 16,
+  "fittedManifest": "b2038625fcaf588bfeaecbcb4c6b58b630e3ba07a7a1aa84315f586690cbad28",
+  "prompt": "90a70cf461232dc3530484fbde9fb3ecf9c5b0c9073af4e0deccf6295f30b6c3",
+  "sourceManifest": "125d5fa79f665e05b72d18c5841c6d959ba98305d5c05491dd8b0297635f57fe",
+}
+`;
+
+exports[`freezes clean ranked selection and bounded greedy fitting (input=128000) 1`] = `
+{
+  "cap": 8,
+  "count": 16,
+  "fittedManifest": "b2038625fcaf588bfeaecbcb4c6b58b630e3ba07a7a1aa84315f586690cbad28",
+  "prompt": "90a70cf461232dc3530484fbde9fb3ecf9c5b0c9073af4e0deccf6295f30b6c3",
+  "sourceManifest": "125d5fa79f665e05b72d18c5841c6d959ba98305d5c05491dd8b0297635f57fe",
+}
+`;
+
+exports[`keeps the disabled deterministic pack frozen (headroom=4000) 1`] = `
+{
+  "counts": {
+    "evidence": 24,
+    "owner": 20,
+    "summary": 0,
+    "tool": 20,
+  },
+  "hash": "cfef3c4a481ef2b510818a3cce983ab368effce8cfdd0c998ecfc789fba5420d",
+  "omitted": 16,
+  "tokens": 3841,
+}
+`;
+
+exports[`keeps the disabled deterministic pack frozen (headroom=8000) 1`] = `
+{
+  "counts": {
+    "evidence": 40,
+    "owner": 20,
+    "summary": 0,
+    "tool": 20,
+  },
+  "hash": "b8b42680c42a80db7bb6f321075c183df172f3fc122e968e2fe553deea843472",
+  "omitted": 0,
+  "tokens": 4592,
+}
+`;

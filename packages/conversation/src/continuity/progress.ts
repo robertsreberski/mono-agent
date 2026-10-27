@@ -110,9 +110,9 @@ export function readProgress(db: DatabaseSync, logicalId: string, conversationId
 }
 export function offeredKeys(db: DatabaseSync, logicalId: string, conversationId: string, ordinals: readonly number[]): string[] {
   if (!ordinals.length || !db.prepare("SELECT 1 FROM sqlite_master WHERE name='continuity_upkeep_offers'").get()) return [];
-  const keys = (db.prepare(`SELECT span_key FROM continuity_upkeep_offers WHERE logical_id=? AND conversation_id=? AND (state NOT IN ('unrepresented','available','reofferable') OR offer_count>=2) AND ordinal IN (${ordinals.map(() => "?").join(",")})`).all(logicalId, conversationId, ...ordinals) as Row[]).map(row => row.span_key);
+  const keys = (db.prepare(`SELECT span_key FROM continuity_upkeep_offers WHERE logical_id=? AND conversation_id=? AND (state NOT IN ('unrepresented','available','reofferable','analyzed') OR offer_count>=2) AND ordinal IN (${ordinals.map(() => "?").join(",")})`).all(logicalId, conversationId, ...ordinals) as Row[]).map(row => row.span_key);
   const sources = new Map<number, Row>();
-  for (const s of readRetired(db, logicalId, conversationId)) if (ordinals.includes(s.ordinal) && (!['unrepresented','available','reofferable'].includes(s.state) || s.count >= 2)) {
+  for (const s of readRetired(db, logicalId, conversationId)) if (ordinals.includes(s.ordinal) && (!['unrepresented','available','reofferable','analyzed'].includes(s.state) || s.count >= 2)) {
     let source = sources.get(s.ordinal);
     if (!source) { source = progressSource(db, logicalId, conversationId, s.ordinal); sources.set(s.ordinal, source); }
     keys.push(progressKey(source, s));
@@ -140,7 +140,7 @@ export function dispatchProgress(db: DatabaseSync, r: { logicalId: string; conve
     if (working && working.span_key !== span.key) throw new Error("upkeep_progress_source_changed");
     if (working?.state === state && working.operation_id === r.operationId) continue;
     const old = working ?? (compact ? { state: compact.state, offer_count: compact.count } : undefined);
-    if (old && (!['unrepresented','available','reofferable'].includes(old.state) || old.offer_count >= 2)) throw new Error("upkeep_progress_repeat");
+    if (old && (!['unrepresented','available','reofferable','analyzed'].includes(old.state) || old.offer_count >= 2)) throw new Error("upkeep_progress_repeat");
     identities.add(identity); if (identities.size > RETIRED_IDENTITY_LIMIT) throw new Error("upkeep_progress_capacity");
     remaining.delete(identity);
     const count = Number(old?.offer_count ?? 0) + Number(state !== "oversized");

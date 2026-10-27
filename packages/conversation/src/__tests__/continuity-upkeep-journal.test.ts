@@ -12,7 +12,7 @@ import { ToolHistoryReader } from "../tool-history/reader.js";
 import { mutateUpkeep, resetUpkeep, assertUpkeepPublication, type UpkeepAdmission, type UpkeepReservation, type UpkeepMutation } from "../continuity/admission.js";
 import { createDurableHistoryStore } from "../history/canonical/store.js";
 import { createLedgerSupplier } from "../continuity/upkeep.js";
-import { selectLedgerSources, ledgerHash } from "../continuity/ledger.js";
+import { selectLedgerSources, fitLedgerSelection, ledgerHash } from "../continuity/ledger.js";
 import { continuityGenerationId, continuityRecordId } from "../tool-history/continuity-storage.js";
 import { persistContinuityPurge } from "../tool-history/continuity-purge.js";
 import type { ConversationHarnessOptions } from "../harness/contracts.js";
@@ -240,12 +240,12 @@ it.each(["reserved", "dispatch_started", "provider_return", "outcome"])("recover
   else expect(row.outcome).toBeNull(); // Unknown is not a zero-cost outcome.
 }, 15000);
 
-it("threads the bootstrap budget through selection, including prior and prompt overhead", async () => {
+it("threads the bootstrap budget through greedy fitting, including prompt overhead", async () => {
   const f = await fixture(), scope = { logicalConversationId: "fictional", currentConversationId: "fictional", currentRunId: "current" };
   const record = f.reader.snapshotContinuity(scope).records[0]!;
-  const records = Array.from({ length: 30 }, (_, i) => { const text = `Fictional rule ${i}. ` + "neutral ".repeat(1500); return { ...record, recordId: `record-${i}`, ordinal: i, text, sha256: ledgerHash(text) }; });
+  const records = Array.from({ length: 30 }, (_, i) => { const word = String.fromCharCode(97 + Math.floor(i / 26), 97 + i % 26); const text = `Fictional rule ${word}. ` + `${word} neutral `.repeat(1500); return { ...record, recordId: `record-${i}`, ordinal: i + 1, kind: "tool" as const, text, sha256: ledgerHash(text), tool: { name: "read_notes", state: "success", invocationId: `invocation-${i}`, arguments: "{}" } }; });
   const source = { ...f.reader.snapshotContinuity(scope), records };
-  const small = selectLedgerSources(source, undefined, 64000), large = selectLedgerSources(source, undefined, 128000);
+  const small = fitLedgerSelection(selectLedgerSources(source, undefined, 64000), scope).selection, large = fitLedgerSelection(selectLedgerSources(source, undefined, 128000), scope).selection;
   expect(large.spans.length).toBeGreaterThan(small.spans.length);
   expect(Buffer.byteLength(small.prompt) * 0.625 + 1024).toBeLessThan(64000);
   expect(Buffer.byteLength(large.prompt) * 0.625 + 1024).toBeLessThan(128000);

@@ -48,7 +48,8 @@ silently pretending that an excluded route performed maintenance.
 One promise is memoized per logical turn. Selection/completion run under the
 existing exclusive conversation hold, **outside** the owner transaction;
 publication reacquires that transaction and checks source visibility and parent
-identity. A cold first token can therefore be delayed by **up to 60 seconds**.
+identity. The completion can delay a cold first token by **up to 60 seconds**,
+in addition to the separately bounded scan/preflight below.
 Failures do not block the answer: retain the deterministic pack and report a gap.
 Here “retry” means router retries and backups: they never buy upkeep. A native
 `resume_error` that produces a cold seed within the primary attempt is an eligible
@@ -74,7 +75,7 @@ text/thinking conservatively and abort when the visible estimate reaches 4,096.
 For Codex, the request asks for at most eight entries with values at most 96
 UTF-8 bytes and at most 3,072 serialized JSON bytes. `covered` explicitly lists the deduplicated IDs cited by entries; it is **not** a
 count or numeric prefix. This matches the general JSON contract and avoids
-ambiguity when fitting orders spans by age. Preserved coverage in this mode
+ambiguity when fitting reorders spans by rank and fairness. Preserved coverage in this mode
 counts **only entry-cited spans**, not a full analysis claim. Dropped spans remain
 uncovered in stored/rendered diagnostics; even a citation is not proof that every
 fact inside its span survived. Reasoning summaries are omitted from
@@ -94,25 +95,49 @@ metered dollar spend; catalog cost estimates are not an invoice.
 
 ## Evidence, trust and deletion
 
-An independent source query pages retained evidence by **AUTOINCREMENT ordinal**,
-not the deterministic pack shortlist or clipped tool result heads. Each eligible
-preparation freezes its committed physical-bucket watermark. A durable cursor
-records the next ordinal, UTF-8 offset and continuation source digest; its anchor
-need not survive. Changed digests restart that record's enumeration. A later
-eligible boundary may extend the watermark; rollover never inherits progress.
-Each query materializes at most 512 records/4 MiB and each progressive selection
-at most 64 spans, inside the cumulative input allowance. Tool interiors use
-UTF-8-safe overlapping windows; owner paragraphs are indivisible. Bounded span
-enumeration leaves unscanned evidence disclosed, never counted as preserved.
-The disabled deterministic-pack query is unchanged. An indivisible owner paragraph
-that cannot fit a minimal delta alongside the **actual prior** at this boundary's
-headroom is recorded
-as an **oversized offer**, never represented. It consumes **zero paid offers**.
-The cursor advances only across a verified contiguous offered/oversized prefix;
-an intervening unpaid hole stops advancement. A late oversized span cannot jump
-a hole or overwrite a later frontier. The gap
-remains disclosed. A tool whose arguments exceed the remaining page budget ends
-that page as bounded, not as a corrupt/unavailable source.
+An independent source query scans retained evidence by **AUTOINCREMENT ordinal**,
+not the deterministic pack shortlist or clipped tool heads. It freezes a committed
+physical-bucket watermark and releases its read transaction after each page
+(at most 64 records/about 4MiB). A complete scan is required before selection:
+**4096 records, 32 MiB of source text/metadata, 65536 windows and 5 seconds** are the
+fixed ceilings. The time limit is cooperative around bounded SQL/CPU work, not a
+hard database-query timeout. Exhaustion reports `ledger_scan_capacity`, discloses
+unscanned evidence and makes **zero calls**, without consuming bootstrap. Tool
+lifecycle bindings are batched/cached per run. The disabled deterministic-pack
+query is unchanged.
+
+Ranking uses generic numeric/identifier/transition shapes, host-attested owner
+and tool lifecycle metadata, interior depth, offer state and recency; it contains
+no benchmark annotation words or probe-meaning vocabulary. Scope-local structural
+comparison normalizes Unicode/case, number and mixed identifier tokens. At most
+65,536 ephemeral hash/count/descriptor entries (no retained bodies) measure repeat
+frequency, including ineligible windows. Each shape keeps its first two eligible
+representatives; more than two repetitions receive a logarithmic down-rank.
+Host-attested owners are a separate comparison partition from untrusted text.
+This is selection diversity, not semantic deduplication or durable coverage:
+unoffered repeats remain eligible and can progress on later preparations.
+
+Each record contributes at most eight candidates, pairing its best window with a
+complementary head/interior and sharing remaining space with oldest evidence.
+Round-robin records within kind/tool metadata sources, then those sources, so
+repetitive output cannot monopolize ranked slots when alternatives exist. A mild
+sampled distinct-token signal and a small interior bonus supplement this balance.
+The final pool retains at most 256 descriptors (192 ranked plus 64 oldest never
+offered). Admission
+reserves up to 25% of the **actual fitting width** for oldest never-offered spans;
+unused reservation backfills by rank. Selected source/argument materialization is
+bounded to 4MiB; skipped records are counted separately from scan completeness.
+Tool interiors use UTF-8-safe overlapping windows; owner paragraphs are indivisible.
+Visibility, source digests and the current ledger parent are rechecked before
+paid dispatch. The scan/preflight deadline also applies during greedy fitting.
+
+The durable cursor is a verified contiguous frontier, **not a ranking lower
+bound**. It records the next ordinal, UTF-8 offset and continuation digest; its
+anchor need not survive. An indivisible owner paragraph that cannot fit a minimal
+delta alongside the actual prior/headroom is recorded as **oversized**, consuming
+zero paid offers. A late paid or oversized offer cannot jump an earlier unpaid
+hole or overwrite a later frontier. Missing/unrepresented evidence remains
+explicitly disclosed, never counted as preserved. Rollover inherits no progress.
 
 The host validates the whole delta, exact source IDs, UTF-8 byte spans,
 whole-record and span digests, entry bounds and coverage references. Values must
@@ -121,7 +146,33 @@ model entry must fit **832 JSON-serialized bytes**, and each escaped rendered
 derived line must fit **1024 UTF-8 bytes including its newline**. Any excess
 rejects the whole completion. Identifier values must occur exactly in cited
 evidence and contain only the bare identifier, not an explanatory prefix.
-A confirmed action/artifact cannot cite only an owner request. All prose is
+An owner promise or plan is `requested` or `active`, not an observed outcome.
+For commitment/artifact entries, `confirmed`/`failed` without a finalized tool-result
+binding is conservatively downgraded to `unknown`; values and citations stay intact.
+The host renders an outcome-not-verified marker and records a content-free
+`outcomeDowngrades` count in the receipt. Forged references, digest/span mismatches,
+schema errors and bounds violations still reject the whole completion.
+A new `decision` must cite an attested owner span. Without one, the host relabels
+it `artifact`, preserving value/citations, marks it as a reported fact with no
+owner decision cited, and records content-free `decisionRelabels` in the receipt.
+An owner citation is necessary, not proof that the owner adopted the choice.
+Prior entries remain preserved; this rule applies to newly validated deltas.
+Offered spans are presented in source-ordinal order, without changing ranking,
+selection identities or storage order. Each rendered entry carries `order=`, the
+latest **cited** host record ordinal, and entries render in ascending order.
+This is source order, not proof of event time or semantic replacement. Positions
+stay fixed for retained citations; legacy spans lacking ordinals explicitly show
+`order=unknown` after positioned entries. The prompt permits relative chronology
+only when cited host positions support it. No temporal-word heuristic is used.
+These markers fit inside the existing rendered-line and prefix bounds; payload
+projections already include the immutable cited span ordinals. Uncited records
+cannot supply an entry's position. Structural successor-order checks remain.
+Identifier lines also include escaped `context` extracted verbatim from the verified
+cited span at the first occurrence of the value, with at most 48 UTF-8 bytes on each
+side and inward word-boundary cuts where possible. No model-supplied context or
+uncited bytes are used. Context is re-derived, not separately persisted; existing
+source lineage/payload projections retain those verified bytes. The 1024-byte line
+ceiling and prefix projections include context, outcome and relabel markers. All prose is
 **derived interpretation**, never host-owner authority. Cited owner text is
 reconstructed as whole paragraphs with qualifications and negations intact.
 Historical requests are not renewed approval; absent outcomes remain unknown.
@@ -133,8 +184,10 @@ source IDs are rebased to stable host identities. Entries have host-assigned
 stable IDs, with deterministic source-bound IDs for legacy entries. The aggregate
 is capped at **64 entries**. Validation enforces **24 per delta** for request-cap
 adapters, **8 for Codex**, and any smaller admitted rendering limit. Admission
-chooses the largest usable delta cap, then a fitting prefix of at most **8 × cap**
-spans. Only the admitted cap appears in the provider instructions.
+chooses the largest usable delta cap, then greedily tries ranked candidates,
+skipping those that exceed lineage, payload, input or render bounds. At most
+**8 × cap** spans are offered (64 for Codex); this is a ceiling, not a promised
+width. Only the admitted cap appears in the provider instructions.
 
 Optional relations bind an existing target ID, exact target value/citations and a
 distinct proposed successor ID. The host enforces bounded relations and strictly
@@ -157,9 +210,9 @@ evidence available.
 Admission and the pack renderer use the **same prefix-fit calculation**: prefix
 plus 700-token reserve must fit `min(actual headroom, 4000)` tokens. Before paying,
 admission reserves the prior rendering, worst-case bounded delta lines and all
-potential complete owner quotations. The prior rendering and quote/lineage prefix costs are computed once; bounded
-binary prefix probes measure merged metadata without rebuilding the source prompt.
-It reduces the delta/selection to fit,
+potential complete owner quotations. Prior rendering/source-line costs are measured
+once; at most 4096 merged-payload projections are allowed, with cheap rejects first.
+Only the final source prompt is rebuilt. It reduces the delta/selection to fit,
 without dropping the prior. If even one addition cannot fit, it makes **zero
 calls**, retains the prior ledger and records `ledger_render_budget` as a capacity
 gap. A smaller new boundary may still have insufficient headroom to inject that
@@ -188,21 +241,34 @@ The fenced dispatch transaction durably records offers and verifies the cursor
 frontier independently of the last selected span. A sparse late offer never
 retires earlier unpaid holes.
 A pending or unacknowledged result is not representation. Invalid operations keep
-failed offers suppressed. Valid uncited spans become terminal **analyzed**: they
-remain disclosed but are neither represented nor purchased at idle boundaries.
-Only a response that **saturates the admitted entry cap** may leave uncited spans
-re-offerable, **once**. Transient `publish_cas`/`publish_cancelled` failures also
-allow at most one re-offer; quota/bounds failures become failed immediately.
-A strictly formed empty delta is a valid **analysis-only** result in both cap
-modes: `entries: []`, with `covered` a unique array of offered IDs (possibly
-empty). Counts, unknown IDs and extra keys remain invalid. All offered spans
-settle analyzed without publishing a generation or renewing bootstrap; the prior
-ledger remains injectable. Usage is recorded, and idle boundaries do not rebuy
-the analysis. A valid host receipt uses reason `analyzed` without a generation ID.
-Fresh evidence takes priority over that single deferred opportunity. Successful publication alone
-associates entry-cited spans with the latest ledger. Analysis-only `covered`
-claims do not establish representation in either profile. Unknown batches are
-not resubmitted; unresolved dispatch conservatively blocks the scope.
+failed offers suppressed. Valid uncited spans settle **analyzed**, which is not
+representation. They may be offered again while their **shared total offer count
+is below 2**, whether or not the valid response saturated its entry cap. Transient
+`publish_cas`/`publish_cancelled` failures use that same allowance; quota/bounds
+failures become failed immediately. A strictly formed empty delta is valid
+analysis-only in both cap modes: `entries: []`, with `covered` a unique array of
+offered IDs (possibly empty). Unknown IDs, counts and extra keys remain invalid.
+No generation is published or bootstrap renewed; usage is recorded and the prior
+remains injectable. Its valid receipt has reason `analyzed`, without a generation
+ID. Once all new/re-eligible evidence is exhausted, an idle boundary buys nothing.
+Unknown batches are not resubmitted; unresolved dispatch conservatively blocks
+the scope. Only entry-cited spans become representation in either profile.
+
+New generations and prior prompt metadata retain **only entry-cited spans**,
+including when reading a legacy prior with unused span metadata. The full union
+of inherited and selected input links remains for conservative purge invalidation;
+cited-only metadata never weakens deletion ancestry.
+
+All five interpretation finding types remain **prompt-influenced, not structurally
+proven**: request-only absence claims, acknowledgement as decision, delivery as
+fulfilment, historical requests as current work, and overly broad kind labels.
+The prompt treats received facts as artifacts, conditional reminder requests as
+requested open work, and completed requests as historical rather than outstanding.
+It requires earlier replaced values to be phrased historically. Only the necessary
+owner-citation rule is structural; actual adoption and these distinctions remain
+prompt-influenced. Missing evidence means unknown, not never. Owner provenance and a model annotation
+cannot authoritatively classify a span as a request versus a declaration, so there
+is **no request-only citation label**. Offline audit must still check every category.
 
 Deleting, tombstoning or changing **any** contributing source invalidates the
 latest ledger and its representation associations in the same transaction.

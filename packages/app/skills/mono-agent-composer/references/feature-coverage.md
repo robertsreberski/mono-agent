@@ -275,7 +275,7 @@ requests with usage, are included in the run total and shown separately in web.
 with legacy paths (no participant, sidecar probe or v3 upgrade). It retains
 sanitized evidence and portable
 summaries in the existing sidecar for scoped `ConversationHistory` search/get;
-it does not add a ledger, automatic recall or tool-result clearing. No memory
+capture alone does not add a ledger, automatic recall or tool-result clearing. No memory
 backend or durable provider-session root is required. Stop older writers and
 back up the canonical history and sidecar before the first enabled start
 upgrades v2 to v3 in place. Older binaries refuse it; rollback requires the
@@ -284,3 +284,10 @@ Disabling capture retains doctor, stats and purge access, not the ConversationHi
 Records are at most 1 MiB and retrieval chunks at most 8192 UTF-8 bytes, with
 explicit retained-text digests/redaction/truncation. Pins do not expire; quota
 exhaustion reports degraded continuity. Reset/clear-sessions remove this evidence.
+
+Explicit `runtime.session.continuity.upkeep.enabled` and `ledgerEnabled` remain
+OFF by default. Upkeep adds one bounded primary cold-boundary extraction, not
+per-message recall. It scans/ranks retained evidence, greedily fits cited-only
+metadata and shares a two-offer ceiling across analysis/reconstruction. Scan
+exhaustion makes zero calls. Both switches off keep deterministic packs unchanged.
+Ledger interpretation is not owner authority or proof of semantic fulfilment.

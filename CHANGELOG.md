@@ -2,6 +2,35 @@
 
 ## Unreleased
 
+- Fix continuity benchmark degradation and overrun reporting, and reconcile
+  pre-dispatch reservations by identity without changing runtime behavior.
+
+- Show cited host source order in continuity ledger entries and extractor inputs
+  without reordering stored entries or treating prose as chronology evidence.
+
+- Fix continuity benchmark integrity checks to reject ineligible preparations,
+  distinguish released non-invocations, and avoid double-counting unknown usage.
+  Keep extraction kind guidance generic and disclose its evaluation limitations.
+
+- Keep received continuity facts without inventing owner decisions: relabel new
+  decisions lacking owner citations as marked artifacts and count the relabels.
+  Clarify pending work, reminders and historical facts without changing ranking.
+
+- Keep continuity benchmark probes after degraded upkeep stages, while rejecting
+  broken boundary/journal/injection protocols and separately charging unknown
+  usage at full catalog reservations (not an invoice guarantee).
+
+- Keep valid continuity facts when an unverified action status needs a host
+  downgrade, and preserve identifier roles with bounded, verified cited context.
+  Integrity errors still reject the whole response; upkeep remains opt-in.
+
+- Rank complete bounded history scans for opt-in continuity upkeep, greedily fit
+  cited-only ledger deltas, and allow valid uncited evidence one remaining offer
+  within the shared two-offer ceiling. Keep scan exhaustion zero-call and the
+  disabled deterministic-pack path unchanged. Suppress repetitive ID/amount-shaped
+  templates and balance source records, tool heads and interiors without semantic
+  annotation cues.
+
 - Seed legacy continuity representation into shared offer accounting so progress
   reaches later pages; isolate corrupt retirement scopes during retention.
 

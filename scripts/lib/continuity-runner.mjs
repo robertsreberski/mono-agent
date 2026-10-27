@@ -212,7 +212,7 @@ export function compactionUsageOf(usage) {
 
 function observer() {
   const observed = { boundaries: [], compactions: [], warnings: 0, steersAccepted: 0, historyWarnings: 0, toolsOffered: [],
-    conversationHistory: { calls: 0, search: 0, get: 0, success: 0, unavailable: 0, error: 0, hits: 0 }, continuityPacks: [], upkeep: [], offlineProviderPackCounts: [], offlineLedgerCounts: [] };
+    conversationHistory: { calls: 0, search: 0, get: 0, success: 0, unavailable: 0, error: 0, hits: 0 }, continuityPacks: [], upkeep: [], upkeepScans: [], upkeepSelections: [], offlineProviderPackCounts: [], offlineLedgerCounts: [] };
   const historyCalls = new Map();
   let steerWaiter = null;
   return {
@@ -244,6 +244,10 @@ function observer() {
       }
       if (event?.type === "continuity_pack_injected") {
         observed.continuityPacks.push(Object.fromEntries(["reason", "ownerEntries", "toolEntries", "summaryEntries", "evidenceEntries", "omittedCount", "unknownOverlap", "ownerDeduped", "toolReserved", "ledgerEntries", "tokens", "degradedReason"].map(key => [key, event[key]])));
+      } else if (event?.type === "continuity_upkeep_scan") {
+        observed.upkeepScans.push({ ...event });
+      } else if (event?.type === "continuity_upkeep_selection") {
+        observed.upkeepSelections.push({ ...event });
       } else if (event?.type === "continuity_upkeep") {
         observed.upkeep.push({ ...event });
       } else if (event?.type === "session_boundary") {
@@ -383,7 +387,7 @@ export async function runLiveTurn({ modules, work, authPath, plan, mode, configP
  * Replay a trace into a fresh workspace up to its checkpoint. Arms without a
  * live mid-trace turn produce identical scripted state and share one checkpoint.
  */
-export async function buildCheckpoint({ modules, trace, arm, repeat, dir, plan, mode, authPath, captureUpkeepOutput }) {
+export async function buildCheckpoint({ modules, trace, arm, repeat, dir, plan, mode, authPath, captureUpkeepOutput, upkeepPrice }) {
   const source = sourceOnly(trace);
   const work = join(dir, "work");
   await prepareWorkspace(work);
@@ -430,24 +434,21 @@ export async function buildCheckpoint({ modules, trace, arm, repeat, dir, plan, 
           const capture = captureUpkeepOutput?.replace(/\.json$/u, `-p${index + 1}.json`);
           let result;
           try { result = await runBoundaryChild({ type: "preparation", root: fileURLToPath(new URL("../../", import.meta.url)), work, authPath, plan, mode,
-            clockIso: clock.value.toISOString(), conversationId, step, preparation: index + 1, captureUpkeepOutput: capture }, { timeoutMs: plan.limits.perLiveTurnTimeoutMs }); }
+            clockIso: clock.value.toISOString(), conversationId, step, preparation: index + 1, upkeepPrice, captureUpkeepOutput: capture }, { timeoutMs: plan.limits.perLiveTurnTimeoutMs }); }
           catch (error) {
             // A lost child acknowledgement cannot prove non-invocation. Keep
             // its whole input allowance; the controller retains its reservation.
             result = { valid: false, boundary: { verified: false }, failure: codeOf(error), receipt: null,
-              usage: { calls: 1, inputTokens: null, outputTokens: null, estimatedInputTokens: step.maxInputTokens, estimatedCostUsd: null } };
+              usage: preparationUsage({ providerInvoked: true }, preparationInputReserve(preparations), upkeepPrice, plan.upkeep.maxOutputTokens) };
           }
           preparations.push(result);
           record.upkeep.usage = sumPreparationUsage(preparations);
-          if (!result.valid || !result.boundary.verified) break;
+          if (!preparationIntegrity(preparations)) break;
         }
-        const seen = new Set();
-        record.upkeep.valid = preparations.length === 3 && preparations.every((step, index) => {
-          const selection = step.journal?.selection ?? [];
-          const fresh = selection.some(key => !seen.has(key)); selection.forEach(key => seen.add(key));
-          return step.valid && step.boundary.verified && fresh && step.journal.operations === index + 1
-            && step.journal.bootstrap === 1 && step.journal.budget === plan.upkeep.preparations[index].budget;
-        }) && new Set(preparations.map(step => step.pid)).size === 3 && preparations.at(-1).entriesAfter > 0;
+        record.upkeep.valid = preparations.length === plan.upkeep.preparations.length && preparationIntegrity(preparations);
+        record.upkeep.expectedEntries = preparations.at(-1)?.entriesAfter ?? null;
+        record.upkeep.degradedStages = preparations.filter(step => step.degraded).length;
+        record.upkeep.degradedReasons = preparations.filter(step => step.degraded).map(step => step.degradedReason);
         record.upkeep.receipt = preparations.at(-1)?.receipt ?? null;
       }
     } finally {
@@ -501,7 +502,97 @@ export function captureUpkeepModels(models, capture) {
   } });
 }
 
-/** Sum each extraction once; reported totals and estimated unknown-call input remain separate. */
+/** A valid uncited second offer need not contain an unseen key. The three-child
+ * protocol still rejects a third/duplicate/empty offer. */
+export function boundedOfferHistory(selections) {
+  const counts = new Map();
+  return selections.every(selection => Array.isArray(selection) && selection.length > 0 && new Set(selection).size === selection.length && selection.every(key => {
+    const count = (counts.get(key) ?? 0) + 1; counts.set(key, count); return count <= 2;
+  }));
+}
+
+/** Only product degradation is tolerated; ineligible/config-skipped treatment is invalid. */
+export function preparationDisposition(receipt) {
+  const reason = receipt?.reason;
+  if (receipt?.status === "valid" && receipt.providerInvoked === true && ["completed", "analyzed"].includes(reason)) return "applied";
+  if (!["invalid", "skipped", "aborted", "timeout", "uncertain"].includes(receipt?.status)) return "integrity";
+  const capacity = ["input_budget", "model_headroom", "ledger_scan_capacity", "ledger_render_budget", "ledger_payload_budget", "ledger_lineage_budget", "ledger_aggregate_capacity", "source_oversized", "upkeep_dispatch_rejected", "ledger_quota_budget", "upkeep_repeat_suppressed", "already_covered", "unchanged", "no_source"];
+  const provider = ["output_aborted", "aborted", "provider_output", "empty_output", "validation_or_publication", "input_overrun", "output_overrun"];
+  return capacity.includes(reason) || provider.includes(reason)
+    || reason === "unavailable" && receipt.providerInvoked === true
+    || receipt.status === "uncertain" && ["uncertain", "dispatch_or_outcome_unacknowledged"].includes(reason)
+    ? "degraded" : "integrity";
+}
+
+const consumingOperation = row => ["dispatch_started", "uncertain", "terminal"].includes(row.state);
+/** Only a dispatched, non-released bootstrap consumes the larger allowance. */
+export function preparationInputReserve(steps) {
+  const rows = steps.findLast(step => Array.isArray(step.journal?.rows))?.journal.rows ?? [];
+  return rows.some(row => consumingOperation(row) && row.budget === "bootstrap") ? 64000 : 128000;
+}
+
+/** Reconcile identities, not count deltas: a later claim can release an older
+ * pre-dispatch reservation while admitting one new operation in the same stage. */
+export function preparationIntegrity(steps) {
+  let previous = new Map();
+  if (!steps.length || new Set(steps.map(step => step.pid)).size !== steps.length) return false;
+  for (const step of steps) {
+    const j = step.journal, rows = j?.rows;
+    if (!step.valid || preparationDisposition(step.receipt) === "integrity" || !step.boundary?.verified || !step.preserved || !Array.isArray(rows)) return false;
+    const current = new Map(rows.map(row => [row.operationId, row]));
+    if (current.size !== rows.length || rows.some(row => typeof row.operationId !== "string" || !row.operationId || !["bootstrap", "incremental"].includes(row.budget)
+      || !["reserved", "released", "dispatch_started", "uncertain", "terminal"].includes(row.state) || !Array.isArray(row.selection))) return false;
+    for (const [id, old] of previous) {
+      const row = current.get(id);
+      if (!row || row.budget !== old.budget || JSON.stringify(row.selection) !== JSON.stringify(old.selection)
+        || row.state !== old.state && !(old.state === "reserved" && row.state === "released")) return false;
+    }
+    const added = rows.filter(row => !previous.has(row.operationId)), consumed = rows.filter(consumingOperation);
+    if (added.length > 1 || j.operations !== consumed.length || (j.released ?? 0) !== rows.filter(row => row.state === "released").length
+      || (j.reserved ?? 0) !== rows.filter(row => row.state === "reserved").length
+      || j.bootstrap !== consumed.filter(row => row.budget === "bootstrap").length || j.bootstrap !== Number(consumed.length > 0)) return false;
+    const latest = current.get(j.operationId);
+    if (j.operationId && (!latest || j.state !== latest.state || j.budget !== latest.budget)) return false;
+    const row = added[0], receipt = step.receipt;
+    if (row && row.budget !== ([...previous.values()].some(consumingOperation) ? "incremental" : "bootstrap")) return false;
+    if (receipt.operationId && receipt.operationId !== row?.operationId) return false;
+    if (receipt.providerInvoked || receipt.status === "uncertain") {
+      if (!row || !consumingOperation(row) || receipt.operationId !== row.operationId) return false;
+    } else if (row && (consumingOperation(row)
+      // A dispatched operation without proven invocation can remain uncertain;
+      // only reserved/released rows are affirmative non-consuming evidence.
+      ? row.state !== "uncertain" || receipt.operationId !== row.operationId
+      : row.state === "released" && receipt.operationId !== row.operationId)) return false;
+    previous = current;
+  }
+  return boundedOfferHistory([...previous.values()].filter(consumingOperation).map(row => row.selection));
+}
+
+/** Exact expected injection; no-ledger stages must still inject deterministic evidence. */
+export function verifyLedgerTreatment(upkeep, observed) {
+  const packs = observed.continuityPacks ?? [];
+  return !!upkeep?.valid && Number.isInteger(upkeep.expectedEntries) && packs.length > 0
+    && packs.every(pack => pack.ledgerEntries === upkeep.expectedEntries && (upkeep.expectedEntries > 0 || pack.evidenceEntries > 0))
+    && !(observed.upkeep ?? []).some(row => row.providerInvoked || row.operationId);
+}
+
+/** Unknown usage is charged the full input reservation plus output allowance.
+ * This is catalog accounting, NOT a remote output/billing maximum (D6). */
+export function preparationUsage(receipt, inputReserve, price, outputReserve = 4096) {
+  const calls = receipt?.providerInvoked || receipt?.status === "uncertain" ? 1 : 0;
+  const finite = value => typeof value === "number" && Number.isFinite(value) && value >= 0;
+  const unknown = !!calls && ![receipt?.inputTokens, receipt?.outputTokens, receipt?.costUsd].every(finite);
+  const conservative = unknown && finite(price?.input) && finite(price?.output)
+    ? (inputReserve * price.input + outputReserve * price.output) / 1_000_000 : unknown ? null : 0;
+  return { calls, inputTokens: calls ? receipt?.inputTokens ?? null : 0, outputTokens: calls ? receipt?.outputTokens ?? null : 0,
+    estimatedInputTokens: calls ? unknown ? inputReserve : receipt?.estimatedInputTokens ?? null : 0,
+    cacheReadTokens: 0, cacheWriteTokens: 0, estimatedCostUsd: calls ? unknown ? null : receipt.costUsd : 0,
+    conservativeInputTokens: unknown ? inputReserve : 0,
+    conservativeCostUsd: conservative, conservativeCalls: unknown ? 1 : 0,
+    unpricedConservativeCalls: unknown && conservative === null ? 1 : 0 };
+}
+
+/** Sum each extraction once; known catalog cost and unknown-call reserves stay separate. */
 function sumPreparationUsage(steps) {
   const total = emptyUsage();
   for (const step of steps) addUsage(total, step.usage);
@@ -509,7 +600,7 @@ function sumPreparationUsage(steps) {
 }
 
 /** One upkeep, no real answer call, before read-only probe forks. No probe/answer data enter extraction. */
-export async function prepareLedgerCheckpoint({ modules, work, authPath, plan, mode, reader, alternate, scripted, route, clock, conversationId, captureUpkeepOutput, step = plan.upkeep.preparations?.[0], preparation = 1 }) {
+export async function prepareLedgerCheckpoint({ modules, work, authPath, plan, mode, reader, alternate, scripted, route, clock, conversationId, captureUpkeepOutput, step = plan.upkeep.preparations?.[0], preparation = 1, upkeepPrice }) {
   // Reject stale single-preparation plans before opening a harness or resolving auth.
   if (plan.upkeep.maxInputTokens !== 128000 || plan.upkeep.incrementalMaxInputTokens !== 64000
     || plan.upkeep.maxOutputTokens !== 4096 || plan.upkeep.callsPerTraceRepeat !== 3
@@ -529,6 +620,7 @@ export async function prepareLedgerCheckpoint({ modules, work, authPath, plan, m
       const prompt = textOfContent(context.messages.at(-1)?.content);
       const spans = prompt.split("\n").flatMap(line => { try { const row = JSON.parse(line); return typeof row.id === "string" && typeof row.text === "string" ? [row] : []; } catch { return []; } });
       if (!spans.length) throw new ContinuityError("offline_upkeep_source_missing");
+      if (step.offlineAbort) return modules.pi.fauxAssistantMessage("x".repeat(5000));
       if (preparation === 2) return modules.pi.fauxAssistantMessage('{"entries":[],"covered":[]}');
       return modules.pi.fauxAssistantMessage(JSON.stringify({ entries: [{ kind: "open_work", value: "Offline scripted ledger; not model quality.", status: "unknown", sources: [spans[0].id] }], covered: spans.map(span => span.id) }));
     }]);
@@ -564,29 +656,39 @@ export async function prepareLedgerCheckpoint({ modules, work, authPath, plan, m
       await writeFile(captureUpkeepOutput, JSON.stringify({ text: capturedText ?? null, failure: receipt?.failure ?? null, status: receipt?.status ?? null, ledger: generation?.generation ?? null }, null, 2) + "\n", { mode: 0o600, flag: "wx" });
     } catch { failure ??= "upkeep_capture_failed"; }
   }
-  const calls = receipt?.providerInvoked ? 1 : 0;
-  const estimatedPaid = calls > 0 && receipt.costUsd == null && typeof receipt.estimatedInputCostUsd === "number";
   let journal = null;
   if (typeof history.databasePath === "string") {
     const db = new DatabaseSync(history.databasePath, { readOnly: true });
     try {
       const rows = db.prepare("SELECT operation_id,reservation,state FROM continuity_upkeep_operations ORDER BY rowid").all();
-      const latest = rows.find(row => row.operation_id === receipt?.operationId);
+      const latest = rows.find(row => row.operation_id === receipt?.operationId) ?? rows.at(-1);
       const reservation = latest ? JSON.parse(latest.reservation) : null;
-      journal = { operations: rows.length, bootstrap: rows.filter(row => JSON.parse(row.reservation).budget === "bootstrap").length,
+      const identities = rows.map(row => { const r = JSON.parse(row.reservation); return { operationId: row.operation_id, state: row.state, budget: r.budget, selection: r.progress?.spans.map(span => span.key) ?? [] }; });
+      const active = identities.filter(consumingOperation);
+      journal = { rows: identities, operations: active.length, released: identities.filter(row => row.state === "released").length, reserved: identities.filter(row => row.state === "reserved").length, states: Object.fromEntries([...new Set(rows.map(row => row.state))].map(state => [state, rows.filter(row => row.state === state).length])),
+        bootstrap: active.filter(row => row.budget === "bootstrap").length, state: latest?.state ?? null,
+        operationId: latest?.operation_id ?? null, databaseId: reservation?.databaseId ?? null, incarnation: reservation?.incarnation ?? null, fence: reservation?.fence ?? null,
+        frontier: db.prepare("SELECT cursor FROM continuity_upkeep_progress WHERE logical_id=? AND conversation_id=?").get(conversationId, conversationId)?.cursor ?? null,
+        offered: reservation?.progress?.spans ?? [],
+        offerCounts: db.prepare("SELECT offer_count,state,count(*) count FROM continuity_upkeep_offers GROUP BY offer_count,state").all(),
+        compact: db.prepare("SELECT coalesce(sum(length(data)),0) bytes,coalesce(sum(length(data)/17),0) identities FROM continuity_upkeep_retired").get(),
         budget: reservation?.budget ?? null, selection: reservation?.progress?.spans.map(span => span.key) ?? [],
         spans: db.prepare("SELECT state,count(*) count FROM continuity_upkeep_offers GROUP BY state").all() };
     } finally { db.close(); }
   }
   const entries = generation?.generation.entries ?? [];
   const preserved = previous.every(old => entries.some(entry => entry.id === old.id && entry.value === old.value && entry.status === old.status));
-  return { valid: !failure && preserved && receipt?.status === "valid"
-      && (receipt.reason === "analyzed" && !receipt.generationId || !!entries.length && generation.generation.id === receipt.generationId),
+  const disposition = preparationDisposition(receipt), degraded = disposition === "degraded";
+  return { valid: !failure && preserved && disposition !== "integrity" && (degraded
+      ? true
+      : receipt.reason === "analyzed" && !receipt.generationId || !!entries.length && generation.generation.id === receipt.generationId),
+    degraded, degradedReason: degraded ? receipt.status === "uncertain" ? "uncertain" : receipt.reason : null,
+    d6InputOverrun: receipt?.reason === "input_overrun",
+    d6OutputOverrun: receipt?.reason === "output_overrun" || receipt?.outputOverrun === true,
     boundary: verifyBoundary({ boundary: "model_change", compactions: 0 }, watch.observed), observed: watch.observed,
     entriesBefore: previous.length, entriesAfter: entries.length, preserved, journal,
-    failure, receipt, usage: { calls, estimatedInputTokens: calls ? receipt?.estimatedInputTokens ?? null : 0, inputTokens: calls ? receipt?.inputTokens ?? null : 0, outputTokens: calls ? receipt?.outputTokens ?? null : 0,
-      cacheReadTokens: 0, cacheWriteTokens: 0, estimatedCostUsd: calls ? receipt?.costUsd ?? receipt?.estimatedInputCostUsd ?? null : 0,
-      estimatedPaidCalls: estimatedPaid ? 1 : 0, estimatedPaidInputCostUsd: estimatedPaid ? receipt.estimatedInputCostUsd : 0 } };
+    failure, receipt, usage: preparationUsage(receipt, journal?.budget === "bootstrap" ? 128000 : step.maxInputTokens, upkeepPrice, plan.upkeep.maxOutputTokens) };
+
 }
 
 /** `harness.compactConversation()` through a tool-free configured harness on the bound model. */
@@ -606,7 +708,8 @@ async function manualCompaction({ modules, work, authPath, plan, mode, binding, 
     tokensBefore: finite(result?.tokensBefore), tokensAfter: finite(result?.tokensAfter),
     boundary: { ...verifyBoundary({ boundary: null, compactions: 1 }, observed), observed },
     usage: { calls: usage.calls, inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, cacheReadTokens: usage.cacheReadTokens, cacheWriteTokens: usage.cacheWriteTokens,
-      estimatedCostUsd: usage.unknownCostCalls > 0 ? null : usage.estimatedCostUsd },
+      estimatedCostUsd: usage.unknownCostCalls > 0 ? null : usage.estimatedCostUsd,
+      knownCatalogCostUsd: usage.estimatedCostUsd, unknownCostCalls: usage.unknownCostCalls, unknownTokenCalls: usage.unknownTokenCalls },
     compactionUsage: usage, durationMs: Math.round(performance.now() - started),
   };
 }
@@ -657,12 +760,12 @@ export async function runProbe({ modules, trace, arm, repeat, probe, checkpointW
       : await runLiveTurn({ modules, ...turn, clock });
     trial.usage = live.usage; trial.compactionUsage = live.compactionUsage; trial.durationMs = live.durationMs;
     const boundary = verifyBoundary({ boundary: arm.expect.probeBoundary, compactions: arm.expect.probeCompactions, restart: arm.restart }, live.observed);
-    if (arm.ledgerUpkeep && (!checkpointUpkeep?.valid || !live.observed.continuityPacks.some(pack => pack.ledgerEntries > 0) || live.observed.upkeep.some(row => row.providerInvoked))) { boundary.reasons.push("ledger_treatment_unverified"); boundary.verified = false; }
+    if (arm.ledgerUpkeep && !verifyLedgerTreatment(checkpointUpkeep, live.observed)) { boundary.reasons.push("ledger_treatment_unverified"); boundary.verified = false; }
     const metrics = pressureMetrics(live.observed, { usage: live.usage, traceToolRecords: traceShape(trace).toolCalls, mid });
     const pressure = verifyPressure(arm, traceFamily(trace), metrics);
     trial.boundary = { ...boundary, observed: live.observed };
     trial.pressure = { ...pressure, metrics };
-    trial.store = verifyStore(arm, { checkpointContinuity, observed: live.observed });
+    trial.store = verifyStore(arm, { checkpointContinuity, observed: live.observed, expectedLedgerEntries: checkpointUpkeep?.valid ? checkpointUpkeep.expectedEntries : undefined });
     if (live.failureKind !== null || live.text === null) {
       trial.status = "failed"; trial.failure = live.failureKind ?? "empty_answer";
       return trial;
