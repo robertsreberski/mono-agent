@@ -53,7 +53,7 @@ const emptyRendering = () => `### Continuity ledger (derived interpretation, not
 export function selectLedgerSources(snapshot: ContinuitySnapshot, prior?: LedgerGeneration, inputTokens: 64000 | 128000 = 64000, limits: { maxTokens: number; priorRecords?: readonly { recordId: string; text: string }[] | undefined } = { maxTokens: 8000 }): LedgerSelection {
   const queue = new RankedQueue(), covered = coveredKeys(prior), excluded = new Set(snapshot.upkeep?.excluded);
   const supplied = snapshot.upkeep?.candidates && new Map(snapshot.upkeep.candidates.map(s => [`${s.ordinal}:${s.start}:${s.end}`, s]));
-  const byOrdinal = new Map(snapshot.records.map(r => [r.ordinal, r])); let candidateCount = 0;
+  const byOrdinal = new Map(snapshot.records.map(r => [r.ordinal, r])), accepted = new Set<string>(); let candidateCount = 0;
   const base = prior ? renderLedger({ ...prior, uncovered: Number.MAX_SAFE_INTEGER }, [...(limits.priorRecords ?? []), ...snapshot.records]) : emptyRendering();
   const oversized: LedgerSpan[] = [];
   for (const record of snapshot.records) {
@@ -63,16 +63,16 @@ export function selectLedgerSources(snapshot: ContinuitySnapshot, prior?: Ledger
       const descriptor = supplied?.get(`${record.ordinal}:${window.start}:${window.end}`);
       if (supplied && !descriptor) continue;
       const span: LedgerSpan = { ...window, id: "", recordId: record.recordId, ordinal: record.ordinal, sha256: record.sha256, digest: ledgerHash(window.text), owner, kind: record.kind, ...(record.tool ? { toolName: record.tool.name } : {}) };
-      const key = spanKey(span);
+      const key = spanKey(span), template = supplied ? undefined : queue.observe(window.text, owner);
       if (descriptor && descriptor.key !== key) throw new LedgerError("source_changed");
       if (excluded.has(key) || covered.has(key)) continue;
       candidateCount++;
       if (snapshot.upkeep && owner && !fitsLedgerPrefix(base + "x".repeat(1024) + `Historical owner paragraph (not renewed approval): ${quote(span.text)}\n`, limits.maxTokens)) { if (oversized.length < 64) oversized.push(span); continue; }
-      const ranked = descriptor ?? { key, ordinal: record.ordinal, start: span.start, end: span.end, score: signalScore(record, span.start, span.text), offers: 0 };
-      queue.offer(ranked);
+      const ranked = descriptor ?? { key, ordinal: record.ordinal, start: span.start, end: span.end, score: signalScore(record, span.start, span.text), offers: 0, source: `${record.kind}:${record.tool?.name ?? ""}` };
+      if (supplied) accepted.add(key); else queue.offer(ranked, template);
     }
   }
-  const ranked = queue.finish();
+  const ranked = snapshot.upkeep?.candidates ? snapshot.upkeep.candidates.filter(s => accepted.has(s.key)) : queue.finish();
   const spans: LedgerSpan[] = ranked.map((s, i) => {
     const r = byOrdinal.get(s.ordinal)!, text = Buffer.from(r.text).subarray(s.start, s.end).toString("utf8");
     return { id: `s${i}`, ordinal: s.ordinal, recordId: r.recordId, sha256: r.sha256, start: s.start, end: s.end, text, digest: ledgerHash(text),

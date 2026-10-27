@@ -15,6 +15,7 @@ import type { UpkeepReservation } from "../continuity/admission.js";
 import { retainContinuity } from "../tool-history/continuity-storage.js";
 import { persistContinuityPurge } from "../tool-history/continuity-purge.js";
 
+const word = (n: number) => String.fromCharCode(97 + Math.floor(n / 676) % 26, 97 + Math.floor(n / 26) % 26, 97 + n % 26);
 const scope = { logicalConversationId: "fictional", currentConversationId: "fictional", currentRunId: "next" };
 const resources: { root: string; writer: ToolHistoryWriter }[] = [];
 const receipt = (r: UpkeepReservation, extra: Partial<ContinuityUpkeepReceipt> = {}): ContinuityUpkeepReceipt => ({
@@ -26,18 +27,18 @@ async function fixture(text = "Neutral source.", count = 4) {
   const root = await mkdtemp(join(tmpdir(), "sparse-ledger-"));
   const f = { root, writer: await ToolHistoryWriter.open({ root, continuityEnabled: true, persistenceCeilingMs: 5000 }) }; resources.push(f);
   const reader = new ToolHistoryReader(root);
+  let serial = 0;
   const capture = async (physical = "fictional") => {
     const generationId = continuityGenerationId(), digest = ledgerHash(generationId);
     await f.writer.prepareContinuity({ generationId, conversationId: physical, logicalConversationId: "fictional", beforeDigest: null, afterDigest: digest,
-      records: Array.from({ length: count }, (_, i) => ({ recordId: continuityRecordId(physical, `${generationId}-${i}`), runId: generationId, kind: "user" as const, provenance: "unknown" as const, sequence: i, text })) });
+      records: Array.from({ length: count }, (_, i) => ({ recordId: continuityRecordId(physical, `${generationId}-${i}`), runId: generationId, kind: "user" as const, provenance: "unknown" as const, sequence: i, text: count > 1 ? `${text} ${word(serial++)}` : text })) });
     await f.writer.commitContinuity({ generationId, conversationId: physical, canonicalDigest: digest }); return generationId;
   };
   const generation = await capture();
   const db = <T>(fn: (d: DatabaseSync) => T) => { const d = new DatabaseSync(reader.databasePath); d.exec("PRAGMA foreign_keys=ON;BEGIN IMMEDIATE"); try { const result = fn(d); d.exec("COMMIT"); return result; } catch (e) { d.exec("ROLLBACK"); throw e; } finally { d.close(); } };
   const choose = (ordinals?: number[], physical = "fictional") => {
     const snapshot = reader.snapshotContinuity({ ...scope, currentConversationId: physical, selection: "upkeep" });
-    // Explicit sparse request exercises the future caller contract without enabling
-    // ranking/re-eligibility in the production chronological selector.
+    // Explicit sparse request isolates accounting from the ranked caller policy.
     return selectLedgerSources({ ...snapshot, records: ordinals ? snapshot.records.filter(r => ordinals.includes(r.ordinal)) : snapshot.records }, reader.ledger({ ...scope, currentConversationId: physical })?.generation, 128000);
   };
   const reserve = async (selection = choose(), physical = "fictional") => {

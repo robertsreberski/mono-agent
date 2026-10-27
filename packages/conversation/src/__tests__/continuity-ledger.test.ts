@@ -290,7 +290,7 @@ it("rejects serialized value and whole-entry overflow as whole completions", asy
 });
 it("fits a 205-span selection to payload, lineage and shared rendered capacity", async () => {
   const f = await fixture(); await owner(f, "Fictional rule."); const base = f.reader.snapshotContinuity(scope), first = base.records[0]!;
-  const records = Array.from({ length: 205 }, (_, i) => ({ ...first, ordinal: i + 1, recordId: `fictional-${i}-` + "x".repeat(100), inputId: `input-${i}`, source: { attestation: { inputId: `input-${i}`, requestDigest: first.sha256 } } }));
+  const records = Array.from({ length: 205 }, (_, i) => ({ ...first, text: `Fictional rule ${String.fromCharCode(97 + Math.floor(i / 26), 97 + i % 26)}.`, sha256: ledgerHash(`Fictional rule ${String.fromCharCode(97 + Math.floor(i / 26), 97 + i % 26)}.`), ordinal: i + 1, recordId: `fictional-${i}-` + "x".repeat(100), inputId: `input-${i}`, source: { attestation: { inputId: `input-${i}`, requestDigest: first.sha256 } } }));
   const initial = selectLedgerSources({ ...base, records }), fitted = fitLedgerSelection(initial, scope);
   expect(initial.spans).toHaveLength(205); expect(fitted.trimmedSpans).toBeGreaterThan(0); expect(fitted.selection.spans.length).toBeGreaterThan(0);
   expect(fitted.projectedBytes).toBeLessThanOrEqual(LEDGER_PAYLOAD_BYTES); expect(fitted.selection.uncovered).toBe(fitted.trimmedSpans);

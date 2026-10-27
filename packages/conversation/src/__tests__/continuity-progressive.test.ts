@@ -14,6 +14,7 @@ import { fitsLedgerPrefix } from "../continuity/render-fit.js";
 import { ledgerHash, fitLedgerSelection, projectedLedgerPayloadBytes, LEDGER_PAYLOAD_BYTES, normalizeLedger, renderLedger, selectLedgerSources, spanKey, validateLedgerOutput, type LedgerEntry } from "../continuity/ledger.js";
 import type { ConversationHarnessOptions } from "../harness/contracts.js";
 
+const word = (n: number) => String.fromCharCode(97 + Math.floor(n / 676) % 26, 97 + Math.floor(n / 26) % 26, 97 + n % 26);
 const scope = { logicalConversationId: "fictional", currentConversationId: "fictional", currentRunId: "new-turn" };
 const resources: { root: string; writer: ToolHistoryWriter }[] = [];
 afterEach(async () => { vi.restoreAllMocks(); for (const f of resources.splice(0)) { await f.writer.close(); await rm(f.root, { recursive: true, force: true }); } });
@@ -29,11 +30,12 @@ async function fixture() {
     return { text: JSON.stringify({ entries: response(rows, budget.maxEntries ?? 24), covered: rows.map(row => row.id) }), receipt: { operationId: budget.operationId, model: "fictional:base", status: "valid", reason: "completed", providerInvoked: true, capEnforcement: "request" } };
   });
   const ports = { writer, reader, mutateUpkeep: writer.mutateUpkeep.bind(writer), publishLedger: writer.publishLedger.bind(writer), continuityEnabled: true, logicalConversationId: () => "fictional", upkeep: { enabled: true, model: "fictional:base", complete } };
+  let serial = 0; // Accounting fixtures are distinct evidence, not one repeated template.
   const capture = async (count = 1, text = "Rule.", physical = "fictional", neutral = false) => {
     for (let left = count; left > 0; left -= 128) {
       const generationId = continuityGenerationId(), digest = ledgerHash(generationId);
       await writer.prepareContinuity({ generationId, conversationId: physical, logicalConversationId: "fictional", beforeDigest: null, afterDigest: digest,
-        records: Array.from({ length: Math.min(128, left) }, (_, i) => ({ recordId: continuityRecordId(physical, `${generationId}-${i}`), runId: generationId, inputId: `${generationId}-${i}`, kind: neutral ? "user" as const : "owner" as const, provenance: neutral ? "unknown" as const : "host-owner" as const, sequence: i, text, source: neutral ? {} : { attestation: { inputId: `${generationId}-${i}`, requestDigest: digest } } })) });
+        records: Array.from({ length: Math.min(128, left) }, (_, i) => ({ recordId: continuityRecordId(physical, `${generationId}-${i}`), runId: generationId, inputId: `${generationId}-${i}`, kind: neutral ? "user" as const : "owner" as const, provenance: neutral ? "unknown" as const : "host-owner" as const, sequence: i, text: count > 1 ? `${text} ${word(serial++)}` : text, source: neutral ? {} : { attestation: { inputId: `${generationId}-${i}`, requestDigest: digest } } })) });
       await writer.commitContinuity({ generationId, conversationId: physical, canonicalDigest: digest });
     }
   };
@@ -67,12 +69,12 @@ it("progresses beyond 512 records, preserves earlier stable entries, and reaches
   expect(f.db(db => db.prepare("SELECT count(*) n FROM continuity_upkeep_offers WHERE state='analyzed'").get())).not.toEqual({ n: 0 });
 }, 20000);
 
-it("resumes a UTF-8 interior cursor without reoffering windows or relying on a source anchor", async () => {
+it("resumes a UTF-8 interior cursor with bounded reoffers and without relying on a source anchor", async () => {
   const f = await fixture(); await f.capture(1, "Fictional Ω prose ".repeat(24000), "fictional", true);
   await f.prepare(); const cursor = f.db(db => JSON.parse((db.prepare("SELECT cursor FROM continuity_upkeep_progress").get() as { cursor: string }).cursor));
   expect(cursor.offset).toBeGreaterThan(0); expect(cursor.ordinal).toBe(1);
   await f.prepare(); expect(f.selections[1]![0].start).toBe(cursor.offset);
-  const keys = f.selections.flat().map(spanKey); expect(new Set(keys).size).toBe(keys.length);
+  const keys = f.selections.flat().map(spanKey); expect(Math.max(...keys.map(k => keys.filter(other => other === k).length))).toBeLessThanOrEqual(2);
   expect(f.selections[1]!.every(span => Buffer.from(span.text).toString("utf8") === span.text)).toBe(true);
   expect(f.reader.ledger(scope)!.generation.entries).toHaveLength(2);
 });
@@ -463,7 +465,7 @@ it("does not rewind a frontier beyond 512 represented anchors on an old tombston
   const f = await fixture(); await f.capture(640, "Anchor.", "fictional", true);
   const fence = (await f.writer.mutateUpkeep({ kind: "inspect", scope: { logicalId: "fictional", conversationId: "fictional" } }))!;
   f.db(db => { db.prepare("INSERT INTO continuity_upkeep_progress VALUES (?,?,?,?)").run("fictional", "fictional", fence.incarnation, JSON.stringify({ ordinal: 641, offset: 0, digest: "", watermark: 640 }));
-    db.exec(`INSERT INTO continuity_upkeep_offers SELECT 'fictional','fictional','incarnation',printf('%064x',ordinal),ordinal,text_sha256,0,7,'historical','represented','historical',0,1 FROM continuity_records;
+    db.exec(`INSERT INTO continuity_upkeep_offers SELECT 'fictional','fictional','incarnation',printf('%064x',ordinal),ordinal,text_sha256,0,retained_bytes,'historical','represented','historical',0,1 FROM continuity_records;
       UPDATE continuity_records SET retained_text=NULL WHERE ordinal=1;`); });
   expect(f.db(db => JSON.parse((db.prepare("SELECT cursor FROM continuity_upkeep_progress").get() as any).cursor).ordinal)).toBe(641);
   await f.capture(1, "Later tool evidence.", "fictional", true); await f.prepare(); await f.prepare();
@@ -682,4 +684,19 @@ it("excludes legacy current citations before the oldest-never-offered fairness q
   expect(source.upkeep?.scan).toMatchObject({ complete: true, rows: 320, excluded: 64 });
   expect(source.upkeep?.candidates?.some(s => s.ordinal === 65)).toBe(true);
   expect(source.upkeep?.candidates?.every(s => s.ordinal > 64)).toBe(true);
+});
+
+it("counts repeated shapes over the complete native scan before choosing diverse representatives", async () => {
+  const f = await fixture();
+  for (let i = 0; i < 24; i++) await f.capture(1, `Dispatch notice REF-${100 + i}: amount $${200 + i}.`, "fictional", true);
+  await f.capture(1, "The register now records $275 instead of the previous $490.", "fictional", true);
+  await f.capture(1, "Plain background paragraph.\n\n".repeat(2000) + "Routing token RIVET-123.", "fictional", true);
+  const source = f.reader.snapshotContinuity({ ...scope, selection: "upkeep" });
+  expect(source.records.map(r => r.ordinal)).toEqual(source.records.map(r => r.ordinal).sort((a, b) => a - b));
+  expect(source.upkeep?.scan).toMatchObject({ complete: true, rows: 26, diversity: { templateSuppressed: 2020 } });
+  expect(source.upkeep?.candidates?.filter(s => s.ordinal <= 24).length).toBeLessThanOrEqual(2);
+  expect(source.upkeep?.candidates?.some(s => s.ordinal === 25)).toBe(true);
+  const r = source.records.find(r => r.ordinal === 26)!;
+  expect(source.upkeep?.candidates?.some(s => s.ordinal === 26 && s.start > 0 && Buffer.from(r.text).subarray(s.start, s.end).toString().includes("RIVET-123"))).toBe(true);
+  expect(f.complete).not.toHaveBeenCalled();
 });

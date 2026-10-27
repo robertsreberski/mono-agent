@@ -3,20 +3,20 @@
 exports[`freezes clean ranked selection and bounded greedy fitting (input=64000) 1`] = `
 {
   "cap": 8,
-  "count": 39,
-  "fittedManifest": "4fa2cd26ef994afd3b75b1fd262895d0c9b7c21fb3aeaaa0f991df94e86bd6bf",
-  "prompt": "fb7d955e64cd443efcb8feca69e83a98142fa736646a8b53d24f9a7c69bec28f",
-  "sourceManifest": "9df2582ff2348a13e304aa6fe791d636baa3dd2b5b91f390e6afe5a46c908145",
+  "count": 16,
+  "fittedManifest": "b2038625fcaf588bfeaecbcb4c6b58b630e3ba07a7a1aa84315f586690cbad28",
+  "prompt": "05573694cabea0c797b58a7bd0be205baa7bd326a24fee2aa89bab46740a5cc5",
+  "sourceManifest": "125d5fa79f665e05b72d18c5841c6d959ba98305d5c05491dd8b0297635f57fe",
 }
 `;
 
 exports[`freezes clean ranked selection and bounded greedy fitting (input=128000) 1`] = `
 {
   "cap": 8,
-  "count": 50,
-  "fittedManifest": "ba650cc939122c585c66baf64f46fc6c0f7bba43759ca9cf73f77e6fc59ae459",
-  "prompt": "d175cee96c8ff9dafab096a00b4d90198048d3b49a29d7934b3027fa35ef72fa",
-  "sourceManifest": "9df2582ff2348a13e304aa6fe791d636baa3dd2b5b91f390e6afe5a46c908145",
+  "count": 16,
+  "fittedManifest": "b2038625fcaf588bfeaecbcb4c6b58b630e3ba07a7a1aa84315f586690cbad28",
+  "prompt": "05573694cabea0c797b58a7bd0be205baa7bd326a24fee2aa89bab46740a5cc5",
+  "sourceManifest": "125d5fa79f665e05b72d18c5841c6d959ba98305d5c05491dd8b0297635f57fe",
 }
 `;
 

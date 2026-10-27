@@ -243,7 +243,7 @@ it.each(["reserved", "dispatch_started", "provider_return", "outcome"])("recover
 it("threads the bootstrap budget through greedy fitting, including prompt overhead", async () => {
   const f = await fixture(), scope = { logicalConversationId: "fictional", currentConversationId: "fictional", currentRunId: "current" };
   const record = f.reader.snapshotContinuity(scope).records[0]!;
-  const records = Array.from({ length: 30 }, (_, i) => { const text = `Fictional rule ${i}. ` + "neutral ".repeat(1500); return { ...record, recordId: `record-${i}`, ordinal: i + 1, kind: "tool" as const, text, sha256: ledgerHash(text), tool: { name: "read_notes", state: "success", invocationId: `invocation-${i}`, arguments: "{}" } }; });
+  const records = Array.from({ length: 30 }, (_, i) => { const word = String.fromCharCode(97 + Math.floor(i / 26), 97 + i % 26); const text = `Fictional rule ${word}. ` + `${word} neutral `.repeat(1500); return { ...record, recordId: `record-${i}`, ordinal: i + 1, kind: "tool" as const, text, sha256: ledgerHash(text), tool: { name: "read_notes", state: "success", invocationId: `invocation-${i}`, arguments: "{}" } }; });
   const source = { ...f.reader.snapshotContinuity(scope), records };
   const small = fitLedgerSelection(selectLedgerSources(source, undefined, 64000), scope).selection, large = fitLedgerSelection(selectLedgerSources(source, undefined, 128000), scope).selection;
   expect(large.spans.length).toBeGreaterThan(small.spans.length);

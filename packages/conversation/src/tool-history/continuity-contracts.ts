@@ -197,7 +197,7 @@ export interface ContinuitySnapshot {
   readonly omitted: number;
   readonly gaps: number;
   readonly upkeep?: { readonly cursor?: LedgerCursor | undefined; readonly watermark: number; readonly excluded: readonly string[];
-    readonly candidates?: readonly { key: string; ordinal: number; start: number; end: number; score: number; offers: number }[];
-    readonly scan?: { limits?: { rows: number; bytes: number; windows: number; ms: number }; complete: boolean; rows: number; bytes: number; windows: number; pages: number; bindingQueries: number; bindings: number; elapsedMs: number; excluded: number; materializationSkipped: number; deadline: number } };
+    readonly candidates?: readonly { key: string; ordinal: number; start: number; end: number; score: number; offers: number; source?: string }[];
+    readonly scan?: { limits?: { rows: number; bytes: number; windows: number; ms: number }; complete: boolean; rows: number; bytes: number; windows: number; pages: number; bindingQueries: number; bindings: number; elapsedMs: number; diversity?: { templates: number; repeated: number; templateSuppressed: number; recordSuppressed: number; sources: number }; excluded: number; materializationSkipped: number; deadline: number } };
   readonly degradedReason?: "unavailable" | "purge_pending" | "boundary_unavailable" | "snapshot_bounds" | "source_unavailable" | "source_changed" | "scan_capacity";
 }

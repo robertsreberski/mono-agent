@@ -9,6 +9,7 @@ import { ledgerWindows } from "../continuity/span-geometry.js";
 import { ledgerHash, spanKey } from "../continuity/ledger.js";
 import { RankedQueue, signalScore } from "../continuity/ranking.js";
 type Row = Record<string, any>;
+const queueMetrics = () => ({ templates: 0, repeated: 0, templateSuppressed: 0, recordSuppressed: 0, sources: 0 });
 const DEFAULT = { rows: 4096, bytes: 32 * 1024 * 1024, windows: 65536, ms: 5000 };
 const VISIBLE = `g.logical_id=? AND g.conversation_id=? AND g.state='committed' AND r.finalized=1 AND r.run_id<>?
   AND NOT EXISTS (SELECT 1 FROM continuity_generations p WHERE p.conversation_id=g.conversation_id AND p.state='prepared' AND p.action IN ('reset','delete'))`;
@@ -33,7 +34,7 @@ export function scanLedgerHistory(db: DatabaseSync, input: ContinuitySnapshotInp
   if ((input.priorCovered?.length ?? 0) > 1024 || input.priorCovered?.some(key => !/^[a-f0-9]{64}$/u.test(key))) throw new TypeError("Invalid prior coverage");
   const represented = new Set(input.priorCovered);
   const started = performance.now(), deadline = started + budget.ms;
-  const stats = { limits: { ...budget }, complete: false, rows: 0, bytes: 0, windows: 0, pages: 0, bindingQueries: 0, bindings: 0, elapsedMs: 0, excluded: 0, materializationSkipped: 0, deadline };
+  const stats = { limits: { ...budget }, complete: false, rows: 0, bytes: 0, windows: 0, pages: 0, bindingQueries: 0, bindings: 0, elapsedMs: 0, diversity: queueMetrics(), excluded: 0, materializationSkipped: 0, deadline };
   const args = [input.logicalConversationId, input.currentConversationId, input.currentRunId] as const;
   const table = (name: string) => !!db.prepare("SELECT 1 FROM sqlite_master WHERE name=?").get(name);
   let watermark = 0, total = 0, gaps = 0, progress: ReturnType<typeof readProgress> = { failed: 0 }, summary = "";
@@ -94,16 +95,18 @@ export function scanLedgerHistory(db: DatabaseSync, input: ContinuitySnapshotInp
         const owner = source.kind === "owner" && source.provenance === "host-owner" && !!source.inputId && source.inputId === source.source.attestation?.inputId;
         for (const s of ledgerWindows(source.text, owner)) {
           if (++stats.windows > budget.windows) throw new Error("scan_capacity"); check();
+          const template = queue.observe(s.text, owner);
           const old = history.get(geometryKey({ ordinal: source.ordinal, ...s }));
           if (source.ordinal <= ((progress.cursor as Row | undefined)?.retiredThrough ?? 0) || old && (old.count >= 2 || !["available", "unrepresented", "reofferable", "analyzed"].includes(old.state))) { stats.excluded++; continue; }
           const key = spanKey({ id: "", recordId: source.recordId, sha256: source.sha256, start: s.start, end: s.end, digest: ledgerHash(s.text), owner, kind: source.kind, ...(call ? { toolName: call.tool_name } : {}) });
           if (represented.has(key)) { stats.excluded++; continue; }
-          queue.offer({ key, ordinal: source.ordinal, start: s.start, end: s.end, score: signalScore(withTool, s.start, s.text) + (old?.state === "unrepresented" ? 64 : 0), offers: old?.count ?? 0 });
+          queue.offer({ key, ordinal: source.ordinal, start: s.start, end: s.end, score: signalScore(withTool, s.start, s.text) + (old?.state === "unrepresented" ? 64 : 0), offers: old?.count ?? 0, source: `${source.kind}:${call?.tool_name ?? ""}` }, template);
         }
       }
       after = page.at(-1)!.ordinal;
     }
-    check(); const candidates = queue.finish(), wanted = [...new Set(candidates.map(s => s.ordinal))];
+    check(); const candidates = queue.finish(); stats.diversity = { ...queue.diagnostics };
+    const wanted = [...new Set(candidates.map(s => s.ordinal))];
     const records: ContinuitySnapshotRecord[] = [];
     transaction(() => {
       let bytes = 0;
@@ -113,7 +116,7 @@ export function scanLedgerHistory(db: DatabaseSync, input: ContinuitySnapshotInp
         bytes += size; return true;
       });
       const ids = chosen.map(ordinal => info.get(ordinal)!.recordId);
-      const rows = ids.length ? db.prepare(`SELECT r.* FROM continuity_records r JOIN continuity_generations g USING(generation_id) WHERE ${VISIBLE} AND r.retained_text IS NOT NULL AND r.record_id IN (${ids.map(() => "?").join(",")})`).all(...args, ...ids) as Row[] : [];
+      const rows = ids.length ? db.prepare(`SELECT r.* FROM continuity_records r JOIN continuity_generations g USING(generation_id) WHERE ${VISIBLE} AND r.retained_text IS NOT NULL AND r.record_id IN (${ids.map(() => "?").join(",")}) ORDER BY r.ordinal`).all(...args, ...ids) as Row[] : [];
       if (rows.length !== ids.length) throw new Error("source_changed");
       const invocations = chosen.flatMap(ordinal => { const op = info.get(ordinal)!.operation; return op ? [calls.get(op)!.invocation_id] : []; });
       const payloads = new Map((invocations.length ? db.prepare(`SELECT record_id,payload_json,payload_sha256 FROM tool_records WHERE record_id IN (${invocations.map(() => "?").join(",")}) AND length(CAST(payload_json AS BLOB))<=4194304`).all(...invocations) as Row[] : []).map(row => [row.record_id, row]));

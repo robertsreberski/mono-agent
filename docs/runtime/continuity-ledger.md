@@ -108,8 +108,22 @@ query is unchanged.
 
 Ranking uses generic numeric/identifier/transition shapes, host-attested owner
 and tool lifecycle metadata, interior depth, offer state and recency; it contains
-no benchmark annotation words or probe-meaning vocabulary. Two bounded queues
-retain at most 256 descriptors (192 ranked plus 64 oldest never offered). Admission
+no benchmark annotation words or probe-meaning vocabulary. Scope-local structural
+comparison normalizes Unicode/case, number and mixed identifier tokens. At most
+65,536 ephemeral hash/count/descriptor entries (no retained bodies) measure repeat
+frequency, including ineligible windows. Each shape keeps its first two eligible
+representatives; more than two repetitions receive a logarithmic down-rank.
+Host-attested owners are a separate comparison partition from untrusted text.
+This is selection diversity, not semantic deduplication or durable coverage:
+unoffered repeats remain eligible and can progress on later preparations.
+
+Each record contributes at most eight candidates, pairing its best window with a
+complementary head/interior and sharing remaining space with oldest evidence.
+Round-robin records within kind/tool metadata sources, then those sources, so
+repetitive output cannot monopolize ranked slots when alternatives exist. A mild
+sampled distinct-token signal and a small interior bonus supplement this balance.
+The final pool retains at most 256 descriptors (192 ranked plus 64 oldest never
+offered). Admission
 reserves up to 25% of the **actual fitting width** for oldest never-offered spans;
 unused reservation backfills by rank. Selected source/argument materialization is
 bounded to 4MiB; skipped records are counted separately from scan completeness.
