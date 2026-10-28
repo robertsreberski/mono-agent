@@ -60,7 +60,9 @@ is not proof of conceptual independence.
 
 ## Freeze and verify
 
-Freeze only after all loader/controller tooling has merged. Freeze and verify
+Freeze only after the complete loader/controller/audit/report tooling has merged.
+Before freezing, copy the exact checked-in `audit-rubric.json` bytes to the external
+`--rubric` input; certification rejects another rubric, even if its prose is similar. Freeze and verify
 reject tracked or untracked dirt (gitignored artifacts are excluded). Freeze recomputes
 and requires an exactly matching passing overlap report; stale reports fail.
 The destination must be new and outside the checkout, including through symlinks.
@@ -220,11 +222,147 @@ consistently rewrites the whole output root and all receipts.
 shards, unexpected membership, archive corruption, inconsistent accounting or an
 unreconciled stop. Missing shards/partial units keep planned denominators and
 known failures. Optional `--audit /external/audit.json` uses PR2's bound totals,
-but **cannot certify the final entry population**. This stage always adds
-`audit-workflow-pending:inconclusive`; no study pass is possible yet, even with
-numerically passing totals. The mechanical/blinded two-auditor workflow and the
-deterministic final report are deferred to the next PR. Missing audit or incomplete
-data can never authorize acceptance.
+but **cannot certify the final entry population**. The intermediate join always
+adds `audit-workflow-pending:inconclusive`, even for numerically passing totals.
+Standalone real benchmark aggregation is also noncertifying. Only the complete
+workflow below can remove the pending gate. Missing audit or incomplete data
+can never authorize acceptance.
+
+## Mechanical audit, blinded review and final report
+
+Run → join → audit → report must use **one clean tooling revision**, equal to
+`registration.codeRevision`. Register the real freeze at the final merged tooling
+revision; older freezes cannot adopt these audit modules. Auditing/reporting make
+no provider calls and confer no execution/spending permission. Use fresh external
+output directories for every invocation; incomplete outputs are not resumable.
+
+```bash
+node scripts/continuity-holdout/workflow.mjs audit-export "${ARGS[@]}" \
+  --shard-roots /external/shard-roots.json --joined /external/joined/joined.json \
+  --output /external/audit-export
+```
+
+The exporter revalidates the exact join against reconciled controllers and rehashes
+all archived bytes. It checks every ledger checkpoint publication/captured render,
+probe render count/order, final native SQLite ledger, host source and tool binding,
+citation geometry, identifier contexts, derived markers, and inherited entry
+preservation. Native receipts corroborate relabel/downgrade and D6 counters.
+Missing/unreadable/unbindable material is explicit integrity failure, never skipped.
+Deduplication uses `(corpus, conversation, repeat, entry.id)` across publications;
+same-ID content changes fail, and paraphrases or different repeats never merge.
+Counters cover validated checkpoints; incomplete populations cannot certify.
+
+Give each independent auditor **only** `public/export.json` and `public/rubric.json`.
+Keep the entire `private/` directory, controller roots, join and probe outcomes
+custodian-only. It contains the mechanical population, identity map and recorded
+256-bit ordering seed. Default seed generation is cryptographically random;
+optional `--seed` accepts exactly 64 lowercase hexadecimal characters to reproduce
+an existing export using its private seed. Do not search seeds after review.
+Deterministic keyed shuffle/opaque IDs hide source order; only a seed commitment
+is public. Giving reviewers the seed could reveal corpus-sorted positions.
+
+Each public item supplies entry kind/value/status/normalization markers and **full
+cited spans**, retaining owner/tool evidence but not corpus/model/repeat/checkpoint
+identity, paths or probe outcomes. True arm blinding is impossible because ledger
+structure reveals treatment; the header discloses this. Story content may itself
+be recognizable, so author/tuner isolation and no outcome access remain human
+responsibilities. Software validates attestations, not people's actual independence.
+
+The exact shipped narrow-kind/context rubric is frozen and hash-bound. Deliberation,
+conditional requests, fulfilled work, reported content and historical cautions are
+judged on their evidence, not hard-coded entry/index decisions. Chronology and
+historical cautions are recorded separately from acceptance gates. `exportSha256`
+hashes canonical JSON **with its trailing newline**, omitting that field itself;
+`rubricSha256` hashes raw rubric bytes. The manifest also records raw export-file SHA.
+
+Each auditor supplies this envelope and one judgment for **every** opaque item ID,
+without extras/duplicates. The item below illustrates shape, not a reviewed finding;
+evaluate all six booleans and provide a nonempty rationale (at most 4,096 characters).
+Auditor IDs are distinct 1–80-character ASCII letters/digits/underscore/hyphen.
+
+```json
+{
+  "schema": "holdout-auditor-v1",
+  "auditorId": "independent-auditor-a",
+  "exportSha256": "EXPORT_HEADER_SHA",
+  "rubricSha256": "RUBRIC_RAW_SHA",
+  "attestations": {
+    "notAuthor": true, "notTuner": true,
+    "independentReview": true, "noOutcomeAccess": true
+  },
+  "items": [{
+    "id": "OPAQUE_ITEM_ID", "label": false, "context": false,
+    "chronology": false, "falseSupersession": false, "binding": false,
+    "historicalCaution": false, "rationale": "Evidence-specific independent assessment."
+  }]
+}
+```
+
+```bash
+node scripts/continuity-holdout/workflow.mjs audit-import "${ARGS[@]}" \
+  --shard-roots /external/shard-roots.json --joined /external/joined/joined.json \
+  --audit-directory /external/audit-export \
+  --auditor-a /external/auditor-a.json --auditor-b /external/auditor-b.json \
+  --output /external/audit-disagreements
+```
+
+Without adjudication this writes only `disagreements.json` and `status.json`, not
+an identity map or certificate. Share these disagreements, both reviewer files
+and the public packet with the outcome-blind adjudicator; do not share private
+material. The adjudication binds **exact raw byte hashes** of both auditor files,
+the export/rubric hashes, and exactly the disagreeing IDs. Each item has all six
+booleans and rationale as above. Even zero disagreements requires this envelope
+with `items: []` before unmasking:
+
+```json
+{
+  "schema": "holdout-adjudication-v1", "blinded": true,
+  "adjudicatorId": "outcome-blind-adjudicator",
+  "exportSha256": "EXPORT_HEADER_SHA", "rubricSha256": "RUBRIC_RAW_SHA",
+  "auditorASha256": "EXACT_A_FILE_SHA", "auditorBSha256": "EXACT_B_FILE_SHA",
+  "items": []
+}
+```
+
+```bash
+node scripts/continuity-holdout/workflow.mjs audit-import "${ARGS[@]}" \
+  --shard-roots /external/shard-roots.json --joined /external/joined/joined.json \
+  --audit-directory /external/audit-export \
+  --auditor-a /external/auditor-a.json --auditor-b /external/auditor-b.json \
+  --adjudication /external/adjudication.json --output /external/audit-certified
+node scripts/continuity-holdout/workflow.mjs report "${ARGS[@]}" \
+  --shard-roots /external/shard-roots.json --joined /external/joined/joined.json \
+  --audit-directory /external/audit-export \
+  --auditor-a /external/auditor-a.json --auditor-b /external/auditor-b.json \
+  --adjudication /external/adjudication.json \
+  --certificate /external/audit-certified/certificate.json --output /external/final-report
+```
+
+After validated adjudication, import emits private `unmasked.json` and a certificate,
+plus disagreements/status. Certification requires a complete mechanical population,
+both complete independent responses and adjudication bound to this exact join.
+Totals alone never certify. The unchanged registered gates use unique-entry rates
+(label ≤10/363, context ≤5/363) and hard zero for falsely superseded current facts
+and binding errors. A numerical pass remains inconclusive without certification;
+established statistical or audit failures remain failures.
+
+`report` recomputes the join and mechanical audit, validates all human files and
+certificate/import outputs, then writes deterministic `report.json`, `report.md`
+and `artifacts.json`. They include gates/intervals/reasons, integrity and audit
+counters, controller stops and catalog spend (not an invoice). There are no local
+absolute paths or freshly generated timestamps. Identical input bytes give
+identical output bytes, including with roots supplied in a different order.
+
+**Raw-file hashes are bound transitively: report → archive-manifest SHA → per-file
+SHA.** The artifact section lists each controller and `shards/N/chunks/M/archive.json`
+SHA, freeze/registration/spec/rubric, join/export/human/import artifacts and tooling
+revision. Report generation reruns `verifyArchive` on every listed chunk; changing
+one raw file invalidates it even when its manifest is unchanged. Verification is
+chunk-by-chunk, without retaining per-file maps across chunks or duplicating a
+multi-million-row raw inventory. Retain those original archive manifests and roots.
+The detached manifest hashes report JSON/Markdown but cannot hash itself: pin its
+returned SHA externally. Hashes detect corruption, not a hostile custodian rewriting
+the complete evidence chain or false human independence attestations.
 
 ### Synthetic verification
 

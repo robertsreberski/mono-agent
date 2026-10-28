@@ -10,8 +10,9 @@ Existing suites, arm configurations and scoring of legacy suites are unchanged.
 Design E is **512 conversations in 32 disjoint families of 16**, half the families
 and 256 conversations in each corpus. There are **32 balanced shards of 16**,
 eight conversations per corpus, each binding a **$25 ceiling**. This records a
-ceiling, not spending authorization or a remotely enforced invoice cap; controller
-admission/accounting belongs to the subsequent workflow.
+ceiling, not spending authorization or a remotely enforced invoice cap. Use the
+[portable workflow](./README.md#portable-execution-and-validated-joining) for
+controller admission/accounting.
 
 ```bash
 node scripts/continuity-holdout-power.mjs --seed 572913 \
@@ -41,7 +42,10 @@ of the conversation-level intervals. Power is not model-quality or audit evidenc
 Use the approved `statistical-spec.json`, copied to a private external file. Exact
 bytes are bound by registration; its semantic values must also equal the design
 bound into the frozen manifest. All frozen content and current tooling are
-verified, requiring a clean tree even for dry/offline loading.
+verified, requiring a clean tree even for dry/offline loading. Before freezing,
+copy the exact checked-in `audit-rubric.json` bytes to the external rubric input.
+Run, join, audit and report must all use the same clean revision equal to
+`registration.codeRevision`; register only after the complete tooling has merged.
 
 ```bash
 node scripts/continuity-holdout-register.mjs \
@@ -80,7 +84,7 @@ safety, benefit and wrong-rate status is `not_a_measurement`, while raw counts a
 intervals remain diagnostic. The pure API also
 defaults to non-measurement; only validated real records justify opting in.
 Per-shard results cannot pass the study: denominators always cover the complete
-registered population. The subsequent controller must validate/join shard trial
+registered population. The portable controller workflow must validate/join shard trial
 units before calling `holdoutStatistics`; completed observations in partial units
 remain evidence, not discarded. Incomplete units never count as complete coverage. Exact `not_started` placeholders
 are reported as `integrity.notStartedPlaceholders`, not unknown trials; their
@@ -132,7 +136,7 @@ cannot undo them. No incomplete data is presented as a confidence estimate.
 
 ## Bound audit input
 
-Optional `--audit /external/audit.json` supplies PR3's trusted unique-entry totals:
+Optional `--audit /external/audit.json` supplies **diagnostic, noncertifying** totals:
 `published`, `audited`, `labelFindings`, `contextFindings`,
 `falselySupersededCurrent`, `bindingErrors`, `complete: true`, and
 **`registrationSha256`** equal to the pinned registration digest. A missing or
@@ -144,7 +148,10 @@ pre-execution plan confirmation.
 Counts are nonnegative integers; `audited` equals positive `published`. Unique
 published-entry rates use exact cross multiplication at the configured limits
 (E retains 10/363 and 5/363 and zero provenance/false-supersession findings).
-The trusted `published` total must cover the entire final unique-entry population,
+The claimed `published` total must cover the entire final unique-entry population,
 not just its audited subset. Known violations of that fixed denominator fail even
-when auditing is incomplete. Missing/incomplete audit material never passes. Deduplication, source verification
-and export collection remain the subsequent controller/audit workflow's job.
+when auditing is incomplete. Missing/incomplete audit material never passes.
+Neither standalone aggregation nor a join can certify these claims. Only the
+[mechanical and two-auditor workflow](./README.md#mechanical-audit-blinded-review-and-final-report)
+reconstructs the population, validates blinded responses/adjudication and permits
+a final certified report to remove the pending gate. A bare totals file never does.

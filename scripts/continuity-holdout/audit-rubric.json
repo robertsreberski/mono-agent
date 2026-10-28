@@ -1,0 +1,18 @@
+{
+  "schema": "holdout-audit-rubric-v1",
+  "scope": "Review every unique entry using its entire value, kind, status, markers and all complete cited spans. Do not infer missing evidence or merge paraphrases.",
+  "label": {
+    "deliberation": "Considering an option does not establish an adopted decision or outstanding assigned work.",
+    "conditionalRequests": "A conditional request or reminder is not an actor promise, adopted decision or renewed approval.",
+    "fulfilledRequests": "A historical request must not imply outstanding work when its cited evidence establishes completion. Tool success alone does not establish a real-world outcome.",
+    "reportedContent": "Reported, quoted or delivered content is not by itself a governing owner rule, decision or promise.",
+    "standingRules": "A prohibition or standing constraint is not by itself an actor commitment. Judge the narrow kind, even when the value is qualified."
+  },
+  "context": "Flag unsupported values, missing qualifications or negations, false absence, invented completion/adoption, or misleading current-versus-historical assertions. Assess cited evidence rather than assuming semantic entailment from mechanical binding.",
+  "historicalCautions": "Report faithful earlier artifacts lacking an explicit historical qualifier as cautions when host order and retained revisions distinguish them; do not automatically count a caution as a context finding. An actual false current or relative-time assertion is a finding.",
+  "chronology": "Report false earlier/later or current/historical assertions separately; independently flag context when warranted.",
+  "falseSupersession": "Flag any current fact incorrectly retired or marked superseded.",
+  "binding": "Flag any source/provenance mismatch, including an unsupported owner attribution.",
+  "flags": ["label", "context", "chronology", "falseSupersession", "binding", "historicalCaution"],
+  "independence": "Two independent auditors must not have authored the corpus or tuned the ledger, seen one another's judgments, or seen probe outcomes. Adjudication remains outcome-blind. These are custodian-verified attestations, not proof supplied by software."
+}
