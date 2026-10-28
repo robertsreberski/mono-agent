@@ -312,26 +312,30 @@ export function createConversationResponder(options: {
         }
       },
     });
-    await runtimeEventStream.flush();
-
     if (response.failure !== undefined) {
-      // Error frames have no metadata slot. Reconcile the content-free summary
-      // before throwing, so a lost live receipt is not lost with the response.
-      const summary = response.metadata.summary;
-      if (summary) {
-        let partial = summary.upkeepAccountingPartial === true;
-        for (const value of summary.upkeepAccounting ?? []) {
-          try {
-            const accounting = parseForwardedUpkeepAccounting(value);
-            if (accounting.runId !== summary.runId || accounting.conversationId !== summary.conversationId) { partial = true; continue; }
-            runtimeEventStream.enqueueEvent({ type: "runtime_telemetry", kind: "continuity_upkeep", data: { accounting } });
-          } catch { partial = true; }
+      try {
+        // Error frames have no metadata slot. Reconcile the content-free summary
+        // before throwing, so a lost live receipt is not lost with the response.
+        const summary = response.metadata.summary;
+        if (summary) {
+          let partial = summary.upkeepAccountingPartial === true;
+          const values = summary.upkeepAccounting;
+          if (values !== undefined && !Array.isArray(values)) partial = true;
+          for (const value of Array.isArray(values) ? values : []) {
+            try {
+              const accounting = parseForwardedUpkeepAccounting(value);
+              if (accounting.runId !== summary.runId || accounting.conversationId !== summary.conversationId) { partial = true; continue; }
+              runtimeEventStream.enqueueEvent({ type: "runtime_telemetry", kind: "continuity_upkeep", data: { accounting } });
+            } catch { partial = true; }
+          }
+          if (partial) runtimeEventStream.enqueueEvent({ type: "runtime_telemetry", kind: "continuity_upkeep", data: { accountingPartial: true } });
         }
-        if (partial) runtimeEventStream.enqueueEvent({ type: "runtime_telemetry", kind: "continuity_upkeep", data: { accountingPartial: true } });
         await runtimeEventStream.flush();
-      }
+      } catch { /* Recovery is best-effort; never replace the harness failure. */ }
       throw new ConversationHarnessFailureError(response.failure);
     }
+
+    await runtimeEventStream.flush();
 
     const text = response.metadata?.turnDisposition === "silent"
       ? "" : composeResponseText(response.text, notice, routing);

@@ -33,6 +33,7 @@ User Stop also marks a running `AskUser` question as interrupted; answer in a ne
   browser-safe derivation. Storage-local accounting identities never reach the
   browser, including full transcript reads. Cache-hit percentages in upkeep
   threads use inclusive reported tokens; incomplete counters suppress the ratio.
+  Status-only skips without accounting or spend evidence contribute nothing.
 - Persist agents, threads, messages, structured reasoning/tool/telemetry parts,
   revisions, turns, attachments, and agent pin preferences under
   `~/.mono-agent/web`.

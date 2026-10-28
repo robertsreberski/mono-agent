@@ -6844,7 +6844,7 @@ export class WebStore {
     if (runtime?.upkeepParts) parts.push(...runtime.upkeepParts);
     // Error frames cannot carry a summary. Retained upkeep evidence plus a
     // failed transport/turn cannot establish that the last receipt arrived.
-    if (status !== "complete" && hasUpkeepTelemetry(parts)) parts.push({ type: "telemetry", event: "runtime_telemetry", data: upkeepTelemetryData(undefined) });
+    if (status !== "complete" && hasUpkeepTelemetry(parts)) parts.push({ type: "telemetry", event: "runtime_telemetry", data: upkeepTelemetryData({ accountingPartial: true }) });
     if (errorMessage !== undefined) {
       parts.push({ type: "error", ...(errorCode === undefined ? {} : { code: errorCode }), message: errorMessage });
     }
@@ -8629,7 +8629,7 @@ function applyEvent(
   }
   if (event.type === "runtime_telemetry" && event.kind === "continuity_upkeep") {
     const data = upkeepTelemetryData(event);
-    parts.push({ type: "telemetry", event: event.type, kind: "continuity_upkeep", ...(data === undefined ? {} : { data }) });
+    if (data !== undefined) parts.push({ type: "telemetry", event: event.type, kind: "continuity_upkeep", data });
     return;
   }
   if (event.type === "runtime_telemetry" && event.kind === "context_compaction") {

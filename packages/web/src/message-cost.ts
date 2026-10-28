@@ -155,22 +155,33 @@ export const isCompactionTelemetry = (event: string, layers: readonly UnknownRec
 
 export const isUpkeepTelemetry = (event: string, layers: readonly UnknownRecord[]): boolean => hasTelemetryLabel(event, layers, "continuity_upkeep");
 
+const hasUpkeepSpendEvidence = (layers: readonly UnknownRecord[]): boolean => layers.some(layer =>
+  Object.getOwnPropertyDescriptor(layer, "accounting") !== undefined
+  || Object.getOwnPropertyDescriptor(layer, "accountingPartial")?.value === true
+  || Object.getOwnPropertyDescriptor(layer, "providerInvoked")?.value === true
+  || Object.getOwnPropertyDescriptor(layer, "status")?.value === "uncertain");
+
 /** Closed data only, used before persistence as well as shaped reloads. */
-export function upkeepTelemetryData(value: unknown): UnknownRecord {
+export function upkeepTelemetryData(value: unknown): UnknownRecord | undefined {
   const partial = { type: "runtime_telemetry", kind: "continuity_upkeep", data: { accountingPartial: true } };
   const layers: UnknownRecord[] = [], seen = new Set<UnknownRecord>();
+  let spendEvidence = false;
   try {
     let current = recordValue(value);
     while (current && layers.length < 8 && !seen.has(current)) {
       layers.push(current); seen.add(current);
       current = recordValue(Object.getOwnPropertyDescriptor(current, "data")?.value);
     }
+    spendEvidence = hasUpkeepSpendEvidence(layers);
     for (const layer of layers.reverse()) {
       const descriptor = Object.getOwnPropertyDescriptor(layer, "accounting");
-      if (descriptor) return { type: "runtime_telemetry", kind: "continuity_upkeep", data: { accounting: parseForwardedUpkeepAccounting(descriptor.value), ...(layers.some(layer => Object.getOwnPropertyDescriptor(layer, "accountingPartial")?.value === true) ? { accountingPartial: true } : {}) } };
+      if (descriptor) {
+        spendEvidence = true;
+        return { type: "runtime_telemetry", kind: "continuity_upkeep", data: { accounting: parseForwardedUpkeepAccounting(descriptor.value), ...(layers.some(layer => Object.getOwnPropertyDescriptor(layer, "accountingPartial")?.value === true) ? { accountingPartial: true } : {}) } };
+      }
     }
-  } catch { /* The label is evidence of missing accounting, never free work. */ }
-  return partial;
+  } catch { /* Invalid accounting is evidence; a status-only skip is not. */ }
+  return spendEvidence ? partial : undefined;
 }
 
 export const isAggregateUsageTelemetry = (event: string, layers: readonly UnknownRecord[]): boolean =>
@@ -485,14 +496,16 @@ export function upkeepUsageRollup(candidates: readonly unknown[], partial = fals
   return { accounting, partial, slice: { ...slice(accounting), operations: accounting.length }, byModel };
 }
 export function hasUpkeepTelemetry(parts: readonly CostTelemetryPart[]): boolean {
-  return parts.some(part => part.type === "telemetry" && !!part.event && (part.kind === "continuity_upkeep" || isUpkeepTelemetry(part.event, dataLayers(part.data))));
+  return parts.some(part => part.type === "telemetry" && !!part.event && (part.kind === "continuity_upkeep" || isUpkeepTelemetry(part.event, dataLayers(part.data))) && hasUpkeepSpendEvidence(dataLayers(part.data)));
 }
 function upkeepObservations(parts: readonly CostTelemetryPart[]) {
   const candidates: unknown[] = [];
   let partial = false;
   for (const part of parts) {
     if (part.type !== "telemetry" || !part.event || part.kind !== "continuity_upkeep" && !isUpkeepTelemetry(part.event, dataLayers(part.data))) continue;
-    const layer = recordValue(upkeepTelemetryData(part.data).data)!;
+    const data = upkeepTelemetryData(part.data);
+    if (!data) continue;
+    const layer = recordValue(data.data)!;
     if (layer.accounting !== undefined) candidates.push(layer.accounting);
     if (layer.accountingPartial === true) partial = true;
   }
@@ -519,7 +532,7 @@ export function latestMessageCostUsd(parts: readonly CostTelemetryPart[]): numbe
 
 /** Final metadata is another view of the same operations, not another charge. */
 export function upkeepSummaryParts(summary: unknown): { type: "telemetry"; event: "runtime_telemetry"; data: UnknownRecord }[] {
-  const marker = () => ({ type: "telemetry" as const, event: "runtime_telemetry" as const, data: upkeepTelemetryData(undefined) });
+  const marker = () => ({ type: "telemetry" as const, event: "runtime_telemetry" as const, data: upkeepTelemetryData({ accountingPartial: true })! });
   try {
     if (!summary || typeof summary !== "object") return [];
     const own = (key: string) => Object.getOwnPropertyDescriptor(summary, key)?.value as unknown;

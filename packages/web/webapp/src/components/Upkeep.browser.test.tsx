@@ -19,10 +19,10 @@ const dispatch = { version: 1, usageIncluded: false, operationId: "fictional-ope
 const result = { ...dispatch, phase: "result", invocation: "invoked", outcome: "valid", inputTokens: 200, cacheReadTokens: 10, cacheWriteTokens: 0, outputTokens: 30, costUsd: 0.02 } as const;
 const answerUsage = { type: "telemetry", event: "usage_update", data: { model: "fictional:answer-a", cumulativeUsd: 0.01, tokens: { input: 900, cacheRead: 100, cacheWrite: 0, output: 100 } } } as const;
 function Fixture({ mode }: { readonly mode: string }) {
-  const running = mode === "running", legacy = mode === "legacy";
+  const running = mode === "running" || mode === "skipped", legacy = mode === "legacy";
   const message: WebMessage = { id: "fictional-answer", threadId: "fictional-thread", turnId: "fictional-turn", role: "assistant", status: running ? "running" : "complete", attachments: [], createdAt: "2026-05-17T10:00:00Z", updatedAt: "2026-05-17T10:00:01Z", parts: [
     { type: "text", text: "Morgan's fictional garden plan." }, answerUsage,
-    ...(legacy ? [] : [{ type: "telemetry" as const, event: "runtime_telemetry", data: { kind: "continuity_upkeep", data: { accounting: mode === "known" ? result : mode === "partial" ? { ...result, costUsd: null, outputTokens: null } : dispatch } } }]),
+    ...(mode === "skipped" ? [{ type: "telemetry" as const, event: "runtime_telemetry", data: { kind: "continuity_upkeep", data: { status: "skipped", providerInvoked: false } } }] : legacy ? [] : [{ type: "telemetry" as const, event: "runtime_telemetry", data: { kind: "continuity_upkeep", data: { accounting: mode === "known" ? result : mode === "partial" ? { ...result, costUsd: null, outputTokens: null } : dispatch } } }]),
   ] };
   const totals = sumThreadUsage([messageUsageRollup(message)], "2026-05-17T10:00:01Z");
   const runtime = useExternalStoreRuntime<WebMessage>({ messages: [message], convertMessage: value => convertWebMessage(value), onNew: async () => undefined });
@@ -79,5 +79,19 @@ it("announces included upkeep and pending tokens/cost before the first result", 
   expect(dialog).not.toHaveTextContent("≥$0.00");
   expect(dialog).not.toHaveTextContent("Known cost");
   expect(screen.getByText("(included in total)")).toBeInTheDocument();
+  view.unmount();
+});
+
+
+it("keeps status-only skipped upkeep out of running cards, footers and totals", async () => {
+  const view = render(<Fixture mode="skipped" />);
+  const card = screen.getByRole("button", { name: /Open Morgan's fictional garden/u });
+  expect(card).toHaveTextContent(/Working… · \$0.01/u);
+  expect(card).not.toHaveTextContent(/Continuity upkeep|partial|pending/u);
+  expect(screen.queryByText(/^Message cost/u)).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: /^Context usage:/u }));
+  const dialog = await screen.findByRole("dialog", { name: "Context usage" });
+  expect(dialog).not.toHaveTextContent(/Continuity upkeep|partial/u);
+  expect(dialog).toHaveTextContent("$0.01");
   view.unmount();
 });

@@ -603,7 +603,30 @@ export function preparationUsage(receipt, inputReserve, price, outputReserve = 4
 /** Sum each extraction once; known catalog cost and unknown-call reserves stay separate. */
 export function sumPreparationUsage(steps) {
   try {
-  mergeAgentUpkeepAccounting(steps.flatMap(step => step.receipt?.accounting ? [step.receipt.accounting] : []));
+    mergeAgentUpkeepAccounting(steps.flatMap(step => step.receipt?.accounting ? [step.receipt.accounting] : []));
+  } catch (error) {
+    if (!(error instanceof TypeError) || !["Conflicting upkeep identity", "Conflicting upkeep evidence"].includes(error.message)) throw error;
+    // Count every observation for stop budgets, but retain only the minimum
+    // known price per operation as a trusted billed subtotal.
+    const total = emptyUsage(), minimums = new Map();
+    const observations = steps.map((step, index) => {
+      const accounting = step.receipt?.accounting ? forwardUpkeepAccounting(step.receipt.accounting) : undefined;
+      const id = accounting?.operationId ?? step.receipt?.operationId ?? `anonymous:${index}`;
+      const cost = accounting ? accounting.costUsd : step.usage?.reportedCost?.knownCostUsd;
+      if (typeof cost === "number" && Number.isFinite(cost) && cost >= 0) minimums.set(id, Math.min(minimums.get(id) ?? Infinity, cost));
+      addUsage(total, step.usage);
+      return { id, usage: step.usage };
+    });
+    const reportedCost = deriveUpkeepAccounting([], { totalUsd: null, knownCostUsd: [...minimums.values()].reduce((sum, cost) => sum + cost, 0) }).cost;
+    // Attribute each operation lower bound once for downstream addUsage sums.
+    const assigned = new Set();
+    const components = observations.map(({ id, usage }) => {
+      const knownCostUsd = assigned.has(id) ? 0 : minimums.get(id) ?? 0;
+      assigned.add(id);
+      return { ...usage, reportedCost: { totalUsd: null, knownCostUsd, partial: true } };
+    });
+    return { ...total, reportedCost, components };
+  }
   const unique = new Map();
   for (const [index, step] of steps.entries()) {
     const id = step.receipt?.operationId ?? `anonymous:${index}`, previous = unique.get(id);
@@ -620,14 +643,6 @@ export function sumPreparationUsage(steps) {
   }
   return { ...total, reportedCost: deriveUpkeepAccounting(accounting, { totalUsd: partial ? null : known, knownCostUsd: known }).cost,
     components: rows.map(step => step.usage) };
-  } catch {
-    // Conflicting observations cannot erase an already-paid step from stop
-    // budgets. Count every observation conservatively; billing stays unknown.
-    const total = emptyUsage();
-    for (const step of steps) addUsage(total, step.usage);
-    const reportedCost = { totalUsd: null, knownCostUsd: 0, partial: true };
-    return { ...total, reportedCost, components: steps.map(step => ({ ...step.usage, reportedCost })) };
-  }
 }
 
 /** One upkeep, no real answer call, before read-only probe forks. No probe/answer data enter extraction. */

@@ -20,7 +20,7 @@ const usage: WebMessagePart = { type: "telemetry", event: "usage_update", data: 
 
 it("keeps legacy no-upkeep totals byte-identical and excludes upkeep from aggregates", () => {
   expect(JSON.stringify(messageUsageRollup({ parts: [usage] }))).toBe(JSON.stringify({ main: { model: "fictional:answer-a", tokens: { input: 100, output: 20, cacheRead: 0, cacheWrite: 0 }, costUsd: 1 }, subagents: [] }));
-  expect(latestMessageCostUsd([usage, { type: "telemetry", event: "usage_update", data: { kind: "continuity_upkeep", cumulativeUsd: 900 } }])).toBeNull();
+  expect(latestMessageCostUsd([usage, { type: "telemetry", event: "usage_update", data: { kind: "continuity_upkeep", cumulativeUsd: 900, accounting: { version: 2 } } }])).toBeNull();
 });
 it("counts one operation across phases, summaries, messages and model slices", () => {
   const rolled = messageUsageRollup({ parts: [usage, telemetry(dispatch), telemetry(result), telemetry(dispatch), ...upkeepSummaryParts({ runId: "run", conversationId: "conversation", upkeepAccounting: [result] })] });
@@ -154,4 +154,37 @@ it("reuses running upkeep rollups on prose flushes but invalidates changed accou
     runActivityFromParts([...parts, telemetry(result)]);
     expect(observe).toHaveBeenCalledTimes(2);
   } finally { observe.mockRestore(); }
+});
+
+
+it.each([
+  [{ status: "skipped", providerInvoked: false }, false],
+  [{ status: "skipped", providerInvoked: true }, true],
+  [{ status: "uncertain", providerInvoked: false }, true],
+] as const)("requires spend evidence without accounting: %j", async (status, partial) => {
+  const root = await temporaryRoot();
+  const service = await WebService.create({ stateDir: join(root, "state"), discoveryIntervalMs: 0, purgeIntervalMs: 0, discoverImpl: async () => [fakeDiscoveredAgent()], fetchImpl: operatorFetch() });
+  try {
+    const thread = service.store.createThread("agent-one");
+    const turn = service.store.beginTurn({ threadId: thread.id, text: "Fictional no-spend check.", attachmentIds: [] });
+    const event = { type: "runtime_telemetry", kind: "continuity_upkeep", data: status } as const;
+    const raw: WebMessagePart = { type: "telemetry", event: event.type, data: event };
+    const write = service.store.applyStreamFrames(turn.turnId, [{ kind: "event", event: { type: "usage_update", ...(usage.data as object) } }, { kind: "event", event }]);
+    const live = service.store.getMessage(turn.assistantMessageId)!;
+    const replay = { ...live, parts: applyDeltaOps([], write.delta!.ops) };
+    const historical = { ...live, parts: [usage, raw] };
+    vi.spyOn(service.store, "getMessage").mockReturnValueOnce(historical);
+    const shapedHistorical = service.message(thread.id, live.id);
+    for (const view of [live, historical, shapedHistorical, replay, service.message(thread.id, live.id)]) {
+      const rolled = messageUsageRollup(view), total = sumThreadUsage([rolled]), activity = runActivityFromParts(view.parts);
+      expect(rolled.main.costUsd).toBe(partial ? null : 1);
+      expect(total.total.costUsd).toBe(partial ? null : 1);
+      expect(Boolean(rolled.upkeep)).toBe(partial);
+      expect(Boolean(activity.upkeep)).toBe(partial);
+      expect(activity.cumulativeUsd).toBe(partial ? null : 1);
+    }
+    service.store.failTurn(turn.turnId, { message: "Fictional failure" });
+    expect(messageUsageRollup(service.message(thread.id, live.id)).main.costUsd).toBe(partial ? null : 1);
+    expect(upkeepSummaryParts({ runId: "run", conversationId: "conversation", upkeepAccounting: [] })).toEqual([]);
+  } finally { vi.restoreAllMocks(); await service.stop(); await rm(root, { recursive: true, force: true }); }
 });

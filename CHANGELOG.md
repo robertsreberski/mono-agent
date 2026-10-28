@@ -5,7 +5,7 @@
 - Show continuity upkeep (off by default) once in live, reloaded and replayed
   console totals, running cards and per-model slices. Keep unknown spend partial
   with its known subtotal, and reconcile benchmark reported costs separately from
-  reservations.
+  reservations. Keep status-only upkeep skips out of billed and partial totals.
 - Retry transient SQLite contention while preparing continuity upkeep rather
   than treating accounting-export locks as permanent ledger corruption.
 

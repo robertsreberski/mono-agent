@@ -20,7 +20,9 @@ export function runUpkeepAccounting(origin: Origin, candidates: readonly unknown
   return values;
 }
 export function upkeepEventAccounting(event: RuntimeEventLike): readonly unknown[] {
-  return ["continuity_upkeep", "continuity_upkeep_dispatch"].includes(String(event.type)) && event.accounting !== undefined ? [event.accounting] : [];
+  if (!["continuity_upkeep", "continuity_upkeep_dispatch"].includes(String(event.type))) return [];
+  const accounting = Object.getOwnPropertyDescriptor(event, "accounting");
+  return accounting || event.providerInvoked === true || event.status === "uncertain" ? [accounting?.value] : [];
 }
 
 /** Inference fields are never rewritten or repriced at the answer model. */

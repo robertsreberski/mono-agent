@@ -867,9 +867,16 @@ it("reconciles reported upkeep cost by operation while preserving conservative s
   const free = preparationUsage({ providerInvoked: true, inputTokens: null, costUsd: 0 }, 128000, { input: 2, output: 4 });
   expect(free).toMatchObject({ conservativeCalls: 1, reportedCost: { totalUsd: 0, knownCostUsd: 0, partial: false } });
   const conflict = sumPreparationUsage([step(result), step({ ...result, costUsd: 2 })]);
-  expect(conflict).toMatchObject({ calls: 2, inputTokens: result.inputTokens * 2, reportedCost: { totalUsd: null, partial: true } });
+  expect(conflict).toMatchObject({ calls: 2, inputTokens: result.inputTokens * 2, reportedCost: { totalUsd: null, knownCostUsd: 0.02, partial: true } });
   const budget = emptyUsage(); addUsage(budget, conflict);
-  expect(budget.calls).toBe(2); expect(budget.reportedCost.partial).toBe(true);
+  expect(budget.calls).toBe(2); expect(budget.reportedCost).toEqual({ totalUsd: null, knownCostUsd: 0.02, partial: true });
+  const multiple = sumPreparationUsage([step(full), step(result), step({ ...result, costUsd: 2 }), step({ ...result, operationId: "second", costUsd: 0.03 }), step({ ...result, operationId: "second", costUsd: 0.03 })]);
+  expect(multiple.reportedCost.knownCostUsd).toBe(0.05);
+  const combined = emptyUsage(); addUsage(combined, multiple);
+  expect(combined.reportedCost.knownCostUsd).toBe(0.05);
+  expect(() => sumPreparationUsage([{ receipt: { accounting: { ...result, version: 2 } }, usage: emptyUsage() }])).toThrow("Invalid upkeep accounting");
+  const bug = new Error("Fictional unrelated dedupe failure");
+  expect(() => sumPreparationUsage([{ ...step(result), get usage() { throw bug; } }])).toThrow(bug);
   const mixed = sumPreparationUsage([step(result), step({ ...result, inputTokens: null, costUsd: 2 })]);
   expect(observedInputTokens(mixed)).toBe(128000 + result.inputTokens + result.cacheReadTokens + result.cacheWriteTokens);
 });
