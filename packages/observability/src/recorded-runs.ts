@@ -1,3 +1,4 @@
+import { withRecordedUpkeep } from "./upkeep-totals.js";
 import { readUpkeepAccounting } from "./upkeep-accounting.js";
 import { constants as fsConstants } from "node:fs";
 import { open, readdir, readFile, stat } from "node:fs/promises";
@@ -87,10 +88,11 @@ export class ObservabilityReadError extends Error {
 
 export async function listRecordedRuns(options: JsonlRunReaderOptions): Promise<RecordedRunListResult> {
   const normalized = normalizeReaderOptions(options);
-  const { summaries, warnings } = await loadSummaryFiles(normalized, true);
+  const { summaries, warnings: loadedWarnings } = await loadSummaryFiles(normalized, true);
+  const warnings = [...loadedWarnings];
   return {
     totalRuns: summaries.length,
-    runs: [...summaries]
+    runs: await Promise.all([...summaries]
       // Newest first by logical update time, with file mtime then runId as deterministic
       // tiebreakers — two runs finishing in the same millisecond share an `updatedAt`, and
       // without a tiebreaker their order (and any top-N slice) is unstable.
@@ -101,7 +103,16 @@ export async function listRecordedRuns(options: JsonlRunReaderOptions): Promise<
           || b.summary.runId.localeCompare(a.summary.runId),
       )
       .slice(0, normalized.maxRuns)
-      .map((entry) => summaryToListItem(entry.summary, entry.updatedAt, normalized.maxStringBytes, entry)),
+      .map(async (entry) => {
+        const events = await readEventsFile(safeJoin(entry.artifactDir, `${safeArtifactName(entry.summary.runId)}${EVENTS_SUFFIX}`), { ...normalized, eventSelection: "head-tail" }, []);
+        const accountingWarnings: string[] = [];
+        const upkeep = await readUpkeepAccounting(entry.artifactDir, entry.summary.runId, entry.summary.conversationId, [
+          ...(entry.upkeepCandidates ?? []),
+          ...events.flatMap(event => isRecord(event.payload) && ["continuity_upkeep", "continuity_upkeep_dispatch"].includes(String(event.payload.type)) && event.payload.accounting !== undefined ? [event.payload.accounting] : []),
+        ], accountingWarnings);
+        warnings.push(...accountingWarnings);
+        return summaryToListItem(withRecordedUpkeep({ ...entry.summary, ...(accountingWarnings.length ? { upkeepAccountingPartial: true as const } : {}) }, upkeep), entry.updatedAt, normalized.maxStringBytes, entry);
+      })),
     warnings,
   };
 }
@@ -214,13 +225,15 @@ export async function readRecordedRun(
   const eventsPath = safeJoin(summary.artifactDir, `${baseName}${EVENTS_SUFFIX}`);
   const events = await readEventsFile(eventsPath, normalized, warnings);
   const summaryAccounting = summary.upkeepCandidates;
+  const accountingWarnings: string[] = [];
   const upkeepAccounting = await readUpkeepAccounting(summary.artifactDir, normalizedRunId, summary.summary.conversationId, [
     ...(Array.isArray(summaryAccounting) ? summaryAccounting : []),
-    ...events.flatMap(event => isRecord(event.payload) && event.payload.type === "continuity_upkeep" && event.payload.accounting !== undefined ? [event.payload.accounting] : []),
-  ], warnings);
+    ...events.flatMap(event => isRecord(event.payload) && ["continuity_upkeep", "continuity_upkeep_dispatch"].includes(String(event.payload.type)) && event.payload.accounting !== undefined ? [event.payload.accounting] : []),
+  ], accountingWarnings);
+  warnings.push(...accountingWarnings);
 
   return {
-    summary: summaryToListItem(summary.summary, summary.updatedAt, normalized.maxStringBytes, summary),
+    summary: summaryToListItem(withRecordedUpkeep({ ...summary.summary, ...(accountingWarnings.length ? { upkeepAccountingPartial: true as const } : {}) }, upkeepAccounting), summary.updatedAt, normalized.maxStringBytes, summary),
     events,
     ...(upkeepAccounting.length ? { upkeepAccounting } : {}),
     warnings,
@@ -517,6 +530,7 @@ function coerceRunSummary(
     durationMs,
     ...(value.usage === undefined ? {} : { usage: redactJsonValue(value.usage, maxStringBytes) }),
     ...(value.cost === undefined ? {} : { cost: redactJsonValue(value.cost, maxStringBytes) }),
+    ...(value.upkeepAccountingPartial === true ? { upkeepAccountingPartial: true } : {}),
     ...(providerSessionId === undefined ? {} : { providerSessionId }),
     ...(isolated === undefined ? {} : { isolated }),
     eventCount,
@@ -555,6 +569,9 @@ function summaryToListItem(
     updatedAt: summary.updatedAt ?? updatedAt,
     ...(summary.usage === undefined ? {} : { usage: redactJsonValue(summary.usage, maxStringBytes) }),
     ...(summary.cost === undefined ? {} : { cost: redactJsonValue(summary.cost, maxStringBytes) }),
+    ...(summary.upkeepAccounting === undefined ? {} : { upkeepAccounting: summary.upkeepAccounting }),
+    ...(summary.inclusiveCost === undefined ? {} : { inclusiveCost: summary.inclusiveCost }),
+    ...(summary.upkeepAccountingPartial === true ? { upkeepAccountingPartial: true } : {}),
     ...(summary.model === undefined ? {} : { model: summary.model }),
     ...(summary.providerSessionId === undefined ? {} : { providerSessionId: summary.providerSessionId }),
     ...(summary.isolated === undefined ? {} : { isolated: summary.isolated }),

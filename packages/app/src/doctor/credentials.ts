@@ -55,7 +55,7 @@ export async function credentialsSection(
   const refs: { label: string; ref: RuntimeModelReference }[] = [
     { label: "Primary", ref: config.runtime.model },
     ...configuredRuntimeRouteChecks(config).slice(1).map((route) => ({
-      label: "Fallback",
+      label: route.label === "Continuity upkeep model" ? "Continuity upkeep" : "Fallback",
       ref: route.model,
     })),
     ...staticTriggerRefs,

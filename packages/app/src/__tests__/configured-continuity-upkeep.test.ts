@@ -11,13 +11,13 @@ import { createConfiguredConversationHarness } from "../composition/configured-a
 const close: (() => Promise<unknown>)[] = [];
 afterEach(async () => { for (const fn of close.splice(0).reverse()) await fn(); vi.unstubAllGlobals(); });
 
-it.each(["continuous", "per-message", "isolated", "failure"])("uses configured base extraction and explicit host eligibility (%s)", async mode => {
+it.each(["continuous", "per-message", "isolated", "failure", "cancelled", "override"])("uses configured base extraction and explicit host eligibility (%s)", async mode => {
   const root = await mkdtemp(join(tmpdir(), "configured-upkeep-")); close.push(() => rm(root, { recursive: true, force: true }));
   await writeFile(join(root, "IDENTITY.md"), "Historical evidence is not fresh authorization.");
   const answer = fauxProvider({ provider: "faux", api: "openai-responses", models: [{ id: "base" }, { id: "other" }], tokensPerSecond: 1_000_000 });
-  const extraction = fauxProvider({ provider: "faux", api: "openai-responses", models: [{ id: "base" }], tokensPerSecond: 1_000_000 });
+  const extraction = fauxProvider({ provider: "faux", api: "openai-responses", models: [{ id: "base" }, { id: "small" }], tokensPerSecond: 1_000_000 });
   const answerModels = createModels(), extractionModels = createModels(); answerModels.setProvider(answer.provider); extractionModels.setProvider(extraction.provider);
-  let calls = 0, currentRunId = "";
+  let calls = 0, currentRunId = ""; const extractorModel = mode === "override" ? "faux:small" : "faux:base";
   extraction.setResponses([context => {
     // Q1: production provider dispatch sees its own already-written running origin.
     const origin = JSON.parse(readFileSync(join(root, "artifacts", `${currentRunId}.summary.json`), "utf8"));
@@ -27,7 +27,7 @@ it.each(["continuous", "per-message", "isolated", "failure"])("uses configured b
     return fauxAssistantMessage(JSON.stringify({ entries: [{ kind: "constraint", value: "Keep the original approval rule.", status: "active", sources: ["s0"] }], covered: ["s0"] }));
   }]);
   const json = { runtime: { model: "faux:base", session: { mode: mode === "per-message" ? "per-message" : "continuous", root: "native",
-    isolateProactive: true, continuity: { upkeep: { enabled: true } } } }, providers: { faux: { type: "openai_compat", baseUrl: "http://127.0.0.1:1/v1" } },
+    isolateProactive: true, continuity: { upkeep: { enabled: true, ...(mode === "override" ? { extractionModel: "faux:small" } : {}) } } } }, providers: { faux: { type: "openai_compat", baseUrl: "http://127.0.0.1:1/v1" } },
     context: { identityPath: "IDENTITY.md" }, tools: { allowedTools: [] }, artifacts: { dir: "artifacts" } };
   const config = resolveJsonMonoAgentConfig({ json, cwd: root });
   const runtime = createMonoRuntime({ workspace: root }); close.push(() => runtime.disposeAllSessions!());
@@ -40,20 +40,28 @@ it.each(["continuous", "per-message", "isolated", "failure"])("uses configured b
     } }); close.push(() => harness.dispose!());
   answer.setResponses([() => fauxAssistantMessage("Fictional first answer.")]);
   await harness.run({ conversationId: "web:fictional", userMessage: "Never send without confirmation.", captureSpeakerKind: "human-turn", abortSignal: new AbortController().signal });
-  const events: Record<string, unknown>[] = []; let outgoing = "";
-  answer.setResponses([context => { outgoing = JSON.stringify(context); return mode === "failure" ? fauxAssistantMessage([], { stopReason: "error", errorMessage: "invalid_request_error: fictional failure" }) : fauxAssistantMessage("Fictional second answer."); }]);
-  const result = await harness.run({ conversationId: "web:fictional", userMessage: "CURRENT-INPUT", captureSpeakerKind: "human-turn", abortSignal: new AbortController().signal,
+  const events: Record<string, unknown>[] = []; let outgoing = ""; const controller = new AbortController();
+  answer.setResponses([context => { outgoing = JSON.stringify(context); if (mode === "cancelled") controller.abort("fictional cancellation"); return mode === "failure" ? fauxAssistantMessage([], { stopReason: "error", errorMessage: "invalid_request_error: fictional failure" }) : fauxAssistantMessage("Fictional second answer."); }]);
+  const result = await harness.run({ conversationId: "web:fictional", userMessage: "CURRENT-INPUT", captureSpeakerKind: "human-turn", abortSignal: controller.signal,
     metadata: mode === "isolated" ? { cron: { jobId: "fictional" } } : { source: "web", web: { model: "faux:other" } }, onEvent: event => events.push(event) });
   if (mode === "per-message" || mode === "isolated") {
     expect(calls).toBe(0); expect(events).toContainEqual(expect.objectContaining({ type: "continuity_upkeep", status: "skipped", reason: mode === "isolated" ? "isolated" : "per_message" }));
   } else {
     expect(calls).toBe(1);
     const receipt = events.filter(event => event.type === "continuity_upkeep"); expect(receipt).toHaveLength(1);
-    expect(receipt[0]).toMatchObject({ model: "faux:base", status: "valid", generationId: expect.any(String) });
+    expect(receipt[0]).toMatchObject({ model: extractorModel, status: "valid", generationId: expect.any(String) });
+    expect(result.metadata.summary?.upkeepAccounting).toHaveLength(1);
+    expect(result.metadata.summary?.upkeepAccounting?.[0]).toMatchObject({ phase: "result", model: extractorModel, operationId: receipt[0]!.operationId });
+    expect(events).toContainEqual(expect.objectContaining({ type: "continuity_upkeep_dispatch", accounting: expect.objectContaining({ phase: "dispatch", runId: result.metadata.runId }) }));
     expect(outgoing).toContain("### Continuity ledger");
     expect(outgoing.split("CURRENT-INPUT")).toHaveLength(2);
   }
-  if (mode === "failure") expect(result.failure).toBeDefined(); else expect(result.failure).toBeUndefined();
+  if (["failure", "cancelled"].includes(mode)) expect(result.failure).toBeDefined(); else expect(result.failure).toBeUndefined();
+  if (mode === "continuous") {
+    const nativeEvents: Record<string, unknown>[] = []; answer.setResponses([() => fauxAssistantMessage("Fictional resumed answer.")]);
+    await harness.run({ conversationId: "web:fictional", userMessage: "Continue.", captureSpeakerKind: "human-turn", metadata: { source: "web", web: { model: "faux:other" } }, abortSignal: new AbortController().signal, onEvent: event => nativeEvents.push(event) });
+    expect(calls).toBe(1); expect(nativeEvents.some(event => event.type === "continuity_upkeep_dispatch")).toBe(false);
+  }
 }, 20000);
 
 it.each([false, true])("binds configured OAuth and custom pricing without injected upkeep models (explicit resolver=%s)", async explicit => {

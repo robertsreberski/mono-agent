@@ -1,3 +1,4 @@
+import { upkeepAccounting } from "./accounting-outbox.js";
 import { fitsLedgerPrefix } from "./render-fit.js";
 import { randomUUID } from "node:crypto";
 import type { UpkeepAdmission, UpkeepReservation } from "./admission.js";
@@ -43,6 +44,7 @@ export function createLedgerSupplier(options: ConversationHarnessOptions, reques
         let published: string | undefined, localSkip: string | undefined, uncovered: number | undefined;
         let reservation: UpkeepReservation | undefined;
         let outcomeRecorded = false, barrierRequested = false;
+        let accounting: ReturnType<typeof upkeepAccounting> | undefined;
         try {
           if (history!.reader.continuitySuppressed(scope) || !history!.publishLedger || !history!.mutateUpkeep || !eligibility.withOwner) throw new Error("unavailable");
           if (!config.model) { localSkip = "model_unavailable"; return; }
@@ -94,6 +96,8 @@ export function createLedgerSupplier(options: ConversationHarnessOptions, reques
           });
           // No invocation until BOTH the durable acknowledgement and canonical
           // owner's post-check succeed. Lost waiters never speculate or retry.
+          accounting = upkeepAccounting(reservation);
+          emitSafe(emit, { type: "continuity_upkeep_dispatch", accounting });
           completion = await config.complete(selection.prompt, request.abortSignal, { operationId: reservation.operationId, inputTokens, maxEntries: selection.maxEntries });
           let generation: ReturnType<typeof validateLedgerOutput> | undefined, validationError: unknown;
           if (completion.receipt.status === "valid" && completion.text) {
@@ -107,6 +111,7 @@ export function createLedgerSupplier(options: ConversationHarnessOptions, reques
             await history!.mutateUpkeep!({ kind: "outcome", reservation: reservation!, receipt: completion!.receipt });
           });
           outcomeRecorded = true;
+          accounting = upkeepAccounting(reservation, completion.receipt);
           if (validationError) throw validationError;
           if (completion.receipt.status !== "valid" || !completion.text) {
             if (completion.receipt.providerInvoked && completion.receipt.status === "valid") await eligibility.withOwner(async () => { await history!.mutateUpkeep!({ kind: "reject", reservation: reservation! }); });
@@ -145,6 +150,7 @@ export function createLedgerSupplier(options: ConversationHarnessOptions, reques
           // This host callback records before the provider attempt can fail over;
           // it is deliberately not attached to an attempt's return value.
           emitSafe(emit, { type: "continuity_upkeep", ...(completion?.receipt ?? uncertain ?? { status: "skipped", reason: localSkip ?? "unavailable", providerInvoked: false }),
+            ...(barrierRequested ? { accounting: accounting ?? upkeepAccounting(reservation!) } : {}),
             ...(published ? { generationId: published } : {}), uncovered: uncovered ?? frozen?.generation.uncovered ?? 0 });
           if (completion?.receipt.outputOverrun) emitSafe(emit, { type: "upkeep_output_overrun", outputTokens: completion.receipt.outputTokens });
           if (gap) emitSafe(emit, { type: "runtime_warning", warning_kind: "continuity_upkeep_degraded", error_code: completion?.receipt.failure ?? completion?.receipt.reason ?? localSkip ?? "unavailable",

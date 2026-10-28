@@ -64,7 +64,7 @@ export async function exportUpkeepAccounting(value: unknown, options: {
   } finally { await unlink(temp).catch(error => { if (!isErrno(error, "ENOENT")) throw error; }); }
 }
 
-/** Separate non-aggregate evidence: inference summaries and session totals stay unchanged. */
+/** Separate non-aggregate evidence; inclusive totals are derived by readers, never added to raw inference. */
 export async function readUpkeepAccounting(artifactDir: string, runId: string, conversationId: string, candidates: readonly unknown[], warnings: string[]): Promise<readonly AgentUpkeepAccounting[]> {
   const values = new Map<string, AgentUpkeepAccounting>();
   const accept = (value: unknown) => {

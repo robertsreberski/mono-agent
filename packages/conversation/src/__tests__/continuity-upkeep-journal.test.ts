@@ -12,7 +12,7 @@ import { ToolHistoryWriter } from "../tool-history/writer.js";
 import { ToolHistoryReader } from "../tool-history/reader.js";
 import { mutateUpkeep, resetUpkeep, assertUpkeepPublication, type UpkeepAdmission, type UpkeepReservation, type UpkeepMutation } from "../continuity/admission.js";
 import { createDurableHistoryStore } from "../history/canonical/store.js";
-import { createLedgerSupplier } from "../continuity/upkeep.js";
+import { createLedgerSupplier, type UpkeepEligibility } from "../continuity/upkeep.js";
 import { selectLedgerSources, fitLedgerSelection, ledgerHash } from "../continuity/ledger.js";
 import { continuityGenerationId, continuityRecordId } from "../tool-history/continuity-storage.js";
 import { persistContinuityPurge } from "../tool-history/continuity-purge.js";
@@ -126,9 +126,9 @@ function harness(f: Awaited<ReturnType<typeof fixture>>, mutation = f.mutate, ow
     upkeep: { enabled: true, model: "fictional:base", recorderNamespace: resolve("/origin-recorder"), complete }, mutateUpkeep: mutation,
     publishLedger: f.writer.publishLedger.bind(f.writer) } } as unknown as ConversationHarnessOptions;
   const events: any[] = [];
-  return { complete, events, get fetches() { return fetches; }, prepare: async () => await createLedgerSupplier(options,
+  return { complete, events, get fetches() { return fetches; }, prepare: async (extra: Partial<UpkeepEligibility> = {}, reason = "cold_rebuild") => await createLedgerSupplier(options,
     { conversationId: "fictional", userMessage: "Current.", abortSignal: new AbortController().signal }, "origin-run").prepare(
-    { sessionsEnabled: true, isolated: false, ownedStore: true, primaryAttempt: true, maxTokens: 8000, withOwner: owner }, "cold_rebuild", e => events.push(e)) };
+    { sessionsEnabled: true, isolated: false, ownedStore: true, primaryAttempt: true, maxTokens: 8000, withOwner: owner, ...extra }, reason, e => events.push(e)) };
 }
 
 it("keeps disabled upkeep entirely outside durable admission", async () => {
@@ -154,7 +154,12 @@ it("records outcome and origin identity before publication and before the receip
   await h.prepare(); expect(h.fetches).toBe(1); expect(h.complete.mock.calls[0]![2]).toMatchObject({ inputTokens: 128000 });
   expect(calls).toEqual(["inspect", "claim", "reserve", "dispatch", "outcome", "settle", "reject"]);
   expect(f.db.prepare("SELECT id FROM continuity_ledger").all()).toHaveLength(1);
-  expect(h.events).toContainEqual(expect.objectContaining({ providerInvoked: true })); publish.mockRestore();
+  expect(h.events).toContainEqual(expect.objectContaining({ providerInvoked: true }));
+  const final = h.events.find(e => e.type === "continuity_upkeep" && e.accounting);
+  const durable = f.db.prepare("SELECT payload FROM continuity_upkeep_accounting WHERE phase='result'").get() as { payload: string };
+  expect(final.accounting).toEqual(JSON.parse(durable.payload)); // publication rejection must not rewrite immutable provider evidence
+  expect(h.events.find(e => e.type === "continuity_upkeep_dispatch").accounting.phase).toBe("dispatch");
+  publish.mockRestore();
 });
 
 it("does not invoke after a committed barrier fails the canonical owner post-check", async () => {
@@ -321,4 +326,16 @@ it.each(["relative", "/fictional/../other", ""])("rejects %s namespace as one-sh
   expect(f.db.prepare("SELECT state FROM continuity_upkeep_operations").all()).toEqual([]);
   expect(f.db.prepare("SELECT exported,error FROM continuity_upkeep_accounting").get()).toBeUndefined();
   expect(f.reader.hasPendingUpkeepAccounting()).toBe(false);
+});
+
+it.each([
+  [{ sessionsEnabled: false }, "cold_rebuild", "per_message"],
+  [{ isolated: true }, "cold_rebuild", "isolated"],
+  [{ primaryAttempt: false }, "cold_rebuild", "detached_attempt"],
+  [{}, "detached_context", "detached_attempt"],
+] as const)("never buys upkeep on excluded paths (%j, %s)", async (extra, reason, skipped) => {
+  const f = await fixture(), mutation = vi.fn(f.mutate), h = harness(f, mutation);
+  await h.prepare(extra, reason); expect(h.fetches).toBe(0); expect(mutation).not.toHaveBeenCalled();
+  expect(h.events).toContainEqual(expect.objectContaining({ type: "continuity_upkeep", status: "skipped", reason: skipped }));
+  expect(h.events.some(e => e.accounting)).toBe(false);
 });

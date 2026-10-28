@@ -23,6 +23,10 @@ Catalog responsibility: Runs a config-first agent host: loads mono-agent.config.
 
 Turn a folder's `mono-agent.config.json` into a running agent host:
 
+Doctor and auth discovery include enabled continuity upkeep's explicit
+`extractionModel`, otherwise `runtime.model`. Disabled upkeep requires no extra
+credentials, and doctor never purchases an extraction.
+
 - Aggregate the adapter-neutral core config and every channel section
   (`telegram`, `slack`, `webhook`, `openaiApi`, `cron`) plus configured
   external channel plugins from `channels.plugins[]`.

@@ -1,3 +1,5 @@
+import { runUpkeepAccounting, upkeepEventAccounting, withRecordedUpkeep } from "./upkeep-totals.js";
+import type { AgentUpkeepAccounting } from "@mono-agent/contracts";
 import { join, resolve } from "node:path";
 
 import { artifactDirForKind } from "./artifact-scope.js";
@@ -60,6 +62,8 @@ class JsonlRunRecorder implements RunRecorder {
   private readonly startedAt: number;
   private readonly startedAtIso: string;
   private readonly events: RuntimeEventLike[] = [];
+  private upkeepAccounting: readonly AgentUpkeepAccounting[] = [];
+  private upkeepAccountingPartial = false;
   private readonly userInput: string | undefined;
   private readonly systemPrompt: string | undefined;
   private readonly isolated: boolean | undefined;
@@ -116,6 +120,7 @@ class JsonlRunRecorder implements RunRecorder {
 
   onEvent(event: RuntimeEventLike): void {
     if (this.terminalPromise !== undefined) return;
+    this.upkeepAccounting = runUpkeepAccounting({ runId: this.runId, conversationId: this.conversationId, upkeepAccounting: this.upkeepAccounting }, upkeepEventAccounting(event), () => { this.upkeepAccountingPartial = true; });
     const redacted = redactArtifactValue(event, this.maxStringBytes);
     const timestamp = redacted.timestamp;
     const hasUsableTimestamp = typeof timestamp === "string" || typeof timestamp === "number";
@@ -335,7 +340,7 @@ class JsonlRunRecorder implements RunRecorder {
         ? {}
         : { capabilitiesUsed: redactArtifactValue(result.capabilitiesUsed, this.maxStringBytes) }),
     };
-    return summary;
+    return withRecordedUpkeep({ ...summary, ...(this.upkeepAccountingPartial || result.upkeepAccountingPartial ? { upkeepAccountingPartial: true as const } : {}) }, [...this.upkeepAccounting, ...(result.upkeepAccounting ?? [])]);
   }
 
   private artifactPaths(): readonly string[] {

@@ -363,10 +363,11 @@ affected state before rebuilding, after preserving any needed diagnostics.
 ## Measurement boundary
 
 See the [ledger benchmark arm](/runtime/continuity-benchmark/#progressive-ledger-boundaries).
-This slice provides host receipts, benchmark upkeep accounting and separate durable
-upkeep evidence, **not** inclusive answer/upkeep run or session totals, complete
-host receipt forwarding, default-on upkeep, or a general claim of paid quality
-improvement. Those require subsequent evaluation and implementation.
+Host receipts and durable upkeep evidence now support inclusive recorded and
+session totals, including failed/cancelled turns and failover. Web forwarding,
+running cards, per-model web slices and benchmark reconciliation remain separate
+follow-up work. Upkeep is still off by default; none of this is a claim of new
+paid quality improvement.
 
 Validation and publication failures carry an allowlisted, content-free `failure`
 code in the upkeep receipt and warning `error_code`: JSON/schema/coverage,
@@ -439,8 +440,31 @@ durable work for recovery before releasing ownership.
 `RunHistory` inspection surfaces applicable degraded artifact warnings too.
 Artifact retention removes companions with their origin run; late exports never
 recreate pruned runs. Readers expose this as
-separate, explicitly non-aggregate `upkeepAccounting` evidence. Existing run and
-session usage/cost totals are unchanged and remain inference-only.
+separate, explicitly non-aggregate `upkeepAccounting` evidence. Raw summary
+`usage`/`cost` remain inference-only. Additive `inclusiveCost` contains `totalUsd`,
+`knownCostUsd` and `partial`, combining the unchanged inference aggregate with
+upkeep once by operation ID, with result precedence. Unknown dispatched cost
+means a null total plus the known subtotal, never estimated or repriced at the
+answer model. Malformed evidence sets `upkeepAccountingPartial` and suppresses
+complete totals rather than implying free work.
+
+The host accumulates validated receipts outside runtime-attempt results. An
+auxiliary `continuity_upkeep_dispatch` event captures uncertainty before provider
+invocation; the existing final `continuity_upkeep` receipt retains its flat
+fields and carries the immutable journal accounting envelope. Both forward as
+validated, content-free `continuity_upkeep` telemetry. Failed/cancelled summaries
+and later companion recovery retain the originating run's attribution.
+
+Session `cost` is inclusive; `knownCostUsd` is its known subtotal. Numeric
+`tokIn`, `tokOut`, `tokCache`, `tokCacheRead` and `tokCacheWrite` are now known
+subtotals across inference and upkeep. Any unknown contributing counter sets
+`tokensPartial:true`; incomplete inputs omit `tokInputTotal` and `cacheHitRatio`.
+The separate upkeep counters remain nullable. Legacy inference-only metrics and
+web consumers keep their existing meaning pending web reconciliation.
+
+Doctor and auth discovery include enabled upkeep's effective model: the explicit
+`extractionModel`, otherwise `runtime.model`. Disabled upkeep adds no credential
+requirements. Discovery is read-only and never purchases an extraction.
 
 **Bootstrap marker lifetime:** quota pressure, source retention, ledger eviction,
 restart and model changes do not clear it. Only explicit user reset/delete of the

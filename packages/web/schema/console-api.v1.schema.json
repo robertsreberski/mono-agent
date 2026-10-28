@@ -3208,6 +3208,7 @@
             "primary",
             "fallback",
             "memory_llm",
+            "continuity_upkeep",
             "cron",
             "webhook"
           ]

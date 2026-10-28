@@ -1,3 +1,5 @@
+import type { AgentUpkeepAccounting } from "@mono-agent/contracts";
+
 export interface RuntimeEventLike {
   readonly type?: string;
   readonly [key: string]: unknown;
@@ -29,6 +31,10 @@ export interface RuntimeResultLike {
   readonly failoverHistory?: unknown;
   readonly usage?: unknown;
   readonly cost?: unknown;
+  readonly upkeepAccounting?: readonly AgentUpkeepAccounting[];
+  /** Malformed or conflicting evidence prevents a complete billing claim. */
+  readonly upkeepAccountingPartial?: true;
+  readonly inclusiveCost?: InclusiveRunCost;
   readonly durationMs?: number;
   readonly providerSessionId?: string | null;
   readonly isolated?: boolean;
@@ -119,6 +125,13 @@ export interface FailoverAttempt {
   readonly retryIndex?: number;
 }
 
+/** Additive inclusive billing; legacy cost/usage remain inference-only. */
+export interface InclusiveRunCost {
+  readonly totalUsd: number | null;
+  readonly knownCostUsd: number;
+  readonly partial: boolean;
+}
+
 export interface RunSummary {
   readonly turnDisposition?: "silent" | "visible";
   /** Empty only for a host-certified silent completion; not model-written prose. */
@@ -149,6 +162,10 @@ export interface RunSummary {
   readonly durationMs: number;
   readonly usage?: unknown;
   readonly cost?: unknown;
+  readonly upkeepAccounting?: readonly AgentUpkeepAccounting[];
+  /** Malformed or conflicting evidence prevents a complete billing claim. */
+  readonly upkeepAccountingPartial?: true;
+  readonly inclusiveCost?: InclusiveRunCost;
   readonly providerSessionId?: string | null;
   readonly isolated?: boolean;
   readonly eventCount: number;
@@ -310,6 +327,10 @@ export interface RecordedRunListItem {
   readonly updatedAt: string;
   readonly usage?: unknown;
   readonly cost?: unknown;
+  readonly upkeepAccounting?: readonly AgentUpkeepAccounting[];
+  /** Malformed or conflicting evidence prevents a complete billing claim. */
+  readonly upkeepAccountingPartial?: true;
+  readonly inclusiveCost?: InclusiveRunCost;
   readonly model?: string;
   readonly providerSessionId?: string | null;
   readonly isolated?: boolean;

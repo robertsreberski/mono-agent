@@ -37,6 +37,10 @@ export async function collectUsedProviderReferences(
       label: index === 0 ? "Primary model" : `Fallback ${index}`,
     },
   }));
+  if (config.runtime.session?.continuity?.upkeep?.enabled) {
+    const ref = config.runtime.session?.continuity.upkeep.extractionModel ?? config.runtime.model;
+    refs.push({ ref, usage: { kind: "continuity_upkeep", model: modelReferenceKey(ref), label: "Continuity upkeep" } });
+  }
   if (config.memory?.llm?.provider === "agent-host") {
     try {
       const ref = parseMonoRuntimeModelReference(config.memory.llm.model);

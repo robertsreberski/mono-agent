@@ -104,8 +104,23 @@ upkeep evidence. Immutable `<run>.upkeep.<operation-hash>.dispatch.json` and
 `.result.json` companions belong to the originating recorder namespace. Readers
 merge companions, accounting envelopes in events, and legacy summary views by
 operation ID; a result wins over dispatch uncertainty regardless of write order.
-Unknown counters and cost remain null. Existing summary usage/cost and session
-totals remain inference-only; this separate evidence is **not** included in them.
+Unknown counters and cost remain null. Raw summary `usage`/`cost` and existing
+inference metrics retain their meaning. New `inclusiveCost` combines that
+inference aggregate with upkeep once, exposing `totalUsd`, `knownCostUsd` and
+`partial`. Unknown cost means a null total plus the known subtotal. Invalid or
+conflicting evidence marks `upkeepAccountingPartial`, not measured zero.
+
+`withUpkeepAccounting` is the host receipt sink, independent of attempt results
+and injected recorder behavior. The JSONL recorder snapshots receipts on running
+and terminal boundaries. List/detail readers refine those snapshots from events
+and companions without rewriting the on-disk inference aggregate.
+
+`mapRunToSession` now returns inclusive `totals.cost`/`knownCostUsd`. Numeric token
+fields (`tokIn`, `tokOut`, `tokCache`, `tokCacheRead`, `tokCacheWrite`) are known
+subtotals; `tokensPartial:true` discloses any unknown counter, including legacy
+inference counters. `tokInputTotal` and `cacheHitRatio` are omitted for incomplete
+inputs. Nullable upkeep counters stay nullable. Web usage/running-card consumers
+and benchmark reconciliation remain follow-up work.
 
 Exports never create run summaries or namespaces. Retention deletes the origin
 summary before companions; exporters recheck the origin after writing, preventing
@@ -224,6 +239,7 @@ CacheUsageMetrics
 CompositeRunRecorderOptions
 DEFAULT_PRUNE_TRACE_SOURCES_OLDER_THAN_MS
 DescribeRunFailureKindInput
+InclusiveRunCost
 JsonlRunReaderOptions
 JsonlRunRecorderOptions
 KNOWN_RUN_FAILURE_KINDS
@@ -337,6 +353,7 @@ segmentTimelineTurns
 summarizeRecordedRunMetrics
 toolOutputRunDirectoryName
 truncateVisibleText
+withUpkeepAccounting
 ```
 
 **`@mono-agent/observability/event-timeline`**

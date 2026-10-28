@@ -192,7 +192,7 @@ async function executeHarnessRuntime(preparation: PreparationControl | undefined
 ): Promise<RuntimeResult> {
   const hostOnEvent = request.onEvent;
   const emitRuntimeEvent = (event: RuntimeEventLike): void => {
-    if (!["continuity_upkeep", "upkeep_output_overrun"].includes(String(event.type)) && !turnContinuityCollector.observeRuntimeEvent(event)) return;
+    if (!["continuity_upkeep", "continuity_upkeep_dispatch", "upkeep_output_overrun"].includes(String(event.type)) && !turnContinuityCollector.observeRuntimeEvent(event)) return;
     recorder.onEvent(event);
     hostOnEvent?.(event);
   };

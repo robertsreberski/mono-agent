@@ -34,8 +34,13 @@
 
 - Add separate, content-free continuity upkeep accounting with durable journal
   recovery, immutable per-operation companions and origin-run retention. Keep
-  cache categories and unknown usage distinct; existing run/session totals remain
+  cache categories and unknown usage distinct; raw run usage/cost fields remain
   inference-only and upkeep remains disabled by default.
+
+- Include continuity upkeep once in inclusive recorded and session costs, retaining
+  known subtotals and explicit partial tokens when usage is missing. Preserve
+  origin-run receipts through failures, cancellation and failover, and expose
+  enabled upkeep's effective extraction model in doctor and auth discovery.
 
 - Rank complete bounded history scans for opt-in continuity upkeep, greedily fit
   cited-only ledger deltas, and allow valid uncited evidence one remaining offer
