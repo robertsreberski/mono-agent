@@ -10,6 +10,8 @@ import { seeded } from "./continuity-holdout-registration.mjs";
 import { preparationIntegrity, verifyLedgerTreatment } from "./continuity-runner.mjs";
 import { benchmarkArgs, durable, need } from "./continuity-holdout-workflow.mjs";
 
+// Direct ledger import and its complete local dist dependency closure.
+export const LEDGER_DIST_MODULES = ["ledger", "ranking", "span-geometry", "render-fit", "ledger-error"].map(name => `packages/conversation/dist/continuity/${name}.js`);
 export function representatives(conversations, seed) {
   const next = seeded(seed), families = [...new Set(conversations.map(c => c.family))].sort();
   return families.map(family => {
@@ -73,7 +75,7 @@ export function checkLedgerView(generation, records, renderLedger) {
   return { rendered, derivedLines: lines.length };
 }
 async function sourceRenderProof(root, unit) {
-  const { spanKey, ledgerHash, renderLedger } = await import(pathToFileURL(join(CHECKOUT, "packages/conversation/dist/continuity/ledger.js")).href);
+  const { spanKey, ledgerHash, renderLedger } = await import(pathToFileURL(join(CHECKOUT, LEDGER_DIST_MODULES[0])).href);
   const path = join(root, "work", `cp-${unit.traceId}_ledger-continuity-ledger-cold-r1`, "work/history/tool-history/tool-lifecycles.sqlite");
   const db = new DatabaseSync(path, { readOnly: true });
   try {

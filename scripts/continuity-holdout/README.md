@@ -243,14 +243,24 @@ node scripts/continuity-holdout/workflow.mjs audit-export "${ARGS[@]}" \
 ```
 
 The exporter revalidates the exact join against reconciled controllers and rehashes
-all archived bytes. It checks every ledger checkpoint publication/captured render,
-probe render count/order, final native SQLite ledger, host source and tool binding,
+all archived bytes. It checks every ledger checkpoint publication/reconstructed
+captured-generation render, the **probe ledger entry count** (not a bound probe-render
+hash), final native SQLite ledger, host source and tool binding,
 citation geometry, identifier contexts, derived markers, and inherited entry
 preservation. Native receipts corroborate relabel/downgrade and D6 counters.
 Missing/unreadable/unbindable material is explicit integrity failure, never skipped.
 Deduplication uses `(corpus, conversation, repeat, entry.id)` across publications;
 same-ID content changes fail, and paraphrases or different repeats never merge.
 Counters cover validated checkpoints; incomplete populations cannot certify.
+A failed trial without any boundary observation increments `probeViewsUnobserved`
+instead of inventing a probe view. Every other status, and any present boundary,
+still requires valid evidence. Mechanical population completeness is independent
+of controller/statistical completeness: this does not relax missing-slot semantics
+or permit study acceptance with incomplete controllers. New publications require
+the host receipt's `generationId` (emitted after successful publication in
+`packages/conversation/src/continuity/upkeep.ts` and retained by the runner).
+Archived rollback journals are copied with the database into scratch; only that
+isolated copy opens read-write for SQLite recovery. Archived originals stay unchanged.
 
 Give each independent auditor **only** `public/export.json` and `public/rubric.json`.
 Keep the entire `private/` directory, controller roots, join and probe outcomes
@@ -262,7 +272,8 @@ Deterministic keyed shuffle/opaque IDs hide source order; only a seed commitment
 is public. Giving reviewers the seed could reveal corpus-sorted positions.
 
 Each public item supplies entry kind/value/status/normalization markers and **full
-cited spans**, retaining owner/tool evidence but not corpus/model/repeat/checkpoint
+cited spans**, retaining owner/tool evidence and item-relative `hostOrder` dense
+ranks (1..k, with ties), never absolute host ordinals or corpus/model/repeat/checkpoint
 identity, paths or probe outcomes. True arm blinding is impossible because ledger
 structure reveals treatment; the header discloses this. Story content may itself
 be recognizable, so author/tuner isolation and no outcome access remain human
@@ -310,8 +321,11 @@ Without adjudication this writes only `disagreements.json` and `status.json`, no
 an identity map or certificate. Share these disagreements, both reviewer files
 and the public packet with the outcome-blind adjudicator; do not share private
 material. The adjudication binds **exact raw byte hashes** of both auditor files,
-the export/rubric hashes, and exactly the disagreeing IDs. Each item has all six
-booleans and rationale as above. Even zero disagreements requires this envelope
+the export/rubric hashes, and exactly the disagreeing IDs. Each item contains `id`,
+`rationale` and **only the disputed boolean flags**; agreed flags are preserved.
+Including an undisputed flag, even with its agreed value, is rejected. For example,
+a label-only dispute uses `{"id":"OPAQUE_ITEM_ID","label":true,"rationale":"Evidence-specific resolution."}`.
+Even zero disagreements requires this envelope
 with `items: []` before unmasking:
 
 ```json
@@ -341,7 +355,9 @@ node scripts/continuity-holdout/workflow.mjs report "${ARGS[@]}" \
 After validated adjudication, import emits private `unmasked.json` and a certificate,
 plus disagreements/status. Certification requires a complete mechanical population,
 both complete independent responses and adjudication bound to this exact join.
-Totals alone never certify. The unchanged registered gates use unique-entry rates
+Totals alone never certify. Once both auditor files validate, their agreed lower
+bounds survive invalid adjudication/certificate evidence; established failures cannot
+be erased by breaking a later file. The unchanged registered gates use unique-entry rates
 (label ≤10/363, context ≤5/363) and hard zero for falsely superseded current facts
 and binding errors. A numerical pass remains inconclusive without certification;
 established statistical or audit failures remain failures.
@@ -356,7 +372,9 @@ identical output bytes, including with roots supplied in a different order.
 **Raw-file hashes are bound transitively: report → archive-manifest SHA → per-file
 SHA.** The artifact section lists each controller and `shards/N/chunks/M/archive.json`
 SHA, freeze/registration/spec/rubric, join/export/human/import artifacts and tooling
-revision. Report generation reruns `verifyArchive` on every listed chunk; changing
+revision. SHA-256 inputs also record the imported conversation dist ledger module
+and its local dependency closure (ranking, span geometry, render fit and ledger error);
+rebuild before running so stale compiled bytes remain visible. Report generation reruns `verifyArchive` on every listed chunk; changing
 one raw file invalidates it even when its manifest is unchanged. Verification is
 chunk-by-chunk, without retaining per-file maps across chunks or duplicating a
 multi-million-row raw inventory. Retain those original archive manifests and roots.

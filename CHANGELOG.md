@@ -4,7 +4,8 @@
 
 - Add provenance-verified holdout auditing, blinded independent reviewer imports
   and deterministic final reports. Require complete hash-bound adjudication for
-  acceptance; handwritten totals and standalone aggregation cannot certify.
+  acceptance; preserve agreed findings and limit adjudication to disputed flags.
+  Handwritten totals and standalone aggregation cannot certify.
 
 - Add root-bound holdout shard authorization, interrupted-upkeep accounting,
   validated joins and provider-free offline proof tooling.

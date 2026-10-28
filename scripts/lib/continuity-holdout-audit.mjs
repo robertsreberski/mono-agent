@@ -5,10 +5,10 @@ import { pathToFileURL } from "node:url";
 import { CHECKOUT, externalFile, externalDirectory, regularFile, jsonBytes, sha256 } from "./continuity-holdout-files.mjs";
 import { createHmac, randomBytes } from "node:crypto";
 import { digest } from "./continuity-dataset.mjs";
-import { checkLedgerView } from "./continuity-holdout-proof.mjs";
+import { checkLedgerView, LEDGER_DIST_MODULES } from "./continuity-holdout-proof.mjs";
 import { need, durable, joinShards, chunkDirectory, verifyArchive, chunkUnits } from "./continuity-holdout-workflow.mjs";
 
-const ledgerModule = () => import(pathToFileURL(join(CHECKOUT, "packages/conversation/dist/continuity/ledger.js")).href);
+const ledgerModule = () => import(pathToFileURL(join(CHECKOUT, LEDGER_DIST_MODULES[0])).href);
 export const AUDIT_FLAGS = ["label", "context", "chronology", "falseSupersession", "binding", "historicalCaution"];
 export async function auditRubric(context) {
   const bytes = await regularFile(join(CHECKOUT, "scripts/continuity-holdout/audit-rubric.json"));
@@ -31,8 +31,9 @@ async function snapshot(root, verified, name, scratch, fn) {
   const directory = await mkdtemp(join(scratch, "snapshot-")), path = join(directory, "store.sqlite"); let db;
   try {
     await writeFile(path, await material(root, verified, name), { mode: 0o600 });
-    for (const suffix of ["-wal", "-shm"]) if (Object.hasOwn(verified.files, name + suffix)) await writeFile(path + suffix, await material(root, verified, name + suffix), { mode: 0o600 });
-    db = new DatabaseSync(path, { readOnly: true }); return await fn(db);
+    for (const suffix of ["-wal", "-shm", "-journal"]) if (Object.hasOwn(verified.files, name + suffix)) await writeFile(path + suffix, await material(root, verified, name + suffix), { mode: 0o600 });
+    db = new DatabaseSync(path, { readOnly: !Object.hasOwn(verified.files, name + "-journal") }); return await fn(db);
+  } catch (e) { if (/^(audit_|offline_)/u.test(e.message)) throw e; throw new Error("audit_material_unreadable");
   } finally { db?.close(); await rm(directory, { recursive: true, force: true }); }
 }
 function nativeRecords(db, scope, ledgerHash) {
@@ -69,7 +70,7 @@ export async function checkpointAudit(root, verified, unit, scratch, ledger) {
   need(scope && unit.checkpoint.upkeep?.preparations?.length === 3, "audit_checkpoint_missing");
   return snapshot(root, verified, prefix, scratch, async db => {
     const records = nativeRecords(db, scope, ledger.ledgerHash), publications = new Map(), items = [], captures = [];
-    const counters = { publications: 0, captureViews: 0, probeViews: 0, derivedLines: 0, receiptRelabels: 0, receiptDowngrades: 0, d6InputOverruns: 0, d6OutputOverruns: 0 };
+    const counters = { publications: 0, captureViews: 0, probeViews: 0, probeViewsUnobserved: 0, derivedLines: 0, receiptRelabels: 0, receiptDowngrades: 0, d6InputOverruns: 0, d6OutputOverruns: 0 };
     let latest = null;
     for (const [index, step] of unit.checkpoint.upkeep.preparations.entries()) {
       const name = `upkeep-output/r${unit.repeat}-${unit.traceId}-p${index + 1}.json`, capture = JSON.parse(await material(root, verified, name)); captures.push(name);
@@ -92,6 +93,7 @@ export async function checkpointAudit(root, verified, unit, scratch, ledger) {
       need(!receipt?.generationId || receipt.generationId === g.id, "audit_publication_binding");
       const evidence = generationEvidence(g, records, scope, ledger); counters.captureViews++; counters.derivedLines += evidence.derivedLines;
       if (!publications.has(g.id)) {
+        need(receipt?.generationId === g.id, "audit_publication_binding");
         need(g.parent === (latest?.id ?? null) && (!latest || latest.entries.every(old => g.entries.some(e => digest(e) === digest(old)))), "audit_ancestry_binding");
         publications.set(g.id, g); counters.publications++; items.push(...evidence.items);
       } else need(digest(publications.get(g.id)) === digest(g), "audit_generation_changed");
@@ -100,7 +102,7 @@ export async function checkpointAudit(root, verified, unit, scratch, ledger) {
     const native = db.prepare("SELECT payload,payload_sha256 FROM continuity_ledger WHERE conversation_id=? AND logical_id=?").get(scope, scope);
     need(latest ? native && sha256(native.payload) === native.payload_sha256 && digest(ledger.normalizeLedger(JSON.parse(native.payload))) === digest(latest) : !native, "audit_latest_binding");
     for (const trial of unit.trials) {
-      if (trial.status === "not_started") continue;
+      if (trial.status === "failed" && trial.boundary == null) { counters.probeViewsUnobserved++; continue; }
       const observed = trial.boundary?.observed;
       need(observed && !(observed.upkeep ?? []).some(r => r.providerInvoked || r.operationId) && !(observed.upkeepScans ?? []).length, "audit_probe_upkeep");
       need(Array.isArray(observed.continuityPacks) && observed.continuityPacks.length > 0
@@ -112,7 +114,7 @@ export async function checkpointAudit(root, verified, unit, scratch, ledger) {
 }
 export async function mechanicalAudit(context, roots, joined, scratch) {
   await mkdir(scratch, { recursive: true, mode: 0o700 }); const ledger = await ledgerModule();
-  const population = new Map(), failures = [], counters = { publications: 0, captureViews: 0, probeViews: 0, derivedLines: 0,
+  const population = new Map(), failures = [], counters = { publications: 0, captureViews: 0, probeViews: 0, probeViewsUnobserved: 0, derivedLines: 0,
     receiptRelabels: 0, receiptDowngrades: 0, d6InputOverruns: 0, d6OutputOverruns: 0 }, checkpoints = new Set();
   for (const root of roots) {
     const controllerBytes = await externalFile(join(root, "controller.json")), state = JSON.parse(controllerBytes);
@@ -142,7 +144,7 @@ export async function mechanicalAudit(context, roots, joined, scratch) {
   const expected = context.registration.conversations.length * context.registration.statisticalSpec.design.repeats;
   if (checkpoints.size !== expected) failures.push({ location: "population", code: "audit_checkpoints_missing" });
   const items = [...population].sort(([a], [b]) => a.localeCompare(b, "en")).map(([, item]) => item);
-  return { schema: "holdout-mechanical-audit-v1", complete: joined.controllerComplete && failures.length === 0,
+  return { schema: "holdout-mechanical-audit-v1", complete: failures.length === 0,
     expectedCheckpoints: expected, checkedCheckpoints: checkpoints.size, published: items.length, items,
     counters: { ...counters, uniqueRelabelled: items.filter(i => i.entry.decisionRelabelled).length, uniqueDowngraded: items.filter(i => i.entry.outcomeUnverified).length },
     failures: failures.sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b), "en")) };
@@ -154,8 +156,11 @@ export function blindExport(mechanical, joinSha256, rubricSha256, seed) {
   const mapping = mechanical.items.map((item, i) => ({ id: keyed(`item:${joinSha256}:${i}`).toString("hex").slice(0, 24), item }));
   need(new Set(mapping.map(m => m.id)).size === mapping.length, "audit_blind_collision");
   for (let i = mapping.length - 1; i > 0; i--) { const j = Math.floor(next() * (i + 1)); [mapping[i], mapping[j]] = [mapping[j], mapping[i]]; }
-  const items = mapping.map(({ id, item }) => ({ id, entry: Object.fromEntries(["kind", "value", "status", "decisionRelabelled", "outcomeUnverified"].filter(k => item.entry[k] !== undefined).map(k => [k, item.entry[k]])),
-    evidence: item.sources.map((s, i) => ({ citation: i + 1, owner: s.owner, kind: s.kind, ...(s.tool ? { tool: s.tool } : {}), text: s.text })) }));
+  const items = mapping.map(({ id, item }) => {
+    const ordinals = [...new Set(item.sources.map(s => s.ordinal))].sort((a, b) => a - b);
+    return { id, entry: Object.fromEntries(["kind", "value", "status", "decisionRelabelled", "outcomeUnverified"].filter(k => item.entry[k] !== undefined).map(k => [k, item.entry[k]])),
+    evidence: item.sources.map((s, i) => ({ citation: i + 1, hostOrder: ordinals.indexOf(s.ordinal) + 1, owner: s.owner, kind: s.kind, ...(s.tool ? { tool: s.tool } : {}), text: s.text })) };
+  });
   const payload = { schema: "holdout-blind-export-v1", orderSeedSha256: sha256(Buffer.from(seed, "hex")), joinSha256, rubricSha256, populationComplete: mechanical.complete,
     disclosure: "True arm blinding is impossible: ledger structure identifies the treatment. Corpus, model, repeat, checkpoint, paths and probe outcomes are masked.", items };
   return { exported: { ...payload, exportSha256: sha256(jsonBytes(payload)) }, mapping };

@@ -1,7 +1,9 @@
 import { beforeAll, afterAll, expect, it } from "vitest";
 import { mkdir, mkdtemp, realpath, readFile, writeFile, rm, cp } from "node:fs/promises";
 import { join } from "node:path";
-import { spawnSync } from "node:child_process";
+import { fork, spawnSync } from "node:child_process";
+import { DatabaseSync } from "node:sqlite";
+import { once } from "node:events";
 import { pathToFileURL } from "node:url";
 import { syntheticContext } from "./fixtures/holdout-synthetic.mjs";
 import { CHECKOUT, jsonBytes, sha256 } from "../lib/continuity-holdout-files.mjs";
@@ -15,6 +17,23 @@ const auditorDoc = id => ({ schema: "holdout-auditor-v1", auditorId: id, exportS
   attestations: { notAuthor: true, notTuner: true, independentReview: true, noOutcomeAccess: true }, items: exported.items.map(i => response(i.id)) });
 const adjDoc = async items => ({ schema: "holdout-adjudication-v1", blinded: true, adjudicatorId: "synthetic-custodian", exportSha256: exported.exportSha256,
   rubricSha256: exported.rubricSha256, auditorASha256: sha256(await readFile(paths.auditorA)), auditorBSha256: sha256(await readFile(paths.auditorB)), items });
+async function changedChunk(label, change, joinMaterial = true) {
+  const copy = join(directory, label); await cp(roots[0], copy, { recursive: true });
+  const state = await parse(join(copy, "controller.json")), chunk = join(copy, "chunks/1"), traceId = state.chunks[0].traceId;
+  const unitPath = join(chunk, "units", `r1-${traceId}-continuity-ledger-cold.json`), unit = await parse(unitPath);
+  const store = join(chunk, `work/cp-${traceId}_ledger-continuity-ledger-cold-r1/work/history/tool-history/tool-lifecycles.sqlite`);
+  await change({ chunk, unit, store }); await writeFile(unitPath, jsonBytes(unit));
+  await rm(join(chunk, "archive.json")); state.chunks[0].archiveSha256 = await workflow.archiveChunk(chunk);
+  const verified = await workflow.verifyArchive(chunk, state.chunks[0].archiveSha256);
+  if (!joinMaterial) return { chunk, unit, store, verified };
+  const bundle = context.plans.find(b => b.plan.holdout.shard === state.shard), units = await workflow.chunkUnits(chunk, bundle.plan, traceId, verified);
+  state.chunks[0].accounting = controller.accountUnits(units, bundle);
+  state.chunks[0].journalAccounting = await controller.accountJournals(chunk, traceId, bundle, units);
+  state.spend = controller.spendOf(state.chunks, bundle.plan.arms.length * bundle.plan.repeats);
+  await writeFile(join(copy, "controller.json"), jsonBytes(state));
+  const changedRoots = [copy, roots[1]], joined = await workflow.joinShards(context, changedRoots, null);
+  return { chunk, unit, store, changedRoots, joined, mechanical: await audit.mechanicalAudit(context, changedRoots, joined, join(directory, "verify")) };
+}
 beforeAll(async () => {
   await mkdir(join(CHECKOUT, ".worklab-tmp"), { recursive: true }); directory = await realpath(await mkdtemp(join(CHECKOUT, ".worklab-tmp/holdout-audit-")));
   ({ repo, inputs, context, workflow, controller } = await syntheticContext(directory));
@@ -41,7 +60,7 @@ afterAll(async () => { if (directory) await rm(directory, { recursive: true, for
 it("runs join, mechanical audit, blinded import and report at one revision without a provider", async () => {
   const mechanical = await parse(join(paths.directory, "private/mechanical.json")), certificate = await parse(certificatePath);
   expect(mechanical.complete).toBe(true); expect(mechanical.checkedCheckpoints).toBe(8); expect(mechanical.published).toBe(24);
-  expect(mechanical.counters).toMatchObject({ publications: 16, captureViews: 24, probeViews: 120, derivedLines: 400,
+  expect(mechanical.counters).toMatchObject({ publications: 16, captureViews: 24, probeViews: 120, probeViewsUnobserved: 0, derivedLines: 400,
     receiptRelabels: 8, receiptDowngrades: 8, uniqueRelabelled: 8, uniqueDowngraded: 8, d6OutputOverruns: 8 });
   expect(certificate.totals).toMatchObject({ complete: true, published: 24, audited: 24, labelFindings: 0, contextFindings: 0 });
   const result = await report.finalReport(context, roots, joinedPath, { ...paths, certificate: certificatePath }, join(directory, "final"));
@@ -115,7 +134,7 @@ it("reports disagreements without unmasking, and requires adjudication even for 
   const missing = { ...paths }; delete missing.adjudication;
   const out = join(directory, "unresolved-import"); expect((await auditors.importAudit(context, roots, joinedPath, paths.directory, missing, out)).phase).toBe("awaiting-adjudication");
   await expect(readFile(join(out, "unmasked.json"))).rejects.toMatchObject({ code: "ENOENT" }); await expect(readFile(join(out, "certificate.json"))).rejects.toMatchObject({ code: "ENOENT" });
-  const adj = { ...(await adjDoc([response(a.items[0].id, { label: true })])), auditorASha256: "a", auditorBSha256: "b" };
+  const adj = { ...(await adjDoc([{ id: a.items[0].id, label: true, rationale: "Synthetic disputed-label resolution." }])), auditorASha256: "a", auditorBSha256: "b" };
   const resolved = auditors.resolveAuditors(collection, a, b, "a", "b", adj); expect(resolved.totals.labelFindings).toBe(1); expect(resolved.unmasked).toHaveLength(24);
   for (const items of [[], [response("extra")], [response(a.items[0].id), response(a.items[0].id)]]) expect(() => auditors.resolveAuditors(collection, a, b, "a", "b", { ...adj, items })).toThrow();
   expect(() => auditors.resolveAuditors(collection, a, b, "wrong", "b", adj)).toThrow("audit_adjudication_binding");
@@ -124,6 +143,79 @@ it("preserves agreed hard violations before adjudication without revealing ident
   const a = auditorDoc("auditor-one"), b = auditorDoc("auditor-two"); a.items[0].binding = true; b.items[0].binding = true; a.items[1].context = true;
   const unresolved = auditors.resolveAuditors(collection, a, b, "a", "b", null);
   expect(unresolved.lowerBounds.bindingErrors).toBe(1); expect(unresolved.lowerBounds.contextFindings).toBe(0); expect(unresolved).not.toHaveProperty("unmasked");
+});
+it("retains two validated auditors' agreed failures after invalid adjudication or certificate", async () => {
+  const a = auditorDoc("auditor-one"), b = auditorDoc("auditor-two"); a.items[0].binding = b.items[0].binding = true;
+  const local = { ...paths, auditorA: join(inputs, "failure-a.json"), auditorB: join(inputs, "failure-b.json"), adjudication: join(inputs, "failure-adj.json"), certificate: certificatePath };
+  await writeFile(local.auditorA, jsonBytes(a)); await writeFile(local.auditorB, jsonBytes(b));
+  const adj = { ...(await adjDoc([])), auditorASha256: sha256(await readFile(local.auditorA)), auditorBSha256: sha256(await readFile(local.auditorB)) };
+  for (const kind of ["hash", "unreadable", "certificate-missing", "certificate-invalid"]) {
+    await writeFile(local.adjudication, kind === "unreadable" ? "{" : jsonBytes({ ...adj, ...(kind === "hash" ? { exportSha256: "bad" } : {}) }));
+    const output = join(directory, `established-fail-${kind}`), options = { ...local };
+    if (kind === "certificate-missing") options.certificate = join(inputs, "missing-certificate.json");
+    if (kind === "certificate-invalid") { options.certificate = join(inputs, "invalid-certificate.json"); await writeFile(options.certificate, "{"); }
+    const result = await report.finalReport(context, roots, joinedPath, options, output);
+    expect(result.certified).toBe(false); expect(result.decision.status).toBe("fail");
+    expect((await parse(join(output, "report.json"))).audit.totals.bindingErrors).toBe(1);
+  }
+});
+it("adjudicates only disputed flags and cannot clear or restate agreed flags", async () => {
+  const a = auditorDoc("auditor-one"), b = auditorDoc("auditor-two"); a.items[0].binding = b.items[0].binding = true; a.items[0].label = true;
+  const resolution = { id: a.items[0].id, label: false, rationale: "Synthetic disputed-label resolution." };
+  const adj = { ...(await adjDoc([resolution])), auditorASha256: "a", auditorBSha256: "b" };
+  const resolved = auditors.resolveAuditors(collection, a, b, "a", "b", adj);
+  expect(resolved.totals.bindingErrors).toBe(1); expect(resolved.totals.labelFindings).toBe(0);
+  expect(resolved.unmasked.find(r => r.id === resolution.id).judgment.binding).toBe(true);
+  for (const extra of [{ binding: false }, { binding: true }, { context: false }]) expect(() => auditors.resolveAuditors(collection, a, b, "a", "b", { ...adj, items: [{ ...resolution, ...extra }] })).toThrow("audit_response_invalid");
+});
+it("exports item-relative dense host order with ties, not absolute ordinals", () => {
+  const mechanical = structuredClone(collection.mechanical); mechanical.items = [mechanical.items[0]];
+  const item = mechanical.items[0], source = item.sources[0]; item.sources = [{ ...source, ordinal: 900 }, { ...source, ordinal: 100 }, { ...source, ordinal: 900 }];
+  const first = audit.blindExport(mechanical, collection.joined.sha256, exported.rubricSha256, orderSeed).exported;
+  expect(first.items[0].evidence.map(e => e.hostOrder)).toEqual([2, 1, 2]); expect(JSON.stringify(first.items)).not.toMatch(/ordinal|900|100/u);
+  item.sources[0].ordinal = 50;
+  const second = audit.blindExport(mechanical, collection.joined.sha256, exported.rubricSha256, orderSeed).exported;
+  expect(second.items[0].evidence.map(e => e.hostOrder)).toEqual([1, 2, 3]); expect(second.exportSha256).not.toBe(first.exportSha256);
+});
+it.each(["missing", "altered", "same-entry-changed", "publication-receipt-missing"])("rejects %s native audit material", async kind => {
+  const result = await changedChunk(`native-${kind}`, async ({ chunk, unit, store }) => {
+    if (kind === "missing") await rm(store);
+    if (kind === "altered") { const db = new DatabaseSync(store); try { db.exec("UPDATE continuity_ledger SET payload='{}'"); } finally { db.close(); } }
+    // Preserve the producer span-key order: the manifest hashes JSON.stringify(spans).
+    if (kind === "same-entry-changed") { const path = join(chunk, "upkeep-output", `r1-${unit.traceId}-p2.json`), capture = await parse(path); expect(capture.ledger.entries[0].id).toBe("entry-a"); capture.ledger.entries[0].value = "Changed request."; await writeFile(path, JSON.stringify(capture)); }
+    if (kind === "publication-receipt-missing") delete unit.checkpoint.upkeep.preparations[0].receipt.generationId;
+  });
+  const code = { missing: "audit_material_missing", altered: "audit_latest_binding", "same-entry-changed": "audit_generation_changed", "publication-receipt-missing": "audit_publication_binding" }[kind];
+  expect(result.mechanical.complete).toBe(false); expect(result.mechanical.failures.map(f => f.code)).toContain(code);
+});
+it("recovers an archived hot rollback journal only in the scratch snapshot", async () => {
+  let hotHash, journalHash;
+  const result = await changedChunk("native-hot-journal", async ({ store }) => {
+    const before = sha256(await readFile(store));
+    const child = fork(new URL("./fixtures/holdout-hot-journal.mjs", import.meta.url), [store], { stdio: ["ignore", "ignore", "ignore", "ipc"], execArgv: [], env: {} });
+    try { await new Promise((resolve, reject) => { child.once("message", resolve); child.once("error", reject); child.once("exit", code => reject(new Error(`hot_journal_fixture_exit:${code}`))); }); }
+    finally { const exited = once(child, "exit"); child.kill("SIGKILL"); await exited; }
+    hotHash = sha256(await readFile(store)); journalHash = sha256(await readFile(store + "-journal")); expect(hotHash).not.toBe(before);
+    expect((await readFile(store + "-journal")).subarray(0, 8).toString("hex")).toBe("d9d505f920a163d7");
+  }, false);
+  const ledger = await import("../../packages/conversation/dist/continuity/ledger.js");
+  const checked = await audit.checkpointAudit(result.chunk, result.verified, result.unit, join(directory, "verify"), ledger);
+  expect(checked.counters.publications).toBe(2); expect(checked.counters.probeViews).toBe(15);
+  expect(sha256(await readFile(result.store))).toBe(hotHash); expect(sha256(await readFile(result.store + "-journal"))).toBe(journalHash);
+});
+it("counts unobserved failed probes without inventing views or altering statistics", async () => {
+  const result = await changedChunk("unobserved-failed", async ({ unit }) => { unit.trials[0].status = "failed"; unit.trials[0].boundary = null; });
+  expect(result.mechanical.complete).toBe(true); expect(result.mechanical.counters.probeViewsUnobserved).toBe(1); expect(result.mechanical.counters.probeViews).toBe(119);
+  expect(result.joined.controllerComplete).toBe(false); expect(result.joined.statistics.decision.status).not.toBe("pass");
+  const joinedDir = join(directory, "unobserved-join"), exportedDir = join(directory, "unobserved-export"), reportedDir = join(directory, "unobserved-report");
+  await workflow.joinShards(context, result.changedRoots, joinedDir); const path = join(joinedDir, "joined.json");
+  await audit.exportAudit(context, result.changedRoots, path, exportedDir, orderSeed);
+  expect((await report.finalReport(context, result.changedRoots, path, { directory: exportedDir }, reportedDir)).decision.status).not.toBe("pass");
+  expect((await parse(join(reportedDir, "report.json"))).audit.counters.probeViewsUnobserved).toBe(1);
+});
+it.each(["failed-with-boundary", "completed", "started", "not_started"])("fails closed for unverified %s probes", async kind => {
+  const result = await changedChunk(`unobserved-${kind}`, async ({ unit }) => { unit.trials[0].status = kind === "failed-with-boundary" ? "failed" : kind; unit.trials[0].boundary = kind === "failed-with-boundary" ? {} : null; });
+  expect(result.mechanical.complete).toBe(false); expect(result.mechanical.failures.some(f => f.code === "audit_probe_upkeep")).toBe(true);
 });
 it("rejects rewritten export or private mapping evidence", async () => {
   const copy = join(directory, "bad-export"); await cp(paths.directory, copy, { recursive: true });
@@ -177,8 +269,8 @@ it("rejects edited certificate totals or unmasked import outputs", async () => {
 });
 it("rejects non-UTF8 citation geometry instead of exporting replacement text", async () => {
   const { checkLedgerView } = await import("../lib/continuity-holdout-proof.mjs"), { renderLedger } = await import("../../packages/conversation/dist/continuity/ledger.js");
-  const text = "🙂 Synthetic source.", record = { recordId: "r", ordinal: 1, text, sha256: sha256(text), kind: "owner", provenance: "host-owner", inputId: "i", source: { attestation: { inputId: "i" } } };
-  const span = { id: "s", recordId: "r", ordinal: 1, sha256: record.sha256, start: 1, end: 4, digest: sha256(Buffer.from(text).subarray(1, 4)), owner: true };
+  const text = "🙂 Synthetic source.", record = { recordId: "r", ordinal: 1, text, sha256: sha256(text), kind: "tool", provenance: "tool", source: {} };
+  const span = { id: "s", recordId: "r", ordinal: 1, sha256: record.sha256, start: 1, end: 4, digest: sha256(Buffer.from(text).subarray(1, 4)), owner: false };
   expect(() => checkLedgerView({ spans: [span], entries: [{ id: "e", kind: "artifact", value: "Synthetic", status: "unknown", sources: ["s"] }] }, [record], renderLedger)).toThrow("offline_host_citation");
 });
 it("refuses a report after one raw archived file changes, even with an unchanged manifest", async () => {
@@ -200,6 +292,9 @@ it("writes byte-identical reports with detached hashes and no local path or chan
   expect(Object.keys((await parse(archivePath)).files).some(k => k.endsWith("tool-lifecycles.sqlite"))).toBe(true);
   expect(Object.keys(manifest.inputs).some(k => k.includes("/work/"))).toBe(false);
   expect(manifest.toolingRevision).toBe(context.registration.codeRevision);
+  for (const name of ["ledger", "ranking", "span-geometry", "render-fit", "ledger-error"]) {
+    const path = `packages/conversation/dist/continuity/${name}.js`; expect(manifest.inputs[`runtime/${path}`]).toBe(sha256(await readFile(join(repo, path))));
+  }
   expect(manifest.inputs["audit-import/unmasked.json"]).toBe(sha256(await readFile(join(directory, "imported/unmasked.json"))));
   expect(JSON.stringify(manifest)).not.toContain(directory); expect(JSON.stringify(manifest)).not.toContain("timestamp");
 });

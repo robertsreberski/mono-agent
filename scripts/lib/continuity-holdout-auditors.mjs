@@ -24,11 +24,12 @@ export async function verifyAuditExport(context, roots, joinedPath, directory, s
   return { joined, mechanical, exported: saved, mapping, rubricSha256: rubric.sha256 };
 }
 const flagsOf = row => Object.fromEntries(AUDIT_FLAGS.map(k => [k, row[k]]));
-function rowsById(rows, expected) {
+function rowsById(rows, expected, flagsFor = () => AUDIT_FLAGS) {
   need(Array.isArray(rows) && rows.length === expected.size, "audit_response_coverage"); const map = new Map();
   for (const row of rows) {
     need(expected.has(row?.id) && !map.has(row.id), "audit_response_membership");
-    need(AUDIT_FLAGS.every(k => typeof row[k] === "boolean") && typeof row.rationale === "string" && row.rationale.trim().length > 0 && row.rationale.length <= 4096, "audit_response_invalid"); map.set(row.id, row);
+    const selected = flagsFor(row.id);
+    need(selected.every(k => typeof row[k] === "boolean") && AUDIT_FLAGS.every(k => selected.includes(k) || !Object.hasOwn(row, k)) && typeof row.rationale === "string" && row.rationale.trim().length > 0 && row.rationale.length <= 4096, "audit_response_invalid"); map.set(row.id, row);
   }
   return map;
 }
@@ -58,17 +59,20 @@ export function resolveAuditors(collection, a, b, aSha256, bSha256, adjudication
   need(adjudication.schema === "holdout-adjudication-v1" && adjudication.blinded === true
     && typeof adjudication.adjudicatorId === "string" && adjudication.adjudicatorId.trim()
     && adjudication.auditorASha256 === aSha256 && adjudication.auditorBSha256 === bSha256, "audit_adjudication_binding");
-  const resolutions = rowsById(adjudication.items, new Set(disagreements.map(d => d.id)));
-  const judgments = collection.exported.items.map(({ id }) => resolutions.get(id) ?? first.get(id));
+  const disputed = new Map(disagreements.map(d => [d.id, AUDIT_FLAGS.filter(k => d.first[k] !== d.second[k])])),
+    resolutions = rowsById(adjudication.items, new Set(disputed.keys()), id => disputed.get(id));
+  const judgments = collection.exported.items.map(({ id }) => ({ ...first.get(id), ...resolutions.get(id) }));
   const totals = { complete: true, published: collection.mechanical.published, audited: judgments.length,
     labelFindings: judgments.filter(r => r.label).length, contextFindings: judgments.filter(r => r.context).length,
     falselySupersededCurrent: judgments.filter(r => r.falseSupersession).length, bindingErrors: judgments.filter(r => r.binding).length,
     chronologyFindings: judgments.filter(r => r.chronology).length, historicalCautions: judgments.filter(r => r.historicalCaution).length };
-  const unmasked = collection.mapping.map(({ id, item }) => ({ id, ...item, judgment: judgments.find(r => r.id === id) }));
+  const judgmentsById = new Map(judgments.map(row => [row.id, row]));
+  const unmasked = collection.mapping.map(({ id, item }) => ({ id, ...item, judgment: judgmentsById.get(id) }));
   return { phase: "certified", disagreements, totals, unmasked };
 }
-export async function evaluateImport(collection, paths, hashes) {
+export async function evaluateImport(collection, paths, hashes, onValidated = () => {}) {
   const a = await auditInput(paths.auditorA, "auditor-a.json", hashes), b = await auditInput(paths.auditorB, "auditor-b.json", hashes);
+  onValidated(resolveAuditors(collection, a, b, hashes["auditor-a.json"], hashes["auditor-b.json"], null));
   const adjudication = paths.adjudication ? await auditInput(paths.adjudication, "adjudication.json", hashes) : null;
   return resolveAuditors(collection, a, b, hashes["auditor-a.json"], hashes["auditor-b.json"], adjudication);
 }
