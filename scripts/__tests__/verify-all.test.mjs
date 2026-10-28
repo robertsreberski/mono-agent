@@ -1,5 +1,7 @@
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 import { Scalar, isAlias, isMap, isScalar, isSeq, parseDocument } from "yaml";
@@ -356,17 +358,27 @@ describe("verify-all", () => {
     ["unexpected CLI output", "ubuntu24", "20261025.1", "X64", "not a version", null],
   ])("keys apt archives by the installed CLI and hosted image: %s", (_label, ImageOS, ImageVersion, RUNNER_ARCH, version, expected) => {
     const script = readInstallChromiumAction().runs.steps[0].run;
-    const result = spawnSync("bash", ["-c", 'pnpm() { printf "%s\\n" "$TEST_CLI_VERSION"; };\n' + script], {
-      encoding: "utf8",
-      env: { PATH: process.env.PATH, ImageOS, ImageVersion, RUNNER_ARCH, TEST_CLI_VERSION: version, GITHUB_OUTPUT: "/dev/stdout" },
-    });
-    if (expected === null) {
-      expect(result.status).not.toBe(0);
-      expect(result.stderr).toMatch(/required|Unexpected Playwright CLI version/u);
-      expect(result.stdout).toBe("");
-    } else {
-      expect(result.status, result.stderr).toBe(0);
-      expect(result.stdout).toBe(`cache-key=${expected}\n`);
+    // A real file, as on the runner: /dev/stdout cannot be reopened when the
+    // child's stdout is a socket (Linux spawnSync), so it fails with ENXIO.
+    const outputDir = mkdtempSync(join(tmpdir(), "install-chromium-output-"));
+    const outputFile = join(outputDir, "github-output");
+    writeFileSync(outputFile, "");
+    try {
+      const result = spawnSync("bash", ["-c", 'pnpm() { printf "%s\\n" "$TEST_CLI_VERSION"; };\n' + script], {
+        encoding: "utf8",
+        env: { PATH: process.env.PATH, ImageOS, ImageVersion, RUNNER_ARCH, TEST_CLI_VERSION: version, GITHUB_OUTPUT: outputFile },
+      });
+      const output = readFileSync(outputFile, "utf8");
+      if (expected === null) {
+        expect(result.status).not.toBe(0);
+        expect(result.stderr).toMatch(/required|Unexpected Playwright CLI version/u);
+        expect(output).toBe("");
+      } else {
+        expect(result.status, result.stderr).toBe(0);
+        expect(output).toBe(`cache-key=${expected}\n`);
+      }
+    } finally {
+      rmSync(outputDir, { recursive: true, force: true });
     }
   });
 
