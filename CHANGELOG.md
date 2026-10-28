@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Bound recorded-run upkeep enrichment to evidenced runs and one namespace scan;
+  preserve no-upkeep session totals and custom-recorder recovery semantics. Keep
+  local accounting paths/storage identifiers out of forwarded channel metadata,
+  and recognize symlink aliases of local artifact namespaces.
+- Include enabled extraction overrides on other providers in provider-usage quota
+  snapshots and refresh scope. The new `continuity_upkeep` auth usage kind and
+  its web/TUI consumers ship together in the same lockstep release.
+
 - Fix continuity benchmark degradation and overrun reporting, and reconcile
   pre-dispatch reservations by identity without changing runtime behavior.
 

@@ -1,3 +1,4 @@
+import { mapRunToSession, NoopRunRecorder, withUpkeepAccounting } from "@mono-agent/observability";
 import { resolve } from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
@@ -113,7 +114,7 @@ async function fixture(maxBytes?: number) {
   const claim = async (ownerToken: string) => (await mutate({ kind: "claim", expected: await inspect(), ownerToken }))!;
   return { root, writer, reader, db, mutate, inspect, claim };
 }
-function harness(f: Awaited<ReturnType<typeof fixture>>, mutation = f.mutate, owner = async <T>(op: (token: string) => Promise<T>) => await op("owner")) {
+function harness(f: Awaited<ReturnType<typeof fixture>>, mutation = f.mutate, owner = async <T>(op: (token: string) => Promise<T>) => await op("owner"), namespace: { recorderNamespace?: string } = { recorderNamespace: resolve("/origin-recorder") }) {
   let fetches = 0;
   const complete = vi.fn(async (prompt, _signal, budget) => {
     fetches++;
@@ -123,7 +124,7 @@ function harness(f: Awaited<ReturnType<typeof fixture>>, mutation = f.mutate, ow
     return { text: JSON.stringify({ entries: [{ kind: "constraint", value: "Require confirmation.", status: "active", sources: [span.id] }], covered: [span.id] }), receipt: receipt(r) };
   });
   const options = { toolHistory: { continuityEnabled: true, reader: f.reader, writer: f.writer, logicalConversationId: (id: string) => id,
-    upkeep: { enabled: true, model: "fictional:base", recorderNamespace: resolve("/origin-recorder"), complete }, mutateUpkeep: mutation,
+    upkeep: { enabled: true, model: "fictional:base", ...namespace, complete }, mutateUpkeep: mutation,
     publishLedger: f.writer.publishLedger.bind(f.writer) } } as unknown as ConversationHarnessOptions;
   const events: any[] = [];
   return { complete, events, get fetches() { return fetches; }, prepare: async (extra: Partial<UpkeepEligibility> = {}, reason = "cold_rebuild") => await createLedgerSupplier(options,
@@ -184,10 +185,29 @@ it.each(["delay_execution", "delay_ack"])("a timed-out %s cannot invoke or defea
   const post = internal.worker.postMessage.bind(internal.worker), response = internal.handleResponse.bind(internal);
   const h = harness(f, async input => {
     if (input.kind !== "dispatch") return await f.mutate(input);
-    if (mode === "delay_execution") internal.worker.postMessage = (request: any) => { delayed = request; };
-    else internal.handleResponse = (message: any) => { delayed = message; };
-    try { return await internal.request("continuity_upkeep", input, 30); }
-    finally { internal.worker.postMessage = post; internal.handleResponse = response; }
+    // Expire only after the exact request/ack is parked. A real 30 ms race can
+    // expire before the worker executes under load, testing the wrong boundary.
+    const target = internal.requestId + 1;
+    let captured!: () => void;
+    const parked = new Promise<void>(resolve => { captured = resolve; });
+    if (mode === "delay_execution") internal.worker.postMessage = (request: any) => {
+      if (request.id !== target) { post(request); return; }
+      delayed = request; captured();
+    };
+    else internal.handleResponse = (message: any) => {
+      if (message.id !== target) { response(message); return; }
+      delayed = message; captured();
+    };
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const pending = internal.request("continuity_upkeep", input, 30);
+      void pending.catch(() => {}); // The intentional timeout is awaited below.
+      await parked;
+      await vi.advanceTimersByTimeAsync(30);
+      return await pending;
+    } finally {
+      vi.useRealTimers(); internal.worker.postMessage = post; internal.handleResponse = response;
+    }
   });
   await h.prepare(); expect(h.fetches).toBe(0); expect(delayed).toBeDefined();
   const next = await f.claim("recovery"); expect(next.bootstrap).toBe(mode === "delay_execution");
@@ -338,4 +358,17 @@ it.each([
   await h.prepare(extra, reason); expect(h.fetches).toBe(0); expect(mutation).not.toHaveBeenCalled();
   expect(h.events).toContainEqual(expect.objectContaining({ type: "continuity_upkeep", status: "skipped", reason: skipped }));
   expect(h.events.some(e => e.accounting)).toBe(false);
+});
+
+it.each([undefined, ""])("buys nothing and does not mark totals partial for missing/empty namespace %j", async namespace => {
+  const f = await fixture(), h = harness(f, f.mutate, undefined, namespace === undefined ? {} : { recorderNamespace: namespace });
+  await h.prepare();
+  expect(h.fetches).toBe(0); expect(h.complete).not.toHaveBeenCalled();
+  expect(h.events.filter(e => ["continuity_upkeep", "continuity_upkeep_dispatch"].includes(e.type))).toEqual([]);
+  const recorder = withUpkeepAccounting(new NoopRunRecorder({ runId: "origin-run", conversationId: "fictional" }), "origin-run", "fictional");
+  for (const event of h.events) recorder.onEvent(event);
+  const settled = await recorder.finish({ cost: { cumulativeUsd: 0.1 }, usage: { input_tokens: 10, output_tokens: 2, cache_read_tokens: 0, cache_creation_tokens: 0 } });
+  expect(settled.upkeepAccounting).toBeUndefined(); expect(settled.upkeepAccountingPartial).toBeUndefined(); expect(settled.inclusiveCost).toBeUndefined();
+  const totals = mapRunToSession(settled, [], { instanceLabel: "fictional" }).totals;
+  expect(totals.cost).toBe(0.1); expect(totals.tokensPartial).toBeUndefined();
 });

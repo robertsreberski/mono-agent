@@ -149,7 +149,8 @@ export function createLedgerSupplier(options: ConversationHarnessOptions, reques
           if (!outcomeRecorded) completion = undefined;
           // This host callback records before the provider attempt can fail over;
           // it is deliberately not attached to an attempt's return value.
-          emitSafe(emit, { type: "continuity_upkeep", ...(completion?.receipt ?? uncertain ?? { status: "skipped", reason: localSkip ?? "unavailable", providerInvoked: false }),
+          // Namespace rejection admitted no operation: warn, but emit no receipt.
+          if (localSkip !== "namespace_invalid" || barrierRequested) emitSafe(emit, { type: "continuity_upkeep", ...(completion?.receipt ?? uncertain ?? { status: "skipped", reason: localSkip ?? "unavailable", providerInvoked: false }),
             ...(barrierRequested ? { accounting: accounting ?? upkeepAccounting(reservation!) } : {}),
             ...(published ? { generationId: published } : {}), uncovered: uncovered ?? frozen?.generation.uncovered ?? 0 });
           if (completion?.receipt.outputOverrun) emitSafe(emit, { type: "upkeep_output_overrun", outputTokens: completion.receipt.outputTokens });

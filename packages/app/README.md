@@ -23,10 +23,6 @@ Catalog responsibility: Runs a config-first agent host: loads mono-agent.config.
 
 Turn a folder's `mono-agent.config.json` into a running agent host:
 
-Doctor and auth discovery include enabled continuity upkeep's explicit
-`extractionModel`, otherwise `runtime.model`. Disabled upkeep requires no extra
-credentials, and doctor never purchases an extraction.
-
 - Aggregate the adapter-neutral core config and every channel section
   (`telegram`, `slack`, `webhook`, `openaiApi`, `cron`) plus configured
   external channel plugins from `channels.plugins[]`.
@@ -292,6 +288,15 @@ which deliberately runs unprotected. When that protection applies, off/omitted p
 synthesize workspace confinement; native policies retain their configured readable/writable roots.
 Enabled jobs register roots at startup. `validate`, `doctor` and status describe
 the effective boundary rather than just the configured mode.
+
+Doctor and auth discovery include enabled continuity upkeep's explicit
+`extractionModel`, otherwise `runtime.model`. Disabled upkeep requires no extra
+credentials, and doctor never purchases an extraction.
+
+An enabled extraction override on another provider adds that provider to the
+provider-usage quota snapshot and refresh scope. The auth usage kind
+`continuity_upkeep` is new: shared contracts and their web/TUI consumers ship
+together in the same lockstep release.
 
 ## Install / Usage
 

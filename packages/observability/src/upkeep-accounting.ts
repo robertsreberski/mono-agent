@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { constants } from "node:fs";
+import { constants, realpathSync } from "node:fs";
 import { link, lstat, open, readdir, readFile, unlink } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
 import { parseAgentUpkeepAccounting, mergeAgentUpkeepAccounting, type AgentUpkeepAccounting } from "@mono-agent/contracts";
@@ -64,20 +64,41 @@ export async function exportUpkeepAccounting(value: unknown, options: {
   } finally { await unlink(temp).catch(error => { if (!isErrno(error, "ENOENT")) throw error; }); }
 }
 
-/** Separate non-aggregate evidence; inclusive totals are derived by readers, never added to raw inference. */
-export async function readUpkeepAccounting(artifactDir: string, runId: string, conversationId: string, candidates: readonly unknown[], warnings: string[]): Promise<readonly AgentUpkeepAccounting[]> {
+/** Canonical identity when present; legacy/missing namespaces still normalize lexically. */
+export function canonicalUpkeepNamespace(namespace: string): string {
+  try { return realpathSync.native(namespace); } catch { return resolve(namespace); }
+}
+
+/** Index once per namespace, rather than rescanning the directory for each run. */
+export function indexUpkeepCompanions(names: readonly string[]): ReadonlyMap<string, readonly string[]> {
+  const index = new Map<string, string[]>();
+  for (const name of names) {
+    const prefix = /^(.*\.upkeep\.)[a-f0-9]{64}\.(dispatch|result)\.json$/u.exec(name)?.[1];
+    if (prefix) { const group = index.get(prefix) ?? []; group.push(name); index.set(prefix, group); }
+  }
+  return index;
+}
+
+/** Separate non-aggregate evidence; inclusive totals never rewrite raw inference. */
+export async function readUpkeepAccounting(artifactDir: string, runId: string, conversationId: string, candidates: readonly unknown[], warnings: string[], options: {
+  readonly companionNames?: readonly string[];
+  readonly onEvidence?: () => void;
+} = {}): Promise<readonly AgentUpkeepAccounting[]> {
   const values = new Map<string, AgentUpkeepAccounting>();
+  const namespace = canonicalUpkeepNamespace(artifactDir);
   const accept = (value: unknown) => {
     const parsed = parseAgentUpkeepAccounting(value);
-    const a = { ...parsed, recorderNamespace: resolve(parsed.recorderNamespace) };
-    if (a.runId !== runId || a.conversationId !== conversationId || resolve(a.recorderNamespace) !== resolve(artifactDir)) throw new Error("Conflicting upkeep origin");
-    // Check each contribution so a corrupt/conflicting record cannot hide good evidence.
+    const a = { ...parsed, recorderNamespace: canonicalUpkeepNamespace(parsed.recorderNamespace) };
+    if (a.runId !== runId || a.conversationId !== conversationId || a.recorderNamespace !== namespace) throw new Error("Conflicting upkeep origin");
     const old = values.get(a.operationId);
     values.set(a.operationId, mergeAgentUpkeepAccounting(old ? [old, a] : [a])[0]!);
   };
+  if (candidates.length) options.onEvidence?.();
   for (const value of candidates) { try { accept(value); } catch { warnings.push("Upkeep accounting degraded: invalid or conflicting evidence."); } }
   try {
-    const names = (await readdir(artifactDir)).filter(name => name.startsWith(upkeepCompanionPrefix(runId)) && /\.[a-f0-9]{64}\.(dispatch|result)\.json$/u.test(name)).sort();
+    const names = [...(options.companionNames ?? indexUpkeepCompanions(await readdir(artifactDir)).get(upkeepCompanionPrefix(runId)) ?? [])]
+      .filter(name => name.startsWith(upkeepCompanionPrefix(runId)) && /\.[a-f0-9]{64}\.(dispatch|result)\.json$/u.test(name)).sort();
+    if (names.length) options.onEvidence?.();
     if (names.length > 32768) warnings.push("Upkeep accounting degraded: companion limit exceeded.");
     for (const name of names.slice(0, 32768)) {
       try {

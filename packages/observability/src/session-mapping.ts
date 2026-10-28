@@ -1,3 +1,4 @@
+import { cacheUsageMetrics } from "./cache-usage.js";
 import { recordedCost } from "./recorded-cost.js";
 import { inclusiveRecordedCost, runUpkeepAccounting, sessionTokenTotals, upkeepEventAccounting } from "./upkeep-totals.js";
 import { suppressesNotification } from "@mono-agent/contracts";
@@ -381,7 +382,7 @@ export function mapRunToSession(
   let inclusive = upkeep.length || accountingPartial ? inclusiveRecordedCost(summary, upkeep) : undefined;
   if (inclusive && accountingPartial) inclusive = { ...inclusive, totalUsd: null, partial: true };
   const recorded = inclusive ? { total: inclusive.totalUsd, known: inclusive.knownCostUsd } : recordedCost(summary);
-  const tokens = sessionTokenTotals(summary.usage, upkeep);
+  const tokens = { ...(upkeep.length || accountingPartial ? sessionTokenTotals(summary.usage, upkeep) : tokenTotals(summary.usage)) };
   if (accountingPartial) { delete tokens.tokInputTotal; delete tokens.cacheHitRatio; }
   const totals: SessionTotals = {
     asst: walk.asstCount,
@@ -971,6 +972,26 @@ function parseModelRef(ref: string | undefined): { readonly provider?: string } 
   const provider = ref.slice(0, separator).trim();
   return provider.length === 0 ? {} : { provider };
 }
+
+/**
+ * Token totals from the run's usage record. Usage values may be redaction
+ * placeholders (e.g. the string "[redacted]") or null on a partial run, so every
+ * field coerces non-finite input to 0. `tokCache` sums cache read + creation.
+ */
+function tokenTotals(usage: unknown): Pick<SessionTotals, "tokIn" | "tokOut" | "tokCache" | "tokCacheRead" | "tokCacheWrite" | "tokInputTotal" | "cacheHitRatio"> {
+  const record = isRecord(usage) ? usage : {};
+  const cache = cacheUsageMetrics(record);
+  return {
+    tokIn: finiteNumber(record.input_tokens) ?? 0,
+    tokOut: finiteNumber(record.output_tokens) ?? 0,
+    tokCache: (finiteNumber(record.cache_read_tokens) ?? 0) + (finiteNumber(record.cache_creation_tokens) ?? 0),
+    ...(cache.cacheReadTokens === undefined ? {} : { tokCacheRead: cache.cacheReadTokens }),
+    ...(cache.cacheWriteTokens === undefined ? {} : { tokCacheWrite: cache.cacheWriteTokens }),
+    ...(cache.inputTotalTokens === undefined ? {} : { tokInputTotal: cache.inputTotalTokens }),
+    ...(cache.cacheHitRatio === undefined ? {} : { cacheHitRatio: cache.cacheHitRatio }),
+  };
+}
+
 
 function finiteNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;

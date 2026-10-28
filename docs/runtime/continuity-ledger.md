@@ -452,14 +452,18 @@ The host accumulates validated receipts outside runtime-attempt results. An
 auxiliary `continuity_upkeep_dispatch` event captures uncertainty before provider
 invocation; the existing final `continuity_upkeep` receipt retains its flat
 fields and carries the immutable journal accounting envelope. Both forward as
-validated, content-free `continuity_upkeep` telemetry. Failed/cancelled summaries
+validated, content-free `continuity_upkeep` telemetry. Forwarded telemetry and
+external summaries omit recorder paths and storage database/incarnation/logical
+identifiers; operationId and phase still identify contributions. Full envelopes
+remain local. Failed/cancelled summaries
 and later companion recovery retain the originating run's attribution.
 
-Session `cost` is inclusive; `knownCostUsd` is its known subtotal. Numeric
+For sessions with upkeep evidence, `cost` is inclusive; `knownCostUsd` is its known subtotal. Numeric
 `tokIn`, `tokOut`, `tokCache`, `tokCacheRead` and `tokCacheWrite` are now known
 subtotals across inference and upkeep. Any unknown contributing counter sets
 `tokensPartial:true`; incomplete inputs omit `tokInputTotal` and `cacheHitRatio`.
-The separate upkeep counters remain nullable. Legacy inference-only metrics and
+The separate upkeep counters remain nullable. Sessions without upkeep evidence
+retain the legacy totals shape, parsing and values. Legacy inference-only metrics and
 web consumers keep their existing meaning pending web reconciliation.
 
 Doctor and auth discovery include enabled upkeep's effective model: the explicit

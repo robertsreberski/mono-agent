@@ -1,7 +1,15 @@
-import { mergeAgentUpkeepAccounting } from "@mono-agent/contracts";
+import { mergeAgentUpkeepAccounting, parseAgentUpkeepAccounting } from "@mono-agent/contracts";
 import type { RunSummary } from "@mono-agent/observability";
 
 import type { ExternalRunSummary } from "./contracts.js";
+
+/** External accounting is a projection, not the host-local journal envelope.
+ * operationId + phase still identify immutable contributions downstream. */
+export function forwardedUpkeepAccounting(value: unknown): NonNullable<ExternalRunSummary["upkeepAccounting"]>[number] {
+  const { recorderNamespace: _namespace, databaseId: _database, incarnation: _incarnation,
+    logicalConversationId: _logical, ...forwarded } = parseAgentUpkeepAccounting(value);
+  return forwarded;
+}
 
 export function externalResponseSummary(summary: RunSummary): ExternalRunSummary | undefined {
   let descriptors: PropertyDescriptorMap;
@@ -58,6 +66,7 @@ export function externalResponseSummary(summary: RunSummary): ExternalRunSummary
         if (!Array.isArray(cloned)) continue;
         cloned = mergeAgentUpkeepAccounting(cloned);
         if ((cloned as readonly { runId: string; conversationId: string }[]).some(a => a.runId !== runId || a.conversationId !== conversationId)) continue;
+        cloned = (cloned as readonly unknown[]).map(forwardedUpkeepAccounting);
       } catch { continue; }
     }
     if (key === "upkeepAccountingPartial" && cloned !== true) continue;

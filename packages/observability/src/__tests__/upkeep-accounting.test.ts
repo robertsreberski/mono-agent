@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it } from "vitest";
@@ -10,7 +10,8 @@ async function fixture() {
   const artifactDir = await mkdtemp(join(tmpdir(), "upkeep-artifacts-")); roots.push(artifactDir);
   const recorder = createJsonlRunRecorder({ artifactDir, runId: "origin", conversationId: "fictional" });
   await recorder.start!();
-  const dispatch = { version: 1, usageIncluded: false, operationId: "operation", databaseId: "database", incarnation: "incarnation", runId: "origin", conversationId: "fictional", logicalConversationId: "logical", recorderNamespace: artifactDir, model: "fictional:extractor", budget: "bootstrap", phase: "dispatch", invocation: "uncertain", outcome: "uncertain", inputTokens: null, cacheReadTokens: null, cacheWriteTokens: null, outputTokens: null, costUsd: null };
+  const namespace = await realpath(artifactDir);
+  const dispatch = { version: 1, usageIncluded: false, operationId: "operation", databaseId: "database", incarnation: "incarnation", runId: "origin", conversationId: "fictional", logicalConversationId: "logical", recorderNamespace: namespace, model: "fictional:extractor", budget: "bootstrap", phase: "dispatch", invocation: "uncertain", outcome: "uncertain", inputTokens: null, cacheReadTokens: null, cacheWriteTokens: null, outputTokens: null, costUsd: null };
   const result = { ...dispatch, phase: "result", invocation: "invoked", outcome: "valid", inputTokens: 3, cacheReadTokens: 4, cacheWriteTokens: 5, outputTokens: 2, costUsd: 0.2 };
   return { artifactDir, recorder, dispatch, result };
 }

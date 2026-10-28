@@ -7,7 +7,7 @@ import type { MonoRuntimeLike, RuntimeResult } from "@mono-agent/turn/host/types
 import type { AgentUpkeepAccounting } from "@mono-agent/contracts";
 import { createConversationHarness } from "../index.js";
 import { streamEventFromRuntimeEvent } from "../responder.js";
-import { externalResponseSummary } from "../harness/external-summary.js";
+import { externalResponseSummary, forwardedUpkeepAccounting } from "../harness/external-summary.js";
 const roots: string[] = [];
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
 const model = { provider: "fictional", model: "answer", reference: "fictional:answer" };
@@ -41,7 +41,7 @@ it.each(["throw", "failed", "cancelled", "failover", "retry"])("retains host acc
     const response = await harness.run({ conversationId: "fictional", userMessage: "Current input.", abortSignal: controller.signal });
     const summary = response.metadata.summary!;
     if (["failover", "retry"].includes(mode)) expect(calls, JSON.stringify(response.failure)).toBe(2);
-    expect(summary.upkeepAccounting).toEqual([mode === "throw" ? dispatch : paid]);
+    expect(summary.upkeepAccounting).toEqual([forwardedUpkeepAccounting(mode === "throw" ? dispatch : paid)]);
     expect(summary.inclusiveCost?.knownCostUsd).toBeCloseTo(mode === "throw" ? 0 : mode === "cancelled" ? 0.2 : 0.3);
     if (mode === "throw") expect(summary.inclusiveCost?.totalUsd).toBeNull();
     if (["failover", "retry"].includes(mode)) { expect(calls).toBe(2); expect(response.failure).toBeUndefined(); expect(summary.inclusiveCost?.totalUsd).toBeCloseTo(0.3); }
@@ -52,11 +52,25 @@ it.each(["throw", "failed", "cancelled", "failover", "retry"])("retains host acc
 it("allowlists only validated, content-free upkeep telemetry and summary fields", () => {
   const a = accounting();
   const event = streamEventFromRuntimeEvent({ type: "continuity_upkeep_dispatch", accounting: a, prompt: "Fictional private text", text: "Fictional body" });
-  expect(event).toEqual({ type: "runtime_telemetry", kind: "continuity_upkeep", data: { accounting: a } });
+  expect(event).toEqual({ type: "runtime_telemetry", kind: "continuity_upkeep", data: { accounting: forwardedUpkeepAccounting(a) } });
   expect(streamEventFromRuntimeEvent({ type: "continuity_upkeep", accounting: { ...a, prompt: "Fictional private text" } })).toBeUndefined();
   const summary = { runId: "origin", conversationId: "fictional", status: "failed" as const, durationMs: 1, eventCount: 1, artifactPaths: [], upkeepAccounting: [a], inclusiveCost: { totalUsd: null, knownCostUsd: 0, partial: true }, systemPrompt: "Fictional private instructions" };
-  expect(externalResponseSummary(summary)).toMatchObject({ upkeepAccounting: [a], inclusiveCost: summary.inclusiveCost });
+  expect(externalResponseSummary(summary)).toMatchObject({ upkeepAccounting: [forwardedUpkeepAccounting(a)], inclusiveCost: summary.inclusiveCost });
   expect(externalResponseSummary(summary)).not.toHaveProperty("systemPrompt");
   expect(externalResponseSummary({ ...summary, upkeepAccounting: [{ ...a, runId: "other" }] })?.upkeepAccounting).toBeUndefined();
   expect(externalResponseSummary({ ...summary, inclusiveCost: { ...summary.inclusiveCost, prompt: "Fictional body" } } as typeof summary)?.inclusiveCost).toBeUndefined();
+});
+
+it("omits local paths and storage identifiers from both forwarded phases, retaining dedup keys", () => {
+  const dispatch = accounting("/home/example/private-artifacts");
+  const result: AgentUpkeepAccounting = { ...dispatch, phase: "result", invocation: "invoked", outcome: "valid", inputTokens: 1, outputTokens: 2, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0.2 };
+  for (const a of [dispatch, result]) {
+    const event = streamEventFromRuntimeEvent({ type: "continuity_upkeep", accounting: a });
+    const summary = externalResponseSummary({ runId: "origin", conversationId: "fictional", status: "succeeded", durationMs: 1, eventCount: 1, artifactPaths: [], upkeepAccounting: [a] });
+    for (const value of [event, summary]) {
+      const wire = JSON.stringify(value);
+      for (const key of ["recorderNamespace", "databaseId", "incarnation", "logicalConversationId", dispatch.recorderNamespace]) expect(wire).not.toContain(key);
+      expect(wire).toContain('"operationId":"op"'); expect(wire).toContain(`"phase":"${a.phase}"`);
+    }
+  }
 });

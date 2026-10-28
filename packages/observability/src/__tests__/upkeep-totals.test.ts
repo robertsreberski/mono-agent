@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, realpath, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it } from "vitest";
@@ -33,10 +33,17 @@ it("keeps known cost even when inference cost is partial, and explicit non-invoc
   const none: AgentUpkeepAccounting = { ...result, invocation: "not_invoked", outcome: "skipped", inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0 };
   expect(inclusiveRecordedCost(summary, [dispatch, none])).toEqual({ totalUsd: 0.1, knownCostUsd: 0.1, partial: false });
 });
-it("marks incomplete inference counters partial without silently extending zero coercion", () => {
-  expect(mapRunToSession({ ...summary, usage: { input_tokens: 10, output_tokens: 5 } }, [], opts).totals).toMatchObject({ tokIn: 10, tokOut: 5, tokCache: 0, tokensPartial: true });
-  const totals = mapRunToSession({ ...summary, usage: undefined }, [], opts).totals;
-  expect(totals).toMatchObject({ tokIn: 0, tokOut: 0, tokensPartial: true }); expect(totals.cacheHitRatio).toBeUndefined();
+it.each([
+  [undefined, { tokIn: 0, tokOut: 0, tokCache: 0 }],
+  [{ input_tokens: 10, output_tokens: 5 }, { tokIn: 10, tokOut: 5, tokCache: 0 }],
+  [{ input: 10, output: 5, cacheRead: 2, cacheWrite: 3 }, { tokIn: 0, tokOut: 0, tokCache: 0, tokCacheRead: 2, tokCacheWrite: 3, tokInputTotal: 15, cacheHitRatio: 2 / 15 }],
+  [{ input_tokens: -2, output_tokens: 1.5, cache_read_tokens: -4, cache_creation_tokens: 2.5 }, { tokIn: -2, tokOut: 1.5, tokCache: -1.5, tokCacheWrite: 2.5 }],
+  [{ input_tokens: "[redacted]", output_tokens: null, cache_read_tokens: 0 }, { tokIn: 0, tokOut: 0, tokCache: 0, tokCacheRead: 0 }],
+  [inference.usage, { tokIn: 10, tokOut: 5, tokCache: 23, tokCacheRead: 20, tokCacheWrite: 3, tokInputTotal: 33, cacheHitRatio: 20 / 33 }],
+])("preserves main's complete no-upkeep totals shape for %j", (usage, tokens) => {
+  const expected = { asst: 0, tcalls: 0, think: 0, ...tokens, cost: 0.1, steps: 0 };
+  const actual = mapRunToSession({ ...summary, usage }, [], opts).totals;
+  expect(actual).toEqual(expected); expect(JSON.stringify(actual)).toBe(JSON.stringify(expected));
 });
 it.each(["failed", "cancelled"] as const)("retains host receipts independently of an injected recorder (%s)", async status => {
   const recorder = withUpkeepAccounting(new NoopRunRecorder({ runId: "origin", conversationId: "fictional" }), "origin", "fictional");
@@ -55,7 +62,8 @@ it("never attributes another run's receipt to the current answer", async () => {
 });
 it("persists dispatch before failed settlement; late companions refine both list and detail exactly once", async () => {
   const artifactDir = await mkdtemp(join(tmpdir(), "upkeep-inclusive-")); roots.push(artifactDir);
-  const d = { ...dispatch, recorderNamespace: artifactDir }, r = { ...result, recorderNamespace: artifactDir };
+  const namespace = await realpath(artifactDir);
+  const d = { ...dispatch, recorderNamespace: namespace }, r = { ...result, recorderNamespace: namespace };
   const recorder = createJsonlRunRecorder({ artifactDir, runId: "origin", conversationId: "fictional" });
   await recorder.start!(); recorder.onEvent({ type: "continuity_upkeep_dispatch", accounting: d });
   const failed = await recorder.fail(new Error("fictional failure after dispatch"));
@@ -103,4 +111,42 @@ it("adds host accounting without executing injected summary or cost getters", as
   const second = withUpkeepAccounting({ onEvent() {}, finish: async () => nested, fail: async () => nested }, "origin", "fictional");
   second.onEvent({ type: "continuity_upkeep", accounting: result });
   expect((await second.finish({})).inclusiveCost).toEqual({ totalUsd: null, knownCostUsd: 0.2, partial: true }); expect(reads).toBe(0);
+});
+
+it("allows custom recorder terminal recovery after a rejected commit, retaining host receipts", async () => {
+  let commits = 0, failures = 0;
+  const inner = { onEvent() {}, finish: async () => summary,
+    commitFinish: async () => { commits++; throw new Error("fictional commit rejection"); },
+    fail: async () => { failures++; return { ...summary, status: "failed" as const }; } };
+  const recorder = withUpkeepAccounting(inner, "origin", "fictional");
+  recorder.onEvent({ type: "continuity_upkeep", accounting: result });
+  await expect(recorder.commitFinish!({})).rejects.toThrow("fictional commit rejection");
+  const recovered = await recorder.fail(new Error("fictional failure"));
+  expect(commits).toBe(1); expect(failures).toBe(1); expect(recovered.status).toBe("failed");
+  expect(recovered.upkeepAccounting).toEqual([result]); expect(await recorder.finish({})).toBe(recovered);
+});
+it("returns async custom onEvent rejection so existing await/catch boundaries still handle it", async () => {
+  const error = new Error("fictional event rejection");
+  const recorder = withUpkeepAccounting({ onEvent: async () => { throw error; }, finish: async () => summary, fail: async () => summary }, "origin", "fictional");
+  let caught: unknown;
+  try { await recorder.onEvent({ type: "continuity_upkeep", accounting: result }); } catch (value) { caught = value; }
+  expect(caught).toBe(error); expect((await recorder.finish({})).upkeepAccounting).toEqual([result]);
+});
+it("merges real and symlinked namespace identities without making readers or sessions partial", async () => {
+  const root = await mkdtemp(join(tmpdir(), "upkeep-alias-")); roots.push(root);
+  const artifactDir = join(root, "artifacts"), alias = join(root, "alias");
+  await mkdir(artifactDir); await symlink(artifactDir, alias, process.platform === "win32" ? "junction" : "dir");
+  const d = { ...dispatch, recorderNamespace: alias }, r = { ...result, recorderNamespace: artifactDir };
+  const recorder = createJsonlRunRecorder({ artifactDir: alias, runId: "origin", conversationId: "fictional" });
+  recorder.onEvent({ type: "continuity_upkeep_dispatch", accounting: d }); await recorder.finish(inference);
+  await exportUpkeepAccounting(r);
+  for (const dir of [alias, artifactDir]) {
+    const detail = await readRecordedRun({ artifactDir: dir }, "origin");
+    const listed = (await listRecordedRuns({ artifactDir: dir })).runs[0]!;
+    expect(detail?.warnings).toEqual([]); expect(detail?.summary.upkeepAccountingPartial).toBeUndefined();
+    expect(listed.inclusiveCost?.totalUsd).toBeCloseTo(0.3);
+    expect(detail?.upkeepAccounting).toEqual([{ ...r, recorderNamespace: await realpath(artifactDir) }]);
+    const totals = mapRunToSession({ ...detail!.summary, artifactPaths: [] }, [{ type: "continuity_upkeep_dispatch", accounting: d }], opts).totals;
+    expect(totals.cost).toBeCloseTo(0.3); expect(totals.tokensPartial).toBeUndefined();
+  }
 });

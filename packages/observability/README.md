@@ -113,12 +113,16 @@ conflicting evidence marks `upkeepAccountingPartial`, not measured zero.
 `withUpkeepAccounting` is the host receipt sink, independent of attempt results
 and injected recorder behavior. The JSONL recorder snapshots receipts on running
 and terminal boundaries. List/detail readers refine those snapshots from events
-and companions without rewriting the on-disk inference aggregate.
+and companions without rewriting the on-disk inference aggregate. Lists scan
+once per namespace and enrich only runs with summary/companion evidence, with
+at most eight concurrent enrichments. Detail reads can additionally recover
+event-only evidence. Read failures alone never imply a purchase.
 
-`mapRunToSession` now returns inclusive `totals.cost`/`knownCostUsd`. Numeric token
-fields (`tokIn`, `tokOut`, `tokCache`, `tokCacheRead`, `tokCacheWrite`) are known
-subtotals; `tokensPartial:true` discloses any unknown counter, including legacy
-inference counters. `tokInputTotal` and `cacheHitRatio` are omitted for incomplete
+When upkeep evidence is present, `mapRunToSession` returns inclusive
+`totals.cost`/`knownCostUsd`. Numeric token fields (`tokIn`, `tokOut`, `tokCache`,
+`tokCacheRead`, `tokCacheWrite`) are known subtotals; `tokensPartial:true`
+discloses any unknown contributing counter. Without upkeep evidence, the legacy
+inference-only parsing, values and optional-field omissions remain unchanged. `tokInputTotal` and `cacheHitRatio` are omitted for incomplete
 inputs. Nullable upkeep counters stay nullable. Web usage/running-card consumers
 and benchmark reconciliation remain follow-up work.
 

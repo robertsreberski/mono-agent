@@ -1,4 +1,4 @@
-import { parseAgentUpkeepAccounting } from "@mono-agent/contracts";
+import { forwardedUpkeepAccounting } from "./harness/external-summary.js";
 import { stripDailyBucketSuffix, hasDailyBucketSuffix } from "./history/conversation-id.js";
 import type { ConversationHarness, ConversationHarnessFailure, ConversationHarnessSessionBoundary } from "./harness/contracts.js";
 import { ConversationHarnessError } from "./harness/error.js";
@@ -679,7 +679,7 @@ export function streamEventFromRuntimeEvent(
     if (event.type === "continuity_upkeep" || event.type === "continuity_upkeep_dispatch") {
       const data: Record<string, unknown> = {};
       if (event.accounting !== undefined) {
-        try { data.accounting = parseAgentUpkeepAccounting(event.accounting); } catch { return undefined; }
+        try { data.accounting = forwardedUpkeepAccounting(event.accounting); } catch { return undefined; }
       }
       if (["valid", "invalid", "uncertain", "skipped"].includes(String(event.status))) data.status = event.status;
       if (typeof event.providerInvoked === "boolean") data.providerInvoked = event.providerInvoked;

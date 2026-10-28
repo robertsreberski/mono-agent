@@ -1,4 +1,4 @@
-import { resolve } from "node:path";
+import { canonicalUpkeepNamespace } from "./upkeep-accounting.js";
 import { mergeAgentUpkeepAccounting, parseAgentUpkeepAccounting, type AgentUpkeepAccounting } from "@mono-agent/contracts";
 import { isRecord } from "./artifact-fs.js";
 import { recordedCost } from "./recorded-cost.js";
@@ -11,7 +11,7 @@ export function runUpkeepAccounting(origin: Origin, candidates: readonly unknown
   for (const candidate of [...(origin.upkeepAccounting ?? []), ...candidates]) {
     try {
       const parsed = parseAgentUpkeepAccounting(candidate);
-      const a = { ...parsed, recorderNamespace: resolve(parsed.recorderNamespace) };
+      const a = { ...parsed, recorderNamespace: canonicalUpkeepNamespace(parsed.recorderNamespace) };
       if (a.runId !== origin.runId || a.conversationId !== origin.conversationId) continue;
       values = mergeAgentUpkeepAccounting([...values, a]);
     } catch { onInvalid?.(); }
@@ -94,12 +94,15 @@ export function withUpkeepAccounting(recorder: RunRecorder, runId: string, conve
       }) as RunSummary;
     } catch { return summary; } // Unsafe recorder objects remain fail-closed at the external boundary.
   };
-  const finish = (work: () => Promise<RunSummary>): Promise<RunSummary> => terminal ??= work().then(snapshot);
+  const finish = (work: () => Promise<RunSummary>): Promise<RunSummary> => terminal ??= work().then(snapshot).catch(error => {
+    terminal = undefined; // A failed custom settlement must not swallow fail/cancel recovery.
+    throw error;
+  });
   return {
     ...(recorder.start ? { start: async () => snapshot(await recorder.start!()) } : {}),
     onEvent(event) {
       upkeepAccounting = runUpkeepAccounting(origin(), upkeepEventAccounting(event), () => { partial = true; });
-      recorder.onEvent(event);
+      return recorder.onEvent(event);
     },
     ...(recorder.prepareFinish ? { prepareFinish: (value: RuntimeResultLike) => recorder.prepareFinish!(result(value)) } : {}),
     ...(recorder.commitFinish ? { commitFinish: (value: RuntimeResultLike) => finish(() => recorder.commitFinish!(result(value))) } : {}),
