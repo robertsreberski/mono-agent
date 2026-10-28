@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Add independent fictional benchmark corpus authoring, deterministic generation,
+  lexical overlap checks and hash-verified freezes without changing runtime behavior.
+
 - Show continuity upkeep (off by default) once in live, reloaded and replayed
   console totals, running cards and per-model slices. Keep unknown spend partial
   with its known subtotal, and reconcile benchmark reported costs separately from

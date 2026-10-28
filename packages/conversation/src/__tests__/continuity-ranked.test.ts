@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import ts from "typescript";
+import { grams, literals } from "../../../../scripts/lib/continuity-overlap-text.mjs";
 import { expect, it } from "vitest";
 import { SCORE_SHAPES, RankedQueue, signalScore, templateShape, TEMPLATE_REPRESENTATIVES, RECORD_SPAN_LIMIT } from "../continuity/ranking.js";
 import { fitLedgerSelection, ledgerHash, renderLedger, projectedLedgerPayloadBytes, selectLedgerSources, validateLedgerOutput, type LedgerGeneration } from "../continuity/ledger.js";
@@ -14,21 +14,6 @@ function row(ordinal: number, text = "Neutral.", kind: ContinuitySnapshotRecord[
 const select = (records: ContinuitySnapshotRecord[], prior?: LedgerGeneration) => selectLedgerSources({ records, omitted: 0, gaps: 0, upkeep: { watermark: Math.max(...records.map(r => r.ordinal)), excluded: [] } }, prior, 128000);
 const fit = (records: ContinuitySnapshotRecord[], prior?: Parameters<typeof fitLedgerSelection>[2]) => fitLedgerSelection(select(records, prior?.generation), scope, prior, { maxTokens: 8000, deltaEntries: 8 });
 
-// Fixed function-word list, not selected from benchmark content. Content words remain.
-const STOPWORDS = new Set("a an and are as at be been but by for from has have i if in is it its me my of on or our s so that the their them then there they this to was we were will with you your".split(" "));
-const grams = (text: string) => {
-  const words = (text.toLowerCase().match(/[a-z]+/gu) ?? []).filter(word => !STOPWORDS.has(word));
-  return words.slice(2).map((_, i) => words.slice(i, i + 3).join(" "));
-};
-function literals(text: string, templatesOnly = false): string[] {
-  const file = ts.createSourceFile("fixture.ts", text, ts.ScriptTarget.Latest, true), chunks: string[] = [];
-  const visit = (node: ts.Node) => {
-    if (ts.isTemplateExpression(node)) chunks.push([node.head.text, ...node.templateSpans.map(span => span.literal.text)].join(" "));
-    else if (ts.isNoSubstitutionTemplateLiteral(node) || !templatesOnly && ts.isStringLiteral(node)) chunks.push(node.text);
-    ts.forEachChild(node, visit);
-  };
-  visit(file); return chunks;
-}
 it("rejects stopword-stripped generator string/template trigrams in the production prompt and ranking constants", () => {
   const generator = readFileSync(new URL("../../../../scripts/lib/continuity-generator.mjs", import.meta.url), "utf8");
   const generatorLiterals = literals(generator), generatorGrams = new Set(generatorLiterals.flatMap(grams));

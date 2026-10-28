@@ -364,7 +364,10 @@ export default {
     "packages/conversation/src/__tests__/fixtures/managed-native-switch-fixture.d.mts": ["exports"],
   },
   workspaces: {
-    ".": { paths },
+    ".": {
+      paths,
+      entry: ["scripts/holdout-validate.mjs", "scripts/continuity-holdout-freeze.mjs", "scripts/continuity-holdout-overlap.mjs"],
+    },
     "packages/*": { paths },
     "extras/*": { paths },
     "packages/contracts": {

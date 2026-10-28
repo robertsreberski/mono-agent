@@ -1,0 +1,91 @@
+# Independent conversation corpus tooling
+
+These scripts only validate, render, compare and freeze fictional benchmark data.
+They do not prepare a product treatment or call a provider. Suite loading and
+statistical registration are separate work; existing benchmark suites are unchanged.
+
+## Author isolation
+
+Give the isolated author **only** [the neutral format](./AUTHOR-FORMAT.md), not
+this README or a checkout. Accept `index.json` and one file per family. Keep all
+authored material, exceptions, reports, rubric, protocol and frozen outputs
+private and outside the checkout. Never check an actual corpus into this public
+repository. The tests contain deliberately synthetic placeholders, not a seed
+pool for an evaluation.
+
+The neutral document's `holdout-validate` interface maps to:
+
+```bash
+node scripts/holdout-validate.mjs --spec-dir /external/authored --schema-only
+```
+
+Schema-only validation never renders histories or consults comparison sources.
+It checks declared fictional/independent provenance, not the truth of those
+claims or semantic adequacy of evidence. The custodian must review these claims,
+each family's independence, and corrections/decisions/work-state evidence.
+
+## Reproducible selection and overlap
+
+Supply a seeds JSON object with distinct positive 32-bit integer fields
+`ordinary` and `distractor`. Each family has a fixed quota, summing to 128 per
+group. Families and case pools are ordered by ID before seeded selection without
+replacement. Rendering seeds and selected identities are recorded separately.
+Histories use only the authored strings; shared dataset validation does not
+supply generation content.
+
+Supply an explicit allowlist JSON object with `schema` set to
+`holdout-overlap-allowlist-v1` and an `entries` array (empty is valid). Each entry
+has `mode` (`raw7` or `content3`), a normalized `phrase`, and a `justification`
+with at least 20 characters. Exceptions must be narrow generic language, reviewed
+and fixed before acceptance, never a way to admit reused narrative.
+
+```bash
+node scripts/continuity-holdout-overlap.mjs \
+  --spec-dir /external/authored --seeds /external/seeds.json \
+  --allowlist /external/allowlist.json --output /external/overlap-run
+```
+
+The JSON report covers authored narrative fields (including unused cases), all
+rendered histories, and exact reader probe text. It compares against every string
+and joined template literal in the development generator and production ledger
+and ranking sources, using shared AST extraction and normalization. Narrative
+values are compared, not schema keys or tool names. The two checks are raw
+seven-word runs and function-word-stripped content trigrams. A non-allowlisted
+match exits nonzero. Identical text is scanned once; each unique overlap records
+its first location and all matching reference files. Lexical disjointness alone
+is not proof of conceptual independence.
+
+## Freeze and verify
+
+Use a clean, merged tooling revision for real registration. Freeze recomputes
+and requires an exactly matching passing overlap report; stale reports fail.
+The destination must be new and outside the checkout, including through symlinks.
+All file writes are exclusive. A failed freeze may leave a partial directory;
+it is not valid without a verified manifest and must not be reused.
+
+```bash
+node scripts/continuity-holdout-freeze.mjs freeze \
+  --spec-dir /external/authored --seeds /external/seeds.json \
+  --rubric /external/rubric --protocol /external/protocol \
+  --overlap /external/overlap-run/overlap.json \
+  --allowlist /external/allowlist.json --output /external/frozen
+node scripts/continuity-holdout-freeze.mjs verify \
+  --directory /external/frozen --manifest-sha256 <registered-digest>
+```
+
+Record the returned manifest digest in independent custodian-controlled
+registration; do **not** obtain the trusted digest from the directory being
+verified. `manifest.sha256` is a convenience copy, not a trust anchor.
+
+Canonical JSON sorts object keys, preserves array order, and uses one trailing
+newline for files. Semantic input digests hash canonical JSON without a newline;
+`files` entries hash actual bytes, including the newline. The manifest binds the
+merged canonical spec, group and per-case seeds, frozen mixture, each conversation
+and answer-key file, rubric, protocol, allowlist, overlap report, generator and
+supporting tooling snapshots, and Git revision. Raw author formatting is not
+part of the merged spec digest. No timestamps or caller paths enter the freeze.
+Verify checks every artifact and the externally pinned manifest, rejects extra
+files/symlinks, and checks current tooling bytes and revision. Changing corpus,
+scoring, reference sources or tooling requires a new registration.
+
+No model execution or quality/acceptance claim follows from a successful freeze.
