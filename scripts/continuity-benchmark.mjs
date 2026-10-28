@@ -125,7 +125,8 @@ Holdout: --corpus-manifest FILE --manifest-sha256 SHA --registration FILE --regi
   --statistical-spec FILE --shard N [--audit FILE]. Shard counts/workload follow the registered specification.
 See docs/runtime/continuity-benchmark.md.`;
 
-export async function main(argv = process.argv.slice(2), { stdout = console.log, env = process.env, modulesLoader } = {}) {
+export async function main(argv = process.argv.slice(2), { stdout = console.log, env = process.env, modulesLoader, onPhase = () => {} } = {}) {
+  onPhase({ phase: "benchmark-start" });
   const flags = parseArguments(argv);
   if (flags.help) { stdout(HELP); return 0; }
   if (flags.real && Object.hasOwn(env, "CI")) throw new CliError("paid_mode_refused_in_ci");
@@ -185,9 +186,9 @@ export async function main(argv = process.argv.slice(2), { stdout = console.log,
     await writeFile(planPath, `${JSON.stringify({ ...plan, executionKind: mode }, null, 2)}\n`, { mode: 0o600 });
   }
   if (!flags["aggregate-only"]) {
-    await execute({ flags, plan, traces, mode, output, piAuthPath, head, dirty, modulesLoader });
+    await execute({ flags, plan, traces, mode, output, piAuthPath, head, dirty, modulesLoader, onPhase });
   }
-  const results = await aggregate({ plan, traces, output, mode, auditPath: flags.audit });
+  const results = await aggregate({ plan, traces, output, mode, auditPath: flags.audit, onPhase });
   stdout(JSON.stringify({ output, executionKind: mode, qualityMeasured: mode === "real", coverage: results.coverage,
     ...(results.summary.holdout ? { holdoutDecision: results.summary.holdout.decision } : {}),
     overall: Object.fromEntries(Object.entries(results.summary.arms).map(([arm, row]) => [arm, { n: row.overall.n, accuracy: row.overall.accuracy, delta: row.deltaVsBaseline.overall, excluded: row.excluded }])) }, null, 2));
@@ -204,7 +205,7 @@ export function observedInputTokens(usage) {
   return Math.max(input, usage?.conservativeInputTokens ?? 0);
 }
 
-async function execute({ flags, plan, traces, mode, output, piAuthPath, head, dirty, modulesLoader }) {
+async function execute({ flags, plan, traces, mode, output, piAuthPath, head, dirty, modulesLoader, onPhase }) {
   const selectedTraces = flags.trace === undefined ? traces : traces.filter((trace) => flags.trace.includes(trace.id));
   if (flags.trace !== undefined && selectedTraces.length !== new Set(flags.trace).size) throw new CliError("unknown_trace");
   const repeatList = flags.repeat === undefined ? Array.from({ length: plan.repeats }, (_, index) => index + 1)
@@ -244,9 +245,10 @@ async function execute({ flags, plan, traces, mode, output, piAuthPath, head, di
     if (!admit()) { checkpoints.set(key, { error: "admission_stopped" }); return; }
     const dir = join(scratch, `cp-${key.replace(/[^a-z0-9-]/giu, "_")}`);
     await rm(dir, { recursive: true, force: true });
+    onPhase({ phase: "checkpoint-dispatch", traceId: unit.trace.id, arm: unit.arm.id });
     try {
       state.liveTurns += unit.arm.ledgerUpkeep ? plan.upkeep.callsPerTraceRepeat : unit.arm.midCheckpoint !== null ? 1 : 0;
-      const built = await buildCheckpoint({ modules, trace: unit.trace, arm: unit.arm, repeat: unit.repeat, dir, plan, mode, authPath, upkeepPrice, ...(flags["capture-upkeep-output"] ? { captureUpkeepOutput: join(output, "upkeep-output", `r${unit.repeat}-${unit.trace.id}.json`) } : {}) });
+      const built = await buildCheckpoint({ modules, trace: unit.trace, arm: unit.arm, repeat: unit.repeat, dir, plan, mode, authPath, upkeepPrice, onPhase, ...(flags["capture-upkeep-output"] ? { captureUpkeepOutput: join(output, "upkeep-output", `r${unit.repeat}-${unit.trace.id}.json`) } : {}) });
       if (built.record.mid) account(built.record.mid.usage);
       if (built.record.upkeep) account(built.record.upkeep.usage);
       checkpoints.set(key, built);
@@ -257,7 +259,7 @@ async function execute({ flags, plan, traces, mode, output, piAuthPath, head, di
       if (record?.mid) account(record.mid.usage);
       if (record?.upkeep) account(record.upkeep.usage);
       checkpoints.set(key, { error: error?.code ?? "checkpoint_failed", ...(record ? { record } : {}) });
-    }
+    } finally { onPhase({ phase: "checkpoint-completion", traceId: unit.trace.id, arm: unit.arm.id }); }
   });
   const judge = createJudge({ modules, plan, mode, workspace: join(scratch, "judge"), authPath: piAuthPath });
   if (judge) await mkdir(join(scratch, "judge"), { recursive: true, mode: 0o700 });
@@ -271,9 +273,11 @@ async function execute({ flags, plan, traces, mode, output, piAuthPath, head, di
       return { traceId: unit.trace.id, arm: unit.arm.id, repeat: unit.repeat, probeId: probe.id, category: probe.category, status: "failed", failure: checkpoint?.error ?? "checkpoint_missing", score: null };
     }
     state.liveTurns += 1;
+    onPhase({ phase: "unit-dispatch", traceId: unit.trace.id, arm: unit.arm.id, probeId: probe.id });
     const trial = await runProbe({ modules, trace: unit.trace, arm: unit.arm, repeat: unit.repeat, probe, checkpointWork: checkpoint.work, checkpointSnapshot: checkpoint.snapshot ?? null, checkpointContinuity: checkpoint.record.continuity ?? null,
       checkpointConversationId: checkpoint.record.conversationId, checkpointUpkeep: checkpoint.record.upkeep ?? null, mid: checkpoint.record.mid, root: ROOT,
       forkDir: join(scratch, `probe-${index}`), plan, mode, authPath, keepWork: flags["keep-work"] === true });
+    onPhase({ phase: "worker-completion", traceId: unit.trace.id, arm: unit.arm.id, probeId: probe.id, status: trial.status });
     account(trial.usage);
     if (isFatalFailure(trial)) state.stop = trial.failure;
     if (judge && probe.category === "next_action" && trial.answer !== null && trial.answer !== undefined) {
@@ -299,7 +303,8 @@ async function execute({ flags, plan, traces, mode, output, piAuthPath, head, di
   if (flags["keep-work"] !== true) await rm(scratch, { recursive: true, force: true });
 }
 
-export async function aggregate({ plan, traces, output, mode, auditPath }) {
+export async function aggregate({ plan, traces, output, mode, auditPath, onPhase = () => {} }) {
+  onPhase({ phase: "join-start" });
   if (plan.holdout && mode === "real") (await import("./lib/continuity-holdout-registration.mjs")).assertRealHoldoutModels(plan.holdout.models);
   const files = (await readdir(join(output, "units"))).filter((name) => name.endsWith(".json")).sort();
   const units = [];
@@ -315,9 +320,12 @@ export async function aggregate({ plan, traces, output, mode, auditPath }) {
     const { holdoutStatistics } = await import("./lib/continuity-holdout-statistics.mjs");
     const { readBoundAudit } = await import("./lib/continuity-holdout-registration.mjs");
     const bound = await readBoundAudit(auditPath, plan.holdout.registrationSha256);
+    onPhase({ phase: "statistics-start" });
     summary.holdout = holdoutStatistics({ conversations: plan.holdout.conversations, trials, statisticalSpec: plan.holdout.statisticalSpec,
       audit: bound.audit, measurement: mode === "real" });
+    onPhase({ phase: "statistics-completion" });
     summary.holdout.auditBinding = bound.binding;
+    onPhase({ phase: "audit-gate", auditPresent: bound.binding !== null, decision: summary.holdout.decision.status });
   }
   const judgeUsage = emptyUsage();
   for (const trial of trials) if (trial.judge?.usage) addUsage(judgeUsage, trial.judge.usage);
