@@ -2,9 +2,13 @@
 
 ## Unreleased
 
+- Add provenance-verified holdout auditing, blinded independent reviewer imports
+  and deterministic final reports. Require complete hash-bound adjudication for
+  acceptance; preserve agreed findings and limit adjudication to disputed flags.
+  Handwritten totals and standalone aggregation cannot certify.
+
 - Add root-bound holdout shard authorization, interrupted-upkeep accounting,
-  validated joins and provider-free offline proof tooling; study acceptance remains
-  blocked until the independent audit workflow is available.
+  validated joins and provider-free offline proof tooling.
 
 - Add registered holdout benchmark shards, conversation-cluster decision statistics
   and deterministic power analysis without changing runtime behavior. Use the

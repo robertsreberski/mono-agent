@@ -10,6 +10,8 @@ import { seeded } from "./continuity-holdout-registration.mjs";
 import { preparationIntegrity, verifyLedgerTreatment } from "./continuity-runner.mjs";
 import { benchmarkArgs, durable, need } from "./continuity-holdout-workflow.mjs";
 
+// Direct ledger import and its complete local dist dependency closure.
+export const LEDGER_DIST_MODULES = ["ledger", "ranking", "span-geometry", "render-fit", "ledger-error"].map(name => `packages/conversation/dist/continuity/${name}.js`);
 export function representatives(conversations, seed) {
   const next = seeded(seed), families = [...new Set(conversations.map(c => c.family))].sort();
   return families.map(family => {
@@ -38,8 +40,42 @@ export function checkProofUnit(unit) {
       && (trial.boundary.observed.upkeep ?? []).every(r => !r.providerInvoked && !r.operationId), "offline_probe_upkeep");
   }
 }
+/** Shared pure renderer/citation check; callers supply archive-bound native records. */
+export function checkLedgerView(generation, records, renderLedger) {
+  const byId = new Map(records.map(r => [r.recordId, r]));
+  for (const span of generation.spans) {
+    const record = byId.get(span.recordId);
+    need(record && span.ordinal === record.ordinal && record.sha256 === sha256(record.text)
+      && span.sha256 === record.sha256 && Number.isSafeInteger(span.start) && span.start >= 0 && Number.isSafeInteger(span.end)
+      && span.end > span.start && span.end <= Buffer.byteLength(record.text)
+      && Buffer.from(Buffer.from(record.text).subarray(span.start, span.end).toString("utf8")).equals(Buffer.from(record.text).subarray(span.start, span.end))
+      && (!span.owner || (span.start === 0 || Buffer.from(record.text).subarray(0, span.start).toString().endsWith("\n\n"))
+        && (span.end === Buffer.byteLength(record.text) || Buffer.from(record.text).subarray(span.end).toString().startsWith("\n\n")))
+      && span.digest === sha256(Buffer.from(record.text).subarray(span.start, span.end))
+      && span.owner === (record.kind === "owner" && record.provenance === "host-owner" && record.inputId === record.source.attestation?.inputId), "offline_host_citation");
+  }
+  const saved = JSON.stringify(generation), rendered = renderLedger(generation, records);
+  const lines = rendered.split("\n").filter(line => line.startsWith("Derived "));
+  const order = lines.map(line => Number(line.match(/ order=(\d+) status=/u)?.[1]));
+  const expected = generation.entries.map(e => Math.max(...e.sources.map(id => generation.spans.find(s => s.id === id)?.ordinal))).sort((a, b) => a - b);
+  need(JSON.stringify(order) === JSON.stringify(expected) && order.every(Number.isSafeInteger)
+    && lines.every(line => Buffer.byteLength(line + "\n") <= 1024) && saved === JSON.stringify(generation), "offline_render_order_or_storage");
+  need(lines.length === generation.entries.length, "offline_render_count");
+  for (const [i, entry] of [...generation.entries].sort((a, b) => Math.max(...a.sources.map(id => generation.spans.find(s => s.id === id)?.ordinal)) - Math.max(...b.sources.map(id => generation.spans.find(s => s.id === id)?.ordinal))).entries()) {
+    if (entry.decisionRelabelled) need(lines[i].startsWith("Derived artifact (reported fact; no owner decision cited)"), "offline_relabel_marker");
+    if (entry.outcomeUnverified) need(lines[i].includes("(outcome not verified by a tool result)"), "offline_downgrade_marker");
+    if (entry.kind !== "identifier") continue;
+    const context = JSON.parse(lines[i].match(/ context=("(?:[^"\\]|\\.)*") sources=/u)?.[1] ?? "null");
+    const span = entry.sources.map(id => generation.spans.find(s => s.id === id)).find(s => Buffer.from(byId.get(s.recordId).text).subarray(s.start, s.end).includes(Buffer.from(entry.value)));
+    need(typeof context === "string" && span, "offline_identifier_context");
+    const text = Buffer.from(byId.get(span.recordId).text).subarray(span.start, span.end), literal = text.indexOf(Buffer.from(entry.value)), at = text.indexOf(Buffer.from(context));
+    need(at >= 0 && at <= literal && at + Buffer.byteLength(context) >= literal + Buffer.byteLength(entry.value)
+      && literal - at <= 48 && at + Buffer.byteLength(context) - literal - Buffer.byteLength(entry.value) <= 48, "offline_identifier_context");
+  }
+  return { rendered, derivedLines: lines.length };
+}
 async function sourceRenderProof(root, unit) {
-  const { spanKey, ledgerHash, renderLedger } = await import(pathToFileURL(join(CHECKOUT, "packages/conversation/dist/continuity/ledger.js")).href);
+  const { spanKey, ledgerHash, renderLedger } = await import(pathToFileURL(join(CHECKOUT, LEDGER_DIST_MODULES[0])).href);
   const path = join(root, "work", `cp-${unit.traceId}_ledger-continuity-ledger-cold-r1`, "work/history/tool-history/tool-lifecycles.sqlite");
   const db = new DatabaseSync(path, { readOnly: true });
   try {
@@ -51,7 +87,7 @@ async function sourceRenderProof(root, unit) {
       ...(r.input_id ? { inputId: r.input_id } : {}), kind: r.kind, provenance: r.provenance, source: JSON.parse(r.source_json), ordinal: r.ordinal,
       sequence: r.seq, text: r.retained_text, sha256: r.text_sha256, originalBytes: r.original_bytes, retainedBytes: r.retained_bytes,
       redacted: !!r.redacted, truncated: !!r.truncated, untrusted: true }));
-    const byOrdinal = new Map(records.map(r => [r.ordinal, r])), byId = new Map(records.map(r => [r.recordId, r]));
+    const byOrdinal = new Map(records.map(r => [r.ordinal, r]));
     const counts = new Map(); let validatedGenerations = 0;
     for (const [index, step] of unit.checkpoint.upkeep.preparations.entries()) {
       for (const offer of step.journal.offered) {
@@ -67,20 +103,7 @@ async function sourceRenderProof(root, unit) {
       const capture = JSON.parse((await regularFile(join(root, "upkeep-output", `r1-${unit.traceId}-p${index + 1}.json`))).toString("utf8"));
       const generation = capture.ledger;
       if (!generation) continue; // An analyzed empty delta is valid; injection is independently verified.
-      for (const span of generation.spans) {
-        const record = byId.get(span.recordId);
-        need(record && span.ordinal === record.ordinal && record.sha256 === sha256(record.text)
-          && span.sha256 === record.sha256 && Number.isSafeInteger(span.start) && span.start >= 0 && Number.isSafeInteger(span.end)
-          && span.end > span.start && span.end <= Buffer.byteLength(record.text)
-          && span.digest === sha256(Buffer.from(record.text).subarray(span.start, span.end))
-          && span.owner === (record.kind === "owner" && record.provenance === "host-owner" && record.inputId === record.source.attestation?.inputId), "offline_host_citation");
-      }
-      const saved = JSON.stringify(generation), rendered = renderLedger(generation, records);
-      const lines = rendered.split("\n").filter(line => line.startsWith("Derived "));
-      const order = lines.map(line => Number(line.match(/ order=(\d+) status=/u)?.[1]));
-      const expected = generation.entries.map(e => Math.max(...e.sources.map(id => generation.spans.find(s => s.id === id)?.ordinal))).sort((a, b) => a - b);
-      need(JSON.stringify(order) === JSON.stringify(expected) && order.every(Number.isSafeInteger)
-        && lines.every(line => Buffer.byteLength(line + "\n") <= 1024) && saved === JSON.stringify(generation), "offline_render_order_or_storage");
+      checkLedgerView(generation, records, renderLedger);
       validatedGenerations += Number(generation.spans.length > 0 && generation.entries.length > 0);
     }
     return { retainedRecords: records.length, validatedGenerations, preparationChildren: unit.checkpoint.upkeep.preparations.map(s => s.pid) };

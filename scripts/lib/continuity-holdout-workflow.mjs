@@ -16,7 +16,7 @@ export const unitKey = u => `${u.traceId}/${u.arm}/${u.repeat}`;
 export async function durable(path, value, exclusive = false) {
   const temp = `${path}.${randomUUID()}.pending`, file = await open(temp, "wx", 0o600);
   try {
-    try { await file.writeFile(jsonBytes(value)); await file.sync(); } finally { await file.close(); }
+    try { await file.writeFile(Buffer.isBuffer(value) ? value : jsonBytes(value)); await file.sync(); } finally { await file.close(); }
     if (exclusive) await link(temp, path); else await rename(temp, path);
   } finally {
     try { await unlink(temp); } catch (e) { if (e.code !== "ENOENT") throw e; }
@@ -169,16 +169,16 @@ export async function chunkUnits(root, plan, traceId, verified) {
   }
   return units;
 }
-export function pendingAuditGate(statistics, complete) {
-  const extra = [...(!complete ? ["controller-material:inconclusive"] : []), "audit-workflow-pending:inconclusive"];
+export function pendingAuditGate(statistics, complete, certified = false) {
+  const extra = [...(!complete ? ["controller-material:inconclusive"] : []), ...(!certified ? ["audit-workflow-pending:inconclusive"] : [])];
   statistics.decision.reasons.push(...extra);
   statistics.decision.gates.push(...extra.map(reason => ({ name: reason.split(":")[0], status: "inconclusive" })));
-  if (statistics.decision.status === "pass") statistics.decision.status = "inconclusive";
+  if (extra.length > 0 && statistics.decision.status === "pass") statistics.decision.status = "inconclusive";
   return statistics;
 }
 export async function joinShards(context, roots, output, auditPath) {
   const { accountUnits, accountJournals, spendOf, CONTROLLER_STOPS } = await import("./continuity-holdout-controller.mjs");
-  const trials = [], stops = [], seen = new Set(), shardIds = new Set(); let complete = true;
+  const trials = [], stops = [], artifacts = {}, seen = new Set(), shardIds = new Set(); let complete = true;
   for (const rootInput of roots) {
     const root = await externalDirectory(rootInput), controllerBytes = await regularFile(join(root, "controller.json")), state = JSON.parse(controllerBytes);
     const bundle = context.plans.find(b => b.plan.holdout.shard === state.shard);
@@ -186,6 +186,8 @@ export async function joinShards(context, roots, output, auditPath) {
     need(state.schema === "holdout-controller-v1" && state.binding === digest(bundle) && state.stop?.reconciled === true
       && CONTROLLER_STOPS.includes(state.stop.reason) && /^[a-f0-9]{64}$/u.test(state.authorizationSha256 ?? "")
       && state.chunks.every(c => c.state !== "running"), "controller_binding_or_stop_mismatch");
+    artifacts[`shards/${state.shard}/controller.json`] = sha256(controllerBytes);
+    artifacts[`shards/${state.shard}/authorization.json`] = state.authorizationSha256;
     stops.push({ shard: state.shard, stop: state.stop, spend: state.spend, controllerSha256: sha256(controllerBytes) });
     complete &&= state.stop.reason === "completed" && state.chunks.length === bundle.chunks.length;
     const names = await readdir(root);
@@ -204,6 +206,8 @@ export async function joinShards(context, roots, output, auditPath) {
         reconciledChunks.push({ ...chunk, accounting: accountUnits([], bundle), journalAccounting: accountUnits([], bundle), unitFiles: 0 }); continue;
       }
       const verified = await verifyArchive(directory, chunk.archiveSha256);
+      const prefix = `shards/${state.shard}/chunks/${index + 1}/`;
+      artifacts[`${prefix}archive.json`] = chunk.archiveSha256;
       if (chunk.integrityError) need(chunk.integrityError === "invalid_unit_material" && chunk.state !== "finished", "invalid_integrity_stop");
       const units = chunk.integrityError ? [] : await chunkUnits(directory, bundle.plan, chunk.traceId, verified);
       const accounting = accountUnits(units, bundle), journalAccounting = await accountJournals(directory, chunk.traceId, bundle, units);
@@ -215,6 +219,8 @@ export async function joinShards(context, roots, output, auditPath) {
     }
     need(digest(spendOf(reconciledChunks, bundle.plan.arms.length * bundle.plan.repeats)) === digest(state.spend), "accounting_mismatch");
   }
+  stops.sort((a, b) => a.shard - b.shard);
+  trials.sort((a, b) => JSON.stringify([a.traceId, a.arm, a.repeat, a.probeId]).localeCompare(JSON.stringify([b.traceId, b.arm, b.repeat, b.probeId]), "en"));
   complete &&= shardIds.size === context.plans.length;
   const bound = await readBoundAudit(auditPath, context.options.registrationSha256);
   const statistics = holdoutStatistics({ conversations: context.registration.conversations, trials, audit: bound.audit,
@@ -223,7 +229,7 @@ export async function joinShards(context, roots, output, auditPath) {
   // A bare totals file is not that proof, even if every numeric gate would pass.
   pendingAuditGate(statistics, complete);
   const result = { schema: "holdout-joined-v1", registrationSha256: context.options.registrationSha256,
-    controllerComplete: complete, stops, auditBinding: bound.binding, statistics };
-  output = await externalDirectory(output, true);
-  await durable(join(output, "joined.json"), result, true); return result;
+    controllerComplete: complete, stops, artifacts, trials, auditBinding: bound.binding, statistics };
+  if (output !== null) { output = await externalDirectory(output, true); await durable(join(output, "joined.json"), result, true); }
+  return result;
 }

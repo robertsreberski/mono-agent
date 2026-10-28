@@ -325,6 +325,12 @@ export async function aggregate({ plan, traces, output, mode, auditPath, onPhase
       audit: bound.audit, measurement: mode === "real" });
     onPhase({ phase: "statistics-completion" });
     summary.holdout.auditBinding = bound.binding;
+    if (mode === "real") {
+      // Standalone aggregation cannot certify the mechanical/two-auditor workflow.
+      summary.holdout.decision.gates.push({ name: "audit-certification", status: "inconclusive" });
+      summary.holdout.decision.reasons.push("audit-certification:inconclusive");
+      if (summary.holdout.decision.status === "pass") summary.holdout.decision.status = "inconclusive";
+    }
     onPhase({ phase: "audit-gate", auditPresent: bound.binding !== null, decision: summary.holdout.decision.status });
   }
   const judgeUsage = emptyUsage();

@@ -2,6 +2,7 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join, dirname } from "node:path";
 import { fork } from "node:child_process";
+import { auditCheckpoint } from "./holdout-audit-data.mjs";
 import { DatabaseSync } from "node:sqlite";
 let finished = false;
 process.on("disconnect", () => { if (!finished) process.kill(-process.pid, "SIGKILL"); });
@@ -47,6 +48,10 @@ process.once("message", async ({ argv }) => {
       trials: probes.map(probeId => ({ traceId, arm, repeat, probeId, status: "completed", boundary: { verified: true },
         score: mode === "quality_fail" ? { pass: false, outcome: "wrong" } : arm === "continuity-pack-cold" ? { pass: false, outcome: "abstained" } : { pass: true, outcome: "correct" },
         usage: { calls: 1, inputTokens: 100, outputTokens: 10, estimatedCostUsd: 0.001 } })) };
+    if (mode === "audit" && arm === "continuity-ledger-cold") {
+      unit.checkpoint = await auditCheckpoint(output, traceId, repeat);
+      for (const trial of unit.trials) trial.boundary.observed = { upkeep: [], upkeepScans: [], continuityPacks: [{ ledgerEntries: 3 }] };
+    }
     if (mode === "journal_overlap" && arm === "continuity-ledger-cold") {
       const path = join(output, "work", `cp-${traceId}_ledger-continuity-ledger-cold-r${repeat}/work/history/tool-history`); await mkdir(path, { recursive: true });
       const db = new DatabaseSync(join(path, "tool-lifecycles.sqlite"));

@@ -155,7 +155,7 @@ it("recovers a crashed controller's durable reservation without dispatching twic
 it("joins validated complete/partial shards into planned statistics and cannot accept absent audit evidence", async () => {
   const first = await run("valid", 1), second = await run("valid", 2);
   const result = await workflow.joinShards(context, [second.opts.output, first.opts.output], join(directory, "joined"));
-  expect(result.stops[0].controllerSha256).toBe(sha256(await readFile(join(second.opts.output, "controller.json"))));
+  expect(result.stops.find(s => s.shard === second.state.shard).controllerSha256).toBe(sha256(await readFile(join(second.opts.output, "controller.json"))));
   expect(result.controllerComplete).toBe(true); expect(result.statistics.integrity.complete).toBe(true); expect(result.statistics.plannedAnswersPerArm).toBe(120);
   expect(result.auditBinding).toBe(null); expect(result.statistics.decision.status).not.toBe("pass"); expect(result.statistics.decision.reasons).toContain("audit-material:inconclusive");
   const partial = await workflow.joinShards(context, [first.opts.output], join(directory, "joined-missing"));

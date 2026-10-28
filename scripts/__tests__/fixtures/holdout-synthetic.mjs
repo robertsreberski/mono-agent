@@ -91,9 +91,10 @@ export async function syntheticContext(directory) {
   const allowlist = { ...empty, entries: overlap.overlaps.map(({ mode, phrase }) => ({ mode, phrase, justification: "Synthetic test-only generic-language exception." })) };
   if (overlap.overlaps.length) overlap = await checkHoldoutOverlap(loaded, seeds, allowlist, stats);
   const paths = {};
-  for (const [key, value] of Object.entries({ seeds, overlap, rubric: "Synthetic rubric", protocol: "Synthetic protocol", allowlist })) {
+  for (const [key, value] of Object.entries({ seeds, overlap, protocol: "Synthetic protocol", allowlist })) {
     paths[`${key}Path`] = join(inputs, `${key}.json`); await writeFile(paths[`${key}Path`], jsonBytes(value));
   }
+  paths.rubricPath = join(inputs, "rubric.json"); await writeFile(paths.rubricPath, await readFile(join(CHECKOUT, "scripts/continuity-holdout/audit-rubric.json")));
   await mkdir(join(directory, "outputs"));
   const outputDir = join(directory, "outputs/frozen");
   const frozen = await freeze.freezeHoldout({ specDir, outputDir, statisticalSpec: stats, ...paths });
