@@ -1,3 +1,5 @@
+// Offline/dry-run must work before a workspace build; Node >=24.15.0 strips this import-free TS source.
+import { deriveUpkeepAccounting } from "../../packages/contracts/src/upkeep-accounting.ts";
 // Deterministic probe scoring and aggregation for the continuity benchmark.
 // Pure functions: no provider, filesystem or clock access.
 
@@ -179,11 +181,14 @@ const round = (value, digits = 4) => (value === null ? null : Number(value.toFix
 
 const USAGE_FIELDS = ["inputTokens", "outputTokens", "cacheReadTokens", "cacheWriteTokens"];
 export function emptyUsage() {
-  return { calls: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, estimatedCostUsd: 0, unknownCostCalls: 0, unknownTokenCalls: 0, conservativeInputTokens: 0, conservativeCostUsd: 0, conservativeCalls: 0, unpricedConservativeCalls: 0 };
+  return { reportedCost: { totalUsd: 0, knownCostUsd: 0, partial: false }, calls: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, estimatedCostUsd: 0, unknownCostCalls: 0, unknownTokenCalls: 0, conservativeInputTokens: 0, conservativeCostUsd: 0, conservativeCalls: 0, unpricedConservativeCalls: 0 };
 }
 export function addUsage(total, usage) {
   if (!usage || usage.calls === 0) return total;
   if (Array.isArray(usage.components)) { for (const part of usage.components) addUsage(total, part); return total; }
+  const before = total.reportedCost ?? { totalUsd: null, knownCostUsd: 0 }, next = usage.reportedCost ?? { totalUsd: null, knownCostUsd: 0 };
+  const known = before.knownCostUsd + next.knownCostUsd;
+  total.reportedCost = deriveUpkeepAccounting([], { totalUsd: before.totalUsd == null || next.totalUsd == null ? null : known, knownCostUsd: known }).cost;
   total.calls += usage.calls ?? 1;
   let unknownTokens = false;
   for (const field of USAGE_FIELDS) {

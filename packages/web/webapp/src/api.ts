@@ -390,7 +390,7 @@ const recordOf = (value: unknown): Record<string, unknown> | null =>
 const safeNumber = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0;
 function validUsageSlice(value: unknown): value is WebUsageSlice {
   const slice = recordOf(value);
-  if (slice === null || (slice.costUsd !== undefined && slice.costUsd !== null && !safeNumber(slice.costUsd))
+  if (slice === null || (slice.pending !== undefined && slice.pending !== true) || (slice.costUsd !== undefined && slice.costUsd !== null && !safeNumber(slice.costUsd))
     || (slice.knownCostUsd !== undefined && !safeNumber(slice.knownCostUsd))
     || (slice.costUnknown !== undefined && slice.costUnknown !== true)
     || (slice.tokensPartial !== undefined && slice.tokensPartial !== true)
@@ -403,7 +403,10 @@ export function parseThreadUsage(value: unknown): WebThreadUsage {
   normalizeBrowserCosts(value);
   const usage = recordOf(value);
   const compaction = recordOf(usage?.compaction);
+  const upkeep = recordOf(usage?.upkeep);
   if (usage === null || !validUsageSlice(usage.total)
+    || (usage.upkeep !== undefined && (!validUsageSlice(usage.upkeep) || upkeep === null
+      || !Number.isSafeInteger(upkeep.operations) || Number(upkeep.operations) < 0))
     || (usage.compaction !== undefined && (!validUsageSlice(usage.compaction) || compaction === null
       || !Number.isSafeInteger(compaction.requests) || Number(compaction.requests) < 1
       || (compaction.requestsWithUsage !== undefined && (!Number.isSafeInteger(compaction.requestsWithUsage) || Number(compaction.requestsWithUsage) < 0

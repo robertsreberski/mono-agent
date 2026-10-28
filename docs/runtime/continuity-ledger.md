@@ -478,3 +478,18 @@ explicit reset intents are distinguished durably. No source is pinned indefinite
 Bounded admission metadata stops further purchases when full rather than evicting
 anti-repurchase evidence. Disabling upkeep stops new purchases without downgrading
 or deleting the additive tables. Existing deterministic fallback remains available.
+
+The console preserves the content-free forwarded accounting projection through
+live updates, shaped reloads and replay. Message/thread totals and running cards
+include upkeep once by operation ID, preferring results over delayed dispatches.
+The upkeep slice and per-model breakdown attribute extraction to its own model,
+not the answering model. Unknown prices display a known subtotal plus partial;
+incomplete token observations do not establish a complete cache ratio. Runs
+without upkeep retain their previous totals and presentation.
+
+Benchmark preparation usage exposes `reportedCost` with `totalUsd`,
+`knownCostUsd` and `partial`, reconciled by the same operation semantics. Missing
+reported cost remains unknown even when catalog reservations are available.
+Legacy catalog estimates and conservative unknown-call/input/cost stop counters
+remain separate: they bound the experiment, not an invoice. No paid quality run
+is implied by offline reconciliation tests.

@@ -1028,6 +1028,9 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
 .selection-toolbar { display: flex; padding: 4px; color: #f8faf6; background: #242a26; border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 9px; box-shadow: var(--shadow-lg); }
 .selection-toolbar-quote { height: 30px; display: inline-flex; align-items: center; gap: 6px; padding: 0 9px; color: inherit; background: transparent; border-radius: 6px; cursor: pointer; font-size: 11px; font-weight: 650; }
 .selection-toolbar-quote:hover { background: rgba(255, 255, 255, 0.09); }
+.message-upkeep-cost { margin-top: 10px; color: var(--text-muted); font-size: 11px; line-height: 1.6; }
+.message-upkeep-cost summary { cursor: pointer; }
+.message-upkeep-cost > div { padding-left: 12px; font-family: var(--font-mono); font-size: 10px; overflow-wrap: anywhere; }
 .message-actions {
   min-height: 26px;
   display: flex;

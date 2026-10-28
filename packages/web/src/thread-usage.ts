@@ -1,7 +1,7 @@
 import type { WebThreadUsage, WebUsageTokens } from "./contracts.js";
-import type { MessageUsageRollup, MessageUsageSlice } from "./message-cost.js";
+import { upkeepUsageRollup, type MessageUsageRollup, type MessageUsageSlice } from "./message-cost.js";
 
-type MutableSlice = { tokens?: WebUsageTokens; costUsd?: number | null; knownCostUsd?: number; tokensPartial?: true; costPartial?: true };
+type MutableSlice = { pending?: true; tokens?: WebUsageTokens; costUsd?: number | null; knownCostUsd?: number; tokensPartial?: true; costPartial?: true };
 const safeSum = (left: number, right: number): number => Math.min(Number.MAX_SAFE_INTEGER, left + right);
 const addTokens = (left: WebUsageTokens | undefined, right: WebUsageTokens): WebUsageTokens => ({
   input: safeSum(left?.input ?? 0, right.input), cacheRead: safeSum(left?.cacheRead ?? 0, right.cacheRead),
@@ -9,6 +9,8 @@ const addTokens = (left: WebUsageTokens | undefined, right: WebUsageTokens): Web
 });
 const known = (slice: MessageUsageSlice): number | undefined => slice.costUsd ?? slice.knownCostUsd;
 function add(target: MutableSlice, source: MessageUsageSlice) {
+  if (source.pending && (target.pending || target.costUsd === undefined && target.tokens === undefined)) target.pending = true;
+  else delete target.pending;
   if (source.tokens !== undefined) {
     const keys: ReadonlyArray<keyof WebUsageTokens> = ["input", "output", "cacheRead", "cacheWrite"];
     for (const key of keys) if (source.tokens[key] > Number.MAX_SAFE_INTEGER - (target.tokens?.[key] ?? 0)) target.tokensPartial = true;
@@ -38,21 +40,23 @@ export function sumThreadUsage(rollups: readonly MessageUsageRollup[], computedA
     return slice;
   };
   for (const rollup of rollups) {
+    const inference = rollup.inference ?? rollup.main;
+    if (rollup.inference && inference.tokens === undefined) total.tokensPartial = true;
     const syncKnown = rollup.subagents.reduce((sum, child) => sum + (!child.detached ? known(child) ?? 0 : 0), 0);
-    const inclusiveKnown = known(rollup.main);
+    const inclusiveKnown = known(inference);
     const ownKnown = inclusiveKnown === undefined ? undefined : Math.max(0, inclusiveKnown - syncKnown - (known(rollup.compaction ?? {}) ?? 0));
-    add(total, rollup.main);
-    const main = modelSlice(rollup.main.model);
-    const allTokens = rollup.main.tokens;
+    if (!(rollup.main.pending && inference.costUsd === undefined && inference.tokens === undefined)) add(total, rollup.inference && inference.costUsd === undefined ? { ...inference, costUsd: null, costPartial: true } : inference);
+    const main = modelSlice(inference.model);
+    const allTokens = inference.tokens;
     const summaryTokens = rollup.compaction?.tokens;
     const ownTokens = allTokens === undefined ? undefined : {
       input: Math.max(0, allTokens.input - (summaryTokens?.input ?? 0)), output: Math.max(0, allTokens.output - (summaryTokens?.output ?? 0)),
       cacheRead: Math.max(0, allTokens.cacheRead - (summaryTokens?.cacheRead ?? 0)), cacheWrite: Math.max(0, allTokens.cacheWrite - (summaryTokens?.cacheWrite ?? 0)),
     };
-    const { costUsd: _inclusiveCost, knownCostUsd: _inclusiveKnown, tokens: _inclusiveTokens, ...mainMetadata } = rollup.main;
+    const { costUsd: _inclusiveCost, knownCostUsd: _inclusiveKnown, tokens: _inclusiveTokens, ...mainMetadata } = inference;
     add(main, { ...mainMetadata,
-      ...(rollup.main.costUsd === null ? { costUsd: null, ...(ownKnown !== undefined ? { knownCostUsd: ownKnown } : {}) }
-        : ownKnown === undefined || ownKnown === 0 && rollup.main.costPartial ? {} : { costUsd: ownKnown }),
+      ...(inference.costUsd === null ? { costUsd: null, ...(ownKnown !== undefined ? { knownCostUsd: ownKnown } : {}) }
+        : ownKnown === undefined || ownKnown === 0 && inference.costPartial ? {} : { costUsd: ownKnown }),
       ...(ownTokens === undefined ? {} : { tokens: ownTokens }) });
     if (rollup.compaction) {
       add(compaction, rollup.compaction);
@@ -75,8 +79,15 @@ export function sumThreadUsage(rollups: readonly MessageUsageRollup[], computedA
       add(modelSlice(child.model), child.detached ? observed : costOnly);
     }
   }
+  const upkeep = upkeepUsageRollup(rollups.flatMap(r => r.upkeepAccounting ?? []), rollups.some(r => r.upkeepPartial));
+  const hasUpkeep = upkeep.accounting.length > 0 || upkeep.partial;
+  if (hasUpkeep) {
+    add(total, upkeep.slice);
+    for (const row of upkeep.byModel) add(modelSlice(row.model), row);
+  }
   return {
     total: { ...total },
+    ...(hasUpkeep ? { upkeep: upkeep.slice } : {}),
     ...(compaction.requests ? { compaction: { ...compaction } } : {}),
     ...(subagents.runs === 0 ? {} : { subagents: { ...subagents } }),
     byModel: [...byModel.entries()].filter(([, slice]) => slice.costUsd !== undefined)

@@ -13,7 +13,8 @@
     "skipLibCheck": true,
     "moduleResolution": "bundler",
     "paths": {
-      "@mono-agent/contracts/provider-usage": ["../../contracts/src/provider-usage.ts"]
+      "@mono-agent/contracts/provider-usage": ["../../contracts/src/provider-usage.ts"],
+      "@mono-agent/contracts/upkeep-accounting": ["../../contracts/src/upkeep-accounting.ts"]
     },
     "allowImportingTsExtensions": true,
     "verbatimModuleSyntax": true,
@@ -36,7 +37,8 @@
         "../src/thread-usage.ts",
         "../src/push-preview.ts",
         "../src/contracts.ts",
-        "../../contracts/src/provider-usage.ts"
+        "../../contracts/src/provider-usage.ts",
+        "../../contracts/src/upkeep-accounting.ts"
       ],
       "exclude": ["src/stories/**", "src/**/*.stories.tsx"]
 }

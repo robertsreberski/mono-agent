@@ -191,3 +191,22 @@ it.each(["fail", "cancel"])("forwards a waiting %s after pending custom commit r
   expect(recovered.status).toBe(mode === "fail" ? "failed" : "cancelled");
   expect(recovered.upkeepAccounting).toEqual([result]);
 });
+
+
+it.each([
+  [{ status: "skipped", providerInvoked: false }, false],
+  [{ status: "valid", providerInvoked: true }, true],
+  [{ status: "uncertain", providerInvoked: false }, true],
+] as const)("requires spend evidence before missing accounting makes recorder/session partial: %j", async (status, partial) => {
+  const event = { type: "continuity_upkeep", ...status };
+  const recorder = withUpkeepAccounting(new NoopRunRecorder({ runId: "origin", conversationId: "fictional" }), "origin", "fictional");
+  recorder.onEvent(event);
+  const done = await recorder.finish(inference);
+  expect(done.upkeepAccountingPartial === true).toBe(partial);
+  const totals = mapRunToSession(summary, [event], opts).totals;
+  expect(totals.cost).toBe(partial ? null : 0.1);
+  if (!partial) {
+    expect(done.inclusiveCost).toBeUndefined();
+    expect(totals).toEqual({ ...mapRunToSession(summary, [], opts).totals, steps: 1 });
+  } else expect(done.inclusiveCost).toEqual({ totalUsd: null, knownCostUsd: 0.1, partial: true });
+});

@@ -57,7 +57,7 @@ try {
   }
   const contracts = join(fixture, "packages/contracts/src");
   mkdirSync(contracts, { recursive: true });
-  cpSync(resolve(source, "../../contracts/src/provider-usage.ts"), join(contracts, "provider-usage.ts"));
+  for (const file of ["provider-usage.ts", "upkeep-accounting.ts"]) cpSync(resolve(source, "../../contracts/src", file), join(contracts, file));
   console.log(`[standalone] Fixture: ${fixture}`);
   console.log(`[standalone] Source SHA256: ${sourceDigest(join(fixture, "packages")).digest("hex")}`);
   console.log("[standalone] No ancestor node_modules; only canonical contract source, no contracts manifest or dist.");

@@ -21,6 +21,7 @@ const json = (value) => `${JSON.stringify(value, null, 2)}\n`;
 function projectWireSchema(schema) {
   if (schema === null || typeof schema !== "object") return;
   if (schema.properties) {
+    if (schema.properties.operations?.type === "number") Object.assign(schema.properties.operations, { type: "integer", minimum: 0 });
     for (const key of ["costUsd", "cost_usd", "cumulativeUsd", "cumulative_usd", "totalUsd", "total_usd", "cost", "monthUsd", "knownCostUsd", "known_cost_usd", "knownUsd", "monthKnownUsd"]) {
       const property = schema.properties[key];
       if (!property || !(property.type === "number" || Array.isArray(property.type) && property.type.includes("number"))) continue;

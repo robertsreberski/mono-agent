@@ -9,7 +9,7 @@ import {
   type AgentStreamEvent,
 } from "@mono-agent/contracts";
 
-import { assistantTextFromRuntimeEvent, bucketConversationId, createConversationResponder, streamEventFromRuntimeEvent } from "../responder.js";
+import { ConversationHarnessFailureError, assistantTextFromRuntimeEvent, bucketConversationId, createConversationResponder, streamEventFromRuntimeEvent } from "../responder.js";
 import type { ConversationHarness, ConversationHarnessRequest, ConversationHarnessResponse } from "../harness/contracts.js";
 
 function okResponse(conversationId: string): ConversationHarnessResponse {
@@ -1974,4 +1974,29 @@ it("forwards model-change boundaries as runtime telemetry", () => {
     providerSessionId: "new-id", reason: "model_change" };
   const { type: _type, ...data } = boundary;
   expect(streamEventFromRuntimeEvent(boundary)).toMatchObject({ type: "runtime_telemetry", kind: "session_boundary", data });
+});
+
+it.each(["cancelled", "runtime_error"])("forwards failed %s summary receipts before the terminal error", async kind => {
+  const accounting = { version: 1, usageIncluded: false, operationId: "fictional-operation", runId: "r", conversationId: "c1", model: "fictional:extractor", budget: "bootstrap", phase: "result", invocation: "invoked", outcome: "valid", inputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: 1, costUsd: 0.02 } as const;
+  const events: AgentStreamEvent[] = [];
+  const responder = createConversationResponder({ harness: { run: async () => ({ ...okResponse("c1"), failure: { kind, message: "Fictional failure" }, metadata: { ...okResponse("c1").metadata, summary: { runId: "r", conversationId: "c1", status: "failed", durationMs: 1, eventCount: 0, artifactPaths: [], upkeepAccounting: [accounting] } } }) } });
+  await expect(responder.respond(baseRequest(), { append: async () => {}, event: async event => { events.push(event); } })).rejects.toBeInstanceOf(ConversationHarnessFailureError);
+  expect(events).toContainEqual({ type: "runtime_telemetry", kind: "continuity_upkeep", data: { accounting } });
+});
+
+it.each(["disconnected", "noniterable", "queued-disconnect"])("preserves harness failure classification during %s receipt recovery", async mode => {
+  const accounting = { version: 1, usageIncluded: false, operationId: "fictional-operation", runId: "r", conversationId: "c1", model: "fictional:extractor", budget: "bootstrap", phase: "result", invocation: "invoked", outcome: "valid", inputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: 1, costUsd: 0.02 } as const;
+  const failure = { kind: "runtime_error", message: "Fictional original failure" };
+  const events: AgentStreamEvent[] = [];
+  const responder = createConversationResponder({ harness: { run: async request => {
+    if (mode === "queued-disconnect") request.onEvent?.({ type: "tool_execution_start", toolCallId: "fictional-call", toolName: "Read", args: {} });
+    return { ...okResponse("c1"), failure, metadata: { ...okResponse("c1").metadata, summary: { runId: "r", conversationId: "c1", status: "failed", durationMs: 1, eventCount: 0, artifactPaths: [], upkeepAccounting: mode === "noniterable" ? 42 as unknown as readonly typeof accounting[] : [accounting] } } };
+  } } });
+  const response = responder.respond(baseRequest(), { append: async () => {}, event: async event => {
+    events.push(event);
+    if (mode !== "noniterable") throw new Error("Fictional disconnected transport");
+  } });
+  await expect(response).rejects.toBeInstanceOf(ConversationHarnessFailureError);
+  await expect(response).rejects.toMatchObject({ failure });
+  if (mode === "noniterable") expect(events).toContainEqual({ type: "runtime_telemetry", kind: "continuity_upkeep", data: { accountingPartial: true } });
 });

@@ -1107,3 +1107,10 @@ it("normalizes unknown usage without treating unmarked omissions as free", () =>
   expect(() => parseThreadUsage({ ...base, total: { costUnknown: false } })).toThrow();
   expect(() => parseThreadUsage({ ...base, total: { costUnknown: true, knownCostUsd: -1 } })).toThrow();
 });
+
+it("validates and rehydrates the upkeep slice without treating unknown spend as zero", async () => {
+  const { parseThreadUsage } = await import("./api");
+  const usage = { total: { costUnknown: true, knownCostUsd: 0.01 }, upkeep: { operations: 1, costUnknown: true, knownCostUsd: 0 }, byModel: [{ model: "fictional:extractor", costUnknown: true }], computedAt: "2026-05-17T10:00:00Z" };
+  expect(parseThreadUsage(usage).upkeep).toMatchObject({ costUsd: null, knownCostUsd: 0, operations: 1 });
+  for (const invalid of [{ operations: -1 }, { operations: 1.2 }, { operations: 1, costUsd: -0.01 }, { operations: 1, tokensPartial: false }]) expect(() => parseThreadUsage({ ...usage, upkeep: invalid })).toThrow();
+});

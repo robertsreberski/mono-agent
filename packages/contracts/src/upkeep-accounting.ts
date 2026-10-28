@@ -68,3 +68,43 @@ export function mergeAgentUpkeepAccounting(values: readonly unknown[]): readonly
   }
   return [...operations.values()];
 }
+
+/** Browser/channel projection: storage identities never cross this boundary. */
+export type ForwardedUpkeepAccounting = Omit<AgentUpkeepAccounting, "recorderNamespace" | "databaseId" | "incarnation" | "logicalConversationId">;
+const LOCAL_KEYS = new Set(["recorderNamespace", "databaseId", "incarnation", "logicalConversationId"]);
+export function forwardUpkeepAccounting(value: unknown): ForwardedUpkeepAccounting {
+  return Object.fromEntries(Object.entries(parseAgentUpkeepAccounting(value)).filter(([key]) => !LOCAL_KEYS.has(key))) as unknown as ForwardedUpkeepAccounting;
+}
+export function parseForwardedUpkeepAccounting(value: unknown): ForwardedUpkeepAccounting {
+  if (!value || typeof value !== "object" || Array.isArray(value) || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) throw new TypeError("Invalid forwarded upkeep accounting");
+  const data: Record<string, unknown> = {};
+  for (const key of Reflect.ownKeys(value)) {
+    const d = Object.getOwnPropertyDescriptor(value, key);
+    if (typeof key !== "string" || !KEYS.has(key) || LOCAL_KEYS.has(key) || !d || !("value" in d)) throw new TypeError("Invalid forwarded upkeep accounting");
+    data[key] = d.value;
+  }
+  return forwardUpkeepAccounting({ ...data, recorderNamespace: "x", databaseId: "x", incarnation: "x", logicalConversationId: "x" });
+}
+export function mergeForwardedUpkeepAccounting(values: readonly unknown[]): readonly ForwardedUpkeepAccounting[] {
+  const full = values.map(value => ({ ...parseForwardedUpkeepAccounting(value), recorderNamespace: "x", databaseId: "x", incarnation: "x", logicalConversationId: "x" }));
+  return mergeAgentUpkeepAccounting(full).map(forwardUpkeepAccounting);
+}
+
+/** Pure shared derivation. Reservations/estimates are never observations. */
+export function deriveUpkeepAccounting(values: readonly unknown[], inference: { readonly totalUsd?: number | null | undefined; readonly knownCostUsd?: number | undefined } = { totalUsd: 0 }) {
+  const operations: readonly ForwardedUpkeepAccounting[] = [...mergeForwardedUpkeepAccounting(values)].sort((a, b) => a.operationId < b.operationId ? -1 : a.operationId > b.operationId ? 1 : 0);
+  const valid = (n: unknown): n is number => typeof n === "number" && Number.isFinite(n) && n >= 0;
+  let knownCostUsd = valid(inference.totalUsd) ? inference.totalUsd : valid(inference.knownCostUsd) ? inference.knownCostUsd : 0, partial = !valid(inference.totalUsd);
+  const tokens = { input: 0, cacheRead: 0, cacheWrite: 0, output: 0 };
+  let tokensPartial = false;
+  for (const a of operations) {
+    if (a.costUsd === null || !Number.isFinite(knownCostUsd + a.costUsd)) partial = true;
+    else knownCostUsd += a.costUsd;
+    for (const [target, source] of [["input", "inputTokens"], ["cacheRead", "cacheReadTokens"], ["cacheWrite", "cacheWriteTokens"], ["output", "outputTokens"]] as const) {
+      const n = a[source];
+      if (n === null || !Number.isSafeInteger(tokens[target] + n)) tokensPartial = true;
+      else tokens[target] += n;
+    }
+  }
+  return { operations, cost: { totalUsd: partial ? null : knownCostUsd, knownCostUsd, partial }, tokens, tokensPartial };
+}

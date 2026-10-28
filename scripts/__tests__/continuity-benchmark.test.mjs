@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ARMS, AVAILABLE_ARM_IDS, BASELINE_ARM, CONTINUITY_OFF, CONTINUITY_ON, CONTINUITY_PACK_ON, DEFAULT_ARMS, NOT_AVAILABLE, ORIGINAL_ARM_IDS, SMALL_PROACTIVE_COMPACTION, armById, checkpointKey, mergePatch, pressureMetrics, verifyBoundary, verifyPressure, verifyStore } from "../lib/continuity-arms.mjs";
-import { classifyHistoryResult, boundedOfferHistory, preparationDisposition, preparationInputReserve, preparationIntegrity, preparationUsage, verifyLedgerTreatment } from "../lib/continuity-runner.mjs";
+import { classifyHistoryResult, boundedOfferHistory, preparationDisposition, preparationInputReserve, preparationIntegrity, preparationUsage, sumPreparationUsage, liveResponseUsage, verifyLedgerTreatment } from "../lib/continuity-runner.mjs";
 import { digest, estimateCost, inventory, loadTraces, makePlan, parseSeeds, sourceOnly, validateTrace } from "../lib/continuity-dataset.mjs";
 import { COLD_BOUNDS, GENERATOR_VERSION, HARD_SEEDS, LONG_RULES, generateTrace, mulberry32, outsideColdBounds, traceShape } from "../lib/continuity-generator.mjs";
 import { ABSTAIN_INSTRUCTION, ORIGINAL_CATEGORIES, emptyUsage, addUsage, isAbstention, parseJudgeVerdict, probePrompt, renderMarkdown, scoreAnswer, summarize } from "../lib/continuity-score.mjs";
@@ -852,4 +852,41 @@ it("counts uncached, cache-read and cache-write upkeep input toward spend admiss
     expect(unknown[key]).toBeNull(); expect(unknown.conservativeCalls).toBe(1);
     expect(observedInputTokens(unknown)).toBe(128000);
   }
+});
+
+it("reconciles reported upkeep cost by operation while preserving conservative stop reserves", () => {
+  const full = { version: 1, usageIncluded: false, operationId: "fictional-operation", databaseId: "database", incarnation: "epoch", recorderNamespace: "/home/example", logicalConversationId: "logical", runId: "run", conversationId: "conversation", model: "fictional:extractor", budget: "bootstrap", phase: "dispatch", invocation: "uncertain", outcome: "uncertain", inputTokens: null, cacheReadTokens: null, cacheWriteTokens: null, outputTokens: null, costUsd: null };
+  const result = { ...full, phase: "result", invocation: "invoked", outcome: "valid", inputTokens: 10, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: 2, costUsd: 0.02 };
+  const step = accounting => { const receipt = { ...accounting, providerInvoked: accounting.invocation === "invoked", status: accounting.phase === "dispatch" ? "uncertain" : "valid", accounting }; return { receipt, usage: preparationUsage(receipt, 128000, { input: 2, output: 4 }) }; };
+  expect(sumPreparationUsage([step(full), step(result), step(full), step(result)])).toMatchObject({ calls: 1, estimatedCostUsd: 0.02, reportedCost: { totalUsd: 0.02, knownCostUsd: 0.02, partial: false } });
+  expect(sumPreparationUsage([step(full)])).toMatchObject({ conservativeCalls: 1, conservativeInputTokens: 128000, reportedCost: { totalUsd: null, partial: true } });
+  const unknown = preparationUsage({ providerInvoked: true, estimatedCostUsd: 500 }, 128000, { input: 2, output: 4 });
+  expect(unknown).toMatchObject({ estimatedCostUsd: null, conservativeCostUsd: 0.272384, reportedCost: { totalUsd: null, knownCostUsd: 0, partial: true } });
+  const priced = preparationUsage({ providerInvoked: true, inputTokens: null, costUsd: 0.01 }, 128000, { input: 2, output: 4 });
+  expect(priced).toMatchObject({ estimatedCostUsd: null, conservativeCalls: 1, reportedCost: { totalUsd: 0.01, partial: false } });
+  const free = preparationUsage({ providerInvoked: true, inputTokens: null, costUsd: 0 }, 128000, { input: 2, output: 4 });
+  expect(free).toMatchObject({ conservativeCalls: 1, reportedCost: { totalUsd: 0, knownCostUsd: 0, partial: false } });
+  const conflict = sumPreparationUsage([step(result), step({ ...result, costUsd: 2 })]);
+  expect(conflict).toMatchObject({ calls: 2, inputTokens: result.inputTokens * 2, reportedCost: { totalUsd: null, knownCostUsd: 0.02, partial: true } });
+  const budget = emptyUsage(); addUsage(budget, conflict);
+  expect(budget.calls).toBe(2); expect(budget.reportedCost).toEqual({ totalUsd: null, knownCostUsd: 0.02, partial: true });
+  const multiple = sumPreparationUsage([step(full), step(result), step({ ...result, costUsd: 2 }), step({ ...result, operationId: "second", costUsd: 0.03 }), step({ ...result, operationId: "second", costUsd: 0.03 })]);
+  expect(multiple.reportedCost.knownCostUsd).toBe(0.05);
+  const combined = emptyUsage(); addUsage(combined, multiple);
+  expect(combined.reportedCost.knownCostUsd).toBe(0.05);
+  expect(() => sumPreparationUsage([{ receipt: { accounting: { ...result, version: 2 } }, usage: emptyUsage() }])).toThrow("Invalid upkeep accounting");
+  const bug = new Error("Fictional unrelated dedupe failure");
+  expect(() => sumPreparationUsage([{ ...step(result), get usage() { throw bug; } }])).toThrow(bug);
+  const mixed = sumPreparationUsage([step(result), step({ ...result, inputTokens: null, costUsd: 2 })]);
+  expect(observedInputTokens(mixed)).toBe(128000 + result.inputTokens + result.cacheReadTokens + result.cacheWriteTokens);
+});
+
+it("counts inference-only runtime usage plus checkpoint upkeep once in arm totals", () => {
+  const response = { metadata: { runtime: { usage: { input_tokens: 100, output_tokens: 20, cache_read_tokens: 0, cache_write_tokens: 0, cost_usd: 1 } }, summary: { cost: { totalUsd: 1 }, inclusiveCost: { totalUsd: 1.02 } } } };
+  const own = liveResponseUsage(response), checkpoint = preparationUsage({ providerInvoked: true, inputTokens: 10, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: 2, costUsd: 0.02 }, 128000, { input: 2, output: 4 });
+  const total = emptyUsage(); addUsage(total, own); addUsage(total, checkpoint);
+  expect(total.reportedCost.totalUsd).toBe(1.02);
+  const trial = { traceId: "fictional", arm: "native", repeat: 1, probeId: "fictional-probe", category: "next_action", status: "completed", score: { pass: true, outcome: "correct" }, usage: own };
+  const summary = summarize([trial], { arms: ["native"], baselineArm: "native", repeats: [1], extraUsage: [{ arm: "native", usage: checkpoint }] });
+  expect(summary.arms.native.usage.reportedCost.totalUsd).toBe(1.02);
 });

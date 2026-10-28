@@ -1,3 +1,4 @@
+import { shortModelName } from "./route-label";
 import { ModelMarkers } from "./ModelMarkers";
 import { isConversationMarker } from "../conversation-markers";
 import { ProjectMarkers } from "./project/ProjectIdentity";
@@ -28,7 +29,7 @@ import { api } from "../api";
 import { useConsoleStore } from "../console-store";
 import { currentDataMode, useDataMode } from "../data-mode";
 import { useDocumentVisible } from "../document-visibility";
-import { formatTokenCount } from "../usage";
+import { formatUsageCost, formatTokenCount } from "../usage";
 import type {
   AskAnswer,
   AskSnapshot,
@@ -1514,6 +1515,14 @@ export function UserMessage() {
   );
 }
 
+function UpkeepMessageCost() {
+  const usage = useAuiState(state => state.message.metadata.custom?.upkeepUsage) as import("../../../src/contracts.js").WebThreadUsage | undefined;
+  if (!usage?.upkeep) return null;
+  return <details className="message-upkeep-cost"><summary>Message cost {formatUsageCost(usage.total)} · Continuity upkeep {formatUsageCost(usage.upkeep)}</summary>
+    {usage.byModel.map(row => <div key={row.model ?? "unknown"}>{row.model ? shortModelName(row.model) : "Unknown model"}: {formatUsageCost(row)}</div>)}
+  </details>;
+}
+
 export function AssistantMessage() {
   return (
     <>
@@ -1521,6 +1530,7 @@ export function AssistantMessage() {
       <MessageGallery>
         <div className="assistant-content">
           <AssistantParts />
+          <UpkeepMessageCost />
           <MessagePrimitive.Error>
             <div className="message-error" role="alert">The response ended with an error.</div>
           </MessagePrimitive.Error>

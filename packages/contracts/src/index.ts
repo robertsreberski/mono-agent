@@ -354,3 +354,6 @@ export type { AgentCompactionAccounting } from "./compaction-accounting.js";
 
 export { parseAgentUpkeepAccounting, mergeAgentUpkeepAccounting } from "./upkeep-accounting.js";
 export type { AgentUpkeepAccounting } from "./upkeep-accounting.js";
+
+export { deriveUpkeepAccounting, forwardUpkeepAccounting, parseForwardedUpkeepAccounting, mergeForwardedUpkeepAccounting } from "./upkeep-accounting.js";
+export type { ForwardedUpkeepAccounting } from "./upkeep-accounting.js";

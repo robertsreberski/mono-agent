@@ -1,3 +1,4 @@
+import { hasUpkeepTelemetry, messageUsageRollup } from "./message-cost.js";
 import { costAmount, knownCostAmount } from "./cost-wire.js";
 import { toolNameLeaf } from "@mono-agent/contracts";
 
@@ -39,6 +40,20 @@ export const isAskUserToolName = (toolName: string): boolean =>
  * parts already excludes both the parent and its children -- and it counts each
  * call once, because the store upserts a call in place as it progresses.
  */
+const upkeepRollups = new WeakMap<WebMessagePart, { parts: readonly WebMessagePart[]; value: ReturnType<typeof messageUsageRollup> }>();
+function upkeepRollup(parts: readonly WebMessagePart[]) {
+  const relevant = parts.filter(p => p.type === "telemetry" || p.type === "subagent" || p.type === "process-job");
+  const key = relevant[0];
+  if (!key) return undefined;
+  const previous = upkeepRollups.get(key);
+  if (previous && previous.parts.length === relevant.length && relevant.every((p, i) => p === previous.parts[i])) return previous.value;
+  // Parts are immutable/upserted. Prose/tool-only flushes keep these identities;
+  // a telemetry or child-price replacement invalidates the weakly held cache.
+  const value = messageUsageRollup({ parts: relevant });
+  upkeepRollups.set(key, { parts: relevant, value });
+  return value;
+}
+
 export const runActivityFromParts = (parts: readonly WebMessagePart[]): WebRunActivity => {
   let toolCallCount = 0;
   let asking = false;
@@ -58,7 +73,13 @@ export const runActivityFromParts = (parts: readonly WebMessagePart[]): WebRunAc
       if (cost !== undefined) { cumulativeUsd = cost; knownCostUsd = cost === null ? knownCostAmount(part.data) : undefined; }
     }
   }
+  const upkeep = hasUpkeepTelemetry(parts) ? upkeepRollup(parts) : undefined;
+  if (upkeep?.upkeep) {
+    cumulativeUsd = upkeep.main.costUsd;
+    knownCostUsd = upkeep.main.knownCostUsd;
+  }
   return {
+    ...(upkeep?.upkeep ? { upkeep: { ...upkeep.upkeep, models: [...new Set(upkeep.upkeepAccounting?.map(a => a.model))].sort() } } : {}),
     toolCallCount,
     phase: asking ? "asking" : "working",
     ...(cumulativeUsd === undefined ? {} : { cumulativeUsd }),
@@ -83,4 +104,5 @@ export const sameRunActivity = (
     && left.toolCallCount === right.toolCallCount
     && left.phase === right.phase
     && left.cumulativeUsd === right.cumulativeUsd
-    && left.knownCostUsd === right.knownCostUsd);
+    && left.knownCostUsd === right.knownCostUsd
+    && JSON.stringify(left.upkeep) === JSON.stringify(right.upkeep));

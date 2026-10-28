@@ -1,5 +1,7 @@
 "use client";
 
+import { formatUsageCost } from "../../usage";
+
 import { isProviderUsageId, PROVIDER_USAGE_LABELS } from "@mono-agent/contracts/provider-usage";
 import type { AgentManualCompactionResult } from "@mono-agent/contracts";
 import { Popover } from "@base-ui/react/popover";
@@ -103,8 +105,9 @@ const tokenColumns = [
 function TokensSection({ totals, loading, id }: { readonly totals?: WebThreadUsage; readonly loading: boolean; readonly id: string }) {
   const total = totals?.total;
   const sub = totals?.subagents;
-  const cacheHit = conversationCacheHitPercent(total);
+  const cacheHit = totals?.upkeep && total?.tokensPartial ? undefined : conversationCacheHitPercent(total);
   const cells = (slice: WebUsageSlice, subLine = false) => {
+    if (slice.pending) return <td colSpan={3} className="is-unreported">pending</td>;
     if (slice.tokens === undefined) return <td colSpan={3} className="is-unreported">{subLine ? "not reported" : "No token counts reported"}</td>;
     return tokenColumns.map(({ key }) => {
       const value = key === "input" ? slice.tokens!.input + slice.tokens!.cacheWrite : slice.tokens![key];
@@ -126,11 +129,12 @@ function TokensSection({ totals, loading, id }: { readonly totals?: WebThreadUsa
         {cacheHit} cache hit
       </span>}
     </div>
-    {loading && totals === undefined ? <p className="context-display-empty">—</p> : total?.tokens === undefined && sub === undefined
+    {loading && totals === undefined ? <p className="context-display-empty">—</p> : total?.tokens === undefined && !total?.pending && sub === undefined
       ? <p className="context-display-empty">No reply in this conversation reported token counts.</p>
       : <table className="context-display-tokens"><colgroup><col className="label" /><col /><col /><col /></colgroup>
         <thead><tr><th aria-label="Row" />{tokenColumns.map(({ key, label, title }) => <th key={key} scope="col" title={title}>{label}</th>)}</tr></thead>
         <tbody><tr><th scope="row">Total</th>{cells(total ?? {})}</tr>
+          {totals?.upkeep && <tr className="is-sub"><th scope="row">incl. upkeep</th>{cells(totals.upkeep)}</tr>}
           {sub && <tr className="is-sub"><th scope="row">incl. subagents</th>{cells(sub, true)}</tr>}
         </tbody></table>}
   </section>;
@@ -141,7 +145,7 @@ function CostSection({ totals, loading, id }: { readonly totals?: WebThreadUsage
   const models = totals?.byModel ?? [];
   const duplicates = new Map<string, number>();
   for (const row of models) duplicates.set(modelName(row.model), (duplicates.get(modelName(row.model)) ?? 0) + 1);
-  const cost = (slice: WebUsageSlice) => slice.costUsd === null ? "unknown" : slice.costUsd === undefined ? "—" : `${slice.costPartial ? "≥" : ""}${formatUsd(slice.costUsd)}`;
+  const cost = (slice: WebUsageSlice) => totals?.upkeep ? formatUsageCost(slice) : slice.costUsd === null ? "unknown" : slice.costUsd === undefined ? "—" : `${slice.costPartial ? "≥" : ""}${formatUsd(slice.costUsd)}`;
   const moreRows = models.slice(4);
   const more = moreRows.some((row) => row.costUsd === null) ? null : moreRows.reduce((sum, row) => sum + (row.costUsd ?? 0), 0);
   return <section className="context-display-section" aria-labelledby={id} aria-busy={loading || undefined}>
@@ -151,17 +155,18 @@ function CostSection({ totals, loading, id }: { readonly totals?: WebThreadUsage
     {loading && totals === undefined ? null : total?.costUsd === undefined && totals?.compaction === undefined
       ? <p className="context-display-empty">No cost was reported for this conversation.</p>
       : <dl className="context-display-cost">
+        {totals?.upkeep && <div className="context-display-cost-row is-sub" title="Continuity extraction, included once in total at its own model"><dt>Continuity upkeep<span className="sr-only"> (included in total)</span></dt><dd>{cost(totals.upkeep)}</dd></div>}
         {totals?.compaction && <div className="context-display-cost-row is-sub" title="Context summary requests, included in the total"><dt>Compaction<span className="sr-only"> (included in total)</span></dt><dd>{cost(totals.compaction)}</dd></div>}
         {totals?.subagents?.costUsd !== undefined && (totals.subagents.costUsd === null || totals.subagents.costUsd > 0) &&
           <div className="context-display-cost-row is-sub"><dt>incl. subagents</dt><dd>{cost(totals.subagents)}</dd></div>}
-        {total?.knownCostUsd !== undefined && <>
+        {total?.knownCostUsd !== undefined && !(totals?.upkeep && total.costUsd === null) && <>
           <div className="context-display-cost-divider" aria-hidden="true" />
           <div className="context-display-cost-row" title="Known spend across this conversation"><dt>Known cost</dt><dd>{formatUsd(total.knownCostUsd)}</dd></div>
         </>}
         {models.length >= 2 && <><div className="context-display-cost-divider" aria-hidden="true" />
           {models.slice(0, 4).map((row, index) => <div className="context-display-cost-row is-model" key={`${row.model ?? "unknown"}-${index}`}>
             <dt title={row.model}>{modelName(row.model)}{(duplicates.get(modelName(row.model)) ?? 0) > 1 && row.model?.includes(":") ? ` · ${row.model.split(":", 1)[0]}` : ""}</dt>
-            <dd>{cost(row)}{row.knownCostUsd === undefined ? null : <span> · Known cost {formatUsd(row.knownCostUsd)}</span>}</dd>
+            <dd>{cost(row)}{row.knownCostUsd === undefined || totals?.upkeep ? null : <span> · Known cost {formatUsd(row.knownCostUsd)}</span>}</dd>
           </div>)}
           {models.length > 4 && <div className="context-display-cost-row is-model"><dt>{models.length - 4} more models</dt><dd>{more === null ? "unknown" : formatUsd(more)}</dd></div>}
         </>}

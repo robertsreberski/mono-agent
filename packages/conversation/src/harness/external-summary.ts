@@ -1,4 +1,4 @@
-import { mergeAgentUpkeepAccounting, parseAgentUpkeepAccounting } from "@mono-agent/contracts";
+import { forwardUpkeepAccounting, mergeAgentUpkeepAccounting, parseAgentUpkeepAccounting } from "@mono-agent/contracts";
 import type { RunSummary } from "@mono-agent/observability";
 
 import type { ExternalRunSummary } from "./contracts.js";
@@ -6,9 +6,7 @@ import type { ExternalRunSummary } from "./contracts.js";
 /** External accounting is a projection, not the host-local journal envelope.
  * operationId + phase still identify immutable contributions downstream. */
 export function forwardedUpkeepAccounting(value: unknown): NonNullable<ExternalRunSummary["upkeepAccounting"]>[number] {
-  const { recorderNamespace: _namespace, databaseId: _database, incarnation: _incarnation,
-    logicalConversationId: _logical, ...forwarded } = parseAgentUpkeepAccounting(value);
-  return forwarded;
+  return forwardUpkeepAccounting(value);
 }
 
 export function externalResponseSummary(summary: RunSummary): ExternalRunSummary | undefined {
@@ -57,17 +55,21 @@ export function externalResponseSummary(summary: RunSummary): ExternalRunSummary
   // getters, or custom prototypes; an unsafe value is omitted fail-closed.
   for (const key of EXTERNAL_SUMMARY_OPTIONAL_KEYS) {
     const descriptor = descriptors[key];
-    if (descriptor === undefined || !("value" in descriptor)) continue;
+    if (descriptor === undefined) continue;
+    if (!("value" in descriptor)) {
+      if (key === "upkeepAccounting") external.upkeepAccountingPartial = true;
+      continue;
+    }
     const value = descriptor.value;
     if (value === undefined) continue;
     let cloned = cloneExternalSummaryValue(value);
     if (key === "upkeepAccounting") {
       try {
-        if (!Array.isArray(cloned)) continue;
+        if (!Array.isArray(cloned)) { external.upkeepAccountingPartial = true; continue; }
         cloned = mergeAgentUpkeepAccounting(cloned);
-        if ((cloned as readonly { runId: string; conversationId: string }[]).some(a => a.runId !== runId || a.conversationId !== conversationId)) continue;
+        if ((cloned as readonly { runId: string; conversationId: string }[]).some(a => a.runId !== runId || a.conversationId !== conversationId)) { external.upkeepAccountingPartial = true; continue; }
         cloned = (cloned as readonly unknown[]).map(forwardedUpkeepAccounting);
-      } catch { continue; }
+      } catch { external.upkeepAccountingPartial = true; continue; }
     }
     if (key === "upkeepAccountingPartial" && cloned !== true) continue;
     if (key === "inclusiveCost") {

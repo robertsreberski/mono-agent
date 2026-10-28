@@ -99,6 +99,7 @@ export function windowUsage(detail: ThreadDetail): WebThreadUsage {
   return {
     ...partial,
     total: { ...usage.total, ...partialCost(usage.total), tokensPartial: true, costPartial: true },
+    ...(usage.upkeep ? { upkeep: { ...usage.upkeep, ...partialCost(usage.upkeep), tokensPartial: true, costPartial: true } } : {}),
     ...(usage.compaction ? { compaction: { ...usage.compaction, ...partialCost(usage.compaction), tokensPartial: true, costPartial: true } } : {}),
     byModel: usage.byModel.map((model) => ({ ...model, ...partialCost(model), costPartial: true, tokensPartial: true })),
     ...(partialSubagents === undefined ? {} : { subagents: partialSubagents }),
@@ -304,3 +305,8 @@ function partialCost(slice: WebUsageSlice): WebUsageSlice {
   const known = slice.costUsd ?? slice.knownCostUsd;
   return { costUsd: null, ...(known === undefined ? {} : { knownCostUsd: known }) };
 }
+
+/** Existing known-subtotal idiom, without inventing a free unknown request. */
+export const formatUsageCost = (slice: WebUsageSlice): string => slice.pending ? "pending" : slice.costUsd === null
+  ? slice.knownCostUsd === undefined ? "unknown" : `≥${formatUsd(slice.knownCostUsd)} (partial)`
+  : slice.costUsd === undefined ? "—" : `${slice.costPartial ? "≥" : ""}${formatUsd(slice.costUsd)}`;

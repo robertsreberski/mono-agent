@@ -57,7 +57,11 @@ it("allowlists only validated, content-free upkeep telemetry and summary fields"
   const summary = { runId: "origin", conversationId: "fictional", status: "failed" as const, durationMs: 1, eventCount: 1, artifactPaths: [], upkeepAccounting: [a], inclusiveCost: { totalUsd: null, knownCostUsd: 0, partial: true }, systemPrompt: "Fictional private instructions" };
   expect(externalResponseSummary(summary)).toMatchObject({ upkeepAccounting: [forwardedUpkeepAccounting(a)], inclusiveCost: summary.inclusiveCost });
   expect(externalResponseSummary(summary)).not.toHaveProperty("systemPrompt");
-  expect(externalResponseSummary({ ...summary, upkeepAccounting: [{ ...a, runId: "other" }] })?.upkeepAccounting).toBeUndefined();
+  const foreign = externalResponseSummary({ ...summary, upkeepAccounting: [{ ...a, runId: "other" }] });
+  expect(foreign?.upkeepAccounting).toBeUndefined();
+  expect(foreign?.upkeepAccountingPartial).toBe(true);
+  const accessor = Object.defineProperty({ ...summary }, "upkeepAccounting", { get() { throw new Error("must not invoke"); } });
+  expect(externalResponseSummary(accessor)?.upkeepAccountingPartial).toBe(true);
   expect(externalResponseSummary({ ...summary, inclusiveCost: { ...summary.inclusiveCost, prompt: "Fictional body" } } as typeof summary)?.inclusiveCost).toBeUndefined();
 });
 

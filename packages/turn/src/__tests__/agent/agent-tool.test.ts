@@ -869,11 +869,17 @@ describe("subagentUsageForRun", () => {
     // Consumers read `usage_update` as the run's cumulative figure, so a
     // child's smaller total arriving last would read as the run getting cheaper.
     const events: any[] = [];
-    const options = subagentOptions({ run: spendingRun(0.02) });
+    const paid = spendingRun(0.02);
+    const options = subagentOptions({ run: async (request: any) => {
+      const upkeep = { type: "runtime_telemetry", kind: "continuity_upkeep", data: { accounting: { version: 1, usageIncluded: false, operationId: "fictional-child-operation", runId: "fictional-child-run", conversationId: "fictional-child", model: "fictional:extractor", budget: "bootstrap", phase: "result", invocation: "invoked", outcome: "valid", inputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: 1, costUsd: 0.01 } } };
+      request.onEvent(upkeep);
+      request.onEvent({ type: "continuity_upkeep", accounting: upkeep.data.accounting });
+      return paid(request);
+    } });
     const tool = createAgentTool(options, { parentRunId: "run-1", onEvent: (event: any) => events.push(event) });
     await tool.execute("c1", { name: "researcher", prompt: "x" });
 
-    expect(events.some((event: any) => event.type === "cost_accumulated")).toBe(false);
+    expect(events.some((event: any) => event.type === "cost_accumulated" || event.kind === "continuity_upkeep" || event.type === "continuity_upkeep")).toBe(false);
     const completed = events.find((event: any) => event.phase === "agent_completed");
     expect(completed.subagent).toMatchObject({ id: "c1", name: "researcher", costUsd: 0.02,
       usage: { input: 100, output: 20, cacheRead: 5, cacheWrite: 3 } });

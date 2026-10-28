@@ -65,8 +65,8 @@ export function useThreadUsage(threadId: string | undefined, open: boolean, runn
     };
     scheduleRef.current = schedule;
     void load();
-    const unsubscribe = subscribeThreadUsageChanged((changedThreadId) => {
-      if (changedThreadId === threadId && !runningRef.current) schedule();
+    const unsubscribe = subscribeThreadUsageChanged((changedThreadId, liveUpkeep) => {
+      if (changedThreadId === threadId && (!runningRef.current || liveUpkeep)) schedule();
     });
     return () => {
       active = false; controller.abort(); unsubscribe(); scheduleRef.current = null;

@@ -2,6 +2,133 @@
   "version": 1,
   "fixtures": [
     {
+      "name": "upkeep-message",
+      "type": "ApiMessage",
+      "value": {
+        "message": {
+          "id": "message-example",
+          "threadId": "thread-example",
+          "turnId": "turn-example",
+          "role": "assistant",
+          "parts": [
+            {
+              "type": "telemetry",
+              "event": "runtime_telemetry",
+              "kind": "continuity_upkeep",
+              "data": {
+                "kind": "continuity_upkeep",
+                "data": {
+                  "accounting": {
+                    "version": 1,
+                    "usageIncluded": false,
+                    "operationId": "upkeep-example",
+                    "runId": "run-example",
+                    "conversationId": "conversation-example",
+                    "model": "fictional:extractor-b",
+                    "budget": "bootstrap",
+                    "phase": "dispatch",
+                    "invocation": "uncertain",
+                    "outcome": "uncertain",
+                    "inputTokens": null,
+                    "cacheReadTokens": null,
+                    "cacheWriteTokens": null,
+                    "outputTokens": null,
+                    "costUsd": null
+                  }
+                }
+              }
+            }
+          ],
+          "attachments": [],
+          "createdAt": "2030-01-02T12:00:00.000Z",
+          "updatedAt": "2030-01-02T12:00:00.000Z",
+          "finishedAt": "2030-01-02T12:00:00.000Z",
+          "status": "complete",
+          "seq": 1
+        }
+      }
+    },
+    {
+      "name": "upkeep-thread-usage",
+      "type": "ApiThreadUsage",
+      "value": {
+        "usage": {
+          "total": {
+            "costUnknown": true,
+            "knownCostUsd": 0.01,
+            "costPartial": true
+          },
+          "upkeep": {
+            "operations": 1,
+            "pending": true,
+            "costUnknown": true,
+            "knownCostUsd": 0,
+            "costPartial": true,
+            "tokensPartial": true
+          },
+          "byModel": [
+            {
+              "model": "fictional:answer-a",
+              "costUsd": 0.01
+            },
+            {
+              "model": "fictional:extractor-b",
+              "costUnknown": true,
+              "knownCostUsd": 0
+            }
+          ],
+          "computedAt": "2030-01-02T12:00:00.000Z"
+        }
+      }
+    },
+    {
+      "name": "upkeep-running",
+      "type": "ApiActiveThreads",
+      "value": {
+        "threads": [
+          {
+            "id": "thread-example",
+            "sourceId": "agent-example",
+            "title": "Morgan's sample project",
+            "archivedAt": null,
+            "projectId": null,
+            "tagIds": [],
+            "createdAt": "2030-01-02T12:00:00.000Z",
+            "updatedAt": "2030-01-02T12:00:00.000Z",
+            "revision": 1,
+            "messageCount": 3,
+            "runState": {
+              "status": "running",
+              "activity": {
+                "toolCallCount": 0,
+                "phase": "working",
+                "costUnknown": true,
+                "knownCostUsd": 0.01,
+                "upkeep": {
+                  "operations": 1,
+                  "pending": true,
+                  "models": [
+                    "fictional:extractor-b"
+                  ],
+                  "costUnknown": true,
+                  "knownCostUsd": 0
+                }
+              }
+            },
+            "canSend": true,
+            "canUpload": true,
+            "runModel": null,
+            "runEffort": null
+          }
+        ],
+        "runningCounts": {
+          "agent-example": 1
+        },
+        "total": 1,
+        "truncated": false
+      }
+    },
+    {
       "name": "bootstrap",
       "type": "ApiBootstrap",
       "value": {

@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { once } from "node:events";
+import { realpathSync } from "node:fs";
 import { mkdtemp, readdir, rm, rename, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -19,7 +20,7 @@ const writeFor = (db: DatabaseSync) => <T>(operation: () => T): T => {
 const replayUpkeepAccounting = (db: DatabaseSync, options?: Parameters<typeof replayTransactional>[2]) => replayTransactional(db, writeFor(db), options);
 const roots: string[] = [];
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
-async function rootDir() { const root = await mkdtemp(join(tmpdir(), "upkeep-outbox-")); roots.push(root); return root; }
+async function rootDir() { const root = realpathSync(await mkdtemp(join(tmpdir(), "upkeep-outbox-"))); roots.push(root); return root; }
 async function memory() {
   const root = await rootDir(), artifactDir = join(root, "runs"), db = new DatabaseSync(":memory:");
   const recorder = createJsonlRunRecorder({ artifactDir, runId: "origin", conversationId: "fictional" }); await recorder.start!();

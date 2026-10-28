@@ -1,3 +1,5 @@
+// Offline/dry-run must work before a workspace build; Node >=24.15.0 strips this import-free TS source.
+import { deriveUpkeepAccounting, forwardUpkeepAccounting, mergeAgentUpkeepAccounting } from "../../packages/contracts/src/upkeep-accounting.ts";
 // Conversation-continuity benchmark runner.
 //
 // Every turn goes through the production configured host path:
@@ -188,8 +190,11 @@ export function runUsage(usage) {
     cacheReadTokens: finite(usage?.cache_read_tokens),
     cacheWriteTokens: finite(usage?.cache_write_tokens ?? usage?.cache_creation_tokens),
     estimatedCostUsd: finite(usage?.cost_usd),
+    reportedCost: deriveUpkeepAccounting([], { totalUsd: finite(usage?.cost_usd) }).cost,
   };
 }
+export const liveResponseUsage = response => runUsage(response?.metadata?.runtime?.usage);
+
 /** The compaction slice is already included once in the run totals. */
 export function compactionUsageOf(usage) {
   const requests = Array.isArray(usage?.compaction?.requests) ? usage.compaction.requests : [];
@@ -207,6 +212,7 @@ export function compactionUsageOf(usage) {
     const cost = finite(row?.cost_usd) ?? finite(row?.costUsd);
     if (cost === null) total.unknownCostCalls += 1; else total.estimatedCostUsd += cost;
   }
+  total.reportedCost = deriveUpkeepAccounting([], { totalUsd: total.unknownCostCalls ? null : total.estimatedCostUsd, knownCostUsd: total.estimatedCostUsd }).cost;
   return total;
 }
 
@@ -377,7 +383,7 @@ export async function runLiveTurn({ modules, work, authPath, plan, mode, configP
     text: typeof response.text === "string" ? response.text : null,
     failureKind: response.failure ? String(response.failure.kind ?? "unknown") : null,
     observed: watch.observed,
-    usage: runUsage(usage),
+    usage: liveResponseUsage(response),
     compactionUsage: compactionUsageOf(usage),
     durationMs: Math.round(performance.now() - started),
   };
@@ -579,12 +585,14 @@ export function verifyLedgerTreatment(upkeep, observed) {
 /** Unknown usage is charged the full input reservation plus output allowance.
  * This is catalog accounting, NOT a remote output/billing maximum (D6). */
 export function preparationUsage(receipt, inputReserve, price, outputReserve = 4096) {
+  if (receipt?.accounting) { const a = forwardUpkeepAccounting(receipt.accounting); receipt = { ...receipt, inputTokens: a.inputTokens, cacheReadTokens: a.cacheReadTokens, cacheWriteTokens: a.cacheWriteTokens, outputTokens: a.outputTokens, costUsd: a.costUsd }; }
   const calls = receipt?.providerInvoked || receipt?.status === "uncertain" ? 1 : 0;
   const finite = value => typeof value === "number" && Number.isFinite(value) && value >= 0;
   const unknown = !!calls && ![receipt?.inputTokens, receipt?.cacheReadTokens, receipt?.cacheWriteTokens, receipt?.outputTokens, receipt?.costUsd].every(finite);
   const conservative = unknown && finite(price?.input) && finite(price?.output)
     ? (inputReserve * price.input + outputReserve * price.output) / 1_000_000 : unknown ? null : 0;
-  return { calls, inputTokens: calls ? receipt?.inputTokens ?? null : 0, outputTokens: calls ? receipt?.outputTokens ?? null : 0,
+  return { reportedCost: deriveUpkeepAccounting([], { totalUsd: calls ? finite(receipt?.costUsd) ? receipt.costUsd : null : 0 }).cost,
+    calls, inputTokens: calls ? receipt?.inputTokens ?? null : 0, outputTokens: calls ? receipt?.outputTokens ?? null : 0,
     estimatedInputTokens: calls ? unknown ? inputReserve : receipt?.estimatedInputTokens ?? null : 0,
     cacheReadTokens: calls ? receipt?.cacheReadTokens ?? null : 0, cacheWriteTokens: calls ? receipt?.cacheWriteTokens ?? null : 0, estimatedCostUsd: calls ? unknown ? null : receipt.costUsd : 0,
     conservativeInputTokens: unknown ? inputReserve : 0,
@@ -593,10 +601,48 @@ export function preparationUsage(receipt, inputReserve, price, outputReserve = 4
 }
 
 /** Sum each extraction once; known catalog cost and unknown-call reserves stay separate. */
-function sumPreparationUsage(steps) {
-  const total = emptyUsage();
-  for (const step of steps) addUsage(total, step.usage);
-  return { ...total, components: steps.map(step => step.usage) };
+export function sumPreparationUsage(steps) {
+  try {
+    mergeAgentUpkeepAccounting(steps.flatMap(step => step.receipt?.accounting ? [step.receipt.accounting] : []));
+  } catch (error) {
+    if (!(error instanceof TypeError) || !["Conflicting upkeep identity", "Conflicting upkeep evidence"].includes(error.message)) throw error;
+    // Count every observation for stop budgets, but retain only the minimum
+    // known price per operation as a trusted billed subtotal.
+    const total = emptyUsage(), minimums = new Map();
+    const observations = steps.map((step, index) => {
+      const accounting = step.receipt?.accounting ? forwardUpkeepAccounting(step.receipt.accounting) : undefined;
+      const id = accounting?.operationId ?? step.receipt?.operationId ?? `anonymous:${index}`;
+      const cost = accounting ? accounting.costUsd : step.usage?.reportedCost?.knownCostUsd;
+      if (typeof cost === "number" && Number.isFinite(cost) && cost >= 0) minimums.set(id, Math.min(minimums.get(id) ?? Infinity, cost));
+      addUsage(total, step.usage);
+      return { id, usage: step.usage };
+    });
+    const reportedCost = deriveUpkeepAccounting([], { totalUsd: null, knownCostUsd: [...minimums.values()].reduce((sum, cost) => sum + cost, 0) }).cost;
+    // Attribute each operation lower bound once for downstream addUsage sums.
+    const assigned = new Set();
+    const components = observations.map(({ id, usage }) => {
+      const knownCostUsd = assigned.has(id) ? 0 : minimums.get(id) ?? 0;
+      assigned.add(id);
+      return { ...usage, reportedCost: { totalUsd: null, knownCostUsd, partial: true } };
+    });
+    return { ...total, reportedCost, components };
+  }
+  const unique = new Map();
+  for (const [index, step] of steps.entries()) {
+    const id = step.receipt?.operationId ?? `anonymous:${index}`, previous = unique.get(id);
+    if (previous?.receipt?.accounting?.phase === "result" && step.receipt?.accounting?.phase === "dispatch") continue;
+    if (previous?.receipt?.providerInvoked && step.receipt?.status === "uncertain") continue;
+    unique.set(id, step);
+  }
+  const rows = [...unique.values()], total = emptyUsage(), accounting = [];
+  let known = 0, partial = false;
+  for (const step of rows) {
+    addUsage(total, step.usage);
+    if (step.receipt?.accounting) accounting.push(forwardUpkeepAccounting(step.receipt.accounting));
+    else { const cost = step.usage?.reportedCost; known += cost?.knownCostUsd ?? 0; partial ||= cost?.partial ?? !!step.usage?.calls; }
+  }
+  return { ...total, reportedCost: deriveUpkeepAccounting(accounting, { totalUsd: partial ? null : known, knownCostUsd: known }).cost,
+    components: rows.map(step => step.usage) };
 }
 
 /** One upkeep, no real answer call, before read-only probe forks. No probe/answer data enter extraction. */
@@ -709,7 +755,7 @@ async function manualCompaction({ modules, work, authPath, plan, mode, binding, 
     boundary: { ...verifyBoundary({ boundary: null, compactions: 1 }, observed), observed },
     usage: { calls: usage.calls, inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, cacheReadTokens: usage.cacheReadTokens, cacheWriteTokens: usage.cacheWriteTokens,
       estimatedCostUsd: usage.unknownCostCalls > 0 ? null : usage.estimatedCostUsd,
-      knownCatalogCostUsd: usage.estimatedCostUsd, unknownCostCalls: usage.unknownCostCalls, unknownTokenCalls: usage.unknownTokenCalls },
+      knownCatalogCostUsd: usage.estimatedCostUsd, unknownCostCalls: usage.unknownCostCalls, unknownTokenCalls: usage.unknownTokenCalls, reportedCost: usage.reportedCost },
     compactionUsage: usage, durationMs: Math.round(performance.now() - started),
   };
 }

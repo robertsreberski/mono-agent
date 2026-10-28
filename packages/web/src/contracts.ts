@@ -330,6 +330,7 @@ export interface WebRunAttribution {
  * cannot stand behind.
  */
 export interface WebRunActivity {
+  readonly upkeep?: WebUsageSlice & { readonly operations: number; readonly models: readonly string[] };
   /**
    * Retained TOP-LEVEL tool calls, each counted once.
    *
@@ -896,6 +897,8 @@ export interface WebUsageTokens {
 /** Internally nullable; browser wire omits unknown amounts and carries costUnknown: true.
  * The same convention applies to message telemetry, activity and job progress. */
 export interface WebUsageSlice {
+  /** Upkeep dispatches exist, but no terminal observation has arrived. */
+  readonly pending?: true;
   readonly tokens?: WebUsageTokens;
   readonly costUsd?: number | null;
       readonly knownCostUsd?: number;
@@ -906,6 +909,8 @@ export interface WebUsageSlice {
 
 export interface WebThreadUsage {
   readonly total: WebUsageSlice;
+  /** Excluded upkeep, included once in total and attributed to its extraction model. */
+  readonly upkeep?: WebUsageSlice & { readonly operations: number };
   /** Included subset of total; never an additional surcharge. */
   readonly compaction?: WebUsageSlice & { readonly requests: number; readonly requestsWithUsage?: number };
   readonly subagents?: WebUsageSlice & { readonly runs: number; readonly runsWithTokens?: number };

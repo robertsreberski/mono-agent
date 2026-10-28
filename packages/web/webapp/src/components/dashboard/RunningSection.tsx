@@ -1,6 +1,7 @@
+import { shortModelName } from "../route-label";
 import { costAmount, knownCostAmount } from "../../../../src/cost-wire.js";
-import { formatUsd } from "../../usage";
-import { Fragment } from "react";
+import { formatUsageCost, formatUsd } from "../../usage";
+import { Fragment, useId } from "react";
 import { Icon } from "../Icon";
 import type { AgentSummary, CatalogModel, ProjectSummary, ThreadSummary } from "../../types";
 import { resolveThreadRoute } from "../route-label";
@@ -30,6 +31,7 @@ function RunningCard({
   readonly projectsByAgent: Readonly<Record<string, readonly ProjectSummary[]>>;
   readonly onOpen: (thread: ThreadSummary) => void;
 }) {
+  const activityId = useId();
   const pending = runningCardPending(thread);
   const activity = thread.runState.status === "running" ? thread.runState.activity : undefined;
   const knownCost = costAmount(activity, "cumulativeUsd") === null ? knownCostAmount(activity) : undefined;
@@ -43,6 +45,7 @@ function RunningCard({
     <button
       type="button"
       className="running-card"
+      aria-describedby={activity?.upkeep ? `${activityId}-status ${activityId}-upkeep` : undefined}
       aria-label={project === undefined
         ? `Open ${thread.title} on ${agent.label}`
         : `Open ${thread.title} on ${agent.label}, in project ${project.name}`}
@@ -51,7 +54,7 @@ function RunningCard({
       <span className="running-card-agent" aria-hidden="true">{agentInitials(agent.label)}</span>
       <span className="running-card-copy">
         <span className="running-card-title">{thread.title}</span>
-        <span className="running-card-status-line">
+        <span className="running-card-status-line" id={`${activityId}-status`}>
           {project !== undefined && (
             <ProjectTag name={project.name} color={project.color} />
           )}
@@ -66,7 +69,8 @@ function RunningCard({
             title={route.title}
           />
         </span>
-        {knownCost !== undefined && <span className="running-card-known-cost">Known cost {formatUsd(knownCost)}</span>}
+        {activity?.upkeep && <span className="running-card-known-cost" id={`${activityId}-upkeep`}>Continuity upkeep · {Array.isArray(activity.upkeep.models) && activity.upkeep.models.length ? activity.upkeep.models.map(model => shortModelName(model)).join(", ") : "model not reported"} · {activity.upkeep.pending ? "cost pending" : formatUsageCost(activity.upkeep)}</span>}
+        {knownCost !== undefined && !activity?.upkeep && <span className="running-card-known-cost">Known cost {formatUsd(knownCost)}</span>}
       </span>
       <time className="running-card-time" dateTime={thread.updatedAt}>
         {relativeTime(thread.updatedAt)}

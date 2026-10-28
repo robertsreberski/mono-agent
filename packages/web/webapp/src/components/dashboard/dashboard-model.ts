@@ -1,3 +1,4 @@
+import { formatUsageCost } from "../../usage";
 import { costAmount } from "../../../../src/cost-wire.js";
 import {
   threadJobSummaries,
@@ -199,7 +200,7 @@ export const runningCardStatus = (thread: ThreadSummary): string => {
   return [
     head,
     ...threadJobSummaries(thread),
-    ...(cost === undefined ? [] : [cost === null ? "cost unknown" : formatUsd(cost)]),
+    ...(cost === undefined ? [] : [activity.upkeep ? formatUsageCost({ ...activity, costUsd: cost }) : cost === null ? "cost unknown" : formatUsd(cost)]),
   ].join(" · ");
 };
 
