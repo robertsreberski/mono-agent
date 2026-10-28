@@ -1,13 +1,13 @@
 import { DatabaseSync } from "node:sqlite";
 import { fork, execFileSync } from "node:child_process";
-import { mkdir, open, readdir, lstat } from "node:fs/promises";
+import { open, readdir, lstat } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { preparationDisposition, preparationUsage } from "./continuity-runner.mjs";
 import { digest } from "./continuity-dataset.mjs";
 import { externalDirectory, readJson, regularFile, externalFile, sha256, assertCleanTree } from "./continuity-holdout-files.mjs";
 import { assertRealHoldoutModels } from "./continuity-holdout-registration.mjs";
-import { need, finite, durable, archiveChunk, verifyArchive, chunkUnits, benchmarkArgs, invalidUnit } from "./continuity-holdout-workflow.mjs";
+import { need, finite, durable, archiveChunk, verifyArchive, chunkUnits, benchmarkArgs, invalidUnit, chunkDirectory } from "./continuity-holdout-workflow.mjs";
 
 export function authFailure(value) {
   if (!value || typeof value !== "object") return false;
@@ -48,9 +48,10 @@ export function accountUnits(units, bundle) {
 export function spendOf(chunks, unitsPerChunk) {
   const totals = { knownUSD: 0, unknownUSD: 0, lostUSD: 0, activeUSD: 0, unknownCalls: 0, unpriced: 0, invalidUnits: 0, admittedUnits: chunks.length * unitsPerChunk, authFailure: false };
   for (const chunk of chunks) {
-    const a = chunk.accounting;
-    for (const key of ["knownUSD", "unknownUSD", "unknownCalls", "unpriced", "invalidUnits"]) totals[key] += a?.[key] ?? 0;
-    totals.authFailure ||= a?.authFailure ?? false;
+    for (const a of [chunk.accounting, chunk.journalAccounting]) {
+      for (const key of ["knownUSD", "unknownUSD", "unknownCalls", "unpriced", "invalidUnits"]) totals[key] += a?.[key] ?? 0;
+      totals.authFailure ||= a?.authFailure ?? false;
+    }
     if (chunk.state === "running") totals.activeUSD += chunk.reservationUsd;
     else if (chunk.state !== "finished") {
       totals.lostUSD += chunk.reservationUsd; // Full hold can deliberately overlap reported partial usage.
@@ -96,9 +97,10 @@ async function lease(root) {
   return () => { db.exec("ROLLBACK"); db.close(); };
 }
 export async function authorize(bundle, path, root) {
+  root = await externalDirectory(root);
   const bytes = await externalFile(path), record = JSON.parse(bytes.toString("utf8"));
   need(record.planDigest === bundle.plan.confirmation && record.ceilingUSD === bundle.ceilingUSD
-    && record.authPathFingerprint === bundle.plan.piAuthFingerprint && /^[a-f0-9]{64}$/u.test(record.authPathFingerprint ?? "")
+    && record.outputRootSha256 === sha256(root) && record.authPathFingerprint === bundle.plan.piAuthFingerprint && /^[a-f0-9]{64}$/u.test(record.authPathFingerprint ?? "")
     && typeof record.approver === "string" && record.approver.trim().length > 0 && !/[\u0000-\u001f]/u.test(record.approver)
     && typeof record.timestamp === "string" && Number.isFinite(Date.parse(record.timestamp)), "authorization_mismatch");
   const claim = { authorizationSha256: sha256(bytes), outputRootSha256: sha256(root) }, claimPath = `${path}.claim`;
@@ -108,19 +110,25 @@ export async function authorize(bundle, path, root) {
 }
 
 /** Inspect live journals, not model answers or quality gates. Busy reads retain the active hold. */
-export async function liveAccounting(root, traceId, bundle) {
-  const result = { knownUSD: 0, unknownUSD: 0, unknownCalls: 0, unpriced: 0, invalidUnits: 0, authFailure: false, replacedReserveUSD: 0 };
+export async function liveAccounting(root, traceId, bundle, units = [], strict = false) {
+  const result = { ...accountUnits([], bundle), replacedReserveUSD: 0 };
+  const covered = new Set(units.flatMap(unit => (unit.checkpoint?.upkeep?.preparations ?? []).flatMap(step => {
+    const id = step.receipt?.accounting?.operationId ?? step.receipt?.operationId ?? step.journal?.operationId;
+    return id ? [`${unit.repeat}/${id}`] : [];
+  })));
   for (let repeat = 1; repeat <= bundle.plan.repeats; repeat++) {
     const path = join(root, "work", `cp-${traceId}_ledger-continuity-ledger-cold-r${repeat}`, "work/history/tool-history/tool-lifecycles.sqlite");
     let db;
     try {
       need((await lstat(path)).isFile(), "live_nonregular_journal"); db = new DatabaseSync(path, { readOnly: true });
-      const rows = db.prepare("SELECT reservation,outcome,state FROM continuity_upkeep_operations").all(); let bad = rows.filter(r => !["reserved", "released"].includes(r.state)).length > 3, bootstraps = 0;
+      const rows = db.prepare("SELECT operation_id,reservation,outcome,state FROM continuity_upkeep_operations").all(); let bad = rows.filter(r => !["reserved", "released"].includes(r.state)).length > 3, bootstraps = 0;
       for (const row of rows) {
-        if (["reserved", "released"].includes(row.state)) continue;
+        if (["reserved", "released"].includes(row.state) || covered.has(`${repeat}/${row.operation_id}`)) continue;
+        need(typeof row.operation_id === "string" && row.operation_id.length > 0, "journal_operation_identity");
         const reservation = JSON.parse(row.reservation), receipt = row.outcome ? JSON.parse(row.outcome) : { status: "uncertain", reason: "dispatch_or_outcome_unacknowledged" };
         if (reservation.budget === "bootstrap") bootstraps++;
         bad ||= bootstraps > 1 || !["bootstrap", "incremental"].includes(reservation.budget);
+        result.degradedStages += Number(preparationDisposition(receipt) === "degraded");
         result.authFailure ||= authFailure(receipt); bad ||= preparationDisposition(receipt) === "integrity";
         const price = bundle.prices[bundle.plan.upkeep.model], input = reservation.budget === "bootstrap" ? 128000 : 64000;
         if (price) result.replacedReserveUSD += (input * price.input + 4096 * price.output) / 1e6;
@@ -128,12 +136,17 @@ export async function liveAccounting(root, traceId, bundle) {
       }
       result.invalidUnits += Number(bad);
     } catch (error) {
-      if (error.code !== "ENOENT" && !String(error.code).startsWith("ERR_SQLITE")) throw error;
+      if (error.code !== "ENOENT" && (strict || !String(error.code).startsWith("ERR_SQLITE"))) throw error;
     } finally { db?.close(); }
   }
   return result;
 }
 
+/** Persist orphan journal spend separately; missing/invalid unit slots own validity counts. */
+export async function accountJournals(root, traceId, bundle, units) {
+  const accounting = await liveAccounting(root, traceId, bundle, units, true);
+  delete accounting.replacedReserveUSD; accounting.invalidUnits = 0; return accounting;
+}
 async function dispatch({ argv, onReady, poll, deadlineMs, workerURL, env }) {
   const child = fork(workerURL ?? new URL("../continuity-holdout/worker.mjs", import.meta.url), [], {
     detached: true, stdio: ["ignore", "ignore", "ignore", "ipc"], env: { ...env, NODE_OPTIONS: "" }, execArgv: [],
@@ -198,23 +211,27 @@ export async function runController(context, { shard, output, authorizationPath,
         state.stop = { reason: "unreconciled_running_chunks", reconciled: false }; await save(); throw new Error("unreconciled_running_chunks");
       }
       chunk.state = "lost";
-      const directory = join(output, "chunks", String(index + 1));
-      let units;
-      try { units = await chunkUnits(directory, bundle.plan, chunk.traceId); }
-      catch { units = []; chunk.integrityError = "invalid_unit_material"; }
-      chunk.unitFiles = units.length; chunk.accounting = accountUnits(units, bundle);
+      const directory = await chunkDirectory(output, index); let verified, archiveError = false;
       try {
-        try { chunk.archiveSha256 = sha256(await regularFile(join(directory, "archive.json"))); await verifyArchive(directory, chunk.archiveSha256); }
+        try { chunk.archiveSha256 = sha256(await regularFile(join(directory, "archive.json"))); }
         catch (e) { if (e.code !== "ENOENT") throw e; chunk.archiveSha256 = await archiveChunk(directory); }
-      } catch (e) { if (e.code !== "ENOENT") throw e; }
-      await stop(chunk.integrityError ?? "unreconciled_running_chunks");
+        verified = await verifyArchive(directory, chunk.archiveSha256);
+      } catch { archiveError = true; }
+      let units = [];
+      if (verified) try { units = await chunkUnits(directory, bundle.plan, chunk.traceId, verified); }
+      catch { chunk.integrityError = "invalid_unit_material"; }
+      chunk.unitFiles = units.length; chunk.accounting = accountUnits(units, bundle);
+      try { chunk.journalAccounting = await accountJournals(directory, chunk.traceId, bundle, units); }
+      catch { archiveError = true; }
+      await stop(archiveError ? "archive_verification" : chunk.integrityError ?? "unreconciled_running_chunks");
     }
     for (const [index, chunk] of state.chunks.entries()) if (chunk.archiveSha256) {
       try {
-        const directory = join(output, "chunks", String(index + 1)); await verifyArchive(directory, chunk.archiveSha256);
-        const units = chunk.integrityError ? [] : await chunkUnits(directory, bundle.plan, chunk.traceId), accounting = accountUnits(units, bundle);
-        const matches = digest(accounting) === digest(chunk.accounting) && units.length === chunk.unitFiles;
-        chunk.accounting = accounting; chunk.unitFiles = units.length; need(matches, "accounting_mismatch");
+        const directory = await chunkDirectory(output, index), verified = await verifyArchive(directory, chunk.archiveSha256);
+        const units = chunk.integrityError ? [] : await chunkUnits(directory, bundle.plan, chunk.traceId, verified), accounting = accountUnits(units, bundle);
+        const journalAccounting = await accountJournals(directory, chunk.traceId, bundle, units);
+        const matches = digest(accounting) === digest(chunk.accounting) && digest(journalAccounting) === digest(chunk.journalAccounting) && units.length === chunk.unitFiles;
+        chunk.accounting = accounting; chunk.journalAccounting = journalAccounting; chunk.unitFiles = units.length; need(matches, "accounting_mismatch");
       } catch { chunk.state = "failed"; await stop("archive_verification"); return state; }
     }
     if (state.stop) { await save(); return state; } // No automatic readmission, even after restart.
@@ -223,7 +240,7 @@ export async function runController(context, { shard, output, authorizationPath,
       const next = bundle.chunks[index], before = spendOf(state.chunks, expectedUnits);
       const reason = stopReason(before, bundle.ceilingUSD, next.reservationUsd);
       if (reason) { await stop(reason); return state; }
-      const directory = join(output, "chunks", String(index + 1)); await mkdir(directory, { recursive: true, mode: 0o700 });
+      const directory = await chunkDirectory(output, index, true);
       need((await readdir(directory)).length === 0, "existing_chunk_no_retry");
       const chunk = { ...next, state: "running", pid: null }; state.chunks.push(chunk); await save();
       let outcome;
@@ -242,14 +259,16 @@ export async function runController(context, { shard, output, authorizationPath,
         if (error.message === "unreconciled_running_chunks") { state.stop = { reason: error.message, reconciled: false }; await save(); throw error; }
         outcome = { code: null, reason: error.message === "child_start_deadline" ? "chunk_deadline" : "dispatch_failure" };
       }
-      let units;
-      try { units = await chunkUnits(directory, bundle.plan, chunk.traceId); }
-      catch { units = []; chunk.integrityError = "invalid_unit_material"; }
+      let units = [], verified;
+      try { chunk.archiveSha256 = await archiveChunk(directory); verified = await verifyArchive(directory, chunk.archiveSha256); }
+      catch { outcome.reason = "archive_verification"; }
+      if (verified) try { units = await chunkUnits(directory, bundle.plan, chunk.traceId, verified); }
+      catch { chunk.integrityError = "invalid_unit_material"; }
       chunk.unitFiles = units.length; chunk.accounting = accountUnits(units, bundle);
+      try { chunk.journalAccounting = await accountJournals(directory, chunk.traceId, bundle, units); }
+      catch { outcome.reason = "archive_verification"; }
       chunk.state = outcome.reason ? "killed" : [0, 1].includes(outcome.code) && units.length === expectedUnits && units.every(u => !invalidUnit(u, bundle.plan)) ? "finished" : "failed";
       chunk.exitCode = outcome.code; chunk.stopReason = outcome.reason;
-      try { chunk.archiveSha256 = await archiveChunk(directory); await verifyArchive(directory, chunk.archiveSha256); }
-      catch { chunk.state = "failed"; outcome.reason = "archive_verification"; }
       await save();
       const after = chunk.integrityError ?? outcome.reason ?? stopReason(state.spend, bundle.ceilingUSD);
       if (after) { await stop(after); return state; }

@@ -52,7 +52,7 @@ async function sourceRenderProof(root, unit) {
       sequence: r.seq, text: r.retained_text, sha256: r.text_sha256, originalBytes: r.original_bytes, retainedBytes: r.retained_bytes,
       redacted: !!r.redacted, truncated: !!r.truncated, untrusted: true }));
     const byOrdinal = new Map(records.map(r => [r.ordinal, r])), byId = new Map(records.map(r => [r.recordId, r]));
-    const counts = new Map();
+    const counts = new Map(); let validatedGenerations = 0;
     for (const [index, step] of unit.checkpoint.upkeep.preparations.entries()) {
       for (const offer of step.journal.offered) {
         const record = byOrdinal.get(offer.ordinal);
@@ -81,15 +81,16 @@ async function sourceRenderProof(root, unit) {
       const expected = generation.entries.map(e => Math.max(...e.sources.map(id => generation.spans.find(s => s.id === id)?.ordinal))).sort((a, b) => a - b);
       need(JSON.stringify(order) === JSON.stringify(expected) && order.every(Number.isSafeInteger)
         && lines.every(line => Buffer.byteLength(line + "\n") <= 1024) && saved === JSON.stringify(generation), "offline_render_order_or_storage");
+      validatedGenerations += Number(generation.spans.length > 0 && generation.entries.length > 0);
     }
-    return { retainedRecords: records.length, preparationChildren: unit.checkpoint.upkeep.preparations.map(s => s.pid) };
+    return { retainedRecords: records.length, validatedGenerations, preparationChildren: unit.checkpoint.upkeep.preparations.map(s => s.pid) };
   } finally { db.close(); }
 }
 export async function auditProofOutput(context, directory, selected, limit) {
     const saved = JSON.parse((await regularFile(join(directory, "plan.json"))).toString("utf8"));
     const expected = makePlan({ ...context.loaded, suite: "holdout", profile: context.profile, codeRevision: context.registration.codeRevision, repeats: 1, probeLimit: limit });
     need(saved.confirmation === expected.confirmation && saved.executionKind === "offline", "offline_plan_mismatch");
-    const files = (await readdir(join(directory, "units"))).sort(), identities = new Set(), children = new Set();
+    const files = (await readdir(join(directory, "units"))).sort(), identities = new Set(), children = new Set(); let validatedGenerations = 0;
     need(files.length === selected.length * 4, "offline_units_missing");
     for (const file of files) {
       const unit = JSON.parse(await readFile(join(directory, "units", file), "utf8"));
@@ -103,11 +104,12 @@ export async function auditProofOutput(context, directory, selected, limit) {
       const identity = `${unit.traceId}/${unit.arm}`; need(!identities.has(identity), "offline_duplicate_unit"); identities.add(identity);
       checkProofUnit(unit);
       if (unit.arm === "continuity-ledger-cold") {
-        const source = await sourceRenderProof(directory, unit);
+        const source = await sourceRenderProof(directory, unit); validatedGenerations += source.validatedGenerations;
         for (const pid of source.preparationChildren) { need(!children.has(pid), "offline_child_reused"); children.add(pid); }
       }
     }
-    return children.size;
+    need(validatedGenerations > 0, "offline_render_evidence_missing");
+    return { preparationChildren: children.size, validatedGenerations };
 }
 export async function offlineProof(context, output, { onPhase = () => {}, scope = "both", run = benchmark } = {}) {
   need(["both", "all", "representative"].includes(scope), "invalid_proof_scope");
@@ -122,8 +124,8 @@ export async function offlineProof(context, output, { onPhase = () => {}, scope 
     const code = await run([...benchmarkArgs(context), "--repeats", "1", "--probe-limit", String(limit),
       "--output", directory, "--concurrency", "8", "--capture-upkeep-output", "--keep-work", ...(label === "all" ? [] : selected.flatMap(id => ["--trace", id]))], { stdout: () => {}, onPhase: event => onPhase({ ...event, label }) });
     need([0, 1].includes(code), "offline_run_failed");
-    const children = await auditProofOutput(context, directory, selected, limit);
-    receipts.push({ label, conversations: selected, probes: limit, units: selected.length * 4, preparationChildren: children, passed: true });
+    const evidence = await auditProofOutput(context, directory, selected, limit);
+    receipts.push({ label, conversations: selected, probes: limit, units: selected.length * 4, ...evidence, passed: true });
     await durable(join(output, `${label}-proof.json`), receipts.at(-1), true);
     onPhase({ phase: "proof-phase-completion", label });
   }

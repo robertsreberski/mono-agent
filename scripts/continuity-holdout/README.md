@@ -128,7 +128,8 @@ node scripts/continuity-holdout/workflow.mjs plan "${ARGS[@]}"   --output /exter
 node scripts/continuity-holdout/workflow.mjs proof "${ARGS[@]}"   --output /external/offline-proof
 ```
 
-`plan` writes every shard's confirmed plan, catalog prices, inventory, expected
+`plan` writes every shard's confirmed plan, an incomplete authorization template,
+catalog prices, inventory, expected
 cost, planning upper and reservation total, plus a blocked-confirmation receipt.
 Its real-mode preflight deliberately throws at `modulesLoader`: no provider module
 is loaded and dispatch is zero. The auth path must pass the existing metadata-only
@@ -137,8 +138,14 @@ an empty owner-only file, not credentials. An unknown price/context limit or any
 shard above its registered ceiling blocks admission for the entire registration;
 obtain a new decision, not a smaller outcome-dependent workload.
 
-`proof` never forwards the auth-path flag to execution and refuses provider-key
-credentials in the environment. It runs all frozen conversations at one repeat,
+`proof` never forwards the auth-path flag to execution. It refuses the presence
+(even an empty value) of exactly the environment names matching
+`^(OPENAI|ANTHROPIC|GEMINI|GOOGLE|AZURE|CODEX|PI)_.*(API_KEY|ACCESS_TOKEN|AUTH_TOKEN)$`:
+those seven prefixes, any intermediate text, and one of those three suffixes.
+Examples are `OPENAI_API_KEY`, `GOOGLE_GEMINI_API_KEY` and `PI_ACCESS_TOKEN`;
+other credential names are not detected. Run with a clean credential-free
+environment rather than treating this finite-name guard as a secret scanner.
+It runs all frozen conversations at one repeat,
 one probe and four arms, then all 15 probes on one seeded representative/family.
 It keeps work/captures and validates boundaries, three distinct preparation
 children, journal identities/budgets, preservation, two-offer limits, source hashes,
@@ -146,21 +153,40 @@ host citations/order, exact injection and zero probe upkeep. It emits per-phase
 receipts; offline output is never model-quality evidence. Full long-history
 replay is intentionally an explicit drill rather than a short CI test.
 
-After separate authorization, an operator supplies a private JSON record:
+After separate authorization, the custodian completes the shard's
+`authorization-template.json` as a private record. Create the intended output
+directory first, then obtain its **canonical** root hash (not the spelling of a
+symlink or a nonexistent path):
+
+```bash
+mkdir -p /external/run-shard-1
+node --input-type=module -e 'import {realpathSync} from "node:fs"; import {createHash} from "node:crypto"; console.log(createHash("sha256").update(realpathSync(process.argv[1])).digest("hex"))' /external/run-shard-1
+```
+
+Fill the remaining fields only with explicit approval; the template itself is
+not authorization. The output root is chosen before approval, not at claim time:
+
 
 ```json
 {
   "planDigest": "CONFIRMED_SHARD_DIGEST",
   "ceilingUSD": 25,
   "authPathFingerprint": "SHA256_OF_THE_ABSOLUTE_AUTH_PATH_NOT_ITS_CONTENTS",
+  "outputRootSha256": "SHA256_OF_THE_CANONICAL_OUTPUT_ROOT",
   "approver": "AUTHORIZED_CUSTODIAN",
   "timestamp": "2040-01-01T00:00:00.000Z"
 }
 ```
 
-The controller checks the record against the selected plan and ceiling. It creates
+The controller checks the record against the selected plan, ceiling and canonical
+output root, so copying the record to another filename cannot authorize a second
+root. Authorization binds the auth **path**, not its contents: OAuth refresh
+rewrites that file, so content binding would reject legitimate refreshes. It creates
 an exclusive, fsynced sibling `.claim` binding that record to one output root;
-keep both files, and never copy a record to simulate fresh approval.
+keep both files and all run state; never delete/reuse a root or copy a record to
+simulate fresh approval. Direct `continuity-benchmark.mjs --real --suite holdout`
+still bypasses the controller authorization record. Use the workflow `run`
+command; this is an operator-error guard, not a hostile-local-user boundary.
 
 ```bash
 node scripts/continuity-holdout/workflow.mjs run "${ARGS[@]}" --shard 1   --authorization /external/shard-1-authorization.json   --output /external/run-shard-1 --deadline-seconds 1500 --concurrency 4
@@ -176,15 +202,22 @@ stopping rule. Known catalog costs, full unknown-usage reserves and full lost
 chunk holds are separate: **not an invoice**, and Codex `stream_abort` cannot
 guarantee containment. Unknown upkeep reserves use 128k/64k input plus 4,096
 output; unknown readers reserve catalog context/output, including expensive tiers.
+Unknown reader usage is visible only at chunk boundaries, not during probes.
+Its conservative charge can exceed the ceiling by at most one admitted chunk
+before the next-chunk admission stop; it is not live invoice containment.
+Killed/lost chunks retain journal-only upkeep spend (deduped against unit
+operations) **in addition to** their full planning hold.
 
 A crash leaves the reservation consumed. A still-live session on restart is not
 authority to signal a potentially reused PID: it blocks reconciliation/reporting.
 After owned workers are confirmed gone, restart records a lost chunk and stops;
 it does not readmit it. Do not edit state to resume. Archive verification hashes
 all unit/work/capture files and is repeated on restart and join, without a cache.
+These hashes detect corruption and inconsistent rewrites, not an adversary who
+consistently rewrites the whole output root and all receipts.
 
 `join` rejects mismatched manifest/registration/spec/revision, duplicate units or
-shards, unexpected membership, archive tampering, inconsistent accounting or an
+shards, unexpected membership, archive corruption, inconsistent accounting or an
 unreconciled stop. Missing shards/partial units keep planned denominators and
 known failures. Optional `--audit /external/audit.json` uses PR2's bound totals,
 but **cannot certify the final entry population**. This stage always adds

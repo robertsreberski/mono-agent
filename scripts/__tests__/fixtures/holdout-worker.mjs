@@ -14,17 +14,16 @@ process.once("message", async ({ argv }) => {
   await writeFile(join(output, "write-ahead-proof.json"), JSON.stringify({ reservationDurable: true, pid: process.pid }));
   const mode = process.env.HOLDOUT_FIXTURE_MODE;
   if (["park", "auth", "budget"].includes(mode)) {
+    const path = join(output, "work", `cp-${traceId}_ledger-continuity-ledger-cold-r1/work/history/tool-history`); await mkdir(path, { recursive: true });
+    const db = new DatabaseSync(join(path, "tool-lifecycles.sqlite"));
+    db.exec("CREATE TABLE continuity_upkeep_operations (operation_id TEXT,reservation TEXT,outcome TEXT,state TEXT)");
+    db.prepare("INSERT INTO continuity_upkeep_operations VALUES (?,?,?,?)").run("synthetic-live-op", JSON.stringify({ budget: "bootstrap" }), JSON.stringify({
+      status: "valid", reason: "completed", providerInvoked: true, ...(mode === "auth" ? { failureKind: "provider_auth" } : {}),
+      inputTokens: 100, outputTokens: 10, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: mode === "budget" ? 100 : 0.01,
+    }), "terminal"); db.close();
     if (mode === "park") {
       const child = fork(new URL("./holdout-park.mjs", import.meta.url), [], { stdio: "ignore", execArgv: [] });
       await writeFile(join(output, "park.json"), JSON.stringify({ pid: child.pid }));
-    } else {
-      const path = join(output, "work", `cp-${traceId}_ledger-continuity-ledger-cold-r1/work/history/tool-history`); await mkdir(path, { recursive: true });
-      const db = new DatabaseSync(join(path, "tool-lifecycles.sqlite"));
-      db.exec("CREATE TABLE continuity_upkeep_operations (reservation TEXT,outcome TEXT,state TEXT)");
-      db.prepare("INSERT INTO continuity_upkeep_operations VALUES (?,?,?)").run(JSON.stringify({ budget: "bootstrap" }), JSON.stringify({
-        status: "valid", reason: "completed", providerInvoked: true, ...(mode === "auth" ? { failureKind: "provider_auth" } : {}),
-        inputTokens: 100, outputTokens: 10, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: mode === "budget" ? 100 : 0.01,
-      }), "terminal"); db.close();
     }
     process.send({ started: true }); setInterval(() => {}, 1000); return;
   }
@@ -48,6 +47,13 @@ process.once("message", async ({ argv }) => {
       trials: probes.map(probeId => ({ traceId, arm, repeat, probeId, status: "completed", boundary: { verified: true },
         score: mode === "quality_fail" ? { pass: false, outcome: "wrong" } : arm === "continuity-pack-cold" ? { pass: false, outcome: "abstained" } : { pass: true, outcome: "correct" },
         usage: { calls: 1, inputTokens: 100, outputTokens: 10, estimatedCostUsd: 0.001 } })) };
+    if (mode === "journal_overlap" && arm === "continuity-ledger-cold") {
+      const path = join(output, "work", `cp-${traceId}_ledger-continuity-ledger-cold-r${repeat}/work/history/tool-history`); await mkdir(path, { recursive: true });
+      const db = new DatabaseSync(join(path, "tool-lifecycles.sqlite"));
+      db.exec("CREATE TABLE continuity_upkeep_operations (operation_id TEXT,reservation TEXT,outcome TEXT,state TEXT)");
+      for (const step of steps) db.prepare("INSERT INTO continuity_upkeep_operations VALUES (?,?,?,?)").run(step.receipt.operationId, JSON.stringify({ budget: step.journal.budget }), JSON.stringify(step.receipt), "terminal");
+      db.close();
+    }
     await writeFile(join(output, "units", `r${repeat}-${traceId}-${arm}.json`), JSON.stringify(unit));
   }
   finished = true; process.disconnect(); process.exit(0);

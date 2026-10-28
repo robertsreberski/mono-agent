@@ -61,8 +61,8 @@ export async function registerFrozenHoldout({ manifestPath, manifestSha256, stat
   return createRegistration({ conversations: traces.map(conversationIdentity),
     manifestSha256, rubricSha256: manifest.files.rubric.sha256, statisticalSpecSha256: sha256(bytes), statisticalSpec, seed, models, codeRevision });
 }
-export async function loadRegisteredHoldout({ manifestPath, manifestSha256, registrationPath, registrationSha256, statisticalSpecPath, shard, profile, codeRevision, repeats, arms, probeLimit }) {
-  const bytes = await externalFile(registrationPath);
+export async function loadRegisteredHoldout({ manifestPath, manifestSha256, registrationPath, registrationSha256, registrationBytes, statisticalSpecPath, shard, profile, codeRevision, repeats, arms, probeLimit }) {
+  const bytes = registrationBytes ?? await externalFile(registrationPath);
   requireValue(sha256(bytes) === registrationSha256, "registration_hash_mismatch");
   const registration = JSON.parse(bytes.toString("utf8"));
   const statBytes = await externalFile(statisticalSpecPath), statisticalSpec = JSON.parse(statBytes.toString("utf8"));
