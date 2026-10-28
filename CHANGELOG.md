@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add authorized, conservatively accounted holdout shard control, validated joins
+  and provider-free offline proof tooling; study acceptance remains blocked until
+  the independent audit workflow is available.
+
 - Add registered holdout benchmark shards, conversation-cluster decision statistics
   and deterministic power analysis without changing runtime behavior. Use the
   512-conversation design, retain established failures with missing data, and bind

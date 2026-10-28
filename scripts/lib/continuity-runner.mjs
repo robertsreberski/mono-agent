@@ -393,7 +393,7 @@ export async function runLiveTurn({ modules, work, authPath, plan, mode, configP
  * Replay a trace into a fresh workspace up to its checkpoint. Arms without a
  * live mid-trace turn produce identical scripted state and share one checkpoint.
  */
-export async function buildCheckpoint({ modules, trace, arm, repeat, dir, plan, mode, authPath, captureUpkeepOutput, upkeepPrice }) {
+export async function buildCheckpoint({ modules, trace, arm, repeat, dir, plan, mode, authPath, captureUpkeepOutput, upkeepPrice, onPhase = () => {} }) {
   const source = sourceOnly(trace);
   const work = join(dir, "work");
   await prepareWorkspace(work);
@@ -429,7 +429,9 @@ export async function buildCheckpoint({ modules, trace, arm, repeat, dir, plan, 
         }
         open ??= await openHarness({ modules, work, authPath, model: binding.reference, effort: undefined, tools: true, configPatch: arm.sessionConfig ?? {}, route, clock,
           onHistoryWarning: () => { replayHistoryWarnings += 1; } });
+        onPhase({ phase: "replay-turn-start", traceId: trace.id, arm: arm.id, turnId: turn.id });
         const result = await replayScriptedTurn({ harness: open.harness, scripted, tools, turn, binding, conversationId, owner: source.owner.displayName, pi: modules.pi });
+        onPhase({ phase: "replay-turn-completion", traceId: trace.id, arm: arm.id, turnId: turn.id });
         record.turns += 1; record.toolCalls += result.toolCalls; record.steers += result.steers;
       }
       if (arm.ledgerUpkeep) {

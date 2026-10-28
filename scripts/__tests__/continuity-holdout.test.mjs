@@ -1,3 +1,4 @@
+import { fixtureSpec, writeSpec, fixtureGit, fixtureCommit, toolingRepository } from "./fixtures/holdout-synthetic.mjs";
 import { STATISTICAL_SPEC } from "../lib/continuity-holdout-statistics.mjs";
 import { constants } from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
@@ -5,61 +6,18 @@ import { mkdtemp, mkdir, readFile, realpath, cp, writeFile, rm, symlink, readdir
 import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { pathToFileURL } from "node:url";
-import { spawnSync, execFileSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { canonicalJson, sourceOnly } from "../lib/continuity-dataset.mjs";
 import { generateHoldout, generateHoldoutTrace, loadHoldoutSpec, selectHoldoutCases, validateHoldoutSpec } from "../lib/continuity-holdout-generator.mjs";
 import { checkHoldoutOverlap, overlapMatcher, overlapSources, traceNarratives, validateAllowlist } from "../lib/continuity-holdout-overlap.mjs";
 import { wordRuns, literals } from "../lib/continuity-overlap-text.mjs";
-import { externalDirectory, readJson, externalFile, benchmarkFiles, jsonBytes, CHECKOUT } from "../lib/continuity-holdout-files.mjs";
+import { externalDirectory, readJson, externalFile, jsonBytes, CHECKOUT } from "../lib/continuity-holdout-files.mjs";
 
 const dirs = [];
 afterEach(async () => { for (const dir of dirs.splice(0)) await rm(dir, { recursive: true, force: true }); });
 async function scratch() { const dir = await mkdtemp(join(tmpdir(), "holdout-fixture-")); dirs.push(dir); return dir; }
 const seeds = { ordinary: 12345, distractor: 98765 };
 const emptyAllowlist = { schema: "holdout-overlap-allowlist-v1", entries: [] };
-
-// Tiny, unmistakably synthetic templates expanded mechanically ONLY to exercise
-// minimum schema counts. These are not narrative content or a holdout seed pool.
-function fixtureCase(n) {
-  const id = `fixture-case-${n}`, early = `FXEARLY-${n}-ABC`, middle = `FXMIDDLE-${n}-ABC`, head = `FXHEAD-${n}-ABC`, secret = `FXSECRET-${n}-ABC`, decoy = `FXDECOY-${n}-ABC`;
-  const tool = (bytes, facts = [], mid = []) => ({ operation: "read", args: {}, bytes, head: facts, middle: mid, tail: [] });
-  const event = (at, extra = {}) => ({ at, owner: `Fixture source ${n} at ${at}.`, assistant: "Fixture acknowledgement.", ...extra });
-  const probe = (category, score, i, evidence) => ({ category, score, question: `Fixture inquiry ${n} number ${i}?`, abstainOption: ![5, 15].includes(i), evidence });
-  return { id, title: "Fixture title", owner: "{{person}}", bindings: {}, turnCount: 96, toolCount: 72, sessions: 8, midpoint: 47,
-    events: [event(0), event(1, { tool: tool(8192, [early]), interruption: "Fixture interruption alpha." }),
-      event(3, { tool: tool(8192, [secret]), interruption: "Fixture interruption beta." }),
-      event(10, { owner: `Fixture previous VALUE-OLD-${n}; now VALUE-NEW-${n}.` }),
-      event(20, { tool: tool(40960, [], [middle]) }), event(30, { tool: tool(24576, [head]) }),
-      event(40, { owner: `Fixture obsolete ${decoy}.` }), event(55, { owner: `Fixture next ACTION-${n} by DEADLINE-${n}.` }), event(60)],
-    features: { correction: [10], deliberation: [40], decision: [55], outstanding: [55], fulfilled: [60], distractor: [60] },
-    unstated: ["Fixture absent alpha", "Fixture absent beta"],
-    probes: [
-      ...[early, middle, head].map((value, i) => ({ ...probe("tool_identifier", { kind: "identifier", accept: [value], ...(i === 2 ? { reject: [decoy] } : {}) }, i + 1, [[1], [20], [30]][i]), source: [1, 20, 30][i], placement: ["early", "middle", "head"][i] })),
-      probe("active_constraint", { kind: "constraint_recall", requireAll: [["FixtureAllowed"]] }, 4, [0]),
-      probe("active_constraint", { kind: "constraint_task", forbidden: ["FixtureForbidden"] }, 5, [0]),
-      ...[6, 7].map(i => probe("superseded_current", { kind: "value", accept: [`VALUE-NEW-${n}`], superseded: [`VALUE-OLD-${n}`] }, i, [10])),
-      ...[8, 9, 10, 11].map(i => probe(i < 10 ? "commitment_status" : "artifact_status", { kind: "choice", options: ["PENDING", "COMPLETE"], expected: "PENDING" }, i, [40])),
-      probe("next_action", { kind: "next_action", proxyAll: [[`ACTION-${n}`], [`DEADLINE-${n}`]], rubric: `Fixture-only semantic key for case ${n}, action and deadline.` }, 12, [55]),
-      probe("abstention", { kind: "abstain" }, 13, []), probe("abstention", { kind: "abstain" }, 14, []),
-      probe("redaction", { kind: "redaction", secret }, 15, [3]),
-    ] };
-}
-function fixtureSpec(statisticalSpec = STATISTICAL_SPEC) {
-  const d = statisticalSpec.design;
-  return { schema: "fictional-conversations-v1", fictional: true,
-    provenance: { authorId: "fixture-author", createdAt: "2040-01-01T00:00:00.000Z", independent: true, references: [], exposures: [],
-      declaration: "Fixture declaration only: wholly fictional synthetic test content, not an evaluation corpus." },
-    families: Array.from({ length: d.families }, (_, i) => ({ id: `fixture-family-${String(i).padStart(2, "0")}`, group: i < d.families / 2 ? "ordinary" : "distractor", count: d.conversationsPerFamily,
-      entities: { person: "Fixture Person" }, vocabulary: { word: "Fixtureword" },
-      templates: { owner: ["Fixture owner alpha.", "Fixture owner beta."], assistant: ["Fixture reply alpha.", "Fixture reply beta."], toolBody: Array.from({ length: 8 }, (_, k) => `Fixture filler unit ${String.fromCharCode(97 + k)}.`) },
-      cases: Array.from({ length: d.conversationsPerFamily }, (_, j) => fixtureCase(i * d.conversationsPerFamily + j + 100)) })) };
-}
-async function writeSpec(dir, spec) {
-  await mkdir(dir, { recursive: true });
-  const families = [];
-  for (const f of spec.families) { const file = `${f.id}.json`; await writeFile(join(dir, file), jsonBytes(f)); families.push({ id: f.id, group: f.group, count: f.count, file }); }
-  await writeFile(join(dir, "index.json"), jsonBytes({ ...spec, families }));
-}
 
 describe("holdout author schema", () => {
   it("loads directory families in ID order and schema CLI does not render or compare text", async () => {
@@ -232,22 +190,6 @@ it("rejects a JSON backspace pattern through the schema-only CLI, but permits es
   spec.families[0].templates.toolBody[0] += "\u0008";
   expect(() => validateHoldoutSpec(spec)).toThrow("spec.families[0].templates.toolBody[0]");
 });
-
-function fixtureGit(repo, args) {
-  return execFileSync("git", ["-C", repo, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", ...args], { encoding: "utf8" });
-}
-function fixtureCommit(repo) { fixtureGit(repo, ["add", "--", "."]); fixtureGit(repo, ["commit", "-qm", "Fixture checkpoint"]); }
-async function toolingRepository(directory) {
-  await mkdir(directory);
-  for (const name of [...benchmarkFiles(), "pnpm-lock.yaml", "scripts/lib/memory-e2e-build.mjs"]) {
-    await mkdir(dirname(join(directory, name)), { recursive: true });
-    await writeFile(join(directory, name), await readFile(resolve(CHECKOUT, name)));
-  }
-  await writeFile(join(directory, ".gitignore"), "node_modules\n");
-  await symlink(resolve(CHECKOUT, "node_modules"), join(directory, "node_modules"));
-  fixtureGit(directory, ["init", "-q"]); fixtureCommit(directory);
-  return import(/* @vite-ignore */ pathToFileURL(join(directory, "scripts/continuity-holdout-freeze.mjs")).href);
-}
 
 it("freezes external canonical bytes and detects artifact, manifest, allowlist and tooling mutation", async () => {
   // Smallest valid explicitly bound synthetic design; full E inventory/selection
