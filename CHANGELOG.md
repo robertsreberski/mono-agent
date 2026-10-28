@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Keep cancellation publication failures from crashing an agent while its
+  provider is still settling, without bypassing pending history recovery.
+- Preserve existing managed workers' launch proofs when another consumer
+  rebuilds identical runtime bytes; use full verification for stale warm caches.
+
 - Add independent fictional benchmark corpus authoring, deterministic generation,
   lexical overlap checks and hash-verified freezes without changing runtime behavior.
 

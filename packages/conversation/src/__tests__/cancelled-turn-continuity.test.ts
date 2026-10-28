@@ -567,6 +567,42 @@ describe("cancelled turn natural continuity", () => {
     });
   });
 
+  it("observes a rejected cancellation publication while the provider is still settling", async () => {
+    const controller = new AbortController();
+    let entered!: () => void;
+    const running = new Promise<void>((resolve) => { entered = resolve; });
+    let release!: () => void;
+    const provider = new Promise<void>((resolve) => { release = resolve; });
+    let published!: () => void;
+    const publication = new Promise<void>((resolve) => { published = resolve; });
+    const harness = createConversationHarness({
+      identityPath: await identityFixture(),
+      model,
+      historyStore: {
+        async load() { return []; },
+        async append() { published(); throw new Error("history unavailable"); },
+      },
+      runtime: { async run() { entered(); await provider; return { text: "late answer" }; } },
+    });
+    const response = harness.run({ conversationId: "delayed-provider", userMessage: "cancel me", abortSignal: controller.signal });
+    try {
+      await running;
+      controller.abort(createChannelUserCancelReason("Web"));
+      await publication;
+      // Let Node report unhandled rejections before the provider allows run()
+      // to join continuityPromise. Vitest fails the test on an escaped error.
+      await new Promise<void>((resolve) => setTimeout(resolve, 20));
+      release();
+      await expect(response).resolves.toMatchObject({ failure: { kind: "cancelled" } });
+      await expect(harness.run({ conversationId: "delayed-provider", userMessage: "next", abortSignal: new AbortController().signal }))
+        .resolves.toMatchObject({ failure: { kind: "cancellation_continuity_unavailable" } });
+    } finally {
+      release();
+      await response;
+      await harness.dispose?.();
+    }
+  });
+
   it("retries a rejected cancellation publication on the next turn and self-heals", async () => {
     const identityPath = await identityFixture();
     const controller = new AbortController();

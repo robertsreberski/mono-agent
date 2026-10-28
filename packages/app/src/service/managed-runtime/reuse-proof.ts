@@ -35,11 +35,11 @@ import {
 } from "./installed-closure.js";
 import { runtimeLayout, verifyPrivateRuntimeAncestors } from "./layout.js";
 import {
+  PROVISIONAL_RUNTIME_INSTALLED_AT,
   privateJsonContents,
   readPrivateRuntimeMarkerBytes,
   runtimeMarkerFromJson,
   writeFinalizedRuntimeMarker,
-  writePrivateJson,
 } from "./marker.js";
 import { captureExecutionClosure } from "./source-closure.js";
 import { MANAGED_RUNTIME_MARKER_PACKAGE, RUNTIME_REUSE_PROOF_SCHEMA } from "./types.js";
@@ -200,8 +200,10 @@ export async function publishRuntimeReuseProof(
   source: SourceClosureReuseProof,
   marker: RuntimeMarker,
   deps: ManagedBackgroundRuntimeDeps,
-  finalizeLaunchBoundary = false,
 ): Promise<void> {
+  if (marker.installedAt !== PROVISIONAL_RUNTIME_INSTALLED_AT) {
+    throw new Error("A finalized managed runtime launch marker must not be republished.");
+  }
   if (!(await verifySourceReuseProofStats(source))) {
     throw new Error("The managed runtime source closure changed before warm-proof publication.");
   }
@@ -253,11 +255,7 @@ export async function publishRuntimeReuseProof(
     throw new Error("The managed runtime warm-reuse proof changed while it was published.");
   }
 
-  if (finalizeLaunchBoundary) {
-    await writeFinalizedRuntimeMarker(layout.markerPath, nextMarker, deps);
-  } else {
-    await writePrivateJson(layout.markerPath, nextMarker);
-  }
+  await writeFinalizedRuntimeMarker(layout.markerPath, nextMarker, deps);
   if (!(await verifySourceReuseProofStats(source))) {
     throw new Error("The managed runtime source closure changed during warm-proof publication.");
   }

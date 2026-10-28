@@ -1083,6 +1083,10 @@ export class ConversationHarnessImpl implements ConversationHarness {
       turnContinuityCollector.seal(claim.outcome);
       const publication = publishTurnContinuity();
       continuityPromise = finalizeTurnContinuity(publication);
+      // Abort callbacks can publish before the provider settles. Observe the
+      // finalizer's rejection immediately; the owning response still drains
+      // the original promise, and the rejected publication barrier stays closed.
+      void continuityPromise.catch(() => undefined);
       this.registerTurnContinuityPublication(request.conversationId, claim.outcome, publication, republishTurnContinuity);
       return true;
     };
