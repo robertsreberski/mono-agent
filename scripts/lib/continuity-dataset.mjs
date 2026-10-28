@@ -6,11 +6,12 @@ import { fileURLToPath } from "node:url";
 import { ARMS, BASELINE_ARM, DEFAULT_ARMS, assertRunnableArms } from "./continuity-arms.mjs";
 import { GENERATOR_VERSION, HARD_SEEDS, LONG_RULES, generateTrace, generateDistractorTrace, outsideColdBounds, traceShape } from "./continuity-generator.mjs";
 import { CATEGORIES, ORIGINAL_CATEGORIES, probePrompt, validateProbeScore } from "./continuity-score.mjs";
+import { HOLDOUT_ARMS } from "./continuity-holdout-statistics.mjs";
 import { TOOL_NAMES } from "./continuity-tools.mjs";
 
 export const CORPUS_DIR = fileURLToPath(new URL("../fixtures/continuity/", import.meta.url));
 export const PLAN_SCHEMA = "continuity-benchmark-plan-v2";
-export const SUITES = Object.freeze(["original", "hard", "hard-distractors"]);
+export const SUITES = Object.freeze(["original", "hard", "hard-distractors", "holdout"]);
 export const DEFAULT_READER = "openai-codex:gpt-6-luna";
 export const DEFAULT_ALTERNATE = "openai-codex:gpt-6.1-sol";
 export const DEFAULT_JUDGE = "openai-codex:gpt-6.1-sol";
@@ -179,8 +180,9 @@ export function parseSeeds(text) {
  * Load a suite. `original` is the four checked-in hand-written traces; `hard`
  * is generated deterministically from seeds and validated like any other trace.
  */
-export async function loadTraces({ dir = CORPUS_DIR, suite = "original", seeds = HARD_SEEDS } = {}) {
+export async function loadTraces({ dir = CORPUS_DIR, suite = "original", seeds = HARD_SEEDS, ...holdoutOptions } = {}) {
   if (!SUITES.includes(suite)) fail("invalid_suite");
+  if (suite === "holdout") return (await import("./continuity-holdout-registration.mjs")).loadRegisteredHoldout(holdoutOptions);
   if (suite === "original") return { suite, ...(await loadOriginal(dir)) };
   const traces = seeds.map((seed) => suite === "hard-distractors" ? generateDistractorTrace(seed) : generateTrace(seed));
   for (const trace of traces) validateTrace(trace);
@@ -217,9 +219,9 @@ export function digest(value) { return createHash("sha256").update(canonicalJson
  * selection, output directory) are deliberately outside the digest; a chunk
  * may only select a subset of the confirmed plan.
  */
-export function makePlan({ traces, sha256, suite = "original", source = null, codeRevision = null, profile = {}, repeats = 1, arms, probeLimit = null, piAuthFingerprint = null }) {
+export function makePlan({ traces, sha256, suite = "original", source = null, codeRevision = null, profile = {}, repeats = 1, arms, probeLimit = null, piAuthFingerprint = null, holdout = null }) {
   if (!SUITES.includes(suite)) fail("invalid_suite");
-  arms ??= DEFAULT_ARMS[suite];
+  arms ??= suite === "holdout" ? HOLDOUT_ARMS : DEFAULT_ARMS[suite];
   if (!Number.isSafeInteger(repeats) || repeats < 1 || repeats > 5) fail("invalid_repeats");
   if (!Array.isArray(arms) || arms.length === 0 || arms.some((arm) => !ARMS.some((row) => row.id === arm)) || new Set(arms).size !== arms.length) fail("invalid_arms");
   if (!arms.includes(BASELINE_ARM)) fail("baseline_arm_required");
@@ -254,6 +256,7 @@ export function makePlan({ traces, sha256, suite = "original", source = null, co
   const plan = {
     schema: PLAN_SCHEMA,
     suite,
+    ...(holdout === null ? {} : { holdout }),
     corpus: { sha256, source, traces: probesPerTrace, probeLimit },
     arms: selectedArms.map((arm) => ({ id: arm.id, label: arm.label, replayBinding: arm.replayBinding, ...(arm.ledgerUpkeep ? { ledgerUpkeep: true } : {}), midCheckpoint: arm.midCheckpoint,
       restart: arm.restart, probeConfig: arm.probeConfig, expect: arm.expect, pressure: arm.pressure })),

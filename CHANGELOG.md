@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Add registered holdout benchmark shards, conversation-cluster decision statistics
+  and deterministic power analysis without changing runtime behavior.
+
 - Add independent fictional benchmark corpus authoring, deterministic generation,
   lexical overlap checks and hash-verified freezes without changing runtime behavior.
 

@@ -1,0 +1,11 @@
+{
+  "schema": "holdout-statistical-spec-v1",
+  "design": { "conversationsPerCorpus": 128, "corpora": ["holdout-hard", "holdout-hard-distractors"], "repeats": 2, "probes": 15, "shards": 16, "perCorpusPerShard": 8 },
+  "confidence": 0.95,
+  "safety": { "comparators": ["cold-rebuild", "continuity-pack-cold"], "treatment": "continuity-ledger-cold", "harmful": "ledger has any non-abstaining wrong answer in its 30-answer conversation bundle and comparator has none", "upperBound": "one-sided exact Clopper-Pearson", "maximum": 0.05, "wrongRateMaximum": 0.005 },
+  "benefit": { "comparator": "continuity-pack-cold", "unit": "conversation correct-fraction difference over all 30 planned answers", "lowerBound": "one-sided paired Student-t", "combinedMinimumExclusive": 0.02, "corpusMinimumExclusive": 0 },
+  "accuracyMinimum": 0.91875,
+  "audit": { "labelNumerator": 10, "contextNumerator": 5, "referenceDenominator": 363, "requireComplete": true, "falselySupersededMaximum": 0, "bindingErrorsMaximum": 0 },
+  "missingData": "Never drop planned slots. A missing, invalid, duplicate or unknown unit/probe/arm/repeat prevents acceptance. Incomplete scopes have no inferential estimates (not complete-case estimates), remain inconclusive, and ledger accuracy uses the planned denominator with missing/invalid answers incorrect. Hard failures established by complete scopes or audit remain failures. Native-arm coverage is required as well. Missing audit material prevents acceptance.",
+  "decision": "Intersection-union: pass only if all gates pass with complete integrity and audit. Hard rate/floor/audit failure or a one-sided confidence bound establishing failure gives fail. Otherwise give inconclusive, with reasons; no outcome-dependent extension. Statistical bounds are per conversation, never independent probes."
+}

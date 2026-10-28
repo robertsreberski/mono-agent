@@ -2,7 +2,7 @@
 
 These scripts only validate, render, compare and freeze fictional benchmark data.
 They do not prepare a product treatment or call a provider. Suite loading and
-statistical registration are separate work; existing benchmark suites are unchanged.
+statistical registration are documented in [the registration workflow](./REGISTRATION.md); existing benchmark suites are unchanged.
 
 ## Author isolation
 

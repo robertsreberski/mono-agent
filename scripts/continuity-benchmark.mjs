@@ -11,12 +11,13 @@ import { isAbsolute, join, relative, resolve, sep, dirname } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { ARMS, AVAILABLE_ARM_IDS, DEFAULT_ARMS, armById, checkpointKey } from "./lib/continuity-arms.mjs";
 import { estimateCost, inventory, loadTraces, makePlan, parseSeeds } from "./lib/continuity-dataset.mjs";
+import { HOLDOUT_ARMS } from "./lib/continuity-holdout-statistics.mjs";
 import { HARD_SEEDS } from "./lib/continuity-generator.mjs";
 import { addUsage, emptyUsage, renderMarkdown, summarize } from "./lib/continuity-score.mjs";
 
 const ROOT = fileURLToPath(new URL("../", import.meta.url)).replace(/\/$/u, "");
 const BOOLEAN = new Set(["dry-run", "real", "help", "no-judge", "keep-work", "aggregate-only", "require-request-cap", "capture-upkeep-output"]);
-const VALUED = new Set(["suite", "seeds", "reader", "extraction-model", "alternate", "judge", "reader-effort", "judge-effort", "repeats", "arms", "probe-limit", "confirm-plan", "pi-auth-path", "output", "concurrency"]);
+const VALUED = new Set(["suite", "seeds", "reader", "extraction-model", "alternate", "judge", "reader-effort", "judge-effort", "repeats", "arms", "probe-limit", "confirm-plan", "pi-auth-path", "output", "concurrency", "corpus-manifest", "manifest-sha256", "registration", "registration-sha256", "statistical-spec", "shard", "audit"]);
 const REPEATABLE = new Set(["trace", "repeat"]);
 const EFFORTS = ["none", "minimal", "low", "medium", "high"];
 
@@ -51,9 +52,12 @@ export function profileFrom(flags) {
   for (const key of ["reader-effort", "judge-effort"]) if (flags[key] !== undefined && !EFFORTS.includes(flags[key])) throw new CliError("invalid_effort");
   if (flags["no-judge"] && flags.judge !== undefined) throw new CliError("judge_conflict");
   const suite = flags.suite ?? "original";
-  if (!["original", "hard", "hard-distractors"].includes(suite)) throw new CliError("invalid_suite");
+  if (!["original", "hard", "hard-distractors", "holdout"].includes(suite)) throw new CliError("invalid_suite");
+  if (suite === "holdout" && flags.seeds !== undefined) throw new CliError("holdout_has_frozen_seeds");
+  if (suite !== "holdout" && ["corpus-manifest", "manifest-sha256", "registration", "registration-sha256", "statistical-spec", "shard", "audit"].some(k => flags[k] !== undefined)) throw new CliError("holdout_flags_require_holdout_suite");
   if (flags.seeds !== undefined && suite === "original") throw new CliError("seeds_require_hard_suite");
-  const arms = flags.arms === undefined ? [...DEFAULT_ARMS[suite]] : flags.arms.split(",").map((value) => value.trim());
+  if (suite === "holdout" && ["corpus-manifest", "manifest-sha256", "registration", "registration-sha256", "statistical-spec"].some(k => !flags[k])) throw new CliError("holdout_registration_required");
+  const arms = flags.arms === undefined ? [...(suite === "holdout" ? HOLDOUT_ARMS : DEFAULT_ARMS[suite])] : flags.arms.split(",").map((value) => value.trim());
   return {
     suite,
     seeds: flags.seeds === undefined ? [...HARD_SEEDS] : parseSeeds(flags.seeds),
@@ -62,11 +66,11 @@ export function profileFrom(flags) {
       requireRequestCap: flags["require-request-cap"] === true,
       ...(flags.reader === undefined ? {} : { reader: flags.reader }),
       ...(flags.alternate === undefined ? {} : { alternate: flags.alternate }),
-      ...(flags["no-judge"] ? { judge: null } : flags.judge === undefined ? {} : { judge: flags.judge }),
+      ...(flags["no-judge"] || suite === "holdout" && flags.judge === undefined ? { judge: null } : flags.judge === undefined ? {} : { judge: flags.judge }),
       ...(flags["reader-effort"] === undefined ? {} : { readerEffort: flags["reader-effort"] }),
       ...(flags["judge-effort"] === undefined ? {} : { judgeEffort: flags["judge-effort"] }),
     },
-    repeats: integer(flags.repeats, { min: 1, max: 5 }, "invalid_repeats") ?? 1,
+    repeats: integer(flags.repeats, { min: 1, max: 5 }, "invalid_repeats") ?? (suite === "holdout" ? 2 : 1),
     arms,
     probeLimit: integer(flags["probe-limit"], { min: 1, max: 15 }, "invalid_probe_limit") ?? null,
   };
@@ -112,11 +116,13 @@ Default: offline contract run through the built production harness with scripted
 --dry-run                 Print the workload plan and its confirmation digest; no build, credentials or network.
 --real                    Paid run. Requires --confirm-plan SHA256 from the identical --dry-run, --pi-auth-path ABS,
                           --output ABS (outside the checkout) and a clean checkout. Refused whenever CI is set.
-Plan (bound into the digest): --suite original|hard|hard-distractors (default original) --seeds 101-108 (hard only)
+Plan (bound into the digest): --suite original|hard|hard-distractors|holdout (default original) --seeds 101-108 (hard only)
   --reader REF (default openai-codex:gpt-6-luna) --alternate REF --judge REF | --no-judge
   --extraction-model REF (default configured reader) --require-request-cap
   --reader-effort LEVEL --judge-effort LEVEL --repeats N --arms ${AVAILABLE_ARM_IDS.join(",")} --probe-limit N
 Execution only: --trace ID (repeatable) --repeat N (repeatable) --concurrency N --output DIR --keep-work --aggregate-only --capture-upkeep-output
+Holdout: --corpus-manifest FILE --manifest-sha256 SHA --registration FILE --registration-sha256 SHA
+  --statistical-spec FILE --shard 1..16 [--audit FILE]. Shards require all four arms, two repeats, fifteen probes.
 See docs/runtime/continuity-benchmark.md.`;
 
 export async function main(argv = process.argv.slice(2), { stdout = console.log, env = process.env, modulesLoader } = {}) {
@@ -125,9 +131,14 @@ export async function main(argv = process.argv.slice(2), { stdout = console.log,
   if (flags.real && Object.hasOwn(env, "CI")) throw new CliError("paid_mode_refused_in_ci");
   const { suite, seeds, profile, repeats, arms, probeLimit } = profileFrom(flags);
   const piAuthPath = await validatePiAuthPath(flags["pi-auth-path"]);
-  const { traces, sha256, source } = await loadTraces({ suite, seeds });
   const { head, dirty } = await gitState();
-  const plan = makePlan({ traces, sha256, suite, source, codeRevision: head, profile, repeats, arms, probeLimit,
+  if (suite === "holdout" && flags.real && flags.shard === undefined) throw new CliError("paid_holdout_requires_shard");
+  if (suite === "holdout" && flags.shard !== undefined && flags.repeat !== undefined) throw new CliError("registered_shard_requires_both_repeats");
+  const { traces, sha256, source, holdout } = await loadTraces({ suite, seeds,
+    ...(suite === "holdout" ? { manifestPath: flags["corpus-manifest"], manifestSha256: flags["manifest-sha256"], registrationPath: flags.registration,
+      registrationSha256: flags["registration-sha256"], statisticalSpecPath: flags["statistical-spec"], shard: integer(flags.shard, { min: 1, max: 16 }, "invalid_shard"),
+      profile, codeRevision: head, repeats, arms, probeLimit } : {}) });
+  const plan = makePlan({ traces, sha256, suite, source, codeRevision: head, profile, repeats, arms, probeLimit, ...(holdout ? { holdout } : {}),
     piAuthFingerprint: piAuthPath === undefined ? null : createHash("sha256").update(piAuthPath).digest("hex") });
   if (flags["dry-run"]) {
     const prices = await listPrices([plan.reader.model, plan.upkeep.model, ...(plan.judge ? [plan.judge.model] : [])]);
@@ -143,7 +154,7 @@ export async function main(argv = process.argv.slice(2), { stdout = console.log,
   } else if (flags["confirm-plan"] !== undefined || piAuthPath !== undefined) {
     throw new CliError("credentials_require_real_mode");
   }
-  const output = flags.output === undefined
+  let output = flags.output === undefined
     ? join(ROOT, ".worklab-tmp", "continuity", `run-${new Date().toISOString().replace(/[:.]/gu, "-")}`)
     : resolve(flags.output);
   if (flags.output !== undefined && (!isAbsolute(flags.output) || (mode === "real" && insideRoot(output)))) throw new CliError("invalid_output");
@@ -154,6 +165,10 @@ export async function main(argv = process.argv.slice(2), { stdout = console.log,
       try { if (insideRoot(await realpath(ancestor))) throw new CliError("capture_requires_external_output"); break; }
       catch (error) { if (error.code !== "ENOENT") throw error; ancestor = dirname(ancestor); }
     }
+  }
+  if (suite === "holdout") {
+    if (flags.output === undefined) throw new CliError("holdout_requires_external_output");
+    output = await (await import("./lib/continuity-holdout-files.mjs")).externalDirectory(output);
   }
   await mkdir(join(output, "units"), { recursive: true, mode: 0o700 });
   const planPath = join(output, "plan.json");
@@ -167,8 +182,9 @@ export async function main(argv = process.argv.slice(2), { stdout = console.log,
   if (!flags["aggregate-only"]) {
     await execute({ flags, plan, traces, mode, output, piAuthPath, head, dirty, modulesLoader });
   }
-  const results = await aggregate({ plan, traces, output, mode });
+  const results = await aggregate({ plan, traces, output, mode, auditPath: flags.audit });
   stdout(JSON.stringify({ output, executionKind: mode, qualityMeasured: mode === "real", coverage: results.coverage,
+    ...(results.summary.holdout ? { holdoutDecision: results.summary.holdout.decision } : {}),
     overall: Object.fromEntries(Object.entries(results.summary.arms).map(([arm, row]) => [arm, { n: row.overall.n, accuracy: row.overall.accuracy, delta: row.deltaVsBaseline.overall, excluded: row.excluded }])) }, null, 2));
   return results.coverage.unitsComplete === results.coverage.unitsExpected ? 0 : 1;
 }
@@ -278,7 +294,7 @@ async function execute({ flags, plan, traces, mode, output, piAuthPath, head, di
   if (flags["keep-work"] !== true) await rm(scratch, { recursive: true, force: true });
 }
 
-export async function aggregate({ plan, traces, output, mode }) {
+export async function aggregate({ plan, traces, output, mode, auditPath }) {
   const files = (await readdir(join(output, "units"))).filter((name) => name.endsWith(".json")).sort();
   const units = [];
   for (const name of files) {
@@ -289,6 +305,12 @@ export async function aggregate({ plan, traces, output, mode }) {
   const extraUsage = units.flatMap(unit => [unit.checkpoint?.mid && { arm: unit.arm, usage: unit.checkpoint.mid.usage, compactionUsage: unit.checkpoint.mid.compactionUsage }, unit.checkpoint?.upkeep && { arm: unit.arm, usage: unit.checkpoint.upkeep.usage }].filter(Boolean));
   const armIds = plan.arms.map((row) => row.id);
   const summary = summarize(trials, { arms: armIds, baselineArm: plan.baselineArm, repeats: Array.from({ length: plan.repeats }, (_, index) => index + 1), extraUsage });
+  if (plan.holdout) {
+    const { holdoutStatistics } = await import("./lib/continuity-holdout-statistics.mjs");
+    const { readJson } = await import("./lib/continuity-holdout-files.mjs");
+    summary.holdout = holdoutStatistics({ conversations: plan.holdout.conversations, trials, statisticalSpec: plan.holdout.statisticalSpec,
+      audit: auditPath ? await readJson(auditPath) : null });
+  }
   const judgeUsage = emptyUsage();
   for (const trial of trials) if (trial.judge?.usage) addUsage(judgeUsage, trial.judge.usage);
   const midCheckpoints = units.filter((unit) => unit.checkpoint?.mid).map((unit) => ({ traceId: unit.traceId, arm: unit.arm, repeat: unit.repeat,

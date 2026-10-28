@@ -211,7 +211,7 @@ function fixtureGit(repo, args) {
 function fixtureCommit(repo) { fixtureGit(repo, ["add", "--", "."]); fixtureGit(repo, ["commit", "-qm", "Fixture checkpoint"]); }
 async function toolingRepository(directory) {
   await mkdir(directory);
-  for (const name of [...benchmarkFiles(), "pnpm-lock.yaml"]) {
+  for (const name of [...benchmarkFiles(), "pnpm-lock.yaml", "scripts/lib/memory-e2e-build.mjs"]) {
     await mkdir(dirname(join(directory, name)), { recursive: true });
     await writeFile(join(directory, name), await readFile(resolve(CHECKOUT, name)));
   }
@@ -248,6 +248,51 @@ it("freezes external canonical bytes and detects artifact, manifest, allowlist a
   expect(manifest.runtime.lockfileSha256).toMatch(/^[a-f0-9]{64}$/u);
   expect(manifest.runtime.typescript).toMatch(/^\d+\.\d+\.\d+/u);
   for (const name of ["dataset", "score", "runner", "arms", "probe-child", "tools"]) expect(manifest.files[`tooling/scripts/lib/continuity-${name}.mjs`]).toBeTruthy();
+  // Registration/loader integration uses this real frozen synthetic corpus and clean fixture Git tree.
+  const registrationModule = await import(/* @vite-ignore */ pathToFileURL(join(repo, "scripts/lib/continuity-holdout-registration.mjs")).href);
+  const datasetModule = await import(/* @vite-ignore */ pathToFileURL(join(repo, "scripts/lib/continuity-dataset.mjs")).href);
+  const specPath = join(inputs, "statistics.json");
+  await writeFile(specPath, await readFile(resolve(CHECKOUT, "scripts/continuity-holdout/statistical-spec.json")));
+  const profile = { reader: "fixture:reader", extractionModel: "fixture:extractor", alternate: "fixture:alternate", judge: null };
+  const revision = fixtureGit(repo, ["rev-parse", "HEAD"]).trim();
+  const registered = await registrationModule.registerFrozenHoldout({ manifestPath: join(outputDir, "manifest.json"), manifestSha256: frozen.manifestSha256,
+    statisticalSpecPath: specPath, seed: 1234, models: registrationModule.holdoutModels(profile), codeRevision: revision });
+  const registrationPath = join(inputs, "registration.json"), registrationBytes = jsonBytes(registered);
+  await writeFile(registrationPath, registrationBytes);
+  const { sha256: fixtureSha256 } = await import(/* @vite-ignore */ pathToFileURL(join(repo, "scripts/lib/continuity-holdout-files.mjs")).href);
+  const options = { suite: "holdout", manifestPath: join(outputDir, "manifest.json"), manifestSha256: frozen.manifestSha256,
+    registrationPath, registrationSha256: fixtureSha256(registrationBytes), statisticalSpecPath: specPath, shard: 1, profile, codeRevision: revision,
+    repeats: 2, arms: ["native", "cold-rebuild", "continuity-pack-cold", "continuity-ledger-cold"], probeLimit: null };
+  const loadedShard = await datasetModule.loadTraces(options);
+  expect(loadedShard.traces).toHaveLength(16);
+  expect(loadedShard.traces.filter(t => t.corpus === "holdout-hard")).toHaveLength(8);
+  expect(loadedShard.holdout.conversations).toHaveLength(256);
+  const shardPlan = datasetModule.makePlan({ ...loadedShard, suite: "holdout", profile, repeats: 2, codeRevision: revision });
+  expect(shardPlan.workload.probeTurns).toBe(16 * 4 * 2 * 15);
+  const cli = await import(/* @vite-ignore */ pathToFileURL(join(repo, "scripts/continuity-benchmark.mjs")).href);
+  const cliArgs = ["--suite", "holdout", "--corpus-manifest", options.manifestPath, "--manifest-sha256", options.manifestSha256,
+    "--registration", registrationPath, "--registration-sha256", options.registrationSha256, "--statistical-spec", specPath, "--shard", "1",
+    "--reader", profile.reader, "--extraction-model", profile.extractionModel, "--alternate", profile.alternate, "--no-judge"];
+  let dispatches = 0, dry;
+  const blocked = { env: {}, stdout: text => { dry = JSON.parse(text); }, modulesLoader: () => { dispatches++; throw new Error("fixture_dispatch_forbidden"); } };
+  expect(await cli.main([...cliArgs, "--dry-run"], blocked)).toBe(0);
+  expect(dry.workload.probeTurns).toBe(1920); expect(dry.holdout.shard).toBe(1);
+  await expect(cli.main([...cliArgs, "--real", "--confirm-plan", "wrong"], blocked)).rejects.toThrow("real_mode_requires_confirmed_plan");
+  expect(dispatches).toBe(0);
+  const aggregateOutput = join(dir, "outputs/aggregate");
+  expect(await cli.main([...cliArgs, "--aggregate-only", "--output", aggregateOutput], blocked)).toBe(1);
+  const aggregateResult = JSON.parse(await readFile(join(aggregateOutput, "results.json"), "utf8"));
+  expect(aggregateResult.summary.holdout.plannedAnswersPerArm).toBe(7680);
+  expect(aggregateResult.summary.holdout.decision.status).toBe("inconclusive");
+  expect(await readFile(join(aggregateOutput, "summary.md"), "utf8")).toContain("Decision: **inconclusive**");
+  expect(dispatches).toBe(0);
+
+  await expect(datasetModule.loadTraces({ ...options, registrationSha256: "a".repeat(64) })).rejects.toThrow("registration_hash_mismatch");
+  await expect(datasetModule.loadTraces({ ...options, profile: { ...profile, extractionModel: "fixture:changed" } })).rejects.toThrow("registration_binding_mismatch");
+  await expect(datasetModule.loadTraces({ ...options, repeats: 1 })).rejects.toThrow("invalid_registered_workload");
+  const originalSpec = await readFile(specPath); await writeFile(specPath, Buffer.concat([originalSpec, Buffer.from(" ")]));
+  await expect(datasetModule.loadTraces(options)).rejects.toThrow("registration_binding_mismatch");
+  await writeFile(specPath, originalSpec);
   expect(frozen.conversations).toBe(256);
   expect((await verifyHoldout(outputDir, frozen.manifestSha256)).pass).toBe(true);
   for (const name of ["spec.json", "seeds.json", "selection.json", "allowlist.json", "overlap.json", "rubric", "protocol", "tooling/scripts/lib/continuity-holdout-generator.mjs",
