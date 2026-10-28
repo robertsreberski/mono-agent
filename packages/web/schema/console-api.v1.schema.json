@@ -6264,13 +6264,19 @@
           "additionalProperties": false,
           "properties": {
             "operations": {
-              "type": "number"
+              "type": "integer",
+              "minimum": 0
             },
             "models": {
               "type": "array",
               "items": {
                 "type": "string"
               }
+            },
+            "pending": {
+              "type": "boolean",
+              "const": true,
+              "description": "Upkeep dispatches exist, but no terminal observation has arrived."
             },
             "tokens": {
               "$ref": "#/definitions/WebUsageTokens"
@@ -7183,7 +7189,13 @@
           "additionalProperties": false,
           "properties": {
             "operations": {
-              "type": "number"
+              "type": "integer",
+              "minimum": 0
+            },
+            "pending": {
+              "type": "boolean",
+              "const": true,
+              "description": "Upkeep dispatches exist, but no terminal observation has arrived."
             },
             "tokens": {
               "$ref": "#/definitions/WebUsageTokens"
@@ -7224,6 +7236,11 @@
             "requestsWithUsage": {
               "type": "number"
             },
+            "pending": {
+              "type": "boolean",
+              "const": true,
+              "description": "Upkeep dispatches exist, but no terminal observation has arrived."
+            },
             "tokens": {
               "$ref": "#/definitions/WebUsageTokens"
             },
@@ -7263,6 +7280,11 @@
             "runsWithTokens": {
               "type": "number"
             },
+            "pending": {
+              "type": "boolean",
+              "const": true,
+              "description": "Upkeep dispatches exist, but no terminal observation has arrived."
+            },
             "tokens": {
               "$ref": "#/definitions/WebUsageTokens"
             },
@@ -7299,6 +7321,11 @@
             "properties": {
               "model": {
                 "type": "string"
+              },
+              "pending": {
+                "type": "boolean",
+                "const": true,
+                "description": "Upkeep dispatches exist, but no terminal observation has arrived."
               },
               "tokens": {
                 "$ref": "#/definitions/WebUsageTokens"
@@ -7888,6 +7915,11 @@
     "WebUsageSlice": {
       "type": "object",
       "properties": {
+        "pending": {
+          "type": "boolean",
+          "const": true,
+          "description": "Upkeep dispatches exist, but no terminal observation has arrived."
+        },
         "tokens": {
           "$ref": "#/definitions/WebUsageTokens"
         },

@@ -1975,3 +1975,11 @@ it("forwards model-change boundaries as runtime telemetry", () => {
   const { type: _type, ...data } = boundary;
   expect(streamEventFromRuntimeEvent(boundary)).toMatchObject({ type: "runtime_telemetry", kind: "session_boundary", data });
 });
+
+it.each(["cancelled", "runtime_error"])("forwards failed %s summary receipts before the terminal error", async kind => {
+  const accounting = { version: 1, usageIncluded: false, operationId: "fictional-operation", runId: "r", conversationId: "c1", model: "fictional:extractor", budget: "bootstrap", phase: "result", invocation: "invoked", outcome: "valid", inputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: 1, costUsd: 0.02 } as const;
+  const events: AgentStreamEvent[] = [];
+  const responder = createConversationResponder({ harness: { run: async () => ({ ...okResponse("c1"), failure: { kind, message: "Fictional failure" }, metadata: { ...okResponse("c1").metadata, summary: { runId: "r", conversationId: "c1", status: "failed", durationMs: 1, eventCount: 0, artifactPaths: [], upkeepAccounting: [accounting] } } }) } });
+  await expect(responder.respond(baseRequest(), { append: async () => {}, event: async event => { events.push(event); } })).rejects.toThrow();
+  expect(events).toContainEqual({ type: "runtime_telemetry", kind: "continuity_upkeep", data: { accounting } });
+});

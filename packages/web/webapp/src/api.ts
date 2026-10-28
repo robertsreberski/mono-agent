@@ -390,7 +390,7 @@ const recordOf = (value: unknown): Record<string, unknown> | null =>
 const safeNumber = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0;
 function validUsageSlice(value: unknown): value is WebUsageSlice {
   const slice = recordOf(value);
-  if (slice === null || (slice.costUsd !== undefined && slice.costUsd !== null && !safeNumber(slice.costUsd))
+  if (slice === null || (slice.pending !== undefined && slice.pending !== true) || (slice.costUsd !== undefined && slice.costUsd !== null && !safeNumber(slice.costUsd))
     || (slice.knownCostUsd !== undefined && !safeNumber(slice.knownCostUsd))
     || (slice.costUnknown !== undefined && slice.costUnknown !== true)
     || (slice.tokensPartial !== undefined && slice.tokensPartial !== true)

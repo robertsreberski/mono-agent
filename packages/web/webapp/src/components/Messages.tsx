@@ -1,3 +1,4 @@
+import { shortModelName } from "./route-label";
 import { ModelMarkers } from "./ModelMarkers";
 import { isConversationMarker } from "../conversation-markers";
 import { ProjectMarkers } from "./project/ProjectIdentity";
@@ -1518,7 +1519,7 @@ function UpkeepMessageCost() {
   const usage = useAuiState(state => state.message.metadata.custom?.upkeepUsage) as import("../../../src/contracts.js").WebThreadUsage | undefined;
   if (!usage?.upkeep) return null;
   return <details className="message-upkeep-cost"><summary>Message cost {formatUsageCost(usage.total)} · Continuity upkeep {formatUsageCost(usage.upkeep)}</summary>
-    {usage.byModel.map(row => <div key={row.model ?? "unknown"}>{row.model ?? "Unknown model"}: {formatUsageCost(row)}</div>)}
+    {usage.byModel.map(row => <div key={row.model ?? "unknown"}>{row.model ? shortModelName(row.model) : "Unknown model"}: {formatUsageCost(row)}</div>)}
   </details>;
 }
 

@@ -307,6 +307,6 @@ function partialCost(slice: WebUsageSlice): WebUsageSlice {
 }
 
 /** Existing known-subtotal idiom, without inventing a free unknown request. */
-export const formatUsageCost = (slice: WebUsageSlice): string => slice.costUsd === null
+export const formatUsageCost = (slice: WebUsageSlice): string => slice.pending ? "pending" : slice.costUsd === null
   ? slice.knownCostUsd === undefined ? "unknown" : `≥${formatUsd(slice.knownCostUsd)} (partial)`
   : slice.costUsd === undefined ? "—" : `${slice.costPartial ? "≥" : ""}${formatUsd(slice.costUsd)}`;

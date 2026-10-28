@@ -1,7 +1,8 @@
+import * as messageCosts from "../message-cost.js";
 import { createServer } from "node:http";
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { type AgentStreamWireFrame } from "@mono-agent/contracts";
 import { messageUsageRollup, latestMessageCostUsd, upkeepSummaryParts, upkeepTelemetryData } from "../message-cost.js";
 import { sumThreadUsage } from "../thread-usage.js";
@@ -19,7 +20,7 @@ const usage: WebMessagePart = { type: "telemetry", event: "usage_update", data: 
 
 it("keeps legacy no-upkeep totals byte-identical and excludes upkeep from aggregates", () => {
   expect(JSON.stringify(messageUsageRollup({ parts: [usage] }))).toBe(JSON.stringify({ main: { model: "fictional:answer-a", tokens: { input: 100, output: 20, cacheRead: 0, cacheWrite: 0 }, costUsd: 1 }, subagents: [] }));
-  expect(latestMessageCostUsd([usage, { type: "telemetry", event: "usage_update", data: { kind: "continuity_upkeep", cumulativeUsd: 900 } }])).toBe(1);
+  expect(latestMessageCostUsd([usage, { type: "telemetry", event: "usage_update", data: { kind: "continuity_upkeep", cumulativeUsd: 900 } }])).toBeNull();
 });
 it("counts one operation across phases, summaries, messages and model slices", () => {
   const rolled = messageUsageRollup({ parts: [usage, telemetry(dispatch), telemetry(result), telemetry(dispatch), ...upkeepSummaryParts({ runId: "run", conversationId: "conversation", upkeepAccounting: [result] })] });
@@ -39,8 +40,8 @@ it("preserves null evidence through the cost wire and uses known subtotal plus p
   expect(JSON.stringify(parts)).toContain('"costUsd":null');
 });
 it("rejects private fields, invalid counters, getters, foreign origins and conflicting results", () => {
-  for (const accounting of [{ ...result, recorderNamespace: "/home/example" }, { ...result, outputTokens: -1 }, { ...result, extra: "fictional secret" }, Object.defineProperty({ ...result }, "model", { get() { throw new Error("must not evaluate"); } })]) expect(upkeepTelemetryData({ data: { accounting } })).toBeUndefined();
-  expect(upkeepSummaryParts({ runId: "other", conversationId: "conversation", upkeepAccounting: [result] })).toEqual([]);
+  for (const accounting of [{ ...result, recorderNamespace: "/home/example" }, { ...result, outputTokens: -1 }, { ...result, extra: "fictional secret" }, Object.defineProperty({ ...result }, "model", { get() { throw new Error("must not evaluate"); } })]) expect(upkeepTelemetryData({ data: { accounting } })).toMatchObject({ data: { accountingPartial: true } });
+  expect(messageUsageRollup({ parts: [usage, ...upkeepSummaryParts({ runId: "other", conversationId: "conversation", upkeepAccounting: [result] })] }).main).toMatchObject({ costUsd: null, knownCostUsd: 1, costPartial: true });
   expect(messageUsageRollup({ parts: [usage, telemetry(result), telemetry({ ...result, costUsd: 4 })] }).main).toMatchObject({ costUsd: null, knownCostUsd: 1.02, costPartial: true });
 });
 it.each([false, true])("reconciles production live → shaped reload → cost wire → delta replay, uncertain=%s", async uncertain => {
@@ -66,9 +67,14 @@ it.each([false, true])("reconciles production live → shaped reload → cost wi
       expect(runActivityFromParts(view.parts)).toEqual(runActivityFromParts(live.parts));
       expect(sumThreadUsage([messageUsageRollup(view)], "fixed")).toEqual(sumThreadUsage([messageUsageRollup(live)], "fixed"));
     }
-    expect(JSON.stringify(shaped)).not.toContain("recorderNamespace");
+    service.store.applyStreamFrames(turn.turnId, [{ kind: "event", event: { type: "runtime_telemetry", kind: "continuity_upkeep", data: { accounting: { ...result, recorderNamespace: "/home/example", prompt: "Fictional private instructions" } } } }]);
+    const rejected = service.message(thread.id, live.id);
+    expect(JSON.stringify(rejected)).not.toContain("/home/example");
+    expect(JSON.stringify(rejected)).not.toContain("recorderNamespace");
+    expect(JSON.stringify(rejected)).not.toContain("Fictional private instructions");
+    expect(messageUsageRollup(rejected).main).toMatchObject({ costUsd: null, costPartial: true });
     const settled = service.store.completeTurn(turn.turnId, "Fictional answer.", { summary: { runId: "run", conversationId: "conversation", upkeepAccounting: uncertain ? [dispatch] : [result] } });
-    expect(messageUsageRollup(settled.messages.find(m => m.id === live.id)!).main).toEqual(messageUsageRollup(live).main);
+    expect(messageUsageRollup(settled.messages.find(m => m.id === live.id)!).main).toEqual(messageUsageRollup(rejected).main);
     const withChild = sumThreadUsage([messageUsageRollup({ parts })], "fixed");
     expect(withChild.total.costUsd).toBe(uncertain ? null : 1.02);
     expect(withChild.compaction?.costUsd).toBe(0.1);
@@ -113,4 +119,39 @@ it("smokes the real loopback operator transport through shaped console totals", 
     expect(messageUsageRollup(served).main.costUsd).toBe(1.02);
     expect(await service.threadUsage(thread.id)).toMatchObject({ total: { costUsd: 1.02 }, upkeep: { operations: 1, costUsd: 0.02 } });
   } finally { await service.stop(); await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())); await rm(root, { recursive: true, force: true }); }
+});
+
+it.each(["failed", "cancelled", "interrupted", "restart"])("keeps retained upkeep partial after %s when the last event may be lost", async status => {
+  const root = await temporaryRoot();
+  const service = await WebService.create({ stateDir: join(root, "state"), discoveryIntervalMs: 0, purgeIntervalMs: 0, discoverImpl: async () => [fakeDiscoveredAgent()], fetchImpl: operatorFetch() });
+  try {
+    const thread = service.store.createThread("agent-one"), turn = service.store.beginTurn({ threadId: thread.id, text: "Fictional request", attachmentIds: [] });
+    service.store.applyStreamFrames(turn.turnId, [{ kind: "event", event: { type: "usage_update", ...(usage.data as object) } }, { kind: "event", event: { type: "runtime_telemetry", kind: "continuity_upkeep", data: { accounting: result } } }]);
+    if (status === "interrupted") service.store.interruptTurn(turn.turnId);
+    else if (status === "restart") service.store.interruptTurnForRestart(turn.turnId);
+    else service.store.failTurn(turn.turnId, { message: "Fictional interruption", cancelled: status === "cancelled" });
+    expect(messageUsageRollup(service.message(thread.id, turn.assistantMessageId)).main).toMatchObject({ costUsd: null, knownCostUsd: 1.02, costPartial: true });
+  } finally { await service.stop(); await rm(root, { recursive: true, force: true }); }
+});
+it("marks malformed/skewed summary evidence partial and never invokes receipt getters", () => {
+  let getters = 0;
+  const bad = Object.defineProperty({}, "accounting", { get() { getters++; return result; } });
+  expect(upkeepTelemetryData(bad)).toMatchObject({ data: { accountingPartial: true } });
+  expect(getters).toBe(0);
+  for (const candidate of [{ ...result, version: 2 }, { ...result, recorderNamespace: "/home/example" }]) {
+    const parts = upkeepSummaryParts({ runId: "run", conversationId: "conversation", upkeepAccounting: [candidate] });
+    expect(messageUsageRollup({ parts: [usage, ...parts] }).main).toMatchObject({ costUsd: null, knownCostUsd: 1, costPartial: true });
+    expect(JSON.stringify(parts)).not.toContain("/home/example");
+  }
+});
+it("reuses running upkeep rollups on prose flushes but invalidates changed accounting", () => {
+  const observe = vi.spyOn(messageCosts, "messageUsageRollup");
+  try {
+    const first = { ...usage }, parts = [first, telemetry(dispatch)];
+    runActivityFromParts(parts);
+    runActivityFromParts([...parts, { type: "text", text: "Fictional prose" }]);
+    expect(observe).toHaveBeenCalledTimes(1);
+    runActivityFromParts([...parts, telemetry(result)]);
+    expect(observe).toHaveBeenCalledTimes(2);
+  } finally { observe.mockRestore(); }
 });

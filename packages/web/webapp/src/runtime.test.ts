@@ -1458,3 +1458,9 @@ describe("cold model context warning projection", () => {
     expect(result.content).toEqual([]);
   });
 });
+
+it("keeps nullable upkeep telemetry out of the legacy message-content renderer", () => {
+  const accounting = { version: 1, usageIncluded: false, operationId: "fictional-operation", runId: "r", conversationId: "c", model: "fictional:extractor", budget: "bootstrap", phase: "dispatch", invocation: "uncertain", outcome: "uncertain", inputTokens: null, cacheReadTokens: null, cacheWriteTokens: null, outputTokens: null, costUsd: null };
+  const converted = convertWebMessage(message({ parts: [{ type: "text", text: "Fictional answer" }, { type: "telemetry", event: "runtime_telemetry", data: { kind: "continuity_upkeep", data: { accounting } } }] }));
+  expect(converted.content).toEqual([{ type: "text", text: "Fictional answer" }]);
+});

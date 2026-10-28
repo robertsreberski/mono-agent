@@ -101,7 +101,7 @@ export const dataLayers = (value: unknown): readonly UnknownRecord[] => {
   while (current !== undefined && layers.length < 8 && !seen.has(current)) {
     layers.push(current);
     seen.add(current);
-    current = recordValue(current.data);
+    current = recordValue(Object.getOwnPropertyDescriptor(current, "data")?.value);
   }
   return layers;
 };
@@ -156,15 +156,21 @@ export const isCompactionTelemetry = (event: string, layers: readonly UnknownRec
 export const isUpkeepTelemetry = (event: string, layers: readonly UnknownRecord[]): boolean => hasTelemetryLabel(event, layers, "continuity_upkeep");
 
 /** Closed data only, used before persistence as well as shaped reloads. */
-export function upkeepTelemetryData(value: unknown): UnknownRecord | undefined {
-  for (const layer of [...dataLayers(value)].reverse()) {
-    if (layer.accounting !== undefined) {
-      try { return { type: "runtime_telemetry", kind: "continuity_upkeep", data: { accounting: parseForwardedUpkeepAccounting(layer.accounting) } }; }
-      catch { return undefined; }
+export function upkeepTelemetryData(value: unknown): UnknownRecord {
+  const partial = { type: "runtime_telemetry", kind: "continuity_upkeep", data: { accountingPartial: true } };
+  const layers: UnknownRecord[] = [], seen = new Set<UnknownRecord>();
+  try {
+    let current = recordValue(value);
+    while (current && layers.length < 8 && !seen.has(current)) {
+      layers.push(current); seen.add(current);
+      current = recordValue(Object.getOwnPropertyDescriptor(current, "data")?.value);
     }
-    if (layer.accountingPartial === true) return { type: "runtime_telemetry", kind: "continuity_upkeep", data: { accountingPartial: true } };
-  }
-  return undefined;
+    for (const layer of layers.reverse()) {
+      const descriptor = Object.getOwnPropertyDescriptor(layer, "accounting");
+      if (descriptor) return { type: "runtime_telemetry", kind: "continuity_upkeep", data: { accounting: parseForwardedUpkeepAccounting(descriptor.value), ...(layers.some(layer => Object.getOwnPropertyDescriptor(layer, "accountingPartial")?.value === true) ? { accountingPartial: true } : {}) } };
+    }
+  } catch { /* The label is evidence of missing accounting, never free work. */ }
+  return partial;
 }
 
 export const isAggregateUsageTelemetry = (event: string, layers: readonly UnknownRecord[]): boolean =>
@@ -312,6 +318,7 @@ export function sumMessageCosts(costs: readonly (number | null | undefined)[]): 
 
 /** A per-message observation. Synchronous children are a subset of main cost. */
 export interface MessageUsageSlice {
+  readonly pending?: true;
   readonly model?: string;
   readonly tokens?: { readonly input: number; readonly cacheRead: number; readonly cacheWrite: number; readonly output: number };
   readonly costUsd?: number | null;
@@ -466,7 +473,8 @@ export function upkeepUsageRollup(candidates: readonly unknown[], partial = fals
   const slice = (values: readonly ForwardedUpkeepAccounting[]): MessageUsageSlice => {
     const derived = deriveUpkeepAccounting(values);
     const unknown = partial || derived.cost.partial;
-    return { tokens: derived.tokens, costUsd: unknown ? null : derived.cost.totalUsd,
+    const pending = !partial && derived.operations.length > 0 && derived.operations.every(a => a.phase === "dispatch");
+    return { ...(pending ? { pending: true as const } : { tokens: derived.tokens }), costUsd: unknown ? null : derived.cost.totalUsd,
       ...(unknown ? { knownCostUsd: derived.cost.knownCostUsd, costPartial: true } : {}),
       ...(partial || derived.tokensPartial ? { tokensPartial: true } : {}) };
   };
@@ -484,10 +492,9 @@ function upkeepObservations(parts: readonly CostTelemetryPart[]) {
   let partial = false;
   for (const part of parts) {
     if (part.type !== "telemetry" || !part.event || part.kind !== "continuity_upkeep" && !isUpkeepTelemetry(part.event, dataLayers(part.data))) continue;
-    for (const layer of dataLayers(part.data)) {
-      if (layer.accounting !== undefined) candidates.push(layer.accounting);
-      if (layer.accountingPartial === true) partial = true;
-    }
+    const layer = recordValue(upkeepTelemetryData(part.data).data)!;
+    if (layer.accounting !== undefined) candidates.push(layer.accounting);
+    if (layer.accountingPartial === true) partial = true;
   }
   return upkeepUsageRollup(candidates, partial);
 }
@@ -496,11 +503,12 @@ export function messageUsageRollup(message: Parameters<typeof inferenceUsageRoll
   if (!upkeep.accounting.length && !upkeep.partial) return base;
   const inclusive = deriveUpkeepAccounting(upkeep.accounting, { totalUsd: base.main.costUsd, knownCostUsd: base.main.knownCostUsd });
   const partial = inclusive.cost.partial || upkeep.partial;
+  const pending = upkeep.slice.pending && base.main.costUsd === undefined && base.main.tokens === undefined && !base.subagents.length && !base.compaction;
   const tokens = Object.fromEntries((["input", "cacheRead", "cacheWrite", "output"] as const).map(key => [key,
     Math.min(Number.MAX_SAFE_INTEGER, (base.main.tokens?.[key] ?? 0) + inclusive.tokens[key])])) as NonNullable<MessageUsageSlice["tokens"]>;
   return { ...base, inference: base.main, upkeep: upkeep.slice, upkeepAccounting: upkeep.accounting,
     ...(upkeep.partial ? { upkeepPartial: true } : {}),
-    main: { ...base.main, tokens, costUsd: partial ? null : inclusive.cost.totalUsd,
+    main: { ...base.main, ...(pending ? { pending: true as const } : { tokens }), costUsd: partial ? null : inclusive.cost.totalUsd,
       ...(partial ? { knownCostUsd: inclusive.cost.knownCostUsd, costPartial: true } : {}),
       ...(inclusive.tokensPartial || base.main.tokens === undefined || (["input", "cacheRead", "cacheWrite", "output"] as const).some(key => !Number.isSafeInteger((base.main.tokens?.[key] ?? 0) + inclusive.tokens[key])) ? { tokensPartial: true } : {}) } };
 }
@@ -511,19 +519,24 @@ export function latestMessageCostUsd(parts: readonly CostTelemetryPart[]): numbe
 
 /** Final metadata is another view of the same operations, not another charge. */
 export function upkeepSummaryParts(summary: unknown): { type: "telemetry"; event: "runtime_telemetry"; data: UnknownRecord }[] {
+  const marker = () => ({ type: "telemetry" as const, event: "runtime_telemetry" as const, data: upkeepTelemetryData(undefined) });
   try {
     if (!summary || typeof summary !== "object") return [];
     const own = (key: string) => Object.getOwnPropertyDescriptor(summary, key)?.value as unknown;
+    const has = (key: string) => Object.prototype.hasOwnProperty.call(summary, key);
+    if (!has("upkeepAccounting") && !has("upkeepAccountingPartial")) return [];
     const runId = own("runId"), conversationId = own("conversationId"), values = own("upkeepAccounting");
-    if (typeof runId !== "string" || typeof conversationId !== "string") return [];
+    if (typeof runId !== "string" || typeof conversationId !== "string" || has("upkeepAccounting") && !Array.isArray(values)) return [marker()];
     const result: { type: "telemetry"; event: "runtime_telemetry"; data: UnknownRecord }[] = [];
+    let partial = own("upkeepAccountingPartial") === true;
     for (const candidate of Array.isArray(values) ? values : []) {
       try {
         const accounting = parseForwardedUpkeepAccounting(candidate);
-        if (accounting.runId === runId && accounting.conversationId === conversationId) result.push({ type: "telemetry", event: "runtime_telemetry", data: { kind: "continuity_upkeep", data: { accounting } } });
-      } catch { /* invalid evidence never crosses the web boundary */ }
+        if (accounting.runId !== runId || accounting.conversationId !== conversationId) { partial = true; continue; }
+        result.push({ type: "telemetry", event: "runtime_telemetry", data: { kind: "continuity_upkeep", data: { accounting } } });
+      } catch { partial = true; }
     }
-    if (own("upkeepAccountingPartial") === true) result.push({ type: "telemetry", event: "runtime_telemetry", data: { kind: "continuity_upkeep", data: { accountingPartial: true } } });
+    if (partial) result.push(marker());
     return result;
-  } catch { return []; }
+  } catch { return [marker()]; }
 }

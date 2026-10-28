@@ -1,3 +1,4 @@
+// Offline/dry-run must work before a workspace build; Node >=24.15.0 strips this import-free TS source.
 import { deriveUpkeepAccounting } from "../../packages/contracts/src/upkeep-accounting.ts";
 // Deterministic probe scoring and aggregation for the continuity benchmark.
 // Pure functions: no provider, filesystem or clock access.

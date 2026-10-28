@@ -60,6 +60,7 @@
           },
           "upkeep": {
             "operations": 1,
+            "pending": true,
             "costUnknown": true,
             "knownCostUsd": 0,
             "costPartial": true,
@@ -105,6 +106,7 @@
                 "knownCostUsd": 0.01,
                 "upkeep": {
                   "operations": 1,
+                  "pending": true,
                   "models": [
                     "fictional:extractor-b"
                   ],

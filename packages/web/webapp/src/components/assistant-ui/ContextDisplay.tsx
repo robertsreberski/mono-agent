@@ -1,5 +1,6 @@
-import { formatUsageCost } from "../../usage";
 "use client";
+
+import { formatUsageCost } from "../../usage";
 
 import { isProviderUsageId, PROVIDER_USAGE_LABELS } from "@mono-agent/contracts/provider-usage";
 import type { AgentManualCompactionResult } from "@mono-agent/contracts";
@@ -106,6 +107,7 @@ function TokensSection({ totals, loading, id }: { readonly totals?: WebThreadUsa
   const sub = totals?.subagents;
   const cacheHit = totals?.upkeep && total?.tokensPartial ? undefined : conversationCacheHitPercent(total);
   const cells = (slice: WebUsageSlice, subLine = false) => {
+    if (slice.pending) return <td colSpan={3} className="is-unreported">pending</td>;
     if (slice.tokens === undefined) return <td colSpan={3} className="is-unreported">{subLine ? "not reported" : "No token counts reported"}</td>;
     return tokenColumns.map(({ key }) => {
       const value = key === "input" ? slice.tokens!.input + slice.tokens!.cacheWrite : slice.tokens![key];
@@ -127,7 +129,7 @@ function TokensSection({ totals, loading, id }: { readonly totals?: WebThreadUsa
         {cacheHit} cache hit
       </span>}
     </div>
-    {loading && totals === undefined ? <p className="context-display-empty">—</p> : total?.tokens === undefined && sub === undefined
+    {loading && totals === undefined ? <p className="context-display-empty">—</p> : total?.tokens === undefined && !total?.pending && sub === undefined
       ? <p className="context-display-empty">No reply in this conversation reported token counts.</p>
       : <table className="context-display-tokens"><colgroup><col className="label" /><col /><col /><col /></colgroup>
         <thead><tr><th aria-label="Row" />{tokenColumns.map(({ key, label, title }) => <th key={key} scope="col" title={title}>{label}</th>)}</tr></thead>
@@ -153,11 +155,11 @@ function CostSection({ totals, loading, id }: { readonly totals?: WebThreadUsage
     {loading && totals === undefined ? null : total?.costUsd === undefined && totals?.compaction === undefined
       ? <p className="context-display-empty">No cost was reported for this conversation.</p>
       : <dl className="context-display-cost">
-        {totals?.upkeep && <div className="context-display-cost-row is-sub" title="Continuity extraction, included once in total at its own model"><dt>Continuity upkeep</dt><dd>{cost(totals.upkeep)}</dd></div>}
+        {totals?.upkeep && <div className="context-display-cost-row is-sub" title="Continuity extraction, included once in total at its own model"><dt>Continuity upkeep<span className="sr-only"> (included in total)</span></dt><dd>{cost(totals.upkeep)}</dd></div>}
         {totals?.compaction && <div className="context-display-cost-row is-sub" title="Context summary requests, included in the total"><dt>Compaction<span className="sr-only"> (included in total)</span></dt><dd>{cost(totals.compaction)}</dd></div>}
         {totals?.subagents?.costUsd !== undefined && (totals.subagents.costUsd === null || totals.subagents.costUsd > 0) &&
           <div className="context-display-cost-row is-sub"><dt>incl. subagents</dt><dd>{cost(totals.subagents)}</dd></div>}
-        {total?.knownCostUsd !== undefined && <>
+        {total?.knownCostUsd !== undefined && !(totals?.upkeep && total.costUsd === null) && <>
           <div className="context-display-cost-divider" aria-hidden="true" />
           <div className="context-display-cost-row" title="Known spend across this conversation"><dt>Known cost</dt><dd>{formatUsd(total.knownCostUsd)}</dd></div>
         </>}

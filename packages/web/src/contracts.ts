@@ -897,6 +897,8 @@ export interface WebUsageTokens {
 /** Internally nullable; browser wire omits unknown amounts and carries costUnknown: true.
  * The same convention applies to message telemetry, activity and job progress. */
 export interface WebUsageSlice {
+  /** Upkeep dispatches exist, but no terminal observation has arrived. */
+  readonly pending?: true;
   readonly tokens?: WebUsageTokens;
   readonly costUsd?: number | null;
       readonly knownCostUsd?: number;

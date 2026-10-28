@@ -1,3 +1,4 @@
+import { parseForwardedUpkeepAccounting } from "@mono-agent/contracts";
 import { forwardedUpkeepAccounting } from "./harness/external-summary.js";
 import { stripDailyBucketSuffix, hasDailyBucketSuffix } from "./history/conversation-id.js";
 import type { ConversationHarness, ConversationHarnessFailure, ConversationHarnessSessionBoundary } from "./harness/contracts.js";
@@ -314,6 +315,21 @@ export function createConversationResponder(options: {
     await runtimeEventStream.flush();
 
     if (response.failure !== undefined) {
+      // Error frames have no metadata slot. Reconcile the content-free summary
+      // before throwing, so a lost live receipt is not lost with the response.
+      const summary = response.metadata.summary;
+      if (summary) {
+        let partial = summary.upkeepAccountingPartial === true;
+        for (const value of summary.upkeepAccounting ?? []) {
+          try {
+            const accounting = parseForwardedUpkeepAccounting(value);
+            if (accounting.runId !== summary.runId || accounting.conversationId !== summary.conversationId) { partial = true; continue; }
+            runtimeEventStream.enqueueEvent({ type: "runtime_telemetry", kind: "continuity_upkeep", data: { accounting } });
+          } catch { partial = true; }
+        }
+        if (partial) runtimeEventStream.enqueueEvent({ type: "runtime_telemetry", kind: "continuity_upkeep", data: { accountingPartial: true } });
+        await runtimeEventStream.flush();
+      }
       throw new ConversationHarnessFailureError(response.failure);
     }
 

@@ -1,3 +1,4 @@
+// Offline/dry-run must work before a workspace build; Node >=24.15.0 strips this import-free TS source.
 import { deriveUpkeepAccounting, forwardUpkeepAccounting, mergeAgentUpkeepAccounting } from "../../packages/contracts/src/upkeep-accounting.ts";
 // Conversation-continuity benchmark runner.
 //
@@ -192,6 +193,8 @@ export function runUsage(usage) {
     reportedCost: deriveUpkeepAccounting([], { totalUsd: finite(usage?.cost_usd) }).cost,
   };
 }
+export const liveResponseUsage = response => runUsage(response?.metadata?.runtime?.usage);
+
 /** The compaction slice is already included once in the run totals. */
 export function compactionUsageOf(usage) {
   const requests = Array.isArray(usage?.compaction?.requests) ? usage.compaction.requests : [];
@@ -380,7 +383,7 @@ export async function runLiveTurn({ modules, work, authPath, plan, mode, configP
     text: typeof response.text === "string" ? response.text : null,
     failureKind: response.failure ? String(response.failure.kind ?? "unknown") : null,
     observed: watch.observed,
-    usage: runUsage(usage),
+    usage: liveResponseUsage(response),
     compactionUsage: compactionUsageOf(usage),
     durationMs: Math.round(performance.now() - started),
   };
@@ -599,6 +602,7 @@ export function preparationUsage(receipt, inputReserve, price, outputReserve = 4
 
 /** Sum each extraction once; known catalog cost and unknown-call reserves stay separate. */
 export function sumPreparationUsage(steps) {
+  try {
   mergeAgentUpkeepAccounting(steps.flatMap(step => step.receipt?.accounting ? [step.receipt.accounting] : []));
   const unique = new Map();
   for (const [index, step] of steps.entries()) {
@@ -616,6 +620,14 @@ export function sumPreparationUsage(steps) {
   }
   return { ...total, reportedCost: deriveUpkeepAccounting(accounting, { totalUsd: partial ? null : known, knownCostUsd: known }).cost,
     components: rows.map(step => step.usage) };
+  } catch {
+    // Conflicting observations cannot erase an already-paid step from stop
+    // budgets. Count every observation conservatively; billing stays unknown.
+    const total = emptyUsage();
+    for (const step of steps) addUsage(total, step.usage);
+    const reportedCost = { totalUsd: null, knownCostUsd: 0, partial: true };
+    return { ...total, reportedCost, components: steps.map(step => ({ ...step.usage, reportedCost })) };
+  }
 }
 
 /** One upkeep, no real answer call, before read-only probe forks. No probe/answer data enter extraction. */

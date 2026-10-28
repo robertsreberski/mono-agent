@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ARMS, AVAILABLE_ARM_IDS, BASELINE_ARM, CONTINUITY_OFF, CONTINUITY_ON, CONTINUITY_PACK_ON, DEFAULT_ARMS, NOT_AVAILABLE, ORIGINAL_ARM_IDS, SMALL_PROACTIVE_COMPACTION, armById, checkpointKey, mergePatch, pressureMetrics, verifyBoundary, verifyPressure, verifyStore } from "../lib/continuity-arms.mjs";
-import { classifyHistoryResult, boundedOfferHistory, preparationDisposition, preparationInputReserve, preparationIntegrity, preparationUsage, sumPreparationUsage, verifyLedgerTreatment } from "../lib/continuity-runner.mjs";
+import { classifyHistoryResult, boundedOfferHistory, preparationDisposition, preparationInputReserve, preparationIntegrity, preparationUsage, sumPreparationUsage, liveResponseUsage, verifyLedgerTreatment } from "../lib/continuity-runner.mjs";
 import { digest, estimateCost, inventory, loadTraces, makePlan, parseSeeds, sourceOnly, validateTrace } from "../lib/continuity-dataset.mjs";
 import { COLD_BOUNDS, GENERATOR_VERSION, HARD_SEEDS, LONG_RULES, generateTrace, mulberry32, outsideColdBounds, traceShape } from "../lib/continuity-generator.mjs";
 import { ABSTAIN_INSTRUCTION, ORIGINAL_CATEGORIES, emptyUsage, addUsage, isAbstention, parseJudgeVerdict, probePrompt, renderMarkdown, scoreAnswer, summarize } from "../lib/continuity-score.mjs";
@@ -866,5 +866,20 @@ it("reconciles reported upkeep cost by operation while preserving conservative s
   expect(priced).toMatchObject({ estimatedCostUsd: null, conservativeCalls: 1, reportedCost: { totalUsd: 0.01, partial: false } });
   const free = preparationUsage({ providerInvoked: true, inputTokens: null, costUsd: 0 }, 128000, { input: 2, output: 4 });
   expect(free).toMatchObject({ conservativeCalls: 1, reportedCost: { totalUsd: 0, knownCostUsd: 0, partial: false } });
-  expect(() => sumPreparationUsage([step(result), step({ ...result, costUsd: 2 })])).toThrow();
+  const conflict = sumPreparationUsage([step(result), step({ ...result, costUsd: 2 })]);
+  expect(conflict).toMatchObject({ calls: 2, inputTokens: result.inputTokens * 2, reportedCost: { totalUsd: null, partial: true } });
+  const budget = emptyUsage(); addUsage(budget, conflict);
+  expect(budget.calls).toBe(2); expect(budget.reportedCost.partial).toBe(true);
+  const mixed = sumPreparationUsage([step(result), step({ ...result, inputTokens: null, costUsd: 2 })]);
+  expect(observedInputTokens(mixed)).toBe(128000 + result.inputTokens + result.cacheReadTokens + result.cacheWriteTokens);
+});
+
+it("counts inference-only runtime usage plus checkpoint upkeep once in arm totals", () => {
+  const response = { metadata: { runtime: { usage: { input_tokens: 100, output_tokens: 20, cache_read_tokens: 0, cache_write_tokens: 0, cost_usd: 1 } }, summary: { cost: { totalUsd: 1 }, inclusiveCost: { totalUsd: 1.02 } } } };
+  const own = liveResponseUsage(response), checkpoint = preparationUsage({ providerInvoked: true, inputTokens: 10, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: 2, costUsd: 0.02 }, 128000, { input: 2, output: 4 });
+  const total = emptyUsage(); addUsage(total, own); addUsage(total, checkpoint);
+  expect(total.reportedCost.totalUsd).toBe(1.02);
+  const trial = { traceId: "fictional", arm: "native", repeat: 1, probeId: "fictional-probe", category: "next_action", status: "completed", score: { pass: true, outcome: "correct" }, usage: own };
+  const summary = summarize([trial], { arms: ["native"], baselineArm: "native", repeats: [1], extraUsage: [{ arm: "native", usage: checkpoint }] });
+  expect(summary.arms.native.usage.reportedCost.totalUsd).toBe(1.02);
 });

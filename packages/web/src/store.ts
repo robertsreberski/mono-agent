@@ -96,7 +96,7 @@ import { isConversationMarker } from "./conversation-markers.js";
 import { parseTagColor, parseTagName } from "./tag-color.js";
 import { parseProjectColor } from "./project-color.js";
 import { WebConsoleError } from "./errors.js";
-import { upkeepSummaryParts, upkeepTelemetryData, latestMessageCostUsd, messageUsageRollup, type MessageUsageRollup } from "./message-cost.js";
+import { hasUpkeepTelemetry, upkeepSummaryParts, upkeepTelemetryData, latestMessageCostUsd, messageUsageRollup, type MessageUsageRollup } from "./message-cost.js";
 import { sumThreadUsage } from "./thread-usage.js";
 import { isAskUserToolName, runActivityFromParts, sameRunActivity } from "./run-activity.js";
 import { runWebStorageMigrations, validateWebStorageMigrationRegistry, WEB_STORAGE_SCHEMA_VERSION } from "./store-migrations.js";
@@ -6842,6 +6842,9 @@ export class WebStore {
     if (finalText !== undefined && finalText.length > 0) reconcileFinalText(parts, finalText);
     if (replyParts !== undefined) parts = boundedWebReplyParts(replyParts, parts);
     if (runtime?.upkeepParts) parts.push(...runtime.upkeepParts);
+    // Error frames cannot carry a summary. Retained upkeep evidence plus a
+    // failed transport/turn cannot establish that the last receipt arrived.
+    if (status !== "complete" && hasUpkeepTelemetry(parts)) parts.push({ type: "telemetry", event: "runtime_telemetry", data: upkeepTelemetryData(undefined) });
     if (errorMessage !== undefined) {
       parts.push({ type: "error", ...(errorCode === undefined ? {} : { code: errorCode }), message: errorMessage });
     }
