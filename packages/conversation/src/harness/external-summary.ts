@@ -1,6 +1,15 @@
+import { mergeAgentUpkeepAccounting, parseAgentUpkeepAccounting } from "@mono-agent/contracts";
 import type { RunSummary } from "@mono-agent/observability";
 
 import type { ExternalRunSummary } from "./contracts.js";
+
+/** External accounting is a projection, not the host-local journal envelope.
+ * operationId + phase still identify immutable contributions downstream. */
+export function forwardedUpkeepAccounting(value: unknown): NonNullable<ExternalRunSummary["upkeepAccounting"]>[number] {
+  const { recorderNamespace: _namespace, databaseId: _database, incarnation: _incarnation,
+    logicalConversationId: _logical, ...forwarded } = parseAgentUpkeepAccounting(value);
+  return forwarded;
+}
 
 export function externalResponseSummary(summary: RunSummary): ExternalRunSummary | undefined {
   let descriptors: PropertyDescriptorMap;
@@ -51,7 +60,24 @@ export function externalResponseSummary(summary: RunSummary): ExternalRunSummary
     if (descriptor === undefined || !("value" in descriptor)) continue;
     const value = descriptor.value;
     if (value === undefined) continue;
-    const cloned = cloneExternalSummaryValue(value);
+    let cloned = cloneExternalSummaryValue(value);
+    if (key === "upkeepAccounting") {
+      try {
+        if (!Array.isArray(cloned)) continue;
+        cloned = mergeAgentUpkeepAccounting(cloned);
+        if ((cloned as readonly { runId: string; conversationId: string }[]).some(a => a.runId !== runId || a.conversationId !== conversationId)) continue;
+        cloned = (cloned as readonly unknown[]).map(forwardedUpkeepAccounting);
+      } catch { continue; }
+    }
+    if (key === "upkeepAccountingPartial" && cloned !== true) continue;
+    if (key === "inclusiveCost") {
+      if (cloned === null || typeof cloned !== "object" || Array.isArray(cloned)) continue;
+      const c = cloned as Record<string, unknown>;
+      if (Object.keys(c).some(k => !["totalUsd", "knownCostUsd", "partial"].includes(k))
+        || typeof c.knownCostUsd !== "number" || !Number.isFinite(c.knownCostUsd) || c.knownCostUsd < 0
+        || typeof c.partial !== "boolean" || c.partial !== (c.totalUsd === null)
+        || (c.totalUsd !== null && (typeof c.totalUsd !== "number" || !Number.isFinite(c.totalUsd) || c.totalUsd < 0))) continue;
+    }
     if (cloned !== UNSAFE_EXTERNAL_SUMMARY_VALUE) {
       external[key] = cloned;
     }
@@ -72,6 +98,9 @@ const EXTERNAL_SUMMARY_OPTIONAL_KEYS = [
   "updatedAt",
   "usage",
   "cost",
+  "upkeepAccounting",
+  "upkeepAccountingPartial",
+  "inclusiveCost",
   "providerSessionId",
   "isolated",
   "runtimeWarnings",

@@ -46,8 +46,12 @@ const supplier = createLedgerSupplier({ toolHistory: { writer, reader, continuit
   { conversationId: "fictional", userMessage: "New fictional boundary.", abortSignal: new AbortController().signal }, phase === "recover" ? "recovery-run" : "origin-run");
 await supplier.prepare({ sessionsEnabled: true, isolated: false, ownedStore: true, primaryAttempt: true, maxTokens: 8000,
   withOwner: turn.withContinuityOwner.bind(turn) }, "cold_rebuild", event => events.push(event));
+// Inspect settled recovery after the worker releases its SQLite connection;
+// do not race a read-only connection's close against background export writes.
+await writer.close();
 const db = new DatabaseSync(reader.databasePath, { readOnly: true });
-const operations = db.prepare("SELECT state,outcome FROM continuity_upkeep_operations").all(); db.close();
+let operations;
+try { operations = db.prepare("SELECT state,outcome FROM continuity_upkeep_operations").all(); } finally { db.close(); }
 const published = !!reader.ledger({ logicalConversationId: "fictional", currentConversationId: "fictional", currentRunId: "recovery-run" });
 process.send({ phase, calls: calls(), operations, published, events });
-await writer.close(); await turn.abort(); process.exit(0);
+await turn.abort(); process.exit(0);

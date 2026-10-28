@@ -1,3 +1,4 @@
+import { forwardedUpkeepAccounting } from "./harness/external-summary.js";
 import { stripDailyBucketSuffix, hasDailyBucketSuffix } from "./history/conversation-id.js";
 import type { ConversationHarness, ConversationHarnessFailure, ConversationHarnessSessionBoundary } from "./harness/contracts.js";
 import { ConversationHarnessError } from "./harness/error.js";
@@ -510,6 +511,8 @@ const RUNTIME_TELEMETRY_KINDS = new Set([
   "session_boundary",
   "continuity_pack_injected",
   "continuity_pack_skipped",
+  "continuity_upkeep",
+  "continuity_upkeep_dispatch",
 ]);
 
 export function streamEventFromRuntimeEvent(
@@ -673,6 +676,15 @@ export function streamEventFromRuntimeEvent(
     };
   }
   if (typeof event.type === "string" && RUNTIME_TELEMETRY_KINDS.has(event.type)) {
+    if (event.type === "continuity_upkeep" || event.type === "continuity_upkeep_dispatch") {
+      const data: Record<string, unknown> = {};
+      if (event.accounting !== undefined) {
+        try { data.accounting = forwardedUpkeepAccounting(event.accounting); } catch { return undefined; }
+      }
+      if (["valid", "invalid", "uncertain", "skipped"].includes(String(event.status))) data.status = event.status;
+      if (typeof event.providerInvoked === "boolean") data.providerInvoked = event.providerInvoked;
+      return { type: "runtime_telemetry", kind: "continuity_upkeep", data };
+    }
     const { type, ...data } = event;
     return { type: "runtime_telemetry", kind: type, data };
   }

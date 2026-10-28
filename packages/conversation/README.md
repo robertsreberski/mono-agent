@@ -24,10 +24,18 @@ Composition spine for an agent request. It turns a communication request into co
 
 Continuity upkeep's fenced operation journal also owns a transactional,
 content-free accounting outbox. Dispatch and result evidence exports to the
-originating run's recorder namespace before receipt telemetry, and pending
+originating run's recorder namespace independently of receipt telemetry, and pending
 exports replay on writer recovery even when continuity/upkeep is disabled.
 Startup discovery with no pending journal work is read-only and invokes no
 provider. Retention never pins source records or recreates pruned run artifacts.
+The host-owned receipt sink survives failed/cancelled attempts and model failover;
+validated accounting and inclusive-cost fields cross explicit responder and
+external-summary allowlists. Raw inference aggregates are unchanged.
+Ledger preparation retries transient SQLite locks on fresh read-only connections
+within a 10-second bound matching upkeep maintenance, yielding between
+attempts. Export contention is not an integrity failure; exhausted/cancelled
+reads remain unavailable and never authorize a purchase. Synchronous pack reads
+omit a temporarily unavailable ledger without latching a corruption warning.
 
 ## Install / Usage
 

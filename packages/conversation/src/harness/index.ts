@@ -1,3 +1,4 @@
+import { withUpkeepAccounting } from "@mono-agent/observability";
 import { createContinuityPackSupplier } from "../continuity/pack.js";
 import { markContinuityTurnBatch } from "../tool-history/continuity-input.js";
 import { isAgentCompactionAccounting } from "@mono-agent/contracts";
@@ -602,14 +603,14 @@ export class ConversationHarnessImpl implements ConversationHarness {
     let liveInputMailbox: LiveInputMailbox | undefined;
     let liveInputCloseReason: "closed" | "failed" = "failed";
     let toolHistoryStatus: "succeeded" | "failed" | "cancelled" = "failed";
-    const recorder = this.options.recorderFactory?.({
+    const recorder = withUpkeepAccounting(this.options.recorderFactory?.({
       runId,
       conversationId: request.conversationId,
       userInput: request.userMessage,
       isolated,
       ...(runSource.source === undefined ? {} : { source: runSource.source }),
       ...(runSource.sourceDetail === undefined ? {} : { sourceDetail: runSource.sourceDetail }),
-    }) ?? new NoopRunRecorder({ runId, conversationId: request.conversationId, isolated });
+    }) ?? new NoopRunRecorder({ runId, conversationId: request.conversationId, isolated }), runId, request.conversationId);
     await recorder.start?.();
 
     try {

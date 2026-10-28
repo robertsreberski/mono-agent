@@ -69,6 +69,10 @@ export function configuredRuntimeRouteChecks(config: MonoAgentConfig): readonly 
   };
   return [
     primary,
+    ...(config.runtime.session?.continuity?.upkeep?.enabled ? [{
+      label: "Continuity upkeep model", configPath: "runtime.session.continuity.upkeep.extractionModel",
+      model: config.runtime.session?.continuity.upkeep.extractionModel ?? config.runtime.model,
+    }] : []),
     ...(config.runtime.fallbacks ?? []).map((fallback, index) => ({
       label: "Fallback model",
       configPath: `runtime.fallbacks[${index}].effort`,

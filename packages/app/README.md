@@ -289,6 +289,15 @@ synthesize workspace confinement; native policies retain their configured readab
 Enabled jobs register roots at startup. `validate`, `doctor` and status describe
 the effective boundary rather than just the configured mode.
 
+Doctor and auth discovery include enabled continuity upkeep's explicit
+`extractionModel`, otherwise `runtime.model`. Disabled upkeep requires no extra
+credentials, and doctor never purchases an extraction.
+
+An enabled extraction override on another provider adds that provider to the
+provider-usage quota snapshot and refresh scope. The auth usage kind
+`continuity_upkeep` is new: shared contracts and their web/TUI consumers ship
+together in the same lockstep release.
+
 ## Install / Usage
 
 Process-job chains keep the default depth budget of 4 and allow a configured

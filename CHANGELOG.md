@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- Retry transient SQLite contention while preparing continuity upkeep rather
+  than treating accounting-export locks as permanent ledger corruption.
+
+- Cache upkeep namespace normalization at local acceptance boundaries, keep
+  session mapping filesystem-free, and forward waiting failure/cancellation
+  after an injected recorder's pending commit rejects.
+
+- Bound recorded-run upkeep enrichment to evidenced runs and one namespace scan;
+  preserve no-upkeep session totals and custom-recorder recovery semantics. Keep
+  local accounting paths/storage identifiers out of forwarded channel metadata,
+  and recognize symlink aliases of local artifact namespaces.
+- Include enabled extraction overrides on other providers in provider-usage quota
+  snapshots and refresh scope. The new `continuity_upkeep` auth usage kind and
+  its web/TUI consumers ship together in the same lockstep release.
+
 - Fix continuity benchmark degradation and overrun reporting, and reconcile
   pre-dispatch reservations by identity without changing runtime behavior.
 
@@ -34,8 +49,13 @@
 
 - Add separate, content-free continuity upkeep accounting with durable journal
   recovery, immutable per-operation companions and origin-run retention. Keep
-  cache categories and unknown usage distinct; existing run/session totals remain
+  cache categories and unknown usage distinct; raw run usage/cost fields remain
   inference-only and upkeep remains disabled by default.
+
+- Include continuity upkeep once in inclusive recorded and session costs, retaining
+  known subtotals and explicit partial tokens when usage is missing. Preserve
+  origin-run receipts through failures, cancellation and failover, and expose
+  enabled upkeep's effective extraction model in doctor and auth discovery.
 
 - Rank complete bounded history scans for opt-in continuity upkeep, greedily fit
   cited-only ledger deltas, and allow valid uncited evidence one remaining offer

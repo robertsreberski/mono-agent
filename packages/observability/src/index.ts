@@ -137,6 +137,7 @@ export type {
   RunRecorder,
   RunCancellationReason,
   RunSummary,
+  InclusiveRunCost,
   RunSummaryStatus,
   RuntimeEventLike,
   RuntimeResultLike,
@@ -167,3 +168,5 @@ export * from "./cache-usage.js";
 export { NoopRunRecorder } from "./noop-recorder.js";
 
 export { exportUpkeepAccounting, UpkeepAccountingExportError, assertUpkeepAccountingNamespace } from "./upkeep-accounting.js";
+
+export { withUpkeepAccounting } from "./upkeep-totals.js";

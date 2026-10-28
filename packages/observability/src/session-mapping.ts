@@ -1,11 +1,12 @@
+import { cacheUsageMetrics } from "./cache-usage.js";
 import { recordedCost } from "./recorded-cost.js";
+import { inclusiveRecordedCost, runUpkeepAccounting, sessionTokenTotals, upkeepEventAccounting } from "./upkeep-totals.js";
 import { suppressesNotification } from "@mono-agent/contracts";
 
 import { compactString } from "./content.js";
 import { isRecord } from "./guards.js";
 import { deriveRunSource } from "./run-source.js";
 import type { FailoverAttempt, RunSummary, RuntimeEventLike } from "./types.js";
-import { cacheUsageMetrics } from "./cache-usage.js";
 
 /**
  * Pure run -> UI "Session" mapping. Turns a recorded run ({@link RunSummary} plus
@@ -130,11 +131,13 @@ export interface SessionStepUsage {
   readonly knownCostUsd?: number;
 }
 
-/** Aggregate counters for a session. */
+/** Inclusive inference + upkeep cost and known token subtotals for a session. */
 export interface SessionTotals {
   readonly asst: number;
   readonly tcalls: number;
   readonly think: number;
+  /** Known subtotals across inference and upkeep; never interpret partial as measured zero. */
+  readonly tokensPartial?: true;
   readonly tokIn: number;
   readonly tokOut: number;
   readonly tokCache: number;
@@ -374,12 +377,19 @@ export function mapRunToSession(
     });
   }
 
-  const recorded = recordedCost(summary);
+  let accountingPartial = summary.upkeepAccountingPartial === true;
+  const upkeep = runUpkeepAccounting(summary, events.flatMap(upkeepEventAccounting), () => { accountingPartial = true; });
+  let inclusive = upkeep.length || accountingPartial ? inclusiveRecordedCost(summary, upkeep) : undefined;
+  if (inclusive && accountingPartial) inclusive = { ...inclusive, totalUsd: null, partial: true };
+  const recorded = inclusive ? { total: inclusive.totalUsd, known: inclusive.knownCostUsd } : recordedCost(summary);
+  const tokens = { ...(upkeep.length || accountingPartial ? sessionTokenTotals(summary.usage, upkeep) : tokenTotals(summary.usage)) };
+  if (accountingPartial) { delete tokens.tokInputTotal; delete tokens.cacheHitRatio; }
   const totals: SessionTotals = {
     asst: walk.asstCount,
     tcalls: walk.tcallCount,
     think: walk.thinkCount,
-    ...tokenTotals(summary.usage),
+    ...tokens,
+    ...(accountingPartial ? { tokensPartial: true as const } : {}),
     cost: recorded.total === undefined ? 0 : recorded.total,
     ...(recorded.known === undefined ? {} : { knownCostUsd: recorded.known }),
     steps: events.length,

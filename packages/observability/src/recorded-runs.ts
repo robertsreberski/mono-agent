@@ -1,4 +1,5 @@
-import { readUpkeepAccounting } from "./upkeep-accounting.js";
+import { runUpkeepAccounting, withRecordedUpkeep } from "./upkeep-totals.js";
+import { createUpkeepNamespaceNormalizer, indexUpkeepCompanions, readUpkeepAccounting, upkeepCompanionPrefix } from "./upkeep-accounting.js";
 import { constants as fsConstants } from "node:fs";
 import { open, readdir, readFile, stat } from "node:fs/promises";
 import { resolve } from "node:path";
@@ -64,6 +65,7 @@ interface ParsedSummaryFile {
   readonly artifactDir: string;
   readonly summary: RunSummary;
   readonly upkeepCandidates?: readonly unknown[];
+  readonly upkeepCompanions?: readonly string[];
   readonly updatedAt: string;
   readonly mtimeMs: number;
 }
@@ -87,23 +89,33 @@ export class ObservabilityReadError extends Error {
 
 export async function listRecordedRuns(options: JsonlRunReaderOptions): Promise<RecordedRunListResult> {
   const normalized = normalizeReaderOptions(options);
-  const { summaries, warnings } = await loadSummaryFiles(normalized, true);
-  return {
-    totalRuns: summaries.length,
-    runs: [...summaries]
-      // Newest first by logical update time, with file mtime then runId as deterministic
-      // tiebreakers — two runs finishing in the same millisecond share an `updatedAt`, and
-      // without a tiebreaker their order (and any top-N slice) is unstable.
-      .sort(
-        (a: ParsedSummaryFile, b: ParsedSummaryFile) =>
-          summaryUpdatedAtMs(b) - summaryUpdatedAtMs(a)
-          || b.mtimeMs - a.mtimeMs
-          || b.summary.runId.localeCompare(a.summary.runId),
-      )
-      .slice(0, normalized.maxRuns)
-      .map((entry) => summaryToListItem(entry.summary, entry.updatedAt, normalized.maxStringBytes, entry)),
-    warnings,
-  };
+  const { summaries, warnings: loadedWarnings } = await loadSummaryFiles(normalized, true);
+  const warnings = [...loadedWarnings];
+  const selected = [...summaries]
+    .sort((a, b) => summaryUpdatedAtMs(b) - summaryUpdatedAtMs(a)
+      || b.mtimeMs - a.mtimeMs || b.summary.runId.localeCompare(a.summary.runId))
+    .slice(0, normalized.maxRuns);
+  const runs: RecordedRunListItem[] = new Array(selected.length);
+  let next = 0;
+  // RunHistory can request every run. Bound event/companion file descriptors.
+  await Promise.all(Array.from({ length: Math.min(8, selected.length) }, async () => {
+    while (next < selected.length) {
+      const index = next++, entry = selected[index]!;
+      if (!entry.upkeepCandidates?.length && !entry.upkeepCompanions?.length && !entry.summary.upkeepAccountingPartial) {
+        runs[index] = summaryToListItem(entry.summary, entry.updatedAt, normalized.maxStringBytes, entry);
+        continue;
+      }
+      const events = await readEventsFile(safeJoin(entry.artifactDir, `${safeArtifactName(entry.summary.runId)}${EVENTS_SUFFIX}`), { ...normalized, eventSelection: "head-tail" }, warnings);
+      const accountingWarnings: string[] = [];
+      const upkeep = await readUpkeepAccounting(entry.artifactDir, entry.summary.runId, entry.summary.conversationId, [
+        ...(entry.upkeepCandidates ?? []),
+        ...events.flatMap(event => isRecord(event.payload) && ["continuity_upkeep", "continuity_upkeep_dispatch"].includes(String(event.payload.type)) && event.payload.accounting !== undefined ? [event.payload.accounting] : []),
+      ], accountingWarnings, { companionNames: entry.upkeepCompanions ?? [] });
+      warnings.push(...accountingWarnings);
+      runs[index] = summaryToListItem(withRecordedUpkeep({ ...entry.summary, ...(accountingWarnings.length ? { upkeepAccountingPartial: true as const } : {}) }, upkeep), entry.updatedAt, normalized.maxStringBytes, entry);
+    }
+  }));
+  return { totalRuns: summaries.length, runs, warnings };
 }
 
 export interface ReconcileStaleRunsResult {
@@ -212,15 +224,24 @@ export async function readRecordedRun(
   }
 
   const eventsPath = safeJoin(summary.artifactDir, `${baseName}${EVENTS_SUFFIX}`);
-  const events = await readEventsFile(eventsPath, normalized, warnings);
+  const normalizeNamespace = createUpkeepNamespaceNormalizer();
+  const events = (await readEventsFile(eventsPath, normalized, warnings)).map(event => {
+    const payload = event.payload;
+    if (!isRecord(payload) || !["continuity_upkeep", "continuity_upkeep_dispatch"].includes(String(payload.type)) || payload.accounting === undefined) return event;
+    const accepted = runUpkeepAccounting(summary!.summary, [payload.accounting], undefined, normalizeNamespace);
+    return accepted.length ? { ...event, payload: { ...payload, accounting: accepted[0] } } : event;
+  });
   const summaryAccounting = summary.upkeepCandidates;
+  let hasUpkeepEvidence = summary.summary.upkeepAccountingPartial === true;
+  const accountingWarnings: string[] = [];
   const upkeepAccounting = await readUpkeepAccounting(summary.artifactDir, normalizedRunId, summary.summary.conversationId, [
     ...(Array.isArray(summaryAccounting) ? summaryAccounting : []),
-    ...events.flatMap(event => isRecord(event.payload) && event.payload.type === "continuity_upkeep" && event.payload.accounting !== undefined ? [event.payload.accounting] : []),
-  ], warnings);
+    ...events.flatMap(event => isRecord(event.payload) && ["continuity_upkeep", "continuity_upkeep_dispatch"].includes(String(event.payload.type)) && event.payload.accounting !== undefined ? [event.payload.accounting] : []),
+  ], accountingWarnings, { onEvidence: () => { hasUpkeepEvidence = true; }, normalizeNamespace });
+  warnings.push(...accountingWarnings);
 
   return {
-    summary: summaryToListItem(summary.summary, summary.updatedAt, normalized.maxStringBytes, summary),
+    summary: summaryToListItem(withRecordedUpkeep({ ...summary.summary, ...(hasUpkeepEvidence && accountingWarnings.length ? { upkeepAccountingPartial: true as const } : {}) }, upkeepAccounting), summary.updatedAt, normalized.maxStringBytes, summary),
     events,
     ...(upkeepAccounting.length ? { upkeepAccounting } : {}),
     warnings,
@@ -262,6 +283,7 @@ async function loadSummaryFilesFromNamespace(
     return;
   }
 
+  const companions = indexUpkeepCompanions(entries.map(entry => entry.name));
   for (const entry of entries) {
     if (!entry.isFile() || !entry.name.endsWith(SUMMARY_SUFFIX)) {
       continue;
@@ -278,7 +300,7 @@ async function loadSummaryFilesFromNamespace(
       parsed !== undefined &&
       summaryMatchesArtifactScope(namespaceKind, parsed.summary, normalized.scope)
     ) {
-      summaries.push(parsed);
+      summaries.push({ ...parsed, upkeepCompanions: companions.get(upkeepCompanionPrefix(parsed.summary.runId)) ?? [] });
     }
   }
 }
@@ -517,6 +539,7 @@ function coerceRunSummary(
     durationMs,
     ...(value.usage === undefined ? {} : { usage: redactJsonValue(value.usage, maxStringBytes) }),
     ...(value.cost === undefined ? {} : { cost: redactJsonValue(value.cost, maxStringBytes) }),
+    ...(value.upkeepAccountingPartial === true ? { upkeepAccountingPartial: true } : {}),
     ...(providerSessionId === undefined ? {} : { providerSessionId }),
     ...(isolated === undefined ? {} : { isolated }),
     eventCount,
@@ -555,6 +578,9 @@ function summaryToListItem(
     updatedAt: summary.updatedAt ?? updatedAt,
     ...(summary.usage === undefined ? {} : { usage: redactJsonValue(summary.usage, maxStringBytes) }),
     ...(summary.cost === undefined ? {} : { cost: redactJsonValue(summary.cost, maxStringBytes) }),
+    ...(summary.upkeepAccounting === undefined ? {} : { upkeepAccounting: summary.upkeepAccounting }),
+    ...(summary.inclusiveCost === undefined ? {} : { inclusiveCost: summary.inclusiveCost }),
+    ...(summary.upkeepAccountingPartial === true ? { upkeepAccountingPartial: true } : {}),
     ...(summary.model === undefined ? {} : { model: summary.model }),
     ...(summary.providerSessionId === undefined ? {} : { providerSessionId: summary.providerSessionId }),
     ...(summary.isolated === undefined ? {} : { isolated: summary.isolated }),

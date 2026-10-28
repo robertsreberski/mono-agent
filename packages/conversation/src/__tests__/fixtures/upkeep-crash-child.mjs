@@ -22,8 +22,6 @@ const reservation = { databaseId: fence.databaseId, ...scope, incarnation: fence
 let fetches = 0;
 globalThis.fetch = async () => { fetches++; return new Response("{}"); };
 if (phase === "recover") {
-  const db = new DatabaseSync(join(root, "tool-history", "tool-lifecycles.sqlite"), { readOnly: true });
-  const rows = db.prepare("SELECT reservation,state,outcome FROM continuity_upkeep_operations").all(); db.close();
   let bootstrapRejected = false, incrementalRejected = false;
   if (!fence.bootstrap) {
     try { await writer.mutateUpkeep({ kind: "reserve", reservation: { ...reservation, budget: "bootstrap", model: "fictional:changed-model", manifest: "b".repeat(64) } }); }
@@ -31,8 +29,14 @@ if (phase === "recover") {
     try { await writer.mutateUpkeep({ kind: "reserve", reservation: { ...reservation, budget: "incremental", model: "fictional:changed-model", manifest: "c".repeat(64) } }); }
     catch { incrementalRejected = true; }
   }
+  // Inspect the durable recovery result after the worker has stopped. Closing
+  // a second SQLite connection while its exporter writes can itself hit BUSY.
+  await writer.close();
+  const db = new DatabaseSync(join(root, "tool-history", "tool-lifecycles.sqlite"), { readOnly: true });
+  let rows;
+  try { rows = db.prepare("SELECT reservation,state,outcome FROM continuity_upkeep_operations").all(); } finally { db.close(); }
   process.send({ phase, bootstrap: fence.bootstrap, bootstrapRejected, incrementalRejected, fetches, rows });
-  await writer.close(); await turn.abort(); process.exit(0);
+  await turn.abort(); process.exit(0);
 }
 await turn.withContinuityOwner(async () => await writer.mutateUpkeep({ kind: "reserve", reservation }));
 if (phase !== "reserved") {

@@ -58,7 +58,7 @@ export type ProviderAuthCheckResultCode =
   | "not_run";
 
 export interface ProviderAuthUsage {
-  readonly kind: "primary" | "fallback" | "memory_llm" | "cron" | "webhook";
+  readonly kind: "primary" | "fallback" | "memory_llm" | "continuity_upkeep" | "cron" | "webhook";
   readonly model: string;
   readonly label: string;
 }
@@ -337,7 +337,7 @@ function parseProviderStatus(value: unknown): ProviderAuthProviderStatus {
 
 function parseUsage(value: unknown): ProviderAuthUsage {
   const root = exactRecord(value, ["kind", "model", "label"], "provider auth usage");
-  if (!["primary", "fallback", "memory_llm", "cron", "webhook"].includes(String(root.kind))
+  if (!["primary", "fallback", "memory_llm", "continuity_upkeep", "cron", "webhook"].includes(String(root.kind))
     || !boundedString(root.model) || !boundedString(root.label)) invalid("provider auth usage");
   return root as unknown as ProviderAuthUsage;
 }

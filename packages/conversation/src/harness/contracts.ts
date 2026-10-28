@@ -2,7 +2,7 @@ import type { ContinuityUpkeepResult } from "@mono-agent/turn/host";
 import type { UpkeepMutation, UpkeepAdmission, UpkeepReservation } from "../continuity/admission.js";
 import type { LedgerGeneration } from "../continuity/ledger.js";
 import type { SessionContextCapabilities } from "./session-capabilities.js";
-import type { AgentLiveInputOffer, AgentLiveInputOwnership, AgentLiveInputRequest, AgentAttachment, AgentContextImportRequest, AgentContextImportResult, AgentContinuationOriginContext, AgentContinuationTurn, AgentMessageSender, AgentPrecedingMessage, AgentReplyTarget, AgentSurface, AgentToolEnvironment, MemoryStore, MemoryCaptureSpeakerKind } from "@mono-agent/contracts";
+import type { AgentUpkeepAccounting, AgentLiveInputOffer, AgentLiveInputOwnership, AgentLiveInputRequest, AgentAttachment, AgentContextImportRequest, AgentContextImportResult, AgentContinuationOriginContext, AgentContinuationTurn, AgentMessageSender, AgentPrecedingMessage, AgentReplyTarget, AgentSurface, AgentToolEnvironment, MemoryStore, MemoryCaptureSpeakerKind } from "@mono-agent/contracts";
 import type { RunRecorder, RunSummary, RuntimeEventLike } from "@mono-agent/observability";
 import type { MonoRuntimeLike, RuntimeModelReference, RuntimeRunOptions } from "@mono-agent/turn/host/types";
 import type { SandboxPolicy } from "@mono-agent/turn/host/types";
@@ -60,7 +60,10 @@ export interface ConversationHarnessFailure {
  * summary projection excludes that sensitive field in both the exported type
  * and the runtime payload.
  */
-export type ExternalRunSummary = Omit<RunSummary, "systemPrompt">;
+export type ExternalRunSummary = Omit<RunSummary, "systemPrompt" | "upkeepAccounting"> & {
+  readonly upkeepAccounting?: readonly Omit<AgentUpkeepAccounting,
+    "recorderNamespace" | "databaseId" | "incarnation" | "logicalConversationId">[];
+};
 
 export interface ConversationHarnessResponse {
   readonly text?: string;
