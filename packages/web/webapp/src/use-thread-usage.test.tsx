@@ -53,3 +53,14 @@ describe("useThreadUsage", () => {
     expect(result.current.loading).toBe(false);
   });
 });
+
+it("refreshes open running totals on upkeep changes without polling ordinary deltas", async () => {
+  const before = { total: { costUsd: 1 }, byModel: [], computedAt: "2026-05-17T10:00:00Z" };
+  const after = { ...before, total: { costUsd: 1.02 }, upkeep: { operations: 1, costUsd: 0.02 } };
+  const read = vi.spyOn(api, "threadUsage").mockResolvedValueOnce(before).mockResolvedValue(after);
+  const { result } = renderHook(() => useThreadUsage("fictional-upkeep-live", true, true));
+  await waitFor(() => expect(result.current.usage?.total.costUsd).toBe(1));
+  act(() => notifyThreadUsageChanged("fictional-upkeep-live", true));
+  await waitFor(() => expect(result.current.usage?.upkeep?.costUsd).toBe(0.02));
+  expect(read).toHaveBeenCalledTimes(2);
+});

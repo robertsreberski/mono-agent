@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Show continuity upkeep once in live, reloaded and replayed console totals,
+  running cards and per-model slices. Keep unknown spend partial with its known
+  subtotal, and reconcile benchmark reported costs separately from reservations.
 - Retry transient SQLite contention while preparing continuity upkeep rather
   than treating accounting-export locks as permanent ledger corruption.
 

@@ -6,4 +6,7 @@ import { fileURLToPath } from "node:url";
 export const sharedSourceAliases = [{
   find: /^@mono-agent\/contracts\/provider-usage$/,
   replacement: fileURLToPath(new URL("../../contracts/src/provider-usage.ts", import.meta.url)),
+}, {
+  find: /^@mono-agent\/contracts\/upkeep-accounting$/,
+  replacement: fileURLToPath(new URL("../../contracts/src/upkeep-accounting.ts", import.meta.url)),
 }];

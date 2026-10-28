@@ -4537,6 +4537,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
      * Each event now names what it invalidated and nothing else is re-read.
      * Anything the payload already carries is applied locally.
      */
+    let previousUpkeep: { threadId: string; signature: string | undefined } | undefined;
     const handleEvent = (event: Event) => {
       const frame = (event as MessageEvent<unknown>).data;
       // The delta stream is a real cost on a metered link -- the whole reason
@@ -4886,6 +4887,15 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
           // The run state IS the payload, so there is nothing to go and ask
           // for.
           if (threadId === undefined || payload.turn === undefined) return;
+          if (threadId === selectedThreadRef.current) {
+            const signature = JSON.stringify(payload.turn.activity?.upkeep);
+            if (previousUpkeep?.threadId !== threadId || previousUpkeep.signature !== signature) {
+              // Refresh only an open usage popover on accounting changes, not
+              // on every text/tool delta. Legacy runs keep their existing path.
+              if (signature !== undefined) notifyThreadUsageChanged(threadId, true);
+              previousUpkeep = { threadId, signature };
+            }
+          }
           patchRunState(threadId, payload.turn);
           return;
 

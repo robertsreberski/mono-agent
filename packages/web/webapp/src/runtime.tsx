@@ -1,3 +1,5 @@
+import { hasUpkeepTelemetry, messageUsageRollup } from "../../src/message-cost.js";
+import { sumThreadUsage } from "../../src/thread-usage.js";
 import { isLegacySilentCronMessage } from "./cron-visibility";
 import {
   AssistantRuntimeProvider,
@@ -475,6 +477,7 @@ export const convertWebMessage = (
           : message.status === "failed"
             ? { type: "incomplete", reason: "error", error: "Agent run failed" }
             : { type: "incomplete", reason: "other", error: "Agent run was interrupted" };
+  const usage = message.role === "assistant" && hasUpkeepTelemetry(message.parts) ? messageUsageRollup(message) : undefined;
   return {
     id: message.id,
     role: message.role,
@@ -490,6 +493,7 @@ export const convertWebMessage = (
       custom: {
         ...(message.role === "system" && content[0]?.type === "data-conversation-marker"
           ? { conversationMarker: content[0] } : {}),
+        ...(usage?.upkeep ? { upkeepUsage: sumThreadUsage([usage]) } : {}),
         turnId: message.turnId,
         threadId: message.threadId,
         updatedAt: message.updatedAt,

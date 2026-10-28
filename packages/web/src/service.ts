@@ -1,3 +1,4 @@
+import { dataLayers, isUpkeepTelemetry, upkeepTelemetryData } from "./message-cost.js";
 import { type ProcessJobWakeRecovery } from "./process-job-wake-recovery.js";
 import type { ProviderUsageId, ProviderUsageSnapshot } from "@mono-agent/contracts";
 import type { WebCancelOrigin, WebExternalConversationChannel } from "./contracts.js";
@@ -289,6 +290,10 @@ function keepsTelemetryData(part: WebTelemetryPart): boolean {
  * payload was dropped".
  */
 function shapeTelemetryPart(part: WebTelemetryPart): WebTelemetryPart {
+  if (part.kind === "continuity_upkeep" || isUpkeepTelemetry(part.event, dataLayers(part.data))) {
+    const data = upkeepTelemetryData(part.data);
+    return { type: "telemetry", event: part.event, kind: "continuity_upkeep", ...(data === undefined ? {} : { data }) };
+  }
   const kind = telemetryKind(part.data);
   const keepsData = part.data === undefined || keepsTelemetryData(part);
   if (keepsData && (kind === undefined || part.kind === kind)) return part;
@@ -4914,6 +4919,7 @@ export class WebService {
       return { type: "restart_proposal", id: part.id,
         ...(part.reason === undefined ? {} : { reason: part.reason }), restartable };
     }
+    if (part.type === "telemetry" && (part.kind === "continuity_upkeep" || isUpkeepTelemetry(part.event, dataLayers(part.data)))) return shapeTelemetryPart(part);
     if (options.full === true) return part;
     if (message.role === "assistant"
       && message.turnId === undefined

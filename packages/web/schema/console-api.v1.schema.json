@@ -6259,6 +6259,48 @@
     "WebRunActivity": {
       "type": "object",
       "properties": {
+        "upkeep": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "operations": {
+              "type": "number"
+            },
+            "models": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "tokens": {
+              "$ref": "#/definitions/WebUsageTokens"
+            },
+            "costUsd": {
+              "type": "number",
+              "minimum": 0
+            },
+            "knownCostUsd": {
+              "type": "number",
+              "minimum": 0
+            },
+            "costUnknown": {
+              "type": "boolean",
+              "const": true
+            },
+            "tokensPartial": {
+              "type": "boolean",
+              "const": true
+            },
+            "costPartial": {
+              "type": "boolean",
+              "const": true
+            }
+          },
+          "required": [
+            "models",
+            "operations"
+          ]
+        },
         "toolCallCount": {
           "type": "number",
           "description": "Retained TOP-LEVEL tool calls, each counted once.\n\nModel steps are not tool calls and are not counted. A delegation's own calls belong to the subagent group that owns them and are not counted either -- concurrent subagents interleave, so a flat total would be a number with no owner."
@@ -7135,6 +7177,42 @@
       "properties": {
         "total": {
           "$ref": "#/definitions/WebUsageSlice"
+        },
+        "upkeep": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "operations": {
+              "type": "number"
+            },
+            "tokens": {
+              "$ref": "#/definitions/WebUsageTokens"
+            },
+            "costUsd": {
+              "type": "number",
+              "minimum": 0
+            },
+            "knownCostUsd": {
+              "type": "number",
+              "minimum": 0
+            },
+            "costUnknown": {
+              "type": "boolean",
+              "const": true
+            },
+            "tokensPartial": {
+              "type": "boolean",
+              "const": true
+            },
+            "costPartial": {
+              "type": "boolean",
+              "const": true
+            }
+          },
+          "required": [
+            "operations"
+          ],
+          "description": "Excluded upkeep, included once in total and attributed to its extraction model."
         },
         "compaction": {
           "type": "object",

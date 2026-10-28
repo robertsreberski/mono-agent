@@ -397,6 +397,7 @@ DEFAULT_AGENT_ATTACHMENT_MAX_BYTES
 DEFAULT_AGENT_ATTACHMENT_MIME_ALLOWLIST
 DEFAULT_EMPTY_FINAL_TEXT
 DEFAULT_MAX_MESSAGE_CHARS
+ForwardedUpkeepAccounting
 HostWakeDeliveryResult
 HostWakeDisposition
 InternalProcessJobTool
@@ -509,11 +510,13 @@ collectExactReplyArtifactBytes
 createChannelUserCancelReason
 createLogRedactor
 decodeAgentAttachmentText
+deriveUpkeepAccounting
 describePeerQuestionForm
 encodeJsonEnvValue
 fieldSpecMappings
 formatLiveInputActivityLine
 formatProviderUsageLead
+forwardUpkeepAccounting
 generateBearerToken
 hostForUrl
 isAgentCompactionAccounting
@@ -537,6 +540,7 @@ layerJsonOntoEnv
 listen
 markSilentTurnAlreadyVisible
 mergeAgentUpkeepAccounting
+mergeForwardedUpkeepAccounting
 normalizeHostForBind
 normalizeOptionalString
 normalizeProcessJobSubagentUsage
@@ -548,6 +552,7 @@ parseCronOperatorOverview
 parseCronOperatorRunDetail
 parseCronOperatorRunPage
 parseCronOperatorRunSummary
+parseForwardedUpkeepAccounting
 parseProcessJobProjection
 parseProcessJobProjections
 parseProviderAuthCheckSessionSnapshot
@@ -607,6 +612,19 @@ projectProviderUsage
 projectProviderUsageWindow
 ```
 
+**`@mono-agent/contracts/upkeep-accounting`**
+
+```text
+AgentUpkeepAccounting
+ForwardedUpkeepAccounting
+deriveUpkeepAccounting
+forwardUpkeepAccounting
+mergeAgentUpkeepAccounting
+mergeForwardedUpkeepAccounting
+parseAgentUpkeepAccounting
+parseForwardedUpkeepAccounting
+```
+
 <!-- public-api-inventory:end -->
 
 Persistent Agent/AgentManage can run detached through the app-private in-process
@@ -639,6 +657,12 @@ a forecast. The meter countdown and the lead share the
 not error backoff. Capability-aware hosts expose it separately; snapshot-only
 implementations remain valid. Both return the same strictly parsed, secret-free
 `mono-agent.provider-usage.v1` projection, without changing inference evidence.
+
+The browser-safe `@mono-agent/contracts/upkeep-accounting` entrypoint validates
+closed forwarded receipts without storage-local identifiers. Its merge preserves
+result-over-dispatch precedence by operation ID; `deriveUpkeepAccounting()` shares
+once-only nullable cost and known-token-subtotal arithmetic across recorders,
+console consumers and benchmark reconciliation. Reservations are not billed cost.
 
 ## Dependency Boundary
 

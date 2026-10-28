@@ -14,7 +14,7 @@ export function browserCostWire(value: unknown): unknown {
       result.monthCostUnknown = true;
     } else {
       // Tool payloads are opaque user data, not framework billing envelopes.
-      result[key] = opaque(key) ? child : browserCostWire(child);
+      result[key] = opaque(key, child) ? child : browserCostWire(child);
     }
   }
   return result;
@@ -29,7 +29,7 @@ export function normalizeBrowserCosts(value: unknown): void {
     if ("toolCallCount" in value && "phase" in value) value.cumulativeUsd = null;
   }
   if (value.monthCostUnknown === true) value.monthUsd = null;
-  for (const [key, child] of Object.entries(value)) if (!opaque(key)) normalizeBrowserCosts(child);
+  for (const [key, child] of Object.entries(value)) if (!opaque(key, child)) normalizeBrowserCosts(child);
 }
 
 export function costAmount(value: unknown, field = "costUsd"): number | null | undefined {
@@ -49,6 +49,8 @@ function record(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-function opaque(key: string): boolean {
+function opaque(key: string, child: unknown): boolean {
+  // Immutable upkeep counters/cost deliberately retain null inside their closed envelope.
+  if (key === "accounting" && record(child) && child.version === 1 && child.usageIncluded === false) return true;
   return ["args", "arguments", "structuredContent", "structuredResult", "partialResult", "result", "schema", "requestedSchema"].includes(key);
 }

@@ -23,6 +23,10 @@
     "./provider-usage": {
       "types": "./dist/provider-usage.d.ts",
       "import": "./dist/provider-usage.js"
+    },
+    "./upkeep-accounting": {
+      "types": "./dist/upkeep-accounting.d.ts",
+      "import": "./dist/upkeep-accounting.js"
     }
   },
   "files": [

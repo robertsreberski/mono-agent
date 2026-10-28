@@ -72,6 +72,7 @@ import type {
   WebEvent,
   WebMessage,
 } from "./types";
+import { subscribeThreadUsageChanged } from "./thread-usage-events";
 import { WebRuntimeProvider } from "./runtime";
 import { threadPresentation } from "./thread-presentation";
 import { NotificationsProvider } from "./notifications";
@@ -348,6 +349,24 @@ describe("ConsoleStoreProvider integration", () => {
     vi.useRealTimers();
     resetServerClock();
     vi.unstubAllGlobals();
+  });
+
+  it("invalidates live usage only for selected-thread upkeep accounting changes", async () => {
+    const selected = thread("fictional-upkeep-live", "alpha", { runState: { status: "running" } });
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap([agent("alpha")], [selected], selected.id));
+    vi.mocked(api.thread).mockResolvedValue(detail(selected));
+    const store = await renderStore();
+    await waitFor(() => expect(store.current.selectedThreadId).toBe(selected.id));
+    const changed = vi.fn(), unsubscribe = subscribeThreadUsageChanged(changed);
+    const publish = (costUsd: number, id = selected.id) => act(() => FakeEventSource.latest?.emit("turn.changed", {
+      version: 1, type: "turn.changed", at: "2026-05-17T10:00:00Z", threadId: id,
+      payload: { turn: { status: "running", activity: { toolCallCount: 0, phase: "working", upkeep: { operations: 1, models: ["fictional:extractor"], costUsd } } } },
+    }));
+    try {
+      publish(0.02); publish(0.02); publish(0.03, "fictional-background"); publish(0.03);
+      expect(changed).toHaveBeenCalledTimes(2);
+      expect(changed).toHaveBeenLastCalledWith(selected.id, true);
+    } finally { unsubscribe(); }
   });
 
   describe.sequential("device-store isolation across cases", () => {

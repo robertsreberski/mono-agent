@@ -403,7 +403,10 @@ export function parseThreadUsage(value: unknown): WebThreadUsage {
   normalizeBrowserCosts(value);
   const usage = recordOf(value);
   const compaction = recordOf(usage?.compaction);
+  const upkeep = recordOf(usage?.upkeep);
   if (usage === null || !validUsageSlice(usage.total)
+    || (usage.upkeep !== undefined && (!validUsageSlice(usage.upkeep) || upkeep === null
+      || !Number.isSafeInteger(upkeep.operations) || Number(upkeep.operations) < 0))
     || (usage.compaction !== undefined && (!validUsageSlice(usage.compaction) || compaction === null
       || !Number.isSafeInteger(compaction.requests) || Number(compaction.requests) < 1
       || (compaction.requestsWithUsage !== undefined && (!Number.isSafeInteger(compaction.requestsWithUsage) || Number(compaction.requestsWithUsage) < 0

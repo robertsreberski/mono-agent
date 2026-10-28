@@ -96,7 +96,7 @@ import { isConversationMarker } from "./conversation-markers.js";
 import { parseTagColor, parseTagName } from "./tag-color.js";
 import { parseProjectColor } from "./project-color.js";
 import { WebConsoleError } from "./errors.js";
-import { latestMessageCostUsd, messageUsageRollup, type MessageUsageRollup } from "./message-cost.js";
+import { upkeepSummaryParts, upkeepTelemetryData, latestMessageCostUsd, messageUsageRollup, type MessageUsageRollup } from "./message-cost.js";
 import { sumThreadUsage } from "./thread-usage.js";
 import { isAskUserToolName, runActivityFromParts, sameRunActivity } from "./run-activity.js";
 import { runWebStorageMigrations, validateWebStorageMigrationRegistry, WEB_STORAGE_SCHEMA_VERSION } from "./store-migrations.js";
@@ -6794,7 +6794,7 @@ export class WebStore {
     finalText?: string,
     errorCode?: string,
     errorMessage?: string,
-    runtime?: { readonly model?: string; readonly effort?: string; readonly effectiveEffort?: string; readonly turnDisposition?: "silent" | "visible" },
+    runtime?: TurnRuntimeMetadata,
     replyParts?: readonly AgentReplyPart[],
     suppressResponsePush = false,
     hostWakeDeliveryKey?: string,
@@ -6828,7 +6828,7 @@ export class WebStore {
     finalText?: string,
     errorCode?: string,
     errorMessage?: string,
-    runtime?: { readonly model?: string; readonly effort?: string; readonly effectiveEffort?: string; readonly turnDisposition?: "silent" | "visible" },
+    runtime?: TurnRuntimeMetadata,
     replyParts?: readonly AgentReplyPart[],
     suppressResponsePush = false,
     hostWakeDeliveryKey?: string,
@@ -6841,6 +6841,7 @@ export class WebStore {
     let parts = [...existing.parts];
     if (finalText !== undefined && finalText.length > 0) reconcileFinalText(parts, finalText);
     if (replyParts !== undefined) parts = boundedWebReplyParts(replyParts, parts);
+    if (runtime?.upkeepParts) parts.push(...runtime.upkeepParts);
     if (errorMessage !== undefined) {
       parts.push({ type: "error", ...(errorCode === undefined ? {} : { code: errorCode }), message: errorMessage });
     }
@@ -8623,6 +8624,11 @@ function applyEvent(
     }, historyUpdate);
     return;
   }
+  if (event.type === "runtime_telemetry" && event.kind === "continuity_upkeep") {
+    const data = upkeepTelemetryData(event);
+    parts.push({ type: "telemetry", event: event.type, kind: "continuity_upkeep", ...(data === undefined ? {} : { data }) });
+    return;
+  }
   if (event.type === "runtime_telemetry" && event.kind === "context_compaction") {
     upsertContextCompaction(parts, event);
     return;
@@ -10358,20 +10364,25 @@ function runAttribution(row: TurnRow): WebRunAttribution | undefined {
   };
 }
 
+type TurnRuntimeMetadata = { readonly model?: string; readonly effort?: string; readonly effectiveEffort?: string; readonly turnDisposition?: "silent" | "visible"; readonly upkeepParts?: readonly WebMessagePart[] };
+
 function runtimeMetadata(
   metadata: Readonly<Record<string, unknown>> | undefined,
-): { readonly model?: string; readonly effort?: string; readonly effectiveEffort?: string; readonly turnDisposition?: "silent" | "visible" } | undefined {
+): TurnRuntimeMetadata | undefined {
   const runtime = metadata?.runtime;
+  const upkeepParts = upkeepSummaryParts(metadata?.summary);
+  const accounting = upkeepParts.length ? { upkeepParts } : {};
   const turnDisposition = metadata?.turnDisposition === "silent" || metadata?.turnDisposition === "visible"
     ? metadata.turnDisposition : undefined;
   if (typeof runtime !== "object" || runtime === null || Array.isArray(runtime)) {
-    return turnDisposition === undefined ? undefined : { turnDisposition };
+    return turnDisposition === undefined && !upkeepParts.length ? undefined : { ...accounting, ...(turnDisposition === undefined ? {} : { turnDisposition }) };
   }
   const record = runtime as Record<string, unknown>;
   const model = canonicalRouteString(record.model);
   const effort = canonicalRouteString(record.effort, 64);
   const effectiveEffort = canonicalRouteString(record.effectiveEffort, 64);
-  return model === undefined && effort === undefined && effectiveEffort === undefined && turnDisposition === undefined ? undefined : {
+  return model === undefined && effort === undefined && effectiveEffort === undefined && turnDisposition === undefined && !upkeepParts.length ? undefined : {
+    ...accounting,
     ...(turnDisposition === undefined ? {} : { turnDisposition }),
     ...(model === undefined ? {} : { model }),
     ...(effort === undefined ? {} : { effort }),

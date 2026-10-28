@@ -1,6 +1,6 @@
 import { resolve } from "node:path";
 import { createUpkeepNamespaceNormalizer } from "./upkeep-accounting.js";
-import { mergeAgentUpkeepAccounting, parseAgentUpkeepAccounting, type AgentUpkeepAccounting } from "@mono-agent/contracts";
+import { deriveUpkeepAccounting, forwardUpkeepAccounting, mergeAgentUpkeepAccounting, parseAgentUpkeepAccounting, type AgentUpkeepAccounting } from "@mono-agent/contracts";
 import { isRecord } from "./artifact-fs.js";
 import { recordedCost } from "./recorded-cost.js";
 import type { InclusiveRunCost, RunRecorder, RunSummary, RuntimeEventLike, RuntimeResultLike } from "./types.js";
@@ -26,14 +26,7 @@ export function upkeepEventAccounting(event: RuntimeEventLike): readonly unknown
 /** Inference fields are never rewritten or repriced at the answer model. */
 export function inclusiveRecordedCost(summary: Pick<RunSummary, "cost" | "usage">, upkeep: readonly AgentUpkeepAccounting[]): InclusiveRunCost {
   const inference = recordedCost(summary);
-  let knownCostUsd = inference.total ?? inference.known ?? 0;
-  let partial = inference.total == null;
-  for (const a of mergeAgentUpkeepAccounting(upkeep)) {
-    if (a.costUsd === null) partial = true;
-    else if (Number.isFinite(knownCostUsd + a.costUsd)) knownCostUsd += a.costUsd;
-    else partial = true;
-  }
-  return { totalUsd: partial ? null : knownCostUsd, knownCostUsd, partial };
+  return deriveUpkeepAccounting(mergeAgentUpkeepAccounting(upkeep).map(forwardUpkeepAccounting), { totalUsd: inference.total, knownCostUsd: inference.known }).cost;
 }
 export function withRecordedUpkeep<T extends Origin & Pick<RunSummary, "usage" | "cost">>(summary: T, candidates: readonly unknown[] = [], normalizeNamespace: (namespace: string) => string = resolve): T {
   let partial = summary.upkeepAccountingPartial === true;

@@ -1,3 +1,4 @@
+import { hasUpkeepTelemetry, messageUsageRollup } from "./message-cost.js";
 import { costAmount, knownCostAmount } from "./cost-wire.js";
 import { toolNameLeaf } from "@mono-agent/contracts";
 
@@ -58,7 +59,13 @@ export const runActivityFromParts = (parts: readonly WebMessagePart[]): WebRunAc
       if (cost !== undefined) { cumulativeUsd = cost; knownCostUsd = cost === null ? knownCostAmount(part.data) : undefined; }
     }
   }
+  const upkeep = hasUpkeepTelemetry(parts) ? messageUsageRollup({ parts }) : undefined;
+  if (upkeep?.upkeep) {
+    cumulativeUsd = upkeep.main.costUsd;
+    knownCostUsd = upkeep.main.knownCostUsd;
+  }
   return {
+    ...(upkeep?.upkeep ? { upkeep: { ...upkeep.upkeep, models: [...new Set(upkeep.upkeepAccounting?.map(a => a.model))].sort() } } : {}),
     toolCallCount,
     phase: asking ? "asking" : "working",
     ...(cumulativeUsd === undefined ? {} : { cumulativeUsd }),
@@ -83,4 +90,5 @@ export const sameRunActivity = (
     && left.toolCallCount === right.toolCallCount
     && left.phase === right.phase
     && left.cumulativeUsd === right.cumulativeUsd
-    && left.knownCostUsd === right.knownCostUsd);
+    && left.knownCostUsd === right.knownCostUsd
+    && JSON.stringify(left.upkeep) === JSON.stringify(right.upkeep));

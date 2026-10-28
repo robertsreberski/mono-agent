@@ -4,10 +4,9 @@ import { execFileSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
 
 const webapp = process.cwd();
-const specifier = "@mono-agent/contracts/provider-usage";
-const canonical = resolve(webapp, "../../contracts/src/provider-usage.ts");
-
-describe("standalone browser contract resolution", () => {
+describe.each(["provider-usage", "upkeep-accounting"])("standalone browser contract resolution: %s", contract => {
+  const specifier = `@mono-agent/contracts/${contract}`;
+  const canonical = resolve(webapp, `../../contracts/src/${contract}.ts`);
   it.each(["vite.config.ts", "vitest.browser.config.ts"])("maps the exact pure contract source in %s", async (configFile) => {
     // Resolve real configs in Node, not jsdom's mixed typed-array realm (which
     // esbuild correctly rejects). This does not start a dev/test server.

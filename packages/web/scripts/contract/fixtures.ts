@@ -15,6 +15,7 @@ const project = { id: "project-example", sourceId: thread.sourceId, name: "Sampl
   monthUsd: null, monthKnownUsd: 0.02 } satisfies W.WebProject;
 const attachment = { id: "upload-example", name: "example.txt", contentType: "text/plain", sizeBytes: 7,
   kind: "document", status: "staged", uploaded: false, createdAt: at } satisfies W.WebAttachment;
+const upkeep = { version: 1, usageIncluded: false, operationId: "upkeep-example", runId: "run-example", conversationId: "conversation-example", model: "fictional:extractor-b", budget: "bootstrap", phase: "dispatch", invocation: "uncertain", outcome: "uncertain", inputTokens: null, cacheReadTokens: null, cacheWriteTokens: null, outputTokens: null, costUsd: null } as const;
 const parts = [
   { type: "text", text: "Hello, Morgan." },
   { type: "reasoning", text: "Consider the example." },
@@ -72,6 +73,9 @@ function fixture<K extends keyof WebApiDtos>(name: string, type: K, value: WebAp
 }
 
 export const FIXTURES = [
+  fixture("upkeep-message", "ApiMessage", { message: { ...message, parts: [{ type: "telemetry", event: "runtime_telemetry", kind: "continuity_upkeep", data: { kind: "continuity_upkeep", data: { accounting: upkeep } } }] } }),
+  fixture("upkeep-thread-usage", "ApiThreadUsage", { usage: { total: { costUsd: null, knownCostUsd: 0.01, costPartial: true }, upkeep: { operations: 1, costUsd: null, knownCostUsd: 0, costPartial: true, tokensPartial: true }, byModel: [{ model: "fictional:answer-a", costUsd: 0.01 }, { model: upkeep.model, costUsd: null, knownCostUsd: 0 }], computedAt: at } }),
+  fixture("upkeep-running", "ApiActiveThreads", { threads: [{ ...thread, runState: { status: "running", activity: { toolCallCount: 0, phase: "working", cumulativeUsd: null, knownCostUsd: 0.01, upkeep: { operations: 1, models: [upkeep.model], costUsd: null, knownCostUsd: 0 } } } }], runningCounts: { [thread.sourceId]: 1 }, total: 1, truncated: false }),
   fixture("bootstrap", "ApiBootstrap", { version: 1, console: { hostName: "console.example.ts.net", displayName: "Example console", theme: "evergreen" },
     push: { applicationServerKey: "fictional-public-key", keyFingerprint: "example", serviceWorkerVersion: 2 },
     agents: [{ sourceId: thread.sourceId, label: "Example agent", status: "online", pinned: false, supportsAttachments: true, runSettings: { config: {}, override: null, effective: { modelSource: "config", effortSource: "config" } }, updatedAt: at }],

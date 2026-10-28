@@ -1,5 +1,5 @@
 import { costAmount, knownCostAmount } from "../../../../src/cost-wire.js";
-import { formatUsd } from "../../usage";
+import { formatUsageCost, formatUsd } from "../../usage";
 import { Fragment } from "react";
 import { Icon } from "../Icon";
 import type { AgentSummary, CatalogModel, ProjectSummary, ThreadSummary } from "../../types";
@@ -66,6 +66,7 @@ function RunningCard({
             title={route.title}
           />
         </span>
+        {activity?.upkeep && <span className="running-card-known-cost">Continuity upkeep · {Array.isArray(activity.upkeep.models) && activity.upkeep.models.length ? activity.upkeep.models.join(", ") : "model not reported"} · {formatUsageCost(activity.upkeep)}</span>}
         {knownCost !== undefined && <span className="running-card-known-cost">Known cost {formatUsd(knownCost)}</span>}
       </span>
       <time className="running-card-time" dateTime={thread.updatedAt}>

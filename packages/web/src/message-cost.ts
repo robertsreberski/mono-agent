@@ -1,3 +1,4 @@
+import { deriveUpkeepAccounting, mergeForwardedUpkeepAccounting, parseForwardedUpkeepAccounting, type ForwardedUpkeepAccounting } from "@mono-agent/contracts/upkeep-accounting";
 import { costAmount, knownCostAmount } from "./cost-wire.js";
 /**
  * The browser-safe cost observation helpers, shared verbatim by both ends of
@@ -12,8 +13,8 @@ import { costAmount, knownCostAmount } from "./cost-wire.js";
  * (relatively, the way `mcp-app-document.ts` already is), so there is exactly
  * one implementation of the precedence rules.
  *
- * It must therefore stay dependency-free: the webapp is its own pnpm workspace
- * and cannot resolve anything else from the monorepo. Only the aggregate cost
+ * Its sole runtime dependency is the canonical pure upkeep contract, mapped
+ * explicitly by the standalone browser shared-source aliases. Only aggregate cost
  * observation moves here -- context occupancy, compaction and processed-token
  * projections stay browser-side.
  */
@@ -21,6 +22,7 @@ import { costAmount, knownCostAmount } from "./cost-wire.js";
 export interface CostTelemetryPart {
   readonly type: string;
   readonly event?: string;
+  readonly kind?: string;
   readonly data?: unknown;
   readonly usage?: unknown;
   readonly attribution?: unknown;
@@ -151,8 +153,22 @@ export const isContextTelemetry = (event: string, layers: readonly UnknownRecord
 export const isCompactionTelemetry = (event: string, layers: readonly UnknownRecord[]): boolean =>
   hasTelemetryLabel(event, layers, "context_compaction");
 
+export const isUpkeepTelemetry = (event: string, layers: readonly UnknownRecord[]): boolean => hasTelemetryLabel(event, layers, "continuity_upkeep");
+
+/** Closed data only, used before persistence as well as shaped reloads. */
+export function upkeepTelemetryData(value: unknown): UnknownRecord | undefined {
+  for (const layer of [...dataLayers(value)].reverse()) {
+    if (layer.accounting !== undefined) {
+      try { return { type: "runtime_telemetry", kind: "continuity_upkeep", data: { accounting: parseForwardedUpkeepAccounting(layer.accounting) } }; }
+      catch { return undefined; }
+    }
+    if (layer.accountingPartial === true) return { type: "runtime_telemetry", kind: "continuity_upkeep", data: { accountingPartial: true } };
+  }
+  return undefined;
+}
+
 export const isAggregateUsageTelemetry = (event: string, layers: readonly UnknownRecord[]): boolean =>
-  !isContextTelemetry(event, layers) && telemetryLabels(event, layers).some((label) => {
+  !isUpkeepTelemetry(event, layers) && !isContextTelemetry(event, layers) && telemetryLabels(event, layers).some((label) => {
     const normalized = label.toLowerCase();
     return normalized.includes("usage") || normalized.includes("cost");
   });
@@ -215,7 +231,7 @@ function latestAggregateCostUsd(parts: readonly CostTelemetryPart[]): number | n
     const part = parts[partIndex];
     if (part?.type !== "telemetry" || part.event === undefined) continue;
     const layers = dataLayers(part.data);
-    if (!isAggregateUsageTelemetry(part.event, layers)) continue;
+    if (part.kind === "continuity_upkeep" || !isAggregateUsageTelemetry(part.event, layers)) continue;
     const cost = normalizeUsage(part.data)?.cost;
     if (cost !== undefined) return cost;
   }
@@ -269,7 +285,7 @@ function compactionObservations(parts: readonly CostTelemetryPart[]) {
 }
 
 /** Aggregate totals already include v2 run summaries; legacy/manual receipts do not. */
-export function latestMessageCostUsd(parts: readonly CostTelemetryPart[]): number | null | undefined {
+function latestInferenceMessageCostUsd(parts: readonly CostTelemetryPart[]): number | null | undefined {
   const aggregate = latestAggregateCostUsd(parts);
   const compaction = compactionObservations(parts);
   if (aggregate === undefined) return compaction.slice.costUsd;
@@ -305,6 +321,10 @@ export interface MessageUsageSlice {
 }
 export interface MessageUsageRollup {
   readonly main: MessageUsageSlice;
+  readonly inference?: MessageUsageSlice;
+  readonly upkeep?: MessageUsageSlice & { readonly operations: number };
+  readonly upkeepAccounting?: readonly ForwardedUpkeepAccounting[];
+  readonly upkeepPartial?: true;
   readonly subagents: readonly (MessageUsageSlice & { readonly detached: boolean })[];
   readonly compaction?: MessageUsageSlice & { readonly requests: number; readonly requestsWithUsage: number };
   readonly compactionByModel?: readonly (MessageUsageSlice & { readonly model?: string })[];
@@ -329,7 +349,7 @@ function hasTokenFields(value: unknown): boolean {
       .some((key) => Object.hasOwn(record, key))));
 }
 
-export function messageUsageRollup(message: {
+function inferenceUsageRollup(message: {
   readonly parts: readonly CostTelemetryPart[];
   readonly turnId?: string;
   readonly attribution?: { readonly executed?: { readonly model?: string }; readonly attempted?: { readonly model?: string } };
@@ -340,7 +360,7 @@ export function messageUsageRollup(message: {
   for (const part of message.parts) {
     if (part.type !== "telemetry" || part.event === undefined) continue;
     const layers = dataLayers(part.data);
-    if (!isAggregateUsageTelemetry(part.event, layers)) continue;
+    if (part.kind === "continuity_upkeep" || !isAggregateUsageTelemetry(part.event, layers)) continue;
     const observation = normalizeUsage(part.data);
     if (observation === null) {
       if (hasTokenFields(part.data)) rejectedTokens = true;
@@ -399,7 +419,7 @@ export function messageUsageRollup(message: {
       Math.min(Number.MAX_SAFE_INTEGER, Math.max(tokens?.[field] ?? 0, syncTotals[field]))])) as MessageUsageSlice["tokens"];
   const tokenGuardPartial = fields.some((field) => (tokens?.[field] ?? 0) > Number.MAX_SAFE_INTEGER || syncTotals[field] > Number.MAX_SAFE_INTEGER
     || (tokens !== undefined && syncTotals[field] > tokens[field]));
-  const reportedCost = latestMessageCostUsd(message.parts);
+  const reportedCost = latestInferenceMessageCostUsd(message.parts);
   const syncChildren = subagents.filter((child) => !child.detached);
   const syncKnown = syncChildren.reduce((sum, child) => sum + (child.costUsd ?? child.knownCostUsd ?? 0), 0);
   const summaryKnown = compaction.slice.costUsd ?? compaction.slice.knownCostUsd ?? 0;
@@ -431,4 +451,79 @@ export function messageUsageRollup(message: {
       requestsWithUsage: compaction.rows.filter((row) => row.input !== undefined || row.output !== undefined).length },
       compactionByModel: compaction.byModel } : {}),
   };
+}
+
+/** Shared web slice, with result precedence and conflict isolation. */
+export function upkeepUsageRollup(candidates: readonly unknown[], partial = false) {
+  const accepted = new Map<string, ForwardedUpkeepAccounting>();
+  for (const value of candidates) {
+    try {
+      const next = parseForwardedUpkeepAccounting(value), previous = accepted.get(next.operationId);
+      accepted.set(next.operationId, mergeForwardedUpkeepAccounting(previous ? [previous, next] : [next])[0]!);
+    } catch { partial = true; }
+  }
+  const accounting = [...accepted.values()];
+  const slice = (values: readonly ForwardedUpkeepAccounting[]): MessageUsageSlice => {
+    const derived = deriveUpkeepAccounting(values);
+    const unknown = partial || derived.cost.partial;
+    return { tokens: derived.tokens, costUsd: unknown ? null : derived.cost.totalUsd,
+      ...(unknown ? { knownCostUsd: derived.cost.knownCostUsd, costPartial: true } : {}),
+      ...(partial || derived.tokensPartial ? { tokensPartial: true } : {}) };
+  };
+  const groups = new Map<string, ForwardedUpkeepAccounting[]>();
+  for (const a of accounting) { const group = groups.get(a.model) ?? []; group.push(a); groups.set(a.model, group); }
+  const byModel: MessageUsageSlice[] = [...groups].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([model, rows]) => ({ ...slice(rows), model }));
+  if (partial && !accounting.length) byModel.push(slice([]));
+  return { accounting, partial, slice: { ...slice(accounting), operations: accounting.length }, byModel };
+}
+export function hasUpkeepTelemetry(parts: readonly CostTelemetryPart[]): boolean {
+  return parts.some(part => part.type === "telemetry" && !!part.event && (part.kind === "continuity_upkeep" || isUpkeepTelemetry(part.event, dataLayers(part.data))));
+}
+function upkeepObservations(parts: readonly CostTelemetryPart[]) {
+  const candidates: unknown[] = [];
+  let partial = false;
+  for (const part of parts) {
+    if (part.type !== "telemetry" || !part.event || part.kind !== "continuity_upkeep" && !isUpkeepTelemetry(part.event, dataLayers(part.data))) continue;
+    for (const layer of dataLayers(part.data)) {
+      if (layer.accounting !== undefined) candidates.push(layer.accounting);
+      if (layer.accountingPartial === true) partial = true;
+    }
+  }
+  return upkeepUsageRollup(candidates, partial);
+}
+export function messageUsageRollup(message: Parameters<typeof inferenceUsageRollup>[0]): MessageUsageRollup {
+  const base = inferenceUsageRollup(message), upkeep = upkeepObservations(message.parts);
+  if (!upkeep.accounting.length && !upkeep.partial) return base;
+  const inclusive = deriveUpkeepAccounting(upkeep.accounting, { totalUsd: base.main.costUsd, knownCostUsd: base.main.knownCostUsd });
+  const partial = inclusive.cost.partial || upkeep.partial;
+  const tokens = Object.fromEntries((["input", "cacheRead", "cacheWrite", "output"] as const).map(key => [key,
+    Math.min(Number.MAX_SAFE_INTEGER, (base.main.tokens?.[key] ?? 0) + inclusive.tokens[key])])) as NonNullable<MessageUsageSlice["tokens"]>;
+  return { ...base, inference: base.main, upkeep: upkeep.slice, upkeepAccounting: upkeep.accounting,
+    ...(upkeep.partial ? { upkeepPartial: true } : {}),
+    main: { ...base.main, tokens, costUsd: partial ? null : inclusive.cost.totalUsd,
+      ...(partial ? { knownCostUsd: inclusive.cost.knownCostUsd, costPartial: true } : {}),
+      ...(inclusive.tokensPartial || base.main.tokens === undefined || (["input", "cacheRead", "cacheWrite", "output"] as const).some(key => !Number.isSafeInteger((base.main.tokens?.[key] ?? 0) + inclusive.tokens[key])) ? { tokensPartial: true } : {}) } };
+}
+export function latestMessageCostUsd(parts: readonly CostTelemetryPart[]): number | null | undefined {
+  const upkeep = upkeepObservations(parts);
+  return upkeep.accounting.length || upkeep.partial ? messageUsageRollup({ parts }).main.costUsd : latestInferenceMessageCostUsd(parts);
+}
+
+/** Final metadata is another view of the same operations, not another charge. */
+export function upkeepSummaryParts(summary: unknown): { type: "telemetry"; event: "runtime_telemetry"; data: UnknownRecord }[] {
+  try {
+    if (!summary || typeof summary !== "object") return [];
+    const own = (key: string) => Object.getOwnPropertyDescriptor(summary, key)?.value as unknown;
+    const runId = own("runId"), conversationId = own("conversationId"), values = own("upkeepAccounting");
+    if (typeof runId !== "string" || typeof conversationId !== "string") return [];
+    const result: { type: "telemetry"; event: "runtime_telemetry"; data: UnknownRecord }[] = [];
+    for (const candidate of Array.isArray(values) ? values : []) {
+      try {
+        const accounting = parseForwardedUpkeepAccounting(candidate);
+        if (accounting.runId === runId && accounting.conversationId === conversationId) result.push({ type: "telemetry", event: "runtime_telemetry", data: { kind: "continuity_upkeep", data: { accounting } } });
+      } catch { /* invalid evidence never crosses the web boundary */ }
+    }
+    if (own("upkeepAccountingPartial") === true) result.push({ type: "telemetry", event: "runtime_telemetry", data: { kind: "continuity_upkeep", data: { accountingPartial: true } } });
+    return result;
+  } catch { return []; }
 }

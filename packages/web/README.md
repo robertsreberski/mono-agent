@@ -26,6 +26,12 @@ User Stop also marks a running `AskUser` question as interrupted; answer in a ne
 - Render the host's `degraded_native_context` runtime warning in the existing
   conversation activity-note presentation; leave every other runtime warning
   store-only rather than displaying raw provider diagnostics.
+- Include continuity upkeep once in message/thread totals and running cards,
+  with its own extraction-model slice. Unknown spend retains a known subtotal
+  and an explicit partial label; inference, compaction and child work are not
+  repriced at the answer model. Shaped reloads and stream replay use the same
+  browser-safe derivation. Storage-local accounting identities never reach the
+  browser, including full transcript reads.
 - Persist agents, threads, messages, structured reasoning/tool/telemetry parts,
   revisions, turns, attachments, and agent pin preferences under
   `~/.mono-agent/web`.
