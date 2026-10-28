@@ -1,7 +1,7 @@
 import type { ContinuityUpkeepReceipt } from "@mono-agent/turn/host";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, expect, it, vi } from "vitest";
@@ -35,7 +35,7 @@ async function fixture(text = "Neutral source.", count = 4) {
     await f.writer.commitContinuity({ generationId, conversationId: physical, canonicalDigest: digest }); return generationId;
   };
   const generation = await capture();
-  const db = <T>(fn: (d: DatabaseSync) => T) => { const d = new DatabaseSync(reader.databasePath); d.exec("PRAGMA foreign_keys=ON;BEGIN IMMEDIATE"); try { const result = fn(d); d.exec("COMMIT"); return result; } catch (e) { d.exec("ROLLBACK"); throw e; } finally { d.close(); } };
+  const db = <T>(fn: (d: DatabaseSync) => T) => { const d = new DatabaseSync(reader.databasePath); d.exec("PRAGMA busy_timeout=5000;PRAGMA foreign_keys=ON;BEGIN IMMEDIATE"); try { const result = fn(d); d.exec("COMMIT"); return result; } catch (e) { d.exec("ROLLBACK"); throw e; } finally { d.close(); } };
   const choose = (ordinals?: number[], physical = "fictional") => {
     const snapshot = reader.snapshotContinuity({ ...scope, currentConversationId: physical, selection: "upkeep" });
     // Explicit sparse request isolates accounting from the ranked caller policy.
@@ -44,7 +44,7 @@ async function fixture(text = "Neutral source.", count = 4) {
   const reserve = async (selection = choose(), physical = "fictional") => {
     const expected = (await f.writer.mutateUpkeep({ kind: "inspect", scope: { logicalId: "fictional", conversationId: physical } }))!;
     const fence = expected.ownerToken ? expected : (await f.writer.mutateUpkeep({ kind: "claim", expected, ownerToken: "owner" }))!;
-    const reservation: UpkeepReservation = { ...fence, operationId: randomUUID(), runId: "next", recorderNamespace: "fictional", model: "fictional:model", manifest: selection.manifest,
+    const reservation: UpkeepReservation = { ...fence, operationId: randomUUID(), runId: "next", recorderNamespace: resolve("/fictional"), model: "fictional:model", manifest: selection.manifest,
       parent: reader.ledger({ ...scope, currentConversationId: physical })?.generation.id ?? null, budget: fence.bootstrap ? "bootstrap" : "incremental", progress: selection.progress! };
     await f.writer.mutateUpkeep({ kind: "reserve", reservation }); return reservation;
   };

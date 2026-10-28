@@ -358,3 +358,10 @@ function toolHistoryAcquisitionErrorCode(error: unknown): string {
     ? candidate
     : "history_writer_unavailable";
 }
+
+/** Replay historical billing evidence at startup, regardless of feature flags. */
+export async function recoverConfiguredUpkeepAccounting(root: string, artifactRoot: string, onWarning: (message: string) => void): Promise<void> {
+  if (!new ToolHistoryReader(root).hasPendingUpkeepAccounting()) return;
+  const handle = await acquireToolHistoryWriter({ root, artifactRoot, onWarning });
+  try { await handle.writer.replayUpkeepAccounting(); } finally { await handle.release(); }
+}

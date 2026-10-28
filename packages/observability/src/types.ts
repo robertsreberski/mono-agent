@@ -409,6 +409,8 @@ export interface TimelineTurn {
 }
 
 export interface RecordedRunDetail {
+  /** Excluded upkeep evidence, NOT included in summary usage/cost. */
+  readonly upkeepAccounting?: readonly import("@mono-agent/contracts").AgentUpkeepAccounting[];
   readonly summary: RecordedRunListItem;
   readonly events: readonly RecordedRunEvent[];
   readonly warnings: readonly string[];

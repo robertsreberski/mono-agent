@@ -1,3 +1,4 @@
+import { readUpkeepAccounting } from "./upkeep-accounting.js";
 import { constants as fsConstants } from "node:fs";
 import { open, readdir, readFile, stat } from "node:fs/promises";
 import { resolve } from "node:path";
@@ -62,6 +63,7 @@ interface ParsedSummaryFile {
   readonly fileName: string;
   readonly artifactDir: string;
   readonly summary: RunSummary;
+  readonly upkeepCandidates?: readonly unknown[];
   readonly updatedAt: string;
   readonly mtimeMs: number;
 }
@@ -211,10 +213,16 @@ export async function readRecordedRun(
 
   const eventsPath = safeJoin(summary.artifactDir, `${baseName}${EVENTS_SUFFIX}`);
   const events = await readEventsFile(eventsPath, normalized, warnings);
+  const summaryAccounting = summary.upkeepCandidates;
+  const upkeepAccounting = await readUpkeepAccounting(summary.artifactDir, normalizedRunId, summary.summary.conversationId, [
+    ...(Array.isArray(summaryAccounting) ? summaryAccounting : []),
+    ...events.flatMap(event => isRecord(event.payload) && event.payload.type === "continuity_upkeep" && event.payload.accounting !== undefined ? [event.payload.accounting] : []),
+  ], warnings);
 
   return {
     summary: summaryToListItem(summary.summary, summary.updatedAt, normalized.maxStringBytes, summary),
     events,
+    ...(upkeepAccounting.length ? { upkeepAccounting } : {}),
     warnings,
   };
 }
@@ -317,6 +325,7 @@ async function readSummaryFile(
     fileName: location.relativeFileName,
     artifactDir: location.artifactDir,
     summary,
+    ...(isRecord(parsed) && Array.isArray(parsed.upkeepAccounting) ? { upkeepCandidates: parsed.upkeepAccounting } : {}),
     updatedAt: stats.mtime.toISOString(),
     mtimeMs: stats.mtimeMs,
   };

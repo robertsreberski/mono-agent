@@ -662,7 +662,7 @@ it("charges unknown upkeep full reserved input plus output, separately from know
   const price = { input: 2, output: 4 };
   const unknown = preparationUsage({ providerInvoked: true, estimatedInputTokens: 20, estimatedInputCostUsd: 0.00004 }, 64000, price);
   expect(unknown).toMatchObject({ calls: 1, estimatedInputTokens: 64000, estimatedCostUsd: null, conservativeCostUsd: 0.144384, conservativeCalls: 1 });
-  const known = preparationUsage({ providerInvoked: true, inputTokens: 100, outputTokens: 20, costUsd: 0.01 }, 128000, price);
+  const known = preparationUsage({ providerInvoked: true, inputTokens: 100, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: 20, costUsd: 0.01 }, 128000, price);
   const sum = addUsage(addUsage(emptyUsage(), known), unknown);
   expect(sum).toMatchObject({ calls: 2, estimatedCostUsd: 0.01, conservativeCostUsd: 0.144384, conservativeCalls: 1, unknownCostCalls: 1 });
   expect(addUsage(emptyUsage(), sum)).toMatchObject({ estimatedCostUsd: 0.01, conservativeCostUsd: 0.144384, unknownCostCalls: 1, unknownTokenCalls: 1 });
@@ -739,7 +739,7 @@ it("allows a released non-invoked bootstrap row before the first real bootstrap"
   const wrongBudget = structuredClone(second); wrongBudget.journal.budget = "incremental";
   expect(preparationIntegrity([first, wrongBudget])).toBe(false);
 });
-it("charges only the full reserve for a partial known-cost call and carries inclusive input into admission", () => {
+it("charges the full inclusive reserve for incomplete uncached/cache usage", () => {
   const usage = preparationUsage({ providerInvoked: true, inputTokens: 30, outputTokens: null, costUsd: 0.01 }, 128000, { input: 2, output: 4 });
   expect(usage).toMatchObject({ estimatedCostUsd: null, conservativeCostUsd: 0.272384, conservativeInputTokens: 128000 });
   expect(observedInputTokens(usage)).toBe(128000);
@@ -812,7 +812,7 @@ it("partitions every product-emitted non-success reason exactly once and rejects
   const reasons = new Set();
   for (const file of files) for (const reason of productReasonLiterals(await readFile(join(root, file), "utf8"))) reasons.add(reason);
   const degraded = new Set(["input_budget", "model_headroom", "ledger_scan_capacity", "ledger_render_budget", "ledger_payload_budget", "ledger_lineage_budget", "ledger_aggregate_capacity", "ledger_quota_budget", "source_oversized", "upkeep_dispatch_rejected", "upkeep_repeat_suppressed", "already_covered", "unchanged", "no_source", "output_aborted", "aborted", "provider_output", "empty_output", "validation_or_publication", "input_overrun", "output_overrun", "unavailable", "dispatch_or_outcome_unacknowledged"]);
-  const integrity = new Set(["disabled", "continuation_boundary", "history_unavailable", "per_message", "isolated", "unowned_store", "detached_attempt", "trigger_headroom", "ledger_integrity", "read_only", "model_unavailable", "model_identity", "cap_unsupported"]);
+  const integrity = new Set(["disabled", "continuation_boundary", "history_unavailable", "per_message", "isolated", "unowned_store", "detached_attempt", "trigger_headroom", "ledger_integrity", "read_only", "model_unavailable", "model_identity", "cap_unsupported", "namespace_invalid"]);
   const success = new Set(["completed", "analyzed"]);
   expect(reasons.size).toBeGreaterThan(30);
   for (const reason of reasons) {
@@ -840,5 +840,16 @@ it("reconciles a never-acknowledged reservation released by a later claim withou
   expect(preparationInputReserve([first, second])).toBe(64000);
   for (const mutate of [x => { x[1].journal.rows[0].operationId = "replacement"; }, x => { x[1].journal.rows[1].budget = "incremental"; }, x => { x[1].journal.rows.push({ ...boot }); }, x => { x[2].journal.rows[1].state = "released"; }]) {
     const bad = structuredClone([first, second, third]); mutate(bad); expect(preparationIntegrity(bad)).toBe(false);
+  }
+});
+
+it("counts uncached, cache-read and cache-write upkeep input toward spend admission", () => {
+  const usage = preparationUsage({ providerInvoked: true, inputTokens: 30, cacheReadTokens: 400, cacheWriteTokens: 50, outputTokens: 2, costUsd: 0.01 }, 128000, { input: 2, output: 4 });
+  expect(usage).toMatchObject({ inputTokens: 30, cacheReadTokens: 400, cacheWriteTokens: 50, conservativeInputTokens: 0, estimatedCostUsd: 0.01 });
+  expect(observedInputTokens(usage)).toBe(480);
+  for (const key of ["cacheReadTokens", "cacheWriteTokens"]) {
+    const unknown = preparationUsage({ providerInvoked: true, inputTokens: 30, cacheReadTokens: 400, cacheWriteTokens: 50, outputTokens: 2, costUsd: 0.01, [key]: null }, 128000, { input: 2, output: 4 });
+    expect(unknown[key]).toBeNull(); expect(unknown.conservativeCalls).toBe(1);
+    expect(observedInputTokens(unknown)).toBe(128000);
   }
 });

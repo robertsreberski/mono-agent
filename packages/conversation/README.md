@@ -22,6 +22,13 @@ Catalog responsibility: Composes prompt context, selected skills, runtime, memor
 
 Composition spine for an agent request. It turns a communication request into context, calls a runtime, records structured run events, updates optional memory, and returns explicit success or failure responses.
 
+Continuity upkeep's fenced operation journal also owns a transactional,
+content-free accounting outbox. Dispatch and result evidence exports to the
+originating run's recorder namespace before receipt telemetry, and pending
+exports replay on writer recovery even when continuity/upkeep is disabled.
+Startup discovery with no pending journal work is read-only and invokes no
+provider. Retention never pins source records or recreates pruned run artifacts.
+
 ## Install / Usage
 
 ```bash
@@ -888,6 +895,16 @@ checkpoint plus records cited by unresolved work) is retained. Capacity refusal
 is explicit `ERR_NATIVE_EVIDENCE_CAPTURE_LIMIT`, never truncation. A journal that
 changes between the two streamed passes is refused. These are preparation limits, not
 permission to erase oversized evidence or cold-fallback after switch intent.
+
+Enabled host upkeep requires an explicit `recorderNamespace`; disabled upkeep
+may omit it. Accounting recovery runs independently of admission replies with
+bounded batches and timed retries. Pending work is diagnostic-only, not a warning;
+readiness warns once per process about terminal failures or counted evidence loss.
+Metadata-write failures back off exponentially from one second to 60 seconds.
+Terminal failed rows are capped at 128 and reclaimed with their operation, with
+loss counted before removal. Export metadata uses
+the same secure-journal transaction as ordinary history writes; close abandons
+queued work and bounds the in-flight wait, leaving durable evidence for recovery.
 
 ## Public API
 

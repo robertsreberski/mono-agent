@@ -150,6 +150,28 @@ export async function pruneRunArtifacts(options: PruneRunArtifactsOptions): Prom
     }
   }
 
+  // Summary first, then one companion sweep per namespace. Exporters recheck
+  // origin after writing, so late exports cannot recreate a pruned run. Also
+  // retry orphan cleanup after a crash or a previous companion deletion error.
+  for (const kind of normalized.scope === "memory" ? ["memory"] as const : normalized.scope === "all" ? ["agent", "memory"] as const : ["agent"] as const) {
+    const directory = artifactDirForKind(normalized.artifactDir, kind);
+    let names: string[];
+    try { names = await readdir(directory); } catch (error) {
+      if (!isErrno(error, "ENOENT")) warnings.push("Unable to sweep upkeep companions.");
+      continue;
+    }
+    for (const name of names) {
+      if (normalized.shouldContinue?.() === false) break;
+      if (!/\.upkeep\.[a-f0-9]{64}\.(dispatch|result)\.json(?:\..+\.tmp)?$/u.test(name)) continue;
+      const summaryPath = join(directory, `${name.slice(0, name.lastIndexOf(".upkeep."))}${SUMMARY_SUFFIX}`);
+      if (!normalized.dryRun || !removedFilePaths.includes(summaryPath)) {
+        try { await lstat(summaryPath); continue; } catch (error) { if (!isErrno(error, "ENOENT")) { warnings.push("Unable to inspect upkeep origin during retention."); continue; } }
+      }
+      const path = join(directory, name), removal = await removeArtifactFile(path, normalized.dryRun, warnings);
+      if (removal.removed) removedFilePaths.push(path);
+    }
+  }
+
   const toolOutput = normalized.scope === "memory"
     ? emptyToolOutputRetentionResult()
     : await pruneToolOutputDirectories(normalized, protectedToolOutputDirectoryNames, warnings);

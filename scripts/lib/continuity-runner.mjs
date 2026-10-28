@@ -581,12 +581,12 @@ export function verifyLedgerTreatment(upkeep, observed) {
 export function preparationUsage(receipt, inputReserve, price, outputReserve = 4096) {
   const calls = receipt?.providerInvoked || receipt?.status === "uncertain" ? 1 : 0;
   const finite = value => typeof value === "number" && Number.isFinite(value) && value >= 0;
-  const unknown = !!calls && ![receipt?.inputTokens, receipt?.outputTokens, receipt?.costUsd].every(finite);
+  const unknown = !!calls && ![receipt?.inputTokens, receipt?.cacheReadTokens, receipt?.cacheWriteTokens, receipt?.outputTokens, receipt?.costUsd].every(finite);
   const conservative = unknown && finite(price?.input) && finite(price?.output)
     ? (inputReserve * price.input + outputReserve * price.output) / 1_000_000 : unknown ? null : 0;
   return { calls, inputTokens: calls ? receipt?.inputTokens ?? null : 0, outputTokens: calls ? receipt?.outputTokens ?? null : 0,
     estimatedInputTokens: calls ? unknown ? inputReserve : receipt?.estimatedInputTokens ?? null : 0,
-    cacheReadTokens: 0, cacheWriteTokens: 0, estimatedCostUsd: calls ? unknown ? null : receipt.costUsd : 0,
+    cacheReadTokens: calls ? receipt?.cacheReadTokens ?? null : 0, cacheWriteTokens: calls ? receipt?.cacheWriteTokens ?? null : 0, estimatedCostUsd: calls ? unknown ? null : receipt.costUsd : 0,
     conservativeInputTokens: unknown ? inputReserve : 0,
     conservativeCostUsd: conservative, conservativeCalls: unknown ? 1 : 0,
     unpricedConservativeCalls: unknown && conservative === null ? 1 : 0 };

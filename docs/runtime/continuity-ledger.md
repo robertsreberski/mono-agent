@@ -363,9 +363,10 @@ affected state before rebuilding, after preserving any needed diagnostics.
 ## Measurement boundary
 
 See the [ledger benchmark arm](/runtime/continuity-benchmark/#progressive-ledger-boundaries).
-This slice provides host receipts and benchmark upkeep accounting, **not** merged
-answer/upkeep billing reconciliation, cancellation/restart-complete accounting,
-default-on upkeep, or a general claim of paid quality improvement. Those require subsequent evaluation and implementation.
+This slice provides host receipts, benchmark upkeep accounting and separate durable
+upkeep evidence, **not** inclusive answer/upkeep run or session totals, complete
+host receipt forwarding, default-on upkeep, or a general claim of paid quality
+improvement. Those require subsequent evaluation and implementation.
 
 Validation and publication failures carry an allowlisted, content-free `failure`
 code in the upkeep receipt and warning `error_code`: JSON/schema/coverage,
@@ -404,8 +405,42 @@ can release a committed barrier. Generic errors and cancellation are not proof.
 Provider outcome and available usage, including separate cache counters, commit
 before ledger publication and before the result receipt. The journal retains the
 originating run, recorder namespace, extraction model, source/parent manifest and
-budget kind. Missing terminal evidence means unknown usage/cost, never zero;
-accounting export/reconciliation is a separate follow-up capability.
+budget kind. Missing terminal evidence means unknown usage/cost, never zero.
+
+A transactional accounting outbox exports content-free `AgentUpkeepAccounting` v1
+companions under the originating run's recorder namespace. Dispatch uncertainty
+and terminal results have distinct immutable identities; readers merge by
+operation ID, with result precedence. Uncached input, cache read, cache write and
+output counters stay separate and nullable; estimates never become billed usage.
+Pending exports replay on startup/writer recovery even when upkeep is disabled,
+without invoking a provider or charging a new answer. With no pending journal
+work, startup discovery is read-only. Permanent parse/identity/origin/companion
+failures are terminal degraded records, not startup work. Transient I/O failures
+retry at most three times with exponential backoff starting at one second;
+recovery batches are capped at 32 rows. Due recovery continues in cooperative
+200 ms slices independently of readiness. An unreferenced timer services later
+retries and is cancelled on close. Failed metadata-write slices back off from one
+second exponentially up to 60 seconds, even when new work is scheduled. Mutation
+exports target their own queued phase before sweeping other due work,
+independently of admission replies. A not-yet-written origin stays pending within those retry bounds. Only an origin durably observed and then
+removed is pruned. Invalid or non-normalized recorder namespaces are rejected
+before admission and reported as a one-shot `namespace_invalid` configuration
+warning, not a permanent row for every boundary. Enabled host upkeep requires an
+explicit namespace at the type boundary too. Accounting warnings are deduplicated
+per process. Failed rows are removed when their operation is gone, and capped at
+128 oldest-first, with content-free loss counts recorded before either kind of
+reclamation. Readiness warns only about terminal failures or counted loss.
+Pending and never-attempted rows, including transient exports, are diagnostics-only
+and recover without warnings. An actual metadata transaction failure is reported
+once, separately from normal pending work. All metadata writes use the secure
+journal transaction and busy deadline. Close skips queued jobs and bounds the in-flight export wait to at
+most one second (less if the host's remaining close budget requires it), leaving
+durable work for recovery before releasing ownership.
+`RunHistory` inspection surfaces applicable degraded artifact warnings too.
+Artifact retention removes companions with their origin run; late exports never
+recreate pruned runs. Readers expose this as
+separate, explicitly non-aggregate `upkeepAccounting` evidence. Existing run and
+session usage/cost totals are unchanged and remain inference-only.
 
 **Bootstrap marker lifetime:** quota pressure, source retention, ledger eviction,
 restart and model changes do not clear it. Only explicit user reset/delete of the

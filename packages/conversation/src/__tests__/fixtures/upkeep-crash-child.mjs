@@ -1,3 +1,4 @@
+import { resolve } from "node:path";
 import { ToolHistoryWriter } from "../../../dist/tool-history/writer.js";
 import { createDurableHistoryStore } from "../../../dist/history/canonical/store.js";
 import { DatabaseSync } from "node:sqlite";
@@ -16,7 +17,7 @@ const fence = await turn.withContinuityOwner(async ownerToken => {
   return await writer.mutateUpkeep({ kind: "claim", expected, ownerToken });
 });
 const reservation = { databaseId: fence.databaseId, ...scope, incarnation: fence.incarnation, fence: fence.fence, ownerToken: fence.ownerToken,
-  operationId: `operation-${phase}`, runId: "origin-run", recorderNamespace: "fictional-recorder", model: "fictional:base", manifest: "a".repeat(64), parent: null,
+  operationId: `operation-${phase}`, runId: "origin-run", recorderNamespace: resolve("/fictional-recorder"), model: "fictional:base", manifest: "a".repeat(64), parent: null,
   budget: fence.bootstrap ? "bootstrap" : "incremental" };
 let fetches = 0;
 globalThis.fetch = async () => { fetches++; return new Response("{}"); };

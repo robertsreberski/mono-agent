@@ -97,6 +97,35 @@ stream.
 | `src/artifact-retention.ts` / `src/tool-output-path.ts` | Terminal-run and raw tool-output retention with shared canonical containment and run-directory naming. |
 | `src/trace-sources.ts` | File-backed source manifests, heartbeat updates, discovery, and per-source run reads. |
 
+### Separate upkeep evidence
+
+`readRecordedRun().upkeepAccounting` exposes validated, non-aggregate continuity
+upkeep evidence. Immutable `<run>.upkeep.<operation-hash>.dispatch.json` and
+`.result.json` companions belong to the originating recorder namespace. Readers
+merge companions, accounting envelopes in events, and legacy summary views by
+operation ID; a result wins over dispatch uncertainty regardless of write order.
+Unknown counters and cost remain null. Existing summary usage/cost and session
+totals remain inference-only; this separate evidence is **not** included in them.
+
+Exports never create run summaries or namespaces. Retention deletes the origin
+summary before companions; exporters recheck the origin after writing, preventing
+late recovery from recreating a pruned run. A not-yet-observed origin stays
+pending, never pruned; the outbox durably records whether an origin was seen. Only a previously observed, now missing origin counts
+as pruned. Permanent validation/identity failures are terminal degraded records.
+Transient failures have three attempts with exponential backoff (starting at one
+second), and recovery batches contain at most 32 rows. They then become terminal
+failures, never zero cost. The host services due batches and timed retries without
+blocking readiness. Failed rows are bounded to 128, evicted oldest-first with a
+content-free loss count, and removed once their operation is gone. Orphan failure
+loss is counted before removal too. Normal pending work is diagnostic-only;
+readiness warnings cover terminal failures and counted loss, once per process.
+An invalid namespace does not add a row per boundary. Metadata-write failures
+back off exponentially from one second to 60 seconds and are reported once.
+Export I/O runs separately from admission replies and has a bounded close drain;
+all outbox writes use the host's secure journal transaction.
+These degradation diagnostics also appear as artifact warnings in `RunHistory`
+inspection when the applicable run evidence is degraded.
+
 ### Recorder checkpoints and reads
 
 The JSONL recorder writes an initial `running` snapshot, then schedules a
@@ -275,7 +304,9 @@ TraceSourceRegistryErrorDetails
 TraceSourceRegistryOptions
 TraceSourceStatus
 UpdateTraceSourceOptions
+UpkeepAccountingExportError
 VisibleTextSanitizationOptions
+assertUpkeepAccountingNamespace
 auditRecordedRuns
 cacheUsageMetrics
 canonicalToolArtifactRoot
@@ -285,6 +316,7 @@ createCompositeRunRecorder
 createJsonlRunRecorder
 deriveRunSource
 describeRunFailureKind
+exportUpkeepAccounting
 isKnownArtifactFailureKind
 isSafeRunId
 listRecordedRuns

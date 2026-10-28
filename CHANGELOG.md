@@ -24,6 +24,19 @@
   downgrade, and preserve identifier roles with bounded, verified cited context.
   Integrity errors still reject the whole response; upkeep remains opt-in.
 
+- Bound continuity accounting retries and keep slow exports off admission replies.
+  Preserve pending origins until observed, reject invalid recorder namespaces
+  before admission, and include upkeep cache categories in benchmark spend gates.
+  Deduplicate degradation notices, bound failed evidence, service timed retries,
+  and keep secure-journal writes and graceful ownership release during shutdown.
+  Back off storage-write failures, keep recoverable pending work warning-free,
+  and acknowledge active recovery requests before closing the writer.
+
+- Add separate, content-free continuity upkeep accounting with durable journal
+  recovery, immutable per-operation companions and origin-run retention. Keep
+  cache categories and unknown usage distinct; existing run/session totals remain
+  inference-only and upkeep remains disabled by default.
+
 - Rank complete bounded history scans for opt-in continuity upkeep, greedily fit
   cited-only ledger deltas, and allow valid uncited evidence one remaining offer
   within the shared two-offer ceiling. Keep scan exhaustion zero-call and the

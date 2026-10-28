@@ -1,3 +1,4 @@
+import { pruneFailedUpkeepAccounting } from "./accounting-outbox.js";
 import type { DatabaseSync } from "node:sqlite";
 import type { LedgerGeneration } from "./ledger.js";
 import type { LedgerCursor, LedgerProgress } from "../tool-history/continuity-contracts.js";
@@ -84,6 +85,7 @@ export function reclaimProgress(db: DatabaseSync, logicalId: string, conversatio
     AND (json_type(reservation,'$.progress') IS NOT NULL OR json_extract(reservation,'$.purged')=1)
     AND operation_id NOT IN (SELECT operation_id FROM continuity_upkeep_operations WHERE logical_id=? AND conversation_id=? ORDER BY rowid DESC LIMIT 64)`)
     .run(logicalId, conversationId, logicalId, conversationId);
+  pruneFailedUpkeepAccounting(db);
   if (!db.prepare("SELECT 1 FROM sqlite_master WHERE name='continuity_records'").get() || !db.prepare("SELECT 1 FROM sqlite_master WHERE name='continuity_upkeep_offers'").get()) return;
   db.prepare(`DELETE FROM continuity_upkeep_offers WHERE logical_id=? AND conversation_id=? AND state<>'uncertain' AND NOT EXISTS
     (SELECT 1 FROM continuity_records r WHERE r.ordinal=continuity_upkeep_offers.ordinal AND r.retained_text IS NOT NULL AND r.text_sha256=continuity_upkeep_offers.source_digest)`)
@@ -170,6 +172,8 @@ export function representProgress(db: DatabaseSync, generation: LedgerGeneration
 export function upkeepBytes(db: DatabaseSync): number {
   let bytes = 0;
   for (const [table, columns, fixed] of [
+    ["continuity_upkeep_accounting", "operation_id,phase,payload,exported,error", 64],
+    ["continuity_upkeep_accounting_counters", "key,value", 32],
     ["continuity_upkeep_operations", "operation_id,logical_id,conversation_id,incarnation,owner_token,reservation,selection_key,budget,state,outcome", 72],
     ["continuity_upkeep_offers", "logical_id,conversation_id,incarnation,span_key,source_digest,operation_id,state,ledger_id", 104],
     ["continuity_upkeep_progress", "logical_id,conversation_id,incarnation,cursor", 64],
@@ -213,6 +217,7 @@ export function reclaimUpkeepQuota(db: DatabaseSync, fits: () => boolean): void 
     const working = offers && !!db.prepare("SELECT 1 FROM continuity_upkeep_offers WHERE logical_id=? AND conversation_id=?").get(...args);
     if (offers) compactRetired(db, scope.logical_id, scope.conversation_id);
     const removed = db.prepare("DELETE FROM continuity_upkeep_operations WHERE logical_id=? AND conversation_id=? AND state IN ('terminal','released')").run(...args).changes;
+    pruneFailedUpkeepAccounting(db);
     // Packed tuples intentionally carry no operation IDs. Expire the settled
     // owner before forgetting its journal, so a delayed reserve+dispatch replay
     // cannot recreate a purchase under the same fence after compaction.

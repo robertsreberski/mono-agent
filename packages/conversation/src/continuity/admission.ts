@@ -1,3 +1,5 @@
+import { createUpkeepAccountingSchema, queueUpkeepAccounting, upkeepAccounting, pruneFailedUpkeepAccounting } from "./accounting-outbox.js";
+import { assertUpkeepAccountingNamespace } from "@mono-agent/observability";
 import { initializeLedgerProgress } from "./ledger-storage.js";
 import type { LedgerProgress } from "../tool-history/continuity-contracts.js";
 import { createProgressSchema, dispatchProgress, reclaimProgress } from "./progress.js";
@@ -57,6 +59,7 @@ export function createUpkeepSchema(db: DatabaseSync): void {
       reservation TEXT NOT NULL, selection_key TEXT NOT NULL, budget TEXT NOT NULL,
       state TEXT NOT NULL, outcome TEXT);
     CREATE INDEX IF NOT EXISTS continuity_upkeep_scope_operations ON continuity_upkeep_operations(logical_id,conversation_id,incarnation);`);
+  createUpkeepAccountingSchema(db);
   createProgressSchema(db);
   if (!db.prepare("SELECT 1 FROM continuity_upkeep_migrations WHERE version=4").get()) {
     for (const row of db.prepare("SELECT operation_id,reservation FROM continuity_upkeep_operations").all() as Row[]) {
@@ -127,9 +130,12 @@ export function mutateUpkeep(db: DatabaseSync, root: string, request: UpkeepMuta
     dispatchProgress(db, { ...request.fence, operationId: request.operationId, progress: request.progress }, "oversized", request.advance); return null;
   }
   const r = request.reservation, scope = assertUpkeepFence(db, root, r), serialized = serializeReservation(r);
-  if (Buffer.byteLength(JSON.stringify(r)) > 131072 || !r.operationId || !r.runId || !r.recorderNamespace || !r.model || !/^[a-f0-9]{64}$/u.test(r.manifest)) fail();
+  if (Buffer.byteLength(JSON.stringify(r)) > 131072 || !r.operationId || !r.runId || !r.model || !/^[a-f0-9]{64}$/u.test(r.manifest)) fail();
   if (r.payloadReserve !== undefined && (!Number.isSafeInteger(r.payloadReserve) || r.payloadReserve < 0 || r.payloadReserve > 131072)) fail();
   if (request.kind === "reserve") {
+    // Validate the exact accounting identity before buying an admission slot.
+    try { assertUpkeepAccountingNamespace(r.recorderNamespace); } catch { throw new LedgerError("namespace_invalid"); }
+    upkeepAccounting(r);
     const old = db.prepare("SELECT reservation FROM continuity_upkeep_operations WHERE operation_id=?").get(r.operationId) as Row | undefined;
     if (old) { const stored = JSON.parse(old.reservation); if (stored.reservationIdentity !== reservationIdentity(r) || !contentMatches(stored, r)) fail(); return null; }
     reclaimProgress(db, r.logicalId, r.conversationId);
@@ -159,6 +165,7 @@ export function mutateUpkeep(db: DatabaseSync, root: string, request: UpkeepMuta
       db.prepare("UPDATE continuity_upkeep_admissions SET bootstrap_operation=? WHERE logical_id=? AND conversation_id=?").run(r.operationId, r.logicalId, r.conversationId);
     }
     try { dispatchProgress(db, r); } catch { throw new LedgerError("upkeep_dispatch_rejected"); }
+    queueUpkeepAccounting(db, upkeepAccounting(r));
     db.prepare("UPDATE continuity_upkeep_operations SET state='dispatch_started' WHERE operation_id=?").run(r.operationId);
     return null;
   }
@@ -173,10 +180,12 @@ export function mutateUpkeep(db: DatabaseSync, root: string, request: UpkeepMuta
     db.prepare("UPDATE continuity_upkeep_offers SET state=CASE WHEN ? THEN CASE WHEN offer_count<2 THEN 'reofferable' ELSE 'analyzed' END ELSE 'failed' END WHERE operation_id=? AND state IN ('pending','pending_retry')").run(Number(request.retry === true), r.operationId); return null;
   }
   if (request.receipt.operationId !== r.operationId || request.receipt.model !== r.model) fail();
+  const accounting = upkeepAccounting(r, request.receipt);
   const outcome = JSON.stringify(request.receipt);
   if (Buffer.byteLength(outcome) > 16384) fail();
   if (row.outcome !== null) { if (row.outcome !== outcome) fail(); return null; }
   if (row.state !== "dispatch_started") fail();
+  queueUpkeepAccounting(db, accounting);
   const released = !request.receipt.providerInvoked && request.receipt.status === "skipped" && NON_INVOCATION.has(request.receipt.reason);
   db.prepare("UPDATE continuity_upkeep_operations SET state=?,outcome=? WHERE operation_id=?").run(released ? "released" : request.receipt.providerInvoked ? "terminal" : "uncertain", outcome, r.operationId);
   if (released) {
@@ -200,6 +209,7 @@ export function resetUpkeep(db: DatabaseSync, kind: "logical" | "physical", id: 
     if (db.prepare("SELECT 1 FROM sqlite_master WHERE name=?").get(table)) db.prepare(`DELETE FROM ${table} WHERE ${column}=?`).run(id);
   }
   db.prepare(`DELETE FROM continuity_upkeep_operations WHERE ${column}=?`).run(id);
+  pruneFailedUpkeepAccounting(db);
   db.prepare(`DELETE FROM continuity_upkeep_admissions WHERE ${column}=?`).run(id);
   db.prepare(`UPDATE continuity_upkeep_scopes SET incarnation=?,fence=fence+1,owner_token='' WHERE ${column}=?`).run(randomUUID(), id);
   db.prepare(`INSERT INTO continuity_upkeep_admissions SELECT logical_id,conversation_id,incarnation,NULL FROM continuity_upkeep_scopes WHERE ${column}=?`).run(id);

@@ -10,6 +10,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import * as z from "zod/v4";
 import { createModels, fauxProvider, fauxAssistantMessage, fauxText, fauxToolCall } from "@earendil-works/pi-ai";
+import { readRecordedRun } from "@mono-agent/observability";
 import { createMonoRuntime } from "@mono-agent/turn/host";
 import { resolveJsonMonoAgentConfig } from "@mono-agent/config";
 import { acquireToolHistoryWriter, createDurableHistoryStore } from "@mono-agent/conversation";
@@ -80,6 +81,7 @@ try {
       metadata: { source: "web", web: { model, ownerText: text } }, abortSignal: new AbortController().signal,
       onEvent: event => events.push(event) });
     assert.equal(result.failure, undefined, JSON.stringify(result.failure));
+    return result;
   };
   await run(rule, [() => fauxAssistantMessage([fauxToolCall("mail_draft", { draft: "DRAFT-43" }), fauxToolCall("mail_send", { draft: "DRAFT-42" }), ...(ledgerMode ? [fauxToolCall("fixture_lookup", { query: "fictional" })] : [])]), () => fauxAssistantMessage([fauxText("Fictional send recorded.")])]);
   // 33 completed pairs put the rule and effect outside canonical's 64 messages.
@@ -88,7 +90,7 @@ try {
   assert.equal(canonical.length, 64);
   assert.ok(canonical.every(message => !message.content.includes(rule)));
   events.length = 0;
-  await run("CURRENT-FICTIONAL-COLD-INPUT", [request => { context.push(structuredClone(request)); return fauxAssistantMessage([fauxText("Fictional cold reply.")]); }], "faux:other");
+  const cold = await run("CURRENT-FICTIONAL-COLD-INPUT", [request => { context.push(structuredClone(request)); return fauxAssistantMessage([fauxText("Fictional cold reply.")]); }], "faux:other");
   const messages = context[0].messages;
   const packs = messages.filter(message => JSON.stringify(message).includes("### Conversation continuity pack"));
   assert.equal(packs.length, 1);
@@ -108,6 +110,11 @@ try {
   assert.equal(receipt.ownerDeduped, 32); assert.equal(receipt.toolReserved, ledgerMode ? 3 : 2);
   if (ledgerMode) {
     assert.equal(upkeepCalls, 1);
+    const recorded = await readRecordedRun({ artifactDir: join(root, "artifacts") }, cold.metadata.runId);
+    assert.equal(recorded.upkeepAccounting.length, 1);
+    assert.equal(recorded.upkeepAccounting[0].model, "faux:base");
+    assert.equal(recorded.upkeepAccounting[0].phase, "result");
+    assert.equal(recorded.upkeepAccounting[0].usageIncluded, false);
     const upkeep = events.filter(event => event.type === "continuity_upkeep"); assert.equal(upkeep.length, 1);
     assert.equal(upkeep[0].status, failUpkeep ? "invalid" : "valid");
     assert.equal(receipt.ledgerEntries > 0, !failUpkeep);
@@ -116,7 +123,7 @@ try {
     else assert.equal(receipt.degradedReason, "upkeep_gap");
   }
   console.log(JSON.stringify({ ledgerMode, failUpkeep, upkeepCalls, proof: "built-configured-cold-provider-request", turns: 35, effects, drafts, packs: packs.length,
-    currentInputs: 1, ruleOutsideWindow: true, toolState: "success", delivery: "MESSAGE-42", ...receipt }));
+    currentInputs: 1, ruleOutsideWindow: true, toolState: "success", delivery: "MESSAGE-42", accountingCompanions: ledgerMode ? 1 : 0, ...receipt }));
 } finally {
   await harness?.dispose?.(); await runtime.disposeAllSessions?.(); await lease?.release();
   await Promise.all([...servers].map(server => server.close()));
