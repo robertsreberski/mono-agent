@@ -45,9 +45,10 @@ node scripts/continuity-holdout-overlap.mjs \
   --allowlist /external/allowlist.json --output /external/overlap-run
 ```
 
-The JSON report covers authored narrative fields (including unused cases), all
+The JSON report covers authored narrative fields (including unused cases), rendered
+titles and owner names, all
 rendered histories, and exact reader probe text. It compares against every string
-and joined template literal in the development generator and production ledger
+and joined template literal in the development generator, original checked-in suite string values, and production ledger
 and ranking sources, using shared AST extraction and normalization. Narrative
 values are compared, not schema keys or tool names. The two checks are raw
 seven-word runs and function-word-stripped content trigrams. A non-allowlisted
@@ -57,9 +58,11 @@ is not proof of conceptual independence.
 
 ## Freeze and verify
 
-Use a clean, merged tooling revision for real registration. Freeze recomputes
+Freeze only after all loader/controller tooling has merged. Freeze and verify
+reject tracked or untracked dirt (gitignored artifacts are excluded). Freeze recomputes
 and requires an exactly matching passing overlap report; stale reports fail.
 The destination must be new and outside the checkout, including through symlinks.
+The spec directory and every input file must also be outside the checkout.
 All file writes are exclusive. A failed freeze may leave a partial directory;
 it is not valid without a verified manifest and must not be reused.
 
@@ -82,10 +85,14 @@ newline for files. Semantic input digests hash canonical JSON without a newline;
 `files` entries hash actual bytes, including the newline. The manifest binds the
 merged canonical spec, group and per-case seeds, frozen mixture, each conversation
 and answer-key file, rubric, protocol, allowlist, overlap report, generator and
-supporting tooling snapshots, and Git revision. Raw author formatting is not
+supporting benchmark/tooling snapshots, Git revision for audit, Node version,
+lockfile SHA-256 and resolved TypeScript version. All tracked continuity benchmark
+modules, entrypoints, development fixtures and holdout scripts are bound, including
+subsequent loader/controller additions. Raw author formatting is not
 part of the merged spec digest. No timestamps or caller paths enter the freeze.
 Verify checks every artifact and the externally pinned manifest, rejects extra
-files/symlinks, and checks current tooling bytes and revision. Changing corpus,
-scoring, reference sources or tooling requires a new registration.
+files/symlinks, and checks the current bound-file inventory/content, lockfile,
+TypeScript version and Node major version. An unrelated descendant commit is
+allowed; changing bound content or runtime provenance requires a new registration.
 
 No model execution or quality/acceptance claim follows from a successful freeze.

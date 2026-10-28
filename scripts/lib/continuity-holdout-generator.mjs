@@ -2,6 +2,7 @@
 import { readFile, realpath, lstat } from "node:fs/promises";
 import { resolve, dirname, basename } from "node:path";
 import { canonicalJson, digest, sourceOnly, validateTrace } from "./continuity-dataset.mjs";
+import { externalDirectory } from "./continuity-holdout-files.mjs";
 import { validateProbeScore, compactIdentifier } from "./continuity-score.mjs";
 
 export const HOLDOUT_VERSION = "holdout-generator-v1";
@@ -46,7 +47,7 @@ function bindingsFor(family, item) { return { ...family.entities, ...family.voca
 
 /** Directory loading is data-only. No overlap sources or rendering are consulted. */
 export async function loadHoldoutSpec(directory) {
-  const dir = await realpath(directory);
+  const dir = await realpath(await externalDirectory(directory));
   const read = async name => {
     need(typeof name === "string" && /^[a-zA-Z0-9_-]+\.json$/u.test(name) && basename(name) === name, "invalid_spec_filename");
     const path = resolve(dir, name);
@@ -90,7 +91,7 @@ export function validateHoldoutSpec(spec) {
     slots(family.entities); slots(family.vocabulary);
     need(Object.keys(family.entities).every(k => !Object.hasOwn(family.vocabulary, k)), "duplicate_slot");
     keys(family.templates, ["owner", "assistant", "toolBody"]);
-    Object.values(family.templates).forEach(v => strings(v, 2));
+    for (const [key, value] of Object.entries(family.templates)) strings(value, key === "toolBody" ? 8 : 2);
     need(Array.isArray(family.cases) && family.cases.length >= family.count, "insufficient_cases");
     for (const item of family.cases) {
       keys(item, ["id", "title", "owner", "bindings", "turnCount", "toolCount", "sessions", "midpoint", "events", "probes", "features", "unstated"]);
@@ -136,7 +137,9 @@ export function validateHoldoutSpec(spec) {
         need(probe.category === category && probe.score?.kind === kind && probe.abstainOption === ![4, 14].includes(i), "invalid_probe_allocation");
         text(probe.question); need(probe.question.length >= 10, "invalid_question"); if (probe.format !== undefined) text(probe.format);
         const fields = SCORE_FIELDS[kind]; keys(probe.score, ["kind", ...fields], ["kind", ...fields.filter(k => k !== "reject")]);
-        validateProbeScore(probe);
+        try { validateProbeScore(probe); } catch { fail("invalid_probe_score"); }
+        if (i === 2) need(Array.isArray(probe.score.reject) && probe.score.reject.length > 0, "missing_identifier_decoy");
+        if (kind === "identifier") need((probe.score.reject ?? []).every(v => !probe.score.accept.some(a => compactIdentifier(a) === compactIdentifier(v))), "identifier_decoy_conflict");
         if (kind === "choice") need(new Set(probe.score.options).size === probe.score.options.length, "duplicate_choice");
         need(Array.isArray(probe.evidence) && probe.evidence.every(index => events.has(index))
           && (kind === "abstain" ? probe.evidence.length === 0 : probe.evidence.length > 0), "invalid_probe_evidence");
@@ -177,19 +180,23 @@ export function selectHoldoutCases(spec, seeds) {
 }
 
 // Fill a byte range with whole UTF-8 code points; authored evidence is never truncated.
-function fill(bytes, sentence) {
+function fill(bytes, nextUnit) {
   need(bytes >= 0, "result_facts_do_not_fit");
-  const unit = Buffer.from(sentence + "\n"); need(unit.length > 1, "empty_filler");
-  const whole = Math.floor(bytes / unit.length), remainder = bytes % unit.length;
-  let tail = "";
-  for (const char of sentence + "\n") { if (Buffer.byteLength(tail + char) > remainder) break; tail += char; }
-  return (sentence + "\n").repeat(whole) + tail + " ".repeat(remainder - Buffer.byteLength(tail));
+  const parts = [];
+  while (bytes > 0) {
+    const unit = nextUnit() + "\n", size = Buffer.byteLength(unit);
+    if (size <= bytes) { parts.push(unit); bytes -= size; continue; }
+    let tail = "";
+    for (const char of unit) { if (Buffer.byteLength(tail + char) > bytes) break; tail += char; }
+    parts.push(tail, " ".repeat(bytes - Buffer.byteLength(tail))); bytes = 0;
+  }
+  return parts.join("");
 }
-function resultBody(tool, filler) {
+function resultBody(tool, nextUnit) {
   const head = tool.head.join("\n") + "\n", middle = tool.middle.join("\n") + "\n", tail = "\n" + tool.tail.join("\n");
   const half = Math.floor(tool.bytes / 2);
-  return head + fill(half - Buffer.byteLength(head), filler) + middle
-    + fill(tool.bytes - half - Buffer.byteLength(middle + tail), filler) + tail;
+  return head + fill(half - Buffer.byteLength(head), nextUnit) + middle
+    + fill(tool.bytes - half - Buffer.byteLength(middle + tail), nextUnit) + tail;
 }
 const turnId = i => `t${String(i + 1).padStart(3, "0")}`;
 
@@ -227,7 +234,7 @@ export function generateHoldoutTrace(family, item, seed) {
   const turns = raw.map((e, i) => ({
     id: turnId(i), at: new Date(epoch + Math.floor(i * c.sessions / c.turnCount) * 86400000 + i * 60000).toISOString(), user: e.owner,
     steps: [...(e.tool ? [{ ...(e.aside ? { say: e.aside } : {}), call: { tool: OPERATIONS[e.tool.operation], args: e.tool.args,
-      result: resultBody(e.tool, pick(templates.toolBody)) }, ...(e.interruption ? { steer: e.interruption } : {}) }] : []), { reply: e.assistant }],
+      result: resultBody(e.tool, () => substitute(pick(family.templates.toolBody), bindings)) }, ...(e.interruption ? { steer: e.interruption } : {}) }] : []), { reply: e.assistant }],
   }));
   const trace = { id: c.id, title: c.title, fictional: true, family: "long", owner: { displayName: c.owner },
     generated: { generator: HOLDOUT_VERSION, seed, scenario: family.id, group: family.group },
@@ -262,9 +269,13 @@ export function generateHoldoutTrace(family, item, seed) {
       const offset = Buffer.byteLength(tool.result.slice(0, location));
       if (i === 1) need(offset > 16384 && Math.abs(offset - Buffer.byteLength(tool.result) / 2) < 2048, "identifier_not_in_middle");
       if (i === 2) need(offset < 2048 && Buffer.byteLength(tool.result) > 16384, "identifier_not_in_head");
-      if (i === 0) need(turns.every((t, index) => index === c.probes[i].source || !compactIdentifier(canonicalJson(t)).includes(compactIdentifier(value))), "early_identifier_repeated");
+      const compact = compactIdentifier(value), result = compactIdentifier(tool.result);
+      need(result.indexOf(compact) === result.lastIndexOf(compact) && turns.every((t, index) => index === c.probes[i].source
+        || !compactIdentifier(canonicalJson(t)).includes(compact)), "identifier_repeated");
     }
   }
+  const decoyHistory = compactIdentifier(canonicalJson(turns.filter((_, i) => i !== c.probes[2].source)));
+  need(trace.probes[2].score.reject.every(value => decoyHistory.includes(compactIdentifier(value))), "identifier_decoy_missing");
   return trace;
 }
 

@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import { resolve } from "node:path";
 import { grams, wordRuns, literals } from "./continuity-overlap-text.mjs";
 import { generateHoldout } from "./continuity-holdout-generator.mjs";
@@ -12,7 +12,13 @@ const modes = { raw7: text => wordRuns(text, 7, false), content3: text => grams(
 const strings = value => typeof value === "string" ? [value] : Array.isArray(value) ? value.flatMap(strings)
   : value && typeof value === "object" ? Object.values(value).flatMap(strings) : [];
 export async function overlapSources() {
-  return Promise.all(SOURCE_PATHS.map(async name => ({ name, text: await readFile(resolve(CHECKOUT, name), "utf8") })));
+  const code = await Promise.all(SOURCE_PATHS.map(async name => ({ name, text: await readFile(resolve(CHECKOUT, name), "utf8") })));
+  const directory = "scripts/fixtures/continuity";
+  const fixtures = await Promise.all((await readdir(resolve(CHECKOUT, directory))).filter(name => name.endsWith(".json")).sort().map(async name => {
+    const text = await readFile(resolve(CHECKOUT, directory, name), "utf8");
+    return { name: `${directory}/${name}`, text, values: strings(JSON.parse(text)) };
+  }));
+  return [...code, ...fixtures];
 }
 export function validateAllowlist(allowlist) {
   if (allowlist?.schema !== "holdout-overlap-allowlist-v1" || !Array.isArray(allowlist.entries)
@@ -36,9 +42,9 @@ export function specNarratives(spec) {
     ...c.probes.flatMap(p => [p.question, p.format, ...strings(p.score).filter(v => v !== p.score.kind)])]),
   ]).filter(v => typeof v === "string" && !TOOL_NAMES.includes(v));
 }
-function traceNarratives(trace) {
-  return trace.turns.flatMap(t => [t.user, ...t.steps.flatMap(s => [s.reply, s.say, s.steer, s.call?.result, ...strings(s.call?.args)])])
-    .filter(v => typeof v === "string").concat(trace.probes.map(probePrompt));
+export function traceNarratives(trace) {
+  return [trace.title, trace.owner.displayName, ...trace.turns.flatMap(t => [t.user, ...t.steps.flatMap(s => [s.reply, s.say, s.steer, s.call?.result, ...strings(s.call?.args)])])
+    .filter(v => typeof v === "string"), ...trace.probes.map(probePrompt)];
 }
 
 /** Pure matcher seam also exercises planted negative controls without rendering a real corpus. */
@@ -46,7 +52,7 @@ export function overlapMatcher(sources, allowlist) {
   validateAllowlist(allowlist);
   const exceptions = new Map(allowlist.entries.map(e => [`${e.mode}:${e.phrase}`, e]));
   const indexes = Object.fromEntries(Object.keys(modes).map(mode => [mode, new Map()]));
-  for (const source of sources) for (const literal of literals(source.text).filter(v => !TOOL_NAMES.includes(v))) {
+  for (const source of sources) for (const literal of (source.values ?? literals(source.text)).filter(v => !TOOL_NAMES.includes(v))) {
     for (const [mode, tokenize] of Object.entries(modes)) for (const phrase of tokenize(literal)) {
       if (!indexes[mode].has(phrase)) indexes[mode].set(phrase, new Set()); indexes[mode].get(phrase).add(source.name);
     }

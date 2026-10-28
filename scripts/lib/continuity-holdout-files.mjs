@@ -3,13 +3,29 @@ import { execFileSync } from "node:child_process";
 import { readFile, realpath, mkdir, lstat, writeFile } from "node:fs/promises";
 import { resolve, dirname, basename, relative, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createRequire } from "node:module";
 import { canonicalJson } from "./continuity-dataset.mjs";
 
 export const CHECKOUT = fileURLToPath(new URL("../../", import.meta.url));
 export const sha256 = bytes => createHash("sha256").update(bytes).digest("hex");
 export const jsonBytes = value => canonicalJson(value) + "\n";
-export const readJson = async path => JSON.parse(await readFile(path, "utf8"));
-export function toolingRevision() { return execFileSync("git", ["-C", CHECKOUT, "rev-parse", "HEAD"], { encoding: "utf8" }).trim(); }
+export const readJson = async path => JSON.parse((await externalFile(path)).toString("utf8"));
+const git = args => execFileSync("git", ["-C", CHECKOUT, ...args], { encoding: "utf8" });
+export function toolingRevision() { return git(["rev-parse", "HEAD"]).trim(); }
+export function assertCleanTree() {
+  if (git(["status", "--porcelain", "--untracked-files=all"]).trim()) throw new Error("dirty_tooling_tree");
+}
+export function benchmarkFiles() {
+  return git(["ls-files", "-z", "--", "scripts/continuity-*", "scripts/lib/continuity-*", "scripts/holdout-validate.mjs",
+    "scripts/fixtures/continuity/", "packages/contracts/src/upkeep-accounting.ts",
+    "packages/conversation/src/continuity/ledger.ts", "packages/conversation/src/continuity/ranking.ts"])
+    .split("\0").filter(Boolean).sort();
+}
+export async function runtimeProvenance() {
+  const require = createRequire(import.meta.url);
+  return { node: process.version, lockfileSha256: sha256(await regularFile(resolve(CHECKOUT, "pnpm-lock.yaml"))),
+    typescript: require("typescript/package.json").version };
+}
 const within = (root, path) => { const rel = relative(root, path); return rel === "" || !rel.startsWith("..") && !isAbsolute(rel); };
 
 /** Resolve every existing ancestor before creating anything, including symlinked parents. */
@@ -21,9 +37,14 @@ export async function externalDirectory(path, create = false) {
     catch (error) { if (error.code !== "ENOENT") throw error; suffix.unshift(basename(ancestor)); ancestor = dirname(ancestor); }
   }
   const target = resolve(ancestor, ...suffix);
-  if (within(checkout, target) || within(target, checkout)) throw new Error("output_must_be_outside_checkout");
+  if (within(checkout, target) || within(target, checkout)) throw new Error("path_must_be_outside_checkout");
   if (create) await mkdir(target, { recursive: true, mode: 0o700 });
   return target;
+}
+export async function externalFile(path) {
+  await externalDirectory(dirname(resolve(path)));
+  await externalDirectory(dirname(await realpath(path)));
+  return regularFile(path);
 }
 export async function writeExclusive(path, bytes) { await writeFile(path, bytes, { flag: "wx", mode: 0o600 }); }
 export async function regularFile(path) {
