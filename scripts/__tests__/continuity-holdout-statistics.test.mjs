@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { clopperPearson, pairedT, tQuantile, betaCdf, betaQuantile, holdoutStatistics, HOLDOUT_ARMS, STATISTICAL_SPEC, completionUpperBound, gateEvaluator, validateStatisticalSpec } from "../lib/continuity-holdout-statistics.mjs";
-import { createRegistration, holdoutModels, readBoundAudit, seeded } from "../lib/continuity-holdout-registration.mjs";
+import { createRegistration, holdoutModels, readBoundAudit, seeded, assertRealHoldoutModels } from "../lib/continuity-holdout-registration.mjs";
 import { effectDistribution, safetyPower } from "../lib/continuity-holdout-power.mjs";
 import { scoreAnswer, renderMarkdown } from "../lib/continuity-score.mjs";
 import { sha256 } from "../lib/continuity-holdout-files.mjs";
@@ -198,9 +198,9 @@ describe("review regression contracts", () => {
       expect(result.status).toBe(interval.lower > 0.02 ? "pass" : interval.upper <= 0.02 ? "fail" : "inconclusive");
     }
   });
-  it("accepts parameterized layouts/thresholds but rejects inconsistent totals", () => {
+  it("accepts parameterized layouts but rejects inconsistent totals", () => {
     const options = registrationOptions(), changed = structuredClone(STATISTICAL_SPEC);
-    changed.benefit.combinedMinimumExclusive = 0; changed.safety.maximum = 0.04;
+    changed.design.shards = 16; changed.design.perCorpusPerShard = 16; changed.design.shardCostCapUSD = 30;
     expect(validateStatisticalSpec(changed)).toBe(true);
     expect(digest(createRegistration({ ...options, statisticalSpec: changed }))).not.toBe(digest(createRegistration(options)));
     const broken = structuredClone(STATISTICAL_SPEC); broken.design.shards = 31;
@@ -217,15 +217,23 @@ describe("review regression contracts", () => {
     await writeFile(path, JSON.stringify(input) + "\n");
     expect((await readBoundAudit(path, registrationSha256)).binding.sha256).not.toBe(bound.binding.sha256);
     const plan = makePlan({ suite: "holdout", traces: [], sha256: "a".repeat(64), repeats: 2, arms: HOLDOUT_ARMS, profile: { judge: null },
-      holdout: { conversations, statisticalSpec: STATISTICAL_SPEC, registrationSha256 } });
+      holdout: { conversations, statisticalSpec: STATISTICAL_SPEC, registrationSha256, models: holdoutModels() } });
     for (const mode of ["offline", "real"]) {
       const output = join(directory, mode); await mkdir(join(output, "units"), { recursive: true });
       const observedWrong = ledger(trials()).slice(0, 40).map(t => ({ ...t, score: { pass: false, outcome: "wrong", abstained: true } }));
       await writeFile(join(output, "units/partial.json"), JSON.stringify({ confirmation: plan.confirmation, executionKind: mode,
-        complete: false, arm: "continuity-ledger-cold", trials: observedWrong }));
+        complete: false, arm: "continuity-ledger-cold", trials: [...observedWrong, { status: "not_started" }] }));
       const result = await aggregate({ plan, traces: [], output, mode, auditPath: path });
       expect(result.coverage.unitsComplete).toBe(0);
-      expect(result.summary.holdout.scopes["holdout-hard"].wrongStatus).toBe("fail");
+      expect(result.summary.holdout.integrity.unknownTrials).toBe(0);
+      expect(result.summary.holdout.integrity.notStartedPlaceholders).toBe(1);
+      for (const scope of Object.values(result.summary.holdout.scopes)) {
+        if (mode === "offline") {
+          expect(scope.wrongStatus).toBe("not_a_measurement"); expect(scope.benefitStatus).toBe("not_a_measurement");
+          expect(Object.values(scope.safety).every(s => s.status === "not_a_measurement")).toBe(true);
+        }
+      }
+      expect(result.summary.holdout.scopes["holdout-hard"].wrongStatus).toBe(mode === "offline" ? "not_a_measurement" : "fail");
       expect(result.summary.holdout.scopes["holdout-hard"].ledgerWrong).toBe(40);
       expect(renderMarkdown(result.summary, { qualityMeasured: false })).toContain("Decision: **inconclusive**");
       expect(renderMarkdown(result.summary, { qualityMeasured: false })).toContain("not_a_measurement");
@@ -235,8 +243,41 @@ describe("review regression contracts", () => {
       if (mode === "offline") expect(result.summary.holdout.decision.reasons).toEqual(["not_a_measurement"]);
       else expect(result.summary.holdout.decision.reasons).toContain("audit-label:fail");
     }
+    await expect(aggregate({ plan: { ...plan, holdout: { ...plan.holdout, models: { ...holdoutModels(), reader: "fixture:synthetic" } } },
+      traces: [], output: directory, mode: "real" })).rejects.toThrow("holdout_measurement_requires_real_models");
     await writeFile(path, JSON.stringify({ ...input, registrationSha256: "e".repeat(64) }));
     await expect(readBoundAudit(path, registrationSha256)).rejects.toThrow("audit_registration_mismatch");
     await expect(aggregate({ plan, traces: [], output: join(directory, "offline"), mode: "offline", auditPath: path })).rejects.toThrow("audit_registration_mismatch");
   });
+});
+
+
+it.each([
+  ["confidence", 0.9], ["safety.maximum", 1], ["safety.wrongRateMaximum", 1],
+  ["benefit.combinedMinimumExclusive", 0], ["benefit.corpusMinimumExclusive", -1], ["accuracyMinimum", 0],
+  ["audit.labelNumerator", 11], ["audit.contextNumerator", 6], ["audit.referenceDenominator", 364],
+  ["audit.falselySupersededMaximum", 1], ["audit.bindingErrorsMaximum", 1],
+])("rejects a changed approved gate: %s", (path, value) => {
+  const changed = structuredClone(STATISTICAL_SPEC), keys = path.split("."), last = keys.pop();
+  let parent = changed; for (const key of keys) parent = parent[key]; parent[last] = value;
+  expect(() => validateStatisticalSpec(changed)).toThrow("unregistered_statistical_spec");
+  expect(() => createRegistration({ ...registrationOptions(), statisticalSpec: changed })).toThrow("unregistered_statistical_spec");
+});
+it.each(["correct", "stale", "conflicted", "violation", "leaked", "abstained", "empty", "wrong", "fabricated"])("rejects pass/outcome disagreement for %s", outcome => {
+  const rows = trials(); ledger(rows)[0].score = { outcome, pass: outcome !== "correct" };
+  const result = score(rows); expect(result.integrity.complete).toBe(false);
+  expect(result.scopes.combined.ledgerMissing).toBe(1); expect(result.decision.status).not.toBe("pass");
+});
+it.each(["reader", "extractor", "alternate"].flatMap(role => ["fixture", "faux"].map(provider => [role, provider])))("rejects a real holdout %s on %s models", (role, provider) => {
+  expect(() => assertRealHoldoutModels({ ...holdoutModels(), [role]: `${provider}:synthetic` })).toThrow("holdout_measurement_requires_real_models");
+  expect(() => assertRealHoldoutModels(holdoutModels())).not.toThrow();
+});
+it("keeps offline complete counts/intervals diagnostic without per-scope verdicts", () => {
+  const result = holdoutStatistics({ conversations, trials: trials(), audit });
+  expect(result.scopes.combined.benefit.n).toBe(512);
+  expect(result.scopes.combined.ledgerWrong).toBe(0);
+  for (const scope of Object.values(result.scopes)) {
+    expect(scope.wrongStatus).toBe("not_a_measurement"); expect(scope.benefitStatus).toBe("not_a_measurement");
+    expect(Object.values(scope.safety).every(s => s.status === "not_a_measurement" && s.interval)).toBe(true);
+  }
 });

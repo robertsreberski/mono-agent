@@ -22,10 +22,12 @@ The CLI writes deterministic `power.json` and `power.md`, exact safety enumerati
 and at least 100,000 replications/scenario. It and the real scorer share CP count
 cuts, paired-t confidence endpoints, wrong-rate and accuracy gate helpers.
 Optional `--statistical-spec /external/statistical-spec.json` permits an explicitly
-reviewed alternative design. Layout, corpus counts, shards and numerical gate
-thresholds are parameterized, not inferred from completed work; malformed layouts
-are rejected. The v1 two-repeat, 15-probe and comparator/model policies stay fixed.
-Any design or threshold change requires fresh approval/freeze/registration, never
+reviewed alternative design. Layout, corpus counts, shards and per-shard ceilings are parameterized, never
+inferred from completed work; malformed layouts are rejected. All approved gate
+thresholds and audit limits are pinned exactly to the checked-in specification;
+a more lenient or stricter external gate specification is rejected. The v1 two-repeat, 15-probe and comparator/model policies stay fixed.
+Any layout change requires fresh approval/freeze/registration; a gate change also
+requires an explicitly reviewed tooling/spec update, never
 an outcome-dependent extension.
 
 Power assumptions are disclosed, including shared comparator harmful events,
@@ -70,13 +72,20 @@ chunks; absent work stays missing. Paid mode requires a shard and existing
 confirmation/credential/output checks. Runtime outputs must be external.
 
 For offline proofs, omit `--shard` and use reduced `--repeats`/`--probe-limit`.
-**All non-real/scripted analyses are forced inconclusive with `not_a_measurement`,
-even when synthetic data would mathematically pass or fail.** The pure API also
+Real-mode holdout execution rejects `fixture:*`/`faux:*` reader, extractor or
+alternate model references before dispatch; mechanics registration still allows
+them. **All non-real/scripted analyses are forced inconclusive with `not_a_measurement`,
+even when synthetic data would mathematically pass or fail.** Every per-scope
+safety, benefit and wrong-rate status is `not_a_measurement`, while raw counts and
+intervals remain diagnostic. The pure API also
 defaults to non-measurement; only validated real records justify opting in.
 Per-shard results cannot pass the study: denominators always cover the complete
 registered population. The subsequent controller must validate/join shard trial
 units before calling `holdoutStatistics`; completed observations in partial units
-remain evidence, not discarded. Incomplete units never count as complete coverage.
+remain evidence, not discarded. Incomplete units never count as complete coverage. Exact `not_started` placeholders
+are reported as `integrity.notStartedPlaceholders`, not unknown trials; their
+absent planned slots remain missing. Pass/outcome mismatches invalidate a slot:
+only outcome `correct` may have `pass: true`, and it must have it.
 
 ## Gate semantics and missing data
 

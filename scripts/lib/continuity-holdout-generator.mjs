@@ -72,10 +72,27 @@ export async function loadHoldoutSpec(directory, statisticalSpec = STATISTICAL_S
   return spec;
 }
 
+// JSON "\\b" is a regex boundary, but JSON "\b" decodes to a backspace.
+// Check every authored value/key before regex compilation or other schema checks.
+function validateAuthoredStrings(value, field = "spec", caseId = null) {
+  const forbidden = /[\u0000-\u0008\u000b-\u001f]/u;
+  const reject = location => fail(`invalid_authored_control:case=${JSON.stringify(caseId)}:field=${JSON.stringify(location)}`);
+  if (typeof value === "string") { if (forbidden.test(value)) reject(field); }
+  else if (Array.isArray(value)) value.forEach((item, index) => validateAuthoredStrings(item, `${field}[${index}]`, caseId));
+  else if (value && typeof value === "object") {
+    if (/\.cases\[\d+\]$/u.test(field)) caseId = value.id ?? null;
+    for (const [key, item] of Object.entries(value)) {
+      if (forbidden.test(key)) reject(`${field}.[key]`);
+      validateAuthoredStrings(item, `${field}.${key}`, caseId);
+    }
+  }
+}
+
 /** Strict schema/provenance validation only; no history generation or hidden comparison. */
 export function validateHoldoutSpec(spec, statisticalSpec = STATISTICAL_SPEC) {
   validateStatisticalSpec(statisticalSpec);
   const d = statisticalSpec.design;
+  validateAuthoredStrings(spec);
   keys(spec, ["schema", "fictional", "provenance", "families"]);
   need(spec.schema === "fictional-conversations-v1" && spec.fictional === true, "fictional_spec_required");
   const p = spec.provenance;
@@ -283,7 +300,7 @@ export function generateHoldoutTrace(family, item, seed) {
   return trace;
 }
 
-/** Streaming keeps a full 256-conversation freeze from retaining all long results in memory. */
+/** Streaming keeps a full registered-design freeze from retaining all long results in memory. */
 export function* generateHoldout(spec, seeds, statisticalSpec = STATISTICAL_SPEC) {
   for (const { family, item, seed } of selectHoldoutCases(spec, seeds, statisticalSpec)) yield generateHoldoutTrace(family, item, seed);
 }

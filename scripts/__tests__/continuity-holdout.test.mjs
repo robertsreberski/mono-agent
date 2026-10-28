@@ -1,7 +1,7 @@
 import { STATISTICAL_SPEC } from "../lib/continuity-holdout-statistics.mjs";
 import { constants } from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
-import { mkdtemp, mkdir, readFile, cp, writeFile, rm, symlink, readdir } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, realpath, cp, writeFile, rm, symlink, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -213,6 +213,26 @@ it("rejects group totals that differ from registered design E", () => {
   expect(() => validateHoldoutSpec(spec)).toThrowError(new Error("invalid_family_mixture"));
 });
 
+it.each(Array.from({ length: 32 }, (_, i) => i).filter(i => ![9, 10].includes(i)))("rejects authored C0 code %i with case and pattern field", code => {
+  const spec = fixtureSpec(), item = spec.families[0].cases[0];
+  item.probes[4].score.forbidden[0] = String.fromCharCode(code) + "Synthetic";
+  expect(() => validateHoldoutSpec(spec)).toThrowError(new Error(`invalid_authored_control:case="${item.id}":field="spec.families[0].cases[0].probes[4].score.forbidden[0]"`));
+});
+it("rejects a JSON backspace pattern through the schema-only CLI, but permits escaped regex boundaries/newlines/tabs", async () => {
+  const dir = await scratch(), spec = fixtureSpec(), item = spec.families[0].cases[0];
+  item.probes[4].score.forbidden[0] = "\u0008Synthetic\u0008";
+  await writeSpec(dir, spec);
+  const cli = spawnSync(process.execPath, [resolve(CHECKOUT, "scripts/holdout-validate.mjs"), "--spec-dir", dir, "--schema-only"], { encoding: "utf8", timeout: 10000 });
+  expect(cli.status).toBe(1); expect(cli.stderr).toContain("invalid_authored_control");
+  expect(cli.stderr).toContain(item.id); expect(cli.stderr).toContain("probes[4].score.forbidden[0]");
+  item.probes[4].score.forbidden[0] = "\\bSynthetic\\b";
+  item.title += "\n\tSynthetic";
+  expect(validateHoldoutSpec(spec)).toBe(true);
+  expect(new RegExp(item.probes[4].score.forbidden[0]).test("Synthetic")).toBe(true);
+  spec.families[0].templates.toolBody[0] += "\u0008";
+  expect(() => validateHoldoutSpec(spec)).toThrow("spec.families[0].templates.toolBody[0]");
+});
+
 function fixtureGit(repo, args) {
   return execFileSync("git", ["-C", repo, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", ...args], { encoding: "utf8" });
 }
@@ -233,7 +253,7 @@ it("freezes external canonical bytes and detects artifact, manifest, allowlist a
   // Smallest valid explicitly bound synthetic design; full E inventory/selection
   // and 512-conversation registration are tested separately, never mocked here.
   const statisticalSpec = { ...STATISTICAL_SPEC, design: { ...STATISTICAL_SPEC.design,
-    families: 2, conversationsPerFamily: 2, conversationsPerCorpus: 2, shards: 1, perCorpusPerShard: 2 } };
+    families: 2, conversationsPerFamily: 2, conversationsPerCorpus: 2, shards: 2, perCorpusPerShard: 1 } };
   const dir = await scratch(), specDir = join(dir, "spec"), spec = fixtureSpec(statisticalSpec);
   for (const family of spec.families) for (const item of family.cases) Object.assign(item, { turnCount: 80, toolCount: 64, sessions: 7 });
   // Large obvious synthetic units keep byte pressure and fresh seeded draws,
@@ -274,6 +294,14 @@ it("freezes external canonical bytes and detects artifact, manifest, allowlist a
   const revision = fixtureGit(repo, ["rev-parse", "HEAD"]).trim();
   const registered = await registrationModule.registerFrozenHoldout({ manifestPath: join(outputDir, "manifest.json"), manifestSha256: frozen.manifestSha256,
     statisticalSpecPath: specPath, seed: 1234, models: registrationModule.holdoutModels(profile), codeRevision: revision });
+  const cliRegistrationDir = join(dir, "outputs/registration-cli");
+  const registrationCli = spawnSync(process.execPath, [await realpath(join(repo, "scripts/continuity-holdout-register.mjs")),
+    "--corpus-manifest", join(outputDir, "manifest.json"), "--manifest-sha256", frozen.manifestSha256,
+    "--statistical-spec", specPath, "--seed", "1234", "--reader", profile.reader,
+    "--extractor", profile.extractionModel, "--alternate", profile.alternate, "--output", cliRegistrationDir], { encoding: "utf8", timeout: 10000 });
+  expect(registrationCli.status, registrationCli.stderr).toBe(0);
+  expect(JSON.parse(registrationCli.stdout).shards).toBe(2);
+  expect(JSON.parse(await readFile(join(cliRegistrationDir, "registration.json"), "utf8")).shards).toHaveLength(2);
   const registrationPath = join(inputs, "registration.json"), registrationBytes = jsonBytes(registered);
   await writeFile(registrationPath, registrationBytes);
   const { sha256: fixtureSha256 } = await import(/* @vite-ignore */ pathToFileURL(join(repo, "scripts/lib/continuity-holdout-files.mjs")).href);
@@ -281,11 +309,13 @@ it("freezes external canonical bytes and detects artifact, manifest, allowlist a
     registrationPath, registrationSha256: fixtureSha256(registrationBytes), statisticalSpecPath: specPath, shard: 1, profile, codeRevision: revision,
     repeats: 2, arms: ["native", "cold-rebuild", "continuity-pack-cold", "continuity-ledger-cold"], probeLimit: null };
   const loadedShard = await datasetModule.loadTraces(options);
-  expect(loadedShard.traces).toHaveLength(4);
-  expect(loadedShard.traces.filter(t => t.corpus === "holdout-hard")).toHaveLength(2);
+  expect(loadedShard.traces).toHaveLength(2);
+  expect(loadedShard.traces.filter(t => t.corpus === "holdout-hard")).toHaveLength(1);
   expect(loadedShard.holdout.conversations).toHaveLength(4);
+  expect(loadedShard.traces.filter(t => t.corpus === "holdout-hard-distractors")).toHaveLength(1);
+  await expect(datasetModule.loadTraces({ ...options, shard: 3 })).rejects.toThrow("invalid_shard");
   const shardPlan = datasetModule.makePlan({ ...loadedShard, suite: "holdout", profile, repeats: 2, codeRevision: revision });
-  expect(shardPlan.workload.probeTurns).toBe(4 * 4 * 2 * 15);
+  expect(shardPlan.workload.probeTurns).toBe(2 * 4 * 2 * 15);
   const cli = await import(/* @vite-ignore */ pathToFileURL(join(repo, "scripts/continuity-benchmark.mjs")).href);
   const cliArgs = ["--suite", "holdout", "--corpus-manifest", options.manifestPath, "--manifest-sha256", options.manifestSha256,
     "--registration", registrationPath, "--registration-sha256", options.registrationSha256, "--statistical-spec", specPath, "--shard", "1",
@@ -293,8 +323,9 @@ it("freezes external canonical bytes and detects artifact, manifest, allowlist a
   let dispatches = 0, dry;
   const blocked = { env: {}, stdout: text => { dry = JSON.parse(text); }, modulesLoader: () => { dispatches++; throw new Error("fixture_dispatch_forbidden"); } };
   expect(await cli.main([...cliArgs, "--dry-run"], blocked)).toBe(0);
-  expect(dry.workload.probeTurns).toBe(480); expect(dry.holdout.shard).toBe(1);
+  expect(dry.workload.probeTurns).toBe(240); expect(dry.holdout.shard).toBe(1);
   await expect(cli.main([...cliArgs, "--real", "--confirm-plan", "wrong"], blocked)).rejects.toThrow("real_mode_requires_confirmed_plan");
+  await expect(cli.main([...cliArgs, "--real", "--confirm-plan", dry.confirmation], blocked)).rejects.toThrow("holdout_measurement_requires_real_models");
   expect(dispatches).toBe(0);
   const aggregateOutput = join(dir, "outputs/aggregate");
   expect(await cli.main([...cliArgs, "--aggregate-only", "--output", aggregateOutput], blocked)).toBe(1);

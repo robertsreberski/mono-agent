@@ -14,17 +14,7 @@ export function validateStatisticalSpec(value) {
     && d.families * d.conversationsPerFamily === d.conversationsPerCorpus * spec.design.corpora.length
     && d.shards * d.perCorpusPerShard === d.conversationsPerCorpus && Number.isFinite(d.shardCostCapUSD) && d.shardCostCapUSD > 0, "invalid_statistical_design");
   for (const key of ["conversationsPerCorpus", "families", "conversationsPerFamily", "shards", "perCorpusPerShard", "shardCostCapUSD"]) expected.design[key] = d[key];
-  const probability = x => Number.isFinite(x) && x >= 0 && x <= 1;
-  check(Number.isFinite(value.confidence) && value.confidence > 0.5 && value.confidence < 1 && probability(value.safety?.maximum)
-    && probability(value.safety?.wrongRateMaximum) && probability(value.accuracyMinimum)
-    && [value.benefit?.combinedMinimumExclusive, value.benefit?.corpusMinimumExclusive].every(x => Number.isFinite(x) && x >= -1 && x <= 1), "invalid_statistical_threshold");
-  expected.confidence = value.confidence; expected.accuracyMinimum = value.accuracyMinimum;
-  for (const key of ["maximum", "wrongRateMaximum"]) expected.safety[key] = value.safety[key];
-  for (const key of ["combinedMinimumExclusive", "corpusMinimumExclusive"]) expected.benefit[key] = value.benefit[key];
-  for (const key of ["labelNumerator", "contextNumerator", "referenceDenominator", "falselySupersededMaximum", "bindingErrorsMaximum"]) {
-    check(Number.isSafeInteger(value.audit?.[key]) && value.audit[key] >= 0, "invalid_statistical_threshold"); expected.audit[key] = value.audit[key];
-  }
-  check(value.audit.referenceDenominator > 0 && isDeepStrictEqual(value, expected), "unregistered_statistical_spec");
+  check(isDeepStrictEqual(value, expected), "unregistered_statistical_spec");
   return true;
 }
 export function validateHoldoutConversations(conversations, statisticalSpec = spec) {
@@ -141,7 +131,8 @@ export function completionUpperBound(bounds, confidence = spec.confidence) {
   return high / n + critical(confidence, n) * Math.sqrt((Math.max(0, squares - nearest * nearest / n) + 64 * Number.EPSILON * n * n) / (n * (n - 1)));
 }
 const OUTCOMES = new Set(["correct", "stale", "conflicted", "violation", "leaked", "abstained", "empty", "wrong", "fabricated"]);
-const validTrial = row => row?.status === "completed" && typeof row.score?.pass === "boolean" && OUTCOMES.has(row.score?.outcome);
+const validTrial = row => row?.status === "completed" && typeof row.score?.pass === "boolean" && OUTCOMES.has(row.score?.outcome)
+  && row.score.pass === (row.score.outcome === "correct");
 const wrongTrial = row => validTrial(row) && !row.score.pass && !["abstained", "empty"].includes(row.score.outcome);
 
 /** Pure analysis defaults to NOT a measurement; callers must explicitly supply validated real execution provenance. */
@@ -149,8 +140,9 @@ export function holdoutStatistics({ conversations, trials, audit = null, statist
   validateHoldoutConversations(conversations, statisticalSpec);
   const d = statisticalSpec.design, bundleSize = d.probes * d.repeats, evaluator = gateEvaluator(statisticalSpec);
   const repeats = Array.from({ length: d.repeats }, (_, i) => i + 1);
-  const byId = new Map(conversations.map(c => [c.id, c])), slots = new Map(); let unknown = 0;
+  const byId = new Map(conversations.map(c => [c.id, c])), slots = new Map(); let unknown = 0, notStartedPlaceholders = 0;
   for (const row of trials) {
+    if (row?.status === "not_started" && Object.keys(row).length === 1) { notStartedPlaceholders++; continue; }
     const c = byId.get(row?.traceId);
     if (!c || !c.probes.includes(row.probeId) || !HOLDOUT_ARMS.includes(row.arm) || !repeats.includes(row.repeat)) { unknown++; continue; }
     const key = `${row.traceId}/${row.arm}/${row.repeat}/${row.probeId}`;
@@ -204,8 +196,12 @@ export function holdoutStatistics({ conversations, trials, audit = null, statist
     if (!complete) add("audit-material", "inconclusive");
   } else add("audit-material", "inconclusive");
   const status = gates.some(g => g.status === "fail") ? "fail" : gates.some(g => g.status !== "pass") ? "inconclusive" : "pass";
+  if (!measurement) for (const scope of Object.values(scopes)) {
+    scope.wrongStatus = scope.benefitStatus = "not_a_measurement";
+    for (const safety of Object.values(scope.safety)) safety.status = "not_a_measurement";
+  }
   return { schema: "holdout-statistics-v1", unit: "conversation", measurement, scopes, plannedAnswersPerArm: conversations.length * bundleSize, audit: auditRates,
-    integrity: { complete: integrity, unknownTrials: unknown, incompleteConversations: bundles.filter(c => !c.complete).map(c => c.id) },
+    integrity: { complete: integrity, unknownTrials: unknown, notStartedPlaceholders, incompleteConversations: bundles.filter(c => !c.complete).map(c => c.id) },
     decision: measurement ? { status, reasons: gates.filter(g => g.status !== "pass").map(g => `${g.name}:${g.status}`), gates }
       : { status: "inconclusive", reasons: ["not_a_measurement"], gates: [] } };
 }

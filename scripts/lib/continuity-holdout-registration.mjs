@@ -14,6 +14,11 @@ export function holdoutModels(profile = {}) {
   const reader = profile.reader ?? DEFAULT_READER;
   return { reader, extractor: profile.extractionModel ?? reader, alternate: profile.alternate ?? DEFAULT_ALTERNATE, readerEffort: profile.readerEffort ?? "low", judge: profile.judge ?? null };
 }
+/** Mechanics registrations may use scripted routes; real measurement may not. */
+export function assertRealHoldoutModels(models) {
+  requireValue([models?.reader, models?.extractor, models?.alternate].every(ref => typeof ref === "string"
+    && !/^(?:fixture|faux)(?:[:/.-]|$)/iu.test(ref)), "holdout_measurement_requires_real_models");
+}
 export async function loadFrozenHoldout(manifestPath, manifestSha256, statisticalSpec = STATISTICAL_SPEC) {
   validateStatisticalSpec(statisticalSpec);
   const d = statisticalSpec.design, total = d.conversationsPerCorpus * d.corpora.length;

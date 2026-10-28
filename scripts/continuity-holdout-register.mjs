@@ -8,6 +8,6 @@ export async function main(argv) {
     models: { reader: f["--reader"], extractor: f["--extractor"], alternate: f["--alternate"], readerEffort: "low", judge: null }, codeRevision: toolingRevision() });
   const bytes = jsonBytes(registration), dir = await externalDirectory(f["--output"], true);
   await writeExclusive(resolve(dir, "registration.json"), bytes);
-  console.log(jsonBytes({ registrationSha256: sha256(bytes), shards: 16 }).trim());
+  console.log(jsonBytes({ registrationSha256: sha256(bytes), shards: registration.shards.length }).trim());
 }
 await runCli(import.meta.url, main);

@@ -152,6 +152,7 @@ export async function main(argv = process.argv.slice(2), { stdout = console.log,
   const mode = flags.real ? "real" : "offline";
   if (mode === "real") {
     if (flags["confirm-plan"] !== plan.confirmation) throw new CliError("real_mode_requires_confirmed_plan");
+    if (holdout) (await import("./lib/continuity-holdout-registration.mjs")).assertRealHoldoutModels(holdout.models);
     if (piAuthPath === undefined) throw new CliError("real_mode_requires_pi_auth_path");
     if (dirty) throw new CliError("real_mode_requires_clean_checkout");
     if (flags.output === undefined) throw new CliError("real_mode_requires_output");
@@ -299,6 +300,7 @@ async function execute({ flags, plan, traces, mode, output, piAuthPath, head, di
 }
 
 export async function aggregate({ plan, traces, output, mode, auditPath }) {
+  if (plan.holdout && mode === "real") (await import("./lib/continuity-holdout-registration.mjs")).assertRealHoldoutModels(plan.holdout.models);
   const files = (await readdir(join(output, "units"))).filter((name) => name.endsWith(".json")).sort();
   const units = [];
   for (const name of files) {

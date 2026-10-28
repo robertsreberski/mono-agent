@@ -21,7 +21,9 @@ node scripts/holdout-validate.mjs --spec-dir /external/authored --schema-only
 
 Schema-only validation never renders histories or consults comparison sources.
 It checks declared fictional/independent provenance, not the truth of those
-claims or semantic adequacy of evidence. The custodian must review these claims,
+claims or semantic adequacy of evidence. Authored strings reject C0 controls
+other than newline/tab, with the case and field in the error. In JSON regex
+patterns, write `"\\b"` for a word boundary; `"\b"` is a backspace and is rejected. The custodian must review these claims,
 each family's independence, and corrections/decisions/work-state evidence.
 
 ## Reproducible selection and overlap
