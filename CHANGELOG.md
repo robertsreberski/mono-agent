@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Add registered holdout benchmark shards, conversation-cluster decision statistics
+  and deterministic power analysis without changing runtime behavior. Use the
+  512-conversation design, retain established failures with missing data, and bind
+  audit inputs and pin approved gates while suppressing offline measurement decisions.
+
 - Add independent fictional benchmark corpus authoring, deterministic generation,
   lexical overlap checks and hash-verified freezes without changing runtime behavior.
 

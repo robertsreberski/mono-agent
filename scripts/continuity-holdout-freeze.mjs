@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { STATISTICAL_SPEC, validateStatisticalSpec } from "./lib/continuity-holdout-statistics.mjs";
 import { mkdir, readdir, lstat } from "node:fs/promises";
 import { resolve, dirname, relative } from "node:path";
 import { loadHoldoutSpec, generateHoldout, selectHoldoutCases, HOLDOUT_VERSION } from "./lib/continuity-holdout-generator.mjs";
@@ -6,11 +7,14 @@ import { checkHoldoutOverlap } from "./lib/continuity-holdout-overlap.mjs";
 import { digest } from "./lib/continuity-dataset.mjs";
 import { CHECKOUT, assertCleanTree, benchmarkFiles, externalDirectory, externalFile, runtimeProvenance, jsonBytes, parseFlags, readJson, regularFile, runCli, sha256, toolingRevision, writeExclusive } from "./lib/continuity-holdout-files.mjs";
 
-export async function freezeHoldout({ specDir, seedsPath, rubricPath, protocolPath, overlapPath, allowlistPath, outputDir }) {
+export async function freezeHoldout({ specDir, seedsPath, rubricPath, protocolPath, overlapPath, allowlistPath, outputDir, statisticalSpec = STATISTICAL_SPEC }) {
   assertCleanTree();
+  validateStatisticalSpec(statisticalSpec);
   const tooling = benchmarkFiles(), runtime = await runtimeProvenance();
-  const spec = await loadHoldoutSpec(specDir), seeds = await readJson(seedsPath), allowlist = await readJson(allowlistPath);
-  const supplied = await readJson(overlapPath), report = await checkHoldoutOverlap(spec, seeds, allowlist);
+  const spec = await loadHoldoutSpec(specDir, statisticalSpec), seeds = await readJson(seedsPath), allowlist = await readJson(allowlistPath);
+  const supplied = await readJson(overlapPath);
+  if (supplied.pass !== true) throw new Error("overlap_report_not_passing_or_stale");
+  const report = await checkHoldoutOverlap(spec, seeds, allowlist, statisticalSpec);
   if (!report.pass || digest(report) !== digest(supplied)) throw new Error("overlap_report_not_passing_or_stale");
   const rubric = await externalFile(rubricPath), protocol = await externalFile(protocolPath);
   if (!rubric.length || !protocol.length) throw new Error("empty_registration_input");
@@ -28,10 +32,10 @@ export async function freezeHoldout({ specDir, seedsPath, rubricPath, protocolPa
   await put("allowlist.json", jsonBytes(allowlist));
   await put("overlap.json", jsonBytes(report));
   await put("rubric", rubric); await put("protocol", protocol);
-  const selection = selectHoldoutCases(spec, seeds).map(({ family, item, seed }) => ({ id: item.id, family: family.id, group: family.group, seed }));
+  const selection = selectHoldoutCases(spec, seeds, statisticalSpec).map(({ family, item, seed }) => ({ id: item.id, family: family.id, group: family.group, seed }));
   await put("selection.json", jsonBytes(selection));
   const conversations = [];
-  for (const trace of generateHoldout(spec, seeds)) {
+  for (const trace of generateHoldout(spec, seeds, statisticalSpec)) {
     const path = `conversations/${trace.id}.json`, answers = `answers/${trace.id}.json`;
     await put(path, jsonBytes(trace));
     await put(answers, jsonBytes(trace.probes.map(p => ({ id: p.id, category: p.category, score: p.score, evidence: p.evidence }))));
@@ -39,7 +43,7 @@ export async function freezeHoldout({ specDir, seedsPath, rubricPath, protocolPa
   }
   for (const name of tooling) await put(`tooling/${name}`, await regularFile(resolve(CHECKOUT, name)));
   const manifest = { schema: "holdout-freeze-v1", generator: HOLDOUT_VERSION, toolingRevision: toolingRevision(), runtime,
-    specSha256: digest(spec), seedsSha256: digest(seeds), overlapSha256: digest(report), allowlistSha256: digest(allowlist),
+    specSha256: digest(spec), statisticalSpec, seedsSha256: digest(seeds), overlapSha256: digest(report), allowlistSha256: digest(allowlist),
     mixture: spec.families.map(f => ({ id: f.id, group: f.group, count: f.count })), conversations, files };
   assertCleanTree();
   const bytes = jsonBytes(manifest);
@@ -47,6 +51,15 @@ export async function freezeHoldout({ specDir, seedsPath, rubricPath, protocolPa
   const manifestSha256 = sha256(bytes);
   await writeExclusive(resolve(out, "manifest.sha256"), manifestSha256 + "\n");
   return { manifestSha256, conversations: conversations.length };
+}
+
+// Bounded concurrent I/O; every byte is rehashed on EVERY verification, never cached.
+async function eachBounded(values, visit) {
+  let next = 0, failure;
+  await Promise.all(Array.from({ length: Math.min(16, values.length) }, async () => {
+    while (next < values.length && !failure) { const i = next++; try { await visit(values[i]); } catch (error) { failure ??= error; } }
+  }));
+  if (failure) throw failure;
 }
 
 /** The digest must come from the custodian's independent registration, not this directory. */
@@ -58,25 +71,27 @@ export async function verifyHoldout(directory, expectedManifestSha256) {
   if (manifest.schema !== "holdout-freeze-v1" || jsonBytes(manifest) !== bytes.toString("utf8")) throw new Error("manifest_schema_mismatch");
   const expected = new Set(["manifest.json", "manifest.sha256", ...Object.keys(manifest.files)]);
   const walk = async directory => {
-    for (const name of await readdir(directory)) {
+    await eachBounded(await readdir(directory), async name => {
       const path = resolve(directory, name), stat = await lstat(path);
       if (stat.isDirectory()) await walk(path);
       else if (!stat.isFile() || !expected.has(relative(dir, path))) throw new Error("unexpected_frozen_file");
-    }
+    });
   };
   await walk(dir);
   if ((await regularFile(resolve(dir, "manifest.sha256"))).toString("utf8") !== expectedManifestSha256 + "\n") throw new Error("manifest_hash_mismatch");
-  for (const [name, entry] of Object.entries(manifest.files)) {
+  await eachBounded(Object.entries(manifest.files), async ([name, entry]) => {
     if (name.startsWith("/") || name.split("/").some(p => !p || p === "." || p === "..")) throw new Error("invalid_manifest_path");
     const file = await regularFile(resolve(dir, name));
     if (file.length !== entry.bytes || sha256(file) !== entry.sha256) throw new Error(`frozen_file_mutated:${name}`);
-  }
+  });
   const runtime = await runtimeProvenance();
   if (runtime.node.split(".")[0] !== manifest.runtime?.node.split(".")[0] || runtime.lockfileSha256 !== manifest.runtime?.lockfileSha256
     || runtime.typescript !== manifest.runtime?.typescript) throw new Error("runtime_provenance_mismatch");
   const tooling = Object.keys(manifest.files).filter(name => name.startsWith("tooling/")).map(name => name.slice(8));
   if (jsonBytes(tooling.sort()) !== jsonBytes(benchmarkFiles())) throw new Error("benchmark_file_inventory_changed");
-  for (const name of tooling) if (sha256(await regularFile(resolve(CHECKOUT, name))) !== manifest.files[`tooling/${name}`]?.sha256) throw new Error("current_tooling_mutated");
+  await eachBounded(tooling, async name => {
+    if (sha256(await regularFile(resolve(CHECKOUT, name))) !== manifest.files[`tooling/${name}`]?.sha256) throw new Error("current_tooling_mutated");
+  });
   assertCleanTree();
   return { pass: true, manifestSha256: expectedManifestSha256, conversations: manifest.conversations.length };
 }

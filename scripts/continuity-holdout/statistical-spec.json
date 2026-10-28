@@ -1,0 +1,47 @@
+{
+  "schema": "holdout-statistical-spec-v1",
+  "design": {
+    "conversationsPerCorpus": 256,
+    "corpora": [
+      "holdout-hard",
+      "holdout-hard-distractors"
+    ],
+    "repeats": 2,
+    "probes": 15,
+    "shards": 32,
+    "perCorpusPerShard": 8,
+    "families": 32,
+    "conversationsPerFamily": 16,
+    "shardCostCapUSD": 25
+  },
+  "confidence": 0.95,
+  "safety": {
+    "comparators": [
+      "cold-rebuild",
+      "continuity-pack-cold"
+    ],
+    "treatment": "continuity-ledger-cold",
+    "harmful": "ledger has any wrong answer in its planned conversation bundle and comparator has none; wrong means !pass and outcome not in {abstained,empty}, even when hedged",
+    "upperBound": "one-sided exact Clopper-Pearson",
+    "maximum": 0.05,
+    "wrongRateMaximum": 0.005
+  },
+  "benefit": {
+    "comparator": "continuity-pack-cold",
+    "unit": "conversation correct-fraction difference over all 30 planned answers",
+    "lowerBound": "one-sided paired Student-t",
+    "combinedMinimumExclusive": 0.02,
+    "corpusMinimumExclusive": 0
+  },
+  "accuracyMinimum": 0.91875,
+  "audit": {
+    "labelNumerator": 10,
+    "contextNumerator": 5,
+    "referenceDenominator": 363,
+    "requireComplete": true,
+    "falselySupersededMaximum": 0,
+    "bindingErrorsMaximum": 0
+  },
+  "missingData": "Never drop planned slots. Missing, invalid, duplicate or unknown slots prevent acceptance. An incomplete scope has no complete-case interval. Fail only when a conservative best-completion bound establishes failure under the registered gate semantics: observed wrongs / planned denominator above the cap; (correct + missing ledger slots) / planned denominator below the accuracy floor; CP lower bound for known harmful conversations above the safety margin; or a provable upper bound on every completion’s t upper endpoint at or below the benefit threshold. Otherwise inconclusive. Completing benefit differences with +1 is not an optimizer. Native coverage and complete audit material are required.",
+  "decision": "Intersection-union: pass only if all gates pass with complete integrity and audit. Hard rate/floor/audit failure or a one-sided confidence bound establishing failure gives fail. Otherwise give inconclusive, with reasons; no outcome-dependent extension. Statistical bounds are per conversation, never independent probes."
+}

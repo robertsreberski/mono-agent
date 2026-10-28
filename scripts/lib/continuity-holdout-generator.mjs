@@ -1,3 +1,4 @@
+import { STATISTICAL_SPEC, validateStatisticalSpec } from "./continuity-holdout-statistics.mjs";
 // Benchmark-only: no narrative imports, provider calls, or product preparation.
 import { readFile, realpath, lstat } from "node:fs/promises";
 import { resolve, dirname, basename } from "node:path";
@@ -46,7 +47,7 @@ function substitute(value, bindings) {
 function bindingsFor(family, item) { return { ...family.entities, ...family.vocabulary, ...item.bindings, sample_id: item.id }; }
 
 /** Directory loading is data-only. No overlap sources or rendering are consulted. */
-export async function loadHoldoutSpec(directory) {
+export async function loadHoldoutSpec(directory, statisticalSpec = STATISTICAL_SPEC) {
   const dir = await realpath(await externalDirectory(directory));
   const read = async name => {
     need(typeof name === "string" && /^[a-zA-Z0-9_-]+\.json$/u.test(name) && basename(name) === name, "invalid_spec_filename");
@@ -67,12 +68,31 @@ export async function loadHoldoutSpec(directory) {
     families.push(family);
   }
   const spec = { ...index, families: families.sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0) };
-  validateHoldoutSpec(spec);
+  validateHoldoutSpec(spec, statisticalSpec);
   return spec;
 }
 
+// JSON "\\b" is a regex boundary, but JSON "\b" decodes to a backspace.
+// Check every authored value/key before regex compilation or other schema checks.
+function validateAuthoredStrings(value, field = "spec", caseId = null) {
+  const forbidden = /[\u0000-\u0008\u000b-\u001f]/u;
+  const reject = location => fail(`invalid_authored_control:case=${JSON.stringify(caseId)}:field=${JSON.stringify(location)}`);
+  if (typeof value === "string") { if (forbidden.test(value)) reject(field); }
+  else if (Array.isArray(value)) value.forEach((item, index) => validateAuthoredStrings(item, `${field}[${index}]`, caseId));
+  else if (value && typeof value === "object") {
+    if (/\.cases\[\d+\]$/u.test(field)) caseId = value.id ?? null;
+    for (const [key, item] of Object.entries(value)) {
+      if (forbidden.test(key)) reject(`${field}.[key]`);
+      validateAuthoredStrings(item, `${field}.${key}`, caseId);
+    }
+  }
+}
+
 /** Strict schema/provenance validation only; no history generation or hidden comparison. */
-export function validateHoldoutSpec(spec) {
+export function validateHoldoutSpec(spec, statisticalSpec = STATISTICAL_SPEC) {
+  validateStatisticalSpec(statisticalSpec);
+  const d = statisticalSpec.design;
+  validateAuthoredStrings(spec);
   keys(spec, ["schema", "fictional", "provenance", "families"]);
   need(spec.schema === "fictional-conversations-v1" && spec.fictional === true, "fictional_spec_required");
   const p = spec.provenance;
@@ -81,13 +101,13 @@ export function validateHoldoutSpec(spec) {
     && new Date(p.createdAt).toISOString() === p.createdAt && p.independent === true
     && Array.isArray(p.references) && p.references.length === 0 && Array.isArray(p.exposures) && p.exposures.length === 0
     && typeof p.declaration === "string" && p.declaration.length >= 40, "invalid_provenance");
-  need(Array.isArray(spec.families) && spec.families.length >= 16, "insufficient_families");
+  need(Array.isArray(spec.families) && spec.families.length >= d.families, "insufficient_families");
   const ids = new Set(), cases = new Set(), structures = new Set(), counts = { ordinary: 0, distractor: 0 };
   for (const family of spec.families) {
     keys(family, ["id", "group", "count", "entities", "vocabulary", "templates", "cases"]);
     need(ID.test(family.id) && !ids.has(family.id), "duplicate_family_identity"); ids.add(family.id);
     need(Object.hasOwn(counts, family.group), "invalid_group");
-    integer(family.count, 1, 128); counts[family.group] += family.count;
+    integer(family.count, 1, d.conversationsPerCorpus); counts[family.group] += family.count;
     slots(family.entities); slots(family.vocabulary);
     need(Object.keys(family.entities).every(k => !Object.hasOwn(family.vocabulary, k)), "duplicate_slot");
     keys(family.templates, ["owner", "assistant", "toolBody"]);
@@ -149,7 +169,8 @@ export function validateHoldoutSpec(spec) {
       });
     }
   }
-  need(counts.ordinary === 128 && counts.distractor === 128, "invalid_family_mixture");
+  need(counts.ordinary === d.conversationsPerCorpus && counts.distractor === d.conversationsPerCorpus
+    && ["ordinary", "distractor"].every(g => spec.families.filter(f => f.group === g).length >= d.families / d.corpora.length), "invalid_family_mixture");
   return true;
 }
 
@@ -165,8 +186,8 @@ function shuffle(values, next) {
 function seedNumber(seed) { integer(seed, 1, 0xffffffff); return seed; }
 
 /** Independent per-group selection and per-case rendering seeds; fixed quotas, no replacement. */
-export function selectHoldoutCases(spec, seeds) {
-  validateHoldoutSpec(spec); keys(seeds, ["ordinary", "distractor"]);
+export function selectHoldoutCases(spec, seeds, statisticalSpec = STATISTICAL_SPEC) {
+  validateHoldoutSpec(spec, statisticalSpec); keys(seeds, ["ordinary", "distractor"]);
   seedNumber(seeds.ordinary); seedNumber(seeds.distractor); need(seeds.ordinary !== seeds.distractor, "distinct_group_seeds_required");
   const rows = [];
   for (const group of ["ordinary", "distractor"]) {
@@ -186,9 +207,9 @@ function fill(bytes, nextUnit) {
   while (bytes > 0) {
     const unit = nextUnit() + "\n", size = Buffer.byteLength(unit);
     if (size <= bytes) { parts.push(unit); bytes -= size; continue; }
-    let tail = "";
-    for (const char of unit) { if (Buffer.byteLength(tail + char) > bytes) break; tail += char; }
-    parts.push(tail, " ".repeat(bytes - Buffer.byteLength(tail))); bytes = 0;
+    let tail = "", used = 0;
+    for (const char of unit) { const size = Buffer.byteLength(char); if (used + size > bytes) break; tail += char; used += size; }
+    parts.push(tail, " ".repeat(bytes - used)); bytes = 0;
   }
   return parts.join("");
 }
@@ -279,7 +300,7 @@ export function generateHoldoutTrace(family, item, seed) {
   return trace;
 }
 
-/** Streaming keeps a full 256-conversation freeze from retaining all long results in memory. */
-export function* generateHoldout(spec, seeds) {
-  for (const { family, item, seed } of selectHoldoutCases(spec, seeds)) yield generateHoldoutTrace(family, item, seed);
+/** Streaming keeps a full registered-design freeze from retaining all long results in memory. */
+export function* generateHoldout(spec, seeds, statisticalSpec = STATISTICAL_SPEC) {
+  for (const { family, item, seed } of selectHoldoutCases(spec, seeds, statisticalSpec)) yield generateHoldoutTrace(family, item, seed);
 }

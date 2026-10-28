@@ -374,5 +374,10 @@ export function renderMarkdown(summary, { qualityMeasured, armLabels = {}, judge
     lines.push(`| ${armLabels[arm] ?? arm} | ${pct(row.judgeAccuracy)} | ${pct(row.proxyAccuracy)} | ${row.n} |`);
   }
   lines.push("");
+  if (summary.holdout) {
+    const decision = qualityMeasured ? summary.holdout.decision : { status: "inconclusive", reasons: ["not_a_measurement"] };
+    lines.push("", "## Pre-registered holdout decision", "", `Decision: **${decision.status}**. Planned answers per arm: ${summary.holdout.plannedAnswersPerArm}.`,
+      ...decision.reasons.map(reason => `- ${reason}`), "", "Full conversation-cluster intervals, denominators and audit rates are in results.json; incomplete scopes have no complete-case inference.");
+  }
   return lines.join("\n");
 }
