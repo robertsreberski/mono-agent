@@ -14,14 +14,14 @@ values. Do not use real people, places or companies, personal records, actual
 credentials, or copied conversations. Use reserved `.example` domains if needed.
 A fictional-data declaration is required; it does not replace human review.
 
-Write at least 16 genuinely different families across two disjoint groups:
+Write at least 32 genuinely different families across two disjoint groups (at least 16 per group):
 `ordinary` and `distractor`. Both groups have long histories. The latter adds
 plausible but clearly attributable irrelevant, hypothetical, historical or
 otherwise inapplicable material. Its cases must be independently authored,
 not modified copies of ordinary cases. Do not create nominally different cases
 by changing only names or numbers.
 
-The eventual collection contains 128 conversations from each group, with exactly
+The eventual collection contains 256 conversations from each group, with exactly
 15 questions per conversation. Supply enough distinct authored cases for those
 counts, preferably more. Selection is without replacement within each family.
 The fixed family counts determine the population to which conclusions apply.
@@ -60,13 +60,13 @@ in place of descriptors. No single-file delivery is required.
   array), `exposures` (empty array), and `declaration` (at least 40 characters,
   confirming independent authorship and wholly invented content).
   Any exposure requires stopping for custodian review, not omitting it.
-- `families`: array of at least 16 family descriptors as described above.
+- `families`: array of at least 32 family descriptors as described above.
 
 ## Family object
 
 - `id`: unique family ID.
 - `group`: `ordinary` or `distractor`.
-- `count`: positive integer; counts sum to exactly 128 separately for each group.
+- `count`: positive integer; counts sum to exactly 256 separately for each group.
 - `entities`: object mapping slot names to invented identity strings.
 - `vocabulary`: object mapping different slot names to original descriptive
   strings. Keys cannot collide with entities or the reserved slot.

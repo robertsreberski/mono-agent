@@ -4,11 +4,43 @@ import spec from "../continuity-holdout/statistical-spec.json" with { type: "jso
 function freeze(value) { if (value && typeof value === "object") { Object.values(value).forEach(freeze); Object.freeze(value); } return value; }
 export const STATISTICAL_SPEC = freeze(spec);
 export const HOLDOUT_ARMS = Object.freeze(["native", "cold-rebuild", "continuity-pack-cold", "continuity-ledger-cold"]);
+const check = (ok, code) => { if (!ok) throw new Error(code); };
 export function validateStatisticalSpec(value) {
-  if (!isDeepStrictEqual(value, spec)) throw new Error("unregistered_statistical_spec");
+  const expected = structuredClone(spec), d = value?.design;
+  const integer = x => Number.isSafeInteger(x) && x > 0;
+  check(d && [d.conversationsPerCorpus, d.families, d.conversationsPerFamily, d.shards, d.perCorpusPerShard].every(integer)
+    && Number.isSafeInteger(d.conversationsPerCorpus * spec.design.corpora.length * spec.design.probes * spec.design.repeats * HOLDOUT_ARMS.length)
+    && d.conversationsPerCorpus >= 2 && d.families % spec.design.corpora.length === 0
+    && d.families * d.conversationsPerFamily === d.conversationsPerCorpus * spec.design.corpora.length
+    && d.shards * d.perCorpusPerShard === d.conversationsPerCorpus && Number.isFinite(d.shardCostCapUSD) && d.shardCostCapUSD > 0, "invalid_statistical_design");
+  for (const key of ["conversationsPerCorpus", "families", "conversationsPerFamily", "shards", "perCorpusPerShard", "shardCostCapUSD"]) expected.design[key] = d[key];
+  const probability = x => Number.isFinite(x) && x >= 0 && x <= 1;
+  check(Number.isFinite(value.confidence) && value.confidence > 0.5 && value.confidence < 1 && probability(value.safety?.maximum)
+    && probability(value.safety?.wrongRateMaximum) && probability(value.accuracyMinimum)
+    && [value.benefit?.combinedMinimumExclusive, value.benefit?.corpusMinimumExclusive].every(x => Number.isFinite(x) && x >= -1 && x <= 1), "invalid_statistical_threshold");
+  expected.confidence = value.confidence; expected.accuracyMinimum = value.accuracyMinimum;
+  for (const key of ["maximum", "wrongRateMaximum"]) expected.safety[key] = value.safety[key];
+  for (const key of ["combinedMinimumExclusive", "corpusMinimumExclusive"]) expected.benefit[key] = value.benefit[key];
+  for (const key of ["labelNumerator", "contextNumerator", "referenceDenominator", "falselySupersededMaximum", "bindingErrorsMaximum"]) {
+    check(Number.isSafeInteger(value.audit?.[key]) && value.audit[key] >= 0, "invalid_statistical_threshold"); expected.audit[key] = value.audit[key];
+  }
+  check(value.audit.referenceDenominator > 0 && isDeepStrictEqual(value, expected), "unregistered_statistical_spec");
   return true;
 }
-const check = (ok, code) => { if (!ok) throw new Error(code); };
+export function validateHoldoutConversations(conversations, statisticalSpec = spec) {
+  validateStatisticalSpec(statisticalSpec);
+  const d = statisticalSpec.design, total = d.conversationsPerCorpus * d.corpora.length;
+  check(Array.isArray(conversations) && conversations.length === total && new Set(conversations.map(c => c.id)).size === total
+    && d.corpora.every(corpus => conversations.filter(c => c.corpus === corpus).length === d.conversationsPerCorpus)
+    && conversations.every(c => typeof c.id === "string" && !c.id.includes("/") && typeof c.family === "string"
+      && Array.isArray(c.probes) && c.probes.length === d.probes && new Set(c.probes).size === d.probes
+      && c.probes.every(p => typeof p === "string" && !p.includes("/"))), "invalid_planned_holdout");
+  const families = new Map();
+  for (const c of conversations) { if (!families.has(c.family)) families.set(c.family, []); families.get(c.family).push(c); }
+  check(families.size === d.families && [...families.values()].every(rows => rows.length === d.conversationsPerFamily
+    && new Set(rows.map(c => c.corpus)).size === 1), "invalid_holdout_family_layout");
+  return true;
+}
 const lanczos = [676.5203681218851, -1259.1392167224028, 771.3234287776531, -176.6150291621406, 12.507343278686905, -0.13857109526572012, 9.984369578019572e-6, 1.5056327351493116e-7];
 export function logGamma(z) {
   if (z < 0.5) return Math.log(Math.PI) - Math.log(Math.sin(Math.PI * z)) - logGamma(1 - z);
@@ -58,75 +90,122 @@ export function tQuantile(p, df) {
   for (let i = 0; i < 90; i++) { const mid = (lo + hi) / 2; if (tCdf(mid, df) < p) lo = mid; else hi = mid; }
   return (lo + hi) / 2;
 }
-export function pairedT(values, confidence = 0.95) {
-  check(values.length >= 2 && values.every(Number.isFinite), "invalid_paired_sample");
-  const mean = values.reduce((a, b) => a + b, 0) / values.length;
-  const sd = Math.sqrt(values.reduce((s, v) => s + (v - mean) ** 2, 0) / (values.length - 1));
-  const radius = tQuantile(confidence, values.length - 1) * sd / Math.sqrt(values.length);
-  return { n: values.length, mean, sd, lower: mean - radius, upper: mean + radius };
+export function pairedMoments(sum, squares, n, confidence = spec.confidence) {
+  check(n >= 2 && Number.isFinite(sum) && Number.isFinite(squares), "invalid_paired_sample");
+  const mean = sum / n, sd = Math.sqrt(Math.max(0, (squares - sum * sum / n) / (n - 1)));
+  const radius = critical(confidence, n) * sd / Math.sqrt(n);
+  return { n, mean, sd, lower: mean - radius, upper: mean + radius };
 }
-const inference = (interval, threshold, upperIsPass) => upperIsPass
+export function pairedT(values, confidence = spec.confidence) {
+  check(values.length >= 2 && values.every(Number.isFinite), "invalid_paired_sample");
+  return pairedMoments(values.reduce((a, b) => a + b, 0), values.reduce((s, v) => s + v * v, 0), values.length, confidence);
+}
+export const intervalStatus = (interval, threshold, upperIsPass) => upperIsPass
   ? interval.upper <= threshold ? "pass" : interval.lower > threshold ? "fail" : "inconclusive"
   : interval.lower > threshold ? "pass" : interval.upper <= threshold ? "fail" : "inconclusive";
-const validTrial = row => row?.status === "completed" && typeof row.score?.pass === "boolean" && typeof row.score?.abstained === "boolean";
-
-/** Inputs are all planned conversations, never only observed ones. Audit counts are PR3's unique-entry totals. */
-export function holdoutStatistics({ conversations, trials, audit = null, statisticalSpec = spec }) {
+const criticals = new Map(), cuts = new Map();
+function critical(confidence, n) {
+  const key = `${confidence}/${n}`;
+  if (!criticals.has(key)) criticals.set(key, tQuantile(confidence, n - 1));
+  return criticals.get(key);
+}
+export function safetyCuts(n, statisticalSpec = spec) {
+  const key = `${n}/${statisticalSpec.confidence}/${statisticalSpec.safety.maximum}`;
+  if (!cuts.has(key)) {
+    const boundary = predicate => { let lo = 0, hi = n + 1; while (lo < hi) { const mid = Math.floor((lo + hi) / 2); if (mid <= n && !predicate(mid)) lo = mid + 1; else hi = mid; } return lo; };
+    cuts.set(key, { passMaximum: boundary(k => clopperPearson(k, n, statisticalSpec.confidence).upper > statisticalSpec.safety.maximum) - 1,
+      failMinimum: boundary(k => clopperPearson(k, n, statisticalSpec.confidence).lower > statisticalSpec.safety.maximum) });
+  }
+  return cuts.get(key);
+}
+/** Shared scoring/power gate code; binomial count cuts are exactly equivalent to CP endpoints. */
+export function gateEvaluator(statisticalSpec = spec) {
   validateStatisticalSpec(statisticalSpec);
-  check(Array.isArray(conversations) && conversations.length === 256 && new Set(conversations.map(c => c.id)).size === 256
-    && spec.design.corpora.every(corpus => conversations.filter(c => c.corpus === corpus).length === 128)
-    && conversations.every(c => Array.isArray(c.probes) && c.probes.length === 15 && new Set(c.probes).size === 15), "invalid_planned_holdout");
+  return {
+    safety: (k, n) => { const c = safetyCuts(n, statisticalSpec); return k <= c.passMaximum ? "pass" : k >= c.failMinimum ? "fail" : "inconclusive"; },
+    benefit: (sum, squares, n, combined) => { const interval = pairedMoments(sum, squares, n, statisticalSpec.confidence);
+      return { interval, status: intervalStatus(interval, combined ? statisticalSpec.benefit.combinedMinimumExclusive : statisticalSpec.benefit.corpusMinimumExclusive, false) }; },
+    wrongRate: (wrong, denominator, complete = true) => wrong / denominator > statisticalSpec.safety.wrongRateMaximum ? "fail" : complete ? "pass" : "inconclusive",
+    accuracy: (correct, missing, denominator, complete = true) => (correct + missing) / denominator < statisticalSpec.accuracyMinimum ? "fail" : complete ? "pass" : "inconclusive",
+  };
+}
+/** Conservative bound for EVERY completion's t upper endpoint, not the invalid '+1 maximizes lower' shortcut.
+ * mean <= sum(hi)/n. Sum of centered squares <= sum(max(lo²,hi²)) - min(sum(x)²)/n.
+ * This relaxation can be loose: failure is reported only when its upper bound establishes failure. */
+export function completionUpperBound(bounds, confidence = spec.confidence) {
+  check(bounds.length >= 2 && bounds.every(([lo, hi]) => Number.isFinite(lo) && Number.isFinite(hi) && lo >= -1 && hi <= 1 && lo <= hi), "invalid_completion_bounds");
+  if (bounds.every(([lo, hi]) => lo === hi)) return pairedT(bounds.map(([lo]) => lo), confidence).upper;
+  const n = bounds.length, low = bounds.reduce((s, b) => s + b[0], 0), high = bounds.reduce((s, b) => s + b[1], 0);
+  const squares = bounds.reduce((s, [lo, hi]) => s + Math.max(lo * lo, hi * hi), 0);
+  const nearest = low > 0 ? low : high < 0 ? high : 0;
+  return high / n + critical(confidence, n) * Math.sqrt((Math.max(0, squares - nearest * nearest / n) + 64 * Number.EPSILON * n * n) / (n * (n - 1)));
+}
+const OUTCOMES = new Set(["correct", "stale", "conflicted", "violation", "leaked", "abstained", "empty", "wrong", "fabricated"]);
+const validTrial = row => row?.status === "completed" && typeof row.score?.pass === "boolean" && OUTCOMES.has(row.score?.outcome);
+const wrongTrial = row => validTrial(row) && !row.score.pass && !["abstained", "empty"].includes(row.score.outcome);
+
+/** Pure analysis defaults to NOT a measurement; callers must explicitly supply validated real execution provenance. */
+export function holdoutStatistics({ conversations, trials, audit = null, statisticalSpec = spec, measurement = false }) {
+  validateHoldoutConversations(conversations, statisticalSpec);
+  const d = statisticalSpec.design, bundleSize = d.probes * d.repeats, evaluator = gateEvaluator(statisticalSpec);
+  const repeats = Array.from({ length: d.repeats }, (_, i) => i + 1);
   const byId = new Map(conversations.map(c => [c.id, c])), slots = new Map(); let unknown = 0;
   for (const row of trials) {
-    const c = byId.get(row.traceId);
-    if (!c || !c.probes.includes(row.probeId) || !HOLDOUT_ARMS.includes(row.arm) || ![1, 2].includes(row.repeat)) { unknown++; continue; }
+    const c = byId.get(row?.traceId);
+    if (!c || !c.probes.includes(row.probeId) || !HOLDOUT_ARMS.includes(row.arm) || !repeats.includes(row.repeat)) { unknown++; continue; }
     const key = `${row.traceId}/${row.arm}/${row.repeat}/${row.probeId}`;
-    const prior = slots.get(key); slots.set(key, prior === undefined ? row : null); // A duplicate invalidates the slot, never last-wins.
+    const prior = slots.get(key); slots.set(key, prior === undefined ? row : null);
   }
   const bundles = conversations.map(c => {
     const arms = Object.fromEntries(HOLDOUT_ARMS.map(arm => {
-      const rows = [1, 2].flatMap(repeat => c.probes.map(id => slots.get(`${c.id}/${arm}/${repeat}/${id}`)));
-      return [arm, { complete: rows.every(validTrial), correct: rows.filter(r => validTrial(r) && r.score.pass).length,
-        wrong: rows.filter(r => validTrial(r) && !r.score.pass && !r.score.abstained).length }];
+      const rows = repeats.flatMap(repeat => c.probes.map(id => slots.get(`${c.id}/${arm}/${repeat}/${id}`)));
+      return [arm, { complete: rows.every(validTrial), missing: rows.filter(r => !validTrial(r)).length,
+        correct: rows.filter(r => validTrial(r) && r.score.pass).length, wrong: rows.filter(wrongTrial).length }];
     }));
     return { ...c, arms, complete: Object.values(arms).every(a => a.complete) };
   });
-  const gates = [], add = (name, status) => gates.push({ name, status });
-  const scopes = {};
-  for (const corpus of [...spec.design.corpora, "combined"]) {
-    const rows = bundles.filter(c => corpus === "combined" || c.corpus === corpus), n = rows.length, denominator = n * 30;
-    const complete = unknown === 0 && rows.every(c => c.complete), ledger = spec.safety.treatment, pack = spec.benefit.comparator;
+  const gates = [], add = (name, status) => gates.push({ name, status }), scopes = {};
+  for (const corpus of [...d.corpora, "combined"]) {
+    const rows = bundles.filter(c => corpus === "combined" || c.corpus === corpus), n = rows.length, denominator = n * bundleSize;
+    const complete = unknown === 0 && rows.every(c => c.complete), ledger = statisticalSpec.safety.treatment, pack = statisticalSpec.benefit.comparator;
     const correct = rows.reduce((s, c) => s + c.arms[ledger].correct, 0), wrong = rows.reduce((s, c) => s + c.arms[ledger].wrong, 0);
-    const safety = {};
-    for (const comparator of spec.safety.comparators) {
-      const harmful = rows.filter(c => c.arms[ledger].wrong > 0 && c.arms[comparator].wrong === 0).length;
-      const interval = complete ? clopperPearson(harmful, n, spec.confidence) : null;
-      const status = interval ? inference(interval, spec.safety.maximum, true) : "inconclusive";
-      safety[comparator] = { harmful: complete ? harmful : null, n, interval, status }; add(`${corpus}:safety:${comparator}`, status);
+    const missing = rows.reduce((s, c) => s + c.arms[ledger].missing, 0), safety = {};
+    for (const comparator of statisticalSpec.safety.comparators) {
+      // 'No comparator wrong' is established only if ALL comparator slots are valid.
+      const knownHarmful = rows.filter(c => c.arms[ledger].wrong > 0 && c.arms[comparator].complete && c.arms[comparator].wrong === 0).length;
+      const interval = complete ? clopperPearson(knownHarmful, n, statisticalSpec.confidence) : null;
+      const bestCompletion = clopperPearson(knownHarmful, n, statisticalSpec.confidence);
+      const status = complete ? evaluator.safety(knownHarmful, n) : bestCompletion.lower > statisticalSpec.safety.maximum ? "fail" : "inconclusive";
+      safety[comparator] = { harmful: complete ? knownHarmful : null, knownHarmful, n, interval, bestCompletion, status }; add(`${corpus}:safety:${comparator}`, status);
     }
-    const benefit = complete ? pairedT(rows.map(c => (c.arms[ledger].correct - c.arms[pack].correct) / 30), spec.confidence) : null;
-    const benefitStatus = benefit ? inference(benefit, corpus === "combined" ? 0.02 : 0, false) : "inconclusive";
+    const bounds = rows.map(c => { const l = c.arms[ledger], p = c.arms[pack]; return [(l.correct - p.correct - p.missing) / bundleSize, (l.correct + l.missing - p.correct) / bundleSize]; });
+    const differences = bounds.map(([lo]) => lo), sum = differences.reduce((a, b) => a + b, 0), squares = differences.reduce((a, b) => a + b * b, 0);
+    const result = complete ? evaluator.benefit(sum, squares, n, corpus === "combined") : null;
+    const benefit = result?.interval ?? null, bestCompletionUpper = completionUpperBound(bounds, statisticalSpec.confidence);
+    const threshold = corpus === "combined" ? statisticalSpec.benefit.combinedMinimumExclusive : statisticalSpec.benefit.corpusMinimumExclusive;
+    const benefitStatus = result?.status ?? (bestCompletionUpper <= threshold ? "fail" : "inconclusive");
     add(`${corpus}:benefit`, benefitStatus);
-    const wrongStatus = complete ? wrong / denominator <= spec.safety.wrongRateMaximum ? "pass" : "fail" : "inconclusive";
-    add(`${corpus}:wrong-rate`, wrongStatus);
-    scopes[corpus] = { plannedConversations: n, plannedAnswers: denominator, complete, safety, benefit, benefitStatus,
-      ledgerCorrect: correct, ledgerAccuracy: correct / denominator, ledgerWrong: complete ? wrong : null,
-      ledgerWrongRate: complete ? wrong / denominator : null, wrongStatus };
+    const wrongStatus = evaluator.wrongRate(wrong, denominator, complete); add(`${corpus}:wrong-rate`, wrongStatus);
+    scopes[corpus] = { plannedConversations: n, plannedAnswers: denominator, complete, safety, benefit, benefitStatus, bestCompletionUpper,
+      ledgerCorrect: correct, ledgerMissing: missing, ledgerAccuracy: correct / denominator, bestCompletionAccuracy: (correct + missing) / denominator,
+      ledgerWrong: wrong, ledgerWrongRate: wrong / denominator, wrongStatus };
   }
-  const integrity = unknown === 0 && bundles.every(c => c.complete);
-  add("integrity", integrity ? "pass" : "inconclusive");
-  add("accuracy", scopes.combined.ledgerAccuracy >= spec.accuracyMinimum ? "pass" : integrity ? "fail" : "inconclusive");
+  const integrity = unknown === 0 && bundles.every(c => c.complete); add("integrity", integrity ? "pass" : "inconclusive");
+  add("accuracy", evaluator.accuracy(scopes.combined.ledgerCorrect, scopes.combined.ledgerMissing, scopes.combined.plannedAnswers, integrity));
   let auditRates = null;
-  const fields = ["published", "audited", "labelFindings", "contextFindings", "falselySupersededCurrent", "bindingErrors"];
-  if (audit && fields.every(k => Number.isSafeInteger(audit[k]) && audit[k] >= 0) && audit.published > 0 && audit.audited === audit.published
-    && audit.labelFindings <= audit.published && audit.contextFindings <= audit.published && audit.complete === true) {
+  const fields = ["published", "audited", "labelFindings", "contextFindings", "falselySupersededCurrent", "bindingErrors"], a = statisticalSpec.audit;
+  if (audit && fields.every(k => Number.isSafeInteger(audit[k]) && audit[k] >= 0) && audit.published > 0 && audit.audited <= audit.published
+    && audit.labelFindings <= audit.audited && audit.contextFindings <= audit.audited && typeof audit.complete === "boolean") {
+    const complete = audit.complete && audit.audited === audit.published;
     auditRates = { ...audit, labelRate: audit.labelFindings / audit.published, contextRate: audit.contextFindings / audit.published };
-    add("audit-label", audit.labelFindings * 363 <= 10 * audit.published ? "pass" : "fail");
-    add("audit-context", audit.contextFindings * 363 <= 5 * audit.published ? "pass" : "fail");
-    add("audit-provenance", audit.falselySupersededCurrent === 0 && audit.bindingErrors === 0 ? "pass" : "fail");
+    add("audit-label", audit.labelFindings * a.referenceDenominator > a.labelNumerator * audit.published ? "fail" : complete ? "pass" : "inconclusive");
+    add("audit-context", audit.contextFindings * a.referenceDenominator > a.contextNumerator * audit.published ? "fail" : complete ? "pass" : "inconclusive");
+    add("audit-provenance", audit.falselySupersededCurrent > a.falselySupersededMaximum || audit.bindingErrors > a.bindingErrorsMaximum ? "fail" : complete ? "pass" : "inconclusive");
+    if (!complete) add("audit-material", "inconclusive");
   } else add("audit-material", "inconclusive");
   const status = gates.some(g => g.status === "fail") ? "fail" : gates.some(g => g.status !== "pass") ? "inconclusive" : "pass";
-  return { schema: "holdout-statistics-v1", unit: "conversation", scopes, plannedAnswersPerArm: 7680, audit: auditRates,
+  return { schema: "holdout-statistics-v1", unit: "conversation", measurement, scopes, plannedAnswersPerArm: conversations.length * bundleSize, audit: auditRates,
     integrity: { complete: integrity, unknownTrials: unknown, incompleteConversations: bundles.filter(c => !c.complete).map(c => c.id) },
-    decision: { status, reasons: gates.filter(g => g.status !== "pass").map(g => `${g.name}:${g.status}`), gates } };
+    decision: measurement ? { status, reasons: gates.filter(g => g.status !== "pass").map(g => `${g.name}:${g.status}`), gates }
+      : { status: "inconclusive", reasons: ["not_a_measurement"], gates: [] } };
 }

@@ -1,3 +1,4 @@
+import { STATISTICAL_SPEC } from "./continuity-holdout-statistics.mjs";
 import { readFile, readdir } from "node:fs/promises";
 import { resolve } from "node:path";
 import { grams, wordRuns, literals } from "./continuity-overlap-text.mjs";
@@ -75,15 +76,15 @@ export function overlapMatcher(sources, allowlist) {
   };
 }
 
-export async function checkHoldoutOverlap(spec, seeds, allowlist) {
+export async function checkHoldoutOverlap(spec, seeds, allowlist, statisticalSpec = STATISTICAL_SPEC) {
   const sources = await overlapSources(), matcher = overlapMatcher(sources, allowlist);
   specNarratives(spec).forEach((s, i) => matcher.add(s, `spec:${i}`));
   const conversations = [];
-  for (const trace of generateHoldout(spec, seeds)) {
+  for (const trace of generateHoldout(spec, seeds, statisticalSpec)) {
     conversations.push({ id: trace.id, sha256: digest(trace) });
     traceNarratives(trace).forEach((s, i) => matcher.add(s, `${trace.id}:${i}`));
   }
-  return { schema: "holdout-overlap-report-v1", specSha256: digest(spec), seedsSha256: digest(seeds), allowlistSha256: digest(allowlist),
+  return { schema: "holdout-overlap-report-v1", specSha256: digest(spec), statisticalSpecSha256: digest(statisticalSpec), seedsSha256: digest(seeds), allowlistSha256: digest(allowlist),
     sources: sources.map(s => ({ name: s.name, sha256: sha256(s.text) })), conversations, ...matcher.result(),
     limitation: "Lexical disjointness does not establish conceptual independence; independent provenance and semantic review remain required." };
 }

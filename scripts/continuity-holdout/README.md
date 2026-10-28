@@ -27,7 +27,7 @@ each family's independence, and corrections/decisions/work-state evidence.
 ## Reproducible selection and overlap
 
 Supply a seeds JSON object with distinct positive 32-bit integer fields
-`ordinary` and `distractor`. Each family has a fixed quota, summing to 128 per
+`ordinary` and `distractor`. Each family has a fixed quota, summing to 256 per
 group. Families and case pools are ordered by ID before seeded selection without
 replacement. Rendering seeds and selected identities are recorded separately.
 Histories use only the authored strings; shared dataset validation does not
@@ -83,7 +83,7 @@ verified. `manifest.sha256` is a convenience copy, not a trust anchor.
 Canonical JSON sorts object keys, preserves array order, and uses one trailing
 newline for files. Semantic input digests hash canonical JSON without a newline;
 `files` entries hash actual bytes, including the newline. The manifest binds the
-merged canonical spec, group and per-case seeds, frozen mixture, each conversation
+merged canonical author spec, statistical design, group and per-case seeds, frozen mixture, each conversation
 and answer-key file, rubric, protocol, allowlist, overlap report, generator and
 supporting benchmark/tooling snapshots, Git revision for audit, Node version,
 lockfile SHA-256 and resolved TypeScript version. All tracked continuity benchmark
@@ -96,3 +96,11 @@ TypeScript version and Node major version. An unrelated descendant commit is
 allowed; changing bound content or runtime provenance requires a new registration.
 
 No model execution or quality/acceptance claim follows from a successful freeze.
+
+Design E is 32 families × 16 selected conversations (16 families per group),
+512 total. Schema/selection/overlap/freeze APIs take their population from the
+statistical spec; the CLIs use the checked-in spec. Registration additionally
+verifies the exact selected family layout. Alternative designs must be approved
+and frozen before execution; no post-outcome change is permitted. Verification
+rehashes every artifact and tooling byte on every call, using bounded concurrent
+I/O without a content or metadata cache.

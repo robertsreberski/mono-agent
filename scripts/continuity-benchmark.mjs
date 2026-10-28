@@ -11,7 +11,7 @@ import { isAbsolute, join, relative, resolve, sep, dirname } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { ARMS, AVAILABLE_ARM_IDS, DEFAULT_ARMS, armById, checkpointKey } from "./lib/continuity-arms.mjs";
 import { estimateCost, inventory, loadTraces, makePlan, parseSeeds } from "./lib/continuity-dataset.mjs";
-import { HOLDOUT_ARMS } from "./lib/continuity-holdout-statistics.mjs";
+import { HOLDOUT_ARMS, STATISTICAL_SPEC } from "./lib/continuity-holdout-statistics.mjs";
 import { HARD_SEEDS } from "./lib/continuity-generator.mjs";
 import { addUsage, emptyUsage, renderMarkdown, summarize } from "./lib/continuity-score.mjs";
 
@@ -70,7 +70,7 @@ export function profileFrom(flags) {
       ...(flags["reader-effort"] === undefined ? {} : { readerEffort: flags["reader-effort"] }),
       ...(flags["judge-effort"] === undefined ? {} : { judgeEffort: flags["judge-effort"] }),
     },
-    repeats: integer(flags.repeats, { min: 1, max: 5 }, "invalid_repeats") ?? (suite === "holdout" ? 2 : 1),
+    repeats: integer(flags.repeats, { min: 1, max: 5 }, "invalid_repeats") ?? (suite === "holdout" ? STATISTICAL_SPEC.design.repeats : 1),
     arms,
     probeLimit: integer(flags["probe-limit"], { min: 1, max: 15 }, "invalid_probe_limit") ?? null,
   };
@@ -122,21 +122,25 @@ Plan (bound into the digest): --suite original|hard|hard-distractors|holdout (de
   --reader-effort LEVEL --judge-effort LEVEL --repeats N --arms ${AVAILABLE_ARM_IDS.join(",")} --probe-limit N
 Execution only: --trace ID (repeatable) --repeat N (repeatable) --concurrency N --output DIR --keep-work --aggregate-only --capture-upkeep-output
 Holdout: --corpus-manifest FILE --manifest-sha256 SHA --registration FILE --registration-sha256 SHA
-  --statistical-spec FILE --shard 1..16 [--audit FILE]. Shards require all four arms, two repeats, fifteen probes.
+  --statistical-spec FILE --shard N [--audit FILE]. Shard counts/workload follow the registered specification.
 See docs/runtime/continuity-benchmark.md.`;
 
 export async function main(argv = process.argv.slice(2), { stdout = console.log, env = process.env, modulesLoader } = {}) {
   const flags = parseArguments(argv);
   if (flags.help) { stdout(HELP); return 0; }
   if (flags.real && Object.hasOwn(env, "CI")) throw new CliError("paid_mode_refused_in_ci");
-  const { suite, seeds, profile, repeats, arms, probeLimit } = profileFrom(flags);
+  let { suite, seeds, profile, repeats, arms, probeLimit } = profileFrom(flags);
+  if (suite === "holdout" && flags.repeats === undefined) {
+    const { readJson } = await import("./lib/continuity-holdout-files.mjs");
+    repeats = (await readJson(flags["statistical-spec"])).design?.repeats;
+  }
   const piAuthPath = await validatePiAuthPath(flags["pi-auth-path"]);
   const { head, dirty } = await gitState();
   if (suite === "holdout" && flags.real && flags.shard === undefined) throw new CliError("paid_holdout_requires_shard");
   if (suite === "holdout" && flags.shard !== undefined && flags.repeat !== undefined) throw new CliError("registered_shard_requires_both_repeats");
   const { traces, sha256, source, holdout } = await loadTraces({ suite, seeds,
     ...(suite === "holdout" ? { manifestPath: flags["corpus-manifest"], manifestSha256: flags["manifest-sha256"], registrationPath: flags.registration,
-      registrationSha256: flags["registration-sha256"], statisticalSpecPath: flags["statistical-spec"], shard: integer(flags.shard, { min: 1, max: 16 }, "invalid_shard"),
+      registrationSha256: flags["registration-sha256"], statisticalSpecPath: flags["statistical-spec"], shard: integer(flags.shard, { min: 1, max: Number.MAX_SAFE_INTEGER }, "invalid_shard"),
       profile, codeRevision: head, repeats, arms, probeLimit } : {}) });
   const plan = makePlan({ traces, sha256, suite, source, codeRevision: head, profile, repeats, arms, probeLimit, ...(holdout ? { holdout } : {}),
     piAuthFingerprint: piAuthPath === undefined ? null : createHash("sha256").update(piAuthPath).digest("hex") });
@@ -299,7 +303,7 @@ export async function aggregate({ plan, traces, output, mode, auditPath }) {
   const units = [];
   for (const name of files) {
     const unit = JSON.parse(await readFile(join(output, "units", name), "utf8"));
-    if (unit.confirmation === plan.confirmation && unit.executionKind === mode && unit.complete === true) units.push(unit);
+    if (unit.confirmation === plan.confirmation && unit.executionKind === mode && (unit.complete === true || plan.holdout && Array.isArray(unit.trials))) units.push(unit);
   }
   const trials = units.flatMap((unit) => unit.trials);
   const extraUsage = units.flatMap(unit => [unit.checkpoint?.mid && { arm: unit.arm, usage: unit.checkpoint.mid.usage, compactionUsage: unit.checkpoint.mid.compactionUsage }, unit.checkpoint?.upkeep && { arm: unit.arm, usage: unit.checkpoint.upkeep.usage }].filter(Boolean));
@@ -307,9 +311,11 @@ export async function aggregate({ plan, traces, output, mode, auditPath }) {
   const summary = summarize(trials, { arms: armIds, baselineArm: plan.baselineArm, repeats: Array.from({ length: plan.repeats }, (_, index) => index + 1), extraUsage });
   if (plan.holdout) {
     const { holdoutStatistics } = await import("./lib/continuity-holdout-statistics.mjs");
-    const { readJson } = await import("./lib/continuity-holdout-files.mjs");
+    const { readBoundAudit } = await import("./lib/continuity-holdout-registration.mjs");
+    const bound = await readBoundAudit(auditPath, plan.holdout.registrationSha256);
     summary.holdout = holdoutStatistics({ conversations: plan.holdout.conversations, trials, statisticalSpec: plan.holdout.statisticalSpec,
-      audit: auditPath ? await readJson(auditPath) : null });
+      audit: bound.audit, measurement: mode === "real" });
+    summary.holdout.auditBinding = bound.binding;
   }
   const judgeUsage = emptyUsage();
   for (const trial of trials) if (trial.judge?.usage) addUsage(judgeUsage, trial.judge.usage);
@@ -323,7 +329,7 @@ export async function aggregate({ plan, traces, output, mode, auditPath }) {
     return [id, { samples: rows.length, verified: rows.filter((row) => row.verified).length, probeInputTokens: stat("probeInputTokens"), compactionTokensBefore: stat("compactionTokensBefore"),
       midCompactionTokensBefore: stat("midCompactionTokensBefore"), replayedMessages: stat("replayedMessages"), projectionDroppedRecords: stat("projectionDroppedRecords") }];
   }));
-  const coverage = { unitsComplete: units.length, unitsExpected: plan.repeats * plan.corpus.traces.length * armIds.length };
+  const coverage = { unitsComplete: units.filter(unit => unit.complete === true).length, unitsExpected: plan.repeats * plan.corpus.traces.length * armIds.length };
   const armLabels = Object.fromEntries(ARMS.map((arm) => [arm.id, arm.label]));
   const preparationHealth = Object.fromEntries(plan.arms.map(arm => {
     const stages = units.filter(unit => unit.arm === arm.id).flatMap(unit => unit.checkpoint?.upkeep?.preparations ?? []);

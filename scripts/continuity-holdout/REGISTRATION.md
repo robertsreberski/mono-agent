@@ -3,29 +3,43 @@
 This is benchmark tooling, not a quality result or permission to execute a study.
 Keep corpus, registration, statistical-spec copies and result inputs outside the
 checkout. Do not add registration files to the immutable frozen directory.
-Existing suites and arm configurations remain unchanged.
+Existing suites, arm configurations and scoring of legacy suites are unchanged.
 
-## Before registration: power review
+## Registered design and power review
+
+Design E is **512 conversations in 32 disjoint families of 16**, half the families
+and 256 conversations in each corpus. There are **32 balanced shards of 16**,
+eight conversations per corpus, each binding a **$25 ceiling**. This records a
+ceiling, not spending authorization or a remotely enforced invoice cap; controller
+admission/accounting belongs to the subsequent workflow.
 
 ```bash
 node scripts/continuity-holdout-power.mjs --seed 572913 \
   --replications 100000 --output .worklab-tmp/holdout-power
 ```
 
-The CLI writes deterministic `power.json` and `power.md`, enumerates exact safety
-acceptance power and simulates at least 100,000 replications for each scenario.
-The output states all assumptions, including comparator dependence, family and
-repeat correlation. Accuracy/integrity/audit are assumed to pass in the joint
-simulation, not estimated from models. Heterogeneous family scenarios introduce
-residual dependence between conversations and are sensitivity analyses, not a
-family-cluster calibration of the conversation-level gates. Poor power must be
-reviewed before execution; never extend the sample or change gates after outcomes.
+The CLI writes deterministic `power.json` and `power.md`, exact safety enumeration
+and at least 100,000 replications/scenario. It and the real scorer share CP count
+cuts, paired-t confidence endpoints, wrong-rate and accuracy gate helpers.
+Optional `--statistical-spec /external/statistical-spec.json` permits an explicitly
+reviewed alternative design. Layout, corpus counts, shards and numerical gate
+thresholds are parameterized, not inferred from completed work; malformed layouts
+are rejected. The v1 two-repeat, 15-probe and comparator/model policies stay fixed.
+Any design or threshold change requires fresh approval/freeze/registration, never
+an outcome-dependent extension.
+
+Power assumptions are disclosed, including shared comparator harmful events,
+repeat/family dependence, fixed ledger accuracy and passing integrity/audit.
+The configured accuracy floor is evaluated. Family scenarios introduce residual
+within-family dependence: these are sensitivities, **not family-cluster calibration**
+of the conversation-level intervals. Power is not model-quality or audit evidence.
 
 ## Register the clean, merged tooling and frozen corpus
 
-Use the checked-in `statistical-spec.json` unchanged, copied to a private external
-file. The exact bytes of that copy are bound. Freeze verification checks current
-bound tooling contents and requires a clean tree, even for dry/offline loading.
+Use the approved `statistical-spec.json`, copied to a private external file. Exact
+bytes are bound by registration; its semantic values must also equal the design
+bound into the frozen manifest. All frozen content and current tooling are
+verified, requiring a clean tree even for dry/offline loading.
 
 ```bash
 node scripts/continuity-holdout-register.mjs \
@@ -42,50 +56,86 @@ node scripts/continuity-benchmark.mjs --dry-run --suite holdout \
   --alternate <alternate-ref> --no-judge
 ```
 
-Pin the returned registration digest independently. Registration deterministically
-shuffles sorted conversation identities, without replacement, into 16 shards of
-16: eight ordinary (`holdout-hard`) and eight distractor
-(`holdout-hard-distractors`) conversations per shard. It binds all memberships,
-manifest/rubric/statistical-spec hashes, seed, reader/extractor/alternate models,
-low reader effort, no judge, and the current code revision. The plan confirmation
-also binds these inputs and the selected shard. Changing an input refuses loading
-or changes confirmation before dispatch.
+Pin the returned registration digest independently. Seeded no-replacement
+shuffling of sorted identities binds every conversation/family and shard,
+manifest/rubric/statistical-spec hashes, models, low reader effort, no judge,
+code revision and per-shard ceiling. Plan confirmation binds these inputs and
+the selected shard. Changing an input refuses loading or changes confirmation
+before dispatch. Registration checks the exact 32 × 16 selected family layout;
+author-format/schema validity alone is not corpus acceptance.
 
-A shard requires all four arms, two repeats and all 15 probes (1,920 reader turns).
-`--repeat` is refused for shards. `--trace` may select registered conversation
-chunks; absent work stays missing, never silently shrinks the analysis population.
-Paid holdout mode requires a shard plus the existing explicit confirmation and
-credential/output checks. This tooling does not grant paid authorization.
+Each shard requires all four arms, two repeats and 15 probes (1,920 reader turns).
+`--repeat` is refused for shards. `--trace` can select registered conversation
+chunks; absent work stays missing. Paid mode requires a shard and existing
+confirmation/credential/output checks. Runtime outputs must be external.
 
-For offline diagnostic proofs only, omit `--shard` and use the existing
-`--repeats`/`--probe-limit` controls; such partial runs cannot pass the study.
-Per-shard results alone also cannot pass: statistical denominators always cover
-all 256 registered conversations, not just completed or selected ones. The pure
-`holdoutStatistics` API accepts the complete registered conversation list and
-merged trials; the subsequent controller must validate and combine all registered
-shard units before final analysis.
+For offline proofs, omit `--shard` and use reduced `--repeats`/`--probe-limit`.
+**All non-real/scripted analyses are forced inconclusive with `not_a_measurement`,
+even when synthetic data would mathematically pass or fail.** The pure API also
+defaults to non-measurement; only validated real records justify opting in.
+Per-shard results cannot pass the study: denominators always cover the complete
+registered population. The subsequent controller must validate/join shard trial
+units before calling `holdoutStatistics`; completed observations in partial units
+remain evidence, not discarded. Incomplete units never count as complete coverage.
 
-## Statistical and audit output
+## Gate semantics and missing data
 
-`results.json` keeps existing per-probe descriptive results and adds
-`summary.holdout`: conversation-level safety intervals, paired-t benefit intervals,
-planned denominators, audit rates, integrity counts and pass/fail/inconclusive
-reasons. `summary.md` and CLI output disclose the decision. Statistical confidence
-bounds are one-sided 95%; the intersection-union gates do not assert simultaneous
-95% interval coverage.
+`results.json` retains descriptive per-probe results and adds `summary.holdout`:
+conversation-level safety/benefit, planned denominators, audit rates and decision
+reasons. Markdown/CLI guard offline output as well. Design E has **7,680 planned
+answers per corpus/arm, 15,360 combined**. Both repeats/all probes stay together.
+Native coverage is required although native is not a safety comparator.
 
-Missing, invalid, duplicated or unknown slots prevent acceptance. An incomplete
-scope has **no complete-case inferential interval**. Ledger accuracy retains its
-planned denominator with missing/invalid answers incorrect. Complete scopes and
-complete audit inputs can still establish failures; unknown data cannot turn an
-incomplete study into a pass. Both repeats and all probes stay in one conversation
-bundle, and native-arm coverage is required even though it is not a safety comparator.
+**Wrong** means `!pass && outcome !== "abstained" && outcome !== "empty"`.
+Stale, conflicted, violating, leaked or fabricated answers count as wrong even
+when they contain an abstention phrase. Pure abstentions and empty answers are
+incorrect but not wrong. Malformed/unknown outcome records are missing/invalid.
 
-Optional `--audit /external/audit.json` supplies PR3's unique-entry totals:
+Complete safety passes with CP upper ≤5%, fails only with CP lower >5%, and is
+otherwise inconclusive. Counts derive from n: E allows at most **6/256 per corpus**
+and **17/512 combined** to pass. A count just above a passing cutoff is **not**
+a failure unless the lower bound establishes it. Complete benefit passes when
+its t lower endpoint exceeds the threshold, fails when its upper endpoint is
+at or below the threshold, and otherwise is inconclusive. Bounds are one-sided
+95%; intersection-union gates do not claim simultaneous 95% interval coverage.
+
+Missing, invalid, duplicate or unknown slots can never produce acceptance. An
+incomplete scope has no complete-case inferential interval. It fails only when
+a conservative bound proves that **every completion fails by the same registered
+semantics**, otherwise it is inconclusive:
+
+- Wrong rate: observed ledger wrongs / planned denominator already >0.5%.
+- Accuracy: even `(correct + missing ledger slots) / planned` is below 91.875%.
+- Safety: CP lower bound for **known harmful** conversations on planned n >5%.
+  A comparator with missing slots cannot establish that it made no wrong answers.
+- Benefit: bound every conversation difference by its possible correct fractions
+  in [−1,1]. A conservative upper bound on **every completion's t upper endpoint**
+  must be ≤ the threshold to establish failure. The bound combines the maximal
+  possible mean with an upper bound on centered squared variation, with numerical
+  padding; fixed differences use the actual t upper endpoint. This relaxation can
+  be loose and may conservatively leave a case inconclusive. Filling missing
+  differences with +1 does **not** maximize a t lower endpoint: for 127 differences
+  of 0.0201 and one missing, +1 makes the lower endpoint below 0.02, while 0.0201
+  keeps it above 0.02. Neither that shortcut nor 'cannot pass means fail' is used.
+
+Point-threshold and audit failures remain failures when missing execution data
+cannot undo them. No incomplete data is presented as a confidence estimate.
+
+## Bound audit input
+
+Optional `--audit /external/audit.json` supplies PR3's trusted unique-entry totals:
 `published`, `audited`, `labelFindings`, `contextFindings`,
-`falselySupersededCurrent`, `bindingErrors`, and `complete: true`.
-All counts are nonnegative integers; `audited` must equal positive `published`.
-Rates use unique published entries and exact cross-multiplied 10/363 and 5/363
-limits. Missing or incomplete audit material is inconclusive, never a pass.
-Audit deduplication, source verification and export collection belong to the
-subsequent audit/controller workflow, not these trusted aggregate counts.
+`falselySupersededCurrent`, `bindingErrors`, `complete: true`, and
+**`registrationSha256`** equal to the pinned registration digest. A missing or
+mismatched digest is rejected. `summary.holdout.auditBinding` records the SHA-256
+of the **exact file bytes** and its claimed registration digest, so whitespace
+changes too are visible. This post-execution receipt is not part of the
+pre-execution plan confirmation.
+
+Counts are nonnegative integers; `audited` equals positive `published`. Unique
+published-entry rates use exact cross multiplication at the configured limits
+(E retains 10/363 and 5/363 and zero provenance/false-supersession findings).
+The trusted `published` total must cover the entire final unique-entry population,
+not just its audited subset. Known violations of that fixed denominator fail even
+when auditing is incomplete. Missing/incomplete audit material never passes. Deduplication, source verification
+and export collection remain the subsequent controller/audit workflow's job.

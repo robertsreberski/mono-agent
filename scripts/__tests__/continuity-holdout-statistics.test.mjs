@@ -1,15 +1,17 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
-import { clopperPearson, pairedT, tQuantile, betaCdf, betaQuantile, holdoutStatistics, HOLDOUT_ARMS, STATISTICAL_SPEC } from "../lib/continuity-holdout-statistics.mjs";
-import { createRegistration, holdoutModels } from "../lib/continuity-holdout-registration.mjs";
+import { clopperPearson, pairedT, tQuantile, betaCdf, betaQuantile, holdoutStatistics, HOLDOUT_ARMS, STATISTICAL_SPEC, completionUpperBound, gateEvaluator, validateStatisticalSpec } from "../lib/continuity-holdout-statistics.mjs";
+import { createRegistration, holdoutModels, readBoundAudit, seeded } from "../lib/continuity-holdout-registration.mjs";
 import { effectDistribution, safetyPower } from "../lib/continuity-holdout-power.mjs";
+import { scoreAnswer, renderMarkdown } from "../lib/continuity-score.mjs";
+import { sha256 } from "../lib/continuity-holdout-files.mjs";
 import { makePlan, digest } from "../lib/continuity-dataset.mjs";
-import { profileFrom, parseArguments } from "../continuity-benchmark.mjs";
+import { profileFrom, parseArguments, aggregate } from "../continuity-benchmark.mjs";
 
-const conversations = Array.from({ length: 256 }, (_, i) => ({ id: `fixture-${i}`, corpus: i < 128 ? "holdout-hard" : "holdout-hard-distractors", probes: Array.from({ length: 15 }, (_, j) => `p${String(j + 1).padStart(2, "0")}`) }));
+const conversations = Array.from({ length: 512 }, (_, i) => ({ id: `fixture-${i}`, family: `family-${Math.floor(i / 16)}`, corpus: i < 256 ? "holdout-hard" : "holdout-hard-distractors", probes: Array.from({ length: 15 }, (_, j) => `p${String(j + 1).padStart(2, "0")}`) }));
 const audit = { published: 363, audited: 363, labelFindings: 10, contextFindings: 5, falselySupersededCurrent: 0, bindingErrors: 0, complete: true };
 function trials() {
   return conversations.flatMap(c => HOLDOUT_ARMS.flatMap(arm => [1, 2].flatMap(repeat => c.probes.map(probeId => {
@@ -17,7 +19,7 @@ function trials() {
     return { traceId: c.id, probeId, arm, repeat, status: "completed", score: { pass, abstained: !pass, outcome: pass ? "correct" : "abstained" } };
   }))));
 }
-const score = rows => holdoutStatistics({ conversations, trials: rows, audit });
+const score = rows => holdoutStatistics({ conversations, trials: rows, audit, measurement: true });
 const ledger = rows => rows.filter(t => t.arm === "continuity-ledger-cold");
 const registrationOptions = () => ({ conversations, manifestSha256: "a".repeat(64), rubricSha256: "b".repeat(64), statisticalSpecSha256: "c".repeat(64), statisticalSpec: STATISTICAL_SPEC, seed: 7654, models: holdoutModels(), codeRevision: "d".repeat(40) });
 
@@ -39,42 +41,43 @@ describe("exact cluster statistics", () => {
   });
   it("passes complete fixture gates with planned denominators and exact audit rate boundaries", () => {
     const result = score(trials()); expect(result.decision.status).toBe("pass");
-    expect(result.plannedAnswersPerArm).toBe(7680); expect(result.scopes["holdout-hard"].plannedAnswers).toBe(3840);
-    expect(result.scopes.combined.benefit.n).toBe(256); expect(result.audit.labelRate).toBe(10 / 363);
+    expect(result.plannedAnswersPerArm).toBe(15360); expect(result.scopes["holdout-hard"].plannedAnswers).toBe(7680);
+    expect(result.scopes.combined.benefit.n).toBe(512); expect(result.audit.labelRate).toBe(10 / 363);
     expect(result.scopes.combined.ledgerAccuracy).toBe(1);
-    expect(holdoutStatistics({ conversations, trials: trials(), audit: { ...audit, labelFindings: 11 } }).decision.reasons).toContain("audit-label:fail");
-    expect(holdoutStatistics({ conversations, trials: trials(), audit: { ...audit, contextFindings: 6 } }).decision.reasons).toContain("audit-context:fail");
-    expect(holdoutStatistics({ conversations, trials: trials() }).decision.status).toBe("inconclusive");
+    expect(holdoutStatistics({ conversations, trials: trials(), measurement: true, audit: { ...audit, labelFindings: 11 } }).decision.reasons).toContain("audit-label:fail");
+    expect(holdoutStatistics({ conversations, trials: trials(), measurement: true, audit: { ...audit, contextFindings: 6 } }).decision.reasons).toContain("audit-context:fail");
+    expect(holdoutStatistics({ conversations, trials: trials(), measurement: true }).decision.status).toBe("inconclusive");
   });
   it("is invariant to probe/repeat order and uses conversations, not independent answers", () => {
     const rows = trials(), first = score(rows);
     expect(score([...rows].reverse())).toEqual(first);
     expect(score(rows.map(t => ({ ...t, repeat: 3 - t.repeat })))).toEqual(first);
-    const affected = ledger(rows).filter(t => t.traceId === "fixture-0");
-    affected.slice(0, 20).forEach(t => { t.score = { pass: false, abstained: false }; });
+    const affected = ledger(rows).filter(t => ["fixture-0", "fixture-1"].includes(t.traceId));
+    affected.slice(0, 40).forEach(t => { t.score = { pass: false, abstained: false, outcome: "wrong" }; });
     const result = score(rows), corpus = result.scopes["holdout-hard"];
-    expect(corpus.safety["cold-rebuild"].harmful).toBe(1);
-    expect(corpus.safety["cold-rebuild"].interval.upper).toBeCloseTo(clopperPearson(1, 128).upper, 14);
+    expect(corpus.safety["cold-rebuild"].harmful).toBe(2);
+    expect(corpus.safety["cold-rebuild"].interval.upper).toBeCloseTo(clopperPearson(2, 256).upper, 14);
     expect(result.decision.reasons).toContain("holdout-hard:wrong-rate:fail");
   });
   it("distinguishes a straddling safety interval from an established failure", () => {
-    const rows = trials(); ledger(rows).filter(t => t.repeat === 1 && t.probeId === "p01" && Number(t.traceId.slice(8)) < 3).forEach(t => { t.score = { pass: false, abstained: false }; });
+    const rows = trials(); ledger(rows).filter(t => t.repeat === 1 && t.probeId === "p01" && Number(t.traceId.slice(8)) < 7).forEach(t => { t.score = { pass: false, abstained: false, outcome: "wrong" }; });
     expect(score(rows).scopes["holdout-hard"].safety["cold-rebuild"].status).toBe("inconclusive");
-    ledger(rows).filter(t => t.repeat === 1 && t.probeId === "p01" && Number(t.traceId.slice(8)) < 30).forEach(t => { t.score = { pass: false, abstained: false }; });
+    ledger(rows).filter(t => t.repeat === 1 && t.probeId === "p01" && Number(t.traceId.slice(8)) < 30).forEach(t => { t.score = { pass: false, abstained: false, outcome: "wrong" }; });
     expect(score(rows).scopes["holdout-hard"].safety["cold-rebuild"].status).toBe("fail");
   });
-  it.each(["missing", "invalid", "duplicate", "unknown", "native"])("never accepts %s data or produces complete-case inference", kind => {
+  it.each(["missing", "invalid", "bad-score", "duplicate", "unknown", "native"])("never accepts %s data or produces complete-case inference", kind => {
     const rows = trials();
     if (kind === "missing") rows.splice(rows.findIndex(t => t.arm === "continuity-ledger-cold"), 1);
     if (kind === "invalid") ledger(rows)[0].status = "boundary_unverified";
+    if (kind === "bad-score") ledger(rows)[0].score = { pass: true, outcome: "not-an-outcome" };
     if (kind === "duplicate") rows.push(structuredClone(ledger(rows)[0]));
     if (kind === "unknown") rows.push({ ...rows[0], traceId: "unknown" });
     if (kind === "native") rows.splice(rows.findIndex(t => t.arm === "native"), 1);
     const result = score(rows);
     expect(result.decision.status).not.toBe("pass"); expect(result.integrity.complete).toBe(false);
     expect(result.scopes.combined.benefit).toBe(null); expect(result.scopes.combined.safety["cold-rebuild"].interval).toBe(null);
-    expect(result.scopes.combined.plannedAnswers).toBe(7680);
-    if (["missing", "invalid", "duplicate"].includes(kind)) expect(result.scopes.combined.ledgerAccuracy).toBe(7679 / 7680);
+    expect(result.scopes.combined.plannedAnswers).toBe(15360);
+    if (["missing", "invalid", "bad-score", "duplicate"].includes(kind)) expect(result.scopes.combined.ledgerAccuracy).toBe(15359 / 15360);
   });
 });
 
@@ -82,9 +85,10 @@ describe("registration and confirmation", () => {
   it("deterministically creates balanced disjoint shards and binds all inputs", () => {
     const options = registrationOptions(), registration = createRegistration(options);
     expect(createRegistration({ ...options, conversations: [...conversations].reverse() })).toEqual(registration);
-    const ids = registration.shards.flatMap(s => s.conversations); expect(ids).toHaveLength(256); expect(new Set(ids).size).toBe(256);
+    expect(registration.shards).toHaveLength(32);
+    const ids = registration.shards.flatMap(s => s.conversations); expect(ids).toHaveLength(512); expect(new Set(ids).size).toBe(512);
     for (const shard of registration.shards) {
-      expect(shard.conversations).toHaveLength(16);
+      expect(shard.costCapUSD).toBe(25); expect(shard.conversations).toHaveLength(16);
       expect(shard.conversations.filter(id => conversations.find(c => c.id === id).corpus === "holdout-hard")).toHaveLength(8);
     }
     for (const key of ["manifestSha256", "rubricSha256", "statisticalSpecSha256", "codeRevision", "seed", "models"]) {
@@ -99,7 +103,7 @@ describe("registration and confirmation", () => {
     expect(plan({ ...registration, statisticalSpecSha256: "e".repeat(64) }).confirmation).not.toBe(confirmation);
   });
   it("locks the spec and the registered model policy, with legacy profiles unchanged", () => {
-    expect(() => createRegistration({ ...registrationOptions(), statisticalSpec: { ...STATISTICAL_SPEC, accuracyMinimum: 0.5 } })).toThrow("unregistered_statistical_spec");
+    expect(() => createRegistration({ ...registrationOptions(), statisticalSpec: { ...STATISTICAL_SPEC, decision: "unsupported" } })).toThrow("unregistered_statistical_spec");
     expect(() => createRegistration({ ...registrationOptions(), models: { ...holdoutModels(), judge: "fixture:judge" } })).toThrow("invalid_holdout_models");
     expect(profileFrom(parseArguments([])).repeats).toBe(1);
     expect(profileFrom(parseArguments(["--suite", "hard"])).arms).not.toEqual(HOLDOUT_ARMS);
@@ -109,7 +113,7 @@ describe("registration and confirmation", () => {
 const scratch = [];
 afterEach(async () => { for (const dir of scratch.splice(0)) await rm(dir, { recursive: true, force: true }); });
 it("enumerates exact safety power and preserves the specified effect moments", () => {
-  const power = safetyPower(0.005); expect(power.largestAcceptedCount).toBe(2); expect(power.individualGatePower).toBeCloseTo(0.973, 2);
+  const power = safetyPower(0.005); expect(power.largestAcceptedCount).toBe(6); expect(power.largestCombinedAcceptedCount).toBe(17); expect(power.individualGatePower).toBeGreaterThan(0.99);
   for (const rho of [0, 0.5, 0.9]) {
     const { values, probabilities } = effectDistribution(rho), mean = values.reduce((s, v, i) => s + v * probabilities[i], 0);
     const variance = values.reduce((s, v, i) => s + (v - mean) ** 2 * probabilities[i], 0) * (1 + rho) / 2;
@@ -126,3 +130,113 @@ it("power CLI is deterministic at 100,000 replications and rejects smaller studi
   expect(JSON.parse(a.stdout).replications).toBe(100000);
   const invalid = run(join(dir, "invalid"), "99999"); expect(invalid.status).toBe(1); expect(invalid.stderr).toContain("invalid_power_design");
 }, 360000);
+
+
+describe("review regression contracts", () => {
+  it.each(["stale", "conflicted", "violation", "leaked", "abstained", "empty"])("classifies hedged %s by outcome, not the abstained flag", outcome => {
+    const rows = trials();
+    const examples = {
+      stale: [{ score: { kind: "value", accept: ["fresh"], superseded: ["stale"] } }, "stale UNKNOWN"],
+      conflicted: [{ score: { kind: "value", accept: ["fresh"], superseded: ["stale"] } }, "fresh stale UNKNOWN"],
+      violation: [{ score: { kind: "constraint_task", forbidden: ["forbidden"] } }, "forbidden UNKNOWN"],
+      leaked: [{ score: { kind: "redaction", secret: "SYNTHETICSECRET" } }, "SYNTHETICSECRET UNKNOWN"],
+      abstained: [{ score: { kind: "value", accept: ["fresh"], superseded: ["stale"] } }, "UNKNOWN"],
+      empty: [{ score: { kind: "value", accept: ["fresh"], superseded: ["stale"] } }, ""],
+    };
+    const result = scoreAnswer(...examples[outcome]); expect(result.outcome).toBe(outcome);
+    if (outcome !== "empty") expect(result.abstained).toBe(true);
+    ledger(rows)[0].score = result;
+    const scope = score(rows).scopes["holdout-hard"], expected = ["abstained", "empty"].includes(outcome) ? 0 : 1;
+    expect(scope.ledgerWrong).toBe(expected); expect(scope.safety["cold-rebuild"].knownHarmful).toBe(expected);
+  });
+  it.each(["wrong-rate", "accuracy", "safety", "benefit"])("retains an established %s failure with missing data", gate => {
+    const rows = trials(), ls = ledger(rows);
+    if (gate === "wrong-rate") ls.slice(0, 40).forEach(t => { t.score = { pass: false, outcome: "wrong", abstained: false }; });
+    if (gate === "accuracy") ls.slice(0, 2000).forEach(t => { t.score = { pass: false, outcome: "abstained", abstained: true }; });
+    if (gate === "safety") ls.filter(t => t.repeat === 1 && t.probeId === "p01" && Number(t.traceId.slice(8)) < 40).forEach(t => { t.score = { pass: false, outcome: "wrong", abstained: false }; });
+    if (gate === "benefit") {
+      ls.forEach(t => { t.score = { pass: false, outcome: "abstained", abstained: true }; });
+      rows.filter(t => t.arm === "continuity-pack-cold").forEach(t => { t.score = { pass: true, outcome: "correct", abstained: false }; });
+    }
+    rows.splice(rows.findIndex(t => t.arm === "continuity-ledger-cold" && t.traceId === "fixture-255"), 1);
+    const result = score(rows); expect(result.decision.status).toBe("fail");
+    const reason = gate === "accuracy" ? "accuracy:fail" : `holdout-hard:${gate === "safety" ? "safety:cold-rebuild" : gate}:fail`;
+    expect(result.decision.reasons).toContain(reason);
+    expect(result.scopes.combined.benefit).toBe(null);
+  });
+  it("retains known audit failures when auditing is incomplete", () => {
+    const result = holdoutStatistics({ conversations, trials: [], measurement: true, audit: { ...audit, audited: 100, complete: false, labelFindings: 11 } });
+    expect(result.decision.reasons).toContain("audit-label:fail"); expect(result.decision.status).toBe("fail");
+  });
+  it("does not treat an incomplete comparator as known non-harmful", () => {
+    const rows = trials();
+    ledger(rows).filter(t => t.repeat === 1 && t.probeId === "p01" && Number(t.traceId.slice(8)) < 40).forEach(t => { t.score = { pass: false, outcome: "wrong", abstained: true }; });
+    const filtered = rows.filter(t => !(t.arm === "cold-rebuild" && t.repeat === 1 && t.probeId === "p01" && Number(t.traceId.slice(8)) < 40));
+    const safety = score(filtered).scopes["holdout-hard"].safety["cold-rebuild"];
+    expect(safety.knownHarmful).toBe(0); expect(safety.status).toBe("inconclusive");
+  });
+  it("preserves the non-monotone +1 counterexample and bounds sampled completions", () => {
+    const fixed = Array(127).fill(0.0201), bounds = fixed.map(v => [v, v]).concat([[-1, 1]]);
+    expect(pairedT([...fixed, 1]).lower).toBeLessThan(0.02);
+    expect(pairedT([...fixed, 0.0201]).lower).toBeGreaterThan(0.02);
+    expect(completionUpperBound(bounds)).toBeGreaterThan(0.02);
+    const random = seeded(8231);
+    for (let i = 0; i < 200; i++) {
+      const intervals = Array.from({ length: 16 }, () => { const lo = random() * 2 - 1; return [lo, lo + random() * (1 - lo)]; });
+      const completion = intervals.map(([lo, hi]) => lo + random() * (hi - lo));
+      expect(pairedT(completion).upper).toBeLessThanOrEqual(completionUpperBound(intervals));
+    }
+  });
+  it("shares power/scoring gates and matches 200 sampled exact CP/t decisions", () => {
+    const evaluator = gateEvaluator(), random = seeded(88432), n = STATISTICAL_SPEC.design.conversationsPerCorpus;
+    for (let i = 0; i < 200; i++) {
+      const k = Math.floor(random() * n), cp = clopperPearson(k, n);
+      expect(evaluator.safety(k, n)).toBe(cp.upper <= 0.05 ? "pass" : cp.lower > 0.05 ? "fail" : "inconclusive");
+      const values = Array.from({ length: n }, () => random() * 2 - 1), interval = pairedT(values);
+      const result = evaluator.benefit(values.reduce((a, b) => a + b, 0), values.reduce((a, b) => a + b * b, 0), n, true);
+      expect(result.interval).toEqual(interval);
+      expect(result.status).toBe(interval.lower > 0.02 ? "pass" : interval.upper <= 0.02 ? "fail" : "inconclusive");
+    }
+  });
+  it("accepts parameterized layouts/thresholds but rejects inconsistent totals", () => {
+    const options = registrationOptions(), changed = structuredClone(STATISTICAL_SPEC);
+    changed.benefit.combinedMinimumExclusive = 0; changed.safety.maximum = 0.04;
+    expect(validateStatisticalSpec(changed)).toBe(true);
+    expect(digest(createRegistration({ ...options, statisticalSpec: changed }))).not.toBe(digest(createRegistration(options)));
+    const broken = structuredClone(STATISTICAL_SPEC); broken.design.shards = 31;
+    expect(() => validateStatisticalSpec(broken)).toThrow("invalid_statistical_design");
+    expect(() => createRegistration({ ...options, conversations: conversations.slice(1) })).toThrow("invalid_planned_holdout");
+  });
+  it("forces offline analysis inconclusive and binds exact audit bytes to registration", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "holdout-audit-fixture-")); scratch.push(directory);
+    const registrationSha256 = "f".repeat(64), path = join(directory, "audit.json");
+    const input = { ...audit, labelFindings: 11, registrationSha256 };
+    await writeFile(path, JSON.stringify(input));
+    const bound = await readBoundAudit(path, registrationSha256);
+    expect(bound.binding).toEqual({ sha256: sha256(await readFile(path)), registrationSha256 });
+    await writeFile(path, JSON.stringify(input) + "\n");
+    expect((await readBoundAudit(path, registrationSha256)).binding.sha256).not.toBe(bound.binding.sha256);
+    const plan = makePlan({ suite: "holdout", traces: [], sha256: "a".repeat(64), repeats: 2, arms: HOLDOUT_ARMS, profile: { judge: null },
+      holdout: { conversations, statisticalSpec: STATISTICAL_SPEC, registrationSha256 } });
+    for (const mode of ["offline", "real"]) {
+      const output = join(directory, mode); await mkdir(join(output, "units"), { recursive: true });
+      const observedWrong = ledger(trials()).slice(0, 40).map(t => ({ ...t, score: { pass: false, outcome: "wrong", abstained: true } }));
+      await writeFile(join(output, "units/partial.json"), JSON.stringify({ confirmation: plan.confirmation, executionKind: mode,
+        complete: false, arm: "continuity-ledger-cold", trials: observedWrong }));
+      const result = await aggregate({ plan, traces: [], output, mode, auditPath: path });
+      expect(result.coverage.unitsComplete).toBe(0);
+      expect(result.summary.holdout.scopes["holdout-hard"].wrongStatus).toBe("fail");
+      expect(result.summary.holdout.scopes["holdout-hard"].ledgerWrong).toBe(40);
+      expect(renderMarkdown(result.summary, { qualityMeasured: false })).toContain("Decision: **inconclusive**");
+      expect(renderMarkdown(result.summary, { qualityMeasured: false })).toContain("not_a_measurement");
+      expect(result.summary.holdout.auditBinding.sha256).toBe(sha256(await readFile(path)));
+      expect(result.summary.holdout.auditBinding.registrationSha256).toBe(registrationSha256);
+      expect(result.summary.holdout.decision.status).toBe(mode === "offline" ? "inconclusive" : "fail");
+      if (mode === "offline") expect(result.summary.holdout.decision.reasons).toEqual(["not_a_measurement"]);
+      else expect(result.summary.holdout.decision.reasons).toContain("audit-label:fail");
+    }
+    await writeFile(path, JSON.stringify({ ...input, registrationSha256: "e".repeat(64) }));
+    await expect(readBoundAudit(path, registrationSha256)).rejects.toThrow("audit_registration_mismatch");
+    await expect(aggregate({ plan, traces: [], output: join(directory, "offline"), mode: "offline", auditPath: path })).rejects.toThrow("audit_registration_mismatch");
+  });
+});
