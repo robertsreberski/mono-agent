@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Cache upkeep namespace normalization at local acceptance boundaries, keep
+  session mapping filesystem-free, and forward waiting failure/cancellation
+  after an injected recorder's pending commit rejects.
+
 - Bound recorded-run upkeep enrichment to evidenced runs and one namespace scan;
   preserve no-upkeep session totals and custom-recorder recovery semantics. Keep
   local accounting paths/storage identifiers out of forwarded channel metadata,

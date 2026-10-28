@@ -1,4 +1,3 @@
-import { mapRunToSession, NoopRunRecorder, withUpkeepAccounting } from "@mono-agent/observability";
 import { resolve } from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
@@ -360,15 +359,10 @@ it.each([
   expect(h.events.some(e => e.accounting)).toBe(false);
 });
 
-it.each([undefined, ""])("buys nothing and does not mark totals partial for missing/empty namespace %j", async namespace => {
+it.each([undefined, ""])("buys nothing and emits no receipt for missing/empty namespace %j", async namespace => {
   const f = await fixture(), h = harness(f, f.mutate, undefined, namespace === undefined ? {} : { recorderNamespace: namespace });
   await h.prepare();
   expect(h.fetches).toBe(0); expect(h.complete).not.toHaveBeenCalled();
   expect(h.events.filter(e => ["continuity_upkeep", "continuity_upkeep_dispatch"].includes(e.type))).toEqual([]);
-  const recorder = withUpkeepAccounting(new NoopRunRecorder({ runId: "origin-run", conversationId: "fictional" }), "origin-run", "fictional");
-  for (const event of h.events) recorder.onEvent(event);
-  const settled = await recorder.finish({ cost: { cumulativeUsd: 0.1 }, usage: { input_tokens: 10, output_tokens: 2, cache_read_tokens: 0, cache_creation_tokens: 0 } });
-  expect(settled.upkeepAccounting).toBeUndefined(); expect(settled.upkeepAccountingPartial).toBeUndefined(); expect(settled.inclusiveCost).toBeUndefined();
-  const totals = mapRunToSession(settled, [], { instanceLabel: "fictional" }).totals;
-  expect(totals.cost).toBe(0.1); expect(totals.tokensPartial).toBeUndefined();
+  expect(h.events).toContainEqual(expect.objectContaining({ type: "runtime_warning", warning_kind: "continuity_upkeep_degraded", error_code: "namespace_invalid" }));
 });

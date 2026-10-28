@@ -1,5 +1,5 @@
-import { withRecordedUpkeep } from "./upkeep-totals.js";
-import { indexUpkeepCompanions, readUpkeepAccounting, upkeepCompanionPrefix } from "./upkeep-accounting.js";
+import { runUpkeepAccounting, withRecordedUpkeep } from "./upkeep-totals.js";
+import { createUpkeepNamespaceNormalizer, indexUpkeepCompanions, readUpkeepAccounting, upkeepCompanionPrefix } from "./upkeep-accounting.js";
 import { constants as fsConstants } from "node:fs";
 import { open, readdir, readFile, stat } from "node:fs/promises";
 import { resolve } from "node:path";
@@ -224,14 +224,20 @@ export async function readRecordedRun(
   }
 
   const eventsPath = safeJoin(summary.artifactDir, `${baseName}${EVENTS_SUFFIX}`);
-  const events = await readEventsFile(eventsPath, normalized, warnings);
+  const normalizeNamespace = createUpkeepNamespaceNormalizer();
+  const events = (await readEventsFile(eventsPath, normalized, warnings)).map(event => {
+    const payload = event.payload;
+    if (!isRecord(payload) || !["continuity_upkeep", "continuity_upkeep_dispatch"].includes(String(payload.type)) || payload.accounting === undefined) return event;
+    const accepted = runUpkeepAccounting(summary!.summary, [payload.accounting], undefined, normalizeNamespace);
+    return accepted.length ? { ...event, payload: { ...payload, accounting: accepted[0] } } : event;
+  });
   const summaryAccounting = summary.upkeepCandidates;
   let hasUpkeepEvidence = summary.summary.upkeepAccountingPartial === true;
   const accountingWarnings: string[] = [];
   const upkeepAccounting = await readUpkeepAccounting(summary.artifactDir, normalizedRunId, summary.summary.conversationId, [
     ...(Array.isArray(summaryAccounting) ? summaryAccounting : []),
     ...events.flatMap(event => isRecord(event.payload) && ["continuity_upkeep", "continuity_upkeep_dispatch"].includes(String(event.payload.type)) && event.payload.accounting !== undefined ? [event.payload.accounting] : []),
-  ], accountingWarnings, { onEvidence: () => { hasUpkeepEvidence = true; } });
+  ], accountingWarnings, { onEvidence: () => { hasUpkeepEvidence = true; }, normalizeNamespace });
   warnings.push(...accountingWarnings);
 
   return {

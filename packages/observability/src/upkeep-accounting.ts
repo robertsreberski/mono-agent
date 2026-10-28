@@ -69,6 +69,18 @@ export function canonicalUpkeepNamespace(namespace: string): string {
   try { return realpathSync.native(namespace); } catch { return resolve(namespace); }
 }
 
+/** Per-acceptance lifetime: cache aliases and their canonical result, not global state. */
+export function createUpkeepNamespaceNormalizer(): (namespace: string) => string {
+  const cache = new Map<string, string>();
+  return namespace => {
+    const known = cache.get(namespace);
+    if (known !== undefined) return known;
+    const canonical = canonicalUpkeepNamespace(namespace);
+    cache.set(namespace, canonical); cache.set(canonical, canonical);
+    return canonical;
+  };
+}
+
 /** Index once per namespace, rather than rescanning the directory for each run. */
 export function indexUpkeepCompanions(names: readonly string[]): ReadonlyMap<string, readonly string[]> {
   const index = new Map<string, string[]>();
@@ -83,12 +95,14 @@ export function indexUpkeepCompanions(names: readonly string[]): ReadonlyMap<str
 export async function readUpkeepAccounting(artifactDir: string, runId: string, conversationId: string, candidates: readonly unknown[], warnings: string[], options: {
   readonly companionNames?: readonly string[];
   readonly onEvidence?: () => void;
+  readonly normalizeNamespace?: (namespace: string) => string;
 } = {}): Promise<readonly AgentUpkeepAccounting[]> {
   const values = new Map<string, AgentUpkeepAccounting>();
-  const namespace = canonicalUpkeepNamespace(artifactDir);
+  const normalizeNamespace = options.normalizeNamespace ?? createUpkeepNamespaceNormalizer();
+  const namespace = normalizeNamespace(artifactDir);
   const accept = (value: unknown) => {
     const parsed = parseAgentUpkeepAccounting(value);
-    const a = { ...parsed, recorderNamespace: canonicalUpkeepNamespace(parsed.recorderNamespace) };
+    const a = { ...parsed, recorderNamespace: normalizeNamespace(parsed.recorderNamespace) };
     if (a.runId !== runId || a.conversationId !== conversationId || a.recorderNamespace !== namespace) throw new Error("Conflicting upkeep origin");
     const old = values.get(a.operationId);
     values.set(a.operationId, mergeAgentUpkeepAccounting(old ? [old, a] : [a])[0]!);

@@ -1,14 +1,15 @@
+import { realpathSync } from "node:fs";
 import { mkdtemp, mkdir, readFile, realpath, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import type { AgentUpkeepAccounting } from "@mono-agent/contracts";
 import { createJsonlRunRecorder, listRecordedRuns, mapRunToSession, NoopRunRecorder, readRecordedRun, withUpkeepAccounting } from "../index.js";
-import type { RunSummary } from "../types.js";
+import type { RunSummary, RuntimeEventLike } from "../types.js";
 import { exportUpkeepAccounting } from "../upkeep-accounting.js";
 import { inclusiveRecordedCost } from "../upkeep-totals.js";
 const roots: string[] = [];
-afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
+afterEach(async () => { vi.restoreAllMocks(); for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
 const dispatch: AgentUpkeepAccounting = { version: 1, usageIncluded: false, operationId: "op", databaseId: "db", incarnation: "inc", runId: "origin", conversationId: "fictional", logicalConversationId: "logical", recorderNamespace: "/home/example", model: "fictional:extractor", budget: "bootstrap", phase: "dispatch", invocation: "uncertain", outcome: "uncertain", inputTokens: null, cacheReadTokens: null, cacheWriteTokens: null, outputTokens: null, costUsd: null };
 const result: AgentUpkeepAccounting = { ...dispatch, phase: "result", invocation: "invoked", outcome: "valid", inputTokens: 3, cacheReadTokens: 4, cacheWriteTokens: 5, outputTokens: 2, costUsd: 0.2 };
 const inference = { usage: { input_tokens: 10, cache_read_tokens: 20, cache_creation_tokens: 3, output_tokens: 5 }, cost: { cumulativeUsd: 0.1 } };
@@ -146,7 +147,47 @@ it("merges real and symlinked namespace identities without making readers or ses
     expect(detail?.warnings).toEqual([]); expect(detail?.summary.upkeepAccountingPartial).toBeUndefined();
     expect(listed.inclusiveCost?.totalUsd).toBeCloseTo(0.3);
     expect(detail?.upkeepAccounting).toEqual([{ ...r, recorderNamespace: await realpath(artifactDir) }]);
-    const totals = mapRunToSession({ ...detail!.summary, artifactPaths: [] }, [{ type: "continuity_upkeep_dispatch", accounting: d }], opts).totals;
+    const totals = mapRunToSession({ ...detail!.summary, artifactPaths: [] }, detail!.events.map(event => event.payload as RuntimeEventLike), opts).totals;
     expect(totals.cost).toBeCloseTo(0.3); expect(totals.tokensPartial).toBeUndefined();
   }
+});
+
+it.each(["host", "jsonl"])("canonicalizes once at %s acceptance, not on ordinary recorder events", async kind => {
+  const artifactDir = await mkdtemp(join(tmpdir(), "upkeep-namespace-cache-")); roots.push(artifactDir);
+  const inner = new NoopRunRecorder({ runId: "origin", conversationId: "fictional" });
+  const recorder = kind === "host" ? withUpkeepAccounting(inner, "origin", "fictional")
+    : createJsonlRunRecorder({ artifactDir, runId: "origin", conversationId: "fictional" });
+  const canonicalize = vi.spyOn(realpathSync, "native");
+  recorder.onEvent({ type: "continuity_upkeep_dispatch", accounting: { ...dispatch, recorderNamespace: artifactDir } });
+  const reads = canonicalize.mock.calls.length;
+  expect(reads).toBe(1);
+  for (let i = 0; i < 500; i++) recorder.onEvent({ type: "text_delta", text: "Fictional output." });
+  recorder.onEvent({ type: "continuity_upkeep", accounting: { ...result, recorderNamespace: artifactDir } });
+  const done = await recorder.finish(inference);
+  expect(canonicalize).toHaveBeenCalledTimes(reads); expect(done.inclusiveCost?.totalUsd).toBeCloseTo(0.3);
+});
+it("keeps session mapping pure with already-accepted receipt namespaces", () => {
+  const canonicalize = vi.spyOn(realpathSync, "native").mockImplementation(() => { throw new Error("mapper must not touch filesystem"); });
+  const totals = mapRunToSession({ ...summary, upkeepAccounting: [result] }, [{ type: "continuity_upkeep_dispatch", accounting: dispatch }], opts).totals;
+  expect(totals.cost).toBeCloseTo(0.3); expect(totals.tokensPartial).toBeUndefined(); expect(canonicalize).not.toHaveBeenCalled();
+});
+it.each(["fail", "cancel"])("forwards a waiting %s after pending custom commit rejects", async mode => {
+  let reject!: (error: Error) => void;
+  const commit = new Promise<RunSummary>((_resolve, rejectCommit) => { reject = rejectCommit; });
+  const calls: string[] = [];
+  const inner = { onEvent() {}, commitFinish: () => { calls.push("commit"); return commit; },
+    finish: async () => { calls.push("cancel"); return { ...summary, status: "cancelled" as const }; },
+    fail: async () => { calls.push("fail"); return { ...summary, status: "failed" as const }; } };
+  const recorder = withUpkeepAccounting(inner, "origin", "fictional");
+  recorder.onEvent({ type: "continuity_upkeep", accounting: result });
+  const pending = recorder.commitFinish!({});
+  const recover = () => mode === "fail" ? recorder.fail(new Error("fictional failure")) : recorder.finish({ cancelled: true });
+  const first = recover(), second = recover();
+  expect(calls).toEqual(["commit"]);
+  reject(new Error("fictional delayed commit rejection"));
+  await expect(pending).rejects.toThrow("fictional delayed commit rejection");
+  const recovered = await first;
+  expect(await second).toBe(recovered); expect(calls).toEqual(["commit", mode]);
+  expect(recovered.status).toBe(mode === "fail" ? "failed" : "cancelled");
+  expect(recovered.upkeepAccounting).toEqual([result]);
 });

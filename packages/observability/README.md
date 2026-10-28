@@ -111,7 +111,11 @@ inference aggregate with upkeep once, exposing `totalUsd`, `knownCostUsd` and
 conflicting evidence marks `upkeepAccountingPartial`, not measured zero.
 
 `withUpkeepAccounting` is the host receipt sink, independent of attempt results
-and injected recorder behavior. The JSONL recorder snapshots receipts on running
+and injected recorder behavior. A failed pending custom commit lets waiting
+failure/cancellation reach the inner recorder. Namespace aliases are normalized
+once per namespace string within each recorder/read acceptance lifetime, not on
+ordinary token events; decoded detail events carry accepted namespaces so session
+mapping stays filesystem-free. The JSONL recorder snapshots receipts on running
 and terminal boundaries. List/detail readers refine those snapshots from events
 and companions without rewriting the on-disk inference aggregate. Lists scan
 once per namespace and enrich only runs with summary/companion evidence, with

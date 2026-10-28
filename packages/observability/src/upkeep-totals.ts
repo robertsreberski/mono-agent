@@ -1,4 +1,5 @@
-import { canonicalUpkeepNamespace } from "./upkeep-accounting.js";
+import { resolve } from "node:path";
+import { createUpkeepNamespaceNormalizer } from "./upkeep-accounting.js";
 import { mergeAgentUpkeepAccounting, parseAgentUpkeepAccounting, type AgentUpkeepAccounting } from "@mono-agent/contracts";
 import { isRecord } from "./artifact-fs.js";
 import { recordedCost } from "./recorded-cost.js";
@@ -6,12 +7,12 @@ import type { InclusiveRunCost, RunRecorder, RunSummary, RuntimeEventLike, Runti
 
 type Origin = Pick<RunSummary, "runId" | "conversationId" | "upkeepAccounting" | "upkeepAccountingPartial">;
 /** Validate each contribution independently, preserving good evidence on conflict. */
-export function runUpkeepAccounting(origin: Origin, candidates: readonly unknown[] = [], onInvalid?: () => void): readonly AgentUpkeepAccounting[] {
+export function runUpkeepAccounting(origin: Origin, candidates: readonly unknown[] = [], onInvalid?: () => void, normalizeNamespace: (namespace: string) => string = resolve): readonly AgentUpkeepAccounting[] {
   let values: readonly AgentUpkeepAccounting[] = [];
   for (const candidate of [...(origin.upkeepAccounting ?? []), ...candidates]) {
     try {
       const parsed = parseAgentUpkeepAccounting(candidate);
-      const a = { ...parsed, recorderNamespace: canonicalUpkeepNamespace(parsed.recorderNamespace) };
+      const a = { ...parsed, recorderNamespace: normalizeNamespace(parsed.recorderNamespace) };
       if (a.runId !== origin.runId || a.conversationId !== origin.conversationId) continue;
       values = mergeAgentUpkeepAccounting([...values, a]);
     } catch { onInvalid?.(); }
@@ -34,9 +35,9 @@ export function inclusiveRecordedCost(summary: Pick<RunSummary, "cost" | "usage"
   }
   return { totalUsd: partial ? null : knownCostUsd, knownCostUsd, partial };
 }
-export function withRecordedUpkeep<T extends Origin & Pick<RunSummary, "usage" | "cost">>(summary: T, candidates: readonly unknown[] = []): T {
+export function withRecordedUpkeep<T extends Origin & Pick<RunSummary, "usage" | "cost">>(summary: T, candidates: readonly unknown[] = [], normalizeNamespace: (namespace: string) => string = resolve): T {
   let partial = summary.upkeepAccountingPartial === true;
-  const upkeepAccounting = runUpkeepAccounting(summary, candidates, () => { partial = true; });
+  const upkeepAccounting = runUpkeepAccounting(summary, candidates, () => { partial = true; }, normalizeNamespace);
   if (!upkeepAccounting.length && !partial) return summary;
   const cost = inclusiveRecordedCost(summary, upkeepAccounting);
   return { ...summary, upkeepAccounting, ...(partial ? { upkeepAccountingPartial: true as const } : {}),
@@ -66,6 +67,7 @@ export function sessionTokenTotals(usage: unknown, upkeep: readonly AgentUpkeepA
 /** A host-owned receipt sink, outside runtime attempts and recorder injection.
  * A failed/cancelled attempt can never discard receipts already observed here. */
 export function withUpkeepAccounting(recorder: RunRecorder, runId: string, conversationId: string): RunRecorder {
+  const normalizeNamespace = createUpkeepNamespaceNormalizer();
   let upkeepAccounting: readonly AgentUpkeepAccounting[] = [];
   let partial = false;
   let terminal: Promise<RunSummary> | undefined;
@@ -94,19 +96,23 @@ export function withUpkeepAccounting(recorder: RunRecorder, runId: string, conve
       }) as RunSummary;
     } catch { return summary; } // Unsafe recorder objects remain fail-closed at the external boundary.
   };
-  const finish = (work: () => Promise<RunSummary>): Promise<RunSummary> => terminal ??= work().then(snapshot).catch(error => {
-    terminal = undefined; // A failed custom settlement must not swallow fail/cancel recovery.
-    throw error;
-  });
+  const finish = (work: () => Promise<RunSummary>, recover = false): Promise<RunSummary> => {
+    if (terminal) return recover ? terminal.catch(() => finish(work, true)) : terminal;
+    const pending = work().then(snapshot);
+    terminal = pending;
+    void pending.catch(() => { if (terminal === pending) terminal = undefined; });
+    return pending;
+  };
   return {
     ...(recorder.start ? { start: async () => snapshot(await recorder.start!()) } : {}),
     onEvent(event) {
-      upkeepAccounting = runUpkeepAccounting(origin(), upkeepEventAccounting(event), () => { partial = true; });
+      const candidates = upkeepEventAccounting(event);
+      if (candidates.length) upkeepAccounting = runUpkeepAccounting(origin(), candidates, () => { partial = true; }, normalizeNamespace);
       return recorder.onEvent(event);
     },
     ...(recorder.prepareFinish ? { prepareFinish: (value: RuntimeResultLike) => recorder.prepareFinish!(result(value)) } : {}),
     ...(recorder.commitFinish ? { commitFinish: (value: RuntimeResultLike) => finish(() => recorder.commitFinish!(result(value))) } : {}),
-    finish: value => finish(() => recorder.finish(result(value))),
-    fail: (error, context) => finish(() => recorder.fail(error, context)),
+    finish: value => finish(() => recorder.finish(result(value)), value.cancelled === true),
+    fail: (error, context) => finish(() => recorder.fail(error, context), true),
   };
 }
