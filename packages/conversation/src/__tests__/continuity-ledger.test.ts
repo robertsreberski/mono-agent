@@ -325,6 +325,64 @@ it("preserves durable paid-failure suppression beyond the old 256-scope LRU", as
   await prepare(1); expect(complete, JSON.stringify(f.trace)).toHaveBeenCalledTimes(257);
 });
 
+it.each(["ledger", "stats", "snapshotContinuity", "continuitySnapshotVisible"] as const)("retries an actual export-style exclusive lock during %s without losing upkeep admission", async method => {
+  const f = await fixture(); await owner(f);
+  const blocker = new DatabaseSync(f.reader.databasePath);
+  blocker.exec("PRAGMA busy_timeout=0");
+  const exec = DatabaseSync.prototype.exec;
+  // Force the real SQLite conflict immediately; release it on the observed
+  // failed read, not after a wall-clock sleep or a guessed export duration.
+  vi.spyOn(DatabaseSync.prototype, "exec").mockImplementation(function (this: DatabaseSync, sql: string) {
+    return exec.call(this, sql === "PRAGMA busy_timeout=250" ? "PRAGMA busy_timeout=0" : sql);
+  });
+  let caught: unknown;
+  vi.spyOn(f.reader, method).mockImplementationOnce((...args: unknown[]) => {
+    blocker.exec("BEGIN EXCLUSIVE");
+    try { return Reflect.apply(ToolHistoryReader.prototype[method], f.reader, args); }
+    catch (error) { caught = error; throw error; }
+    finally { blocker.exec("ROLLBACK"); blocker.close(); }
+  });
+  const complete = vi.fn(async (_prompt, _signal, input) => ({ receipt: { operationId: input.operationId, model: "fictional:bounded", providerInvoked: true, status: "invalid", inputTokens: null, outputTokens: null, costUsd: null } }));
+  const events: any[] = [];
+  const options = { toolHistory: { ...f, logicalConversationId: (id: string) => id, continuityEnabled: true,
+    upkeep: { enabled: true, recorderNamespace: resolve("/fictional-recorder"), model: "bound-completion", complete },
+    publishLedger: f.writer.publishLedger.bind(f.writer) } } as unknown as ConversationHarnessOptions;
+  await createContinuityPackSupplier(options, { conversationId: "fictional", userMessage: "Current.", abortSignal: new AbortController().signal }, "current")!.prepare(eligible, "cold_rebuild", event => events.push(event));
+  expect(caught).toMatchObject({ code: "ERR_SQLITE_ERROR", errcode: 5 });
+  expect(complete, JSON.stringify(f.trace)).toHaveBeenCalledTimes(1);
+  expect(events).toContainEqual(expect.objectContaining({ type: "continuity_upkeep_dispatch" }));
+  expect(events).not.toContainEqual(expect.objectContaining({ warning_kind: "ledger_integrity" }));
+});
+it("bounds a persistently busy preflight without misreporting ledger corruption", async () => {
+  const f = await fixture(); await owner(f);
+  const busy = Object.assign(new Error("database is locked"), { code: "ERR_SQLITE_ERROR", errcode: 5 });
+  let now = performance.now();
+  const clock = vi.spyOn(performance, "now").mockImplementation(() => now);
+  vi.spyOn(f.reader, "ledger").mockImplementation(() => { now += 10_001; throw busy; });
+  const complete = vi.fn(), events: any[] = [];
+  const options = { toolHistory: { ...f, logicalConversationId: (id: string) => id, continuityEnabled: true,
+    upkeep: { enabled: true, recorderNamespace: resolve("/fictional-recorder"), model: "bound-completion", complete },
+    publishLedger: f.writer.publishLedger.bind(f.writer) } } as unknown as ConversationHarnessOptions;
+  await createContinuityPackSupplier(options, { conversationId: "fictional", userMessage: "Current.", abortSignal: new AbortController().signal }, "current")!.prepare(eligible, "cold_rebuild", event => events.push(event));
+  clock.mockRestore();
+  expect(complete, JSON.stringify(f.trace)).not.toHaveBeenCalled();
+  expect(events).toContainEqual(expect.objectContaining({ type: "continuity_upkeep", status: "skipped", reason: "unavailable" }));
+  expect(events).not.toContainEqual(expect.objectContaining({ warning_kind: "ledger_integrity" }));
+});
+it("does not latch integrity failure when a frozen ledger's current read is busy", async () => {
+  const f = await fixture(); await owner(f);
+  const source = selectLedgerSources(f.reader.snapshotContinuity(scope));
+  await f.writer.publishLedger(validateLedgerOutput(output(source), source, scope));
+  const options = { toolHistory: { ...f, logicalConversationId: (id: string) => id, continuityEnabled: true, ledgerEnabled: true } } as unknown as ConversationHarnessOptions;
+  const events: any[] = [], supplier = createContinuityPackSupplier(options, { conversationId: "fictional", userMessage: "Current.", abortSignal: new AbortController().signal }, "current")!;
+  await supplier.prepare(eligible, "cold_rebuild", () => {});
+  vi.spyOn(f.reader, "ledger").mockImplementationOnce(() => { throw Object.assign(new Error("database is locked"), { code: "ERR_SQLITE_ERROR", errcode: 5 }); });
+  supplier([], 1500, "model_change", event => events.push(event));
+  supplier([], 1500, "model_change", event => events.push(event));
+  expect(events).not.toContainEqual(expect.objectContaining({ warning_kind: "ledger_integrity" }));
+  expect(events).toContainEqual(expect.objectContaining({ warning_kind: "continuity_upkeep_degraded", error_code: "unavailable" }));
+});
+
 it.each(["reader", "rpc"])("keeps a caught %s failure and skipped receipt in count diagnostics", async mode => {
   const f = await fixture(); await owner(f);
   const complete = vi.fn();

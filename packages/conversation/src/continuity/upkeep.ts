@@ -1,3 +1,4 @@
+import { isToolHistorySqliteBusy } from "../tool-history/busy-wait.js";
 import { upkeepAccounting } from "./accounting-outbox.js";
 import { fitsLedgerPrefix } from "./render-fit.js";
 import { randomUUID } from "node:crypto";
@@ -7,6 +8,9 @@ import type { RuntimeEventLike } from "@mono-agent/observability";
 import type { ContinuityUpkeepResult } from "@mono-agent/turn/host";
 import type { ConversationHarnessOptions, ConversationHarnessRequest } from "../harness/contracts.js";
 import { selectLedgerSources, validateLedgerOutput, fitLedgerSelection, renderLedger, spanKey } from "./ledger.js";
+
+// Match the existing asynchronous upkeep-maintenance ceiling, not a provider retry.
+const UPKEEP_READ_BUSY_CEILING_MS = 10_000;
 
 export interface UpkeepEligibility {
   readonly sessionsEnabled: boolean; readonly isolated: boolean; readonly ownedStore: boolean; readonly primaryAttempt: boolean;
@@ -20,13 +24,28 @@ export function createLedgerSupplier(options: ConversationHarnessOptions, reques
   let prepared: Promise<void> | undefined, gap = false, integrityFailed = false;
   const emitSafe = (emit: (event: RuntimeEventLike) => void, event: RuntimeEventLike) => { try { emit(event); } catch { /* diagnostics never block an answer */ } };
   const integrityWarning = (emit: (event: RuntimeEventLike) => void) => emitSafe(emit, { type: "runtime_warning", warning_kind: "ledger_integrity", error_code: "ledger_integrity", message: "Continuity ledger integrity failed; use continuity reset for recovery. Deterministic evidence remains available." });
+  const unavailableWarning = (emit: (event: RuntimeEventLike) => void) => emitSafe(emit, { type: "runtime_warning", warning_kind: "continuity_upkeep_degraded", error_code: "unavailable", message: "Continuity ledger is temporarily unavailable. Deterministic evidence remains available." });
+  // DELETE-journal accounting exports can briefly hold the commit lock after an
+  // acknowledged RPC. Retry the whole read on a fresh connection, yielding to
+  // cancellation/other host work; SQLITE_BUSY is not failed ledger integrity.
+  const read = async <T>(operation: () => T): Promise<T> => {
+    const deadline = performance.now() + UPKEEP_READ_BUSY_CEILING_MS;
+    for (;;) {
+      try { return operation(); }
+      catch (error) {
+        if (!isToolHistorySqliteBusy(error) || request.abortSignal.aborted || performance.now() >= deadline) throw error;
+        await new Promise<void>(resolve => setImmediate(resolve));
+      }
+    }
+  };
+  const readLedger = () => read(() => history?.reader.ledger(scope));
   return {
     get gap() { return gap; },
     current(emit: (event: RuntimeEventLike) => void) {
       if (integrityFailed) { integrityWarning(emit); return undefined; }
       if (!frozen || !history) return undefined;
       try { if (history.reader.continuitySuppressed(scope) || history.reader.ledger(scope)?.generation.id !== frozen.generation.id) { frozen = undefined; gap = true; } }
-      catch { frozen = undefined; gap = true; integrityFailed = true; integrityWarning(emit); }
+      catch (error) { frozen = undefined; gap = true; if (isToolHistorySqliteBusy(error)) unavailableWarning(emit); else { integrityFailed = true; integrityWarning(emit); } }
       return frozen;
     },
     async prepare(eligibility: UpkeepEligibility, reason: string, emit: (event: RuntimeEventLike) => void) {
@@ -35,10 +54,11 @@ export function createLedgerSupplier(options: ConversationHarnessOptions, reques
         const skip = !history?.continuityEnabled || history.packEnabled === false ? "disabled" : request.continuation ? "continuation_boundary"
           : eligibility.historyAvailable === false ? "history_unavailable" : !eligibility.sessionsEnabled ? "per_message" : eligibility.isolated ? "isolated" : !eligibility.ownedStore ? "unowned_store"
           : !eligibility.primaryAttempt || reason === "detached_context" ? "detached_attempt" : eligibility.maxTokens < 500 ? "trigger_headroom" : undefined;
+        let readUnavailable = false;
         if (!request.continuation && !eligibility.isolated && eligibility.ownedStore && eligibility.sessionsEnabled && history?.continuityEnabled && history.packEnabled !== false) {
-          try { frozen = history.reader.ledger(scope); } catch { gap = true; integrityFailed = true; integrityWarning(emit); }
+          try { frozen = await readLedger(); } catch (error) { gap = true; if (isToolHistorySqliteBusy(error)) { readUnavailable = true; unavailableWarning(emit); } else { integrityFailed = true; integrityWarning(emit); } }
         }
-        if (skip || integrityFailed || !config?.enabled) { emitSafe(emit, { type: "continuity_upkeep", status: "skipped", reason: skip ?? (integrityFailed ? "ledger_integrity" : "read_only"), providerInvoked: false }); return; }
+        if (skip || integrityFailed || readUnavailable || !config?.enabled) { emitSafe(emit, { type: "continuity_upkeep", status: "skipped", reason: skip ?? (integrityFailed ? "ledger_integrity" : readUnavailable ? "unavailable" : "read_only"), providerInvoked: false }); return; }
         let completion: ContinuityUpkeepResult | undefined;
         let publishing = false;
         let published: string | undefined, localSkip: string | undefined, uncovered: number | undefined;
@@ -56,7 +76,7 @@ export function createLedgerSupplier(options: ConversationHarnessOptions, reques
           });
           if (fence.uncertain) throw new LedgerError("upkeep_repeat_suppressed");
           const inputTokens = fence.bootstrap ? 128000 : 64000;
-          const source = history!.reader.snapshotContinuity({ ...scope, selection: "upkeep", priorCovered: frozen?.generation.spans.filter(s => frozen!.generation.entries.some(e => e.sources.includes(s.id))).map(spanKey) });
+          const source = await read(() => history!.reader.snapshotContinuity({ ...scope, selection: "upkeep", priorCovered: frozen?.generation.spans.filter(s => frozen!.generation.entries.some(e => e.sources.includes(s.id))).map(spanKey) }));
           if (source.upkeep?.scan) emitSafe(emit, { type: "continuity_upkeep_scan", ...source.upkeep.scan, watermark: source.upkeep.watermark, reason: source.degradedReason ?? "complete" });
           if (["unavailable", "purge_pending", "source_unavailable"].includes(source.degradedReason ?? "")) throw new Error("source_unavailable");
           if (source.degradedReason === "scan_capacity" || source.upkeep?.scan && !source.upkeep.scan.complete) { gap = true; localSkip = "ledger_scan_capacity"; return; }
@@ -77,7 +97,7 @@ export function createLedgerSupplier(options: ConversationHarnessOptions, reques
           }
           const covered = new Set(frozen?.generation.coveredSpans ?? frozen?.generation.entries.flatMap(entry => entry.sources));
           if (frozen && selection.spans.every(span => frozen!.generation.spans.some(old => covered.has(old.id) && old.recordId === span.recordId && old.sha256 === span.sha256 && old.start === span.start && old.end === span.end && old.digest === span.digest))) { localSkip = "already_covered"; return; }
-          const stats = history!.reader.stats();
+          const stats = await read(() => history!.reader.stats());
           if (!stats) throw new Error("quota_unavailable");
           if (stats.retainedBytes - (frozen?.payloadBytes ?? 0) + projectedBytes > stats.limits.maxBytes) { localSkip = "ledger_quota_budget"; return; }
           reservation = { databaseId: fence.databaseId, logicalId: fence.logicalId, conversationId: fence.conversationId,
@@ -87,7 +107,7 @@ export function createLedgerSupplier(options: ConversationHarnessOptions, reques
             budget: fence.bootstrap ? "bootstrap" : "incremental", payloadReserve: Math.max(0, projectedBytes - (frozen?.payloadBytes ?? 0)), ...(selection.progress ? { progress: selection.progress } : {}) };
           await eligibility.withOwner(async () => {
             if (selection.deadline !== undefined && performance.now() >= selection.deadline) throw new LedgerError("ledger_scan_capacity");
-            if (!history!.reader.continuitySnapshotVisible(scope, { ...source, records: selection.records }) || history!.reader.ledger(scope)?.generation.id !== frozen?.generation.id) throw new LedgerError("source_changed");
+            if (!await read(() => history!.reader.continuitySnapshotVisible(scope, { ...source, records: selection.records })) || (await readLedger())?.generation.id !== frozen?.generation.id) throw new LedgerError("source_changed");
             await history!.mutateUpkeep!({ kind: "reserve", reservation: reservation! });
             request.abortSignal.throwIfAborted();
             if (selection.deadline !== undefined && performance.now() >= selection.deadline) throw new LedgerError("ledger_scan_capacity");
@@ -130,7 +150,7 @@ export function createLedgerSupplier(options: ConversationHarnessOptions, reques
           }
           publishing = true;
           await eligibility.withOwner(async () => { if (request.abortSignal.aborted) throw new LedgerError("publish_cancelled"); await history!.publishLedger!(generation, reservation); });
-          frozen = history!.reader.ledger(scope); published = frozen?.generation.id;
+          frozen = await readLedger(); published = frozen?.generation.id;
           if (!published) throw new LedgerError("publish_unavailable");
         } catch (error) {
           gap = true;

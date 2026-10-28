@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Retry transient SQLite contention while preparing continuity upkeep rather
+  than treating accounting-export locks as permanent ledger corruption.
+
 - Cache upkeep namespace normalization at local acceptance boundaries, keep
   session mapping filesystem-free, and forward waiting failure/cancellation
   after an injected recorder's pending commit rejects.
