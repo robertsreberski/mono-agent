@@ -9,8 +9,8 @@ import { auditInput, verifyAuditExport, evaluateImport, certification } from "./
 import { durable, need, pendingAuditGate } from "./continuity-holdout-workflow.mjs";
 
 /** Policy layer only. Callers must have revalidated the certificate, not merely totals. */
-export function certifiedDecision(statistics, controllerComplete, certified) {
-  pendingAuditGate(statistics, controllerComplete, certified);
+export function certifiedDecision(statistics, controllerAdmissible, certified) {
+  pendingAuditGate(statistics, controllerAdmissible, certified);
   statistics.decision.gates.push({ name: "audit-certification", status: certified ? "pass" : "inconclusive" });
   if (!certified) {
     statistics.decision.reasons.push("audit-certification:inconclusive");
@@ -44,7 +44,7 @@ export async function finalReport(context, roots, joinedPath, audit, output) {
   finally { await rm(scratch, { recursive: true, force: true }); }
   const statistics = holdoutStatistics({ conversations: context.registration.conversations, trials: joined.value.trials,
     statisticalSpec: context.registration.statisticalSpec, audit: resolved?.totals ?? agreed?.lowerBounds ?? null, measurement: true });
-  certifiedDecision(statistics, joined.value.controllerComplete, certified);
+  certifiedDecision(statistics, joined.value.controllerAdmissible, certified);
   const bindingErrors = collection?.mechanical.failures.filter(f => /binding|changed|host_citation|offered_digest/u.test(f.code)).length ?? 0;
   if (bindingErrors > context.registration.statisticalSpec.audit.bindingErrorsMaximum) {
     statistics.decision.status = "fail"; statistics.decision.gates.push({ name: "mechanical-provenance", status: "fail" }); statistics.decision.reasons.push("mechanical-provenance:fail");
@@ -52,7 +52,7 @@ export async function finalReport(context, roots, joinedPath, audit, output) {
   const report = { schema: "holdout-final-report-v1", codeRevision: context.registration.codeRevision,
     registrationSha256: context.options.registrationSha256, joinSha256: joined.sha256,
     artifactInventory: "Raw file hashes are bound transitively: report -> archive-manifest SHA-256 -> per-file SHA-256. Every listed chunk was reverified from disk, chunk by chunk.",
-    decision: statistics.decision, statistics, integrity: { ...statistics.integrity, controllerComplete: joined.value.controllerComplete,
+    decision: statistics.decision, statistics, integrity: { ...statistics.integrity, controllerComplete: joined.value.controllerComplete, controllerAdmissible: joined.value.controllerAdmissible,
       mechanicalComplete: collection?.mechanical.complete ?? false, auditCertified: certified, bindingErrors, auditError: error },
     accounting: "Catalog accounting, not an invoice; Codex stream_abort cannot guarantee containment. Unknown reader usage is reconciled only at chunk boundaries.",
     controllers: joined.value.stops, audit: { totals: resolved?.totals ?? agreed?.lowerBounds ?? null, counters: collection?.mechanical.counters ?? null,

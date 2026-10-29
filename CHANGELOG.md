@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Let registered holdout studies pass with at most 1% missing slots per arm only
+  when every worst-case completion gate passes and controllers are admissible.
+  Preserve complete-data results, established failures and power semantics.
+
 - Add provenance-verified holdout auditing, blinded independent reviewer imports
   and deterministic final reports. Require complete hash-bound adjudication for
   acceptance; preserve agreed findings and limit adjudication to disputed flags.

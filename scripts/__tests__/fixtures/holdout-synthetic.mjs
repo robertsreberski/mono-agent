@@ -73,12 +73,12 @@ export async function toolingRepository(directory, runtime = false) {
 }
 
 
-export async function syntheticContext(directory) {
+export async function syntheticContext(directory, design = {}) {
   const repo = join(directory, "tooling"), inputs = join(directory, "inputs"); await mkdir(inputs);
   const freeze = await toolingRepository(repo, true);
   const load = name => import(/* @vite-ignore */ pathToFileURL(join(repo, "scripts/lib", `${name}.mjs`)).href);
   const workflow = await load("continuity-holdout-workflow"); const controller = await load("continuity-holdout-controller"); const proof = await load("continuity-holdout-proof");
-  const stats = { ...STATISTICAL_SPEC, design: { ...STATISTICAL_SPEC.design, families: 2, conversationsPerFamily: 2, conversationsPerCorpus: 2, shards: 2, perCorpusPerShard: 1 } };
+  const stats = { ...STATISTICAL_SPEC, design: { ...STATISTICAL_SPEC.design, families: 2, conversationsPerFamily: 2, conversationsPerCorpus: 2, shards: 2, perCorpusPerShard: 1, ...design } };
   const specDir = join(directory, "synthetic-spec"), spec = fixtureSpec(stats), seeds = { ordinary: 12345, distractor: 98765 };
   for (const family of spec.families) {
     family.templates.toolBody = Array.from({ length: 8 }, (_, i) => `Synthetic filler ${i} ${"0123456789".repeat(409)}`);
