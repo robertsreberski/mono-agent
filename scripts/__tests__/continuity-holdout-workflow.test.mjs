@@ -6,6 +6,7 @@ import { fork, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import { setTimeout as delay } from "node:timers/promises";
 import { jsonBytes, sha256, CHECKOUT } from "../lib/continuity-holdout-files.mjs";
+import { fixtureDatabase } from "./fixtures/holdout-audit-data.mjs";
 import { fixtureProofRun } from "./fixtures/holdout-proof-output.mjs";
 import { syntheticContext } from "./fixtures/holdout-synthetic.mjs";
 import { stopReason, spendOf, accountUnits, authFailure, groupAlive, terminateGroup } from "../lib/continuity-holdout-controller.mjs";
@@ -234,6 +235,10 @@ it("rejects duplicate trial units and mismatches of every shared shard binding",
 it("refuses a copied authorization under another filename and canonical output root", async () => {
   const { opts } = await run("valid"), copied = join(inputs, "copied-authorization.json"); await cp(opts.authorizationPath, copied);
   await expect(controller.runController(context, { ...opts, authorizationPath: copied, output: join(directory, "copied-root") })).rejects.toThrow("authorization_mismatch");
+});
+it("gives synthetic journal writers bounded wait for live reader locks", () => {
+  const db = fixtureDatabase(":memory:");
+  try { expect(db.prepare("PRAGMA busy_timeout").get().timeout).toBe(5000); } finally { db.close(); }
 });
 it("dedupes journal operations against unit receipts by repeat and operation identity", async () => {
   const { opts, state } = await run("journal_overlap"); expect(state.stop.reason).toBe("completed"); expect(state.spend.knownUSD).toBeCloseTo(0.252);

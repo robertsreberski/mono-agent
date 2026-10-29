@@ -2,8 +2,7 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join, dirname } from "node:path";
 import { fork } from "node:child_process";
-import { auditCheckpoint } from "./holdout-audit-data.mjs";
-import { DatabaseSync } from "node:sqlite";
+import { auditCheckpoint, fixtureDatabase } from "./holdout-audit-data.mjs";
 let finished = false;
 process.on("disconnect", () => { if (!finished) process.kill(-process.pid, "SIGKILL"); });
 process.send({ ready: true });
@@ -16,7 +15,7 @@ process.once("message", async ({ argv }) => {
   const mode = process.env.HOLDOUT_FIXTURE_MODE;
   if (["park", "auth", "budget"].includes(mode)) {
     const path = join(output, "work", `cp-${traceId}_ledger-continuity-ledger-cold-r1/work/history/tool-history`); await mkdir(path, { recursive: true });
-    const db = new DatabaseSync(join(path, "tool-lifecycles.sqlite"));
+    const db = fixtureDatabase(join(path, "tool-lifecycles.sqlite"));
     db.exec("CREATE TABLE continuity_upkeep_operations (operation_id TEXT,reservation TEXT,outcome TEXT,state TEXT)");
     db.prepare("INSERT INTO continuity_upkeep_operations VALUES (?,?,?,?)").run("synthetic-live-op", JSON.stringify({ budget: "bootstrap" }), JSON.stringify({
       status: "valid", reason: "completed", providerInvoked: true, ...(mode === "auth" ? { failureKind: "provider_auth" } : {}),
@@ -54,7 +53,7 @@ process.once("message", async ({ argv }) => {
     }
     if (mode === "journal_overlap" && arm === "continuity-ledger-cold") {
       const path = join(output, "work", `cp-${traceId}_ledger-continuity-ledger-cold-r${repeat}/work/history/tool-history`); await mkdir(path, { recursive: true });
-      const db = new DatabaseSync(join(path, "tool-lifecycles.sqlite"));
+      const db = fixtureDatabase(join(path, "tool-lifecycles.sqlite"));
       db.exec("CREATE TABLE continuity_upkeep_operations (operation_id TEXT,reservation TEXT,outcome TEXT,state TEXT)");
       for (const step of steps) db.prepare("INSERT INTO continuity_upkeep_operations VALUES (?,?,?,?)").run(step.receipt.operationId, JSON.stringify({ budget: step.journal.budget }), JSON.stringify(step.receipt), "terminal");
       db.close();

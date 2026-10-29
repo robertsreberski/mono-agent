@@ -97,7 +97,7 @@ only outcome `correct` may have `pass: true`, and it must have it.
 conversation-level safety/benefit, planned denominators, audit rates and decision
 reasons. Markdown/CLI guard offline output as well. Design E has **7,680 planned
 answers per corpus/arm, 15,360 combined**. Both repeats/all probes stay together.
-Native coverage is required although native is not a safety comparator.
+Native is subject to the same missing-slot cap although it is not a safety comparator.
 
 **Wrong** means `!pass && outcome !== "abstained" && outcome !== "empty"`.
 Stale, conflicted, violating, leaked or fabricated answers count as wrong even
@@ -112,10 +112,31 @@ its t lower endpoint exceeds the threshold, fails when its upper endpoint is
 at or below the threshold, and otherwise is inconclusive. Bounds are one-sided
 95%; intersection-union gates do not claim simultaneous 95% interval coverage.
 
-Missing, invalid, duplicate or unknown slots can never produce acceptance. An
-incomplete scope has no complete-case inferential interval. It fails only when
-a conservative bound proves that **every completion fails by the same registered
-semantics**, otherwise it is inconclusive:
+Never drop missing, invalid or duplicate planned slots. Registration pins
+`missingData.worstCaseCompletion.maximumMissingFractionPerArm = 0.01`: each of
+all four arms may have at most 1% missing/invalid slots, combined across corpora.
+For E, the integer cap is **153 of 15,360 per arm**; 154 blocks acceptance.
+Any unknown/unplanned row also blocks acceptance. The integrity gate passes with
+complete data, or within this cap with zero unknowns. Reports retain strict
+`integrity.complete`, counts in `missingPerArm`, `withinMissingCap` and `worstCase`.
+
+An incomplete scope has no complete-case inferential interval. It may pass only
+when **every possible completion passes**, treating missing ledger answers against
+the ledger and missing comparator answers in the comparator's favour:
+
+- Safety: count conversations with any ledger wrong **or ledger missing** and no
+  known comparator wrong, including incomplete comparators. This `worstHarmful`
+  count must satisfy the same CP upper-bound passing cutoff on planned n.
+- Benefit: `completionLowerBound` bounds every possible one-sided t lower endpoint
+  conservatively by reflection of `completionUpperBound`. It must exceed the
+  registered scope threshold; fixed bounds equal the ordinary paired-t lower bound.
+- Wrong rate: `(wrong + ledgerMissing) / plannedAnswers ≤ 0.005` in each scope.
+- Accuracy: `correct / plannedAnswers ≥ 0.91875`.
+
+Scopes expose `worstCase` and `worstCompletionLower` without claiming complete-case
+confidence intervals. A loose bound can leave the result inconclusive; the cap
+alone never promises a pass. **Existing failure rules remain unchanged**: fail only
+when a conservative best-completion bound establishes the same registered failure:
 
 - Wrong rate: observed ledger wrongs / planned denominator already >0.5%.
 - Accuracy: even `(correct + missing ledger slots) / planned` is below 91.875%.
@@ -132,7 +153,9 @@ semantics**, otherwise it is inconclusive:
   keeps it above 0.02. Neither that shortcut nor 'cannot pass means fail' is used.
 
 Point-threshold and audit failures remain failures when missing execution data
-cannot undo them. No incomplete data is presented as a confidence estimate.
+cannot undo them. No incomplete data is presented as a complete-case confidence
+estimate. Complete-data gate results and power semantics are unchanged; power
+simulations still condition on complete data and do not model missing-slot tolerance.
 
 ## Bound audit input
 

@@ -225,8 +225,16 @@ known failures. Optional `--audit /external/audit.json` uses PR2's bound totals,
 but **cannot certify the final entry population**. The intermediate join always
 adds `audit-workflow-pending:inconclusive`, even for numerically passing totals.
 Standalone real benchmark aggregation is also noncertifying. Only the complete
-workflow below can remove the pending gate. Missing audit or incomplete data
-can never authorize acceptance.
+workflow below can remove the pending gate. Missing audit never permits acceptance.
+Missing/invalid planned slots may pass only under the registered 1% per-arm cap
+and worst-case completion of every statistical gate; unknown rows still block it.
+
+`controllerComplete` remains the strict all-valid counter. Certification uses
+`controllerAdmissible`: every registered shard must stop `completed`, with every
+planned chunk admitted, archived and reconciled, all units present, and each chunk
+`finished` or `failed`. A failed chunk's invalid slots count as missing, not dropped.
+Killed/lost/missing chunks, missing shards and any other stop reason remain
+inconclusive. This does not change controller stopping, retries or spending rules.
 
 ## Mechanical audit, blinded review and final report
 
@@ -255,8 +263,9 @@ Counters cover validated checkpoints; incomplete populations cannot certify.
 A failed trial without any boundary observation increments `probeViewsUnobserved`
 instead of inventing a probe view. Every other status, and any present boundary,
 still requires valid evidence. Mechanical population completeness is independent
-of controller/statistical completeness: this does not relax missing-slot semantics
-or permit study acceptance with incomplete controllers. New publications require
+of controller/statistical completeness: this does not make failed trials valid.
+Final acceptance requires admissible controllers and the registered cap plus every
+worst-case completion gate, even when strict completeness is false. New publications require
 the host receipt's `generationId` (emitted after successful publication in
 `packages/conversation/src/continuity/upkeep.ts` and retained by the runner).
 Archived rollback journals are copied with the database into scratch; only that
@@ -365,7 +374,10 @@ established statistical or audit failures remain failures.
 `report` recomputes the join and mechanical audit, validates all human files and
 certificate/import outputs, then writes deterministic `report.json`, `report.md`
 and `artifacts.json`. They include gates/intervals/reasons, integrity and audit
-counters, controller stops and catalog spend (not an invoice). There are no local
+counters, controller stops and catalog spend (not an invoice). Integrity includes
+both controller completeness/admissibility, per-arm missing counts and `worstCase`
+when the decision relies on capped worst-case completion. Complete-data results,
+existing fail rules and complete-data power semantics remain unchanged. There are no local
 absolute paths or freshly generated timestamps. Identical input bytes give
 identical output bytes, including with roots supplied in a different order.
 

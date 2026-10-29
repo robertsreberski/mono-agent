@@ -130,6 +130,11 @@ export function completionUpperBound(bounds, confidence = spec.confidence) {
   const nearest = low > 0 ? low : high < 0 ? high : 0;
   return high / n + critical(confidence, n) * Math.sqrt((Math.max(0, squares - nearest * nearest / n) + 64 * Number.EPSILON * n * n) / (n * (n - 1)));
 }
+/** Lower bound on EVERY completion's t lower endpoint, by reflection of the upper relaxation. */
+export function completionLowerBound(bounds, confidence = spec.confidence) {
+  const upper = completionUpperBound(bounds.map(([lo, hi]) => [-hi, -lo]), confidence);
+  return bounds.every(([lo, hi]) => lo === hi) ? pairedT(bounds.map(([lo]) => lo), confidence).lower : -upper;
+}
 const OUTCOMES = new Set(["correct", "stale", "conflicted", "violation", "leaked", "abstained", "empty", "wrong", "fabricated"]);
 const validTrial = row => row?.status === "completed" && typeof row.score?.pass === "boolean" && OUTCOMES.has(row.score?.outcome)
   && row.score.pass === (row.score.outcome === "correct");
@@ -167,23 +172,33 @@ export function holdoutStatistics({ conversations, trials, audit = null, statist
       const knownHarmful = rows.filter(c => c.arms[ledger].wrong > 0 && c.arms[comparator].complete && c.arms[comparator].wrong === 0).length;
       const interval = complete ? clopperPearson(knownHarmful, n, statisticalSpec.confidence) : null;
       const bestCompletion = clopperPearson(knownHarmful, n, statisticalSpec.confidence);
-      const status = complete ? evaluator.safety(knownHarmful, n) : bestCompletion.lower > statisticalSpec.safety.maximum ? "fail" : "inconclusive";
-      safety[comparator] = { harmful: complete ? knownHarmful : null, knownHarmful, n, interval, bestCompletion, status }; add(`${corpus}:safety:${comparator}`, status);
+      const worstHarmful = rows.filter(c => (c.arms[ledger].wrong > 0 || c.arms[ledger].missing > 0) && c.arms[comparator].wrong === 0).length;
+      const status = complete ? evaluator.safety(knownHarmful, n) : bestCompletion.lower > statisticalSpec.safety.maximum ? "fail"
+        : worstHarmful <= safetyCuts(n, statisticalSpec).passMaximum ? "pass" : "inconclusive";
+      safety[comparator] = { harmful: complete ? knownHarmful : null, knownHarmful, worstHarmful, n, interval, bestCompletion, status }; add(`${corpus}:safety:${comparator}`, status);
     }
     const bounds = rows.map(c => { const l = c.arms[ledger], p = c.arms[pack]; return [(l.correct - p.correct - p.missing) / bundleSize, (l.correct + l.missing - p.correct) / bundleSize]; });
     const differences = bounds.map(([lo]) => lo), sum = differences.reduce((a, b) => a + b, 0), squares = differences.reduce((a, b) => a + b * b, 0);
     const result = complete ? evaluator.benefit(sum, squares, n, corpus === "combined") : null;
     const benefit = result?.interval ?? null, bestCompletionUpper = completionUpperBound(bounds, statisticalSpec.confidence);
     const threshold = corpus === "combined" ? statisticalSpec.benefit.combinedMinimumExclusive : statisticalSpec.benefit.corpusMinimumExclusive;
-    const benefitStatus = result?.status ?? (bestCompletionUpper <= threshold ? "fail" : "inconclusive");
+    const worstCompletionLower = completionLowerBound(bounds, statisticalSpec.confidence);
+    const benefitStatus = result?.status ?? (bestCompletionUpper <= threshold ? "fail" : worstCompletionLower > threshold ? "pass" : "inconclusive");
     add(`${corpus}:benefit`, benefitStatus);
-    const wrongStatus = evaluator.wrongRate(wrong, denominator, complete); add(`${corpus}:wrong-rate`, wrongStatus);
-    scopes[corpus] = { plannedConversations: n, plannedAnswers: denominator, complete, safety, benefit, benefitStatus, bestCompletionUpper,
+    const observedWrongStatus = evaluator.wrongRate(wrong, denominator, complete);
+    const wrongStatus = observedWrongStatus === "inconclusive" && (wrong + missing) / denominator <= statisticalSpec.safety.wrongRateMaximum ? "pass" : observedWrongStatus;
+    add(`${corpus}:wrong-rate`, wrongStatus);
+    scopes[corpus] = { plannedConversations: n, plannedAnswers: denominator, complete, worstCase: !complete, safety, benefit, benefitStatus, bestCompletionUpper, worstCompletionLower,
       ledgerCorrect: correct, ledgerMissing: missing, ledgerAccuracy: correct / denominator, bestCompletionAccuracy: (correct + missing) / denominator,
       ledgerWrong: wrong, ledgerWrongRate: wrong / denominator, wrongStatus };
   }
-  const integrity = unknown === 0 && bundles.every(c => c.complete); add("integrity", integrity ? "pass" : "inconclusive");
-  add("accuracy", evaluator.accuracy(scopes.combined.ledgerCorrect, scopes.combined.ledgerMissing, scopes.combined.plannedAnswers, integrity));
+  const integrity = unknown === 0 && bundles.every(c => c.complete), planned = conversations.length * bundleSize;
+  const missingPerArm = Object.fromEntries(HOLDOUT_ARMS.map(arm => [arm, bundles.reduce((n, c) => n + c.arms[arm].missing, 0)]));
+  const maximumMissingPerArm = Math.floor(planned * statisticalSpec.missingData.worstCaseCompletion.maximumMissingFractionPerArm);
+  const withinMissingCap = Object.values(missingPerArm).every(n => n <= maximumMissingPerArm);
+  add("integrity", unknown === 0 && withinMissingCap ? "pass" : "inconclusive");
+  const observedAccuracy = evaluator.accuracy(scopes.combined.ledgerCorrect, scopes.combined.ledgerMissing, scopes.combined.plannedAnswers, integrity);
+  add("accuracy", observedAccuracy === "inconclusive" && scopes.combined.ledgerAccuracy >= statisticalSpec.accuracyMinimum ? "pass" : observedAccuracy);
   let auditRates = null;
   const fields = ["published", "audited", "labelFindings", "contextFindings", "falselySupersededCurrent", "bindingErrors"], a = statisticalSpec.audit;
   if (audit && fields.every(k => Number.isSafeInteger(audit[k]) && audit[k] >= 0) && audit.published > 0 && audit.audited <= audit.published
@@ -201,7 +216,7 @@ export function holdoutStatistics({ conversations, trials, audit = null, statist
     for (const safety of Object.values(scope.safety)) safety.status = "not_a_measurement";
   }
   return { schema: "holdout-statistics-v1", unit: "conversation", measurement, scopes, plannedAnswersPerArm: conversations.length * bundleSize, audit: auditRates,
-    integrity: { complete: integrity, unknownTrials: unknown, notStartedPlaceholders, incompleteConversations: bundles.filter(c => !c.complete).map(c => c.id) },
+    integrity: { complete: integrity, missingPerArm, maximumMissingPerArm, withinMissingCap, worstCase: !integrity && unknown === 0 && withinMissingCap, unknownTrials: unknown, notStartedPlaceholders, incompleteConversations: bundles.filter(c => !c.complete).map(c => c.id) },
     decision: measurement ? { status, reasons: gates.filter(g => g.status !== "pass").map(g => `${g.name}:${g.status}`), gates }
       : { status: "inconclusive", reasons: ["not_a_measurement"], gates: [] } };
 }

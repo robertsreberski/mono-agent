@@ -68,6 +68,7 @@ export function simulatePower({ seed = 572913, replications = 100000, scenarios 
       "Ledger correct fraction is 14/15 in each repeat; pack correct fraction is ledger minus the simulated repeat difference (always in [0,1]). The configured accuracy floor is evaluated, not assumed to pass.",
       "Both comparator harmful indicators are identical; each harmful conversation contributes one non-abstaining ledger error, all other incorrect answers abstain. Exact enumeration also reports independent-comparator safety power.",
       "For heterogeneous scenarios a family draws risk 0 or 2q equiprobably, and a shared effect value is used with the stated familyWeight on each draw. Repeat correlation includes that shared family component. Residual within-family dependence makes these sensitivity analyses, not family-cluster calibration of conversation-level gates.",
+      "Missing-slot tolerance is not modeled; complete-data gateEvaluator power semantics are unchanged.",
       "Joint power is conditional on complete data/integrity and a passing complete audit (zero audit findings). These assumptions are not model-quality measurements or an audit-power estimate."] };
 }
 export function powerMarkdown(report) {

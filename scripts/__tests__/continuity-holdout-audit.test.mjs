@@ -5,6 +5,7 @@ import { fork, spawnSync } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
 import { once } from "node:events";
 import { pathToFileURL } from "node:url";
+import { CONTROLLER_STOPS } from "../lib/continuity-holdout-controller.mjs";
 import { syntheticContext } from "./fixtures/holdout-synthetic.mjs";
 import { CHECKOUT, jsonBytes, sha256 } from "../lib/continuity-holdout-files.mjs";
 import { holdoutStatistics, HOLDOUT_ARMS, STATISTICAL_SPEC } from "../lib/continuity-holdout-statistics.mjs";
@@ -22,7 +23,7 @@ async function changedChunk(label, change, joinMaterial = true) {
   const state = await parse(join(copy, "controller.json")), chunk = join(copy, "chunks/1"), traceId = state.chunks[0].traceId;
   const unitPath = join(chunk, "units", `r1-${traceId}-continuity-ledger-cold.json`), unit = await parse(unitPath);
   const store = join(chunk, `work/cp-${traceId}_ledger-continuity-ledger-cold-r1/work/history/tool-history/tool-lifecycles.sqlite`);
-  await change({ chunk, unit, store }); await writeFile(unitPath, jsonBytes(unit));
+  await change({ chunk, unit, store, state }); await writeFile(unitPath, jsonBytes(unit));
   await rm(join(chunk, "archive.json")); state.chunks[0].archiveSha256 = await workflow.archiveChunk(chunk);
   const verified = await workflow.verifyArchive(chunk, state.chunks[0].archiveSha256);
   if (!joinMaterial) return { chunk, unit, store, verified };
@@ -216,6 +217,17 @@ it("counts unobserved failed probes without inventing views or altering statisti
 it.each(["failed-with-boundary", "completed", "started", "not_started"])("fails closed for unverified %s probes", async kind => {
   const result = await changedChunk(`unobserved-${kind}`, async ({ unit }) => { unit.trials[0].status = kind === "failed-with-boundary" ? "failed" : kind; unit.trials[0].boundary = kind === "failed-with-boundary" ? {} : null; });
   expect(result.mechanical.complete).toBe(false); expect(result.mechanical.failures.some(f => f.code === "audit_probe_upkeep")).toBe(true);
+});
+it.each([["failed", "completed", true], ["killed", "completed", false], ["lost", "completed", false], ...CONTROLLER_STOPS.filter(s => s !== "completed").map(s => ["failed", s, false])])("checks controller admission for %s / %s", async (chunkState, reason, expected) => {
+  const result = await changedChunk(`admission-${chunkState}-${reason}`, async ({ unit, state }) => {
+    unit.trials[0].status = "failed"; unit.trials[0].boundary = null; state.chunks[0].state = chunkState; state.stop.reason = reason;
+  });
+  expect(result.joined.controllerComplete).toBe(false); expect(result.joined.controllerAdmissible).toBe(expected);
+});
+it("refuses admission with a missing shard or planned chunk", async () => {
+  expect((await workflow.joinShards(context, [roots[0]], null)).controllerAdmissible).toBe(false);
+  const result = await changedChunk("admission-missing-chunk", async ({ state, chunk }) => { state.chunks.pop(); await rm(join(chunk, "../2"), { recursive: true }); });
+  expect(result.joined.controllerAdmissible).toBe(false); expect(result.joined.controllerComplete).toBe(false);
 });
 it("rejects rewritten export or private mapping evidence", async () => {
   const copy = join(directory, "bad-export"); await cp(paths.directory, copy, { recursive: true });

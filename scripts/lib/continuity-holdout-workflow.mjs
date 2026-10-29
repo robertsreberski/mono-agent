@@ -178,7 +178,7 @@ export function pendingAuditGate(statistics, complete, certified = false) {
 }
 export async function joinShards(context, roots, output, auditPath) {
   const { accountUnits, accountJournals, spendOf, CONTROLLER_STOPS } = await import("./continuity-holdout-controller.mjs");
-  const trials = [], stops = [], artifacts = {}, seen = new Set(), shardIds = new Set(); let complete = true;
+  const trials = [], stops = [], artifacts = {}, seen = new Set(), shardIds = new Set(); let complete = true, admissible = true;
   for (const rootInput of roots) {
     const root = await externalDirectory(rootInput), controllerBytes = await regularFile(join(root, "controller.json")), state = JSON.parse(controllerBytes);
     const bundle = context.plans.find(b => b.plan.holdout.shard === state.shard);
@@ -190,6 +190,7 @@ export async function joinShards(context, roots, output, auditPath) {
     artifacts[`shards/${state.shard}/authorization.json`] = state.authorizationSha256;
     stops.push({ shard: state.shard, stop: state.stop, spend: state.spend, controllerSha256: sha256(controllerBytes) });
     complete &&= state.stop.reason === "completed" && state.chunks.length === bundle.chunks.length;
+    admissible &&= state.stop.reason === "completed" && state.chunks.length === bundle.chunks.length;
     const names = await readdir(root);
     need(names.every(n => ["controller.json", "chunks"].includes(n) || n.startsWith("controller-lock.sqlite")), "unexpected_controller_file");
     const chunkNames = names.includes("chunks") ? await readdir(await directoryOnly(join(root, "chunks"))) : [];
@@ -201,7 +202,7 @@ export async function joinShards(context, roots, output, auditPath) {
         && !admissions.has(chunk.traceId) && ["finished", "failed", "killed", "lost"].includes(chunk.state), "chunk_membership_mismatch"); admissions.add(chunk.traceId);
       const directory = await chunkDirectory(root, index);
       if (!chunk.archiveSha256) {
-        need(chunk.state !== "finished" && !chunk.integrityError, "missing_archive"); complete = false;
+        need(chunk.state !== "finished" && !chunk.integrityError, "missing_archive"); complete = admissible = false;
         try { need((await readdir(directory)).length === 0, "unarchived_material"); } catch (e) { if (e.code !== "ENOENT") throw e; }
         reconciledChunks.push({ ...chunk, accounting: accountUnits([], bundle), journalAccounting: accountUnits([], bundle), unitFiles: 0 }); continue;
       }
@@ -214,6 +215,7 @@ export async function joinShards(context, roots, output, auditPath) {
       need(digest(accounting) === digest(chunk.accounting) && digest(journalAccounting) === digest(chunk.journalAccounting)
         && chunk.unitFiles === units.length, "accounting_mismatch");
       reconciledChunks.push({ ...chunk, accounting, journalAccounting, unitFiles: units.length });
+      admissible &&= ["finished", "failed"].includes(chunk.state) && !chunk.integrityError && units.length === HOLDOUT_ARMS.length * bundle.plan.repeats;
       complete &&= chunk.state === "finished" && units.length === HOLDOUT_ARMS.length * bundle.plan.repeats && units.every(u => !invalidUnit(u, bundle.plan));
       for (const unit of units) { need(!seen.has(unitKey(unit)), "duplicate_unit"); seen.add(unitKey(unit)); trials.push(...unit.trials); }
     }
@@ -221,15 +223,15 @@ export async function joinShards(context, roots, output, auditPath) {
   }
   stops.sort((a, b) => a.shard - b.shard);
   trials.sort((a, b) => JSON.stringify([a.traceId, a.arm, a.repeat, a.probeId]).localeCompare(JSON.stringify([b.traceId, b.arm, b.repeat, b.probeId]), "en"));
-  complete &&= shardIds.size === context.plans.length;
+  complete &&= shardIds.size === context.plans.length; admissible &&= shardIds.size === context.plans.length;
   const bound = await readBoundAudit(auditPath, context.options.registrationSha256);
   const statistics = holdoutStatistics({ conversations: context.registration.conversations, trials, audit: bound.audit,
     statisticalSpec: context.registration.statisticalSpec, measurement: true });
   // PR3b must establish the final unique-entry population and two-auditor evidence.
   // A bare totals file is not that proof, even if every numeric gate would pass.
-  pendingAuditGate(statistics, complete);
+  pendingAuditGate(statistics, admissible);
   const result = { schema: "holdout-joined-v1", registrationSha256: context.options.registrationSha256,
-    controllerComplete: complete, stops, artifacts, trials, auditBinding: bound.binding, statistics };
+    controllerComplete: complete, controllerAdmissible: admissible, stops, artifacts, trials, auditBinding: bound.binding, statistics };
   if (output !== null) { output = await externalDirectory(output, true); await durable(join(output, "joined.json"), result, true); }
   return result;
 }

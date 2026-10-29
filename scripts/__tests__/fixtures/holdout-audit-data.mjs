@@ -3,6 +3,10 @@ import { DatabaseSync } from "node:sqlite";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { ledgerHash, spanKey, normalizeLedger } from "../../../packages/conversation/dist/continuity/ledger.js";
+// Live controller polling can briefly hold a reader lock during fixture publication.
+export function fixtureDatabase(path) {
+  const db = new DatabaseSync(path); db.exec("PRAGMA busy_timeout=5000"); return db;
+}
 export async function auditCheckpoint(output, traceId, repeat) {
   const scope = `synthetic-${traceId}-r${repeat}`, directory = join(output, `work/cp-${traceId}_ledger-continuity-ledger-cold-r${repeat}/work/history/tool-history`);
   await mkdir(directory, { recursive: true }); await mkdir(join(output, "upkeep-output"), { recursive: true });
@@ -20,7 +24,7 @@ export async function auditCheckpoint(output, traceId, repeat) {
     ...(i !== 1 ? { generationId: i === 0 ? initial.id : final.id } : { outputOverrun: true }),
     decisionRelabels: i === 0 ? 1 : 0, outcomeDowngrades: i === 0 ? 1 : 0,
     inputTokens: 100, outputTokens: 10, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0.001 }));
-  const db = new DatabaseSync(join(directory, "tool-lifecycles.sqlite"));
+  const db = fixtureDatabase(join(directory, "tool-lifecycles.sqlite"));
   db.exec(`CREATE TABLE continuity_generations(generation_id TEXT,conversation_id TEXT,logical_id TEXT,state TEXT);
     CREATE TABLE continuity_records(record_id TEXT,generation_id TEXT,run_id TEXT,input_id TEXT,kind TEXT,provenance TEXT,source_json TEXT,ordinal INTEGER,seq INTEGER,retained_text TEXT,text_sha256 TEXT,finalized INTEGER);
     CREATE TABLE tool_calls(run_id TEXT,tool_call_id TEXT,tool_name TEXT,conversation_id TEXT);
