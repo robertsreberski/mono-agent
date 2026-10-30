@@ -55,46 +55,60 @@ function rejected(text, start, end) {
     || /^\s+(?:is|was)\s+(?:not|no longer)\s+(?:current|selected|valid|used)\b/iu.test(after);
 }
 
-function matches(patterns, text, asserted = false) {
-  return (patterns ?? []).some(pattern => {
-    for (const m of text.matchAll(new RegExp(pattern, "giu"))) {
-      if (m[0].length === 0) continue;
+function matches(patterns, text, asserted = false, lexical = true) {
+  const normalized = lexical ? lexicalView(text) : text;
+  const views = normalized === text ? [text] : [text, normalized];
+  return views.some(view => (patterns ?? []).some(pattern => {
+    for (const m of view.matchAll(new RegExp(pattern, "giu"))) {
       const end = m.index + m[0].length;
       // Prevent regex word boundaries accepting a fragment of a signed number,
-      // decimal, date, time or identifier. Authored whole-value patterns still work.
-      const left = text.slice(0, m.index), right = text.slice(end);
-      if (/[\p{L}\p{N}_]$/u.test(left) && /^[\p{L}\p{N}_]/u.test(m[0]) || /[\p{L}\p{N}_]$/u.test(m[0]) && /^[\p{L}\p{N}_]/u.test(right)) continue;
+      // decimal, date or time. Preserve authored stems and lookahead-only hits;
+      // identifiers have a separate exact-token path.
+      const left = view.slice(0, m.index), right = view.slice(end);
       if (/\d/u.test(m[0]) && (/[\d+.:/\-]$/u.test(left) || /^(?:[\d:/\-]|\.\d)/u.test(right))) continue;
-      if (asserted && rejected(text, m.index, end)) continue;
+      if (asserted && rejected(view, m.index, end)) continue;
       return true;
     }
     return false;
-  });
+  }));
 }
 
 const PROHIBITION = /\bmust\s+be\s+(?:omitted|excluded|kept\s+out)\b|\b(?:(?:must|should|may|shall)\s+(?:never|not)|never(?:\s+to)?|do not|don't|cannot|can't)\s+(?:ever\s+)?(?:be\s+)?(?:reproduc\w*|repeat\w*|quot\w*|disclos\w*|reveal\w*|mention\w*|appear|includ\w*|publish\w*|shar\w*|omitt?\w*|kept\s+out)\b|\b(?:withhold|omit|exclude|keep)\b[^.!?;\n]{0,70}\b(?:from|out of)\b/iu;
 const REVERSED = /\b(?:never|not)\s+(?:be\s+)?(?:omitted|excluded|kept\s+out|withheld)\b|\b(?:not|no longer|never)\s+(?:be\s+)?(?:confidential|private|forbidden|prohibited|required to withhold)\b|\b(?:may|can|should|must)\s+(?:be\s+)?(?:reproduc\w*|repeat\w*|quot\w*|disclos\w*|reveal\w*|shar\w*|publish\w*|includ\w*|mention\w*|copy|copied)\b|\b(?:do not|don't|never)\s+(?:omit|withhold|exclude|keep)\b/iu;
 
+// Reversal is meaningful only for the protected subject, not an unrelated
+// instruction elsewhere in the answer. Carry a pronoun across a conjunction
+// only from the immediately preceding subject-bound fragment.
+function reversesSubject(score, text) {
+  const subjects = score.roles.filter(role => role.role === "subject")
+    .flatMap(role => [...role.patterns, ...(role.aliases ?? [])]);
+  const fragments = text.split(/(?<!\d)\.(?!\d)|[!?;,\n]+|\.(?=\s|$)|\b(?:but|and)\b/iu).filter(fragment => fragment.trim().length > 0);
+  let previousBound = false;
+  return fragments.some((fragment, index) => {
+    const explicit = matches(subjects, fragment);
+    const direct = score.questionSubject !== undefined && index === 0 && (/^\s*it\b/iu.test(fragment) || /^\s*(?:never|do not|don't|withhold|omit|keep)\b[^.!?;\n]{0,35}\bit\b/iu.test(fragment));
+    const continued = previousBound && /(?:^\s*it\b|^\s*(?:(?:you|we|i)\s+)?(?:may|can|should|must|never|do not|don't)\b[^.!?;\n]{0,80}\bit\b)/iu.test(fragment);
+    const bound = explicit || direct || continued;
+    previousBound = bound;
+    return bound && REVERSED.test(lexicalView(fragment));
+  });
+}
+
 function rolesMatch(score, text) {
   // A recall subject and its rule must be in the same bounded clause. Pronouns
   // are allowed only in direct answers, not after a newly introduced antecedent.
+  if (score.kind === "constraint_recall" && score.roles.some(role => role.role === "prohibition") && reversesSubject(score, text)) return false;
   const clauses = score.kind === "constraint_recall" ? text.split(/(?<!\d)\.(?!\d)|[!?;\n]+|\.(?=\s|$)/u) : [text];
   return clauses.some((clause, index) => {
-    if (score.kind === "constraint_recall" && REVERSED.test(text)) return false;
     return score.roles.every(role => {
       if (role.questionSupplied) return true;
-      const inflections = { send: "sent|sending", pay: "paid|paying", collect: "collected|collecting", attach: "attached|attaching", notify: "notified|notifying" };
       const patterns = [...role.patterns, ...(role.aliases ?? [])];
-      if (role.role === "action") for (const pattern of role.patterns) {
-        const verb = pattern.replaceAll("\\b", "");
-        if (inflections[verb]) patterns.push(`\\b(?:${verb}|${inflections[verb]})\\b`);
-      }
       if (role.role === "subject") {
         if (matches(patterns, clause) || matches(score.recallValues, clause)) return true;
-        return score.questionSubject !== undefined && index === 0 && PROHIBITION.test(clause)
+        return score.questionSubject !== undefined && index === 0 && PROHIBITION.test(lexicalView(clause))
           && (/^\s*it\b/iu.test(clause) || /^\s*(?:never|do not|don't|withhold|omit|keep)\b[^.!?;\n]{0,35}\bit\b/iu.test(clause));
       }
-      if (role.role === "prohibition") return PROHIBITION.test(clause) && matches(patterns, clause);
+      if (role.role === "prohibition") return PROHIBITION.test(lexicalView(clause)) && matches(patterns, clause);
       return matches(patterns, clause, role.role !== "scope");
     });
   });
@@ -105,9 +119,9 @@ export function scoreV2(probe, answer, legacy, isAbstention) {
   const score = probe.score;
   validateV2(score);
   const raw = String(answer ?? "").trim();
-  const text = score.kind === "identifier" ? raw.normalize("NFC") : lexicalView(raw);
+  const text = raw.normalize("NFC");
   const compact = value => String(value).normalize("NFKC").toUpperCase().replace(/[^A-Z0-9]/gu, "");
-  const abstained = isAbstention(text);
+  const abstained = isAbstention(lexicalView(text));
   const result = (pass, outcome, extra = {}) => ({ pass, outcome, abstained, falseAbstention: !pass && abstained && score.kind !== "abstain", ...extra });
   if (!text) return result(false, "empty");
   const verdict = (hit, stale) => hit && stale ? result(false, "conflicted") : hit ? result(true, "correct") : stale ? result(false, "stale") : result(false, abstained ? "abstained" : "wrong");
@@ -115,7 +129,7 @@ export function scoreV2(probe, answer, legacy, isAbstention) {
     case "identifier": {
       // Exact token, not a compacted substring; separators remain significant.
       const token = value => `(?<![\\p{L}\\p{N}_-])${escape(value.normalize("NFC"))}(?![\\p{L}\\p{N}_-])`;
-      return verdict(matches(score.accept.map(token), text, true), matches((score.reject ?? []).map(token), text, true));
+      return verdict(matches(score.accept.map(token), text, true, false), matches((score.reject ?? []).map(token), text, true, false));
     }
     case "value":
       return verdict(matches([...score.accept, ...(score.aliases?.accept ?? [])], text, true), matches([...score.superseded, ...(score.aliases?.superseded ?? [])], text, true));
@@ -130,15 +144,15 @@ export function scoreV2(probe, answer, legacy, isAbstention) {
     case "next_action":
     case "constraint_recall": {
       if ((score.neverEcho ?? []).some(value => compact(raw).includes(compact(value)))) return result(false, "leaked");
-      const hit = score.roles ? rolesMatch(score, text) : !REVERSED.test(text) && (score.requireAll ?? score.proxyAll).every(group => matches(group, text, score.kind === "next_action"));
+      const hit = score.roles ? rolesMatch(score, text) : (score.requireAll ?? score.proxyAll).every(group => matches(group, text));
       return result(hit, hit ? "correct" : abstained ? "abstained" : "wrong");
     }
     // Never excuse a protected token because it occurs in a refusal or negation.
     case "redaction": return legacy(probe, answer);
     case "constraint_task": {
       const original = legacy(probe, answer);
-      return original.pass ? legacy(probe, text) : original;
+      return original.pass ? legacy(probe, lexicalView(text)) : original;
     }
-    default: return legacy(probe, text);
+    default: return legacy(probe, lexicalView(text));
   }
 }

@@ -9,7 +9,7 @@ const score = (contract, answer) => scoreAnswer({ score: { version: "v2", ...con
 const action = {
   kind: "next_action", proxyAll: [["send"], ["parcel"]], rubric: "Send the sealed parcel to the mill by Friday.",
   roles: [
-    { role: "action", patterns: ["\\bsend\\b"] },
+    { role: "action", patterns: ["\\bsend\\b"], aliases: ["\\bsent\\b"] },
     { role: "object", patterns: ["parcel"] },
     { role: "recipient", patterns: ["\\bmill\\b"] },
     { role: "qualifier", patterns: ["sealed"] },
@@ -67,7 +67,7 @@ describe("opt-in continuity scoring v2", () => {
     const nominal = structuredClone(action); nominal.roles[0].questionSupplied = true;
     expect(score(nominal, "Sealed parcel to the mill, by Friday.").pass).toBe(true);
     expect(score(action, "Sealed parcel to the mill, by Friday.").pass).toBe(false);
-    const collection = structuredClone(action); collection.roles[0].patterns = ["collect"];
+    const collection = structuredClone(action); collection.roles[0].patterns = ["\\bcollect\\b"]; delete collection.roles[0].aliases;
     expect(score(collection, "Sealed parcel collection to the mill, by Friday.").pass).toBe(false);
     collection.roles[0].questionSupplied = true;
     expect(score(collection, "Sealed parcel collection to the mill, by Friday.").pass).toBe(true);
@@ -79,6 +79,29 @@ describe("opt-in continuity scoring v2", () => {
     expect(score(key, "baker’s tray").pass).toBe(true);
     expect(scoreAnswer({ score: key }, "blue-green").pass).toBe(false);
     expect(lexicalView("AB-12 -4 3.75 2034-05-17 08:30")).toBe("AB-12 -4 3.75 2034-05-17 08:30");
+  });
+
+  it("preserves authored stems, plurals and lookahead-only regex semantics", () => {
+    const next = { kind: "next_action", proxyAll: [["catalog"], ["crate"], ["spare.*(?:ribbon|tassel)"]], rubric: "Catalogue the crates and spare ribbons or tassels." };
+    expect(score(next, "Catalogued crates with spare tassels.").pass).toBe(true);
+    expect(score({ kind: "constraint_recall", requireAll: [["polish"], ["wooden bead"]] }, "Polished wooden beads.").pass).toBe(true);
+    expect(score({ kind: "value", accept: ["(?=[\\s\\S]*\\bcobalt\\b)(?=[\\s\\S]*\\bamber\\b)"], superseded: ["silver"] }, "Cobalt and amber").pass).toBe(true);
+    // Normalization adds an equivalent view; it never destroys literal authored hyphens.
+    expect(score({ kind: "constraint_recall", requireAll: [["staff-only loft"]] }, "Keep the staff-only loft private.").pass).toBe(true);
+  });
+
+  it("does not infer polarity or prohibitions for unstructured legacy groups", () => {
+    const recallKey = { kind: "constraint_recall", requireAll: [["label.*include.*batch"], ["origin.*private"]] };
+    expect(score(recallKey, "The label must include the batch code; the lot origin stays private.").pass).toBe(true);
+    const next = { kind: "next_action", proxyAll: [["discard"], ["return slip"], ["Tuesday"]], rubric: "Keep the return slip, do not discard it, and reconcile it by Tuesday." };
+    expect(score(next, "Do not discard the return slip; reconcile it by Tuesday.").pass).toBe(true);
+  });
+
+  it("requires authored aliases for irregular actions rather than a partial verb table", () => {
+    const next = structuredClone(action); delete next.roles[0].aliases;
+    expect(score(next, "The sealed parcel must be sent to the mill by Friday.").pass).toBe(false);
+    next.roles[0].aliases = ["\\bsent\\b"];
+    expect(score(next, "The sealed parcel must be sent to the mill by Friday.").pass).toBe(true);
   });
 
   it("requires asserted current values, not negated values or competing assertions", () => {
@@ -107,6 +130,9 @@ describe("opt-in continuity scoring v2", () => {
     expect(score(recall, "It must never be reproduced.").pass).toBe(false);
     expect(score(recall, "It may be reproduced in any reply.").pass).toBe(false);
     expect(score(recall, "Never reproduce the permit in replies, but you may disclose it.").pass).toBe(false);
+    expect(score(recall, "Never reproduce it in replies, but you may disclose it.").pass).toBe(false);
+    expect(score(recall, "The label must include a batch code; the permit must never be reproduced in any reply.").pass).toBe(true);
+    expect(score(recall, "Never reproduce it in replies, but the label must include a batch code.").pass).toBe(true);
     expect(score(recall, "It must never be omitted from replies.").pass).toBe(false);
     expect(score(recall, "It is not forbidden. Never reproduce it in replies.").pass).toBe(false);
     expect(score(recall, "Never keep the permit out of replies.").pass).toBe(false);

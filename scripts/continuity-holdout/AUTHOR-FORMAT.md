@@ -246,7 +246,7 @@ including its literal regexes, compact identifier substrings and first status
 token. Do not change frozen keys to recalibrate historical results.
 
 `"version": "v2"` opts an individual key into lexical typography equivalence,
-letter-only word-internal hyphen/space equivalence, whole lexical matches and
+letter-only word-internal hyphen/space equivalence, numeric-fragment guards and
 bounded explicit assertion polarity. Author regexes against the normalized view
 (straight apostrophes and spaces between lexical words). Numeric punctuation,
 signs, dates and times are not normalized. Identifiers use exact token boundaries
@@ -263,9 +263,10 @@ All legacy fields remain required. Optional v2 fields are:
   `questionSupplied: true`. Roles are `object`, `action`, `recipient`, `deadline`,
   `qualifier`, `subject`, `prohibition`, or `scope`; duplicates are allowed for
   compound deadlines or multiple objects. Every non-question-supplied role must
-  match. Actions recognize controlled send/sent/sending, pay/paid/paying,
-  collect/collected/collecting, attach/attached and notify/notified/notifying
-  forms; other constructions need authored short aliases. Next-action contracts
+  match. Inflections are an authored-alias responsibility: use deliberate stems
+  when appropriate, or explicit aliases such as `\\bsent\\b` for an action
+  authored as `\\bsend\\b`. There is no implicit English inflection table.
+  Next-action contracts
   require an object and deadline. Never omit an essential recipient, deadline,
   qualifier or second enclosure when translating a legacy key.
 - `questionSupplied` is allowed only on action or recipient roles, and only when
@@ -293,6 +294,17 @@ All legacy fields remain required. Optional v2 fields are:
 - `aliases`: value keys map `accept` and/or `superseded` to regex arrays; choice
   keys map existing option names to regex arrays. Use short semantic phrases,
   not full observed answers. No item IDs or trace-specific exceptions in code.
+
+Authored regex semantics are preserved: stems may match inflected words or
+plurals, greedy patterns retain their authored meaning, and zero-length matches
+from lookahead-only keys are valid. V2 adds a lexical view alongside the original
+text, rather than replacing text and destroying literal hyphen patterns. Regex
+numeric matches are guarded against sign/decimal/date/time fragments; identifier
+keys have their own exact-token path. For unstructured `proxyAll`/`requireAll`
+keys, no assertion or prohibition inference is added. Negation handling for
+values/choices remains separate. Reversal checks for role-based restrictions
+are bound to the declared protected subject (or its tightly scoped pronoun), not
+unrelated positive instructions elsewhere in the answer.
 
 V2 remains a conservative lexical evaluator, not a model judge. Independently
 review the essential roles against the source question and evidence before

@@ -61,3 +61,21 @@ it("exercises the offline executable flags without provider access", async () =>
   expect(run.stderr).toBe(""); expect(run.status).toBe(0);
   expect(JSON.parse(await readFile(f.output, "utf8")).summary.changed).toBe(1);
 });
+
+it("keeps CLI pass-to-fail counts zero for authored regex compatibility cases", async () => {
+  const f = await fixture();
+  const cases = [
+    { answer: "Catalogued crates with spare tassels.", score: { kind: "next_action", proxyAll: [["catalog"], ["crate"], ["spare.*(?:ribbon|tassel)"]], rubric: "Catalogue the crates and spare ribbons or tassels." } },
+    { answer: "Cobalt and amber", score: { kind: "value", accept: ["(?=[\\s\\S]*\\bcobalt\\b)(?=[\\s\\S]*\\bamber\\b)"], superseded: ["silver"] } },
+    { answer: "The label must include the batch code; the lot origin stays private.", score: { kind: "constraint_recall", requireAll: [["label.*include.*batch"], ["origin.*private"]] } },
+    { answer: "Do not discard the return slip; reconcile it by Tuesday.", score: { kind: "next_action", proxyAll: [["discard"], ["return slip"], ["Tuesday"]], rubric: "Keep the return slip, do not discard it, and reconcile it by Tuesday." } },
+  ];
+  const keys = cases.map((row, i) => ({ id: `p0${i + 1}`, score: row.score }));
+  await writeFile(f.answer, JSON.stringify(keys));
+  await writeFile(f.unit, JSON.stringify({ trials: cases.map((row, i) => ({ traceId: "bakery", probeId: keys[i].id, answer: row.answer, score: { pass: true, outcome: "correct", abstained: false, falseAbstention: false } })) }));
+  const run = spawnSync(process.execPath, [fileURLToPath(new URL("../continuity-rescore.mjs", import.meta.url)), "--units", f.units, "--answers", f.answers, "--scorer-version", "v2", "--output", f.output], { encoding: "utf8" });
+  expect(run.stderr).toBe(""); expect(run.status).toBe(0);
+  const report = JSON.parse(await readFile(f.output, "utf8"));
+  expect(report.trials.filter(row => row.old.pass && !row.new.pass)).toHaveLength(0);
+  expect(report.summary.changed).toBe(0);
+});
