@@ -95,7 +95,11 @@ export function validateProbeScore(probe) {
  *  wrong | violation (constraint broken) | fabricated (answered an unstated fact)
  */
 export function scoreAnswer(probe, answer) {
-  if (probe.score.version === "v2") return { ...scoreV2(probe, answer, scoreAnswerV1, isAbstention), scorerVersion: "v2" };
+  if (probe.score.version === "v2") {
+    try { validateProbeScore(probe); }
+    catch (error) { if (error instanceof SyntaxError) throw new Error("invalid_probe_score"); throw error; }
+    return { ...scoreV2(probe, answer, scoreAnswerV1, isAbstention), scorerVersion: "v2" };
+  }
   if (probe.score.version !== undefined && probe.score.version !== "v1") throw new Error("invalid_scorer_version");
   return scoreAnswerV1(probe, answer);
 }

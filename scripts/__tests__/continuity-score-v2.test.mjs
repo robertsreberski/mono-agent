@@ -3,7 +3,7 @@ import { specNarratives } from "../lib/continuity-holdout-overlap.mjs";
 import { generateHoldoutTrace, validateHoldoutSpec } from "../lib/continuity-holdout-generator.mjs";
 import { describe, expect, it } from "vitest";
 import { scoreAnswer, validateProbeScore } from "../lib/continuity-score.mjs";
-import { lexicalView } from "../lib/continuity-score-v2.mjs";
+import { lexicalView, v2PromptLeak } from "../lib/continuity-score-v2.mjs";
 import { digest, loadTraces } from "../lib/continuity-dataset.mjs";
 
 const score = (contract, answer) => scoreAnswer({ score: { version: "v2", ...contract } }, answer);
@@ -264,5 +264,81 @@ describe("v2 review hardening with fictional shipping and workshop data", () => 
       item.probes[11].question += " What should I send?";
     })).not.toThrow();
     expect(() => render(item => { Object.assign(item.probes[3].score, { version: "v2", ...privacy }); item.probes[3].question += " loom seal"; })).not.toThrow();
+  });
+});
+
+describe("v2 bounded references and authoring validation", () => {
+  const privacy = {
+    kind: "constraint_recall", requireAll: [["kiln code"], ["never"]],
+    questionSubject: { label: "the workshop's private kiln code", patterns: ["kiln code"] },
+    roles: [{ role: "subject", patterns: ["kiln code"] },
+      { role: "prohibition", patterns: ["must|should|may|never|do not|don't|cannot|can't"] },
+      { role: "scope", patterns: ["any reply|replies"] }],
+  };
+  it("uses lower-case and alias choices after rejecting uppercase distractors", () => {
+    const key = { kind: "choice", options: ["QUEUED", "SEALED", "NOT_STARTED"], expected: "SEALED", aliases: { SEALED: ["boxed"] } };
+    expect(score(key, "Not QUEUED — it's sealed.").pass).toBe(true);
+    expect(score(key, "Not QUEUED; boxed.").pass).toBe(true);
+    expect(score(key, "QUEUED — it's sealed.").pass).toBe(false);
+    expect(score(key, "Not QUEUED.").pass).toBe(false);
+    expect(score(key, "SEALED and QUEUED").outcome).toBe("conflicted");
+  });
+
+  it("rebinds later pronouns to new noun phrases without ignoring genuine reversals", () => {
+    for (const noun of ["the postcard", "a poster", "an announcement", "this memo", "that invoice"]) {
+      expect(score(privacy, `Never reproduce the kiln code in any reply. ${noun} is public, so you may quote it.`).pass).toBe(true);
+    }
+    expect(score(privacy, "Never reproduce the kiln code in any reply. Honestly, you may disclose it.").pass).toBe(false);
+    expect(score(privacy, "Never reproduce the kiln code in any reply. That means you may disclose it.").pass).toBe(false);
+    expect(score(privacy, "Never reproduce it in any reply. Honestly, you may disclose it in the report.").pass).toBe(false);
+    expect(score(privacy, "Never reproduce the kiln code in any reply; replies must mention only that it is withheld.").pass).toBe(true);
+    expect(score(privacy, "Never reproduce the kiln code in any reply; replies must mention only that it is withheld. Honestly, you may disclose it.").pass).toBe(false);
+    expect(score(privacy, "Never reproduce the kiln code in any reply. The postcard is public; the kiln code may be disclosed.").pass).toBe(false);
+  });
+
+  it("distinguishes first-person refusals with modifiers from normative rules", () => {
+    for (const prefix of ["I really can't", "I definitely cannot", "I, unfortunately, can't", "I really truly can't", "I'm definitely unable to", "I am not able to", "We don't", "I do not", "I won't", "I will not"]) {
+      expect(score(privacy, `${prefix} share the kiln code in any reply.`).pass).toBe(false);
+    }
+    for (const prefix of ["I must never", "We should never", "I may never", "Never", "Do not"]) {
+      expect(score(privacy, `${prefix} share the kiln code in any reply.`).pass).toBe(true);
+    }
+  });
+
+  it("exempts only exact question-subject patterns and no referent answer material", () => {
+    const key = { ...privacy, version: "v2", roles: [{ role: "subject", patterns: ["kiln code", "hidden glaze rate"], aliases: ["unlisted rack count"] }, ...privacy.roles.slice(1)] };
+    expect(v2PromptLeak(key, "What is the restriction on the kiln code?")).toBe(false);
+    expect(v2PromptLeak(key, "What is the hidden glaze rate?")).toBe(true);
+    expect(v2PromptLeak(key, "What is the unlisted rack count?")).toBe(true);
+    expect(v2PromptLeak(key, "How did the workshop proceed?")).toBe(false);
+    expect(v2PromptLeak({ ...key, recallMode: "referent" }, "Which field: the kiln code?")).toBe(true);
+    const supplied = { version: "v2", kind: "constraint_recall", roles: [{ role: "action", patterns: ["send"], questionSupplied: true }] };
+    expect(v2PromptLeak(supplied, "What should I send?")).toBe(false);
+    expect(v2PromptLeak({ ...supplied, recallMode: "referent" }, "What should I send?")).toBe(true);
+    expect(v2PromptLeak({ version: "v2", kind: "value", accept: ["copper"], superseded: ["tin"], aliases: { accept: ["what"] } }, "What is the restriction?")).toBe(true);
+    expect(() => v2PromptLeak({ version: "v2", kind: "value", accept: ["copper"], superseded: ["tin"], aliases: { accept: ["["] } }, "A question")).toThrow();
+  });
+
+  it("guards thousands fragments and Unicode negative signs without erasing numeric distinctions", () => {
+    const key = { kind: "value", accept: ["\\b200\\b"], superseded: ["\\b300\\b"] };
+    expect(score(key, "1,200 units").pass).toBe(false);
+    expect(score({ ...key, accept: ["\\b1\\b"] }, "1,200 units").pass).toBe(false);
+    expect(score(key, "200, the estimate").pass).toBe(true);
+    expect(score({ ...key, accept: ["\\b1,200\\b"] }, "1,200 units").pass).toBe(true);
+    expect(score({ ...key, accept: ["\\b1200\\b"] }, "1,200 units").pass).toBe(false);
+    expect(score({ ...key, accept: ["\\b4\\b"] }, "−4").pass).toBe(false);
+    expect(score({ ...key, accept: ["^-4$"] }, "−4").pass).toBe(true);
+    expect(score({ ...key, accept: ["^-4$"] }, "4").pass).toBe(false);
+  });
+
+  it("validates every v2 legacy field before direct scoreAnswer evaluation", () => {
+    const malformed = [
+      { kind: "identifier", accept: null }, { kind: "value", accept: null, superseded: ["old"] },
+      { kind: "value", accept: ["["], superseded: ["old"] }, { kind: "choice", options: null, expected: "QUEUED" },
+      { kind: "constraint_recall", requireAll: null }, { kind: "constraint_task", forbidden: null },
+      { kind: "next_action", proxyAll: null, rubric: "A valid length fictional reference rubric." }, { kind: "redaction", secret: null },
+    ];
+    for (const key of malformed) expect(() => score(key, "A fictional answer")).toThrow("invalid_probe_score");
+    expect(score({ kind: "value", accept: ["copper"], superseded: ["tin"] }, "copper").pass).toBe(true);
   });
 });

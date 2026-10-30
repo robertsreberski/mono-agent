@@ -11,7 +11,7 @@ const fields = (value, allowed) => need(object(value) && Object.keys(value).ever
 /** Typography is lexical only. Never collapse punctuation in numeric/alphanumeric tokens. */
 export function typographyView(text) {
   return String(text).normalize("NFC").replace(/[‘’]/gu, "'").replace(/[“”]/gu, '"')
-    .replace(/[\u00a0\u202f]/gu, " ").replace(/[‐‑]/gu, "-");
+    .replace(/[\u00a0\u202f]/gu, " ").replace(/[‐‑−]/gu, "-");
 }
 export function lexicalView(text) {
   return typographyView(text).replace(/(?<![\p{L}\p{N}_-])\p{L}+(?:-\p{L}+)+(?![\p{L}\p{N}_-])/gu, token => token.replaceAll("-", " "));
@@ -67,8 +67,9 @@ function matches(patterns, text, asserted = false, lexical = true, numeric = tru
       // Prevent regex word boundaries accepting a fragment of a signed number,
       // decimal, date or time. Preserve authored stems and lookahead-only hits;
       // identifiers have a separate exact-token path.
-      const left = view.slice(0, m.index), right = view.slice(end);
-      if (numeric && /\d/u.test(m[0]) && (/(?:\d|\d[.:/\-]|(?:^|[^\p{L}\p{N}])[+\-])$/u.test(left) || /^(?:\d|[.:/\-]\d)/u.test(right))) continue;
+      const left = typographyView(view.slice(0, m.index)), right = typographyView(view.slice(end));
+      const thousands = /\d,$/u.test(left) && /^\d{3}(?!\d)/u.test(view.slice(m.index));
+      if (numeric && /\d/u.test(m[0]) && (/(?:\d|\d[.:/\-]|(?:^|[^\p{L}\p{N}])[+\-])$/u.test(left) || /^(?:\d|[.:/\-]\d|,\d{3}(?!\d))/u.test(right) || thousands)) continue;
       if (asserted && rejected(view, m.index, end)) continue;
       return true;
     }
@@ -81,16 +82,21 @@ const REVERSED = /\b(?:never|not)\s+(?:be\s+)?(?:omitted|excluded|kept\s+out|wit
 
 function hasRuleProhibition(clause) {
   const text = typographyView(clause);
+  const personal = /\b(?:i(?:'m|\s+am)?|we)\b(?:\s*,?\s*(?:\p{L}+ly|just|quite|very)){0,2}\s*,?\s*$/iu;
+  const refusal = /^(?:cannot|can't|do not|don't|won't|will not|am unable to|am not able to)\b/iu;
   return [...text.matchAll(new RegExp(PROHIBITION.source, "giu"))]
-    .some(match => !(/\bi\s*$/iu.test(text.slice(0, match.index)) && /^(?:cannot|can't)\b/iu.test(match[0])));
+    .some(match => !(personal.test(text.slice(0, match.index)) && refusal.test(match[0])));
 }
 
 /** Evaluator answer material must not appear in a reader-visible prompt. */
 export function v2PromptLeak(score, prompt) {
   if (score.version !== "v2") return false;
+  const referent = score.recallMode === "referent";
+  const supplied = new Set(score.questionSubject?.patterns ?? []);
   const patterns = [...Object.values(score.aliases ?? {}).flat(), ...(score.recallValues ?? []),
-    ...(score.roles ?? []).filter(role => !role.questionSupplied && !(role.role === "subject" && score.questionSubject))
-      .flatMap(role => [...role.patterns, ...(role.aliases ?? [])])];
+    ...(referent ? [...supplied] : []), ...(score.roles ?? []).flatMap(role =>
+      [...role.patterns, ...(role.aliases ?? [])].filter(pattern => referent ||
+        (!role.questionSupplied && !(role.role === "subject" && supplied.has(pattern)))))];
   const compact = value => String(value).normalize("NFKC").toUpperCase().replace(/[^A-Z0-9]/gu, "");
   return patterns.some(pattern => re(pattern).test(prompt) || re(pattern).test(lexicalView(prompt)))
     || (score.neverEcho ?? []).some(value => compact(prompt).includes(compact(value)));
@@ -101,16 +107,21 @@ export function v2PromptLeak(score, prompt) {
 // bound for reversal checks even across intervening filler fragments.
 function reversesSubject(score, text) {
   const subjects = score.roles.filter(role => role.role === "subject")
-    .flatMap(role => [...role.patterns, ...(role.aliases ?? [])]);
+    .flatMap(role => [...role.patterns, ...(role.aliases ?? [])]).concat(score.questionSubject?.patterns ?? []);
   const fragments = text.split(/(?<!\d)\.(?!\d)|[!?;,\n]+|\.(?=\s|$)|\b(?:but|and)\b/iu).filter(fragment => fragment.trim().length > 0);
   let subjectBound = false;
   return fragments.some((fragment, index) => {
     const explicit = matches(subjects, fragment);
     const direct = score.questionSubject !== undefined && index === 0 && (/^\s*it\b/iu.test(fragment) || /^\s*(?:never|do not|don't|withhold|omit|keep)\b[^.!?;\n]{0,35}\bit\b/iu.test(fragment));
-    const continued = subjectBound && /\bit\b/iu.test(fragment);
+    const pronoun = /\bit\b/iu.exec(fragment);
+    const antecedent = /\b(?:the|a|an|this|that)\s+(?!(?:it|is|was|are|were|can|may|must|should|will|means|allows|permits)\b)[\p{L}][\p{L}-]*\b/iu.exec(fragment);
+    if (!explicit && antecedent && antecedent.index < (pronoun?.index ?? fragment.length)) subjectBound = false;
+    const continued = subjectBound && pronoun !== null;
     const bound = explicit || direct || continued;
     subjectBound ||= explicit || direct;
-    return bound && REVERSED.test(lexicalView(fragment));
+    // Describing the withholding status does not disclose the protected value.
+    const statusOnly = /\b(?:mention|state|say|report|indicate|note)\s+only\s+that\s+it\s+(?:is|remains)\s+(?:withheld|omitted|redacted|private|confidential)\s*$/iu.test(fragment);
+    return bound && !statusOnly && REVERSED.test(lexicalView(fragment));
   });
 }
 
@@ -156,7 +167,8 @@ export function scoreV2(probe, answer, legacy, isAbstention) {
     case "choice": {
       const alternatives = [...score.options].sort((a, b) => b.length - a.length).map(option => option.split("_").join("[\\s_-]+"));
       const pattern = `\\b(?:${alternatives.join("|")})\\b`;
-      const uppercase = [...text.matchAll(new RegExp(pattern, "gu"))];
+      const uppercase = [...text.matchAll(new RegExp(pattern, "gu"))]
+        .filter(match => !rejected(text, match.index, match.index + match[0].length));
       const candidates = uppercase.length ? uppercase : [...text.matchAll(new RegExp(pattern, "giu"))];
       const tokens = candidates.filter(m => !rejected(text, m.index, m.index + m[0].length))
         .map(m => m[0].toUpperCase().replace(/[\s_-]+/gu, "_"));
