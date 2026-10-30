@@ -95,7 +95,7 @@ async function hashTree(installRoot: string): Promise<string> {
 
 describe("managed SRT runtime resolution", () => {
   it("pins the complete npm-ci tree independently of the install marker", async () => {
-    expect(MANAGED_SRT_TREE_SHA256).toBe("a6302340f9754fbb4fab32e3bc636a6d05e389ad338a7bc6b98c71a9f3609649");
+    expect(MANAGED_SRT_TREE_SHA256).toBe("8dd7983d664c195474d12b431113487ff750a6721af91c6e97cd968692a6a25d");
     const cacheRoot = await tempDir();
     const fixture = await createManagedFixture(cacheRoot);
 

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Fix the vulnerable `node-forge` dependency in the managed sandbox runtime by
+  updating its pinned version to 1.4.2.
+
 - Let registered holdout studies pass with at most 1% missing slots per arm only
   when every worst-case completion gate passes and controllers are admissible.
   Preserve complete-data results, established failures and power semantics.
