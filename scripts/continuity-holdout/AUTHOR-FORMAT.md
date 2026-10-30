@@ -238,3 +238,110 @@ access another collection, render conversations, execute any service or compare
 against hidden text. The author is not expected to run it. Rendering, integrity
 checks, independent overlap review and the final immutable freeze are separate
 custodian steps. A schema pass is not acceptance of independence or correctness.
+
+## Opt-in deterministic scorer v2
+
+Keys without `score.version` (or with `"version": "v1"`) retain legacy scoring,
+including its literal regexes, compact identifier substrings and first status
+token. Do not change frozen keys to recalibrate historical results.
+
+`"version": "v2"` opts an individual key into lexical typography equivalence,
+letter-only word-internal hyphen/space equivalence, whole lexical matches and
+bounded explicit assertion polarity. Author regexes against the normalized view
+(straight apostrophes and spaces between lexical words). Numeric punctuation,
+signs, dates and times are not normalized. Identifiers use exact token boundaries
+and retain separators; identifier and redaction answers never use the lexical
+hyphen view. Redaction leaks and forbidden tokens are not excused by refusals.
+For values and choices, explicitly rejected alternatives (`not`, `rather than`,
+`instead of`, `no longer`) do not count as asserted; competing asserted values
+fail. This recognizes bounded constructions, not arbitrary natural language.
+
+All legacy fields remain required. Optional v2 fields are:
+
+- `roles`: replaces `proxyAll` or `requireAll` for v2 evaluation only. Each role
+  has `role`, nonempty regex `patterns`, optional regex `aliases`, and optional
+  `questionSupplied: true`. Roles are `object`, `action`, `recipient`, `deadline`,
+  `qualifier`, `subject`, `prohibition`, or `scope`; duplicates are allowed for
+  compound deadlines or multiple objects. Every non-question-supplied role must
+  match. Actions recognize controlled send/sent/sending, pay/paid/paying,
+  collect/collected/collecting, attach/attached and notify/notified/notifying
+  forms; other constructions need authored short aliases. Next-action contracts
+  require an object and deadline. Never omit an essential recipient, deadline,
+  qualifier or second enclosure when translating a legacy key.
+- `questionSupplied` is allowed only on action or recipient roles, and only when
+  the exact question already supplies that information. It permits an elliptical
+  nominal answer; it is not permission to drop a requirement from a generic
+  action question. Patterns for skipped roles are not evaluated, so do not mark
+  a recipient supplied if the question actually asks the respondent to identify
+  it. Explicit incompatible additions require appropriate negative keys/audit;
+  this lexical contract is not a semantic contradiction detector.
+- `questionSubject`: `{ "label": "the private permit", "patterns": ["permit"] }`
+  declares a single explicit subject in the question. With restriction roles,
+  accept a direct first-clause `It must never be reproduced ...` or
+  `Never reproduce it ...`; do not resolve pronouns after new antecedents.
+  Subject, prohibition and scope must match the same clause. Supply `scope`
+  roles for required qualifiers such as replies and quotation/refusal coverage.
+- `recallMode`: `restriction` (default) requires subject and prohibition roles;
+  `referent` allows subject-only identification of a restricted field.
+  `recallValues` supplies regex aliases for that subject only in `referent` mode.
+  Use it only when an exact value unambiguously identifies the requested field,
+  never when the question asks a statistic's category/type.
+- `neverEcho`: literal protected values for recall keys; any compacted occurrence
+  fails even in a refusal. It is incompatible with `recallValues`. Use it for
+  all-replies-protected values, not value aliases. Redaction keys retain their
+  existing eight-character-run leak rule.
+- `aliases`: value keys map `accept` and/or `superseded` to regex arrays; choice
+  keys map existing option names to regex arrays. Use short semantic phrases,
+  not full observed answers. No item IDs or trace-specific exceptions in code.
+
+V2 remains a conservative lexical evaluator, not a model judge. Independently
+review the essential roles against the source question and evidence before
+freezing. Archived evaluator projections omit questions; an overlay declaration
+cannot itself prove that a role was question-supplied. Unsupported paraphrases
+can remain incorrect, and lucky keyword combinations still need interpretation
+audit. Scorer recalibration is development evidence, not a new holdout result.
+
+### Offline archived-answer comparison
+
+Run without providers or a workspace build (Node 24.15+):
+
+```bash
+node scripts/continuity-rescore.mjs \
+  --units '/private/archive/units/**/*.json' \
+  --answers /private/frozen/answers \
+  --overlay /private/development/key-overlay.json \
+  --scorer-version v2 \
+  --output /private/development/rescore.json
+```
+
+`--units` accepts a directory (recursively) or a quoted Node filesystem glob.
+Each JSON object has `trials` with `traceId`, `probeId`, `answer` and the archived
+`score` (`pass`, `outcome`); arm/category/repeat are retained where available.
+`--answers` names the frozen `answers/` directory: each `<traceId>.json` contains
+an array of evaluator probes (`id`, `category`, `score`, optional `evidence`).
+`--scorer-version v1|v2` is required and applies explicitly to all selected keys.
+
+The optional external overlay has this shape (score patches are shallow):
+
+```json
+{
+  "schema": "continuity-key-overlay-v1",
+  "patches": [
+    {
+      "traceId": "bakery",
+      "probeId": "p01",
+      "score": { "aliases": { "accept": ["out of use"] } }
+    }
+  ]
+}
+```
+
+Merged keys are validated; unknown fields, duplicate/unused patches, invalid
+versions and invalid regexes fail. A patch cannot change score kind. If present,
+its `version` must agree with the flag; v2-only fields cannot accompany v1.
+Outputs must be new files, not inputs or files under the directory-form units or
+answers paths. Input files are never edited. The deterministic JSON records
+per-trial archived/new scores, changed verdicts by arm/category/direction, input
+SHA-256s, overlay SHA-256 and scorer/CLI source hashes. Identical paths and bytes
+produce identical output bytes. Keep outputs, overlays and archived content out
+of the public repository; they do not revise any registered historical decision.

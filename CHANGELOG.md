@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Add opt-in deterministic v2 continuity benchmark scoring and a read-only
+  archived-answer re-score CLI; keep legacy scoring and study decisions unchanged.
+
 - Fix the vulnerable `node-forge` dependency in the managed sandbox runtime by
   updating its pinned version to 1.4.2.
 

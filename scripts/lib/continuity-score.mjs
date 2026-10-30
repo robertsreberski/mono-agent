@@ -1,3 +1,4 @@
+import { scoreV2, validateV2, V2_FIELDS } from "./continuity-score-v2.mjs";
 // Offline/dry-run must work before a workspace build; Node >=24.15.0 strips this import-free TS source.
 import { deriveUpkeepAccounting } from "../../packages/contracts/src/upkeep-accounting.ts";
 // Deterministic probe scoring and aggregation for the continuity benchmark.
@@ -50,6 +51,9 @@ function allGroups(groups, text) { return (groups ?? []).every((group) => anyMat
 /** Validate one probe's scoring contract; throws a stable code. */
 export function validateProbeScore(probe) {
   const score = probe?.score;
+  if (score?.version !== undefined && !["v1", "v2"].includes(score.version)) throw new Error("invalid_scorer_version");
+  if (score?.version === "v2") validateV2(score);
+  else if (V2_FIELDS.slice(1).some(field => score?.[field] !== undefined)) throw new Error("v2_fields_require_version");
   if (!score || !SCORE_KINDS.includes(score.kind)) throw new Error("invalid_probe_score");
   const strings = (value) => Array.isArray(value) && value.length > 0 && value.every((item) => typeof item === "string" && item.length > 0);
   const groups = (value) => Array.isArray(value) && value.length > 0 && value.every(strings);
@@ -91,6 +95,12 @@ export function validateProbeScore(probe) {
  *  wrong | violation (constraint broken) | fabricated (answered an unstated fact)
  */
 export function scoreAnswer(probe, answer) {
+  if (probe.score.version === "v2") return scoreV2(probe, answer, scoreAnswerV1, isAbstention);
+  if (probe.score.version !== undefined && probe.score.version !== "v1") throw new Error("invalid_scorer_version");
+  return scoreAnswerV1(probe, answer);
+}
+
+function scoreAnswerV1(probe, answer) {
   const text = String(answer ?? "").trim();
   const abstained = isAbstention(text);
   const score = probe.score;
