@@ -1,5 +1,5 @@
 {
-  "schema": "holdout-statistical-spec-v1",
+  "schema": "holdout-statistical-spec-v2",
   "design": {
     "conversationsPerCorpus": 256,
     "corpora": [
@@ -17,14 +17,18 @@
   "confidence": 0.95,
   "safety": {
     "comparators": [
-      "cold-rebuild",
-      "continuity-pack-cold"
+      "continuity-pack-cold",
+      "native"
     ],
     "treatment": "continuity-ledger-cold",
-    "harmful": "ledger has any wrong answer in its planned conversation bundle and comparator has none; wrong means !pass and outcome not in {abstained,empty}, even when hedged",
-    "upperBound": "one-sided exact Clopper-Pearson",
-    "maximum": 0.05,
-    "wrongRateMaximum": 0.005
+    "wrong": "!pass and outcome not in {abstained,empty}, even when hedged; incomplete substantive answers are wrong",
+    "unit": "conversation wrong-fraction difference over all 30 planned answers",
+    "upperBound": "one-sided paired Student-t",
+    "maximumByComparator": {
+      "continuity-pack-cold": 0.005,
+      "native": 0.02
+    },
+    "wrongRateMaximum": 0.02
   },
   "benefit": {
     "comparator": "continuity-pack-cold",
@@ -43,10 +47,10 @@
     "bindingErrorsMaximum": 0
   },
   "missingData": {
-    "policy": "Never drop planned slots. Missing, invalid and duplicate planned slots may pass only under every gate’s worst-case completion, within the registered per-arm cap and with no unknown rows. No incomplete scope has a complete-case interval. Existing conservative best-completion fail rules remain unchanged. Native coverage is subject to the same cap; complete audit material is required.",
+    "policy": "Never drop planned slots. Missing, invalid and duplicate planned slots may pass only under every gate\u2019s worst-case completion, within the registered per-arm cap and with no unknown rows. No incomplete scope has a complete-case interval. Conservative completion bounds apply to paired wrong differences against pack and native. Complete audit material is required.",
     "worstCaseCompletion": {
       "maximumMissingFractionPerArm": 0.01
     }
   },
-  "decision": "Intersection-union: pass only if every gate passes, integrity is complete or within the registered worst-case-completion cap with no unknown rows, controller admission is admissible, and audit is complete. Established fail rules are unchanged. Otherwise inconclusive; no outcome-dependent extension. Statistical bounds are per conversation, never independent probes."
+  "decision": "Pass only if every necessary gate passes, integrity is complete or within the registered worst-case-completion cap with no unknown rows, controller admission is admissible, and audit is complete. Otherwise fail when established, else inconclusive; no outcome-dependent extension. One-sided 95% conversation-paired bounds make no simultaneous-coverage claim. Cold-rebuild and any-wrong risks/discordances are descriptive only. Eligibility is limited to the registered reader/extractor model references; never automatic default enablement."
 }

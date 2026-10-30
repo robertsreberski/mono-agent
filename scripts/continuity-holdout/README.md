@@ -377,7 +377,12 @@ and `artifacts.json`. They include gates/intervals/reasons, integrity and audit
 counters, controller stops and catalog spend (not an invoice). Integrity includes
 both controller completeness/admissibility, per-arm missing counts and `worstCase`
 when the decision relies on capped worst-case completion. Complete-data results,
-existing fail rules and complete-data power semantics remain unchanged. There are no local
+v2 paired wrong-rate gates and conservative completion bounds apply.
+Cold-rebuild rates and discordances are descriptive only; eligibility is limited
+to the registration’s pinned reader/extractor model references (Sol-only evidence
+is Sol-scoped, not blanket default enablement). Historical v1 registrations must
+use their frozen tooling revision; current tooling rejects them explicitly.
+See [registered gate semantics](./REGISTRATION.md#gate-semantics-and-missing-data). There are no local
 absolute paths or freshly generated timestamps. Identical input bytes give
 identical output bytes, including with roots supplied in a different order.
 

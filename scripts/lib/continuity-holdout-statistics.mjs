@@ -6,6 +6,7 @@ export const STATISTICAL_SPEC = freeze(spec);
 export const HOLDOUT_ARMS = Object.freeze(["native", "cold-rebuild", "continuity-pack-cold", "continuity-ledger-cold"]);
 const check = (ok, code) => { if (!ok) throw new Error(code); };
 export function validateStatisticalSpec(value) {
+  check(value?.schema === spec.schema, "incompatible_statistical_spec_version");
   const expected = structuredClone(spec), d = value?.design;
   const integer = x => Number.isSafeInteger(x) && x > 0;
   check(d && [d.conversationsPerCorpus, d.families, d.conversationsPerFamily, d.shards, d.perCorpusPerShard].every(integer)
@@ -93,26 +94,21 @@ export function pairedT(values, confidence = spec.confidence) {
 export const intervalStatus = (interval, threshold, upperIsPass) => upperIsPass
   ? interval.upper <= threshold ? "pass" : interval.lower > threshold ? "fail" : "inconclusive"
   : interval.lower > threshold ? "pass" : interval.upper <= threshold ? "fail" : "inconclusive";
-const criticals = new Map(), cuts = new Map();
+const criticals = new Map();
 function critical(confidence, n) {
   const key = `${confidence}/${n}`;
   if (!criticals.has(key)) criticals.set(key, tQuantile(confidence, n - 1));
   return criticals.get(key);
 }
-export function safetyCuts(n, statisticalSpec = spec) {
-  const key = `${n}/${statisticalSpec.confidence}/${statisticalSpec.safety.maximum}`;
-  if (!cuts.has(key)) {
-    const boundary = predicate => { let lo = 0, hi = n + 1; while (lo < hi) { const mid = Math.floor((lo + hi) / 2); if (mid <= n && !predicate(mid)) lo = mid + 1; else hi = mid; } return lo; };
-    cuts.set(key, { passMaximum: boundary(k => clopperPearson(k, n, statisticalSpec.confidence).upper > statisticalSpec.safety.maximum) - 1,
-      failMinimum: boundary(k => clopperPearson(k, n, statisticalSpec.confidence).lower > statisticalSpec.safety.maximum) });
-  }
-  return cuts.get(key);
-}
-/** Shared scoring/power gate code; binomial count cuts are exactly equivalent to CP endpoints. */
+/** Shared complete-data scoring/power gates, using conversation moments. */
 export function gateEvaluator(statisticalSpec = spec) {
   validateStatisticalSpec(statisticalSpec);
   return {
-    safety: (k, n) => { const c = safetyCuts(n, statisticalSpec); return k <= c.passMaximum ? "pass" : k >= c.failMinimum ? "fail" : "inconclusive"; },
+    safety: (sum, squares, n, comparator) => {
+      check(Object.hasOwn(statisticalSpec.safety.maximumByComparator, comparator), "invalid_safety_comparator");
+      const interval = pairedMoments(sum, squares, n, statisticalSpec.confidence);
+      return { interval, status: intervalStatus(interval, statisticalSpec.safety.maximumByComparator[comparator], true) };
+    },
     benefit: (sum, squares, n, combined) => { const interval = pairedMoments(sum, squares, n, statisticalSpec.confidence);
       return { interval, status: intervalStatus(interval, combined ? statisticalSpec.benefit.combinedMinimumExclusive : statisticalSpec.benefit.corpusMinimumExclusive, false) }; },
     wrongRate: (wrong, denominator, complete = true) => wrong / denominator > statisticalSpec.safety.wrongRateMaximum ? "fail" : complete ? "pass" : "inconclusive",
@@ -168,15 +164,34 @@ export function holdoutStatistics({ conversations, trials, audit = null, statist
     const correct = rows.reduce((s, c) => s + c.arms[ledger].correct, 0), wrong = rows.reduce((s, c) => s + c.arms[ledger].wrong, 0);
     const missing = rows.reduce((s, c) => s + c.arms[ledger].missing, 0), safety = {};
     for (const comparator of statisticalSpec.safety.comparators) {
-      // 'No comparator wrong' is established only if ALL comparator slots are valid.
-      const knownHarmful = rows.filter(c => c.arms[ledger].wrong > 0 && c.arms[comparator].complete && c.arms[comparator].wrong === 0).length;
-      const interval = complete ? clopperPearson(knownHarmful, n, statisticalSpec.confidence) : null;
-      const bestCompletion = clopperPearson(knownHarmful, n, statisticalSpec.confidence);
-      const worstHarmful = rows.filter(c => (c.arms[ledger].wrong > 0 || c.arms[ledger].missing > 0) && c.arms[comparator].wrong === 0).length;
-      const status = complete ? evaluator.safety(knownHarmful, n) : bestCompletion.lower > statisticalSpec.safety.maximum ? "fail"
-        : worstHarmful <= safetyCuts(n, statisticalSpec).passMaximum ? "pass" : "inconclusive";
-      safety[comparator] = { harmful: complete ? knownHarmful : null, knownHarmful, worstHarmful, n, interval, bestCompletion, status }; add(`${corpus}:safety:${comparator}`, status);
+      const bounds = rows.map(c => { const l = c.arms[ledger], p = c.arms[comparator];
+        return [(l.wrong - p.wrong - p.missing) / bundleSize, (l.wrong + l.missing - p.wrong) / bundleSize]; });
+      const values = bounds.map(([lo]) => lo);
+      const result = complete ? evaluator.safety(values.reduce((a, b) => a + b, 0), values.reduce((a, b) => a + b * b, 0), n, comparator) : null;
+      const worstCompletionUpper = completionUpperBound(bounds, statisticalSpec.confidence);
+      const bestCompletionLower = completionLowerBound(bounds, statisticalSpec.confidence);
+      const margin = statisticalSpec.safety.maximumByComparator[comparator];
+      const status = result?.status ?? (worstCompletionUpper <= margin ? "pass" : bestCompletionLower > margin ? "fail" : "inconclusive");
+      safety[comparator] = { n, margin, interval: result?.interval ?? null, worstCompletionUpper, bestCompletionLower, status };
+      add(`${corpus}:safety:${comparator}`, status);
     }
+    // Any-wrong risks and both discordance directions are descriptive, never gates.
+    const descriptive = Object.fromEntries(HOLDOUT_ARMS.map(arm => {
+      const count = key => rows.reduce((s, c) => s + c.arms[arm][key], 0);
+      return [arm, { complete: rows.every(c => c.arms[arm].complete), correct: count("correct"), wrong: count("wrong"), missing: count("missing"),
+        missingRate: count("missing") / denominator,
+        abstainedOrEmptyRate: (denominator - count("correct") - count("wrong") - count("missing")) / denominator,
+        abstainedOrEmpty: denominator - count("correct") - count("wrong") - count("missing"),
+        correctRate: count("correct") / denominator, wrongRate: count("wrong") / denominator,
+        anyWrongConversations: rows.filter(c => c.arms[arm].wrong > 0).length,
+        anyWrongRisk: rows.filter(c => c.arms[arm].wrong > 0).length / n }];
+    }));
+    const discordances = Object.fromEntries(HOLDOUT_ARMS.filter(a => a !== ledger).map(comparator => [comparator, {
+      ledgerOnlyKnownWrong: rows.filter(c => c.arms[ledger].wrong > 0 && c.arms[comparator].complete && c.arms[comparator].wrong === 0).length,
+      comparatorOnlyKnownWrong: rows.filter(c => c.arms[comparator].wrong > 0 && c.arms[ledger].complete && c.arms[ledger].wrong === 0).length,
+      bothKnownWrong: rows.filter(c => c.arms[ledger].wrong > 0 && c.arms[comparator].wrong > 0).length,
+      bothComplete: rows.filter(c => c.arms[ledger].complete && c.arms[comparator].complete).length,
+    }]));
     const bounds = rows.map(c => { const l = c.arms[ledger], p = c.arms[pack]; return [(l.correct - p.correct - p.missing) / bundleSize, (l.correct + l.missing - p.correct) / bundleSize]; });
     const differences = bounds.map(([lo]) => lo), sum = differences.reduce((a, b) => a + b, 0), squares = differences.reduce((a, b) => a + b * b, 0);
     const result = complete ? evaluator.benefit(sum, squares, n, corpus === "combined") : null;
@@ -188,7 +203,7 @@ export function holdoutStatistics({ conversations, trials, audit = null, statist
     const observedWrongStatus = evaluator.wrongRate(wrong, denominator, complete);
     const wrongStatus = observedWrongStatus === "inconclusive" && (wrong + missing) / denominator <= statisticalSpec.safety.wrongRateMaximum ? "pass" : observedWrongStatus;
     add(`${corpus}:wrong-rate`, wrongStatus);
-    scopes[corpus] = { plannedConversations: n, plannedAnswers: denominator, complete, worstCase: !complete, safety, benefit, benefitStatus, bestCompletionUpper, worstCompletionLower,
+    scopes[corpus] = { plannedConversations: n, plannedAnswers: denominator, complete, worstCase: !complete, safety, descriptive, discordances, benefit, benefitStatus, bestCompletionUpper, worstCompletionLower,
       ledgerCorrect: correct, ledgerMissing: missing, ledgerAccuracy: correct / denominator, bestCompletionAccuracy: (correct + missing) / denominator,
       ledgerWrong: wrong, ledgerWrongRate: wrong / denominator, wrongStatus };
   }
@@ -215,7 +230,7 @@ export function holdoutStatistics({ conversations, trials, audit = null, statist
     scope.wrongStatus = scope.benefitStatus = "not_a_measurement";
     for (const safety of Object.values(scope.safety)) safety.status = "not_a_measurement";
   }
-  return { schema: "holdout-statistics-v1", unit: "conversation", measurement, scopes, plannedAnswersPerArm: conversations.length * bundleSize, audit: auditRates,
+  return { schema: "holdout-statistics-v2", unit: "conversation", measurement, scopes, plannedAnswersPerArm: conversations.length * bundleSize, audit: auditRates,
     integrity: { complete: integrity, missingPerArm, maximumMissingPerArm, withinMissingCap, worstCase: !integrity && unknown === 0 && withinMissingCap, unknownTrials: unknown, notStartedPlaceholders, incompleteConversations: bundles.filter(c => !c.complete).map(c => c.id) },
     decision: measurement ? { status, reasons: gates.filter(g => g.status !== "pass").map(g => `${g.name}:${g.status}`), gates }
       : { status: "inconclusive", reasons: ["not_a_measurement"], gates: [] } };

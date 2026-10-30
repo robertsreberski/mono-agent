@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add versioned holdout v2 paired wrong-rate quality gates, model-scoped
+  eligibility reports, and coherent joint-power/null-calibration simulations.
+  Keep cold-rebuild descriptive; reject incompatible v1 registrations.
+
 - Add opt-in deterministic v2 continuity benchmark scoring and a read-only
   archived-answer re-score CLI; keep legacy scoring and study decisions unchanged.
 

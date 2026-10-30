@@ -17,23 +17,25 @@ function trials(packAbstains = true) {
 }
 const score = rows => holdoutStatistics({ conversations, trials: rows, audit, measurement: true });
 const missing = (rows, a, count) => { let left = count; return rows.filter(t => !(t.arm === a && left-- > 0)); };
-it("preserves all legacy complete-data scope fields and the decision", () => {
-  const result = score(trials(false)); expect(result.decision.status).toBe("pass"); expect(result.decision.reasons).toEqual([]); expect(result.integrity.worstCase).toBe(false);
+it("reports v2 paired gates and descriptive risks on complete data", () => {
+  const result = score(trials(false)); expect(result.schema).toBe("holdout-statistics-v2");
+  expect(result.decision.status).toBe("pass"); expect(result.decision.reasons).toEqual([]);
   for (const [name, scope] of Object.entries(result.scopes)) {
-    const n = name === "combined" ? 512 : 256, cp = clopperPearson(0, n), benefit = pairedT(Array(n).fill(1 / 15));
-    const { worstCase, worstCompletionLower, ...legacy } = scope;
-    const safety = Object.fromEntries(Object.entries(legacy.safety).map(([key, { worstHarmful, ...row }]) => [key, row]));
-    expect({ ...legacy, safety }).toEqual({ plannedConversations: n, plannedAnswers: n * 30, complete: true,
-      safety: Object.fromEntries([cold, pack].map(key => [key, { harmful: 0, knownHarmful: 0, n, interval: cp, bestCompletion: cp, status: "pass" }])),
-      benefit, benefitStatus: "pass", bestCompletionUpper: benefit.upper, ledgerCorrect: n * 30, ledgerMissing: 0, ledgerAccuracy: 1,
-      bestCompletionAccuracy: 1, ledgerWrong: 0, ledgerWrongRate: 0, wrongStatus: "pass" });
-    expect(worstCase).toBe(false); expect(worstCompletionLower).toBe(benefit.lower);
+    const n = name === "combined" ? 512 : 256;
+    expect(Object.keys(scope.safety)).toEqual([pack, "native"]);
+    for (const comparator of [pack, "native"]) {
+      expect(scope.safety[comparator].interval).toEqual(pairedT(Array(n).fill(0)));
+      expect(scope.safety[comparator].status).toBe("pass");
+    }
+    expect(scope.benefit).toEqual(pairedT(Array(n).fill(1 / 15)));
+    expect(scope.descriptive[cold]).toMatchObject({ correctRate: 1, wrongRate: 0, anyWrongRisk: 0 });
+    expect(scope.worstCase).toBe(false); expect(scope.worstCompletionLower).toBe(scope.benefit.lower);
   }
 });
 it("passes one missing ledger slot with explicit worst-case flags and planned denominators", () => {
   const result = score(missing(trials(), arm, 1)); expect(result.decision.status).toBe("pass"); expect(result.integrity.complete).toBe(false);
   expect(result.integrity.worstCase).toBe(true); expect(result.integrity.missingPerArm[arm]).toBe(1); expect(result.scopes.combined.worstCase).toBe(true);
-  expect(result.scopes.combined.safety[cold].worstHarmful).toBe(1); expect(result.scopes.combined.benefit).toBe(null);
+  expect(result.scopes.combined.safety.native.worstCompletionUpper).toBeGreaterThan(0); expect(result.scopes.combined.benefit).toBe(null);
 });
 it.each([153, 154])("enforces the registered integer cap with %i native misses", count => {
   const result = score(missing(trials(), "native", count)); expect(result.integrity.maximumMissingPerArm).toBe(153);
@@ -43,20 +45,24 @@ it.each([153, 154])("enforces the registered integer cap with %i native misses",
 });
 it.each(["wrong-rate", "safety", "accuracy"])("leaves worst-case %s uncertainty inconclusive, not failed", gate => {
   let rows = trials();
-  if (gate === "wrong-rate") rows = missing(rows, arm, 39);
-  if (gate === "safety") rows = rows.filter(t => !(t.arm === arm && t.repeat === 1 && t.probeId === "p0" && Number(t.traceId.slice(10)) < 7));
+  if (gate === "wrong-rate") {
+    const wrong = rows.find(t => t.arm === arm); wrong.score = { pass: false, outcome: "wrong" };
+    let left = 153; rows = rows.filter(t => !(t !== wrong && t.arm === arm && left-- > 0));
+  }
+  if (gate === "safety") rows = rows.filter(t => !(t.arm === arm && t.repeat === 1 && t.probeId === "p0" && Number(t.traceId.slice(10)) < 40));
   if (gate === "accuracy") {
     const ls = rows.filter(t => t.arm === arm); ls.slice(0, 1248).forEach(t => { t.score = { pass: false, outcome: "abstained" }; });
     rows.splice(rows.indexOf(ls[1248]), 1);
   }
-  const result = score(rows), key = gate === "accuracy" ? "accuracy" : `holdout-hard:${gate === "safety" ? `safety:${cold}` : gate}`;
+  const result = score(rows), key = gate === "accuracy" ? "accuracy" : `holdout-hard:${gate === "safety" ? `safety:${pack}` : gate}`;
   expect(result.decision.gates.find(g => g.name === key).status).toBe("inconclusive"); expect(result.decision.status).toBe("inconclusive");
 });
-it("fills a missing comparator wrong in its favour and can flip safety from pass", () => {
-  let rows = trials();
-  for (const row of rows) if (row.repeat === 1 && row.probeId === "p0" && (row.arm === arm && Number(row.traceId.slice(10)) < 7 || [cold, pack].includes(row.arm) && row.traceId === "synthetic-6")) row.score = { pass: false, outcome: "wrong" };
-  expect(score(rows).decision.status).toBe("pass"); rows = rows.filter(t => !(t.arm === cold && t.traceId === "synthetic-6" && t.repeat === 1 && t.probeId === "p0"));
-  const safety = score(rows).scopes["holdout-hard"].safety[cold]; expect(safety.knownHarmful).toBe(6); expect(safety.worstHarmful).toBe(7); expect(safety.status).toBe("inconclusive");
+it.each([pack, "native"])("includes missing %s slots in both paired completion bounds", comparator => {
+  const rows = trials();
+  const before = score(rows).scopes["holdout-hard"].safety[comparator];
+  const after = score(missing(rows, comparator, 100)).scopes["holdout-hard"].safety[comparator];
+  expect(before.interval.mean).toBe(0); expect(after.interval).toBe(null);
+  expect(after.bestCompletionLower).toBeLessThan(0); expect(after.worstCompletionUpper).toBeGreaterThan(0);
 });
 it("unknown rows still block acceptance and the registered cap cannot be relaxed", () => {
   const rows = trials(); rows.push({ ...rows[0], traceId: "unplanned" }); expect(score(rows).decision.status).toBe("inconclusive");
@@ -114,5 +120,9 @@ it("joins and certifies a full synthetic report with a failed chunk within the c
   const imported = join(directory, "imported"); await auditors.importAudit(context, roots, joinedPath, exportedDir, paths, imported);
   const output = join(directory, "report"), result = await report.finalReport(context, roots, joinedPath, { ...paths, directory: exportedDir, certificate: join(imported, "certificate.json") }, output);
   expect(result.certified).toBe(true); expect(result.decision.status).toBe("pass");
-  expect(JSON.parse(await readFile(join(output, "report.json"))).integrity).toMatchObject({ controllerComplete: false, controllerAdmissible: true, worstCase: true, complete: false, auditCertified: true });
+  const savedReport = JSON.parse(await readFile(join(output, "report.json")));
+  expect(savedReport.schema).toBe("holdout-final-report-v2");
+  expect(savedReport.eligibilityScope).toMatchObject({ reader: context.registration.models.reader, extractor: context.registration.models.extractor });
+  expect(await readFile(join(output, "report.md"), "utf8")).toContain(savedReport.eligibilityScope.statement);
+  expect(savedReport.integrity).toMatchObject({ controllerComplete: false, controllerAdmissible: true, worstCase: true, complete: false, auditCertified: true });
 }, 120000);

@@ -68,8 +68,10 @@ it("runs join, mechanical audit, blinded import and report at one revision witho
   expect(result.certified).toBe(true); expect(result.decision.status).not.toBe("fail");
   const final = await parse(join(directory, "final/report.json")); expect(final.integrity.auditCertified).toBe(true);
   expect(final.decision.reasons).not.toContain("audit-workflow-pending:inconclusive");
-  // Four conversations cannot pass the registered CP safety gate; this is mechanics only.
-  expect(final.decision.status).toBe("inconclusive"); expect(JSON.stringify(final)).not.toContain(directory);
+  // Zero-variance paired differences pass v2 even in this tiny mechanics-only fixture.
+  expect(final.decision.status).toBe("pass");
+  expect(final.eligibilityScope).toMatchObject({ reader: context.registration.models.reader, extractor: context.registration.models.extractor });
+  expect(final.eligibilityScope.statement).toContain("not other models or blanket default enablement"); expect(JSON.stringify(final)).not.toContain(directory);
 });
 it("exposes the complete join/export/import/report CLI chain at one registered revision", async () => {
   const rootsPath = join(inputs, "roots.json"); await writeFile(rootsPath, jsonBytes(roots)); const o = context.options;

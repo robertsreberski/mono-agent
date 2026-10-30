@@ -16,26 +16,41 @@ controller admission/accounting.
 
 ```bash
 node scripts/continuity-holdout-power.mjs --seed 572913 \
-  --replications 100000 --output .worklab-tmp/holdout-power
+  --replications 100000 --output /external/holdout-power
 ```
 
-The CLI writes deterministic `power.json` and `power.md`, exact safety enumeration
-and at least 100,000 replications/scenario. It and the real scorer share CP count
-cuts, paired-t confidence endpoints, wrong-rate and accuracy gate helpers.
-Optional `--statistical-spec /external/statistical-spec.json` permits an explicitly
-reviewed alternative design. Layout, corpus counts, shards and per-shard ceilings are parameterized, never
-inferred from completed work; malformed layouts are rejected. All approved gate
-thresholds and audit limits are pinned exactly to the checked-in specification;
-a more lenient or stricter external gate specification is rejected. The v1 two-repeat, 15-probe and comparator/model policies stay fixed.
-Any layout change requires fresh approval/freeze/registration; a gate change also
-requires an explicitly reviewed tooling/spec update, never
-an outcome-dependent extension.
+The CLI writes deterministic `power.json` and `power.md`, with at least 100,000
+replications/scenario. It calls the actual paired-t, wrong-rate and accuracy
+gate evaluator. Coherent native/pack/ledger correct/wrong/abstention bundles
+include concentrated errors and repeat correlations 0/0.5/0.9. Reports include
+joint acceptance and each margin's null-boundary rejection rates, not just
+favorable marginal gates. Quality inputs are assumptions, not measurements.
+The observed wrong/accuracy point thresholds are not level-5% hypothesis tests.
 
-Power assumptions are disclosed, including shared comparator harmful events,
-repeat/family dependence, fixed ledger accuracy and passing integrity/audit.
-The configured accuracy floor is evaluated. Family scenarios introduce residual
-within-family dependence: these are sensitivities, **not family-cluster calibration**
-of the conversation-level intervals. Power is not model-quality or audit evidence.
+Optional `--statistical-spec /external/statistical-spec.json` permits an explicitly
+reviewed alternative layout. Corpus counts, families, shards and per-shard ceilings
+are parameterized, never inferred from completed work. Approved thresholds,
+two repeats, 15 probes and audit limits are immutable. A stricter or more lenient
+external threshold is rejected. Any layout change requires fresh approval,
+freeze and registration, never outcome-dependent extension.
+
+Main power scenarios assume independently sampled conversations conditional on
+the fixed family layout. Extra family/concentration sensitivities introduce
+residual within-family dependence: these are **not family-cluster calibration**
+of conversation-level intervals. Complete data, admission and passing certified
+audit are assumed, not measured. Inadequate power/calibration blocks a fresh
+registration; it does not justify loosening margins.
+
+## Versioned contracts
+
+The statistical spec, registration, statistics and final report are **v2**.
+New tooling rejects v1 registrations with
+`incompatible_holdout_registration_version` and v1 statistical specs with
+`incompatible_statistical_spec_version`, before interpreting their contents.
+There is no migration or silent re-scoring. Historical v1 studies remain
+reproducible only from their frozen tooling revision (the last pre-v2 main
+revision is `36d8b06ba4ba78539bdcec23383abf41cdc018e1`). Their decisions remain
+unchanged; legacy scorer contracts are separate from this statistical version.
 
 ## Register the clean, merged tooling and frozen corpus
 
@@ -97,20 +112,41 @@ only outcome `correct` may have `pass: true`, and it must have it.
 conversation-level safety/benefit, planned denominators, audit rates and decision
 reasons. Markdown/CLI guard offline output as well. Design E has **7,680 planned
 answers per corpus/arm, 15,360 combined**. Both repeats/all probes stay together.
-Native is subject to the same missing-slot cap although it is not a safety comparator.
+Native is a paired safety comparator and subject to the same missing-slot cap.
 
 **Wrong** means `!pass && outcome !== "abstained" && outcome !== "empty"`.
 Stale, conflicted, violating, leaked or fabricated answers count as wrong even
 when they contain an abstention phrase. Pure abstentions and empty answers are
 incorrect but not wrong. Malformed/unknown outcome records are missing/invalid.
 
-Complete safety passes with CP upper ≤5%, fails only with CP lower >5%, and is
-otherwise inconclusive. Counts derive from n: E allows at most **6/256 per corpus**
-and **17/512 combined** to pass. A count just above a passing cutoff is **not**
-a failure unless the lower bound establishes it. Complete benefit passes when
-its t lower endpoint exceeds the threshold, fails when its upper endpoint is
-at or below the threshold, and otherwise is inconclusive. Bounds are one-sided
-95%; intersection-union gates do not claim simultaneous 95% interval coverage.
+For conversation i, `W_i(A) = wrong/30` and `C_i(A) = correct/30`, retaining
+both repeats/all probes. Each of these gates is necessary:
+
+| Gate | Each corpus | Combined |
+| --- | --- | --- |
+| Ledger − pack mean wrong-fraction upper bound | ≤ +0.005 | ≤ +0.005 |
+| Ledger − native mean wrong-fraction upper bound | ≤ +0.02 | ≤ +0.02 |
+| Observed ledger wrong / planned answers | ≤ 0.02 | ≤ 0.02 |
+| Ledger − pack mean correct-fraction lower bound | > 0 | > 0.02 |
+| Ledger correct / planned answers | descriptive | ≥ 0.91875 |
+
+Paired bounds are one-sided 95% Student-t on **conversation** fraction
+differences: mean ± `t(.95,n−1) * SD / sqrt(n)`. Safety passes at an upper
+endpoint exactly equal to its margin, fails when the lower endpoint is above
+it, otherwise is inconclusive. Benefit passes strictly above its lower-bound
+threshold, fails when its upper endpoint is at/below it, otherwise is
+inconclusive. Zero-variance differences have zero radius. These necessary
+gates make **no simultaneous-coverage claim**.
+
+Cold-rebuild is **descriptive only**, not a safety gate. Reports retain every
+arm's correct/wrong/abstention counts and planned-denominator rates, any-wrong
+conversation risks, and both directions of any-wrong discordances. Incomplete
+arms expose known counts/missingness, not completed risk estimates.
+
+A pass establishes eligibility **only for the registered reader and extractor
+model references**. A Sol-only registration gives Sol-scoped eligibility, not
+blanket eligibility for other models and never automatic default enablement.
+Final JSON/Markdown reports state the pinned reader/extractor scope explicitly.
 
 Never drop missing, invalid or duplicate planned slots. Registration pins
 `missingData.worstCaseCompletion.maximumMissingFractionPerArm = 0.01`: each of
@@ -124,24 +160,27 @@ An incomplete scope has no complete-case inferential interval. It may pass only
 when **every possible completion passes**, treating missing ledger answers against
 the ledger and missing comparator answers in the comparator's favour:
 
-- Safety: count conversations with any ledger wrong **or ledger missing** and no
-  known comparator wrong, including incomplete comparators. This `worstHarmful`
-  count must satisfy the same CP upper-bound passing cutoff on planned n.
+- Paired wrong comparisons (pack and native): each conversation's feasible
+  difference is `[(ledgerWrong − comparatorWrong − comparatorMissing)/30,
+  (ledgerWrong + ledgerMissing − comparatorWrong)/30]`. A conservative upper
+  bound on **every completion's t upper endpoint** must be ≤ its margin.
+  Missing native slots participate just like pack slots.
 - Benefit: `completionLowerBound` bounds every possible one-sided t lower endpoint
   conservatively by reflection of `completionUpperBound`. It must exceed the
   registered scope threshold; fixed bounds equal the ordinary paired-t lower bound.
-- Wrong rate: `(wrong + ledgerMissing) / plannedAnswers ≤ 0.005` in each scope.
+- Wrong rate: `(wrong + ledgerMissing) / plannedAnswers ≤ 0.02` in each scope.
 - Accuracy: `correct / plannedAnswers ≥ 0.91875`.
 
 Scopes expose `worstCase` and `worstCompletionLower` without claiming complete-case
 confidence intervals. A loose bound can leave the result inconclusive; the cap
-alone never promises a pass. **Existing failure rules remain unchanged**: fail only
+alone never promises a pass. **Conservative failure semantics remain**: fail only
 when a conservative best-completion bound establishes the same registered failure:
 
-- Wrong rate: observed ledger wrongs / planned denominator already >0.5%.
+- Wrong rate: observed ledger wrongs / planned denominator already >2%.
 - Accuracy: even `(correct + missing ledger slots) / planned` is below 91.875%.
-- Safety: CP lower bound for **known harmful** conversations on planned n >5%.
-  A comparator with missing slots cannot establish that it made no wrong answers.
+- Paired wrong comparisons: a conservative lower bound on **every completion's
+  t lower endpoint** must exceed the comparator's margin to establish failure.
+  Reflection of `completionUpperBound` supplies this bound, not endpoint filling.
 - Benefit: bound every conversation difference by its possible correct fractions
   in [−1,1]. A conservative upper bound on **every completion's t upper endpoint**
   must be ≤ the threshold to establish failure. The bound combines the maximal
@@ -154,8 +193,7 @@ when a conservative best-completion bound establishes the same registered failur
 
 Point-threshold and audit failures remain failures when missing execution data
 cannot undo them. No incomplete data is presented as a complete-case confidence
-estimate. Complete-data gate results and power semantics are unchanged; power
-simulations still condition on complete data and do not model missing-slot tolerance.
+estimate. Power simulations still condition on complete data and do not model missing-slot tolerance.
 
 ## Bound audit input
 
