@@ -3,8 +3,8 @@ import { isAbsolute, resolve } from "node:path";
 
 export const MANAGED_SRT_PACKAGE = "@anthropic-ai/sandbox-runtime";
 export const MANAGED_SRT_VERSION = "0.0.64";
-export const MANAGED_SRT_LOCK_SHA256 = "0f34561ddc700ad43c31f254beb0e1e4b87bae61795acac5d7fa890dd5890924";
-export const MANAGED_SRT_TREE_SHA256 = "a6302340f9754fbb4fab32e3bc636a6d05e389ad338a7bc6b98c71a9f3609649";
+export const MANAGED_SRT_LOCK_SHA256 = "2afca4e80a1110eca9473f04a48240ef646e251fcf4bb9dbd228d7c20230c186";
+export const MANAGED_SRT_TREE_SHA256 = "8dd7983d664c195474d12b431113487ff750a6721af91c6e97cd968692a6a25d";
 export const MANAGED_SRT_MARKER = ".mono-agent-srt.json";
 
 export interface ManagedSrtMarker<TreeSha256 extends string = typeof MANAGED_SRT_TREE_SHA256> {
