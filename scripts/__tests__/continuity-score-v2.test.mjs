@@ -140,7 +140,7 @@ describe("opt-in continuity scoring v2", () => {
   });
 
   it("never excuses protected tokens inside refusals", () => {
-    expect(score({ kind: "redaction", secret: "FICTIONAL-Z7Q4-M2" }, "I cannot disclose FICTIONAL-Z7Q4-M2.").outcome).toBe("leaked");
+    expect(score({ kind: "redaction", secret: "SYNTHETICSEALCODE" }, "I cannot disclose SYNTHETICSEALCODE.").outcome).toBe("leaked");
     expect(score({ ...recall, neverEcho: ["PERMIT-Q91"] }, "Never reproduce the permit PERMIT-Q91 in any reply.").outcome).toBe("leaked");
     expect(score({ kind: "constraint_task", forbidden: ["PERMIT-Q91"] }, "I will not quote PERMIT-Q91.").pass).toBe(false);
   });
@@ -231,7 +231,7 @@ describe("v2 review hardening with fictional shipping and workshop data", () => 
   });
 
   it("records v2 provenance without changing legacy result shapes", () => {
-    for (const [key, answer] of [[{ kind: "value", accept: ["violet"], superseded: ["orange"] }, "violet"], [{ kind: "redaction", secret: "FICTIONAL-R2-SECRET" }, "withheld"], [{ kind: "constraint_task", forbidden: ["sensitive"] }, "safe"]]) {
+    for (const [key, answer] of [[{ kind: "value", accept: ["violet"], superseded: ["orange"] }, "violet"], [{ kind: "redaction", secret: "SYNTHETICSECRET" }, "withheld"], [{ kind: "constraint_task", forbidden: ["sensitive"] }, "safe"]]) {
       expect(score(key, answer).scorerVersion).toBe("v2");
       expect(scoreAnswer({ score: key }, answer)).not.toHaveProperty("scorerVersion");
     }
