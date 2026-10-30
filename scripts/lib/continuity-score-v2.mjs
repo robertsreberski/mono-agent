@@ -82,7 +82,7 @@ const REVERSED = /\b(?:never|not)\s+(?:be\s+)?(?:omitted|excluded|kept\s+out|wit
 
 function hasRuleProhibition(clause) {
   const text = typographyView(clause);
-  const personal = /\b(?:i(?:'m|\s+am)?|we)\b(?:\s*,?\s*(?:\p{L}+ly|just|quite|very)){0,2}\s*,?\s*$/iu;
+  const personal = /\bi(?:'m|\s+am)?\b(?:\s*,?\s*(?:\p{L}+ly|just|quite|very|still|also|even)){0,2}\s*,?\s*$/iu;
   const refusal = /^(?:cannot|can't|do not|don't|won't|will not|am unable to|am not able to)\b/iu;
   return [...text.matchAll(new RegExp(PROHIBITION.source, "giu"))]
     .some(match => !(personal.test(text.slice(0, match.index)) && refusal.test(match[0])));
@@ -114,14 +114,16 @@ function reversesSubject(score, text) {
     const explicit = matches(subjects, fragment);
     const direct = score.questionSubject !== undefined && index === 0 && (/^\s*it\b/iu.test(fragment) || /^\s*(?:never|do not|don't|withhold|omit|keep)\b[^.!?;\n]{0,35}\bit\b/iu.test(fragment));
     const pronoun = /\bit\b/iu.exec(fragment);
-    const antecedent = /\b(?:the|a|an|this|that)\s+(?!(?:it|is|was|are|were|can|may|must|should|will|means|allows|permits)\b)[\p{L}][\p{L}-]*\b/iu.exec(fragment);
-    if (!explicit && antecedent && antecedent.index < (pronoun?.index ?? fragment.length)) subjectBound = false;
+    const antecedent = /^\s*(?:the|a|an|this|that)\s+([\p{L}][\p{L}-]*(?:\s+[\p{L}][\p{L}-]*)?)\s+(?:is|are|was|were|has|have|remains)\b/iu.exec(fragment);
+    const meta = /\b(?:exception|record|reminder|rule|point|policy|instruction|note|aside|caveat|clarification|reason|fact|condition)\b/iu;
+    if (antecedent && !matches(subjects, antecedent[1]) && !meta.test(antecedent[1])
+      && antecedent[0].length <= (pronoun?.index ?? fragment.length)) subjectBound = false;
     const continued = subjectBound && pronoun !== null;
     const bound = explicit || direct || continued;
     subjectBound ||= explicit || direct;
     // Describing the withholding status does not disclose the protected value.
-    const statusOnly = /\b(?:mention|state|say|report|indicate|note)\s+only\s+that\s+it\s+(?:is|remains)\s+(?:withheld|omitted|redacted|private|confidential)\s*$/iu.test(fragment);
-    return bound && !statusOnly && REVERSED.test(lexicalView(fragment));
+    const withoutStatus = fragment.replace(/\b(?:mention|state|say|report|indicate|note)\s+only\s+that\s+it\s+(?:is|remains)\s+(?:withheld|omitted|redacted|private|confidential)\b/giu, "");
+    return bound && REVERSED.test(lexicalView(withoutStatus));
   });
 }
 

@@ -50,6 +50,11 @@ function allGroups(groups, text) { return (groups ?? []).every((group) => anyMat
 
 /** Validate one probe's scoring contract; throws a stable code. */
 export function validateProbeScore(probe) {
+  try { return validateProbeScoreContract(probe); }
+  catch (error) { if (error instanceof SyntaxError) throw new Error("invalid_probe_score"); throw error; }
+}
+
+function validateProbeScoreContract(probe) {
   const score = probe?.score;
   if (score?.version !== undefined && !["v1", "v2"].includes(score.version)) throw new Error("invalid_scorer_version");
   if (score?.version === "v2") validateV2(score);
@@ -96,8 +101,7 @@ export function validateProbeScore(probe) {
  */
 export function scoreAnswer(probe, answer) {
   if (probe.score.version === "v2") {
-    try { validateProbeScore(probe); }
-    catch (error) { if (error instanceof SyntaxError) throw new Error("invalid_probe_score"); throw error; }
+    validateProbeScore(probe);
     return { ...scoreV2(probe, answer, scoreAnswerV1, isAbstention), scorerVersion: "v2" };
   }
   if (probe.score.version !== undefined && probe.score.version !== "v1") throw new Error("invalid_scorer_version");

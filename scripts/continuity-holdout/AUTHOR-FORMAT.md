@@ -293,13 +293,21 @@ All legacy fields remain required. Optional v2 fields are:
   roles for required qualifiers such as replies and quotation/refusal coverage.
   A personal refusal (`I can't/cannot/won't/am unable to ...`) is not a statement
   of the prohibition, even when it names the field. State the rule and its scope.
-  Modifiers and commas after a first-person subject do not turn a refusal into
-  a rule. Normative `must/should/may never` and imperative prohibitions remain
-  valid. Once bound, later bare `it` references remain checked for reversals
-  despite filler. A new non-subject noun phrase (`the/a/an/this/that ...`) before
-  the pronoun resets its antecedent; these are bounded lexical rules, not general
-  coreference resolution. Reporting only that the value is withheld is not a
-  permission to disclose it.
+  Singular `I/I'm/I am` refusals remain insufficient with optional commas and
+  up to two recognized modifiers (`-ly` words or `just/quite/very/still/also/even`).
+  This includes `simply/truly/honestly/currently/really/definitely/unfortunately`;
+  arbitrary intervening words are not accepted as modifiers. Plural `we` is not
+  a refusal subject: `We don't ...` and `We never ...` can state house policy when
+  subject, scope and polarity match. Normative `must/should/may never` and
+  imperative prohibitions remain valid.
+  Once bound, later bare `it` references remain checked for reversals despite
+  filler. Reset only when a fragment begins with `the/a/an/this/that`, a new
+  non-subject noun phrase of one or two words, and its own predicate
+  (`is/are/was/were/has/have/remains`) before the pronoun. A finite meta-noun
+  exclusion list (including exception, record, reminder, rule and point) prevents
+  discourse fillers or purported exceptions from resetting the subject.
+  Reporting only that the value is withheld is not permission to disclose it:
+  remove that status phrase, then check the rest of the fragment for reversals.
 - `recallMode`: `restriction` (default) requires subject and prohibition roles;
   `referent` allows subject-only identification of a restricted field.
   `recallValues` supplies regex aliases for that subject only in `referent` mode.
@@ -326,7 +334,8 @@ unrelated positive instructions elsewhere in the answer. Numeric separators are
 fragments only when adjacent to another digit, including thousands-comma groups;
 prose such as `27-person` and identifier-adjacent colons are not rejected as
 numeric fragments. V2 legacy fields are validated before direct scoring, not
-only by the dataset loader.
+only by the dataset loader. Direct `validateProbeScore` calls also map invalid
+authored regexes to the stable `invalid_probe_score` error code.
 
 Scored v2 results include `scorerVersion: "v2"`, including delegated safety
 kinds. Legacy result objects remain unchanged. Author overlap checks exclude
@@ -347,6 +356,29 @@ freezing. Archived evaluator projections omit questions; an overlay declaration
 cannot itself prove that a role was question-supplied. Unsupported paraphrases
 can remain incorrect, and lucky keyword combinations still need interpretation
 audit. Scorer recalibration is development evidence, not a new holdout result.
+
+### Known lexical limitations
+
+- Regex aliases, stems and essential role declarations are author responsibilities;
+  unsupported paraphrases can fail and coincidental keyword combinations can pass.
+  Next-action roles do not provide general multi-action relationship resolution.
+- Coreference recognizes bounded `it` continuations and the simple clause-subject
+  reset above, not arbitrary pronouns, long noun phrases or nested/reported speech.
+  The predicate and meta-noun lists are finite, not a general English parser.
+- Negation, permission reversals and withholding-status phrases use bounded
+  constructions, not general scope, double-negation, irony or quotation semantics.
+- Singular-refusal detection allows at most two recognized modifiers, not arbitrary
+  intervening clauses such as `I think staff can't ...`. More complex refusals may
+  be misclassified. Matching plural `we` statements deliberately count as policies.
+- Asserted uppercase choices intentionally override lowercase prose competitors.
+  Numeric/identifier checks preserve lexical distinctions rather than infer locale
+  formats, number words, unit conversions or fuzzy identifier equivalence.
+- Prompt-leak checks fail closed: broad authored regexes can reject legitimate
+  questions. Question-supplied roles still require independent source-question
+  review; declaring an exemption is not evidence that it is justified.
+
+Audit these limits against intended answers and negative cases. V2 is an opt-in
+benchmark scoring contract, not a semantic judge or runtime confidentiality guard.
 
 ### Offline archived-answer comparison
 

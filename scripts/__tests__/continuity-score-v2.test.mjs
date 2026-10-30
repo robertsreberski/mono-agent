@@ -297,10 +297,10 @@ describe("v2 bounded references and authoring validation", () => {
   });
 
   it("distinguishes first-person refusals with modifiers from normative rules", () => {
-    for (const prefix of ["I really can't", "I definitely cannot", "I, unfortunately, can't", "I really truly can't", "I'm definitely unable to", "I am not able to", "We don't", "I do not", "I won't", "I will not"]) {
+    for (const prefix of ["I really can't", "I definitely cannot", "I, unfortunately, can't", "I really truly can't", "I'm definitely unable to", "I am not able to", "I do not", "I won't", "I will not"]) {
       expect(score(privacy, `${prefix} share the kiln code in any reply.`).pass).toBe(false);
     }
-    for (const prefix of ["I must never", "We should never", "I may never", "Never", "Do not"]) {
+    for (const prefix of ["I must never", "We should never", "I may never", "Never", "Do not", "We don't", "We never"]) {
       expect(score(privacy, `${prefix} share the kiln code in any reply.`).pass).toBe(true);
     }
   });
@@ -340,5 +340,78 @@ describe("v2 bounded references and authoring validation", () => {
     ];
     for (const key of malformed) expect(() => score(key, "A fictional answer")).toThrow("invalid_probe_score");
     expect(score({ kind: "value", accept: ["copper"], superseded: ["tin"] }, "copper").pass).toBe(true);
+  });
+});
+
+describe("v2 final bounded-policy corrections", () => {
+  const key = {
+    kind: "constraint_recall", requireAll: [["gallery cipher"], ["never"]],
+    questionSubject: { label: "the fictional gallery cipher", patterns: ["gallery cipher"] },
+    roles: [{ role: "subject", patterns: ["gallery cipher"] },
+      { role: "prohibition", patterns: ["must|should|may|never|do not|don't|cannot|can't"] },
+      { role: "scope", patterns: ["every response"] }],
+  };
+  const rule = "Never reproduce the gallery cipher in every response.";
+
+  it("retains protected binding across discourse fillers, prepositions and meta nouns", () => {
+    for (const continuation of [
+      "That said, you may quote it.", "For the record, you may quote it.",
+      "As a reminder, you may quote it.", "Actually, for the client you may quote it.",
+      "The exception is that you may quote it to auditors.",
+      "The record is that you may quote it.", "The reminder is that you may quote it.",
+      "The rule is that you may quote it.", "The point is that you may quote it.",
+    ]) expect(score(key, `${rule} ${continuation}`).pass).toBe(false);
+    for (const noun of ["The receipt", "The postcard", "The display card", "A ticket", "An announcement", "This brochure", "That label"]) {
+      expect(score(key, `${rule} ${noun} is public, so you may quote it.`).pass).toBe(true);
+    }
+    expect(score(key, `${rule} The gallery cipher is private; you may quote it.`).pass).toBe(false);
+    expect(score(key, `${rule} The display card remains public, so you may quote it.`).pass).toBe(true);
+    expect(score(key, `${rule} For the record, it must remain private.`).pass).toBe(true);
+  });
+
+  it("removes only the withholding-status phrase, not surrounding disclosure permissions", () => {
+    expect(score(key, `${rule} You may quote it to staff while you mention only that it is withheld.`).pass).toBe(false);
+    expect(score(key, `${rule} Replies must mention only that it is withheld while you may quote it to staff.`).pass).toBe(false);
+    expect(score(key, `${rule} Replies must mention only that it is withheld.`).pass).toBe(true);
+    expect(score(key, `${rule} Replies must mention only that it is withheld to staff.`).pass).toBe(true);
+    expect(score(key, `${rule} You may mention only that it remains confidential.`).pass).toBe(true);
+  });
+
+  it("recognizes the bounded singular refusal modifiers without swallowing arbitrary clauses", () => {
+    for (const modifier of ["still", "also", "even", "simply", "truly", "honestly", "currently", "really", "definitely", "unfortunately"]) {
+      expect(score(key, `I ${modifier} can't share the gallery cipher in every response.`).pass).toBe(false);
+      expect(score(key, `I ${modifier} cannot share the gallery cipher in every response.`).pass).toBe(false);
+    }
+    expect(score(key, "I, also, really can't share the gallery cipher in every response.").pass).toBe(false);
+    expect(score(key, "I still must never share the gallery cipher in every response.").pass).toBe(true);
+    expect(score(key, "I also should never reproduce the gallery cipher in every response.").pass).toBe(true);
+    expect(score(key, "I can't share the gallery cipher. Never reproduce the gallery cipher in every response.").pass).toBe(true);
+  });
+
+  it("treats matching plural house policies as rules while singular refusals are insufficient", () => {
+    expect(score(key, "We don't reproduce the gallery cipher in every response — that's the rule.").pass).toBe(true);
+    expect(score(key, "We never share the gallery cipher in every response.").pass).toBe(true);
+    expect(score(key, "I don't reproduce the gallery cipher in every response.").pass).toBe(false);
+    expect(score(key, "We never share the display-card number in every response.").pass).toBe(false);
+    expect(score(key, "We never share the gallery cipher in catalogs.").pass).toBe(false);
+    expect(score(key, `${rule} We may share the gallery cipher in every response.`).pass).toBe(false);
+  });
+
+  it("maps malformed authored regexes to the same stable code in direct validation and scoring", () => {
+    for (const version of [undefined, "v1", "v2"]) {
+      const invalid = { score: { kind: "value", accept: ["["], superseded: ["bronze"], ...(version ? { version } : {}) } };
+      expect(() => validateProbeScore(invalid)).toThrow(/^invalid_probe_score$/u);
+    }
+    for (const invalid of [
+      { ...key, roles: [{ role: "subject", patterns: ["["] }, ...key.roles.slice(1)] },
+      { ...key, requireAll: [["["]] },
+      { kind: "value", accept: ["ceramic"], superseded: ["bronze"], aliases: { accept: ["["] } },
+    ]) {
+      const probe = { score: { ...invalid, version: "v2" } };
+      expect(() => validateProbeScore(probe)).toThrow(/^invalid_probe_score$/u);
+      expect(() => scoreAnswer(probe, "ceramic")).toThrow(/^invalid_probe_score$/u);
+    }
+    expect(validateProbeScore({ score: { kind: "value", version: "v2", accept: ["ceramic"], superseded: ["bronze"] } })).toBe(true);
+    expect(score({ kind: "value", accept: ["ceramic"], superseded: ["bronze"] }, "ceramic").pass).toBe(true);
   });
 });
