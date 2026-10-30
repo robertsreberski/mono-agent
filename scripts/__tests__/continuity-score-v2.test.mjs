@@ -360,6 +360,10 @@ describe("v2 final bounded-policy corrections", () => {
       "The exception is that you may quote it to auditors.",
       "The record is that you may quote it.", "The reminder is that you may quote it.",
       "The rule is that you may quote it.", "The point is that you may quote it.",
+      "The rules have changed, so you may quote it.", "The exceptions are that you may quote it.",
+      "The policies have changed, so you may quote it.", "The truth is, you may quote it.",
+      "The answer is that you may quote it.", "The bottom line is that you may quote it.",
+      "The upshot is, you may quote it.",
     ]) expect(score(key, `${rule} ${continuation}`).pass).toBe(false);
     for (const noun of ["The receipt", "The postcard", "The display card", "A ticket", "An announcement", "This brochure", "That label"]) {
       expect(score(key, `${rule} ${noun} is public, so you may quote it.`).pass).toBe(true);

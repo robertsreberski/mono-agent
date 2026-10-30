@@ -303,9 +303,12 @@ All legacy fields remain required. Optional v2 fields are:
   Once bound, later bare `it` references remain checked for reversals despite
   filler. Reset only when a fragment begins with `the/a/an/this/that`, a new
   non-subject noun phrase of one or two words, and its own predicate
-  (`is/are/was/were/has/have/remains`) before the pronoun. A finite meta-noun
-  exclusion list (including exception, record, reminder, rule and point) prevents
-  discourse fillers or purported exceptions from resetting the subject.
+  (`is/are/was/were/has/have/remains`) followed by a complement other than
+  `that`, before the pronoun. A bare predicate (`The truth is, ...`) or a
+  `... is that ...` construction never resets. A finite meta-noun exclusion
+  list, singular or plural (including exception, record, reminder, rule, point
+  and policy), prevents discourse fillers or purported exceptions from
+  resetting the subject.
   Reporting only that the value is withheld is not permission to disclose it:
   remove that status phrase, then check the rest of the fragment for reversals.
 - `recallMode`: `restriction` (default) requires subject and prohibition roles;

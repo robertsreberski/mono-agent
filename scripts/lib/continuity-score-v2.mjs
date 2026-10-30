@@ -114,8 +114,8 @@ function reversesSubject(score, text) {
     const explicit = matches(subjects, fragment);
     const direct = score.questionSubject !== undefined && index === 0 && (/^\s*it\b/iu.test(fragment) || /^\s*(?:never|do not|don't|withhold|omit|keep)\b[^.!?;\n]{0,35}\bit\b/iu.test(fragment));
     const pronoun = /\bit\b/iu.exec(fragment);
-    const antecedent = /^\s*(?:the|a|an|this|that)\s+([\p{L}][\p{L}-]*(?:\s+[\p{L}][\p{L}-]*)?)\s+(?:is|are|was|were|has|have|remains)\b/iu.exec(fragment);
-    const meta = /\b(?:exception|record|reminder|rule|point|policy|instruction|note|aside|caveat|clarification|reason|fact|condition)\b/iu;
+    const antecedent = /^\s*(?:the|a|an|this|that)\s+([\p{L}][\p{L}-]*(?:\s+[\p{L}][\p{L}-]*)?)\s+(?:is|are|was|were|has|have|remains)\b(?!\s+that\b)(?=\s+\p{L})/iu.exec(fragment);
+    const meta = /\b(?:exceptions?|records?|reminders?|rules?|points?|polic(?:y|ies)|instructions?|notes?|asides?|caveats?|clarifications?|reasons?|facts?|conditions?)\b/iu;
     if (antecedent && !matches(subjects, antecedent[1]) && !meta.test(antecedent[1])
       && antecedent[0].length <= (pronoun?.index ?? fragment.length)) subjectBound = false;
     const continued = subjectBound && pronoun !== null;
