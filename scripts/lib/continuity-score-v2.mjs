@@ -9,14 +9,17 @@ const need = ok => { if (!ok) throw new Error("invalid_probe_score_v2"); };
 const fields = (value, allowed) => need(object(value) && Object.keys(value).every(k => allowed.includes(k)));
 
 /** Typography is lexical only. Never collapse punctuation in numeric/alphanumeric tokens. */
-export function lexicalView(text) {
+export function typographyView(text) {
   return String(text).normalize("NFC").replace(/[‘’]/gu, "'").replace(/[“”]/gu, '"')
-    .replace(/[\u00a0\u202f]/gu, " ").replace(/[‐‑]/gu, "-")
-    .replace(/(?<![\p{L}\p{N}_-])\p{L}+(?:-\p{L}+)+(?![\p{L}\p{N}_-])/gu, token => token.replaceAll("-", " "));
+    .replace(/[\u00a0\u202f]/gu, " ").replace(/[‐‑]/gu, "-");
+}
+export function lexicalView(text) {
+  return typographyView(text).replace(/(?<![\p{L}\p{N}_-])\p{L}+(?:-\p{L}+)+(?![\p{L}\p{N}_-])/gu, token => token.replaceAll("-", " "));
 }
 
 export function validateV2(score) {
   need(score.version === "v2");
+  if (score.kind === "choice" && (!strings(score.options) || !score.options.every(option => /^[A-Z][A-Z_]*$/u.test(option)) || !score.options.includes(score.expected))) throw new Error("invalid_probe_score");
   const compile = patterns => { need(strings(patterns)); patterns.forEach(p => re(p)); };
   if (score.recallMode !== undefined) need(score.kind === "constraint_recall" && ["referent", "restriction"].includes(score.recallMode));
   if (score.roles !== undefined) {
@@ -50,12 +53,12 @@ export function validateV2(score) {
 // Keep negation local: only explicit rejection immediately preceding a value,
 // or a value immediately followed by "is not [current/selected]". No sentiment inference.
 function rejected(text, start, end) {
-  const before = text.slice(0, start), after = text.slice(end);
-  return /\b(?:not|never|rather than|instead of|no longer)(?:\s+(?:a|an|the))?\s*$/iu.test(before)
-    || /^\s+(?:is|was)\s+(?:not|no longer)\s+(?:current|selected|valid|used)\b/iu.test(after);
+  const before = typographyView(text.slice(0, start)), after = typographyView(text.slice(end));
+  return /\b(?:not(?:\s+yet)?|never|rather than|instead of|no longer|\w+n't)(?:\s+been)?(?:\s+(?:to|by|for|from|on|at))?(?:\s+(?:a|an|the))?\s*$/iu.test(before)
+    || /^\s+(?:(?:is|was|has|have)\s+(?:not(?:\s+yet)?|no longer)|\w+n't)(?:\s+been)?\s+(?:current|selected|valid|used)\b/iu.test(after);
 }
 
-function matches(patterns, text, asserted = false, lexical = true) {
+function matches(patterns, text, asserted = false, lexical = true, numeric = true) {
   const normalized = lexical ? lexicalView(text) : text;
   const views = normalized === text ? [text] : [text, normalized];
   return views.some(view => (patterns ?? []).some(pattern => {
@@ -65,7 +68,7 @@ function matches(patterns, text, asserted = false, lexical = true) {
       // decimal, date or time. Preserve authored stems and lookahead-only hits;
       // identifiers have a separate exact-token path.
       const left = view.slice(0, m.index), right = view.slice(end);
-      if (/\d/u.test(m[0]) && (/[\d+.:/\-]$/u.test(left) || /^(?:[\d:/\-]|\.\d)/u.test(right))) continue;
+      if (numeric && /\d/u.test(m[0]) && (/(?:\d|\d[.:/\-]|(?:^|[^\p{L}\p{N}])[+\-])$/u.test(left) || /^(?:\d|[.:/\-]\d)/u.test(right))) continue;
       if (asserted && rejected(view, m.index, end)) continue;
       return true;
     }
@@ -76,20 +79,37 @@ function matches(patterns, text, asserted = false, lexical = true) {
 const PROHIBITION = /\bmust\s+be\s+(?:omitted|excluded|kept\s+out)\b|\b(?:(?:must|should|may|shall)\s+(?:never|not)|never(?:\s+to)?|do not|don't|cannot|can't)\s+(?:ever\s+)?(?:be\s+)?(?:reproduc\w*|repeat\w*|quot\w*|disclos\w*|reveal\w*|mention\w*|appear|includ\w*|publish\w*|shar\w*|omitt?\w*|kept\s+out)\b|\b(?:withhold|omit|exclude|keep)\b[^.!?;\n]{0,70}\b(?:from|out of)\b/iu;
 const REVERSED = /\b(?:never|not)\s+(?:be\s+)?(?:omitted|excluded|kept\s+out|withheld)\b|\b(?:not|no longer|never)\s+(?:be\s+)?(?:confidential|private|forbidden|prohibited|required to withhold)\b|\b(?:may|can|should|must)\s+(?:be\s+)?(?:reproduc\w*|repeat\w*|quot\w*|disclos\w*|reveal\w*|shar\w*|publish\w*|includ\w*|mention\w*|copy|copied)\b|\b(?:do not|don't|never)\s+(?:omit|withhold|exclude|keep)\b/iu;
 
+function hasRuleProhibition(clause) {
+  const text = typographyView(clause);
+  return [...text.matchAll(new RegExp(PROHIBITION.source, "giu"))]
+    .some(match => !(/\bi\s*$/iu.test(text.slice(0, match.index)) && /^(?:cannot|can't)\b/iu.test(match[0])));
+}
+
+/** Evaluator answer material must not appear in a reader-visible prompt. */
+export function v2PromptLeak(score, prompt) {
+  if (score.version !== "v2") return false;
+  const patterns = [...Object.values(score.aliases ?? {}).flat(), ...(score.recallValues ?? []),
+    ...(score.roles ?? []).filter(role => !role.questionSupplied && !(role.role === "subject" && score.questionSubject))
+      .flatMap(role => [...role.patterns, ...(role.aliases ?? [])])];
+  const compact = value => String(value).normalize("NFKC").toUpperCase().replace(/[^A-Z0-9]/gu, "");
+  return patterns.some(pattern => re(pattern).test(prompt) || re(pattern).test(lexicalView(prompt)))
+    || (score.neverEcho ?? []).some(value => compact(prompt).includes(compact(value)));
+}
+
 // Reversal is meaningful only for the protected subject, not an unrelated
-// instruction elsewhere in the answer. Carry a pronoun across a conjunction
-// only from the immediately preceding subject-bound fragment.
+// instruction elsewhere in the answer. Once bound, a bare pronoun remains
+// bound for reversal checks even across intervening filler fragments.
 function reversesSubject(score, text) {
   const subjects = score.roles.filter(role => role.role === "subject")
     .flatMap(role => [...role.patterns, ...(role.aliases ?? [])]);
   const fragments = text.split(/(?<!\d)\.(?!\d)|[!?;,\n]+|\.(?=\s|$)|\b(?:but|and)\b/iu).filter(fragment => fragment.trim().length > 0);
-  let previousBound = false;
+  let subjectBound = false;
   return fragments.some((fragment, index) => {
     const explicit = matches(subjects, fragment);
     const direct = score.questionSubject !== undefined && index === 0 && (/^\s*it\b/iu.test(fragment) || /^\s*(?:never|do not|don't|withhold|omit|keep)\b[^.!?;\n]{0,35}\bit\b/iu.test(fragment));
-    const continued = previousBound && /(?:^\s*it\b|^\s*(?:(?:you|we|i)\s+)?(?:may|can|should|must|never|do not|don't)\b[^.!?;\n]{0,80}\bit\b)/iu.test(fragment);
+    const continued = subjectBound && /\bit\b/iu.test(fragment);
     const bound = explicit || direct || continued;
-    previousBound = bound;
+    subjectBound ||= explicit || direct;
     return bound && REVERSED.test(lexicalView(fragment));
   });
 }
@@ -105,10 +125,10 @@ function rolesMatch(score, text) {
       const patterns = [...role.patterns, ...(role.aliases ?? [])];
       if (role.role === "subject") {
         if (matches(patterns, clause) || matches(score.recallValues, clause)) return true;
-        return score.questionSubject !== undefined && index === 0 && PROHIBITION.test(lexicalView(clause))
+        return score.questionSubject !== undefined && index === 0 && hasRuleProhibition(clause)
           && (/^\s*it\b/iu.test(clause) || /^\s*(?:never|do not|don't|withhold|omit|keep)\b[^.!?;\n]{0,35}\bit\b/iu.test(clause));
       }
-      if (role.role === "prohibition") return PROHIBITION.test(lexicalView(clause)) && matches(patterns, clause);
+      if (role.role === "prohibition") return hasRuleProhibition(clause) && matches(patterns, clause);
       return matches(patterns, clause, role.role !== "scope");
     });
   });
@@ -128,17 +148,19 @@ export function scoreV2(probe, answer, legacy, isAbstention) {
   switch (score.kind) {
     case "identifier": {
       // Exact token, not a compacted substring; separators remain significant.
-      const token = value => `(?<![\\p{L}\\p{N}_-])${escape(value.normalize("NFC"))}(?![\\p{L}\\p{N}_-])`;
-      return verdict(matches(score.accept.map(token), text, true, false), matches((score.reject ?? []).map(token), text, true, false));
+      const token = value => `(?<![\\p{L}\\p{N}_-])${escape(typographyView(value))}(?![\\p{L}\\p{N}_-])`;
+      return verdict(matches(score.accept.map(token), typographyView(text), true, false, false), matches((score.reject ?? []).map(token), typographyView(text), true, false, false));
     }
     case "value":
       return verdict(matches([...score.accept, ...(score.aliases?.accept ?? [])], text, true), matches([...score.superseded, ...(score.aliases?.superseded ?? [])], text, true));
     case "choice": {
       const alternatives = [...score.options].sort((a, b) => b.length - a.length).map(option => option.split("_").join("[\\s_-]+"));
-      const tokens = [...text.matchAll(new RegExp(`\\b(?:${alternatives.join("|")})\\b`, "giu"))]
-        .filter(m => !rejected(text, m.index, m.index + m[0].length))
+      const pattern = `\\b(?:${alternatives.join("|")})\\b`;
+      const uppercase = [...text.matchAll(new RegExp(pattern, "gu"))];
+      const candidates = uppercase.length ? uppercase : [...text.matchAll(new RegExp(pattern, "giu"))];
+      const tokens = candidates.filter(m => !rejected(text, m.index, m.index + m[0].length))
         .map(m => m[0].toUpperCase().replace(/[\s_-]+/gu, "_"));
-      const selected = score.options.filter(option => tokens.includes(option) || matches(score.aliases?.[option], text, true));
+      const selected = score.options.filter(option => tokens.includes(option) || (!uppercase.length && matches(score.aliases?.[option], text, true)));
       return result(selected.length === 1 && selected[0] === score.expected, selected.length > 1 ? "conflicted" : selected[0] === score.expected ? "correct" : abstained ? "abstained" : "wrong", { selected: selected.length === 1 ? selected[0] : null });
     }
     case "next_action":

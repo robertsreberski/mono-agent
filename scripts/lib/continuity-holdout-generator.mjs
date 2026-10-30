@@ -1,4 +1,4 @@
-import { V2_FIELDS } from "./continuity-score-v2.mjs";
+import { V2_FIELDS, v2PromptLeak } from "./continuity-score-v2.mjs";
 import { STATISTICAL_SPEC, validateStatisticalSpec } from "./continuity-holdout-statistics.mjs";
 // Benchmark-only: no narrative imports, provider calls, or product preparation.
 import { readFile, realpath, lstat } from "node:fs/promises";
@@ -273,7 +273,8 @@ export function generateHoldoutTrace(family, item, seed) {
     const prompt = probe.question + " " + (probe.format ?? "");
     need(!source.includes(probe.question) && !source.includes(canonicalJson(probe.score))
       && !(probe.score.rubric && (source.includes(probe.score.rubric) || prompt.includes(probe.score.rubric)))
-      && !(probe.score.kind === "value" && probe.score.accept.some(p => new RegExp(p, "iu").test(prompt))), "answer_key_leakage");
+      && !(probe.score.kind === "value" && probe.score.accept.some(p => new RegExp(p, "iu").test(prompt)))
+      && !v2PromptLeak(probe.score, prompt), "answer_key_leakage");
     if (["identifier", "redaction"].includes(probe.score.kind)) {
       const values = probe.score.kind === "identifier" ? probe.score.accept : [probe.score.secret];
       const question = compactIdentifier(probe.question + (probe.format ?? ""));

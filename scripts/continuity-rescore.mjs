@@ -24,7 +24,7 @@ export function validateOverlay(value) {
     need(object(row) && Object.keys(row).every(k => ["traceId", "probeId", "score"].includes(k)) && identity(row.traceId) && identity(row.probeId) && object(row.score), "invalid_overlay_patch");
     const key = `${row.traceId}/${row.probeId}`;
     need(!seen.has(key), "duplicate_overlay_patch"); seen.add(key);
-    need(Object.keys(row.score).length > 0 && Object.keys(row.score).every(k => ["version", ...V2_FIELDS, ...Object.values(FIELDS).flat()].includes(k)), "invalid_overlay_score");
+    need(Object.keys(row.score).length > 0 && Object.keys(row.score).every(k => V2_FIELDS.includes(k)), "invalid_overlay_score");
   }
   return value;
 }
@@ -89,7 +89,7 @@ export async function rescore({ units, answers, overlay, scorerVersion, output }
   const scorerSources = await Promise.all(["./lib/continuity-score.mjs", "./lib/continuity-score-v2.mjs", "./continuity-rescore.mjs"].map(async name => ({ file: name, sha256: hash(await readFile(new URL(name, import.meta.url))) })));
   const report = { schema: "continuity-rescore-v1", scorerVersion, certification: "development-only; historical decisions unchanged", scorerSources, inputs: [...inputs].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([file, sha256]) => ({ file, sha256 })), overlaySha256: overlay ? inputs.get(await realpath(overlay)) : null, summary: { trials: rows.length, changed: changes.length, byArm: table("arm"), byCategory: table("category") }, trials: rows };
   const target = resolve(await realpath(dirname(resolve(output))), resolve(output).split(sep).at(-1));
-  need(!inputs.has(target) && !target.startsWith(answersDir + sep) && !(unitDir && target.startsWith(unitDir + sep)), "output_overwrites_input");
+  need(!inputs.has(target) && !target.startsWith(answersDir + sep) && !(unitDir && target.startsWith(unitDir + sep)) && !paths.some(path => target.startsWith(dirname(path) + sep)), "output_overwrites_input");
   // Exclusive creation prevents symlink aliases and accidental report overwrite.
   await writeFile(target, JSON.stringify(report, null, 2) + "\n", { flag: "wx" });
   return report;

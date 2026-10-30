@@ -1,4 +1,5 @@
 import { fixtureSpec } from "./fixtures/holdout-synthetic.mjs";
+import { specNarratives } from "../lib/continuity-holdout-overlap.mjs";
 import { generateHoldoutTrace, validateHoldoutSpec } from "../lib/continuity-holdout-generator.mjs";
 import { describe, expect, it } from "vitest";
 import { scoreAnswer, validateProbeScore } from "../lib/continuity-score.mjs";
@@ -168,5 +169,100 @@ describe("opt-in continuity scoring v2", () => {
     for (const key of [{ ...action, version: "v3" }, { ...action }, { ...action, version: "v2", roles: [{ role: "deadline", patterns: ["Friday"], questionSupplied: true }] }, { ...recall, version: "v2", recallValues: ["["] }]) expect(() => validateProbeScore({ score: key })).toThrow();
     expect(validateProbeScore({ score: { ...action, version: "v2" } })).toBe(true);
     expect(score({ kind: "value", accept: ["closed"], superseded: ["open"], aliases: { accept: ["out of use"] } }, "Out of use").pass).toBe(true);
+  });
+});
+
+describe("v2 review hardening with fictional shipping and workshop data", () => {
+  const privacy = {
+    kind: "constraint_recall", requireAll: [["loom seal"], ["never"]],
+    questionSubject: { label: "the private loom seal", patterns: ["loom seal"] },
+    roles: [{ role: "subject", patterns: ["loom seal"] },
+      { role: "prohibition", patterns: ["never|must|do not|cannot|can't|won't|unable"] },
+      { role: "scope", patterns: ["any reply|every reply|replies"] }],
+  };
+  it("keeps a protected-subject binding across filler fragments, not unrelated instructions", () => {
+    for (const answer of ["Never reproduce it in replies. To be clear, you may quote it.", "The loom seal must never be reproduced in any reply. Nevertheless, you may disclose it."]) expect(score(privacy, answer).pass).toBe(false);
+    expect(score(privacy, "The loom seal must never be reproduced in any reply. Nevertheless, shipping labels must include routing digits.").pass).toBe(true);
+  });
+
+  it("does not mistake first-person refusals for the rule, even without a scope matcher", () => {
+    const withoutScope = { ...privacy, roles: privacy.roles.slice(0, 2) };
+    for (const prefix of ["I can't", "I cannot", "I won't", "I am unable to"]) {
+      expect(score(withoutScope, `${prefix} reproduce the loom seal.`).pass).toBe(false);
+      expect(score(privacy, `${prefix} reproduce the loom seal in any reply.`).pass).toBe(false);
+    }
+    expect(score(privacy, "Never reproduce the loom seal in any reply.").pass).toBe(true);
+    expect(score(privacy, "I must never reproduce the loom seal in any reply.").pass).toBe(true);
+    expect(score(privacy, "I cannot reproduce the loom seal because it must never be reproduced in any reply.").pass).toBe(true);
+  });
+
+  it("guards numeric fragments without rejecting adjacent prose punctuation", () => {
+    const key = { kind: "value", accept: ["\\b27\\b"], superseded: ["\\b31\\b"] };
+    for (const answer of ["A 27-person table.", "27: the headcount.", "room:27"]) expect(score(key, answer).pass).toBe(true);
+    for (const answer of ["27.5", "-27", "+27", "19:27", "2037-05-27", "27/05/2037"]) expect(score(key, answer).pass).toBe(false);
+    const id = { kind: "identifier", accept: ["CART-62091"] };
+    for (const answer of ["ref:CART-62091", "CART-62091: the cart", "CART‑62091", "CART‐62091"]) expect(score(id, answer).pass).toBe(true);
+    for (const answer of ["XCART-62091", "CART-620910", "CART62091"]) expect(score(id, answer).pass).toBe(false);
+    expect(score({ ...id, accept: ["CART-SEAL"] }, "CART‑SEAL").pass).toBe(true);
+    expect(score({ ...id, accept: ["CART-SEAL"] }, "CART SEAL").pass).toBe(false);
+  });
+
+  it("prioritizes explicit uppercase status tokens over incidental prose", () => {
+    const key = { kind: "choice", options: ["READY", "PACKED", "NOT_STARTED"], expected: "PACKED", aliases: { READY: ["prepared"], PACKED: ["boxed"] } };
+    expect(score(key, "PACKED — it isn't ready yet.").pass).toBe(true);
+    expect(score(key, "PACKED — already prepared for dispatch.").pass).toBe(true);
+    expect(score(key, "PACKED and READY").outcome).toBe("conflicted");
+    expect(score(key, "packed").pass).toBe(true);
+    expect(score(key, "boxed").pass).toBe(true);
+    expect(score(key, "ready").pass).toBe(false);
+  });
+
+  it("rejects contracted and prepositional negation of required roles and values", () => {
+    const actionKey = { kind: "next_action", proxyAll: [["send"]], rubric: "Send the signed packet to the tower by Sunday.", roles: [
+      { role: "action", patterns: ["send", "sent"] }, { role: "object", patterns: ["packet"] },
+      { role: "qualifier", patterns: ["signed"] }, { role: "recipient", patterns: ["tower"] }, { role: "deadline", patterns: ["Sunday"] }] };
+    for (const answer of ["Don't send the signed packet to the tower by Sunday.", "Send the signed packet to the dock, not to the tower, by Sunday.", "Send the signed packet to the tower, not by Sunday but Wednesday.", "The signed packet has not yet been sent to the tower by Sunday."]) expect(score(actionKey, answer).pass).toBe(false);
+    expect(score(actionKey, "Send the signed packet to the tower by Sunday, not to the dock.").pass).toBe(true);
+    const value = { kind: "value", accept: ["violet"], superseded: ["orange"] };
+    expect(score(value, "It isn't violet.").pass).toBe(false);
+    expect(score(value, "It isn’t violet; orange.").outcome).toBe("stale");
+    expect(score(value, "Violet isn't current; orange.").outcome).toBe("stale");
+    expect(score(value, "Violet, not orange.").pass).toBe(true);
+  });
+
+  it("records v2 provenance without changing legacy result shapes", () => {
+    for (const [key, answer] of [[{ kind: "value", accept: ["violet"], superseded: ["orange"] }, "violet"], [{ kind: "redaction", secret: "FICTIONAL-R2-SECRET" }, "withheld"], [{ kind: "constraint_task", forbidden: ["sensitive"] }, "safe"]]) {
+      expect(score(key, answer).scorerVersion).toBe("v2");
+      expect(scoreAnswer({ score: key }, answer)).not.toHaveProperty("scorerVersion");
+    }
+    for (const options of [null, {}, ["bad-lowercase"], []]) expect(() => score({ kind: "choice", options, expected: "READY", aliases: { READY: ["prepared"] } }, "READY")).toThrow("invalid_probe_score");
+  });
+
+  it("excludes v2 structural metadata from overlap narratives but retains answer regexes", () => {
+    const spec = fixtureSpec(), key = spec.families[0].cases[0].probes[3].score;
+    Object.assign(key, { version: "v2", ...privacy, recallMode: "restriction" });
+    const narratives = specNarratives(spec);
+    for (const structural of ["v2", "subject", "prohibition", "scope", "restriction", privacy.questionSubject.label]) expect(narratives).not.toContain(structural);
+    expect(narratives).toContain("loom seal");
+    expect(narratives).toContain("any reply|every reply|replies");
+  });
+
+  it("rejects v2 answer material in prompts while allowing declared question-supplied roles", () => {
+    const render = mutate => {
+      const family = structuredClone(fixtureSpec().families[0]), item = family.cases[0];
+      mutate(item); return generateHoldoutTrace(family, item, 17);
+    };
+    const leaks = [
+      item => { Object.assign(item.probes[5].score, { version: "v2", aliases: { accept: ["copper ferry"] } }); item.probes[5].question += " copper ferry"; },
+      item => { Object.assign(item.probes[3].score, { version: "v2", neverEcho: ["LOOM-Q82"] }); item.probes[3].question += " loom q82"; },
+      item => { Object.assign(item.probes[3].score, { version: "v2", recallMode: "referent", recallValues: ["LOOM-Q82"], roles: [{ role: "subject", patterns: ["private seal"] }] }); item.probes[3].question += " LOOM-Q82"; },
+      item => { Object.assign(item.probes[11].score, { version: "v2", roles: [{ role: "object", patterns: ["copper ferry"] }, { role: "deadline", patterns: ["Sunday"] }] }); item.probes[11].question += " copper ferry"; },
+    ];
+    for (const leak of leaks) expect(() => render(leak)).toThrow("answer_key_leakage");
+    expect(() => render(item => {
+      Object.assign(item.probes[11].score, { version: "v2", roles: [{ role: "object", patterns: ["sealed packet"] }, { role: "action", patterns: ["send"], questionSupplied: true }, { role: "deadline", patterns: ["Sunday"] }] });
+      item.probes[11].question += " What should I send?";
+    })).not.toThrow();
+    expect(() => render(item => { Object.assign(item.probes[3].score, { version: "v2", ...privacy }); item.probes[3].question += " loom seal"; })).not.toThrow();
   });
 });
