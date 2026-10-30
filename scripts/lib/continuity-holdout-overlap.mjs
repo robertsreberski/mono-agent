@@ -34,13 +34,20 @@ export function validateAllowlist(allowlist) {
   return true;
 }
 
+function scoreNarratives(score) {
+  if (score.version !== "v2") return strings(score).filter(value => value !== score.kind && value !== score.version);
+  const { kind, version, roles, questionSubject, recallMode, ...answerFields } = score;
+  return [...strings(answerFields), ...strings(questionSubject?.patterns),
+    ...(roles ?? []).flatMap(role => [...strings(role.patterns), ...strings(role.aliases)])];
+}
+
 /** All string values in narrative fields, never schema keys, operation names or tool names. */
 export function specNarratives(spec) {
   return spec.families.flatMap(f => [
     ...strings(f.entities), ...strings(f.vocabulary), ...strings(f.templates),
     ...f.cases.flatMap(c => [...strings(c.bindings), c.title, c.owner, ...c.events.flatMap(e => [e.owner, e.assistant, e.aside, e.interruption,
       ...strings(e.tool?.args), ...strings(e.tool?.head), ...strings(e.tool?.middle), ...strings(e.tool?.tail)]),
-    ...c.probes.flatMap(p => [p.question, p.format, ...strings(p.score).filter(v => v !== p.score.kind)])]),
+    ...c.probes.flatMap(p => [p.question, p.format, ...scoreNarratives(p.score)])]),
   ]).filter(v => typeof v === "string" && !TOOL_NAMES.includes(v));
 }
 export function traceNarratives(trace) {

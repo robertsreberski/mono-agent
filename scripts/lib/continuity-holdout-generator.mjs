@@ -1,3 +1,4 @@
+import { V2_FIELDS, v2PromptLeak } from "./continuity-score-v2.mjs";
 import { STATISTICAL_SPEC, validateStatisticalSpec } from "./continuity-holdout-statistics.mjs";
 // Benchmark-only: no narrative imports, provider calls, or product preparation.
 import { readFile, realpath, lstat } from "node:fs/promises";
@@ -156,7 +157,7 @@ export function validateHoldoutSpec(spec, statisticalSpec = STATISTICAL_SPEC) {
         const [category, kind] = ALLOCATION[i];
         need(probe.category === category && probe.score?.kind === kind && probe.abstainOption === ![4, 14].includes(i), "invalid_probe_allocation");
         text(probe.question); need(probe.question.length >= 10, "invalid_question"); if (probe.format !== undefined) text(probe.format);
-        const fields = SCORE_FIELDS[kind]; keys(probe.score, ["kind", ...fields], ["kind", ...fields.filter(k => k !== "reject")]);
+        const fields = SCORE_FIELDS[kind]; keys(probe.score, ["kind", ...fields, ...(probe.score.version === "v2" ? V2_FIELDS : ["version"])], ["kind", ...fields.filter(k => k !== "reject")]);
         try { validateProbeScore(probe); } catch { fail("invalid_probe_score"); }
         if (i === 2) need(Array.isArray(probe.score.reject) && probe.score.reject.length > 0, "missing_identifier_decoy");
         if (kind === "identifier") need((probe.score.reject ?? []).every(v => !probe.score.accept.some(a => compactIdentifier(a) === compactIdentifier(v))), "identifier_decoy_conflict");
@@ -272,7 +273,8 @@ export function generateHoldoutTrace(family, item, seed) {
     const prompt = probe.question + " " + (probe.format ?? "");
     need(!source.includes(probe.question) && !source.includes(canonicalJson(probe.score))
       && !(probe.score.rubric && (source.includes(probe.score.rubric) || prompt.includes(probe.score.rubric)))
-      && !(probe.score.kind === "value" && probe.score.accept.some(p => new RegExp(p, "iu").test(prompt))), "answer_key_leakage");
+      && !(probe.score.kind === "value" && probe.score.accept.some(p => new RegExp(p, "iu").test(prompt)))
+      && !v2PromptLeak(probe.score, prompt), "answer_key_leakage");
     if (["identifier", "redaction"].includes(probe.score.kind)) {
       const values = probe.score.kind === "identifier" ? probe.score.accept : [probe.score.secret];
       const question = compactIdentifier(probe.question + (probe.format ?? ""));
