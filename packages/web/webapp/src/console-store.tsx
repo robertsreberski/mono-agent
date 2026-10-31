@@ -6029,29 +6029,6 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       if (!admitThread(removedThreadsRef.current, thread, issuedAt)) {
         throw new Error("This conversation was deleted.");
       }
-      transferComposerDraft(selectedAgentId, null, thread.id);
-      setModelByContext((current) => {
-        if (current[draftPreferenceKey] === undefined) return current;
-        const next = { ...current };
-        delete next[draftPreferenceKey];
-        return next;
-      });
-      setEffortByContext((current) => {
-        if (current[draftPreferenceKey] === undefined) return current;
-        const next = { ...current };
-        delete next[draftPreferenceKey];
-        return next;
-      });
-      setContext1MByContext((current) => { const next = { ...current }; delete next[draftPreferenceKey]; return next; });
-      const stillOwnsSelection = operatorSelectionRef.current === request.generation
-        && selectedAgentRef.current === request.sourceId
-        && (owner?.isCurrent() ?? true);
-      if (stillOwnsSelection) {
-        beginOperatorSelection();
-        // See `restoredSelectionRef`: what the operator opens is theirs, and a
-        // read still in flight for what they left has nothing to settle here.
-        restoredSelectionRef.current = null;
-      }
       setBootstrap((current) =>
         current ? { ...current, threads: mergeThreads(current.threads, [thread]) } : current,
       );
@@ -6064,18 +6041,42 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
           byId: { ...current.byId, [thread.id]: thread },
         });
       }
-      if (stillOwnsSelection) {
-        selectedThreadRef.current = thread.id;
-        // Publish the exact installed identity synchronously, before React can
-        // observe the keyed handoff or the awaiting caller resumes.
-        owner?.onSelectionInstalled({ generation: operatorSelectionRef.current, thread });
-        setSelectedThreadId(thread.id);
-        persistThreadId(selectedAgentId, thread.id);
-        setShowArchived(false);
-        updateThreadRoute(thread);
-        publishDetail(thread.id);
+      // Listing/cache/project membership describe a committed server thread.
+      // Draft consumption and selection are user-owned: a cancelled voice
+      // operation has no authority over anything authored after cancellation.
+      // Non-voice creation retains its ordinary draft-transfer semantics.
+      if (owner?.isCurrent() ?? true) {
+        transferComposerDraft(selectedAgentId, null, thread.id);
+        setModelByContext((current) => {
+          if (current[draftPreferenceKey] === undefined) return current;
+          const next = { ...current };
+          delete next[draftPreferenceKey];
+          return next;
+        });
+        setEffortByContext((current) => {
+          if (current[draftPreferenceKey] === undefined) return current;
+          const next = { ...current };
+          delete next[draftPreferenceKey];
+          return next;
+        });
+        setContext1MByContext((current) => { const next = { ...current }; delete next[draftPreferenceKey]; return next; });
+        if (operatorSelectionRef.current === request.generation
+          && selectedAgentRef.current === request.sourceId) {
+          beginOperatorSelection();
+          // An owned birth replaces only its own restored read.
+          restoredSelectionRef.current = null;
+          selectedThreadRef.current = thread.id;
+          // Publish the exact installed identity synchronously, before React can
+          // observe the keyed handoff or the awaiting caller resumes.
+          owner?.onSelectionInstalled({ generation: operatorSelectionRef.current, thread });
+          setSelectedThreadId(thread.id);
+          persistThreadId(selectedAgentId, thread.id);
+          setShowArchived(false);
+          updateThreadRoute(thread);
+          publishDetail(thread.id);
+          setActionError(null);
+        }
       }
-      if (stillOwnsSelection) setActionError(null);
       return thread;
     } catch (createError) {
       if (operatorSelectionRef.current === request.generation

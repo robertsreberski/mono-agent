@@ -3,7 +3,9 @@ import { page, userEvent } from "@vitest/browser/context";
 import { useLayoutEffect } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "./api";
-import { ConsoleStoreProvider, SELECTED_AGENT_STORAGE_KEY, useConsoleStore } from "./console-store";
+import { ConsoleStoreProvider, RUN_PREFERENCES_STORAGE_KEY, SELECTED_AGENT_STORAGE_KEY, preferenceKeyForThread, useConsoleStore } from "./console-store";
+import { COMPOSER_DRAFTS_STORAGE_KEY, flushComposerDrafts, readComposerDraft, resetComposerDraft, writeComposerDraft } from "./composer-draft";
+import { VoiceComposer } from "./components/VoiceComposer";
 import { WebRuntimeProvider } from "./runtime";
 import { Chat } from "./components/Chat";
 import { agent, bootstrap, thread } from "./test/fixtures";
@@ -63,7 +65,7 @@ function seed(selected?: ThreadSummary) {
 beforeEach(async () => {
   await persistence.clearAll();
   vi.resetAllMocks();
-  localStorage.clear(); sessionStorage.clear(); window.history.replaceState(null, "", "/");
+  localStorage.clear(); sessionStorage.clear(); resetComposerDraft(); window.history.replaceState(null, "", "/");
   localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, "alpha");
   vi.stubGlobal("EventSource", FixtureEventSource);
   fixture = installVoiceFixture();
@@ -76,7 +78,7 @@ beforeEach(async () => {
   vi.mocked(api.transcribe).mockResolvedValue({ text: "A synthetic voice request." });
   vi.mocked(api.submit).mockImplementation(async (threadId, submissionId) => ({ threadId, submissionId, outcome: "turn" }));
 });
-afterEach(async () => { cleanup(); fixture.restore(); await persistence.clearAll(); localStorage.clear(); });
+afterEach(async () => { cleanup(); fixture.restore(); await persistence.clearAll(); localStorage.clear(); resetComposerDraft(); });
 async function record() {
   await waitFor(() => expect(screen.getByRole("button", { name: "Record voice message" })).toBeEnabled());
   await userEvent.click(screen.getByRole("button", { name: "Record voice message" }));
@@ -225,4 +227,63 @@ describe("voice through real mounted Chat, keyed Composer, runtime and store", (
     expect(api.patchThread).toHaveBeenCalled();
     expect(api.submit).toHaveBeenCalledWith(persisted.id, expect.any(String), expect.objectContaining({ model: "provider/model", effort: "medium", context1M: capturedContext, inheritRunSettings: false }));
   });
+});
+
+// Chat deliberately hides its keyed Composer during creation. Keep the real
+// voice owner mounted here to exercise explicit Cancel, then write through the
+// real draft cache/setters; round-trip storage and consume the surviving draft
+// only through a later ordinary creation in the real Chat.
+function PendingVoiceOwner() {
+  const current = useConsoleStore();
+  return <VoiceComposer selectionGeneration={current.selectionGeneration} captureSubmission={current.captureVoiceSubmission} />;
+}
+it.each([false, true])("cancelled creation preserves fresh null-thread draft/preferences and restore (context %s)", async (context) => {
+  let resolveCreate!: (value: ThreadSummary) => void;
+  vi.mocked(api.createThread).mockImplementation(() => new Promise((resolve) => { resolveCreate = resolve; }));
+  const pending = render(<ConsoleStoreProvider><Probe /><PendingVoiceOwner /></ConsoleStoreProvider>);
+  await record(); await stop();
+  fireEvent.click(screen.getByRole("button", { name: "Send voice message" }));
+  await waitFor(() => expect(store.creatingThread).toBe(true));
+  const generation = store.selectionGeneration;
+  await userEvent.click(screen.getByRole("button", { name: "Cancel voice message" }));
+  expect(screen.getByRole("button", { name: "Record voice message" })).toBeEnabled();
+  const fresh = "A fresh fictional text draft after Cancel.";
+  writeComposerDraft("alpha", null, fresh);
+  act(() => store.setModel("provider/other"));
+  await waitFor(() => expect(store.model).toBe("provider/other"));
+  act(() => store.setEffort("high"));
+  act(() => store.setContext1M(context));
+  const preference = preferenceKeyForThread("alpha", null);
+  await waitFor(() => expect(JSON.parse(localStorage.getItem(RUN_PREFERENCES_STORAGE_KEY)!)[preference]).toEqual({ model: "provider/other", effort: "high", context1M: context }));
+  await act(async () => resolveCreate(created));
+  expect(store.selectedThreadId).toBeNull(); expect(store.selectionGeneration).toBe(generation);
+  expect(store.threads.some((item) => item.id === created.id)).toBe(true);
+  expect(readComposerDraft("alpha", null)).toBe(fresh);
+  expect(readComposerDraft("alpha", created.id)).toBe("");
+  expect(store.model).toBe("provider/other"); expect(store.effort).toBe("high"); expect(store.context1M).toBe(context);
+  expect(api.transcribe).not.toHaveBeenCalled(); expect(api.submit).not.toHaveBeenCalled(); expect(api.patchThread).not.toHaveBeenCalled();
+  expect(fixture.stop).toHaveBeenCalledTimes(2);
+  flushComposerDrafts();
+  const saved = localStorage.getItem(COMPOSER_DRAFTS_STORAGE_KEY)!;
+  pending.unmount(); resetComposerDraft(); localStorage.setItem(COMPOSER_DRAFTS_STORAGE_KEY, saved);
+  vi.mocked(api.bootstrap).mockResolvedValue({ ...bootstrap([fixtureAgent], [created]), voice: { enabled: true, maxBytes: 10485760, maxSeconds: 120, maxTextCharacters: 8000 } });
+  vi.mocked(api.threads).mockResolvedValue({ threads: [created] });
+  mount();
+  await waitFor(() => expect(store.loading || store.selectionLoading).toBe(false));
+  // Startup may open the most recent server thread, but cannot steal the
+  // still-new draft. A later explicit creation is its legitimate consumer.
+  expect(readComposerDraft("alpha", null)).toBe(fresh);
+  expect(readComposerDraft("alpha", created.id)).toBe("");
+  expect(JSON.parse(localStorage.getItem(RUN_PREFERENCES_STORAGE_KEY)!)[preference]).toEqual({ model: "provider/other", effort: "high", context1M: context });
+  const next = thread("fresh-draft-created", "alpha", { runModel: "provider/other", runEffort: "high", runContext1M: context });
+  vi.mocked(api.createThread).mockResolvedValue(next);
+  vi.mocked(api.thread).mockImplementation(async (id) => ({ thread: id === next.id ? next : created, messages: [] }));
+  await act(async () => { await store.createThread(); });
+  await waitFor(() => expect(screen.getByRole("combobox", { name: "Message" })).toHaveValue(fresh));
+  expect(store.selectedThreadId).toBe(next.id);
+  expect(api.createThread).toHaveBeenLastCalledWith("alpha", { model: "provider/other", effort: "high", context1M: context }, expect.any(AbortSignal), undefined);
+  expect(readComposerDraft("alpha", null)).toBe("");
+  expect(readComposerDraft("alpha", created.id)).toBe("");
+  expect(readComposerDraft("alpha", next.id)).toBe(fresh);
+  expect(api.transcribe).not.toHaveBeenCalled(); expect(api.submit).not.toHaveBeenCalled();
 });

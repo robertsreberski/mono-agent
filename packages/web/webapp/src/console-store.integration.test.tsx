@@ -724,10 +724,13 @@ describe("ConsoleStoreProvider integration", () => {
     const store = await renderStore();
     await waitFor(() => expect(store.current.selectionLoading).toBe(false));
     const captured = store.current.captureVoiceSubmission();
+    writeComposerDraft("alpha", null, "Owned creation draft");
     let destination: string | undefined;
     await act(async () => { destination = await captured.prepare(); });
     expect(destination).toBe(created.id);
     expect(captured.isCurrent()).toBe(true);
+    expect(readComposerDraft("alpha", null)).toBe("");
+    expect(readComposerDraft("alpha", created.id)).toBe("Owned creation draft");
     await captured.submit("A new voice conversation");
     expect(api.createThread).toHaveBeenCalledTimes(1);
     expect(api.submit).toHaveBeenCalledWith(created.id, expect.any(String), expect.objectContaining({ text: "A new voice conversation" }));
