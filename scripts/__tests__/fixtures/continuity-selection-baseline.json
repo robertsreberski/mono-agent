@@ -1,0 +1,200 @@
+{
+  "revision": "de469a06c0edb1641b98194ae747428bc5effbaf",
+  "cases": {
+    "development-1": {
+      "sourceDigest": "535e00e22cc7e662460c4efd235c942da0dc09c04fdf4215baccd577abdeb433",
+      "passes": [
+        {
+          "tool": 24,
+          "owner": 3,
+          "transitions": 0,
+          "transitionIds": [],
+          "cap": 8,
+          "fitted": 64,
+          "protectedOwners": [
+            "fictional-input-0"
+          ]
+        },
+        {
+          "tool": 24,
+          "owner": 2,
+          "transitions": 0,
+          "transitionIds": [],
+          "cap": 8,
+          "fitted": 64,
+          "protectedOwners": []
+        },
+        {
+          "tool": 25,
+          "owner": 2,
+          "transitions": 0,
+          "transitionIds": [],
+          "cap": 8,
+          "fitted": 64,
+          "protectedOwners": []
+        }
+      ]
+    },
+    "development-2": {
+      "sourceDigest": "da569fedc908c3e3382633866da8c84cae2669f57870ae9e536546f58764be5e",
+      "passes": [
+        {
+          "tool": 24,
+          "owner": 3,
+          "transitions": 0,
+          "transitionIds": [],
+          "cap": 8,
+          "fitted": 64,
+          "protectedOwners": [
+            "fictional-input-0"
+          ]
+        },
+        {
+          "tool": 24,
+          "owner": 1,
+          "transitions": 0,
+          "transitionIds": [],
+          "cap": 8,
+          "fitted": 64,
+          "protectedOwners": [
+            "fictional-input-255"
+          ]
+        },
+        {
+          "tool": 25,
+          "owner": 2,
+          "transitions": 0,
+          "transitionIds": [],
+          "cap": 8,
+          "fitted": 64,
+          "protectedOwners": []
+        }
+      ]
+    },
+    "transitions": {
+      "sourceDigest": "c61383adc60a7edfd171953ff0f86384740045e4e20095b9e67bc18703c14316",
+      "passes": [
+        {
+          "tool": 51,
+          "owner": 7,
+          "transitions": 5,
+          "transitionIds": [
+            "fictional-input-134",
+            "fictional-input-136",
+            "fictional-input-138",
+            "fictional-input-140",
+            "fictional-input-142"
+          ],
+          "cap": 8,
+          "fitted": 64,
+          "protectedOwners": [
+            "fictional-input-0",
+            "fictional-input-144"
+          ]
+        },
+        {
+          "tool": 58,
+          "owner": 6,
+          "transitions": 5,
+          "transitionIds": [
+            "fictional-input-122",
+            "fictional-input-124",
+            "fictional-input-126",
+            "fictional-input-132",
+            "fictional-input-142"
+          ],
+          "cap": 8,
+          "fitted": 64,
+          "protectedOwners": [
+            "fictional-input-144"
+          ]
+        },
+        {
+          "tool": 57,
+          "owner": 7,
+          "transitions": 7,
+          "transitionIds": [
+            "fictional-input-124",
+            "fictional-input-126",
+            "fictional-input-132",
+            "fictional-input-134",
+            "fictional-input-136",
+            "fictional-input-138",
+            "fictional-input-140"
+          ],
+          "cap": 8,
+          "fitted": 64,
+          "protectedOwners": []
+        }
+      ]
+    },
+    "owner-flood": {
+      "sourceDigest": "0cbfda57d1bc08998d4b26fa3c82e5e8f611c819f30db717df64602f955af72a",
+      "passes": [
+        {
+          "tool": 3,
+          "owner": 9,
+          "transitions": 0,
+          "transitionIds": [],
+          "cap": 8,
+          "fitted": 12,
+          "protectedOwners": []
+        },
+        {
+          "tool": 3,
+          "owner": 7,
+          "transitions": 0,
+          "transitionIds": [],
+          "cap": 8,
+          "fitted": 10,
+          "protectedOwners": []
+        },
+        {
+          "tool": 0,
+          "owner": 7,
+          "transitions": 0,
+          "transitionIds": [],
+          "cap": 8,
+          "fitted": 7,
+          "protectedOwners": []
+        }
+      ]
+    },
+    "tool-flood": {
+      "sourceDigest": "8c8ef6342fd5c07e3dd3057a01c3052c61e73d648f988ece90cfb582f1522513",
+      "passes": [
+        {
+          "tool": 61,
+          "owner": 1,
+          "transitions": 1,
+          "transitionIds": [
+            "fictional-input-180"
+          ],
+          "cap": 8,
+          "fitted": 64,
+          "protectedOwners": []
+        },
+        {
+          "tool": 63,
+          "owner": 1,
+          "transitions": 1,
+          "transitionIds": [
+            "fictional-input-180"
+          ],
+          "cap": 8,
+          "fitted": 64,
+          "protectedOwners": []
+        },
+        {
+          "tool": 64,
+          "owner": 0,
+          "transitions": 0,
+          "transitionIds": [],
+          "cap": 8,
+          "fitted": 64,
+          "protectedOwners": []
+        }
+      ]
+    }
+  }
+}

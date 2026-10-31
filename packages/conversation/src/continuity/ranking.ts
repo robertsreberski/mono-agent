@@ -12,11 +12,15 @@ export function templateShape(text: string): string {
   return text.normalize("NFKC").toLowerCase().replace(/[\p{L}\p{N}]+(?:[-_.,:/][\p{L}\p{N}]+)*/gu,
     token => /\p{N}/u.test(token) ? /\p{L}/u.test(token) ? "[ID]" : "[N]" : token).replace(/\s+/gu, " ").trim();
 }
-export function signalScore(record: Pick<ContinuitySnapshotRecord, "kind" | "provenance" | "inputId" | "source" | "tool">, start: number, text: string): number {
+export function signalScore(record: Pick<ContinuitySnapshotRecord, "kind" | "provenance" | "inputId" | "source" | "tool">, start: number, text: string, offers = 0): number {
   const owner = record.kind === "owner" && record.provenance === "host-owner" && !!record.inputId && record.inputId === record.source.attestation?.inputId;
   const words = templateShape(text.slice(0, 2048)).match(/[\p{L}\p{N}]+/gu) ?? [];
   const density = Math.floor(3 * new Set(words).size / Math.max(1, words.length));
   return (record.kind === "tool" ? 12 + Number(start > 0) * 2 + Number(!!record.tool?.state) * 2 : owner ? 10 : 4)
+    // A bounded shape-only bonus closes the numeric/ID scoring deficit for
+    // short never-offered attested-owner paragraphs. Source round robin and fitting
+    // still bound owner floods; no text vocabulary or inferred authority.
+    + Number(owner && offers === 0 && Buffer.byteLength(text) <= 256) * 16
     + Number(SCORE_SHAPES[0].test(text)) * 8 + Number(SCORE_SHAPES[1].test(text)) * 8 + Number(SCORE_SHAPES[2].test(text)) * 4 + density;
 }
 const rankCompare = (a: RankedSpan, b: RankedSpan) => b.score - a.score || a.offers - b.offers || a.start - b.start || b.ordinal - a.ordinal;

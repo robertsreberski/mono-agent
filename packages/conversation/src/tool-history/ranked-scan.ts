@@ -100,7 +100,7 @@ export function scanLedgerHistory(db: DatabaseSync, input: ContinuitySnapshotInp
           if (source.ordinal <= ((progress.cursor as Row | undefined)?.retiredThrough ?? 0) || old && (old.count >= 2 || !["available", "unrepresented", "reofferable", "analyzed"].includes(old.state))) { stats.excluded++; continue; }
           const key = spanKey({ id: "", recordId: source.recordId, sha256: source.sha256, start: s.start, end: s.end, digest: ledgerHash(s.text), owner, kind: source.kind, ...(call ? { toolName: call.tool_name } : {}) });
           if (represented.has(key)) { stats.excluded++; continue; }
-          queue.offer({ key, ordinal: source.ordinal, start: s.start, end: s.end, score: signalScore(withTool, s.start, s.text) + (old?.state === "unrepresented" ? 64 : 0), offers: old?.count ?? 0, source: `${source.kind}:${call?.tool_name ?? ""}` }, template);
+          queue.offer({ key, ordinal: source.ordinal, start: s.start, end: s.end, score: signalScore(withTool, s.start, s.text, old?.count ?? 0) + (old?.state === "unrepresented" ? 64 : 0), offers: old?.count ?? 0, source: `${source.kind}:${call?.tool_name ?? ""}` }, template);
         }
       }
       after = page.at(-1)!.ordinal;

@@ -167,3 +167,21 @@ it("projects long host positions inside the existing rendered line and payload c
   expect(text.split("\n").filter(l => l.startsWith("Derived ")).every(l => Buffer.byteLength(l + "\n") <= 1024)).toBe(true);
   expect(Buffer.byteLength(JSON.stringify(generation))).toBeLessThanOrEqual(fitted.projectedBytes);
 });
+
+it("gives only never-offered short attested-owner spans a bounded shape bonus", () => {
+  const text = "Cancel the LANTERN exhibit.";
+  const owner = { ...row(1, text, "owner"), provenance: "host-owner" as const, inputId: "input", source: { attestation: { inputId: "input", requestDigest: ledgerHash("input") } } };
+  const bonus = (record: typeof owner, value = text) => signalScore(record, 0, value, 0) - signalScore(record, 0, value, 1);
+  expect(bonus(owner)).toBe(16);
+  expect(bonus(owner, "Ω".repeat(128))).toBe(16); // Exactly 256 UTF-8 bytes.
+  expect(bonus(owner, "Ω".repeat(128) + "a")).toBe(0);
+  expect(signalScore(owner, 0, text, 1)).toBe(signalScore(owner, 0, text, 2));
+  for (const untrusted of [
+    { ...owner, kind: "user" as const, provenance: "unknown" as const },
+    { ...owner, provenance: "unknown" as const },
+    { ...owner, inputId: "different" },
+    { ...owner, source: {} },
+  ]) expect(signalScore(untrusted, 0, text, 0)).toBe(signalScore(untrusted, 0, text, 1));
+  expect(signalScore(owner, 0, "Archive parcel WILLOW.")).toBe(signalScore(owner, 0, "Review exhibit CEDAR."));
+  expect(signalScore(row(2, text, "tool"), 0, text, 0)).toBe(signalScore(row(2, text, "tool"), 0, text, 1));
+});

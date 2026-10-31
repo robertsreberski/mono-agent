@@ -24,7 +24,7 @@ it.each([64000, 128000] as const)("freezes clean ranked selection and bounded gr
   const snapshot = { records, omitted: 0, gaps: 0, upkeep: { watermark: 80, excluded: [] } };
   const selected = selectLedgerSources(snapshot, undefined, inputTokens);
   const fitted = fitLedgerSelection(selected, { currentConversationId: "fictional", logicalConversationId: "fictional" }, undefined, { maxTokens: 8000, deltaEntries: 8 }).selection;
-  expect({ sourceManifest: selected.manifest, fittedManifest: fitted.manifest, prompt: ledgerHash(fitted.prompt), count: fitted.spans.length, cap: fitted.maxEntries }).toMatchSnapshot();
+  expect({ sourceManifest: selected.manifest, fittedManifest: fitted.manifest, prompt: ledgerHash(fitted.prompt), ownerScores: [...new Set(selected.ranked!.filter(candidate => selected.spans.find(span => span.ordinal === candidate.ordinal && span.start === candidate.start)?.owner).map(candidate => candidate.score))].sort((a, b) => a - b), count: fitted.spans.length, cap: fitted.maxEntries }).toMatchSnapshot();
   expect(fitted.spans.length).toBeLessThanOrEqual(8 * fitted.maxEntries!);
   expect((Math.ceil(Buffer.byteLength(fitted.prompt) / 2) + 16) * 1.25).toBeLessThanOrEqual(inputTokens - 2048);
 });
