@@ -53,7 +53,7 @@ export function createRegistration({ conversations, manifestSha256, rubricSha256
     for (let i = pool.length - 1; i > 0; i--) { const j = Math.floor(next() * (i + 1)); [pool[i], pool[j]] = [pool[j], pool[i]]; }
     pool.forEach((c, i) => shards[Math.floor(i / d.perCorpusPerShard)].conversations.push(c.id));
   }
-  return { schema: "holdout-registration-v1", manifestSha256, rubricSha256, statisticalSpecSha256, statisticalSpec, seed, models, codeRevision, conversations: ordered, shards };
+  return { schema: "holdout-registration-v2", manifestSha256, rubricSha256, statisticalSpecSha256, statisticalSpec, seed, models, codeRevision, conversations: ordered, shards };
 }
 export async function registerFrozenHoldout({ manifestPath, manifestSha256, statisticalSpecPath, seed, models, codeRevision }) {
   const bytes = await externalFile(statisticalSpecPath), statisticalSpec = JSON.parse(bytes.toString("utf8"));
@@ -61,10 +61,15 @@ export async function registerFrozenHoldout({ manifestPath, manifestSha256, stat
   return createRegistration({ conversations: traces.map(conversationIdentity),
     manifestSha256, rubricSha256: manifest.files.rubric.sha256, statisticalSpecSha256: sha256(bytes), statisticalSpec, seed, models, codeRevision });
 }
+export function validateRegistrationVersion(registration) {
+  requireValue(registration?.schema === "holdout-registration-v2", "incompatible_holdout_registration_version");
+  validateStatisticalSpec(registration.statisticalSpec);
+}
 export async function loadRegisteredHoldout({ manifestPath, manifestSha256, registrationPath, registrationSha256, registrationBytes, statisticalSpecPath, shard, profile, codeRevision, repeats, arms, probeLimit }) {
   const bytes = registrationBytes ?? await externalFile(registrationPath);
   requireValue(sha256(bytes) === registrationSha256, "registration_hash_mismatch");
   const registration = JSON.parse(bytes.toString("utf8"));
+  validateRegistrationVersion(registration);
   const statBytes = await externalFile(statisticalSpecPath), statisticalSpec = JSON.parse(statBytes.toString("utf8"));
   validateStatisticalSpec(statisticalSpec);
   requireValue(registration.manifestSha256 === manifestSha256 && registration.statisticalSpecSha256 === sha256(statBytes)

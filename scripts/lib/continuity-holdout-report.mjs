@@ -18,6 +18,9 @@ export function certifiedDecision(statistics, controllerAdmissible, certified) {
   }
   return statistics;
 }
+export function eligibilityScope(models) {
+  return { reader: models.reader, extractor: models.extractor, statement: `A pass establishes eligibility only for reader ${models.reader} and extractor ${models.extractor}; not other models or blanket default enablement.` };
+}
 export async function finalReport(context, roots, joinedPath, audit, output) {
   output = await externalDirectory(output, true);
   const joined = await verifiedJoin(context, roots, joinedPath), inputs = { ...joined.value.artifacts, "joined.json": joined.sha256,
@@ -49,7 +52,7 @@ export async function finalReport(context, roots, joinedPath, audit, output) {
   if (bindingErrors > context.registration.statisticalSpec.audit.bindingErrorsMaximum) {
     statistics.decision.status = "fail"; statistics.decision.gates.push({ name: "mechanical-provenance", status: "fail" }); statistics.decision.reasons.push("mechanical-provenance:fail");
   }
-  const report = { schema: "holdout-final-report-v1", codeRevision: context.registration.codeRevision,
+  const report = { schema: "holdout-final-report-v2", eligibilityScope: eligibilityScope(context.registration.models), codeRevision: context.registration.codeRevision,
     registrationSha256: context.options.registrationSha256, joinSha256: joined.sha256,
     artifactInventory: "Raw file hashes are bound transitively: report -> archive-manifest SHA-256 -> per-file SHA-256. Every listed chunk was reverified from disk, chunk by chunk.",
     decision: statistics.decision, statistics, integrity: { ...statistics.integrity, controllerComplete: joined.value.controllerComplete, controllerAdmissible: joined.value.controllerAdmissible,
@@ -57,9 +60,10 @@ export async function finalReport(context, roots, joinedPath, audit, output) {
     accounting: "Catalog accounting, not an invoice; Codex stream_abort cannot guarantee containment. Unknown reader usage is reconciled only at chunk boundaries.",
     controllers: joined.value.stops, audit: { totals: resolved?.totals ?? agreed?.lowerBounds ?? null, counters: collection?.mechanical.counters ?? null,
       failures: collection?.mechanical.failures ?? [], disagreements: resolved?.disagreements.length ?? agreed?.disagreements.length ?? null }, inputArtifacts: inputs };
-  const markdown = ["# Registered holdout report", "", `Decision: **${report.decision.status}**`, "", report.accounting, "",
+  const markdown = ["# Registered holdout report", "", `Decision: **${report.decision.status}**`, "", report.accounting, "", report.eligibilityScope.statement, "",
     `Registration: ${report.registrationSha256}`, `Join: ${report.joinSha256}`, "", "## Gates", "",
-    ...report.decision.gates.map(g => `- ${g.name}: ${g.status}`), "", "## Integrity and audit", "", "```json",
+    ...report.decision.gates.map(g => `- ${g.name}: ${g.status}${g.confidence === undefined ? "" : ` (one-sided ${g.confidence * 100}% confidence)`}`), "", "## Descriptive arms (not gates)", "", "```json",
+    JSON.stringify(Object.fromEntries(Object.entries(statistics.scopes).map(([name, scope]) => [name, { rates: scope.descriptive, discordances: scope.discordances }])), null, 2), "```", "", "## Integrity and audit", "", "```json",
     JSON.stringify({ integrity: report.integrity, audit: report.audit }, null, 2), "```", "", report.artifactInventory, "", "See report.json for all intervals, counters and artifact bindings.", ""].join("\n");
   await durable(join(output, "report.json"), report, true); await durable(join(output, "report.md"), Buffer.from(markdown), true);
   const artifacts = { schema: "holdout-report-artifacts-v1", toolingRevision: context.registration.codeRevision, inventory: report.artifactInventory, inputs, outputs: { "report.json": sha256(jsonBytes(report)), "report.md": sha256(markdown) },

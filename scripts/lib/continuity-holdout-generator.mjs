@@ -102,13 +102,14 @@ export function validateHoldoutSpec(spec, statisticalSpec = STATISTICAL_SPEC) {
     && new Date(p.createdAt).toISOString() === p.createdAt && p.independent === true
     && Array.isArray(p.references) && p.references.length === 0 && Array.isArray(p.exposures) && p.exposures.length === 0
     && typeof p.declaration === "string" && p.declaration.length >= 40, "invalid_provenance");
-  need(Array.isArray(spec.families) && spec.families.length >= d.families, "insufficient_families");
+  need(Array.isArray(spec.families) && spec.families.length === d.families, "insufficient_families");
   const ids = new Set(), cases = new Set(), structures = new Set(), counts = { ordinary: 0, distractor: 0 };
   for (const family of spec.families) {
     keys(family, ["id", "group", "count", "entities", "vocabulary", "templates", "cases"]);
     need(ID.test(family.id) && !ids.has(family.id), "duplicate_family_identity"); ids.add(family.id);
     need(Object.hasOwn(counts, family.group), "invalid_group");
-    integer(family.count, 1, d.conversationsPerCorpus); counts[family.group] += family.count;
+    integer(family.count, 1, d.conversationsPerCorpus);
+    need(family.count === d.conversationsPerFamily, "invalid_family_mixture"); counts[family.group] += family.count;
     slots(family.entities); slots(family.vocabulary);
     need(Object.keys(family.entities).every(k => !Object.hasOwn(family.vocabulary, k)), "duplicate_slot");
     keys(family.templates, ["owner", "assistant", "toolBody"]);

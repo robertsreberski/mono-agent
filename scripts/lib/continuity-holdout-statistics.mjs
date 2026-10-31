@@ -6,6 +6,7 @@ export const STATISTICAL_SPEC = freeze(spec);
 export const HOLDOUT_ARMS = Object.freeze(["native", "cold-rebuild", "continuity-pack-cold", "continuity-ledger-cold"]);
 const check = (ok, code) => { if (!ok) throw new Error(code); };
 export function validateStatisticalSpec(value) {
+  check(value?.schema === spec.schema, "incompatible_statistical_spec_version");
   const expected = structuredClone(spec), d = value?.design;
   const integer = x => Number.isSafeInteger(x) && x > 0;
   check(d && [d.conversationsPerCorpus, d.families, d.conversationsPerFamily, d.shards, d.perCorpusPerShard].every(integer)
@@ -80,49 +81,108 @@ export function tQuantile(p, df) {
   for (let i = 0; i < 90; i++) { const mid = (lo + hi) / 2; if (tCdf(mid, df) < p) lo = mid; else hi = mid; }
   return (lo + hi) / 2;
 }
-export function pairedMoments(sum, squares, n, confidence = spec.confidence) {
+export function pairedMoments(sum, squares, n, confidence = spec.confidenceByGate.benefit) {
   check(n >= 2 && Number.isFinite(sum) && Number.isFinite(squares), "invalid_paired_sample");
   const mean = sum / n, sd = Math.sqrt(Math.max(0, (squares - sum * sum / n) / (n - 1)));
   const radius = critical(confidence, n) * sd / Math.sqrt(n);
   return { n, mean, sd, lower: mean - radius, upper: mean + radius };
 }
-export function pairedT(values, confidence = spec.confidence) {
+export function pairedT(values, confidence = spec.confidenceByGate.benefit) {
   check(values.length >= 2 && values.every(Number.isFinite), "invalid_paired_sample");
   return pairedMoments(values.reduce((a, b) => a + b, 0), values.reduce((s, v) => s + v * v, 0), values.length, confidence);
 }
 export const intervalStatus = (interval, threshold, upperIsPass) => upperIsPass
   ? interval.upper <= threshold ? "pass" : interval.lower > threshold ? "fail" : "inconclusive"
   : interval.lower > threshold ? "pass" : interval.upper <= threshold ? "fail" : "inconclusive";
-const criticals = new Map(), cuts = new Map();
+const criticals = new Map();
 function critical(confidence, n) {
   const key = `${confidence}/${n}`;
   if (!criticals.has(key)) criticals.set(key, tQuantile(confidence, n - 1));
   return criticals.get(key);
 }
-export function safetyCuts(n, statisticalSpec = spec) {
-  const key = `${n}/${statisticalSpec.confidence}/${statisticalSpec.safety.maximum}`;
-  if (!cuts.has(key)) {
-    const boundary = predicate => { let lo = 0, hi = n + 1; while (lo < hi) { const mid = Math.floor((lo + hi) / 2); if (mid <= n && !predicate(mid)) lo = mid + 1; else hi = mid; } return lo; };
-    cuts.set(key, { passMaximum: boundary(k => clopperPearson(k, n, statisticalSpec.confidence).upper > statisticalSpec.safety.maximum) - 1,
-      failMinimum: boundary(k => clopperPearson(k, n, statisticalSpec.confidence).lower > statisticalSpec.safety.maximum) });
-  }
-  return cuts.get(key);
+/** G families are random scenario types. Combined inference pools ALL family means.
+ * Adjusted Fisher-Pearson sample skewness; G=2 uses zero (mechanics only).
+ * One-family fixtures cannot support inference and never pass an interval gate. */
+export function familyMoments(sum, squares, cubes, n, confidence = spec.confidenceByGate.benefit) {
+  if (n < 2) return { n, confidence, mean: sum / n, estimable: false, lower: null, upper: null, se: null, skew: null };
+  const base = pairedMoments(sum, squares, n, confidence);
+  // Raw moment cancellation must not manufacture variance/skew for constant families.
+  if (base.sd ** 2 * (n - 1) <= 64 * Number.EPSILON * Math.max(squares, sum * sum / n)) base.sd = 0;
+  const se = base.sd / Math.sqrt(n);
+  const centeredCube = cubes - 3 * base.mean * squares + 2 * n * base.mean ** 3;
+  const skew = base.sd > 0 && n > 2 ? n * centeredCube / ((n - 1) * (n - 2) * base.sd ** 3) : 0;
+  const t = critical(confidence, n), correction = skew * (1 + 2 * t * t) / (6 * Math.sqrt(n));
+  const upperAdjustment = Math.max(0, correction), lowerAdjustment = Math.max(0, -correction);
+  return { ...base, confidence, estimable: true, se, skew, upperAdjustment, lowerAdjustment,
+    upper: base.mean + se * (t + upperAdjustment), lower: base.mean - se * (t + lowerAdjustment) };
 }
-/** Shared scoring/power gate code; binomial count cuts are exactly equivalent to CP endpoints. */
+export function familyT(values, confidence = spec.confidenceByGate.benefit) {
+  return familyMoments(values.reduce((a, b) => a + b, 0), values.reduce((a, b) => a + b * b, 0), values.reduce((a, b) => a + b ** 3, 0), values.length, confidence);
+}
+/** Balanced one-way random-effects ICC, not truncated at zero. Zero variance -> ICC=0.
+ * Sums are conversation squares and family-mean squares; m is registered size. */
+export function familyDependence(sum, conversationSquares, familySquares, g, m) {
+  if (g < 2 || m < 2) return { icc: null, designEffect: null };
+  const between = Math.max(0, m * (familySquares - (sum / m) ** 2 / g) / (g - 1));
+  const within = Math.max(0, (conversationSquares - m * familySquares) / (g * (m - 1)));
+  const denominator = between + (m - 1) * within;
+  const icc = denominator === 0 ? 0 : (between - within) / denominator;
+  return { icc, designEffect: 1 + (m - 1) * icc };
+}
+/** Shared complete-data scoring/power gates use moments of FAMILY means. */
 export function gateEvaluator(statisticalSpec = spec) {
   validateStatisticalSpec(statisticalSpec);
+  const evaluate = (sum, squares, cubes, g, threshold, upper, confidence) => {
+    const interval = familyMoments(sum, squares, cubes, g, confidence);
+    return { interval, status: interval.estimable ? intervalStatus(interval, threshold, upper) : "inconclusive" };
+  };
   return {
-    safety: (k, n) => { const c = safetyCuts(n, statisticalSpec); return k <= c.passMaximum ? "pass" : k >= c.failMinimum ? "fail" : "inconclusive"; },
-    benefit: (sum, squares, n, combined) => { const interval = pairedMoments(sum, squares, n, statisticalSpec.confidence);
-      return { interval, status: intervalStatus(interval, combined ? statisticalSpec.benefit.combinedMinimumExclusive : statisticalSpec.benefit.corpusMinimumExclusive, false) }; },
+    safety: (sum, squares, cubes, g, comparator) => {
+      check(Object.hasOwn(statisticalSpec.safety.maximumByComparator, comparator), "invalid_safety_comparator");
+      return evaluate(sum, squares, cubes, g, statisticalSpec.safety.maximumByComparator[comparator], true,
+        statisticalSpec.confidenceByGate[comparator === "continuity-pack-cold" ? "pack" : "native"]);
+    },
+    benefit: (sum, squares, cubes, g, combined) => evaluate(sum, squares, cubes, g,
+      combined ? statisticalSpec.benefit.combinedMinimumExclusive : statisticalSpec.benefit.corpusMinimumExclusive, false, statisticalSpec.confidenceByGate.benefit),
     wrongRate: (wrong, denominator, complete = true) => wrong / denominator > statisticalSpec.safety.wrongRateMaximum ? "fail" : complete ? "pass" : "inconclusive",
     accuracy: (correct, missing, denominator, complete = true) => (correct + missing) / denominator < statisticalSpec.accuracyMinimum ? "fail" : complete ? "pass" : "inconclusive",
   };
 }
+/** Conservative skew-adjusted FAMILY completion envelope.
+ * For x_f in [lo_f,hi_f], mean is in [sum(lo)/G,sum(hi)/G]. Centered SS <=
+ * sum(max(lo²,hi²)) - min(sum(x)²)/G, giving SEmax. For standardized z_f,
+ * sum(z²)=G-1 and |sum(z³)| <= (sum(z²))^(3/2) by the l3/l2 norm inequality.
+ * Thus adjusted sample |skew| <= G*sqrt(G-1)/(G-2). Both tighten-only radii
+ * are <= SEmax*(t+skewMax*(1+2t²)/(6sqrt(G))). Subtracting/adding that radius
+ * from the smallest/largest possible mean bounds EVERY completion's L/U.
+ * No monotonicity of skewness or endpoint-filling shortcut is assumed. */
+export function familyCompletionBounds(bounds, confidence = spec.confidenceByGate.benefit) {
+  const g = bounds.length;
+  check(g > 0 && bounds.every(([lo, hi]) => Number.isFinite(lo) && Number.isFinite(hi) && lo >= -1 && hi <= 1 && lo <= hi), "invalid_completion_bounds");
+  if (g < 2) return { lower: -Infinity, upper: Infinity };
+  if (bounds.every(([lo, hi]) => lo === hi)) { const result = familyT(bounds.map(([lo]) => lo), confidence); return { lower: result.lower, upper: result.upper }; }
+  const low = bounds.reduce((s, b) => s + b[0], 0), high = bounds.reduce((s, b) => s + b[1], 0);
+  const squares = bounds.reduce((s, [lo, hi]) => s + Math.max(lo * lo, hi * hi), 0);
+  const nearest = low > 0 ? low : high < 0 ? high : 0;
+  const se = Math.sqrt((Math.max(0, squares - nearest * nearest / g) + 64 * Number.EPSILON * g * g) / (g * (g - 1)));
+  const t = critical(confidence, g), maxSkew = g > 2 ? g * Math.sqrt(g - 1) / (g - 2) : 0;
+  const radius = se * (t + maxSkew * (1 + 2 * t * t) / (6 * Math.sqrt(g)));
+  return { lower: low / g - radius, upper: high / g + radius };
+}
+function familySample(rows, bounds, confidence) {
+  const groups = new Map();
+  rows.forEach((row, i) => { if (!groups.has(row.family)) groups.set(row.family, []); groups.get(row.family).push(bounds[i]); });
+  const familyBounds = [...groups.values()].map(group => [0, 1].map(i => group.reduce((s, b) => s + b[i], 0) / group.length));
+  const values = familyBounds.map(([lo]) => lo), g = values.length;
+  const interval = familyT(values, confidence), completion = familyCompletionBounds(familyBounds, confidence);
+  const complete = bounds.every(([lo, hi]) => lo === hi);
+  const dependence = complete ? familyDependence(bounds.reduce((s, [lo]) => s + lo, 0), bounds.reduce((s, [lo]) => s + lo * lo, 0), values.reduce((s, v) => s + v * v, 0), g, rows.length / g) : { icc: null, designEffect: null };
+  return { g, interval: { ...interval, ...dependence }, completion };
+}
 /** Conservative bound for EVERY completion's t upper endpoint, not the invalid '+1 maximizes lower' shortcut.
  * mean <= sum(hi)/n. Sum of centered squares <= sum(max(lo²,hi²)) - min(sum(x)²)/n.
  * This relaxation can be loose: failure is reported only when its upper bound establishes failure. */
-export function completionUpperBound(bounds, confidence = spec.confidence) {
+export function completionUpperBound(bounds, confidence = spec.confidenceByGate.benefit) {
   check(bounds.length >= 2 && bounds.every(([lo, hi]) => Number.isFinite(lo) && Number.isFinite(hi) && lo >= -1 && hi <= 1 && lo <= hi), "invalid_completion_bounds");
   if (bounds.every(([lo, hi]) => lo === hi)) return pairedT(bounds.map(([lo]) => lo), confidence).upper;
   const n = bounds.length, low = bounds.reduce((s, b) => s + b[0], 0), high = bounds.reduce((s, b) => s + b[1], 0);
@@ -131,14 +191,23 @@ export function completionUpperBound(bounds, confidence = spec.confidence) {
   return high / n + critical(confidence, n) * Math.sqrt((Math.max(0, squares - nearest * nearest / n) + 64 * Number.EPSILON * n * n) / (n * (n - 1)));
 }
 /** Lower bound on EVERY completion's t lower endpoint, by reflection of the upper relaxation. */
-export function completionLowerBound(bounds, confidence = spec.confidence) {
+export function completionLowerBound(bounds, confidence = spec.confidenceByGate.benefit) {
   const upper = completionUpperBound(bounds.map(([lo, hi]) => [-hi, -lo]), confidence);
   return bounds.every(([lo, hi]) => lo === hi) ? pairedT(bounds.map(([lo]) => lo), confidence).lower : -upper;
 }
 const OUTCOMES = new Set(["correct", "stale", "conflicted", "violation", "leaked", "abstained", "empty", "wrong", "fabricated"]);
 const validTrial = row => row?.status === "completed" && typeof row.score?.pass === "boolean" && OUTCOMES.has(row.score?.outcome)
   && row.score.pass === (row.score.outcome === "correct");
-const wrongTrial = row => validTrial(row) && !row.score.pass && !["abstained", "empty"].includes(row.score.outcome);
+/** Whole-answer allowlist, not a search for hedging keywords. Missing text is NOT pure.
+ * Scorers intentionally have broader abstained labels; keep their v1/v2 behavior unchanged. */
+export function pureAbstention(answer) {
+  if (typeof answer !== "string") return false;
+  const text = answer.normalize("NFKC").replace(/[‘’]/gu, "'").trim();
+  if (text === "") return true;
+  const phrase = text.toLowerCase().replace(/^[\p{P}`\s]+|[\p{P}`\s]+$/gu, "").replace(/\s+/gu, " ");
+  return /^(?:unknown|i (?:don'?t|do not) know|not (?:stated|mentioned|specified|provided|known|available|applicable)|n(?:\s*[/.]\s*|\s*)a)$/u.test(phrase);
+}
+const wrongTrial = row => validTrial(row) && !row.score.pass && !pureAbstention(row.answer);
 
 /** Pure analysis defaults to NOT a measurement; callers must explicitly supply validated real execution provenance. */
 export function holdoutStatistics({ conversations, trials, audit = null, statisticalSpec = spec, measurement = false }) {
@@ -161,34 +230,55 @@ export function holdoutStatistics({ conversations, trials, audit = null, statist
     }));
     return { ...c, arms, complete: Object.values(arms).every(a => a.complete) };
   });
-  const gates = [], add = (name, status) => gates.push({ name, status }), scopes = {};
+  const gates = [], add = (name, status, confidence) => gates.push({ name, status, ...(confidence === undefined ? {} : { confidence }) }), scopes = {};
   for (const corpus of [...d.corpora, "combined"]) {
     const rows = bundles.filter(c => corpus === "combined" || c.corpus === corpus), n = rows.length, denominator = n * bundleSize;
     const complete = unknown === 0 && rows.every(c => c.complete), ledger = statisticalSpec.safety.treatment, pack = statisticalSpec.benefit.comparator;
     const correct = rows.reduce((s, c) => s + c.arms[ledger].correct, 0), wrong = rows.reduce((s, c) => s + c.arms[ledger].wrong, 0);
     const missing = rows.reduce((s, c) => s + c.arms[ledger].missing, 0), safety = {};
     for (const comparator of statisticalSpec.safety.comparators) {
-      // 'No comparator wrong' is established only if ALL comparator slots are valid.
-      const knownHarmful = rows.filter(c => c.arms[ledger].wrong > 0 && c.arms[comparator].complete && c.arms[comparator].wrong === 0).length;
-      const interval = complete ? clopperPearson(knownHarmful, n, statisticalSpec.confidence) : null;
-      const bestCompletion = clopperPearson(knownHarmful, n, statisticalSpec.confidence);
-      const worstHarmful = rows.filter(c => (c.arms[ledger].wrong > 0 || c.arms[ledger].missing > 0) && c.arms[comparator].wrong === 0).length;
-      const status = complete ? evaluator.safety(knownHarmful, n) : bestCompletion.lower > statisticalSpec.safety.maximum ? "fail"
-        : worstHarmful <= safetyCuts(n, statisticalSpec).passMaximum ? "pass" : "inconclusive";
-      safety[comparator] = { harmful: complete ? knownHarmful : null, knownHarmful, worstHarmful, n, interval, bestCompletion, status }; add(`${corpus}:safety:${comparator}`, status);
+      const bounds = rows.map(c => { const l = c.arms[ledger], p = c.arms[comparator];
+        return [(l.wrong - p.wrong - p.missing) / bundleSize, (l.wrong + l.missing - p.wrong) / bundleSize]; });
+      const confidence = statisticalSpec.confidenceByGate[comparator === pack ? "pack" : "native"];
+      const sample = familySample(rows, bounds, confidence);
+      const result = complete ? sample.interval : null;
+      const worstCompletionUpper = sample.completion.upper, bestCompletionLower = sample.completion.lower;
+      const margin = statisticalSpec.safety.maximumByComparator[comparator];
+      const status = result ? result.estimable ? intervalStatus(result, margin, true) : "inconclusive"
+        : worstCompletionUpper <= margin ? "pass" : bestCompletionLower > margin ? "fail" : "inconclusive";
+      safety[comparator] = { n, families: sample.g, confidence, margin, interval: result, worstCompletionUpper, bestCompletionLower, status };
+      add(`${corpus}:safety:${comparator}`, status, confidence);
     }
+    // Any-wrong risks and both discordance directions are descriptive, never gates.
+    const descriptive = Object.fromEntries(HOLDOUT_ARMS.map(arm => {
+      const count = key => rows.reduce((s, c) => s + c.arms[arm][key], 0);
+      const complete = rows.every(c => c.arms[arm].complete);
+      return [arm, { complete, correct: count("correct"), wrong: count("wrong"), missing: count("missing"),
+        missingRate: count("missing") / denominator,
+        abstainedOrEmptyRate: complete ? (denominator - count("correct") - count("wrong") - count("missing")) / denominator : null,
+        abstainedOrEmpty: denominator - count("correct") - count("wrong") - count("missing"),
+        correctRate: complete ? count("correct") / denominator : null, wrongRate: complete ? count("wrong") / denominator : null,
+        anyWrongConversations: rows.filter(c => c.arms[arm].wrong > 0).length,
+        anyWrongRisk: complete ? rows.filter(c => c.arms[arm].wrong > 0).length / n : null }];
+    }));
+    const discordances = Object.fromEntries(HOLDOUT_ARMS.filter(a => a !== ledger).map(comparator => [comparator, {
+      ledgerOnlyKnownWrong: rows.filter(c => c.arms[ledger].wrong > 0 && c.arms[comparator].complete && c.arms[comparator].wrong === 0).length,
+      comparatorOnlyKnownWrong: rows.filter(c => c.arms[comparator].wrong > 0 && c.arms[ledger].complete && c.arms[ledger].wrong === 0).length,
+      bothKnownWrong: rows.filter(c => c.arms[ledger].wrong > 0 && c.arms[comparator].wrong > 0).length,
+      bothComplete: rows.filter(c => c.arms[ledger].complete && c.arms[comparator].complete).length,
+    }]));
     const bounds = rows.map(c => { const l = c.arms[ledger], p = c.arms[pack]; return [(l.correct - p.correct - p.missing) / bundleSize, (l.correct + l.missing - p.correct) / bundleSize]; });
-    const differences = bounds.map(([lo]) => lo), sum = differences.reduce((a, b) => a + b, 0), squares = differences.reduce((a, b) => a + b * b, 0);
-    const result = complete ? evaluator.benefit(sum, squares, n, corpus === "combined") : null;
-    const benefit = result?.interval ?? null, bestCompletionUpper = completionUpperBound(bounds, statisticalSpec.confidence);
+    const sample = familySample(rows, bounds, statisticalSpec.confidenceByGate.benefit);
+    const benefit = complete ? sample.interval : null, bestCompletionUpper = sample.completion.upper;
     const threshold = corpus === "combined" ? statisticalSpec.benefit.combinedMinimumExclusive : statisticalSpec.benefit.corpusMinimumExclusive;
-    const worstCompletionLower = completionLowerBound(bounds, statisticalSpec.confidence);
-    const benefitStatus = result?.status ?? (bestCompletionUpper <= threshold ? "fail" : worstCompletionLower > threshold ? "pass" : "inconclusive");
-    add(`${corpus}:benefit`, benefitStatus);
+    const worstCompletionLower = sample.completion.lower;
+    const benefitStatus = benefit ? benefit.estimable ? intervalStatus(benefit, threshold, false) : "inconclusive"
+      : bestCompletionUpper <= threshold ? "fail" : worstCompletionLower > threshold ? "pass" : "inconclusive";
+    add(`${corpus}:benefit`, benefitStatus, statisticalSpec.confidenceByGate.benefit);
     const observedWrongStatus = evaluator.wrongRate(wrong, denominator, complete);
     const wrongStatus = observedWrongStatus === "inconclusive" && (wrong + missing) / denominator <= statisticalSpec.safety.wrongRateMaximum ? "pass" : observedWrongStatus;
     add(`${corpus}:wrong-rate`, wrongStatus);
-    scopes[corpus] = { plannedConversations: n, plannedAnswers: denominator, complete, worstCase: !complete, safety, benefit, benefitStatus, bestCompletionUpper, worstCompletionLower,
+    scopes[corpus] = { plannedConversations: n, families: sample.g, plannedAnswers: denominator, complete, worstCase: !complete, safety, descriptive, discordances, benefit, benefitStatus, bestCompletionUpper, worstCompletionLower,
       ledgerCorrect: correct, ledgerMissing: missing, ledgerAccuracy: correct / denominator, bestCompletionAccuracy: (correct + missing) / denominator,
       ledgerWrong: wrong, ledgerWrongRate: wrong / denominator, wrongStatus };
   }
@@ -215,7 +305,7 @@ export function holdoutStatistics({ conversations, trials, audit = null, statist
     scope.wrongStatus = scope.benefitStatus = "not_a_measurement";
     for (const safety of Object.values(scope.safety)) safety.status = "not_a_measurement";
   }
-  return { schema: "holdout-statistics-v1", unit: "conversation", measurement, scopes, plannedAnswersPerArm: conversations.length * bundleSize, audit: auditRates,
+  return { schema: "holdout-statistics-v2", unit: "family", pairing: "conversation", confidenceByGate: statisticalSpec.confidenceByGate, measurement, scopes, plannedAnswersPerArm: conversations.length * bundleSize, audit: auditRates,
     integrity: { complete: integrity, missingPerArm, maximumMissingPerArm, withinMissingCap, worstCase: !integrity && unknown === 0 && withinMissingCap, unknownTrials: unknown, notStartedPlaceholders, incompleteConversations: bundles.filter(c => !c.complete).map(c => c.id) },
     decision: measurement ? { status, reasons: gates.filter(g => g.status !== "pass").map(g => `${g.name}:${g.status}`), gates }
       : { status: "inconclusive", reasons: ["not_a_measurement"], gates: [] } };
