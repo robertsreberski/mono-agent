@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Prioritize first offers of short, host-attested owner paragraphs during
+  continuity ledger selection, without changing source authority, fitting
+  budgets, oldest-first fairness or tool-source diversity limits.
+
 - Add opt-in web voice messages: explicitly record, stop and Send to transcribe
   through a server-configured local service/proxy and submit an ordinary request,
   with bounded ephemeral audio, cancellation, captured execution settings and

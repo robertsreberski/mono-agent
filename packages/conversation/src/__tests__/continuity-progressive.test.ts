@@ -753,3 +753,20 @@ it("releases a non-invoked bootstrap and admits a fresh bootstrap then increment
   expect(rows[1]).toMatchObject({ budget: "bootstrap" }); expect(rows[2]).toMatchObject({ budget: "incremental" });
   expect(f.budgets).toEqual([128000, 64000]);
 });
+
+it("uses durable first-offer counts for the short-owner bonus without changing retirement", async () => {
+  const f = await fixture(); f.respond(() => []);
+  await f.capture(1, "Keep the LANTERN exhibit pending review.");
+  const scan = () => f.reader.snapshotContinuity({ ...scope, selection: "upkeep" }).upkeep!.candidates!;
+  const first = scan()[0]!;
+  await f.prepare();
+  const reoffer = scan().find(candidate => candidate.key === first.key)!;
+  expect(reoffer.offers).toBe(1); expect(reoffer.score).toBe(first.score - 16);
+  await f.capture(1, "Cancel the WILLOW exhibit commitment.");
+  const fresh = scan().find(candidate => candidate.ordinal > first.ordinal)!;
+  expect(fresh.offers).toBe(0);
+  await f.prepare();
+  expect(f.selections[1]!.some(row => row.ordinal === fresh.ordinal)).toBe(true);
+  expect(scan().some(candidate => candidate.key === first.key)).toBe(false); // Unchanged two-offer limit.
+  expect(f.reader.ledger(scope)).toBeUndefined(); // Both deltas were analysis only.
+});

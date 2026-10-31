@@ -167,6 +167,14 @@ comparison normalizes Unicode/case, number and mixed identifier tokens. At most
 frequency, including ineligible windows. Each shape keeps its first two eligible
 representatives; more than two repetitions receive a logarithmic down-rank.
 Host-attested owners are a separate comparison partition from untrusted text.
+A never-offered owner paragraph of at most 256 UTF-8 bytes receives a bounded
+16-point score bonus (the same magnitude as two existing eight-point shape
+signals). Owner means `kind=owner`, `provenance=host-owner`, and an input ID
+matching the source attestation, not a claim in the text. The bonus uses no
+words or inferred status; suggestions and cancellations are equally eligible.
+After its first durable offer the paragraph returns to its ordinary score;
+the existing two-offer eligibility/retirement rules are unchanged. This favors
+availability of short owner evidence without changing its authority or meaning.
 This is selection diversity, not semantic deduplication or durable coverage:
 unoffered repeats remain eligible and can progress on later preparations.
 
