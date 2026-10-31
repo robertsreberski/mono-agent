@@ -96,12 +96,26 @@ beforeEach(async () => {
   vi.mocked(api.submit).mockImplementation(async (threadId, submissionId) => ({ threadId, submissionId, outcome: "turn" }));
 });
 afterEach(async () => { await commands.emulateColorScheme(null); cleanup(); fixture.restore(); await persistence.clearAll(); localStorage.clear(); resetComposerDraft(); });
+async function openRecordingMenu() {
+  // Store readiness precedes the external adapter's passive snapshot update.
+  // Chat keys the composer by that snapshot, so an awaited DOM node can already
+  // be detached by the time Vitest generates its native click selector.
+  await waitFor(() => {
+    expect(store.bootstrap).toBeTruthy();
+    expect(store.loading || store.selectionLoading || store.detailLoading).toBe(false);
+    expect(runtime.thread.getState().extras).toMatchObject({ selectedThreadId: store.selectedThreadId });
+  });
+  const trigger = page.getByRole("button", { name: "Add attachment", exact: true });
+  await trigger.click();
+  await expect.element(trigger).toHaveAttribute("aria-expanded", "true");
+  const option = page.getByRole("menuitem", { name: "Record audio", exact: true });
+  await expect.element(option).toBeVisible();
+  await expect.element(option).toHaveAttribute("aria-disabled", "false");
+  return option;
+}
 async function record() {
-  await waitFor(() => expect(!store.bootstrap || store.loading || store.selectionLoading).toBe(false));
-  await userEvent.click(await screen.findByRole("button", { name: "Add attachment" }));
-  const option = await screen.findByRole("menuitem", { name: "Record audio" });
-  await waitFor(() => expect(option).toHaveAttribute("aria-disabled", "false"));
-  await userEvent.click(option);
+  const option = await openRecordingMenu();
+  await option.click();
   await screen.findByRole("button", { name: "Stop recording" });
 }
 async function stop() {
@@ -213,6 +227,27 @@ describe("recorded audio through actual Chat, Composer, ordinary uploads and sub
       });
     }
   }
+  it("opens the current composer's recording menu through trusted native clicks", async () => {
+    seed(created); mount();
+    const clicks: { name: string; trusted: boolean; connected: boolean }[] = [];
+    const observe = (event: MouseEvent) => {
+      const target = event.target instanceof Element
+        ? event.target.closest('button[aria-label="Add attachment"], [role="menuitem"]') : null;
+      if (target) clicks.push({ name: target.getAttribute("aria-label") ?? target.textContent!.trim(),
+        trusted: event.isTrusted, connected: target.isConnected });
+    };
+    document.addEventListener("click", observe, true);
+    try {
+      await record();
+      expect(clicks).toEqual([
+        { name: "Add attachment", trusted: true, connected: true },
+        { name: "Record audio", trusted: true, connected: true },
+      ]);
+      expect(runtime.thread.getState().extras).toMatchObject({ selectedThreadId: created.id });
+      expect(fixture.getUserMedia).toHaveBeenCalledTimes(1);
+      expect(screen.getByRole("button", { name: "Cancel recording" })).toBeVisible();
+    } finally { document.removeEventListener("click", observe, true); }
+  });
   it.each(["resolve", "reject"] as const)("stale attachment retry cannot change a newer live recording when it later %ss", async (outcome) => {
     seed(created); mount(); await record();
     vi.mocked(api.createUpload).mockRejectedValueOnce(new Error("Synthetic reservation refusal"));
@@ -333,8 +368,8 @@ describe("recorded audio through actual Chat, Composer, ordinary uploads and sub
     expect(input).toHaveValue("Keep this draft."); expect(screen.getByText("notes.txt")).toBeVisible();
     expect(runtime.thread.composer.getState().quote?.text).toBe("A quote to keep");
     fixture.getUserMedia.mockRejectedValueOnce(new DOMException("Denied", "NotAllowedError"));
-    await userEvent.click(screen.getByRole("button", { name: "Add attachment" }));
-    await userEvent.click(screen.getByRole("menuitem", { name: "Record audio" }));
+    const deniedOption = await openRecordingMenu();
+    await deniedOption.click();
     expect(await screen.findByRole("alert")).toHaveTextContent("permission denied");
     expect(input).toHaveValue("Keep this draft."); expect(api.transcribe).not.toHaveBeenCalled(); expect(api.submit).not.toHaveBeenCalled();
   });
@@ -441,8 +476,8 @@ describe("recorded audio through actual Chat, Composer, ordinary uploads and sub
     let resolveTranscript!: (value: { text: string }) => void;
     if (phase === "permission") {
       fixture.getUserMedia.mockImplementationOnce(() => new Promise((resolve) => { resolvePermission = resolve; }));
-      await userEvent.click(await screen.findByRole("button", { name: "Add attachment" }));
-      await userEvent.click(screen.getByRole("menuitem", { name: "Record audio" }));
+      const pendingOption = await openRecordingMenu();
+      await pendingOption.click();
       await screen.findByText("Allow microphone access…");
     } else {
       await record(); await stop();
