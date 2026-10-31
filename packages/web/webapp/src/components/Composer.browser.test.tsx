@@ -1,3 +1,4 @@
+import { ConsoleVoiceScope } from "./ConsoleVoiceScope";
 import { render, screen, waitFor } from "@testing-library/react";
 import { page, userEvent } from "@vitest/browser/context";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -421,7 +422,7 @@ describe("voice and existing text drafts", () => {
     fixture = installVoiceFixture();
     const send = vi.fn<SendSubmission>();
     storeMock.current = { ...store(send), bootstrap: { voice: { enabled: true, maxBytes: 10485760, maxSeconds: 120 } }, captureVoiceSubmission: vi.fn(), selectionGeneration: 0 };
-    render(<WebRuntimeProvider><Composer /></WebRuntimeProvider>);
+    render(<WebRuntimeProvider><ConsoleVoiceScope><Composer /></ConsoleVoiceScope></WebRuntimeProvider>);
     const input = screen.getByRole("combobox", { name: "Message" });
     await userEvent.fill(input, "Keep this fictional draft intact.");
     expect(screen.getByRole("button", { name: "Record voice message" })).toBeDisabled();

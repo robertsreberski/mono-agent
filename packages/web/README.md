@@ -130,7 +130,9 @@ not insert an editable draft. Send or clear any text, files and quote before
 recording. Permission is requested only after Record. Cancel discards the audio
 before submission; after dispatch, use the ordinary Stop response/receipt
 recovery semantics. Retrying an uncertain submission reuses its submission ID
-and transcript, not a second transcription.
+and transcript, not a second transcription. Voice captures the effective model,
+compatible effort and 1M-context choice at Record; later settings edits do not
+change that request (active-turn input still follows the active turn).
 
 Voice is disabled unless the console owner configures a server-side local
 OpenAI-compatible transcription service or operator-managed proxy. No browser

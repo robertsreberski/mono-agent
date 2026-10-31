@@ -1887,6 +1887,7 @@ function parsePatchThread(value: unknown): PatchWebThreadInput {
 
 function parseTurn(value: unknown): StartWebTurnInput {
   const body = requireRecord(value);
+  if (body.inheritRunSettings !== undefined && typeof body.inheritRunSettings !== "boolean") throw invalidBody("inheritRunSettings must be boolean.");
   const context1M = optionalNullableBoolean(body.context1M, "context1M");
   const text = body.text === undefined
     ? undefined
@@ -1909,6 +1910,7 @@ function parseTurn(value: unknown): StartWebTurnInput {
   const model = optionalString(body.model, "model", 512);
   const effort = optionalString(body.effort, "effort", 128);
   return {
+    ...(body.inheritRunSettings === undefined ? {} : { inheritRunSettings: body.inheritRunSettings as boolean }),
     ...(context1M === undefined ? {} : { context1M }),
     ...(text === undefined ? {} : { text }),
     ...(quote === undefined ? {} : { quote }),

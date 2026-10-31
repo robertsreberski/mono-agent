@@ -73,7 +73,7 @@ try {
   const { text } = await transcribed.json();
   assert.equal(operatorRequests.length, 0, "Transcription alone must not dispatch");
   const submissionId = randomUUID();
-  const body = JSON.stringify({ submissionId, text });
+  const body = JSON.stringify({ submissionId, text, model: "fixture/model", inheritRunSettings: false });
   for (let repeat = 0; repeat < 2; repeat++) {
     const submitted = await fetch(`${base}/api/v1/threads/${thread.id}/submissions`, { method: "POST", headers, body });
     assert.equal(submitted.status, 202);

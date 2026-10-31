@@ -7282,6 +7282,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         attachmentIds: input.attachmentIds ?? [],
         model: input.model ?? null,
         effort: input.effort ?? null,
+        ...(input.inheritRunSettings === false ? { inheritRunSettings: false } : {}),
         ...(input.context1M == null ? {} : { context1M: input.context1M }),
       });
       const pending = pendingSubmissionPayloadsRef.current.get(threadId);
@@ -7332,7 +7333,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     let thread = selectedThread;
     let creating = false;
     let preparePromise: Promise<string> | undefined;
-    const settings = { model: model || undefined, effort: effort || undefined, ...(context1M === undefined ? {} : { context1M }) };
+    const settings = { model: effectiveModel || undefined, effort: effectiveEffort || undefined, inheritRunSettings: false, ...(context1M === undefined ? {} : { context1M }) };
     const isCurrent = (): boolean => selectedAgentRef.current === sourceId
       && voiceVisibilityRef.current.generation === visibilityGeneration
       && ((operatorSelectionRef.current === generation && selectedThreadRef.current === (thread?.id ?? null))
@@ -7367,7 +7368,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         await sendSubmission({ text, ...settings }, undefined, { thread, isCurrent });
       },
     };
-  }, [context1M, createThread, effort, model, requireResolvedSelection, selectedThread, sendSubmission]);
+  }, [context1M, createThread, effectiveEffort, effectiveModel, requireResolvedSelection, selectedThread, sendSubmission]);
 
   const value = useMemo<ConsoleStoreValue>(
     () => ({

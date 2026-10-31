@@ -214,3 +214,11 @@ creating a turn. This route requires the actual exact `Origin` header, not just
 is absent. Submit the transcript separately through the normal UUID-bearing
 submission/receipt path; never replay an ambiguous submission with a new ID.
 See [voice configuration, limits and retention](./web-console.md#voice-messages-opt-in).
+
+For immutable asynchronous submissions, `StartWebTurnInput.inheritRunSettings:
+false` disables fallback to mutable thread overrides. Supply captured effective
+`model`, compatible `effort` when known, and resolved `context1M` (`false` is an
+explicit choice). Omitted/true preserves ordinary text behavior. An absent effort
+with inheritance disabled uses the agent/model default, never a later thread
+selection. This flag is part of submission identity; active-turn live input still
+uses the existing active run rather than starting a differently configured turn.

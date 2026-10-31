@@ -15,7 +15,7 @@ afterEach(() => fixture.restore());
 const shot = async (name: string) => { if (shots) await page.screenshot({ path: `${shots}/${engine}-${name}.png` }); };
 function setup(unavailableReason?: string) {
   const owner = { isCurrent: vi.fn(() => true), prepare: vi.fn(async () => "fixture-thread"), submit: vi.fn(async () => undefined) };
-  const view = render(<main style={{ maxWidth: 620, margin: "24px auto", padding: 12 }}><h1>Synthetic voice-message fixture</h1><VoiceComposer unavailableReason={unavailableReason} selectionGeneration={0} captureSubmission={() => owner} /></main>);
+  const view = render(<main style={{ maxWidth: 620, margin: "24px auto", padding: 12 }}><h1>Synthetic voice-message fixture</h1>{import.meta.env.VITE_VOICE_REVISION && <p style={{ fontSize: 10 }}>Fixture revision: {import.meta.env.VITE_VOICE_REVISION}</p>}<VoiceComposer unavailableReason={unavailableReason} selectionGeneration={0} captureSubmission={() => owner} /></main>);
   return { owner, ...view };
 }
 async function record() {

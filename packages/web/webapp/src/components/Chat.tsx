@@ -1,3 +1,4 @@
+import { ConsoleVoiceScope } from "./ConsoleVoiceScope";
 import { ConversationTags } from "./tag/ConversationTags";
 import { ProjectBadge } from "./project/ProjectIdentity";
 import { ThreadPrimitive, useAui, useAuiState } from "@assistant-ui/react";
@@ -664,6 +665,7 @@ export function Chat({ onBack }: { readonly onBack: () => void }) {
         }}
         fallback={(props) => <ConversationErrorFallback {...props} />}
       >
+        <ConsoleVoiceScope>
         <AskReconciliationProvider>
           <ThreadPrimitive.Root className="thread-root">
             <SelectionToolbar />
@@ -749,6 +751,7 @@ export function Chat({ onBack }: { readonly onBack: () => void }) {
             )}
           </ThreadPrimitive.Root>
         </AskReconciliationProvider>
+        </ConsoleVoiceScope>
       </RenderErrorBoundary>
     </main>
   );

@@ -1391,6 +1391,8 @@ export interface PatchWebThreadInput {
 }
 
 export interface StartWebTurnInput {
+  /** Default true. False uses only explicit selections and agent defaults, never mutable thread overrides. */
+  readonly inheritRunSettings?: boolean;
   readonly text?: string;
   readonly quote?: WebQuote;
   readonly attachmentIds?: readonly string[];

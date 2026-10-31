@@ -261,3 +261,42 @@ describe("ephemeral raw audio HTTP boundary", () => {
     expect((await post()).status).toBe(409);
   });
 });
+
+
+describe("immutable captured execution settings", () => {
+  it.each([
+    { name: "captured selections", input: { model: "provider/default", effort: "medium", context1M: false, inheritRunSettings: false }, expectedModel: "provider/default", expectedEffort: "medium", expectedContext: false },
+    { name: "no effort on a plain model", input: { model: "provider/plain", inheritRunSettings: false }, expectedModel: "provider/plain", expectedEffort: undefined, expectedContext: undefined },
+    { name: "ordinary omitted selections still inherit", input: {}, expectedModel: "provider/fallback", expectedEffort: "high", expectedContext: true },
+    { name: "explicit context null does not inherit", input: { model: "provider/default", context1M: null, inheritRunSettings: false }, expectedModel: "provider/default", expectedEffort: undefined, expectedContext: undefined },
+  ])("$name", async ({ input, expectedModel, expectedEffort, expectedContext }) => {
+    const seen: Record<string, unknown>[] = [];
+    const upstream = operatorFetch({ onTurn: (body) => seen.push(body) });
+    const service = await WebService.create({ stateDir: join(await root(), "state"), discoveryIntervalMs: 0, purgeIntervalMs: 0,
+      discoverImpl: async () => [fakeDiscoveredAgent()], fetchImpl: async (url, init) => {
+        const response = await upstream(url, init);
+        if (!String(url).endsWith("/v1/info")) return response;
+        const info = await response.json() as Record<string, unknown>;
+        return Response.json({ ...info, models: ["provider/default", "provider/fallback", "provider/plain"], modelOptions: {
+          "provider/default": { reasoning: true, effortLevels: ["low", "medium", "high"], supportsContext1M: true },
+          "provider/fallback": { reasoning: true, effortLevels: ["low", "high"], supportsContext1M: true },
+          "provider/plain": { reasoning: false, effortLevels: [] },
+        } });
+      },
+    });
+    try {
+      const thread = service.createThread("agent-one");
+      service.patchThread(thread.id, { model: "provider/fallback", effort: "high", context1M: true });
+      const submission = { submissionId: "11111111-1111-4111-8111-111111111111", text: "A synthetic captured request.", ...input };
+      service.submit(thread.id, submission);
+      await vi.waitFor(() => expect(seen).toHaveLength(1));
+      const web = (seen[0]?.metadata as { web?: { model?: string; effort?: string; context1M?: boolean } })?.web;
+      expect(web?.model).toBe(expectedModel);
+      expect(web?.effort).toBe(expectedEffort);
+      expect(web?.context1M).toBe(expectedContext);
+      if (input.inheritRunSettings === false) {
+        expect(() => service.submit(thread.id, { ...submission, inheritRunSettings: true })).toThrow("different content");
+      }
+    } finally { await service.stop(); }
+  });
+});

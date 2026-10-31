@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { api } from "../api";
 import type { VoiceSubmissionSession } from "../console-store";
 import { VoiceRecorder, voiceUnavailableReason } from "../voice-recorder";
@@ -12,7 +12,7 @@ export interface VoiceComposerProps {
   readonly onBusyChange?: (busy: boolean) => void;
 }
 
-export function VoiceComposer({ unavailableReason, selectionGeneration, visible = true, captureSubmission, onBusyChange }: VoiceComposerProps) {
+function useVoiceComposer({ unavailableReason, selectionGeneration, visible = true, captureSubmission, onBusyChange }: VoiceComposerProps) {
   const [phase, setPhase] = useState<Phase>("idle");
   const [seconds, setSeconds] = useState(0);
   const [error, setError] = useState<string>();
@@ -111,16 +111,29 @@ export function VoiceComposer({ unavailableReason, selectionGeneration, visible 
     }
   };
 
-  if (!busy) return <div className="voice-composer voice-idle">
+  if (!busy) return { busy, view: <div className="voice-composer voice-idle">
     <button type="button" className="icon-button composer-tool" aria-label="Record voice message" title={blocked ?? "Record a voice message"} disabled={Boolean(blocked)} onClick={start}>
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3M8 22h8"/></svg>
     </button>
     <span className="voice-note">{blocked ?? "Voice Send transcribes and sends your request."}</span>
     {error && <p role="alert">{error}</p>}
-  </div>;
-  return <VoiceMessagePanel phase={phase} seconds={seconds} error={error} dispatched={dispatched.current}
-    onStop={() => recorder.current?.stop()} onCancel={() => { if (!dispatched.current) cancel(); }} onSend={() => void send()} />;
+  </div> };
+  return { busy, view: <VoiceMessagePanel phase={phase} seconds={seconds} error={error} dispatched={dispatched.current}
+    onStop={() => recorder.current?.stop()} onCancel={() => { if (!dispatched.current) cancel(); }} onSend={() => void send()} /> };
 }
+
+// Own capture at the stable Chat boundary, not in the keyed viewport/composer.
+// The owner still cleans up on unmount; every genuine selection change is fenced
+// by the captured store session. Only that session's createThread handoff survives.
+const VoiceScope = createContext<ReturnType<typeof useVoiceComposer> | null>(null);
+export function VoiceComposerScope({ children, ...props }: VoiceComposerProps & { readonly children: ReactNode }) {
+  const value = useVoiceComposer(props);
+  return <VoiceScope.Provider value={value}>{children}</VoiceScope.Provider>;
+}
+export function ScopedVoiceComposer() { return useContext(VoiceScope)?.view ?? null; }
+export function useVoiceBusy() { return useContext(VoiceScope)?.busy ?? false; }
+/** Standalone lifecycle fixture; the console uses the stable scoped owner. */
+export function VoiceComposer(props: VoiceComposerProps) { return useVoiceComposer(props).view; }
 
 /** Presentational seam for deterministic browser/story fixtures; no capture side effects. */
 export function VoiceMessagePanel({ phase, seconds = 0, error, dispatched = false, onStop, onCancel, onSend }: {

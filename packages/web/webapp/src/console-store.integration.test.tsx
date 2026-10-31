@@ -2465,7 +2465,7 @@ describe("ConsoleStoreProvider integration", () => {
       const store = await renderStore();
       await waitFor(() => expect(store.current.selectedThreadId).toBe(alphaThread.id));
       const captured = store.current.captureVoiceSubmission();
-      const recordedModel = store.current.model;
+      const recordedModel = store.current.effectiveModel;
       act(() => store.current.setModel("provider/fallback"));
       await expect(captured.submit("A synthetic voice request")).rejects.toThrow("submission response lost");
       await expect(captured.submit("A synthetic voice request")).rejects.toThrow("submission response lost");

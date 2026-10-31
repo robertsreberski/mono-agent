@@ -73,6 +73,7 @@ function fixture<K extends keyof WebApiDtos>(name: string, type: K, value: WebAp
 }
 
 export const FIXTURES = [
+  fixture("voice-captured-submission", "ApiStartSubmission", { submissionId: "11111111-1111-4111-8111-111111111111", text: "A synthetic voice request.", model: "fixture/model", inheritRunSettings: false, context1M: false }),
   fixture("voice-transcription", "ApiTranscription", { text: "Write a short fictional greeting." }),
   fixture("upkeep-message", "ApiMessage", { message: { ...message, parts: [{ type: "telemetry", event: "runtime_telemetry", kind: "continuity_upkeep", data: { kind: "continuity_upkeep", data: { accounting: upkeep } } }] } }),
   fixture("upkeep-thread-usage", "ApiThreadUsage", { usage: { total: { costUsd: null, knownCostUsd: 0.01, costPartial: true }, upkeep: { operations: 1, pending: true, costUsd: null, knownCostUsd: 0, costPartial: true, tokensPartial: true }, byModel: [{ model: "fictional:answer-a", costUsd: 0.01 }, { model: upkeep.model, costUsd: null, knownCostUsd: 0 }], computedAt: at } }),

@@ -24,7 +24,7 @@ import {
   ComposerTriggerPopover,
   type ComposerTriggerCommand,
 } from "./assistant-ui/ComposerTriggerPopover";
-import { VoiceComposer } from "./VoiceComposer";
+import { ScopedVoiceComposer, useVoiceBusy } from "./VoiceComposer";
 import { Icon } from "./Icon";
 import { ComposerQuotePreview } from "./assistant-ui/Quote";
 import { SkillAutocomplete, SkillBrowser } from "./assistant-ui/SkillPicker";
@@ -100,8 +100,7 @@ export function Composer({ runSettings, notice }: {
   // Server admission rejects both a new turn and live input during compaction.
   const compacting = runningManualCompaction(selectedThread);
   const canSend = useAuiState((state) => state.composer.canSend);
-  const [voiceBusy, setVoiceBusy] = useState(false);
-  const hasQuote = useAuiState((state) => Boolean(state.composer.quote));
+  const voiceBusy = useVoiceBusy();
   const attachmentCount = useAuiState((state) => state.composer.attachments.length);
   const commands = useMemo(() => buildComposerCommands({
     attachmentCount,
@@ -255,16 +254,7 @@ export function Composer({ runSettings, notice }: {
         )}
         <ComposerQuotePreview />
         {notice}
-        <VoiceComposer
-          visible={store.conversationVisible}
-          selectionGeneration={store.selectionGeneration}
-          captureSubmission={store.captureVoiceSubmission}
-          onBusyChange={setVoiceBusy}
-          unavailableReason={!store.bootstrap?.voice?.enabled ? "Voice messages are not configured on this console."
-            : selectionUnavailable || !settled || !selectedAgent || selectedAgent.status === "offline" || selectedThread?.archivedAt || selectedThread?.trigger?.kind === "cron" || (selectedThread && !selectedThread.canSend) || compacting
-              ? "Select a connected, writable conversation and wait for compaction to finish."
-              : composer.value.length > 0 || attachmentCount > 0 || hasQuote ? "Send or clear text, files and quotes before recording a voice message." : undefined}
-        />
+        <ScopedVoiceComposer />
         {compacting && <p className="composer-compaction-note">Compacting context — you can send when it finishes.</p>}
         <ComposerPrimitive.AttachmentDropzone
           className="composer-dropzone"

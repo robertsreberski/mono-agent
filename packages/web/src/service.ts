@@ -2291,7 +2291,7 @@ export class WebService {
     const operatorText = this.withProjectPrefix(threadId, quotedText);
     assertTurnTextWithinLimit(operatorText);
     const attachmentIds = input.attachmentIds ?? [];
-    const selection = this.resolveTurnSelection(threadId, input.model, input.effort, input.context1M);
+    const selection = this.resolveTurnSelection(threadId, input.model, input.effort, input.context1M, input.inheritRunSettings);
     const { thread, model, effort, context1M, requestedModel, requestedEffort } = selection;
     threadId = thread.id;
     const connection = this.connections.get(thread.sourceId);
@@ -2354,6 +2354,7 @@ export class WebService {
       attachmentIds,
       model: input.model ?? null,
       effort: input.effort ?? null,
+      ...(input.inheritRunSettings === false ? { inheritRunSettings: false } : {}),
       ...(input.context1M == null ? {} : { context1M: input.context1M }),
     })).digest("hex");
     const existing = this.store.webSubmission(threadId, input.submissionId);
@@ -2409,6 +2410,7 @@ export class WebService {
           input.model,
           input.effort,
           input.context1M,
+          input.inheritRunSettings,
         );
         started = this.store.beginTurn({
           threadId,
@@ -4703,6 +4705,7 @@ export class WebService {
     explicitModel?: string,
     explicitEffort?: string,
     explicitContext1M?: boolean | null,
+    inheritRunSettings = true,
   ): {
     readonly thread: WebThread;
     readonly agent: WebAgentSummary;
@@ -4718,12 +4721,12 @@ export class WebService {
     if (agent === undefined) {
       throw new WebConsoleError("agent_offline", "This agent is offline. The conversation remains available read-only.", 409);
     }
-    const model = explicitModel ?? thread.runModel ?? undefined;
-    const effort = explicitEffort ?? thread.runEffort ?? undefined;
+    const model = explicitModel ?? (inheritRunSettings ? thread.runModel : undefined) ?? undefined;
+    const effort = explicitEffort ?? (inheritRunSettings ? thread.runEffort : undefined) ?? undefined;
     this.validateModelAndEffort(thread.sourceId, agent, model, effort);
     this.validateContext1M(thread.sourceId, agent, model, explicitContext1M);
     const context1M = this.supportsContext1M(thread.sourceId, agent, model)
-      ? (explicitContext1M === undefined ? thread.runContext1M ?? undefined : explicitContext1M ?? undefined)
+      ? (explicitContext1M === undefined ? (inheritRunSettings ? thread.runContext1M ?? undefined : undefined) : explicitContext1M ?? undefined)
       : undefined;
     const requestedModel = effectiveModelForAgent(agent, model);
     const cached = requestedModel === undefined

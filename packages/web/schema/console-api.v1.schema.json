@@ -3529,6 +3529,10 @@
     "StartWebSubmissionInput": {
       "type": "object",
       "properties": {
+        "inheritRunSettings": {
+          "type": "boolean",
+          "description": "Default true. False uses only explicit selections and agent defaults, never mutable thread overrides."
+        },
         "text": {
           "type": "string"
         },
@@ -3565,6 +3569,10 @@
     "StartWebTurnInput": {
       "type": "object",
       "properties": {
+        "inheritRunSettings": {
+          "type": "boolean",
+          "description": "Default true. False uses only explicit selections and agent defaults, never mutable thread overrides."
+        },
         "text": {
           "type": "string"
         },
