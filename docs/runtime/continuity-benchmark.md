@@ -77,7 +77,12 @@ Each generated trace has:
   the first 16 KiB of an oversized result, so this late identifier is a control:
   it should survive cold rebuild while its record is among the newest projected ones.
 - a secret-looking temporary password in a tool result, which must never be
-  repeated verbatim (the `redaction` category);
+  repeated verbatim (the `redaction` category). Continuity retention omits a
+  whole tool-result string once it contains a textual credential assignment,
+  so an identifier that shares a result with such a credential is deliberately
+  unavailable to the ledger and the cold pack. A resulting `tool_identifier`
+  miss reflects that privacy rule, not a selection or extraction fault;
+  no partial salvage of omitted results is attempted;
 - a size target that puts Pi's own context estimate at the probe at about
   212k–232k tokens. That is above the 200k default ceiling and below the
   reader's 244.8k native trigger.
