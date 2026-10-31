@@ -70,19 +70,30 @@ it.each([true, false])("stages real live identities before handoff and captures 
       onLiveInputOwnership(event) {
         if (event.status !== "ready") return;
         for (let index = 0; index < 80; index++) {
-          const ownerText = index === 0 ? "Fictional owner steer." : undefined;
+          const text = index === 0 ? "Fictional owner steer." : index === 4 ? "HOST-ONLY LIVE ENVELOPE\n\nFictional prefixed owner steer." : `Fictional anonymous/other-user follow-up ${index}.`;
+          const ownerText = index === 0 || index === 3 ? text : index === 2 ? "Unbound fictional quotation." : index === 4 ? "Fictional prefixed owner steer." : undefined;
           expect(harness.offerLiveInput!({ conversationId: id, id: `fictional-steer-${index}`, receivedAt: timestamp,
-            text: ownerText ? `HOST-ONLY LIVE ENVELOPE\n\n${ownerText}` : `Fictional anonymous/other-user follow-up ${index}.`,
+            text, ...(index === 3 ? { deliveryKey: "fictional-wake" } : {}),
             ...(ownerText ? { ownerText } : {}) }).status).toBe("accepted");
         }
       } });
     expect(result.failure).toBeUndefined(); expect(admitted).toBe(80); expect(await f.store.load(id)).toHaveLength(64);
     const records = all(f.reader);
-    expect(records).toHaveLength(82); expect(records.every(record => record.runId === runId)).toBe(true);
+    expect(records).toHaveLength(durable ? 81 : 82); expect(records.every(record => record.runId === runId)).toBe(true);
     const liveOwner = records.find(record => record.inputId === "fictional-steer-0")!;
     expect(liveOwner).toMatchObject({ kind: "owner", provenance: "host-owner", preview: "Fictional owner steer.", source: { attestation: { inputId: "fictional-steer-0" } } });
-    expect(records.filter(record => record.provenance === "host-owner")).toHaveLength(durable ? 2 : 1);
+    expect(records.find(record => record.inputId === "fictional-steer-4")).toMatchObject({
+      kind: "owner", provenance: "host-owner", preview: "Fictional prefixed owner steer.", source: { attestation: { inputId: "fictional-steer-4" } },
+    });
+    expect(records.filter(record => record.provenance === "host-owner")).toHaveLength(durable ? 3 : 2);
     expect(records.find(record => record.preview === "Fictional anonymous/other-user follow-up 1.")).toMatchObject({ provenance: "unknown", kind: "user", inputId: "fictional-steer-1" });
+    // A mismatched quotation and a bound-but-background wake are not owner steers.
+    expect(records.find(record => record.inputId === "fictional-steer-2")).toMatchObject({ provenance: "unknown", kind: "user" });
+    const wake = records.find(record => record.inputId === "fictional-steer-3");
+    // Durable wake payloads are deliberately not retained; the per-message
+    // fallback retains unknown evidence, never an owner quotation.
+    if (durable) expect(wake).toBeUndefined();
+    else expect(wake).toMatchObject({ provenance: "unknown", kind: "user" });
     if (durable) expect(records.find(record => record.inputId === actualInitial)).toMatchObject({ preview: "Fictional original quotation.", provenance: "host-owner", source: { attestation: { inputId: actualInitial } } });
     const ownerBodies = records.filter(record => record.provenance === "host-owner").map(record => record.preview).join("\n");
     expect(ownerBodies).not.toContain("HOST-ONLY");

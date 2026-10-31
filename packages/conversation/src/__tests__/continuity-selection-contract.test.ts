@@ -28,3 +28,17 @@ it.each([64000, 128000] as const)("freezes clean ranked selection and bounded gr
   expect(fitted.spans.length).toBeLessThanOrEqual(8 * fitted.maxEntries!);
   expect((Math.ceil(Buffer.byteLength(fitted.prompt) / 2) + 16) * 1.25).toBeLessThanOrEqual(inputTokens - 2048);
 });
+
+it("pins the compact extraction contract without changing schema or caps", () => {
+  const { prompt } = selectLedgerSources({ records: [], omitted: 0, gaps: 0 });
+  for (const clause of [
+    "never restate unchanged prior entries. Changed state is a new fact",
+    "Preserve explicit cancellation, rejection and completion",
+    "artifact state transitions",
+    "Distinguish suggestion, agreement, obligation, report and verified outcome",
+    "never promote an unagreed suggestion",
+    "Keep prose concise and self-contained",
+    "Identifier values stay bare; keep the role in the cited context or a separate entry; never substitute a nearby identifier",
+    "Reconcile earlier and later retained evidence by source order even when discovered in reverse extraction-pass order",
+  ]) expect(prompt).toContain(clause);
+});

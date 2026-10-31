@@ -16,7 +16,7 @@ import { cp, mkdir, readFile, rm, writeFile, realpath, lstat } from "node:fs/pro
 import { dirname, join, isAbsolute, relative, resolve, sep } from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { armById, checkpointKey, mergePatch, pressureMetrics, verifyBoundary, verifyPressure, verifyStore } from "./continuity-arms.mjs";
+import { armById, hasPackEvidence, checkpointKey, mergePatch, pressureMetrics, verifyBoundary, verifyPressure, verifyStore } from "./continuity-arms.mjs";
 import { traceShape } from "./continuity-generator.mjs";
 import { probePrompt, scoreAnswer, judgePrompt, parseJudgeVerdict, emptyUsage, addUsage } from "./continuity-score.mjs";
 import { sourceOnly, traceFamily } from "./continuity-dataset.mjs";
@@ -313,7 +313,7 @@ async function replayScriptedTurn({ harness, scripted, tools, turn, binding, con
       if (step.call) {
         tools.expect(step.call.tool, step.call.args, step.call.result);
         if (step.steer) {
-          const offer = harness.offerLiveInput?.({ conversationId, id: `${turn.id}-steer`, text: step.steer,
+          const offer = harness.offerLiveInput?.({ conversationId, id: `${turn.id}-steer`, text: step.steer, ownerText: step.steer,
             receivedAt: new Date(Date.parse(turn.at) + 60_000).toISOString() });
           if (offer?.status !== "accepted") throw new ContinuityError("replay_steer_refused", turn.id);
           await watch.waitForSteer();
@@ -580,7 +580,7 @@ export function preparationIntegrity(steps) {
 export function verifyLedgerTreatment(upkeep, observed) {
   const packs = observed.continuityPacks ?? [];
   return !!upkeep?.valid && Number.isInteger(upkeep.expectedEntries) && packs.length > 0
-    && packs.every(pack => pack.ledgerEntries === upkeep.expectedEntries && (upkeep.expectedEntries > 0 || pack.evidenceEntries > 0))
+    && packs.every(pack => pack.ledgerEntries === upkeep.expectedEntries && (upkeep.expectedEntries > 0 || hasPackEvidence(pack)))
     && !(observed.upkeep ?? []).some(row => row.providerInvoked || row.operationId);
 }
 

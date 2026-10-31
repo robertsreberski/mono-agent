@@ -246,6 +246,13 @@ export function verifyBoundary(expected, observed) {
   return { verified: reasons.length === 0, reasons };
 }
 
+/** A zero-entry ledger still receives deterministic pack evidence. Section
+ * attribution changes do not turn injected owner/tool evidence into absence. */
+export function hasPackEvidence(pack) {
+  return ["ownerEntries", "toolEntries", "summaryEntries", "evidenceEntries"]
+    .some(key => Number.isInteger(pack?.[key]) && pack[key] > 0);
+}
+
 /**
  * Store-arm evidence: the replay retained records, the reader was offered
  * ConversationHistory, and nothing degraded the store. A degraded store makes
@@ -267,7 +274,7 @@ export function verifyStore(arm, { checkpointContinuity, observed, expectedLedge
     if (pack && !["none", "overflow", "snapshot_bounds"].includes(pack.degradedReason)) reasons.push(`continuity_pack_degraded:${pack.degradedReason}`);
   }
   if (arm.expect.evidence.includes("ledger_injected") && !(observed.continuityPacks?.[0]?.ledgerEntries > 0)
-    && !(expectedLedgerEntries === 0 && observed.continuityPacks?.[0]?.ledgerEntries === 0 && observed.continuityPacks?.[0]?.evidenceEntries > 0)) reasons.push("ledger_not_injected");
+    && !(expectedLedgerEntries === 0 && observed.continuityPacks?.[0]?.ledgerEntries === 0 && hasPackEvidence(observed.continuityPacks?.[0]))) reasons.push("ledger_not_injected");
   return { applicable: true, healthy: reasons.length === 0, reasons };
 }
 

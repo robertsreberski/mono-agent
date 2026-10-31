@@ -9,6 +9,14 @@
   cancels pending voice creation without blocking the destination composer;
   cancelled creation preserves newer text drafts and execution preferences.
 
+- Fix continuity benchmark steers to carry owner-bound web attribution across
+  ledger and pack arms; corrected results are not directly comparable with
+  archived runs. Keep empty-ledger trials valid when owner or tool pack evidence
+  was injected, without accepting absent evidence.
+
+- Clarify continuity extraction of changed states, evidence order and identifier
+  roles within existing limits, without promoting suggestions into commitments.
+
 - Add versioned holdout v2 family-clustered, conversation-paired quality gates,
   tighten-only skew bounds (pack 97%, native/benefit 95%), a 128-families-of-2
   per-corpus layout, model-scoped

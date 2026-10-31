@@ -13,6 +13,8 @@ import { ABSTAIN_INSTRUCTION, ORIGINAL_CATEGORIES, emptyUsage, addUsage, isAbste
 import { callKey } from "../lib/continuity-tools.mjs";
 import { main, parseArguments, observedInputTokens } from "../continuity-benchmark.mjs";
 
+import { fictionalTransitionRecords, replayLedgerSelection, selectionReplayRecords, selectionReplaySummary } from "../lib/continuity-selection-replay.mjs";
+
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const dirs = [];
 // Restart probes run outside Vitest mocks. Reject an accidental default home
@@ -697,6 +699,21 @@ it.each([false, true])("continues stage3 and probes after aborted stage2 (no led
   if (noLedger) for (const step of plan.upkeep.preparations) step.offlineAbort = true;
   const modules = await productionModules(root), trace = corpus.traces[0], arm = armById("continuity-ledger-cold"), dir = await scratch();
   const checkpoint = await buildCheckpoint({ modules, trace, arm, repeat: 1, dir, plan, mode: "offline", upkeepPrice: { input: 2, output: 4 } });
+  // Pin the runner offer itself through the production harness/store path.
+  // A missing ownerText on replay steers must not silently change the treatment.
+  const history = new modules.conversation.ToolHistoryReader(join(checkpoint.work, "history"));
+  const scope = { logicalConversationId: checkpoint.record.conversationId, currentConversationId: checkpoint.record.conversationId, currentRunId: "steer-verification" };
+  const retained = []; let before;
+  for (;;) {
+    const page = history.searchContinuity({ ...scope, limit: 10, ...(before === undefined ? {} : { before }) });
+    retained.push(...page.items); if (page.next === undefined) break; before = page.next;
+  }
+  for (const turn of trace.turns) for (const step of turn.steps) if (step.steer) {
+    expect(retained.find(record => record.inputId === `${turn.id}-steer`)).toMatchObject({
+      kind: "owner", provenance: "host-owner", preview: step.steer,
+      source: { attestation: { inputId: `${turn.id}-steer` } },
+    });
+  }
   const upkeep = checkpoint.record.upkeep;
   expect(upkeep).toMatchObject({ valid: true, expectedEntries: noLedger ? 0 : 1 });
   expect(upkeep.degradedStages).toBe(noLedger ? 3 : 2);
@@ -708,7 +725,11 @@ it.each([false, true])("continues stage3 and probes after aborted stage2 (no led
   const trial = await runProbe({ modules, trace, arm, repeat: 1, probe: trace.probes[0], checkpointWork: checkpoint.work, checkpointSnapshot: checkpoint.snapshot,
     checkpointConversationId: checkpoint.record.conversationId, checkpointContinuity: checkpoint.record.continuity, checkpointUpkeep: upkeep,
     forkDir: join(dir, "probe"), plan, mode: "offline", root });
-  expect(trial.status).toBe("completed");
+  expect(trial.status, JSON.stringify(trial.store)).toBe("completed");
+  expect(trial.boundary.verified).toBe(true);
+  if (noLedger) {
+    expect(trial.boundary.observed.continuityPacks.every(pack => pack.ledgerEntries === 0 && pack.evidenceEntries === 0 && pack.ownerEntries + pack.toolEntries > 0)).toBe(true);
+  }
   expect(trial.boundary.observed.offlineLedgerCounts).toEqual(noLedger ? [0, 0] : [1, 1]);
   expect(trial.boundary.observed.upkeep.every(row => !row.providerInvoked)).toBe(true);
 }, 180_000);
@@ -889,4 +910,51 @@ it("counts inference-only runtime usage plus checkpoint upkeep once in arm total
   const trial = { traceId: "fictional", arm: "native", repeat: 1, probeId: "fictional-probe", category: "next_action", status: "completed", score: { pass: true, outcome: "correct" }, usage: own };
   const summary = summarize([trial], { arms: ["native"], baselineArm: "native", repeats: [1], extraUsage: [{ arm: "native", usage: checkpoint }] });
   expect(summary.arms.native.usage.reportedCost.totalUsd).toBe(1.02);
+});
+
+
+describe("free three-pass source-selection/fitting baseline", () => {
+  it.each([1, 2, "transitions"])("records every exact offer, including an empty delta (%s)", async seed => {
+    const records = seed === "transitions" ? fictionalTransitionRecords() : selectionReplayRecords(generateTrace(seed));
+    const passes = await replayLedgerSelection(records);
+    expect(selectionReplaySummary(passes)).toMatchSnapshot();
+    expect(passes.map(pass => pass.deltaEntries)).toEqual([1, 0, 1]);
+    expect(passes.map(pass => pass.published)).toEqual([true, false, true]);
+    expect(passes.map(pass => pass.inputTokens)).toEqual([128000, 64000, 64000]);
+    for (const pass of passes) {
+      expect(pass.offered.length).toBeGreaterThan(0);
+      expect(pass.offered.length).toBeLessThanOrEqual(pass.deltaCap * 8);
+      expect(pass.deltaCap).toBeLessThanOrEqual(8);
+      expect(pass.selection.projectedBytes).toBeLessThanOrEqual(128 * 1024);
+      expect(pass.selection.lineageBytes).toBeLessThanOrEqual(4 * 1024 * 1024);
+      for (const span of pass.offered) {
+        const record = pass.records.find(record => record.recordId === span.recordId);
+        expect(record).toBeDefined();
+        expect(record.sha256).toBe(span.sha256);
+        expect(Buffer.from(record.text).subarray(span.start, span.end).toString()).toBe(span.text);
+      }
+    }
+    // Repeat through a new private store, not a cached selection. No random
+    // generation identity or timing field belongs in the replay manifest.
+    expect(await replayLedgerSelection(records)).toEqual(passes);
+  }, 60000);
+});
+
+
+it.each(["ownerEntries", "toolEntries", "summaryEntries", "evidenceEntries"])("accepts empty-ledger injection with %s, but not absent evidence", section => {
+  const arm = armById("continuity-ledger-cold"), upkeep = { valid: true, expectedEntries: 0 };
+  const checkpointContinuity = { records: 10, degraded: false };
+  const empty = { reason: "model_change", tokens: 100, degradedReason: "none", ledgerEntries: 0, ownerEntries: 0, toolEntries: 0, summaryEntries: 0, evidenceEntries: 0 };
+  const observed = pack => ({ toolsOffered: ["ConversationHistory"], historyWarnings: 0,
+    continuityPacks: pack === undefined ? [] : [pack], upkeep: [{ providerInvoked: false, reason: "read_only" }] });
+  const injected = observed({ ...empty, [section]: 1 });
+  expect(verifyLedgerTreatment(upkeep, injected)).toBe(true);
+  expect(verifyStore(arm, { checkpointContinuity, observed: injected, expectedLedgerEntries: 0 }).healthy).toBe(true);
+  for (const missing of [observed(undefined), observed(empty)]) {
+    expect(verifyLedgerTreatment(upkeep, missing)).toBe(false);
+    expect(verifyStore(arm, { checkpointContinuity, observed: missing, expectedLedgerEntries: 0 }).reasons).toContain("ledger_not_injected");
+  }
+  expect(verifyLedgerTreatment({ valid: true, expectedEntries: 1 }, injected)).toBe(false);
+  expect(verifyLedgerTreatment(upkeep, { ...injected, continuityPacks: [...injected.continuityPacks, empty] })).toBe(false);
+  expect(verifyLedgerTreatment(upkeep, { ...injected, upkeep: [{ providerInvoked: true }] })).toBe(false);
 });

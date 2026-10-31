@@ -125,6 +125,15 @@ it("requests guard-sized Codex output and suppresses reasoning summaries", async
   const body = payloadSeen; expect(body.reasoning.summary).toBeUndefined(); expect(JSON.stringify(body)).toContain("OUTPUT LIMIT OVERRIDE");
   expect(JSON.stringify(body)).toContain("covered must be the deduplicated array");
   expect(JSON.stringify(body)).not.toContain("s(N-1)");
+  const prompt = JSON.stringify(body);
+  for (const clause of [
+    "at most 8 entries, each value at most 96 UTF-8 bytes, total serialized JSON at most 3072 UTF-8 bytes",
+    "Changed state is a new fact, not restatement",
+    "preserve cancellation, rejection, completion and artifact state transitions",
+    "Distinguish suggestion, agreement, obligation, report and verified outcome; never promote an unagreed suggestion",
+    "Reconcile retained evidence by source order, even across reverse extraction-pass order",
+    "Keep prose concise and self-contained. Identifier values stay bare; keep the role in the cited context or a separate entry; never substitute a nearby identifier",
+  ]) expect(prompt).toContain(clause);
 });
 it("retains a distinct estimated paid input cost after a Codex abort", async () => {
   const { result } = await codex([created, added, { type: "response.output_text.delta", output_index: 0, delta: "x".repeat(5000) }]);
