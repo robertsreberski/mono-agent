@@ -118,6 +118,17 @@ it("never installs cold upkeep on the prepared model-switch route", async () => 
   expect(f.transport).toHaveBeenCalledTimes(3); // two answers plus native handoff, no extractor
 });
 
+it("observes upkeep preflights on an ordinary cold model boundary (positive control)", async () => {
+  const f = await fixture(true, true), h = await f.make(false);
+  f.faux.setResponses([reply("Fictional initial answer")]);
+  await h.respond(f.request("fictional-first"), { append: async () => {} });
+  const before = f.upkeepCalls();
+  f.faux.setResponses([reply(JSON.stringify({ entries: [], covered: [] })), reply("Fictional cold answer")]);
+  await h.respond(f.request("fictional-second", "faux:B"), { append: async () => {} });
+  expect(f.upkeepCalls()).toBeGreaterThan(before);
+  expect(f.runOptions.some(options => options.coldContext !== undefined)).toBe(true);
+});
+
 it("no-ID native wakes inherit the current journal despite sticky model and context-window overrides", async () => {
   const f = await fixture(true); await f.seed(); const h = await f.make(true);
   f.faux.setResponses([reply(summary), reply("Fictional B reply")]);

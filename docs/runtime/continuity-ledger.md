@@ -51,7 +51,13 @@ retain their precedence, subject to the answer route's per-attempt options.
 MCP/tools/session authority is copied. Credential/pricing callbacks from
 `runtimeOptionsForRequest` are propagated as narrow inference-only overrides, with
 the same precedence as the answer route. Delegated route runtimes use their own
-auth/pricing defaults, never the outer runtime's defaults. Routed attempt-scoped
+auth/pricing defaults, never the outer runtime's defaults.
+Request-level `piResolvedModels`, `piResolvedModel` and `customProvider` bags are
+not propagated to the binding. A request override whose model/endpoint is
+available only through those request-level bags skips extraction cleanly with
+`model_unavailable`, never substituting another endpoint. Configure that endpoint
+statically or supply a custom binding to support extraction.
+Routed attempt-scoped
 provider bags are cleared and merged with the same helper as the answer router;
 an unpinned requested model that disagrees with the routed primary skips cleanly.
 Custom runtimes can implement
@@ -85,7 +91,13 @@ One promise is memoized per logical turn. Selection/completion run under the
 existing exclusive conversation hold, **outside** the owner transaction;
 publication reacquires that transaction and checks source visibility and parent
 identity. Preflight and completion share **one 60-second deadline**, including intervening
-selection. Stalled credential refresh is raced against this deadline even if the
+selection and owner waits. Before inspect/claim and again immediately before
+reservation, at least **30 seconds must remain**. Otherwise upkeep skips locally
+with `unavailable`: no reservation, allowance consumption, operation/dispatch row
+or uncertain record. Scope/fence metadata from an earlier claim may remain, but
+does not suppress a later eligible turn. This floor avoids purchasing a large
+request with only a few seconds left; it does not restart the shared deadline.
+Stalled credential refresh is raced against this deadline even if the
 credential provider ignores cancellation; timeout skips locally without a
 reservation. Request cancellation during preflight reports `aborted`, not a
 missing model. Late bindings are never dispatched.
@@ -104,7 +116,8 @@ newer generation during the turn.
   metadata with a conservative estimate margin. Reported
   input usage including cached input is also checked before publication.
 - 4,096 output tokens **including reasoning**, with lowest supported effort.
-- One shared 60-second preflight/completion deadline, combined with caller cancellation.
+- One shared 60-second preflight/completion deadline, combined with caller cancellation;
+  at least 30 seconds must remain at admission.
 
 Nine supported adapters send an inclusive request cap (Anthropic, OpenAI
 completions/Responses, Azure Responses, Google, Vertex, Bedrock, Mistral and Pi):

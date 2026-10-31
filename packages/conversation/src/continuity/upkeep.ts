@@ -11,6 +11,9 @@ import { selectLedgerSources, validateLedgerOutput, fitLedgerSelection, renderLe
 
 // Match the existing asynchronous upkeep-maintenance ceiling, not a provider retry.
 const UPKEEP_READ_BUSY_CEILING_MS = 10_000;
+const UPKEEP_BOUNDARY_BUDGET_MS = 60_000;
+// Leave at least half the shared budget before buying a potentially large call.
+const UPKEEP_MIN_REMAINING_MS = 30_000;
 
 export interface UpkeepEligibility {
   readonly sessionsEnabled: boolean; readonly isolated: boolean; readonly ownedStore: boolean; readonly primaryAttempt: boolean;
@@ -69,7 +72,12 @@ export function createLedgerSupplier(options: ConversationHarnessOptions, reques
           if (history!.reader.continuitySuppressed(scope) || !history!.publishLedger || !history!.mutateUpkeep || !eligibility.withOwner) throw new Error("unavailable");
           // Bind before even claiming the admission fence: model/auth failures
           // must not create uncertain journal state or consume an allowance.
-          const boundarySignal = AbortSignal.any([request.abortSignal, AbortSignal.timeout(60_000)]);
+          const deadline = performance.now() + UPKEEP_BOUNDARY_BUDGET_MS;
+          const boundarySignal = AbortSignal.any([request.abortSignal, AbortSignal.timeout(UPKEEP_BOUNDARY_BUDGET_MS)]);
+          const requireDispatchBudget = () => {
+            boundarySignal.throwIfAborted();
+            if (deadline - performance.now() < UPKEEP_MIN_REMAINING_MS) throw new Error("upkeep_budget_unavailable");
+          };
           let binding, stopWaiting: (() => void) | undefined;
           try {
             const cancelled = new Promise<undefined>(resolve => { stopWaiting = () => resolve(undefined); boundarySignal.addEventListener("abort", stopWaiting, { once: true }); });
@@ -82,6 +90,7 @@ export function createLedgerSupplier(options: ConversationHarnessOptions, reques
           if (!binding) { gap = true; localSkip = "model_unavailable"; return; }
           const fence = await eligibility.withOwner(async ownerToken => {
             if (!ownerToken) throw new Error("owner_unavailable");
+            requireDispatchBudget();
             const expected = await history!.mutateUpkeep!({ kind: "inspect", scope: { logicalId: scope.logicalConversationId, conversationId: scope.currentConversationId } });
             if (!expected) throw new Error("scope_unavailable");
             return await history!.mutateUpkeep!({ kind: "claim", expected, ownerToken }) as UpkeepAdmission;
@@ -120,10 +129,10 @@ export function createLedgerSupplier(options: ConversationHarnessOptions, reques
           await eligibility.withOwner(async () => {
             if (selection.deadline !== undefined && performance.now() >= selection.deadline) throw new LedgerError("ledger_scan_capacity");
             if (!await read(() => history!.reader.continuitySnapshotVisible(scope, { ...source, records: selection.records })) || (await readLedger())?.generation.id !== frozen?.generation.id) throw new LedgerError("source_changed");
-            boundarySignal.throwIfAborted();
+            requireDispatchBudget();
             await history!.mutateUpkeep!({ kind: "reserve", reservation: reservation! });
-            boundarySignal.throwIfAborted();
             if (selection.deadline !== undefined && performance.now() >= selection.deadline) throw new LedgerError("ledger_scan_capacity");
+            boundarySignal.throwIfAborted();
             barrierRequested = true;
             await history!.mutateUpkeep!({ kind: "dispatch", reservation: reservation! });
           });

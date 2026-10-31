@@ -165,6 +165,45 @@ it.each(["missing", "throws"])("preflights %s bindings without admission poisoni
   expect(f.db.prepare("SELECT id FROM continuity_ledger").all()).toHaveLength(1);
 });
 
+it.each(["owner", "visibility"])("skips below the 30-second remaining floor after slow %s work, then extracts in the same scope", async phase => {
+  const f = await fixture(), mutation = vi.fn(f.mutate);
+  const started = performance.now(); let elapsed = 0, owners = 0;
+  const clock = vi.spyOn(performance, "now").mockImplementation(() => started + elapsed);
+  const visible = f.reader.continuitySnapshotVisible.bind(f.reader);
+  const visibility = vi.spyOn(f.reader, "continuitySnapshotVisible").mockImplementation((...args) => {
+    const result = visible(...args);
+    if (phase === "visibility") elapsed = 31_000;
+    return result;
+  });
+  const h = harness(f, mutation, async op => {
+    if (phase === "owner" && owners === 0) elapsed = 31_000;
+    return await op(`owner-${++owners}`);
+  });
+  try {
+    await h.prepare();
+    expect(h.complete).not.toHaveBeenCalled();
+    expect(h.events).toContainEqual(expect.objectContaining({ type: "continuity_upkeep", status: "skipped", reason: "unavailable", providerInvoked: false }));
+    expect(h.events.some(e => e.type === "continuity_upkeep_dispatch" || e.status === "uncertain")).toBe(false);
+    expect(mutation.mock.calls.map(([input]) => input.kind)).toEqual(phase === "owner" ? [] : ["inspect", "claim"]);
+    if (phase === "owner") expect(f.db.prepare("SELECT name FROM sqlite_master WHERE name LIKE 'continuity_upkeep_%'").all()).toEqual([]);
+    else {
+      expect(f.db.prepare("SELECT * FROM continuity_upkeep_operations").all()).toEqual([]);
+      expect(f.db.prepare("SELECT bootstrap_operation FROM continuity_upkeep_admissions").all()).toEqual([{ bootstrap_operation: null }]);
+    }
+  } finally { clock.mockRestore(); visibility.mockRestore(); }
+  // The retained scope/fence from the visibility case must not suppress or
+  // reject a fresh owner on a later eligible turn in this SAME conversation.
+  mutation.mockClear();
+  const nextOwner = owners + 1;
+  await h.prepare();
+  expect(h.complete).toHaveBeenCalledOnce();
+  expect(mutation.mock.calls.map(([input]) => input.kind)).toEqual(["inspect", "claim", "reserve", "dispatch", "outcome", "settle"]);
+  const row = f.db.prepare("SELECT reservation,state FROM continuity_upkeep_operations").get() as any;
+  expect(JSON.parse(row.reservation)).toMatchObject({ budget: "bootstrap", ownerToken: `owner-${nextOwner}` });
+  expect(row.state).toBe("terminal");
+  expect(f.db.prepare("SELECT id FROM continuity_ledger").all()).toHaveLength(1);
+});
+
 it("keeps interleaved runs on different models isolated in ONE shared journal", async () => {
   const f = await fixture();
   const generationId = continuityGenerationId(), digest = ledgerHash(generationId);
