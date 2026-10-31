@@ -59,15 +59,21 @@ function resolveUpkeepRuntime(options: RuntimeRunOptions) {
 /** Model/credential presence only; no completion, fallback, or journal mutation. */
 export async function prepareContinuityUpkeep(options: RuntimeRunOptions, requireRequestCap = false): Promise<ContinuityUpkeepBinding | undefined> {
   try {
-    options = { ...upkeepInferenceOptions(options), model: Object.freeze({ ...options.model }), abortSignal: options.abortSignal, messages: [] };
+    options = { ...upkeepInferenceOptions(options), model: Object.freeze({ ...options.model }), abortSignal: AbortSignal.any([options.abortSignal, AbortSignal.timeout(60_000)]), messages: [] };
     const runtime = resolveUpkeepRuntime(options);
+    const cap = upkeepCapEnforcement(runtime.model.api);
+    if (requireRequestCap && cap !== "request") return undefined;
     const models = buildRunModels(runtime as any, options as any, []);
-    await prepareDispatchAuth(models, runtime.model, options.abortSignal);
+    let stopWaiting: (() => void) | undefined;
+    try {
+      const cancelled = new Promise<undefined>(resolve => { stopWaiting = () => resolve(undefined); options.abortSignal.addEventListener("abort", stopWaiting, { once: true }); });
+      if (options.abortSignal.aborted || !await Promise.race([prepareDispatchAuth(models, runtime.model, options.abortSignal), cancelled])) return undefined;
+    } finally { if (stopWaiting) options.abortSignal.removeEventListener("abort", stopWaiting); }
     // Retain the resolved collection, not credentials or arbitrary session authority.
     const bound = { ...options, piResolvedModels: models };
     return Object.freeze({ model: options.model.reference,
       complete: (prompt: string, signal: AbortSignal, budget?: { readonly operationId: string; readonly inputTokens: 64000 | 128000; maxEntries?: number | undefined }) =>
-        completeContinuityUpkeep(prompt, { ...bound, abortSignal: signal }, requireRequestCap, budget) });
+        completeContinuityUpkeep(prompt, { ...bound, abortSignal: AbortSignal.any([signal, bound.abortSignal]) }, requireRequestCap, budget) });
   } catch { return undefined; }
 }
 

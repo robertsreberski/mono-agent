@@ -40,10 +40,16 @@ async function fixture(publicConfig = false, upkeep = false) {
     traceability: { registryDir: join(root, "trace") },
   };
   const runtimes: MonoRuntimeLike[] = [], runOptions: Parameters<MonoRuntimeLike["run"]>[1][] = [];
+  const upkeepPreflights: (() => number)[] = [];
   const runtimeFor = (id: string) => {
     const raw = createMonoRuntime({ workspace: root }), run = raw.run.bind(raw), prepare = raw.prepareNativeDispatch!.bind(raw);
     raw.run = (prompt, options) => { runOptions.push(options); return run(prompt, { ...options, piResolvedModel: faux.getModel(id), piResolvedModels: models }); };
     raw.prepareNativeDispatch = (prompt, options) => { runOptions.push(options); return prepare(prompt, { ...options, piResolvedModel: faux.getModel(id), piResolvedModels: models }); };
+    if (upkeep) {
+      const prepareUpkeep = raw.prepareContinuityUpkeep!.bind(raw); let calls = 0;
+      raw.prepareContinuityUpkeep = (...args) => { calls++; return prepareUpkeep(...args); };
+      upkeepPreflights.push(() => calls);
+    }
     const owned = wrapOwnedConfiguredRuntime(raw, config, root, undefined); runtimes.push(owned); cleanup.push(() => owned.disposeAllSessions!()); return owned;
   };
   let store: ConversationHistoryStore | undefined;
@@ -98,17 +104,16 @@ async function fixture(publicConfig = false, upkeep = false) {
       runtimeOptionsForRequest: createRequestModelOverrideRuntimeExtension({ baseModel: config.runtime.model }), runtimeOptions: { piResolvedModels: models, compaction: { enabled: false } } });
     cleanup.push(() => dispose(h)); return h;
   };
-  return { root, config, runtimes, runOptions, get native() { return activeNative; }, nativeRoot, faux, transport, originalTransport, request, record, make, makePublic, seed, dispose, runtimeFor, getStore: () => store!, getPreparation: () => preparation, getBindingRead: () => bindingRead, getDraining: () => draining };
+  return { root, config, runtimes, runOptions, upkeepCalls: () => upkeepPreflights.reduce((sum, calls) => sum + calls(), 0), get native() { return activeNative; }, nativeRoot, faux, transport, originalTransport, request, record, make, makePublic, seed, dispose, runtimeFor, getStore: () => store!, getPreparation: () => preparation, getBindingRead: () => bindingRead, getDraining: () => draining };
 }
 
 it("never installs cold upkeep on the prepared model-switch route", async () => {
   const f = await fixture(true, true), h = await f.make(true);
-  const preflight = vi.spyOn(f.runtimes[0]!, "prepareContinuityUpkeep");
   f.faux.setResponses([reply("Fictional initial answer")]);
   await h.respond(f.request("fictional-first"), { append: async () => {} });
   f.faux.setResponses([reply(summary), reply("Fictional switched answer")]);
   await h.respond(f.request("fictional-second", "faux:B"), { append: async () => {} });
-  expect(preflight).not.toHaveBeenCalled();
+  expect(f.upkeepCalls()).toBe(0);
   expect(f.runOptions.every(options => options.coldContext === undefined)).toBe(true);
   expect(f.transport).toHaveBeenCalledTimes(3); // two answers plus native handoff, no extractor
 });

@@ -7,6 +7,8 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, expect, it, vi } from "vitest";
+import { prepareContinuityUpkeep } from "@mono-agent/turn/host";
+import { createModels, fauxProvider, fauxAssistantMessage } from "@earendil-works/pi-ai";
 import type { ContinuityUpkeepReceipt } from "@mono-agent/turn/host";
 import { ToolHistoryWriter } from "../tool-history/writer.js";
 import { ToolHistoryReader } from "../tool-history/reader.js";
@@ -126,7 +128,7 @@ function harness(f: Awaited<ReturnType<typeof fixture>>, mutation = f.mutate, ow
     upkeep: { enabled: true, model: "fictional:base", ...namespace, complete }, mutateUpkeep: mutation,
     publishLedger: f.writer.publishLedger.bind(f.writer) } } as unknown as ConversationHarnessOptions;
   const events: any[] = [];
-  return { complete, events, get fetches() { return fetches; }, prepare: async (extra: Partial<UpkeepEligibility> = {}, reason = "cold_rebuild") => await createLedgerSupplier(options,
+  return { options, complete, events, get fetches() { return fetches; }, prepare: async (extra: Partial<UpkeepEligibility> = {}, reason = "cold_rebuild") => await createLedgerSupplier(options,
     { conversationId: "fictional", userMessage: "Current.", abortSignal: new AbortController().signal }, "origin-run").prepare(
     { sessionsEnabled: true, isolated: false, ownedStore: true, primaryAttempt: true, maxTokens: 8000, withOwner: owner, ...extra }, reason, e => events.push(e)) };
 }
@@ -163,8 +165,13 @@ it.each(["missing", "throws"])("preflights %s bindings without admission poisoni
   expect(f.db.prepare("SELECT id FROM continuity_ledger").all()).toHaveLength(1);
 });
 
-it("keeps interleaved operation bindings, reservations and receipts isolated", async () => {
-  const first = await fixture(), second = await fixture();
+it("keeps interleaved runs on different models isolated in ONE shared journal", async () => {
+  const f = await fixture();
+  const generationId = continuityGenerationId(), digest = ledgerHash(generationId);
+  await f.writer.prepareContinuity({ generationId, conversationId: "fictional-other", logicalConversationId: "fictional-other", beforeDigest: null, afterDigest: digest,
+    records: [{ recordId: continuityRecordId("fictional-other", generationId), runId: "historical-other", inputId: "owner-other", kind: "owner", provenance: "host-owner", sequence: 0,
+      text: "Keep the confirmation requirement.", source: { attestation: { inputId: "owner-other", requestDigest: digest } } }] });
+  await f.writer.commitContinuity({ generationId, conversationId: "fictional-other", canonicalDigest: digest });
   let release!: () => void;
   const pending = new Promise<void>(resolve => { release = resolve; });
   const bind = vi.fn(async (model: { reference: string }) => {
@@ -175,19 +182,78 @@ it("keeps interleaved operation bindings, reservations and receipts isolated", a
         receipt: receipt({ operationId: budget.operationId, model: model.reference } as UpkeepReservation) };
     } };
   });
-  await Promise.all([first, second].map(async (f, index) => {
+  const options = { toolHistory: { continuityEnabled: true, reader: f.reader, writer: f.writer, logicalConversationId: (id: string) => id,
+    upkeep: { enabled: true, recorderNamespace: resolve("/origin-recorder"), bind }, mutateUpkeep: f.mutate,
+    publishLedger: f.writer.publishLedger.bind(f.writer) } } as unknown as ConversationHarnessOptions;
+  await Promise.all(["fictional", "fictional-other"].map(async (conversationId, index) => {
     const model = { provider: "fictional", model: index ? "second" : "first", reference: index ? "fictional:second" : "fictional:first" };
-    const options = { toolHistory: { continuityEnabled: true, reader: f.reader, writer: f.writer, logicalConversationId: (id: string) => id,
-      upkeep: { enabled: true, recorderNamespace: resolve("/origin-recorder"), bind }, mutateUpkeep: f.mutate,
-      publishLedger: f.writer.publishLedger.bind(f.writer) } } as unknown as ConversationHarnessOptions;
     const events: any[] = [];
-    await createLedgerSupplier(options, { conversationId: "fictional", userMessage: "Current.", abortSignal: new AbortController().signal }, "origin-run").prepare(
-      { effectiveModel: model, sessionsEnabled: true, isolated: false, ownedStore: true, primaryAttempt: true, maxTokens: 8000, withOwner: async op => await op("owner") }, "model_change", e => events.push(e));
-    const row = f.db.prepare("SELECT reservation,outcome FROM continuity_upkeep_operations").get() as any;
+    await createLedgerSupplier(options, { conversationId, userMessage: "Current.", abortSignal: new AbortController().signal }, `origin-${index}`).prepare(
+      { effectiveModel: model, sessionsEnabled: true, isolated: false, ownedStore: true, primaryAttempt: true, maxTokens: 8000, withOwner: async op => await op(`owner-${index}`) }, "model_change", e => events.push(e));
+    const row = f.db.prepare("SELECT reservation,outcome FROM continuity_upkeep_operations WHERE conversation_id=?").get(conversationId) as any;
     expect(JSON.parse(row.reservation).model).toBe(model.reference); expect(JSON.parse(row.outcome).model).toBe(model.reference);
     expect(events).toContainEqual(expect.objectContaining({ type: "continuity_upkeep", model: model.reference, status: "valid", generationId: expect.any(String) }));
   }));
   expect(bind).toHaveBeenCalledTimes(2);
+  expect(f.db.prepare("SELECT * FROM continuity_upkeep_operations").all()).toHaveLength(2);
+});
+
+it.each(["model", "operationId"])("rejects receipt %s mismatches without publishing or rewriting dispatch identity", async field => {
+  const f = await fixture(), h = harness(f);
+  h.complete.mockImplementation(async (_prompt, _signal, budget) => ({ text: '{"entries":[],"covered":[]}', receipt: receipt({ model: "fictional:base", operationId: budget.operationId } as UpkeepReservation,
+    { [field]: "fictional-mismatch" }) }));
+  await h.prepare();
+  const row = f.db.prepare("SELECT reservation,outcome,state FROM continuity_upkeep_operations").get() as any;
+  const reservation = JSON.parse(row.reservation);
+  expect(reservation.model).toBe("fictional:base"); expect(row.outcome).toBeNull(); expect(row.state).toBe("dispatch_started");
+  expect(f.db.prepare("SELECT name FROM sqlite_master WHERE name='continuity_ledger'").all()).toHaveLength(0);
+  expect(h.events).toContainEqual(expect.objectContaining({ type: "continuity_upkeep", status: "uncertain", model: reservation.model, operationId: reservation.operationId }));
+  expect((await f.claim("later-owner")).uncertain).toBe(true);
+});
+
+it("binds a pinned extractor even when a custom caller has no effective model", async () => {
+  const f = await fixture(), h = harness(f);
+  const bind = vi.fn(async model => { expect(model).toBeUndefined(); return { model: "fictional:base", complete: h.complete }; });
+  const options = { ...h.options, toolHistory: { ...h.options.toolHistory!, upkeep: { enabled: true as const, recorderNamespace: resolve("/origin-recorder"), bind } } };
+  await createLedgerSupplier(options, { conversationId: "fictional", userMessage: "Current.", abortSignal: new AbortController().signal }, "pinned-run").prepare(
+    { sessionsEnabled: true, isolated: false, ownedStore: true, primaryAttempt: true, maxTokens: 8000, withOwner: async op => await op("owner") }, "cold_rebuild", () => {});
+  expect(bind).toHaveBeenCalledOnce(); expect(h.complete).toHaveBeenCalledOnce();
+});
+
+it.each(["timeout", "cancel"])("bounds uncooperative preflight (%s) without admission or a model-unavailable misdiagnosis", async kind => {
+  const f = await fixture(), h = harness(f), deadline = new AbortController(), requestAbort = new AbortController();
+  vi.spyOn(AbortSignal, "timeout").mockReturnValue(deadline.signal);
+  let started!: () => void; const ready = new Promise<void>(resolve => { started = resolve; });
+  const bind = vi.fn(async () => { started(); return await new Promise<never>(() => {}); });
+  const options = { ...h.options, toolHistory: { ...h.options.toolHistory!, upkeep: { enabled: true as const, recorderNamespace: resolve("/origin-recorder"), bind } } };
+  const events: any[] = [];
+  const pending = createLedgerSupplier(options, { conversationId: "fictional", userMessage: "Current.", abortSignal: requestAbort.signal }, "slow-run").prepare(
+    { sessionsEnabled: true, isolated: false, ownedStore: true, primaryAttempt: true, maxTokens: 8000, withOwner: async op => await op("owner") }, "cold_rebuild", e => events.push(e));
+  await ready; (kind === "timeout" ? deadline : requestAbort).abort(); await pending;
+  expect(AbortSignal.timeout).toHaveBeenCalledWith(60_000);
+  expect(h.complete).not.toHaveBeenCalled();
+  expect(f.db.prepare("SELECT name FROM sqlite_master WHERE name LIKE 'continuity_upkeep_%'").all()).toEqual([]);
+  expect(events).toContainEqual(expect.objectContaining({ type: "continuity_upkeep", status: "skipped", reason: kind === "timeout" ? "unavailable" : "aborted" }));
+  expect(events.some(e => e.reason === "model_unavailable")).toBe(false);
+});
+
+it("rejects strict Codex before reservation, then permits another model in the same conversation", async () => {
+  const f = await fixture(), h = harness(f), mutation = vi.fn(f.mutate);
+  const codex = fauxProvider({ provider: "openai-codex", api: "openai-codex-responses", models: [{ id: "fictional" }] });
+  const supported = fauxProvider({ provider: "fictional", api: "openai-responses", models: [{ id: "base" }], tokensPerSecond: 1000000 });
+  const models = createModels(); models.setProvider(codex.provider); models.setProvider(supported.provider);
+  supported.setResponses([fauxAssistantMessage(JSON.stringify({ entries: [{ kind: "constraint", value: "Require confirmation.", status: "active", sources: ["s0"] }], covered: ["s0"] }))]);
+  const bind = async (model: any, signal: AbortSignal) => await prepareContinuityUpkeep({ model, messages: [], abortSignal: signal, piResolvedModels: models }, true);
+  const options = { ...h.options, toolHistory: { ...h.options.toolHistory!, mutateUpkeep: mutation, upkeep: { enabled: true as const, recorderNamespace: resolve("/origin-recorder"), bind } } };
+  const run = async (model: any) => await createLedgerSupplier(options, { conversationId: "fictional", userMessage: "Current.", abortSignal: new AbortController().signal }, `run-${model.model}`).prepare(
+    { effectiveModel: model, sessionsEnabled: true, isolated: false, ownedStore: true, primaryAttempt: true, maxTokens: 8000, withOwner: async op => await op("owner") }, "model_change", () => {});
+  await run({ provider: "openai-codex", model: "fictional", reference: "openai-codex:fictional" });
+  expect(mutation).not.toHaveBeenCalled(); expect(codex.state.callCount).toBe(0);
+  await run({ provider: "fictional", model: "base", reference: "fictional:base" });
+  expect(supported.state.callCount).toBe(1);
+  const row = f.db.prepare("SELECT reservation,outcome FROM continuity_upkeep_operations").get() as any;
+  expect(JSON.parse(row.reservation)).toMatchObject({ budget: "bootstrap", model: "fictional:base" });
+  expect(JSON.parse(row.outcome).status).toBe("valid");
 });
 
 it("keeps disabled upkeep entirely outside durable admission", async () => {

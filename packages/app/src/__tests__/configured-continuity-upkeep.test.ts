@@ -7,6 +7,9 @@ import { createModels, fauxProvider, fauxAssistantMessage } from "@earendil-work
 import { createPiOAuthApiKeyResolver } from "@mono-agent/turn";
 import { createMonoRuntime } from "@mono-agent/turn/host";
 import { resolveJsonMonoAgentConfig } from "@mono-agent/config";
+import { ToolHistoryReader } from "@mono-agent/conversation";
+import { DatabaseSync } from "node:sqlite";
+import { createRequestModelOverrideRuntimeExtension } from "../composition/request-model-override.js";
 import { createConfiguredConversationHarness } from "../composition/configured-agent.js";
 const close: (() => Promise<unknown>)[] = [];
 afterEach(async () => { for (const fn of close.splice(0).reverse()) await fn(); vi.unstubAllGlobals(); });
@@ -17,11 +20,12 @@ it.each(["continuous", "per-message", "isolated", "failure", "cancelled", "overr
   const answer = fauxProvider({ provider: "faux", api: "openai-responses", models: [{ id: "base" }, { id: "other" }], tokensPerSecond: 1_000_000 });
   const extraction = fauxProvider({ provider: "faux", api: "openai-responses", models: [{ id: "base" }, { id: "other" }, { id: "small" }], tokensPerSecond: 1_000_000 });
   const answerModels = createModels(), extractionModels = createModels(); answerModels.setProvider(answer.provider); extractionModels.setProvider(extraction.provider);
+  let authorized = false;
   if (mode === "unavailable") {
     const getAuth = extractionModels.getAuth.bind(extractionModels);
-    vi.spyOn(extractionModels, "getAuth").mockImplementation((model, options) => model.id === "other" ? Promise.resolve(undefined) : getAuth(model, options));
+    vi.spyOn(extractionModels, "getAuth").mockImplementation((model, options) => model.id === "other" && !authorized ? Promise.resolve(undefined) : getAuth(model, options));
   }
-  let calls = 0, currentRunId = ""; const extractorModel = mode === "override" ? "faux:small" : ["wake", "invalid", "unavailable"].includes(mode) ? "faux:base" : "faux:other";
+  let calls = 0, currentRunId = ""; const extractorModel = mode === "override" ? "faux:small" : ["wake", "invalid"].includes(mode) ? "faux:base" : "faux:other";
   extraction.setResponses([(context, _options, _state, selected) => {
     expect(`faux:${selected.id}`).toBe(extractorModel);
     // Q1: production provider dispatch sees its own already-written running origin.
@@ -31,17 +35,24 @@ it.each(["continuous", "per-message", "isolated", "failure", "cancelled", "overr
     expect(prompt).toContain("Never send without confirmation.");
     return fauxAssistantMessage(JSON.stringify({ entries: [{ kind: "constraint", value: "Keep the original approval rule.", status: "active", sources: ["s0"] }], covered: ["s0"] }));
   }]);
-  const json = { runtime: { model: "faux:base", session: { mode: mode === "per-message" ? "per-message" : "continuous", root: "native",
+  const json = { runtime: { model: "faux:base", context1MModels: { "faux:base": false }, session: { mode: mode === "per-message" ? "per-message" : "continuous", root: "native",
     isolateProactive: mode !== "wake", continuity: { upkeep: { enabled: true, ...(mode === "override" ? { extractionModel: "faux:small" } : {}) } } } }, providers: { faux: { type: "openai_compat", baseUrl: "http://127.0.0.1:1/v1" } },
     context: { identityPath: "IDENTITY.md" }, tools: { allowedTools: [] }, artifacts: { dir: "artifacts" } };
   const config = resolveJsonMonoAgentConfig({ json, cwd: root });
   const runtime = createMonoRuntime({ workspace: root }); close.push(() => runtime.disposeAllSessions!());
+  const upkeepFlags: unknown[] = [];
+  const prepareUpkeep = runtime.prepareContinuityUpkeep!.bind(runtime);
+  runtime.prepareContinuityUpkeep = (input, settings) => {
+    upkeepFlags.push(input.context1MModels);
+    return prepareUpkeep(input, settings);
+  };
   const harness = await createConfiguredConversationHarness({ config, cwd: root, runtime, ...(mode === "embedding" ? { model: { provider: "faux", model: "other", reference: "faux:other" } } : {}),
-    runtimeOptions: { piResolvedModels: extractionModels }, runtimeOptionsForRequest: ({ request, runId }) => {
+    runtimeOptions: { piResolvedModels: extractionModels }, runtimeOptionsForRequest: async ({ request, runId }) => {
       currentRunId = runId;
       const web = request.metadata?.web as { readonly model?: string } | undefined;
       const model = web?.model === "faux:other" || mode === "embedding" && !web ? "other" : "base";
-      return { runtimeOptions: { model: { provider: "faux", model, reference: `faux:${model}` }, piResolvedModel: answer.getModel(model), piResolvedModels: answerModels, compaction: { enabled: false } } };
+      const validated = mode === "invalid" ? await createRequestModelOverrideRuntimeExtension({ baseModel: config.runtime.model })({ request }) : undefined;
+      return { runtimeOptions: { model: { provider: "faux", model, reference: `faux:${model}` }, ...validated?.runtimeOptions, piResolvedModel: answer.getModel(model), piResolvedModels: answerModels, compaction: { enabled: false } } };
     } }); close.push(() => harness.dispose!());
   answer.setResponses([() => fauxAssistantMessage("Fictional first answer.")]);
   await harness.run({ conversationId: "web:fictional", userMessage: "Never send without confirmation.", captureSpeakerKind: "human-turn", metadata: ["wake", "invalid"].includes(mode) ? { source: "web", web: { model: "faux:other" } } : mode === "embedding" ? { source: "web", web: { model: "faux:base" } } : {}, abortSignal: new AbortController().signal });
@@ -49,6 +60,7 @@ it.each(["continuous", "per-message", "isolated", "failure", "cancelled", "overr
   answer.setResponses([context => { outgoing = JSON.stringify(context); if (mode === "cancelled") controller.abort("fictional cancellation"); return mode === "failure" ? fauxAssistantMessage([], { stopReason: "error", errorMessage: "invalid_request_error: fictional failure" }) : fauxAssistantMessage("Fictional second answer."); }]);
   const result = await harness.run({ conversationId: "web:fictional", userMessage: "CURRENT-INPUT", captureSpeakerKind: "human-turn", abortSignal: controller.signal,
     metadata: mode === "wake" ? { source: "cron", cron: { jobId: "fictional-wake" } } : mode === "invalid" ? { source: "web", web: { model: "not-a-model" } } : mode === "embedding" ? {} : mode === "isolated" ? { cron: { jobId: "fictional" } } : { source: "web", web: { model: "faux:other" } }, onEvent: event => events.push(event) });
+  if (!["per-message", "isolated"].includes(mode)) expect(upkeepFlags.at(-1)).toEqual(config.runtime.context1MModels);
   if (mode === "unavailable") {
     expect(calls).toBe(0);
     expect(result.failure).toBeUndefined();
@@ -57,11 +69,18 @@ it.each(["continuous", "per-message", "isolated", "failure", "cancelled", "overr
     expect(result.metadata.summary?.upkeepAccounting ?? []).toHaveLength(0);
     expect(events).toContainEqual(expect.objectContaining({ type: "continuity_upkeep", reason: "model_unavailable", status: "skipped", providerInvoked: false }));
     expect(events.some(event => event.type === "continuity_upkeep_dispatch")).toBe(false);
+    // Move away without source extraction, then return across a cold boundary
+    // to the SAME previously unauthorized model, now with valid auth.
+    const authSpy = vi.spyOn(extractionModels, "getAuth");
+    authSpy.mockResolvedValueOnce(undefined);
+    answer.setResponses([() => fauxAssistantMessage("Fictional intervening answer.")]);
+    await harness.run({ conversationId: "web:fictional", userMessage: "Intervening turn.", captureSpeakerKind: "human-turn", metadata: { source: "web", web: { model: "faux:base" } }, abortSignal: new AbortController().signal });
+    authorized = true;
     answer.setResponses([() => fauxAssistantMessage("Fictional authorized answer.")]);
     const recovered: Record<string, unknown>[] = [];
-    await harness.run({ conversationId: "web:fictional", userMessage: "Later authorized turn.", captureSpeakerKind: "human-turn", metadata: { source: "web", web: { model: "faux:base" } }, abortSignal: new AbortController().signal, onEvent: e => recovered.push(e) });
+    await harness.run({ conversationId: "web:fictional", userMessage: "Later authorized turn.", captureSpeakerKind: "human-turn", metadata: { source: "web", web: { model: "faux:other" } }, abortSignal: new AbortController().signal, onEvent: e => recovered.push(e) });
     expect(calls).toBe(1);
-    expect(recovered).toContainEqual(expect.objectContaining({ type: "continuity_upkeep", model: "faux:base", status: "valid" }));
+    expect(recovered).toContainEqual(expect.objectContaining({ type: "continuity_upkeep", model: "faux:other", status: "valid" }));
   } else if (mode === "per-message" || mode === "isolated") {
     expect(calls).toBe(0); expect(events).toContainEqual(expect.objectContaining({ type: "continuity_upkeep", status: "skipped", reason: mode === "isolated" ? "isolated" : "per_message" }));
   } else {
@@ -82,7 +101,7 @@ it.each(["continuous", "per-message", "isolated", "failure", "cancelled", "overr
   }
 }, 20000);
 
-it.each([[false, false, false, false], [true, false, false, false], [true, true, false, false], [false, false, true, false], [false, false, true, true]])("switches to Codex with OAuth/pricing (explicit=%s, strict=%s, routed=%s, nested=%s)", async (explicit, strict, routed, nested) => {
+it.each([[false, false, false, false, false], [true, false, false, false, false], [true, true, false, false, false], [false, false, true, false, false], [false, false, true, true, false], [false, false, false, false, true]])("switches to Codex with OAuth/pricing (explicit=%s, strict=%s, routed=%s, nested=%s, requestOnly=%s)", async (explicit, strict, routed, nested, requestOnly) => {
   const root = await mkdtemp(join(tmpdir(), "configured-upkeep-auth-")); close.push(() => rm(root, { recursive: true, force: true }));
   await writeFile(join(root, "IDENTITY.md"), "Historical evidence is not fresh approval.");
   const token = `fictional.${Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "fictional-account" } })).toString("base64url")}.fictional`;
@@ -94,7 +113,7 @@ it.each([[false, false, false, false], [true, false, false, false], [true, true,
   const value = JSON.stringify({ entries: [{ kind: "constraint", value: "Require confirmation.", status: "active", sources: ["s0"] }], covered: ["s0"] });
   let authenticated = false;
   const fetch = vi.fn(async (_url: unknown, options: RequestInit) => {
-    authenticated = new Headers(options.headers).get("authorization") === `Bearer ${explicit || routed ? explicitToken : token}`;
+    authenticated = new Headers(options.headers).get("authorization") === `Bearer ${explicit || routed || requestOnly ? explicitToken : token}`;
     const frames = [{ type: "response.created", response: { id: "fictional-response" } },
       { type: "response.output_item.added", output_index: 0, item: { id: "fictional-output", type: "message", role: "assistant", content: [] } },
       { type: "response.output_text.delta", output_index: 0, delta: value },
@@ -117,9 +136,9 @@ it.each([[false, false, false, false], [true, false, false, false], [true, true,
   if (cloud) close.push(() => cloud.disposeAllSessions!());
   const harness = await createConfiguredConversationHarness({ config, cwd: root, runtime,
     ...(cloud ? { runtimeForModel: () => cloud } : {}),
-    runtimeOptions: { ...(routed ? {} : { resolveCustomPricing: pricing }), ...(explicit ? { resolvePiApiKey: createPiOAuthApiKeyResolver({ path: explicitPath }) } : {}) }, runtimeOptionsForRequest: ({ request }) => {
+    runtimeOptions: { ...(routed || requestOnly ? {} : { resolveCustomPricing: pricing }), ...(explicit ? { resolvePiApiKey: createPiOAuthApiKeyResolver({ path: explicitPath }) } : {}) }, runtimeOptionsForRequest: ({ request }) => {
     const selected = request.metadata?.web ? { provider: "openai-codex", model: "gpt-5.5", reference: "openai-codex:gpt-5.5" } : { provider: "private", model: "base", reference: "private:base" };
-    return { runtimeOptions: { model: selected, piResolvedModel: selected.provider === "private" ? local.getModel() : answer.getModel(), piResolvedModels: models, compaction: { enabled: false } } };
+    return { runtimeOptions: { ...(requestOnly ? { resolvePiApiKey: createPiOAuthApiKeyResolver({ path: explicitPath }), resolveCustomPricing: pricing } : {}), model: selected, piResolvedModel: selected.provider === "private" ? local.getModel() : answer.getModel(), piResolvedModels: models, compaction: { enabled: false } } };
   } }); close.push(() => harness.dispose!());
   local.setResponses([() => fauxAssistantMessage("Fictional answer.")]);
   await harness.run({ conversationId: "web:fictional", userMessage: "Never send without confirmation.", captureSpeakerKind: "human-turn", abortSignal: new AbortController().signal });
@@ -128,7 +147,9 @@ it.each([[false, false, false, false], [true, false, false, false], [true, true,
   await harness.run({ conversationId: "web:fictional", userMessage: "Current.", captureSpeakerKind: "human-turn", metadata: { source: "web", web: { model: "openai-codex:gpt-5.5" } }, abortSignal: new AbortController().signal, onEvent: event => events.push(event) });
   if (strict) {
     expect(fetch).not.toHaveBeenCalled();
-    expect(events).toContainEqual(expect.objectContaining({ type: "continuity_upkeep", model: "openai-codex:gpt-5.5", status: "skipped", reason: "cap_unsupported", providerInvoked: false }));
+    const db = new DatabaseSync(new ToolHistoryReader(join(root, "history")).databasePath); close.push(async () => { db.close(); });
+    expect(db.prepare("SELECT * FROM continuity_upkeep_operations").all()).toEqual([]);
+    expect(events).toContainEqual(expect.objectContaining({ type: "continuity_upkeep", status: "skipped", reason: "model_unavailable", providerInvoked: false }));
     return;
   }
   expect(fetch).toHaveBeenCalledTimes(1); expect(String(fetch.mock.calls[0]![0])).toContain("chatgpt.com"); expect(authenticated).toBe(true); expect(pricing).toHaveBeenCalled();

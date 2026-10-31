@@ -893,7 +893,7 @@ function normalizeAttemptPolicyOptions(value: any) {
  * then applies the current route's private options. Logical request, safety,
  * effort, and session fields remain router-owned.
  */
-function mergeAttemptOptions(base: { [x: string]: any; }, resolved: { [x: string]: any; } | undefined) {
+export function mergeAttemptOptions(base: { [x: string]: any; }, resolved: { [x: string]: any; } | undefined) {
   if (resolved !== undefined) assertNoRetiredRunOptions(resolved);
   const merged = withoutAttemptScopedOptions(base);
   if (resolved === undefined) return merged;

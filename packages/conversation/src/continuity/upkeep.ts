@@ -14,7 +14,7 @@ const UPKEEP_READ_BUSY_CEILING_MS = 10_000;
 
 export interface UpkeepEligibility {
   readonly sessionsEnabled: boolean; readonly isolated: boolean; readonly ownedStore: boolean; readonly primaryAttempt: boolean;
-  readonly effectiveModel?: import("@mono-agent/turn/host/types").RuntimeModelReference; readonly historyAvailable?: boolean; readonly maxTokens: number; readonly withOwner?: <T>(operation: (ownerToken: string) => Promise<T>) => Promise<T>;
+  readonly requestInference?: Pick<import("@mono-agent/turn/host/types").MonoRuntimeHostOptions, "resolvePiApiKey" | "resolveCustomPricing">; readonly effectiveModel?: import("@mono-agent/turn/host/types").RuntimeModelReference; readonly historyAvailable?: boolean; readonly maxTokens: number; readonly withOwner?: <T>(operation: (ownerToken: string) => Promise<T>) => Promise<T>;
 }
 export function createLedgerSupplier(options: ConversationHarnessOptions, request: ConversationHarnessRequest, runId: string) {
   const history = options.toolHistory, config = history?.upkeep;
@@ -69,11 +69,16 @@ export function createLedgerSupplier(options: ConversationHarnessOptions, reques
           if (history!.reader.continuitySuppressed(scope) || !history!.publishLedger || !history!.mutateUpkeep || !eligibility.withOwner) throw new Error("unavailable");
           // Bind before even claiming the admission fence: model/auth failures
           // must not create uncertain journal state or consume an allowance.
-          let binding;
+          const boundarySignal = AbortSignal.any([request.abortSignal, AbortSignal.timeout(60_000)]);
+          let binding, stopWaiting: (() => void) | undefined;
           try {
-            binding = config.bind ? eligibility.effectiveModel && await config.bind(eligibility.effectiveModel, request.abortSignal)
-              : config.model && config.complete ? { model: config.model, complete: config.complete } : undefined;
+            const cancelled = new Promise<undefined>(resolve => { stopWaiting = () => resolve(undefined); boundarySignal.addEventListener("abort", stopWaiting, { once: true }); });
+            binding = boundarySignal.aborted ? undefined : config.bind ? await Promise.race([
+              config.bind(eligibility.effectiveModel, boundarySignal, eligibility.requestInference), cancelled,
+            ]) : config.model && config.complete ? { model: config.model, complete: config.complete } : undefined;
           } catch { /* model/credential preflight is a local, non-purchasing failure */ }
+          finally { if (stopWaiting) boundarySignal.removeEventListener("abort", stopWaiting); }
+          if (boundarySignal.aborted) { gap = true; localSkip = request.abortSignal.aborted ? "aborted" : "unavailable"; return; }
           if (!binding) { gap = true; localSkip = "model_unavailable"; return; }
           const fence = await eligibility.withOwner(async ownerToken => {
             if (!ownerToken) throw new Error("owner_unavailable");
@@ -115,8 +120,9 @@ export function createLedgerSupplier(options: ConversationHarnessOptions, reques
           await eligibility.withOwner(async () => {
             if (selection.deadline !== undefined && performance.now() >= selection.deadline) throw new LedgerError("ledger_scan_capacity");
             if (!await read(() => history!.reader.continuitySnapshotVisible(scope, { ...source, records: selection.records })) || (await readLedger())?.generation.id !== frozen?.generation.id) throw new LedgerError("source_changed");
+            boundarySignal.throwIfAborted();
             await history!.mutateUpkeep!({ kind: "reserve", reservation: reservation! });
-            request.abortSignal.throwIfAborted();
+            boundarySignal.throwIfAborted();
             if (selection.deadline !== undefined && performance.now() >= selection.deadline) throw new LedgerError("ledger_scan_capacity");
             barrierRequested = true;
             await history!.mutateUpkeep!({ kind: "dispatch", reservation: reservation! });
@@ -125,7 +131,7 @@ export function createLedgerSupplier(options: ConversationHarnessOptions, reques
           // owner's post-check succeed. Lost waiters never speculate or retry.
           accounting = upkeepAccounting(reservation);
           emitSafe(emit, { type: "continuity_upkeep_dispatch", accounting });
-          completion = await binding.complete(selection.prompt, request.abortSignal, { operationId: reservation.operationId, inputTokens, maxEntries: selection.maxEntries });
+          completion = await binding.complete(selection.prompt, boundarySignal, { operationId: reservation.operationId, inputTokens, maxEntries: selection.maxEntries });
           let generation: ReturnType<typeof validateLedgerOutput> | undefined, validationError: unknown;
           if (completion.receipt.status === "valid" && completion.text) {
             try {

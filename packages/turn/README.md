@@ -20,7 +20,12 @@ Implements the Pi runtime and its typed host integration. The `./host` entrypoin
 
 Continuity upkeep can preflight model identity and credential presence without a
 completion, then bind a sessionless no-fallback call. Configured hosts use the
-selected runtime's auth/pricing defaults and first-attempt inference options.
+selected runtime's auth/pricing defaults and the answer router's first-attempt
+inference merge. Request credential/pricing callbacks propagate without tools or
+session authority; delegated runtimes do not inherit outer account defaults.
+Preflight and completion share one 60-second deadline. Unsupported required
+request caps skip before reservation. The named `ContinuityUpkeepBinding` type
+requires matching receipt model and budget operation identity.
 Codex has no wire output cap; selecting it via a conversation switch also selects
 that extraction behavior unless an override or `requireRequestCap` prevents it.
 See [ledger bounds](../../docs/runtime/continuity-ledger.md).
@@ -746,6 +751,7 @@ validateSessionTurn
 **`@mono-agent/turn/host`**
 
 ```text
+ContinuityUpkeepBinding
 ContinuityUpkeepReceipt
 ContinuityUpkeepResult
 completeContinuityUpkeep

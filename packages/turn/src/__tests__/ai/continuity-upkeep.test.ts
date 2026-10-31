@@ -5,7 +5,7 @@ const apis = ["anthropic-messages", "openai-completions", "openai-responses", "o
 const token = `fictional.${Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "fictional-account" } })).toString("base64url")}.fictional`;
 const reference = { provider: "fictional", model: "fixture", reference: "fictional:fixture" };
 function model(api: string) { return { ...fauxProvider({ models: [{ id: "fixture", contextWindow: 128000, maxTokens: 8192 }] }).getModel(), provider: "fictional", id: "fixture", api, baseUrl: "https://fixture.invalid/v1" }; }
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 it.each(apis)("proves one real %s request builder, enforcement class and inclusive cap without transport", async api => {
   const network = vi.fn(async () => { throw new Error("OFFLINE_NETWORK_FORBIDDEN"); }); vi.stubGlobal("fetch", network);
@@ -241,4 +241,22 @@ it.each(["missing_model", "missing_auth", "auth_error"])("preflights %s without 
   const result = await binding!.complete("Fictional evidence.", options.abortSignal);
   expect(result.receipt).toMatchObject({ model: reference.reference, status: "valid", providerInvoked: true });
   expect(provider.state.callCount).toBe(1);
+});
+
+it("bounds stalled auth and shares the preflight deadline with completion", async () => {
+  const provider = fauxProvider({ provider: "fictional", api: "openai-responses", models: [{ id: "fixture" }], tokensPerSecond: 1000000 });
+  const models = createModels(); models.setProvider(provider.provider);
+  const deadline = new AbortController();
+  const timeout = vi.spyOn(AbortSignal, "timeout").mockReturnValue(new AbortController().signal).mockReturnValueOnce(deadline.signal);
+  const getAuth = vi.spyOn(models, "getAuth").mockImplementationOnce(async () => await new Promise<never>(() => {}));
+  const options = { model: reference, messages: [], abortSignal: new AbortController().signal, piResolvedModels: models };
+  const stalled = prepareContinuityUpkeep(options);
+  expect(getAuth).toHaveBeenCalledOnce(); deadline.abort();
+  expect(await stalled).toBeUndefined(); expect(provider.state.callCount).toBe(0);
+  const shared = new AbortController(); timeout.mockReturnValueOnce(shared.signal);
+  const binding = await prepareContinuityUpkeep(options);
+  shared.abort();
+  const result = await binding!.complete("Fictional evidence", options.abortSignal);
+  expect(result.receipt).toMatchObject({ reason: "aborted", providerInvoked: false });
+  expect(provider.state.callCount).toBe(0);
 });

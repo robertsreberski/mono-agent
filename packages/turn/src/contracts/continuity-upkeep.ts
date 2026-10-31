@@ -12,6 +12,7 @@ export interface ContinuityUpkeepReceipt {
   readonly costUsd: number | null; readonly visibleEstimate: number; readonly outputOverrun: boolean;
 }
 export interface ContinuityUpkeepResult { readonly text?: string; readonly receipt: ContinuityUpkeepReceipt }
+/** Completion receipts must retain binding.model and the supplied budget.operationId. */
 export interface ContinuityUpkeepBinding {
   readonly model: string;
   readonly complete: (prompt: string, signal: AbortSignal, budget?: { readonly operationId: string; readonly inputTokens: 64000 | 128000; maxEntries?: number | undefined }) => Promise<ContinuityUpkeepResult>;

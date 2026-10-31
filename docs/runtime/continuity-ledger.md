@@ -37,8 +37,8 @@ extractor; set it to the previous `runtime.model` to keep the old fixed behavior
 Upkeep and ledger reading remain OFF by default; budgets are unchanged.
 
 The model/completion pair binds once after eligibility and before source selection
-or reservation. Model identity and credential presence are checked first. Missing
-models/auth produce a local `model_unavailable` receipt and bounded degradation
+or reservation. Model identity, credential presence and API/request-cap eligibility are checked
+first. Missing models/auth or unsupported required caps produce a local `model_unavailable` receipt and bounded degradation
 warning, without admission state, reservation, dispatch or `uncertain` poisoning.
 The answer keeps deterministic evidence; a later authorized turn can still extract.
 Actual dispatch failures retain conservative uncertain-dispatch suppression.
@@ -48,9 +48,13 @@ including routed first-attempt inference options, and rebuild local-provider
 endpoint options for the selection. Explicit static `runtimeOptions` resolvers
 retain their precedence, subject to the answer route's per-attempt options.
 `providers.piAuthPath` supplies configuration defaults. No arbitrary request
-MCP/tools/session authority is copied. Request-only credential/pricing overrides
-from `runtimeOptionsForRequest` are not propagated; supply those through static
-`runtimeOptions` or the selected model runtime instead. Custom runtimes can implement
+MCP/tools/session authority is copied. Credential/pricing callbacks from
+`runtimeOptionsForRequest` are propagated as narrow inference-only overrides, with
+the same precedence as the answer route. Delegated route runtimes use their own
+auth/pricing defaults, never the outer runtime's defaults. Routed attempt-scoped
+provider bags are cleared and merged with the same helper as the answer router;
+an unpinned requested model that disagrees with the routed primary skips cleanly.
+Custom runtimes can implement
 `prepareContinuityUpkeep`; without it, configured/static inference defaults are
 used (private runtime credentials cannot be introspected). Resource-owning custom
 attempt resolvers with `cleanup` skip preflight rather than lend an unsafe closure;
@@ -80,8 +84,11 @@ silently pretending that an excluded route performed maintenance.
 One promise is memoized per logical turn. Selection/completion run under the
 existing exclusive conversation hold, **outside** the owner transaction;
 publication reacquires that transaction and checks source visibility and parent
-identity. The completion can delay a cold first token by **up to 60 seconds**,
-in addition to the separately bounded scan/preflight below.
+identity. Preflight and completion share **one 60-second deadline**, including intervening
+selection. Stalled credential refresh is raced against this deadline even if the
+credential provider ignores cancellation; timeout skips locally without a
+reservation. Request cancellation during preflight reports `aborted`, not a
+missing model. Late bindings are never dispatched.
 Failures do not block the answer: retain the deterministic pack and report a gap.
 Here “retry” means router retries and backups: they never buy upkeep. A native
 `resume_error` that produces a cold seed within the primary attempt is an eligible
@@ -97,7 +104,7 @@ newer generation during the turn.
   metadata with a conservative estimate margin. Reported
   input usage including cached input is also checked before publication.
 - 4,096 output tokens **including reasoning**, with lowest supported effort.
-- One 60-second deadline, combined with caller cancellation.
+- One shared 60-second preflight/completion deadline, combined with caller cancellation.
 
 Nine supported adapters send an inclusive request cap (Anthropic, OpenAI
 completions/Responses, Azure Responses, Google, Vertex, Bedrock, Mistral and Pi):

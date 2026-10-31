@@ -3,7 +3,7 @@ import type { MonoRuntimeFallbackChainEntry, MonoRuntimeRetryPolicy, MonoRuntime
 import { assertParsedRuntimeModelReference, TurnHostError } from "./model-reference.js";
 import { bridgeOwnedForegroundProcesses } from "./owned-foreground-processes.js";
 import { createRuntime } from "#turn/runtime/create-runtime";
-import { createRouterRuntime } from "#turn/runtime/router";
+import { createRouterRuntime, mergeAttemptOptions } from "#turn/runtime/router";
 import { listRuntimeBridges } from "#turn/runtime/bridges";
 import { bridgeProcessJobsController } from "./process-jobs.js";
 import { monoSandboxImpl } from "./sandbox/implementation.js";
@@ -77,6 +77,8 @@ export function createMonoRuntime(options: CreateMonoRuntimeOptions = {}): MonoR
   return {
     async prepareContinuityUpkeep(runOptions, settings) {
       assertParsedRuntimeModelReference(runOptions.model);
+      // Unpinned extraction must never disagree with the actual routed primary.
+      if (chain && !settings?.pinned && (chain[0]!.model.provider !== runOptions.model.provider || chain[0]!.model.model !== runOptions.model.model)) return undefined;
       // Resolve only the selected route's first attempt; never enter the router.
       const resolution = chain && protectedResolveAttempt
         ? await protectedResolveAttempt({ model: runOptions.model, attemptIndex: 0, retryIndex: 0 }) : undefined;
@@ -90,10 +92,10 @@ export function createMonoRuntime(options: CreateMonoRuntimeOptions = {}): MonoR
           ...(hostOptions.resolveCustomPricing === undefined ? {} : { resolveCustomPricing: hostOptions.resolveCustomPricing }),
         };
         const inference = {
-          ...upkeepInferenceOptions(runOptions), ...upkeepInferenceOptions(resolution?.options),
+          ...upkeepInferenceOptions(chain && protectedResolveAttempt ? mergeAttemptOptions(runOptions, resolution?.options) : runOptions),
           model: runOptions.model, abortSignal: runOptions.abortSignal, messages: [],
         };
-        return resolution?.runtime ? await resolution.runtime.prepareContinuityUpkeep?.(inference, { defaults, requireRequestCap: settings?.requireRequestCap === true })
+        return resolution?.runtime ? await resolution.runtime.prepareContinuityUpkeep?.(inference, { pinned: settings?.pinned === true, requireRequestCap: settings?.requireRequestCap === true })
           : await prepareContinuityUpkeep({ ...defaults, ...inference }, settings?.requireRequestCap === true);
       } finally { await resolution?.cleanup?.(); }
     },

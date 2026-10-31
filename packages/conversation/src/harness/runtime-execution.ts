@@ -9,7 +9,7 @@ import { sessionModelKey } from "../sessions/model-key.js";
 import type { RunRecorder, RuntimeEventLike } from "@mono-agent/observability";
 import { monoRuntimeSupportsLiveInput } from "@mono-agent/turn/host";
 import { sandboxPolicyToRuntimeOptions } from "@mono-agent/turn/host/sandbox";
-import { type RuntimeMessage, type RuntimeResult, type RuntimeRunOptions, type RuntimeNativePreparedDispatch, type RuntimeNativeDispatchSnapshot, type RuntimeNativeDispatchBinding, type RuntimeHandoffProducerRequest, type RuntimeHandoffProducerResult, type RuntimeHandoffFit } from "@mono-agent/turn/host/types";
+import { type MonoRuntimeHostOptions, type RuntimeMessage, type RuntimeResult, type RuntimeRunOptions, type RuntimeNativePreparedDispatch, type RuntimeNativeDispatchSnapshot, type RuntimeNativeDispatchBinding, type RuntimeHandoffProducerRequest, type RuntimeHandoffProducerResult, type RuntimeHandoffFit } from "@mono-agent/turn/host/types";
 
 import type { BuiltAgentContext, ContextBlockInput, HistoryMessage, SkillIndexSummary } from "../context/index.js";
 import { composeHostTurnEnvelope, formatHostCapabilities, neutralizeTurnEnvelope } from "../context/turn-envelope.js";
@@ -498,7 +498,10 @@ async function executeHarnessRuntime(preparation: PreparationControl | undefined
         && (continuityHistory.length > 0 || routing.boundaryReason !== undefined || options.toolHistory?.upkeep?.enabled || options.toolHistory?.ledgerEnabled) ? async (budget: { maxTokens: number; reason: string; primaryAttempt: boolean }) => {
         try {
           let toolIds: ReadonlySet<string> = new Set();
-          await routing.continuityPack!.prepare({ effectiveModel, historyAvailable: continuityHistoryAvailable, sessionsEnabled, isolated: sessionIsolated,
+          await routing.continuityPack!.prepare({ effectiveModel, requestInference: {
+            ...(typeof requestRuntimeOptions?.resolvePiApiKey === "function" ? { resolvePiApiKey: requestRuntimeOptions.resolvePiApiKey as NonNullable<MonoRuntimeHostOptions["resolvePiApiKey"]> } : {}),
+            ...(typeof requestRuntimeOptions?.resolveCustomPricing === "function" ? { resolveCustomPricing: requestRuntimeOptions.resolveCustomPricing as NonNullable<MonoRuntimeHostOptions["resolveCustomPricing"]> } : {}),
+          }, historyAvailable: continuityHistoryAvailable, sessionsEnabled, isolated: sessionIsolated,
             ownedStore: typeof routing.withContinuityOwner === "function", primaryAttempt: budget.primaryAttempt, maxTokens: budget.maxTokens,
             ...(routing.withContinuityOwner ? { withOwner: routing.withContinuityOwner } : {}) }, budget.reason, emitRuntimeEvent);
           if (continuityHistory.length === 0 && routing.boundaryReason === undefined) return { messages: [] };

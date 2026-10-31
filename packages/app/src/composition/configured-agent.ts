@@ -364,17 +364,18 @@ async function createConfiguredConversationHarnessInternal(
     ledgerEnabled: config.runtime.session.continuity?.ledgerEnabled === true,
     ...(config.runtime.session.continuity?.upkeep?.enabled ? { upkeep: { enabled: true,
       recorderNamespace: recording.artifactDir,
-      bind: async (effectiveModel: RuntimeModelReference, signal: AbortSignal) => {
+      bind: async (effectiveModel: RuntimeModelReference | undefined, signal: AbortSignal, requestInference?: Pick<import("@mono-agent/turn/host/types").MonoRuntimeHostOptions, "resolvePiApiKey" | "resolveCustomPricing">) => {
         const selected = config.runtime.session.continuity?.upkeep?.extractionModel ?? effectiveModel;
+        if (!selected) return undefined;
         const owner = runtimeForSession(modelReferenceKey(selected));
         const { customProvider: _provider, customModel: _model, modelCapabilities: _capabilities, isPrivateProvider: _private, ...sharedInference } = options.runtimeOptions ?? {};
-        const inference = { ...mergeStaticRuntimeOptions(runtimeOptionsForLocalProvider(selected, config.providers?.local),
-          modelReferenceKey(selected) === modelReferenceKey(model) ? options.runtimeOptions : sharedInference),
+        const inference = { ...mergeStaticRuntimeOptions(configRuntimeFlags(config), runtimeOptionsForLocalProvider(selected, config.providers?.local),
+          modelReferenceKey(selected) === modelReferenceKey(model) ? options.runtimeOptions : sharedInference, requestInference),
           model: selected, abortSignal: signal, messages: [] };
         const requireRequestCap = config.runtime.session.continuity?.upkeep?.requireRequestCap === true;
         // A custom host without the optional seam keeps config/static inference
         // defaults. Built-in and routed model runtimes supply their own defaults.
-        return owner.prepareContinuityUpkeep ? await owner.prepareContinuityUpkeep(inference, { defaults: runtimeHostOptionsForConfig(config), requireRequestCap })
+        return owner.prepareContinuityUpkeep ? await owner.prepareContinuityUpkeep(inference, { defaults: runtimeHostOptionsForConfig(config), requireRequestCap, pinned: config.runtime.session.continuity?.upkeep?.extractionModel !== undefined })
           : await prepareContinuityUpkeep({ ...runtimeHostOptionsForConfig(config), ...inference }, requireRequestCap);
       } } } : {}),
     conversationHistoryAvailable: conversationHistory !== undefined,

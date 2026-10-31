@@ -13,7 +13,9 @@
 
 - Let continuity-ledger extraction follow the turn's effective primary model
   before fallback, while preserving the explicit `upkeep.extractionModel` pin.
-  Model/auth preflight skips without reserving or suppressing later upkeep.
+  Model/auth/cap preflight skips without reserving or suppressing later upkeep;
+  it shares the completion's 60-second deadline. Request credential/pricing
+  overrides follow the answer route without leaking outer delegate accounts.
   Switching models changes extraction cost and account quota use; private-to-cloud
   switches may send up to about 128k tokens of retained evidence to the new model.
   Switching to Codex can select extraction without a wire cap unless
