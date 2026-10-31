@@ -308,6 +308,24 @@ A full 64-entry aggregate instead reports `ledger_aggregate_capacity`.
 Actual merged rendering is checked again before publication; overflow rejects
 the delta, not the prior.
 
+Fitting the first ledger is unchanged. Once a prior ledger exists, never-offered
+host-attested owner paragraphs already in the ranked queue receive a bounded
+first claim before the oldest-fair and ordinary ranked phases. The bound is the
+smaller of the current delta-entry cap and the current fair quota; it is
+recomputed on every quota retry and counts only successful fits, not rejected
+candidates. Previously offered owners receive no extra priority. Every phase
+shares the same seen set, projection-attempt limit and deadline, and every owner
+paragraph remains whole. Authority checks, input/render/payload/lineage bounds,
+largest-usable-delta selection and offer retirement are unchanged.
+
+This improves source availability, not representation or extraction quality.
+An offered but uncited owner is only analyzed and still shares the two-offer
+lifetime limit (see below). The first claim is not universal same-pass
+non-preemption: it can consume fitting room otherwise available to older sources,
+and moving an offer earlier can consume its later analysis window. A paragraph
+that is absent from the ranked queue or cannot fit the fixed envelope still
+cannot be offered; no promise of commitment or artifact recovery follows.
+
 Storage is latest-only, additive inside schema v3. Downgrading upkeep state to a
 pre-c-1 binary after upgrade is unsupported; rollback means disabling the features. Aggregate payload metadata
 must fit **128 KiB**, and the union of inherited/new retained source text must fit
