@@ -118,6 +118,60 @@ describe("voice through real mounted Chat, keyed Composer, runtime and store", (
     expect(api.createThread).toHaveBeenCalledTimes(1);
     expect(fixture.stop).toHaveBeenCalledTimes(2);
   });
+  it.each([
+    ["resolve", other], ["reject", other], ["resolve", created], ["reject", created],
+  ] as const)("recovers immediately after single navigation before create %s (%j)", async (outcome, destination) => {
+    let resolveCreate!: (value: ThreadSummary) => void;
+    let rejectCreate!: (error: Error) => void;
+    vi.mocked(api.createThread).mockImplementation(() => new Promise((resolve, reject) => { resolveCreate = resolve; rejectCreate = reject; }));
+    mount(); await record(); await stop();
+    fireEvent.click(screen.getByRole("button", { name: "Send voice message" }));
+    await waitFor(() => expect(store.creatingThread).toBe(true));
+    act(() => store.selectThread(destination.id)); // Exactly one operator navigation; stay here.
+    await waitFor(() => expect(store.selectionLoading).toBe(false));
+    await waitFor(() => expect(screen.getByRole("combobox", { name: "Message" })).toBeEnabled());
+    expect(screen.getByRole("button", { name: "Record voice message" })).toBeEnabled();
+    expect(screen.queryByText("Transcribing…")).not.toBeInTheDocument();
+    expect(fixture.stop).toHaveBeenCalledTimes(2);
+    // Cancellation/UI recovery must happen BEFORE the old acknowledgement.
+    await act(async () => { if (outcome === "resolve") resolveCreate(created); else rejectCreate(new Error("Synthetic create refusal")); });
+    expect(store.selectedThreadId).toBe(destination.id);
+    expect(screen.getByRole("combobox", { name: "Message" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Record voice message" })).toBeEnabled();
+    expect(api.transcribe).not.toHaveBeenCalled(); expect(api.submit).not.toHaveBeenCalled();
+  });
+  it.each(["resolve", "reject"] as const)("keeps a newer recording when a cancelled creation later %ss", async (outcome) => {
+    let resolveCreate!: (value: ThreadSummary) => void;
+    let rejectCreate!: (error: Error) => void;
+    vi.mocked(api.createThread).mockImplementation(() => new Promise((resolve, reject) => { resolveCreate = resolve; rejectCreate = reject; }));
+    mount(); await record(); await stop();
+    fireEvent.click(screen.getByRole("button", { name: "Send voice message" }));
+    await waitFor(() => expect(store.creatingThread).toBe(true));
+    act(() => store.selectThread(other.id));
+    await waitFor(() => expect(store.selectionLoading).toBe(false));
+    await record();
+    await act(async () => { if (outcome === "resolve") resolveCreate(created); else rejectCreate(new Error("Synthetic create refusal")); });
+    expect(screen.getByRole("button", { name: "Stop recording" })).toBeEnabled();
+    expect(store.selectedThreadId).toBe(other.id);
+    expect(api.transcribe).not.toHaveBeenCalled(); expect(api.submit).not.toHaveBeenCalled();
+    await stop(); await userEvent.click(screen.getByRole("button", { name: "Send voice message" }));
+    await waitFor(() => expect(api.submit).toHaveBeenCalledTimes(1));
+    expect(api.transcribe).toHaveBeenCalledTimes(1);
+    expect(api.transcribe).toHaveBeenCalledWith(other.id, expect.any(Blob), expect.any(AbortSignal));
+    expect(api.submit).toHaveBeenCalledWith(other.id, expect.any(String), expect.objectContaining({ text: "A synthetic voice request." }));
+    expect(fixture.stop).toHaveBeenCalledTimes(4);
+  });
+  it("keeps an owned creation refusal retryable without losing the recording", async () => {
+    vi.mocked(api.createThread).mockRejectedValueOnce(new Error("Synthetic create refusal")).mockResolvedValue(created);
+    mount(); await record(); await stop();
+    fireEvent.click(screen.getByRole("button", { name: "Send voice message" }));
+    await screen.findByText("Synthetic create refusal");
+    await userEvent.click(await screen.findByRole("button", { name: "Send voice message" }));
+    await waitFor(() => expect(api.submit).toHaveBeenCalledTimes(1));
+    expect(api.createThread).toHaveBeenCalledTimes(2); expect(api.transcribe).toHaveBeenCalledTimes(1);
+    expect(fixture.getUserMedia).toHaveBeenCalledTimes(1);
+    expect(api.submit).toHaveBeenCalledWith(created.id, expect.any(String), expect.objectContaining({ text: "A synthetic voice request." }));
+  });
   it.each(["creating", "transcribing"] as const)("cancels real navigation while %s, even A → B → A", async (phase) => {
     let resolveCreate!: (value: ThreadSummary) => void;
     let resolveTranscript!: (value: { text: string }) => void;

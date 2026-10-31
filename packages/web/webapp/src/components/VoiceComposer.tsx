@@ -40,6 +40,12 @@ function useVoiceComposer({ unavailableReason, selectionGeneration, visible = tr
     dispatched.current = false;
   };
   const cancel = () => { cleanup(); setPhase("idle"); setError(undefined); setSeconds(0); };
+  const ownsOperation = (current: number, signal?: AbortSignal) => {
+    if (current !== epoch.current) return false; // Never clean up a newer recording.
+    if (session.current?.isCurrent() && !signal?.aborted) return true;
+    cancel(); // Same-operation loss must also recover the composer without a rerender.
+    return false;
+  };
   useEffect(() => () => cleanup(), []);
   useEffect(() => { onBusyChange?.(busy); return () => onBusyChange?.(false); }, [busy, onBusyChange]);
   useEffect(() => {
@@ -62,12 +68,12 @@ function useVoiceComposer({ unavailableReason, selectionGeneration, visible = tr
     setError(undefined);
     setSeconds(0);
     setPhase("permission");
-    const owned = () => epoch.current === current && session.current?.isCurrent();
+    const owned = () => ownsOperation(current);
     const capture = new VoiceRecorder({
-      recording: () => { if (owned()) setPhase("recording"); else cancel(); },
+      recording: () => { if (owned()) setPhase("recording"); },
       elapsed: (elapsed) => { if (owned()) setSeconds(elapsed); },
       ready: (blob) => {
-        if (!owned()) { cancel(); return; }
+        if (!owned()) return;
         audio.current = blob;
         setPhase("ready");
       },
@@ -80,17 +86,18 @@ function useVoiceComposer({ unavailableReason, selectionGeneration, visible = tr
   const send = async () => {
     const owner = session.current;
     const blob = audio.current;
-    if (sending.current || !owner || (!blob && !transcript.current) || !owner.isCurrent()) return;
+    if (sending.current || !owner || (!blob && !transcript.current)) return;
+    if (!owner.isCurrent()) { cancel(); return; }
     sending.current = true;
     const current = epoch.current;
     const abort = new AbortController();
     controller.current = abort;
-    const owned = () => current === epoch.current && owner.isCurrent() && !abort.signal.aborted;
+    const owned = () => ownsOperation(current, abort.signal);
     setError(undefined);
     try {
       if (!transcript.current) {
         setPhase("transcribing");
-        const threadId = await owner.prepare();
+        const threadId = await owner.prepare(abort.signal);
         if (!owned()) return;
         const result = await api.transcribe(threadId, blob!, abort.signal);
         if (!owned()) return;

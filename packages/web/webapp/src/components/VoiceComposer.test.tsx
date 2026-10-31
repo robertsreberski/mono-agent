@@ -81,6 +81,39 @@ describe("voice composer", () => {
     await act(async () => resolve({ text: "Cancelled text" }));
     expect(owner.submit).not.toHaveBeenCalled();
   });
+  it.each(["resolve", "reject"] as const)("cleans up same-operation ownership loss on prepare %s without a selection rerender", async (outcome) => {
+    let resolve!: (value: string) => void;
+    let reject!: (error: Error) => void;
+    const owner = session();
+    owner.prepare.mockImplementation(() => new Promise((done, fail) => { resolve = done; reject = fail; }));
+    render(<VoiceComposer selectionGeneration={0} captureSubmission={() => owner} />);
+    await record(); fireEvent.click(screen.getByRole("button", { name: "Send voice message" }));
+    expect(owner.prepare).toHaveBeenCalledWith(expect.any(AbortSignal));
+    owner.isCurrent.mockReturnValue(false);
+    await act(async () => { if (outcome === "resolve") resolve("thread-one"); else reject(new Error("Synthetic refusal")); });
+    expect(screen.getByRole("button", { name: "Record voice message" })).toBeEnabled();
+    expect(api.transcribe).not.toHaveBeenCalled(); expect(owner.submit).not.toHaveBeenCalled();
+    expect(fixture.stop).toHaveBeenCalledTimes(2);
+  });
+  it.each(["resolve", "reject"] as const)("does not cancel a newer recording when old prepare %ss", async (outcome) => {
+    let resolve!: (value: string) => void;
+    let reject!: (error: Error) => void;
+    const oldOwner = session(); const nextOwner = session();
+    oldOwner.prepare.mockImplementation(() => new Promise((done, fail) => { resolve = done; reject = fail; }));
+    const capture = vi.fn().mockReturnValueOnce(oldOwner).mockReturnValue(nextOwner);
+    render(<VoiceComposer selectionGeneration={0} captureSubmission={capture} />);
+    await record(); fireEvent.click(screen.getByRole("button", { name: "Send voice message" }));
+    fireEvent.click(screen.getByRole("button", { name: "Cancel voice message" }));
+    fireEvent.click(screen.getByRole("button", { name: "Record voice message" }));
+    await screen.findByRole("button", { name: "Stop recording" });
+    await act(async () => { if (outcome === "resolve") resolve("thread-one"); else reject(new Error("Synthetic refusal")); });
+    expect(screen.getByRole("button", { name: "Stop recording" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "Stop recording" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Send voice message" }));
+    await waitFor(() => expect(nextOwner.submit).toHaveBeenCalledTimes(1));
+    expect(oldOwner.submit).not.toHaveBeenCalled(); expect(api.transcribe).toHaveBeenCalledTimes(1);
+    expect(fixture.stop).toHaveBeenCalledTimes(4);
+  });
   it("provider failure produces no submission and preserves a retryable recording", async () => {
     vi.mocked(api.transcribe).mockRejectedValueOnce(new Error("Service cannot decode this format"));
     const owner = session();

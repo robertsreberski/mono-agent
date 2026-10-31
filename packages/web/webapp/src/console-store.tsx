@@ -1,7 +1,7 @@
 /** In-memory immutable destination/settings; never persisted with audio. */
 export interface VoiceSubmissionSession {
   isCurrent(): boolean;
-  prepare(): Promise<string>;
+  prepare(signal?: AbortSignal): Promise<string>;
   submit(text: string): Promise<void>;
 }
 
@@ -5974,7 +5974,10 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     if (selectedThreadRef.current !== job.threadId) selectThread(job.threadId);
   }, [failOwnedSelection, routeRevision, selectThread, selectedAgentId, selectedCronOverview]);
 
-  const createThread = useCallback(async (projectId?: string, onSelectionInstalled?: (generation: number) => void) => {
+  const createThread = useCallback(async (projectId?: string, owner?: {
+    readonly isCurrent: () => boolean;
+    readonly onSelectionInstalled: (proof: { readonly generation: number; readonly thread: ThreadSummary }) => void;
+  }) => {
     if (!selectedAgentId) throw new Error("Select an agent before starting a conversation.");
     setNavigationScope("chats");
     const unresolved = selectionRequestRef.current;
@@ -6041,7 +6044,8 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       });
       setContext1MByContext((current) => { const next = { ...current }; delete next[draftPreferenceKey]; return next; });
       const stillOwnsSelection = operatorSelectionRef.current === request.generation
-        && selectedAgentRef.current === request.sourceId;
+        && selectedAgentRef.current === request.sourceId
+        && (owner?.isCurrent() ?? true);
       if (stillOwnsSelection) {
         beginOperatorSelection();
         // See `restoredSelectionRef`: what the operator opens is theirs, and a
@@ -6062,7 +6066,9 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       }
       if (stillOwnsSelection) {
         selectedThreadRef.current = thread.id;
-        onSelectionInstalled?.(operatorSelectionRef.current);
+        // Publish the exact installed identity synchronously, before React can
+        // observe the keyed handoff or the awaiting caller resumes.
+        owner?.onSelectionInstalled({ generation: operatorSelectionRef.current, thread });
         setSelectedThreadId(thread.id);
         persistThreadId(selectedAgentId, thread.id);
         setShowArchived(false);
@@ -6073,7 +6079,8 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       return thread;
     } catch (createError) {
       if (operatorSelectionRef.current === request.generation
-        && selectedAgentRef.current === request.sourceId) {
+        && selectedAgentRef.current === request.sourceId
+        && (owner?.isCurrent() ?? true)) {
         setActionError(errorMessage(createError));
       }
       throw createError;
@@ -7331,27 +7338,31 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     let generation = operatorSelectionRef.current;
     const visibilityGeneration = voiceVisibilityRef.current.generation;
     let thread = selectedThread;
-    let creating = false;
+    let operationSignal: AbortSignal | undefined;
     let preparePromise: Promise<string> | undefined;
     const settings = { model: effectiveModel || undefined, effort: effectiveEffort || undefined, inheritRunSettings: false, ...(context1M === undefined ? {} : { context1M }) };
-    const isCurrent = (): boolean => selectedAgentRef.current === sourceId
+    const isCurrent = (): boolean => !operationSignal?.aborted
+      && selectedAgentRef.current === sourceId
       && voiceVisibilityRef.current.generation === visibilityGeneration
-      && ((operatorSelectionRef.current === generation && selectedThreadRef.current === (thread?.id ?? null))
-        || (creating && operatorSelectionRef.current === generation + 1));
-    const prepare = (): Promise<string> => {
+      && operatorSelectionRef.current === generation
+      && selectedThreadRef.current === (thread?.id ?? null);
+    const prepare = (signal?: AbortSignal): Promise<string> => {
       if (preparePromise) return preparePromise;
       preparePromise = (async () => {
-        if (!isCurrent()) throw new Error("Conversation changed. Record again.");
+        if (!isCurrent() || signal?.aborted) throw new Error("Conversation changed. Record again.");
+        operationSignal = signal;
         if (!thread) {
-          creating = true;
-          try {
-            let installedGeneration: number | undefined;
-            const created = await createThread(undefined, (installed) => { installedGeneration = installed; });
-            if (selectedAgentRef.current !== sourceId || installedGeneration !== operatorSelectionRef.current || operatorSelectionRef.current !== generation + 1
-              || selectedThreadRef.current !== created.id) throw new Error("Conversation changed. Record again.");
-            generation = operatorSelectionRef.current;
-            thread = created;
-          } finally { creating = false; }
+          const created = await createThread(undefined, {
+            isCurrent,
+            onSelectionInstalled: (proof) => {
+              generation = proof.generation;
+              thread = proof.thread;
+            },
+          });
+          // Only the owned installation callback can adopt a destination. A
+          // matching id seen via SSE/operator navigation is not that proof.
+          if (!isCurrent() || selectedThreadRef.current !== created.id) throw new Error("Conversation changed. Record again.");
+          thread = created;
         }
         if (!isCurrent()) throw new Error("Conversation changed. Record again.");
         return thread.id;

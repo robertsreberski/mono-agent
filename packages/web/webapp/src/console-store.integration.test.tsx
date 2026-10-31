@@ -748,6 +748,30 @@ describe("ConsoleStoreProvider integration", () => {
     expect(api.submit).not.toHaveBeenCalled();
   });
 
+  it.each(["resolve", "reject"] as const)("voice cancellation fences late create %s without changing selection", async (outcome) => {
+    localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, "alpha");
+    let resolve!: (value: ThreadSummary) => void;
+    let reject!: (error: Error) => void;
+    vi.mocked(api.createThread).mockImplementation(() => new Promise((done, fail) => { resolve = done; reject = fail; }));
+    const store = await renderStore();
+    await waitFor(() => expect(store.current.selectionLoading).toBe(false));
+    const generation = store.current.selectionGeneration;
+    const captured = store.current.captureVoiceSubmission();
+    const controller = new AbortController();
+    const preparing = captured.prepare(controller.signal);
+    const assertion = expect(preparing).rejects.toThrow(outcome === "resolve" ? "Conversation changed" : "Synthetic refusal");
+    controller.abort();
+    expect(captured.isCurrent()).toBe(false);
+    await act(async () => {
+      if (outcome === "resolve") resolve(thread("cancelled-voice", "alpha")); else reject(new Error("Synthetic refusal"));
+      await assertion;
+    });
+    expect(store.current.selectedThreadId).toBeNull();
+    expect(store.current.selectionGeneration).toBe(generation);
+    expect(store.current.actionError).toBeNull();
+    expect(api.submit).not.toHaveBeenCalled();
+  });
+
   it("voice rejects an operator-selected matching new thread while creation acknowledgement is late", async () => {
     localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, "alpha");
     const created = thread("voice-sse-created", "alpha");
@@ -762,6 +786,7 @@ describe("ConsoleStoreProvider integration", () => {
     // The thread may appear through SSE before POST acknowledgement; selecting
     // it is still an independent operator choice, not this voice session's handoff.
     act(() => store.current.selectThread(created.id));
+    expect(captured.isCurrent()).toBe(false);
     await waitFor(() => expect(store.current.selectedThreadId).toBe(created.id));
     await act(async () => { resolve(created); await assertion; });
     expect(api.submit).not.toHaveBeenCalled();
