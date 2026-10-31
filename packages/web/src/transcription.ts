@@ -1,7 +1,7 @@
 import { WebConsoleError } from "./errors.js";
 import type { WebVoiceConfig } from "./voice-config.js";
 
-export const WEB_VOICE_LIMITS = { maxBytes: 10 * 1024 * 1024, maxSeconds: 120, maxTextCharacters: 8000 } as const;
+export const WEB_VOICE_LIMITS = { maxBytes: 10 * 1024 * 1024, maxTextCharacters: 8000 } as const;
 export const WEB_VOICE_UPLOAD_TIMEOUT_MS = 30_000;
 const MAX_RESPONSE_BYTES = 64 * 1024;
 

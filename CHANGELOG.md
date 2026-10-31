@@ -2,20 +2,16 @@
 
 ## Unreleased
 
-- Keep web voice messages inside the existing composer: a toolbar microphone,
-  compact recording status and explicit Stop, Cancel and Send controls, with
-  accessible availability reasons and receipt recovery.
+- Record audio from the web composer’s paperclip menu as ordinary removable,
+  retained attachments. Stop only stages audio; normal Send combines text/files
+  with bounded serial transcription, Send-time settings/UUID capture and exact
+  receipt retry. Preserve owned new-thread creation/navigation and newer drafts;
+  remove the fixed 120-second recording cutoff while retaining byte/resource
+  limits. Deprecate the no-longer-emitted `voice.maxSeconds` bootstrap field.
 
 - Prioritize first offers of short, host-attested owner paragraphs during
   continuity ledger selection, without changing source authority, fitting
   budgets, oldest-first fairness or tool-source diversity limits.
-
-- Add opt-in web voice messages: explicitly record, stop and Send to transcribe
-  through a server-configured local service/proxy and submit an ordinary request,
-  with bounded ephemeral audio, cancellation, captured execution settings and
-  normal receipt recovery across owned new-conversation creation. Navigation
-  cancels pending voice creation without blocking the destination composer;
-  cancelled creation preserves newer text drafts and execution preferences.
 
 - Fix continuity benchmark steers to carry owner-bound web attribution across
   ledger and pack arms; corrected results are not directly comparable with

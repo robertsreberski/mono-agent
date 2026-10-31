@@ -213,9 +213,21 @@ creating a turn. This route requires the actual exact `Origin` header, not just
 `no-store`, byte/deadline/concurrency bounded, and disabled if capability metadata
 is absent. Submit the transcript separately through the normal UUID-bearing
 submission/receipt path; never replay an ambiguous submission with a new ID.
+The browser stages recorded audio through ordinary uploads, then transcribes it
+before the normal synchronous UUID submission, including the same ordered
+attachment IDs. Audio retention is ordinary committed-attachment retention;
+this raw endpoint itself still stores no audio. Recording intent and successful
+transcript cache are client-memory only, never inferred from arbitrary audio
+filenames. Preparation must not bypass running-turn attachment restrictions.
+
+`voice.maxSeconds` is deprecated, optional on reads for old-server compatibility,
+and no longer emitted. There is no fixed browser recording-duration cutoff;
+byte/count/deadline/provider limits remain. Update pinned strict generated
+schemas/decoders accordingly. No asynchronous submission or processing receipt
+has been added.
 See [voice configuration, limits and retention](./web-console.md#voice-messages-opt-in).
 
-For immutable asynchronous submissions, `StartWebTurnInput.inheritRunSettings:
+For immutable prepared submissions, `StartWebTurnInput.inheritRunSettings:
 false` disables fallback to mutable thread overrides. Supply captured effective
 `model`, compatible `effort` when known, and resolved `context1M` (`false` is an
 explicit choice). Omitted/true preserves ordinary text behavior. An absent effort

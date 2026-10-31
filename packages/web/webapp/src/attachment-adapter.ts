@@ -5,6 +5,7 @@ import type {
   CreateAttachment,
   PendingAttachment,
 } from "@assistant-ui/react";
+import { VOICE_MAX_BYTES } from "./voice-recorder";
 import { api, uploadContent } from "./api";
 import type { UploadLimits, WebAttachment } from "./types";
 
@@ -101,6 +102,45 @@ export class WebUploadAttachmentAdapter implements AttachmentAdapter {
   private readonly recovering = new Set<string>();
   private readonly files = new Map<string, File>();
   private readonly recoveryFiles = new WeakMap<File, string>();
+  private readonly recorded = new WeakSet<File>();
+  private readonly recordings = new Map<string, { readonly file: File; text?: string }>();
+
+  registerRecording(file: File): void { this.recorded.add(file); }
+  hasRecordings(attachments: readonly { id: string }[]): boolean { return attachments.some(({ id }) => this.recordings.has(id)); }
+  hasIncompleteRecording(attachments: readonly { file?: File; status: { type: string } }[]): boolean {
+    return attachments.some((item) => item.status.type === "incomplete" && item.file !== undefined && this.recorded.has(item.file));
+  }
+  recordingBudget(attachments: readonly { id: string; file?: File }[] = []): number {
+    // Failed chips still own browser bytes, even after their staged reservation
+    // is released. Include them so repeated failed recordings remain bounded.
+    const extra = attachments.filter(({ id }) => !this.activeSizes.has(id));
+    if (this.activeSizes.size + extra.length >= this.limits.maxFilesPerTurn) return 0;
+    const used = [...this.activeSizes.values()].reduce((sum, size) => sum + size, 0)
+      + extra.reduce((sum, item) => sum + (item.file?.size ?? 0), 0);
+    return Math.max(0, Math.min(VOICE_MAX_BYTES, this.limits.maxFileBytes, this.limits.maxTurnBytes - used));
+  }
+  async prepareRecordedText(text: string, attachments: readonly { id: string; name?: string }[], threadId: string,
+    signal: AbortSignal, isCurrent: () => boolean): Promise<string> {
+    const sections: string[] = text ? [text] : [];
+    let number = 0;
+    for (const attachment of attachments) {
+      const recording = this.recordings.get(attachment.id);
+      if (!recording) continue; // Arbitrary audio uploads never enter transcription.
+      signal.throwIfAborted();
+      if (!isCurrent()) throw new DOMException("The conversation changed.", "AbortError");
+      if (recording.text === undefined) {
+        const result = await api.transcribe(threadId, recording.file, signal);
+        signal.throwIfAborted();
+        if (!isCurrent() || this.recordings.get(attachment.id) !== recording) throw new DOMException("The conversation changed.", "AbortError");
+        if (!result.text?.trim() || result.text.length > 8000) throw new Error("The transcript is empty or exceeds the transcription text limit.");
+        recording.text = result.text.trim();
+      }
+      sections.push(`Audio transcript ${++number} (${JSON.stringify(attachment.name ?? recording.file.name)}):\n${recording.text}`);
+    }
+    const composed = sections.join("\n\n");
+    if (composed.length > 200_000) throw new Error("The message and audio transcripts exceed the 200,000-character message limit.");
+    return composed;
+  }
   private reservationTail: Promise<void> = Promise.resolve();
   private generation = 0;
 
@@ -139,6 +179,10 @@ export class WebUploadAttachmentAdapter implements AttachmentAdapter {
     });
     const reservation = await this.reserveUpload(normalizedFile, generation);
     this.files.set(reservation.id, normalizedFile);
+    if (this.recorded.has(file)) {
+      this.recorded.add(normalizedFile);
+      this.recordings.set(reservation.id, { file: normalizedFile });
+    }
 
     let progress = 0;
     let settled = false;
@@ -192,6 +236,7 @@ export class WebUploadAttachmentAdapter implements AttachmentAdapter {
       this.activeSizes.delete(reservation.id);
       this.uploads.delete(reservation.id);
       this.files.delete(reservation.id);
+      this.recordings.delete(reservation.id);
       if (!this.removing.has(reservation.id)) {
         void api.deleteUpload(reservation.id).catch(() => undefined);
       }
@@ -243,6 +288,7 @@ export class WebUploadAttachmentAdapter implements AttachmentAdapter {
     this.activeSizes.delete(attachment.id);
     const existed = this.uploads.delete(attachment.id);
     this.files.delete(attachment.id);
+    this.recordings.delete(attachment.id);
     const transfer = this.transfers.get(attachment.id);
     transfer?.controller.abort();
     await transfer?.done.catch(() => undefined);
@@ -273,6 +319,7 @@ export class WebUploadAttachmentAdapter implements AttachmentAdapter {
       this.activeSizes.delete(id);
       this.uploads.delete(id);
       this.files.delete(id);
+      this.recordings.delete(id);
     }
   }
 
@@ -314,6 +361,7 @@ export class WebUploadAttachmentAdapter implements AttachmentAdapter {
       this.activeSizes.delete(id);
       this.uploads.delete(id);
       this.files.delete(id);
+      this.recordings.delete(id);
     }
     await Promise.all(ids.map((id) => api.deleteUpload(id).catch(() => undefined)));
   }
@@ -328,6 +376,7 @@ export class WebUploadAttachmentAdapter implements AttachmentAdapter {
       this.activeSizes.delete(id);
       this.uploads.delete(id);
       this.files.delete(id);
+      this.recordings.delete(id);
     }
     const transfers = ids.flatMap((id) => {
       const transfer = this.transfers.get(id);

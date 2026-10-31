@@ -2603,30 +2603,27 @@ textarea.wake-text { min-height: calc(3lh + 24px); max-height: calc(12lh + 24px)
 .wake-compact-label input { width: 18px; height: 18px; flex: none; accent-color: var(--accent); }
 .wake-compact .wake-message-foot { margin: 4px 0 0; }
 
-/* Voice occupies the existing input and toolbar, never a nested feature card. */
-.composer-input-row[hidden], .composer-hint[hidden] { display: none; }
-.voice-record[aria-disabled="true"] { opacity: .45; cursor: help; }
-.voice-availability { position: absolute; bottom: calc(100% + 8px); left: 10px; max-width: min(320px, calc(100% - 20px)); padding: 9px 12px; color: var(--text-soft); background: var(--surface-raised); border: 1px solid var(--line-strong); border-radius: 10px; box-shadow: var(--shadow-lg); font-size: 12px; line-height: 1.5; z-index: 15; }
-.voice-body { min-height: 37px; padding: 7px 5px; color: var(--text-soft); font-size: 13px; }
-.voice-status-line { display: flex; align-items: center; gap: 8px; min-height: 22px; }
-.voice-status-line > svg { flex: none; color: var(--accent); }
-.voice-recording-dot { width: 7px; height: 7px; flex: none; margin-inline: 4px; background: var(--danger); border-radius: 50%; }
-.voice-time { margin-left: auto; color: var(--text-soft); font: 12px var(--font-mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
-.voice-limit { color: var(--text-muted); }
-.voice-detail, .voice-error { margin: 4px 0 3px; color: var(--text-muted); font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
-.voice-error { color: var(--danger); padding-inline: 5px; }
-.voice-cancel { display: inline-flex; align-items: center; justify-content: center; gap: 5px; min-height: 34px; padding: 0 8px; color: var(--text-muted); background: transparent; border-radius: 10px; font-size: 12px; cursor: pointer; }
-.voice-cancel:hover { color: var(--text); background: var(--surface-hover); }
-.voice-primary { display: flex; gap: 7px; width: auto; min-width: 76px; padding-inline: 12px; font-size: 12px; }
+/* Audio capture is one compact draft attachment, not a second composer. */
+.recording-draft { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; padding: 6px 8px; margin-bottom: 6px; border: 1px solid var(--line); border-radius: 9px; color: var(--text-soft); font-size: 12px; }
+.voice-recording-dot { width: 7px; height: 7px; flex: none; background: var(--danger); border-radius: 50%; }
+.voice-time { margin-left: auto; font: 12px var(--font-mono); font-variant-numeric: tabular-nums; }
+.voice-detail, .voice-error { margin: 4px 5px 7px; color: var(--text-muted); font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
+.voice-error { color: var(--danger); }
+.voice-cancel, .voice-retry { display: inline-flex; align-items: center; justify-content: center; min-height: 34px; padding: 0 8px; color: var(--text); background: var(--surface-hover); border-radius: 8px; font-size: 12px; cursor: pointer; }
+.attachment-menu { min-width: 210px; max-width: min(300px, calc(100vw - 24px)); padding: 5px; color: var(--text); background: var(--surface-raised); border: 1px solid var(--line-strong); border-radius: 12px; box-shadow: var(--shadow-lg); z-index: 100; }
+.attachment-menu .menu-item { display: flex; align-items: center; gap: 9px; width: 100%; min-height: 40px; padding: 8px 10px; color: var(--text-soft); background: transparent; border-radius: 8px; font-size: 12px; cursor: pointer; }
+.attachment-menu .menu-item[data-highlighted] { background: var(--surface-hover); }
+.attachment-menu .menu-item[aria-disabled="true"] { opacity: .5; }
+.attachment-menu-reason { margin: 4px 9px 7px; color: var(--text-muted); font-size: 11px; line-height: 1.5; }
+.audio-attachment { display: flex; flex-direction: column; min-width: 0; max-width: 100%; }
+.audio-preview { width: min(280px, 100%); max-width: 100%; height: 40px; margin-block: 5px; }
+.audio-play { flex: none; min-width: 44px; min-height: 32px; padding: 4px 6px; color: var(--accent); background: transparent; cursor: pointer; font-size: 11px; }
+.composer-attachments:has(.audio-attachment) { max-height: 148px; }
+.composer-attachments:has(.audio-preview) { max-height: 188px; }
 @media (max-width: 700px) {
-  .composer-tools:has(.voice-record) { gap: 1px; }
-  .composer-tools:has(.voice-record) .composer-tool { width: 36px; height: 44px; }
-  .voice-cancel, .voice-primary, .voice-progress { min-height: 44px; }
-}
-/* At phone widths, stack the two existing setting labels inside their trigger
-   rather than squeezing the model name away to make room for the microphone. */
-@media (max-width: 420px) {
-  .composer-toolbar:has(.voice-record) .model-selector__trigger { height: 44px; }
-  .composer-toolbar:has(.voice-record) .model-selector__value { display: grid; grid-template-columns: minmax(0, 1fr); justify-items: start; gap: 2px; }
-  .composer-toolbar:has(.voice-record) .model-selector__model-name { max-width: 100%; }
+  .voice-cancel, .voice-retry, .audio-play { min-height: 44px; }
+  .recording-draft .icon-button { width: 44px; height: 44px; }
+  .attachment-menu .menu-item { min-height: 44px; }
+  .audio-attachment .attachment-chip { height: 44px; }
+  .audio-attachment .attachment-remove { width: 44px; height: 44px; }
 }

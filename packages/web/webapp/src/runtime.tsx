@@ -11,6 +11,9 @@ import {
   useExternalStoreRuntime,
 } from "@assistant-ui/react";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { RecordedAudioContext } from "./recorded-audio-context";
+import { RecordedSubmissionAttempt } from "./recorded-submission";
+import { ApiError } from "./api";
 import { WebUploadAttachmentAdapter } from "./attachment-adapter";
 import { ReplyAccessProvider } from "./components/reply-access";
 import { shouldShowMessageRunAttribution } from "./components/RunAttribution";
@@ -572,6 +575,57 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
     [attachmentAdapter],
   );
 
+  const [recordedState, setRecordedState] = useState<{ attempt: RecordedSubmissionAttempt; agentId: string | null; busy: boolean; error?: string; uncertain: boolean }>();
+  const recordedRef = useRef<typeof recordedState>(undefined);
+  const runRecorded = useCallback(async (state: NonNullable<typeof recordedState>) => {
+    if (state.busy) return;
+    state.busy = true;
+    setRecordedState({ ...state, error: undefined });
+    try {
+      await state.attempt.send();
+      attachmentAdapter.completeSend(state.attempt.attachments);
+      if (recordedRef.current === state) { recordedRef.current = undefined; setRecordedState(undefined); }
+    } catch (failure) {
+      const knownUnsent = !state.attempt.dispatched || failure instanceof ApiError && failure.status >= 400 && failure.status < 500 && failure.status !== 408 && failure.code !== "submission_conflict";
+      const context = { agentId: state.agentId, threadId: state.attempt.threadId };
+      if (knownUnsent) {
+        attachmentAdapter.recoverSend(state.attempt.attachments);
+        queueRecovery(state.attempt.text, state.attempt.attachments, state.attempt.quote, context);
+        if (recordedRef.current === state) {
+          recordedRef.current = undefined;
+          setRecordedState({ ...state, busy: false, uncertain: false, error: failure instanceof DOMException && failure.name === "AbortError" ? "Audio preparation cancelled. Your draft and files are kept." : failure instanceof Error ? failure.message : "Audio preparation failed. Retry Send." });
+        }
+      } else if (recordedRef.current === state) {
+        // Never merge an uncertain, possibly accepted message into an editable
+        // newer draft. Retry this exact prepared attempt, settings and UUID.
+        state.uncertain = true;
+        state.busy = false;
+        state.error = "Send not confirmed. Check or retry the same message; it will not be transcribed again.";
+        setRecordedState({ ...state });
+      }
+    } finally { state.busy = false; }
+  }, [attachmentAdapter, queueRecovery]);
+  useEffect(() => {
+    const state = recordedRef.current;
+    if (state && !state.attempt.owner.isCurrent()) {
+      if (state.attempt.dispatched) {
+        // Lost ownership is reference-only recovery, just like reload. Do not
+        // lend a stale retry session to A → B → A or merge it into newer work.
+        // Release browser bytes/cache without deleting possibly committed audio.
+        attachmentAdapter.completeSend(state.attempt.attachments);
+        recordedRef.current = undefined; setRecordedState(undefined);
+      } else state.attempt.cancelPreparation();
+    }
+  }, [attachmentAdapter, store.selectionGeneration, store.conversationVisible]);
+  useEffect(() => {
+    const leave = () => recordedRef.current?.attempt.cancelPreparation();
+    const hidden = () => { if (document.hidden) leave(); };
+    window.addEventListener("pagehide", leave); document.addEventListener("visibilitychange", hidden);
+    return () => { leave(); window.removeEventListener("pagehide", leave); document.removeEventListener("visibilitychange", hidden); };
+  }, []);
+  const recordedVisible = recordedState && recordedState.agentId === store.selectedAgentId
+    && (recordedState.attempt.threadId === store.selectedThreadId || recordedState.attempt.threadId === null && store.creatingThread);
+
   const onNew = useCallback(
     async (message: AppendMessage, _options?: SubmissionOptions) => {
       const text = message.content
@@ -591,6 +645,20 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
       };
       if (store.selectionLoading || store.selectionError !== null) {
         queueRecovery(text, attachments, quote, submissionContext);
+        return;
+      }
+      if (attachmentAdapter.hasRecordings(attachments)) {
+        if (store.selectedThread?.runState.status === "running") {
+          queueRecovery(text, attachments, quote, submissionContext);
+          setRecordedState({ attempt: new RecordedSubmissionAttempt(store.captureAttachmentSubmission(), attachmentAdapter, { text, attachments, quote, threadId: store.selectedThreadId }), agentId: store.selectedAgentId, busy: false, uncertain: false, error: "Wait for the running response to finish before sending attachments." });
+          return;
+        }
+        const attempt = new RecordedSubmissionAttempt(store.captureAttachmentSubmission(), attachmentAdapter,
+          { text, attachments, quote, threadId: store.selectedThreadId });
+        attachmentAdapter.beginSend(attachments);
+        const state = { attempt, agentId: store.selectedAgentId, busy: false, uncertain: false };
+        recordedRef.current = state;
+        void runRecorded(state);
         return;
       }
       if (turnStartingRef.current) {
@@ -646,7 +714,7 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
         }
       })();
     },
-    [attachmentAdapter, queueRecovery, store],
+    [attachmentAdapter, queueRecovery, runRecorded, store],
   );
 
   /**
@@ -782,7 +850,7 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
     convertMessage,
     isLoading: store.selectionLoading || store.detailLoading,
     isRunning,
-    isSendDisabled: !selectedCanSend || turnStarting || runningManualCompaction(store.selectedThread),
+    isSendDisabled: !selectedCanSend || turnStarting || Boolean(recordedVisible && (recordedState.busy || recordedState.uncertain)) || runningManualCompaction(store.selectedThread),
     onNew,
     onCancel: () => store.cancelTurn("api"),
     queue: submissionQueue,
@@ -880,7 +948,11 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
             catalogByProvider={routeOwner?.sourceId === store.selectedAgentId ? store.catalogByProvider : undefined}
           >
             <ReplyAccessProvider refreshAttachment={store.refreshReplyAttachmentAccess}>
-              {children}
+              <RecordedAudioContext.Provider value={{ adapter: attachmentAdapter, busy: Boolean(recordedVisible && recordedState.busy),
+                error: recordedVisible ? recordedState.error : undefined, uncertain: Boolean(recordedVisible && recordedState.uncertain),
+                retry: () => { const state = recordedRef.current; if (state && state.attempt.owner.isCurrent()) void runRecorded(state); } }}>
+                {children}
+              </RecordedAudioContext.Provider>
             </ReplyAccessProvider>
           </RouteCapabilitiesProvider>
         </ToolCallRepairProvider>

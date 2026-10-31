@@ -7,7 +7,7 @@ import { join, resolve } from "node:path";
 import { startWebServer } from "../dist/index.js";
 
 // Built-dist, loopback-only proof. Requires the real synthetic Chromium recording
-// emitted by VoiceComposer.browser.test.tsx with VITE_VOICE_SHOTS enabled.
+// emitted by VoiceConversation.browser.test.tsx with VITE_VOICE_SHOTS enabled.
 const audio = await readFile(resolve(process.argv[2] ?? "output/voice/chromium-synthetic-recording.webm"));
 assert(audio.length > 100 && audio.length < 10 * 1024 * 1024);
 const root = await realpath(await mkdtemp(join(tmpdir(), "mono-voice-smoke-")));
@@ -57,27 +57,51 @@ try {
     json(res, { error: "not found" }, 404);
   });
   const now = new Date().toISOString();
-  consoleServer = await startWebServer({ host: "127.0.0.1", port: 0, stateDir: join(root, "state"), discoveryIntervalMs: 0, purgeIntervalMs: 0,
+  const options = { host: "127.0.0.1", port: 0, stateDir: join(root, "state"), discoveryIntervalMs: 0, purgeIntervalMs: 0,
     voice: { transcription: { endpoint: `${provider}/v1/audio/transcriptions`, model: "fixture-whisper", timeoutMs: 500 } },
     discoverImpl: async () => [{ source: { schema: "agent-runtime.trace-source.v1", sourceId: "fixture-agent", label: "Fixture operator", artifactDir: join(root, "artifacts"), pid: process.pid, status: "running", health: "running", startedAt: now, updatedAt: now, warnings: [] }, baseUrl: `${operator}/gui` }],
-  });
-  const base = `http://127.0.0.1:${consoleServer.port}`;
+  };
+  consoleServer = await startWebServer(options);
+  let base = `http://127.0.0.1:${consoleServer.port}`;
   const headers = { origin: base, "content-type": "application/json" };
   const created = await fetch(`${base}/api/v1/threads`, { method: "POST", headers, body: JSON.stringify({ sourceId: "fixture-agent" }) });
   assert.equal(created.status, 201);
   const { thread } = await created.json();
   const transcriptionUrl = `${base}/api/v1/threads/${thread.id}/transcriptions`;
   const transcribe = (signal) => fetch(transcriptionUrl, { method: "POST", headers: { origin: base, "content-type": "audio/webm;codecs=opus" }, body: audio, ...(signal ? { signal } : {}) });
+  assert.equal((await (await fetch(`${base}/api/v1/bootstrap`)).json()).voice.maxSeconds, undefined);
+  async function stage(name, contentType, content) {
+    const reserved = await fetch(`${base}/api/v1/uploads`, { method: "POST", headers, body: JSON.stringify({ name, contentType, sizeBytes: content.length }) });
+    assert.equal(reserved.status, 201);
+    const { attachment } = await reserved.json();
+    assert.equal(attachment.status, "staged");
+    const uploaded = await fetch(`${base}/api/v1/uploads/${attachment.id}/content`, { method: "PUT", headers: { origin: base, "content-type": "application/octet-stream" }, body: content });
+    assert.equal(uploaded.status, 200);
+    return attachment;
+  }
+  const recording = await stage("recording.webm", "audio/webm", audio);
+  const note = await stage("plants.txt", "text/plain", Buffer.from("A fictional herb list."));
+  const removed = await stage("discarded.webm", "audio/webm", audio);
+  assert.equal((await fetch(`${base}/api/v1/uploads/${removed.id}`, { method: "DELETE", headers: { origin: base } })).status, 204);
+  assert.equal((await fetch(`${base}/api/v1/uploads/${removed.id}/content`)).status, 404);
+  providerMode = "fail";
+  assert.equal((await transcribe()).status, 502);
+  assert.equal(operatorRequests.length, 0, "Failed preparation must not dispatch or consume staged files");
+  assert.equal((await fetch(`${base}/api/v1/uploads/${recording.id}/content`)).status, 200);
+  providerMode = "ok";
   const transcribed = await transcribe();
   assert.equal(transcribed.status, 200);
-  const { text } = await transcribed.json();
+  const transcript = (await transcribed.json()).text;
+  const text = `Plan an easy-care garden.\n\nAudio transcript 1 ("recording.webm"):\n${transcript}`;
+  const preparedProviderRequests = providerRequests;
   assert.equal(operatorRequests.length, 0, "Transcription alone must not dispatch");
   const submissionId = randomUUID();
-  const body = JSON.stringify({ submissionId, text, model: "fixture/model", inheritRunSettings: false });
+  const body = JSON.stringify({ submissionId, text, attachmentIds: [recording.id, note.id], model: "fixture/model", inheritRunSettings: false });
   for (let repeat = 0; repeat < 2; repeat++) {
     const submitted = await fetch(`${base}/api/v1/threads/${thread.id}/submissions`, { method: "POST", headers, body });
     assert.equal(submitted.status, 202);
   }
+  assert.equal(providerRequests, preparedProviderRequests, "Exact prepared retry must not transcribe again");
   const receipt = await fetch(`${base}/api/v1/threads/${thread.id}/submissions/${submissionId}`);
   assert.equal(receipt.status, 200);
   let detail;
@@ -86,6 +110,18 @@ try {
     return detail.messages.some((message) => message.role === "assistant" && message.status === "complete");
   });
   assert.equal(operatorRequests.length, 1);
+  assert.equal(operatorRequests[0].attachments.length, 2);
+  const retained = detail.messages.find((message) => message.role === "user").attachments;
+  assert.deepEqual(retained.map((value) => value.id), [recording.id, note.id]);
+  assert(retained.every((value) => value.status === "committed"));
+  async function download() {
+    const response = await fetch(`${base}/api/v1/uploads/${recording.id}/content`);
+    assert.equal(response.status, 200); assert.equal(response.headers.get("x-content-type-options"), "nosniff");
+    assert.equal(response.headers.get("content-type"), "application/octet-stream");
+    assert.match(response.headers.get("content-disposition"), /^attachment;/u);
+    assert.deepEqual(Buffer.from(await response.arrayBuffer()), audio);
+  }
+  await download();
   assert.equal(detail.messages.filter((message) => message.role === "user").length, 1);
   assert(detail.messages.some((message) => message.parts.some((part) => part.type === "text" && part.text === text)));
   assert(detail.messages.some((message) => message.parts.some((part) => part.type === "text" && part.text === "Hello from the fixture.")));
@@ -101,10 +137,13 @@ try {
   abort.abort(); await cancelled;
   await until(() => providerAborted);
   assert.equal(operatorRequests.length, 1, "Failure, timeout and cancel create zero additional requests");
-  assert.deepEqual(await readdir(join(root, "state", "uploads")), []);
+  assert((await readdir(join(root, "state", "uploads"))).length > 0, "Committed audio/files must be retained normally");
+  await consoleServer.stop(); consoleServer = await startWebServer(options);
+  base = `http://127.0.0.1:${consoleServer.port}`;
+  await download();
   const final = await (await fetch(`${base}/api/v1/threads/${thread.id}`)).json();
   assert.equal(final.messages.filter((message) => message.role === "user").length, 1);
-  console.log(JSON.stringify({ proof: "built-dist-loopback-voice", syntheticAudioBytes: audio.length, multipartValidated: true, providerRequests, normalRequests: operatorRequests.length, userMessages: 1, assistantReplies: 1, replayDeduplicated: true, failureTimeoutCancelAdditionalRequests: 0, audioUploadFiles: 0, realProviderAccuracy: "unverified" }));
+  console.log(JSON.stringify({ proof: "built-dist-loopback-recorded-attachments", syntheticAudioBytes: audio.length, multipartValidated: true, providerRequests, normalRequests: operatorRequests.length, userMessages: 1, assistantReplies: 1, replayDeduplicated: true, failureTimeoutCancelAdditionalRequests: 0, retainedAudioAndTextAttachments: 2, retainedThroughTestServiceReopen: true, forcedDownloadNoSniff: true, removedDraftUnavailable: true, fixedDurationClaimAbsent: true, realProviderAccuracy: "unverified" }));
 } finally {
   await consoleServer?.stop();
   for (const server of servers) { server.closeAllConnections(); await new Promise((resolveClose) => server.close(resolveClose)); }
