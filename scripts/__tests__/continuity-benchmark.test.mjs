@@ -957,4 +957,7 @@ it.each(["ownerEntries", "toolEntries", "summaryEntries", "evidenceEntries"])("a
   expect(verifyLedgerTreatment({ valid: true, expectedEntries: 1 }, injected)).toBe(false);
   expect(verifyLedgerTreatment(upkeep, { ...injected, continuityPacks: [...injected.continuityPacks, empty] })).toBe(false);
   expect(verifyLedgerTreatment(upkeep, { ...injected, upkeep: [{ providerInvoked: true }] })).toBe(false);
+  // A disclosed oversized ledger still renders zero derived entries: never the planned treatment.
+  expect(verifyLedgerTreatment({ valid: true, expectedEntries: 3 }, injected)).toBe(false);
+  expect(verifyStore(arm, { checkpointContinuity, observed: injected, expectedLedgerEntries: 3 }).reasons).toContain("ledger_not_injected");
 });
