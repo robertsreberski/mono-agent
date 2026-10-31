@@ -129,10 +129,10 @@ it("requests guard-sized Codex output and suppresses reasoning summaries", async
   for (const clause of [
     "at most 8 entries, each value at most 96 UTF-8 bytes, total serialized JSON at most 3072 UTF-8 bytes",
     "Changed state is a new fact, not restatement",
-    "preserve cancellation, rejection, completion and artifact transitions (approve, void, file, send)",
+    "preserve cancellation, rejection, completion and artifact state transitions",
     "Distinguish suggestion, agreement, obligation, report and verified outcome; never promote an unagreed suggestion",
     "Reconcile retained evidence by source order, even across reverse extraction-pass order",
-    "Keep prose concise and self-contained; keep identifiers tied to their cited roles, never substitute a nearby identifier",
+    "Keep prose concise and self-contained. Identifier values stay bare; keep the role in the cited context or a separate entry; never substitute a nearby identifier",
   ]) expect(prompt).toContain(clause);
 });
 it("retains a distinct estimated paid input cost after a Codex abort", async () => {

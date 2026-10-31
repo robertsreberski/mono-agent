@@ -34,11 +34,11 @@ it("pins the compact extraction contract without changing schema or caps", () =>
   for (const clause of [
     "never restate unchanged prior entries. Changed state is a new fact",
     "Preserve explicit cancellation, rejection and completion",
-    "artifact transitions (approve, void, file, send)",
+    "artifact state transitions",
     "Distinguish suggestion, agreement, obligation, report and verified outcome",
     "never promote an unagreed suggestion",
     "Keep prose concise and self-contained",
-    "Keep each identifier tied to its role in cited context; never substitute a nearby identifier",
+    "Identifier values stay bare; keep the role in the cited context or a separate entry; never substitute a nearby identifier",
     "Reconcile earlier and later retained evidence by source order even when discovered in reverse extraction-pass order",
   ]) expect(prompt).toContain(clause);
 });

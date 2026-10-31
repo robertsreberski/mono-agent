@@ -725,14 +725,10 @@ it.each([false, true])("continues stage3 and probes after aborted stage2 (no led
   const trial = await runProbe({ modules, trace, arm, repeat: 1, probe: trace.probes[0], checkpointWork: checkpoint.work, checkpointSnapshot: checkpoint.snapshot,
     checkpointConversationId: checkpoint.record.conversationId, checkpointContinuity: checkpoint.record.continuity, checkpointUpkeep: upkeep,
     forkDir: join(dir, "probe"), plan, mode: "offline", root });
-  // Correct web attribution removes the former unknown steer from neutral
-  // evidence. With every extraction aborted, this fixture now exhausts the
-  // pack budget on owner/tool sections. Keep the exact no-ledger injection
-  // check strict: no neutral evidence means this treatment is unverified.
-  expect(trial.status, JSON.stringify(trial.store)).toBe(noLedger ? "store_degraded" : "completed");
+  expect(trial.status, JSON.stringify(trial.store)).toBe("completed");
+  expect(trial.boundary.verified).toBe(true);
   if (noLedger) {
-    expect(trial.boundary.reasons).toContain("ledger_treatment_unverified");
-    expect(trial.boundary.observed.continuityPacks.every(pack => pack.ledgerEntries === 0 && pack.evidenceEntries === 0)).toBe(true);
+    expect(trial.boundary.observed.continuityPacks.every(pack => pack.ledgerEntries === 0 && pack.evidenceEntries === 0 && pack.ownerEntries + pack.toolEntries > 0)).toBe(true);
   }
   expect(trial.boundary.observed.offlineLedgerCounts).toEqual(noLedger ? [0, 0] : [1, 1]);
   expect(trial.boundary.observed.upkeep.every(row => !row.providerInvoked)).toBe(true);
@@ -942,4 +938,23 @@ describe("free three-pass source-selection/fitting baseline", () => {
     // generation identity or timing field belongs in the replay manifest.
     expect(await replayLedgerSelection(records)).toEqual(passes);
   }, 60000);
+});
+
+
+it.each(["ownerEntries", "toolEntries", "summaryEntries", "evidenceEntries"])("accepts empty-ledger injection with %s, but not absent evidence", section => {
+  const arm = armById("continuity-ledger-cold"), upkeep = { valid: true, expectedEntries: 0 };
+  const checkpointContinuity = { records: 10, degraded: false };
+  const empty = { reason: "model_change", tokens: 100, degradedReason: "none", ledgerEntries: 0, ownerEntries: 0, toolEntries: 0, summaryEntries: 0, evidenceEntries: 0 };
+  const observed = pack => ({ toolsOffered: ["ConversationHistory"], historyWarnings: 0,
+    continuityPacks: pack === undefined ? [] : [pack], upkeep: [{ providerInvoked: false, reason: "read_only" }] });
+  const injected = observed({ ...empty, [section]: 1 });
+  expect(verifyLedgerTreatment(upkeep, injected)).toBe(true);
+  expect(verifyStore(arm, { checkpointContinuity, observed: injected, expectedLedgerEntries: 0 }).healthy).toBe(true);
+  for (const missing of [observed(undefined), observed(empty)]) {
+    expect(verifyLedgerTreatment(upkeep, missing)).toBe(false);
+    expect(verifyStore(arm, { checkpointContinuity, observed: missing, expectedLedgerEntries: 0 }).reasons).toContain("ledger_not_injected");
+  }
+  expect(verifyLedgerTreatment({ valid: true, expectedEntries: 1 }, injected)).toBe(false);
+  expect(verifyLedgerTreatment(upkeep, { ...injected, continuityPacks: [...injected.continuityPacks, empty] })).toBe(false);
+  expect(verifyLedgerTreatment(upkeep, { ...injected, upkeep: [{ providerInvoked: true }] })).toBe(false);
 });

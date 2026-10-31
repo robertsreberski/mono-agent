@@ -116,12 +116,18 @@ returns the frozen output, so production code writes the native transcript and
 the tool-history records. Steers are delivered with `offerLiveInput` while a
 scripted tool call is in flight, and each must reach the next model request.
 Owner-authored web steers supply `ownerText` bound to the exact steer text, just
-as production web does. Anonymous offers, background wakes and mismatched text
+as production web does. The trace schema has no steer-author field: replay
+assumes every trace steer/interruption is owner-authored web live input.
+Anonymous offers, background wakes and mismatched text
 remain unknown; no product channel authority rule changes. This attribution
 also moves retained steers into owner sections in the pack arm, not just the
 ledger arm. Archived results made without this binding are not directly
 comparable: any future comparison must use the corrected runner for all arms,
-including pack.
+including pack. A valid empty ledger still requires injected pack evidence;
+owner, tool, generated-summary or neutral sections all establish its presence.
+Reclassifying a steer from neutral to owner evidence does not exclude that trial
+or shrink the scoring denominator. A missing pack or one with no evidence
+sections remains an invalid treatment.
 Scripted turns never compact, because a faux model cannot produce a real summary.
 
 After the checkpoint, the workspace is copied once per probe. A new tool-free

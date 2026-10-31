@@ -15,7 +15,7 @@ exports[`free three-pass source-selection/fitting baseline > records every exact
       6,
     ],
     "pass": 1,
-    "promptBytes": 45101,
+    "promptBytes": 45108,
     "published": true,
     "recordsDigest": "5d95ab943c1b5e09b4536a6d7df14a9e217a6f65303f3ee09e7ff8d048c3d0e6",
     "selection": {
@@ -41,7 +41,7 @@ exports[`free three-pass source-selection/fitting baseline > records every exact
       299,
     ],
     "pass": 2,
-    "promptBytes": 45800,
+    "promptBytes": 45807,
     "published": false,
     "recordsDigest": "4c25005f945bb633c7002e21f0f20031a06b7f084722bc1f17e21e6b5c670f52",
     "selection": {
@@ -67,7 +67,7 @@ exports[`free three-pass source-selection/fitting baseline > records every exact
       291,
     ],
     "pass": 3,
-    "promptBytes": 47176,
+    "promptBytes": 47183,
     "published": true,
     "recordsDigest": "2d3cf82dbf2a6801b904991dcfbaac7eb91e817804c7c29a2e937d6da614812c",
     "selection": {
@@ -99,7 +99,7 @@ exports[`free three-pass source-selection/fitting baseline > records every exact
       6,
     ],
     "pass": 1,
-    "promptBytes": 42575,
+    "promptBytes": 42582,
     "published": true,
     "recordsDigest": "c11c961401305d874b245cfa0c265ad1282f9960b1e07a21e5dd52de69717a1a",
     "selection": {
@@ -124,7 +124,7 @@ exports[`free three-pass source-selection/fitting baseline > records every exact
       256,
     ],
     "pass": 2,
-    "promptBytes": 44387,
+    "promptBytes": 44394,
     "published": false,
     "recordsDigest": "69370cc9f0097bd77657649c488eb5b8a5fd130e104b0d411471ca5fd658d3f7",
     "selection": {
@@ -150,7 +150,7 @@ exports[`free three-pass source-selection/fitting baseline > records every exact
       270,
     ],
     "pass": 3,
-    "promptBytes": 47409,
+    "promptBytes": 47416,
     "published": true,
     "recordsDigest": "327f1f956569865e8a6ea30e2dbd69e7638a98e33bfc99b0013ed6ff0da57660",
     "selection": {
@@ -186,7 +186,7 @@ exports[`free three-pass source-selection/fitting baseline > records every exact
       145,
     ],
     "pass": 1,
-    "promptBytes": 68990,
+    "promptBytes": 68997,
     "published": true,
     "recordsDigest": "086f4df55f0c3dc8abfafab8ce7fb71006e7995e8479979003c036133f63ef8d",
     "selection": {
@@ -214,7 +214,7 @@ exports[`free three-pass source-selection/fitting baseline > records every exact
       145,
     ],
     "pass": 2,
-    "promptBytes": 29569,
+    "promptBytes": 29576,
     "published": false,
     "recordsDigest": "fadd1a6ac8afe0723b94c66a446c4794b793e77c2a3f054dfbbfa1fd264fac2b",
     "selection": {
@@ -243,7 +243,7 @@ exports[`free three-pass source-selection/fitting baseline > records every exact
       141,
     ],
     "pass": 3,
-    "promptBytes": 29453,
+    "promptBytes": 29460,
     "published": true,
     "recordsDigest": "dcc777187f309f56c45d42bd6a485c36374a82ba88c7d67f99fc8713f3db410d",
     "selection": {
