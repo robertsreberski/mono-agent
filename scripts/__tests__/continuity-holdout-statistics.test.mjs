@@ -140,6 +140,10 @@ it("power CLI is deterministic at 100,000 synthetic replications and rejects sma
   expect(await readFile(join(dir, "a/power.md"), "utf8")).toBe(await readFile(join(dir, "b/power.md"), "utf8"));
   const report = JSON.parse(a.stdout); expect(report.replications).toBe(100000);
   expect(report.schema).toBe("holdout-power-v2");
+  expect(Object.keys(report.calibrationMaximum)).toHaveLength(9);
+  expect(Object.keys(report.calibrationMaximum).every(k => /:(?:pack|native|benefit)$/u.test(k))).toBe(true);
+  expect(report.statisticalSpec.confidenceByGate).toEqual({ pack: 0.97, native: 0.95, benefit: 0.95 });
+  expect(report.scenarios.slice(0, 65).every(s => !s.stress && !s.reference && (s.name.startsWith("improved-target") || ["pack", "native", "benefit:combined", "benefit:corpus"].includes(s.boundary)))).toBe(true);
   expect(report.scenarios.filter(s => s.boundary).every(s => Object.keys(s.nullRejectionRates).length > 0)).toBe(true);
   const invalid = run(join(dir, "invalid"), "99999"); expect(invalid.status).toBe(1); expect(invalid.stderr).toContain("invalid_power_design");
   expect(() => simulatePower({ scenarios: [{ ...POWER_SCENARIOS[0], errorCount: 0 }] })).toThrow("invalid_power_scenario");
@@ -208,8 +212,9 @@ describe("review regression contracts", () => {
       const values = Array.from({ length: n }, () => random() * 2 - 1), interval = familyT(values);
       const result = evaluator.benefit(values.reduce((a, b) => a + b, 0), values.reduce((a, b) => a + b * b, 0), values.reduce((a, b) => a + b ** 3, 0), n, true);
       const safety = evaluator.safety(values.reduce((a, b) => a + b, 0), values.reduce((a, b) => a + b * b, 0), values.reduce((a, b) => a + b ** 3, 0), n, "continuity-pack-cold");
-      expect(safety.interval).toEqual(interval);
-      expect(safety.status).toBe(interval.upper <= 0.005 ? "pass" : interval.lower > 0.005 ? "fail" : "inconclusive");
+      const packInterval = familyT(values, 0.97);
+      expect(safety.interval).toEqual(packInterval);
+      expect(safety.status).toBe(packInterval.upper <= 0.005 ? "pass" : packInterval.lower > 0.005 ? "fail" : "inconclusive");
       expect(result.interval).toEqual(interval);
       expect(result.status).toBe(interval.lower > 0.02 ? "pass" : interval.upper <= 0.02 ? "fail" : "inconclusive");
     }
@@ -253,6 +258,7 @@ describe("review regression contracts", () => {
       expect(result.summary.holdout.scopes["holdout-hard"].ledgerWrong).toBe(200);
       expect(renderMarkdown(result.summary, { qualityMeasured: false })).toContain("Decision: **inconclusive**");
       expect(renderMarkdown(result.summary, { qualityMeasured: false })).toContain("not_a_measurement");
+      expect(renderMarkdown(result.summary, { qualityMeasured: false })).toContain("pack 97%; native 95%; benefit 95%");
       expect(result.summary.holdout.auditBinding.sha256).toBe(sha256(await readFile(path)));
       expect(result.summary.holdout.auditBinding.registrationSha256).toBe(registrationSha256);
       expect(result.summary.holdout.decision.status).toBe(mode === "offline" ? "inconclusive" : "fail");
@@ -269,7 +275,8 @@ describe("review regression contracts", () => {
 
 
 it.each([
-  ["confidence", 0.9], ["safety.maximumByComparator.continuity-pack-cold", 1], ["safety.maximumByComparator.native", 1], ["safety.wrongRateMaximum", 1],
+  ["confidence", 0.9], ["confidenceByGate.pack", 0.95], ["confidenceByGate.pack", 0.975],
+  ["confidenceByGate.native", 0.97], ["confidenceByGate.benefit", 0.97], ["safety.maximumByComparator.continuity-pack-cold", 1], ["safety.maximumByComparator.native", 1], ["safety.wrongRateMaximum", 1],
   ["benefit.combinedMinimumExclusive", 0], ["benefit.corpusMinimumExclusive", -1], ["accuracyMinimum", 0],
   ["audit.labelNumerator", 11], ["audit.contextNumerator", 6], ["audit.referenceDenominator", 364],
   ["audit.falselySupersededMaximum", 1], ["audit.bindingErrorsMaximum", 1],
@@ -390,5 +397,50 @@ describe("family-clustered tighten-only inference", () => {
     }
     const changed = structuredClone(STATISTICAL_SPEC); changed.inference.combined = "corpus-stratified";
     expect(() => validateStatisticalSpec(changed)).toThrow("unregistered_statistical_spec");
+  });
+});
+
+
+describe("registered alternative B confidence levels", () => {
+  it("matches hand-calculated 97% pack endpoints and keeps negative-skew U plain t", () => {
+    // Independent df=3 closed-form CDF inversion: F(t)=.5+[atan(r)+r/(1+r²)]/pi, r=t/sqrt(3).
+    const t97 = 2.950510470082926, adjustment = 3.068504011356323;
+    expect(tQuantile(0.97, 3)).toBeCloseTo(t97, 12);
+    const upper = familyT([0, 0, 0, 4], 0.97), reflected = familyT([0, 0, 0, -4], 0.97);
+    expect(upper).toMatchObject({ mean: 1, se: 1, skew: 2, confidence: 0.97 });
+    expect(upper.upperAdjustment).toBeCloseTo(adjustment, 12);
+    expect(upper.upper).toBeCloseTo(7.019014481439249, 12);
+    expect(upper.lower).toBeCloseTo(1 - t97, 12);
+    expect(reflected.upperAdjustment).toBe(0); expect(reflected.upper).toBeCloseTo(-1 + t97, 12);
+    expect(reflected.lower).toBeCloseTo(-1 - t97 - adjustment, 12);
+    const evaluator = gateEvaluator(), moments = [4, 16, 64, 4];
+    expect(evaluator.safety(...moments, "continuity-pack-cold").interval).toEqual(upper);
+    expect(evaluator.safety(...moments, "native").interval).toEqual(familyT([0, 0, 0, 4], 0.95));
+    expect(evaluator.benefit(...moments, true).interval).toEqual(familyT([0, 0, 0, 4], 0.95));
+    expect(evaluator.safety(0.01, 0.00005, 0.00000025, 2, "continuity-pack-cold")).toMatchObject({ status: "pass", interval: { upper: 0.005, confidence: 0.97 } });
+    const above = 0.005001;
+    expect(evaluator.safety(2 * above, 2 * above ** 2, 2 * above ** 3, 2, "continuity-pack-cold").status).toBe("fail");
+  });
+  it("uses each gate's confidence in its conservative missing envelope and reporting", () => {
+    const rows = trials(); rows.splice(rows.findIndex(t => t.arm === "continuity-ledger-cold"), 1);
+    const result = score(rows), scope = result.scopes["holdout-hard"];
+    const bounds = [[0, 1 / 60], ...Array.from({ length: 127 }, () => [0, 0])];
+    expect(scope.safety["continuity-pack-cold"].worstCompletionUpper).toBe(familyCompletionBounds(bounds, 0.97).upper);
+    expect(scope.safety.native.worstCompletionUpper).toBe(familyCompletionBounds(bounds, 0.95).upper);
+    expect(result.confidenceByGate).toEqual({ pack: 0.97, native: 0.95, benefit: 0.95 });
+    expect(result.decision.gates.find(g => g.name === "holdout-hard:safety:continuity-pack-cold").confidence).toBe(0.97);
+    expect(result.decision.gates.find(g => g.name === "holdout-hard:benefit").confidence).toBe(0.95);
+    const values = bounds.map(([lo, hi]) => (lo + hi) / 2), envelope = familyCompletionBounds(bounds, 0.97);
+    expect(familyT(values, 0.97).upper).toBeLessThanOrEqual(envelope.upper);
+    expect(familyT(values, 0.97).lower).toBeGreaterThanOrEqual(envelope.lower);
+  });
+  it("rejects the all-95% round-1 semantic spec and unregistered per-gate levels", () => {
+    const round1 = structuredClone(STATISTICAL_SPEC); delete round1.confidenceByGate; round1.confidence = 0.95;
+    expect(() => validateStatisticalSpec(round1)).toThrow("unregistered_statistical_spec");
+    expect(() => createRegistration({ ...registrationOptions(), statisticalSpec: round1 })).toThrow("unregistered_statistical_spec");
+    for (const key of ["pack", "native", "benefit"]) {
+      const changed = structuredClone(STATISTICAL_SPEC); changed.confidenceByGate[key] -= 0.01;
+      expect(() => validateStatisticalSpec(changed)).toThrow("unregistered_statistical_spec");
+    }
   });
 });

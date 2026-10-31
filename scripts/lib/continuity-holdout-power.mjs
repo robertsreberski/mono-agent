@@ -12,13 +12,17 @@ const qualities = [
   { name: "accuracy-null", boundary: "accuracy", quality: { ...target, ledger: [0.91875, 0.01] } },
 ];
 const grid = [0, 0.1, 0.2, 0.35].flatMap(icc => [0, 0.5, 0.9].map(repeatCorrelation => ({ icc, repeatCorrelation })));
-export const POWER_SCENARIOS = Object.freeze([
+const scenarios = [
   ...qualities.flatMap(s => grid.map(g => ({ ...s, ...g, name: `${s.name}-icc-${g.icc}-rho-${g.repeatCorrelation}`, effect: "dirichlet", errorCount: 3 }))),
   ...qualities.map(s => ({ ...s, name: `${s.name}-right-skew`, icc: 0.2, repeatCorrelation: 0.5, effect: "rare-shift", errorCount: 3 })),
   ...grid.map(g => ({ ...qualities[1], ...g, name: `target-reference-16x16-icc-${g.icc}-rho-${g.repeatCorrelation}`, effect: "dirichlet", errorCount: 3, reference: true })),
   ...qualities.filter(s => ["improved-target", "pack-null", "native-null"].includes(s.name)).flatMap(s => [false, true].map(reference => ({ ...s,
     name: `${s.name}-bundle-reuse-stress-${reference ? "16x16" : "128x2"}`, repeatCorrelation: 0.5, effect: "reuse", errorCount: 6, stress: true, reference }))),
-]);
+];
+// Keep the confidence-calibration/target prefix identical to the approved exploration.
+const calibrationScenario = s => !s.stress && !s.reference && (s.name.startsWith("improved-target")
+  || ["pack", "native", "benefit:combined", "benefit:corpus"].includes(s.boundary));
+export const POWER_SCENARIOS = Object.freeze([...scenarios.filter(calibrationScenario), ...scenarios.filter(s => !calibrationScenario(s))]);
 /** Exact finite mixture of repeatBundle; pre-enumeration avoids simulating individual answers. */
 export function bundleDistribution(quality, errorCount = 3, probes = 15) {
   const arms = ["native", "pack", "ledger"], atoms = [];
@@ -132,13 +136,14 @@ export function simulatePower({ seed = 572913, replications = 100000, scenarios 
       gatePassRates, nullRejectionRates, diagnostics, jointAcceptance: estimate(joint) };
   });
   const maxima = {};
-  for (const s of results.filter(s => !s.stress)) for (const [gate, estimate] of Object.entries(s.nullRejectionRates ?? {})) {
+  for (const s of results.filter(s => !s.stress)) for (const [gate, estimate] of Object.entries(s.nullRejectionRates ?? {}).filter(([gate]) => /:(?:pack|native|benefit)$/u.test(gate))) {
     if (!maxima[gate] || estimate.rate > maxima[gate].rate) maxima[gate] = { ...estimate, scenario: s.name };
   }
   return { schema: "holdout-power-v2", seed, replications, statisticalSpec, scenarios: results, calibrationMaximum: maxima,
-    calibrationCriterion: "Every non-stress boundary pass rate <= 0.055; point rules are reported too, not falsely called level-5% tests.",
+    calibrationCriterion: "Every non-stress confidence-bound gate/scope boundary pass rate <= 0.055; observed-wrong and accuracy point rules are excluded.",
     calibrationPass: Object.values(maxima).every(x => x.rate <= 0.055),
-    assumptions: ["Families are freshly sampled scenario types each replication. Main DGP uses Dirichlet random family outcome-mixture probabilities, inducing per-arm correct/wrong shifts with exactly preserved superpopulation means. Polya-urn integration is exact, not the stress model.",
+    assumptions: ["One-sided confidence is pack 97%, native 95%, benefit 95%; each critical value also enters its tighten-only skew term. Pack 95% was anti-conservative for lumpy errors at the tiny margin. The 65-scenario confidence-calibration/target prefix preserves the exploratory B RNG stream; all other scenarios follow.",
+      "Families are freshly sampled scenario types each replication. Main DGP uses Dirichlet random family outcome-mixture probabilities, inducing per-arm correct/wrong shifts with exactly preserved superpopulation means. Polya-urn integration is exact, not the stress model.",
       "Target ICC is for conversation-paired D (and benefit), not marginal wrong indicators. With r=1/(kappa+1), a=(1+rho)/2, ICC=r/(a+(1-a)r). rho is CONDITIONAL repeat copying; marginal repeat correlation is rho+(1-rho)r and is reported.",
       "Coherent 15-slot arm bundles use concentrated 0/3 errors and 0/6 abstentions conditional on remaining slots; half share cross-arm uniforms, half are independent. These count-mixture assumptions are not model-performance estimates.",
       "The non-stress right-skew variant uses a rare all-mass family arm shift with probability r, otherwise the baseline distribution; it preserves all means and target ICC exactly. Bundle-reuse stress instead mixes .4 family anchor + .6 baseline, with 0/6 errors. P(no bad family drawn) means no anchor with any ledger error among all families.",
@@ -147,7 +152,7 @@ export function simulatePower({ seed = 572913, replications = 100000, scenarios 
 }
 export function powerMarkdown(report) {
   const f = x => x.toFixed(6);
-  return ["# Family-clustered holdout power and calibration", "", `Seed ${report.seed}; ${report.replications} replications/scenario. Calibration criterion holds: ${report.calibrationPass}.`, "", ...report.assumptions.map(a => `- ${a}`), "",
+  return ["# Family-clustered holdout power and calibration", "", `Seed ${report.seed}; ${report.replications} replications/scenario. Calibration criterion (confidence-bound gates only) holds: ${report.calibrationPass}.`, "", `One-sided confidence: pack ${report.statisticalSpec.confidenceByGate.pack * 100}%; native ${report.statisticalSpec.confidenceByGate.native * 100}%; benefit ${report.statisticalSpec.confidenceByGate.benefit * 100}%.`, "", ...report.assumptions.map(a => `- ${a}`), "",
     "| Gate/scope | Max non-stress boundary pass | MC SE | Scenario |", "| --- | ---: | ---: | --- |",
     ...Object.entries(report.calibrationMaximum).map(([k, x]) => `| ${k} | ${f(x.rate)} | ${f(x.monteCarloSE)} | ${x.scenario} |`), "",
     "| Scenario | Joint acceptance (MC SE) | Boundary pass (MC SE) by scope | ICC / DE / skew (C1,C2,pooled) | P(no bad family) |", "| --- | --- | --- | --- | --- |",

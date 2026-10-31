@@ -3,8 +3,10 @@
 ## Unreleased
 
 - Add versioned holdout v2 family-clustered, conversation-paired quality gates,
-  tighten-only skew bounds, a 128-families-of-2 per-corpus layout, model-scoped
+  tighten-only skew bounds (pack 97%, native/benefit 95%), a 128-families-of-2
+  per-corpus layout, model-scoped
   eligibility reports, and random-family joint-power/null-calibration simulations.
+  Use 97% for the tiny pack margin after lumpy-error calibration rejected 95%.
   Keep cold-rebuild descriptive; reject incompatible v1 registrations.
 
 - Add opt-in deterministic v2 continuity benchmark scoring and a read-only

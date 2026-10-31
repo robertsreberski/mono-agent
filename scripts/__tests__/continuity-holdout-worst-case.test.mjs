@@ -24,7 +24,7 @@ it("reports v2 paired gates and descriptive risks on complete data", () => {
     const n = name === "combined" ? 512 : 256;
     expect(Object.keys(scope.safety)).toEqual([pack, "native"]);
     for (const comparator of [pack, "native"]) {
-      expect(scope.safety[comparator].interval).toMatchObject(familyT(Array(n / 2).fill(0)));
+      expect(scope.safety[comparator].interval).toMatchObject(familyT(Array(n / 2).fill(0), comparator === pack ? 0.97 : 0.95));
       expect(scope.safety[comparator].status).toBe("pass");
     }
     expect(scope.benefit).toMatchObject(familyT(Array(n / 2).fill(1 / 15)));
@@ -122,6 +122,9 @@ it("joins and certifies a full synthetic report with a failed chunk within the c
   expect(result.certified).toBe(true); expect(result.decision.status).toBe("pass");
   const savedReport = JSON.parse(await readFile(join(output, "report.json")));
   expect(savedReport.schema).toBe("holdout-final-report-v2");
+  expect(savedReport.statistics.confidenceByGate).toEqual({ pack: 0.97, native: 0.95, benefit: 0.95 });
+  const markdown = await readFile(join(output, "report.md"), "utf8");
+  expect(markdown).toContain("(one-sided 97% confidence)"); expect(markdown).toContain("(one-sided 95% confidence)");
   expect(savedReport.eligibilityScope).toMatchObject({ reader: context.registration.models.reader, extractor: context.registration.models.extractor });
   expect(await readFile(join(output, "report.md"), "utf8")).toContain(savedReport.eligibilityScope.statement);
   expect(savedReport.integrity).toMatchObject({ controllerComplete: false, controllerAdmissible: true, worstCase: true, complete: false, auditCertified: true });

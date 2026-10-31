@@ -14,7 +14,11 @@
     "conversationsPerFamily": 2,
     "shardCostCapUSD": 25
   },
-  "confidence": 0.95,
+  "confidenceByGate": {
+    "pack": 0.97,
+    "native": 0.95,
+    "benefit": 0.95
+  },
   "safety": {
     "comparators": [
       "continuity-pack-cold",
@@ -52,7 +56,7 @@
       "maximumMissingFractionPerArm": 0.01
     }
   },
-  "decision": "Pass only if every necessary gate passes, integrity is complete or within the registered worst-case-completion cap with no unknown rows, controller admission is admissible, and audit is complete. Otherwise fail when established, else inconclusive; no outcome-dependent extension. One-sided 95% family-clustered, conversation-paired bounds make no simultaneous-coverage claim. Cold-rebuild and any-wrong risks/discordances are descriptive only. Eligibility is limited to the registered reader/extractor model references; never automatic default enablement.",
+  "decision": "Pass only if every necessary gate passes, integrity is complete or within the registered worst-case-completion cap with no unknown rows, controller admission is admissible, and audit is complete. Otherwise fail when established, else inconclusive; no outcome-dependent extension. One-sided per-gate (pack 97%, native/benefit 95%) family-clustered, conversation-paired bounds make no simultaneous-coverage claim. Cold-rebuild and any-wrong risks/discordances are descriptive only. Eligibility is limited to the registered reader/extractor model references; never automatic default enablement.",
   "inference": {
     "unit": "family (sampled scenario type), conversation-paired",
     "combined": "all families pooled, not corpus-stratified",

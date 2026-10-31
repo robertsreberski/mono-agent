@@ -62,7 +62,7 @@ export async function finalReport(context, roots, joinedPath, audit, output) {
       failures: collection?.mechanical.failures ?? [], disagreements: resolved?.disagreements.length ?? agreed?.disagreements.length ?? null }, inputArtifacts: inputs };
   const markdown = ["# Registered holdout report", "", `Decision: **${report.decision.status}**`, "", report.accounting, "", report.eligibilityScope.statement, "",
     `Registration: ${report.registrationSha256}`, `Join: ${report.joinSha256}`, "", "## Gates", "",
-    ...report.decision.gates.map(g => `- ${g.name}: ${g.status}`), "", "## Descriptive arms (not gates)", "", "```json",
+    ...report.decision.gates.map(g => `- ${g.name}: ${g.status}${g.confidence === undefined ? "" : ` (one-sided ${g.confidence * 100}% confidence)`}`), "", "## Descriptive arms (not gates)", "", "```json",
     JSON.stringify(Object.fromEntries(Object.entries(statistics.scopes).map(([name, scope]) => [name, { rates: scope.descriptive, discordances: scope.discordances }])), null, 2), "```", "", "## Integrity and audit", "", "```json",
     JSON.stringify({ integrity: report.integrity, audit: report.audit }, null, 2), "```", "", report.artifactInventory, "", "See report.json for all intervals, counters and artifact bindings.", ""].join("\n");
   await durable(join(output, "report.json"), report, true); await durable(join(output, "report.md"), Buffer.from(markdown), true);

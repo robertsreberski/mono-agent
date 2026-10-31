@@ -415,3 +415,16 @@ real process tests for reservation durability, crash/restart, stop thresholds,
 unknown/lost accounting, owned deadline termination and blocked confirmation.
 It does not claim the artifact fixture is a real replay. Run the explicit drill
 for that evidence. No genuine holdout files belong in fixtures or this checkout.
+
+
+## Per-gate registered confidence
+
+Family-clustered, conversation-paired bounds use one-sided **97% for pack**
+and **95% for native and benefit**. Each gate uses its own critical value in
+both the base/skew terms and conservative missing-completion envelope.
+The pack margin is tiny (+0.5 pp) and errors are lumpy; 95% was anti-conservative
+in calibration. Confidence levels and margins are immutable external contracts.
+The ≤5.5% boundary-pass calibration criterion applies only to confidence-bound
+gates in non-stress scenarios, **not** the observed-wrong/accuracy point rules.
+Reports label these levels; there is no simultaneous-coverage claim. The earlier
+all-95% v2 spec requires a fresh registration and is not silently reinterpreted.

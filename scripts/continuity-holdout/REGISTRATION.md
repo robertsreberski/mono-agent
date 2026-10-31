@@ -38,7 +38,8 @@ Main power scenarios draw fresh Dirichlet family arm-mixture random effects
 with exact superpopulation means and target paired-difference ICC, including
 0/0.1/0.2/0.35 × conditional repeat copying 0/0.5/0.9. A right-skewed effect
 variant is included. Bundle-reuse stress is reported with P(no bad family),
-not calibration-gated. Every non-stress boundary pass rate must be ≤5.5%;
+not calibration-gated. Every non-stress **confidence-bound gate/scope** boundary pass rate must be
+≤5.5%; observed-wrong and accuracy point rules are excluded.
 maxima and realized ICC/design-effect/skew diagnostics are reported. Complete data, admission and passing certified
 audit are assumed, not measured. Inadequate power/calibration blocks a fresh
 registration; it does not justify loosening margins.
@@ -49,7 +50,9 @@ The statistical spec, registration, statistics and final report are **v2**.
 New tooling rejects v1 registrations with
 `incompatible_holdout_registration_version` and v1 statistical specs with
 `incompatible_statistical_spec_version`, before interpreting their contents.
-There is no migration or silent re-scoring. Historical v1 studies remain
+There is no migration or silent re-scoring. The earlier all-95% v2 semantic
+spec is also rejected as `unregistered_statistical_spec`; per-gate confidence
+levels are pinned and require fresh registration. Historical v1 studies remain
 reproducible only from their frozen tooling revision (the last pre-v2 main
 revision is `36d8b06ba4ba78539bdcec23383abf41cdc018e1`). Their decisions remain
 unchanged; legacy scorer contracts are separate from this statistical version.
@@ -136,12 +139,22 @@ Bounds are **family-clustered (families as sampled scenario types),
 conversation-paired**. Each family mean averages its registered conversation
 fraction differences. G=128 per corpus; **combined pools all 256 families**, not
 corpus-stratified. Let θ be the mean of family means, SE=sd(family means)/√G,
-t=t(.95,G−1), and γ their adjusted Fisher-Pearson sample skewness:
+t=t(q,G−1) for that gate’s pinned confidence q, and γ their adjusted
+Fisher-Pearson sample skewness:
 `G/((G−1)(G−2)) * sum(((familyMean−θ)/sd)^3)` (zero when SE=0;
 G=2 mechanics fixtures use zero, G<2 cannot pass an interval gate).
 
 - Upper U = θ + SE·max(t, t + γ(1+2t²)/(6√G)).
 - Lower L = θ − SE·max(t, t − γ(1+2t²)/(6√G)).
+
+One-sided confidence is **pack 97%, native 95%, benefit 95%**, pinned in
+`confidenceByGate`; there is no single global study confidence level.
+The same gate-specific t enters both the base and skew terms, including the
+missing-completion envelope. Pack's tiny +0.5 pp margin and lumpy errors made
+95% anti-conservative in calibration; 97% was approved after exploration.
+This does not change the numerical margins or claim simultaneous coverage.
+Reports/Markdown identify each confidence-bound gate's level; point rules have
+no confidence level.
 
 This Johnson/Hesterberg second-order skew adjustment is **tighten-only**;
 negative skew on U and positive skew on L use plain t. For balanced families
