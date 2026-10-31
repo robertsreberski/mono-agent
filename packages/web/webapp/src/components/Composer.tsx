@@ -24,6 +24,7 @@ import {
   ComposerTriggerPopover,
   type ComposerTriggerCommand,
 } from "./assistant-ui/ComposerTriggerPopover";
+import { VoiceComposer } from "./VoiceComposer";
 import { Icon } from "./Icon";
 import { ComposerQuotePreview } from "./assistant-ui/Quote";
 import { SkillAutocomplete, SkillBrowser } from "./assistant-ui/SkillPicker";
@@ -99,6 +100,8 @@ export function Composer({ runSettings, notice }: {
   // Server admission rejects both a new turn and live input during compaction.
   const compacting = runningManualCompaction(selectedThread);
   const canSend = useAuiState((state) => state.composer.canSend);
+  const [voiceBusy, setVoiceBusy] = useState(false);
+  const hasQuote = useAuiState((state) => Boolean(state.composer.quote));
   const attachmentCount = useAuiState((state) => state.composer.attachments.length);
   const commands = useMemo(() => buildComposerCommands({
     attachmentCount,
@@ -239,7 +242,7 @@ export function Composer({ runSettings, notice }: {
   return (
     <ComposerPrimitive.Unstable_TriggerPopoverRoot>
       <ComposerPrimitive.Root className="composer-root" onSubmitCapture={(event) => {
-        if (compacting) event.preventDefault();
+        if (compacting || voiceBusy) event.preventDefault();
       }}>
         <ComposerTriggerPopover commands={commands} />
         {skillQuery !== null && autocompleteSkills.length > 0 && (
@@ -252,15 +255,26 @@ export function Composer({ runSettings, notice }: {
         )}
         <ComposerQuotePreview />
         {notice}
+        <VoiceComposer
+          visible={store.conversationVisible}
+          selectionGeneration={store.selectionGeneration}
+          captureSubmission={store.captureVoiceSubmission}
+          onBusyChange={setVoiceBusy}
+          unavailableReason={!store.bootstrap?.voice?.enabled ? "Voice messages are not configured on this console."
+            : selectionUnavailable || !settled || !selectedAgent || selectedAgent.status === "offline" || selectedThread?.archivedAt || selectedThread?.trigger?.kind === "cron" || (selectedThread && !selectedThread.canSend) || compacting
+              ? "Select a connected, writable conversation and wait for compaction to finish."
+              : composer.value.length > 0 || attachmentCount > 0 || hasQuote ? "Send or clear text, files and quotes before recording a voice message." : undefined}
+        />
         {compacting && <p className="composer-compaction-note">Compacting context — you can send when it finishes.</p>}
         <ComposerPrimitive.AttachmentDropzone
           className="composer-dropzone"
-          disabled={!canUpload}
+          disabled={!canUpload || voiceBusy}
         >
           <AttachmentErrorListener />
           <ComposerAttachments />
           <div className="composer-input-row">
             <ComposerPrimitive.Input
+              disabled={voiceBusy}
               ref={inputRef}
               id="composer-input"
               className="composer-input"
@@ -289,7 +303,7 @@ export function Composer({ runSettings, notice }: {
           </div>
           <div className="composer-toolbar">
             <div className="composer-tools">
-              {canUpload && (
+              {canUpload && !voiceBusy && (
                 <ComposerPrimitive.AddAttachment
                   className="icon-button composer-tool"
                   aria-label="Attach files"
@@ -299,20 +313,20 @@ export function Composer({ runSettings, notice }: {
                   <Icon name="attach" size={17} />
                 </ComposerPrimitive.AddAttachment>
               )}
-              <SkillBrowser
+              {!voiceBusy && <SkillBrowser
                 agentLabel={selectedAgent?.label}
                 registry={store.skillRegistry}
                 onBeforeOpen={() => captureSelection()}
                 composerInputRef={inputRef}
                 onSelect={(name) => insertSkill(name, "browse")}
-              />
+              />}
             </div>
             <div className="composer-actions">
               {runSettings}
               <ComposerPrimitive.Send
                 className="composer-send"
                 aria-label="Send message"
-                disabled={!canSend || compacting}
+                disabled={!canSend || compacting || voiceBusy}
               >
                 <Icon name="send" size={16} />
               </ComposerPrimitive.Send>

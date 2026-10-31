@@ -121,6 +121,73 @@ User Stop also marks a running `AskUser` question as interrupted; answer in a ne
   remain stack-only.
 ## Install / Usage
 
+### Voice messages (opt-in)
+
+The microphone action records a separate voice-only request: **Record → Stop
+recording → Send voice message**. Send transcribes and submits the transcript as
+an ordinary request (including the existing mid-turn live-input path); it does
+not insert an editable draft. Send or clear any text, files and quote before
+recording. Permission is requested only after Record. Cancel discards the audio
+before submission; after dispatch, use the ordinary Stop response/receipt
+recovery semantics. Retrying an uncertain submission reuses its submission ID
+and transcript, not a second transcription.
+
+Voice is disabled unless the console owner configures a server-side local
+OpenAI-compatible transcription service or operator-managed proxy. No browser
+speech service, automatic cloud fallback, provider credentials or agent-config
+selection is involved. Create an owner-private regular file (mode `0600`, not a
+symlink) named `voice.json` in the web state root, normally `~/.mono-agent/web`:
+
+```json
+{
+  "transcription": {
+    "endpoint": "http://127.0.0.1:50123/v1/audio/transcriptions",
+    "model": "local-whisper",
+    "language": "en",
+    "timeoutMs": 120000
+  }
+}
+```
+
+`endpoint` and `model` are required; `language` is optional and `timeoutMs`
+defaults to 120000 (integer range 100–120000 ms). Unknown fields, URL credentials,
+query strings/fragments and non-HTTP(S) endpoints are rejected. The file is
+bounded to 8 KiB and preserved by console state reset; invalid explicit config
+fails startup safely. Configuration is read at service startup. Embedders can
+supply `CreateWebServiceOptions.voice: WebVoiceConfig | false`; `false` disables
+voice even when a file exists. This file is web-owned, not an agent config key.
+Endpoint/model values never enter browser bootstrap, logs or error messages.
+
+The configured endpoint must accept OpenAI-style multipart `file`, `model` and
+optional `language`, returning JSON `{ "text": "..." }`. Redirects and direct
+cloud credential management are unsupported. It must decode the browser's actual
+WebM/Opus, MP4/AAC (Safari/iOS) or Ogg/Opus container; there is no transcoder.
+Format rejection is visible and does not create a user request. Accuracy depends
+on the device, speech, model and service; synthetic tests do not establish it.
+
+Browser recording needs HTTPS (or localhost), `getUserMedia` and MediaRecorder.
+Insecure LAN HTTP cannot access the microphone; use your existing trusted HTTPS
+route, not a broader listener. The existing trusted-local/LAN/tailnet access
+boundary remains unchanged: there is no application login and origin validation
+is not authentication.
+
+Recordings are limited to 120 seconds and 10 MiB, held only in bounded browser
+and server memory. Audio never enters SQLite, staged uploads, attachment history
+or browser storage; cancel/navigation/unmount releases capture. Hiding the tab
+before dispatch also discards the recording/transcription. The submitted
+transcript is ordinary retained user text, with normal conversation/history
+policies. A transcription failure creates no message or turn.
+
+`POST /api/v1/threads/:id/transcriptions` accepts raw uncompressed audio with
+`Content-Type: audio/webm`, `audio/mp4` or `audio/ogg` (recognized codec parameters
+allowed) and a mandatory exact `Origin`. It returns `{ "text": "..." }` without
+submitting anything. Thread admission and concurrency reservations happen before
+buffering. It admits two operations globally and one per thread, without a queue;
+uploads have a 30-second deadline and actual-byte cap. Provider responses are
+limited to 64 KiB and transcripts to 8,000 characters. Responses are `no-store`;
+cancel, disconnect, timeout and shutdown abort provider work and release capacity.
+An absent bootstrap `voice` capability on an older server means unavailable.
+
 ### Scheduled wake-ups
 
 An ordinary existing conversation can have one schedule, configured through
@@ -1023,6 +1090,7 @@ id discovery no longer reports, are left alone.
 
 ### Package structure
 
+- `src/voice-config.ts`, `transcription.ts`, `voice-upload.ts`: server-only opt-in validation and bounded ephemeral audio admission/transcription.
 - `src/api-contract.ts`: HTTP body/query wrapper DTOs referencing the domain contracts.
 - `scripts/contract/`: explicit route descriptors and fictional fixture inputs.
 - `scripts/generate-api-contract.mjs`: deterministic JSON Schema/manifest/fixture generation and drift checks.
@@ -1039,6 +1107,11 @@ id discovery no longer reports, are left alone.
 | [`webapp/`](https://github.com/robertsreberski/mono-agent/tree/main/packages/web/webapp) | Isolated assistant-ui PWA, including the loaded conversation-level process-job stack and live tails, atomic `AskUser` forms, tests, and its own dependency lockfile. |
 
 ## Public API
+
+`WebVoiceConfig` is the server-only `CreateWebServiceOptions.voice` embedding
+override (`false` disables file configuration). The browser API exposes only
+capability limits and the transcription result; endpoint/model selection stays
+on the server. See [voice messages](#voice-messages-opt-in).
 
 Recovery-aware process-job notifications optionally carry private v1
 `wakeRecovery` metadata through the existing bearer-authenticated ingress. A
@@ -1255,6 +1328,7 @@ WebThreadUsage
 WebTypedEvent
 WebUsageSlice
 WebUsageTokens
+WebVoiceConfig
 WebWakeSchedule
 WebWakeScheduleDefinition
 beginWebExternalTurn
@@ -1430,6 +1504,25 @@ then runs focused unit checks, typecheck, production build and the full browser
 suite. It copies the canonical contract source and the existing pure web helpers,
 not a contracts package install or dist tree. Normal local browser tests still use
 `pnpm --dir packages/web/webapp run test:browser`.
+
+### Synthetic voice round trip
+
+After the dependency-closure build, capture a synthetic Chromium microphone
+recording and optional screenshots through the ordinary automated browser suite:
+
+```sh
+VITE_VOICE_SHOTS="$PWD/output/voice" WEBAPP_TEST_WEBKIT=1 \
+  pnpm --dir packages/web/webapp exec vitest run --config vitest.browser.config.ts \
+  src/components/VoiceComposer.browser.test.tsx
+node packages/web/scripts/smoke-voice.mjs
+```
+
+The smoke imports built `dist`, uses isolated temporary state and loopback fixture
+transcription/operator HTTP servers, and checks exactly one ordinary request and
+reply through duplicate receipt recovery. Provider failure, timeout and cancel
+create zero additional requests; audio leaves no upload files. Fixtures prove
+transport/lifecycle, not physical devices or real-provider accuracy. WebKit's
+states are deterministic fixtures; real recording is exercised only in Chromium.
 
 ### Console Storybook
 

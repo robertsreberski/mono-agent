@@ -1,3 +1,5 @@
+import { voiceFormat, WEB_VOICE_LIMITS } from "./transcription.js";
+import { readVoiceUpload } from "./voice-upload.js";
 import { browserCostWire } from "./cost-wire.js";
 import { isProviderUsageId } from "@mono-agent/contracts";
 import type { CreateWebTagInput, PatchWebTagInput } from "./contracts.js";
@@ -204,6 +206,36 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
     res.setHeader("Cache-Control", "private, no-store, max-age=0");
     next();
   });
+  // Raw audio admission precedes body middleware, including JSON parsing.
+  app.post("/api/v1/threads/:id/transcriptions", (req, res, next) => {
+    res.setHeader("Cache-Control", "private, no-store, max-age=0");
+    try {
+      if (!req.headers.origin) throw new WebConsoleError("origin_required", "Voice messages require an exact same-origin request.", 403);
+      exactRequestOrigin(req);
+      if (req.headers["content-encoding"] !== undefined && req.headers["content-encoding"] !== "identity") {
+        throw new WebConsoleError("voice_encoding_unsupported", "Send uncompressed recording bytes.", 415);
+      }
+      const format = voiceFormat(req.headers["content-type"]);
+      const length = Number(req.headers["content-length"] ?? 0);
+      if (length > WEB_VOICE_LIMITS.maxBytes) throw new WebConsoleError("voice_too_large", "The recording exceeds 10 MiB. Record a shorter message.", 413);
+      const operation = service.reserveTranscription(pathParam(req.params.id));
+      const abort = (): void => operation.abort();
+      req.once("aborted", abort);
+      res.once("close", abort);
+      void trackOperation((async () => {
+        try {
+          const audio = await readVoiceUpload(req, operation.signal);
+          const result = await operation.transcribe(audio, format);
+          if (!operation.signal.aborted && !res.destroyed) res.status(200).json(result);
+        } finally {
+          req.off("aborted", abort);
+          res.off("close", abort);
+          operation.release();
+        }
+      })(), activeOperations).catch(next);
+    } catch (error) { next(error); }
+  });
+
   app.use("/api/v1", express.json({ limit: "256kb", strict: true }));
 
   app.get("/healthz", (_req, res) => {

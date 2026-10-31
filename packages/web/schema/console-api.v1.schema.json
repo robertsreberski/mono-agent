@@ -339,7 +339,7 @@
       "type": "object",
       "properties": {
         "part": {
-          "$ref": "#/definitions/Extract%3CWebMessagePart%2Cstructure-src_api-contract.ts-4100-4132-src_api-contract.ts-4074-4133-src_api-contract.ts-4059-4133-src_api-contract.ts-4057-4135-src_api-contract.ts-4025-4136-src_api-contract.ts-90-6978-src_api-contract.ts-0-6979%3E"
+          "$ref": "#/definitions/Extract%3CWebMessagePart%2Cstructure-src_api-contract.ts-4100-4132-src_api-contract.ts-4074-4133-src_api-contract.ts-4059-4133-src_api-contract.ts-4057-4135-src_api-contract.ts-4025-4136-src_api-contract.ts-90-7034-src_api-contract.ts-0-7035%3E"
         }
       },
       "required": [
@@ -475,7 +475,7 @@
       "additionalProperties": false
     },
     "ApiCronEnableResult": {
-      "$ref": "#/definitions/WebCronMutationResult%3Cstructure-src_api-contract.ts-2378-2408-src_api-contract.ts-2353-2409-src_api-contract.ts-2321-2410-src_api-contract.ts-90-6978-src_api-contract.ts-0-6979%3E"
+      "$ref": "#/definitions/WebCronMutationResult%3Cstructure-src_api-contract.ts-2378-2408-src_api-contract.ts-2353-2409-src_api-contract.ts-2321-2410-src_api-contract.ts-90-7034-src_api-contract.ts-0-7035%3E"
     },
     "ApiCronOverview": {
       "$ref": "#/definitions/WebCronOverview"
@@ -499,7 +499,7 @@
       "additionalProperties": false
     },
     "ApiCronRunResult": {
-      "$ref": "#/definitions/WebCronMutationResult%3Cstructure-src_api-contract.ts-2282-2319-src_api-contract.ts-2257-2320-src_api-contract.ts-2228-2321-src_api-contract.ts-90-6978-src_api-contract.ts-0-6979%3E"
+      "$ref": "#/definitions/WebCronMutationResult%3Cstructure-src_api-contract.ts-2282-2319-src_api-contract.ts-2257-2320-src_api-contract.ts-2228-2321-src_api-contract.ts-90-7034-src_api-contract.ts-0-7035%3E"
     },
     "ApiCronRuns": {
       "$ref": "#/definitions/WebCronRunPage"
@@ -704,7 +704,7 @@
       "type": "object",
       "properties": {
         "part": {
-          "$ref": "#/definitions/Extract%3CWebMessagePart%2Cstructure-src_api-contract.ts-4292-4321-src_api-contract.ts-4266-4322-src_api-contract.ts-4251-4322-src_api-contract.ts-4249-4324-src_api-contract.ts-4221-4325-src_api-contract.ts-90-6978-src_api-contract.ts-0-6979%3E"
+          "$ref": "#/definitions/Extract%3CWebMessagePart%2Cstructure-src_api-contract.ts-4292-4321-src_api-contract.ts-4266-4322-src_api-contract.ts-4251-4322-src_api-contract.ts-4249-4324-src_api-contract.ts-4221-4325-src_api-contract.ts-90-7034-src_api-contract.ts-0-7035%3E"
         }
       },
       "required": [
@@ -1183,11 +1183,23 @@
       "type": "object",
       "properties": {
         "part": {
-          "$ref": "#/definitions/Extract%3CWebMessagePart%2Cstructure-src_api-contract.ts-3588-3632-src_api-contract.ts-3562-3633-src_api-contract.ts-3547-3633-src_api-contract.ts-3545-3635-src_api-contract.ts-3521-3636-src_api-contract.ts-90-6978-src_api-contract.ts-0-6979%3E"
+          "$ref": "#/definitions/Extract%3CWebMessagePart%2Cstructure-src_api-contract.ts-3588-3632-src_api-contract.ts-3562-3633-src_api-contract.ts-3547-3633-src_api-contract.ts-3545-3635-src_api-contract.ts-3521-3636-src_api-contract.ts-90-7034-src_api-contract.ts-0-7035%3E"
         }
       },
       "required": [
         "part"
+      ],
+      "additionalProperties": false
+    },
+    "ApiTranscription": {
+      "type": "object",
+      "properties": {
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "text"
       ],
       "additionalProperties": false
     },
@@ -1660,7 +1672,7 @@
       "additionalProperties": false,
       "description": "What an `agents.changed` says about itself.\n\nA pin is a one-field write the writing tab already applied from the PATCH response, so it names the agent and the new state rather than telling every console to re-read the bootstrap, its skills and its cron. Discovery-driven invalidations carry nothing: an agent that appeared, went away, or advertises something different can have changed anything at all."
     },
-    "Extract<WebMessagePart,structure-src_api-contract.ts-3588-3632-src_api-contract.ts-3562-3633-src_api-contract.ts-3547-3633-src_api-contract.ts-3545-3635-src_api-contract.ts-3521-3636-src_api-contract.ts-90-6978-src_api-contract.ts-0-6979>": {
+    "Extract<WebMessagePart,structure-src_api-contract.ts-3588-3632-src_api-contract.ts-3562-3633-src_api-contract.ts-3547-3633-src_api-contract.ts-3545-3635-src_api-contract.ts-3521-3636-src_api-contract.ts-90-7034-src_api-contract.ts-0-7035>": {
       "anyOf": [
         {
           "type": "object",
@@ -1815,7 +1827,7 @@
         }
       ]
     },
-    "Extract<WebMessagePart,structure-src_api-contract.ts-4100-4132-src_api-contract.ts-4074-4133-src_api-contract.ts-4059-4133-src_api-contract.ts-4057-4135-src_api-contract.ts-4025-4136-src_api-contract.ts-90-6978-src_api-contract.ts-0-6979>": {
+    "Extract<WebMessagePart,structure-src_api-contract.ts-4100-4132-src_api-contract.ts-4074-4133-src_api-contract.ts-4059-4133-src_api-contract.ts-4057-4135-src_api-contract.ts-4025-4136-src_api-contract.ts-90-7034-src_api-contract.ts-0-7035>": {
       "type": "object",
       "properties": {
         "type": {
@@ -1863,7 +1875,7 @@
       ],
       "additionalProperties": false
     },
-    "Extract<WebMessagePart,structure-src_api-contract.ts-4292-4321-src_api-contract.ts-4266-4322-src_api-contract.ts-4251-4322-src_api-contract.ts-4249-4324-src_api-contract.ts-4221-4325-src_api-contract.ts-90-6978-src_api-contract.ts-0-6979>": {
+    "Extract<WebMessagePart,structure-src_api-contract.ts-4292-4321-src_api-contract.ts-4266-4322-src_api-contract.ts-4251-4322-src_api-contract.ts-4249-4324-src_api-contract.ts-4221-4325-src_api-contract.ts-90-7034-src_api-contract.ts-0-7035>": {
       "type": "object",
       "properties": {
         "type": {
@@ -3950,6 +3962,31 @@
     "WebBootstrap": {
       "type": "object",
       "properties": {
+        "voice": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "maxBytes": {
+              "type": "number"
+            },
+            "maxSeconds": {
+              "type": "number"
+            },
+            "maxTextCharacters": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "enabled",
+            "maxBytes",
+            "maxSeconds",
+            "maxTextCharacters"
+          ],
+          "additionalProperties": false,
+          "description": "Absent on older servers: voice is unavailable. No provider details cross this boundary."
+        },
         "version": {
           "type": "number",
           "const": 1
@@ -4482,7 +4519,7 @@
       ],
       "additionalProperties": false
     },
-    "WebCronMutationResult<structure-src_api-contract.ts-2282-2319-src_api-contract.ts-2257-2320-src_api-contract.ts-2228-2321-src_api-contract.ts-90-6978-src_api-contract.ts-0-6979>": {
+    "WebCronMutationResult<structure-src_api-contract.ts-2282-2319-src_api-contract.ts-2257-2320-src_api-contract.ts-2228-2321-src_api-contract.ts-90-7034-src_api-contract.ts-0-7035>": {
       "anyOf": [
         {
           "type": "object",
@@ -4533,7 +4570,7 @@
         }
       ]
     },
-    "WebCronMutationResult<structure-src_api-contract.ts-2378-2408-src_api-contract.ts-2353-2409-src_api-contract.ts-2321-2410-src_api-contract.ts-90-6978-src_api-contract.ts-0-6979>": {
+    "WebCronMutationResult<structure-src_api-contract.ts-2378-2408-src_api-contract.ts-2353-2409-src_api-contract.ts-2321-2410-src_api-contract.ts-90-7034-src_api-contract.ts-0-7035>": {
       "anyOf": [
         {
           "type": "object",

@@ -1,3 +1,5 @@
+import { loadVoiceConfig, type WebVoiceConfig } from "./voice-config.js";
+import { WebTranscriptions, WEB_VOICE_LIMITS, type VoiceOperation } from "./transcription.js";
 import { dataLayers, isUpkeepTelemetry, upkeepTelemetryData } from "./message-cost.js";
 import { type ProcessJobWakeRecovery } from "./process-job-wake-recovery.js";
 import type { ProviderUsageId, ProviderUsageSnapshot } from "@mono-agent/contracts";
@@ -506,6 +508,9 @@ export interface WebServiceLogger {
 
 export interface CreateWebServiceOptions extends WebStatePathOptions, DiscoverOperatorAgentsOptions {
   readonly fetchImpl?: typeof fetch;
+  /** Server-only voice configuration; false disables the optional owner-private voice.json. */
+  readonly voice?: WebVoiceConfig | false;
+  readonly transcriptionFetchImpl?: typeof fetch;
   readonly logger?: WebServiceLogger;
   readonly clock?: () => Date;
   readonly discoveryIntervalMs?: number;
@@ -645,6 +650,7 @@ export class WebService {
   readonly store: WebStore;
   private readonly options: CreateWebServiceOptions;
   private readonly lease: WebStateLease;
+  private readonly transcriptions: WebTranscriptions;
   private readonly subscribers = new Set<(event: WebEvent) => boolean | void>();
   private readonly activeTurns = new Map<string, ActiveTurn>();
   /** Threads with an in-flight manual compaction; wakes wait on the promise. */
@@ -739,7 +745,9 @@ export class WebService {
     pushIdentity: WebPushIdentity,
     pushSubject: string,
     replyAccessKey: Buffer,
+    voice: WebVoiceConfig | undefined,
   ) {
+    this.transcriptions = new WebTranscriptions(voice, options.transcriptionFetchImpl);
     this.store = store;
     store.onConversationMarker = ({ threadId, messageId, updatedAt }) => this.emit("message.changed", threadId, { messageId, updatedAt });
     this.lease = lease;
@@ -763,6 +771,7 @@ export class WebService {
 
   static async create(options: CreateWebServiceOptions = {}): Promise<WebService> {
     const paths = await prepareWebStatePaths(options);
+    const voice = await loadVoiceConfig(paths.root, options.voice);
     let lease: WebStateLease;
     try {
       lease = await acquireWebStateLease(paths);
@@ -784,7 +793,7 @@ export class WebService {
         "base64url",
       );
       const pushSubject = resolveWebPushSubject(options.env?.MONO_AGENT_WEB_PUSH_SUBJECT);
-      service = new WebService(store, lease, options, pushIdentity, pushSubject, replyAccessKey);
+      service = new WebService(store, lease, options, pushIdentity, pushSubject, replyAccessKey, voice);
       await store.purgePartialUploadFiles();
       await service.purgeOrphans();
       await service.refreshAgents();
@@ -834,6 +843,7 @@ export class WebService {
     const projects = projectsSourceId === null ? [] : this.store.listProjects(projectsSourceId);
     return {
       version: WEB_API_VERSION,
+      voice: { enabled: this.transcriptions.enabled, ...WEB_VOICE_LIMITS },
       push: {
         applicationServerKey: this.pushIdentity.publicKey,
         keyFingerprint: this.pushIdentity.fingerprint,
@@ -2316,6 +2326,16 @@ export class WebService {
     return { thread: this.projectThread(started.thread), turn: started.thread.runState };
   }
 
+  reserveTranscription(threadId: string): VoiceOperation {
+    const thread = this.store.getThread(threadId);
+    if (!thread) throw new WebConsoleError("thread_not_found", "Conversation not found.", 404);
+    if (thread.archivedAt || thread.trigger?.kind === "cron" || !thread.canSend
+      || !this.connections.has(thread.sourceId) || this.activeCompactions.has(thread.id)) {
+      throw new WebConsoleError("voice_thread_unavailable", "Select a connected, writable conversation and wait for compaction to finish.", 409);
+    }
+    return this.transcriptions.reserve(thread.id);
+  }
+
   submit(threadId: string, input: StartWebSubmissionInput): WebSubmissionReceipt {
     if (this.stopped) throw new WebConsoleError("web_service_stopping", "The web service is stopping.", 409);
     const thread = this.store.getThread(threadId);
@@ -2622,6 +2642,7 @@ export class WebService {
   async stop(): Promise<void> {
     if (this.stopped) return;
     this.stopped = true;
+    this.transcriptions.stop();
     if (this.discoveryTimer !== undefined) clearInterval(this.discoveryTimer);
     if (this.purgeTimer !== undefined) clearInterval(this.purgeTimer);
     if (this.wakeTimer !== undefined) clearInterval(this.wakeTimer);

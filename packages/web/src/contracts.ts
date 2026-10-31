@@ -1154,6 +1154,8 @@ export interface WebBootstrapScope {
 }
 
 export interface WebBootstrap {
+  /** Absent on older servers: voice is unavailable. No provider details cross this boundary. */
+  readonly voice?: { readonly enabled: boolean; readonly maxBytes: number; readonly maxSeconds: number; readonly maxTextCharacters: number };
   readonly version: typeof WEB_API_VERSION;
   readonly console: WebConsoleIdentity;
   readonly push: WebPushBootstrap;

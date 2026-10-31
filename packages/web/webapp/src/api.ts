@@ -429,6 +429,7 @@ export function parseThreadUsage(value: unknown): WebThreadUsage {
 }
 
 export const api = {
+  transcribe: (threadId: string, audio: Blob, signal: AbortSignal) => request<{ readonly text: string }>(`/api/v1/threads/${encodeURIComponent(threadId)}/transcriptions`, { method: "POST", body: audio, signal, cache: "no-store", headers: { "Content-Type": audio.type } }),
   threadUsage: async (threadId: string, signal?: AbortSignal): Promise<WebThreadUsage> => {
     const response = await request<{ usage: unknown }>(`/api/v1/threads/${encodeURIComponent(threadId)}/usage`, { signal });
     return parseThreadUsage(response.usage);

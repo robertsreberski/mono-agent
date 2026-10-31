@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add opt-in web voice messages: explicitly record, stop and Send to transcribe
+  through a server-configured local service/proxy and submit an ordinary request,
+  with bounded ephemeral audio, cancellation and normal receipt recovery.
+
 - Add opt-in deterministic v2 continuity benchmark scoring and a read-only
   archived-answer re-score CLI; keep legacy scoring and study decisions unchanged.
 

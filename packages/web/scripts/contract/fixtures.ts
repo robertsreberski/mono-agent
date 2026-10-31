@@ -73,6 +73,7 @@ function fixture<K extends keyof WebApiDtos>(name: string, type: K, value: WebAp
 }
 
 export const FIXTURES = [
+  fixture("voice-transcription", "ApiTranscription", { text: "Write a short fictional greeting." }),
   fixture("upkeep-message", "ApiMessage", { message: { ...message, parts: [{ type: "telemetry", event: "runtime_telemetry", kind: "continuity_upkeep", data: { kind: "continuity_upkeep", data: { accounting: upkeep } } }] } }),
   fixture("upkeep-thread-usage", "ApiThreadUsage", { usage: { total: { costUsd: null, knownCostUsd: 0.01, costPartial: true }, upkeep: { operations: 1, pending: true, costUsd: null, knownCostUsd: 0, costPartial: true, tokensPartial: true }, byModel: [{ model: "fictional:answer-a", costUsd: 0.01 }, { model: upkeep.model, costUsd: null, knownCostUsd: 0 }], computedAt: at } }),
   fixture("upkeep-running", "ApiActiveThreads", { threads: [{ ...thread, runState: { status: "running", activity: { toolCallCount: 0, phase: "working", cumulativeUsd: null, knownCostUsd: 0.01, upkeep: { operations: 1, pending: true, models: [upkeep.model], costUsd: null, knownCostUsd: 0 } } } }], runningCounts: { [thread.sourceId]: 1 }, total: 1, truncated: false }),

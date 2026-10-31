@@ -26,6 +26,18 @@
       "responseContentType": "text/html"
     },
     {
+      "method": "POST",
+      "path": "/api/v1/threads/:id/transcriptions",
+      "requestType": "Binary",
+      "responseType": "ApiTranscription",
+      "successStatus": [
+        200
+      ],
+      "requiresClaimedOrigin": true,
+      "originPolicy": "exact",
+      "requiresOriginHeader": true
+    },
+    {
       "method": "GET",
       "path": "/api/v1/bootstrap",
       "requestType": "NoBody",

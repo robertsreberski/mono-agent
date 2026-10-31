@@ -203,3 +203,14 @@ fixtures and rejects stale committed artifacts. Independent route discovery
 checks both missing and extra routes and origin-policy drift; focused tests also
 prove that adding an unlisted handler fails. Static/PWA/shell routes and the
 internal ingress listener are outside this contract.
+
+## Optional voice transcription
+
+When bootstrap `voice.enabled` is true, `POST /api/v1/threads/:id/transcriptions`
+accepts raw WebM, MP4 or Ogg audio bytes and returns `{ "text": "..." }` without
+creating a turn. This route requires the actual exact `Origin` header, not just
+`X-Mono-Agent-Web-Origin` (manifest `requiresOriginHeader: true`). It is ephemeral,
+`no-store`, byte/deadline/concurrency bounded, and disabled if capability metadata
+is absent. Submit the transcript separately through the normal UUID-bearing
+submission/receipt path; never replay an ambiguous submission with a new ID.
+See [voice configuration, limits and retention](./web-console.md#voice-messages-opt-in).

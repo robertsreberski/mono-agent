@@ -291,3 +291,15 @@ per-message recall. It scans/ranks retained evidence, greedily fits cited-only
 metadata and shares a two-offer ceiling across analysis/reconstruction. Scan
 exhaustion makes zero calls. Both switches off keep deterministic packs unchanged.
 Ledger interpretation is not owner authority or proof of semantic fulfilment.
+
+## Web voice messages
+
+The web console supports disabled-by-default voice-only requests: explicitly
+Record, Stop and Send to transcribe and submit ordinary user text. Enable only
+through owner-private web-root `voice.json` (`transcription.endpoint`, `model`,
+optional `language` and bounded `timeoutMs`) or a typed web-service embedding
+`voice` override, not an agent config field. A local OpenAI-compatible service
+or operator-managed proxy must decode WebM/MP4/Ogg; there is no cloud fallback,
+credential integration or transcoding. HTTPS/localhost and MediaRecorder are
+required; audio is ephemeral and capped at 120 seconds/10 MiB. See
+[web voice configuration](../../../../../docs/observability/web-console.md#voice-messages-opt-in).

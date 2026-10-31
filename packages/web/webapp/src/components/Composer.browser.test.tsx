@@ -1,8 +1,9 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import { page, userEvent } from "@vitest/browser/context";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { StartTurnInput } from "../types";
+import { installVoiceFixture } from "../test/voice-fixtures";
 import { agent, thread, uploadLimits } from "../test/fixtures";
 import "../styles.css";
 
@@ -411,4 +412,23 @@ it.each(["close button", "Escape"])("returns focus to the book trigger when dism
   }
   await waitFor(() => expect(screen.queryByRole("dialog", { name: "Skills" })).not.toBeInTheDocument());
   expect(document.activeElement).toBe(browse);
+});
+
+describe("voice and existing text drafts", () => {
+  let fixture: ReturnType<typeof installVoiceFixture> | undefined;
+  afterEach(() => fixture?.restore());
+  it("never requests permission over a nonempty draft or clobbers its text", async () => {
+    fixture = installVoiceFixture();
+    const send = vi.fn<SendSubmission>();
+    storeMock.current = { ...store(send), bootstrap: { voice: { enabled: true, maxBytes: 10485760, maxSeconds: 120 } }, captureVoiceSubmission: vi.fn(), selectionGeneration: 0 };
+    render(<WebRuntimeProvider><Composer /></WebRuntimeProvider>);
+    const input = screen.getByRole("combobox", { name: "Message" });
+    await userEvent.fill(input, "Keep this fictional draft intact.");
+    expect(screen.getByRole("button", { name: "Record voice message" })).toBeDisabled();
+    expect(input).toHaveValue("Keep this fictional draft intact.");
+    expect(fixture.getUserMedia).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
+    await userEvent.clear(input);
+    expect(screen.getByRole("button", { name: "Record voice message" })).not.toBeDisabled();
+  });
 });

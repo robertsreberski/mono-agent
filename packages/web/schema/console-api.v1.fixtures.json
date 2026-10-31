@@ -2,6 +2,13 @@
   "version": 1,
   "fixtures": [
     {
+      "name": "voice-transcription",
+      "type": "ApiTranscription",
+      "value": {
+        "text": "Write a short fictional greeting."
+      }
+    },
+    {
       "name": "upkeep-message",
       "type": "ApiMessage",
       "value": {
