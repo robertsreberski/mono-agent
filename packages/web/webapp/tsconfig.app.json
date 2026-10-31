@@ -36,6 +36,7 @@
         "../src/cost-wire.ts",
         "../src/thread-usage.ts",
         "../src/push-preview.ts",
+        "../src/project-context.ts",
         "../src/contracts.ts",
         "../../contracts/src/provider-usage.ts",
         "../../contracts/src/upkeep-accounting.ts"

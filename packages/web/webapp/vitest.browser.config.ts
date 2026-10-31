@@ -71,8 +71,8 @@ export default defineConfig({
         ...(process.env.WEBAPP_TEST_WEBKIT === "1" ? [{
           browser: "webkit" as const,
           name: "webkit-chat",
-          include: ["src/components/Chat.browser.test.tsx", "src/components/VoiceComposer.browser.test.tsx"],
-          exclude: ["src/**/!(Chat|VoiceComposer).browser.test.tsx"],
+          include: ["src/components/Chat.browser.test.tsx", "src/VoiceConversation.browser.test.tsx"],
+          exclude: ["src/**/!(Chat|VoiceConversation).browser.test.tsx"],
           context: { viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true },
         }] : []),
         // Instance include patterns merge with the suite's include; explicitly

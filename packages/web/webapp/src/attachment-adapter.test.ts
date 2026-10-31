@@ -10,6 +10,7 @@ import { attachment, uploadLimits } from "./test/fixtures";
 vi.mock("./api", () => ({
   api: {
     createUpload: vi.fn(),
+    transcribe: vi.fn(),
     deleteUpload: vi.fn(),
   },
   uploadContent: vi.fn(),
@@ -215,4 +216,92 @@ describe("WebUploadAttachmentAdapter", () => {
     await expect(generator.next()).rejects.toMatchObject({ name: "AbortError" });
     await vi.waitFor(() => expect(api.deleteUpload).toHaveBeenCalledWith("upload-1"));
   });
+  async function stageRecorded(adapter: WebUploadAttachmentAdapter, name = "recording.webm", recorded = true) {
+    const file = createFile(name, 4, "audio/webm");
+    if (recorded) adapter.registerRecording(file);
+    let value!: PendingAttachment;
+    for await (const update of adapter.add({ file })) value = update;
+    return adapter.send(value);
+  }
+  it("uses explicit recording intent, not MIME or filenames", async () => {
+    const adapter = new WebUploadAttachmentAdapter(uploadLimits);
+    const uploaded = await stageRecorded(adapter, "recording.webm", false);
+    expect(adapter.hasRecordings([uploaded])).toBe(false);
+    expect(await adapter.prepareRecordedText("Typed text", [uploaded], "thread", new AbortController().signal, () => true)).toBe("Typed text");
+    expect(api.transcribe).not.toHaveBeenCalled();
+  });
+  it("serially prepares only recordings in attachment order and retains successful transcript cache through recovery", async () => {
+    const adapter = new WebUploadAttachmentAdapter(uploadLimits);
+    const first = await stageRecorded(adapter, "first.webm");
+    const generic = await stageRecorded(adapter, "arbitrary.webm", false);
+    const second = await stageRecorded(adapter, "second.webm");
+    const items = [first, generic, second];
+    adapter.beginSend(items); adapter.disposeUnsent(); expect(api.deleteUpload).not.toHaveBeenCalled();
+    vi.mocked(api.transcribe).mockResolvedValueOnce({ text: "First transcript" }).mockRejectedValueOnce(new Error("provider unavailable"));
+    await expect(adapter.prepareRecordedText("Authored", items, "thread", new AbortController().signal, () => true)).rejects.toThrow("provider unavailable");
+    expect(api.transcribe).toHaveBeenCalledTimes(2);
+    adapter.recoverSend(items);
+    let restored!: PendingAttachment;
+    for await (const update of adapter.add({ file: adapter.prepareRecoveryAttachment(first) as File })) restored = update;
+    expect(restored.id).toBe(first.id);
+    adapter.beginSend(items);
+    vi.mocked(api.transcribe).mockResolvedValueOnce({ text: "Second transcript" });
+    expect(await adapter.prepareRecordedText("Authored", items, "thread", new AbortController().signal, () => true)).toBe('Authored\n\nAudio transcript 1 ("first.webm"):\nFirst transcript\n\nAudio transcript 2 ("second.webm"):\nSecond transcript');
+    expect(api.transcribe).toHaveBeenCalledTimes(3); expect((vi.mocked(api.transcribe).mock.calls[2]![1] as File).name).toBe("second.webm");
+    adapter.completeSend(items); expect(adapter.hasRecordings(items)).toBe(false);
+  });
+  it("does not cache a cancelled or stale provider result, and rejects empty or oversized transcripts", async () => {
+    const adapter = new WebUploadAttachmentAdapter(uploadLimits);
+    const item = await stageRecorded(adapter);
+    const controller = new AbortController();
+    vi.mocked(api.transcribe).mockImplementationOnce(async () => { controller.abort(); return { text: "stale" }; });
+    await expect(adapter.prepareRecordedText("", [item], "thread", controller.signal, () => true)).rejects.toThrow();
+    vi.mocked(api.transcribe).mockResolvedValueOnce({ text: "  " });
+    await expect(adapter.prepareRecordedText("", [item], "thread", new AbortController().signal, () => true)).rejects.toThrow("empty");
+    vi.mocked(api.transcribe).mockResolvedValueOnce({ text: "x".repeat(8001) });
+    await expect(adapter.prepareRecordedText("", [item], "thread", new AbortController().signal, () => true)).rejects.toThrow("limit");
+    vi.mocked(api.transcribe).mockResolvedValueOnce({ text: "current" });
+    await expect(adapter.prepareRecordedText("x".repeat(200_000), [item], "thread", new AbortController().signal, () => true)).rejects.toThrow("message limit");
+    expect(api.transcribe).toHaveBeenCalledTimes(4);
+  });
+
+  it("counts failed composer files against the remaining capture byte/count budget", () => {
+    const adapter = new WebUploadAttachmentAdapter({ ...uploadLimits, maxTurnBytes: 32 });
+    expect(adapter.recordingBudget([{ id: "failed-one", file: createFile("one.webm", 14) }, { id: "failed-two", file: createFile("two.webm", 14) }])).toBe(4);
+    expect(adapter.recordingBudget(Array.from({ length: 10 }, (_, index) => ({ id: `failed-${index}` })))).toBe(0);
+  });
+
+  it("blocks incomplete recordings but allows the adapter’s ready composer-send state", () => {
+    const adapter = new WebUploadAttachmentAdapter(uploadLimits);
+    const file = createFile("recording.webm"); adapter.registerRecording(file);
+    expect(adapter.hasIncompleteRecording([{ file, status: { type: "requires-action" } }])).toBe(false);
+    expect(adapter.hasIncompleteRecording([{ file, status: { type: "incomplete" } }])).toBe(true);
+    expect(adapter.hasIncompleteRecording([{ file: createFile("ordinary.webm"), status: { type: "incomplete" } }])).toBe(false);
+  });
+
+  it.each(["resolve", "reject"] as const)("cancels recorded reservation before a late %s without yielding or reviving a chip", async (outcome) => {
+    const adapter = new WebUploadAttachmentAdapter(uploadLimits);
+    const file = createFile("recording.webm", 4, "audio/webm"); const controller = new AbortController();
+    adapter.registerRecording(file, controller.signal);
+    let resolve!: (value: ReturnType<typeof attachment>) => void; let reject!: (error: Error) => void;
+    vi.mocked(api.createUpload).mockImplementationOnce(() => new Promise((done, fail) => { resolve = done; reject = fail; }));
+    const generator = adapter.add({ file }); const next = generator.next();
+    await vi.waitFor(() => expect(api.createUpload).toHaveBeenCalled()); controller.abort();
+    if (outcome === "resolve") resolve(attachment("cancelled-reservation")); else reject(new Error("late refusal"));
+    expect(await next).toEqual({ done: true, value: undefined }); expect(uploadContent).not.toHaveBeenCalled();
+    if (outcome === "resolve") expect(api.deleteUpload).toHaveBeenCalledWith("cancelled-reservation");
+    expect(adapter.hasRecordings([{ id: "cancelled-reservation" }])).toBe(false);
+  });
+  it("cleans a cancelled recorded transfer even when transport ignores abort and later succeeds", async () => {
+    const adapter = new WebUploadAttachmentAdapter(uploadLimits);
+    const file = createFile("recording.webm", 4, "audio/webm"); const controller = new AbortController();
+    adapter.registerRecording(file, controller.signal);
+    let resolve!: (value: ReturnType<typeof attachment>) => void;
+    vi.mocked(uploadContent).mockImplementationOnce(() => new Promise((done) => { resolve = done; }));
+    const generator = adapter.add({ file }); const first = (await generator.next()).value as PendingAttachment;
+    controller.abort(); resolve({ ...attachment(first.id), uploaded: true });
+    expect(await generator.next()).toEqual({ done: true, value: undefined });
+    expect(api.deleteUpload).toHaveBeenCalledWith(first.id); expect(adapter.hasRecordings([first])).toBe(false);
+  });
+
 });

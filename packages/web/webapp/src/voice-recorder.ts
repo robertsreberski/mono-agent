@@ -1,5 +1,4 @@
 export const VOICE_MAX_BYTES = 10 * 1024 * 1024;
-export const VOICE_MAX_SECONDS = 120;
 const CANDIDATES = ["audio/webm;codecs=opus", "audio/mp4;codecs=mp4a.40.2", "audio/mp4", "audio/ogg;codecs=opus"] as const;
 
 export function chooseRecordingType(recorder: Pick<typeof MediaRecorder, "isTypeSupported">): string | undefined {
@@ -23,7 +22,7 @@ interface RecorderCallbacks {
   readonly error: (message: string) => void;
 }
 
-/** All audio is ephemeral; no preview URL, storage or file upload is created. */
+/** Bounded capture only. The caller stages the finished audio as an attachment. */
 export class VoiceRecorder {
   private disposed = false;
   private stream?: MediaStream;
@@ -32,7 +31,8 @@ export class VoiceRecorder {
   private chunks: Blob[] = [];
   private bytes = 0;
   private readonly callbacks: RecorderCallbacks;
-  constructor(callbacks: RecorderCallbacks) { this.callbacks = callbacks; }
+  private readonly maxBytes: number;
+  constructor(callbacks: RecorderCallbacks, maxBytes = VOICE_MAX_BYTES) { this.callbacks = callbacks; this.maxBytes = maxBytes; }
 
   async start(): Promise<void> {
     try {
@@ -47,7 +47,7 @@ export class VoiceRecorder {
       recorder.ondataavailable = (event) => {
         if (this.disposed) return;
         this.bytes += event.data.size;
-        if (this.bytes > VOICE_MAX_BYTES) { this.fail("Recording exceeds 10 MiB. Record a shorter message."); return; }
+        if (this.bytes > this.maxBytes) { this.fail("Recording exceeds the remaining attachment byte limit. Record a smaller file."); return; }
         if (event.data.size) this.chunks.push(event.data);
       };
       recorder.onerror = () => this.fail("Recording failed. Check microphone access and record again.");
@@ -65,9 +65,8 @@ export class VoiceRecorder {
       this.callbacks.recording();
       const start = performance.now();
       this.timer = setInterval(() => {
-        const seconds = Math.min(VOICE_MAX_SECONDS, Math.floor((performance.now() - start) / 1000));
+        const seconds = Math.floor((performance.now() - start) / 1000);
         this.callbacks.elapsed(seconds);
-        if (seconds >= VOICE_MAX_SECONDS) this.stop();
       }, 200);
     } catch (error) {
       if (this.disposed) return;
@@ -106,4 +105,14 @@ export class VoiceRecorder {
     this.dispose();
     this.callbacks.error(message);
   }
+}
+
+/** Validate actual MediaRecorder MIME/codec metadata before normal upload. */
+export function recordingFile(audio: Blob): File {
+  const match = /^(audio\/(?:webm|mp4|ogg))(?:\s*;\s*codecs\s*=\s*"?([a-zA-Z0-9., -]+)"?)?\s*$/iu.exec(audio.type);
+  const type = match?.[1]?.toLowerCase();
+  const allowed = type === "audio/mp4" ? /^(?:mp4a\.40\.[25]|aac|alac|opus)$/u : /^(?:opus|vorbis)$/u;
+  if (!type || match?.[2]?.toLowerCase().split(",").some((codec) => !allowed.test(codec.trim()))) throw new Error("Unsupported recording format.");
+  const extension = type === "audio/mp4" ? "m4a" : type === "audio/webm" ? "webm" : "ogg";
+  return new File([audio], `recording.${extension}`, { type });
 }

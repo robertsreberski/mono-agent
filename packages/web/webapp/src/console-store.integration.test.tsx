@@ -723,7 +723,7 @@ describe("ConsoleStoreProvider integration", () => {
     vi.mocked(api.submit).mockResolvedValue({ submissionId: "fixture", threadId: created.id, outcome: "turn" });
     const store = await renderStore();
     await waitFor(() => expect(store.current.selectionLoading).toBe(false));
-    const captured = store.current.captureVoiceSubmission();
+    const captured = store.current.captureAttachmentSubmission();
     writeComposerDraft("alpha", null, "Owned creation draft");
     let destination: string | undefined;
     await act(async () => { destination = await captured.prepare(); });
@@ -742,7 +742,7 @@ describe("ConsoleStoreProvider integration", () => {
     vi.mocked(api.createThread).mockImplementation(() => new Promise((done) => { resolve = done; }));
     const store = await renderStore();
     await waitFor(() => expect(store.current.selectionLoading).toBe(false));
-    const captured = store.current.captureVoiceSubmission();
+    const captured = store.current.captureAttachmentSubmission();
     const preparing = captured.prepare();
     const assertion = expect(preparing).rejects.toThrow("Conversation changed");
     act(() => store.current.selectAgent("beta"));
@@ -759,7 +759,7 @@ describe("ConsoleStoreProvider integration", () => {
     const store = await renderStore();
     await waitFor(() => expect(store.current.selectionLoading).toBe(false));
     const generation = store.current.selectionGeneration;
-    const captured = store.current.captureVoiceSubmission();
+    const captured = store.current.captureAttachmentSubmission();
     const controller = new AbortController();
     const preparing = captured.prepare(controller.signal);
     const assertion = expect(preparing).rejects.toThrow(outcome === "resolve" ? "Conversation changed" : "Synthetic refusal");
@@ -783,7 +783,7 @@ describe("ConsoleStoreProvider integration", () => {
     vi.mocked(api.thread).mockResolvedValue(detail(created));
     const store = await renderStore();
     await waitFor(() => expect(store.current.selectionLoading).toBe(false));
-    const captured = store.current.captureVoiceSubmission();
+    const captured = store.current.captureAttachmentSubmission();
     const preparing = captured.prepare();
     const assertion = expect(preparing).rejects.toThrow("Conversation changed");
     // The thread may appear through SSE before POST acknowledgement; selecting
@@ -2475,7 +2475,7 @@ describe("ConsoleStoreProvider integration", () => {
       vi.mocked(api.thread).mockImplementation(async (id) => detail(id === beta.id ? beta : alphaThread));
       const store = await renderStore();
       await waitFor(() => expect(store.current.selectedThreadId).toBe(alphaThread.id));
-      const captured = store.current.captureVoiceSubmission();
+      const captured = store.current.captureAttachmentSubmission();
       act(() => store.current.selectThread(beta.id));
       await waitFor(() => expect(store.current.selectedThreadId).toBe(beta.id));
       act(() => store.current.selectThread(alphaThread.id));
@@ -2485,20 +2485,24 @@ describe("ConsoleStoreProvider integration", () => {
       expect(api.submit).not.toHaveBeenCalled();
     });
 
-    it("voice keeps captured settings and normal receipt recovery without persisting audio or text", async () => {
+    it("recorded attachment attempts retain explicit UUID/settings across interleaved ordinary sends and receipt recovery", async () => {
       seedOneThread();
       vi.mocked(api.patchThread).mockResolvedValue(alphaThread);
       vi.mocked(api.submit).mockRejectedValue(new Error("submission response lost"));
       vi.mocked(api.submission).mockRejectedValue(new Error("receipt unavailable"));
       const store = await renderStore();
       await waitFor(() => expect(store.current.selectedThreadId).toBe(alphaThread.id));
-      const captured = store.current.captureVoiceSubmission();
+      const captured = store.current.captureAttachmentSubmission();
       const recordedModel = store.current.effectiveModel;
       act(() => store.current.setModel("provider/fallback"));
       await expect(captured.submit("A synthetic voice request")).rejects.toThrow("submission response lost");
+      const firstAttempt = vi.mocked(api.submit).mock.calls[0]!;
+      expect(firstAttempt[1]).toBe(captured.submissionId);
+      vi.mocked(api.submit).mockResolvedValueOnce({ submissionId: "interleaved", threadId: alphaThread.id, outcome: "turn" });
+      await store.current.sendSubmission({ text: "An interleaved ordinary request" });
       await expect(captured.submit("A synthetic voice request")).rejects.toThrow("submission response lost");
-      expect(api.submit).toHaveBeenCalledTimes(2);
-      expect(vi.mocked(api.submit).mock.calls[0]![1]).toBe(vi.mocked(api.submit).mock.calls[1]![1]);
+      expect(api.submit).toHaveBeenCalledTimes(3);
+      expect(vi.mocked(api.submit).mock.calls[2]).toEqual(firstAttempt);
       expect(vi.mocked(api.submit).mock.calls[0]![2].model).toBe(recordedModel || undefined);
       const receipt = { threadId: alphaThread.id, submissionId: vi.mocked(api.submit).mock.calls[0]![1], outcome: "turn" as const, turnId: "voice-turn" };
       vi.mocked(api.submission).mockResolvedValue(receipt);
@@ -2512,7 +2516,7 @@ describe("ConsoleStoreProvider integration", () => {
       const store = await renderStore();
       await waitFor(() => expect(store.current.selectedThreadId).toBe(alphaThread.id));
       act(() => store.current.setConversationVisible(true));
-      const captured = store.current.captureVoiceSubmission();
+      const captured = store.current.captureAttachmentSubmission();
       act(() => { store.current.setConversationVisible(false); store.current.setConversationVisible(true); });
       expect(captured.isCurrent()).toBe(false);
       await expect(captured.prepare()).rejects.toThrow("Conversation changed");

@@ -3989,7 +3989,6 @@
           "required": [
             "enabled",
             "maxBytes",
-            "maxSeconds",
             "maxTextCharacters"
           ],
           "additionalProperties": false,

@@ -123,16 +123,26 @@ User Stop also marks a running `AskUser` question as interrupted; answer in a ne
 
 ### Voice messages (opt-in)
 
-The microphone action records a separate voice-only request: **Record → Stop
-recording → Send voice message**. Send transcribes and submits the transcript as
-an ordinary request (including the existing mid-turn live-input path); it does
-not insert an editable draft. Send or clear any text, files and quote before
-recording. Permission is requested only after Record. Cancel discards the audio
-before submission; after dispatch, use the ordinary Stop response/receipt
-recovery semantics. Retrying an uncertain submission reuses its submission ID
-and transcript, not a second transcription. Voice captures the effective model,
-compatible effort and 1M-context choice at Record; later settings edits do not
-change that request (active-turn input still follows the active turn).
+Use **paperclip → Record audio → Stop recording** to add a normal removable
+audio attachment. Keep typing or add other files, then use the ordinary **Send**.
+Stop never submits. There is no separate voice composer or voice-only Send.
+Only recordings made through Record audio are automatically transcribed; audio
+chosen through Upload files is unchanged. During an active response you can
+prepare recordings, but attachment-bearing Send waits until the response ends.
+
+At Send, the browser freezes authored text, quote, attachment order, effective
+model/effort/context settings, ownership and an explicit attempt UUID before
+awaiting thread creation or transcription. It transcribes recordings serially
+within one 150-second preparation deadline and composes filename-associated,
+numbered transcripts with authored text once, then uses the existing synchronous
+submission/receipt path. Successful transcripts are cached only in bounded
+attachment/attempt memory, keyed by immutable upload ID. Preparation failures
+send nothing and restore owned content without overwriting newer drafts. An
+uncertain dispatched attempt stays separate from newer work; Check / retry send
+reuses its exact prepared payload/settings/UUID, without retranscription.
+After navigation loses ownership or reload, recovery reads only saved
+thread/receipt references: it never reconstructs
+or automatically resubmits a request.
 
 Voice is disabled unless the console owner configures a server-side local
 OpenAI-compatible transcription service or operator-managed proxy. No browser
@@ -173,12 +183,21 @@ route, not a broader listener. The existing trusted-local/LAN/tailnet access
 boundary remains unchanged: there is no application login and origin validation
 is not authentication.
 
-Recordings are limited to 120 seconds and 10 MiB, held only in bounded browser
-and server memory. Audio never enters SQLite, staged uploads, attachment history
-or browser storage; cancel/navigation/unmount releases capture. Hiding the tab
-before dispatch also discards the recording/transcription. The submitted
-transcript is ordinary retained user text, with normal conversation/history
-policies. A transcription failure creates no message or turn.
+Recording has no fixed duration cutoff. Capture is limited to 10 MiB or the
+stricter remaining upload byte/count budget; very long recordings can still hit
+provider limits. Cancel, navigation, hiding the tab or unmount releases active
+capture. Stop creates a correctly typed File and uses ordinary staged upload,
+progress, removal and recovery. Staged files expire under the normal 24-hour
+policy; after Send, audio is retained as a normal committed conversation
+attachment, alongside transcript text. It is not persisted in browser storage.
+There are no server-side recording markers, transcript caches or preparation jobs.
+Explicit playback uses bounded local/same-origin Blob URLs, never autoplay;
+Download keeps the normal forced-download/no-sniff boundary.
+
+Bootstrap no longer emits `voice.maxSeconds`. It is deprecated and optional in
+the v1 read schema solely for older-server compatibility; clients must not treat
+it as a current recording-duration promise. Pin/update strict generated native
+decoders before adopting this package version.
 
 `POST /api/v1/threads/:id/transcriptions` accepts raw uncompressed audio with
 `Content-Type: audio/webm`, `audio/mp4` or `audio/ogg` (recognized codec parameters
@@ -1092,7 +1111,7 @@ id discovery no longer reports, are left alone.
 
 ### Package structure
 
-- `src/voice-config.ts`, `transcription.ts`, `voice-upload.ts`: server-only opt-in validation and bounded ephemeral audio admission/transcription.
+- `src/voice-config.ts`, `transcription.ts`, `voice-upload.ts`: server-only opt-in validation and bounded raw-audio admission/transcription (recorded attachments use ordinary uploads).
 - `src/api-contract.ts`: HTTP body/query wrapper DTOs referencing the domain contracts.
 - `scripts/contract/`: explicit route descriptors and fictional fixture inputs.
 - `scripts/generate-api-contract.mjs`: deterministic JSON Schema/manifest/fixture generation and drift checks.
@@ -1513,16 +1532,18 @@ After the dependency-closure build, capture a synthetic Chromium microphone
 recording and optional screenshots through the ordinary automated browser suite:
 
 ```sh
-VITE_VOICE_SHOTS="$PWD/output/voice" WEBAPP_TEST_WEBKIT=1 \
+VITE_VOICE_SHOTS="$PWD/output/voice" \
   pnpm --dir packages/web/webapp exec vitest run --config vitest.browser.config.ts \
-  src/components/VoiceComposer.browser.test.tsx
+  src/VoiceConversation.browser.test.tsx
 node packages/web/scripts/smoke-voice.mjs
 ```
 
 The smoke imports built `dist`, uses isolated temporary state and loopback fixture
 transcription/operator HTTP servers, and checks exactly one ordinary request and
 reply through duplicate receipt recovery. Provider failure, timeout and cancel
-create zero additional requests; audio leaves no upload files. Fixtures prove
+create zero additional requests. Audio and a text file use normal staged upload,
+removal and committed retention; retained audio remains downloadable after the
+temporary test service is reopened, with forced-download/nosniff headers. Fixtures prove
 transport/lifecycle, not physical devices or real-provider accuracy. WebKit's
 states are deterministic fixtures; real recording is exercised only in Chromium.
 

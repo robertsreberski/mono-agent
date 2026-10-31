@@ -24,8 +24,9 @@ import {
   ComposerTriggerPopover,
   type ComposerTriggerCommand,
 } from "./assistant-ui/ComposerTriggerPopover";
-import { ScopedVoiceComposer, useVoiceBusy } from "./VoiceComposer";
+import { AttachmentMenu, RecordingDraft, useUnattachedRecording, useVoiceBusy } from "./VoiceComposer";
 import { Icon } from "./Icon";
+import { useRecordedAudio } from "../recorded-audio-context";
 import { ComposerQuotePreview } from "./assistant-ui/Quote";
 import { SkillAutocomplete, SkillBrowser } from "./assistant-ui/SkillPicker";
 
@@ -101,6 +102,19 @@ export function Composer({ runSettings, notice }: {
   const compacting = runningManualCompaction(selectedThread);
   const canSend = useAuiState((state) => state.composer.canSend);
   const voiceBusy = useVoiceBusy();
+  const unattachedRecording = useUnattachedRecording();
+  const recorded = useRecordedAudio();
+  const incompleteRecording = useAuiState((state) => recorded?.adapter.hasIncompleteRecording(state.composer.attachments) ?? false);
+  const hasRecordedDraft = useAuiState((state) => recorded?.adapter.hasRecordings(state.composer.attachments) ?? false);
+  const wasVoiceBusy = useRef(voiceBusy);
+  useLayoutEffect(() => {
+    const root = inputRef.current?.closest(".composer-root");
+    if (wasVoiceBusy.current && !voiceBusy && store.conversationVisible !== false
+      && (document.activeElement === document.body || root?.contains(document.activeElement))) {
+      root?.querySelector<HTMLButtonElement>('[aria-label="Add attachment"]')?.focus({ preventScroll: true });
+    }
+    wasVoiceBusy.current = voiceBusy;
+  }, [voiceBusy]);
   const attachmentCount = useAuiState((state) => state.composer.attachments.length);
   const commands = useMemo(() => buildComposerCommands({
     attachmentCount,
@@ -241,7 +255,7 @@ export function Composer({ runSettings, notice }: {
   return (
     <ComposerPrimitive.Unstable_TriggerPopoverRoot>
       <ComposerPrimitive.Root className="composer-root" onSubmitCapture={(event) => {
-        if (compacting || voiceBusy) event.preventDefault();
+        if (compacting || voiceBusy || unattachedRecording || incompleteRecording) event.preventDefault();
       }}>
         <ComposerTriggerPopover commands={commands} />
         {skillQuery !== null && autocompleteSkills.length > 0 && (
@@ -254,7 +268,6 @@ export function Composer({ runSettings, notice }: {
         )}
         <ComposerQuotePreview />
         {notice}
-        <ScopedVoiceComposer />
         {compacting && <p className="composer-compaction-note">Compacting context — you can send when it finishes.</p>}
         <ComposerPrimitive.AttachmentDropzone
           className="composer-dropzone"
@@ -262,9 +275,9 @@ export function Composer({ runSettings, notice }: {
         >
           <AttachmentErrorListener />
           <ComposerAttachments />
+          <RecordingDraft />
           <div className="composer-input-row">
             <ComposerPrimitive.Input
-              disabled={voiceBusy}
               ref={inputRef}
               id="composer-input"
               className="composer-input"
@@ -293,16 +306,7 @@ export function Composer({ runSettings, notice }: {
           </div>
           <div className="composer-toolbar">
             <div className="composer-tools">
-              {canUpload && !voiceBusy && (
-                <ComposerPrimitive.AddAttachment
-                  className="icon-button composer-tool"
-                  aria-label="Attach files"
-                  title="Attach files"
-                  multiple
-                >
-                  <Icon name="attach" size={17} />
-                </ComposerPrimitive.AddAttachment>
-              )}
+              {canUpload && !voiceBusy && <AttachmentMenu />}
               {!voiceBusy && <SkillBrowser
                 agentLabel={selectedAgent?.label}
                 registry={store.skillRegistry}
@@ -313,20 +317,20 @@ export function Composer({ runSettings, notice }: {
             </div>
             <div className="composer-actions">
               {runSettings}
-              <ComposerPrimitive.Send
-                className="composer-send"
-                aria-label="Send message"
-                disabled={!canSend || compacting || voiceBusy}
-              >
-                <Icon name="send" size={16} />
-              </ComposerPrimitive.Send>
-              {isRunning && (
+                <ComposerPrimitive.Send
+                  className="composer-send"
+                  aria-label="Send message"
+                  disabled={!canSend || compacting || voiceBusy || unattachedRecording || incompleteRecording || isRunning && hasRecordedDraft}
+                >
+                  <Icon name="send" size={16} />
+                </ComposerPrimitive.Send>
+              {isRunning && !voiceBusy && (
                 <button
                   type="button"
                   onClick={() => void store.cancelTurn("user-stop").catch(() => undefined)}
                   className="composer-stop"
                   aria-label="Stop response"
-                  title="Stop"
+                  title="Stop response"
                 >
                   <Icon name="stop" size={14} />
                 </button>
@@ -334,6 +338,7 @@ export function Composer({ runSettings, notice }: {
             </div>
           </div>
           <div className="composer-hint">
+            {isRunning && hasRecordedDraft && <span className="composer-hint-status">Attachments can be sent when the response finishes.</span>}
             {statusText ? <span className="composer-hint-status">{statusText}</span> : null}
             {/* Keyboard affordances are meaningless on the phone layout, where the row
                 only costs vertical space; styles.css hides it below the mobile breakpoint. */}

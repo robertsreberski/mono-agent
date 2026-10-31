@@ -1,8 +1,10 @@
 /** In-memory immutable destination/settings; never persisted with audio. */
-export interface VoiceSubmissionSession {
+export interface AttachmentSubmissionSession {
   isCurrent(): boolean;
   prepare(signal?: AbortSignal): Promise<string>;
-  submit(text: string): Promise<void>;
+  readonly submissionId: string;
+  assertCanSendAttachments(): void;
+  submit(text: string, attachmentIds?: readonly string[], quote?: NonNullable<StartTurnInput["quote"]>, onDispatch?: () => void): Promise<void>;
 }
 
 import { normalizeBrowserCosts } from "../../src/cost-wire.js";
@@ -356,11 +358,13 @@ interface ConsoleStoreValue {
   ) => Promise<void>;
   readonly sendLiveInput: (text: string) => Promise<void>;
   readonly selectionGeneration: number;
-  readonly captureVoiceSubmission: () => VoiceSubmissionSession;
+  readonly captureAttachmentSubmission: () => AttachmentSubmissionSession;
   readonly sendSubmission: (
     input: StartTurnInput,
     onThreadResolved?: (threadId: string) => void,
     target?: { readonly thread: ThreadSummary; readonly isCurrent: () => boolean },
+    attemptId?: string,
+    onDispatch?: () => void,
   ) => Promise<void>;
   readonly cancelTurn: (origin?: "user-stop" | "api") => Promise<void>;
   readonly setShowArchived: (show: boolean) => void;
@@ -6042,9 +6046,9 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         });
       }
       // Listing/cache/project membership describe a committed server thread.
-      // Draft consumption and selection are user-owned: a cancelled voice
+      // Draft consumption and selection are user-owned: a cancelled attachment
       // operation has no authority over anything authored after cancellation.
-      // Non-voice creation retains its ordinary draft-transfer semantics.
+      // Unowned creation retains its ordinary draft-transfer semantics.
       if (owner?.isCurrent() ?? true) {
         transferComposerDraft(selectedAgentId, null, thread.id);
         setModelByContext((current) => {
@@ -7277,8 +7281,8 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   }, [applySubmissionReceipt]);
 
   const sendSubmission = useCallback(
-    async (input: StartTurnInput, onThreadResolved?: (threadId: string) => void, target?: { readonly thread: ThreadSummary; readonly isCurrent: () => boolean }) => {
-      if (target && !target.isCurrent()) throw new Error("Conversation changed. Record again.");
+    async (input: StartTurnInput, onThreadResolved?: (threadId: string) => void, target?: { readonly thread: ThreadSummary; readonly isCurrent: () => boolean }, attemptId?: string, onDispatch?: () => void) => {
+      if (target && !target.isCurrent()) throw new Error("Conversation changed. Retry from the selected conversation.");
       let thread = target?.thread ?? selectedThread;
       if (!thread) thread = await createThread();
       if (thread.archivedAt) throw new Error("Unarchive this conversation before sending.");
@@ -7294,23 +7298,24 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         ...(input.context1M == null ? {} : { context1M: input.context1M }),
       });
       const pending = pendingSubmissionPayloadsRef.current.get(threadId);
-      const submissionId = pending?.payload === payload ? pending.submissionId : crypto.randomUUID();
+      const submissionId = attemptId ?? (pending?.payload === payload ? pending.submissionId : crypto.randomUUID());
       pendingSubmissionPayloadsRef.current.set(threadId, { submissionId, payload });
       const reference: SubmissionRecoveryReference = { threadId, submissionId };
       rememberSubmissionRecoveryReference(sessionStorage, reference);
       let receiptKnown = false;
       try {
         await settleThreadWrites(threadId);
-        if (target && !target.isCurrent()) throw new Error("Conversation changed. Record again.");
+        if (target && !target.isCurrent()) throw new Error("Conversation changed. Retry from the selected conversation.");
         let receipt: SubmissionReceipt;
         try {
+          onDispatch?.();
           receipt = await api.submit(threadId, submissionId, input);
         } catch (error) {
           receipt = await api.submission(threadId, submissionId).catch(() => { throw error; });
         }
         receiptKnown = true;
         const rejection = applySubmissionReceipt(receipt);
-        if (rejection !== undefined) throw new Error(rejection);
+        if (rejection !== undefined) throw new ApiError(rejection, 409, "submission_rejected");
       } catch (submissionError) {
         // The server owns admission. A missed busy event, or a stale busy hint
         // after a different rejection, needs an authoritative thread re-read.
@@ -7332,25 +7337,31 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     [applySubmissionReceipt, createThread, selectedThread, settleThreadWrites],
   );
 
-  const captureVoiceSubmission = useCallback((): VoiceSubmissionSession => {
+  const captureAttachmentSubmission = useCallback((): AttachmentSubmissionSession => {
     requireResolvedSelection();
     const sourceId = selectedAgentRef.current;
-    if (!sourceId) throw new Error("Select an agent before recording.");
+    if (!sourceId) throw new Error("Select an agent before sending.");
     let generation = operatorSelectionRef.current;
     const visibilityGeneration = voiceVisibilityRef.current.generation;
     let thread = selectedThread;
     let operationSignal: AbortSignal | undefined;
     let preparePromise: Promise<string> | undefined;
+    const submissionId = crypto.randomUUID();
     const settings = { model: effectiveModel || undefined, effort: effectiveEffort || undefined, inheritRunSettings: false, ...(context1M === undefined ? {} : { context1M }) };
     const isCurrent = (): boolean => !operationSignal?.aborted
       && selectedAgentRef.current === sourceId
       && voiceVisibilityRef.current.generation === visibilityGeneration
       && operatorSelectionRef.current === generation
       && selectedThreadRef.current === (thread?.id ?? null);
+    const assertCanSendAttachments = () => {
+      const latest = threadsRef.current.find((item) => item.id === thread?.id) ?? thread;
+      if (latest?.runState.status === "running") throw new ApiError("Wait for the running response to finish before sending attachments.", 409, "active_attachments_unsupported");
+      if (latest?.archivedAt || latest?.trigger?.kind === "cron" || runningManualCompaction(latest)) throw new ApiError("This conversation cannot accept attachments right now.", 409, "attachments_unavailable");
+    };
     const prepare = (signal?: AbortSignal): Promise<string> => {
       if (preparePromise) return preparePromise;
       preparePromise = (async () => {
-        if (!isCurrent() || signal?.aborted) throw new Error("Conversation changed. Record again.");
+        if (!isCurrent() || signal?.aborted) throw new Error("Conversation changed. Retry from the selected conversation.");
         operationSignal = signal;
         if (!thread) {
           const created = await createThread(undefined, {
@@ -7362,22 +7373,24 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
           });
           // Only the owned installation callback can adopt a destination. A
           // matching id seen via SSE/operator navigation is not that proof.
-          if (!isCurrent() || selectedThreadRef.current !== created.id) throw new Error("Conversation changed. Record again.");
+          if (!isCurrent() || selectedThreadRef.current !== created.id) throw new Error("Conversation changed. Retry from the selected conversation.");
           thread = created;
         }
-        if (!isCurrent()) throw new Error("Conversation changed. Record again.");
+        if (!isCurrent()) throw new Error("Conversation changed. Retry from the selected conversation.");
         return thread.id;
       })();
       void preparePromise.catch(() => { preparePromise = undefined; });
       return preparePromise;
     };
     return {
+      submissionId,
+      assertCanSendAttachments,
       isCurrent,
       prepare,
-      submit: async (text) => {
+      submit: async (text, attachmentIds = [], quote, onDispatch) => {
         await prepare();
-        if (!thread || !isCurrent()) throw new Error("Conversation changed. Record again.");
-        await sendSubmission({ text, ...settings }, undefined, { thread, isCurrent });
+        if (!thread || !isCurrent()) throw new Error("Conversation changed. Retry from the selected conversation.");
+        await sendSubmission({ text, attachmentIds, quote, ...settings }, undefined, { thread, isCurrent }, submissionId, onDispatch);
       },
     };
   }, [context1M, createThread, effectiveEffort, effectiveModel, requireResolvedSelection, selectedThread, sendSubmission]);
@@ -7386,7 +7399,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     () => ({
       bootstrap,
       selectionGeneration: operatorSelectionGeneration,
-      captureVoiceSubmission,
+      captureAttachmentSubmission,
       agents,
       visibleAgents,
       threads,
@@ -7575,7 +7588,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       sendLiveInput,
       sendSubmission,
       operatorSelectionGeneration,
-      captureVoiceSubmission,
+      captureAttachmentSubmission,
       conversationVisible,
       setConversationVisible,
       setEffort,

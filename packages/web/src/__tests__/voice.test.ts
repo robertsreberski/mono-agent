@@ -166,6 +166,7 @@ describe("ephemeral raw audio HTTP boundary", () => {
     const { url, thread, post, turns, directory } = await server();
     const bootstrap = await (await fetch(`${url}/api/v1/bootstrap`)).json() as { voice: unknown };
     expect(bootstrap.voice).toEqual({ enabled: true, ...WEB_VOICE_LIMITS });
+    expect(bootstrap.voice).not.toHaveProperty("maxSeconds");
     expect(JSON.stringify(bootstrap)).not.toContain("fixture-whisper");
     const result = await post();
     expect(result.status).toBe(200);

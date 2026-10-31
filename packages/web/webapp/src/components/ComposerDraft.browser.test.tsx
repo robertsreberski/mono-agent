@@ -11,7 +11,8 @@ vi.mock("../console-store", () => ({
   useConsoleStore: () => storeMock.current,
   useUploadLimits: () => uploadLimits,
 }));
-vi.mock("../api", () => ({
+vi.mock("../api", async (original) => ({
+  ...await original<typeof import("../api")>(),
   api: { createUpload: vi.fn(), deleteUpload: vi.fn() },
   uploadContent: vi.fn(),
 }));

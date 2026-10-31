@@ -1,170 +1,170 @@
+import { ComposerPrimitive, useAssistantRuntime, useAuiState } from "@assistant-ui/react";
+import { Menu } from "@base-ui/react/menu";
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
-import { api } from "../api";
-import type { VoiceSubmissionSession } from "../console-store";
-import { VoiceRecorder, voiceUnavailableReason } from "../voice-recorder";
+import { useConsoleStore } from "../console-store";
+import { useRecordedAudio } from "../recorded-audio-context";
+import { recordingFile, VoiceRecorder, voiceUnavailableReason } from "../voice-recorder";
+import { Icon } from "./Icon";
 
-type Phase = "idle" | "permission" | "recording" | "ready" | "transcribing" | "submitting" | "uncertain";
-export interface VoiceComposerProps {
-  readonly unavailableReason?: string;
-  readonly selectionGeneration: number;
-  readonly visible?: boolean;
-  readonly captureSubmission: () => VoiceSubmissionSession;
-  readonly onBusyChange?: (busy: boolean) => void;
+type CapturePhase = "idle" | "permission" | "recording" | "attaching";
+interface CaptureState {
+  readonly phase: CapturePhase;
+  readonly seconds: number;
+  readonly error?: string;
+  readonly blocked?: string;
+  readonly retryAttachment?: () => void;
+  start(): void;
+  stop(): void;
+  cancel(): void;
 }
+const CaptureContext = createContext<CaptureState | null>(null);
 
-function useVoiceComposer({ unavailableReason, selectionGeneration, visible = true, captureSubmission, onBusyChange }: VoiceComposerProps) {
-  const [phase, setPhase] = useState<Phase>("idle");
+/** Capture stays above keyed Composer. Submission belongs only to normal Send. */
+export function VoiceComposerScope({ children, unavailableReason }: { readonly children: ReactNode; readonly unavailableReason?: string }) {
+  const store = useConsoleStore();
+  const runtime = useAssistantRuntime();
+  const attachments = useAuiState((state) => state.composer.attachments);
+  const recorded = useRecordedAudio();
+  const [phase, setPhase] = useState<CapturePhase>("idle");
   const [seconds, setSeconds] = useState(0);
   const [error, setError] = useState<string>();
-  const recorder = useRef<VoiceRecorder | undefined>(undefined);
-  const session = useRef<VoiceSubmissionSession | undefined>(undefined);
-  const audio = useRef<Blob | undefined>(undefined);
-  const transcript = useRef<string | undefined>(undefined);
-  const controller = useRef<AbortController | undefined>(undefined);
+  const [finished, setFinished] = useState<{ file: File; generation: number; sourceId: string | null; threadId: string | null }>();
+  const capture = useRef<VoiceRecorder | undefined>(undefined);
   const epoch = useRef(0);
-  const sending = useRef(false);
-  const dispatched = useRef(false);
-  const busy = phase !== "idle";
-  const blocked = unavailableReason ?? voiceUnavailableReason();
-
-  const cleanup = () => {
+  const attaching = useRef<{ controller: AbortController; remove: () => void } | undefined>(undefined);
+  const target = useRef<(() => boolean) | undefined>(undefined);
+  const current = useRef(store);
+  current.current = store;
+  const cleanup = (cancelAttachment = true) => {
     epoch.current++;
-    recorder.current?.dispose();
-    recorder.current = undefined;
-    controller.current?.abort();
-    controller.current = undefined;
-    audio.current = undefined;
-    transcript.current = undefined;
-    session.current = undefined;
-    sending.current = false;
-    dispatched.current = false;
+    capture.current?.dispose(); capture.current = undefined; target.current = undefined;
+    const pending = attaching.current; attaching.current = undefined;
+    if (cancelAttachment && pending) { pending.controller.abort(); pending.remove(); }
   };
-  const cancel = () => { cleanup(); setPhase("idle"); setError(undefined); setSeconds(0); };
-  const ownsOperation = (current: number, signal?: AbortSignal) => {
-    if (current !== epoch.current) return false; // Never clean up a newer recording.
-    if (session.current?.isCurrent() && !signal?.aborted) return true;
-    cancel(); // Same-operation loss must also recover the composer without a rerender.
-    return false;
+  const attach = (file: File) => {
+    const controller = new AbortController();
+    recorded!.adapter.registerRecording(file, controller.signal);
+    const composer = runtime.thread.composer;
+    attaching.current = { controller, remove: () => {
+      composer.getState().attachments.forEach((item, index) => {
+        if (item.file === file) void composer.getAttachmentByIndex(index).remove().catch(() => undefined);
+      });
+    } };
+    return composer.addAttachment(file);
   };
+  const cancel = () => { cleanup(); setPhase("idle"); setError(undefined); setSeconds(0); setFinished(undefined); };
   useEffect(() => () => cleanup(), []);
-  useEffect(() => { onBusyChange?.(busy); return () => onBusyChange?.(false); }, [busy, onBusyChange]);
   useEffect(() => {
-    if (session.current && (!visible || !session.current.isCurrent())) cancel();
-  }, [selectionGeneration, visible]);
-  useEffect(() => {
-    const leave = () => cancel();
-    const hidden = () => { if (document.hidden && !dispatched.current) cancel(); };
-    window.addEventListener("pagehide", leave);
-    document.addEventListener("visibilitychange", hidden);
-    return () => { window.removeEventListener("pagehide", leave); document.removeEventListener("visibilitychange", hidden); };
-  }, []);
-
-  const start = () => {
-    if (blocked || recorder.current || sending.current) return;
+    if (target.current && !target.current() || finished && !ownsFinished()) cancel();
+  }, [store.selectionGeneration, store.conversationVisible]);
+  const ownsFinished = () => finished && current.current.selectionGeneration === finished.generation && current.current.selectedAgentId === finished.sourceId
+    && current.current.selectedThreadId === finished.threadId && current.current.conversationVisible;
+  const retryAttachment = async () => {
+    if (!finished || !ownsFinished()) return;
     cleanup();
-    const current = epoch.current;
-    try { session.current = captureSubmission(); if (!session.current.isCurrent()) throw new Error("stale"); }
-    catch { setError("Select a connected, writable conversation before recording."); return; }
-    setError(undefined);
-    setSeconds(0);
-    setPhase("permission");
-    const owned = () => ownsOperation(current);
-    const capture = new VoiceRecorder({
-      recording: () => { if (owned()) setPhase("recording"); },
-      elapsed: (elapsed) => { if (owned()) setSeconds(elapsed); },
-      ready: (blob) => {
-        if (!owned()) return;
-        audio.current = blob;
-        setPhase("ready");
-      },
-      error: (message) => { if (epoch.current === current) { cleanup(); setError(message); setPhase("idle"); } },
-    });
-    recorder.current = capture;
-    void capture.start();
-  };
-
-  const send = async () => {
-    const owner = session.current;
-    const blob = audio.current;
-    if (sending.current || !owner || (!blob && !transcript.current)) return;
-    if (!owner.isCurrent()) { cancel(); return; }
-    sending.current = true;
-    const current = epoch.current;
-    const abort = new AbortController();
-    controller.current = abort;
-    const owned = () => ownsOperation(current, abort.signal);
-    setError(undefined);
+    // Same-conversation identity is not enough after hide/cancel/new capture.
+    // This immutable epoch also owns all retry completion/error state effects.
+    const token = epoch.current;
+    const ownsRetry = () => token === epoch.current && Boolean(ownsFinished());
+    target.current = ownsRetry;
+    setPhase("attaching"); setError(undefined);
     try {
-      if (!transcript.current) {
-        setPhase("transcribing");
-        const threadId = await owner.prepare(abort.signal);
-        if (!owned()) return;
-        const result = await api.transcribe(threadId, blob!, abort.signal);
-        if (!owned()) return;
-        transcript.current = result.text;
-        audio.current = undefined;
-      }
-      if (!owned()) return;
-      setPhase("submitting");
-      dispatched.current = true;
-      await owner.submit(transcript.current!);
-      if (current === epoch.current) cancel();
+      await attach(finished.file);
+      if (!ownsRetry()) return;
+      cleanup(false); setFinished(undefined); setPhase("idle");
     } catch (failure) {
-      if (!owned()) return;
-      setError(failure instanceof Error ? failure.message : "Voice message failed. Retry Send.");
-      setPhase(dispatched.current ? "uncertain" : "ready");
-    } finally {
-      if (current === epoch.current) { sending.current = false; controller.current = undefined; }
+      if (!ownsRetry()) return;
+      cleanup(false);
+      if (failure instanceof DOMException && failure.name === "AbortError") { setFinished(undefined); setPhase("idle"); return; }
+      const hasChip = runtime.thread.composer.getState().attachments.some((item) => item.file === finished.file);
+      if (hasChip) setFinished(undefined);
+      setError(hasChip ? undefined : failure instanceof Error ? failure.message : "The recording could not be attached."); setPhase("idle");
     }
   };
+  useEffect(() => {
+    const leave = () => cancel();
+    const hidden = () => { if (document.hidden) cancel(); };
+    window.addEventListener("pagehide", leave); document.addEventListener("visibilitychange", hidden);
+    return () => { window.removeEventListener("pagehide", leave); document.removeEventListener("visibilitychange", hidden); };
+  }, []);
+  const blocked = (finished ? "Retry or remove the finished recording first." : undefined) ?? unavailableReason ?? voiceUnavailableReason() ?? (!recorded?.adapter.recordingBudget(attachments) ? "Remove an attachment to make room for a recording." : undefined);
+  const start = () => {
+    if (blocked || phase !== "idle" || !recorded) return;
+    cleanup();
+    const token = epoch.current;
+    const generation = store.selectionGeneration;
+    const sourceId = store.selectedAgentId;
+    const threadId = store.selectedThreadId;
+    const owns = () => token === epoch.current && current.current.selectionGeneration === generation
+      && current.current.selectedAgentId === sourceId && current.current.selectedThreadId === threadId && current.current.conversationVisible;
+    target.current = owns;
+    setError(undefined); setSeconds(0); setPhase("permission");
+    const recorder = new VoiceRecorder({
+      recording: () => { if (owns()) setPhase("recording"); },
+      elapsed: (value) => { if (owns()) setSeconds(value); },
+      error: (message) => { if (owns()) { cleanup(); setError(message); setPhase("idle"); } },
+      ready: (blob) => {
+        if (!owns()) return;
+        setPhase("attaching");
+        void (async () => {
+          let file: File | undefined;
+          try {
+            file = recordingFile(blob);
+            await attach(file);
+            if (owns()) { cleanup(false); setPhase("idle"); }
+          } catch (failure) {
+            if (owns()) {
+              if (failure instanceof DOMException && failure.name === "AbortError") { cleanup(false); setPhase("idle"); return; }
+              const hasChip = file && runtime.thread.composer.getState().attachments.some((item) => item.file === file);
+              if (file && !hasChip) setFinished({ file, generation, sourceId, threadId });
+              cleanup(false); setPhase("idle"); setError(hasChip ? undefined : failure instanceof Error ? failure.message : "The recording could not be attached. Record again.");
+            }
+          }
+        })();
+      },
+    }, recorded.adapter.recordingBudget(attachments));
+    capture.current = recorder;
+    void recorder.start();
+  };
+  return <CaptureContext.Provider value={{ phase, seconds, error, blocked, retryAttachment: finished ? () => void retryAttachment() : undefined, start, stop: () => capture.current?.stop(), cancel }}>{children}</CaptureContext.Provider>;
+}
+export const useVoiceBusy = () => { const phase = useContext(CaptureContext)?.phase; return phase !== undefined && phase !== "idle"; };
 
-  if (!busy) return { busy, view: <div className="voice-composer voice-idle">
-    <button type="button" className="icon-button composer-tool" aria-label="Record voice message" title={blocked ?? "Record a voice message"} disabled={Boolean(blocked)} onClick={start}>
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3M8 22h8"/></svg>
-    </button>
-    <span className="voice-note">{blocked ?? "Voice Send transcribes and sends your request."}</span>
-    {error && <p role="alert">{error}</p>}
-  </div> };
-  return { busy, view: <VoiceMessagePanel phase={phase} seconds={seconds} error={error} dispatched={dispatched.current}
-    onStop={() => recorder.current?.stop()} onCancel={() => { if (!dispatched.current) cancel(); }} onSend={() => void send()} /> };
+export const useUnattachedRecording = () => Boolean(useContext(CaptureContext)?.retryAttachment);
+
+export function AttachmentMenu() {
+  const capture = useContext(CaptureContext);
+  return <Menu.Root><Menu.Trigger className="icon-button composer-tool" aria-label="Add attachment" title="Add attachment"><Icon name="attach" size={17} /></Menu.Trigger>
+    <Menu.Portal><Menu.Positioner className="conversation-menu-positioner" side="top" align="start" sideOffset={8}><Menu.Popup className="menu-popup attachment-menu">
+      <Menu.Item nativeButton render={<ComposerPrimitive.AddAttachment multiple />} className="menu-item"><Icon name="file" size={16} />Upload files</Menu.Item>
+      <Menu.Item className="menu-item" aria-disabled={Boolean(capture?.blocked)} onClick={() => { if (!capture?.blocked) capture?.start(); }}><Icon name="mic" size={16} />Record audio</Menu.Item>
+      {capture?.blocked && <p className="attachment-menu-reason">{capture.blocked}</p>}
+    </Menu.Popup></Menu.Positioner></Menu.Portal>
+  </Menu.Root>;
 }
 
-// Own capture at the stable Chat boundary, not in the keyed viewport/composer.
-// The owner still cleans up on unmount; every genuine selection change is fenced
-// by the captured store session. Only that session's createThread handoff survives.
-const VoiceScope = createContext<ReturnType<typeof useVoiceComposer> | null>(null);
-export function VoiceComposerScope({ children, ...props }: VoiceComposerProps & { readonly children: ReactNode }) {
-  const value = useVoiceComposer(props);
-  return <VoiceScope.Provider value={value}>{children}</VoiceScope.Provider>;
+export function RecordingDraft() {
+  const capture = useContext(CaptureContext);
+  const recorded = useRecordedAudio();
+  if (!capture) return null;
+  return <>
+    {capture.phase !== "idle" && <CaptureStatus phase={capture.phase} seconds={capture.seconds} onStop={capture.stop} onCancel={capture.cancel} />}
+    {capture.retryAttachment && capture.phase === "idle" && <div className="recording-draft"><span>Recording not attached</span><button type="button" className="voice-retry" onClick={capture.retryAttachment}>Retry attachment</button><button type="button" className="icon-button" aria-label="Remove recording" onClick={capture.cancel}><Icon name="close" size={16} /></button></div>}
+    {(capture.error || recorded?.error) && <p role="alert" className="voice-error">{capture.error ?? recorded?.error}</p>}
+    {recorded?.busy && <p className="voice-detail" role="status">Preparing message…</p>}
+    {recorded?.uncertain && <button type="button" className="voice-retry" onClick={recorded.retry}>Check / retry send</button>}
+  </>;
 }
-export function ScopedVoiceComposer() { return useContext(VoiceScope)?.view ?? null; }
-export function useVoiceBusy() { return useContext(VoiceScope)?.busy ?? false; }
-/** Standalone lifecycle fixture; the console uses the stable scoped owner. */
-export function VoiceComposer(props: VoiceComposerProps) { return useVoiceComposer(props).view; }
 
-/** Presentational seam for deterministic browser/story fixtures; no capture side effects. */
-export function VoiceMessagePanel({ phase, seconds = 0, error, dispatched = false, onStop, onCancel, onSend }: {
-  readonly phase: Exclude<Phase, "idle">;
-  readonly seconds?: number;
-  readonly error?: string;
-  readonly dispatched?: boolean;
-  readonly onStop?: () => void;
-  readonly onCancel?: () => void;
-  readonly onSend?: () => void;
-}) {
-  return <section className="voice-composer voice-panel" aria-label="Voice message">
-    <p role="status" aria-live="polite">{phase === "permission" ? "Allow microphone access to record…"
-      : phase === "recording" ? `Recording · ${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")} / 2:00`
-      : phase === "ready" ? "Recording ready to send"
-      : phase === "transcribing" ? "Transcribing…"
-      : phase === "submitting" ? "Submitting request…"
-      : "Submission not confirmed. Retry checks the same request; it does not transcribe again."}</p>
-    <p className="voice-note">Send transcribes and submits an ordinary request. Audio is not saved. {dispatched ? "After dispatch, use Stop response; cancellation cannot withdraw the request." : "Cancel discards audio before submission."}</p>
-    {error && <p role="alert">{error}</p>}
-    <div className="voice-actions">
-      {phase === "recording" && <button type="button" onClick={onStop}>Stop recording</button>}
-      {!dispatched && <button type="button" onClick={onCancel}>Cancel voice message</button>}
-      {(phase === "ready" || phase === "uncertain") && <button type="button" className="composer-send" onClick={onSend}>{phase === "uncertain" ? "Retry submission" : "Send voice message"}</button>}
-    </div>
-  </section>;
+/** Presentation seam used by the actual recording draft and synthetic stories. */
+export function CaptureStatus({ phase, seconds, onStop, onCancel }: { readonly phase: Exclude<CapturePhase, "idle">; readonly seconds: number; readonly onStop?: () => void; readonly onCancel?: () => void }) {
+  const stop = useRef<HTMLButtonElement>(null);
+  useEffect(() => { if (phase === "recording") stop.current?.focus({ preventScroll: true }); }, [phase]);
+  return <div className="recording-draft">
+    <span className="voice-recording-dot" aria-hidden="true" />
+    <span role="status">{phase === "permission" ? "Allow microphone access…" : phase === "attaching" ? "Attaching recording…" : "Recording"}</span>
+    <span className="voice-time" role="timer" aria-live="off">{Math.floor(seconds / 60)}:{String(seconds % 60).padStart(2, "0")}</span>
+    {phase === "recording" && <button ref={stop} type="button" className="voice-cancel" onClick={onStop}>Stop recording</button>}
+    {phase !== "attaching" && <button type="button" className="icon-button" aria-label="Cancel recording" onClick={onCancel}><Icon name="close" size={16} /></button>}
+  </div>;
 }

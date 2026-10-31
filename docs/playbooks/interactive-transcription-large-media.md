@@ -142,11 +142,21 @@ mono-agent start --config ./mono-agent.config.json
 
 ## Browser voice messages
 
-For short console requests, use the [opt-in web voice-message flow](../observability/web-console.md#voice-messages-opt-in)
-instead of uploading an audio attachment. The owner configures a local
-OpenAI-compatible service/proxy in the web root's owner-private `voice.json`;
-there is no automatic cloud fallback. Record, stop, then Send transcribes and
-submits a normal request. Existing text, file and quote drafts must first be sent
-or cleared. Audio is ephemeral (120 seconds/10 MiB); only the submitted transcript
-is retained. HTTPS or localhost and a compatible browser/service container are
-required. This does not add a large-media transcoder.
+For console requests with recorded speech, use the
+[opt-in recorded-audio attachment flow](../observability/web-console.md#voice-messages-opt-in).
+The owner configures a local OpenAI-compatible service/proxy in the web root's
+owner-private `voice.json`; there is no automatic cloud fallback. Paperclip →
+Record audio → Stop recording stages a normal removable audio attachment; Stop
+never sends. Keep typed text, quotes and other files, then ordinary Send freezes
+the execution settings and attempt UUID, transcribes recordings serially within
+one bounded preparation deadline, and submits text/transcripts with the ordered
+attachments. Successful transcript cache and exact prepared retry are in-memory;
+reload performs receipt lookup only, never automatic replay. Arbitrary audio
+chosen through Upload files is not automatically transcribed.
+
+There is no fixed recording-duration cutoff. Capture is limited to 10 MiB or the
+stricter remaining attachment byte/count budget; provider, transcript and
+concurrency/deadline limits still apply. Stopped audio follows ordinary staged
+upload expiry; sent audio is retained as a committed conversation attachment
+alongside the transcript. HTTPS or localhost and compatible WebM/MP4/Ogg browser
+and service support are required. This does not add a large-media transcoder.

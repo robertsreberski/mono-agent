@@ -418,18 +418,19 @@ it.each(["close button", "Escape"])("returns focus to the book trigger when dism
 describe("voice and existing text drafts", () => {
   let fixture: ReturnType<typeof installVoiceFixture> | undefined;
   afterEach(() => fixture?.restore());
-  it("never requests permission over a nonempty draft or clobbers its text", async () => {
+  it("offers Record audio beside a nonempty draft without requesting permission until selected", async () => {
     fixture = installVoiceFixture();
     const send = vi.fn<SendSubmission>();
-    storeMock.current = { ...store(send), bootstrap: { voice: { enabled: true, maxBytes: 10485760, maxSeconds: 120 } }, captureVoiceSubmission: vi.fn(), selectionGeneration: 0 };
+    storeMock.current = { ...store(send), bootstrap: { voice: { enabled: true, maxBytes: 10485760 } }, captureAttachmentSubmission: vi.fn(), selectionGeneration: 0 };
     render(<WebRuntimeProvider><ConsoleVoiceScope><Composer /></ConsoleVoiceScope></WebRuntimeProvider>);
     const input = screen.getByRole("combobox", { name: "Message" });
     await userEvent.fill(input, "Keep this fictional draft intact.");
-    expect(screen.getByRole("button", { name: "Record voice message" })).toBeDisabled();
+    await userEvent.click(screen.getByRole("button", { name: "Add attachment" }));
+    expect(screen.getByRole("menuitem", { name: "Record audio" })).toHaveAttribute("aria-disabled", "false");
     expect(input).toHaveValue("Keep this fictional draft intact.");
     expect(fixture.getUserMedia).not.toHaveBeenCalled();
     expect(send).not.toHaveBeenCalled();
-    await userEvent.clear(input);
-    expect(screen.getByRole("button", { name: "Record voice message" })).not.toBeDisabled();
+    await userEvent.keyboard("{Escape}");
+    expect(input).toHaveValue("Keep this fictional draft intact.");
   });
 });
