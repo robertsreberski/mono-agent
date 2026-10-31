@@ -1,15 +1,16 @@
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import { commands, page, userEvent } from "@vitest/browser/context";
 import { useLayoutEffect } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api, uploadContent } from "./api";
-import { useAssistantRuntime } from "@assistant-ui/react";
+import { useAssistantRuntime, type PendingAttachment } from "@assistant-ui/react";
 import { ConsoleStoreProvider, SELECTED_AGENT_STORAGE_KEY, useConsoleStore } from "./console-store";
 import { readComposerDraft, resetComposerDraft, writeComposerDraft } from "./composer-draft";
 import { WebRuntimeProvider } from "./runtime";
 import { Chat } from "./components/Chat";
 import { agent, attachment, bootstrap, thread, uploadLimits } from "./test/fixtures";
-import { installVoiceFixture } from "./test/voice-fixtures";
+import { useRecordedAudio } from "./recorded-audio-context";
+import { FixtureMediaRecorder, installVoiceFixture } from "./test/voice-fixtures";
 import { createThreadPersistence } from "./thread-persistence";
 import type { ThreadSummary, WebMessage } from "./types";
 import "./styles.css";
@@ -38,7 +39,8 @@ let store: ReturnType<typeof useConsoleStore>;
 let runtime: NonNullable<ReturnType<typeof useAssistantRuntime>>;
 let uploads: Map<string, import("./types").WebAttachment>;
 let nextUpload = 0;
-function RuntimeProbe() { runtime = useAssistantRuntime()!; return null; }
+let recorded: NonNullable<ReturnType<typeof useRecordedAudio>>;
+function RuntimeProbe() { runtime = useAssistantRuntime()!; recorded = useRecordedAudio()!; return null; }
 const created = thread("voice-created", "alpha", { title: "Synthetic voice conversation" });
 const other = thread("voice-other", "alpha", { title: "Other synthetic conversation" });
 const fixtureAgent = agent("alpha", {
@@ -211,6 +213,115 @@ describe("recorded audio through actual Chat, Composer, ordinary uploads and sub
       });
     }
   }
+  it.each(["resolve", "reject"] as const)("stale attachment retry cannot change a newer live recording when it later %ss", async (outcome) => {
+    seed(created); mount(); await record();
+    vi.mocked(api.createUpload).mockRejectedValueOnce(new Error("Synthetic reservation refusal"));
+    await userEvent.click(screen.getByRole("button", { name: "Stop recording" }));
+    const retry = await screen.findByRole("button", { name: "Retry attachment" });
+    let resolve!: (value: import("./types").WebAttachment) => void; let reject!: (error: Error) => void;
+    vi.mocked(api.createUpload).mockImplementationOnce(() => new Promise((done, fail) => { resolve = done; reject = fail; }));
+    await userEvent.click(retry); await screen.findByText("Attaching recording…");
+    const hidden = vi.spyOn(document, "hidden", "get").mockReturnValue(true);
+    try { act(() => document.dispatchEvent(new Event("visibilitychange"))); } finally { hidden.mockRestore(); }
+    await waitFor(() => expect(screen.queryByText("Attaching recording…")).toBeNull());
+    await record();
+    const freshRecorder = FixtureMediaRecorder.instances.at(-1)!;
+    await act(async () => {
+      if (outcome === "resolve") resolve(attachment("retired-retry", { name: "recording.webm", contentType: "audio/webm", sizeBytes: 7 }));
+      else reject(new Error("Stale reservation error"));
+    });
+    expect(screen.getByRole("button", { name: "Stop recording" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Cancel recording" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled();
+    expect(freshRecorder.state).toBe("recording"); expect(fixture.stop).toHaveBeenCalledTimes(2);
+    expect(runtime.thread.composer.getState().attachments).toHaveLength(0);
+    expect(screen.queryByText("Stale reservation error")).toBeNull();
+    if (outcome === "resolve") await waitFor(() => expect(api.deleteUpload).toHaveBeenCalledWith("retired-retry"));
+    expect(api.submit).not.toHaveBeenCalled(); expect(api.transcribe).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole("button", { name: "Cancel recording" }));
+    expect(freshRecorder.state).toBe("inactive"); expect(fixture.stop).toHaveBeenCalledTimes(4);
+  });
+  it.each([320, 390])("complete failed audio chip Retry/Remove controls fit at %spx", async (width) => {
+    await page.viewport(width, 844); await commands.emulateColorScheme("light"); seed(created); mount();
+    await waitFor(() => expect(store.detail?.thread.id).toBe(created.id));
+    await screen.findByRole("button", { name: "Add attachment" });
+    await act(async () => runtime.thread.composer.addAttachment(new File(["notes"], "notes.txt", { type: "text/plain" })));
+    await record(); vi.mocked(uploadContent).mockRejectedValueOnce(new Error("Synthetic transfer refusal"));
+    await userEvent.click(screen.getByRole("button", { name: "Stop recording" }));
+    const retry = await screen.findByRole("button", { name: "Retry upload" });
+    const chip = retry.closest<HTMLElement>(".attachment-chip")!;
+    const viewport = chip.closest<HTMLElement>(".composer-attachments")!.getBoundingClientRect();
+    const bounds = chip.getBoundingClientRect();
+    expect(bounds.left).toBeGreaterThanOrEqual(0); expect(bounds.right).toBeLessThanOrEqual(width);
+    expect(bounds.top).toBeGreaterThanOrEqual(viewport.top); expect(bounds.bottom).toBeLessThanOrEqual(viewport.bottom + 1);
+    for (const button of within(chip).getAllByRole("button")) {
+      const rect = button.getBoundingClientRect();
+      expect(rect.left).toBeGreaterThanOrEqual(bounds.left); expect(rect.right).toBeLessThanOrEqual(bounds.right);
+      expect(rect.top).toBeGreaterThanOrEqual(bounds.top); expect(rect.bottom).toBeLessThanOrEqual(bounds.bottom);
+      expect(rect.width).toBeGreaterThanOrEqual(44); expect(rect.height).toBeGreaterThanOrEqual(44);
+      expect(button.scrollWidth).toBeLessThanOrEqual(button.clientWidth + 1);
+    }
+    await shot(`failed-upload-${width}`);
+    await userEvent.click(within(chip).getByRole("button", { name: "Remove file" }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Retry upload" })).toBeNull());
+  });
+  it("same-tick composer sends consume the recorded attachments only once", async () => {
+    seed(created); mount(); await record(); await stop();
+    let resolve!: (value: { text: string }) => void;
+    vi.mocked(api.transcribe).mockImplementationOnce(() => new Promise((done) => { resolve = done; }));
+    await act(async () => { await Promise.all([runtime.thread.composer.send(), runtime.thread.composer.send()]); });
+    await waitFor(() => expect(api.transcribe).toHaveBeenCalledTimes(1));
+    await act(async () => resolve({ text: "One request" }));
+    await waitFor(() => expect(api.submit).toHaveBeenCalledTimes(1));
+  });
+  it("same-tick real runtime queue appends deduplicate identical recorded attachment intent", async () => {
+    seed(created); mount(); await record(); await stop();
+    const attachments = await Promise.all(runtime.thread.composer.getState().attachments.map((item) => recorded.adapter.send(item as PendingAttachment)));
+    await act(async () => runtime.thread.composer.setText(""));
+    let resolve!: (value: { text: string }) => void;
+    vi.mocked(api.transcribe).mockImplementation(() => new Promise((done) => { resolve = done; }));
+    const capture = vi.spyOn(store, "captureAttachmentSubmission");
+    const input = { role: "user" as const, content: [{ type: "text" as const, text: "Original intent" }], attachments, parentId: null };
+    await act(async () => { await Promise.all([runtime.thread.append(input), runtime.thread.append(input)]); });
+    expect(capture).toHaveBeenCalledTimes(1); expect(api.transcribe).toHaveBeenCalledTimes(1);
+    await act(async () => resolve({ text: "One transcript" }));
+    await waitFor(() => expect(api.submit).toHaveBeenCalledTimes(1));
+  });
+  it("real queue preserves a newer draft without lending it the admitted recording", async () => {
+    seed(created); mount(); await record(); await stop();
+    const attachments = await Promise.all(runtime.thread.composer.getState().attachments.map((item) => recorded.adapter.send(item as PendingAttachment)));
+    let resolve!: (value: { text: string }) => void;
+    vi.mocked(api.transcribe).mockImplementationOnce(() => new Promise((done) => { resolve = done; }));
+    await userEvent.fill(screen.getByRole("combobox", { name: "Message" }), "Original");
+    await act(async () => runtime.thread.composer.send());
+    await act(async () => runtime.thread.append({ role: "user", content: [{ type: "text", text: "Newer draft" }], attachments, parentId: null }));
+    expect(api.transcribe).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(screen.getByRole("combobox", { name: "Message" })).toHaveValue("Newer draft"));
+    expect(runtime.thread.composer.getState().attachments).toHaveLength(0);
+    await act(async () => resolve({ text: "Original transcript" }));
+    await waitFor(() => expect(api.submit).toHaveBeenCalledTimes(1));
+    await send(); await waitFor(() => expect(api.submit).toHaveBeenCalledTimes(2));
+    expect(vi.mocked(api.submit).mock.calls[1]![2].text).toBe("Newer draft");
+    expect(vi.mocked(api.submit).mock.calls[1]![1]).not.toBe(vi.mocked(api.submit).mock.calls[0]![1]);
+    expect(api.transcribe).toHaveBeenCalledTimes(1);
+  });
+  it("recorded queue input waits behind an ordinary synchronous admission and stays recoverable", async () => {
+    seed(created); mount(); await record(); await stop();
+    const attachments = await Promise.all(runtime.thread.composer.getState().attachments.map((item) => recorded.adapter.send(item as PendingAttachment)));
+    let resolve!: (value: import("./types").SubmissionReceipt) => void;
+    vi.mocked(api.submit).mockImplementationOnce(() => new Promise((done) => { resolve = done; }));
+    await act(async () => {
+      await Promise.all([
+        runtime.thread.append({ role: "user", content: [{ type: "text", text: "Earlier ordinary request" }], parentId: null }),
+        runtime.thread.append({ role: "user", content: [], attachments, parentId: null }),
+      ]);
+    });
+    await waitFor(() => expect(api.submit).toHaveBeenCalledTimes(1)); expect(api.transcribe).not.toHaveBeenCalled();
+    const id = vi.mocked(api.submit).mock.calls[0]![1];
+    await act(async () => resolve({ threadId: created.id, submissionId: id, outcome: "turn" }));
+    await send(); await waitFor(() => expect(api.submit).toHaveBeenCalledTimes(2));
+    expect(api.transcribe).toHaveBeenCalledTimes(1);
+  });
   it("cancel and permission denial preserve typed text, quote and an existing file, without sending", async () => {
     seed(created); mount();
     await waitFor(() => expect(store.detail?.thread.id).toBe(created.id));

@@ -1111,7 +1111,7 @@ id discovery no longer reports, are left alone.
 
 ### Package structure
 
-- `src/voice-config.ts`, `transcription.ts`, `voice-upload.ts`: server-only opt-in validation and bounded ephemeral audio admission/transcription.
+- `src/voice-config.ts`, `transcription.ts`, `voice-upload.ts`: server-only opt-in validation and bounded raw-audio admission/transcription (recorded attachments use ordinary uploads).
 - `src/api-contract.ts`: HTTP body/query wrapper DTOs referencing the domain contracts.
 - `scripts/contract/`: explicit route descriptors and fictional fixture inputs.
 - `scripts/generate-api-contract.mjs`: deterministic JSON Schema/manifest/fixture generation and drift checks.
@@ -1532,16 +1532,18 @@ After the dependency-closure build, capture a synthetic Chromium microphone
 recording and optional screenshots through the ordinary automated browser suite:
 
 ```sh
-VITE_VOICE_SHOTS="$PWD/output/voice" WEBAPP_TEST_WEBKIT=1 \
+VITE_VOICE_SHOTS="$PWD/output/voice" \
   pnpm --dir packages/web/webapp exec vitest run --config vitest.browser.config.ts \
-  src/components/VoiceComposer.browser.test.tsx
+  src/VoiceConversation.browser.test.tsx
 node packages/web/scripts/smoke-voice.mjs
 ```
 
 The smoke imports built `dist`, uses isolated temporary state and loopback fixture
 transcription/operator HTTP servers, and checks exactly one ordinary request and
 reply through duplicate receipt recovery. Provider failure, timeout and cancel
-create zero additional requests; audio leaves no upload files. Fixtures prove
+create zero additional requests. Audio and a text file use normal staged upload,
+removal and committed retention; retained audio remains downloadable after the
+temporary test service is reopened, with forced-download/nosniff headers. Fixtures prove
 transport/lifecycle, not physical devices or real-provider accuracy. WebKit's
 states are deterministic fixtures; real recording is exercised only in Chromium.
 

@@ -371,3 +371,20 @@ describe("mono-agent-composer reference parity", () => {
     }
   });
 });
+
+it("keeps recorded-audio knowledge on retained attachments and ordinary Send", () => {
+  const coverage = readRepoFile("packages/app/skills/mono-agent-composer/references/feature-coverage.md");
+  const registry = readRepoFile("docs/reference/feature-registry.md");
+  const playbook = readRepoFile("docs/playbooks/interactive-transcription-large-media.md");
+  const voiceRow = registry.split("\n").find((line) => line.startsWith("| `web.voice-messages` |"))!;
+  for (const text of [section(coverage, "Web voice messages"), voiceRow, section(playbook, "Browser voice messages")]) {
+    const normalized = text.replace(/\s+/gu, " ");
+    expect(normalized).toMatch(/ordinary Send/u); expect(normalized).toMatch(/retained|retention/u);
+    expect(normalized).toMatch(/no fixed (?:recording-)?duration cutoff/u);
+    expect(text).not.toMatch(/120 seconds|voice-only requests|audio is ephemeral|only the submitted transcript/iu);
+  }
+  const webReadme = readRepoFile("packages/web/README.md");
+  expect(webReadme).not.toContain("VoiceComposer.browser.test.tsx");
+  expect(webReadme).not.toContain("audio leaves no upload files");
+  expect(webReadme).toContain("src/VoiceConversation.browser.test.tsx");
+});

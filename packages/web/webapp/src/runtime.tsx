@@ -647,6 +647,23 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
         queueRecovery(text, attachments, quote, submissionContext);
         return;
       }
+      const activeRecorded = recordedRef.current;
+      if (activeRecorded?.attempt.owner.isCurrent() && (activeRecorded.busy || activeRecorded.uncertain)) {
+        const original = activeRecorded.attempt;
+        const duplicate = text === original.text && quote?.messageId === original.quote?.messageId && quote?.text === original.quote?.text
+          && attachments.length === original.attachments.length && attachments.every((item, index) => item.id === original.attachments[index]?.id);
+        if (!duplicate) {
+          // A newer queued draft is recoverable, but never lend it files already
+          // owned by the admitted attempt or merge an uncertain attempt into it.
+          const admittedIds = new Set(original.attachments.map(({ id }) => id));
+          queueRecovery(text, attachments.filter(({ id }) => !admittedIds.has(id)), quote, submissionContext);
+        }
+        return;
+      }
+      if (turnStartingRef.current) {
+        queueRecovery(text, attachments, quote, submissionContext);
+        return;
+      }
       if (attachmentAdapter.hasRecordings(attachments)) {
         if (store.selectedThread?.runState.status === "running") {
           queueRecovery(text, attachments, quote, submissionContext);
@@ -661,11 +678,6 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
         void runRecorded(state);
         return;
       }
-      if (turnStartingRef.current) {
-        queueRecovery(text, attachments, quote, submissionContext);
-        return;
-      }
-
       // The ref closes the gap before React publishes isSendDisabled. This must
       // happen before the first await so two same-tick composer sends are atomic.
       turnStartingRef.current = true;

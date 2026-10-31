@@ -279,4 +279,29 @@ describe("WebUploadAttachmentAdapter", () => {
     expect(adapter.hasIncompleteRecording([{ file: createFile("ordinary.webm"), status: { type: "incomplete" } }])).toBe(false);
   });
 
+  it.each(["resolve", "reject"] as const)("cancels recorded reservation before a late %s without yielding or reviving a chip", async (outcome) => {
+    const adapter = new WebUploadAttachmentAdapter(uploadLimits);
+    const file = createFile("recording.webm", 4, "audio/webm"); const controller = new AbortController();
+    adapter.registerRecording(file, controller.signal);
+    let resolve!: (value: ReturnType<typeof attachment>) => void; let reject!: (error: Error) => void;
+    vi.mocked(api.createUpload).mockImplementationOnce(() => new Promise((done, fail) => { resolve = done; reject = fail; }));
+    const generator = adapter.add({ file }); const next = generator.next();
+    await vi.waitFor(() => expect(api.createUpload).toHaveBeenCalled()); controller.abort();
+    if (outcome === "resolve") resolve(attachment("cancelled-reservation")); else reject(new Error("late refusal"));
+    expect(await next).toEqual({ done: true, value: undefined }); expect(uploadContent).not.toHaveBeenCalled();
+    if (outcome === "resolve") expect(api.deleteUpload).toHaveBeenCalledWith("cancelled-reservation");
+    expect(adapter.hasRecordings([{ id: "cancelled-reservation" }])).toBe(false);
+  });
+  it("cleans a cancelled recorded transfer even when transport ignores abort and later succeeds", async () => {
+    const adapter = new WebUploadAttachmentAdapter(uploadLimits);
+    const file = createFile("recording.webm", 4, "audio/webm"); const controller = new AbortController();
+    adapter.registerRecording(file, controller.signal);
+    let resolve!: (value: ReturnType<typeof attachment>) => void;
+    vi.mocked(uploadContent).mockImplementationOnce(() => new Promise((done) => { resolve = done; }));
+    const generator = adapter.add({ file }); const first = (await generator.next()).value as PendingAttachment;
+    controller.abort(); resolve({ ...attachment(first.id), uploaded: true });
+    expect(await generator.next()).toEqual({ done: true, value: undefined });
+    expect(api.deleteUpload).toHaveBeenCalledWith(first.id); expect(adapter.hasRecordings([first])).toBe(false);
+  });
+
 });

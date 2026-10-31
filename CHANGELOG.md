@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Keep recording controls owned by their capture operation when an older audio
+  attachment retry settles after cancellation; cancel pending attachment work
+  without reviving removed audio. Keep failed-audio Retry/Remove controls visible
+  on mobile, and admit same-tick recorded submissions only once.
+
 - Record audio from the web composer’s paperclip menu as ordinary removable,
   retained attachments. Stop only stages audio; normal Send combines text/files
   with bounded serial transcription, Send-time settings/UUID capture and exact

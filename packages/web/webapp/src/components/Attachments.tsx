@@ -126,7 +126,7 @@ function AttachmentChip({ removable }: { readonly removable: boolean }) {
       )}
       {audio && !isUploading && <button type="button" className="audio-play" aria-label={`Preview ${name}`} onClick={() => setPlay((value) => !value)}>{play ? "Close" : "Play"}</button>}
       {isError && <span className="attachment-error">Upload failed</span>}
-      {isError && localFile && <button type="button" className="audio-play" onClick={() => {
+      {isError && localFile && <button type="button" className="audio-play attachment-retry" onClick={() => {
         aui.attachment().remove();
         void aui.composer().addAttachment(localFile).catch(() => announce("Upload failed. Retry or remove the file."));
       }}>Retry upload</button>}

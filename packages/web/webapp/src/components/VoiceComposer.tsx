@@ -31,10 +31,27 @@ export function VoiceComposerScope({ children, unavailableReason }: { readonly c
   const [finished, setFinished] = useState<{ file: File; generation: number; sourceId: string | null; threadId: string | null }>();
   const capture = useRef<VoiceRecorder | undefined>(undefined);
   const epoch = useRef(0);
+  const attaching = useRef<{ controller: AbortController; remove: () => void } | undefined>(undefined);
   const target = useRef<(() => boolean) | undefined>(undefined);
   const current = useRef(store);
   current.current = store;
-  const cleanup = () => { epoch.current++; capture.current?.dispose(); capture.current = undefined; target.current = undefined; };
+  const cleanup = (cancelAttachment = true) => {
+    epoch.current++;
+    capture.current?.dispose(); capture.current = undefined; target.current = undefined;
+    const pending = attaching.current; attaching.current = undefined;
+    if (cancelAttachment && pending) { pending.controller.abort(); pending.remove(); }
+  };
+  const attach = (file: File) => {
+    const controller = new AbortController();
+    recorded!.adapter.registerRecording(file, controller.signal);
+    const composer = runtime.thread.composer;
+    attaching.current = { controller, remove: () => {
+      composer.getState().attachments.forEach((item, index) => {
+        if (item.file === file) void composer.getAttachmentByIndex(index).remove().catch(() => undefined);
+      });
+    } };
+    return composer.addAttachment(file);
+  };
   const cancel = () => { cleanup(); setPhase("idle"); setError(undefined); setSeconds(0); setFinished(undefined); };
   useEffect(() => () => cleanup(), []);
   useEffect(() => {
@@ -44,10 +61,20 @@ export function VoiceComposerScope({ children, unavailableReason }: { readonly c
     && current.current.selectedThreadId === finished.threadId && current.current.conversationVisible;
   const retryAttachment = async () => {
     if (!finished || !ownsFinished()) return;
+    cleanup();
+    // Same-conversation identity is not enough after hide/cancel/new capture.
+    // This immutable epoch also owns all retry completion/error state effects.
+    const token = epoch.current;
+    const ownsRetry = () => token === epoch.current && Boolean(ownsFinished());
+    target.current = ownsRetry;
     setPhase("attaching"); setError(undefined);
-    try { await runtime.thread.composer.addAttachment(finished.file); if (ownsFinished()) { setFinished(undefined); setPhase("idle"); } }
-    catch (failure) {
-      if (!ownsFinished()) return;
+    try {
+      await attach(finished.file);
+      if (!ownsRetry()) return;
+      cleanup(false); setFinished(undefined); setPhase("idle");
+    } catch (failure) {
+      if (!ownsRetry()) return;
+      cleanup(false);
       if (failure instanceof DOMException && failure.name === "AbortError") { setFinished(undefined); setPhase("idle"); return; }
       const hasChip = runtime.thread.composer.getState().attachments.some((item) => item.file === finished.file);
       if (hasChip) setFinished(undefined);
@@ -83,15 +110,14 @@ export function VoiceComposerScope({ children, unavailableReason }: { readonly c
           let file: File | undefined;
           try {
             file = recordingFile(blob);
-            recorded.adapter.registerRecording(file);
-            await runtime.thread.composer.addAttachment(file);
-            if (owns()) { cleanup(); setPhase("idle"); }
+            await attach(file);
+            if (owns()) { cleanup(false); setPhase("idle"); }
           } catch (failure) {
             if (owns()) {
-              if (failure instanceof DOMException && failure.name === "AbortError") { cleanup(); setPhase("idle"); return; }
+              if (failure instanceof DOMException && failure.name === "AbortError") { cleanup(false); setPhase("idle"); return; }
               const hasChip = file && runtime.thread.composer.getState().attachments.some((item) => item.file === file);
               if (file && !hasChip) setFinished({ file, generation, sourceId, threadId });
-              cleanup(); setPhase("idle"); setError(hasChip ? undefined : failure instanceof Error ? failure.message : "The recording could not be attached. Record again.");
+              cleanup(false); setPhase("idle"); setError(hasChip ? undefined : failure instanceof Error ? failure.message : "The recording could not be attached. Record again.");
             }
           }
         })();
