@@ -198,7 +198,16 @@ export function completionLowerBound(bounds, confidence = spec.confidenceByGate.
 const OUTCOMES = new Set(["correct", "stale", "conflicted", "violation", "leaked", "abstained", "empty", "wrong", "fabricated"]);
 const validTrial = row => row?.status === "completed" && typeof row.score?.pass === "boolean" && OUTCOMES.has(row.score?.outcome)
   && row.score.pass === (row.score.outcome === "correct");
-const wrongTrial = row => validTrial(row) && !row.score.pass && !["abstained", "empty"].includes(row.score.outcome);
+/** Whole-answer allowlist, not a search for hedging keywords. Missing text is NOT pure.
+ * Scorers intentionally have broader abstained labels; keep their v1/v2 behavior unchanged. */
+export function pureAbstention(answer) {
+  if (typeof answer !== "string") return false;
+  const text = answer.normalize("NFKC").replace(/[‘’]/gu, "'").trim();
+  if (text === "") return true;
+  const phrase = text.toLowerCase().replace(/^[\p{P}`\s]+|[\p{P}`\s]+$/gu, "").replace(/\s+/gu, " ");
+  return /^(?:unknown|i (?:don'?t|do not) know|not (?:stated|mentioned|specified|provided|known|available|applicable)|n(?:\s*[/.]\s*|\s*)a)$/u.test(phrase);
+}
+const wrongTrial = row => validTrial(row) && !row.score.pass && !pureAbstention(row.answer);
 
 /** Pure analysis defaults to NOT a measurement; callers must explicitly supply validated real execution provenance. */
 export function holdoutStatistics({ conversations, trials, audit = null, statisticalSpec = spec, measurement = false }) {
@@ -243,13 +252,14 @@ export function holdoutStatistics({ conversations, trials, audit = null, statist
     // Any-wrong risks and both discordance directions are descriptive, never gates.
     const descriptive = Object.fromEntries(HOLDOUT_ARMS.map(arm => {
       const count = key => rows.reduce((s, c) => s + c.arms[arm][key], 0);
-      return [arm, { complete: rows.every(c => c.arms[arm].complete), correct: count("correct"), wrong: count("wrong"), missing: count("missing"),
+      const complete = rows.every(c => c.arms[arm].complete);
+      return [arm, { complete, correct: count("correct"), wrong: count("wrong"), missing: count("missing"),
         missingRate: count("missing") / denominator,
-        abstainedOrEmptyRate: (denominator - count("correct") - count("wrong") - count("missing")) / denominator,
+        abstainedOrEmptyRate: complete ? (denominator - count("correct") - count("wrong") - count("missing")) / denominator : null,
         abstainedOrEmpty: denominator - count("correct") - count("wrong") - count("missing"),
-        correctRate: count("correct") / denominator, wrongRate: count("wrong") / denominator,
+        correctRate: complete ? count("correct") / denominator : null, wrongRate: complete ? count("wrong") / denominator : null,
         anyWrongConversations: rows.filter(c => c.arms[arm].wrong > 0).length,
-        anyWrongRisk: rows.filter(c => c.arms[arm].wrong > 0).length / n }];
+        anyWrongRisk: complete ? rows.filter(c => c.arms[arm].wrong > 0).length / n : null }];
     }));
     const discordances = Object.fromEntries(HOLDOUT_ARMS.filter(a => a !== ledger).map(comparator => [comparator, {
       ledgerOnlyKnownWrong: rows.filter(c => c.arms[ledger].wrong > 0 && c.arms[comparator].complete && c.arms[comparator].wrong === 0).length,

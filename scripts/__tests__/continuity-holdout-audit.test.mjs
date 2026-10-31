@@ -315,7 +315,7 @@ it("writes byte-identical reports with detached hashes and no local path or chan
 function passingStatistics(totals) {
   const d = STATISTICAL_SPEC.design, conversations = Array.from({ length: d.conversationsPerCorpus * 2 }, (_, i) => ({ id: `synthetic-${i}`,
     corpus: d.corpora[Math.floor(i / d.conversationsPerCorpus)], family: `family-${Math.floor(i / d.conversationsPerFamily)}`, probes: Array.from({ length: d.probes }, (_, j) => `p${j}`) }));
-  const trials = conversations.flatMap(c => HOLDOUT_ARMS.flatMap(arm => [1, 2].flatMap(repeat => c.probes.map(probeId => ({ traceId: c.id, arm, repeat, probeId, status: "completed", boundary: { verified: true }, score: { pass: arm !== "continuity-pack-cold", outcome: arm !== "continuity-pack-cold" ? "correct" : "abstained" } })))));
+  const trials = conversations.flatMap(c => HOLDOUT_ARMS.flatMap(arm => [1, 2].flatMap(repeat => c.probes.map(probeId => ({ traceId: c.id, arm, repeat, probeId, status: "completed", answer: arm === "continuity-pack-cold" ? "UNKNOWN" : "Fixture answer.", boundary: { verified: true }, score: { pass: arm !== "continuity-pack-cold", outcome: arm !== "continuity-pack-cold" ? "correct" : "abstained" } })))));
   return holdoutStatistics({ conversations, trials, audit: totals, measurement: true });
 }
 const totals = (published = 363, labelFindings = 10, contextFindings = 5) => ({ complete: true, published, audited: published, labelFindings, contextFindings, falselySupersededCurrent: 0, bindingErrors: 0 });

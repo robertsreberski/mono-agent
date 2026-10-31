@@ -25,7 +25,7 @@
       "native"
     ],
     "treatment": "continuity-ledger-cold",
-    "wrong": "!pass and outcome not in {abstained,empty}, even when hedged; incomplete substantive answers are wrong",
+    "wrong": "!pass and !pureAbstention(answer); missing/non-string answer text is not pure. Pure means empty/whitespace or only a whole-answer abstention expression after case/whitespace, Unicode apostrophe and surrounding-punctuation normalization: UNKNOWN; I do not know / I don't know / I dont know; not stated/mentioned/specified/provided/known/available/applicable; N/A, N.A. or NA (optional internal spaces). Any additional substantive content is not pure, regardless of scorer outcome or hedging.",
     "unit": "conversation wrong-fraction difference over all 30 planned answers",
     "upperBound": "one-sided family-clustered tighten-only skew-adjusted Student-t",
     "maximumByComparator": {

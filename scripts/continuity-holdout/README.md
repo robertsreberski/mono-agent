@@ -428,3 +428,17 @@ The ≤5.5% boundary-pass calibration criterion applies only to confidence-bound
 gates in non-stress scenarios, **not** the observed-wrong/accuracy point rules.
 Reports label these levels; there is no simultaneous-coverage claim. The earlier
 all-95% v2 spec requires a fresh registration and is not silently reinterpreted.
+
+
+## Pure abstentions versus substantive non-passes
+
+For every arm, wrong means `!pass && !pureAbstention(answer)` on archived raw
+answer text, **not** the scorer's abstained flag/outcome. Pure means an
+empty/whitespace string or only a whole-answer abstention expression: UNKNOWN;
+I don't/dont/do not know; not stated/mentioned/specified/provided/known/available/
+applicable; N/A, N.A. or NA (optional internal spaces). Case/whitespace, Unicode
+apostrophes and surrounding punctuation are normalized. Extra substantive
+content, including hedged guesses and incomplete answers, counts wrong.
+Missing/non-string text is not pure and fails closed for a non-pass. Correct
+answers and v1/v2 scoring are unchanged. Incomplete arms retain known counts and
+missingness, with outcome rates/any-wrong risk null, not completed risk estimates.

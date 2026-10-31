@@ -7,6 +7,8 @@
   per-corpus layout, model-scoped
   eligibility reports, and random-family joint-power/null-calibration simulations.
   Use 97% for the tiny pack margin after lumpy-error calibration rejected 95%.
+  Count substantive hedges as wrong without changing scorers; require raw text
+  for pure abstentions and keep incomplete-arm rates null.
   Keep cold-rebuild descriptive; reject incompatible v1 registrations.
 
 - Add opt-in deterministic v2 continuity benchmark scoring and a read-only

@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
-import { clopperPearson, pairedT, tQuantile, betaCdf, betaQuantile, holdoutStatistics, HOLDOUT_ARMS, STATISTICAL_SPEC, completionUpperBound, gateEvaluator, validateStatisticalSpec, familyT, familyCompletionBounds } from "../lib/continuity-holdout-statistics.mjs";
+import { clopperPearson, pairedT, tQuantile, betaCdf, betaQuantile, holdoutStatistics, HOLDOUT_ARMS, STATISTICAL_SPEC, completionUpperBound, gateEvaluator, validateStatisticalSpec, familyT, familyCompletionBounds, pureAbstention } from "../lib/continuity-holdout-statistics.mjs";
 import { createRegistration, holdoutModels, readBoundAudit, seeded, assertRealHoldoutModels, validateRegistrationVersion } from "../lib/continuity-holdout-registration.mjs";
 import { bundleDistribution, simulatePower, POWER_SCENARIOS, familyEffectParameters } from "../lib/continuity-holdout-power.mjs";
 import { scoreAnswer, renderMarkdown } from "../lib/continuity-score.mjs";
@@ -16,7 +16,7 @@ const audit = { published: 363, audited: 363, labelFindings: 10, contextFindings
 function trials() {
   return conversations.flatMap(c => HOLDOUT_ARMS.flatMap(arm => [1, 2].flatMap(repeat => c.probes.map(probeId => {
     const pass = arm !== "continuity-pack-cold" || probeId !== "p01";
-    return { traceId: c.id, probeId, arm, repeat, status: "completed", score: { pass, abstained: !pass, outcome: pass ? "correct" : "abstained" } };
+    return { traceId: c.id, probeId, arm, repeat, status: "completed", answer: pass ? "Fixture answer." : "UNKNOWN", score: { pass, abstained: !pass, outcome: pass ? "correct" : "abstained" } };
   }))));
 }
 const score = rows => holdoutStatistics({ conversations, trials: rows, audit, measurement: true });
@@ -129,29 +129,36 @@ it("enumerates coherent repeat bundles with the requested quality moments", () =
 });
 it("power CLI is deterministic at 100,000 synthetic replications and rejects smaller studies", async () => {
   const dir = await mkdtemp(join(tmpdir(), "holdout-power-fixture-")); scratch.push(dir);
-  // Tiny synthetic design exercises the CLI without rerunning the planned-design power study.
+  // Selected synthetic scenario has G=8 per corpus, exercising real family inference, not G=1 inconclusiveness.
   const spec = structuredClone(STATISTICAL_SPEC);
-  Object.assign(spec.design, { conversationsPerCorpus: 2, families: 2, conversationsPerFamily: 2, shards: 1, perCorpusPerShard: 2 });
+  Object.assign(spec.design, { conversationsPerCorpus: 16, families: 16, conversationsPerFamily: 2, shards: 1, perCorpusPerShard: 16 });
   const path = join(dir, "spec.json"); await writeFile(path, JSON.stringify(spec));
-  const run = (output, replications = "100000") => spawnSync(process.execPath, [new URL("../continuity-holdout-power.mjs", import.meta.url).pathname, "--seed", "572913", "--replications", replications, "--statistical-spec", path, "--output", output], { encoding: "utf8", timeout: 180000 });
+  const run = (output, replications = "100000", scenario = "improved-target-icc-0.2-rho-0.5") => spawnSync(process.execPath, [new URL("../continuity-holdout-power.mjs", import.meta.url).pathname, "--seed", "572913", "--replications", replications, "--statistical-spec", path, "--scenario", scenario, "--output", output], { encoding: "utf8", timeout: 180000 });
   const a = run(join(dir, "a")), b = run(join(dir, "b"));
   expect(a.status, a.stderr).toBe(0); expect(b.status, b.stderr).toBe(0);
   expect(a.stdout).toBe(b.stdout);
   expect(await readFile(join(dir, "a/power.md"), "utf8")).toBe(await readFile(join(dir, "b/power.md"), "utf8"));
   const report = JSON.parse(a.stdout); expect(report.replications).toBe(100000);
   expect(report.schema).toBe("holdout-power-v2");
-  expect(Object.keys(report.calibrationMaximum)).toHaveLength(9);
-  expect(Object.keys(report.calibrationMaximum).every(k => /:(?:pack|native|benefit)$/u.test(k))).toBe(true);
+  expect(report.scenarioSelection).toBe("improved-target-icc-0.2-rho-0.5");
+  expect(report.scenarios).toHaveLength(1); expect(report.scenarios[0].families).toBe(16);
+  expect(report.scenarios[0].conversationsPerFamily).toBe(2);
+  expect(report.scenarios[0].gatePassRates["combined:benefit"].rate).toBeGreaterThan(0);
+  expect(report.scenarios[0].gatePassRates["holdout-hard:native"].rate).toBeGreaterThan(0);
+  expect(report.scenarios[0].jointAcceptance.rate).toBeGreaterThan(0);
+  expect(report.scenarios[0].jointAcceptance.rate).toBeLessThan(1);
+  expect(report.calibrationPass).toBe(null); // Target-only analysis cannot claim null calibration.
   expect(report.statisticalSpec.confidenceByGate).toEqual({ pack: 0.97, native: 0.95, benefit: 0.95 });
-  expect(report.scenarios.slice(0, 65).every(s => !s.stress && !s.reference && (s.name.startsWith("improved-target") || ["pack", "native", "benefit:combined", "benefit:corpus"].includes(s.boundary)))).toBe(true);
-  expect(report.scenarios.filter(s => s.boundary).every(s => Object.keys(s.nullRejectionRates).length > 0)).toBe(true);
   const invalid = run(join(dir, "invalid"), "99999"); expect(invalid.status).toBe(1); expect(invalid.stderr).toContain("invalid_power_design");
+  const unknown = run(join(dir, "unknown"), "100000", "unregistered-scenario");
+  expect(unknown.status).toBe(1); expect(unknown.stderr).toContain("invalid_power_scenario");
+  expect(POWER_SCENARIOS.slice(0, 65).every(s => !s.stress && !s.reference && (s.name.startsWith("improved-target") || ["pack", "native", "benefit:combined", "benefit:corpus"].includes(s.boundary)))).toBe(true);
   expect(() => simulatePower({ scenarios: [{ ...POWER_SCENARIOS[0], errorCount: 0 }] })).toThrow("invalid_power_scenario");
 }, 360000);
 
 
 describe("review regression contracts", () => {
-  it.each(["stale", "conflicted", "violation", "leaked", "abstained", "empty"])("classifies hedged %s by outcome, not the abstained flag", outcome => {
+  it.each(["stale", "conflicted", "violation", "leaked", "abstained", "empty"])("classifies %s from raw answers, not the abstained flag", outcome => {
     const rows = trials();
     const examples = {
       stale: [{ score: { kind: "value", accept: ["fresh"], superseded: ["stale"] } }, "stale UNKNOWN"],
@@ -163,17 +170,17 @@ describe("review regression contracts", () => {
     };
     const result = scoreAnswer(...examples[outcome]); expect(result.outcome).toBe(outcome);
     if (outcome !== "empty") expect(result.abstained).toBe(true);
-    ledger(rows)[0].score = result;
+    ledger(rows)[0].score = result; ledger(rows)[0].answer = examples[outcome][1];
     const scope = score(rows).scopes["holdout-hard"], expected = ["abstained", "empty"].includes(outcome) ? 0 : 1;
     expect(scope.ledgerWrong).toBe(expected); expect(scope.discordances["cold-rebuild"].ledgerOnlyKnownWrong).toBe(expected);
   });
   it.each(["wrong-rate", "accuracy", "safety", "benefit"])("retains an established %s failure with missing data", gate => {
     const rows = trials(), ls = ledger(rows);
     if (gate === "wrong-rate") ls.slice(0, 200).forEach(t => { t.score = { pass: false, outcome: "wrong", abstained: false }; });
-    if (gate === "accuracy") ls.slice(0, 2000).forEach(t => { t.score = { pass: false, outcome: "abstained", abstained: true }; });
+    if (gate === "accuracy") ls.slice(0, 2000).forEach(t => { t.answer = "UNKNOWN"; t.score = { pass: false, outcome: "abstained", abstained: true }; });
     if (gate === "safety") ls.filter(t => t.repeat === 1 && t.probeId === "p01" && Number(t.traceId.slice(8)) < 100).forEach(t => { t.score = { pass: false, outcome: "wrong", abstained: false }; });
     if (gate === "benefit") {
-      ls.forEach(t => { t.score = { pass: false, outcome: "abstained", abstained: true }; });
+      ls.forEach(t => { t.answer = "UNKNOWN"; t.score = { pass: false, outcome: "abstained", abstained: true }; });
       rows.filter(t => t.arm === "continuity-pack-cold").forEach(t => { t.score = { pass: true, outcome: "correct", abstained: false }; });
     }
     rows.splice(rows.findIndex(t => t.arm === "continuity-ledger-cold" && t.traceId === "fixture-255"), 1);
@@ -326,7 +333,7 @@ describe("registered v2 quality rule", () => {
   });
   it("retains reverse discordances without gating any-wrong conversation risks", () => {
     const rows = trials();
-    rows.filter(t => t.arm === "continuity-pack-cold" && t.traceId === "fixture-0").forEach(t => { t.score = { pass: false, outcome: "wrong" }; });
+    rows.filter(t => t.arm === "continuity-pack-cold" && t.traceId === "fixture-0").forEach(t => { t.answer = "Fixture wrong answer."; t.score = { pass: false, outcome: "wrong" }; });
     const scope = score(rows).scopes["holdout-hard"];
     expect(scope.discordances["continuity-pack-cold"]).toMatchObject({ ledgerOnlyKnownWrong: 0, comparatorOnlyKnownWrong: 1 });
     expect(scope.safety["continuity-pack-cold"].interval.mean).toBe(-1 / 256);
@@ -441,6 +448,64 @@ describe("registered alternative B confidence levels", () => {
     for (const key of ["pack", "native", "benefit"]) {
       const changed = structuredClone(STATISTICAL_SPEC); changed.confidenceByGate[key] -= 0.01;
       expect(() => validateStatisticalSpec(changed)).toThrow("unregistered_statistical_spec");
+    }
+  });
+});
+
+
+describe("pure abstention and completion regressions", () => {
+  it.each(["", "  ", "UNKNOWN", " ‘unknown!’ ", "I don’t know.", "I do not know", "Not stated", "NOT MENTIONED!", "N / A", "N.A."])("recognizes only a whole abstention: %s", answer => {
+    expect(pureAbstention(answer)).toBe(true);
+  });
+  it.each([undefined, null, 42, "...", "Use fathoms; the excluded terms were not mentioned.", "I don't know exactly, perhaps PARCELMALLOW"])("fails closed for missing or substantive text: %s", answer => {
+    expect(pureAbstention(answer)).toBe(false);
+  });
+  it.each(HOLDOUT_ARMS)("uses the raw predicate for %s gates, point counts and descriptive W", arm => {
+    const examples = [
+      ["UNKNOWN", { kind: "identifier", accept: ["PARCELASTER"], reject: ["PARCELBIRCH"] }, 0],
+      ["Use fathoms; the excluded terms were not mentioned.", { kind: "constraint_recall", requireAll: [["FixtureRequired"]] }, 1],
+      ["I don't know exactly, perhaps PARCELMALLOW", { kind: "identifier", accept: ["PARCELASTER"], reject: ["PARCELBIRCH"] }, 1],
+      [undefined, null, 1],
+    ];
+    for (const [answer, key, expected] of examples) {
+      const rows = trials(), trial = rows.find(t => t.arm === arm);
+      trial.answer = answer; trial.score = key ? scoreAnswer({ score: key }, answer) : { pass: false, outcome: "abstained" };
+      expect(trial.score.outcome).toBe("abstained"); // Existing scorer remains unchanged, including hedged cases.
+      const scope = score(rows).scopes["holdout-hard"];
+      expect(scope.descriptive[arm].wrong).toBe(expected); expect(scope.descriptive[arm].wrongRate).toBe(expected / 7680);
+      if (arm === "continuity-ledger-cold") {
+        expect(scope.ledgerWrong).toBe(expected); expect(scope.ledgerWrongRate).toBe(expected / 7680);
+        expect(scope.safety.native.interval.mean).toBeCloseTo(expected / 7680, 13);
+        expect(scope.safety["continuity-pack-cold"].interval.mean).toBeCloseTo(expected / 7680, 13);
+      }
+      trial.score = { pass: true, outcome: "correct" }; delete trial.answer;
+      expect(score(rows).scopes["holdout-hard"].descriptive[arm].wrong).toBe(0);
+    }
+  });
+  it("nulls incomplete arm outcome rates/risks but retains known counts and missingness", () => {
+    const rows = trials(), index = rows.findIndex(t => t.arm === "cold-rebuild"); rows.splice(index, 1);
+    const scope = score(rows).scopes["holdout-hard"], cold = scope.descriptive["cold-rebuild"];
+    expect(cold).toMatchObject({ complete: false, missing: 1, correct: 7679, wrong: 0, anyWrongRisk: null, correctRate: null, wrongRate: null, abstainedOrEmptyRate: null });
+    expect(cold.missingRate).toBe(1 / 7680); expect(scope.descriptive.native.correctRate).toBe(1);
+  });
+  // Independently generated with Python Decimal at 70-digit precision (confirmed at 50):
+  // t=sqrt(df)*tan(theta), F(t)=1/2+[4^k(k!)²/((2k)!pi)]*integral_0^theta cos^(2k)(u) du,
+  // df=2k+1; even-cosine reduction recurrence + arctan series and 240 bisection steps.
+  // This is independent of the JS incomplete-beta/Lanczos implementation.
+  it.each([[0.95, 127, 1.6569403435420646592], [0.97, 127, 1.8977419806344177570],
+    [0.95, 255, 1.6508510924986625441], [0.97, 255, 1.8891970911838422851]])("matches independent t(%s,%i)", (confidence, df, reference) => {
+    expect(tQuantile(confidence, df)).toBeCloseTo(reference, 10);
+  });
+  it("encloses 200 independently randomized family-wise corner completions at both confidence levels", () => {
+    const random = seeded(783421), bounds = Array.from({ length: 128 }, () => {
+      const lo = random() * 2 - 1; return [lo, lo + random() * (1 - lo)];
+    });
+    for (const confidence of [0.95, 0.97]) {
+      const envelope = familyCompletionBounds(bounds, confidence);
+      for (let draw = 0; draw < 200; draw++) {
+        const completion = bounds.map(([lo, hi]) => random() < 0.5 ? lo : hi), result = familyT(completion, confidence);
+        expect(result.upper).toBeLessThanOrEqual(envelope.upper); expect(result.lower).toBeGreaterThanOrEqual(envelope.lower);
+      }
     }
   });
 });

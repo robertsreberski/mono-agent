@@ -13,6 +13,7 @@ const conversations = Array.from({ length: 512 }, (_, i) => ({ id: `synthetic-${
 const audit = { complete: true, published: 363, audited: 363, labelFindings: 0, contextFindings: 0, falselySupersededCurrent: 0, bindingErrors: 0 };
 function trials(packAbstains = true) {
   return conversations.flatMap(c => HOLDOUT_ARMS.flatMap(a => [1, 2].flatMap(repeat => c.probes.map(probeId => ({ traceId: c.id, arm: a, repeat, probeId, status: "completed",
+    answer: a === pack && (packAbstains || probeId === "p0") ? "UNKNOWN" : "Fixture answer.",
     score: a === pack && (packAbstains || probeId === "p0") ? { pass: false, outcome: "abstained" } : { pass: true, outcome: "correct" } })))));
 }
 const score = rows => holdoutStatistics({ conversations, trials: rows, audit, measurement: true });
@@ -51,7 +52,7 @@ it.each(["wrong-rate", "safety", "accuracy"])("leaves worst-case %s uncertainty 
   }
   if (gate === "safety") rows = rows.filter(t => !(t.arm === arm && t.repeat === 1 && t.probeId === "p0" && Number(t.traceId.slice(10)) < 40));
   if (gate === "accuracy") {
-    const ls = rows.filter(t => t.arm === arm); ls.slice(0, 1248).forEach(t => { t.score = { pass: false, outcome: "abstained" }; });
+    const ls = rows.filter(t => t.arm === arm); ls.slice(0, 1248).forEach(t => { t.answer = "UNKNOWN"; t.score = { pass: false, outcome: "abstained" }; });
     rows.splice(rows.indexOf(ls[1248]), 1);
   }
   const result = score(rows), key = gate === "accuracy" ? "accuracy" : `holdout-hard:${gate === "safety" ? `safety:${pack}` : gate}`;
@@ -92,7 +93,7 @@ async function syntheticShards(directory, context, workflow, controller) {
         const unit = { traceId: planned.traceId, arm: a, repeat, complete: true, executionKind: "real", confirmation: bundle.plan.confirmation,
           manifest: { codeRevision: context.registration.codeRevision, dirty: false }, checkpoint, trials: probes.map(probeId => ({ traceId: planned.traceId, arm: a, repeat, probeId, status: "completed",
             boundary: { verified: true, ...(a === arm ? { observed: { upkeep: [], upkeepScans: [], continuityPacks: [{ ledgerEntries: 3 }] } } : {}) },
-            score: a === pack ? { pass: false, outcome: "abstained" } : { pass: true, outcome: "correct" }, usage: { calls: 1, inputTokens: 100, outputTokens: 10, estimatedCostUsd: 0.001 } })) };
+            answer: a === pack ? "UNKNOWN" : "Fixture answer.", score: a === pack ? { pass: false, outcome: "abstained" } : { pass: true, outcome: "correct" }, usage: { calls: 1, inputTokens: 100, outputTokens: 10, estimatedCostUsd: 0.001 } })) };
         if (fails && a === "native" && repeat === 1) Object.assign(unit.trials[0], { status: "failed", score: null, boundary: null });
         units.push(unit); await writeFile(join(output, "units", `${a}-${repeat}.json`), jsonBytes(unit));
       }
