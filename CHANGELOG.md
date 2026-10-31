@@ -2,8 +2,9 @@
 
 ## Unreleased
 
-- Add versioned holdout v2 paired wrong-rate quality gates, model-scoped
-  eligibility reports, and coherent joint-power/null-calibration simulations.
+- Add versioned holdout v2 family-clustered, conversation-paired quality gates,
+  tighten-only skew bounds, a 128-families-of-2 per-corpus layout, model-scoped
+  eligibility reports, and random-family joint-power/null-calibration simulations.
   Keep cold-rebuild descriptive; reject incompatible v1 registrations.
 
 - Add opt-in deterministic v2 continuity benchmark scoring and a read-only

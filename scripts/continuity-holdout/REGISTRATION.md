@@ -7,8 +7,8 @@ Existing suites, arm configurations and scoring of legacy suites are unchanged.
 
 ## Registered design and power review
 
-Design E is **512 conversations in 32 disjoint families of 16**, half the families
-and 256 conversations in each corpus. There are **32 balanced shards of 16**,
+Design E is **512 conversations in 256 disjoint families of 2**, half the families
+and 128 families / 256 conversations in each corpus. There are **32 balanced shards of 16**,
 eight conversations per corpus, each binding a **$25 ceiling**. This records a
 ceiling, not spending authorization or a remotely enforced invoice cap. Use the
 [portable workflow](./README.md#portable-execution-and-validated-joining) for
@@ -23,7 +23,7 @@ The CLI writes deterministic `power.json` and `power.md`, with at least 100,000
 replications/scenario. It calls the actual paired-t, wrong-rate and accuracy
 gate evaluator. Coherent native/pack/ledger correct/wrong/abstention bundles
 include concentrated errors and repeat correlations 0/0.5/0.9. Reports include
-joint acceptance and each margin's null-boundary rejection rates, not just
+joint acceptance and each margin's null-boundary rejection rates/Monte Carlo SE, not just
 favorable marginal gates. Quality inputs are assumptions, not measurements.
 The observed wrong/accuracy point thresholds are not level-5% hypothesis tests.
 
@@ -34,10 +34,12 @@ two repeats, 15 probes and audit limits are immutable. A stricter or more lenien
 external threshold is rejected. Any layout change requires fresh approval,
 freeze and registration, never outcome-dependent extension.
 
-Main power scenarios assume independently sampled conversations conditional on
-the fixed family layout. Extra family/concentration sensitivities introduce
-residual within-family dependence: these are **not family-cluster calibration**
-of conversation-level intervals. Complete data, admission and passing certified
+Main power scenarios draw fresh Dirichlet family arm-mixture random effects
+with exact superpopulation means and target paired-difference ICC, including
+0/0.1/0.2/0.35 × conditional repeat copying 0/0.5/0.9. A right-skewed effect
+variant is included. Bundle-reuse stress is reported with P(no bad family),
+not calibration-gated. Every non-stress boundary pass rate must be ≤5.5%;
+maxima and realized ICC/design-effect/skew diagnostics are reported. Complete data, admission and passing certified
 audit are assumed, not measured. Inadequate power/calibration blocks a fresh
 registration; it does not justify loosening margins.
 
@@ -82,7 +84,7 @@ shuffling of sorted identities binds every conversation/family and shard,
 manifest/rubric/statistical-spec hashes, models, low reader effort, no judge,
 code revision and per-shard ceiling. Plan confirmation binds these inputs and
 the selected shard. Changing an input refuses loading or changes confirmation
-before dispatch. Registration checks the exact 32 × 16 selected family layout;
+before dispatch. Registration checks the exact 256 × 2 selected family layout;
 author-format/schema validity alone is not corpus acceptance.
 
 Each shard requires all four arms, two repeats and 15 probes (1,920 reader turns).
@@ -109,7 +111,7 @@ only outcome `correct` may have `pass: true`, and it must have it.
 ## Gate semantics and missing data
 
 `results.json` retains descriptive per-probe results and adds `summary.holdout`:
-conversation-level safety/benefit, planned denominators, audit rates and decision
+family-clustered safety/benefit, planned denominators, audit rates and decision
 reasons. Markdown/CLI guard offline output as well. Design E has **7,680 planned
 answers per corpus/arm, 15,360 combined**. Both repeats/all probes stay together.
 Native is a paired safety comparator and subject to the same missing-slot cap.
@@ -130,8 +132,29 @@ both repeats/all probes. Each of these gates is necessary:
 | Ledger − pack mean correct-fraction lower bound | > 0 | > 0.02 |
 | Ledger correct / planned answers | descriptive | ≥ 0.91875 |
 
-Paired bounds are one-sided 95% Student-t on **conversation** fraction
-differences: mean ± `t(.95,n−1) * SD / sqrt(n)`. Safety passes at an upper
+Bounds are **family-clustered (families as sampled scenario types),
+conversation-paired**. Each family mean averages its registered conversation
+fraction differences. G=128 per corpus; **combined pools all 256 families**, not
+corpus-stratified. Let θ be the mean of family means, SE=sd(family means)/√G,
+t=t(.95,G−1), and γ their adjusted Fisher-Pearson sample skewness:
+`G/((G−1)(G−2)) * sum(((familyMean−θ)/sd)^3)` (zero when SE=0;
+G=2 mechanics fixtures use zero, G<2 cannot pass an interval gate).
+
+- Upper U = θ + SE·max(t, t + γ(1+2t²)/(6√G)).
+- Lower L = θ − SE·max(t, t − γ(1+2t²)/(6√G)).
+
+This Johnson/Hesterberg second-order skew adjustment is **tighten-only**;
+negative skew on U and positive skew on L use plain t. For balanced families
+the base t bound equals the family-clustered CR2/Bell–McCaffrey bound. Reports
+include G, θ, SE, γ, each applied adjustment, realized one-way ANOVA family ICC
+and design effect `1+(conversationsPerFamily−1)*ICC` for each paired estimand.
+These diagnostics are null for incomplete pairs; zero variance has ICC=0.
+
+Conversation-seeded shard assignment is unchanged: a family's two conversations
+**may share or cross shards**. Joining reconstructs whole registered families
+before inference, so shard placement never defines the inferential clusters.
+
+ Safety passes at an upper
 endpoint exactly equal to its margin, fails when the lower endpoint is above
 it, otherwise is inconclusive. Benefit passes strictly above its lower-bound
 threshold, fails when its upper endpoint is at/below it, otherwise is
@@ -162,12 +185,18 @@ the ledger and missing comparator answers in the comparator's favour:
 
 - Paired wrong comparisons (pack and native): each conversation's feasible
   difference is `[(ledgerWrong − comparatorWrong − comparatorMissing)/30,
-  (ledgerWrong + ledgerMissing − comparatorWrong)/30]`. A conservative upper
-  bound on **every completion's t upper endpoint** must be ≤ its margin.
-  Missing native slots participate just like pack slots.
-- Benefit: `completionLowerBound` bounds every possible one-sided t lower endpoint
-  conservatively by reflection of `completionUpperBound`. It must exceed the
-  registered scope threshold; fixed bounds equal the ordinary paired-t lower bound.
+  (ledgerWrong + ledgerMissing − comparatorWrong)/30]`. Average these bounds
+  within each family, then apply the conservative family envelope below.
+- Benefit: analogous feasible correct differences are averaged within families.
+  A lower envelope for every possible skew-adjusted L must exceed the threshold.
+- Completion proof: for family means in [lo,hi], θ lies between mean(lo) and
+  mean(hi); centered SS is at most `sum(max(lo²,hi²))−min(sum(x)²)/G`.
+  Standardized centered z satisfy `sum(z²)=G−1` and
+  `abs(sum(z³)) ≤ (sum(z²))^(3/2)`, hence
+  `abs(γ) ≤ G*sqrt(G−1)/(G−2)`. Use this maximum skew with the maximal SE
+  in both radii; mean(lo) minus that radius and mean(hi) plus it enclose
+  **every completion's L and U**. Fixed bounds use the actual skew procedure.
+  This is deliberately coarse, never an endpoint-fill or monotonic-skew claim.
 - Wrong rate: `(wrong + ledgerMissing) / plannedAnswers ≤ 0.02` in each scope.
 - Accuracy: `correct / plannedAnswers ≥ 0.91875`.
 
@@ -180,16 +209,9 @@ when a conservative best-completion bound establishes the same registered failur
 - Accuracy: even `(correct + missing ledger slots) / planned` is below 91.875%.
 - Paired wrong comparisons: a conservative lower bound on **every completion's
   t lower endpoint** must exceed the comparator's margin to establish failure.
-  Reflection of `completionUpperBound` supplies this bound, not endpoint filling.
-- Benefit: bound every conversation difference by its possible correct fractions
-  in [−1,1]. A conservative upper bound on **every completion's t upper endpoint**
-  must be ≤ the threshold to establish failure. The bound combines the maximal
-  possible mean with an upper bound on centered squared variation, with numerical
-  padding; fixed differences use the actual t upper endpoint. This relaxation can
-  be loose and may conservatively leave a case inconclusive. Filling missing
-  differences with +1 does **not** maximize a t lower endpoint: for 127 differences
-  of 0.0201 and one missing, +1 makes the lower endpoint below 0.02, while 0.0201
-  keeps it above 0.02. Neither that shortcut nor 'cannot pass means fail' is used.
+  The family envelope supplies this bound, not endpoint filling.
+- Benefit: the family envelope's upper endpoint must be ≤ the threshold to
+  establish failure. No missing completion can then undo that failure.
 
 Point-threshold and audit failures remain failures when missing execution data
 cannot undo them. No incomplete data is presented as a complete-case confidence

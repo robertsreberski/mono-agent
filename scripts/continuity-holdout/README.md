@@ -101,7 +101,7 @@ allowed; changing bound content or runtime provenance requires a new registratio
 
 No model execution or quality/acceptance claim follows from a successful freeze.
 
-Design E is 32 families × 16 selected conversations (16 families per group),
+Design E is 256 families × 2 selected conversations (128 families per group),
 512 total. Schema/selection/overlap/freeze APIs take their population from the
 statistical spec; the CLIs use the checked-in spec. Registration additionally
 verifies the exact selected family layout. Alternative designs must be approved
@@ -377,7 +377,8 @@ and `artifacts.json`. They include gates/intervals/reasons, integrity and audit
 counters, controller stops and catalog spend (not an invoice). Integrity includes
 both controller completeness/admissibility, per-arm missing counts and `worstCase`
 when the decision relies on capped worst-case completion. Complete-data results,
-v2 paired wrong-rate gates and conservative completion bounds apply.
+v2 family-clustered (families as sampled scenario types), conversation-paired
+wrong-rate gates and conservative completion bounds apply.
 Cold-rebuild rates and discordances are descriptive only; eligibility is limited
 to the registration’s pinned reader/extractor model references (Sol-only evidence
 is Sol-scoped, not blanket default enablement). Historical v1 registrations must

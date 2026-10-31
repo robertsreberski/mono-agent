@@ -1,4 +1,4 @@
-import { STATISTICAL_SPEC, validateStatisticalSpec, gateEvaluator } from "./continuity-holdout-statistics.mjs";
+import { STATISTICAL_SPEC, validateStatisticalSpec, gateEvaluator, familyDependence, familyMoments } from "./continuity-holdout-statistics.mjs";
 
 const target = { ledger: [0.95, 0.01], pack: [0.87, 0.015], native: [0.98, 0.005] };
 const qualities = [
@@ -11,37 +11,14 @@ const qualities = [
   { name: "corpus-benefit-null", boundary: "benefit:corpus", quality: { ...target, pack: [0.95, 0.015] } },
   { name: "accuracy-null", boundary: "accuracy", quality: { ...target, ledger: [0.91875, 0.01] } },
 ];
+const grid = [0, 0.1, 0.2, 0.35].flatMap(icc => [0, 0.5, 0.9].map(repeatCorrelation => ({ icc, repeatCorrelation })));
 export const POWER_SCENARIOS = Object.freeze([
-  ...qualities.flatMap(s => [0, 0.5, 0.9].map(repeatCorrelation => ({ ...s, name: `${s.name}-rho-${repeatCorrelation}`, repeatCorrelation, familyWeight: 0, errorCount: 3 }))),
-  ...qualities.filter(s => ["improved-target", "pack-null", "native-null"].includes(s.name)).map(s => ({ ...s, name: `${s.name}-family-sensitivity`, repeatCorrelation: 0.5, familyWeight: 0.4, errorCount: 6 })),
+  ...qualities.flatMap(s => grid.map(g => ({ ...s, ...g, name: `${s.name}-icc-${g.icc}-rho-${g.repeatCorrelation}`, effect: "dirichlet", errorCount: 3 }))),
+  ...qualities.map(s => ({ ...s, name: `${s.name}-right-skew`, icc: 0.2, repeatCorrelation: 0.5, effect: "rare-shift", errorCount: 3 })),
+  ...grid.map(g => ({ ...qualities[1], ...g, name: `target-reference-16x16-icc-${g.icc}-rho-${g.repeatCorrelation}`, effect: "dirichlet", errorCount: 3, reference: true })),
+  ...qualities.filter(s => ["improved-target", "pack-null", "native-null"].includes(s.name)).flatMap(s => [false, true].map(reference => ({ ...s,
+    name: `${s.name}-bundle-reuse-stress-${reference ? "16x16" : "128x2"}`, repeatCorrelation: 0.5, effect: "reuse", errorCount: 6, stress: true, reference }))),
 ]);
-
-/** Coherent 15-answer repeat counts, including concentrated errors and abstentions.
- * Half of repeats share uniforms across arms; half have independent arm uniforms.
- * Correct/wrong/abstention are mutually exclusive and sum to 15 for every arm.
- */
-export function repeatBundle(next, quality, errorCount = 3, probes = 15) {
-  const shared = next() < 0.5, error = next(), abstention = next();
-  return Object.fromEntries(["native", "pack", "ledger"].map(arm => {
-    const [correctRate, wrongRate] = quality[arm], u = shared ? error : next(), v = shared ? abstention : next();
-    const wrong = u < wrongRate * probes / errorCount ? errorCount : 0;
-    const remaining = probes - wrong, abstentionCount = Math.min(6, remaining);
-    const conditionalAbstentions = remaining * (1 - correctRate - wrongRate) / (1 - wrongRate);
-    const abstained = v < conditionalAbstentions / abstentionCount ? abstentionCount : 0;
-    return [arm, { correct: remaining - abstained, wrong, abstained }];
-  }));
-}
-function validateScenario(s, probes) {
-  if (![s.repeatCorrelation, s.familyWeight].every(x => x >= 0 && x <= 1)
-    || !Number.isSafeInteger(s.errorCount) || s.errorCount < 1 || s.errorCount > probes
-    || !["native", "pack", "ledger"].every(arm => {
-      const q = s.quality?.[arm];
-      // Ensure the two-point distributions can realize these expectations, even after an error.
-      return q?.length === 2 && q.every(x => Number.isFinite(x) && x >= 0 && x <= 1)
-        && q[0] + q[1] <= 1 && q[1] < 1 && q[1] * probes <= s.errorCount
-        && probes * (1 - q[0] - q[1]) / (1 - q[1]) <= Math.min(6, probes - s.errorCount);
-    })) throw new Error("invalid_power_scenario");
-}
 /** Exact finite mixture of repeatBundle; pre-enumeration avoids simulating individual answers. */
 export function bundleDistribution(quality, errorCount = 3, probes = 15) {
   const arms = ["native", "pack", "ledger"], atoms = [];
@@ -67,83 +44,112 @@ export function bundleDistribution(quality, errorCount = 3, probes = 15) {
   }
   return atoms;
 }
+/** Integrate fresh family Dirichlet arm-mixture random effects exactly with a Polya urn.
+ * p_f ~ Dirichlet(kappa*p): E[p_f]=p, Cov(E[X|f])=r Var(X), r=1/(kappa+1).
+ * For two-repeat conversation X, conditional copy probability rho gives a=(1+rho)/2:
+ * ICC(X) = r / (a+(1-a)r). Solve r=ICC*a/(1-ICC*(1-a)). This holds for BOTH D
+ * comparisons and benefit, not just arm errors. Null superpopulation means remain EXACTLY
+ * the scenario means since E[p_f]=p. No pilot/observed-study fitting or Monte Carlo centering.
+ * The urn samples only genuinely new conditional draws; forced repeat copies add no draws.
+ */
+export function familyEffectParameters(icc, rho) {
+  const a = (1 + rho) / 2, r = icc * a / (1 - icc * (1 - a));
+  return { r, kappa: r === 0 ? Infinity : 1 / r - 1, marginalRepeatCorrelation: rho + (1 - rho) * r };
+}
 export function simulatePower({ seed = 572913, replications = 100000, scenarios = POWER_SCENARIOS, statisticalSpec = STATISTICAL_SPEC } = {}) {
   if (!Number.isSafeInteger(replications) || replications < 100000 || !Number.isSafeInteger(seed) || seed <= 0 || seed > 0xffffffff) throw new Error("invalid_power_design");
+  validateStatisticalSpec(statisticalSpec);
   let state = seed;
   const next = () => { state = (Math.imul(state, 1664525) + 1013904223) >>> 0; return state / 4294967296; };
-  validateStatisticalSpec(statisticalSpec);
-  const d = statisticalSpec.design, n = d.conversationsPerCorpus, total = 2 * n, size = d.probes * d.repeats;
-  const evaluator = gateEvaluator(statisticalSpec);
+  const evaluator = gateEvaluator(statisticalSpec), d = statisticalSpec.design, scopes = [...d.corpora, "combined"];
   const results = scenarios.map(s => {
-    validateScenario(s, d.probes);
+    if (!["dirichlet", "rare-shift", "reuse"].includes(s.effect) || !(s.errorCount > 0) || !(s.icc >= 0 && s.icc < 1 || s.stress)
+      || !(s.repeatCorrelation >= 0 && s.repeatCorrelation <= 1)) throw new Error("invalid_power_scenario");
     const atoms = bundleDistribution(s.quality, s.errorCount, d.probes);
     let cumulative = 0;
     const cdf = atoms.map(a => (cumulative += a.probability));
     const draw = () => { const u = next(); let lo = 0, hi = cdf.length - 1;
-      while (lo < hi) { const mid = (lo + hi) >>> 1; if (u < cdf[mid]) hi = mid; else lo = mid + 1; }
-      return atoms[lo]; };
-    const counts = {}, scopes = [...d.corpora, "combined"];
+      while (lo < hi) { const mid = (lo + hi) >>> 1; if (u < cdf[mid]) hi = mid; else lo = mid + 1; } return atoms[lo]; };
+    const m = s.reference ? Math.min(16, d.conversationsPerCorpus) : d.conversationsPerFamily, families = 2 * d.conversationsPerCorpus / m, g = families / 2;
+    const parameters = s.stress ? { r: 0.16, kappa: null, marginalRepeatCorrelation: s.repeatCorrelation + (1 - s.repeatCorrelation) * 0.16 } : familyEffectParameters(s.icc, s.repeatCorrelation);
+    const badProbability = atoms.reduce((sum, a) => sum + (a.bundle.ledger.wrong > 0 ? a.probability : 0), 0);
+    const counts = {}, diagnostics = {};
     for (const scope of scopes) for (const gate of ["pack", "native", "wrong-rate", "benefit", "accuracy"]) counts[`${scope}:${gate}`] = 0;
+    for (const scope of scopes) for (const gate of ["pack", "native", "benefit", "wrong-rate", "accuracy"]) diagnostics[`${scope}:${gate}`] = { icc: 0, designEffect: 0, skew: 0 };
     let joint = 0;
     for (let replication = 0; replication < replications; replication++) {
-      const moments = [Array(8).fill(0), Array(8).fill(0)];
-      for (let family = 0; family < d.families; family++) {
-        const group = family < d.families / 2 ? 0 : 1;
-        const familyBundle = s.familyWeight > 0 ? draw() : null;
-        const repeat = () => s.familyWeight > 0 && next() < s.familyWeight ? familyBundle : draw();
-        for (let conversation = 0; conversation < d.conversationsPerFamily; conversation++) {
+      const moments = [Array(22).fill(0), Array(22).fill(0)];
+      for (let family = 0; family < families; family++) {
+        const row = moments[family < g ? 0 : 1], urn = [], fs = Array(5).fill(0), cs = Array(5).fill(0);
+        const anchor = s.effect === "reuse" || s.effect === "rare-shift" ? draw() : null;
+        const shifted = s.effect === "rare-shift" && next() < parameters.r;
+        const repeat = () => {
+          if (s.effect === "reuse") return next() < 0.4 ? anchor : draw();
+          if (s.effect === "rare-shift") return shifted ? anchor : draw();
+          const atom = urn.length > 0 && next() < urn.length / (parameters.kappa + urn.length) ? urn[Math.floor(next() * urn.length)] : draw();
+          urn.push(atom); return atom;
+        };
+        for (let conversation = 0; conversation < m; conversation++) {
           const a = repeat(), b = next() < s.repeatCorrelation ? a : repeat();
-          const wrong = a.bundle.ledger.wrong + b.bundle.ledger.wrong, correct = a.bundle.ledger.correct + b.bundle.ledger.correct;
-          const pack = (a.pack + b.pack) / 2;
-          const native = (a.native + b.native) / 2;
-          const benefit = (a.benefit + b.benefit) / 2;
-          const m = moments[group];
-          m[0] += pack; m[1] += pack * pack; m[2] += native; m[3] += native * native;
-          m[4] += benefit; m[5] += benefit * benefit; m[6] += wrong; m[7] += correct;
+          const values = [(a.pack + b.pack) / 2, (a.native + b.native) / 2, (a.benefit + b.benefit) / 2,
+            (a.bundle.ledger.wrong + b.bundle.ledger.wrong) / 30, (a.bundle.ledger.correct + b.bundle.ledger.correct) / 30];
+          for (let j = 0; j < 5; j++) { fs[j] += values[j]; cs[j] += values[j] ** 2; }
+          row[20] += a.bundle.ledger.wrong + b.bundle.ledger.wrong; row[21] += a.bundle.ledger.correct + b.bundle.ledger.correct;
         }
+        for (let j = 0; j < 5; j++) { const v = fs[j] / m, k = 4 * j; row[k] += v; row[k + 1] += v * v; row[k + 2] += v ** 3; row[k + 3] += cs[j]; }
       }
       moments.push(moments[0].map((v, i) => v + moments[1][i]));
       let accepted = true;
       for (let i = 0; i < scopes.length; i++) {
-        const m = moments[i], count = i === 2 ? total : n, denominator = count * size;
-        const passes = {
-          pack: evaluator.safety(m[0], m[1], count, "continuity-pack-cold").status === "pass",
-          native: evaluator.safety(m[2], m[3], count, "native").status === "pass",
-          "wrong-rate": evaluator.wrongRate(m[6], denominator) === "pass",
-          benefit: evaluator.benefit(m[4], m[5], count, i === 2).status === "pass",
-          accuracy: evaluator.accuracy(m[7], 0, denominator) === "pass",
-        };
+        const row = moments[i], G = i === 2 ? families : g, denominator = G * m * d.probes * d.repeats;
+        const pack = evaluator.safety(row[0], row[1], row[2], G, "continuity-pack-cold");
+        const native = evaluator.safety(row[4], row[5], row[6], G, "native");
+        const benefit = evaluator.benefit(row[8], row[9], row[10], G, i === 2);
+        const passes = { pack: pack.status === "pass", native: native.status === "pass", benefit: benefit.status === "pass",
+          "wrong-rate": evaluator.wrongRate(row[20], denominator) === "pass", accuracy: evaluator.accuracy(row[21], 0, denominator) === "pass" };
         for (const [gate, pass] of Object.entries(passes)) {
           if (pass) counts[`${scopes[i]}:${gate}`]++;
-          // Accuracy is registered only combined; all other gates are necessary in every scope.
           if ((gate !== "accuracy" || i === 2) && !pass) accepted = false;
+        }
+        for (const [j, gate] of ["pack", "native", "benefit", "wrong-rate", "accuracy"].entries()) {
+          const k = 4 * j, dependence = familyDependence(row[k] * m, row[k + 3], row[k + 1], G, m), out = diagnostics[`${scopes[i]}:${gate}`];
+          out.icc += dependence.icc ?? 0; out.designEffect += dependence.designEffect ?? 0; out.skew += familyMoments(row[k], row[k + 1], row[k + 2], G).skew ?? 0;
         }
       }
       if (accepted) joint++;
     }
-    const gatePassRates = Object.fromEntries(Object.entries(counts).map(([k, v]) => [k, v / replications]));
-    const power = joint / replications;
+    const estimate = count => { const rate = count / replications; return { rate, monteCarloSE: Math.sqrt(rate * (1 - rate) / replications) }; };
+    const gatePassRates = Object.fromEntries(Object.entries(counts).map(([k, v]) => [k, estimate(v)]));
     const nullRejectionRates = s.boundary ? Object.fromEntries(Object.entries(gatePassRates).filter(([key]) => {
       if (s.boundary === "benefit:combined") return key === "combined:benefit";
       if (s.boundary === "benefit:corpus") return key !== "combined:benefit" && key.endsWith(":benefit");
       if (s.boundary === "accuracy") return key === "combined:accuracy";
       return key.endsWith(`:${s.boundary}`);
     })) : null;
-    return { ...s, gatePassRates, nullRejectionRates, jointAcceptancePower: power, monteCarloSE: Math.sqrt(power * (1 - power) / replications) };
+    for (const row of Object.values(diagnostics)) for (const key of Object.keys(row)) row[key] /= replications;
+    return { ...s, families, conversationsPerFamily: m, ...parameters,
+      probabilityNoBadFamilyDrawn: s.stress ? (1 - badProbability) ** families : null,
+      gatePassRates, nullRejectionRates, diagnostics, jointAcceptance: estimate(joint) };
   });
-  return { schema: "holdout-power-v2", seed, replications, statisticalSpec, scenarios: results,
-    assumptions: [`${total} conversations, ${n} per corpus, ${d.families} disjoint families of ${d.conversationsPerFamily}. Each corpus has the same stated quality distribution.`,
-      "Each repeat has coherent native/pack/ledger counts in 15 slots. Wrong counts are 0 or errorCount (3; 6 in concentration/family sensitivities); abstentions are 0 or 6 conditional on remaining slots. Expected correct/wrong fractions equal the scenario inputs. Positions within a repeat do not affect the gates.",
-      "Half of repeat draws share error/abstention uniforms across arms, half use independent uniforms. Repeat 2 copies repeat 1 with probability rho (0/0.5/0.9), otherwise redraws. This induces the stated repeat correlation with no independent-probe inference.",
-      "Main scenarios have independent conversations conditional on a fixed family layout. Sensitivities reuse a family repeat bundle with probability .4, with extra error concentration; residual family dependence is not family-cluster calibration. Their effective repeat correlation is rho + (1-rho)*.4^2.",
-      "Null rejection means a gate passes at its true boundary (rejecting non-inferiority/benefit null). Paired interval gates target at most 5%; the observed wrong/accuracy point thresholds are NOT level-5% tests and may pass near 50% at their boundaries. No simultaneous-coverage claim.",
-      "Joint acceptance calls every actual gateEvaluator gate, conditional on complete data, admissible execution and a passing certified audit. Cold-rebuild is descriptive only and not simulated. Missingness, provider behavior and audit power are not modeled.",
-      "These are assumed count-mixture distributions, not estimated model performance. Poor power/calibration blocks freezing a study; never loosen the approved margins in response."] };
+  const maxima = {};
+  for (const s of results.filter(s => !s.stress)) for (const [gate, estimate] of Object.entries(s.nullRejectionRates ?? {})) {
+    if (!maxima[gate] || estimate.rate > maxima[gate].rate) maxima[gate] = { ...estimate, scenario: s.name };
+  }
+  return { schema: "holdout-power-v2", seed, replications, statisticalSpec, scenarios: results, calibrationMaximum: maxima,
+    calibrationCriterion: "Every non-stress boundary pass rate <= 0.055; point rules are reported too, not falsely called level-5% tests.",
+    calibrationPass: Object.values(maxima).every(x => x.rate <= 0.055),
+    assumptions: ["Families are freshly sampled scenario types each replication. Main DGP uses Dirichlet random family outcome-mixture probabilities, inducing per-arm correct/wrong shifts with exactly preserved superpopulation means. Polya-urn integration is exact, not the stress model.",
+      "Target ICC is for conversation-paired D (and benefit), not marginal wrong indicators. With r=1/(kappa+1), a=(1+rho)/2, ICC=r/(a+(1-a)r). rho is CONDITIONAL repeat copying; marginal repeat correlation is rho+(1-rho)r and is reported.",
+      "Coherent 15-slot arm bundles use concentrated 0/3 errors and 0/6 abstentions conditional on remaining slots; half share cross-arm uniforms, half are independent. These count-mixture assumptions are not model-performance estimates.",
+      "The non-stress right-skew variant uses a rare all-mass family arm shift with probability r, otherwise the baseline distribution; it preserves all means and target ICC exactly. Bundle-reuse stress instead mixes .4 family anchor + .6 baseline, with 0/6 errors. P(no bad family drawn) means no anchor with any ledger error among all families.",
+      "128 families of 2 per corpus is registered; 16 families of 16 per corpus is reference only. Combined bounds pool all families. Diagnostics are averages of realized ANOVA ICC, design effect and family-mean sample skew across replications.",
+      "Joint acceptance uses actual family/skew gateEvaluator, conditional on complete data, admission and passing certified audit. Point-rule wrong/accuracy boundary pass probabilities near 50% are expected, not nominal confidence tests. Stress is reported, excluded from calibration criterion. No simultaneous-coverage claim; no paid/provider runs."] };
 }
 export function powerMarkdown(report) {
-  const rate = x => x.toFixed(6);
-  return ["# Holdout v2 planned-design power and null calibration", "", `Seed ${report.seed}; ${report.replications} replications per scenario.`, "", ...report.assumptions.map(a => `- ${a}`), "",
-    "| Scenario | Joint acceptance | MC SE | Boundary rejection rates (corpus 1 / corpus 2 / combined, as applicable) |",
-    "| --- | ---: | ---: | --- |",
-    ...report.scenarios.map(s => `| ${s.name} | ${rate(s.jointAcceptancePower)} | ${rate(s.monteCarloSE)} | ${s.nullRejectionRates ? Object.entries(s.nullRejectionRates).map(([k, v]) => `${k}: ${rate(v)}`).join("; ") : "—"} |`), ""].join("\n");
+  const f = x => x.toFixed(6);
+  return ["# Family-clustered holdout power and calibration", "", `Seed ${report.seed}; ${report.replications} replications/scenario. Calibration criterion holds: ${report.calibrationPass}.`, "", ...report.assumptions.map(a => `- ${a}`), "",
+    "| Gate/scope | Max non-stress boundary pass | MC SE | Scenario |", "| --- | ---: | ---: | --- |",
+    ...Object.entries(report.calibrationMaximum).map(([k, x]) => `| ${k} | ${f(x.rate)} | ${f(x.monteCarloSE)} | ${x.scenario} |`), "",
+    "| Scenario | Joint acceptance (MC SE) | Boundary pass (MC SE) by scope | ICC / DE / skew (C1,C2,pooled) | P(no bad family) |", "| --- | --- | --- | --- | --- |",
+    ...report.scenarios.map(s => `| ${s.name} | ${f(s.jointAcceptance.rate)} (${f(s.jointAcceptance.monteCarloSE)}) | ${Object.entries(s.nullRejectionRates ?? {}).map(([k, x]) => `${k}: ${f(x.rate)} (${f(x.monteCarloSE)})`).join("; ")} | ${Object.entries(s.diagnostics).filter(([k]) => !s.boundary || k.endsWith(`:${s.boundary.split(":")[0]}`)).map(([k, x]) => `${k}: ${f(x.icc)}/${f(x.designEffect)}/${f(x.skew)}`).join("; ")} | ${s.probabilityNoBadFamilyDrawn === null ? "—" : f(s.probabilityNoBadFamilyDrawn)} |`), ""].join("\n");
 }

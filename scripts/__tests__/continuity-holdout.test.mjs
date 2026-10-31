@@ -78,6 +78,9 @@ describe("deterministic holdout rendering", () => {
   it("samples 512 disjoint identities with fixed mixture and category/pressure coverage", () => {
     const spec = fixtureSpec(), rows = selectHoldoutCases(spec, seeds), groups = { ordinary: 0, distractor: 0 };
     expect(rows).toHaveLength(512); expect(new Set(rows.map(r => r.item.id)).size).toBe(512);
+    expect(new Set(rows.map(r => r.family.id)).size).toBe(256);
+    for (const group of ["ordinary", "distractor"]) expect(new Set(rows.filter(r => r.family.group === group).map(r => r.family.id)).size).toBe(128);
+    expect(rows.every(r => r.family.count === 2)).toBe(true);
     const first = rows[0];
     expect(canonicalJson(generateHoldoutTrace(first.family, first.item, first.seed))).toBe(canonicalJson(generateHoldoutTrace(first.family, first.item, first.seed)));
     expect(selectHoldoutCases({ ...spec, families: [...spec.families].reverse() }, seeds).map(r => [r.item.id, r.seed])).toEqual(rows.map(r => [r.item.id, r.seed]));

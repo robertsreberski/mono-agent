@@ -3,15 +3,15 @@ import { mkdtemp, readFile, rm, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
-import { clopperPearson, pairedT, tQuantile, betaCdf, betaQuantile, holdoutStatistics, HOLDOUT_ARMS, STATISTICAL_SPEC, completionUpperBound, gateEvaluator, validateStatisticalSpec } from "../lib/continuity-holdout-statistics.mjs";
+import { clopperPearson, pairedT, tQuantile, betaCdf, betaQuantile, holdoutStatistics, HOLDOUT_ARMS, STATISTICAL_SPEC, completionUpperBound, gateEvaluator, validateStatisticalSpec, familyT, familyCompletionBounds } from "../lib/continuity-holdout-statistics.mjs";
 import { createRegistration, holdoutModels, readBoundAudit, seeded, assertRealHoldoutModels, validateRegistrationVersion } from "../lib/continuity-holdout-registration.mjs";
-import { bundleDistribution, simulatePower, POWER_SCENARIOS } from "../lib/continuity-holdout-power.mjs";
+import { bundleDistribution, simulatePower, POWER_SCENARIOS, familyEffectParameters } from "../lib/continuity-holdout-power.mjs";
 import { scoreAnswer, renderMarkdown } from "../lib/continuity-score.mjs";
 import { sha256 } from "../lib/continuity-holdout-files.mjs";
 import { makePlan, digest } from "../lib/continuity-dataset.mjs";
 import { profileFrom, parseArguments, aggregate } from "../continuity-benchmark.mjs";
 
-const conversations = Array.from({ length: 512 }, (_, i) => ({ id: `fixture-${i}`, family: `family-${Math.floor(i / 16)}`, corpus: i < 256 ? "holdout-hard" : "holdout-hard-distractors", probes: Array.from({ length: 15 }, (_, j) => `p${String(j + 1).padStart(2, "0")}`) }));
+const conversations = Array.from({ length: 512 }, (_, i) => ({ id: `fixture-${i}`, family: `family-${Math.floor(i / 2)}`, corpus: i < 256 ? "holdout-hard" : "holdout-hard-distractors", probes: Array.from({ length: 15 }, (_, j) => `p${String(j + 1).padStart(2, "0")}`) }));
 const audit = { published: 363, audited: 363, labelFindings: 10, contextFindings: 5, falselySupersededCurrent: 0, bindingErrors: 0, complete: true };
 function trials() {
   return conversations.flatMap(c => HOLDOUT_ARMS.flatMap(arm => [1, 2].flatMap(repeat => c.probes.map(probeId => {
@@ -42,7 +42,7 @@ describe("exact cluster statistics", () => {
   it("passes complete fixture gates with planned denominators and exact audit rate boundaries", () => {
     const result = score(trials()); expect(result.decision.status).toBe("pass");
     expect(result.plannedAnswersPerArm).toBe(15360); expect(result.scopes["holdout-hard"].plannedAnswers).toBe(7680);
-    expect(result.scopes.combined.benefit.n).toBe(512); expect(result.audit.labelRate).toBe(10 / 363);
+    expect(result.scopes.combined.benefit.n).toBe(256); expect(result.audit.labelRate).toBe(10 / 363);
     expect(result.scopes.combined.ledgerAccuracy).toBe(1);
     expect(holdoutStatistics({ conversations, trials: trials(), measurement: true, audit: { ...audit, labelFindings: 11 } }).decision.reasons).toContain("audit-label:fail");
     expect(holdoutStatistics({ conversations, trials: trials(), measurement: true, audit: { ...audit, contextFindings: 6 } }).decision.reasons).toContain("audit-context:fail");
@@ -56,7 +56,7 @@ describe("exact cluster statistics", () => {
     affected.slice(0, 40).forEach(t => { t.score = { pass: false, abstained: false, outcome: "wrong" }; });
     const result = score(rows), corpus = result.scopes["holdout-hard"];
     expect(corpus.discordances["cold-rebuild"].ledgerOnlyKnownWrong).toBe(2);
-    expect(corpus.safety.native.interval).toEqual(pairedT([1, 1 / 3, ...Array(254).fill(0)]));
+    expect(corpus.safety.native.interval).toMatchObject(familyT([2 / 3, ...Array(127).fill(0)]));
     expect(result.decision.reasons).toContain("holdout-hard:safety:continuity-pack-cold:inconclusive");
   });
   it("distinguishes a straddling safety interval from an established failure", () => {
@@ -205,9 +205,9 @@ describe("review regression contracts", () => {
   it("shares power/scoring gates and matches 200 sampled paired-t decisions", () => {
     const evaluator = gateEvaluator(), random = seeded(88432), n = STATISTICAL_SPEC.design.conversationsPerCorpus;
     for (let i = 0; i < 200; i++) {
-      const values = Array.from({ length: n }, () => random() * 2 - 1), interval = pairedT(values);
-      const result = evaluator.benefit(values.reduce((a, b) => a + b, 0), values.reduce((a, b) => a + b * b, 0), n, true);
-      const safety = evaluator.safety(values.reduce((a, b) => a + b, 0), values.reduce((a, b) => a + b * b, 0), n, "continuity-pack-cold");
+      const values = Array.from({ length: n }, () => random() * 2 - 1), interval = familyT(values);
+      const result = evaluator.benefit(values.reduce((a, b) => a + b, 0), values.reduce((a, b) => a + b * b, 0), values.reduce((a, b) => a + b ** 3, 0), n, true);
+      const safety = evaluator.safety(values.reduce((a, b) => a + b, 0), values.reduce((a, b) => a + b * b, 0), values.reduce((a, b) => a + b ** 3, 0), n, "continuity-pack-cold");
       expect(safety.interval).toEqual(interval);
       expect(safety.status).toBe(interval.upper <= 0.005 ? "pass" : interval.lower > 0.005 ? "fail" : "inconclusive");
       expect(result.interval).toEqual(interval);
@@ -290,7 +290,7 @@ it.each(["reader", "extractor", "alternate"].flatMap(role => ["fixture", "faux"]
 });
 it("keeps offline complete counts/intervals diagnostic without per-scope verdicts", () => {
   const result = holdoutStatistics({ conversations, trials: trials(), audit });
-  expect(result.scopes.combined.benefit.n).toBe(512);
+  expect(result.scopes.combined.benefit.n).toBe(256);
   expect(result.scopes.combined.ledgerWrong).toBe(0);
   for (const scope of Object.values(result.scopes)) {
     expect(scope.wrongStatus).toBe("not_a_measurement"); expect(scope.benefitStatus).toBe("not_a_measurement");
@@ -302,20 +302,20 @@ it("keeps offline complete counts/intervals diagnostic without per-scope verdict
 describe("registered v2 quality rule", () => {
   it.each([["continuity-pack-cold", 0.005], ["native", 0.02]])("uses inclusive exact %s upper margins", (comparator, margin) => {
     const gate = gateEvaluator();
-    const at = gate.safety(2 * margin, 2 * margin * margin, 2, comparator);
+    const at = gate.safety(2 * margin, 2 * margin * margin, 2 * margin ** 3, 2, comparator);
     expect(at.interval.upper).toBe(margin); expect(at.status).toBe("pass");
     const above = margin + 1e-6;
-    expect(gate.safety(2 * above, 2 * above * above, 2, comparator).status).toBe("fail");
-    expect(gate.safety(0, 0, 256, comparator).status).toBe("pass");
-    expect(gate.safety(1 / 30, 1 / 900, 256, comparator).status).toBe("pass");
+    expect(gate.safety(2 * above, 2 * above * above, 2 * above ** 3, 2, comparator).status).toBe("fail");
+    expect(gate.safety(0, 0, 0, 128, comparator).status).toBe("pass");
+    expect(gate.safety(1 / 60, 1 / 3600, 1 / 216000, 128, comparator).status).toBe("pass");
   });
   it("pins point boundaries and strict benefit lower endpoints", () => {
     const gate = gateEvaluator();
     expect(gate.wrongRate(2, 100)).toBe("pass"); expect(gate.wrongRate(2.00001, 100)).toBe("fail");
     expect(gate.accuracy(91875, 0, 100000)).toBe("pass"); expect(gate.accuracy(91874, 0, 100000)).toBe("fail");
-    expect(gate.benefit(0.04, 0.0008, 2, true).status).toBe("fail");
-    expect(gate.benefit(0, 0, 2, false).status).toBe("fail");
-    expect(gate.benefit(0.040002, 2 * 0.020001 ** 2, 2, true).status).toBe("pass");
+    expect(gate.benefit(0.04, 0.0008, 0.000016, 2, true).status).toBe("fail");
+    expect(gate.benefit(0, 0, 0, 2, false).status).toBe("fail");
+    expect(gate.benefit(0.040002, 2 * 0.020001 ** 2, 2 * 0.020001 ** 3, 2, true).status).toBe("pass");
   });
   it("retains reverse discordances without gating any-wrong conversation risks", () => {
     const rows = trials();
@@ -337,5 +337,58 @@ describe("registered v2 quality rule", () => {
     const oldSpec = { ...STATISTICAL_SPEC, schema: "holdout-statistical-spec-v1" };
     expect(() => validateStatisticalSpec(oldSpec)).toThrow("incompatible_statistical_spec_version");
     expect(() => validateRegistrationVersion({ ...registration, statisticalSpec: oldSpec })).toThrow("incompatible_statistical_spec_version");
+  });
+});
+
+
+describe("family-clustered tighten-only inference", () => {
+  it("matches hand-calculated adjusted sample skew and endpoints", () => {
+    // x=[0,0,0,4]: mean=1, sd=2, SE=1, adjusted sample skew=2.
+    const t = tQuantile(0.95, 3), adjustment = 2 * (1 + 2 * t * t) / 12;
+    const positive = familyT([0, 0, 0, 4]), negative = familyT([0, 0, 0, -4]);
+    expect(positive.mean).toBe(1); expect(positive.se).toBe(1); expect(positive.skew).toBe(2);
+    expect(positive.upper).toBeCloseTo(1 + t + adjustment, 13);
+    expect(positive.lower).toBeCloseTo(1 - t, 13);
+    expect(negative.upperAdjustment).toBe(0); expect(negative.upper).toBeCloseTo(-1 + t, 13);
+    expect(negative.lower).toBeCloseTo(-1 - t - adjustment, 13);
+    const constant = familyT(Array(128).fill(1 / 15));
+    expect(constant).toMatchObject({ se: 0, skew: 0 });
+    expect(constant.upper).toBeCloseTo(1 / 15, 14); expect(constant.lower).toBeCloseTo(1 / 15, 14);
+  });
+  it("never loosens plain t, and bounds all sampled missing completions", () => {
+    const random = seeded(77424);
+    for (let draw = 0; draw < 250; draw++) {
+      const bounds = Array.from({ length: 8 }, () => { const lo = random() * 2 - 1; return [lo, lo + random() * (1 - lo)]; });
+      const envelope = familyCompletionBounds(bounds);
+      for (const fraction of [0, 0.25, 0.5, 0.75, 1]) {
+        const values = bounds.map(([lo, hi]) => lo + fraction * (hi - lo));
+        const result = familyT(values), plain = pairedT(values);
+        expect(result.upper).toBeGreaterThanOrEqual(plain.upper - 1e-12);
+        expect(result.lower).toBeLessThanOrEqual(plain.lower + 1e-12);
+        expect(result.upper).toBeLessThanOrEqual(envelope.upper);
+        expect(result.lower).toBeGreaterThanOrEqual(envelope.lower);
+      }
+    }
+    const fixed = [[0, 0], [0, 0], [0.5, 0.5]];
+    expect(familyCompletionBounds(fixed)).toEqual({ lower: familyT([0, 0, 0.5]).lower, upper: familyT([0, 0, 0.5]).upper });
+  });
+  it("can lose pack non-inferiority because of one bad family", () => {
+    const rows = trials(); ledger(rows).filter(t => t.traceId === "fixture-0" || t.traceId === "fixture-1").forEach(t => { t.score = { pass: false, outcome: "wrong" }; });
+    const result = score(rows);
+    expect(result.scopes["holdout-hard"].families).toBe(128); expect(result.scopes.combined.families).toBe(256);
+    expect(result.scopes["holdout-hard"].safety["continuity-pack-cold"].status).not.toBe("pass");
+    expect(result.scopes["holdout-hard"].safety.native.interval.icc).toBeCloseTo(1, 12);
+    expect(result.scopes["holdout-hard"].safety.native.interval.designEffect).toBeCloseTo(2, 12);
+    // A single bad family can also turn a sub-ceiling background into an established point-rule failure.
+    ledger(rows).filter(t => !["fixture-0", "fixture-1"].includes(t.traceId)).slice(0, 100).forEach(t => { t.score = { pass: false, outcome: "wrong" }; });
+    expect(score(rows).decision.reasons).toContain("holdout-hard:wrong-rate:fail");
+  });
+  it("pins inference and analytically targets the D ICC with exactly preserved means", () => {
+    for (const icc of [0, 0.1, 0.2, 0.35]) for (const rho of [0, 0.5, 0.9]) {
+      const { r } = familyEffectParameters(icc, rho), a = (1 + rho) / 2;
+      expect(r / (a + (1 - a) * r)).toBeCloseTo(icc, 14);
+    }
+    const changed = structuredClone(STATISTICAL_SPEC); changed.inference.combined = "corpus-stratified";
+    expect(() => validateStatisticalSpec(changed)).toThrow("unregistered_statistical_spec");
   });
 });

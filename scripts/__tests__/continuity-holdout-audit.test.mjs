@@ -68,8 +68,8 @@ it("runs join, mechanical audit, blinded import and report at one revision witho
   expect(result.certified).toBe(true); expect(result.decision.status).not.toBe("fail");
   const final = await parse(join(directory, "final/report.json")); expect(final.integrity.auditCertified).toBe(true);
   expect(final.decision.reasons).not.toContain("audit-workflow-pending:inconclusive");
-  // Zero-variance paired differences pass v2 even in this tiny mechanics-only fixture.
-  expect(final.decision.status).toBe("pass");
+  // One family per corpus in this mechanics fixture cannot establish family inference.
+  expect(final.decision.status).toBe("inconclusive");
   expect(final.eligibilityScope).toMatchObject({ reader: context.registration.models.reader, extractor: context.registration.models.extractor });
   expect(final.eligibilityScope.statement).toContain("not other models or blanket default enablement"); expect(JSON.stringify(final)).not.toContain(directory);
 });

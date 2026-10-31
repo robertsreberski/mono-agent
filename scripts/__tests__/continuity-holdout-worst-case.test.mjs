@@ -2,14 +2,14 @@ import { afterEach, expect, it } from "vitest";
 import { mkdir, mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { HOLDOUT_ARMS, STATISTICAL_SPEC, holdoutStatistics, completionLowerBound, pairedT, clopperPearson, validateStatisticalSpec } from "../lib/continuity-holdout-statistics.mjs";
+import { HOLDOUT_ARMS, STATISTICAL_SPEC, holdoutStatistics, completionLowerBound, pairedT, clopperPearson, validateStatisticalSpec, familyT, familyCompletionBounds } from "../lib/continuity-holdout-statistics.mjs";
 import { CHECKOUT, jsonBytes, sha256 } from "../lib/continuity-holdout-files.mjs";
 import { digest } from "../lib/continuity-dataset.mjs";
 import { seeded } from "../lib/continuity-holdout-registration.mjs";
 import { syntheticContext } from "./fixtures/holdout-synthetic.mjs";
 import { auditCheckpoint } from "./fixtures/holdout-audit-data.mjs";
 const arm = "continuity-ledger-cold", pack = "continuity-pack-cold", cold = "cold-rebuild";
-const conversations = Array.from({ length: 512 }, (_, i) => ({ id: `synthetic-${i}`, corpus: STATISTICAL_SPEC.design.corpora[Math.floor(i / 256)], family: `family-${Math.floor(i / 16)}`, probes: Array.from({ length: 15 }, (_, j) => `p${j}`) }));
+const conversations = Array.from({ length: 512 }, (_, i) => ({ id: `synthetic-${i}`, corpus: STATISTICAL_SPEC.design.corpora[Math.floor(i / 256)], family: `family-${Math.floor(i / 2)}`, probes: Array.from({ length: 15 }, (_, j) => `p${j}`) }));
 const audit = { complete: true, published: 363, audited: 363, labelFindings: 0, contextFindings: 0, falselySupersededCurrent: 0, bindingErrors: 0 };
 function trials(packAbstains = true) {
   return conversations.flatMap(c => HOLDOUT_ARMS.flatMap(a => [1, 2].flatMap(repeat => c.probes.map(probeId => ({ traceId: c.id, arm: a, repeat, probeId, status: "completed",
@@ -24,10 +24,10 @@ it("reports v2 paired gates and descriptive risks on complete data", () => {
     const n = name === "combined" ? 512 : 256;
     expect(Object.keys(scope.safety)).toEqual([pack, "native"]);
     for (const comparator of [pack, "native"]) {
-      expect(scope.safety[comparator].interval).toEqual(pairedT(Array(n).fill(0)));
+      expect(scope.safety[comparator].interval).toMatchObject(familyT(Array(n / 2).fill(0)));
       expect(scope.safety[comparator].status).toBe("pass");
     }
-    expect(scope.benefit).toEqual(pairedT(Array(n).fill(1 / 15)));
+    expect(scope.benefit).toMatchObject(familyT(Array(n / 2).fill(1 / 15)));
     expect(scope.descriptive[cold]).toMatchObject({ correctRate: 1, wrongRate: 0, anyWrongRisk: 0 });
     expect(scope.worstCase).toBe(false); expect(scope.worstCompletionLower).toBe(scope.benefit.lower);
   }
@@ -40,8 +40,8 @@ it("passes one missing ledger slot with explicit worst-case flags and planned de
 it.each([153, 154])("enforces the registered integer cap with %i native misses", count => {
   const result = score(missing(trials(), "native", count)); expect(result.integrity.maximumMissingPerArm).toBe(153);
   expect(result.integrity.missingPerArm.native).toBe(count); expect(result.integrity.withinMissingCap).toBe(count === 153);
-  expect(result.decision.status).toBe(count === 153 ? "pass" : "inconclusive");
-  expect(result.decision.gates.filter(g => g.name !== "integrity").every(g => g.status === "pass")).toBe(true);
+  expect(result.decision.status).toBe("inconclusive"); // The coarse skew envelope can be loose even inside the cap.
+  expect(result.decision.gates.find(g => g.name === "integrity").status).toBe(count === 153 ? "pass" : "inconclusive");
 });
 it.each(["wrong-rate", "safety", "accuracy"])("leaves worst-case %s uncertainty inconclusive, not failed", gate => {
   let rows = trials();
@@ -106,7 +106,7 @@ async function syntheticShards(directory, context, workflow, controller) {
 }
 it("joins and certifies a full synthetic report with a failed chunk within the cap", async () => {
   await mkdir(join(CHECKOUT, ".worklab-tmp"), { recursive: true }); const directory = await mkdtemp(join(CHECKOUT, ".worklab-tmp/worst-case-study-")); scratch.push(directory);
-  const { repo, inputs, context, workflow, controller } = await syntheticContext(directory, { families: 8, conversationsPerFamily: 16, conversationsPerCorpus: 64, shards: 64, perCorpusPerShard: 1 });
+  const { repo, inputs, context, workflow, controller } = await syntheticContext(directory, { families: 16, conversationsPerFamily: 2, conversationsPerCorpus: 16, shards: 16, perCorpusPerShard: 1 });
   const load = name => import(/* @vite-ignore */ pathToFileURL(join(repo, `scripts/lib/continuity-holdout-${name}.mjs`)).href);
   const auditModule = await load("audit"), auditors = await load("auditors"), report = await load("report"), roots = await syntheticShards(directory, context, workflow, controller);
   const joinedDir = join(directory, "joined"), joined = await workflow.joinShards(context, roots, joinedDir), joinedPath = join(joinedDir, "joined.json");

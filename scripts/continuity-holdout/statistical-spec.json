@@ -10,8 +10,8 @@
     "probes": 15,
     "shards": 32,
     "perCorpusPerShard": 8,
-    "families": 32,
-    "conversationsPerFamily": 16,
+    "families": 256,
+    "conversationsPerFamily": 2,
     "shardCostCapUSD": 25
   },
   "confidence": 0.95,
@@ -23,7 +23,7 @@
     "treatment": "continuity-ledger-cold",
     "wrong": "!pass and outcome not in {abstained,empty}, even when hedged; incomplete substantive answers are wrong",
     "unit": "conversation wrong-fraction difference over all 30 planned answers",
-    "upperBound": "one-sided paired Student-t",
+    "upperBound": "one-sided family-clustered tighten-only skew-adjusted Student-t",
     "maximumByComparator": {
       "continuity-pack-cold": 0.005,
       "native": 0.02
@@ -33,7 +33,7 @@
   "benefit": {
     "comparator": "continuity-pack-cold",
     "unit": "conversation correct-fraction difference over all 30 planned answers",
-    "lowerBound": "one-sided paired Student-t",
+    "lowerBound": "one-sided family-clustered tighten-only skew-adjusted Student-t",
     "combinedMinimumExclusive": 0.02,
     "corpusMinimumExclusive": 0
   },
@@ -47,10 +47,19 @@
     "bindingErrorsMaximum": 0
   },
   "missingData": {
-    "policy": "Never drop planned slots. Missing, invalid and duplicate planned slots may pass only under every gate\u2019s worst-case completion, within the registered per-arm cap and with no unknown rows. No incomplete scope has a complete-case interval. Conservative completion bounds apply to paired wrong differences against pack and native. Complete audit material is required.",
+    "policy": "Never drop planned slots. Missing, invalid and duplicate planned slots may pass only under every gate’s worst-case completion, within the registered per-arm cap and with no unknown rows. No incomplete scope has a complete-case interval. Conservative completion bounds apply to paired wrong differences against pack and native. Complete audit material is required.",
     "worstCaseCompletion": {
       "maximumMissingFractionPerArm": 0.01
     }
   },
-  "decision": "Pass only if every necessary gate passes, integrity is complete or within the registered worst-case-completion cap with no unknown rows, controller admission is admissible, and audit is complete. Otherwise fail when established, else inconclusive; no outcome-dependent extension. One-sided 95% conversation-paired bounds make no simultaneous-coverage claim. Cold-rebuild and any-wrong risks/discordances are descriptive only. Eligibility is limited to the registered reader/extractor model references; never automatic default enablement."
+  "decision": "Pass only if every necessary gate passes, integrity is complete or within the registered worst-case-completion cap with no unknown rows, controller admission is admissible, and audit is complete. Otherwise fail when established, else inconclusive; no outcome-dependent extension. One-sided 95% family-clustered, conversation-paired bounds make no simultaneous-coverage claim. Cold-rebuild and any-wrong risks/discordances are descriptive only. Eligibility is limited to the registered reader/extractor model references; never automatic default enablement.",
+  "inference": {
+    "unit": "family (sampled scenario type), conversation-paired",
+    "combined": "all families pooled, not corpus-stratified",
+    "bound": "tighten-only skew-adjusted Student-t",
+    "skewness": "adjusted Fisher-Pearson sample skewness G/((G-1)(G-2)) * sum(((familyMean-mean)/sd)^3); zero for zero variance or G=2",
+    "upper": "mean + SE * max(t, t + skew*(1+2*t^2)/(6*sqrt(G)))",
+    "lower": "mean - SE * max(t, t - skew*(1+2*t^2)/(6*sqrt(G)))",
+    "shards": "conversation-level seeded shuffle; family members may share or cross shards"
+  }
 }
