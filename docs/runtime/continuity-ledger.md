@@ -262,9 +262,35 @@ language grants no retirement authority. Interpretation still needs offline audi
 The renderer escapes JSON strings (including `<` and `>`), labels host-owner,
 tool and neutral provenance, and labels mixed-source claims explicitly. Adding
 an owner citation cannot promote a tool-reported portion into an instruction.
-Raw owner evidence is demoted only when every paragraph is cited by an active
-entry and quoted exactly. Missing or oversized ledgers leave deterministic
-evidence available.
+The ledger quotes cited owner paragraphs for every entry status. Raw owner
+evidence is demoted only when every paragraph is cited by an active entry and
+quoted exactly, so a derived non-active status is never the only framing of
+owner words. Missing or oversized ledgers leave deterministic evidence available.
+An oversized ledger stays all-or-nothing under the shared admission rule below.
+Its omission is disclosed in the pack body (`Continuity ledger omitted: N
+derived entries exceed the ledger space`) and reports `ledgerEntries: 0`. The
+disclosure never creates a pack by itself. The pack's `Coverage … omitted=` count
+covers retained records, not derived entries.
+
+### Owner evidence beside a ledger
+
+A shown ledger must not push out the newest owner evidence the no-ledger pack
+would carry, within the same 8,000-token pack and unchanged prefix rule. The renderer first
+runs the unchanged no-ledger selection over the same snapshot and history. The
+owners it admits form the backbone, sorted by host ordinal then record id.
+With the ledger shown, selection (not layout) admits non-demoted backbone owners
+from both ends: oldest, newest, second oldest, second newest, and so on. Other
+owners follow oldest-first, and demoted owners stay last. The ledger's cost
+therefore falls on middle history; early rules and late corrections are kept.
+Tool reservation, effect-first ranking, `contentFreeRead`, demotion, section
+layout, rendered text formats and all bounds are unchanged. Packs without a
+shown ledger are byte-identical to the previous renderer.
+
+This is a structural trade-off, not a guarantee: a middle owner instruction
+(for example a withdrawal pending confirmation) that the no-ledger pack shows can
+be dropped when the ledger cites none of it. The pack-order tests record that
+limitation explicitly. Owner request lines carry no source ordinal. Derived lines
+keep `order=N`, and owner lines keep host order within the owner section.
 
 ### Shared rendered admission
 

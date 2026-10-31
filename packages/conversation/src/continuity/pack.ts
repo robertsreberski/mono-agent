@@ -9,7 +9,7 @@ import { CONTINUITY_REDACTION_OMISSION } from "../tool-history/continuity-payloa
 import { representedContinuityToolRecordIds } from "../harness/turn-continuity.js";
 import type { ConversationHarnessOptions, ConversationHarnessRequest } from "../harness/contracts.js";
 
-import { PACK_HEADER as HEADER, packTokens as estimate, fitsLedgerPrefix } from "./render-fit.js";
+import { PACK_HEADER as HEADER, packTokens as estimate, packTokensOfBytes, fitsLedgerPrefix } from "./render-fit.js";
 type Section = "owner" | "tool" | "summary" | "evidence";
 export interface ContinuityPack {
   readonly text?: string;
@@ -48,39 +48,62 @@ export function renderContinuityPack(snapshot: ContinuitySnapshot, history: read
   });
   const limit = Math.max(0, Math.min(8000, Math.floor(maxTokens)));
   const derived = ledger?.generation.entries.length ? renderLedger(ledger.generation, ledger.records) : "";
-  // An oversized ledger never displaces the whole deterministic fallback.
-  const prefix = fitsLedgerPrefix(derived, limit) ? HEADER + derived : HEADER;
-  const demoted = new Set(prefix !== HEADER ? ledger ? quotedOwnerRecords(ledger.generation, ledger.records) : [] : []);
+  // An oversized ledger never displaces the whole deterministic fallback. It is
+  // all-or-nothing (shared purchase/injection rule) and its omission is disclosed.
+  const shown = derived !== "" && fitsLedgerPrefix(derived, limit);
+  const prefix = shown ? HEADER + derived : HEADER;
+  const disclosure = derived !== "" && !shown ? `Continuity ledger omitted: ${ledger!.generation.entries.length} derived entries exceed the ledger space; omission is not supersession.\n` : "";
+  const demoted = new Set(shown ? quotedOwnerRecords(ledger!.generation, ledger!.records) : []);
   const rank: Record<Section, number> = { owner: 0, tool: 1, summary: 2, evidence: 3 };
   const toolRank = (record: ContinuitySnapshotRecord) => effectPriority(record.tool?.name ?? "") ? 0 : 1;
-  entries.sort((a, b) => (demoted.has(a.recordId) ? 4 : rank[section(a)]) - (demoted.has(b.recordId) ? 4 : rank[section(b)])
-    || (section(a) === "tool" ? toolRank(a) - toolRank(b) : 0) || a.ordinal - b.ordinal);
-  const renderedToolIds = new Set<string>();
-  const selected = new Map<ContinuitySnapshotRecord, string>();
-  const ledgerEntries = prefix !== HEADER ? ledger?.generation.entries.length ?? 0 : 0;
-  let body = prefix, unknownOverlap = 0, toolReserved = 0;
-  let degradedReason: string | undefined = snapshot.degradedReason ?? (snapshot.gaps > 0 ? "coverage_gap" : upkeepGap ? "upkeep_gap" : undefined);
+  const layout = (quoted: ReadonlySet<string>) => (a: ContinuitySnapshotRecord, b: ContinuitySnapshotRecord) => (quoted.has(a.recordId) ? 4 : rank[section(a)]) - (quoted.has(b.recordId) ? 4 : rank[section(b)])
+    || (section(a) === "tool" ? toolRank(a) - toolRank(b) : 0) || a.ordinal - b.ordinal || (a.recordId < b.recordId ? -1 : a.recordId > b.recordId ? 1 : 0);
   // Reserve the marker, then 40% of the remaining content space for tools.
   // Effect-like names get first claim; reads/unknown names use the remainder.
   // Unused reservation returns to owners. Remaining tools may backfill after
   // owners, but neither phase can insert text outside the actual target limit.
-  const toolBudget = Math.floor(Math.max(0, limit - estimate(prefix) - 220) * 0.4);
-  let toolTokens = 0;
-  const select = (record: ContinuitySnapshotRecord, reserved = false) => {
-    if (selected.has(record) || contentFreeRead(record)) return;
-    const entry = renderEntry(record, section(record));
-    const cost = estimate(body + entry) - estimate(body);
-    if (estimate(body + entry) + 220 > limit || reserved && toolTokens + cost > toolBudget) return;
-    selected.set(record, entry); body += entry;
-    if (reserved) { toolTokens += cost; toolReserved++; }
+  const choose = (start: string, ordered: readonly ContinuitySnapshotRecord[]) => {
+    const selected = new Map<ContinuitySnapshotRecord, string>();
+    let bytes = Buffer.byteLength(start), toolTokens = 0, toolReserved = 0;
+    const toolBudget = Math.floor(Math.max(0, limit - packTokensOfBytes(bytes) - 220) * 0.4);
+    const select = (record: ContinuitySnapshotRecord, reserved = false) => {
+      if (selected.has(record) || contentFreeRead(record)) return;
+      const entry = renderEntry(record, section(record)), next = bytes + Buffer.byteLength(entry);
+      const cost = packTokensOfBytes(next) - packTokensOfBytes(bytes);
+      if (packTokensOfBytes(next) + 220 > limit || reserved && toolTokens + cost > toolBudget) return;
+      selected.set(record, entry); bytes = next;
+      if (reserved) { toolTokens += cost; toolReserved++; }
+    };
+    // Entries are sorted effect-first, then oldest-first, so reads spend the
+    // reservation left by compact effect heads in ordinal order.
+    for (const record of ordered) if (section(record) === "tool") select(record, true);
+    for (const record of ordered) select(record);
+    return { selected, toolReserved };
   };
-  // Entries are sorted effect-first, then oldest-first, so reads spend the
-  // reservation left by compact effect heads in ordinal order.
-  for (const record of entries) if (section(record) === "tool") select(record, true);
-  for (const record of entries) select(record);
+  entries.sort(layout(demoted));
+  let ordered: readonly ContinuitySnapshotRecord[] = entries;
+  if (shown) {
+    // Ledger packs: the derived prefix must not push out the newest owner
+    // evidence the no-ledger pack shows. Selection (never layout) takes the
+    // no-ledger owner backbone from both ends: oldest, newest, next oldest...
+    // Ledger cost thus falls on middle history, not on early rules or late
+    // corrections. Quoted owners keep their demotion; other owners follow.
+    const fallback = choose(HEADER, [...entries].sort(layout(new Set())));
+    const backbone = entries.filter(record => section(record) === "owner" && !demoted.has(record.recordId) && fallback.selected.has(record))
+      .sort((a, b) => a.ordinal - b.ordinal || (a.recordId < b.recordId ? -1 : a.recordId > b.recordId ? 1 : 0));
+    const priority = new Map<ContinuitySnapshotRecord, number>();
+    for (let low = 0, high = backbone.length - 1; low <= high; low++, high--) { priority.set(backbone[low]!, priority.size); if (high !== low) priority.set(backbone[high]!, priority.size); }
+    const owner = (record: ContinuitySnapshotRecord) => section(record) === "owner" && !demoted.has(record.recordId);
+    ordered = [...entries].sort((a, b) => owner(a) && owner(b) ? (priority.get(a) ?? priority.size) - (priority.get(b) ?? priority.size) || layout(demoted)(a, b) : layout(demoted)(a, b));
+  }
+  const { selected, toolReserved } = choose(prefix + disclosure, ordered);
+  const renderedToolIds = new Set<string>();
+  const ledgerEntries = shown ? ledger!.generation.entries.length : 0;
+  let unknownOverlap = 0;
+  let degradedReason: string | undefined = snapshot.degradedReason ?? (snapshot.gaps > 0 ? "coverage_gap" : upkeepGap ? "upkeep_gap" : undefined);
   // Selection priority does not change section layout: owner requests first,
   // tools effect-first, then summary/neutral evidence; ordinal within groups.
-  body = prefix;
+  let body = prefix + disclosure;
   for (const record of entries) {
     const entry = selected.get(record); if (entry === undefined) continue;
     body += entry; counts[section(record)]++;

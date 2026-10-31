@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Keep the newest owner corrections a continuity pack would show when a derived
+  ledger is also rendered: ledger space is now charged to middle owner history,
+  not to the newest owners, within unchanged pack and ledger bounds. Packs
+  without a shown ledger are unchanged, and an oversized ledger's omission is now
+  disclosed in the pack.
+
 - Keep recording controls owned by their capture operation when an older audio
   attachment retry settles after cancellation; cancel pending attachment work
   without reviving removed audio. Keep failed-audio Retry/Remove controls visible

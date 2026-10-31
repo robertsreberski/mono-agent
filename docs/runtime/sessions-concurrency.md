@@ -133,7 +133,11 @@ text, so failed/unknown effects without such a record are not inferred as sent.
 Owner entries are explicitly requests, not proof that an action happened. Only
 captured tool records show outcomes; absent an outcome, status remains unknown.
 The renderer reserves 40% of usable content space for tool records before owner
-selection; unused reservation returns to owners. Snapshots carry no MCP
+selection; unused reservation returns to owners. When a derived continuity
+ledger is shown, owners from the no-ledger selection are admitted from both ends
+of host order. Ledger space is charged to middle history rather than the newest
+owner corrections; layout and rendered text are unchanged (see
+[continuity ledger](./continuity-ledger.md)). Snapshots carry no MCP
 `readOnlyHint` annotations or catalog classification, so a conservative name-only
 rule ranks the first recognized action verb (`send`, `draft`, `write`, `create`,
 `update`, `delete`, and similar mutation verbs) ahead of reads and unknown names.
