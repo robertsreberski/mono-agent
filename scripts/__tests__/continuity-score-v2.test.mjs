@@ -37,7 +37,8 @@ describe("opt-in continuity scoring v2", () => {
       ["hard", "63db1c616542f03075f260c49f24c576afd57eeff34a7f15c0bbfa17bd84cb03"],
       ["hard-distractors", "63db1c616542f03075f260c49f24c576afd57eeff34a7f15c0bbfa17bd84cb03"],
     ]) {
-      const { traces } = suite === "holdout" ? { traces: fixtureSpec().families.map(f => generateHoldoutTrace(f, f.cases[0], 17)) } : await loadTraces({ suite });
+      const { traces } = suite === "holdout" ? { // Keep the historical scorer oracle's authored inputs fixed, independent of current study layout.
+        traces: fixtureSpec({ design: { families: 32, conversationsPerFamily: 16 } }).families.map(f => generateHoldoutTrace(f, f.cases[0], 17)) } : await loadTraces({ suite });
       const results = [];
       for (const trace of traces) for (const probe of trace.probes) {
         const answers = ["", "UNKNOWN", "Send the parcel by noon.", ...Object.values(probe.score).flat(3).filter(v => typeof v === "string")];

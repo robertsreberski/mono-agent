@@ -44,8 +44,9 @@ process.once("message", async ({ argv }) => {
     });
     const unit = { traceId, arm, repeat, complete: !(mode === "partial" && repeat === 1 && arm === "native"), confirmation: flag("--confirm-plan"), executionKind: "real",
       manifest: { codeRevision: registration.codeRevision, dirty: false }, checkpoint: arm === "continuity-ledger-cold" ? { upkeep: { valid: true, preparations: steps } } : {},
-      trials: probes.map(probeId => ({ traceId, arm, repeat, probeId, status: "completed", boundary: { verified: true },
-        score: mode === "quality_fail" ? { pass: false, outcome: "wrong" } : arm === "continuity-pack-cold" ? { pass: false, outcome: "abstained" } : { pass: true, outcome: "correct" },
+      trials: probes.map((probeId, index) => ({ traceId, arm, repeat, probeId, status: "completed", boundary: { verified: true },
+        answer: mode === "quality_fail" ? "Fixture wrong answer." : mode === "hedged" && index === 0 && ["native", "continuity-ledger-cold"].includes(arm) ? "I do not know exactly, perhaps PARCELMALLOW." : arm === "continuity-pack-cold" ? "UNKNOWN" : "Fixture answer.",
+        score: mode === "hedged" && index === 0 && ["native", "continuity-ledger-cold"].includes(arm) ? { pass: false, outcome: "abstained" } : mode === "quality_fail" ? { pass: false, outcome: "wrong" } : arm === "continuity-pack-cold" ? { pass: false, outcome: "abstained" } : { pass: true, outcome: "correct" },
         usage: { calls: 1, inputTokens: 100, outputTokens: 10, estimatedCostUsd: 0.001 } })) };
     if (mode === "audit" && arm === "continuity-ledger-cold") {
       unit.checkpoint = await auditCheckpoint(output, traceId, repeat);

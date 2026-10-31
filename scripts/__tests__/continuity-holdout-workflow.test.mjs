@@ -334,3 +334,26 @@ it("refuses offline_plan_mismatch and vacuous missing/empty ledger generations",
     await expect(proof.auditProofOutput(context, root, selected, 1)).rejects.toThrow("offline_render_evidence_missing");
   }
 });
+
+it("rejects a v1 registration before auth, frozen corpus loading or dispatch", async () => {
+  const path = join(inputs, "incompatible-registration.json");
+  const old = { ...context.registration, schema: "holdout-registration-v1" }, bytes = jsonBytes(old);
+  await writeFile(path, bytes);
+  await expect(workflow.loadContext({ ...context.options, registrationPath: path, registrationSha256: sha256(bytes), piAuthPath: null }))
+    .rejects.toThrow("incompatible_holdout_registration_version");
+  const loader = await import(/* @vite-ignore */ pathToFileURL(join(repo, "scripts/lib/continuity-holdout-registration.mjs")).href);
+  await expect(loader.loadRegisteredHoldout({ registrationBytes: Buffer.from(bytes), registrationSha256: sha256(bytes), statisticalSpecPath: "/nonexistent/spec.json" }))
+    .rejects.toThrow("incompatible_holdout_registration_version");
+});
+
+it("preserves raw native/ledger answers through archive parsing and joined statistics", async () => {
+  const a = await run("hedged", 1), b = await run("hedged", 2);
+  const joined = await workflow.joinShards(context, [a.opts.output, b.opts.output], null);
+  for (const arm of ["native", "continuity-ledger-cold"]) {
+    const rows = joined.trials.filter(t => t.arm === arm && t.score.outcome === "abstained");
+    expect(rows).toHaveLength(8); expect(rows.every(t => t.answer === "I do not know exactly, perhaps PARCELMALLOW.")).toBe(true);
+    expect(joined.statistics.scopes.combined.descriptive[arm].wrong).toBe(8);
+  }
+  expect(joined.statistics.scopes.combined.ledgerWrong).toBe(8);
+  expect(joined.statistics.scopes.combined.descriptive["continuity-pack-cold"].wrong).toBe(0);
+});

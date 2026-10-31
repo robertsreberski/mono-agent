@@ -68,8 +68,10 @@ it("runs join, mechanical audit, blinded import and report at one revision witho
   expect(result.certified).toBe(true); expect(result.decision.status).not.toBe("fail");
   const final = await parse(join(directory, "final/report.json")); expect(final.integrity.auditCertified).toBe(true);
   expect(final.decision.reasons).not.toContain("audit-workflow-pending:inconclusive");
-  // Four conversations cannot pass the registered CP safety gate; this is mechanics only.
-  expect(final.decision.status).toBe("inconclusive"); expect(JSON.stringify(final)).not.toContain(directory);
+  // One family per corpus in this mechanics fixture cannot establish family inference.
+  expect(final.decision.status).toBe("inconclusive");
+  expect(final.eligibilityScope).toMatchObject({ reader: context.registration.models.reader, extractor: context.registration.models.extractor });
+  expect(final.eligibilityScope.statement).toContain("not other models or blanket default enablement"); expect(JSON.stringify(final)).not.toContain(directory);
 });
 it("exposes the complete join/export/import/report CLI chain at one registered revision", async () => {
   const rootsPath = join(inputs, "roots.json"); await writeFile(rootsPath, jsonBytes(roots)); const o = context.options;
@@ -313,7 +315,7 @@ it("writes byte-identical reports with detached hashes and no local path or chan
 function passingStatistics(totals) {
   const d = STATISTICAL_SPEC.design, conversations = Array.from({ length: d.conversationsPerCorpus * 2 }, (_, i) => ({ id: `synthetic-${i}`,
     corpus: d.corpora[Math.floor(i / d.conversationsPerCorpus)], family: `family-${Math.floor(i / d.conversationsPerFamily)}`, probes: Array.from({ length: d.probes }, (_, j) => `p${j}`) }));
-  const trials = conversations.flatMap(c => HOLDOUT_ARMS.flatMap(arm => [1, 2].flatMap(repeat => c.probes.map(probeId => ({ traceId: c.id, arm, repeat, probeId, status: "completed", boundary: { verified: true }, score: { pass: arm !== "continuity-pack-cold", outcome: arm !== "continuity-pack-cold" ? "correct" : "abstained" } })))));
+  const trials = conversations.flatMap(c => HOLDOUT_ARMS.flatMap(arm => [1, 2].flatMap(repeat => c.probes.map(probeId => ({ traceId: c.id, arm, repeat, probeId, status: "completed", answer: arm === "continuity-pack-cold" ? "UNKNOWN" : "Fixture answer.", boundary: { verified: true }, score: { pass: arm !== "continuity-pack-cold", outcome: arm !== "continuity-pack-cold" ? "correct" : "abstained" } })))));
   return holdoutStatistics({ conversations, trials, audit: totals, measurement: true });
 }
 const totals = (published = 363, labelFindings = 10, contextFindings = 5) => ({ complete: true, published, audited: published, labelFindings, contextFindings, falselySupersededCurrent: 0, bindingErrors: 0 });

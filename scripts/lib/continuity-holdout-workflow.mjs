@@ -4,7 +4,7 @@ import { dirname, join, resolve } from "node:path";
 import { main as benchmark, listPrices } from "../continuity-benchmark.mjs";
 import { makePlan, estimateCost, inventory, digest } from "./continuity-dataset.mjs";
 import { preparationIntegrity } from "./continuity-runner.mjs";
-import { loadRegisteredHoldout, holdoutModels, readBoundAudit } from "./continuity-holdout-registration.mjs";
+import { loadRegisteredHoldout, holdoutModels, readBoundAudit, validateRegistrationVersion } from "./continuity-holdout-registration.mjs";
 import { HOLDOUT_ARMS, holdoutStatistics } from "./continuity-holdout-statistics.mjs";
 import { CHECKOUT, externalDirectory, externalFile, regularFile, jsonBytes, sha256, toolingRevision } from "./continuity-holdout-files.mjs";
 
@@ -69,6 +69,7 @@ export async function loadContext(options) {
   const registrationBytes = await externalFile(options.registrationPath);
   need(sha256(registrationBytes) === options.registrationSha256, "registration_hash_mismatch");
   const registration = JSON.parse(registrationBytes), models = registration.models;
+  validateRegistrationVersion(registration);
   need(models && options.piAuthPath && options.piAuthPath === resolve(options.piAuthPath), "auth_path_required");
   const profile = { reader: models.reader, extractionModel: models.extractor, alternate: models.alternate, readerEffort: models.readerEffort, judge: models.judge };
   const codeRevision = toolingRevision();

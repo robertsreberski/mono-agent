@@ -101,7 +101,7 @@ allowed; changing bound content or runtime provenance requires a new registratio
 
 No model execution or quality/acceptance claim follows from a successful freeze.
 
-Design E is 32 families × 16 selected conversations (16 families per group),
+Design E is 256 families × 2 selected conversations (128 families per group),
 512 total. Schema/selection/overlap/freeze APIs take their population from the
 statistical spec; the CLIs use the checked-in spec. Registration additionally
 verifies the exact selected family layout. Alternative designs must be approved
@@ -377,7 +377,13 @@ and `artifacts.json`. They include gates/intervals/reasons, integrity and audit
 counters, controller stops and catalog spend (not an invoice). Integrity includes
 both controller completeness/admissibility, per-arm missing counts and `worstCase`
 when the decision relies on capped worst-case completion. Complete-data results,
-existing fail rules and complete-data power semantics remain unchanged. There are no local
+v2 family-clustered (families as sampled scenario types), conversation-paired
+wrong-rate gates and conservative completion bounds apply.
+Cold-rebuild rates and discordances are descriptive only; eligibility is limited
+to the registration’s pinned reader/extractor model references (Sol-only evidence
+is Sol-scoped, not blanket default enablement). Historical v1 registrations must
+use their frozen tooling revision; current tooling rejects them explicitly.
+See [registered gate semantics](./REGISTRATION.md#gate-semantics-and-missing-data). There are no local
 absolute paths or freshly generated timestamps. Identical input bytes give
 identical output bytes, including with roots supplied in a different order.
 
@@ -409,3 +415,30 @@ real process tests for reservation durability, crash/restart, stop thresholds,
 unknown/lost accounting, owned deadline termination and blocked confirmation.
 It does not claim the artifact fixture is a real replay. Run the explicit drill
 for that evidence. No genuine holdout files belong in fixtures or this checkout.
+
+
+## Per-gate registered confidence
+
+Family-clustered, conversation-paired bounds use one-sided **97% for pack**
+and **95% for native and benefit**. Each gate uses its own critical value in
+both the base/skew terms and conservative missing-completion envelope.
+The pack margin is tiny (+0.5 pp) and errors are lumpy; 95% was anti-conservative
+in calibration. Confidence levels and margins are immutable external contracts.
+The ≤5.5% boundary-pass calibration criterion applies only to confidence-bound
+gates in non-stress scenarios, **not** the observed-wrong/accuracy point rules.
+Reports label these levels; there is no simultaneous-coverage claim. The earlier
+all-95% v2 spec requires a fresh registration and is not silently reinterpreted.
+
+
+## Pure abstentions versus substantive non-passes
+
+For every arm, wrong means `!pass && !pureAbstention(answer)` on archived raw
+answer text, **not** the scorer's abstained flag/outcome. Pure means an
+empty/whitespace string or only a whole-answer abstention expression: UNKNOWN;
+I don't/dont/do not know; not stated/mentioned/specified/provided/known/available/
+applicable; N/A, N.A. or NA (optional internal spaces). Case/whitespace, Unicode
+apostrophes and surrounding punctuation are normalized. Extra substantive
+content, including hedged guesses and incomplete answers, counts wrong.
+Missing/non-string text is not pure and fails closed for a non-pass. Correct
+answers and v1/v2 scoring are unchanged. Incomplete arms retain known counts and
+missingness, with outcome rates/any-wrong risk null, not completed risk estimates.
