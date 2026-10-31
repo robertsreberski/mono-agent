@@ -148,7 +148,7 @@ jobs:
   website:
     name: Website
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 40
 
     # website/ is an isolated pnpm workspace (own lockfile) that renders ../docs.
     # Gate its build and rendered accessibility independently from the package
@@ -177,7 +177,9 @@ jobs:
         run: pnpm run test:unit
 
       - name: Install Chromium
-        run: pnpm exec playwright install --with-deps chromium
+        uses: ./.github/actions/install-chromium
+        with:
+          directory: website
 
       - name: Build docs site (check-asides -> sync-content -> astro build -> check-links)
         run: pnpm run build
@@ -188,7 +190,7 @@ jobs:
   marketing:
     name: Marketing
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 40
 
     # marketing/ is an isolated pnpm workspace (own lockfile) holding the
     # standalone static site for the prospective mono-agent.dev. Gate its
@@ -215,7 +217,9 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Install Chromium
-        run: pnpm exec playwright install --with-deps chromium
+        uses: ./.github/actions/install-chromium
+        with:
+          directory: marketing
 
       - name: Build marketing site (astro build -> check-links)
         run: pnpm run build
@@ -229,7 +233,7 @@ jobs:
   webapp-browser:
     name: Webapp browser
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 40
 
     defaults:
       run:
@@ -254,7 +258,9 @@ jobs:
         run: pnpm run build-storybook
 
       - name: Install Chromium
-        run: pnpm exec playwright install --with-deps chromium
+        uses: ./.github/actions/install-chromium
+        with:
+          directory: packages/web/webapp
 
       - name: Test webapp in Chromium
         run: pnpm run test:browser
