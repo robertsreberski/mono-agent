@@ -313,7 +313,7 @@ async function replayScriptedTurn({ harness, scripted, tools, turn, binding, con
       if (step.call) {
         tools.expect(step.call.tool, step.call.args, step.call.result);
         if (step.steer) {
-          const offer = harness.offerLiveInput?.({ conversationId, id: `${turn.id}-steer`, text: step.steer,
+          const offer = harness.offerLiveInput?.({ conversationId, id: `${turn.id}-steer`, text: step.steer, ownerText: step.steer,
             receivedAt: new Date(Date.parse(turn.at) + 60_000).toISOString() });
           if (offer?.status !== "accepted") throw new ContinuityError("replay_steer_refused", turn.id);
           await watch.waitForSteer();

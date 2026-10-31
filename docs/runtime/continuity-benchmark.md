@@ -115,6 +115,13 @@ seam. Their tool calls are real MCP calls to a loopback fixture server that
 returns the frozen output, so production code writes the native transcript and
 the tool-history records. Steers are delivered with `offerLiveInput` while a
 scripted tool call is in flight, and each must reach the next model request.
+Owner-authored web steers supply `ownerText` bound to the exact steer text, just
+as production web does. Anonymous offers, background wakes and mismatched text
+remain unknown; no product channel authority rule changes. This attribution
+also moves retained steers into owner sections in the pack arm, not just the
+ledger arm. Archived results made without this binding are not directly
+comparable: any future comparison must use the corrected runner for all arms,
+including pack.
 Scripted turns never compact, because a faux model cannot produce a real summary.
 
 After the checkpoint, the workspace is copied once per probe. A new tool-free
@@ -459,6 +466,25 @@ outside the checkout (also offline), uses owner-only files, refuses existing
 capture files, and is **off by default**. Captures are benchmark artifacts, never
 written into the continuity store or exposed by production runtime configuration.
 No prompt or credentials are captured; model, auth, SSE and caps remain unchanged.
+
+### Free selection replay baseline
+
+`scripts/lib/continuity-selection-replay.mjs` is a reusable, provider-free helper
+for three preparations through the real retention, upkeep source selection,
+fitting and durable offer settlement. Its regression test in
+`scripts/__tests__/continuity-benchmark.test.mjs` uses development-generator
+seeds and newly authored fictional transition/pressure cases, not holdout data.
+It returns exact fitted source descriptors and their retained records on every
+pass, including the deliberately empty second delta. Compact snapshots pin
+those offers by digest, counts, owner ordinals, caps and budget projections.
+This is an availability baseline for later selection changes, not extraction
+quality or a semantic commitment/constraint/next-action score.
+
+The helper's source-only trace projection is not the full benchmark harness.
+The benchmark still requires exact ledger injection counts and its scripted
+empty-pass check. Cumulative published `ledger.inputs` cannot reconstruct an
+empty pass's offers; archived completion captures and aggregate exclusion
+counts do not provide that missing record-level evidence.
 
 ### Evaluation independence limitation
 

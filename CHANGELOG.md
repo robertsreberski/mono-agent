@@ -9,6 +9,9 @@
   cancels pending voice creation without blocking the destination composer;
   cancelled creation preserves newer text drafts and execution preferences.
 
+- Clarify continuity extraction of changed states, evidence order and identifier
+  roles within existing limits, without promoting suggestions into commitments.
+
 - Add versioned holdout v2 family-clustered, conversation-paired quality gates,
   tighten-only skew bounds (pack 97%, native/benefit 95%), a 128-families-of-2
   per-corpus layout, model-scoped
