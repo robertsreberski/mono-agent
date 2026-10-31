@@ -1,3 +1,10 @@
+/** In-memory immutable destination/settings; never persisted with audio. */
+export interface VoiceSubmissionSession {
+  isCurrent(): boolean;
+  prepare(signal?: AbortSignal): Promise<string>;
+  submit(text: string): Promise<void>;
+}
+
 import { normalizeBrowserCosts } from "../../src/cost-wire.js";
 import { routeWriteState } from "./mobile-history";
 import type { TagSummary, TagColor } from "./types";
@@ -319,6 +326,7 @@ interface ConsoleStoreValue {
    * inert behind the dashboard for most of a session, and only the shell knows
    * which of the two the operator is on.
    */
+  readonly conversationVisible: boolean;
   readonly setConversationVisible: (visible: boolean) => void;
   readonly selectAgent: (sourceId: string) => void;
   readonly setAgentPinned: (sourceId: string, pinned: boolean) => Promise<void>;
@@ -347,9 +355,12 @@ interface ConsoleStoreValue {
     onThreadResolved?: (threadId: string) => void,
   ) => Promise<void>;
   readonly sendLiveInput: (text: string) => Promise<void>;
+  readonly selectionGeneration: number;
+  readonly captureVoiceSubmission: () => VoiceSubmissionSession;
   readonly sendSubmission: (
     input: StartTurnInput,
     onThreadResolved?: (threadId: string) => void,
+    target?: { readonly thread: ThreadSummary; readonly isCurrent: () => boolean },
   ) => Promise<void>;
   readonly cancelTurn: (origin?: "user-stop" | "api") => Promise<void>;
   readonly setShowArchived: (show: boolean) => void;
@@ -2313,7 +2324,14 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
    * "visible" would clear the unread marker for a conversation nobody has
    * looked at.
    */
-  const [conversationVisible, setConversationVisible] = useState(false);
+  const [conversationVisible, setConversationVisibleState] = useState(false);
+  const voiceVisibilityRef = useRef({ visible: false, generation: 0 });
+  const setConversationVisible = useCallback((visible: boolean) => {
+    if (voiceVisibilityRef.current.visible !== visible) {
+      voiceVisibilityRef.current = { visible, generation: voiceVisibilityRef.current.generation + 1 };
+    }
+    setConversationVisibleState(visible);
+  }, []);
 
   /**
    * Write what this tab holds to the device, at most once every
@@ -5956,7 +5974,10 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     if (selectedThreadRef.current !== job.threadId) selectThread(job.threadId);
   }, [failOwnedSelection, routeRevision, selectThread, selectedAgentId, selectedCronOverview]);
 
-  const createThread = useCallback(async (projectId?: string) => {
+  const createThread = useCallback(async (projectId?: string, owner?: {
+    readonly isCurrent: () => boolean;
+    readonly onSelectionInstalled: (proof: { readonly generation: number; readonly thread: ThreadSummary }) => void;
+  }) => {
     if (!selectedAgentId) throw new Error("Select an agent before starting a conversation.");
     setNavigationScope("chats");
     const unresolved = selectionRequestRef.current;
@@ -6008,28 +6029,6 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       if (!admitThread(removedThreadsRef.current, thread, issuedAt)) {
         throw new Error("This conversation was deleted.");
       }
-      transferComposerDraft(selectedAgentId, null, thread.id);
-      setModelByContext((current) => {
-        if (current[draftPreferenceKey] === undefined) return current;
-        const next = { ...current };
-        delete next[draftPreferenceKey];
-        return next;
-      });
-      setEffortByContext((current) => {
-        if (current[draftPreferenceKey] === undefined) return current;
-        const next = { ...current };
-        delete next[draftPreferenceKey];
-        return next;
-      });
-      setContext1MByContext((current) => { const next = { ...current }; delete next[draftPreferenceKey]; return next; });
-      const stillOwnsSelection = operatorSelectionRef.current === request.generation
-        && selectedAgentRef.current === request.sourceId;
-      if (stillOwnsSelection) {
-        beginOperatorSelection();
-        // See `restoredSelectionRef`: what the operator opens is theirs, and a
-        // read still in flight for what they left has nothing to settle here.
-        restoredSelectionRef.current = null;
-      }
       setBootstrap((current) =>
         current ? { ...current, threads: mergeThreads(current.threads, [thread]) } : current,
       );
@@ -6042,19 +6041,47 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
           byId: { ...current.byId, [thread.id]: thread },
         });
       }
-      if (stillOwnsSelection) {
-        selectedThreadRef.current = thread.id;
-        setSelectedThreadId(thread.id);
-        persistThreadId(selectedAgentId, thread.id);
-        setShowArchived(false);
-        updateThreadRoute(thread);
-        publishDetail(thread.id);
+      // Listing/cache/project membership describe a committed server thread.
+      // Draft consumption and selection are user-owned: a cancelled voice
+      // operation has no authority over anything authored after cancellation.
+      // Non-voice creation retains its ordinary draft-transfer semantics.
+      if (owner?.isCurrent() ?? true) {
+        transferComposerDraft(selectedAgentId, null, thread.id);
+        setModelByContext((current) => {
+          if (current[draftPreferenceKey] === undefined) return current;
+          const next = { ...current };
+          delete next[draftPreferenceKey];
+          return next;
+        });
+        setEffortByContext((current) => {
+          if (current[draftPreferenceKey] === undefined) return current;
+          const next = { ...current };
+          delete next[draftPreferenceKey];
+          return next;
+        });
+        setContext1MByContext((current) => { const next = { ...current }; delete next[draftPreferenceKey]; return next; });
+        if (operatorSelectionRef.current === request.generation
+          && selectedAgentRef.current === request.sourceId) {
+          beginOperatorSelection();
+          // An owned birth replaces only its own restored read.
+          restoredSelectionRef.current = null;
+          selectedThreadRef.current = thread.id;
+          // Publish the exact installed identity synchronously, before React can
+          // observe the keyed handoff or the awaiting caller resumes.
+          owner?.onSelectionInstalled({ generation: operatorSelectionRef.current, thread });
+          setSelectedThreadId(thread.id);
+          persistThreadId(selectedAgentId, thread.id);
+          setShowArchived(false);
+          updateThreadRoute(thread);
+          publishDetail(thread.id);
+          setActionError(null);
+        }
       }
-      if (stillOwnsSelection) setActionError(null);
       return thread;
     } catch (createError) {
       if (operatorSelectionRef.current === request.generation
-        && selectedAgentRef.current === request.sourceId) {
+        && selectedAgentRef.current === request.sourceId
+        && (owner?.isCurrent() ?? true)) {
         setActionError(errorMessage(createError));
       }
       throw createError;
@@ -7250,8 +7277,9 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   }, [applySubmissionReceipt]);
 
   const sendSubmission = useCallback(
-    async (input: StartTurnInput, onThreadResolved?: (threadId: string) => void) => {
-      let thread = selectedThread;
+    async (input: StartTurnInput, onThreadResolved?: (threadId: string) => void, target?: { readonly thread: ThreadSummary; readonly isCurrent: () => boolean }) => {
+      if (target && !target.isCurrent()) throw new Error("Conversation changed. Record again.");
+      let thread = target?.thread ?? selectedThread;
       if (!thread) thread = await createThread();
       if (thread.archivedAt) throw new Error("Unarchive this conversation before sending.");
       const threadId = thread.id;
@@ -7262,6 +7290,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         attachmentIds: input.attachmentIds ?? [],
         model: input.model ?? null,
         effort: input.effort ?? null,
+        ...(input.inheritRunSettings === false ? { inheritRunSettings: false } : {}),
         ...(input.context1M == null ? {} : { context1M: input.context1M }),
       });
       const pending = pendingSubmissionPayloadsRef.current.get(threadId);
@@ -7272,6 +7301,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       let receiptKnown = false;
       try {
         await settleThreadWrites(threadId);
+        if (target && !target.isCurrent()) throw new Error("Conversation changed. Record again.");
         let receipt: SubmissionReceipt;
         try {
           receipt = await api.submit(threadId, submissionId, input);
@@ -7302,9 +7332,61 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     [applySubmissionReceipt, createThread, selectedThread, settleThreadWrites],
   );
 
+  const captureVoiceSubmission = useCallback((): VoiceSubmissionSession => {
+    requireResolvedSelection();
+    const sourceId = selectedAgentRef.current;
+    if (!sourceId) throw new Error("Select an agent before recording.");
+    let generation = operatorSelectionRef.current;
+    const visibilityGeneration = voiceVisibilityRef.current.generation;
+    let thread = selectedThread;
+    let operationSignal: AbortSignal | undefined;
+    let preparePromise: Promise<string> | undefined;
+    const settings = { model: effectiveModel || undefined, effort: effectiveEffort || undefined, inheritRunSettings: false, ...(context1M === undefined ? {} : { context1M }) };
+    const isCurrent = (): boolean => !operationSignal?.aborted
+      && selectedAgentRef.current === sourceId
+      && voiceVisibilityRef.current.generation === visibilityGeneration
+      && operatorSelectionRef.current === generation
+      && selectedThreadRef.current === (thread?.id ?? null);
+    const prepare = (signal?: AbortSignal): Promise<string> => {
+      if (preparePromise) return preparePromise;
+      preparePromise = (async () => {
+        if (!isCurrent() || signal?.aborted) throw new Error("Conversation changed. Record again.");
+        operationSignal = signal;
+        if (!thread) {
+          const created = await createThread(undefined, {
+            isCurrent,
+            onSelectionInstalled: (proof) => {
+              generation = proof.generation;
+              thread = proof.thread;
+            },
+          });
+          // Only the owned installation callback can adopt a destination. A
+          // matching id seen via SSE/operator navigation is not that proof.
+          if (!isCurrent() || selectedThreadRef.current !== created.id) throw new Error("Conversation changed. Record again.");
+          thread = created;
+        }
+        if (!isCurrent()) throw new Error("Conversation changed. Record again.");
+        return thread.id;
+      })();
+      void preparePromise.catch(() => { preparePromise = undefined; });
+      return preparePromise;
+    };
+    return {
+      isCurrent,
+      prepare,
+      submit: async (text) => {
+        await prepare();
+        if (!thread || !isCurrent()) throw new Error("Conversation changed. Record again.");
+        await sendSubmission({ text, ...settings }, undefined, { thread, isCurrent });
+      },
+    };
+  }, [context1M, createThread, effectiveEffort, effectiveModel, requireResolvedSelection, selectedThread, sendSubmission]);
+
   const value = useMemo<ConsoleStoreValue>(
     () => ({
       bootstrap,
+      selectionGeneration: operatorSelectionGeneration,
+      captureVoiceSubmission,
       agents,
       visibleAgents,
       threads,
@@ -7350,6 +7432,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       activeThreads: activeThreadsState,
       unreadThreadIds,
       unreadCountByAgent,
+      conversationVisible,
       setConversationVisible,
       hasOlderMessages,
       tagsByAgent,
@@ -7491,6 +7574,10 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       sendTurn,
       sendLiveInput,
       sendSubmission,
+      operatorSelectionGeneration,
+      captureVoiceSubmission,
+      conversationVisible,
+      setConversationVisible,
       setEffort,
       setContext1M,
       setAgentPinned,

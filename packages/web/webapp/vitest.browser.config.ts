@@ -1,6 +1,8 @@
 /// <reference types="vitest/config" />
 /// <reference types="@vitest/browser/providers/playwright" />
 
+import { mkdir, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import react from "@vitejs/plugin-react";
 import { sharedSourceAliases } from "./shared-sources";
 import type { BrowserCommand } from "vitest/node";
@@ -34,6 +36,15 @@ const screenshotDirectories = Object.entries(process.env)
   .filter(([name, value]) => /^VITE_[A-Z0-9_]+_SHOTS$/u.test(name) && value !== undefined && value.length > 0)
   .map(([, value]) => value as string);
 
+// Opt-in artifact from the real synthetic Chromium microphone, for built-dist smoke.
+const saveVoiceFixture: BrowserCommand<[number[]]> = async (_context, bytes) => {
+  const directory = process.env.VITE_VOICE_SHOTS;
+  if (!directory) return;
+  if (bytes.length === 0 || bytes.length > 10 * 1024 * 1024) throw new Error("Invalid synthetic voice fixture size");
+  await mkdir(directory, { recursive: true });
+  await writeFile(join(directory, "chromium-synthetic-recording.webm"), Buffer.from(bytes));
+};
+
 export default defineConfig({
   resolve: { alias: sharedSourceAliases },
   plugins: [react()],
@@ -51,6 +62,7 @@ export default defineConfig({
         {
           browser: "chromium",
           name: "chromium",
+          launch: { args: ["--use-fake-device-for-media-stream", "--use-fake-ui-for-media-stream"] },
           provide: { providerUsageTouch: false },
           context: { viewport: { width: 1440, height: 1000 }, hasTouch: false },
         },
@@ -59,8 +71,8 @@ export default defineConfig({
         ...(process.env.WEBAPP_TEST_WEBKIT === "1" ? [{
           browser: "webkit" as const,
           name: "webkit-chat",
-          include: ["src/components/Chat.browser.test.tsx"],
-          exclude: ["src/**/!(Chat).browser.test.tsx"],
+          include: ["src/components/Chat.browser.test.tsx", "src/components/VoiceComposer.browser.test.tsx"],
+          exclude: ["src/**/!(Chat|VoiceComposer).browser.test.tsx"],
           context: { viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true },
         }] : []),
         // Instance include patterns merge with the suite's include; explicitly
@@ -74,7 +86,7 @@ export default defineConfig({
           context: { viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true },
         },
       ],
-      commands: { emulateColorScheme, emulateReducedMotion },
+      commands: { emulateColorScheme, emulateReducedMotion, saveVoiceFixture },
     },
   },
 });

@@ -139,3 +139,14 @@ mono-agent start --config ./mono-agent.config.json
   with `timeoutMs: null` is narrowly exempt and instead ends on answer,
   cancellation, or app shutdown.
 - Everything here is loopback-only: the interaction bridge binds `127.0.0.1`, and the self-hosted Bot API server must be started with `--http-ip-address=127.0.0.1`. Long polling means nothing inbound is exposed.
+
+## Browser voice messages
+
+For short console requests, use the [opt-in web voice-message flow](../observability/web-console.md#voice-messages-opt-in)
+instead of uploading an audio attachment. The owner configures a local
+OpenAI-compatible service/proxy in the web root's owner-private `voice.json`;
+there is no automatic cloud fallback. Record, stop, then Send transcribes and
+submits a normal request. Existing text, file and quote drafts must first be sent
+or cleared. Audio is ephemeral (120 seconds/10 MiB); only the submitted transcript
+is retained. HTTPS or localhost and a compatible browser/service container are
+required. This does not add a large-media transcoder.

@@ -10,6 +10,8 @@ export interface ContractRoute {
   /** For native clients without an Origin header. See originPolicy. */
   readonly requiresClaimedOrigin: boolean;
   readonly originPolicy: "host" | "exact" | "claimed";
+  /** This route requires the actual Origin header, not the native claimed-origin alternative. */
+  readonly requiresOriginHeader?: true;
   readonly queryType?: keyof WebApiDtos;
   readonly resultStatuses?: readonly number[];
   readonly responseContentType?: string;
@@ -18,7 +20,7 @@ export interface ContractRoute {
 function route(
   method: ContractRoute["method"], path: string, requestType: Dto, responseType: Dto,
   successStatus: readonly number[] = [200], originPolicy: ContractRoute["originPolicy"] = "host",
-  extra: Pick<ContractRoute, "queryType" | "resultStatuses" | "responseContentType"> = {},
+  extra: Pick<ContractRoute, "queryType" | "resultStatuses" | "responseContentType" | "requiresOriginHeader"> = {},
 ): ContractRoute {
   return { method, path: path === "/healthz" ? path : `/api/v1${path}`, requestType, responseType,
     successStatus, requiresClaimedOrigin: originPolicy !== "host", originPolicy, ...extra };
@@ -28,6 +30,7 @@ function route(
 export const ROUTES: readonly ContractRoute[] = [
   route("GET", "/healthz", "NoBody", "ApiHealth"),
   route("GET", "/mcp-app-proxy", "NoBody", "Html", [200], "host", { responseContentType: "text/html" }),
+  route("POST", "/threads/:id/transcriptions", "Binary", "ApiTranscription", [200], "exact", { requiresOriginHeader: true }),
   route("GET", "/bootstrap", "NoBody", "ApiBootstrap", [200], "host", { queryType: "ApiBootstrapQuery" }),
   route("PATCH", "/agents/:id", "ApiPatchAgent", "ApiAgent"),
   route("PUT", "/agents/:id/run-defaults", "ApiPutRunDefaults", "ApiAgent"),

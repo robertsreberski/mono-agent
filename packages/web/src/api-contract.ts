@@ -78,6 +78,7 @@ export interface WebApiDtos {
   readonly ApiStartTurn: W.StartWebTurnInput;
   readonly ApiStartedTurn: { readonly thread: W.WebThread; readonly turn: W.WebRunState };
   readonly ApiStartSubmission: W.StartWebSubmissionInput;
+  readonly ApiTranscription: { readonly text: string };
   readonly ApiSubmissionReceipt: W.WebSubmissionReceipt;
   readonly ApiLiveInput: W.StartWebLiveInputInput;
   readonly ApiLiveInputReceipt: W.WebLiveInputReceipt;

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Add opt-in web voice messages: explicitly record, stop and Send to transcribe
+  through a server-configured local service/proxy and submit an ordinary request,
+  with bounded ephemeral audio, cancellation, captured execution settings and
+  normal receipt recovery across owned new-conversation creation. Navigation
+  cancels pending voice creation without blocking the destination composer;
+  cancelled creation preserves newer text drafts and execution preferences.
+
 - Add versioned holdout v2 family-clustered, conversation-paired quality gates,
   tighten-only skew bounds (pack 97%, native/benefit 95%), a 128-families-of-2
   per-corpus layout, model-scoped
