@@ -123,8 +123,10 @@ User Stop also marks a running `AskUser` question as interrupted; answer in a ne
 
 ### Voice messages (opt-in)
 
-The microphone action records a separate voice-only request: **Record → Stop
-recording → Send voice message**. Send transcribes and submits the transcript as
+The microphone in the composer toolbar records a separate voice-only request:
+**Record → Stop → Send**. Recording replaces the composer input with a compact
+status and timer; Stop only finishes recording and never sends. Cancel returns
+to the text composer. Unavailable microphone reasons are shown on focus or tap. Send transcribes and submits the transcript as
 an ordinary request (including the existing mid-turn live-input path); it does
 not insert an editable draft. Send or clear any text, files and quote before
 recording. Permission is requested only after Record. Cancel discards the audio

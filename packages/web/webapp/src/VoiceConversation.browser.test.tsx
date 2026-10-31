@@ -1,5 +1,5 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { page, userEvent } from "@vitest/browser/context";
+import { commands, page, userEvent } from "@vitest/browser/context";
 import { useLayoutEffect } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "./api";
@@ -11,7 +11,7 @@ import { Chat } from "./components/Chat";
 import { agent, bootstrap, thread } from "./test/fixtures";
 import { installVoiceFixture } from "./test/voice-fixtures";
 import { createThreadPersistence } from "./thread-persistence";
-import type { ThreadSummary } from "./types";
+import type { ThreadSummary, WebMessage } from "./types";
 import "./styles.css";
 
 vi.mock("./api", async (original) => ({
@@ -25,7 +25,9 @@ vi.mock("./api", async (original) => ({
 }));
 vi.mock("./notifications", () => ({ NotificationBell: () => null }));
 class FixtureEventSource {
-  readyState = 1; onopen = null; onmessage = null; onerror = null;
+  static current: FixtureEventSource;
+  constructor() { FixtureEventSource.current = this; }
+  readyState = 1; onopen = null; onmessage: ((event: MessageEvent) => void) | null = null; onerror = null;
   addEventListener() {} removeEventListener() {} close() {}
 }
 const persistence = createThreadPersistence();
@@ -51,8 +53,6 @@ function Probe() {
 function mount() {
   return render(<ConsoleStoreProvider><Probe /><WebRuntimeProvider>
     <div className="voice-console-fixture" style={{ height: "100dvh", display: "flex", flexDirection: "column", maxWidth: 1000, margin: "auto" }}>
-      <h1 style={{ fontSize: 16, margin: 8 }}>Synthetic full console voice fixture</h1>
-      {import.meta.env.VITE_VOICE_REVISION && <p style={{ fontSize: 10, margin: "0 8px 4px" }}>Fixture revision: {import.meta.env.VITE_VOICE_REVISION}</p>}
       <Chat onBack={() => store.setConversationVisible(false)} />
     </div>
   </WebRuntimeProvider></ConsoleStoreProvider>);
@@ -78,9 +78,9 @@ beforeEach(async () => {
   vi.mocked(api.transcribe).mockResolvedValue({ text: "A synthetic voice request." });
   vi.mocked(api.submit).mockImplementation(async (threadId, submissionId) => ({ threadId, submissionId, outcome: "turn" }));
 });
-afterEach(async () => { cleanup(); fixture.restore(); await persistence.clearAll(); localStorage.clear(); resetComposerDraft(); });
+afterEach(async () => { await commands.emulateColorScheme(null); cleanup(); fixture.restore(); await persistence.clearAll(); localStorage.clear(); resetComposerDraft(); });
 async function record() {
-  await waitFor(() => expect(screen.getByRole("button", { name: "Record voice message" })).toBeEnabled());
+  await waitFor(() => expect(screen.getByRole("button", { name: "Record voice message" })).toHaveAttribute("aria-disabled", "false"));
   await userEvent.click(screen.getByRole("button", { name: "Record voice message" }));
   await screen.findByRole("button", { name: "Stop recording" });
 }
@@ -101,7 +101,7 @@ describe("voice through real mounted Chat, keyed Composer, runtime and store", (
     const { container } = mount();
     await record(); await shot(`${label}-recording`);
     await stop(); await shot(`${label}-ready`);
-    const oldInput = screen.getByRole("combobox", { name: "Message" });
+    const oldInput = container.querySelector("#composer-input")!;
     await userEvent.click(screen.getByRole("button", { name: "Send voice message" }));
     await waitFor(() => expect(store.creatingThread).toBe(true));
     expect(oldInput.isConnected).toBe(false); // Real Chat unmounted the keyed composer.
@@ -132,14 +132,14 @@ describe("voice through real mounted Chat, keyed Composer, runtime and store", (
     act(() => store.selectThread(destination.id)); // Exactly one operator navigation; stay here.
     await waitFor(() => expect(store.selectionLoading).toBe(false));
     await waitFor(() => expect(screen.getByRole("combobox", { name: "Message" })).toBeEnabled());
-    expect(screen.getByRole("button", { name: "Record voice message" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Record voice message" })).toHaveAttribute("aria-disabled", "false");
     expect(screen.queryByText("Transcribing…")).not.toBeInTheDocument();
     expect(fixture.stop).toHaveBeenCalledTimes(2);
     // Cancellation/UI recovery must happen BEFORE the old acknowledgement.
     await act(async () => { if (outcome === "resolve") resolveCreate(created); else rejectCreate(new Error("Synthetic create refusal")); });
     expect(store.selectedThreadId).toBe(destination.id);
     expect(screen.getByRole("combobox", { name: "Message" })).toBeEnabled();
-    expect(screen.getByRole("button", { name: "Record voice message" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Record voice message" })).toHaveAttribute("aria-disabled", "false");
     expect(api.transcribe).not.toHaveBeenCalled(); expect(api.submit).not.toHaveBeenCalled();
   });
   it.each(["resolve", "reject"] as const)("keeps a newer recording when a cancelled creation later %ss", async (outcome) => {
@@ -229,6 +229,130 @@ describe("voice through real mounted Chat, keyed Composer, runtime and store", (
   });
 });
 
+// The actual Chat/Composer/runtime/store path with synthetic device and API only.
+// Opt-in screenshots are deliberately clean; provenance lives beside the images.
+describe("integrated compact voice presentation", () => {
+  const message = (id: string, role: WebMessage["role"], text: string): WebMessage => ({
+    id, threadId: "polish-thread", role, parts: [{ type: "text", text }], attachments: [],
+    createdAt: "2026-07-17T10:00:00.000Z", updatedAt: "2026-07-17T10:00:00.000Z", status: "complete", seq: 0,
+  });
+  it("does not move focus back into a conversation after leaving it", async () => {
+    seed(created);
+    mount();
+    await record();
+    render(<button type="button" onClick={() => store.setConversationVisible(false)}>Synthetic dashboard navigation</button>);
+    const navigation = screen.getByRole("button", { name: "Synthetic dashboard navigation" });
+    await userEvent.click(navigation);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Record voice message" })).toHaveAttribute("aria-disabled", "false"));
+    expect(navigation).toHaveFocus();
+    expect(fixture.stop).toHaveBeenCalledTimes(2);
+  });
+  const longModel = "provider/long-reasoning-model-2026-preview";
+  for (const [width, height, device] of [[1280, 900, "desktop"], [390, 844, "mobile"], [320, 740, "narrow"]] as const) {
+    for (const scheme of ["light", "dark"] as const) {
+      it(`${device} ${scheme}: toolbar placement, explicit controls, recovery and layout`, async () => {
+        await page.viewport(width, height);
+        await commands.emulateColorScheme(scheme);
+        const selected = thread("polish-thread", "alpha", { title: "A small garden project", messageCount: 2 });
+        const messages: WebMessage[] = [
+          message("garden-user", "user", "Let’s plan a small balcony garden."),
+          message("garden-assistant", "assistant", "Start with herbs in a sunny spot. What would you like to grow?"),
+        ];
+        seed(selected);
+        vi.mocked(api.bootstrap).mockResolvedValue({ ...bootstrap([{ ...fixtureAgent, models: [longModel], defaultModel: longModel,
+          runSettings: { config: { model: longModel, effort: "medium" }, override: null, effective: { model: longModel, effort: "medium", modelSource: "config", effortSource: "config" } },
+          modelOptions: { [longModel]: { reasoning: true, effortLevels: ["low", "medium", "high"], supportsContext1M: true } } }], [selected], selected.id),
+          voice: { enabled: true, maxBytes: 10485760, maxSeconds: 120, maxTextCharacters: 8000 } });
+        vi.mocked(api.thread).mockResolvedValue({ thread: selected, messages });
+        const { container } = mount();
+        await waitFor(() => expect(screen.getByRole("button", { name: "Record voice message" })).toHaveAttribute("aria-disabled", "false"));
+        const mic = screen.getByRole("button", { name: "Record voice message" });
+        expect(mic.closest(".composer-tools")).not.toBeNull();
+        const root = container.querySelector<HTMLElement>(".composer-root")!;
+        const idleHeight = root.getBoundingClientRect().height;
+        expect(idleHeight).toBeLessThan(width < 700 ? 115 : 120);
+        expect(root.querySelector(".model-selector__model-name")!.getBoundingClientRect().width).toBeGreaterThanOrEqual(40);
+        const checkLayout = () => {
+          expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width);
+          for (const control of root.querySelectorAll<HTMLElement>(".composer-toolbar button")) {
+            const bounds = control.getBoundingClientRect();
+            if (bounds.width === 0) continue;
+            expect(bounds.left).toBeGreaterThanOrEqual(0);
+            expect(bounds.right).toBeLessThanOrEqual(width);
+            expect(control.scrollWidth).toBeLessThanOrEqual(control.clientWidth + 1);
+          }
+        };
+        const capture = (state: string) => shot(`polished-${device}-${scheme}-${state}`);
+        checkLayout(); await capture("01-idle");
+        // Text still works, availability is reachable by focus/touch, not hover only.
+        const input = screen.getByRole("combobox", { name: "Message" }) as HTMLTextAreaElement;
+        fireEvent.change(input, { target: { value: "A draft to keep" } });
+        input.setSelectionRange(2, 7);
+        await waitFor(() => expect(mic).toHaveAttribute("aria-disabled", "true"));
+        act(() => mic.focus());
+        expect(screen.getByText(/Send or clear text, files and quotes/)).toBeVisible();
+        fireEvent.click(mic);
+        expect(fixture.getUserMedia).not.toHaveBeenCalled();
+        expect(input.value).toBe("A draft to keep");
+        expect(input.selectionStart).toBe(2); expect(input.selectionEnd).toBe(7);
+        fireEvent.change(input, { target: { value: "" } });
+        await record();
+        expect(screen.queryByRole("combobox", { name: "Message" })).toBeNull();
+        expect(screen.queryByRole("button", { name: "Send message" })).toBeNull();
+        expect(screen.queryByRole("button", { name: "Send voice message" })).toBeNull();
+        expect(screen.getByRole("button", { name: "Stop recording" })).toHaveFocus();
+        checkLayout(); await capture("02-recording");
+        await stop();
+        expect(screen.getByRole("button", { name: "Send voice message" })).toHaveFocus();
+        expect(api.transcribe).not.toHaveBeenCalled(); expect(api.submit).not.toHaveBeenCalled();
+        checkLayout(); await capture("03-ready");
+        await userEvent.click(screen.getByRole("button", { name: "Cancel voice message" }));
+        expect(mic.isConnected).toBe(false);
+        expect(screen.getByRole("button", { name: "Record voice message" })).toHaveFocus();
+        expect(screen.getByRole("combobox", { name: "Message" })).toBe(input);
+        expect(root.getBoundingClientRect().height).toBe(idleHeight);
+        await record(); await stop();
+        vi.mocked(api.transcribe).mockRejectedValueOnce(new Error("Transcription unavailable. Try Send again."));
+        await userEvent.click(screen.getByRole("button", { name: "Send voice message" }));
+        expect(await screen.findByRole("alert")).toHaveTextContent("Transcription unavailable");
+        checkLayout(); await capture("04-transcription-error");
+        let resolveTranscript!: (value: { text: string }) => void;
+        let rejectSubmit!: (error: Error) => void;
+        vi.mocked(api.transcribe).mockImplementationOnce(() => new Promise((resolve) => { resolveTranscript = resolve; }));
+        vi.mocked(api.submit).mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectSubmit = reject; }));
+        vi.mocked(api.submission).mockRejectedValueOnce(new Error("Receipt unavailable"));
+        await userEvent.click(screen.getByRole("button", { name: "Send voice message" }));
+        await screen.findByText("Transcribing…");
+        expect(screen.getByRole("button", { name: "Cancel voice message" })).toHaveFocus();
+        checkLayout(); await capture("05-transcribing");
+        await act(async () => resolveTranscript({ text: "Add basil and mint to the garden plan." }));
+        await screen.findByText("Submitting request…");
+        expect(screen.queryByRole("button", { name: "Cancel voice message" })).toBeNull();
+        expect(container.querySelector(".voice-body")).toHaveFocus();
+        checkLayout(); await capture("06-submitting");
+        await act(async () => rejectSubmit(new Error("Request acknowledgement unavailable.")));
+        const retry = await screen.findByRole("button", { name: "Retry submission" });
+        expect(retry).toHaveFocus();
+        expect(screen.queryByRole("button", { name: "Cancel voice message" })).toBeNull();
+        checkLayout(); await capture("07-receipt-recovery");
+        const transcriptCalls = vi.mocked(api.transcribe).mock.calls.length;
+        await userEvent.click(retry);
+        await waitFor(() => expect(screen.getByRole("button", { name: "Record voice message" })).toHaveAttribute("aria-disabled", "false"));
+        expect(api.transcribe).toHaveBeenCalledTimes(transcriptCalls);
+        expect(api.submit).toHaveBeenCalledTimes(2);
+        expect(vi.mocked(api.submit).mock.calls[0]).toEqual(vi.mocked(api.submit).mock.calls[1]);
+        // Emulate the ordinary server refresh after the accepted synthetic receipt.
+        const sent: WebMessage = message("garden-voice", "user", "Add basil and mint to the garden plan.");
+        const reply: WebMessage = message("garden-reply", "assistant", "Basil and mint are on the plan. Keep mint in its own pot.");
+        vi.mocked(api.thread).mockResolvedValue({ thread: { ...selected, messageCount: 4, revision: 2 }, messages: [...messages, sent, reply] });
+        act(() => FixtureEventSource.current.onmessage?.(new MessageEvent("message", { data: JSON.stringify({ version: 1, type: "message.changed", at: "2026-07-17T10:00:03.000Z", threadId: selected.id, payload: { messageId: sent.id } }) })));
+        await screen.findByText("Basil and mint are on the plan. Keep mint in its own pot.");
+        checkLayout(); await capture("08-submitted");
+      });
+    }
+  }
+});
+
 // Chat deliberately hides its keyed Composer during creation. Keep the real
 // voice owner mounted here to exercise explicit Cancel, then write through the
 // real draft cache/setters; round-trip storage and consume the surviving draft
@@ -246,7 +370,7 @@ it.each([false, true])("cancelled creation preserves fresh null-thread draft/pre
   await waitFor(() => expect(store.creatingThread).toBe(true));
   const generation = store.selectionGeneration;
   await userEvent.click(screen.getByRole("button", { name: "Cancel voice message" }));
-  expect(screen.getByRole("button", { name: "Record voice message" })).toBeEnabled();
+  expect(screen.getByRole("button", { name: "Record voice message" })).toHaveAttribute("aria-disabled", "false");
   const fresh = "A fresh fictional text draft after Cancel.";
   writeComposerDraft("alpha", null, fresh);
   act(() => store.setModel("provider/other"));

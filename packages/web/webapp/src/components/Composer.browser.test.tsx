@@ -425,11 +425,11 @@ describe("voice and existing text drafts", () => {
     render(<WebRuntimeProvider><ConsoleVoiceScope><Composer /></ConsoleVoiceScope></WebRuntimeProvider>);
     const input = screen.getByRole("combobox", { name: "Message" });
     await userEvent.fill(input, "Keep this fictional draft intact.");
-    expect(screen.getByRole("button", { name: "Record voice message" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Record voice message" })).toHaveAttribute("aria-disabled", "true");
     expect(input).toHaveValue("Keep this fictional draft intact.");
     expect(fixture.getUserMedia).not.toHaveBeenCalled();
     expect(send).not.toHaveBeenCalled();
     await userEvent.clear(input);
-    expect(screen.getByRole("button", { name: "Record voice message" })).not.toBeDisabled();
+    expect(screen.getByRole("button", { name: "Record voice message" })).toHaveAttribute("aria-disabled", "false");
   });
 });

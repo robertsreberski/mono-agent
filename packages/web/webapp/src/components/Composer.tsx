@@ -101,6 +101,15 @@ export function Composer({ runSettings, notice }: {
   const compacting = runningManualCompaction(selectedThread);
   const canSend = useAuiState((state) => state.composer.canSend);
   const voiceBusy = useVoiceBusy();
+  const wasVoiceBusy = useRef(voiceBusy);
+  useLayoutEffect(() => {
+    const root = inputRef.current?.closest(".composer-root");
+    if (wasVoiceBusy.current && !voiceBusy && store.conversationVisible !== false
+      && (document.activeElement === document.body || root?.contains(document.activeElement))) {
+      root?.querySelector<HTMLButtonElement>(".voice-record")?.focus({ preventScroll: true });
+    }
+    wasVoiceBusy.current = voiceBusy;
+  }, [voiceBusy]);
   const attachmentCount = useAuiState((state) => state.composer.attachments.length);
   const commands = useMemo(() => buildComposerCommands({
     attachmentCount,
@@ -254,7 +263,6 @@ export function Composer({ runSettings, notice }: {
         )}
         <ComposerQuotePreview />
         {notice}
-        <ScopedVoiceComposer />
         {compacting && <p className="composer-compaction-note">Compacting context — you can send when it finishes.</p>}
         <ComposerPrimitive.AttachmentDropzone
           className="composer-dropzone"
@@ -262,7 +270,8 @@ export function Composer({ runSettings, notice }: {
         >
           <AttachmentErrorListener />
           <ComposerAttachments />
-          <div className="composer-input-row">
+          <ScopedVoiceComposer slot="body" />
+          <div className="composer-input-row" hidden={voiceBusy}>
             <ComposerPrimitive.Input
               disabled={voiceBusy}
               ref={inputRef}
@@ -293,6 +302,8 @@ export function Composer({ runSettings, notice }: {
           </div>
           <div className="composer-toolbar">
             <div className="composer-tools">
+              <ScopedVoiceComposer slot="tool" />
+              <ScopedVoiceComposer slot="cancel" />
               {canUpload && !voiceBusy && (
                 <ComposerPrimitive.AddAttachment
                   className="icon-button composer-tool"
@@ -312,14 +323,17 @@ export function Composer({ runSettings, notice }: {
               />}
             </div>
             <div className="composer-actions">
-              {runSettings}
-              <ComposerPrimitive.Send
-                className="composer-send"
-                aria-label="Send message"
-                disabled={!canSend || compacting || voiceBusy}
-              >
-                <Icon name="send" size={16} />
-              </ComposerPrimitive.Send>
+              {!voiceBusy && runSettings}
+              <ScopedVoiceComposer slot="action" />
+              {!voiceBusy && (
+                <ComposerPrimitive.Send
+                  className="composer-send"
+                  aria-label="Send message"
+                  disabled={!canSend || compacting}
+                >
+                  <Icon name="send" size={16} />
+                </ComposerPrimitive.Send>
+              )}
               {isRunning && (
                 <button
                   type="button"
@@ -333,7 +347,7 @@ export function Composer({ runSettings, notice }: {
               )}
             </div>
           </div>
-          <div className="composer-hint">
+          <div className="composer-hint" hidden={voiceBusy}>
             {statusText ? <span className="composer-hint-status">{statusText}</span> : null}
             {/* Keyboard affordances are meaningless on the phone layout, where the row
                 only costs vertical space; styles.css hides it below the mobile breakpoint. */}

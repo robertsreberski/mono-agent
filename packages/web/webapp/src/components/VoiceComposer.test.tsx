@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "../api";
 import { FixtureMediaRecorder, installVoiceFixture } from "../test/voice-fixtures";
 import { chooseRecordingType, VoiceRecorder, VOICE_MAX_BYTES } from "../voice-recorder";
-import { VoiceComposer } from "./VoiceComposer";
+import { VoiceComposer, VoiceMessagePanel } from "./VoiceComposer";
 vi.mock("../api", () => ({ api: { transcribe: vi.fn() } }));
 let fixture: ReturnType<typeof installVoiceFixture>;
 beforeEach(() => { fixture = installVoiceFixture(); vi.mocked(api.transcribe).mockReset().mockResolvedValue({ text: "A fictional request." }); });
@@ -17,6 +17,16 @@ async function record() {
 }
 
 describe("voice composer", () => {
+  it("keeps the elapsed timer out of phase announcements", () => {
+    const view = render(<VoiceMessagePanel phase="recording" seconds={17} />);
+    const status = screen.getByRole("status");
+    expect(status).toHaveTextContent(/^Recording$/);
+    expect(screen.getByRole("timer")).toHaveAttribute("aria-live", "off");
+    view.rerender(<VoiceMessagePanel phase="recording" seconds={18} />);
+    expect(screen.getByRole("status")).toBe(status);
+    expect(status).toHaveTextContent(/^Recording$/);
+    expect(screen.getByRole("timer")).toHaveTextContent("0:18 / 2:00");
+  });
   it("captures only on click and Send transcribes then submits exactly once", async () => {
     const owner = session();
     render(<VoiceComposer selectionGeneration={0} captureSubmission={() => owner} />);
@@ -91,7 +101,7 @@ describe("voice composer", () => {
     expect(owner.prepare).toHaveBeenCalledWith(expect.any(AbortSignal));
     owner.isCurrent.mockReturnValue(false);
     await act(async () => { if (outcome === "resolve") resolve("thread-one"); else reject(new Error("Synthetic refusal")); });
-    expect(screen.getByRole("button", { name: "Record voice message" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Record voice message" })).toHaveAttribute("aria-disabled", "false");
     expect(api.transcribe).not.toHaveBeenCalled(); expect(owner.submit).not.toHaveBeenCalled();
     expect(fixture.stop).toHaveBeenCalledTimes(2);
   });
@@ -126,7 +136,12 @@ describe("voice composer", () => {
   });
   it("does not capture over a text/attachment/quote draft or an older-server capability", () => {
     render(<VoiceComposer unavailableReason="Send or clear text, files and quotes before recording." selectionGeneration={0} captureSubmission={session} />);
-    expect(screen.getByRole("button", { name: "Record voice message" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Record voice message" })).toHaveAttribute("aria-disabled", "true");
+    fireEvent.click(screen.getByRole("button", { name: "Record voice message" }));
+    expect(screen.getByText("Send or clear text, files and quotes before recording.")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Record voice message" })).toHaveAccessibleDescription("Send or clear text, files and quotes before recording.");
+    fireEvent.keyDown(screen.getByRole("button", { name: "Record voice message" }), { key: "Escape" });
+    expect(screen.getByText("Send or clear text, files and quotes before recording.")).toHaveClass("sr-only");
     expect(fixture.getUserMedia).not.toHaveBeenCalled();
   });
   it("pagehide discards capture and resets controls for a restored page", async () => {
@@ -135,7 +150,7 @@ describe("voice composer", () => {
     fireEvent.click(screen.getByRole("button", { name: "Record voice message" }));
     await screen.findByRole("button", { name: "Stop recording" });
     act(() => window.dispatchEvent(new Event("pagehide")));
-    expect(screen.getByRole("button", { name: "Record voice message" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Record voice message" })).toHaveAttribute("aria-disabled", "false");
     expect(fixture.stop).toHaveBeenCalledTimes(2);
     expect(owner.submit).not.toHaveBeenCalled();
   });

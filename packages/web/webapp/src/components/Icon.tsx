@@ -25,6 +25,7 @@ export type IconName =
   | "file"
   | "folder"
   | "key"
+  | "mic"
   | "menu"
   | "more"
   | "new"
@@ -131,6 +132,7 @@ const paths: Record<IconName, React.ReactNode> = {
     </>
   ),
   folder: <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />,
+  mic: <><rect x="9" y="3" width="6" height="11" rx="3" /><path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3M8 22h8" /></>,
   menu: <path d="M4 7h16M4 12h16M4 17h16" />,
   more: <path d="M5 12h.01M12 12h.01M19 12h.01" />,
   new: <path d="M12 5v14M5 12h14" />,

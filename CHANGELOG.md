@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Keep web voice messages inside the existing composer: a toolbar microphone,
+  compact recording status and explicit Stop, Cancel and Send controls, with
+  accessible availability reasons and receipt recovery.
+
 - Prioritize first offers of short, host-attested owner paragraphs during
   continuity ledger selection, without changing source authority, fitting
   budgets, oldest-first fairness or tool-source diversity limits.

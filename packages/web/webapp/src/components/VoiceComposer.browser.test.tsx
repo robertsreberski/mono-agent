@@ -50,7 +50,7 @@ describe("automated synthetic voice states", () => {
       await waitFor(() => expect(api.transcribe).toHaveBeenCalledTimes(1));
       await screen.findByText("Transcribing…");
       await shot(`synthetic-${name}-transcribing`);
-      for (const button of container.querySelectorAll("button")) expect(button.getBoundingClientRect().height).toBeGreaterThanOrEqual(44);
+      for (const button of container.querySelectorAll("button")) expect(button.getBoundingClientRect().height).toBeGreaterThanOrEqual(name === "mobile" ? 44 : 34);
       expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width);
       await userEvent.click(screen.getByRole("button", { name: "Cancel voice message" }));
       await act(async () => resolve({ text: "Cancelled fixture request." }));
@@ -73,14 +73,15 @@ describe("automated synthetic voice states", () => {
       // Re-evaluate via unmount/remount rather than claim a real insecure browser visit.
       const { cleanup } = await import("@testing-library/react");
       cleanup(); setup();
-      expect(screen.getByRole("button", { name: "Record voice message" })).toBeDisabled();
+      expect(screen.getByRole("button", { name: "Record voice message" })).toHaveAttribute("aria-disabled", "true");
+      act(() => screen.getByRole("button", { name: "Record voice message" }).focus());
       expect(screen.getByText(/Microphone access needs HTTPS/)).toBeVisible();
       await shot(`synthetic-${name}-insecure`);
     });
   }
   it("draft gate preserves text/files/quotes without asking permission", async () => {
     setup("Send or clear text, files and quotes before recording a voice message.");
-    expect(screen.getByRole("button", { name: "Record voice message" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Record voice message" })).toHaveAttribute("aria-disabled", "true");
     expect(fixture.getUserMedia).not.toHaveBeenCalled();
   });
   it.runIf(/Chrome\//u.test(navigator.userAgent))("real Chromium MediaRecorder records synthetic browser microphone input through the component", async () => {

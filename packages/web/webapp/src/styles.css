@@ -2603,14 +2603,30 @@ textarea.wake-text { min-height: calc(3lh + 24px); max-height: calc(12lh + 24px)
 .wake-compact-label input { width: 18px; height: 18px; flex: none; accent-color: var(--accent); }
 .wake-compact .wake-message-foot { margin: 4px 0 0; }
 
-/* Voice is a separate ephemeral request, never a text/attachment draft. */
-.voice-composer { padding: 8px 12px; font-size: 13px; }
-.voice-idle { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.voice-note { color: var(--text-muted); font-size: 12px; line-height: 1.5; margin: 4px 0; overflow-wrap: anywhere; }
-.voice-panel { border: 1px solid var(--line); border-radius: 12px; margin: 8px; }
-.voice-panel p { margin: 4px 0 10px; }
-.voice-actions { display: flex; gap: 8px; flex-wrap: wrap; }
-.voice-actions button { min-height: 44px; padding: 8px 12px; border-radius: 8px; }
-.voice-actions .composer-send { width: auto; height: auto; white-space: nowrap; }
-.voice-idle .composer-tool { min-width: 44px; min-height: 44px; }
-.voice-composer [role="alert"] { color: var(--danger); overflow-wrap: anywhere; }
+/* Voice occupies the existing input and toolbar, never a nested feature card. */
+.composer-input-row[hidden], .composer-hint[hidden] { display: none; }
+.voice-record[aria-disabled="true"] { opacity: .45; cursor: help; }
+.voice-availability { position: absolute; bottom: calc(100% + 8px); left: 10px; max-width: min(320px, calc(100% - 20px)); padding: 9px 12px; color: var(--text-soft); background: var(--surface-raised); border: 1px solid var(--line-strong); border-radius: 10px; box-shadow: var(--shadow-lg); font-size: 12px; line-height: 1.5; z-index: 15; }
+.voice-body { min-height: 37px; padding: 7px 5px; color: var(--text-soft); font-size: 13px; }
+.voice-status-line { display: flex; align-items: center; gap: 8px; min-height: 22px; }
+.voice-status-line > svg { flex: none; color: var(--accent); }
+.voice-recording-dot { width: 7px; height: 7px; flex: none; margin-inline: 4px; background: var(--danger); border-radius: 50%; }
+.voice-time { margin-left: auto; color: var(--text-soft); font: 12px var(--font-mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.voice-limit { color: var(--text-muted); }
+.voice-detail, .voice-error { margin: 4px 0 3px; color: var(--text-muted); font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
+.voice-error { color: var(--danger); padding-inline: 5px; }
+.voice-cancel { display: inline-flex; align-items: center; justify-content: center; gap: 5px; min-height: 34px; padding: 0 8px; color: var(--text-muted); background: transparent; border-radius: 10px; font-size: 12px; cursor: pointer; }
+.voice-cancel:hover { color: var(--text); background: var(--surface-hover); }
+.voice-primary { display: flex; gap: 7px; width: auto; min-width: 76px; padding-inline: 12px; font-size: 12px; }
+@media (max-width: 700px) {
+  .composer-tools:has(.voice-record) { gap: 1px; }
+  .composer-tools:has(.voice-record) .composer-tool { width: 36px; height: 44px; }
+  .voice-cancel, .voice-primary, .voice-progress { min-height: 44px; }
+}
+/* At phone widths, stack the two existing setting labels inside their trigger
+   rather than squeezing the model name away to make room for the microphone. */
+@media (max-width: 420px) {
+  .composer-toolbar:has(.voice-record) .model-selector__trigger { height: 44px; }
+  .composer-toolbar:has(.voice-record) .model-selector__value { display: grid; grid-template-columns: minmax(0, 1fr); justify-items: start; gap: 2px; }
+  .composer-toolbar:has(.voice-record) .model-selector__model-name { max-width: 100%; }
+}

@@ -1,7 +1,8 @@
-import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { api } from "../api";
 import type { VoiceSubmissionSession } from "../console-store";
 import { VoiceRecorder, voiceUnavailableReason } from "../voice-recorder";
+import { Icon } from "./Icon";
 
 type Phase = "idle" | "permission" | "recording" | "ready" | "transcribing" | "submitting" | "uncertain";
 export interface VoiceComposerProps {
@@ -118,15 +119,9 @@ function useVoiceComposer({ unavailableReason, selectionGeneration, visible = tr
     }
   };
 
-  if (!busy) return { busy, view: <div className="voice-composer voice-idle">
-    <button type="button" className="icon-button composer-tool" aria-label="Record voice message" title={blocked ?? "Record a voice message"} disabled={Boolean(blocked)} onClick={start}>
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3M8 22h8"/></svg>
-    </button>
-    <span className="voice-note">{blocked ?? "Voice Send transcribes and sends your request."}</span>
-    {error && <p role="alert">{error}</p>}
-  </div> };
-  return { busy, view: <VoiceMessagePanel phase={phase} seconds={seconds} error={error} dispatched={dispatched.current}
-    onStop={() => recorder.current?.stop()} onCancel={() => { if (!dispatched.current) cancel(); }} onSend={() => void send()} /> };
+  return { busy, phase, seconds, error, blocked, dispatched: dispatched.current, start,
+    onStop: () => recorder.current?.stop(),
+    onCancel: () => { if (!dispatched.current) cancel(); }, onSend: () => void send() };
 }
 
 // Own capture at the stable Chat boundary, not in the keyed viewport/composer.
@@ -137,34 +132,103 @@ export function VoiceComposerScope({ children, ...props }: VoiceComposerProps & 
   const value = useVoiceComposer(props);
   return <VoiceScope.Provider value={value}>{children}</VoiceScope.Provider>;
 }
-export function ScopedVoiceComposer() { return useContext(VoiceScope)?.view ?? null; }
+type VoiceSlot = "tool" | "body" | "cancel" | "action";
+export function ScopedVoiceComposer({ slot }: { readonly slot: VoiceSlot }) {
+  const voice = useContext(VoiceScope);
+  return voice ? <VoiceContent voice={voice} slot={slot} /> : null;
+}
 export function useVoiceBusy() { return useContext(VoiceScope)?.busy ?? false; }
-/** Standalone lifecycle fixture; the console uses the stable scoped owner. */
-export function VoiceComposer(props: VoiceComposerProps) { return useVoiceComposer(props).view; }
 
-/** Presentational seam for deterministic browser/story fixtures; no capture side effects. */
-export function VoiceMessagePanel({ phase, seconds = 0, error, dispatched = false, onStop, onCancel, onSend }: {
-  readonly phase: Exclude<Phase, "idle">;
+/** Standalone lifecycle fixture; the console uses the stable scoped owner. */
+export function VoiceComposer(props: VoiceComposerProps) {
+  const voice = useVoiceComposer(props);
+  return <div className="composer-root"><div className="composer-dropzone">
+    <VoiceContent voice={voice} slot="body" />
+    <div className="composer-toolbar">
+      <div className="composer-tools"><VoiceContent voice={voice} slot="tool" /><VoiceContent voice={voice} slot="cancel" /></div>
+      <div className="composer-actions"><VoiceContent voice={voice} slot="action" /></div>
+    </div>
+  </div></div>;
+}
+
+function VoiceContent({ voice, slot }: { readonly voice: ReturnType<typeof useVoiceComposer>; readonly slot: VoiceSlot }) {
+  if (slot === "tool") return !voice.busy ? <VoiceRecordControl blocked={voice.blocked} onStart={voice.start} /> : null;
+  if (slot === "body") return voice.busy ? <VoiceStatus {...voice} /> : voice.error ? <p className="voice-error" role="alert">{voice.error}</p> : null;
+  return voice.busy ? <VoiceAction {...voice} slot={slot} /> : null;
+}
+
+function VoiceRecordControl({ blocked, onStart }: { readonly blocked?: string; readonly onStart: () => void }) {
+  const id = useId();
+  const [explain, setExplain] = useState(false);
+  return <>
+    <button type="button" className="icon-button composer-tool voice-record" aria-label="Record voice message"
+      title={blocked ?? "Record a voice message"} aria-disabled={Boolean(blocked)} aria-describedby={blocked ? id : undefined}
+      onFocus={() => setExplain(true)} onBlur={() => setExplain(false)} onKeyDown={(event) => { if (event.key === "Escape") setExplain(false); }}
+      onClick={() => { if (blocked) setExplain(true); else onStart(); }}>
+      <Icon name="mic" size={17} />
+    </button>
+    {blocked && <span id={id} className={explain ? "voice-availability" : "sr-only"}>{blocked}</span>}
+  </>;
+}
+
+type ActiveVoiceProps = {
+  readonly phase: Phase;
   readonly seconds?: number;
   readonly error?: string;
   readonly dispatched?: boolean;
   readonly onStop?: () => void;
   readonly onCancel?: () => void;
   readonly onSend?: () => void;
-}) {
-  return <section className="voice-composer voice-panel" aria-label="Voice message">
-    <p role="status" aria-live="polite">{phase === "permission" ? "Allow microphone access to record…"
-      : phase === "recording" ? `Recording · ${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")} / 2:00`
-      : phase === "ready" ? "Recording ready to send"
-      : phase === "transcribing" ? "Transcribing…"
-      : phase === "submitting" ? "Submitting request…"
-      : "Submission not confirmed. Retry checks the same request; it does not transcribe again."}</p>
-    <p className="voice-note">Send transcribes and submits an ordinary request. Audio is not saved. {dispatched ? "After dispatch, use Stop response; cancellation cannot withdraw the request." : "Cancel discards audio before submission."}</p>
-    {error && <p role="alert">{error}</p>}
-    <div className="voice-actions">
-      {phase === "recording" && <button type="button" onClick={onStop}>Stop recording</button>}
-      {!dispatched && <button type="button" onClick={onCancel}>Cancel voice message</button>}
-      {(phase === "ready" || phase === "uncertain") && <button type="button" className="composer-send" onClick={onSend}>{phase === "uncertain" ? "Retry submission" : "Send voice message"}</button>}
+};
+function focusVoiceControl(element: HTMLElement | null) {
+  const root = element?.closest(".composer-root");
+  if (document.activeElement === document.body || root?.contains(document.activeElement)) {
+    element?.focus({ preventScroll: true });
+  }
+}
+
+function VoiceStatus({ phase, seconds = 0, error }: ActiveVoiceProps) {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => { if (phase === "submitting") focusVoiceControl(ref.current); }, [phase]);
+  const label = phase === "permission" ? "Allow microphone access…"
+    : phase === "recording" ? "Recording"
+    : phase === "ready" ? "Voice message ready"
+    : phase === "transcribing" ? "Transcribing…"
+    : phase === "submitting" ? "Submitting request…" : "Submission not confirmed";
+  return <div ref={ref} tabIndex={-1} className="voice-body" data-phase={phase} aria-label="Voice message">
+    <div className="voice-status-line">
+      {phase === "recording" ? <span className="voice-recording-dot" aria-hidden="true" /> : <Icon name={phase === "ready" ? "check" : "mic"} size={16} />}
+      <span role="status">{label}</span>
+      {(phase === "recording" || phase === "ready") && <span className="voice-time" role="timer" aria-live="off" aria-label="Recording duration">{Math.floor(seconds / 60)}:{String(seconds % 60).padStart(2, "0")}{phase === "recording" && <span className="voice-limit"> / 2:00</span>}</span>}
     </div>
-  </section>;
+    {phase === "ready" && !error && <p className="voice-detail">Send to transcribe and submit. Audio isn’t saved.</p>}
+    {phase === "uncertain" && <p className="voice-detail">Retry checks the same request. It won’t send twice.</p>}
+    {phase === "submitting" && <p className="voice-detail">Dispatched — waiting for confirmation.</p>}
+    {error && <p className="voice-error" role="alert">{error}</p>}
+  </div>;
+}
+function VoiceAction({ slot, phase, dispatched, onStop, onCancel, onSend }: ActiveVoiceProps & { readonly slot: "cancel" | "action" }) {
+  const ref = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    // Each explicit step keeps keyboard focus in the operation, not on a removed
+    // microphone/Stop button. Timer ticks never move focus or announce a status.
+    const primary = phase === "recording" || phase === "ready" || phase === "uncertain";
+    if ((slot === "action" && primary) || (slot === "cancel" && !primary)) focusVoiceControl(ref.current);
+  }, [phase, slot]);
+  if (slot === "cancel") return !dispatched ? <button ref={ref} type="button" className="voice-cancel" aria-label="Cancel voice message" onClick={onCancel}><Icon name="close" size={16} />Cancel</button> : null;
+  if (phase === "recording") return <button ref={ref} type="button" className="composer-stop voice-primary" aria-label="Stop recording" onClick={onStop}><Icon name="stop" size={14} />Stop</button>;
+  if (phase === "ready" || phase === "uncertain") return <button ref={ref} type="button" className="composer-send voice-primary" aria-label={phase === "uncertain" ? "Retry submission" : "Send voice message"} onClick={onSend}><Icon name={phase === "uncertain" ? "refresh" : "send"} size={16} />{phase === "uncertain" ? "Retry" : "Send"}</button>;
+  if (phase === "transcribing" || phase === "submitting") return <button type="button" className="composer-send voice-progress" aria-label="Processing voice message" disabled><Icon name="clock" size={16} /></button>;
+  return null;
+}
+
+/** Synthetic presentation fixture, using the same composer slots as Chat. */
+export function VoiceMessagePanel(props: ActiveVoiceProps) {
+  return <div className="composer-root"><div className="composer-dropzone">
+    <VoiceStatus {...props} />
+    <div className="composer-toolbar">
+      <div className="composer-tools"><VoiceAction {...props} slot="cancel" /></div>
+      <div className="composer-actions"><VoiceAction {...props} slot="action" /></div>
+    </div>
+  </div></div>;
 }
