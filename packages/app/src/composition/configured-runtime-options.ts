@@ -13,7 +13,7 @@ export function configuredSandboxEngine(
   return explicit ?? createSrtSandboxEngine();
 }
 
-export function runtimeHostOptionsForConfig(config: MonoAgentConfig): Parameters<typeof createMonoRuntime>[0] {
+export function runtimeHostOptionsForConfig(config: MonoAgentConfig): NonNullable<Parameters<typeof createMonoRuntime>[0]> {
   return {
     workspace: config.runtime.workspace,
     ...(config.tools.filesystem === undefined

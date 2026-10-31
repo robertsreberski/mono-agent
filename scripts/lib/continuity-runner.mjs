@@ -682,7 +682,7 @@ export async function prepareLedgerCheckpoint({ modules, work, authPath, plan, m
     }
     hostOptions.runtimeOptions = { ...(hostOptions.runtimeOptions ?? {}), piResolvedModels: captureUpkeepModels(models, text => { capturedText = text; }) };
   }
-  // Configured runtime.model remains reader (or explicit extractionModel).
+  // Benchmark preparation pins extractionModel independently of the scripted answer switch.
   // Only the scripted answer switches binding, leaving probes a real cold boundary.
   hostOptions.runtimeOptionsForRequest = () => ({ runtimeOptions: { model: binding, piResolvedModel: scripted.route({ model: binding }).model, piResolvedModels: scripted.models } });
   scripted.respondWith(binding, () => modules.pi.fauxAssistantMessage("Continuity preparation complete."));

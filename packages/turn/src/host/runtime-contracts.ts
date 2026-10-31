@@ -433,6 +433,10 @@ export interface RuntimeNativePreparedDispatch {
 
 
 export interface MonoRuntimeLike {
+  /** Sessionless extraction using this runtime's answer-route inference defaults.
+   * Set pinned only for an explicit extractor override distinct from the routed primary.
+   */
+  prepareContinuityUpkeep?(options: RuntimeRunOptions, settings?: { readonly pinned?: boolean; readonly requireRequestCap?: boolean; readonly defaults?: Pick<MonoRuntimeHostOptions, "resolvePiApiKey" | "resolveCustomPricing"> }): Promise<import("../contracts/continuity-upkeep.js").ContinuityUpkeepBinding | undefined>;
   prepareNativeDispatch?(systemPrompt: string, options: RuntimeRunOptions): Promise<RuntimeNativePreparedDispatch>;
   run(systemPrompt: string, options: RuntimeRunOptions): Promise<RuntimeResult>;
   configureTools?(next?: RuntimeToolOptions): void;

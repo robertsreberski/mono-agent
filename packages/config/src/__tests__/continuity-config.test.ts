@@ -63,3 +63,10 @@ it("reports upkeep model/unknown-key errors as repairable config errors with pat
   expect(() => resolve({ upkeep: { extractionModel: "not-a-reference" } })).toThrow(expect.objectContaining({ code: "invalid_model_reference", details: expect.objectContaining({ path: "runtime.session.continuity.upkeep.extractionModel" }) }));
   expect(() => resolve({ upkeep: { unexpected: true } })).toThrow(expect.objectContaining({ code: "invalid_json", details: expect.objectContaining({ path: "runtime.session.continuity.upkeep" }) }));
 });
+
+it.each([false, true])("labels the extraction default as conversation model (override=%s)", override => {
+  const config = resolve({ upkeep: { enabled: true, ...(override ? { extractionModel: "openai:gpt-4o-mini" } : {}) } });
+  const view = buildMonoAgentConfigView({ redacted: redactMonoAgentConfig(config), json: {} });
+  expect(view.flatMap(section => section.fields).find(field => field.id === "runtime.session.continuity.upkeep.extractionModel")?.value)
+    .toBe(override ? "openai:gpt-4o-mini" : "conversation model");
+});

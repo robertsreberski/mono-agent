@@ -14,7 +14,7 @@ import { configuredRoutesOnlyPiNative } from "./configured-runtime-routes.js";
 
 // Explicit ownership boundary: new runtime/prepared methods require disposition.
 const ownedRuntimeKeys = {
-  run: true, prepareNativeDispatch: true,
+  run: true, prepareNativeDispatch: true, prepareContinuityUpkeep: true,
   configureTools: true, syncSession: true, sessionTurnReconciliation: true,
   reconcileSessionTurn: true, recoverSession: true, refreshSession: true,
   // Deliberately omitted: switch dispatch does not need default-path salvage.
@@ -125,6 +125,7 @@ export function wrapOwnedConfiguredRuntime(
     }
   };
   return {
+    ...(runtime.prepareContinuityUpkeep === undefined ? {} : { prepareContinuityUpkeep: runtime.prepareContinuityUpkeep.bind(runtime) }),
     async run(systemPrompt, runOptions) {
       const secured = await secureOptions(runOptions);
       try { return await runtime.run(systemPrompt, secured.effectiveOptions); }

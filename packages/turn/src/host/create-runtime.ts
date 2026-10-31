@@ -1,8 +1,9 @@
+import { prepareContinuityUpkeep, upkeepInferenceOptions } from "../execution/pi/continuity-upkeep.js";
 import type { MonoRuntimeFallbackChainEntry, MonoRuntimeRetryPolicy, MonoRuntimeAttemptContext, MonoRuntimeAttemptResolution, MonoRuntimeAttemptResolver, CreateMonoRuntimeOptions } from "./runtime-options.js";
 import { assertParsedRuntimeModelReference, TurnHostError } from "./model-reference.js";
 import { bridgeOwnedForegroundProcesses } from "./owned-foreground-processes.js";
 import { createRuntime } from "#turn/runtime/create-runtime";
-import { createRouterRuntime } from "#turn/runtime/router";
+import { createRouterRuntime, mergeAttemptOptions } from "#turn/runtime/router";
 import { listRuntimeBridges } from "#turn/runtime/bridges";
 import { bridgeProcessJobsController } from "./process-jobs.js";
 import { monoSandboxImpl } from "./sandbox/implementation.js";
@@ -74,6 +75,30 @@ export function createMonoRuntime(options: CreateMonoRuntimeOptions = {}): MonoR
       });
 
   return {
+    async prepareContinuityUpkeep(runOptions, settings) {
+      assertParsedRuntimeModelReference(runOptions.model);
+      // Unpinned extraction must never disagree with the actual routed primary.
+      if (chain && !settings?.pinned && (chain[0]!.model.provider !== runOptions.model.provider || chain[0]!.model.model !== runOptions.model.model)) return undefined;
+      // Resolve only the selected route's first attempt; never enter the router.
+      const resolution = chain && protectedResolveAttempt
+        ? await protectedResolveAttempt({ model: runOptions.model, attemptIndex: 0, retryIndex: 0 }) : undefined;
+      try {
+        // A route with a resource lifetime cannot lend a closure beyond preflight.
+        // Custom hosts may implement this seam themselves; never speculate.
+        if (resolution?.cleanup) return undefined;
+        const defaults = {
+          ...settings?.defaults,
+          ...(hostOptions.resolvePiApiKey === undefined ? {} : { resolvePiApiKey: hostOptions.resolvePiApiKey }),
+          ...(hostOptions.resolveCustomPricing === undefined ? {} : { resolveCustomPricing: hostOptions.resolveCustomPricing }),
+        };
+        const inference = {
+          ...upkeepInferenceOptions(chain && protectedResolveAttempt ? mergeAttemptOptions(runOptions, resolution?.options) : runOptions),
+          model: runOptions.model, abortSignal: runOptions.abortSignal, messages: [],
+        };
+        return resolution?.runtime ? await resolution.runtime.prepareContinuityUpkeep?.(inference, { pinned: settings?.pinned === true, requireRequestCap: settings?.requireRequestCap === true })
+          : await prepareContinuityUpkeep({ ...defaults, ...inference }, settings?.requireRequestCap === true);
+      } finally { await resolution?.cleanup?.(); }
+    },
     async run(systemPrompt: string, runOptions: RuntimeRunOptions): Promise<RuntimeResult> {
       if (typeof systemPrompt !== "string" || systemPrompt.trim().length === 0) {
         throw new TurnHostError("invalid_runtime_options", "Runtime system prompt must be a non-empty string.");

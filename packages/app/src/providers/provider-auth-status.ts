@@ -39,7 +39,7 @@ export async function collectUsedProviderReferences(
   }));
   if (config.runtime.session?.continuity?.upkeep?.enabled) {
     const ref = config.runtime.session?.continuity.upkeep.extractionModel ?? config.runtime.model;
-    refs.push({ ref, usage: { kind: "continuity_upkeep", model: modelReferenceKey(ref), label: "Continuity upkeep" } });
+    refs.push({ ref, usage: { kind: "continuity_upkeep", model: modelReferenceKey(ref), label: config.runtime.session.continuity.upkeep.extractionModel ? "Continuity upkeep" : "Continuity upkeep default representative" } });
   }
   if (config.memory?.llm?.provider === "agent-host") {
     try {

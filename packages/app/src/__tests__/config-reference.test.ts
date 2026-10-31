@@ -829,3 +829,9 @@ it("publishes default-on recording and packs without paid upkeep or clearing set
   expect(findUnknownAppConfigPaths({ runtime: { session: { continuity: { maintenanceMode: "boundary" } } } }))
     .toContain("runtime.session.continuity.maintenanceMode");
 });
+
+it("describes the dynamic extraction default without adding a literal schema default", () => {
+  const field = allConfigReferenceFields().find(field => field.jsonPath === "runtime.session.continuity.upkeep.extractionModel")!;
+  expect(field.defaultLabel).toBe("conversation model");
+  expect(schemaForField(field)).not.toHaveProperty("default");
+});

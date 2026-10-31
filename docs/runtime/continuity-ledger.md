@@ -22,12 +22,49 @@ The first ledger slice is **off by default**. Deterministic cold packs and retai
 ```
 
 `upkeep.extractionModel` optionally names an explicit provider/model reference.
-Otherwise extraction uses configured `runtime.model`, not an answer-model switch.
-There is no fallback model. Configured upkeep binds `providers.piAuthPath`;
-explicit `runtimeOptions.resolvePiApiKey` and `resolveCustomPricing` override
-configuration defaults. An injected `options.runtime` may keep different private
-host resolvers: upkeep cannot introspect them. Embedders must also supply those
-resolvers through `runtimeOptions` to use the same credentials/pricing for upkeep.
+Otherwise extraction follows the turn's validated effective **primary conversation
+model**, captured before provider fallback. At an A→B cold boundary, B extracts
+before B's first answer. An embedding `options.model` or valid request override
+therefore also selects extraction; invalid declarations retain normal routing.
+There is no outgoing-model, configured-base or backup substitution.
+
+This can increase cost and consume the selected account's quota. Extraction uses
+a separate sessionless prompt, so answer-session/cache savings are not guaranteed.
+A private/local→cloud switch also sends extraction to that cloud model: up to
+about **128k tokens of retained evidence** may be sent (64k after bootstrap), a
+larger window than the cold answer's replay. Set `extractionModel` to pin the
+extractor; set it to the previous `runtime.model` to keep the old fixed behavior.
+Upkeep and ledger reading remain OFF by default; budgets are unchanged.
+
+The model/completion pair binds once after eligibility and before source selection
+or reservation. Model identity, credential presence and API/request-cap eligibility are checked
+first. Missing models/auth or unsupported required caps produce a local `model_unavailable` receipt and bounded degradation
+warning, without admission state, reservation, dispatch or `uncertain` poisoning.
+The answer keeps deterministic evidence; a later authorized turn can still extract.
+Actual dispatch failures retain conservative uncertain-dispatch suppression.
+
+Built-in runtimes use the selected model runtime's credential/pricing defaults,
+including routed first-attempt inference options, and rebuild local-provider
+endpoint options for the selection. Explicit static `runtimeOptions` resolvers
+retain their precedence, subject to the answer route's per-attempt options.
+`providers.piAuthPath` supplies configuration defaults. No arbitrary request
+MCP/tools/session authority is copied. Credential/pricing callbacks from
+`runtimeOptionsForRequest` are propagated as narrow inference-only overrides, with
+the same precedence as the answer route. Delegated route runtimes use their own
+auth/pricing defaults, never the outer runtime's defaults.
+Request-level `piResolvedModels`, `piResolvedModel` and `customProvider` bags are
+not propagated to the binding. A request override whose model/endpoint is
+available only through those request-level bags skips extraction cleanly with
+`model_unavailable`, never substituting another endpoint. Configure that endpoint
+statically or supply a custom binding to support extraction.
+Routed attempt-scoped
+provider bags are cleared and merged with the same helper as the answer router;
+an unpinned requested model that disagrees with the routed primary skips cleanly.
+Custom runtimes can implement
+`prepareContinuityUpkeep`; without it, configured/static inference defaults are
+used (private runtime credentials cannot be introspected). Resource-owning custom
+attempt resolvers with `cleanup` skip preflight rather than lend an unsafe closure;
+they need a custom binding implementation to support extraction.
 `ledgerEnabled: true` permits read-only reuse without
 buying upkeep; upkeep also enables reading. Both switches default false. Disabling
 upkeep stops extraction, not storage/purge. Disabling ledger reading restores the
@@ -39,7 +76,12 @@ deterministic renderer without changing additive storage or disabling owed purge
 Only the primary attempt of a continuous, non-isolated session at an actual cold
 native seed may buy upkeep, and only with an owned canonical-history transaction,
 continuity capture and packs enabled, source evidence and usable trigger headroom.
-True native resumes do not call it. Per-message sessions, isolated proactive turns,
+True native resumes do not call it. With `runtime.session.modelSwitch.enabled`,
+the native prepared route installs no cold hook: upkeep never runs there,
+including wakes. This change does not add purchases to that route. Durable-model
+inheritance for no-ID wakes applies only with modelSwitch; an ordinary non-Web
+wake without a model declaration uses the configured default (that wake's effective
+model). Web wakes carry their thread selection. Per-message sessions, isolated proactive turns,
 continuations and router detached attempts cannot buy upkeep. Unavailable canonical history and unsupported/custom
 stores fail closed. Continuations keep the deterministic, boundary-scoped fallback.
 Content-free `continuity_upkeep` receipts expose a skipped reason rather than
@@ -48,8 +90,17 @@ silently pretending that an excluded route performed maintenance.
 One promise is memoized per logical turn. Selection/completion run under the
 existing exclusive conversation hold, **outside** the owner transaction;
 publication reacquires that transaction and checks source visibility and parent
-identity. The completion can delay a cold first token by **up to 60 seconds**,
-in addition to the separately bounded scan/preflight below.
+identity. Preflight and completion share **one 60-second deadline**, including intervening
+selection and owner waits. Before inspect/claim and again immediately before
+reservation, at least **30 seconds must remain**. Otherwise upkeep skips locally
+with `unavailable`: no reservation, allowance consumption, operation/dispatch row
+or uncertain record. Scope/fence metadata from an earlier claim may remain, but
+does not suppress a later eligible turn. This floor avoids purchasing a large
+request with only a few seconds left; it does not restart the shared deadline.
+Stalled credential refresh is raced against this deadline even if the
+credential provider ignores cancellation; timeout skips locally without a
+reservation. Request cancellation during preflight reports `aborted`, not a
+missing model. Late bindings are never dispatched.
 Failures do not block the answer: retain the deterministic pack and report a gap.
 Here “retry” means router retries and backups: they never buy upkeep. A native
 `resume_error` that produces a cold seed within the primary attempt is an eligible
@@ -65,7 +116,8 @@ newer generation during the turn.
   metadata with a conservative estimate margin. Reported
   input usage including cached input is also checked before publication.
 - 4,096 output tokens **including reasoning**, with lowest supported effort.
-- One 60-second deadline, combined with caller cancellation.
+- One shared 60-second preflight/completion deadline, combined with caller cancellation;
+  at least 30 seconds must remain at admission.
 
 Nine supported adapters send an inclusive request cap (Anthropic, OpenAI
 completions/Responses, Azure Responses, Google, Vertex, Bedrock, Mistral and Pi):
@@ -84,6 +136,7 @@ one-visible-byte-per-token guard remains 4,096, including any visible thinking.
 Incomplete/invalid output is discarded, without advancing coverage. Reported
 usage above 4,096 emits `upkeep_output_overrun` and rejects publication.
 
+A switch to Codex can now select Codex extraction without any explicit override.
 **Codex is not a hard server/billing cap.** Hidden reasoning and already-started
 remote work can exceed the client guard; aborted calls may not report usage.
 Reported usage stays unknown when absent; a separate conservative
@@ -466,9 +519,10 @@ The separate upkeep counters remain nullable. Sessions without upkeep evidence
 retain the legacy totals shape, parsing and values. Legacy inference-only metrics and
 web consumers keep their existing meaning pending web reconciliation.
 
-Doctor and auth discovery include enabled upkeep's effective model: the explicit
-`extractionModel`, otherwise `runtime.model`. Disabled upkeep adds no credential
-requirements. Discovery is read-only and never purchases an extraction.
+Doctor and auth discovery inspect the explicit `extractionModel`, otherwise
+`runtime.model` as a **default representative**, not proof of every conversation's
+effective model or credentials. Disabled upkeep adds no credential requirements.
+Discovery is read-only and never purchases an extraction.
 
 **Bootstrap marker lifetime:** quota pressure, source retention, ledger eviction,
 restart and model changes do not clear it. Only explicit user reset/delete of the

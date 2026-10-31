@@ -53,9 +53,10 @@ try {
   lease = await acquireToolHistoryWriter({ root: join(root, "history"), artifactRoot: join(root, "artifacts", "tool-output"), continuityEnabled: true, persistenceCeilingMs: 5000 });
   const faux = fauxProvider({ api: "openai-responses", models: [{ id: "base" }, { id: "other" }], tokensPerSecond: 1_000_000 });
   const models = createModels(); models.setProvider(faux.provider);
-  const extraction = fauxProvider({ api: "openai-responses", models: [{ id: "base" }], tokensPerSecond: 1_000_000 });
+  const extraction = fauxProvider({ api: "openai-responses", models: [{ id: "other" }], tokensPerSecond: 1_000_000 });
   const extractionModels = createModels(); extractionModels.setProvider(extraction.provider);
-  extraction.setResponses([request => {
+  extraction.setResponses([(request, _options, _state, model) => {
+    assert.equal(model.id, "other");
     upkeepCalls++; const content = request.messages.at(-1).content;
     const prompt = typeof content === "string" ? content : content.filter(part => part.type === "text").map(part => part.text).join("\n");
     assert.ok(prompt.includes("BURIED-42")); assert.ok(prompt.includes("Actual correction: $725 replaces $500."));
@@ -112,7 +113,7 @@ try {
     assert.equal(upkeepCalls, 1);
     const recorded = await readRecordedRun({ artifactDir: join(root, "artifacts") }, cold.metadata.runId);
     assert.equal(recorded.upkeepAccounting.length, 1);
-    assert.equal(recorded.upkeepAccounting[0].model, "faux:base");
+    assert.equal(recorded.upkeepAccounting[0].model, "faux:other");
     assert.equal(recorded.upkeepAccounting[0].phase, "result");
     assert.equal(recorded.upkeepAccounting[0].usageIncluded, false);
     const upkeep = events.filter(event => event.type === "continuity_upkeep"); assert.equal(upkeep.length, 1);

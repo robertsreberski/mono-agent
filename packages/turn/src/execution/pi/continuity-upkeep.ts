@@ -4,22 +4,11 @@ import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import type { RuntimeRunOptions } from "../../host/runtime-contracts.js";
 import { resolvePiRuntimeModel } from "../../providers/pi/models.js";
 import { estimateCost } from "../../telemetry/cost.js";
+import { prepareDispatchAuth } from "./prepared-dispatch.js";
 import { buildRunModels } from "./run.js";
 
-export interface ContinuityUpkeepReceipt {
-  readonly operationId: string; readonly model: string; readonly api: string; readonly providerInvoked: boolean;
-  readonly capEnforcement: "request" | "stream_abort"; readonly status: "valid" | "invalid" | "skipped";
-  readonly outcomeDowngrades?: number; readonly decisionRelabels?: number;
-  readonly failure?: string; readonly reason: string; readonly elapsedMs: number;
-  /** Uncached input; cache counters are never folded into this value. */
-  readonly inputTokens: number | null; readonly outputTokens: number | null;
-  /** Optional only for legacy receipt compatibility; the producer always sets these. */
-  readonly cacheReadTokens?: number | null; readonly cacheWriteTokens?: number | null;
-  readonly estimatedInputTokens: number; readonly estimatedInputCostUsd: number | null;
-  readonly providerUsage?: { readonly input: number | null; readonly output: number | null; readonly cacheRead: number | null; readonly cacheWrite: number | null };
-  readonly costUsd: number | null; readonly visibleEstimate: number; readonly outputOverrun: boolean;
-}
-export interface ContinuityUpkeepResult { readonly text?: string; readonly receipt: ContinuityUpkeepReceipt }
+import type { ContinuityUpkeepBinding, ContinuityUpkeepReceipt, ContinuityUpkeepResult } from "../../contracts/continuity-upkeep.js";
+export type { ContinuityUpkeepReceipt, ContinuityUpkeepResult } from "../../contracts/continuity-upkeep.js";
 const REQUEST_CAPS: Record<string, readonly string[]> = {
   "anthropic-messages": ["max_tokens"], "openai-completions": ["max_completion_tokens", "max_tokens"],
   "openai-responses": ["max_output_tokens"], "azure-openai-responses": ["max_output_tokens"],
@@ -44,6 +33,48 @@ export function constrainUpkeepPayload(api: string, payload: any): void {
   // Some thinking adapters add a reasoning allowance to maxTokens. Replace the
   // EXISTING native field with the inclusive cap, never invent an unknown field.
   target[key] = 4096;
+}
+
+/** Only inference inputs, never tools, session state, or request authority. */
+export function upkeepInferenceOptions(options: Readonly<Record<string, unknown>> = {}): Record<string, unknown> {
+  return Object.fromEntries(["resolvePiApiKey", "resolveCustomPricing", "piResolvedModels", "piResolvedModel",
+    "customProvider", "customModel", "modelCapabilities", "isPrivateProvider", "context1MModels", "providerCheckAuthContext"]
+    .filter(key => options[key] !== undefined).map(key => [key, options[key]]));
+}
+
+function resolveUpkeepRuntime(options: RuntimeRunOptions) {
+  const resolved = (options.piResolvedModels as any)?.getModel(options.model.provider, options.model.model);
+  const pinned = options.piResolvedModel as any;
+  const runtime = resolved ? { model: resolved, apiKeys: new Map() }
+    : pinned?.id === options.model.model && pinned?.provider === options.model.provider ? { model: pinned, apiKeys: new Map() }
+    : resolvePiRuntimeModel(options.model, options);
+  const model = runtime.model;
+  const custom = options.customProvider as { id?: string } | undefined;
+  const mappedProvider = !resolved && runtime.apiKeys.has(model.provider) && custom?.id === options.model.provider
+    ? `${(options.toolContext as { runtimeBrand?: { providerModelPrefix?: string } } | undefined)?.runtimeBrand?.providerModelPrefix ?? DEFAULT_RUNTIME_BRAND.providerModelPrefix}-${custom.id}` : options.model.provider;
+  if (model.id !== options.model.model || model.provider !== mappedProvider) throw new Error("model_identity");
+  return runtime;
+}
+
+/** Model/credential presence only; no completion, fallback, or journal mutation. */
+export async function prepareContinuityUpkeep(options: RuntimeRunOptions, requireRequestCap = false): Promise<ContinuityUpkeepBinding | undefined> {
+  try {
+    options = { ...upkeepInferenceOptions(options), model: Object.freeze({ ...options.model }), abortSignal: AbortSignal.any([options.abortSignal, AbortSignal.timeout(60_000)]), messages: [] };
+    const runtime = resolveUpkeepRuntime(options);
+    const cap = upkeepCapEnforcement(runtime.model.api);
+    if (requireRequestCap && cap !== "request") return undefined;
+    const models = buildRunModels(runtime as any, options as any, []);
+    let stopWaiting: (() => void) | undefined;
+    try {
+      const cancelled = new Promise<undefined>(resolve => { stopWaiting = () => resolve(undefined); options.abortSignal.addEventListener("abort", stopWaiting, { once: true }); });
+      if (options.abortSignal.aborted || !await Promise.race([prepareDispatchAuth(models, runtime.model, options.abortSignal), cancelled])) return undefined;
+    } finally { if (stopWaiting) options.abortSignal.removeEventListener("abort", stopWaiting); }
+    // Retain the resolved collection, not credentials or arbitrary session authority.
+    const bound = { ...options, piResolvedModels: models };
+    return Object.freeze({ model: options.model.reference,
+      complete: (prompt: string, signal: AbortSignal, budget?: { readonly operationId: string; readonly inputTokens: 64000 | 128000; maxEntries?: number | undefined }) =>
+        completeContinuityUpkeep(prompt, { ...bound, abortSignal: AbortSignal.any([signal, bound.abortSignal]) }, requireRequestCap, budget) });
+  } catch { return undefined; }
 }
 
 /** One SSE completion, no session/tools/router/repair. Codex lacks a wire cap in
@@ -100,16 +131,8 @@ export async function completeContinuityUpkeep(prompt: string, options: RuntimeR
   } });
   try {
     if (budget?.maxEntries !== undefined && (!Number.isInteger(budget.maxEntries) || budget.maxEntries < 1 || budget.maxEntries > 24)) return result("skipped", "input_budget");
-    const resolved = (options.piResolvedModels as any)?.getModel(options.model.provider, options.model.model);
-    const pinned = options.piResolvedModel as any;
-    const runtime = resolved ? { model: resolved, apiKeys: new Map() }
-      : pinned?.id === options.model.model && pinned?.provider === options.model.provider ? { model: pinned, apiKeys: new Map() }
-      : resolvePiRuntimeModel(options.model, options);
+    const runtime = resolveUpkeepRuntime(options);
     model = runtime.model;
-    const custom = options.customProvider as { id?: string } | undefined;
-    const mappedProvider = !resolved && runtime.apiKeys.has(model.provider) && custom?.id === options.model.provider
-      ? `${(options.toolContext as { runtimeBrand?: { providerModelPrefix?: string } } | undefined)?.runtimeBrand?.providerModelPrefix ?? DEFAULT_RUNTIME_BRAND.providerModelPrefix}-${custom.id}` : options.model.provider;
-    if (model.id !== options.model.model || model.provider !== mappedProvider) return result("skipped", "model_identity");
     api = model.api; capEnforcement = upkeepCapEnforcement(api);
     if (capEnforcement === "stream_abort") prompt += `\nOUTPUT LIMIT OVERRIDE: at most ${Math.min(8, budget?.maxEntries ?? 8)} entries, each value at most 96 UTF-8 bytes, total serialized JSON at most 3072 UTF-8 bytes. covered must be the deduplicated array of exactly the span IDs cited in entries, e.g. ["s58","s0"] when those are your citations. Never use a count or numeric prefix. If there are no new facts beyond the prior entries, return {"entries":[],"covered":[]}; this is a valid analysis-only result. Cite only supplied span IDs. Identifier values must be exact bare identifiers copied from a cited span, with no entity name, label or explanatory prefix. The host records preserved coverage only for entry-cited spans; omitted facts remain uncovered. No reasoning summary.\n`;
     estimatedInputTokens = Math.ceil(Buffer.byteLength(prompt) / 2 * 1.25 + 1024);
@@ -154,5 +177,5 @@ export async function completeContinuityUpkeep(prompt: string, options: RuntimeR
     const text = response.content.filter((part: any) => part.type === "text").map((part: any) => part.text).join("");
     if (!text.trim()) return result("invalid", "empty_output");
     return result("valid", "completed", text);
-  } catch (error) { return result(providerInvoked ? "invalid" : "skipped", error instanceof Error && error.message === "cap_unsupported" ? "cap_unsupported" : stopped ? "output_aborted" : signal.aborted ? "aborted" : "unavailable"); }
+  } catch (error) { return result(providerInvoked ? "invalid" : "skipped", error instanceof Error && ["cap_unsupported", "model_identity"].includes(error.message) ? error.message : stopped ? "output_aborted" : signal.aborted ? "aborted" : "unavailable"); }
 }

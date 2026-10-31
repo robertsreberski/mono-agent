@@ -18,6 +18,18 @@ Catalog responsibility: Owns the Pi model-run loop, native journals/storage and 
 
 Implements the Pi runtime and its typed host integration. The `./host` entrypoint constructs a protected runtime behind host contracts. Pi-owned stdio children enforce optional mono-agent sandbox policy through an injectable `RuntimeSandbox` seam (a fail-closed passthrough by default; `@mono-agent/turn/host` injects the real implementation). Every route in a fallback chain is Pi-native and shares one contract; no route silently drops required capabilities.
 
+Continuity upkeep can preflight model identity and credential presence without a
+completion, then bind a sessionless no-fallback call. Configured hosts use the
+selected runtime's auth/pricing defaults and the answer router's first-attempt
+inference merge. Request credential/pricing callbacks propagate without tools or
+session authority; delegated runtimes do not inherit outer account defaults.
+Preflight and completion share one 60-second deadline. Unsupported required
+request caps skip before reservation. The named `ContinuityUpkeepBinding` type
+requires matching receipt model and budget operation identity.
+Codex has no wire output cap; selecting it via a conversation switch also selects
+that extraction behavior unless an override or `requireRequestCap` prevents it.
+See [ledger bounds](../../docs/runtime/continuity-ledger.md).
+
 ## Install / Usage
 
 ```bash
@@ -739,6 +751,7 @@ validateSessionTurn
 **`@mono-agent/turn/host`**
 
 ```text
+ContinuityUpkeepBinding
 ContinuityUpkeepReceipt
 ContinuityUpkeepResult
 completeContinuityUpkeep
@@ -749,6 +762,7 @@ discoverLocalProviders
 monoRuntimeSupportsLiveInput
 monoRuntimeSupportsMcpApps
 monoRuntimeSupportsSessionResume
+prepareContinuityUpkeep
 ```
 
 **`@mono-agent/turn/host/config`**
