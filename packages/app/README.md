@@ -290,8 +290,17 @@ Enabled jobs register roots at startup. `validate`, `doctor` and status describe
 the effective boundary rather than just the configured mode.
 
 Doctor and auth discovery include enabled continuity upkeep's explicit
-`extractionModel`, otherwise `runtime.model`. Disabled upkeep requires no extra
+`extractionModel`, otherwise `runtime.model` as a default representative, not every
+conversation's model. Disabled upkeep requires no extra
 credentials, and doctor never purchases an extraction.
+
+Enabled cold-boundary extraction follows the turn's effective primary model
+before fallback; `extractionModel` pins it. Switching private→cloud can send about
+128k retained evidence tokens and changes cost/quota exposure. Pin the previous
+`runtime.model` to preserve fixed extraction. Model/auth preflight skips cleanly
+before reservation. Native prepared modelSwitch routes still run no upkeep.
+See [ledger policy](../../docs/runtime/continuity-ledger.md), including Codex's
+lack of a wire cap and `requireRequestCap`.
 
 An enabled extraction override on another provider adds that provider to the
 provider-usage quota snapshot and refresh scope. The auth usage kind

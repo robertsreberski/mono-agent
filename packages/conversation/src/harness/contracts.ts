@@ -485,13 +485,20 @@ export interface ConversationHarnessRuntimeOptionsExtension {
   readonly settleCleanup?: () => void | Promise<void>;
 }
 
+export interface ContinuityUpkeepBinding {
+  readonly model: string;
+  readonly complete: (prompt: string, signal: AbortSignal, budget?: { readonly operationId: string; readonly inputTokens: 64000 | 128000; maxEntries?: number | undefined }) => Promise<ContinuityUpkeepResult>;
+}
+
 export interface ConversationHarnessToolHistoryOptions {
   /** Positive configured capture capability; omitted for the legacy/OFF path. */
   readonly continuityEnabled?: true;
   /** Default-on deterministic cold rebuild evidence; false retains recording/retrieval. */
   readonly packEnabled?: boolean;
   readonly ledgerEnabled?: boolean;
-  readonly upkeep?: ({ readonly enabled: true; readonly recorderNamespace: string } | { readonly enabled: false; readonly recorderNamespace?: string }) & { readonly model?: string; readonly complete: (prompt: string, signal: AbortSignal, budget?: { readonly operationId: string; readonly inputTokens: 64000 | 128000; maxEntries?: number | undefined }) => Promise<ContinuityUpkeepResult> };
+  readonly upkeep?: ({ readonly enabled: true; readonly recorderNamespace: string } | { readonly enabled: false; readonly recorderNamespace?: string }) & { readonly model?: string; readonly complete?: ContinuityUpkeepBinding["complete"];
+    /** Resolve once before selection/reservation. Undefined is a clean local skip. */
+    readonly bind?: (model: RuntimeModelReference, signal: AbortSignal) => Promise<ContinuityUpkeepBinding | undefined> };
   readonly mutateUpkeep?: (input: UpkeepMutation) => Promise<UpkeepAdmission | null>;
   readonly publishLedger?: (generation: LedgerGeneration, reservation?: UpkeepReservation) => Promise<void>;
   readonly conversationHistoryAvailable?: boolean;

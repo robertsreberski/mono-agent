@@ -512,8 +512,13 @@ legacy path. See [cold pack limits](/runtime/sessions-concurrency/#deterministic
 
 Ledger maintenance remains opt-in: `runtime.session.continuity.upkeep.enabled`
 buys one bounded extraction at eligible primary continuous cold boundaries, not
-on true resumes or detached attempts. `extractionModel` overrides configured
-`runtime.model`; `requireRequestCap` skips adapters without a server request cap.
+on true resumes or detached attempts. Extraction follows the turn's effective
+primary conversation model before fallback; `extractionModel` pins an override
+(set it to the previous `runtime.model` to retain fixed extraction).
+Private→cloud switches follow that selection and may send about 128k retained
+evidence tokens, with different costs/quota. Switches to Codex can use extraction
+without a wire cap; `requireRequestCap` skips adapters without a server request cap.
+The native prepared route with `modelSwitch.enabled` runs no upkeep.
 `ledgerEnabled` is read-only reuse without maintenance. All three booleans default
 false. See [ledger bounds and trust](/runtime/continuity-ledger/), including Codex
 hidden-reasoning/quota limits and up to 60 seconds of boundary latency.

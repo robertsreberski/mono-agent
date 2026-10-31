@@ -26,7 +26,7 @@ const cleanup: (() => Promise<unknown>)[] = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); vi.restoreAllMocks(); });
 const reply = (value: string) => fauxAssistantMessage([fauxText(value)]);
 const summary = JSON.stringify({ intent: ["Fictional objective"], constraints: [], decisions: [], completedWork: ["Fictional progress"], failures: [], openWork: [], nextActions: [], references: [] });
-async function fixture(publicConfig = false) {
+async function fixture(publicConfig = false, upkeep = false) {
   const root = await mkdtemp(join(tmpdir(), "app-native-switch-")); cleanup.push(() => rm(root, { recursive: true, force: true }));
   const identityPath = join(root, "IDENTITY.md"), nativeRoot = join(root, "native"); await writeFile(identityPath, "Fictional stable instructions");
   const faux = fauxProvider({ models: [{ id: "A", contextWindow: 1000000, maxTokens: 4096 }, { id: "B", contextWindow: 100000, maxTokens: 4096 }], tokensPerSecond: 1000000 });
@@ -34,7 +34,7 @@ async function fixture(publicConfig = false) {
   const originalTransport = faux.provider.streamSimple.bind(faux.provider);
   const transport = vi.spyOn(faux.provider, "streamSimple"), native = createManagedNativeJournalStorage({ sessionsRoot: nativeRoot });
   const config: MonoAgentConfig = {
-    runtime: { model: { provider: "faux", model: "A", reference: "faux:A" }, workspace: root, maxTurns: 4, session: { root: nativeRoot, mode: "continuous", idleTimeoutMs: 600000, rollover: "none" } },
+    runtime: { model: { provider: "faux", model: "A", reference: "faux:A" }, workspace: root, maxTurns: 4, session: { root: nativeRoot, mode: "continuous", idleTimeoutMs: 600000, rollover: "none", ...(upkeep ? { continuity: { enabled: true, upkeep: { enabled: true } } } : {}) } },
     providers: { piNative: {} }, context: { identityPath, selectedSkills: [] }, tools: { allowedTools: [], disallowedTools: [] },
     artifacts: { dir: join(root, "artifacts"), retention: { maxAgeDays: 365, maxCount: 50000, dryRun: false }, memoryRetention: { maxAgeDays: 7, maxCount: 5000, dryRun: false } },
     traceability: { registryDir: join(root, "trace") },
@@ -100,6 +100,18 @@ async function fixture(publicConfig = false) {
   };
   return { root, config, runtimes, runOptions, get native() { return activeNative; }, nativeRoot, faux, transport, originalTransport, request, record, make, makePublic, seed, dispose, runtimeFor, getStore: () => store!, getPreparation: () => preparation, getBindingRead: () => bindingRead, getDraining: () => draining };
 }
+
+it("never installs cold upkeep on the prepared model-switch route", async () => {
+  const f = await fixture(true, true), h = await f.make(true);
+  const preflight = vi.spyOn(f.runtimes[0]!, "prepareContinuityUpkeep");
+  f.faux.setResponses([reply("Fictional initial answer")]);
+  await h.respond(f.request("fictional-first"), { append: async () => {} });
+  f.faux.setResponses([reply(summary), reply("Fictional switched answer")]);
+  await h.respond(f.request("fictional-second", "faux:B"), { append: async () => {} });
+  expect(preflight).not.toHaveBeenCalled();
+  expect(f.runOptions.every(options => options.coldContext === undefined)).toBe(true);
+  expect(f.transport).toHaveBeenCalledTimes(3); // two answers plus native handoff, no extractor
+});
 
 it("no-ID native wakes inherit the current journal despite sticky model and context-window overrides", async () => {
   const f = await fixture(true); await f.seed(); const h = await f.make(true);

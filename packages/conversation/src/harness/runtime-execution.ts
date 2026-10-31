@@ -498,7 +498,7 @@ async function executeHarnessRuntime(preparation: PreparationControl | undefined
         && (continuityHistory.length > 0 || routing.boundaryReason !== undefined || options.toolHistory?.upkeep?.enabled || options.toolHistory?.ledgerEnabled) ? async (budget: { maxTokens: number; reason: string; primaryAttempt: boolean }) => {
         try {
           let toolIds: ReadonlySet<string> = new Set();
-          await routing.continuityPack!.prepare({ historyAvailable: continuityHistoryAvailable, sessionsEnabled, isolated: sessionIsolated,
+          await routing.continuityPack!.prepare({ effectiveModel, historyAvailable: continuityHistoryAvailable, sessionsEnabled, isolated: sessionIsolated,
             ownedStore: typeof routing.withContinuityOwner === "function", primaryAttempt: budget.primaryAttempt, maxTokens: budget.maxTokens,
             ...(routing.withContinuityOwner ? { withOwner: routing.withContinuityOwner } : {}) }, budget.reason, emitRuntimeEvent);
           if (continuityHistory.length === 0 && routing.boundaryReason === undefined) return { messages: [] };

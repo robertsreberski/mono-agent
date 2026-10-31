@@ -1,4 +1,4 @@
-import { completeContinuityUpkeep } from "@mono-agent/turn/host";
+import { prepareContinuityUpkeep } from "@mono-agent/turn/host";
 import { assertSupportedSessionsRoot } from "../conversation-admin/sessions-root.js";
 import type { ConversationHistoryTurnInspection } from "@mono-agent/conversation";
 import { persistedWebDeliveryId, serializeNativeSwitchHarness } from "./configured-native-switch.js";
@@ -363,12 +363,19 @@ async function createConfiguredConversationHarnessInternal(
     packEnabled: config.runtime.session.continuity?.packEnabled !== false,
     ledgerEnabled: config.runtime.session.continuity?.ledgerEnabled === true,
     ...(config.runtime.session.continuity?.upkeep?.enabled ? { upkeep: { enabled: true,
-      get model() { return (config.runtime.session.continuity?.upkeep?.extractionModel ?? config.runtime.model).reference; },
       recorderNamespace: recording.artifactDir,
-      complete: async (prompt: string, signal: AbortSignal, budget?: { operationId: string; inputTokens: 64000 | 128000; maxEntries?: number | undefined }) => {
-        const selected = config.runtime.session.continuity?.upkeep?.extractionModel ?? config.runtime.model;
-        return await completeContinuityUpkeep(prompt, { ...runtimeHostOptionsForConfig(config), ...mergeStaticRuntimeOptions(runtimeOptionsForLocalProvider(selected, config.providers?.local), configRuntimeFlags(config), options.runtimeOptions),
-          model: selected, abortSignal: signal, messages: [] }, config.runtime.session.continuity?.upkeep?.requireRequestCap === true, budget);
+      bind: async (effectiveModel: RuntimeModelReference, signal: AbortSignal) => {
+        const selected = config.runtime.session.continuity?.upkeep?.extractionModel ?? effectiveModel;
+        const owner = runtimeForSession(modelReferenceKey(selected));
+        const { customProvider: _provider, customModel: _model, modelCapabilities: _capabilities, isPrivateProvider: _private, ...sharedInference } = options.runtimeOptions ?? {};
+        const inference = { ...mergeStaticRuntimeOptions(runtimeOptionsForLocalProvider(selected, config.providers?.local),
+          modelReferenceKey(selected) === modelReferenceKey(model) ? options.runtimeOptions : sharedInference),
+          model: selected, abortSignal: signal, messages: [] };
+        const requireRequestCap = config.runtime.session.continuity?.upkeep?.requireRequestCap === true;
+        // A custom host without the optional seam keeps config/static inference
+        // defaults. Built-in and routed model runtimes supply their own defaults.
+        return owner.prepareContinuityUpkeep ? await owner.prepareContinuityUpkeep(inference, { defaults: runtimeHostOptionsForConfig(config), requireRequestCap })
+          : await prepareContinuityUpkeep({ ...runtimeHostOptionsForConfig(config), ...inference }, requireRequestCap);
       } } } : {}),
     conversationHistoryAvailable: conversationHistory !== undefined,
     artifactRoot: toolOutputArtifactRoot,

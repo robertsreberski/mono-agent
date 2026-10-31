@@ -508,7 +508,7 @@
                   "additionalProperties": false,
                   "properties": {
                     "enabled": {
-                      "description": "Opt-in boundary ledger upkeep. One no-tools completion on configured runtime.model or extractionModel, no fallback; up to 64k estimated selected input, 4k output including reasoning, 60 seconds before first token. Only primary owned continuous cold seeds. Disabled by default in P3a.",
+                      "description": "Opt-in boundary ledger upkeep. One no-tools completion on the turn's effective primary conversation model or explicit extractionModel, no fallback; up to 128k bootstrap / 64k incremental estimated input, 4k output including reasoning, 60 seconds before first token. Only primary owned continuous cold seeds. Disabled by default in P3a.",
                       "examples": [
                         true
                       ],
@@ -524,7 +524,7 @@
                       "default": false
                     },
                     "extractionModel": {
-                      "description": "Explicit upkeep model override; otherwise configured runtime.model, never the switched-to answer model. No fallback. Benchmark estimates use this actual model's prices.",
+                      "description": "Explicit upkeep model override; otherwise the turn's effective primary conversation model, captured before fallback. Switches also select extraction, including private-to-cloud evidence egress (up to about 128k retained tokens). Pin the previous runtime.model here to preserve fixed extraction. No fallback; budgets unchanged.",
                       "examples": [
                         "openai:gpt-4o-mini"
                       ],

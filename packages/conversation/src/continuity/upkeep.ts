@@ -14,7 +14,7 @@ const UPKEEP_READ_BUSY_CEILING_MS = 10_000;
 
 export interface UpkeepEligibility {
   readonly sessionsEnabled: boolean; readonly isolated: boolean; readonly ownedStore: boolean; readonly primaryAttempt: boolean;
-  readonly historyAvailable?: boolean; readonly maxTokens: number; readonly withOwner?: <T>(operation: (ownerToken: string) => Promise<T>) => Promise<T>;
+  readonly effectiveModel?: import("@mono-agent/turn/host/types").RuntimeModelReference; readonly historyAvailable?: boolean; readonly maxTokens: number; readonly withOwner?: <T>(operation: (ownerToken: string) => Promise<T>) => Promise<T>;
 }
 export function createLedgerSupplier(options: ConversationHarnessOptions, request: ConversationHarnessRequest, runId: string) {
   const history = options.toolHistory, config = history?.upkeep;
@@ -67,7 +67,14 @@ export function createLedgerSupplier(options: ConversationHarnessOptions, reques
         let accounting: ReturnType<typeof upkeepAccounting> | undefined;
         try {
           if (history!.reader.continuitySuppressed(scope) || !history!.publishLedger || !history!.mutateUpkeep || !eligibility.withOwner) throw new Error("unavailable");
-          if (!config.model) { localSkip = "model_unavailable"; return; }
+          // Bind before even claiming the admission fence: model/auth failures
+          // must not create uncertain journal state or consume an allowance.
+          let binding;
+          try {
+            binding = config.bind ? eligibility.effectiveModel && await config.bind(eligibility.effectiveModel, request.abortSignal)
+              : config.model && config.complete ? { model: config.model, complete: config.complete } : undefined;
+          } catch { /* model/credential preflight is a local, non-purchasing failure */ }
+          if (!binding) { gap = true; localSkip = "model_unavailable"; return; }
           const fence = await eligibility.withOwner(async ownerToken => {
             if (!ownerToken) throw new Error("owner_unavailable");
             const expected = await history!.mutateUpkeep!({ kind: "inspect", scope: { logicalId: scope.logicalConversationId, conversationId: scope.currentConversationId } });
@@ -86,7 +93,7 @@ export function createLedgerSupplier(options: ConversationHarnessOptions, reques
             await eligibility.withOwner(async () => { await history!.mutateUpkeep!({ kind: "oversized", fence, progress: selected.oversizedProgress!, operationId: randomUUID(), advance: selected.oversizedAdvance === true }); });
             gap = true;
           }
-          const admission = fitLedgerSelection(selected, scope, frozen, { maxTokens: eligibility.maxTokens, deltaEntries: config.model.startsWith("openai-codex:") ? 8 : 24 });
+          const admission = fitLedgerSelection(selected, scope, frozen, { maxTokens: eligibility.maxTokens, deltaEntries: binding.model.startsWith("openai-codex:") ? 8 : 24 });
           const { selection, projectedBytes } = admission; uncovered = selection.uncovered;
           emitSafe(emit, { type: "continuity_upkeep_selection", candidates: selected.spans.length, fitted: selection.spans.length, trimmed: admission.trimmedSpans, deltaCap: selection.maxEntries, projectedBytes, lineageBytes: admission.lineageBytes, projectionAttempts: admission.projectionAttempts, exclusions: admission.exclusions, elapsedMs: performance.now() - preflightStarted, scores: selected.ranked?.reduce<Record<string, number>>((counts, s) => { counts[s.score] = (counts[s.score] ?? 0) + 1; return counts; }, {}), reason: admission.reason ?? "fitted" });
           if (admission.reason) { gap = true; localSkip = admission.reason; return; }
@@ -103,7 +110,7 @@ export function createLedgerSupplier(options: ConversationHarnessOptions, reques
           reservation = { databaseId: fence.databaseId, logicalId: fence.logicalId, conversationId: fence.conversationId,
             incarnation: fence.incarnation, fence: fence.fence, ownerToken: fence.ownerToken,
             operationId: randomUUID(), runId, recorderNamespace: config.recorderNamespace ?? "",
-            model: config.model, manifest: selection.manifest, parent: frozen?.generation.id ?? null,
+            model: binding.model, manifest: selection.manifest, parent: frozen?.generation.id ?? null,
             budget: fence.bootstrap ? "bootstrap" : "incremental", payloadReserve: Math.max(0, projectedBytes - (frozen?.payloadBytes ?? 0)), ...(selection.progress ? { progress: selection.progress } : {}) };
           await eligibility.withOwner(async () => {
             if (selection.deadline !== undefined && performance.now() >= selection.deadline) throw new LedgerError("ledger_scan_capacity");
@@ -118,7 +125,7 @@ export function createLedgerSupplier(options: ConversationHarnessOptions, reques
           // owner's post-check succeed. Lost waiters never speculate or retry.
           accounting = upkeepAccounting(reservation);
           emitSafe(emit, { type: "continuity_upkeep_dispatch", accounting });
-          completion = await config.complete(selection.prompt, request.abortSignal, { operationId: reservation.operationId, inputTokens, maxEntries: selection.maxEntries });
+          completion = await binding.complete(selection.prompt, request.abortSignal, { operationId: reservation.operationId, inputTokens, maxEntries: selection.maxEntries });
           let generation: ReturnType<typeof validateLedgerOutput> | undefined, validationError: unknown;
           if (completion.receipt.status === "valid" && completion.text) {
             try {

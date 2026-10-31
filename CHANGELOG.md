@@ -11,6 +11,16 @@
   for pure abstentions and keep incomplete-arm rates null.
   Keep cold-rebuild descriptive; reject incompatible v1 registrations.
 
+- Let continuity-ledger extraction follow the turn's effective primary model
+  before fallback, while preserving the explicit `upkeep.extractionModel` pin.
+  Model/auth preflight skips without reserving or suppressing later upkeep.
+  Switching models changes extraction cost and account quota use; private-to-cloud
+  switches may send up to about 128k tokens of retained evidence to the new model.
+  Switching to Codex can select extraction without a wire cap unless
+  `requireRequestCap` is set. To keep the old fixed extractor, set
+  `extractionModel` to the previous `runtime.model`. Upkeep stays off by default,
+  with unchanged budgets and no upkeep on native prepared modelSwitch routes.
+
 - Add opt-in deterministic v2 continuity benchmark scoring and a read-only
   archived-answer re-score CLI; keep legacy scoring and study decisions unchanged.
 

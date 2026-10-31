@@ -22,12 +22,39 @@ The first ledger slice is **off by default**. Deterministic cold packs and retai
 ```
 
 `upkeep.extractionModel` optionally names an explicit provider/model reference.
-Otherwise extraction uses configured `runtime.model`, not an answer-model switch.
-There is no fallback model. Configured upkeep binds `providers.piAuthPath`;
-explicit `runtimeOptions.resolvePiApiKey` and `resolveCustomPricing` override
-configuration defaults. An injected `options.runtime` may keep different private
-host resolvers: upkeep cannot introspect them. Embedders must also supply those
-resolvers through `runtimeOptions` to use the same credentials/pricing for upkeep.
+Otherwise extraction follows the turn's validated effective **primary conversation
+model**, captured before provider fallback. At an A→B cold boundary, B extracts
+before B's first answer. An embedding `options.model` or valid request override
+therefore also selects extraction; invalid declarations retain normal routing.
+There is no outgoing-model, configured-base or backup substitution.
+
+This can increase cost and consume the selected account's quota. Extraction uses
+a separate sessionless prompt, so answer-session/cache savings are not guaranteed.
+A private/local→cloud switch also sends extraction to that cloud model: up to
+about **128k tokens of retained evidence** may be sent (64k after bootstrap), a
+larger window than the cold answer's replay. Set `extractionModel` to pin the
+extractor; set it to the previous `runtime.model` to keep the old fixed behavior.
+Upkeep and ledger reading remain OFF by default; budgets are unchanged.
+
+The model/completion pair binds once after eligibility and before source selection
+or reservation. Model identity and credential presence are checked first. Missing
+models/auth produce a local `model_unavailable` receipt and bounded degradation
+warning, without admission state, reservation, dispatch or `uncertain` poisoning.
+The answer keeps deterministic evidence; a later authorized turn can still extract.
+Actual dispatch failures retain conservative uncertain-dispatch suppression.
+
+Built-in runtimes use the selected model runtime's credential/pricing defaults,
+including routed first-attempt inference options, and rebuild local-provider
+endpoint options for the selection. Explicit static `runtimeOptions` resolvers
+retain their precedence, subject to the answer route's per-attempt options.
+`providers.piAuthPath` supplies configuration defaults. No arbitrary request
+MCP/tools/session authority is copied. Request-only credential/pricing overrides
+from `runtimeOptionsForRequest` are not propagated; supply those through static
+`runtimeOptions` or the selected model runtime instead. Custom runtimes can implement
+`prepareContinuityUpkeep`; without it, configured/static inference defaults are
+used (private runtime credentials cannot be introspected). Resource-owning custom
+attempt resolvers with `cleanup` skip preflight rather than lend an unsafe closure;
+they need a custom binding implementation to support extraction.
 `ledgerEnabled: true` permits read-only reuse without
 buying upkeep; upkeep also enables reading. Both switches default false. Disabling
 upkeep stops extraction, not storage/purge. Disabling ledger reading restores the
@@ -39,7 +66,12 @@ deterministic renderer without changing additive storage or disabling owed purge
 Only the primary attempt of a continuous, non-isolated session at an actual cold
 native seed may buy upkeep, and only with an owned canonical-history transaction,
 continuity capture and packs enabled, source evidence and usable trigger headroom.
-True native resumes do not call it. Per-message sessions, isolated proactive turns,
+True native resumes do not call it. With `runtime.session.modelSwitch.enabled`,
+the native prepared route installs no cold hook: upkeep never runs there,
+including wakes. This change does not add purchases to that route. Durable-model
+inheritance for no-ID wakes applies only with modelSwitch; an ordinary non-Web
+wake without a model declaration uses the configured default (that wake's effective
+model). Web wakes carry their thread selection. Per-message sessions, isolated proactive turns,
 continuations and router detached attempts cannot buy upkeep. Unavailable canonical history and unsupported/custom
 stores fail closed. Continuations keep the deterministic, boundary-scoped fallback.
 Content-free `continuity_upkeep` receipts expose a skipped reason rather than
@@ -84,6 +116,7 @@ one-visible-byte-per-token guard remains 4,096, including any visible thinking.
 Incomplete/invalid output is discarded, without advancing coverage. Reported
 usage above 4,096 emits `upkeep_output_overrun` and rejects publication.
 
+A switch to Codex can now select Codex extraction without any explicit override.
 **Codex is not a hard server/billing cap.** Hidden reasoning and already-started
 remote work can exceed the client guard; aborted calls may not report usage.
 Reported usage stays unknown when absent; a separate conservative
@@ -466,9 +499,10 @@ The separate upkeep counters remain nullable. Sessions without upkeep evidence
 retain the legacy totals shape, parsing and values. Legacy inference-only metrics and
 web consumers keep their existing meaning pending web reconciliation.
 
-Doctor and auth discovery include enabled upkeep's effective model: the explicit
-`extractionModel`, otherwise `runtime.model`. Disabled upkeep adds no credential
-requirements. Discovery is read-only and never purchases an extraction.
+Doctor and auth discovery inspect the explicit `extractionModel`, otherwise
+`runtime.model` as a **default representative**, not proof of every conversation's
+effective model or credentials. Disabled upkeep adds no credential requirements.
+Discovery is read-only and never purchases an extraction.
 
 **Bootstrap marker lifetime:** quota pressure, source retention, ledger eviction,
 restart and model changes do not clear it. Only explicit user reset/delete of the

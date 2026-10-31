@@ -213,7 +213,7 @@ export function buildRuntimeSection(input: BuildMonoAgentConfigViewInput): Confi
       toField({ id: "runtime.session.continuity.upkeep.requireRequestCap", label: "Require server output cap",
         value: session.continuity?.upkeep?.requireRequestCap === true ? "yes" : "no", jsonPresent: json.runtime?.session?.continuity?.upkeep?.requireRequestCap !== undefined }),
       toField({ id: "runtime.session.continuity.upkeep.extractionModel", label: "Ledger extraction model",
-        value: session.continuity?.upkeep?.extractionModel?.reference ?? runtime.model.reference, jsonPresent: json.runtime?.session?.continuity?.upkeep?.extractionModel !== undefined }),
+        value: session.continuity?.upkeep?.extractionModel?.reference ?? "conversation model", jsonPresent: json.runtime?.session?.continuity?.upkeep?.extractionModel !== undefined }),
       ...(session.modelSwitch?.enabled ? [
         toField({ id: "runtime.session.modelSwitch.enabled", label: "Web model switching", value: "yes",
           jsonPresent: json.runtime?.session?.modelSwitch?.enabled !== undefined }),

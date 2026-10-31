@@ -44,6 +44,10 @@ file contributes an empty JSON source. Duplicate object keys are returned as
 `duplicateKeyPaths` by `readMonoAgentConfigJson`; loading warns and retains JSON's
 last-value-wins result. App's validate/doctor treats these as errors.
 
+Continuity upkeep and ledger reading remain opt-in. The extraction model view
+shows `conversation model` unless `runtime.session.continuity.upkeep.extractionModel`
+pins an override; no configuration rewrite or migration is required.
+
 ### Computer use
 
 `tools.computerUse` is absent by default. Set `{ "backend": "cua-driver" }`

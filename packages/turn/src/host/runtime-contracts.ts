@@ -433,6 +433,8 @@ export interface RuntimeNativePreparedDispatch {
 
 
 export interface MonoRuntimeLike {
+  /** Sessionless, no-fallback extraction using this runtime's credential/pricing defaults. */
+  prepareContinuityUpkeep?(options: RuntimeRunOptions, settings?: { readonly requireRequestCap?: boolean; readonly defaults?: Pick<MonoRuntimeHostOptions, "resolvePiApiKey" | "resolveCustomPricing"> }): Promise<import("../contracts/continuity-upkeep.js").ContinuityUpkeepBinding | undefined>;
   prepareNativeDispatch?(systemPrompt: string, options: RuntimeRunOptions): Promise<RuntimeNativePreparedDispatch>;
   run(systemPrompt: string, options: RuntimeRunOptions): Promise<RuntimeResult>;
   configureTools?(next?: RuntimeToolOptions): void;

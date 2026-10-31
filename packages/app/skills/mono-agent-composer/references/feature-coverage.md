@@ -287,7 +287,14 @@ exhaustion reports degraded continuity. Reset/clear-sessions remove this evidenc
 
 Explicit `runtime.session.continuity.upkeep.enabled` and `ledgerEnabled` remain
 OFF by default. Upkeep adds one bounded primary cold-boundary extraction, not
-per-message recall. It scans/ranks retained evidence, greedily fits cited-only
+per-message recall. It follows the effective primary conversation model before
+fallback unless `upkeep.extractionModel` pins it (pin the previous `runtime.model`
+to retain fixed extraction). Private→cloud switches may send about 128k retained
+evidence tokens; costs/quota follow the selection. Codex has no wire cap unless
+`requireRequestCap` skips it. Native prepared modelSwitch routes run no upkeep;
+ordinary non-Web wakes use the configured default, not durable model inheritance.
+Model/auth preflight skips before reservation without poisoning later turns.
+It scans/ranks retained evidence, greedily fits cited-only
 metadata and shares a two-offer ceiling across analysis/reconstruction. Scan
 exhaustion makes zero calls. Both switches off keep deterministic packs unchanged.
 Ledger interpretation is not owner authority or proof of semantic fulfilment.

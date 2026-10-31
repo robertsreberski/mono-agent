@@ -131,6 +131,65 @@ function harness(f: Awaited<ReturnType<typeof fixture>>, mutation = f.mutate, ow
     { sessionsEnabled: true, isolated: false, ownedStore: true, primaryAttempt: true, maxTokens: 8000, withOwner: owner, ...extra }, reason, e => events.push(e)) };
 }
 
+it.each(["missing", "throws"])("preflights %s bindings without admission poisoning, then permits a later authorized turn", async failure => {
+  const f = await fixture(), mutation = vi.fn(f.mutate);
+  let authorized = false;
+  const selected = { provider: "fictional", model: "incoming", reference: "fictional:incoming" };
+  const complete = vi.fn(async (prompt: string, _signal: AbortSignal, budget: any) => {
+    const span = prompt.split("\n").map(line => { try { return JSON.parse(line); } catch { return {}; } }).find(row => row.id);
+    return { text: JSON.stringify({ entries: [{ kind: "constraint", value: "Require confirmation.", status: "active", sources: [span.id] }], covered: [span.id] }),
+      receipt: receipt({ operationId: budget.operationId, model: selected.reference } as UpkeepReservation) };
+  });
+  const bind = vi.fn(async () => { if (!authorized) { if (failure === "throws") throw new Error("fictional credential denial"); return undefined; } return { model: selected.reference, complete }; });
+  const options = { toolHistory: { continuityEnabled: true, reader: f.reader, writer: f.writer, logicalConversationId: (id: string) => id,
+    upkeep: { enabled: true, recorderNamespace: resolve("/origin-recorder"), bind }, mutateUpkeep: mutation,
+    publishLedger: f.writer.publishLedger.bind(f.writer) } } as unknown as ConversationHarnessOptions;
+  const events: any[] = [], eligibility: UpkeepEligibility = { effectiveModel: selected, sessionsEnabled: true, isolated: false, ownedStore: true, primaryAttempt: true, maxTokens: 8000,
+    withOwner: async op => await op("owner") };
+  const supplier = (runId: string) => createLedgerSupplier(options, { conversationId: "fictional", userMessage: "Current.", abortSignal: new AbortController().signal }, runId);
+  const first = supplier("denied"); await first.prepare(eligibility, "model_change", e => events.push(e));
+  expect(first.gap).toBe(true); expect(bind).toHaveBeenCalledOnce(); expect(mutation).not.toHaveBeenCalled(); expect(complete).not.toHaveBeenCalled();
+  expect(f.db.prepare("SELECT name FROM sqlite_master WHERE name LIKE 'continuity_upkeep_%'").all()).toEqual([]);
+  expect(events).toContainEqual(expect.objectContaining({ type: "continuity_upkeep", status: "skipped", reason: "model_unavailable", providerInvoked: false }));
+  expect(events).toContainEqual(expect.objectContaining({ type: "runtime_warning", warning_kind: "continuity_upkeep_degraded", error_code: "model_unavailable" }));
+  authorized = true;
+  const later = supplier("authorized");
+  await Promise.all([later.prepare(eligibility, "model_change", e => events.push(e)), later.prepare(eligibility, "model_change", e => events.push(e))]);
+  expect(bind).toHaveBeenCalledTimes(2); expect(complete).toHaveBeenCalledOnce();
+  const row = f.db.prepare("SELECT reservation,outcome,state FROM continuity_upkeep_operations").get() as any;
+  expect(JSON.parse(row.reservation)).toMatchObject({ model: selected.reference, budget: "bootstrap" });
+  expect(JSON.parse(row.outcome)).toMatchObject({ model: selected.reference, status: "valid" });
+  expect(row.state).toBe("terminal");
+  expect(f.db.prepare("SELECT id FROM continuity_ledger").all()).toHaveLength(1);
+});
+
+it("keeps interleaved operation bindings, reservations and receipts isolated", async () => {
+  const first = await fixture(), second = await fixture();
+  let release!: () => void;
+  const pending = new Promise<void>(resolve => { release = resolve; });
+  const bind = vi.fn(async (model: { reference: string }) => {
+    if (model.reference === "fictional:first") await pending; else release();
+    return { model: model.reference, complete: async (prompt: string, _signal: AbortSignal, budget: any) => {
+      const span = prompt.split("\n").map(line => { try { return JSON.parse(line); } catch { return {}; } }).find(row => row.id);
+      return { text: JSON.stringify({ entries: [{ kind: "constraint", value: "Require confirmation.", status: "active", sources: [span.id] }], covered: [span.id] }),
+        receipt: receipt({ operationId: budget.operationId, model: model.reference } as UpkeepReservation) };
+    } };
+  });
+  await Promise.all([first, second].map(async (f, index) => {
+    const model = { provider: "fictional", model: index ? "second" : "first", reference: index ? "fictional:second" : "fictional:first" };
+    const options = { toolHistory: { continuityEnabled: true, reader: f.reader, writer: f.writer, logicalConversationId: (id: string) => id,
+      upkeep: { enabled: true, recorderNamespace: resolve("/origin-recorder"), bind }, mutateUpkeep: f.mutate,
+      publishLedger: f.writer.publishLedger.bind(f.writer) } } as unknown as ConversationHarnessOptions;
+    const events: any[] = [];
+    await createLedgerSupplier(options, { conversationId: "fictional", userMessage: "Current.", abortSignal: new AbortController().signal }, "origin-run").prepare(
+      { effectiveModel: model, sessionsEnabled: true, isolated: false, ownedStore: true, primaryAttempt: true, maxTokens: 8000, withOwner: async op => await op("owner") }, "model_change", e => events.push(e));
+    const row = f.db.prepare("SELECT reservation,outcome FROM continuity_upkeep_operations").get() as any;
+    expect(JSON.parse(row.reservation).model).toBe(model.reference); expect(JSON.parse(row.outcome).model).toBe(model.reference);
+    expect(events).toContainEqual(expect.objectContaining({ type: "continuity_upkeep", model: model.reference, status: "valid", generationId: expect.any(String) }));
+  }));
+  expect(bind).toHaveBeenCalledTimes(2);
+});
+
 it("keeps disabled upkeep entirely outside durable admission", async () => {
   const f = await fixture(), complete = vi.fn(), mutation = vi.fn(f.mutate);
   const options = { toolHistory: { continuityEnabled: true, reader: f.reader, writer: f.writer, logicalConversationId: (id: string) => id,
