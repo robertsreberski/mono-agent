@@ -223,7 +223,7 @@ describe("recorded audio through actual Chat, Composer, ordinary uploads and sub
         act(() => runtime.thread.composer.setQuote({ messageId: "garden-user", text: "small balcony garden" }));
         const checkLayout = () => {
           expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width);
-          for (const control of view.container.querySelectorAll<HTMLElement>(".composer-toolbar button, .recording-draft button")) {
+          for (const control of view.container.querySelectorAll<HTMLElement>(".composer-toolbar button, .recording-draft button, .capture-pill button")) {
             const rect = control.getBoundingClientRect(); if (!rect.width) continue;
             expect(rect.left).toBeGreaterThanOrEqual(0); expect(rect.right).toBeLessThanOrEqual(width);
             expect(control.scrollWidth).toBeLessThanOrEqual(control.clientWidth + 1);
@@ -244,6 +244,34 @@ describe("recorded audio through actual Chat, Composer, ordinary uploads and sub
         await userEvent.click(screen.getByRole("timer"));
         await waitFor(() => expect([...view.container.querySelectorAll<HTMLElement>(".capture-meter i")].some(bar => parseFloat(bar.style.height) > 3)).toBe(true));
         await waitFor(() => expect(visualFixture.samples).toBeGreaterThanOrEqual(16));
+        const captureRow = view.container.querySelector<HTMLElement>(".capture-pill")!;
+        const recordingStatus = within(captureRow).getByRole("status");
+        expect(recordingStatus).toHaveTextContent(/^Recording$/);
+        expect(recordingStatus).toHaveClass("sr-only");
+        expect(recordingStatus.getBoundingClientRect().width).toBeLessThanOrEqual(1);
+        expect(getComputedStyle(captureRow.querySelector(".voice-time")!).fontSize).toBe("10px");
+        const captureSurface = getComputedStyle(captureRow, "::before");
+        const fileChip = view.container.querySelector(".attachment-chip")!;
+        expect(parseFloat(captureSurface.height)).toBe(fileChip.getBoundingClientRect().height);
+        expect(captureSurface.borderRadius).toBe(getComputedStyle(fileChip).borderRadius);
+        expect(captureSurface.backgroundColor).toBe(getComputedStyle(fileChip).backgroundColor);
+        const beforeStop = {
+          row: captureRow.getBoundingClientRect(),
+          face: captureRow.querySelector(".voice-action-face")!.getBoundingClientRect(),
+          discard: within(captureRow).getByRole("button", { name: "Cancel recording" }).getBoundingClientRect(),
+          meter: captureRow.querySelector(".capture-meter")!.getBoundingClientRect(),
+        };
+        const liveBarStyle = getComputedStyle(captureRow.querySelector(".capture-meter i")!);
+        const barStyle = {
+          backgroundColor: liveBarStyle.backgroundColor, maxWidth: liveBarStyle.maxWidth, opacity: liveBarStyle.opacity,
+        };
+        const stopBox = within(captureRow).getByRole("button", { name: "Stop recording" }).getBoundingClientRect();
+        expect(stopBox.right).toBeLessThanOrEqual(beforeStop.discard.left);
+        for (const box of [stopBox, beforeStop.discard]) {
+          expect(box.width).toBeGreaterThanOrEqual(width <= 700 ? 44 : 32);
+          expect(box.height).toBeGreaterThanOrEqual(width <= 700 ? 44 : 32);
+        }
+        expect(beforeStop.face.width).toBe(26);
         checkLayout(); await capture("02-recording-with-draft");
         await stop();
         expect(api.submit).not.toHaveBeenCalled(); expect(api.transcribe).not.toHaveBeenCalled();
@@ -251,6 +279,24 @@ describe("recorded audio through actual Chat, Composer, ordinary uploads and sub
         await waitFor(() => expect(screen.getByRole("button", { name: "Play voice note, 0:07" })).toBeVisible());
         expect([...view.container.querySelectorAll<HTMLElement>(".voice-waveform i")].some(bar => parseFloat(bar.style.height) > 3)).toBe(true);
         const player = view.container.querySelector(".voice-note-player")!;
+        const afterStop = {
+          row: player.getBoundingClientRect(),
+          face: player.querySelector(".voice-action-face")!.getBoundingClientRect(),
+          discard: within(player as HTMLElement).getByRole("button", { name: "Remove file" }).getBoundingClientRect(),
+          meter: player.querySelector(".voice-waveform")!.getBoundingClientRect(),
+        };
+        // Capture occupies the very same attachment-flow slot, even beside a file.
+        for (const key of ["row", "face", "discard", "meter"] as const) {
+          expect(Math.abs(afterStop[key].left - beforeStop[key].left)).toBeLessThanOrEqual(1);
+          expect(Math.abs(afterStop[key].top - beforeStop[key].top)).toBeLessThanOrEqual(1);
+          expect(afterStop[key].height).toBe(beforeStop[key].height);
+        }
+        expect(Math.abs(afterStop.row.width - beforeStop.row.width)).toBeLessThanOrEqual(1);
+        expect(Math.abs(afterStop.meter.width - beforeStop.meter.width)).toBeLessThanOrEqual(1);
+        const decodedBar = player.querySelector(".voice-waveform i")!;
+        for (const property of ["backgroundColor", "maxWidth", "opacity"] as const) {
+          expect(barStyle[property]).toBe(getComputedStyle(decodedBar)[property]);
+        }
         const chip = view.container.querySelector(".attachment-chip")!;
         const surface = getComputedStyle(player, "::before");
         expect(parseFloat(surface.height)).toBe(chip.getBoundingClientRect().height);
@@ -348,6 +394,26 @@ describe("recorded audio through actual Chat, Composer, ordinary uploads and sub
     expect(document.querySelector<HTMLElement>(".capture-meter i")!.style.height).toBe("19.15px");
     await userEvent.click(screen.getByRole("button", { name: "Cancel recording" }));
     expect(visualFixture.composerRenders).toBeGreaterThan(renders); // The counter observes real context-driven renders.
+  });
+  it("keeps capture controls visible when earlier attachments fill the chip scroller", async () => {
+    await page.viewport(320, 740); seed(created); const view = mount();
+    await waitFor(() => expect(store.detail?.thread.id).toBe(created.id));
+    for (let index = 0; index < 4; index++) {
+      await act(async () => runtime.thread.composer.addAttachment(new File(["notes"], `a-long-garden-attachment-${index}.txt`, { type: "text/plain" })));
+    }
+    await record();
+    const row = view.container.querySelector<HTMLElement>(".capture-pill")!;
+    const viewport = row.closest<HTMLElement>(".composer-attachments")!;
+    expect(viewport.scrollHeight).toBeGreaterThan(viewport.clientHeight);
+    const bounds = viewport.getBoundingClientRect();
+    for (const button of within(row).getAllByRole("button")) {
+      const rect = button.getBoundingClientRect();
+      expect(rect.top).toBeGreaterThanOrEqual(bounds.top);
+      expect(rect.bottom).toBeLessThanOrEqual(bounds.bottom);
+      expect(rect.width).toBeGreaterThanOrEqual(44); expect(rect.height).toBeGreaterThanOrEqual(44);
+    }
+    await userEvent.click(screen.getByRole("button", { name: "Cancel recording" }));
+    expect(row).not.toBeInTheDocument();
   });
   it("opens the current composer's recording menu through trusted native clicks", async () => {
     seed(created); mount();

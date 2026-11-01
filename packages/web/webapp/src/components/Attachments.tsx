@@ -119,12 +119,13 @@ function AttachmentChip({ removable }: { readonly removable: boolean }) {
   return chip;
 }
 
-export function ComposerAttachments() {
+export function ComposerAttachments({ children }: { readonly children?: ReactNode }) {
   return (
     <div className="composer-attachments">
       <ComposerPrimitive.Attachments>
         {() => <AttachmentChip removable />}
       </ComposerPrimitive.Attachments>
+      {children}
     </div>
   );
 }

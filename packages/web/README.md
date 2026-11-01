@@ -193,7 +193,9 @@ policy; after Send, audio is retained as a normal committed conversation
 attachment, alongside transcript text. It is not persisted in browser storage.
 There are no server-side recording markers, transcript caches or preparation jobs.
 The composer shows a compact recording pill with rolling microphone-amplitude
-history, elapsed time, Stop and Discard. Reduced-motion preferences keep the meter
+history, elapsed time, leading Stop and trailing Discard, aligned in place with
+the finished voice note. Recording status remains available to assistive tech
+without a visible label. Reduced-motion preferences keep the meter
 static. A compact, single-row voice note replaces native audio controls in drafts
 and sent messages: Play / Pause, keyboard- and pointer-seekable waveform, duration,
 and the usual remove, upload retry or download actions. Local files decode eagerly
