@@ -200,10 +200,19 @@ static. A compact, single-row voice note replaces native audio controls in draft
 and sent messages: Play / Pause, keyboard- and pointer-seekable waveform, duration,
 and the usual remove, upload retry or download actions. Local files decode eagerly
 without a network request. Remote waveforms decode only after a short visible
-dwell, through a bounded queue; leaving view cancels pending work and Data Saver
-skips automatic remote previews. Only compact peaks/duration are cached, so Play
+dwell, through a consumer-cancellable queue; leaving view cancels pending work
+and Data Saver skips automatic remote previews. Only compact peaks/duration and
+skip metadata are cached, so Play
 may fetch remote audio again (concurrent preview/Play share live work, with
-independent cancellation). Optional peak decoding accepts at most 2 MiB at 3kHz
+independent cancellation). Preview-only transfers stop at 2 MiB, checking both
+Content-Length and streamed bytes. An immutable oversize marker in the bounded
+32-entry compact cache prevents re-visibility from refetching while retained.
+Play upgrades shared work to the
+10 MiB playback limit (or retries if the preview already hit its cap); cancelling
+Play restores the smaller budget for remaining preview consumers. Queue wait has
+no deadline: the 30-second load/decode deadline starts after acquiring the slot,
+while queued work is cancelled only when all its consumers leave.
+Optional peak decoding accepts at most 2 MiB at 3kHz
 (about 8 minutes at 32 kbit/s or 4 minutes at 64 kbit/s). A single fetch/decode
 queue and native decoder lease serialize previews, including a lease retained
 until a timed-out native decoder settles. Larger files keep neutral bars but

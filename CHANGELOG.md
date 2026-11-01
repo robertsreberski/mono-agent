@@ -6,8 +6,9 @@
   waveforms to the web console, with transcript captions beneath sent audio and
   accessible playback controls. Keep Stop and playback controls aligned as a
   recording becomes an attachment. Keep multi-minute waveform previews useful
-  with bounded decoding and recording controls visible while scrolling files,
-  without changing preparation or stored text.
+  with bounded preview transfers and recording controls visible while scrolling
+  files; do not expire Play while queued. Keep preparation and stored text
+  unchanged.
 
 - Give never-offered, host-attested owner paragraphs a bounded first claim on
   continuity extraction space once a prior ledger exists, under unchanged

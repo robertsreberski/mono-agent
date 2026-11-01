@@ -9,6 +9,9 @@ import { VOICE_MAX_BYTES } from "./voice-recorder";
 export const WAVEFORM_MAX_BYTES = 2 * 1024 * 1024;
 const PEAK_SAMPLE_RATE = 3000;
 
+class PreviewTooLarge extends Error {}
+const TOO_LARGE = "too-large";
+
 export interface Waveform { readonly peaks: readonly number[]; readonly duration: number; }
 /** Max absolute amplitude in each bucket, across every channel (including tails). */
 export function extractPeaks(channels: readonly Float32Array[], count = 48): number[] {
@@ -24,14 +27,14 @@ export function extractPeaks(channels: readonly Float32Array[], count = 48): num
 
 /** One bounded loader per application. A factory also lets tests use cold caches. */
 export function createAudioLoader() {
-  // Only compact peaks are retained, never blobs/URLs/decoded PCM. Bounded LRU.
-  const cache = new Map<string, Waveform | null>();
+  // Only compact peaks/failure/oversize metadata, never blobs/URLs/PCM. Bounded LRU.
+  const cache = new Map<string, Waveform | null | typeof TOO_LARGE>();
   // Serialize ordinary fetch/decode work so concurrent previews wait, not skip.
   let active = 0;
   let decoders = 0;
   const queue: (() => void)[] = [];
   type Loaded = { blob: Blob; waveform?: Waveform };
-  type Pending = { controller: AbortController; users: number; promise: Promise<Loaded> };
+  type Pending = { controller: AbortController; users: number; players: number; promise: Promise<Loaded | undefined> };
   // Only live consumers retain this temporary blob; settled entries are removed.
   const pending = new Map<string, Pending>();
   function release() { const next = queue.shift(); if (next) next(); else active--; }
@@ -47,23 +50,28 @@ export function createAudioLoader() {
     if (signal.aborted) { release(); signal.throwIfAborted(); }
     return release;
   }
-  function remember(id: string, value: Waveform | null) {
+  function remember(id: string, value: Waveform | null | typeof TOO_LARGE) {
     cache.delete(id); cache.set(id, value);
     if (cache.size > 32) cache.delete(cache.keys().next().value!);
   }
   function cachedWaveform(id: string): Waveform | undefined {
     const value = cache.get(id);
     if (value !== undefined) { cache.delete(id); cache.set(id, value); }
-    return value ?? undefined;
+    return value === TOO_LARGE ? undefined : value ?? undefined;
   }
   async function bounded<T>(signal: AbortSignal, work: (signal: AbortSignal) => Promise<T>): Promise<T> {
     const controller = new AbortController();
     const abort = () => controller.abort(signal.reason);
     signal.addEventListener("abort", abort, { once: true });
     if (signal.aborted) abort();
-    const timeout = setTimeout(() => controller.abort(), 30_000);
+    let timeout: ReturnType<typeof setTimeout> | undefined;
     let done: (() => void) | undefined;
-    try { done = await slot(controller.signal); return await work(controller.signal); }
+    try {
+      // Queue wait is consumer-cancellable, never charged to active work's budget.
+      done = await slot(controller.signal);
+      timeout = setTimeout(() => controller.abort(), 30_000);
+      return await work(controller.signal);
+    }
     finally { done?.(); clearTimeout(timeout); signal.removeEventListener("abort", abort); }
   }
   async function decodeCached(id: string, blob: Blob, signal: AbortSignal): Promise<Waveform | undefined> {
@@ -76,7 +84,7 @@ export function createAudioLoader() {
     return result.waveform;
   }
   async function decode(blob: Blob, signal: AbortSignal): Promise<{ waveform?: Waveform; cacheable: boolean }> {
-    // Deliberate budget skips are retryable, not negatively cached codec failures.
+    // Immutable size skips are remembered by sharedLoad; saturation stays retryable.
     if (blob.size > WAVEFORM_MAX_BYTES || decoders >= 1) return { cacheable: false };
     if (typeof OfflineAudioContext === "undefined" && typeof AudioContext === "undefined") return { cacheable: true };
     let context: AudioContext | OfflineAudioContext | undefined;
@@ -105,24 +113,34 @@ export function createAudioLoader() {
       try { if (context && "close" in context) void context.close().catch(() => undefined); } catch { /* already closed */ }
     }
   }
-  function sharedLoad(id: string, file: File | undefined, type: string, signal: AbortSignal): Promise<Loaded> {
+  function sharedLoad(id: string, file: File | undefined, type: string, signal: AbortSignal, play = false): Promise<Loaded | undefined> {
     signal.throwIfAborted();
     let task = pending.get(id);
     if (!task) {
       const controller = new AbortController();
-      const entry: Pending = { controller, users: 0, promise: bounded(controller.signal, async signal => {
-        const blob = await audioBlob(id, file, type, signal);
-        signal.throwIfAborted(); const waveform = await decodeCached(id, blob, signal);
-        signal.throwIfAborted(); return { blob, ...(waveform ? { waveform } : {}) };
+      const entry: Pending = { controller, users: 0, players: 0, promise: bounded(controller.signal, async signal => {
+        try {
+          // A live Play subscriber upgrades queued/in-flight previews. If it leaves,
+          // the remaining preview consumers regain their smaller transfer budget.
+          const blob = await audioBlob(id, file, type, signal, () => entry.players ? VOICE_MAX_BYTES : WAVEFORM_MAX_BYTES);
+          signal.throwIfAborted();
+          if (blob.size > WAVEFORM_MAX_BYTES) { remember(id, TOO_LARGE); return { blob }; }
+          const waveform = await decodeCached(id, blob, signal);
+          signal.throwIfAborted(); return { blob, ...(waveform ? { waveform } : {}) };
+        } catch (error) {
+          if (!(error instanceof PreviewTooLarge)) throw error;
+          remember(id, TOO_LARGE); signal.throwIfAborted(); return undefined;
+        }
       }).finally(() => { if (pending.get(id) === entry) pending.delete(id); }) };
       pending.set(id, entry); task = entry;
     }
     const entry = task;
-    entry.users++;
-    return new Promise<Loaded>((resolve, reject) => {
+    entry.users++; if (play) entry.players++;
+    return new Promise<Loaded | undefined>((resolve, reject) => {
       let settled = false;
       const finish = () => {
         settled = true; signal.removeEventListener("abort", abort);
+        if (play) entry.players--;
         if (--entry.users === 0) {
           if (pending.get(id) === entry) pending.delete(id);
           entry.controller.abort();
@@ -138,29 +156,39 @@ export function createAudioLoader() {
   async function prepareWaveform(id: string, file: File | undefined, type: string, signal: AbortSignal): Promise<Waveform | undefined> {
     signal.throwIfAborted();
     if (cache.has(id)) return cachedWaveform(id);
-    if (file && file.size > WAVEFORM_MAX_BYTES) return undefined;
-    return (await sharedLoad(id, file, type, signal)).waveform;
+    if (file && file.size > WAVEFORM_MAX_BYTES) { remember(id, TOO_LARGE); return undefined; }
+    return (await sharedLoad(id, file, type, signal))?.waveform;
   }
   /** Concurrent preview/Play share work; later Play may fetch again (no blob cache). */
   async function loadAudio(id: string, file: File | undefined, type: string, signal: AbortSignal): Promise<Loaded> {
-    return sharedLoad(id, file, type, signal);
+    const result = await sharedLoad(id, file, type, signal, true);
+    // A Play may join just after a preview's cap decision. Its settled entry is
+    // removed before subscribers resume; retry with the full playback budget.
+    return result ?? loadAudio(id, file, type, signal);
   }
   return { cachedWaveform, prepareWaveform, loadAudio };
 }
 const loader = createAudioLoader();
 export const { cachedWaveform, prepareWaveform, loadAudio } = loader;
 
-async function audioBlob(id: string, file: File | undefined, contentType: string, signal: AbortSignal): Promise<Blob> {
-  if (file) { if (file.size > VOICE_MAX_BYTES) throw new Error("Download this file to play it."); return file; }
+async function audioBlob(id: string, file: File | undefined, contentType: string, signal: AbortSignal, byteLimit: () => number): Promise<Blob> {
+  const checkSize = (size: number) => {
+    const limit = byteLimit();
+    if (!(size > limit)) return;
+    if (limit === WAVEFORM_MAX_BYTES) throw new PreviewTooLarge();
+    throw new Error("Download this file to play it.");
+  };
+  if (file) { checkSize(file.size); return file; }
   const response = await fetch(`/api/v1/uploads/${encodeURIComponent(id)}/content`, { signal });
   if (!response.ok || !response.body) throw new Error("Audio preview unavailable. Use Download.");
-  if (Number(response.headers.get("Content-Length")) > VOICE_MAX_BYTES) { await response.body.cancel(); throw new Error("Download this file to play it."); }
+  try { checkSize(Number(response.headers.get("Content-Length"))); }
+  catch (error) { await response.body.cancel().catch(() => undefined); throw error; }
   const reader = response.body.getReader(); const chunks: Uint8Array<ArrayBuffer>[] = []; let size = 0;
   try {
     while (true) {
       signal.throwIfAborted(); const next = await reader.read(); if (next.done) break;
-      size += next.value.byteLength;
-      if (size > VOICE_MAX_BYTES) throw new Error("Download this file to play it.");
+      signal.throwIfAborted(); size += next.value.byteLength;
+      checkSize(size);
       chunks.push(Uint8Array.from(next.value));
     }
   } finally { await reader.cancel().catch(() => undefined); reader.releaseLock(); }

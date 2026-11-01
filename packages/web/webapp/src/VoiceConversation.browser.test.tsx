@@ -8,6 +8,7 @@ import { ConsoleStoreProvider, SELECTED_AGENT_STORAGE_KEY, useConsoleStore } fro
 import { readComposerDraft, resetComposerDraft, writeComposerDraft } from "./composer-draft";
 import { WebRuntimeProvider } from "./runtime";
 import { CaptureStatus } from "./components/VoiceComposer";
+import { VoiceNote } from "./components/VoiceNote";
 import { Chat } from "./components/Chat";
 import { agent, attachment, bootstrap, thread, uploadLimits } from "./test/fixtures";
 import { useRecordedAudio } from "./recorded-audio-context";
@@ -183,6 +184,28 @@ function message(id: string, threadId: string, role: WebMessage["role"], text: s
   return { id, threadId, role, parts: [{ type: "text", text }], attachments: [], status: "complete", seq: 0,
     createdAt: "2026-07-17T10:00:00.000Z", updatedAt: "2026-07-17T10:00:00.000Z" };
 }
+
+it("caps an oversize remote preview without refetching, then lets explicit Play load it", async () => {
+  await page.viewport(390, 844);
+  const bytes = syntheticAudio(400); // 2,400,044-byte WAVE: above peaks, below playback budget.
+  expect(bytes.byteLength).toBeGreaterThan(WAVEFORM_MAX_BYTES);
+  const pull = vi.fn(); const cancel = vi.fn();
+  const fetch = vi.spyOn(window, "fetch").mockImplementation(async () => new Response(new ReadableStream<Uint8Array>({
+    pull(controller) { pull(); controller.enqueue(bytes); controller.close(); }, cancel,
+  }, { highWaterMark: 0 }), { headers: { "Content-Length": String(bytes.byteLength) } }));
+  const play = vi.spyOn(HTMLMediaElement.prototype, "play").mockImplementation(async function (this: HTMLMediaElement) { this.dispatchEvent(new Event("play")); });
+  vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(function (this: HTMLMediaElement) { this.dispatchEvent(new Event("pause")); });
+  const view = render(<VoiceNote id="large-browser-note" name="long.wav" contentType="audio/wav" />);
+  await waitFor(() => expect(cancel).toHaveBeenCalledOnce());
+  expect(pull).not.toHaveBeenCalled();
+  await prepareWaveform("large-browser-note", undefined, "audio/wav", new AbortController().signal);
+  expect(fetch).toHaveBeenCalledOnce();
+  await userEvent.click(screen.getByRole("button", { name: /Play long.wav/ }));
+  await screen.findByRole("button", { name: /Pause long.wav/ });
+  expect(fetch).toHaveBeenCalledTimes(2); expect(pull).toHaveBeenCalledOnce(); expect(play).toHaveBeenCalledOnce();
+  expect(view.container.querySelector("audio")!.src).toMatch(/^blob:/);
+  expect([...view.container.querySelectorAll<HTMLElement>(".voice-waveform i")].every(bar => bar.style.height === "3px")).toBe(true);
+});
 
 it("really decodes a 60-second waveform larger than the former 64KiB cap", async () => {
   const bytes = syntheticAudio(60);

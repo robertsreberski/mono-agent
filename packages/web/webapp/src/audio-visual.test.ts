@@ -112,14 +112,17 @@ describe("bounded waveform preparation", () => {
     expect((await loader.loadAudio("two-minute-note", file, "audio/webm", signal)).blob).toBe(file);
     expect(context.decodeAudioData).toHaveBeenCalledOnce();
   });
-  it("skips over-budget peaks for automatic and Play loads without negative caching or blocking playback", async () => {
+  it("remembers immutable over-budget preview size without blocking Play", async () => {
     const context = contextFixture(); const loader = createAudioLoader(); const signal = new AbortController().signal;
     const large = { size: WAVEFORM_MAX_BYTES + 1, arrayBuffer: vi.fn() } as unknown as File;
     expect(await loader.prepareWaveform("decode-budget", large, "audio/webm", signal)).toBeUndefined();
     const result = await loader.loadAudio("decode-budget", large, "audio/webm", signal);
     expect(result.blob).toBe(large); expect(result.waveform).toBeUndefined();
     expect(large.arrayBuffer).not.toHaveBeenCalled(); expect(context.decodeAudioData).not.toHaveBeenCalled();
-    expect((await loader.loadAudio("decode-budget", blob(), "audio/webm", signal)).waveform?.duration).toBe(7);
+    const fetch = vi.fn(); vi.stubGlobal("fetch", fetch);
+    expect(await loader.prepareWaveform("decode-budget", undefined, "audio/webm", signal)).toBeUndefined();
+    expect(fetch).not.toHaveBeenCalled();
+    expect((await loader.loadAudio("different-small-note", blob(), "audio/webm", signal)).waveform?.duration).toBe(7);
     expect(context.decodeAudioData).toHaveBeenCalledOnce();
   });
   it("also skips over-budget remote decoding when automatic preparation overlaps Play", async () => {
@@ -133,6 +136,97 @@ describe("bounded waveform preparation", () => {
     expect(preview).toBeUndefined(); expect(playback.waveform).toBeUndefined();
     expect(playback.blob.size).toBe(WAVEFORM_MAX_BYTES + 1);
     expect(context.decodeAudioData).not.toHaveBeenCalled(); expect(fetch).toHaveBeenCalledOnce();
+  });
+  it.each([false, true])("does not time out >30s queue wait (Play joins queued preview: %s)", async joinPlay => {
+    vi.useFakeTimers(); contextFixture(); vi.stubGlobal("Blob", ReadableBlob); const loader = createAudioLoader();
+    const pending: { resolve: (response: Response) => void; signal: AbortSignal }[] = [];
+    const fetch = vi.fn((_url: string, init?: RequestInit) => new Promise<Response>(resolve => pending.push({ resolve, signal: init!.signal! }))); vi.stubGlobal("fetch", fetch);
+    const signal = new AbortController().signal;
+    const first = loader.prepareWaveform("wait-first", undefined, "audio/ogg", signal);
+    const second = loader.prepareWaveform("wait-second", undefined, "audio/ogg", signal);
+    const preview = loader.prepareWaveform("wait-target", undefined, "audio/ogg", signal);
+    let completed = false; void preview.then(() => { completed = true; }, () => { completed = true; });
+    await vi.advanceTimersByTimeAsync(20_000);
+    pending[0]!.resolve(new Response(new Uint8Array([1, 2, 3]))); await first;
+    const play = joinPlay ? loader.loadAudio("wait-target", undefined, "audio/ogg", signal) : undefined;
+    await vi.advanceTimersByTimeAsync(20_000); // Target has spent 40s in the queue.
+    expect(completed).toBe(false); expect(pending[1]!.signal.aborted).toBe(false);
+    pending[1]!.resolve(new Response(new Uint8Array([1, 2, 3]))); await second;
+    expect(pending).toHaveLength(3); expect(pending[2]!.signal.aborted).toBe(false);
+    await vi.advanceTimersByTimeAsync(20_000); // Fresh active budget, not an expired queue budget.
+    pending[2]!.resolve(new Response(new Uint8Array([1, 2, 3])));
+    expect((await preview)?.duration).toBe(7);
+    if (play) expect((await play).waveform?.duration).toBe(7);
+  });
+  it("rejects an oversized preview by Content-Length before reading and caches the size skip", async () => {
+    const context = contextFixture(); const loader = createAudioLoader(); const pull = vi.fn(); const cancel = vi.fn();
+    const body = new ReadableStream<Uint8Array>({ pull, cancel }, { highWaterMark: 0 });
+    const fetch = vi.fn(async () => new Response(body, { headers: { "Content-Length": String(WAVEFORM_MAX_BYTES + 1) } })); vi.stubGlobal("fetch", fetch);
+    const signal = new AbortController().signal;
+    expect(await loader.prepareWaveform("header-large", undefined, "audio/ogg", signal)).toBeUndefined();
+    expect(pull).not.toHaveBeenCalled(); expect(cancel).toHaveBeenCalledOnce();
+    expect(context.decodeAudioData).not.toHaveBeenCalled();
+    expect(await loader.prepareWaveform("header-large", undefined, "audio/ogg", signal)).toBeUndefined();
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+  it("retains known immutable oversize metadata if the owner leaves during stream cancellation", async () => {
+    contextFixture(); const loader = createAudioLoader(); const owner = new AbortController();
+    const body = new ReadableStream({ cancel() { owner.abort(); } }, { highWaterMark: 0 });
+    const fetch = vi.fn(async () => new Response(body, { headers: { "Content-Length": String(WAVEFORM_MAX_BYTES + 1) } })); vi.stubGlobal("fetch", fetch);
+    await expect(loader.prepareWaveform("cancel-large", undefined, "audio/ogg", owner.signal)).rejects.toMatchObject({ name: "AbortError" });
+    await Promise.resolve(); await Promise.resolve();
+    expect(await loader.prepareWaveform("cancel-large", undefined, "audio/ogg", new AbortController().signal)).toBeUndefined();
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+  it("cancels a streamed preview at the first byte beyond its cap, without reading the rest", async () => {
+    const context = contextFixture(); const loader = createAudioLoader(); const cancel = vi.fn();
+    let reads = 0;
+    const body = new ReadableStream<Uint8Array>({ pull(controller) {
+      reads++;
+      if (reads === 1) controller.enqueue(new Uint8Array(WAVEFORM_MAX_BYTES));
+      else if (reads === 2) controller.enqueue(new Uint8Array(1));
+      else controller.enqueue(new Uint8Array(6 * 1024 * 1024));
+    }, cancel }, { highWaterMark: 0 });
+    const fetch = vi.fn(async () => new Response(body)); vi.stubGlobal("fetch", fetch);
+    const signal = new AbortController().signal;
+    expect(await loader.prepareWaveform("stream-large", undefined, "audio/ogg", signal)).toBeUndefined();
+    expect(reads).toBe(2); expect(cancel).toHaveBeenCalledOnce(); expect(context.decodeAudioData).not.toHaveBeenCalled();
+    await loader.prepareWaveform("stream-large", undefined, "audio/ogg", signal);
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+  it("upgrades an in-flight preview to Play's full byte budget", async () => {
+    const context = contextFixture(); vi.stubGlobal("Blob", ReadableBlob); const loader = createAudioLoader();
+    let resolve!: (response: Response) => void;
+    const fetch = vi.fn(() => new Promise<Response>(done => { resolve = done; })); vi.stubGlobal("fetch", fetch);
+    const signal = new AbortController().signal;
+    const preview = loader.prepareWaveform("upgrade-large", undefined, "audio/ogg", signal);
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalledOnce());
+    const play = loader.loadAudio("upgrade-large", undefined, "audio/ogg", signal);
+    resolve(new Response(new Uint8Array(3 * 1024 * 1024), { headers: { "Content-Length": String(3 * 1024 * 1024) } }));
+    expect(await preview).toBeUndefined(); expect((await play).blob.size).toBe(3 * 1024 * 1024);
+    expect(fetch).toHaveBeenCalledOnce(); expect(context.decodeAudioData).not.toHaveBeenCalled();
+    await loader.prepareWaveform("upgrade-large", undefined, "audio/ogg", signal);
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+  it("restores the preview cap if the only Play subscriber cancels", async () => {
+    contextFixture(); const loader = createAudioLoader(); let resolve!: (response: Response) => void;
+    const cancel = vi.fn(); const fetch = vi.fn(() => new Promise<Response>(done => { resolve = done; })); vi.stubGlobal("fetch", fetch);
+    const preview = loader.prepareWaveform("downgrade", undefined, "audio/ogg", new AbortController().signal);
+    const owner = new AbortController(); const play = loader.loadAudio("downgrade", undefined, "audio/ogg", owner.signal);
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalledOnce());
+    const rejection = expect(play).rejects.toMatchObject({ name: "AbortError" }); owner.abort(); await rejection;
+    resolve(new Response(new ReadableStream({ cancel }, { highWaterMark: 0 }), { headers: { "Content-Length": String(3 * 1024 * 1024) } }));
+    expect(await preview).toBeUndefined(); expect(cancel).toHaveBeenCalledOnce();
+  });
+  it("retries Play with its own budget if it joins after a preview's cap decision", async () => {
+    contextFixture(); vi.stubGlobal("Blob", ReadableBlob); const loader = createAudioLoader();
+    const signal = new AbortController().signal; let play!: ReturnType<typeof loader.loadAudio>;
+    const cancel = vi.fn(() => { play = loader.loadAudio("late-play", undefined, "audio/ogg", signal); });
+    const fetch = vi.fn().mockResolvedValueOnce(new Response(new ReadableStream({ cancel }, { highWaterMark: 0 }), { headers: { "Content-Length": String(3 * 1024 * 1024) } }))
+      .mockImplementation(async () => new Response(new Uint8Array(3 * 1024 * 1024)));
+    vi.stubGlobal("fetch", fetch);
+    expect(await loader.prepareWaveform("late-play", undefined, "audio/ogg", signal)).toBeUndefined();
+    expect((await play).blob.size).toBe(3 * 1024 * 1024); expect(fetch).toHaveBeenCalledTimes(2);
   });
   it("requests 3000Hz offline decoding and skips an ignored fallback sample rate", async () => {
     const context = contextFixture(); const construct = vi.fn();
