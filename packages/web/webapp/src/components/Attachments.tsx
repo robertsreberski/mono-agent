@@ -6,7 +6,10 @@ import {
   useAuiEvent,
   useAuiState,
 } from "@assistant-ui/react";
-import { useEffect, useState } from "react";
+import { createContext, useContext, useMemo, type ReactNode } from "react";
+import { useRecordedAudio } from "../recorded-audio-context";
+import { presentTranscripts, type TranscriptPresentation } from "../voice-transcripts";
+import { VoiceNote } from "./VoiceNote";
 import { type GalleryImage, ImageGrid } from "./ImageGallery";
 import { Icon } from "./Icon";
 
@@ -36,42 +39,8 @@ function AttachmentChip({ removable }: { readonly removable: boolean }) {
   const localFile = useAuiState((state) => state.attachment.file);
   const contentType = useAuiState((state) => state.attachment.contentType)?.split(";", 1)[0]?.trim().toLowerCase();
   const audio = ["audio/webm", "audio/mp4", "audio/ogg"].includes(contentType ?? "");
-  const [play, setPlay] = useState(false);
-  const [preview, setPreview] = useState<string>();
-  const [previewError, setPreviewError] = useState<string>();
-  useEffect(() => {
-    if (!play || !audio || !contentType) return;
-    const controller = new AbortController();
-    let url: string | undefined;
-    const timeout = setTimeout(() => controller.abort(), 30_000);
-    setPreview(undefined); setPreviewError(undefined);
-    void (async () => {
-      try {
-        let blob: Blob;
-        if (localFile) { if (localFile.size > 10 * 1024 * 1024) throw new Error("Download this file to play it."); blob = localFile; }
-        else {
-          const response = await fetch(`/api/v1/uploads/${encodeURIComponent(id)}/content`, { signal: controller.signal });
-          if (!response.ok || !response.body) throw new Error("Audio preview unavailable. Use Download.");
-          const reader = response.body.getReader();
-          const chunks: Uint8Array<ArrayBuffer>[] = [];
-          let size = 0;
-          try {
-            if (Number(response.headers.get("Content-Length")) > 10 * 1024 * 1024) throw new Error("Download this file to play it.");
-            while (true) {
-              const next = await reader.read(); if (next.done) break;
-              size += next.value.byteLength;
-              if (size > 10 * 1024 * 1024) throw new Error("Download this file to play it.");
-              chunks.push(Uint8Array.from(next.value));
-            }
-          } finally { await reader.cancel().catch(() => undefined); reader.releaseLock(); }
-          blob = new Blob(chunks, { type: contentType });
-        }
-        if (controller.signal.aborted) return;
-        url = URL.createObjectURL(blob); setPreview(url);
-      } catch (failure) { if (!controller.signal.aborted) setPreviewError(failure instanceof Error ? failure.message : "Audio preview unavailable."); }
-    })();
-    return () => { clearTimeout(timeout); controller.abort(); if (url) URL.revokeObjectURL(url); };
-  }, [play, audio, contentType, id, localFile]);
+  const recorded = useRecordedAudio();
+  const captions = useContext(TranscriptContext)?.captions;
   const content = useAuiState((state) => state.attachment.content);
   const isUploading = status.type === "running";
   const isError = status.type === "incomplete";
@@ -83,6 +52,17 @@ function AttachmentChip({ removable }: { readonly removable: boolean }) {
   // A sent image is shown full-size by `UserMessageAttachments` instead. The
   // composer keeps its chip, where the thumbnail sits beside upload progress.
   if (isMessageAttachment && type === "image") return null;
+  if (audio && contentType) return <VoiceNote key={id} id={id} name={name} contentType={contentType} file={localFile}
+    recorded={Boolean(recorded?.adapter.hasRecordings([{ id }]) || recorded?.adapter.hasIncompleteRecording([{ file: localFile, status }]))}
+    caption={captions?.get(id)} uploading={isUploading ? progress : undefined} failed={isError}
+    onRetry={isError && localFile ? () => {
+      aui.attachment().remove();
+      void aui.composer().addAttachment(localFile).catch(() => announce("Upload failed. Retry or remove the file."));
+    } : undefined}
+    actions={<>
+      {isMessageAttachment && href && <a className="icon-button" href={href} download={name} aria-label={`Download ${name}`}><Icon name="download" size={17} /></a>}
+      {removable && <AttachmentPrimitive.Remove className="icon-button" aria-label="Remove file"><Icon name="close" size={17} /></AttachmentPrimitive.Remove>}
+    </>} />;
   const chipContent = (
     <>
       <span className="attachment-icon">
@@ -124,7 +104,6 @@ function AttachmentChip({ removable }: { readonly removable: boolean }) {
           aria-hidden="true"
         />
       )}
-      {audio && !isUploading && <button type="button" className="audio-play" aria-label={`Preview ${name}`} onClick={() => setPlay((value) => !value)}>{play ? "Close" : "Play"}</button>}
       {isError && <span className="attachment-error">Upload failed</span>}
       {isError && localFile && <button type="button" className="audio-play attachment-retry" onClick={() => {
         aui.attachment().remove();
@@ -137,11 +116,7 @@ function AttachmentChip({ removable }: { readonly removable: boolean }) {
       )}
     </AttachmentPrimitive.Root>
   );
-  if (!audio) return chip;
-  return <div className="audio-attachment">{chip}
-      {play && preview && <audio className="audio-preview" controls preload="none" src={preview} aria-label={`Audio ${name}`} />}
-      {play && previewError && <span className="voice-error" role="status">{previewError}</span>}
-    </div>;
+  return chip;
 }
 
 export function ComposerAttachments() {
@@ -177,3 +152,15 @@ export function UserMessageAttachments() {
     </>
   );
 }
+
+const TranscriptContext = createContext<TranscriptPresentation | null>(null);
+export function VoiceMessagePresentation({ children }: { readonly children: ReactNode }) {
+  const content = useAuiState(state => state.message.content);
+  const attachments = useAuiState(state => state.message.attachments);
+  const presentation = useMemo(() => {
+    const texts = content.filter(part => part.type === "text");
+    return texts.length === 1 ? presentTranscripts(texts[0]!.text, attachments ?? []) : null;
+  }, [content, attachments]);
+  return <TranscriptContext.Provider value={presentation}>{children}</TranscriptContext.Provider>;
+}
+export function usePresentedUserText() { return useContext(TranscriptContext); }

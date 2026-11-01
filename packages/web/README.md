@@ -123,7 +123,8 @@ User Stop also marks a running `AskUser` question as interrupted; answer in a ne
 
 ### Voice messages (opt-in)
 
-Use **paperclip → Record audio → Stop recording** to add a normal removable
+Use **paperclip → Record audio → Stop recording** (the round square-icon button)
+to add a normal removable
 audio attachment. Keep typing or add other files, then use the ordinary **Send**.
 Stop never submits. There is no separate voice composer or voice-only Send.
 Only recordings made through Record audio are automatically transcribed; audio
@@ -191,6 +192,14 @@ progress, removal and recovery. Staged files expire under the normal 24-hour
 policy; after Send, audio is retained as a normal committed conversation
 attachment, alongside transcript text. It is not persisted in browser storage.
 There are no server-side recording markers, transcript caches or preparation jobs.
+The composer shows a compact recording pill with microphone-driven levels, elapsed
+time, Stop and Discard. Reduced-motion preferences keep the meter static. A
+voice-note tile replaces native audio controls in drafts and sent messages: Play /
+Pause, keyboard- and pointer-seekable waveform, duration, and the usual remove,
+upload retry or download actions. Waveforms decode actual audio only on first
+Play, never by downloading a conversation's audio on load; unsupported codecs
+keep neutral bars. Sent transcripts appear as quiet captions beside the matching
+audio (long captions expand), while stored and model-facing text stays unchanged.
 Explicit playback uses bounded local/same-origin Blob URLs, never autoplay;
 Download keeps the normal forced-download/no-sniff boundary.
 

@@ -17,7 +17,7 @@ import {
 import { compactionMarkerIdsForMessages, convertWebMessage, visibleCompactionMessages } from "../runtime";
 import type { WebMessage } from "../types";
 import { processJob } from "../test/fixtures";
-import { AssistantMessage, SystemMessage, UserMessage } from "./Messages";
+import { AssistantMessage, SystemMessage, UserMessage, copyableMessageText } from "./Messages";
 import { ProcessJobStack } from "./ProcessJobStack";
 import { ToolCallRepairProvider } from "./tool-call-repair";
 
@@ -454,6 +454,25 @@ describe("AssistantMessage grouped parts", () => {
     fireEvent.click(screen.getByText("Exec").closest("summary")!);
     expect(screen.getByText("Preview only, 20,480 chars.")).toBeVisible();
     expect(screen.queryByRole("button", { name: "Load full output" })).toBeNull();
+  });
+
+  it("ties canonical transcripts to audio without changing runtime/model or copied text", () => {
+    const text = 'Keep the herbs.\n\nAudio transcript 1 ("recording.webm"):\nAdd basil.';
+    const message: WebMessage = { ...userMessage, parts: [{ type: "text", text }], attachments: [upload("voice", "recording.webm", "document", "audio/webm")] };
+    render(<MessageHarness message={message} />);
+    expect(screen.getByText("Add basil.").closest(".voice-note")).not.toBeNull();
+    expect(screen.getByText("Keep the herbs.")).toBeVisible();
+    expect(document.body.textContent).not.toContain("Audio transcript 1");
+    const content = convertWebMessage(message).content;
+    expect(typeof content === "string" ? content : copyableMessageText(content)).toBe(text);
+    expect(message.parts).toEqual([{ type: "text", text }]);
+  });
+
+  it("leaves transcript-like authored text unchanged without a matching audio attachment", () => {
+    const text = 'Audio transcript 1 ("unmatched.ogg"):\nKeep this exact text.';
+    render(<MessageHarness message={{ ...userMessage, parts: [{ type: "text", text }] }} />);
+    expect(screen.getByText(/Audio transcript 1/)).toBeVisible();
+    expect(document.querySelector(".voice-caption")).toBeNull();
   });
 
   it("shows sent images as a gallery while documents keep their file chip", () => {

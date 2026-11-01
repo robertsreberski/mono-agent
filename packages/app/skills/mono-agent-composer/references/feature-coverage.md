@@ -317,9 +317,12 @@ A local OpenAI-compatible service or operator-managed proxy must decode
 WebM/MP4/Ogg; there is no cloud fallback, credential integration or transcoding.
 HTTPS/localhost and MediaRecorder are required. Recording has no fixed duration
 cutoff: 10 MiB or stricter remaining attachment byte/count limits and provider,
-transcript, concurrency and preparation deadlines remain. Stopped audio uses
-ordinary staging expiry; sent audio is retained as a committed conversation
-attachment alongside transcript text, not just ephemeral transcription bytes.
+transcript, concurrency and preparation deadlines remain. Capture uses a
+microphone-level recording pill; stopped audio uses seekable voice-note tiles. Waveform decoding
+is first-Play-only and bounded; sent transcript captions are presentation-only,
+not changes to stored/model-facing text. Audio retains ordinary staging expiry;
+sent audio is retained as a committed conversation attachment alongside transcript
+text, not just ephemeral transcription bytes.
 Bootstrap no longer emits deprecated `voice.maxSeconds` (optional on reads for
 older-server compatibility). See
 [web voice configuration](../../../../../docs/observability/web-console.md#voice-messages-opt-in).

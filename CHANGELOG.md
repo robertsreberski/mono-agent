@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add a calm recording meter and seekable voice-note waveforms to the web
+  console, with transcript captions beside sent audio and accessible playback
+  controls. Keep recorded-message preparation and stored text unchanged.
+
 - Give never-offered, host-attested owner paragraphs a bounded first claim on
   continuity extraction space once a prior ledger exists, under unchanged
   fitting limits and offer retirement. First-ledger fitting is unchanged;

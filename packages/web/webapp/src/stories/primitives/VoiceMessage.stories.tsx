@@ -7,5 +7,5 @@ export default {
 } satisfies Meta<typeof CaptureStatus>;
 type Story = StoryObj<typeof CaptureStatus>;
 export const Permission: Story = { args: { phase: "permission", seconds: 0 } };
-export const Recording: Story = { args: { phase: "recording", seconds: 181 } };
+export const Recording: Story = { args: { phase: "recording", seconds: 181, levels: Array.from({ length: 24 }, (_, i) => 0.12 + 0.65 * Math.sin(i * 0.7) ** 2) } };
 export const Attaching: Story = { args: { phase: "attaching", seconds: 181 } };

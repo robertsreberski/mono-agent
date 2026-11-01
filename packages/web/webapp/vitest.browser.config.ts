@@ -11,6 +11,16 @@ import { defineConfig } from "vitest/config";
 
 type EmulatedColorScheme = "light" | "dark" | null;
 
+const dragVoiceNote: BrowserCommand<[]> = async (context) => {
+  if (context.provider.name !== "playwright") throw new Error("Playwright required");
+  const bounds = await context.iframe.getByRole("slider", { name: "Seek voice note" }).boundingBox();
+  if (!bounds) throw new Error("Voice waveform missing");
+  await context.page.mouse.move(bounds.x + bounds.width / 4, bounds.y + bounds.height / 2);
+  await context.page.mouse.down();
+  await context.page.mouse.move(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2, { steps: 5 });
+  await context.page.mouse.up();
+};
+
 const emulateReducedMotion: BrowserCommand<["reduce" | "no-preference" | null]> = async (context, reducedMotion) => {
   if (context.provider.name !== "playwright") throw new Error("emulateReducedMotion requires Playwright");
   await context.page.emulateMedia({ reducedMotion });
@@ -86,7 +96,7 @@ export default defineConfig({
           context: { viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true },
         },
       ],
-      commands: { emulateColorScheme, emulateReducedMotion, saveVoiceFixture },
+      commands: { dragVoiceNote, emulateColorScheme, emulateReducedMotion, saveVoiceFixture },
     },
   },
 });

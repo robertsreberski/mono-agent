@@ -7,13 +7,31 @@ import { useAssistantRuntime, type PendingAttachment } from "@assistant-ui/react
 import { ConsoleStoreProvider, SELECTED_AGENT_STORAGE_KEY, useConsoleStore } from "./console-store";
 import { readComposerDraft, resetComposerDraft, writeComposerDraft } from "./composer-draft";
 import { WebRuntimeProvider } from "./runtime";
+import { CaptureStatus } from "./components/VoiceComposer";
 import { Chat } from "./components/Chat";
 import { agent, attachment, bootstrap, thread, uploadLimits } from "./test/fixtures";
 import { useRecordedAudio } from "./recorded-audio-context";
 import { FixtureMediaRecorder, installVoiceFixture } from "./test/voice-fixtures";
 import { createThreadPersistence } from "./thread-persistence";
 import type { ThreadSummary, WebMessage } from "./types";
+import { extractPeaks } from "./audio-waveform";
+import { syntheticAudio } from "./test/synthetic-audio";
 import "./styles.css";
+
+// Test-only module seam: never included in production builds or enabled by a URL.
+// Real AudioMeter still samples and owns its context/animation; only screenshot
+// levels are deterministic because headless audio-render clocks can stall.
+const visualFixture = vi.hoisted(() => ({ syntheticLevels: false, samples: 0 }));
+vi.mock("./audio-meter", async original => {
+  const actual = await original<typeof import("./audio-meter")>();
+  return { AudioMeter: class extends actual.AudioMeter {
+    constructor(stream: MediaStream, update: (levels: readonly number[]) => void) {
+      super(stream, levels => { visualFixture.samples++; update(visualFixture.syntheticLevels
+        ? Array.from({ length: 24 }, (_, i) => 0.12 + 0.65 * Math.sin(i * 0.7) ** 2)
+        : levels); });
+    }
+  } };
+});
 
 vi.mock("./api", async (original) => ({
   ...await original<typeof import("./api")>(),
@@ -26,7 +44,7 @@ vi.mock("./api", async (original) => ({
   },
 }));
 vi.mock("./notifications", () => ({ NotificationBell: () => null }));
-declare module "@vitest/browser/context" { interface BrowserCommands { saveVoiceFixture(bytes: number[]): Promise<void>; } }
+declare module "@vitest/browser/context" { interface BrowserCommands { saveVoiceFixture(bytes: number[]): Promise<void>; dragVoiceNote(): Promise<void>; } }
 class FixtureEventSource {
   static current: FixtureEventSource;
   constructor() { FixtureEventSource.current = this; }
@@ -77,7 +95,7 @@ beforeEach(async () => {
   localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, "alpha");
   vi.stubGlobal("EventSource", FixtureEventSource);
   fixture = installVoiceFixture();
-  nextUpload = 0; uploads = new Map();
+  nextUpload = 0; uploads = new Map(); visualFixture.syntheticLevels = false; visualFixture.samples = 0;
   vi.mocked(api.createUpload).mockImplementation(async (file) => {
     const value = attachment(`audio-upload-${++nextUpload}`, { name: file.name, contentType: file.type, sizeBytes: file.size });
     uploads.set(value.id, value); return value;
@@ -121,23 +139,36 @@ async function record() {
 async function stop() {
   await userEvent.click(screen.getByRole("button", { name: "Stop recording" }));
   await waitFor(() => expect(screen.queryByText("Attaching recording…")).toBeNull());
-  await screen.findAllByText("recording.webm");
+  await screen.findAllByLabelText("Audio attachment: recording.webm");
 }
 async function send() {
   const button = screen.getByRole("button", { name: "Send message" });
   await waitFor(() => expect(button).toBeEnabled()); await userEvent.click(button);
 }
 const shots = import.meta.env.VITE_VOICE_SHOTS as string | undefined;
-const shot = async (name: string) => { if (shots) await page.screenshot({ path: `${shots}/attachments-synthetic-${name}.png` }); };
+const shot = async (name: string) => { if (shots) await page.screenshot({ path: `${shots}/attachments-synthetic-${navigator.userAgent.includes("Chrome") ? "chromium" : "webkit"}-${name}.png` }); };
 function message(id: string, threadId: string, role: WebMessage["role"], text: string): WebMessage {
   return { id, threadId, role, parts: [{ type: "text", text }], attachments: [], status: "complete", seq: 0,
     createdAt: "2026-07-17T10:00:00.000Z", updatedAt: "2026-07-17T10:00:00.000Z" };
 }
 
+it("synthetic levels respect reduced motion and permission/attaching fit narrow screens", async () => {
+  await page.viewport(320, 740); await commands.emulateReducedMotion("reduce");
+  const view = render(<div style={{ width: 280 }}><CaptureStatus phase="recording" seconds={7} levels={Array(24).fill(0.8)} /></div>);
+  try {
+    expect(getComputedStyle(view.container.querySelector(".voice-recording-dot")!).animationName).toBe("none");
+    expect(getComputedStyle(view.container.querySelector(".capture-meter i")!).height).toBe("3px");
+    for (const phase of ["permission", "attaching"] as const) {
+      view.rerender(<div style={{ width: 280 }}><CaptureStatus phase={phase} seconds={7} /></div>);
+      expect(view.container.firstElementChild!.scrollWidth).toBeLessThanOrEqual(280);
+    }
+  } finally { await commands.emulateReducedMotion(null); }
+});
+
 describe("recorded audio through actual Chat, Composer, ordinary uploads and submissions", () => {
   for (const [width, height, device] of [[1280, 900, "desktop"], [390, 844, "mobile"], [320, 740, "narrow"]] as const) {
     for (const scheme of ["light", "dark"] as const) {
-      it(`${device} ${scheme}: normal text + two recordings + file, cached preparation and exact retry`, async () => {
+      it(`${device} ${scheme}: normal text + two recordings + file, cached preparation and exact retry (synthetic meter levels/playback events)`, async () => {
         await page.viewport(width, height); await commands.emulateColorScheme(scheme);
         let selected = { ...created, title: "A small garden project" };
         seed(selected);
@@ -148,6 +179,18 @@ describe("recorded audio through actual Chat, Composer, ordinary uploads and sub
           selected = { ...selected, ...(patch.model === undefined ? {} : { runModel: patch.model }), ...(patch.effort === undefined ? {} : { runEffort: patch.effort }), ...(patch.context1M === undefined ? {} : { runContext1M: patch.context1M }) };
           return selected;
         });
+        // Synthetic meter levels and generated encoded audio: no device/provider.
+        visualFixture.syntheticLevels = true;
+        // Controlled playback events for presentation only; headless media clocks
+        // are not a proof of speaker playback. Real decoding is asserted below.
+        vi.spyOn(HTMLMediaElement.prototype, "play").mockImplementation(async function (this: HTMLMediaElement) { this.dispatchEvent(new Event("play")); });
+        vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(function (this: HTMLMediaElement) { this.dispatchEvent(new Event("pause")); });
+        FixtureMediaRecorder.audioBytes = syntheticAudio();
+        const originalFetch = window.fetch.bind(window);
+        vi.spyOn(window, "fetch").mockImplementation((input, init) => String(input).includes("/uploads/") ? Promise.resolve(new Response(syntheticAudio(), { headers: { "Content-Type": "audio/webm" } })) : originalFetch(input, init));
+        // A real MediaStream lets the real analyser construct without device access.
+        const context = new AudioContext();
+        fixture.getUserMedia.mockImplementation(async () => context.createMediaStreamDestination().stream);
         const view = mount();
         await waitFor(() => expect(store.detail?.thread.id).toBe(selected.id));
         const input = await screen.findByRole("combobox", { name: "Message" });
@@ -174,19 +217,29 @@ describe("recorded audio through actual Chat, Composer, ordinary uploads and sub
         expect(screen.getByRole("timer")).toHaveAttribute("aria-live", "off");
         await userEvent.click(input); await userEvent.keyboard("{Control>}{Enter}{/Control}");
         expect(api.submit).not.toHaveBeenCalled(); expect(screen.getByRole("button", { name: "Stop recording" })).toBeVisible();
+        await userEvent.click(screen.getByRole("timer"));
+        await waitFor(() => expect([...view.container.querySelectorAll<HTMLElement>(".capture-meter i")].some(bar => parseFloat(bar.style.height) > 3)).toBe(true));
         checkLayout(); await capture("02-recording-with-draft");
         await stop();
         expect(api.submit).not.toHaveBeenCalled(); expect(api.transcribe).not.toHaveBeenCalled();
         expect(input).toHaveValue("Include easy-care herbs."); expect(screen.getByText("plants.txt")).toBeVisible();
         checkLayout(); await capture("03-audio-draft");
-        await userEvent.click(screen.getByRole("button", { name: "Preview recording.webm" }));
-        const audio = await screen.findByLabelText("Audio recording.webm");
-        const bounds = audio.getBoundingClientRect();
-        expect(bounds.bottom).toBeLessThanOrEqual(audio.closest(".composer-attachments")!.getBoundingClientRect().bottom + 1);
-        const previewUrl = audio.getAttribute("src"); const revoke = vi.spyOn(URL, "revokeObjectURL");
+        await userEvent.click(screen.getByRole("button", { name: /Play voice note/ }));
+        await screen.findByRole("button", { name: "Pause voice note, 0:07" });
+        // Duration and non-neutral peaks came from real in-browser offline decoding,
+        // not the synthetic meter seam or media duration metadata.
+        expect([...view.container.querySelectorAll<HTMLElement>(".voice-waveform i")].some(bar => parseFloat(bar.style.height) > 3)).toBe(true);
+        const audio = screen.getByLabelText("Audio recording.webm");
+        expect(audio).not.toHaveAttribute("controls");
+        const slider = screen.getByRole("slider", { name: "Seek voice note" });
+        expect(slider.getBoundingClientRect().top).toBeGreaterThanOrEqual(view.container.querySelector(".voice-note-heading")!.getBoundingClientRect().bottom + 4);
+        await userEvent.click(slider); await userEvent.keyboard("{Home}{ArrowRight}");
+        expect(Number(slider.getAttribute("aria-valuenow"))).toBeGreaterThanOrEqual(5);
+        await commands.dragVoiceNote();
+        expect(Number(slider.getAttribute("aria-valuenow"))).toBeGreaterThan(1);
         checkLayout(); await capture("04-playback");
-        await userEvent.click(screen.getByRole("button", { name: "Preview recording.webm" }));
-        expect(revoke).toHaveBeenCalledWith(previewUrl); revoke.mockRestore();
+        await userEvent.click(screen.getByRole("button", { name: "Pause voice note, 0:07" }));
+        expect(screen.getByRole("button", { name: "Play voice note, 0:07" })).toBeVisible();
         await record(); await stop();
         act(() => store.setModel("provider/other"));
         await waitFor(() => expect(store.effectiveModel).toBe("provider/other"));
@@ -223,7 +276,16 @@ describe("recorded audio through actual Chat, Composer, ordinary uploads and sub
         act(() => FixtureEventSource.current.onmessage?.(new MessageEvent("message", { data: JSON.stringify({ version: 1, type: "message.changed", at: reply.createdAt, threadId: selected.id, payload: { messageId: sent.id } }) })));
         await screen.findByText(reply.parts[0]!.type === "text" ? reply.parts[0]!.text : "");
         expect(screen.getAllByRole("link", { name: "Download recording.webm" })).toHaveLength(2);
+        expect(screen.getByText("Add basil.")).toBeVisible();
+        expect(screen.getByText("Grow mint in its own pot.")).toBeVisible();
+        expect(view.container.textContent).not.toContain("Audio transcript 1");
         checkLayout(); await capture("08-sent-attachments");
+        await record();
+        vi.mocked(uploadContent).mockRejectedValueOnce(new Error("Synthetic upload transfer failure"));
+        await userEvent.click(screen.getByRole("button", { name: "Stop recording" }));
+        await screen.findByRole("button", { name: "Retry upload" });
+        checkLayout(); await capture("09-failed-upload");
+        view.unmount(); void context.close().catch(() => undefined); vi.restoreAllMocks();
       });
     }
   }
@@ -284,7 +346,7 @@ describe("recorded audio through actual Chat, Composer, ordinary uploads and sub
     await record(); vi.mocked(uploadContent).mockRejectedValueOnce(new Error("Synthetic transfer refusal"));
     await userEvent.click(screen.getByRole("button", { name: "Stop recording" }));
     const retry = await screen.findByRole("button", { name: "Retry upload" });
-    const chip = retry.closest<HTMLElement>(".attachment-chip")!;
+    const chip = retry.closest<HTMLElement>(".voice-note")!;
     const viewport = chip.closest<HTMLElement>(".composer-attachments")!.getBoundingClientRect();
     const bounds = chip.getBoundingClientRect();
     expect(bounds.left).toBeGreaterThanOrEqual(0); expect(bounds.right).toBeLessThanOrEqual(width);
@@ -439,7 +501,7 @@ describe("recorded audio through actual Chat, Composer, ordinary uploads and sub
     await screen.findByText("Synthetic preparation refusal");
     expect(screen.getByRole("combobox", { name: "Message" })).toHaveValue("Original authored text.\n\nNewer authored text.");
     expect(runtime.thread.composer.getState().quote?.text).toBe("Newer quote");
-    expect(screen.getByText("newer.txt")).toBeVisible(); expect(screen.getByText("recording.webm")).toBeVisible();
+    expect(screen.getByText("newer.txt")).toBeVisible(); expect(screen.getByLabelText("Audio attachment: recording.webm")).toBeVisible();
     expect(api.submit).not.toHaveBeenCalled(); expect(api.createUpload).toHaveBeenCalledTimes(2);
   });
   it("navigation after uncertain dispatch and reload keep receipt references only, never reconstructing or autosending", async () => {
@@ -519,9 +581,35 @@ describe("recorded audio through actual Chat, Composer, ordinary uploads and sub
     expect(store.model).toBe("provider/other"); expect(api.submit).not.toHaveBeenCalled(); expect(api.transcribe).not.toHaveBeenCalled();
     act(() => store.setConversationVisible(true));
   });
+  it.skipIf(!navigator.userAgent.includes("Chrome")).each(["cancel", "navigation", "unmount"] as const)("real analyser lifecycle during native capture: %s (clock values unverified)", async action => {
+    fixture.restore(); vi.stubGlobal("EventSource", FixtureEventSource);
+    const close = vi.spyOn(AudioContext.prototype, "close");
+    const source = vi.spyOn(AudioContext.prototype, "createMediaStreamSource");
+    const cancelFrame = vi.spyOn(window, "cancelAnimationFrame");
+    const getUserMedia = vi.spyOn(navigator.mediaDevices, "getUserMedia");
+    seed(created); const view = mount();
+    try {
+      await record(); await waitFor(() => expect(visualFixture.samples).toBeGreaterThan(0));
+      expect(source).toHaveBeenCalledTimes(1);
+      const stream: MediaStream = await getUserMedia.mock.results[0]!.value;
+      if (action === "cancel") await userEvent.click(screen.getByRole("button", { name: "Cancel recording" }));
+      else if (action === "navigation") act(() => store.selectThread(other.id));
+      else view.unmount();
+      await waitFor(() => expect(close).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect((close.mock.contexts[0] as AudioContext).state).toBe("closed"));
+      expect(cancelFrame).toHaveBeenCalled();
+      expect(stream.getTracks().every(track => track.readyState === "ended")).toBe(true);
+      const samples = visualFixture.samples;
+      await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+      expect(visualFixture.samples).toBe(samples);
+      expect(api.transcribe).not.toHaveBeenCalled(); expect(api.submit).not.toHaveBeenCalled();
+    } finally { vi.restoreAllMocks(); }
+  });
   it.skipIf(!navigator.userAgent.includes("Chrome"))("stages real MediaRecorder container bytes from Chromium’s synthetic microphone before normal Send", async () => {
     fixture.restore(); vi.stubGlobal("EventSource", FixtureEventSource);
     seed(created); mount();
+    const closeContext = vi.spyOn(AudioContext.prototype, "close");
+    const cancelFrame = vi.spyOn(window, "cancelAnimationFrame");
     const start = MediaRecorder.prototype.start;
     let receivedChunks = 0;
     const spy = vi.spyOn(MediaRecorder.prototype, "start").mockImplementation(function (this: MediaRecorder, timeslice) {
@@ -532,13 +620,20 @@ describe("recorded audio through actual Chat, Composer, ordinary uploads and sub
       await record(); await waitFor(() => expect(receivedChunks).toBeGreaterThanOrEqual(2)); await stop();
       const file = vi.mocked(api.createUpload).mock.calls[0]![0];
       expect(file.type).toBe("audio/webm"); expect(file.size).toBeGreaterThan(100);
+      expect(closeContext).toHaveBeenCalledTimes(1); expect(cancelFrame).toHaveBeenCalled();
+      await waitFor(() => expect((closeContext.mock.contexts[0] as AudioContext).state).toBe("closed"));
+      // An encoded native MediaRecorder WebM is decoded by the actual browser,
+      // independent of the stalled realtime context clock.
+      const decoded = await new OfflineAudioContext(1, 1, 8000).decodeAudioData(await file.arrayBuffer());
+      expect(decoded.duration).toBeGreaterThan(0);
+      expect(extractPeaks([decoded.getChannelData(0)]).some(value => value > 0)).toBe(true);
       const bytes = new Uint8Array(await file.arrayBuffer()); expect([...bytes.slice(0, 4)]).toEqual([0x1a, 0x45, 0xdf, 0xa3]);
       expect(bytes.some((value, index) => value === 0x1f && bytes[index + 1] === 0x43 && bytes[index + 2] === 0xb6 && bytes[index + 3] === 0x75)).toBe(true); // WebM audio cluster, not a header-only artifact.
       if (shots) await commands.saveVoiceFixture([...bytes]);
       expect(api.submit).not.toHaveBeenCalled(); expect(api.transcribe).not.toHaveBeenCalled();
       await send(); await waitFor(() => expect(api.submit).toHaveBeenCalledTimes(1));
       expect(vi.mocked(api.transcribe).mock.calls[0]![1]).toBe(file);
-    } finally { spy.mockRestore(); }
+    } finally { spy.mockRestore(); closeContext.mockRestore(); cancelFrame.mockRestore(); }
   });
   it("leaving to an inert conversation with body focus never attempts to refocus it", async () => {
     seed(created); const view = mount(); await record();

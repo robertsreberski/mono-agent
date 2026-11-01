@@ -10,6 +10,8 @@ type CapturePhase = "idle" | "permission" | "recording" | "attaching";
 interface CaptureState {
   readonly phase: CapturePhase;
   readonly seconds: number;
+  readonly levels: readonly number[];
+  resumeVisualization(): void;
   readonly error?: string;
   readonly blocked?: string;
   readonly retryAttachment?: () => void;
@@ -27,6 +29,7 @@ export function VoiceComposerScope({ children, unavailableReason }: { readonly c
   const recorded = useRecordedAudio();
   const [phase, setPhase] = useState<CapturePhase>("idle");
   const [seconds, setSeconds] = useState(0);
+  const [levels, setLevels] = useState<readonly number[]>([]);
   const [error, setError] = useState<string>();
   const [finished, setFinished] = useState<{ file: File; generation: number; sourceId: string | null; threadId: string | null }>();
   const capture = useRef<VoiceRecorder | undefined>(undefined);
@@ -98,9 +101,10 @@ export function VoiceComposerScope({ children, unavailableReason }: { readonly c
     const owns = () => token === epoch.current && current.current.selectionGeneration === generation
       && current.current.selectedAgentId === sourceId && current.current.selectedThreadId === threadId && current.current.conversationVisible;
     target.current = owns;
-    setError(undefined); setSeconds(0); setPhase("permission");
+    setError(undefined); setSeconds(0); setLevels([]); setPhase("permission");
     const recorder = new VoiceRecorder({
       recording: () => { if (owns()) setPhase("recording"); },
+      levels: (values) => { if (owns()) setLevels(values); },
       elapsed: (value) => { if (owns()) setSeconds(value); },
       error: (message) => { if (owns()) { cleanup(); setError(message); setPhase("idle"); } },
       ready: (blob) => {
@@ -126,7 +130,7 @@ export function VoiceComposerScope({ children, unavailableReason }: { readonly c
     capture.current = recorder;
     void recorder.start();
   };
-  return <CaptureContext.Provider value={{ phase, seconds, error, blocked, retryAttachment: finished ? () => void retryAttachment() : undefined, start, stop: () => capture.current?.stop(), cancel }}>{children}</CaptureContext.Provider>;
+  return <CaptureContext.Provider value={{ phase, seconds, levels, resumeVisualization: () => capture.current?.resumeVisualization(), error, blocked, retryAttachment: finished ? () => void retryAttachment() : undefined, start, stop: () => capture.current?.stop(), cancel }}>{children}</CaptureContext.Provider>;
 }
 export const useVoiceBusy = () => { const phase = useContext(CaptureContext)?.phase; return phase !== undefined && phase !== "idle"; };
 
@@ -148,23 +152,24 @@ export function RecordingDraft() {
   const recorded = useRecordedAudio();
   if (!capture) return null;
   return <>
-    {capture.phase !== "idle" && <CaptureStatus phase={capture.phase} seconds={capture.seconds} onStop={capture.stop} onCancel={capture.cancel} />}
+    {capture.phase !== "idle" && <CaptureStatus phase={capture.phase} seconds={capture.seconds} levels={capture.levels} onResume={capture.resumeVisualization} onStop={capture.stop} onCancel={capture.cancel} />}
     {capture.retryAttachment && capture.phase === "idle" && <div className="recording-draft"><span>Recording not attached</span><button type="button" className="voice-retry" onClick={capture.retryAttachment}>Retry attachment</button><button type="button" className="icon-button" aria-label="Remove recording" onClick={capture.cancel}><Icon name="close" size={16} /></button></div>}
     {(capture.error || recorded?.error) && <p role="alert" className="voice-error">{capture.error ?? recorded?.error}</p>}
-    {recorded?.busy && <p className="voice-detail" role="status">Preparing message…</p>}
-    {recorded?.uncertain && <button type="button" className="voice-retry" onClick={recorded.retry}>Check / retry send</button>}
+    {recorded?.busy && <div className="recording-draft voice-preparing" role="status"><span className="voice-spinner" aria-hidden="true" />Preparing message…</div>}
+    {recorded?.uncertain && <div className="recording-draft"><Icon name="refresh" size={16} /><button type="button" className="voice-retry" onClick={recorded.retry}>Check / retry send</button></div>}
   </>;
 }
 
 /** Presentation seam used by the actual recording draft and synthetic stories. */
-export function CaptureStatus({ phase, seconds, onStop, onCancel }: { readonly phase: Exclude<CapturePhase, "idle">; readonly seconds: number; readonly onStop?: () => void; readonly onCancel?: () => void }) {
+export function CaptureStatus({ phase, seconds, levels = [], onStop, onCancel, onResume }: { readonly phase: Exclude<CapturePhase, "idle">; readonly seconds: number; readonly levels?: readonly number[]; readonly onStop?: () => void; readonly onCancel?: () => void; readonly onResume?: () => void }) {
   const stop = useRef<HTMLButtonElement>(null);
   useEffect(() => { if (phase === "recording") stop.current?.focus({ preventScroll: true }); }, [phase]);
-  return <div className="recording-draft">
-    <span className="voice-recording-dot" aria-hidden="true" />
-    <span role="status">{phase === "permission" ? "Allow microphone access…" : phase === "attaching" ? "Attaching recording…" : "Recording"}</span>
+  return <div className={`recording-draft capture-pill is-${phase}`} onPointerDown={onResume}>
+    <span className={phase === "recording" ? "voice-recording-dot" : "voice-spinner"} aria-hidden="true" />
+    <span className="capture-label" role="status">{phase === "permission" ? "Allow microphone access…" : phase === "attaching" ? "Attaching recording…" : "Recording"}</span>
+    <span className="capture-meter" aria-hidden="true">{Array.from({ length: 24 }, (_, i) => <i key={i} style={{ height: `${3 + (phase === "recording" ? levels[i] ?? 0 : 0) * 25}px` }} />)}</span>
     <span className="voice-time" role="timer" aria-live="off">{Math.floor(seconds / 60)}:{String(seconds % 60).padStart(2, "0")}</span>
-    {phase === "recording" && <button ref={stop} type="button" className="voice-cancel" onClick={onStop}>Stop recording</button>}
-    {phase !== "attaching" && <button type="button" className="icon-button" aria-label="Cancel recording" onClick={onCancel}><Icon name="close" size={16} /></button>}
+    {phase === "recording" && <button ref={stop} type="button" className="icon-button voice-stop" aria-label="Stop recording" onClick={onStop}><Icon name="stop" size={17} /></button>}
+    {phase !== "attaching" && <button type="button" className="icon-button voice-discard" aria-label="Cancel recording" onClick={onCancel}><Icon name="close" size={17} /></button>}
   </div>;
 }
