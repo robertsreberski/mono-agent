@@ -1,0 +1,76 @@
+name: Install Chromium with cached system packages
+description: Keep Playwright's full system dependencies while reusing apt archives across runs.
+inputs:
+  directory:
+    description: Package directory containing the installed Playwright CLI
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Derive apt archive cache key
+      id: key
+      shell: bash
+      working-directory: ${{ inputs.directory }}
+      run: |
+        set -euo pipefail
+        : "${ImageOS:?Hosted runner ImageOS is required}"
+        : "${ImageVersion:?Hosted runner ImageVersion is required}"
+        : "${RUNNER_ARCH:?Runner architecture is required}"
+        version="$(pnpm exec playwright --version)"
+        if [[ ! "$version" =~ ^Version\ ([0-9]+\.[0-9]+\.[0-9]+([.-][[:alnum:].-]+)?)$ ]]; then
+          echo "Unexpected Playwright CLI version: $version" >&2
+          exit 1
+        fi
+        version="${BASH_REMATCH[1]}"
+        # Exact image + CLI keys avoid mixing runner or dependency generations.
+        # Bump v1 if an immutable cache needs refreshing for newer apt packages.
+        echo "cache-key=pw-debs-v1-${ImageOS}-${ImageVersion}-${RUNNER_ARCH}-${version}" >> "$GITHUB_OUTPUT"
+
+    - name: Restore apt archives
+      id: restore
+      uses: actions/cache/restore@v4
+      continue-on-error: true
+      with:
+        path: ${{ runner.temp }}/playwright-debs
+        key: ${{ steps.key.outputs.cache-key }}
+
+    - name: Install Chromium and retain apt archives
+      id: install
+      shell: bash
+      working-directory: ${{ inputs.directory }}
+      env:
+        DEB_CACHE: ${{ runner.temp }}/playwright-debs
+      run: |
+        set -euo pipefail
+        shopt -s nullglob
+        mkdir -p "$DEB_CACHE"
+        # Docker-style apt hooks otherwise delete the archives after installation.
+        sudo rm -f /etc/apt/apt.conf.d/docker-clean
+        printf '%s\n' \
+          'APT::Keep-Downloaded-Packages "true";' \
+          'Binary::apt-get::APT::Keep-Downloaded-Packages "true";' \
+          | sudo tee /etc/apt/apt.conf.d/99-playwright-keep-downloads > /dev/null
+        sudo mkdir -p /var/cache/apt/archives
+        restored=("$DEB_CACHE"/*.deb)
+        if (( ${#restored[@]} > 0 )); then
+          sudo cp "${restored[@]}" /var/cache/apt/archives/
+        fi
+        echo "Restored ${#restored[@]} apt archives ($(du -sh "$DEB_CACHE" | cut -f1))"
+
+        pnpm exec playwright install --with-deps chromium
+
+        collected=(/var/cache/apt/archives/*.deb)
+        if (( ${#collected[@]} > 0 )); then
+          cp "${collected[@]}" "$DEB_CACHE/"
+          echo "has-debs=true" >> "$GITHUB_OUTPUT"
+        fi
+        echo "Collected ${#collected[@]} apt archives ($(du -sh "$DEB_CACHE" | cut -f1))"
+
+    - name: Save apt archives
+      if: steps.restore.outputs.cache-hit != 'true' && steps.install.outputs.has-debs == 'true'
+      uses: actions/cache/save@v4
+      continue-on-error: true
+      with:
+        path: ${{ runner.temp }}/playwright-debs
+        key: ${{ steps.key.outputs.cache-key }}

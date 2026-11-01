@@ -14,7 +14,7 @@ describe("website CI contract", () => {
     expect(website).toEqual({
       name: "Website",
       "runs-on": "ubuntu-latest",
-      "timeout-minutes": 20,
+      "timeout-minutes": 40,
       defaults: { run: { "working-directory": "website" } },
       steps: [
         { name: "Checkout", uses: "actions/checkout@v4" },
@@ -26,7 +26,11 @@ describe("website CI contract", () => {
         { name: "Install pinned pnpm", run: "npm install --global pnpm@11.18.0" },
         { name: "Install website dependencies", run: "pnpm install --frozen-lockfile" },
         { name: "Test website transforms", run: "pnpm run test:unit" },
-        { name: "Install Chromium", run: "pnpm exec playwright install --with-deps chromium" },
+        {
+          name: "Install Chromium",
+          uses: "./.github/actions/install-chromium",
+          with: { directory: "website" },
+        },
         {
           name: "Build docs site (check-asides -> sync-content -> astro build -> check-links)",
           run: "pnpm run build",
