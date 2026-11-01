@@ -277,6 +277,8 @@ describe("recorded audio through actual Chat, Composer, ordinary uploads and sub
         expect(recordingStatus).toHaveClass("sr-only");
         expect(recordingStatus.getBoundingClientRect().width).toBeLessThanOrEqual(1);
         expect(getComputedStyle(captureRow.querySelector(".voice-time")!).fontSize).toBe("10px");
+        expect(getComputedStyle(captureRow.querySelector(".capture-meter")!).touchAction).toBe("auto");
+        expect(getComputedStyle(captureRow.querySelector(".capture-meter")!).cursor).not.toBe("pointer");
         const captureSurface = getComputedStyle(captureRow, "::before");
         const fileChip = view.container.querySelector(".attachment-chip")!;
         expect(parseFloat(captureSurface.height)).toBe(fileChip.getBoundingClientRect().height);
@@ -340,6 +342,8 @@ describe("recorded audio through actual Chat, Composer, ordinary uploads and sub
         const audio = screen.getByLabelText("Audio recording.webm");
         expect(audio).not.toHaveAttribute("controls");
         const slider = screen.getByRole("slider", { name: "Seek voice note" });
+        expect(getComputedStyle(slider).touchAction).toBe("none");
+        expect(getComputedStyle(slider).cursor).toBe("pointer");
         expect(view.container.querySelector(".voice-note-time")!.getBoundingClientRect().left).toBeGreaterThanOrEqual(slider.getBoundingClientRect().right + 3);
         await userEvent.click(slider); await userEvent.keyboard("{Home}{ArrowRight}");
         expect(Number(slider.getAttribute("aria-valuenow"))).toBeGreaterThanOrEqual(5);
@@ -427,7 +431,7 @@ describe("recorded audio through actual Chat, Composer, ordinary uploads and sub
     await userEvent.click(screen.getByRole("button", { name: "Cancel recording" }));
     expect(visualFixture.composerRenders).toBeGreaterThan(renders); // The counter observes real context-driven renders.
   });
-  it("keeps capture controls visible when earlier attachments fill the chip scroller", async () => {
+  it("keeps capture controls sticky and tappable after scrolling earlier attachments to the top", async () => {
     await page.viewport(320, 740); seed(created); const view = mount();
     await waitFor(() => expect(store.detail?.thread.id).toBe(created.id));
     for (let index = 0; index < 4; index++) {
@@ -437,12 +441,21 @@ describe("recorded audio through actual Chat, Composer, ordinary uploads and sub
     const row = view.container.querySelector<HTMLElement>(".capture-pill")!;
     const viewport = row.closest<HTMLElement>(".composer-attachments")!;
     expect(viewport.scrollHeight).toBeGreaterThan(viewport.clientHeight);
+    expect(viewport.scrollTop).toBeGreaterThan(0);
+    viewport.scrollTop = 0;
+    await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+    expect(viewport.scrollTop).toBe(0);
+    expect(getComputedStyle(row).position).toBe("sticky");
+    expect(getComputedStyle(row).bottom).toBe("0px");
+    expect(getComputedStyle(row).backgroundColor).not.toBe("rgba(0, 0, 0, 0)");
+    expect(getComputedStyle(row.querySelector(".capture-meter")!).touchAction).toBe("auto");
     const bounds = viewport.getBoundingClientRect();
     for (const button of within(row).getAllByRole("button")) {
       const rect = button.getBoundingClientRect();
       expect(rect.top).toBeGreaterThanOrEqual(bounds.top);
       expect(rect.bottom).toBeLessThanOrEqual(bounds.bottom);
       expect(rect.width).toBeGreaterThanOrEqual(44); expect(rect.height).toBeGreaterThanOrEqual(44);
+      expect(document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2)?.closest("button")).toBe(button);
     }
     await userEvent.click(screen.getByRole("button", { name: "Cancel recording" }));
     expect(row).not.toBeInTheDocument();

@@ -214,7 +214,7 @@ MediaRecorder/AAC rates are far higher. Extreme DTX/ultra-low-bitrate files are 
 accepted residual for owner-only uploads decoded in the owner's local tab, not
 an absolute memory/security guarantee. Unsupported codecs keep neutral bars. Local playback
 starts directly in the Play gesture; remote audio blocked by gesture policy says
-“Tap to play”. Sent transcripts appear as quiet captions beside the matching
+“Tap to play”. Sent transcripts appear as quiet captions beneath the matching
 audio (long captions expand), while stored and model-facing text stays unchanged.
 Explicit playback uses bounded local/same-origin Blob URLs, never autoplay;
 Download keeps the normal forced-download/no-sniff boundary.
