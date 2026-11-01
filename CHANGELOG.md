@@ -5,7 +5,8 @@
 - Add a compact rolling recording meter and visible, seekable voice-note
   waveforms to the web console, with transcript captions beside sent audio and
   accessible playback controls. Keep Stop and playback controls aligned as a
-  recording becomes an attachment, without changing preparation or stored text.
+  recording becomes an attachment. Bound optional waveform decoding separately
+  from playback, without changing preparation or stored text.
 
 - Give never-offered, host-attested owner paragraphs a bounded first claim on
   continuity extraction space once a prior ledger exists, under unchanged

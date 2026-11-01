@@ -1,5 +1,13 @@
 import { VOICE_MAX_BYTES } from "./voice-recorder";
 
+// Optional peaks have a much smaller encoded budget than playback (10 MiB).
+// At a conservative 400 bit/s (one DTX byte per 20ms), 64 KiB represents
+// 1310.72s. At 3000Hz, stereo Float32 PCM is 31,457,280 bytes (30 MiB),
+// or 60 MiB across both native decoder leases. Container overhead adds bitrate.
+// This is a stated bitrate/channel estimate, not a guarantee for hostile codecs.
+export const WAVEFORM_MAX_BYTES = 64 * 1024;
+const PEAK_SAMPLE_RATE = 3000;
+
 export interface Waveform { readonly peaks: readonly number[]; readonly duration: number; }
 /** Max absolute amplitude in each bucket, across every channel (including tails). */
 export function extractPeaks(channels: readonly Float32Array[], count = 48): number[] {
@@ -20,6 +28,10 @@ export function createAudioLoader() {
   let active = 0;
   let decoders = 0;
   const queue: (() => void)[] = [];
+  type Loaded = { blob: Blob; waveform?: Waveform };
+  type Pending = { controller: AbortController; users: number; promise: Promise<Loaded> };
+  // Only live consumers retain this temporary blob; settled entries are removed.
+  const pending = new Map<string, Pending>();
   function release() { const next = queue.shift(); if (next) next(); else active--; }
   async function slot(signal: AbortSignal): Promise<() => void> {
     signal.throwIfAborted();
@@ -62,13 +74,16 @@ export function createAudioLoader() {
     return result.waveform;
   }
   async function decode(blob: Blob, signal: AbortSignal): Promise<{ waveform?: Waveform; cacheable: boolean }> {
-    if (decoders >= 2) return { cacheable: false };
+    // Deliberate budget skips are retryable, not negatively cached codec failures.
+    if (blob.size > WAVEFORM_MAX_BYTES || decoders >= 2) return { cacheable: false };
     if (typeof OfflineAudioContext === "undefined" && typeof AudioContext === "undefined") return { cacheable: true };
     let context: AudioContext | OfflineAudioContext | undefined;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let abort: (() => void) | undefined;
     try {
-      context = typeof OfflineAudioContext !== "undefined" ? new OfflineAudioContext(1, 1, 8000) : new AudioContext();
+      context = typeof OfflineAudioContext !== "undefined" ? new OfflineAudioContext(1, 1, PEAK_SAMPLE_RATE) : new AudioContext({ sampleRate: PEAK_SAMPLE_RATE });
+      // Some implementations ignore requested rates. Never decode at a device rate.
+      if (context.sampleRate !== PEAK_SAMPLE_RATE) return { cacheable: false };
       const interrupted = new Promise<never>((_, reject) => {
         abort = () => reject(new DOMException("Decode cancelled", "AbortError"));
         signal.addEventListener("abort", abort, { once: true }); timer = setTimeout(abort, 8_000);
@@ -88,22 +103,45 @@ export function createAudioLoader() {
       try { if (context && "close" in context) void context.close().catch(() => undefined); } catch { /* already closed */ }
     }
   }
-  /** Visibility/local-file previews discard their blob as soon as peaks exist. */
-  async function prepareWaveform(id: string, file: File | undefined, type: string, signal: AbortSignal): Promise<Waveform | undefined> {
-    if (cache.has(id)) return cachedWaveform(id);
-    return bounded(signal, async signal => {
-      if (cache.has(id)) return cachedWaveform(id);
-      const blob = await audioBlob(id, file, type, signal);
-      signal.throwIfAborted(); return decodeCached(id, blob, signal);
+  function sharedLoad(id: string, file: File | undefined, type: string, signal: AbortSignal): Promise<Loaded> {
+    signal.throwIfAborted();
+    let task = pending.get(id);
+    if (!task) {
+      const controller = new AbortController();
+      const entry: Pending = { controller, users: 0, promise: bounded(controller.signal, async signal => {
+        const blob = await audioBlob(id, file, type, signal);
+        signal.throwIfAborted(); const waveform = await decodeCached(id, blob, signal);
+        signal.throwIfAborted(); return { blob, ...(waveform ? { waveform } : {}) };
+      }).finally(() => { if (pending.get(id) === entry) pending.delete(id); }) };
+      pending.set(id, entry); task = entry;
+    }
+    const entry = task;
+    entry.users++;
+    return new Promise<Loaded>((resolve, reject) => {
+      let settled = false;
+      const finish = () => {
+        settled = true; signal.removeEventListener("abort", abort);
+        if (--entry.users === 0) {
+          if (pending.get(id) === entry) pending.delete(id);
+          entry.controller.abort();
+        }
+      };
+      const abort = () => { if (!settled) { finish(); reject(signal.reason); } };
+      signal.addEventListener("abort", abort, { once: true });
+      entry.promise.then(value => { if (!settled) { finish(); resolve(value); } }, error => { if (!settled) { finish(); reject(error); } });
+      if (signal.aborted) abort();
     });
   }
-  /** Playback may fetch remote audio again; blobs are deliberately not cached. */
-  async function loadAudio(id: string, file: File | undefined, type: string, signal: AbortSignal): Promise<{ blob: Blob; waveform?: Waveform }> {
-    return bounded(signal, async signal => {
-      const blob = await audioBlob(id, file, type, signal);
-      signal.throwIfAborted(); const waveform = await decodeCached(id, blob, signal);
-      signal.throwIfAborted(); return { blob, ...(waveform ? { waveform } : {}) };
-    });
+  /** Visibility/local-file previews discard their blob as soon as peaks exist. */
+  async function prepareWaveform(id: string, file: File | undefined, type: string, signal: AbortSignal): Promise<Waveform | undefined> {
+    signal.throwIfAborted();
+    if (cache.has(id)) return cachedWaveform(id);
+    if (file && file.size > WAVEFORM_MAX_BYTES) return undefined;
+    return (await sharedLoad(id, file, type, signal)).waveform;
+  }
+  /** Concurrent preview/Play share work; later Play may fetch again (no blob cache). */
+  async function loadAudio(id: string, file: File | undefined, type: string, signal: AbortSignal): Promise<Loaded> {
+    return sharedLoad(id, file, type, signal);
   }
   return { cachedWaveform, prepareWaveform, loadAudio };
 }

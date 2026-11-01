@@ -43,10 +43,16 @@ it("aborts pending work on unmount and leaves a neutral waveform on decode failu
   await waitFor(() => expect(HTMLMediaElement.prototype.play).toHaveBeenCalled());
   expect(screen.getByRole("slider")).toHaveAttribute("aria-disabled", "true");
   expect(screen.queryByRole("status")).toBeNull();
+  expect([...screen.getByRole("slider").querySelectorAll<HTMLElement>("i")].every(bar => bar.style.height === "3px")).toBe(true);
 });
 it("keeps upload progress, failure/retry and filename accessibility", () => {
   const retry = vi.fn(); const view = render(<VoiceNote id="a" name="recording.webm" recorded contentType="audio/webm" uploading={45} />);
   expect(screen.getByRole("progressbar")).toHaveValue(45); expect(screen.getByRole("button")).toBeDisabled();
+  expect(screen.getByRole("progressbar").closest('[role="status"]')).toBeNull();
+  expect(screen.getByRole("status")).toHaveTextContent(/^Uploading recording.webm$/);
+  view.rerender(<VoiceNote id="a" name="recording.webm" recorded contentType="audio/webm" uploading={65} />);
+  expect(screen.getByRole("progressbar")).toHaveValue(65);
+  expect(screen.getByRole("status")).toHaveTextContent(/^Uploading recording.webm$/);
   view.rerender(<VoiceNote id="a" name="recording.webm" recorded contentType="audio/webm" failed onRetry={retry} />);
   expect(screen.getByLabelText("Audio attachment: recording.webm")).toBeVisible();
   fireEvent.click(screen.getByRole("button", { name: "Retry upload" })); expect(retry).toHaveBeenCalledTimes(1);
@@ -75,10 +81,10 @@ it("shows remote audio ready for another gesture if async play is rejected", asy
 it("gates remote preparation on visible dwell, aborts on leave and skips saveData", async () => {
   vi.useFakeTimers();
   let observe!: (entries: { isIntersecting: boolean }[]) => void;
-  const disconnect = vi.fn();
+  const disconnect = vi.fn(); const constructed = vi.fn(); const observed = vi.fn();
   vi.stubGlobal("IntersectionObserver", class {
-    constructor(callback: typeof observe) { observe = callback; }
-    observe() {} disconnect = disconnect;
+    constructor(callback: typeof observe) { constructed(); observe = callback; }
+    observe = observed; disconnect = disconnect;
   });
   vi.mocked(prepareWaveform).mockImplementation(() => new Promise(() => {}));
   const view = render(<VoiceNote id="visible" name="garden.ogg" contentType="audio/ogg" />);
@@ -95,11 +101,13 @@ it("gates remote preparation on visible dwell, aborts on leave and skips saveDat
   const signal = vi.mocked(prepareWaveform).mock.calls[0]![3];
   act(() => observe([{ isIntersecting: false }])); expect(signal.aborted).toBe(true);
   view.unmount(); expect(disconnect).toHaveBeenCalledTimes(1);
+  constructed.mockClear(); observed.mockClear();
   Object.defineProperty(navigator, "connection", { configurable: true, value: { saveData: true } });
   try {
     render(<VoiceNote id="save-data" name="garden.ogg" contentType="audio/ogg" />);
     await act(async () => vi.advanceTimersByTimeAsync(300));
     expect(prepareWaveform).toHaveBeenCalledTimes(1); expect(loadAudio).not.toHaveBeenCalled();
+    expect(constructed).not.toHaveBeenCalled(); expect(observed).not.toHaveBeenCalled();
   } finally { Reflect.deleteProperty(navigator, "connection"); }
 });
 

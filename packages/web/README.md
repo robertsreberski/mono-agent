@@ -202,7 +202,12 @@ and the usual remove, upload retry or download actions. Local files decode eager
 without a network request. Remote waveforms decode only after a short visible
 dwell, through a bounded queue; leaving view cancels pending work and Data Saver
 skips automatic remote previews. Only compact peaks/duration are cached, so Play
-may fetch remote audio again. Unsupported codecs keep neutral bars. Local playback
+may fetch remote audio again (concurrent preview/Play share live work, with
+independent cancellation). Optional peak decoding accepts at most 64 KiB at 3kHz;
+larger files keep neutral bars but still play within the 10 MiB playback limit.
+At a conservative 400 bit/s stereo floor this is 30 MiB of Float32 PCM per decode,
+60 MiB across two decoder leases; arbitrary hostile codecs are not covered by
+that bitrate/channel estimate. Unsupported codecs keep neutral bars. Local playback
 starts directly in the Play gesture; remote audio blocked by gesture policy says
 “Tap to play”. Sent transcripts appear as quiet captions beside the matching
 audio (long captions expand), while stored and model-facing text stays unchanged.

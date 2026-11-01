@@ -2664,7 +2664,7 @@ textarea.wake-text { min-height: calc(3lh + 24px); max-height: calc(12lh + 24px)
 @media (pointer: coarse), (max-width: 700px) {
   .capture-pill, .voice-note-player { height: 44px; min-height: 44px; }
   .recording-draft .icon-button, .capture-pill .icon-button, .voice-note .icon-button, .voice-face-slot { width: 44px; height: 44px; min-width: 44px; }
-  .attachment-retry, .voice-caption summary { min-height: 44px; }
+  .attachment-menu .menu-item, .attachment-retry, .voice-caption summary { min-height: 44px; }
   .capture-meter, .voice-waveform { height: 44px; }
   .voice-upload { bottom: 6px; }
 }

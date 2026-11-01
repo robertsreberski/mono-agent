@@ -8,7 +8,7 @@ import {
 } from "@assistant-ui/react";
 import { createContext, useContext, useMemo, type ReactNode } from "react";
 import { useRecordedAudio } from "../recorded-audio-context";
-import { presentTranscripts, type TranscriptPresentation } from "../voice-transcripts";
+import { isAudioAttachment, presentTranscripts, type TranscriptPresentation } from "../voice-transcripts";
 import { VoiceNote } from "./VoiceNote";
 import { type GalleryImage, ImageGrid } from "./ImageGallery";
 import { Icon } from "./Icon";
@@ -38,7 +38,7 @@ function AttachmentChip({ removable }: { readonly removable: boolean }) {
   const id = useAuiState((state) => state.attachment.id);
   const localFile = useAuiState((state) => state.attachment.file);
   const contentType = useAuiState((state) => state.attachment.contentType)?.split(";", 1)[0]?.trim().toLowerCase();
-  const audio = ["audio/webm", "audio/mp4", "audio/ogg"].includes(contentType ?? "");
+  const audio = isAudioAttachment(contentType);
   const recorded = useRecordedAudio();
   const captions = useContext(TranscriptContext)?.captions;
   const content = useAuiState((state) => state.attachment.content);

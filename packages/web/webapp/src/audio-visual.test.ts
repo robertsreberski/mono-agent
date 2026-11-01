@@ -1,6 +1,7 @@
+import { Blob as ReadableBlob } from "node:buffer";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AudioMeter, rmsAmplitude } from "./audio-meter";
-import { cachedWaveform, createAudioLoader, extractPeaks, loadAudio } from "./audio-waveform";
+import { cachedWaveform, createAudioLoader, extractPeaks, loadAudio, WAVEFORM_MAX_BYTES } from "./audio-waveform";
 import { VoiceRecorder } from "./voice-recorder";
 import { FixtureMediaRecorder, installVoiceFixture } from "./test/voice-fixtures";
 import { presentTranscripts } from "./voice-transcripts";
@@ -9,7 +10,7 @@ function contextFixture() {
   const close = vi.fn(async () => {}); const disconnect = vi.fn(); const resume = vi.fn(async () => {});
   const decodeAudioData = vi.fn(async () => ({ duration: 7, numberOfChannels: 1, getChannelData: () => new Float32Array([0, 0.5, -1, 0.2]) }));
   vi.stubGlobal("AudioContext", class {
-    state = "suspended"; close = close; resume = resume; decodeAudioData = decodeAudioData;
+    sampleRate = 3000; state = "suspended"; close = close; resume = resume; decodeAudioData = decodeAudioData;
     createAnalyser() { return { frequencyBinCount: 128, connect: vi.fn(), getByteTimeDomainData: (data: Uint8Array) => data.fill(192), disconnect }; }
     createMediaStreamSource() { return { connect: vi.fn(), disconnect }; }
   });
@@ -60,6 +61,16 @@ describe("optional capture meter ownership", () => {
     expect(update.mock.calls[1]![0].slice(22)).toEqual([0.45, expect.closeTo(0.6975)]);
     meter.dispose();
   });
+  it("warns once and disposes non-fatally when a sampling callback throws", () => {
+    const context = contextFixture(); const error = new Error("Synthetic callback failure");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const meter = new AudioMeter({} as MediaStream, () => { throw error; });
+    const callback = [...context.frames.values()][0]!; context.frames.clear();
+    expect(() => callback(100)).not.toThrow(); callback(200);
+    expect(warn).toHaveBeenCalledExactlyOnceWith("Audio meter sampling stopped.", error);
+    expect(context.close).toHaveBeenCalledOnce(); expect(context.frames.size).toBe(0);
+    meter.dispose();
+  });
   it("is static under reduced motion", () => {
     const context = contextFixture(); vi.stubGlobal("matchMedia", () => ({ matches: true }));
     const meter = new AudioMeter({} as MediaStream, vi.fn()); meter.dispose();
@@ -89,6 +100,98 @@ describe("bounded waveform preparation", () => {
     expect(prepared?.duration).toBe(7);
     expect(await loader.prepareWaveform("local-preview", undefined, "audio/webm", signal)).toBe(prepared);
     expect(context.decodeAudioData).toHaveBeenCalledTimes(1); expect(fetch).not.toHaveBeenCalled();
+  });
+  it("skips over-budget peaks for automatic and Play loads without negative caching or blocking playback", async () => {
+    const context = contextFixture(); const loader = createAudioLoader(); const signal = new AbortController().signal;
+    const large = { size: WAVEFORM_MAX_BYTES + 1, arrayBuffer: vi.fn() } as unknown as File;
+    expect(await loader.prepareWaveform("decode-budget", large, "audio/webm", signal)).toBeUndefined();
+    const result = await loader.loadAudio("decode-budget", large, "audio/webm", signal);
+    expect(result.blob).toBe(large); expect(result.waveform).toBeUndefined();
+    expect(large.arrayBuffer).not.toHaveBeenCalled(); expect(context.decodeAudioData).not.toHaveBeenCalled();
+    expect((await loader.loadAudio("decode-budget", blob(), "audio/webm", signal)).waveform?.duration).toBe(7);
+    expect(context.decodeAudioData).toHaveBeenCalledOnce();
+  });
+  it("also skips over-budget remote decoding when automatic preparation overlaps Play", async () => {
+    const context = contextFixture(); const loader = createAudioLoader(); vi.stubGlobal("Blob", ReadableBlob);
+    const fetch = vi.fn(async () => new Response(new Uint8Array(WAVEFORM_MAX_BYTES + 1))); vi.stubGlobal("fetch", fetch);
+    const signal = new AbortController().signal;
+    const [preview, playback] = await Promise.all([
+      loader.prepareWaveform("large-remote", undefined, "audio/ogg", signal),
+      loader.loadAudio("large-remote", undefined, "audio/ogg", signal),
+    ]);
+    expect(preview).toBeUndefined(); expect(playback.waveform).toBeUndefined();
+    expect(playback.blob.size).toBe(WAVEFORM_MAX_BYTES + 1);
+    expect(context.decodeAudioData).not.toHaveBeenCalled(); expect(fetch).toHaveBeenCalledOnce();
+  });
+  it("requests 3000Hz offline decoding and skips an ignored fallback sample rate", async () => {
+    const context = contextFixture(); const construct = vi.fn();
+    vi.stubGlobal("OfflineAudioContext", class {
+      sampleRate = 3000; decodeAudioData = context.decodeAudioData;
+      constructor(...args: number[]) { construct(...args); }
+    });
+    const loader = createAudioLoader(); const signal = new AbortController().signal;
+    expect((await loader.loadAudio("offline-rate", blob(), "audio/ogg", signal)).waveform?.duration).toBe(7);
+    expect(construct).toHaveBeenCalledExactlyOnceWith(1, 1, 3000);
+    expect(context.close).not.toHaveBeenCalled();
+    vi.stubGlobal("OfflineAudioContext", undefined);
+    vi.stubGlobal("AudioContext", class { sampleRate = 48000; close = context.close; decodeAudioData = context.decodeAudioData; });
+    expect((await loader.loadAudio("ignored-rate", blob(), "audio/ogg", signal)).waveform).toBeUndefined();
+    expect(context.decodeAudioData).toHaveBeenCalledOnce(); expect(context.close).toHaveBeenCalledOnce();
+  });
+  it("shares one live remote fetch and decode between preview and Play", async () => {
+    const context = contextFixture(); const loader = createAudioLoader(); vi.stubGlobal("Blob", ReadableBlob);
+    const fetch = vi.fn(async () => new Response(new Uint8Array([1, 2, 3]))); vi.stubGlobal("fetch", fetch);
+    const signal = new AbortController().signal;
+    const [preview, playback] = await Promise.all([
+      loader.prepareWaveform("shared", undefined, "audio/webm", signal),
+      loader.loadAudio("shared", undefined, "audio/webm", signal),
+    ]);
+    expect(fetch).toHaveBeenCalledOnce(); expect(context.decodeAudioData).toHaveBeenCalledOnce();
+    expect(preview).toBe(playback.waveform); expect(playback.blob.size).toBe(3);
+    // Settled blobs are not cached: a later Play fetches again but reuses peaks.
+    await loader.loadAudio("shared", undefined, "audio/webm", signal);
+    expect(fetch).toHaveBeenCalledTimes(2); expect(context.decodeAudioData).toHaveBeenCalledOnce();
+  });
+  it.each(["preview", "playback"] as const)("detaches aborted %s without cancelling the remaining caller", async cancelled => {
+    const context = contextFixture(); const loader = createAudioLoader(); vi.stubGlobal("Blob", ReadableBlob);
+    let resolve!: (value: Response) => void;
+    const fetch = vi.fn((_url: string, _init?: RequestInit) => new Promise<Response>(done => { resolve = done; })); vi.stubGlobal("fetch", fetch);
+    const previewOwner = new AbortController(); const playbackOwner = new AbortController();
+    const preview = loader.prepareWaveform("shared-abort", undefined, "audio/webm", previewOwner.signal);
+    const playback = loader.loadAudio("shared-abort", undefined, "audio/webm", playbackOwner.signal);
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalledOnce());
+    const rejection = expect(cancelled === "preview" ? preview : playback).rejects.toMatchObject({ name: "AbortError" });
+    (cancelled === "preview" ? previewOwner : playbackOwner).abort(); await rejection;
+    expect(fetch.mock.calls[0]![1]!.signal!.aborted).toBe(false);
+    resolve(new Response(new Uint8Array([1, 2, 3])));
+    const remaining = await (cancelled === "preview" ? playback : preview);
+    expect(remaining).toBeDefined(); expect(context.decodeAudioData).toHaveBeenCalledOnce();
+  });
+  it("keeps an already-running shared decoder alive for the surviving Play caller", async () => {
+    const context = contextFixture(); const loader = createAudioLoader();
+    let resolve!: (value: Awaited<ReturnType<typeof context.decodeAudioData>>) => void;
+    context.decodeAudioData.mockImplementation(() => new Promise(done => { resolve = done; }));
+    const owner = new AbortController();
+    const preview = loader.prepareWaveform("decode-abort", blob(), "audio/webm", owner.signal);
+    const playback = loader.loadAudio("decode-abort", blob(), "audio/webm", new AbortController().signal);
+    await vi.waitFor(() => expect(context.decodeAudioData).toHaveBeenCalledOnce());
+    const rejected = expect(preview).rejects.toMatchObject({ name: "AbortError" }); owner.abort(); await rejected;
+    expect(context.close).not.toHaveBeenCalled();
+    resolve({ duration: 7, numberOfChannels: 1, getChannelData: () => new Float32Array([0.5]) });
+    expect((await playback).waveform?.duration).toBe(7); expect(context.close).toHaveBeenCalledOnce();
+  });
+  it("cancels shared work when its last caller leaves and allows a fresh attempt", async () => {
+    contextFixture(); const loader = createAudioLoader(); vi.stubGlobal("Blob", ReadableBlob); let resolve!: (value: Response) => void;
+    const fetch = vi.fn((_url: string, _init?: RequestInit) => new Promise<Response>(done => { resolve = done; })); vi.stubGlobal("fetch", fetch);
+    const owners = [new AbortController(), new AbortController()];
+    const work = owners.map(owner => loader.prepareWaveform("all-abort", undefined, "audio/webm", owner.signal).catch(error => error));
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalledOnce());
+    owners.forEach(owner => owner.abort()); await Promise.all(work);
+    expect(fetch.mock.calls[0]![1]!.signal!.aborted).toBe(true);
+    resolve(new Response(new Uint8Array([1])));
+    fetch.mockResolvedValue(new Response(new Uint8Array([1, 2, 3])));
+    expect((await loader.prepareWaveform("all-abort", undefined, "audio/webm", new AbortController().signal))?.duration).toBe(7);
+    expect(fetch).toHaveBeenCalledTimes(2);
   });
   it("limits concurrency to two and cancels queued work without fetching", async () => {
     contextFixture(); const prepareQueue = createAudioLoader(); const pending: ((value: Response) => void)[] = [];

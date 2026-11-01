@@ -38,7 +38,7 @@ export class AudioMeter {
             update([...history]);
           }
           if (!this.disposed) this.frame = requestAnimationFrame(sample);
-        } catch { this.dispose(); }
+        } catch (error) { console.warn("Audio meter sampling stopped.", error); this.dispose(); }
       };
       this.frame = requestAnimationFrame(sample);
     } catch { this.dispose(); }

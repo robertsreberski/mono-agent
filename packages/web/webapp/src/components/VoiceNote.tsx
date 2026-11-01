@@ -134,7 +134,7 @@ export function VoiceNote({ id, name, contentType, file, recorded, uploading, fa
       {!failed && <span className="voice-note-time">{uploading !== undefined ? `${Math.round(uploading)}%` : <>{playing || time > 0 ? `${audioTime(time)} / ` : ""}{duration ? audioTime(duration) : "—:—"}</>}</span>}
       <div className="voice-note-actions">{actions}</div>
     </div>
-    {uploading !== undefined && <div className="voice-upload" role="status"><span className="sr-only">Uploading · {Math.round(uploading)}%</span><progress value={uploading} max={100} aria-label={`Uploading ${name}`} /></div>}
+    {uploading !== undefined && <div className="voice-upload"><span className="sr-only" role="status">Uploading {name}</span><progress value={uploading} max={100} aria-label={`Uploading ${name}`} /></div>}
 
     {ready && <p className="voice-ready" role="status">Tap to play</p>}
     {error && <p className="voice-error" role="status">{error}</p>}

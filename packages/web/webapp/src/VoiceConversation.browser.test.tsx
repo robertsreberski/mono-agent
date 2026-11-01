@@ -81,6 +81,7 @@ let store: ReturnType<typeof useConsoleStore>;
 let runtime: NonNullable<ReturnType<typeof useAssistantRuntime>>;
 let uploads: Map<string, import("./types").WebAttachment>;
 let nextUpload = 0;
+const ownedContexts = new Set<AudioContext>();
 let recorded: NonNullable<ReturnType<typeof useRecordedAudio>>;
 function RuntimeProbe() { runtime = useAssistantRuntime()!; recorded = useRecordedAudio()!; return null; }
 const created = thread("voice-created", "alpha", { title: "Synthetic voice conversation" });
@@ -137,7 +138,14 @@ beforeEach(async () => {
   vi.mocked(api.transcribe).mockResolvedValue({ text: "A synthetic voice request." });
   vi.mocked(api.submit).mockImplementation(async (threadId, submissionId) => ({ threadId, submissionId, outcome: "turn" }));
 });
-afterEach(async () => { await commands.emulateColorScheme(null); cleanup(); fixture.restore(); await persistence.clearAll(); localStorage.clear(); resetComposerDraft(); });
+afterEach(async () => {
+  try { cleanup(); }
+  finally {
+    await Promise.all([...ownedContexts].map(context => context.close().catch(() => undefined)));
+    ownedContexts.clear(); vi.restoreAllMocks(); fixture.restore();
+    await commands.emulateColorScheme(null); await persistence.clearAll(); localStorage.clear(); resetComposerDraft();
+  }
+});
 async function openRecordingMenu() {
   // Store readiness precedes the external adapter's passive snapshot update.
   // Chat keys the composer by that snapshot, so an awaited DOM node can already
@@ -213,7 +221,7 @@ describe("recorded audio through actual Chat, Composer, ordinary uploads and sub
         const originalFetch = window.fetch.bind(window);
         const contentFetch = vi.spyOn(window, "fetch").mockImplementation((input, init) => String(input).includes("/uploads/") ? Promise.resolve(new Response(syntheticAudio(), { headers: { "Content-Type": "audio/webm" } })) : originalFetch(input, init));
         // A real MediaStream lets the real analyser construct without device access.
-        const context = new AudioContext();
+        const context = new AudioContext(); ownedContexts.add(context);
         fixture.getUserMedia.mockImplementation(async () => context.createMediaStreamDestination().stream);
         const view = mount();
         await waitFor(() => expect(store.detail?.thread.id).toBe(selected.id));
@@ -232,6 +240,11 @@ describe("recorded audio through actual Chat, Composer, ordinary uploads and sub
         const capture = (state: string) => shot(`${device}-${scheme}-${state}`);
         await userEvent.click(screen.getByRole("button", { name: "Add attachment" }));
         await screen.findByRole("menuitem", { name: "Upload files" });
+        if (width <= 700 || matchMedia("(pointer: coarse)").matches) {
+          for (const item of document.querySelectorAll(".attachment-menu .menu-item")) {
+            expect(item.getBoundingClientRect().height).toBeGreaterThanOrEqual(44);
+          }
+        }
         expect(screen.queryByRole("button", { name: "Record voice message" })).toBeNull();
         await capture("01-menu");
         await userEvent.click(screen.getByRole("menuitem", { name: "Record audio" }));
@@ -381,16 +394,21 @@ describe("recorded audio through actual Chat, Composer, ordinary uploads and sub
         });
         expect(contentFetch.mock.calls.filter(([url]) => String(url).includes("/uploads/")).length).toBeGreaterThanOrEqual(requestsBeforeReload + 2);
         await capture("10-cold-reload-sent");
-        reloaded.unmount(); void context.close().catch(() => undefined); vi.restoreAllMocks();
+        reloaded.unmount(); // Contexts and spies are always released by afterEach.
       });
     }
   }
   it("does not rerender Composer for synthetic meter level updates while typing", async () => {
     seed(created); mount(); await record();
-    const renders = visualFixture.composerRenders;
-    act(() => { for (let i = 0; i < 20; i++) visualFixture.emit(Array(24).fill(i / 20)); });
-    expect(visualFixture.composerRenders).toBe(renders);
-    expect(screen.getByRole("combobox", { name: "Message" })).toBeEnabled();
+    const input = screen.getByRole("combobox", { name: "Message" });
+    let renders = visualFixture.composerRenders;
+    for (const [index, character] of [..."basil"].entries()) {
+      await userEvent.type(input, character);
+      renders = visualFixture.composerRenders; // Typing itself is allowed to render.
+      act(() => { for (let sample = 0; sample < 4; sample++) visualFixture.emit(Array(24).fill((index * 4 + sample) / 20)); });
+      expect(visualFixture.composerRenders).toBe(renders);
+    }
+    expect(input).toHaveValue("basil"); expect(input).toBeEnabled();
     expect(document.querySelector<HTMLElement>(".capture-meter i")!.style.height).toBe("19.15px");
     await userEvent.click(screen.getByRole("button", { name: "Cancel recording" }));
     expect(visualFixture.composerRenders).toBeGreaterThan(renders); // The counter observes real context-driven renders.
