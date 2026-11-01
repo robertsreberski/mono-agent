@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Give never-offered, host-attested owner paragraphs a bounded first claim on
+  continuity extraction space once a prior ledger exists, under unchanged
+  fitting limits and offer retirement. First-ledger fitting is unchanged;
+  source availability does not guarantee representation or recovery.
+
 - Keep the newest owner corrections a continuity pack would show when a derived
   ledger is also rendered: ledger space is now charged to middle owner history,
   not to the newest owners, within unchanged pack and ledger bounds. Packs

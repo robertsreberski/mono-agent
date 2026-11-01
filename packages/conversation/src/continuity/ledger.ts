@@ -284,9 +284,17 @@ export function fitLedgerSelection(selection: LedgerSelection, scope: { currentC
       // After a non-fitting reserved candidate, keep trying older never-offered
       // candidates until the quota is full; unused reservation backfills by rank.
       const fair = [...ranked].filter(s => !s.offers).sort((a, b) => a.ordinal - b.ordinal || a.start - b.start);
+      // Keep first-ledger fitting unchanged. With a prior, only never-offered
+      // exact-attested owner paragraphs get first claim; previously offered
+      // owners keep ordinary eligibility/rank. Bound successful fits by this
+      // cap and the current fair quota, recomputed on each quota retry.
+      // This is not universal same-pass non-preemption: an earlier offer can
+      // consume a source's later analysis window without representing it.
+      const ownerPriority = prior ? ranked.filter(s => !s.offers && spans.get(s.key)!.owner) : [];
+      const ownerQuota = Math.min(cap, quota); let ownerFits = 0;
       let fairFits = 0; const seen = new Set<string>();
-      for (const phase of [fair, ranked]) for (const candidate of phase) {
-        if (selected.length >= cap * 8 || phase === fair && fairFits >= quota) break;
+      for (const phase of [ownerPriority, fair, ranked]) for (const candidate of phase) {
+        if (selected.length >= cap * 8 || phase === fair && fairFits >= quota || phase === ownerPriority && ownerFits >= ownerQuota) break;
         if (seen.has(candidate.key)) continue;
         if (selection.deadline !== undefined && performance.now() >= selection.deadline) { reason = "ledger_scan_capacity"; chosen = []; break capLoop; }
         seen.add(candidate.key);
@@ -301,7 +309,7 @@ export function fitLedgerSelection(selection: LedgerSelection, scope: { currentC
         if (attempts >= 4096) { reason = "ledger_scan_capacity"; chosen = []; break capLoop; }
         attempts++;
         if (projectedLedgerPayloadBytes(probe, scope, prior?.generation) > LEDGER_PAYLOAD_BYTES) { exclude("ledger_payload_budget"); continue; }
-        selected.push(span); used.add(span.recordId); lineage = nextLineage; owners = nextOwners; inputBytes = nextInput; if (phase === fair) fairFits++;
+        selected.push(span); used.add(span.recordId); lineage = nextLineage; owners = nextOwners; inputBytes = nextInput; if (phase === fair) fairFits++; if (phase === ownerPriority) ownerFits++;
       }
       if (fairFits > Math.floor(selected.length / 4)) { quota = Math.floor(selected.length / 4); continue; }
       if (selected.length) { chosen = selected; admittedCap = cap; lineageBytes = lineage; }
