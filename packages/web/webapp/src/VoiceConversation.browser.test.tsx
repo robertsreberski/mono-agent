@@ -14,7 +14,7 @@ import { useRecordedAudio } from "./recorded-audio-context";
 import { FixtureMediaRecorder, installVoiceFixture } from "./test/voice-fixtures";
 import { createThreadPersistence } from "./thread-persistence";
 import type { ThreadSummary, WebMessage } from "./types";
-import { cachedWaveform, extractPeaks } from "./audio-waveform";
+import { cachedWaveform, extractPeaks, prepareWaveform, WAVEFORM_MAX_BYTES } from "./audio-waveform";
 import { syntheticAudio } from "./test/synthetic-audio";
 import "./styles.css";
 
@@ -183,6 +183,20 @@ function message(id: string, threadId: string, role: WebMessage["role"], text: s
   return { id, threadId, role, parts: [{ type: "text", text }], attachments: [], status: "complete", seq: 0,
     createdAt: "2026-07-17T10:00:00.000Z", updatedAt: "2026-07-17T10:00:00.000Z" };
 }
+
+it("really decodes a 60-second waveform larger than the former 64KiB cap", async () => {
+  const bytes = syntheticAudio(60);
+  expect(bytes.byteLength).toBe(360_044);
+  expect(bytes.byteLength).toBeGreaterThan(64 * 1024);
+  expect(bytes.byteLength).toBeLessThanOrEqual(WAVEFORM_MAX_BYTES);
+  const file = new File([bytes], "long-synthetic.wav", { type: "audio/wav" });
+  const waveform = await prepareWaveform("long-browser-note", file, file.type, new AbortController().signal);
+  expect(waveform).toBeDefined();
+  expect(Number.isFinite(waveform!.duration)).toBe(true); expect(waveform!.duration).toBeCloseTo(60, 2);
+  expect(waveform!.peaks).toHaveLength(48);
+  expect(Math.max(...waveform!.peaks)).toBeGreaterThan(0.5);
+  expect(Math.max(...waveform!.peaks) - Math.min(...waveform!.peaks)).toBeGreaterThan(0.1);
+});
 
 it("synthetic levels respect reduced motion and permission/attaching fit narrow screens", async () => {
   await page.viewport(320, 740); await commands.emulateReducedMotion("reduce");

@@ -203,11 +203,16 @@ without a network request. Remote waveforms decode only after a short visible
 dwell, through a bounded queue; leaving view cancels pending work and Data Saver
 skips automatic remote previews. Only compact peaks/duration are cached, so Play
 may fetch remote audio again (concurrent preview/Play share live work, with
-independent cancellation). Optional peak decoding accepts at most 64 KiB at 3kHz;
-larger files keep neutral bars but still play within the 10 MiB playback limit.
-At a conservative 400 bit/s stereo floor this is 30 MiB of Float32 PCM per decode,
-60 MiB across two decoder leases; arbitrary hostile codecs are not covered by
-that bitrate/channel estimate. Unsupported codecs keep neutral bars. Local playback
+independent cancellation). Optional peak decoding accepts at most 2 MiB at 3kHz
+(about 8 minutes at 32 kbit/s or 4 minutes at 64 kbit/s). A single fetch/decode
+queue and native decoder lease serialize previews, including a lease retained
+until a timed-out native decoder settles. Larger files keep neutral bars but
+still play within the 10 MiB playback limit. At the >= 6 kbit/s Opus nominal
+minimum design floor, 2 MiB / 750 B/s is about 2796 seconds; 3000Hz × stereo ×
+4-byte Float32 is about 67 MB (64 MiB) of output PCM for that one lease.
+MediaRecorder/AAC rates are far higher. Extreme DTX/ultra-low-bitrate files are an
+accepted residual for owner-only uploads decoded in the owner's local tab, not
+an absolute memory/security guarantee. Unsupported codecs keep neutral bars. Local playback
 starts directly in the Play gesture; remote audio blocked by gesture policy says
 “Tap to play”. Sent transcripts appear as quiet captions beside the matching
 audio (long captions expand), while stored and model-facing text stays unchanged.

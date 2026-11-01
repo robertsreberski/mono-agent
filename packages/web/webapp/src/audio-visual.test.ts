@@ -8,7 +8,7 @@ import { presentTranscripts } from "./voice-transcripts";
 
 function contextFixture() {
   const close = vi.fn(async () => {}); const disconnect = vi.fn(); const resume = vi.fn(async () => {});
-  const decodeAudioData = vi.fn(async () => ({ duration: 7, numberOfChannels: 1, getChannelData: () => new Float32Array([0, 0.5, -1, 0.2]) }));
+  const decodeAudioData = vi.fn(async (_bytes: ArrayBuffer) => ({ duration: 7, numberOfChannels: 1, getChannelData: () => new Float32Array([0, 0.5, -1, 0.2]) }));
   vi.stubGlobal("AudioContext", class {
     sampleRate = 3000; state = "suspended"; close = close; resume = resume; decodeAudioData = decodeAudioData;
     createAnalyser() { return { frequencyBinCount: 128, connect: vi.fn(), getByteTimeDomainData: (data: Uint8Array) => data.fill(192), disconnect }; }
@@ -100,6 +100,17 @@ describe("bounded waveform preparation", () => {
     expect(prepared?.duration).toBe(7);
     expect(await loader.prepareWaveform("local-preview", undefined, "audio/webm", signal)).toBe(prepared);
     expect(context.decodeAudioData).toHaveBeenCalledTimes(1); expect(fetch).not.toHaveBeenCalled();
+  });
+  it("decodes a realistic 480KB two-minute note instead of treating it as over budget", async () => {
+    const context = contextFixture(); const loader = createAudioLoader(); const signal = new AbortController().signal;
+    context.decodeAudioData.mockResolvedValue({ duration: 120, numberOfChannels: 1, getChannelData: () => new Float32Array([0.1, 0.7, -0.5]) });
+    const file = { size: 480_000, arrayBuffer: async () => new ArrayBuffer(480_000) } as File;
+    const waveform = await loader.prepareWaveform("two-minute-note", file, "audio/webm", signal);
+    expect(waveform?.duration).toBe(120); expect(waveform?.peaks.some(peak => peak > 0.5)).toBe(true);
+    expect(context.decodeAudioData).toHaveBeenCalledOnce();
+    expect(context.decodeAudioData.mock.calls[0]![0].byteLength).toBe(480_000);
+    expect((await loader.loadAudio("two-minute-note", file, "audio/webm", signal)).blob).toBe(file);
+    expect(context.decodeAudioData).toHaveBeenCalledOnce();
   });
   it("skips over-budget peaks for automatic and Play loads without negative caching or blocking playback", async () => {
     const context = contextFixture(); const loader = createAudioLoader(); const signal = new AbortController().signal;
@@ -193,17 +204,21 @@ describe("bounded waveform preparation", () => {
     expect((await loader.prepareWaveform("all-abort", undefined, "audio/webm", new AbortController().signal))?.duration).toBe(7);
     expect(fetch).toHaveBeenCalledTimes(2);
   });
-  it("limits concurrency to two and cancels queued work without fetching", async () => {
-    contextFixture(); const prepareQueue = createAudioLoader(); const pending: ((value: Response) => void)[] = [];
+  it("serializes previews and cancels queued work without fetching", async () => {
+    const context = contextFixture(); vi.stubGlobal("Blob", ReadableBlob); const prepareQueue = createAudioLoader(); const pending: ((value: Response) => void)[] = [];
     const fetch = vi.fn(() => new Promise<Response>(resolve => pending.push(resolve))); vi.stubGlobal("fetch", fetch);
     const controllers = Array.from({ length: 3 }, () => new AbortController());
     const loads = controllers.map((controller, i) => prepareQueue.prepareWaveform(`queue-${i}`, undefined, "audio/webm", controller.signal).catch(() => undefined));
-    await Promise.resolve(); await Promise.resolve(); expect(fetch).toHaveBeenCalledTimes(2);
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
     controllers[2]!.abort();
-    for (const resolve of pending) resolve(new Response(new Uint8Array([1, 2, 3])));
-    await Promise.all(loads); expect(fetch).toHaveBeenCalledTimes(2);
+    pending[0]!(new Response(new Uint8Array([1, 2, 3])));
+    await loads[0]; await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
+    pending[1]!(new Response(new Uint8Array([1, 2, 3])));
+    const results = await Promise.all(loads); expect(fetch).toHaveBeenCalledTimes(2);
+    expect(context.decodeAudioData).toHaveBeenCalledTimes(2);
+    expect(results.slice(0, 2).every(result => result?.duration === 7)).toBe(true);
   });
-  it("times out without allowing orphaned native decodes to exceed two", async () => {
+  it("retains the single native decoder lease after timeout until it really settles", async () => {
     vi.useFakeTimers(); const context = contextFixture();
     type Decoded = Awaited<ReturnType<typeof context.decodeAudioData>>;
     const pending: ((value: Decoded) => void)[] = [];
@@ -211,14 +226,14 @@ describe("bounded waveform preparation", () => {
     const loads = ["timeout-a", "timeout-b"].map(id => loadAudio(id, blob(), "audio/webm", new AbortController().signal));
     await vi.advanceTimersByTimeAsync(8001);
     expect((await Promise.all(loads)).every(result => result.waveform === undefined)).toBe(true);
-    expect(context.close).toHaveBeenCalledTimes(2);
+    expect(context.close).toHaveBeenCalledTimes(1);
     await loadAudio("timeout-c", blob(), "audio/webm", new AbortController().signal);
-    expect(context.decodeAudioData).toHaveBeenCalledTimes(2);
+    expect(context.decodeAudioData).toHaveBeenCalledTimes(1);
     pending.forEach(resolve => resolve({ duration: 1, numberOfChannels: 1, getChannelData: () => new Float32Array([0.2]) }));
     await vi.advanceTimersByTimeAsync(0);
     context.decodeAudioData.mockResolvedValue({ duration: 1, numberOfChannels: 1, getChannelData: () => new Float32Array([0.2]) });
     const retried = await loadAudio("timeout-c", blob(), "audio/webm", new AbortController().signal);
-    expect(retried.waveform?.duration).toBe(1); expect(context.decodeAudioData).toHaveBeenCalledTimes(3);
+    expect(retried.waveform?.duration).toBe(1); expect(context.decodeAudioData).toHaveBeenCalledTimes(2);
   });
   it("bounds the compact peak cache and enforces the existing byte cap", async () => {
     contextFixture();

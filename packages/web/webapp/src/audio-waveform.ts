@@ -1,11 +1,12 @@
 import { VOICE_MAX_BYTES } from "./voice-recorder";
 
-// Optional peaks have a much smaller encoded budget than playback (10 MiB).
-// At a conservative 400 bit/s (one DTX byte per 20ms), 64 KiB represents
-// 1310.72s. At 3000Hz, stereo Float32 PCM is 31,457,280 bytes (30 MiB),
-// or 60 MiB across both native decoder leases. Container overhead adds bitrate.
-// This is a stated bitrate/channel estimate, not a guarantee for hostile codecs.
-export const WAVEFORM_MAX_BYTES = 64 * 1024;
+// Peaks accept 2 MiB (about 8/4 minutes at 32/64 kbit/s); playback accepts 10 MiB.
+// Design floor: >= 6 kbit/s (Opus nominal minimum; recorder/AAC rates are higher).
+// 2 MiB / 750 B/s = 2796.2s; 3000Hz * stereo * 4-byte Float32 = 67,108,864 B
+// (~67 MB / 64 MiB) for the SINGLE native decode lease, including after timeout.
+// Extreme DTX/ultra-low-bitrate files are an accepted residual: owner-only uploads
+// decoded in the owner's local tab, not an absolute memory/security guarantee.
+export const WAVEFORM_MAX_BYTES = 2 * 1024 * 1024;
 const PEAK_SAMPLE_RATE = 3000;
 
 export interface Waveform { readonly peaks: readonly number[]; readonly duration: number; }
@@ -25,6 +26,7 @@ export function extractPeaks(channels: readonly Float32Array[], count = 48): num
 export function createAudioLoader() {
   // Only compact peaks are retained, never blobs/URLs/decoded PCM. Bounded LRU.
   const cache = new Map<string, Waveform | null>();
+  // Serialize ordinary fetch/decode work so concurrent previews wait, not skip.
   let active = 0;
   let decoders = 0;
   const queue: (() => void)[] = [];
@@ -35,7 +37,7 @@ export function createAudioLoader() {
   function release() { const next = queue.shift(); if (next) next(); else active--; }
   async function slot(signal: AbortSignal): Promise<() => void> {
     signal.throwIfAborted();
-    if (active >= 2) await new Promise<void>((resolve, reject) => {
+    if (active >= 1) await new Promise<void>((resolve, reject) => {
       const enter = () => { signal.removeEventListener("abort", abort); resolve(); };
       const abort = () => { const index = queue.indexOf(enter); if (index >= 0) queue.splice(index, 1); reject(signal.reason); };
       signal.addEventListener("abort", abort, { once: true }); queue.push(enter);
@@ -75,7 +77,7 @@ export function createAudioLoader() {
   }
   async function decode(blob: Blob, signal: AbortSignal): Promise<{ waveform?: Waveform; cacheable: boolean }> {
     // Deliberate budget skips are retryable, not negatively cached codec failures.
-    if (blob.size > WAVEFORM_MAX_BYTES || decoders >= 2) return { cacheable: false };
+    if (blob.size > WAVEFORM_MAX_BYTES || decoders >= 1) return { cacheable: false };
     if (typeof OfflineAudioContext === "undefined" && typeof AudioContext === "undefined") return { cacheable: true };
     let context: AudioContext | OfflineAudioContext | undefined;
     let timer: ReturnType<typeof setTimeout> | undefined;
