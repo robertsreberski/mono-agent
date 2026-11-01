@@ -1,7 +1,9 @@
 import { vi } from "vitest";
 
-/** Synthetic fixture only: these bytes exercise lifecycle, not audio decoding. */
+/** Synthetic fixture only. Default bytes test lifecycle; visual suites may
+ * override them with generated encoded WAVE audio (not a claimed WebM capture). */
 export class FixtureMediaRecorder {
+  static audioBytes: Uint8Array<ArrayBuffer> | undefined;
   static supported = ["audio/webm;codecs=opus"];
   static instances: FixtureMediaRecorder[] = [];
   static isTypeSupported(type: string) { return this.supported.includes(type); }
@@ -18,7 +20,7 @@ export class FixtureMediaRecorder {
   stop() {
     this.state = "inactive";
     queueMicrotask(() => {
-      this.chunk(new Blob([new Uint8Array([0x1a, 0x45, 0xdf, 0xa3, 1, 2, 3])], { type: this.mimeType }));
+      this.chunk(new Blob([FixtureMediaRecorder.audioBytes ?? new Uint8Array([0x1a, 0x45, 0xdf, 0xa3, 1, 2, 3])], { type: this.mimeType }));
       this.onstop?.();
     });
   }
@@ -35,6 +37,7 @@ export function installVoiceFixture(permission?: () => Promise<MediaStream>) {
   vi.stubGlobal("MediaRecorder", FixtureMediaRecorder);
   FixtureMediaRecorder.supported = ["audio/webm;codecs=opus"];
   FixtureMediaRecorder.instances = [];
+  FixtureMediaRecorder.audioBytes = undefined;
   return { stop, stream, getUserMedia, restore: () => {
     if (descriptor) Object.defineProperty(navigator, "mediaDevices", descriptor);
     else Reflect.deleteProperty(navigator, "mediaDevices");

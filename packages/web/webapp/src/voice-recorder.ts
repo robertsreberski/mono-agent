@@ -1,3 +1,5 @@
+import { AudioMeter } from "./audio-meter";
+
 export const VOICE_MAX_BYTES = 10 * 1024 * 1024;
 const CANDIDATES = ["audio/webm;codecs=opus", "audio/mp4;codecs=mp4a.40.2", "audio/mp4", "audio/ogg;codecs=opus"] as const;
 
@@ -17,6 +19,7 @@ export function voiceUnavailableReason(): string | undefined {
 
 interface RecorderCallbacks {
   readonly recording: () => void;
+  readonly levels?: (levels: readonly number[]) => void;
   readonly elapsed: (seconds: number) => void;
   readonly ready: (audio: Blob) => void;
   readonly error: (message: string) => void;
@@ -26,6 +29,7 @@ interface RecorderCallbacks {
 export class VoiceRecorder {
   private disposed = false;
   private stream?: MediaStream;
+  private meter?: AudioMeter;
   private recorder?: MediaRecorder;
   private timer?: ReturnType<typeof setInterval>;
   private chunks: Blob[] = [];
@@ -62,6 +66,7 @@ export class VoiceRecorder {
         this.callbacks.ready(audio);
       };
       recorder.start(250);
+      if (this.callbacks.levels) this.meter = new AudioMeter(stream, this.callbacks.levels);
       this.callbacks.recording();
       const start = performance.now();
       this.timer = setInterval(() => {
@@ -75,6 +80,8 @@ export class VoiceRecorder {
         : "Microphone unavailable. Check the device and browser, then record again.");
     }
   }
+
+  resumeVisualization(): void { this.meter?.resume(); }
 
   stop(): void {
     if (this.timer) clearInterval(this.timer);
@@ -96,6 +103,7 @@ export class VoiceRecorder {
     this.stream = undefined;
   }
   private releaseCapture(): void {
+    this.meter?.dispose(); this.meter = undefined;
     if (this.timer) clearInterval(this.timer);
     this.timer = undefined;
     this.stream?.getTracks().forEach((track) => track.stop());

@@ -7,3 +7,8 @@ type Story = StoryObj<typeof UserMessage>;
 export const PlainText: Story = { render: () => <Transcript messages={[sampleMessages[0]!]} /> };
 export const LongText: Story = { render: () => <Transcript messages={[{ role: "user", content: "Morgan wants a fictional garden layout. ".repeat(20) }]} /> };
 export const Mobile: Story = { render: () => <Transcript messages={[sampleMessages[0]!]} />, globals: { viewport: { value: "phone" } } };
+
+export const VoiceTranscript: Story = { render: () => <Transcript messages={[{
+  role: "user", content: 'Keep the herbs.\n\nAudio transcript 1 ("recording.webm"):\nAdd basil and keep mint in its own pot.',
+  attachments: [{ id: "synthetic-sent-voice", type: "file", name: "recording.webm", contentType: "audio/webm", status: { type: "complete" }, content: [{ type: "file", data: "#synthetic-download", mimeType: "audio/webm" }] }],
+}]} /> };

@@ -123,7 +123,8 @@ User Stop also marks a running `AskUser` question as interrupted; answer in a ne
 
 ### Voice messages (opt-in)
 
-Use **paperclip → Record audio → Stop recording** to add a normal removable
+Use **paperclip → Record audio → Stop recording** (the round square-icon button)
+to add a normal removable
 audio attachment. Keep typing or add other files, then use the ordinary **Send**.
 Stop never submits. There is no separate voice composer or voice-only Send.
 Only recordings made through Record audio are automatically transcribed; audio
@@ -191,6 +192,39 @@ progress, removal and recovery. Staged files expire under the normal 24-hour
 policy; after Send, audio is retained as a normal committed conversation
 attachment, alongside transcript text. It is not persisted in browser storage.
 There are no server-side recording markers, transcript caches or preparation jobs.
+The composer shows a compact recording pill with rolling microphone-amplitude
+history, elapsed time, leading Stop and trailing Discard, aligned in place with
+the finished voice note. Recording status remains available to assistive tech
+without a visible label. Reduced-motion preferences keep the meter
+static. A compact, single-row voice note replaces native audio controls in drafts
+and sent messages: Play / Pause, keyboard- and pointer-seekable waveform, duration,
+and the usual remove, upload retry or download actions. Local files decode eagerly
+without a network request. Remote waveforms decode only after a short visible
+dwell, through a consumer-cancellable queue; leaving view cancels pending work
+and Data Saver skips automatic remote previews. Only compact peaks/duration and
+skip metadata are cached, so Play
+may fetch remote audio again (concurrent preview/Play share live work, with
+independent cancellation). Preview-only transfers stop at 2 MiB, checking both
+Content-Length and streamed bytes. An immutable oversize marker in the bounded
+32-entry compact cache prevents re-visibility from refetching while retained.
+Play upgrades shared work to the
+10 MiB playback limit (or retries if the preview already hit its cap); cancelling
+Play restores the smaller budget for remaining preview consumers. Queue wait has
+no deadline: the 30-second load/decode deadline starts after acquiring the slot,
+while queued work is cancelled only when all its consumers leave.
+Optional peak decoding accepts at most 2 MiB at 3kHz
+(about 8 minutes at 32 kbit/s or 4 minutes at 64 kbit/s). A single fetch/decode
+queue and native decoder lease serialize previews, including a lease retained
+until a timed-out native decoder settles. Larger files keep neutral bars but
+still play within the 10 MiB playback limit. At the >= 6 kbit/s Opus nominal
+minimum design floor, 2 MiB / 750 B/s is about 2796 seconds; 3000Hz × stereo ×
+4-byte Float32 is about 67 MB (64 MiB) of output PCM for that one lease.
+MediaRecorder/AAC rates are far higher. Extreme DTX/ultra-low-bitrate files are an
+accepted residual for owner-only uploads decoded in the owner's local tab, not
+an absolute memory/security guarantee. Unsupported codecs keep neutral bars. Local playback
+starts directly in the Play gesture; remote audio blocked by gesture policy says
+“Tap to play”. Sent transcripts appear as quiet captions beneath the matching
+audio (long captions expand), while stored and model-facing text stays unchanged.
 Explicit playback uses bounded local/same-origin Blob URLs, never autoplay;
 Download keeps the normal forced-download/no-sniff boundary.
 

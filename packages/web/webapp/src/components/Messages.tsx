@@ -38,7 +38,7 @@ import type {
   RunAttribution as RunAttributionValue,
   RestartProposalPart as RestartProposalValue,
 } from "../types";
-import { UserMessageAttachments } from "./Attachments";
+import { UserMessageAttachments, VoiceMessagePresentation, usePresentedUserText } from "./Attachments";
 import {
   ACTIVITY_DATA_PARTS,
   ACTIVITY_GROUP_BY,
@@ -1498,15 +1498,23 @@ function AssistantParts() {
   );
 }
 
+function UserText() {
+  const presentation = usePresentedUserText();
+  if (!presentation?.captions.size) return <MarkdownText />;
+  if (!presentation.text) return null;
+  return <MarkdownTextPrimitive className="markdown" data-aui-quote-selectable components={MARKDOWN_COMPONENTS} remarkPlugins={MARKDOWN_REMARK_PLUGINS} preprocess={() => presentation.text} />;
+}
+const userParts = { ...parts, Text: UserText };
+
 export function UserMessage() {
   return (
     <>
     <MessagePrimitive.Root className="message message-user">
       <MessageGallery>
-        <div className="message-user-content">
+        <VoiceMessagePresentation><div className="message-user-content">
           <UserMessageAttachments />
-          <MessagePrimitive.Parts components={parts} />
-        </div>
+          <MessagePrimitive.Parts components={userParts} />
+        </div></VoiceMessagePresentation>
       </MessageGallery>
       <LiveInputStatus />
       <MessageActions label="Copy message" />

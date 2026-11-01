@@ -24,7 +24,7 @@ import {
   ComposerTriggerPopover,
   type ComposerTriggerCommand,
 } from "./assistant-ui/ComposerTriggerPopover";
-import { AttachmentMenu, RecordingDraft, useUnattachedRecording, useVoiceBusy } from "./VoiceComposer";
+import { AttachmentMenu, RecordingCapture, RecordingDraft, useUnattachedRecording, useVoiceBusy } from "./VoiceComposer";
 import { Icon } from "./Icon";
 import { useRecordedAudio } from "../recorded-audio-context";
 import { ComposerQuotePreview } from "./assistant-ui/Quote";
@@ -274,7 +274,7 @@ export function Composer({ runSettings, notice }: {
           disabled={!canUpload || voiceBusy}
         >
           <AttachmentErrorListener />
-          <ComposerAttachments />
+          <ComposerAttachments><RecordingCapture /></ComposerAttachments>
           <RecordingDraft />
           <div className="composer-input-row">
             <ComposerPrimitive.Input
