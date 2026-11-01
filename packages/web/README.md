@@ -192,13 +192,17 @@ progress, removal and recovery. Staged files expire under the normal 24-hour
 policy; after Send, audio is retained as a normal committed conversation
 attachment, alongside transcript text. It is not persisted in browser storage.
 There are no server-side recording markers, transcript caches or preparation jobs.
-The composer shows a compact recording pill with microphone-driven levels, elapsed
-time, Stop and Discard. Reduced-motion preferences keep the meter static. A
-voice-note tile replaces native audio controls in drafts and sent messages: Play /
-Pause, keyboard- and pointer-seekable waveform, duration, and the usual remove,
-upload retry or download actions. Waveforms decode actual audio only on first
-Play, never by downloading a conversation's audio on load; unsupported codecs
-keep neutral bars. Sent transcripts appear as quiet captions beside the matching
+The composer shows a compact recording pill with rolling microphone-amplitude
+history, elapsed time, Stop and Discard. Reduced-motion preferences keep the meter
+static. A compact, single-row voice note replaces native audio controls in drafts
+and sent messages: Play / Pause, keyboard- and pointer-seekable waveform, duration,
+and the usual remove, upload retry or download actions. Local files decode eagerly
+without a network request. Remote waveforms decode only after a short visible
+dwell, through a bounded queue; leaving view cancels pending work and Data Saver
+skips automatic remote previews. Only compact peaks/duration are cached, so Play
+may fetch remote audio again. Unsupported codecs keep neutral bars. Local playback
+starts directly in the Play gesture; remote audio blocked by gesture policy says
+“Tap to play”. Sent transcripts appear as quiet captions beside the matching
 audio (long captions expand), while stored and model-facing text stays unchanged.
 Explicit playback uses bounded local/same-origin Blob URLs, never autoplay;
 Download keeps the normal forced-download/no-sniff boundary.

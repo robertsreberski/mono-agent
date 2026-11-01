@@ -1,3 +1,10 @@
+/** Normalized time-domain RMS; byte midpoint is silence, never a frequency bin. */
+export function rmsAmplitude(data: Uint8Array): number {
+  let sum = 0;
+  for (const sample of data) sum += ((sample - 128) / 128) ** 2;
+  return data.length ? Math.sqrt(sum / data.length) : 0;
+}
+
 /** Optional, capture-owned visualization. It never owns or stops stream tracks. */
 export class AudioMeter {
   private context?: AudioContext;
@@ -13,25 +20,22 @@ export class AudioMeter {
       const analyser = context.createAnalyser();
       this.analyser = analyser;
       analyser.fftSize = 256;
-      analyser.smoothingTimeConstant = 0.75;
       this.source = context.createMediaStreamSource(stream);
       this.source.connect(analyser); // Never connect microphone capture to speakers.
       this.resume();
-      const data = new Uint8Array(analyser.frequencyBinCount);
+      const data = new Uint8Array(analyser.fftSize);
+      const history = Array<number>(24).fill(0.04);
+      let amplitude = 0;
       let previous = 0;
       const sample = (time: number) => {
         if (this.disposed) return;
         try {
-          if (time - previous >= 80) {
+          if (time - previous >= 90) {
             previous = time;
-            analyser.getByteFrequencyData(data);
-            update(Array.from({ length: 24 }, (_, index) => {
-              const start = Math.floor(index * data.length / 24);
-              const end = Math.max(start + 1, Math.floor((index + 1) * data.length / 24));
-              let sum = 0;
-              for (let i = start; i < end; i++) sum += data[i]!;
-              return sum / (end - start) / 255;
-            }));
+            analyser.getByteTimeDomainData(data);
+            amplitude = amplitude * 0.55 + Math.min(1, rmsAmplitude(data) * 3) * 0.45;
+            history.shift(); history.push(Math.max(0.04, amplitude));
+            update([...history]);
           }
           if (!this.disposed) this.frame = requestAnimationFrame(sample);
         } catch { this.dispose(); }

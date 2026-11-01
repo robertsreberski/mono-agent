@@ -1,6 +1,7 @@
 import { ComposerPrimitive, useAssistantRuntime, useAuiState } from "@assistant-ui/react";
 import { Menu } from "@base-ui/react/menu";
-import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import { createAudioLevelStore } from "../audio-level-store";
 import { useConsoleStore } from "../console-store";
 import { useRecordedAudio } from "../recorded-audio-context";
 import { recordingFile, VoiceRecorder, voiceUnavailableReason } from "../voice-recorder";
@@ -10,7 +11,6 @@ type CapturePhase = "idle" | "permission" | "recording" | "attaching";
 interface CaptureState {
   readonly phase: CapturePhase;
   readonly seconds: number;
-  readonly levels: readonly number[];
   resumeVisualization(): void;
   readonly error?: string;
   readonly blocked?: string;
@@ -19,6 +19,8 @@ interface CaptureState {
   stop(): void;
   cancel(): void;
 }
+const emptyLevels = createAudioLevelStore();
+const LevelContext = createContext(emptyLevels);
 const CaptureContext = createContext<CaptureState | null>(null);
 
 /** Capture stays above keyed Composer. Submission belongs only to normal Send. */
@@ -29,7 +31,7 @@ export function VoiceComposerScope({ children, unavailableReason }: { readonly c
   const recorded = useRecordedAudio();
   const [phase, setPhase] = useState<CapturePhase>("idle");
   const [seconds, setSeconds] = useState(0);
-  const [levels, setLevels] = useState<readonly number[]>([]);
+  const [levelStore] = useState(createAudioLevelStore);
   const [error, setError] = useState<string>();
   const [finished, setFinished] = useState<{ file: File; generation: number; sourceId: string | null; threadId: string | null }>();
   const capture = useRef<VoiceRecorder | undefined>(undefined);
@@ -101,10 +103,10 @@ export function VoiceComposerScope({ children, unavailableReason }: { readonly c
     const owns = () => token === epoch.current && current.current.selectionGeneration === generation
       && current.current.selectedAgentId === sourceId && current.current.selectedThreadId === threadId && current.current.conversationVisible;
     target.current = owns;
-    setError(undefined); setSeconds(0); setLevels([]); setPhase("permission");
+    setError(undefined); setSeconds(0); levelStore.publish([]); setPhase("permission");
     const recorder = new VoiceRecorder({
       recording: () => { if (owns()) setPhase("recording"); },
-      levels: (values) => { if (owns()) setLevels(values); },
+      levels: (values) => { if (owns()) levelStore.publish(values); },
       elapsed: (value) => { if (owns()) setSeconds(value); },
       error: (message) => { if (owns()) { cleanup(); setError(message); setPhase("idle"); } },
       ready: (blob) => {
@@ -130,7 +132,7 @@ export function VoiceComposerScope({ children, unavailableReason }: { readonly c
     capture.current = recorder;
     void recorder.start();
   };
-  return <CaptureContext.Provider value={{ phase, seconds, levels, resumeVisualization: () => capture.current?.resumeVisualization(), error, blocked, retryAttachment: finished ? () => void retryAttachment() : undefined, start, stop: () => capture.current?.stop(), cancel }}>{children}</CaptureContext.Provider>;
+  return <LevelContext.Provider value={levelStore}><CaptureContext.Provider value={{ phase, seconds, resumeVisualization: () => capture.current?.resumeVisualization(), error, blocked, retryAttachment: finished ? () => void retryAttachment() : undefined, start, stop: () => capture.current?.stop(), cancel }}>{children}</CaptureContext.Provider></LevelContext.Provider>;
 }
 export const useVoiceBusy = () => { const phase = useContext(CaptureContext)?.phase; return phase !== undefined && phase !== "idle"; };
 
@@ -152,24 +154,31 @@ export function RecordingDraft() {
   const recorded = useRecordedAudio();
   if (!capture) return null;
   return <>
-    {capture.phase !== "idle" && <CaptureStatus phase={capture.phase} seconds={capture.seconds} levels={capture.levels} onResume={capture.resumeVisualization} onStop={capture.stop} onCancel={capture.cancel} />}
-    {capture.retryAttachment && capture.phase === "idle" && <div className="recording-draft"><span>Recording not attached</span><button type="button" className="voice-retry" onClick={capture.retryAttachment}>Retry attachment</button><button type="button" className="icon-button" aria-label="Remove recording" onClick={capture.cancel}><Icon name="close" size={16} /></button></div>}
+    {capture.phase !== "idle" && <CaptureStatus phase={capture.phase} seconds={capture.seconds} onResume={capture.resumeVisualization} onStop={capture.stop} onCancel={capture.cancel} />}
+    {capture.retryAttachment && capture.phase === "idle" && <div className="recording-draft"><span>Recording not attached</span><button type="button" className="attachment-retry" onClick={capture.retryAttachment}>Retry attachment</button><button type="button" className="icon-button" aria-label="Remove recording" onClick={capture.cancel}><Icon name="close" size={14} /></button></div>}
     {(capture.error || recorded?.error) && <p role="alert" className="voice-error">{capture.error ?? recorded?.error}</p>}
     {recorded?.busy && <div className="recording-draft voice-preparing" role="status"><span className="voice-spinner" aria-hidden="true" />Preparing message…</div>}
-    {recorded?.uncertain && <div className="recording-draft"><Icon name="refresh" size={16} /><button type="button" className="voice-retry" onClick={recorded.retry}>Check / retry send</button></div>}
+    {recorded?.uncertain && <div className="recording-draft"><Icon name="refresh" size={16} /><button type="button" className="attachment-retry" onClick={recorded.retry}>Check / retry send</button></div>}
   </>;
 }
 
 /** Presentation seam used by the actual recording draft and synthetic stories. */
-export function CaptureStatus({ phase, seconds, levels = [], onStop, onCancel, onResume }: { readonly phase: Exclude<CapturePhase, "idle">; readonly seconds: number; readonly levels?: readonly number[]; readonly onStop?: () => void; readonly onCancel?: () => void; readonly onResume?: () => void }) {
+export function CaptureStatus({ phase, seconds, levels, onStop, onCancel, onResume }: { readonly phase: Exclude<CapturePhase, "idle">; readonly seconds: number; readonly levels?: readonly number[]; readonly onStop?: () => void; readonly onCancel?: () => void; readonly onResume?: () => void }) {
   const stop = useRef<HTMLButtonElement>(null);
   useEffect(() => { if (phase === "recording") stop.current?.focus({ preventScroll: true }); }, [phase]);
   return <div className={`recording-draft capture-pill is-${phase}`} onPointerDown={onResume}>
     <span className={phase === "recording" ? "voice-recording-dot" : "voice-spinner"} aria-hidden="true" />
     <span className="capture-label" role="status">{phase === "permission" ? "Allow microphone access…" : phase === "attaching" ? "Attaching recording…" : "Recording"}</span>
-    <span className="capture-meter" aria-hidden="true">{Array.from({ length: 24 }, (_, i) => <i key={i} style={{ height: `${3 + (phase === "recording" ? levels[i] ?? 0 : 0) * 25}px` }} />)}</span>
+    <CaptureMeter phase={phase} levels={levels} />
     <span className="voice-time" role="timer" aria-live="off">{Math.floor(seconds / 60)}:{String(seconds % 60).padStart(2, "0")}</span>
-    {phase === "recording" && <button ref={stop} type="button" className="icon-button voice-stop" aria-label="Stop recording" onClick={onStop}><Icon name="stop" size={17} /></button>}
-    {phase !== "attaching" && <button type="button" className="icon-button voice-discard" aria-label="Cancel recording" onClick={onCancel}><Icon name="close" size={17} /></button>}
+    {phase === "recording" && <button ref={stop} type="button" className="icon-button voice-stop" aria-label="Stop recording" onClick={onStop}><span className="voice-action-face"><Icon name="stop" size={14} /></span></button>}
+    {phase !== "attaching" && <button type="button" className="icon-button voice-discard" aria-label="Cancel recording" onClick={onCancel}><Icon name="close" size={14} /></button>}
   </div>;
+}
+
+function CaptureMeter({ phase, levels }: { readonly phase: CapturePhase; readonly levels?: readonly number[] | undefined }) {
+  const store = useContext(LevelContext);
+  const sampled = useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot);
+  const history = levels ?? sampled;
+  return <span className="capture-meter" aria-hidden="true">{Array.from({ length: 24 }, (_, i) => <i key={i} style={{ height: `${3 + (phase === "recording" ? history[i] ?? 0 : 0) * 17}px` }} />)}</span>;
 }

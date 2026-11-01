@@ -319,7 +319,8 @@ HTTPS/localhost and MediaRecorder are required. Recording has no fixed duration
 cutoff: 10 MiB or stricter remaining attachment byte/count limits and provider,
 transcript, concurrency and preparation deadlines remain. Capture uses a
 microphone-level recording pill; stopped audio uses seekable voice-note tiles. Waveform decoding
-is first-Play-only and bounded; sent transcript captions are presentation-only,
+is eager for local files and visible-dwell-only for remote notes (skipped with
+Data Saver), using a bounded queue and compact peak cache; sent transcript captions are presentation-only,
 not changes to stored/model-facing text. Audio retains ordinary staging expiry;
 sent audio is retained as a committed conversation attachment alongside transcript
 text, not just ephemeral transcription bytes.

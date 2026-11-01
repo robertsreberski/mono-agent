@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { AudioMeter } from "./audio-meter";
-import { cachedWaveform, extractPeaks, loadAudio } from "./audio-waveform";
+import { AudioMeter, rmsAmplitude } from "./audio-meter";
+import { cachedWaveform, createAudioLoader, extractPeaks, loadAudio } from "./audio-waveform";
 import { VoiceRecorder } from "./voice-recorder";
 import { FixtureMediaRecorder, installVoiceFixture } from "./test/voice-fixtures";
 import { presentTranscripts } from "./voice-transcripts";
@@ -10,7 +10,7 @@ function contextFixture() {
   const decodeAudioData = vi.fn(async () => ({ duration: 7, numberOfChannels: 1, getChannelData: () => new Float32Array([0, 0.5, -1, 0.2]) }));
   vi.stubGlobal("AudioContext", class {
     state = "suspended"; close = close; resume = resume; decodeAudioData = decodeAudioData;
-    createAnalyser() { return { frequencyBinCount: 128, connect: vi.fn(), getByteFrequencyData: (data: Uint8Array) => data.fill(128), disconnect }; }
+    createAnalyser() { return { frequencyBinCount: 128, connect: vi.fn(), getByteTimeDomainData: (data: Uint8Array) => data.fill(192), disconnect }; }
     createMediaStreamSource() { return { connect: vi.fn(), disconnect }; }
   });
   const frames = new Map<number, FrameRequestCallback>(); let next = 0;
@@ -27,7 +27,7 @@ describe("optional capture meter ownership", () => {
     const recorder = new VoiceRecorder({ levels, ready, error, recording: vi.fn(), elapsed: vi.fn() });
     await recorder.start(); expect(context.resume).toHaveBeenCalledTimes(1);
     const callback = [...context.frames.values()][0]!; context.frames.clear(); callback(100);
-    expect(levels).toHaveBeenCalledWith(Array(24).fill(128 / 255));
+    expect(levels).toHaveBeenCalledWith([...Array(23).fill(0.04), 0.45]);
     if (action === "stop") recorder.stop();
     else if (action === "error") FixtureMediaRecorder.instances[0]!.onerror?.();
     else recorder.dispose();
@@ -49,6 +49,16 @@ describe("optional capture meter ownership", () => {
     expect(ready).toHaveBeenCalledTimes(1); expect(error).not.toHaveBeenCalled();
     if (mode === "source") expect(close).toHaveBeenCalledTimes(1);
     recorder.dispose(); fixture.restore();
+  });
+  it("uses time-domain RMS and rolls a quiet amplitude history from the right", () => {
+    expect(rmsAmplitude(new Uint8Array([128, 128]))).toBe(0);
+    expect(rmsAmplitude(new Uint8Array([64, 192]))).toBe(0.5);
+    const context = contextFixture(); const update = vi.fn();
+    const meter = new AudioMeter({} as MediaStream, update);
+    for (const time of [100, 200]) { const callback = [...context.frames.values()][0]!; context.frames.clear(); callback(time); }
+    expect(update.mock.calls[1]![0].slice(0, 22)).toEqual(Array(22).fill(0.04));
+    expect(update.mock.calls[1]![0].slice(22)).toEqual([0.45, expect.closeTo(0.6975)]);
+    meter.dispose();
   });
   it("is static under reduced motion", () => {
     const context = contextFixture(); vi.stubGlobal("matchMedia", () => ({ matches: true }));
@@ -72,11 +82,19 @@ describe("bounded waveform preparation", () => {
     expect(cachedWaveform("cache-test")).toBe(first.waveform);
     expect(context.decodeAudioData).toHaveBeenCalledTimes(1); expect(context.close).toHaveBeenCalledTimes(1); expect(fetch).not.toHaveBeenCalled();
   });
+  it("prepares local peaks eagerly and reuses them for sent notes without fetching", async () => {
+    const context = contextFixture(); const loader = createAudioLoader(); const fetch = vi.fn(); vi.stubGlobal("fetch", fetch);
+    const signal = new AbortController().signal;
+    const prepared = await loader.prepareWaveform("local-preview", blob(), "audio/webm", signal);
+    expect(prepared?.duration).toBe(7);
+    expect(await loader.prepareWaveform("local-preview", undefined, "audio/webm", signal)).toBe(prepared);
+    expect(context.decodeAudioData).toHaveBeenCalledTimes(1); expect(fetch).not.toHaveBeenCalled();
+  });
   it("limits concurrency to two and cancels queued work without fetching", async () => {
-    contextFixture(); const pending: ((value: Response) => void)[] = [];
+    contextFixture(); const prepareQueue = createAudioLoader(); const pending: ((value: Response) => void)[] = [];
     const fetch = vi.fn(() => new Promise<Response>(resolve => pending.push(resolve))); vi.stubGlobal("fetch", fetch);
     const controllers = Array.from({ length: 3 }, () => new AbortController());
-    const loads = controllers.map((controller, i) => loadAudio(`queue-${i}`, undefined, "audio/webm", controller.signal).catch(() => undefined));
+    const loads = controllers.map((controller, i) => prepareQueue.prepareWaveform(`queue-${i}`, undefined, "audio/webm", controller.signal).catch(() => undefined));
     await Promise.resolve(); await Promise.resolve(); expect(fetch).toHaveBeenCalledTimes(2);
     controllers[2]!.abort();
     for (const resolve of pending) resolve(new Response(new Uint8Array([1, 2, 3])));
@@ -95,6 +113,9 @@ describe("bounded waveform preparation", () => {
     expect(context.decodeAudioData).toHaveBeenCalledTimes(2);
     pending.forEach(resolve => resolve({ duration: 1, numberOfChannels: 1, getChannelData: () => new Float32Array([0.2]) }));
     await vi.advanceTimersByTimeAsync(0);
+    context.decodeAudioData.mockResolvedValue({ duration: 1, numberOfChannels: 1, getChannelData: () => new Float32Array([0.2]) });
+    const retried = await loadAudio("timeout-c", blob(), "audio/webm", new AbortController().signal);
+    expect(retried.waveform?.duration).toBe(1); expect(context.decodeAudioData).toHaveBeenCalledTimes(3);
   });
   it("bounds the compact peak cache and enforces the existing byte cap", async () => {
     contextFixture();

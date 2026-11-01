@@ -14,22 +14,46 @@ import { useRecordedAudio } from "./recorded-audio-context";
 import { FixtureMediaRecorder, installVoiceFixture } from "./test/voice-fixtures";
 import { createThreadPersistence } from "./thread-persistence";
 import type { ThreadSummary, WebMessage } from "./types";
-import { extractPeaks } from "./audio-waveform";
+import { cachedWaveform, extractPeaks } from "./audio-waveform";
 import { syntheticAudio } from "./test/synthetic-audio";
 import "./styles.css";
 
 // Test-only module seam: never included in production builds or enabled by a URL.
 // Real AudioMeter still samples and owns its context/animation; only screenshot
 // levels are deterministic because headless audio-render clocks can stall.
-const visualFixture = vi.hoisted(() => ({ syntheticLevels: false, samples: 0 }));
+const visualFixture = vi.hoisted(() => ({ syntheticLevels: false, samples: 0, composerRenders: 0, emit: (_levels: readonly number[]) => {}, resetWaveforms: () => {} }));
 vi.mock("./audio-meter", async original => {
   const actual = await original<typeof import("./audio-meter")>();
   return { AudioMeter: class extends actual.AudioMeter {
     constructor(stream: MediaStream, update: (levels: readonly number[]) => void) {
-      super(stream, levels => { visualFixture.samples++; update(visualFixture.syntheticLevels
-        ? Array.from({ length: 24 }, (_, i) => 0.12 + 0.65 * Math.sin(i * 0.7) ** 2)
-        : levels); });
+      const history = Array<number>(24).fill(0.04);
+      super(stream, levels => {
+        visualFixture.samples++;
+        history.shift(); history.push(0.08 + 0.6 * Math.sin(visualFixture.samples * 0.35) ** 2);
+        update(visualFixture.syntheticLevels ? [...history] : levels);
+      });
+      visualFixture.emit = update;
     }
+  } };
+});
+
+// A fresh loader per iteration is a test-only cold-cache seam, not a product reset.
+vi.mock("./audio-waveform", async original => {
+  const actual = await original<typeof import("./audio-waveform")>();
+  let loader = actual.createAudioLoader();
+  visualFixture.resetWaveforms = () => { loader = actual.createAudioLoader(); };
+  return { ...actual,
+    cachedWaveform: (...args: Parameters<typeof loader.cachedWaveform>) => loader.cachedWaveform(...args),
+    prepareWaveform: (...args: Parameters<typeof loader.prepareWaveform>) => loader.prepareWaveform(...args),
+    loadAudio: (...args: Parameters<typeof loader.loadAudio>) => loader.loadAudio(...args),
+  };
+});
+vi.mock("./components/Composer", async original => {
+  const actual = await original<typeof import("./components/Composer")>();
+  return { ...actual, Composer: (props: Parameters<typeof actual.Composer>[0]) => {
+    // Invoke the real function in this fiber so its context subscriptions, not
+    // just renders of a non-subscribing wrapper, increment the counter.
+    visualFixture.composerRenders++; return actual.Composer(props);
   } };
 });
 
@@ -95,7 +119,7 @@ beforeEach(async () => {
   localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, "alpha");
   vi.stubGlobal("EventSource", FixtureEventSource);
   fixture = installVoiceFixture();
-  nextUpload = 0; uploads = new Map(); visualFixture.syntheticLevels = false; visualFixture.samples = 0;
+  nextUpload = 0; uploads = new Map(); visualFixture.syntheticLevels = false; visualFixture.samples = 0; visualFixture.composerRenders = 0; visualFixture.resetWaveforms();
   vi.mocked(api.createUpload).mockImplementation(async (file) => {
     const value = attachment(`audio-upload-${++nextUpload}`, { name: file.name, contentType: file.type, sizeBytes: file.size });
     uploads.set(value.id, value); return value;
@@ -187,7 +211,7 @@ describe("recorded audio through actual Chat, Composer, ordinary uploads and sub
         vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(function (this: HTMLMediaElement) { this.dispatchEvent(new Event("pause")); });
         FixtureMediaRecorder.audioBytes = syntheticAudio();
         const originalFetch = window.fetch.bind(window);
-        vi.spyOn(window, "fetch").mockImplementation((input, init) => String(input).includes("/uploads/") ? Promise.resolve(new Response(syntheticAudio(), { headers: { "Content-Type": "audio/webm" } })) : originalFetch(input, init));
+        const contentFetch = vi.spyOn(window, "fetch").mockImplementation((input, init) => String(input).includes("/uploads/") ? Promise.resolve(new Response(syntheticAudio(), { headers: { "Content-Type": "audio/webm" } })) : originalFetch(input, init));
         // A real MediaStream lets the real analyser construct without device access.
         const context = new AudioContext();
         fixture.getUserMedia.mockImplementation(async () => context.createMediaStreamDestination().stream);
@@ -219,10 +243,21 @@ describe("recorded audio through actual Chat, Composer, ordinary uploads and sub
         expect(api.submit).not.toHaveBeenCalled(); expect(screen.getByRole("button", { name: "Stop recording" })).toBeVisible();
         await userEvent.click(screen.getByRole("timer"));
         await waitFor(() => expect([...view.container.querySelectorAll<HTMLElement>(".capture-meter i")].some(bar => parseFloat(bar.style.height) > 3)).toBe(true));
+        await waitFor(() => expect(visualFixture.samples).toBeGreaterThanOrEqual(16));
         checkLayout(); await capture("02-recording-with-draft");
         await stop();
         expect(api.submit).not.toHaveBeenCalled(); expect(api.transcribe).not.toHaveBeenCalled();
         expect(input).toHaveValue("Include easy-care herbs."); expect(screen.getByText("plants.txt")).toBeVisible();
+        await waitFor(() => expect(screen.getByRole("button", { name: "Play voice note, 0:07" })).toBeVisible());
+        expect([...view.container.querySelectorAll<HTMLElement>(".voice-waveform i")].some(bar => parseFloat(bar.style.height) > 3)).toBe(true);
+        const player = view.container.querySelector(".voice-note-player")!;
+        const chip = view.container.querySelector(".attachment-chip")!;
+        const surface = getComputedStyle(player, "::before");
+        expect(parseFloat(surface.height)).toBe(chip.getBoundingClientRect().height);
+        expect(surface.borderRadius).toBe(getComputedStyle(chip).borderRadius);
+        expect(surface.backgroundColor).toBe(getComputedStyle(chip).backgroundColor);
+        expect(getComputedStyle(player.querySelector(".voice-action-face")!).width).toBe("26px");
+        expect(getComputedStyle(player.querySelector(".voice-note-time")!).fontSize).toBe("10px");
         checkLayout(); await capture("03-audio-draft");
         await userEvent.click(screen.getByRole("button", { name: /Play voice note/ }));
         await screen.findByRole("button", { name: "Pause voice note, 0:07" });
@@ -232,11 +267,12 @@ describe("recorded audio through actual Chat, Composer, ordinary uploads and sub
         const audio = screen.getByLabelText("Audio recording.webm");
         expect(audio).not.toHaveAttribute("controls");
         const slider = screen.getByRole("slider", { name: "Seek voice note" });
-        expect(slider.getBoundingClientRect().top).toBeGreaterThanOrEqual(view.container.querySelector(".voice-note-heading")!.getBoundingClientRect().bottom + 4);
+        expect(view.container.querySelector(".voice-note-time")!.getBoundingClientRect().left).toBeGreaterThanOrEqual(slider.getBoundingClientRect().right + 3);
         await userEvent.click(slider); await userEvent.keyboard("{Home}{ArrowRight}");
         expect(Number(slider.getAttribute("aria-valuenow"))).toBeGreaterThanOrEqual(5);
         await commands.dragVoiceNote();
         expect(Number(slider.getAttribute("aria-valuenow"))).toBeGreaterThan(1);
+        expect(slider.querySelector("i")!.getBoundingClientRect().width).toBeGreaterThanOrEqual(0.8);
         checkLayout(); await capture("04-playback");
         await userEvent.click(screen.getByRole("button", { name: "Pause voice note, 0:07" }));
         expect(screen.getByRole("button", { name: "Play voice note, 0:07" })).toBeVisible();
@@ -285,10 +321,34 @@ describe("recorded audio through actual Chat, Composer, ordinary uploads and sub
         await userEvent.click(screen.getByRole("button", { name: "Stop recording" }));
         await screen.findByRole("button", { name: "Retry upload" });
         checkLayout(); await capture("09-failed-upload");
-        view.unmount(); void context.close().catch(() => undefined); vi.restoreAllMocks();
+        view.unmount(); visualFixture.resetWaveforms();
+        for (const value of uploads.values()) expect(cachedWaveform(value.id)).toBeUndefined();
+        const requestsBeforeReload = contentFetch.mock.calls.filter(([url]) => String(url).includes("/uploads/")).length;
+        const reloaded = mount();
+        await waitFor(() => {
+          const notes = [...reloaded.container.querySelectorAll<HTMLElement>(".message-attachments .voice-note")];
+          expect(notes).toHaveLength(2);
+          for (const note of notes) {
+            expect([...note.querySelectorAll<HTMLElement>(".voice-waveform i")].some(bar => parseFloat(bar.style.height) > 3)).toBe(true);
+            expect(note.querySelector("audio")).not.toHaveAttribute("src");
+          }
+        });
+        expect(contentFetch.mock.calls.filter(([url]) => String(url).includes("/uploads/")).length).toBeGreaterThanOrEqual(requestsBeforeReload + 2);
+        await capture("10-cold-reload-sent");
+        reloaded.unmount(); void context.close().catch(() => undefined); vi.restoreAllMocks();
       });
     }
   }
+  it("does not rerender Composer for synthetic meter level updates while typing", async () => {
+    seed(created); mount(); await record();
+    const renders = visualFixture.composerRenders;
+    act(() => { for (let i = 0; i < 20; i++) visualFixture.emit(Array(24).fill(i / 20)); });
+    expect(visualFixture.composerRenders).toBe(renders);
+    expect(screen.getByRole("combobox", { name: "Message" })).toBeEnabled();
+    expect(document.querySelector<HTMLElement>(".capture-meter i")!.style.height).toBe("19.15px");
+    await userEvent.click(screen.getByRole("button", { name: "Cancel recording" }));
+    expect(visualFixture.composerRenders).toBeGreaterThan(renders); // The counter observes real context-driven renders.
+  });
   it("opens the current composer's recording menu through trusted native clicks", async () => {
     seed(created); mount();
     const clicks: { name: string; trusted: boolean; connected: boolean }[] = [];

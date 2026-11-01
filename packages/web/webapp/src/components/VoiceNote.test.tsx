@@ -1,9 +1,10 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { VoiceNote } from "./VoiceNote";
-import { loadAudio } from "../audio-waveform";
-vi.mock("../audio-waveform", () => ({ cachedWaveform: () => undefined, loadAudio: vi.fn() }));
+import { loadAudio, prepareWaveform } from "../audio-waveform";
+vi.mock("../audio-waveform", () => ({ cachedWaveform: () => undefined, loadAudio: vi.fn(), prepareWaveform: vi.fn() }));
 beforeEach(() => {
+  vi.mocked(prepareWaveform).mockReset().mockResolvedValue({ peaks: Array(48).fill(0.5), duration: 7 });
   vi.mocked(loadAudio).mockReset().mockResolvedValue({ blob: new Blob(["audio"]), waveform: { peaks: Array(48).fill(0.5), duration: 7 } });
   vi.stubGlobal("PointerEvent", MouseEvent);
   vi.stubGlobal("URL", { createObjectURL: vi.fn(() => "blob:voice-test"), revokeObjectURL: vi.fn() });
@@ -11,7 +12,7 @@ beforeEach(() => {
   vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(function (this: HTMLMediaElement) { this.dispatchEvent(new Event("pause")); });
   vi.spyOn(HTMLMediaElement.prototype, "load").mockImplementation(() => {});
 });
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+afterEach(() => { cleanup(); vi.useRealTimers(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 it("is lazy, plays/pauses, seeks with keyboard and pointer, and derives finite duration", async () => {
   const view = render(<VoiceNote id="a" name="recording.webm" recorded contentType="audio/webm" />);
   expect(loadAudio).not.toHaveBeenCalled();
@@ -49,4 +50,63 @@ it("keeps upload progress, failure/retry and filename accessibility", () => {
   view.rerender(<VoiceNote id="a" name="recording.webm" recorded contentType="audio/webm" failed onRetry={retry} />);
   expect(screen.getByLabelText("Audio attachment: recording.webm")).toBeVisible();
   fireEvent.click(screen.getByRole("button", { name: "Retry upload" })); expect(retry).toHaveBeenCalledTimes(1);
+});
+
+it("decodes a local file eagerly, but plays synchronously within the first click", async () => {
+  vi.mocked(prepareWaveform).mockImplementationOnce(() => new Promise(() => {}));
+  const file = new File(["audio"], "recording.webm", { type: "audio/webm" });
+  render(<VoiceNote id="local-sync" name={file.name} file={file} recorded contentType={file.type} />);
+  expect(prepareWaveform).toHaveBeenCalledWith("local-sync", file, file.type, expect.any(AbortSignal));
+  expect(loadAudio).not.toHaveBeenCalled(); expect(HTMLMediaElement.prototype.play).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button"));
+  expect(URL.createObjectURL).toHaveBeenCalledWith(file);
+  expect(HTMLMediaElement.prototype.play).toHaveBeenCalledTimes(1);
+  expect(loadAudio).not.toHaveBeenCalled();
+});
+it("shows remote audio ready for another gesture if async play is rejected", async () => {
+  vi.mocked(HTMLMediaElement.prototype.play).mockRejectedValueOnce(new DOMException("Gesture required", "NotAllowedError"));
+  render(<VoiceNote id="gesture" name="garden.ogg" contentType="audio/ogg" />);
+  fireEvent.click(screen.getByRole("button"));
+  expect(await screen.findByText("Tap to play")).toBeVisible();
+  fireEvent.click(screen.getByRole("button"));
+  expect(screen.queryByText("Tap to play")).toBeNull();
+  expect(screen.getByRole("button", { name: "Pause garden.ogg, 0:07" })).toBeVisible();
+});
+it("gates remote preparation on visible dwell, aborts on leave and skips saveData", async () => {
+  vi.useFakeTimers();
+  let observe!: (entries: { isIntersecting: boolean }[]) => void;
+  const disconnect = vi.fn();
+  vi.stubGlobal("IntersectionObserver", class {
+    constructor(callback: typeof observe) { observe = callback; }
+    observe() {} disconnect = disconnect;
+  });
+  vi.mocked(prepareWaveform).mockImplementation(() => new Promise(() => {}));
+  const view = render(<VoiceNote id="visible" name="garden.ogg" contentType="audio/ogg" />);
+  expect(prepareWaveform).not.toHaveBeenCalled();
+  act(() => observe([{ isIntersecting: true }]));
+  await act(async () => vi.advanceTimersByTimeAsync(200));
+  expect(prepareWaveform).not.toHaveBeenCalled();
+  act(() => observe([{ isIntersecting: false }]));
+  await act(async () => vi.advanceTimersByTimeAsync(100));
+  expect(prepareWaveform).not.toHaveBeenCalled();
+  act(() => observe([{ isIntersecting: true }]));
+  await act(async () => vi.advanceTimersByTimeAsync(251));
+  expect(prepareWaveform).toHaveBeenCalledTimes(1);
+  const signal = vi.mocked(prepareWaveform).mock.calls[0]![3];
+  act(() => observe([{ isIntersecting: false }])); expect(signal.aborted).toBe(true);
+  view.unmount(); expect(disconnect).toHaveBeenCalledTimes(1);
+  Object.defineProperty(navigator, "connection", { configurable: true, value: { saveData: true } });
+  try {
+    render(<VoiceNote id="save-data" name="garden.ogg" contentType="audio/ogg" />);
+    await act(async () => vi.advanceTimersByTimeAsync(300));
+    expect(prepareWaveform).toHaveBeenCalledTimes(1); expect(loadAudio).not.toHaveBeenCalled();
+  } finally { Reflect.deleteProperty(navigator, "connection"); }
+});
+
+it("shows a local waveform and duration before the first Play without creating a URL", async () => {
+  const file = new File(["audio"], "recording.webm", { type: "audio/webm" });
+  const view = render(<VoiceNote id="local-preview" name={file.name} file={file} recorded contentType={file.type} />);
+  expect(await screen.findByRole("button", { name: "Play voice note, 0:07" })).toBeVisible();
+  expect([...view.container.querySelectorAll<HTMLElement>(".voice-waveform i")].every(bar => parseFloat(bar.style.height) > 3)).toBe(true);
+  expect(URL.createObjectURL).not.toHaveBeenCalled(); expect(HTMLMediaElement.prototype.play).not.toHaveBeenCalled();
 });
