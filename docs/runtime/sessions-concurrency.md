@@ -132,6 +132,28 @@ never renew approval to repeat an effect. B1 retains successful finalized tool
 text, so failed/unknown effects without such a record are not inferred as sent.
 Owner entries are explicitly requests, not proof that an action happened. Only
 captured tool records show outcomes; absent an outcome, status remains unknown.
+A nonempty pack adds exact-value retrieval guidance only when the effective
+request can use `ConversationHistory`. Its `Tool evidence id` (`chr1_…`) is a
+get `recordId`, not the `invocation_id` or tool-projection `sth1_…` lifecycle id;
+those lifecycle ids are not valid for `ConversationHistory` get. Get before
+guessing exact values or claiming absence, search without a record id, and
+follow search/get cursors. Pack omission may be retrievable, but source
+redaction/truncation is irreversible here. Omitted arguments have no retrieval
+promise. The 270-byte / 90-estimate-token guidance is charged to selection,
+fallback and final size, outside the unchanged ledger-prefix admission rule.
+This can displace evidence at 4k/8k budgets without changing selection policy.
+An empty snapshot with no ledger, omission, gap or degradation emits nothing.
+
+Projection record blocks are bounded before exclusions and never refilled.
+Both history-tool availabilities are resolved per request after merged policy,
+authoritative overrides and tools-disabled handling. The healthy header is
+unchanged: use `ConversationHistory`, or retain `SessionHistory` when it alone is
+available. Neither-tool and manual-compaction routes omit tool-directed guidance.
+Boundary facts report the resolved replay's bytes and record count, including
+post-pack projection exclusions, not the pre-resolution configured header.
+Reconstruction boundary events can follow `run_config`, `turn_context` and provider
+events while exclusions resolve; consumers match event type/reason, not order.
+
 The renderer reserves 40% of usable content space for tool records before owner
 selection; unused reservation returns to owners. When a derived continuity
 ledger is shown, owners from the no-ledger selection are admitted from both ends
@@ -152,7 +174,7 @@ bytes); a larger first paragraph and oversized arguments are omitted explicitly,
 never clipped. Effect-ranked entries keep only their first paragraph when it fits
 512 bytes, so effects leave reservation for early reads. An outcome detail stated
 only in a later effect paragraph is then left out (`result_omitted=true`) and
-remains available through retrieval.
+may remain available through retrieval when that capability is available.
 
 The pack has an 8000 estimated-token ceiling, lowered by the actual target's
 compaction trigger (including `maxInputTokens`), instructions, tools, replay,

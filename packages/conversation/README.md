@@ -139,9 +139,10 @@ absent evidence remains compatible with older completed-turn admissions.
 The built-in default soul adds only a compact evidence router: active dialogue
 for what was just said, `MemoryRecall` for a targeted durable fact or decision,
 `MemoryJournal` for a chronological retrospective over an explicit date range,
-`ConversationHistory` for exact retained conversation and tool-result values,
-including identifiers, `RunHistory` for settlement and interrupted-work recovery,
-and `SessionHistory` for prior-run tool-lifecycle evidence. It names those
+`ConversationHistory` for exact retained conversation and captured plain-text
+tool-result values, including identifiers and pack `Tool evidence id` records,
+`SessionHistory` for prior-run managed-tool call/result lifecycles, and
+`RunHistory` for settlement and interrupted-work recovery. It names those
 tools "when available" because the harness itself does not own or assume any
 app MCP tool.
 Unhinted interrupted-work recovery retains the `RunHistory {}` first step.
@@ -1373,6 +1374,24 @@ runtime seeding, never on true native resume; one source snapshot is shared by
 resume retries and detached router attempts. Evidence stays within the physical
 canonical bucket and continuation boundary. Unknown record/window overlap stays
 visible rather than being deduplicated by text. Default operation performs no paid upkeep.
+When `ConversationHistory` is available for the effective request, a nonempty
+pack adds retrieval guidance: use the pack's `Tool evidence id` (`chr1_…`) as
+`recordId`, not `invocation_id`; get exact retained values before guessing or
+claiming absence, search without an id, and follow search/get cursors. This costs
+270 bytes / 90 pack-estimate tokens within the existing budget, so fewer evidence
+entries may fit. Ledger-prefix admission is unchanged. Empty snapshots still
+emit no pack. Pack omission may be retrievable; source redaction/truncation is
+irreversible here, and omitted invocation arguments have no recovery promise.
+
+Tool projection ids (`sth1_…`) are lifecycle identities, **not** valid
+`ConversationHistory` get ids. Prepared projections contain serializable bounded
+blocks; the host resolves both history tools after request policy/overrides and
+tools-disabled handling, outside cloneable prepared data. Healthy header wording
+is unchanged: prefer `ConversationHistory`, otherwise retain `SessionHistory`
+routing when available. Neither-tool and manual-compaction routes omit tool
+routing. Boundary facts measure the resolved supplied projection, including
+post-pack exclusions, rather than the configured header.
+
 Rendered ledger entries expose stable cited host order, independently of derived
 prose or storage order; source order is not proof of event time.
 Explicit [ledger upkeep](../../docs/runtime/continuity-ledger.md) adds one bounded

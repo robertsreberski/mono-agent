@@ -1,3 +1,4 @@
+import { renderToolHistoryProjection } from "../tool-history/projection.js";
 import { withUpkeepAccounting } from "@mono-agent/observability";
 import { createContinuityPackSupplier } from "../continuity/pack.js";
 import { markContinuityTurnBatch } from "../tool-history/continuity-input.js";
@@ -356,7 +357,8 @@ export class ConversationHarnessImpl implements ConversationHarness {
         model: requestedModel,
         abortSignal: controller.signal,
         messages: warm ? [] : coldReplayMessages(history,
-          loadToolHistoryProjection(this.options, conversationId, runId, history)?.text),
+          renderToolHistoryProjection(loadToolHistoryProjection(this.options, conversationId, runId, history),
+            { conversationHistory: false, sessionHistory: false })?.text),
         sessionId,
         providerSessionId: sessionId,
         sessionTurn: providerTurn.reconciliation?.descriptor ?? { kind: "host", ownerKey: this.options.toolHistory?.logicalConversationId(conversationId) ?? conversationId,
@@ -680,6 +682,12 @@ export class ConversationHarnessImpl implements ConversationHarness {
     let context: BuiltAgentContext | undefined;
     const emit = (event: RuntimeEventLike): void => {
       if (!turnContinuityCollector.observeRuntimeEvent(event)) return;
+      recorder.onEvent(event);
+      request.onEvent?.(event);
+    };
+    // Host reconstruction accounting survives a cancellation seal. It carries
+    // no provider/tool transcript and must not be dropped as late runtime data.
+    const emitReconstructionBoundary = (event: RuntimeEventLike): void => {
       recorder.onEvent(event);
       request.onEvent?.(event);
     };
@@ -1413,7 +1421,7 @@ export class ConversationHarnessImpl implements ConversationHarness {
         isolated,
         ...(exclusiveCapturedHistory === undefined ? {} : { historyOverride: exclusiveCapturedHistory }),
       }, emit);
-      if (coldReason !== undefined) {
+      if (coldReason !== undefined && preparedNativeTurn !== undefined) {
         const handoff = preparedNativeTurn !== undefined && coldReason === "model_change";
         emit({ type: "session_boundary", kind: "resume_replay", context: handoff ? "handoff" : "reconstructed",
           conversationId: request.conversationId, providerSessionId: providerAttributionSessionId,
@@ -1447,6 +1455,12 @@ export class ConversationHarnessImpl implements ConversationHarness {
           isolated,
           { modelKey: requestedModelKey, runtimeForSession: this.runtimeForSession, reconciliation: p2Turn,
             continuityPack, ...(coldReason === undefined ? {} : { boundaryReason: coldReason }),
+            onContextResolved: (resolved) => {
+              context = resolved.context;
+              if (coldReason !== undefined) emitReconstructionBoundary({ type: "session_boundary", kind: "resume_replay", context: "reconstructed",
+                conversationId: request.conversationId, providerSessionId: providerAttributionSessionId,
+                reason: coldReason, ...reconstructionFacts(resolved), timestamp: this.nowIso() });
+            },
             withContinuityOwner: providerHistoryTurn?.withContinuityOwner ?? exclusiveHistoryTurn?.withContinuityOwner,
             prepareCompaction: providerHistoryTurn?.prepareCompaction ?? exclusiveHistoryTurn?.prepareCompaction,
             recordCompaction: providerHistoryTurn?.recordCompaction ?? exclusiveHistoryTurn?.recordCompaction,
@@ -1459,7 +1473,7 @@ export class ConversationHarnessImpl implements ConversationHarness {
           prepared.history,
           prepared.historyOmitted,
           prepared.historyAsMessages,
-          prepared.toolHistoryProjection,
+          prepared.toolProjection,
           attachmentContext,
           continuationCapabilities,
           turnContinuityCollector,
@@ -1499,16 +1513,6 @@ export class ConversationHarnessImpl implements ConversationHarness {
           isolated,
           ...(exclusiveCapturedHistory === undefined ? {} : { historyOverride: exclusiveCapturedHistory }),
         }, emit);
-        emit({
-          type: "session_boundary",
-          kind: "resume_replay",
-          context: "reconstructed",
-          ...reconstructionFacts(prepared),
-          conversationId: request.conversationId,
-          providerSessionId: staleResumeSessionId,
-          reason: shouldRetrySessionResumeError(resumeError) ? "resume_error" : "runtime_result",
-          timestamp: this.nowIso(),
-        });
         context = prepared.context;
         throwIfCancellationOwned();
         runtimeResult = await settleRuntime(runHarnessRuntime(
@@ -1526,6 +1530,13 @@ export class ConversationHarnessImpl implements ConversationHarness {
           isolated,
           { modelKey: requestedModelKey, runtimeForSession: this.runtimeForSession, reconciliation: p2Turn,
             continuityPack, boundaryReason: shouldRetrySessionResumeError(resumeError) ? "resume_error" : "runtime_result",
+            onContextResolved: (resolved) => {
+              context = resolved.context;
+              emitReconstructionBoundary({ type: "session_boundary", kind: "resume_replay", context: "reconstructed",
+                ...reconstructionFacts(resolved), conversationId: request.conversationId,
+                providerSessionId: staleResumeSessionId,
+                reason: shouldRetrySessionResumeError(resumeError) ? "resume_error" : "runtime_result", timestamp: this.nowIso() });
+            },
             withContinuityOwner: providerHistoryTurn?.withContinuityOwner ?? exclusiveHistoryTurn?.withContinuityOwner,
             prepareCompaction: providerHistoryTurn?.prepareCompaction ?? exclusiveHistoryTurn?.prepareCompaction,
             recordCompaction: providerHistoryTurn?.recordCompaction ?? exclusiveHistoryTurn?.recordCompaction,
@@ -1535,7 +1546,7 @@ export class ConversationHarnessImpl implements ConversationHarness {
           prepared.history,
           prepared.historyOmitted,
           prepared.historyAsMessages,
-          prepared.toolHistoryProjection,
+          prepared.toolProjection,
           attachmentContext,
           continuationCapabilities,
           turnContinuityCollector,

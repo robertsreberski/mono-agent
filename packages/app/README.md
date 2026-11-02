@@ -1013,6 +1013,17 @@ fsynced current-run evidence can be read; partial streams cannot. SessionHistory
 still excludes current-run tool records. Enabled capture/projection omits nested
 history-result bodies. See [MCP evidence bounds](../../docs/tools/mcp.md#conversationhistory-retained-conversation-evidence).
 
+Nonempty cold continuity packs guide exact-value retrieval only when the final
+request policy and live endpoint permit `ConversationHistory`. Policy overrides,
+endpoint suppression/startup failure and tools-disabled synthesis are resolved
+per request. A pack's `Tool evidence id` is a `chr1_…` `recordId`; its
+`invocation_id` and cold-projection `sth1_…` ids are not accepted by this tool's
+get action. Get before guessing exact values or claiming absence, search when no
+id is shown, and follow every search/get cursor. Pack omission may be retrievable;
+source redaction/truncation is irreversible here. Projection headers retain
+`SessionHistory` routing if that tool alone is available; neither-tool and manual
+compaction routes omit tool-directed guidance.
+
 ### Session tool history
 
 `SessionHistory` requires no config key. It is available under allow-all on
@@ -1141,7 +1152,10 @@ as upgrade-pending for the next writer.
 The configured host keeps four evidence sources distinct: the active
 conversation for what was just said, `MemoryRecall` for a targeted durable fact
 or decision, `MemoryJournal` for a broad retrospective over explicit local
-calendar dates, and `RunHistory`/`SessionHistory` for exact execution evidence.
+calendar dates, `ConversationHistory` for exact retained conversation and captured
+plain-text tool-result values (including pack `Tool evidence id` records),
+`SessionHistory` for managed-tool call/result lifecycles, and `RunHistory` for
+settlement and interrupted-work recovery.
 Unhinted interrupted-work recovery still begins with `RunHistory {}`.
 
 The configured, request-scoped `MemoryRecall` endpoint can deliberately reuse the

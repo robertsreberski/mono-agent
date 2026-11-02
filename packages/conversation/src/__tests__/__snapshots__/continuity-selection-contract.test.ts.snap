@@ -1,5 +1,33 @@
 // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
+exports[`freezes available=true retrieval pack (headroom=4000) 1`] = `
+{
+  "counts": {
+    "evidence": 22,
+    "owner": 20,
+    "summary": 0,
+    "tool": 20,
+  },
+  "hash": "bd73a271bda80f9b0dc94bcb0bf52235db85b3183fe708bb8a50fb9ac7498302",
+  "omitted": 18,
+  "tokens": 3837,
+}
+`;
+
+exports[`freezes available=true retrieval pack (headroom=8000) 1`] = `
+{
+  "counts": {
+    "evidence": 40,
+    "owner": 20,
+    "summary": 0,
+    "tool": 20,
+  },
+  "hash": "ad13e90b9d86c7316730cc33e0e9ca933e6d2fa125e9339f7db2f4beedb222a9",
+  "omitted": 0,
+  "tokens": 4682,
+}
+`;
+
 exports[`freezes clean ranked selection and bounded greedy fitting (input=64000) 1`] = `
 {
   "cap": 8,

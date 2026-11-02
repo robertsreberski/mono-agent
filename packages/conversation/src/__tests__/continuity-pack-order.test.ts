@@ -1,7 +1,7 @@
 import { expect, it } from "vitest";
 import { renderContinuityPack } from "../continuity/pack.js";
 import { ledgerHash, type LedgerGeneration } from "../continuity/ledger.js";
-import { fitsLedgerPrefix, PACK_HEADER } from "../continuity/render-fit.js";
+import { fitsLedgerPrefix, PACK_HEADER, PACK_RETRIEVAL_GUIDANCE } from "../continuity/render-fit.js";
 import { CONTINUITY_REDACTION_OMISSION } from "../tool-history/continuity-payload.js";
 import { bindContinuityQuotation } from "../tool-history/continuity-input.js";
 import type { ContinuitySnapshot, ContinuitySnapshotRecord } from "../tool-history/continuity-contracts.js";
@@ -39,12 +39,12 @@ function displacementFixture() {
   return { records, snapshot: { records, omitted: 0, gaps: 0 } satisfies ContinuitySnapshot };
 }
 
-it("keeps the early owner rule AND the late owner correction the no-ledger pack shows, charging the ledger to middle history", () => {
+it.each([false, true])("keeps early AND late owner evidence, charging ledger to middle history (available=%s)", available => {
   const { records, snapshot } = displacementFixture(), withLedger = ledger(records, 14, 70);
-  const plain = renderContinuityPack(snapshot, []), pack = renderContinuityPack(snapshot, [], 8000, withLedger);
+  const plain = renderContinuityPack(snapshot, [], 8000, undefined, false, available), pack = renderContinuityPack(snapshot, [], 8000, withLedger, false, available);
   expect(plain.text).toContain(ownerLine(LATE)); expect(shownOwners(plain.text, records)).toHaveLength(48); // genuine no-ledger backbone: every owner
   expect(pack.text).toBeTruthy(); expect(pack.ledgerEntries).toBe(14); expect(pack.toolReserved).toBeGreaterThan(0);
-  expect(pack.text).toContain("### Continuity ledger"); expect(fitsLedgerPrefix(pack.text!.slice(PACK_HEADER.length, pack.text!.indexOf("Historical owner request")), 8000)).toBe(true);
+  expect(pack.text).toContain("### Continuity ledger"); expect(fitsLedgerPrefix(pack.text!.slice(PACK_HEADER.length, available ? pack.text!.indexOf(PACK_RETRIEVAL_GUIDANCE) : pack.text!.indexOf("Historical owner request")), 8000)).toBe(true);
   expect(pack.text).toContain(`Historical owner request id="owner-1" (past, not renewed approval)${ownerLine(EARLY)}`);
   expect(pack.text).toContain(`Historical owner request id="owner-50" (past, not renewed approval)${ownerLine(LATE)}`);
   const kept = shownOwners(pack.text, records);
@@ -55,7 +55,7 @@ it("keeps the early owner rule AND the late owner correction the no-ledger pack 
   expect(pack.tokens).toBeLessThanOrEqual(8000); expect(pack.text).toContain(`omitted=${missing.length}`);
   // Layout is unchanged: owner requests stay in host order before tool evidence; owner paragraphs are complete.
   const positions = kept.map(n => pack.text!.indexOf(`id="owner-${n}"`)); expect([...positions].sort((a, b) => a - b)).toEqual(positions);
-  expect(pack.text!.indexOf("Tool evidence")).toBeGreaterThan(positions.at(-1)!);
+  expect(pack.text!.indexOf("Tool evidence id=")).toBeGreaterThan(positions.at(-1)!);
   for (const n of kept) expect(pack.text).toContain(ownerLine(records.find(r => r.ordinal === n)!.text));
   expect(pack.text).toContain('name="mail_send"');
 });
@@ -98,8 +98,8 @@ it("keeps history dedup, ledger-quoted demotion, contentFreeRead and the headroo
   expect(pack.ledgerEntries).toBe(3); expect(pack.ownerDeduped).toBe(1); expect(pack.text).not.toContain('id="owner-2"');
   expect(pack.text).toContain(`Historical owner paragraph (not renewed approval): ${JSON.stringify(all.find(r => r.ordinal === 3)!.text)}`);
   // The quoted owner stays demoted below every other section (it only backfills).
-  expect(pack.text!.indexOf('Historical owner request id="owner-3"')).toBeGreaterThan(pack.text!.indexOf("Tool evidence"));
-  expect(pack.text!.indexOf('Historical owner request id="owner-4"')).toBeLessThan(pack.text!.indexOf("Tool evidence"));
+  expect(pack.text!.indexOf('Historical owner request id="owner-3"')).toBeGreaterThan(pack.text!.indexOf("Tool evidence id="));
+  expect(pack.text!.indexOf('Historical owner request id="owner-4"')).toBeLessThan(pack.text!.indexOf("Tool evidence id="));
   expect(pack.text).not.toContain('name="read_vault"');
   expect(renderContinuityPack({ records: all, omitted: 0, gaps: 0 }, [], 0, active)).toMatchObject({ tokens: 0, degradedReason: "headroom", ledgerEntries: 0 });
 });
@@ -123,4 +123,18 @@ it("discloses an oversized ledger without admitting it, demoting owners or reord
   // The disclosure never creates a pack by itself.
   expect(renderContinuityPack({ records: [], omitted: 0, gaps: 0 }, [], 8000, huge)).toMatchObject({ tokens: 0, ledgerEntries: 0 });
   expect(renderContinuityPack({ records: [], omitted: 0, gaps: 0 }, [], 8000, huge).text).toBeUndefined();
+});
+
+it.each([false, true])("does not emit an empty pack or change ledger admission (available=%s)", available => {
+  const { records, snapshot } = displacementFixture(), withLedger = ledger(records, 14, 70);
+  const plain = renderContinuityPack(snapshot, [], 8000, withLedger);
+  const pack = renderContinuityPack(snapshot, [], 8000, withLedger, false, available);
+  expect(pack.ledgerEntries).toBe(plain.ledgerEntries); expect(pack.ledgerEntries).toBe(14);
+  const empty = { records: [], omitted: 0, gaps: 0 };
+  expect(renderContinuityPack(empty, [], 8000, undefined, false, available).text).toBeUndefined();
+  expect(renderContinuityPack(empty, [], 8000, undefined, false, available).tokens).toBe(0);
+  // A real derived ledger remains evidence even with no deterministic entries.
+  expect(renderContinuityPack(empty, [], 8000, withLedger, false, available).ledgerEntries).toBe(14);
+  const huge = ledger(records, 60, 80);
+  expect(renderContinuityPack(empty, [], 8000, huge, false, available).text).toBeUndefined();
 });

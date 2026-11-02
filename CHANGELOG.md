@@ -8,6 +8,10 @@
   for settlement and interrupted-work recovery and `SessionHistory` for prior-run
   tool-lifecycle evidence. Custom souls are unchanged.
 
+- Add capability-matched exact-value retrieval guidance to nonempty continuity
+  packs, within existing budgets, and resolve history-tool projection routing
+  per request, preserving `SessionHistory` when it alone is available.
+
 - Add a compact rolling recording meter and visible, seekable voice-note
   waveforms to the web console, with transcript captions beneath sent audio and
   accessible playback controls. Keep Stop and playback controls aligned as a

@@ -14,7 +14,7 @@ import { acquireToolHistoryWriter, assertToolHistoryWorkerBuildFresh, ToolHistor
 import { ToolHistoryReader } from "../tool-history/reader.js";
 import { TOOL_HISTORY_DATABASE, TOOL_HISTORY_DIRECTORY, TOOL_HISTORY_OWNER_ACQUIRE_CEILING_MS, TOOL_HISTORY_OWNER_DATABASE, TOOL_HISTORY_PERSISTENCE_CEILING_MS, TOOL_HISTORY_USER_VERSION, toolHistoryRecordId, type ToolHistoryRunBinding, type ToolHistoryWriterOptions } from "../tool-history/contracts.js";
 import { CONTINUITY_USER_VERSION } from "../tool-history/continuity-contracts.js";
-import { buildToolHistoryProjection } from "../tool-history/projection.js";
+import { buildToolHistoryProjection } from "./fixtures/tool-history-projection.js";
 
 const tempDirs: string[] = [];
 const children = new Set<ChildProcess>();

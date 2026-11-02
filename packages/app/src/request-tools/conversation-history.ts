@@ -1,3 +1,4 @@
+import { isSessionHistoryToolAllowed, SESSION_HISTORY_MCP_SERVER_NAME } from "./session-history.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { ToolHistoryReader, toolHistoryLogicalConversationId, type ContinuityRecordMetadata, type ContinuityScope, type ToolPolicyInput } from "@mono-agent/conversation";
 import * as z from "zod/v4";
@@ -25,6 +26,19 @@ export function isConversationHistoryToolAllowed(policy: Pick<ToolPolicyInput, "
   const denied = policy?.disallowedTools ?? [], allowed = policy?.allowedTools ?? [];
   return !denied.includes("*") && !ALIASES.some((name) => denied.includes(name))
     && (allowed.includes("*") || ALIASES.some((name) => allowed.includes(name)));
+}
+
+/** Effective request policy and endpoints, after override/suppression/startup. */
+export function historyToolAvailabilityForRuntime(runtime: Readonly<Record<string, unknown>>) {
+  const policy = {
+    allowedTools: Array.isArray(runtime.allowedTools) ? runtime.allowedTools as string[] : [],
+    disallowedTools: Array.isArray(runtime.disallowedTools) ? runtime.disallowedTools as string[] : [],
+  };
+  const servers = runtime.mcpServers as Readonly<Record<string, unknown>> | undefined;
+  return {
+    conversationHistory: servers?.[CONVERSATION_HISTORY_MCP_SERVER_NAME] !== undefined && isConversationHistoryToolAllowed(policy),
+    sessionHistory: servers?.[SESSION_HISTORY_MCP_SERVER_NAME] !== undefined && isSessionHistoryToolAllowed(policy),
+  };
 }
 
 export function createConversationHistoryServer(binding: Binding): McpServer {
