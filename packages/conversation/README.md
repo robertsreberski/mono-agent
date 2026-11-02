@@ -139,7 +139,9 @@ absent evidence remains compatible with older completed-turn admissions.
 The built-in default soul adds only a compact evidence router: active dialogue
 for what was just said, `MemoryRecall` for a targeted durable fact or decision,
 `MemoryJournal` for a chronological retrospective over an explicit date range,
-and `RunHistory`/`SessionHistory` for exact execution evidence. It names those
+`ConversationHistory` for exact retained conversation and tool-result values,
+including identifiers, `RunHistory` for settlement and interrupted-work recovery,
+and `SessionHistory` for prior-run tool-lifecycle evidence. It names those
 tools "when available" because the harness itself does not own or assume any
 app MCP tool.
 Unhinted interrupted-work recovery retains the `RunHistory {}` first step.
