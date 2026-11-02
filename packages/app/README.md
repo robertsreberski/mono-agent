@@ -1638,6 +1638,12 @@ evidence as interrupted answers.
 
 ## Architecture
 
+App-created policy-gated MCP specs carry cloneable matching metadata so the
+Pi runtime applies the effective request/run allow/deny policy at declaration
+and execution. `MemoryRecall` remains controlled by memory-read enablement,
+not tool policy; external MCP declarations retain their existing boundary.
+
+
 Automatic memory similarity injection excludes known same-logical-conversation
 `source.session` records before selection; explicit `MemoryRecall` remains
 unchanged. Daily bucket suffixes share an owner; web conversation ids are already

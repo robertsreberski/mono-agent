@@ -1,4 +1,5 @@
 // MCP tool invocation, progress/timeouts and run teardown.
+import { createMcpToolPolicyGuard } from "./tool-policy.js";
 import { MAX_TOOL_RESULT_BYTES, wrapToolsWithBloatGuard } from "../../agent/tool-bloat.js";
 import { connectMcpClient, closeConnectedMcpClient } from "./connection.js";
 import { objectSchema } from "../shared/tool-schema.js";
@@ -29,8 +30,10 @@ function withTimeout(promise: any, timeoutMs: any, signal: any, label: any, regi
   return Promise.race([promise, timer]).finally(() => clearTimeout(timeout));
 }
 
-export function initPiMcpTools(mcpConfig: any, reservedNames?: Set<any>, { limits, mcpCallNoTotalTimeoutTools, cwd, persistArtifact, qaOutputDir, onTruncate, toolPayloadMaxBytes, sandboxPolicy, sandboxEngine, onToolProgress, ctx, mcpApps, onRichOutput, runId, }?: { limits?: any; mcpCallNoTotalTimeoutTools?: readonly string[]; cwd?: any; persistArtifact?: any; qaOutputDir?: any; onTruncate?: any; toolPayloadMaxBytes?: number; sandboxPolicy?: any; sandboxEngine?: any; onToolProgress?: any; ctx?: any; mcpApps?: any; onRichOutput?: () => void; runId?: string; }): Promise<{ clients: { name: any; client: import("@modelcontextprotocol/sdk/client").Client<{ method: string; params?: { [x: string]: unknown; _meta?: { [x: string]: unknown; progressToken?: string | number; "io.modelcontextprotocol/related-task"?: { taskId: string; }; }; }; }, { method: string; params?: { [x: string]: unknown; _meta?: { [x: string]: unknown; progressToken?: string | number; "io.modelcontextprotocol/related-task"?: { taskId: string; }; }; }; }, { [x: string]: unknown; _meta?: { [x: string]: unknown; progressToken?: string | number; "io.modelcontextprotocol/related-task"?: { taskId: string; }; }; }>; transport: import("@modelcontextprotocol/sdk/client/streamableHttp").StreamableHTTPClientTransport | import("@modelcontextprotocol/sdk/client/sse").SSEClientTransport | import("@modelcontextprotocol/sdk/client/stdio").StdioClientTransport; connectionId: `${string}-${string}-${string}-${string}-${string}`; retainedByMcpApps: boolean; privateCapabilityUrl: boolean; closed: boolean; inFlight: Set<any>; }[]; tools: any[]; warnings: { server: string; message: any; code?: string; type: string; warning_kind: string; }[]; }>;
+export function initPiMcpTools(mcpConfig: any, reservedNames?: Set<any>, { allowedTools, disallowedTools, limits, mcpCallNoTotalTimeoutTools, cwd, persistArtifact, qaOutputDir, onTruncate, toolPayloadMaxBytes, sandboxPolicy, sandboxEngine, onToolProgress, ctx, mcpApps, onRichOutput, runId, }?: { allowedTools?: readonly string[]; disallowedTools?: readonly string[]; limits?: any; mcpCallNoTotalTimeoutTools?: readonly string[]; cwd?: any; persistArtifact?: any; qaOutputDir?: any; onTruncate?: any; toolPayloadMaxBytes?: number; sandboxPolicy?: any; sandboxEngine?: any; onToolProgress?: any; ctx?: any; mcpApps?: any; onRichOutput?: () => void; runId?: string; }): Promise<{ clients: { name: any; client: import("@modelcontextprotocol/sdk/client").Client<{ method: string; params?: { [x: string]: unknown; _meta?: { [x: string]: unknown; progressToken?: string | number; "io.modelcontextprotocol/related-task"?: { taskId: string; }; }; }; }, { method: string; params?: { [x: string]: unknown; _meta?: { [x: string]: unknown; progressToken?: string | number; "io.modelcontextprotocol/related-task"?: { taskId: string; }; }; }; }, { [x: string]: unknown; _meta?: { [x: string]: unknown; progressToken?: string | number; "io.modelcontextprotocol/related-task"?: { taskId: string; }; }; }>; transport: import("@modelcontextprotocol/sdk/client/streamableHttp").StreamableHTTPClientTransport | import("@modelcontextprotocol/sdk/client/sse").SSEClientTransport | import("@modelcontextprotocol/sdk/client/stdio").StdioClientTransport; connectionId: `${string}-${string}-${string}-${string}-${string}`; retainedByMcpApps: boolean; privateCapabilityUrl: boolean; closed: boolean; inFlight: Set<any>; }[]; tools: any[]; warnings: { server: string; message: any; code?: string; type: string; warning_kind: string; }[]; }>;
 export async function initPiMcpTools(mcpConfig: any, reservedNames: Set<any> = new Set(), {
+  allowedTools,
+  disallowedTools = [],
   limits = {},
   mcpCallNoTotalTimeoutTools = [],
   cwd = null,
@@ -45,10 +48,11 @@ export async function initPiMcpTools(mcpConfig: any, reservedNames: Set<any> = n
   mcpApps = null,
   onRichOutput = null,
   runId = null,
-}: { limits?: any; mcpCallNoTotalTimeoutTools?: readonly string[]; cwd?: any; persistArtifact?: any; qaOutputDir?: any; onTruncate?: any; toolPayloadMaxBytes?: number; sandboxPolicy?: any; sandboxEngine?: any; onToolProgress?: any; ctx?: any; mcpApps?: any; onRichOutput?: (() => void) | null; runId?: string | null } = {}) {
+}: { allowedTools?: readonly string[]; disallowedTools?: readonly string[]; limits?: any; mcpCallNoTotalTimeoutTools?: readonly string[]; cwd?: any; persistArtifact?: any; qaOutputDir?: any; onTruncate?: any; toolPayloadMaxBytes?: number; sandboxPolicy?: any; sandboxEngine?: any; onToolProgress?: any; ctx?: any; mcpApps?: any; onRichOutput?: (() => void) | null; runId?: string | null } = {}) {
   const clients = [];
   const tools = [];
   const entries = Object.entries(mcpConfig || {}).sort(([a]: [string, any], [b]: [string, any]) => a < b ? -1 : a > b ? 1 : 0);
+  const guards = new Map(entries.map(([name, spec]) => [name, createMcpToolPolicyGuard(spec, name, allowedTools, disallowedTools)]));
   const settled = await Promise.allSettled(entries.map(([name, cfg]: [string, any]) => connectMcpClient(name, cfg, {
     cwd,
     sandboxPolicy,
@@ -103,6 +107,8 @@ export async function initPiMcpTools(mcpConfig: any, reservedNames: Set<any> = n
     }
 
     for (const sourceTool of [...(listed!.tools || [])].sort((a: { inputSchema: { [x: string]: unknown; type: "object"; properties?: Record<string, object> | undefined; required?: string[] | undefined; }; name: string; description?: string | undefined; outputSchema?: { [x: string]: unknown; type: "object"; properties?: Record<string, object> | undefined; required?: string[] | undefined; } | undefined; annotations?: { title?: string | undefined; readOnlyHint?: boolean | undefined; destructiveHint?: boolean | undefined; idempotentHint?: boolean | undefined; openWorldHint?: boolean | undefined; } | undefined; execution?: { taskSupport?: "optional" | "required" | "forbidden" | undefined; } | undefined; _meta?: Record<string, unknown> | undefined; icons?: { src: string; mimeType?: string | undefined; sizes?: string[] | undefined; theme?: "light" | "dark" | undefined; }[] | undefined; title?: string | undefined; }, b: { inputSchema: { [x: string]: unknown; type: "object"; properties?: Record<string, object> | undefined; required?: string[] | undefined; }; name: string; description?: string | undefined; outputSchema?: { [x: string]: unknown; type: "object"; properties?: Record<string, object> | undefined; required?: string[] | undefined; } | undefined; annotations?: { title?: string | undefined; readOnlyHint?: boolean | undefined; destructiveHint?: boolean | undefined; idempotentHint?: boolean | undefined; openWorldHint?: boolean | undefined; } | undefined; execution?: { taskSupport?: "optional" | "required" | "forbidden" | undefined; } | undefined; _meta?: Record<string, unknown> | undefined; icons?: { src: string; mimeType?: string | undefined; sizes?: string[] | undefined; theme?: "light" | "dark" | undefined; }[] | undefined; title?: string | undefined; }) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0)) {
+      const isAllowed = guards.get(serverName)!;
+      if (!isAllowed(sourceTool.name)) continue;
       const name = mcpToolName(serverName, sourceTool.name, seen);
       if (seen.has(name)) continue;
       seen.add(name);
@@ -112,6 +118,7 @@ export async function initPiMcpTools(mcpConfig: any, reservedNames: Set<any> = n
         description: sourceTool.description || `${serverName}:${sourceTool.name}`,
         parameters: sourceTool.inputSchema || ((sourceTool) as any).input_schema || objectSchema({}),
         async execute(toolCallId: any, params: any, signal: any) {
+          if (!isAllowed(sourceTool.name)) throw new Error("MCP tool denied by effective tool policy.");
           if (signal?.aborted) throw new Error("tool execution aborted");
           // OWN this request's abort signal rather than forwarding the caller's
           // directly, so run teardown can cancel the call ON THE WIRE. The SDK
@@ -205,7 +212,7 @@ export async function initPiMcpTools(mcpConfig: any, reservedNames: Set<any> = n
               serverName,
               connected,
               sourceTool,
-              listedTools: listed!.tools || [],
+              listedTools: (listed!.tools || []).filter((tool) => isAllowed(tool.name)),
               toolCallId,
               toolInput: normalizedParams || {},
               toolResult: out,

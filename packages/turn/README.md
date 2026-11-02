@@ -394,6 +394,12 @@ root retains readonly copying and coordinate normalization without a second faca
 
 ## Architecture
 
+The MCP bridge filters marked app-owned tools against the effective run policy
+before registration and rechecks before execution. Serializable app metadata
+preserves aliases through prepared dispatch; unmarked external MCP servers keep
+the server-declaration boundary.
+
+
 Provider schema adaptation occurs only at the serialization boundary; native
 validation/execution keeps original schemas and cached validator identities.
 Shared-cap level-based Gemini and other reasoning families receive bounded

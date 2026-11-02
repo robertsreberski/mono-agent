@@ -39,7 +39,9 @@ Allow-all is the **config** default, not a programmatic one. For code-defined ag
 **Enforcement is uniform.** Every route runs the Pi runtime, which projects the
 policy directly instead of silently widening the tool surface. A specific list is
 the agent's complete surface of policy-gated tools, and any `disallowedTools`
-entry is honored for built-ins and app-owned tools. There is no route that
+entry is honored for built-ins and policy-gated app-owned tools. `MemoryRecall`
+is the exception: neither list gates it; disable it with
+`memory.recallTool.enabled: false`. There is no route that
 downgrades a restrictive policy to allow-all — a combination the runtime cannot
 enforce fails before provider startup.
 
@@ -87,7 +89,9 @@ The example above keeps allow-all (every tool stays available) but denies `Bash`
 
 ## Deny enforcement
 
-`disallowedTools` filters the built-in tools (`Read`, `Bash`, …), the progressive-disclosure `ReadSkill` tool, `RunHistory`, `SessionHistory`, `ConversationHistory`, `MemoryJournal`, `SetConversationTitle`, `SuggestReplies`, and app-owned adapter send tools (`SlackSendMessage`, `TelegramSendMessage`, …). The Pi runtime honors the list for all of those on every route.
+`disallowedTools` filters the built-in tools (`Read`, `Bash`, …), the progressive-disclosure `ReadSkill` tool, and every policy-gated app-owned tool: `RunHistory`, `SessionHistory`, `ConversationHistory`, `MemoryJournal`, `Remember`, `ProviderUsage`, `SetConversationTitle`, `SuggestReplies`, `PublishReplyFile`, `ProposeRestart`, `PeerAgent`, `AskUser`, adapter send tools (`SlackSendMessage`, `TelegramSendMessage`, `TelegramSendFile`), and console project/tag/conversation/wake tools. The Pi runtime honors the effective merged request/run policy for all of those on every route, including authoritative request overrides and global `"*"` denies. Denied app-owned tools are not offered to the model and cannot be invoked through the runtime.
+
+`MemoryRecall` is deliberately exempt from both `allowedTools` and `disallowedTools`, including request overrides that preserve its configured endpoint. Its off switch is `memory.recallTool.enabled: false`; this does not disable automatic memory context. See [Tools not gated by allowedTools](#tools-not-gated-by-allowedtools).
 
 :::caution
 **Known limitation — external MCP tools on pi.** Arbitrary tools advertised by an external MCP server are **not** deny-filtered on the engine-turn runtime yet. Listing such a tool in `disallowedTools` has no effect there. To hard-restrict an external MCP tool on pi, **don't declare its server** in `mcp.json` / `tools.mcpServers` — server declaration, not the denylist, is what governs its availability. (The app-owned adapter send tools are exempt from this limitation: they are gated by the app, so their `disallowedTools` entries are honored everywhere.)
@@ -220,7 +224,7 @@ storage contract and the credential-rejection boundary.
 
 Two families are never gated by `allowedTools` and are unaffected by the allow-all / specific-list choice:
 
-- **`MemoryRecall`** — auto-provisioned from `config.memory.recallTool.enabled`. See [Capture & recall](/memory/capture-and-recall/).
+- **`MemoryRecall`** — auto-provisioned from `config.memory.recallTool.enabled`; also exempt from `disallowedTools`. Set that enablement to `false` to remove it. See [Capture & recall](/memory/capture-and-recall/).
 - **MCP-server tools** (`mcp__…`) — governed by whether their server is declared, not by the allowlist. See below and [MCP servers](/tools/mcp/).
 
 ## MCP tools

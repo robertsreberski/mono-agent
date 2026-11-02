@@ -433,3 +433,20 @@ it("prepared OpenCode requests attribute the bound id rather than the preparatio
   expect((await lease.run({ providerAttributionSessionId: "fictional-bound-id" })).text).toBe("Fictional bound reply");
   expect(headers).toEqual([{ "x-opencode-session": "fictional-bound-id", "x-opencode-client": "mono-agent" }]);
 });
+
+it("preserves serializable app-tool policy through native preparation without exposing denied tools", async () => {
+  const f = await fixture(), endpoint = await mcp();
+  const listTools = vi.spyOn(Client.prototype, "listTools");
+  const spec = JSON.parse(JSON.stringify({ type: "http", url: endpoint.url, appOwnedTools: { version: 1, aliases: { Lookup: ["lookup_legacy"] } } }));
+  const pending = prepare(f, { allowedTools: ["*"], disallowedTools: ["lookup_legacy"], mcpServers: { owned: spec } });
+  spec.appOwnedTools.aliases.Lookup.length = 0;
+  const lease = await pending;
+  expect(endpoint.methods.filter((method) => method === "tools/list")).toHaveLength(1);
+  expect(listTools).toHaveBeenCalledOnce();
+  const listed = await listTools.mock.results[0]!.value;
+  expect(listed.tools).toEqual([expect.objectContaining({ name: "Lookup" })]);
+  expect(lease.snapshot.tools.some((tool) => tool.name.includes("Lookup"))).toBe(false);
+  expect(Object.isFrozen(lease.snapshot.tools)).toBe(true);
+  f.faux.setResponses([fauxAssistantMessage([fauxToolCall("Lookup", { color: "amber" })]), fauxAssistantMessage([fauxText("Denied")])]);
+  await lease.run(); expect(endpoint.calls).toEqual([]);
+});

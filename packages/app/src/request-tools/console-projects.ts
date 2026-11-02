@@ -7,7 +7,7 @@ import { createRequestScopedMcpRuntimeExtension } from "../mcp/request-scoped-mc
 import type { RuntimeOptionsExtension } from "../composition/runtime-option-extensions.js";
 import { telegramProjectTurnFor } from "../channels/telegram/telegram-projects.js";
 
-const SERVER = "mono-agent-console-projects";
+export const SERVER = "mono-agent-console-projects";
 const id = z.string().min(1).max(128);
 const name = z.string().trim().min(1).max(120).refine((value) => !/[\r\n]/u.test(value), "name must not contain line breaks");
 const context = z.string().max(4000);

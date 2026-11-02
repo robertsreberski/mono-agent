@@ -188,6 +188,8 @@ export async function buildTurnTools(runState: PiRunState, {
     const mcpInit = capabilities.tool_use === false
       ? { clients: [], tools: [], warnings: [] }
       : await initPiMcpTools(options.mcpServers || {}, reservedNames, (({
+        allowedTools: options.allowedTools,
+        disallowedTools: options.disallowedTools,
         cwd: options.cwd,
         persistArtifact,
         qaOutputDir,

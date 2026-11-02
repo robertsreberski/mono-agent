@@ -1,3 +1,4 @@
+import type { RuntimeMcpAppHost } from "../../contracts/mcp-apps.js";
 import { createToolContext, updateToolContext } from "../../tools/shared/tool-context.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -980,6 +981,60 @@ describe("pi MCP tool helpers", () => {
     }
   });
 
+  it("excludes policy-denied siblings from app-visible MCP App registration", async () => {
+    const register = vi.fn<RuntimeMcpAppHost["register"]>(async (registration) => ({
+      part: {
+        type: "mcp_app",
+        id: "fictional-app",
+        invocationId: "fictional-invocation",
+        connectionId: registration.connection.connectionId,
+        serverName: registration.serverName,
+        toolName: registration.toolName,
+        resourceUri: registration.resourceUri,
+        mediaType: "text/html;profile=mcp-app",
+        protocolVersion: "2026-01-26",
+      },
+      retainConnection: false,
+    }));
+    const host: RuntimeMcpAppHost = {
+      protocolVersions: ["2026-01-26"],
+      mimeTypes: ["text/html;profile=mcp-app"],
+      register,
+      recordFailure: vi.fn<RuntimeMcpAppHost["recordFailure"]>(async (input) => ({ type: "failure", id: "fictional-failure", code: input.code, message: input.message })),
+    };
+    const resourceUri = "ui://widgets/policy";
+    const connectSpy = vi.spyOn(McpClient.prototype, "connect").mockResolvedValue(undefined);
+    const closeSpy = vi.spyOn(McpClient.prototype, "close").mockResolvedValue(undefined);
+    const listSpy = vi.spyOn(McpClient.prototype, "listTools").mockResolvedValue({
+      tools: [
+        { name: "ShowPanel", inputSchema: { type: "object", properties: {} }, _meta: { ui: { resourceUri } } },
+        { name: "RestrictedSibling", inputSchema: { type: "object", properties: {} } },
+      ],
+    });
+    const readSpy = vi.spyOn(McpClient.prototype, "readResource").mockResolvedValue({
+      contents: [{ uri: resourceUri, mimeType: "text/html;profile=mcp-app", text: "<!doctype html><p>Fictional panel</p>" }],
+    });
+    const callSpy = vi.spyOn(McpClient.prototype, "callTool").mockResolvedValue({ content: [{ type: "text", text: "ok" }] });
+    let clients: any[] = [];
+    try {
+      const initialized = await initPiMcpTools(
+        { srv: { type: "http", url: "http://127.0.0.1:9/mcp", appOwnedTools: { version: 1, aliases: {} } } },
+        new Set(),
+        { ctx, mcpApps: host, runId: "run-policy-app", allowedTools: ["*"], disallowedTools: ["RestrictedSibling"] },
+      );
+      clients = initialized.clients;
+      expect(initialized.tools.map((tool: any) => tool.name)).toEqual(["ShowPanel"]);
+      await initialized.tools[0].execute("call-panel", {});
+      expect(register).toHaveBeenCalledOnce();
+      expect(register.mock.calls[0]![0].appVisibleTools).toEqual(["ShowPanel"]);
+      expect(host.recordFailure).not.toHaveBeenCalled();
+      expect(callSpy.mock.calls.map(([params]) => params.name)).toEqual(["ShowPanel"]);
+    } finally {
+      await closePiMcpClients(clients);
+      for (const spy of [connectSpy, closeSpy, listSpy, readSpy, callSpy]) spy.mockRestore();
+    }
+  });
+
   it("intersects both shipped MCP Apps revisions and retains one exact connection until the host evicts it", async () => {
     const resourceUri = "ui://widgets/chart";
     const mimeType = "text/html;profile=mcp-app";
@@ -1777,5 +1832,79 @@ describe("web delivery guards", () => {
     }).find((tool: any) => tool.name === "WebSearch");
     const result = await search.execute("WebSearch:1", { query: "evidence" });
     expect(JSON.parse(result.content[0].text)).not.toHaveProperty("next_actions");
+  });
+});
+
+describe("app-owned MCP effective policy", () => {
+  it.each([undefined, ["*"], [], ["Read"], ["Write"], null, "Read"].map((allowedTools) => ({ allowedTools })))("matches builtin allow semantics for $allowedTools without weakening denies", async ({ allowedTools }) => {
+    const { createMcpToolPolicyGuard } = await import("../../tools/mcp/tool-policy.js");
+    const spec = { appOwnedTools: { version: 1, aliases: {} } };
+    for (const disallowedTools of [[], ["Read"]]) {
+      const builtinAvailable = getPiBuiltinTools(allowedTools, { ctx, disallowedTools }).some((tool) => tool.name === "Read");
+      expect(createMcpToolPolicyGuard(spec, "owned", allowedTools, disallowedTools)("Read")).toBe(builtinAvailable);
+    }
+    expect(createMcpToolPolicyGuard(spec, "owned", allowedTools, ["*"])("Read")).toBe(false);
+    expect(createMcpToolPolicyGuard({ appOwnedTools: { version: 2, aliases: {} } }, "owned", allowedTools)("Read")).toBe(false);
+  });
+  const marker = { version: 1, aliases: { Lookup: ["lookup_legacy"] } };
+  it.each(["Lookup", "lookup_legacy", "mcp__owned__Lookup", "mcp__owned__*", "*"])("removes %s before collision naming and leaves external tools unchanged", async (deny) => {
+    const connect = vi.spyOn(McpClient.prototype, "connect").mockResolvedValue(undefined);
+    const close = vi.spyOn(McpClient.prototype, "close").mockResolvedValue(undefined);
+    const list = vi.spyOn(McpClient.prototype, "listTools").mockResolvedValue({ tools: ["Lookup", "Sibling"].map((name) => ({ name, inputSchema: { type: "object" as const } })) });
+    try {
+      const initialized = await initPiMcpTools({ owned: { type: "http", url: "http://127.0.0.1:9", appOwnedTools: marker },
+        external: { type: "http", url: "http://127.0.0.1:9" } }, new Set(["Lookup"]), { ctx, allowedTools: ["*"], disallowedTools: [deny] });
+      expect(initialized.tools.map((tool) => tool.name)).toEqual(["mcp__external__Lookup", "Sibling", ...(deny === "*" || deny.endsWith("__*") ? [] : ["mcp__owned__Sibling"])]);
+      await closePiMcpClients(initialized.clients);
+    } finally { connect.mockRestore(); close.mockRestore(); list.mockRestore(); }
+  });
+
+  it("refuses execution before the MCP call even if a stale wrapper reaches execution", async () => {
+    const policy = await import("../../tools/mcp/tool-policy.js");
+    const guard = vi.fn().mockReturnValueOnce(true).mockReturnValue(false);
+    const createGuard = vi.spyOn(policy, "createMcpToolPolicyGuard").mockReturnValue(guard);
+    const connect = vi.spyOn(McpClient.prototype, "connect").mockResolvedValue(undefined);
+    const close = vi.spyOn(McpClient.prototype, "close").mockResolvedValue(undefined);
+    const list = vi.spyOn(McpClient.prototype, "listTools").mockResolvedValue({ tools: [{ name: "Lookup", inputSchema: { type: "object" } }] });
+    const call = vi.spyOn(McpClient.prototype, "callTool");
+    try {
+      const initialized = await initPiMcpTools({ owned: { type: "http", url: "http://127.0.0.1:9", appOwnedTools: marker } }, new Set(), { ctx, allowedTools: ["*"] });
+      await expect(initialized.tools[0].execute("stale-call", {})).rejects.toThrow("denied by effective tool policy");
+      expect(call).not.toHaveBeenCalled(); expect(guard).toHaveBeenCalledTimes(2);
+      await closePiMcpClients(initialized.clients);
+    } finally { createGuard.mockRestore(); connect.mockRestore(); close.mockRestore(); list.mockRestore(); call.mockRestore(); }
+  });
+
+  it("fails closed for non-plain policy records, including Map aliases that survive cloning", async () => {
+    const { createMcpToolPolicyGuard } = await import("../../tools/mcp/tool-policy.js");
+    for (const aliases of [new Map(), new Map([["Lookup", ["lookup_legacy"]]])]) {
+      const spec = structuredClone({ appOwnedTools: { version: 1, aliases } });
+      expect(spec.appOwnedTools.aliases).toBeInstanceOf(Map);
+      expect(createMcpToolPolicyGuard(spec, "owned", ["*"], ["lookup_legacy"])("Lookup")).toBe(false);
+    }
+    class Descriptor { version = 1; aliases = { Lookup: ["lookup_legacy"] }; }
+    class MarkedSpec { appOwnedTools = marker; }
+    for (const descriptor of [new Descriptor(), Object.assign(new Date(0), marker)]) {
+      expect(createMcpToolPolicyGuard({ appOwnedTools: descriptor }, "owned", ["*"])("Lookup")).toBe(false);
+    }
+    expect(createMcpToolPolicyGuard(new MarkedSpec(), "owned", ["*"])("Lookup")).toBe(false);
+    expect(createMcpToolPolicyGuard(new Date(0), "external", [], ["*"])("Lookup")).toBe(true);
+    const plain = Object.assign(Object.create(null), { version: 1, aliases: Object.assign(Object.create(null), { Lookup: ["lookup_legacy"] }) });
+    const guard = createMcpToolPolicyGuard({ appOwnedTools: plain }, "owned", ["*"], ["lookup_legacy"]);
+    expect(guard("Lookup")).toBe(false);
+    expect(guard("Sibling")).toBe(true);
+  });
+
+  it("owns cloneable policy data and fails closed for malformed marked specs", async () => {
+    const { createMcpToolPolicyGuard } = await import("../../tools/mcp/tool-policy.js");
+    const allowed = ["*"], denied = ["lookup_legacy"], descriptor = structuredClone(marker);
+    const guard = createMcpToolPolicyGuard({ appOwnedTools: descriptor }, "owned", allowed, denied);
+    denied.length = 0; descriptor.aliases.Lookup.length = 0;
+    expect(guard("Lookup")).toBe(false);
+    expect(createMcpToolPolicyGuard({ appOwnedTools: marker }, "owned", ["lookup"])("Lookup")).toBe(false);
+    expect(createMcpToolPolicyGuard({}, "owned", [], ["*"])("Lookup")).toBe(true);
+    for (const malformed of [undefined, null, {}, { version: 2, aliases: {} }, { version: 1, aliases: { Lookup: [42] } }]) {
+      expect(createMcpToolPolicyGuard({ appOwnedTools: malformed }, "owned", ["*"])("Lookup")).toBe(false);
+    }
   });
 });
