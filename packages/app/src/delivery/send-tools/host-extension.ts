@@ -1,6 +1,7 @@
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 
+import { appOwnedMcpServerSpec } from "../../mcp/app-owned-tool-policy.js";
 import { adapterSendToolsMcpEnv, ADAPTER_SEND_TOOLS_MCP_SERVER_NAME } from "./child-config.js";
 import { ensureAdapterRunOutputDir, removeOwnedDirectory } from "./run-output.js";
 import type {
@@ -37,7 +38,7 @@ export function adapterSendToolsMcpServerSpec(
     value: true,
     enumerable: false,
   });
-  return spec;
+  return appOwnedMcpServerSpec(ADAPTER_SEND_TOOLS_MCP_SERVER_NAME, spec);
 }
 
 /**

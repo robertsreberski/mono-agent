@@ -209,7 +209,7 @@ function isAdapterToolAllowed(name: string, options: AdapterSendToolsResolveOpti
   ]);
   const allowed = options.allowedTools ?? [];
   const disallowed = options.disallowedTools ?? [];
-  if (disallowed.includes(wildcard) || aliases.some((alias) => disallowed.includes(alias))) {
+  if (disallowed.includes("*") || disallowed.includes(wildcard) || aliases.some((alias) => disallowed.includes(alias))) {
     return false;
   }
   if (aliases.some((alias) => allowed.includes(alias))) {

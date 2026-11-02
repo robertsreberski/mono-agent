@@ -712,7 +712,9 @@ describe("reply artifact publication", () => {
       expect(first.url).not.toContain(workspace);
       expect(second.url).not.toBe(first.url);
       expect(first.privateCapability).toBe(true);
-      expect(first.serializedSpec).toBe('{"type":"http"}');
+      expect(first.serializedSpec).toBe(JSON.stringify({ type: "http", appOwnedTools: {
+        version: 1, aliases: { PublishReplyFile: ["publish_reply_file"] },
+      } }));
       expect(first.serializedSpec).not.toContain(first.url);
     } finally {
       await first.close();

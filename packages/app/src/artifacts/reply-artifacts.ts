@@ -36,6 +36,7 @@ import {
   type AgentReplyPartFailure,
   type AgentResponder,
 } from "@mono-agent/contracts";
+import { appOwnedMcpServerSpec } from "../mcp/app-owned-tool-policy.js";
 import { createLoopbackMcpEndpoint } from "../mcp/loopback-transport.js";
 import type { ToolPolicyInput } from "@mono-agent/conversation";
 import * as z from "zod/v4";
@@ -619,7 +620,7 @@ export function createReplyArtifactService(options: ReplyArtifactServiceOptions)
       bodyLimitMessage: "Reply artifact MCP request exceeds 1 MB.",
       unavailableTransportMessage: "Reply artifact MCP transport is unavailable.",
     });
-    const serverSpec = privateLoopbackHttpServerSpec(endpoint.url);
+    const serverSpec = appOwnedMcpServerSpec(REPLY_ARTIFACT_MCP_SERVER_NAME, privateLoopbackHttpServerSpec(endpoint.url));
     return {
       runtimeOptions: {
         mcpServers: {

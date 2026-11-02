@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Fix effective request/run denies for policy-gated app-owned MCP tools,
+  including global `*` denies for `AskUser` and adapter send tools; keep
+  `MemoryRecall` exempt.
+
 - Add repeatable comparisons of retained-history lookup across code checkouts
   and fixed instruction variants, with registered settings and paired reports.
   Results demonstrate offline mechanics only, not guidance benefits or costs;

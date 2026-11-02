@@ -20,7 +20,7 @@ import { createRequestScopedMcpRuntimeExtension } from "../mcp/request-scoped-mc
 import type { RuntimeOptionsExtension } from "../composition/runtime-option-extensions.js";
 
 const PEER_TOOL = "PeerAgent";
-const SERVER = "mono-agent-peer-agent";
+export const SERVER = "mono-agent-peer-agent";
 const THREAD = /^[a-z][a-z0-9-]{0,39}$/u;
 const INPUT = z.object({
   action: z.enum(["send", "stop", "answer", "decline"]),

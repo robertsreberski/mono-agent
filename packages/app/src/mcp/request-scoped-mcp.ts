@@ -3,6 +3,7 @@ import type { Server } from "node:http";
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
+import { appOwnedMcpServerSpec } from "./app-owned-tool-policy.js";
 import { createLoopbackMcpEndpoint } from "./loopback-transport.js";
 import type { RuntimeOptionsExtension } from "../composition/runtime-option-extensions.js";
 
@@ -39,7 +40,7 @@ export function createRequestScopedMcpRuntimeExtension(options: RequestScopedMcp
         ...(options.listen === undefined ? {} : { listen: options.listen }),
       });
       return {
-        runtimeOptions: { mcpServers: { [options.serverName]: { type: "http", url: endpoint.url } } },
+        runtimeOptions: { mcpServers: { [options.serverName]: appOwnedMcpServerSpec(options.serverName, { type: "http", url: endpoint.url }) } },
         cleanup: endpoint.close,
       };
     } catch (error) {
