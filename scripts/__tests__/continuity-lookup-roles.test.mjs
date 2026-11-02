@@ -1,0 +1,398 @@
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { execFileSync, spawnSync, spawn } from "node:child_process";
+import { access, appendFile, cp, chmod, lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import { digest, loadTraces, makePlan, traceTokenShape } from "../lib/continuity-dataset.mjs";
+import { BUILD_POLICY, verifyRealBuild } from "../lib/memory-e2e-build.mjs";
+import { LOOKUP_MODE, LOOKUP_ROLES, LOOKUP_SOULS, LOOKUP_BUDGET, sha256 } from "../lib/continuity-lookup.mjs";
+import { ROOT, GUIDANCE_FILES, lookupProtocol, lookupWorkload, registerLookup, validateRegistration, guidanceDiff, roleBinding, rolePlan,
+  verifyRoleRequest, roleReceipt, assertRoleReceipt, aggregateLookupRoles, aggregateRoleFiles, runLookupRoles, runLookupRoleChild, verifyRegisteredCheckouts } from "../lib/continuity-lookup-roles.mjs";
+import { main as benchmarkMain } from "../continuity-benchmark.mjs";
+import { main as compareMain, lookupOutputPath } from "../continuity-lookup-compare.mjs";
+import { main as estimateMain, estimateLookup, ESTIMATE_PROFILES, offlinePrices, priceLookupCall } from "../continuity-lookup-estimate.mjs";
+
+const dirs = [];
+beforeEach(() => {
+  for (const key of Object.keys(process.env)) if (key.startsWith("GIT_")) vi.stubEnv(key, undefined);
+  vi.stubEnv("GIT_CONFIG_GLOBAL", "/dev/null"); vi.stubEnv("GIT_CONFIG_NOSYSTEM", "1");
+  vi.stubEnv("NODE_OPTIONS", `${process.env.NODE_OPTIONS ?? ""} --import=${join(ROOT, "scripts/__tests__/fixtures/reject-account-home.mjs")}`);
+});
+afterEach(async () => { vi.unstubAllEnvs(); vi.restoreAllMocks(); for (const dir of dirs.splice(0)) await rm(dir, { recursive: true, force: true }); });
+const gitEnv = () => ({ ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_"))),
+  GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_AUTHOR_NAME: "Fictional Fixture", GIT_AUTHOR_EMAIL: "fiction@example.invalid",
+  GIT_COMMITTER_NAME: "Fictional Fixture", GIT_COMMITTER_EMAIL: "fiction@example.invalid" });
+const git = (root, args) => execFileSync("git", ["-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", "-c", "gc.auto=0", "-c", "maintenance.auto=false", "-C", root, ...args],
+  { env: gitEnv(), encoding: "utf8", maxBuffer: 16 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] }).trim();
+const RENDER = "packages/conversation/src/continuity/render-fit.ts", PACK = "packages/conversation/src/continuity/pack.ts";
+const guidance = 'export const PACK_RETRIEVAL_GUIDANCE = "Fictional guidance";\n';
+async function scratch() { const base = join(ROOT, ".worklab-tmp"); await mkdir(base, { recursive: true }); const dir = await mkdtemp(join(base, "lookup-roles-")); dirs.push(dir); return dir; }
+function commit(root) { git(root, ["add", "--all"]); git(root, ["-c", "user.name=Fictional Fixture", "-c", "user.email=fiction@example.invalid", "commit", "-m", "test: fictional checkout"]); return git(root, ["rev-parse", "HEAD"]); }
+async function tinyRepo(base, name, files) {
+  const root = join(base, name); await mkdir(root); git(root, ["init"]);
+  for (const [path, value] of Object.entries(files)) { await mkdir(dirname(join(root, path)), { recursive: true }); await writeFile(join(root, path), value); }
+  commit(root); return root;
+}
+async function registrationFixture() {
+  const first = (await loadTraces()).traces[0];
+  const common = { protocol: await lookupProtocol(), ...await lookupWorkload({ suites: ["original"], traceIds: [first.id], probeLimit: 2 }) };
+  const build = revision => ({ policy: BUILD_POLICY, sourceHead: revision, command: ["pnpm", "--filter", "@mono-agent/app...", "run", "build"],
+    packages: ["packages/app"], outputRoots: ["packages/app/dist"], outputSha256: "c".repeat(64), node: process.version });
+  const codes = { R0: { path: "/fictional/r0", revision: "a".repeat(40), build: build("a".repeat(40)) }, Rpack: { path: "/fictional/rpack", revision: "b".repeat(40), build: build("b".repeat(40)) } };
+  return { schema: "continuity-lookup-registration-v1", purpose: "offline-mechanics-only-not-ledger-qualification", common, codes, diffFiles: [RENDER],
+    roles: LOOKUP_ROLES.map(def => ({ id: def.id, arm: def.arm, code: def.code, revision: codes[def.code].revision, buildHash: codes[def.code].build.outputSha256, soul: LOOKUP_SOULS[def.soul] })) };
+}
+
+it("pins ordinary A1 plan bytes in addition to the existing three recall-only digest tests", async () => {
+  const plan = makePlan({ ...await loadTraces(), probeMode: LOOKUP_MODE, codeRevision: "a".repeat(40), profile: { judge: null } });
+  expect(digest(plan)).toBe("48d89ea070e196d4c320041e451e79eb2bd0782dd1b36d41d00fce588d5db978");
+  expect(plan.lookup).not.toHaveProperty("role");
+});
+
+it("pins the frozen post-routing S1 raw/core digests independently of future defaults, distinct from S0", async () => {
+  const bytes = await readFile(join(ROOT, "scripts/fixtures/continuity-soul-v2.md"));
+  expect(sha256(bytes.toString("utf8").replace(/\r\n?/gu, "\n").trim())).toBe(LOOKUP_SOULS.S1.coreSha256);
+  expect(sha256(bytes)).toBe("e625bc0ddb256f336ec66bf94335d260396fa2c5139e37d44f8e0370fef808a9");
+  expect(LOOKUP_SOULS.S1.coreSha256).toBe(LOOKUP_SOULS.S1.rawSha256);
+  expect(LOOKUP_SOULS.S0.rawSha256).not.toBe(LOOKUP_SOULS.S1.rawSha256);
+  const work = await scratch();
+  const { installSoul } = await import("../lib/continuity-lookup.mjs");
+  const { loadContextFromFiles } = await import("../../packages/conversation/dist/context/file-loader.js");
+  await installSoul(work, LOOKUP_SOULS.S1); await writeFile(join(work, "IDENTITY.md"), "Fictional benchmark agent.");
+  const context = await loadContextFromFiles({ identityPath: join(work, "IDENTITY.md"), soulPath: join(work, "BENCHMARK-SOUL.md"), userMessage: "Check." });
+  expect(sha256(context.sections.find(s => s.id === "core").content)).toBe(LOOKUP_SOULS.S1.coreSha256);
+});
+
+it("fails module loading when the frozen S1 fixture bytes drift", async () => {
+  const base = await scratch(); await mkdir(join(base, "lib")); await mkdir(join(base, "fixtures"));
+  const module = join(base, "lib/continuity-lookup.mjs"); await cp(join(ROOT, "scripts/lib/continuity-lookup.mjs"), module);
+  for (const file of ["continuity-soul-v1.md", "continuity-soul-v2.md", "continuity-lookup-budget-v1.json"]) await cp(join(ROOT, "scripts/fixtures", file), join(base, "fixtures", file));
+  expect(spawnSync(process.execPath, [module]).status).toBe(0);
+  const fixture = join(base, "fixtures/continuity-soul-v2.md"), original = await readFile(fixture, "utf8");
+  for (const changed of [original + "\n", "Fictional drift\n" + original]) {
+    await writeFile(fixture, changed);
+    const child = spawnSync(process.execPath, [module], { encoding: "utf8" });
+    expect(child.status).toBe(1); expect(child.stderr).toContain("lookup_soul_digest_mismatch");
+  }
+});
+
+it("rejects checkout-local registration/run outputs through existing ancestors and symlinks before work", async () => {
+  const base = await scratch(), r0 = join(base, "r0"), rpack = join(base, "rpack");
+  await mkdir(r0); await mkdir(rpack); await symlink(r0, join(base, "alias"), "dir");
+  const reg = await registrationFixture(); reg.codes.R0.path = r0; reg.codes.Rpack.path = rpack;
+  const file = join(base, "registration.json"), bytes = JSON.stringify(reg); await writeFile(file, bytes);
+  const args = ["register", "--r0", r0, "--r0-revision", reg.codes.R0.revision, "--rpack", rpack, "--rpack-revision", reg.codes.Rpack.revision];
+  for (const output of [r0, join(r0, "new/missing/output"), join(rpack, "new"), join(base, "alias/new/missing/output")]) {
+    await expect(compareMain([...args, "--output", output])).rejects.toThrow("lookup_output_inside_checkout");
+    await expect(compareMain(["run", "--registration", file, "--sha256", sha256(bytes), "--output", output])).rejects.toThrow("lookup_output_inside_checkout");
+  }
+  const existing = join(base, "existing"); await mkdir(existing);
+  // These are deliberately not Git checkouts: reaching registerLookup would fail differently.
+  await expect(compareMain([...args, "--output", existing])).rejects.toThrow("lookup_output_exists");
+  expect(await readdir(existing)).toEqual([]); expect(await readdir(r0)).toEqual([]); expect(await readdir(rpack)).toEqual([]);
+  expect(await lookupOutputPath(join(base, "r0-sibling/new"), [r0, rpack])).toBe(join(base, "r0-sibling/new"));
+});
+
+it("rejects explicit empty reader and reader-effort instead of selecting defaults", async () => {
+  const base = await scratch();
+  for (const flag of ["--reader", "--reader-effort"]) for (const value of ["", " "]) {
+    await expect(compareMain(["register", flag, value, "--output", join(base, "unused")])).rejects.toThrow("lookup_empty_reader_option");
+  }
+  await expect(access(join(base, "unused"))).rejects.toMatchObject({ code: "ENOENT" });
+});
+
+it("rejects wrong bound revisions, arms, builds, souls, receipts and protocol/lockfile bindings", async () => {
+  const reg = await registrationFixture(), role = reg.roles.find(r => r.id === "shipping"), binding = roleBinding(reg, role, reg.common.corpora[0]);
+  const loaded = await loadTraces();
+  const dir = await scratch(), missing = join(dir, "missing-role.json"); await writeFile(missing, "null");
+  await expect(benchmarkMain(["--probe-mode", LOOKUP_MODE, "--lookup-role", missing])).rejects.toThrow("lookup_role_request_mismatch");
+  expect(() => makePlan({ ...loaded, probeMode: LOOKUP_MODE, lookupRole: binding, codeRevision: "e".repeat(40), arms: [role.arm] })).toThrow("lookup_role_scope_mismatch");
+  expect(() => makePlan({ ...loaded, probeMode: LOOKUP_MODE, lookupRole: { ...binding, soul: LOOKUP_SOULS.S0 }, codeRevision: role.revision, arms: [role.arm] })).toThrow("lookup_role_binding_mismatch");
+  expect(() => makePlan({ ...loaded, probeMode: LOOKUP_MODE, lookupRole: binding, codeRevision: role.revision, arms: ["native-lookup"] })).toThrow("lookup_role_arm_mismatch");
+  const plan = await rolePlan(reg.common, binding), request = { schema: "lookup-role-request-v1", binding, common: reg.common, build: reg.codes.Rpack.build };
+  await expect(verifyRoleRequest(ROOT, { ...request, build: { ...request.build, outputSha256: "d".repeat(64) } }, plan)).rejects.toThrow("lookup_build_binding_mismatch");
+  const receipt = roleReceipt(request, plan), results = { plan, lookupReceipt: receipt, executionKind: "offline", qualityMeasured: false };
+  expect(() => assertRoleReceipt(results, request, plan)).not.toThrow();
+  for (const changed of [{ ...receipt, binding: { ...binding, revision: "d".repeat(40) } }, { ...receipt, binding: { ...binding, soul: LOOKUP_SOULS.S0 } }, { ...receipt, build: { ...request.build, outputSha256: "d".repeat(64) } }, null]) {
+    expect(() => assertRoleReceipt({ ...results, lookupReceipt: changed }, request, plan)).toThrow("lookup_role_receipt_mismatch");
+  }
+  const wrong = structuredClone(reg); wrong.common.protocol.lockfileSha256 = "0".repeat(64);
+  await expect(validateRegistration(wrong)).rejects.toThrow("lookup_registration_protocol_mismatch");
+  const { validateRegistrationVersion } = await import("../lib/continuity-holdout-registration.mjs");
+  expect(() => validateRegistrationVersion(reg)).toThrow("incompatible_holdout_registration_version");
+  const badVersion = { ...reg, schema: "holdout-registration-v2" };
+  await expect(validateRegistration(badVersion)).rejects.toThrow("incompatible_lookup_registration");
+});
+
+it("enforces the 14-file scope, runtime change and forward guidance witness, including modes, deletion and rename", async () => {
+  expect(GUIDANCE_FILES).toHaveLength(14); expect(new Set(GUIDANCE_FILES).size).toBe(14);
+  const base = await scratch(), baseline = { [RENDER]: "// Fictional pre-guidance render\n", [PACK]: "// Fictional pack\n", "docs/context/assembly.md": "Fictional docs\n" };
+  const a = await tinyRepo(base, "r0", baseline), b = await tinyRepo(base, "rpack", baseline);
+  expect(() => guidanceDiff(a, b)).toThrow("lookup_rpack_diff_out_of_scope");
+  await appendFile(join(b, "docs/context/assembly.md"), "Fictional docs delta\n"); commit(b);
+  expect(() => guidanceDiff(a, b)).toThrow("lookup_rpack_diff_out_of_scope");
+  await writeFile(join(b, "docs/context/assembly.md"), baseline["docs/context/assembly.md"]);
+  await chmod(join(b, PACK), 0o755); commit(b);
+  expect(() => guidanceDiff(a, b)).toThrow("lookup_rpack_direction_invalid"); // Mode alone is not forward guidance.
+  await writeFile(join(b, RENDER), guidance); commit(b);
+  expect(guidanceDiff(a, b)).toEqual([PACK, RENDER]); // Includes the mode-only pack delta.
+  expect(() => guidanceDiff(b, a)).toThrow("lookup_rpack_direction_invalid");
+  await rm(join(b, PACK)); commit(b);
+  expect(guidanceDiff(a, b)).toEqual([PACK, RENDER]); // Deletion is still a changed path.
+  await mkdir(join(b, "docs/tools"), { recursive: true });
+  git(b, ["mv", "docs/context/assembly.md", "docs/tools/mcp.md"]); commit(b);
+  expect(guidanceDiff(a, b)).toEqual(["docs/context/assembly.md", "docs/tools/mcp.md", PACK, RENDER]);
+  await rm(join(b, RENDER)); commit(b);
+  expect(() => guidanceDiff(a, b)).toThrow("lookup_rpack_direction_invalid");
+  await writeFile(join(b, "outside.txt"), "Fictional out-of-scope file"); commit(b);
+  expect(() => guidanceDiff(a, b)).toThrow("lookup_rpack_diff_out_of_scope");
+});
+
+it("rejects hidden untracked edits, assume-unchanged and skip-worktree flags", async () => {
+  const base = await scratch(), script = "scripts/continuity-benchmark.mjs", original = "// Fictional script\n";
+  const path = await tinyRepo(base, "masked", { [script]: original }), revision = git(path, ["rev-parse", "HEAD"]);
+  const options = { checkouts: { R0: { path, revision } }, suites: ["original"] };
+  git(path, ["config", "status.showUntrackedFiles", "no"]); await writeFile(join(path, "untracked"), "Fictional hidden file");
+  await expect(registerLookup(options)).rejects.toThrow("lookup_checkout_revision_or_dirt_mismatch");
+  await rm(join(path, "untracked"));
+  for (const flag of ["assume-unchanged", "skip-worktree"]) {
+    git(path, ["update-index", `--${flag}`, script]); await writeFile(join(path, script), "// Fictional hidden edit\n");
+    expect(git(path, ["status", "--porcelain=v1"])).toBe("");
+    await expect(registerLookup(options)).rejects.toThrow("lookup_checkout_index_flags_unsafe");
+    await writeFile(join(path, script), original); git(path, ["update-index", `--no-${flag}`, script]);
+  }
+});
+
+it("keeps fixture Git hermetic against inherited config, GIT_* variables, signing and hooks", async () => {
+  const base = await scratch(), global = join(base, "global-config"), hooks = join(base, "hooks");
+  await mkdir(hooks); await writeFile(join(hooks, "pre-commit"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+  await writeFile(global, `[commit]\n  gpgsign = true\n[core]\n  hooksPath = ${hooks}\n`);
+  for (const [key, value] of Object.entries({ GIT_DIR: "/fictional/not-a-git-dir", GIT_WORK_TREE: "/fictional/not-a-tree", GIT_INDEX_FILE: "/fictional/no-index",
+    GIT_CONFIG_GLOBAL: global, GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "commit.gpgsign", GIT_CONFIG_VALUE_0: "true", GIT_AUTHOR_NAME: "Ignored inherited fixture identity" })) vi.stubEnv(key, value);
+  const path = await tinyRepo(base, "hermetic", { "fiction.txt": "Fictional initial file\n" });
+  git(path, ["config", "commit.gpgsign", "true"]); git(path, ["config", "core.hooksPath", hooks]);
+  await appendFile(join(path, "fiction.txt"), "Fictional change\n");
+  expect(commit(path)).toMatch(/^[a-f0-9]{40}$/u);
+});
+
+it("refuses a dirty/wrong checkout before building and old A1-only protocols explicitly", async () => {
+  const base = await scratch(), path = await tinyRepo(base, "old", { "scripts/continuity-benchmark.mjs": "console.log(JSON.stringify({ version: 'old-A1-only' }));\n" });
+  let revision = git(path, ["rev-parse", "HEAD"]);
+  await expect(registerLookup({ checkouts: { R0: { path, revision: "a".repeat(40) } }, suites: ["original"] })).rejects.toThrow("lookup_checkout_revision_or_dirt_mismatch");
+  await expect(registerLookup({ checkouts: { R0: { path, revision } }, suites: ["original"] })).rejects.toThrow("lookup_checkout_protocol_incompatible");
+  await writeFile(join(path, "scripts/continuity-benchmark.mjs"), `console.log(${JSON.stringify(JSON.stringify(await lookupProtocol()))});`);
+  revision = commit(path);
+  await expect(registerLookup({ checkouts: { R0: { path, revision } }, suites: ["original"] })).rejects.toThrow("lookup_checkout_protocol_incompatible");
+  await writeFile(join(path, "dirty"), "Fictional untracked file");
+  await expect(registerLookup({ checkouts: { R0: { path, revision } }, suites: ["original"] })).rejects.toThrow("lookup_checkout_revision_or_dirt_mismatch");
+});
+
+it("keeps missing and duplicate role slots and reports failure-inclusive paired counts, not significance", async () => {
+  const reg = await registrationFixture(), corpus = reg.common.corpora[0], trace = corpus.traces[0];
+  const trial = (role, probe = 0, extra = {}) => ({ role, suite: corpus.suite, traceId: trace.id, probeId: trace.probes[probe], arm: reg.roles.find(r => r.id === role).arm, repeat: 1,
+    status: "completed", lookup: { exactAccuracy: true, budgetFeasibility: { classification: "feasible" } }, ...extra });
+  const result = await aggregateLookupRoles(reg, [trial("pack"), trial("pack-only", 0, { status: "failed" }), trial("pack", 1), trial("pack", 1)]);
+  expect(result.coverage).toMatchObject({ planned: 12, completed: 1, missing: 9, duplicate: 1, observations: 4 });
+  expect(result.slots.find(s => s.role === "pack" && s.probeId === trace.probes[1])).toMatchObject({ status: "duplicate", occurrences: 2 });
+  expect(result.roles.pack.exact).toMatchObject({ correct: 1, n: 1 });
+  expect(result.roles["pack-only"]).toMatchObject({ exact: { n: 0 }, exactWithFailures: { correct: 0, n: 1 }, failedFeasible: 1 });
+  expect(result.contrasts[0]).toMatchObject({ target: "pack-only", baseline: "pack", planned: 2, completedExact: { n: 0 }, exactWithFailures: { n: 1, baselineOnly: 1, delta: -1 } });
+  expect(result.contrasts).toHaveLength(5); expect(result.purpose).toContain("not significance");
+});
+
+it("estimates offline per profile with unknown prices retained, repeated input and no spending authority", async () => {
+  const reg = await registrationFixture();
+  const fetch = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("No network allowed"));
+  const unknown = await estimateLookup({ workload: reg.common });
+  expect(unknown.workload.probes).toBe(12); expect(unknown.profiles.map(p => p.id)).toEqual(["sol", "luna", "opus"]);
+  expect(unknown.profiles.every(p => p.priceStatus === "unknown_price" && p.scenarios.every(s => s.costSensitivityUSD.every(c => c.usd === null)))).toBe(true);
+  expect(unknown).toMatchObject({ authorizedSpend: false, executionKind: "offline-estimate" });
+  const known = await estimateLookup({ workload: reg.common, prices: { [ESTIMATE_PROFILES[0].model]: { input: 2, output: 8, cacheRead: null } } });
+  const sol = known.profiles[0]; expect(sol.scenarios[0].costSensitivityUSD[0].usd).toBeGreaterThan(0);
+  expect(sol.scenarios[0].costSensitivityUSD[1].usd).toBeNull();
+  expect(sol.scenarios.at(-1).inputTokens).toBeGreaterThan(sol.scenarios[0].inputTokens * 8);
+  await expect(estimateMain(["--real", "--registration", "/nonexistent"])).rejects.toThrow("lookup_real_not_authorized");
+  await expect(compareMain(["run", "--real", "--registration", "/nonexistent"])).rejects.toThrow("lookup_real_not_authorized");
+  expect(fetch).not.toHaveBeenCalled();
+});
+
+async function artifactRole(reg, output, id, receipt = true) {
+  const role = reg.roles.find(r => r.id === id), corpus = reg.common.corpora[0], trace = corpus.traces[0];
+  const binding = roleBinding(reg, role, corpus), plan = await rolePlan(reg.common, binding);
+  const dir = join(output, id, corpus.suite); await mkdir(join(dir, "units"), { recursive: true });
+  const unit = { confirmation: plan.confirmation, executionKind: "offline", arm: role.arm, repeat: 1, traceId: trace.id,
+    manifest: { codeRevision: role.revision, dirty: false, buildPolicy: BUILD_POLICY, lookupRole: binding },
+    trials: trace.probes.map(probeId => ({ traceId: trace.id, probeId, arm: role.arm, repeat: 1, status: "completed", lookup: { exactAccuracy: true } })) };
+  const bytes = JSON.stringify(unit); await writeFile(join(dir, "units/unit.json"), bytes);
+  const request = { binding, build: reg.codes[role.code].build };
+  const results = { plan, executionKind: "offline", qualityMeasured: false, ...(receipt ? { lookupReceipt: roleReceipt(request, plan, [sha256(bytes)]) } : {}) };
+  await writeFile(join(dir, "results.json"), JSON.stringify(results)); return dir;
+}
+
+it("keeps receipt-less post-aggregate failures missing with a reason, but rejects tampering and cross-role replay", async () => {
+  const reg = await registrationFixture(), output = await scratch();
+  const pack = await artifactRole(reg, output, "pack"), packOnly = await artifactRole(reg, output, "pack-only", false);
+  const result = await aggregateRoleFiles(reg, output);
+  expect(result.coverage).toMatchObject({ planned: 12, completed: 2, missing: 10 });
+  expect(result.slots.filter(s => s.role === "pack-only").every(s => s.status === "missing" && s.missingReason === "lookup_role_receipt_missing")).toBe(true);
+  expect(result.availability.find(a => a.role === "shipping").reason).toBe("lookup_role_results_missing");
+  expect(await readFile(join(output, "summary.md"), "utf8")).toContain("pack-only/original: lookup_role_receipt_missing");
+  await cp(join(pack, "results.json"), join(packOnly, "results.json"));
+  await expect(aggregateRoleFiles(reg, output)).rejects.toThrow("lookup_role_receipt_mismatch");
+  await artifactRole(reg, output, "pack-only");
+  const changed = JSON.parse(await readFile(join(packOnly, "results.json"))); changed.lookupReceipt.build.outputSha256 = "0".repeat(64);
+  await writeFile(join(packOnly, "results.json"), JSON.stringify(changed));
+  await expect(aggregateRoleFiles(reg, output)).rejects.toThrow("lookup_role_receipt_mismatch");
+});
+
+it("uses the frozen conservative context and one-token-per-returned-byte replay bounds", async () => {
+  const reg = await registrationFixture(), trace = (await loadTraces()).traces[0];
+  const shape = traceTokenShape(trace), paths = LOOKUP_BUDGET.paths.filter(p => p.traceId === trace.id && p.arm === "continuity-pack-cold");
+  const initial = Math.max(shape.cold + 12000, ...paths.map(p => Math.ceil(p.initialContextBytes / 3)), ...paths.map(p => p.initialTokens));
+  const estimate = await estimateLookup({ workload: reg.common });
+  expect(estimate.assumptions).toMatchObject({ packAllowanceTokens: 12000, soulDeltaTokens: 56 });
+  expect(estimate.workload.roles.pack.initialTokens).toBe(initial * 2);
+  expect(estimate.workload.roles["soul-only"].initialTokens - estimate.workload.roles.pack.initialTokens).toBe(56 * 2);
+  const scenarios = estimate.profiles[0].scenarios, without = scenarios.find(s => s.lookupCallsPerProbe === 8 && s.returnedBytesPerProbe === 0), full = scenarios.at(-1);
+  expect(full.inputTokens - without.inputTokens).toBe(estimate.workload.probes * 8 * LOOKUP_BUDGET.byteBudget);
+  expect(full.inputCalls.reduce((sum, call) => sum + call.inputTokens * call.count, 0)).toBe(full.inputTokens);
+  expect(full.inputTokens).toBeGreaterThanOrEqual(Object.values(estimate.workload.roles).reduce((sum, role) => sum + role.initialTokens * 9, 0)
+    + estimate.workload.probes * (8 * LOOKUP_BUDGET.byteBudget + 81 * 300));
+});
+
+it("preserves catalog tiers and prices each call by its total input, including cached input", async () => {
+  expect(ESTIMATE_PROFILES.find(p => p.id === "opus").model).toBe("anthropic:claude-opus-5-5");
+  const prices = await offlinePrices(ESTIMATE_PROFILES);
+  expect(prices[ESTIMATE_PROFILES[2].model]).toMatchObject({ input: 4, output: 20 });
+  expect(prices[ESTIMATE_PROFILES[0].model].tiers[0].inputTokensAbove).toBe(272000);
+  const price = { input: 2, output: 10, cacheRead: .1, tiers: [
+    { inputTokensAbove: 400000, input: 6, output: 30, cacheRead: .3 },
+    { inputTokensAbove: 272000, input: 4, output: 20, cacheRead: .2 },
+  ] };
+  expect(priceLookupCall(price, 272000, 300, 0)).toEqual({ usd: (272000 * 2 + 300 * 10) / 1e6, tierInputTokensAbove: null });
+  expect(priceLookupCall(price, 272001, 300, 0)).toEqual({ usd: (272001 * 4 + 300 * 20) / 1e6, tierInputTokensAbove: 272000 });
+  expect(priceLookupCall(price, 400001, 300, .5)).toEqual({ usd: (400001 * (3 + .15) + 300 * 30) / 1e6, tierInputTokensAbove: 400000 });
+  const reg = await registrationFixture(), model = ESTIMATE_PROFILES[0].model;
+  const result = await estimateLookup({ workload: reg.common, prices: { [model]: price } });
+  const low = result.profiles[0].scenarios[0], high = result.profiles[0].scenarios.at(-1);
+  expect(low.inputTokens).toBeGreaterThan(272000); // Aggregate input must NOT select a tier for every call.
+  expect(low.costSensitivityUSD[0].tieredCalls).toBe(0);
+  expect(high.costSensitivityUSD[0].tieredCalls).toBeGreaterThan(0);
+  const expected = high.inputCalls.reduce((sum, call) => sum + priceLookupCall(price, call.inputTokens, call.outputTokens, 0).usd * call.count, 0);
+  expect(high.costSensitivityUSD[0].usd).toBe(expected);
+  const absent = { input: 2, output: 10, cacheRead: .1, tiers: [{ inputTokensAbove: 272000, output: 20 }] };
+  expect(priceLookupCall(absent, 272001, 300, 0).usd).toBeNull();
+});
+
+async function overlaySource(source, dest, paths) {
+  for (const path of paths) {
+    try { await lstat(join(source, path)); }
+    catch (error) { if (error.code !== "ENOENT") throw error; await rm(join(dest, path), { recursive: true, force: true }); continue; }
+    await mkdir(dirname(join(dest, path)), { recursive: true }); await cp(join(source, path), join(dest, path));
+  }
+}
+
+it("overlays uncommitted deletions without copying nonexistent source files", async () => {
+  const base = await scratch(), source = join(base, "source"), dest = join(base, "dest"); await mkdir(source); await mkdir(dest);
+  await writeFile(join(source, "kept.txt"), "Fictional current text"); await writeFile(join(dest, "removed.txt"), "Fictional old text");
+  await overlaySource(source, dest, ["kept.txt", "removed.txt"]);
+  expect(await readFile(join(dest, "kept.txt"), "utf8")).toBe("Fictional current text");
+  await expect(access(join(dest, "removed.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+});
+
+// Preserve relative workspace links, but share the installed external virtual store only.
+async function linkDependencies(source, dest) {
+  async function copyModules(rel) {
+    const from = join(source, rel), to = join(dest, rel);
+    try { await access(from); } catch { return; }
+    await cp(from, to, { recursive: true, dereference: false, verbatimSymlinks: true,
+      filter: path => ![join(from, ".pnpm"), join(from, ".cache")].includes(path) });
+    try { if ((await lstat(join(from, ".pnpm"))).isDirectory()) await symlink(join(from, ".pnpm"), join(to, ".pnpm"), "dir"); } catch (error) { if (error.code !== "ENOENT") throw error; }
+  }
+  await copyModules("node_modules");
+  for (const parent of ["packages", "extras"]) for (const name of await readdir(join(source, parent))) await copyModules(join(parent, name, "node_modules"));
+  await copyModules("packages/web/webapp/node_modules");
+}
+
+it("runs all six faux/real-loopback roles across two clean synthetic checkouts with fresh builds and bound receipts", async () => {
+  const base = await scratch(), r0 = join(base, "r0"), rpack = join(base, "rpack");
+  git(ROOT, ["clone", "--shared", "--quiet", ROOT, r0]);
+  // Include this uncommitted implementation in the synthetic source commit; never change ROOT HEAD.
+  const overlay = new Set([...git(ROOT, ["diff", "--name-only", "HEAD"]).split("\n"), ...git(ROOT, ["ls-files", "--others", "--exclude-standard"]).split("\n")].filter(Boolean));
+  await overlaySource(ROOT, r0, overlay);
+  // Synthetic R0 has no retrieval clause; Rpack restores the actual runtime guidance.
+  const shippedRender = await readFile(join(ROOT, RENDER), "utf8"), shippedPack = await readFile(join(ROOT, PACK), "utf8");
+  await writeFile(join(r0, RENDER), shippedRender.replace(/^export const PACK_RETRIEVAL_GUIDANCE = .*;$/mu, 'export const SYNTHETIC_NO_GUIDANCE = "";'));
+  await writeFile(join(r0, PACK), shippedPack.replaceAll("PACK_RETRIEVAL_GUIDANCE", "SYNTHETIC_NO_GUIDANCE"));
+  const r0Revision = commit(r0);
+  git(ROOT, ["clone", "--shared", "--quiet", r0, rpack]);
+  await writeFile(join(rpack, RENDER), shippedRender); await writeFile(join(rpack, PACK), shippedPack); const rpackRevision = commit(rpack);
+  await linkDependencies(ROOT, r0); await linkDependencies(ROOT, rpack);
+  const trace = (await loadTraces()).traces[0];
+  const registration = await registerLookup({ checkouts: { R0: { path: r0, revision: r0Revision }, Rpack: { path: rpack, revision: rpackRevision } },
+    suites: ["original"], traceIds: [trace.id], probeLimit: 1 });
+  expect(registration.diffFiles).toEqual([PACK, RENDER]);
+  expect(() => guidanceDiff(rpack, r0)).toThrow("lookup_rpack_direction_invalid");
+  expect(registration.codes.R0.build.policy).toBe(BUILD_POLICY);
+  const output = join(base, "run"); let dispatches = 0;
+  const result = await runLookupRoles(registration, output, { dispatch: async (root, args, timeoutMs) => {
+    if (dispatches++ > 0) return runLookupRoleChild(root, args, timeoutMs);
+    // A real nonzero process exit AFTER main emitted a valid receipt must not stop later roles.
+    const program = `const {main} = await import(${JSON.stringify(new URL("scripts/continuity-benchmark.mjs", `file://${root}/`).href)}); await main(${JSON.stringify(args)}); process.exit(1);`;
+    const wrapper = join(base, "nonzero-after-receipt.mjs"); await writeFile(wrapper, program);
+    // Match the launcher's file/async process shape; eval/synchronous invocation
+    // interferes with native in-place replay and is not the production entry path.
+    return new Promise((resolve, reject) => {
+      const child = spawn(process.execPath, [wrapper], { cwd: root, stdio: ["ignore", "ignore", "pipe"] }); child.stderr.resume();
+      let timedOut = false; const timer = setTimeout(() => { timedOut = true; child.kill("SIGKILL"); }, timeoutMs);
+      child.once("error", error => { clearTimeout(timer); reject(error); });
+      child.once("close", code => { clearTimeout(timer); resolve({ code, timedOut }); });
+    });
+  } });
+  expect(dispatches).toBe(6);
+  expect(result.launches[0]).toMatchObject({ role: "native", exitCode: 1, receiptVerified: true, reason: null });
+  expect(result.coverage, JSON.stringify(result.slots)).toEqual({ planned: 6, completed: 6, missing: 0, duplicate: 0, observations: 6 });
+  expect(result.slots.map(s => s.role)).toEqual(LOOKUP_ROLES.map(r => r.id));
+  expect(result.slots.every(s => s.calls > 0 && s.bytes > 0)).toBe(true);
+  for (const role of registration.roles) {
+    const aggregate = JSON.parse(await readFile(join(output, role.id, "original/results.json")));
+    expect(aggregate.inventory.traces.map(row => row.id)).toEqual([trace.id]);
+    expect(aggregate.coverage).toEqual({ unitsComplete: 1, unitsExpected: 1 });
+    expect(aggregate.summary.lookup.arms[role.arm]).toMatchObject({ planned: 1, statuses: { completed: 1 } });
+    expect(aggregate.summary.lookup.slots.map(slot => [slot.traceId, slot.probeId])).toEqual([[trace.id, trace.probes[0].id]]);
+  }
+  const request = JSON.parse(await readFile(join(output, "native/original-request.json")));
+  for (const [mutate, code] of [
+    [r => { r.binding.revision = "0".repeat(40); }, "lookup_role_scope_mismatch"],
+    [r => { r.build.outputSha256 = "0".repeat(64); }, "lookup_build_binding_mismatch"],
+    [r => { r.binding.soul = LOOKUP_SOULS.S1; }, "lookup_role_binding_mismatch"],
+    [r => { r.binding.arm = "continuity-pack-cold"; }, "lookup_role_binding_mismatch"],
+  ]) {
+    const changed = structuredClone(request); mutate(changed);
+    const path = join(base, "rejected-request.json"); await writeFile(path, JSON.stringify(changed));
+    const rejected = spawnSync(process.execPath, [join(r0, "scripts/continuity-benchmark.mjs"), "--probe-mode", LOOKUP_MODE, "--lookup-role", path,
+      "--arms", "native-lookup", "--no-judge", "--probe-limit", "1", "--output", join(base, "must-not-dispatch")], { cwd: r0, encoding: "utf8" });
+    expect(rejected.status).toBe(1); expect(rejected.stderr).toContain(code);
+    await expect(access(join(base, "must-not-dispatch"))).rejects.toMatchObject({ code: "ENOENT" });
+  }
+  const unitDir = join(output, "pack", "original", "units"), [name] = await readdir(unitDir);
+  const original = await readFile(join(unitDir, name));
+  await writeFile(join(unitDir, "duplicate.json"), original);
+  const duplicated = await aggregateRoleFiles(registration, output);
+  expect(duplicated.coverage.duplicate).toBe(1);
+  await rm(join(unitDir, "duplicate.json"));
+  const wrong = JSON.parse(original); wrong.manifest.codeRevision = "0".repeat(40);
+  await writeFile(join(unitDir, name), JSON.stringify(wrong));
+  await expect(aggregateRoleFiles(registration, output)).rejects.toThrow("lookup_role_unit_receipt_mismatch");
+  await writeFile(join(unitDir, name), original);
+  const changedPayload = JSON.parse(original); changedPayload.trials[0].lookup.calls += 1;
+  await writeFile(join(unitDir, name), JSON.stringify(changedPayload));
+  await expect(aggregateRoleFiles(registration, output)).rejects.toThrow("lookup_role_unit_digest_mismatch");
+  await writeFile(join(unitDir, name), original);
+  const appDist = join(r0, "packages/app/dist/index.js"), saved = await readFile(appDist);
+  await appendFile(appDist, "\n// Fictional stale build\n");
+  await expect(verifyRegisteredCheckouts(registration)).rejects.toThrow("build_output_changed");
+  await writeFile(appDist, saved); await verifyRealBuild(r0, registration.codes.R0.build);
+  // Explicit missing role: never silently substitute a different checkout or role.
+  await rm(join(output, "shipping"), { recursive: true });
+  expect((await aggregateRoleFiles(registration, output)).coverage.missing).toBe(1);
+}, 900000);

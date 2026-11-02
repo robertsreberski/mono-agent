@@ -3,6 +3,8 @@
 // stdin and writes one JSON result on stdout; never prints request content.
 import { productionModules, runLiveTurn, prepareLedgerCheckpoint, scriptedModels } from "./continuity-runner.mjs";
 
+import { assertLookupRole } from "./continuity-lookup.mjs";
+
 let raw = "";
 for await (const chunk of process.stdin) raw += chunk;
 try {
@@ -11,6 +13,12 @@ try {
     || input.plan.lookup?.maxTurns !== input.plan.lookup?.budget?.callBudget + 2 || input.plan.lookup.maxTurns > 100
     || input.plan.lookup.deadlineMs !== 600000 || input.plan.limits.perLiveTurnTimeoutMs !== 690000 || input.plan.lookup.childWatchdogMs !== 720000)) {
     throw Object.assign(new Error("invalid_lookup_child_contract"), { code: "invalid_lookup_child_contract" });
+  }
+  if (input.plan?.lookup?.role) {
+    assertLookupRole(input.plan.lookup.role);
+    if (input.plan.lookup.soul?.file !== input.plan.lookup.role.soul.file || input.plan.lookup.soul?.rawSha256 !== input.plan.lookup.role.soul.rawSha256 || input.plan.lookup.soul?.coreSha256 !== input.plan.lookup.role.soul.coreSha256) {
+      throw Object.assign(new Error("lookup_role_binding_mismatch"), { code: "lookup_role_binding_mismatch" });
+    }
   }
   const modules = await productionModules(input.root);
   const clock = { value: new Date(input.clockIso) };
