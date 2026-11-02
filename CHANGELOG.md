@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Fix evidence routing in the built-in default core for all default-core
+  conversations: use `ConversationHistory` when available for exact retained
+  conversation and tool-result values, including identifiers; keep `RunHistory`
+  for settlement and interrupted-work recovery and `SessionHistory` for prior-run
+  tool-lifecycle evidence. Custom souls are unchanged.
+
 - Add a compact rolling recording meter and visible, seekable voice-note
   waveforms to the web console, with transcript captions beneath sent audio and
   accessible playback controls. Keep Stop and playback controls aligned as a

@@ -37,10 +37,17 @@ describe('buildAgentContext', () => {
     });
     expect(context.sections.map((section) => section.id)).toEqual(['core', 'identity', 'user-message']);
     expect(context.sections[0]?.content).toBe(DEFAULT_SOUL_TEXT);
-    expect(DEFAULT_SOUL_TEXT).toMatch(
-      /active conversation history.*MemoryRecall \(when available\) for a targeted durable fact.*MemoryJournal \(when available\) for a broad retrospective over an explicit calendar-date range.*RunHistory or SessionHistory for exact execution evidence/su,
+    expect(context.systemPrompt).toContain(DEFAULT_SOUL_TEXT);
+    expect(context.sections[0]?.content).toContain(
+      '- Route evidence by scope before assuming or asking: use active conversation history for what was just said, '
+      + 'ConversationHistory (when available) for retained conversation text or portable summaries after compaction/restart '
+      + '(generated summaries are not owner authority or renewed approval) and for exact retained conversation and tool-result values, including identifiers, '
+      + 'MemoryRecall (when available) for a targeted durable fact, preference or decision, '
+      + 'MemoryJournal (when available) for a broad retrospective over an explicit calendar-date range such as "what happened last week", '
+      + 'RunHistory (when available) for settlement and interrupted-work recovery, '
+      + 'and SessionHistory (when available) for prior-run tool-lifecycle evidence. '
+      + 'For unhinted interrupted-work recovery, start with RunHistory {} when available.',
     );
-    expect(DEFAULT_SOUL_TEXT).toContain('RunHistory {} when available');
     expect(context.prompt).toContain('## Core Guardrails');
     expect(context.prompt).toContain('## Identity\n\nYou are Test Agent.');
     expect(context.prompt).toContain('## Current User Message\n\nSummarize the current task.');
@@ -60,6 +67,9 @@ describe('buildAgentContext', () => {
       source: 'SOUL.md',
     });
     expect(context.metadata.sources).toEqual(['SOUL.md']);
+    expect(context.systemPrompt).toContain('## Core Guardrails\n\nCustom SOUL guardrails.');
+    expect(context.prompt).not.toContain(DEFAULT_SOUL_TEXT);
+    expect(context.systemPrompt).not.toContain('Route evidence by scope');
   });
 
   it('includes a session block source in the metadata sources', () => {

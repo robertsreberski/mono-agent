@@ -23,7 +23,9 @@ describe('loadContextFromFiles', () => {
     expect(context.metadata.usedDefaultCore).toBe(false);
     expect(context.metadata.skillCount).toBe(1);
     expect(context.prompt).toContain('You are the fixture context agent.');
-    expect(context.prompt).toContain('Use fixture guardrails and verify real outcomes.');
+    expect(context.sections[0]?.content).toBe('# Fixture Soul\n\nUse fixture guardrails and verify real outcomes.');
+    expect(context.prompt).not.toContain(DEFAULT_SOUL_TEXT);
+    expect(context.systemPrompt).not.toContain('Route evidence by scope');
     expect(context.prompt).toContain('- **research** — Find source-grounded evidence before making claims.');
     expect(context.prompt).not.toContain(join(skillsRoot, 'research', 'SKILL.md'));
     expect(context.prompt).not.toContain('ReadSkill');
