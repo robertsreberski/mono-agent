@@ -5,11 +5,11 @@ import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { resolveJsonMonoAgentConfig } from "@mono-agent/config";
-import { acquireToolHistoryWriter, createInMemoryHistoryStore } from "@mono-agent/conversation";
+import { acquireToolHistoryWriter, createInMemoryHistoryStore, createToolPolicy, ToolHistoryWriter } from "@mono-agent/conversation";
 import type { RuntimeRunOptions } from "@mono-agent/turn/host/types";
 import { expect, it } from "vitest";
 import { createConfiguredAgentResponderForApp, createConfiguredConversationHarness } from "../composition/configured-agent.js";
-import { CONVERSATION_HISTORY_MCP_SERVER_NAME, CONVERSATION_HISTORY_TOOL_NAME } from "../request-tools/conversation-history.js";
+import { CONVERSATION_HISTORY_MCP_SERVER_NAME, CONVERSATION_HISTORY_TOOL_NAME, historyToolAvailabilityForRuntime } from "../request-tools/conversation-history.js";
 
 it.each([
   { allow: ["*"], deny: [], enabled: undefined, present: true },
@@ -134,3 +134,53 @@ it("respects explicit controller suppression instead of creating a standalone hi
     expect(observed).toBe(true);
   } finally { await rm(cwd, { recursive: true, force: true }); }
 });
+
+it.each(["healthy", "suppressed", "startup-failure", "override", "disabled", "session-only"] as const)(
+  "forwards capability-matched projection guidance after %s", async (mode) => {
+    const cwd = await mkdtemp(join(tmpdir(), "configured-history-routing-"));
+    const conversationId = "web:fictional";
+    try {
+      await writeFile(join(cwd, "IDENTITY.md"), "Fictional fixture.");
+      const config = resolveJsonMonoAgentConfig({ cwd, json: {
+        runtime: { model: "openai-codex:gpt-5.5", session: { mode: "per-message" } },
+        context: { identityPath: "IDENTITY.md" }, artifacts: { dir: join(cwd, "artifacts") },
+        tools: { allowedTools: ["*"], ...(mode === "session-only" ? { disallowedTools: ["ConversationHistory"] } : {}) },
+      } });
+      const writer = await ToolHistoryWriter.open({ root: join(cwd, "history") });
+      const binding = { conversationId, logicalConversationId: conversationId, runId: "old", isolated: false };
+      try {
+        await writer.persist(binding, { phase: "invocation", toolCallId: "fictional-call", toolName: "Read", arguments: {} });
+        await writer.persist(binding, { phase: "result", toolCallId: "fictional-call", state: "success", content: "Fictional cobalt evidence." });
+        await writer.finishRun(binding, "completed");
+      } finally { await writer.close(); }
+      const { createSessionHistoryRuntimeExtension } = await import("../request-tools/session-history.js");
+      const { createRequestScopedMcpRuntimeExtension } = await import("../mcp/request-scoped-mcp.js");
+      const failed = createRequestScopedMcpRuntimeExtension({ serverName: CONVERSATION_HISTORY_MCP_SERVER_NAME,
+        startingMessage: "Fictional endpoint starting", createServer: () => { throw new Error("Not reached"); },
+        listen: async () => { throw new Error("Fictional startup failure"); } });
+      let forwarded = "";
+      const responder = await createConfiguredAgentResponderForApp({ config, cwd, env: {}, historyStore: createInMemoryHistoryStore(),
+        runtimeOptionsForRequest: mode === "override" ? () => ({ toolPolicyOverride: createToolPolicy({ allowedTools: ["Read"] }) })
+          : mode === "session-only" ? createSessionHistoryRuntimeExtension({ historyRoot: join(cwd, "history") }) : () => ({}),
+        runtime: { async run(_prompt, options) {
+          forwarded = options.messages!.map(message => message.content).join("\n");
+          const availability = historyToolAvailabilityForRuntime(options);
+          expect(availability).toEqual({ conversationHistory: mode === "healthy", sessionHistory: mode === "session-only" });
+          return { text: "Fictional answer." };
+        } },
+      }, { ...(mode === "suppressed" ? { conversationHistoryExtension: null } : {}),
+        ...(mode === "startup-failure" ? { conversationHistoryExtension: failed } : {}) });
+      const result = await responder.respond({ conversationId, text: "Inspect fictional evidence", abortSignal: new AbortController().signal,
+        ...(mode === "disabled" ? { continuation: { continuationId: "fictional-continuation", originRunId: "old", originContextPolicy: "detached_latest" as const, toolsDisabled: true as const, deferHistoryCommit: true as const } } : {}) }, { append: async () => {} });
+      expect(result.text).toBe("Fictional answer."); expect(forwarded).toContain("Fictional cobalt evidence.");
+      if (mode === "healthy") expect(forwarded).toContain("Use ConversationHistory for retained details.");
+      else if (mode === "session-only") expect(forwarded).toContain("Use SessionHistory for retained details.");
+      else expect(forwarded).not.toMatch(/Use (ConversationHistory|SessionHistory)/u);
+    } finally { await rm(cwd, { recursive: true, force: true }); }
+  });
+
+it.each(["ConversationHistory", "conversation_history", `mcp__${CONVERSATION_HISTORY_MCP_SERVER_NAME}__ConversationHistory`, `mcp__${CONVERSATION_HISTORY_MCP_SERVER_NAME}__*`, "*"])(
+  "effective runtime deny alias %s wins over a live endpoint", deny => {
+    expect(historyToolAvailabilityForRuntime({ allowedTools: ["*"], disallowedTools: [deny],
+      mcpServers: { [CONVERSATION_HISTORY_MCP_SERVER_NAME]: { url: "http://127.0.0.1/fictional" } } }).conversationHistory).toBe(false);
+  });

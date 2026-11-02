@@ -301,7 +301,7 @@ it.each([false, true])("keeps warm clean-break seeding pack-only without canonic
   expect(f.events.filter(event => event.type === "context_compaction")).toEqual([]);
 }, 20_000);
 
-it("keeps prepared projection evidence when its pack-time reread fails", async () => {
+it("reuses bounded prepared projection blocks at pack time without rereading or refilling", async () => {
   const f = await fixture();
   for (const retained of [true, false]) {
     const binding = { conversationId: id, logicalConversationId: id, runId: retained ? "retained-effect" : "legacy-effect", isolated: false,
@@ -315,7 +315,7 @@ it("keeps prepared projection evidence when its pack-time reread fails", async (
   const projection = vi.spyOn(f.reader, "latestProjection").mockImplementationOnce((...args) => read(...args))
     .mockImplementation(() => { throw new Error("Fictional projection reread failure."); });
   await f.run(); assertRequest(f.requests.at(-1));
-  expect(projection).toHaveBeenCalledTimes(2);
+  expect(projection).toHaveBeenCalledOnce();
   expect(JSON.stringify(f.requests.at(-1))).toContain("LEGACY-ONLY-TOOL-EVIDENCE-MUST-SURVIVE");
-  expect(f.events).toContainEqual(expect.objectContaining({ warning_kind: "tool_history_projection_degraded" }));
+  expect(f.events).not.toContainEqual(expect.objectContaining({ warning_kind: "tool_history_projection_degraded" }));
 }, 20_000);

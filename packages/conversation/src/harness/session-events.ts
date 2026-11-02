@@ -1,4 +1,3 @@
-import type { prepareHarnessContext } from "./context-preparation.js";
 import type { RuntimeEventLike } from "@mono-agent/observability";
 
 import type { RuntimeSessionRecord, RuntimeSessionSnapshot } from "../sessions/warm-store.js";
@@ -37,9 +36,13 @@ export function sessionEventFromRecord(
   };
 }
 
-/** Sizes of supplied replay evidence, never provider occupancy or completeness. */
-export function reconstructionFacts(prepared: Pick<Awaited<ReturnType<typeof prepareHarnessContext>>,
-  "history" | "toolHistoryProjection" | "toolProjectionRecords">) {
+/** Sizes of the resolved replay actually supplied, never the prepared blocks,
+ * provider occupancy, or completeness. Call only after late header resolution. */
+export function reconstructionFacts(prepared: {
+  readonly history: readonly import("../context/index.js").HistoryMessage[];
+  readonly toolHistoryProjection: string | undefined;
+  readonly toolProjectionRecords?: number;
+}) {
   const coverageStartTimestamp = prepared.history.find((message) => message.timestamp !== undefined)?.timestamp;
   return {
     replayedMessageCount: prepared.history.length,

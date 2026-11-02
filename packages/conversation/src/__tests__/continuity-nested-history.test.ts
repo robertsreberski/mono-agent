@@ -5,7 +5,7 @@ import { expect, it } from "vitest";
 import { ToolHistoryReader } from "../tool-history/reader.js";
 import { ToolHistoryWriter } from "../tool-history/writer.js";
 import { UncommittedTurnCollector, cancelledTurnReason } from "../harness/turn-continuity.js";
-import { buildToolHistoryProjection } from "../tool-history/projection.js";
+import { buildToolHistoryProjection } from "./fixtures/tool-history-projection.js";
 
 const tools = ["ConversationHistory", "conversation_history", "SessionHistory", "session_history", "RunHistory", "run_history"];
 it.each(tools.flatMap((tool) => [tool, `mcp__fictional-history__${tool}`]))("omits nested %s results only on positive capture and preserves OFF runs sharing the writer", async (toolName) => {

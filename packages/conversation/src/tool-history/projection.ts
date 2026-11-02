@@ -10,34 +10,54 @@ const PROJECTION_HEADER_LINES = [
 const PROJECTION_TRUNCATED_LINE = "<projection_truncated reason=\"byte_limit\" />";
 const PROJECTION_CLOSING_LINE = "</session_tool_history>";
 
-interface ToolHistoryProjection {
+export interface ToolHistoryProjection {
   readonly text: string;
   readonly recordCount: number;
 }
 
-/**
- * Build the cold-reseed-only, provider-neutral text projection. Historical
- * content is deliberately framed as untrusted data and never replayed as a
- * structured tool-use/result pair.
- */
-export function buildToolHistoryProjection(
+/** Serializable, guidance-free bounded evidence. Header resolution never rereads
+ * or refills this suffix, including after pack exclusions. */
+export interface PreparedToolHistoryProjection {
+  readonly blocks: readonly { readonly callId: string; readonly resultId?: string; readonly lines: readonly string[] }[];
+  readonly recordCount: number;
+  readonly truncated: boolean;
+}
+export interface HistoryToolAvailability {
+  readonly conversationHistory: boolean;
+  readonly sessionHistory: boolean;
+}
+
+export function renderToolHistoryProjection(
+  projection: PreparedToolHistoryProjection | undefined,
+  availability: HistoryToolAvailability,
+  excludedRecordIds: ReadonlySet<string> = new Set(),
+): ToolHistoryProjection | undefined {
+  if (!projection) return undefined;
+  const blocks = projection.blocks.filter(block => !excludedRecordIds.has(block.callId)
+    && (block.resultId === undefined || !excludedRecordIds.has(block.resultId)));
+  if (blocks.length === 0 && projection.recordCount > 0) return undefined;
+  const header = availability.conversationHistory
+    ? PROJECTION_HEADER_LINES.map(line => line.replace("Use SessionHistory", "Use ConversationHistory"))
+    : availability.sessionHistory ? PROJECTION_HEADER_LINES
+    : [PROJECTION_HEADER_LINES[0], "This is a bounded cold-session projection.", PROJECTION_HEADER_LINES[2]];
+  return { text: [...header, ...blocks.flatMap(block => block.lines),
+    ...(projection.truncated ? [PROJECTION_TRUNCATED_LINE] : []), PROJECTION_CLOSING_LINE].join("\n"), recordCount: blocks.length };
+}
+
+export function prepareToolHistoryProjection(
   reader: ToolHistoryReader,
   logicalConversationId: string,
   currentConversationId: string,
   currentRunId: string,
   excludedRecordIds: ReadonlySet<string> = new Set(),
-  continuityEnabled = false,
-  conversationHistoryAvailable = false,
-  packExcludedRecordIds: ReadonlySet<string> = new Set(),
-): ToolHistoryProjection | undefined {
-  const header = conversationHistoryAvailable ? PROJECTION_HEADER_LINES.map(line => line.replace("Use SessionHistory", "Use ConversationHistory")) : PROJECTION_HEADER_LINES;
+): PreparedToolHistoryProjection | undefined {
+  // Availability is resolved later. Reserve the longest header so a late
+  // ConversationHistory route cannot grow the bounded suffix by five bytes.
+  const header = PROJECTION_HEADER_LINES.map(line => line.replace("Use SessionHistory", "Use ConversationHistory"));
   const records = reader.latestProjection(logicalConversationId, currentConversationId, currentRunId, 32)
     .filter(({ call }) => !excludedRecordIds.has(call.recordId)
       && (call.resultRecordId === undefined || !excludedRecordIds.has(call.resultRecordId)));
   if (records.length === 0) return undefined;
-  void continuityEnabled;
-  // Bound the original suffix BEFORE exclusions. Never refill it with older
-  // records: replacing projection evidence with a pack must not grow replay.
   let selected = [...records], truncated = false;
   const render = (items: typeof selected, clipped: boolean) => [...header,
     ...items.slice().reverse().flatMap(renderRecordLines), ...(clipped ? [PROJECTION_TRUNCATED_LINE] : []), PROJECTION_CLOSING_LINE];
@@ -48,11 +68,9 @@ export function buildToolHistoryProjection(
       selected.push(record);
     }
   }
-  const boundedCount = selected.length;
-  selected = selected.filter(({ call }) => !packExcludedRecordIds.has(call.recordId)
-    && (call.resultRecordId === undefined || !packExcludedRecordIds.has(call.resultRecordId)));
-  if (selected.length === 0 && boundedCount > 0) return undefined;
-  return { text: render(selected, truncated).join("\n"), recordCount: selected.length };
+  return { blocks: selected.slice().reverse().map(record => ({ callId: record.call.recordId,
+    ...(record.call.resultRecordId === undefined ? {} : { resultId: record.call.resultRecordId }), lines: renderRecordLines(record) })),
+    recordCount: selected.length, truncated };
 }
 
 function renderRecordLines(

@@ -9,6 +9,7 @@ interface LazyConfiguredToolHistoryOptions {
   readonly ledgerEnabled?: boolean;
   readonly upkeep?: ConversationHarnessToolHistoryOptions["upkeep"];
   readonly conversationHistoryAvailable?: boolean;
+  readonly historyToolAvailabilityForRuntime?: ConversationHarnessToolHistoryOptions["historyToolAvailabilityForRuntime"];
   readonly rollover: "none" | "daily" | undefined;
   readonly onWarning?: (message: string) => void;
   /** Internal seam for deterministic acquisition-retry tests. */
@@ -314,6 +315,7 @@ export function lazyConfiguredToolHistory(
     ...(options.ledgerEnabled ? { ledgerEnabled: true } : {}),
     ...(options.upkeep ? { upkeep: options.upkeep, mutateUpkeep: async (input: Parameters<ToolHistoryWriterHandle["writer"]["mutateUpkeep"]>[0]) => await continuityCall(async writer => await writer.mutateUpkeep(input)), publishLedger: async (generation: Parameters<ToolHistoryWriterHandle["writer"]["publishLedger"]>[0], reservation?: Parameters<ToolHistoryWriterHandle["writer"]["publishLedger"]>[1]) => await continuityCall(async writer => await writer.publishLedger(generation, reservation)) } : {}),
     ...(options.conversationHistoryAvailable === undefined ? {} : { conversationHistoryAvailable: options.conversationHistoryAvailable }),
+    ...(options.historyToolAvailabilityForRuntime ? { historyToolAvailabilityForRuntime: options.historyToolAvailabilityForRuntime } : {}),
     writer,
     reader,
     logicalConversationId: (conversationId) =>

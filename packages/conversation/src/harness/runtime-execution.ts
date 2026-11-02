@@ -1,7 +1,8 @@
+import { renderToolHistoryProjection, type PreparedToolHistoryProjection } from "../tool-history/projection.js";
 import { stageContinuityInput, continuityOwnerTextCandidate, clearContinuityInput } from "../tool-history/continuity-input.js";
 import { memoryUserText } from "./memory-persistence.js";
 import type { createContinuityPackSupplier } from "../continuity/pack.js";
-import { loadHarnessHistory, loadToolHistoryProjection, type prepareHarnessContext } from "./context-preparation.js";
+import { loadHarnessHistory, loadToolHistoryProjection, resolveHarnessContext, type prepareHarnessContext } from "./context-preparation.js";
 import { reconstructionFacts } from "./session-events.js";
 import { randomUUID } from "node:crypto";
 import { createPendingInitialInput, createPendingLiveInput, assertDetachedTurnDescriptor } from "../history/pending-turn/contract.js";
@@ -47,6 +48,7 @@ interface HarnessRuntimeRouting {
   readonly detachedHistoryOverride?: readonly HistoryMessage[];
   readonly continuityPack?: ReturnType<typeof createContinuityPackSupplier>;
   readonly boundaryReason?: string;
+  readonly onContextResolved?: (prepared: Pick<PreparedContext, "context" | "history" | "toolHistoryProjection" | "toolProjectionRecords">) => void;
   readonly onRuntimeSelected: (modelKey: string) => void;
 }
 
@@ -183,7 +185,7 @@ async function executeHarnessRuntime(preparation: PreparationControl | undefined
   history: readonly HistoryMessage[],
   historyOmitted: boolean,
   historyAsMessages: boolean,
-  toolHistoryProjection: string | undefined,
+  toolProjection: PreparedToolHistoryProjection | undefined,
   attachmentContext: AttachmentRequestContext,
   continuationCapabilities: ConversationHarnessContinuationClaimCapability[],
   turnContinuityCollector: UncommittedTurnCollector,
@@ -199,6 +201,8 @@ async function executeHarnessRuntime(preparation: PreparationControl | undefined
     let requestExtension: ConversationHarnessRuntimeOptionsExtension | undefined;
     let nativeLease: RuntimeNativePreparedDispatch | undefined;
     let preparedContext: PreparedContext | undefined;
+    let toolHistoryProjection: string | undefined;
+    let toolProjectionRecords = 0;
     let requestExtensionCleanup: Promise<void> | undefined;
     let mcpProgressCapability: ConversationHarnessProgressCapability | undefined;
     let mcpContinuationCapabilities: readonly ConversationHarnessContinuationClaimCapability[] = [];
@@ -268,7 +272,31 @@ async function executeHarnessRuntime(preparation: PreparationControl | undefined
       if (preparation) { preparation.abort(request.abortSignal.reason ?? new Error("Host preparation aborted")); return; }
       void cleanupRequestExtension().catch(() => undefined).finally(releaseSlot);
     };
+      // Publish the existing boundary once, after a cold supplier has resolved
+      // any projection exclusions. A second resume_replay would manufacture a
+      // boundary for consumers that count reconstructions.
+      let contextResolutionReady = !preparation;
+      let resolvedReplay = { history, toolHistoryProjection, toolProjectionRecords };
+      const useUnavailableReplayFacts = () => {
+        const projection = renderToolHistoryProjection(toolProjection, { conversationHistory: false, sessionHistory: false });
+        resolvedReplay = { history, toolHistoryProjection: projection?.text, toolProjectionRecords: projection?.recordCount ?? 0 };
+      };
+      let contextResolutionPublished = false;
+      const publishResolvedContext = () => {
+        if (!contextResolutionReady || contextResolutionPublished) return;
+        contextResolutionPublished = true;
+        routing.onContextResolved?.({ context, ...resolvedReplay });
+      };
+      let detachedReplayFacts: typeof resolvedReplay | undefined;
+      const publishDetachedReplay = () => {
+        if (!detachedReplayFacts) return;
+        emitRuntimeEvent({ type: "session_boundary", kind: "resume_replay", context: "reconstructed",
+          conversationId: request.conversationId, reason: "detached_context",
+          ...reconstructionFacts(detachedReplayFacts), timestamp: new Date().toISOString() });
+        detachedReplayFacts = undefined;
+      };
     try {
+      useUnavailableReplayFacts();
       if (runLimiter !== undefined) {
         await runLimiter.acquire(request.abortSignal);
         acquired = true;
@@ -276,7 +304,9 @@ async function executeHarnessRuntime(preparation: PreparationControl | undefined
       if (preparation) {
         await preparation.assertOwned();
         preparedContext = freezePreparationData(structuredClone(await preparation.prepareContext(request, options)));
-        ({ context, memory, skillDisclosureEntries, history, historyOmitted, historyAsMessages, toolHistoryProjection } = preparedContext);
+        ({ context, memory, skillDisclosureEntries, history, historyOmitted, historyAsMessages, toolProjection } = preparedContext);
+        contextResolutionReady = true;
+        useUnavailableReplayFacts();
         await preparation.assertOwned();
       }
       requestExtension = await options.runtimeOptionsForRequest?.({ request, runId, context });
@@ -337,6 +367,25 @@ async function executeHarnessRuntime(preparation: PreparationControl | undefined
         merged.mcpServers = {};
         delete merged.mcpConfigPath;
       }
+      const availability = request.continuation?.toolsDisabled === true
+        ? { conversationHistory: false, sessionHistory: false }
+        : options.toolHistory?.historyToolAvailabilityForRuntime?.(merged) ?? {
+          conversationHistory: options.toolHistory?.conversationHistoryAvailable === true,
+          sessionHistory: options.toolHistory?.sessionHistoryAvailable !== false,
+        };
+      const projection = renderToolHistoryProjection(toolProjection, availability);
+      toolHistoryProjection = projection?.text;
+      toolProjectionRecords = projection?.recordCount ?? 0;
+      if (preparedContext) {
+        preparedContext = freezePreparationData(resolveHarnessContext(preparedContext, availability));
+        context = preparedContext.context;
+      } else {
+        // Ordinary/retry paths also carry only the serializable bounded blocks.
+        context = resolveHarnessContext({ context, memory, skillDisclosureEntries, history,
+          historyOmitted, historyAsMessages, toolHistoryProjection: undefined,
+          ...(toolProjection ? { toolProjection } : {}) }, availability).context;
+      }
+      resolvedReplay = { history, toolHistoryProjection, toolProjectionRecords };
       const requestContext = await injectMcpRequestContext({
         options: options.mcpRequestContext,
         mcpServers: merged.mcpServers,
@@ -465,9 +514,8 @@ async function executeHarnessRuntime(preparation: PreparationControl | undefined
         if (!contextOwned || request.abortSignal.aborted) return Promise.reject(new Error("Detached context ownership ended"));
         detachedReplay ??= (async () => {
           if (!historyOmitted) {
-            emitRuntimeEvent({ type: "session_boundary", kind: "resume_replay", context: "reconstructed",
-              conversationId: request.conversationId, reason: "detached_context",
-              ...reconstructionFacts({ history, toolHistoryProjection }), timestamp: new Date().toISOString() });
+            detachedReplayFacts = { history, toolHistoryProjection, toolProjectionRecords };
+            if (!coldContext) publishDetachedReplay();
             return freezePreparationData(coldReplayMessages(history, toolHistoryProjection));
           }
           if (routing.detachedHistoryOverride === undefined && options.historyStore === undefined) {
@@ -475,11 +523,10 @@ async function executeHarnessRuntime(preparation: PreparationControl | undefined
           }
           const canonical = routing.detachedHistoryOverride ?? await loadHarnessHistory(options, request.conversationId, request.continuation);
           if (!contextOwned || request.abortSignal.aborted) throw new Error("Detached context ownership ended");
-          const projection = loadToolHistoryProjection(options, request.conversationId, runId, canonical, emitRuntimeEvent);
-          emitRuntimeEvent({ type: "session_boundary", kind: "resume_replay", context: "reconstructed",
-            conversationId: request.conversationId, reason: "detached_context",
-            ...reconstructionFacts({ history: canonical, toolHistoryProjection: projection?.text,
-              toolProjectionRecords: projection?.recordCount ?? 0 }), timestamp: new Date().toISOString() });
+          const projection = renderToolHistoryProjection(loadToolHistoryProjection(options, request.conversationId, runId, canonical, emitRuntimeEvent), availability);
+          detachedReplayFacts = { history: canonical, toolHistoryProjection: projection?.text,
+            toolProjectionRecords: projection?.recordCount ?? 0 };
+          if (!coldContext) publishDetachedReplay();
           return freezePreparationData(coldReplayMessages(canonical, projection?.text));
         })();
         return detachedReplay;
@@ -511,21 +558,29 @@ async function executeHarnessRuntime(preparation: PreparationControl | undefined
           const replayedHistory = hasCanonicalReplay ? continuityHistory : [];
           const messages = routing.continuityPack!(replayedHistory, budget.maxTokens,
             budget.reason === "detached_context" ? budget.reason : routing.boundaryReason ?? budget.reason, emitRuntimeEvent,
-            ids => { toolIds = ids; });
+            ids => { toolIds = ids; }, availability.conversationHistory);
           if (toolIds.size === 0 || !hasCanonicalReplay) return { messages };
           let projectionUnavailable = false;
-          const projection = loadToolHistoryProjection(options, request.conversationId, runId, replayedHistory, emitRuntimeEvent, toolIds,
-            () => { projectionUnavailable = true; });
+          const projection = renderToolHistoryProjection(!historyOmitted ? toolProjection
+            : loadToolHistoryProjection(options, request.conversationId, runId, replayedHistory, emitRuntimeEvent,
+              () => { projectionUnavailable = true; }), availability, toolIds);
           // Undefined can also mean successful exclusion of every projected
           // call. Only a failed read preserves the original prepared replay.
           if (projectionUnavailable) return { messages };
+          resolvedReplay = { history: replayedHistory, toolHistoryProjection: projection?.text,
+            toolProjectionRecords: projection?.recordCount ?? 0 };
+          if (detachedReplayFacts) detachedReplayFacts = resolvedReplay;
           return { messages, replayMessages: coldReplayMessages(continuityHistory, projection?.text) };
         } catch {
           try { emitRuntimeEvent({ type: "continuity_pack_skipped", reason: "unavailable", degradedReason: "unavailable", tokens: 0 }); }
           catch { /* fail open */ }
           return { messages: [] };
+        } finally {
+          publishResolvedContext();
+          publishDetachedReplay();
         }
       } : undefined;
+      if (!coldContext) publishResolvedContext();
       let runtimeOptions: RuntimeRunOptions = {
         ...merged,
         ...(routing.turnRevision !== undefined && sessionsEnabled && !sessionIsolated
@@ -729,6 +784,9 @@ async function executeHarnessRuntime(preparation: PreparationControl | undefined
         }
         return result;
       } finally {
+        // A custom runtime or a true warm resume need not call coldContext.
+        publishResolvedContext();
+        publishDetachedReplay();
         contextOwned = false;
         const latencyEvent: RuntimeEventLike = {
           type: "provider_bridge_latency",
@@ -743,12 +801,16 @@ async function executeHarnessRuntime(preparation: PreparationControl | undefined
       // settled normally or an abort already released it.
       request.abortSignal.removeEventListener("abort", onAbortCleanupAndRelease);
       try {
-        try { await nativeLease?.close(); } finally { await cleanupRequestExtension(); }
+        // Preserve cold/retry boundary accounting even if extension setup,
+        // availability resolution, cancellation or native preparation fails.
+        // Before availability resolves, the best facts omit tool routing.
+        try { publishResolvedContext(); publishDetachedReplay(); }
+        catch { /* Accounting must not mask the settled outcome. */ }
       } finally {
         try {
-          await cleanupAfterSettlement();
+          try { await nativeLease?.close(); } finally { await cleanupRequestExtension(); }
         } finally {
-          releaseSlot();
+          try { await cleanupAfterSettlement(); } finally { releaseSlot(); }
         }
       }
     }

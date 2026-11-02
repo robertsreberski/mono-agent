@@ -503,6 +503,13 @@ export interface ConversationHarnessToolHistoryOptions {
   readonly mutateUpkeep?: (input: UpkeepMutation) => Promise<UpkeepAdmission | null>;
   readonly publishLedger?: (generation: LedgerGeneration, reservation?: UpkeepReservation) => Promise<void>;
   readonly conversationHistoryAvailable?: boolean;
+  /** Legacy custom hosts retain SessionHistory routing unless explicitly false. */
+  readonly sessionHistoryAvailable?: boolean;
+  /** Host-owned predicate evaluated after all runtime policy layers. Never cloned into prepared context. */
+  readonly historyToolAvailabilityForRuntime?: (runtimeOptions: Readonly<Record<string, unknown>>) => {
+    readonly conversationHistory: boolean;
+    readonly sessionHistory: boolean;
+  };
   readonly writer: Pick<ToolHistoryWriter, "createSink" | "finishRun" | "resetConversation">;
   readonly reader: ToolHistoryReader;
   /** Collapse a physical rollover bucket into its current logical session. */

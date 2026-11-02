@@ -171,3 +171,28 @@ it.each(["admission", "normalization"])("allows slow %s while the signal and tra
   expect((await readdir(join(f.root, "history", ".locks"))).filter((name) => name.endsWith(".dirty.json"))).toHaveLength(1);
   await lease.close(); expect(f.limiter.inUse()).toBe(0); await turn!.abort();
 });
+
+it.each([true, false])("native preparation freezes the late resolved projection (available=%s)", async (available) => {
+  const f = await fixture();
+  const base = await f.input.prepareContext(f.input.request, f.input.options);
+  const projection = { blocks: [{ callId: "sth1_fictional", lines: ["<tool_record>Fictional cobalt evidence.</tool_record>"] }],
+    recordCount: 1, truncated: false };
+  f.context.mockResolvedValueOnce({ ...base, toolProjection: projection } as never);
+  const resolver = vi.fn(() => ({ conversationHistory: available, sessionHistory: false }));
+  const { ToolHistoryReader } = await import("../tool-history/reader.js");
+  const options = { ...f.input.options, toolHistory: {
+    reader: new ToolHistoryReader(join(f.root, "empty")), logicalConversationId: (id: string) => id,
+    writer: { createSink: () => async () => ({ persistence: "persisted" as const }), async finishRun() {}, async resetConversation() {} },
+    historyToolAvailabilityForRuntime: resolver,
+  } };
+  const lease = await prepareHarnessRuntime({ ...f.input, options }); cleanup.push(() => lease.close());
+  expect(resolver).toHaveBeenCalledOnce();
+  const replay = lease.snapshot.messages.map(message => message.content).join("\n");
+  expect(replay).toContain("Fictional cobalt evidence.");
+  expect(replay.includes("Use ConversationHistory")).toBe(available);
+  expect(replay).not.toContain("Use SessionHistory");
+  expect(lease.context.toolHistoryProjection).toContain("Fictional cobalt evidence.");
+  expect(Object.isFrozen(lease.context.context)).toBe(true);
+  expect(Object.isFrozen(lease.context.toolProjection?.blocks)).toBe(true);
+  expect(JSON.stringify(projection)).not.toContain("Use ConversationHistory");
+});

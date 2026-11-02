@@ -33,7 +33,7 @@ import type {
 } from "@mono-agent/turn/host/types";
 
 import { agentArtifactDerivedRoots } from "../artifacts/agent-artifact-paths.js";
-import { createConversationHistoryRuntimeExtension, isConversationHistoryToolAllowed } from "../request-tools/conversation-history.js";
+import { createConversationHistoryRuntimeExtension, isConversationHistoryToolAllowed, historyToolAvailabilityForRuntime } from "../request-tools/conversation-history.js";
 import { createToolOutputArtifactsRuntimeExtension } from "../artifacts/tool-output-artifacts.js";
 import {
   acquireAgentRootOwnership,
@@ -379,6 +379,7 @@ async function createConfiguredConversationHarnessInternal(
           : await prepareContinuityUpkeep({ ...runtimeHostOptionsForConfig(config), ...inference }, requireRequestCap);
       } } } : {}),
     conversationHistoryAvailable: conversationHistory !== undefined,
+    historyToolAvailabilityForRuntime,
     artifactRoot: toolOutputArtifactRoot,
     rollover,
     ...(options.onToolHistoryWarning === undefined

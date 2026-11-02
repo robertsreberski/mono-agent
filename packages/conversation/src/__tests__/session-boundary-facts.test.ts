@@ -25,3 +25,15 @@ it("leaves an unknown legacy producer unclassified rather than guessing", () => 
     reason: "custom_boundary", conversationId: "fictional" }, "2030-01-01T00:00:00Z"))
     .not.toHaveProperty("context");
 });
+
+it.each([[true, true], [false, true], [false, false]])("measures the resolved header forwarded for tools %s/%s", async (conversationHistory, sessionHistory) => {
+  const { renderToolHistoryProjection } = await import("../tool-history/projection.js");
+  const projection = renderToolHistoryProjection({ blocks: [{ callId: "sth1_fictional", lines: ["Fictional é evidence"] }],
+    recordCount: 1, truncated: false }, { conversationHistory, sessionHistory })!;
+  const facts = reconstructionFacts({ history: [], toolHistoryProjection: projection.text, toolProjectionRecords: projection.recordCount });
+  expect(facts.toolProjectionBytes).toBe(Buffer.byteLength(projection.text, "utf8"));
+  expect(facts.toolProjectionRecords).toBe(1);
+  const unavailable = renderToolHistoryProjection({ blocks: [{ callId: "sth1_fictional", lines: ["Fictional é evidence"] }],
+    recordCount: 1, truncated: false }, { conversationHistory: false, sessionHistory: false })!;
+  if (conversationHistory || sessionHistory) expect(facts.toolProjectionBytes).toBeGreaterThan(Buffer.byteLength(unavailable.text));
+});

@@ -67,7 +67,7 @@ it("joins finalized tool text by exact call identity, preserving state and compa
   const source = f.reader.snapshotContinuity(scope);
   expect(source.records).toHaveLength(1);
   expect(source.records[0]!.tool).toMatchObject({ name: "mail_send", state: "success" });
-  const { buildToolHistoryProjection } = await import("../tool-history/projection.js");
+  const { buildToolHistoryProjection } = await import("./fixtures/tool-history-projection.js");
   expect(buildToolHistoryProjection(f.reader, "fictional", "fictional", "current", new Set(), true, true)?.text).toContain("Use ConversationHistory");
   expect(buildToolHistoryProjection(f.reader, "fictional", "fictional", "current")?.text).toContain("Use SessionHistory");
   const pack = renderContinuityPack(source, []);

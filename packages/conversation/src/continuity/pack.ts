@@ -199,7 +199,7 @@ export function createContinuityPackSupplier(options: ConversationHarnessOptions
   const upkeep = createLedgerSupplier(options, request, runId);
   let scope: ContinuitySnapshotInput | undefined;
   let snapshot: ContinuitySnapshot | undefined;
-  const supply = (history: readonly HistoryMessage[], maxTokens: number, reason: string, emit: (event: RuntimeEventLike) => void, onRenderedTools?: (ids: ReadonlySet<string>) => void): readonly RuntimeMessage[] => {
+  const supply = (history: readonly HistoryMessage[], maxTokens: number, reason: string, emit: (event: RuntimeEventLike) => void, onRenderedTools?: (ids: ReadonlySet<string>) => void, conversationHistoryAvailable = false): readonly RuntimeMessage[] => {
     if (toolHistory?.continuityEnabled !== true || toolHistory.packEnabled === false) return [];
     let pack: ContinuityPack;
     if (maxTokens < 500) {

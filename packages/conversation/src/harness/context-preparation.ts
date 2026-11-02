@@ -16,7 +16,7 @@ import { representedContinuityToolRecordIds } from "./turn-continuity.js";
 import { sessionContextBlock } from "./session-context.js";
 import { memorySenderToken, memoryUserText } from "./memory-persistence.js";
 import { isCronRequest, runSourceFromRequest } from "./request-routing.js";
-import { buildToolHistoryProjection } from "../tool-history/projection.js";
+import { prepareToolHistoryProjection, renderToolHistoryProjection, type PreparedToolHistoryProjection, type HistoryToolAvailability } from "../tool-history/projection.js";
 
 export async function prepareHarnessContext(
   options: ConversationHarnessOptions,
@@ -39,6 +39,7 @@ export async function prepareHarnessContext(
   readonly historyOmitted: boolean;
   readonly historyAsMessages: boolean;
   readonly toolHistoryProjection: string | undefined;
+  readonly toolProjection?: PreparedToolHistoryProjection;
   readonly toolProjectionRecords?: number;
 }> {
     const history = contextOptions.historyMode === "omitted"
@@ -89,9 +90,6 @@ export async function prepareHarnessContext(
     const toolProjection = contextOptions.historyMode === "omitted"
       ? undefined
       : loadToolHistoryProjection(options, request.conversationId, contextOptions.turnId, history, emit);
-    const context = toolProjection === undefined
-      ? baseContext
-      : projectToolHistoryBeforeCurrentTurn(baseContext, toolProjection.text, toolProjection.recordCount);
     // Progressive skill disclosure (index mode, opt-in): the index is in the
     // prompt but the bodies are not — so expose a `ReadSkill` tool whose enum is
     // the discovered skill names, letting the agent pull a full body on demand.
@@ -100,14 +98,15 @@ export async function prepareHarnessContext(
     // skillsRoot is set.
     const skillDisclosureEntries = await loadSkillDisclosureEntries(options);
     return {
-      context,
+      context: baseContext,
+      ...(toolProjection === undefined ? {} : { toolProjection }),
       memory,
       skillDisclosureEntries,
       history,
       historyOmitted: contextOptions.historyMode === "omitted",
       historyAsMessages: contextOptions.historyMode === "messages",
       toolProjectionRecords: toolProjection?.recordCount ?? 0,
-      toolHistoryProjection: contextOptions.historyMode === "messages" ? toolProjection?.text : undefined,
+      toolHistoryProjection: undefined,
     };
 }
 
@@ -122,20 +121,16 @@ export function loadToolHistoryProjection(
   turnId: string,
   history: readonly HistoryMessage[],
   emit?: (event: RuntimeEventLike) => void,
-  excludedRecordIds: ReadonlySet<string> = new Set(),
   onReadError?: () => void,
-): ReturnType<typeof buildToolHistoryProjection> {
+): ReturnType<typeof prepareToolHistoryProjection> {
     if (options.toolHistory === undefined) return undefined;
     try {
-      return buildToolHistoryProjection(
+      return prepareToolHistoryProjection(
         options.toolHistory.reader,
         options.toolHistory.logicalConversationId(conversationId),
         conversationId,
         turnId,
         representedContinuityToolRecordIds(history),
-        options.toolHistory.continuityEnabled === true,
-        options.toolHistory.conversationHistoryAvailable === true,
-        excludedRecordIds,
       );
     } catch (error) {
       onReadError?.();
@@ -157,6 +152,17 @@ function toolHistoryProjectionErrorCode(error: unknown): string {
     return typeof candidate === "string" && /^history_[a-z0-9_]+$/u.test(candidate)
       ? candidate
       : "history_projection_unavailable";
+}
+
+/** Build a new context from the prepared base, never edit a frozen prompt. */
+export function resolveHarnessContext(
+  prepared: Awaited<ReturnType<typeof prepareHarnessContext>>,
+  availability: HistoryToolAvailability,
+): Awaited<ReturnType<typeof prepareHarnessContext>> {
+  const projection = renderToolHistoryProjection(prepared.toolProjection, availability);
+  return { ...prepared, context: projection === undefined ? prepared.context
+    : projectToolHistoryBeforeCurrentTurn(prepared.context, projection.text, projection.recordCount),
+    toolHistoryProjection: projection?.text, toolProjectionRecords: projection?.recordCount ?? 0 };
 }
 
 function projectToolHistoryBeforeCurrentTurn(

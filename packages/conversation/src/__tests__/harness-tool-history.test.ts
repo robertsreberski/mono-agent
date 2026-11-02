@@ -21,7 +21,7 @@ import {
 } from "../index.js";
 import { ConversationHarnessImpl } from "../harness/index.js";
 import { representedContinuityToolRecordIds } from "../harness/turn-continuity.js";
-import { buildToolHistoryProjection } from "../tool-history/projection.js";
+import { buildToolHistoryProjection } from "./fixtures/tool-history-projection.js";
 
 const tempDirs: string[] = [];
 const model = { sdk: "pi", provider: "openai-codex", model: "gpt-5.5", reference: "pi:openai-codex:gpt-5.5" } as const;
