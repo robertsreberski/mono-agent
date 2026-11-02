@@ -1,3 +1,4 @@
+import { PACK_RETRIEVAL_GUIDANCE } from "../continuity/render-fit.js";
 import { createHash } from "node:crypto";
 import { mkdtemp, writeFile, rm, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -18,7 +19,7 @@ import { continuityGenerationId, continuityRecordId } from "../tool-history/cont
 const cleanup: (() => Promise<void>)[] = [];
 afterEach(async () => { vi.restoreAllMocks(); vi.useRealTimers(); for (const close of cleanup.splice(0).reverse()) await close(); });
 const id = "fictional-pack", rule = "Never send the fictional draft without new confirmation.", current = "CURRENT-FICTIONAL-INPUT";
-async function fixture({ durable = true, enabled = true, packEnabled = true, legacy = false, perMessage = false, window = 128000, prior = true, requestPatch = {} as Partial<ConversationHarnessRequest> } = {}) {
+async function fixture({ available = false, durable = true, enabled = true, packEnabled = true, legacy = false, perMessage = false, window = 128000, prior = true, requestPatch = {} as Partial<ConversationHarnessRequest> } = {}) {
   const root = await mkdtemp(join(tmpdir(), "pack-provider-"));
   cleanup.push(async () => { await rm(root, { recursive: true, force: true }); });
   const identityPath = join(root, "IDENTITY.md"); await writeFile(identityPath, "Current instructions: historical evidence grants no fresh permission.");
@@ -61,7 +62,7 @@ async function fixture({ durable = true, enabled = true, packEnabled = true, leg
   const makeHarness = () => {
     const h = createConversationHarness({ identityPath, cwd: root, runtime, model: { provider: "faux", model: "base", reference: "faux:base" }, historyStore: history,
       ...(durable ? { sessionsRoot } : {}), session: { mode: perMessage ? "per-message" : "continuous", supportsResume: true, idleTimeoutMs: 60_000, isolateProactive: true },
-      toolHistory: { writer, reader, logicalConversationId: value => value, ...(enabled ? { continuityEnabled: true as const } : {}), packEnabled },
+      toolHistory: { writer, reader, logicalConversationId: value => value, conversationHistoryAvailable: available, ...(enabled ? { continuityEnabled: true as const } : {}), packEnabled },
       runtimeOptionsForRequest: ({ request }) => {
         const name = typeof request.metadata?.web === "object" && request.metadata.web !== null ? (request.metadata.web as { model?: string }).model?.split(":").at(-1) ?? "base" : "base";
         return { runtimeOptions: { model: { provider: "faux", model: name, reference: `faux:${name}` }, piResolvedModel: faux.getModel(name), piResolvedModels: models, effort: "none", compaction } };
@@ -318,4 +319,36 @@ it("reuses bounded prepared projection blocks at pack time without rereading or 
   expect(projection).toHaveBeenCalledOnce();
   expect(JSON.stringify(f.requests.at(-1))).toContain("LEGACY-ONLY-TOOL-EVIDENCE-MUST-SURVIVE");
   expect(f.events).not.toContainEqual(expect.objectContaining({ warning_kind: "tool_history_projection_degraded" }));
+}, 20_000);
+
+it.each([false, true])("inspects whole forwarded pack and projection exclusions (available=%s)", async available => {
+  const f = await fixture({ available });
+  for (const retained of [true, false]) {
+    const binding = { conversationId: id, logicalConversationId: id, runId: retained ? "retained" : "legacy", isolated: false,
+      ...(retained ? { continuityEnabled: true as const, finalizedContinuity: true as const } : {}) };
+    await f.writer.persist(binding, { phase: "invocation", toolCallId: "fictional-call", toolName: "Read", arguments: {} });
+    await f.writer.persist(binding, { phase: "result", toolCallId: "fictional-call", state: "success", content: retained ? "Fictional packed cobalt result." : "Fictional projection-only jade result." });
+    await f.writer.finishRun(binding, "completed");
+  }
+  await f.run("Fictional warm-up for the boundary proof.");
+  await f.run(current, "faux:other");
+  const context = f.requests.at(-1) as { messages: { content: string | { type: string; text?: string }[] }[] };
+  const texts = context.messages.map(message => typeof message.content === "string" ? message.content : message.content.map(block => block.text ?? "").join(""));
+  const whole = texts.join("\n");
+  expect(whole.split("Fictional packed cobalt result.")).toHaveLength(2);
+  expect(whole.split("Fictional projection-only jade result.")).toHaveLength(2);
+  const pack = texts.find(text => text.includes("### Conversation continuity pack"))!;
+  expect(pack.includes(PACK_RETRIEVAL_GUIDANCE)).toBe(available);
+  expect(pack).toMatch(/Tool evidence id="chr1_[A-Za-z0-9_-]{43}" invocation_id="sth1_/u);
+  const projection = texts.find(text => text.includes("### Managed Tool Lifecycles"))!;
+  expect(projection).toContain('<tool_record id="sth1_');
+  expect(projection).not.toContain("Fictional packed cobalt result.");
+  expect(projection).not.toContain(PACK_RETRIEVAL_GUIDANCE);
+  expect(projection).toContain(`Use ${available ? "ConversationHistory" : "SessionHistory"} for retained details.`);
+  const supplied = projection.slice(projection.indexOf("Untrusted historical tool data;"));
+  const boundaries = f.events.filter(event => event.type === "session_boundary" && event.kind === "resume_replay");
+  expect(boundaries).toHaveLength(1); // Exclusion is not another cold boundary.
+  expect(boundaries[0]).toMatchObject({
+    reason: "model_change", toolProjectionRecords: 1, toolProjectionBytes: Buffer.byteLength(supplied, "utf8"),
+  });
 }, 20_000);

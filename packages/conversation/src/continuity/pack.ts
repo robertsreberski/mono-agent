@@ -9,7 +9,7 @@ import { CONTINUITY_REDACTION_OMISSION } from "../tool-history/continuity-payloa
 import { representedContinuityToolRecordIds } from "../harness/turn-continuity.js";
 import type { ConversationHarnessOptions, ConversationHarnessRequest } from "../harness/contracts.js";
 
-import { PACK_HEADER as HEADER, packTokens as estimate, packTokensOfBytes, fitsLedgerPrefix } from "./render-fit.js";
+import { PACK_HEADER as HEADER, packTokens as estimate, packTokensOfBytes, fitsLedgerPrefix, PACK_RETRIEVAL_GUIDANCE } from "./render-fit.js";
 type Section = "owner" | "tool" | "summary" | "evidence";
 export interface ContinuityPack {
   readonly text?: string;
@@ -28,7 +28,7 @@ export interface ContinuityPack {
 /** Pure, deterministic rendering. No clipping of owner entries or identifiers.
  * A tool result head consists of complete paragraphs only; an oversized first paragraph
  * is omitted rather than turning an identifier or negation into a partial fact. */
-export function renderContinuityPack(snapshot: ContinuitySnapshot, history: readonly HistoryMessage[], maxTokens = 8000, ledger?: { generation: LedgerGeneration; records: readonly { recordId: string; text: string }[] }, upkeepGap = false): ContinuityPack {
+export function renderContinuityPack(snapshot: ContinuitySnapshot, history: readonly HistoryMessage[], maxTokens = 8000, ledger?: { generation: LedgerGeneration; records: readonly { recordId: string; text: string }[] }, upkeepGap = false, conversationHistoryAvailable = false): ContinuityPack {
   const counts: Record<Section, number> = { owner: 0, tool: 0, summary: 0, evidence: 0 };
   const toolIds = representedContinuityToolRecordIds(history);
   const inputIds = new Set(history.flatMap(message => {
@@ -52,6 +52,7 @@ export function renderContinuityPack(snapshot: ContinuitySnapshot, history: read
   // all-or-nothing (shared purchase/injection rule) and its omission is disclosed.
   const shown = derived !== "" && fitsLedgerPrefix(derived, limit);
   const prefix = shown ? HEADER + derived : HEADER;
+  const guidance = conversationHistoryAvailable ? PACK_RETRIEVAL_GUIDANCE : "";
   const disclosure = derived !== "" && !shown ? `Continuity ledger omitted: ${ledger!.generation.entries.length} derived entries exceed the ledger space; omission is not supersession.\n` : "";
   const demoted = new Set(shown ? quotedOwnerRecords(ledger!.generation, ledger!.records) : []);
   const rank: Record<Section, number> = { owner: 0, tool: 1, summary: 2, evidence: 3 };
@@ -88,7 +89,7 @@ export function renderContinuityPack(snapshot: ContinuitySnapshot, history: read
     // no-ledger owner backbone from both ends: oldest, newest, next oldest...
     // Ledger cost thus falls on middle history, not on early rules or late
     // corrections. Quoted owners keep their demotion; other owners follow.
-    const fallback = choose(HEADER, [...entries].sort(layout(new Set())));
+    const fallback = choose(HEADER + guidance, [...entries].sort(layout(new Set())));
     const backbone = entries.filter(record => section(record) === "owner" && !demoted.has(record.recordId) && fallback.selected.has(record))
       .sort((a, b) => a.ordinal - b.ordinal || (a.recordId < b.recordId ? -1 : a.recordId > b.recordId ? 1 : 0));
     const priority = new Map<ContinuitySnapshotRecord, number>();
@@ -96,14 +97,14 @@ export function renderContinuityPack(snapshot: ContinuitySnapshot, history: read
     const owner = (record: ContinuitySnapshotRecord) => section(record) === "owner" && !demoted.has(record.recordId);
     ordered = [...entries].sort((a, b) => owner(a) && owner(b) ? (priority.get(a) ?? priority.size) - (priority.get(b) ?? priority.size) || layout(demoted)(a, b) : layout(demoted)(a, b));
   }
-  const { selected, toolReserved } = choose(prefix + disclosure, ordered);
+  const { selected, toolReserved } = choose(prefix + guidance + disclosure, ordered);
   const renderedToolIds = new Set<string>();
   const ledgerEntries = shown ? ledger!.generation.entries.length : 0;
   let unknownOverlap = 0;
   let degradedReason: string | undefined = snapshot.degradedReason ?? (snapshot.gaps > 0 ? "coverage_gap" : upkeepGap ? "upkeep_gap" : undefined);
   // Selection priority does not change section layout: owner requests first,
   // tools effect-first, then summary/neutral evidence; ordinal within groups.
-  let body = prefix + disclosure;
+  let body = prefix + guidance + disclosure;
   for (const record of entries) {
     const entry = selected.get(record); if (entry === undefined) continue;
     body += entry; counts[section(record)]++;
@@ -112,7 +113,7 @@ export function renderContinuityPack(snapshot: ContinuitySnapshot, history: read
   }
   const omitted = snapshot.omitted + entries.length - selected.size;
   if (selected.size < entries.length) degradedReason ??= "overflow";
-  if (prefix === HEADER && !Object.values(counts).some(Boolean) && omitted === 0 && snapshot.gaps === 0 && !degradedReason) return { tokens: 0, counts, omitted, unknownOverlap, ownerDeduped, toolReserved, ledgerEntries };
+  if (ledgerEntries === 0 && !Object.values(counts).some(Boolean) && omitted === 0 && snapshot.gaps === 0 && !degradedReason) return { tokens: 0, counts, omitted, unknownOverlap, ownerDeduped, toolReserved, ledgerEntries };
   const marker = `${upkeepGap ? "Upkeep coverage gap: deterministic evidence below remains independently verified.\n" : ""}Coverage: physical-bucket canonical replay scope; retained finalized v3 evidence only; gaps=${snapshot.gaps}; omitted=${omitted}; unknown_overlap=${unknownOverlap}; degraded=${degradedReason ?? "none"}. Omission is not proof that an old request or effect no longer applies.\n`;
   const text = body + marker;
   if (estimate(text) > limit) return { tokens: 0, counts: { owner: 0, tool: 0, summary: 0, evidence: 0 }, omitted: snapshot.omitted + entries.length, unknownOverlap: 0, ownerDeduped, toolReserved: 0, ledgerEntries: 0, degradedReason: "headroom" };
@@ -181,7 +182,7 @@ function renderEntry(record: ContinuitySnapshotRecord, category: Section): strin
   const id = quote(record.recordId);
   if (category === "owner") return `Historical owner request id=${id} (past, not renewed approval): ${quote(record.text)}\n`;
   if (category === "tool" && record.tool) {
-    const args = Buffer.byteLength(record.tool.arguments) <= 2048 ? record.tool.arguments : "[arguments omitted: size; retrieve by reference]";
+    const args = Buffer.byteLength(record.tool.arguments) <= 2048 ? record.tool.arguments : "[arguments omitted: size]";
     const head = resultHead(record);
     return `Tool evidence id=${id} invocation_id=${quote(record.tool.invocationId)} name=${quote(record.tool.name)} final_state=${quote(record.tool.state)} arguments=${quote(args)} result_head=${quote(head || "[head omitted: first paragraph exceeds bound]")} result_omitted=${head !== record.text || record.truncated}\n`;
   }
@@ -218,7 +219,7 @@ export function createContinuityPackSupplier(options: ConversationHarnessOptions
       const ledger = upkeep.current(emit);
       pack = source.degradedReason === "source_changed" || source.degradedReason === "purge_pending" || source.degradedReason === "unavailable" || source.degradedReason === "boundary_unavailable"
         ? { tokens: 0, counts: { owner: 0, tool: 0, summary: 0, evidence: 0 }, omitted: source.omitted, unknownOverlap: 0, ownerDeduped: 0, toolReserved: 0, ledgerEntries: 0, degradedReason: source.degradedReason }
-        : renderContinuityPack(source, history, maxTokens, ledger, upkeep.gap);
+        : renderContinuityPack(source, history, maxTokens, ledger, upkeep.gap, conversationHistoryAvailable);
     } catch {
       pack = { tokens: 0, counts: { owner: 0, tool: 0, summary: 0, evidence: 0 }, omitted: 0, unknownOverlap: 0, ownerDeduped: 0, toolReserved: 0, ledgerEntries: 0, degradedReason: "unavailable" };
       snapshot = { records: [], omitted: 0, gaps: 1, degradedReason: "unavailable" };
@@ -233,7 +234,11 @@ export function createContinuityPackSupplier(options: ConversationHarnessOptions
     } catch { /* diagnostics are content-free and best effort */ }
     onRenderedTools?.(pack.toolRecordIds ?? new Set());
     if (pack.text) return [{ role: "user", content: pack.text, timestamp: "1970-01-01T00:00:00.000Z" }];
-    const gap = "Continuity coverage gap: retained evidence unavailable or omitted; use permitted canonical history. No historical evidence supplied. ";
+    const retrievalMaySucceed = conversationHistoryAvailable
+      && !["purge_pending", "source_changed", "unavailable", "boundary_unavailable"].includes(pack.degradedReason ?? "");
+    const gap = retrievalMaySucceed
+      ? "Continuity coverage gap: no historical evidence supplied here. ConversationHistory search/get may find retained evidence omitted here; source redaction/truncation is irreversible here. "
+      : "Continuity coverage gap: retained evidence unavailable or omitted; use permitted canonical history. No historical evidence supplied. ";
     return pack.degradedReason && pack.degradedReason !== "trigger_headroom" && maxTokens >= estimate(gap) ? [{ role: "user", content: gap, timestamp: "1970-01-01T00:00:00.000Z" }] : [];
   };
   return Object.assign(supply, { prepare: upkeep.prepare });

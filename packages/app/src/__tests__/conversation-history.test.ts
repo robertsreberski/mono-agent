@@ -177,3 +177,37 @@ describe("ConversationHistory scoped evidence", () => {
     expect((await client.callTool({ name: CONVERSATION_HISTORY_TOOL_NAME, arguments: { action: "search", logicalConversationId: "web:foreign" } })).isError).toBe(true);
   });
 });
+
+it("gets the id parsed from an available rendered pack, rejecting invocation and projection ids", async () => {
+  const f = await fixture();
+  const binding = { conversationId, logicalConversationId: logicalId, runId: "fictional-old", isolated: false,
+    continuityEnabled: true as const, finalizedContinuity: true as const };
+  await f.writer.persist(binding, { phase: "invocation", toolCallId: "fictional-call", toolName: "Read", arguments: {} });
+  await f.writer.persist(binding, { phase: "result", toolCallId: "fictional-call", state: "success", content: "Fictional cobalt retained value." });
+  await f.writer.finishRun(binding, "completed");
+  // Exercise the built renderer used by the app, without widening a package API
+  // solely for this integration proof. The app closure is built before testing.
+  const { renderContinuityPack } = await import(new URL("../../../conversation/dist/continuity/pack.js", import.meta.url).href) as typeof import("../../../conversation/dist/continuity/pack.js");
+  const { prepareToolHistoryProjection, renderToolHistoryProjection } = await import(new URL("../../../conversation/dist/tool-history/projection.js", import.meta.url).href) as typeof import("../../../conversation/dist/tool-history/projection.js");
+  const snapshot = f.reader.snapshotContinuity({ logicalConversationId: logicalId, currentConversationId: conversationId, currentRunId: runId });
+  const pack = renderContinuityPack(snapshot, [], 8000, undefined, false, true);
+  expect(pack.text).toContain("Get the record before guessing exact values");
+  const entry = /Tool evidence id=("chr1_[A-Za-z0-9_-]{43}") invocation_id=("sth1_[A-Za-z0-9_-]+")/u.exec(pack.text!)!;
+  expect(entry).not.toBeNull();
+  const recordId = JSON.parse(entry[1]!) as string, invocationId = JSON.parse(entry[2]!) as string;
+  const projection = renderToolHistoryProjection(prepareToolHistoryProjection(f.reader, logicalId, conversationId, runId),
+    { conversationHistory: true, sessionHistory: true })!;
+  const projectedId = /<tool_record id="(sth1_[A-Za-z0-9_-]+)"/u.exec(projection.text)![1]!;
+  const extension = await createConversationHistoryRuntimeExtension({ historyRoot: f.root, rollover: "daily" })({ runId,
+    request: { conversationId, userMessage: "Retrieve fictional evidence", abortSignal: new AbortController().signal }, context: {} as never });
+  const spec = (extension.runtimeOptions?.mcpServers as Record<string, { url: string }>)[CONVERSATION_HISTORY_MCP_SERVER_NAME]!;
+  const client = new Client({ name: "fictional-packed-id-client", version: "1.0.0" });
+  clients.push(async () => { await client.close(); await extension.cleanup?.(); });
+  await client.connect(new StreamableHTTPClientTransport(new URL(spec.url)) as never);
+  const get = async (recordId: string) => body(await client.callTool({ name: CONVERSATION_HISTORY_TOOL_NAME, arguments: { action: "get", recordId } }));
+  expect(await get(recordId)).toMatchObject({ status: "available", chunk: "Fictional cobalt retained value." });
+  for (const invalidId of [invocationId, projectedId]) {
+    expect(invalidId).toMatch(/^sth1_/u);
+    expect(await get(invalidId)).toMatchObject({ error: { code: "invalid_record" } });
+  }
+});

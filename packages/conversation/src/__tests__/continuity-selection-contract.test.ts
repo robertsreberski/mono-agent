@@ -42,3 +42,16 @@ it("pins the compact extraction contract without changing schema or caps", () =>
     "Reconcile earlier and later retained evidence by source order even when discovered in reverse extraction-pass order",
   ]) expect(prompt).toContain(clause);
 });
+
+// Retrieval guidance costs 270 bytes / 90 estimate tokens, so under 4k pressure
+// it displaces late neutral evidence, not the ranking/reservation policy. At 8k
+// the same records fit and only the prompt/token count changes. Keep the legacy
+// snapshots above untouched; these names bind availability=true explicitly.
+it.each([4000, 8000])("freezes available=true retrieval pack (headroom=%s)", maxTokens => {
+  const snapshot = { records, omitted: 0, gaps: 0 };
+  const pack = renderContinuityPack(snapshot, [], maxTokens, undefined, false, true);
+  expect({ hash: ledgerHash(pack.text ?? ""), tokens: pack.tokens, counts: pack.counts, omitted: pack.omitted }).toMatchSnapshot();
+  expect(pack.tokens).toBeLessThanOrEqual(maxTokens);
+  expect(pack.counts.owner).toBe(20); expect(pack.counts.tool).toBe(20);
+  expect(renderContinuityPack(snapshot, [], maxTokens, undefined, false, false)).toEqual(renderContinuityPack(snapshot, [], maxTokens));
+});

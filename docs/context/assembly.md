@@ -202,10 +202,14 @@ separate user turn rather than part of the in-turn interaction transcript.
 Choose evidence by question shape: use active conversation history for the current
 exchange, `MemoryRecall` for a targeted durable fact, and `MemoryJournal` for a broad
 retrospective over explicit local dates when that local-memory tool is available. Use
-[`RunHistory`](/tools/mcp/#runhistory-prior-run-evidence) for exact settled-run evidence
-or interrupted-work recovery and
-[`SessionHistory`](/tools/mcp/#sessionhistory-retained-tool-lifecycles) for exact retained
-managed-tool calls/results. Journal entries are never automatically injected into this
+[`ConversationHistory`](/tools/mcp/#conversationhistory-retained-conversation-evidence),
+when available, for exact retained conversation values, including captured plain-text
+tool results and the values referenced by pack `Tool evidence id` records. That is the
+retained continuity subset, not every managed-tool result. Use
+[`SessionHistory`](/tools/mcp/#sessionhistory-retained-tool-lifecycles) for managed-tool
+call/result lifecycles, and
+[`RunHistory`](/tools/mcp/#runhistory-prior-run-evidence) for run settlement and
+interrupted-work recovery. Journal entries are never automatically injected into this
 assembly; they enter context only when the model explicitly calls the bounded tool, and
 remain untrusted curated summaries rather than exact execution evidence.
 

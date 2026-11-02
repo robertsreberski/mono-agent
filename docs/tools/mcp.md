@@ -222,8 +222,12 @@ capability, and app-tool policy. Under a restrictive allowlist name `MemoryJourn
 `mcp__mono-agent-memory-journal__MemoryJournal`, or
 `mcp__mono-agent-memory-journal__*`; exact/server/global deny wins. There is no legacy
 alias. Use active conversation history for the current exchange, `MemoryRecall` for a
-targeted durable fact, this tool for broad date-bounded summaries, and
-`RunHistory`/`SessionHistory` for exact commands, results, failures, or recovery.
+targeted durable fact, and this tool for broad date-bounded summaries. Use
+`ConversationHistory`, when available, for exact retained conversation values,
+including captured plain-text tool results and values referenced by pack
+`Tool evidence id` records—not all managed-tool outputs. Use `SessionHistory`
+for managed-tool call/result lifecycles, and `RunHistory` for run settlement and
+interrupted-work recovery.
 
 ## `SetConversationTitle`: web conversation naming
 
@@ -398,8 +402,11 @@ The current or any running run is excluded, as are unrelated conversations and t
 
 Use active conversation history first for the current exchange. Use `MemoryRecall` for
 a targeted intentionally captured durable fact, `MemoryJournal` for a broad
-date-bounded curated summary, and `RunHistory` for exact settled evidence from an
-earlier run or tool call, including interrupted-work recovery. See
+date-bounded curated summary, and `ConversationHistory`, when available, for exact
+retained conversation values, including captured plain-text tool results and values
+referenced by pack `Tool evidence id` records. Use `SessionHistory` for prior-run
+managed-tool call/result lifecycles and `RunHistory` for settlement and
+interrupted-work recovery. See
 [Artifacts and traces](/observability/artifacts-and-traces/#agent-facing-prior-run-evidence-runhistory).
 
 ## `ConversationHistory`: retained conversation evidence
@@ -428,6 +435,19 @@ with the record metadata. Cursors bind the request's logical/physical/run scope,
 filters, record generation and retained digest; a changed/removed anchor refuses
 continuation. They are navigation, not authority to select another conversation.
 Navigation is provided in model-visible text as well as structured content.
+
+In a continuity pack, `Tool evidence id` is the `chr1_…` `recordId` accepted by
+get. Do not substitute `invocation_id`: it and the cold tool projection's
+`sth1_…` lifecycle ids are rejected by `ConversationHistory` get, with no implicit
+identity conversion. Retrieve exact retained values before guessing or claiming
+absence; search when no pack record id is shown, then follow search/get cursors.
+Pack omission may be retrievable, but source redaction/truncation is irreversible
+here. Omitted invocation arguments are not promised to be retrievable.
+
+Pack retrieval guidance is conditional on the effective request policy and live
+endpoint after overrides, startup and suppression. Tool projection headers retain
+the existing `SessionHistory` route when it alone is available; tools-disabled
+synthesis and manual compaction omit both routes.
 
 Only committed evidence or positively finalized/fsynced current-run evidence is
 readable. Prepared publications, partial assistant streams, reasoning and foreign
