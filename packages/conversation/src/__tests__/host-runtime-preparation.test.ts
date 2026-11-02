@@ -194,5 +194,7 @@ it.each([true, false])("native preparation freezes the late resolved projection 
   expect(lease.context.toolHistoryProjection).toContain("Fictional cobalt evidence.");
   expect(Object.isFrozen(lease.context.context)).toBe(true);
   expect(Object.isFrozen(lease.context.toolProjection?.blocks)).toBe(true);
-  expect(JSON.stringify(projection)).not.toContain("Use ConversationHistory");
+  // The frozen prepared projection keeps only serializable blocks; routing is rendered late.
+  expect(JSON.stringify(lease.context.toolProjection)).toContain("Fictional cobalt evidence.");
+  expect(JSON.stringify(lease.context.toolProjection)).not.toMatch(/Use (?:ConversationHistory|SessionHistory)/u);
 });
