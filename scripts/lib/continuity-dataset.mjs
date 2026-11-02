@@ -3,11 +3,13 @@ import { createHash } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { ARMS, BASELINE_ARM, DEFAULT_ARMS, assertRunnableArms } from "./continuity-arms.mjs";
+import { NATIVE_LOOKUP_ARM, ARMS, BASELINE_ARM, DEFAULT_ARMS, assertRunnableArms } from "./continuity-arms.mjs";
 import { GENERATOR_VERSION, HARD_SEEDS, LONG_RULES, generateTrace, generateDistractorTrace, outsideColdBounds, traceShape } from "./continuity-generator.mjs";
 import { CATEGORIES, ORIGINAL_CATEGORIES, probePrompt, validateProbeScore } from "./continuity-score.mjs";
 import { HOLDOUT_ARMS } from "./continuity-holdout-statistics.mjs";
 import { TOOL_NAMES } from "./continuity-tools.mjs";
+
+import { assertLookupContract, LOOKUP_MODE, LOOKUP_DEFAULT_ARMS, LOOKUP_BUDGET, LOOKUP_TIMING, SOUL_BINDING } from "./continuity-lookup.mjs";
 
 export const CORPUS_DIR = fileURLToPath(new URL("../fixtures/continuity/", import.meta.url));
 export const PLAN_SCHEMA = "continuity-benchmark-plan-v2";
@@ -219,23 +221,31 @@ export function digest(value) { return createHash("sha256").update(canonicalJson
  * selection, output directory) are deliberately outside the digest; a chunk
  * may only select a subset of the confirmed plan.
  */
-export function makePlan({ traces, sha256, suite = "original", source = null, codeRevision = null, profile = {}, repeats = 1, arms, probeLimit = null, piAuthFingerprint = null, holdout = null }) {
+export function makePlan({ traces, sha256, suite = "original", source = null, codeRevision = null, profile = {}, repeats = 1, arms, probeLimit = null, piAuthFingerprint = null, holdout = null, probeMode }) {
   if (!SUITES.includes(suite)) fail("invalid_suite");
-  arms ??= suite === "holdout" ? HOLDOUT_ARMS : DEFAULT_ARMS[suite];
+  if (probeMode !== undefined && probeMode !== LOOKUP_MODE) fail("invalid_probe_mode");
+  const lookup = probeMode === LOOKUP_MODE;
+  if (lookup) assertLookupContract({ suite, sha256 });
+  if (lookup && suite === "holdout") fail("lookup_not_legacy_holdout");
+  arms ??= lookup ? LOOKUP_DEFAULT_ARMS : suite === "holdout" ? HOLDOUT_ARMS : DEFAULT_ARMS[suite];
   if (!Number.isSafeInteger(repeats) || repeats < 1 || repeats > 5) fail("invalid_repeats");
-  if (!Array.isArray(arms) || arms.length === 0 || arms.some((arm) => !ARMS.some((row) => row.id === arm)) || new Set(arms).size !== arms.length) fail("invalid_arms");
-  if (!arms.includes(BASELINE_ARM)) fail("baseline_arm_required");
+  if (!Array.isArray(arms) || arms.length === 0 || arms.some((arm) => ![...ARMS, NATIVE_LOOKUP_ARM].some((row) => row.id === arm)) || new Set(arms).size !== arms.length) fail("invalid_arms");
+  if (!lookup && arms.includes("native-lookup")) fail("native_lookup_requires_lookup_mode");
+  if (lookup && arms.some(arm => !LOOKUP_DEFAULT_ARMS.includes(arm))) fail("lookup_arm_not_supported");
+  const baselineArm = lookup ? "native-lookup" : BASELINE_ARM;
+  if (!arms.includes(baselineArm)) fail("baseline_arm_required");
   const families = [...new Set(traces.map(traceFamily))];
   assertRunnableArms(arms, families);
   if (probeLimit !== null && (!Number.isSafeInteger(probeLimit) || probeLimit < 1 || probeLimit > 15)) fail("invalid_probe_limit");
-  const reader = profile.reader ?? DEFAULT_READER;
-  const alternate = profile.alternate ?? DEFAULT_ALTERNATE;
+  const reader = profile.reader ?? (lookup ? DEFAULT_ALTERNATE : DEFAULT_READER);
+  const alternate = profile.alternate ?? (lookup ? DEFAULT_READER : DEFAULT_ALTERNATE);
   const judge = profile.judge === undefined ? DEFAULT_JUDGE : profile.judge;
   for (const ref of [reader, alternate, profile.extractionModel ?? reader, ...(judge === null ? [] : [judge])]) if (!MODEL_REF.test(ref)) fail("invalid_model_reference");
   if (reader === alternate) fail("alternate_must_differ_from_reader");
   const readerEffort = profile.readerEffort ?? "low";
   const judgeEffort = profile.judgeEffort ?? "low";
-  const selectedArms = ARMS.filter((arm) => arms.includes(arm.id));
+  const selectedArms = lookup ? LOOKUP_DEFAULT_ARMS.filter(id => arms.includes(id)).map(id => id === "native-lookup" ? NATIVE_LOOKUP_ARM : ARMS.find(arm => arm.id === id))
+    : ARMS.filter((arm) => arms.includes(arm.id));
   const probesPerTrace = traces.map((trace) => ({ id: trace.id, family: traceFamily(trace), toolRecords: traceShape(trace).toolCalls,
     probes: trace.probes.slice(0, probeLimit ?? undefined).map((probe) => probe.id) }));
   const probeCount = probesPerTrace.reduce((sum, row) => sum + row.probes.length, 0);
@@ -255,12 +265,14 @@ export function makePlan({ traces, sha256, suite = "original", source = null, co
   const long = families.includes("long");
   const plan = {
     schema: PLAN_SCHEMA,
+    ...(lookup ? { probeMode, lookup: { budget: LOOKUP_BUDGET, soul: SOUL_BINDING, ...LOOKUP_TIMING,
+      maxTurns: LOOKUP_BUDGET.callBudget + 2, reader: "scripted-multicall-v1", purpose: "mechanics-self-check-not-treatment-benefit" } } : {}),
     suite,
     ...(holdout === null ? {} : { holdout }),
     corpus: { sha256, source, traces: probesPerTrace, probeLimit },
     arms: selectedArms.map((arm) => ({ id: arm.id, label: arm.label, replayBinding: arm.replayBinding, ...(arm.ledgerUpkeep ? { ledgerUpkeep: true } : {}), midCheckpoint: arm.midCheckpoint,
       restart: arm.restart, probeConfig: arm.probeConfig, expect: arm.expect, pressure: arm.pressure })),
-    baselineArm: BASELINE_ARM,
+    baselineArm,
     repeats,
     reader: { model: reader, effort: readerEffort },
     upkeep: { degradedStagePolicy: "allowlisted_product_ledger_or_pack", eligibilitySkipPolicy: "integrity_failure", unknownUsagePolicy: "full_reserve_catalog_accounting", model: profile.extractionModel ?? reader, requireRequestCap: profile.requireRequestCap === true, maxInputTokens: 128000, incrementalMaxInputTokens: 64000, maxOutputTokens: 4096, timeoutMs: 60000,
@@ -271,7 +283,7 @@ export function makePlan({ traces, sha256, suite = "original", source = null, co
     workload: { ...(upkeepCalls ? { upkeepCalls } : {}), probeTurns, midCheckpointCompactions: midCompactions, liveTurns: probeTurns, expectedCompactions: compactions, judgeCalls },
     limits: {
       maxLiveTurns: probeTurns + midCompactions + upkeepCalls,
-      perLiveTurnTimeoutMs: long ? 600000 : 240000,
+      perLiveTurnTimeoutMs: lookup ? LOOKUP_TIMING.turnTimeoutMs : long ? 600000 : 240000,
       // Observed (not reserved) uncached+cached input per invocation; admission stops when crossed.
       maxObservedInputTokensPerInvocation: long ? 400_000_000 : 6_000_000,
     },

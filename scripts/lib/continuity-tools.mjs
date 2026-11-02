@@ -30,7 +30,7 @@ export function callKey(name, args) {
 }
 
 /** Start a per-replay server; `expect` queues the frozen result for the next identical call. */
-export async function startFixtureTools() {
+export async function startFixtureTools({ beforeResult } = {}) {
   const [{ Server }, { StreamableHTTPServerTransport }, { CallToolRequestSchema, ListToolsRequestSchema }] = await Promise.all([
     import("@modelcontextprotocol/sdk/server/index.js"),
     import("@modelcontextprotocol/sdk/server/streamableHttp.js"),
@@ -50,8 +50,10 @@ export async function startFixtureTools() {
           mismatches.push(call.params.name);
           return { content: [{ type: "text", text: "Fixture error: no scripted result for this call." }], isError: true };
         }
+        const result = queue.shift();
         served += 1;
-        return { content: [{ type: "text", text: queue.shift() }] };
+        await beforeResult?.();
+        return { content: [{ type: "text", text: result }] };
       });
       const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
       response.on("close", () => { void transport.close(); void server.close(); });

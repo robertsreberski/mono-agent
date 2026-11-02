@@ -17,7 +17,7 @@ export function assertCleanTree() {
 }
 export function benchmarkFiles() {
   return git(["ls-files", "-z", "--", "scripts/continuity-*", "scripts/lib/continuity-*", "scripts/holdout-validate.mjs",
-    "scripts/fixtures/continuity/", "packages/contracts/src/upkeep-accounting.ts",
+    "scripts/fixtures/continuity/", "scripts/fixtures/continuity-*", "packages/contracts/src/upkeep-accounting.ts",
     "packages/conversation/src/continuity/ledger.ts", "packages/conversation/src/continuity/ranking.ts"])
     .split("\0").filter(Boolean).sort();
 }

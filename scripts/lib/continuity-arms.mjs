@@ -178,6 +178,18 @@ export const ARMS = Object.freeze([
   }),
 ]);
 
+// Kept outside ARMS so recall-only arm inventories and defaults remain byte-identical.
+export const NATIVE_LOOKUP_ARM = Object.freeze({
+  id: "native-lookup", label: "Full native context + retained lookup (no pack)",
+  description: "Native reader binding, retained capture and retrieval; no compaction, pack, ledger or upkeep.",
+  available: true, sessionConfig: CONTINUITY_ON, fork: "in-place", families: ["original", "long"],
+  replayBinding: "reader", midCheckpoint: null, restart: false,
+  probeConfig: Object.freeze(mergePatch(HISTORY_TOOL_ONLY, runtime({ compaction: { enabled: false, maxInputTokens: 0 } }))),
+  expect: Object.freeze({ probeBoundary: null, probeCompactions: 0, midCompactions: 0,
+    evidence: ["continuity_records_retained", "conversation_history_offered", "store_healthy", "no_pack_injected"] }),
+  pressure: Object.freeze([{ metric: "probeInputTokens", min: 150_000 }]),
+});
+
 export const ARM_IDS = Object.freeze(ARMS.map((arm) => arm.id));
 export const AVAILABLE_ARM_IDS = Object.freeze(ARMS.filter((arm) => arm.available).map((arm) => arm.id));
 /** The four arms of the original (#1334) plan, kept for comparability reruns. */
@@ -189,7 +201,7 @@ export const DEFAULT_ARMS = Object.freeze({
 });
 
 export function armById(id) {
-  const arm = ARMS.find((candidate) => candidate.id === id);
+  const arm = [...ARMS, NATIVE_LOOKUP_ARM].find((candidate) => candidate.id === id);
   if (arm === undefined) throw new Error("unknown_arm");
   return arm;
 }
@@ -209,7 +221,8 @@ export function assertRunnableArms(ids, families) {
  * repeat-specific. Arms never share a checkpoint: probes forked from one share a
  * provider session identity and are therefore never run concurrently.
  */
-export function checkpointKey(arm, repeat) {
+export function checkpointKey(arm, repeat, probeMode) {
+  if (probeMode === "lookup-allowed-v1") return `lookup-v1-${checkpointKey(arm, repeat)}`;
   return arm.ledgerUpkeep ? `ledger-${arm.id}-r${repeat}` : arm.midCheckpoint === null ? `scripted-${arm.id}` : `mid-${arm.id}-r${repeat}`;
 }
 
@@ -266,6 +279,7 @@ export function verifyStore(arm, { checkpointContinuity, observed, expectedLedge
   if (!observed.toolsOffered?.includes(CONVERSATION_HISTORY_TOOL)) reasons.push("conversation_history_not_offered");
   if ((observed.historyWarnings ?? 0) > 0) reasons.push(`tool_history_warnings:${observed.historyWarnings}`);
   if ((observed.conversationHistory?.unavailable ?? 0) > 0) reasons.push(`conversation_history_unavailable:${observed.conversationHistory.unavailable}`);
+  if (arm.expect.evidence.includes("no_pack_injected") && (observed.continuityPacks?.length || observed.offlineProviderPackCounts?.some(count => count > 0))) reasons.push("unexpected_pack_injected");
   if (arm.expect.evidence.includes("continuity_pack_injected")) {
     const packs = observed.continuityPacks ?? [];
     const pack = packs[0];

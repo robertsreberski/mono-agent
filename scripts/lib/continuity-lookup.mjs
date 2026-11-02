@@ -1,0 +1,297 @@
+// Benchmark-only lookup protocol. No provider calls; production owns retention and tools.
+import { createHash, randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { createServer } from "node:http";
+import { join } from "node:path";
+
+export const LOOKUP_MODE = "lookup-allowed-v1";
+export const HISTORY_SERVER = "mono-agent-conversation-history";
+export const LOOKUP_DEFAULT_ARMS = Object.freeze(["native-lookup", "continuity-pack-cold"]);
+export const LOOKUP_TIMING = Object.freeze({ deadlineMs: 600000, cleanupAllowanceMs: 60000, turnTimeoutMs: 690000, childWatchdogMs: 720000 });
+export const sha256 = value => createHash("sha256").update(value).digest("hex");
+const soulFile = new URL("../fixtures/continuity-soul-v1.md", import.meta.url);
+const soulBytes = readFileSync(soulFile);
+export const SOUL_BINDING = Object.freeze({ file: "continuity-soul-v1.md", rawSha256: sha256(soulBytes), coreSha256: sha256(soulBytes.toString("utf8").replace(/\r\n?/gu, "\n").trim()) });
+export const LOOKUP_BUDGET = Object.freeze(JSON.parse(readFileSync(new URL("../fixtures/continuity-lookup-budget-v1.json", import.meta.url), "utf8")));
+
+export function assertLookupContract({ suite, sha256: corpusSha256 }) {
+  if (LOOKUP_BUDGET.status !== "frozen" || LOOKUP_BUDGET.corpus[suite] !== corpusSha256) throw Object.assign(new Error("lookup_requires_frozen_corpus_and_budget"), { code: "lookup_requires_frozen_corpus_and_budget" });
+  if (!Number.isSafeInteger(LOOKUP_BUDGET.callBudget) || LOOKUP_BUDGET.callBudget < 1 || LOOKUP_BUDGET.callBudget > 96 || LOOKUP_BUDGET.callBudget + 2 > 100
+    || !Number.isSafeInteger(LOOKUP_BUDGET.byteBudget) || LOOKUP_BUDGET.byteBudget < 1 || LOOKUP_BUDGET.byteBudget > 8 * 1024 * 1024) throw Object.assign(new Error("lookup_invalid_frozen_budget"), { code: "lookup_invalid_frozen_budget" });
+  assertSoul(soulBytes, LOOKUP_BUDGET.soul);
+}
+
+export function assertSoul(bytes, binding) {
+  if (!binding || typeof binding.rawSha256 !== "string" || typeof binding.coreSha256 !== "string") {
+    throw Object.assign(new Error("lookup_soul_binding_missing"), { code: "lookup_soul_binding_missing" });
+  }
+  if (sha256(bytes) !== binding.rawSha256 || sha256(bytes.toString("utf8").replace(/\r\n?/gu, "\n").trim()) !== binding.coreSha256) throw Object.assign(new Error("lookup_soul_digest_mismatch"), { code: "lookup_soul_digest_mismatch" });
+}
+export async function installSoul(work, binding) {
+  const { readFile, writeFile } = await import("node:fs/promises");
+  const bytes = await readFile(soulFile); assertSoul(bytes, binding);
+  await writeFile(join(work, "BENCHMARK-SOUL.md"), bytes, { mode: 0o600 });
+}
+export function lookupPrompt(probe) {
+  return ["Quick check about this conversation so far, including tool results. You may use ConversationHistory to retrieve retained evidence before answering:",
+    probe.question, probe.format, probe.abstainOption ? "If the value is not available, reply exactly UNKNOWN." : null].filter(Boolean).join(" ");
+}
+
+// Parse only model-visible blocks, never structuredContent. Multi-block prefixes are transport framing.
+export function historyBody(result) {
+  const text = (result?.content ?? []).slice(1).map(part => String(part.text ?? "").replace(/^\[continued section \d+ of \d+\]\n/u, "")).join("");
+  const offset = text.indexOf("\n{");
+  if (offset < 0) return null;
+  try { return JSON.parse(text.slice(offset + 1)); } catch { return null; }
+}
+export function witnessedRecovery(lookup, correct) {
+  return correct === true && lookup.initiallyPresent === false && lookup.source?.availability === "retained" && lookup.sourceReturned === true;
+}
+export const contentBytes = result => Buffer.byteLength(JSON.stringify(result.content), "utf8");
+const compact = text => String(text).normalize("NFKC").toUpperCase().replace(/[^A-Z0-9]/gu, "");
+
+/** Evaluator-only annotations: unique literal tool identifiers; other provenance remains unknown.
+ * The sizing query is the source line, not an unfiltered scan. Never give these annotations to a reader.
+ */
+export function sourceAnnotation(trace, probe) {
+  if (probe.category === "redaction") return { availability: "protected" };
+  if (probe.score?.kind !== "identifier") return { availability: "unknown" };
+  const value = probe.score.accept[0];
+  const calls = trace.turns.filter(turn => !probe.sourceTurn || turn.id === probe.sourceTurn)
+    .flatMap(turn => turn.steps.filter(step => step.call).map(step => step.call));
+  const found = calls.filter(call => compact(call.result).includes(compact(value)));
+  if (found.length !== 1) return { availability: "unknown" };
+  const line = found[0].result.split("\n").find(text => compact(text).includes(compact(value)));
+  if (!line) return { availability: "unknown" };
+  // Source-derived oracle navigation is only the registered offline sizing path, not a quality reader.
+  return { availability: "annotated", value, query: line.trim().slice(0, 120), sourceSha256: sha256(found[0].result) };
+}
+
+/** Resolve annotations against this arm's sanitized store, never another arm's raw transcript. */
+export function resolveSource(modules, work, conversationId, annotation) {
+  if (annotation.availability !== "annotated") return { availability: annotation.availability };
+  const reader = new modules.conversation.ToolHistoryReader(join(work, "history"));
+  const scope = { logicalConversationId: conversationId, currentConversationId: conversationId, currentRunId: "lookup-evaluator" };
+  let before; const matches = [];
+  do {
+    const page = reader.searchContinuity({ ...scope, limit: 10, ...(before === undefined ? {} : { before }) });
+    if (!page.available) return { availability: "unavailable" };
+    for (const record of page.items.filter(row => row.kind === "tool")) {
+      let text = "", offset = 0, next;
+      do {
+        const result = reader.getContinuity({ ...scope, recordId: record.recordId, chunkOffset: offset, chunkBytes: 8192 });
+        text += result.chunk ?? ""; next = result.nextOffset; offset = next;
+      } while (next !== undefined);
+      if (compact(text).includes(compact(annotation.value))) matches.push(record);
+    }
+    before = page.next;
+  } while (before !== undefined);
+  if (matches.length !== 1) return { availability: matches.length ? "unknown" : "unavailable" };
+  const record = matches[0];
+  if (record.provenance !== "tool") return { availability: "unknown", recordId: record.recordId, sha256: record.sha256 };
+  if (record.redacted || record.truncated) return { availability: "protected", recordId: record.recordId, sha256: record.sha256 };
+  return { availability: "retained", recordId: record.recordId, sha256: record.sha256, retainedBytes: record.retainedBytes };
+}
+
+/** A content-free witness accumulator. Incremental hashing never retains retrieved text. */
+export function lookupWitness(source = { availability: "unknown" }, annotation = {}) {
+  let initial = null, initialContextBytes = null;
+  const traversals = new Map(), returned = new Map();
+  return {
+    initial(context) {
+      if (initial !== null) return;
+      initialContextBytes = Buffer.byteLength(JSON.stringify(context), "utf8");
+      initial = annotation.value ? compact(JSON.stringify(context)).includes(compact(annotation.value)) : "unknown";
+    },
+    delivered(result) {
+      const body = historyBody(result);
+      if (body?.action !== "get" || body.status !== "available" || !body.record || typeof body.chunk !== "string") return;
+      const { recordId, sha256: digest } = body.record;
+      if (body.chunkOffset === 0) traversals.set(recordId, { hash: createHash("sha256"), offset: 0, chunks: 0, digest });
+      const row = traversals.get(recordId);
+      if (!row || row.offset !== body.chunkOffset || row.digest !== digest) return;
+      row.hash.update(body.chunk); row.offset += Buffer.byteLength(body.chunk); row.chunks += 1;
+      if (!body.nextCursor) {
+        const verified = row.hash.digest("hex") === digest && row.offset === body.record.retainedBytes;
+        returned.set(recordId, { recordId, sha256: digest, bytes: row.offset, chunks: row.chunks, verified });
+        traversals.delete(recordId);
+      }
+    },
+    snapshot() {
+      const records = [...returned.values()];
+      return { source: { ...source }, initialContextBytes, initiallyPresent: initial ?? "unknown", records,
+        sourceReturned: source.availability === "retained" && records.some(row => row.recordId === source.recordId && row.sha256 === source.sha256 && row.verified) };
+    },
+  };
+}
+
+/** Frozen reference-path feasibility, conservative 1 token/UTF-8 byte plus per-round overhead.
+ * Repeated input (including native history) counts on EVERY round, not just the first.
+ */
+export function referenceFeasibility(path, { callBudget, byteBudget, contextWindowTokens, contextMarginTokens }, { initialTokens, admissionCap }) {
+  const reasons = [];
+  const rounds = path.calls + 1;
+  if (path.calls > callBudget) reasons.push("calls");
+  if (path.bytes > byteBudget) reasons.push("bytes");
+  if (initialTokens + path.bytes + rounds * 300 + contextMarginTokens > contextWindowTokens) reasons.push("reader_context");
+  const observedInput = rounds * initialTokens + path.cumulativeBytes + rounds * rounds * 300;
+  if (observedInput > admissionCap) reasons.push("observed_input_admission");
+  if (path.discovered === false) reasons.push("reference_source_not_discovered");
+  return { classification: reasons.length ? "budget-infeasible" : "feasible", reasons, estimatedRepeatedInputTokens: observedInput };
+}
+
+/** Atomic pre-dispatch call admission / pre-delivery byte admission. No response is clipped. */
+export function lookupMeter({ callBudget, byteBudget, deadlineMs = LOOKUP_TIMING.deadlineMs, now = performance.now.bind(performance), onExhaustion = () => {} }) {
+  const started = now();
+  const state = { calls: 0, bytes: 0, responses: 0, largestResponse: 0, responseBytes: [], responseSha256: [], searchPages: 0, getChunks: 0, cumulativeBytes: 0, exhausted: null };
+  const fail = cause => {
+    state.exhausted ??= cause; onExhaustion(state.exhausted);
+    throw Object.assign(new Error(`lookup_budget_${state.exhausted}`), { code: `lookup_budget_${state.exhausted}` });
+  };
+  const deadline = () => { if (now() - started >= deadlineMs) fail("latency"); if (state.exhausted) fail(state.exhausted); };
+  return {
+    state,
+    dispatch() { deadline(); if (state.calls >= callBudget) fail("calls"); state.calls += 1; },
+    deliver(result) {
+      deadline(); const bytes = contentBytes(result);
+      state.largestResponse = Math.max(state.largestResponse, bytes);
+      if (state.bytes + bytes > byteBudget) fail("bytes");
+      state.bytes += bytes; state.responses += 1; state.responseBytes.push(bytes); state.responseSha256.push(sha256(JSON.stringify(result.content))); state.cumulativeBytes += state.bytes;
+      const body = historyBody(result); if (body?.action === "search") state.searchPages += 1; if (body?.action === "get") state.getChunks += 1;
+      return result;
+    },
+    expire() { if (!state.exhausted) { state.exhausted = "latency"; onExhaustion("latency"); } },
+  };
+}
+
+/** Probe-only allowlist: an alias or unexpected MCP endpoint could bypass the meter.
+ * Replay's fictional tools are separate and never pass through this probe guard.
+ */
+export function assertLookupServers(options) {
+  if (Object.keys(options.mcpServers ?? {}).some(key => key !== HISTORY_SERVER)) {
+    throw Object.assign(new Error("lookup_unmetered_mcp_server"), { code: "lookup_unmetered_mcp_server" });
+  }
+}
+
+/** A URL-only forwarding seam: preserve server identity, listing/schema and production handlers. */
+export async function lookupForwarder({ meter, witness }) {
+  const [{ Server }, { StreamableHTTPServerTransport }, { Client }, { StreamableHTTPClientTransport }, { CallToolRequestSchema, ListToolsRequestSchema }] = await Promise.all([
+    import("@modelcontextprotocol/sdk/server/index.js"), import("@modelcontextprotocol/sdk/server/streamableHttp.js"),
+    import("@modelcontextprotocol/sdk/client/index.js"), import("@modelcontextprotocol/sdk/client/streamableHttp.js"), import("@modelcontextprotocol/sdk/types.js"),
+  ]);
+  const routes = new Map(), clients = new Set(), servers = new Set();
+  let host;
+  const http = createServer(async (request, response) => {
+    let server, transport;
+    try {
+      if (request.headers.host !== host) { response.writeHead(403).end(); return; }
+      const route = routes.get(request.url);
+      if (!route) { response.writeHead(404).end(); return; }
+      const client = await route.client;
+      server = new Server({ name: HISTORY_SERVER, version: "1.0.0" }, { capabilities: { tools: {} } }); servers.add(server);
+      server.setRequestHandler(ListToolsRequestSchema, () => client.listTools());
+      server.setRequestHandler(CallToolRequestSchema, async call => {
+        meter.dispatch();
+        const result = await client.callTool(call.params);
+        meter.deliver(result); witness?.delivered(result);
+        return result;
+      });
+      transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, allowedHosts: [host], enableDnsRebindingProtection: true });
+      response.on("close", () => { void transport.close(); void server.close(); servers.delete(server); });
+      let body = ""; for await (const chunk of request) body += chunk;
+      await server.connect(transport);
+      await transport.handleRequest(request, response, body ? JSON.parse(body) : undefined);
+    } catch { if (!response.headersSent) response.writeHead(500).end(); }
+  });
+  await new Promise((resolve, reject) => { http.once("error", reject); http.listen(0, "127.0.0.1", resolve); });
+  host = `127.0.0.1:${http.address().port}`;
+  return {
+    async rewrite(options) {
+      const upstream = options.mcpServers?.[HISTORY_SERVER];
+      if (!upstream) return options;
+      const url = new URL(upstream.url);
+      if (url.protocol !== "http:" || url.hostname !== "127.0.0.1") throw new Error("lookup_requires_real_loopback_history");
+      let route = [...routes.values()].find(row => row.upstream === upstream.url);
+      if (!route) {
+        const path = `/mcp/${randomUUID()}`;
+        const client = new Client({ name: "continuity-lookup-forwarder", version: "1.0.0" }); clients.add(client);
+        try {
+          await client.connect(new StreamableHTTPClientTransport(url, upstream.headers ? { requestInit: { headers: upstream.headers } } : {}));
+        } catch (error) {
+          clients.delete(client);
+          await client.close().catch(() => {});
+          throw error;
+        }
+        // Publish only connected routes; a failed handshake must not poison later retries.
+        route = { upstream: upstream.url, url: `http://127.0.0.1:${http.address().port}${path}`, client }; routes.set(path, route);
+      }
+      return { ...options, mcpServers: { ...options.mcpServers, [HISTORY_SERVER]: { ...upstream, url: route.url } } };
+    },
+    async close() {
+      await Promise.all([...clients].map(client => client.close()));
+      await Promise.all([...servers].map(server => server.close()));
+      await new Promise(resolve => { http.closeAllConnections(); http.close(resolve); });
+    },
+  };
+}
+
+/** Offline reference reader: packed-id get, otherwise ONE query-first search, then full get. */
+export function referenceReader({ source, query, witness, onFinish = () => {} }) {
+  let next, started = false, discovered = false;
+  return {
+    next(context, body) {
+      witness?.initial(context);
+      if (!started) {
+        started = true;
+        const pack = (context.messages ?? []).map(message => JSON.stringify(message.content)).filter(text => text.includes("### Conversation continuity pack")).join("\n");
+        next = pack.includes(source.recordId) ? { action: "get", recordId: source.recordId, chunkBytes: 8192 } : { action: "search", query, limit: 10 };
+      } else if (body?.action === "search") {
+        discovered = body.items?.some(item => item.recordId === source.recordId) === true;
+        next = discovered ? { action: "get", recordId: source.recordId, chunkBytes: 8192 } : null;
+      } else if (body?.action === "get") {
+        discovered = body.record?.recordId === source.recordId;
+        next = body.nextCursor ? { action: "get", cursor: body.nextCursor } : null;
+      } else next = null;
+      if (!next) onFinish({ discovered });
+      return next;
+    },
+  };
+}
+
+/** Multi-round mechanics reader, without evaluator annotations or expected answers.
+ * One packed-id traversal, then query, pagination and a second full cursor traversal.
+ */
+export function scriptedLookupReader({ minRounds = 8, callBudget = LOOKUP_BUDGET.callBudget } = {}) {
+  let round = 0, phase = "pack", page = null, recordId = null;
+  return {
+    next(context, body) {
+      // Stop voluntarily with room for the final answer; do not manufacture meter exhaustion.
+      if (round >= callBudget) return null;
+      round += 1;
+      if (phase === "pack") {
+        phase = "pack-get";
+        const text = (context.messages ?? []).map(message => JSON.stringify(message.content)).filter(text => text.includes("### Conversation continuity pack")).join("\n");
+        const id = /chr1_[A-Za-z0-9_-]{43}/u.exec(text)?.[0];
+        if (id) return { action: "get", recordId: id, chunkBytes: 8192 };
+      }
+      if (phase === "pack-get") {
+        if (body?.action === "get" && body.nextCursor) return { action: "get", cursor: body.nextCursor };
+        phase = "search";
+        return { action: "search", query: "order", limit: 1 };
+      }
+      if (phase === "search") {
+        recordId = body?.items?.[0]?.recordId; page = body?.navigation?.nextActions?.find(action => action.kind === "next_search_page")?.arguments;
+        phase = "page";
+        if (page) return page;
+      }
+      if (phase === "page") {
+        phase = "get";
+        recordId = body?.items?.[0]?.recordId ?? recordId;
+        if (recordId) return { action: "get", recordId, chunkBytes: 8192 };
+      }
+      if (phase === "get" && body?.action === "get" && body.nextCursor) return { action: "get", cursor: body.nextCursor };
+      if (round <= minRounds) return { action: "search", query: "order", limit: 1 };
+      return null;
+    },
+  };
+}
