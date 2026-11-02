@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Add repeatable comparisons of retained-history lookup across code checkouts
+  and fixed instruction variants, with registered settings and paired reports.
+  Results demonstrate offline mechanics only, not guidance benefits or costs;
+  reject incompatible checkouts and paid execution.
+
 - Fix evidence routing in the built-in default core for all default-core
   conversations: use `ConversationHistory` when available for exact retained
   conversation and tool-result values, including identifiers; keep `RunHistory`

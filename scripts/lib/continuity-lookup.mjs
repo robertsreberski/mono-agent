@@ -14,6 +14,34 @@ const soulBytes = readFileSync(soulFile);
 export const SOUL_BINDING = Object.freeze({ file: "continuity-soul-v1.md", rawSha256: sha256(soulBytes), coreSha256: sha256(soulBytes.toString("utf8").replace(/\r\n?/gu, "\n").trim()) });
 export const LOOKUP_BUDGET = Object.freeze(JSON.parse(readFileSync(new URL("../fixtures/continuity-lookup-budget-v1.json", import.meta.url), "utf8")));
 
+// Opt-in cross-checkout contract; ordinary A1 plans keep their original shape.
+export const LOOKUP_ROLE_PROTOCOL = "continuity-lookup-role-v1";
+const soul1Bytes = readFileSync(new URL("../fixtures/continuity-soul-v2.md", import.meta.url));
+export const LOOKUP_SOULS = Object.freeze({ S0: SOUL_BINDING, S1: Object.freeze({ file: "continuity-soul-v2.md",
+  rawSha256: "e625bc0ddb256f336ec66bf94335d260396fa2c5139e37d44f8e0370fef808a9",
+  coreSha256: "e625bc0ddb256f336ec66bf94335d260396fa2c5139e37d44f8e0370fef808a9" }) });
+assertSoul(soul1Bytes, LOOKUP_SOULS.S1);
+export const LOOKUP_ROLES = Object.freeze([
+  { id: "native", arm: "native-lookup", code: "R0", soul: "S0" },
+  { id: "pack", arm: "continuity-pack-cold", code: "R0", soul: "S0" },
+  { id: "pack-only", arm: "continuity-pack-cold", code: "Rpack", soul: "S0" },
+  { id: "soul-only", arm: "continuity-pack-cold", code: "R0", soul: "S1" },
+  { id: "shipping", arm: "continuity-pack-cold", code: "Rpack", soul: "S1" },
+  { id: "native-soul", arm: "native-lookup", code: "R0", soul: "S1" },
+].map(Object.freeze));
+export function assertLookupRole(role) {
+  const def = LOOKUP_ROLES.find(row => row.id === role?.id);
+  const soul = def && LOOKUP_SOULS[def.soul];
+  if (!def || role.protocol !== LOOKUP_ROLE_PROTOCOL || role.arm !== def.arm || role.code !== def.code
+    || !/^[a-f0-9]{40}$/u.test(role.revision ?? "")
+    || ![role.buildHash, role.commonSha256, role.registrationSha256].every(hash => /^[a-f0-9]{64}$/u.test(hash ?? ""))
+    || !role.scope || !["original", "hard", "hard-distractors"].includes(role.scope.suite)
+    || !Array.isArray(role.scope.traces) || !role.scope.traces.length || new Set(role.scope.traces).size !== role.scope.traces.length
+    || role.soul?.file !== soul.file || role.soul?.rawSha256 !== soul.rawSha256 || role.soul?.coreSha256 !== soul.coreSha256) {
+    throw Object.assign(new Error("lookup_role_binding_mismatch"), { code: "lookup_role_binding_mismatch" });
+  }
+}
+
 export function assertLookupContract({ suite, sha256: corpusSha256 }) {
   if (LOOKUP_BUDGET.status !== "frozen" || LOOKUP_BUDGET.corpus[suite] !== corpusSha256) throw Object.assign(new Error("lookup_requires_frozen_corpus_and_budget"), { code: "lookup_requires_frozen_corpus_and_budget" });
   if (!Number.isSafeInteger(LOOKUP_BUDGET.callBudget) || LOOKUP_BUDGET.callBudget < 1 || LOOKUP_BUDGET.callBudget > 96 || LOOKUP_BUDGET.callBudget + 2 > 100
@@ -29,7 +57,11 @@ export function assertSoul(bytes, binding) {
 }
 export async function installSoul(work, binding) {
   const { readFile, writeFile } = await import("node:fs/promises");
-  const bytes = await readFile(soulFile); assertSoul(bytes, binding);
+  // Never let a caller select an arbitrary path; only the two frozen fixtures.
+  if (!binding || typeof binding.rawSha256 !== "string" || typeof binding.coreSha256 !== "string") assertSoul(Buffer.alloc(0), binding);
+  const selected = Object.values(LOOKUP_SOULS).find(soul => soul.file === binding.file && soul.rawSha256 === binding.rawSha256 && soul.coreSha256 === binding.coreSha256);
+  if (!selected) throw Object.assign(new Error("lookup_soul_digest_mismatch"), { code: "lookup_soul_digest_mismatch" });
+  const bytes = await readFile(new URL(`../fixtures/${selected.file}`, import.meta.url)); assertSoul(bytes, binding);
   await writeFile(join(work, "BENCHMARK-SOUL.md"), bytes, { mode: 0o600 });
 }
 export function lookupPrompt(probe) {

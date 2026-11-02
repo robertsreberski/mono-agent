@@ -169,6 +169,164 @@ answer. Unknown initial presence/provenance or protected bytes cannot establish
 recovery. This is descriptive evidence, not a causal treatment-benefit estimate.
 Cross-checkout role attribution and paid qualification are separate work.
 
+## Cross-checkout lookup roles (offline only)
+
+`continuity-lookup-compare.mjs` registers six explicit roles. `pack-cold` below
+means the existing `continuity-pack-cold` arm, with no ledger upkeep:
+
+| Role | Arm | Code | Frozen soul |
+|---|---|---|---|
+| `native` | `native-lookup` | R0 | S0 |
+| `pack` | `pack-cold` | R0 | S0 |
+| `pack-only` | `pack-cold` | Rpack | S0 |
+| `soul-only` | `pack-cold` | R0 | S1 |
+| `shipping` | `pack-cold` | Rpack | S1 |
+| `native-soul` | `native-lookup` | R0 | S1 |
+
+S0 is `scripts/fixtures/continuity-soul-v1.md`. S1 is the separately frozen
+`scripts/fixtures/continuity-soul-v2.md`, exactly the default core after the
+ConversationHistory routing change, without a final newline. Its raw and
+normalized-core SHA-256 are both
+`e625bc0ddb256f336ec66bf94335d260396fa2c5139e37d44f8e0370fef808a9`.
+Missing or incorrect soul bindings fail closed; no role follows a moving default.
+S1 exceeds S0 by 167 bytes, about 56 conservative tokens (ceil(167/3)). That is
+small
+relative to the 16k-token context margin, but S1-role feasibility has **not** been
+remeasured: the frozen budget and A1 reference classifications are unchanged.
+
+Both supplied checkouts must implement **`continuity-lookup-role-v1`**. An old
+A1-only checkout is incompatible, not adapted by a hidden shim. Registration
+binds clean full SHAs (not ancestry or branch names), independently checked
+entrypoint/reader/scorer, lockfile and frozen budget digests, identical corpus
+and model settings, and fresh app-closure output hashes. It builds each checkout
+using the fresh-clean-head policy, verifies the hashes again before/after each
+role, and launches that checkout's A1 entrypoint in a separate Node child.
+`--lookup-role` is an explicit offline arm/soul/receipt contract; ordinary A1 and
+recall-only plans retain their original digests and behavior.
+
+Rpack must differ from R0 in **at least one** file and **only** the 14 frozen
+B2 guidance paths (`GUIDANCE_FILES` in `scripts/lib/continuity-lookup-roles.mjs`).
+The diff must include `pack.ts` or `render-fit.ts`, and the exported
+`PACK_RETRIEVAL_GUIDANCE` witness must be present in Rpack's `render-fit.ts`
+and absent in R0's; reversed roles fail `lookup_rpack_direction_invalid`.
+Docs/test-only deltas cannot establish a treatment. Clean checks explicitly
+include all untracked files and submodules; assume-unchanged/skip-worktree
+index flags are rejected. Complete Git tree comparisons include modes and deletions, also across independent
+local repositories; no shared ancestor is assumed. The launcher never fetches,
+checks out, cherry-picks, or silently substitutes latest-main. Isolated role/suite
+output and state directories prevent shared checkpoints from crossing treatments.
+
+### Maintainer checkout construction and launch
+
+Use Node 24.18.0 and locally available dependencies. The maintainer constructs
+these checkouts **after A2 is merged**: Rpack is that clean main revision, R0 is
+that same revision with only the original B2 guidance patch reversed. The two
+historic local commits below identify the guidance patch, not role revisions;
+no historical checkout lacking A2 is run. Those objects must already exist
+locally. Stop on conflicts; resolve only the frozen guidance paths, never widen
+the accepted diff or silently change a registered revision.
+
+```bash
+BASE=$(git rev-parse origin/main)
+R0=/tmp/lookup-r0
+RPACK=/tmp/lookup-rpack
+PATCH=/tmp/lookup-b2-guidance.patch
+REG=/tmp/lookup-registration
+RUN=/tmp/lookup-run
+# All destinations must be unused. This construction is performed by the maintainer.
+git cat-file -e '629c1db6f^{commit}'
+git cat-file -e 'd76457ba8^{commit}'
+git diff --no-ext-diff --binary 629c1db6f d76457ba8 > "$PATCH"
+git worktree add --detach "$RPACK" "$BASE"
+git worktree add --detach "$R0" "$BASE"
+git -C "$R0" apply --reverse --3way "$PATCH"
+git -C "$R0" commit -m "test(benchmark): isolate pre-guidance lookup code"
+# Prepare cached local dependencies in both checkouts; stop if unavailable.
+pnpm --dir "$R0" install --offline --frozen-lockfile
+pnpm --dir "$RPACK" install --offline --frozen-lockfile
+R0_SHA=$(git -C "$R0" rev-parse HEAD)
+RPACK_SHA=$(git -C "$RPACK" rev-parse HEAD)
+node "$RPACK/scripts/continuity-lookup-compare.mjs" register \
+  --r0 "$R0" --r0-revision "$R0_SHA" \
+  --rpack "$RPACK" --rpack-revision "$RPACK_SHA" --output "$REG"
+FILE_SHA=$(node -p 'require("node:crypto").createHash("sha256").update(require("node:fs").readFileSync(process.argv[1])).digest("hex")' "$REG/registration.json")
+node "$RPACK/scripts/continuity-lookup-compare.mjs" run \
+  --registration "$REG/registration.json" --sha256 "$FILE_SHA" --output "$RUN"
+node "$RPACK/scripts/continuity-lookup-compare.mjs" aggregate \
+  --registration "$REG/registration.json" --sha256 "$FILE_SHA" --output "$RUN"
+```
+
+Registration defaults to the three frozen suites, one repeat, all probes, and
+Sol/low with no judge. For a small mechanics smoke, registration may specify
+`--suites original --traces brightline-return --probe-limit 1`; the restricted
+workload is itself registered, not hidden as missing coverage. `register` always
+builds the app closure; dependencies must already be available. `run` requires a
+new absolute output directory, not a resume directory. Registration's printed
+`sha256` is the raw file hash used by `--sha256`; `registrationDigest` is its
+canonical content digest, bound into role receipts.
+
+The separate `continuity-lookup-registration-v1` schema never enters legacy v2
+ledger qualification gates. Aggregation verifies role/plan/build receipts and
+unit payload hashes and identities before joining planned role × suite × trace × probe × repeat
+slots. A nonzero child exit with a verified receipt is recorded in `launches.json`
+and does not prevent later roles from running. Missing results/receipts (including
+a failure of the child's post-aggregate verification) leave that role's slots
+missing with an explicit reason, without discarding other roles. Present tampered
+receipts and cross-role replay still fail closed. Missing roles remain missing;
+duplicate observations remain duplicate
+slots with occurrence counts, never last-write-wins. Ambiguous duplicates are
+excluded from exact accuracy and slot cost statistics rather than double-scored.
+Each role reports both completed eligible `exact` and `exactWithFailures`, plus
+failed-feasible counts. Missing/not-run slots are coverage-only. Infeasible
+native paths remain the registered A1 reference limitations, not reader failures
+or a newly measured feasibility result for different models.
+
+Contrasts are `pack-only − pack`, `soul-only − pack`, `shipping − pack`,
+`native-soul − native`, and `native − pack` as context. Reports retain planned,
+paired-completed and failure-inclusive counts, discordant correct counts and
+paired descriptive deltas. **These are not significance, power, qualification,
+model-quality or treatment-benefit claims.** The automated two-checkout
+faux/real-loopback smoke rebuilds both app closures and runs all six roles with a
+runtime guidance delta; it adds approximately **3–4 minutes** to CI.
+
+Registration and run output directories must be outside **both** checkout roots,
+including through symlink aliases. Registration reserves its new directory before
+building either checkout; an existing directory fails immediately. A failed
+registration may leave that reserved directory empty; use a new path to retry.
+
+### Offline workload and cost sensitivity
+
+```bash
+node scripts/continuity-lookup-estimate.mjs \
+  --registration "$REG/registration.json" --sha256 "$FILE_SHA"
+# No checkout registration or build is needed for workload-only arithmetic:
+node scripts/continuity-lookup-estimate.mjs --suites original --probe-limit 1
+```
+
+The estimator performs no provider, network or credential calls and rejects
+`--real` before reading artifacts. It reports Sol first, Luna screening, and a
+separate fixed Opus sensitivity profile (`anthropic:claude-opus-5-5`, overridable
+with `--opus-model REF`), never pooled model results. Installed local catalog
+prices may be unknown; missing input/output/cache prices stay unknown, not zero.
+Pricing applies the highest strictly exceeded input tier **per call**, including
+cached input in threshold selection, rather than pricing the whole experiment
+at the base rate or selecting a tier from its combined token total. Reports retain
+call-input histograms, tiered-call counts and unknown-price counts.
+
+Conservative sizing uses the maximum frozen observed context bytes/3 and initial
+bound versus native's 150k floor/source shape or cold + 12k, plus the S1 and
+Rpack guidance allowances. Each returned byte is charged as one input token in
+every subsequent round, with the frozen assistant-history replay bound. These
+are not new measurements. Output size (300 tokens per round), source-shape
+estimates for unseen context, and cache fractions remain labeled heuristics, not
+model-tokenizer or invoice guarantees. The 0/2/8 lookup-call levels,
+0/half/full returned-byte levels,
+repeated input and 0/50/90% cache sensitivities are assumptions, not predictions.
+Output includes configured deadline/cleanup/turn/watchdog limits, not measured
+latency, power, invoice guarantees, or spending authorization. Provider fees,
+reasoning variance, cache writes, model-specific context feasibility and checkpoint
+replay wall time are not inferred from a faux run.
+
 ## Suites
 
 There are two suites. `--suite` is bound into the plan digest.
