@@ -12,6 +12,10 @@
   packs, within existing budgets, and resolve history-tool projection routing
   per request, preserving `SessionHistory` when it alone is available.
 
+- Add opt-in offline continuity lookup mechanics with a frozen soul, measured
+  call/byte budgets and content-free retrieval witnesses; keep recall-only
+  prompts and confirmations unchanged and refuse paid lookup runs.
+
 - Add a compact rolling recording meter and visible, seekable voice-note
   waveforms to the web console, with transcript captions beneath sent audio and
   accessible playback controls. Keep Stop and playback controls aligned as a

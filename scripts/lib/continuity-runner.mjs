@@ -17,6 +17,7 @@ import { dirname, join, isAbsolute, relative, resolve, sep } from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { armById, hasPackEvidence, checkpointKey, mergePatch, pressureMetrics, verifyBoundary, verifyPressure, verifyStore } from "./continuity-arms.mjs";
+import { LOOKUP_MODE, assertLookupServers, witnessedRecovery, installSoul, assertSoul, lookupPrompt, lookupMeter, lookupForwarder, lookupWitness, scriptedLookupReader, referenceReader, historyBody, sourceAnnotation, resolveSource } from "./continuity-lookup.mjs";
 import { traceShape } from "./continuity-generator.mjs";
 import { probePrompt, scoreAnswer, judgePrompt, parseJudgeVerdict, emptyUsage, addUsage } from "./continuity-score.mjs";
 import { sourceOnly, traceFamily } from "./continuity-dataset.mjs";
@@ -109,7 +110,7 @@ export function scriptedModels(pi, refs) {
 function controlledRuntime(base, route) {
   return new Proxy(base, {
     get(target, key) {
-      if (key === "run") return async (prompt, options) => target.run(prompt, { ...options, ...route(options) });
+      if (key === "run") return async (prompt, options) => target.run(prompt, { ...options, ...await route(options) });
       const value = Reflect.get(target, key, target);
       return typeof value === "function" ? value.bind(target) : value;
     },
@@ -289,9 +290,10 @@ function conversationIdFor(traceId, key) {
   return `web:continuity-${traceId}-${createHash("sha256").update(key).digest("hex").slice(0, 10)}`;
 }
 
-async function prepareWorkspace(work) {
+async function prepareWorkspace(work, plan) {
   await mkdir(work, { recursive: true, mode: 0o700 });
   await writeFile(join(work, "IDENTITY.md"), `${IDENTITY}\n`, { mode: 0o600 });
+  if (plan?.probeMode === LOOKUP_MODE) await installSoul(work, plan.lookup.soul);
 }
 
 /** One scripted owner turn through the production harness. */
@@ -344,7 +346,7 @@ async function replayScriptedTurn({ harness, scripted, tools, turn, binding, con
 }
 
 /** One live turn (probe or mid-trace checkpoint) through a tool-free production harness. */
-function liveRoute(modules, mode, refs, watch = null) {
+function liveRoute(modules, mode, refs, watch = null, lookup = null) {
   if (mode !== "offline") return (options) => { watch?.noteOffered(options); return {}; };
   const scripted = scriptedModels(modules.pi, refs);
   // The offline contract reader calls ConversationHistory once when it is
@@ -354,30 +356,88 @@ function liveRoute(modules, mode, refs, watch = null) {
     const system = [context.systemPrompt, ...(context.messages ?? []).filter((message) => message.role === "system").map((message) => textOfContent(message.content))].join("\n");
     if (system.includes(SUMMARY_MARKER)) return modules.pi.fauxAssistantMessage(OFFLINE_SUMMARY);
     watch?.noteOfflineContext(context);
+    if (lookup) {
+      lookup.witness.initial(context);
+      const args = lookup.reader.next(context, lookup.lastBody);
+      return args ? modules.pi.fauxAssistantMessage([modules.pi.fauxToolCall("ConversationHistory", args, { id: `call_lookup_${++lookup.round}` })], { stopReason: "toolUse" })
+        : modules.pi.fauxAssistantMessage(OFFLINE_ANSWER);
+    }
     const last = context.messages?.at(-1);
     if (watch?.observed.toolsOffered.includes("ConversationHistory") && last?.role !== "toolResult") {
       return modules.pi.fauxAssistantMessage([modules.pi.fauxToolCall("ConversationHistory", { action: "search", query: "order", limit: 3 }, { id: "call_offline_history" })], { stopReason: "toolUse" });
     }
     return modules.pi.fauxAssistantMessage(OFFLINE_ANSWER);
   };
-  for (const ref of refs) scripted.respondWith(ref, dispatcher);
-  return (options) => { watch?.noteOffered(options); const { model } = scripted.route(options); return { piResolvedModel: model, piResolvedModels: scripted.models }; };
+  for (const ref of refs) scripted.respondWith(ref, dispatcher, lookup ? lookup.maxTurns + 4 : 64);
+  return async (options) => {
+    if (lookup) assertLookupServers(options);
+    watch?.noteOffered(options);
+    const forwarded = lookup ? await lookup.forwarder.rewrite(options) : null;
+    const { model } = scripted.route(options);
+    return { ...(forwarded ?? {}), piResolvedModel: model, piResolvedModels: scripted.models };
+  };
 }
 
-export async function runLiveTurn({ modules, work, authPath, plan, mode, configPatch, userMessage, clock, conversationId, owner }) {
-  const reader = modules.host.parseMonoRuntimeModelReference(plan.reader.model);
-  const watch = observer();
-  const route = liveRoute(modules, mode, [reader], watch);
-  const { harness, close } = await openHarness({ modules, work, authPath, model: plan.reader.model, effort: plan.reader.effort, tools: false, configPatch, route, clock,
-    onHistoryWarning: () => watch.noteHistoryWarning() });
+export function lookupConfig(work, plan, configPatch, probe = false) {
+  return plan.probeMode === LOOKUP_MODE ? mergePatch(configPatch, {
+    context: { soulPath: join(work, "BENCHMARK-SOUL.md") },
+    runtime: { ...(probe ? { maxTurns: plan.lookup.maxTurns } : {}), compaction: { enabled: false }, session: { continuity: { ledgerEnabled: false, upkeep: { enabled: false } } } },
+  }) : configPatch;
+}
+
+function snapshotLookup(lookup, reference) {
+  return { ...lookup.witness.snapshot(), ...lookup.meter.state, rounds: lookup.round,
+    ...(reference ? { reference: lookup.reference ?? { discovered: false } } : {}) };
+}
+
+export async function runLiveTurn({ modules, work, authPath, plan, mode, configPatch, userMessage, clock, conversationId, owner, lookupSource, lookupAnnotation, lookupReference = false }) {
+  const isLookup = plan.probeMode === LOOKUP_MODE;
+  const watch = observer(), controller = new AbortController();
+  let lookup = null, deadlineTimer = null, open = null;
   const started = performance.now();
   let response;
   try {
-    response = await harness.run({
-      conversationId, userMessage, abortSignal: AbortSignal.timeout(plan.limits.perLiveTurnTimeoutMs),
-      captureSpeakerKind: "human-turn", metadata: { source: "web" }, sender: { displayName: owner }, onEvent: watch.onEvent,
-    });
-  } finally { await close(); }
+    if (isLookup) {
+      const witness = lookupWitness(lookupSource, lookupAnnotation);
+      const meter = lookupMeter({ ...plan.lookup.budget, deadlineMs: plan.lookup.deadlineMs, onExhaustion: () => controller.abort() });
+      lookup = { witness, meter, round: 0, maxTurns: plan.lookup.maxTurns, lastBody: null };
+    }
+    try {
+      if (isLookup && mode !== "offline") throw new ContinuityError("lookup_real_not_authorized");
+      if (isLookup) assertSoul(await readFile(join(work, "BENCHMARK-SOUL.md")), plan.lookup.soul);
+      const reader = modules.host.parseMonoRuntimeModelReference(plan.reader.model);
+      if (lookup) {
+        lookup.reader = lookupReference ? referenceReader({ source: lookupSource, query: lookupAnnotation.query, witness: lookup.witness, onFinish: result => { lookup.reference = result; } })
+          : scriptedLookupReader({ callBudget: plan.lookup.budget.callBudget });
+        try {
+          lookup.forwarder = await lookupForwarder({ meter: lookup.meter, witness: { delivered(result) { lookup.witness.delivered(result); lookup.lastBody = historyBody(result); } } });
+        } catch { throw new ContinuityError("lookup_forwarder_setup"); }
+        deadlineTimer = setTimeout(() => lookup.meter.expire(), plan.lookup.deadlineMs); deadlineTimer.unref();
+      }
+      const route = liveRoute(modules, mode, [reader], watch, lookup);
+      open = await openHarness({ modules, work, authPath, model: plan.reader.model, effort: plan.reader.effort, tools: false,
+        configPatch: lookupConfig(work, plan, configPatch, true), route, clock, onHistoryWarning: () => watch.noteHistoryWarning() });
+      response = await open.harness.run({
+        conversationId, userMessage, abortSignal: AbortSignal.any([controller.signal, AbortSignal.timeout(plan.limits.perLiveTurnTimeoutMs)]),
+        captureSpeakerKind: "human-turn", metadata: { source: "web" }, sender: { displayName: owner }, onEvent: watch.onEvent,
+      });
+    } finally {
+      clearTimeout(deadlineTimer);
+      const cleanup = async () => { try { await open?.close(); } finally { await lookup?.forwarder?.close(); } };
+      if (!isLookup) await cleanup();
+      else {
+        let timer;
+        try { await Promise.race([cleanup(), new Promise((_, reject) => { timer = setTimeout(() => reject(new ContinuityError("lookup_cleanup_timeout")), plan.lookup.cleanupAllowanceMs); timer.unref(); })]); }
+        finally { clearTimeout(timer); }
+      }
+    }
+  } catch (error) {
+    if (!isLookup) throw error;
+    // Only stable codes leave the child; raw runtime/transport messages can carry content.
+    const failure = new ContinuityError(error instanceof ContinuityError ? error.code : /^lookup_[a-z_]+$/u.test(error?.code ?? "") ? error.code : "lookup_turn_failed");
+    failure.lookup = lookup ? snapshotLookup(lookup, lookupReference) : null;
+    throw failure;
+  }
   const usage = response.metadata?.runtime?.usage;
   return {
     text: typeof response.text === "string" ? response.text : null,
@@ -386,6 +446,7 @@ export async function runLiveTurn({ modules, work, authPath, plan, mode, configP
     usage: liveResponseUsage(response),
     compactionUsage: compactionUsageOf(usage),
     durationMs: Math.round(performance.now() - started),
+    ...(lookup ? { lookup: snapshotLookup(lookup, lookupReference) } : {}),
   };
 }
 
@@ -396,7 +457,7 @@ export async function runLiveTurn({ modules, work, authPath, plan, mode, configP
 export async function buildCheckpoint({ modules, trace, arm, repeat, dir, plan, mode, authPath, captureUpkeepOutput, upkeepPrice, onPhase = () => {} }) {
   const source = sourceOnly(trace);
   const work = join(dir, "work");
-  await prepareWorkspace(work);
+  await prepareWorkspace(work, plan);
   const reader = modules.host.parseMonoRuntimeModelReference(plan.reader.model);
   const alternate = modules.host.parseMonoRuntimeModelReference(plan.alternateBinding.model);
   const binding = arm.replayBinding === "alternate" ? alternate : reader;
@@ -409,7 +470,7 @@ export async function buildCheckpoint({ modules, trace, arm, repeat, dir, plan, 
   const tools = await startFixtureTools();
   await writeFile(join(work, "fixture-mcp.json"), JSON.stringify({ mcpServers: { [FIXTURE_SERVER_NAME]: { type: "http", url: tools.url } } }), { mode: 0o600 });
   const clock = { value: new Date(source.turns[0].at) };
-  const key = checkpointKey(arm, repeat);
+  const key = checkpointKey(arm, repeat, plan.probeMode);
   const conversationId = conversationIdFor(source.id, key);
   const record = { key, conversationId, traceId: source.id, arm: arm.midCheckpoint === null && !arm.ledgerUpkeep ? null : arm.id, repeat: arm.midCheckpoint === null && !arm.ledgerUpkeep ? null : repeat,
     binding: binding.reference, turns: 0, toolCalls: 0, steers: 0, mid: null, durationMs: 0 };
@@ -427,7 +488,7 @@ export async function buildCheckpoint({ modules, trace, arm, repeat, dir, plan, 
           record.mid = await manualCompaction({ modules, work, authPath, plan, mode, binding, configPatch: mergePatch(arm.sessionConfig ?? {}, arm.midCheckpoint.config), clock, conversationId, turnId: turn.id });
           if (!record.mid.boundary.verified) throw new ContinuityError("mid_checkpoint_boundary_unverified", record.mid.boundary.reasons.join(","));
         }
-        open ??= await openHarness({ modules, work, authPath, model: binding.reference, effort: undefined, tools: true, configPatch: arm.sessionConfig ?? {}, route, clock,
+        open ??= await openHarness({ modules, work, authPath, model: binding.reference, effort: undefined, tools: true, configPatch: lookupConfig(work, plan, arm.sessionConfig ?? {}), route, clock,
           onHistoryWarning: () => { replayHistoryWarnings += 1; } });
         onPhase({ phase: "replay-turn-start", traceId: trace.id, arm: arm.id, turnId: turn.id });
         const result = await replayScriptedTurn({ harness: open.harness, scripted, tools, turn, binding, conversationId, owner: source.owner.displayName, pi: modules.pi });
@@ -774,16 +835,34 @@ async function runBoundaryChild(input, { timeoutMs }) {
   child.stderr.on("data", (chunk) => { if (process.env.CONTINUITY_DEBUG === "1") process.stderr.write(chunk); });
   child.stdin.end(JSON.stringify(input));
   const code = await new Promise((resolve) => {
-    const timer = setTimeout(() => { child.kill("SIGKILL"); resolve("timeout"); }, timeoutMs + 30_000);
-    child.on("exit", (exit) => { clearTimeout(timer); resolve(exit); });
+    const timer = setTimeout(() => { child.kill("SIGKILL"); resolve("timeout"); }, input.plan?.probeMode === LOOKUP_MODE ? input.plan.lookup.childWatchdogMs : timeoutMs + 30_000);
+    child.on("close", (exit) => { clearTimeout(timer); resolve(exit); });
+    child.on("error", () => { clearTimeout(timer); resolve("spawn_failed"); });
   });
-  if (code !== 0) throw new ContinuityError(code === "timeout" ? "restart_child_timeout" : "restart_child_failed");
-  const parsed = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  const parsed = decodeBoundaryChildResult(code, Buffer.concat(chunks).toString("utf8"), input.plan?.probeMode);
   return { ...parsed, observed: { ...parsed.observed, restart: { processRestart: parsed.pid !== process.pid, pid: parsed.pid } } };
 }
 
+/** Parse code-only failure receipts even on nonzero exit; hard watchdogs have no receipt. */
+export function decodeBoundaryChildResult(code, raw, probeMode) {
+  if (code === "timeout") throw new ContinuityError("restart_child_timeout");
+  if (code !== 0) {
+    if (probeMode === LOOKUP_MODE) {
+      let receipt;
+      try { receipt = JSON.parse(raw); } catch { /* No trustworthy failure acknowledgement. */ }
+      if (/^(?:lookup_[a-z_]+|invalid_lookup_child_contract)$/u.test(receipt?.failure ?? "")) {
+        const failure = new ContinuityError(receipt.failure);
+        failure.lookup = receipt.lookup ?? null;
+        throw failure;
+      }
+    }
+    throw new ContinuityError("restart_child_failed");
+  }
+  return JSON.parse(raw);
+}
+
 /** Fork the checkpoint into a new workspace and ask one probe in a fresh continuation turn. */
-export async function runProbe({ modules, trace, arm, repeat, probe, checkpointWork, checkpointSnapshot = null, checkpointContinuity = null, checkpointUpkeep = null, checkpointConversationId, forkDir, plan, mode, authPath, keepWork = false, mid = null, root }) {
+export async function runProbe({ modules, trace, arm, repeat, probe, checkpointWork, checkpointSnapshot = null, checkpointContinuity = null, checkpointUpkeep = null, checkpointConversationId, forkDir, plan, mode, authPath, keepWork = false, mid = null, root, lookupReference = false }) {
   const inPlace = arm.fork === "in-place";
   if (inPlace && checkpointSnapshot === null) throw new ContinuityError("in_place_fork_requires_snapshot");
   // In-place: restore the pristine snapshot at the checkpoint's own absolute
@@ -801,11 +880,19 @@ export async function runProbe({ modules, trace, arm, repeat, probe, checkpointW
   const trial = { traceId: trace.id, arm: arm.id, repeat, probeId: probe.id, category: probe.category, status: "started",
     answer: null, score: null, judge: null, boundary: null, usage: null, compactionUsage: null, durationMs: null, failure: null };
   try {
-    const turn = { work, authPath, plan, mode, configPatch: mergePatch(arm.sessionConfig ?? {}, arm.probeConfig), userMessage: probePrompt(probe),
+    const lookupAnnotation = plan.probeMode === LOOKUP_MODE ? sourceAnnotation(trace, probe) : null;
+    const lookupSource = lookupAnnotation ? resolveSource(modules, work, checkpointConversationId, lookupAnnotation) : null;
+    const turn = { work, authPath, plan, mode, configPatch: mergePatch(arm.sessionConfig ?? {}, arm.probeConfig), userMessage: plan.probeMode === LOOKUP_MODE ? lookupPrompt(probe) : probePrompt(probe),
+      ...(lookupAnnotation ? { lookupSource, lookupAnnotation, lookupReference } : {}),
       conversationId: checkpointConversationId, owner: trace.owner.displayName };
     const live = arm.restart || inPlace
       ? await runBoundaryChild({ type: "probe", ...turn, root, clockIso: clock.value.toISOString() }, { timeoutMs: plan.limits.perLiveTurnTimeoutMs })
       : await runLiveTurn({ modules, ...turn, clock });
+    if (live.lookup) {
+      const path = plan.lookup.budget.paths?.find(row => row.traceId === trace.id && row.probeId === probe.id && row.arm === arm.id);
+      if (path && path.sourceSha256 !== lookupAnnotation.sourceSha256) throw new ContinuityError("lookup_source_binding_mismatch");
+      trial.lookup = { ...live.lookup, budgetFeasibility: path?.feasibility ?? { classification: "unknown", reasons: [] }, exactAccuracy: null, witnessedRecovery: false };
+    }
     trial.usage = live.usage; trial.compactionUsage = live.compactionUsage; trial.durationMs = live.durationMs;
     const boundary = verifyBoundary({ boundary: arm.expect.probeBoundary, compactions: arm.expect.probeCompactions, restart: arm.restart }, live.observed);
     if (arm.ledgerUpkeep && !verifyLedgerTreatment(checkpointUpkeep, live.observed)) { boundary.reasons.push("ledger_treatment_unverified"); boundary.verified = false; }
@@ -815,17 +902,25 @@ export async function runProbe({ modules, trace, arm, repeat, probe, checkpointW
     trial.pressure = { ...pressure, metrics };
     trial.store = verifyStore(arm, { checkpointContinuity, observed: live.observed, expectedLedgerEntries: checkpointUpkeep?.valid ? checkpointUpkeep.expectedEntries : undefined });
     if (live.failureKind !== null || live.text === null) {
-      trial.status = "failed"; trial.failure = live.failureKind ?? "empty_answer";
+      trial.status = "failed"; trial.failure = live.lookup?.exhausted ? `lookup_budget_${live.lookup.exhausted}` : live.failureKind ?? "empty_answer";
       return trial;
     }
     trial.answer = live.text;
     trial.score = scoreAnswer(probe, live.text);
+    if (trial.lookup) {
+      trial.lookup.exactAccuracy = probe.score.kind === "identifier" || probe.score.kind === "value" ? trial.score.pass : null;
+      trial.lookup.witnessedRecovery = witnessedRecovery(trial.lookup, trial.score.pass);
+    }
     // A degraded store is an invalid trial, never a scored miss.
     trial.status = !trial.store.healthy ? "store_degraded" : !trial.boundary.verified ? "boundary_unverified"
       : !trial.pressure.verified ? "pressure_unverified" : "completed";
     return trial;
   } catch (error) {
     trial.status = "failed"; trial.failure = codeOf(error);
+    if (plan.probeMode === LOOKUP_MODE && error.lookup) {
+      const path = plan.lookup.budget.paths?.find(row => row.traceId === trace.id && row.probeId === probe.id && row.arm === arm.id);
+      trial.lookup = { ...error.lookup, budgetFeasibility: path?.feasibility ?? { classification: "unknown", reasons: [] }, exactAccuracy: null, witnessedRecovery: false };
+    }
     return trial;
   } finally {
     if (!keepWork && !inPlace) await rm(forkDir, { recursive: true, force: true });

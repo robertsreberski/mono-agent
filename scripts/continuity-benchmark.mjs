@@ -15,9 +15,12 @@ import { HOLDOUT_ARMS, STATISTICAL_SPEC } from "./lib/continuity-holdout-statist
 import { HARD_SEEDS } from "./lib/continuity-generator.mjs";
 import { addUsage, emptyUsage, renderMarkdown, summarize } from "./lib/continuity-score.mjs";
 
+import { summarizeLookup, renderLookupMarkdown } from "./lib/continuity-lookup-score.mjs";
+import { LOOKUP_MODE, LOOKUP_DEFAULT_ARMS } from "./lib/continuity-lookup.mjs";
+
 const ROOT = fileURLToPath(new URL("../", import.meta.url)).replace(/\/$/u, "");
 const BOOLEAN = new Set(["dry-run", "real", "help", "no-judge", "keep-work", "aggregate-only", "require-request-cap", "capture-upkeep-output"]);
-const VALUED = new Set(["suite", "seeds", "reader", "extraction-model", "alternate", "judge", "reader-effort", "judge-effort", "repeats", "arms", "probe-limit", "confirm-plan", "pi-auth-path", "output", "concurrency", "corpus-manifest", "manifest-sha256", "registration", "registration-sha256", "statistical-spec", "shard", "audit"]);
+const VALUED = new Set(["probe-mode", "suite", "seeds", "reader", "extraction-model", "alternate", "judge", "reader-effort", "judge-effort", "repeats", "arms", "probe-limit", "confirm-plan", "pi-auth-path", "output", "concurrency", "corpus-manifest", "manifest-sha256", "registration", "registration-sha256", "statistical-spec", "shard", "audit"]);
 const REPEATABLE = new Set(["trace", "repeat"]);
 const EFFORTS = ["none", "minimal", "low", "medium", "high"];
 
@@ -51,15 +54,19 @@ function integer(value, { min, max }, code) {
 export function profileFrom(flags) {
   for (const key of ["reader-effort", "judge-effort"]) if (flags[key] !== undefined && !EFFORTS.includes(flags[key])) throw new CliError("invalid_effort");
   if (flags["no-judge"] && flags.judge !== undefined) throw new CliError("judge_conflict");
+  const probeMode = flags["probe-mode"];
+  if (probeMode !== undefined && probeMode !== LOOKUP_MODE) throw new CliError("invalid_probe_mode");
   const suite = flags.suite ?? "original";
+  if (probeMode && suite === "holdout") throw new CliError("lookup_not_legacy_holdout");
   if (!["original", "hard", "hard-distractors", "holdout"].includes(suite)) throw new CliError("invalid_suite");
   if (suite === "holdout" && flags.seeds !== undefined) throw new CliError("holdout_has_frozen_seeds");
   if (suite !== "holdout" && ["corpus-manifest", "manifest-sha256", "registration", "registration-sha256", "statistical-spec", "shard", "audit"].some(k => flags[k] !== undefined)) throw new CliError("holdout_flags_require_holdout_suite");
   if (flags.seeds !== undefined && suite === "original") throw new CliError("seeds_require_hard_suite");
   if (suite === "holdout" && ["corpus-manifest", "manifest-sha256", "registration", "registration-sha256", "statistical-spec"].some(k => !flags[k])) throw new CliError("holdout_registration_required");
-  const arms = flags.arms === undefined ? [...(suite === "holdout" ? HOLDOUT_ARMS : DEFAULT_ARMS[suite])] : flags.arms.split(",").map((value) => value.trim());
+  const arms = flags.arms === undefined ? [...(probeMode ? LOOKUP_DEFAULT_ARMS : suite === "holdout" ? HOLDOUT_ARMS : DEFAULT_ARMS[suite])] : flags.arms.split(",").map((value) => value.trim());
   return {
     suite,
+    ...(probeMode ? { probeMode } : {}),
     seeds: flags.seeds === undefined ? [...HARD_SEEDS] : parseSeeds(flags.seeds),
     profile: {
       ...(flags["extraction-model"] === undefined ? {} : { extractionModel: flags["extraction-model"] }),
@@ -116,6 +123,8 @@ Default: offline contract run through the built production harness with scripted
 --dry-run                 Print the workload plan and its confirmation digest; no build, credentials or network.
 --real                    Paid run. Requires --confirm-plan SHA256 from the identical --dry-run, --pi-auth-path ABS,
                           --output ABS (outside the checkout) and a clean checkout. Refused whenever CI is set.
+--probe-mode lookup-allowed-v1  Offline lookup mechanics only; native-lookup + no-ledger production pack.
+                          Frozen soul/budgets; --real is rejected before credentials. Omit for recall-only.
 Plan (bound into the digest): --suite original|hard|hard-distractors|holdout (default original) --seeds 101-108 (hard only)
   --reader REF (default openai-codex:gpt-6-luna) --alternate REF --judge REF | --no-judge
   --extraction-model REF (default configured reader) --require-request-cap
@@ -129,8 +138,9 @@ export async function main(argv = process.argv.slice(2), { stdout = console.log,
   onPhase({ phase: "benchmark-start" });
   const flags = parseArguments(argv);
   if (flags.help) { stdout(HELP); return 0; }
+  if (flags.real && flags["probe-mode"] === LOOKUP_MODE) throw new CliError("lookup_real_not_authorized");
   if (flags.real && Object.hasOwn(env, "CI")) throw new CliError("paid_mode_refused_in_ci");
-  let { suite, seeds, profile, repeats, arms, probeLimit } = profileFrom(flags);
+  let { suite, seeds, profile, repeats, arms, probeLimit, probeMode } = profileFrom(flags);
   if (suite === "holdout" && flags.repeats === undefined) {
     const { readJson } = await import("./lib/continuity-holdout-files.mjs");
     repeats = (await readJson(flags["statistical-spec"])).design?.repeats;
@@ -143,7 +153,7 @@ export async function main(argv = process.argv.slice(2), { stdout = console.log,
     ...(suite === "holdout" ? { manifestPath: flags["corpus-manifest"], manifestSha256: flags["manifest-sha256"], registrationPath: flags.registration,
       registrationSha256: flags["registration-sha256"], statisticalSpecPath: flags["statistical-spec"], shard: integer(flags.shard, { min: 1, max: Number.MAX_SAFE_INTEGER }, "invalid_shard"),
       profile, codeRevision: head, repeats, arms, probeLimit } : {}) });
-  const plan = makePlan({ traces, sha256, suite, source, codeRevision: head, profile, repeats, arms, probeLimit, ...(holdout ? { holdout } : {}),
+  const plan = makePlan({ traces, sha256, suite, source, ...(probeMode ? { probeMode } : {}), codeRevision: head, profile, repeats, arms, probeLimit, ...(holdout ? { holdout } : {}),
     piAuthFingerprint: piAuthPath === undefined ? null : createHash("sha256").update(piAuthPath).digest("hex") });
   if (flags["dry-run"]) {
     const prices = await listPrices([plan.reader.model, plan.upkeep.model, ...(plan.judge ? [plan.judge.model] : [])]);
@@ -238,7 +248,7 @@ async function execute({ flags, plan, traces, mode, output, piAuthPath, head, di
   const checkpoints = new Map();
   const needed = [];
   for (const unit of units) {
-    const key = `${unit.trace.id}:${checkpointKey(unit.arm, unit.repeat)}`;
+    const key = `${unit.trace.id}:${checkpointKey(unit.arm, unit.repeat, plan.probeMode)}`;
     if (!checkpoints.has(key)) { checkpoints.set(key, null); needed.push({ key, unit }); }
   }
   await pool(needed, concurrency, async ({ key, unit }) => {
@@ -268,7 +278,7 @@ async function execute({ flags, plan, traces, mode, output, piAuthPath, head, di
     return probes.map((probe) => ({ unit, probe }));
   });
   const results = await pool(jobs, concurrency, async ({ unit, probe }, index) => {
-    const checkpoint = checkpoints.get(`${unit.trace.id}:${checkpointKey(unit.arm, unit.repeat)}`);
+    const checkpoint = checkpoints.get(`${unit.trace.id}:${checkpointKey(unit.arm, unit.repeat, plan.probeMode)}`);
     if (!checkpoint || checkpoint.error) {
       return { traceId: unit.trace.id, arm: unit.arm.id, repeat: unit.repeat, probeId: probe.id, category: probe.category, status: "failed", failure: checkpoint?.error ?? "checkpoint_missing", score: null };
     }
@@ -284,18 +294,21 @@ async function execute({ flags, plan, traces, mode, output, piAuthPath, head, di
       trial.judge = await judge.judge(probe, trial.answer);
     }
     return trial;
-  }, admit, ({ unit }) => `${unit.trace.id}:${checkpointKey(unit.arm, unit.repeat)}`);
+  }, admit, ({ unit }) => `${unit.trace.id}:${checkpointKey(unit.arm, unit.repeat, plan.probeMode)}`);
   await judge?.close();
   const finishedAt = new Date().toISOString();
   for (const unit of units) {
     const trials = jobs.map((job, index) => (job.unit === unit ? results[index] : null)).filter((row) => row !== null);
+    const unitJobs = plan.probeMode === LOOKUP_MODE ? jobs.filter(job => job.unit === unit) : [];
     const complete = trials.length > 0 && trials.every((trial) => trial !== undefined);
-    const checkpoint = checkpoints.get(`${unit.trace.id}:${checkpointKey(unit.arm, unit.repeat)}`);
+    const checkpoint = checkpoints.get(`${unit.trace.id}:${checkpointKey(unit.arm, unit.repeat, plan.probeMode)}`);
     const body = {
       confirmation: plan.confirmation, executionKind: mode, complete,
       repeat: unit.repeat, traceId: unit.trace.id, arm: unit.arm.id,
       checkpoint: checkpoint && !checkpoint.error ? checkpoint.record : { ...(checkpoint?.record ?? {}), error: checkpoint?.error ?? "checkpoint_missing" },
-      trials: trials.map((trial) => trial ?? { status: "not_started" }),
+      trials: trials.map((trial, index) => trial ?? (plan.probeMode === LOOKUP_MODE
+        ? { traceId: unit.trace.id, arm: unit.arm.id, repeat: unit.repeat, probeId: unitJobs[index].probe.id, category: unitJobs[index].probe.category, status: "not_started" }
+        : { status: "not_started" })),
       manifest: { codeRevision: head, dirty, node: process.version, finishedAt, buildPolicy: "existing-dist-unverified", observedInput: state.observedInput, admissionStop: state.stop },
     };
     await writeFile(join(output, "units", unit.name), `${JSON.stringify(body, null, 2)}\n`, { mode: 0o600 });
@@ -310,12 +323,13 @@ export async function aggregate({ plan, traces, output, mode, auditPath, onPhase
   const units = [];
   for (const name of files) {
     const unit = JSON.parse(await readFile(join(output, "units", name), "utf8"));
-    if (unit.confirmation === plan.confirmation && unit.executionKind === mode && (unit.complete === true || plan.holdout && Array.isArray(unit.trials))) units.push(unit);
+    if (unit.confirmation === plan.confirmation && unit.executionKind === mode && (unit.complete === true || (plan.holdout || plan.probeMode === LOOKUP_MODE) && Array.isArray(unit.trials))) units.push(unit);
   }
   const trials = units.flatMap((unit) => unit.trials);
   const extraUsage = units.flatMap(unit => [unit.checkpoint?.mid && { arm: unit.arm, usage: unit.checkpoint.mid.usage, compactionUsage: unit.checkpoint.mid.compactionUsage }, unit.checkpoint?.upkeep && { arm: unit.arm, usage: unit.checkpoint.upkeep.usage }].filter(Boolean));
   const armIds = plan.arms.map((row) => row.id);
   const summary = summarize(trials, { arms: armIds, baselineArm: plan.baselineArm, repeats: Array.from({ length: plan.repeats }, (_, index) => index + 1), extraUsage });
+  if (plan.probeMode === LOOKUP_MODE) summary.lookup = summarizeLookup(trials, plan);
   if (plan.holdout) {
     const { holdoutStatistics } = await import("./lib/continuity-holdout-statistics.mjs");
     const { readBoundAudit } = await import("./lib/continuity-holdout-registration.mjs");
@@ -356,7 +370,7 @@ export async function aggregate({ plan, traces, output, mode, auditPath, onPhase
   await writeFile(join(output, "results.json"), `${JSON.stringify(results, null, 2)}\n`, { mode: 0o600 });
   const degradation = Object.entries(preparationHealth).map(([arm, health]) => `- ${arm}: ${health.degradedStages}/${health.stages} degraded preparation stages; D6 input overruns ${health.d6InputOverruns}, output overruns ${health.d6OutputOverruns}; reasons ${JSON.stringify(health.reasons)}.`).join("\n");
   const header = `Preparation health (degraded stages remain scored):\n${degradation}\n\nCoverage: ${coverage.unitsComplete}/${coverage.unitsExpected} trace×arm×repeat units. Code revision ${plan.codeRevision ?? "unknown"}. Plan ${plan.confirmation}.\n\n`;
-  await writeFile(join(output, "summary.md"), `${header}${renderMarkdown(summary, { qualityMeasured: mode === "real", armLabels, judgeUsage: plan.judge ? judgeUsage : null })}`, { mode: 0o600 });
+  await writeFile(join(output, "summary.md"), `${header}${renderMarkdown(summary, { qualityMeasured: mode === "real", armLabels, judgeUsage: plan.judge ? judgeUsage : null })}${summary.lookup ? renderLookupMarkdown(summary.lookup) : ""}`, { mode: 0o600 });
   return results;
 }
 

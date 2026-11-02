@@ -29,6 +29,146 @@ driver, but the reader and summarizer are scripted. It proves that every arm
 crosses its boundary and that scoring and accounting run; its accuracy numbers
 mean nothing. CI runs the offline unit and contract tests only.
 
+## Offline lookup mechanics (opt-in)
+
+Recall-only remains the default: omitting `--probe-mode` preserves its prompt
+bytes, arm selection, plan schema and confirmation serialization. Lookup uses a
+separate explicit protocol, not the registered ledger holdout or a claim that
+retrieval improves a model:
+
+```bash
+pnpm --filter '@mono-agent/app...' run build
+node scripts/continuity-benchmark.mjs --dry-run --probe-mode lookup-allowed-v1 --no-judge
+node scripts/continuity-benchmark.mjs --probe-mode lookup-allowed-v1 --no-judge \
+  --trace brightline-return --probe-limit 1
+```
+
+Lookup is **offline preparation only**. `--real` fails before credential-path
+validation or provider setup. The default reader binding is Sol, with Luna as the
+scripted alternate; both are faux providers, never model calls. The scripted
+reader performs a packed-ID get when available, a query, search pagination and
+complete get-cursor traversal. Its dispatch capacity exceeds the pinned turn
+ceiling, allowing eight or more tool rounds. Budget exhaustion is an expected,
+explicit mechanics outcome; the scripted answer is not semantic evaluation.
+
+Only `native-lookup` and `continuity-pack-cold` are admitted. Native lookup
+captures retained records and offers ConversationHistory, but injects no pack,
+ledger or upkeep and never compacts. It uses the reader's native session, an
+**in-place** snapshot restore and a fresh probe child. Both arms must show
+retained records, an offered tool and a healthy store; native must also prove
+absence of an injected pack. Lookup checkpoint keys are namespaced, so they
+cannot reuse recall-only capture-off checkpoints.
+
+The benchmark copies `scripts/fixtures/continuity-soul-v1.md` to every lookup
+workspace and sets `context.soulPath`. Its raw SHA-256 and production-normalized
+core SHA-256 are bound into the confirmation and frozen budget policy. Missing,
+modified or mismatched soul bytes fail; there is no checkout-default fallback.
+This freezes the original core independently of later default-soul changes.
+
+### Frozen sizing policy
+
+`scripts/continuity-lookup-budget.mjs` measures a content-free inventory using
+real retained stores, configured replay and real loopback ConversationHistory
+calls. The sizing corpus is the four original traces, hard and hard-distractor
+seeds 101–108, plus 27,600-byte UTF-8 and escaped-content regression records.
+The regression records also traverse the production handler and response
+splitter. The **reference path**, distinct from the quality reader, gets a
+source's packed record ID when displayed; otherwise it issues **one** search
+with an evaluator-only source-line query at limit 10, then follows every 8-KiB
+get cursor. It never performs an unfiltered linear search. Queries and expected
+values do not enter ordinary reader prompts or persisted witnesses.
+
+Only unambiguous literal tool-identifier sources are annotated in this version;
+other source provenance remains `unknown`. Redaction probes remain `protected`,
+even when a native transcript contained raw values. Sources are resolved
+independently against each arm's sanitized store, not borrowed from another arm.
+The measured inventory contains 112 paths, 9,370 retained-size observations and
+370 serialized response-size observations. Every measured path discovered its
+source and verified the concatenated retained UTF-8 digest.
+
+| Binding | Frozen value |
+| --- | --- |
+| Call budget, identical per arm/probe | 8 dispatched calls |
+| Byte budget, identical per arm/probe | 126,976 UTF-8 bytes (124 KiB) |
+| Maximum reference path | 6 calls / 61,718 bytes |
+| Largest serialized response | 32,608 bytes |
+| Inventory SHA-256 (canonical JSON) | `6c45a457f926af1d259c4b53bc3b45821b939ca3fdfd1a830b38b538f415a6b9` |
+
+Each arm/probe gets a fresh meter with these identical call and byte limits;
+they are **not pooled** across arms or probes. Calls are `max(path calls) + 2`, capped at `min(96, 100 - 2)`. Bytes are
+`max(path bytes) + 2 × largest response`, rounded upward to KiB and capped at
+8 MiB. The policy and content-free per-slot reference costs are checked in at
+`scripts/fixtures/continuity-lookup-budget-v1.json`; the detailed inventory is a
+separate archived artifact, never retrieved text in a repository fixture. The
+inventory digest binds that specific archived inventory used for the checked-in
+policy, **not byte-identical remeasurement reproducibility**: generation, run
+and record identities are random. A new measurement has its own receipt and
+digest; do not claim that reproducing the protocol must reproduce this hash. Re-run
+measurement into a fresh directory to prepare a **new** policy, not to enlarge
+budgets after seeing trial outcomes:
+
+```bash
+node scripts/continuity-lookup-budget.mjs --output .worklab-tmp/lookup-sizing-new
+```
+
+Feasibility additionally reserves a 16,000-token context margin within the
+272,000-token scripted reader window. It conservatively charges each serialized
+response byte as one token plus 300 tokens per round. Initial input uses the larger of the observed first forwarded context's UTF-8
+JSON bytes divided by three (the conservative handoff-style estimate) and the
+trace estimate. Native input is at least 150,000 tokens **on every round**;
+the pack floor is the cold estimate plus 12,000. This observes wrappers,
+metadata and schemas, not just source-text sizes. The sum of repeated inputs must
+also fit the existing per-invocation observed-input admission cap (6 million
+for originals, 400 million for long suites). Passing a slot's reference check
+does not reserve capacity for every planned slot: cumulative admission may
+still leave later slots unstarted. These are conservative scripted-reader
+feasibility estimates, not tokenizer or latency guarantees for a future model.
+There are 64 feasible paths and 48 `budget-infeasible` native long-trace paths:
+the conservative observed-request estimate exceeds the scripted reader's
+context bound. Do not count those slots as reader failures, omit them from
+coverage or widen the policy to make them fit. Cap-bound, context-bound,
+undiscovered or admission-bound paths retain the same classification. Corpus
+or protocol changes require a new frozen policy.
+
+### Forwarding, deadlines and interpretation
+
+A benchmark-only forwarding server rewrites **only the URL** under the existing
+`mono-agent-conversation-history` key. It preserves server identity, listing,
+schema and production handler behavior. Calls are reserved atomically before
+dispatch. Exact UTF-8 `JSON.stringify(result.content)` bytes are charged before
+delivery, excluding `structuredContent`. An over-budget response is withheld
+whole, never clipped; the lookup is aborted with an explicit calls/bytes cause. The
+scripted mechanics reader also observes the planned call budget and stops
+voluntarily before dispatching an excess call, even during long cursor paths.
+The proxy uses an unguessable UUID path, an exact loopback Host check and SDK
+DNS-rebinding protection. Effective probe MCP endpoints are allowlisted to the
+metered ConversationHistory server only: **SessionHistory is not part of
+`lookup-allowed-v1`**, nor is any other history/tool-history alias or MCP server.
+Unexpected endpoints fail closed rather than exposing an unmetered route.
+
+The probe deadline is 600 seconds, with a 60-second cleanup allowance, a
+690-second turn safety timeout and a 720-second parent-enforced child watchdog.
+For probe turns, `maxTurns = callBudget + 2 = 10` stays within the config maximum of 100; this
+probe ceiling does not constrain scripted checkpoint replay. Child failures
+retain their explicit code and accumulated content-free meter/witness state
+even on a nonzero exit. Latency exhaustion is distinct from the hard child watchdog; test clocks prove deadline
+admission without waiting ten minutes.
+
+The lookup report keeps **every planned slot**, including missing, duplicate,
+unstarted, failed and budget-infeasible slots. Per arm it reports source
+availability, reference feasibility, exact-value accuracy (excluding
+budget-infeasible slots from both numerator and denominator), witnessed recovery,
+calls, bytes, latency and exhaustion. `exact` describes completed eligible
+exact-value slots. `exactWithFailures` additionally counts failed feasible slots as incorrect, with a separate
+failed-feasible count; missing/not-run slots remain coverage-only, so partial
+runs do not masquerade as reader failures. Both accuracy figures and the
+failure count appear in the lookup table. Witnesses persist only IDs, digests,
+counts and classifications. Recovery requires an initially absent value, an
+available retained source fully returned with a verified digest, and a correct
+answer. Unknown initial presence/provenance or protected bytes cannot establish
+recovery. This is descriptive evidence, not a causal treatment-benefit estimate.
+Cross-checkout role attribution and paid qualification are separate work.
+
 ## Suites
 
 There are two suites. `--suite` is bound into the plan digest.

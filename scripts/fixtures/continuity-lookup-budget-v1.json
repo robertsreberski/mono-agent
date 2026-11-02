@@ -1,0 +1,2156 @@
+{
+  "schema": "continuity-lookup-budget-v1",
+  "status": "frozen",
+  "protocol": "query-first-packed-id-otherwise-one-source-query-10-and-8192-get-v1",
+  "callBudget": 8,
+  "byteBudget": 126976,
+  "contextWindowTokens": 272000,
+  "contextMarginTokens": 16000,
+  "feasibilityTokenBound": "observed-initial-context-json-bytes/3-or-trace-estimate; one-token-per-response-byte-plus-300-per-round; native-at-least-150000-every-round",
+  "corpus": {
+    "original": "e7933cf60ac1b8f51b966b4bda4fcdfadc1123fa2ac5c700d0705d287fdebea3",
+    "hard": "97500ece21a64e90397c9ad22d0b040b3d48a3603a342b9af97139bd2b331e51",
+    "hard-distractors": "7036689f9e72deb3b360b918f9ad0560976265f146d0183cf58273a72a7a1ea1",
+    "regressions": "12ab57193794ee3b9f22c3ebc231e7d7311fe5b7dd2f72da89332f6eb97992b4"
+  },
+  "soul": {
+    "file": "continuity-soul-v1.md",
+    "rawSha256": "885b978ba3d1e894f5bc706a062ed49d59326426cebd88fc3c7a44ce80fe7cad",
+    "coreSha256": "e4a417e5f8bc394fd76e4820c5cfe726cbd6e40e9d58244b28de6a23e8e335b1"
+  },
+  "inventorySha256": "6c45a457f926af1d259c4b53bc3b45821b939ca3fdfd1a830b38b538f415a6b9",
+  "measurement": {
+    "paths": 112,
+    "largestResponse": 32608,
+    "maxPathBytes": 61718,
+    "maxPathCalls": 6,
+    "retainedSizes": {
+      "count": 9370,
+      "min": 7,
+      "p50": 70,
+      "p95": 10427,
+      "max": 48004
+    },
+    "responseSizes": {
+      "count": 370,
+      "min": 2784,
+      "p50": 7771,
+      "p95": 12324,
+      "max": 32608
+    }
+  },
+  "paths": [
+    {
+      "traceId": "brightline-return",
+      "probeId": "p01",
+      "arm": "native-lookup",
+      "sourceSha256": "6ae304ef59a26661f26c553a5dec6bde6b6ba1eeed52b8877f318cb8d60a9ff2",
+      "calls": 2,
+      "bytes": 6626,
+      "cumulativeBytes": 10192,
+      "discovered": true,
+      "initialContextBytes": 134063,
+      "initialTokens": 150000,
+      "admissionCap": 6000000,
+      "feasibility": {
+        "classification": "feasible",
+        "reasons": [],
+        "estimatedRepeatedInputTokens": 462892
+      }
+    },
+    {
+      "traceId": "brightline-return",
+      "probeId": "p01",
+      "arm": "continuity-pack-cold",
+      "sourceSha256": "6ae304ef59a26661f26c553a5dec6bde6b6ba1eeed52b8877f318cb8d60a9ff2",
+      "calls": 1,
+      "bytes": 3060,
+      "cumulativeBytes": 3060,
+      "discovered": true,
+      "initialContextBytes": 49684,
+      "initialTokens": 18719,
+      "admissionCap": 6000000,
+      "feasibility": {
+        "classification": "feasible",
+        "reasons": [],
+        "estimatedRepeatedInputTokens": 41698
+      }
+    },
+    {
+      "traceId": "cedar-offsite",
+      "probeId": "p01",
+      "arm": "native-lookup",
+      "sourceSha256": "324dabd5b9baa609b2295d4c30a9152a40ad8c9c5cfc8d0c533d9c65d04446cb",
+      "calls": 2,
+      "bytes": 6412,
+      "cumulativeBytes": 9871,
+      "discovered": true,
+      "initialContextBytes": 123890,
+      "initialTokens": 150000,
+      "admissionCap": 6000000,
+      "feasibility": {
+        "classification": "feasible",
+        "reasons": [],
+        "estimatedRepeatedInputTokens": 462571
+      }
+    },
+    {
+      "traceId": "cedar-offsite",
+      "probeId": "p02",
+      "arm": "native-lookup",
+      "sourceSha256": "58cbe1c3fd671fdd2696f095e0c06f93d5fc8d987fb5c059d52e5ddf70efcc2a",
+      "calls": 2,
+      "bytes": 6350,
+      "cumulativeBytes": 9778,
+      "discovered": true,
+      "initialContextBytes": 123875,
+      "initialTokens": 150000,
+      "admissionCap": 6000000,
+      "feasibility": {
+        "classification": "feasible",
+        "reasons": [],
+        "estimatedRepeatedInputTokens": 462478
+      }
+    },
+    {
+      "traceId": "cedar-offsite",
+      "probeId": "p01",
+      "arm": "continuity-pack-cold",
+      "sourceSha256": "324dabd5b9baa609b2295d4c30a9152a40ad8c9c5cfc8d0c533d9c65d04446cb",
+      "calls": 1,
+      "bytes": 2953,
+      "cumulativeBytes": 2953,
+      "discovered": true,
+      "initialContextBytes": 46467,
+      "initialTokens": 18165,
+      "admissionCap": 6000000,
+      "feasibility": {
+        "classification": "feasible",
+        "reasons": [],
+        "estimatedRepeatedInputTokens": 40483
+      }
+    },
+    {
+      "traceId": "cedar-offsite",
+      "probeId": "p02",
+      "arm": "continuity-pack-cold",
+      "sourceSha256": "58cbe1c3fd671fdd2696f095e0c06f93d5fc8d987fb5c059d52e5ddf70efcc2a",
+      "calls": 1,
+      "bytes": 2922,
+      "cumulativeBytes": 2922,
+      "discovered": true,
+      "initialContextBytes": 46452,
+      "initialTokens": 18165,
+      "admissionCap": 6000000,
+      "feasibility": {
+        "classification": "feasible",
+        "reasons": [],
+        "estimatedRepeatedInputTokens": 40452
+      }
+    },
+    {
+      "traceId": "harbourline-talk",
+      "probeId": "p01",
+      "arm": "native-lookup",
+      "sourceSha256": "2ff9d5eb2eca30049d90800c84d8b28e3002eebe9417b04c81814d3301e64411",
+      "calls": 2,
+      "bytes": 6074,
+      "cumulativeBytes": 9364,
+      "discovered": true,
+      "initialContextBytes": 130641,
+      "initialTokens": 150000,
+      "admissionCap": 6000000,
+      "feasibility": {
+        "classification": "feasible",
+        "reasons": [],
+        "estimatedRepeatedInputTokens": 462064
+      }
+    },
+    {
+      "traceId": "harbourline-talk",
+      "probeId": "p01",
+      "arm": "continuity-pack-cold",
+      "sourceSha256": "2ff9d5eb2eca30049d90800c84d8b28e3002eebe9417b04c81814d3301e64411",
+      "calls": 1,
+      "bytes": 2784,
+      "cumulativeBytes": 2784,
+      "discovered": true,
+      "initialContextBytes": 48823,
+      "initialTokens": 18411,
+      "admissionCap": 6000000,
+      "feasibility": {
+        "classification": "feasible",
+        "reasons": [],
+        "estimatedRepeatedInputTokens": 40806
+      }
+    },
+    {
+      "traceId": "radiator-leak",
+      "probeId": "p01",
+      "arm": "native-lookup",
+      "sourceSha256": "2bf6bcc3d053b89e7724516d609c840842195c269e89f983335a61835c5f1de4",
+      "calls": 2,
+      "bytes": 6282,
+      "cumulativeBytes": 9676,
+      "discovered": true,
+      "initialContextBytes": 123879,
+      "initialTokens": 150000,
+      "admissionCap": 6000000,
+      "feasibility": {
+        "classification": "feasible",
+        "reasons": [],
+        "estimatedRepeatedInputTokens": 462376
+      }
+    },
+    {
+      "traceId": "radiator-leak",
+      "probeId": "p02",
+      "arm": "native-lookup",
+      "sourceSha256": "f10b0742eb742f1a659f04fbb63145160cf25f86b26edeebebc1535db50ecda6",
+      "calls": 2,
+      "bytes": 6204,
+      "cumulativeBytes": 9559,
+      "discovered": true,
+      "initialContextBytes": 123861,
+      "initialTokens": 150000,
+      "admissionCap": 6000000,
+      "feasibility": {
+        "classification": "feasible",
+        "reasons": [],
+        "estimatedRepeatedInputTokens": 462259
+      }
+    },
+    {
+      "traceId": "radiator-leak",
+      "probeId": "p01",
+      "arm": "continuity-pack-cold",
+      "sourceSha256": "2bf6bcc3d053b89e7724516d609c840842195c269e89f983335a61835c5f1de4",
+      "calls": 1,
+      "bytes": 2888,
+      "cumulativeBytes": 2888,
+      "discovered": true,
+      "initialContextBytes": 46619,
+      "initialTokens": 18246,
+      "admissionCap": 6000000,
+      "feasibility": {
+        "classification": "feasible",
+        "reasons": [],
+        "estimatedRepeatedInputTokens": 40580
+      }
+    },
+    {
+      "traceId": "radiator-leak",
+      "probeId": "p02",
+      "arm": "continuity-pack-cold",
+      "sourceSha256": "f10b0742eb742f1a659f04fbb63145160cf25f86b26edeebebc1535db50ecda6",
+      "calls": 1,
+      "bytes": 2849,
+      "cumulativeBytes": 2849,
+      "discovered": true,
+      "initialContextBytes": 46601,
+      "initialTokens": 18246,
+      "admissionCap": 6000000,
+      "feasibility": {
+        "classification": "feasible",
+        "reasons": [],
+        "estimatedRepeatedInputTokens": 40541
+      }
+    },
+    {
+      "traceId": "gen-grant-101",
+      "probeId": "p01",
+      "arm": "native-lookup",
+      "sourceSha256": "4eeec096642798ed911c6cd04ec0d1c6784026b91801c9208a3a415acd5fe3ba",
+      "calls": 3,
+      "bytes": 20839,
+      "cumulativeBytes": 40377,
+      "discovered": true,
+      "initialContextBytes": 1303133,
+      "initialTokens": 434378,
+      "admissionCap": 400000000,
+      "feasibility": {
+        "classification": "budget-infeasible",
+        "reasons": [
+          "reader_context"
+        ],
+        "estimatedRepeatedInputTokens": 1782689
+      }
+    },
+    {
+      "traceId": "gen-grant-101",
+      "probeId": "p02",
+      "arm": "native-lookup",
+      "sourceSha256": "5c44f019bc75f556f09eba6f3823d410a23fab06083a4fe3b70d9a3ad68e8c45",
+      "calls": 3,
+      "bytes": 21232,
+      "cumulativeBytes": 40761,
+      "discovered": true,
+      "initialContextBytes": 1303124,
+      "initialTokens": 434375,
+      "admissionCap": 400000000,
+      "feasibility": {
+        "classification": "budget-infeasible",
+        "reasons": [
+          "reader_context"
+        ],
+        "estimatedRepeatedInputTokens": 1783061
+      }
+    },
+    {
+      "traceId": "gen-grant-101",
+      "probeId": "p03",
+      "arm": "native-lookup",
+      "sourceSha256": "df8ca810b668c9dd592c79de700f1d3e9aa7267b1b49c9c9c28d63cf44b8b903",
+      "calls": 4,
+      "bytes": 36002,
+      "cumulativeBytes": 83795,
+      "discovered": true,
+      "initialContextBytes": 1303119,
+      "initialTokens": 434373,
+      "admissionCap": 400000000,
+      "feasibility": {
+        "classification": "budget-infeasible",
+        "reasons": [
+          "reader_context"
+        ],
+        "estimatedRepeatedInputTokens": 2263160
+      }
+    },
+    {
+      "traceId": "gen-grant-101",
+      "probeId": "p01",
+      "arm": "continuity-pack-cold",
+      "sourceSha256": "4eeec096642798ed911c6cd04ec0d1c6784026b91801c9208a3a415acd5fe3ba",
+      "calls": 2,
+      "bytes": 17224,
+      "cumulativeBytes": 29532,
+      "discovered": true,
+      "initialContextBytes": 97633,
+      "initialTokens": 32545,
+      "admissionCap": 400000000,
+      "feasibility": {
+        "classification": "feasible",
+        "reasons": [],
+        "estimatedRepeatedInputTokens": 129867
+      }
+    },
+    {
+      "traceId": "gen-grant-101",
+      "probeId": "p02",
+      "arm": "continuity-pack-cold",
+      "sourceSha256": "5c44f019bc75f556f09eba6f3823d410a23fab06083a4fe3b70d9a3ad68e8c45",
+      "calls": 3,
+      "bytes": 21232,
+      "cumulativeBytes": 40761,
+      "discovered": true,
+      "initialContextBytes": 97624,
+      "initialTokens": 32542,
+      "admissionCap": 400000000,
+      "feasibility": {
+        "classification": "feasible",
+        "reasons": [],
+        "estimatedRepeatedInputTokens": 175729
+      }
+    },
+    {
+      "traceId": "gen-grant-101",
+      "probeId": "p03",
+      "arm": "continuity-pack-cold",
+      "sourceSha256": "df8ca810b668c9dd592c79de700f1d3e9aa7267b1b49c9c9c28d63cf44b8b903",
+      "calls": 4,
+      "bytes": 36002,
+      "cumulativeBytes": 83795,
+      "discovered": true,
+      "initialContextBytes": 97619,
+      "initialTokens": 32540,
+      "admissionCap": 400000000,
+      "feasibility": {
+        "classification": "feasible",
+        "reasons": [],
+        "estimatedRepeatedInputTokens": 253995
+      }
+    },
+    {
+      "traceId": "gen-oven-102",
+      "probeId": "p01",
+      "arm": "native-lookup",
+      "sourceSha256": "18ad5b7dd5c8a11cf31801384fa0a47bfb31a88538d26850eef674d330491cf5",
+      "calls": 3,
+      "bytes": 20560,
+      "cumulativeBytes": 40083,
+      "discovered": true,
+      "initialContextBytes": 1275219,
+      "initialTokens": 425073,
+      "admissionCap": 400000000,
+      "feasibility": {
+        "classification": "budget-infeasible",
+        "reasons": [
+          "reader_context"
+        ],
+        "estimatedRepeatedInputTokens": 1745175
+      }
+    },
+    {
+      "traceId": "gen-oven-102",
+      "probeId": "p02",
+      "arm": "native-lookup",
+      "sourceSha256": "c87871f1d29190e083eed3487df4f73376d292c5cc36fa7a8b2848e5a486c829",
+      "calls": 3,
+      "bytes": 19389,
+      "cumulativeBytes": 38901,
+      "discovered": true,
+      "initialContextBytes": 1275208,
+      "initialTokens": 425070,
+      "admissionCap": 400000000,
+      "feasibility": {
+        "classification": "budget-infeasible",
+        "reasons": [
+          "reader_context"
+        ],
+        "estimatedRepeatedInputTokens": 1743981
+      }
+    },
+    {
+      "traceId": "gen-oven-102",
+      "probeId": "p03",
+      "arm": "native-lookup",
+      "sourceSha256": "c32485f54ff6babc8e5d65ba4b7d74e491a1ebaa9a186c5554f187f9a80519bf",
+      "calls": 6,
+      "bytes": 61646,
+      "cumulativeBytes": 202817,
+      "discovered": true,
+      "initialContextBytes": 1275208,
+      "initialTokens": 425070,
+      "admissionCap": 400000000,
+      "feasibility": {
+        "classification": "budget-infeasible",
+        "reasons": [
+          "reader_context"
+        ],
+        "estimatedRepeatedInputTokens": 3193007
+      }
+    },
+    {
+      "traceId": "gen-oven-102",
+      "probeId": "p01",
+      "arm": "continuity-pack-cold",
+      "sourceSha256": "18ad5b7dd5c8a11cf31801384fa0a47bfb31a88538d26850eef674d330491cf5",
+      "calls": 2,
+      "bytes": 16950,
+      "cumulativeBytes": 29253,
+      "discovered": true,
+      "initialContextBytes": 92765,
+      "initialTokens": 32398,
+      "admissionCap": 400000000,
+      "feasibility": {
+        "classification": "feasible",
+        "reasons": [],
+        "estimatedRepeatedInputTokens": 129147
+      }
+    },
+    {
+      "traceId": "gen-oven-102",
+      "probeId": "p02",
+      "arm": "continuity-pack-cold",
+      "sourceSha256": "c87871f1d29190e083eed3487df4f73376d292c5cc36fa7a8b2848e5a486c829",
+      "calls": 3,
+      "bytes": 19389,
+      "cumulativeBytes": 38901,
+      "discovered": true,
+      "initialContextBytes": 92754,
+      "initialTokens": 32398,
+      "admissionCap": 400000000,
+      "feasibility": {
+        "classification": "feasible",
+        "reasons": [],
+        "estimatedRepeatedInputTokens": 173293
+      }
+    },
+    {
+      "traceId": "gen-oven-102",
+      "probeId": "p03",
+      "arm": "continuity-pack-cold",
+      "sourceSha256": "c32485f54ff6babc8e5d65ba4b7d74e491a1ebaa9a186c5554f187f9a80519bf",
+      "calls": 6,
+      "bytes": 61646,
+      "cumulativeBytes": 202817,
+      "discovered": true,
+      "initialContextBytes": 92754,
+      "initialTokens": 32398,
+      "admissionCap": 400000000,
+      "feasibility": {
+        "classification": "feasible",
+        "reasons": [],
+        "estimatedRepeatedInputTokens": 444303
+      }
+    },
+    {
+      "traceId": "gen-rowing-103",
+      "probeId": "p01",
+      "arm": "native-lookup",
+      "sourceSha256": "03bc182555c0fbba262b4e89480e815940dc1c6c57aa1c743279e55ee3cb813b",
+      "calls": 3,
+      "bytes": 21483,
+      "cumulativeBytes": 41032,
+      "discovered": true,
+      "initialContextBytes": 1260213,
+      "initialTokens": 420071,
+      "admissionCap": 400000000,
+      "feasibility": {
+        "classification": "budget-infeasible",
+        "reasons": [
+          "reader_context"
+        ],
+        "estimatedRepeatedInputTokens": 1726116
+      }
+    },
+    {
+      "traceId": "gen-rowing-103",
+      "probeId": "p02",
+      "arm": "native-lookup",
+      "sourceSha256": "bd7cc9e86f7aa19856bb5f753cfbf3620392340b9d97db458d3b653d7390073d",
+      "calls": 3,
+      "bytes": 21198,
+      "cumulativeBytes": 40718,
+      "discovered": true,
+      "initialContextBytes": 1260208,
+      "initialTokens": 420070,
+      "admissionCap": 400000000,
+      "feasibility": {
+        "classification": "budget-infeasible",
+        "reasons": [
+          "reader_context"
+        ],
+        "estimatedRepeatedInputTokens": 1725798
+      }
+    },
+    {
+      "traceId": "gen-rowing-103",
+      "probeId": "p03",
+      "arm": "native-lookup",
+      "sourceSha256": "9b5536fa43f5ddd012f963c59ca7a34947f03ee254d6c409ca40551ba7e2c26e",
+      "calls": 5,
+      "bytes": 48316,
+      "cumulativeBytes": 136647,
+      "discovered": true,
+      "initialContextBytes": 1260205,
+      "initialTokens": 420069,
+      "admissionCap": 400000000,
+      "feasibility": {
+        "classification": "budget-infeasible",
+        "reasons": [
+          "reader_context"
+        ],
+        "estimatedRepeatedInputTokens": 2667861
+      }
+    },
+    {
+      "traceId": "gen-rowing-103",
+      "probeId": "p01",
+      "arm": "continuity-pack-cold",
+      "sourceSha256": "03bc182555c0fbba262b4e89480e815940dc1c6c57aa1c743279e55ee3cb813b",
+      "calls": 2,
+      "bytes": 17867,
+      "cumulativeBytes": 30184,
+      "discovered": true,
+      "initialContextBytes": 107552,
+      "initialTokens": 35851,
+      "admissionCap": 400000000,
+      "feasibility": {
+        "classification": "feasible",
+        "reasons": [],
+        "estimatedRepeatedInputTokens": 140437
+      }
+    },
+    {
+      "traceId": "gen-rowing-103",
+      "probeId": "p02",
+      "arm": "continuity-pack-cold",
+      "sourceSha256": "bd7cc9e86f7aa19856bb5f753cfbf3620392340b9d97db458d3b653d7390073d",
+      "calls": 3,
+      "bytes": 21198,
+      "cumulativeBytes": 40718,
+      "discovered": true,
+      "initialContextBytes": 107547,
+      "initialTokens": 35849,
+      "admissionCap": 400000000,
+      "feasibility": {
+        "classification": "feasible",
+        "reasons": [],
+        "estimatedRepeatedInputTokens": 188914
+      }
+    },
+    {
+      "traceId": "gen-rowing-103",
+      "probeId": "p03",
+      "arm": "continuity-pack-cold",
+      "sourceSha256": "9b5536fa43f5ddd012f963c59ca7a34947f03ee254d6c409ca40551ba7e2c26e",
+      "calls": 5,
+      "bytes": 48316,
+      "cumulativeBytes": 136647,
+      "discovered": true,
+      "initialContextBytes": 107544,
+      "initialTokens": 35848,
+      "admissionCap": 400000000,
+      "feasibility": {
+        "classification": "feasible",
+        "reasons": [],
+        "estimatedRepeatedInputTokens": 362535
+      }
+    },
+    {
+      "traceId": "gen-zine-104",
+      "probeId": "p01",
+      "arm": "native-lookup",
+      "sourceSha256": "c2a4a404610bf95e5982556da36e3bc193c31ed5bdf36f99b0156f1f6bc05021",
+      "calls": 3,
+      "bytes": 19759,
+      "cumulativeBytes": 39288,
+      "discovered": true,
+      "initialContextBytes": 1249566,
+      "initialTokens": 416522,
+      "admissionCap": 400000000,
+      "feasibility": {
+        "classification": "budget-infeasible",
+        "reasons": [
+          "reader_context"
+        ],
+        "estimatedRepeatedInputTokens": 1710176
+      }
+    },
+    {
+      "traceId": "gen-zine-104",
+      "probeId": "p02",
+      "arm": "native-lookup",
+      "sourceSha256": "62a67b84da3fdecfe6815bac34cad3d0e45b39a96989f80f00bc08765bbdeeae",
+      "calls": 3,
+      "bytes": 18964,
+      "cumulativeBytes": 38488,
+      "discovered": true,
+      "initialContextBytes": 1249562,
+      "initialTokens": 416521,
+      "admissionCap": 400000000,
+      "feasibility": {
+        "classification": "budget-infeasible",
+        "reasons": [
+          "reader_context"
+        ],
+        "estimatedRepeatedInputTokens": 1709372
+      }
+    },
+    {
+      "traceId": "gen-zine-104",
+      "probeId": "p03",
+      "arm": "native-lookup",
+      "sourceSha256": "28ecfe3a51ac5d815872d66a9ece3473b6cc0729c8873b48cd364c0f18ca3127",
+      "calls": 5,
+      "bytes": 48310,
+      "cumulativeBytes": 136653,
+      "discovered": true,
+      "initialContextBytes": 1249557,
+      "initialTokens": 416519,
+      "admissionCap": 400000000,
+      "feasibility": {
+        "classification": "budget-infeasible",
+        "reasons": [
+          "reader_context"
+        ],
+        "estimatedRepeatedInputTokens": 2646567
+      }
+    },
+    {
+      "traceId": "gen-zine-104",
+      "probeId": "p01",
+      "arm": "continuity-pack-cold",
+      "sourceSha256": "c2a4a404610bf95e5982556da36e3bc193c31ed5bdf36f99b0156f1f6bc05021",
+      "calls": 2,
+      "bytes": 16151,
+      "cumulativeBytes": 28464,
+      "discovered": true,
+      "initialContextBytes": 96665,
+      "initialTokens": 32222,
+      "admissionCap": 400000000,
+      "feasibility": {
+        "classification": "feasible",
+        "reasons": [],
+        "estimatedRepeatedInputTokens": 127830
+      }
+    },
+    {
+      "traceId": "gen-zine-104",
+      "probeId": "p02",
+      "arm": "continuity-pack-cold",
+      "sourceSha256": "62a67b84da3fdecfe6815bac34cad3d0e45b39a96989f80f00bc08765bbdeeae",
+      "calls": 3,
+      "bytes": 18964,
+      "cumulativeBytes": 38488,
+      "discovered": true,
+      "initialContextBytes": 96661,
+      "initialTokens": 32221,
+      "admissionCap": 400000000,
+      "feasibility": {
+        "classification": "feasible",
+        "reasons": [],
+        "estimatedRepeatedInputTokens": 172172
+      }
+    },
+    {
+      "traceId": "gen-zine-104",
+      "probeId": "p03",
+      "arm": "continuity-pack-cold",
+      "sourceSha256": "28ecfe3a51ac5d815872d66a9ece3473b6cc0729c8873b48cd364c0f18ca3127",
+      "calls": 5,
+      "bytes": 48310,
+      "cumulativeBytes": 136653,
+      "discovered": true,
+      "initialContextBytes": 96656,
+      "initialTokens": 32219,
+      "admissionCap": 400000000,
+      "feasibility": {
+        "classification": "feasible",
+        "reasons": [],
+        "estimatedRepeatedInputTokens": 340767
+      }
+    },
+    {
+      "traceId": "gen-kiln-105",
+      "probeId": "p01",
+      "arm": "native-lookup",
+      "sourceSha256": "0a1f35512916126cc6b10a863cd2ba218889325e48c87bd35b61ad8e72038558",
+      "calls": 4,
+      "bytes": 39074,
+      "cumulativeBytes": 86823,
+      "discovered": true,
+      "initialContextBytes": 1295263,
+      "initialTokens": 431755,
+      "admissionCap": 400000000,
+      "feasibility": {
+        "classification": "budget-infeasible",
+        "reasons": [
+          "reader_context"
+        ],
+        "estimatedRepeatedInputTokens": 2253098
+      }
+    },
+    {
+      "traceId": "gen-kiln-105",
+      "probeId": "p02",
+      "arm": "native-lookup",
+      "sourceSha256": "617d90e4d48dcfa8f2a641513d9edcf81bfc9cd5b000de30ade6c1bc9876148c",
+      "calls": 3,
+      "bytes": 20280,
+      "cumulativeBytes": 39792,
+      "discovered": true,
+      "initialContextBytes": 1295252,
+      "initialTokens": 431751,
+      "admissionCap": 400000000,
+      "feasibility": {
+        "classification": "budget-infeasible",
+        "reasons": [
+          "reader_context"
+        ],
+        "estimatedRepeatedInputTokens": 1771596
+      }
+    },
+    {
+      "traceId": "gen-kiln-105",
+      "probeId": "p03",
+      "arm": "native-lookup",
+      "sourceSha256": "c756871dd366a70e54a83bfe5d24e77ca045654370a27a3805389aaee3d2e1a7",
+      "calls": 4,
+      "bytes": 39086,
+      "cumulativeBytes": 86857,
+      "discovered": true,
+      "initialContextBytes": 1295249,
+      "initialTokens": 431750,
+      "admissionCap": 400000000,
+      "feasibility": {
+        "classification": "budget-infeasible",
+        "reasons": [
+          "reader_context"
+        ],
+        "estimatedRepeatedInputTokens": 2253107
+      }
+    },
+    {
+      "traceId": "gen-kiln-105",
+      "probeId": "p01",
+      "arm": "continuity-pack-cold",
+      "sourceSha256": "0a1f35512916126cc6b10a863cd2ba218889325e48c87bd35b61ad8e72038558",
+      "calls": 3,
+      "bytes": 35460,
+      "cumulativeBytes": 72367,
+      "discovered": true,
+      "initialContextBytes": 98979,
+      "initialTokens": 32993,
+      "admissionCap": 400000000,
+      "feasibility": {
+        "classification": "feasible",
+        "reasons": [],
+        "estimatedRepeatedInputTokens": 209139
+      }
+    },
+    {
+      "traceId": "gen-kiln-105",
+      "probeId": "p02",
+      "arm": "continuity-pack-cold",
+      "sourceSha256": "617d90e4d48dcfa8f2a641513d9edcf81bfc9cd5b000de30ade6c1bc9876148c",
+      "calls": 3,
+      "bytes": 20280,
+      "cumulativeBytes": 39792,
+      "discovered": true,
+      "initialContextBytes": 98968,
+      "initialTokens": 32990,
+      "admissionCap": 400000000,
+      "feasibility": {
+        "classification": "feasible",
+        "reasons": [],
+        "estimatedRepeatedInputTokens": 176552
+      }
+    },
+    {
+      "traceId": "gen-kiln-105",
+      "probeId": "p03",
+      "arm": "continuity-pack-cold",
+      "sourceSha256": "c756871dd366a70e54a83bfe5d24e77ca045654370a27a3805389aaee3d2e1a7",
+      "calls": 4,
+      "bytes": 39086,
+      "cumulativeBytes": 86857,
+      "discovered": true,
+      "initialContextBytes": 98965,
+      "initialTokens": 32989,
+      "admissionCap": 400000000,
+      "feasibility": {
+        "classification": "feasible",
+        "reasons": [],
+        "estimatedRepeatedInputTokens": 259302
+      }
+    },
+    {
+      "traceId": "gen-cider-106",
+      "probeId": "p01",
+      "arm": "native-lookup",
+      "sourceSha256": "d700957a57ad348f6b2a9a63b59f6d7b4672350e7a3e000a4f5c411b1a010f1e",
+      "calls": 3,
+      "bytes": 19287,
+      "cumulativeBytes": 38823,
+      "discovered": true,
+      "initialContextBytes": 1273332,
+      "initialTokens": 424444,
+      "admissionCap": 400000000,
+      "feasibility": {
+        "classification": "budget-infeasible",
+        "reasons": [
+          "reader_context"
+        ],
+        "estimatedRepeatedInputTokens": 1741399
+      }
+    },
+    {
+      "traceId": "gen-cider-106",
+      "probeId": "p02",
+      "arm": "native-lookup",
+      "sourceSha256": "6ca756616e5ef7fead5961387e53358f66595c4f7049166b1e22e4dc2495cc54",
+      "calls": 3,
+      "bytes": 21147,
+      "cumulativeBytes": 40684,
+      "discovered": true,
+      "initialContextBytes": 1273325,
+      "initialTokens": 424442,
+      "admissionCap": 400000000,
+      "feasibility": {
+        "classification": "budget-infeasible",
+        "reasons": [
+          "reader_context"
+        ],
+        "estimatedRepeatedInputTokens": 1743252
+      }
+    },
+    {
+      "traceId": "gen-cider-106",
+      "probeId": "p03",
+      "arm": "native-lookup",
+      "sourceSha256": "8ffce69f4b42443c7cafc70de8cd2e877a607e83645f1a7cb963e5f5f58ad361",
+      "calls": 5,
+      "bytes": 46227,
+      "cumulativeBytes": 134540,
+      "discovered": true,
+      "initialContextBytes": 1273320,
+      "initialTokens": 424440,
+      "admissionCap": 400000000,
+      "feasibility": {
+        "classification": "budget-infeasible",
+        "reasons": [
+          "reader_context"
+        ],
+        "estimatedRepeatedInputTokens": 2691980
+      }
+    },
+    {
+      "traceId": "gen-cider-106",
+      "probeId": "p01",
+      "arm": "continuity-pack-cold",
+      "sourceSha256": "d700957a57ad348f6b2a9a63b59f6d7b4672350e7a3e000a4f5c411b1a010f1e",
+      "calls": 2,
+      "bytes": 15674,
+      "cumulativeBytes": 27984,
+      "discovered": true,
+      "initialContextBytes": 98291,
+      "initialTokens": 32764,
+      "admissionCap": 400000000,
+      "feasibility": {
+        "classification": "feasible",
+        "reasons": [],
+        "estimatedRepeatedInputTokens": 128976
+      }
+    },
+    {
+      "traceId": "gen-cider-106",
+      "probeId": "p02",
+      "arm": "continuity-pack-cold",
+      "sourceSha256": "6ca756616e5ef7fead5961387e53358f66595c4f7049166b1e22e4dc2495cc54",
+      "calls": 3,
+      "bytes": 21147,
+      "cumulativeBytes": 40684,
+      "discovered": true,
+      "initialContextBytes": 98284,
+      "initialTokens": 32762,
+      "admissionCap": 400000000,
+      "feasibility": {
+        "classification": "feasible",
+        "reasons": [],
+        "estimatedRepeatedInputTokens": 176532
+      }
+    },
+    {
+      "traceId": "gen-cider-106",
+      "probeId": "p03",
+      "arm": "continuity-pack-cold",
+      "sourceSha256": "8ffce69f4b42443c7cafc70de8cd2e877a607e83645f1a7cb963e5f5f58ad361",
+      "calls": 5,
+      "bytes": 46227,
+      "cumulativeBytes": 134540,
+      "discovered": true,
+      "initialContextBytes": 98279,
+      "initialTokens": 32760,
+      "admissionCap": 400000000,
+      "feasibility": {
+        "classification": "feasible",
+        "reasons": [],
+        "estimatedRepeatedInputTokens": 341900
+      }
+    },
+    {
+      "traceId": "gen-rig-107",
+      "probeId": "p01",
+      "arm": "native-lookup",
+      "sourceSha256": "7f4eee7041fc49af7f222bfe575d40d53ed071d3b10bda2de21ef4048ae763ea",
+      "calls": 3,
+      "bytes": 19509,
+      "cumulativeBytes": 39023,
+      "discovered": true,
+      "initialContextBytes": 1321505,
+      "initialTokens": 440502,
+      "admissionCap": 400000000,
+      "feasibility": {
+        "classification": "budget-infeasible",
+        "reasons": [
+          "reader_context"
+        ],
+        "estimatedRepeatedInputTokens": 1805831
+      }
+    },
+    {
+      "traceId": "gen-rig-107",
+      "probeId": "p02",
+      "arm": "native-lookup",
+      "sourceSha256": "68486f0148d6102ae09639b2f65aa679525d714ea184d8ddd5cce155d3f571ff",
+      "calls": 3,
+      "bytes": 20974,
+      "cumulativeBytes": 40492,
+      "discovered": true,
+      "initialContextBytes": 1321495,
+      "initialTokens": 440499,
+      "admissionCap": 400000000,
+      "feasibility": {
+        "classification": "budget-infeasible",
+        "reasons": [
+          "reader_context"
+        ],
+        "estimatedRepeatedInputTokens": 1807288
+      }
+    },
+    {
+      "traceId": "gen-rig-107",
+      "probeId": "p03",
+      "arm": "native-lookup",
+      "sourceSha256": "75ad974286c7b7cffae0de2b4c24f2de71652b33d20a6c238df0951e70551213",
+      "calls": 5,
+      "bytes": 48305,
+      "cumulativeBytes": 136634,
+      "discovered": true,
+      "initialContextBytes": 1321491,
+      "initialTokens": 440497,
+      "admissionCap": 400000000,
+      "feasibility": {
+        "classification": "budget-infeasible",
+        "reasons": [
+          "reader_context"
+        ],
+        "estimatedRepeatedInputTokens": 2790416
+      }
+    },
+    {
+      "traceId": "gen-rig-107",
+      "probeId": "p01",
+      "arm": "continuity-pack-cold",
+      "sourceSha256": "7f4eee7041fc49af7f222bfe575d40d53ed071d3b10bda2de21ef4048ae763ea",
+      "calls": 2,
+      "bytes": 15902,
+      "cumulativeBytes": 28202,
+      "discovered": true,
+      "initialContextBytes": 93479,
+      "initialTokens": 32830,
+      "admissionCap": 400000000,
+      "feasibility": {
+        "classification": "feasible",
+        "reasons": [],
+        "estimatedRepeatedInputTokens": 129392
+      }
+    },
+    {
+      "traceId": "gen-rig-107",
+      "probeId": "p02",
+      "arm": "continuity-pack-cold",
+      "sourceSha256": "68486f0148d6102ae09639b2f65aa679525d714ea184d8ddd5cce155d3f571ff",
+      "calls": 3,
+      "bytes": 20974,
+      "cumulativeBytes": 40492,
+      "discovered": true,
+      "initialContextBytes": 93469,
+      "initialTokens": 32830,
+      "admissionCap": 400000000,
+      "feasibility": {
+        "classification": "feasible",
+        "reasons": [],
+        "estimatedRepeatedInputTokens": 176612
+      }
+    },
+    {
+      "traceId": "gen-rig-107",
+      "probeId": "p03",
+      "arm": "continuity-pack-cold",
+      "sourceSha256": "75ad974286c7b7cffae0de2b4c24f2de71652b33d20a6c238df0951e70551213",
+      "calls": 5,
+      "bytes": 48305,
+      "cumulativeBytes": 136634,
+      "discovered": true,
+      "initialContextBytes": 93465,
+      "initialTokens": 32830,
+      "admissionCap": 400000000,
+      "feasibility": {
+        "classification": "feasible",
+        "reasons": [],
+        "estimatedRepeatedInputTokens": 344414
+      }
+    },
+    {
+      "traceId": "gen-app-108",
+      "probeId": "p01",
+      "arm": "native-lookup",
+      "sourceSha256": "a18c1d84928f4cb428e25fc10dc07f05bdf5d5d99a62963bb18963fcffd59b44",
+      "calls": 3,
+      "bytes": 19909,
+      "cumulativeBytes": 39419,
+      "discovered": true,
+      "initialContextBytes": 1268721,
+      "initialTokens": 422907,
+      "admissionCap": 400000000,
+      "feasibility": {
+        "classification": "budget-infeasible",
+        "reasons": [
+          "reader_context"
+        ],
+        "estimatedRepeatedInputTokens": 1735847
+      }
+    },
+    {
+      "traceId": "gen-app-108",
+      "probeId": "p02",
+      "arm": "native-lookup",
+      "sourceSha256": "2d6119512784ba350686b483b36d3ac9847c2f5d2ab3a42b884112d311b08f94",
+      "calls": 3,
+      "bytes": 20598,
+      "cumulativeBytes": 40113,
+      "discovered": true,
+      "initialContextBytes": 1268715,
+      "initialTokens": 422905,
+      "admissionCap": 400000000,
+      "feasibility": {
+        "classification": "budget-infeasible",
+        "reasons": [
+          "reader_context"
+        ],
+        "estimatedRepeatedInputTokens": 1736533
+      }
+    },
+    {
+      "traceId": "gen-app-108",
+      "probeId": "p03",
+      "arm": "native-lookup",
+      "sourceSha256": "c7916ad0b8b9a9ebf81f56911fecb132f9d682cc616d2a2e7d7dee98a8715f59",
+      "calls": 5,
+      "bytes": 45185,
+      "cumulativeBytes": 133470,
+      "discovered": true,
+      "initialContextBytes": 1268717,
+      "initialTokens": 422906,
+      "admissionCap": 400000000,
+      "feasibility": {
+        "classification": "budget-infeasible",
+        "reasons": [
+          "reader_context"
+        ],
+        "estimatedRepeatedInputTokens": 2681706
+      }
+    },
+    {
+      "traceId": "gen-app-108",
+      "probeId": "p01",
+      "arm": "continuity-pack-cold",
+      "sourceSha256": "a18c1d84928f4cb428e25fc10dc07f05bdf5d5d99a62963bb18963fcffd59b44",
+      "calls": 2,
+      "bytes": 16302,
+      "cumulativeBytes": 28598,
+      "discovered": true,
+      "initialContextBytes": 98406,
+      "initialTokens": 32835,
+      "admissionCap": 400000000,
+      "feasibility": {
+        "classification": "feasible",
+        "reasons": [],
+        "estimatedRepeatedInputTokens": 129803
+      }
+    },
+    {
+      "traceId": "gen-app-108",
+      "probeId": "p02",
+      "arm": "continuity-pack-cold",
+      "sourceSha256": "2d6119512784ba350686b483b36d3ac9847c2f5d2ab3a42b884112d311b08f94",
+      "calls": 3,
+      "bytes": 20598,
+      "cumulativeBytes": 40113,
+      "discovered": true,
+      "initialContextBytes": 98400,
+      "initialTokens": 32835,
+      "admissionCap": 400000000,
+      "feasibility": {
+        "classification": "feasible",
+        "reasons": [],
+        "estimatedRepeatedInputTokens": 176253
+      }
+    },
+    {
+      "traceId": "gen-app-108",
+      "probeId": "p03",
+      "arm": "continuity-pack-cold",
+      "sourceSha256": "c7916ad0b8b9a9ebf81f56911fecb132f9d682cc616d2a2e7d7dee98a8715f59",
+      "calls": 5,
+      "bytes": 45185,
+      "cumulativeBytes": 133470,
+      "discovered": true,
+      "initialContextBytes": 98402,
+      "initialTokens": 32835,
+      "admissionCap": 400000000,
+      "feasibility": {
+        "classification": "feasible",
+        "reasons": [],
+        "estimatedRepeatedInputTokens": 341280
+      }
+    },
+    {
+      "traceId": "gen-grant-101-distractors",
+      "probeId": "p01",
+      "arm": "native-lookup",
+      "sourceSha256": "a9f0c839ad033ae0245c7536435db58b6dfbacdeb23fcd539283f267dcc30f1d",
+      "calls": 3,
+      "bytes": 20875,
+      "cumulativeBytes": 40449,
+      "discovered": true,
+      "initialContextBytes": 1304297,
+      "initialTokens": 434766,
+      "admissionCap": 400000000,
+      "feasibility": {
+        "classification": "budget-infeasible",
+        "reasons": [
+          "reader_context"
+        ],
+        "estimatedRepeatedInputTokens": 1784313
+      }
+    },
+    {
+      "traceId": "gen-grant-101-distractors",
+      "probeId": "p02",
+      "arm": "native-lookup",
+      "sourceSha256": "10b72f9ae6499e2b2b223a89647308af4301552f43e037a8ac24d054ffc7a0f0",
+      "calls": 3,
+      "bytes": 21268,
+      "cumulativeBytes": 40833,
+      "discovered": true,
+      "initialContextBytes": 1304288,
+      "initialTokens": 434763,
+      "admissionCap": 400000000,
+      "feasibility": {
+        "classification": "budget-infeasible",
+        "reasons": [
+          "reader_context"
+        ],
+        "estimatedRepeatedInputTokens": 1784685
+      }
+    },
+    {
+      "traceId": "gen-grant-101-distractors",
+      "probeId": "p03",
+      "arm": "native-lookup",
+      "sourceSha256": "b147b78dfae22667ef8c55236bdda900423e43575e180170f7bb43f6e5a42bc2",
+      "calls": 4,
+      "bytes": 36050,
+      "cumulativeBytes": 83915,
+      "discovered": true,
+      "initialContextBytes": 1304283,
+      "initialTokens": 434761,
+      "admissionCap": 400000000,
+      "feasibility": {
+        "classification": "budget-infeasible",
+        "reasons": [
+          "reader_context"
+        ],
+        "estimatedRepeatedInputTokens": 2265220
+      }
+    },
+    {
+      "traceId": "gen-grant-101-distractors",
+      "probeId": "p01",
+      "arm": "continuity-pack-cold",
+      "sourceSha256": "a9f0c839ad033ae0245c7536435db58b6dfbacdeb23fcd539283f267dcc30f1d",
+      "calls": 2,
+      "bytes": 17248,
+      "cumulativeBytes": 29568,
+      "discovered": true,
+      "initialContextBytes": 97645,
+      "initialTokens": 32549,
+      "admissionCap": 400000000,
+      "feasibility": {
+        "classification": "feasible",
+        "reasons": [],
+        "estimatedRepeatedInputTokens": 129915
+      }
+    },
+    {
+      "traceId": "gen-grant-101-distractors",
+      "probeId": "p02",
+      "arm": "continuity-pack-cold",
+      "sourceSha256": "10b72f9ae6499e2b2b223a89647308af4301552f43e037a8ac24d054ffc7a0f0",
+      "calls": 3,
+      "bytes": 21268,
+      "cumulativeBytes": 40833,
+      "discovered": true,
+      "initialContextBytes": 97636,
+      "initialTokens": 32546,
+      "admissionCap": 400000000,
+      "feasibility": {
+        "classification": "feasible",
+        "reasons": [],
+        "estimatedRepeatedInputTokens": 175817
+      }
+    },
+    {
+      "traceId": "gen-grant-101-distractors",
+      "probeId": "p03",
+      "arm": "continuity-pack-cold",
+      "sourceSha256": "b147b78dfae22667ef8c55236bdda900423e43575e180170f7bb43f6e5a42bc2",
+      "calls": 4,
+      "bytes": 36050,
+      "cumulativeBytes": 83915,
+      "discovered": true,
+      "initialContextBytes": 97631,
+      "initialTokens": 32544,
+      "admissionCap": 400000000,
+      "feasibility": {
+        "classification": "feasible",
+        "reasons": [],
+        "estimatedRepeatedInputTokens": 254135
+      }
+    },
+    {
+      "traceId": "gen-oven-102-distractors",
+      "probeId": "p01",
+      "arm": "native-lookup",
+      "sourceSha256": "c8a4301f8cbca3f2f206c3803b101c6b32d0436b9b65de2f6cb128bd03be75aa",
+      "calls": 3,
+      "bytes": 20596,
+      "cumulativeBytes": 40155,
+      "discovered": true,
+      "initialContextBytes": 1276515,
+      "initialTokens": 425505,
+      "admissionCap": 400000000,
+      "feasibility": {
+        "classification": "budget-infeasible",
+        "reasons": [
+          "reader_context"
+        ],
+        "estimatedRepeatedInputTokens": 1746975
+      }
+    },
+    {
+      "traceId": "gen-oven-102-distractors",
+      "probeId": "p02",
+      "arm": "native-lookup",
+      "sourceSha256": "5073628176fc490564a4c77fc97630a891510cb846470bb820fd5a5ec351c6d6",
+      "calls": 3,
+      "bytes": 19425,
+      "cumulativeBytes": 38973,
+      "discovered": true,
+      "initialContextBytes": 1276504,
+      "initialTokens": 425502,
+      "admissionCap": 400000000,
+      "feasibility": {
+        "classification": "budget-infeasible",
+        "reasons": [
+          "reader_context"
+        ],
+        "estimatedRepeatedInputTokens": 1745781
+      }
+    },
+    {
+      "traceId": "gen-oven-102-distractors",
+      "probeId": "p03",
+      "arm": "native-lookup",
+      "sourceSha256": "8bf4f29c13ca8438ae4f79aab1c4499fc411a87e5ff9026e1a3213e7cf8ea7d5",
+      "calls": 6,
+      "bytes": 61718,
+      "cumulativeBytes": 203069,
+      "discovered": true,
+      "initialContextBytes": 1276504,
+      "initialTokens": 425502,
+      "admissionCap": 400000000,
+      "feasibility": {
+        "classification": "budget-infeasible",
+        "reasons": [
+          "reader_context"
+        ],
+        "estimatedRepeatedInputTokens": 3196283
+      }
+    },
+    {
+      "traceId": "gen-oven-102-distractors",
+      "probeId": "p01",
+      "arm": "continuity-pack-cold",
+      "sourceSha256": "c8a4301f8cbca3f2f206c3803b101c6b32d0436b9b65de2f6cb128bd03be75aa",
+      "calls": 2,
+      "bytes": 16974,
+      "cumulativeBytes": 29289,
+      "discovered": true,
+      "initialContextBytes": 92777,
+      "initialTokens": 32398,
+      "admissionCap": 400000000,
+      "feasibility": {
+        "classification": "feasible",
+        "reasons": [],
+        "estimatedRepeatedInputTokens": 129183
+      }
+    },
+    {
+      "traceId": "gen-oven-102-distractors",
+      "probeId": "p02",
+      "arm": "continuity-pack-cold",
+      "sourceSha256": "5073628176fc490564a4c77fc97630a891510cb846470bb820fd5a5ec351c6d6",
+      "calls": 3,
+      "bytes": 19425,
+      "cumulativeBytes": 38973,
+      "discovered": true,
+      "initialContextBytes": 92766,
+      "initialTokens": 32398,
+      "admissionCap": 400000000,
+      "feasibility": {
+        "classification": "feasible",
+        "reasons": [],
+        "estimatedRepeatedInputTokens": 173365
+      }
+    },
+    {
+      "traceId": "gen-oven-102-distractors",
+      "probeId": "p03",
+      "arm": "continuity-pack-cold",
+      "sourceSha256": "8bf4f29c13ca8438ae4f79aab1c4499fc411a87e5ff9026e1a3213e7cf8ea7d5",
+      "calls": 6,
+      "bytes": 61718,
+      "cumulativeBytes": 203069,
+      "discovered": true,
+      "initialContextBytes": 92766,
+      "initialTokens": 32398,
+      "admissionCap": 400000000,
+      "feasibility": {
+        "classification": "feasible",
+        "reasons": [],
+        "estimatedRepeatedInputTokens": 444555
+      }
+    },
+    {
+      "traceId": "gen-rowing-103-distractors",
+      "probeId": "p01",
+      "arm": "native-lookup",
+      "sourceSha256": "fbf62d6a436ef0078f1e8b6bc8c2ced6aa0dc38905b55b3a64e43af16233e8ec",
+      "calls": 3,
+      "bytes": 21519,
+      "cumulativeBytes": 41104,
+      "discovered": true,
+      "initialContextBytes": 1261233,
+      "initialTokens": 420411,
+      "admissionCap": 400000000,
+      "feasibility": {
+        "classification": "budget-infeasible",
+        "reasons": [
+          "reader_context"
+        ],
+        "estimatedRepeatedInputTokens": 1727548
+      }
+    },
+    {
+      "traceId": "gen-rowing-103-distractors",
+      "probeId": "p02",
+      "arm": "native-lookup",
+      "sourceSha256": "df4e0225dc4ef130d03ad33e1696b5c1e57544104bd448fbea620ee701216704",
+      "calls": 3,
+      "bytes": 21234,
+      "cumulativeBytes": 40790,
+      "discovered": true,
+      "initialContextBytes": 1261228,
+      "initialTokens": 420410,
+      "admissionCap": 400000000,
+      "feasibility": {
+        "classification": "budget-infeasible",
+        "reasons": [
+          "reader_context"
+        ],
+        "estimatedRepeatedInputTokens": 1727230
+      }
+    },
+    {
+      "traceId": "gen-rowing-103-distractors",
+      "probeId": "p03",
+      "arm": "native-lookup",
+      "sourceSha256": "269329b0284c11966fb0c533868d9aa3d39b3b22b2090ae8e9197dbcc7b98cd3",
+      "calls": 5,
+      "bytes": 48376,
+      "cumulativeBytes": 136827,
+      "discovered": true,
+      "initialContextBytes": 1261225,
+      "initialTokens": 420409,
+      "admissionCap": 400000000,
+      "feasibility": {
+        "classification": "budget-infeasible",
+        "reasons": [
+          "reader_context"
+        ],
+        "estimatedRepeatedInputTokens": 2670081
+      }
+    },
+    {
+      "traceId": "gen-rowing-103-distractors",
+      "probeId": "p01",
+      "arm": "continuity-pack-cold",
+      "sourceSha256": "fbf62d6a436ef0078f1e8b6bc8c2ced6aa0dc38905b55b3a64e43af16233e8ec",
+      "calls": 2,
+      "bytes": 17891,
+      "cumulativeBytes": 30220,
+      "discovered": true,
+      "initialContextBytes": 107564,
+      "initialTokens": 35855,
+      "admissionCap": 400000000,
+      "feasibility": {
+        "classification": "feasible",
+        "reasons": [],
+        "estimatedRepeatedInputTokens": 140485
+      }
+    },
+    {
+      "traceId": "gen-rowing-103-distractors",
+      "probeId": "p02",
+      "arm": "continuity-pack-cold",
+      "sourceSha256": "df4e0225dc4ef130d03ad33e1696b5c1e57544104bd448fbea620ee701216704",
+      "calls": 3,
+      "bytes": 21234,
+      "cumulativeBytes": 40790,
+      "discovered": true,
+      "initialContextBytes": 107559,
+      "initialTokens": 35853,
+      "admissionCap": 400000000,
+      "feasibility": {
+        "classification": "feasible",
+        "reasons": [],
+        "estimatedRepeatedInputTokens": 189002
+      }
+    },
+    {
+      "traceId": "gen-rowing-103-distractors",
+      "probeId": "p03",
+      "arm": "continuity-pack-cold",
+      "sourceSha256": "269329b0284c11966fb0c533868d9aa3d39b3b22b2090ae8e9197dbcc7b98cd3",
+      "calls": 5,
+      "bytes": 48376,
+      "cumulativeBytes": 136827,
+      "discovered": true,
+      "initialContextBytes": 107556,
+      "initialTokens": 35852,
+      "admissionCap": 400000000,
+      "feasibility": {
+        "classification": "feasible",
+        "reasons": [],
+        "estimatedRepeatedInputTokens": 362739
+      }
+    },
+    {
+      "traceId": "gen-zine-104-distractors",
+      "probeId": "p01",
+      "arm": "native-lookup",
+      "sourceSha256": "792e09af5d3ec51d6d9b8c6d53bfb5cba938aba5468ee0b0304e7f0535b5248e",
+      "calls": 3,
+      "bytes": 19795,
+      "cumulativeBytes": 39360,
+      "discovered": true,
+      "initialContextBytes": 1250682,
+      "initialTokens": 416894,
+      "admissionCap": 400000000,
+      "feasibility": {
+        "classification": "budget-infeasible",
+        "reasons": [
+          "reader_context"
+        ],
+        "estimatedRepeatedInputTokens": 1711736
+      }
+    },
+    {
+      "traceId": "gen-zine-104-distractors",
+      "probeId": "p02",
+      "arm": "native-lookup",
+      "sourceSha256": "3d4cf951aa595004bbda4779e8d8fd44288cff71fa0d2cf23db84b04c81fc516",
+      "calls": 3,
+      "bytes": 19000,
+      "cumulativeBytes": 38560,
+      "discovered": true,
+      "initialContextBytes": 1250678,
+      "initialTokens": 416893,
+      "admissionCap": 400000000,
+      "feasibility": {
+        "classification": "budget-infeasible",
+        "reasons": [
+          "reader_context"
+        ],
+        "estimatedRepeatedInputTokens": 1710932
+      }
+    },
+    {
+      "traceId": "gen-zine-104-distractors",
+      "probeId": "p03",
+      "arm": "native-lookup",
+      "sourceSha256": "4024d9c943fa30005b9172502022f3eb3c087dfb85205f99cbe43aa05c4419d4",
+      "calls": 5,
+      "bytes": 48370,
+      "cumulativeBytes": 136833,
+      "discovered": true,
+      "initialContextBytes": 1250673,
+      "initialTokens": 416891,
+      "admissionCap": 400000000,
+      "feasibility": {
+        "classification": "budget-infeasible",
+        "reasons": [
+          "reader_context"
+        ],
+        "estimatedRepeatedInputTokens": 2648979
+      }
+    },
+    {
+      "traceId": "gen-zine-104-distractors",
+      "probeId": "p01",
+      "arm": "continuity-pack-cold",
+      "sourceSha256": "792e09af5d3ec51d6d9b8c6d53bfb5cba938aba5468ee0b0304e7f0535b5248e",
+      "calls": 2,
+      "bytes": 16175,
+      "cumulativeBytes": 28500,
+      "discovered": true,
+      "initialContextBytes": 96677,
+      "initialTokens": 32226,
+      "admissionCap": 400000000,
+      "feasibility": {
+        "classification": "feasible",
+        "reasons": [],
+        "estimatedRepeatedInputTokens": 127878
+      }
+    },
+    {
+      "traceId": "gen-zine-104-distractors",
+      "probeId": "p02",
+      "arm": "continuity-pack-cold",
+      "sourceSha256": "3d4cf951aa595004bbda4779e8d8fd44288cff71fa0d2cf23db84b04c81fc516",
+      "calls": 3,
+      "bytes": 19000,
+      "cumulativeBytes": 38560,
+      "discovered": true,
+      "initialContextBytes": 96673,
+      "initialTokens": 32225,
+      "admissionCap": 400000000,
+      "feasibility": {
+        "classification": "feasible",
+        "reasons": [],
+        "estimatedRepeatedInputTokens": 172260
+      }
+    },
+    {
+      "traceId": "gen-zine-104-distractors",
+      "probeId": "p03",
+      "arm": "continuity-pack-cold",
+      "sourceSha256": "4024d9c943fa30005b9172502022f3eb3c087dfb85205f99cbe43aa05c4419d4",
+      "calls": 5,
+      "bytes": 48370,
+      "cumulativeBytes": 136833,
+      "discovered": true,
+      "initialContextBytes": 96668,
+      "initialTokens": 32223,
+      "admissionCap": 400000000,
+      "feasibility": {
+        "classification": "feasible",
+        "reasons": [],
+        "estimatedRepeatedInputTokens": 340971
+      }
+    },
+    {
+      "traceId": "gen-kiln-105-distractors",
+      "probeId": "p01",
+      "arm": "native-lookup",
+      "sourceSha256": "40e9a2ce9b2dc66ce6399ad9d2c1bdb9da27a8a6d54c2dc5fed72755c887b9b0",
+      "calls": 4,
+      "bytes": 39122,
+      "cumulativeBytes": 86943,
+      "discovered": true,
+      "initialContextBytes": 1296355,
+      "initialTokens": 432119,
+      "admissionCap": 400000000,
+      "feasibility": {
+        "classification": "budget-infeasible",
+        "reasons": [
+          "reader_context"
+        ],
+        "estimatedRepeatedInputTokens": 2255038
+      }
+    },
+    {
+      "traceId": "gen-kiln-105-distractors",
+      "probeId": "p02",
+      "arm": "native-lookup",
+      "sourceSha256": "1fe42e03a9620e7c034337fc3ea04005f3a41c6270a3fd9a5e2c4d0aa651ce0d",
+      "calls": 3,
+      "bytes": 20316,
+      "cumulativeBytes": 39864,
+      "discovered": true,
+      "initialContextBytes": 1296344,
+      "initialTokens": 432115,
+      "admissionCap": 400000000,
+      "feasibility": {
+        "classification": "budget-infeasible",
+        "reasons": [
+          "reader_context"
+        ],
+        "estimatedRepeatedInputTokens": 1773124
+      }
+    },
+    {
+      "traceId": "gen-kiln-105-distractors",
+      "probeId": "p03",
+      "arm": "native-lookup",
+      "sourceSha256": "9d948b947aedfa9a268019ea4605e5523ae1110128494d1a478e5b2e8335c16c",
+      "calls": 4,
+      "bytes": 39134,
+      "cumulativeBytes": 86977,
+      "discovered": true,
+      "initialContextBytes": 1296341,
+      "initialTokens": 432114,
+      "admissionCap": 400000000,
+      "feasibility": {
+        "classification": "budget-infeasible",
+        "reasons": [
+          "reader_context"
+        ],
+        "estimatedRepeatedInputTokens": 2255047
+      }
+    },
+    {
+      "traceId": "gen-kiln-105-distractors",
+      "probeId": "p01",
+      "arm": "continuity-pack-cold",
+      "sourceSha256": "40e9a2ce9b2dc66ce6399ad9d2c1bdb9da27a8a6d54c2dc5fed72755c887b9b0",
+      "calls": 3,
+      "bytes": 35496,
+      "cumulativeBytes": 72439,
+      "discovered": true,
+      "initialContextBytes": 98991,
+      "initialTokens": 32997,
+      "admissionCap": 400000000,
+      "feasibility": {
+        "classification": "feasible",
+        "reasons": [],
+        "estimatedRepeatedInputTokens": 209227
+      }
+    },
+    {
+      "traceId": "gen-kiln-105-distractors",
+      "probeId": "p02",
+      "arm": "continuity-pack-cold",
+      "sourceSha256": "1fe42e03a9620e7c034337fc3ea04005f3a41c6270a3fd9a5e2c4d0aa651ce0d",
+      "calls": 3,
+      "bytes": 20316,
+      "cumulativeBytes": 39864,
+      "discovered": true,
+      "initialContextBytes": 98980,
+      "initialTokens": 32994,
+      "admissionCap": 400000000,
+      "feasibility": {
+        "classification": "feasible",
+        "reasons": [],
+        "estimatedRepeatedInputTokens": 176640
+      }
+    },
+    {
+      "traceId": "gen-kiln-105-distractors",
+      "probeId": "p03",
+      "arm": "continuity-pack-cold",
+      "sourceSha256": "9d948b947aedfa9a268019ea4605e5523ae1110128494d1a478e5b2e8335c16c",
+      "calls": 4,
+      "bytes": 39134,
+      "cumulativeBytes": 86977,
+      "discovered": true,
+      "initialContextBytes": 98977,
+      "initialTokens": 32993,
+      "admissionCap": 400000000,
+      "feasibility": {
+        "classification": "feasible",
+        "reasons": [],
+        "estimatedRepeatedInputTokens": 259442
+      }
+    },
+    {
+      "traceId": "gen-cider-106-distractors",
+      "probeId": "p01",
+      "arm": "native-lookup",
+      "sourceSha256": "a73abd495ad8837bada68be8a75be536a3d4495529972a079fb828942afcc954",
+      "calls": 3,
+      "bytes": 19323,
+      "cumulativeBytes": 38895,
+      "discovered": true,
+      "initialContextBytes": 1274556,
+      "initialTokens": 424852,
+      "admissionCap": 400000000,
+      "feasibility": {
+        "classification": "budget-infeasible",
+        "reasons": [
+          "reader_context"
+        ],
+        "estimatedRepeatedInputTokens": 1743103
+      }
+    },
+    {
+      "traceId": "gen-cider-106-distractors",
+      "probeId": "p02",
+      "arm": "native-lookup",
+      "sourceSha256": "82a014d8f507c99df3520df70851cfac5706e72a6de4f02536f1bc158d420cee",
+      "calls": 3,
+      "bytes": 21183,
+      "cumulativeBytes": 40756,
+      "discovered": true,
+      "initialContextBytes": 1274549,
+      "initialTokens": 424850,
+      "admissionCap": 400000000,
+      "feasibility": {
+        "classification": "budget-infeasible",
+        "reasons": [
+          "reader_context"
+        ],
+        "estimatedRepeatedInputTokens": 1744956
+      }
+    },
+    {
+      "traceId": "gen-cider-106-distractors",
+      "probeId": "p03",
+      "arm": "native-lookup",
+      "sourceSha256": "64047564b82fe36ccd5d491e8644ebfd668728b9308fe82b780cf989af880a44",
+      "calls": 5,
+      "bytes": 46287,
+      "cumulativeBytes": 134720,
+      "discovered": true,
+      "initialContextBytes": 1274544,
+      "initialTokens": 424848,
+      "admissionCap": 400000000,
+      "feasibility": {
+        "classification": "budget-infeasible",
+        "reasons": [
+          "reader_context"
+        ],
+        "estimatedRepeatedInputTokens": 2694608
+      }
+    },
+    {
+      "traceId": "gen-cider-106-distractors",
+      "probeId": "p01",
+      "arm": "continuity-pack-cold",
+      "sourceSha256": "a73abd495ad8837bada68be8a75be536a3d4495529972a079fb828942afcc954",
+      "calls": 2,
+      "bytes": 15698,
+      "cumulativeBytes": 28020,
+      "discovered": true,
+      "initialContextBytes": 98303,
+      "initialTokens": 32768,
+      "admissionCap": 400000000,
+      "feasibility": {
+        "classification": "feasible",
+        "reasons": [],
+        "estimatedRepeatedInputTokens": 129024
+      }
+    },
+    {
+      "traceId": "gen-cider-106-distractors",
+      "probeId": "p02",
+      "arm": "continuity-pack-cold",
+      "sourceSha256": "82a014d8f507c99df3520df70851cfac5706e72a6de4f02536f1bc158d420cee",
+      "calls": 3,
+      "bytes": 21183,
+      "cumulativeBytes": 40756,
+      "discovered": true,
+      "initialContextBytes": 98296,
+      "initialTokens": 32766,
+      "admissionCap": 400000000,
+      "feasibility": {
+        "classification": "feasible",
+        "reasons": [],
+        "estimatedRepeatedInputTokens": 176620
+      }
+    },
+    {
+      "traceId": "gen-cider-106-distractors",
+      "probeId": "p03",
+      "arm": "continuity-pack-cold",
+      "sourceSha256": "64047564b82fe36ccd5d491e8644ebfd668728b9308fe82b780cf989af880a44",
+      "calls": 5,
+      "bytes": 46287,
+      "cumulativeBytes": 134720,
+      "discovered": true,
+      "initialContextBytes": 98291,
+      "initialTokens": 32764,
+      "admissionCap": 400000000,
+      "feasibility": {
+        "classification": "feasible",
+        "reasons": [],
+        "estimatedRepeatedInputTokens": 342104
+      }
+    },
+    {
+      "traceId": "gen-rig-107-distractors",
+      "probeId": "p01",
+      "arm": "native-lookup",
+      "sourceSha256": "b1e619be6086ed5df690cce11888f1a24360a3dd8a5e2fb261403b2f18544f67",
+      "calls": 3,
+      "bytes": 19545,
+      "cumulativeBytes": 39095,
+      "discovered": true,
+      "initialContextBytes": 1322909,
+      "initialTokens": 440970,
+      "admissionCap": 400000000,
+      "feasibility": {
+        "classification": "budget-infeasible",
+        "reasons": [
+          "reader_context"
+        ],
+        "estimatedRepeatedInputTokens": 1807775
+      }
+    },
+    {
+      "traceId": "gen-rig-107-distractors",
+      "probeId": "p02",
+      "arm": "native-lookup",
+      "sourceSha256": "255442671aaa0f1142ece8ddb53f39afb6220f4bfa83d8f882970f53e1b53ce5",
+      "calls": 3,
+      "bytes": 21010,
+      "cumulativeBytes": 40564,
+      "discovered": true,
+      "initialContextBytes": 1322899,
+      "initialTokens": 440967,
+      "admissionCap": 400000000,
+      "feasibility": {
+        "classification": "budget-infeasible",
+        "reasons": [
+          "reader_context"
+        ],
+        "estimatedRepeatedInputTokens": 1809232
+      }
+    },
+    {
+      "traceId": "gen-rig-107-distractors",
+      "probeId": "p03",
+      "arm": "native-lookup",
+      "sourceSha256": "fb9ab624bf8134abc838ed95f821425a41c4f6c6b2e131e98db0707f012bfb28",
+      "calls": 5,
+      "bytes": 48365,
+      "cumulativeBytes": 136814,
+      "discovered": true,
+      "initialContextBytes": 1322895,
+      "initialTokens": 440965,
+      "admissionCap": 400000000,
+      "feasibility": {
+        "classification": "budget-infeasible",
+        "reasons": [
+          "reader_context"
+        ],
+        "estimatedRepeatedInputTokens": 2793404
+      }
+    },
+    {
+      "traceId": "gen-rig-107-distractors",
+      "probeId": "p01",
+      "arm": "continuity-pack-cold",
+      "sourceSha256": "b1e619be6086ed5df690cce11888f1a24360a3dd8a5e2fb261403b2f18544f67",
+      "calls": 2,
+      "bytes": 15926,
+      "cumulativeBytes": 28238,
+      "discovered": true,
+      "initialContextBytes": 93491,
+      "initialTokens": 32830,
+      "admissionCap": 400000000,
+      "feasibility": {
+        "classification": "feasible",
+        "reasons": [],
+        "estimatedRepeatedInputTokens": 129428
+      }
+    },
+    {
+      "traceId": "gen-rig-107-distractors",
+      "probeId": "p02",
+      "arm": "continuity-pack-cold",
+      "sourceSha256": "255442671aaa0f1142ece8ddb53f39afb6220f4bfa83d8f882970f53e1b53ce5",
+      "calls": 3,
+      "bytes": 21010,
+      "cumulativeBytes": 40564,
+      "discovered": true,
+      "initialContextBytes": 93481,
+      "initialTokens": 32830,
+      "admissionCap": 400000000,
+      "feasibility": {
+        "classification": "feasible",
+        "reasons": [],
+        "estimatedRepeatedInputTokens": 176684
+      }
+    },
+    {
+      "traceId": "gen-rig-107-distractors",
+      "probeId": "p03",
+      "arm": "continuity-pack-cold",
+      "sourceSha256": "fb9ab624bf8134abc838ed95f821425a41c4f6c6b2e131e98db0707f012bfb28",
+      "calls": 5,
+      "bytes": 48365,
+      "cumulativeBytes": 136814,
+      "discovered": true,
+      "initialContextBytes": 93477,
+      "initialTokens": 32830,
+      "admissionCap": 400000000,
+      "feasibility": {
+        "classification": "feasible",
+        "reasons": [],
+        "estimatedRepeatedInputTokens": 344594
+      }
+    },
+    {
+      "traceId": "gen-app-108-distractors",
+      "probeId": "p01",
+      "arm": "native-lookup",
+      "sourceSha256": "3ab14077d7f0c44710a5f704ea2b8216c61705f49fc2fd4757d68e90bb475884",
+      "calls": 3,
+      "bytes": 19945,
+      "cumulativeBytes": 39491,
+      "discovered": true,
+      "initialContextBytes": 1269946,
+      "initialTokens": 423316,
+      "admissionCap": 400000000,
+      "feasibility": {
+        "classification": "budget-infeasible",
+        "reasons": [
+          "reader_context"
+        ],
+        "estimatedRepeatedInputTokens": 1737555
+      }
+    },
+    {
+      "traceId": "gen-app-108-distractors",
+      "probeId": "p02",
+      "arm": "native-lookup",
+      "sourceSha256": "1016391fd715454cb89e7022bf36be67d32700f74704b059679afaa0daf9ded9",
+      "calls": 3,
+      "bytes": 20634,
+      "cumulativeBytes": 40185,
+      "discovered": true,
+      "initialContextBytes": 1269940,
+      "initialTokens": 423314,
+      "admissionCap": 400000000,
+      "feasibility": {
+        "classification": "budget-infeasible",
+        "reasons": [
+          "reader_context"
+        ],
+        "estimatedRepeatedInputTokens": 1738241
+      }
+    },
+    {
+      "traceId": "gen-app-108-distractors",
+      "probeId": "p03",
+      "arm": "native-lookup",
+      "sourceSha256": "90ae1b9dfc9dcfcd48e2a3128090b977686bf74d3510fc50ddb974ea8844e4e2",
+      "calls": 5,
+      "bytes": 45245,
+      "cumulativeBytes": 133650,
+      "discovered": true,
+      "initialContextBytes": 1269942,
+      "initialTokens": 423314,
+      "admissionCap": 400000000,
+      "feasibility": {
+        "classification": "budget-infeasible",
+        "reasons": [
+          "reader_context"
+        ],
+        "estimatedRepeatedInputTokens": 2684334
+      }
+    },
+    {
+      "traceId": "gen-app-108-distractors",
+      "probeId": "p01",
+      "arm": "continuity-pack-cold",
+      "sourceSha256": "3ab14077d7f0c44710a5f704ea2b8216c61705f49fc2fd4757d68e90bb475884",
+      "calls": 2,
+      "bytes": 16326,
+      "cumulativeBytes": 28634,
+      "discovered": true,
+      "initialContextBytes": 98418,
+      "initialTokens": 32835,
+      "admissionCap": 400000000,
+      "feasibility": {
+        "classification": "feasible",
+        "reasons": [],
+        "estimatedRepeatedInputTokens": 129839
+      }
+    },
+    {
+      "traceId": "gen-app-108-distractors",
+      "probeId": "p02",
+      "arm": "continuity-pack-cold",
+      "sourceSha256": "1016391fd715454cb89e7022bf36be67d32700f74704b059679afaa0daf9ded9",
+      "calls": 3,
+      "bytes": 20634,
+      "cumulativeBytes": 40185,
+      "discovered": true,
+      "initialContextBytes": 98412,
+      "initialTokens": 32835,
+      "admissionCap": 400000000,
+      "feasibility": {
+        "classification": "feasible",
+        "reasons": [],
+        "estimatedRepeatedInputTokens": 176325
+      }
+    },
+    {
+      "traceId": "gen-app-108-distractors",
+      "probeId": "p03",
+      "arm": "continuity-pack-cold",
+      "sourceSha256": "90ae1b9dfc9dcfcd48e2a3128090b977686bf74d3510fc50ddb974ea8844e4e2",
+      "calls": 5,
+      "bytes": 45245,
+      "cumulativeBytes": 133650,
+      "discovered": true,
+      "initialContextBytes": 98414,
+      "initialTokens": 32835,
+      "admissionCap": 400000000,
+      "feasibility": {
+        "classification": "feasible",
+        "reasons": [],
+        "estimatedRepeatedInputTokens": 341460
+      }
+    },
+    {
+      "traceId": "regression-0",
+      "probeId": "p01",
+      "arm": "native-lookup",
+      "sourceSha256": "78b84419d3bf7a26cf5307af91221572c06dbd529113baf3bbfe5bc88198e91d",
+      "calls": 5,
+      "bytes": 45429,
+      "cumulativeBytes": 132258,
+      "discovered": true,
+      "initialContextBytes": null,
+      "initialTokens": 150000,
+      "admissionCap": 6000000,
+      "feasibility": {
+        "classification": "feasible",
+        "reasons": [],
+        "estimatedRepeatedInputTokens": 1043058
+      }
+    },
+    {
+      "traceId": "regression-0",
+      "probeId": "p01",
+      "arm": "continuity-pack-cold",
+      "sourceSha256": "78b84419d3bf7a26cf5307af91221572c06dbd529113baf3bbfe5bc88198e91d",
+      "calls": 5,
+      "bytes": 45429,
+      "cumulativeBytes": 132258,
+      "discovered": true,
+      "initialContextBytes": null,
+      "initialTokens": 12000,
+      "admissionCap": 6000000,
+      "feasibility": {
+        "classification": "feasible",
+        "reasons": [],
+        "estimatedRepeatedInputTokens": 215058
+      }
+    },
+    {
+      "traceId": "regression-1",
+      "probeId": "p01",
+      "arm": "native-lookup",
+      "sourceSha256": "bec0d5cc7525e0af4b757ca10b6ee5a3ee6c2bf0ffaa09bee2b88a0354830e01",
+      "calls": 3,
+      "bytes": 46223,
+      "cumulativeBytes": 88413,
+      "discovered": true,
+      "initialContextBytes": null,
+      "initialTokens": 150000,
+      "admissionCap": 6000000,
+      "feasibility": {
+        "classification": "feasible",
+        "reasons": [],
+        "estimatedRepeatedInputTokens": 693213
+      }
+    },
+    {
+      "traceId": "regression-1",
+      "probeId": "p01",
+      "arm": "continuity-pack-cold",
+      "sourceSha256": "bec0d5cc7525e0af4b757ca10b6ee5a3ee6c2bf0ffaa09bee2b88a0354830e01",
+      "calls": 3,
+      "bytes": 46223,
+      "cumulativeBytes": 88413,
+      "discovered": true,
+      "initialContextBytes": null,
+      "initialTokens": 12000,
+      "admissionCap": 6000000,
+      "feasibility": {
+        "classification": "feasible",
+        "reasons": [],
+        "estimatedRepeatedInputTokens": 141213
+      }
+    }
+  ]
+}
