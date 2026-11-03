@@ -956,3 +956,144 @@ here. Faux accuracy proves mechanics only. Protocol-covered script changes
 invalidate older code-bound registrations; regenerate them for matching clean
 checkouts, not as execution approval. All raw content and private artifacts
 stay outside checkouts; share only counts, IDs, hashes and numerical summaries.
+
+### Offline guarded request contract
+
+`scripts/lib/continuity-lookup-guard.mjs` exports `guardedLookupModels(models,
+{ contract, permit, assumptions })`. It is plumbing, **not execution authority**:
+no pilot command, controller, authorization, or real route is enabled. All seven
+existing refusal sites remain unchanged (compare parser/main, benchmark
+main/execute, runner non-offline branch/enclosing lookup guard, and probe child).
+The private runner branch is still unreachable for non-offline lookup; it is not
+itself an authorization check. Ordinary readiness remains false.
+
+Create one wrapper per sequential probe run with unique `runId` and `slotId`.
+`LOOKUP_GUARD_CONTRACT` freezes version `lookup-guard-v1`, the exact Sol
+provider/model/API/base URL and high effort. Only `streamSimple` may dispatch;
+other request methods, including native handoff `completeSimple`, refuse with
+`lookup_method_forbidden` and classification `failed/pilot_method_forbidden`.
+Metadata/auth access preserves its receiver; provider metadata cannot expose an
+unguarded dispatch method. Every call asserts SSE, zero retries, no fallback,
+no context1M, and no per-request route overrides. Entry-level retry budgets and
+auxiliary configuration remain the future controller's responsibility.
+
+The turn advanced option `piModelsDecorator(models) => models` wraps normally
+constructed, credentialed Models before dispatch. It is exclusive with
+`piResolvedModels`. It does not replace or duplicate OAuth resolution/refresh.
+
+The last composed `onPayload` runs existing mutation hooks first, then checks the
+final payload and computes:
+
+```text
+U_k = UTF8Bytes(JSON.stringify(finalPayload))
+    + sum(previous settled raw output_tokens in this probe run)
+    + H(finalPayload)
+I = 272000; O = 128000
+```
+
+Opaque reasoning is prohibited in payload 1. Images, remote content, unsupported
+input items and non-function tools refuse. Requests 1–10 may be admitted; request
+11 refuses before any hold or send. `U_k > I` returns
+`not_admitted_input_envelope` before admission. JSON is detached from earlier
+mutation hooks, and fetch verifies the final serialized (or zstd-decoded) body
+against the permitted digest. No default/global fetch is used.
+
+Only raw `response.completed`/`response.incomplete` with nonnegative integer
+`input_tokens` and `output_tokens` can settle. Normalized message usage is never
+used as a substitute. Missing usage, a failed response, or a lost stream retains
+the hold. A dependent next request is refused and stops on
+`lookup_unsettled_dependency`. Raw hooks compose without allowing later hooks to
+rewrite the captured usage. Tiers are allowlisted: `default` 1×, `flex` 0.5×,
+`priority` 2×; an absent tier settles conservatively at 2×. Unknown tiers stop.
+Input includes cache reads/writes; reasoning is not added again to output.
+Post-settlement violations of input ≤ U, output ≤ O, reasoning ≤ output, valid
+cache breakdowns, or catalog cost ≤ hold cause sticky integrity stops. Empty or
+length-terminal replies cannot issue a finalization request: the refusal is
+`pilot_empty_final_output`, classified `failed/pilot_empty_final_output`.
+
+#### Frozen permit interface
+
+`LOOKUP_PERMIT_CONTRACT` freezes interface version `lookup-permit-v1`. The
+injected source implements four awaitable methods. Opaque permits must be
+bound by the future controller to its live epoch, worker, slot, round, sequence,
+payload digest and reservation; the wrapper supplies the request-side bindings.
+
+```text
+admit({ requestId, slotId, round, payloadDigest, rmax })
+  -> opaquePermit | { refused: true, code }
+consume(opaquePermit, bodyDigest) -> void
+settle(opaquePermit, { kind, code?, cost? }, rawUsageOrNull, rawTierOrNull) -> void
+stop(code) -> void
+```
+
+`consume` runs exactly once at injected `options.fetch`, before the network.
+Body mismatch/reuse refuses. `settle` runs once per admitted request; a missing
+tier stays null in the record while `cost` uses 2×. Unknown tiers are redacted to
+null with a fixed integrity code. Usage records allowlist only numeric input,
+output, cache-read/cache-write and reasoning counts, preserving optional-field
+absence rather than forwarding arbitrary raw-event fields. The source must persist the
+hold before granting, reject stale/disconnected epochs, enforce sticky stops,
+and retain unknown/lost reservations. It owns durable cap admission and pricing
+accounting; the guard checks the frozen catalog arithmetic independently.
+
+| Outcome kind | Hold | Stop policy |
+| --- | --- | --- |
+| `refused_pre_send` | None; no permit settlement | Continue; slot outcome |
+| `own_abort_after_send` | Retained as lost | Continue pilot; slot terminal |
+| `settled` | Replace with actual catalog cost | Continue |
+| `lost` | Retained, including admitted abort before fetch | Continue unless a later in-run request depends on it |
+| `integrity_stop` | Retained | Sticky pilot stop |
+
+Refusals thrown inside `onPayload` before admission propagate even if the
+provider normalizes them into zero-usage errors; they are not pilot-wide stops.
+After admission, failure before fetch is conservatively lost, not a fictitious
+no-hold refusal. Own deadline/latency aborts after send retain the hold without
+immediately stopping the pilot. A later request in that terminated run is not
+admissible.
+
+`createTestOnlyLookupPermitSource()` is the only implementation shipped here;
+it is branded `lookup-faux-test-only-v1`, `testOnly: true`, in-memory and
+non-durable. `assertRealLookupPermitSource()` rejects it. Future real-route entry
+must call this guard and independently validate authorization; a brand is not
+an authorization credential. No body, response text or credentials enter permit
+records. The smoke uses two real local processes, loopback MCP and the installed
+serializer hosted by faux Models with injected scripted SSE; external sockets,
+fetch and WebSocket are denied.
+
+#### Registered assumptions: assumed-v1
+
+`LOOKUP_ASSUMPTIONS` is deeply frozen and versioned. These are **assumptions, not
+backend enforcement evidence**. For the pilot they supersede PLAN-B-v2's
+“do not invent H” prerequisite and frozen-O replay bound. The future B2b
+authorization must bind the entire registry, formula, values and catalog rates.
+
+| Assumption | Registered value / check |
+| --- | --- |
+| Literal input tokens ≤ UTF-8 bytes | Entire serialized payload counted; check reported input ≤ U |
+| Framing H | 4096/request + 256/input item + 1024/reasoning item + 1024/tool + 256/schema property + 4096 if instructions exists |
+| Output includes reasoning | Require reported reasoning ≤ output; never add it twice |
+| Restored reasoning ≤ prior settled output | Sum prior raw settled output; unknown predecessor blocks next admission |
+| Catalog max output | 128000; reported output above this falsifies the bound |
+| Max tier multiplier | 2×; unknown tier stops, absent tier priced at 2× |
+| Reservation Rmax | 2 × (272000 × 2.5 + 128000 × 10) / 10⁶ = $3.92 |
+
+H deliberately overcounts: one 4096-token request/instructions slab each, one
+256-token slab per input item/property, and four slabs per tool/reasoning item.
+Properties count recursively through tool schemas. These generous power-of-two
+allowances have no proved backend derivation. Literal content remains in B,
+including schemas, instructions, signatures and JSON syntax; replayed visible
+output is deliberately counted both in B and prior settled output. Rates per
+million are input 2, output 10, cache-read 0.1 and cache-write 2.5. The input tier
+above 272000 is excluded by I; the threshold is strict. Each settlement checks
+the observable implications above, but cannot independently prove tokenizer,
+framing or encrypted-restoration semantics. An overrun falsifies the assumption;
+a stop cannot retroactively undo spend.
+
+`assertLookupAuxiliaryCallersOff()` and `assertLookupChildSafety()` require
+`plan.judge === null`, explicit false for memory/subagents/upkeep/compaction and
+no output schema. B2b must call them on resolved configuration at pilot entry
+and in each child before model preparation. The faux smoke exercises the child
+check; the existing production child still refuses every non-offline lookup.
+Controller leases, durable permits, accounting, concurrency-one scheduling,
+resume refusal, authorization, readiness extension and re-registration are not
+part of this offline contract.

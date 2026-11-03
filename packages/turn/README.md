@@ -93,6 +93,11 @@ no `x-opencode-*` headers.
 `Glob` and `Grep` prefer the packaged `@vscode/ripgrep` binary on supported
 platforms. An explicit `ripgrepPath` wins, with `PATH` as the final fallback.
 
+Advanced hosts may supply `piModelsDecorator(models) => models` to wrap the
+normal Models collection after credential-store construction, without replacing
+OAuth resolution or refresh. It is mutually exclusive with `piResolvedModels`;
+the decorator must preserve metadata/auth methods and their receivers.
+
 ### Pi-native MCP Apps bridge
 
 Only the engine-turn adapter declares `supports_mcp_apps`. When a host supplies an

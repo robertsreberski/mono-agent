@@ -32,6 +32,8 @@ export type PiOptions = Omit<Partial<RuntimeRequest>, "liveInput" | "piToolExecu
   piToolExecutionMode?: unknown;
   piResolvedModel?: PiModel;
   piResolvedModels?: Models;
+  /** Advanced wrapper over normally credentialed Models; exclusive with piResolvedModels. */
+  piModelsDecorator?: (models: Models) => Models;
   piResolvedCapabilities?: PiCapabilities;
   piMaxRetries?: number | string;
   maxRetryDelayMs?: number;
