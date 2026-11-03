@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Add offline lookup readiness reports that show why real execution is blocked,
+  and list infeasible probes as skipped instead of missing or failed. Keep
+  finished eligible probes from replaying when resuming a run with skips.
+- Fix empty or whitespace-only `--fixed-budget-sha256` values to report
+  `lookup_empty_fixed_budget_sha256` before other workload validation errors.
+
 - Let startup proceed after a tool-history writer crash so the next writer can
   recover interrupted invocations without rerunning tools.
 

@@ -1,14 +1,17 @@
 // Lookup reporting is separate from recall-only/ledger qualification statistics.
+import { LOOKUP_SLOT_CODES, lookupSlotDisposition } from "./continuity-lookup.mjs";
 export function summarizeLookup(trials, plan) {
   const slots = [];
   for (const trace of plan.corpus.traces) for (const probeId of trace.probes) for (const { id: arm } of plan.arms) for (let repeat = 1; repeat <= plan.repeats; repeat++) {
     const matching = trials.filter(trial => trial.traceId === trace.id && trial.probeId === probeId && trial.arm === arm && trial.repeat === repeat);
     const trial = matching.length === 1 ? matching[0] : null;
     const lookup = trial?.lookup;
-    const reference = plan.lookup.budget.paths.find(path => path.traceId === trace.id && path.probeId === probeId && path.arm === arm && (!plan.lookup.role || path.role === undefined || path.role === plan.lookup.role.id));
-    slots.push({ traceId: trace.id, probeId, arm, repeat, status: trial?.status ?? (matching.length > 1 ? "duplicate" : "missing"),
+    const disposition = lookupSlotDisposition(plan, { traceId: trace.id, probeId, arm });
+    slots.push({ traceId: trace.id, probeId, arm, repeat, status: trial?.status ?? (matching.length > 1 ? "duplicate"
+      : disposition.status === "infeasible" ? "infeasible" : "missing"),
+      disposition: trial?.disposition ?? disposition.code,
       sourceAvailability: lookup?.source?.availability ?? "unknown",
-      budgetFeasibility: lookup?.budgetFeasibility?.classification ?? reference?.feasibility.classification ?? "unknown",
+      budgetFeasibility: lookup?.budgetFeasibility?.classification ?? disposition.feasibility.classification ?? "unknown",
       exactAccuracy: trial?.status === "completed" ? lookup?.exactAccuracy ?? null : null,
       witnessedRecovery: trial?.status === "completed" && lookup?.witnessedRecovery === true,
       calls: lookup?.calls ?? null, bytes: lookup?.bytes ?? null, durationMs: trial?.durationMs ?? null,
@@ -24,7 +27,9 @@ export function summarizeLookup(trials, plan) {
       const rows = slots.filter(row => row.arm === id), exact = rows.filter(row => row.budgetFeasibility !== "budget-infeasible" && row.exactAccuracy !== null);
       const failedFeasible = rows.filter(row => row.status === "failed" && row.budgetFeasibility === "feasible").length;
       const exactWithFailuresN = exact.length + failedFeasible;
-      return [id, { planned: rows.length, statuses: countBy(rows, "status"), sourceAvailability: countBy(rows, "sourceAvailability"),
+      return [id, { planned: rows.length, skipped: rows.filter(row => row.status === "infeasible").length,
+        // Inventory readiness diagnostic; can overlap missing/duplicate observations.
+        blocked: rows.filter(row => row.disposition === LOOKUP_SLOT_CODES.unknownFeasibility).length, statuses: countBy(rows, "status"), sourceAvailability: countBy(rows, "sourceAvailability"),
         budgetFeasibility: countBy(rows, "budgetFeasibility"), exact: { n: exact.length, correct: exact.filter(row => row.exactAccuracy).length, accuracy: exact.length ? exact.filter(row => row.exactAccuracy).length / exact.length : null },
         exactWithFailures: { n: exactWithFailuresN, correct: exact.filter(row => row.exactAccuracy).length, accuracy: exactWithFailuresN ? exact.filter(row => row.exactAccuracy).length / exactWithFailuresN : null },
         failedFeasible,
@@ -38,5 +43,5 @@ export function summarizeLookup(trials, plan) {
     })) };
 }
 export function renderLookupMarkdown(summary) {
-  return `\n\nLookup mechanics (not treatment benefit):\n\n| Arm | Planned slots | Source availability | Budget feasibility | Exact correct/n | Exact with failures correct/n | Failed feasible | Witnessed recovery | Calls | Bytes | Latency exhausted |\n|---|---:|---|---|---:|---:|---:|---:|---:|---:|---:|\n${Object.entries(summary.arms).map(([arm, row]) => `| ${arm} | ${row.planned} | ${JSON.stringify(row.sourceAvailability)} | ${JSON.stringify(row.budgetFeasibility)} | ${row.exact.correct}/${row.exact.n} | ${row.exactWithFailures.correct}/${row.exactWithFailures.n} | ${row.failedFeasible} | ${row.witnessedRecovery} | ${row.calls.total} | ${row.bytes.total} | ${row.latencyExhaustion} |`).join("\n")}\n`;
+  return `\n\nLookup mechanics (not treatment benefit):\n\n| Arm | Planned slots | Skipped | Blocked | Missing | Source availability | Budget feasibility | Exact correct/n | Exact with failures correct/n | Failed feasible | Witnessed recovery | Calls | Bytes | Latency exhausted |\n|---|---:|---:|---:|---:|---|---|---:|---:|---:|---:|---:|---:|---:|\n${Object.entries(summary.arms).map(([arm, row]) => `| ${arm} | ${row.planned} | ${row.skipped} | ${row.blocked} | ${row.statuses.missing ?? 0} | ${JSON.stringify(row.sourceAvailability)} | ${JSON.stringify(row.budgetFeasibility)} | ${row.exact.correct}/${row.exact.n} | ${row.exactWithFailures.correct}/${row.exactWithFailures.n} | ${row.failedFeasible} | ${row.witnessedRecovery} | ${row.calls.total} | ${row.bytes.total} | ${row.latencyExhaustion} |`).join("\n")}\n`;
 }

@@ -4,7 +4,7 @@ import { mkdir, readFile, readdir, realpath, writeFile } from "node:fs/promises"
 import { isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { digest, loadTraces, makePlan, DEFAULT_ALTERNATE } from "./continuity-dataset.mjs";
-import { LOOKUP_MODE, LOOKUP_ROLE_PROTOCOL, LOOKUP_ROLES, LOOKUP_SOULS, LOOKUP_BUDGET, assertExternalPolicy, sha256 } from "./continuity-lookup.mjs";
+import { LOOKUP_MODE, LOOKUP_ROLE_PROTOCOL, LOOKUP_ROLES, LOOKUP_SOULS, LOOKUP_BUDGET, LOOKUP_SLOT_CODES, assertExternalPolicy, sha256 } from "./continuity-lookup.mjs";
 import { summarizeLookup } from "./continuity-lookup-score.mjs";
 import { BUILD_POLICY, prepareRealBuild, verifyRealBuild } from "./memory-e2e-build.mjs";
 
@@ -188,6 +188,25 @@ export async function validateRegistration(registration) {
   if (r.common.lookupSource) await validateExternalPricing(r.common, r.codes, r.common.protocol);
   return r;
 }
+/** Diagnostic only: catalog arithmetic is not capability evidence or authority.
+ * B1 has no backend input-envelope proof and cannot promote caller-supplied caps.
+ */
+export function lookupPilotReadiness({ model = DEFAULT_ALTERNATE, catalog } = {}) {
+  const rate = value => typeof value === "number" && Number.isFinite(value) && value >= 0;
+  const rates = cost => ["input", "output", "cacheRead", "cacheWrite"].every(key => rate(cost?.[key]));
+  const priced = catalog?.model === model && rates(catalog?.cost)
+    && (catalog.cost.tiers === undefined || Array.isArray(catalog.cost.tiers)
+      && catalog.cost.tiers.every(tier => rate(tier.inputTokensAbove) && rates(tier)));
+  const outputCap = model === "openai-codex:gpt-6.1-sol"
+    ? { status: "unsupported", code: "lookup_output_cap_unsupported" }
+    : { status: "unknown", code: "lookup_output_cap_unknown" };
+  const inputEnvelope = { status: "unknown", code: "lookup_input_envelope_unknown" };
+  const pricing = { status: priced ? "ready" : "unknown", code: priced ? "lookup_pricing_catalog_only" : "lookup_pricing_unknown" };
+  const components = { outputCap, inputEnvelope, pricing };
+  return { ready: Object.values(components).every(part => part.status === "ready"), ...components,
+    blockers: Object.values(components).filter(part => part.status !== "ready").map(part => part.code) };
+}
+
 export async function readRegistration(path, hash) {
   requireLookup(HASH.test(hash ?? ""), "lookup_registration_hash_required");
   const bytes = await readFile(path);
@@ -362,14 +381,16 @@ export async function aggregateLookupRoles(registration, observations, { availab
     }
     const plan = { arms: [{ id: role.arm }], repeats: registration.common.repeats,
       corpus: { traces: registration.common.corpora.flatMap(c => c.traces.map(t => ({ ...t, id: `${c.suite}/${t.id}` }))) },
-      lookup: { budget: { paths: (registration.common.policy?.budget.paths.filter(path => path.role === role.id) ?? LOOKUP_BUDGET.paths).flatMap(path => registration.common.corpora.map(c => ({ ...path, traceId: `${c.suite}/${path.traceId}` }))) } } };
+      lookup: { role: { id: role.id }, budget: { ...(registration.common.policy?.budget ?? LOOKUP_BUDGET),
+        paths: (registration.common.policy?.budget.paths.filter(path => path.role === role.id) ?? LOOKUP_BUDGET.paths).flatMap(path => registration.common.corpora.map(c => ({ ...path, traceId: `${c.suite}/${path.traceId}` }))) } } };
     roles[role.id] = summarizeLookup(all, plan).arms[role.arm];
   }
   requireLookup(observations.every(row => slots.some(slot => slot.role === row.role && slot.suite === row.suite && slot.arm === row.arm
     && slot.traceId === row.traceId && slot.probeId === row.probeId && slot.repeat === row.repeat)), "lookup_unplanned_observation");
   return { schema: "continuity-lookup-comparison-v1", registrationSha256: digest(registration), executionKind: "offline", qualityMeasured: false,
     purpose: "Descriptive mechanics only; not significance, power, qualification or treatment benefit", roles, slots, availability, launches,
-    coverage: { planned: slots.length, completed: slots.filter(s => s.status === "completed").length, missing: slots.filter(s => s.status === "missing").length,
+    coverage: { planned: slots.length, skipped: slots.filter(s => s.status === "infeasible").length,
+      blocked: slots.filter(s => s.disposition === LOOKUP_SLOT_CODES.unknownFeasibility).length, completed: slots.filter(s => s.status === "completed").length, missing: slots.filter(s => s.status === "missing").length,
       duplicate: slots.filter(s => s.status === "duplicate").length, observations: observations.length }, contrasts: contrasts(slots) };
 }
 function contrasts(slots) {
@@ -393,7 +414,7 @@ function contrasts(slots) {
   });
 }
 export function renderRoleMarkdown(result) {
-  return `# Offline lookup roles\n\n${result.purpose}. No provider calls or spending authorization.\n\nCoverage: ${result.coverage.completed}/${result.coverage.planned}; missing ${result.coverage.missing}; duplicate ${result.coverage.duplicate}.\n\n${result.availability.filter(row => row.reason).map(row => `- ${row.role}/${row.suite}: ${row.reason}`).join("\n")}\n${result.launches.filter(row => row.exitCode !== 0 || row.timedOut).map(row => `- Child ${row.role}/${row.suite}: exit ${row.exitCode}, timed out ${row.timedOut}, receipt verified ${row.receiptVerified}.`).join("\n")}\n\n| Role | Completed exact correct/n | Exact with failures correct/n | Failed feasible |\n|---|---:|---:|---:|\n${Object.entries(result.roles).map(([id, row]) => `| ${id} | ${row.exact.correct}/${row.exact.n} | ${row.exactWithFailures.correct}/${row.exactWithFailures.n} | ${row.failedFeasible} |`).join("\n")}\n\nPaired counts (not significance or power):\n\n| Target vs baseline | Planned | Completed exact pairs | Including failed feasible | Target-only correct | Baseline-only correct |\n|---|---:|---:|---:|---:|---:|\n${result.contrasts.map(row => `| ${row.target} vs ${row.baseline} | ${row.planned} | ${row.completedExact.n} | ${row.exactWithFailures.n} | ${row.exactWithFailures.targetOnly} | ${row.exactWithFailures.baselineOnly} |`).join("\n")}\n`;
+  return `# Offline lookup roles\n\n${result.purpose}. No provider calls or spending authorization.\n\nCoverage: ${result.coverage.completed}/${result.coverage.planned}; skipped ${result.coverage.skipped}; blocked ${result.coverage.blocked}; missing ${result.coverage.missing}; duplicate ${result.coverage.duplicate}.\n\n${result.availability.filter(row => row.reason).map(row => `- ${row.role}/${row.suite}: ${row.reason}`).join("\n")}\n${result.launches.filter(row => row.exitCode !== 0 || row.timedOut).map(row => `- Child ${row.role}/${row.suite}: exit ${row.exitCode}, timed out ${row.timedOut}, receipt verified ${row.receiptVerified}.`).join("\n")}\n\n| Role | Completed exact correct/n | Exact with failures correct/n | Failed feasible |\n|---|---:|---:|---:|\n${Object.entries(result.roles).map(([id, row]) => `| ${id} | ${row.exact.correct}/${row.exact.n} | ${row.exactWithFailures.correct}/${row.exactWithFailures.n} | ${row.failedFeasible} |`).join("\n")}\n\nPaired counts (not significance or power):\n\n| Target vs baseline | Planned | Completed exact pairs | Including failed feasible | Target-only correct | Baseline-only correct |\n|---|---:|---:|---:|---:|---:|\n${result.contrasts.map(row => `| ${row.target} vs ${row.baseline} | ${row.planned} | ${row.completedExact.n} | ${row.exactWithFailures.n} | ${row.exactWithFailures.targetOnly} | ${row.exactWithFailures.baselineOnly} |`).join("\n")}\n`;
 }
 
 export async function validateExternalPricing(workload, codes, protocol) {

@@ -127,7 +127,7 @@ it("filters policy paths in plans and aggregates, and forwards source/policy/see
     return { code: 0, timedOut: false };
   });
   const result = await runLookupRoles(r, join(f.dir, "run"), { dispatch });
-  expect(dispatch).toHaveBeenCalledTimes(6); expect(result.coverage).toMatchObject({ planned: 48, missing: 48 });
+  expect(dispatch).toHaveBeenCalledTimes(6); expect(result.coverage).toMatchObject({ planned: 48, skipped: 16, missing: 32 });
 });
 it("rejects inputs hidden or symlinked inside either checkout before measuring or registering", async () => {
   const f = await fixture();
