@@ -228,7 +228,7 @@ Offline only: local catalog prices, no providers, builds, credentials or spendin
 export async function main(argv = process.argv.slice(2), { stdout = console.log } = {}) {
   if (argv.length === 1 && argv[0] === "--help") { stdout(HELP); return 0; }
   const flags = parseLookupOptions(argv, ["--registration", "--sha256", "--opus-model", ...WORKLOAD_FLAGS]);
-  requireLookup(!flags["--registration"] || !WORKLOAD_FLAGS.some(flag => flags[flag]), "lookup_estimate_workload_conflict");
+  requireLookup(!flags["--registration"] || !WORKLOAD_FLAGS.some(flag => flags[flag] !== undefined), "lookup_estimate_workload_conflict");
   requireLookup(Boolean(flags["--registration"]) === Boolean(flags["--sha256"]), "lookup_registration_hash_required");
   const registration = flags["--registration"] ? await readRegistration(flags["--registration"], flags["--sha256"]) : null;
   const workload = registration?.common ?? await lookupWorkload(workloadOptions(flags));

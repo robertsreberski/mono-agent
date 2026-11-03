@@ -852,6 +852,14 @@ are bound into the policy, registration and plans. Explicit external `--traces`,
 `--lookup-traces` and execution `--trace` selections are refused. Unselected
 families are sealed spares, not outcome-driven replacements.
 
+External-only workload flags (`--selection-seed`, `--per-group`, `--lookup-policy`
+and its hash, `--output-limit` and its source, `--catalog-cap-usd`) are refused
+without the complete manifest/hash/statistical-spec source triple. Checkout
+roots `--r0`/`--rpack` remain required for legacy registration; in estimation
+they require an external source. Legacy budget sizing still accepts only
+`--output`; fixed-budget sizing requires an external source. These flags never
+silently fall back to a legacy workload.
+
 ```bash
 node scripts/continuity-lookup-budget.mjs \
   --r0 /external/r0 --r0-revision FULL_SHA \

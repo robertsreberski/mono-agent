@@ -18,7 +18,7 @@ export function parseLookupOptions(argv, valued) {
   }
   return flags;
 }
-export function workloadOptions(flags) {
+export function workloadOptions(flags, { allowLegacyCheckoutRoots = false } = {}) {
   const number = (key, fallback) => {
     if (flags[key] === undefined) return fallback;
     const value = Number(flags[key]); requireLookup(Number.isSafeInteger(value), "lookup_invalid_arguments"); return value;
@@ -34,9 +34,14 @@ export function workloadOptions(flags) {
   nonempty(["--r0", "--rpack"], "lookup_empty_input_root_option");
   nonempty(["--catalog-cap-usd"], "lookup_empty_catalog_cap_option");
   requireLookup(present("--r0") === present("--rpack"), "lookup_input_roots_required");
+  requireLookup(!sourceKeys.some(present) || sourceKeys.every(present), "lookup_source_required");
+  const externalOnly = ["--selection-seed", "--per-group", "--lookup-policy", "--lookup-policy-sha256",
+    "--output-limit", "--output-limit-source", "--catalog-cap-usd",
+    // Registration also uses roots to bind legacy code checkouts, independently of the corpus.
+    ...(!allowLegacyCheckoutRoots ? ["--r0", "--rpack"] : [])];
+  requireLookup(present("--corpus-manifest") || !externalOnly.some(present), "lookup_external_flag_requires_source");
   requireLookup(present("--lookup-policy") === present("--lookup-policy-sha256"), "lookup_policy_hash_required");
   requireLookup(present("--output-limit") === present("--output-limit-source"), "lookup_output_limit_required");
-  requireLookup(!sourceKeys.some(present) || sourceKeys.every(present), "lookup_source_required");
   return { ...(present("--corpus-manifest") ? { lookupSource: { manifestPath: flags["--corpus-manifest"], manifestSha256: flags["--manifest-sha256"], statisticalSpecPath: flags["--statistical-spec"] } } : {}),
     ...(present("--lookup-policy") ? { policyPath: flags["--lookup-policy"], policySha256: flags["--lookup-policy-sha256"] } : {}),
     ...(present("--output-limit") ? { outputLimit: { tokens: number("--output-limit"), source: flags["--output-limit-source"] } } : {}),
@@ -87,7 +92,7 @@ export async function main(argv = process.argv.slice(2), { stdout = console.log 
     : ["--registration", "--sha256", "--output"]);
   requireLookup(isAbsolute(flags["--output"] ?? ""), "lookup_output_must_be_absolute");
   if (command === "register") {
-    const workload = workloadOptions(flags);
+    const workload = workloadOptions(flags, { allowLegacyCheckoutRoots: true });
     const output = await lookupOutputPath(flags["--output"], [flags["--r0"], flags["--rpack"]]);
     // Exclusively reserve before either checkout can build, not after expensive work.
     try { await mkdir(output, { mode: 0o700 }); }

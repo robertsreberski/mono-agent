@@ -6,7 +6,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { armById } from "./lib/continuity-arms.mjs";
 import { digest, loadTraces, makePlan, traceTokenShape } from "./lib/continuity-dataset.mjs";
 import { LOOKUP_MODE, LOOKUP_DEFAULT_ARMS, LOOKUP_BUDGET, SOUL_BINDING, referenceFeasibility, externalPathFeasibility, sourceAnnotation, LOOKUP_ROLES, LOOKUP_SOULS, assertFixedBudget, assertExternalPolicy, sha256 } from "./lib/continuity-lookup.mjs";
-import { lookupWorkload, prepareLookupCodes } from "./lib/continuity-lookup-roles.mjs";
+import { lookupWorkload, prepareLookupCodes, requireLookup } from "./lib/continuity-lookup-roles.mjs";
 import { parseLookupOptions, workloadOptions, WORKLOAD_FLAGS, lookupOutputPath } from "./continuity-lookup-compare.mjs";
 import { buildCheckpoint, productionModules, runProbe } from "./lib/continuity-runner.mjs";
 
@@ -200,11 +200,13 @@ export async function measureFixedBudget({ output, fixedBudgetSha256, checkouts,
 export async function main(argv = process.argv.slice(2), { stdout = console.log } = {}) {
   const f = parseLookupOptions(argv, ["--output", "--fixed-budget-sha256", "--r0", "--r0-revision", "--rpack", "--rpack-revision", ...WORKLOAD_FLAGS]);
   if (!f["--output"]) throw new Error("usage: continuity-lookup-budget --output DIR");
+  const workload = workloadOptions(f);
+  requireLookup(f["--fixed-budget-sha256"] === undefined || workload.lookupSource, "lookup_external_flag_requires_source");
   const output = resolve(f["--output"]);
   try { await readFile(join(output, "inventory.json")); throw new Error("inventory_already_exists"); } catch (error) { if (error.code !== "ENOENT") throw error; }
   if (f["--fixed-budget-sha256"]) {
     const external = await lookupOutputPath(output, [ROOT, f["--r0"], f["--rpack"]]);
-    const result = await measureFixedBudget({ ...workloadOptions(f), output: external, fixedBudgetSha256: f["--fixed-budget-sha256"], checkouts: {
+    const result = await measureFixedBudget({ ...workload, output: external, fixedBudgetSha256: f["--fixed-budget-sha256"], checkouts: {
       R0: { path: f["--r0"], revision: f["--r0-revision"] }, Rpack: { path: f["--rpack"], revision: f["--rpack-revision"] } } });
     stdout(JSON.stringify({ policySha256: sha256(await readFile(join(external, "budget.json"))), planned: result.budget.paths.length,
       feasible: result.budget.paths.filter(p => p.feasibility.classification === "feasible").length,

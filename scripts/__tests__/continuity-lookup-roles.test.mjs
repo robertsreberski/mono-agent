@@ -8,7 +8,8 @@ import { LOOKUP_MODE, LOOKUP_ROLES, LOOKUP_SOULS, LOOKUP_BUDGET, sha256 } from "
 import { ROOT, GUIDANCE_FILES, lookupProtocol, lookupWorkload, registerLookup, validateRegistration, guidanceDiff, roleBinding, rolePlan,
   verifyRoleRequest, roleReceipt, assertRoleReceipt, aggregateLookupRoles, aggregateRoleFiles, runLookupRoles, runLookupRoleChild, verifyRegisteredCheckouts } from "../lib/continuity-lookup-roles.mjs";
 import { main as benchmarkMain } from "../continuity-benchmark.mjs";
-import { main as compareMain, lookupOutputPath, workloadOptions } from "../continuity-lookup-compare.mjs";
+import { main as compareMain, lookupOutputPath, workloadOptions, WORKLOAD_FLAGS } from "../continuity-lookup-compare.mjs";
+import { main as budgetMain } from "../continuity-lookup-budget.mjs";
 import { main as estimateMain, estimateLookup, ESTIMATE_PROFILES, offlinePrices, priceLookupCall } from "../continuity-lookup-estimate.mjs";
 
 const dirs = [];
@@ -485,4 +486,53 @@ it("refuses empty external options by presence instead of silently selecting leg
   const base = await scratch();
   await expect(compareMain(["register", "--corpus-manifest", "", "--manifest-sha256", "", "--statistical-spec", "", "--output", join(base, "unused")])).rejects.toThrow("lookup_empty_source_option");
   await expect(access(join(base, "unused"))).rejects.toMatchObject({ code: "ENOENT" });
+});
+
+const externalOnlyOptions = [
+  ["--selection-seed", "42"], ["--per-group", "2"],
+  ["--lookup-policy", "/fictional/policy.json"], ["--lookup-policy-sha256", "a".repeat(64)],
+  ["--output-limit", "300"], ["--output-limit-source", "enforced"], ["--catalog-cap-usd", "10"],
+];
+it.each(externalOnlyOptions)("refuses source-less %s across register, estimate, budget and launcher", async (flag, value) => {
+  const base = await scratch(), output = join(base, "unused"), code = "lookup_external_flag_requires_source";
+  expect(() => workloadOptions({ [flag]: value })).toThrow(code);
+  await expect(compareMain(["register", flag, value, "--output", output])).rejects.toThrow(code);
+  await expect(estimateMain([flag, value])).rejects.toThrow(code);
+  for (const fixed of [[], ["--fixed-budget-sha256", "a".repeat(64)]]) {
+    await expect(budgetMain(["--output", output, ...fixed, flag, value])).rejects.toThrow(code);
+  }
+  // Launch/aggregate accept only registered settings, never workload overrides.
+  for (const command of ["run", "aggregate"]) {
+    await expect(compareMain([command, "--registration", "/fictional/registration.json", flag, value, "--output", output])).rejects.toThrow("lookup_invalid_arguments");
+  }
+  await expect(access(output)).rejects.toMatchObject({ code: "ENOENT" });
+});
+
+it("keeps legacy registration checkout roots but refuses source-less estimator and budget roots", async () => {
+  const flags = { "--r0": ROOT, "--rpack": ROOT };
+  expect(workloadOptions(flags, { allowLegacyCheckoutRoots: true }).inputRoots).toEqual([ROOT, ROOT]);
+  expect(() => workloadOptions(flags)).toThrow("lookup_external_flag_requires_source");
+  await expect(estimateMain(["--r0", ROOT, "--rpack", ROOT])).rejects.toThrow("lookup_external_flag_requires_source");
+  const base = await scratch();
+  await expect(budgetMain(["--r0", ROOT, "--rpack", ROOT, "--output", join(base, "unused")])).rejects.toThrow("lookup_external_flag_requires_source");
+  await expect(budgetMain(["--fixed-budget-sha256", "a".repeat(64), "--output", join(base, "unused")])).rejects.toThrow("lookup_external_flag_requires_source");
+});
+
+it("covers every workload flag and preserves a legacy estimate invocation", async () => {
+  const legacyFlags = ["--suites", "--traces", "--repeats", "--probe-limit", "--reader", "--reader-effort"];
+  expect([...WORKLOAD_FLAGS].sort()).toEqual([...externalOnlyOptions.map(([flag]) => flag), ...legacyFlags,
+    "--r0", "--rpack", "--corpus-manifest", "--manifest-sha256", "--statistical-spec"].sort());
+  const first = (await loadTraces()).traces[0], reader = "openai-codex:gpt-6.1-sol";
+  let result;
+  await estimateMain(["--suites", "original", "--traces", first.id, "--repeats", "2", "--probe-limit", "1", "--reader", reader, "--reader-effort", "low"],
+    { stdout: text => { result = JSON.parse(text); } });
+  expect(result.schema).toBe("continuity-lookup-estimate-v1");
+  expect(result.workload.suites).toEqual(["original"]); expect(result.workload.repeats).toBe(2);
+  expect(result.workload.probes).toBe(12); expect(result.registrationDigest).toBeNull();
+  const expected = await lookupWorkload({ suites: ["original"], traceIds: [first.id], repeats: 2, probeLimit: 1, reader, readerEffort: "low" });
+  expect(result.workloadDigest).toBe(digest(expected));
+});
+
+it("refuses even empty workload overrides before reading an estimator registration", async () => {
+  for (const flag of WORKLOAD_FLAGS) await expect(estimateMain(["--registration", "/fictional/registration.json", "--sha256", "a".repeat(64), flag, ""])).rejects.toThrow("lookup_estimate_workload_conflict");
 });
