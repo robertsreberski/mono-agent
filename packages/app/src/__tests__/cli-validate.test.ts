@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resolveActiveMemoryDbPath, safeRebuildMemoryIndex } from "@mono-agent/memory/bujo";
 
 import { runCli } from "../cli.js";
+import * as startupRefusal from "../service/launchd/launchd-snapshot-refusal.js";
 
 let dir: string;
 let previousCwd: string;
@@ -116,6 +117,29 @@ async function closedLoopbackBaseUrl(): Promise<string> {
 }
 
 describe("runCli doctor runtime provenance", () => {
+  it("makes validate and doctor fail visibly on a durable runtime-proof refusal", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n", "utf8");
+    const configPath = await writeConsumerConfig(dir, "mono-agent.config.json", {
+      runtime: { model: "openai-codex:gpt-5.6-terra" },
+      context: { identityPath: "./IDENTITY.md" },
+      providers: { piAuthPath: join(dir, "missing-auth.json") },
+    });
+    const refusal = vi.spyOn(startupRefusal, "readLaunchdStartupRefusal").mockResolvedValue("runtime-proof-refused");
+    process.chdir(dir);
+    try {
+      const json = await captureRunCli(["validate", "--json", "--config", configPath]);
+      expect(json.code).toBe(1);
+      expect(JSON.parse(json.stdout)).toMatchObject({
+        ok: false, structurallyValid: false, operationallyReady: false,
+        sections: expect.arrayContaining([expect.objectContaining({ id: "managed-runtime-launch", status: "error" })]),
+      });
+      const text = await captureRunCli(["doctor", "--config", configPath]);
+      expect(text.code).toBe(1);
+      expect(text.stdout).toContain("refused its finalized runtime proof");
+      expect(text.stdout).toContain("mono-agent restart --config");
+    } finally { refusal.mockRestore(); }
+  });
+
   it("renders the unmanaged provenance of the CLI producing the report", async () => {
     await writeFile(join(dir, "IDENTITY.md"), "# Identity\n", "utf8");
     await writeConsumerConfig(dir, "mono-agent.config.json", {

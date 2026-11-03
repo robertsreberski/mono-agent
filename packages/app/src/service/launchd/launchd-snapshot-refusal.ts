@@ -9,6 +9,16 @@ import { secureFileReplace } from "../../durable-state/secure-file-replace.js";
 
 const MESSAGE = "Managed worker refused the approved startup snapshot. Run `mono-agent validate` then `mono-agent restart` from the agent folder.";
 export const SNAPSHOT_REFUSAL_MESSAGE = MESSAGE;
+export type LaunchdStartupRefusal = "snapshot-refused" | "runtime-proof-refused";
+
+export function runtimeProofRefusalMessage(configPath: string): string {
+  const quotedPath = `'${configPath.replaceAll("'", `'"'"'`)}'`;
+  return `Managed worker refused its finalized runtime proof. Run \`mono-agent restart --config ${quotedPath}\` to rewrite the service proof.`;
+}
+
+function contents(reason: LaunchdStartupRefusal): string {
+  return `${JSON.stringify({ reason })}\n`;
+}
 
 function paths(label: string, path: Pick<LaunchdPaths, "logDir">) {
   const root = dirname(path.logDir);
@@ -47,15 +57,21 @@ async function prepare(label: string, target: Pick<LaunchdPaths, "logDir">, crea
   return state;
 }
 
-/** Content-free, owner-only durable evidence for a launchd worker that retired before readiness. */
+/** Content-free, owner-only durable evidence for a launchd worker that refused startup. */
 export async function writeLaunchdSnapshotRefusal(label: string, target: Pick<LaunchdPaths, "logDir">): Promise<void> {
+  await writeLaunchdStartupRefusal(label, target, "snapshot-refused");
+}
+
+export async function writeLaunchdStartupRefusal(
+  label: string, target: Pick<LaunchdPaths, "logDir">, reason: LaunchdStartupRefusal,
+): Promise<void> {
   const state = (await prepare(label, target, true))!;
   let previous: Stats | undefined;
   try { previous = await lstat(state.file); assertFile(previous); }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
   await secureFileReplace({
     path: state.file, temporaryPath: state.temporary,
-    contents: '{"reason":"snapshot-refused"}\n', mode: 0o600,
+    contents: contents(reason), mode: 0o600,
     target: { expected: previous === undefined ? { kind: "missing" } : {
       kind: "present", validate: async (candidate) => {
         try { const current = await lstat(candidate); assertFile(current); return same(current, previous); }
@@ -64,23 +80,26 @@ export async function writeLaunchdSnapshotRefusal(label: string, target: Pick<La
     }, recovery: "restore-previous" },
   });
 }
-export async function readLaunchdSnapshotRefusal(label: string, target: Pick<LaunchdPaths, "logDir">): Promise<boolean> {
+export async function readLaunchdStartupRefusal(
+  label: string, target: Pick<LaunchdPaths, "logDir">,
+): Promise<LaunchdStartupRefusal | undefined> {
   const state = await prepare(label, target, false);
-  if (state === undefined) return false;
+  if (state === undefined) return undefined;
   let initial: Stats;
   try { initial = await lstat(state.file); }
-  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw error; }
   assertFile(initial);
   const handle = await open(state.file, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK);
   try {
     const opened = await handle.stat(); assertFile(opened);
     if (!same(initial, opened)) throw new Error("Managed snapshot refusal state changed while opened.");
     const bytes = await handle.readFile();
-    if (!same(opened, await handle.stat()) || !same(opened, await lstat(state.file))
-      || bytes.toString("utf8") !== '{"reason":"snapshot-refused"}\n') {
+    const reason = bytes.toString("utf8") === contents("snapshot-refused") ? "snapshot-refused"
+      : bytes.toString("utf8") === contents("runtime-proof-refused") ? "runtime-proof-refused" : undefined;
+    if (!same(opened, await handle.stat()) || !same(opened, await lstat(state.file)) || reason === undefined) {
       throw new Error("Managed snapshot refusal state changed or is malformed.");
     }
-    return true;
+    return reason;
   } finally { await handle.close(); }
 }
 export async function clearLaunchdSnapshotRefusal(label: string, target: Pick<LaunchdPaths, "logDir">): Promise<void> {

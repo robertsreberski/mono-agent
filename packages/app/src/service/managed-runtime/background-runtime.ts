@@ -233,26 +233,10 @@ async function ensureManagedBackgroundRuntimeInternal(
     await cleanupAbandonedRuntimeStaging(layout, [packageSource, ...additionalPackages.map((entry) => entry.packageSource)]);
     reportRuntimePhase("reuse");
     if (await verifyRuntime(layout, identity, additionalPackages)) {
-      const marker = await readRuntimeMarker(layout.markerPath, identity);
-      if (marker === undefined) throw new Error("The managed runtime marker changed before warm-proof publication.");
-      reportRuntimePhase("proof-publication");
-      const sourceReuseProof = await currentSourceReuseProof(
-        packageSource,
-        additionalPackages,
-        sourceClosure,
-      );
-      await publishRuntimeReuseProof(
-        layout,
-        identity,
-        packageSource,
-        additionalPackages,
-        sourceReuseProof,
-        marker,
-        deps,
-      );
-      if (!(await verifyRuntimeFast(layout, identity, packageSource, additionalPackages))) {
-        throw new Error("The managed runtime warm-reuse proof failed verification after publication.");
-      }
+      // Finalized markers are launch identities, not mutable warm-cache metadata.
+      // A source stat/path change may invalidate the optimization without changing
+      // any closure bytes. Full verification is authoritative; preserve every
+      // existing worker/helper proof instead of rebinding the marker to a new cache.
       await waitForManagedRuntimeLaunchBoundary(layout, identity, deps);
       return await runtimeResult(layout, identity, input.nodePath, "full-reuse");
     }
@@ -350,7 +334,7 @@ async function ensureManagedBackgroundRuntimeInternal(
         await publishRuntimeReuseProof(layout, identity, packageSource, additionalPackages, sourceReuseProof, {
           ...marker,
           executionProofSha256: promotedClosure.filesystemProofSha256,
-        }, deps, true);
+        }, deps);
       }
     } catch (error) {
       await rm(layout.stagingDir, { recursive: true, force: true }).catch(() => undefined);
@@ -361,27 +345,8 @@ async function ensureManagedBackgroundRuntimeInternal(
     if (!(await verifyRuntime(layout, identity, additionalPackages))) {
       throw new Error("The managed runtime failed verification after atomic promotion.");
     }
-    if (!(await verifyRuntimeFast(layout, identity, packageSource, additionalPackages))) {
-      const marker = await readRuntimeMarker(layout.markerPath, identity);
-      if (marker === undefined) throw new Error("The managed runtime marker changed before warm-proof publication.");
-      const sourceReuseProof = await currentSourceReuseProof(
-        packageSource,
-        additionalPackages,
-        sourceClosure,
-      );
-      await publishRuntimeReuseProof(
-        layout,
-        identity,
-        packageSource,
-        additionalPackages,
-        sourceReuseProof,
-        marker,
-        deps,
-      );
-    }
-    if (!(await verifyRuntimeFast(layout, identity, packageSource, additionalPackages))) {
-      throw new Error("The managed runtime warm-reuse proof failed verification after atomic promotion.");
-    }
+    // Another publisher may have finalized this root, or the optional stat cache
+    // may already be stale. Never rewrite a finalized marker to refresh it.
     await waitForManagedRuntimeLaunchBoundary(layout, identity, deps);
     return await runtimeResult(
       layout,

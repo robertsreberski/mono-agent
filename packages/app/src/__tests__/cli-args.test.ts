@@ -6,6 +6,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   waitForManagedRuntimePublication: vi.fn(async () => undefined),
+  refuseManagedRuntimeLaunch: vi.fn(async (_configPath: string) => 78),
+  verifyManagedRuntimeLaunch: vi.fn(async () => { throw new Error("The managed runtime marker does not match its LaunchAgent proof."); }),
 }));
 
 vi.mock("../service/managed-runtime/managed-runtime-publication.js", async (importOriginal) => {
@@ -13,11 +15,22 @@ vi.mock("../service/managed-runtime/managed-runtime-publication.js", async (impo
   return { ...actual, waitForManagedRuntimePublication: mocks.waitForManagedRuntimePublication };
 });
 
+vi.mock("../service/managed-runtime/runtime-launch-refusal.js", () => ({
+  refuseManagedRuntimeLaunch: mocks.refuseManagedRuntimeLaunch,
+}));
+vi.mock("../service/managed-runtime/background-runtime.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../service/managed-runtime/background-runtime.js")>();
+  return { ...actual, verifyManagedRuntimeLaunch: mocks.verifyManagedRuntimeLaunch };
+});
+
 import { firstCliPositional, JSON_CAPABLE_COMMANDS } from "../cli/cli-args.js";
 import { describeChannelStatus } from "../cli/commands/cli-background-command.js";
 import { loadCliEnvFile, parseCliArgs } from "../cli/cli-args.js";
 import { monoAgentVersion, renderHelp, renderHelpTopic } from "../cli/cli-help.js";
 import { runCli } from "../cli.js";
+import * as appHost from "../host/app.js";
+import * as managedAppHost from "../host/app-controller.js";
+import * as workerLease from "../service/background/background-worker-lease.js";
 import { shouldLoadCommandDotenv } from "../cli/cli-commands.js";
 
 /** Resolve a help topic to its rendered detail text, failing if it is not a valid topic. */
@@ -42,6 +55,8 @@ const tempDirs: string[] = [];
 
 afterEach(async () => {
   mocks.waitForManagedRuntimePublication.mockClear();
+  mocks.refuseManagedRuntimeLaunch.mockClear();
+  mocks.verifyManagedRuntimeLaunch.mockClear();
   await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
 
@@ -337,7 +352,7 @@ describe("parseCliArgs", () => {
     }
   });
 
-  it("rejects the internal snapshot outside launchd and makes a missing managed snapshot non-restarting", async () => {
+  it("rejects the internal snapshot outside launchd and routes missing proofs through visible bounded refusal", async () => {
     const ordinary = await captureCli(() => runCli([
       "start",
       "--foreground",
@@ -356,11 +371,14 @@ describe("parseCliArgs", () => {
     expect(ordinaryRuntimeProof.code).toBe(2);
     expect(ordinaryRuntimeProof.stderr).toContain("--expected-managed-runtime-launch is reserved");
 
+    const startApp = vi.spyOn(appHost, "startMonoAgentApp");
+    const startManagedApp = vi.spyOn(managedAppHost, "startVerifiedManagedMonoAgentApp");
+    const lease = vi.spyOn(workerLease, "acquireBackgroundWorkerLease");
     const previous = process.env[MANAGED_BACKGROUND_WORKER_ENV];
     process.env[MANAGED_BACKGROUND_WORKER_ENV] = "1";
     try {
       const managed = await captureCli(() => runCli(["start", "--foreground"]));
-      expect(managed.code).toBe(0);
+      expect(managed.code).toBe(78);
       expect(managed.stderr).toContain("missing its approved background snapshot");
 
       process.env[MANAGED_BACKGROUND_WORKER_ENV] = "1";
@@ -370,10 +388,30 @@ describe("parseCliArgs", () => {
         "--expected-background-snapshot",
         "encoded-snapshot",
       ]));
-      expect(missingRuntimeProof.code).toBe(0);
+      expect(missingRuntimeProof.code).toBe(78);
       expect(missingRuntimeProof.stderr).toContain("missing its finalized runtime proof");
       expect(mocks.waitForManagedRuntimePublication).toHaveBeenCalledTimes(2);
+      expect(mocks.refuseManagedRuntimeLaunch).toHaveBeenCalledTimes(2);
+
+      process.env[MANAGED_BACKGROUND_WORKER_ENV] = "1";
+      const staleProof = await captureCli(() => runCli([
+        "start", "--foreground", "--expected-background-snapshot", "encoded-snapshot",
+        "--expected-managed-runtime-launch", "encoded-runtime-proof",
+      ]));
+      expect(staleProof.code).toBe(78);
+      expect(staleProof.stderr).toContain("does not match its LaunchAgent proof");
+      expect(mocks.verifyManagedRuntimeLaunch).toHaveBeenCalledTimes(1);
+      expect(mocks.refuseManagedRuntimeLaunch).toHaveBeenCalledTimes(3);
+      expect(staleProof.stdout).toBe("");
+      // Refused cooldown workers publish no app/trace registration or readiness,
+      // so neither worker readiness nor web discovery can see a running agent.
+      expect(startApp).not.toHaveBeenCalled();
+      expect(startManagedApp).not.toHaveBeenCalled();
+      expect(lease).not.toHaveBeenCalled();
     } finally {
+      startApp.mockRestore();
+      startManagedApp.mockRestore();
+      lease.mockRestore();
       if (previous === undefined) delete process.env[MANAGED_BACKGROUND_WORKER_ENV];
       else process.env[MANAGED_BACKGROUND_WORKER_ENV] = previous;
     }

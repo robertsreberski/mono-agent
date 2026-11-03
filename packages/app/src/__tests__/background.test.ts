@@ -16,7 +16,7 @@ import { describe, expect, it, vi } from "vitest";
 import { listTraceSources, registerTraceSource } from "@mono-agent/observability";
 import type { RecordedRunListItem, TraceSourceListItem } from "@mono-agent/observability";
 
-import { ensureBackgroundReady, forceRestartBackground, maintainLaunchdController, unattendedLogDeps, restartBackground, startBackground, stopBackground, tailLogs } from "../service/background/background.js";
+import { pollInstanceReady, ensureBackgroundReady, forceRestartBackground, maintainLaunchdController, unattendedLogDeps, restartBackground, startBackground, stopBackground, tailLogs } from "../service/background/background.js";
 import { canonicalBackgroundConfigPath, managedLaunchdLogMaintenanceEnvironment, resolveInstanceTarget } from "../service/background/target.js";
 import { defaultBackgroundDeps } from "../service/background/deps.js";
 import { statusBackground } from "../service/background/status.js";
@@ -33,7 +33,7 @@ import { recordManagedSnapshotRefusal } from "../cli/commands/cli-background-com
 import type { LaunchctlRunner } from "../service/launchd/launchd.js";
 import type { ProcessIncarnation } from "@mono-agent/conversation/process-incarnation";
 import type { OwnerPrivateLock } from "../durable-state/owner-private-lock.js";
-import { readLaunchdSnapshotRefusal, clearLaunchdSnapshotRefusal } from "../service/launchd/launchd-snapshot-refusal.js";
+import { readLaunchdStartupRefusal, clearLaunchdSnapshotRefusal, writeLaunchdStartupRefusal } from "../service/launchd/launchd-snapshot-refusal.js";
 import {
   readLaunchdLogMonitorStatus,
   removeLaunchdLogMonitorStatus,
@@ -3080,6 +3080,30 @@ describe("stopBackground", () => {
 });
 
 describe("statusBackground", () => {
+  it("never reports a refused cooldown PID as running even with a matching cached healthy manifest", async () => {
+    const home = await mkdtemp(join(tmpdir(), "runtime-refusal-status-"));
+    try {
+      const target = makeTarget({ paths: { ...makeTarget().paths, logDir: join(home, "logs") } });
+      const { runner } = makeRunner({ loaded: true, initialPid: 4321 });
+      const harness = makeHarness({ runner, list: listReturning(() => [makeSource(target, { pid: 4321 })]), isAlive: () => true });
+      await writeLaunchdStartupRefusal(target.label, target.paths, "runtime-proof-refused");
+      expect(await statusBackground(target, harness.deps, { json: true })).toBe(1);
+      const result = JSON.parse(harness.out.join(""));
+      expect(result).toMatchObject({
+        ok: false,
+        startupFailure: { reason: "runtime-proof-refused", message: expect.stringContaining("mono-agent restart --config") },
+        instance: { health: "stopped", status: "stopped", pid: null },
+      });
+      expect(result.instance).not.toHaveProperty("transports");
+      expect(await pollInstanceReady(target, harness.deps, { sinceMs: 0, timeoutMs: 0, intervalMs: 100 })).toBeUndefined();
+      harness.out.length = 0;
+      expect(await statusBackground(target, harness.deps)).toBe(1);
+      expect(harness.out.join("")).toContain("refused its finalized runtime proof");
+      await clearLaunchdSnapshotRefusal(target.label, target.paths);
+      expect(await pollInstanceReady(target, harness.deps, { sinceMs: 0, timeoutMs: 0, intervalMs: 100 })).toBeDefined();
+    } finally { await rm(home, { recursive: true, force: true }); }
+  });
+
   it("shows an offline launchd snapshot refusal in text and JSON until approved startup clears it", async () => {
     const home = await mkdtemp(join(tmpdir(), "snapshot-refusal-status-"));
     try {
@@ -3087,14 +3111,14 @@ describe("statusBackground", () => {
       const { runner } = makeRunner({ loaded: false });
       const harness = makeHarness({ runner, list: listReturning(() => []), isAlive: () => false });
       await recordManagedSnapshotRefusal(target.configPath, target.paths);
-      expect(await readLaunchdSnapshotRefusal(target.label, target.paths)).toBe(true);
+      expect(await readLaunchdStartupRefusal(target.label, target.paths)).toBe("snapshot-refused");
       expect(await statusBackground(target, harness.deps, { json: true })).toBe(1);
       expect(JSON.parse(harness.out.join(""))).toMatchObject({ ok: false, startupFailure: { reason: "snapshot-refused" } });
       harness.out.length = 0;
       expect(await statusBackground(target, harness.deps)).toBe(1);
       expect(harness.out.join("")).toContain("mono-agent restart");
       await clearLaunchdSnapshotRefusal(target.label, target.paths);
-      expect(await readLaunchdSnapshotRefusal(target.label, target.paths)).toBe(false);
+      expect(await readLaunchdStartupRefusal(target.label, target.paths)).toBeUndefined();
       harness.out.length = 0;
       await statusBackground(target, harness.deps, { json: true });
       expect(JSON.parse(harness.out.join(""))).not.toHaveProperty("startupFailure");
