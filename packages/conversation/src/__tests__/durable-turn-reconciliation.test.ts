@@ -10,6 +10,7 @@ import { parseMonoRuntimeModelReference } from "@mono-agent/turn/host/config";
 import type { RuntimeSessionTurnReconciliationResult } from "@mono-agent/turn/host/types";
 import type { DurableHistoryStoreOptions } from "../history/canonical/store.js";
 import type { ConversationHistoryTurnInspection } from "../history/contracts.js";
+import { HistoryOwnerBusyError } from "../history/canonical/claims.js";
 import { PendingTurnPayloadStore } from "../history/pending-turn/payloads.js";
 import { createPendingTurnPayload, createPendingInitialInput, createPendingLiveInput } from "../history/pending-turn/contract.js";
 const fault = vi.hoisted(() => ({ unlinkFence: false, beforePendingSync: undefined as ((path: string) => Promise<void>) | undefined }));
@@ -361,12 +362,14 @@ it("never waits for a sibling's logical owner while draining and leaves its payl
   expect(f.inspect).not.toHaveBeenCalled(); await active.abort();
 }, 5_000);
 
-it("bounded draining leaves busy native ownership charged and supports explicit cursor continuation", async () => {
+it.each(["native journal", "history owner"] as const)("bounded draining leaves busy %s ownership charged and supports explicit cursor continuation", async (resource) => {
   const f = await fixture(); const first = await f.begin(); await first.abort();
   const second = await f.store.beginProviderSessionTurn("fictional-second", "fictional-second-turn", { modelKey,
     reconciliation: { purpose: "execution", ownerKey: "fictional-second", initial: { persistText: "Fictional second input.", timestamp } } });
   await second.abort();
-  f.inspect.mockRejectedValueOnce(Object.assign(new Error("Fictional native owner busy"), { code: "ERR_HARNESS_WRITER_BUSY" }));
+  f.inspect.mockRejectedValueOnce(resource === "history owner"
+    ? new HistoryOwnerBusyError("Fictional history owner busy")
+    : Object.assign(new Error("Fictional native owner busy"), { code: "ERR_HARNESS_WRITER_BUSY" }));
   const drained = await f.store.drainPendingProviderSessionTurns({ limit: 1 });
   expect(drained).toMatchObject({ settled: 0, busy: 1, remaining: true }); expect(drained.cursor).toBeDefined();
   expect(await f.store.drainPendingProviderSessionTurns({ limit: 1, cursor: drained.cursor! })).toMatchObject({ settled: 1, busy: 0, remaining: false });

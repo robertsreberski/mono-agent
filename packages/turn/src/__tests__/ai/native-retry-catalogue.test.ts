@@ -148,17 +148,25 @@ it.each([0, -1, null, "", Infinity, undefined])("uses the default retry-delay ca
 
 it("classifies exhausted native open contention as retryable without provider dispatch", async () => {
   const model = setup(), root = mkdtempSync(join(tmpdir(), "open-contention-"));
-  const sessionId = "fictional-busy-open", repo = resolveDurableNativeSessionRepo(root);
-  await (await repo.create({ id: sessionId })).close();
+  const sessionId = "b".repeat(64), repo = resolveDurableNativeSessionRepo(root);
+  const hostAuthority = { version: 1 as const, rootId: "1".repeat(64), authorityId: "2".repeat(64),
+    ownerKey: "fictional-owner", historyBucket: "fictional-bucket" };
+  const assertCurrent = vi.fn(async () => {});
+  await (await repo.create({ id: sessionId, hostAuthority, assertOwned: assertCurrent })).close();
   const locks = await repo.ensureDirectory(), held = (await locks.tryLock(locks.catalogPath))!;
-  // Exercise the protected-open wait policy without manufacturing a busy error.
-  const open = repo.open.bind(repo);
-  vi.spyOn(repo, "open").mockImplementation((metadata, options) => open(metadata, { ...(options as object | undefined), repair: false, wait: false }));
+  // Observe the production open options without changing them. The held
+  // catalogue makes protected writer acquisition exhaust its bounded wait.
+  const open = vi.spyOn(repo, "open");
   try {
     const result = await generateEngineTurnResponse("Fictional rules", runOptions(model, {
       sessionId, sessionsRoot: root, sessionKeepAlive: true,
+      nativeSessionAuthority: { version: 1, currentHandleId: sessionId, sessionsRoot: root, hostAuthority, assertCurrent },
+      sessionTurn: { kind: "host", ownerKey: hostAuthority.ownerKey, historyBucket: hostAuthority.historyBucket,
+        turnId: "fictional-busy-turn", handleId: sessionId, baseRevision: 1,
+        reconciliation: { version: 1, purpose: "execution", fenceDigest: "c".repeat(64), initialInputId: "fictional-input" } },
       messages: [{ role: "user", content: "Fictional request" }],
     }));
+    expect(open).toHaveBeenCalledWith(expect.objectContaining({ id: sessionId }), expect.objectContaining({ repair: false, wait: false }));
     expect(result).toMatchObject({ failureKind: "native_journal_busy", retryable: true,
       errorDetails: { code: "ERR_HARNESS_WRITER_BUSY", retryable: true, pi_error_retryable: true } });
     expect(result.error).toContain("please retry shortly");

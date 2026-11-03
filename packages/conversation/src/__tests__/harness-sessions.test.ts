@@ -23,6 +23,7 @@ import {
 import type { ConversationHistoryStore } from "../index.js";
 import type { ConversationHarnessSessionOptions } from "../harness/contracts.js";
 import type { SkillsCache } from "../skills/index.js";
+import { HistoryOwnerBusyError } from "../history/canonical/claims.js";
 
 const tempDirs: string[] = [];
 const model = { sdk: "pi", provider: "openai-codex", model: "gpt-5.5", reference: "pi:openai-codex:gpt-5.5" } as const;
@@ -1450,6 +1451,22 @@ describe("ConversationHarness continuous sessions", () => {
       details: { code: "ERR_HARNESS_WRITER_BUSY", retryable: true } });
     expect(fake.calls).toHaveLength(2);
     expect(fake.calls[1]?.options.sessionId).toBe("fictional-session");
+  });
+
+  it.each([
+    ["history owner", new HistoryOwnerBusyError("Fictional history owner busy")],
+    ["session", Object.assign(new Error("Harness session is already open"), { code: "ERR_HARNESS_WRITER_BUSY" })],
+    ["native journal", Object.assign(new Error("Native journal catalogue ownership is busy"), { code: "ERR_HARNESS_WRITER_BUSY" })],
+  ])("uses neutral retry guidance for thrown %s contention before runtime dispatch", async (_resource, error) => {
+    const identityPath = await identityFixture();
+    const fake = createSessionFakeRuntime(async () => ({ text: "Must not dispatch" }));
+    const harness = createConversationHarness({ identityPath, runtime: fake.runtime, model,
+      runtimeOptionsForRequest: () => { throw error; } });
+    const result = await harness.run(request("fictional-storage-contention"));
+    expect(result.failure).toEqual({ kind: "native_journal_busy",
+      message: "Conversation storage is busy; please retry shortly.",
+      details: { code: "ERR_HARNESS_WRITER_BUSY", retryable: true } });
+    expect(fake.calls).toHaveLength(0);
   });
 
   it("does not retry and invalidates a resumed provider attempt that throws without session failure details", async () => {
