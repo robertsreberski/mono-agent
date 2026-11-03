@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Keep cancelled native turns with pending provider settlement from crashing the
+  host, while preserving retryable, fail-closed conversation recovery.
+
 - Fix transient native journal catalogue contention with a short, abortable
   wait; keep writer conflicts fail-fast and report persistent contention as
   retryable without replaying the turn in a new session.

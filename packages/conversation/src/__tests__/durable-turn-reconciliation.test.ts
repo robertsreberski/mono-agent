@@ -705,6 +705,76 @@ it("keeps native accepted acknowledgement behind durable live payload and fence 
   }
 }, 10_000);
 
+it.each([false, true])("observes cancelled native settlement timeout while the provider is pending (recorder rejects=%s)", async (recorderRejects) => {
+  const f = await fixture();
+  const identityPath = join(f.root, "IDENTITY.md");
+  await writeFile(identityPath, "You are a fictional fixture.");
+  const controller = new AbortController();
+  let started!: () => void, release!: () => void;
+  const providerStarted = new Promise<void>((resolve) => { started = resolve; });
+  const providerGate = new Promise<void>((resolve) => { release = resolve; });
+  let providerPending = true, runtimeCalls = 0, runIds = 0;
+  const unhandled: unknown[] = [];
+  const onUnhandled = (reason: unknown): void => { unhandled.push(reason); };
+  process.on("unhandledRejection", onUnhandled);
+  const finish = vi.fn(async () => {
+    if (recorderRejects) throw new Error("Fictional recorder export failure");
+    return { runId: "fictional-turn", conversationId: bucket, status: "cancelled" as const, durationMs: 0, eventCount: 0, artifactPaths: [] };
+  });
+  f.inspect.mockImplementation(async (request) => {
+    if (providerPending) throw new Error("Fictional native settlement is still pending");
+    return evidence(request);
+  });
+  const recover = vi.spyOn(f.store, "recoverProviderSessionTurn");
+  const harness = createConversationHarness({ identityPath, cwd: f.root, model: parseMonoRuntimeModelReference(modelKey),
+    historyStore: f.store, createRunId: () => `fictional-turn-${++runIds}`, sessionsRoot: join(f.root, "native"),
+    session: { mode: "continuous", idleTimeoutMs: 60_000, terminalRecoverySettlementMs: 1 },
+    recorderFactory: () => ({ onEvent() {}, finish, fail: finish }),
+    runtime: {
+      sessionTurnReconciliation: "v1", async reconcileSessionTurn() { return { status: "absent" }; },
+      async refreshSession() {}, async syncSession() { return true; },
+      async run(_prompt, options) {
+        runtimeCalls += 1;
+        expect(options.sessionTurn).toBeDefined();
+        if (runtimeCalls === 1) { started(); await providerGate; providerPending = false; }
+        return { text: "Fictional final reply.", providerSessionId: options.sessionTurn!.handleId };
+      },
+    } });
+  const request = (userMessage: string) => ({ conversationId: bucket, userMessage, abortSignal: new AbortController().signal });
+  const first = harness.run({ ...request("Fictional cancelled input."), abortSignal: controller.signal });
+  try {
+    await providerStarted;
+    controller.abort();
+    // Finalization starts only after the native publication times out, while
+    // the owning run is still awaiting its uncooperative provider.
+    await vi.waitFor(() => expect(finish).toHaveBeenCalledOnce());
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(providerPending).toBe(true);
+    expect(unhandled).toEqual([]);
+    expect(await f.store.load(bucket)).toEqual([]);
+    const blocked = await harness.run(request("Fictional blocked input."));
+    expect(blocked.failure?.kind).toBe("cancellation_continuity_unavailable");
+    expect(recover).toHaveBeenCalled();
+    expect(runtimeCalls).toBe(1);
+    expect(await f.store.load(bucket)).toEqual([]);
+    release();
+    await expect(first).resolves.toMatchObject({ failure: { kind: "cancelled" } });
+    const retry = await harness.run(request("Fictional retry input."));
+    expect(retry.failure).toBeUndefined();
+    expect(runtimeCalls).toBe(2);
+    const history = await f.store.load(bucket);
+    expect(history.filter((message) => message.content === "Fictional cancelled input.")).toHaveLength(1);
+    expect(history.some((message) => message.content === "Fictional blocked input.")).toBe(false);
+    expect(history.some((message) => message.content === "Fictional retry input.")).toBe(true);
+    expect(unhandled).toEqual([]);
+  } finally {
+    release();
+    await first.catch(() => undefined);
+    await harness.dispose?.();
+    process.off("unhandledRejection", onUnhandled);
+  }
+});
+
 it("admits a reconciled turn and its live inputs without whole-root accounting; retention is enforced at commit", async () => {
   const f = await fixture();
   for (const id of ["fictional-other-a", "fictional-other-b", "fictional-other-c"]) await f.store.append(id, [{ role: "assistant", content: `Fictional ${id} reply.` }]);

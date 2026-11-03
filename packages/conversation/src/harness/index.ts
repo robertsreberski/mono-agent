@@ -1091,6 +1091,12 @@ export class ConversationHarnessImpl implements ConversationHarness {
       turnContinuityCollector.seal(claim.outcome);
       const publication = publishTurnContinuity();
       continuityPromise = finalizeTurnContinuity(publication);
+      // Cancellation claims from an abort listener while the owning run may
+      // still await the provider. Observe the finalizer promise immediately:
+      // handling publication alone does not handle this derived rejection.
+      // Keep both promises rejected for their existing owners; only successful
+      // publication/republish may clear the fail-closed continuity barrier.
+      void continuityPromise.catch(() => undefined);
       this.registerTurnContinuityPublication(request.conversationId, claim.outcome, publication, republishTurnContinuity);
       return true;
     };
