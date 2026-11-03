@@ -17,6 +17,9 @@
   keep legacy defaults and paid-execution refusals unchanged. Regenerate earlier
   overlap reports before freezing: expanded reference sources make them stale.
 
+- Keep cancelled native turns with pending provider settlement from crashing the
+  host, while preserving retryable, fail-closed conversation recovery.
+
 - Fix effective request/run denies for policy-gated app-owned MCP tools,
   including global `*` denies for `AskUser` and adapter send tools; keep
   `MemoryRecall` exempt.
