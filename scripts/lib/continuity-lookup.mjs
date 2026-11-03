@@ -1,4 +1,5 @@
 // Benchmark-only lookup protocol. No provider calls; production owns retention and tools.
+import { isDeepStrictEqual } from "node:util";
 import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { createServer } from "node:http";
@@ -35,14 +36,24 @@ export function assertLookupRole(role) {
   if (!def || role.protocol !== LOOKUP_ROLE_PROTOCOL || role.arm !== def.arm || role.code !== def.code
     || !/^[a-f0-9]{40}$/u.test(role.revision ?? "")
     || ![role.buildHash, role.commonSha256, role.registrationSha256].every(hash => /^[a-f0-9]{64}$/u.test(hash ?? ""))
-    || !role.scope || !["original", "hard", "hard-distractors"].includes(role.scope.suite)
+    || !role.scope || !["original", "hard", "hard-distractors", "holdout"].includes(role.scope.suite)
     || !Array.isArray(role.scope.traces) || !role.scope.traces.length || new Set(role.scope.traces).size !== role.scope.traces.length
     || role.soul?.file !== soul.file || role.soul?.rawSha256 !== soul.rawSha256 || role.soul?.coreSha256 !== soul.coreSha256) {
     throw Object.assign(new Error("lookup_role_binding_mismatch"), { code: "lookup_role_binding_mismatch" });
   }
 }
 
-export function assertLookupContract({ suite, sha256: corpusSha256 }) {
+export const FIXED_BUDGET_SHA256 = sha256(readFileSync(new URL("../fixtures/continuity-lookup-budget-v1.json", import.meta.url)));
+export function assertFixedBudget(hash) {
+  if (hash !== FIXED_BUDGET_SHA256) throw Object.assign(new Error("lookup_fixed_budget_hash_mismatch"), { code: "lookup_fixed_budget_hash_mismatch" });
+}
+export function assertLookupContract({ suite, sha256: corpusSha256, source, lookupSource, lookupPolicy }) {
+  if (suite === "holdout" && lookupSource) {
+    if (source?.kind !== "lookup-frozen-holdout" || source.manifestSha256 !== corpusSha256 || lookupSource.manifestSha256 !== corpusSha256)
+      throw Object.assign(new Error("lookup_invalid_source"), { code: "lookup_invalid_source" });
+    if (lookupPolicy) assertExternalPolicy(lookupPolicy, { source });
+    return;
+  }
   if (LOOKUP_BUDGET.status !== "frozen" || LOOKUP_BUDGET.corpus[suite] !== corpusSha256) throw Object.assign(new Error("lookup_requires_frozen_corpus_and_budget"), { code: "lookup_requires_frozen_corpus_and_budget" });
   if (!Number.isSafeInteger(LOOKUP_BUDGET.callBudget) || LOOKUP_BUDGET.callBudget < 1 || LOOKUP_BUDGET.callBudget > 96 || LOOKUP_BUDGET.callBudget + 2 > 100
     || !Number.isSafeInteger(LOOKUP_BUDGET.byteBudget) || LOOKUP_BUDGET.byteBudget < 1 || LOOKUP_BUDGET.byteBudget > 8 * 1024 * 1024) throw Object.assign(new Error("lookup_invalid_frozen_budget"), { code: "lookup_invalid_frozen_budget" });
@@ -326,4 +337,31 @@ export function scriptedLookupReader({ minRounds = 8, callBudget = LOOKUP_BUDGET
       return null;
     },
   };
+}
+
+/** Fixed-budget artifact, not a derived budget or a legacy holdout gate. */
+export function assertExternalPolicy(policy, { source, selection, codes, protocol } = {}) {
+  const fail = code => { throw Object.assign(new Error(code), { code }); };
+  if (policy?.schema !== "continuity-lookup-feasibility-v1" || policy.mode !== "fixed-budget-feasibility-only" || policy.maxTurns !== 10) fail("lookup_invalid_policy");
+  assertFixedBudget(policy.fixedBudgetSha256);
+  const b = policy.budget;
+  for (const key of Object.keys(LOOKUP_BUDGET).filter(key => key !== "paths")) {
+    if (!isDeepStrictEqual(b?.[key], LOOKUP_BUDGET[key])) fail("lookup_fixed_budget_changed");
+  }
+  if (!source || !isDeepStrictEqual(policy.source, source)) fail("lookup_policy_source_mismatch");
+  if (selection && !isDeepStrictEqual(policy.selection, selection)) fail("lookup_policy_selection_mismatch");
+  if (codes && !isDeepStrictEqual(policy.codes, codes)) fail("lookup_policy_code_mismatch");
+  if (protocol && !isDeepStrictEqual(policy.protocol, protocol)) fail("lookup_policy_protocol_mismatch");
+  if (!Array.isArray(b.paths) || !b.paths.length || new Set(b.paths.map(p => `${p.role}/${p.traceId}/${p.probeId}`)).size !== b.paths.length) fail("lookup_invalid_inventory");
+  for (const p of b.paths) {
+    const role = LOOKUP_ROLES.find(r => r.id === p.role);
+    if (!role || role.arm !== p.arm || !Number.isSafeInteger(p.initialTokens) || p.initialTokens < 1 || !Number.isSafeInteger(p.initialContextBytes) || p.initialContextBytes < 1
+      || !["feasible", "budget-infeasible", "unknown"].includes(p.feasibility?.classification)
+      || !["identifier-reference", "conservative-full-budget"].includes(p.method)) fail("lookup_invalid_inventory");
+  }
+  if (selection) {
+    const expected = LOOKUP_ROLES.flatMap(r => selection.flatMap(t => t.probes.map(id => `${r.id}/${t.id}/${id}`))).sort();
+    if (JSON.stringify(expected) !== JSON.stringify(b.paths.map(p => `${p.role}/${p.traceId}/${p.probeId}`).sort())) fail("lookup_inventory_scope_mismatch");
+  }
+  return policy;
 }

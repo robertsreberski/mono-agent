@@ -961,3 +961,14 @@ it.each(["ownerEntries", "toolEntries", "summaryEntries", "evidenceEntries"])("a
   expect(verifyLedgerTreatment({ valid: true, expectedEntries: 3 }, injected)).toBe(false);
   expect(verifyStore(arm, { checkpointContinuity, observed: injected, expectedLedgerEntries: 3 }).reasons).toContain("ledger_not_injected");
 });
+
+it("accepts external lookup transport without legacy registration, but never uses its repeat default", async () => {
+  const { profileFrom } = await import("../continuity-benchmark.mjs");
+  const flags = { suite: "holdout", "probe-mode": "lookup-allowed-v1", "corpus-manifest": "/fictional/manifest.json",
+    "manifest-sha256": "a".repeat(64), "statistical-spec": "/fictional/spec.json" };
+  expect(profileFrom(flags).repeats).toBe(1);
+  expect(profileFrom(flags).arms).toEqual(["native-lookup", "continuity-pack-cold"]);
+  expect(() => profileFrom({ ...flags, shard: "1" })).toThrow("lookup_not_legacy_holdout");
+  expect(() => profileFrom({ suite: "holdout", "probe-mode": "lookup-allowed-v1" })).toThrow("lookup_not_legacy_holdout");
+  expect(() => profileFrom({ ...flags, "statistical-spec": undefined })).toThrow("holdout_registration_required");
+});

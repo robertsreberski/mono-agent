@@ -24,7 +24,15 @@ export function workloadOptions(flags) {
     const value = Number(flags[key]); requireLookup(Number.isSafeInteger(value), "lookup_invalid_arguments"); return value;
   };
   for (const key of ["--reader", "--reader-effort"]) requireLookup(flags[key] === undefined || flags[key].trim().length > 0, "lookup_empty_reader_option");
-  return { suites: flags["--suites"]?.split(",") ?? ["original", "hard", "hard-distractors"],
+  requireLookup(Boolean(flags["--lookup-policy"]) === Boolean(flags["--lookup-policy-sha256"]), "lookup_policy_hash_required");
+  requireLookup(Boolean(flags["--output-limit"]) === Boolean(flags["--output-limit-source"]), "lookup_output_limit_required");
+  const sourceKeys = ["--corpus-manifest", "--manifest-sha256", "--statistical-spec"];
+  requireLookup(!sourceKeys.some(k => flags[k]) || sourceKeys.every(k => flags[k]), "lookup_source_required");
+  return { ...(flags["--corpus-manifest"] ? { lookupSource: { manifestPath: flags["--corpus-manifest"], manifestSha256: flags["--manifest-sha256"], statisticalSpecPath: flags["--statistical-spec"] } } : {}),
+    ...(flags["--lookup-policy"] ? { policyPath: flags["--lookup-policy"], policySha256: flags["--lookup-policy-sha256"] } : {}),
+    ...(flags["--output-limit"] ? { outputLimit: { tokens: number("--output-limit"), source: flags["--output-limit-source"] } } : {}),
+    ...(flags["--catalog-cap-usd"] ? { catalogCapUSD: Number(flags["--catalog-cap-usd"]) } : {}),
+    suites: flags["--suites"]?.split(",") ?? (flags["--corpus-manifest"] ? ["holdout"] : ["original", "hard", "hard-distractors"]),
     traceIds: flags["--traces"]?.split(",") ?? null, repeats: number("--repeats", 1), probeLimit: number("--probe-limit", null),
     ...(flags["--reader"] !== undefined ? { reader: flags["--reader"] } : {}), ...(flags["--reader-effort"] !== undefined ? { readerEffort: flags["--reader-effort"] } : {}) };
 }
@@ -45,13 +53,17 @@ export async function lookupOutputPath(output, roots) {
   // Use this resolved path for writes too; do not re-traverse the original alias.
   return canonical;
 }
-export const WORKLOAD_FLAGS = ["--suites", "--traces", "--repeats", "--probe-limit", "--reader", "--reader-effort"];
+export const WORKLOAD_FLAGS = ["--suites", "--traces", "--repeats", "--probe-limit", "--reader", "--reader-effort", "--corpus-manifest", "--manifest-sha256", "--statistical-spec", "--lookup-policy", "--lookup-policy-sha256", "--output-limit", "--output-limit-source", "--catalog-cap-usd"];
 const HELP = `continuity-lookup-compare (offline only)
   register --r0 PATH --r0-revision FULL_SHA --rpack PATH --rpack-revision FULL_SHA --output NEW_DIR
            [--suites original,hard,hard-distractors] [--traces ID,...] [--probe-limit N] [--repeats N]
            [--reader REF] [--reader-effort low]
   run --registration FILE --sha256 FILE_SHA256 --output NEW_ABSOLUTE_DIR
   aggregate --registration FILE --sha256 FILE_SHA256 --output EXISTING_ABSOLUTE_DIR
+External workload: --suites holdout --corpus-manifest FILE --manifest-sha256 SHA --statistical-spec FILE
+  --traces ID,... --lookup-policy FILE --lookup-policy-sha256 SHA
+  --output-limit N --output-limit-source enforced|catalog_max --catalog-cap-usd C (register)
+  External registration uses one repeat, fixed-policy feasibility and a run-wide proposed cap; no legacy gates.
 Both checkouts must implement continuity-lookup-role-v1. Registration always builds the app closure.
 Registration/run output directories must be outside both checkouts (symlinks resolved).
 No provider calls, fetch, checkout, cherry-pick, significance claims or spending authorization.`;

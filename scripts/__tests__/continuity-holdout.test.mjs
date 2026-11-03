@@ -235,6 +235,29 @@ it("freezes external canonical bytes and detects artifact, manifest, allowlist a
   const datasetModule = await import(/* @vite-ignore */ pathToFileURL(join(repo, "scripts/lib/continuity-dataset.mjs")).href);
   const specPath = join(inputs, "statistics.json");
   await writeFile(specPath, jsonBytes(statisticalSpec));
+  // Explicit lookup source reuses the freeze, not legacy shard/ledger registration.
+  const lookupSource = { manifestPath: join(outputDir, "manifest.json"), manifestSha256: frozen.manifestSha256, statisticalSpecPath: specPath };
+  const external = await datasetModule.loadTraces({ suite: "holdout", lookupSource });
+  expect(external.traces).toHaveLength(4); expect(external.holdout).toBeUndefined();
+  expect(external.source.kind).toBe("lookup-frozen-holdout");
+  const rolesModule = await import(/* @vite-ignore */ pathToFileURL(join(repo, "scripts/lib/continuity-lookup-roles.mjs")).href);
+  const selected = [external.traces[0].id, external.traces[2].id];
+  const workload = await rolesModule.lookupWorkload({ suites: ["holdout"], lookupSource, traceIds: selected });
+  expect(workload.repeats).toBe(1); expect(workload.corpora[0].traces.map(t => t.id)).toEqual(selected);
+  expect(workload).not.toHaveProperty("shards"); expect(workload).not.toHaveProperty("shardCostCapUSD");
+  await expect(rolesModule.lookupWorkload({ suites: ["holdout"], lookupSource, traceIds: selected, repeats: 2 })).rejects.toThrow("lookup_external_requires_explicit_selection_and_one_repeat");
+  await expect(rolesModule.lookupWorkload({ suites: ["holdout"], lookupSource })).rejects.toThrow("lookup_external_requires_explicit_selection_and_one_repeat");
+  await expect(datasetModule.loadTraces({ suite: "holdout", lookupSource: { ...lookupSource, manifestSha256: "0".repeat(64) } })).rejects.toThrow("manifest_hash_mismatch");
+  const lookupCli = await import(/* @vite-ignore */ pathToFileURL(join(repo, "scripts/continuity-benchmark.mjs")).href);
+  let lookupDry;
+  const lookupArgs = ["--suite", "holdout", "--probe-mode", "lookup-allowed-v1", "--corpus-manifest", lookupSource.manifestPath,
+    "--manifest-sha256", lookupSource.manifestSha256, "--statistical-spec", specPath, "--lookup-traces", selected.join(","), "--dry-run"];
+  expect(await lookupCli.main(lookupArgs, { stdout: text => { lookupDry = JSON.parse(text); } })).toBe(0);
+  expect(lookupDry.repeats).toBe(1); expect(lookupDry.holdout).toBeUndefined(); expect(lookupDry.corpus.traces).toHaveLength(2);
+  expect(lookupDry.lookup.maxTurns).toBe(10);
+  await expect(lookupCli.main([...lookupArgs.filter(a => a !== "--dry-run"), "--real"])).rejects.toThrow("lookup_real_not_authorized");
+  const validateCli = spawnSync(process.execPath, [await realpath(join(repo, "scripts/holdout-validate.mjs")), "--spec-dir", specDir, "--schema-only", "--statistical-spec", specPath], { encoding: "utf8" });
+  expect(validateCli.status, validateCli.stderr).toBe(0); expect(JSON.parse(validateCli.stdout).families).toBe(2);
   const profile = { reader: "fixture:reader", extractionModel: "fixture:extractor", alternate: "fixture:alternate", judge: null };
   const revision = fixtureGit(repo, ["rev-parse", "HEAD"]).trim();
   const registered = await registrationModule.registerFrozenHoldout({ manifestPath: join(outputDir, "manifest.json"), manifestSha256: frozen.manifestSha256,
@@ -315,3 +338,20 @@ it("freezes external canonical bytes and detects artifact, manifest, allowlist a
   await symlink(CHECKOUT, join(dir, "checkout-link"));
   await expect(externalDirectory(join(dir, "checkout-link", "new-output"), true)).rejects.toThrow("path_must_be_outside_checkout");
 }, 180000);
+
+it("keeps required freeze/overlap arguments mandatory when optional statistical transport is present", async () => {
+  const { parseFlags } = await import("../lib/continuity-holdout-files.mjs");
+  expect(parseFlags(["--required", "a"], ["--required"], ["--statistical-spec"])).toEqual({ "--required": "a" });
+  expect(parseFlags(["--required", "a", "--statistical-spec", "b"], ["--required"], ["--statistical-spec"])).toEqual({ "--required": "a", "--statistical-spec": "b" });
+  expect(() => parseFlags(["--statistical-spec", "b"], ["--required"], ["--statistical-spec"])).toThrow("missing_argument");
+  expect(() => parseFlags(["--required", "a", "--statistical-spec", "b", "--statistical-spec", "c"], ["--required"], ["--statistical-spec"])).toThrow("invalid_arguments");
+});
+it("indexes pack guidance and both soul texts separately from semantic independence review", async () => {
+  const sources = await overlapSources();
+  for (const name of ["packages/conversation/src/continuity/render-fit.ts", "packages/conversation/src/continuity/pack.ts", "scripts/fixtures/continuity-soul-v1.md", "scripts/fixtures/continuity-soul-v2.md"]) {
+    const source = sources.find(s => s.name === name); expect(source).toBeTruthy();
+    const text = (source.values ?? literals(source.text)).find(t => wordRuns(t, 7, false).length);
+    expect(text).toBeTruthy(); const matcher = overlapMatcher(sources, emptyAllowlist); matcher.add(text, "fixture");
+    expect(matcher.result().overlaps.some(hit => hit.sources.includes(name))).toBe(true);
+  }
+});

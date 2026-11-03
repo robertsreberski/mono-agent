@@ -442,3 +442,25 @@ content, including hedged guesses and incomplete answers, counts wrong.
 Missing/non-string text is not pure and fails closed for a non-pass. Correct
 answers and v1/v2 scoring are unchanged. Incomplete arms retain known counts and
 missingness, with outcome rates/any-wrong risk null, not completed risk estimates.
+
+## Smaller external lookup populations
+
+`AUTHOR-FORMAT-PILOT-v1.md` is a population-only authoring delta: eight families
+(four ordinary, four distractor), one conversation each, 15 questions each.
+It is not a qualification population. Review the neutral document for leakage
+before giving it to an independent author; semantic independence is a separate
+human review, not a lexical test.
+
+The existing validate, overlap and freeze commands accept optional
+`--statistical-spec FILE`. Omission preserves the legacy design. For the pilot,
+copy the legacy specification to an external private file and change only
+`design.families=8`, `conversationsPerFamily=1`, `conversationsPerCorpus=4`,
+`shards=1`, `perCorpusPerShard=4` (all other fields remain required).
+The validated transport still requires `repeats: 2`, positive `shardCostCapUSD`
+and legacy gates. **Lookup ignores those placeholders**: one repeat, no legacy
+ledger registration or statistical gates, and a run-wide `catalogCapUSD`.
+
+Overlap now also compares runtime pack guidance and both instruction fixtures.
+Lexical matching and independent semantic/provenance review remain separate.
+Freeze only after the last tooling merge; later script changes require a new
+freeze, measurement, registration and estimate.

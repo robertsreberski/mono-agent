@@ -51,11 +51,11 @@ export async function regularFile(path) {
   if (!(await lstat(path)).isFile()) throw new Error("regular_file_required");
   return readFile(path);
 }
-export function parseFlags(argv, allowed) {
+export function parseFlags(argv, allowed, optional = []) {
   const flags = {};
   for (let i = 0; i < argv.length; i++) {
     const key = argv[i];
-    if (!allowed.includes(key) || Object.hasOwn(flags, key)) throw new Error("invalid_arguments");
+    if (![...allowed, ...optional].includes(key) || Object.hasOwn(flags, key)) throw new Error("invalid_arguments");
     if (key === "--schema-only") flags[key] = true;
     else { if (!argv[i + 1] || argv[i + 1].startsWith("--")) throw new Error("missing_argument"); flags[key] = argv[++i]; }
   }

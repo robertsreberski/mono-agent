@@ -396,3 +396,60 @@ it("runs all six faux/real-loopback roles across two clean synthetic checkouts w
   await rm(join(output, "shipping"), { recursive: true });
   expect((await aggregateRoleFiles(registration, output)).coverage.missing).toBe(1);
 }, 900000);
+
+function externalEstimateFixture() {
+  const selection = [{ id: "fixture-selected", family: "long", toolRecords: 64, probes: ["p01", "p04"] }];
+  const source = { kind: "lookup-frozen-holdout", manifestSha256: "d".repeat(64), statisticalSpecSha256: "e".repeat(64) };
+  const paths = LOOKUP_ROLES.flatMap(role => selection[0].probes.map(probeId => ({ role: role.id, arm: role.arm, traceId: selection[0].id,
+    probeId, initialContextBytes: 12000, initialTokens: 12000, method: probeId === "p01" ? "identifier-reference" : "conservative-full-budget",
+    feasibility: { classification: role.arm === "native-lookup" ? "budget-infeasible" : "feasible", reasons: [] } })));
+  const policy = { schema: "continuity-lookup-feasibility-v1", mode: "fixed-budget-feasibility-only", maxTurns: 10,
+    fixedBudgetSha256: sha256(Buffer.from(JSON.stringify(LOOKUP_BUDGET))), source, selection, budget: { ...LOOKUP_BUDGET, paths } };
+  const workload = { lookupSource: { manifestPath: "/fictional/manifest.json", manifestSha256: source.manifestSha256, statisticalSpecPath: "/fictional/spec.json" },
+    policy, reader: { model: "fixture:reader", effort: "low" }, repeats: 1, corpora: [{ suite: "holdout", source, traces: selection }] };
+  const catalog = { model: workload.reader.model, fileSha256: "c".repeat(64), contextWindow: 300000, maxTokens: 10000,
+    cost: { input: 2, output: 10, cacheRead: .2, tiers: [{ inputTokensAbove: 272000, input: 4, output: 20, cacheRead: .4 }] } };
+  return { workload, catalog, outputLimit: { tokens: 10000, source: "catalog_max" } };
+}
+it("prices eligible external slots with ten no-cache rounds, per-call tiers and one run-wide cap", async () => {
+  const { estimateExternalLookup } = await import("../continuity-lookup-estimate.mjs");
+  const fixture = externalEstimateFixture(), result = estimateExternalLookup(fixture);
+  expect(result).toMatchObject({ planned: 12, eligible: 8, skipped: 4, authorizedSpend: false });
+  expect(result.roles.native).toMatchObject({ planned: 2, eligible: 0, skipped: 2, reservationUSD: 0 });
+  expect(result.trials.filter(t => t.eligible).every(t => t.reservationTieredCalls === 10)).toBe(true);
+  const perCall = priceLookupCall(fixture.catalog.cost, 300000, 10000, 0).usd;
+  expect(result.reservationUSD).toBeCloseTo(8 * 10 * perCall, 10);
+  expect(result.catalogCapUSD).toBe(Math.ceil(1.25 * result.reservationUSD * 100) / 100);
+  expect(result.capOverExpected).toBe(result.catalogCapUSD / result.expectedUSD);
+  expect(result.tokenEnvelope.roundsPerEligibleTrial).toBe(10);
+  expect(result.roles.pack.expectedUSD).toBeCloseTo(result.trials.filter(t => t.role === "pack").reduce((s, t) => s + t.expectedUSD, 0));
+  const altered = structuredClone(fixture);
+  altered.workload.transportSpec = { design: { repeats: 2, shardCostCapUSD: 999999 }, gates: { arbitrary: true } };
+  expect(estimateExternalLookup(altered)).toEqual(result);
+  const enforced = structuredClone(fixture); enforced.outputLimit = { tokens: 1000, source: "enforced" };
+  expect(estimateExternalLookup(enforced).reservationUSD).toBeLessThan(result.reservationUSD);
+});
+it("blocks external numerical approval on unknown slots, missing catalogs/limits/rates and ambiguous output bounds", async () => {
+  const { estimateExternalLookup, offlineCatalog } = await import("../continuity-lookup-estimate.mjs");
+  for (const mutate of [f => { f.catalog = null; }, f => { delete f.catalog.cost; }, f => { delete f.catalog.contextWindow; },
+    f => { delete f.catalog.maxTokens; }, f => { delete f.catalog.cost.tiers[0].input; }, f => { f.catalog.cost.tiers = {}; },
+    f => { delete f.catalog.cost.cacheRead; }, f => { f.outputLimit = null; }, f => { f.outputLimit.source = "hint"; },
+    f => { f.outputLimit.tokens = 9999; }, f => { f.outputLimit.tokens = 10001; },
+    f => { f.workload.policy.budget.paths[0].feasibility.classification = "unknown"; },
+    f => { f.workload.policy.budget.paths.pop(); }, f => { f.workload.policy.budget.paths[2].initialTokens = 300001; }]) {
+    const fixture = externalEstimateFixture(); mutate(fixture); expect(() => estimateExternalLookup(fixture)).toThrow();
+  }
+  await expect(offlineCatalog("fixture:reader", "/fictional/no-catalog")).rejects.toThrow("lookup_catalog_missing");
+});
+it("validates fixed policy hash, unchanged limits, complete role slots and independent source/selection bindings", async () => {
+  const { assertExternalPolicy, FIXED_BUDGET_SHA256 } = await import("../lib/continuity-lookup.mjs");
+  const fixture = externalEstimateFixture(), policy = fixture.workload.policy;
+  policy.fixedBudgetSha256 = FIXED_BUDGET_SHA256;
+  const binding = { source: policy.source, selection: policy.selection };
+  expect(assertExternalPolicy(policy, binding)).toBe(policy);
+  for (const mutate of [p => { p.fixedBudgetSha256 = "a".repeat(64); }, p => { p.maxTurns = 9; }, p => { p.budget.callBudget++; },
+    p => { p.budget.byteBudget++; }, p => { p.budget.paths.pop(); }, p => { p.budget.paths[0].role = "unregistered"; },
+    p => { p.budget.paths[0].initialContextBytes = null; }, p => { p.selection[0].probes.pop(); }, p => { p.source.manifestSha256 = "a".repeat(64); }]) {
+    const changed = structuredClone(policy); mutate(changed); expect(() => assertExternalPolicy(changed, binding)).toThrow();
+  }
+});

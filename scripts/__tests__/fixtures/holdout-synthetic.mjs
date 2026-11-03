@@ -55,7 +55,7 @@ export function fixtureGit(repo, args) {
 export function fixtureCommit(repo) { fixtureGit(repo, ["add", "--", "."]); fixtureGit(repo, ["commit", "-qm", "Fixture checkpoint"]); }
 export async function toolingRepository(directory, runtime = false) {
   await mkdir(directory);
-  for (const name of [...benchmarkFiles(), "pnpm-lock.yaml", "scripts/lib/memory-e2e-build.mjs"]) {
+  for (const name of [...benchmarkFiles(), "pnpm-lock.yaml", "scripts/lib/memory-e2e-build.mjs", "packages/conversation/src/continuity/pack.ts", "packages/conversation/src/continuity/render-fit.ts"]) {
     await mkdir(dirname(join(directory, name)), { recursive: true });
     await writeFile(join(directory, name), await readFile(resolve(CHECKOUT, name)));
   }

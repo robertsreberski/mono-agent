@@ -20,7 +20,7 @@ import { LOOKUP_MODE, LOOKUP_DEFAULT_ARMS } from "./lib/continuity-lookup.mjs";
 
 const ROOT = fileURLToPath(new URL("../", import.meta.url)).replace(/\/$/u, "");
 const BOOLEAN = new Set(["dry-run", "real", "help", "lookup-protocol", "no-judge", "keep-work", "aggregate-only", "require-request-cap", "capture-upkeep-output"]);
-const VALUED = new Set(["probe-mode", "lookup-role", "suite", "seeds", "reader", "extraction-model", "alternate", "judge", "reader-effort", "judge-effort", "repeats", "arms", "probe-limit", "confirm-plan", "pi-auth-path", "output", "concurrency", "corpus-manifest", "manifest-sha256", "registration", "registration-sha256", "statistical-spec", "shard", "audit"]);
+const VALUED = new Set(["lookup-policy", "lookup-policy-sha256", "lookup-traces", "probe-mode", "lookup-role", "suite", "seeds", "reader", "extraction-model", "alternate", "judge", "reader-effort", "judge-effort", "repeats", "arms", "probe-limit", "confirm-plan", "pi-auth-path", "output", "concurrency", "corpus-manifest", "manifest-sha256", "registration", "registration-sha256", "statistical-spec", "shard", "audit"]);
 const REPEATABLE = new Set(["trace", "repeat"]);
 const EFFORTS = ["none", "minimal", "low", "medium", "high"];
 
@@ -57,12 +57,14 @@ export function profileFrom(flags) {
   const probeMode = flags["probe-mode"];
   if (probeMode !== undefined && probeMode !== LOOKUP_MODE) throw new CliError("invalid_probe_mode");
   const suite = flags.suite ?? "original";
-  if (probeMode && suite === "holdout") throw new CliError("lookup_not_legacy_holdout");
+  if (probeMode && suite === "holdout" && !flags["corpus-manifest"]) throw new CliError("lookup_not_legacy_holdout");
   if (!["original", "hard", "hard-distractors", "holdout"].includes(suite)) throw new CliError("invalid_suite");
   if (suite === "holdout" && flags.seeds !== undefined) throw new CliError("holdout_has_frozen_seeds");
   if (suite !== "holdout" && ["corpus-manifest", "manifest-sha256", "registration", "registration-sha256", "statistical-spec", "shard", "audit"].some(k => flags[k] !== undefined)) throw new CliError("holdout_flags_require_holdout_suite");
   if (flags.seeds !== undefined && suite === "original") throw new CliError("seeds_require_hard_suite");
-  if (suite === "holdout" && ["corpus-manifest", "manifest-sha256", "registration", "registration-sha256", "statistical-spec"].some(k => !flags[k])) throw new CliError("holdout_registration_required");
+  if (suite === "holdout" && (probeMode ? ["corpus-manifest", "manifest-sha256", "statistical-spec"] : ["corpus-manifest", "manifest-sha256", "registration", "registration-sha256", "statistical-spec"]).some(k => !flags[k])) throw new CliError("holdout_registration_required");
+  if (["lookup-policy", "lookup-policy-sha256", "lookup-traces"].some(k => flags[k]) && !(probeMode && suite === "holdout")) throw new CliError("lookup_source_required");
+  if (probeMode && suite === "holdout" && ["registration", "registration-sha256", "shard", "audit"].some(k => flags[k])) throw new CliError("lookup_not_legacy_holdout");
   const arms = flags.arms === undefined ? [...(probeMode ? LOOKUP_DEFAULT_ARMS : suite === "holdout" ? HOLDOUT_ARMS : DEFAULT_ARMS[suite])] : flags.arms.split(",").map((value) => value.trim());
   return {
     suite,
@@ -77,7 +79,7 @@ export function profileFrom(flags) {
       ...(flags["reader-effort"] === undefined ? {} : { readerEffort: flags["reader-effort"] }),
       ...(flags["judge-effort"] === undefined ? {} : { judgeEffort: flags["judge-effort"] }),
     },
-    repeats: integer(flags.repeats, { min: 1, max: 5 }, "invalid_repeats") ?? (suite === "holdout" ? STATISTICAL_SPEC.design.repeats : 1),
+    repeats: integer(flags.repeats, { min: 1, max: 5 }, "invalid_repeats") ?? (suite === "holdout" && !probeMode ? STATISTICAL_SPEC.design.repeats : 1),
     arms,
     probeLimit: integer(flags["probe-limit"], { min: 1, max: 15 }, "invalid_probe_limit") ?? null,
   };
@@ -134,6 +136,8 @@ Plan (bound into the digest): --suite original|hard|hard-distractors|holdout (de
 Execution only: --trace ID (repeatable) --repeat N (repeatable) --concurrency N --output DIR --keep-work --aggregate-only --capture-upkeep-output
 Holdout: --corpus-manifest FILE --manifest-sha256 SHA --registration FILE --registration-sha256 SHA
   --statistical-spec FILE --shard N [--audit FILE]. Shard counts/workload follow the registered specification.
+External offline lookup uses the source triple above without legacy registration/shard:
+  --lookup-traces ID,... [--lookup-policy FILE --lookup-policy-sha256 SHA], exactly one repeat.
 See docs/runtime/continuity-benchmark.md.`;
 
 export async function main(argv = process.argv.slice(2), { stdout = console.log, env = process.env, modulesLoader, onPhase = () => {} } = {}) {
@@ -148,7 +152,7 @@ export async function main(argv = process.argv.slice(2), { stdout = console.log,
   if (flags.real && flags["probe-mode"] === LOOKUP_MODE) throw new CliError("lookup_real_not_authorized");
   if (flags.real && Object.hasOwn(env, "CI")) throw new CliError("paid_mode_refused_in_ci");
   let { suite, seeds, profile, repeats, arms, probeLimit, probeMode } = profileFrom(flags);
-  if (suite === "holdout" && flags.repeats === undefined) {
+  if (suite === "holdout" && !probeMode && flags.repeats === undefined) {
     const { readJson } = await import("./lib/continuity-holdout-files.mjs");
     repeats = (await readJson(flags["statistical-spec"])).design?.repeats;
   }
@@ -158,12 +162,31 @@ export async function main(argv = process.argv.slice(2), { stdout = console.log,
   if (flags["lookup-role"] && (!roleRequest || !roleRequest.binding)) throw new CliError("lookup_role_request_mismatch");
   if (suite === "holdout" && flags.real && flags.shard === undefined) throw new CliError("paid_holdout_requires_shard");
   if (suite === "holdout" && flags.shard !== undefined && flags.repeat !== undefined) throw new CliError("registered_shard_requires_both_repeats");
-  const { traces, sha256, source, holdout } = await loadTraces({ suite, seeds,
-    ...(suite === "holdout" ? { manifestPath: flags["corpus-manifest"], manifestSha256: flags["manifest-sha256"], registrationPath: flags.registration,
+  const lookupSource = suite === "holdout" && probeMode ? { manifestPath: flags["corpus-manifest"], manifestSha256: flags["manifest-sha256"], statisticalSpecPath: flags["statistical-spec"] } : undefined;
+  let lookupPolicy;
+  if (lookupSource) {
+    if (repeats !== 1) throw new CliError("lookup_external_requires_explicit_selection_and_one_repeat");
+    if (Boolean(flags["lookup-policy"]) !== Boolean(flags["lookup-policy-sha256"])) throw new CliError("lookup_policy_hash_required");
+    if (flags["lookup-policy"]) {
+      const { externalFile } = await import("./lib/continuity-holdout-files.mjs");
+      const bytes = await externalFile(flags["lookup-policy"]);
+      if (createHash("sha256").update(bytes).digest("hex") !== flags["lookup-policy-sha256"]) throw new CliError("lookup_policy_hash_mismatch");
+      lookupPolicy = JSON.parse(bytes);
+    }
+  }
+  const { traces: allTraces, sha256, source, holdout } = await loadTraces({ suite, seeds,
+    ...(lookupSource ? { lookupSource } : suite === "holdout" ? { manifestPath: flags["corpus-manifest"], manifestSha256: flags["manifest-sha256"], registrationPath: flags.registration,
       registrationSha256: flags["registration-sha256"], statisticalSpecPath: flags["statistical-spec"], shard: integer(flags.shard, { min: 1, max: Number.MAX_SAFE_INTEGER }, "invalid_shard"),
       profile, codeRevision: head, repeats, arms, probeLimit } : {}) });
-  const plan = makePlan({ traces, sha256, suite, source, ...(probeMode ? { probeMode } : {}), ...(roleRequest ? { lookupRole: roleRequest.binding } : {}), codeRevision: head, profile, repeats, arms, probeLimit, ...(holdout ? { holdout } : {}),
+  const ids = lookupSource ? roleRequest?.binding.scope.traces ?? flags["lookup-traces"]?.split(",") : null;
+  if (lookupSource && (!ids?.length || new Set(ids).size !== ids.length || ids.some(id => !allTraces.some(t => t.id === id)))) throw new CliError("lookup_external_requires_explicit_selection_and_one_repeat");
+  const traces = ids ? allTraces.filter(t => ids.includes(t.id)) : allTraces;
+  const plan = makePlan({ traces, sha256, suite, source, ...(lookupSource ? { lookupSource, lookupPolicy } : {}), ...(probeMode ? { probeMode } : {}), ...(roleRequest ? { lookupRole: roleRequest.binding } : {}), codeRevision: head, profile, repeats, arms, probeLimit, ...(holdout ? { holdout } : {}),
     piAuthFingerprint: piAuthPath === undefined ? null : createHash("sha256").update(piAuthPath).digest("hex") });
+  if (lookupPolicy) {
+    const { assertExternalPolicy } = await import("./lib/continuity-lookup.mjs");
+    assertExternalPolicy(lookupPolicy, { source, selection: plan.corpus.traces });
+  }
   if (roleRequest) await (await import("./lib/continuity-lookup-roles.mjs")).verifyRoleRequest(ROOT, roleRequest, plan);
   if (flags["dry-run"]) {
     const prices = await listPrices([plan.reader.model, plan.upkeep.model, ...(plan.judge ? [plan.judge.model] : [])]);

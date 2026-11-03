@@ -830,3 +830,70 @@ safe-integer revision stays below 36 KiB, less than the scan's 64 KiB source cap
 Oversized writes are rejected before publication; admission-boundary and healthy
 scan tests cover this. Corrupted on-disk rows still fail closed rather than being
 accepted as authentic source metadata.
+
+## External frozen lookup preparation (offline only)
+
+An explicit lookup source is `{manifestPath, manifestSha256,
+statisticalSpecPath}`. `loadTraces({suite: "holdout", lookupSource})` reuses
+`loadFrozenHoldout`, including freeze/tooling/runtime verification and trace
+hashes. This is not legacy holdout registration, ledger selection or
+qualification. Recall-only and checked-in lookup defaults remain unchanged.
+
+Use the existing validate/overlap/freeze commands with `--statistical-spec FILE`;
+see the [holdout preparation guide](../../scripts/continuity-holdout/README.md#smaller-external-lookup-populations).
+The transport specification's `repeats`, shard dollar cap and statistical gates
+are ignored by lookup, which explicitly requires one repeat. Preregister a seed
+and select two ordinary plus two distractor IDs **before** measuring; supply
+those IDs through `--traces` to all preparation commands. Unselected families
+are sealed spares, not outcome-driven replacements.
+
+```bash
+node scripts/continuity-lookup-budget.mjs \
+  --r0 /external/r0 --r0-revision FULL_SHA \
+  --rpack /external/rpack --rpack-revision FULL_SHA \
+  --corpus-manifest /external/frozen/manifest.json --manifest-sha256 SHA256 \
+  --statistical-spec /external/statistics.json --traces ID1,ID2,ID3,ID4 \
+  --fixed-budget-sha256 RAW_V1_POLICY_SHA256 --output /external/new-sizing
+```
+
+This fixed-budget, feasibility-only path never derives limits: eight calls,
+126,976 returned bytes, ten rounds and unchanged deadlines. Each of the six
+role/trace/probe slots records observed initial context and initial admission.
+Identifiers use that role's sanitized store and digest-verified reference path;
+other questions use an explicit conservative full-budget envelope, independent
+of identifier provenance. Unknown reference feasibility blocks pricing approval.
+The content-free `budget.json` binds source/spec/selection, reader, protocol,
+clean code/build bindings and the raw v1 policy hash. It contains no questions,
+answers, retrieved text or narrative. Scratch replay stays private and is removed.
+
+For estimate and compare registration, pass the same source/selection plus
+`--lookup-policy /external/new-sizing/budget.json --lookup-policy-sha256 SHA256`,
+`--output-limit N --output-limit-source catalog_max` (N must equal the selected
+model's catalog maximum) or `enforced` (requires separate execution proof).
+`continuity-lookup-estimate.mjs` accepts these flags directly or a hash-bound
+`--registration FILE --sha256 SHA256`. Compare `register` also requires
+`--catalog-cap-usd C`, exactly reproducing the estimate. External registrations
+use v2; v1 default registration shape and legacy plan digests remain unchanged.
+A standalone offline benchmark uses `--suite holdout --probe-mode lookup-allowed-v1`
+with the source triple, `--lookup-traces ID1,ID2,ID3,ID4` and optional hash-bound
+policy. A2 passes role-filtered policy paths through plans, receipts and scoring.
+
+Pricing retains planned denominators, excludes inventory-infeasible slots and
+blocks unknown slots. It reports per-role/per-trial expected, worst/reservation,
+lookup overhead, tier crossings and C/expected. Expected is only a scenario:
+two lookups, half the byte budget, 50% cache and 300 output tokens per round.
+Reservation uses **ten rounds**, **no cache**, the **full catalog context input
+bound on every call** (including replay) and the explicit per-call output limit.
+C is `ceil-to-cents(1.25 * summed eligible reservations)`, a run-wide proposed
+catalog-equivalent cap, never a per-shard cap or spending authorization.
+Missing catalog, selected model, rates (including tier/cache rates), context or
+output limits block numerical approval rather than becoming zero or unknown-allowed.
+
+The Codex transport currently omits the requested lower output token limit;
+`catalog_max` is the honest offline envelope until enforcement is independently
+proved. Dollars do not predict subscription quota: report token/turn envelopes,
+not a dollar-to-quota conversion. **All real-execution refusals remain in force**;
+inventory skip is a pricing classification, not a claim that guarded real
+dispatch or reservation has been implemented. Faux accuracy proves mechanics
+only. All raw content and private artifacts stay outside checkouts; share only
+counts, IDs, hashes and numerical summaries.
