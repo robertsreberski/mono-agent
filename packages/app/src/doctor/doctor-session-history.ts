@@ -118,13 +118,19 @@ async function inspectSessionToolHistorySection(
     && contentInfo.nlink === 1
     && ownerOnly(contentInfo, 0o600);
   if (!contentSecure) {
-    if (contentInfo === undefined && (owner.live === true || owner.initializing === true)) {
+    if (contentInfo === undefined && (ownerInfo === undefined || owner.initializing === true || owner.live === true)) {
       worsen(
         "waiting",
         owner.live === true
           ? "A live writer owns the sidecar and is still initializing the tool-history database."
-          : "The zero-byte owner database is still initializing before the tool-history database is published.",
+          : owner.initializing === true
+            ? "The zero-byte owner database is still initializing before the tool-history database is published."
+            : "Tool history database has not been published; the next writer can initialize it safely.",
       );
+    } else if (contentInfo === undefined) {
+      // The writer creates the content file before acquiring its owner. A
+      // non-pristine owner without a live writer is not unpublished content.
+      worsen("error", "Tool history database is missing although a writer previously owned it; restore it or move the history directory aside before starting.");
     } else {
       worsen("error", "Tool history database must be a single-link regular current-user file with mode 0600.");
     }
@@ -164,7 +170,7 @@ async function inspectSessionToolHistorySection(
     } else if (owner.live === true) {
       worsen("waiting", "An in-flight DELETE journal is present under the protected 0700 tool-history directory.");
     } else {
-      worsen("error", "A tool-history DELETE journal survived without a live writer; recovery is required before trusting the store.");
+      worsen("waiting", "A crash-stale tool-history DELETE journal remains; the next writer will recover it before use.");
     }
   }
   if (contentInspection === "readable") {
@@ -175,13 +181,13 @@ async function inspectSessionToolHistorySection(
           `Tool history: ${String(stats.calls)} calls, ${String(stats.records)} records, ${String(stats.tombstones)} tombstones, ${String(stats.retainedBytes)} retained payload bytes, ${String(stats.bytes)} database bytes.`,
           `Retention: ${String(stats.limits.maxCompletedCalls)} completed calls, ${String(stats.limits.maxAgeMs)} ms age, ${String(stats.limits.maxBytes)} retained bytes, ${String(stats.limits.maxTombstones)} tombstones.`,
         );
-        if (stats.dangling > 0) worsen(owner.live === true ? "waiting" : "error", `${String(stats.dangling)} dangling invocation(s) await terminal recovery.`);
+        if (stats.dangling > 0) worsen("waiting", `${String(stats.dangling)} dangling invocation(s) await terminal recovery.`);
         if (stats.orphanResults > 0) worsen("waiting", `${String(stats.orphanResults)} result(s) required a synthetic invocation because the provider start was missing.`);
         if (stats.recovered > 0) worsen("waiting", `${String(stats.recovered)} invocation(s) were recovered as interrupted without rerun.`);
         if (stats.writeFailures > 0) worsen("waiting", `${String(stats.writeFailures)} unresolved lifecycle write incident(s); only the matching tool-phase retry or a retry of the failed run finalization clears that incident.`);
         if (stats.idempotencyConflicts > 0) worsen("error", `${String(stats.idempotencyConflicts)} unresolved lifecycle idempotency conflict(s); only the matching tool-phase retry or canonical run-binding retry clears that incident.`);
         if (stats.maintenanceFailures > 0) worsen("waiting", `${String(stats.maintenanceFailures)} retention failure(s) remain since the latest successful retention pass.`);
-        if (stats.recoveryFailures > 0) worsen("error", `${String(stats.recoveryFailures)} recovery failure(s) remain since the latest successful writer recovery.`);
+        if (stats.recoveryFailures > 0) worsen("waiting", `${String(stats.recoveryFailures)} recovery failure(s) remain since the latest successful writer recovery.`);
         if (stats.retainedBytes > stats.limits.maxBytes) worsen("error", "Tool-history retained payload bytes exceed the configured byte ceiling.");
         else if (stats.retainedBytes >= Math.floor(stats.limits.maxBytes * 0.9)) worsen("waiting", "Tool-history retained payload bytes have reached 90% of the configured ceiling.");
         if (stats.continuity !== undefined) reportContinuity(stats.continuity, owner.live === true, details, worsen);
@@ -314,7 +320,14 @@ function inspectContentDatabase(
     return "readable";
   } catch (error) {
     const reason = reasonOf(error);
-    worsen(liveOwner && isBusyReason(reason) ? "waiting" : "error", `Tool-history database cannot be inspected: ${reason}`);
+    // A read-only connection cannot roll back a hot DELETE journal. Leave
+    // that storage-only recovery to the next owned writer, without treating
+    // arbitrary inspection failures (including corruption) as recoverable.
+    if (isReadOnlyRollback(error)) {
+      worsen("waiting", "Tool-history database awaits hot DELETE journal rollback by the next writer; read-only inspection cannot recover it.");
+    } else {
+      worsen(liveOwner && isBusyReason(reason) ? "waiting" : "error", `Tool-history database cannot be inspected: ${reason}`);
+    }
     return "unavailable";
   } finally {
     try { database?.close(); } catch { /* read-only doctor */ }
@@ -402,4 +415,9 @@ function isUnsupportedSchema(error: unknown): boolean {
 
 function isBusyReason(reason: string): boolean {
   return /\b(?:busy|locked)\b/iu.test(reason);
+}
+
+/** SQLite extended result SQLITE_READONLY_ROLLBACK. */
+function isReadOnlyRollback(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "errcode" in error && error.errcode === 776;
 }

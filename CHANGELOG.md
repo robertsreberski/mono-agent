@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Let startup proceed after a tool-history writer crash so the next writer can
+  recover interrupted invocations without rerunning tools.
+
 - Fix transient native journal catalogue contention with a short, abortable
   wait; keep writer conflicts fail-fast and report persistent contention as
   retryable without replaying the turn in a new session.
