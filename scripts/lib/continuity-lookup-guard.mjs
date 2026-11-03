@@ -115,7 +115,11 @@ function assertIdentity(model, contract) {
 function assertRoute(model, options, contract) {
   if (Object.hasOwn(options, "fetch")) refuse("lookup_external_fetch_forbidden");
   for (const key of Object.keys(options)) if (!REQUEST_OPTION_KEYS.has(key)) refuse("lookup_option_forbidden");
-  if (options.headers != null && [...new Headers(options.headers)].length) refuse("lookup_headers_forbidden");
+  if (options.headers != null) {
+    let count;
+    try { count = [...new Headers(options.headers)].length; } catch { refuse("lookup_headers_forbidden"); }
+    if (count) refuse("lookup_headers_forbidden");
+  }
   if (options.env != null && (typeof options.env !== "object" || ![Object.prototype, null].includes(Object.getPrototypeOf(options.env)) || Object.keys(options.env).length)) refuse("lookup_env_forbidden");
   assertIdentity(model, contract);
   if (model?.api !== contract.api || model?.baseUrl !== contract.baseUrl
@@ -274,7 +278,9 @@ export function guardedLookupModels(models, { contract, permit, send, assumption
         }
         if (fetchEntered) { integrity = "lookup_permit_invalid"; throw new LookupGuardError(integrity); }
         fetchEntered = true;
-        const headers = new Headers(init?.headers);
+        let headers;
+        try { headers = new Headers(init?.headers); }
+        catch (cause) { integrity = "lookup_headers_forbidden"; throw new LookupGuardError(integrity, undefined, undefined, cause); }
         const allowedHeaders = new Set(["originator", "user-agent", "authorization", "chatgpt-account-id", "openai-beta",
           "accept", "content-type", "session-id", "x-client-request-id", "content-encoding"]);
         if ([...headers.keys()].some(name => !allowedHeaders.has(name))) {

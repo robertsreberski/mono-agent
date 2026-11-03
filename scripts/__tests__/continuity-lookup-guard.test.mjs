@@ -325,14 +325,29 @@ it("requires a declared run-bound prompt cache key and rejects undeclared or sha
   }
   expect(() => fixture({ contractPatch: { promptCacheKey: "shared-key" } })).toThrow("lookup_prompt_cache_key_forbidden");
 });
-it.each([{ headers: { "x-fictional": "value" } }, { headers: new Headers({ "x-fictional": "value" }) }, { env: { FICTIONAL: "value" } }])("refuses non-empty request headers/env %j before admission", options => {
-  const f = fixture(); expect(() => f.call(options)).toThrow(); expect(f.permit.events).toEqual([]);
+it.each([
+  [{ headers: { "x-fictional": "value" } }, "lookup_headers_forbidden"],
+  [{ headers: new Headers({ "x-fictional": "value" }) }, "lookup_headers_forbidden"],
+  [{ headers: [["malformed"]] }, "lookup_headers_forbidden"],
+  [{ env: { FICTIONAL: "value" } }, "lookup_env_forbidden"],
+])("refuses non-empty or malformed request headers/env %j before admission", (options, code) => {
+  const f = fixture(); expect(() => f.call(options)).toThrow(code); expect(f.permit.events).toEqual([]);
 });
 it("permits empty headers/env without changing the real harness's options", async () => { const f = fixture(); await f.call({ headers: {}, env: {} }); expect(f.send).toHaveBeenCalledOnce(); });
-it.each([{ "x-fictional": "value" }, { "session-id": "shared-key" }, { "x-client-request-id": "shared-key" }])("rejects unexpected or shared send headers before consumption %j", async sendHeaders => {
+it.each([
+  [{ "x-fictional": "value" }, "lookup_headers_forbidden"],
+  [[["malformed"]], "lookup_headers_forbidden"],
+  [{ "session-id": "shared-key" }, "lookup_prompt_cache_key_forbidden"],
+  [{ "x-client-request-id": "shared-key" }, "lookup_prompt_cache_key_forbidden"],
+])("rejects unexpected, malformed or shared send headers before consumption %j", async (sendHeaders, code) => {
   const source = createTestOnlyLookupPermitSource(), consume = vi.fn();
-  const f = fixture({ permitSource: { ...source, consume }, sendHeaders });
-  await expect(f.call()).rejects.toMatchObject({ outcome: "integrity_stop" }); expect(consume).not.toHaveBeenCalled(); expect(f.send).not.toHaveBeenCalled();
+  // A declared run-bound key, so the shared-key cases exercise a real mismatch.
+  const f = fixture({ permitSource: { ...source, consume }, sendHeaders, contractPatch: { promptCacheKey: "fictional-run-slot-arm" } });
+  await expect(f.call()).rejects.toMatchObject({ code, outcome: "integrity_stop" }); expect(consume).not.toHaveBeenCalled(); expect(f.send).not.toHaveBeenCalled();
+});
+it("accepts send headers that carry the declared run-bound key", async () => {
+  const f = fixture({ sendHeaders: { "session-id": "fictional-run-slot-arm", "x-client-request-id": "fictional-run-slot-arm" }, contractPatch: { promptCacheKey: "fictional-run-slot-arm" } });
+  await f.call(); expect(f.send).toHaveBeenCalledOnce();
 });
 it("retains both settlement and stop failures", async () => {
   const source = createTestOnlyLookupPermitSource(), settleCause = Error("fictional_settle_failure"), cause = Error("fictional_stop_failure");
