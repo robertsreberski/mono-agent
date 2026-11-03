@@ -5,7 +5,7 @@ export function summarizeLookup(trials, plan) {
     const matching = trials.filter(trial => trial.traceId === trace.id && trial.probeId === probeId && trial.arm === arm && trial.repeat === repeat);
     const trial = matching.length === 1 ? matching[0] : null;
     const lookup = trial?.lookup;
-    const reference = plan.lookup.budget.paths.find(path => path.traceId === trace.id && path.probeId === probeId && path.arm === arm);
+    const reference = plan.lookup.budget.paths.find(path => path.traceId === trace.id && path.probeId === probeId && path.arm === arm && (!plan.lookup.role || path.role === undefined || path.role === plan.lookup.role.id));
     slots.push({ traceId: trace.id, probeId, arm, repeat, status: trial?.status ?? (matching.length > 1 ? "duplicate" : "missing"),
       sourceAvailability: lookup?.source?.availability ?? "unknown",
       budgetFeasibility: lookup?.budgetFeasibility?.classification ?? reference?.feasibility.classification ?? "unknown",

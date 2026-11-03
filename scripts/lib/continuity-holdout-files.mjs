@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { readFile, realpath, mkdir, lstat, writeFile } from "node:fs/promises";
-import { resolve, dirname, basename, relative, isAbsolute } from "node:path";
+import { resolve, dirname, basename, relative, isAbsolute, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 import { canonicalJson } from "./continuity-dataset.mjs";
@@ -26,24 +26,24 @@ export async function runtimeProvenance() {
   return { node: process.version, lockfileSha256: sha256(await regularFile(resolve(CHECKOUT, "pnpm-lock.yaml"))),
     typescript: require("typescript/package.json").version };
 }
-const within = (root, path) => { const rel = relative(root, path); return rel === "" || !rel.startsWith("..") && !isAbsolute(rel); };
+const within = (root, path) => { const rel = relative(root, path); return rel === "" || !(rel === ".." || rel.startsWith(`..${sep}`)) && !isAbsolute(rel); };
 
 /** Resolve every existing ancestor before creating anything, including symlinked parents. */
-export async function externalDirectory(path, create = false) {
-  const checkout = await realpath(CHECKOUT);
+export async function externalDirectory(path, create = false, roots = []) {
+  const checkouts = await Promise.all([CHECKOUT, ...roots].map(root => realpath(root)));
   let ancestor = resolve(path), suffix = [];
   while (true) {
     try { ancestor = await realpath(ancestor); break; }
     catch (error) { if (error.code !== "ENOENT") throw error; suffix.unshift(basename(ancestor)); ancestor = dirname(ancestor); }
   }
   const target = resolve(ancestor, ...suffix);
-  if (within(checkout, target) || within(target, checkout)) throw new Error("path_must_be_outside_checkout");
+  if (checkouts.some(checkout => within(checkout, target) || within(target, checkout))) throw new Error("path_must_be_outside_checkout");
   if (create) await mkdir(target, { recursive: true, mode: 0o700 });
   return target;
 }
-export async function externalFile(path) {
-  await externalDirectory(dirname(resolve(path)));
-  await externalDirectory(dirname(await realpath(path)));
+export async function externalFile(path, roots = []) {
+  await externalDirectory(dirname(resolve(path)), false, roots);
+  await externalDirectory(dirname(await realpath(path)), false, roots);
   return regularFile(path);
 }
 export async function writeExclusive(path, bytes) { await writeFile(path, bytes, { flag: "wx", mode: 0o600 }); }
@@ -51,11 +51,11 @@ export async function regularFile(path) {
   if (!(await lstat(path)).isFile()) throw new Error("regular_file_required");
   return readFile(path);
 }
-export function parseFlags(argv, allowed) {
+export function parseFlags(argv, allowed, optional = []) {
   const flags = {};
   for (let i = 0; i < argv.length; i++) {
     const key = argv[i];
-    if (!allowed.includes(key) || Object.hasOwn(flags, key)) throw new Error("invalid_arguments");
+    if (![...allowed, ...optional].includes(key) || Object.hasOwn(flags, key)) throw new Error("invalid_arguments");
     if (key === "--schema-only") flags[key] = true;
     else { if (!argv[i + 1] || argv[i + 1].startsWith("--")) throw new Error("missing_argument"); flags[key] = argv[++i]; }
   }

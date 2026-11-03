@@ -19,7 +19,10 @@ The neutral document's `holdout-validate` interface maps to:
 node scripts/holdout-validate.mjs --spec-dir /external/authored --schema-only
 ```
 
-Schema-only validation never renders histories or consults comparison sources.
+Schema-only validation reports `design: "checked-in"` for the default design, or
+`design: { statisticalSpecSha256 }` with the supplied spec's raw-byte SHA-256.
+A schema-only pass is not registration-design approval. It never renders
+histories or consults comparison sources.
 It checks declared fictional/independent provenance, not the truth of those
 claims or semantic adequacy of evidence. Authored strings reject C0 controls
 other than newline/tab, with the case and field in the error. In JSON regex
@@ -442,3 +445,41 @@ content, including hedged guesses and incomplete answers, counts wrong.
 Missing/non-string text is not pure and fails closed for a non-pass. Correct
 answers and v1/v2 scoring are unchanged. Incomplete arms retain known counts and
 missingness, with outcome rates/any-wrong risk null, not completed risk estimates.
+
+## Smaller external lookup populations
+
+`AUTHOR-FORMAT-PILOT-v1.md` is a population-only authoring delta: eight families
+(four ordinary, four distractor), one conversation each, 15 questions each.
+It is not a qualification population. Review the neutral document for leakage
+before giving it to an independent author; semantic independence is a separate
+human review, not a lexical test.
+
+The existing validate, overlap and freeze commands accept optional
+`--statistical-spec FILE`. Omission preserves the legacy design. For the pilot,
+copy the legacy specification to an external private file and change only
+`design.families=8`, `conversationsPerFamily=1`, `conversationsPerCorpus=4`,
+`shards=1`, `perCorpusPerShard=4` (all other fields remain required).
+The validated transport still requires `repeats: 2`, positive `shardCostCapUSD`
+and legacy gates. **Lookup ignores those placeholders**: one repeat, no legacy
+ledger registration or statistical gates, and a run-wide `catalogCapUSD`.
+
+Overlap now also compares runtime pack guidance and both instruction fixtures.
+Lexical matching and independent semantic/provenance review remain separate.
+Freeze only after the last tooling merge; later script changes require a new
+freeze, measurement, registration and estimate.
+
+The expanded guidance/soul overlap references make **all earlier overlap
+reports stale**, including legacy-design reports. Regenerate them with the
+current overlap CLI before any freeze; do not reuse an older passing report.
+
+For external lookup preparation, preregister an integer selection seed before
+measurement. Pass `--selection-seed N` and optional `--per-group 2` to the budget,
+estimate, compare registration and standalone benchmark commands. The pure
+`seeded-sha256-rank-v1` algorithm sorts the frozen family IDs, ranks each by
+SHA-256 of `${seed}:${id}`, and selects the first two per group. Exactly one
+conversation belongs to each family. The algorithm ID, seed, per-group count
+and selected family IDs are bound in the policy, registration and plans;
+unselected families are sealed spares. Explicit external trace-ID selections
+are refused. Source, statistical-spec and policy files must be outside **both**
+R0/Rpack checkouts, including symlink aliases and gitignored subdirectories.
+Use `--r0` and `--rpack` to declare those roots where no policy supplies them.

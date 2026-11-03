@@ -8,12 +8,15 @@ import { probePrompt } from "./continuity-score.mjs";
 import { TOOL_NAMES } from "./continuity-tools.mjs";
 import { CHECKOUT, sha256 } from "./continuity-holdout-files.mjs";
 
-const SOURCE_PATHS = ["scripts/lib/continuity-generator.mjs", "packages/conversation/src/continuity/ledger.ts", "packages/conversation/src/continuity/ranking.ts"];
+const SOURCE_PATHS = ["scripts/lib/continuity-generator.mjs", "packages/conversation/src/continuity/ledger.ts", "packages/conversation/src/continuity/ranking.ts",
+  "packages/conversation/src/continuity/pack.ts", "packages/conversation/src/continuity/render-fit.ts",
+  "scripts/fixtures/continuity-soul-v1.md", "scripts/fixtures/continuity-soul-v2.md"];
 const modes = { raw7: text => wordRuns(text, 7, false), content3: text => grams(text) };
 const strings = value => typeof value === "string" ? [value] : Array.isArray(value) ? value.flatMap(strings)
   : value && typeof value === "object" ? Object.values(value).flatMap(strings) : [];
 export async function overlapSources() {
-  const code = await Promise.all(SOURCE_PATHS.map(async name => ({ name, text: await readFile(resolve(CHECKOUT, name), "utf8") })));
+  const code = await Promise.all(SOURCE_PATHS.map(async name => ({ name, text: await readFile(resolve(CHECKOUT, name), "utf8"),
+    ...(name.endsWith(".md") ? { values: [await readFile(resolve(CHECKOUT, name), "utf8")] } : {}) })));
   const directory = "scripts/fixtures/continuity";
   const fixtures = await Promise.all((await readdir(resolve(CHECKOUT, directory))).filter(name => name.endsWith(".json")).sort().map(async name => {
     const text = await readFile(resolve(CHECKOUT, directory, name), "utf8");

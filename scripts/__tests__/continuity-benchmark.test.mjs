@@ -1,7 +1,7 @@
 import ts from "typescript";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { spawnSync } from "node:child_process";
-import { mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, realpath, rm, writeFile, mkdir, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -11,7 +11,7 @@ import { digest, estimateCost, inventory, loadTraces, makePlan, parseSeeds, sour
 import { COLD_BOUNDS, GENERATOR_VERSION, HARD_SEEDS, LONG_RULES, generateTrace, mulberry32, outsideColdBounds, traceShape } from "../lib/continuity-generator.mjs";
 import { ABSTAIN_INSTRUCTION, ORIGINAL_CATEGORIES, emptyUsage, addUsage, isAbstention, parseJudgeVerdict, probePrompt, renderMarkdown, scoreAnswer, summarize } from "../lib/continuity-score.mjs";
 import { callKey } from "../lib/continuity-tools.mjs";
-import { main, parseArguments, observedInputTokens } from "../continuity-benchmark.mjs";
+import { main, parseArguments, observedInputTokens, resolveLookupInputRoots } from "../continuity-benchmark.mjs";
 
 import { fictionalTransitionRecords, replayLedgerSelection, selectionReplayRecords, selectionReplaySummary } from "../lib/continuity-selection-replay.mjs";
 
@@ -960,4 +960,33 @@ it.each(["ownerEntries", "toolEntries", "summaryEntries", "evidenceEntries"])("a
   // A disclosed oversized ledger still renders zero derived entries: never the planned treatment.
   expect(verifyLedgerTreatment({ valid: true, expectedEntries: 3 }, injected)).toBe(false);
   expect(verifyStore(arm, { checkpointContinuity, observed: injected, expectedLedgerEntries: 3 }).reasons).toContain("ledger_not_injected");
+});
+
+it("accepts external lookup transport without legacy registration, but never uses its repeat default", async () => {
+  const { profileFrom } = await import("../continuity-benchmark.mjs");
+  const flags = { suite: "holdout", "probe-mode": "lookup-allowed-v1", "corpus-manifest": "/fictional/manifest.json",
+    "manifest-sha256": "a".repeat(64), "statistical-spec": "/fictional/spec.json" };
+  expect(profileFrom(flags).repeats).toBe(1);
+  expect(profileFrom(flags).arms).toEqual(["native-lookup", "continuity-pack-cold"]);
+  expect(() => profileFrom({ ...flags, shard: "1" })).toThrow("lookup_not_legacy_holdout");
+  expect(() => profileFrom({ suite: "holdout", "probe-mode": "lookup-allowed-v1" })).toThrow("lookup_not_legacy_holdout");
+  expect(() => profileFrom({ ...flags, "statistical-spec": undefined })).toThrow("holdout_registration_required");
+});
+
+it("binds explicit benchmark roots canonically to policy and role-request roots", async () => {
+  const dir = await scratch(), r0 = join(dir, "r0"), rpack = join(dir, "rpack"), other = join(dir, "other"), alias = join(dir, "r0-alias");
+  for (const root of [r0, rpack, other]) await mkdir(root);
+  await symlink(r0, alias);
+  expect(await resolveLookupInputRoots({ explicit: [alias, rpack], role: [r0, rpack], policy: [r0, rpack] })).toEqual([r0, rpack]);
+  const source = ["--suite", "holdout", "--probe-mode", "lookup-allowed-v1", "--corpus-manifest", "/fictional/manifest.json",
+    "--manifest-sha256", "a".repeat(64), "--statistical-spec", "/fictional/spec.json", "--selection-seed", "42"];
+  for (const flag of ["--r0", "--rpack"]) await expect(main([...source, flag, r0, "--dry-run"])).rejects.toThrow("lookup_input_roots_required");
+  const policyPath = join(dir, "policy.json"), bytes = JSON.stringify({ codes: { R0: { path: r0 }, Rpack: { path: rpack } } });
+  await writeFile(policyPath, bytes);
+  const { sha256 } = await import("../lib/continuity-lookup.mjs");
+  await expect(main([...source, "--r0", other, "--rpack", rpack, "--lookup-policy", policyPath, "--lookup-policy-sha256", sha256(bytes), "--dry-run"])).rejects.toThrow("lookup_input_roots_mismatch");
+  const request = join(dir, "role.json"); await writeFile(request, JSON.stringify({ binding: {}, common: { inputRoots: [r0, rpack] } }));
+  await expect(main([...source, "--r0", other, "--rpack", rpack, "--lookup-role", request])).rejects.toThrow("lookup_input_roots_mismatch");
+  await writeFile(request, JSON.stringify({ binding: {} }));
+  await expect(main([...source, "--lookup-role", request])).rejects.toThrow("lookup_role_request_mismatch");
 });

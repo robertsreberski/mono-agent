@@ -18,13 +18,37 @@ export function parseLookupOptions(argv, valued) {
   }
   return flags;
 }
-export function workloadOptions(flags) {
+export function workloadOptions(flags, { allowLegacyCheckoutRoots = false } = {}) {
   const number = (key, fallback) => {
     if (flags[key] === undefined) return fallback;
     const value = Number(flags[key]); requireLookup(Number.isSafeInteger(value), "lookup_invalid_arguments"); return value;
   };
   for (const key of ["--reader", "--reader-effort"]) requireLookup(flags[key] === undefined || flags[key].trim().length > 0, "lookup_empty_reader_option");
-  return { suites: flags["--suites"]?.split(",") ?? ["original", "hard", "hard-distractors"],
+  const present = key => flags[key] !== undefined;
+  const nonempty = (keys, code) => { for (const key of keys) requireLookup(!present(key) || typeof flags[key] === "string" && flags[key].trim().length > 0, code); };
+  const sourceKeys = ["--corpus-manifest", "--manifest-sha256", "--statistical-spec"];
+  nonempty(sourceKeys, "lookup_empty_source_option");
+  nonempty(["--lookup-policy", "--lookup-policy-sha256"], "lookup_empty_policy_option");
+  nonempty(["--output-limit", "--output-limit-source"], "lookup_empty_output_limit_option");
+  nonempty(["--selection-seed", "--per-group"], "lookup_empty_selection_option");
+  nonempty(["--r0", "--rpack"], "lookup_empty_input_root_option");
+  nonempty(["--catalog-cap-usd"], "lookup_empty_catalog_cap_option");
+  requireLookup(present("--r0") === present("--rpack"), "lookup_input_roots_required");
+  requireLookup(!sourceKeys.some(present) || sourceKeys.every(present), "lookup_source_required");
+  const externalOnly = ["--selection-seed", "--per-group", "--lookup-policy", "--lookup-policy-sha256",
+    "--output-limit", "--output-limit-source", "--catalog-cap-usd",
+    // Registration also uses roots to bind legacy code checkouts, independently of the corpus.
+    ...(!allowLegacyCheckoutRoots ? ["--r0", "--rpack"] : [])];
+  requireLookup(present("--corpus-manifest") || !externalOnly.some(present), "lookup_external_flag_requires_source");
+  requireLookup(present("--lookup-policy") === present("--lookup-policy-sha256"), "lookup_policy_hash_required");
+  requireLookup(present("--output-limit") === present("--output-limit-source"), "lookup_output_limit_required");
+  return { ...(present("--corpus-manifest") ? { lookupSource: { manifestPath: flags["--corpus-manifest"], manifestSha256: flags["--manifest-sha256"], statisticalSpecPath: flags["--statistical-spec"] } } : {}),
+    ...(present("--lookup-policy") ? { policyPath: flags["--lookup-policy"], policySha256: flags["--lookup-policy-sha256"] } : {}),
+    ...(present("--output-limit") ? { outputLimit: { tokens: number("--output-limit"), source: flags["--output-limit-source"] } } : {}),
+    ...(present("--catalog-cap-usd") ? { catalogCapUSD: Number(flags["--catalog-cap-usd"]) } : {}),
+    suites: flags["--suites"]?.split(",") ?? (present("--corpus-manifest") ? ["holdout"] : ["original", "hard", "hard-distractors"]),
+    ...(flags["--selection-seed"] !== undefined ? { selectionSeed: number("--selection-seed"), perGroup: number("--per-group", 2) } : {}),
+    ...(present("--r0") && present("--rpack") ? { inputRoots: [flags["--r0"], flags["--rpack"]] } : {}),
     traceIds: flags["--traces"]?.split(",") ?? null, repeats: number("--repeats", 1), probeLimit: number("--probe-limit", null),
     ...(flags["--reader"] !== undefined ? { reader: flags["--reader"] } : {}), ...(flags["--reader-effort"] !== undefined ? { readerEffort: flags["--reader-effort"] } : {}) };
 }
@@ -45,13 +69,17 @@ export async function lookupOutputPath(output, roots) {
   // Use this resolved path for writes too; do not re-traverse the original alias.
   return canonical;
 }
-export const WORKLOAD_FLAGS = ["--suites", "--traces", "--repeats", "--probe-limit", "--reader", "--reader-effort"];
+export const WORKLOAD_FLAGS = ["--selection-seed", "--per-group", "--r0", "--rpack","--suites", "--traces", "--repeats", "--probe-limit", "--reader", "--reader-effort", "--corpus-manifest", "--manifest-sha256", "--statistical-spec", "--lookup-policy", "--lookup-policy-sha256", "--output-limit", "--output-limit-source", "--catalog-cap-usd"];
 const HELP = `continuity-lookup-compare (offline only)
   register --r0 PATH --r0-revision FULL_SHA --rpack PATH --rpack-revision FULL_SHA --output NEW_DIR
            [--suites original,hard,hard-distractors] [--traces ID,...] [--probe-limit N] [--repeats N]
            [--reader REF] [--reader-effort low]
   run --registration FILE --sha256 FILE_SHA256 --output NEW_ABSOLUTE_DIR
   aggregate --registration FILE --sha256 FILE_SHA256 --output EXISTING_ABSOLUTE_DIR
+External workload: --suites holdout --corpus-manifest FILE --manifest-sha256 SHA --statistical-spec FILE
+  --selection-seed N [--per-group 2] --lookup-policy FILE --lookup-policy-sha256 SHA
+  --output-limit N --output-limit-source enforced|catalog_max --catalog-cap-usd C (register)
+  External registration uses one repeat, fixed-policy feasibility and a run-wide proposed cap; no legacy gates.
 Both checkouts must implement continuity-lookup-role-v1. Registration always builds the app closure.
 Registration/run output directories must be outside both checkouts (symlinks resolved).
 No provider calls, fetch, checkout, cherry-pick, significance claims or spending authorization.`;
@@ -64,7 +92,7 @@ export async function main(argv = process.argv.slice(2), { stdout = console.log 
     : ["--registration", "--sha256", "--output"]);
   requireLookup(isAbsolute(flags["--output"] ?? ""), "lookup_output_must_be_absolute");
   if (command === "register") {
-    const workload = workloadOptions(flags);
+    const workload = workloadOptions(flags, { allowLegacyCheckoutRoots: true });
     const output = await lookupOutputPath(flags["--output"], [flags["--r0"], flags["--rpack"]]);
     // Exclusively reserve before either checkout can build, not after expensive work.
     try { await mkdir(output, { mode: 0o700 }); }

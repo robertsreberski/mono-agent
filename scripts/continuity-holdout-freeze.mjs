@@ -102,8 +102,8 @@ export async function main(argv) {
     const f = parseFlags(argv.slice(1), ["--directory", "--manifest-sha256"]);
     console.log(jsonBytes(await verifyHoldout(f["--directory"], f["--manifest-sha256"])).trim());
   } else if (command === "freeze") {
-    const f = parseFlags(argv.slice(1), ["--spec-dir", "--seeds", "--rubric", "--protocol", "--overlap", "--allowlist", "--output"]);
-    console.log(jsonBytes(await freezeHoldout({ specDir: f["--spec-dir"], seedsPath: f["--seeds"], rubricPath: f["--rubric"], protocolPath: f["--protocol"], overlapPath: f["--overlap"], allowlistPath: f["--allowlist"], outputDir: f["--output"] })).trim());
+    const f = parseFlags(argv.slice(1), ["--spec-dir", "--seeds", "--rubric", "--protocol", "--overlap", "--allowlist", "--output"], ["--statistical-spec"]);
+    console.log(jsonBytes(await freezeHoldout({ specDir: f["--spec-dir"], seedsPath: f["--seeds"], rubricPath: f["--rubric"], protocolPath: f["--protocol"], overlapPath: f["--overlap"], allowlistPath: f["--allowlist"], outputDir: f["--output"], statisticalSpec: f["--statistical-spec"] ? await readJson(f["--statistical-spec"]) : undefined })).trim());
   } else throw new Error("expected_freeze_or_verify");
 }
 await runCli(import.meta.url, main);

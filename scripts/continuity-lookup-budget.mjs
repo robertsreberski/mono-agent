@@ -1,11 +1,13 @@
 #!/usr/bin/env node
 // Offline sizing only. External artifacts contain sizes, hashes, IDs and classifications, not text.
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { armById } from "./lib/continuity-arms.mjs";
 import { digest, loadTraces, makePlan, traceTokenShape } from "./lib/continuity-dataset.mjs";
-import { LOOKUP_MODE, LOOKUP_DEFAULT_ARMS, LOOKUP_BUDGET, SOUL_BINDING, referenceFeasibility, sourceAnnotation, sha256 } from "./lib/continuity-lookup.mjs";
+import { LOOKUP_MODE, LOOKUP_DEFAULT_ARMS, LOOKUP_BUDGET, SOUL_BINDING, referenceFeasibility, externalPathFeasibility, sourceAnnotation, LOOKUP_ROLES, LOOKUP_SOULS, assertFixedBudget, assertExternalPolicy, sha256 } from "./lib/continuity-lookup.mjs";
+import { lookupWorkload, prepareLookupCodes, requireLookup } from "./lib/continuity-lookup-roles.mjs";
+import { parseLookupOptions, workloadOptions, WORKLOAD_FLAGS, lookupOutputPath } from "./continuity-lookup-compare.mjs";
 import { buildCheckpoint, productionModules, runProbe } from "./lib/continuity-runner.mjs";
 
 const ROOT = fileURLToPath(new URL("../", import.meta.url));
@@ -138,11 +140,85 @@ export async function measureBudget({ output, onProgress = () => {} }) {
   return budget;
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  if (process.argv.length !== 4 || process.argv[2] !== "--output") throw new Error("usage: continuity-lookup-budget --output DIR");
-  const output = resolve(process.argv[3]);
-  // Do not overwrite evidence or let raw replay scratch linger from a previous run.
+/** Measure only the explicit selection, once per role/slot. Never derive limits. */
+export async function measureFixedBudget({ output, fixedBudgetSha256, checkouts, onProgress = () => {}, ...options }) {
+  assertFixedBudget(fixedBudgetSha256);
+  const inputRoots = [checkouts?.R0?.path, checkouts?.Rpack?.path];
+  const workload = await lookupWorkload({ ...options, inputRoots });
+  if (!workload.lookupSource || workload.policy) throw new Error("lookup_fixed_measurement_requires_source_without_policy");
+  const { protocol, codes } = await prepareLookupCodes(checkouts);
+  const selection = workload.corpora[0].traces;
+  const inventory = { schema: "continuity-lookup-feasibility-v1", mode: "fixed-budget-feasibility-only", fixedBudgetSha256,
+    source: workload.corpora[0].source, selection, lookupSelection: workload.lookupSelection, protocol, codes, reader: workload.reader,
+    maxTurns: 10, budget: { ...LOOKUP_BUDGET, paths: [] } };
+  const loaded = await loadTraces({ suite: "holdout", lookupSource: workload.lookupSource, selectionSeed: workload.lookupSelection.seed, perGroup: workload.lookupSelection.perGroup, inputRoots });
+  await mkdir(dirname(output), { recursive: true, mode: 0o700 });
+  await mkdir(output, { mode: 0o700 });
+  for (const role of LOOKUP_ROLES) {
+    const code = codes[role.code], modules = await productionModules(code.path);
+    for (const selected of selection) {
+      const trace = loaded.traces.find(t => t.id === selected.id), arm = armById(role.arm);
+      const plan = makePlan({ ...loaded, traces: [trace], probeMode: LOOKUP_MODE, profile: { ...workload.reader, reader: workload.reader.model, readerEffort: workload.reader.effort, judge: null }, probeLimit: workload.probeLimit });
+      plan.lookup.soul = LOOKUP_SOULS[role.soul];
+      const dir = join(output, "scratch", `${role.id}-${trace.id}`);
+      try {
+        const checkpoint = await buildCheckpoint({ modules, trace, arm, repeat: 1, dir, plan, mode: "offline" });
+        retainedInventory(modules, checkpoint); // Independently verify this role's sanitized store.
+        for (const probe of trace.probes.filter(p => selected.probes.includes(p.id))) {
+          onProgress(`${role.id}/${trace.id}/${probe.id}`);
+          const annotation = sourceAnnotation(trace, probe), identifier = annotation.availability === "annotated";
+          const trial = await runProbe({ modules, trace, arm, repeat: 1, probe, checkpointWork: checkpoint.work, checkpointSnapshot: checkpoint.snapshot,
+            checkpointContinuity: checkpoint.record.continuity, checkpointConversationId: checkpoint.record.conversationId,
+            forkDir: join(dir, "probe"), plan, mode: "offline", root: code.path, lookupReference: identifier });
+          const l = trial.lookup;
+          if (!l?.initialContextBytes || (!trial.store?.healthy && !l.exhausted)) throw new Error("lookup_inventory_initial_context_unverified");
+          const shape = traceTokenShape(trace);
+          const initialTokens = Math.max(Math.ceil(l.initialContextBytes / 3), role.arm === "native-lookup" ? Math.max(150000, shape.full) : shape.cold + 12000);
+          const base = { role: role.id, arm: role.arm, traceId: trace.id, probeId: probe.id, initialContextBytes: l.initialContextBytes,
+            initialTokens, admissionCap: plan.limits.maxObservedInputTokensPerInvocation, initiallyPresent: l.initiallyPresent,
+            sourceAvailability: l.source.availability, exhausted: l.exhausted ?? null, referenceFailure: Boolean(trial.failure), method: identifier ? "identifier-reference" : "conservative-full-budget" };
+          // Provenance is not feasibility. Non-identifiers have no witnessed reference:
+          // conservatively admit the entire 10-round envelope, never borrow a neighbour.
+          const path = identifier ? { ...base, sourceSha256: annotation.sourceSha256, retainedSha256: l.source.sha256 ?? null, recordId: l.source.recordId ?? null, retainedBytes: l.source.retainedBytes ?? null,
+            calls: l.calls, bytes: l.bytes, cumulativeBytes: l.cumulativeBytes, responseBytes: l.responseBytes,
+            responseSha256: l.responseSha256, searchPages: l.searchPages, getChunks: l.getChunks,
+            sourceReturned: l.sourceReturned, discovered: l.reference?.discovered === true }
+            : { ...base, calls: LOOKUP_BUDGET.callBudget, bytes: LOOKUP_BUDGET.byteBudget,
+              cumulativeBytes: 9 * LOOKUP_BUDGET.byteBudget, discovered: true };
+          const initialAdmission = referenceFeasibility({ calls: 0, bytes: 0, cumulativeBytes: 0, discovered: true }, LOOKUP_BUDGET, base);
+          const feasibility = externalPathFeasibility(path, LOOKUP_BUDGET);
+          inventory.budget.paths.push({ ...path, initialAdmission, feasibility });
+        }
+      } finally { await rm(dir, { recursive: true, force: true }); }
+    }
+  }
+  assertExternalPolicy(inventory, { source: loaded.source, selection, lookupSelection: workload.lookupSelection, codes, protocol });
+  await writeFile(join(output, "budget.json"), `${JSON.stringify(inventory, null, 2)}\n`, { mode: 0o600, flag: "wx" });
+  await rm(join(output, "scratch"), { recursive: true, force: true });
+  return inventory;
+}
+export async function main(argv = process.argv.slice(2), { stdout = console.log } = {}) {
+  const f = parseLookupOptions(argv, ["--output", "--fixed-budget-sha256", "--r0", "--r0-revision", "--rpack", "--rpack-revision", ...WORKLOAD_FLAGS]);
+  if (!f["--output"]) throw new Error("usage: continuity-lookup-budget --output DIR");
+  const workload = workloadOptions(f);
+  requireLookup(f["--fixed-budget-sha256"] === undefined || workload.lookupSource, "lookup_external_flag_requires_source");
+  const output = resolve(f["--output"]);
   try { await readFile(join(output, "inventory.json")); throw new Error("inventory_already_exists"); } catch (error) { if (error.code !== "ENOENT") throw error; }
-  const budget = await measureBudget({ output, onProgress: message => console.error(`sizing ${message}`) });
-  console.log(JSON.stringify({ callBudget: budget.callBudget, byteBudget: budget.byteBudget, inventorySha256: budget.inventorySha256, measurement: budget.measurement }, null, 2));
+  if (f["--fixed-budget-sha256"]) {
+    const external = await lookupOutputPath(output, [ROOT, f["--r0"], f["--rpack"]]);
+    const result = await measureFixedBudget({ ...workload, output: external, fixedBudgetSha256: f["--fixed-budget-sha256"], checkouts: {
+      R0: { path: f["--r0"], revision: f["--r0-revision"] }, Rpack: { path: f["--rpack"], revision: f["--rpack-revision"] } } });
+    stdout(JSON.stringify({ policySha256: sha256(await readFile(join(external, "budget.json"))), planned: result.budget.paths.length,
+      feasible: result.budget.paths.filter(p => p.feasibility.classification === "feasible").length,
+      infeasible: result.budget.paths.filter(p => p.feasibility.classification === "budget-infeasible").length,
+      unknown: result.budget.paths.filter(p => p.feasibility.classification === "unknown").length }));
+  } else {
+    if (Object.keys(f).length !== 1) throw new Error("lookup_fixed_budget_required");
+    const budget = await measureBudget({ output, onProgress: message => console.error(`sizing ${message}`) });
+    stdout(JSON.stringify({ callBudget: budget.callBudget, byteBudget: budget.byteBudget, inventorySha256: budget.inventorySha256, measurement: budget.measurement }, null, 2));
+  }
+  return 0;
+}
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch(error => { console.error(`continuity-lookup-budget: ${error.code ?? error.message}`); process.exitCode = 1; });
 }

@@ -55,7 +55,7 @@ export function fixtureGit(repo, args) {
 export function fixtureCommit(repo) { fixtureGit(repo, ["add", "--", "."]); fixtureGit(repo, ["commit", "-qm", "Fixture checkpoint"]); }
 export async function toolingRepository(directory, runtime = false) {
   await mkdir(directory);
-  for (const name of [...benchmarkFiles(), "pnpm-lock.yaml", "scripts/lib/memory-e2e-build.mjs"]) {
+  for (const name of [...benchmarkFiles(), "pnpm-lock.yaml", "scripts/lib/memory-e2e-build.mjs", "packages/conversation/src/continuity/pack.ts", "packages/conversation/src/continuity/render-fit.ts"]) {
     await mkdir(dirname(join(directory, name)), { recursive: true });
     await writeFile(join(directory, name), await readFile(resolve(CHECKOUT, name)));
   }
@@ -107,4 +107,22 @@ export async function syntheticContext(directory, design = {}) {
   const context = await workflow.loadContext({ manifestPath: join(outputDir, "manifest.json"), manifestSha256: frozen.manifestSha256,
     registrationPath, registrationSha256: sha256(jsonBytes(registration)), statisticalSpecPath, piAuthPath });
   return { repo, inputs, context, workflow, controller, proof };
+}
+
+/** Content-free, arithmetically valid fixed-policy records for offline tests. */
+export async function fixtureLookupPolicy({ source, selection, lookupSelection, reader, codes, protocol } = {}) {
+  const { LOOKUP_BUDGET, LOOKUP_ROLES, FIXED_BUDGET_SHA256, externalPathFeasibility, referenceFeasibility } = await import("../../lib/continuity-lookup.mjs");
+  const paths = LOOKUP_ROLES.flatMap(role => selection.flatMap(trace => trace.probes.map(probeId => {
+    const path = { role: role.id, arm: role.arm, traceId: trace.id, probeId,
+      initialContextBytes: role.arm === "native-lookup" ? 900000 : 12000,
+      initialTokens: role.arm === "native-lookup" ? 300000 : 12000, admissionCap: 400000000,
+      method: probeId === "p01" ? "identifier-reference" : "conservative-full-budget",
+      calls: 2, bytes: 100, cumulativeBytes: 150, discovered: true, exhausted: null,
+      referenceFailure: false, sourceAvailability: "retained", sourceReturned: true };
+    if (path.method === "conservative-full-budget") Object.assign(path, { calls: LOOKUP_BUDGET.callBudget, bytes: LOOKUP_BUDGET.byteBudget, cumulativeBytes: 9 * LOOKUP_BUDGET.byteBudget });
+    path.initialAdmission = referenceFeasibility({ calls: 0, bytes: 0, cumulativeBytes: 0, discovered: true }, LOOKUP_BUDGET, path);
+    path.feasibility = externalPathFeasibility(path, LOOKUP_BUDGET); return path;
+  })));
+  return { schema: "continuity-lookup-feasibility-v1", mode: "fixed-budget-feasibility-only", maxTurns: 10,
+    fixedBudgetSha256: FIXED_BUDGET_SHA256, source, selection, lookupSelection, reader, codes, protocol, budget: { ...LOOKUP_BUDGET, paths } };
 }

@@ -4,7 +4,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { digest, loadTraces, traceTokenShape } from "./lib/continuity-dataset.mjs";
-import { LOOKUP_BUDGET, LOOKUP_TIMING, LOOKUP_ROLES, LOOKUP_SOULS, sha256 } from "./lib/continuity-lookup.mjs";
+import { LOOKUP_BUDGET, LOOKUP_TIMING, LOOKUP_ROLES, LOOKUP_SOULS, assertExternalPolicy, sha256 } from "./lib/continuity-lookup.mjs";
 import { ROOT, lookupWorkload, readRegistration, requireLookup } from "./lib/continuity-lookup-roles.mjs";
 import { parseLookupOptions, workloadOptions, WORKLOAD_FLAGS } from "./continuity-lookup-compare.mjs";
 
@@ -119,20 +119,124 @@ export async function estimateLookup({ workload, profiles = ESTIMATE_PROFILES, p
         }) })) };
     }) };
 }
+/** A selected-reader catalog is mandatory for external numerical approval. */
+export async function offlineCatalog(model, root = ROOT) {
+  requireLookup(/^[a-z0-9-]+:[A-Za-z0-9._/-]+$/u.test(model ?? ""), "invalid_model_reference");
+  const colon = model.indexOf(":"), provider = model.slice(0, colon), id = model.slice(colon + 1);
+  let bytes;
+  try { bytes = await readFile(join(root, "packages/turn/node_modules/@earendil-works/pi-ai/dist/providers/data", `${provider}.json`)); }
+  catch { requireLookup(false, "lookup_catalog_missing"); }
+  const entry = Object.values(JSON.parse(bytes)).flatMap(models => Object.values(models)).find(row => row?.id === id);
+  requireLookup(entry, "lookup_catalog_model_missing");
+  return { model, fileSha256: sha256(bytes), contextWindow: entry.contextWindow, maxTokens: entry.maxTokens, cost: entry.cost };
+}
+// Catalog rates are decimal dollars, so ceil-to-cents must not round a binary
+// accumulation error up into another cent. This envelope has one rate per call.
+function reservationEnvelope(price, input, output, trials) {
+  const threshold = priceLookupCall(price, input, output, 0).tierInputTokensAbove;
+  const rates = threshold === null ? price : price.tiers.find(t => t.inputTokensAbove === threshold);
+  const fraction = value => {
+    const [mantissa, exponent = "0"] = String(value).toLowerCase().split("e");
+    const [whole, decimals = ""] = mantissa.split("."), shift = Number(exponent) - decimals.length;
+    const n = BigInt(whole + decimals);
+    return shift >= 0 ? { n: n * 10n ** BigInt(shift), d: 1n } : { n, d: 10n ** BigInt(-shift) };
+  };
+  const a = fraction(rates.input), b = fraction(rates.output), scale = a.d > b.d ? a.d : b.d;
+  const n = (a.n * (scale / a.d) * BigInt(input) + b.n * (scale / b.d) * BigInt(output)) * BigInt(trials) * 10n;
+  const d = scale * 1000000n, cents = (n * 125n + d - 1n) / d;
+  const usd = Number(n) / Number(d);
+  requireLookup(Number.isFinite(usd) && Number.isSafeInteger(Number(cents)), "lookup_catalog_envelope_unrepresentable");
+  return { usd, capUSD: Number(cents) / 100 };
+}
+export function estimateExternalLookup({ workload, catalog, outputLimit = workload.outputLimit }) {
+  requireLookup(workload.lookupSource && workload.policy && workload.repeats === 1, "lookup_external_policy_required");
+  assertExternalPolicy(workload.policy, { source: workload.corpora[0].source, selection: workload.corpora.flatMap(c => c.traces), lookupSelection: workload.lookupSelection });
+  requireLookup(catalog?.model === workload.reader.model && /^[a-f0-9]{64}$/u.test(catalog.fileSha256 ?? ""), "lookup_catalog_binding_mismatch");
+  const positive = n => Number.isSafeInteger(n) && n > 0;
+  requireLookup(positive(catalog.contextWindow) && positive(catalog.maxTokens) && catalog.maxTokens <= catalog.contextWindow, "lookup_catalog_limits_missing");
+  const price = catalog.cost;
+  requireLookup(price && (price.tiers === undefined || Array.isArray(price.tiers)), "lookup_catalog_rates_missing");
+  requireLookup(price && [price, ...(price.tiers ?? [])].every(rate => [rate.input, rate.output, rate.cacheRead].every(finitePrice))
+    && (price.tiers === undefined || Array.isArray(price.tiers) && price.tiers.every(t => finitePrice(t.inputTokensAbove))
+      && new Set(price.tiers.map(t => t.inputTokensAbove)).size === price.tiers.length), "lookup_catalog_rates_missing");
+  requireLookup(positive(outputLimit?.tokens) && ["enforced", "catalog_max"].includes(outputLimit.source)
+    && outputLimit.tokens <= catalog.maxTokens && (outputLimit.source !== "catalog_max" || outputLimit.tokens === catalog.maxTokens), "lookup_output_limit_required");
+  const paths = workload.policy.budget.paths;
+  const selection = workload.corpora.flatMap(c => c.traces);
+  // Revalidate complete slot coverage rather than silently dropping unknown slots.
+  const keys = LOOKUP_ROLES.flatMap(r => selection.flatMap(t => t.probes.map(p => `${r.id}/${t.id}/${p}`))).sort();
+  requireLookup(digest(keys) === digest(paths.map(p => `${p.role}/${p.traceId}/${p.probeId}`).sort()), "lookup_inventory_scope_mismatch");
+  requireLookup(paths.every(p => ["feasible", "budget-infeasible"].includes(p.feasibility?.classification)), "lookup_inventory_unknown");
+  const roles = Object.fromEntries(LOOKUP_ROLES.map(r => [r.id, { planned: 0, eligible: 0, skipped: 0, expectedUSD: 0, reservationUSD: 0, expectedLookupOverheadUSD: 0 }]));
+  const trials = [];
+  for (const p of paths) {
+    const row = roles[p.role]; row.planned++;
+    if (p.feasibility.classification === "budget-infeasible") {
+      row.skipped++; trials.push({ role: p.role, traceId: p.traceId, probeId: p.probeId, eligible: false, expectedUSD: 0, reservationUSD: 0 }); continue;
+    }
+    requireLookup(positive(p.initialTokens) && p.initialTokens + workload.policy.budget.byteBudget + 3000 + workload.policy.budget.contextMarginTokens <= catalog.contextWindow, "lookup_catalog_context_incompatible");
+    row.eligible++;
+    const calls = [p.initialTokens + 900, p.initialTokens + Math.floor(workload.policy.budget.byteBudget / 2) + 900,
+      p.initialTokens + Math.floor(workload.policy.budget.byteBudget / 2) + 900];
+    requireLookup(calls.every(input => input <= catalog.contextWindow), "lookup_catalog_context_incompatible");
+    const expectedCalls = calls.map(input => priceLookupCall(price, input, Math.min(300, outputLimit.tokens), .5));
+    const expectedUSD = expectedCalls.reduce((sum, call) => sum + call.usd, 0);
+    // Ten rounds, no cache. Full catalog context on EVERY round bounds all replay,
+    // tool schemas, reasoning history and wrappers without assuming output=300.
+    const reservedCall = priceLookupCall(price, catalog.contextWindow, outputLimit.tokens, 0);
+    const reservationUSD = 10 * reservedCall.usd;
+    const baseline = priceLookupCall(price, calls[0], Math.min(300, outputLimit.tokens), .5).usd;
+    row.expectedUSD += expectedUSD; row.reservationUSD += reservationUSD; row.expectedLookupOverheadUSD += expectedUSD - baseline;
+    trials.push({ role: p.role, traceId: p.traceId, probeId: p.probeId, eligible: true, expectedUSD, reservationUSD,
+      expectedLookupOverheadUSD: expectedUSD - baseline, expectedTieredCalls: expectedCalls.filter(c => c.tierInputTokensAbove !== null).length,
+      reservationTieredCalls: reservedCall.tierInputTokensAbove === null ? 0 : 10 });
+  }
+  // Compensated sums avoid inventing an extra cap cent from repeated float
+  // additions (for example 64 * 18.24 catalog dollars).
+  const sum = values => {
+    let total = 0, correction = 0;
+    for (const value of values) { const y = value - correction, next = total + y; correction = (next - total) - y; total = next; }
+    return total;
+  };
+  for (const [id, role] of Object.entries(roles)) for (const key of ["expectedUSD", "reservationUSD", "expectedLookupOverheadUSD"])
+    role[key] = sum(trials.filter(t => t.role === id).map(t => t[key] ?? 0));
+  const total = key => sum(Object.values(roles).map(r => r[key]));
+  for (const role of Object.values(roles)) role.reservationUSD = reservationEnvelope(price, catalog.contextWindow, outputLimit.tokens, role.eligible).usd;
+  for (const trial of trials) if (trial.eligible) trial.reservationUSD = reservationEnvelope(price, catalog.contextWindow, outputLimit.tokens, 1).usd;
+  const expectedUSD = total("expectedUSD");
+  const envelope = reservationEnvelope(price, catalog.contextWindow, outputLimit.tokens, total("eligible"));
+  const reservationUSD = envelope.usd, catalogCapUSD = envelope.capUSD;
+  return { schema: "continuity-lookup-estimate-v2", executionKind: "offline-estimate", authorizedSpend: false,
+    planned: paths.length, eligible: total("eligible"), skipped: total("skipped"), roles, trials, catalog, outputLimit,
+    expectedUSD, worstUSD: reservationUSD, reservationUSD, catalogCapUSD, capOverExpected: expectedUSD > 0 ? catalogCapUSD / expectedUSD : null,
+    expectedLookupOverheadUSD: total("expectedLookupOverheadUSD"),
+    tokenEnvelope: { roundsPerEligibleTrial: 10, inputTokensPerCall: catalog.contextWindow, outputTokensPerCall: outputLimit.tokens,
+      totalInputTokens: total("eligible") * 10 * catalog.contextWindow, totalOutputTokens: total("eligible") * 10 * outputLimit.tokens },
+    assumptions: { expected: "two lookups, half byte budget, 50% cache, up to 300 output tokens/round; scenario, not measurement",
+      reservation: "10 rounds, no cache, full catalog context per call including replay, explicit outputLimit",
+      cap: "ceil-to-cents(1.25 * sum eligible reservations); run-wide, not per shard",
+      ignoredTransport: ["repeats", "shardCostCapUSD", "legacy statistical gates"],
+      quota: "catalog-equivalent dollars do not predict subscription quota or invoices; no spending authority",
+      output: outputLimit.source === "enforced" ? "execution enforcement must be proved separately" : "catalog maximum, not a lower enforceable transport limit" } };
+}
 const HELP = `continuity-lookup-estimate [--registration FILE --sha256 FILE_SHA256 | workload options]
-  [--suites original,hard,hard-distractors] [--traces ID,...] [--probe-limit N] [--repeats N]
+  [--suites original,hard,hard-distractors|holdout] [--traces ID,...] [--probe-limit N] [--repeats N]
+  External: --corpus-manifest FILE --manifest-sha256 SHA --statistical-spec FILE --selection-seed N [--per-group 2]
+    --lookup-policy FILE --lookup-policy-sha256 SHA --output-limit N --output-limit-source enforced|catalog_max
   [--opus-model REF] (default fixed sensitivity profile anthropic:claude-opus-5-5)
 Offline only: local catalog prices, no providers, builds, credentials or spending authorization.`;
 export async function main(argv = process.argv.slice(2), { stdout = console.log } = {}) {
   if (argv.length === 1 && argv[0] === "--help") { stdout(HELP); return 0; }
   const flags = parseLookupOptions(argv, ["--registration", "--sha256", "--opus-model", ...WORKLOAD_FLAGS]);
-  requireLookup(!flags["--registration"] || !WORKLOAD_FLAGS.some(flag => flags[flag]), "lookup_estimate_workload_conflict");
+  requireLookup(!flags["--registration"] || !WORKLOAD_FLAGS.some(flag => flags[flag] !== undefined), "lookup_estimate_workload_conflict");
   requireLookup(Boolean(flags["--registration"]) === Boolean(flags["--sha256"]), "lookup_registration_hash_required");
   const registration = flags["--registration"] ? await readRegistration(flags["--registration"], flags["--sha256"]) : null;
   const workload = registration?.common ?? await lookupWorkload(workloadOptions(flags));
   const profiles = ESTIMATE_PROFILES.map(profile => profile.id === "opus" && flags["--opus-model"] ? { ...profile, model: flags["--opus-model"] } : profile);
   const prices = await offlinePrices(profiles);
-  const result = await estimateLookup({ workload, profiles, prices });
+  const result = workload.lookupSource ? estimateExternalLookup({ workload, catalog: await offlineCatalog(workload.reader.model) })
+    : await estimateLookup({ workload, profiles, prices });
+  if (workload.lookupSource && workload.catalogCapUSD !== undefined) requireLookup(result.catalogCapUSD === workload.catalogCapUSD, "lookup_catalog_cap_mismatch");
   result.workloadDigest = digest(workload);
   result.registrationDigest = registration ? digest(registration) : null;
   result.pricingSource = { source: "installed local Pi catalog (offline)", lockfileSha256: sha256(await readFile(join(ROOT, "pnpm-lock.yaml"))) };

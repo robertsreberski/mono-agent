@@ -11,7 +11,7 @@ import { canonicalJson, sourceOnly } from "../lib/continuity-dataset.mjs";
 import { generateHoldout, generateHoldoutTrace, loadHoldoutSpec, selectHoldoutCases, validateHoldoutSpec } from "../lib/continuity-holdout-generator.mjs";
 import { checkHoldoutOverlap, overlapMatcher, overlapSources, traceNarratives, validateAllowlist } from "../lib/continuity-holdout-overlap.mjs";
 import { wordRuns, literals } from "../lib/continuity-overlap-text.mjs";
-import { externalDirectory, readJson, externalFile, jsonBytes, CHECKOUT } from "../lib/continuity-holdout-files.mjs";
+import { externalDirectory, readJson, externalFile, jsonBytes, CHECKOUT, sha256 } from "../lib/continuity-holdout-files.mjs";
 
 const dirs = [];
 afterEach(async () => { for (const dir of dirs.splice(0)) await rm(dir, { recursive: true, force: true }); });
@@ -29,7 +29,7 @@ describe("holdout author schema", () => {
     spec.families[0].cases[0].events[0].owner = spec.families[0].cases[0].probes[0].question;
     await writeSpec(dir, spec);
     const cli = spawnSync(process.execPath, [new URL("../holdout-validate.mjs", import.meta.url).pathname, "--spec-dir", dir, "--schema-only"], { encoding: "utf8" });
-    expect(cli.status, cli.stderr).toBe(0); expect(JSON.parse(cli.stdout).scope).toBe("schema-only");
+    expect(cli.status, cli.stderr).toBe(0); expect(JSON.parse(cli.stdout).scope).toBe("schema-only"); expect(JSON.parse(cli.stdout).design).toBe("checked-in");
     const index = JSON.parse(await readFile(join(dir, "index.json"), "utf8")); index.families[0].file = "../escape.json";
     await writeFile(join(dir, "index.json"), jsonBytes(index));
     await expect(loadHoldoutSpec(dir)).rejects.toThrow("invalid_spec_filename");
@@ -198,7 +198,7 @@ it("freezes external canonical bytes and detects artifact, manifest, allowlist a
   // Smallest valid explicitly bound synthetic design; full E inventory/selection
   // and 512-conversation registration are tested separately, never mocked here.
   const statisticalSpec = { ...STATISTICAL_SPEC, design: { ...STATISTICAL_SPEC.design,
-    families: 2, conversationsPerFamily: 2, conversationsPerCorpus: 2, shards: 2, perCorpusPerShard: 1 } };
+    families: 4, conversationsPerFamily: 1, conversationsPerCorpus: 2, shards: 2, perCorpusPerShard: 1 } };
   const dir = await scratch(), specDir = join(dir, "spec"), spec = fixtureSpec(statisticalSpec);
   for (const family of spec.families) for (const item of family.cases) Object.assign(item, { turnCount: 80, toolCount: 64, sessions: 7 });
   // Large obvious synthetic units keep byte pressure and fresh seeded draws,
@@ -235,6 +235,33 @@ it("freezes external canonical bytes and detects artifact, manifest, allowlist a
   const datasetModule = await import(/* @vite-ignore */ pathToFileURL(join(repo, "scripts/lib/continuity-dataset.mjs")).href);
   const specPath = join(inputs, "statistics.json");
   await writeFile(specPath, jsonBytes(statisticalSpec));
+  // Explicit lookup source reuses the freeze, not legacy shard/ledger registration.
+  const lookupSource = { manifestPath: join(outputDir, "manifest.json"), manifestSha256: frozen.manifestSha256, statisticalSpecPath: specPath };
+  const external = await datasetModule.loadTraces({ suite: "holdout", lookupSource, selectionSeed: 42, perGroup: 1 });
+  expect(external.traces).toHaveLength(2); expect(external.holdout).toBeUndefined();
+  expect(external.source.kind).toBe("lookup-frozen-holdout");
+  const rolesModule = await import(/* @vite-ignore */ pathToFileURL(join(repo, "scripts/lib/continuity-lookup-roles.mjs")).href);
+  const selected = external.traces.map(t => t.id);
+  const workload = await rolesModule.lookupWorkload({ suites: ["holdout"], lookupSource, selectionSeed: 42, perGroup: 1, inputRoots: [repo, repo] });
+  expect(workload.repeats).toBe(1); expect(workload.corpora[0].traces.map(t => t.id)).toEqual(selected);
+  expect(workload).not.toHaveProperty("shards"); expect(workload).not.toHaveProperty("shardCostCapUSD");
+  await expect(rolesModule.lookupWorkload({ suites: ["holdout"], lookupSource, selectionSeed: 42, perGroup: 1, inputRoots: [repo, repo], repeats: 2 })).rejects.toThrow("lookup_external_requires_explicit_selection_and_one_repeat");
+  await expect(rolesModule.lookupWorkload({ suites: ["holdout"], lookupSource })).rejects.toThrow("lookup_invalid_selection");
+  await expect(datasetModule.loadTraces({ suite: "holdout", lookupSource: { ...lookupSource, manifestSha256: "0".repeat(64) }, selectionSeed: 42, perGroup: 1 })).rejects.toThrow("manifest_hash_mismatch");
+  const lookupCli = await import(/* @vite-ignore */ pathToFileURL(join(repo, "scripts/continuity-benchmark.mjs")).href);
+  let lookupDry;
+  const lookupArgs = ["--suite", "holdout", "--probe-mode", "lookup-allowed-v1", "--corpus-manifest", lookupSource.manifestPath,
+    "--manifest-sha256", lookupSource.manifestSha256, "--statistical-spec", specPath, "--selection-seed", "42", "--per-group", "1", "--r0", repo, "--rpack", repo, "--dry-run"];
+  expect(await lookupCli.main(lookupArgs, { stdout: text => { lookupDry = JSON.parse(text); } })).toBe(0);
+  expect(lookupDry.repeats).toBe(1); expect(lookupDry.holdout).toBeUndefined(); expect(lookupDry.corpus.traces).toHaveLength(2);
+  expect(lookupDry.lookup.maxTurns).toBe(10);
+  expect(lookupDry.lookup.selection).toEqual(external.lookupSelection);
+  await expect(lookupCli.main([...lookupArgs, "--lookup-traces", "fixture-sealed-spare"])).rejects.toThrow("lookup_explicit_selection_refused");
+  await expect(lookupCli.main([...lookupArgs, "--trace", "fixture-sealed-spare"])).rejects.toThrow("lookup_explicit_selection_refused");
+  await expect(lookupCli.main([...lookupArgs.filter(a => a !== "--dry-run"), "--real"])).rejects.toThrow("lookup_real_not_authorized");
+  const validateCli = spawnSync(process.execPath, [await realpath(join(repo, "scripts/holdout-validate.mjs")), "--spec-dir", specDir, "--schema-only", "--statistical-spec", specPath], { encoding: "utf8" });
+  expect(validateCli.status, validateCli.stderr).toBe(0); expect(JSON.parse(validateCli.stdout).families).toBe(4);
+  expect(JSON.parse(validateCli.stdout).design).toEqual({ statisticalSpecSha256: sha256(await readFile(specPath)) });
   const profile = { reader: "fixture:reader", extractionModel: "fixture:extractor", alternate: "fixture:alternate", judge: null };
   const revision = fixtureGit(repo, ["rev-parse", "HEAD"]).trim();
   const registered = await registrationModule.registerFrozenHoldout({ manifestPath: join(outputDir, "manifest.json"), manifestSha256: frozen.manifestSha256,
@@ -315,3 +342,27 @@ it("freezes external canonical bytes and detects artifact, manifest, allowlist a
   await symlink(CHECKOUT, join(dir, "checkout-link"));
   await expect(externalDirectory(join(dir, "checkout-link", "new-output"), true)).rejects.toThrow("path_must_be_outside_checkout");
 }, 180000);
+
+it("keeps required freeze/overlap arguments mandatory when optional statistical transport is present", async () => {
+  const { parseFlags } = await import("../lib/continuity-holdout-files.mjs");
+  expect(parseFlags(["--required", "a"], ["--required"], ["--statistical-spec"])).toEqual({ "--required": "a" });
+  expect(parseFlags(["--required", "a", "--statistical-spec", "b"], ["--required"], ["--statistical-spec"])).toEqual({ "--required": "a", "--statistical-spec": "b" });
+  expect(() => parseFlags(["--statistical-spec", "b"], ["--required"], ["--statistical-spec"])).toThrow("missing_argument");
+  expect(() => parseFlags(["--required", "a", "--statistical-spec", "b", "--statistical-spec", "c"], ["--required"], ["--statistical-spec"])).toThrow("invalid_arguments");
+});
+it("indexes pack guidance and both soul texts separately from semantic independence review", async () => {
+  const sources = await overlapSources();
+  for (const name of ["packages/conversation/src/continuity/render-fit.ts", "packages/conversation/src/continuity/pack.ts", "scripts/fixtures/continuity-soul-v1.md", "scripts/fixtures/continuity-soul-v2.md"]) {
+    const source = sources.find(s => s.name === name); expect(source).toBeTruthy();
+    const text = (source.values ?? literals(source.text)).find(t => wordRuns(t, 7, false).length);
+    expect(text).toBeTruthy(); const matcher = overlapMatcher(sources, emptyAllowlist); matcher.add(text, "fixture");
+    expect(matcher.result().overlaps.some(hit => hit.sources.includes(name))).toBe(true);
+  }
+});
+
+it("keeps dot-dot-prefixed directory names inside each protected checkout", async () => {
+  const dir = await scratch(), checkout = join(dir, "checkout"), hidden = join(checkout, "..cache");
+  await mkdir(hidden, { recursive: true }); await writeFile(join(hidden, "input.json"), "{}");
+  await expect(externalDirectory(hidden, false, [checkout])).rejects.toThrow("path_must_be_outside_checkout");
+  await expect(externalFile(join(hidden, "input.json"), [checkout])).rejects.toThrow("path_must_be_outside_checkout");
+});

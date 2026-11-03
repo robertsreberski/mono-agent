@@ -12,6 +12,10 @@
 - Keep finalized managed-runtime proofs stable across warm-cache misses, and
   report runtime-proof refusals in `status` and `validate` with a nonzero exit
   after a shutdown-interruptible five-minute retry cooldown.
+- Add offline lookup workloads from externally frozen fictional conversations,
+  with fixed-policy per-role feasibility and run-wide catalog cap estimates;
+  keep legacy defaults and paid-execution refusals unchanged. Regenerate earlier
+  overlap reports before freezing: expanded reference sources make them stale.
 
 - Fix effective request/run denies for policy-gated app-owned MCP tools,
   including global `*` denies for `AskUser` and adapter send tools; keep
