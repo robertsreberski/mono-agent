@@ -55,7 +55,7 @@ it("cancels a catalogue wait, and releases a catalogue acquisition that races ca
   expect(await locks.withCatalog(async () => "free", { wait: false })).toBe("free");
 });
 
-it("cancels a writer wait, and releases a writer acquisition that races cancellation", async () => {
+it.each([true, false])("cancels a writer wait and acquisition racing cancellation (wait=%s)", async (wait) => {
   const r = await root(), locks = await JournalLocks.open(r), held = await locks.acquireWriter("journal-fictional");
   const controller = new AbortController(), waiting = locks.acquireWriter("journal-fictional", { signal: controller.signal });
   setTimeout(() => controller.abort(), 30);
@@ -64,7 +64,7 @@ it("cancels a writer wait, and releases a writer acquisition that races cancella
   held.release();
   const race = new AbortController(), tryLock = locks.tryLock.bind(locks);
   vi.spyOn(locks, "tryLock").mockImplementation(async (path: any) => { const lock = await tryLock(path); if (lock && path.endsWith("journal-fictional.sqlite")) race.abort(); return lock; });
-  await expect(locks.acquireWriter("journal-fictional", { signal: race.signal })).rejects.toMatchObject(aborted);
+  await expect(locks.acquireWriter("journal-fictional", { wait, signal: race.signal })).rejects.toMatchObject(aborted);
   vi.restoreAllMocks();
   const next = await locks.acquireWriter("journal-fictional", { wait: false }); next.release();
 });

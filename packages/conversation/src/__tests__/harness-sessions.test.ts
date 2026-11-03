@@ -1431,6 +1431,27 @@ describe("ConversationHarness continuous sessions", () => {
     expect(fake.disposedSessions).toContain("ps-next");
   });
 
+  it.each(["thrown", "result"] as const)("reports %s native journal contention without sessionless replay", async (mode) => {
+    const identityPath = await identityFixture();
+    const fake = createSessionFakeRuntime(async (_prompt, options) => {
+      if (options.sessionId !== undefined) {
+        if (mode === "thrown") throw Object.assign(new Error("Native journal catalogue ownership is busy"), {
+          code: "ERR_HARNESS_WRITER_BUSY", retryable: true,
+        });
+        return { failureKind: "native_journal_busy", error: "Native journal ownership is busy; please retry shortly.",
+          retryable: true, errorDetails: { code: "ERR_HARNESS_WRITER_BUSY", retryable: true } };
+      }
+      return { text: "Fictional answer", providerSessionId: "fictional-session" };
+    });
+    const harness = createConversationHarness({ identityPath, runtime: fake.runtime, model, session });
+    await harness.run(request("fictional-contention"));
+    const result = await harness.run(request("fictional-contention", "Fictional follow-up"));
+    expect(result.failure).toMatchObject({ kind: "native_journal_busy", message: expect.stringContaining("retry shortly"),
+      details: { code: "ERR_HARNESS_WRITER_BUSY", retryable: true } });
+    expect(fake.calls).toHaveLength(2);
+    expect(fake.calls[1]?.options.sessionId).toBe("fictional-session");
+  });
+
   it("does not retry and invalidates a resumed provider attempt that throws without session failure details", async () => {
     const identityPath = await identityFixture();
     const fake = createSessionFakeRuntime(async (_prompt, options) => {

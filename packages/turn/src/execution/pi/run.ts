@@ -1410,6 +1410,12 @@ async function executeTrackedPiNativeResponse(systemPrompt: string, options: PiO
       piTransport,
       effectiveEffort: harness?.getEffectiveEffort?.(),
     });
+    // Shared storage contention is retryable, not a provider failure or a
+    // session miss: the host must not discard this session and replay cold.
+    if (!runState.externalAbort && err?.code === "ERR_HARNESS_WRITER_BUSY") {
+      return { ...failure, failureKind: "native_journal_busy", retryable: true, providerSessionRecovery: undefined,
+        errorDetails: { ...failure.errorDetails, code: err.code, retryable: true, pi_error_retryable: true } };
+    }
     if (err?.code === "ERR_NATIVE_SESSION_AUTHORITY" || err?.code === "ERR_HANDOFF_DISPATCH_BUDGET") {
       return { ...failure, failureKind: err.code === "ERR_NATIVE_SESSION_AUTHORITY" ? "safety_native_session_authority" : "safety_handoff_dispatch_budget",
         retryable: false, providerSessionRecovery: undefined };

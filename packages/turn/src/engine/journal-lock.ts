@@ -10,6 +10,10 @@ import { DatabaseSync } from "node:sqlite";
 import { setTimeout as delay } from "node:timers/promises";
 import { assertIdentity, isOwned, sameIdentity as same, syncDir } from "./owned-fs-impl.js";
 
+// Catalogue operations are short; fail-fast writers still tolerate transient
+// catalogue contention, but never wait for another journal writer.
+const CATALOG_WAIT_MS = 250;
+const writerBusy = (message: string) => Object.assign(new Error(message), { code: "ERR_HARNESS_WRITER_BUSY", retryable: true });
 const fail = (): never => { throw new Error("Harness journal ownership unavailable"); };
 const secure = (stat: Stats, directory: boolean = false) => { if (!isOwned(stat, directory)) fail(); };
 /**
@@ -102,37 +106,41 @@ export class JournalLocks {
       throw error;
     }
   }
-  /**
-   * `signal` cancels only the wait: an acquisition that races cancellation is
-   *  released before the callback runs, and the callback itself is never cancelled.
-   */
-  async withCatalog<T>(callback: () => Promise<T>, { wait = true, signal }: { wait?: boolean; signal?: AbortSignal | undefined; } = {}): Promise<T> {
+  private async acquireCatalog(waitMs: number, signal?: AbortSignal) {
+    const deadline = performance.now() + waitMs;
     for (;;) {
       signal?.throwIfAborted();
       const lock = await this.tryLock(this.catalogPath);
-      if (!lock) {
-        if (!wait) throw Object.assign(new Error("Native journal catalogue ownership is busy"), { code: "ERR_HARNESS_WRITER_BUSY" });
-        await pause(signal); continue;
+      if (lock) {
+        if (signal?.aborted) { lock.release(); signal.throwIfAborted(); }
+        return lock;
       }
-      if (signal?.aborted) { lock.release(); signal.throwIfAborted(); }
-      try { return await callback(); } finally { lock.release(); }
+      signal?.throwIfAborted();
+      if (performance.now() >= deadline) throw writerBusy("Native journal catalogue ownership is busy; please retry shortly");
+      await pause(signal);
     }
   }
+  /**
+   * `signal` cancels only the wait: an acquisition that races cancellation is
+   * released before the callback runs, and the callback itself is never cancelled.
+   * `wait: false` remains an immediate probe for storage busy checks.
+   */
+  async withCatalog<T>(callback: () => Promise<T>, { wait = true, signal }: { wait?: boolean; signal?: AbortSignal | undefined; } = {}): Promise<T> {
+    const lock = await this.acquireCatalog(wait ? Infinity : 0, signal);
+    try { signal?.throwIfAborted(); return await callback(); } finally { lock.release(); }
+  }
+  /** `wait: false` bounds catalogue waits, but never waits for a journal writer. */
   async acquireWriter(journalId: string, { wait = true, signal }: { wait?: boolean; signal?: AbortSignal | undefined; } = {}): Promise<{ path: any; identity: Stats; release(): void; }> {
     if (!/^[A-Za-z0-9_-]+$/.test(journalId)) throw new TypeError("Unsafe harness journal ID");
     const path = join(this.directory, `${journalId}.sqlite`);
     for (;;) {
+      const catalog = await this.acquireCatalog(wait ? Infinity : CATALOG_WAIT_MS, signal);
       let lock;
-      if (wait) {
-        lock = await this.withCatalog(async () => { await this.ensureFile(path); return this.tryLock(path); }, { signal });
-        if (lock && signal?.aborted) { lock.release(); signal.throwIfAborted(); }
-      } else {
-        const catalog = await this.tryLock(this.catalogPath);
-        if (!catalog) throw Object.assign(new Error("Native journal catalogue ownership is busy"), { code: "ERR_HARNESS_WRITER_BUSY" });
-        try { await this.ensureFile(path); lock = await this.tryLock(path); } finally { catalog.release(); }
-      }
+      try { await this.ensureFile(path); lock = await this.tryLock(path); } finally { catalog.release(); }
+      if (lock && signal?.aborted) { lock.release(); signal.throwIfAborted(); }
+      signal?.throwIfAborted();
       if (lock) return lock;
-      if (!wait) throw Object.assign(new Error("Native journal writer ownership is busy"), { code: "ERR_HARNESS_WRITER_BUSY" });
+      if (!wait) throw writerBusy("Native journal writer ownership is busy; please retry shortly");
       // Release catalogue before waiting for a provider-owned writer.
       await pause(signal);
     }

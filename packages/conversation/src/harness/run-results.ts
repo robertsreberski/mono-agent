@@ -73,6 +73,10 @@ export function failureFromThrownError(error: unknown, wasAborted: boolean): Con
   if (wasAborted) {
     return { kind: "cancelled", message: "Agent request was cancelled.", details: errorToDetails(error) };
   }
+  if (isRecord(error) && error.code === "ERR_HARNESS_WRITER_BUSY") {
+    return { kind: "native_journal_busy", message: "Native journal ownership is busy; please retry shortly.",
+      details: { code: error.code, retryable: true } };
+  }
   if (error instanceof ConversationHarnessError) {
     return { kind: error.failureKind, message: error.message, details: error.details };
   }

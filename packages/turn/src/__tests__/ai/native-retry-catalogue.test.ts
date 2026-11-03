@@ -145,3 +145,27 @@ it.each([0, -1, null, "", Infinity, undefined])("uses the default retry-delay ca
   await generateEngineTurnResponse("Fictional rules", runOptions(model, { maxRetryDelayMs, messages: [{ role: "user", content: "Fictional request" }] }));
   expect(requests[0]!.maxRetryDelayMs).toBe(60_000);
 });
+
+it("classifies exhausted native open contention as retryable without provider dispatch", async () => {
+  const model = setup(), root = mkdtempSync(join(tmpdir(), "open-contention-"));
+  const sessionId = "fictional-busy-open", repo = resolveDurableNativeSessionRepo(root);
+  await (await repo.create({ id: sessionId })).close();
+  const locks = await repo.ensureDirectory(), held = (await locks.tryLock(locks.catalogPath))!;
+  // Exercise the protected-open wait policy without manufacturing a busy error.
+  const open = repo.open.bind(repo);
+  vi.spyOn(repo, "open").mockImplementation((metadata, options) => open(metadata, { ...(options as object | undefined), repair: false, wait: false }));
+  try {
+    const result = await generateEngineTurnResponse("Fictional rules", runOptions(model, {
+      sessionId, sessionsRoot: root, sessionKeepAlive: true,
+      messages: [{ role: "user", content: "Fictional request" }],
+    }));
+    expect(result).toMatchObject({ failureKind: "native_journal_busy", retryable: true,
+      errorDetails: { code: "ERR_HARNESS_WRITER_BUSY", retryable: true, pi_error_retryable: true } });
+    expect(result.error).toContain("please retry shortly");
+    expect(result.providerSessionRecovery).toBeUndefined();
+    expect(faux.state.callCount).toBe(0);
+  } finally {
+    held.release(); vi.restoreAllMocks();
+    await disposeProviderSession(sessionId).catch(() => {}); rmSync(root, { recursive: true, force: true });
+  }
+});
