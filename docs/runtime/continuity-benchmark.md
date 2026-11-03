@@ -192,20 +192,20 @@ Missing or incorrect soul bindings fail closed; no role follows a moving default
 S1 exceeds S0 by 167 bytes, about 56 conservative tokens (ceil(167/3)). That is
 small
 relative to the 16k-token context margin, but S1-role feasibility has **not** been
-remeasured: the frozen budget and A1 reference classifications are unchanged.
+remeasured: the frozen budget and registered reference classifications are unchanged.
 
 Both supplied checkouts must implement **`continuity-lookup-role-v1`**. An old
-A1-only checkout is incompatible, not adapted by a hidden shim. Registration
+checkout without role-protocol support is incompatible, not adapted by a hidden shim. Registration
 binds clean full SHAs (not ancestry or branch names), independently checked
 entrypoint/reader/scorer, lockfile and frozen budget digests, identical corpus
 and model settings, and fresh app-closure output hashes. It builds each checkout
 using the fresh-clean-head policy, verifies the hashes again before/after each
-role, and launches that checkout's A1 entrypoint in a separate Node child.
-`--lookup-role` is an explicit offline arm/soul/receipt contract; ordinary A1 and
+role, and launches that checkout's lookup entrypoint in a separate Node child.
+`--lookup-role` is an explicit offline arm/soul/receipt contract; ordinary lookup and
 recall-only plans retain their original digests and behavior.
 
 Rpack must differ from R0 in **at least one** file and **only** the 14 frozen
-B2 guidance paths (`GUIDANCE_FILES` in `scripts/lib/continuity-lookup-roles.mjs`).
+allowed guidance paths (`GUIDANCE_FILES` in `scripts/lib/continuity-lookup-roles.mjs`).
 The diff must include `pack.ts` or `render-fit.ts`, and the exported
 `PACK_RETRIEVAL_GUIDANCE` witness must be present in Rpack's `render-fit.ts`
 and absent in R0's; reversed roles fail `lookup_rpack_direction_invalid`.
@@ -219,10 +219,10 @@ output and state directories prevent shared checkpoints from crossing treatments
 ### Maintainer checkout construction and launch
 
 Use Node 24.18.0 and locally available dependencies. The maintainer constructs
-these checkouts **after A2 is merged**: Rpack is that clean main revision, R0 is
-that same revision with only the original B2 guidance patch reversed. The two
+these checkouts **after role-protocol support is merged**: Rpack is that clean main revision, R0 is
+that same revision with only the original guidance patch reversed. The two
 historic local commits below identify the guidance patch, not role revisions;
-no historical checkout lacking A2 is run. Those objects must already exist
+no historical checkout lacking role-protocol support is run. Those objects must already exist
 locally. Stop on conflicts; resolve only the frozen guidance paths, never widen
 the accepted diff or silently change a registered revision.
 
@@ -278,7 +278,7 @@ slots with occurrence counts, never last-write-wins. Ambiguous duplicates are
 excluded from exact accuracy and slot cost statistics rather than double-scored.
 Each role reports both completed eligible `exact` and `exactWithFailures`, plus
 failed-feasible counts. Missing/not-run slots are coverage-only. Infeasible
-native paths remain the registered A1 reference limitations, not reader failures
+native paths remain the registered reference limitations, not reader failures
 or a newly measured feasibility result for different models.
 
 Contrasts are `pack-only − pack`, `soul-only − pack`, `shipping − pack`,
@@ -452,7 +452,7 @@ provider-session identity, so they never run concurrently.
 Retained conversation evidence (`runtime.session.continuity`) defaults to on.
 Every arm from (a) to (f) pins `runtime.session.continuity.enabled: false` in its
 replay, mid-trace and probe configs. Those arms therefore stay comparable with
-baselines recorded before the feature existed. The B1 arms (g) and (h) turn
+baselines recorded before the feature existed. The prepared-continuity arms (g) and (h) turn
 recording on but explicitly pin `packEnabled: false`; any gain there depends on
 the reader choosing to call `ConversationHistory`. The deterministic pack arm
 pins `packEnabled: true` and uses the same cold boundary and tool offer as (g).
@@ -893,7 +893,7 @@ model's catalog maximum) or `enforced` (requires separate execution proof).
 use v2; v1 default registration shape and legacy plan digests remain unchanged.
 A standalone offline benchmark uses `--suite holdout --probe-mode lookup-allowed-v1`
 with the source triple, `--selection-seed N --per-group 2`, both `--r0`/`--rpack`
-roots (or a policy that binds them), and optional hash-bound policy. A2 passes role-filtered policy paths through plans, receipts and scoring.
+roots (or a policy that binds them), and optional hash-bound policy. Role-aware execution passes role-filtered policy paths through plans, receipts and scoring.
 
 Pricing retains planned denominators, excludes inventory-infeasible slots and
 blocks unknown slots. It reports per-role/per-trial expected, worst/reservation,
@@ -981,15 +981,32 @@ budgets/profiles, unknown options and caller `options.fetch` (even undefined)
 refuse. The latter returns `lookup_external_fetch_forbidden`, preventing the
 turn's outage-profile retrying fetch from being used. The sole transport is the
 constructor's trusted single-shot `send(url, init)`, never a retry wrapper.
-B2b must select the corresponding non-outage runtime configuration. No fallback,
+The follow-up pilot controller must select the corresponding non-outage runtime
+configuration. No fallback,
 context1M or per-request route substitution is allowed.
 
 The turn advanced option `piModelsDecorator(models) => models` wraps normally
 constructed, credentialed Models before dispatch. It is exclusive with
 `piResolvedModels`. It does not replace or duplicate OAuth resolution/refresh.
 It is **not propagated** to Models rebuilt by continuity upkeep or provider-check
-preparation. B2b's resolved auxiliary-callers check must prohibit those paths;
+preparation. The follow-up pilot controller's resolved auxiliary-callers check
+must prohibit those paths;
 the decorator alone is not a guard over every runtime caller.
+
+The optional contract `promptCacheKey`, if supplied, must contain the unique
+per-probe `runId`. A payload cache key must exactly match it; without a declared
+key, payload `prompt_cache_key` is forbidden. The follow-up pilot controller must
+assign distinct run IDs/cache keys across slots and arms. The real turn exposes
+`providerAttributionSessionId`: the host-turn test sets it to the declared key,
+which becomes the native session metadata ID and the serializer's `sessionId`.
+The guard also binds emitted `session-id`/`x-client-request-id` headers to that key.
+
+Non-empty caller `options.headers` and `options.env` are refused before admission;
+the real harness needs neither. Before consumption, send headers are limited to
+`originator`, `user-agent`, `authorization`, `chatgpt-account-id`, `openai-beta`,
+`accept`, `content-type`, `session-id`, `x-client-request-id`, and
+`content-encoding`, compared as lowercase names. Unknown headers stop without
+sending. A fetch entered without admission also awaits an integrity stop.
 
 The last composed `onPayload` runs existing mutation hooks first, then checks the
 final payload and computes:
@@ -1002,27 +1019,36 @@ I = 272000; O = 128000
 ```
 
 Opaque reasoning is prohibited in payload 1. Images, remote content, unsupported
-input items and non-function tools refuse. Top-level payload keys are allowlisted
+input items and non-function tools refuse. Pi replays server reasoning items
+verbatim from their thinking signatures. Reasoning `content` may be absent,
+null, an empty array, or one `{type: "reasoning_text", text: string}` item; these
+bytes are counted in U like the encrypted content and summary. Top-level payload
+keys are allowlisted
 from Codex `buildRequestBody`; each supported input item has its own key allowlist.
 Stored-input expansion fields such as conversation/prompt/background/truncation
 are refused before admission. Requests 1–10 may be admitted; request
 11 refuses before any hold or send. `U_k > I` returns
 `not_admitted_input_envelope` before admission. JSON is detached from earlier
-mutation hooks, and fetch verifies the final serialized (or zstd-decoded) body
-against the permitted digest. No default/global fetch is used.
+mutation hooks, and the guard compares the final serialized (or zstd-decoded) body
+to its locally retained admission digest before calling `consume`. A mismatch
+is `lookup_body_mismatch`, even if the injected permit source does not compare.
+No default/global fetch is used.
 
 Only raw `response.completed`/`response.incomplete` with integer
 `input_tokens >= 1` and `output_tokens >= 0` can settle. Zero or negative input
 is `lookup_invalid_usage`. Normalized message usage is never
 used as a substitute. Missing usage, a failed response, or a lost stream retains
 the hold and makes that probe run terminal. Any later request in the run refuses
-pre-send with `lookup_slot_terminal`, without a new hold, send or pilot stop. Raw hooks compose without allowing later hooks to
+pre-send with `lookup_slot_terminal`, without a new hold, send or pilot stop. Raw
+hooks compose without allowing later hooks to
 rewrite the captured usage. Tiers are allowlisted: `default` 1×, `flex` 0.5×,
-`priority` 2×; an absent or null tier settles conservatively at 2×. Unknown non-null tiers stop.
+`priority` 2×; an absent or null tier settles conservatively at 2×. Unknown
+non-null tiers stop.
 Input includes cache reads/writes; reasoning is not added again to output.
 Post-settlement violations of input ≤ U, output ≤ O, reasoning ≤ output, valid
-cache breakdowns, or catalog cost ≤ hold cause sticky integrity stops. Empty or
-length-terminal replies cannot issue a finalization request: the refusal is
+cache breakdowns, or catalog cost ≤ hold cause sticky integrity stops. Failed
+response events also validate a reported tier: an unknown tier stops, while a
+known/absent tier leaves failed usage lost. Empty or length-terminal replies cannot issue a finalization request: the refusal is
 `pilot_empty_final_output`, classified `failed/pilot_empty_final_output`.
 
 #### Frozen permit interface
@@ -1046,7 +1072,9 @@ guard invokes its construction-time single-shot `send` once. A second fetch
 entry is an integrity stop and never invokes `send` again, including overlapping
 calls. An admitted request may fail before send, retaining its hold as lost;
 therefore the guarantee is **at most one send per permit**, not that every
-admission sends. Body mismatch/reuse refuses. `settle` runs once per admitted request; a missing
+admission sends. The guard independently rejects body mismatch before
+consumption; the permit source must also reject digest mismatch and reuse.
+`settle` runs once per admitted request; a missing
 tier stays null in the record while `cost` uses 2×. Unknown tiers are redacted to
 null with a fixed integrity code. Usage records allowlist only numeric input,
 output, cache-read/cache-write and reasoning counts, preserving optional-field
@@ -1072,7 +1100,8 @@ admissible and returns `lookup_slot_terminal` without a pilot stop. Only an
 `integrity_stop` closes pilot admission. The guard's result/terminal iterator
 awaits `permit.stop()` before rejecting. A stop rejection preserves the original
 integrity `code`, adds `stopCode: "lookup_stop_failed"`, and keeps the IPC error
-as `cause`; it never becomes an unobserved fire-and-forget operation.
+as `cause`; if settlement also failed, `settleCause` retains that error. It never
+becomes an unobserved fire-and-forget operation.
 
 `createTestOnlyLookupPermitSource()` is the only implementation shipped here;
 it is branded `lookup-faux-test-only-v1`, `testOnly: true`, in-memory and
@@ -1084,14 +1113,20 @@ serializer hosted by faux Models with injected scripted SSE; external sockets,
 fetch and WebSocket are denied. A separate integration test uses the same public
 host runtime entry as the benchmark, with `piModelsDecorator`, fake OAuth,
 the installed serializer and scripted SSE `send`, across two rounds including
-a real local tool execution. No real route is enabled by either proof.
+a real local tool execution and verbatim encrypted reasoning replay. A second
+real-turn case selects the outage retry profile and proves it refuses caller
+fetch with zero sends, admissions or holds. No real route is enabled by either
+proof.
 
 #### Registered assumptions: assumed-v1
 
 `LOOKUP_ASSUMPTIONS` is deeply frozen and versioned. These are **assumptions, not
-backend enforcement evidence**. For the pilot they supersede PLAN-B-v2's
-“do not invent H” prerequisite and frozen-O replay bound. The future B2b
-authorization must bind the entire registry, formula, values and catalog rates.
+backend enforcement evidence**. For the pilot they replace the earlier
+requirement for a proved backend framing
+allowance before any admission, and replace the fixed maximum-output allowance
+for every replayed response with the sum of settled output usage. Authorization
+from the follow-up pilot controller must bind the entire registry, formula,
+values and catalog rates.
 
 | Assumption | Registered value / check |
 | --- | --- |
@@ -1117,7 +1152,8 @@ a stop cannot retroactively undo spend.
 
 `assertLookupAuxiliaryCallersOff()` and `assertLookupChildSafety()` require
 `plan.judge === null`, explicit false for memory/subagents/upkeep/compaction and
-no output schema. B2b must call them on resolved configuration at pilot entry
+no output schema. The follow-up pilot controller must call them on resolved
+configuration at pilot entry
 and in each child before model preparation. The faux smoke exercises the child
 check; the existing production child still refuses every non-offline lookup.
 Controller leases, durable permits, accounting, concurrency-one scheduling,

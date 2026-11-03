@@ -3,35 +3,39 @@ import assert from "node:assert/strict";
 import { Socket } from "node:net";
 import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { join } from "node:path";
 import { guardedLookupModels, LOOKUP_GUARD_CONTRACT as C, createTestOnlyLookupPermitSource, assertLookupChildSafety } from "../../lib/continuity-lookup-guard.mjs";
 import { startFixtureTools } from "../../lib/continuity-tools.mjs";
 
+let deniedEgressAttempts = 0;
 const connect = Socket.prototype.connect;
 Socket.prototype.connect = function (...args) {
   const opts = Array.isArray(args[0]) ? args[0][0] : args[0];
   const host = typeof opts === "object" ? opts.host ?? opts.hostname : args[1];
-  if (host !== "127.0.0.1" && host !== "::1") throw Error("smoke_external_egress_denied");
+  if (host !== "127.0.0.1" && host !== "::1") { deniedEgressAttempts++; throw Error("smoke_external_egress_denied"); }
   return connect.apply(this, args);
 };
 const nativeFetch = globalThis.fetch;
 globalThis.fetch = (url, init) => {
-  if (new URL(typeof url === "string" || url instanceof URL ? url : url.url).hostname !== "127.0.0.1") throw Error("smoke_external_fetch_denied");
+  if (new URL(typeof url === "string" || url instanceof URL ? url : url.url).hostname !== "127.0.0.1") { deniedEgressAttempts++; throw Error("smoke_external_fetch_denied"); }
   return nativeFetch(url, init);
 };
-globalThis.WebSocket = class { constructor() { throw Error("smoke_websocket_denied"); } };
+globalThis.WebSocket = class { constructor() { deniedEgressAttempts++; throw Error("smoke_websocket_denied"); } };
 const deadline = setTimeout(() => { process.stderr.write("smoke_timeout\n"); process.exit(1); }, 110000);
 try {
   if (process.argv[2] !== "--child") {
     const tools = await startFixtureTools(); tools.expect("doc_read", {}, "Fictional lookup result.");
     let child;
     try {
-      child = spawn(process.execPath, [new URL(import.meta.url).pathname, "--child", tools.url], { cwd: process.cwd(), stdio: ["ignore", "pipe", "pipe"] });
+      child = spawn(process.execPath, [fileURLToPath(import.meta.url), "--child", tools.url], { cwd: process.cwd(), stdio: ["ignore", "pipe", "pipe"] });
       let stdout = "", stderr = ""; child.stdout.on("data", b => stdout += b); child.stderr.on("data", b => stderr += b);
       const code = await new Promise((resolve, reject) => { child.once("error", reject); child.once("close", resolve); });
-      assert.equal(code, 0, stderr); assert.deepEqual(JSON.parse(stdout), { sends: 1, settled: 1, externalEgress: 0 }); assert.equal(tools.served(), 1);
-      process.stdout.write(JSON.stringify({ processes: 2, loopbackMcpCalls: 1, sends: 1, settled: 1, externalEgress: 0 }) + "\n");
+      assert.equal(code, 0, stderr); const receipt = JSON.parse(stdout);
+      const loopbackMcpCalls = tools.served(); deniedEgressAttempts += receipt.deniedEgressAttempts;
+      assert.equal(receipt.sends, 1); assert.equal(receipt.settled, 1); assert.equal(deniedEgressAttempts, 0); assert.equal(loopbackMcpCalls, 1);
+      process.stdout.write(JSON.stringify({ processes: new Set([process.pid, child.pid]).size, loopbackMcpCalls,
+        sends: receipt.sends, settled: receipt.settled, deniedEgressAttempts }) + "\n");
     } finally { child?.kill(); await tools.close(); }
   } else {
     assertLookupChildSafety({ plan: { judge: null }, memory: false, subagents: false, upkeep: false, compaction: false, outputSchema: null });
@@ -65,6 +69,6 @@ try {
     assert.equal(result.stopReason, "stop");
     const settled = permit.events.filter(e => e.type === "settle" && e.outcome.kind === "settled").length;
     assert.equal(settled, 1); assert.equal(sends, 1);
-    process.stdout.write(JSON.stringify({ sends, settled, externalEgress: 0 }));
+    process.stdout.write(JSON.stringify({ sends, settled, deniedEgressAttempts }));
   }
 } finally { clearTimeout(deadline); }

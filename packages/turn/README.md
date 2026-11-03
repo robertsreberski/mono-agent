@@ -98,8 +98,7 @@ normal Models collection after credential-store construction, without replacing
 OAuth resolution or refresh. It is mutually exclusive with `piResolvedModels`;
 the decorator must preserve metadata/auth methods and their receivers. It is not
 propagated to Models rebuilt for continuity upkeep or provider-check preparation.
-The guarded lookup caller must prohibit those auxiliary paths through its
-resolved auxiliary-callers check; this seam is not a universal dispatch guard.
+This seam is not a universal dispatch guard.
 
 ### Pi-native MCP Apps bridge
 

@@ -43,7 +43,7 @@ export function lookupInputEnvelope(payload, settledOutputTokens = [], assumptio
   return { bytes, H, U: bytes + settledOutputTokens.reduce((a, b) => a + b, 0) + H };
 }
 
-/** B2b must call at entry and again in each child, on resolved settings (not CLI flags). */
+/** The pilot controller must call at entry and again in each child, on resolved settings (not CLI flags). */
 export function assertLookupAuxiliaryCallersOff({ plan, memory, subagents, upkeep, compaction, outputSchema }) {
   if (plan?.judge !== null || memory !== false || subagents !== false || upkeep !== false || compaction !== false || outputSchema != null)
     refuse("lookup_auxiliary_callers_forbidden");
@@ -68,7 +68,7 @@ export const LOOKUP_PERMIT_CONTRACT = freeze({
  * @property {(code: string) => void | Promise<void>} stop
  */
 
-/** Frozen wire contract: all calls may be async. B2b owns durability/epoch/IPC.
+/** Frozen wire contract: all calls may be async. The pilot controller owns durability/epoch/IPC.
  * admit({requestId,slotId,round,payloadDigest,rmax}) => opaque permit | {refused:true,code}
  * consume(permit,bodyDigest): once for a dispatched permit, before single-shot send.
  * settle(permit,outcome,rawUsage,tier): exactly once; outcome includes code/cost.
@@ -115,6 +115,8 @@ function assertIdentity(model, contract) {
 function assertRoute(model, options, contract) {
   if (Object.hasOwn(options, "fetch")) refuse("lookup_external_fetch_forbidden");
   for (const key of Object.keys(options)) if (!REQUEST_OPTION_KEYS.has(key)) refuse("lookup_option_forbidden");
+  if (options.headers != null && [...new Headers(options.headers)].length) refuse("lookup_headers_forbidden");
+  if (options.env != null && (typeof options.env !== "object" || ![Object.prototype, null].includes(Object.getPrototypeOf(options.env)) || Object.keys(options.env).length)) refuse("lookup_env_forbidden");
   assertIdentity(model, contract);
   if (model?.api !== contract.api || model?.baseUrl !== contract.baseUrl
     || options.reasoning !== contract.effort || options.transport !== "sse" || options.maxRetries !== 0
@@ -136,6 +138,8 @@ function assertPayload(payload, round, contract) {
   keysOnly(payload, ["model", "store", "stream", "instructions", "input", "text", "include", "prompt_cache_key", "tool_choice", "parallel_tool_calls", "temperature", "service_tier", "tools", "reasoning"]);
   if (payload.model !== contract.model || payload.reasoning?.effort !== contract.effort || payload.store !== false || payload.stream !== true
     || payload.service_tier !== undefined || !Array.isArray(payload.input)) refuse("lookup_payload_forbidden");
+  if (Object.hasOwn(payload, "prompt_cache_key") && (typeof contract.promptCacheKey !== "string"
+    || !contract.promptCacheKey.includes(contract.runId) || payload.prompt_cache_key !== contract.promptCacheKey)) refuse("lookup_prompt_cache_key_forbidden");
   keysOnly(payload.reasoning, ["effort", "summary"]);
   if (payload.text !== undefined) keysOnly(payload.text, ["verbosity"]);
   if (payload.include !== undefined && (!Array.isArray(payload.include) || payload.include.some(x => x !== "reasoning.encrypted_content"))) refuse("lookup_payload_forbidden");
@@ -147,9 +151,16 @@ function assertPayload(payload, round, contract) {
   }
   for (const item of payload.input) {
     if (item?.type === "reasoning") {
-      keysOnly(item, ["type", "id", "summary", "encrypted_content", "status"]);
+      keysOnly(item, ["type", "id", "summary", "encrypted_content", "status", "content"]);
       if (round === 1) refuse("lookup_initial_reasoning_forbidden");
       if (item.summary !== undefined) textParts(item.summary, true);
+      if (item.content != null) {
+        if (!Array.isArray(item.content) || item.content.length > 1) refuse("lookup_payload_forbidden");
+        for (const part of item.content) {
+          keysOnly(part, ["type", "text"]);
+          if (part.type !== "reasoning_text" || typeof part.text !== "string") refuse("lookup_payload_forbidden");
+        }
+      }
     } else if (item?.type === "function_call") {
       keysOnly(item, ["type", "id", "call_id", "name", "arguments", "namespace", "status"]);
       if (typeof item.arguments !== "string") refuse("lookup_payload_forbidden");
@@ -179,6 +190,8 @@ export function guardedLookupModels(models, { contract, permit, send, assumption
   if (!contract.slotId || !contract.runId || contract.piMaxRetries !== 0 || contract.maxRetries !== 0) refuse("lookup_contract_mismatch");
   for (const key of ["piRequestRetryBudgetMs", "retryBudgetMs", "retryProfile", "retry"])
     if (Object.hasOwn(contract, key)) refuse("lookup_retry_profile_forbidden");
+  if (Object.hasOwn(contract, "promptCacheKey") && (typeof contract.promptCacheKey !== "string"
+    || !contract.promptCacheKey.includes(contract.runId))) refuse("lookup_prompt_cache_key_forbidden");
   if (typeof send !== "function") refuse("lookup_single_shot_send_required");
   contract = Object.freeze({ ...contract });
   assumptions = LOOKUP_ASSUMPTIONS;
@@ -189,6 +202,7 @@ export function guardedLookupModels(models, { contract, permit, send, assumption
     catch (ipcError) {
       const error = new LookupGuardError(code, "integrity_stop", code, ipcError);
       error.stopCode = "lookup_stop_failed";
+      if (cause !== undefined) error.settleCause = cause;
       throw error;
     }
     throw new LookupGuardError(code, "integrity_stop", code, cause);
@@ -201,10 +215,11 @@ export function guardedLookupModels(models, { contract, permit, send, assumption
     if (rounds >= 10) refuse("lookup_request_limit");
     assertRoute(model, options, contract);
     const round = rounds + 1;
-    let admitted, sent = false, fetchEntered = false, raw, tier, envelope, payloadSeen = false, terminalSeen = false, preRefusal, integrity;
+    let admitted, admittedPayloadDigest, earlyStop, sent = false, fetchEntered = false, raw, tier, envelope, payloadSeen = false, terminalSeen = false, preRefusal, integrity;
     active = true;
     const finish = async (message, failure) => {
       try {
+        if (earlyStop) await earlyStop;
         if (admitted) {
           let code, outcome = "lost", cost;
           if (integrity) { outcome = "integrity_stop"; code = integrity; }
@@ -246,28 +261,51 @@ export function guardedLookupModels(models, { contract, permit, send, assumption
           const grant = await permit.admit({ requestId: `${contract.runId}:${round}`, slotId: contract.slotId, round, payloadDigest, rmax: assumptions.rmax });
           if (grant?.refused) refuse(grant.code ?? "not_admitted_cap");
           if (!grant) refuse("lookup_permit_missing");
-          admitted = grant; rounds++;
+          admitted = grant; admittedPayloadDigest = payloadDigest; rounds++;
           // Detach from all mutation hooks; fetch verifies these exact serialized bytes.
           return JSON.parse(JSON.stringify(final));
         } catch (error) { preRefusal = error; throw error; }
       },
       fetch: async (url, init) => {
-        if (!admitted || fetchEntered) { integrity = "lookup_permit_invalid"; throw new LookupGuardError(integrity); }
+        if (!admitted) {
+          integrity = "lookup_permit_invalid";
+          earlyStop ??= stopWithError(integrity);
+          return await earlyStop;
+        }
+        if (fetchEntered) { integrity = "lookup_permit_invalid"; throw new LookupGuardError(integrity); }
         fetchEntered = true;
-        const encoding = new Headers(init?.headers).get("content-encoding");
+        const headers = new Headers(init?.headers);
+        const allowedHeaders = new Set(["originator", "user-agent", "authorization", "chatgpt-account-id", "openai-beta",
+          "accept", "content-type", "session-id", "x-client-request-id", "content-encoding"]);
+        if ([...headers.keys()].some(name => !allowedHeaders.has(name))) {
+          integrity = "lookup_headers_forbidden"; throw new LookupGuardError(integrity);
+        }
+        for (const key of ["session-id", "x-client-request-id"]) {
+          if (headers.has(key) && headers.get(key) !== contract.promptCacheKey) {
+            integrity = "lookup_prompt_cache_key_forbidden"; throw new LookupGuardError(integrity);
+          }
+        }
+        const encoding = headers.get("content-encoding");
         if (String(url) !== `${contract.baseUrl}/codex/responses` || init?.method !== "POST" || ![null, "zstd"].includes(encoding)) {
           integrity = "lookup_send_mismatch"; throw new LookupGuardError(integrity);
         }
         try {
           const bytes = encoding === "zstd" ? zstdDecompressSync(init.body) : Buffer.from(init.body);
-          await permit.consume(admitted, lookupBodyDigest(bytes));
-        } catch (error) { integrity = "lookup_permit_invalid"; throw error; }
+          const bodyDigest = lookupBodyDigest(bytes);
+          if (bodyDigest !== admittedPayloadDigest) {
+            integrity = "lookup_body_mismatch"; throw new LookupGuardError(integrity);
+          }
+          await permit.consume(admitted, bodyDigest);
+        } catch (error) { integrity ??= "lookup_permit_invalid"; throw error; }
         if (integrity) throw new LookupGuardError(integrity);
         sent = true;
         return send(url, init);
       },
       onProviderStreamEvent: async (event, selected) => {
-        if (event?.type === "response.failed") raw = undefined;
+        if (event?.type === "response.failed") {
+          raw = undefined; tier = event.response?.service_tier;
+          if (tier != null && !["default", "flex", "priority"].includes(tier)) integrity = "lookup_unknown_tier";
+        }
         if (["response.completed", "response.incomplete"].includes(event?.type)) {
           const usage = event.response?.usage;
           tier = event.response?.service_tier;
@@ -311,7 +349,6 @@ export function guardedLookupModels(models, { contract, permit, send, assumption
     // Metadata/auth only; never expose a provider object capable of dispatch.
     if (key === "getModel" || key === "getAuth") return target[key].bind(target);
     if (key === "getProvider") return id => target.getProvider(id) ? Object.freeze({ id }) : undefined;
-    if (typeof key === "symbol") return undefined;
     if (["stream", "complete", "completeSimple", "streamDeferred", "fetchDeferred", "cancelDeferred", "setProvider"].includes(key) || typeof target[key] === "function")
       return () => refuse("lookup_method_forbidden", "failed/pilot_method_forbidden");
     return undefined;

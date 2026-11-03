@@ -29,7 +29,7 @@ it("benchmark:282 execute refuses non-offline mode before modules load", async (
 const plan = { probeMode: "lookup-allowed-v1", lookup: { budget: { callBudget: 8 }, maxTurns: 10, deadlineMs: 600000, cleanupAllowanceMs: 1, childWatchdogMs: 720000 }, limits: { perLiveTurnTimeoutMs: 690000 } };
 it("runner:350 non-offline liveRoute bypass remains unreachable to lookup", async () => {
   // liveRoute is private and its non-offline branch is NOT an authorization guard.
-  // Pin the branch and prove its public enclosing path refuses before parsing a model.
+  // Keep this pin: deleting the private branch still hits the independent enclosing refusal.
   const source = await readFile(new URL("../lib/continuity-runner.mjs", import.meta.url), "utf8");
   expect(source).toContain('if (mode !== "offline") return (options) => { watch?.noteOffered(options); return {}; };');
   const parse = vi.fn(); await expect(runLiveTurn({ modules: { host: { parseMonoRuntimeModelReference: parse } }, plan, mode: "real" })).rejects.toThrow("lookup_real_not_authorized"); expect(parse).not.toHaveBeenCalled();
@@ -38,12 +38,16 @@ it("runner:406 refuses independently of CLI and with egress denied", async () =>
   const network = vi.spyOn(Socket.prototype, "connect").mockImplementation(() => { throw Error("egress_denied"); });
   await expect(runLiveTurn({ modules: {}, plan, mode: "real" })).rejects.toThrow("lookup_real_not_authorized"); expect(network).not.toHaveBeenCalled();
 });
+function childFailure(stdout, stderr) { return stdout.trim() ? JSON.parse(stdout).failure : stderr.trim() || "child_no_output"; }
+it("keeps the child stderr diagnostic when no stdout receipt is emitted", () => {
+  expect(childFailure("", "fictional child failure\n")).toBe("fictional child failure");
+});
 async function childGate(mode) {
   const child = spawn(process.execPath, ["scripts/lib/continuity-probe-child.mjs"], { cwd: root, stdio: ["pipe", "pipe", "pipe"] });
   let out = "", err = ""; child.stdout.on("data", b => out += b); child.stderr.on("data", b => err += b);
   child.stdin.end(JSON.stringify({ type: "probe", plan, mode, root: "/fictional-must-not-load" }));
   const status = await new Promise((resolve, reject) => { child.on("error", reject); child.on("close", resolve); });
-  return { status, failure: JSON.parse(out).failure, err };
+  return { status, failure: childFailure(out, err), err };
 }
 it("probe-child:12 refuses real lookup with an otherwise valid contract", async () => {
   const real = await childGate("real");

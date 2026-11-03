@@ -2,10 +2,6 @@
 
 ## Unreleased
 
-- Fix offline guarded lookup admission to own a single-shot send, allow the
-  native turn's matching model, and retain terminal-slot holds without stopping
-  unrelated slots. Refuse unknown request and payload fields before admission.
-
 - Add an advanced turn `piModelsDecorator` seam over normally credentialed Models,
   mutually exclusive with `piResolvedModels`.
 - Add offline-only guarded lookup request contracts and assumption checks; keep

@@ -16,17 +16,18 @@ const payload = () => ({ model: C.model, store: false, stream: true, reasoning: 
 function sized(U) { const p = payload(); p.input[0].content += "x".repeat(U - lookupInputEnvelope(p).U); return p; }
 const message = (stopReason = "stop", text = "Fictional answer.") => ({ stopReason, content: [{ type: "text", text }] });
 const usage = (input_tokens = 1, output_tokens = 1) => ({ input_tokens, output_tokens });
-function fixture({ body = payload(), raw = usage(), tier = "default", event = "response.completed", final = message(), failure, mutate, noSend = false, doubleSend = false, duplicateTerminal = false, repeatedPayload = false, sendUrl, permitSource } = {}) {
+function fixture({ body = payload(), raw = usage(), tier = "default", event = "response.completed", final = message(), failure, mutate, noSend = false, doubleSend = false, duplicateTerminal = false, repeatedPayload = false, sendUrl, sendHeaders, skipPayload = false, contractPatch = {}, permitSource } = {}) {
   const permit = permitSource ?? createTestOnlyLookupPermitSource(), send = vi.fn(async () => new Response(""));
   const underlying = { streamSimple: vi.fn((_m, _c, options) => {
     const result = (async () => {
       try {
+        if (skipPayload) { await options.fetch(`${C.baseUrl}/codex/responses`, { method: "POST", body: "{}" }); return final; }
         const p = await options.onPayload(body, model);
         if (repeatedPayload) await options.onPayload(body, model);
         mutate?.(p);
         if (noSend) throw Error("fictional_before_send_abort");
-        await options.fetch(sendUrl ?? `${C.baseUrl}/codex/responses`, { method: "POST", body: JSON.stringify(p) });
-        if (doubleSend) await options.fetch(sendUrl ?? `${C.baseUrl}/codex/responses`, { method: "POST", body: JSON.stringify(p) });
+        await options.fetch(sendUrl ?? `${C.baseUrl}/codex/responses`, { method: "POST", headers: sendHeaders, body: JSON.stringify(p) });
+        if (doubleSend) await options.fetch(sendUrl ?? `${C.baseUrl}/codex/responses`, { method: "POST", headers: sendHeaders, body: JSON.stringify(p) });
         if (failure) { failure(options); throw Error("fictional_stream_failure"); }
         await options.onProviderStreamEvent({ type: event, response: { usage: raw, ...(tier !== "OMIT" ? { service_tier: tier } : {}) } }, model);
         if (duplicateTerminal) await options.onProviderStreamEvent({ type: event, response: { usage: raw, service_tier: tier } }, model);
@@ -35,7 +36,7 @@ function fixture({ body = payload(), raw = usage(), tier = "default", event = "r
     })();
     return { result: () => result, async *[Symbol.asyncIterator]() { yield { type: "done", message: await result }; } };
   }), getModel: () => model };
-  const guarded = guardedLookupModels(underlying, { contract: { ...C, slotId: "fictional-slot", runId: "fictional-run" }, permit, send });
+  const guarded = guardedLookupModels(underlying, { contract: { ...C, slotId: "fictional-slot", runId: "fictional-run", ...contractPatch }, permit, send });
   const options = { reasoning: "high", transport: "sse", maxRetries: 0 };
   return { guarded, permit, send, underlying, options, call: (overrides = {}) => guarded.streamSimple(model, {}, { ...options, ...overrides }).result() };
 }
@@ -110,7 +111,7 @@ it("gates the payload returned by the last mutation hook", async () => {
   const f = fixture(); await expect(f.call({ onPayload: () => sized(272001) })).rejects.toThrow("not_admitted_input_envelope"); expect(f.send).not.toHaveBeenCalled();
 });
 it("detects late mutation before injected network", async () => {
-  const f = fixture({ mutate: p => { p.instructions += "late"; } }); await expect(f.call()).rejects.toThrow("lookup_permit_invalid"); expect(f.send).not.toHaveBeenCalled();
+  const f = fixture({ mutate: p => { p.instructions += "late"; } }); await expect(f.call()).rejects.toThrow("lookup_body_mismatch"); expect(f.send).not.toHaveBeenCalled();
 });
 it("consumes once and binds the body digest", () => {
   const p = createTestOnlyLookupPermitSource(), digest = lookupBodyDigest(Buffer.from("fictional"));
@@ -123,7 +124,9 @@ it.each(["completeSimple", "complete", "stream", "streamDeferred", "fetchDeferre
 });
 it.each([["stop", ""], ["length", "Fictional partial."]])("refuses %s finalization", async (stop, text) => {
   const f = fixture({ final: message(stop, text) }); await f.call();
-  try { f.call(); throw Error("not_refused"); } catch (error) { expect(error.classification).toBe("failed/pilot_empty_final_output"); }
+  let refusal;
+  try { f.call(); } catch (error) { refusal = error; }
+  expect(refusal).toMatchObject({ code: "pilot_empty_final_output", classification: "failed/pilot_empty_final_output" });
   expect(f.send).toHaveBeenCalledOnce();
 });
 it("own abort after send retains hold without pilot stop", async () => {
@@ -296,4 +299,57 @@ it.each([
 ])("refuses unknown input-item keys before admission", async item => {
   const body = payload(); body.input = [item]; const f = fixture({ body });
   await expect(f.call()).rejects.toThrow("lookup_payload_forbidden"); expect(f.permit.events).toEqual([]);
+});
+
+it("verifies the body locally before a permissive permit source can consume", async () => {
+  const source = createTestOnlyLookupPermitSource(), consume = vi.fn();
+  const f = fixture({ permitSource: { ...source, consume }, mutate: p => { p.instructions += " late"; } });
+  await expect(f.call()).rejects.toMatchObject({ code: "lookup_body_mismatch", outcome: "integrity_stop" });
+  expect(consume).not.toHaveBeenCalled(); expect(f.send).not.toHaveBeenCalled();
+});
+it.each([null, [], [{ type: "reasoning_text", text: "Fictional reasoning." }]])("accepts supported verbatim reasoning content %j after settlement", async content => {
+  const f = fixture(); await f.call();
+  await f.call({ onPayload: p => ({ ...p, input: [...p.input, { type: "reasoning", id: "rs_fictional", encrypted_content: "FAKE", summary: [{ type: "summary_text", text: "Fictional summary." }], content }] }) });
+  expect(f.send).toHaveBeenCalledTimes(2);
+});
+it.each(["fictional", {}, [{ type: "input_text", text: "Fictional" }], [{ type: "reasoning_text", text: 1 }], [{ type: "reasoning_text", text: "a" }, { type: "reasoning_text", text: "b" }]])("refuses unsupported reasoning content %j", async content => {
+  const f = fixture(); await f.call();
+  await expect(f.call({ onPayload: p => ({ ...p, input: [...p.input, { type: "reasoning", content }] }) })).rejects.toThrow("lookup_payload_forbidden");
+  expect(f.send).toHaveBeenCalledOnce();
+});
+it("requires a declared run-bound prompt cache key and rejects undeclared or shared keys", async () => {
+  const key = "fictional-run-slot-arm";
+  const valid = fixture({ contractPatch: { promptCacheKey: key }, body: { ...payload(), prompt_cache_key: key } }); await valid.call();
+  for (const f of [fixture({ body: { ...payload(), prompt_cache_key: key } }), fixture({ contractPatch: { promptCacheKey: key }, body: { ...payload(), prompt_cache_key: "other-slot" } })]) {
+    await expect(f.call()).rejects.toThrow("lookup_prompt_cache_key_forbidden"); expect(f.permit.events).toEqual([]); expect(f.send).not.toHaveBeenCalled();
+  }
+  expect(() => fixture({ contractPatch: { promptCacheKey: "shared-key" } })).toThrow("lookup_prompt_cache_key_forbidden");
+});
+it.each([{ headers: { "x-fictional": "value" } }, { headers: new Headers({ "x-fictional": "value" }) }, { env: { FICTIONAL: "value" } }])("refuses non-empty request headers/env %j before admission", options => {
+  const f = fixture(); expect(() => f.call(options)).toThrow(); expect(f.permit.events).toEqual([]);
+});
+it("permits empty headers/env without changing the real harness's options", async () => { const f = fixture(); await f.call({ headers: {}, env: {} }); expect(f.send).toHaveBeenCalledOnce(); });
+it.each([{ "x-fictional": "value" }, { "session-id": "shared-key" }, { "x-client-request-id": "shared-key" }])("rejects unexpected or shared send headers before consumption %j", async sendHeaders => {
+  const source = createTestOnlyLookupPermitSource(), consume = vi.fn();
+  const f = fixture({ permitSource: { ...source, consume }, sendHeaders });
+  await expect(f.call()).rejects.toMatchObject({ outcome: "integrity_stop" }); expect(consume).not.toHaveBeenCalled(); expect(f.send).not.toHaveBeenCalled();
+});
+it("retains both settlement and stop failures", async () => {
+  const source = createTestOnlyLookupPermitSource(), settleCause = Error("fictional_settle_failure"), cause = Error("fictional_stop_failure");
+  const f = fixture({ permitSource: { ...source, settle: async () => { throw settleCause; }, stop: async () => { throw cause; } } });
+  await expect(f.call()).rejects.toMatchObject({ code: "lookup_settlement_failed", stopCode: "lookup_stop_failed", cause, settleCause });
+});
+it.each([["unknown", "integrity_stop"], ["default", "lost"], [null, "lost"]])("validates failed-response tier %s while retaining lost usage", async (tier, outcome) => {
+  const f = fixture({ event: "response.failed", tier });
+  if (outcome === "integrity_stop") await expect(f.call()).rejects.toThrow("lookup_unknown_tier"); else await f.call();
+  expect(settles(f)[0].outcome.kind).toBe(outcome);
+});
+it("fetch without admission awaits the sticky stop and cannot consume or send", async () => {
+  const source = createTestOnlyLookupPermitSource(); let release;
+  const stop = vi.fn(() => new Promise(resolve => { release = resolve; }));
+  const f = fixture({ skipPayload: true, permitSource: { ...source, stop } });
+  let finished = false; const result = f.call().finally(() => { finished = true; });
+  const assertion = expect(result).rejects.toMatchObject({ code: "lookup_permit_invalid", outcome: "integrity_stop" });
+  await vi.waitFor(() => expect(stop).toHaveBeenCalledOnce()); expect(finished).toBe(false); release(); await assertion;
+  expect(source.events).toEqual([]); expect(f.send).not.toHaveBeenCalled();
 });
