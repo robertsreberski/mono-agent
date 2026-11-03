@@ -146,12 +146,15 @@ it("refuses creating a handle that a damaged legacy file is attributed to", asyn
 
 it("settles a create cancelled behind the catalogue promptly, releasing its writer and reclaiming the lock later", async () => {
   const r = await root(), repo = new JsonlSessionRepo({ sessionsRoot: r }), locks = await repo.ensureDirectory();
-  const acquire = locks.acquireWriter.bind(locks); let held: any;
+  const acquire = locks.acquireWriter.bind(locks), controller = new AbortController(); let held: any;
   vi.spyOn(locks, "acquireWriter").mockImplementation(async (...args: unknown[]) => {
-    const writer = await acquire(...args); held = await locks.tryLock(locks.catalogPath); return writer; // another owner takes the catalogue
+    const writer = await acquire(...args); held = await locks.tryLock(locks.catalogPath); // another owner takes the catalogue
+    // Cancel only after establishing the state this test intends to exercise;
+    // an outer timer can fire before acquisition under package-suite load.
+    setImmediate(() => controller.abort());
+    return writer;
   });
-  const controller = new AbortController(), creating = repo.create({ id: "fictional-cancelled" }, { abortSignal: controller.signal });
-  setTimeout(() => controller.abort(), 30);
+  const creating = repo.create({ id: "fictional-cancelled" }, { abortSignal: controller.signal });
   const settled = await Promise.race([creating.then(() => "created", (error: any) => (error as NodeJS.ErrnoException).name), new Promise((resolve: (value: any) => void) => setTimeout(() => resolve("stuck"), 2_000))]);
   try {
     expect(settled).toBe("AbortError"); // settled while the catalogue is still held
