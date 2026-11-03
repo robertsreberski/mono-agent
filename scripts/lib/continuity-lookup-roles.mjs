@@ -4,7 +4,7 @@ import { mkdir, readFile, readdir, realpath, writeFile } from "node:fs/promises"
 import { isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { digest, loadTraces, makePlan, DEFAULT_ALTERNATE } from "./continuity-dataset.mjs";
-import { LOOKUP_MODE, LOOKUP_ROLE_PROTOCOL, LOOKUP_ROLES, LOOKUP_SOULS, LOOKUP_BUDGET, assertExternalPolicy, sha256 } from "./continuity-lookup.mjs";
+import { LOOKUP_MODE, LOOKUP_ROLE_PROTOCOL, LOOKUP_ROLES, LOOKUP_SOULS, LOOKUP_BUDGET, LOOKUP_SLOT_CODES, assertExternalPolicy, sha256 } from "./continuity-lookup.mjs";
 import { summarizeLookup } from "./continuity-lookup-score.mjs";
 import { BUILD_POLICY, prepareRealBuild, verifyRealBuild } from "./memory-e2e-build.mjs";
 
@@ -390,7 +390,7 @@ export async function aggregateLookupRoles(registration, observations, { availab
   return { schema: "continuity-lookup-comparison-v1", registrationSha256: digest(registration), executionKind: "offline", qualityMeasured: false,
     purpose: "Descriptive mechanics only; not significance, power, qualification or treatment benefit", roles, slots, availability, launches,
     coverage: { planned: slots.length, skipped: slots.filter(s => s.status === "infeasible").length,
-      blocked: slots.filter(s => s.status === "blocked").length, completed: slots.filter(s => s.status === "completed").length, missing: slots.filter(s => s.status === "missing").length,
+      blocked: slots.filter(s => s.disposition === LOOKUP_SLOT_CODES.unknownFeasibility).length, completed: slots.filter(s => s.status === "completed").length, missing: slots.filter(s => s.status === "missing").length,
       duplicate: slots.filter(s => s.status === "duplicate").length, observations: observations.length }, contrasts: contrasts(slots) };
 }
 function contrasts(slots) {

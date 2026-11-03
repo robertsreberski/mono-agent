@@ -276,6 +276,8 @@ export function observedInputTokens(usage) {
   return Math.max(input, usage?.conservativeInputTokens ?? 0);
 }
 
+const terminalLookupTrial = trial => ["completed", "failed", "boundary_unverified", "pressure_unverified", "store_degraded"].includes(trial?.status);
+
 export async function execute({ flags, plan, traces, mode, output, piAuthPath, head, dirty, modulesLoader, onPhase }) {
   if (plan.probeMode === LOOKUP_MODE && mode !== "offline") throw new CliError("lookup_real_not_authorized");
   const selectedTraces = flags.trace === undefined ? traces : traces.filter((trace) => flags.trace.includes(trace.id));
@@ -288,10 +290,10 @@ export async function execute({ flags, plan, traces, mode, output, piAuthPath, h
   const skippedUnits = [];
   for (const repeat of repeatList) for (const trace of selectedTraces) for (const arm of armList) {
     const name = unitName({ repeat, traceId: trace.id, armId: arm.id });
-    try {
-      const existing = JSON.parse(await readFile(join(output, "units", name), "utf8"));
-      if (existing.confirmation === plan.confirmation && existing.complete === true) continue;
-    } catch { /* not yet run */ }
+    let existing;
+    try { existing = JSON.parse(await readFile(join(output, "units", name), "utf8")); } catch { /* not yet run */ }
+    const sameRun = existing?.confirmation === plan.confirmation && existing?.executionKind === mode;
+    if (sameRun && existing.complete === true) continue;
     const probes = trace.probes.filter(probe => plan.corpus.traces.find(row => row.id === trace.id).probes.includes(probe.id));
     const skipped = [], eligible = [];
     for (const probe of probes) {
@@ -301,6 +303,15 @@ export async function execute({ flags, plan, traces, mode, output, piAuthPath, h
         category: probe.category, status: "infeasible", disposition: disposition.code, lookup: { budgetFeasibility: disposition.feasibility } });
       else eligible.push(probe);
     }
+    // Skips are terminal for resume, not successful completions. Check each
+    // planned slot, also recognizing older mixed records without eligibleComplete.
+    if (sameRun && plan.probeMode === LOOKUP_MODE && Array.isArray(existing.trials)
+      && existing.trials.length === probes.length && probes.every(probe => {
+        const rows = existing.trials.filter(trial => trial.traceId === trace.id && trial.arm === arm.id
+          && trial.repeat === repeat && trial.probeId === probe.id);
+        return rows.length === 1 && (skipped.some(trial => trial.probeId === probe.id)
+          ? rows[0].status === "infeasible" : terminalLookupTrial(rows[0]));
+      })) continue;
     const unit = { repeat, trace, arm, name, probes: eligible, skipped };
     (eligible.length ? units : skippedUnits).push(unit);
   }
@@ -310,7 +321,7 @@ export async function execute({ flags, plan, traces, mode, output, piAuthPath, h
     buildPolicy: plan.lookup?.role ? "fresh-clean-head-agent-app-closure-v1" : "existing-dist-unverified",
     ...(plan.lookup?.role ? { lookupRole: plan.lookup.role } : {}) });
   for (const unit of skippedUnits) await writeFile(join(output, "units", unit.name), `${JSON.stringify({
-    confirmation: plan.confirmation, executionKind: mode, complete: false,
+    confirmation: plan.confirmation, executionKind: mode, complete: false, eligibleComplete: true,
     repeat: unit.repeat, traceId: unit.trace.id, arm: unit.arm.id,
     checkpoint: null, trials: unit.skipped, manifest: manifest(),
   }, null, 2)}\n`, { mode: 0o600 });
@@ -380,10 +391,13 @@ export async function execute({ flags, plan, traces, mode, output, piAuthPath, h
   for (const unit of units) {
     const trials = jobs.map((job, index) => (job.unit === unit ? results[index] : null)).filter((row) => row !== null);
     const unitJobs = plan.probeMode === LOOKUP_MODE ? jobs.filter(job => job.unit === unit) : [];
-    const complete = unit.skipped.length === 0 && trials.length > 0 && trials.every((trial) => trial !== undefined);
+    const eligibleComplete = trials.length === unit.probes.length && trials.length > 0
+      && trials.every(plan.probeMode === LOOKUP_MODE ? terminalLookupTrial : trial => trial !== undefined);
+    const complete = unit.skipped.length === 0 && eligibleComplete;
     const checkpoint = checkpoints.get(`${unit.trace.id}:${checkpointKey(unit.arm, unit.repeat, plan.probeMode)}`);
     const body = {
       confirmation: plan.confirmation, executionKind: mode, complete,
+      ...(plan.probeMode === LOOKUP_MODE ? { eligibleComplete } : {}),
       repeat: unit.repeat, traceId: unit.trace.id, arm: unit.arm.id,
       checkpoint: checkpoint && !checkpoint.error ? checkpoint.record : { ...(checkpoint?.record ?? {}), error: checkpoint?.error ?? "checkpoint_missing" },
       trials: [...unit.skipped, ...trials.map((trial, index) => trial ?? (plan.probeMode === LOOKUP_MODE
@@ -408,7 +422,9 @@ export async function aggregate({ plan, traces, output, mode, auditPath, onPhase
   const trials = units.flatMap((unit) => unit.trials);
   const extraUsage = units.flatMap(unit => [unit.checkpoint?.mid && { arm: unit.arm, usage: unit.checkpoint.mid.usage, compactionUsage: unit.checkpoint.mid.compactionUsage }, unit.checkpoint?.upkeep && { arm: unit.arm, usage: unit.checkpoint.upkeep.usage }].filter(Boolean));
   const armIds = plan.arms.map((row) => row.id);
-  const summary = summarize(trials, { arms: armIds, baselineArm: plan.baselineArm, repeats: Array.from({ length: plan.repeats }, (_, index) => index + 1), extraUsage });
+  // Inventory skips remain in lookup coverage, never in the generic Failed count.
+  const summaryTrials = plan.probeMode === LOOKUP_MODE ? trials.filter(trial => trial.status !== "infeasible") : trials;
+  const summary = summarize(summaryTrials, { arms: armIds, baselineArm: plan.baselineArm, repeats: Array.from({ length: plan.repeats }, (_, index) => index + 1), extraUsage });
   if (plan.probeMode === LOOKUP_MODE) summary.lookup = summarizeLookup(trials, plan);
   if (plan.holdout) {
     const { holdoutStatistics } = await import("./lib/continuity-holdout-statistics.mjs");

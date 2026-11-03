@@ -426,6 +426,8 @@ it("reports exact accuracy both with and without failed feasible slots, without 
   expect(summary.arms["native-lookup"]).toMatchObject({ exact: { n: 1, correct: 1, accuracy: 1 }, exactWithFailures: { n: 2, correct: 1, accuracy: .5 }, failedFeasible: 1 });
   expect(summary.arms["native-lookup"].statuses.missing).toBeGreaterThan(0);
   const markdown = renderLookupMarkdown(summary);
+  expect(markdown).toContain("| Planned slots | Skipped | Blocked | Missing |");
+  expect(markdown).toContain(`| native-lookup | ${summary.arms["native-lookup"].planned} | ${summary.arms["native-lookup"].skipped} | ${summary.arms["native-lookup"].blocked} | ${summary.arms["native-lookup"].statuses.missing} |`);
   expect(markdown).toContain("Exact with failures correct/n"); expect(markdown).toContain("Failed feasible");
   expect(markdown).toContain("| 1/1 | 1/2 | 1 |");
 });

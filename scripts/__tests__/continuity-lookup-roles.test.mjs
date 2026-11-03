@@ -192,7 +192,7 @@ it("keeps missing and duplicate role slots and reports failure-inclusive paired 
   const trial = (role, probe = 0, extra = {}) => ({ role, suite: corpus.suite, traceId: trace.id, probeId: trace.probes[probe], arm: reg.roles.find(r => r.id === role).arm, repeat: 1,
     status: "completed", lookup: { exactAccuracy: true, budgetFeasibility: { classification: "feasible" } }, ...extra });
   const result = await aggregateLookupRoles(reg, [trial("pack"), trial("pack-only", 0, { status: "failed" }), trial("pack", 1), trial("pack", 1)]);
-  expect(result.coverage).toMatchObject({ planned: 12, completed: 1, missing: 9, duplicate: 1, observations: 4 });
+  expect(result.coverage).toMatchObject({ planned: 12, completed: 1, blocked: 6, missing: 9, duplicate: 1, observations: 4 });
   expect(result.slots.find(s => s.role === "pack" && s.probeId === trace.probes[1])).toMatchObject({ status: "duplicate", occurrences: 2 });
   expect(result.roles.pack.exact).toMatchObject({ correct: 1, n: 1 });
   expect(result.roles["pack-only"]).toMatchObject({ exact: { n: 0 }, exactWithFailures: { correct: 0, n: 1 }, failedFeasible: 1 });

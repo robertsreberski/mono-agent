@@ -935,8 +935,15 @@ manufactured completion. Mixed units dispatch only eligible probes; all-skipped
 units need no checkpoint. Skips retain the planned denominator, are reported
 separately and are not missing observations or reader failures. Skipped units
 are not marked complete, so partial coverage remains visible with a nonzero
-exit. Unknown feasibility blocks execution; absent observations with unknown
-inventory remain missing, not inferred completions. The distinct later refusal
+exit. Units separately record whether all eligible probes have terminal results;
+resume leaves terminal mixed/all-skipped units untouched without replaying their
+finished eligible probes. Unstarted eligible work remains retryable. The generic
+Failed column excludes inventory skips but still counts actual failures.
+Unknown feasibility blocks execution; absent observations with unknown
+inventory remain missing, not inferred completions. The `blocked` count measures
+slots with `lookup_unknown_feasibility`, independently of observation status;
+it can overlap missing or duplicate observations. Lookup Markdown reports show
+skipped, blocked and missing counts explicitly. The distinct later refusal
 codes `not_admitted_input_envelope` and `not_admitted_cap` are reserved but not
 used by this offline preparation path. Feasible inventory is not an input-envelope
 proof. A present empty/whitespace `--fixed-budget-sha256` fails with

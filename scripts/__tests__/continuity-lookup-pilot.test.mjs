@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { mkdir, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { Socket } from "node:net";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -11,7 +11,7 @@ import { aggregate, execute } from "../continuity-benchmark.mjs";
 import { loadTraces, makePlan } from "../lib/continuity-dataset.mjs";
 import { lookupPilotReadiness } from "../lib/continuity-lookup-roles.mjs";
 import { LOOKUP_MODE, LOOKUP_SLOT_CODES, lookupSlotDisposition } from "../lib/continuity-lookup.mjs";
-import { summarizeLookup } from "../lib/continuity-lookup-score.mjs";
+import { renderLookupMarkdown, summarizeLookup } from "../lib/continuity-lookup-score.mjs";
 
 const root = fileURLToPath(new URL("../../", import.meta.url)), dirs = [];
 let network, globalFetch;
@@ -33,6 +33,21 @@ async function scratch() {
   const dir = await mkdtemp(join(base, "lookup-b1-test-")); dirs.push(dir);
   await mkdir(join(dir, "units")); return dir;
 }
+
+// Payloads are JSON: traverse objects and array elements without inspecting values
+// as field names. Return full paths so a nested cap cannot hide behind reasoning.
+function maxOutputFields(value, path = []) {
+  if (value === null || typeof value !== "object") return [];
+  return Object.entries(value).flatMap(([key, child]) => [
+    ...(/max.*(token|output)|(token|output).*max/iu.test(key) ? [[...path, key].join(".")] : []),
+    ...maxOutputFields(child, [...path, key]),
+  ]);
+}
+it("finds max-output spellings at every payload depth, including arrays (serialized only)", () => {
+  expect(maxOutputFields({ reasoning: { max_output_tokens: 17 }, input: [{ options: { outputTokenMax: 9 } }], maxTokens: 3 }))
+    .toEqual(["reasoning.max_output_tokens", "input.0.options.outputTokenMax", "maxTokens"]);
+  expect(maxOutputFields({ reasoning: { effort: "high" }, input: [{ text: "max_output_tokens is text, not a key" }] })).toEqual([]);
+});
 
 it("captures the installed Codex Sol serializer through options.fetch: no request-local output cap, one send, no egress", async () => {
   const piRoot = join(root, "packages/turn/node_modules/@earendil-works/pi-ai");
@@ -69,7 +84,7 @@ it("captures the installed Codex Sol serializer through options.fetch: no reques
   expect(capture.encoding).toBe("zstd"); // Node 24 exercises the real compressed-body path.
   expect(capture.payload.model).toBe("gpt-6.1-sol"); expect(capture.payload.reasoning.effort).toBe("high");
   // Fail on any new max-output spelling, not just max_output_tokens.
-  expect(Object.keys(capture.payload).filter(key => /max.*(token|output)|(token|output).*max/iu.test(key))).toEqual([]);
+  expect(maxOutputFields(capture.payload)).toEqual([]);
 });
 
 it("reports output-cap, input-envelope and pricing readiness independently, with unknown/unsupported blocking", () => {
@@ -125,7 +140,7 @@ it("writes planned/infeasible records without loading runtime, creating checkpoi
   const units = await Promise.all((await readdir(join(output, "units"))).map(async file => JSON.parse(await readFile(join(output, "units", file), "utf8"))));
   expect(units).toHaveLength(2);
   for (const unit of units) {
-    expect(unit.complete).toBe(false); expect(unit.checkpoint).toBeNull();
+    expect(unit.complete).toBe(false); expect(unit.eligibleComplete).toBe(true); expect(unit.checkpoint).toBeNull();
     expect(unit.trials).toHaveLength(2);
     for (const trial of unit.trials) {
       expect(trial.status).toBe("infeasible"); expect(trial.disposition).toBe("inventory_infeasible");
@@ -137,25 +152,44 @@ it("writes planned/infeasible records without loading runtime, creating checkpoi
   expect(results.coverage).toMatchObject({ unitsComplete: 0, unitsExpected: 2 });
   expect(results.summary.lookup.arms["native-lookup"]).toMatchObject({ planned: 4, skipped: 4, statuses: { infeasible: 4 }, exact: { n: 0 }, calls: { n: 0 } });
   expect(results.summary.arms["native-lookup"].usage.calls).toBe(0);
+  expect(results.summary.arms["native-lookup"].excluded.failed).toBe(0);
+  expect(renderLookupMarkdown(results.summary.lookup)).toContain("| native-lookup | 4 | 4 | 0 | 0 |");
   const absent = summarizeLookup([], plan).arms["native-lookup"];
   expect(absent.statuses).toEqual({ infeasible: 4 }); expect(absent.planned).toBe(4);
 });
 
-it("partitions mixed units before checkpoint/provider admission and retains every planned denominator", async () => {
+it.each(["completed", "failed"])("resumes terminal mixed units without replay or skipped completions (%s)", async status => {
   const { traces, plan } = await fixture(), output = await scratch(), id = slot(plan);
   const path = plan.lookup.budget.paths.find(p => p.traceId === id.traceId && p.probeId === id.probeId && p.arm === id.arm);
   Object.assign(path, { initialTokens: 10, calls: 0, bytes: 0, cumulativeBytes: 0, discovered: true });
   mocks.buildCheckpoint.mockResolvedValue({ work: "fictional-work", record: { continuity: {}, conversationId: "fictional-conversation" } });
   mocks.runProbe.mockImplementation(async ({ trace, probe, arm, repeat }) => ({ traceId: trace.id, probeId: probe.id, arm: arm.id, repeat, category: probe.category,
-    status: "completed", score: { pass: true }, usage: { calls: 1 }, lookup: { exactAccuracy: true, calls: 0, bytes: 0 } }));
+    status, score: status === "completed" ? { pass: true } : null, usage: { calls: 1 }, lookup: { exactAccuracy: status === "completed", calls: 0, bytes: 0 } }));
   mocks.createJudge.mockReturnValue(null);
   await execute({ flags: {}, plan, traces, mode: "offline", output, modulesLoader: async () => ({}), onPhase: () => {}, head: "a".repeat(40), dirty: false });
   expect(mocks.buildCheckpoint).toHaveBeenCalledOnce(); expect(mocks.runProbe).toHaveBeenCalledOnce();
   expect(mocks.runProbe.mock.calls[0][0].probe.id).toBe(id.probeId);
   const results = await aggregate({ plan, traces, mode: "offline", output });
-  expect(results.summary.lookup.arms["native-lookup"]).toMatchObject({ planned: 4, skipped: 3, statuses: { infeasible: 3, completed: 1 }, exact: { n: 1, correct: 1 } });
+  const completed = status === "completed" ? 1 : 0;
+  expect(results.summary.lookup.arms["native-lookup"]).toMatchObject({ planned: 4, skipped: 3, statuses: { infeasible: 3, [status]: 1 }, exact: { n: completed, correct: completed } });
   expect(results.summary.arms["native-lookup"].usage.calls).toBe(1);
+  expect(results.summary.arms["native-lookup"].excluded.failed).toBe(status === "failed" ? 1 : 0);
   expect(results.coverage.unitsComplete).toBe(0);
+  const files = await readdir(join(output, "units"));
+  const before = await Promise.all(files.map(file => readFile(join(output, "units", file), "utf8")));
+  expect(before.every(bytes => JSON.parse(bytes).eligibleComplete === true)).toBe(true);
+  const modulesLoader = vi.fn(() => { throw new Error("resume_must_not_load_runtime"); });
+  await execute({ flags: {}, plan, traces, mode: "offline", output, modulesLoader });
+  expect(modulesLoader).not.toHaveBeenCalled();
+  expect(mocks.buildCheckpoint).toHaveBeenCalledOnce(); expect(mocks.runProbe).toHaveBeenCalledOnce();
+  expect(await Promise.all(files.map(file => readFile(join(output, "units", file), "utf8")))).toEqual(before);
+  // Older B1 mixed receipts have no marker. Their terminal slot records suffice.
+  for (let i = 0; i < files.length; i++) {
+    const unit = JSON.parse(before[i]); delete unit.eligibleComplete;
+    await writeFile(join(output, "units", files[i]), JSON.stringify(unit));
+  }
+  await execute({ flags: {}, plan, traces, mode: "offline", output, modulesLoader });
+  expect(modulesLoader).not.toHaveBeenCalled(); expect(mocks.runProbe).toHaveBeenCalledOnce();
 });
 
 it.each(["real", "unknown"])("retains the paid/non-offline refusal at the execution seam (%s)", async mode => {
@@ -171,5 +205,39 @@ it("blocks unknown feasibility before any checkpoint, module load or skipped-uni
   await expect(execute({ flags: {}, plan, traces, mode: "offline", output, modulesLoader })).rejects.toThrow("lookup_unknown_feasibility");
   expect(modulesLoader).not.toHaveBeenCalled(); expect(mocks.buildCheckpoint).not.toHaveBeenCalled(); expect(mocks.runProbe).not.toHaveBeenCalled();
   expect(await readdir(join(output, "units"))).toEqual([]);
-  expect(summarizeLookup([], plan).arms["native-lookup"]).toMatchObject({ planned: 4, blocked: 0, statuses: { missing: 4 } });
+  expect(summarizeLookup([], plan).arms["native-lookup"]).toMatchObject({ planned: 4, blocked: 4, statuses: { missing: 4 } });
+});
+
+it("does not treat retryable unstarted eligible work as terminal when a unit also has skips", async () => {
+  const { traces, plan } = await fixture(), output = await scratch(), id = slot(plan);
+  const path = plan.lookup.budget.paths.find(p => p.traceId === id.traceId && p.probeId === id.probeId);
+  path.initialTokens = 10;
+  const args = { flags: {}, plan, traces, mode: "offline", output, modulesLoader: async () => ({}), onPhase: () => {}, head: "a".repeat(40), dirty: false };
+  const limit = plan.limits.maxLiveTurns; plan.limits.maxLiveTurns = 0;
+  await execute(args);
+  const file = join(output, "units", `r1-${id.traceId}-native-lookup.json`);
+  const partial = JSON.parse(await readFile(file, "utf8"));
+  expect(partial).toMatchObject({ complete: false, eligibleComplete: false });
+  expect(partial.trials.map(trial => trial.status)).toEqual(["infeasible", "not_started"]);
+  expect(mocks.runProbe).not.toHaveBeenCalled();
+  plan.limits.maxLiveTurns = limit;
+  mocks.buildCheckpoint.mockResolvedValue({ work: "fictional-work", record: { conversationId: "fictional-conversation" } });
+  mocks.createJudge.mockReturnValue(null);
+  mocks.runProbe.mockImplementation(async ({ trace, probe, arm, repeat }) => ({ traceId: trace.id, probeId: probe.id, arm: arm.id, repeat,
+    category: probe.category, status: "completed", score: { pass: true }, usage: { calls: 1 } }));
+  await execute(args);
+  expect(mocks.runProbe).toHaveBeenCalledOnce();
+  const resumed = JSON.parse(await readFile(file, "utf8"));
+  expect(resumed).toMatchObject({ complete: false, eligibleComplete: true });
+  expect(resumed.trials.map(trial => trial.status)).toEqual(["infeasible", "completed"]);
+});
+
+it("renders skipped, unknown-inventory blocked and missing counts separately", async () => {
+  const { plan } = await fixture();
+  plan.lookup.budget.paths.pop();
+  const summary = summarizeLookup([], plan);
+  expect(summary.arms["native-lookup"]).toMatchObject({ planned: 4, skipped: 3, blocked: 1, statuses: { infeasible: 3, missing: 1 } });
+  const markdown = renderLookupMarkdown(summary);
+  expect(markdown).toContain("| Planned slots | Skipped | Blocked | Missing |");
+  expect(markdown).toContain("| native-lookup | 4 | 3 | 1 | 1 |");
 });
