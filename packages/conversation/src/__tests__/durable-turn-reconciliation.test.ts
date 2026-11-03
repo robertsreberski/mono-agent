@@ -3,6 +3,7 @@ import { mkdtemp, readFile, readdir, rm, lstat, writeFile, rename, mkdir, utimes
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
+import type { RunSummary, RuntimeResultLike } from "@mono-agent/observability";
 import { createMonoRuntime } from "@mono-agent/turn/host";
 import { JsonlSessionRepo } from "@mono-agent/turn/engine";
 import { createModels, fauxProvider, fauxAssistantMessage, fauxText } from "@earendil-works/pi-ai";
@@ -717,10 +718,12 @@ it.each([false, true])("observes cancelled native settlement timeout while the p
   const unhandled: unknown[] = [];
   const onUnhandled = (reason: unknown): void => { unhandled.push(reason); };
   process.on("unhandledRejection", onUnhandled);
-  const finish = vi.fn(async () => {
+  const summary = (runId: string, status: RunSummary["status"]): RunSummary => {
     if (recorderRejects) throw new Error("Fictional recorder export failure");
-    return { runId: "fictional-turn", conversationId: bucket, status: "cancelled" as const, durationMs: 0, eventCount: 0, artifactPaths: [] };
-  });
+    return { runId, conversationId: bucket, status, durationMs: 0, eventCount: 0, artifactPaths: [] };
+  };
+  const finish = vi.fn(async (runId: string, result: RuntimeResultLike) => summary(runId,
+    result.cancelled === true ? "cancelled" : result.failureKind || result.error ? "failed" : "succeeded"));
   f.inspect.mockImplementation(async (request) => {
     if (providerPending) throw new Error("Fictional native settlement is still pending");
     return evidence(request);
@@ -729,7 +732,11 @@ it.each([false, true])("observes cancelled native settlement timeout while the p
   const harness = createConversationHarness({ identityPath, cwd: f.root, model: parseMonoRuntimeModelReference(modelKey),
     historyStore: f.store, createRunId: () => `fictional-turn-${++runIds}`, sessionsRoot: join(f.root, "native"),
     session: { mode: "continuous", idleTimeoutMs: 60_000, terminalRecoverySettlementMs: 1 },
-    recorderFactory: () => ({ onEvent() {}, finish, fail: finish }),
+    recorderFactory: ({ runId }) => ({
+      onEvent() {},
+      async finish(result) { return await finish(runId, result); },
+      async fail() { return summary(runId, "failed"); },
+    }),
     runtime: {
       sessionTurnReconciliation: "v1", async reconcileSessionTurn() { return { status: "absent" }; },
       async refreshSession() {}, async syncSession() { return true; },
@@ -758,9 +765,14 @@ it.each([false, true])("observes cancelled native settlement timeout while the p
     expect(runtimeCalls).toBe(1);
     expect(await f.store.load(bucket)).toEqual([]);
     release();
-    await expect(first).resolves.toMatchObject({ failure: { kind: "cancelled" } });
+    const cancelled = await first;
+    expect(cancelled.failure?.kind).toBe("cancelled");
+    if (recorderRejects) expect(cancelled.metadata.summary).toBeUndefined();
+    else expect(cancelled.metadata.summary).toMatchObject({ runId: cancelled.metadata.runId, status: "cancelled" });
     const retry = await harness.run(request("Fictional retry input."));
     expect(retry.failure).toBeUndefined();
+    if (recorderRejects) expect(retry.metadata.summary).toBeUndefined();
+    else expect(retry.metadata.summary).toMatchObject({ runId: retry.metadata.runId, status: "succeeded" });
     expect(runtimeCalls).toBe(2);
     const history = await f.store.load(bucket);
     expect(history.filter((message) => message.content === "Fictional cancelled input.")).toHaveLength(1);
