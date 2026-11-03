@@ -453,3 +453,15 @@ it("validates fixed policy hash, unchanged limits, complete role slots and indep
     const changed = structuredClone(policy); mutate(changed); expect(() => assertExternalPolicy(changed, binding)).toThrow();
   }
 });
+
+it("does not add a spurious cap cent when summing repeated fractional catalog reservations", async () => {
+  const { estimateExternalLookup } = await import("../continuity-lookup-estimate.mjs");
+  const f = externalEstimateFixture();
+  f.catalog = { ...f.catalog, contextWindow: 272000, maxTokens: 128000, cost: { input: 2, output: 10, cacheRead: .1 } };
+  f.outputLimit = { tokens: 128000, source: "catalog_max" };
+  f.workload.corpora[0].traces = Array.from({ length: 4 }, (_, i) => ({ id: `fixture-${i}`, probes: ["p01", "p02", "p03", "p04"] }));
+  f.workload.policy.budget.paths = LOOKUP_ROLES.flatMap(r => f.workload.corpora[0].traces.flatMap(t => t.probes.map(probeId => ({
+    role: r.id, traceId: t.id, probeId, initialTokens: 12000, feasibility: { classification: r.arm === "native-lookup" ? "budget-infeasible" : "feasible" } }))));
+  const result = estimateExternalLookup(f);
+  expect(result.eligible).toBe(64); expect(result.reservationUSD).toBe(1167.36); expect(result.catalogCapUSD).toBe(1459.2);
+});

@@ -130,6 +130,24 @@ export async function offlineCatalog(model, root = ROOT) {
   requireLookup(entry, "lookup_catalog_model_missing");
   return { model, fileSha256: sha256(bytes), contextWindow: entry.contextWindow, maxTokens: entry.maxTokens, cost: entry.cost };
 }
+// Catalog rates are decimal dollars, so ceil-to-cents must not round a binary
+// accumulation error up into another cent. This envelope has one rate per call.
+function reservationEnvelope(price, input, output, trials) {
+  const threshold = priceLookupCall(price, input, output, 0).tierInputTokensAbove;
+  const rates = threshold === null ? price : price.tiers.find(t => t.inputTokensAbove === threshold);
+  const fraction = value => {
+    const [mantissa, exponent = "0"] = String(value).toLowerCase().split("e");
+    const [whole, decimals = ""] = mantissa.split("."), shift = Number(exponent) - decimals.length;
+    const n = BigInt(whole + decimals);
+    return shift >= 0 ? { n: n * 10n ** BigInt(shift), d: 1n } : { n, d: 10n ** BigInt(-shift) };
+  };
+  const a = fraction(rates.input), b = fraction(rates.output), scale = a.d > b.d ? a.d : b.d;
+  const n = (a.n * (scale / a.d) * BigInt(input) + b.n * (scale / b.d) * BigInt(output)) * BigInt(trials) * 10n;
+  const d = scale * 1000000n, cents = (n * 125n + d - 1n) / d;
+  const usd = Number(n) / Number(d);
+  requireLookup(Number.isFinite(usd) && Number.isSafeInteger(Number(cents)), "lookup_catalog_envelope_unrepresentable");
+  return { usd, capUSD: Number(cents) / 100 };
+}
 export function estimateExternalLookup({ workload, catalog, outputLimit = workload.outputLimit }) {
   requireLookup(workload.lookupSource && workload.policy && workload.repeats === 1, "lookup_external_policy_required");
   requireLookup(catalog?.model === workload.reader.model && /^[a-f0-9]{64}$/u.test(catalog.fileSha256 ?? ""), "lookup_catalog_binding_mismatch");
@@ -172,9 +190,21 @@ export function estimateExternalLookup({ workload, catalog, outputLimit = worklo
       expectedLookupOverheadUSD: expectedUSD - baseline, expectedTieredCalls: expectedCalls.filter(c => c.tierInputTokensAbove !== null).length,
       reservationTieredCalls: reservedCall.tierInputTokensAbove === null ? 0 : 10 });
   }
-  const total = key => Object.values(roles).reduce((sum, r) => sum + r[key], 0);
-  const expectedUSD = total("expectedUSD"), reservationUSD = total("reservationUSD");
-  const catalogCapUSD = Math.ceil(1.25 * reservationUSD * 100) / 100;
+  // Compensated sums avoid inventing an extra cap cent from repeated float
+  // additions (for example 64 * 18.24 catalog dollars).
+  const sum = values => {
+    let total = 0, correction = 0;
+    for (const value of values) { const y = value - correction, next = total + y; correction = (next - total) - y; total = next; }
+    return total;
+  };
+  for (const [id, role] of Object.entries(roles)) for (const key of ["expectedUSD", "reservationUSD", "expectedLookupOverheadUSD"])
+    role[key] = sum(trials.filter(t => t.role === id).map(t => t[key] ?? 0));
+  const total = key => sum(Object.values(roles).map(r => r[key]));
+  for (const role of Object.values(roles)) role.reservationUSD = reservationEnvelope(price, catalog.contextWindow, outputLimit.tokens, role.eligible).usd;
+  for (const trial of trials) if (trial.eligible) trial.reservationUSD = reservationEnvelope(price, catalog.contextWindow, outputLimit.tokens, 1).usd;
+  const expectedUSD = total("expectedUSD");
+  const envelope = reservationEnvelope(price, catalog.contextWindow, outputLimit.tokens, total("eligible"));
+  const reservationUSD = envelope.usd, catalogCapUSD = envelope.capUSD;
   return { schema: "continuity-lookup-estimate-v2", executionKind: "offline-estimate", authorizedSpend: false,
     planned: paths.length, eligible: total("eligible"), skipped: total("skipped"), roles, trials, catalog, outputLimit,
     expectedUSD, worstUSD: reservationUSD, reservationUSD, catalogCapUSD, capOverExpected: expectedUSD > 0 ? catalogCapUSD / expectedUSD : null,
