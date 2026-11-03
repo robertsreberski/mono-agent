@@ -15,7 +15,7 @@ export async function refuseManagedRuntimeLaunch(
   // Install signal handlers before asynchronous publication, so a controller can
   // replace a refused worker promptly even during the durable write.
   const cooldown = waitForRuntimeProofRefusalCooldown();
-  process.stderr.write(`${runtimeProofRefusalMessage(configPath)} Retrying in five minutes unless stopped.\n`);
+  process.stderr.write(`${runtimeProofRefusalMessage(configPath)} Exiting after a five-minute cooldown (sooner if stopped); launchd will then retry.\n`);
   try {
     await writeLaunchdStartupRefusal(deriveLaunchdLabel(configPath), target, "runtime-proof-refused");
   } catch {

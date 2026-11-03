@@ -6,7 +6,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { managedRuntimeRefusalSection } from "../doctor/managed-startup.js";
 import { deriveLaunchdLabel } from "../service/launchd/launchd.js";
-import { clearLaunchdSnapshotRefusal, readLaunchdStartupRefusal } from "../service/launchd/launchd-snapshot-refusal.js";
+import * as startupRefusal from "../service/launchd/launchd-snapshot-refusal.js";
+import { clearLaunchdSnapshotRefusal, readLaunchdStartupRefusal, writeLaunchdStartupRefusal, SNAPSHOT_REFUSAL_MESSAGE } from "../service/launchd/launchd-snapshot-refusal.js";
 import {
   refuseManagedRuntimeLaunch,
   RUNTIME_PROOF_REFUSAL_COOLDOWN_MS,
@@ -18,6 +19,23 @@ afterEach(async () => {
   vi.useRealTimers();
   vi.restoreAllMocks();
   await Promise.all(directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
+});
+
+describe("managed startup refusal diagnostics", () => {
+  it.each(["snapshot-refused", "runtime-proof-refused"] as const)("reports %s on macOS but does not even read leftover launchd state on Linux", async (reason) => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), "managed-startup-refusal-")));
+    directories.push(root);
+    const configPath = join(root, "example-agent.config.json");
+    const target = { logDir: join(root, "logs") };
+    await writeLaunchdStartupRefusal(deriveLaunchdLabel(configPath), target, reason);
+    expect(await managedRuntimeRefusalSection(configPath, target, "darwin")).toMatchObject({
+      id: "managed-runtime-launch", status: "error",
+      details: [reason === "snapshot-refused" ? SNAPSHOT_REFUSAL_MESSAGE : startupRefusal.runtimeProofRefusalMessage(configPath)],
+    });
+    const read = vi.spyOn(startupRefusal, "readLaunchdStartupRefusal");
+    expect(await managedRuntimeRefusalSection(configPath, target, "linux")).toBeUndefined();
+    expect(read).not.toHaveBeenCalled();
+  });
 });
 
 describe("managed runtime launch refusal", () => {
@@ -35,11 +53,11 @@ describe("managed runtime launch refusal", () => {
         expect(await readLaunchdStartupRefusal(deriveLaunchdLabel(configPath), target)).toBe("runtime-proof-refused");
       });
       expect(completed).toBe(false);
-      expect(await managedRuntimeRefusalSection(configPath, target)).toMatchObject({
+      expect(await managedRuntimeRefusalSection(configPath, target, "darwin")).toMatchObject({
         id: "managed-runtime-launch", status: "error",
         details: [expect.stringContaining(`mono-agent restart --config '${configPath}'`)],
       });
-      expect(stderr).toHaveBeenCalledWith(expect.stringContaining("Retrying in five minutes"));
+      expect(stderr).toHaveBeenCalledWith(expect.stringContaining("Exiting after a five-minute cooldown (sooner if stopped); launchd will then retry."));
       // vi.waitFor advanced at most one second, far short of the retry boundary.
       await vi.advanceTimersByTimeAsync(RUNTIME_PROOF_REFUSAL_COOLDOWN_MS - 1_001);
       expect(completed).toBe(false);
@@ -47,7 +65,7 @@ describe("managed runtime launch refusal", () => {
       expect(await pending).toBe(78);
       expect(await readLaunchdStartupRefusal(deriveLaunchdLabel(configPath), target)).toBe("runtime-proof-refused");
       await clearLaunchdSnapshotRefusal(deriveLaunchdLabel(configPath), target);
-      expect(await managedRuntimeRefusalSection(configPath, target)).toBeUndefined();
+      expect(await managedRuntimeRefusalSection(configPath, target, "darwin")).toBeUndefined();
     } finally {
       process.emit("SIGTERM");
       await pending;
