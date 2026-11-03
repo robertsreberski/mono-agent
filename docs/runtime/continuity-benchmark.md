@@ -960,7 +960,7 @@ stay outside checkouts; share only counts, IDs, hashes and numerical summaries.
 ### Offline guarded request contract
 
 `scripts/lib/continuity-lookup-guard.mjs` exports `guardedLookupModels(models,
-{ contract, permit, assumptions })`. It is plumbing, **not execution authority**:
+{ contract, permit, send, assumptions })`. It is plumbing, **not execution authority**:
 no pilot command, controller, authorization, or real route is enabled. All seven
 existing refusal sites remain unchanged (compare parser/main, benchmark
 main/execute, runner non-offline branch/enclosing lookup guard, and probe child).
@@ -973,13 +973,23 @@ provider/model/API/base URL and high effort. Only `streamSimple` may dispatch;
 other request methods, including native handoff `completeSimple`, refuse with
 `lookup_method_forbidden` and classification `failed/pilot_method_forbidden`.
 Metadata/auth access preserves its receiver; provider metadata cannot expose an
-unguarded dispatch method. Every call asserts SSE, zero retries, no fallback,
-no context1M, and no per-request route overrides. Entry-level retry budgets and
-auxiliary configuration remain the future controller's responsibility.
+unguarded dispatch method. Request options are allowlisted from Pi's simple
+options and the agent-loop configuration. A matching loop-supplied `model` is
+allowed; a changed identity is not. Every call requires SSE and `maxRetries: 0`;
+the construction contract binds `piMaxRetries: 0` and `maxRetries: 0`. Retry
+budgets/profiles, unknown options and caller `options.fetch` (even undefined)
+refuse. The latter returns `lookup_external_fetch_forbidden`, preventing the
+turn's outage-profile retrying fetch from being used. The sole transport is the
+constructor's trusted single-shot `send(url, init)`, never a retry wrapper.
+B2b must select the corresponding non-outage runtime configuration. No fallback,
+context1M or per-request route substitution is allowed.
 
 The turn advanced option `piModelsDecorator(models) => models` wraps normally
 constructed, credentialed Models before dispatch. It is exclusive with
 `piResolvedModels`. It does not replace or duplicate OAuth resolution/refresh.
+It is **not propagated** to Models rebuilt by continuity upkeep or provider-check
+preparation. B2b's resolved auxiliary-callers check must prohibit those paths;
+the decorator alone is not a guard over every runtime caller.
 
 The last composed `onPayload` runs existing mutation hooks first, then checks the
 final payload and computes:
@@ -992,19 +1002,23 @@ I = 272000; O = 128000
 ```
 
 Opaque reasoning is prohibited in payload 1. Images, remote content, unsupported
-input items and non-function tools refuse. Requests 1–10 may be admitted; request
+input items and non-function tools refuse. Top-level payload keys are allowlisted
+from Codex `buildRequestBody`; each supported input item has its own key allowlist.
+Stored-input expansion fields such as conversation/prompt/background/truncation
+are refused before admission. Requests 1–10 may be admitted; request
 11 refuses before any hold or send. `U_k > I` returns
 `not_admitted_input_envelope` before admission. JSON is detached from earlier
 mutation hooks, and fetch verifies the final serialized (or zstd-decoded) body
 against the permitted digest. No default/global fetch is used.
 
-Only raw `response.completed`/`response.incomplete` with nonnegative integer
-`input_tokens` and `output_tokens` can settle. Normalized message usage is never
+Only raw `response.completed`/`response.incomplete` with integer
+`input_tokens >= 1` and `output_tokens >= 0` can settle. Zero or negative input
+is `lookup_invalid_usage`. Normalized message usage is never
 used as a substitute. Missing usage, a failed response, or a lost stream retains
-the hold. A dependent next request is refused and stops on
-`lookup_unsettled_dependency`. Raw hooks compose without allowing later hooks to
+the hold and makes that probe run terminal. Any later request in the run refuses
+pre-send with `lookup_slot_terminal`, without a new hold, send or pilot stop. Raw hooks compose without allowing later hooks to
 rewrite the captured usage. Tiers are allowlisted: `default` 1×, `flex` 0.5×,
-`priority` 2×; an absent tier settles conservatively at 2×. Unknown tiers stop.
+`priority` 2×; an absent or null tier settles conservatively at 2×. Unknown non-null tiers stop.
 Input includes cache reads/writes; reasoning is not added again to output.
 Post-settlement violations of input ≤ U, output ≤ O, reasoning ≤ output, valid
 cache breakdowns, or catalog cost ≤ hold cause sticky integrity stops. Empty or
@@ -1026,8 +1040,13 @@ settle(opaquePermit, { kind, code?, cost? }, rawUsageOrNull, rawTierOrNull) -> v
 stop(code) -> void
 ```
 
-`consume` runs exactly once at injected `options.fetch`, before the network.
-Body mismatch/reuse refuses. `settle` runs once per admitted request; a missing
+The guard installs its own `options.fetch` and latches entry before any await.
+A dispatched permit is consumed once after the body digest/URL check, then the
+guard invokes its construction-time single-shot `send` once. A second fetch
+entry is an integrity stop and never invokes `send` again, including overlapping
+calls. An admitted request may fail before send, retaining its hold as lost;
+therefore the guarantee is **at most one send per permit**, not that every
+admission sends. Body mismatch/reuse refuses. `settle` runs once per admitted request; a missing
 tier stays null in the record while `cost` uses 2×. Unknown tiers are redacted to
 null with a fixed integrity code. Usage records allowlist only numeric input,
 output, cache-read/cache-write and reasoning counts, preserving optional-field
@@ -1041,7 +1060,7 @@ accounting; the guard checks the frozen catalog arithmetic independently.
 | `refused_pre_send` | None; no permit settlement | Continue; slot outcome |
 | `own_abort_after_send` | Retained as lost | Continue pilot; slot terminal |
 | `settled` | Replace with actual catalog cost | Continue |
-| `lost` | Retained, including admitted abort before fetch | Continue unless a later in-run request depends on it |
+| `lost` | Retained, including admitted abort before fetch | Continue pilot; slot terminal |
 | `integrity_stop` | Retained | Sticky pilot stop |
 
 Refusals thrown inside `onPayload` before admission propagate even if the
@@ -1049,7 +1068,11 @@ provider normalizes them into zero-usage errors; they are not pilot-wide stops.
 After admission, failure before fetch is conservatively lost, not a fictitious
 no-hold refusal. Own deadline/latency aborts after send retain the hold without
 immediately stopping the pilot. A later request in that terminated run is not
-admissible.
+admissible and returns `lookup_slot_terminal` without a pilot stop. Only an
+`integrity_stop` closes pilot admission. The guard's result/terminal iterator
+awaits `permit.stop()` before rejecting. A stop rejection preserves the original
+integrity `code`, adds `stopCode: "lookup_stop_failed"`, and keeps the IPC error
+as `cause`; it never becomes an unobserved fire-and-forget operation.
 
 `createTestOnlyLookupPermitSource()` is the only implementation shipped here;
 it is branded `lookup-faux-test-only-v1`, `testOnly: true`, in-memory and
@@ -1058,7 +1081,10 @@ must call this guard and independently validate authorization; a brand is not
 an authorization credential. No body, response text or credentials enter permit
 records. The smoke uses two real local processes, loopback MCP and the installed
 serializer hosted by faux Models with injected scripted SSE; external sockets,
-fetch and WebSocket are denied.
+fetch and WebSocket are denied. A separate integration test uses the same public
+host runtime entry as the benchmark, with `piModelsDecorator`, fake OAuth,
+the installed serializer and scripted SSE `send`, across two rounds including
+a real local tool execution. No real route is enabled by either proof.
 
 #### Registered assumptions: assumed-v1
 

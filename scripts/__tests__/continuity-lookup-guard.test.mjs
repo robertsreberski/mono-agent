@@ -16,25 +16,27 @@ const payload = () => ({ model: C.model, store: false, stream: true, reasoning: 
 function sized(U) { const p = payload(); p.input[0].content += "x".repeat(U - lookupInputEnvelope(p).U); return p; }
 const message = (stopReason = "stop", text = "Fictional answer.") => ({ stopReason, content: [{ type: "text", text }] });
 const usage = (input_tokens = 1, output_tokens = 1) => ({ input_tokens, output_tokens });
-function fixture({ body = payload(), raw = usage(), tier = "default", event = "response.completed", final = message(), failure, mutate, noSend = false, doubleSend = false, permitSource } = {}) {
+function fixture({ body = payload(), raw = usage(), tier = "default", event = "response.completed", final = message(), failure, mutate, noSend = false, doubleSend = false, duplicateTerminal = false, repeatedPayload = false, sendUrl, permitSource } = {}) {
   const permit = permitSource ?? createTestOnlyLookupPermitSource(), send = vi.fn(async () => new Response(""));
   const underlying = { streamSimple: vi.fn((_m, _c, options) => {
     const result = (async () => {
       try {
         const p = await options.onPayload(body, model);
+        if (repeatedPayload) await options.onPayload(body, model);
         mutate?.(p);
         if (noSend) throw Error("fictional_before_send_abort");
-        await options.fetch(`${C.baseUrl}/codex/responses`, { method: "POST", body: JSON.stringify(p) });
-        if (doubleSend) await options.fetch(`${C.baseUrl}/codex/responses`, { method: "POST", body: JSON.stringify(p) });
+        await options.fetch(sendUrl ?? `${C.baseUrl}/codex/responses`, { method: "POST", body: JSON.stringify(p) });
+        if (doubleSend) await options.fetch(sendUrl ?? `${C.baseUrl}/codex/responses`, { method: "POST", body: JSON.stringify(p) });
         if (failure) { failure(options); throw Error("fictional_stream_failure"); }
         await options.onProviderStreamEvent({ type: event, response: { usage: raw, ...(tier !== "OMIT" ? { service_tier: tier } : {}) } }, model);
+        if (duplicateTerminal) await options.onProviderStreamEvent({ type: event, response: { usage: raw, service_tier: tier } }, model);
         return final;
-      } catch (error) { if (error.code) return message("error"); throw error; }
+      } catch { return message("error"); }
     })();
     return { result: () => result, async *[Symbol.asyncIterator]() { yield { type: "done", message: await result }; } };
   }), getModel: () => model };
-  const guarded = guardedLookupModels(underlying, { contract: { ...C, slotId: "fictional-slot", runId: "fictional-run" }, permit });
-  const options = { reasoning: "high", transport: "sse", maxRetries: 0, fetch: send };
+  const guarded = guardedLookupModels(underlying, { contract: { ...C, slotId: "fictional-slot", runId: "fictional-run" }, permit, send });
+  const options = { reasoning: "high", transport: "sse", maxRetries: 0 };
   return { guarded, permit, send, underlying, options, call: (overrides = {}) => guarded.streamSimple(model, {}, { ...options, ...overrides }).result() };
 }
 const settles = f => f.permit.events.filter(e => e.type === "settle");
@@ -62,12 +64,12 @@ it.each([undefined, { input_tokens: 1 }, { input_tokens: 1, output_tokens: "1" }
   const f = fixture({ raw: null }); // null represents missing raw response usage
   const g = raw ? fixture({ raw }) : f;
   await g.call(); expect(settles(g)[0].outcome.kind).toBe("lost");
-  expect(() => g.call()).toThrow("lookup_unsettled_dependency"); expect(g.send).toHaveBeenCalledOnce();
+  expect(() => g.call()).toThrow("lookup_slot_terminal"); expect(g.send).toHaveBeenCalledOnce();
 });
 it.each(["response.failed", "response.output_text.done"])("does not settle from %s", async event => {
   const f = fixture({ event }); await f.call(); expect(settles(f)[0].outcome.kind).toBe("lost");
 });
-it.each([["OMIT", 2], ["default", 1], ["flex", 0.5], ["priority", 2]])("accounts tier %s conservatively", async (tier, multiplier) => {
+it.each([[null, 2], ["OMIT", 2], ["default", 1], ["flex", 0.5], ["priority", 2]])("accounts tier %s conservatively", async (tier, multiplier) => {
   const f = fixture({ tier, raw: usage(10, 20) });
   await f.call(); expect(settles(f)[0].outcome.cost).toBe(lookupSettledCost(usage(10, 20), "default") * multiplier);
 });
@@ -126,11 +128,12 @@ it.each([["stop", ""], ["length", "Fictional partial."]])("refuses %s finalizati
 });
 it("own abort after send retains hold without pilot stop", async () => {
   const controller = new AbortController(); const f = fixture({ failure: () => controller.abort() });
-  await expect(f.call({ signal: controller.signal })).rejects.toThrow("fictional_stream_failure");
+  await expect(f.call({ signal: controller.signal })).resolves.toMatchObject({ stopReason: "error" });
+  expect(() => f.call()).toThrow("lookup_slot_terminal");
   expect(settles(f)[0].outcome.kind).toBe("own_abort_after_send"); expect(f.permit.events.some(e => e.type === "stop")).toBe(false);
 });
 it("admission followed by abort before fetch is lost, never released", async () => {
-  const f = fixture({ noSend: true }); await expect(f.call()).rejects.toThrow("fictional_before_send_abort"); expect(settles(f)[0].outcome.kind).toBe("lost"); expect(f.send).not.toHaveBeenCalled();
+  const f = fixture({ noSend: true }); await expect(f.call()).resolves.toMatchObject({ stopReason: "error" }); expect(settles(f)[0].outcome.kind).toBe("lost"); expect(f.send).not.toHaveBeenCalled();
 });
 it("faux is branded and refused by the real-route guard", () => { expect(() => assertRealLookupPermitSource(createTestOnlyLookupPermitSource())).toThrow("lookup_faux_permit_forbidden"); });
 it("asserts auxiliary callers in parent and child", () => {
@@ -183,7 +186,7 @@ it("reusing a consumed permit at fetch cannot send twice", async () => {
   const f = fixture({ doubleSend: true }); await expect(f.call()).rejects.toThrow("lookup_permit_invalid"); expect(f.send).toHaveBeenCalledOnce(); expect(settles(f)[0].outcome.kind).toBe("integrity_stop");
 });
 it("a thrown failed response is lost, never zero-usage settlement", async () => {
-  const f = fixture({ failure: () => {} }); await expect(f.call()).rejects.toThrow("fictional_stream_failure"); expect(settles(f)[0].outcome.kind).toBe("lost");
+  const f = fixture({ failure: () => {} }); await expect(f.call()).resolves.toMatchObject({ stopReason: "error" }); expect(settles(f)[0].outcome.kind).toBe("lost");
 });
 it("pins assumed-v1 rates, strict tier threshold and output max to the installed catalog without auth or dispatch", async () => {
   const pi = fileURLToPath(new URL("../../packages/turn/node_modules/@earendil-works/pi-ai/", import.meta.url));
@@ -221,4 +224,76 @@ it("permit records allowlist numeric raw usage and fixed tier values only", asyn
   const f = fixture({ raw: { ...usage(), extra: "Fictional event extension.", input_tokens_details: { cached_tokens: 0, extra: "Fictional extension." } } });
   await f.call(); expect(settles(f)[0].rawUsage).toEqual({ ...usage(), input_tokens_details: { cached_tokens: 0 } });
   const g = fixture({ tier: "Fictional unknown tier." }); await expect(g.call()).rejects.toThrow("lookup_unknown_tier"); expect(settles(g)[0].tier).toBeNull();
+});
+
+it("refuses caller fetch even when it is undefined, and never enters the provider", () => {
+  for (const fetch of [undefined, vi.fn()]) {
+    const f = fixture(); expect(() => f.call({ fetch })).toThrow("lookup_external_fetch_forbidden");
+    expect(f.underlying.streamSimple).not.toHaveBeenCalled(); expect(f.send).not.toHaveBeenCalled();
+  }
+});
+it.each([{ piMaxRetries: 1 }, { maxRetries: 1 }, { piRequestRetryBudgetMs: 0 }, { retryBudgetMs: 1 }, { retryProfile: "outage" }, { unexpectedOption: true }])("refuses retry/unknown request option %j", options => {
+  const f = fixture(); expect(() => f.call(options)).toThrow(); expect(f.permit.events).toEqual([]);
+});
+it("refuses constructor retry profiles and nonzero retry declarations", () => {
+  for (const extra of [{ piMaxRetries: 1 }, { maxRetries: 1 }, { piRequestRetryBudgetMs: 0 }, { retryProfile: "outage" }]) {
+    expect(() => guardedLookupModels({}, { contract: { ...C, slotId: "fictional", runId: "fictional", ...extra }, permit: createTestOnlyLookupPermitSource(), send: vi.fn() })).toThrow();
+  }
+});
+it("accepts the matching model spread by the real agent loop", async () => { const f = fixture(); await f.call({ model }); expect(f.send).toHaveBeenCalledOnce(); });
+it("rejects send endpoint mismatch before send and retains the hold", async () => {
+  const f = fixture({ sendUrl: "https://example.invalid/fictional" }); await expect(f.call()).rejects.toThrow("lookup_send_mismatch");
+  expect(f.send).not.toHaveBeenCalled(); expect(settles(f)[0].outcome.kind).toBe("integrity_stop");
+});
+it.each([
+  usage(0, 0), usage(-1, 0),
+  { ...usage(), input_tokens_details: { cached_tokens: 2 } },
+  { ...usage(), output_tokens_details: { reasoning_tokens: "fictional" } },
+])("stops on invalid raw usage %j", async raw => {
+  const f = fixture({ raw }); await expect(f.call()).rejects.toThrow("lookup_invalid_usage"); expect(settles(f)[0].outcome.kind).toBe("integrity_stop");
+});
+it("stops on duplicate raw terminal events", async () => {
+  const f = fixture({ duplicateTerminal: true }); await expect(f.call()).rejects.toThrow("lookup_duplicate_terminal"); expect(f.send).toHaveBeenCalledOnce();
+});
+it("repeated payload callback cannot reserve or send twice", async () => {
+  const f = fixture({ repeatedPayload: true }); await expect(f.call()).rejects.toThrow("lookup_payload_repeated");
+  expect(f.permit.events.filter(e => e.type === "admit")).toHaveLength(1); expect(f.send).not.toHaveBeenCalled();
+});
+it("awaits sticky stop before exposing the integrity error", async () => {
+  const source = createTestOnlyLookupPermitSource(); let release;
+  const stop = vi.fn(() => new Promise(resolve => { release = resolve; }));
+  const f = fixture({ raw: usage(1, 128001), permitSource: { ...source, stop } });
+  let done = false; const result = f.call().finally(() => { done = true; });
+  const assertion = expect(result).rejects.toMatchObject({ code: "lookup_output_envelope_violated" });
+  await vi.waitFor(() => expect(stop).toHaveBeenCalledOnce()); expect(done).toBe(false);
+  release(); await assertion; expect(done).toBe(true);
+});
+it("stop failure retains integrity code and identifies the IPC stop failure separately", async () => {
+  const source = createTestOnlyLookupPermitSource(), ipc = Error("fictional_stop_disconnect");
+  const f = fixture({ tier: "unknown", permitSource: { ...source, stop: async () => { throw ipc; } } });
+  await expect(f.call()).rejects.toMatchObject({ code: "lookup_unknown_tier", outcome: "integrity_stop", stopCode: "lookup_stop_failed", cause: ipc });
+  expect(() => f.call()).toThrow("lookup_stopped");
+});
+it.each(["lost", "own_abort_after_send"])("a request after %s is slot-terminal, never a pilot stop", async outcome => {
+  const controller = new AbortController();
+  const f = fixture({ failure: () => { if (outcome === "own_abort_after_send") controller.abort(); } });
+  await f.call({ signal: controller.signal }); const before = f.permit.events.length;
+  expect(settles(f)[0].outcome.kind).toBe(outcome); expect(() => f.call()).toThrow("lookup_slot_terminal");
+  expect(f.permit.events).toHaveLength(before); expect(f.send).toHaveBeenCalledOnce(); expect(f.permit.events.some(e => e.type === "stop")).toBe(false);
+});
+it("is not thenable and has no accidental serialization methods", async () => {
+  const f = fixture(); expect(f.guarded.then).toBeUndefined(); expect(f.guarded.toJSON).toBeUndefined(); expect(f.guarded.fictional).toBeUndefined();
+  expect(await Promise.resolve(f.guarded)).toBe(f.guarded);
+});
+it.each(["conversation", "prompt", "background", "truncation", "previous_response_id"])("refuses server expansion key %s before admission", async key => {
+  const f = fixture({ body: { ...payload(), [key]: "fictional" } });
+  await expect(f.call()).rejects.toThrow("lookup_payload_forbidden"); expect(f.permit.events).toEqual([]); expect(f.send).not.toHaveBeenCalled();
+});
+it.each([
+  { role: "user", content: "Fictional", conversation: "fictional" },
+  { type: "function_call", arguments: "{}", prompt: "fictional" },
+  { type: "function_call_output", call_id: "fictional", output: "Fictional", background: true },
+])("refuses unknown input-item keys before admission", async item => {
+  const body = payload(); body.input = [item]; const f = fixture({ body });
+  await expect(f.call()).rejects.toThrow("lookup_payload_forbidden"); expect(f.permit.events).toEqual([]);
 });

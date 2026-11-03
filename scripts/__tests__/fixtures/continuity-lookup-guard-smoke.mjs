@@ -48,7 +48,8 @@ try {
     const fakeKey = `${encode({ alg: "none" })}.${encode({ "https://api.openai.com/auth": { chatgpt_account_id: "FAKE-TEST-ACCOUNT-NOT-REAL" } })}.FAKE-TEST-SIGNATURE`;
     const model = { provider: C.provider, id: C.model, api: C.api, baseUrl: C.baseUrl, name: "Fictional", reasoning: true, input: ["text"], contextWindow: 272000, maxTokens: 128000, cost: { input: 2, output: 10, cacheRead: 0.1, cacheWrite: 2.5 } };
     const permit = createTestOnlyLookupPermitSource(); let sends = 0;
-    const guarded = guardedLookupModels({ streamSimple }, { contract: { ...C, slotId: "fictional-slot", runId: "fictional-run" }, permit });
+    const guarded = guardedLookupModels({ streamSimple }, { contract: { ...C, slotId: "fictional-slot", runId: "fictional-run" }, permit, send: async url => { assert.equal(String(url), `${C.baseUrl}/codex/responses`); sends++;
+      return new Response(events.map(e => `data: ${JSON.stringify(e)}\n\n`).join(""), { headers: { "content-type": "text/event-stream" } }); } });
     const output = { type: "message", id: "fictional-message", role: "assistant", status: "completed", content: [{ type: "output_text", text: "Fictional answer.", annotations: [] }] };
     const events = [
       { type: "response.output_item.added", output_index: 0, item: { ...output, content: [] } },
@@ -59,8 +60,7 @@ try {
     ];
     const result = await guarded.streamSimple(model, { messages: [{ role: "user", content: tool.content[0].text, timestamp: 0 }] }, {
       apiKey: fakeKey, reasoning: "high", transport: "sse", maxRetries: 0,
-      fetch: async url => { assert.equal(String(url), `${C.baseUrl}/codex/responses`); sends++;
-        return new Response(events.map(e => `data: ${JSON.stringify(e)}\n\n`).join(""), { headers: { "content-type": "text/event-stream" } }); },
+
     }).result();
     assert.equal(result.stopReason, "stop");
     const settled = permit.events.filter(e => e.type === "settle" && e.outcome.kind === "settled").length;
