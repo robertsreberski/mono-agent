@@ -200,6 +200,7 @@ export async function measureFixedBudget({ output, fixedBudgetSha256, checkouts,
 export async function main(argv = process.argv.slice(2), { stdout = console.log } = {}) {
   const f = parseLookupOptions(argv, ["--output", "--fixed-budget-sha256", "--r0", "--r0-revision", "--rpack", "--rpack-revision", ...WORKLOAD_FLAGS]);
   if (!f["--output"]) throw new Error("usage: continuity-lookup-budget --output DIR");
+  requireLookup(f["--fixed-budget-sha256"] === undefined || f["--fixed-budget-sha256"].trim().length > 0, "lookup_empty_fixed_budget_sha256");
   const workload = workloadOptions(f);
   requireLookup(f["--fixed-budget-sha256"] === undefined || workload.lookupSource, "lookup_external_flag_requires_source");
   const output = resolve(f["--output"]);

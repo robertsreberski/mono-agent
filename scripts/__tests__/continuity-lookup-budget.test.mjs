@@ -29,6 +29,15 @@ async function scratch() {
   const output = await mkdtemp(join(base, "lookup-sizing-failure-")); dirs.push(output); return output;
 }
 
+it.each(["", "   ", "\t\n"])("rejects an empty fixed-budget hash before workload/source checks (%j)", async hash => {
+  for (const options of [[], ["--reader", ""], ["--corpus-manifest", ""], ["--selection-seed", "not-a-number"]]) {
+    await expect(main(["--output", "/fictional/output", "--fixed-budget-sha256", hash, ...options]))
+      .rejects.toMatchObject({ code: "lookup_empty_fixed_budget_sha256" });
+  }
+  expect(mocks.productionModules).not.toHaveBeenCalled();
+  expect(mocks.buildCheckpoint).not.toHaveBeenCalled();
+});
+
 it("cleans partial checkpoint scratch when checkpoint creation throws", async () => {
   const output = await scratch(); let checkpointDir;
   mocks.buildCheckpoint.mockImplementation(async ({ dir }) => {
