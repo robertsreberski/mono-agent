@@ -118,7 +118,7 @@ async function inspectSessionToolHistorySection(
     && contentInfo.nlink === 1
     && ownerOnly(contentInfo, 0o600);
   if (!contentSecure) {
-    if (contentInfo === undefined) {
+    if (contentInfo === undefined && (ownerInfo === undefined || owner.initializing === true || owner.live === true)) {
       worsen(
         "waiting",
         owner.live === true
@@ -127,6 +127,10 @@ async function inspectSessionToolHistorySection(
             ? "The zero-byte owner database is still initializing before the tool-history database is published."
             : "Tool history database has not been published; the next writer can initialize it safely.",
       );
+    } else if (contentInfo === undefined) {
+      // The writer creates the content file before acquiring its owner. A
+      // non-pristine owner without a live writer is not unpublished content.
+      worsen("error", "Tool history database is missing although a writer previously owned it; restore it or move the history directory aside before starting.");
     } else {
       worsen("error", "Tool history database must be a single-link regular current-user file with mode 0600.");
     }

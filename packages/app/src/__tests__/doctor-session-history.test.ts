@@ -323,48 +323,63 @@ describe("sessionToolHistorySection", () => {
     expect(live.details.join("\n")).not.toMatch(/cannot be inspected|foreign tool-history schema|purge/iu);
   });
 
-  it("treats owner-before-content publication races and interrupted initialization as writer-recoverable", async () => {
-    const root = await tempRoot();
-    const toolDirectory = join(root, TOOL_HISTORY_DIRECTORY);
-    const locksDirectory = join(root, ".locks");
-    const ownerPath = join(locksDirectory, TOOL_HISTORY_OWNER_DATABASE);
-    await mkdir(toolDirectory, { recursive: true, mode: 0o700 });
-    await mkdir(locksDirectory, { recursive: true, mode: 0o700 });
-    await writeFile(ownerPath, "", { mode: 0o600 });
+  it.each(["absent", "pristine", "live"] as const)(
+    "treats missing content as unpublished with owner state %s", async (ownerState) => {
+      const root = await tempRoot();
+      const toolDirectory = join(root, TOOL_HISTORY_DIRECTORY);
+      const locksDirectory = join(root, ".locks");
+      const ownerPath = join(locksDirectory, TOOL_HISTORY_OWNER_DATABASE);
+      await mkdir(toolDirectory, { recursive: true, mode: 0o700 });
+      await mkdir(locksDirectory, { recursive: true, mode: 0o700 });
+      if (ownerState !== "absent") {
+        await writeFile(ownerPath, "", { mode: 0o600 });
+      }
+      if (ownerState === "live") {
+        const owner = new DatabaseSync(ownerPath);
+        try {
+          owner.exec("CREATE TABLE writer_owner (singleton INTEGER PRIMARY KEY CHECK(singleton=1), pid INTEGER NOT NULL, token TEXT NOT NULL, acquired_at_ms INTEGER NOT NULL)");
+          owner.prepare("INSERT INTO writer_owner (singleton,pid,token,acquired_at_ms) VALUES (1,?,?,?)")
+            .run(process.pid, "doctor-owner-before-content", Date.now());
+        } finally { owner.close(); }
+      }
 
-    const zeroByteOwner = await sessionToolHistorySection({ historyRoot: root, requestScopedToolSupported: true });
-    expect(zeroByteOwner.status, zeroByteOwner.details.join("\n")).toBe("waiting");
-    expect(zeroByteOwner.details).toContain(
-      "The zero-byte owner database is still initializing before the tool-history database is published.",
-    );
-    expect(zeroByteOwner.details.join("\n")).not.toContain("Tool history database must be");
+      const section = await sessionToolHistorySection({ historyRoot: root, requestScopedToolSupported: true });
+      expect(section.status, section.details.join("\n")).toBe("waiting");
+      expect(section.details).toContain(ownerState === "live"
+        ? "A live writer owns the sidecar and is still initializing the tool-history database."
+        : ownerState === "pristine"
+          ? "The zero-byte owner database is still initializing before the tool-history database is published."
+          : "Tool history database has not been published; the next writer can initialize it safely.");
+      if (ownerState !== "live") {
+        const initialized = await openWriter(root);
+        try { await expect(initialized.stats()).resolves.toMatchObject({ calls: 0, records: 0 }); }
+        finally { await initialized.close(); }
+      }
+    },
+  );
 
-    const owner = new DatabaseSync(ownerPath);
-    owner.exec("CREATE TABLE writer_owner (singleton INTEGER PRIMARY KEY CHECK(singleton=1), pid INTEGER NOT NULL, token TEXT NOT NULL, acquired_at_ms INTEGER NOT NULL)");
-    owner.prepare("INSERT INTO writer_owner (singleton,pid,token,acquired_at_ms) VALUES (1,?,?,?)")
-      .run(process.pid, "doctor-owner-before-content", Date.now());
-    owner.close();
+  it.each(["dead", "absent"] as const)(
+    "rejects deleted content with a non-empty owner database and %s writer", async (ownerState) => {
+      const root = await tempRoot();
+      const writer = await openWriter(root);
+      await writer.close();
+      await rm(join(root, TOOL_HISTORY_DIRECTORY, TOOL_HISTORY_DATABASE));
+      if (ownerState === "dead") {
+        const owner = new DatabaseSync(join(root, ".locks", TOOL_HISTORY_OWNER_DATABASE));
+        try {
+          owner.prepare("INSERT INTO writer_owner (singleton,pid,token,acquired_at_ms) VALUES (1,?,?,?)")
+            .run(2_147_483_647, "doctor-dead-owner", Date.now());
+        } finally { owner.close(); }
+      }
 
-    const liveOwner = await sessionToolHistorySection({ historyRoot: root, requestScopedToolSupported: true });
-    expect(liveOwner.status, liveOwner.details.join("\n")).toBe("waiting");
-    expect(liveOwner.details).toContain(
-      "A live writer owns the sidecar and is still initializing the tool-history database.",
-    );
-    expect(liveOwner.details.join("\n")).not.toContain("Tool history database must be");
-
-    const staleOwner = new DatabaseSync(ownerPath);
-    staleOwner.prepare("UPDATE writer_owner SET pid=? WHERE singleton=1").run(2_147_483_647);
-    staleOwner.close();
-    const stale = await sessionToolHistorySection({ historyRoot: root, requestScopedToolSupported: true });
-    expect(stale.status, stale.details.join("\n")).toBe("waiting");
-    expect(stale.details).toContain(
-      "Tool history database has not been published; the next writer can initialize it safely.",
-    );
-    expect(stale.details.join("\n")).toContain("Recorded writer owner PID 2147483647 is dead");
-    const recovered = await openWriter(root);
-    try { await expect(recovered.stats()).resolves.toMatchObject({ calls: 0, records: 0 }); }
-    finally { await recovered.close(); }
-  });
+      const section = await sessionToolHistorySection({ historyRoot: root, requestScopedToolSupported: true });
+      expect(section.status, section.details.join("\n")).toBe("error");
+      expect(section.details).toContain(
+        "Tool history database is missing although a writer previously owned it; restore it or move the history directory aside before starting.",
+      );
+      expect(section.details.join("\n")).not.toContain("can initialize it safely");
+    },
+  );
 
   it("lets a historical recovery failure await the next writer's successful recovery", async () => {
     const root = await tempRoot();
