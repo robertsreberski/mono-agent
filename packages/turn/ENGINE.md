@@ -64,7 +64,12 @@ Owned, non-group/other-writable legacy roots (including 0755) are tightened to
 0700 through a pinned no-follow descriptor. Session directories/files remain strictly
 owner-private; writable or foreign-owned roots are rejected. One permanent catalogue mutex
 serializes acquisition and retired-writer lock reclamation; per-journal writer
-locks never hold that mutex over model execution. Torn owned tails are repaired
+locks never hold that mutex over model execution. Non-waiting writer acquisitions
+retry catalogue contention for up to 250 ms with abortable 10 ms polls, but still
+refuse an occupied journal writer immediately. Catalogue-only non-waiting probes
+remain immediate. Exhausted contention carries `ERR_HARNESS_WRITER_BUSY` and is
+retryable; runtime turns report `native_journal_busy`, not a provider failure or
+a session miss that could trigger cold replay. Torn owned tails are repaired
 and fsynced before reuse; complete corruption and resource failures are explicit.
 Native records above 2 MiB and journals above 32 MiB are supported.
 

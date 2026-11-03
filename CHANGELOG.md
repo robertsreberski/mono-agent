@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Fix transient native journal catalogue contention with a short, abortable
+  wait; keep writer conflicts fail-fast and report persistent contention as
+  retryable without replaying the turn in a new session.
+
 - Keep finalized managed-runtime proofs stable across warm-cache misses, and
   report runtime-proof refusals in `status` and `validate` with a nonzero exit
   after a shutdown-interruptible five-minute retry cooldown.
