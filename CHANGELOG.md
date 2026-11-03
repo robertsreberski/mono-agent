@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add fail-closed offline lookup pilot readiness and honest inventory skips;
+  retain planned coverage without counting skips as completions or reader
+  failures, and reject empty fixed-budget hashes before workload validation.
+
 - Let startup proceed after a tool-history writer crash so the next writer can
   recover interrupted invocations without rerunning tools.
 

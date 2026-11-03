@@ -415,3 +415,32 @@ export function assertExternalPolicy(policy, { source, selection, lookupSelectio
   }
   return policy;
 }
+
+// Reserved independently: inventory skips must never masquerade as later admission refusals.
+export const LOOKUP_SLOT_CODES = Object.freeze({
+  inventoryInfeasible: "inventory_infeasible", unknownFeasibility: "lookup_unknown_feasibility",
+  inputEnvelope: "not_admitted_input_envelope", cap: "not_admitted_cap",
+});
+/** Recompute role-specific inventory geometry; never trust its cached label.
+ * An eligible inventory path is NOT a proved backend input envelope.
+ */
+export function lookupSlotDisposition(plan, { traceId, probeId, arm }) {
+  const budget = plan.lookup?.budget;
+  const role = plan.lookup?.role?.id;
+  const paths = (budget?.paths ?? []).filter(path => path.traceId === traceId && path.probeId === probeId && path.arm === arm
+    && (!role || path.role === role || path.role === undefined && !plan.lookup.source));
+  const path = paths.length === 1 ? paths[0] : null;
+  const natural = value => Number.isSafeInteger(value) && value >= 0;
+  const geometry = path && (path.method === undefined || ["identifier-reference", "conservative-full-budget"].includes(path.method))
+    && [path.calls, path.bytes, path.cumulativeBytes].every(natural)
+    && Number.isSafeInteger(path.initialTokens) && path.initialTokens > 0
+    && Number.isSafeInteger(path.admissionCap) && path.admissionCap > 0 && typeof path.discovered === "boolean"
+    && [budget.callBudget, budget.byteBudget, budget.contextWindowTokens, budget.contextMarginTokens].every(natural);
+  const feasibility = !geometry ? { classification: "unknown", reasons: ["inventory_not_verified"] }
+    : path.method ? externalPathFeasibility(path, budget) : referenceFeasibility(path, budget, path);
+  if (feasibility.classification === "budget-infeasible")
+    return { status: "infeasible", code: LOOKUP_SLOT_CODES.inventoryInfeasible, feasibility };
+  if (feasibility.classification !== "feasible")
+    return { status: "blocked", code: LOOKUP_SLOT_CODES.unknownFeasibility, feasibility };
+  return { status: "eligible", code: null, feasibility };
+}

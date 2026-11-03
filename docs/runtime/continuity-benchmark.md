@@ -837,7 +837,7 @@ An explicit lookup source is `{manifestPath, manifestSha256,
 statisticalSpecPath}`. `loadTraces({suite: "holdout", lookupSource})` reuses
 `loadFrozenHoldout`, including freeze/tooling/runtime verification and trace
 hashes. This is not legacy holdout registration, ledger selection or
-qualification. Recall-only and checked-in lookup defaults remain unchanged.
+qualification. Recall-only plans and checked-in lookup plan digests remain unchanged.
 
 Use the existing validate/overlap/freeze commands with `--statistical-spec FILE`;
 expanded overlap references invalidate earlier overlap reports, which must be regenerated before freezing;
@@ -906,11 +906,46 @@ catalog-equivalent cap, never a per-shard cap or spending authorization.
 Missing catalog, selected model, rates (including tier/cache rates), context or
 output limits block numerical approval rather than becoming zero or unknown-allowed.
 
-The Codex transport currently omits the requested lower output token limit;
-`catalog_max` is the honest offline envelope until enforcement is independently
-proved. Dollars do not predict subscription quota: report token/turn envelopes,
-not a dollar-to-quota conversion. **All real-execution refusals remain in force**;
-inventory skip is a pricing classification, not a claim that guarded real
-dispatch or reservation has been implemented. Faux accuracy proves mechanics
-only. All raw content and private artifacts stay outside checkouts; share only
-counts, IDs, hashes and numerical summaries.
+### Pilot readiness and inventory skips
+
+`lookupPilotReadiness()` in `scripts/lib/continuity-lookup-roles.mjs` is a
+pure diagnostic, not authorization. It reports separate output-cap,
+input-envelope and pricing readiness; unknown or unsupported components block.
+For `openai-codex:gpt-6.1-sol`, the output cap is **unsupported** and the backend
+input envelope is **unknown**, so `ready` remains false. A complete supplied
+local catalog can establish catalog pricing readiness only, not billing or
+reservation safety. Missing rates (including cache writes or tier rates) stay
+unknown. There is no caller-supplied capability override.
+
+The installed Pi Codex serializer is tested with its actual provider URL/model,
+synthetic unexpired credentials and an injected `options.fetch` that never
+forwards. The test decodes zstd when present and captures exactly one attempted
+send: reasoning effort survives, but no max-output field is serialized.
+This negative evidence does not test backend acceptance or reasoning-inclusive
+enforcement. Payload mutation, if tested separately, is **serialized only**,
+never enforcement evidence. `catalog_max` is an offline modeling assumption,
+not a proved transport ceiling. Byte geometry alone does not establish backend
+tokenization, framing or opaque reasoning-restoration bounds.
+
+`lookupSlotDisposition()` recomputes role-specific inventory feasibility before
+`execute()` loads the runtime, builds checkpoints or admits provider work.
+Inventory-infeasible slots get `infeasible` records with the fixed
+`inventory_infeasible` code, no provider usage/count, score, reservation or
+manufactured completion. Mixed units dispatch only eligible probes; all-skipped
+units need no checkpoint. Skips retain the planned denominator, are reported
+separately and are not missing observations or reader failures. Skipped units
+are not marked complete, so partial coverage remains visible with a nonzero
+exit. Unknown feasibility blocks execution; absent observations with unknown
+inventory remain missing, not inferred completions. The distinct later refusal
+codes `not_admitted_input_envelope` and `not_admitted_cap` are reserved but not
+used by this offline preparation path. Feasible inventory is not an input-envelope
+proof. A present empty/whitespace `--fixed-budget-sha256` fails with
+`lookup_empty_fixed_budget_sha256` before workload/source validation.
+
+Dollars do not predict subscription quota: report token/turn envelopes, not a
+dollar-to-quota conversion. **All real-execution refusals remain in force**;
+no guarded real dispatch, authorization, cap gate or reservation is implemented
+here. Faux accuracy proves mechanics only. Protocol-covered script changes
+invalidate older code-bound registrations; regenerate them for matching clean
+checkouts, not as execution approval. All raw content and private artifacts
+stay outside checkouts; share only counts, IDs, hashes and numerical summaries.

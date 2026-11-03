@@ -16,7 +16,7 @@ import { HARD_SEEDS } from "./lib/continuity-generator.mjs";
 import { addUsage, emptyUsage, renderMarkdown, summarize } from "./lib/continuity-score.mjs";
 
 import { summarizeLookup, renderLookupMarkdown } from "./lib/continuity-lookup-score.mjs";
-import { LOOKUP_MODE, LOOKUP_DEFAULT_ARMS } from "./lib/continuity-lookup.mjs";
+import { LOOKUP_MODE, LOOKUP_DEFAULT_ARMS, lookupSlotDisposition } from "./lib/continuity-lookup.mjs";
 
 const ROOT = fileURLToPath(new URL("../", import.meta.url)).replace(/\/$/u, "");
 const BOOLEAN = new Set(["dry-run", "real", "help", "lookup-protocol", "no-judge", "keep-work", "aggregate-only", "require-request-cap", "capture-upkeep-output"]);
@@ -276,7 +276,8 @@ export function observedInputTokens(usage) {
   return Math.max(input, usage?.conservativeInputTokens ?? 0);
 }
 
-async function execute({ flags, plan, traces, mode, output, piAuthPath, head, dirty, modulesLoader, onPhase }) {
+export async function execute({ flags, plan, traces, mode, output, piAuthPath, head, dirty, modulesLoader, onPhase }) {
+  if (plan.probeMode === LOOKUP_MODE && mode !== "offline") throw new CliError("lookup_real_not_authorized");
   const selectedTraces = flags.trace === undefined ? traces : traces.filter((trace) => flags.trace.includes(trace.id));
   if (flags.trace !== undefined && selectedTraces.length !== new Set(flags.trace).size) throw new CliError("unknown_trace");
   const repeatList = flags.repeat === undefined ? Array.from({ length: plan.repeats }, (_, index) => index + 1)
@@ -284,14 +285,35 @@ async function execute({ flags, plan, traces, mode, output, piAuthPath, head, di
   const concurrency = integer(flags.concurrency, { min: 1, max: 8 }, "invalid_concurrency") ?? (mode === "real" ? 4 : 2);
   const armList = plan.arms.map((row) => armById(row.id));
   const units = [];
+  const skippedUnits = [];
   for (const repeat of repeatList) for (const trace of selectedTraces) for (const arm of armList) {
     const name = unitName({ repeat, traceId: trace.id, armId: arm.id });
     try {
       const existing = JSON.parse(await readFile(join(output, "units", name), "utf8"));
       if (existing.confirmation === plan.confirmation && existing.complete === true) continue;
     } catch { /* not yet run */ }
-    units.push({ repeat, trace, arm, name });
+    const probes = trace.probes.filter(probe => plan.corpus.traces.find(row => row.id === trace.id).probes.includes(probe.id));
+    const skipped = [], eligible = [];
+    for (const probe of probes) {
+      const disposition = plan.probeMode === LOOKUP_MODE ? lookupSlotDisposition(plan, { traceId: trace.id, probeId: probe.id, arm: arm.id }) : null;
+      if (disposition?.status === "blocked") throw new CliError(disposition.code);
+      if (disposition?.status === "infeasible") skipped.push({ traceId: trace.id, probeId: probe.id, arm: arm.id, repeat,
+        category: probe.category, status: "infeasible", disposition: disposition.code, lookup: { budgetFeasibility: disposition.feasibility } });
+      else eligible.push(probe);
+    }
+    const unit = { repeat, trace, arm, name, probes: eligible, skipped };
+    (eligible.length ? units : skippedUnits).push(unit);
   }
+  // Persist planned/infeasible records, not completions. No checkpoint, runtime,
+  // provider admission or reservation is needed for an all-skipped unit.
+  const manifest = () => ({ codeRevision: head, dirty, node: process.version, finishedAt: new Date().toISOString(),
+    buildPolicy: plan.lookup?.role ? "fresh-clean-head-agent-app-closure-v1" : "existing-dist-unverified",
+    ...(plan.lookup?.role ? { lookupRole: plan.lookup.role } : {}) });
+  for (const unit of skippedUnits) await writeFile(join(output, "units", unit.name), `${JSON.stringify({
+    confirmation: plan.confirmation, executionKind: mode, complete: false,
+    repeat: unit.repeat, traceId: unit.trace.id, arm: unit.arm.id,
+    checkpoint: null, trials: unit.skipped, manifest: manifest(),
+  }, null, 2)}\n`, { mode: 0o600 });
   if (units.length === 0) return;
   const { productionModules, buildCheckpoint, runProbe, createJudge, pool, isFatalFailure } = await import("./lib/continuity-runner.mjs");
   const modules = await (modulesLoader ?? productionModules)(ROOT);
@@ -334,10 +356,7 @@ async function execute({ flags, plan, traces, mode, output, piAuthPath, head, di
   });
   const judge = createJudge({ modules, plan, mode, workspace: join(scratch, "judge"), authPath: piAuthPath });
   if (judge) await mkdir(join(scratch, "judge"), { recursive: true, mode: 0o700 });
-  const jobs = units.flatMap((unit) => {
-    const probes = unit.trace.probes.filter((probe) => plan.corpus.traces.find((row) => row.id === unit.trace.id).probes.includes(probe.id));
-    return probes.map((probe) => ({ unit, probe }));
-  });
+  const jobs = units.flatMap(unit => unit.probes.map(probe => ({ unit, probe })));
   const results = await pool(jobs, concurrency, async ({ unit, probe }, index) => {
     const checkpoint = checkpoints.get(`${unit.trace.id}:${checkpointKey(unit.arm, unit.repeat, plan.probeMode)}`);
     if (!checkpoint || checkpoint.error) {
@@ -361,15 +380,15 @@ async function execute({ flags, plan, traces, mode, output, piAuthPath, head, di
   for (const unit of units) {
     const trials = jobs.map((job, index) => (job.unit === unit ? results[index] : null)).filter((row) => row !== null);
     const unitJobs = plan.probeMode === LOOKUP_MODE ? jobs.filter(job => job.unit === unit) : [];
-    const complete = trials.length > 0 && trials.every((trial) => trial !== undefined);
+    const complete = unit.skipped.length === 0 && trials.length > 0 && trials.every((trial) => trial !== undefined);
     const checkpoint = checkpoints.get(`${unit.trace.id}:${checkpointKey(unit.arm, unit.repeat, plan.probeMode)}`);
     const body = {
       confirmation: plan.confirmation, executionKind: mode, complete,
       repeat: unit.repeat, traceId: unit.trace.id, arm: unit.arm.id,
       checkpoint: checkpoint && !checkpoint.error ? checkpoint.record : { ...(checkpoint?.record ?? {}), error: checkpoint?.error ?? "checkpoint_missing" },
-      trials: trials.map((trial, index) => trial ?? (plan.probeMode === LOOKUP_MODE
+      trials: [...unit.skipped, ...trials.map((trial, index) => trial ?? (plan.probeMode === LOOKUP_MODE
         ? { traceId: unit.trace.id, arm: unit.arm.id, repeat: unit.repeat, probeId: unitJobs[index].probe.id, category: unitJobs[index].probe.category, status: "not_started" }
-        : { status: "not_started" })),
+        : { status: "not_started" }))],
       manifest: { codeRevision: head, dirty, node: process.version, finishedAt, buildPolicy: plan.lookup?.role ? "fresh-clean-head-agent-app-closure-v1" : "existing-dist-unverified", ...(plan.lookup?.role ? { lookupRole: plan.lookup.role } : {}), observedInput: state.observedInput, admissionStop: state.stop },
     };
     await writeFile(join(output, "units", unit.name), `${JSON.stringify(body, null, 2)}\n`, { mode: 0o600 });

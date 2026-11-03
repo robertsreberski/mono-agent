@@ -351,7 +351,7 @@ it("runs all six faux/real-loopback roles across two clean synthetic checkouts w
   } });
   expect(dispatches).toBe(6);
   expect(result.launches[0]).toMatchObject({ role: "native", exitCode: 1, receiptVerified: true, reason: null });
-  expect(result.coverage, JSON.stringify(result.slots)).toEqual({ planned: 6, completed: 6, missing: 0, duplicate: 0, observations: 6 });
+  expect(result.coverage, JSON.stringify(result.slots)).toEqual({ planned: 6, completed: 6, skipped: 0, blocked: 0, missing: 0, duplicate: 0, observations: 6 });
   expect(result.slots.map(s => s.role)).toEqual(LOOKUP_ROLES.map(r => r.id));
   expect(result.slots.every(s => s.calls > 0 && s.bytes > 0)).toBe(true);
   for (const role of registration.roles) {
