@@ -6,7 +6,7 @@ import { describeMaintenanceActivity, readLaunchdMaintenanceActivityStatus } fro
 import { readLaunchdLogMonitorStatus } from "../launchd/launchd-log-monitor-status.js";
 import { hasCompletedManagedStartup } from "../managed-runtime/managed-startup.js";
 import { launchdServiceInfo } from "../launchd/launchd.js";
-import { readLaunchdSnapshotRefusal, SNAPSHOT_REFUSAL_MESSAGE } from "../launchd/launchd-snapshot-refusal.js";
+import { readLaunchdStartupRefusal, runtimeProofRefusalMessage, SNAPSHOT_REFUSAL_MESSAGE } from "../launchd/launchd-snapshot-refusal.js";
 import { RUNS_HEALTH_MAX_RUNS } from "../../diagnostics/runs-health.js";
 import { canonicalBackgroundConfigPath } from "./target.js";
 import { channelRecords, commandFlags, formatOtherInstance, isPlainRecord, writeInstanceDetail, writeRunsHealthDetail } from "./presentation.js";
@@ -24,14 +24,17 @@ export async function statusBackground(
   ]);
   const matchingSources = classified.filter((entry) => entry.matches).map((entry) => entry.source);
   // Status is diagnostic: unsafe or unreadable refusal state is reported, never fatal.
-  const snapshotRefused = await readLaunchdSnapshotRefusal(target.label, target.paths).catch((error: unknown) => {
-    deps.stderr(ui.errorLine(`Could not read the managed snapshot refusal status: ${error instanceof Error ? error.message : String(error)}`));
-    return false;
+  const startupRefusal = await readLaunchdStartupRefusal(target.label, target.paths).catch((error: unknown) => {
+    deps.stderr(ui.errorLine(`Could not read the managed startup refusal status: ${error instanceof Error ? error.message : String(error)}`));
+    return undefined;
   });
+  const refusalMessage = startupRefusal === "runtime-proof-refused"
+    ? runtimeProofRefusalMessage(target.configPath) : SNAPSHOT_REFUSAL_MESSAGE;
   const recorded = service.pid === undefined
     ? matchingSources[0]
     : matchingSources.find((source) => source.pid === service.pid) ?? matchingSources[0];
-  const active = service.loaded
+  const active = startupRefusal === undefined
+    && service.loaded
     && service.pid !== undefined
     && deps.isAlive(service.pid)
     && recorded?.pid === service.pid
@@ -52,7 +55,7 @@ export async function statusBackground(
       instance,
       maintenanceActivity: maintenanceActivity ?? null,
       logMonitor: logMonitor ?? null,
-      ...(snapshotRefused ? { startupFailure: { reason: "snapshot-refused", message: SNAPSHOT_REFUSAL_MESSAGE } } : {}),
+      ...(startupRefusal === undefined ? {} : { startupFailure: { reason: startupRefusal, message: refusalMessage } }),
       others: others.map(assembleOtherInstanceStatus),
     })}\n`);
     return active ? 0 : 1;
@@ -68,7 +71,7 @@ export async function statusBackground(
 
   if (maintenanceActivity !== undefined) deps.stdout((maintenanceActivity === "unavailable" ? "Maintenance: owner-private status is unavailable or unsafe." : describeMaintenanceActivity(maintenanceActivity)) + "\n");
   if (logMonitor !== undefined) deps.stdout(logMonitor === "unavailable" ? "Log monitor: owner-private status is unavailable or unsafe.\n" : `Log monitor: ${logMonitor.lastOutcome}; wakes=${logMonitor.wakeCount}\n`);
-  if (snapshotRefused) deps.stdout(ui.errorLine(SNAPSHOT_REFUSAL_MESSAGE));
+  if (startupRefusal !== undefined) deps.stdout(ui.errorLine(refusalMessage));
 
   if (others.length > 0) {
     deps.stdout("\n" + ui.rule("Other mono-agent instances"));

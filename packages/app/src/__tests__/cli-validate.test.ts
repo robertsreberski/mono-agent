@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resolveActiveMemoryDbPath, safeRebuildMemoryIndex } from "@mono-agent/memory/bujo";
 
 import { runCli } from "../cli.js";
+import * as startupRefusal from "../service/launchd/launchd-snapshot-refusal.js";
 
 let dir: string;
 let previousCwd: string;
@@ -116,6 +117,29 @@ async function closedLoopbackBaseUrl(): Promise<string> {
 }
 
 describe("runCli doctor runtime provenance", () => {
+  it.skipIf(process.platform !== "darwin").each(["snapshot-refused", "runtime-proof-refused"] as const)("makes validate and doctor fail visibly on a durable %s record", async (reason) => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n", "utf8");
+    const configPath = await writeConsumerConfig(dir, "mono-agent.config.json", {
+      runtime: { model: "openai-codex:gpt-5.6-terra" },
+      context: { identityPath: "./IDENTITY.md" },
+      providers: { piAuthPath: join(dir, "missing-auth.json") },
+    });
+    const refusal = vi.spyOn(startupRefusal, "readLaunchdStartupRefusal").mockResolvedValue(reason);
+    process.chdir(dir);
+    try {
+      const json = await captureRunCli(["validate", "--json", "--config", configPath]);
+      expect(json.code).toBe(1);
+      expect(JSON.parse(json.stdout)).toMatchObject({
+        ok: false, structurallyValid: false, operationallyReady: false,
+        sections: expect.arrayContaining([expect.objectContaining({ id: "managed-runtime-launch", status: "error" })]),
+      });
+      const text = await captureRunCli(["doctor", "--config", configPath]);
+      expect(text.code).toBe(1);
+      expect(text.stdout).toContain(reason === "snapshot-refused" ? startupRefusal.SNAPSHOT_REFUSAL_MESSAGE : "refused its finalized runtime proof");
+      expect(text.stdout).toContain(reason === "snapshot-refused" ? "mono-agent restart" : "mono-agent restart --config");
+    } finally { refusal.mockRestore(); }
+  });
+
   it("renders the unmanaged provenance of the CLI producing the report", async () => {
     await writeFile(join(dir, "IDENTITY.md"), "# Identity\n", "utf8");
     await writeConsumerConfig(dir, "mono-agent.config.json", {

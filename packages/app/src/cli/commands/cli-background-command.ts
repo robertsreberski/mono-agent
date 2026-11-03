@@ -1,3 +1,4 @@
+import { refuseManagedRuntimeLaunch } from "../../service/managed-runtime/runtime-launch-refusal.js";
 import { ensureStartable } from "../../service/start-preflight.js";
 import { type PreflightResult } from "../../service/start-preflight.js";
 import { resolveAppSessionsRoot } from "../../composition/app-config.js";
@@ -329,12 +330,10 @@ async function runForeground(
         managedRoot: dirname(paths.logDir),
       });
       if (args.expectedBackgroundSnapshot === undefined) {
-        process.stderr.write(ui.errorLine("Managed LaunchAgent worker is missing its approved background snapshot."));
-        return 0;
+        throw new Error("Managed LaunchAgent worker is missing its approved background snapshot.");
       }
       if (args.expectedManagedRuntimeLaunch === undefined) {
-        process.stderr.write(ui.errorLine("Managed LaunchAgent worker is missing its finalized runtime proof."));
-        return 0;
+        throw new Error("Managed LaunchAgent worker is missing its finalized runtime proof.");
       }
       managedRuntime = await verifyManagedRuntimeLaunch({
         currentCliPath: fileURLToPath(new URL("../../cli.js", import.meta.url)),
@@ -344,9 +343,10 @@ async function runForeground(
       process.stderr.write(ui.errorLine(
         `Managed worker could not verify its finalized runtime: ${error instanceof Error ? error.message : String(error)}`,
       ));
-      // KeepAlive restarts only unsuccessful exits. A controller must publish a
-      // fresh proven plist before this worker can safely recover.
-      return 0;
+      // No lease, app, trace registration or readiness is published on this path.
+      // A dedicated failure state and cooldown preserve both integrity and a
+      // non-zero exit without turning a stale definition into a restart storm.
+      return await refuseManagedRuntimeLaunch(configPath);
     }
   }
   if (managedBackgroundWorker) {

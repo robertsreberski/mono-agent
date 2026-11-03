@@ -14,6 +14,7 @@ import {
   verifyManagedRuntimeLaunch,
 } from "../service/managed-runtime/background-runtime.js";
 import type { ManagedBackgroundRuntimeDeps, ManagedRuntimeInstallInput, ManagedRuntimeProgress } from "../service/managed-runtime/types.js";
+import { verifyManagedRuntimeMaintenanceEntrypoint } from "../service/managed-runtime/managed-runtime-maintenance-entry.js";
 import { fingerprintClosureFile } from "../service/managed-runtime/installed-closure.js";
 import { runtimeLayout } from "../service/managed-runtime/layout.js";
 import { runtimeMarkerFromJson } from "../service/managed-runtime/marker.js";
@@ -1415,7 +1416,7 @@ describe("ensureManagedBackgroundRuntime", () => {
     expect(second).toEqual({ ...first, verificationMode: "fast-reuse" });
   });
 
-  it.each([false, true])("rejects a stored duplicate link (conflicting: %s) and self-heals it", async (conflicting) => {
+  it.each([false, true])("rejects a stored duplicate link (conflicting: %s) without republishing launch identity", async (conflicting) => {
     const source = await hoistedPackageFixture();
     const homeDir = await homeFixture();
     const input = { currentCliPath: source.cliPath, nodePath: process.execPath, homeDir };
@@ -1435,15 +1436,16 @@ describe("ensureManagedBackgroundRuntime", () => {
     marker.reuseProofSha256 = createHash("sha256").update(contents).digest("hex");
     await writeFile(markerPath, `${JSON.stringify(marker)}\n`, { mode: 0o600 });
 
+    const markerBytes = await readFile(markerPath, "utf8");
     const recovered = await ensureManagedBackgroundRuntime(input);
     expect(recovered.installRoot).toBe(first.installRoot);
     expect(recovered.verificationMode).toBe("full-reuse");
-    const refreshed = JSON.parse(await readFile(proofPath, "utf8")) as typeof proof;
-    expect(new Set(refreshed.source.links.map((link) => link.path)).size).toBe(refreshed.source.links.length);
-    expect((await ensureManagedBackgroundRuntime(input)).verificationMode).toBe("fast-reuse");
+    expect(await readFile(proofPath, "utf8")).toBe(contents);
+    expect(await readFile(markerPath, "utf8")).toBe(markerBytes);
+    expect((await ensureManagedBackgroundRuntime(input)).verificationMode).toBe("full-reuse");
   });
 
-  it("upgrades a verified v4 marker once and then uses the warm stat proof", async () => {
+  it("preserves a finalized v4 marker and uses full verification", async () => {
     const source = await fixturePackage();
     const homeDir = await homeFixture();
     const input = { currentCliPath: source.cliPath, nodePath: process.execPath, homeDir };
@@ -1460,16 +1462,18 @@ describe("ensureManagedBackgroundRuntime", () => {
     const upgradedMarker = JSON.parse(await readFile(markerPath, "utf8")) as Record<string, unknown>;
 
     expect(upgraded.verificationMode).toBe("full-reuse");
-    expect(upgradedMarker.schema).toBe("mono-agent.managed-runtime.v5");
-    expect(upgradedMarker.reuseProofSha256).toMatch(/^[0-9a-f]{64}$/u);
-    expect(warm.verificationMode).toBe("fast-reuse");
+    expect(upgradedMarker).toEqual({ ...v4Marker, schema: "mono-agent.managed-runtime.v4" });
+    expect(warm.verificationMode).toBe("full-reuse");
   });
 
-  it("falls back to full verification and republishes a tampered warm proof", async () => {
+  it("preserves finalized marker bytes and launch proof when the warm cache is tampered", async () => {
     const source = await fixturePackage();
     const homeDir = await homeFixture();
     const input = { currentCliPath: source.cliPath, nodePath: process.execPath, homeDir };
     const first = await ensureManagedBackgroundRuntime(input);
+    const markerPath = join(first.installRoot, ".mono-agent-runtime.json");
+    const markerBytes = await readFile(markerPath);
+    const markerStats = await lstat(markerPath);
     const proofPath = join(dirname(first.installRoot), ".reuse-proofs", `${basename(first.installRoot)}.json`);
     await writeFile(proofPath, "{}\n", { mode: 0o600 });
 
@@ -1478,10 +1482,18 @@ describe("ensureManagedBackgroundRuntime", () => {
 
     expect(recovered.installRoot).toBe(first.installRoot);
     expect(recovered.verificationMode).toBe("full-reuse");
-    expect(warm.verificationMode).toBe("fast-reuse");
+    expect(warm.verificationMode).toBe("full-reuse");
+    expect(await readFile(markerPath)).toEqual(markerBytes);
+    expect((await lstat(markerPath)).mtimeMs).toBe(markerStats.mtimeMs);
+    expect(recovered.launchProof).toBe(first.launchProof);
+    await expect(verifyManagedRuntimeMaintenanceEntrypoint({
+      currentEntrypointPath: join(dirname(first.cliPath), "launchd-maintenance-entry.js"),
+      launchProof: first.launchProof, homeDir,
+    })).resolves.toBeUndefined();
+    await expect(verifyManagedRuntimeLaunch({ currentCliPath: first.cliPath, launchProof: first.launchProof, homeDir })).resolves.toMatchObject({ installRoot: first.installRoot });
   });
 
-  it("falls back to content verification after source edit-and-restore, then refreshes the warm proof", async () => {
+  it("preserves the original launch proof after source edit-and-restore", async () => {
     const source = await fixturePackage();
     const homeDir = await homeFixture();
     const input = { currentCliPath: source.cliPath, nodePath: process.execPath, homeDir };
@@ -1496,7 +1508,9 @@ describe("ensureManagedBackgroundRuntime", () => {
 
     expect(recovered.installRoot).toBe(first.installRoot);
     expect(recovered.verificationMode).toBe("full-reuse");
-    expect(warm.verificationMode).toBe("fast-reuse");
+    expect(warm.verificationMode).toBe("full-reuse");
+    expect(recovered.launchProof).toBe(first.launchProof);
+    await expect(verifyManagedRuntimeLaunch({ currentCliPath: first.cliPath, launchProof: first.launchProof, homeDir })).resolves.toMatchObject({ installRoot: first.installRoot });
   });
 
   it("fails closed and removes staging when installed CLI bytes do not match", async () => {

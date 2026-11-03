@@ -1,3 +1,4 @@
+import { managedRuntimeRefusalSection } from "../../doctor/managed-startup.js";
 import { resolveValidateContext } from "../validate-context.js";
 import { basename, resolve } from "node:path";
 import process from "node:process";
@@ -33,12 +34,21 @@ import * as ui from "../ui.js";
 
 export async function runValidate(args: ParsedCliArgs): Promise<number> {
   const context = resolveValidateContext(args, process.cwd());
-  const report = await validateMonoAgentFolder({
+  const validation = await validateMonoAgentFolder({
     env: process.env,
     cwd: context.cwd,
     configPath: context.configPath,
     allowFilesystemWrites: context.allowFilesystemWrites,
   });
+
+  const refusal = await managedRuntimeRefusalSection(context.configPath);
+  const report: ValidationReport = refusal === undefined ? validation : {
+    ...validation,
+    ok: false,
+    structurallyValid: false,
+    operationallyReady: false,
+    sections: [...validation.sections, refusal],
+  };
 
   const preset = resolveValidatePreset(args);
   if (preset === "unknown") {

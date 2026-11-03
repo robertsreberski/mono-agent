@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Keep finalized managed-runtime proofs stable across warm-cache misses, and
+  report runtime-proof refusals in `status` and `validate` with a nonzero exit
+  after a shutdown-interruptible five-minute retry cooldown.
+
 - Fix effective request/run denies for policy-gated app-owned MCP tools,
   including global `*` denies for `AskUser` and adapter send tools; keep
   `MemoryRecall` exempt.

@@ -34,7 +34,7 @@ import {
   sameBackgroundSnapshot,
 } from "./background-snapshot.js";
 import type { BackgroundSnapshot } from "./background-snapshot.js";
-import { clearLaunchdSnapshotRefusal } from "../launchd/launchd-snapshot-refusal.js";
+import { clearLaunchdSnapshotRefusal, readLaunchdStartupRefusal } from "../launchd/launchd-snapshot-refusal.js";
 import { acquireManagedRuntimePublicationBarrier } from "../managed-runtime/managed-runtime-publication.js";
 import type { OwnerPrivateLock } from "../../durable-state/owner-private-lock.js";
 import { acquireSharedLaunchdLogLock } from "../launchd/launchd-lifecycle-lock.js";
@@ -134,10 +134,11 @@ async function maintainLaunchdControllerWithLifecycleLease(
   let maintainLogsOnly = false;
   let resultCode = 1;
   try {
-    const [worker, sources, desiredIdentity] = await Promise.all([
+    const [worker, sources, desiredIdentity, startupRefusal] = await Promise.all([
       launchdManagedWorkerInfo(deps.runner, target.label, uid),
       findInstances(target, deps),
       deps.inspectManagedRuntimeSourceIdentity(target.cliPath),
+      readLaunchdStartupRefusal(target.label, target.paths),
     ]);
     let loadedIdentity: ManagedRuntimeLaunchVerification | undefined;
     if (worker.definition !== undefined) {
@@ -155,7 +156,8 @@ async function maintainLaunchdControllerWithLifecycleLease(
       ? undefined
       : sources.find((candidate) => candidate.pid === worker.pid);
     const durableSnapshotStillMatches = await snapshotStillMatches(target, deps);
-    const workerReady = worker.loaded
+    const workerReady = startupRefusal === undefined
+      && worker.loaded
       && worker.pid !== undefined
       && deps.isAlive(worker.pid)
       && source !== undefined
@@ -527,7 +529,8 @@ async function ensureBackgroundReadyAfterPublicationBarrier(
         const current = await launchdServiceInfo(deps.runner, launchTarget.label, uid);
         const currentSource = (await findInstances(launchTarget, deps)).find((source) => source.pid === current.pid);
         const readyNow = current.loaded && current.pid !== undefined && deps.isAlive(current.pid)
-          && currentSource !== undefined && isReady(currentSource);
+          && currentSource !== undefined && isReady(currentSource)
+          && await readLaunchdStartupRefusal(launchTarget.label, launchTarget.paths) === undefined;
         const override = interruptedMaintenance !== undefined || inspection.pendingTransaction
           ? "transaction-recovery" as const
           : permissionRepair || logPermissionRepairNeeded(inspection) ? "permission-repair" as const
@@ -1070,6 +1073,7 @@ export async function pollInstanceReady(
       const match = matches.find((source) => source.pid === service.pid);
       if (match !== undefined
         && isReady(match)
+        && await readLaunchdStartupRefusal(target.label, target.paths) === undefined
         && startedAtMs(match) >= options.sinceMs
         && snapshotMetadataMatches(match, target.expectedSnapshot)
         && await snapshotStillMatches(target, deps)) {
