@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Offline sizing only. External artifacts contain sizes, hashes, IDs and classifications, not text.
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { armById } from "./lib/continuity-arms.mjs";
 import { digest, loadTraces, makePlan, traceTokenShape } from "./lib/continuity-dataset.mjs";
@@ -152,6 +152,7 @@ export async function measureFixedBudget({ output, fixedBudgetSha256, checkouts,
     source: workload.corpora[0].source, selection, lookupSelection: workload.lookupSelection, protocol, codes, reader: workload.reader,
     maxTurns: 10, budget: { ...LOOKUP_BUDGET, paths: [] } };
   const loaded = await loadTraces({ suite: "holdout", lookupSource: workload.lookupSource, selectionSeed: workload.lookupSelection.seed, perGroup: workload.lookupSelection.perGroup, inputRoots });
+  await mkdir(dirname(output), { recursive: true, mode: 0o700 });
   await mkdir(output, { mode: 0o700 });
   for (const role of LOOKUP_ROLES) {
     const code = codes[role.code], modules = await productionModules(code.path);

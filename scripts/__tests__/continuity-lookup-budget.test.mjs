@@ -68,7 +68,8 @@ it("inventories every selected slot per role without deriving limits, isolating 
     source: { availability: probe.score.kind === "identifier" ? "retained" : "unknown", sha256: "b".repeat(64) },
     sourceReturned: probe.score.kind === "identifier", reference: { discovered: true }, calls: 2, bytes: 100,
     cumulativeBytes: 150, responseBytes: [50, 50] } }));
-  const result = await measureFixedBudget({ output: join(base, "fixed"), fixedBudgetSha256: FIXED_BUDGET_SHA256, sourceAnnotation });
+  const fixed = join(base, "missing", "parent", "fixed");
+  const result = await measureFixedBudget({ output: fixed, fixedBudgetSha256: FIXED_BUDGET_SHA256, sourceAnnotation });
   expect(result.budget.callBudget).toBe(8); expect(result.budget.byteBudget).toBe(126976); expect(result.maxTurns).toBe(10);
   expect(result.budget.paths).toHaveLength(24); expect(mocks.buildCheckpoint).toHaveBeenCalledTimes(6);
   expect(mocks.runProbe).toHaveBeenCalledTimes(24);
@@ -77,9 +78,11 @@ it("inventories every selected slot per role without deriving limits, isolating 
   expect(result.budget.paths.filter(p => p.arm === "native-lookup").every(p => p.initialAdmission.classification === "budget-infeasible")).toBe(true);
   expect(result.budget.paths.filter(p => p.arm !== "native-lookup").every(p => p.feasibility.classification === "feasible")).toBe(true);
   for (const { plan } of mocks.runProbe.mock.calls.map(([arg]) => arg)) { expect(plan.lookup.budget).toEqual({ ...LOOKUP_BUDGET, paths: [] }); expect(plan.lookup.maxTurns).toBe(10); }
-  const bytes = await readFile(join(base, "fixed/budget.json"), "utf8");
+  const bytes = await readFile(join(fixed, "budget.json"), "utf8");
+  await expect(measureFixedBudget({ output: fixed, fixedBudgetSha256: FIXED_BUDGET_SHA256 })).rejects.toMatchObject({ code: "EEXIST" });
+  expect(await readFile(join(fixed, "budget.json"), "utf8")).toBe(bytes);
   expect(bytes).not.toContain(trace.probes[0].question); expect(bytes).not.toContain(trace.probes[0].score.accept[0]);
-  await expect(access(join(base, "fixed/scratch"))).rejects.toMatchObject({ code: "ENOENT" });
+  await expect(access(join(fixed, "scratch"))).rejects.toMatchObject({ code: "ENOENT" });
   await expect(measureFixedBudget({ output: join(base, "bad"), fixedBudgetSha256: "a".repeat(64) })).rejects.toThrow("lookup_fixed_budget_hash_mismatch");
   const external = await mkdtemp(join(tmpdir(), "lookup-fixed-cli-")); dirs.push(external);
   const initialProbe = mocks.runProbe.getMockImplementation();

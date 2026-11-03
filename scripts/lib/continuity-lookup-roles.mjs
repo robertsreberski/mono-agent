@@ -65,7 +65,7 @@ export async function lookupWorkload({ suites = ["original", "hard", "hard-distr
   }
   if (lookupSource) {
     inputRoots ??= policy?.codes ? Object.values(policy.codes).map(code => code.path) : undefined;
-    requireLookup(Array.isArray(inputRoots) && inputRoots.length === 2 && inputRoots.every(isAbsolute), "lookup_input_roots_required");
+    requireLookup(Array.isArray(inputRoots) && inputRoots.length === 2 && inputRoots.every(path => typeof path === "string" && isAbsolute(path)), "lookup_input_roots_required");
     inputRoots = await Promise.all(inputRoots.map(root => realpath(root)));
     const { externalFile } = await import("./continuity-holdout-files.mjs");
     await externalFile(lookupSource.manifestPath, inputRoots);
@@ -161,6 +161,7 @@ export async function prepareLookupCodes(checkouts) {
   return { protocol, codes, diffFiles };
 }
 export async function registerLookup({ checkouts, ...options }) {
+  if (options.lookupSource) requireLookup([checkouts?.R0?.path, checkouts?.Rpack?.path].every(path => typeof path === "string" && isAbsolute(path)), "lookup_invalid_checkout_binding");
   const workload = await lookupWorkload({ ...options, ...(options.lookupSource ? { inputRoots: [checkouts?.R0?.path, checkouts?.Rpack?.path] } : {}) });
   const { protocol, codes, diffFiles } = await prepareLookupCodes(checkouts);
   if (workload.lookupSource) await validateExternalPricing(workload, codes, protocol);

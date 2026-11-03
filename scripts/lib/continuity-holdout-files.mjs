@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { readFile, realpath, mkdir, lstat, writeFile } from "node:fs/promises";
-import { resolve, dirname, basename, relative, isAbsolute } from "node:path";
+import { resolve, dirname, basename, relative, isAbsolute, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 import { canonicalJson } from "./continuity-dataset.mjs";
@@ -26,7 +26,7 @@ export async function runtimeProvenance() {
   return { node: process.version, lockfileSha256: sha256(await regularFile(resolve(CHECKOUT, "pnpm-lock.yaml"))),
     typescript: require("typescript/package.json").version };
 }
-const within = (root, path) => { const rel = relative(root, path); return rel === "" || !rel.startsWith("..") && !isAbsolute(rel); };
+const within = (root, path) => { const rel = relative(root, path); return rel === "" || !(rel === ".." || rel.startsWith(`..${sep}`)) && !isAbsolute(rel); };
 
 /** Resolve every existing ancestor before creating anything, including symlinked parents. */
 export async function externalDirectory(path, create = false, roots = []) {

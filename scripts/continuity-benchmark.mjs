@@ -56,6 +56,7 @@ export function profileFrom(flags) {
   if (flags["no-judge"] && flags.judge !== undefined) throw new CliError("judge_conflict");
   const probeMode = flags["probe-mode"];
   if (probeMode !== undefined && probeMode !== LOOKUP_MODE) throw new CliError("invalid_probe_mode");
+  if ((flags.r0 !== undefined) !== (flags.rpack !== undefined)) throw new CliError("lookup_input_roots_required");
   const suite = flags.suite ?? "original";
   if (probeMode && suite === "holdout" && !flags["corpus-manifest"]) throw new CliError("lookup_not_legacy_holdout");
   if (!["original", "hard", "hard-distractors", "holdout"].includes(suite)) throw new CliError("invalid_suite");
@@ -140,6 +141,18 @@ External offline lookup uses the source triple above without legacy registration
   --selection-seed N [--per-group 2] --r0 PATH --rpack PATH [--lookup-policy FILE --lookup-policy-sha256 SHA], exactly one repeat.
 See docs/runtime/continuity-benchmark.md.`;
 
+/** Explicit and frozen root bindings must denote the same ordered R0/Rpack pair. */
+export async function resolveLookupInputRoots({ explicit, role, policy }) {
+  const canonical = [];
+  for (const roots of [explicit, role, policy].filter(roots => roots !== undefined)) {
+    if (!Array.isArray(roots) || roots.length !== 2 || !roots.every(path => typeof path === "string" && isAbsolute(path))) throw new CliError("lookup_input_roots_required");
+    canonical.push(await Promise.all(roots.map(path => realpath(path))));
+  }
+  if (!canonical.length) throw new CliError("lookup_input_roots_required");
+  if (canonical.some(roots => roots.some((root, i) => root !== canonical[0][i]))) throw new CliError("lookup_input_roots_mismatch");
+  return canonical[0];
+}
+
 export async function main(argv = process.argv.slice(2), { stdout = console.log, env = process.env, modulesLoader, onPhase = () => {} } = {}) {
   onPhase({ phase: "benchmark-start" });
   const flags = parseArguments(argv);
@@ -159,11 +172,12 @@ export async function main(argv = process.argv.slice(2), { stdout = console.log,
   const piAuthPath = await validatePiAuthPath(flags["pi-auth-path"]);
   const { head, dirty } = await gitState();
   const roleRequest = flags["lookup-role"] ? JSON.parse(await readFile(flags["lookup-role"], "utf8")) : null;
-  if (flags["lookup-role"] && (!roleRequest || !roleRequest.binding)) throw new CliError("lookup_role_request_mismatch");
+  if (flags["lookup-role"] && (!roleRequest || !roleRequest.binding || !roleRequest.common || typeof roleRequest.common !== "object")) throw new CliError("lookup_role_request_mismatch");
   if (suite === "holdout" && flags.real && flags.shard === undefined) throw new CliError("paid_holdout_requires_shard");
   if (suite === "holdout" && flags.shard !== undefined && flags.repeat !== undefined) throw new CliError("registered_shard_requires_both_repeats");
   const lookupSource = suite === "holdout" && probeMode ? { manifestPath: flags["corpus-manifest"], manifestSha256: flags["manifest-sha256"], statisticalSpecPath: flags["statistical-spec"] } : undefined;
-  let lookupPolicy, inputRoots = roleRequest?.common.inputRoots ?? (flags.r0 && flags.rpack ? [flags.r0, flags.rpack] : undefined);
+  const explicitRoots = flags.r0 !== undefined ? [flags.r0, flags.rpack] : undefined;
+  let lookupPolicy, inputRoots;
   let selectionSeed = integer(flags["selection-seed"], { min: 0, max: Number.MAX_SAFE_INTEGER }, "lookup_invalid_selection");
   let perGroup = integer(flags["per-group"], { min: 1, max: Number.MAX_SAFE_INTEGER }, "lookup_invalid_selection") ?? 2;
   if (lookupSource) {
@@ -176,9 +190,10 @@ export async function main(argv = process.argv.slice(2), { stdout = console.log,
       const bytes = await externalFile(flags["lookup-policy"]);
       if (createHash("sha256").update(bytes).digest("hex") !== flags["lookup-policy-sha256"]) throw new CliError("lookup_policy_hash_mismatch");
       lookupPolicy = JSON.parse(bytes);
-      inputRoots ??= Object.values(lookupPolicy.codes ?? {}).map(code => code.path);
+
     }
-    if (!Array.isArray(inputRoots) || inputRoots.length !== 2) throw new CliError("lookup_input_roots_required");
+    inputRoots = await resolveLookupInputRoots({ explicit: explicitRoots, role: roleRequest?.common?.inputRoots,
+      policy: lookupPolicy ? [lookupPolicy.codes?.R0?.path, lookupPolicy.codes?.Rpack?.path] : undefined });
     if (flags["lookup-policy"]) await (await import("./lib/continuity-holdout-files.mjs")).externalFile(flags["lookup-policy"], inputRoots);
   }
   const { traces: allTraces, lookupSelection, sha256, source, holdout } = await loadTraces({ suite, seeds,

@@ -162,3 +162,9 @@ it("recomputes policy geometry and refuses classification/reason tampering, whil
   const workload = await lookupWorkload({ ...f.options, policySha256: await f.bindPolicy(unknown) });
   expect(() => estimateExternalLookup({ workload, catalog: { model: workload.reader.model, fileSha256: "a".repeat(64), contextWindow: 272000, maxTokens: 128000, cost: { input: 2, output: 10, cacheRead: .1 } }, outputLimit: f.options.outputLimit })).toThrow("lookup_inventory_unknown");
 });
+
+it("refuses missing or partial checkout paths before external registration loading", async () => {
+  for (const checkouts of [undefined, {}, { R0: { path: ROOT } }, { R0: { path: ROOT }, Rpack: {} }, { R0: { path: 7 }, Rpack: { path: ROOT } }]) {
+    await expect(registerLookup({ lookupSource: {}, checkouts })).rejects.toThrow("lookup_invalid_checkout_binding");
+  }
+});

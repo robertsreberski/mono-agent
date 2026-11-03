@@ -862,8 +862,10 @@ node scripts/continuity-lookup-budget.mjs \
 ```
 
 This fixed-budget, feasibility-only path never derives limits: eight calls,
-126,976 returned bytes, ten rounds and unchanged deadlines. Each of the six
-role/trace/probe slots records observed initial context and initial admission.
+126,976 returned bytes, ten rounds and unchanged deadlines. Each role × selected
+conversation × probe combination is one slot: six roles ×
+four conversations × 15 probes = **360 slots** with `--per-group 2` and no probe
+limit. Every slot records observed initial context and initial admission.
 Identifiers use that role's sanitized store and digest-verified reference path;
 other questions use an explicit conservative full-budget envelope, independent
 of identifier provenance. Classifications are recomputed from recorded metrics

@@ -11,7 +11,7 @@ import { canonicalJson, sourceOnly } from "../lib/continuity-dataset.mjs";
 import { generateHoldout, generateHoldoutTrace, loadHoldoutSpec, selectHoldoutCases, validateHoldoutSpec } from "../lib/continuity-holdout-generator.mjs";
 import { checkHoldoutOverlap, overlapMatcher, overlapSources, traceNarratives, validateAllowlist } from "../lib/continuity-holdout-overlap.mjs";
 import { wordRuns, literals } from "../lib/continuity-overlap-text.mjs";
-import { externalDirectory, readJson, externalFile, jsonBytes, CHECKOUT } from "../lib/continuity-holdout-files.mjs";
+import { externalDirectory, readJson, externalFile, jsonBytes, CHECKOUT, sha256 } from "../lib/continuity-holdout-files.mjs";
 
 const dirs = [];
 afterEach(async () => { for (const dir of dirs.splice(0)) await rm(dir, { recursive: true, force: true }); });
@@ -29,7 +29,7 @@ describe("holdout author schema", () => {
     spec.families[0].cases[0].events[0].owner = spec.families[0].cases[0].probes[0].question;
     await writeSpec(dir, spec);
     const cli = spawnSync(process.execPath, [new URL("../holdout-validate.mjs", import.meta.url).pathname, "--spec-dir", dir, "--schema-only"], { encoding: "utf8" });
-    expect(cli.status, cli.stderr).toBe(0); expect(JSON.parse(cli.stdout).scope).toBe("schema-only");
+    expect(cli.status, cli.stderr).toBe(0); expect(JSON.parse(cli.stdout).scope).toBe("schema-only"); expect(JSON.parse(cli.stdout).design).toBe("checked-in");
     const index = JSON.parse(await readFile(join(dir, "index.json"), "utf8")); index.families[0].file = "../escape.json";
     await writeFile(join(dir, "index.json"), jsonBytes(index));
     await expect(loadHoldoutSpec(dir)).rejects.toThrow("invalid_spec_filename");
@@ -261,6 +261,7 @@ it("freezes external canonical bytes and detects artifact, manifest, allowlist a
   await expect(lookupCli.main([...lookupArgs.filter(a => a !== "--dry-run"), "--real"])).rejects.toThrow("lookup_real_not_authorized");
   const validateCli = spawnSync(process.execPath, [await realpath(join(repo, "scripts/holdout-validate.mjs")), "--spec-dir", specDir, "--schema-only", "--statistical-spec", specPath], { encoding: "utf8" });
   expect(validateCli.status, validateCli.stderr).toBe(0); expect(JSON.parse(validateCli.stdout).families).toBe(4);
+  expect(JSON.parse(validateCli.stdout).design).toEqual({ statisticalSpecSha256: sha256(await readFile(specPath)) });
   const profile = { reader: "fixture:reader", extractionModel: "fixture:extractor", alternate: "fixture:alternate", judge: null };
   const revision = fixtureGit(repo, ["rev-parse", "HEAD"]).trim();
   const registered = await registrationModule.registerFrozenHoldout({ manifestPath: join(outputDir, "manifest.json"), manifestSha256: frozen.manifestSha256,
@@ -357,4 +358,11 @@ it("indexes pack guidance and both soul texts separately from semantic independe
     expect(text).toBeTruthy(); const matcher = overlapMatcher(sources, emptyAllowlist); matcher.add(text, "fixture");
     expect(matcher.result().overlaps.some(hit => hit.sources.includes(name))).toBe(true);
   }
+});
+
+it("keeps dot-dot-prefixed directory names inside each protected checkout", async () => {
+  const dir = await scratch(), checkout = join(dir, "checkout"), hidden = join(checkout, "..cache");
+  await mkdir(hidden, { recursive: true }); await writeFile(join(hidden, "input.json"), "{}");
+  await expect(externalDirectory(hidden, false, [checkout])).rejects.toThrow("path_must_be_outside_checkout");
+  await expect(externalFile(join(hidden, "input.json"), [checkout])).rejects.toThrow("path_must_be_outside_checkout");
 });

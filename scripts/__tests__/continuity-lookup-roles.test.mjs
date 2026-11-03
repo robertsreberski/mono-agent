@@ -8,7 +8,7 @@ import { LOOKUP_MODE, LOOKUP_ROLES, LOOKUP_SOULS, LOOKUP_BUDGET, sha256 } from "
 import { ROOT, GUIDANCE_FILES, lookupProtocol, lookupWorkload, registerLookup, validateRegistration, guidanceDiff, roleBinding, rolePlan,
   verifyRoleRequest, roleReceipt, assertRoleReceipt, aggregateLookupRoles, aggregateRoleFiles, runLookupRoles, runLookupRoleChild, verifyRegisteredCheckouts } from "../lib/continuity-lookup-roles.mjs";
 import { main as benchmarkMain } from "../continuity-benchmark.mjs";
-import { main as compareMain, lookupOutputPath } from "../continuity-lookup-compare.mjs";
+import { main as compareMain, lookupOutputPath, workloadOptions } from "../continuity-lookup-compare.mjs";
 import { main as estimateMain, estimateLookup, ESTIMATE_PROFILES, offlinePrices, priceLookupCall } from "../continuity-lookup-estimate.mjs";
 
 const dirs = [];
@@ -432,10 +432,16 @@ it("blocks external numerical approval on unknown slots, missing catalogs/limits
     f => { delete f.catalog.maxTokens; }, f => { delete f.catalog.cost.tiers[0].input; }, f => { f.catalog.cost.tiers = {}; },
     f => { delete f.catalog.cost.cacheRead; }, f => { f.outputLimit = null; }, f => { f.outputLimit.source = "hint"; },
     f => { f.outputLimit.tokens = 9999; }, f => { f.outputLimit.tokens = 10001; },
-    f => { f.workload.policy.budget.paths[0].feasibility.classification = "unknown"; },
+
     f => { f.workload.policy.budget.paths.pop(); }, f => { f.workload.policy.budget.paths[2].initialTokens = 300001; }]) {
     const fixture = await externalEstimateFixture(); mutate(fixture); expect(() => estimateExternalLookup(fixture)).toThrow();
   }
+  const unknown = await externalEstimateFixture();
+  const path = unknown.workload.policy.budget.paths[0]; path.exhausted = "latency";
+  path.feasibility = (await import("../lib/continuity-lookup.mjs")).externalPathFeasibility(path, unknown.workload.policy.budget);
+  expect(() => estimateExternalLookup(unknown)).toThrow("lookup_inventory_unknown");
+  const inconsistent = await externalEstimateFixture(); inconsistent.workload.policy.budget.paths[0].feasibility.classification = "unknown";
+  expect(() => estimateExternalLookup(inconsistent)).toThrow("lookup_policy_feasibility_mismatch");
   await expect(offlineCatalog("fixture:reader", "/fictional/no-catalog")).rejects.toThrow("lookup_catalog_missing");
 });
 it("validates fixed policy hash, unchanged limits, complete role slots and independent source/selection bindings", async () => {
@@ -460,4 +466,23 @@ it("does not add a spurious cap cent when summing repeated fractional catalog re
   f.workload.policy = await (await import("./fixtures/holdout-synthetic.mjs")).fixtureLookupPolicy({ source: f.workload.corpora[0].source, selection: f.workload.corpora[0].traces });
   const result = estimateExternalLookup(f);
   expect(result.eligible).toBe(64); expect(result.reservationUSD).toBe(1167.36); expect(result.catalogCapUSD).toBe(1459.2);
+});
+
+it("refuses empty external options by presence instead of silently selecting legacy defaults", async () => {
+  const groups = [
+    [["--corpus-manifest", "--manifest-sha256", "--statistical-spec"], "lookup_empty_source_option"],
+    [["--lookup-policy", "--lookup-policy-sha256"], "lookup_empty_policy_option"],
+    [["--output-limit", "--output-limit-source"], "lookup_empty_output_limit_option"],
+    [["--selection-seed", "--per-group"], "lookup_empty_selection_option"],
+    [["--r0", "--rpack"], "lookup_empty_input_root_option"],
+    [["--catalog-cap-usd"], "lookup_empty_catalog_cap_option"],
+  ];
+  for (const [flags, code] of groups) for (const flag of flags) for (const value of ["", " \t "]) {
+    expect(() => workloadOptions({ [flag]: value })).toThrow(code);
+  }
+  for (const flag of ["--r0", "--rpack"]) expect(() => workloadOptions({ [flag]: "/fictional/checkout" })).toThrow("lookup_input_roots_required");
+  expect(() => workloadOptions({ "--corpus-manifest": "/fictional/manifest.json" })).toThrow("lookup_source_required");
+  const base = await scratch();
+  await expect(compareMain(["register", "--corpus-manifest", "", "--manifest-sha256", "", "--statistical-spec", "", "--output", join(base, "unused")])).rejects.toThrow("lookup_empty_source_option");
+  await expect(access(join(base, "unused"))).rejects.toMatchObject({ code: "ENOENT" });
 });

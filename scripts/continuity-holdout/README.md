@@ -19,7 +19,10 @@ The neutral document's `holdout-validate` interface maps to:
 node scripts/holdout-validate.mjs --spec-dir /external/authored --schema-only
 ```
 
-Schema-only validation never renders histories or consults comparison sources.
+Schema-only validation reports `design: "checked-in"` for the default design, or
+`design: { statisticalSpecSha256 }` with the supplied spec's raw-byte SHA-256.
+A schema-only pass is not registration-design approval. It never renders
+histories or consults comparison sources.
 It checks declared fictional/independent provenance, not the truth of those
 claims or semantic adequacy of evidence. Authored strings reject C0 controls
 other than newline/tab, with the case and field in the error. In JSON regex

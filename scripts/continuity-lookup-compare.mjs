@@ -24,17 +24,26 @@ export function workloadOptions(flags) {
     const value = Number(flags[key]); requireLookup(Number.isSafeInteger(value), "lookup_invalid_arguments"); return value;
   };
   for (const key of ["--reader", "--reader-effort"]) requireLookup(flags[key] === undefined || flags[key].trim().length > 0, "lookup_empty_reader_option");
-  requireLookup(Boolean(flags["--lookup-policy"]) === Boolean(flags["--lookup-policy-sha256"]), "lookup_policy_hash_required");
-  requireLookup(Boolean(flags["--output-limit"]) === Boolean(flags["--output-limit-source"]), "lookup_output_limit_required");
+  const present = key => flags[key] !== undefined;
+  const nonempty = (keys, code) => { for (const key of keys) requireLookup(!present(key) || typeof flags[key] === "string" && flags[key].trim().length > 0, code); };
   const sourceKeys = ["--corpus-manifest", "--manifest-sha256", "--statistical-spec"];
-  requireLookup(!sourceKeys.some(k => flags[k]) || sourceKeys.every(k => flags[k]), "lookup_source_required");
-  return { ...(flags["--corpus-manifest"] ? { lookupSource: { manifestPath: flags["--corpus-manifest"], manifestSha256: flags["--manifest-sha256"], statisticalSpecPath: flags["--statistical-spec"] } } : {}),
-    ...(flags["--lookup-policy"] ? { policyPath: flags["--lookup-policy"], policySha256: flags["--lookup-policy-sha256"] } : {}),
-    ...(flags["--output-limit"] ? { outputLimit: { tokens: number("--output-limit"), source: flags["--output-limit-source"] } } : {}),
-    ...(flags["--catalog-cap-usd"] ? { catalogCapUSD: Number(flags["--catalog-cap-usd"]) } : {}),
-    suites: flags["--suites"]?.split(",") ?? (flags["--corpus-manifest"] ? ["holdout"] : ["original", "hard", "hard-distractors"]),
+  nonempty(sourceKeys, "lookup_empty_source_option");
+  nonempty(["--lookup-policy", "--lookup-policy-sha256"], "lookup_empty_policy_option");
+  nonempty(["--output-limit", "--output-limit-source"], "lookup_empty_output_limit_option");
+  nonempty(["--selection-seed", "--per-group"], "lookup_empty_selection_option");
+  nonempty(["--r0", "--rpack"], "lookup_empty_input_root_option");
+  nonempty(["--catalog-cap-usd"], "lookup_empty_catalog_cap_option");
+  requireLookup(present("--r0") === present("--rpack"), "lookup_input_roots_required");
+  requireLookup(present("--lookup-policy") === present("--lookup-policy-sha256"), "lookup_policy_hash_required");
+  requireLookup(present("--output-limit") === present("--output-limit-source"), "lookup_output_limit_required");
+  requireLookup(!sourceKeys.some(present) || sourceKeys.every(present), "lookup_source_required");
+  return { ...(present("--corpus-manifest") ? { lookupSource: { manifestPath: flags["--corpus-manifest"], manifestSha256: flags["--manifest-sha256"], statisticalSpecPath: flags["--statistical-spec"] } } : {}),
+    ...(present("--lookup-policy") ? { policyPath: flags["--lookup-policy"], policySha256: flags["--lookup-policy-sha256"] } : {}),
+    ...(present("--output-limit") ? { outputLimit: { tokens: number("--output-limit"), source: flags["--output-limit-source"] } } : {}),
+    ...(present("--catalog-cap-usd") ? { catalogCapUSD: Number(flags["--catalog-cap-usd"]) } : {}),
+    suites: flags["--suites"]?.split(",") ?? (present("--corpus-manifest") ? ["holdout"] : ["original", "hard", "hard-distractors"]),
     ...(flags["--selection-seed"] !== undefined ? { selectionSeed: number("--selection-seed"), perGroup: number("--per-group", 2) } : {}),
-    ...(flags["--r0"] && flags["--rpack"] ? { inputRoots: [flags["--r0"], flags["--rpack"]] } : {}),
+    ...(present("--r0") && present("--rpack") ? { inputRoots: [flags["--r0"], flags["--rpack"]] } : {}),
     traceIds: flags["--traces"]?.split(",") ?? null, repeats: number("--repeats", 1), probeLimit: number("--probe-limit", null),
     ...(flags["--reader"] !== undefined ? { reader: flags["--reader"] } : {}), ...(flags["--reader-effort"] !== undefined ? { readerEffort: flags["--reader-effort"] } : {}) };
 }
