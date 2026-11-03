@@ -339,8 +339,48 @@ export function scriptedLookupReader({ minRounds = 8, callBudget = LOOKUP_BUDGET
   };
 }
 
+/** Population selection is fixed before retrieval; IDs here are family IDs. */
+export function selectLookupFamilies(groups, seed, perGroup = 2) {
+  const fail = () => { throw Object.assign(new Error("lookup_invalid_selection"), { code: "lookup_invalid_selection" }); };
+  if (!Number.isSafeInteger(seed) || seed < 0 || !Number.isSafeInteger(perGroup) || perGroup < 1
+    || !groups || Object.keys(groups).sort().join(",") !== "distractor,ordinary") fail();
+  const all = Object.values(groups).flat();
+  if (new Set(all).size !== all.length || all.some(id => typeof id !== "string" || !id.length)) fail();
+  const selectedIds = Object.keys(groups).sort().flatMap(group => {
+    const ids = groups[group];
+    if (!Array.isArray(ids) || ids.length < perGroup) fail();
+    return [...ids].sort().map(id => ({ id, rank: sha256(`${seed}:${id}`) }))
+      .sort((a, b) => a.rank < b.rank ? -1 : a.rank > b.rank ? 1 : a.id < b.id ? -1 : 1).slice(0, perGroup).map(r => r.id);
+  }).sort();
+  return { algorithm: "seeded-sha256-rank-v1", seed, perGroup, selectedIds };
+}
+export function selectLookupTraces(traces, seed, perGroup = 2) {
+  const groups = { ordinary: [], distractor: [] };
+  for (const trace of traces) {
+    const { group, scenario } = trace.generated ?? {};
+    if (!groups[group] || typeof scenario !== "string") throw Object.assign(new Error("lookup_invalid_selection"), { code: "lookup_invalid_selection" });
+    groups[group].push(scenario);
+  }
+  // One independently authored conversation per family; repeated families fail closed.
+  const lookupSelection = selectLookupFamilies(groups, seed, perGroup);
+  return { lookupSelection, traces: traces.filter(t => lookupSelection.selectedIds.includes(t.generated.scenario)) };
+}
+/** Recompute geometry and measured failure evidence, never trust a classification. */
+export function externalPathFeasibility(path, budget) {
+  if (path.exhausted && !["calls", "bytes"].includes(path.exhausted))
+    return { classification: "unknown", reasons: [`reference_${path.exhausted}`] };
+  if (path.method === "conservative-full-budget")
+    return referenceFeasibility({ ...path, calls: 9, bytes: budget.byteBudget, cumulativeBytes: 9 * budget.byteBudget, discovered: true }, { ...budget, callBudget: 9 }, path);
+  const computed = referenceFeasibility(path, budget, path);
+  if (path.exhausted) return { ...computed, classification: "budget-infeasible", reasons: [...computed.reasons, `reference_${path.exhausted}`] };
+  if (path.referenceFailure || path.sourceAvailability !== "retained" || !path.sourceReturned) {
+    const initial = referenceFeasibility({ calls: 0, bytes: 0, cumulativeBytes: 0, discovered: true }, budget, path);
+    return initial.classification === "budget-infeasible" ? initial : { classification: "unknown", reasons: ["reference_not_verified"] };
+  }
+  return computed;
+}
 /** Fixed-budget artifact, not a derived budget or a legacy holdout gate. */
-export function assertExternalPolicy(policy, { source, selection, codes, protocol } = {}) {
+export function assertExternalPolicy(policy, { source, selection, lookupSelection, codes, protocol } = {}) {
   const fail = code => { throw Object.assign(new Error(code), { code }); };
   if (policy?.schema !== "continuity-lookup-feasibility-v1" || policy.mode !== "fixed-budget-feasibility-only" || policy.maxTurns !== 10) fail("lookup_invalid_policy");
   assertFixedBudget(policy.fixedBudgetSha256);
@@ -350,6 +390,7 @@ export function assertExternalPolicy(policy, { source, selection, codes, protoco
   }
   if (!source || !isDeepStrictEqual(policy.source, source)) fail("lookup_policy_source_mismatch");
   if (selection && !isDeepStrictEqual(policy.selection, selection)) fail("lookup_policy_selection_mismatch");
+  if (lookupSelection && !isDeepStrictEqual(policy.lookupSelection, lookupSelection)) fail("lookup_policy_selection_mismatch");
   if (codes && !isDeepStrictEqual(policy.codes, codes)) fail("lookup_policy_code_mismatch");
   if (protocol && !isDeepStrictEqual(policy.protocol, protocol)) fail("lookup_policy_protocol_mismatch");
   if (!Array.isArray(b.paths) || !b.paths.length || new Set(b.paths.map(p => `${p.role}/${p.traceId}/${p.probeId}`)).size !== b.paths.length) fail("lookup_invalid_inventory");
@@ -357,7 +398,16 @@ export function assertExternalPolicy(policy, { source, selection, codes, protoco
     const role = LOOKUP_ROLES.find(r => r.id === p.role);
     if (!role || role.arm !== p.arm || !Number.isSafeInteger(p.initialTokens) || p.initialTokens < 1 || !Number.isSafeInteger(p.initialContextBytes) || p.initialContextBytes < 1
       || !["feasible", "budget-infeasible", "unknown"].includes(p.feasibility?.classification)
-      || !["identifier-reference", "conservative-full-budget"].includes(p.method)) fail("lookup_invalid_inventory");
+      || !["identifier-reference", "conservative-full-budget"].includes(p.method)
+      || ![p.calls, p.bytes, p.cumulativeBytes].every(n => Number.isSafeInteger(n) && n >= 0)
+      || !Number.isSafeInteger(p.admissionCap) || p.admissionCap < 1 || typeof p.discovered !== "boolean"
+      || typeof p.referenceFailure !== "boolean" || p.method === "identifier-reference" && typeof p.sourceReturned !== "boolean"
+      || !(p.exhausted === null || typeof p.exhausted === "string" && /^[a-z_]+$/u.test(p.exhausted))) fail("lookup_invalid_inventory");
+    if (p.method === "conservative-full-budget" && (p.calls !== b.callBudget || p.bytes !== b.byteBudget
+      || p.cumulativeBytes !== 9 * b.byteBudget || !p.discovered)) fail("lookup_policy_feasibility_mismatch");
+    if (p.feasibility.classification === "budget-infeasible" && !p.feasibility.reasons?.length) fail("lookup_policy_feasibility_mismatch");
+    if (!isDeepStrictEqual(p.feasibility, externalPathFeasibility(p, b))) fail("lookup_policy_feasibility_mismatch");
+    if (!isDeepStrictEqual(p.initialAdmission, referenceFeasibility({ calls: 0, bytes: 0, cumulativeBytes: 0, discovered: true }, b, p))) fail("lookup_policy_feasibility_mismatch");
   }
   if (selection) {
     const expected = LOOKUP_ROLES.flatMap(r => selection.flatMap(t => t.probes.map(id => `${r.id}/${t.id}/${id}`))).sort();

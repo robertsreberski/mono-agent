@@ -840,19 +840,24 @@ hashes. This is not legacy holdout registration, ledger selection or
 qualification. Recall-only and checked-in lookup defaults remain unchanged.
 
 Use the existing validate/overlap/freeze commands with `--statistical-spec FILE`;
+expanded overlap references invalidate earlier overlap reports, which must be regenerated before freezing;
 see the [holdout preparation guide](../../scripts/continuity-holdout/README.md#smaller-external-lookup-populations).
 The transport specification's `repeats`, shard dollar cap and statistical gates
-are ignored by lookup, which explicitly requires one repeat. Preregister a seed
-and select two ordinary plus two distractor IDs **before** measuring; supply
-those IDs through `--traces` to all preparation commands. Unselected families
-are sealed spares, not outcome-driven replacements.
+are ignored by lookup, which explicitly requires one repeat. Preregister an integer seed **before** measuring and pass `--selection-seed N`
+(and optional `--per-group 2`) consistently to budget, estimate, register and
+benchmark planning. `seeded-sha256-rank-v1` sorts the frozen family IDs, ranks
+by SHA-256 of `${seed}:${id}`, and takes two families per group. Each family has
+one conversation. The algorithm, seed, per-group count and selected family IDs
+are bound into the policy, registration and plans. Explicit external `--traces`,
+`--lookup-traces` and execution `--trace` selections are refused. Unselected
+families are sealed spares, not outcome-driven replacements.
 
 ```bash
 node scripts/continuity-lookup-budget.mjs \
   --r0 /external/r0 --r0-revision FULL_SHA \
   --rpack /external/rpack --rpack-revision FULL_SHA \
   --corpus-manifest /external/frozen/manifest.json --manifest-sha256 SHA256 \
-  --statistical-spec /external/statistics.json --traces ID1,ID2,ID3,ID4 \
+  --statistical-spec /external/statistics.json --selection-seed N --per-group 2 \
   --fixed-budget-sha256 RAW_V1_POLICY_SHA256 --output /external/new-sizing
 ```
 
@@ -861,7 +866,9 @@ This fixed-budget, feasibility-only path never derives limits: eight calls,
 role/trace/probe slots records observed initial context and initial admission.
 Identifiers use that role's sanitized store and digest-verified reference path;
 other questions use an explicit conservative full-budget envelope, independent
-of identifier provenance. Unknown reference feasibility blocks pricing approval.
+of identifier provenance. Classifications are recomputed from recorded metrics
+and failure evidence when a policy is read. Only call/byte exhaustion is budget
+infeasibility; latency and other exhaustion causes are unknown and block pricing. Unknown reference feasibility blocks pricing approval.
 The content-free `budget.json` binds source/spec/selection, reader, protocol,
 clean code/build bindings and the raw v1 policy hash. It contains no questions,
 answers, retrieved text or narrative. Scratch replay stays private and is removed.
@@ -875,8 +882,8 @@ model's catalog maximum) or `enforced` (requires separate execution proof).
 `--catalog-cap-usd C`, exactly reproducing the estimate. External registrations
 use v2; v1 default registration shape and legacy plan digests remain unchanged.
 A standalone offline benchmark uses `--suite holdout --probe-mode lookup-allowed-v1`
-with the source triple, `--lookup-traces ID1,ID2,ID3,ID4` and optional hash-bound
-policy. A2 passes role-filtered policy paths through plans, receipts and scoring.
+with the source triple, `--selection-seed N --per-group 2`, both `--r0`/`--rpack`
+roots (or a policy that binds them), and optional hash-bound policy. A2 passes role-filtered policy paths through plans, receipts and scoring.
 
 Pricing retains planned denominators, excludes inventory-infeasible slots and
 blocks unknown slots. It reports per-role/per-trial expected, worst/reservation,

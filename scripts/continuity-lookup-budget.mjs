@@ -5,7 +5,7 @@ import { join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { armById } from "./lib/continuity-arms.mjs";
 import { digest, loadTraces, makePlan, traceTokenShape } from "./lib/continuity-dataset.mjs";
-import { LOOKUP_MODE, LOOKUP_DEFAULT_ARMS, LOOKUP_BUDGET, SOUL_BINDING, referenceFeasibility, sourceAnnotation, LOOKUP_ROLES, LOOKUP_SOULS, assertFixedBudget, assertExternalPolicy, sha256 } from "./lib/continuity-lookup.mjs";
+import { LOOKUP_MODE, LOOKUP_DEFAULT_ARMS, LOOKUP_BUDGET, SOUL_BINDING, referenceFeasibility, externalPathFeasibility, sourceAnnotation, LOOKUP_ROLES, LOOKUP_SOULS, assertFixedBudget, assertExternalPolicy, sha256 } from "./lib/continuity-lookup.mjs";
 import { lookupWorkload, prepareLookupCodes } from "./lib/continuity-lookup-roles.mjs";
 import { parseLookupOptions, workloadOptions, WORKLOAD_FLAGS, lookupOutputPath } from "./continuity-lookup-compare.mjs";
 import { buildCheckpoint, productionModules, runProbe } from "./lib/continuity-runner.mjs";
@@ -143,14 +143,15 @@ export async function measureBudget({ output, onProgress = () => {} }) {
 /** Measure only the explicit selection, once per role/slot. Never derive limits. */
 export async function measureFixedBudget({ output, fixedBudgetSha256, checkouts, onProgress = () => {}, ...options }) {
   assertFixedBudget(fixedBudgetSha256);
-  const workload = await lookupWorkload(options);
+  const inputRoots = [checkouts?.R0?.path, checkouts?.Rpack?.path];
+  const workload = await lookupWorkload({ ...options, inputRoots });
   if (!workload.lookupSource || workload.policy) throw new Error("lookup_fixed_measurement_requires_source_without_policy");
   const { protocol, codes } = await prepareLookupCodes(checkouts);
   const selection = workload.corpora[0].traces;
   const inventory = { schema: "continuity-lookup-feasibility-v1", mode: "fixed-budget-feasibility-only", fixedBudgetSha256,
-    source: workload.corpora[0].source, selection, protocol, codes, reader: workload.reader,
+    source: workload.corpora[0].source, selection, lookupSelection: workload.lookupSelection, protocol, codes, reader: workload.reader,
     maxTurns: 10, budget: { ...LOOKUP_BUDGET, paths: [] } };
-  const loaded = await loadTraces({ suite: "holdout", lookupSource: workload.lookupSource });
+  const loaded = await loadTraces({ suite: "holdout", lookupSource: workload.lookupSource, selectionSeed: workload.lookupSelection.seed, perGroup: workload.lookupSelection.perGroup, inputRoots });
   await mkdir(output, { mode: 0o700 });
   for (const role of LOOKUP_ROLES) {
     const code = codes[role.code], modules = await productionModules(code.path);
@@ -174,7 +175,7 @@ export async function measureFixedBudget({ output, fixedBudgetSha256, checkouts,
           const initialTokens = Math.max(Math.ceil(l.initialContextBytes / 3), role.arm === "native-lookup" ? Math.max(150000, shape.full) : shape.cold + 12000);
           const base = { role: role.id, arm: role.arm, traceId: trace.id, probeId: probe.id, initialContextBytes: l.initialContextBytes,
             initialTokens, admissionCap: plan.limits.maxObservedInputTokensPerInvocation, initiallyPresent: l.initiallyPresent,
-            sourceAvailability: l.source.availability, method: identifier ? "identifier-reference" : "conservative-full-budget" };
+            sourceAvailability: l.source.availability, exhausted: l.exhausted ?? null, referenceFailure: Boolean(trial.failure), method: identifier ? "identifier-reference" : "conservative-full-budget" };
           // Provenance is not feasibility. Non-identifiers have no witnessed reference:
           // conservatively admit the entire 10-round envelope, never borrow a neighbour.
           const path = identifier ? { ...base, sourceSha256: annotation.sourceSha256, retainedSha256: l.source.sha256 ?? null, recordId: l.source.recordId ?? null, retainedBytes: l.source.retainedBytes ?? null,
@@ -184,21 +185,13 @@ export async function measureFixedBudget({ output, fixedBudgetSha256, checkouts,
             : { ...base, calls: LOOKUP_BUDGET.callBudget, bytes: LOOKUP_BUDGET.byteBudget,
               cumulativeBytes: 9 * LOOKUP_BUDGET.byteBudget, discovered: true };
           const initialAdmission = referenceFeasibility({ calls: 0, bytes: 0, cumulativeBytes: 0, discovered: true }, LOOKUP_BUDGET, base);
-          let feasibility = referenceFeasibility(path, LOOKUP_BUDGET, base);
-          if (!identifier) {
-            feasibility = referenceFeasibility({ ...path, calls: 9 }, { ...LOOKUP_BUDGET, callBudget: 9 }, base);
-          } else if (l.exhausted) {
-            feasibility = { ...feasibility, classification: "budget-infeasible", reasons: [...feasibility.reasons, `reference_${l.exhausted}`] };
-          } else if (trial.failure || l.source.availability !== "retained" || !l.sourceReturned) {
-            feasibility = initialAdmission.classification === "budget-infeasible" ? initialAdmission
-              : { classification: "unknown", reasons: ["reference_not_verified"] };
-          }
+          const feasibility = externalPathFeasibility(path, LOOKUP_BUDGET);
           inventory.budget.paths.push({ ...path, initialAdmission, feasibility });
         }
       } finally { await rm(dir, { recursive: true, force: true }); }
     }
   }
-  assertExternalPolicy(inventory, { source: loaded.source, selection, codes, protocol });
+  assertExternalPolicy(inventory, { source: loaded.source, selection, lookupSelection: workload.lookupSelection, codes, protocol });
   await writeFile(join(output, "budget.json"), `${JSON.stringify(inventory, null, 2)}\n`, { mode: 0o600, flag: "wx" });
   await rm(join(output, "scratch"), { recursive: true, force: true });
   return inventory;
@@ -224,5 +217,5 @@ export async function main(argv = process.argv.slice(2), { stdout = console.log 
   return 0;
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  main().catch(error => { console.error(`continuity-lookup-budget: ${error.code ?? "failed"}`); process.exitCode = 1; });
+  main().catch(error => { console.error(`continuity-lookup-budget: ${error.code ?? error.message}`); process.exitCode = 1; });
 }

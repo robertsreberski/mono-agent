@@ -33,6 +33,8 @@ export function workloadOptions(flags) {
     ...(flags["--output-limit"] ? { outputLimit: { tokens: number("--output-limit"), source: flags["--output-limit-source"] } } : {}),
     ...(flags["--catalog-cap-usd"] ? { catalogCapUSD: Number(flags["--catalog-cap-usd"]) } : {}),
     suites: flags["--suites"]?.split(",") ?? (flags["--corpus-manifest"] ? ["holdout"] : ["original", "hard", "hard-distractors"]),
+    ...(flags["--selection-seed"] !== undefined ? { selectionSeed: number("--selection-seed"), perGroup: number("--per-group", 2) } : {}),
+    ...(flags["--r0"] && flags["--rpack"] ? { inputRoots: [flags["--r0"], flags["--rpack"]] } : {}),
     traceIds: flags["--traces"]?.split(",") ?? null, repeats: number("--repeats", 1), probeLimit: number("--probe-limit", null),
     ...(flags["--reader"] !== undefined ? { reader: flags["--reader"] } : {}), ...(flags["--reader-effort"] !== undefined ? { readerEffort: flags["--reader-effort"] } : {}) };
 }
@@ -53,7 +55,7 @@ export async function lookupOutputPath(output, roots) {
   // Use this resolved path for writes too; do not re-traverse the original alias.
   return canonical;
 }
-export const WORKLOAD_FLAGS = ["--suites", "--traces", "--repeats", "--probe-limit", "--reader", "--reader-effort", "--corpus-manifest", "--manifest-sha256", "--statistical-spec", "--lookup-policy", "--lookup-policy-sha256", "--output-limit", "--output-limit-source", "--catalog-cap-usd"];
+export const WORKLOAD_FLAGS = ["--selection-seed", "--per-group", "--r0", "--rpack","--suites", "--traces", "--repeats", "--probe-limit", "--reader", "--reader-effort", "--corpus-manifest", "--manifest-sha256", "--statistical-spec", "--lookup-policy", "--lookup-policy-sha256", "--output-limit", "--output-limit-source", "--catalog-cap-usd"];
 const HELP = `continuity-lookup-compare (offline only)
   register --r0 PATH --r0-revision FULL_SHA --rpack PATH --rpack-revision FULL_SHA --output NEW_DIR
            [--suites original,hard,hard-distractors] [--traces ID,...] [--probe-limit N] [--repeats N]
@@ -61,7 +63,7 @@ const HELP = `continuity-lookup-compare (offline only)
   run --registration FILE --sha256 FILE_SHA256 --output NEW_ABSOLUTE_DIR
   aggregate --registration FILE --sha256 FILE_SHA256 --output EXISTING_ABSOLUTE_DIR
 External workload: --suites holdout --corpus-manifest FILE --manifest-sha256 SHA --statistical-spec FILE
-  --traces ID,... --lookup-policy FILE --lookup-policy-sha256 SHA
+  --selection-seed N [--per-group 2] --lookup-policy FILE --lookup-policy-sha256 SHA
   --output-limit N --output-limit-source enforced|catalog_max --catalog-cap-usd C (register)
   External registration uses one repeat, fixed-policy feasibility and a run-wide proposed cap; no legacy gates.
 Both checkouts must implement continuity-lookup-role-v1. Registration always builds the app closure.

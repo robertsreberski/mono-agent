@@ -457,3 +457,9 @@ it("gives a non-frozen lookup corpus a stable refusal code, including at the CLI
   const result = spawnSync(process.execPath, [join(root, "scripts/continuity-benchmark.mjs"), "--probe-mode", LOOKUP_MODE, "--suite", "hard", "--seeds", "109", "--dry-run"], { cwd: root, encoding: "utf8" });
   expect(result.status).toBe(1); expect(result.stderr).toContain("continuity-benchmark: lookup_requires_frozen_corpus_and_budget");
 });
+
+it("refuses a policy without an external source in the planner itself", async () => {
+  const { loadTraces, makePlan } = await import("../lib/continuity-dataset.mjs");
+  const loadedForPolicyGuard = await loadTraces();
+  expect(() => makePlan({ ...loadedForPolicyGuard, probeMode: "lookup-allowed-v1", lookupPolicy: {} })).toThrow("lookup_policy_requires_external_source");
+});

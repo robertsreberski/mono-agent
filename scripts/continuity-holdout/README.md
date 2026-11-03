@@ -464,3 +464,19 @@ Overlap now also compares runtime pack guidance and both instruction fixtures.
 Lexical matching and independent semantic/provenance review remain separate.
 Freeze only after the last tooling merge; later script changes require a new
 freeze, measurement, registration and estimate.
+
+The expanded guidance/soul overlap references make **all earlier overlap
+reports stale**, including legacy-design reports. Regenerate them with the
+current overlap CLI before any freeze; do not reuse an older passing report.
+
+For external lookup preparation, preregister an integer selection seed before
+measurement. Pass `--selection-seed N` and optional `--per-group 2` to the budget,
+estimate, compare registration and standalone benchmark commands. The pure
+`seeded-sha256-rank-v1` algorithm sorts the frozen family IDs, ranks each by
+SHA-256 of `${seed}:${id}`, and selects the first two per group. Exactly one
+conversation belongs to each family. The algorithm ID, seed, per-group count
+and selected family IDs are bound in the policy, registration and plans;
+unselected families are sealed spares. Explicit external trace-ID selections
+are refused. Source, statistical-spec and policy files must be outside **both**
+R0/Rpack checkouts, including symlink aliases and gitignored subdirectories.
+Use `--r0` and `--rpack` to declare those roots where no policy supplies them.

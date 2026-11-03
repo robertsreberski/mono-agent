@@ -198,7 +198,7 @@ it("freezes external canonical bytes and detects artifact, manifest, allowlist a
   // Smallest valid explicitly bound synthetic design; full E inventory/selection
   // and 512-conversation registration are tested separately, never mocked here.
   const statisticalSpec = { ...STATISTICAL_SPEC, design: { ...STATISTICAL_SPEC.design,
-    families: 2, conversationsPerFamily: 2, conversationsPerCorpus: 2, shards: 2, perCorpusPerShard: 1 } };
+    families: 4, conversationsPerFamily: 1, conversationsPerCorpus: 2, shards: 2, perCorpusPerShard: 1 } };
   const dir = await scratch(), specDir = join(dir, "spec"), spec = fixtureSpec(statisticalSpec);
   for (const family of spec.families) for (const item of family.cases) Object.assign(item, { turnCount: 80, toolCount: 64, sessions: 7 });
   // Large obvious synthetic units keep byte pressure and fresh seeded draws,
@@ -237,27 +237,30 @@ it("freezes external canonical bytes and detects artifact, manifest, allowlist a
   await writeFile(specPath, jsonBytes(statisticalSpec));
   // Explicit lookup source reuses the freeze, not legacy shard/ledger registration.
   const lookupSource = { manifestPath: join(outputDir, "manifest.json"), manifestSha256: frozen.manifestSha256, statisticalSpecPath: specPath };
-  const external = await datasetModule.loadTraces({ suite: "holdout", lookupSource });
-  expect(external.traces).toHaveLength(4); expect(external.holdout).toBeUndefined();
+  const external = await datasetModule.loadTraces({ suite: "holdout", lookupSource, selectionSeed: 42, perGroup: 1 });
+  expect(external.traces).toHaveLength(2); expect(external.holdout).toBeUndefined();
   expect(external.source.kind).toBe("lookup-frozen-holdout");
   const rolesModule = await import(/* @vite-ignore */ pathToFileURL(join(repo, "scripts/lib/continuity-lookup-roles.mjs")).href);
-  const selected = [external.traces[0].id, external.traces[2].id];
-  const workload = await rolesModule.lookupWorkload({ suites: ["holdout"], lookupSource, traceIds: selected });
+  const selected = external.traces.map(t => t.id);
+  const workload = await rolesModule.lookupWorkload({ suites: ["holdout"], lookupSource, selectionSeed: 42, perGroup: 1, inputRoots: [repo, repo] });
   expect(workload.repeats).toBe(1); expect(workload.corpora[0].traces.map(t => t.id)).toEqual(selected);
   expect(workload).not.toHaveProperty("shards"); expect(workload).not.toHaveProperty("shardCostCapUSD");
-  await expect(rolesModule.lookupWorkload({ suites: ["holdout"], lookupSource, traceIds: selected, repeats: 2 })).rejects.toThrow("lookup_external_requires_explicit_selection_and_one_repeat");
-  await expect(rolesModule.lookupWorkload({ suites: ["holdout"], lookupSource })).rejects.toThrow("lookup_external_requires_explicit_selection_and_one_repeat");
-  await expect(datasetModule.loadTraces({ suite: "holdout", lookupSource: { ...lookupSource, manifestSha256: "0".repeat(64) } })).rejects.toThrow("manifest_hash_mismatch");
+  await expect(rolesModule.lookupWorkload({ suites: ["holdout"], lookupSource, selectionSeed: 42, perGroup: 1, inputRoots: [repo, repo], repeats: 2 })).rejects.toThrow("lookup_external_requires_explicit_selection_and_one_repeat");
+  await expect(rolesModule.lookupWorkload({ suites: ["holdout"], lookupSource })).rejects.toThrow("lookup_invalid_selection");
+  await expect(datasetModule.loadTraces({ suite: "holdout", lookupSource: { ...lookupSource, manifestSha256: "0".repeat(64) }, selectionSeed: 42, perGroup: 1 })).rejects.toThrow("manifest_hash_mismatch");
   const lookupCli = await import(/* @vite-ignore */ pathToFileURL(join(repo, "scripts/continuity-benchmark.mjs")).href);
   let lookupDry;
   const lookupArgs = ["--suite", "holdout", "--probe-mode", "lookup-allowed-v1", "--corpus-manifest", lookupSource.manifestPath,
-    "--manifest-sha256", lookupSource.manifestSha256, "--statistical-spec", specPath, "--lookup-traces", selected.join(","), "--dry-run"];
+    "--manifest-sha256", lookupSource.manifestSha256, "--statistical-spec", specPath, "--selection-seed", "42", "--per-group", "1", "--r0", repo, "--rpack", repo, "--dry-run"];
   expect(await lookupCli.main(lookupArgs, { stdout: text => { lookupDry = JSON.parse(text); } })).toBe(0);
   expect(lookupDry.repeats).toBe(1); expect(lookupDry.holdout).toBeUndefined(); expect(lookupDry.corpus.traces).toHaveLength(2);
   expect(lookupDry.lookup.maxTurns).toBe(10);
+  expect(lookupDry.lookup.selection).toEqual(external.lookupSelection);
+  await expect(lookupCli.main([...lookupArgs, "--lookup-traces", "fixture-sealed-spare"])).rejects.toThrow("lookup_explicit_selection_refused");
+  await expect(lookupCli.main([...lookupArgs, "--trace", "fixture-sealed-spare"])).rejects.toThrow("lookup_explicit_selection_refused");
   await expect(lookupCli.main([...lookupArgs.filter(a => a !== "--dry-run"), "--real"])).rejects.toThrow("lookup_real_not_authorized");
   const validateCli = spawnSync(process.execPath, [await realpath(join(repo, "scripts/holdout-validate.mjs")), "--spec-dir", specDir, "--schema-only", "--statistical-spec", specPath], { encoding: "utf8" });
-  expect(validateCli.status, validateCli.stderr).toBe(0); expect(JSON.parse(validateCli.stdout).families).toBe(2);
+  expect(validateCli.status, validateCli.stderr).toBe(0); expect(JSON.parse(validateCli.stdout).families).toBe(4);
   const profile = { reader: "fixture:reader", extractionModel: "fixture:extractor", alternate: "fixture:alternate", judge: null };
   const revision = fixtureGit(repo, ["rev-parse", "HEAD"]).trim();
   const registered = await registrationModule.registerFrozenHoldout({ manifestPath: join(outputDir, "manifest.json"), manifestSha256: frozen.manifestSha256,

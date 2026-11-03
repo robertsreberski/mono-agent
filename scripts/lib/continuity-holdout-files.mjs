@@ -29,21 +29,21 @@ export async function runtimeProvenance() {
 const within = (root, path) => { const rel = relative(root, path); return rel === "" || !rel.startsWith("..") && !isAbsolute(rel); };
 
 /** Resolve every existing ancestor before creating anything, including symlinked parents. */
-export async function externalDirectory(path, create = false) {
-  const checkout = await realpath(CHECKOUT);
+export async function externalDirectory(path, create = false, roots = []) {
+  const checkouts = await Promise.all([CHECKOUT, ...roots].map(root => realpath(root)));
   let ancestor = resolve(path), suffix = [];
   while (true) {
     try { ancestor = await realpath(ancestor); break; }
     catch (error) { if (error.code !== "ENOENT") throw error; suffix.unshift(basename(ancestor)); ancestor = dirname(ancestor); }
   }
   const target = resolve(ancestor, ...suffix);
-  if (within(checkout, target) || within(target, checkout)) throw new Error("path_must_be_outside_checkout");
+  if (checkouts.some(checkout => within(checkout, target) || within(target, checkout))) throw new Error("path_must_be_outside_checkout");
   if (create) await mkdir(target, { recursive: true, mode: 0o700 });
   return target;
 }
-export async function externalFile(path) {
-  await externalDirectory(dirname(resolve(path)));
-  await externalDirectory(dirname(await realpath(path)));
+export async function externalFile(path, roots = []) {
+  await externalDirectory(dirname(resolve(path)), false, roots);
+  await externalDirectory(dirname(await realpath(path)), false, roots);
   return regularFile(path);
 }
 export async function writeExclusive(path, bytes) { await writeFile(path, bytes, { flag: "wx", mode: 0o600 }); }

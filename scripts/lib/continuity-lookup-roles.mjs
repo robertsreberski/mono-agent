@@ -45,25 +45,38 @@ export async function lookupProtocol(root = ROOT) {
 }
 
 export async function lookupWorkload({ suites = ["original", "hard", "hard-distractors"], traceIds = null, repeats = 1, probeLimit = null,
-  reader = DEFAULT_ALTERNATE, readerEffort = "low", lookupSource, policyPath, policySha256, outputLimit, catalogCapUSD } = {}) {
+  reader = DEFAULT_ALTERNATE, readerEffort = "low", lookupSource, policyPath, policySha256, outputLimit, catalogCapUSD, selectionSeed, perGroup = 2, inputRoots } = {}) {
   requireLookup(Array.isArray(suites) && suites.length > 0 && new Set(suites).size === suites.length
     && suites.every(s => ["original", "hard", "hard-distractors"].includes(s) || s === "holdout" && lookupSource), "lookup_invalid_suites");
   requireLookup(traceIds === null || Array.isArray(traceIds) && traceIds.length > 0 && new Set(traceIds).size === traceIds.length, "lookup_invalid_trace_selection");
   requireLookup(["none", "minimal", "low", "medium", "high"].includes(readerEffort), "invalid_effort");
-  requireLookup(!lookupSource || suites.length === 1 && suites[0] === "holdout" && repeats === 1 && traceIds !== null, "lookup_external_requires_explicit_selection_and_one_repeat");
+  requireLookup(!lookupSource || traceIds === null, "lookup_explicit_selection_refused");
+  requireLookup(lookupSource || selectionSeed === undefined, "lookup_source_required");
+  requireLookup(!lookupSource || suites.length === 1 && suites[0] === "holdout" && repeats === 1 && traceIds === null, "lookup_external_requires_explicit_selection_and_one_repeat");
   requireLookup(Boolean(policyPath) === Boolean(policySha256), "lookup_policy_hash_required");
   requireLookup(!policyPath || lookupSource, "lookup_policy_requires_external_source");
+  if (lookupSource) requireLookup(Number.isSafeInteger(selectionSeed) && selectionSeed >= 0, "lookup_invalid_selection");
   let policy;
   if (policyPath) {
     const { externalFile } = await import("./continuity-holdout-files.mjs");
-    const bytes = await externalFile(policyPath);
+    const bytes = await externalFile(policyPath, inputRoots);
     requireLookup(HASH.test(policySha256 ?? "") && sha256(bytes) === policySha256, "lookup_policy_hash_mismatch");
     policy = JSON.parse(bytes);
   }
+  if (lookupSource) {
+    inputRoots ??= policy?.codes ? Object.values(policy.codes).map(code => code.path) : undefined;
+    requireLookup(Array.isArray(inputRoots) && inputRoots.length === 2 && inputRoots.every(isAbsolute), "lookup_input_roots_required");
+    inputRoots = await Promise.all(inputRoots.map(root => realpath(root)));
+    const { externalFile } = await import("./continuity-holdout-files.mjs");
+    await externalFile(lookupSource.manifestPath, inputRoots);
+    await externalFile(lookupSource.statisticalSpecPath, inputRoots);
+    if (policyPath) await externalFile(policyPath, inputRoots);
+  }
+  let lookupSelection;
   const corpora = [], found = new Set();
   for (const suite of suites) {
-    const loaded = await loadTraces({ suite, ...(lookupSource ? { lookupSource } : {}) });
-    if (lookupSource) loaded.traces = loaded.traces.filter(trace => traceIds.includes(trace.id));
+    const loaded = await loadTraces({ suite, ...(lookupSource ? { lookupSource, selectionSeed, perGroup, inputRoots } : {}) });
+    lookupSelection = loaded.lookupSelection;
     // Validate settings with the unchanged A1 planner, before constructing any registration.
     const plan = makePlan({ ...loaded, probeMode: LOOKUP_MODE, repeats, probeLimit,
       profile: readerProfile(reader, readerEffort), ...(policy ? { lookupPolicy: policy } : {}) });
@@ -75,10 +88,10 @@ export async function lookupWorkload({ suites = ["original", "hard", "hard-distr
   requireLookup(traceIds === null || traceIds.every(id => found.has(id)), "unknown_trace");
   const selection = corpora.flatMap(c => c.traces);
   if (policy) {
-    assertExternalPolicy(policy, { source: corpora[0].source, selection });
+    assertExternalPolicy(policy, { source: corpora[0].source, selection, lookupSelection });
     requireLookup(same(policy.reader, { model: reader, effort: readerEffort }), "lookup_policy_reader_mismatch");
   }
-  return { ...(lookupSource ? { lookupSource, ...(policy ? { policyPath, policySha256, policy } : {}),
+  return { ...(lookupSource ? { lookupSource, lookupSelection, inputRoots, ...(policy ? { policyPath, policySha256, policy } : {}),
     ...(outputLimit ? { outputLimit } : {}), ...(catalogCapUSD !== undefined ? { catalogCapUSD } : {}) } : {}), corpora, repeats, probeLimit, reader: { model: reader, effort: readerEffort } };
 }
 function readerProfile(model, effort) {
@@ -148,7 +161,7 @@ export async function prepareLookupCodes(checkouts) {
   return { protocol, codes, diffFiles };
 }
 export async function registerLookup({ checkouts, ...options }) {
-  const workload = await lookupWorkload(options);
+  const workload = await lookupWorkload({ ...options, ...(options.lookupSource ? { inputRoots: [checkouts?.R0?.path, checkouts?.Rpack?.path] } : {}) });
   const { protocol, codes, diffFiles } = await prepareLookupCodes(checkouts);
   if (workload.lookupSource) await validateExternalPricing(workload, codes, protocol);
   const roles = LOOKUP_ROLES.map(def => ({ id: def.id, arm: def.arm, code: def.code, revision: codes[def.code].revision,
@@ -159,9 +172,9 @@ export async function validateRegistration(registration) {
   const r = registration;
   requireLookup([REGISTRATION_SCHEMA, "continuity-lookup-registration-v2"].includes(r?.schema) && (r.schema === "continuity-lookup-registration-v2") === Boolean(r.common?.lookupSource), "incompatible_lookup_registration");
   requireLookup(same(r.common?.protocol, await lookupProtocol()), "lookup_registration_protocol_mismatch");
-  const expected = await lookupWorkload({ suites: r.common.corpora?.map(c => c.suite), traceIds: [...new Set(r.common.corpora?.flatMap(c => c.traces.map(t => t.id)))],
-    repeats: r.common.repeats, probeLimit: r.common.probeLimit, reader: r.common.reader?.model, readerEffort: r.common.reader?.effort, ...(r.common.lookupSource ? { lookupSource: r.common.lookupSource, policyPath: r.common.policyPath, policySha256: r.common.policySha256, outputLimit: r.common.outputLimit, catalogCapUSD: r.common.catalogCapUSD } : {}) });
-  if (r.common.lookupSource) await validateExternalPricing(expected, r.codes, r.common.protocol);
+  const expected = await lookupWorkload({ suites: r.common.corpora?.map(c => c.suite), traceIds: r.common.lookupSource ? null : [...new Set(r.common.corpora?.flatMap(c => c.traces.map(t => t.id)))],
+    repeats: r.common.repeats, probeLimit: r.common.probeLimit, reader: r.common.reader?.model, readerEffort: r.common.reader?.effort, ...(r.common.lookupSource ? { lookupSource: r.common.lookupSource, selectionSeed: r.common.lookupSelection?.seed, perGroup: r.common.lookupSelection?.perGroup, inputRoots: Object.values(r.codes ?? {}).map(code => code.path), policyPath: r.common.policyPath, policySha256: r.common.policySha256, outputLimit: r.common.outputLimit, catalogCapUSD: r.common.catalogCapUSD } : {}) });
+  if (r.common.lookupSource) { expected.catalog = r.common.catalog; await validateExternalPricing(expected, r.codes, r.common.protocol); }
   requireLookup(same(r.common, { protocol: r.common.protocol, ...expected }), "lookup_registration_workload_mismatch");
   requireLookup(r.codes && same(Object.keys(r.codes).sort(), ["R0", "Rpack"]) && r.diffFiles?.some(file => RUNTIME_GUIDANCE_FILES.includes(file))
     && r.diffFiles.every(file => GUIDANCE_FILES.includes(file)) && new Set(r.diffFiles).size === r.diffFiles.length, "lookup_rpack_diff_out_of_scope");
@@ -185,8 +198,8 @@ export function roleBinding(registration, role, corpus) {
     scope: { suite: corpus.suite, traces: corpus.traces.map(trace => trace.id) } };
 }
 export async function rolePlan(common, binding) {
-  if (common.policy) assertExternalPolicy(common.policy, { source: common.corpora[0].source, selection: common.corpora[0].traces });
-  const loaded = await loadTraces({ suite: binding.scope.suite, ...(common.lookupSource ? { lookupSource: common.lookupSource } : {}) });
+  if (common.policy) assertExternalPolicy(common.policy, { source: common.corpora[0].source, selection: common.corpora[0].traces, lookupSelection: common.lookupSelection });
+  const loaded = await loadTraces({ suite: binding.scope.suite, ...(common.lookupSource ? { lookupSource: common.lookupSource, selectionSeed: common.lookupSelection.seed, perGroup: common.lookupSelection.perGroup, inputRoots: common.inputRoots } : {}) });
   return makePlan({ ...loaded, codeRevision: binding.revision, probeMode: LOOKUP_MODE, lookupRole: binding, arms: [binding.arm],
     ...(common.policy ? { lookupPolicy: common.policy } : {}), repeats: common.repeats, probeLimit: common.probeLimit, profile: readerProfile(common.reader.model, common.reader.effort) });
 }
@@ -254,7 +267,7 @@ export async function runLookupRoles(registration, output, { onProgress = () => 
     const requestPath = join(parent, `${corpus.suite}-request.json`), dir = join(parent, corpus.suite);
     await save(requestPath, request);
     onProgress(`${role.id}/${corpus.suite}`);
-    const args = [...(registration.common.lookupSource ? ["--corpus-manifest", registration.common.lookupSource.manifestPath, "--manifest-sha256", registration.common.lookupSource.manifestSha256, "--statistical-spec", registration.common.lookupSource.statisticalSpecPath, "--lookup-policy", registration.common.policyPath, "--lookup-policy-sha256", registration.common.policySha256] : []), "--probe-mode", LOOKUP_MODE, "--lookup-role", requestPath, "--suite", corpus.suite, "--arms", role.arm,
+    const args = [...(registration.common.lookupSource ? ["--selection-seed", String(registration.common.lookupSelection.seed), "--per-group", String(registration.common.lookupSelection.perGroup), "--corpus-manifest", registration.common.lookupSource.manifestPath, "--manifest-sha256", registration.common.lookupSource.manifestSha256, "--statistical-spec", registration.common.lookupSource.statisticalSpecPath, "--lookup-policy", registration.common.policyPath, "--lookup-policy-sha256", registration.common.policySha256] : []), "--probe-mode", LOOKUP_MODE, "--lookup-role", requestPath, "--suite", corpus.suite, "--arms", role.arm,
       "--reader", registration.common.reader.model, "--alternate", readerProfile(registration.common.reader.model).alternate,
       "--reader-effort", registration.common.reader.effort, "--no-judge", "--repeats", String(registration.common.repeats), "--concurrency", "1", "--output", dir,
       ...(registration.common.probeLimit === null ? [] : ["--probe-limit", String(registration.common.probeLimit)])];
@@ -382,9 +395,9 @@ export function renderRoleMarkdown(result) {
   return `# Offline lookup roles\n\n${result.purpose}. No provider calls or spending authorization.\n\nCoverage: ${result.coverage.completed}/${result.coverage.planned}; missing ${result.coverage.missing}; duplicate ${result.coverage.duplicate}.\n\n${result.availability.filter(row => row.reason).map(row => `- ${row.role}/${row.suite}: ${row.reason}`).join("\n")}\n${result.launches.filter(row => row.exitCode !== 0 || row.timedOut).map(row => `- Child ${row.role}/${row.suite}: exit ${row.exitCode}, timed out ${row.timedOut}, receipt verified ${row.receiptVerified}.`).join("\n")}\n\n| Role | Completed exact correct/n | Exact with failures correct/n | Failed feasible |\n|---|---:|---:|---:|\n${Object.entries(result.roles).map(([id, row]) => `| ${id} | ${row.exact.correct}/${row.exact.n} | ${row.exactWithFailures.correct}/${row.exactWithFailures.n} | ${row.failedFeasible} |`).join("\n")}\n\nPaired counts (not significance or power):\n\n| Target vs baseline | Planned | Completed exact pairs | Including failed feasible | Target-only correct | Baseline-only correct |\n|---|---:|---:|---:|---:|---:|\n${result.contrasts.map(row => `| ${row.target} vs ${row.baseline} | ${row.planned} | ${row.completedExact.n} | ${row.exactWithFailures.n} | ${row.exactWithFailures.targetOnly} | ${row.exactWithFailures.baselineOnly} |`).join("\n")}\n`;
 }
 
-async function validateExternalPricing(workload, codes, protocol) {
+export async function validateExternalPricing(workload, codes, protocol) {
   requireLookup(workload.policy && Number.isFinite(workload.catalogCapUSD) && workload.catalogCapUSD > 0, "lookup_external_pricing_required");
-  assertExternalPolicy(workload.policy, { source: workload.corpora[0].source, selection: workload.corpora[0].traces, codes, protocol });
+  assertExternalPolicy(workload.policy, { source: workload.corpora[0].source, selection: workload.corpora[0].traces, lookupSelection: workload.lookupSelection, codes, protocol });
   const { offlineCatalog, estimateExternalLookup } = await import("../continuity-lookup-estimate.mjs");
   const catalog = await offlineCatalog(workload.reader.model);
   const estimate = estimateExternalLookup({ workload, catalog, outputLimit: workload.outputLimit });

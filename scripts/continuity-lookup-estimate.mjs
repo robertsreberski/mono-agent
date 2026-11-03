@@ -4,7 +4,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { digest, loadTraces, traceTokenShape } from "./lib/continuity-dataset.mjs";
-import { LOOKUP_BUDGET, LOOKUP_TIMING, LOOKUP_ROLES, LOOKUP_SOULS, sha256 } from "./lib/continuity-lookup.mjs";
+import { LOOKUP_BUDGET, LOOKUP_TIMING, LOOKUP_ROLES, LOOKUP_SOULS, assertExternalPolicy, sha256 } from "./lib/continuity-lookup.mjs";
 import { ROOT, lookupWorkload, readRegistration, requireLookup } from "./lib/continuity-lookup-roles.mjs";
 import { parseLookupOptions, workloadOptions, WORKLOAD_FLAGS } from "./continuity-lookup-compare.mjs";
 
@@ -150,6 +150,7 @@ function reservationEnvelope(price, input, output, trials) {
 }
 export function estimateExternalLookup({ workload, catalog, outputLimit = workload.outputLimit }) {
   requireLookup(workload.lookupSource && workload.policy && workload.repeats === 1, "lookup_external_policy_required");
+  assertExternalPolicy(workload.policy, { source: workload.corpora[0].source, selection: workload.corpora.flatMap(c => c.traces), lookupSelection: workload.lookupSelection });
   requireLookup(catalog?.model === workload.reader.model && /^[a-f0-9]{64}$/u.test(catalog.fileSha256 ?? ""), "lookup_catalog_binding_mismatch");
   const positive = n => Number.isSafeInteger(n) && n > 0;
   requireLookup(positive(catalog.contextWindow) && positive(catalog.maxTokens) && catalog.maxTokens <= catalog.contextWindow, "lookup_catalog_limits_missing");
@@ -220,7 +221,7 @@ export function estimateExternalLookup({ workload, catalog, outputLimit = worklo
 }
 const HELP = `continuity-lookup-estimate [--registration FILE --sha256 FILE_SHA256 | workload options]
   [--suites original,hard,hard-distractors|holdout] [--traces ID,...] [--probe-limit N] [--repeats N]
-  External: --corpus-manifest FILE --manifest-sha256 SHA --statistical-spec FILE --traces ID,...
+  External: --corpus-manifest FILE --manifest-sha256 SHA --statistical-spec FILE --selection-seed N [--per-group 2]
     --lookup-policy FILE --lookup-policy-sha256 SHA --output-limit N --output-limit-source enforced|catalog_max
   [--opus-model REF] (default fixed sensitivity profile anthropic:claude-opus-5-5)
 Offline only: local catalog prices, no providers, builds, credentials or spending authorization.`;

@@ -397,14 +397,11 @@ it("runs all six faux/real-loopback roles across two clean synthetic checkouts w
   expect((await aggregateRoleFiles(registration, output)).coverage.missing).toBe(1);
 }, 900000);
 
-function externalEstimateFixture() {
+async function externalEstimateFixture() {
   const selection = [{ id: "fixture-selected", family: "long", toolRecords: 64, probes: ["p01", "p04"] }];
   const source = { kind: "lookup-frozen-holdout", manifestSha256: "d".repeat(64), statisticalSpecSha256: "e".repeat(64) };
-  const paths = LOOKUP_ROLES.flatMap(role => selection[0].probes.map(probeId => ({ role: role.id, arm: role.arm, traceId: selection[0].id,
-    probeId, initialContextBytes: 12000, initialTokens: 12000, method: probeId === "p01" ? "identifier-reference" : "conservative-full-budget",
-    feasibility: { classification: role.arm === "native-lookup" ? "budget-infeasible" : "feasible", reasons: [] } })));
-  const policy = { schema: "continuity-lookup-feasibility-v1", mode: "fixed-budget-feasibility-only", maxTurns: 10,
-    fixedBudgetSha256: sha256(Buffer.from(JSON.stringify(LOOKUP_BUDGET))), source, selection, budget: { ...LOOKUP_BUDGET, paths } };
+  const { fixtureLookupPolicy } = await import("./fixtures/holdout-synthetic.mjs");
+  const policy = await fixtureLookupPolicy({ source, selection });
   const workload = { lookupSource: { manifestPath: "/fictional/manifest.json", manifestSha256: source.manifestSha256, statisticalSpecPath: "/fictional/spec.json" },
     policy, reader: { model: "fixture:reader", effort: "low" }, repeats: 1, corpora: [{ suite: "holdout", source, traces: selection }] };
   const catalog = { model: workload.reader.model, fileSha256: "c".repeat(64), contextWindow: 300000, maxTokens: 10000,
@@ -413,7 +410,7 @@ function externalEstimateFixture() {
 }
 it("prices eligible external slots with ten no-cache rounds, per-call tiers and one run-wide cap", async () => {
   const { estimateExternalLookup } = await import("../continuity-lookup-estimate.mjs");
-  const fixture = externalEstimateFixture(), result = estimateExternalLookup(fixture);
+  const fixture = await externalEstimateFixture(), result = estimateExternalLookup(fixture);
   expect(result).toMatchObject({ planned: 12, eligible: 8, skipped: 4, authorizedSpend: false });
   expect(result.roles.native).toMatchObject({ planned: 2, eligible: 0, skipped: 2, reservationUSD: 0 });
   expect(result.trials.filter(t => t.eligible).every(t => t.reservationTieredCalls === 10)).toBe(true);
@@ -437,13 +434,13 @@ it("blocks external numerical approval on unknown slots, missing catalogs/limits
     f => { f.outputLimit.tokens = 9999; }, f => { f.outputLimit.tokens = 10001; },
     f => { f.workload.policy.budget.paths[0].feasibility.classification = "unknown"; },
     f => { f.workload.policy.budget.paths.pop(); }, f => { f.workload.policy.budget.paths[2].initialTokens = 300001; }]) {
-    const fixture = externalEstimateFixture(); mutate(fixture); expect(() => estimateExternalLookup(fixture)).toThrow();
+    const fixture = await externalEstimateFixture(); mutate(fixture); expect(() => estimateExternalLookup(fixture)).toThrow();
   }
   await expect(offlineCatalog("fixture:reader", "/fictional/no-catalog")).rejects.toThrow("lookup_catalog_missing");
 });
 it("validates fixed policy hash, unchanged limits, complete role slots and independent source/selection bindings", async () => {
   const { assertExternalPolicy, FIXED_BUDGET_SHA256 } = await import("../lib/continuity-lookup.mjs");
-  const fixture = externalEstimateFixture(), policy = fixture.workload.policy;
+  const fixture = await externalEstimateFixture(), policy = fixture.workload.policy;
   policy.fixedBudgetSha256 = FIXED_BUDGET_SHA256;
   const binding = { source: policy.source, selection: policy.selection };
   expect(assertExternalPolicy(policy, binding)).toBe(policy);
@@ -456,12 +453,11 @@ it("validates fixed policy hash, unchanged limits, complete role slots and indep
 
 it("does not add a spurious cap cent when summing repeated fractional catalog reservations", async () => {
   const { estimateExternalLookup } = await import("../continuity-lookup-estimate.mjs");
-  const f = externalEstimateFixture();
+  const f = await externalEstimateFixture();
   f.catalog = { ...f.catalog, contextWindow: 272000, maxTokens: 128000, cost: { input: 2, output: 10, cacheRead: .1 } };
   f.outputLimit = { tokens: 128000, source: "catalog_max" };
   f.workload.corpora[0].traces = Array.from({ length: 4 }, (_, i) => ({ id: `fixture-${i}`, probes: ["p01", "p02", "p03", "p04"] }));
-  f.workload.policy.budget.paths = LOOKUP_ROLES.flatMap(r => f.workload.corpora[0].traces.flatMap(t => t.probes.map(probeId => ({
-    role: r.id, traceId: t.id, probeId, initialTokens: 12000, feasibility: { classification: r.arm === "native-lookup" ? "budget-infeasible" : "feasible" } }))));
+  f.workload.policy = await (await import("./fixtures/holdout-synthetic.mjs")).fixtureLookupPolicy({ source: f.workload.corpora[0].source, selection: f.workload.corpora[0].traces });
   const result = estimateExternalLookup(f);
   expect(result.eligible).toBe(64); expect(result.reservationUSD).toBe(1167.36); expect(result.catalogCapUSD).toBe(1459.2);
 });

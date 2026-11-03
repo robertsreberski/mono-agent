@@ -20,7 +20,7 @@ import { LOOKUP_MODE, LOOKUP_DEFAULT_ARMS } from "./lib/continuity-lookup.mjs";
 
 const ROOT = fileURLToPath(new URL("../", import.meta.url)).replace(/\/$/u, "");
 const BOOLEAN = new Set(["dry-run", "real", "help", "lookup-protocol", "no-judge", "keep-work", "aggregate-only", "require-request-cap", "capture-upkeep-output"]);
-const VALUED = new Set(["lookup-policy", "lookup-policy-sha256", "lookup-traces", "probe-mode", "lookup-role", "suite", "seeds", "reader", "extraction-model", "alternate", "judge", "reader-effort", "judge-effort", "repeats", "arms", "probe-limit", "confirm-plan", "pi-auth-path", "output", "concurrency", "corpus-manifest", "manifest-sha256", "registration", "registration-sha256", "statistical-spec", "shard", "audit"]);
+const VALUED = new Set(["selection-seed", "per-group", "r0", "rpack", "lookup-policy", "lookup-policy-sha256", "lookup-traces", "probe-mode", "lookup-role", "suite", "seeds", "reader", "extraction-model", "alternate", "judge", "reader-effort", "judge-effort", "repeats", "arms", "probe-limit", "confirm-plan", "pi-auth-path", "output", "concurrency", "corpus-manifest", "manifest-sha256", "registration", "registration-sha256", "statistical-spec", "shard", "audit"]);
 const REPEATABLE = new Set(["trace", "repeat"]);
 const EFFORTS = ["none", "minimal", "low", "medium", "high"];
 
@@ -63,7 +63,7 @@ export function profileFrom(flags) {
   if (suite !== "holdout" && ["corpus-manifest", "manifest-sha256", "registration", "registration-sha256", "statistical-spec", "shard", "audit"].some(k => flags[k] !== undefined)) throw new CliError("holdout_flags_require_holdout_suite");
   if (flags.seeds !== undefined && suite === "original") throw new CliError("seeds_require_hard_suite");
   if (suite === "holdout" && (probeMode ? ["corpus-manifest", "manifest-sha256", "statistical-spec"] : ["corpus-manifest", "manifest-sha256", "registration", "registration-sha256", "statistical-spec"]).some(k => !flags[k])) throw new CliError("holdout_registration_required");
-  if (["lookup-policy", "lookup-policy-sha256", "lookup-traces"].some(k => flags[k]) && !(probeMode && suite === "holdout")) throw new CliError("lookup_source_required");
+  if (["lookup-policy", "lookup-policy-sha256", "lookup-traces", "selection-seed", "per-group", "r0", "rpack"].some(k => flags[k]) && !(probeMode && suite === "holdout")) throw new CliError("lookup_source_required");
   if (probeMode && suite === "holdout" && ["registration", "registration-sha256", "shard", "audit"].some(k => flags[k])) throw new CliError("lookup_not_legacy_holdout");
   const arms = flags.arms === undefined ? [...(probeMode ? LOOKUP_DEFAULT_ARMS : suite === "holdout" ? HOLDOUT_ARMS : DEFAULT_ARMS[suite])] : flags.arms.split(",").map((value) => value.trim());
   return {
@@ -137,7 +137,7 @@ Execution only: --trace ID (repeatable) --repeat N (repeatable) --concurrency N 
 Holdout: --corpus-manifest FILE --manifest-sha256 SHA --registration FILE --registration-sha256 SHA
   --statistical-spec FILE --shard N [--audit FILE]. Shard counts/workload follow the registered specification.
 External offline lookup uses the source triple above without legacy registration/shard:
-  --lookup-traces ID,... [--lookup-policy FILE --lookup-policy-sha256 SHA], exactly one repeat.
+  --selection-seed N [--per-group 2] --r0 PATH --rpack PATH [--lookup-policy FILE --lookup-policy-sha256 SHA], exactly one repeat.
 See docs/runtime/continuity-benchmark.md.`;
 
 export async function main(argv = process.argv.slice(2), { stdout = console.log, env = process.env, modulesLoader, onPhase = () => {} } = {}) {
@@ -163,8 +163,12 @@ export async function main(argv = process.argv.slice(2), { stdout = console.log,
   if (suite === "holdout" && flags.real && flags.shard === undefined) throw new CliError("paid_holdout_requires_shard");
   if (suite === "holdout" && flags.shard !== undefined && flags.repeat !== undefined) throw new CliError("registered_shard_requires_both_repeats");
   const lookupSource = suite === "holdout" && probeMode ? { manifestPath: flags["corpus-manifest"], manifestSha256: flags["manifest-sha256"], statisticalSpecPath: flags["statistical-spec"] } : undefined;
-  let lookupPolicy;
+  let lookupPolicy, inputRoots = roleRequest?.common.inputRoots ?? (flags.r0 && flags.rpack ? [flags.r0, flags.rpack] : undefined);
+  let selectionSeed = integer(flags["selection-seed"], { min: 0, max: Number.MAX_SAFE_INTEGER }, "lookup_invalid_selection");
+  let perGroup = integer(flags["per-group"], { min: 1, max: Number.MAX_SAFE_INTEGER }, "lookup_invalid_selection") ?? 2;
   if (lookupSource) {
+    if (flags["lookup-traces"] || flags.trace) throw new CliError("lookup_explicit_selection_refused");
+    if (selectionSeed === undefined) throw new CliError("lookup_invalid_selection");
     if (repeats !== 1) throw new CliError("lookup_external_requires_explicit_selection_and_one_repeat");
     if (Boolean(flags["lookup-policy"]) !== Boolean(flags["lookup-policy-sha256"])) throw new CliError("lookup_policy_hash_required");
     if (flags["lookup-policy"]) {
@@ -172,20 +176,22 @@ export async function main(argv = process.argv.slice(2), { stdout = console.log,
       const bytes = await externalFile(flags["lookup-policy"]);
       if (createHash("sha256").update(bytes).digest("hex") !== flags["lookup-policy-sha256"]) throw new CliError("lookup_policy_hash_mismatch");
       lookupPolicy = JSON.parse(bytes);
+      inputRoots ??= Object.values(lookupPolicy.codes ?? {}).map(code => code.path);
     }
+    if (!Array.isArray(inputRoots) || inputRoots.length !== 2) throw new CliError("lookup_input_roots_required");
+    if (flags["lookup-policy"]) await (await import("./lib/continuity-holdout-files.mjs")).externalFile(flags["lookup-policy"], inputRoots);
   }
-  const { traces: allTraces, sha256, source, holdout } = await loadTraces({ suite, seeds,
-    ...(lookupSource ? { lookupSource } : suite === "holdout" ? { manifestPath: flags["corpus-manifest"], manifestSha256: flags["manifest-sha256"], registrationPath: flags.registration,
+  const { traces: allTraces, lookupSelection, sha256, source, holdout } = await loadTraces({ suite, seeds,
+    ...(lookupSource ? { lookupSource, selectionSeed, perGroup, inputRoots } : suite === "holdout" ? { manifestPath: flags["corpus-manifest"], manifestSha256: flags["manifest-sha256"], registrationPath: flags.registration,
       registrationSha256: flags["registration-sha256"], statisticalSpecPath: flags["statistical-spec"], shard: integer(flags.shard, { min: 1, max: Number.MAX_SAFE_INTEGER }, "invalid_shard"),
       profile, codeRevision: head, repeats, arms, probeLimit } : {}) });
-  const ids = lookupSource ? roleRequest?.binding.scope.traces ?? flags["lookup-traces"]?.split(",") : null;
-  if (lookupSource && (!ids?.length || new Set(ids).size !== ids.length || ids.some(id => !allTraces.some(t => t.id === id)))) throw new CliError("lookup_external_requires_explicit_selection_and_one_repeat");
-  const traces = ids ? allTraces.filter(t => ids.includes(t.id)) : allTraces;
-  const plan = makePlan({ traces, sha256, suite, source, ...(lookupSource ? { lookupSource, lookupPolicy } : {}), ...(probeMode ? { probeMode } : {}), ...(roleRequest ? { lookupRole: roleRequest.binding } : {}), codeRevision: head, profile, repeats, arms, probeLimit, ...(holdout ? { holdout } : {}),
+  const traces = allTraces;
+  if (roleRequest && lookupSource && JSON.stringify([...roleRequest.binding.scope.traces].sort()) !== JSON.stringify(traces.map(t => t.id).sort())) throw new CliError("lookup_policy_selection_mismatch");
+  const plan = makePlan({ traces, sha256, suite, source, ...(lookupSource ? { lookupSource, lookupPolicy, lookupSelection } : {}), ...(probeMode ? { probeMode } : {}), ...(roleRequest ? { lookupRole: roleRequest.binding } : {}), codeRevision: head, profile, repeats, arms, probeLimit, ...(holdout ? { holdout } : {}),
     piAuthFingerprint: piAuthPath === undefined ? null : createHash("sha256").update(piAuthPath).digest("hex") });
   if (lookupPolicy) {
     const { assertExternalPolicy } = await import("./lib/continuity-lookup.mjs");
-    assertExternalPolicy(lookupPolicy, { source, selection: plan.corpus.traces });
+    assertExternalPolicy(lookupPolicy, { source, selection: plan.corpus.traces, lookupSelection });
   }
   if (roleRequest) await (await import("./lib/continuity-lookup-roles.mjs")).verifyRoleRequest(ROOT, roleRequest, plan);
   if (flags["dry-run"]) {

@@ -9,7 +9,7 @@ import { CATEGORIES, ORIGINAL_CATEGORIES, probePrompt, validateProbeScore } from
 import { HOLDOUT_ARMS } from "./continuity-holdout-statistics.mjs";
 import { TOOL_NAMES } from "./continuity-tools.mjs";
 
-import { assertLookupContract, LOOKUP_MODE, LOOKUP_DEFAULT_ARMS, LOOKUP_BUDGET, LOOKUP_TIMING, SOUL_BINDING, assertLookupRole } from "./continuity-lookup.mjs";
+import { assertLookupContract, LOOKUP_MODE, LOOKUP_DEFAULT_ARMS, LOOKUP_BUDGET, LOOKUP_TIMING, SOUL_BINDING, assertLookupRole, selectLookupTraces } from "./continuity-lookup.mjs";
 
 export const CORPUS_DIR = fileURLToPath(new URL("../fixtures/continuity/", import.meta.url));
 export const PLAN_SCHEMA = "continuity-benchmark-plan-v2";
@@ -190,9 +190,11 @@ export async function loadTraces({ dir = CORPUS_DIR, suite = "original", seeds =
     const { loadFrozenHoldout } = await import("./continuity-holdout-registration.mjs");
     const input = holdoutOptions.lookupSource;
     if (Object.keys(input).sort().join(",") !== "manifestPath,manifestSha256,statisticalSpecPath") fail("lookup_invalid_source");
-    const bytes = await externalFile(input.statisticalSpecPath);
+    await externalFile(input.manifestPath, holdoutOptions.inputRoots);
+    const bytes = await externalFile(input.statisticalSpecPath, holdoutOptions.inputRoots);
     const { traces } = await loadFrozenHoldout(input.manifestPath, input.manifestSha256, JSON.parse(bytes));
-    return { suite, traces, sha256: input.manifestSha256, lookupSource: input,
+    const selected = selectLookupTraces(traces, holdoutOptions.selectionSeed, holdoutOptions.perGroup);
+    return { suite, ...selected, sha256: input.manifestSha256, lookupSource: input,
       source: { kind: "lookup-frozen-holdout", manifestSha256: input.manifestSha256, statisticalSpecSha256: digest(JSON.parse(bytes)), statisticalSpecRawSha256: createHash("sha256").update(bytes).digest("hex") } };
   }
   if (suite === "holdout") return (await import("./continuity-holdout-registration.mjs")).loadRegisteredHoldout(holdoutOptions);
@@ -232,12 +234,14 @@ export function digest(value) { return createHash("sha256").update(canonicalJson
  * selection, output directory) are deliberately outside the digest; a chunk
  * may only select a subset of the confirmed plan.
  */
-export function makePlan({ traces, sha256, suite = "original", source = null, codeRevision = null, profile = {}, repeats = 1, arms, probeLimit = null, piAuthFingerprint = null, holdout = null, probeMode, lookupRole, lookupSource, lookupPolicy }) {
+export function makePlan({ traces, sha256, suite = "original", source = null, codeRevision = null, profile = {}, repeats = 1, arms, probeLimit = null, piAuthFingerprint = null, holdout = null, probeMode, lookupRole, lookupSource, lookupPolicy, lookupSelection }) {
   if (!SUITES.includes(suite)) fail("invalid_suite");
   if (probeMode !== undefined && probeMode !== LOOKUP_MODE) fail("invalid_probe_mode");
   const lookup = probeMode === LOOKUP_MODE;
+  if (lookupPolicy && !lookupSource) fail("lookup_policy_requires_external_source");
+  if (lookupSource && !lookupSelection) fail("lookup_invalid_selection");
   if (lookupSource && (!lookup || suite !== "holdout" || repeats !== 1)) fail("lookup_external_requires_explicit_selection_and_one_repeat");
-  if (lookup) assertLookupContract({ suite, sha256, source, lookupSource, lookupPolicy });
+  if (lookup) assertLookupContract({ suite, sha256, source, lookupSource, lookupPolicy, lookupSelection });
   if (lookupRole !== undefined) {
     if (!lookup) fail("lookup_role_requires_lookup_mode");
     assertLookupRole(lookupRole);
@@ -286,7 +290,7 @@ export function makePlan({ traces, sha256, suite = "original", source = null, co
   const plan = {
     schema: PLAN_SCHEMA,
     ...(lookup ? { probeMode, lookup: { budget: lookupPolicy ? { ...lookupPolicy.budget, paths: lookupPolicy.budget.paths.filter(path => (lookupRole ? path.role === lookupRole.id : path.role === "native" || path.role === "pack") && traces.some(trace => trace.id === path.traceId)) } : lookupSource ? { ...LOOKUP_BUDGET, paths: [] } : LOOKUP_BUDGET,
-      ...(lookupSource ? { source: lookupSource, policySha256: lookupPolicy ? digest(lookupPolicy) : null } : {}), soul: lookupRole?.soul ?? SOUL_BINDING, ...(lookupRole ? { role: lookupRole } : {}), ...LOOKUP_TIMING,
+      ...(lookupSource ? { source: lookupSource, selection: lookupSelection, policySha256: lookupPolicy ? digest(lookupPolicy) : null } : {}), soul: lookupRole?.soul ?? SOUL_BINDING, ...(lookupRole ? { role: lookupRole } : {}), ...LOOKUP_TIMING,
       maxTurns: LOOKUP_BUDGET.callBudget + 2, reader: "scripted-multicall-v1", purpose: "mechanics-self-check-not-treatment-benefit" } } : {}),
     suite,
     ...(holdout === null ? {} : { holdout }),
