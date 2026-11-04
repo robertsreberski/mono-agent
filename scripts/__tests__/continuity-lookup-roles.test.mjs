@@ -540,5 +540,21 @@ it("refuses even empty workload overrides before reading an estimator registrati
 it("binds all present pilot artifact files, including guard assumptions, in the local protocol", async () => {
   const protocol = await lookupProtocol();
   expect(protocol.pilotSha256).toBe(digest(await Promise.all(LOOKUP_PILOT_PROTOCOL_FILES.map(async path => [path, sha256(await readFile(join(ROOT, path)))]))));
-  expect(LOOKUP_PILOT_PROTOCOL_FILES).toContain("scripts/lib/continuity-lookup-guard.mjs");
+  expect(LOOKUP_PILOT_PROTOCOL_FILES).toEqual([
+    "scripts/lib/continuity-lookup-guard.mjs", "scripts/lib/continuity-lookup-pilot.mjs",
+    "scripts/lib/continuity-lookup-authorization.mjs", "scripts/continuity-lookup-estimate.mjs",
+    "scripts/lib/continuity-lookup-lease.mjs", "scripts/lib/continuity-process-identity.mjs",
+    "scripts/lib/continuity-holdout-workflow.mjs", "scripts/lib/continuity-holdout-files.mjs",
+    "scripts/lib/continuity-holdout-registration.mjs", "scripts/continuity-holdout-freeze.mjs",
+    "scripts/lib/continuity-holdout-statistics.mjs", "scripts/lib/continuity-holdout-generator.mjs",
+    "scripts/lib/continuity-holdout-overlap.mjs", "scripts/continuity-holdout/statistical-spec.json",
+    "scripts/lib/memory-e2e-build.mjs", "scripts/continuity-lookup-compare.mjs",
+  ]);
+});
+
+it("rejects non-hex estimator hashes before reading files and null registrations with a fixed code", async () => {
+  for (const hash of ["not-hex", "G".repeat(64)])
+    await expect(estimateMain(["--registration", "/fictional/nonexistent.json", "--sha256", hash])).rejects.toThrow("lookup_registration_hash_required");
+  const dir = await scratch(), file = join(dir, "null-registration.json"); await writeFile(file, "null");
+  await expect(estimateMain(["--registration", file, "--sha256", sha256("null")])).rejects.toThrow("incompatible_lookup_registration");
 });

@@ -9,6 +9,8 @@ const mocks = vi.hoisted(() => ({ buildCheckpoint: vi.fn(), runProbe: vi.fn(), c
 vi.mock("../lib/continuity-runner.mjs", async original => ({ ...await original(), ...mocks }));
 import { aggregate, execute } from "../continuity-benchmark.mjs";
 import { loadTraces, makePlan } from "../lib/continuity-dataset.mjs";
+import { LOOKUP_ASSUMPTIONS } from "../lib/continuity-lookup-guard.mjs";
+import { digest } from "../lib/continuity-dataset.mjs";
 import { lookupPilotReadiness } from "../lib/continuity-lookup-roles.mjs";
 import { LOOKUP_MODE, LOOKUP_SLOT_CODES, lookupSlotDisposition } from "../lib/continuity-lookup.mjs";
 import { renderLookupMarkdown, summarizeLookup } from "../lib/continuity-lookup-score.mjs";
@@ -243,7 +245,22 @@ it("renders skipped, unknown-inventory blocked and missing counts separately", a
 });
 
 it("does not accept assumption labels or a faux authorization object as ordinary readiness authority", () => {
-  const catalog = { model: "openai-codex:gpt-6.1-sol", cost: { input: 2, output: 10, cacheRead: .1, cacheWrite: 2.5 } };
-  const descriptor = { capPolicy: "cap-gated-v1", outputCap: "catalog_max_assumed", inputEnvelope: "assumed-v1" };
-  expect(lookupPilotReadiness({ catalog, descriptor, capPolicy: "cap-gated-v1", authorization: { schema: "faux" } }).ready).toBe(false);
+  const catalog = { model: "openai-codex:gpt-6.1-sol", contextWindow: 400000, maxTokens: 128000, cost: { ...LOOKUP_ASSUMPTIONS.rates } };
+  const descriptor = { capPolicy: "cap-gated-v1", outputCap: "catalog_max_assumed", inputEnvelope: "assumed-v1",
+    assumptions: LOOKUP_ASSUMPTIONS, assumptionsSha256: digest(LOOKUP_ASSUMPTIONS) };
+  expect(lookupPilotReadiness({ catalog, descriptor, capPolicy: "cap-gated-v1", authorization: { schema: "faux" } })).toMatchObject({ ready: false, status: "awaiting_authorization",
+    authorization: { status: "awaiting_authorization" }, pricing: { status: "ready" }, assumptions: { status: "ready" }, blockers: ["lookup_authorization_required"] });
+});
+
+it("rejects assumption/catalog drift in cap-gated pricing readiness and uses unknown codes for unknown assumptions", () => {
+  const catalog = { model: "openai-codex:gpt-6.1-sol", contextWindow: 400000, maxTokens: 128000, cost: { ...LOOKUP_ASSUMPTIONS.rates } };
+  const descriptor = { capPolicy: "cap-gated-v1", outputCap: "catalog_max_assumed", inputEnvelope: "assumed-v1",
+    assumptions: LOOKUP_ASSUMPTIONS, assumptionsSha256: digest(LOOKUP_ASSUMPTIONS) };
+  for (const change of [c => { c.cost.input++; }, c => { c.maxTokens--; }, c => { c.contextWindow = 100; },
+    c => { c.cost.tiers = [{ ...c.cost, inputTokensAbove: 1, output: 100 }]; }]) {
+    const changed = structuredClone(catalog); change(changed);
+    expect(lookupPilotReadiness({ catalog: changed, descriptor, capPolicy: "cap-gated-v1" })).toMatchObject({ ready: false, pricing: { status: "unknown" } });
+  }
+  expect(lookupPilotReadiness({ catalog, capPolicy: "cap-gated-v1" })).toMatchObject({
+    outputCap: { status: "unknown", code: "lookup_output_cap_unknown" }, inputEnvelope: { status: "unknown", code: "lookup_input_envelope_unknown" } });
 });

@@ -232,9 +232,12 @@ export async function main(argv = process.argv.slice(2), { stdout = console.log 
   requireLookup(Boolean(flags["--registration"]) === Boolean(flags["--sha256"]), "lookup_registration_hash_required");
   let registration = null, pilot = null;
   if (flags["--registration"]) {
+    requireLookup(/^[a-f0-9]{64}$/u.test(flags["--sha256"] ?? ""), "lookup_registration_hash_required");
     const bytes = await readFile(flags["--registration"]);
     requireLookup(sha256(bytes) === flags["--sha256"], "lookup_registration_hash_mismatch");
-    if (JSON.parse(bytes).schema === "continuity-lookup-pilot-registration-v1") {
+    const artifact = JSON.parse(bytes);
+    requireLookup(artifact && typeof artifact === "object", "incompatible_lookup_registration");
+    if (artifact.schema === "continuity-lookup-pilot-registration-v1") {
       const { validateLookupPilotRegistration } = await import("./lib/continuity-lookup-pilot.mjs");
       pilot = await validateLookupPilotRegistration(JSON.parse(bytes)); registration = pilot.registration;
     } else registration = await readRegistration(flags["--registration"], flags["--sha256"]);

@@ -7,9 +7,10 @@ import { createHash } from "node:crypto";
 import { env } from "node:process";
 import { digest } from "./continuity-dataset.mjs";
 import { sha256 } from "./continuity-lookup.mjs";
-import { requireLookup } from "./continuity-lookup-roles.mjs";
+import { ROOT, requireLookup } from "./continuity-lookup-roles.mjs";
 import { validateLookupPilotRegistration } from "./continuity-lookup-pilot.mjs";
-import { startIdentity } from "./continuity-holdout-controller.mjs";
+import { lookupProcessStartIdentity } from "./continuity-process-identity.mjs";
+import { assertLookupPilotLease, readLookupPilotLease } from "./continuity-lookup-lease.mjs";
 import { durable } from "./continuity-holdout-workflow.mjs";
 
 export const LOOKUP_AUTHORIZATION_SCHEMA = "continuity-lookup-pilot-authorization-v1";
@@ -88,7 +89,7 @@ async function validateAuthorization({ authorizationPath, registrationPath, regi
   need(isAbsolute(outputRoot ?? "") && isAbsolute(credentialPath ?? "") && isAbsolute(controllerRoot ?? ""), "lookup_authorization_binding_mismatch");
   await safeDirectory(outputRoot, "lookup_authorization_binding_mismatch", true);
   need(await realpath(credentialPath) === credentialPath && await realpath(controllerRoot) === controllerRoot
-    && controllerRoot === codes.R0.path, "lookup_authorization_binding_mismatch");
+    && controllerRoot === codes.R0.path && controllerRoot === ROOT, "lookup_authorization_binding_mismatch");
   // Check permissions without ever resolving/refreshing a credential.
   await safeRead(credentialPath, "lookup_unsafe_authorization_file");
   for (const code of Object.values(codes)) need(disjoint(outputRoot, await realpath(code.path)), "lookup_authorization_binding_mismatch");
@@ -131,9 +132,8 @@ async function registry(ctx, create) {
     for (const segment of [".local", "state", "mono-agent", "lookup-pilot", "consumed-v1"]) {
       path = join(path, segment);
       if (create) {
-        let created = false;
-        try { await mkdir(path, { mode: 0o700 }); created = true; } catch (e) { if (e.code !== "EEXIST") throw e; }
-        if (created) await syncDirectory(dirname(path));
+        try { await mkdir(path, { mode: 0o700 }); } catch (e) { if (e.code !== "EEXIST") throw e; }
+        await syncDirectory(dirname(path));
       }
       if (!create && !await exists(path)) return { absent: true };
       await safeDirectory(path, code, ["mono-agent", "lookup-pilot", "consumed-v1"].includes(segment));
@@ -144,12 +144,12 @@ async function registry(ctx, create) {
     return { path, entry: join(path, key) };
   } catch { fail(code); }
 }
-function claim(ctx, identity) {
+function claim(ctx, identity, binding) {
   need(id(identity?.runId) && id(identity?.controllerEpoch) && Number.isSafeInteger(identity?.controller?.pid) && identity.controller.pid > 1
     && typeof identity.controller.startIdentity === "string" && identity.controller.startIdentity.length > 0
-    && startIdentity(identity.controller.pid) === identity.controller.startIdentity, "lookup_authorization_invalid");
+    && lookupProcessStartIdentity(identity.controller.pid) === identity.controller.startIdentity, "lookup_authorization_invalid");
   return { schema: LOOKUP_CONSUMPTION_SCHEMA, authorizationId: ctx.artifact.authorizationId,
-    authorizationSha256: ctx.rawDigest, outputRoot: ctx.outputRoot,
+    authorizationSha256: ctx.rawDigest, outputRoot: ctx.outputRoot, ...binding,
     runId: identity.runId, controllerEpoch: identity.controllerEpoch, controller: { pid: identity.controller.pid, startIdentity: identity.controller.startIdentity } };
 }
 async function pair(ctx, entry, expected) {
@@ -158,20 +158,23 @@ async function pair(ctx, entry, expected) {
     await safeDirectory(entry, code, true);
     need(same((await readdir(entry)).sort(), [CLAIM]), code);
     const a = await safeJson(join(entry, CLAIM), code), b = await safeJson(join(ctx.outputRoot, MARKER), code);
+    const binding = await readLookupPilotLease(ctx.outputRoot, a.controller);
     need(same(a, b) && a.schema === LOOKUP_CONSUMPTION_SCHEMA && a.authorizationId === ctx.artifact.authorizationId
       && a.authorizationSha256 === ctx.rawDigest && a.outputRoot === ctx.outputRoot
+      && same(a.outputIdentity, binding.outputIdentity) && same(a.leaseIdentity, binding.leaseIdentity)
       && id(a.runId) && id(a.controllerEpoch) && Number.isSafeInteger(a.controller?.pid) && a.controller.pid > 1
       && typeof a.controller.startIdentity === "string" && (!expected || same(a, expected)), code);
   } catch { fail(code); }
 }
-/** Hold the output-root lease; consume before launching children. Children later check parent PID/start identity. */
-export async function consumeLookupAuthorization(handle, identity) {
-  try { return await consume(handle, identity); }
+/** Requires a live opaque SQLite lease; consume before launching children and retain the lease until shutdown. */
+export async function consumeLookupAuthorization(handle, identity, lease) {
+  try { return await consume(handle, identity, lease); }
   catch (error) { fail(/^(lookup_[a-z_]+|paid_mode_refused_in_ci)$/u.test(error?.code ?? "") ? error.code : "lookup_authorization_consumption_incomplete"); }
 }
-async function consume(handle, identity) {
+async function consume(handle, identity, lease) {
   const ctx = await revalidate(handle), expected = claim(ctx, identity);
   need(identity.controller.pid === process.pid, "lookup_authorization_invalid");
+  Object.assign(expected, await assertLookupPilotLease(lease, ctx.outputRoot, identity.controller));
   const r = await registry(ctx, true);
   await safeDirectory(ctx.outputRoot, "lookup_authorization_binding_mismatch", true);
   if (await exists(r.entry)) {
@@ -204,6 +207,6 @@ async function verifyConsumption(handle, identity) {
   const ctx = await revalidate(handle), r = await registry(ctx, false);
   need(!r.absent && await exists(r.entry), "lookup_authorization_consumption_incomplete");
   await safeDirectory(ctx.outputRoot, "lookup_authorization_consumption_incomplete", true);
-  await pair(ctx, r.entry, claim(ctx, identity));
+  await pair(ctx, r.entry, claim(ctx, identity, await readLookupPilotLease(ctx.outputRoot, identity?.controller)));
   return true;
 }

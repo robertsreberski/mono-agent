@@ -29,7 +29,7 @@ it("pins exact maximum-class reservation, headroom, ratio and scenario independe
   expect(e.authorizedSpend).toBe(false);
   expect(estimateLookupPilot({ ...f, capUSD: 3.92 }).lastAdmissibleHeadroomUSD).toBe(0);
 });
-it.each([0, -1, 3.919999999, NaN, Infinity, undefined, "4"])("rejects invalid or below-Rmax C %s", async capUSD => {
+it.each([0, -1, 3.919999999, 4.001, 4.000000000000001, 1e14, NaN, Infinity, undefined, "4"])("rejects invalid or below-Rmax C %s", async capUSD => {
   const f = await fixture();
   expect(() => estimateLookupPilot({ ...f, capUSD })).toThrow("lookup_cap_invalid");
 });

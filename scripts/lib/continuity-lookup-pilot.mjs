@@ -67,7 +67,8 @@ function scenarioCall(catalog, input, output) {
 export function estimateLookupPilot({ workload, catalog, capUSD, assumptions = LOOKUP_ASSUMPTIONS }) {
   need(same(assumptions, LOOKUP_ASSUMPTIONS), "lookup_assumptions_mismatch");
   const rmax = requestMaximum(catalog, assumptions), cap = decimal(capUSD);
-  need(!less(cap, rmax), "lookup_cap_invalid");
+  need(!less(cap, rmax) && cap[0] * 100n % cap[1] === 0n
+    && cap[0] * 100n / cap[1] <= BigInt(Number.MAX_SAFE_INTEGER), "lookup_cap_invalid");
   const legacy = estimateExternalLookup({ workload, catalog }); // retains complete inventory/context checks
   let expected = [0n, 1n];
   for (const path of workload.policy.budget.paths) if (path.feasibility.classification === "feasible") {
@@ -98,6 +99,7 @@ export function lookupPilotDescriptor({ workload, catalog, capUSD, scheduleSeed,
 }
 /** Separate schema wraps an unchanged full-upfront registration; C is never its legacy cap. */
 export async function registerLookupPilot({ capUSD, scheduleSeed, runDeadlineMs, ...options }) {
+  need(options.lookupSource, "incompatible_lookup_registration");
   const workload = await lookupWorkload({ ...options, inputRoots: [options.checkouts?.R0?.path, options.checkouts?.Rpack?.path] });
   const catalog = await offlineCatalog(workload.reader.model);
   const comparison = estimateExternalLookup({ workload, catalog });

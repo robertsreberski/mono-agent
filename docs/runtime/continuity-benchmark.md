@@ -911,11 +911,13 @@ output limits block numerical approval rather than becoming zero or unknown-allo
 `lookupPilotReadiness()` in `scripts/lib/continuity-lookup-roles.mjs` is a
 pure diagnostic, not authorization. It reports separate output-cap,
 input-envelope and pricing readiness; unknown or unsupported components block.
-For `openai-codex:gpt-6.1-sol`, the output cap is **unsupported** and the backend
-input envelope is **unknown**, so `ready` remains false. A complete supplied
-local catalog can establish catalog pricing readiness only, not billing or
-reservation safety. Missing rates (including cache writes or tier rates) stay
-unknown. There is no caller-supplied capability override.
+In ordinary mode for `openai-codex:gpt-6.1-sol`, the output cap is
+**unsupported** and the backend input envelope is **unknown**, so `ready`
+remains false. The separate cap-gated artifact mode accepts registered
+assumptions only with a validated bound authorization. Before authorization,
+complete pricing/assumptions report `awaiting_authorization`. Catalog readiness
+requires complete assumption-compatible rates and limits; it is not billing or
+backend-enforcement evidence. There is no caller-supplied capability override.
 
 The installed Pi Codex serializer is tested with its actual provider URL/model,
 synthetic unexpired credentials and an injected `options.fetch` that never
@@ -951,8 +953,10 @@ proof. A present empty/whitespace `--fixed-budget-sha256` fails with
 
 Dollars do not predict subscription quota: report token/turn envelopes, not a
 dollar-to-quota conversion. **All real-execution refusals remain in force**;
-no guarded real dispatch, authorization, cap gate or reservation is implemented
-here. Faux accuracy proves mechanics only. Protocol-covered script changes
+no real dispatcher, active admission controller or provider reservation is
+implemented here. Separate pilot artifacts register the cap policy and validate
+single-use local authorizations; they do not dispatch. Faux accuracy proves
+mechanics only. Protocol-covered script changes
 invalidate older code-bound registrations; regenerate them for matching clean
 checkouts, not as execution approval. All raw content and private artifacts
 stay outside checkouts; share only counts, IDs, hashes and numerical summaries.
@@ -1189,7 +1193,7 @@ Sol's registered rates pin Rmax to $3.92. The maximum input-class rate includes
 cache writes ($2.50/M), not just uncached input ($2/M); the maximum output rate
 is $10/M. Only strictly exceeded input-tier thresholds at I = 272,000 apply.
 Missing prices, changed base assumptions, changed catalog bindings or an altered
-maximum refuse validation. C must be at least Rmax. A corrected full-upfront
+maximum refuse validation. C must be at least Rmax, in whole cents representable as a safe integer. A corrected full-upfront
 comparison remains available: ceil to cents of 1.25 × ten maximum reservations
 per eligible slot. It is not the admission gate, and the nested legacy
 registration retains its original full-upfront validation unchanged.
@@ -1248,18 +1252,31 @@ Output and registry must be disjoint, outside both registered checkouts, and
 have owner-safe ancestors. Pilot directories are private. No-follow reads,
 owned regular files, single-link checks and private file modes reject aliases.
 
-While holding the output-root lease:
+Acquire an opaque lease with `acquireLookupPilotLease(outputRoot)` from
+`scripts/lib/continuity-lookup-lease.mjs`, pass it as the third argument to
+`consumeLookupAuthorization`, and retain it until controller shutdown. The
+helper exclusively creates a private SQLite lease, records this process's PID
+and UTC/C-locale start identity, and holds a writer transaction. Consumption
+checks the active local handle, controller metadata and SQLite lock; a matching
+filename, empty file, unrelated database or released/fabricated handle is not
+proof. The legacy holdout controller keeps its original persisted identity
+semantics and is not imported by the lookup identity helper.
+
+Under that verified lease:
 
 1. Revalidate the attestation, bindings, safe files and local account. Require
    the root to be unused (except its lease), with no `units/` or fixed marker.
 2. Exclusively create the registry entry first. Its existence alone burns the
-   ID. Each newly created registry ancestor's parent is synced before advancing,
+   ID. Each registry ancestor's parent is synced before advancing, even after EEXIST,
    and the entry's parent is synced before either claim is written.
 3. Exclusively write and sync `authorization-consumed.json` in the output root,
    then `claim.json` in the registry entry via `durable()`.
 4. Verify the complete matching pair before setup. Claims bind authorization
    ID/raw digest, output root, run ID, controller epoch and controller PID/process
-   start identity. There is no nonce file or IPC message authentication.
+   start identity, plus output-root device/inode and lease-file device/inode.
+   Verification rechecks these filesystem identities and the held SQLite lock;
+   a recreated root with a copied-back marker cannot pass. There is no nonce
+   file or IPC message authentication.
 5. Only **after consumption**, launch children. Future child setup must check
    its parent PID against the recorded live controller PID/start identity.
 
@@ -1268,8 +1285,12 @@ replay, repair or rollback. Recreating the output root does not undo a burn.
 The registry guards ordinary crash/root recreation, not deliberate destruction
 of all trusted per-user state. CI and debug-variable presence always refuse in
 production. Unit tests redirect only the home lookup to synthetic temporary
-homes and exercise the real filesystem; success fixtures clear CI only
-in-process with egress denied. They do not launch a production child with CI
+homes. They exercise real frozen fictional inputs, clean temporary checkouts,
+deterministic local builds, pilot registration validation, Pi credential reads,
+SQLite locks and synced filesystem writes. They assert credential bytes, inode
+and mtime remain unchanged across validate/consume/verify, including expired
+fictional credentials. Success fixtures clear CI only in-process with egress
+denied. They do not launch a production child with CI
 removed, access real credentials or write the user's registry. Physical
 power-loss durability, backend framing/billing assumptions and live OAuth are
 not established by these offline tests.
