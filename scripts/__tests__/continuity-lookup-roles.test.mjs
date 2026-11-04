@@ -327,7 +327,9 @@ async function linkDependencies(source, dest) {
 it("runs all six faux/real-loopback roles across two clean synthetic checkouts with fresh builds and bound receipts", async () => {
   const base = await scratch(), r0 = join(base, "r0"), rpack = join(base, "rpack");
   const home = join(base, "home"); await mkdir(home, { mode: 0o700 });
-  for (const key of ["HOME", "XDG_CACHE_HOME", "XDG_CONFIG_HOME", "XDG_STATE_HOME"]) vi.stubEnv(key, home);
+  vi.stubEnv("XDG_DATA_HOME", join(base, "fictional-host-data"));
+  for (const key of ["HOME", "XDG_CACHE_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME"]) vi.stubEnv(key, home);
+  expect(process.env.XDG_DATA_HOME).toBe(home);
   git(ROOT, ["clone", "--shared", "--quiet", ROOT, r0]);
   // Include this uncommitted implementation in the synthetic source commit; never change ROOT HEAD.
   const overlay = new Set([...git(ROOT, ["diff", "--name-only", "HEAD"]).split("\n"), ...git(ROOT, ["ls-files", "--others", "--exclude-standard"]).split("\n")].filter(Boolean));

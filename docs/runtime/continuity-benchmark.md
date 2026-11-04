@@ -1348,7 +1348,8 @@ slot can start. Settlement remains legal after a sticky stop, never admission. A
 allows a bounded 250 ms settle grace, drains messages already received, then
 contains the owned process group;
 unreconciled containment is an absorbing safety stop taking precedence over
-other causes.
+other causes. Each signal revalidates the recorded leader start identity. If a
+live group remains without that identity, it is unreconciled and is not signaled.
 Recovery is observation/reconciliation only: it never launches, readmits or
 signals a previously recorded process group.
 
@@ -1370,12 +1371,13 @@ admitted terminal slots reset it. Alternating losses with completed slots are
 bounded only by C.
 
 Partial slot receipts are synced independently of worker exit. Aggregation
-refuses duplicate, changed and unplanned receipts and reports planned,
-eligible, skipped, unadmitted, admitted, completed, incomplete, invalid and
-missing counts for visited slots, plain paired-block counts and schedule
-truncation. The assigned in-flight slot is visited and incomplete in a partial
-view; genuinely unvisited slots count only as remaining truncation. Journal
-status counts and missing receipt copies are independent coverage counters;
+refuses duplicate, changed, unplanned and unvisited receipts. Planned and
+eligible totals describe the entire frozen inventory. Execution status counts
+(skipped, unadmitted, admitted, completed, incomplete, invalid and missing)
+cover visited slots only. The assigned in-flight slot is visited and incomplete
+in a partial view. Unvisited slots remain in inventory totals and schedule
+truncation, never in execution status counts. Journal status counts and missing
+receipt copies are independent coverage counters;
 paired blocks require verified receipt copies. Reports
 are strictly projected to opaque identities, content hashes, fixed codes and
 numeric usage/cost/scoring. They exclude paths and path hashes, commitments,

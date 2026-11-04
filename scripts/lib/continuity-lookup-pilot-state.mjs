@@ -1,7 +1,7 @@
 import { constants } from "node:fs";
-import { lstat, open } from "node:fs/promises";
+import { lstat, open, realpath } from "node:fs/promises";
 import { userInfo } from "node:os";
-import { join } from "node:path";
+import { join, dirname, resolve, isAbsolute } from "node:path";
 import { digest } from "./continuity-dataset.mjs";
 import { isLookupLeaseFile, markLookupLeaseCompromised } from "./continuity-lookup-lease.mjs";
 import { LOOKUP_AUTHORIZATION_SCHEMA } from "./continuity-lookup-authorization.mjs";
@@ -19,7 +19,19 @@ export function requireFauxPilot(authorization) {
   pilotNeed(!Object.hasOwn(process.env, "CONTINUITY_DEBUG"), "lookup_debug_forbidden");
   // The incompatible faux identity is non-paid and is explicitly allowed under CI.
 }
+async function privateParents(path) {
+  pilotNeed(isAbsolute(path) && resolve(path) === path, "lookup_receipt_invalid");
+  const parents = [];
+  for (let current = dirname(path); ; current = dirname(current)) {
+    const s = await lstat(current);
+    pilotNeed(s.isDirectory() && [0, userInfo().uid].includes(s.uid)
+      && ((s.mode & 0o022) === 0 || s.uid === 0 && (s.mode & 0o1000) !== 0), "lookup_receipt_invalid");
+    parents.push([s.dev, s.ino]); if (dirname(current) === current) break;
+  }
+  pilotNeed(await realpath(dirname(path)) === dirname(path), "lookup_receipt_invalid"); return parents;
+}
 export async function readPilotPrivate(path) {
+  const parents = await privateParents(path);
   const before = await lstat(path);
   const safe = s => s.isFile() && s.uid === userInfo().uid && s.nlink === 1 && (s.mode & 0o077) === 0 && s.size <= 16 * 1024 * 1024;
   pilotNeed(safe(before) && !isLookupLeaseFile(path, before), "lookup_receipt_invalid");
@@ -27,7 +39,12 @@ export async function readPilotPrivate(path) {
   try {
     const stat = await file.stat();
     pilotNeed(!markLookupLeaseCompromised(stat) && safe(stat) && stat.dev === before.dev && stat.ino === before.ino, "lookup_receipt_invalid");
-    return JSON.parse(await file.readFile("utf8"));
+    const checkPath = async () => {
+      pilotNeed(samePilot(parents, await privateParents(path)), "lookup_receipt_invalid");
+      const current = await lstat(path);
+      pilotNeed(safe(current) && current.dev === stat.dev && current.ino === stat.ino, "lookup_receipt_invalid");
+    };
+    await checkPath(); const bytes = await file.readFile("utf8"); await checkPath(); return JSON.parse(bytes);
   } finally { await file.close(); }
 }
 export const pilotStatePath = root => join(root, "lookup-pilot-controller.json");

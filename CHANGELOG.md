@@ -3,7 +3,7 @@
 ## Unreleased
 
 - Add offline lookup-pilot accounting and partial-run reports with durable
-  admission holds, drained settlements and bounded worker containment.
+  admission holds, drained settlements and identity-bound worker containment.
   Partial coverage includes assigned in-flight slots; refused rounds are not
   provider losses. Real authorizations and paid dispatch remain unavailable.
 

@@ -74,6 +74,6 @@ export async function createLookupPilotIPC(assignment) {
     consume: (permit, bodyDigest) => request("consume", { permit: token(permit), bodyDigest }),
     settle: (permit, outcome, rawUsage, tier) => request("settle", { permit: token(permit), outcome, rawUsage, tier: tier ?? null }),
     stop: code => request("stop", { code }),
-    close() { process.off("message", listener); process.off("disconnect", abort); if (pending) { clearTimeout(pending.timer); abort(); } },
+    close() { failed = true; process.off("message", listener); process.off("disconnect", abort); if (pending) { clearTimeout(pending.timer); abort(); } },
   });
 }

@@ -4,8 +4,10 @@ import fs from "node:fs";
 import promises from "node:fs/promises";
 import childProcess from "node:child_process";
 import { syncBuiltinESMExports } from "node:module";
+import { pathToFileURL } from "node:url";
 import { join, basename } from "node:path";
-const evidence = {};
+const startIdentity = pid => { try { return childProcess.execFileSync("/bin/ps", ["-p", String(pid), "-o", "lstart="], { encoding: "utf8", env: { ...process.env, LC_ALL: "C", TZ: "UTC" }, stdio: ["ignore", "pipe", "ignore"] }).trim(); } catch { return null; } };
+const evidence = { startIdentity: startIdentity(process.pid), probes: [], descendants: [] };
 let canaries = 0, unexpected = 0, checking = true;
 const directory = process.env.LOOKUP_FIXTURE_WITNESSES;
 const record = () => fs.writeFileSync(join(directory, `${process.pid}.json`), JSON.stringify({ canaries, unexpected, ci: process.env.CI ?? null, home: process.env.HOME, xdg: [process.env.XDG_CACHE_HOME, process.env.XDG_CONFIG_HOME, process.env.XDG_DATA_HOME, process.env.XDG_STATE_HOME], git: [process.env.GIT_CONFIG_GLOBAL, process.env.GIT_CONFIG_NOSYSTEM], ...evidence }), { mode: 0o600 });
@@ -34,7 +36,7 @@ for (const method of ["rename", "link"]) {
     return value;
   };
 }
-if (probe && fault?.action === "arrival") {
+if (probe && ["arrival", "arrival-persist", "arrival-receipt"].includes(fault?.action)) {
   const original = promises.open; let consumedReads = 0;
   promises.open = async (...args) => {
     const file = await original(...args);
@@ -42,7 +44,10 @@ if (probe && fault?.action === "arrival") {
       const read = file.readFile.bind(file);
       file.readFile = async (...options) => {
         const bytes = await read(...options), state = JSON.parse(bytes.toString());
-        if (state.slots.some(s => s.lastAck?.result && s.holds.at(-1)?.consumed) && ++consumedReads === 2) process.kill(process.ppid, "SIGKILL");
+        if (state.slots.some(s => s.lastAck?.result && s.holds.at(-1)?.consumed) && ++consumedReads === 2) {
+          if (fault.action === "arrival") process.kill(process.ppid, "SIGKILL");
+          else throw Object.assign(new Error("fictional_arrival_failure"), { code: fault.action === "arrival-persist" ? "lookup_persist_failed" : "lookup_receipt_invalid" });
+        }
         return bytes;
       };
     }
@@ -89,6 +94,18 @@ process.emit = (event, ...args) => {
       if (kind === "marker") fs.unlinkSync(join(a.outputRoot, "authorization-consumed.json"));
     }
     if (a?.type === "go") {
+      if (fault?.action === "close-idle") {
+        process.removeAllListeners("message"); process.on("message", () => {});
+        void (async () => {
+          const { createLookupPilotIPC } = await import(new URL("./continuity-lookup-ipc.mjs", pathToFileURL(process.argv[1])));
+          const source = await createLookupPilotIPC(assignment), admission = { requestId: `${assignment.runId}:1`, slotId: assignment.slotId, round: 1, payloadDigest: "a".repeat(64), rmax: 3.92 };
+          const permit = await source.admit(admission); source.close(); evidence.closeCodes = [];
+          for (const call of [() => source.admit({ ...admission, round: 2, requestId: `${assignment.runId}:2` }), () => source.consume(permit, "a".repeat(64)), () => source.settle(permit, { kind: "lost" }, null, null), () => source.stop("lookup_auth_failure")]) {
+            evidence.closeCodes.push(await Promise.race([Promise.resolve().then(call).then(() => "unexpected-success", e => e.code), new Promise(resolve => schedule(resolve, 100, "hung"))]));
+          }
+          record(); process.send({ type: "done", epoch: assignment.epoch, slotId: assignment.slotId, terminal: "lost", score: null }, () => process.disconnect());
+        })(); return true;
+      }
       if (assignment.scenario === "die") process.kill(process.pid, "SIGKILL");
       if (assignment.scenario === "hang") return true; // Keep the actual IPC child alive, withholding go.
       if (assignment.scenario === "disconnect") { process.disconnect(); return true; }
@@ -106,7 +123,7 @@ const fork = childProcess.fork;
 childProcess.fork = (...args) => {
   const child = fork(...args);
   if (args[0].endsWith("continuity-lookup-pilot-child.mjs")) {
-    probePid = child.pid; const send = child.send.bind(child), deliver = child.emit.bind(child);
+    probePid = child.pid; evidence.probes.push({ pid: child.pid, startIdentity: startIdentity(child.pid) }); record(); const send = child.send.bind(child), deliver = child.emit.bind(child);
     child.emit = (event, ...rest) => {
       if (event === "message" && rest[0]?.op === "settle" && fault?.action === "settle-at-grace") {
         queuedSettle = () => deliver(event, ...rest); deliverBoundary(); return true;
@@ -126,6 +143,14 @@ childProcess.execFileSync = (command, args, ...rest) => {
     && new Error().stack.split("\n")[3]?.includes("at verifyLookupPilotParent")) {
     evidence.swappedParentStart = true; record(); return fault.action === "swap-parent-start" ? "fictional-start-identity" : "";
   }
+  if (driver && fault?.action === "identity-before-exit" && command === "/bin/ps" && args[1] === String(probePid) && new Error().stack.includes("containOwned")) {
+    // Fixture owns this exact PID: make the leader disappear after the live-group snapshot.
+    process.kill(probePid, "SIGKILL");
+    for (let i = 0; i < 20; i++) { try { if (exec("ps", ["-p", String(probePid), "-o", "stat="], { encoding: "utf8" }).trim().startsWith("Z")) break; } catch { break; } }
+    evidence.leaderExitedAtCheck = true; record(); return "";
+  }
+  if (driver && fault?.action?.startsWith("identity-before-") && command === "/bin/ps" && args[1] === String(probePid) && new Error().stack.includes("containOwned")
+    && (fault.action === "identity-before-term" || evidence.signals?.includes("SIGTERM"))) { evidence.identityRefused = true; record(); return fault.action === "identity-before-gone" ? "" : "fictional-reused-start"; }
   if (driver && fault?.action === "null-controller-start" && command === "/bin/ps") return "";
   if (driver && fault?.action === "terminate-fail" && command === "ps" && args.includes("-axo") && probePid) return `${probePid} ${probePid} S\n`;
   return exec(command, args, ...rest);
@@ -136,8 +161,11 @@ if (probe) {
     if (m.op === "settle" && fault?.action === "settle-at-grace") { m.payload.rawUsage = { input_tokens: 100, output_tokens: 10 }; m.payload.tier = "default"; }
     if (m.type === "done" && fault?.action === "forge-terminal") m.terminal = fault.terminal;
     if (m.op === "stop") { evidence.stopSentAt = Date.now(); record(); }
-    if (m.type === "done" && fault?.action === "stop-hang") return true;
-    if (m.type === "done" && assignment?.scenario === "descendant") childProcess.spawn(process.execPath, ["-e", "setInterval(()=>{},1000)"], { stdio: "ignore", env: process.env }).unref();
+    if (m.type === "done" && (fault?.action === "stop-hang" || fault?.action?.startsWith("identity-before-"))) return true;
+    if (m.type === "done" && assignment?.scenario === "descendant") {
+      const descendant = childProcess.spawn(process.execPath, ["-e", "setInterval(()=>{},1000)"], { stdio: "ignore", env: process.env });
+      evidence.descendants.push({ pid: descendant.pid, startIdentity: startIdentity(descendant.pid) }); record(); descendant.unref();
+    }
     if (!changed && fault?.action?.startsWith("wire-") && m.version === "lookup-faux-ipc-v1" && (fault.action !== "wire-digest" || m.op === "consume")) {
       changed = true;
       if (fault.action === "wire-stale") m.epoch = "fictional-stale";
@@ -147,7 +175,8 @@ if (probe) {
     }
     return send(m, ...args);
   };
-  if (fault?.action === "stop-hang") process.on("message", () => {});
+  if (fault?.action === "stop-hang" || fault?.action?.startsWith("identity-before-")) process.on("message", () => {});
+  if (fault?.action?.startsWith("identity-before-")) { setInterval(() => {}, 1000); process.on("SIGTERM", () => {}); }
   if (fault?.action === "stop-hang") process.on("SIGTERM", () => { evidence.terminatedAt = Date.now(); record(); process.exit(0); });
 }
 if (driver && fault?.action === "settle-at-grace") {
@@ -159,6 +188,31 @@ if (driver && fault?.action === "settle-at-grace") {
       file.readFile = async (...rest) => { evidence.settleCheckPending = true; record(); await new Promise(resolve => schedule(resolve, 80)); return read(...rest); };
     }
     return file;
+  };
+}
+if (driver) {
+  const kill = process.kill.bind(process);
+  process.kill = (pid, signal) => {
+    if (pid < 0 && signal !== 0) {
+      (evidence.signals ??= []).push(signal); record();
+      if (fault?.action === "identity-before-signal-exit") {
+        kill(probePid, "SIGKILL");
+        for (let i = 0; i < 20; i++) { try { if (exec("ps", ["-p", String(probePid), "-o", "stat="], { encoding: "utf8" }).trim().startsWith("Z")) break; } catch { break; } }
+        evidence.signalRacedExit = true; record(); throw Object.assign(new Error("fictional_signal_race"), { code: "EPERM" });
+      }
+    }
+    return kill(pid, signal);
+  };
+}
+// Pause a real child after its grant, before consume is ever sent (or after consume ACK).
+if (probe && ["timeout-before-consume", "timeout-after-consume", "close-idle"].includes(fault?.action)) {
+  const originalEmit = process.emit.bind(process);
+  process.emit = (event, ...args) => {
+    const m = args[0];
+    if (event === "message" && m?.type === "ack" && ((fault.action === "timeout-before-consume" && m.result?.permitId) || (fault.action === "timeout-after-consume" && m.seq === 1))) {
+      evidence.timeoutBoundary = fault.action; record(); return true;
+    }
+    return originalEmit(event, ...args);
   };
 }
 syncBuiltinESMExports();

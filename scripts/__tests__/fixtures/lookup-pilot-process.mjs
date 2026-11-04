@@ -7,6 +7,7 @@ import { fork, execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { syntheticContext, fixtureCommit, fixtureLookupPolicy } from "./holdout-synthetic.mjs";
 import { dependencySnapshot } from "./lookup-dependency-witness.mjs";
+import { lookupProcessStartIdentity } from "../../lib/continuity-process-identity.mjs";
 import { ROOT } from "../../lib/continuity-lookup-roles.mjs";
 import { digest } from "../../lib/continuity-dataset.mjs";
 import { sha256 } from "../../lib/continuity-lookup.mjs";
@@ -58,8 +59,26 @@ export function pilotSuite() {
   let f, deps, real, testReal; const children = [];
   beforeAll(async () => { deps = await dependencySnapshot(ROOT); real = await metadata(registry); f = await pilotProcessFixture(); }, 120000);
   beforeEach(async () => { testReal = await metadata(registry); });
-  afterEach(async () => { try { expect(await metadata(registry)).toEqual(testReal); } finally { for (const c of children.splice(0)) { if (c.child.exitCode === null && c.child.signalCode === null) c.child.kill("SIGKILL"); await c.exit; } } });
+  afterEach(async () => {
+    try { expect(await metadata(registry)).toEqual(testReal); await witnesses(); }
+    finally { for (const c of children.splice(0)) {
+      const driverWitness = JSON.parse(await fs.readFile(join(f.base, "witnesses", `${c.child.pid}.json`)));
+      for (const probe of driverWitness.probes) {
+        let witness; try { witness = JSON.parse(await fs.readFile(join(f.base, "witnesses", `${probe.pid}.json`))); } catch (e) { if (e.code !== "ENOENT") throw e; }
+        for (const owned of [probe, ...(witness?.descendants ?? [])]) if (owned.startIdentity && lookupProcessStartIdentity(owned.pid) === owned.startIdentity) try { process.kill(owned.pid, "SIGKILL"); } catch (e) { if (e.code !== "ESRCH") throw e; }
+      }
+      if (c.child.exitCode === null && c.child.signalCode === null) c.child.kill("SIGKILL"); await c.exit;
+    } }
+  });
   afterAll(async () => { try { if (f) await fs.rm(f.base, { recursive: true, force: true }); } finally { expect(await metadata(registry)).toEqual(real); expect(await dependencySnapshot(ROOT)).toEqual(deps); } });
+  async function witnesses() {
+    for (const c of children) {
+      const read = async pid => { const value = JSON.parse(await fs.readFile(join(f.base, "witnesses", `${pid}.json`))); expect(value).toMatchObject({ canaries: 3, unexpected: 0, home: f.home, xdg: [f.home, f.home, f.home, f.home], git: ["/dev/null", "1"] }); return value; };
+      const driver = await read(c.child.pid), expected = new Set(driver.probes.map(p => p.pid));
+      if (c.outputRoot) try { const state = JSON.parse(await fs.readFile(join(c.outputRoot, "lookup-pilot-controller.json"))); for (const s of state.slots) if (s.worker) expected.add(s.worker.pid); } catch (e) { if (e.code !== "ENOENT") throw e; }
+      for (const pid of expected) await read(pid);
+    }
+  }
   return { get fixture() { return f; },
     async spawn(input, extraEnv = {}) {
       const witnesses = join(f.base, "witnesses"); await fs.mkdir(witnesses, { recursive: true, mode: 0o700 });
@@ -73,8 +92,8 @@ export function pilotSuite() {
         child.on("message", m => { if (m.ready) child.send({ ...input, repo: f.repo }); else { result = m; clearTimeout(timer); resolve(m); } });
         child.once("exit", () => { clearTimeout(timer); resolve(result); }); child.once("error", reject);
       });
-      const record = { child, exit, reply }; children.push(record); return record;
+      const record = { child, exit, reply, outputRoot: input.options?.outputRoot }; children.push(record); return record;
     },
-    async witnesses() { for (const file of await fs.readdir(join(f.base, "witnesses"))) expect(JSON.parse(await fs.readFile(join(f.base, "witnesses", file), "utf8"))).toMatchObject({ canaries: 3, unexpected: 0, home: f.home, xdg: [f.home, f.home, f.home, f.home], git: ["/dev/null", "1"] }); },
+    witnesses,
   };
 }

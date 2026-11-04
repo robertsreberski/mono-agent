@@ -15,8 +15,10 @@ export const LOOKUP_GUARD_STOPS = Object.freeze([
   "auth_failure", "lookup_auth_failure", "lookup_account_mismatch", "lookup_quota_exhausted", "lookup_settlement_failed",
   "lookup_invalid_usage", "lookup_unknown_tier", "lookup_hold_exceeded", "lookup_input_envelope_violated",
   "lookup_output_envelope_violated", "lookup_reasoning_envelope_violated", "lookup_body_mismatch", "lookup_permit_invalid",
-  "lookup_payload_repeated", "lookup_headers_forbidden", "lookup_prompt_cache_key_forbidden", "lookup_send_mismatch", "lookup_duplicate_terminal",
+  "lookup_persist_failed", "lookup_receipt_invalid", "lookup_payload_repeated", "lookup_headers_forbidden", "lookup_prompt_cache_key_forbidden", "lookup_send_mismatch", "lookup_duplicate_terminal",
 ]);
+export const LOOKUP_INTEGRITY_STOPS = Object.freeze(LOOKUP_GUARD_STOPS.filter(code => !["auth_failure", "lookup_auth_failure", "lookup_account_mismatch", "lookup_quota_exhausted"].includes(code)));
+const outcomeCodes = Object.freeze({ settled: [null], lost: [null], own_abort_after_send: [null], integrity_stop: LOOKUP_INTEGRITY_STOPS });
 export const LOOKUP_SLOT_TERMINALS = Object.freeze(["completed", "wrong", "lost", "own_abort_after_send", "pilot_empty_final_output", "integrity_stop", "refused_pre_send", "unadmitted"]);
 export function pilotNeed(ok, code) { if (!ok) throw Object.assign(new Error(code), { code }); }
 export const fixedPilotCode = code => LOOKUP_PILOT_STOPS.includes(code) ? code : "lookup_ipc_invalid";
@@ -45,18 +47,19 @@ export function priceLookupUsage(raw, tier) {
   const units = (uncached * 20n + cached + written * 25n + BigInt(raw.output_tokens) * 100n)
     * (tier === "flex" ? 1n : tier === "default" ? 2n : 4n);
   return { invalid, units: units.toString(), rawUsage: structuredClone(raw), tier: ["default", "flex", "priority"].includes(tier) ? tier : null,
-    sharedCost: lookupSettledCost(raw, tier) };
+    sharedCost: invalid ? lookupDollars(units) : lookupSettledCost(raw, tier) };
 }
 export function settleLookupHold(hold, outcome, raw, tier) {
   pilotNeed(keys(outcome, ["kind", "code", "cost"]) && Object.hasOwn(LOOKUP_OUTCOMES, outcome.kind), "lookup_permit_invalid");
-  pilotNeed(outcome.code === undefined || LOOKUP_PILOT_STOPS.includes(outcome.code), "lookup_ipc_invalid");
+  // A pre-admission refusal has no permit and cannot erase an admitted hold.
+  pilotNeed(outcome.kind !== "refused_pre_send", "lookup_permit_invalid");
+  pilotNeed(outcomeCodes[outcome.kind]?.includes(outcome.code ?? null), "lookup_ipc_invalid");
+  pilotNeed(outcome.kind !== "own_abort_after_send" || hold.consumed, "lookup_permit_invalid");
   const priced = raw === null ? null : priceLookupUsage(raw, tier);
   pilotNeed(tier == null || ["default", "flex", "priority"].includes(tier), "lookup_unknown_tier");
   pilotNeed(!priced?.invalid || outcome.kind === "integrity_stop", "lookup_invalid_usage");
   pilotNeed(outcome.cost === undefined || priced && !priced.invalid && outcome.cost === priced.sharedCost, "lookup_hold_exceeded");
   pilotNeed(outcome.kind !== "settled" || priced && hold.consumed, "lookup_permit_invalid");
-  // A pre-admission refusal has no permit; it cannot erase an already-admitted hold.
-  pilotNeed(outcome.kind !== "refused_pre_send", "lookup_permit_invalid");
   return { ...hold, settlement: { kind: outcome.kind, code: outcome.code ?? null, rawUsage: priced?.rawUsage ?? null,
     tier: priced?.tier ?? null, knownUnits: priced?.units ?? "0" } };
 }

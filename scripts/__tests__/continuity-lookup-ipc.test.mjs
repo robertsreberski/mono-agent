@@ -25,6 +25,7 @@ it("runs the real forked probe and guard over IPC with persisted arrival witness
 });
 it.each(["disconnect", "die", "hang", "descendant"])("contains a real %s worker without admitting a replacement", async scenario => {
   const { result } = await run([scenario], scenario === "hang" ? 1000 : 5000);
+  if (scenario === "descendant") { expect(result).toEqual({ failed: "lookup_unreconciled_processes" }); return; }
   expect(result.failed).toBeUndefined(); expect(result.result.stop).not.toBe("completed");
   expect(result.result.schedule.visited).toBe(1); expect(result.result.counts.invalid).toBe(0);
 });
@@ -192,4 +193,53 @@ it("isolates production checkout and build-source Git reads without the fixture 
     expect(() => assertSource(f.repo, codes.R0.revision)).toThrow("build_source_changed_or_dirty");
     await expect(fs.lstat(marker)).rejects.toMatchObject({ code: "ENOENT" });
   } finally { vi.unstubAllEnvs(); await fs.rm(dirt, { force: true }); for (const root of [f.repo, f.pack]) fixtureGit(root, ["config", "--unset", "core.fsmonitor"]); }
+});
+
+it.each(["timeout-before-consume", "timeout-after-consume"])("classifies %s from durable consumption rather than timeout alone", async action => {
+  const f = suite.fixture, options = await runOptions(f, ["settled"], 3000), config = join(f.base, `${action}.json`);
+  await fs.writeFile(config, JSON.stringify({ action }), { mode: 0o600 }); const p = await suite.spawn({ options }, { LOOKUP_FIXTURE_FAULT: config }), reply = await p.reply; await p.exit;
+  expect(reply.failed).toBeUndefined(); expect(reply.result.stop).toBe("lookup_worker_timeout");
+  const consumed = action === "timeout-after-consume";
+  expect(reply.result.receipts[0]).toMatchObject({ terminal: consumed ? "own_abort_after_send" : "lost", calls: { admitted: 1, consumed: consumed ? 1 : 0 }, costs: { retainedUSD: 3.92 } });
+  const state = JSON.parse(await fs.readFile(join(options.outputRoot, "lookup-pilot-controller.json")));
+  expect(JSON.parse(await fs.readFile(join(f.base, "witnesses", `${state.slots[0].worker.pid}.json`))).timeoutBoundary).toBe(action);
+});
+it.each(["arrival-persist", "arrival-receipt"])("makes %s a sticky integrity stop after consumed arrival", async action => {
+  const f = suite.fixture, options = await runOptions(f), config = join(f.base, `${action}.json`);
+  await fs.writeFile(config, JSON.stringify({ action }), { mode: 0o600 }); const p = await suite.spawn({ options }, { LOOKUP_FIXTURE_FAULT: config }), reply = await p.reply; await p.exit;
+  expect(reply.failed).toBeUndefined(); expect(reply.result.stop).toBe(action === "arrival-persist" ? "lookup_persist_failed" : "lookup_receipt_invalid");
+  expect(reply.result.counts).toMatchObject({ admitted: 1, invalid: 1 }); expect(reply.result.receipts[0]).toMatchObject({ terminal: "integrity_stop", calls: { consumed: 1 }, costs: { retainedUSD: 3.92 } });
+});
+it.each(["identity-before-term", "identity-before-kill", "identity-before-gone"])("never signals an unproven child group at %s", async action => {
+  const f = suite.fixture, options = await runOptions(f, ["auth"], 10000), config = join(f.base, `${action}.json`);
+  await fs.writeFile(config, JSON.stringify({ action }), { mode: 0o600 }); const p = await suite.spawn({ options }, { LOOKUP_FIXTURE_FAULT: config });
+  expect(await p.reply).toEqual({ failed: "lookup_unreconciled_processes" }); await p.exit;
+  const state = JSON.parse(await fs.readFile(join(options.outputRoot, "lookup-pilot-controller.json")));
+  expect(state.stop).toBe("lookup_unreconciled_processes"); expect(state.slots[0].unreconciled).toBe(true);
+  const witness = JSON.parse(await fs.readFile(join(f.base, "witnesses", `${p.child.pid}.json`)));
+  expect(witness.identityRefused).toBe(true); expect(witness.signals ?? []).toEqual(action === "identity-before-term" ? [] : ["SIGTERM"]);
+});
+it("requires current-process witnesses even when older valid witnesses exist", async () => {
+  const older = await suite.spawn({ mode: "idle" }); await older.reply;
+  const p = await suite.spawn({ mode: "idle" }); await p.reply;
+  const path = join(suite.fixture.base, "witnesses", `${p.child.pid}.json`), bytes = await fs.readFile(path);
+  try { await fs.unlink(path); await expect(suite.witnesses()).rejects.toMatchObject({ code: "ENOENT" }); }
+  finally { await fs.writeFile(path, bytes, { mode: 0o600 }); }
+});
+
+it("invalidates an idle IPC permit source synchronously on close", async () => {
+  const f = suite.fixture, options = await runOptions(f), config = join(f.base, "close-idle.json");
+  await fs.writeFile(config, JSON.stringify({ action: "close-idle" }), { mode: 0o600 }); const p = await suite.spawn({ options }, { LOOKUP_FIXTURE_FAULT: config });
+  const reply = await p.reply; await p.exit; expect(reply.failed).toBeUndefined();
+  const state = JSON.parse(await fs.readFile(join(options.outputRoot, "lookup-pilot-controller.json")));
+  expect(state.slots[0].holds).toHaveLength(1); expect(state.slots[0].nextMessage).toBe(1);
+  expect(JSON.parse(await fs.readFile(join(f.base, "witnesses", `${state.slots[0].worker.pid}.json`))).closeCodes).toEqual(Array(4).fill("lookup_ipc_invalid"));
+});
+
+it.each(["identity-before-exit", "identity-before-signal-exit"])("reconciles an absent group after %s without further signaling", async action => {
+  const f = suite.fixture, options = await runOptions(f, ["auth"], 10000), config = join(f.base, "identity-exit.json");
+  await fs.writeFile(config, JSON.stringify({ action }), { mode: 0o600 }); const p = await suite.spawn({ options }, { LOOKUP_FIXTURE_FAULT: config }), reply = await p.reply; await p.exit;
+  expect(reply.failed).toBeUndefined(); expect(reply.result.stop).toBe("lookup_auth_failure");
+  const witness = JSON.parse(await fs.readFile(join(f.base, "witnesses", `${p.child.pid}.json`)));
+  expect(action === "identity-before-exit" ? witness.leaderExitedAtCheck : witness.signalRacedExit).toBe(true); expect(witness.signals ?? []).toEqual(action === "identity-before-exit" ? [] : ["SIGTERM"]);
 });

@@ -203,3 +203,15 @@ it.each([["two_rounds", 6, "refused_pre_send"], ["lost", 8, "unadmitted"]])("rec
   expect(report.receipts.at(-1)).toMatchObject({ terminal, terminalCode: "budget_admission" });
   expect(report.counts).toMatchObject({ admitted: 1, incomplete: 1, invalid: 0, unadmitted: terminal === "unadmitted" ? 1 : 0 });
 });
+
+it.each(["settled", "lost", "own_abort_after_send"])("makes a non-null integrity code on %s a sticky protocol stop", async kind => {
+  const k = await kernel(), permit = await admit(k); await message(k, "consume", { permit, bodyDigest: hash });
+  await expect(message(k, "settle", { permit, outcome: { kind, code: "lookup_payload_repeated" }, rawUsage: { input_tokens: 100, output_tokens: 10 }, tier: "default" })).rejects.toThrow("lookup_ipc_invalid");
+  const s = k.journal.snapshot(); expect(s.stop).toBe("lookup_ipc_invalid"); expect(s.slots[0].holds[0].settlement).toMatchObject({ kind: "integrity_stop", knownUnits: "6000" });
+  await k.journal.finish(0, "lost"); expect(k.journal.snapshot().slots[0].terminal).toBe("integrity_stop");
+});
+it("makes a valid integrity settlement sticky independently of a later stop message", async () => {
+  const k = await kernel(), permit = await admit(k); await message(k, "consume", { permit, bodyDigest: hash });
+  await message(k, "settle", { permit, outcome: { kind: "integrity_stop", code: "lookup_payload_repeated" }, rawUsage: null, tier: null });
+  expect(k.journal.snapshot().stop).toBe("lookup_payload_repeated");
+});

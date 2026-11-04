@@ -5,8 +5,8 @@ import { pilotHash, pilotId, samePilot } from "./continuity-lookup-pilot-state.m
 /** Explicit projection: no paths, path digests, commitments, requests, answers or errors. */
 export function lookupPilotReceipt(state, index) {
   const slot = state.slots[index], planned = state.schedule[index];
-  pilotNeed(pilotId(state.runId) && pilotHash(planned.slotId) && ["completed", "wrong", "lost", "own_abort_after_send", "pilot_empty_final_output", "integrity_stop", "skipped", "unadmitted", "refused_pre_send", null].includes(slot.terminal)
-    && [null, 0, 1].includes(slot.score), "lookup_receipt_invalid");
+  pilotNeed(pilotId(state.runId) && pilotHash(planned.slotId) && slot.slotId === planned.slotId && ["completed", "wrong", "lost", "own_abort_after_send", "pilot_empty_final_output", "integrity_stop", "skipped", "unadmitted", "refused_pre_send", null].includes(slot.terminal)
+    && [null, 0, 1].includes(slot.score) && (["completed", "wrong"].includes(slot.terminal) || slot.score === null), "lookup_receipt_invalid");
   const bindings = { ...state.publicBindings[planned.code], sourceSha256: state.publicSources[planned.suite] };
   pilotNeed(/^[a-f0-9]{40}$/u.test(bindings.revision)
     && ["buildSha256", "sourceSha256", "protocolSha256"].every(k => pilotHash(bindings[k])), "lookup_receipt_invalid");
@@ -32,7 +32,7 @@ export function aggregateLookupPilot(state, receipts) {
   const visited = state.cursor + (state.slots[state.cursor]?.worker || state.slots[state.cursor]?.holds?.length ? 1 : 0);
   const seen = new Set();
   for (const row of receipts) {
-    pilotNeed(Number.isSafeInteger(row?.position) && state.schedule[row.position]?.slotId === row.slotId && !seen.has(row.slotId)
+    pilotNeed(Number.isSafeInteger(row?.position) && row.position >= 0 && row.position < visited && state.schedule[row.position]?.slotId === row.slotId && !seen.has(row.slotId)
       && samePilot(row, lookupPilotReceipt(state, row.position)), "lookup_receipt_invalid");
     seen.add(row.slotId);
   }
