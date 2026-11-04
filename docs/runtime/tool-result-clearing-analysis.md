@@ -26,6 +26,9 @@ For native session roots, pass `<root>/journals`, containing per-session `.jsonl
 files; not the parent root containing legacy imports, aliases or retired state.
 `--sidecar` and `--routes` are also required. Output defaults to stdout.
 `--out` exclusively creates an explicit new file, never overwrites an input.
+Canonical input containment includes filesystem roots. Only the sidecar’s exact
+`-wal`, `-shm` and `-journal` companions are reserved; unrelated sibling names
+remain valid outputs.
 Exit status is 0 for a complete analysis, 2 for incomplete/invalid inputs;
 BUILD/DEFER/STOP is an evidence verdict, not an exit status.
 
@@ -66,11 +69,13 @@ servers over the snapshot period. A built-in must be enabled and have no MCP
 name collision. Configuration changes within that period invalidate the
 attestation: split the period or use an array of per-run proofs, each adding
 `runId`. Missing inventory is not proof; names alone never qualify.
+Per-run proof arrays require unique, nonempty run IDs; contradictory or missing
+IDs invalidate the input rather than selecting a first match.
 No native writer records `tool_call.payload.origin` at this revision. Thus native
 history needs supplied proof; MCP-origin fixtures do not imply real origin capture.
 Optional `--app-allowlist` is a reviewed array of
 `{server,tool,serverIdentityDigest,readOnly:true}` declarations, matched exactly
-to captured MCP origin with `readOnlyHint:true` and no destructive hint. The digest
+to captured MCP origin whose tool equals the message tool name, with `readOnlyHint:true` and no destructive hint. The digest
 is SHA-256 of the reviewed server identity; repointing invalidates it. Inputs are
 never echoed. Without captured provenance, app results remain upper-bound only.
 
@@ -158,6 +163,8 @@ within the trigger, no pressure reduction is credited.
 
 `listDelta` and `quotaShareDelta` expose signed `retained`, `removed`, `summary`
 and `retrieval` components; their sum equals on minus off in the respective units.
+A zero off-arm baseline with positive on-arm cost has a null (unbounded) ratio
+and fails cost admission; zero over zero remains neutral at 1.
 `allUncachedInformational` is a **non-gating** upper-bound scenario: reprice the
 remaining on-arm request prefixes and retrieval round trips at no less than
 uncached input, never discounting a higher observed write-premium blend; reprice
@@ -183,13 +190,17 @@ missing/stale qualification yields `PAYLOAD_UNQUALIFIED`. These mean route DEFER
 not STOP. Restrict journals to the period when continuity capture was enabled.
 Per-route `retention` counts unique proven-identity, successful, completed,
 returned-and-placed plain-text results, including protected ones. A match requires
-an identity-linked finalized, committed retained row with text and no tombstone;
-redaction/truncation/integrity remain separate eligibility checks. No matches
-means `RETENTION_UNMATCHED`; a matched share below the fixed **50%** floor means
+the same exact eligibility check with protection disabled: identity-linked,
+finalized committed retention with no tombstone, redaction or truncation, and
+byte counts, digest and complete text matching the journal. No matches, including
+an empty proven-result set, means `RETENTION_UNMATCHED`; a matched share below
+the fixed **50%** floor means
 `RETENTION_COVERAGE_LOW`. Both DEFER: today's retention may omit pre-capture,
-unowned or evicted results and cannot establish historical opportunity absence. Qualification must match the installed pi-ai version and digest of the
+unowned or evicted results and cannot establish historical opportunity absence.
+Qualification must match the installed pi-ai version and digest of the
 exact fixture-builder/diff/reference sources; the analyzer prints only the version,
-not the digest. With sufficient evidence, a failed criterion means STOP. Thresholds are fixed. Overall BUILD requires every supplied API to
+not the digest. With sufficient evidence, a failed criterion means STOP. Thresholds
+are fixed. Overall BUILD requires every supplied API to
 BUILD; otherwise STOP takes precedence over DEFER. Denominators are never pooled.
 Codex always DEFERs: **wire-unproven (transport)**. Offline `onPayload` comparison
 cannot establish provider acceptance, signature validity or delivery over any
