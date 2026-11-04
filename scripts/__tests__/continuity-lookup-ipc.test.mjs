@@ -1,22 +1,23 @@
-import { it, expect } from "vitest";
+import { it, expect, vi } from "vitest";
 import * as fs from "node:fs/promises";
 import { join } from "node:path";
 import { pilotSuite, loadPilot, runOptions } from "./fixtures/lookup-pilot-process.mjs";
 import { digest } from "../lib/continuity-dataset.mjs";
 const suite = pilotSuite();
-async function run(scenarios, timeoutMs, capUSD) {
+async function run(scenarios, timeoutMs, capUSD, extraEnv = {}) {
   const options = await runOptions(suite.fixture, scenarios, timeoutMs);
   if (capUSD !== undefined) { options.pilot = structuredClone(options.pilot); options.pilot.descriptor.capUSD = capUSD; options.authorization.pilotSha256 = digest(options.pilot); }
-  const p = await suite.spawn({ options });
+  const p = await suite.spawn({ options }, extraEnv);
   const result = await p.reply; await p.exit; await suite.witnesses(); return { options, result };
 }
 it("runs the real forked probe and guard over IPC with persisted arrival witnesses and inherited CI", async () => {
-  const { options, result } = await run(["two_rounds", "lost"], undefined, 3.93);
+  const { options, result } = await run(["two_rounds", "lost"], undefined, 3.93, { CI: "1" });
   expect(result.failed).toBeUndefined(); expect(result.result.executionKind).toBe("faux-only");
   expect(result.result.receipts[0].calls).toEqual({ admitted: 2, consumed: 2, settled: 2 });
   expect(result.result.counts.incomplete).toBe(1); expect(result.result.stop).toBe("budget_admission");
   const state = JSON.parse(await fs.readFile(join(options.outputRoot, "lookup-pilot-controller.json")));
   expect(state.slots[0].worker.pid).not.toBe(state.controller.pid);
+  for (const pid of [state.controller.pid, state.slots[0].worker.pid]) expect(JSON.parse(await fs.readFile(join(suite.fixture.base, "witnesses", `${pid}.json`))).ci).toBe("1");
   expect(new Set(state.slots.filter(s => s.worker).map(s => s.worker.pid)).size).toBe(state.slots.filter(s => s.worker).length);
   expect(state.schedule.every(s => !Object.hasOwn(s, "cacheKey"))).toBe(true);
 });
@@ -57,7 +58,7 @@ it("reconciles a controller SIGKILL at one faux arrival without ever readmitting
   expect(report.cost.totalUSD).toBe(3.92); expect(report.reconciliation).toBe(true); await suite.witnesses();
 });
 
-it.each(["plan", "build", "role", "pid", "epoch", "marker", "debug"])("refuses a real child's swapped %s before ready and before admission", async kind => {
+it.each(["plan", "build", "role", "pid", "epoch", "marker", "debug", "descriptor", "role-id", "registration", "role-build"])("refuses a real child's swapped %s before ready and before admission", async kind => {
   const f = suite.fixture, options = await runOptions(f), config = join(f.base, `swap-${kind}.json`);
   await fs.writeFile(config, JSON.stringify({ action: `swap-${kind}` }), { mode: 0o600 });
   const p = await suite.spawn({ options }, { LOOKUP_FIXTURE_FAULT: config }); const reply = await p.reply; await p.exit;
@@ -71,6 +72,7 @@ it.each(["stale", "order", "duplicate", "digest"])("refuses real IPC %s interfer
 });
 
 it.each([
+  [["lost", "lost"], 8, "lookup_repeated_loss"],
   [["lost", "own_abort_after_send"], 8, "budget_admission"],
   [["lost", "own_abort_after_send", "lost"], 12, "lookup_repeated_loss"],
   [["own_abort_after_send", "own_abort_after_send", "own_abort_after_send"], 12, "budget_admission"],
@@ -83,4 +85,61 @@ it.each([
 it("refuses debug presence in a real controller process without touching the output", async () => {
   const options = await runOptions(suite.fixture), p = await suite.spawn({ options }, { CONTINUITY_DEBUG: "" });
   expect(await p.reply).toEqual({ failed: "lookup_debug_forbidden" }); await p.exit; expect(await fs.readdir(options.outputRoot)).toEqual([]);
+});
+
+it.each(["ack-tamper-revision", "ack-tamper-permit"])("child refuses %s against its durable ACK", async action => {
+  const f = suite.fixture, options = await runOptions(f), config = join(f.base, `${action}.json`);
+  await fs.writeFile(config, JSON.stringify({ action }), { mode: 0o600 });
+  const p = await suite.spawn({ options }, { LOOKUP_FIXTURE_FAULT: config }), reply = await p.reply; await p.exit;
+  expect(reply.failed).toBeUndefined(); expect(reply.result.stop).toBe("lookup_ipc_disconnected");
+  expect(reply.result.counts.admitted).toBeLessThanOrEqual(1);
+  expect(reply.result.receipts[0].calls.consumed).toBe(0); await suite.witnesses();
+});
+it.each(["ppid", "parent-start", "null-parent-start"])("child refuses swapped parent identity %s", async kind => {
+  const f = suite.fixture, options = await runOptions(f), config = join(f.base, `swap-${kind}.json`);
+  await fs.writeFile(config, JSON.stringify({ action: `swap-${kind}` }), { mode: 0o600 });
+  const p = await suite.spawn({ options }, { LOOKUP_FIXTURE_FAULT: config }), reply = await p.reply; await p.exit;
+  expect(reply.failed).toBeUndefined(); expect(reply.result.stop).toBe("lookup_ipc_disconnected");
+  expect(reply.result.counts.admitted).toBe(0); expect(reply.result.receipts[0].calls.consumed).toBe(0); await suite.witnesses();
+});
+it.each(["lost", "two_rounds"])("derives cap-refused %s receipts without adding provider losses", async scenario => {
+  const { result, options } = await run([scenario], undefined, 3.92), zeroHolds = scenario === "lost";
+  expect(result.failed).toBeUndefined(); expect(result.result.stop).toBe("budget_admission");
+  expect(result.result.receipts.at(-1)).toMatchObject({ terminal: zeroHolds ? "unadmitted" : "refused_pre_send", terminalCode: "budget_admission" });
+  expect(result.result.counts).toMatchObject({ admitted: 1, unadmitted: zeroHolds ? 1 : 0, incomplete: 1, invalid: 0, completed: 0 });
+  const state = JSON.parse(await fs.readFile(join(options.outputRoot, "lookup-pilot-controller.json")));
+  const { accountLookupPilot } = await loadPilot(suite.fixture, "pilot-accounting"); expect(accountLookupPilot(state.slots).consecutiveProviderLosses).toBe(zeroHolds ? 1 : 0);
+});
+it("persists unreconciled containment before surfacing termination failure", async () => {
+  const f = suite.fixture, options = await runOptions(f, ["settled"]), config = join(f.base, "terminate-fail.json");
+  await fs.writeFile(config, JSON.stringify({ action: "terminate-fail" }), { mode: 0o600 });
+  const p = await suite.spawn({ options }, { LOOKUP_FIXTURE_FAULT: config }); expect(await p.reply).toEqual({ failed: "lookup_unreconciled_processes" }); await p.exit;
+  expect(JSON.parse(await fs.readFile(join(options.outputRoot, "lookup-pilot-controller.json"))).stop).toBe("lookup_unreconciled_processes");
+});
+it("settles after IPC stop then contains a stalled group within the settle grace, not the watchdog", async () => {
+  const f = suite.fixture, options = await runOptions(f, ["auth"], 10000), config = join(f.base, "stop-hang.json");
+  await fs.writeFile(config, JSON.stringify({ action: "stop-hang" }), { mode: 0o600 });
+  const p = await suite.spawn({ options }, { LOOKUP_FIXTURE_FAULT: config }), reply = await p.reply; await p.exit;
+  expect(reply.failed).toBeUndefined(); expect(reply.result.stop).toBe("lookup_auth_failure");
+  const state = JSON.parse(await fs.readFile(join(options.outputRoot, "lookup-pilot-controller.json"))), pid = state.slots[0].worker.pid;
+  expect(state.slots[0].holds[0].settlement).toMatchObject({ kind: "lost" });
+  const witness = JSON.parse(await fs.readFile(join(f.base, "witnesses", `${pid}.json`)));
+  expect(witness.terminatedAt - witness.stopSentAt).toBeGreaterThanOrEqual(200);
+  expect(witness.terminatedAt - witness.stopSentAt).toBeLessThan(3000);
+});
+it("refuses a null controller start identity before acquiring a lease", async () => {
+  const f = suite.fixture, options = await runOptions(f), config = join(f.base, "null-controller-start.json");
+  await fs.writeFile(config, JSON.stringify({ action: "null-controller-start" }), { mode: 0o600 });
+  const p = await suite.spawn({ options }, { LOOKUP_FIXTURE_FAULT: config }); expect(await p.reply).toEqual({ failed: "lookup_ipc_invalid" }); await p.exit;
+  expect(await fs.readdir(options.outputRoot)).toEqual([]);
+});
+it("isolates controller and child HOME and inherited Git configuration", async () => {
+  const f = suite.fixture, marker = join(f.base, "fsmonitor-called"), hook = join(f.base, "fictional-fsmonitor"), config = join(f.base, "fictional-gitconfig");
+  await fs.writeFile(hook, `#!/bin/sh\nprintf called > '${marker}'\n`, { mode: 0o700 });
+  await fs.writeFile(config, `[core]\nfsmonitor = ${hook}\n`);
+  vi.stubEnv("GIT_DIR", "/fictional/not-a-repository"); vi.stubEnv("GIT_CONFIG_GLOBAL", config); vi.stubEnv("HOME", join(f.base, "unused-home"));
+  try {
+    const { result } = await run(["lost"]); expect(result.failed).toBeUndefined();
+    await expect(fs.lstat(marker)).rejects.toMatchObject({ code: "ENOENT" }); await suite.witnesses();
+  } finally { vi.unstubAllEnvs(); }
 });

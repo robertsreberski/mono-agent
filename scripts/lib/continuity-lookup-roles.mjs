@@ -26,7 +26,11 @@ const GIT_MAX_BUFFER = 16 * 1024 * 1024;
 const FULL_SHA = /^[a-f0-9]{40}$/u, HASH = /^[a-f0-9]{64}$/u;
 export function requireLookup(ok, code) { if (!ok) throw Object.assign(new Error(code), { code }); }
 const same = (a, b) => a !== undefined && b !== undefined && digest(a) === digest(b);
-const git = (root, args) => execFileSync("git", ["-C", root, ...args], { encoding: "utf8", maxBuffer: GIT_MAX_BUFFER, stdio: ["ignore", "pipe", "pipe"] }).trim();
+const git = (root, args) => execFileSync("git", ["--no-optional-locks", "-C", root, "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null",
+  "-c", "gc.auto=0", "-c", "maintenance.auto=false", ...args], {
+  env: { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_"))), GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" },
+  encoding: "utf8", maxBuffer: GIT_MAX_BUFFER, stdio: ["ignore", "pipe", "pipe"],
+}).trim();
 const json = async path => JSON.parse(await readFile(path, "utf8"));
 const save = (path, value, flag) => writeFile(path, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600, ...(flag ? { flag } : {}) });
 
@@ -120,7 +124,7 @@ function readerProfile(model, effort) {
 
 /** Compare complete Git trees by path/mode/type/blob, including independent local repositories. */
 export function guidanceDiff(r0, rpack) {
-  const tree = path => new Map(execFileSync("git", ["-C", path, "ls-tree", "-rz", "--full-tree", "HEAD"], { encoding: "utf8", maxBuffer: GIT_MAX_BUFFER }).split("\0").filter(Boolean).map(row => {
+  const tree = path => new Map(git(path, ["ls-tree", "-rz", "--full-tree", "HEAD"]).split("\0").filter(Boolean).map(row => {
     const tab = row.indexOf("\t"); return [row.slice(tab + 1), row.slice(0, tab)];
   }));
   const a = tree(r0), b = tree(rpack);

@@ -1,3 +1,4 @@
+import { lookupAuthorizationArtifact } from "./fixtures/lookup-authorization-artifact.mjs";
 import { afterAll, afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import * as fs from "node:fs/promises";
 import fsPromises from "node:fs/promises";
@@ -138,12 +139,8 @@ async function fixture() {
   const pilot = structuredClone(shared.pilot), { descriptor } = pilot, { codes, common } = pilot.registration, { catalog } = common;
   const registrationPath = join(dir, "registration.json"); await save(registrationPath, pilot);
   const registrationRawSha256 = sha(await fs.readFile(registrationPath));
-  const salt = "c".repeat(64), account = "fictional-account";
-  const artifact = { schema: auth.LOOKUP_AUTHORIZATION_SCHEMA, authorizationId: "fictional-authorization", salt,
-    accountCommitment: sha(`mono-agent/lookup-pilot/account-v1\0${salt}\0${account}`), timestamp: "2030-01-01T00:00:00Z",
-    approver: "Fictional Approver", numericApprovalReference: "fictional-cap-approval-4USD",
-    bindings: { registrationRawSha256, registrationSha256: digest(pilot), controllerCheckout: codes.R0, codes, protocol: common.protocol,
-      catalog, policy: common.policy, source: common.lookupSource, selection: common.lookupSelection, reader: common.reader, descriptor, outputRoot, credentialPath } };
+  const account = "fictional-account";
+  const artifact = lookupAuthorizationArtifact(pilot, { registrationRawSha256, outputRoot, credentialPath, account });
   const authorizationPath = join(dir, "authorization.json"); await save(authorizationPath, artifact);
   await save(credentialPath, credential(account));
   const args = { authorizationPath, registrationPath, registrationSha256: registrationRawSha256, outputRoot, credentialPath, controllerRoot: shared.repo };

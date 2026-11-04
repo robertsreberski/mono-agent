@@ -1,3 +1,4 @@
+import { lookupAuthorizationArtifact } from "./fixtures/lookup-authorization-artifact.mjs";
 import { it, expect, afterEach } from "vitest";
 import * as fs from "node:fs/promises";
 import { join } from "node:path";
@@ -62,9 +63,16 @@ it("serializes a stop/grant race and rejects consumption after the stop", async 
   expect(k.journal.snapshot().slots[0].holds[0].revoked).toBe(true);
   await expect(message(k, "consume", { permit, bodyDigest: hash })).rejects.toThrow("lookup_permit_invalid");
 });
-it("refuses real-schema authorization before touching outputs, even under CI", async () => {
-  const { runLookupPilot } = await loadPilot(suite.fixture, "controller");
-  await expect(runLookupPilot({ authorization: { schema: "continuity-lookup-pilot-authorization-v1" }, outputRoot: "/fictional/never-created" })).rejects.toThrow("lookup_pilot_real_route_unavailable");
+it("refuses a complete real-schema artifact in a CI child before any lease or output write", async () => {
+  const f = suite.fixture, base = await fs.mkdtemp(join(f.base, "real-refusal-")), outputRoot = join(base, "output");
+  await fs.mkdir(outputRoot, { mode: 0o700 });
+  const options = { pilot: f.pilot, outputRoot, authorization: lookupAuthorizationArtifact(f.pilot, {
+    registrationRawSha256: createHash("sha256").update(JSON.stringify(f.pilot)).digest("hex"), outputRoot, credentialPath: join(base, "fictional-credential.json") }) };
+  const p = await suite.spawn({ options }, { CI: "1" });
+  expect(await p.reply).toEqual({ failed: "lookup_pilot_real_route_unavailable" }); await p.exit;
+  expect(await fs.readdir(outputRoot)).toEqual([]);
+  for (const path of [join(outputRoot, "controller-lock.sqlite"), join(base, ".lookup-faux-consumed-v1")]) await expect(fs.lstat(path)).rejects.toMatchObject({ code: "ENOENT" });
+  expect(JSON.parse(await fs.readFile(join(f.base, "witnesses", `${p.child.pid}.json`))).ci).toBe("1");
 });
 it("holds the lease for the entire run and refuses competing controllers", async () => {
   const k = await kernel(); const c = await loadPilot(suite.fixture, "controller");
@@ -87,7 +95,7 @@ it.each([1, 2, 3, 4, 5, 6, 8])("reconciles only after real SIGKILL before/after 
     } catch (e) { if (revision !== 1 || phase !== "before" || e.code !== "ENOENT") throw e; }
   }
 });
-it("detects a premature persistence ACK rather than granting a permit", async () => {
+it("rejects a dropped journal replacement in the controller before issuing an ACK", async () => {
   const f = suite.fixture, options = await runOptions(f), config = join(f.base, "premature-ack.json");
   await fs.writeFile(config, JSON.stringify({ path: join(options.outputRoot, "lookup-pilot-controller.json"), revision: 3, action: "skip" }), { mode: 0o600 });
   const p = await suite.spawn({ options }, { LOOKUP_FIXTURE_FAULT: config });
@@ -164,4 +172,19 @@ it("preserves terminal journal status across before/after completed receipt pers
     expect(JSON.parse(await fs.readFile(path)).terminal).toBe(phase === "after" ? "completed" : null);
     expect((await c.reconcileLookupPilot(options.outputRoot)).counts.completed).toBe(1);
   }
+});
+
+it.each(["completed", "budget_admission", "lookup_recovery_only", "lookup_unreconciled_processes", "lookup_run_deadline"])("rejects controller-only IPC stop %s", async code => {
+  const k = await kernel(); await expect(message(k, "stop", { code })).rejects.toThrow("lookup_ipc_invalid");
+  expect(k.journal.snapshot().stop).toBe("lookup_ipc_invalid");
+});
+it("derives a zero-hold refusal as unadmitted despite a worker lost claim", async () => {
+  const k = await kernel(3.92), permit = await admit(k); await message(k, "consume", { permit, bodyDigest: hash });
+  await message(k, "settle", { permit, outcome: { kind: "lost" }, rawUsage: null, tier: null }); await k.journal.finish(0, "lost");
+  k.seq = 0; await k.journal.assign(1, k.worker); expect(await admit(k)).toMatchObject({ refused: true }); await k.journal.finish(1, "lost");
+  expect(k.journal.snapshot().slots[1]).toMatchObject({ terminal: "unadmitted", admissionRefusal: "budget_admission" });
+});
+it("refuses a worker with a null start identity", async () => {
+  const k = await kernel(); await k.journal.finish(0, "lost");
+  await expect(k.journal.assign(1, { ...k.worker, startIdentity: null })).rejects.toThrow("lookup_ipc_invalid");
 });

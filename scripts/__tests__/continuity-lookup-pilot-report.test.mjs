@@ -8,6 +8,7 @@ const hold = (kind = "lost", knownUnits = "0") => ({ permitId: "opaque-permit", 
   settlement: { kind, knownUnits, rawUsage: raw, tier: null } });
 const slot = terminal => ({ terminal, holds: [hold(terminal === "completed" ? "settled" : terminal === "integrity_stop" ? "integrity_stop" : "lost")], score: null });
 it.each([
+  [["lost", "lost"], "lookup_repeated_loss"],
   [["lost", "own_abort_after_send"], null],
   [["lost", "own_abort_after_send", "lost"], "lookup_repeated_loss"],
   [["own_abort_after_send", "own_abort_after_send", "own_abort_after_send"], null],
@@ -39,7 +40,7 @@ function reportState() {
   const hash = "a".repeat(64), id = "b".repeat(64);
   return { runId: "fictional-run", capUSD: 100, rmaxUSD: 3.92, schedule: [{ slotId: id, eligible: true, roleId: "native", code: "R0", suite: "holdout", traceId: "fictional", probeId: "p01" }],
     slots: [{ ...slot("completed"), slotId: id }], publicBindings: { R0: { revision: "c".repeat(40), buildSha256: hash, sourceSha256: hash, protocolSha256: hash } },
-    roleCount: 6, cursor: 1, stop: "completed" };
+    publicSources: { holdout: hash }, roleCount: 6, cursor: 1, stop: "completed" };
 }
 it("exports only the content-free projection, never request/answer/path/path-hash/commitment/stderr sentinels", () => {
   const s = reportState(), sentinels = ["fictional-answer-sentinel", "/fictional/private-path", createHash("sha256").update("/fictional/private-path").digest("hex"), "fictional-commitment-sentinel", "fictional-stderr-sentinel"];
@@ -73,4 +74,29 @@ it("keeps conservative numeric partial spend for inconsistent integrity counters
 it("keeps the smallest flex cache quantum exact and refuses non-integrity invalid usage", () => {
   expect(priceLookupUsage({ input_tokens: 1, output_tokens: 0, input_tokens_details: { cached_tokens: 1 } }, "flex").units).toBe("1");
   expect(() => settleLookupHold(hold(), { kind: "settled", cost: 0 }, { input_tokens: 0, output_tokens: 0 }, null)).toThrow("lookup_invalid_usage");
+});
+
+it("counts only visited slots, leaving unvisited inventory solely in truncation", () => {
+  const s = reportState(); s.schedule.push({ ...s.schedule[0], slotId: "d".repeat(64) }, { ...s.schedule[0], slotId: "e".repeat(64), eligible: false });
+  s.slots.push({ terminal: null, holds: [], score: null }, { terminal: null, holds: [], score: null });
+  const report = aggregateLookupPilot(s, [lookupPilotReceipt(s, 0)]);
+  expect(report.counts).toMatchObject({ planned: 3, eligible: 2, admitted: 1, unadmitted: 0, skipped: 0, missing: 0 });
+  expect(report.schedule).toEqual({ visited: 1, remaining: 2, truncated: true });
+});
+it("binds every receipt to its own suite source", () => {
+  const s = reportState(); s.publicSources.other = "f".repeat(64);
+  s.schedule.push({ ...s.schedule[0], suite: "other", slotId: "d".repeat(64) }); s.slots.push(structuredClone(s.slots[0]));
+  expect(lookupPilotReceipt(s, 0).binding.sourceSha256).toBe("a".repeat(64));
+  expect(lookupPilotReceipt(s, 1).binding.sourceSha256).toBe("f".repeat(64));
+});
+it("counts later pre-send refusal as incomplete, never as invalid or a provider loss", () => {
+  const s = reportState(); s.slots[0] = { ...slot("refused_pre_send"), holds: [hold("settled", "6000")], admissionRefusal: "budget_admission" };
+  const row = lookupPilotReceipt(s, 0), report = aggregateLookupPilot(s, [row]);
+  expect(row).toMatchObject({ terminal: "refused_pre_send", terminalCode: "budget_admission", admitted: true });
+  expect(report.counts).toMatchObject({ admitted: 1, incomplete: 1, invalid: 0, completed: 0 });
+  expect(accountLookupPilot([slot("lost"), s.slots[0]]).consecutiveProviderLosses).toBe(0);
+});
+
+it.each([-1, .5, 2])("refuses an invalid classification cursor %s", cursor => {
+  const s = reportState(); s.cursor = cursor; expect(() => aggregateLookupPilot(s, [])).toThrow("lookup_receipt_invalid");
 });

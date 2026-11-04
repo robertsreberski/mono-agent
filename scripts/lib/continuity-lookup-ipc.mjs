@@ -1,3 +1,4 @@
+import { digest } from "./continuity-dataset.mjs";
 import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
 import { LOOKUP_FAUX_AUTHORIZATION_DOMAIN } from "./continuity-lookup-pilot.mjs";
@@ -13,8 +14,14 @@ export async function verifyLookupPilotParent(assignment) {
   const state = await readPilotPrivate(pilotStatePath(assignment.outputRoot));
   const slot = state.slots[assignment.index];
   pilotNeed(samePilot(state.schedule, lookupPilotSchedule(assignment.pilot)), "lookup_ipc_invalid");
+  const parentStart = lookupProcessStartIdentity(process.ppid);
+  pilotNeed(typeof parentStart === "string" && parentStart.length > 0 && state.controller.pid === process.ppid
+    && parentStart === state.controller.startIdentity, "lookup_ipc_invalid");
+  pilotNeed(digest(assignment.pilot) === state.binding
+    && assignment.roleRequest.binding.id === assignment.slot.roleId
+    && assignment.roleRequest.binding.registrationSha256 === digest(assignment.pilot.registration)
+    && samePilot(assignment.roleRequest.build, assignment.pilot.registration.codes[assignment.slot.code].build), "lookup_ipc_invalid");
   pilotNeed(state.schema === LOOKUP_FAUX_CONTROLLER && state.epoch === assignment.epoch && state.runId === assignment.runId && process.connected
-    && state.controller.pid === process.ppid && lookupProcessStartIdentity(process.ppid) === state.controller.startIdentity
     && slot?.worker?.pid === process.pid && slot.worker.startIdentity === lookupProcessStartIdentity(process.pid)
     && slot.slotId === assignment.slotId && slot.cacheKey === assignment.cacheKey && samePilot(state.schedule[assignment.index], assignment.slot), "lookup_ipc_invalid");
   await readLookupPilotLease(assignment.outputRoot, state.controller);

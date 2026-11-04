@@ -4,6 +4,7 @@ import { userInfo } from "node:os";
 import { join } from "node:path";
 import { digest } from "./continuity-dataset.mjs";
 import { isLookupLeaseFile, markLookupLeaseCompromised } from "./continuity-lookup-lease.mjs";
+import { LOOKUP_AUTHORIZATION_SCHEMA } from "./continuity-lookup-authorization.mjs";
 import { pilotNeed } from "./continuity-lookup-pilot-accounting.mjs";
 
 export const LOOKUP_FAUX_AUTHORIZATION = "continuity-lookup-faux-authorization-v1";
@@ -13,7 +14,7 @@ export const samePilot = (a, b) => a !== undefined && b !== undefined && digest(
 export const pilotHash = value => /^[a-f0-9]{64}$/u.test(value ?? "");
 export const pilotId = value => typeof value === "string" && /^[A-Za-z0-9_-]{1,128}$/u.test(value);
 export function requireFauxPilot(authorization) {
-  pilotNeed(authorization?.schema !== "continuity-lookup-pilot-authorization-v1", "lookup_pilot_real_route_unavailable");
+  pilotNeed(authorization?.schema !== LOOKUP_AUTHORIZATION_SCHEMA, "lookup_pilot_real_route_unavailable");
   pilotNeed(authorization?.schema === LOOKUP_FAUX_AUTHORIZATION, "lookup_pilot_faux_required");
   pilotNeed(!Object.hasOwn(process.env, "CONTINUITY_DEBUG"), "lookup_debug_forbidden");
   // The incompatible faux identity is non-paid and is explicitly allowed under CI.

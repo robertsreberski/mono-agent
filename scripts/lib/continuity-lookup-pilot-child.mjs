@@ -1,5 +1,4 @@
 // Internal faux probe only: no real Models, credentials, network transport or capability factory.
-import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { guardedLookupModels, LOOKUP_GUARD_CONTRACT } from "./continuity-lookup-guard.mjs";
 import { validateLookupPilotRegistration } from "./continuity-lookup-pilot.mjs";
@@ -10,9 +9,9 @@ import { pilotNeed } from "./continuity-lookup-pilot-accounting.mjs";
 
 async function main(a) {
   pilotNeed(!Object.hasOwn(process.env, "CONTINUITY_DEBUG"), "lookup_debug_forbidden");
+  await verifyLookupPilotParent(a);
   await validateLookupPilotRegistration(a.pilot);
   await verifyRoleRequest(ROOT, a.roleRequest, a.plan);
-  await verifyLookupPilotParent(a);
   const go = new Promise(resolve => process.once("message", resolve));
   process.send({ type: "ready", epoch: a.epoch, slotId: a.slotId });
   const start = await go;
@@ -20,9 +19,6 @@ async function main(a) {
   const permit = await createLookupPilotIPC(a), abort = new AbortController();
   let terminal = "completed", score = 1;
   try {
-    if (a.scenario === "disconnect") { process.disconnect(); return; }
-    if (a.scenario === "die") process.kill(process.pid, "SIGKILL");
-    if (a.scenario === "hang") { await new Promise(() => {}); return; }
     const contract = { ...LOOKUP_GUARD_CONTRACT, slotId: a.slotId, runId: a.runId };
     // A minimal local serializer drives the *actual guard*. It is not a provider substitute on a paid route.
     const models = { streamSimple(model, context, options) {
@@ -51,11 +47,10 @@ async function main(a) {
       if (!result.content.length) terminal = "pilot_empty_final_output";
     }
     if (a.scenario === "wrong") { terminal = "wrong"; score = 0; }
-    if (a.scenario === "descendant") spawn(process.execPath, ["-e", "setInterval(()=>{},1000)"], { stdio: "ignore", env: process.env });
   } catch (error) {
-    terminal = a.scenario === "own_abort_after_send" ? "own_abort_after_send" : a.scenario === "integrity_stop" ? "integrity_stop" : "lost"; score = null;
+    terminal = error.outcome === "refused_pre_send" ? "refused_pre_send" : a.scenario === "own_abort_after_send" ? "own_abort_after_send" : a.scenario === "integrity_stop" ? "integrity_stop" : "lost"; score = null;
   } finally { permit.close(); }
-  process.send({ type: "done", epoch: a.epoch, slotId: a.slotId, terminal, score, descendants: a.scenario === "descendant" }, () => process.disconnect());
+  process.send({ type: "done", epoch: a.epoch, slotId: a.slotId, terminal, score }, () => process.disconnect());
 }
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   if (!process.send || !process.connected) throw new Error("lookup_ipc_invalid");

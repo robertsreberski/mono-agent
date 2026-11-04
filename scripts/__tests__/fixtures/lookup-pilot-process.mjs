@@ -19,7 +19,7 @@ export async function pilotProcessFixture() {
   await fs.chmod(base, 0o700);
   const env = { ...process.env }, home = join(base, "build-home"); await fs.mkdir(home, { mode: 0o700 });
   for (const key of Object.keys(process.env)) if (key.startsWith("GIT_")) delete process.env[key];
-  Object.assign(process.env, { HOME: home, XDG_CACHE_HOME: home, XDG_CONFIG_HOME: home, COREPACK_ENABLE_NETWORK: "0", GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" });
+  Object.assign(process.env, { HOME: home, XDG_CACHE_HOME: home, XDG_CONFIG_HOME: home, XDG_DATA_HOME: home, XDG_STATE_HOME: home, COREPACK_ENABLE_NETWORK: "0", GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" });
   for (const p of ["npm_config", "pnpm_config"]) Object.assign(process.env, { [`${p}_offline`]: "true", [`${p}_verify_deps_before_run`]: "false", [`${p}_manage_package_manager_versions`]: "false" });
   try {
     const bridge = join(base, "node_modules/@mono-agent"); await fs.mkdir(bridge, { recursive: true });
@@ -45,7 +45,7 @@ export async function pilotProcessFixture() {
     const policy = await fixtureLookupPolicy({ source: workload.corpora[0].source, selection: workload.corpora[0].traces, lookupSelection: workload.lookupSelection, reader: workload.reader, codes, protocol });
     const policyPath = join(f.inputs, "lookup-policy.json"); await fs.writeFile(policyPath, JSON.stringify(policy));
     const pilot = await pilotModule.registerLookupPilot({ ...options, policyPath, policySha256: sha256(await fs.readFile(policyPath)), capUSD: 3.92, scheduleSeed: 13, runDeadlineMs: 60000 });
-    return { ...f, base, pack, pilot };
+    return { ...f, base, pack, pilot, home };
   } catch (error) { await fs.rm(base, { recursive: true, force: true }); throw error; }
   finally { for (const key of Object.keys(process.env)) if (!(key in env)) delete process.env[key]; Object.assign(process.env, env); }
 }
@@ -65,7 +65,7 @@ export function pilotSuite() {
       const witnesses = join(f.base, "witnesses"); await fs.mkdir(witnesses, { recursive: true, mode: 0o700 });
       const preload = fileURLToPath(new URL("./lookup-pilot-preload.mjs", import.meta.url));
       const child = fork(fileURLToPath(new URL("./lookup-pilot-driver.mjs", import.meta.url)), [], { cwd: f.repo, execArgv: [],
-        env: { ...process.env, NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ""} --import=${preload}`, LOOKUP_FIXTURE_WITNESSES: witnesses, ...extraEnv }, stdio: ["ignore", "ignore", "pipe", "ipc"] });
+        env: { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_"))), HOME: f.home, XDG_CACHE_HOME: f.home, XDG_CONFIG_HOME: f.home, XDG_DATA_HOME: f.home, XDG_STATE_HOME: f.home, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ""} --import=${preload}`, LOOKUP_FIXTURE_WITNESSES: witnesses, ...extraEnv }, stdio: ["ignore", "ignore", "pipe", "ipc"] });
       child.stderr.resume(); let result;
       const exit = new Promise(resolve => child.once("exit", (code, signal) => resolve({ code, signal })));
       const reply = new Promise((resolve, reject) => {
@@ -75,6 +75,6 @@ export function pilotSuite() {
       });
       const record = { child, exit, reply }; children.push(record); return record;
     },
-    async witnesses() { for (const file of await fs.readdir(join(f.base, "witnesses"))) expect(JSON.parse(await fs.readFile(join(f.base, "witnesses", file), "utf8"))).toMatchObject({ canaries: 3, unexpected: 0 }); },
+    async witnesses() { for (const file of await fs.readdir(join(f.base, "witnesses"))) expect(JSON.parse(await fs.readFile(join(f.base, "witnesses", file), "utf8"))).toMatchObject({ canaries: 3, unexpected: 0, home: f.home, xdg: [f.home, f.home, f.home, f.home], git: ["/dev/null", "1"] }); },
   };
 }

@@ -10,7 +10,14 @@ export const LOOKUP_PILOT_STOPS = Object.freeze([
   "lookup_permit_invalid", "lookup_settlement_failed", "lookup_stop_failed", "lookup_payload_repeated",
   "lookup_headers_forbidden", "lookup_prompt_cache_key_forbidden", "lookup_send_mismatch", "lookup_duplicate_terminal",
 ]);
-export const LOOKUP_SLOT_TERMINALS = Object.freeze(["completed", "wrong", "lost", "own_abort_after_send", "pilot_empty_final_output", "integrity_stop"]);
+// Only guard-owned causes may cross the worker stop API; lifecycle/completion remain controller-owned.
+export const LOOKUP_GUARD_STOPS = Object.freeze([
+  "auth_failure", "lookup_auth_failure", "lookup_account_mismatch", "lookup_quota_exhausted", "lookup_settlement_failed",
+  "lookup_invalid_usage", "lookup_unknown_tier", "lookup_hold_exceeded", "lookup_input_envelope_violated",
+  "lookup_output_envelope_violated", "lookup_reasoning_envelope_violated", "lookup_body_mismatch", "lookup_permit_invalid",
+  "lookup_payload_repeated", "lookup_headers_forbidden", "lookup_prompt_cache_key_forbidden", "lookup_send_mismatch", "lookup_duplicate_terminal",
+]);
+export const LOOKUP_SLOT_TERMINALS = Object.freeze(["completed", "wrong", "lost", "own_abort_after_send", "pilot_empty_final_output", "integrity_stop", "refused_pre_send", "unadmitted"]);
 export function pilotNeed(ok, code) { if (!ok) throw Object.assign(new Error(code), { code }); }
 export const fixedPilotCode = code => LOOKUP_PILOT_STOPS.includes(code) ? code : "lookup_ipc_invalid";
 export const USD_UNITS = 20000000n; // half of one tenth-microdollar; exact even for flex
@@ -68,7 +75,7 @@ export function accountLookupPilot(slots) {
       else active += reserve;
     }
     if (!slot.terminal) continue;
-    if (["lost", "own_abort_after_send"].includes(slot.terminal)) incomplete++;
+    if (["lost", "own_abort_after_send", "refused_pre_send"].includes(slot.terminal)) incomplete++;
     else if (["completed", "wrong"].includes(slot.terminal)) completed++;
     else invalid++;
     if (slot.terminal === "lost") losses++;

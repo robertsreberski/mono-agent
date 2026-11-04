@@ -1344,7 +1344,10 @@ retries. Epoch, slot, worker identity and the expected next message bind each
 exchange. Holds and one-time consumption are persisted before acknowledgement;
 the client independently reads the acknowledgement from disk. A disconnect,
 integrity error or timeout stops and contains the owned group before another
-slot can start. Settlement remains legal after a sticky stop, never admission.
+slot can start. Settlement remains legal after a sticky stop, never admission. An IPC stop
+allows a bounded 250 ms settle grace, then contains the owned process group;
+unreconciled containment is an absorbing safety stop taking precedence over
+other causes.
 Recovery is observation/reconciliation only: it never launches, readmits or
 signals a previously recorded process group.
 
@@ -1356,9 +1359,11 @@ service tier retains 2× pricing. Legacy holdout accounting is unchanged unless
 its explicit lookup adapter is selected; no ledger unit is fabricated.
 
 Validity counts admitted slots, not requests. Lost and own-aborted slots are
-incomplete, not invalid; wrong answers complete an observation. Empty final
+incomplete, not invalid; wrong answers complete an observation. Admission
+refusals without holds are unadmitted; a refused later round is incomplete,
+never a provider loss. Empty final
 output is invalid, and strictly more than 10% invalid admitted slots stops.
-Two provider-side losses stop the run. Own latency aborts neither count toward
+Two consecutive admitted provider-side losses stop the run. Own latency aborts neither count toward
 nor reset that streak; skipped/unadmitted slots are also invisible. Other
 admitted terminal slots reset it. Alternating losses with completed slots are
 bounded only by C.
@@ -1366,7 +1371,8 @@ bounded only by C.
 Partial slot receipts are synced independently of worker exit. Aggregation
 refuses duplicate, changed and unplanned receipts and reports planned,
 eligible, skipped, unadmitted, admitted, completed, incomplete, invalid and
-missing counts, plain paired-block counts and schedule truncation. Journal
+missing counts for visited slots, plain paired-block counts and schedule
+truncation. Unvisited slots count only as remaining truncation. Journal
 status counts and missing receipt copies are independent coverage counters;
 paired blocks require verified receipt copies. Reports
 are strictly projected to opaque identities, content hashes, fixed codes and
