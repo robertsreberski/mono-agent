@@ -77,6 +77,7 @@ process.emit = (event, ...args) => {
     if (a?.pilot) {
       assignment = a;
       const kind = fault?.action?.startsWith("swap-") ? fault.action.slice(5) : null;
+      if (kind === "cache") a.cacheKey = "foreign-cache-key";
       if (kind === "plan") a.plan.confirmation = "fictional-tamper";
       if (kind === "build" || kind === "role-build") a.roleRequest.build.outputSha256 = "0".repeat(64);
       if (kind === "role") a.roleRequest.binding.arm = "fictional-tamper";
@@ -151,6 +152,7 @@ childProcess.execFileSync = (command, args, ...rest) => {
   }
   if (driver && fault?.action?.startsWith("identity-before-") && command === "/bin/ps" && args[1] === String(probePid) && new Error().stack.includes("containOwned")
     && (fault.action === "identity-before-term" || evidence.signals?.includes("SIGTERM"))) { evidence.identityRefused = true; record(); return fault.action === "identity-before-gone" ? "" : "fictional-reused-start"; }
+  if (driver && fault?.action === "descendant-unproven" && command === "/bin/ps" && args.includes("-axo") && new Error().stack.includes("containOwned")) { evidence.descendantUnproven = true; record(); return ""; }
   if (driver && fault?.action === "null-controller-start" && command === "/bin/ps") return "";
   if (driver && fault?.action === "terminate-fail" && command === "ps" && args.includes("-axo") && probePid) return `${probePid} ${probePid} S\n`;
   return exec(command, args, ...rest);
@@ -165,6 +167,16 @@ if (probe) {
     if (m.type === "done" && assignment?.scenario === "descendant") {
       const descendant = childProcess.spawn(process.execPath, ["-e", "setInterval(()=>{},1000)"], { stdio: "ignore", env: process.env });
       evidence.descendants.push({ pid: descendant.pid, startIdentity: startIdentity(descendant.pid) }); record(); descendant.unref();
+      const callback = args.at(-1);
+      if (typeof callback === "function") args[args.length - 1] = () => { void (async () => {
+        const until = Date.now() + 5000;
+        while (Date.now() < until) {
+          const state = JSON.parse(await promises.readFile(join(assignment.outputRoot, "lookup-pilot-controller.json")));
+          if (state.slots[assignment.index].members?.some(m => m.pid === descendant.pid)) { evidence.membersRecorded = true; record(); break; }
+          await new Promise(resolve => schedule(resolve, 5));
+        }
+        callback();
+      })(); };
     }
     if (!changed && fault?.action?.startsWith("wire-") && m.version === "lookup-faux-ipc-v1" && (fault.action !== "wire-digest" || m.op === "consume")) {
       changed = true;

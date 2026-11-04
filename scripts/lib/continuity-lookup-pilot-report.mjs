@@ -1,3 +1,4 @@
+import { LOOKUP_PRE_SEND_REFUSALS } from "./continuity-lookup-guard.mjs";
 import { digest } from "./continuity-dataset.mjs";
 import { accountLookupPilot, lookupDollars, pilotNeed, LOOKUP_PILOT_STOPS } from "./continuity-lookup-pilot-accounting.mjs";
 import { pilotHash, pilotId, samePilot } from "./continuity-lookup-pilot-state.mjs";
@@ -11,8 +12,8 @@ export function lookupPilotReceipt(state, index) {
   pilotNeed(/^[a-f0-9]{40}$/u.test(bindings.revision)
     && ["buildSha256", "sourceSha256", "protocolSha256"].every(k => pilotHash(bindings[k])), "lookup_receipt_invalid");
   const a = accountLookupPilot([slot]), holds = slot.holds ?? [];
-  const terminalCode = slot.admissionRefusal ?? holds.at(-1)?.settlement?.code ?? slot.terminal;
-  pilotNeed(terminalCode === null || LOOKUP_PILOT_STOPS.includes(terminalCode)
+  const terminalCode = slot.admissionRefusal ?? slot.guardRefusal ?? holds.at(-1)?.settlement?.code ?? slot.terminal;
+  pilotNeed(terminalCode === null || LOOKUP_PILOT_STOPS.includes(terminalCode) || LOOKUP_PRE_SEND_REFUSALS.includes(terminalCode)
     || ["wrong", "lost", "own_abort_after_send", "pilot_empty_final_output", "integrity_stop", "skipped", "unadmitted", "refused_pre_send"].includes(terminalCode), "lookup_receipt_invalid");
   let input = 0, output = 0;
   for (const h of holds) { input += h.settlement?.rawUsage?.input_tokens ?? 0; output += h.settlement?.rawUsage?.output_tokens ?? 0; }

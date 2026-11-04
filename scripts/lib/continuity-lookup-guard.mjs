@@ -1,3 +1,4 @@
+import { assertResolvedLookupSafety, lookupCacheKey } from "./continuity-lookup-pilot-runtime.mjs";
 import { createHash } from "node:crypto";
 import { zstdDecompressSync } from "node:zlib";
 
@@ -23,6 +24,7 @@ export const LOOKUP_OUTCOMES = freeze({
   lost: { hold: "retained", pilot: "continues_slot_terminal" },
   integrity_stop: { hold: "retained", pilot: "sticky_stop" },
 });
+export const LOOKUP_PRE_SEND_REFUSALS = Object.freeze(["not_admitted_input_envelope", "not_admitted_cap", "lookup_request_limit", "lookup_route_mismatch", "lookup_contract_mismatch", "lookup_option_forbidden", "lookup_external_fetch_forbidden", "lookup_headers_forbidden", "lookup_env_forbidden", "lookup_payload_forbidden", "lookup_initial_reasoning_forbidden", "lookup_prompt_cache_key_forbidden", "lookup_retry_profile_forbidden", "lookup_auxiliary_callers_forbidden", "lookup_method_forbidden", "lookup_model_switch_forbidden", "lookup_preparation_forbidden", "lookup_tools_forbidden", "lookup_stopped", "lookup_slot_terminal", "lookup_concurrent_request", "lookup_permit_missing"]);
 export class LookupGuardError extends Error {
   constructor(code, outcome = "refused_pre_send", classification = code, cause) {
     super(code, cause === undefined ? undefined : { cause }); this.code = code; this.outcome = outcome; this.classification = classification;
@@ -142,8 +144,7 @@ function assertPayload(payload, round, contract) {
   keysOnly(payload, ["model", "store", "stream", "instructions", "input", "text", "include", "prompt_cache_key", "tool_choice", "parallel_tool_calls", "temperature", "service_tier", "tools", "reasoning"]);
   if (payload.model !== contract.model || payload.reasoning?.effort !== contract.effort || payload.store !== false || payload.stream !== true
     || payload.service_tier !== undefined || !Array.isArray(payload.input)) refuse("lookup_payload_forbidden");
-  if (Object.hasOwn(payload, "prompt_cache_key") && (typeof contract.promptCacheKey !== "string"
-    || !contract.promptCacheKey.includes(contract.runId) || payload.prompt_cache_key !== contract.promptCacheKey)) refuse("lookup_prompt_cache_key_forbidden");
+  if ((contract.promptCacheKey !== undefined || Object.hasOwn(payload, "prompt_cache_key")) && payload.prompt_cache_key !== contract.promptCacheKey) refuse("lookup_prompt_cache_key_forbidden");
   keysOnly(payload.reasoning, ["effort", "summary"]);
   if (payload.text !== undefined) keysOnly(payload.text, ["verbosity"]);
   if (payload.include !== undefined && (!Array.isArray(payload.include) || payload.include.some(x => x !== "reasoning.encrypted_content"))) refuse("lookup_payload_forbidden");
@@ -187,15 +188,15 @@ export function lookupSettledCost(usage, tier) {
 }
 
 /** One wrapper per sequential probe run. Never share it between slots. No default fetch. */
-export function guardedLookupModels(models, { contract, permit, send, assumptions = LOOKUP_ASSUMPTIONS }) {
+export function guardedLookupModels(models, { contract, permit, send, assumptions = LOOKUP_ASSUMPTIONS, resolvedSafety }) {
   if (JSON.stringify(assumptions) !== JSON.stringify(LOOKUP_ASSUMPTIONS)) refuse("lookup_assumptions_mismatch");
   for (const key of ["provider", "model", "api", "baseUrl", "effort", "version"])
     if (contract?.[key] !== LOOKUP_GUARD_CONTRACT[key]) refuse("lookup_contract_mismatch");
   if (!contract.slotId || !contract.runId || contract.piMaxRetries !== 0 || contract.maxRetries !== 0) refuse("lookup_contract_mismatch");
   for (const key of ["piRequestRetryBudgetMs", "retryBudgetMs", "retryProfile", "retry"])
     if (Object.hasOwn(contract, key)) refuse("lookup_retry_profile_forbidden");
-  if (Object.hasOwn(contract, "promptCacheKey") && (typeof contract.promptCacheKey !== "string"
-    || !contract.promptCacheKey.includes(contract.runId))) refuse("lookup_prompt_cache_key_forbidden");
+  if (Object.hasOwn(contract, "promptCacheKey") && !lookupCacheKey(contract.promptCacheKey)) refuse("lookup_prompt_cache_key_forbidden");
+  if (resolvedSafety) assertResolvedLookupSafety(resolvedSafety);
   if (typeof send !== "function") refuse("lookup_single_shot_send_required");
   contract = Object.freeze({ ...contract });
   assumptions = LOOKUP_ASSUMPTIONS;
@@ -217,6 +218,7 @@ export function guardedLookupModels(models, { contract, permit, send, assumption
     if (slotTerminal) refuse("lookup_slot_terminal");
     if (finalizationBlocked) refuse("pilot_empty_final_output", "failed/pilot_empty_final_output");
     if (rounds >= 10) refuse("lookup_request_limit");
+    if (resolvedSafety) assertResolvedLookupSafety(resolvedSafety);
     assertRoute(model, options, contract);
     const round = rounds + 1;
     let admitted, admittedPayloadDigest, earlyStop, sent = false, fetchEntered = false, raw, tier, envelope, payloadSeen = false, terminalSeen = false, preRefusal, integrity;
@@ -251,13 +253,14 @@ export function guardedLookupModels(models, { contract, permit, send, assumption
         return message;
       } finally { active = false; }
     };
-    const wrapped = { ...options,
+    const wrapped = { ...options, ...(contract.promptCacheKey === undefined ? {} : { sessionId: contract.promptCacheKey }),
       onPayload: async (payload, selected) => {
         try {
           if (payloadSeen) { if (admitted) integrity = "lookup_payload_repeated"; refuse("lookup_payload_repeated"); } payloadSeen = true;
           const mutated = await options.onPayload?.(payload, selected) ?? payload;
           // Snapshot once: accessors/toJSON cannot change between sizing and digesting.
           const final = JSON.parse(JSON.stringify(mutated));
+          if (resolvedSafety) assertResolvedLookupSafety(resolvedSafety);
           assertPayload(final, round, contract);
           envelope = lookupInputEnvelope(final, outputs, assumptions);
           if (envelope.U > assumptions.inputMax) refuse("not_admitted_input_envelope");
@@ -287,7 +290,7 @@ export function guardedLookupModels(models, { contract, permit, send, assumption
           integrity = "lookup_headers_forbidden"; throw new LookupGuardError(integrity);
         }
         for (const key of ["session-id", "x-client-request-id"]) {
-          if (headers.has(key) && headers.get(key) !== contract.promptCacheKey) {
+          if ((contract.promptCacheKey !== undefined || headers.has(key)) && headers.get(key) !== contract.promptCacheKey) {
             integrity = "lookup_prompt_cache_key_forbidden"; throw new LookupGuardError(integrity);
           }
         }

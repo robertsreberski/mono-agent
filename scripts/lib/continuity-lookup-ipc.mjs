@@ -1,3 +1,4 @@
+import { assertLookupCacheAssignment } from "./continuity-lookup-pilot-runtime.mjs";
 import { digest } from "./continuity-dataset.mjs";
 import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
@@ -13,6 +14,7 @@ export async function verifyLookupPilotParent(assignment) {
   pilotNeed(!Object.hasOwn(process.env, "CONTINUITY_DEBUG"), "lookup_debug_forbidden");
   const state = await readPilotPrivate(pilotStatePath(assignment.outputRoot));
   const slot = state.slots[assignment.index];
+  assertLookupCacheAssignment(state, assignment);
   pilotNeed(samePilot(state.schedule, lookupPilotSchedule(assignment.pilot)), "lookup_ipc_invalid");
   const parentStart = lookupProcessStartIdentity(process.ppid);
   pilotNeed(typeof parentStart === "string" && parentStart.length > 0 && state.controller.pid === process.ppid

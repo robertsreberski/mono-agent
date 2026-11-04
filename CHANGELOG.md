@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Isolate lookup-pilot transport caches without changing native checkpoint identity,
+  refuse auxiliary model routes in configured pilot harnesses, and contain
+  identity-proven descendants. Real provider dispatch remains unavailable.
+
 - Add read-only, aggregate-only tool-result clearing opportunity analysis and
   offline provider payload qualification, without enabling runtime clearing.
   Defer weak retention/usage evidence, account for every request, and expose

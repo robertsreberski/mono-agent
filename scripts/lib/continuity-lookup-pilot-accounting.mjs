@@ -4,7 +4,7 @@ export const LOOKUP_PILOT_STOPS = Object.freeze([
   "completed", "auth_failure", "lookup_auth_failure", "lookup_account_mismatch", "lookup_quota_exhausted",
   "unpriced_reservation", "invalid_unit_rate", "budget_admission", "lookup_run_deadline", "lookup_worker_timeout",
   "lookup_unreconciled_processes", "lookup_repeated_loss", "lookup_ipc_invalid", "lookup_ipc_disconnected",
-  "lookup_persist_failed", "lookup_receipt_invalid", "lookup_worker_lost", "lookup_recovery_only",
+  "lookup_persist_failed", "lookup_receipt_invalid", "lookup_arrival_persist_failed", "lookup_arrival_receipt_invalid", "lookup_worker_lost", "lookup_recovery_only",
   "lookup_invalid_usage", "lookup_unknown_tier", "lookup_hold_exceeded", "lookup_input_envelope_violated",
   "lookup_output_envelope_violated", "lookup_reasoning_envelope_violated", "lookup_body_mismatch",
   "lookup_permit_invalid", "lookup_settlement_failed", "lookup_stop_failed", "lookup_payload_repeated",
@@ -15,7 +15,7 @@ export const LOOKUP_GUARD_STOPS = Object.freeze([
   "auth_failure", "lookup_auth_failure", "lookup_account_mismatch", "lookup_quota_exhausted", "lookup_settlement_failed",
   "lookup_invalid_usage", "lookup_unknown_tier", "lookup_hold_exceeded", "lookup_input_envelope_violated",
   "lookup_output_envelope_violated", "lookup_reasoning_envelope_violated", "lookup_body_mismatch", "lookup_permit_invalid",
-  "lookup_persist_failed", "lookup_receipt_invalid", "lookup_payload_repeated", "lookup_headers_forbidden", "lookup_prompt_cache_key_forbidden", "lookup_send_mismatch", "lookup_duplicate_terminal",
+  "lookup_arrival_persist_failed", "lookup_arrival_receipt_invalid", "lookup_payload_repeated", "lookup_headers_forbidden", "lookup_prompt_cache_key_forbidden", "lookup_send_mismatch", "lookup_duplicate_terminal",
 ]);
 export const LOOKUP_INTEGRITY_STOPS = Object.freeze(LOOKUP_GUARD_STOPS.filter(code => !["auth_failure", "lookup_auth_failure", "lookup_account_mismatch", "lookup_quota_exhausted"].includes(code)));
 const outcomeCodes = Object.freeze({ settled: [null], lost: [null], own_abort_after_send: [null], integrity_stop: LOOKUP_INTEGRITY_STOPS });
