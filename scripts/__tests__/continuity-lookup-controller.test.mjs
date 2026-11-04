@@ -143,3 +143,25 @@ it("never releases an admitted-but-unsent hold by claiming a pre-admission refus
   await expect(message(k, "settle", { permit, outcome: { kind: "refused_pre_send" }, rawUsage: null, tier: null })).rejects.toThrow("lookup_permit_invalid");
   expect(k.journal.snapshot().slots[0].holds[0]).toMatchObject({ reservedUnits: "78400000", consumed: false });
 });
+
+it("reconciles before/after final report persistence without resuming", async () => {
+  const f = suite.fixture, c = await loadPilot(f, "controller");
+  for (const phase of ["before", "after"]) {
+    const options = await runOptions(f), path = join(options.outputRoot, "report.json"), config = join(f.base, `${options.authorization.authorizationId}.fault.json`);
+    await fs.writeFile(config, JSON.stringify({ path, phase }), { mode: 0o600 });
+    const p = await suite.spawn({ options }, { LOOKUP_FIXTURE_FAULT: config }); await p.reply; expect((await p.exit).signal).toBe("SIGKILL");
+    if (phase === "after") expect(JSON.parse(await fs.readFile(path)).stop).toBe("budget_admission");
+    else await expect(fs.lstat(path)).rejects.toMatchObject({ code: "ENOENT" });
+    expect((await c.reconcileLookupPilot(options.outputRoot)).cost.totalUSD).toBe(3.92);
+  }
+});
+it("preserves terminal journal status across before/after completed receipt persistence", async () => {
+  const f = suite.fixture, c = await loadPilot(f, "controller"), first = c.lookupPilotSchedule(f.pilot)[0];
+  for (const phase of ["before", "after"]) {
+    const options = await runOptions(f, ["settled"]), path = join(options.outputRoot, "slots", `${first.slotId}.json`), config = join(f.base, `${options.authorization.authorizationId}.fault.json`);
+    await fs.writeFile(config, JSON.stringify({ path, phase, calls: { admitted: 1, consumed: 1, settled: 1 }, terminal: "completed" }), { mode: 0o600 });
+    const p = await suite.spawn({ options }, { LOOKUP_FIXTURE_FAULT: config }); await p.reply; expect((await p.exit).signal).toBe("SIGKILL");
+    expect(JSON.parse(await fs.readFile(path)).terminal).toBe(phase === "after" ? "completed" : null);
+    expect((await c.reconcileLookupPilot(options.outputRoot)).counts.completed).toBe(1);
+  }
+});

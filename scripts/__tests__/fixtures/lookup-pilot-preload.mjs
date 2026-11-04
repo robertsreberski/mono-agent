@@ -22,7 +22,8 @@ for (const method of ["rename", "link"]) {
     if (driver && fault && destination === fault.path) {
       const data = JSON.parse(fs.readFileSync(source, "utf8"));
       match = (fault.revision === undefined || data.revision === fault.revision)
-        && (fault.calls === undefined || JSON.stringify(data.calls) === JSON.stringify(fault.calls));
+        && (fault.calls === undefined || JSON.stringify(data.calls) === JSON.stringify(fault.calls))
+        && (fault.terminal === undefined || data.terminal === fault.terminal);
     }
     if (match && fault.action === "skip") { await promises.unlink(source); return; }
     if (match && fault.phase === "before") process.kill(process.pid, "SIGKILL");
