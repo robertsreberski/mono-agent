@@ -39,3 +39,12 @@ it("stops a policy-failed trial instead of publishing it as generic loss", async
   expect(await run(a)).toEqual({ terminal: "refused_pre_send", score: null, refusalCode: "lookup_payload_repeated" });
   expect(send.permit.stop).toHaveBeenCalledExactlyOnceWith("lookup_payload_repeated"); expect(send.permit.close).toHaveBeenCalledTimes(1);
 });
+
+it.each(["not_admitted_input_envelope", "lookup_request_limit", "not_admitted_cap", "lookup_stopped", "lookup_slot_terminal"])("preserves SDK capacity refusal %s without a policy stop", async code => {
+  runner.runProbe.mockResolvedValue({ status: "failed", failure: code });
+  expect(await run(a)).toEqual({ terminal: "refused_pre_send", score: null, refusalCode: code }); expect(send.permit.stop).not.toHaveBeenCalled();
+});
+it("does not classify SDK account mismatch as provider loss", async () => {
+  runner.runProbe.mockResolvedValue({ status: "failed", failure: "lookup_account_mismatch" });
+  expect(await run(a)).toEqual({ terminal: "integrity_stop", score: null });
+});

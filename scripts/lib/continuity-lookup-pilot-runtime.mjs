@@ -97,3 +97,11 @@ export function fauxLookupSafety(plan, arm) {
     compaction: { enabled: false }, session: { continuity: { ledgerEnabled: false, upkeep: { enabled: false } } }, retry: { primaryAttempts: 1 } },
     providers: { piNative: { transport: "sse", piMaxRetries: 0 } }, tools: { allowedTools: [] } } };
 }
+
+/** Project only known codes from SDK failure receipts; never return free-form text. */
+export async function lookupPilotFailureCode(failure) {
+  const [{ LOOKUP_PRE_SEND_REFUSALS }, { LOOKUP_PILOT_STOPS }] = await Promise.all([
+    import("./continuity-lookup-guard.mjs"), import("./continuity-lookup-pilot-accounting.mjs"),
+  ]);
+  return [failure?.code, failure?.kind, failure?.message, failure?.details?.code, failure?.details?.message].find(value => LOOKUP_PILOT_STOPS.includes(value) || LOOKUP_PRE_SEND_REFUSALS.includes(value));
+}

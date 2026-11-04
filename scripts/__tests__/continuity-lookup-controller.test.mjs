@@ -226,8 +226,10 @@ it.each(["lookup_auth_failure", "lookup_quota_exhausted", "lookup_account_mismat
   const k = await kernel(), permit = await admit(k); await message(k, "consume", { permit, bodyDigest: hash });
   await message(k, "stop", { code });
   const path = join(k.options.outputRoot, "lookup-pilot-controller.json"); expect(JSON.parse(await fs.readFile(path)).stop).toBe(code);
+  if (code === "lookup_account_mismatch") expect(JSON.parse(await fs.readFile(path)).slots[0].terminal).toBe("integrity_stop");
   await message(k, "settle", { permit, outcome: { kind: "lost" }, rawUsage: null, tier: null }); await k.journal.finish(0, "lost");
   expect(k.journal.snapshot().stop).toBe(code);
+  expect(k.journal.snapshot().slots[0].terminal).toBe(code === "lookup_account_mismatch" ? "integrity_stop" : "lost");
   const receipt = JSON.parse(await fs.readFile(join(k.options.outputRoot, "slots", `${k.journal.snapshot().slots[0].slotId}.json`)));
   expect(receipt.costs.retainedUSD).toBe(3.92); expect(receipt.holds[0].retained).toBe(true);
 });

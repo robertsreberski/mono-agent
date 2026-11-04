@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { zstdDecompressSync } from "node:zlib";
 import { openHarness, productionModules, scriptedModels, controlledRuntime, configJson, pilotDispatchConfig, createJudge, prepareLedgerCheckpoint } from "../lib/continuity-runner.mjs";
 import { armById, mergePatch } from "../lib/continuity-arms.mjs";
-import { issueLookupCacheKey, assertResolvedLookupSafety, assertLookupCacheAssignment, fauxLookupSafety, lookupOfflineBoundary } from "../lib/continuity-lookup-pilot-runtime.mjs";
+import { issueLookupCacheKey, assertResolvedLookupSafety, assertLookupCacheAssignment, fauxLookupSafety, lookupOfflineBoundary, lookupPilotFailureCode } from "../lib/continuity-lookup-pilot-runtime.mjs";
 import { createFauxLookupDecorator, createTestOnlyLookupPermitSource, LOOKUP_GUARD_CONTRACT as C } from "../lib/continuity-lookup-guard.mjs";
 
 const cleanups = [];
@@ -252,4 +252,10 @@ it.each(["native-lookup", "continuity-pack-cold"])("resolves the internal %s pro
     configPatch: pilotDispatchConfig(mergePatch(selected.sessionConfig, selected.probeConfig)) }) });
   expect(() => assertResolvedLookupSafety({ plan, arm: selected, config })).not.toThrow();
   expect(config.providers.piNative).toMatchObject({ transport: "sse", piMaxRetries: 0 });
+});
+
+it.each(["not_admitted_cap", "lookup_request_limit", "lookup_account_mismatch", "lookup_auth_failure", "lookup_quota_exhausted", "lookup_payload_repeated"])("preserves fixed SDK failure %s without exporting arbitrary messages", async code => {
+  expect(await lookupPilotFailureCode({ message: code })).toBe(code); expect(await lookupPilotFailureCode({ details: { message: code } })).toBe(code);
+  expect(await lookupPilotFailureCode({ code })).toBe(code); expect(await lookupPilotFailureCode({ kind: code })).toBe(code); expect(await lookupPilotFailureCode({ details: { code } })).toBe(code);
+  expect(await lookupPilotFailureCode({ message: "Fictional unclassified error text." })).toBeUndefined();
 });

@@ -1,7 +1,7 @@
 // Configured probe plumbing; minting precedes runtime construction, never JSON mode flags.
 import { join } from "node:path";
 import { armById, mergePatch } from "./continuity-arms.mjs";
-import { LOOKUP_GUARD_POLICY_REFUSALS } from "./continuity-lookup-guard.mjs";
+import { LOOKUP_PRE_SEND_REFUSALS, LOOKUP_GUARD_POLICY_REFUSALS } from "./continuity-lookup-guard.mjs";
 import { loadTraces } from "./continuity-dataset.mjs";
 import { productionModules, buildCheckpoint, runProbe, createJudge, configJson, lookupConfig, pilotDispatchConfig } from "./continuity-runner.mjs";
 import { lookupPilotWork } from "./continuity-lookup-pilot-runtime.mjs";
@@ -31,6 +31,8 @@ export async function runLookupConfiguredProbe(a) {
     if (LOOKUP_GUARD_POLICY_REFUSALS.includes(trial.failure)) {
       await send.permit.stop(trial.failure); return { terminal: "refused_pre_send", score: null, refusalCode: trial.failure };
     }
+    if (LOOKUP_PRE_SEND_REFUSALS.includes(trial.failure)) return { terminal: "refused_pre_send", score: null, refusalCode: trial.failure };
+    if (trial.failure === "lookup_account_mismatch") return { terminal: "integrity_stop", score: null };
     return { terminal: trial.status === "completed" ? trial.score?.pass ? "completed" : "wrong" : "lost",
       score: trial.status === "completed" ? Number(trial.score?.pass === true) : null };
   } finally { send.permit.close(); }

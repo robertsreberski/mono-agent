@@ -159,7 +159,7 @@ async function initializeLookupPilot(options = {}) {
           }
         } else if (message.op === "stop") {
           pilotNeed(p && Object.keys(p).join() === "code" && LOOKUP_GUARD_STOPS.includes(p.code), "lookup_ipc_invalid");
-          if (LOOKUP_INTEGRITY_STOPS.includes(p.code) && slot.holds.length) slot.terminal = "integrity_stop"; stop(p.code);
+          if ((LOOKUP_INTEGRITY_STOPS.includes(p.code) || p.code === "lookup_account_mismatch") && slot.holds.length) slot.terminal = "integrity_stop"; stop(p.code);
         }
         else {
           const hold = slot.holds.find(h => h.permitId === p?.permit?.permitId);
@@ -178,7 +178,7 @@ async function initializeLookupPilot(options = {}) {
               slot.terminal = "integrity_stop"; throw error;
             }
             if (p.outcome.kind === "integrity_stop") { slot.terminal = "integrity_stop"; stop(p.outcome.code); }
-            else if (["lost", "own_abort_after_send"].includes(p.outcome.kind)) slot.terminal = p.outcome.kind;
+            else if (["lost", "own_abort_after_send"].includes(p.outcome.kind) && slot.terminal !== "integrity_stop") slot.terminal = p.outcome.kind;
             const breach = p.rawUsage?.input_tokens > pilot.descriptor.assumptions.inputMax ? "lookup_input_envelope_violated"
               : p.rawUsage?.output_tokens > pilot.descriptor.assumptions.outputMax ? "lookup_output_envelope_violated"
               : BigInt(hold.settlement.knownUnits) > reserve ? "lookup_hold_exceeded" : null;
@@ -205,6 +205,9 @@ async function initializeLookupPilot(options = {}) {
       if (terminal === "refused_pre_send" && LOOKUP_GUARD_POLICY_REFUSALS.includes(refusalCode)) {
         stop(refusalCode); if (slot.holds.length) terminal = "integrity_stop";
       }
+      // Account substitution is a safety violation, not a provider-loss observation.
+      // Keep B2a's retained settlement unchanged while projecting the slot correctly.
+      if (state.stop === "lookup_account_mismatch" && slot.holds.length) slot.terminal = "integrity_stop";
       slot.terminal = slotTerminal(slot, terminal);
       slot.score = ["completed", "wrong"].includes(slot.terminal) ? score : null;
       state.cursor++; const reason = lookupPilotStopReason(accountLookupPilot(state.slots), cap);

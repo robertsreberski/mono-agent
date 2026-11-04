@@ -16,7 +16,7 @@ import { cp, mkdir, readFile, rm, writeFile, realpath, lstat } from "node:fs/pro
 import { dirname, join, isAbsolute, relative, resolve, sep } from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { assertResolvedLookupSafety, controlledLookupRuntime, lookupOfflineBoundary } from "./continuity-lookup-pilot-runtime.mjs";
+import { assertResolvedLookupSafety, controlledLookupRuntime, lookupOfflineBoundary, lookupPilotFailureCode } from "./continuity-lookup-pilot-runtime.mjs";
 import { armById, hasPackEvidence, checkpointKey, mergePatch, pressureMetrics, verifyBoundary, verifyPressure, verifyStore } from "./continuity-arms.mjs";
 import { LOOKUP_MODE, assertLookupServers, witnessedRecovery, installSoul, assertSoul, lookupPrompt, lookupMeter, lookupForwarder, lookupWitness, scriptedLookupReader, referenceReader, historyBody, sourceAnnotation, resolveSource } from "./continuity-lookup.mjs";
 import { traceShape } from "./continuity-generator.mjs";
@@ -448,8 +448,7 @@ export async function runLiveTurn({ modules, work, authPath, plan, mode, configP
         captureSpeakerKind: "human-turn", metadata: { source: "web" }, sender: { displayName: owner }, onEvent: watch.onEvent,
       });
       if (pilot && response.failure) {
-        const { LOOKUP_PILOT_STOPS } = await import("./continuity-lookup-pilot-accounting.mjs");
-        const code = [response.failure.message, response.failure.details?.message].find(value => LOOKUP_PILOT_STOPS.includes(value));
+        const code = await lookupPilotFailureCode(response.failure);
         if (code) throw new ContinuityError(code);
       }
     } finally {
