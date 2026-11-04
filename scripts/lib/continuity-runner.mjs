@@ -137,6 +137,9 @@ export function configJson({ work, authPath, model, effort, tools, configPatch }
 export async function openHarness({ modules, work, authPath, model, effort, tools, configPatch, route, clock, onHistoryWarning = () => {}, hostOptions = {}, pilot }) {
   if (pilot && (pilot.authorization?.schema !== "continuity-lookup-faux-authorization-v1" || Object.hasOwn(process.env, "CONTINUITY_DEBUG"))) throw new ContinuityError("lookup_pilot_faux_required");
   const json = configJson({ work, authPath, model, effort, tools, configPatch });
+  // A pilot never retains a supplied/patch credential path. Only its branded
+  // serializer may dispatch, using fictional in-memory credentials.
+  if (pilot) json.providers.piAuthPath = lookupOfflineBoundary({ ...pilot, work }).authPath;
   const config = modules.config.resolveJsonMonoAgentConfig({ json, cwd: work });
   const check = pilot ? (options, forwarded = false) => assertResolvedLookupSafety({ ...pilot, config, options, forwarded }) : null;
   if (check) { check(); if (Object.keys(hostOptions).length) throw new ContinuityError("lookup_auxiliary_callers_forbidden"); }

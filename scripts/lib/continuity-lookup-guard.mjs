@@ -1,5 +1,6 @@
 import { assertResolvedLookupSafety, lookupCacheKey } from "./continuity-lookup-pilot-runtime.mjs";
 import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import { zstdDecompressSync } from "node:zlib";
 
 const freeze = value => { for (const child of Object.values(value)) if (child && typeof child === "object") freeze(child); return Object.freeze(value); };
@@ -195,6 +196,34 @@ export function lookupSettledCost(usage, tier) {
   // Accumulate integer tenths-of-a-microdollar; return floating-point dollars.
   const tenths = (usage.input_tokens - cached - written) * 20 + cached + written * 25 + usage.output_tokens * 100;
   return tenths * (tier === "flex" ? 0.5 : tier === "default" ? 1 : 2) / 10000000;
+}
+
+// Only this factory may brand a configured-pilot decorator. No public registration seam.
+const pilotDecorators = new WeakSet();
+export const isGuardedLookupDecorator = value => pilotDecorators.has(value);
+export async function createGuardedLookupDecorator(options) {
+  const bindings = { ...options, contract: Object.freeze({ ...options.contract }), permit: Object.freeze({ ...options.permit, pilot: true }) };
+  if (bindings.permit.testOnly !== true) refuse("lookup_faux_permit_forbidden");
+  if (!lookupCacheKey(bindings.contract.promptCacheKey)) refuse("lookup_prompt_cache_key_forbidden");
+  assertResolvedLookupSafety(bindings.resolvedSafety);
+  // A private serializer instance has only fictional in-memory OAuth data. Never
+  // delegate to the configured Models or its credential store, even for auth.
+  const sdk = new URL("../../packages/turn/node_modules/@earendil-works/pi-ai/", import.meta.url);
+  const pkg = JSON.parse(await readFile(new URL("package.json", sdk), "utf8"));
+  const entry = pkg.exports?.["."]?.import, providerEntry = pkg.exports?.["./providers/*"]?.import;
+  if (typeof entry !== "string" || typeof providerEntry !== "string") refuse("lookup_unguarded_dispatch");
+  const [pi, providers] = await Promise.all([import(new URL(entry, sdk).href), import(new URL(providerEntry.replace("*", "openai-codex"), sdk).href)]);
+  const encode = value => Buffer.from(JSON.stringify(value)).toString("base64url"), credentials = new pi.InMemoryCredentialStore();
+  const access = `${encode({ alg: "none" })}.${encode({ "https://api.openai.com/auth": { chatgpt_account_id: "FAKE-TEST-ACCOUNT-NOT-REAL" } })}.FAKE-TEST-SIGNATURE`;
+  await credentials.modify(LOOKUP_GUARD_CONTRACT.provider, () => ({ type: "oauth", refresh: "FAKE-TEST-REFRESH-NOT-REAL", expires: Number.MAX_SAFE_INTEGER, access }));
+  const serializer = pi.createModels({ credentials }); serializer.setProvider(providers.openaiCodexProvider());
+  const local = {
+    getModel: serializer.getModel.bind(serializer), getProvider: serializer.getProvider.bind(serializer),
+    getAuth: (model, overrides) => serializer.getAuth(model, { ...overrides, apiKey: access }),
+    streamSimple: (model, context, options) => serializer.streamSimple(model, context, { ...options, apiKey: access }),
+  };
+  const wrapped = guardedLookupModels(local, bindings);
+  const decorator = Object.freeze(_configuredModels => wrapped); pilotDecorators.add(decorator); return decorator;
 }
 
 /** One wrapper per sequential probe run. Never share it between slots. No default fetch. */

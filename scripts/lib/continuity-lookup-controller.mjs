@@ -241,8 +241,18 @@ async function runSlot(journal, pilot, authorization, root, index) {
   child.stderr.resume();
   let closed = false, reconciled = false, done = null, busy = false, failure = null, stage = "loaded", chain = Promise.resolve(), settleTimer, termination, containmentFailed = false, rejectContainment;
   const containmentFailure = new Promise((_, reject) => { rejectContainment = reject; }); void containmentFailure.catch(() => {});
+  const recordProvenMembers = async () => {
+    if (child.exitCode !== null || child.signalCode !== null || !owned.startIdentity
+      || lookupProcessStartIdentity(owned.pid) !== owned.startIdentity) return;
+    const snapshot = lookupProcessGroupSnapshot(owned.pid), identity = owned.startIdentity.replace(/\s+/gu, " ");
+    const descendants = snapshot.filter(m => m.pid !== owned.pid && !m.zombie);
+    if (descendants.length && snapshot.some(m => m.pid === owned.pid && !m.zombie && m.startIdentity === identity)) await journal.recordMembers(index, descendants);
+  };
   const terminateOwned = () => reconciled ? Promise.resolve() : termination ??= (async function containOwned() {
     try {
+      // Persist while the leader still pins the group, including timeout/disconnect.
+      // Every signal below still requires a separate fresh, post-persistence proof.
+      await recordProvenMembers();
       for (const signal of ["SIGTERM", "SIGKILL"]) {
         if (!groupAlive(owned.pid)) return;
         const members = journal.snapshot().slots[index].members ?? [];
@@ -286,12 +296,7 @@ async function runSlot(journal, pilot, authorization, root, index) {
       } else if (message?.type === "done") {
         pilotNeed(stage === "running" && message.epoch === state.epoch && message.slotId === slot.slotId && LOOKUP_SLOT_TERMINALS.includes(message.terminal), "lookup_receipt_invalid");
         done = { terminal: message.terminal, score: message.score, refusalCode: message.refusalCode ?? null }; stage = "done";
-        // Capture only while the original unreaped leader still pins this group identity.
-        if (child.exitCode === null && child.signalCode === null) {
-          const snapshot = lookupProcessGroupSnapshot(owned.pid), identity = owned.startIdentity?.replace(/\s+/gu, " ");
-          const descendants = snapshot.filter(m => m.pid !== owned.pid && !m.zombie);
-          if (descendants.length && snapshot.some(m => m.pid === owned.pid && m.startIdentity === identity)) await journal.recordMembers(index, descendants);
-        }
+        await recordProvenMembers();
         if (done.terminal === "refused_pre_send" && LOOKUP_GUARD_POLICY_REFUSALS.includes(done.refusalCode)) await journal.stop(done.refusalCode);
         // The production child may disconnect only after this membership-persist ACK.
         if (child.connected) child.send({ type: "done-ack", epoch: state.epoch, slotId: slot.slotId });

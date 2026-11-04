@@ -10,7 +10,7 @@ import { zstdDecompressSync } from "node:zlib";
 import { openHarness, productionModules, scriptedModels, controlledRuntime, createJudge, prepareLedgerCheckpoint } from "../lib/continuity-runner.mjs";
 import { armById, mergePatch } from "../lib/continuity-arms.mjs";
 import { issueLookupCacheKey, assertResolvedLookupSafety, assertLookupCacheAssignment, fauxLookupSafety, lookupOfflineBoundary } from "../lib/continuity-lookup-pilot-runtime.mjs";
-import { guardedLookupModels, createTestOnlyLookupPermitSource, LOOKUP_GUARD_CONTRACT as C } from "../lib/continuity-lookup-guard.mjs";
+import { createGuardedLookupDecorator, createTestOnlyLookupPermitSource, LOOKUP_GUARD_CONTRACT as C } from "../lib/continuity-lookup-guard.mjs";
 
 const cleanups = [];
 const ROOT = fileURLToPath(new URL("../../", import.meta.url)), registry = join(userInfo().homedir, ".local/state/mono-agent/lookup-pilot/consumed-v1");
@@ -69,11 +69,13 @@ it.each(["native-lookup", "continuity-pack-cold"])("configured %s preserves nati
   vi.stubGlobal("WebSocket", class { constructor() { rejected.push("websocket"); throw Error("test_websocket_denied"); } });
   const modules = await productionModules(root), selected = armById(id), keys = [issueLookupCacheKey("fictional-harness"), issueLookupCacheKey("fictional-harness")];
   expect(new Set(keys).size).toBe(2);
-  const encode = x => Buffer.from(JSON.stringify(x)).toString("base64url");
-  const access = `${encode({ alg: "none" })}.${encode({ exp: Math.floor(Date.now() / 1000) + 3600, "https://api.openai.com/auth": { chatgpt_account_id: "FAKE-TEST-ACCOUNT-NOT-REAL" } })}.FAKE-TEST-SIGNATURE`;
   const authPath = join(work, "fictional-auth.json");
-  await writeFile(authPath, JSON.stringify({ "openai-codex": { type: "oauth", access, refresh: "FAKE-TEST-REFRESH-NOT-REAL", expires: Date.now() + 3600000 } }));
-  const configPatch = mergePatch(selected.sessionConfig ?? {}, { runtime: { compaction: { enabled: false }, retry: { primaryAttempts: 1 }, session: { rollover: "none" } }, providers: { piNative: { transport: "sse", piMaxRetries: 0 } }, tools: { allowedTools: ["ConversationHistory"] } });
+  await writeFile(authPath, "Fictional credential stand-in must never be loaded.");
+  const app = modules.app;
+  modules.app = { ...app, ...Object.fromEntries(["createConfiguredAgentRuntime", "createConfiguredConversationHarness"].map(name => [name, input => {
+    expect(input.config.providers.piAuthPath).toBe(join(work, ".lookup-no-credentials/absent.json")); return app[name](input);
+  }])) };
+  const configPatch = mergePatch(selected.sessionConfig ?? {}, { runtime: { compaction: { enabled: false }, retry: { primaryAttempts: 1 }, session: { rollover: "none" } }, providers: { piAuthPath: authPath, piNative: { transport: "sse", piMaxRetries: 0 } }, tools: { allowedTools: ["ConversationHistory"] } });
   let run = 0, sends = 0; const outer = [], consumed = [], boundaries = [];
   const request = { conversationId: "fictional-conversation", captureSpeakerKind: "human-turn", metadata: { source: "web" }, onEvent: e => { if (e.type === "session_boundary") boundaries.push({ kind: e.kind, reason: e.reason, context: e.context }); } };
   const pilot = { authorization: { schema: "continuity-lookup-faux-authorization-v1" }, plan, arm: selected, historyEndpoint: fixture.url };
@@ -98,16 +100,18 @@ it.each(["native-lookup", "continuity-pack-cold"])("configured %s preserves nati
     };
     consumed.push(permit.events);
     return { mcpServers: { "mono-agent-conversation-history": { type: "http", url: fixture.url } },
-      piModelsDecorator: models => guardedLookupModels(models, { contract: { ...C, runId: "fictional-harness", slotId: `slot-${index}`, promptCacheKey: key }, permit, send, resolvedSafety: { ...pilot, config: opened.config } }) };
+      piModelsDecorator: await createGuardedLookupDecorator({ contract: { ...C, runId: "fictional-harness", slotId: `slot-${index}`, promptCacheKey: key }, permit, send, resolvedSafety: { ...pilot, config: opened.config } }) };
   };
   let opened;
-  const open = async () => { opened = await openHarness({ modules, work, authPath, model: `${C.provider}:${C.model}`, effort: "high", tools: false, configPatch, route, pilot, clock: { value: new Date("2026-01-01T00:00:00Z") } }); cleanups.push(opened.close); return opened; };
+  const open = async () => { opened = await openHarness({ modules, work, authPath, model: `${C.provider}:${C.model}`, effort: "high", tools: false, configPatch, route, pilot, clock: { value: new Date("2026-01-01T00:00:00Z") } }); expect(opened.config.providers.piAuthPath).toBe(join(work, ".lookup-no-credentials/absent.json"));
+    await expect(lstat(opened.config.providers.piAuthPath)).rejects.toMatchObject({ code: "ENOENT" });
+    cleanups.push(opened.close); return opened; };
   let offlineCalls = 0;
   if (id === "continuity-pack-cold") {
     const boundary = lookupOfflineBoundary({ plan, arm: selected, work }), reference = { provider: C.provider, model: "fictional-checkpoint" };
     expect(boundary.mode).toBe("offline");
     const scripted = scriptedModels(modules.pi, [reference]); scripted.respondWith(reference, () => { offlineCalls++; return modules.pi.fauxAssistantMessage("Fictional checkpoint material."); });
-    const prep = await openHarness({ modules, work, authPath: boundary.authPath, model: `${reference.provider}:${reference.model}`, tools: false, configPatch: mergePatch(configPatch, { tools: { allowedTools: [] } }), clock: { value: new Date("2026-01-01T00:00:00Z") }, route: async options => ({ piResolvedModel: scripted.route(options).model, piResolvedModels: scripted.models, compaction: { enabled: false } }) });
+    const prep = await openHarness({ modules, work, authPath: boundary.authPath, model: `${reference.provider}:${reference.model}`, tools: false, configPatch: mergePatch(configPatch, { providers: { piAuthPath: boundary.authPath }, tools: { allowedTools: [] } }), clock: { value: new Date("2026-01-01T00:00:00Z") }, route: async options => ({ piResolvedModel: scripted.route(options).model, piResolvedModels: scripted.models, compaction: { enabled: false } }) });
     cleanups.push(prep.close); const seeded = await prep.harness.run({ ...request, userMessage: "Remember fictional checkpoint material.", abortSignal: AbortSignal.timeout(20000) });
     expect(seeded.failure).toBeUndefined(); await prep.close();
   } else {
@@ -201,4 +205,39 @@ it.each(["parent", "credential", "dangling-parent"])("requires ENOENT for offlin
   if (kind === "dangling-parent") await symlink(join(work, "missing"), parent);
   else { await mkdir(parent); if (kind === "credential") await writeFile(join(parent, "absent.json"), "fictional"); }
   expect(() => lookupOfflineBoundary({ plan, arm, work })).toThrow("lookup_preparation_forbidden");
+});
+
+it.each([undefined, -1, 1, 1.5, "0", "length", NaN, Infinity])("refuses a missing cache key with invalid index %s", index => {
+  expect(() => assertLookupCacheAssignment({ cacheKeysUnique: true, slots: [{ cacheKey: "assigned" }] }, { index })).toThrow("lookup_cache_assignment_invalid");
+});
+it("validates both the assignment index and exact key independently", () => {
+  const state = { cacheKeysUnique: true, slots: [{ cacheKey: "assigned" }] };
+  assertLookupCacheAssignment(state, { index: 0, cacheKey: "assigned" });
+  for (const cacheKey of [undefined, "", " ", 1, "x".repeat(65)]) expect(() => assertLookupCacheAssignment(state, { index: 0, cacheKey })).toThrow("lookup_cache_assignment_invalid");
+  expect(() => assertLookupCacheAssignment(state, { index: "0", cacheKey: "assigned" })).toThrow("lookup_cache_assignment_invalid");
+});
+it.each([false, true])("refuses an identity decorator even with a forged brand: %s", forged => {
+  const dispatch = vi.fn(), identity = Object.assign(x => x, forged ? { brand: "lookup-guard-owned", pilot: true } : {});
+  const runtime = controlledRuntime({ run: dispatch }, async () => ({ piModelsDecorator: identity }), () => {});
+  return expect(runtime.run("fictional", {})).rejects.toThrow("lookup_unguarded_dispatch").then(() => expect(dispatch).not.toHaveBeenCalled());
+});
+it("brands only a faux guard wrapper and never uses configured Models or credentials", async () => {
+  const credential = vi.fn(() => { throw Error("fictional_credentials_forbidden"); }), configured = { getAuth: credential, streamSimple: credential };
+  const options = { contract: { ...C, runId: "fictional", slotId: "fictional-slot", promptCacheKey: "assigned" }, permit: createTestOnlyLookupPermitSource(), send: vi.fn(), resolvedSafety: fauxLookupSafety(plan, arm) };
+  const decorator = await createGuardedLookupDecorator(options), wrapped = decorator(configured);
+  expect(Object.isFrozen(decorator)).toBe(true); expect(wrapped).not.toBe(configured);
+  expect(wrapped.getModel(C.provider, C.model).id).toBe(C.model); await wrapped.getAuth(C.provider);
+  await expect(wrapped.getAuth("openai")).resolves.toBeUndefined();
+  options.send.mockImplementation((_url, init) => {
+    const authorization = new Headers(init.headers).get("authorization"); expect(authorization).toContain("FAKE-TEST-SIGNATURE"); expect(authorization).not.toContain("FICTIONAL-CALLER-KEY");
+    return response([message("Fictional guarded response.")]);
+  });
+  await wrapped.streamSimple(wrapped.getModel(C.provider, C.model), { messages: [{ role: "user", content: "Fictional request.", timestamp: 0 }] }, { apiKey: "FICTIONAL-CALLER-KEY", reasoning: "high", transport: "sse", maxRetries: 0 }).result();
+  expect(options.send).toHaveBeenCalledTimes(1); expect(credential).not.toHaveBeenCalled();
+  await expect(createGuardedLookupDecorator({ ...options, permit: { ...options.permit, testOnly: false } })).rejects.toThrow("lookup_faux_permit_forbidden");
+  await expect(createGuardedLookupDecorator({ ...options, resolvedSafety: undefined })).rejects.toThrow("lookup_auxiliary_callers_forbidden");
+  await expect(createGuardedLookupDecorator({ ...options, contract: { ...options.contract, promptCacheKey: undefined } })).rejects.toThrow("lookup_prompt_cache_key_forbidden");
+  let reads = 0; const route = () => ({ get piModelsDecorator() { reads++; return reads === 1 ? decorator : x => x; } });
+  const dispatch = vi.fn(), runtime = controlledRuntime({ run: dispatch }, route, () => {});
+  await runtime.run("fictional", {}); expect(reads).toBe(1); expect(dispatch).toHaveBeenCalledWith("fictional", { piModelsDecorator: decorator });
 });

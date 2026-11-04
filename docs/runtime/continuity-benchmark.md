@@ -1356,7 +1356,9 @@ allows a bounded 250 ms settle grace, drains messages already received, then
 contains the owned process group;
 unreconciled containment is an absorbing safety stop taking precedence over
 other causes. The child waits for a `done-ack` before disconnecting; the controller
-records descendant membership before sending that ACK. This is production
+records descendant membership before sending that ACK. Timeout and disconnect
+containment also persist proven membership before the first signal, so a leader
+exiting on SIGTERM does not strand a SIGTERM-resistant descendant. This is production
 synchronization, not a fixture delay. Surviving descendants cause a durable
 `lookup_worker_lost` stop before signalling. Before each signal, the controller re-proves a recorded member
 alive with the same start identity and process group: either the original
@@ -1417,6 +1419,11 @@ fallbacks, extra primary attempts and outage retry budgets/profiles refuse.
 Transport is SSE with zero provider retries. Arms cannot request a mid-checkpoint,
 ledger upkeep or output capture. Ordinary runner defaults are unchanged.
 
+Only a guard-owned, module-privately branded decorator may dispatch in pilot
+mode. It ignores configured Models and uses a guard-wrapped serializer with
+fictional in-memory credentials; the harness strips supplied credential paths
+and uses a verified absent path. An identity decorator or forged brand refuses.
+
 The runtime proxy exposes only `run` for inference, plus explicit local lifecycle
 operations: tool-context configuration, session synchronization, reconciliation,
 recovery, refresh, invalidation, retirement and disposal. Preparation,
@@ -1427,7 +1434,7 @@ length and content-digest snapshot also detects in-place transcript mutation.
 
 Auxiliary caller inventory (all paths below are scripts-local unless qualified):
 
-- Judge runtime (`continuity-runner.mjs`, `createJudge`): null judge required.
+- Judge runtime (`lib/continuity-runner.mjs`, `createJudge`): null judge required.
 - Checkpoint replay (`buildCheckpoint`): literal offline mode and a credential path whose parent and file both return ENOENT; only scripted Models, never pilot mode.
 - Mid-checkpoint compaction (`manualCompaction`): forbidden arm and explicit pilot-entry refusal before opening a harness.
 - Preparation and real-credential capture Models (`prepareLedgerCheckpoint`): upkeep/capture forbidden and pilot entry refused before any constructor.

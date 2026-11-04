@@ -11,7 +11,8 @@ export function issueLookupCacheKey(runId) {
 export function assertLookupCacheAssignment(state, assignment) {
   const keys = state.slots.map(s => s.cacheKey);
   need(state.cacheKeysUnique === true && keys.every(lookupCacheKey) && new Set(keys).size === keys.length
-    && keys[assignment.index] === assignment.cacheKey, "lookup_cache_assignment_invalid");
+    && Number.isInteger(assignment?.index) && assignment.index >= 0 && assignment.index < keys.length
+    && lookupCacheKey(assignment.cacheKey) && keys[assignment.index] === assignment.cacheKey, "lookup_cache_assignment_invalid");
 }
 /** Check resolved values, not the flags used to request them. Repeated at every dispatch. */
 export function assertResolvedLookupSafety({ plan, config, arm, captureUpkeepOutput, options, historyEndpoint, forwarded = false } = {}) {
@@ -59,13 +60,15 @@ export function controlledLookupRuntime(base, route, check) {
   return new Proxy(base, { get(target, key) {
     if (typeof key === "symbol" || ["then", "toJSON"].includes(key)) return undefined;
     if (key === "run") return async (prompt, options) => {
+      // Lazy binding avoids a static guard -> policy -> guard initialization cycle.
+      const { isGuardedLookupDecorator } = await import("./continuity-lookup-guard.mjs");
       const fields = ["sessionId", "providerSessionId", "messages", "nativeSessionAuthority", "nativeSessionProjection", "sessionTurn", "sessionRecovery", "detachedContext", "coldContext"];
       const transcript = () => [options.messages?.length ?? null, createHash("sha256").update(JSON.stringify(options.messages ?? null)).digest("hex")];
       check(options); const native = fields.map(key => options[key]), before = transcript();
-      const guarded = await route(options); check(options);
+      const guarded = { ...await route(options) }; check(options);
       need(JSON.stringify(before) === JSON.stringify(transcript()) && native.every((value, i) => Object.is(value, options[fields[i]]))
         && Object.keys(guarded).every(key => ["piModelsDecorator", "mcpServers"].includes(key)), "lookup_native_identity_forbidden");
-      need(typeof guarded.piModelsDecorator === "function" && !Object.hasOwn(guarded, "piResolvedModels"), "lookup_unguarded_dispatch");
+      need(isGuardedLookupDecorator(guarded.piModelsDecorator), "lookup_unguarded_dispatch");
       check({ ...options, ...guarded }, true);
       return target.run(prompt, { ...options, ...guarded });
     };

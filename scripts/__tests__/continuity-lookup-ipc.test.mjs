@@ -291,3 +291,22 @@ it.each([["guard-model-switch", "lookup_model_switch_forbidden"], ["guard-cache-
   const witness = JSON.parse(await fs.readFile(join(f.base, "witnesses", `${state.slots[0].worker.pid}.json`))); expect(witness.guardFaultInjected).toBe(true);
   expect(state.slots.filter(slot => slot.worker)).toHaveLength(1);
 });
+
+it.each(["descendant-timeout", "descendant-disconnect", "descendant-timeout-unproven"])("persists proven descendants before terminating a worker without done: %s", async action => {
+  const f = suite.fixture, options = await runOptions(f, ["settled", "lost"], 4000), config = join(f.base, `${action}.json`);
+  await fs.writeFile(config, JSON.stringify({ action }), { mode: 0o600 });
+  const p = await suite.spawn({ options }, { LOOKUP_FIXTURE_FAULT: config }), reply = await p.reply; await p.exit;
+  const state = JSON.parse(await fs.readFile(join(options.outputRoot, "lookup-pilot-controller.json"))), slot = state.slots[0];
+  const child = JSON.parse(await fs.readFile(join(f.base, "witnesses", `${slot.worker.pid}.json`))), driver = JSON.parse(await fs.readFile(join(f.base, "witnesses", `${p.child.pid}.json`)));
+  expect(child.descendantWithoutDone).toBe(true); expect(slot.members).toHaveLength(1); expect(slot.members[0]).toMatchObject({ pid: child.descendants[0].pid, startIdentity: child.descendants[0].startIdentity.replace(/\s+/gu, " "), pgid: slot.worker.pid });
+  expect(driver.membersAtSignals[0]).toEqual(slot.members); expect(state.slots.filter(s => s.worker)).toHaveLength(1); expect(slot.holds).toHaveLength(0);
+  const stop = action === "descendant-disconnect" ? "lookup_ipc_disconnected" : "lookup_worker_timeout";
+  if (action.endsWith("unproven")) {
+    expect(reply).toEqual({ failed: "lookup_unreconciled_processes" }); expect(state.stop).toBe("lookup_unreconciled_processes");
+    expect(driver.signals).toEqual(["SIGTERM"]); expect(driver.stopAtSignals).toEqual([stop]); expect(driver.descendantUnproven).toBe(true);
+    expect(lookupProcessGroupSnapshot(slot.worker.pid).some(m => !m.zombie && m.pid === slot.members[0].pid)).toBe(true);
+  } else {
+    expect(reply.failed).toBeUndefined(); expect(reply.result.stop).toBe(stop); expect(reply.result.schedule.visited).toBe(1);
+    expect(driver.signals).toEqual(["SIGTERM", "SIGKILL"]); expect(driver.stopAtSignals).toEqual([stop, stop]); expect(driver.leaderExitedBeforeKill).toBe(true); expect(groupAlive(slot.worker.pid)).toBe(false);
+  }
+});
