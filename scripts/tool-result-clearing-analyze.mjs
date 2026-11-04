@@ -1,12 +1,27 @@
 #!/usr/bin/env node
-import { writeFileSync, lstatSync, realpathSync } from 'node:fs';
-import { resolve, sep, dirname, basename } from 'node:path';
+import { writeFileSync, lstatSync, realpathSync, statSync } from 'node:fs';
+import { resolve, dirname, basename } from 'node:path';
 import { pathToFileURL } from 'node:url';
+const sameIdentity = (a, b) => a && b && a.dev === b.dev && a.ino === b.ino;
+const identity = path => statSync(path, { bigint: true });
 export function overlapsInput(out, input, sidecar) {
-  out = resolve(out); input = resolve(input);
-  const prefix = input.endsWith(sep) ? input : input + sep;
-  return out === input || out.startsWith(prefix)
-    || input === sidecar && ['-wal', '-shm', '-journal'].some(suffix => out === input + suffix);
+  const parent = realpathSync(dirname(resolve(out)));
+  out = resolve(parent, basename(out)); input = realpathSync(input);
+  const source = identity(input), destination = statSync(out, { bigint: true, throwIfNoEntry: false });
+  if (sameIdentity(source, destination)) return true;
+  if (source.isDirectory()) {
+    // Check the root identity before terminating the ancestor walk.
+    for (let ancestor = parent;;) {
+      if (sameIdentity(source, identity(ancestor))) return true;
+      const next = dirname(ancestor);
+      if (next === ancestor) return false;
+      ancestor = next;
+    }
+  }
+  if (!sameIdentity(identity(parent), identity(dirname(input)))) return false;
+  const outputName = basename(out).toLowerCase(), inputName = basename(input).toLowerCase();
+  return outputName === inputName || Boolean(sidecar && sameIdentity(source, identity(sidecar))
+    && ['-wal', '-shm', '-journal'].some(suffix => outputName === inputName + suffix));
 }
 export async function main(args) {
   try {
@@ -34,6 +49,7 @@ export async function main(args) {
         const path = realpathSync(input);
         if (overlapsInput(out, path, sidecar)) throw new Error('INPUT');
       }
+      options.out = out;
     }
     const { analyze } = await import('./lib/tool-result-clearing-analysis.mjs');
     const report = analyze(options);

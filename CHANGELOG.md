@@ -9,6 +9,7 @@
   Keep skipped turn boundaries skipped through re-prompts and require exact
   retention, unambiguous identity proof, and meaningful cost baselines.
   Distinguish missing capture from captured-but-ineligible low yield.
+  Protect report outputs against case variants and filesystem aliases.
 
 - Add offline lookup pilot descriptors, exact cap estimates and private
   single-use authorization checks that prevent reuse after a crashed run.

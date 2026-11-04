@@ -26,9 +26,12 @@ For native session roots, pass `<root>/journals`, containing per-session `.jsonl
 files; not the parent root containing legacy imports, aliases or retired state.
 `--sidecar` and `--routes` are also required. Output defaults to stdout.
 `--out` exclusively creates an explicit new file, never overwrites an input.
-Canonical input containment includes filesystem roots. Only the sidecar’s exact
-`-wal`, `-shm` and `-journal` companions are reserved; unrelated sibling names
-remain valid outputs.
+The output parent is canonicalized with realpath. Input containment (including
+filesystem roots) and existing aliases are checked by device/inode identity.
+Same-directory input names and the sidecar’s `-wal`, `-shm` and `-journal`
+companion names are compared case-insensitively on every platform. This can
+conservatively refuse distinct case variants on case-sensitive filesystems;
+unrelated sibling names remain valid outputs. Symlink destinations are refused.
 Exit status is 0 for a complete analysis, 2 for incomplete/invalid inputs;
 BUILD/DEFER/STOP is an evidence verdict, not an exit status.
 

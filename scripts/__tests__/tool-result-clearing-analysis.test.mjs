@@ -1,6 +1,6 @@
 import { afterEach, expect, it } from 'vitest';
-import { existsSync, readFileSync, writeFileSync, readdirSync, lstatSync, renameSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { existsSync, readFileSync, writeFileSync, readdirSync, lstatSync, renameSync, mkdirSync, symlinkSync, linkSync } from 'node:fs';
+import { join, resolve, basename } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { analyze as rawAnalyze } from '../lib/tool-result-clearing-analysis.mjs';
 import { overlapsInput } from '../tool-result-clearing-analyze.mjs';
@@ -236,9 +236,43 @@ it('allows adjacent output filenames but blocks only SQLite companions and norma
   }
   const outside = f.options.routes + '-report.json';
   expect(cli([...args(f), '--out', outside]).status).toBe(0);
-  // Pure checks: never traverse a filesystem-root journal input in a test.
-  expect(overlapsInput(out, '/', f.options.sidecar)).toBe(true);
-  expect(overlapsInput(out, '//', f.options.sidecar)).toBe(true);
+  // Safety-helper checks use only temporary fixture inputs, not real journals.
   expect(overlapsInput(out, f.root + '/', f.options.sidecar)).toBe(true);
   expect(overlapsInput(f.root + '-report.json', f.root, f.options.sidecar)).toBe(false);
+});
+
+it('refuses case-folded input and companion basenames without depending on filesystem case sensitivity', () => {
+  const f = fixture(), before = snapshot(f.root);
+  for (const input of [f.options.sidecar, f.options.routes]) {
+    const names = input === f.options.sidecar ? ['', '-WAL', '-SHM', '-JOURNAL'] : [''];
+    for (const suffix of names) {
+      const out = join(f.root, basename(input).toUpperCase() + suffix);
+      expect(overlapsInput(out, input, f.options.sidecar)).toBe(true);
+      expect(cli([...args(f), '--out', out]).status).toBe(2);
+      if (suffix) expect(existsSync(out)).toBe(false);
+    }
+  }
+  expect(snapshot(f.root)).toEqual(before);
+});
+it('refuses output through an aliased parent inside a journal directory but allows a routes sibling', () => {
+  const f = fixture(), journals = join(f.root, 'journals'), alias = join(f.root, 'journal-alias');
+  mkdirSync(journals); mkdirSync(join(journals, 'nested'));
+  const journal = join(journals, 'journal.jsonl'); renameSync(f.options.journals[0], journal); f.options.journals = [journals];
+  const before = readFileSync(journal);
+  symlinkSync(journals, alias, process.platform === 'win32' ? 'junction' : 'dir');
+  const out = join(alias, 'nested', 'report.json');
+  expect(overlapsInput(out, journals, f.options.sidecar)).toBe(true);
+  expect(cli([...args(f), '--out', out]).status).toBe(2); expect(existsSync(out)).toBe(false);
+  const sibling = f.options.routes + '-report.json';
+  expect(cli([...args(f), '--out', sibling]).status).toBe(0);
+  assertContentFree(JSON.parse(readFileSync(sibling)), fixtures); expect(readFileSync(journal)).toEqual(before);
+});
+it('recognizes existing hardlink identity and preserves destination symlink refusal', () => {
+  const f = fixture(), alias = join(f.root, 'routes-hardlink.json'), link = join(f.root, 'report-link.json');
+  const before = readFileSync(f.options.routes); linkSync(f.options.routes, alias);
+  expect(overlapsInput(alias, f.options.routes, f.options.sidecar)).toBe(true);
+  expect(cli([...args(f), '--out', alias]).status).toBe(2);
+  const absent = join(f.root, 'absent-report.json'); symlinkSync(absent, link);
+  expect(cli([...args(f), '--out', link]).status).toBe(2); expect(existsSync(absent)).toBe(false);
+  expect(readFileSync(f.options.routes)).toEqual(before);
 });
