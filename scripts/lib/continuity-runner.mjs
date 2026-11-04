@@ -16,7 +16,7 @@ import { cp, mkdir, readFile, rm, writeFile, realpath, lstat } from "node:fs/pro
 import { dirname, join, isAbsolute, relative, resolve, sep } from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { assertResolvedLookupSafety, controlledLookupRuntime, lookupOfflineBoundary, lookupPilotFailureCode } from "./continuity-lookup-pilot-runtime.mjs";
+import { assertResolvedLookupSafety, controlledLookupRuntime, lookupOfflineBoundary, lookupPilotFailureCode, createLookupPilotRoute } from "./continuity-lookup-pilot-runtime.mjs";
 import { armById, hasPackEvidence, checkpointKey, mergePatch, pressureMetrics, verifyBoundary, verifyPressure, verifyStore } from "./continuity-arms.mjs";
 import { LOOKUP_MODE, assertLookupServers, witnessedRecovery, installSoul, assertSoul, lookupPrompt, lookupMeter, lookupForwarder, lookupWitness, scriptedLookupReader, referenceReader, historyBody, sourceAnnotation, resolveSource } from "./continuity-lookup.mjs";
 import { traceShape } from "./continuity-generator.mjs";
@@ -431,16 +431,12 @@ export async function runLiveTurn({ modules, work, authPath, plan, mode, configP
         lookup.reader = lookupReference ? referenceReader({ source: lookupSource, query: lookupAnnotation.query, witness: lookup.witness, onFinish: result => { lookup.reference = result; } })
           : scriptedLookupReader({ callBudget: plan.lookup.budget.callBudget });
         try {
-          lookup.forwarder = await lookupForwarder({ meter: lookup.meter, witness: { delivered(result) { lookup.witness.delivered(result); lookup.lastBody = historyBody(result); } } });
+          lookup.forwarder = await lookupForwarder({ pinEndpoint: Boolean(pilot), meter: lookup.meter, witness: { delivered(result) { lookup.witness.delivered(result); lookup.lastBody = historyBody(result); } } });
         } catch { throw new ContinuityError("lookup_forwarder_setup"); }
         deadlineTimer = setTimeout(() => lookup.meter.expire(), plan.lookup.deadlineMs); deadlineTimer.unref();
       }
-      const route = pilot ? async options => {
-        const forwarded = lookup ? await lookup.forwarder.rewrite(options) : null;
-        if (forwarded) pilot.historyEndpoint = forwarded.mcpServers["mono-agent-conversation-history"].url;
-        watch.noteOffered(options);
-        return { piModelsDecorator: pilot.send.decorator, ...(forwarded ? { mcpServers: forwarded.mcpServers } : {}) };
-      } : liveRoute(modules, mode, [reader], watch, lookup);
+      const route = pilot ? createLookupPilotRoute({ pilot, forwarder: lookup?.forwarder, noteOffered: watch.noteOffered })
+        : liveRoute(modules, mode, [reader], watch, lookup);
       open = await openHarness({ modules, work, authPath, model: plan.reader.model, effort: plan.reader.effort, tools: false,
         configPatch: lookupConfig(work, plan, configPatch, true), route, clock, onHistoryWarning: () => watch.noteHistoryWarning(), pilot });
       response = await open.harness.run({
@@ -897,6 +893,9 @@ export function decodeBoundaryChildResult(code, raw, probeMode) {
 /** Fork the checkpoint into a new workspace and ask one probe in a fresh continuation turn. */
 export async function runProbe({ modules, trace, arm, repeat, probe, checkpointWork, checkpointSnapshot = null, checkpointContinuity = null, checkpointUpkeep = null, checkpointConversationId, forkDir, plan, mode, authPath, keepWork = false, mid = null, root, lookupReference = false, pilot }) {
   const inPlace = arm.fork === "in-place";
+  // A capability is assigned to this PID, not transferable to a nested child.
+  // Refuse rather than measure a restart/in-place arm without its fresh process.
+  if (pilot && (arm.restart || inPlace)) throw new ContinuityError("lookup_pilot_boundary_required");
   if (inPlace && checkpointSnapshot === null) throw new ContinuityError("in_place_fork_requires_snapshot");
   // In-place: restore the pristine snapshot at the checkpoint's own absolute
   // root (callers never overlap forks of one checkpoint) and probe in a fresh
@@ -918,7 +917,7 @@ export async function runProbe({ modules, trace, arm, repeat, probe, checkpointW
     const turn = { work, authPath, plan, mode, configPatch: mergePatch(arm.sessionConfig ?? {}, arm.probeConfig), userMessage: plan.probeMode === LOOKUP_MODE ? lookupPrompt(probe) : probePrompt(probe),
       ...(lookupAnnotation ? { lookupSource, lookupAnnotation, lookupReference } : {}),
       conversationId: checkpointConversationId, owner: trace.owner.displayName, pilot };
-    const live = !pilot && (arm.restart || inPlace)
+    const live = arm.restart || inPlace
       ? await runBoundaryChild({ type: "probe", ...turn, root, clockIso: clock.value.toISOString() }, { timeoutMs: plan.limits.perLiveTurnTimeoutMs })
       : await runLiveTurn({ modules, ...turn, clock });
     if (live.lookup) {

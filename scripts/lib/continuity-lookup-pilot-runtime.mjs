@@ -105,3 +105,28 @@ export async function lookupPilotFailureCode(failure) {
   ]);
   return [failure?.code, failure?.kind, failure?.message, failure?.details?.code, failure?.details?.message].find(value => LOOKUP_PILOT_STOPS.includes(value) || LOOKUP_PRE_SEND_REFUSALS.includes(value) || value === "pilot_empty_final_output");
 }
+
+/** Bound timer values explicitly; never let timer coercion select a watchdog. */
+export function lookupPilotWatchdog(authorization, deadlines, deadlineAt, now = Date.now()) {
+  const requested = authorization.timeoutMs ?? deadlines.childWatchdogMs;
+  const valid = value => Number.isSafeInteger(value) && value > 0 && value <= 2147483647;
+  need([requested, deadlines.childWatchdogMs, deadlines.deadlineMs].every(valid)
+    && requested <= deadlines.childWatchdogMs && Number.isSafeInteger(deadlineAt) && Number.isSafeInteger(now), "lookup_ipc_invalid");
+  const timeout = Math.min(requested, deadlines.deadlineMs, Math.max(1, deadlineAt - now));
+  need(valid(timeout), "lookup_ipc_invalid"); return timeout;
+}
+/** Pin to the forwarder's setup-owned endpoint, never to its rewrite output. */
+export function createLookupPilotRoute({ pilot, forwarder, noteOffered }) {
+  const historyEndpoint = forwarder?.historyEndpoint;
+  if (forwarder) {
+    need(typeof historyEndpoint === "string", "lookup_tools_forbidden");
+    pilot.historyEndpoint = historyEndpoint;
+  }
+  return async options => {
+    const forwarded = forwarder ? await forwarder.rewrite(options) : null;
+    const server = forwarded?.mcpServers?.["mono-agent-conversation-history"];
+    if (Object.hasOwn(forwarded?.mcpServers ?? {}, "mono-agent-conversation-history")) need(server?.url === historyEndpoint, "lookup_tools_forbidden");
+    noteOffered(options);
+    return { piModelsDecorator: pilot.send.decorator, ...(forwarded ? { mcpServers: forwarded.mcpServers } : {}) };
+  };
+}

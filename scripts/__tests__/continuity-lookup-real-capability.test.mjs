@@ -176,3 +176,12 @@ it("honours the shared gate at mint and on sends before assignment reads", async
   await expect(cap.createLookupRealSend(a, safety)).rejects.toThrow("lookup_pilot_real_route_unavailable");
   await expect(send(endpoint, request())).rejects.toThrow("lookup_pilot_real_route_unavailable"); expect(network).not.toHaveBeenCalled();
 });
+
+it("ignores null SSE frames and still awaits the fixed quota stop", async () => {
+  let stopped = false;
+  permit.stop.mockImplementation(async code => { await Promise.resolve(); expect(code).toBe("lookup_quota_exhausted"); stopped = true; });
+  network.mockResolvedValue(new Response('data: null\n\ndata: {"error":{"code":"usage_limit_reached"}}\n\n', { headers: { "content-type": "text/event-stream" } }));
+  const send = await cap.createLookupRealSend(a, safety), response = await send(endpoint, request());
+  await expect(response.text()).rejects.toMatchObject({ code: "lookup_quota_exhausted" });
+  expect(stopped).toBe(true); expect(network).toHaveBeenCalledTimes(1); expect(permit.stop).toHaveBeenCalledTimes(1);
+});

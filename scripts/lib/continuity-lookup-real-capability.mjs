@@ -116,7 +116,7 @@ export async function createLookupRealSend(a, resolvedSafety) {
           for (const frame of frames) {
             const data = frame.split(/\r?\n/u).filter(line => line.startsWith("data:")).map(line => line.slice(5).trimStart()).join("\n");
             let event; try { event = JSON.parse(data); } catch { continue; }
-            if (quota(event.error) || quota(event.response?.error)) await stop("lookup_quota_exhausted");
+            if (quota(event?.error) || quota(event?.response?.error)) await stop("lookup_quota_exhausted");
           }
           controller.enqueue(chunk);
         },

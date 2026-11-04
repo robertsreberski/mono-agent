@@ -18,6 +18,8 @@ export const LOOKUP_CONSUMPTION_SCHEMA = "continuity-lookup-pilot-consumed-v1";
 const MARKER = "authorization-consumed.json", CLAIM = "claim.json";
 const REGISTRY_DOMAIN = "mono-agent/lookup-pilot/consumed-v1\0";
 const ACCOUNT_DOMAIN = "mono-agent/lookup-pilot/account-v1\0";
+const matchesAccount = (artifact, account) => typeof account === "string" && account.length > 0
+  && sha256(`${ACCOUNT_DOMAIN}${artifact.salt}\0${account}`) === artifact.accountCommitment;
 const need = requireLookup, handles = new WeakMap();
 const same = (a, b) => a !== undefined && b !== undefined && digest(a) === digest(b);
 const hash = value => /^[a-f0-9]{64}$/u.test(value ?? "");
@@ -111,8 +113,7 @@ async function validateAuthorization({ authorizationPath, registrationPath, regi
   let account;
   try { account = JSON.parse(Buffer.from(credential.access.split(".")[1], "base64url").toString("utf8"))["https://api.openai.com/auth"].chatgpt_account_id; }
   catch { fail("lookup_account_mismatch"); }
-  need(credential.type === "oauth" && typeof account === "string" && account.length > 0
-    && sha256(`${ACCOUNT_DOMAIN}${artifact.salt}\0${account}`) === artifact.accountCommitment, "lookup_account_mismatch");
+  need(credential.type === "oauth" && matchesAccount(artifact, account), "lookup_account_mismatch");
   // Only an opaque handle leaves this module. Never export paths, commitments or credential material.
   const handle = Object.freeze({});
   handles.set(handle, { artifact, rawDigest: sha256(raw), outputRoot, pilot,
@@ -127,8 +128,7 @@ export function lookupAuthorizationBindsPilot(handle, pilot) {
 /** Boolean-only final-header check; no account, salt, commitment or path leaves the handle. */
 export function lookupAuthorizationMatchesAccount(handle, account) {
   const ctx = handles.get(handle);
-  return Boolean(ctx && typeof account === "string" && account.length > 0
-    && sha256(`${ACCOUNT_DOMAIN}${ctx.artifact.salt}\0${account}`) === ctx.artifact.accountCommitment);
+  return Boolean(ctx && matchesAccount(ctx.artifact, account));
 }
 async function revalidate(handle) {
   const ctx = context(handle), fresh = context(await validateLookupAuthorization(ctx.args));

@@ -7,7 +7,7 @@ import { dirname, join } from "node:path";
 import { userInfo } from "node:os";
 
 import { LOOKUP_PRE_SEND_REFUSALS, LOOKUP_GUARD_POLICY_REFUSALS } from "./continuity-lookup-guard.mjs";
-import { assertLookupCacheAssignment, issueLookupCacheKey } from "./continuity-lookup-pilot-runtime.mjs";
+import { assertLookupCacheAssignment, issueLookupCacheKey, lookupPilotWatchdog } from "./continuity-lookup-pilot-runtime.mjs";
 import { digest } from "./continuity-dataset.mjs";
 import { durable } from "./continuity-holdout-workflow.mjs";
 import { externalDirectory } from "./continuity-holdout-files.mjs";
@@ -252,6 +252,7 @@ async function runSlot(journal, pilot, authorization, root, index) {
   const state = journal.snapshot(), slot = state.schedule[index], code = pilot.registration.codes[slot.code];
   const role = pilot.registration.roles.find(r => r.id === slot.roleId), corpus = pilot.registration.common.corpora.find(c => c.suite === slot.suite);
   const binding = roleBinding(pilot.registration, role, corpus), plan = await rolePlan(pilot.registration.common, binding);
+  const timeoutMs = lookupPilotWatchdog(authorization, pilot.descriptor.deadlines, state.deadlineAt);
   const child = fork(join(code.path, "scripts/lib/continuity-lookup-pilot-child.mjs"), [], {
     cwd: code.path, detached: true, stdio: ["ignore", "ignore", "pipe", "ipc"], execArgv: [], env: { ...process.env },
   });
@@ -300,7 +301,6 @@ async function runSlot(journal, pilot, authorization, root, index) {
     }
   })();
   const exited = new Promise(resolve => child.once("close", () => { closed = true; resolve(); }));
-  const timeoutMs = Math.min((authorization.timeoutMs ?? pilot.descriptor.deadlines.childWatchdogMs), pilot.descriptor.deadlines.deadlineMs, Math.max(1, state.deadlineAt - Date.now()));
   const timer = setTimeout(() => { failure ??= "lookup_worker_timeout"; void journal.stop(failure).catch(() => {}).then(terminateOwned).catch(() => {}); }, timeoutMs);
   child.on("error", () => { failure ??= "lookup_worker_lost"; });
   child.on("disconnect", () => { if (!done) { failure ??= "lookup_ipc_disconnected"; void journal.stop(failure).catch(() => {}).then(terminateOwned).catch(() => {}); } });

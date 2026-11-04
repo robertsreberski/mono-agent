@@ -104,7 +104,7 @@ const INVENTORY = {
   real: {
     "scripts/__tests__/continuity-lookup-pilot-entry.test.mjs": 2,
     "scripts/__tests__/continuity-lookup-pilot-probe.test.mjs": 1,
-    "scripts/__tests__/continuity-lookup-real-capability.test.mjs": 16,
+    "scripts/__tests__/continuity-lookup-real-capability.test.mjs": 17,
     "scripts/lib/continuity-lookup-pilot-probe.mjs": 2,
     "scripts/lib/continuity-lookup-real-capability.mjs": 1,
   },
@@ -135,15 +135,18 @@ it("threads pilot through configured probe and all auxiliary helper boundaries",
   const runner = parse("runner", await readFile(join(ROOT, "scripts/lib/continuity-runner.mjs"), "utf8"));
   const functions = new Map(); visit(runner, n => { if (ts.isFunctionDeclaration(n)) functions.set(n.name?.text, n); });
   for (const name of ["buildCheckpoint", "prepareLedgerCheckpoint", "manualCompaction", "createJudge", "runProbe", "runLiveTurn"]) {
+    expect(functions.has(name), name).toBe(true);
     expect(functions.get(name)?.parameters[0]?.name.elements.some(e => e.name.getText() === "pilot"), name).toBe(true);
   }
-  for (const call of calls(runner, "manualCompaction")) expect(hasPilot(call.arguments[0])).toBe(true);
+  const compaction = calls(runner, "manualCompaction"); expect(compaction).toHaveLength(1);
+  for (const call of compaction) expect(hasPilot(call.arguments[0])).toBe(true);
   const preparation = calls(runner, "runBoundaryChild").filter(c => c.arguments[0]?.getText().includes('type: "preparation"'));
   expect(preparation).toHaveLength(1); expect(hasPilot(preparation[0].arguments[0])).toBe(true);
   const probe = parse("probe", await readFile(join(ROOT, "scripts/lib/continuity-lookup-pilot-probe.mjs"), "utf8"));
   for (const name of ["buildCheckpoint", "runProbe", "createJudge"]) {
     const found = calls(probe, name); expect(found, name).toHaveLength(1); expect(hasPilot(found[0].arguments[0]), name).toBe(true);
   }
-  expect(calls(runner, "openHarness").some(c => hasPilot(c.arguments[0]))).toBe(true);
+  const harnesses = calls(runner, "openHarness"); expect(harnesses.length).toBeGreaterThan(0);
+  expect(harnesses.some(c => hasPilot(c.arguments[0]))).toBe(true);
   expect(functions.get("runProbe").getText()).toContain("owner: trace.owner.displayName, pilot");
 });

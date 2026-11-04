@@ -2,8 +2,9 @@
 
 ## Unreleased
 
-- Keep continuity lookup comparisons isolated and fail closed on worker errors,
-  without enabling paid pilots.
+- Keep pilot lookup comparisons isolated by per-slot caches, refuse auxiliary
+  model routes, and stop runs on policy violations, while keeping the real-route
+  entry closed.
 
 - Add read-only, aggregate-only tool-result clearing opportunity analysis and
   offline provider payload qualification, without enabling runtime clearing.

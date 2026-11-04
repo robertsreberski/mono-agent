@@ -1489,6 +1489,9 @@ lease acquisition or output setup. `LOOKUP_PILOT_REAL_ROUTE_ENABLED` in
 must remain false until the separately reviewed two-process configured smoke
 proves the complete controller/child flow. No authorization issuer is provided.
 Ordinary benchmark/compare and probe-child refusal seams remain unchanged.
+Pilot restart and in-place probes also refuse with `lookup_pilot_boundary_required`
+until their fresh-process boundary can be preserved; they never silently run as
+in-process substitutes.
 
 The sole real-send factory independently checks the child's registered code,
 role, build and plan; the shared authorization validator and raw-byte consumption

@@ -35,7 +35,7 @@ export const LOOKUP_GUARD_POLICY_REFUSALS = Object.freeze([
   "lookup_method_forbidden", "lookup_model_switch_forbidden", "lookup_preparation_forbidden", "lookup_tools_forbidden",
   "lookup_concurrent_request", "lookup_permit_missing", "lookup_assumptions_mismatch", "lookup_single_shot_send_required",
   "lookup_faux_permit_forbidden", "lookup_settlement_invalid", "lookup_cache_assignment_invalid",
-  "lookup_native_identity_forbidden", "lookup_unguarded_dispatch", "lookup_payload_repeated", "lookup_pilot_capability_invalid",
+  "lookup_pilot_boundary_required", "lookup_native_identity_forbidden", "lookup_unguarded_dispatch", "lookup_payload_repeated", "lookup_pilot_capability_invalid",
 ]);
 export class LookupGuardError extends Error {
   constructor(code, outcome = "refused_pre_send", classification = code, cause) {

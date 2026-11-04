@@ -1,4 +1,4 @@
-import { assertLookupCacheAssignment } from "./continuity-lookup-pilot-runtime.mjs";
+import { assertLookupCacheAssignment, lookupPilotWatchdog } from "./continuity-lookup-pilot-runtime.mjs";
 import { digest } from "./continuity-dataset.mjs";
 import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
@@ -42,6 +42,7 @@ export async function verifyLookupPilotParent(assignment) {
 /** Frozen four-method guard contract; one in-flight exchange, no retry or caller-supplied transport. */
 export async function createLookupPilotIPC(assignment) {
   const initial = await verifyLookupPilotParent(assignment);
+  const timeoutMs = lookupPilotWatchdog({ timeoutMs: assignment.timeoutMs }, assignment.pilot.descriptor.deadlines, initial.deadlineAt);
   let seq = 0, pending, failed = false;
   const grants = new WeakMap();
   const abort = () => { failed = true; if (pending) { clearTimeout(pending.timer); pending.reject(Object.assign(new Error("lookup_ipc_disconnected"), { code: "lookup_ipc_disconnected" })); pending = null; } if (process.connected) process.disconnect(); };
@@ -65,7 +66,7 @@ export async function createLookupPilotIPC(assignment) {
     pilotNeed(!failed && process.connected && !pending && LOOKUP_PERMIT_CONTRACT.methods.includes(op), "lookup_ipc_invalid");
     const number = seq++;
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => { abort(); process.disconnect?.(); }, assignment.timeoutMs);
+      const timer = setTimeout(() => { abort(); process.disconnect?.(); }, timeoutMs);
       pending = { seq: number, resolve, reject, timer };
       process.send({ version: LOOKUP_PILOT_IPC, epoch: assignment.epoch, slotId: assignment.slotId, seq: number, op, payload }, error => { if (error) abort(); });
     });

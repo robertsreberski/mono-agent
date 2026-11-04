@@ -408,4 +408,10 @@ it("limits pilot continuation to the five capacity/terminal refusals", () => {
   expect(LOOKUP_PRE_SEND_REFUSALS).toEqual(["not_admitted_input_envelope", "lookup_request_limit", "not_admitted_cap", "lookup_stopped", "lookup_slot_terminal"]);
 });
 
-it("keeps repeated payload refusal a fixed sticky policy code", () => { expect(LOOKUP_GUARD_POLICY_REFUSALS).toContain("lookup_payload_repeated"); });
+it("keeps repeated payload refusal a fixed sticky policy code", async () => {
+  expect(LOOKUP_GUARD_POLICY_REFUSALS).toContain("lookup_payload_repeated");
+  const f = fixture({ repeatedPayload: true }); await expect(f.call()).rejects.toThrow("lookup_payload_repeated");
+  expect(settles(f)[0].outcome).toMatchObject({ kind: "integrity_stop", code: "lookup_payload_repeated" });
+  expect(f.permit.events.some(e => e.type === "stop" && e.code === "lookup_payload_repeated")).toBe(true);
+  expect(() => f.call()).toThrow("lookup_stopped"); expect(f.send).not.toHaveBeenCalled();
+});
