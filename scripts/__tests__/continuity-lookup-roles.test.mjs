@@ -1,20 +1,29 @@
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import { execFileSync, spawnSync, spawn } from "node:child_process";
 import { access, appendFile, cp, chmod, lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { digest, loadTraces, makePlan, traceTokenShape } from "../lib/continuity-dataset.mjs";
 import { BUILD_POLICY, verifyRealBuild } from "../lib/memory-e2e-build.mjs";
 import { LOOKUP_MODE, LOOKUP_ROLES, LOOKUP_SOULS, LOOKUP_BUDGET, sha256 } from "../lib/continuity-lookup.mjs";
-import { ROOT, GUIDANCE_FILES, lookupProtocol, lookupWorkload, registerLookup, validateRegistration, guidanceDiff, roleBinding, rolePlan,
+import { ROOT, GUIDANCE_FILES, LOOKUP_PILOT_PROTOCOL_FILES, lookupProtocol, lookupWorkload, registerLookup, validateRegistration, guidanceDiff, roleBinding, rolePlan,
   verifyRoleRequest, roleReceipt, assertRoleReceipt, aggregateLookupRoles, aggregateRoleFiles, runLookupRoles, runLookupRoleChild, verifyRegisteredCheckouts } from "../lib/continuity-lookup-roles.mjs";
 import { main as benchmarkMain } from "../continuity-benchmark.mjs";
 import { main as compareMain, lookupOutputPath, workloadOptions, WORKLOAD_FLAGS } from "../continuity-lookup-compare.mjs";
 import { main as budgetMain } from "../continuity-lookup-budget.mjs";
 import { main as estimateMain, estimateLookup, ESTIMATE_PROFILES, offlinePrices, priceLookupCall } from "../continuity-lookup-estimate.mjs";
 
+import { dependencySnapshot } from "./fixtures/lookup-dependency-witness.mjs";
 const dirs = [];
+let suiteModulesBefore;
+beforeAll(async () => { suiteModulesBefore = await dependencySnapshot(ROOT); expect(suiteModulesBefore).toMatchObject({ directory: true, vitest: true }); });
+afterAll(async () => { expect(await dependencySnapshot(ROOT)).toEqual(suiteModulesBefore); });
 beforeEach(() => {
   for (const key of Object.keys(process.env)) if (key.startsWith("GIT_")) vi.stubEnv(key, undefined);
+  for (const prefix of ["npm_config", "pnpm_config"]) {
+    vi.stubEnv(`${prefix}_offline`, "true"); vi.stubEnv(`${prefix}_verify_deps_before_run`, "false");
+    vi.stubEnv(`${prefix}_manage_package_manager_versions`, "false");
+  }
+  vi.stubEnv("COREPACK_ENABLE_NETWORK", "0");
   vi.stubEnv("GIT_CONFIG_GLOBAL", "/dev/null"); vi.stubEnv("GIT_CONFIG_NOSYSTEM", "1");
   vi.stubEnv("NODE_OPTIONS", `${process.env.NODE_OPTIONS ?? ""} --import=${join(ROOT, "scripts/__tests__/fixtures/reject-account-home.mjs")}`);
 });
@@ -305,6 +314,7 @@ async function linkDependencies(source, dest) {
   async function copyModules(rel) {
     const from = join(source, rel), to = join(dest, rel);
     try { await access(from); } catch { return; }
+    expect((await lstat(from)).isDirectory()).toBe(true);
     await cp(from, to, { recursive: true, dereference: false, verbatimSymlinks: true,
       filter: path => ![join(from, ".pnpm"), join(from, ".cache")].includes(path) });
     try { if ((await lstat(join(from, ".pnpm"))).isDirectory()) await symlink(join(from, ".pnpm"), join(to, ".pnpm"), "dir"); } catch (error) { if (error.code !== "ENOENT") throw error; }
@@ -324,6 +334,8 @@ it("runs all six faux/real-loopback roles across two clean synthetic checkouts w
   const shippedRender = await readFile(join(ROOT, RENDER), "utf8"), shippedPack = await readFile(join(ROOT, PACK), "utf8");
   await writeFile(join(r0, RENDER), shippedRender.replace(/^export const PACK_RETRIEVAL_GUIDANCE = .*;$/mu, 'export const SYNTHETIC_NO_GUIDANCE = "";'));
   await writeFile(join(r0, PACK), shippedPack.replaceAll("PACK_RETRIEVAL_GUIDANCE", "SYNTHETIC_NO_GUIDANCE"));
+  // Both build workspaces forbid dependency verification/install, even under pnpm 11.
+  await writeFile(join(r0, ".npmrc"), "offline=true\nverify-deps-before-run=false\nmanage-package-manager-versions=false\n");
   const r0Revision = commit(r0);
   git(ROOT, ["clone", "--shared", "--quiet", r0, rpack]);
   await writeFile(join(rpack, RENDER), shippedRender); await writeFile(join(rpack, PACK), shippedPack); const rpackRevision = commit(rpack);
@@ -535,4 +547,26 @@ it("covers every workload flag and preserves a legacy estimate invocation", asyn
 
 it("refuses even empty workload overrides before reading an estimator registration", async () => {
   for (const flag of WORKLOAD_FLAGS) await expect(estimateMain(["--registration", "/fictional/registration.json", "--sha256", "a".repeat(64), flag, ""])).rejects.toThrow("lookup_estimate_workload_conflict");
+});
+
+it("binds all present pilot artifact files, including guard assumptions, in the local protocol", async () => {
+  const protocol = await lookupProtocol();
+  expect(protocol.pilotSha256).toBe(digest(await Promise.all(LOOKUP_PILOT_PROTOCOL_FILES.map(async path => [path, sha256(await readFile(join(ROOT, path)))]))));
+  expect(LOOKUP_PILOT_PROTOCOL_FILES).toEqual([
+    "scripts/lib/continuity-lookup-guard.mjs", "scripts/lib/continuity-lookup-pilot.mjs",
+    "scripts/lib/continuity-lookup-authorization.mjs", "scripts/continuity-lookup-estimate.mjs",
+    "scripts/lib/continuity-lookup-lease.mjs", "scripts/lib/continuity-process-identity.mjs",
+    "scripts/lib/continuity-holdout-workflow.mjs", "scripts/lib/continuity-holdout-files.mjs",
+    "scripts/lib/continuity-holdout-registration.mjs", "scripts/continuity-holdout-freeze.mjs",
+    "scripts/lib/continuity-holdout-statistics.mjs", "scripts/lib/continuity-holdout-generator.mjs",
+    "scripts/lib/continuity-holdout-overlap.mjs", "scripts/continuity-holdout/statistical-spec.json",
+    "scripts/lib/memory-e2e-build.mjs", "scripts/continuity-lookup-compare.mjs",
+  ]);
+});
+
+it("rejects non-hex estimator hashes before reading files and null registrations with a fixed code", async () => {
+  for (const hash of ["not-hex", "G".repeat(64)])
+    await expect(estimateMain(["--registration", "/fictional/nonexistent.json", "--sha256", hash])).rejects.toThrow("lookup_registration_hash_required");
+  const dir = await scratch(), file = join(dir, "null-registration.json"); await writeFile(file, "null");
+  await expect(estimateMain(["--registration", file, "--sha256", sha256("null")])).rejects.toThrow("incompatible_lookup_registration");
 });

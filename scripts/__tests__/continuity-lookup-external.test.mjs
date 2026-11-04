@@ -19,7 +19,7 @@ vi.mock("../lib/continuity-dataset.mjs", async original => {
 });
 import { loadTraces, digest } from "../lib/continuity-dataset.mjs";
 import { LOOKUP_ROLES, FIXED_BUDGET_SHA256, selectLookupFamilies, selectLookupTraces, assertExternalPolicy, externalPathFeasibility, sha256 } from "../lib/continuity-lookup.mjs";
-import { ROOT, lookupProtocol, lookupWorkload, registerLookup, validateRegistration, validateExternalPricing,
+import { ROOT, LOOKUP_PILOT_PROTOCOL_FILES, lookupProtocol, lookupWorkload, registerLookup, validateRegistration, validateExternalPricing,
   rolePlan, roleBinding, runLookupRoles, aggregateLookupRoles } from "../lib/continuity-lookup-roles.mjs";
 import { BUILD_POLICY } from "../lib/memory-e2e-build.mjs";
 import { estimateExternalLookup, offlineCatalog } from "../continuity-lookup-estimate.mjs";
@@ -27,12 +27,16 @@ import { measureFixedBudget } from "../continuity-lookup-budget.mjs";
 import { fixtureLookupPolicy } from "./fixtures/holdout-synthetic.mjs";
 const dirs = [];
 afterEach(async () => { for (const dir of dirs.splice(0)) await rm(dir, { recursive: true, force: true }); vi.clearAllMocks(); });
-const git = (root, args) => execFileSync("git", ["-C", root, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false", ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+const git = (root, args) => execFileSync("git", ["-C", root, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+  "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", "-c", "gc.auto=0", "-c", "maintenance.auto=false", ...args], {
+  env: { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_"))), GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" },
+  encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
+}).trim();
 const render = "packages/conversation/src/continuity/render-fit.ts", pack = "packages/conversation/src/continuity/pack.ts";
-async function fixture() {
+async function fixture({ readerEffort = "low" } = {}) {
   const dir = await realpath(await mkdtemp(join(tmpdir(), "lookup-external-fixture-"))); dirs.push(dir);
   const roots = [join(dir, "r0"), join(dir, "rpack")];
-  const files = ["pnpm-lock.yaml", "scripts/continuity-benchmark.mjs", ...["lookup-roles", "dataset", "generator", "lookup", "runner", "probe-child", "arms", "tools", "score", "lookup-score"].map(n => `scripts/lib/continuity-${n}.mjs`),
+  const files = [...LOOKUP_PILOT_PROTOCOL_FILES, "pnpm-lock.yaml", "scripts/continuity-benchmark.mjs", ...["lookup-roles", "dataset", "generator", "lookup", "runner", "probe-child", "arms", "tools", "score", "lookup-score"].map(n => `scripts/lib/continuity-${n}.mjs`),
     ...["continuity-lookup-budget-v1.json", "continuity-soul-v1.md", "continuity-soul-v2.md"].map(n => `scripts/fixtures/${n}`)];
   for (const [i, root] of roots.entries()) {
     await mkdir(root); git(root, ["init", "-q"]);
@@ -53,7 +57,7 @@ async function fixture() {
   const inputs = join(dir, "inputs"); await mkdir(inputs);
   const lookupSource = { manifestPath: join(inputs, "manifest.json"), manifestSha256: mocks.source.manifestSha256, statisticalSpecPath: join(inputs, "statistics.json") };
   await writeFile(lookupSource.manifestPath, "{}"); await writeFile(lookupSource.statisticalSpecPath, "{}");
-  const options = { suites: ["holdout"], lookupSource, selectionSeed: 42, perGroup: 2, probeLimit: 2, inputRoots: roots };
+  const options = { readerEffort, suites: ["holdout"], lookupSource, selectionSeed: 42, perGroup: 2, probeLimit: 2, inputRoots: roots };
   const workload = await lookupWorkload(options);
   const policy = await fixtureLookupPolicy({ source: mocks.source, selection: workload.corpora[0].traces, lookupSelection: workload.lookupSelection,
     reader: workload.reader, codes, protocol: mocks.protocol });
@@ -166,5 +170,35 @@ it("recomputes policy geometry and refuses classification/reason tampering, whil
 it("refuses missing or partial checkout paths before external registration loading", async () => {
   for (const checkouts of [undefined, {}, { R0: { path: ROOT } }, { R0: { path: ROOT }, Rpack: {} }, { R0: { path: 7 }, Rpack: { path: ROOT } }]) {
     await expect(registerLookup({ lookupSource: {}, checkouts })).rejects.toThrow("lookup_invalid_checkout_binding");
+  }
+});
+
+it("keeps pilot registration separate from v2 full-upfront caps and revalidates every descriptor binding", async () => {
+  const { registerLookupPilot, validateLookupPilotRegistration } = await import("../lib/continuity-lookup-pilot.mjs");
+  const f = await fixture({ readerEffort: "high" });
+  const pilot = await registerLookupPilot({ ...f.options, checkouts: f.checkouts, capUSD: 4, scheduleSeed: 12, runDeadlineMs: 3600000 });
+  expect(await validateLookupPilotRegistration(pilot)).toBe(pilot);
+  const { main: estimateMain } = await import("../continuity-lookup-estimate.mjs");
+  const file = join(f.dir, "pilot-registration.json"), bytes = JSON.stringify(pilot); await writeFile(file, bytes);
+  const stdout = vi.fn();
+  expect(await estimateMain(["--registration", file, "--sha256", sha256(bytes)], { stdout })).toBe(0);
+  expect(JSON.parse(stdout.mock.calls[0][0])).toMatchObject({ rmaxUSD: 3.92, capUSD: 4, registrationDigest: digest(pilot), authorizedSpend: false });
+  expect(pilot.descriptor.capUSD).toBe(4); expect(pilot.registration.common.catalogCapUSD).toBe(f.options.catalogCapUSD);
+  await expect(validateRegistration(pilot)).rejects.toThrow("incompatible_lookup_registration");
+  for (const change of [d => { d.capUSD = 3; }, d => { d.assumptions.inputMax--; }, d => { d.scheduleSha256 = "a".repeat(64); },
+    d => { d.concurrency = 2; }, d => { d.accounting.consecutiveLossLimit = 3; }, d => { d.cacheKeyPolicy = "other"; }, d => { d.deadlines.childWatchdogMs++; }]) {
+    const changed = structuredClone(pilot); change(changed.descriptor);
+    await expect(validateLookupPilotRegistration(changed)).rejects.toThrow(/lookup_(cap_invalid|assumptions_mismatch|pilot_not_ready)/u);
+  }
+});
+
+it("disables fixture hooks and background Git maintenance even when local config enables them", async () => {
+  const f = await fixture();
+  for (const root of f.roots) {
+    const path = join(root, ".git/config");
+    await writeFile(path, await readFile(path, "utf8") + "\n[gc]\n  auto = 1\n[maintenance]\n  auto = true\n[core]\n  hooksPath = /fictional/unused-hooks\n");
+    expect(git(root, ["config", "--get", "gc.auto"])).toBe("0");
+    expect(git(root, ["config", "--get", "maintenance.auto"])).toBe("false");
+    expect(git(root, ["config", "--get", "core.hooksPath"])).toBe("/dev/null");
   }
 });
