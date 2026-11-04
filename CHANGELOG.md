@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Add read-only, aggregate-only tool-result clearing opportunity analysis and
+  offline provider payload qualification, without enabling runtime clearing.
+
 - Add offline lookup pilot descriptors, exact cap estimates and private
   single-use authorization checks that prevent reuse after a crashed run.
   Ordinary paid lookup routes remain refused; no pilot dispatch is enabled.
