@@ -5,15 +5,16 @@ export const bytes = text => Buffer.byteLength(text, 'utf8');
 export const PIN_BUDGET = 8 * 1024 * 1024;
 export const APIS = ['anthropic-messages', 'openai-responses', 'openai-codex-responses', 'openai-completions'];
 const builtins = { Read: 'builtin-read', Grep: 'builtin-search', Glob: 'builtin-search', WebFetch: 'builtin-web', WebSearch: 'builtin-web' };
+export const EXCLUDED_TOOLS = ['Bash', 'Exec', 'Write', 'Edit', 'NodeRepl', 'Agent', 'AgentManage', 'AskParent', 'FinishSilently', 'StructuredOutput', 'ReadSkill', 'read_skill'];
 export function identity(name, origin, proof, allowlist = []) {
+  if (EXCLUDED_TOOLS.includes(name)) return null;
   if (origin?.kind === 'mcp') {
     return origin.readOnlyHint === true && origin.destructiveHint !== true && allowlist.some(x => x.server === origin.server && x.tool === origin.tool
       && /^[a-f0-9]{64}$/.test(x.serverIdentityDigest) && x.serverIdentityDigest === origin.serverIdentityDigest
       && x.readOnly === true) ? 'app-declared' : 'ambiguous';
   }
-  const proven = origin?.kind === 'builtin' && origin.tool === name
-    || !origin && proof?.builtins?.includes(name) && Array.isArray(proof.mcpTools)
-      && !proof.mcpTools.some(x => x.exposedName === name);
+  const proven = proof?.builtins?.includes(name) && (proof.mcpTools === 'none'
+    || Array.isArray(proof.mcpTools) && !proof.mcpTools.some(x => x.exposedName === name));
   return proven ? builtins[name] ?? null : 'ambiguous';
 }
 export function renderStub({ toolName, toolCallId }, record) {

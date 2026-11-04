@@ -4,6 +4,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { fauxProvider } from '@earendil-works/pi-ai';
+import { qualificationIdentity } from '../../../scripts/lib/tool-result-clearing-qualification-id.mjs';
 import { APIS, hash, bytes, mapReference, renderStub } from '../../../scripts/lib/tool-result-clearing-reference.mjs';
 
 export function fixture(api) {
@@ -95,7 +96,7 @@ export async function qualifyAll() {
   for (const api of APIS) {
     try { routes.push(await qualify(api)); } catch { routes.push({ api, status: 'fails', unintendedDifferences: 1 }); }
   }
-  return { routes };
+  return { ...qualificationIdentity(), routes };
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   const report = await qualifyAll();

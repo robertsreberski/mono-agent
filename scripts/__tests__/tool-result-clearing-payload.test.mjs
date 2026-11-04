@@ -1,5 +1,6 @@
 import { expect, it } from 'vitest';
-import { qualify, comparePayloads, diffPaths } from '../../packages/turn/scripts/tool-result-clearing-qualify.mjs';
+import { qualify, qualifyAll, comparePayloads, diffPaths } from '../../packages/turn/scripts/tool-result-clearing-qualify.mjs';
+import { qualificationIdentity } from '../lib/tool-result-clearing-qualification-id.mjs';
 import { APIS, mapReference } from '../lib/tool-result-clearing-reference.mjs';
 
 it.each(APIS)('qualifies only targeted earlier result text through the real %s builder', async api => {
@@ -35,4 +36,8 @@ it.each(APIS)('qualifies only targeted earlier result text through the real %s b
   });
   expect(report).toMatchObject({ api, status: 'payload-preserving', unintendedDifferences: 0, targetedTextChanges: 2 });
   if (api === 'openai-codex-responses') expect(report).toMatchObject({ wire: 'wire-unproven (transport)', verdict: 'DEFER' });
+});
+
+it('binds qualification to installed pi-ai and the exact fixture/reference sources', async () => {
+  expect(await qualifyAll()).toMatchObject(qualificationIdentity());
 });

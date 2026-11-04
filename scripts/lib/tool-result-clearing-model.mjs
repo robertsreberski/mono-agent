@@ -1,7 +1,8 @@
+import { qualifiedEntry, qualificationIdentity } from './tool-result-clearing-qualification-id.mjs';
 import { APIS } from './tool-result-clearing-reference.mjs';
 export const SENSITIVITIES = [0, 0.05, 0.20];
-export function gate({ pressured, conversations, cold, opportunities, pressureReduction, costs, payload, incomplete = false, codex = false }) {
-  if (incomplete || codex || pressured < 10 || conversations < 3 || cold === 0) return 'DEFER';
+export function gate({ pressured, conversations, cold, coldConversations = 0, opportunities, pressureReduction, costs, payload, missingEvidence = false, incomplete = false, codex = false }) {
+  if (incomplete || missingEvidence || codex || pressured < 10 || conversations < 3 || cold < 10 || coldConversations < 3) return 'DEFER';
   return opportunities / cold >= 0.25 && pressureReduction >= 0.15
     && SENSITIVITIES.every(rate => costs.some(c => c.retrievalRate === rate)) && costs.every(x => x.listRatio <= 1.05 && x.quotaRatio <= 1.05)
     && payload === 'payload-preserving' ? 'BUILD' : 'STOP';
@@ -52,21 +53,25 @@ export function model(route, boundaries, retrievalRate) {
   const rates = [...new Set([...SENSITIVITIES, retrievalRate])].sort((a, b) => a - b);
   const costs = rates.map(rate => {
     const view = weights => {
-      let off = 0, on = 0;
-      const average = (route.triggerTokens + route.drainTokens) / 2;
-      for (const b of boundaries) {
-        const price = b.cold ? weights.cacheWrite : weights.cacheRead;
-        off += average * price + b.growth * weights.input + (b.outputTokens ?? 0) * weights.output;
-        // Conservative frozen-continuation bound: retained context costs S/2 longer.
-        on += (average + savingsPerCycle / 2) * price + b.growth * weights.input + (b.outputTokens ?? 0) * weights.output;
+      let off = 0, delta = 0;
+      for (const b of boundaries) for (const request of b.requests ?? []) {
+        const u = request.usage;
+        off += u.input * weights.input + u.cacheRead * weights.cacheRead + u.cacheWrite * weights.cacheWrite + u.output * weights.output;
+        // Location of cleared tokens inside usage buckets is unknown: credit the
+        // cheapest bucket only, capped to observed occupancy. Extra retained native
+        // context and expected retrieval growth are conservatively uncached.
+        const removed = Math.min(request.activeSavings, u.input + u.cacheRead + u.cacheWrite);
+        delta += (savingsPerCycle / 2 + rate * request.activeRetrieval) * weights.input
+          - removed * Math.min(weights.input, weights.cacheRead, weights.cacheWrite);
       }
       const summaryOff = route.summaryInputTokens * weights.input + route.summaryOutputTokens * weights.output
         + route.drainTokens * weights.cacheWrite;
-      // Charge delayed native growth plus at most 2,000 characters per cleared result.
       off += offPressure * summaryOff;
-      on += (growth + rate * retrieval) / (span + savingsPerCycle) * (summaryOff + extraSummary * weights.input);
-      // Full retrieval: round-trip context, escaped returned text, and retained-history growth.
-      on += rate * (count * average + retrieval * (1 + boundaries.length / 2)) * weights.input;
+      const onCycles = (growth + rate * retrieval) / (span + savingsPerCycle);
+      delta += (onCycles - offPressure) * summaryOff + onCycles * extraSummary * weights.input;
+      // Expected extra full-retrieval request/response, not an observed off-arm request.
+      delta += rate * (count * route.triggerTokens + retrieval) * weights.input + rate * count * route.summaryOutputTokens * weights.output;
+      const on = off + delta;
       return { off, on, ratio: off > 0 ? on / off : 1 };
     };
     const list = view(route.prices), quota = view(route.quota);
@@ -83,12 +88,19 @@ export function reportRoute(route, boundaries, qualification, retrievalRate, inc
   const pressured = boundaries.filter(b => b.pressured);
   const cold = pressured.filter(b => b.cold);
   const modeled = model(route, boundaries, retrievalRate);
-  const payload = qualification?.routes?.find(r => r.api === route.api);
-  const status = payload?.status === 'payload-preserving' && payload.unintendedDifferences === 0 ? 'payload-preserving' : 'fails';
+  const payload = qualifiedEntry(qualification, route.api);
+  const status = !payload ? 'unqualified' : payload.status === 'payload-preserving' && payload.unintendedDifferences === 0 ? 'payload-preserving' : 'fails';
   const codex = route.api === 'openai-codex-responses';
+  const codes = [];
+  if (!payload) codes.push('PAYLOAD_UNQUALIFIED');
+  if (boundaries.some(b => b.candidates > 0) && !boundaries.some(b => b.provenCandidates > 0)) codes.push('IDENTITY_UNPROVEN');
+  const requests = boundaries.flatMap(b => b.requests ?? []);
+  const fallbackRequests = requests.filter(r => r.source === 'character-heuristic').length;
   const evidence = { pressured: pressured.length, conversations: new Set(pressured.map(b => b.logical)).size,
-    cold: cold.length, opportunities: cold.filter(b => b.admissibleTokens >= 20000).length };
-  return { api: route.api, assumptions: route, counts: evidence,
+    cold: cold.length, coldConversations: new Set(cold.map(b => b.logical)).size, opportunities: cold.filter(b => admitsBatch(b.saved)).length };
+  if (evidence.cold < 10 || evidence.coldConversations < 3) codes.push('COLD_EVIDENCE_INSUFFICIENT');
+  return { api: route.api, codes, piAiVersion: qualificationIdentity().piAiVersion,
+    assumptions: { ...route, requestCount: requests.length, fallbackRequests, fallbackShare: requests.length ? fallbackRequests / requests.length : 0 }, counts: evidence,
     estimates: { usage: boundaries.filter(b => b.source === 'provider-usage-plus-heuristic').length,
       heuristic: boundaries.filter(b => b.source === 'character-heuristic').length },
     gaps: { underMinute: boundaries.filter(b => b.gap !== null && b.gap < 60000).length,
@@ -97,8 +109,8 @@ export function reportRoute(route, boundaries, qualification, retrievalRate, inc
       unknown: boundaries.filter(b => b.gap === null).length },
     upperBoundBoundaryTokens: boundaries.reduce((s, b) => s + (b.upperTokens ?? 0), 0),
     savingsHistogram: { none: boundaries.filter(b => b.saved === 0).length,
-      under50k: boundaries.filter(b => b.saved >= 20000 && b.saved < 50000).length,
+      under50k: boundaries.filter(b => admitsBatch(b.saved) && b.saved < 50000).length,
       larger: boundaries.filter(b => b.saved >= 50000).length },
     modeled, payload: status, ...(codex ? { wire: 'wire-unproven (transport)' } : {}),
-    verdict: gate({ ...evidence, ...modeled, payload: status, incomplete, codex }) };
+    verdict: gate({ ...evidence, ...modeled, payload: status, missingEvidence: codes.includes('PAYLOAD_UNQUALIFIED') || codes.includes('IDENTITY_UNPROVEN'), incomplete, codex }) };
 }

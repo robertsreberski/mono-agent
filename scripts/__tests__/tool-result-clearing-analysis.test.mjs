@@ -2,20 +2,25 @@ import { afterEach, expect, it } from 'vitest';
 import { readFileSync, writeFileSync, readdirSync, lstatSync, renameSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { analyze } from '../lib/tool-result-clearing-analysis.mjs';
+import { analyze as rawAnalyze } from '../lib/tool-result-clearing-analysis.mjs';
 import { gate, model, classifyBoundary, budgetBatch, validateRoutes, reportRoute, admitsBatch } from '../lib/tool-result-clearing-model.mjs';
 import { PIN_BUDGET, identity, exclusion, hash, bytes, estimate, tokens } from '../lib/tool-result-clearing-reference.mjs';
 import { makeFixture, route, SENTINEL } from './tool-result-clearing-fixture.mjs';
+import { assertContentFree } from './tool-result-clearing-privacy.mjs';
 const fixtures = [];
+const analyze = (...args) => { const report = rawAnalyze(...args); assertContentFree(report, fixtures); return report; };
 const fixture = options => { const f = makeFixture(options); fixtures.push(f); return f; };
 afterEach(() => { for (const f of fixtures.splice(0)) f.cleanup(); });
 const snapshot = root => readdirSync(root).sort().map(n => {
   const p = join(root, n), s = lstatSync(p);
   return [n, s.ino, s.size, s.mtimeMs, hash(readFileSync(p))];
 });
-const cli = (args, env = {}) => spawnSync(process.execPath, [resolve('scripts/tool-result-clearing-analyze.mjs'), ...args],
-  { encoding: 'utf8', env: { ...process.env, ...env } });
-const args = f => ['--journals', f.options.journals[0], '--sidecar', f.options.sidecar, '--routes', f.options.routes, '--qualification', f.options.qualification];
+const cli = (args, env = {}) => {
+  const result = spawnSync(process.execPath, [resolve('scripts/tool-result-clearing-analyze.mjs'), ...args], { encoding: 'utf8', env: { ...process.env, ...env } });
+  if (result.stdout) assertContentFree(JSON.parse(result.stdout), fixtures);
+  return result;
+};
+const args = f => ['--journals', f.options.journals[0], '--sidecar', f.options.sidecar, '--routes', f.options.routes, '--qualification', f.options.qualification, ...(f.options.agentConfig ? ['--agent-config', f.options.agentConfig] : [])];
 
 it('reads real native envelopes and schema read-only; stdout is aggregate and sentinel-free', () => {
   const f = fixture(), before = snapshot(f.root);
@@ -24,7 +29,7 @@ it('reads real native envelopes and schema read-only; stdout is aggregate and se
   expect(report.codes).toEqual([]);
   expect(report.counts).toEqual({ journals: 1, boundaries: 14, observedCompactions: 0 });
   expect(report.categories['builtin-read'].results).toBe(12);
-  expect(report.routes[0].counts).toMatchObject({ pressured: 13, conversations: 1, cold: 13, opportunities: 10 });
+  expect(report.routes[0].counts).toMatchObject({ pressured: 13, conversations: 1, cold: 13, opportunities: 1 });
   expect(report.routes[0].modeled.savedTokens).toBeGreaterThan(20000);
   expect(report.exclusions.protected).toBeGreaterThan(0);
   const output = cli(args(f));
@@ -43,7 +48,7 @@ it('keeps representativeness and opportunity denominators separate per API', () 
   writeFileSync(fs[0].options.routes, JSON.stringify([route, { ...route, api: 'openai-codex-responses', cacheLifetimeMs: 'unknown' }]));
   const report = analyze({ ...fs[0].options, journals: [...fs, codex].map(f => f.options.journals[0]) });
   // Only the first conversation has matching retained records in this sidecar.
-  expect(report.routes[0].counts).toEqual({ pressured: 39, conversations: 3, cold: 39, opportunities: 10 });
+  expect(report.routes[0].counts).toEqual({ pressured: 39, conversations: 3, cold: 39, coldConversations: 3, opportunities: 1 });
   expect(report.routes[1].counts.conversations).toBe(1);
   expect(report.routes[1].verdict).toBe('DEFER');
   expect(report.verdict).not.toBe('BUILD');
@@ -56,7 +61,8 @@ it('never discovers inputs from the environment; sanitizes every failure and exp
   expect(bad.status).toBe(2); expect(bad.stdout + bad.stderr).not.toContain(SENTINEL);
   const out = join(f.root, 'explicit-report.json');
   expect(cli([...args(f), '--out', out]).status).toBe(0);
-  expect(JSON.parse(readFileSync(out, 'utf8')).status).toBe('complete');
+  const written = JSON.parse(readFileSync(out, 'utf8')); assertContentFree(written, fixtures);
+  expect(written.status).toBe('complete');
   // Exclusive creation prevents overwriting any input, report or symlink target.
   expect(cli([...args(f), '--out', out]).status).toBe(2);
   expect(cli([...args(f), '--out', f.options.sidecar]).status).toBe(2);
@@ -79,15 +85,15 @@ it('refuses live SQLite sidecars without creating shared memory or checkpointing
   expect(report.codes).toContain('SIDECAR_NOT_OFFLINE'); expect(snapshot(f.root)).toEqual(before);
 });
 it('defers open turns, corrupt chains, duplicated journals and unavailable inherited projections', () => {
-  const f = fixture({ incomplete: true }); expect(analyze(f.options).codes).toContain('OPEN_TURN');
+  const f = fixture({ incomplete: true }); expect(analyze(f.options).skipped.OPEN_TURN).toBe(1);
   const g = fixture(); g.records[0].parentId = SENTINEL;
   writeFileSync(g.options.journals[0], [g.header, ...g.records].map(x => JSON.stringify(x)).join('\n'));
-  expect(analyze(g.options).codes).toContain('JOURNAL_INVALID');
+  expect(analyze(g.options).skipped.JOURNAL_INVALID).toBe(1);
   const h = fixture(); writeFileSync(join(h.root, 'duplicate.jsonl'), readFileSync(h.options.journals[0]));
-  expect(analyze({ ...h.options, journals: [h.root] }).codes).toContain('DUPLICATE_JOURNAL');
+  expect(analyze({ ...h.options, journals: [h.root] }).skipped.DUPLICATE_JOURNAL).toBe(1);
   h.header.import = { note: SENTINEL };
   writeFileSync(h.options.journals[0], JSON.stringify(h.header) + '\n');
-  expect(analyze(h.options).status).toBe('incomplete');
+  expect(analyze(h.options).skipped.IMPORTED_JOURNAL).toBe(1);
 });
 it('keeps exposed-name ambiguity outside the lower bound; accepts exact run proof only', () => {
   const f = fixture({ origin: false });
@@ -136,7 +142,7 @@ it.each(['redacted', 'truncated', 'finalized', 'sha', 'original', 'retained', 't
   expect(analyze(f.options).routes[0].modeled.savedTokens).toBe(0);
 });
 
-const eligible = { pressured: 10, conversations: 3, cold: 4, opportunities: 1, pressureReduction: 0.15,
+const eligible = { pressured: 10, conversations: 3, cold: 12, coldConversations: 3, opportunities: 3, pressureReduction: 0.15,
   costs: [0, 0.05, 0.2].map(retrievalRate => ({ retrievalRate, listRatio: 1.05, quotaRatio: 1.05 })), payload: 'payload-preserving' };
 it('builds exactly at all gate thresholds without pooling route denominators', () => {
   expect(gate(eligible)).toBe('BUILD');
@@ -147,7 +153,7 @@ it('builds exactly at all gate thresholds without pooling route denominators', (
   expect(gate({ ...eligible, cold: 0 })).toBe('DEFER');
   expect(gate({ ...eligible, incomplete: true })).toBe('DEFER');
   expect(gate({ ...eligible, codex: true })).toBe('DEFER');
-  expect(gate({ ...eligible, cold: 5 })).toBe('STOP');
+  expect(gate({ ...eligible, cold: 13 })).toBe('STOP');
   expect(gate({ ...eligible, pressureReduction: 0.15 - 1e-10 })).toBe('STOP');
   expect(gate({ ...eligible, payload: 'fails' })).toBe('STOP');
   for (let i = 0; i < 3; i++) for (const view of ['listRatio', 'quotaRatio']) {
@@ -186,7 +192,7 @@ it('matches the usage-plus-trailing character heuristic including images and Uni
     { role: 'user', content: 'abcd' }])).toEqual({ tokens: 20, source: 'provider-usage-plus-heuristic' });
   expect(estimate([{ role: 'user', content: 'abcd' }])).toEqual({ tokens: 1, source: 'character-heuristic' });
 });
-it('protects lifecycle, approvals, unresolved effects, errors, mixed, image and opaque results', () => {
+it('reference eligibility rejects explicit lifecycle/protection states and non-plain results', () => {
   const m = { isError: false, content: [{ type: 'text', text: SENTINEL }] };
   const r = { finalized: 1, state: 'committed', tombstone_reason: null, redacted: 0, truncated: 0,
     original_bytes: bytes(SENTINEL), retained_bytes: bytes(SENTINEL), text_sha256: hash(SENTINEL), retained_text: SENTINEL };
