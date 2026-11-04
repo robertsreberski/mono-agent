@@ -40,7 +40,7 @@ it('measures idle gaps after the last tool-loop request, including failed assist
 it('defers missing identity or qualification evidence; agent-period proof needs no run IDs', () => {
   const fs = ['one', 'two', 'three'].map(scope => fixture({ scope, origin: false }));
   const options = { ...fs[0].options, journals: fs.map(f => f.options.journals[0]) };
-  expect(analyze(options).routes[0]).toMatchObject({ verdict: 'DEFER', codes: expect.arrayContaining(['IDENTITY_UNPROVEN', 'RETENTION_UNMATCHED']) });
+  expect(analyze(options).routes[0]).toMatchObject({ verdict: 'DEFER', codes: expect.arrayContaining(['IDENTITY_UNPROVEN']) });
   writeFileSync(fs[0].paths['proof.json'], JSON.stringify({ builtins: ['Read'], mcpTools: 'none' }));
   expect(analyze({ ...options, agentConfig: fs[0].paths['proof.json'] }).routes[0].codes).not.toContain('IDENTITY_UNPROVEN');
   writeFileSync(fs[0].paths['proof.json'], JSON.stringify({ builtins: ['Read'], mcpTools: [{ exposedName: 'Read' }] }));
@@ -276,11 +276,25 @@ it.each(['missing', 'empty', 'duplicate'])('rejects %s per-run proof identities 
   writeFileSync(f.paths['proof.json'], JSON.stringify(proof));
   const report = analyze(f.options); expect(report.codes).toContain('INPUT_INVALID'); expect(report.verdict).toBe('DEFER');
 });
-it('defers an empty proven-retention set even for representative boundaries', () => {
+it('distinguishes no opportunity from unproven identity and unmatched proven retention', () => {
   const f = fixture(), q = JSON.parse(readFileSync(f.options.qualification, 'utf8'));
-  const boundaries = Array.from({ length: 12 }, (_, i) => ({ pressured: true, cold: true, logical: i % 3, growth: 1, saved: 0, selected: 0, retrievalTokens: 0 }));
+  const boundaries = Array.from({ length: 12 }, (_, i) => ({ pressured: true, cold: true, logical: i % 3, growth: 1, saved: 0, selected: 0, retrievalTokens: 0, candidates: 0, provenCandidates: 0 }));
   const report = reportRoute(route, boundaries, q, 0, false);
-  expect(report.codes).toContain('RETENTION_UNMATCHED'); expect(report.retention.matchedResults).toBe(0); expect(report.verdict).toBe('DEFER');
+  expect(report.codes).not.toContain('RETENTION_UNMATCHED'); expect(report.retention.matchedResults).toBe(0); expect(report.verdict).toBe('STOP');
+  const ambiguous = reportRoute(route, boundaries.map(b => ({ ...b, candidates: 1 })), q, 0, false);
+  expect(ambiguous.codes).toContain('IDENTITY_UNPROVEN'); expect(ambiguous.codes).not.toContain('RETENTION_UNMATCHED'); expect(ambiguous.verdict).toBe('DEFER');
+  const missing = reportRoute(route, boundaries.map((b, i) => ({ ...b, candidates: 1, provenCandidates: 1, retention: [{ key: i, matched: false }] })), q, 0, false);
+  expect(missing.codes).toContain('RETENTION_UNMATCHED'); expect(missing.verdict).toBe('DEFER');
+});
+it.each(['redacted', 'truncated'])('counts real %s captures as matched but models their low yield as STOP', kind => {
+  const f = fixture({ runs: 2, toolCount: 1, resultText: kind === 'redacted' ? 'Fictional path: /home/fictional/workspace/document.txt' : 'x'.repeat(1024 * 1024 + 1) });
+  const report = analyze(f.options).routes[0];
+  expect(report.retention).toMatchObject({ provenResults: 1, matchedResults: 1, unmatchedResults: 0, matchedShare: 1 });
+  expect(report.categories['builtin-read'][kind]).toBe(1); expect(report.categories['builtin-read'].eligibleBytes).toBe(0); expect(report.modeled.savedTokens).toBe(0);
+  expect(report.codes).not.toContain('RETENTION_UNMATCHED'); expect(report.codes).not.toContain('RETENTION_COVERAGE_LOW');
+  const q = JSON.parse(readFileSync(f.options.qualification, 'utf8'));
+  const boundaries = Array.from({ length: 12 }, (_, i) => ({ pressured: true, cold: true, logical: i % 3, growth: 1, saved: 0, selected: 0, retrievalTokens: 0, candidates: 1, provenCandidates: 1, retention: [{ key: i, matched: true }] }));
+  expect(reportRoute(route, boundaries, q, 0, false).verdict).toBe('STOP');
 });
 it('uses turn-scoped call identity for valid operation-less lifecycle and result messages', () => {
   const f = fixture(), baseline = analyze(f.options).routes[0].modeled.savedTokens;

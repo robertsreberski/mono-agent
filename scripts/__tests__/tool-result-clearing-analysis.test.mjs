@@ -142,8 +142,14 @@ it('reports JSON web yield, structured guard losses and escaped retrieval sizes 
 it.each(['redacted', 'truncated', 'finalized', 'sha', 'original', 'retained', 'text'])('excludes non-exact retained %s evidence', field => {
   const f = fixture({ configureRecord(r) { r[field] = ['redacted', 'truncated'].includes(field) ? 1 : field === 'finalized' ? 0 : typeof r[field] === 'number' ? 1 : SENTINEL; } });
   const report = analyze(f.options).routes[0];
-  expect(report.modeled.savedTokens).toBe(0); expect(report.retention.matchedResults).toBe(0);
-  expect(report.codes).toContain('RETENTION_UNMATCHED'); expect(report.verdict).toBe('DEFER');
+  expect(report.modeled.savedTokens).toBe(0);
+  if (['redacted', 'truncated'].includes(field)) {
+    expect(report.retention.matchedResults).toBe(12); expect(report.retention.matchedShare).toBe(1);
+    expect(report.categories['builtin-read'][field]).toBe(12); expect(report.categories['builtin-read'].eligibleBytes).toBe(0);
+    expect(report.codes).not.toContain('RETENTION_UNMATCHED'); expect(report.codes).not.toContain('RETENTION_COVERAGE_LOW');
+  } else {
+    expect(report.retention.matchedResults).toBe(0); expect(report.codes).toContain('RETENTION_UNMATCHED'); expect(report.verdict).toBe('DEFER');
+  }
 });
 
 const eligible = { pressured: 10, conversations: 3, cold: 12, coldConversations: 3, opportunities: 3, pressureReduction: 0.15,

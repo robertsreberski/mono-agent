@@ -8,6 +8,7 @@
   symmetric cache-aware cost deltas and informational uncached bounds.
   Keep skipped turn boundaries skipped through re-prompts and require exact
   retention, unambiguous identity proof, and meaningful cost baselines.
+  Distinguish missing capture from captured-but-ineligible low yield.
 
 - Add offline lookup pilot descriptors, exact cap estimates and private
   single-use authorization checks that prevent reuse after a crashed run.

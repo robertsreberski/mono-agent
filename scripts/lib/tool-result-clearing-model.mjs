@@ -115,7 +115,7 @@ export function reportRoute(route, boundaries, qualification, retrievalRate, inc
   const retained = new Map(boundaries.flatMap(b => b.retention ?? []).map(r => [r.key, r.matched]));
   const matched = [...retained.values()].filter(Boolean).length;
   const matchedShare = retained.size ? matched / retained.size : null;
-  if (!matched) codes.push('RETENTION_UNMATCHED');
+  if (retained.size && !matched) codes.push('RETENTION_UNMATCHED');
   else if (matchedShare !== null && matchedShare < MIN_RETENTION_SHARE) codes.push('RETENTION_COVERAGE_LOW');
   const evidence = { pressured: pressured.length, conversations: new Set(pressured.map(b => b.logical)).size,
     cold: cold.length, coldConversations: new Set(cold.map(b => b.logical)).size, opportunities: cold.filter(b => admitsBatch(b.saved)).length };

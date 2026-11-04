@@ -190,13 +190,17 @@ missing/stale qualification yields `PAYLOAD_UNQUALIFIED`. These mean route DEFER
 not STOP. Restrict journals to the period when continuity capture was enabled.
 Per-route `retention` counts unique proven-identity, successful, completed,
 returned-and-placed plain-text results, including protected ones. A match requires
-the same exact eligibility check with protection disabled: identity-linked,
-finalized committed retention with no tombstone, redaction or truncation, and
-byte counts, digest and complete text matching the journal. No matches, including
-an empty proven-result set, means `RETENTION_UNMATCHED`; a matched share below
+identity-linked, finalized committed retention without tombstones or integrity
+mismatches. Redacted and truncated rows prove capture: they remain matched and
+counted as redacted/truncated, but are ineligible and reduce opportunity yield.
+For unredacted, untruncated rows, byte counts, digest and complete text must match.
+Proven results with no matches yield `RETENTION_UNMATCHED`; a matched share below
 the fixed **50%** floor means
 `RETENTION_COVERAGE_LOW`. Both DEFER: today's retention may omit pre-capture,
 unowned or evicted results and cannot establish historical opportunity absence.
+An empty proven-result set is not itself missing retention. Unproven plain-text
+candidates still DEFER via `IDENTITY_UNPROVEN`; sufficient evidence with no
+qualifying opportunity can reach STOP, including redaction-dominated low yield.
 Qualification must match the installed pi-ai version and digest of the
 exact fixture-builder/diff/reference sources; the analyzer prints only the version,
 not the digest. With sufficient evidence, a failed criterion means STOP. Thresholds

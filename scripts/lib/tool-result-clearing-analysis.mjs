@@ -177,7 +177,7 @@ export function analyze(options, hooks = {}) {
             if (!scopeExcluded && resultState.completed && resultState.returned && resultState.placed
               && !['lifecycle', 'error', 'blocks'].includes(exclusion(m, undefined, resultState))) {
               identityCandidates++;
-              if (category !== 'ambiguous') { provenIdentities++; retention.push({ key: `${physical}\0${entry.turnId}\0${m.toolCallId}`, matched: recordMatches && !contentReason }); }
+              if (category !== 'ambiguous') { provenIdentities++; retention.push({ key: `${physical}\0${entry.turnId}\0${m.toolCallId}`, matched: recordMatches && !['retention', 'integrity'].includes(contentReason) }); }
             }
             const reason = record && !recordMatches && !scopeExcluded ? 'integrity'
               : contentReason || (resultState.protected ? 'protected' : null);
