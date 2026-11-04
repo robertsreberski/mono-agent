@@ -28,7 +28,8 @@ beforeEach(() => {
   vi.stubEnv("GIT_CONFIG_GLOBAL", "/dev/null"); vi.stubEnv("GIT_CONFIG_NOSYSTEM", "1");
   vi.stubEnv("NODE_OPTIONS", `${process.env.NODE_OPTIONS ?? ""} --import=${join(ROOT, "scripts/__tests__/fixtures/reject-account-home.mjs")}`);
 });
-afterEach(async () => { vi.unstubAllEnvs(); vi.restoreAllMocks(); for (const dir of dirs.splice(0)) await rm(dir, { recursive: true, force: true }); });
+// Removing two built synthetic checkouts can exceed the default hook budget on loaded runners.
+afterEach(async () => { vi.unstubAllEnvs(); vi.restoreAllMocks(); for (const dir of dirs.splice(0)) await rm(dir, { recursive: true, force: true }); }, 120_000);
 const gitEnv = () => ({ ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_"))),
   GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_AUTHOR_NAME: "Fictional Fixture", GIT_AUTHOR_EMAIL: "fiction@example.invalid",
   GIT_COMMITTER_NAME: "Fictional Fixture", GIT_COMMITTER_EMAIL: "fiction@example.invalid" });
