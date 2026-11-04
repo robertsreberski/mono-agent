@@ -96,7 +96,10 @@ Unsupported/imported/inherited/interrupted, invalid, open or duplicate journals
 are skipped, as are owner-missing, unsupported-API and duplicate boundaries.
 `skippedJournals` and `skippedBoundaries` publish separate fixed reason counts;
 representativeness uses what remains. A journal contributes nothing unless its
-entire replay succeeds. Same-journal re-prompts continue the existing boundary;
+entire replay succeeds. It accumulates fresh local results, reads committed ID
+indices without copying them, and copies only touched conversation policies.
+Successful journals merge their contributions; failure discards boundary skips too.
+Same-journal re-prompts continue the existing boundary, even when first skipped;
 only a matching boundary first seen in another journal is skipped.
 Only `SNAPSHOT_CHANGED`, `SIDECAR_NOT_OFFLINE`, `INPUT_INVALID` and `NO_JOURNALS`
 mark the snapshot globally incomplete.

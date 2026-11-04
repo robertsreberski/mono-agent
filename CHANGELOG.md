@@ -6,6 +6,7 @@
   offline provider payload qualification, without enabling runtime clearing.
   Defer weak retention/usage evidence, account for every request, and expose
   symmetric cache-aware cost deltas and informational uncached bounds.
+  Keep skipped turn boundaries skipped through re-prompts.
 
 - Add offline lookup pilot descriptors, exact cap estimates and private
   single-use authorization checks that prevent reuse after a crashed run.

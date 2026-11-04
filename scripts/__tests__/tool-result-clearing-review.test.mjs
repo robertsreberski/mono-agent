@@ -1,4 +1,4 @@
-import { afterEach, expect, it } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 import { writeFileSync, readFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -16,6 +16,17 @@ const fixtures = [];
 const fixture = options => { const f = makeFixture(options); fixtures.push(f); return f; };
 const analyze = options => { const report = rawAnalyze(options); assertContentFree(report, fixtures); return report; };
 const rewrite = f => writeFileSync(f.options.journals[0], [f.header, ...f.records].map(x => JSON.stringify(x)).join('\n'));
+const reprompt = (f, turn = 0) => {
+  const id = f.records.filter(r => r.kind === 'turn_start')[turn].turnId;
+  const index = f.records.findIndex(r => r.kind === 'turn_end' && r.turnId === id);
+  const original = f.records[index - 2], op = 'fictional-retry', start = structuredClone(f.records.find(r => r.kind === 'operation_start'));
+  Object.assign(start, { id: 'fictional-retry-start', operationId: op, turnId: id }); start.payload.baselineTipId = original.id;
+  const message = structuredClone(original); Object.assign(message, { id: 'fictional-retry-message', operationId: op }); message.payload.contextParentId = original.id;
+  const end = structuredClone(f.records[index - 1]); Object.assign(end, { id: 'fictional-retry-end', operationId: op }); end.payload.tipId = message.id;
+  const suffix = JSON.parse(JSON.stringify(f.records.slice(index)).replaceAll(original.id, message.id)); suffix[0].payload.finalOperationId = op;
+  f.records.splice(index, f.records.length - index, start, message, end, ...suffix);
+  f.records.forEach((r, i) => { r.seq = i + 1; r.parentId = i ? f.records[i - 1].id : null; }); rewrite(f);
+};
 afterEach(() => { for (const f of fixtures.splice(0)) f.cleanup(); });
 it('measures idle gaps after the last tool-loop request, including failed assistant dispatches', () => {
   const warm = fixture({ longLoop: true, runs: 2 });
@@ -144,24 +155,33 @@ it('replays a native tool result through the production lifecycle adapter and wr
 
 it('prices cached prefix deltas symmetrically at exactly fifteen percent pressure reduction', () => {
   const savings = (route.triggerTokens - route.drainTokens) * 0.15 / 0.85;
-  const usage = { input: 2000, cacheRead: 147000, cacheWrite: 1000, output: 1000 };
-  const request = { usage, source: 'provider-usage', activeSavings: savings, activeRetrieval: savings };
-  const boundaries = Array.from({ length: 12 }, (_, i) => ({ pressured: true, cold: true, logical: i % 3,
-    growth: 160000 / 12, saved: i ? 0 : savings, selected: i ? 0 : 1, retrievalTokens: i ? 0 : savings, requests: Array(10).fill(request) }));
+  // One 40k→200k cycle: clearing at 150k credits only its last 25/80 requests.
+  const boundaries = Array.from({ length: 80 }, (_, i) => {
+    const occupancy = route.drainTokens + i * 2000, cleared = occupancy >= 0.75 * route.triggerTokens;
+    return { growth: 2000, saved: i === 55 ? savings : 0, selected: i === 55 ? 1 : 0, retrievalTokens: i === 55 ? savings : 0,
+      requests: [{ usage: { input: 2000, cacheRead: occupancy - 3000, cacheWrite: 1000, output: 1000 }, source: 'provider-usage',
+        activeSavings: cleared ? savings : 0, activeRetrieval: cleared ? savings : 0 }] };
+  });
+  const requests = boundaries.flatMap(b => b.requests), credited = requests.filter(r => r.activeSavings > 0);
+  expect(credited).toHaveLength(25); expect(credited.length / requests.length).toBe(0.3125);
   const result = model(route, boundaries, 0), c = result.costs[0];
-  const prefixRate = (2000 * 3 + 147000 * 0.3 + 1000 * 3.75) / 150000;
+  const prefixRate = r => (r.usage.input * 3 + r.usage.cacheRead * 0.3 + r.usage.cacheWrite * 3.75) / (r.usage.input + r.usage.cacheRead + r.usage.cacheWrite);
   expect(result.pressureReduction).toBeCloseTo(0.15, 12);
-  expect(c.listDelta.retained).toBeCloseTo(120 * savings / 2 * prefixRate / 1e6);
-  expect(c.listDelta.removed).toBeCloseTo(-120 * savings * prefixRate / 1e6);
+  expect(c.listDelta.retained).toBeCloseTo(requests.reduce((sum, r) => sum + savings / 2 * prefixRate(r), 0) / 1e6);
+  expect(c.listDelta.removed).toBeCloseTo(-credited.reduce((sum, r) => sum + savings * prefixRate(r), 0) / 1e6);
   for (const cost of result.costs) {
     expect(cost.listOn - cost.listOff).toBeCloseTo(Object.values(cost.listDelta).reduce((a, b) => a + b, 0));
     expect(cost.quotaShareOn - cost.quotaShareOff).toBeCloseTo(Object.values(cost.quotaShareDelta).reduce((a, b) => a + b, 0));
-    expect(cost.listRatio).toBeLessThanOrEqual(1.05); expect(cost.quotaRatio).toBeLessThanOrEqual(1.05);
+    // Growing observed prefixes: a narrow 0% pass, but 20% retrieval fails.
+    if (cost.retrievalRate === 0 || cost.retrievalRate === 0.2) for (const ratio of [cost.listRatio, cost.quotaRatio]) {
+      expect(ratio).toBeGreaterThan(cost.retrievalRate === 0 ? 1.03 : 1.05);
+      expect(ratio).toBeLessThan(cost.retrievalRate === 0 ? 1.05 : 1.075);
+    }
     expect(cost.allUncachedInformational.listOn).toBeGreaterThan(cost.listOff * 1.05);
     expect(cost.allUncachedInformational.gating).toBe(false);
   }
   // A genuinely expensive retrieval workload must still fail the cost criterion.
-  const expensive = model(route, boundaries.map(b => ({ ...b, requests: b.requests.map(r => ({ ...r, activeRetrieval: 1e7 })) })), 0.2);
+  const expensive = model(route, boundaries.map(b => ({ ...b, requests: b.requests.map(r => ({ ...r, activeRetrieval: r.activeSavings ? 1e7 : 0 })) })), 0.2);
   expect(expensive.costs.at(-1).listRatio).toBeGreaterThan(1.05);
   expect(analyze(fixture().options).assumptions.fallbackRequests).toBe(0);
 });
@@ -181,14 +201,7 @@ it('defers absent and under-half retention coverage, counting unique proven plai
   expect(reportRoute(route, boundaries, q, 0, false).verdict).toBe('DEFER');
 });
 it('continues same-journal re-prompts but skips cross-journal duplicates', () => {
-  const f = fixture({ runs: 2, toolCount: 0 }), index = f.records.findIndex(r => r.kind === 'turn_end');
-  const original = f.records[index - 2], op = 'fictional-retry', start = structuredClone(f.records.find(r => r.kind === 'operation_start'));
-  Object.assign(start, { id: 'fictional-retry-start', operationId: op }); start.payload.baselineTipId = original.id;
-  const message = structuredClone(original); Object.assign(message, { id: 'fictional-retry-message', operationId: op }); message.payload.contextParentId = original.id;
-  const end = structuredClone(f.records[index - 1]); Object.assign(end, { id: 'fictional-retry-end', operationId: op }); end.payload.tipId = message.id;
-  const suffix = JSON.parse(JSON.stringify(f.records.slice(index)).replaceAll(original.id, message.id)); suffix[0].payload.finalOperationId = op;
-  f.records.splice(index, f.records.length - index, start, message, end, ...suffix);
-  f.records.forEach((r, i) => { r.seq = i + 1; r.parentId = i ? f.records[i - 1].id : null; }); rewrite(f);
+  const f = fixture({ runs: 2, toolCount: 0 }); reprompt(f);
   let report = analyze(f.options); expect(report.skippedJournals).toEqual({}); expect(report.skippedBoundaries).toEqual({});
   expect(report.counts.boundaries).toBe(2); expect(report.assumptions.requestCount).toBe(3);
   const copy = join(f.root, 'copy.jsonl'); writeFileSync(copy, [JSON.stringify({ ...f.header, journalId: 'fictional-copy' }), ...f.records.map(r => JSON.stringify(r))].join('\n'));
@@ -207,6 +220,7 @@ it('discards every partial contribution of a journal that fails during checkpoin
   const f = fixture({ compactAt: 6 }), baseline = analyze(f.options), good = join(f.root, 'good.jsonl');
   writeFileSync(good, readFileSync(f.options.journals[0]));
   const p = f.records.find(r => r.kind === 'compaction').payload;
+  f.records.find(r => r.kind === 'operation_start' && r.turnId.startsWith('run-1-')).timestamp = 0;
   p.derivedMessages = p.compaction.checkpoint.derivedMessages = [{ role: 'toolResult', content: [{ type: 'text', text: null }] }]; rewrite(f);
   const report = analyze({ ...f.options, journals: [f.options.journals[0], good] });
   expect(report.skippedJournals).toEqual({ JOURNAL_INVALID: 1 }); expect(report.skippedBoundaries).toEqual({});
@@ -215,4 +229,29 @@ it('discards every partial contribution of a journal that fails during checkpoin
 it('accepts prerelease and build-qualified dependency versions without relaxing output privacy', () => {
   for (const version of ['1.2.0', '1.2.0-rc.1', '1.2.0-dev.3+build.7']) expect(validVersion(version)).toBe(true);
   for (const version of ['private', '1.2.0-', '1.2.0+']) expect(validVersion(version)).toBe(false);
+});
+it('merges fresh journal contributions without cloning accumulated request histories', () => {
+  const fs = ['first', 'second', 'third'].map(scope => fixture({ scope, runs: 2, toolCount: 0 }));
+  const clone = vi.spyOn(globalThis, 'structuredClone');
+  try {
+    const report = analyze({ ...fs[0].options, journals: fs.map(f => f.options.journals[0]) });
+    expect(report.counts).toMatchObject({ journals: 3, boundaries: 6 }); expect(report.assumptions.requestCount).toBe(6);
+    expect(clone).not.toHaveBeenCalled();
+  } finally { clone.mockRestore(); }
+});
+it.each(['ROUTE_MISSING', 'OWNER_MISSING', 'TIME_ORDER'])('keeps a skipped %s first boundary skipped across re-prompts', code => {
+  const f = fixture({ runs: 2, toolCount: 0 }), turn = code === 'TIME_ORDER' ? 1 : 0; reprompt(f, turn);
+  const id = f.records.filter(r => r.kind === 'turn_start')[turn].turnId;
+  const start = f.records.find(r => r.kind === 'operation_start' && r.turnId === id);
+  if (code === 'ROUTE_MISSING') start.payload.config.model.api = 'openai-responses';
+  if (code === 'TIME_ORDER') start.timestamp = 0;
+  if (code === 'OWNER_MISSING') {
+    const binding = f.records.find(r => r.kind === 'owner_binding'), restored = structuredClone(binding);
+    binding.payload = { kind: 'unbound' }; restored.id = 'fictional-restored-owner';
+    f.records.splice(f.records.findIndex(r => r.id === 'fictional-retry-start'), 0, restored);
+    f.records.forEach((r, i) => { r.seq = i + 1; r.parentId = i ? f.records[i - 1].id : null; });
+  }
+  rewrite(f); const report = analyze(f.options);
+  expect(report.skippedJournals).toEqual({}); expect(report.skippedBoundaries).toEqual({ [code]: 1 });
+  expect(report.counts.boundaries).toBe(1); expect(report.assumptions.requestCount).toBe(1);
 });

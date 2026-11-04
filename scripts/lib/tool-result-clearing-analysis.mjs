@@ -16,14 +16,33 @@ const categoryCounts = () => Object.fromEntries(['builtin-read', 'builtin-search
   { results: 0, originalBytes: 0, eligibleBytes: 0, escapedBytes: 0, structuredScanLosses: 0, redacted: 0, truncated: 0 }]));
 export function analyze(options, hooks = {}) {
   const tracked = new Map(), codes = new Set(), skippedJournals = {};
-  let state = { categories: categoryCounts(), exclusions: {}, skippedBoundaries: {}, policies: new Map(), boundaries: [],
+  const freshState = () => ({ categories: categoryCounts(), exclusions: {}, skippedBoundaries: {}, policies: new Map(), boundaries: [],
     observedCompactions: 0, observed: { summaryTokens: 0, drainTokens: 0, preCompactionTokens: 0 },
-    routeCategories: new Map(), seenResults: new Set(), seenJournals: new Set(), seenBoundaries: new Map() };
+    routeCategories: new Map(), seenResults: new Set(), seenJournals: new Set(), seenBoundaries: new Map() });
+  let state = freshState(), committed = null;
+  const firstBoundary = key => state.seenBoundaries.get(key) ?? committed?.seenBoundaries.get(key);
+  const hasSeen = (kind, key) => state[kind].has(key) || committed?.[kind].has(key);
   const skipJournal = code => { skippedJournals[code] = (skippedJournals[code] ?? 0) + 1; };
   const skipBoundary = code => { state.skippedBoundaries[code] = (state.skippedBoundaries[code] ?? 0) + 1; };
   const policyFor = physical => {
-    if (!state.policies.has(physical)) state.policies.set(physical, { cleared: new Set(), completedRuns: new Set(), pinBytes: 0, activeSavings: 0, activeRetrieval: 0, lastBatch: -Infinity, runs: 0 });
+    if (!state.policies.has(physical)) state.policies.set(physical, committed?.policies.has(physical)
+      ? structuredClone(committed.policies.get(physical))
+      : { cleared: new Set(), completedRuns: new Set(), pinBytes: 0, activeSavings: 0, activeRetrieval: 0, lastBatch: -Infinity, runs: 0 });
     return state.policies.get(physical);
+  };
+  const merge = (target, local) => {
+    const add = (to, from) => { for (const [key, value] of Object.entries(from)) to[key] = (to[key] ?? 0) + value; };
+    const addCategories = (to, from) => { for (const key of Object.keys(from)) add(to[key], from[key]); };
+    addCategories(target.categories, local.categories);
+    for (const [api, group] of local.routeCategories) {
+      if (!target.routeCategories.has(api)) target.routeCategories.set(api, categoryCounts());
+      addCategories(target.routeCategories.get(api), group);
+    }
+    for (const key of ['exclusions', 'skippedBoundaries', 'observed']) add(target[key], local[key]);
+    target.observedCompactions += local.observedCompactions;
+    for (const b of local.boundaries) target.boundaries.push(b);
+    for (const key of ['seenResults', 'seenJournals']) for (const value of local[key]) target[key].add(value);
+    for (const key of ['policies', 'seenBoundaries']) for (const [id, value] of local[key]) target[key].set(id, value);
   };
   const track = path => {
     path = resolve(path);
@@ -94,7 +113,7 @@ export function analyze(options, hooks = {}) {
     const retained = new Map(rows.map(r => [r.record_id, r]));
     for (const file of files) {
       // Journal-local working state: publish only after the entire replay succeeds.
-      const committed = state; state = structuredClone(committed); let accepted = false;
+      committed = state; state = freshState(); let accepted = false;
       try {
         const [header, ...records] = readFileSync(file, 'utf8').trimEnd().split('\n').map(line => JSON.parse(line));
         if (header?.format !== 'mono-harness' || header.version !== 2) { skipJournal('LEGACY_JOURNAL'); continue; }
@@ -102,7 +121,7 @@ export function analyze(options, hooks = {}) {
         if (records.some(r => r.payload?.projectionBinding)) { skipJournal('INHERITED_PROJECTION'); continue; }
         if (records.some(r => r.kind === 'interruption')) { skipJournal('INTERRUPTION'); continue; }
         validateJournalHeader(header);
-        if (state.seenJournals.has(header.journalId)) { skipJournal('DUPLICATE_JOURNAL'); continue; }
+        if (hasSeen('seenJournals', header.journalId)) { skipJournal('DUPLICATE_JOURNAL'); continue; }
         state.seenJournals.add(header.journalId);
         const validator = new JournalValidator();
         for (const record of records) {
@@ -113,21 +132,22 @@ export function analyze(options, hooks = {}) {
           }
         }
         if (validator.openTurns.size || validator.openOperations.size) { skipJournal('OPEN_TURN'); continue; }
-        const duplicateBoundaries = new Set(), promptTurns = new Set(), allEntries = new Map(), contexts = new Map([[null, []]]), calls = new Map(), turns = new Map();
+        const attemptedTurns = new Set(), duplicateBoundaries = new Set(), promptTurns = new Set(), allEntries = new Map(), contexts = new Map([[null, []]]), calls = new Map(), turns = new Map();
         let context = [], completed = [], uses = [], pending = null, owner = header.hostAuthority;
         let lastDispatch = null, lastEstimate = null, compacted = false, observedDrain = 0, growthBeforeCompaction = 0, currentBoundary;
         const boundary = () => {
           if (!pending) return;
           const { record: start, api } = pending;
           pending = null; currentBoundary = null;
-          const route = routes.find(r => r.api === api);
-          if (!APIS.includes(api)) { skipBoundary('UNSUPPORTED_API'); currentBoundary = null; return; }
-          if (!route) { skipBoundary('ROUTE_MISSING'); currentBoundary = null; return; }
           const physical = owner?.historyBucket, logical = owner?.ownerKey;
-          if (!physical || !logical) { skipBoundary('OWNER_MISSING'); return; }
           const boundaryKey = JSON.stringify([physical, start.turnId]);
-          if (state.seenBoundaries.has(boundaryKey)) { skipBoundary('DUPLICATE_BOUNDARY'); return; }
+          attemptedTurns.add(start.turnId);
+          if (firstBoundary(boundaryKey)) { skipBoundary('DUPLICATE_BOUNDARY'); return; }
           state.seenBoundaries.set(boundaryKey, file);
+          const route = routes.find(r => r.api === api);
+          if (!APIS.includes(api)) { skipBoundary('UNSUPPORTED_API'); return; }
+          if (!route) { skipBoundary('ROUTE_MISSING'); return; }
+          if (!physical || !logical) { skipBoundary('OWNER_MISSING'); return; }
           const measured = estimate(context.map(x => x.message));
           const gap = lastDispatch === null ? null : start.timestamp - lastDispatch;
           if (gap !== null && gap < 0) { skipBoundary('TIME_ORDER'); currentBoundary = null; return; }
@@ -161,7 +181,7 @@ export function analyze(options, hooks = {}) {
             const key = `${physical}\0${entry.turnId}\0${m.toolCallId}`;
             if (!state.routeCategories.has(api)) state.routeCategories.set(api, categoryCounts());
             for (const [scope, group] of [['all', state.categories], [api, state.routeCategories.get(api)]]) {
-              if (state.seenResults.has(`${scope}\0${key}`)) continue;
+              if (hasSeen('seenResults', `${scope}\0${key}`)) continue;
               state.seenResults.add(`${scope}\0${key}`);
               const c = group[category]; c.results++;
               const text = m.content?.[0]?.type === 'text' ? m.content[0].text : '';
@@ -212,12 +232,12 @@ export function analyze(options, hooks = {}) {
             if (p.type === 'compaction') boundary();
             if (p.type === 'prompt') promptTurns.add(r.turnId);
             if (p.type === 'prompt') {
-              const key = JSON.stringify([owner?.historyBucket, r.turnId]), firstFile = state.seenBoundaries.get(key);
+              const key = JSON.stringify([owner?.historyBucket, r.turnId]), firstFile = firstBoundary(key);
               if (firstFile && firstFile !== file) {
                 if (!duplicateBoundaries.has(key)) { skipBoundary('DUPLICATE_BOUNDARY'); duplicateBoundaries.add(key); }
                 currentBoundary = null;
               }
-              else if (!firstFile) pending = { record: r, api: p.config.model?.api };
+              else if (!firstFile && !attemptedTurns.has(r.turnId)) pending = { record: r, api: p.config.model?.api };
             }
           }
           if (r.kind === 'message') {
@@ -275,7 +295,10 @@ export function analyze(options, hooks = {}) {
         }
         accepted = true;
       } catch { skipJournal('JOURNAL_INVALID'); }
-      finally { if (!accepted) state = committed; }
+      finally {
+        if (accepted) merge(committed, state);
+        state = committed; committed = null;
+      }
     }
     // Only safe aggregates leave this function, never internal boundary identities.
     const report = finish(routes, qualification, retrievalRate);
