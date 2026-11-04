@@ -1,3 +1,4 @@
+import { lookupAuthorizationArtifact } from "./fixtures/lookup-authorization-artifact.mjs";
 import { afterAll, afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import * as fs from "node:fs/promises";
 import fsPromises from "node:fs/promises";
@@ -8,7 +9,7 @@ import { DatabaseSync } from "node:sqlite";
 import { fork, execFileSync } from "node:child_process";
 import { userInfo, tmpdir } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { syntheticContext, fixtureLookupPolicy, fixtureCommit } from "./fixtures/holdout-synthetic.mjs";
+import { syntheticContext, fixtureLookupPolicy, fixtureCommit, fixtureGit } from "./fixtures/holdout-synthetic.mjs";
 import { dependencySnapshot } from "./fixtures/lookup-dependency-witness.mjs";
 import { ROOT as worktree } from "../lib/continuity-lookup-roles.mjs";
 import { join } from "node:path";
@@ -138,12 +139,8 @@ async function fixture() {
   const pilot = structuredClone(shared.pilot), { descriptor } = pilot, { codes, common } = pilot.registration, { catalog } = common;
   const registrationPath = join(dir, "registration.json"); await save(registrationPath, pilot);
   const registrationRawSha256 = sha(await fs.readFile(registrationPath));
-  const salt = "c".repeat(64), account = "fictional-account";
-  const artifact = { schema: auth.LOOKUP_AUTHORIZATION_SCHEMA, authorizationId: "fictional-authorization", salt,
-    accountCommitment: sha(`mono-agent/lookup-pilot/account-v1\0${salt}\0${account}`), timestamp: "2030-01-01T00:00:00Z",
-    approver: "Fictional Approver", numericApprovalReference: "fictional-cap-approval-4USD",
-    bindings: { registrationRawSha256, registrationSha256: digest(pilot), controllerCheckout: codes.R0, codes, protocol: common.protocol,
-      catalog, policy: common.policy, source: common.lookupSource, selection: common.lookupSelection, reader: common.reader, descriptor, outputRoot, credentialPath } };
+  const account = "fictional-account";
+  const artifact = lookupAuthorizationArtifact(pilot, { registrationRawSha256, outputRoot, credentialPath, account });
   const authorizationPath = join(dir, "authorization.json"); await save(authorizationPath, artifact);
   await save(credentialPath, credential(account));
   const args = { authorizationPath, registrationPath, registrationSha256: registrationRawSha256, outputRoot, credentialPath, controllerRoot: shared.repo };
@@ -510,4 +507,14 @@ it("keeps invalid acquisition roots behind the fixed lease refusal code", async 
   for (const root of [undefined, null, {}, "fictional-relative-root"]) {
     await expect(acquireLookupPilotLease(root)).rejects.toThrow("lookup_authorization_lease_invalid");
   }
+});
+
+it("isolates synthetic Git from inherited repository selection, hooks and automatic maintenance", async () => {
+  const repo = join(dir, "isolated-git"); await fs.mkdir(repo, { mode: 0o700 });
+  vi.stubEnv("GIT_DIR", "/fictional/never-a-repository");
+  fixtureGit(repo, ["init", "-q"]);
+  fixtureGit(repo, ["config", "gc.auto", "1"]); fixtureGit(repo, ["config", "maintenance.auto", "true"]);
+  expect(fixtureGit(repo, ["config", "--get", "gc.auto"]).trim()).toBe("0");
+  expect(fixtureGit(repo, ["config", "--get", "maintenance.auto"]).trim()).toBe("false");
+  expect(fixtureGit(repo, ["config", "--get", "core.hooksPath"]).trim()).toBe("/dev/null");
 });

@@ -1,0 +1,319 @@
+// Faux-only controller. Real authorizations never reach a lease, worker or permit.
+import { fork } from "node:child_process";
+import { constants } from "node:fs";
+import { mkdir, lstat, readdir, open } from "node:fs/promises";
+import { randomUUID, createHash } from "node:crypto";
+import { dirname, join } from "node:path";
+import { userInfo } from "node:os";
+
+import { digest } from "./continuity-dataset.mjs";
+import { durable } from "./continuity-holdout-workflow.mjs";
+import { externalDirectory } from "./continuity-holdout-files.mjs";
+import { setTimeout as delay } from "node:timers/promises";
+import { groupAlive } from "./continuity-holdout-controller.mjs";
+import { acquireLookupPilotLease, assertLookupPilotLease } from "./continuity-lookup-lease.mjs";
+import { lookupProcessStartIdentity } from "./continuity-process-identity.mjs";
+import { LOOKUP_FAUX_AUTHORIZATION_DOMAIN, validateLookupPilotRegistration } from "./continuity-lookup-pilot.mjs";
+import { ROOT, verifyRegisteredCheckouts, roleBinding, rolePlan } from "./continuity-lookup-roles.mjs";
+import { aggregateLookupPilot, lookupPilotReceipt } from "./continuity-lookup-pilot-report.mjs";
+import { accountLookupPilot, lookupMoney, lookupPilotStopReason, settleLookupHold, priceLookupUsage, pilotNeed, fixedPilotCode, LOOKUP_SLOT_TERMINALS, LOOKUP_PILOT_STOPS, LOOKUP_GUARD_STOPS, LOOKUP_INTEGRITY_STOPS } from "./continuity-lookup-pilot-accounting.mjs";
+import { LOOKUP_FAUX_CONTROLLER, LOOKUP_PILOT_IPC, requireFauxPilot, readPilotPrivate, pilotStatePath, samePilot, pilotHash, pilotId, lookupPilotSchedule } from "./continuity-lookup-pilot-state.mjs";
+
+export { lookupPilotSchedule } from "./continuity-lookup-pilot-state.mjs";
+async function syncDirectory(path) {
+  const file = await open(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  try { await file.sync(); } finally { await file.close(); }
+}
+async function fauxConsume(authorization, pilot, root, identity, lease) {
+  await assertLookupPilotLease(lease, root, identity.controller);
+  pilotNeed(Object.keys(authorization).sort().join() === "authorizationId,outputRoot,pilotSha256,scenarios,schema,timeoutMs"
+    && Array.isArray(authorization.scenarios) && authorization.scenarios.every(s => ["settled", "two_rounds", "wrong", "empty", "empty_two_rounds", "lost", "own_abort_after_send", "integrity_stop", "auth", "quota"].includes(s))
+    && pilotId(authorization.authorizationId) && authorization.outputRoot === root && authorization.pilotSha256 === digest(pilot)
+    && Number.isSafeInteger(authorization.timeoutMs) && authorization.timeoutMs > 0 && authorization.timeoutMs <= pilot.descriptor.deadlines.childWatchdogMs,
+  "lookup_pilot_faux_required");
+  pilotNeed((await readdir(root)).every(n => n === "controller-lock.sqlite"), "lookup_pilot_resume_forbidden");
+  const parent = join(dirname(root), ".lookup-faux-consumed-v1");
+  await mkdir(parent, { mode: 0o700, recursive: true });
+  const info = await lstat(parent);
+  pilotNeed(info.isDirectory() && info.uid === userInfo().uid && (info.mode & 0o077) === 0, "lookup_receipt_invalid");
+  await syncDirectory(dirname(parent));
+  const entry = join(parent, createHash("sha256").update(LOOKUP_FAUX_AUTHORIZATION_DOMAIN + authorization.authorizationId).digest("hex"));
+  try { await mkdir(entry, { mode: 0o700 }); } catch { pilotNeed(false, "lookup_authorization_already_consumed"); }
+  await syncDirectory(parent);
+  const claim = { schema: "lookup-faux-consumption-v1", authorizationId: authorization.authorizationId, ...identity, outputRoot: root, binding: digest(pilot) };
+  await durable(join(root, "authorization-consumed.json"), claim, true);
+  await durable(join(entry, "claim.json"), claim, true);
+}
+function slotTerminal(slot, claimed = "lost") {
+  if (!slot.holds.length) return "unadmitted";
+  let terminal = slot.terminal ?? (slot.admissionRefusal ? "refused_pre_send" : claimed);
+  if (terminal === "own_abort_after_send" && !slot.holds.at(-1).consumed) terminal = "lost";
+  return slot.holds.some(h => !h.settlement) && !["own_abort_after_send", "integrity_stop"].includes(terminal) ? "lost" : terminal;
+}
+/** Serialized durable journal, independently testable without dispatch or an injectable send. */
+async function initializeLookupPilot(options = {}) {
+  const { pilot, authorization, outputRoot } = options;
+  requireFauxPilot(authorization);
+  pilotNeed(Object.keys(options).sort().join() === "authorization,outputRoot,pilot", "lookup_pilot_faux_required");
+  await validateLookupPilotRegistration(pilot);
+  pilotNeed(pilot.registration.codes.R0.path === ROOT, "lookup_controller_checkout_mismatch");
+  await verifyRegisteredCheckouts(pilot.registration);
+  pilotNeed(await externalDirectory(outputRoot, false, Object.values(pilot.registration.codes).map(c => c.path)) === outputRoot, "lookup_receipt_invalid");
+  const controller = { pid: process.pid, startIdentity: lookupProcessStartIdentity(process.pid) };
+  pilotNeed(typeof controller.startIdentity === "string" && controller.startIdentity.length > 0, "lookup_ipc_invalid");
+  const lease = await acquireLookupPilotLease(outputRoot), identity = { runId: randomUUID(), controllerEpoch: randomUUID(), controller };
+  let state, failed = false, tail = Promise.resolve();
+  const path = pilotStatePath(outputRoot), cap = lookupMoney(pilot.descriptor.capUSD), reserve = lookupMoney(pilot.descriptor.rmaxUSD);
+  const serial = fn => { const result = tail.then(fn); tail = result.catch(() => {}); return result; };
+  const save = async () => {
+    pilotNeed(!failed, "lookup_persist_failed");
+    state.revision++;
+    try {
+      await durable(path, state); pilotNeed(samePilot(await readPilotPrivate(path), state), "lookup_persist_failed");
+      for (const i of new Set([state.cursor, state.cursor - 1])) if (state.slots[i] && (state.slots[i].worker || state.slots[i].terminal)) {
+        const receipt = lookupPilotReceipt(state, i), receiptPath = join(outputRoot, "slots", `${receipt.slotId}.json`);
+        await durable(receiptPath, receipt); pilotNeed(samePilot(await readPilotPrivate(receiptPath), receipt), "lookup_persist_failed");
+      }
+    }
+    catch { failed = true; pilotNeed(false, "lookup_persist_failed"); }
+  };
+  const check = async () => {
+    pilotNeed(!failed, "lookup_persist_failed");
+    try {
+      await assertLookupPilotLease(lease, outputRoot, state.controller);
+      pilotNeed(samePilot(await readPilotPrivate(path), state), "lookup_persist_failed");
+    } catch { failed = true; pilotNeed(false, "lookup_persist_failed"); }
+  };
+  const stop = code => {
+    // Unreconciled containment is an absorbing safety escalation, never a reopening.
+    if (code === "lookup_unreconciled_processes") { state.stop = code; if (state.slots[state.cursor]) state.slots[state.cursor].unreconciled = true; }
+    else state.stop ??= fixedPilotCode(code);
+    for (const slot of state.slots) for (const hold of slot.holds) if (!hold.consumed && !hold.settlement) hold.revoked = true;
+  };
+  try {
+    await fauxConsume(authorization, pilot, outputRoot, identity, lease);
+    const schedule = lookupPilotSchedule(pilot);
+    state = { schema: LOOKUP_FAUX_CONTROLLER, binding: digest(pilot), runId: identity.runId, epoch: identity.controllerEpoch,
+      controller: identity.controller, capUSD: pilot.descriptor.capUSD, rmaxUSD: pilot.descriptor.rmaxUSD, revision: 0, deadlineAt: Date.now() + pilot.descriptor.deadlines.runDeadlineMs,
+      schedule, scheduleSha256: digest(schedule), cursor: 0, stop: null,
+      roleCount: pilot.registration.roles.length, publicSources: Object.fromEntries(pilot.registration.common.corpora.map(c => [c.suite, c.sha256])),
+      publicBindings: Object.fromEntries(Object.entries(pilot.registration.codes).map(([id, c]) => [id, {
+        revision: c.revision, buildSha256: c.build.outputSha256,
+        protocolSha256: pilot.registration.common.protocol.pilotSha256 }])),
+      slots: schedule.map(slot => ({ slotId: slot.slotId, holds: [], terminal: null, worker: null, cacheKey: null, startedAt: null, nextMessage: 0, lastAck: null, score: null })) };
+    await mkdir(join(outputRoot, "slots"), { mode: 0o700 });
+    await save();
+  } catch (error) { lease.release(); throw error; }
+  const api = {
+    snapshot: () => structuredClone(state),
+    release: () => lease.release(),
+    async assign(index, worker) { return serial(async () => {
+      await check(); pilotNeed(!state.stop && state.cursor === index && !state.slots[index].worker, "lookup_ipc_invalid");
+      pilotNeed(worker.pid > 1 && worker.pid !== process.pid && typeof worker.startIdentity === "string" && worker.startIdentity.length > 0 && worker.startIdentity === lookupProcessStartIdentity(worker.pid), "lookup_ipc_invalid");
+      state.slots[index].worker = { pid: worker.pid, startIdentity: worker.startIdentity }; state.slots[index].startedAt = Date.now(); await save();
+    }); },
+    async message(index, worker, message) { return serial(async () => {
+      await check();
+      const slot = state.slots[index];
+      try {
+        pilotNeed(index === state.cursor && slot.worker?.pid === worker.pid && lookupProcessStartIdentity(worker.pid) === slot.worker.startIdentity
+          && message?.version === LOOKUP_PILOT_IPC && message.epoch === state.epoch && message.slotId === slot.slotId
+          && message.seq === slot.nextMessage && ["admit", "consume", "settle", "stop"].includes(message.op), "lookup_ipc_invalid");
+        const p = message.payload; let result = {};
+        if (message.op === "admit") {
+          pilotNeed(p && Object.keys(p).sort().join() === "payloadDigest,requestId,rmax,round,slotId" && p.slotId === slot.slotId
+            && typeof p.requestId === "string" && p.requestId === `${state.runId}:${p.round}` && pilotHash(p.payloadDigest)
+            && p.round === slot.holds.length + 1 && p.round <= 10 && p.rmax === pilot.descriptor.rmaxUSD
+            && !slot.terminal && slot.holds.every(h => h.settlement), "lookup_permit_invalid");
+          if (Date.now() >= state.deadlineAt) stop("lookup_run_deadline");
+          else if (Date.now() >= slot.startedAt + pilot.descriptor.deadlines.deadlineMs) stop("lookup_worker_timeout");
+          const reason = lookupPilotStopReason(accountLookupPilot(state.slots), cap, reserve);
+          if (reason) stop(reason);
+          if (state.stop) { slot.admissionRefusal = state.stop; result = { refused: true, code: state.stop === "budget_admission" ? "not_admitted_cap" : "lookup_stopped" }; }
+          else {
+            const permitId = randomUUID();
+            slot.holds.push({ permitId, requestId: p.requestId, payloadDigest: p.payloadDigest, round: p.round,
+              reservedUnits: reserve.toString(), consumed: false, revoked: false, settlement: null });
+            result = { epoch: state.epoch, permitId };
+          }
+        } else if (message.op === "stop") {
+          pilotNeed(p && Object.keys(p).join() === "code" && LOOKUP_GUARD_STOPS.includes(p.code), "lookup_ipc_invalid");
+          if (LOOKUP_INTEGRITY_STOPS.includes(p.code) && slot.holds.length) slot.terminal = "integrity_stop"; stop(p.code);
+        }
+        else {
+          const hold = slot.holds.find(h => h.permitId === p?.permit?.permitId);
+          pilotNeed(hold && p.permit.epoch === state.epoch && !hold.settlement, "lookup_permit_invalid");
+          if (message.op === "consume") {
+            pilotNeed(!state.stop && !hold.revoked && !hold.consumed && p.bodyDigest === hold.payloadDigest && Date.now() < Math.min(state.deadlineAt, slot.startedAt + pilot.descriptor.deadlines.deadlineMs), "lookup_permit_invalid");
+            hold.consumed = true;
+          } else {
+            try { Object.assign(hold, settleLookupHold(hold, p.outcome, p.rawUsage, p.tier)); }
+            catch (error) {
+              // A bad claim must not discard independently computable partial spend.
+              if (p.rawUsage !== null) try {
+                const priced = priceLookupUsage(p.rawUsage, p.tier);
+                hold.settlement = { kind: "integrity_stop", code: fixedPilotCode(error.code), rawUsage: priced.rawUsage, tier: priced.tier, knownUnits: priced.units };
+              } catch {}
+              slot.terminal = "integrity_stop"; throw error;
+            }
+            if (p.outcome.kind === "integrity_stop") { slot.terminal = "integrity_stop"; stop(p.outcome.code); }
+            else if (["lost", "own_abort_after_send"].includes(p.outcome.kind)) slot.terminal = p.outcome.kind;
+            const breach = p.rawUsage?.input_tokens > pilot.descriptor.assumptions.inputMax ? "lookup_input_envelope_violated"
+              : p.rawUsage?.output_tokens > pilot.descriptor.assumptions.outputMax ? "lookup_output_envelope_violated"
+              : BigInt(hold.settlement.knownUnits) > reserve ? "lookup_hold_exceeded" : null;
+            if (breach) { slot.terminal = "integrity_stop"; hold.settlement.kind = "integrity_stop"; hold.settlement.code ??= breach; stop(breach); }
+            if (["auth_failure", "lookup_auth_failure", "lookup_account_mismatch", "lookup_quota_exhausted"].includes(p.outcome.code)) stop(p.outcome.code);
+          }
+        }
+        slot.nextMessage++;
+        const ack = { type: "ack", version: LOOKUP_PILOT_IPC, epoch: state.epoch, slotId: slot.slotId, seq: message.seq,
+          revision: state.revision + 1, ok: true, result };
+        slot.lastAck = ack; await save(); return structuredClone(ack);
+      } catch (error) {
+        if (slot.holds.length) slot.terminal = "integrity_stop";
+        stop(error.code); await save(); throw Object.assign(new Error(fixedPilotCode(error.code)), { code: fixedPilotCode(error.code) });
+      }
+    }); },
+    async finish(index, terminal, score = null) { return serial(async () => {
+      await check(); const slot = state.slots[index];
+      if (!slot || state.cursor !== index || !LOOKUP_SLOT_TERMINALS.includes(terminal) || terminal === "unadmitted"
+        || terminal === "refused_pre_send" && !slot?.admissionRefusal || ![null, 0, 1].includes(score)) {
+        if (slot?.holds.length) slot.terminal = "integrity_stop";
+        stop("lookup_ipc_invalid"); await save(); pilotNeed(false, "lookup_ipc_invalid");
+      }
+      slot.terminal = slotTerminal(slot, terminal);
+      slot.score = ["completed", "wrong"].includes(slot.terminal) ? score : null;
+      state.cursor++; const reason = lookupPilotStopReason(accountLookupPilot(state.slots), cap);
+      if (reason) stop(reason);
+      await save();
+    }); },
+    async stop(code) { return serial(async () => { await check(); stop(code); await save(); }); },
+    async skip(index) { return serial(async () => {
+      await check(); pilotNeed(state.cursor === index && !state.schedule[index].eligible, "lookup_receipt_invalid");
+      state.slots[index].terminal = "skipped"; state.cursor++; await save();
+    }); },
+  };
+  return Object.freeze(api);
+}
+function publicFailure(error) {
+  const allowed = [...LOOKUP_PILOT_STOPS, "lookup_pilot_real_route_unavailable", "lookup_pilot_faux_required", "lookup_debug_forbidden", "lookup_controller_checkout_mismatch",
+    "lookup_authorization_already_consumed", "lookup_authorization_lease_invalid", "lookup_pilot_resume_forbidden", "lookup_pilot_not_ready"];
+  pilotNeed(false, allowed.includes(error?.code) ? error.code : "lookup_pilot_not_ready");
+}
+export async function createLookupPilotController(options) {
+  try { return await initializeLookupPilot(options); } catch (error) { publicFailure(error); }
+}
+/** Reconciliation never acquires a new writer lease, dispatches or signals an old group. */
+async function reconcileFauxPilot(outputRoot) {
+  const state = await readPilotPrivate(pilotStatePath(outputRoot));
+  pilotNeed(state.schema === LOOKUP_FAUX_CONTROLLER && state.scheduleSha256 === digest(state.schedule), "lookup_receipt_invalid");
+  let live = 0;
+  for (const slot of state.slots) if (slot.worker) {
+    const alive = groupAlive(slot.worker.pid); if (alive) live++;
+    if (!slot.terminal && (!alive || slot.admissionRefusal)) slot.terminal = slotTerminal(slot);
+  }
+  state.stop ??= live ? "lookup_unreconciled_processes" : "lookup_recovery_only";
+  // Observation only: a live controller may still be writing this root.
+  return { ...aggregateLookupPilot(state, state.slots.flatMap((s, i) => s.worker || s.terminal ? [lookupPilotReceipt(state, i)] : [])), reconciliation: true, unreconciledGroups: live };
+}
+export async function reconcileLookupPilot(outputRoot) {
+  try { return await reconcileFauxPilot(outputRoot); } catch (error) { publicFailure(error); }
+}
+async function runSlot(journal, pilot, authorization, root, index) {
+  const state = journal.snapshot(), slot = state.schedule[index], code = pilot.registration.codes[slot.code];
+  const role = pilot.registration.roles.find(r => r.id === slot.roleId), corpus = pilot.registration.common.corpora.find(c => c.suite === slot.suite);
+  const binding = roleBinding(pilot.registration, role, corpus), plan = await rolePlan(pilot.registration.common, binding);
+  const child = fork(join(code.path, "scripts/lib/continuity-lookup-pilot-child.mjs"), [], {
+    cwd: code.path, detached: true, stdio: ["ignore", "ignore", "pipe", "ipc"], execArgv: [], env: { ...process.env },
+  });
+  const owned = { pid: child.pid, startIdentity: lookupProcessStartIdentity(child.pid) };
+  child.stderr.resume();
+  let closed = false, reconciled = false, done = null, busy = false, failure = null, stage = "loaded", chain = Promise.resolve(), settleTimer, termination, containmentFailed = false, rejectContainment;
+  const containmentFailure = new Promise((_, reject) => { rejectContainment = reject; }); void containmentFailure.catch(() => {});
+  const terminateOwned = () => reconciled ? Promise.resolve() : termination ??= (async function containOwned() {
+    try {
+      for (const signal of ["SIGTERM", "SIGKILL"]) {
+        if (!groupAlive(owned.pid)) return;
+        if (child.exitCode !== null || child.signalCode !== null || !owned.startIdentity || lookupProcessStartIdentity(owned.pid) !== owned.startIdentity) {
+          // The leader may have exited after the group snapshot. Absence needs no signal.
+          pilotNeed(!groupAlive(owned.pid), "lookup_unreconciled_processes"); return;
+        }
+        try { process.kill(-owned.pid, signal); } catch (error) { if (!groupAlive(owned.pid)) return; throw error; }
+        for (let i = 0; i < 20 && groupAlive(owned.pid); i++) await delay(10);
+      }
+      pilotNeed(!groupAlive(owned.pid), "lookup_unreconciled_processes");
+    }
+    catch {
+      containmentFailed = true; await journal.stop("lookup_unreconciled_processes");
+      const error = Object.assign(new Error("lookup_unreconciled_processes"), { code: "lookup_unreconciled_processes" });
+      rejectContainment(error); throw error;
+    }
+  })();
+  const exited = new Promise(resolve => child.once("close", () => { closed = true; resolve(); }));
+  const timeoutMs = Math.min(authorization.timeoutMs, pilot.descriptor.deadlines.deadlineMs, Math.max(1, state.deadlineAt - Date.now()));
+  const timer = setTimeout(() => { failure ??= "lookup_worker_timeout"; void journal.stop(failure).catch(() => {}).then(terminateOwned).catch(() => {}); }, timeoutMs);
+  child.on("error", () => { failure ??= "lookup_worker_lost"; });
+  child.on("disconnect", () => { if (!done) { failure ??= "lookup_ipc_disconnected"; void journal.stop(failure).catch(() => {}).then(terminateOwned).catch(() => {}); } });
+  child.on("message", message => {
+    if (busy) { failure = "lookup_ipc_invalid"; void journal.stop(failure).catch(() => {}).then(terminateOwned).catch(() => {}); return; }
+    busy = true;
+    chain = chain.then(async () => {
+      if (stage === "loaded") {
+        pilotNeed(message?.type === "loaded", "lookup_ipc_invalid");
+        await journal.assign(index, owned);
+        stage = "ready";
+        child.send({ pilot, runId: state.runId, outputRoot: root, epoch: state.epoch, slotId: slot.slotId, slot, index, timeoutMs,
+          cacheKey: journal.snapshot().slots[index].cacheKey, roleRequest: { schema: "lookup-role-request-v1", binding, common: pilot.registration.common, build: code.build },
+          plan, scenario: authorization.scenarios?.[index] ?? "settled" });
+      } else if (stage === "ready") {
+        pilotNeed(message?.type === "ready" && message.epoch === state.epoch && message.slotId === slot.slotId, "lookup_ipc_invalid");
+        stage = "running"; child.send({ type: "go", epoch: state.epoch, slotId: slot.slotId });
+      } else if (message?.type === "done") {
+        pilotNeed(stage === "running" && message.epoch === state.epoch && message.slotId === slot.slotId && LOOKUP_SLOT_TERMINALS.includes(message.terminal), "lookup_receipt_invalid");
+        done = { terminal: message.terminal, score: message.score }; stage = "done";
+      } else {
+        pilotNeed(stage === "running", "lookup_ipc_invalid");
+        const ack = await journal.message(index, child, message); if (child.connected) child.send(ack);
+        // Settle-then-contain: permit known usage to arrive, but never leave a stopped group alive until the watchdog.
+        if (message.op === "stop" && !settleTimer) settleTimer = setTimeout(() => { void chain.then(() => terminateOwned()).catch(() => {}); }, 250);
+      }
+    }).catch(async error => {
+      failure ??= fixedPilotCode(error.code); await journal.stop(failure).catch(() => {});
+      await terminateOwned().catch(() => {});
+    }).finally(() => { busy = false; });
+  });
+  try {
+    await Promise.race([exited, containmentFailure]); clearTimeout(timer); clearTimeout(settleTimer); await chain; if (termination) await termination;
+    if (groupAlive(child.pid)) { failure = "lookup_unreconciled_processes"; await journal.stop(failure); await terminateOwned(); }
+    if (groupAlive(child.pid)) { await journal.stop("lookup_unreconciled_processes"); pilotNeed(false, "lookup_unreconciled_processes"); } reconciled = true;
+    if (failure) await journal.stop(failure);
+    const consumed = journal.snapshot().slots[index].holds.at(-1)?.consumed;
+    await journal.finish(index, done?.terminal ?? (failure === "lookup_worker_timeout" && consumed ? "own_abort_after_send" : "lost"), done?.score ?? null);
+  } finally {
+    clearTimeout(timer); clearTimeout(settleTimer);
+    try { if (!reconciled && (!closed || groupAlive(child.pid))) await terminateOwned(); }
+    finally { if (child.connected) child.disconnect(); if (containmentFailed) { child.stderr.destroy(); child.unref(); } else await exited; }
+  }
+}
+async function runFauxPilot(options) {
+  const journal = await createLookupPilotController(options);
+  try {
+    const { pilot, authorization, outputRoot } = options;
+    for (let i = 0; i < journal.snapshot().schedule.length; i++) {
+      const state = journal.snapshot(); if (state.stop) break;
+      if (Date.now() >= state.deadlineAt) { await journal.stop("lookup_run_deadline"); break; }
+      if (!state.schedule[i].eligible) { await journal.skip(i); continue; }
+      await runSlot(journal, pilot, authorization, outputRoot, i);
+    }
+    if (!journal.snapshot().stop) await journal.stop("completed");
+    const state = journal.snapshot(), receipts = [];
+    for (const name of (await readdir(join(outputRoot, "slots"))).sort()) {
+      pilotNeed(/^[a-f0-9]{64}\.json$/u.test(name), "lookup_receipt_invalid"); receipts.push(await readPilotPrivate(join(outputRoot, "slots", name)));
+    }
+    const report = aggregateLookupPilot(state, receipts); await durable(join(outputRoot, "report.json"), report); return report;
+  } finally { journal.release(); }
+}
+
+export async function runLookupPilot(options) {
+  try { return await runFauxPilot(options); } catch (error) { publicFailure(error); }
+}

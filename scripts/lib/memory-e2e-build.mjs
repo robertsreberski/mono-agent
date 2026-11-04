@@ -8,7 +8,11 @@ const FILTER = "@mono-agent/app...";
 const BUILD_ARGS = ["--filter", FILTER, "run", "build"];
 
 export function sourceState(root, exec = execFileSync) {
-  const git = (args) => exec("git", ["-C", root, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+  const git = (args) => exec("git", ["--no-optional-locks", "-C", root, "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null",
+    "-c", "gc.auto=0", "-c", "maintenance.auto=false", ...args], {
+    env: { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_"))), GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" },
+    encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
+  }).trim();
   return { head: git(["rev-parse", "HEAD"]), dirty: git(["status", "--porcelain=v1"]).length > 0 };
 }
 export function assertSource(root, head, exec = execFileSync) {

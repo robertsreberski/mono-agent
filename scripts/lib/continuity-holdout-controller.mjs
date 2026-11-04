@@ -1,3 +1,4 @@
+import { accountLookupPilot, lookupPilotStopReason, lookupMoney } from "./continuity-lookup-pilot-accounting.mjs";
 import { DatabaseSync } from "node:sqlite";
 import { fork, execFileSync } from "node:child_process";
 import { open, readdir, lstat } from "node:fs/promises";
@@ -29,7 +30,8 @@ function addUsage(usage, reserve, totals) {
     if (finite(reserve)) totals.unknownUSD += unknown * reserve; else totals.unpriced++;
   } else totals.knownUSD += usage.estimatedCostUsd;
 }
-export function accountUnits(units, bundle) {
+export function accountUnits(units, bundle, options = undefined) {
+  if (options?.lookupPilot === true) return accountLookupPilot(units);
   const result = { knownUSD: 0, unknownUSD: 0, unknownCalls: 0, unpriced: 0, invalidUnits: 0, authFailure: false, degradedStages: 0 };
   const reader = bundle.prices[bundle.plan.reader.model], upkeep = bundle.prices[bundle.plan.upkeep.model];
   const reserve = reader && bundle.readerLimits ? (bundle.readerLimits.input * reader.reserveInput + bundle.readerLimits.output * reader.reserveOutput) / 1e6 : null;
@@ -45,7 +47,8 @@ export function accountUnits(units, bundle) {
   }
   return result;
 }
-export function spendOf(chunks, unitsPerChunk) {
+export function spendOf(chunks, unitsPerChunk, options = undefined) {
+  if (options?.lookupPilot === true) return accountLookupPilot(chunks);
   const totals = { knownUSD: 0, unknownUSD: 0, lostUSD: 0, activeUSD: 0, unknownCalls: 0, unpriced: 0, invalidUnits: 0, admittedUnits: chunks.length * unitsPerChunk, authFailure: false };
   for (const chunk of chunks) {
     for (const a of [chunk.accounting, chunk.journalAccounting]) {
@@ -61,7 +64,8 @@ export function spendOf(chunks, unitsPerChunk) {
   totals.totalUSD = totals.knownUSD + totals.unknownUSD + totals.lostUSD + totals.activeUSD;
   return totals;
 }
-export function stopReason(spend, ceiling, nextReservation = 0) {
+export function stopReason(spend, ceiling, nextReservation = 0, options) {
+  if (options?.lookupPilot === true) return lookupPilotStopReason(spend, lookupMoney(ceiling), lookupMoney(nextReservation));
   if (spend.authFailure) return "auth_failure";
   if (spend.unpriced) return "unpriced_reservation";
   if (spend.invalidUnits * 10 > spend.admittedUnits) return "invalid_unit_rate";
