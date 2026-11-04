@@ -16,6 +16,7 @@ import { cp, mkdir, readFile, rm, writeFile, realpath, lstat } from "node:fs/pro
 import { dirname, join, isAbsolute, relative, resolve, sep } from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { assertResolvedLookupSafety, controlledLookupRuntime, lookupOfflineBoundary } from "./continuity-lookup-pilot-runtime.mjs";
 import { armById, hasPackEvidence, checkpointKey, mergePatch, pressureMetrics, verifyBoundary, verifyPressure, verifyStore } from "./continuity-arms.mjs";
 import { LOOKUP_MODE, assertLookupServers, witnessedRecovery, installSoul, assertSoul, lookupPrompt, lookupMeter, lookupForwarder, lookupWitness, scriptedLookupReader, referenceReader, historyBody, sourceAnnotation, resolveSource } from "./continuity-lookup.mjs";
 import { traceShape } from "./continuity-generator.mjs";
@@ -107,7 +108,8 @@ export function scriptedModels(pi, refs) {
   };
 }
 
-function controlledRuntime(base, route) {
+export function controlledRuntime(base, route, check) {
+  if (check) return controlledLookupRuntime(base, route, check);
   return new Proxy(base, {
     get(target, key) {
       if (key === "run") return async (prompt, options) => target.run(prompt, { ...options, ...await route(options) });
@@ -132,9 +134,15 @@ export function configJson({ work, authPath, model, effort, tools, configPatch }
   }, configPatch ?? {});
 }
 
-async function openHarness({ modules, work, authPath, model, effort, tools, configPatch, route, clock, onHistoryWarning = () => {}, hostOptions = {} }) {
+export async function openHarness({ modules, work, authPath, model, effort, tools, configPatch, route, clock, onHistoryWarning = () => {}, hostOptions = {}, pilot }) {
+  if (pilot && (pilot.authorization?.schema !== "continuity-lookup-faux-authorization-v1" || Object.hasOwn(process.env, "CONTINUITY_DEBUG"))) throw new ContinuityError("lookup_pilot_faux_required");
   const json = configJson({ work, authPath, model, effort, tools, configPatch });
+  // A pilot never retains a supplied/patch credential path. Only its branded
+  // serializer may dispatch, using fictional in-memory credentials.
+  if (pilot) json.providers.piAuthPath = lookupOfflineBoundary({ ...pilot, work }).authPath;
   const config = modules.config.resolveJsonMonoAgentConfig({ json, cwd: work });
+  const check = pilot ? (options, forwarded = false) => assertResolvedLookupSafety({ ...pilot, config, options, forwarded }) : null;
+  if (check) { check(); if (Object.keys(hostOptions).length) throw new ContinuityError("lookup_auxiliary_callers_forbidden"); }
   // Existing reentrant ownership seam: establish the isolated physical lease
   // before either configured runtime can lazily acquire its own reference.
   const homeDir = join(dirname(work), "lease-home");
@@ -151,7 +159,7 @@ async function openHarness({ modules, work, authPath, model, effort, tools, conf
     }
   })();
   try {
-    runtime = controlledRuntime(modules.app.createConfiguredAgentRuntime({ config, cwd: work, model: config.runtime.model }), route);
+    runtime = controlledRuntime(modules.app.createConfiguredAgentRuntime({ config, cwd: work, model: config.runtime.model }), route, check);
     // Tool-history/continuity outages are fail-open in production (warnings only);
     // the benchmark counts them so a degraded store invalidates the sample.
     harness = await modules.app.createConfiguredConversationHarness({ config, cwd: work, runtime, now: () => clock.value, ...hostOptions,
@@ -454,7 +462,8 @@ export async function runLiveTurn({ modules, work, authPath, plan, mode, configP
  * Replay a trace into a fresh workspace up to its checkpoint. Arms without a
  * live mid-trace turn produce identical scripted state and share one checkpoint.
  */
-export async function buildCheckpoint({ modules, trace, arm, repeat, dir, plan, mode, authPath, captureUpkeepOutput, upkeepPrice, onPhase = () => {} }) {
+export async function buildCheckpoint({ modules, trace, arm, repeat, dir, plan, mode, authPath, captureUpkeepOutput, upkeepPrice, onPhase = () => {}, pilot }) {
+  if (pilot) ({ mode, authPath } = lookupOfflineBoundary({ plan, arm, work: join(dir, "work"), captureUpkeepOutput }));
   const source = sourceOnly(trace);
   const work = join(dir, "work");
   await prepareWorkspace(work, plan);
@@ -709,7 +718,8 @@ export function sumPreparationUsage(steps) {
 }
 
 /** One upkeep, no real answer call, before read-only probe forks. No probe/answer data enter extraction. */
-export async function prepareLedgerCheckpoint({ modules, work, authPath, plan, mode, reader, alternate, scripted, route, clock, conversationId, captureUpkeepOutput, step = plan.upkeep.preparations?.[0], preparation = 1, upkeepPrice }) {
+export async function prepareLedgerCheckpoint({ modules, work, authPath, plan, mode, reader, alternate, scripted, route, clock, conversationId, captureUpkeepOutput, step = plan.upkeep?.preparations?.[0], preparation = 1, upkeepPrice, pilot }) {
+  if (pilot) throw new ContinuityError("lookup_preparation_forbidden");
   // Reject stale single-preparation plans before opening a harness or resolving auth.
   if (plan.upkeep.maxInputTokens !== 128000 || plan.upkeep.incrementalMaxInputTokens !== 64000
     || plan.upkeep.maxOutputTokens !== 4096 || plan.upkeep.callsPerTraceRepeat !== 3
@@ -801,7 +811,8 @@ export async function prepareLedgerCheckpoint({ modules, work, authPath, plan, m
 }
 
 /** `harness.compactConversation()` through a tool-free configured harness on the bound model. */
-async function manualCompaction({ modules, work, authPath, plan, mode, binding, configPatch, clock, conversationId, turnId }) {
+async function manualCompaction({ modules, work, authPath, plan, mode, binding, configPatch, clock, conversationId, turnId, pilot }) {
+  if (pilot) throw new ContinuityError("lookup_preparation_forbidden");
   const route = liveRoute(modules, mode, [binding]);
   const { harness, close } = await openHarness({ modules, work, authPath, model: binding.reference, effort: plan.reader.effort, tools: false, configPatch, route, clock });
   const started = performance.now();
@@ -928,7 +939,8 @@ export async function runProbe({ modules, trace, arm, repeat, probe, checkpointW
 }
 
 /** Optional next-action judge through the production Pi host runtime. */
-export function createJudge({ modules, plan, mode, workspace, authPath }) {
+export function createJudge({ modules, plan, mode, workspace, authPath, pilot }) {
+  if (pilot && plan.judge !== null) throw new ContinuityError("lookup_auxiliary_callers_forbidden");
   if (plan.judge === null) return null;
   const ref = modules.host.parseMonoRuntimeModelReference(plan.judge.model);
   const hostOptions = mode === "offline" || authPath === undefined

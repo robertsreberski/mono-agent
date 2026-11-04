@@ -3,7 +3,7 @@ import { Socket } from "node:net";
 import fs from "node:fs";
 import promises from "node:fs/promises";
 import childProcess from "node:child_process";
-import { syncBuiltinESMExports } from "node:module";
+import { syncBuiltinESMExports, registerHooks } from "node:module";
 import { pathToFileURL } from "node:url";
 import { join, basename } from "node:path";
 const startIdentity = pid => { try { return childProcess.execFileSync("/bin/ps", ["-p", String(pid), "-o", "lstart="], { encoding: "utf8", env: { ...process.env, LC_ALL: "C", TZ: "UTC" }, stdio: ["ignore", "pipe", "ignore"] }).trim(); } catch { return null; } };
@@ -19,6 +19,16 @@ try { new WebSocket("fictional-invalid-url"); } catch {}
 checking = false; record();
 const fault = process.env.LOOKUP_FIXTURE_FAULT ? JSON.parse(fs.readFileSync(process.env.LOOKUP_FIXTURE_FAULT, "utf8")) : null;
 const driver = process.argv[1]?.endsWith("lookup-pilot-driver.mjs"), probe = process.argv[1]?.endsWith("continuity-lookup-pilot-child.mjs");
+// Alter only caller inputs in the real child; the guard itself is loaded unchanged.
+if (probe && ["guard-model-switch", "guard-cache-key", "guard-after-hold"].includes(fault?.action)) registerHooks({ load(url, context, nextLoad) {
+  const loaded = nextLoad(url, context);
+  if (!url.endsWith("/continuity-lookup-pilot-child.mjs")) return loaded;
+  const marker = fault.action === "guard-after-hold" ? "const result = await guarded.streamSimple" : "const guarded = guardedLookupModels";
+  const injection = fault.action === "guard-cache-key" ? "delete contract.promptCacheKey;"
+    : `${fault.action === "guard-after-hold" ? "if (round === 1) " : ""}resolvedSafety.config.runtime.session.modelSwitch = { enabled: true };`;
+  const source = String(loaded.source); if (!source.includes(marker)) throw Error("fixture_guard_injection_missing");
+  evidence.guardFaultInjected = true; record(); return { ...loaded, source: source.replace(marker, `${injection}\n    ${marker}`) };
+} });
 for (const method of ["rename", "link"]) {
   const original = promises[method];
   promises[method] = async (source, destination, ...args) => {
@@ -70,6 +80,7 @@ const emit = process.emit.bind(process);
 process.emit = (event, ...args) => {
   const a = args[0];
   if (driver && event === "message" && a?.options?.authorization?.scenarios) {
+    controllerOutputRoot = a.options.outputRoot;
     faultScenarios = [...a.options.authorization.scenarios];
     a.options.authorization.scenarios = faultScenarios.map(s => testFaultScenarios.includes(s) ? "settled" : s);
   }
@@ -77,6 +88,7 @@ process.emit = (event, ...args) => {
     if (a?.pilot) {
       assignment = a;
       const kind = fault?.action?.startsWith("swap-") ? fault.action.slice(5) : null;
+      if (kind === "cache") a.cacheKey = "foreign-cache-key";
       if (kind === "plan") a.plan.confirmation = "fictional-tamper";
       if (kind === "build" || kind === "role-build") a.roleRequest.build.outputSha256 = "0".repeat(64);
       if (kind === "role") a.roleRequest.binding.arm = "fictional-tamper";
@@ -106,6 +118,19 @@ process.emit = (event, ...args) => {
           record(); process.send({ type: "done", epoch: assignment.epoch, slotId: assignment.slotId, terminal: "lost", score: null }, () => process.disconnect());
         })(); return true;
       }
+      if (fault?.action?.startsWith("descendant-timeout") || fault?.action === "descendant-disconnect") {
+        // Keep the leader until controller SIGTERM, but never send done. The
+        // descendant is ready to ignore TERM before disconnect/timeout can fire.
+        const descendant = childProcess.spawn(process.execPath, ["-e", "process.on('SIGTERM',()=>{});process.send({type:'descendant-ready'});setInterval(()=>{},1000)"], { stdio: ["ignore", "ignore", "ignore", "ipc"], env: process.env });
+        setInterval(() => {}, 1000);
+        descendant.once("message", m => {
+          if (m?.type !== "descendant-ready") throw Error("fixture_descendant_not_ready");
+          evidence.descendants.push({ pid: descendant.pid, startIdentity: startIdentity(descendant.pid) }); evidence.descendantWithoutDone = true; record();
+          descendant.disconnect(); descendant.unref();
+          if (fault.action === "descendant-disconnect") process.disconnect();
+        });
+        return true;
+      }
       if (assignment.scenario === "die") process.kill(process.pid, "SIGKILL");
       if (assignment.scenario === "hang") return true; // Keep the actual IPC child alive, withholding go.
       if (assignment.scenario === "disconnect") { process.disconnect(); return true; }
@@ -118,7 +143,7 @@ process.emit = (event, ...args) => {
   }
   return emit(event, ...args);
 };
-let probePid;
+let probePid, controllerOutputRoot;
 const fork = childProcess.fork;
 childProcess.fork = (...args) => {
   const child = fork(...args);
@@ -151,6 +176,7 @@ childProcess.execFileSync = (command, args, ...rest) => {
   }
   if (driver && fault?.action?.startsWith("identity-before-") && command === "/bin/ps" && args[1] === String(probePid) && new Error().stack.includes("containOwned")
     && (fault.action === "identity-before-term" || evidence.signals?.includes("SIGTERM"))) { evidence.identityRefused = true; record(); return fault.action === "identity-before-gone" ? "" : "fictional-reused-start"; }
+  if (driver && (fault?.action === "descendant-unproven" || fault?.action === "descendant-timeout-unproven" && evidence.signals?.includes("SIGTERM")) && command === "/bin/ps" && args.includes("-axo") && new Error().stack.includes("containOwned")) { evidence.descendantUnproven = true; record(); return ""; }
   if (driver && fault?.action === "null-controller-start" && command === "/bin/ps") return "";
   if (driver && fault?.action === "terminate-fail" && command === "ps" && args.includes("-axo") && probePid) return `${probePid} ${probePid} S\n`;
   return exec(command, args, ...rest);
@@ -165,6 +191,7 @@ if (probe) {
     if (m.type === "done" && assignment?.scenario === "descendant") {
       const descendant = childProcess.spawn(process.execPath, ["-e", "setInterval(()=>{},1000)"], { stdio: "ignore", env: process.env });
       evidence.descendants.push({ pid: descendant.pid, startIdentity: startIdentity(descendant.pid) }); record(); descendant.unref();
+      evidence.descendantNoDelay = true; record();
     }
     if (!changed && fault?.action?.startsWith("wire-") && m.version === "lookup-faux-ipc-v1" && (fault.action !== "wire-digest" || m.op === "consume")) {
       changed = true;
@@ -194,7 +221,12 @@ if (driver) {
   const kill = process.kill.bind(process);
   process.kill = (pid, signal) => {
     if (pid < 0 && signal !== 0) {
-      (evidence.signals ??= []).push(signal); record();
+      (evidence.signals ??= []).push(signal);
+      const state = JSON.parse(fs.readFileSync(join(controllerOutputRoot, "lookup-pilot-controller.json")));
+      (evidence.stopAtSignals ??= []).push(state.stop);
+      (evidence.membersAtSignals ??= []).push(state.slots.find(s => s.worker?.pid === probePid)?.members ?? []);
+      if (signal === "SIGKILL") { try { evidence.leaderExitedBeforeKill = exec("ps", ["-p", String(probePid), "-o", "stat="], { encoding: "utf8" }).trim().startsWith("Z"); } catch { evidence.leaderExitedBeforeKill = true; } }
+      record();
       if (fault?.action === "identity-before-signal-exit") {
         kill(probePid, "SIGKILL");
         for (let i = 0; i < 20; i++) { try { if (exec("ps", ["-p", String(probePid), "-o", "stat="], { encoding: "utf8" }).trim().startsWith("Z")) break; } catch { break; } }

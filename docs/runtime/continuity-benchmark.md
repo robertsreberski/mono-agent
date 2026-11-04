@@ -1089,7 +1089,7 @@ accounting; the guard checks the frozen catalog arithmetic independently.
 
 | Outcome kind | Hold | Stop policy |
 | --- | --- | --- |
-| `refused_pre_send` | None; no permit settlement | Continue; slot outcome |
+| `refused_pre_send` | None for this request; no permit settlement | Capacity/terminal refusal continues; policy violation stops |
 | `own_abort_after_send` | Retained as lost | Continue pilot; slot terminal |
 | `settled` | Replace with actual catalog cost | Continue |
 | `lost` | Retained, including admitted abort before fetch | Continue pilot; slot terminal |
@@ -1329,8 +1329,15 @@ per slot**, rather than relaying through a role parent: this reduces admission
 peers and makes containment and the parent/child disk witness explicit. The
 child independently verifies its registration, role request, reconstructed
 plan, build, assigned PID, live parent start identity and writer lease before
-ready. Its opaque `cacheKey` assignment field is reserved and currently null;
-cache enforcement and configured-harness dispatch remain unavailable.
+ready. The controller persists a unique ASCII transport `cacheKey` for every
+slot (at most 64 characters, never truncated), and records uniqueness. The child
+checks membership and uniqueness before constructing its contract. The guard
+requires that exact key in `prompt_cache_key`, `session-id` and
+`x-client-request-id`; all three must be present. Only the inner serializer
+receives this key as its `sessionId`. Harness/runtime session IDs, native
+authority, provider session IDs and restored messages are not replaced. Native
+and pack slots use the same allocation policy. Configured-harness tests use
+faux sends only; the real route remains unavailable.
 
 One serialized writer holds the lease from faux consumption through reporting.
 The faux burn registry has its own domain under the output's parent, never the
@@ -1348,8 +1355,17 @@ slot can start. Settlement remains legal after a sticky stop, never admission. A
 allows a bounded 250 ms settle grace, drains messages already received, then
 contains the owned process group;
 unreconciled containment is an absorbing safety stop taking precedence over
-other causes. Each signal revalidates the recorded leader start identity. If a
-live group remains without that identity, it is unreconciled and is not signaled.
+other causes. The child waits for a `done-ack` before disconnecting; the controller
+records descendant membership before sending that ACK. Timeout and disconnect
+containment also persist proven membership before the first signal, so a leader
+exiting on SIGTERM does not strand a SIGTERM-resistant descendant. This is production
+synchronization, not a fixture delay. Surviving descendants cause a durable
+`lookup_worker_lost` stop before signalling. Before each signal, the controller re-proves a recorded member
+alive with the same start identity and process group: either the original
+unreaped leader, or a descendant observed while that leader pinned the group.
+Descendant identities are persisted from a content-free process snapshot. A
+live group with no re-proven member remains unreconciled and is not signaled.
+These POSIX observations are not atomic kernel capabilities.
 Recovery is observation/reconciliation only: it never launches, readmits or
 signals a previously recorded process group.
 
@@ -1362,7 +1378,7 @@ its explicit lookup adapter is selected; no ledger unit is fabricated.
 
 Validity counts admitted slots, not requests. Lost and own-aborted slots are
 incomplete, not invalid; wrong answers complete an observation. Admission
-refusals without holds are unadmitted; a refused later round is incomplete,
+capacity refusals without holds are unadmitted; a capacity-refused later round is incomplete,
 never a provider loss. Empty final
 output is invalid, and strictly more than 10% invalid admitted slots stops.
 Two consecutive admitted provider-side losses stop the run. Own latency aborts neither count toward
@@ -1384,4 +1400,81 @@ are strictly projected to opaque identities, content hashes, fixed codes and
 numeric usage/cost/scoring. They exclude paths and path hashes, commitments,
 salts, credentials, requests, answers, stderr and free-form errors. Faux scores
 are mechanics fixtures, not measured quality. Physical power-loss and provider
-billing behavior are not established by these local tests.
+billing behavior are not established by these local tests. Private reads require
+canonical roots and refuse aliases. Their before/after path checks are best-effort
+against a same-user attacker: a precisely timed double swap can still pass;
+this is not an OS isolation boundary.
+
+
+### Configured pilot harness safety
+
+The scripts-only faux pilot option checks resolved settings before constructing
+Models or the configured harness, at runtime dispatch, and at every guarded
+request. The local serializer child separately checks its actual fixed faux
+settings. Pilot IPC and non-test permit sources require an assigned key and
+resolved safety at guard construction; neither can be omitted. Legacy standalone
+test-only callers retain their existing contract. The judge must be null; memory, subagents, ledger upkeep, compaction
+and output schemas are absent/off. Model switching, custom/1M routes,
+fallbacks, extra primary attempts and outage retry budgets/profiles refuse.
+Transport is SSE with zero provider retries. Arms cannot request a mid-checkpoint,
+ledger upkeep or output capture. Ordinary runner defaults are unchanged.
+
+Only a guard-owned, module-privately branded decorator may dispatch in pilot
+mode. It ignores configured Models and uses a guard-wrapped serializer with
+fictional in-memory credentials; the harness strips supplied credential paths
+and uses a verified absent path. An identity decorator or forged brand refuses.
+
+The runtime proxy exposes only `run` for inference, plus explicit local lifecycle
+operations: tool-context configuration, session synchronization, reconciliation,
+recovery, refresh, invalidation, retirement and disposal. Preparation,
+compaction, provider checks and unknown methods refuse rather than forwarding.
+The guarded route can install only its Models decorator and the registered
+ConversationHistory forwarding endpoint; it cannot replace native context. A
+length and content-digest snapshot also detects in-place transcript mutation.
+
+Auxiliary caller inventory (all paths below are scripts-local unless qualified):
+
+- Judge runtime (`lib/continuity-runner.mjs`, `createJudge`): null judge required.
+- Checkpoint replay (`buildCheckpoint`): literal offline mode and a credential path whose parent and file both return ENOENT; only scripted Models, never pilot mode.
+- Mid-checkpoint compaction (`manualCompaction`): forbidden arm and explicit pilot-entry refusal before opening a harness.
+- Preparation and real-credential capture Models (`prepareLedgerCheckpoint`): upkeep/capture forbidden and pilot entry refused before any constructor.
+- Memory LLM and embeddings (`packages/app/src/composition/configured-memory.ts`): no memory configuration.
+- Subagent/delegation runtime (`packages/app/src/composition/configured-subagents.ts`): disabled in resolved configuration.
+- Native prepared dispatch/handoff: model switch disabled and proxy denies preparation methods.
+- Provider-check rebuilt Models: no check method exposed or invoked.
+- Structured repair/finalization: no output schema; existing guarded method/finalization limits remain.
+- Router/provider/outage retry and fallback: empty fallback chain, one primary attempt, SSE, zero retries, no budget/profile; guarded one-send boundary.
+- Model/web/shell tools: no such tools exposed; only registered ConversationHistory forwarding is permitted.
+
+| Fixed refusal code | Meaning |
+| --- | --- |
+| `lookup_cache_assignment_invalid` | Invalid, duplicate or foreign assigned key. |
+| `lookup_prompt_cache_key_forbidden` | Payload or either cache header is missing or differs from the assigned key. |
+| `lookup_auxiliary_callers_forbidden` | Judge, memory, subagents, upkeep, compaction, output schema or host override is unsafe. |
+| `lookup_model_switch_forbidden` | Resolved model switching is enabled. |
+| `lookup_preparation_forbidden` | Arm, preparation, compaction or capture would enter an auxiliary caller. |
+| `lookup_route_mismatch` | Model/custom/1M/fallback/attempt/transport/retry settings differ from the contract. |
+| `lookup_retry_profile_forbidden` | An outage budget/profile or prebuilt Models override is present. |
+| `lookup_tools_forbidden` | Tools, MCP configuration or forwarding differ from the registered history boundary. |
+| `lookup_method_forbidden` | Non-allowlisted runtime/model method. |
+| `lookup_native_identity_forbidden` | Route attempts to overwrite native context or other protected options. |
+| `lookup_unguarded_dispatch` | Route lacks a guard decorator. |
+| `lookup_arrival_persist_failed` / `lookup_arrival_receipt_invalid` | Child arrival-witness failure, distinct from controller persistence/receipt failures. |
+
+A guard pre-send refusal carries a fixed code in the child's terminal message.
+Only `not_admitted_input_envelope`, `lookup_request_limit`, `not_admitted_cap`,
+`lookup_stopped` and `lookup_slot_terminal` may continue. With no holds a capacity
+refusal is unadmitted; after admission it is incomplete, not a provider loss.
+Every guard policy violation is a sticky fixed-code stop; with holds its terminal
+is `integrity_stop`, otherwise unadmitted. A refusal does not invent admission
+or accept a child-claimed unadmitted terminal after admission.
+Controller persistence/receipt stop codes are not child-settable.
+
+The actual configured-harness proof covers native checkpoint restoration and
+cold pack model-change replay, reasoning/tool replay and exact cache headers.
+Its ConversationHistory server is test-owned, bound to an ephemeral loopback
+port with fictional data. Socket destinations are restricted to that endpoint;
+other sockets, provider/global external fetches and WebSockets refuse. Rejected
+fetches are recorded too, so swallowed errors cannot hide auxiliary egress. Cleanup
+has an explicit hook budget. Scripted checkpoint work uses absent credentials;
+no provider call, paid smoke or full pilot execution is established by this proof.

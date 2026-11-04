@@ -3,8 +3,9 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { Socket } from "node:net";
-import { guardedLookupModels, LOOKUP_ASSUMPTIONS as A, LOOKUP_GUARD_CONTRACT as C, lookupInputEnvelope, lookupBodyDigest,
+import { guardedLookupModels, LOOKUP_PRE_SEND_REFUSALS, LOOKUP_ASSUMPTIONS as A, LOOKUP_GUARD_CONTRACT as C, lookupInputEnvelope, lookupBodyDigest,
   createTestOnlyLookupPermitSource, assertRealLookupPermitSource, assertLookupAuxiliaryCallersOff, assertLookupChildSafety, lookupSettledCost } from "../lib/continuity-lookup-guard.mjs";
+import { fauxLookupSafety } from "../lib/continuity-lookup-pilot-runtime.mjs";
 let network, fetch;
 beforeEach(() => {
   network = vi.spyOn(Socket.prototype, "connect").mockImplementation(() => { throw Error("egress_denied"); });
@@ -16,7 +17,7 @@ const payload = () => ({ model: C.model, store: false, stream: true, reasoning: 
 function sized(U) { const p = payload(); p.input[0].content += "x".repeat(U - lookupInputEnvelope(p).U); return p; }
 const message = (stopReason = "stop", text = "Fictional answer.") => ({ stopReason, content: [{ type: "text", text }] });
 const usage = (input_tokens = 1, output_tokens = 1) => ({ input_tokens, output_tokens });
-function fixture({ body = payload(), raw = usage(), tier = "default", event = "response.completed", final = message(), failure, mutate, noSend = false, doubleSend = false, duplicateTerminal = false, repeatedPayload = false, sendUrl, sendHeaders, skipPayload = false, contractPatch = {}, permitSource } = {}) {
+function fixture({ body = payload(), raw = usage(), tier = "default", event = "response.completed", final = message(), failure, mutate, noSend = false, doubleSend = false, duplicateTerminal = false, repeatedPayload = false, sendUrl, sendHeaders, skipPayload = false, contractPatch = {}, permitSource, resolvedSafety } = {}) {
   const permit = permitSource ?? createTestOnlyLookupPermitSource(), send = vi.fn(async () => new Response(""));
   const underlying = { streamSimple: vi.fn((_m, _c, options) => {
     const result = (async () => {
@@ -36,7 +37,7 @@ function fixture({ body = payload(), raw = usage(), tier = "default", event = "r
     })();
     return { result: () => result, async *[Symbol.asyncIterator]() { yield { type: "done", message: await result }; } };
   }), getModel: () => model };
-  const guarded = guardedLookupModels(underlying, { contract: { ...C, slotId: "fictional-slot", runId: "fictional-run", ...contractPatch }, permit, send });
+  const guarded = guardedLookupModels(underlying, { contract: { ...C, slotId: "fictional-slot", runId: "fictional-run", ...contractPatch }, permit, send, resolvedSafety });
   const options = { reasoning: "high", transport: "sse", maxRetries: 0 };
   return { guarded, permit, send, underlying, options, call: (overrides = {}) => guarded.streamSimple(model, {}, { ...options, ...overrides }).result() };
 }
@@ -317,13 +318,13 @@ it.each(["fictional", {}, [{ type: "input_text", text: "Fictional" }], [{ type: 
   await expect(f.call({ onPayload: p => ({ ...p, input: [...p.input, { type: "reasoning", content }] }) })).rejects.toThrow("lookup_payload_forbidden");
   expect(f.send).toHaveBeenCalledOnce();
 });
-it("requires a declared run-bound prompt cache key and rejects undeclared or shared keys", async () => {
+it("requires the declared exact transport cache key and rejects missing or mismatched keys", async () => {
   const key = "fictional-run-slot-arm";
-  const valid = fixture({ contractPatch: { promptCacheKey: key }, body: { ...payload(), prompt_cache_key: key } }); await valid.call();
+  const valid = fixture({ contractPatch: { promptCacheKey: key }, body: { ...payload(), prompt_cache_key: key }, sendHeaders: { "session-id": key, "x-client-request-id": key } }); await valid.call();
   for (const f of [fixture({ body: { ...payload(), prompt_cache_key: key } }), fixture({ contractPatch: { promptCacheKey: key }, body: { ...payload(), prompt_cache_key: "other-slot" } })]) {
     await expect(f.call()).rejects.toThrow("lookup_prompt_cache_key_forbidden"); expect(f.permit.events).toEqual([]); expect(f.send).not.toHaveBeenCalled();
   }
-  expect(() => fixture({ contractPatch: { promptCacheKey: "shared-key" } })).toThrow("lookup_prompt_cache_key_forbidden");
+  expect(() => fixture({ contractPatch: { promptCacheKey: "x".repeat(65) } })).toThrow("lookup_prompt_cache_key_forbidden");
 });
 it.each([
   [{ headers: { "x-fictional": "value" } }, "lookup_headers_forbidden"],
@@ -342,11 +343,11 @@ it.each([
 ])("rejects unexpected, malformed or shared send headers before consumption %j", async (sendHeaders, code) => {
   const source = createTestOnlyLookupPermitSource(), consume = vi.fn();
   // A declared run-bound key, so the shared-key cases exercise a real mismatch.
-  const f = fixture({ permitSource: { ...source, consume }, sendHeaders, contractPatch: { promptCacheKey: "fictional-run-slot-arm" } });
+  const f = fixture({ permitSource: { ...source, consume }, sendHeaders, body: { ...payload(), prompt_cache_key: "fictional-run-slot-arm" }, contractPatch: { promptCacheKey: "fictional-run-slot-arm" } });
   await expect(f.call()).rejects.toMatchObject({ code, outcome: "integrity_stop" }); expect(consume).not.toHaveBeenCalled(); expect(f.send).not.toHaveBeenCalled();
 });
 it("accepts send headers that carry the declared run-bound key", async () => {
-  const f = fixture({ sendHeaders: { "session-id": "fictional-run-slot-arm", "x-client-request-id": "fictional-run-slot-arm" }, contractPatch: { promptCacheKey: "fictional-run-slot-arm" } });
+  const f = fixture({ body: { ...payload(), prompt_cache_key: "fictional-run-slot-arm" }, sendHeaders: { "session-id": "fictional-run-slot-arm", "x-client-request-id": "fictional-run-slot-arm" }, contractPatch: { promptCacheKey: "fictional-run-slot-arm" } });
   await f.call(); expect(f.send).toHaveBeenCalledOnce();
 });
 it("retains both settlement and stop failures", async () => {
@@ -367,4 +368,41 @@ it("fetch without admission awaits the sticky stop and cannot consume or send", 
   const assertion = expect(result).rejects.toMatchObject({ code: "lookup_permit_invalid", outcome: "integrity_stop" });
   await vi.waitFor(() => expect(stop).toHaveBeenCalledOnce()); expect(finished).toBe(false); release(); await assertion;
   expect(source.events).toEqual([]); expect(f.send).not.toHaveBeenCalled();
+});
+
+it.each(["prompt_cache_key", "session-id", "x-client-request-id"])("requires assigned %s to be present and exact", async field => {
+  for (const value of [undefined, "wrong-key"]) {
+    const key = "lk-short-independent-nonce", body = { ...payload(), prompt_cache_key: key }, headers = { "session-id": key, "x-client-request-id": key };
+    const target = field === "prompt_cache_key" ? body : headers; if (value === undefined) delete target[field]; else target[field] = value;
+    const f = fixture({ body, sendHeaders: headers, contractPatch: { promptCacheKey: key } });
+    await expect(f.call()).rejects.toMatchObject({ code: "lookup_prompt_cache_key_forbidden" }); expect(f.send).not.toHaveBeenCalled();
+  }
+});
+
+it("rechecks resolved safety at every stream and after payload preparation", async () => {
+  const safety = fauxLookupSafety({ judge: null }, { midCheckpoint: null, ledgerUpkeep: false });
+  const f = fixture({ resolvedSafety: safety }); await f.call();
+  safety.config.runtime.session.modelSwitch = { enabled: true };
+  expect(() => f.call()).toThrow("lookup_model_switch_forbidden"); expect(f.send).toHaveBeenCalledOnce();
+  delete safety.config.runtime.session.modelSwitch;
+  const prepared = fixture({ resolvedSafety: safety });
+  await expect(prepared.call({ onPayload: payload => { safety.captureUpkeepOutput = {}; return payload; } })).rejects.toThrow("lookup_preparation_forbidden");
+  expect(prepared.permit.events).toEqual([]); expect(prepared.send).not.toHaveBeenCalled();
+});
+
+it("requires key and resolved safety for pilot and non-test permit sources without changing legacy callers", () => {
+  const legacy = createTestOnlyLookupPermitSource(), safety = fauxLookupSafety({ judge: null }, { midCheckpoint: null, ledgerUpkeep: false });
+  const base = { contract: { ...C, slotId: "fictional-slot", runId: "fictional-run" }, send: vi.fn() };
+  for (const permit of [{ ...legacy, pilot: true }, { ...legacy, testOnly: false }]) {
+    expect(() => guardedLookupModels({}, { ...base, permit, resolvedSafety: safety })).toThrow("lookup_prompt_cache_key_forbidden");
+    const assigned = { ...base, permit, contract: { ...base.contract, promptCacheKey: "lk-fictional-assigned" } };
+    expect(() => guardedLookupModels({}, assigned)).toThrow("lookup_auxiliary_callers_forbidden");
+    expect(() => guardedLookupModels({}, { ...assigned, resolvedSafety: safety })).not.toThrow();
+    expect(base.send).not.toHaveBeenCalled();
+  }
+  expect(() => guardedLookupModels({}, { ...base, permit: legacy })).not.toThrow();
+});
+
+it("limits pilot continuation to the five capacity/terminal refusals", () => {
+  expect(LOOKUP_PRE_SEND_REFUSALS).toEqual(["not_admitted_input_envelope", "lookup_request_limit", "not_admitted_cap", "lookup_stopped", "lookup_slot_terminal"]);
 });

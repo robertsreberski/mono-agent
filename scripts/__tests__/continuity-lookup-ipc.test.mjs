@@ -4,6 +4,8 @@ import { join } from "node:path";
 import { pilotSuite, loadPilot, runOptions } from "./fixtures/lookup-pilot-process.mjs";
 import { fixtureGit } from "./fixtures/holdout-synthetic.mjs";
 import { sourceState, assertSource } from "../lib/memory-e2e-build.mjs";
+import { groupAlive } from "../lib/continuity-holdout-controller.mjs";
+import { lookupProcessGroupSnapshot } from "../lib/continuity-process-identity.mjs";
 import { digest } from "../lib/continuity-dataset.mjs";
 const suite = pilotSuite();
 async function run(scenarios, timeoutMs, capUSD, extraEnv = {}) {
@@ -24,10 +26,16 @@ it("runs the real forked probe and guard over IPC with persisted arrival witness
   expect(state.schedule.every(s => !Object.hasOwn(s, "cacheKey"))).toBe(true);
 });
 it.each(["disconnect", "die", "hang", "descendant"])("contains a real %s worker without admitting a replacement", async scenario => {
-  const { result } = await run([scenario], scenario === "hang" ? 1000 : 5000);
-  if (scenario === "descendant") { expect(result).toEqual({ failed: "lookup_unreconciled_processes" }); return; }
+  const { result, options } = await run([scenario], scenario === "hang" ? 1000 : 5000);
   expect(result.failed).toBeUndefined(); expect(result.result.stop).not.toBe("completed");
   expect(result.result.schedule.visited).toBe(1); expect(result.result.counts.invalid).toBe(0);
+  if (scenario === "descendant") {
+    const state = JSON.parse(await fs.readFile(join(options.outputRoot, "lookup-pilot-controller.json"))), slot = state.slots[0];
+    expect(slot.members.length).toBeGreaterThan(0); expect(slot.members.every(m => m.pgid === slot.worker.pid && m.startIdentity)).toBe(true);
+    const child = JSON.parse(await fs.readFile(join(suite.fixture.base, "witnesses", `${slot.worker.pid}.json`))); expect(child.descendantNoDelay).toBe(true);
+    const driver = JSON.parse(await fs.readFile(join(suite.fixture.base, "witnesses", `${state.controller.pid}.json`)));
+    expect(driver.signals).toContain("SIGTERM"); expect(driver.stopAtSignals).toEqual(driver.signals.map(() => "lookup_worker_lost")); expect(groupAlive(slot.worker.pid)).toBe(false);
+  }
 });
 it.each(["auth", "quota", "integrity_stop", "empty"])("persists the sticky %s outcome and partial receipt independently of exit", async scenario => {
   const { result } = await run([scenario]); expect(result.failed).toBeUndefined();
@@ -61,7 +69,7 @@ it("reconciles a controller SIGKILL at one faux arrival without ever readmitting
   expect(report.cost.totalUSD).toBe(3.92); expect(report.counts).toMatchObject({ admitted: 1, incomplete: 1 }); expect(report.schedule.visited).toBe(1); expect(report.reconciliation).toBe(true); await suite.witnesses();
 });
 
-it.each(["plan", "build", "role", "pid", "epoch", "marker", "debug", "descriptor", "role-id", "registration", "role-build"])("refuses a real child's swapped %s before ready and before admission", async kind => {
+it.each(["cache", "plan", "build", "role", "pid", "epoch", "marker", "debug", "descriptor", "role-id", "registration", "role-build"])("refuses a real child's swapped %s before ready and before admission", async kind => {
   const f = suite.fixture, options = await runOptions(f), config = join(f.base, `swap-${kind}.json`);
   await fs.writeFile(config, JSON.stringify({ action: `swap-${kind}` }), { mode: 0o600 });
   const p = await suite.spawn({ options }, { LOOKUP_FIXTURE_FAULT: config }); const reply = await p.reply; await p.exit;
@@ -186,7 +194,7 @@ it("isolates production checkout and build-source Git reads without the fixture 
   vi.stubEnv("GIT_DIR", "/fictional/not-a-repository"); vi.stubEnv("GIT_INDEX_FILE", join(f.base, "nonexistent-index")); vi.stubEnv("GIT_CONFIG_GLOBAL", config);
   try {
     // Direct production functions in this process: no pilotSuite.spawn environment filter runs here.
-    const roles = await loadPilot(f, "roles"), { codes } = await roles.prepareLookupCodes(f.pilot.registration.codes);
+    const roles = await loadPilot(f, "roles"), { codes } = await roles.prepareLookupCodes(f.pilot.registration.codes).catch(error => { console.error("fixture build stderr:", String(error.stderr ?? ""), "stdout:", String(error.stdout ?? "")); throw error; });
     expect(codes.R0.revision).toBe(f.pilot.registration.codes.R0.revision);
     expect(sourceState(f.repo)).toEqual({ head: codes.R0.revision, dirty: false });
     await fs.writeFile(dirt, "Fictional untracked source."); expect(sourceState(f.repo).dirty).toBe(true);
@@ -207,7 +215,7 @@ it.each(["timeout-before-consume", "timeout-after-consume"])("classifies %s from
 it.each(["arrival-persist", "arrival-receipt"])("makes %s a sticky integrity stop after consumed arrival", async action => {
   const f = suite.fixture, options = await runOptions(f), config = join(f.base, `${action}.json`);
   await fs.writeFile(config, JSON.stringify({ action }), { mode: 0o600 }); const p = await suite.spawn({ options }, { LOOKUP_FIXTURE_FAULT: config }), reply = await p.reply; await p.exit;
-  expect(reply.failed).toBeUndefined(); expect(reply.result.stop).toBe(action === "arrival-persist" ? "lookup_persist_failed" : "lookup_receipt_invalid");
+  expect(reply.failed).toBeUndefined(); expect(reply.result.stop).toBe(action === "arrival-persist" ? "lookup_arrival_persist_failed" : "lookup_arrival_receipt_invalid");
   expect(reply.result.counts).toMatchObject({ admitted: 1, invalid: 1 }); expect(reply.result.receipts[0]).toMatchObject({ terminal: "integrity_stop", calls: { consumed: 1 }, costs: { retainedUSD: 3.92 } });
 });
 it.each(["identity-before-term", "identity-before-kill", "identity-before-gone"])("never signals an unproven child group at %s", async action => {
@@ -242,4 +250,63 @@ it.each(["identity-before-exit", "identity-before-signal-exit"])("reconciles an 
   expect(reply.failed).toBeUndefined(); expect(reply.result.stop).toBe("lookup_auth_failure");
   const witness = JSON.parse(await fs.readFile(join(f.base, "witnesses", `${p.child.pid}.json`)));
   expect(action === "identity-before-exit" ? witness.leaderExitedAtCheck : witness.signalRacedExit).toBe(true); expect(witness.signals ?? []).toEqual(action === "identity-before-exit" ? [] : ["SIGTERM"]);
+});
+
+it("accepts a real guard pre-send refusal and continues to a final report", async () => {
+  const { result, options } = await run(["input_refusal", "lost"]);
+  expect(result.failed).toBeUndefined(); expect(result.result.receipts[0]).toMatchObject({ terminal: "unadmitted", terminalCode: "not_admitted_input_envelope" });
+  expect(result.result.counts.admitted).toBe(1); expect(result.result.receipts.length).toBeGreaterThan(1);
+  expect(JSON.parse(await fs.readFile(join(options.outputRoot, "report.json"))).stop).toBe("budget_admission");
+});
+it("leaves a descendant group unsignalled when recorded membership cannot be re-proven", async () => {
+  const f = suite.fixture, options = await runOptions(f, ["descendant"]), config = join(f.base, "descendant-unproven.json");
+  await fs.writeFile(config, JSON.stringify({ action: "descendant-unproven" }), { mode: 0o600 });
+  const p = await suite.spawn({ options }, { LOOKUP_FIXTURE_FAULT: config }); expect(await p.reply).toEqual({ failed: "lookup_unreconciled_processes" }); await p.exit;
+  const state = JSON.parse(await fs.readFile(join(options.outputRoot, "lookup-pilot-controller.json"))); expect(state.slots[0].members.length).toBeGreaterThan(0);
+  const witness = JSON.parse(await fs.readFile(join(f.base, "witnesses", `${p.child.pid}.json`))); expect(witness.descendantUnproven).toBe(true); expect(witness.signals ?? []).toEqual([]);
+  expect(lookupProcessGroupSnapshot(state.slots[0].worker.pid).some(now => !now.zombie && state.slots[0].members.some(old => old.pid === now.pid && old.startIdentity === now.startIdentity))).toBe(true);
+});
+it("persists unique bounded ASCII cache keys for every slot", async () => {
+  const { options } = await run(["lost"]), state = JSON.parse(await fs.readFile(join(options.outputRoot, "lookup-pilot-controller.json")));
+  expect(state.cacheKeysUnique).toBe(true); const keys = state.slots.map(s => s.cacheKey); expect(new Set(keys).size).toBe(keys.length);
+  expect(keys.every(key => /^[\x21-\x7e]{1,64}$/.test(key))).toBe(true);
+});
+
+it("accepts a fixed guard refusal after settled holds without stopping the next slot", async () => {
+  const { result, options } = await run(["request_limit", "lost"], undefined, 3.93);
+  expect(result.failed).toBeUndefined(); expect(result.result.receipts[0]).toMatchObject({ terminal: "refused_pre_send", terminalCode: "lookup_request_limit", calls: { admitted: 10, consumed: 10, settled: 10 } });
+  expect(result.result.counts.invalid).toBe(0); expect(result.result.counts.admitted).toBe(2);
+  expect(JSON.parse(await fs.readFile(join(options.outputRoot, "report.json"))).stop).toBe("budget_admission");
+});
+
+it.each([["guard-model-switch", "lookup_model_switch_forbidden"], ["guard-cache-key", "lookup_prompt_cache_key_forbidden"], ["guard-after-hold", "lookup_model_switch_forbidden"]])("makes real-child %s policy refusal a sticky stop", async (action, code) => {
+  const f = suite.fixture, options = await runOptions(f, [action === "guard-after-hold" ? "two_rounds" : "settled", "lost"]), config = join(f.base, `${action}.json`);
+  await fs.writeFile(config, JSON.stringify({ action }), { mode: 0o600 });
+  const p = await suite.spawn({ options }, { LOOKUP_FIXTURE_FAULT: config }), reply = await p.reply; await p.exit;
+  expect(reply.failed).toBeUndefined(); expect(reply.result.stop).toBe(code); expect(reply.result.schedule.visited).toBe(1);
+  const receipt = reply.result.receipts[0]; expect(receipt.terminalCode).toBe(code);
+  expect(receipt.terminal).toBe(action === "guard-after-hold" ? "integrity_stop" : "unadmitted");
+  expect(receipt.calls.consumed).toBe(action === "guard-after-hold" ? 1 : 0);
+  const state = JSON.parse(await fs.readFile(join(options.outputRoot, "lookup-pilot-controller.json")));
+  const witness = JSON.parse(await fs.readFile(join(f.base, "witnesses", `${state.slots[0].worker.pid}.json`))); expect(witness.guardFaultInjected).toBe(true);
+  expect(state.slots.filter(slot => slot.worker)).toHaveLength(1);
+});
+
+it.each(["descendant-timeout", "descendant-disconnect", "descendant-timeout-unproven"])("persists proven descendants before terminating a worker without done: %s", async action => {
+  const f = suite.fixture, options = await runOptions(f, ["settled", "lost"], 4000), config = join(f.base, `${action}.json`);
+  await fs.writeFile(config, JSON.stringify({ action }), { mode: 0o600 });
+  const p = await suite.spawn({ options }, { LOOKUP_FIXTURE_FAULT: config }), reply = await p.reply; await p.exit;
+  const state = JSON.parse(await fs.readFile(join(options.outputRoot, "lookup-pilot-controller.json"))), slot = state.slots[0];
+  const child = JSON.parse(await fs.readFile(join(f.base, "witnesses", `${slot.worker.pid}.json`))), driver = JSON.parse(await fs.readFile(join(f.base, "witnesses", `${p.child.pid}.json`)));
+  expect(child.descendantWithoutDone).toBe(true); expect(slot.members).toHaveLength(1); expect(slot.members[0]).toMatchObject({ pid: child.descendants[0].pid, startIdentity: child.descendants[0].startIdentity.replace(/\s+/gu, " "), pgid: slot.worker.pid });
+  expect(driver.membersAtSignals[0]).toEqual(slot.members); expect(state.slots.filter(s => s.worker)).toHaveLength(1); expect(slot.holds).toHaveLength(0);
+  const stop = action === "descendant-disconnect" ? "lookup_ipc_disconnected" : "lookup_worker_timeout";
+  if (action.endsWith("unproven")) {
+    expect(reply).toEqual({ failed: "lookup_unreconciled_processes" }); expect(state.stop).toBe("lookup_unreconciled_processes");
+    expect(driver.signals).toEqual(["SIGTERM"]); expect(driver.stopAtSignals).toEqual([stop]); expect(driver.descendantUnproven).toBe(true);
+    expect(lookupProcessGroupSnapshot(slot.worker.pid).some(m => !m.zombie && m.pid === slot.members[0].pid)).toBe(true);
+  } else {
+    expect(reply.failed).toBeUndefined(); expect(reply.result.stop).toBe(stop); expect(reply.result.schedule.visited).toBe(1);
+    expect(driver.signals).toEqual(["SIGTERM", "SIGKILL"]); expect(driver.stopAtSignals).toEqual([stop, stop]); expect(driver.leaderExitedBeforeKill).toBe(true); expect(groupAlive(slot.worker.pid)).toBe(false);
+  }
 });
