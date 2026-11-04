@@ -6,6 +6,7 @@ import { fork, execFileSync } from "node:child_process";
 import { userInfo, tmpdir } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { syntheticContext, fixtureLookupPolicy, fixtureCommit } from "./fixtures/holdout-synthetic.mjs";
+import { dependencySnapshot } from "./fixtures/lookup-dependency-witness.mjs";
 import { ROOT as worktree } from "../lib/continuity-lookup-roles.mjs";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
@@ -14,7 +15,7 @@ import { LOOKUP_ASSUMPTIONS } from "../lib/continuity-lookup-guard.mjs";
 
 const sha = data => createHash("sha256").update(data).digest("hex");
 const realUser = userInfo(), realRegistry = join(realUser.homedir, ".local/state/mono-agent/lookup-pilot/consumed-v1");
-let identity, shared, base, suiteRealBefore;
+let identity, shared, base, suiteRealBefore, suiteModulesBefore;
 let dir, home, auth, readiness, f, realBefore, network, fetch;
 const runningUnderCI = Object.hasOwn(process.env, "CI");
 let successfulConsumptions = 0;
@@ -28,15 +29,29 @@ const credential = (account, rotation = 1) => ({ "openai-codex": {
 const local = name => import(/* @vite-ignore */ pathToFileURL(join(shared.repo, "scripts/lib", `${name}.mjs`)).href);
 beforeAll(async () => {
   suiteRealBefore = await snapshot(realRegistry);
+  suiteModulesBefore = await dependencySnapshot(worktree);
+  expect(suiteModulesBefore).toMatchObject({ directory: true, vitest: true });
   base = await fs.realpath(await fs.mkdtemp(join(tmpdir(), "lookup-authorization-source-")));
   const buildHome = join(base, "build-home"); await fs.mkdir(buildHome, { mode: 0o700 });
   vi.stubEnv("HOME", buildHome); vi.stubEnv("XDG_CONFIG_HOME", buildHome); vi.stubEnv("XDG_CACHE_HOME", buildHome);
-  vi.stubEnv("COREPACK_ENABLE_NETWORK", "0"); vi.stubEnv("npm_config_offline", "true");
+  vi.stubEnv("COREPACK_ENABLE_NETWORK", "0");
+  // pnpm 11 reads pnpm_config_*, while older versions use npm_config_*.
+  for (const prefix of ["npm_config", "pnpm_config"]) {
+    vi.stubEnv(`${prefix}_offline`, "true"); vi.stubEnv(`${prefix}_verify_deps_before_run`, "false");
+    vi.stubEnv(`${prefix}_manage_package_manager_versions`, "false");
+  }
   vi.stubEnv("GIT_CONFIG_GLOBAL", "/dev/null"); vi.stubEnv("GIT_CONFIG_NOSYSTEM", "1");
   try {
-    shared = await syntheticContext(base, { families: 4, conversationsPerFamily: 1, conversationsPerCorpus: 2, shards: 2, perCorpusPerShard: 1 });
+    // Bare production imports resolve here, OUTSIDE either pnpm-managed fixture.
+    // These are selected package links, never a shared node_modules directory.
+    const imports = join(base, "node_modules/@mono-agent"); await fs.mkdir(imports, { recursive: true });
+    for (const name of ["turn", "conversation"]) await fs.symlink(join(worktree, "packages", name), join(imports, name));
+    await fs.symlink(join(worktree, "node_modules/typescript"), join(base, "node_modules/typescript"));
+    shared = await syntheticContext(base, { families: 4, conversationsPerFamily: 1, conversationsPerCorpus: 2, shards: 2, perCorpusPerShard: 1 },
+      { isolatedDependencies: true });
     await fs.chmod(shared.repo, 0o700);
     // Real, tiny clean checkouts and real deterministic builds, not build/registration mocks.
+    // No dependencies or install are needed by the fictional built-in-only app.
     await fs.rm(join(shared.repo, "packages/app/dist")); // removes only the fixture's symlink
     await save(join(shared.repo, "package.json"), { name: "fictional-lookup-tooling", private: true });
     await fs.writeFile(join(shared.repo, "pnpm-workspace.yaml"), "packages:\n  - packages/app\n");
@@ -48,6 +63,10 @@ beforeAll(async () => {
     const pack = join(base, "rpack"); await fs.cp(shared.repo, pack, { recursive: true }); await fs.chmod(pack, 0o700);
     await fs.appendFile(join(pack, "packages/conversation/src/continuity/render-fit.ts"), '\nexport const PACK_RETRIEVAL_GUIDANCE = "Fictional fixture guidance";\n');
     fixtureCommit(pack);
+    for (const root of [shared.repo, pack]) {
+      await expect(fs.lstat(join(root, "node_modules"))).rejects.toMatchObject({ code: "ENOENT" });
+      expect((await fs.lstat(join(root, "packages/turn/node_modules"))).isDirectory()).toBe(true);
+    }
     const revision = path => execFileSync("git", ["-C", path, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
     const checkouts = { R0: { path: shared.repo, revision: revision(shared.repo) }, Rpack: { path: pack, revision: revision(pack) } };
     const roles = await local("continuity-lookup-roles"), pilot = await local("continuity-lookup-pilot");
@@ -100,9 +119,14 @@ afterEach(async () => {
 afterAll(async () => {
   try {
     expect(successfulConsumptions).toBeGreaterThan(0);
-    expect(await snapshot(realRegistry)).toEqual(suiteRealBefore);
     if (runningUnderCI) expect(Object.hasOwn(process.env, "CI")).toBe(true);
-  } finally { if (base) await fs.rm(base, { recursive: true, force: true }); }
+  } finally {
+    try { if (base) await fs.rm(base, { recursive: true, force: true }); }
+    finally {
+      try { expect(await snapshot(realRegistry)).toEqual(suiteRealBefore); }
+      finally { expect(await dependencySnapshot(worktree)).toEqual(suiteModulesBefore); }
+    }
+  }
 });
 // The only real-schema fixture builder is test-local, synthetic and fictional.
 async function fixture() {

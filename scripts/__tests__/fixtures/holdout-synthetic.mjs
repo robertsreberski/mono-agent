@@ -53,29 +53,35 @@ export function fixtureGit(repo, args) {
   return execFileSync("git", ["-C", repo, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", ...args], { encoding: "utf8" });
 }
 export function fixtureCommit(repo) { fixtureGit(repo, ["add", "--", "."]); fixtureGit(repo, ["commit", "-qm", "Fixture checkpoint"]); }
-export async function toolingRepository(directory, runtime = false) {
+export async function toolingRepository(directory, runtime = false, { isolatedDependencies = false } = {}) {
   await mkdir(directory);
   for (const name of [...benchmarkFiles(), "pnpm-lock.yaml", "scripts/lib/memory-e2e-build.mjs", "packages/conversation/src/continuity/pack.ts", "packages/conversation/src/continuity/render-fit.ts"]) {
     await mkdir(dirname(join(directory, name)), { recursive: true });
     await writeFile(join(directory, name), await readFile(resolve(CHECKOUT, name)));
   }
   await writeFile(join(directory, ".gitignore"), "node_modules\npackages/*/dist\npackages/turn/node_modules\n");
-  await symlink(resolve(CHECKOUT, "node_modules"), join(directory, "node_modules"));
+  if (!isolatedDependencies) await symlink(resolve(CHECKOUT, "node_modules"), join(directory, "node_modules"));
   if (runtime) {
     for (const name of ["app", "config", "turn", "conversation"]) {
       await mkdir(join(directory, "packages", name), { recursive: true });
       await symlink(resolve(CHECKOUT, "packages", name, "dist"), join(directory, "packages", name, "dist"));
     }
-    await symlink(resolve(CHECKOUT, "packages/turn/node_modules"), join(directory, "packages/turn/node_modules"));
+    if (isolatedDependencies) {
+      // Only the read-only Pi catalog/SDK is needed at this fixed runtime path.
+      // Never share a node_modules directory with a workspace that will run pnpm.
+      const scope = join(directory, "packages/turn/node_modules/@earendil-works");
+      await mkdir(scope, { recursive: true });
+      await symlink(resolve(CHECKOUT, "packages/turn/node_modules/@earendil-works/pi-ai"), join(scope, "pi-ai"));
+    } else await symlink(resolve(CHECKOUT, "packages/turn/node_modules"), join(directory, "packages/turn/node_modules"));
   }
   fixtureGit(directory, ["init", "-q"]); fixtureCommit(directory);
   return import(/* @vite-ignore */ pathToFileURL(join(directory, "scripts/continuity-holdout-freeze.mjs")).href);
 }
 
 
-export async function syntheticContext(directory, design = {}) {
+export async function syntheticContext(directory, design = {}, repositoryOptions = {}) {
   const repo = join(directory, "tooling"), inputs = join(directory, "inputs"); await mkdir(inputs);
-  const freeze = await toolingRepository(repo, true);
+  const freeze = await toolingRepository(repo, true, repositoryOptions);
   const load = name => import(/* @vite-ignore */ pathToFileURL(join(repo, "scripts/lib", `${name}.mjs`)).href);
   const workflow = await load("continuity-holdout-workflow"); const controller = await load("continuity-holdout-controller"); const proof = await load("continuity-holdout-proof");
   const stats = { ...STATISTICAL_SPEC, design: { ...STATISTICAL_SPEC.design, families: 2, conversationsPerFamily: 2, conversationsPerCorpus: 2, shards: 2, perCorpusPerShard: 1, ...design } };

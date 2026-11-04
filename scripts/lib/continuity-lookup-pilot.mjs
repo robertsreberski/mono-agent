@@ -68,7 +68,7 @@ export function estimateLookupPilot({ workload, catalog, capUSD, assumptions = L
   need(same(assumptions, LOOKUP_ASSUMPTIONS), "lookup_assumptions_mismatch");
   const rmax = requestMaximum(catalog, assumptions), cap = decimal(capUSD);
   need(!less(cap, rmax) && cap[0] * 100n % cap[1] === 0n
-    && cap[0] * 100n / cap[1] <= BigInt(Number.MAX_SAFE_INTEGER), "lookup_cap_invalid");
+    && cap[0] * 100n / cap[1] < 10n ** 15n, "lookup_cap_invalid"); // <15 significant digits: the float dollar value round-trips
   const legacy = estimateExternalLookup({ workload, catalog }); // retains complete inventory/context checks
   let expected = [0n, 1n];
   for (const path of workload.policy.budget.paths) if (path.feasibility.classification === "feasible") {

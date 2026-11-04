@@ -1297,7 +1297,13 @@ homes. They exercise real frozen fictional inputs, clean temporary checkouts,
 deterministic local builds, pilot registration validation, Pi credential reads,
 SQLite locks and synced filesystem writes. They assert credential bytes, inode
 and mtime remain unchanged across validate/consume/verify, including expired
-fictional credentials. Success fixtures clear CI only in-process with egress
+fictional credentials. Build fixtures do not share writable `node_modules`
+directories with the source checkout: dependency-free authorization builds
+use selected read-only package imports outside their pnpm workspaces. Fixture
+pnpm commands are offline with dependency verification disabled and never
+install. Suite-level witnesses check the source dependency entry list, state
+file bytes/mtimes and Vitest executable before and after tests.
+Success fixtures clear CI only in-process with egress
 denied. They do not launch a production child with CI
 removed, access real credentials or write the user's registry. Physical
 power-loss durability, backend framing/billing assumptions and live OAuth are

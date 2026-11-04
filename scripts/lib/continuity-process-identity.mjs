@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 export function lookupProcessStartIdentity(pid) {
   if (!Number.isSafeInteger(pid) || pid <= 1) return null;
   try {
-    return execFileSync("ps", ["-p", String(pid), "-o", "lstart="], {
+    return execFileSync("/bin/ps", ["-p", String(pid), "-o", "lstart="], {
       env: { ...process.env, TZ: "UTC", LC_ALL: "C" }, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"],
     }).trim() || null;
   } catch { return null; }

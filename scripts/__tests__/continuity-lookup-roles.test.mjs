@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import { execFileSync, spawnSync, spawn } from "node:child_process";
 import { access, appendFile, cp, chmod, lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -12,9 +12,18 @@ import { main as compareMain, lookupOutputPath, workloadOptions, WORKLOAD_FLAGS 
 import { main as budgetMain } from "../continuity-lookup-budget.mjs";
 import { main as estimateMain, estimateLookup, ESTIMATE_PROFILES, offlinePrices, priceLookupCall } from "../continuity-lookup-estimate.mjs";
 
+import { dependencySnapshot } from "./fixtures/lookup-dependency-witness.mjs";
 const dirs = [];
+let suiteModulesBefore;
+beforeAll(async () => { suiteModulesBefore = await dependencySnapshot(ROOT); expect(suiteModulesBefore).toMatchObject({ directory: true, vitest: true }); });
+afterAll(async () => { expect(await dependencySnapshot(ROOT)).toEqual(suiteModulesBefore); });
 beforeEach(() => {
   for (const key of Object.keys(process.env)) if (key.startsWith("GIT_")) vi.stubEnv(key, undefined);
+  for (const prefix of ["npm_config", "pnpm_config"]) {
+    vi.stubEnv(`${prefix}_offline`, "true"); vi.stubEnv(`${prefix}_verify_deps_before_run`, "false");
+    vi.stubEnv(`${prefix}_manage_package_manager_versions`, "false");
+  }
+  vi.stubEnv("COREPACK_ENABLE_NETWORK", "0");
   vi.stubEnv("GIT_CONFIG_GLOBAL", "/dev/null"); vi.stubEnv("GIT_CONFIG_NOSYSTEM", "1");
   vi.stubEnv("NODE_OPTIONS", `${process.env.NODE_OPTIONS ?? ""} --import=${join(ROOT, "scripts/__tests__/fixtures/reject-account-home.mjs")}`);
 });
@@ -305,6 +314,7 @@ async function linkDependencies(source, dest) {
   async function copyModules(rel) {
     const from = join(source, rel), to = join(dest, rel);
     try { await access(from); } catch { return; }
+    expect((await lstat(from)).isDirectory()).toBe(true);
     await cp(from, to, { recursive: true, dereference: false, verbatimSymlinks: true,
       filter: path => ![join(from, ".pnpm"), join(from, ".cache")].includes(path) });
     try { if ((await lstat(join(from, ".pnpm"))).isDirectory()) await symlink(join(from, ".pnpm"), join(to, ".pnpm"), "dir"); } catch (error) { if (error.code !== "ENOENT") throw error; }
@@ -324,6 +334,8 @@ it("runs all six faux/real-loopback roles across two clean synthetic checkouts w
   const shippedRender = await readFile(join(ROOT, RENDER), "utf8"), shippedPack = await readFile(join(ROOT, PACK), "utf8");
   await writeFile(join(r0, RENDER), shippedRender.replace(/^export const PACK_RETRIEVAL_GUIDANCE = .*;$/mu, 'export const SYNTHETIC_NO_GUIDANCE = "";'));
   await writeFile(join(r0, PACK), shippedPack.replaceAll("PACK_RETRIEVAL_GUIDANCE", "SYNTHETIC_NO_GUIDANCE"));
+  // Both build workspaces forbid dependency verification/install, even under pnpm 11.
+  await writeFile(join(r0, ".npmrc"), "offline=true\nverify-deps-before-run=false\nmanage-package-manager-versions=false\n");
   const r0Revision = commit(r0);
   git(ROOT, ["clone", "--shared", "--quiet", r0, rpack]);
   await writeFile(join(rpack, RENDER), shippedRender); await writeFile(join(rpack, PACK), shippedPack); const rpackRevision = commit(rpack);

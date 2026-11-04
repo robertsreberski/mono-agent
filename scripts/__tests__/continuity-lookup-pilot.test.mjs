@@ -261,6 +261,12 @@ it("rejects assumption/catalog drift in cap-gated pricing readiness and uses unk
     const changed = structuredClone(catalog); change(changed);
     expect(lookupPilotReadiness({ catalog: changed, descriptor, capPolicy: "cap-gated-v1" })).toMatchObject({ ready: false, pricing: { status: "unknown" } });
   }
+  for (const change of [d => { d.assumptions = { ...d.assumptions, inputMax: d.assumptions.inputMax + 1 }; },
+    d => { d.assumptionsSha256 = "0".repeat(64); }, d => { delete d.assumptions; }]) {
+    const drifted = structuredClone(descriptor); change(drifted);
+    expect(lookupPilotReadiness({ catalog, descriptor: drifted, capPolicy: "cap-gated-v1" })).toMatchObject({
+      ready: false, status: "blocked", assumptions: { status: "unknown", code: "lookup_assumptions_mismatch" } });
+  }
   expect(lookupPilotReadiness({ catalog, capPolicy: "cap-gated-v1" })).toMatchObject({
     outputCap: { status: "unknown", code: "lookup_output_cap_unknown" }, inputEnvelope: { status: "unknown", code: "lookup_input_envelope_unknown" } });
 });
