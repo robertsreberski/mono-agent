@@ -207,6 +207,9 @@ export function createDynamicCredentialStore(apiKeys: Map<string, string> | unde
 // `piResolvedModel`: when supplied it is used verbatim (the model dispatched via
 // `piResolvedModel` may live outside pi's builtin catalog, e.g. a faux model).
 export function buildRunModels(runtime: PiRuntime, options: PiOptions, runtimeWarnings: PiWarning[]) {
+  if (options.piResolvedModels && options.piModelsDecorator) {
+    throw new Error("pi_models_seams_mutually_exclusive");
+  }
   let models;
   if (options.piResolvedModels) {
     models = options.piResolvedModels;
@@ -232,6 +235,8 @@ export function buildRunModels(runtime: PiRuntime, options: PiOptions, runtimeWa
       });
     }
   }
+  // Decorate only after ordinary credential construction; OAuth stays Models-owned.
+  models = options.piModelsDecorator ? options.piModelsDecorator(models) : models;
   return withContext1MModels(models, options.customProvider ? undefined : options.context1MModels);
 }
 
