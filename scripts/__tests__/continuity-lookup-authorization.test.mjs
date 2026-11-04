@@ -1,5 +1,8 @@
 import { afterAll, afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import * as fs from "node:fs/promises";
+import fsPromises from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
+import { renameSync, writeFileSync } from "node:fs";
 import { Socket } from "node:net";
 import { DatabaseSync } from "node:sqlite";
 import { fork, execFileSync } from "node:child_process";
@@ -378,12 +381,12 @@ async function leaseChild(mode, { outputRoot = f.args.outputRoot, controller = i
   });
   child.on("message", message => {
     if (message.ready) child.send({ mode, moduleRoot: shared.repo, outputRoot, controller });
-    else { receiptSeen = true; replyResolve(message); }
+    else { receiptSeen = true; if (mode === "hold") clearTimeout(watchdog); replyResolve(message); }
   });
   const receipt = await reply;
   expect(receipt).toMatchObject({ egressDenied: true, egressAttempts: 0 });
   if (mode !== "hold") expect(await exited).toEqual({ code: 0, signal: null });
-  return { child, exited, receipt };
+  return { child, exited, receipt, watchdog };
 }
 it("preserves the OS writer lock after consumption and repeated assertions, visible to real child processes", async () => {
   const handle = await validate(); await consume(handle);
@@ -404,7 +407,9 @@ it("refuses child reads and parent verification after the live controller releas
 });
 it("refuses lease reads after a real controller child is killed and reaped", async () => {
   const outputRoot = join(dir, "child-controller"); await fs.mkdir(outputRoot, { mode: 0o700 });
+  const cleared = vi.spyOn(globalThis, "clearTimeout");
   const holder = await leaseChild("hold", { outputRoot }); expect(holder.receipt.ok).toBe(true);
+  expect(cleared).toHaveBeenCalledWith(holder.watchdog);
   const controller = holder.receipt.controller;
   expect((await leaseChild("read", { outputRoot, controller })).receipt.ok).toBe(true);
   holder.child.kill("SIGKILL"); expect(await holder.exited).toEqual({ code: null, signal: "SIGKILL" });
@@ -430,4 +435,65 @@ it.each(["named", "hardlink", "renamed"])("rejects %s lease aliases before autho
   if (kind === "hardlink") await fs.unlink(alias);
   if (kind === "renamed") await fs.rename(alias, path);
   expect((await leaseChild("probe")).receipt).toMatchObject({ ok: true, busy: true });
+});
+
+it("permanently refuses a live lease swapped into an authorization read between lstat and open", async () => {
+  const handle = await validate(); await consume(handle);
+  const lease = await local("continuity-lookup-lease"), path = join(f.args.outputRoot, "controller-lock.sqlite");
+  expect(lease.markLookupLeaseCompromised(await fs.lstat(f.args.credentialPath))).toBe(false);
+  await lease.assertLookupPilotLease(f.lease, f.args.outputRoot, identity.controller);
+  const original = join(dir, "original-authorization.json"), realOpen = fs.open;
+  let swapped = false;
+  const openSpy = vi.spyOn(fsPromises, "open").mockImplementation(async (target, ...args) => {
+    if (target === f.args.authorizationPath && !swapped) {
+      await fs.rename(target, original); await fs.rename(path, target); swapped = true;
+    }
+    return realOpen(target, ...args);
+  });
+  syncBuiltinESMExports();
+  try {
+    await expect(auth.validateLookupAuthorization(f.args)).rejects.toThrow("lookup_unsafe_authorization_file");
+    expect(swapped).toBe(true);
+  } finally { openSpy.mockRestore(); syncBuiltinESMExports(); }
+  await fs.rename(f.args.authorizationPath, path); await fs.rename(original, f.args.authorizationPath);
+  for (let i = 0; i < 3; i++) await expect(lease.assertLookupPilotLease(f.lease, f.args.outputRoot, identity.controller)).rejects.toThrow("lookup_authorization_lease_invalid");
+  await expect(verify(handle)).rejects.toThrow("lookup_authorization_lease_invalid");
+  expect((await leaseChild("probe")).receipt).toMatchObject({ ok: true, busy: false });
+});
+it.each(["identity", "sqlite-setup"])("cleans its own unconsumed lease after a transient %s failure and permits a fresh acquire", async fault => {
+  const root = join(dir, "failed-acquire"); await fs.mkdir(root, { mode: 0o700 });
+  const identityModule = await local("continuity-process-identity"), lease = await local("continuity-lookup-lease");
+  const closed = vi.spyOn(DatabaseSync.prototype, "close");
+  if (fault === "identity") vi.spyOn(identityModule, "lookupProcessStartIdentity").mockReturnValueOnce(null);
+  else vi.spyOn(DatabaseSync.prototype, "exec").mockImplementationOnce(() => { throw new Error("fictional_sqlite_setup_failure"); });
+  await expect(lease.acquireLookupPilotLease(root)).rejects.toThrow("lookup_authorization_lease_invalid");
+  if (fault === "sqlite-setup") expect(closed).toHaveBeenCalledOnce();
+  expect(await fs.readdir(root)).toEqual([]);
+  const retry = await lease.acquireLookupPilotLease(root);
+  try { await lease.assertLookupPilotLease(retry, root, identity.controller); } finally { retry.release(); }
+});
+it("does not clean up a pre-existing file when exclusive lease creation fails", async () => {
+  const root = join(dir, "preexisting-acquire"); await fs.mkdir(root, { mode: 0o700 });
+  const path = join(root, "controller-lock.sqlite"); await fs.writeFile(path, "fictional-preexisting", { mode: 0o600 });
+  const { acquireLookupPilotLease } = await local("continuity-lookup-lease");
+  await expect(acquireLookupPilotLease(root)).rejects.toThrow("lookup_authorization_lease_invalid");
+  expect(await fs.readFile(path, "utf8")).toBe("fictional-preexisting");
+});
+it("does not unlink a replacement inode after a failed lease acquisition", async () => {
+  const root = join(dir, "replaced-acquire"); await fs.mkdir(root, { mode: 0o700 });
+  const path = join(root, "controller-lock.sqlite"), moved = join(root, "retained-attempt.sqlite");
+  const identityModule = await local("continuity-process-identity"), lease = await local("continuity-lookup-lease");
+  vi.spyOn(identityModule, "lookupProcessStartIdentity").mockImplementationOnce(() => {
+    renameSync(path, moved); writeFileSync(path, "fictional-replacement", { mode: 0o600 }); return null;
+  });
+  await expect(lease.acquireLookupPilotLease(root)).rejects.toThrow("lookup_authorization_lease_invalid");
+  expect((await fs.readdir(root)).sort()).toEqual(["controller-lock.sqlite", "retained-attempt.sqlite"]);
+  expect(await fs.readFile(path, "utf8")).toBe("fictional-replacement");
+});
+
+it("keeps invalid acquisition roots behind the fixed lease refusal code", async () => {
+  const { acquireLookupPilotLease } = await local("continuity-lookup-lease");
+  for (const root of [undefined, null, {}, "fictional-relative-root"]) {
+    await expect(acquireLookupPilotLease(root)).rejects.toThrow("lookup_authorization_lease_invalid");
+  }
 });

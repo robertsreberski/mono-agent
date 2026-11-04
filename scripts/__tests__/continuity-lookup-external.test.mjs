@@ -27,7 +27,11 @@ import { measureFixedBudget } from "../continuity-lookup-budget.mjs";
 import { fixtureLookupPolicy } from "./fixtures/holdout-synthetic.mjs";
 const dirs = [];
 afterEach(async () => { for (const dir of dirs.splice(0)) await rm(dir, { recursive: true, force: true }); vi.clearAllMocks(); });
-const git = (root, args) => execFileSync("git", ["-C", root, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false", ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+const git = (root, args) => execFileSync("git", ["-C", root, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+  "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", "-c", "gc.auto=0", "-c", "maintenance.auto=false", ...args], {
+  env: { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_"))), GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" },
+  encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
+}).trim();
 const render = "packages/conversation/src/continuity/render-fit.ts", pack = "packages/conversation/src/continuity/pack.ts";
 async function fixture({ readerEffort = "low" } = {}) {
   const dir = await realpath(await mkdtemp(join(tmpdir(), "lookup-external-fixture-"))); dirs.push(dir);
@@ -185,5 +189,16 @@ it("keeps pilot registration separate from v2 full-upfront caps and revalidates 
     d => { d.concurrency = 2; }, d => { d.accounting.consecutiveLossLimit = 3; }, d => { d.cacheKeyPolicy = "other"; }, d => { d.deadlines.childWatchdogMs++; }]) {
     const changed = structuredClone(pilot); change(changed.descriptor);
     await expect(validateLookupPilotRegistration(changed)).rejects.toThrow(/lookup_(cap_invalid|assumptions_mismatch|pilot_not_ready)/u);
+  }
+});
+
+it("disables fixture hooks and background Git maintenance even when local config enables them", async () => {
+  const f = await fixture();
+  for (const root of f.roots) {
+    const path = join(root, ".git/config");
+    await writeFile(path, await readFile(path, "utf8") + "\n[gc]\n  auto = 1\n[maintenance]\n  auto = true\n[core]\n  hooksPath = /fictional/unused-hooks\n");
+    expect(git(root, ["config", "--get", "gc.auto"])).toBe("0");
+    expect(git(root, ["config", "--get", "maintenance.auto"])).toBe("false");
+    expect(git(root, ["config", "--get", "core.hooksPath"])).toBe("/dev/null");
   }
 });

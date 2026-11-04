@@ -1266,6 +1266,8 @@ that writer exclusion survives consumption and repeated identity checks;
 a reader in another process accepts the live lease and refuses after release
 or controller death. The legacy holdout controller keeps its original persisted identity
 semantics and is not imported by the lookup identity helper.
+Failed acquisition closes SQLite before removing only its own still-matching
+lease inode; it does not delete pre-existing or replacement files.
 
 Under that verified lease:
 
@@ -1281,15 +1283,17 @@ Under that verified lease:
    start identity, plus output-root device/inode and lease-file device/inode.
    Verification rechecks these filesystem identities without opening the lease
    through filesystem read helpers, and checks the held SQLite writer lock.
-   Private JSON reads reject the lease filename, hardlinks and renamed live
-   lease inodes before opening them. A recreated root with a copied-back marker
-   cannot pass. There is no nonce
+   Private JSON reads reject known lease aliases before opening them, then
+   compare the opened inode too: detecting a raced live lease permanently
+   invalidates it, so later local assertions and verification refuse.
+   A recreated root with a copied-back marker cannot pass. There is no nonce
    file or IPC message authentication.
 5. Only **after consumption**, launch children. Future child setup must check
    its parent PID against the recorded live controller PID/start identity.
 
 A partial or corrupt pair is permanently unusable. There is no identical-claim
 replay, repair or rollback. Recreating the output root does not undo a burn.
+A hostile same-user actor can still race trusted paths; detection invalidates the affected lease rather than restoring its OS locks.
 The registry guards ordinary crash/root recreation, not deliberate destruction
 of all trusted per-user state. CI and debug-variable presence always refuse in
 production. Unit tests redirect only the home lookup to synthetic temporary

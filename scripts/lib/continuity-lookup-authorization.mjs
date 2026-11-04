@@ -10,7 +10,7 @@ import { sha256 } from "./continuity-lookup.mjs";
 import { ROOT, requireLookup } from "./continuity-lookup-roles.mjs";
 import { validateLookupPilotRegistration } from "./continuity-lookup-pilot.mjs";
 import { lookupProcessStartIdentity } from "./continuity-process-identity.mjs";
-import { assertLookupPilotLease, isLookupLeaseFile, readLookupPilotLease } from "./continuity-lookup-lease.mjs";
+import { assertLookupPilotLease, isLookupLeaseFile, markLookupLeaseCompromised, readLookupPilotLease } from "./continuity-lookup-lease.mjs";
 import { durable } from "./continuity-holdout-workflow.mjs";
 
 export const LOOKUP_AUTHORIZATION_SCHEMA = "continuity-lookup-pilot-authorization-v1";
@@ -49,6 +49,10 @@ async function safeRead(path, code) {
   const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
     const stat = await file.stat();
+    // A raced open cannot be undone: closing this fd may drop the process's POSIX locks.
+    // Permanently invalidate any affected live lease before allowing any other checks.
+    need(!markLookupLeaseCompromised(stat), code);
+    need(initial.dev === stat.dev && initial.ino === stat.ino, code);
     need(stat.isFile() && stat.uid === userInfo().uid && stat.nlink === 1 && (stat.mode & 0o077) === 0 && stat.size <= 4 * 1024 * 1024, code);
     const before = await lstat(path);
     need(before.dev === stat.dev && before.ino === stat.ino && !before.isSymbolicLink(), code);

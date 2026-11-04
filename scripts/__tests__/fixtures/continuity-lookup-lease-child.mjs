@@ -9,8 +9,16 @@ const deny = () => { egressAttempts++; throw new Error("test_egress_denied"); };
 Socket.prototype.connect = deny;
 globalThis.fetch = async () => deny();
 globalThis.WebSocket = class { constructor() { deny(); } };
-try { await globalThis.fetch("https://fictional-egress.invalid"); } catch {}
-const egressDenied = egressAttempts === 1;
+const canary = async action => {
+  const before = egressAttempts;
+  try { await action(); return false; }
+  catch (error) { return error.message === "test_egress_denied" && egressAttempts === before + 1; }
+};
+// Invalid native arguments also prevent egress if a denial patch is accidentally removed.
+const fetchDenied = await canary(() => globalThis.fetch("fictional-invalid-fetch-url"));
+const socketDenied = await canary(() => Socket.prototype.connect.call({}, undefined));
+const websocketDenied = await canary(() => new globalThis.WebSocket("fictional-invalid-websocket-url"));
+const egressDenied = fetchDenied && socketDenied && websocketDenied && egressAttempts === 3;
 egressAttempts = 0;
 
 process.once("message", async input => {
