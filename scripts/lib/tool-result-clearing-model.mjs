@@ -1,5 +1,6 @@
 import { qualifiedEntry, qualificationIdentity } from './tool-result-clearing-qualification-id.mjs';
 import { APIS } from './tool-result-clearing-reference.mjs';
+export const MIN_RETENTION_SHARE = 0.5, MAX_FALLBACK_SHARE = 0.05;
 export const SENSITIVITIES = [0, 0.05, 0.20];
 export function gate({ pressured, conversations, cold, coldConversations = 0, opportunities, pressureReduction, costs, payload, missingEvidence = false, incomplete = false, codex = false }) {
   if (incomplete || missingEvidence || codex || pressured < 10 || conversations < 3 || cold < 10 || coldConversations < 3) return 'DEFER';
@@ -53,31 +54,44 @@ export function model(route, boundaries, retrievalRate) {
   const rates = [...new Set([...SENSITIVITIES, retrievalRate])].sort((a, b) => a - b);
   const costs = rates.map(rate => {
     const view = weights => {
-      let off = 0, delta = 0;
+      let off = 0, worstExtra = 0, prefixCostSum = 0, prefixTokensSum = 0;
+      const delta = { retained: 0, removed: 0, summary: 0, retrieval: 0 };
       for (const b of boundaries) for (const request of b.requests ?? []) {
-        const u = request.usage;
-        off += u.input * weights.input + u.cacheRead * weights.cacheRead + u.cacheWrite * weights.cacheWrite + u.output * weights.output;
-        // Location of cleared tokens inside usage buckets is unknown: credit the
-        // cheapest bucket only, capped to observed occupancy. Extra retained native
-        // context and expected retrieval growth are conservatively uncached.
-        const removed = Math.min(request.activeSavings, u.input + u.cacheRead + u.cacheWrite);
-        delta += (savingsPerCycle / 2 + rate * request.activeRetrieval) * weights.input
-          - removed * Math.min(weights.input, weights.cacheRead, weights.cacheWrite);
+        const u = request.usage, prefix = u.input + u.cacheRead + u.cacheWrite;
+        const prefixCost = u.input * weights.input + u.cacheRead * weights.cacheRead + u.cacheWrite * weights.cacheWrite;
+        const blended = prefix ? prefixCost / prefix : 0;
+        prefixCostSum += prefixCost; prefixTokensSum += prefix;
+        off += prefixCost + u.output * weights.output;
+        const removed = Math.min(request.activeSavings, prefix), retained = savingsPerCycle / 2;
+        delta.retained += retained * blended;
+        delta.removed -= removed * blended;
+        delta.retrieval += rate * request.activeRetrieval * blended;
+        // Informational only: reprice the remaining on-arm prefix at no less
+        // than uncached input, without discounting a write-premium blend.
+        worstExtra += (prefix - removed + retained + rate * request.activeRetrieval) * Math.max(0, weights.input - blended);
       }
       const summaryOff = route.summaryInputTokens * weights.input + route.summaryOutputTokens * weights.output
         + route.drainTokens * weights.cacheWrite;
       off += offPressure * summaryOff;
       const onCycles = (growth + rate * retrieval) / (span + savingsPerCycle);
-      delta += (onCycles - offPressure) * summaryOff + onCycles * extraSummary * weights.input;
-      // Expected extra full-retrieval request/response, not an observed off-arm request.
-      delta += rate * (count * route.triggerTokens + retrieval) * weights.input + rate * count * route.summaryOutputTokens * weights.output;
-      const on = off + delta;
-      return { off, on, ratio: off > 0 ? on / off : 1 };
+      delta.summary = (onCycles - offPressure) * summaryOff + onCycles * extraSummary * weights.input;
+      // Expected extra retrieval round trips use the cohort's token-weighted
+      // observed prefix rate; output remains output-priced, not prefix-priced.
+      const blended = prefixTokensSum ? prefixCostSum / prefixTokensSum : weights.input;
+      const retrievalInput = rate * (count * route.triggerTokens + retrieval);
+      delta.retrieval += retrievalInput * blended + rate * count * route.summaryOutputTokens * weights.output;
+      worstExtra += retrievalInput * Math.max(0, weights.input - blended)
+        + onCycles * route.drainTokens * Math.max(0, weights.input - weights.cacheWrite);
+      const on = off + Object.values(delta).reduce((sum, x) => sum + x, 0);
+      return { off, on, delta, worstOn: on + Math.max(0, worstExtra), ratio: off > 0 ? on / off : 1 };
     };
     const list = view(route.prices), quota = view(route.quota);
     // Worst-case recache is reported separately; warm clearing is not enabled by this model.
     const rewrite = route.triggerTokens * boundaries.filter(b => b.saved > 0).length;
     return { retrievalRate: rate, listOff: list.off / 1e6, listOn: list.on / 1e6, listRatio: list.ratio,
+      listDelta: Object.fromEntries(Object.entries(list.delta).map(([k, v]) => [k, v / 1e6])),
+      quotaShareDelta: Object.fromEntries(Object.entries(quota.delta).map(([k, v]) => [k, v / route.quotaBudget])),
+      allUncachedInformational: { gating: false, listOn: list.worstOn / 1e6, quotaShareOn: quota.worstOn / route.quotaBudget },
       quotaShareOff: quota.off / route.quotaBudget, quotaShareOn: quota.on / route.quotaBudget, quotaRatio: quota.ratio,
       warmUnknownWorstListOn: (list.on + rewrite * route.prices.cacheWrite) / 1e6,
       warmUnknownWorstQuotaShareOn: (quota.on + rewrite * route.quota.cacheWrite) / route.quotaBudget };
@@ -96,11 +110,19 @@ export function reportRoute(route, boundaries, qualification, retrievalRate, inc
   if (boundaries.some(b => b.candidates > 0) && !boundaries.some(b => b.provenCandidates > 0)) codes.push('IDENTITY_UNPROVEN');
   const requests = boundaries.flatMap(b => b.requests ?? []);
   const fallbackRequests = requests.filter(r => r.source === 'character-heuristic').length;
+  const fallbackShare = requests.length ? fallbackRequests / requests.length : 0;
+  if (fallbackShare > MAX_FALLBACK_SHARE) codes.push('USAGE_FALLBACK_EXCESSIVE');
+  const retained = new Map(boundaries.flatMap(b => b.retention ?? []).map(r => [r.key, r.matched]));
+  const matched = [...retained.values()].filter(Boolean).length;
+  const matchedShare = retained.size ? matched / retained.size : null;
+  if (retained.size && !matched) codes.push('RETENTION_UNMATCHED');
+  else if (matchedShare !== null && matchedShare < MIN_RETENTION_SHARE) codes.push('RETENTION_COVERAGE_LOW');
   const evidence = { pressured: pressured.length, conversations: new Set(pressured.map(b => b.logical)).size,
     cold: cold.length, coldConversations: new Set(cold.map(b => b.logical)).size, opportunities: cold.filter(b => admitsBatch(b.saved)).length };
   if (evidence.cold < 10 || evidence.coldConversations < 3) codes.push('COLD_EVIDENCE_INSUFFICIENT');
   return { api: route.api, codes, piAiVersion: qualificationIdentity().piAiVersion,
-    assumptions: { ...route, requestCount: requests.length, fallbackRequests, fallbackShare: requests.length ? fallbackRequests / requests.length : 0 }, counts: evidence,
+    assumptions: { ...route, requestCount: requests.length, fallbackRequests, fallbackShare, maximumFallbackShare: MAX_FALLBACK_SHARE, minimumRetentionShare: MIN_RETENTION_SHARE, prefixRate: 'observed-blended-prefix' },
+    retention: { provenResults: retained.size, matchedResults: matched, unmatchedResults: retained.size - matched, matchedShare }, counts: evidence,
     estimates: { usage: boundaries.filter(b => b.source === 'provider-usage-plus-heuristic').length,
       heuristic: boundaries.filter(b => b.source === 'character-heuristic').length },
     gaps: { underMinute: boundaries.filter(b => b.gap !== null && b.gap < 60000).length,
@@ -112,5 +134,5 @@ export function reportRoute(route, boundaries, qualification, retrievalRate, inc
       under50k: boundaries.filter(b => admitsBatch(b.saved) && b.saved < 50000).length,
       larger: boundaries.filter(b => b.saved >= 50000).length },
     modeled, payload: status, ...(codex ? { wire: 'wire-unproven (transport)' } : {}),
-    verdict: gate({ ...evidence, ...modeled, payload: status, missingEvidence: codes.includes('PAYLOAD_UNQUALIFIED') || codes.includes('IDENTITY_UNPROVEN'), incomplete, codex }) };
+    verdict: gate({ ...evidence, ...modeled, payload: status, missingEvidence: codes.some(c => ['PAYLOAD_UNQUALIFIED', 'IDENTITY_UNPROVEN', 'RETENTION_UNMATCHED', 'RETENTION_COVERAGE_LOW', 'USAGE_FALLBACK_EXCESSIVE'].includes(c)), incomplete, codex }) };
 }

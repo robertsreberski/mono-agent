@@ -15,39 +15,39 @@ const stamp = path => {
 const categoryCounts = () => Object.fromEntries(['builtin-read', 'builtin-search', 'builtin-web', 'app-declared', 'ambiguous'].map(k => [k,
   { results: 0, originalBytes: 0, eligibleBytes: 0, escapedBytes: 0, structuredScanLosses: 0, redacted: 0, truncated: 0 }]));
 export function analyze(options, hooks = {}) {
-  const tracked = new Map(), codes = new Set(), categories = categoryCounts(), exclusions = {}, skipped = {};
-  const skip = code => { skipped[code] = (skipped[code] ?? 0) + 1; };
-  const policies = new Map();
+  const tracked = new Map(), codes = new Set(), skippedJournals = {};
+  let state = { categories: categoryCounts(), exclusions: {}, skippedBoundaries: {}, policies: new Map(), boundaries: [],
+    observedCompactions: 0, observed: { summaryTokens: 0, drainTokens: 0, preCompactionTokens: 0 },
+    routeCategories: new Map(), seenResults: new Set(), seenJournals: new Set(), seenBoundaries: new Map() };
+  const skipJournal = code => { skippedJournals[code] = (skippedJournals[code] ?? 0) + 1; };
+  const skipBoundary = code => { state.skippedBoundaries[code] = (state.skippedBoundaries[code] ?? 0) + 1; };
   const policyFor = physical => {
-    if (!policies.has(physical)) policies.set(physical, { cleared: new Set(), completedRuns: new Set(), pinBytes: 0, activeSavings: 0, activeRetrieval: 0, lastBatch: -Infinity, runs: 0 });
-    return policies.get(physical);
+    if (!state.policies.has(physical)) state.policies.set(physical, { cleared: new Set(), completedRuns: new Set(), pinBytes: 0, activeSavings: 0, activeRetrieval: 0, lastBatch: -Infinity, runs: 0 });
+    return state.policies.get(physical);
   };
   const track = path => {
     path = resolve(path);
     if (!tracked.has(path)) { const value = stamp(path); if (value !== null && lstatSync(path).isSymbolicLink()) throw new Error('INPUT'); tracked.set(path, value); }
     return path;
   };
-  const count = reason => { exclusions[reason] = (exclusions[reason] ?? 0) + 1; };
-  let boundaries = [], observedCompactions = 0;
-  const observed = { summaryTokens: 0, drainTokens: 0, preCompactionTokens: 0 };
-  const routeCategories = new Map(), seenResults = new Set(), seenJournals = new Set(), seenBoundaries = new Set();
+  const count = reason => { state.exclusions[reason] = (state.exclusions[reason] ?? 0) + 1; };
   const finish = (routes = [], qualification, retrievalRate = 0.05) => {
     hooks.afterRead?.();
     for (const [path, before] of tracked) if (stamp(path) !== before) codes.add('SNAPSHOT_CHANGED');
     const incomplete = codes.size > 0;
-    const reports = routes.map(r => ({ ...reportRoute(r, boundaries.filter(b => b.api === r.api), qualification, retrievalRate, incomplete),
-      categories: routeCategories.get(r.api) ?? categoryCounts() }));
-    for (const group of [categories, ...reports.map(r => r.categories)]) for (const c of Object.values(group)) c.escapedToOriginalRatio = c.eligibleBytes ? c.escapedBytes / c.eligibleBytes : null;
-    const requests = boundaries.flatMap(b => b.requests);
+    const reports = routes.map(r => ({ ...reportRoute(r, state.boundaries.filter(b => b.api === r.api), qualification, retrievalRate, incomplete),
+      categories: state.routeCategories.get(r.api) ?? categoryCounts() }));
+    for (const group of [state.categories, ...reports.map(r => r.categories)]) for (const c of Object.values(group)) c.escapedToOriginalRatio = c.eligibleBytes ? c.escapedBytes / c.eligibleBytes : null;
+    const requests = state.boundaries.flatMap(b => b.requests);
     const fallbackRequests = requests.filter(r => r.source === 'character-heuristic').length;
-    return { status: incomplete ? 'incomplete' : 'complete', codes: [...codes].sort(), skipped, piAiVersion: qualificationIdentity().piAiVersion,
+    return { status: incomplete ? 'incomplete' : 'complete', codes: [...codes].sort(), skippedJournals, skippedBoundaries: state.skippedBoundaries, piAiVersion: qualificationIdentity().piAiVersion,
       assumptions: { modeled: true, exclusionUnit: 'result-boundary-occurrences', requestCount: requests.length, fallbackRequests,
         fallbackShare: requests.length ? fallbackRequests / requests.length : 0, tokenHeuristic: 'utf16-ceil/4', imageTokens: 1200,
         pinBudgetBytes: PIN_BUDGET, protectedTurns: 3, protectedToolUses: 10, minimumBatchTokens: 20000,
         minimumRunsBetweenBatches: 5, retrievalRate, retrievalEvidence: options.retrievalRate === undefined ? 'pending lookup-pilot evidence' : 'supplied',
         summaryToolCharacterLimit: 2000, costModel: 'observed-requests-plus-modeled-delta',
         quotaUnit: 'share-of-supplied-quota-budget', priceUnit: 'per-million-tokens', warmClearing: false },
-      counts: { journals: seenJournals.size, boundaries: boundaries.length, observedCompactions }, observed, categories, exclusions,
+      counts: { journals: state.seenJournals.size, boundaries: state.boundaries.length, observedCompactions: state.observedCompactions }, observed: state.observed, categories: state.categories, exclusions: state.exclusions,
       routes: reports, verdict: incomplete || !reports.length ? 'DEFER'
         : reports.some(r => r.verdict === 'STOP') ? 'STOP' : reports.every(r => r.verdict === 'BUILD') ? 'BUILD' : 'DEFER' };
   };
@@ -93,15 +93,17 @@ export function analyze(options, hooks = {}) {
     } finally { database.close(); }
     const retained = new Map(rows.map(r => [r.record_id, r]));
     for (const file of files) {
+      // Journal-local working state: publish only after the entire replay succeeds.
+      const committed = state; state = structuredClone(committed); let accepted = false;
       try {
         const [header, ...records] = readFileSync(file, 'utf8').trimEnd().split('\n').map(line => JSON.parse(line));
-        if (header?.format !== 'mono-harness' || header.version !== 2) { skip('LEGACY_JOURNAL'); continue; }
-        if (header.import) { skip('IMPORTED_JOURNAL'); continue; }
-        if (records.some(r => r.payload?.projectionBinding)) { skip('INHERITED_PROJECTION'); continue; }
-        if (records.some(r => r.kind === 'interruption')) { skip('INTERRUPTION'); continue; }
+        if (header?.format !== 'mono-harness' || header.version !== 2) { skipJournal('LEGACY_JOURNAL'); continue; }
+        if (header.import) { skipJournal('IMPORTED_JOURNAL'); continue; }
+        if (records.some(r => r.payload?.projectionBinding)) { skipJournal('INHERITED_PROJECTION'); continue; }
+        if (records.some(r => r.kind === 'interruption')) { skipJournal('INTERRUPTION'); continue; }
         validateJournalHeader(header);
-        if (seenJournals.has(header.journalId)) { skip('DUPLICATE_JOURNAL'); continue; }
-        seenJournals.add(header.journalId);
+        if (state.seenJournals.has(header.journalId)) { skipJournal('DUPLICATE_JOURNAL'); continue; }
+        state.seenJournals.add(header.journalId);
         const validator = new JournalValidator();
         for (const record of records) {
           validator.apply(record);
@@ -110,8 +112,8 @@ export function analyze(options, hooks = {}) {
             if (m.role === 'toolResult' && (typeof m.toolName !== 'string' || typeof m.toolCallId !== 'string')) throw new Error('INPUT');
           }
         }
-        if (validator.openTurns.size || validator.openOperations.size) { skip('OPEN_TURN'); continue; }
-        const promptTurns = new Set(), allEntries = new Map(), contexts = new Map([[null, []]]), calls = new Map(), turns = new Map();
+        if (validator.openTurns.size || validator.openOperations.size) { skipJournal('OPEN_TURN'); continue; }
+        const duplicateBoundaries = new Set(), promptTurns = new Set(), allEntries = new Map(), contexts = new Map([[null, []]]), calls = new Map(), turns = new Map();
         let context = [], completed = [], uses = [], pending = null, owner = header.hostAuthority;
         let lastDispatch = null, lastEstimate = null, compacted = false, observedDrain = 0, growthBeforeCompaction = 0, currentBoundary;
         const boundary = () => {
@@ -119,19 +121,19 @@ export function analyze(options, hooks = {}) {
           const { record: start, api } = pending;
           pending = null; currentBoundary = null;
           const route = routes.find(r => r.api === api);
-          if (!APIS.includes(api)) { skip('UNSUPPORTED_API'); currentBoundary = null; return; }
-          if (!route) { skip('ROUTE_MISSING'); currentBoundary = null; return; }
+          if (!APIS.includes(api)) { skipBoundary('UNSUPPORTED_API'); currentBoundary = null; return; }
+          if (!route) { skipBoundary('ROUTE_MISSING'); currentBoundary = null; return; }
           const physical = owner?.historyBucket, logical = owner?.ownerKey;
-          if (!physical || !logical) { skip('OWNER_MISSING'); return; }
+          if (!physical || !logical) { skipBoundary('OWNER_MISSING'); return; }
           const boundaryKey = JSON.stringify([physical, start.turnId]);
-          if (seenBoundaries.has(boundaryKey)) { skip('DUPLICATE_BOUNDARY'); return; }
-          seenBoundaries.add(boundaryKey);
+          if (state.seenBoundaries.has(boundaryKey)) { skipBoundary('DUPLICATE_BOUNDARY'); return; }
+          state.seenBoundaries.set(boundaryKey, file);
           const measured = estimate(context.map(x => x.message));
           const gap = lastDispatch === null ? null : start.timestamp - lastDispatch;
-          if (gap !== null && gap < 0) { skip('TIME_ORDER'); currentBoundary = null; return; }
+          if (gap !== null && gap < 0) { skipBoundary('TIME_ORDER'); currentBoundary = null; return; }
           const { pressured, cold } = classifyBoundary(measured.tokens, gap, route);
           const protectedTurns = new Set(completed.filter(id => promptTurns.has(id)).slice(-3)), protectedUses = new Set(uses.slice(-10));
-          const candidates = [];
+          const candidates = [], retention = []; let identityCandidates = 0, provenIdentities = 0;
           for (const entry of context) {
             const m = entry.message;
             if (m.role !== 'toolResult') continue;
@@ -142,19 +144,25 @@ export function analyze(options, hooks = {}) {
             const proof = Array.isArray(proofs) ? proofs.find(p => p.runId === entry.turnId) : proofs;
             const classification = identity(m.toolName, call?.origin, proof, allowlist);
             const category = classification ?? 'ambiguous';
-            const state = { completed: turns.get(entry.turnId) === 'completed', returned: call?.returned,
+            const resultState = { completed: turns.get(entry.turnId) === 'completed', returned: call?.returned,
               placed: call?.placed,
               protected: protectedTurns.has(entry.turnId) || protectedUses.has(call) || entry.turnId === start.turnId };
             const scopeExcluded = classification === null || ['ConversationHistory', 'conversation_history', 'SessionHistory', 'session_history', 'RunHistory', 'run_history', 'ReadSkill']
               .some(name => m.toolName === name || m.toolName.endsWith(`__${name}`))
               || call?.origin?.kind === 'builtin' && !['Read', 'Grep', 'Glob', 'WebFetch', 'WebSearch'].includes(m.toolName);
+            if (!scopeExcluded && resultState.completed && resultState.returned && resultState.placed
+              && !['lifecycle', 'error', 'blocks'].includes(exclusion(m, undefined, resultState))) {
+              identityCandidates++;
+              if (category !== 'ambiguous') { provenIdentities++; retention.push({ key: `${physical}\0${entry.turnId}\0${m.toolCallId}`, matched: !!record && record.conversation_id === physical && record.logical_id === logical && record.run_id === entry.turnId
+                && record.finalized === 1 && record.state === 'committed' && record.tombstone_reason === null && typeof record.retained_text === 'string' }); }
+            }
             const reason = scopeExcluded ? 'tool_scope' : record && (record.conversation_id !== physical || record.logical_id !== logical || record.run_id !== entry.turnId)
-              ? 'integrity' : exclusion(m, record, state);
+              ? 'integrity' : exclusion(m, record, resultState);
             const key = `${physical}\0${entry.turnId}\0${m.toolCallId}`;
-            if (!routeCategories.has(api)) routeCategories.set(api, categoryCounts());
-            for (const [scope, group] of [['all', categories], [api, routeCategories.get(api)]]) {
-              if (seenResults.has(`${scope}\0${key}`)) continue;
-              seenResults.add(`${scope}\0${key}`);
+            if (!state.routeCategories.has(api)) state.routeCategories.set(api, categoryCounts());
+            for (const [scope, group] of [['all', state.categories], [api, state.routeCategories.get(api)]]) {
+              if (state.seenResults.has(`${scope}\0${key}`)) continue;
+              state.seenResults.add(`${scope}\0${key}`);
               const c = group[category]; c.results++;
               const text = m.content?.[0]?.type === 'text' ? m.content[0].text : '';
               c.originalBytes += bytes(text);
@@ -164,7 +172,7 @@ export function analyze(options, hooks = {}) {
                 try { JSON.parse(text); if (containsVisibleSensitiveText(text)) c.structuredScanLosses++; } catch { /* not an envelope */ }
               }
               // Protection is boundary-dependent, retention yield is not.
-              if (!scopeExcluded && !exclusion(m, record, { ...state, protected: false })) { c.eligibleBytes += bytes(text); c.escapedBytes += bytes(JSON.stringify(text)); }
+              if (!scopeExcluded && !exclusion(m, record, { ...resultState, protected: false })) { c.eligibleBytes += bytes(text); c.escapedBytes += bytes(JSON.stringify(text)); }
             }
             if (reason) { count(reason); continue; }
             const net = tokens(m) - tokens({ ...m, content: [{ type: 'text', text: renderStub(m, record) }] });
@@ -192,8 +200,8 @@ export function analyze(options, hooks = {}) {
           }
           const growth = lastEstimate === null ? Math.max(0, measured.tokens - route.drainTokens)
             : growthBeforeCompaction + Math.max(0, measured.tokens - (compacted ? observedDrain : lastEstimate));
-          currentBoundary = { api, logical, pressured, cold, gap, source: measured.source, growth, saved, selected, retrievalTokens, upperTokens, candidates: candidates.length, provenCandidates: candidates.filter(c => c.category !== 'ambiguous').length, requests: [] };
-          boundaries.push(currentBoundary);
+          currentBoundary = { api, logical, pressured, cold, gap, source: measured.source, growth, saved, selected, retrievalTokens, upperTokens, candidates: identityCandidates, retention, provenCandidates: provenIdentities, requests: [] };
+          state.boundaries.push(currentBoundary);
           lastEstimate = measured.tokens; compacted = false; growthBeforeCompaction = 0;
         };
         for (const r of records) {
@@ -204,8 +212,12 @@ export function analyze(options, hooks = {}) {
             if (p.type === 'compaction') boundary();
             if (p.type === 'prompt') promptTurns.add(r.turnId);
             if (p.type === 'prompt') {
-              if (seenBoundaries.has(JSON.stringify([owner?.historyBucket, r.turnId]))) { skip('DUPLICATE_BOUNDARY'); currentBoundary = null; }
-              else pending = { record: r, api: p.config.model?.api };
+              const key = JSON.stringify([owner?.historyBucket, r.turnId]), firstFile = state.seenBoundaries.get(key);
+              if (firstFile && firstFile !== file) {
+                if (!duplicateBoundaries.has(key)) { skipBoundary('DUPLICATE_BOUNDARY'); duplicateBoundaries.add(key); }
+                currentBoundary = null;
+              }
+              else if (!firstFile) pending = { record: r, api: p.config.model?.api };
             }
           }
           if (r.kind === 'message') {
@@ -230,13 +242,13 @@ export function analyze(options, hooks = {}) {
             const c = p.compaction.checkpoint;
             context = [{ message: c.summaryMessage, turnId: r.turnId },
               ...c.preservedMessageIds.map(id => allEntries.get(id)), ...c.derivedMessages.map(message => ({ message, turnId: r.turnId }))];
-            contexts.set(r.id, context); observedCompactions++;
-            observed.summaryTokens += tokens(c.summaryMessage);
-            observed.preCompactionTokens += Number.isFinite(c.tokensBefore) ? c.tokensBefore : 0;
+            contexts.set(r.id, context); state.observedCompactions++;
+            state.observed.summaryTokens += tokens(c.summaryMessage);
+            state.observed.preCompactionTokens += Number.isFinite(c.tokensBefore) ? c.tokensBefore : 0;
             growthBeforeCompaction += Math.max(0, (c.tokensBefore ?? 0) - (compacted ? observedDrain : lastEstimate ?? 0));
             compacted = true;
             observedDrain = Number.isFinite(c.tokensAfter) ? c.tokensAfter : estimate(context.map(x => x.message)).tokens;
-            observed.drainTokens += observedDrain;
+            state.observed.drainTokens += observedDrain;
             Object.assign(policyFor(owner?.historyBucket), { pinBytes: 0, activeSavings: 0, activeRetrieval: 0, lastBatch: -Infinity });
           }
           if (r.kind === 'rewind') context = contexts.get(p.tipId);
@@ -261,11 +273,13 @@ export function analyze(options, hooks = {}) {
             }
           }
         }
-      } catch { skip('JOURNAL_INVALID'); }
+        accepted = true;
+      } catch { skipJournal('JOURNAL_INVALID'); }
+      finally { if (!accepted) state = committed; }
     }
     // Only safe aggregates leave this function, never internal boundary identities.
     const report = finish(routes, qualification, retrievalRate);
-    report.modeledUpperBoundBoundaryTokens = boundaries.reduce((s, b) => s + b.upperTokens, 0);
+    report.modeledUpperBoundBoundaryTokens = state.boundaries.reduce((s, b) => s + b.upperTokens, 0);
     return report;
   } catch { codes.add('INPUT_INVALID'); return finish(); }
 }

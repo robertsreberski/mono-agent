@@ -85,15 +85,15 @@ it('refuses live SQLite sidecars without creating shared memory or checkpointing
   expect(report.codes).toContain('SIDECAR_NOT_OFFLINE'); expect(snapshot(f.root)).toEqual(before);
 });
 it('defers open turns, corrupt chains, duplicated journals and unavailable inherited projections', () => {
-  const f = fixture({ incomplete: true }); expect(analyze(f.options).skipped.OPEN_TURN).toBe(1);
+  const f = fixture({ incomplete: true }); expect(analyze(f.options).skippedJournals.OPEN_TURN).toBe(1);
   const g = fixture(); g.records[0].parentId = SENTINEL;
   writeFileSync(g.options.journals[0], [g.header, ...g.records].map(x => JSON.stringify(x)).join('\n'));
-  expect(analyze(g.options).skipped.JOURNAL_INVALID).toBe(1);
+  expect(analyze(g.options).skippedJournals.JOURNAL_INVALID).toBe(1);
   const h = fixture(); writeFileSync(join(h.root, 'duplicate.jsonl'), readFileSync(h.options.journals[0]));
-  expect(analyze({ ...h.options, journals: [h.root] }).skipped.DUPLICATE_JOURNAL).toBe(1);
+  expect(analyze({ ...h.options, journals: [h.root] }).skippedJournals.DUPLICATE_JOURNAL).toBe(1);
   h.header.import = { note: SENTINEL };
   writeFileSync(h.options.journals[0], JSON.stringify(h.header) + '\n');
-  expect(analyze(h.options).skipped.IMPORTED_JOURNAL).toBe(1);
+  expect(analyze(h.options).skippedJournals.IMPORTED_JOURNAL).toBe(1);
 });
 it('keeps exposed-name ambiguity outside the lower bound; accepts exact run proof only', () => {
   const f = fixture({ origin: false });

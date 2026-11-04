@@ -2,20 +2,22 @@ import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { retainContinuityText } from '../../packages/conversation/dist/tool-history/continuity-payload.js';
+import { captureFinalizedToolText } from '../../packages/conversation/dist/tool-history/continuity-lifecycle.js';
 import { qualificationIdentity } from '../lib/tool-result-clearing-qualification-id.mjs';
-import { createContinuitySchema, continuityRecordId } from '../../packages/conversation/dist/tool-history/continuity-storage.js';
+import { createContinuitySchema } from '../../packages/conversation/dist/tool-history/continuity-storage.js';
 import { hash } from '../lib/tool-result-clearing-reference.mjs';
 export const SENTINEL = 'FICTIONAL-CONTENT-NEVER-OUTPUT-🧭';
 export const route = { api: 'anthropic-messages', triggerTokens: 200000, drainTokens: 40000,
   summaryInputTokens: 40000, summaryOutputTokens: 2000, cacheLifetimeMs: 300000, cacheMarginMs: 30000,
   prices: { input: 3, cacheRead: 0.3, cacheWrite: 3.75, output: 15 },
   quota: { input: 1, cacheRead: 0.1, cacheWrite: 1.25, output: 5 }, quotaBudget: 1e8 };
-export function makeFixture({ tool = 'Read', origin = true, resultText, runs = 14, toolCount = 12, configureRecord, incomplete = false, compactAt, scope = 'fictional', api = route.api, longLoop = false, administrativeTurns = 0 } = {}) {
+export function makeFixture({ tool = 'Read', origin = true, resultText, runs = 14, toolCount = 12, configureRecord, incomplete = false, compactAt, scope = 'fictional', api = route.api, longLoop = false, administrativeTurns = 0, observedUsage = true } = {}) {
   // Independent scratch directory, never a workspace or a node_modules link.
   const root = mkdtempSync(join(tmpdir(), 'clearing-fictional-'));
   const paths = Object.fromEntries(['journal.jsonl', 'sidecar.db', 'routes.json', 'proof.json', 'qualification.json'].map(n => [n, join(root, n)]));
   const db = new DatabaseSync(paths['sidecar.db']); createContinuitySchema(db);
+  // Empty ancillary accounting tables; production capture creates the retained rows.
+  db.exec('CREATE TABLE metadata(key TEXT, value TEXT); CREATE TABLE tool_records(retained_bytes INTEGER)');
   const physical = `physical-${scope}-${SENTINEL}`, logical = `logical-${scope}-${SENTINEL}`;
   const header = { format: 'mono-harness', version: 2, journalId: `fictional_journal_${scope}`, ownershipSchemaVersion: 1,
     ownership: { kind: 'unbound' }, initialHandle: { id: `handle-${SENTINEL}` }, id: `handle-${SENTINEL}`, cwd: root, createdAt: 0 };
@@ -35,7 +37,7 @@ export function makeFixture({ tool = 'Read', origin = true, resultText, runs = 1
     add('turn_start', { identitySource: 'synthetic', config, baselineTipId: tip }, runId);
     if (turn === 0) add('owner_binding', { kind: 'host', ownerKey: logical, historyBucket: physical }, runId);
     add('operation_start', { type: 'prompt', cause: SENTINEL, baselineTipId: tip, config }, runId, op);
-    const message = m => add('message', { contextParentId: tip, message: { ...m, timestamp: m.timestamp ?? now }, input: { id: null, complete: true },
+    const message = m => add('message', { contextParentId: tip, message: { ...(m.role === 'assistant' && observedUsage ? { usage: { input: 2000, cacheRead: 156000, cacheWrite: 1000, output: 1000, totalTokens: 160000 } } : {}), ...m, timestamp: m.timestamp ?? now }, input: { id: null, complete: true },
       provenance: { provider: 'fictional', api, model: SENTINEL } }, runId, op);
     message({ role: 'user', content: SENTINEL, timestamp: now });
     if (turn === compactAt) {
@@ -60,22 +62,20 @@ export function makeFixture({ tool = 'Read', origin = true, resultText, runs = 1
       add('tool_result', { callId, name: tool, phase: 'returned', messageId: null, message: m, outcome: 'success' }, runId, op);
       const placed = message(m);
       add('tool_result', { callId, name: tool, phase: 'placed', messageId: placed.id, outcome: 'success' }, runId, op);
-      const callKey = hash(JSON.stringify([physical, runId, callId]));
-      const recordId = continuityRecordId(physical, `tool-result:${callKey}`);
-      secrets.push(callKey, recordId, hash(text));
-      const g = `generation-${n}-${SENTINEL}`;
-      db.prepare(`INSERT INTO continuity_generations(generation_id,conversation_id,logical_id,action,preparation_digest,state,created_at_ms)
-        VALUES(?,?,?,'publish',?,'committed',0)`).run(g, physical, logical, SENTINEL);
-      const t = retainContinuityText(text);
-      const r = { text: t.text, sha: t.sha256, original: t.originalBytes, retained: t.retainedBytes, redacted: Number(t.redacted), truncated: Number(t.truncated), finalized: 1 };
+      captureFinalizedToolText(db, { conversationId: physical, logicalConversationId: logical, runId, isolated: false,
+        continuityEnabled: true, finalizedContinuity: true }, { phase: 'result', toolCallId: callId, toolName: tool, state: 'success', content: m.content }, tool,
+        { maxBytes: 1e8, maxCompletedCalls: 10000 }, () => {});
+      const row = db.prepare('SELECT * FROM continuity_records ORDER BY ordinal DESC LIMIT 1').get();
+      const callKey = JSON.parse(row.source_json).operationId.slice('tool:'.length);
+      secrets.push(callKey, row.record_id, hash(text));
+      const r = { text: row.retained_text, sha: row.text_sha256, original: row.original_bytes, retained: row.retained_bytes,
+        redacted: row.redacted, truncated: row.truncated, finalized: row.finalized };
       configureRecord?.(r, n);
-      db.prepare(`INSERT INTO continuity_records(record_id,generation_id,run_id,kind,seq,finalized,retained_text,text_sha256,
-        original_bytes,retained_bytes,redacted,truncated,provenance,source_json,created_at_ms)
-        VALUES(?,?,?,'tool',0,?,?,?,?,?,?,?,'tool',?,0)`).run(recordId, g, runId, r.finalized, r.text, r.sha, r.original, r.retained, r.redacted, r.truncated,
-        JSON.stringify({ operationId: `tool:${callKey}`, note: SENTINEL }));
+      db.prepare(`UPDATE continuity_records SET finalized=?,retained_text=?,text_sha256=?,original_bytes=?,retained_bytes=?,redacted=?,truncated=? WHERE record_id=?`)
+        .run(r.finalized, r.text, r.sha, r.original, r.retained, r.redacted, r.truncated, row.record_id);
     }
     if (longLoop && turn === 0) now = 950000;
-    message({ role: 'assistant', content: [{ type: 'text', text: SENTINEL }], stopReason: 'stop', usage: { totalTokens: 160000 } });
+    message({ role: 'assistant', content: [{ type: 'text', text: SENTINEL }], stopReason: 'stop', ...(observedUsage ? {} : { usage: { totalTokens: 160000 } }) });
     add('operation_end', { status: 'completed', tipId: tip }, runId, op);
     if (!incomplete || turn < runs - 1) add('turn_end', { status: 'completed', consumedInputIds: [], finalOperationId: op, tipId: tip }, runId);
     if (turn === 0) for (let n = 0; n < administrativeTurns; n++) {
