@@ -42,9 +42,13 @@ export async function readPilotPrivate(path) {
     const checkPath = async () => {
       pilotNeed(samePilot(parents, await privateParents(path)), "lookup_receipt_invalid");
       const current = await lstat(path);
-      pilotNeed(safe(current) && current.dev === stat.dev && current.ino === stat.ino, "lookup_receipt_invalid");
+      // Trusted writers replace atomically; any in-place change around the read refuses.
+      pilotNeed(safe(current) && current.dev === stat.dev && current.ino === stat.ino && current.size === stat.size
+        && current.mtimeMs === stat.mtimeMs && current.ctimeMs === stat.ctimeMs, "lookup_receipt_invalid");
     };
-    await checkPath(); const bytes = await file.readFile("utf8"); await checkPath(); return JSON.parse(bytes);
+    await checkPath(); const bytes = await file.readFile(); const after = await file.stat();
+    pilotNeed(bytes.length === stat.size && after.size === stat.size && after.mtimeMs === stat.mtimeMs && after.ctimeMs === stat.ctimeMs, "lookup_receipt_invalid");
+    await checkPath(); return JSON.parse(bytes.toString("utf8"));
   } finally { await file.close(); }
 }
 export const pilotStatePath = root => join(root, "lookup-pilot-controller.json");

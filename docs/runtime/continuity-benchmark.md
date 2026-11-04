@@ -1374,8 +1374,9 @@ Partial slot receipts are synced independently of worker exit. Aggregation
 refuses duplicate, changed, unplanned and unvisited receipts. Planned and
 eligible totals describe the entire frozen inventory. Execution status counts
 (skipped, unadmitted, admitted, completed, incomplete, invalid and missing)
-cover visited slots only. The assigned in-flight slot is visited and incomplete
-in a partial view. Unvisited slots remain in inventory totals and schedule
+cover visited slots only. In a partial view the assigned in-flight slot is
+visited: it counts as unadmitted before its first admission and as incomplete
+once admitted. Unvisited slots remain in inventory totals and schedule
 truncation, never in execution status counts. Journal status counts and missing
 receipt copies are independent coverage counters;
 paired blocks require verified receipt copies. Reports
