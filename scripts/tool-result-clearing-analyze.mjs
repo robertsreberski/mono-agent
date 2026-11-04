@@ -2,6 +2,12 @@
 import { writeFileSync, lstatSync, realpathSync } from 'node:fs';
 import { resolve, sep, dirname, basename } from 'node:path';
 import { pathToFileURL } from 'node:url';
+export function overlapsInput(out, input, sidecar) {
+  out = resolve(out); input = resolve(input);
+  const prefix = input.endsWith(sep) ? input : input + sep;
+  return out === input || out.startsWith(prefix)
+    || input === sidecar && ['-wal', '-shm', '-journal'].some(suffix => out === input + suffix);
+}
 export async function main(args) {
   try {
     const options = {}, names = { '--sidecar': 'sidecar', '--routes': 'routes', '--agent-config': 'agentConfig',
@@ -23,9 +29,10 @@ export async function main(args) {
       const out = resolve(realpathSync(dirname(resolve(options.out))), basename(options.out));
       // Reject symlink destinations and output overlapping any supplied input root.
       try { if (lstatSync(out).isSymbolicLink()) throw new Error('INPUT'); } catch (e) { if (e.code !== 'ENOENT') throw e; }
+      const sidecar = options.sidecar ? realpathSync(options.sidecar) : null;
       for (const input of [...(options.journals ?? []), options.sidecar, options.routes, options.agentConfig, options.appAllowlist, options.qualification].filter(Boolean)) {
         const path = realpathSync(input);
-        if (out === path || out.startsWith(path + sep) || out.startsWith(path + '-')) throw new Error('INPUT');
+        if (overlapsInput(out, path, sidecar)) throw new Error('INPUT');
       }
     }
     const { analyze } = await import('./lib/tool-result-clearing-analysis.mjs');

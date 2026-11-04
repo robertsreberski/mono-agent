@@ -1,8 +1,9 @@
 import { afterEach, expect, it } from 'vitest';
-import { readFileSync, writeFileSync, readdirSync, lstatSync, renameSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, readdirSync, lstatSync, renameSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { analyze as rawAnalyze } from '../lib/tool-result-clearing-analysis.mjs';
+import { overlapsInput } from '../tool-result-clearing-analyze.mjs';
 import { gate, model, classifyBoundary, budgetBatch, validateRoutes, reportRoute, admitsBatch } from '../lib/tool-result-clearing-model.mjs';
 import { PIN_BUDGET, identity, exclusion, hash, bytes, estimate, tokens } from '../lib/tool-result-clearing-reference.mjs';
 import { makeFixture, route, SENTINEL } from './tool-result-clearing-fixture.mjs';
@@ -123,6 +124,7 @@ it('requires exact reviewed server/tool/digest for app eligibility', () => {
   expect(analyze(f.options).routes[0].modeled.savedTokens).toBe(0);
   const allow = join(f.root, 'allow.json'); writeFileSync(allow, JSON.stringify([{ ...origin, readOnly: true }]));
   expect(analyze({ ...f.options, appAllowlist: allow }).categories['app-declared'].results).toBe(12);
+  expect(identity('different-name', origin, null, [{ ...origin, readOnly: true }])).toBe('ambiguous');
   expect(identity('lookup', { ...origin, destructiveHint: true }, null, [{ ...origin, readOnly: true }])).toBe('ambiguous');
   expect(identity('lookup', { ...origin, serverIdentityDigest: hash('other') }, null, [{ ...origin, readOnly: true }])).toBe('ambiguous');
 });
@@ -139,7 +141,9 @@ it('reports JSON web yield, structured guard losses and escaped retrieval sizes 
 });
 it.each(['redacted', 'truncated', 'finalized', 'sha', 'original', 'retained', 'text'])('excludes non-exact retained %s evidence', field => {
   const f = fixture({ configureRecord(r) { r[field] = ['redacted', 'truncated'].includes(field) ? 1 : field === 'finalized' ? 0 : typeof r[field] === 'number' ? 1 : SENTINEL; } });
-  expect(analyze(f.options).routes[0].modeled.savedTokens).toBe(0);
+  const report = analyze(f.options).routes[0];
+  expect(report.modeled.savedTokens).toBe(0); expect(report.retention.matchedResults).toBe(0);
+  expect(report.codes).toContain('RETENTION_UNMATCHED'); expect(report.verdict).toBe('DEFER');
 });
 
 const eligible = { pressured: 10, conversations: 3, cold: 12, coldConversations: 3, opportunities: 3, pressureReduction: 0.15,
@@ -205,4 +209,30 @@ it('reference eligibility rejects explicit lifecycle/protection states and non-p
   for (const content of [[{ type: 'image' }], [...m.content, { type: 'image' }], [{ type: 'opaque' }], [{ ...m.content[0], extension: true }]]) {
     expect(exclusion({ ...m, content }, r, state)).toBe('blocks');
   }
+});
+it('rejects positive on-arm costs over a zero baseline and preserves zero-over-zero neutrality', () => {
+  const free = { ...route, drainTokens: 0, summaryInputTokens: 0, summaryOutputTokens: 0,
+    prices: { input: 3, cacheRead: 0, cacheWrite: 0, output: 0 }, quota: { input: 1, cacheRead: 0, cacheWrite: 0, output: 0 } };
+  const result = model(free, [{ growth: 160000, saved: 40000, selected: 1, retrievalTokens: 41000 }], 0);
+  for (const cost of result.costs) {
+    expect(cost.listOff).toBe(0); expect(cost.listOn).toBeGreaterThan(0); expect(cost.listRatio).toBeNull();
+    expect(cost.quotaShareOff).toBe(0); expect(cost.quotaShareOn).toBeGreaterThan(0); expect(cost.quotaRatio).toBeNull();
+  }
+  expect(gate({ ...eligible, ...result })).toBe('STOP');
+  expect(model(free, [], 0).costs.every(c => c.listRatio === 1 && c.quotaRatio === 1)).toBe(true);
+});
+it('allows adjacent output filenames but blocks only SQLite companions and normalized input containment', () => {
+  const f = fixture(), out = f.options.sidecar + '-report.json';
+  expect(cli([...args(f), '--out', out]).status).toBe(0); assertContentFree(JSON.parse(readFileSync(out)), fixtures);
+  for (const suffix of ['-wal', '-shm', '-journal']) {
+    expect(cli([...args(f), '--out', f.options.sidecar + suffix]).status).toBe(2);
+    expect(existsSync(f.options.sidecar + suffix)).toBe(false);
+  }
+  const outside = f.options.routes + '-report.json';
+  expect(cli([...args(f), '--out', outside]).status).toBe(0);
+  // Pure checks: never traverse a filesystem-root journal input in a test.
+  expect(overlapsInput(out, '/', f.options.sidecar)).toBe(true);
+  expect(overlapsInput(out, '//', f.options.sidecar)).toBe(true);
+  expect(overlapsInput(out, f.root + '/', f.options.sidecar)).toBe(true);
+  expect(overlapsInput(f.root + '-report.json', f.root, f.options.sidecar)).toBe(false);
 });

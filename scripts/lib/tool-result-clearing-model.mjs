@@ -5,7 +5,7 @@ export const SENSITIVITIES = [0, 0.05, 0.20];
 export function gate({ pressured, conversations, cold, coldConversations = 0, opportunities, pressureReduction, costs, payload, missingEvidence = false, incomplete = false, codex = false }) {
   if (incomplete || missingEvidence || codex || pressured < 10 || conversations < 3 || cold < 10 || coldConversations < 3) return 'DEFER';
   return opportunities / cold >= 0.25 && pressureReduction >= 0.15
-    && SENSITIVITIES.every(rate => costs.some(c => c.retrievalRate === rate)) && costs.every(x => x.listRatio <= 1.05 && x.quotaRatio <= 1.05)
+    && SENSITIVITIES.every(rate => costs.some(c => c.retrievalRate === rate)) && costs.every(x => Number.isFinite(x.listRatio) && Number.isFinite(x.quotaRatio) && x.listRatio <= 1.05 && x.quotaRatio <= 1.05)
     && payload === 'payload-preserving' ? 'BUILD' : 'STOP';
 }
 export function validateRoutes(input) {
@@ -83,7 +83,7 @@ export function model(route, boundaries, retrievalRate) {
       worstExtra += retrievalInput * Math.max(0, weights.input - blended)
         + onCycles * route.drainTokens * Math.max(0, weights.input - weights.cacheWrite);
       const on = off + Object.values(delta).reduce((sum, x) => sum + x, 0);
-      return { off, on, delta, worstOn: on + Math.max(0, worstExtra), ratio: off > 0 ? on / off : 1 };
+      return { off, on, delta, worstOn: on + Math.max(0, worstExtra), ratio: off > 0 ? on / off : on > 0 ? null : 1 };
     };
     const list = view(route.prices), quota = view(route.quota);
     // Worst-case recache is reported separately; warm clearing is not enabled by this model.
@@ -115,7 +115,7 @@ export function reportRoute(route, boundaries, qualification, retrievalRate, inc
   const retained = new Map(boundaries.flatMap(b => b.retention ?? []).map(r => [r.key, r.matched]));
   const matched = [...retained.values()].filter(Boolean).length;
   const matchedShare = retained.size ? matched / retained.size : null;
-  if (retained.size && !matched) codes.push('RETENTION_UNMATCHED');
+  if (!matched) codes.push('RETENTION_UNMATCHED');
   else if (matchedShare !== null && matchedShare < MIN_RETENTION_SHARE) codes.push('RETENTION_COVERAGE_LOW');
   const evidence = { pressured: pressured.length, conversations: new Set(pressured.map(b => b.logical)).size,
     cold: cold.length, coldConversations: new Set(cold.map(b => b.logical)).size, opportunities: cold.filter(b => admitsBatch(b.saved)).length };

@@ -9,7 +9,7 @@ export const EXCLUDED_TOOLS = ['Bash', 'Exec', 'Write', 'Edit', 'NodeRepl', 'Age
 export function identity(name, origin, proof, allowlist = []) {
   if (EXCLUDED_TOOLS.includes(name)) return null;
   if (origin?.kind === 'mcp') {
-    return origin.readOnlyHint === true && origin.destructiveHint !== true && allowlist.some(x => x.server === origin.server && x.tool === origin.tool
+    return origin.tool === name && origin.readOnlyHint === true && origin.destructiveHint !== true && allowlist.some(x => x.server === origin.server && x.tool === origin.tool
       && /^[a-f0-9]{64}$/.test(x.serverIdentityDigest) && x.serverIdentityDigest === origin.serverIdentityDigest
       && x.readOnly === true) ? 'app-declared' : 'ambiguous';
   }

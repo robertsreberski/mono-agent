@@ -5,6 +5,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { captureFinalizedToolText } from '../../packages/conversation/dist/tool-history/continuity-lifecycle.js';
 import { qualificationIdentity } from '../lib/tool-result-clearing-qualification-id.mjs';
 import { createContinuitySchema } from '../../packages/conversation/dist/tool-history/continuity-storage.js';
+import { JournalValidator, validateJournalHeader } from '../../packages/turn/dist/engine/journal-schema.js';
 import { hash } from '../lib/tool-result-clearing-reference.mjs';
 export const SENTINEL = 'FICTIONAL-CONTENT-NEVER-OUTPUT-🧭';
 export const route = { api: 'anthropic-messages', triggerTokens: 200000, drainTokens: 40000,
@@ -61,7 +62,7 @@ export function makeFixture({ tool = 'Read', origin = true, resultText, runs = 1
         ...(origin ? { origin: typeof origin === 'object' ? origin : { kind: 'builtin', tool } } : {}) }, runId, op);
       add('tool_result', { callId, name: tool, phase: 'returned', messageId: null, message: m, outcome: 'success' }, runId, op);
       const placed = message(m);
-      add('tool_result', { callId, name: tool, phase: 'placed', messageId: placed.id, outcome: 'success' }, runId, op);
+      add('tool_result', { callId, name: tool, messageId: placed.id, outcome: 'success' }, runId, op);
       captureFinalizedToolText(db, { conversationId: physical, logicalConversationId: logical, runId, isolated: false,
         continuityEnabled: true, finalizedContinuity: true }, { phase: 'result', toolCallId: callId, toolName: tool, state: 'success', content: m.content }, tool,
         { maxBytes: 1e8, maxCompletedCalls: 10000 }, () => {});
@@ -85,6 +86,9 @@ export function makeFixture({ tool = 'Read', origin = true, resultText, runs = 1
     }
   }
   db.close();
+  validateJournalHeader(header);
+  const validator = new JournalValidator();
+  for (const record of records) validator.apply(record);
   writeFileSync(paths['journal.jsonl'], [header, ...records].map(x => JSON.stringify(x)).join('\n') + '\n');
   writeFileSync(paths['routes.json'], JSON.stringify([{ ...route, api, privateLabel: SENTINEL }]));
   writeFileSync(paths['proof.json'], JSON.stringify(proofs));

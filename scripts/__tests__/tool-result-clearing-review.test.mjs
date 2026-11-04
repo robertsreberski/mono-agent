@@ -3,6 +3,7 @@ import { writeFileSync, readFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { analyze as rawAnalyze } from '../lib/tool-result-clearing-analysis.mjs';
+import { JournalValidator } from '../../packages/turn/dist/engine/journal-schema.js';
 import { validVersion } from '../lib/tool-result-clearing-qualification-id.mjs';
 import { model, reportRoute } from '../lib/tool-result-clearing-model.mjs';
 import { makeFixture, route } from './tool-result-clearing-fixture.mjs';
@@ -39,7 +40,7 @@ it('measures idle gaps after the last tool-loop request, including failed assist
 it('defers missing identity or qualification evidence; agent-period proof needs no run IDs', () => {
   const fs = ['one', 'two', 'three'].map(scope => fixture({ scope, origin: false }));
   const options = { ...fs[0].options, journals: fs.map(f => f.options.journals[0]) };
-  expect(analyze(options).routes[0]).toMatchObject({ verdict: 'DEFER', codes: ['IDENTITY_UNPROVEN'] });
+  expect(analyze(options).routes[0]).toMatchObject({ verdict: 'DEFER', codes: expect.arrayContaining(['IDENTITY_UNPROVEN', 'RETENTION_UNMATCHED']) });
   writeFileSync(fs[0].paths['proof.json'], JSON.stringify({ builtins: ['Read'], mcpTools: 'none' }));
   expect(analyze({ ...options, agentConfig: fs[0].paths['proof.json'] }).routes[0].codes).not.toContain('IDENTITY_UNPROVEN');
   writeFileSync(fs[0].paths['proof.json'], JSON.stringify({ builtins: ['Read'], mcpTools: [{ exposedName: 'Read' }] }));
@@ -254,4 +255,40 @@ it.each(['ROUTE_MISSING', 'OWNER_MISSING', 'TIME_ORDER'])('keeps a skipped %s fi
   rewrite(f); const report = analyze(f.options);
   expect(report.skippedJournals).toEqual({}); expect(report.skippedBoundaries).toEqual({ [code]: 1 });
   expect(report.counts.boundaries).toBe(1); expect(report.assumptions.requestCount).toBe(1);
+});
+it('validates native tool-result envelopes without extra aliases and analyzes nonzero retained evidence', () => {
+  const f = fixture(), validator = new JournalValidator();
+  for (const r of f.records) validator.apply(r);
+  const placed = f.records.find(r => r.kind === 'message' && r.payload.message.role === 'toolResult');
+  expect(placed.payload.message).not.toHaveProperty('callId'); expect(placed.payload.message).not.toHaveProperty('name');
+  expect(validator.contextInfo.get(placed.id).callId).toBe(placed.payload.message.toolCallId);
+  expect(validator.contextInfo.get(placed.id).name).toBe(placed.payload.message.toolName);
+  expect(validator.calls.size).toBe(12); expect([...validator.calls.values()].every(c => c.placed)).toBe(true);
+  expect(validator.openTurns.size + validator.openOperations.size).toBe(0);
+  const report = analyze(f.options); expect(report.skippedJournals).toEqual({});
+  expect(report.categories['builtin-read'].results).toBe(12); expect(report.routes[0].modeled.savedTokens).toBeGreaterThan(20000);
+});
+it.each(['missing', 'empty', 'duplicate'])('rejects %s per-run proof identities instead of using first-match evidence', type => {
+  const f = fixture(), proof = JSON.parse(readFileSync(f.paths['proof.json'], 'utf8'));
+  if (type === 'missing') delete proof[0].runId;
+  if (type === 'empty') proof[0].runId = '';
+  if (type === 'duplicate') proof.push({ ...proof[0], builtins: [] });
+  writeFileSync(f.paths['proof.json'], JSON.stringify(proof));
+  const report = analyze(f.options); expect(report.codes).toContain('INPUT_INVALID'); expect(report.verdict).toBe('DEFER');
+});
+it('defers an empty proven-retention set even for representative boundaries', () => {
+  const f = fixture(), q = JSON.parse(readFileSync(f.options.qualification, 'utf8'));
+  const boundaries = Array.from({ length: 12 }, (_, i) => ({ pressured: true, cold: true, logical: i % 3, growth: 1, saved: 0, selected: 0, retrievalTokens: 0 }));
+  const report = reportRoute(route, boundaries, q, 0, false);
+  expect(report.codes).toContain('RETENTION_UNMATCHED'); expect(report.retention.matchedResults).toBe(0); expect(report.verdict).toBe('DEFER');
+});
+it('uses turn-scoped call identity for valid operation-less lifecycle and result messages', () => {
+  const f = fixture(), baseline = analyze(f.options).routes[0].modeled.savedTokens;
+  for (const r of f.records) if (['tool_call', 'tool_result'].includes(r.kind) || r.kind === 'message'
+    && (r.payload.message.role === 'toolResult' || r.payload.message.content?.some?.(b => b.type === 'toolCall'))) delete r.operationId;
+  const validator = new JournalValidator(); for (const r of f.records) validator.apply(r); rewrite(f);
+  expect(validator.calls.size).toBe(12); expect([...validator.calls.values()].every(c => c.placed)).toBe(true);
+  const report = analyze(f.options); expect(report.skippedJournals).toEqual({});
+  expect(report.routes[0].modeled.savedTokens).toBe(baseline); expect(baseline).toBeGreaterThan(20000);
+  expect(report.routes[0].retention.matchedShare).toBe(1);
 });

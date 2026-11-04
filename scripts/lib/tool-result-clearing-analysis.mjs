@@ -81,6 +81,8 @@ export function analyze(options, hooks = {}) {
     const validProof = p => p && Array.isArray(p.builtins) && p.builtins.every(x => typeof x === 'string')
       && (p.mcpTools === 'none' || Array.isArray(p.mcpTools) && p.mcpTools.every(x => typeof x?.exposedName === 'string'));
     if (!(Array.isArray(proofs) ? proofs.every(validProof) : validProof(proofs)) || !Array.isArray(allowlist)) throw new Error('INPUT');
+    if (Array.isArray(proofs) && (proofs.some(p => typeof p.runId !== 'string' || !p.runId.length || p.runId.length > 512)
+      || new Set(proofs.map(p => p.runId)).size !== proofs.length)) throw new Error('INPUT');
     if (allowlist.some(x => !x || typeof x.server !== 'string' || typeof x.tool !== 'string' || typeof x.serverIdentityDigest !== 'string')) throw new Error('INPUT');
     const qualification = options.qualification ? json(options.qualification) : null;
     const files = new Set();
@@ -157,7 +159,7 @@ export function analyze(options, hooks = {}) {
           for (const entry of context) {
             const m = entry.message;
             if (m.role !== 'toolResult') continue;
-            const call = calls.get(`${entry.operationId}\0${m.toolCallId}`);
+            const call = calls.get(`${entry.operationId ?? entry.turnId}\0${m.toolCallId}`);
             const callKey = hash(JSON.stringify([physical, entry.turnId, m.toolCallId]));
             const recordId = `chr1_${Buffer.from(hash(JSON.stringify([physical, `tool-result:${callKey}`])), 'hex').toString('base64url')}`;
             const record = retained.get(recordId);
@@ -170,14 +172,15 @@ export function analyze(options, hooks = {}) {
             const scopeExcluded = classification === null || ['ConversationHistory', 'conversation_history', 'SessionHistory', 'session_history', 'RunHistory', 'run_history', 'ReadSkill']
               .some(name => m.toolName === name || m.toolName.endsWith(`__${name}`))
               || call?.origin?.kind === 'builtin' && !['Read', 'Grep', 'Glob', 'WebFetch', 'WebSearch'].includes(m.toolName);
+            const recordMatches = !!record && record.conversation_id === physical && record.logical_id === logical && record.run_id === entry.turnId;
+            const contentReason = scopeExcluded ? 'tool_scope' : exclusion(m, record, { ...resultState, protected: false });
             if (!scopeExcluded && resultState.completed && resultState.returned && resultState.placed
               && !['lifecycle', 'error', 'blocks'].includes(exclusion(m, undefined, resultState))) {
               identityCandidates++;
-              if (category !== 'ambiguous') { provenIdentities++; retention.push({ key: `${physical}\0${entry.turnId}\0${m.toolCallId}`, matched: !!record && record.conversation_id === physical && record.logical_id === logical && record.run_id === entry.turnId
-                && record.finalized === 1 && record.state === 'committed' && record.tombstone_reason === null && typeof record.retained_text === 'string' }); }
+              if (category !== 'ambiguous') { provenIdentities++; retention.push({ key: `${physical}\0${entry.turnId}\0${m.toolCallId}`, matched: recordMatches && !contentReason }); }
             }
-            const reason = scopeExcluded ? 'tool_scope' : record && (record.conversation_id !== physical || record.logical_id !== logical || record.run_id !== entry.turnId)
-              ? 'integrity' : exclusion(m, record, resultState);
+            const reason = record && !recordMatches && !scopeExcluded ? 'integrity'
+              : contentReason || (resultState.protected ? 'protected' : null);
             const key = `${physical}\0${entry.turnId}\0${m.toolCallId}`;
             if (!state.routeCategories.has(api)) state.routeCategories.set(api, categoryCounts());
             for (const [scope, group] of [['all', state.categories], [api, state.routeCategories.get(api)]]) {
@@ -192,7 +195,7 @@ export function analyze(options, hooks = {}) {
                 try { JSON.parse(text); if (containsVisibleSensitiveText(text)) c.structuredScanLosses++; } catch { /* not an envelope */ }
               }
               // Protection is boundary-dependent, retention yield is not.
-              if (!scopeExcluded && !exclusion(m, record, { ...resultState, protected: false })) { c.eligibleBytes += bytes(text); c.escapedBytes += bytes(JSON.stringify(text)); }
+              if (!scopeExcluded && recordMatches && !contentReason) { c.eligibleBytes += bytes(text); c.escapedBytes += bytes(JSON.stringify(text)); }
             }
             if (reason) { count(reason); continue; }
             const net = tokens(m) - tokens({ ...m, content: [{ type: 'text', text: renderStub(m, record) }] });
@@ -272,7 +275,7 @@ export function analyze(options, hooks = {}) {
             Object.assign(policyFor(owner?.historyBucket), { pinBytes: 0, activeSavings: 0, activeRetrieval: 0, lastBatch: -Infinity });
           }
           if (r.kind === 'rewind') context = contexts.get(p.tipId);
-          const key = `${r.operationId}\0${p.callId}`;
+          const key = `${r.operationId ?? r.turnId}\0${p.callId}`;
           if (r.kind === 'tool_call' && p.admission === 'started') {
             const call = { origin: p.origin };
             calls.set(key, call); uses.push(call);
