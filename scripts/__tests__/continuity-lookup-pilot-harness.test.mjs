@@ -7,10 +7,10 @@ import { Socket } from "node:net";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { zstdDecompressSync } from "node:zlib";
-import { openHarness, productionModules, scriptedModels, controlledRuntime, createJudge, prepareLedgerCheckpoint } from "../lib/continuity-runner.mjs";
+import { openHarness, productionModules, scriptedModels, controlledRuntime, configJson, pilotDispatchConfig, createJudge, prepareLedgerCheckpoint, runProbe } from "../lib/continuity-runner.mjs";
 import { armById, mergePatch } from "../lib/continuity-arms.mjs";
-import { issueLookupCacheKey, assertResolvedLookupSafety, assertLookupCacheAssignment, fauxLookupSafety, lookupOfflineBoundary } from "../lib/continuity-lookup-pilot-runtime.mjs";
-import { createGuardedLookupDecorator, createTestOnlyLookupPermitSource, LOOKUP_GUARD_CONTRACT as C } from "../lib/continuity-lookup-guard.mjs";
+import { issueLookupCacheKey, assertResolvedLookupSafety, assertLookupCacheAssignment, fauxLookupSafety, lookupOfflineBoundary, lookupPilotFailureCode, lookupPilotWatchdog, createLookupPilotRoute } from "../lib/continuity-lookup-pilot-runtime.mjs";
+import { createFauxLookupDecorator, createTestOnlyLookupPermitSource, LOOKUP_GUARD_CONTRACT as C } from "../lib/continuity-lookup-guard.mjs";
 
 const cleanups = [];
 const ROOT = fileURLToPath(new URL("../../", import.meta.url)), registry = join(userInfo().homedir, ".local/state/mono-agent/lookup-pilot/consumed-v1");
@@ -100,7 +100,7 @@ it.each(["native-lookup", "continuity-pack-cold"])("configured %s preserves nati
     };
     consumed.push(permit.events);
     return { mcpServers: { "mono-agent-conversation-history": { type: "http", url: fixture.url } },
-      piModelsDecorator: await createGuardedLookupDecorator({ contract: { ...C, runId: "fictional-harness", slotId: `slot-${index}`, promptCacheKey: key }, permit, send, resolvedSafety: { ...pilot, config: opened.config } }) };
+      piModelsDecorator: await createFauxLookupDecorator({ contract: { ...C, runId: "fictional-harness", slotId: `slot-${index}`, promptCacheKey: key }, permit, send, resolvedSafety: { ...pilot, config: opened.config } }) };
   };
   let opened;
   const open = async () => { opened = await openHarness({ modules, work, authPath, model: `${C.provider}:${C.model}`, effort: "high", tools: false, configPatch, route, pilot, clock: { value: new Date("2026-01-01T00:00:00Z") } }); expect(opened.config.providers.piAuthPath).toBe(join(work, ".lookup-no-credentials/absent.json"));
@@ -224,7 +224,7 @@ it.each([false, true])("refuses an identity decorator even with a forged brand: 
 it("brands only a faux guard wrapper and never uses configured Models or credentials", async () => {
   const credential = vi.fn(() => { throw Error("fictional_credentials_forbidden"); }), configured = { getAuth: credential, streamSimple: credential };
   const options = { contract: { ...C, runId: "fictional", slotId: "fictional-slot", promptCacheKey: "assigned" }, permit: createTestOnlyLookupPermitSource(), send: vi.fn(), resolvedSafety: fauxLookupSafety(plan, arm) };
-  const decorator = await createGuardedLookupDecorator(options), wrapped = decorator(configured);
+  const decorator = await createFauxLookupDecorator(options), wrapped = decorator(configured);
   expect(Object.isFrozen(decorator)).toBe(true); expect(wrapped).not.toBe(configured);
   expect(wrapped.getModel(C.provider, C.model).id).toBe(C.model); await wrapped.getAuth(C.provider);
   await expect(wrapped.getAuth("openai")).resolves.toBeUndefined();
@@ -234,10 +234,58 @@ it("brands only a faux guard wrapper and never uses configured Models or credent
   });
   await wrapped.streamSimple(wrapped.getModel(C.provider, C.model), { messages: [{ role: "user", content: "Fictional request.", timestamp: 0 }] }, { apiKey: "FICTIONAL-CALLER-KEY", reasoning: "high", transport: "sse", maxRetries: 0 }).result();
   expect(options.send).toHaveBeenCalledTimes(1); expect(credential).not.toHaveBeenCalled();
-  await expect(createGuardedLookupDecorator({ ...options, permit: { ...options.permit, testOnly: false } })).rejects.toThrow("lookup_faux_permit_forbidden");
-  await expect(createGuardedLookupDecorator({ ...options, resolvedSafety: undefined })).rejects.toThrow("lookup_auxiliary_callers_forbidden");
-  await expect(createGuardedLookupDecorator({ ...options, contract: { ...options.contract, promptCacheKey: undefined } })).rejects.toThrow("lookup_prompt_cache_key_forbidden");
-  let reads = 0; const route = () => ({ get piModelsDecorator() { reads++; return reads === 1 ? decorator : x => x; } });
+  await expect(createFauxLookupDecorator({ ...options, permit: { ...options.permit, testOnly: false } })).rejects.toThrow("lookup_faux_permit_forbidden");
+  await expect(createFauxLookupDecorator({ ...options, resolvedSafety: undefined })).rejects.toThrow("lookup_auxiliary_callers_forbidden");
+  await expect(createFauxLookupDecorator({ ...options, contract: { ...options.contract, promptCacheKey: undefined } })).rejects.toThrow("lookup_prompt_cache_key_forbidden");
+  expect(() => decorator(configured)).toThrow("lookup_unguarded_dispatch");
+  const fresh = await createFauxLookupDecorator(options);
+  let reads = 0; const route = () => ({ get piModelsDecorator() { reads++; return reads === 1 ? fresh : x => x; } });
   const dispatch = vi.fn(), runtime = controlledRuntime({ run: dispatch }, route, () => {});
-  await runtime.run("fictional", {}); expect(reads).toBe(1); expect(dispatch).toHaveBeenCalledWith("fictional", { piModelsDecorator: decorator });
+  const wrongRoute = controlledRuntime({ run: dispatch }, () => ({ piModelsDecorator: fresh }), () => {}, "real");
+  await expect(wrongRoute.run("fictional", {})).rejects.toThrow("lookup_unguarded_dispatch");
+  await runtime.run("fictional", {}); expect(reads).toBe(1); expect(dispatch).toHaveBeenCalledWith("fictional", { piModelsDecorator: fresh });
+});
+
+it.each(["native-lookup", "continuity-pack-cold"])("resolves the internal %s probe profile with SSE and no retry before minting", async id => {
+  const modules = await productionModules(ROOT), selected = armById(id), work = "/home/example/work";
+  const config = modules.config.resolveJsonMonoAgentConfig({ cwd: work, json: configJson({ work, authPath: "/home/example/absent.json", model: `${C.provider}:${C.model}`, effort: "high", tools: false,
+    configPatch: pilotDispatchConfig(mergePatch(selected.sessionConfig, selected.probeConfig)) }) });
+  expect(() => assertResolvedLookupSafety({ plan, arm: selected, config })).not.toThrow();
+  expect(config.providers.piNative).toMatchObject({ transport: "sse", piMaxRetries: 0 });
+});
+
+it.each(["not_admitted_cap", "lookup_request_limit", "lookup_account_mismatch", "lookup_auth_failure", "lookup_quota_exhausted", "lookup_payload_repeated", "pilot_empty_final_output"])("preserves fixed SDK failure %s without exporting arbitrary messages", async code => {
+  expect(await lookupPilotFailureCode({ message: code })).toBe(code); expect(await lookupPilotFailureCode({ details: { message: code } })).toBe(code);
+  expect(await lookupPilotFailureCode({ code })).toBe(code); expect(await lookupPilotFailureCode({ kind: code })).toBe(code); expect(await lookupPilotFailureCode({ details: { code } })).toBe(code);
+  expect(await lookupPilotFailureCode({ message: "Fictional unclassified error text." })).toBeUndefined();
+});
+
+it.each([0, -1, 1.5, NaN, Infinity, "100", 2147483648])("refuses an invalid internal watchdog %s", timeoutMs => {
+  expect(() => lookupPilotWatchdog({ timeoutMs }, { childWatchdogMs: 1000, deadlineMs: 500 }, 2000, 1000)).toThrow("lookup_ipc_invalid");
+});
+it("bounds fallback, requested and elapsed watchdogs without timer coercion", () => {
+  const deadlines = { childWatchdogMs: 1000, deadlineMs: 500 };
+  expect(lookupPilotWatchdog({}, deadlines, 2000, 1000)).toBe(500);
+  expect(lookupPilotWatchdog({ timeoutMs: 300 }, deadlines, 1200, 1000)).toBe(200);
+  expect(lookupPilotWatchdog({}, deadlines, 999, 1000)).toBe(1);
+  expect(() => lookupPilotWatchdog({ timeoutMs: 1001 }, deadlines, 2000, 1000)).toThrow("lookup_ipc_invalid");
+  expect(() => lookupPilotWatchdog({}, { ...deadlines, deadlineMs: NaN }, 2000, 1000)).toThrow("lookup_ipc_invalid");
+});
+it.each(["native-lookup", "continuity-pack-cold", "continuity-pack-boundary", "restart-switch-compact"])("refuses %s pilot probes before workspace operations rather than faking the process boundary", async id => {
+  await expect(runProbe({ arm: armById(id), pilot: {} })).rejects.toMatchObject({ code: "lookup_pilot_boundary_required" });
+});
+it("pins history at forwarder setup and refuses changed output before forwarding", async () => {
+  const { lookupForwarder } = await import("../lib/continuity-lookup.mjs");
+  const forwarder = await lookupForwarder({ meter: {}, pinEndpoint: true }); cleanups.push(() => forwarder.close());
+  const endpoint = forwarder.historyEndpoint; expect(endpoint).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/mcp\//u);
+  const offered = vi.fn(), pilot = { send: { decorator() {} } };
+  const rewrite = vi.spyOn(forwarder, "rewrite").mockResolvedValue({ mcpServers: { "mono-agent-conversation-history": { type: "http", url: endpoint } } });
+  const route = createLookupPilotRoute({ pilot, forwarder, noteOffered: offered });
+  expect((await route({})).mcpServers["mono-agent-conversation-history"].url).toBe(endpoint);
+  const changed = endpoint + "-changed"; forwarder.historyEndpoint = changed;
+  rewrite.mockResolvedValue({ mcpServers: { "mono-agent-conversation-history": { type: "http", url: changed } } });
+  await expect(route({})).rejects.toMatchObject({ code: "lookup_tools_forbidden" });
+  rewrite.mockResolvedValue({ mcpServers: { "mono-agent-conversation-history": null } });
+  await expect(route({})).rejects.toMatchObject({ code: "lookup_tools_forbidden" });
+  expect(pilot.historyEndpoint).toBe(endpoint); expect(offered).toHaveBeenCalledTimes(1);
 });

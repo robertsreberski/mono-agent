@@ -1,9 +1,10 @@
 import { lstatSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import { randomBytes, createHash } from "node:crypto";
 // Scripts-only, fail-closed policy. No credential resolution, provider or send factory.
 const need = (ok, code) => { if (!ok) throw Object.assign(new Error(code), { code, outcome: "refused_pre_send" }); };
 export const lookupCacheKey = key => typeof key === "string" && /^[\x21-\x7e]{1,64}$/u.test(key);
+export const lookupPilotWork = a => join(a.outputRoot, "work", a.slotId, "checkpoint", "work");
 export function issueLookupCacheKey(runId) {
   need(typeof runId === "string" && /^[A-Za-z0-9-]{1,36}$/u.test(runId), "lookup_cache_assignment_invalid");
   return `lk-${runId}-${randomBytes(12).toString("hex")}`;
@@ -56,19 +57,20 @@ export function assertResolvedLookupSafety({ plan, config, arm, captureUpkeepOut
 }
 // All these methods only inspect/reconcile/retire local native state; none dispatches Models.
 export const LOOKUP_RUNTIME_LIFECYCLE = Object.freeze(["configureTools", "disposeAllSessions", "disposeSession", "invalidateSession", "retireDurableSession", "syncSession", "refreshSession", "recoverSession", "reconcileSessionTurn"]);
-export function controlledLookupRuntime(base, route, check) {
+export function controlledLookupRuntime(base, route, check, routeKind = "faux") {
   return new Proxy(base, { get(target, key) {
     if (typeof key === "symbol" || ["then", "toJSON"].includes(key)) return undefined;
     if (key === "run") return async (prompt, options) => {
       // Lazy binding avoids a static guard -> policy -> guard initialization cycle.
-      const { isGuardedLookupDecorator } = await import("./continuity-lookup-guard.mjs");
+      const { isFauxLookupDecorator } = await import("./continuity-lookup-guard.mjs");
+      const { isRealLookupDecorator } = await import("./continuity-lookup-real-capability.mjs");
       const fields = ["sessionId", "providerSessionId", "messages", "nativeSessionAuthority", "nativeSessionProjection", "sessionTurn", "sessionRecovery", "detachedContext", "coldContext"];
       const transcript = () => [options.messages?.length ?? null, createHash("sha256").update(JSON.stringify(options.messages ?? null)).digest("hex")];
       check(options); const native = fields.map(key => options[key]), before = transcript();
       const guarded = { ...await route(options) }; check(options);
       need(JSON.stringify(before) === JSON.stringify(transcript()) && native.every((value, i) => Object.is(value, options[fields[i]]))
         && Object.keys(guarded).every(key => ["piModelsDecorator", "mcpServers"].includes(key)), "lookup_native_identity_forbidden");
-      need(isGuardedLookupDecorator(guarded.piModelsDecorator), "lookup_unguarded_dispatch");
+      need(routeKind === "real" ? isRealLookupDecorator(guarded.piModelsDecorator) : routeKind === "faux" && isFauxLookupDecorator(guarded.piModelsDecorator), "lookup_unguarded_dispatch");
       check({ ...options, ...guarded }, true);
       return target.run(prompt, { ...options, ...guarded });
     };
@@ -94,4 +96,37 @@ export function fauxLookupSafety(plan, arm) {
   return { plan, arm, config: { runtime: { model: { provider: "openai-codex", model: "gpt-6.1-sol" },
     compaction: { enabled: false }, session: { continuity: { ledgerEnabled: false, upkeep: { enabled: false } } }, retry: { primaryAttempts: 1 } },
     providers: { piNative: { transport: "sse", piMaxRetries: 0 } }, tools: { allowedTools: [] } } };
+}
+
+/** Project only known codes from SDK failure receipts; never return free-form text. */
+export async function lookupPilotFailureCode(failure) {
+  const [{ LOOKUP_PRE_SEND_REFUSALS }, { LOOKUP_PILOT_STOPS }] = await Promise.all([
+    import("./continuity-lookup-guard.mjs"), import("./continuity-lookup-pilot-accounting.mjs"),
+  ]);
+  return [failure?.code, failure?.kind, failure?.message, failure?.details?.code, failure?.details?.message].find(value => LOOKUP_PILOT_STOPS.includes(value) || LOOKUP_PRE_SEND_REFUSALS.includes(value) || value === "pilot_empty_final_output");
+}
+
+/** Bound timer values explicitly; never let timer coercion select a watchdog. */
+export function lookupPilotWatchdog(authorization, deadlines, deadlineAt, now = Date.now()) {
+  const requested = authorization.timeoutMs ?? deadlines.childWatchdogMs;
+  const valid = value => Number.isSafeInteger(value) && value > 0 && value <= 2147483647;
+  need([requested, deadlines.childWatchdogMs, deadlines.deadlineMs].every(valid)
+    && requested <= deadlines.childWatchdogMs && Number.isSafeInteger(deadlineAt) && Number.isSafeInteger(now), "lookup_ipc_invalid");
+  const timeout = Math.min(requested, deadlines.deadlineMs, Math.max(1, deadlineAt - now));
+  need(valid(timeout), "lookup_ipc_invalid"); return timeout;
+}
+/** Pin to the forwarder's setup-owned endpoint, never to its rewrite output. */
+export function createLookupPilotRoute({ pilot, forwarder, noteOffered }) {
+  const historyEndpoint = forwarder?.historyEndpoint;
+  if (forwarder) {
+    need(typeof historyEndpoint === "string", "lookup_tools_forbidden");
+    pilot.historyEndpoint = historyEndpoint;
+  }
+  return async options => {
+    const forwarded = forwarder ? await forwarder.rewrite(options) : null;
+    const server = forwarded?.mcpServers?.["mono-agent-conversation-history"];
+    if (Object.hasOwn(forwarded?.mcpServers ?? {}, "mono-agent-conversation-history")) need(server?.url === historyEndpoint, "lookup_tools_forbidden");
+    noteOffered(options);
+    return { piModelsDecorator: pilot.send.decorator, ...(forwarded ? { mcpServers: forwarded.mcpServers } : {}) };
+  };
 }

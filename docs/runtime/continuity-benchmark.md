@@ -1171,7 +1171,7 @@ The separate `continuity-lookup-pilot-registration-v1` schema wraps an unchanged
 external full-upfront registration and a
 `continuity-lookup-pilot-descriptor-v1` descriptor. It is not a legacy
 registration and cannot enable the ordinary paid lookup routes. All seven
-ordinary refusal seams remain in force. There is no pilot dispatcher, capability
+ordinary refusal seams remain in force. There is no enabled pilot dispatcher or approval
 issuer or authorization builder in these artifact helpers.
 
 The descriptor registers `cap-gated-v1`, an explicit numeric cap C, concurrency
@@ -1314,12 +1314,13 @@ power-loss durability, backend framing/billing assumptions and live OAuth are
 not established by these offline tests.
 
 
-### Faux pilot controller and partial reports
+### Pilot controller and partial reports
 
 The internal `runLookupPilot` controller currently accepts only
 `continuity-lookup-faux-authorization-v1`. A real-schema authorization refuses
-with `lookup_pilot_real_route_unavailable` before lease acquisition. There is
-no pilot CLI command, real send, credential access or capability mint here.
+with `lookup_pilot_real_route_unavailable` before artifact-driven setup or lease acquisition. There is
+a closed `pilot` command; real send construction is child-gated and its production
+entry remains unavailable pending the separate process proof.
 Faux runs are accepted under CI; debug-variable presence refuses in every
 process. Neither controller nor worker removes CI from its environment.
 
@@ -1478,3 +1479,45 @@ other sockets, provider/global external fetches and WebSockets refuse. Rejected
 fetches are recorded too, so swallowed errors cannot hide auxiliary egress. Cleanup
 has an explicit hook budget. Scripted checkpoint work uses absent credentials;
 no provider call, paid smoke or full pilot execution is established by this proof.
+
+### Child-authorized pilot construction (entry unavailable)
+
+The explicit `continuity-lookup-compare pilot` command exists but refuses with
+`lookup_pilot_real_route_unavailable` before any argument-driven artifact read,
+lease acquisition or output setup. `LOOKUP_PILOT_REAL_ROUTE_ENABLED` in
+`scripts/lib/continuity-lookup-pilot-entry.mjs` is the single release gate. It
+must remain false until the separately reviewed two-process configured smoke
+proves the complete controller/child flow. No authorization issuer is provided.
+Ordinary benchmark/compare and probe-child refusal seams remain unchanged.
+Pilot restart and in-place probes also refuse with `lookup_pilot_boundary_required`
+until their fresh-process boundary can be preserved; they never silently run as
+in-process substitutes.
+
+The sole real-send factory independently checks the child's registered code,
+role, build and plan; the shared authorization validator and raw-byte consumption
+binding; both markers; parent/child PID and start identity; epoch, slot and exact cache key;
+live IPC; readiness; non-recovery state; and resolved safety. CI or debug-variable
+presence refuses, including empty values. There is no nonce file or IPC MAC.
+Registered pack children reuse the same authorization validator without becoming
+controller checkouts. Real and faux decorators have disjoint private brands and
+are one-shot; an object literal, faux artifact or branded permit alone cannot
+construct a real send. Static caller inventories guard the dispatch boundaries.
+
+The real wrapper requires a fresh consumed, unsettled hold matching the exact
+body digest and allows only one native fetch per hold, with redirects refused
+and no retry. Final account headers must match the salted commitment; same-account
+token rotation is permitted. Account mismatch, HTTP 401/403, HTTP 429 and known
+Codex usage-limit JSON/SSE errors await their fixed sticky stops. The guard's
+settlement contract is unchanged. Unit tests use mocked verification graphs,
+fictional values and denied egress, not execution-valid authorizations.
+
+Containment retains proven members in memory when journal persistence fails.
+Fresh PID/start/pgid proof remains mandatory for every signal; persistence failure
+is never treated as a grant or a successful durable write. Done ACK cleanup and
+containment rejection remain bounded even when the journal is sticky-failed.
+The controller releases its lease; observation-only recovery cannot grant more.
+
+The two-process native/pack smoke, explicit inherited egress/credential preload,
+per-process canaries, persisted hold/consumption listener checks and arrival-kill
+proof remain a separate required step. No live provider behavior, billing,
+power-loss durability or operator acceptance is established by these unit tests.

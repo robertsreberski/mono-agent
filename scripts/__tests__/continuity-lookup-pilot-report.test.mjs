@@ -155,3 +155,21 @@ it("rejects symlinked or unsafe private-state parents and parent/file replacemen
     await expect(readPilotPrivate(path)).rejects.toThrow("lookup_receipt_invalid");
   } finally { nativeFS.open = original; syncBuiltinESMExports(); await fs.rm(base, { recursive: true, force: true }); }
 });
+
+it.each(["lost", "integrity_stop", "skipped", "unadmitted", "refused_pre_send", "pilot_empty_final_output", "store_degraded", "boundary_unverified", "pressure_unverified", "completed", "wrong"])("does not claim quality for a real null-score %s slot or run", terminal => {
+  const state = reportState(); state.schema = "continuity-lookup-controller-v1"; state.slots[0].terminal = terminal;
+  const receipt = lookupPilotReceipt(state, 0); expect(receipt.qualityMeasured).toBe(false);
+  expect(aggregateLookupPilot(state, [receipt]).qualityMeasured).toBe(false);
+});
+it.each([["completed", 1], ["wrong", 0]])("marks only a genuinely graded real %s slot and run as measured", (terminal, score) => {
+  const state = reportState(); state.schema = "continuity-lookup-controller-v1"; Object.assign(state.slots[0], { terminal, score });
+  const receipt = lookupPilotReceipt(state, 0); expect(receipt.qualityMeasured).toBe(true);
+  expect(aggregateLookupPilot(state, [receipt]).qualityMeasured).toBe(true);
+  state.schema = "continuity-lookup-faux-controller-v1";
+  const faux = lookupPilotReceipt(state, 0); expect(faux.qualityMeasured).toBe(false); expect(aggregateLookupPilot(state, [faux]).qualityMeasured).toBe(false);
+});
+
+it("does not claim a measured result without admission", () => {
+  const state = reportState(); state.schema = "continuity-lookup-controller-v1"; Object.assign(state.slots[0], { holds: [], score: 1 });
+  const receipt = lookupPilotReceipt(state, 0); expect(receipt.qualityMeasured).toBe(false); expect(aggregateLookupPilot(state, [receipt]).qualityMeasured).toBe(false);
+});

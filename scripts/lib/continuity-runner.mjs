@@ -16,7 +16,7 @@ import { cp, mkdir, readFile, rm, writeFile, realpath, lstat } from "node:fs/pro
 import { dirname, join, isAbsolute, relative, resolve, sep } from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { assertResolvedLookupSafety, controlledLookupRuntime, lookupOfflineBoundary } from "./continuity-lookup-pilot-runtime.mjs";
+import { assertResolvedLookupSafety, controlledLookupRuntime, lookupOfflineBoundary, lookupPilotFailureCode, createLookupPilotRoute } from "./continuity-lookup-pilot-runtime.mjs";
 import { armById, hasPackEvidence, checkpointKey, mergePatch, pressureMetrics, verifyBoundary, verifyPressure, verifyStore } from "./continuity-arms.mjs";
 import { LOOKUP_MODE, assertLookupServers, witnessedRecovery, installSoul, assertSoul, lookupPrompt, lookupMeter, lookupForwarder, lookupWitness, scriptedLookupReader, referenceReader, historyBody, sourceAnnotation, resolveSource } from "./continuity-lookup.mjs";
 import { traceShape } from "./continuity-generator.mjs";
@@ -108,8 +108,8 @@ export function scriptedModels(pi, refs) {
   };
 }
 
-export function controlledRuntime(base, route, check) {
-  if (check) return controlledLookupRuntime(base, route, check);
+export function controlledRuntime(base, route, check, routeKind) {
+  if (check) return controlledLookupRuntime(base, route, check, routeKind);
   return new Proxy(base, {
     get(target, key) {
       if (key === "run") return async (prompt, options) => target.run(prompt, { ...options, ...await route(options) });
@@ -135,11 +135,16 @@ export function configJson({ work, authPath, model, effort, tools, configPatch }
 }
 
 export async function openHarness({ modules, work, authPath, model, effort, tools, configPatch, route, clock, onHistoryWarning = () => {}, hostOptions = {}, pilot }) {
-  if (pilot && (pilot.authorization?.schema !== "continuity-lookup-faux-authorization-v1" || Object.hasOwn(process.env, "CONTINUITY_DEBUG"))) throw new ContinuityError("lookup_pilot_faux_required");
+  if (pilot && Object.hasOwn(process.env, "CONTINUITY_DEBUG")) throw new ContinuityError("lookup_debug_forbidden");
+  if (pilot?.routeKind === "real") {
+    const { realLookupSendBinds } = await import("./continuity-lookup-real-capability.mjs");
+    if (!realLookupSendBinds(pilot.send, { ...pilot, authPath, work })) throw new ContinuityError("lookup_pilot_capability_invalid");
+  } else if (pilot && pilot.authorization?.schema !== "continuity-lookup-faux-authorization-v1") throw new ContinuityError("lookup_pilot_faux_required");
   const json = configJson({ work, authPath, model, effort, tools, configPatch });
   // A pilot never retains a supplied/patch credential path. Only its branded
   // serializer may dispatch, using fictional in-memory credentials.
-  if (pilot) json.providers.piAuthPath = lookupOfflineBoundary({ ...pilot, work }).authPath;
+  if (pilot && pilot.routeKind !== "real") json.providers.piAuthPath = lookupOfflineBoundary({ ...pilot, work }).authPath;
+  if (pilot?.routeKind === "real") json.providers.piAuthPath = authPath;
   const config = modules.config.resolveJsonMonoAgentConfig({ json, cwd: work });
   const check = pilot ? (options, forwarded = false) => assertResolvedLookupSafety({ ...pilot, config, options, forwarded }) : null;
   if (check) { check(); if (Object.keys(hostOptions).length) throw new ContinuityError("lookup_auxiliary_callers_forbidden"); }
@@ -159,7 +164,7 @@ export async function openHarness({ modules, work, authPath, model, effort, tool
     }
   })();
   try {
-    runtime = controlledRuntime(modules.app.createConfiguredAgentRuntime({ config, cwd: work, model: config.runtime.model }), route, check);
+    runtime = controlledRuntime(modules.app.createConfiguredAgentRuntime({ config, cwd: work, model: config.runtime.model }), route, check, pilot?.routeKind);
     // Tool-history/continuity outages are fail-open in production (warnings only);
     // the benchmark counts them so a degraded store invalidates the sample.
     harness = await modules.app.createConfiguredConversationHarness({ config, cwd: work, runtime, now: () => clock.value, ...hostOptions,
@@ -386,6 +391,10 @@ function liveRoute(modules, mode, refs, watch = null, lookup = null) {
   };
 }
 
+export const pilotDispatchConfig = patch => mergePatch(patch, {
+  runtime: { compaction: { enabled: false }, retry: { primaryAttempts: 1 }, fallbacks: [], session: { modelSwitch: { enabled: false } } },
+  providers: { piNative: { transport: "sse", piMaxRetries: 0 } },
+});
 export function lookupConfig(work, plan, configPatch, probe = false) {
   return plan.probeMode === LOOKUP_MODE ? mergePatch(configPatch, {
     context: { soulPath: join(work, "BENCHMARK-SOUL.md") },
@@ -398,7 +407,7 @@ function snapshotLookup(lookup, reference) {
     ...(reference ? { reference: lookup.reference ?? { discovered: false } } : {}) };
 }
 
-export async function runLiveTurn({ modules, work, authPath, plan, mode, configPatch, userMessage, clock, conversationId, owner, lookupSource, lookupAnnotation, lookupReference = false }) {
+export async function runLiveTurn({ modules, work, authPath, plan, mode, configPatch, userMessage, clock, conversationId, owner, lookupSource, lookupAnnotation, lookupReference = false, pilot }) {
   const isLookup = plan.probeMode === LOOKUP_MODE;
   const watch = observer(), controller = new AbortController();
   let lookup = null, deadlineTimer = null, open = null;
@@ -411,24 +420,33 @@ export async function runLiveTurn({ modules, work, authPath, plan, mode, configP
       lookup = { witness, meter, round: 0, maxTurns: plan.lookup.maxTurns, lastBody: null };
     }
     try {
-      if (isLookup && mode !== "offline") throw new ContinuityError("lookup_real_not_authorized");
+      if (isLookup && mode !== "offline") {
+        const { isRealLookupSend } = await import("./continuity-lookup-real-capability.mjs");
+        if (!isRealLookupSend(pilot?.send)) throw new ContinuityError("lookup_real_not_authorized");
+      }
       if (isLookup) assertSoul(await readFile(join(work, "BENCHMARK-SOUL.md")), plan.lookup.soul);
+      if (pilot) configPatch = pilotDispatchConfig(configPatch);
       const reader = modules.host.parseMonoRuntimeModelReference(plan.reader.model);
       if (lookup) {
         lookup.reader = lookupReference ? referenceReader({ source: lookupSource, query: lookupAnnotation.query, witness: lookup.witness, onFinish: result => { lookup.reference = result; } })
           : scriptedLookupReader({ callBudget: plan.lookup.budget.callBudget });
         try {
-          lookup.forwarder = await lookupForwarder({ meter: lookup.meter, witness: { delivered(result) { lookup.witness.delivered(result); lookup.lastBody = historyBody(result); } } });
+          lookup.forwarder = await lookupForwarder({ pinEndpoint: Boolean(pilot), meter: lookup.meter, witness: { delivered(result) { lookup.witness.delivered(result); lookup.lastBody = historyBody(result); } } });
         } catch { throw new ContinuityError("lookup_forwarder_setup"); }
         deadlineTimer = setTimeout(() => lookup.meter.expire(), plan.lookup.deadlineMs); deadlineTimer.unref();
       }
-      const route = liveRoute(modules, mode, [reader], watch, lookup);
+      const route = pilot ? createLookupPilotRoute({ pilot, forwarder: lookup?.forwarder, noteOffered: watch.noteOffered })
+        : liveRoute(modules, mode, [reader], watch, lookup);
       open = await openHarness({ modules, work, authPath, model: plan.reader.model, effort: plan.reader.effort, tools: false,
-        configPatch: lookupConfig(work, plan, configPatch, true), route, clock, onHistoryWarning: () => watch.noteHistoryWarning() });
+        configPatch: lookupConfig(work, plan, configPatch, true), route, clock, onHistoryWarning: () => watch.noteHistoryWarning(), pilot });
       response = await open.harness.run({
         conversationId, userMessage, abortSignal: AbortSignal.any([controller.signal, AbortSignal.timeout(plan.limits.perLiveTurnTimeoutMs)]),
         captureSpeakerKind: "human-turn", metadata: { source: "web" }, sender: { displayName: owner }, onEvent: watch.onEvent,
       });
+      if (pilot && response.failure) {
+        const code = await lookupPilotFailureCode(response.failure);
+        if (code) throw new ContinuityError(code);
+      }
     } finally {
       clearTimeout(deadlineTimer);
       const cleanup = async () => { try { await open?.close(); } finally { await lookup?.forwarder?.close(); } };
@@ -494,7 +512,7 @@ export async function buildCheckpoint({ modules, trace, arm, repeat, dir, plan, 
           // Promptless manual compaction before the mid-trace turn: the same
           // guarded production summary driver, with no live reply in history.
           if (open) { await open.close(); open = null; }
-          record.mid = await manualCompaction({ modules, work, authPath, plan, mode, binding, configPatch: mergePatch(arm.sessionConfig ?? {}, arm.midCheckpoint.config), clock, conversationId, turnId: turn.id });
+          record.mid = await manualCompaction({ modules, work, authPath, plan, mode, binding, configPatch: mergePatch(arm.sessionConfig ?? {}, arm.midCheckpoint.config), clock, conversationId, turnId: turn.id, pilot });
           if (!record.mid.boundary.verified) throw new ContinuityError("mid_checkpoint_boundary_unverified", record.mid.boundary.reasons.join(","));
         }
         open ??= await openHarness({ modules, work, authPath, model: binding.reference, effort: undefined, tools: true, configPatch: lookupConfig(work, plan, arm.sessionConfig ?? {}), route, clock,
@@ -512,7 +530,7 @@ export async function buildCheckpoint({ modules, trace, arm, repeat, dir, plan, 
           const capture = captureUpkeepOutput?.replace(/\.json$/u, `-p${index + 1}.json`);
           let result;
           try { result = await runBoundaryChild({ type: "preparation", root: fileURLToPath(new URL("../../", import.meta.url)), work, authPath, plan, mode,
-            clockIso: clock.value.toISOString(), conversationId, step, preparation: index + 1, upkeepPrice, captureUpkeepOutput: capture }, { timeoutMs: plan.limits.perLiveTurnTimeoutMs }); }
+            clockIso: clock.value.toISOString(), conversationId, step, preparation: index + 1, upkeepPrice, captureUpkeepOutput: capture, pilot }, { timeoutMs: plan.limits.perLiveTurnTimeoutMs }); }
           catch (error) {
             // A lost child acknowledgement cannot prove non-invocation. Keep
             // its whole input allowance; the controller retains its reservation.
@@ -873,8 +891,11 @@ export function decodeBoundaryChildResult(code, raw, probeMode) {
 }
 
 /** Fork the checkpoint into a new workspace and ask one probe in a fresh continuation turn. */
-export async function runProbe({ modules, trace, arm, repeat, probe, checkpointWork, checkpointSnapshot = null, checkpointContinuity = null, checkpointUpkeep = null, checkpointConversationId, forkDir, plan, mode, authPath, keepWork = false, mid = null, root, lookupReference = false }) {
+export async function runProbe({ modules, trace, arm, repeat, probe, checkpointWork, checkpointSnapshot = null, checkpointContinuity = null, checkpointUpkeep = null, checkpointConversationId, forkDir, plan, mode, authPath, keepWork = false, mid = null, root, lookupReference = false, pilot }) {
   const inPlace = arm.fork === "in-place";
+  // A capability is assigned to this PID, not transferable to a nested child.
+  // Refuse rather than measure a restart/in-place arm without its fresh process.
+  if (pilot && (arm.restart || inPlace)) throw new ContinuityError("lookup_pilot_boundary_required");
   if (inPlace && checkpointSnapshot === null) throw new ContinuityError("in_place_fork_requires_snapshot");
   // In-place: restore the pristine snapshot at the checkpoint's own absolute
   // root (callers never overlap forks of one checkpoint) and probe in a fresh
@@ -895,7 +916,7 @@ export async function runProbe({ modules, trace, arm, repeat, probe, checkpointW
     const lookupSource = lookupAnnotation ? resolveSource(modules, work, checkpointConversationId, lookupAnnotation) : null;
     const turn = { work, authPath, plan, mode, configPatch: mergePatch(arm.sessionConfig ?? {}, arm.probeConfig), userMessage: plan.probeMode === LOOKUP_MODE ? lookupPrompt(probe) : probePrompt(probe),
       ...(lookupAnnotation ? { lookupSource, lookupAnnotation, lookupReference } : {}),
-      conversationId: checkpointConversationId, owner: trace.owner.displayName };
+      conversationId: checkpointConversationId, owner: trace.owner.displayName, pilot };
     const live = arm.restart || inPlace
       ? await runBoundaryChild({ type: "probe", ...turn, root, clockIso: clock.value.toISOString() }, { timeoutMs: plan.limits.perLiveTurnTimeoutMs })
       : await runLiveTurn({ modules, ...turn, clock });

@@ -1,3 +1,4 @@
+import { DatabaseSync } from "node:sqlite";
 import { it, expect, vi } from "vitest";
 import * as fs from "node:fs/promises";
 import { join } from "node:path";
@@ -309,4 +310,19 @@ it.each(["descendant-timeout", "descendant-disconnect", "descendant-timeout-unpr
     expect(reply.failed).toBeUndefined(); expect(reply.result.stop).toBe(stop); expect(reply.result.schedule.visited).toBe(1);
     expect(driver.signals).toEqual(["SIGTERM", "SIGKILL"]); expect(driver.stopAtSignals).toEqual([stop, stop]); expect(driver.leaderExitedBeforeKill).toBe(true); expect(groupAlive(slot.worker.pid)).toBe(false);
   }
+});
+
+it.each(["persist-descendant-timeout", "persist-descendant-done", "persist-descendant-unproven", "sticky-descendant-timeout"])("contains or rejects promptly when member persistence fails: %s", async action => {
+  const f = suite.fixture, options = await runOptions(f, [action.endsWith("done") ? "descendant" : "settled", "lost"], 4000), config = join(f.base, `${action}.json`);
+  await fs.writeFile(config, JSON.stringify({ action }), { mode: 0o600 });
+  const p = await suite.spawn({ options }, { LOOKUP_FIXTURE_FAULT: config }), reply = await p.reply; await p.exit;
+  expect(reply).toEqual({ failed: action.endsWith("unproven") ? "lookup_unreconciled_processes" : "lookup_persist_failed" });
+  const state = JSON.parse(await fs.readFile(join(options.outputRoot, "lookup-pilot-controller.json"))), slot = state.slots[0];
+  const driver = JSON.parse(await fs.readFile(join(f.base, "witnesses", `${p.child.pid}.json`)));
+  expect(driver.memberPersistFailed).toBe(true); expect(slot.members ?? []).toEqual([]); expect(state.slots.filter(s => s.worker)).toHaveLength(1);
+  expect(driver.signals).toContain("SIGTERM");
+  if (action.endsWith("unproven")) { expect(driver.signals).toEqual(["SIGTERM"]); expect(driver.descendantUnproven).toBe(true); }
+  else { expect(groupAlive(slot.worker.pid)).toBe(false); if (action === "sticky-descendant-timeout") expect(driver.signals).toEqual(["SIGTERM", "SIGKILL"]); }
+  const db = new DatabaseSync(join(options.outputRoot, "controller-lock.sqlite"));
+  try { db.exec("PRAGMA busy_timeout=0; BEGIN IMMEDIATE; ROLLBACK"); } finally { db.close(); }
 });

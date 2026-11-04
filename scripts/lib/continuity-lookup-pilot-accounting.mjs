@@ -19,7 +19,7 @@ export const LOOKUP_GUARD_STOPS = Object.freeze([...new Set([...LOOKUP_GUARD_POL
 ])]);
 export const LOOKUP_INTEGRITY_STOPS = Object.freeze(LOOKUP_GUARD_STOPS.filter(code => !["auth_failure", "lookup_auth_failure", "lookup_account_mismatch", "lookup_quota_exhausted"].includes(code)));
 const outcomeCodes = Object.freeze({ settled: [null], lost: [null], own_abort_after_send: [null], integrity_stop: LOOKUP_INTEGRITY_STOPS });
-export const LOOKUP_SLOT_TERMINALS = Object.freeze(["completed", "wrong", "lost", "own_abort_after_send", "pilot_empty_final_output", "integrity_stop", "refused_pre_send", "unadmitted"]);
+export const LOOKUP_SLOT_TERMINALS = Object.freeze(["completed", "wrong", "lost", "own_abort_after_send", "pilot_empty_final_output", "store_degraded", "boundary_unverified", "pressure_unverified", "integrity_stop", "refused_pre_send", "unadmitted"]);
 export function pilotNeed(ok, code) { if (!ok) throw Object.assign(new Error(code), { code }); }
 export const fixedPilotCode = code => LOOKUP_PILOT_STOPS.includes(code) ? code : "lookup_ipc_invalid";
 export const USD_UNITS = 20000000n; // half of one tenth-microdollar; exact even for flex

@@ -217,7 +217,7 @@ export function assertLookupServers(options) {
 }
 
 /** A URL-only forwarding seam: preserve server identity, listing/schema and production handlers. */
-export async function lookupForwarder({ meter, witness }) {
+export async function lookupForwarder({ meter, witness, pinEndpoint = false }) {
   const [{ Server }, { StreamableHTTPServerTransport }, { Client }, { StreamableHTTPClientTransport }, { CallToolRequestSchema, ListToolsRequestSchema }] = await Promise.all([
     import("@modelcontextprotocol/sdk/server/index.js"), import("@modelcontextprotocol/sdk/server/streamableHttp.js"),
     import("@modelcontextprotocol/sdk/client/index.js"), import("@modelcontextprotocol/sdk/client/streamableHttp.js"), import("@modelcontextprotocol/sdk/types.js"),
@@ -248,15 +248,21 @@ export async function lookupForwarder({ meter, witness }) {
   });
   await new Promise((resolve, reject) => { http.once("error", reject); http.listen(0, "127.0.0.1", resolve); });
   host = `127.0.0.1:${http.address().port}`;
+  const pinnedPath = pinEndpoint ? `/mcp/${randomUUID()}` : null; let pinnedUpstream;
   return {
+    historyEndpoint: pinnedPath ? `http://${host}${pinnedPath}` : undefined,
     async rewrite(options) {
       const upstream = options.mcpServers?.[HISTORY_SERVER];
       if (!upstream) return options;
       const url = new URL(upstream.url);
       if (url.protocol !== "http:" || url.hostname !== "127.0.0.1") throw new Error("lookup_requires_real_loopback_history");
+      if (pinEndpoint) {
+        if (pinnedUpstream !== undefined && pinnedUpstream !== upstream.url) throw Object.assign(new Error("lookup_tools_forbidden"), { code: "lookup_tools_forbidden" });
+        pinnedUpstream = upstream.url;
+      }
       let route = [...routes.values()].find(row => row.upstream === upstream.url);
       if (!route) {
-        const path = `/mcp/${randomUUID()}`;
+        const path = pinnedPath ?? `/mcp/${randomUUID()}`;
         const client = new Client({ name: "continuity-lookup-forwarder", version: "1.0.0" }); clients.add(client);
         try {
           await client.connect(new StreamableHTTPClientTransport(url, upstream.headers ? { requestInit: { headers: upstream.headers } } : {}));
