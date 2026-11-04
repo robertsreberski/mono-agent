@@ -287,7 +287,7 @@ it('distinguishes no opportunity from unproven identity and unmatched proven ret
   expect(missing.codes).toContain('RETENTION_UNMATCHED'); expect(missing.verdict).toBe('DEFER');
 });
 it.each(['redacted', 'truncated'])('counts real %s captures as matched but models their low yield as STOP', kind => {
-  const f = fixture({ runs: 2, toolCount: 1, resultText: kind === 'redacted' ? 'Fictional path: /home/fictional/workspace/document.txt' : 'x'.repeat(1024 * 1024 + 1) });
+  const f = fixture({ runs: 2, toolCount: 1, resultText: kind === 'redacted' ? 'Fictional path: /home/example/workspace/document.txt' : 'x'.repeat(1024 * 1024 + 1) });
   const report = analyze(f.options).routes[0];
   expect(report.retention).toMatchObject({ provenResults: 1, matchedResults: 1, unmatchedResults: 0, matchedShare: 1 });
   expect(report.categories['builtin-read'][kind]).toBe(1); expect(report.categories['builtin-read'].eligibleBytes).toBe(0); expect(report.modeled.savedTokens).toBe(0);
