@@ -22,6 +22,8 @@ node scripts/tool-result-clearing-analyze.mjs \
 ```
 
 `--journals` accepts one or more files/directories (recursive `.jsonl` selection).
+For native session roots, pass `<root>/journals`, containing per-session `.jsonl`
+files; not the parent root containing legacy imports, aliases or retired state.
 `--sidecar` and `--routes` are also required. Output defaults to stdout.
 `--out` exclusively creates an explicit new file, never overwrites an input.
 Exit status is 0 for a complete analysis, 2 for incomplete/invalid inputs;
@@ -53,16 +55,24 @@ These are fictional modeling inputs, **not current provider prices**. Prices
 are currency per million tokens; quota weights convert tokens to quota units,
 and `quotaBudget` is the subscription budget in those units. Cache lifetime
 can be `"unknown"`, which never qualifies as cold. Cold means a request gap
-strictly greater than lifetime plus margin; the first request's gap is unknown.
+strictly greater than lifetime plus margin, measured from the latest preceding
+assistant message timestamp, including failed/aborted dispatches and tool loops.
+The first request's gap is unknown.
 
-Optional `--agent-config` is an array of complete run proofs:
-`{"runId":"fictional-run","builtins":["Read"],"mcpTools":[]}`. Each MCP entry
-lists its `exposedName`; missing collision inventory is not proof. Native
-host-captured `tool_call.payload.origin` can also prove built-in identity.
-Names alone never qualify. Optional `--app-allowlist` is a reviewed array of
+Optional `--agent-config` accepts an agent-period owner attestation:
+`{"builtins":["Read","Grep"],"mcpTools":"none"}`. Alternatively `mcpTools` is a
+complete array of `{"exposedName":"fictional-tool"}` entries exposed by configured
+servers over the snapshot period. A built-in must be enabled and have no MCP
+name collision. Configuration changes within that period invalidate the
+attestation: split the period or use an array of per-run proofs, each adding
+`runId`. Missing inventory is not proof; names alone never qualify.
+No native writer records `tool_call.payload.origin` at this revision. Thus native
+history needs supplied proof; MCP-origin fixtures do not imply real origin capture.
+Optional `--app-allowlist` is a reviewed array of
 `{server,tool,serverIdentityDigest,readOnly:true}` declarations, matched exactly
-to captured MCP origin with `readOnlyHint:true` and no destructive hint. The digest is SHA-256 of the reviewed server identity;
-repointing the server invalidates the declaration. Neither input is echoed.
+to captured MCP origin with `readOnlyHint:true` and no destructive hint. The digest
+is SHA-256 of the reviewed server identity; repointing invalidates it. Inputs are
+never echoed. Without captured provenance, app results remain upper-bound only.
 
 ## Privacy, eligibility and snapshot limits
 
@@ -70,8 +80,10 @@ The analyzer measures original/retained bytes and computes digests in memory.
 It prints only fixed codes, category/API enums, counts, byte totals, histograms
 and modeled numbers: never text, arguments, paths, URLs, identities, digests or
 raw exceptions. The analyzer does not import provider, auth or credential code.
-SQLite opens read-only. WAL/shared-memory/rollback-journal companions are
-refused without opening the DB, so even shared-memory creation is avoided.
+SQLite opens read-only. WAL-mode header bytes (18–19) and WAL/shared-memory/
+rollback-journal companions are refused with `SIDECAR_NOT_OFFLINE` before opening,
+including WAL-mode databases without companions. No shared-memory creation is
+needed or permitted.
 Size/mtime/inode checks include inputs, directories and absent DB companions;
 changed snapshots are incomplete. This is change detection, not an atomic
 cross-file backup or protection against an adversarial writer restoring metadata.
@@ -80,21 +92,27 @@ Native validation and schema assumptions come from `engine/journal-schema.ts`,
 `engine/session-context.ts`, `tool-history/continuity-storage.ts`, and
 `tool-history/continuity-lifecycle.ts`. Finalized tool IDs are reconstructed from
 physical conversation, host turn/run and call identity, not text similarity.
-Imports, inherited projections and interruption repairs currently defer rather
-than guessing context. Duplicate journals/boundaries, invalid or open turns,
-and missing routes/owners also defer the entire snapshot.
+Unsupported/imported/inherited/interrupted, invalid, open or duplicate journals
+are skipped, as are owner-missing, unsupported-API and duplicate boundaries.
+`skipped` publishes fixed reason counts; representativeness uses what remains.
+Only `SNAPSHOT_CHANGED`, `SIDECAR_NOT_OFFLINE`, `INPUT_INVALID` and `NO_JOURNALS`
+mark the snapshot globally incomplete.
 
 Only successful, completed, returned-and-placed, single plain-text results with
 byte-identical committed/finalized, unredacted, untruncated retention qualify.
-Latest input/current turn, three latest whole turns, ten latest tool starts,
-approvals, unresolved effects, errors, images and opaque/mixed blocks stay intact.
-Known instruction/history/effectful tools are excluded. Ambiguous identity is
-reported only in a separate, pin-budget-bounded upper bound, never the gate.
-The opportunity numerator tests each boundary independently against a fresh pin
-budget; the pressure/cost counterfactual separately applies persistent pins,
-cooldown and effective (already reduced) occupancy. Lower-bound batches require 20k net heuristic tokens, five completed prompt runs
-between batches and at most 8 MiB pinned per physical conversation. Compaction
-releases modeled pins. Categories and web yield are reported per API and overall.
+Latest input/current turn, three latest **prompt** turns, ten latest tool starts,
+errors, images and opaque/mixed blocks stay intact. Approval/unresolved-effect
+state is not recorded natively here: this analyzer cannot attest its protection.
+Only proven read-only identities qualify; this limitation is not runtime authority.
+Known instruction/history/effectful built-in names are excluded from both bounds,
+even without identity proof. Ambiguous identity is upper-bound only.
+The gate counts a boundary only for newly cleared lower-bound results in the
+step-by-step simulation, against the remaining 8 MiB per-conversation budget.
+Each result counts once; five completed prompt runs separate batches, using
+already-reduced effective occupancy. Compaction releases pins, not the historical
+set of counted results. Independent per-boundary upper bounds are informational.
+`exclusionUnit` labels exclusions as result-boundary occurrences, not unique results.
+Categories and web yield are reported per API and overall.
 `structuredScanLosses` counts redacted JSON web envelopes rejected again by the
 existing credential/private-evidence guard (not exclusive causal attribution).
 `escapedBytes` and `escapedToOriginalRatio` measure retrieval's extra JSON layer.
@@ -113,7 +131,13 @@ is (G+retrievalRate×R)/(T-P+S/C). This continuous whole-cycle approximation use
 frozen continuations, not alternate assistant behavior. Ordinary input/output,
 cache reads/writes, summaries, drain recaches, full retrieval round trips and
 returned-history growth are charged in both list-price and quota-share views.
-A conservative mean-context bound charges S/(2C) extra on-arm occupancy. Summary
+Every assistant message is a request. Off-arm request costs use its observed
+`input/cacheRead/cacheWrite/output` usage, otherwise an explicitly labeled
+uncached character-heuristic fallback. Assumptions publish request count, fallback
+count and share. Only the on-arm delta is modeled per request: removed tokens
+earn the cheapest usage-bucket credit, while retained native context S/(2C) and
+retrieved history are charged uncached. Summary-cycle differences and expected
+extra full-retrieval requests/responses are separate modeled deltas. Summary
 input growth charges delayed native growth plus at most 500 heuristic tokens
 per cleared result (the summarizer's 2,000-character limit). If the modeled summary
 cannot fit within the trigger, no pressure reduction is credited. Warm/unknown-cache full-prefix rewrite bounds are also
@@ -125,14 +149,18 @@ Per API, BUILD requires **all** of:
 
 - At least 10 pressured pre-turn boundaries across at least 3 logical conversations;
   pressure means `0.75T ≤ E < T`.
-- At least 25% of pressured cold boundaries admit at least 20k lower-bound net tokens.
+- At least 10 cold pressured boundaries across at least 3 logical conversations.
+- At least 25% of these boundaries admit at least 20k **new** lower-bound net tokens.
 - At least 15% less modeled compaction pressure.
 - At most 5% higher modeled total cost at every retrieval sensitivity in both views.
 - Zero unintended payload differences in offline qualification.
 
 Insufficient representativeness/cold evidence or an incomplete snapshot means
-DEFER. Missing payload evidence fails the payload criterion. With representative evidence, another failure
-means STOP. Thresholds are fixed. Overall BUILD requires every supplied API to
+DEFER. Candidates with no proven lower-bound identity yield `IDENTITY_UNPROVEN`;
+missing/stale qualification yields `PAYLOAD_UNQUALIFIED`. Both mean route DEFER,
+not STOP. Qualification must match the installed pi-ai version and digest of the
+exact fixture-builder/diff/reference sources; the analyzer prints only the version,
+not the digest. With sufficient evidence, a failed criterion means STOP. Thresholds are fixed. Overall BUILD requires every supplied API to
 BUILD; otherwise STOP takes precedence over DEFER. Denominators are never pooled.
 Codex always DEFERs: **wire-unproven (transport)**. Offline `onPayload` comparison
 cannot establish provider acceptance, signature validity or delivery over any
