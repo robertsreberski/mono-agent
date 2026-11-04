@@ -56,7 +56,18 @@ async function main(a) {
     else terminal = error.code === "pilot_empty_final_output" ? "pilot_empty_final_output" : error.outcome === "refused_pre_send" ? "refused_pre_send" : a.scenario === "own_abort_after_send" ? "own_abort_after_send" : a.scenario === "integrity_stop" ? "integrity_stop" : "lost"; score = null;
     if (terminal === "refused_pre_send") refusalCode = error.code;
   } finally { permit.close(); }
-  process.send({ type: "done", epoch: a.epoch, slotId: a.slotId, terminal, score, refusalCode }, () => process.disconnect());
+  await new Promise((resolve, reject) => {
+    const cleanup = () => { process.off("message", ack); process.off("disconnect", disconnected); };
+    const disconnected = () => { cleanup(); reject(Object.assign(new Error("lookup_ipc_disconnected"), { code: "lookup_ipc_disconnected" })); };
+    const ack = message => {
+      cleanup();
+      try { pilotNeed(message?.type === "done-ack" && message.epoch === a.epoch && message.slotId === a.slotId, "lookup_ipc_invalid"); resolve(); }
+      catch (error) { reject(error); }
+    };
+    process.once("message", ack); process.once("disconnect", disconnected);
+    process.send({ type: "done", epoch: a.epoch, slotId: a.slotId, terminal, score, refusalCode }, error => { if (error) { cleanup(); reject(error); } });
+  });
+  process.disconnect();
 }
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   if (!process.send || !process.connected) throw new Error("lookup_ipc_invalid");

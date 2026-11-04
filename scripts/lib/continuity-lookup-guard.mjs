@@ -18,13 +18,23 @@ export const LOOKUP_GUARD_CONTRACT = freeze({
   slotId: "", runId: "", piMaxRetries: 0, maxRetries: 0,
 });
 export const LOOKUP_OUTCOMES = freeze({
-  refused_pre_send: { hold: "none", pilot: "continues" },
+  refused_pre_send: { hold: "none", pilot: "capacity_continues_policy_stops" },
   own_abort_after_send: { hold: "retained", pilot: "continues_slot_terminal" },
   settled: { hold: "actual_cost", pilot: "continues" },
   lost: { hold: "retained", pilot: "continues_slot_terminal" },
   integrity_stop: { hold: "retained", pilot: "sticky_stop" },
 });
-export const LOOKUP_PRE_SEND_REFUSALS = Object.freeze(["not_admitted_input_envelope", "not_admitted_cap", "lookup_request_limit", "lookup_route_mismatch", "lookup_contract_mismatch", "lookup_option_forbidden", "lookup_external_fetch_forbidden", "lookup_headers_forbidden", "lookup_env_forbidden", "lookup_payload_forbidden", "lookup_initial_reasoning_forbidden", "lookup_prompt_cache_key_forbidden", "lookup_retry_profile_forbidden", "lookup_auxiliary_callers_forbidden", "lookup_method_forbidden", "lookup_model_switch_forbidden", "lookup_preparation_forbidden", "lookup_tools_forbidden", "lookup_stopped", "lookup_slot_terminal", "lookup_concurrent_request", "lookup_permit_missing"]);
+// Only capacity/terminal refusals may continue a pilot; policy violations are sticky.
+export const LOOKUP_PRE_SEND_REFUSALS = Object.freeze(["not_admitted_input_envelope", "lookup_request_limit", "not_admitted_cap", "lookup_stopped", "lookup_slot_terminal"]);
+export const LOOKUP_GUARD_POLICY_REFUSALS = Object.freeze([
+  "lookup_route_mismatch", "lookup_contract_mismatch", "lookup_option_forbidden", "lookup_external_fetch_forbidden",
+  "lookup_headers_forbidden", "lookup_env_forbidden", "lookup_payload_forbidden", "lookup_initial_reasoning_forbidden",
+  "lookup_prompt_cache_key_forbidden", "lookup_retry_profile_forbidden", "lookup_auxiliary_callers_forbidden",
+  "lookup_method_forbidden", "lookup_model_switch_forbidden", "lookup_preparation_forbidden", "lookup_tools_forbidden",
+  "lookup_concurrent_request", "lookup_permit_missing", "lookup_assumptions_mismatch", "lookup_single_shot_send_required",
+  "lookup_faux_permit_forbidden", "lookup_settlement_invalid", "lookup_cache_assignment_invalid",
+  "lookup_native_identity_forbidden", "lookup_unguarded_dispatch",
+]);
 export class LookupGuardError extends Error {
   constructor(code, outcome = "refused_pre_send", classification = code, cause) {
     super(code, cause === undefined ? undefined : { cause }); this.code = code; this.outcome = outcome; this.classification = classification;
@@ -195,6 +205,9 @@ export function guardedLookupModels(models, { contract, permit, send, assumption
   if (!contract.slotId || !contract.runId || contract.piMaxRetries !== 0 || contract.maxRetries !== 0) refuse("lookup_contract_mismatch");
   for (const key of ["piRequestRetryBudgetMs", "retryBudgetMs", "retryProfile", "retry"])
     if (Object.hasOwn(contract, key)) refuse("lookup_retry_profile_forbidden");
+  const pilotSource = permit?.pilot === true || permit?.testOnly !== true;
+  if (pilotSource && !lookupCacheKey(contract.promptCacheKey)) refuse("lookup_prompt_cache_key_forbidden");
+  if (pilotSource && !resolvedSafety) refuse("lookup_auxiliary_callers_forbidden");
   if (Object.hasOwn(contract, "promptCacheKey") && !lookupCacheKey(contract.promptCacheKey)) refuse("lookup_prompt_cache_key_forbidden");
   if (resolvedSafety) assertResolvedLookupSafety(resolvedSafety);
   if (typeof send !== "function") refuse("lookup_single_shot_send_required");

@@ -3,7 +3,7 @@ import { Socket } from "node:net";
 import fs from "node:fs";
 import promises from "node:fs/promises";
 import childProcess from "node:child_process";
-import { syncBuiltinESMExports } from "node:module";
+import { syncBuiltinESMExports, registerHooks } from "node:module";
 import { pathToFileURL } from "node:url";
 import { join, basename } from "node:path";
 const startIdentity = pid => { try { return childProcess.execFileSync("/bin/ps", ["-p", String(pid), "-o", "lstart="], { encoding: "utf8", env: { ...process.env, LC_ALL: "C", TZ: "UTC" }, stdio: ["ignore", "pipe", "ignore"] }).trim(); } catch { return null; } };
@@ -19,6 +19,16 @@ try { new WebSocket("fictional-invalid-url"); } catch {}
 checking = false; record();
 const fault = process.env.LOOKUP_FIXTURE_FAULT ? JSON.parse(fs.readFileSync(process.env.LOOKUP_FIXTURE_FAULT, "utf8")) : null;
 const driver = process.argv[1]?.endsWith("lookup-pilot-driver.mjs"), probe = process.argv[1]?.endsWith("continuity-lookup-pilot-child.mjs");
+// Alter only caller inputs in the real child; the guard itself is loaded unchanged.
+if (probe && ["guard-model-switch", "guard-cache-key", "guard-after-hold"].includes(fault?.action)) registerHooks({ load(url, context, nextLoad) {
+  const loaded = nextLoad(url, context);
+  if (!url.endsWith("/continuity-lookup-pilot-child.mjs")) return loaded;
+  const marker = fault.action === "guard-after-hold" ? "const result = await guarded.streamSimple" : "const guarded = guardedLookupModels";
+  const injection = fault.action === "guard-cache-key" ? "delete contract.promptCacheKey;"
+    : `${fault.action === "guard-after-hold" ? "if (round === 1) " : ""}resolvedSafety.config.runtime.session.modelSwitch = { enabled: true };`;
+  const source = String(loaded.source); if (!source.includes(marker)) throw Error("fixture_guard_injection_missing");
+  evidence.guardFaultInjected = true; record(); return { ...loaded, source: source.replace(marker, `${injection}\n    ${marker}`) };
+} });
 for (const method of ["rename", "link"]) {
   const original = promises[method];
   promises[method] = async (source, destination, ...args) => {
@@ -70,6 +80,7 @@ const emit = process.emit.bind(process);
 process.emit = (event, ...args) => {
   const a = args[0];
   if (driver && event === "message" && a?.options?.authorization?.scenarios) {
+    controllerOutputRoot = a.options.outputRoot;
     faultScenarios = [...a.options.authorization.scenarios];
     a.options.authorization.scenarios = faultScenarios.map(s => testFaultScenarios.includes(s) ? "settled" : s);
   }
@@ -119,7 +130,7 @@ process.emit = (event, ...args) => {
   }
   return emit(event, ...args);
 };
-let probePid;
+let probePid, controllerOutputRoot;
 const fork = childProcess.fork;
 childProcess.fork = (...args) => {
   const child = fork(...args);
@@ -167,16 +178,7 @@ if (probe) {
     if (m.type === "done" && assignment?.scenario === "descendant") {
       const descendant = childProcess.spawn(process.execPath, ["-e", "setInterval(()=>{},1000)"], { stdio: "ignore", env: process.env });
       evidence.descendants.push({ pid: descendant.pid, startIdentity: startIdentity(descendant.pid) }); record(); descendant.unref();
-      const callback = args.at(-1);
-      if (typeof callback === "function") args[args.length - 1] = () => { void (async () => {
-        const until = Date.now() + 5000;
-        while (Date.now() < until) {
-          const state = JSON.parse(await promises.readFile(join(assignment.outputRoot, "lookup-pilot-controller.json")));
-          if (state.slots[assignment.index].members?.some(m => m.pid === descendant.pid)) { evidence.membersRecorded = true; record(); break; }
-          await new Promise(resolve => schedule(resolve, 5));
-        }
-        callback();
-      })(); };
+      evidence.descendantNoDelay = true; record();
     }
     if (!changed && fault?.action?.startsWith("wire-") && m.version === "lookup-faux-ipc-v1" && (fault.action !== "wire-digest" || m.op === "consume")) {
       changed = true;
@@ -206,7 +208,8 @@ if (driver) {
   const kill = process.kill.bind(process);
   process.kill = (pid, signal) => {
     if (pid < 0 && signal !== 0) {
-      (evidence.signals ??= []).push(signal); record();
+      (evidence.signals ??= []).push(signal);
+      (evidence.stopAtSignals ??= []).push(JSON.parse(fs.readFileSync(join(controllerOutputRoot, "lookup-pilot-controller.json"))).stop); record();
       if (fault?.action === "identity-before-signal-exit") {
         kill(probePid, "SIGKILL");
         for (let i = 0; i < 20; i++) { try { if (exec("ps", ["-p", String(probePid), "-o", "stat="], { encoding: "utf8" }).trim().startsWith("Z")) break; } catch { break; } }

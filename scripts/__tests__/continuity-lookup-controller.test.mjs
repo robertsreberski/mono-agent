@@ -215,3 +215,9 @@ it("makes a valid integrity settlement sticky independently of a later stop mess
   await message(k, "settle", { permit, outcome: { kind: "integrity_stop", code: "lookup_payload_repeated" }, rawUsage: null, tier: null });
   expect(k.journal.snapshot().stop).toBe("lookup_payload_repeated");
 });
+
+it("does not continue an untyped zero-hold guard refusal", async () => {
+  const k = await kernel();
+  await expect(k.journal.finish(0, "refused_pre_send")).rejects.toThrow("lookup_ipc_invalid");
+  expect(k.journal.snapshot().stop).toBe("lookup_ipc_invalid");
+});

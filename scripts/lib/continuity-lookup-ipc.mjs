@@ -67,7 +67,7 @@ export async function createLookupPilotIPC(assignment) {
     });
   };
   const token = permit => { const value = grants.get(permit); pilotNeed(value, "lookup_permit_invalid"); return value; };
-  return Object.freeze({ brand: "lookup-faux-test-only-v1", testOnly: true,
+  return Object.freeze({ brand: "lookup-faux-test-only-v1", testOnly: true, pilot: true,
     async admit(value) {
       const result = await request("admit", value);
       if (result.refused) return result;

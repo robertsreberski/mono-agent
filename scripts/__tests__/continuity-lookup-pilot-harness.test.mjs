@@ -1,5 +1,5 @@
 import { afterEach, beforeAll, afterAll, expect, it, vi } from "vitest";
-import { mkdir, mkdtemp, rm, writeFile, lstat } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile, lstat, symlink } from "node:fs/promises";
 import { userInfo } from "node:os";
 import { dependencySnapshot } from "./fixtures/lookup-dependency-witness.mjs";
 import { createServer } from "node:http";
@@ -65,8 +65,8 @@ it.each(["native-lookup", "continuity-pack-cold"])("configured %s preserves nati
     destinations.push(`${host}:${port}`); return originalConnect.apply(this, args);
   });
   const realFetch = globalThis.fetch;
-  vi.stubGlobal("fetch", (url, init) => { if (new URL(String(url)).origin !== new URL(fixture.url).origin) throw Error("test_global_fetch_denied"); return realFetch(url, init); });
-  vi.stubGlobal("WebSocket", class { constructor() { throw Error("test_websocket_denied"); } });
+  vi.stubGlobal("fetch", (url, init) => { if (new URL(String(url)).origin !== new URL(fixture.url).origin) { rejected.push(`fetch:${new URL(String(url)).origin}`); throw Error("test_global_fetch_denied"); } return realFetch(url, init); });
+  vi.stubGlobal("WebSocket", class { constructor() { rejected.push("websocket"); throw Error("test_websocket_denied"); } });
   const modules = await productionModules(root), selected = armById(id), keys = [issueLookupCacheKey("fictional-harness"), issueLookupCacheKey("fictional-harness")];
   expect(new Set(keys).size).toBe(2);
   const encode = x => Buffer.from(JSON.stringify(x)).toString("base64url");
@@ -78,7 +78,7 @@ it.each(["native-lookup", "continuity-pack-cold"])("configured %s preserves nati
   const request = { conversationId: "fictional-conversation", captureSpeakerKind: "human-turn", metadata: { source: "web" }, onEvent: e => { if (e.type === "session_boundary") boundaries.push({ kind: e.kind, reason: e.reason, context: e.context }); } };
   const pilot = { authorization: { schema: "continuity-lookup-faux-authorization-v1" }, plan, arm: selected, historyEndpoint: fixture.url };
   const route = async options => {
-    const index = run++, key = keys[index], permit = createTestOnlyLookupPermitSource(); let round = 0;
+    const index = run++, key = keys[index], permit = Object.freeze({ ...createTestOnlyLookupPermitSource(), pilot: true }); let round = 0;
     expect(index).toBeLessThan(2); outer.push({ sessionId: options.sessionId, providerSessionId: options.providerSessionId, nativeAuthority: options.nativeSessionAuthority });
     const send = async (url, init) => {
       sends++; round++; expect(String(url)).toBe(`${C.baseUrl}/codex/responses`);
@@ -107,7 +107,7 @@ it.each(["native-lookup", "continuity-pack-cold"])("configured %s preserves nati
     const boundary = lookupOfflineBoundary({ plan, arm: selected, work }), reference = { provider: C.provider, model: "fictional-checkpoint" };
     expect(boundary.mode).toBe("offline");
     const scripted = scriptedModels(modules.pi, [reference]); scripted.respondWith(reference, () => { offlineCalls++; return modules.pi.fauxAssistantMessage("Fictional checkpoint material."); });
-    const prep = await openHarness({ modules, work, authPath: boundary.authPath, model: `${reference.provider}:${reference.model}`, tools: false, configPatch, clock: { value: new Date("2026-01-01T00:00:00Z") }, route: async options => ({ piResolvedModel: scripted.route(options).model, piResolvedModels: scripted.models, compaction: { enabled: false } }) });
+    const prep = await openHarness({ modules, work, authPath: boundary.authPath, model: `${reference.provider}:${reference.model}`, tools: false, configPatch: mergePatch(configPatch, { tools: { allowedTools: [] } }), clock: { value: new Date("2026-01-01T00:00:00Z") }, route: async options => ({ piResolvedModel: scripted.route(options).model, piResolvedModels: scripted.models, compaction: { enabled: false } }) });
     cleanups.push(prep.close); const seeded = await prep.harness.run({ ...request, userMessage: "Remember fictional checkpoint material.", abortSignal: AbortSignal.timeout(20000) });
     expect(seeded.failure).toBeUndefined(); await prep.close();
   } else {
@@ -126,6 +126,7 @@ it.each(["native-lookup", "continuity-pack-cold"])("configured %s preserves nati
   expect(destinations.length).toBeGreaterThan(0); expect(new Set(destinations)).toEqual(new Set([`127.0.0.1:${fixture.port}`]));
   expect(rejected).toEqual([]); expect(() => new Socket().connect({ host: "127.0.0.1", port: fixture.port === 9 ? 10 : 9 })).toThrow("test_egress_denied");
   expect(() => fetch("https://provider.invalid/forbidden")).toThrow("test_global_fetch_denied");
+  expect(rejected).toEqual([`127.0.0.1:${fixture.port === 9 ? 10 : 9}`, "fetch:https://provider.invalid"]);
 }, 30_000);
 
 it.each([
@@ -181,4 +182,23 @@ it("rechecks policy after route preparation and prevents native overrides", asyn
   delete settings.config.runtime.session.modelSwitch;
   const forged = controlledRuntime({ run: dispatch }, async () => ({ piModelsDecorator: x => x, sessionId: "replacement" }), check);
   await expect(forged.run("fictional", options)).rejects.toThrow("lookup_native_identity_forbidden"); expect(dispatch).not.toHaveBeenCalled();
+});
+
+it.each(["append", "edit"])("detects in-place transcript %s before runtime dispatch", async kind => {
+  const dispatch = vi.fn(), options = { messages: [{ role: "user", content: "Fictional original." }] };
+  const runtime = controlledRuntime({ run: dispatch }, async current => {
+    if (kind === "append") current.messages.push({ role: "assistant", content: "Fictional extra." });
+    else current.messages[0].content = "Fictional replacement.";
+    return { piModelsDecorator: x => x };
+  }, () => {});
+  await expect(runtime.run("fictional", options)).rejects.toThrow("lookup_native_identity_forbidden"); expect(dispatch).not.toHaveBeenCalled();
+});
+it.each(["parent", "credential", "dangling-parent"])("requires ENOENT for offline credential and parent: %s", async kind => {
+  const scratch = join(ROOT, ".worklab-tmp"); await mkdir(scratch, { recursive: true }); const work = await mkdtemp(join(scratch, "lookup-absence-"));
+  cleanups.push(() => rm(work, { recursive: true, force: true }));
+  expect(lookupOfflineBoundary({ plan, arm, work }).mode).toBe("offline");
+  const parent = join(work, ".lookup-no-credentials");
+  if (kind === "dangling-parent") await symlink(join(work, "missing"), parent);
+  else { await mkdir(parent); if (kind === "credential") await writeFile(join(parent, "absent.json"), "fictional"); }
+  expect(() => lookupOfflineBoundary({ plan, arm, work })).toThrow("lookup_preparation_forbidden");
 });

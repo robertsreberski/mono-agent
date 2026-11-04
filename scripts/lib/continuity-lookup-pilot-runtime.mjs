@@ -1,4 +1,6 @@
-import { randomBytes } from "node:crypto";
+import { lstatSync } from "node:fs";
+import { dirname } from "node:path";
+import { randomBytes, createHash } from "node:crypto";
 // Scripts-only, fail-closed policy. No credential resolution, provider or send factory.
 const need = (ok, code) => { if (!ok) throw Object.assign(new Error(code), { code, outcome: "refused_pre_send" }); };
 export const lookupCacheKey = key => typeof key === "string" && /^[\x21-\x7e]{1,64}$/u.test(key);
@@ -58,9 +60,10 @@ export function controlledLookupRuntime(base, route, check) {
     if (typeof key === "symbol" || ["then", "toJSON"].includes(key)) return undefined;
     if (key === "run") return async (prompt, options) => {
       const fields = ["sessionId", "providerSessionId", "messages", "nativeSessionAuthority", "nativeSessionProjection", "sessionTurn", "sessionRecovery", "detachedContext", "coldContext"];
-      check(options); const native = fields.map(key => options[key]);
+      const transcript = () => [options.messages?.length ?? null, createHash("sha256").update(JSON.stringify(options.messages ?? null)).digest("hex")];
+      check(options); const native = fields.map(key => options[key]), before = transcript();
       const guarded = await route(options); check(options);
-      need(native.every((value, i) => Object.is(value, options[fields[i]]))
+      need(JSON.stringify(before) === JSON.stringify(transcript()) && native.every((value, i) => Object.is(value, options[fields[i]]))
         && Object.keys(guarded).every(key => ["piModelsDecorator", "mcpServers"].includes(key)), "lookup_native_identity_forbidden");
       need(typeof guarded.piModelsDecorator === "function" && !Object.hasOwn(guarded, "piResolvedModels"), "lookup_unguarded_dispatch");
       check({ ...options, ...guarded }, true);
@@ -74,7 +77,13 @@ export function controlledLookupRuntime(base, route, check) {
 /** Auxiliary work can only be scripted and must receive a nonexistent credential path. */
 export function lookupOfflineBoundary({ plan, arm, work, captureUpkeepOutput }) {
   need(plan?.judge === null && arm?.midCheckpoint === null && !arm.ledgerUpkeep && !captureUpkeepOutput, "lookup_preparation_forbidden");
-  return { mode: "offline", authPath: `${work}/.lookup-no-credentials/absent.json` };
+  const authPath = `${work}/.lookup-no-credentials/absent.json`;
+  for (const path of [authPath, dirname(authPath)]) {
+    let absent = false;
+    try { lstatSync(path); } catch (error) { absent = error.code === "ENOENT"; }
+    need(absent, "lookup_preparation_forbidden");
+  }
+  return { mode: "offline", authPath };
 }
 
 /** Resolved settings of the local-only serializer, not a configured harness substitute. */

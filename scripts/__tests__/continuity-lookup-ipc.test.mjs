@@ -32,9 +32,9 @@ it.each(["disconnect", "die", "hang", "descendant"])("contains a real %s worker 
   if (scenario === "descendant") {
     const state = JSON.parse(await fs.readFile(join(options.outputRoot, "lookup-pilot-controller.json"))), slot = state.slots[0];
     expect(slot.members.length).toBeGreaterThan(0); expect(slot.members.every(m => m.pgid === slot.worker.pid && m.startIdentity)).toBe(true);
-    const child = JSON.parse(await fs.readFile(join(suite.fixture.base, "witnesses", `${slot.worker.pid}.json`))); expect(child.membersRecorded).toBe(true);
+    const child = JSON.parse(await fs.readFile(join(suite.fixture.base, "witnesses", `${slot.worker.pid}.json`))); expect(child.descendantNoDelay).toBe(true);
     const driver = JSON.parse(await fs.readFile(join(suite.fixture.base, "witnesses", `${state.controller.pid}.json`)));
-    expect(driver.signals).toContain("SIGTERM"); expect(groupAlive(slot.worker.pid)).toBe(false);
+    expect(driver.signals).toContain("SIGTERM"); expect(driver.stopAtSignals).toEqual(driver.signals.map(() => "lookup_worker_lost")); expect(groupAlive(slot.worker.pid)).toBe(false);
   }
 });
 it.each(["auth", "quota", "integrity_stop", "empty"])("persists the sticky %s outcome and partial receipt independently of exit", async scenario => {
@@ -277,4 +277,17 @@ it("accepts a fixed guard refusal after settled holds without stopping the next 
   expect(result.failed).toBeUndefined(); expect(result.result.receipts[0]).toMatchObject({ terminal: "refused_pre_send", terminalCode: "lookup_request_limit", calls: { admitted: 10, consumed: 10, settled: 10 } });
   expect(result.result.counts.invalid).toBe(0); expect(result.result.counts.admitted).toBe(2);
   expect(JSON.parse(await fs.readFile(join(options.outputRoot, "report.json"))).stop).toBe("budget_admission");
+});
+
+it.each([["guard-model-switch", "lookup_model_switch_forbidden"], ["guard-cache-key", "lookup_prompt_cache_key_forbidden"], ["guard-after-hold", "lookup_model_switch_forbidden"]])("makes real-child %s policy refusal a sticky stop", async (action, code) => {
+  const f = suite.fixture, options = await runOptions(f, [action === "guard-after-hold" ? "two_rounds" : "settled", "lost"]), config = join(f.base, `${action}.json`);
+  await fs.writeFile(config, JSON.stringify({ action }), { mode: 0o600 });
+  const p = await suite.spawn({ options }, { LOOKUP_FIXTURE_FAULT: config }), reply = await p.reply; await p.exit;
+  expect(reply.failed).toBeUndefined(); expect(reply.result.stop).toBe(code); expect(reply.result.schedule.visited).toBe(1);
+  const receipt = reply.result.receipts[0]; expect(receipt.terminalCode).toBe(code);
+  expect(receipt.terminal).toBe(action === "guard-after-hold" ? "integrity_stop" : "unadmitted");
+  expect(receipt.calls.consumed).toBe(action === "guard-after-hold" ? 1 : 0);
+  const state = JSON.parse(await fs.readFile(join(options.outputRoot, "lookup-pilot-controller.json")));
+  const witness = JSON.parse(await fs.readFile(join(f.base, "witnesses", `${state.slots[0].worker.pid}.json`))); expect(witness.guardFaultInjected).toBe(true);
+  expect(state.slots.filter(slot => slot.worker)).toHaveLength(1);
 });

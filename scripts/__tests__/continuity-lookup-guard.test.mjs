@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { Socket } from "node:net";
-import { guardedLookupModels, LOOKUP_ASSUMPTIONS as A, LOOKUP_GUARD_CONTRACT as C, lookupInputEnvelope, lookupBodyDigest,
+import { guardedLookupModels, LOOKUP_PRE_SEND_REFUSALS, LOOKUP_ASSUMPTIONS as A, LOOKUP_GUARD_CONTRACT as C, lookupInputEnvelope, lookupBodyDigest,
   createTestOnlyLookupPermitSource, assertRealLookupPermitSource, assertLookupAuxiliaryCallersOff, assertLookupChildSafety, lookupSettledCost } from "../lib/continuity-lookup-guard.mjs";
 import { fauxLookupSafety } from "../lib/continuity-lookup-pilot-runtime.mjs";
 let network, fetch;
@@ -388,4 +388,21 @@ it("rechecks resolved safety at every stream and after payload preparation", asy
   const prepared = fixture({ resolvedSafety: safety });
   await expect(prepared.call({ onPayload: payload => { safety.captureUpkeepOutput = {}; return payload; } })).rejects.toThrow("lookup_preparation_forbidden");
   expect(prepared.permit.events).toEqual([]); expect(prepared.send).not.toHaveBeenCalled();
+});
+
+it("requires key and resolved safety for pilot and non-test permit sources without changing legacy callers", () => {
+  const legacy = createTestOnlyLookupPermitSource(), safety = fauxLookupSafety({ judge: null }, { midCheckpoint: null, ledgerUpkeep: false });
+  const base = { contract: { ...C, slotId: "fictional-slot", runId: "fictional-run" }, send: vi.fn() };
+  for (const permit of [{ ...legacy, pilot: true }, { ...legacy, testOnly: false }]) {
+    expect(() => guardedLookupModels({}, { ...base, permit, resolvedSafety: safety })).toThrow("lookup_prompt_cache_key_forbidden");
+    const assigned = { ...base, permit, contract: { ...base.contract, promptCacheKey: "lk-fictional-assigned" } };
+    expect(() => guardedLookupModels({}, assigned)).toThrow("lookup_auxiliary_callers_forbidden");
+    expect(() => guardedLookupModels({}, { ...assigned, resolvedSafety: safety })).not.toThrow();
+    expect(base.send).not.toHaveBeenCalled();
+  }
+  expect(() => guardedLookupModels({}, { ...base, permit: legacy })).not.toThrow();
+});
+
+it("limits pilot continuation to the five capacity/terminal refusals", () => {
+  expect(LOOKUP_PRE_SEND_REFUSALS).toEqual(["not_admitted_input_envelope", "lookup_request_limit", "not_admitted_cap", "lookup_stopped", "lookup_slot_terminal"]);
 });
