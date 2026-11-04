@@ -36,6 +36,10 @@ const save = (path, value, flag) => writeFile(path, `${JSON.stringify(value, nul
 
 export const LOOKUP_PILOT_PROTOCOL_FILES = Object.freeze([
   "scripts/lib/continuity-lookup-pilot-runtime.mjs",
+  "scripts/lib/continuity-lookup-real-capability.mjs",
+  "scripts/lib/continuity-lookup-pilot-entry.mjs",
+  "scripts/lib/continuity-lookup-pilot-probe.mjs",
+  "scripts/lib/continuity-runner.mjs",
   "scripts/lib/continuity-lookup-controller.mjs",
   "scripts/lib/continuity-lookup-ipc.mjs",
   "scripts/lib/continuity-lookup-pilot-accounting.mjs",

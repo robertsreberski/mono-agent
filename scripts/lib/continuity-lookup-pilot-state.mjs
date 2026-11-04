@@ -8,6 +8,7 @@ import { LOOKUP_AUTHORIZATION_SCHEMA } from "./continuity-lookup-authorization.m
 import { pilotNeed } from "./continuity-lookup-pilot-accounting.mjs";
 
 export const LOOKUP_FAUX_AUTHORIZATION = "continuity-lookup-faux-authorization-v1";
+export const LOOKUP_REAL_CONTROLLER = "continuity-lookup-controller-v1";
 export const LOOKUP_FAUX_CONTROLLER = "continuity-lookup-faux-controller-v1";
 export const LOOKUP_PILOT_IPC = "lookup-faux-ipc-v1";
 export const samePilot = (a, b) => a !== undefined && b !== undefined && digest(a) === digest(b);

@@ -249,6 +249,9 @@ it.each(["codes", "protocol", "catalog", "policy", "source", "selection", "reade
   await expect(validate()).rejects.toThrow("lookup_authorization_binding_mismatch");
 });
 it("rejects account substitution but allows same-account access token rotation without refresh", async () => {
+  const bound = await validate(); expect(auth.lookupAuthorizationMatchesAccount(bound, f.account)).toBe(true);
+  expect(auth.lookupAuthorizationMatchesAccount(bound, "other-fictional-account")).toBe(false);
+  expect(auth.lookupAuthorizationMatchesAccount({}, f.account)).toBe(false);
   await save(f.args.credentialPath, credential("different-fictional-account"));
   await expect(validate()).rejects.toThrow("lookup_account_mismatch");
   await save(f.args.credentialPath, credential(f.account, 2));
@@ -517,4 +520,11 @@ it("isolates synthetic Git from inherited repository selection, hooks and automa
   expect(fixtureGit(repo, ["config", "--get", "gc.auto"]).trim()).toBe("0");
   expect(fixtureGit(repo, ["config", "--get", "maintenance.auto"]).trim()).toBe("false");
   expect(fixtureGit(repo, ["config", "--get", "core.hooksPath"]).trim()).toBe("/dev/null");
+});
+
+it("lets a registered pack child validate the R0-bound attestation without becoming its controller", async () => {
+  const packAuth = await import(/* @vite-ignore */ pathToFileURL(join(f.pilot.registration.codes.Rpack.path, "scripts/lib/continuity-lookup-authorization.mjs")).href);
+  const handle = await unchangedCredential(() => packAuth.validateLookupAuthorization(f.args));
+  expect(packAuth.lookupAuthorizationMatchesAccount(handle, f.account)).toBe(true);
+  await expect(packAuth.validateLookupAuthorization({ ...f.args, controllerRoot: f.pilot.registration.codes.Rpack.path })).rejects.toThrow("lookup_authorization_binding_mismatch");
 });

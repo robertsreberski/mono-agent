@@ -221,3 +221,13 @@ it("does not continue an untyped zero-hold guard refusal", async () => {
   await expect(k.journal.finish(0, "refused_pre_send")).rejects.toThrow("lookup_ipc_invalid");
   expect(k.journal.snapshot().stop).toBe("lookup_ipc_invalid");
 });
+
+it.each(["lookup_auth_failure", "lookup_quota_exhausted", "lookup_account_mismatch"])("preserves %s across a retained-hold settlement and generic lost finish", async code => {
+  const k = await kernel(), permit = await admit(k); await message(k, "consume", { permit, bodyDigest: hash });
+  await message(k, "stop", { code });
+  const path = join(k.options.outputRoot, "lookup-pilot-controller.json"); expect(JSON.parse(await fs.readFile(path)).stop).toBe(code);
+  await message(k, "settle", { permit, outcome: { kind: "lost" }, rawUsage: null, tier: null }); await k.journal.finish(0, "lost");
+  expect(k.journal.snapshot().stop).toBe(code);
+  const receipt = JSON.parse(await fs.readFile(join(k.options.outputRoot, "slots", `${k.journal.snapshot().slots[0].slotId}.json`)));
+  expect(receipt.costs.retainedUSD).toBe(3.92); expect(receipt.holds[0].retained).toBe(true);
+});

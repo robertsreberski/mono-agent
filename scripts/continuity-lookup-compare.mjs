@@ -75,6 +75,8 @@ const HELP = `continuity-lookup-compare (offline only)
            [--suites original,hard,hard-distractors] [--traces ID,...] [--probe-limit N] [--repeats N]
            [--reader REF] [--reader-effort low]
   run --registration FILE --sha256 FILE_SHA256 --output NEW_ABSOLUTE_DIR
+  pilot --registration FILE --sha256 FILE_SHA256 --authorization FILE --credentials FILE --output NEW_DIR
+    (unavailable until process proof; never issues authorization)
   aggregate --registration FILE --sha256 FILE_SHA256 --output EXISTING_ABSOLUTE_DIR
 External workload: --suites holdout --corpus-manifest FILE --manifest-sha256 SHA --statistical-spec FILE
   --selection-seed N [--per-group 2] --lookup-policy FILE --lookup-policy-sha256 SHA
@@ -85,6 +87,7 @@ Registration/run output directories must be outside both checkouts (symlinks res
 No provider calls, fetch, checkout, cherry-pick, significance claims or spending authorization.`;
 export async function main(argv = process.argv.slice(2), { stdout = console.log } = {}) {
   if (!argv.length || argv.length === 1 && argv[0] === "--help") { stdout(HELP); return 0; }
+  if (argv[0] === "pilot") return (await import("./lib/continuity-lookup-pilot-entry.mjs")).runLookupPilotCommand(argv.slice(1), stdout);
   requireLookup(!argv.includes("--real"), "lookup_real_not_authorized");
   const [command, ...args] = argv;
   requireLookup(["register", "run", "aggregate"].includes(command), "lookup_invalid_command");

@@ -97,7 +97,7 @@ async function validateAuthorization({ authorizationPath, registrationPath, regi
   need(isAbsolute(outputRoot ?? "") && isAbsolute(credentialPath ?? "") && isAbsolute(controllerRoot ?? ""), "lookup_authorization_binding_mismatch");
   await safeDirectory(outputRoot, "lookup_authorization_binding_mismatch", true);
   need(await realpath(credentialPath) === credentialPath && await realpath(controllerRoot) === controllerRoot
-    && controllerRoot === codes.R0.path && controllerRoot === ROOT, "lookup_authorization_binding_mismatch");
+    && controllerRoot === codes.R0.path && Object.values(codes).some(code => code.path === ROOT), "lookup_authorization_binding_mismatch");
   // Check permissions without ever resolving/refreshing a credential.
   await safeRead(credentialPath, "lookup_unsafe_authorization_file");
   for (const code of Object.values(codes)) need(disjoint(outputRoot, await realpath(code.path)), "lookup_authorization_binding_mismatch");
@@ -118,6 +118,12 @@ async function validateAuthorization({ authorizationPath, registrationPath, regi
   handles.set(handle, { artifact, rawDigest: sha256(raw), outputRoot, pilot,
     args: { authorizationPath, registrationPath, registrationSha256, outputRoot, credentialPath, controllerRoot } });
   return handle;
+}
+/** Boolean-only final-header check; no account, salt, commitment or path leaves the handle. */
+export function lookupAuthorizationMatchesAccount(handle, account) {
+  const ctx = handles.get(handle);
+  return Boolean(ctx && typeof account === "string" && account.length > 0
+    && sha256(`${ACCOUNT_DOMAIN}${ctx.artifact.salt}\0${account}`) === ctx.artifact.accountCommitment);
 }
 async function revalidate(handle) {
   const ctx = context(handle), fresh = context(await validateLookupAuthorization(ctx.args));

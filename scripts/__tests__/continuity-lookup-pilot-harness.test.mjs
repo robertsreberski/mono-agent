@@ -7,10 +7,10 @@ import { Socket } from "node:net";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { zstdDecompressSync } from "node:zlib";
-import { openHarness, productionModules, scriptedModels, controlledRuntime, createJudge, prepareLedgerCheckpoint } from "../lib/continuity-runner.mjs";
+import { openHarness, productionModules, scriptedModels, controlledRuntime, configJson, pilotDispatchConfig, createJudge, prepareLedgerCheckpoint } from "../lib/continuity-runner.mjs";
 import { armById, mergePatch } from "../lib/continuity-arms.mjs";
 import { issueLookupCacheKey, assertResolvedLookupSafety, assertLookupCacheAssignment, fauxLookupSafety, lookupOfflineBoundary } from "../lib/continuity-lookup-pilot-runtime.mjs";
-import { createGuardedLookupDecorator, createTestOnlyLookupPermitSource, LOOKUP_GUARD_CONTRACT as C } from "../lib/continuity-lookup-guard.mjs";
+import { createFauxLookupDecorator, createTestOnlyLookupPermitSource, LOOKUP_GUARD_CONTRACT as C } from "../lib/continuity-lookup-guard.mjs";
 
 const cleanups = [];
 const ROOT = fileURLToPath(new URL("../../", import.meta.url)), registry = join(userInfo().homedir, ".local/state/mono-agent/lookup-pilot/consumed-v1");
@@ -100,7 +100,7 @@ it.each(["native-lookup", "continuity-pack-cold"])("configured %s preserves nati
     };
     consumed.push(permit.events);
     return { mcpServers: { "mono-agent-conversation-history": { type: "http", url: fixture.url } },
-      piModelsDecorator: await createGuardedLookupDecorator({ contract: { ...C, runId: "fictional-harness", slotId: `slot-${index}`, promptCacheKey: key }, permit, send, resolvedSafety: { ...pilot, config: opened.config } }) };
+      piModelsDecorator: await createFauxLookupDecorator({ contract: { ...C, runId: "fictional-harness", slotId: `slot-${index}`, promptCacheKey: key }, permit, send, resolvedSafety: { ...pilot, config: opened.config } }) };
   };
   let opened;
   const open = async () => { opened = await openHarness({ modules, work, authPath, model: `${C.provider}:${C.model}`, effort: "high", tools: false, configPatch, route, pilot, clock: { value: new Date("2026-01-01T00:00:00Z") } }); expect(opened.config.providers.piAuthPath).toBe(join(work, ".lookup-no-credentials/absent.json"));
@@ -224,7 +224,7 @@ it.each([false, true])("refuses an identity decorator even with a forged brand: 
 it("brands only a faux guard wrapper and never uses configured Models or credentials", async () => {
   const credential = vi.fn(() => { throw Error("fictional_credentials_forbidden"); }), configured = { getAuth: credential, streamSimple: credential };
   const options = { contract: { ...C, runId: "fictional", slotId: "fictional-slot", promptCacheKey: "assigned" }, permit: createTestOnlyLookupPermitSource(), send: vi.fn(), resolvedSafety: fauxLookupSafety(plan, arm) };
-  const decorator = await createGuardedLookupDecorator(options), wrapped = decorator(configured);
+  const decorator = await createFauxLookupDecorator(options), wrapped = decorator(configured);
   expect(Object.isFrozen(decorator)).toBe(true); expect(wrapped).not.toBe(configured);
   expect(wrapped.getModel(C.provider, C.model).id).toBe(C.model); await wrapped.getAuth(C.provider);
   await expect(wrapped.getAuth("openai")).resolves.toBeUndefined();
@@ -234,10 +234,22 @@ it("brands only a faux guard wrapper and never uses configured Models or credent
   });
   await wrapped.streamSimple(wrapped.getModel(C.provider, C.model), { messages: [{ role: "user", content: "Fictional request.", timestamp: 0 }] }, { apiKey: "FICTIONAL-CALLER-KEY", reasoning: "high", transport: "sse", maxRetries: 0 }).result();
   expect(options.send).toHaveBeenCalledTimes(1); expect(credential).not.toHaveBeenCalled();
-  await expect(createGuardedLookupDecorator({ ...options, permit: { ...options.permit, testOnly: false } })).rejects.toThrow("lookup_faux_permit_forbidden");
-  await expect(createGuardedLookupDecorator({ ...options, resolvedSafety: undefined })).rejects.toThrow("lookup_auxiliary_callers_forbidden");
-  await expect(createGuardedLookupDecorator({ ...options, contract: { ...options.contract, promptCacheKey: undefined } })).rejects.toThrow("lookup_prompt_cache_key_forbidden");
-  let reads = 0; const route = () => ({ get piModelsDecorator() { reads++; return reads === 1 ? decorator : x => x; } });
+  await expect(createFauxLookupDecorator({ ...options, permit: { ...options.permit, testOnly: false } })).rejects.toThrow("lookup_faux_permit_forbidden");
+  await expect(createFauxLookupDecorator({ ...options, resolvedSafety: undefined })).rejects.toThrow("lookup_auxiliary_callers_forbidden");
+  await expect(createFauxLookupDecorator({ ...options, contract: { ...options.contract, promptCacheKey: undefined } })).rejects.toThrow("lookup_prompt_cache_key_forbidden");
+  expect(() => decorator(configured)).toThrow("lookup_unguarded_dispatch");
+  const fresh = await createFauxLookupDecorator(options);
+  let reads = 0; const route = () => ({ get piModelsDecorator() { reads++; return reads === 1 ? fresh : x => x; } });
   const dispatch = vi.fn(), runtime = controlledRuntime({ run: dispatch }, route, () => {});
-  await runtime.run("fictional", {}); expect(reads).toBe(1); expect(dispatch).toHaveBeenCalledWith("fictional", { piModelsDecorator: decorator });
+  const wrongRoute = controlledRuntime({ run: dispatch }, () => ({ piModelsDecorator: fresh }), () => {}, "real");
+  await expect(wrongRoute.run("fictional", {})).rejects.toThrow("lookup_unguarded_dispatch");
+  await runtime.run("fictional", {}); expect(reads).toBe(1); expect(dispatch).toHaveBeenCalledWith("fictional", { piModelsDecorator: fresh });
+});
+
+it.each(["native-lookup", "continuity-pack-cold"])("resolves the internal %s probe profile with SSE and no retry before minting", async id => {
+  const modules = await productionModules(ROOT), selected = armById(id), work = "/home/example/work";
+  const config = modules.config.resolveJsonMonoAgentConfig({ cwd: work, json: configJson({ work, authPath: "/home/example/absent.json", model: `${C.provider}:${C.model}`, effort: "high", tools: false,
+    configPatch: pilotDispatchConfig(mergePatch(selected.sessionConfig, selected.probeConfig)) }) });
+  expect(() => assertResolvedLookupSafety({ plan, arm: selected, config })).not.toThrow();
+  expect(config.providers.piNative).toMatchObject({ transport: "sse", piMaxRetries: 0 });
 });

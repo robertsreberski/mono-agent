@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { Socket } from "node:net";
-import { guardedLookupModels, LOOKUP_PRE_SEND_REFUSALS, LOOKUP_ASSUMPTIONS as A, LOOKUP_GUARD_CONTRACT as C, lookupInputEnvelope, lookupBodyDigest,
+import { guardedLookupModels, LOOKUP_GUARD_POLICY_REFUSALS, LOOKUP_PRE_SEND_REFUSALS, LOOKUP_ASSUMPTIONS as A, LOOKUP_GUARD_CONTRACT as C, lookupInputEnvelope, lookupBodyDigest,
   createTestOnlyLookupPermitSource, assertRealLookupPermitSource, assertLookupAuxiliaryCallersOff, assertLookupChildSafety, lookupSettledCost } from "../lib/continuity-lookup-guard.mjs";
 import { fauxLookupSafety } from "../lib/continuity-lookup-pilot-runtime.mjs";
 let network, fetch;
@@ -397,7 +397,8 @@ it("requires key and resolved safety for pilot and non-test permit sources witho
     expect(() => guardedLookupModels({}, { ...base, permit, resolvedSafety: safety })).toThrow("lookup_prompt_cache_key_forbidden");
     const assigned = { ...base, permit, contract: { ...base.contract, promptCacheKey: "lk-fictional-assigned" } };
     expect(() => guardedLookupModels({}, assigned)).toThrow("lookup_auxiliary_callers_forbidden");
-    expect(() => guardedLookupModels({}, { ...assigned, resolvedSafety: safety })).not.toThrow();
+    if (permit.testOnly === false) expect(() => guardedLookupModels({}, { ...assigned, resolvedSafety: safety })).toThrow("lookup_faux_permit_forbidden");
+    else expect(() => guardedLookupModels({}, { ...assigned, resolvedSafety: safety })).not.toThrow();
     expect(base.send).not.toHaveBeenCalled();
   }
   expect(() => guardedLookupModels({}, { ...base, permit: legacy })).not.toThrow();
@@ -406,3 +407,5 @@ it("requires key and resolved safety for pilot and non-test permit sources witho
 it("limits pilot continuation to the five capacity/terminal refusals", () => {
   expect(LOOKUP_PRE_SEND_REFUSALS).toEqual(["not_admitted_input_envelope", "lookup_request_limit", "not_admitted_cap", "lookup_stopped", "lookup_slot_terminal"]);
 });
+
+it("keeps repeated payload refusal a fixed sticky policy code", () => { expect(LOOKUP_GUARD_POLICY_REFUSALS).toContain("lookup_payload_repeated"); });

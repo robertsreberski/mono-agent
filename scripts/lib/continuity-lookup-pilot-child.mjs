@@ -2,7 +2,7 @@
 import { armById } from "./continuity-arms.mjs";
 import { assertResolvedLookupSafety, fauxLookupSafety } from "./continuity-lookup-pilot-runtime.mjs";
 import { fileURLToPath } from "node:url";
-import { guardedLookupModels, LOOKUP_GUARD_CONTRACT, assertLookupChildSafety } from "./continuity-lookup-guard.mjs";
+import { LOOKUP_GUARD_POLICY_REFUSALS, guardedLookupModels, LOOKUP_GUARD_CONTRACT, assertLookupChildSafety } from "./continuity-lookup-guard.mjs";
 import { validateLookupPilotRegistration } from "./continuity-lookup-pilot.mjs";
 import { ROOT, verifyRoleRequest } from "./continuity-lookup-roles.mjs";
 import { createLookupPilotIPC, verifyLookupPilotParent } from "./continuity-lookup-ipc.mjs";
@@ -11,7 +11,9 @@ import { pilotNeed } from "./continuity-lookup-pilot-accounting.mjs";
 
 async function main(a) {
   pilotNeed(!Object.hasOwn(process.env, "CONTINUITY_DEBUG"), "lookup_debug_forbidden");
-  await verifyLookupPilotParent(a);
+  const real = a.authorization?.schema === "continuity-lookup-pilot-authorization-v1";
+  if (real) await (await import("./continuity-lookup-real-capability.mjs")).verifyLookupRealAssignment(a, false);
+  else await verifyLookupPilotParent(a);
   await validateLookupPilotRegistration(a.pilot);
   await verifyRoleRequest(ROOT, a.roleRequest, a.plan);
   assertLookupChildSafety({ plan: a.plan, memory: false, subagents: false, upkeep: false, compaction: false, outputSchema: null });
@@ -20,6 +22,13 @@ async function main(a) {
   process.send({ type: "ready", epoch: a.epoch, slotId: a.slotId });
   const start = await go;
   pilotNeed(start?.type === "go" && start.epoch === a.epoch && start.slotId === a.slotId, "lookup_ipc_invalid");
+  if (real) {
+    let outcome;
+    try { outcome = await (await import("./continuity-lookup-pilot-probe.mjs")).runLookupConfiguredProbe(a); }
+    catch (error) { outcome = { terminal: "refused_pre_send", score: null,
+      refusalCode: LOOKUP_GUARD_POLICY_REFUSALS.includes(error.code) ? error.code : "lookup_pilot_capability_invalid" }; }
+    await finish(a, outcome); return;
+  }
   const permit = await createLookupPilotIPC(a), abort = new AbortController();
   let terminal = "completed", score = 1, refusalCode = null;
   try {
@@ -56,6 +65,9 @@ async function main(a) {
     else terminal = error.code === "pilot_empty_final_output" ? "pilot_empty_final_output" : error.outcome === "refused_pre_send" ? "refused_pre_send" : a.scenario === "own_abort_after_send" ? "own_abort_after_send" : a.scenario === "integrity_stop" ? "integrity_stop" : "lost"; score = null;
     if (terminal === "refused_pre_send") refusalCode = error.code;
   } finally { permit.close(); }
+  await finish(a, { terminal, score, refusalCode });
+}
+async function finish(a, outcome) {
   await new Promise((resolve, reject) => {
     const cleanup = () => { process.off("message", ack); process.off("disconnect", disconnected); };
     const disconnected = () => { cleanup(); reject(Object.assign(new Error("lookup_ipc_disconnected"), { code: "lookup_ipc_disconnected" })); };
@@ -65,7 +77,7 @@ async function main(a) {
       catch (error) { reject(error); }
     };
     process.once("message", ack); process.once("disconnect", disconnected);
-    process.send({ type: "done", epoch: a.epoch, slotId: a.slotId, terminal, score, refusalCode }, error => { if (error) { cleanup(); reject(error); } });
+    process.send({ type: "done", epoch: a.epoch, slotId: a.slotId, ...outcome }, error => { if (error) { cleanup(); reject(error); } });
   });
   process.disconnect();
 }

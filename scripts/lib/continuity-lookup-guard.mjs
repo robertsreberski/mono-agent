@@ -1,4 +1,5 @@
 import { assertResolvedLookupSafety, lookupCacheKey } from "./continuity-lookup-pilot-runtime.mjs";
+import { realLookupSendForGuard } from "./continuity-lookup-real-capability.mjs";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { zstdDecompressSync } from "node:zlib";
@@ -34,7 +35,7 @@ export const LOOKUP_GUARD_POLICY_REFUSALS = Object.freeze([
   "lookup_method_forbidden", "lookup_model_switch_forbidden", "lookup_preparation_forbidden", "lookup_tools_forbidden",
   "lookup_concurrent_request", "lookup_permit_missing", "lookup_assumptions_mismatch", "lookup_single_shot_send_required",
   "lookup_faux_permit_forbidden", "lookup_settlement_invalid", "lookup_cache_assignment_invalid",
-  "lookup_native_identity_forbidden", "lookup_unguarded_dispatch",
+  "lookup_native_identity_forbidden", "lookup_unguarded_dispatch", "lookup_payload_repeated", "lookup_pilot_capability_invalid",
 ]);
 export class LookupGuardError extends Error {
   constructor(code, outcome = "refused_pre_send", classification = code, cause) {
@@ -200,8 +201,8 @@ export function lookupSettledCost(usage, tier) {
 
 // Only this factory may brand a configured-pilot decorator. No public registration seam.
 const pilotDecorators = new WeakSet();
-export const isGuardedLookupDecorator = value => pilotDecorators.has(value);
-export async function createGuardedLookupDecorator(options) {
+export const isFauxLookupDecorator = value => pilotDecorators.has(value);
+export async function createFauxLookupDecorator(options) {
   const bindings = { ...options, contract: Object.freeze({ ...options.contract }), permit: Object.freeze({ ...options.permit, pilot: true }) };
   if (bindings.permit.testOnly !== true) refuse("lookup_faux_permit_forbidden");
   if (!lookupCacheKey(bindings.contract.promptCacheKey)) refuse("lookup_prompt_cache_key_forbidden");
@@ -223,7 +224,10 @@ export async function createGuardedLookupDecorator(options) {
     streamSimple: (model, context, options) => serializer.streamSimple(model, context, { ...options, apiKey: access }),
   };
   const wrapped = guardedLookupModels(local, bindings);
-  const decorator = Object.freeze(_configuredModels => wrapped); pilotDecorators.add(decorator); return decorator;
+  const decorator = Object.freeze(_configuredModels => {
+    if (!pilotDecorators.delete(decorator)) refuse("lookup_unguarded_dispatch");
+    return wrapped;
+  }); pilotDecorators.add(decorator); return decorator;
 }
 
 /** One wrapper per sequential probe run. Never share it between slots. No default fetch. */
@@ -239,6 +243,10 @@ export function guardedLookupModels(models, { contract, permit, send, assumption
   if (pilotSource && !resolvedSafety) refuse("lookup_auxiliary_callers_forbidden");
   if (Object.hasOwn(contract, "promptCacheKey") && !lookupCacheKey(contract.promptCacheKey)) refuse("lookup_prompt_cache_key_forbidden");
   if (resolvedSafety) assertResolvedLookupSafety(resolvedSafety);
+  if (permit?.testOnly !== true) {
+    assertRealLookupPermitSource(permit);
+    if (!realLookupSendForGuard(send, permit, contract)) refuse("lookup_pilot_capability_invalid");
+  }
   if (typeof send !== "function") refuse("lookup_single_shot_send_required");
   contract = Object.freeze({ ...contract });
   assumptions = LOOKUP_ASSUMPTIONS;

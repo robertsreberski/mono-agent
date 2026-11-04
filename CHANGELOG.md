@@ -2,11 +2,8 @@
 
 ## Unreleased
 
-- Isolate lookup-pilot transport caches without changing native checkpoint identity,
-  refuse auxiliary model routes in configured pilot harnesses, and contain
-  identity-proven descendants. Keep guard policy violations sticky; real provider
-  dispatch remains unavailable. Require guard-owned faux dispatchers and retain
-  proven descendants across timeout containment.
+- Keep continuity lookup comparisons isolated and fail closed on worker errors,
+  without enabling paid pilots.
 
 - Add read-only, aggregate-only tool-result clearing opportunity analysis and
   offline provider payload qualification, without enabling runtime clearing.

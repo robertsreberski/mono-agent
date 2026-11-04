@@ -1,7 +1,7 @@
 import { LOOKUP_PRE_SEND_REFUSALS } from "./continuity-lookup-guard.mjs";
 import { digest } from "./continuity-dataset.mjs";
 import { accountLookupPilot, lookupDollars, pilotNeed, LOOKUP_PILOT_STOPS } from "./continuity-lookup-pilot-accounting.mjs";
-import { pilotHash, pilotId, samePilot } from "./continuity-lookup-pilot-state.mjs";
+import { LOOKUP_REAL_CONTROLLER, pilotHash, pilotId, samePilot } from "./continuity-lookup-pilot-state.mjs";
 
 /** Explicit projection: no paths, path digests, commitments, requests, answers or errors. */
 export function lookupPilotReceipt(state, index) {
@@ -18,7 +18,7 @@ export function lookupPilotReceipt(state, index) {
   let input = 0, output = 0;
   for (const h of holds) { input += h.settlement?.rawUsage?.input_tokens ?? 0; output += h.settlement?.rawUsage?.output_tokens ?? 0; }
   const row = { schema: "lookup-pilot-slot-receipt-v1", runId: state.runId, slotId: planned.slotId, position: index, role: planned.roleId,
-    binding: Object.fromEntries(["revision", "buildSha256", "sourceSha256", "protocolSha256"].map(key => [key, bindings[key]])), qualityMeasured: false, eligible: planned.eligible,
+    binding: Object.fromEntries(["revision", "buildSha256", "sourceSha256", "protocolSha256"].map(key => [key, bindings[key]])), qualityMeasured: state.schema === LOOKUP_REAL_CONTROLLER, eligible: planned.eligible,
     admitted: holds.length > 0, terminal: slot.terminal, terminalCode, score: slot.score,
     calls: { admitted: holds.length, consumed: holds.filter(h => h.consumed).length, settled: holds.filter(h => h.settlement).length },
     usage: { inputTokens: input, outputTokens: output },
@@ -54,7 +54,7 @@ export function aggregateLookupPilot(state, receipts) {
     if (!blocks.has(key)) blocks.set(key, new Set()); blocks.get(key).add(row.role);
   }
   const spend = accountLookupPilot(state.slots);
-  return { schema: "lookup-pilot-report-v1", runId: state.runId, executionKind: "faux-only", authorizedSpend: false, qualityMeasured: false, counts,
+  return { schema: "lookup-pilot-report-v1", runId: state.runId, executionKind: state.schema === LOOKUP_REAL_CONTROLLER ? "authorized-pilot" : "faux-only", authorizedSpend: state.schema === LOOKUP_REAL_CONTROLLER, qualityMeasured: state.schema === LOOKUP_REAL_CONTROLLER, counts,
     pairedCoverage: { completeBlocks: [...blocks.values()].filter(v => v.size === state.roleCount).length },
     schedule: { visited, truncated: visited < state.schedule.length, remaining: state.schedule.length - visited },
     stop: state.stop, cost: { capUSD: state.capUSD, reservationUSD: state.rmaxUSD, totalUSD: lookupDollars(spend.totalUnits), knownPartialUSD: lookupDollars(spend.knownPartialUnits) },

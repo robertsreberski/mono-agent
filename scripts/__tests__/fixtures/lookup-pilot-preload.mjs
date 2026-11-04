@@ -32,6 +32,10 @@ if (probe && ["guard-model-switch", "guard-cache-key", "guard-after-hold"].inclu
 for (const method of ["rename", "link"]) {
   const original = promises[method];
   promises[method] = async (source, destination, ...args) => {
+    if (driver && (fault?.action?.startsWith("persist-descendant") || fault?.action === "sticky-descendant-timeout") && basename(destination) === "lookup-pilot-controller.json"
+      && (() => { const state = JSON.parse(fs.readFileSync(source, "utf8")); return state.slots.some(s => s.members?.length) || fault.action === "sticky-descendant-timeout" && state.stop === "lookup_worker_timeout"; })()) {
+      evidence.memberPersistFailed = true; record(); throw Error("fictional_member_persist_failure");
+    }
     let match = false;
     if (driver && fault && destination === fault.path) {
       const data = JSON.parse(fs.readFileSync(source, "utf8"));
@@ -118,7 +122,7 @@ process.emit = (event, ...args) => {
           record(); process.send({ type: "done", epoch: assignment.epoch, slotId: assignment.slotId, terminal: "lost", score: null }, () => process.disconnect());
         })(); return true;
       }
-      if (fault?.action?.startsWith("descendant-timeout") || fault?.action === "descendant-disconnect") {
+      if (fault?.action?.startsWith("descendant-timeout") || fault?.action === "descendant-disconnect" || ["persist-descendant-timeout", "persist-descendant-unproven", "sticky-descendant-timeout"].includes(fault?.action)) {
         // Keep the leader until controller SIGTERM, but never send done. The
         // descendant is ready to ignore TERM before disconnect/timeout can fire.
         const descendant = childProcess.spawn(process.execPath, ["-e", "process.on('SIGTERM',()=>{});process.send({type:'descendant-ready'});setInterval(()=>{},1000)"], { stdio: ["ignore", "ignore", "ignore", "ipc"], env: process.env });
@@ -176,7 +180,7 @@ childProcess.execFileSync = (command, args, ...rest) => {
   }
   if (driver && fault?.action?.startsWith("identity-before-") && command === "/bin/ps" && args[1] === String(probePid) && new Error().stack.includes("containOwned")
     && (fault.action === "identity-before-term" || evidence.signals?.includes("SIGTERM"))) { evidence.identityRefused = true; record(); return fault.action === "identity-before-gone" ? "" : "fictional-reused-start"; }
-  if (driver && (fault?.action === "descendant-unproven" || fault?.action === "descendant-timeout-unproven" && evidence.signals?.includes("SIGTERM")) && command === "/bin/ps" && args.includes("-axo") && new Error().stack.includes("containOwned")) { evidence.descendantUnproven = true; record(); return ""; }
+  if (driver && (fault?.action === "descendant-unproven" || ["descendant-timeout-unproven", "persist-descendant-unproven"].includes(fault?.action) && evidence.signals?.includes("SIGTERM")) && command === "/bin/ps" && args.includes("-axo") && new Error().stack.includes("containOwned")) { evidence.descendantUnproven = true; record(); return ""; }
   if (driver && fault?.action === "null-controller-start" && command === "/bin/ps") return "";
   if (driver && fault?.action === "terminate-fail" && command === "ps" && args.includes("-axo") && probePid) return `${probePid} ${probePid} S\n`;
   return exec(command, args, ...rest);
