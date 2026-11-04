@@ -8,7 +8,7 @@ import { DatabaseSync } from "node:sqlite";
 import { fork, execFileSync } from "node:child_process";
 import { userInfo, tmpdir } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { syntheticContext, fixtureLookupPolicy, fixtureCommit } from "./fixtures/holdout-synthetic.mjs";
+import { syntheticContext, fixtureLookupPolicy, fixtureCommit, fixtureGit } from "./fixtures/holdout-synthetic.mjs";
 import { dependencySnapshot } from "./fixtures/lookup-dependency-witness.mjs";
 import { ROOT as worktree } from "../lib/continuity-lookup-roles.mjs";
 import { join } from "node:path";
@@ -510,4 +510,14 @@ it("keeps invalid acquisition roots behind the fixed lease refusal code", async 
   for (const root of [undefined, null, {}, "fictional-relative-root"]) {
     await expect(acquireLookupPilotLease(root)).rejects.toThrow("lookup_authorization_lease_invalid");
   }
+});
+
+it("isolates synthetic Git from inherited repository selection, hooks and automatic maintenance", async () => {
+  const repo = join(dir, "isolated-git"); await fs.mkdir(repo, { mode: 0o700 });
+  vi.stubEnv("GIT_DIR", "/fictional/never-a-repository");
+  fixtureGit(repo, ["init", "-q"]);
+  fixtureGit(repo, ["config", "gc.auto", "1"]); fixtureGit(repo, ["config", "maintenance.auto", "true"]);
+  expect(fixtureGit(repo, ["config", "--get", "gc.auto"]).trim()).toBe("0");
+  expect(fixtureGit(repo, ["config", "--get", "maintenance.auto"]).trim()).toBe("false");
+  expect(fixtureGit(repo, ["config", "--get", "core.hooksPath"]).trim()).toBe("/dev/null");
 });
