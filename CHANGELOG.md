@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add offline lookup-pilot accounting and partial-run reports with durable
+  admission holds and contained faux workers; real authorizations and paid
+  dispatch remain unavailable.
+
 - Add offline lookup pilot descriptors, exact cap estimates and private
   single-use authorization checks that prevent reuse after a crashed run.
   Ordinary paid lookup routes remain refused; no pilot dispatch is enabled.

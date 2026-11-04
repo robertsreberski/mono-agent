@@ -1,4 +1,5 @@
 import { afterAll, afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
+import { constants } from "node:fs";
 import { execFileSync, spawnSync, spawn } from "node:child_process";
 import { access, appendFile, cp, chmod, lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -309,15 +310,14 @@ it("overlays uncommitted deletions without copying nonexistent source files", as
   await expect(access(join(dest, "removed.txt"))).rejects.toMatchObject({ code: "ENOENT" });
 });
 
-// Preserve relative workspace links, but share the installed external virtual store only.
+// Copy dependency directories, including virtual stores: nested builds may run install.
 async function linkDependencies(source, dest) {
   async function copyModules(rel) {
     const from = join(source, rel), to = join(dest, rel);
     try { await access(from); } catch { return; }
     expect((await lstat(from)).isDirectory()).toBe(true);
-    await cp(from, to, { recursive: true, dereference: false, verbatimSymlinks: true,
-      filter: path => ![join(from, ".pnpm"), join(from, ".cache")].includes(path) });
-    try { if ((await lstat(join(from, ".pnpm"))).isDirectory()) await symlink(join(from, ".pnpm"), join(to, ".pnpm"), "dir"); } catch (error) { if (error.code !== "ENOENT") throw error; }
+    await cp(from, to, { recursive: true, dereference: false, verbatimSymlinks: true, mode: constants.COPYFILE_FICLONE,
+      filter: path => path !== join(from, ".cache") });
   }
   await copyModules("node_modules");
   for (const parent of ["packages", "extras"]) for (const name of await readdir(join(source, parent))) await copyModules(join(parent, name, "node_modules"));
@@ -326,6 +326,8 @@ async function linkDependencies(source, dest) {
 
 it("runs all six faux/real-loopback roles across two clean synthetic checkouts with fresh builds and bound receipts", async () => {
   const base = await scratch(), r0 = join(base, "r0"), rpack = join(base, "rpack");
+  const home = join(base, "home"); await mkdir(home, { mode: 0o700 });
+  for (const key of ["HOME", "XDG_CACHE_HOME", "XDG_CONFIG_HOME", "XDG_STATE_HOME"]) vi.stubEnv(key, home);
   git(ROOT, ["clone", "--shared", "--quiet", ROOT, r0]);
   // Include this uncommitted implementation in the synthetic source commit; never change ROOT HEAD.
   const overlay = new Set([...git(ROOT, ["diff", "--name-only", "HEAD"]).split("\n"), ...git(ROOT, ["ls-files", "--others", "--exclude-standard"]).split("\n")].filter(Boolean));
@@ -334,6 +336,11 @@ it("runs all six faux/real-loopback roles across two clean synthetic checkouts w
   const shippedRender = await readFile(join(ROOT, RENDER), "utf8"), shippedPack = await readFile(join(ROOT, PACK), "utf8");
   await writeFile(join(r0, RENDER), shippedRender.replace(/^export const PACK_RETRIEVAL_GUIDANCE = .*;$/mu, 'export const SYNTHETIC_NO_GUIDANCE = "";'));
   await writeFile(join(r0, PACK), shippedPack.replaceAll("PACK_RETRIEVAL_GUIDANCE", "SYNTHETIC_NO_GUIDANCE"));
+  // Already-installed private dependencies suffice; never run an install in a test build.
+  const webPackagePath = join(r0, "packages/web/package.json"), webPackage = JSON.parse(await readFile(webPackagePath, "utf8"));
+  expect(webPackage.scripts.build.startsWith("pnpm --dir webapp install --frozen-lockfile && ")).toBe(true);
+  webPackage.scripts.build = webPackage.scripts.build.replace("pnpm --dir webapp install --frozen-lockfile && ", "");
+  await writeFile(webPackagePath, JSON.stringify(webPackage, null, 2) + "\n");
   // Both build workspaces forbid dependency verification/install, even under pnpm 11.
   await writeFile(join(r0, ".npmrc"), "offline=true\nverify-deps-before-run=false\nmanage-package-manager-versions=false\n");
   const r0Revision = commit(r0);
@@ -553,6 +560,13 @@ it("binds all present pilot artifact files, including guard assumptions, in the 
   const protocol = await lookupProtocol();
   expect(protocol.pilotSha256).toBe(digest(await Promise.all(LOOKUP_PILOT_PROTOCOL_FILES.map(async path => [path, sha256(await readFile(join(ROOT, path)))]))));
   expect(LOOKUP_PILOT_PROTOCOL_FILES).toEqual([
+    "scripts/lib/continuity-lookup-controller.mjs",
+    "scripts/lib/continuity-lookup-ipc.mjs",
+    "scripts/lib/continuity-lookup-pilot-accounting.mjs",
+    "scripts/lib/continuity-lookup-pilot-state.mjs",
+    "scripts/lib/continuity-lookup-pilot-report.mjs",
+    "scripts/lib/continuity-lookup-pilot-child.mjs",
+    "scripts/lib/continuity-holdout-controller.mjs",
     "scripts/lib/continuity-lookup-guard.mjs", "scripts/lib/continuity-lookup-pilot.mjs",
     "scripts/lib/continuity-lookup-authorization.mjs", "scripts/continuity-lookup-estimate.mjs",
     "scripts/lib/continuity-lookup-lease.mjs", "scripts/lib/continuity-process-identity.mjs",

@@ -1312,3 +1312,65 @@ denied. They do not launch a production child with CI
 removed, access real credentials or write the user's registry. Physical
 power-loss durability, backend framing/billing assumptions and live OAuth are
 not established by these offline tests.
+
+
+### Faux pilot controller and partial reports
+
+The internal `runLookupPilot` controller currently accepts only
+`continuity-lookup-faux-authorization-v1`. A real-schema authorization refuses
+with `lookup_pilot_real_route_unavailable` before lease acquisition. There is
+no pilot CLI command, real send, credential access or capability mint here.
+Faux runs are accepted under CI; debug-variable presence refuses in every
+process. Neither controller nor worker removes CI from its environment.
+
+The controller runs from the registered R0 checkout after verifying both clean
+checkouts, builds and protocol. It talks **directly to one detached probe child
+per slot**, rather than relaying through a role parent: this reduces admission
+peers and makes containment and the parent/child disk witness explicit. The
+child independently verifies its registration, role request, reconstructed
+plan, build, assigned PID, live parent start identity and writer lease before
+ready. Its opaque `cacheKey` assignment field is reserved and currently null;
+cache enforcement and configured-harness dispatch remain unavailable.
+
+One serialized writer holds the lease from faux consumption through reporting.
+The faux burn registry has its own domain under the output's parent, never the
+real per-user registry. A fixed consumption marker precedes the epoch/schedule
+snapshot and any launch. The seeded schedule freezes conversation/probe pair
+blocks and interleaves all roles within each block, at concurrency one, without
+spares, retry, resume or public-trace substitution.
+
+Guard admission, consumption, settlement and stop use lockstep IPC, with no
+retries. Epoch, slot, worker identity and the expected next message bind each
+exchange. Holds and one-time consumption are persisted before acknowledgement;
+the client independently reads the acknowledgement from disk. A disconnect,
+integrity error or timeout stops and contains the owned group before another
+slot can start. Settlement remains legal after a sticky stop, never admission.
+Recovery is observation/reconciliation only: it never launches, readmits or
+signals a previously recorded process group.
+
+Money comparisons use exact half-tenth-microdollar units. Total admission spend
+is complete settled cost plus max(retained hold, independently priced known
+partial) per uncertain request plus active holds. Known partial usage is
+computed on integrity outcomes too, even when the cost claim is wrong. Missing
+service tier retains 2× pricing. Legacy holdout accounting is unchanged unless
+its explicit lookup adapter is selected; no ledger unit is fabricated.
+
+Validity counts admitted slots, not requests. Lost and own-aborted slots are
+incomplete, not invalid; wrong answers complete an observation. Empty final
+output is invalid, and strictly more than 10% invalid admitted slots stops.
+Two provider-side losses stop the run. Own latency aborts neither count toward
+nor reset that streak; skipped/unadmitted slots are also invisible. Other
+admitted terminal slots reset it. Alternating losses with completed slots are
+bounded only by C.
+
+Partial slot receipts are synced independently of worker exit. Aggregation
+refuses duplicate, changed and unplanned receipts and reports planned,
+eligible, skipped, unadmitted, admitted, completed, incomplete, invalid and
+missing counts, plain paired-block counts and schedule truncation. Journal
+status counts and missing receipt copies are independent coverage counters;
+paired blocks require verified receipt copies. Reports
+are strictly projected to opaque identities, content hashes, fixed codes and
+numeric usage/cost/scoring. They exclude paths and path hashes, commitments,
+salts, credentials, requests, answers, stderr and free-form errors. Faux scores
+are mechanics fixtures, not measured quality. Physical power-loss and provider
+billing behavior are not established by these local tests.
