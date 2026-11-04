@@ -491,6 +491,20 @@ it("does not unlink a replacement inode after a failed lease acquisition", async
   expect(await fs.readFile(path, "utf8")).toBe("fictional-replacement");
 });
 
+it("refuses to adopt a valid replacement database swapped in after exclusive creation", async () => {
+  const root = join(dir, "swapped-acquire"); await fs.mkdir(root, { mode: 0o700 });
+  const path = join(root, "controller-lock.sqlite"), moved = join(root, "retained-attempt.sqlite");
+  const identityModule = await local("continuity-process-identity"), lease = await local("continuity-lookup-lease");
+  const original = identityModule.lookupProcessStartIdentity;
+  // An empty file is a valid empty SQLite database, so only the inode check can refuse it.
+  vi.spyOn(identityModule, "lookupProcessStartIdentity").mockImplementationOnce(pid => {
+    renameSync(path, moved); writeFileSync(path, "", { mode: 0o600 }); return original(pid);
+  });
+  await expect(lease.acquireLookupPilotLease(root)).rejects.toThrow("lookup_authorization_lease_invalid");
+  expect((await fs.readdir(root)).sort()).toEqual(["controller-lock.sqlite", "retained-attempt.sqlite"]);
+  expect((await fs.stat(path)).size).toBe(0); // nothing was written into the replacement
+});
+
 it("keeps invalid acquisition roots behind the fixed lease refusal code", async () => {
   const { acquireLookupPilotLease } = await local("continuity-lookup-lease");
   for (const root of [undefined, null, {}, "fictional-relative-root"]) {

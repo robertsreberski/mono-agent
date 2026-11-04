@@ -60,14 +60,21 @@ export async function acquireLookupPilotLease(root) {
     path = join(root, filename);
     const file = await open(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
     try { created = await file.stat({ bigint: true }); } finally { await file.close(); }
-    const binding = await locations(root), controller = { pid: process.pid, startIdentity: lookupProcessStartIdentity(process.pid) };
+    // Adopt only the exact inode this attempt created, before and after SQLite opens the path.
+    const createdHere = id => BigInt(id.dev) === created.dev && BigInt(id.ino) === created.ino;
+    const binding = await locations(root);
+    if (!createdHere(binding.leaseIdentity)) fail();
+    const controller = { pid: process.pid, startIdentity: lookupProcessStartIdentity(process.pid) };
     if (!controller.startIdentity) fail();
     db = new DatabaseSync(join(root, filename));
+    // The connection's fd now pins an inode; refuse before writing into anything else.
+    if (!createdHere((await locations(root)).leaseIdentity)) fail();
     const state = { compromised: false };
     key = fileKey(binding.leaseIdentity); liveFiles.set(key, state);
     db.exec("PRAGMA busy_timeout=0; PRAGMA journal_mode=DELETE; CREATE TABLE lookup_controller (id INTEGER PRIMARY KEY, pid INTEGER NOT NULL, start_identity TEXT NOT NULL)");
     db.prepare("INSERT INTO lookup_controller VALUES (1, ?, ?)").run(controller.pid, controller.startIdentity);
     db.exec("BEGIN IMMEDIATE");
+    if (!createdHere((await locations(root)).leaseIdentity)) fail();
     let handle;
     handle = Object.freeze({ release() {
       const ctx = active.get(handle);
