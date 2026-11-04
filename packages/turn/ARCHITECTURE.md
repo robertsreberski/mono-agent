@@ -64,6 +64,14 @@ The runtime stays below host domain behavior. Provider code in this package
 must not import host DB, API, coordinator, or UI modules. Hosts pass callbacks
 and typed runtime policies into the runtime instead.
 
+## Offline developer qualification
+
+`scripts/tool-result-clearing-qualify.mjs` intentionally imports the benchmark-only
+reference mapper and qualification identity from root `scripts/lib/`. This is an
+unpublished developer proof, excluded by the package's `files` map, not a runtime
+dependency or public entrypoint. It invokes installed pi-ai builders but stops at
+`onPayload`; the production package never imports the root analysis scripts.
+
 ## Runtime Selection
 
 **Diagram summary:** Hosts parse a canonical provider/model reference. The

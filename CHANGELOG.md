@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Add read-only, aggregate-only tool-result clearing opportunity analysis and
+  offline provider payload qualification, without enabling runtime clearing.
+  Defer weak retention/usage evidence, account for every request, and expose
+  symmetric cache-aware cost deltas and informational uncached bounds.
+  Keep skipped turn boundaries skipped through re-prompts and require exact
+  retention, unambiguous identity proof, and meaningful cost baselines.
+  Distinguish missing capture from captured-but-ineligible low yield.
+  Protect report outputs against case variants and filesystem aliases.
+
 - Add offline lookup-pilot accounting and partial-run reports with durable
   admission holds, drained settlements and identity-bound worker containment.
   Partial coverage includes assigned in-flight slots; refused rounds are not
