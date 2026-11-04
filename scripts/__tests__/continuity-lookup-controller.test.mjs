@@ -188,3 +188,18 @@ it("refuses a worker with a null start identity", async () => {
   const k = await kernel(); await k.journal.finish(0, "lost");
   await expect(k.journal.assign(1, { ...k.worker, startIdentity: null })).rejects.toThrow("lookup_ipc_invalid");
 });
+
+it.each(["unadmitted", "refused_pre_send", "fictional-unknown"])("persists a protocol stop for a child-claimed %s terminal", async terminal => {
+  const k = await kernel(), permit = await admit(k); await message(k, "consume", { permit, bodyDigest: hash });
+  await message(k, "settle", { permit, outcome: { kind: "settled", cost: .0003 }, rawUsage: { input_tokens: 100, output_tokens: 10 }, tier: "default" });
+  await expect(k.journal.finish(0, terminal)).rejects.toThrow("lookup_ipc_invalid");
+  expect(k.journal.snapshot().stop).toBe("lookup_ipc_invalid");
+});
+it.each([["two_rounds", 6, "refused_pre_send"], ["lost", 8, "unadmitted"]])("reconciles a crash after %s admission refusal consistently with live classification", async (scenario, revision, terminal) => {
+  const f = suite.fixture, options = await runOptions(f, [scenario]), config = join(f.base, `refusal-crash-${scenario}.json`);
+  await fs.writeFile(config, JSON.stringify({ path: join(options.outputRoot, "lookup-pilot-controller.json"), revision, phase: "after" }), { mode: 0o600 });
+  const p = await suite.spawn({ options }, { LOOKUP_FIXTURE_FAULT: config }); await p.reply; expect((await p.exit).signal).toBe("SIGKILL");
+  const c = await loadPilot(f, "controller"), report = await c.reconcileLookupPilot(options.outputRoot);
+  expect(report.receipts.at(-1)).toMatchObject({ terminal, terminalCode: "budget_admission" });
+  expect(report.counts).toMatchObject({ admitted: 1, incomplete: 1, invalid: 0, unadmitted: terminal === "unadmitted" ? 1 : 0 });
+});

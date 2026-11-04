@@ -1345,7 +1345,8 @@ exchange. Holds and one-time consumption are persisted before acknowledgement;
 the client independently reads the acknowledgement from disk. A disconnect,
 integrity error or timeout stops and contains the owned group before another
 slot can start. Settlement remains legal after a sticky stop, never admission. An IPC stop
-allows a bounded 250 ms settle grace, then contains the owned process group;
+allows a bounded 250 ms settle grace, drains messages already received, then
+contains the owned process group;
 unreconciled containment is an absorbing safety stop taking precedence over
 other causes.
 Recovery is observation/reconciliation only: it never launches, readmits or
@@ -1372,7 +1373,8 @@ Partial slot receipts are synced independently of worker exit. Aggregation
 refuses duplicate, changed and unplanned receipts and reports planned,
 eligible, skipped, unadmitted, admitted, completed, incomplete, invalid and
 missing counts for visited slots, plain paired-block counts and schedule
-truncation. Unvisited slots count only as remaining truncation. Journal
+truncation. The assigned in-flight slot is visited and incomplete in a partial
+view; genuinely unvisited slots count only as remaining truncation. Journal
 status counts and missing receipt copies are independent coverage counters;
 paired blocks require verified receipt copies. Reports
 are strictly projected to opaque identities, content hashes, fixed codes and

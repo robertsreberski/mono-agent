@@ -100,3 +100,12 @@ it("counts later pre-send refusal as incomplete, never as invalid or a provider 
 it.each([-1, .5, 2])("refuses an invalid classification cursor %s", cursor => {
   const s = reportState(); s.cursor = cursor; expect(() => aggregateLookupPilot(s, [])).toThrow("lookup_receipt_invalid");
 });
+
+it.each([["worker", 0], ["holds", 1]])("counts an in-flight slot with %s without classifying untouched inventory", (evidence, admitted) => {
+  const s = reportState(); s.cursor = 0; s.slots[0].terminal = null;
+  if (evidence === "worker") { s.slots[0].worker = { pid: 12345 }; s.slots[0].holds = []; } else delete s.slots[0].worker;
+  s.schedule.push({ ...s.schedule[0], slotId: "d".repeat(64) }); s.slots.push({ terminal: null, holds: [], score: null });
+  const report = aggregateLookupPilot(s, [lookupPilotReceipt(s, 0)]);
+  expect(report.counts).toMatchObject({ admitted, incomplete: admitted, unadmitted: 1 - admitted, missing: 0 });
+  expect(report.schedule).toEqual({ visited: 1, remaining: 1, truncated: true });
+});

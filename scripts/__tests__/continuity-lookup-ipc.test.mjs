@@ -2,6 +2,8 @@ import { it, expect, vi } from "vitest";
 import * as fs from "node:fs/promises";
 import { join } from "node:path";
 import { pilotSuite, loadPilot, runOptions } from "./fixtures/lookup-pilot-process.mjs";
+import { fixtureGit } from "./fixtures/holdout-synthetic.mjs";
+import { sourceState, assertSource } from "../lib/memory-e2e-build.mjs";
 import { digest } from "../lib/continuity-dataset.mjs";
 const suite = pilotSuite();
 async function run(scenarios, timeoutMs, capUSD, extraEnv = {}) {
@@ -55,7 +57,7 @@ it("reconciles a controller SIGKILL at one faux arrival without ever readmitting
   expect(state.slots[0].holds[0].consumed).toBe(true); expect(state.slots[0].holds[0].settlement).toBeNull();
   const { reconcileLookupPilot } = await loadPilot(f, "controller");
   const report = await reconcileLookupPilot(options.outputRoot);
-  expect(report.cost.totalUSD).toBe(3.92); expect(report.reconciliation).toBe(true); await suite.witnesses();
+  expect(report.cost.totalUSD).toBe(3.92); expect(report.counts).toMatchObject({ admitted: 1, incomplete: 1 }); expect(report.schedule.visited).toBe(1); expect(report.reconciliation).toBe(true); await suite.witnesses();
 });
 
 it.each(["plan", "build", "role", "pid", "epoch", "marker", "debug", "descriptor", "role-id", "registration", "role-build"])("refuses a real child's swapped %s before ready and before admission", async kind => {
@@ -142,4 +144,52 @@ it("isolates controller and child HOME and inherited Git configuration", async (
     const { result } = await run(["lost"]); expect(result.failed).toBeUndefined();
     await expect(fs.lstat(marker)).rejects.toMatchObject({ code: "ENOENT" }); await suite.witnesses();
   } finally { vi.unstubAllEnvs(); }
+});
+
+it("refuses a live foreign parent PID even when its intercepted start identity matches", async () => {
+  const f = suite.fixture, options = await runOptions(f), config = join(f.base, "foreign-parent.json");
+  expect(() => process.kill(process.pid, 0)).not.toThrow();
+  await fs.writeFile(config, JSON.stringify({ action: "swap-foreign-ppid", foreignPid: process.pid }), { mode: 0o600 });
+  const p = await suite.spawn({ options }, { LOOKUP_FIXTURE_FAULT: config }), reply = await p.reply; await p.exit;
+  expect(reply.result.stop).toBe("lookup_ipc_disconnected"); expect(reply.result.counts.admitted).toBe(0);
+  const state = JSON.parse(await fs.readFile(join(options.outputRoot, "lookup-pilot-controller.json")));
+  const witness = JSON.parse(await fs.readFile(join(f.base, "witnesses", `${state.slots[0].worker.pid}.json`)));
+  expect(witness.foreignIdentityProvided).toBe(true);
+});
+it("drains a settlement delivered immediately before grace expiry before containing the real child", async () => {
+  const f = suite.fixture, options = await runOptions(f, ["auth"], 10000), config = join(f.base, "settle-at-grace.json");
+  await fs.writeFile(config, JSON.stringify({ action: "settle-at-grace" }), { mode: 0o600 });
+  const p = await suite.spawn({ options }, { LOOKUP_FIXTURE_FAULT: config }), reply = await p.reply; await p.exit;
+  expect(reply.failed).toBeUndefined(); expect(reply.result.stop).toBe("lookup_auth_failure"); expect(reply.result.counts.invalid).toBe(0);
+  expect(reply.result.counts.incomplete).toBe(1); expect(reply.result.cost.knownPartialUSD).toBe(.0003);
+  const state = JSON.parse(await fs.readFile(join(options.outputRoot, "lookup-pilot-controller.json")));
+  expect(state.slots[0].holds[0].settlement).toMatchObject({ kind: "lost", knownUnits: "6000" });
+  expect(JSON.parse(await fs.readFile(join(f.base, "witnesses", `${p.child.pid}.json`)))).toMatchObject({ settleDeliveredBeforeGrace: true, settleCheckPending: true });
+});
+it.each(["unadmitted", "refused_pre_send"])("refuses a real child's forged %s terminal", async terminal => {
+  const f = suite.fixture, options = await runOptions(f, ["settled"]), config = join(f.base, `forge-${terminal}.json`);
+  await fs.writeFile(config, JSON.stringify({ action: "forge-terminal", terminal }), { mode: 0o600 });
+  const p = await suite.spawn({ options }, { LOOKUP_FIXTURE_FAULT: config }); expect(await p.reply).toEqual({ failed: "lookup_ipc_invalid" }); await p.exit;
+  expect(JSON.parse(await fs.readFile(join(options.outputRoot, "lookup-pilot-controller.json"))).stop).toBe("lookup_ipc_invalid");
+});
+it("classifies an empty-output refusal in a later round as invalid, not an admission refusal", async () => {
+  const { result } = await run(["empty_two_rounds"]);
+  expect(result.failed).toBeUndefined(); expect(result.result.counts).toMatchObject({ admitted: 1, invalid: 1, incomplete: 0 });
+  expect(result.result.receipts[0].terminal).toBe("pilot_empty_final_output");
+});
+it("isolates production checkout and build-source Git reads without the fixture spawn filter", async () => {
+  const f = suite.fixture, marker = join(f.base, "production-fsmonitor-called"), hook = join(f.base, "production-fsmonitor"), config = join(f.base, "production-gitconfig"), dirt = join(f.repo, "fictional-source-dirt");
+  await fs.writeFile(hook, `#!/bin/sh\nprintf called > '${marker}'\n`, { mode: 0o700 }); await fs.writeFile(config, `[core]\nfsmonitor = ${hook}\n`);
+  for (const root of [f.repo, f.pack]) fixtureGit(root, ["config", "core.fsmonitor", hook]);
+  vi.stubEnv("HOME", f.home); for (const key of ["XDG_CACHE_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME"]) vi.stubEnv(key, f.home);
+  vi.stubEnv("GIT_DIR", "/fictional/not-a-repository"); vi.stubEnv("GIT_INDEX_FILE", join(f.base, "nonexistent-index")); vi.stubEnv("GIT_CONFIG_GLOBAL", config);
+  try {
+    // Direct production functions in this process: no pilotSuite.spawn environment filter runs here.
+    const roles = await loadPilot(f, "roles"), { codes } = await roles.prepareLookupCodes(f.pilot.registration.codes);
+    expect(codes.R0.revision).toBe(f.pilot.registration.codes.R0.revision);
+    expect(sourceState(f.repo)).toEqual({ head: codes.R0.revision, dirty: false });
+    await fs.writeFile(dirt, "Fictional untracked source."); expect(sourceState(f.repo).dirty).toBe(true);
+    expect(() => assertSource(f.repo, codes.R0.revision)).toThrow("build_source_changed_or_dirty");
+    await expect(fs.lstat(marker)).rejects.toMatchObject({ code: "ENOENT" });
+  } finally { vi.unstubAllEnvs(); await fs.rm(dirt, { force: true }); for (const root of [f.repo, f.pack]) fixtureGit(root, ["config", "--unset", "core.fsmonitor"]); }
 });

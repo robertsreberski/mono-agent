@@ -26,7 +26,7 @@ async function syncDirectory(path) {
 async function fauxConsume(authorization, pilot, root, identity, lease) {
   await assertLookupPilotLease(lease, root, identity.controller);
   pilotNeed(Object.keys(authorization).sort().join() === "authorizationId,outputRoot,pilotSha256,scenarios,schema,timeoutMs"
-    && Array.isArray(authorization.scenarios) && authorization.scenarios.every(s => ["settled", "two_rounds", "wrong", "empty", "lost", "own_abort_after_send", "integrity_stop", "disconnect", "die", "hang", "descendant", "auth", "quota"].includes(s))
+    && Array.isArray(authorization.scenarios) && authorization.scenarios.every(s => ["settled", "two_rounds", "wrong", "empty", "empty_two_rounds", "lost", "own_abort_after_send", "integrity_stop", "auth", "quota"].includes(s))
     && pilotId(authorization.authorizationId) && authorization.outputRoot === root && authorization.pilotSha256 === digest(pilot)
     && Number.isSafeInteger(authorization.timeoutMs) && authorization.timeoutMs > 0 && authorization.timeoutMs <= pilot.descriptor.deadlines.childWatchdogMs,
   "lookup_pilot_faux_required");
@@ -42,6 +42,11 @@ async function fauxConsume(authorization, pilot, root, identity, lease) {
   const claim = { schema: "lookup-faux-consumption-v1", authorizationId: authorization.authorizationId, ...identity, outputRoot: root, binding: digest(pilot) };
   await durable(join(root, "authorization-consumed.json"), claim, true);
   await durable(join(entry, "claim.json"), claim, true);
+}
+function slotTerminal(slot, claimed = "lost") {
+  if (!slot.holds.length) return "unadmitted";
+  const terminal = slot.terminal ?? (slot.admissionRefusal ? "refused_pre_send" : claimed);
+  return slot.holds.some(h => !h.settlement) && !["own_abort_after_send", "integrity_stop"].includes(terminal) ? "lost" : terminal;
 }
 /** Serialized durable journal, independently testable without dispatch or an injectable send. */
 async function initializeLookupPilot(options = {}) {
@@ -167,14 +172,14 @@ async function initializeLookupPilot(options = {}) {
       }
     }); },
     async finish(index, terminal, score = null) { return serial(async () => {
-      await check(); pilotNeed(state.cursor === index && LOOKUP_SLOT_TERMINALS.includes(terminal), "lookup_receipt_invalid");
-      const slot = state.slots[index];
-      if (!slot.holds.length) slot.terminal = "unadmitted";
-      else {
-        slot.terminal ??= slot.admissionRefusal ? "refused_pre_send" : terminal;
-        if (slot.holds.some(h => !h.settlement) && !["own_abort_after_send", "integrity_stop"].includes(slot.terminal)) slot.terminal = "lost";
+      await check(); const slot = state.slots[index];
+      if (!slot || state.cursor !== index || !LOOKUP_SLOT_TERMINALS.includes(terminal) || terminal === "unadmitted"
+        || terminal === "refused_pre_send" && !slot?.admissionRefusal || ![null, 0, 1].includes(score)) {
+        if (slot?.holds.length) slot.terminal = "integrity_stop";
+        stop("lookup_ipc_invalid"); await save(); pilotNeed(false, "lookup_ipc_invalid");
       }
-      pilotNeed(score === null || score === 0 || score === 1, "lookup_receipt_invalid"); slot.score = ["completed", "wrong"].includes(slot.terminal) ? score : null;
+      slot.terminal = slotTerminal(slot, terminal);
+      slot.score = ["completed", "wrong"].includes(slot.terminal) ? score : null;
       state.cursor++; const reason = lookupPilotStopReason(accountLookupPilot(state.slots), cap);
       if (reason) stop(reason);
       await save();
@@ -201,8 +206,8 @@ async function reconcileFauxPilot(outputRoot) {
   pilotNeed(state.schema === LOOKUP_FAUX_CONTROLLER && state.scheduleSha256 === digest(state.schedule), "lookup_receipt_invalid");
   let live = 0;
   for (const slot of state.slots) if (slot.worker) {
-    if (groupAlive(slot.worker.pid)) live++;
-    else if (!slot.terminal) slot.terminal = slot.holds.length ? "lost" : "unadmitted";
+    const alive = groupAlive(slot.worker.pid); if (alive) live++;
+    if (!slot.terminal && (!alive || slot.admissionRefusal)) slot.terminal = slotTerminal(slot);
   }
   state.stop ??= live ? "lookup_unreconciled_processes" : "lookup_recovery_only";
   // Observation only: a live controller may still be writing this root.
@@ -255,7 +260,7 @@ async function runSlot(journal, pilot, authorization, root, index) {
         pilotNeed(stage === "running", "lookup_ipc_invalid");
         const ack = await journal.message(index, child, message); if (child.connected) child.send(ack);
         // Settle-then-contain: permit known usage to arrive, but never leave a stopped group alive until the watchdog.
-        if (message.op === "stop" && !settleTimer) settleTimer = setTimeout(() => { void terminateOwned().catch(() => {}); }, 250);
+        if (message.op === "stop" && !settleTimer) settleTimer = setTimeout(() => { void chain.then(() => terminateOwned()).catch(() => {}); }, 250);
       }
     }).catch(async error => {
       failure ??= fixedPilotCode(error.code); await journal.stop(failure).catch(() => {});

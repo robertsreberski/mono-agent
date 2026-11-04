@@ -3,9 +3,9 @@
 ## Unreleased
 
 - Add offline lookup-pilot accounting and partial-run reports with durable
-  admission holds, bounded worker containment and visited-slot coverage.
-  Refused rounds are not provider losses; real authorizations and paid
-  dispatch remain unavailable.
+  admission holds, drained settlements and bounded worker containment.
+  Partial coverage includes assigned in-flight slots; refused rounds are not
+  provider losses. Real authorizations and paid dispatch remain unavailable.
 
 - Add offline lookup pilot descriptors, exact cap estimates and private
   single-use authorization checks that prevent reuse after a crashed run.

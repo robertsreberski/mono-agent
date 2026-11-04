@@ -28,7 +28,7 @@ async function main(a) {
         await options.fetch(`${contract.baseUrl}/codex/responses`, { method: "POST", body: JSON.stringify(payload), headers: {} });
         const usage = { input_tokens: 100, output_tokens: a.scenario === "integrity_stop" ? 1000000 : 10 };
         await options.onProviderStreamEvent({ type: "response.completed", response: { usage, service_tier: "default" } });
-        return { stopReason: "stop", content: a.scenario === "empty" ? [] : [{ type: "text", text: "Fictional result." }] };
+        return { stopReason: "stop", content: ["empty", "empty_two_rounds"].includes(a.scenario) ? [] : [{ type: "text", text: "Fictional result." }] };
       })();
       return { result: () => result, async *[Symbol.asyncIterator]() { await result; } };
     } };
@@ -41,14 +41,14 @@ async function main(a) {
       if (["lost", "own_abort_after_send"].includes(a.scenario)) throw new Error("fictional_send_failure");
       return new Response("");
     } });
-    for (let round = 0; round < (a.scenario === "two_rounds" ? 2 : 1); round++) {
+    for (let round = 0; round < (["two_rounds", "empty_two_rounds"].includes(a.scenario) ? 2 : 1); round++) {
       const result = await guarded.streamSimple({ provider: contract.provider, id: contract.model, api: contract.api, baseUrl: contract.baseUrl }, {},
         { reasoning: "high", transport: "sse", maxRetries: 0, signal: abort.signal }).result();
       if (!result.content.length) terminal = "pilot_empty_final_output";
     }
     if (a.scenario === "wrong") { terminal = "wrong"; score = 0; }
   } catch (error) {
-    terminal = error.outcome === "refused_pre_send" ? "refused_pre_send" : a.scenario === "own_abort_after_send" ? "own_abort_after_send" : a.scenario === "integrity_stop" ? "integrity_stop" : "lost"; score = null;
+    terminal = error.code === "pilot_empty_final_output" ? "pilot_empty_final_output" : error.outcome === "refused_pre_send" ? "refused_pre_send" : a.scenario === "own_abort_after_send" ? "own_abort_after_send" : a.scenario === "integrity_stop" ? "integrity_stop" : "lost"; score = null;
   } finally { permit.close(); }
   process.send({ type: "done", epoch: a.epoch, slotId: a.slotId, terminal, score }, () => process.disconnect());
 }

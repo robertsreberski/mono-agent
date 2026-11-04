@@ -29,6 +29,7 @@ export function lookupPilotReceipt(state, index) {
 }
 export function aggregateLookupPilot(state, receipts) {
   pilotNeed(Number.isSafeInteger(state.cursor) && state.cursor >= 0 && state.cursor <= state.schedule.length, "lookup_receipt_invalid");
+  const visited = state.cursor + (state.slots[state.cursor]?.worker || state.slots[state.cursor]?.holds?.length ? 1 : 0);
   const seen = new Set();
   for (const row of receipts) {
     pilotNeed(Number.isSafeInteger(row?.position) && state.schedule[row.position]?.slotId === row.slotId && !seen.has(row.slotId)
@@ -38,23 +39,23 @@ export function aggregateLookupPilot(state, receipts) {
   pilotNeed(state.stop === null || LOOKUP_PILOT_STOPS.includes(state.stop), "lookup_receipt_invalid");
   const counts = { planned: state.schedule.length, eligible: state.schedule.filter(s => s.eligible).length,
     skipped: 0, unadmitted: 0, admitted: 0, completed: 0, incomplete: 0, invalid: 0, missing: 0 };
-  for (let i = 0; i < state.cursor; i++) {
+  for (let i = 0; i < visited; i++) {
     const planned = state.schedule[i], slot = state.slots[i];
     if (!seen.has(planned.slotId)) counts.missing++;
     if (!planned.eligible) { counts.skipped++; continue; }
     if (!slot.holds.length) { counts.unadmitted++; continue; }
     const a = accountLookupPilot([slot]); counts.admitted++; counts.completed += a.completed;
-    counts.incomplete += a.incomplete; counts.invalid += a.invalid;
+    counts.incomplete += a.incomplete + (slot.terminal ? 0 : 1); counts.invalid += a.invalid;
   }
   const blocks = new Map();
-  for (const row of receipts) if (row.position < state.cursor && ["completed", "wrong"].includes(row.terminal) && row.admitted) {
+  for (const row of receipts) if (row.position < visited && ["completed", "wrong"].includes(row.terminal) && row.admitted) {
     const s = state.schedule[row.position], key = digest([s.suite, s.traceId, s.probeId]);
     if (!blocks.has(key)) blocks.set(key, new Set()); blocks.get(key).add(row.role);
   }
   const spend = accountLookupPilot(state.slots);
   return { schema: "lookup-pilot-report-v1", runId: state.runId, executionKind: "faux-only", authorizedSpend: false, qualityMeasured: false, counts,
     pairedCoverage: { completeBlocks: [...blocks.values()].filter(v => v.size === state.roleCount).length },
-    schedule: { visited: state.cursor, truncated: state.cursor < state.schedule.length, remaining: state.schedule.length - state.cursor },
+    schedule: { visited, truncated: visited < state.schedule.length, remaining: state.schedule.length - visited },
     stop: state.stop, cost: { capUSD: state.capUSD, reservationUSD: state.rmaxUSD, totalUSD: lookupDollars(spend.totalUnits), knownPartialUSD: lookupDollars(spend.knownPartialUnits) },
     receipts: [...receipts].sort((a, b) => a.position - b.position) };
 }

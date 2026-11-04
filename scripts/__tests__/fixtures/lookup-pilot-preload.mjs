@@ -51,10 +51,23 @@ if (probe && fault?.action === "arrival") {
 }
 
 // Intercept the incoming delivery, including real controller -> child acknowledgements.
-let assignment, changedAck = false;
+let assignment, changedAck = false, foreignControllerStart, faultScenarios = [], queuedSettle, graceCallback;
+const testFaultScenarios = ["die", "hang", "disconnect", "descendant"];
+const deliverBoundary = () => {
+  if (!queuedSettle || !graceCallback) return;
+  const deliver = queuedSettle; queuedSettle = null;
+  evidence.settleDeliveredBeforeGrace = true; record();
+  deliver(); graceCallback(); graceCallback = null;
+};
+const schedule = globalThis.setTimeout;
+if (driver && fault?.action === "settle-at-grace") globalThis.setTimeout = (callback, ms, ...args) => schedule(ms === 250 ? () => { graceCallback = () => callback(...args); deliverBoundary(); } : callback, ms, ...args);
 const emit = process.emit.bind(process);
 process.emit = (event, ...args) => {
   const a = args[0];
+  if (driver && event === "message" && a?.options?.authorization?.scenarios) {
+    faultScenarios = [...a.options.authorization.scenarios];
+    a.options.authorization.scenarios = faultScenarios.map(s => testFaultScenarios.includes(s) ? "settled" : s);
+  }
   if (probe && event === "message") {
     if (a?.pilot) {
       assignment = a;
@@ -66,6 +79,10 @@ process.emit = (event, ...args) => {
       if (kind === "registration") a.roleRequest.binding.registrationSha256 = "0".repeat(64);
       if (kind === "descriptor") a.pilot.descriptor.deadlines.runDeadlineMs--;
       if (kind === "pid") a.index++;
+      if (kind === "foreign-ppid") {
+        foreignControllerStart = JSON.parse(fs.readFileSync(join(a.outputRoot, "lookup-pilot-controller.json"))).controller.startIdentity;
+        Object.defineProperty(process, "ppid", { configurable: true, value: fault.foreignPid });
+      }
       if (kind === "ppid") Object.defineProperty(process, "ppid", { configurable: true, value: 1 });
       if (kind === "epoch") a.epoch = "fictional-stale";
       if (kind === "debug") process.env.CONTINUITY_DEBUG = "";
@@ -86,9 +103,25 @@ process.emit = (event, ...args) => {
 };
 let probePid;
 const fork = childProcess.fork;
-childProcess.fork = (...args) => { const child = fork(...args); if (args[0].endsWith("continuity-lookup-pilot-child.mjs")) probePid = child.pid; return child; };
+childProcess.fork = (...args) => {
+  const child = fork(...args);
+  if (args[0].endsWith("continuity-lookup-pilot-child.mjs")) {
+    probePid = child.pid; const send = child.send.bind(child), deliver = child.emit.bind(child);
+    child.emit = (event, ...rest) => {
+      if (event === "message" && rest[0]?.op === "settle" && fault?.action === "settle-at-grace") {
+        queuedSettle = () => deliver(event, ...rest); deliverBoundary(); return true;
+      }
+      return deliver(event, ...rest);
+    };
+    child.send = (a, ...rest) => { if (a.pilot && testFaultScenarios.includes(faultScenarios[a.index])) a.scenario = faultScenarios[a.index]; return send(a, ...rest); };
+  }
+  return child;
+};
 const exec = childProcess.execFileSync;
 childProcess.execFileSync = (command, args, ...rest) => {
+  if (probe && fault?.action === "swap-foreign-ppid" && command === "/bin/ps" && args[1] === String(fault.foreignPid)) {
+    evidence.foreignIdentityProvided = true; record(); return foreignControllerStart;
+  }
   if (probe && ["swap-parent-start", "swap-null-parent-start"].includes(fault?.action) && command === "/bin/ps" && args[1] === String(process.ppid)
     && new Error().stack.split("\n")[3]?.includes("at verifyLookupPilotParent")) {
     evidence.swappedParentStart = true; record(); return fault.action === "swap-parent-start" ? "fictional-start-identity" : "";
@@ -100,6 +133,8 @@ childProcess.execFileSync = (command, args, ...rest) => {
 if (probe) {
   const send = process.send.bind(process); let changed = false;
   process.send = (m, ...args) => {
+    if (m.op === "settle" && fault?.action === "settle-at-grace") { m.payload.rawUsage = { input_tokens: 100, output_tokens: 10 }; m.payload.tier = "default"; }
+    if (m.type === "done" && fault?.action === "forge-terminal") m.terminal = fault.terminal;
     if (m.op === "stop") { evidence.stopSentAt = Date.now(); record(); }
     if (m.type === "done" && fault?.action === "stop-hang") return true;
     if (m.type === "done" && assignment?.scenario === "descendant") childProcess.spawn(process.execPath, ["-e", "setInterval(()=>{},1000)"], { stdio: "ignore", env: process.env }).unref();
@@ -114,5 +149,16 @@ if (probe) {
   };
   if (fault?.action === "stop-hang") process.on("message", () => {});
   if (fault?.action === "stop-hang") process.on("SIGTERM", () => { evidence.terminatedAt = Date.now(); record(); process.exit(0); });
+}
+if (driver && fault?.action === "settle-at-grace") {
+  const open = promises.open; let delayed = false;
+  promises.open = async (...args) => {
+    const file = await open(...args);
+    if (!delayed && evidence.settleDeliveredBeforeGrace && basename(args[0]) === "lookup-pilot-controller.json") {
+      delayed = true; const read = file.readFile.bind(file);
+      file.readFile = async (...rest) => { evidence.settleCheckPending = true; record(); await new Promise(resolve => schedule(resolve, 80)); return read(...rest); };
+    }
+    return file;
+  };
 }
 syncBuiltinESMExports();
