@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import { digest, loadTraces, makePlan, traceTokenShape } from "../lib/continuity-dataset.mjs";
 import { BUILD_POLICY, verifyRealBuild } from "../lib/memory-e2e-build.mjs";
 import { LOOKUP_MODE, LOOKUP_ROLES, LOOKUP_SOULS, LOOKUP_BUDGET, sha256 } from "../lib/continuity-lookup.mjs";
-import { ROOT, GUIDANCE_FILES, lookupProtocol, lookupWorkload, registerLookup, validateRegistration, guidanceDiff, roleBinding, rolePlan,
+import { ROOT, GUIDANCE_FILES, LOOKUP_PILOT_PROTOCOL_FILES, lookupProtocol, lookupWorkload, registerLookup, validateRegistration, guidanceDiff, roleBinding, rolePlan,
   verifyRoleRequest, roleReceipt, assertRoleReceipt, aggregateLookupRoles, aggregateRoleFiles, runLookupRoles, runLookupRoleChild, verifyRegisteredCheckouts } from "../lib/continuity-lookup-roles.mjs";
 import { main as benchmarkMain } from "../continuity-benchmark.mjs";
 import { main as compareMain, lookupOutputPath, workloadOptions, WORKLOAD_FLAGS } from "../continuity-lookup-compare.mjs";
@@ -535,4 +535,10 @@ it("covers every workload flag and preserves a legacy estimate invocation", asyn
 
 it("refuses even empty workload overrides before reading an estimator registration", async () => {
   for (const flag of WORKLOAD_FLAGS) await expect(estimateMain(["--registration", "/fictional/registration.json", "--sha256", "a".repeat(64), flag, ""])).rejects.toThrow("lookup_estimate_workload_conflict");
+});
+
+it("binds all present pilot artifact files, including guard assumptions, in the local protocol", async () => {
+  const protocol = await lookupProtocol();
+  expect(protocol.pilotSha256).toBe(digest(await Promise.all(LOOKUP_PILOT_PROTOCOL_FILES.map(async path => [path, sha256(await readFile(join(ROOT, path)))]))));
+  expect(LOOKUP_PILOT_PROTOCOL_FILES).toContain("scripts/lib/continuity-lookup-guard.mjs");
 });

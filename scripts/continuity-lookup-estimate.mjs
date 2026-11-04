@@ -230,15 +230,24 @@ export async function main(argv = process.argv.slice(2), { stdout = console.log 
   const flags = parseLookupOptions(argv, ["--registration", "--sha256", "--opus-model", ...WORKLOAD_FLAGS]);
   requireLookup(!flags["--registration"] || !WORKLOAD_FLAGS.some(flag => flags[flag] !== undefined), "lookup_estimate_workload_conflict");
   requireLookup(Boolean(flags["--registration"]) === Boolean(flags["--sha256"]), "lookup_registration_hash_required");
-  const registration = flags["--registration"] ? await readRegistration(flags["--registration"], flags["--sha256"]) : null;
+  let registration = null, pilot = null;
+  if (flags["--registration"]) {
+    const bytes = await readFile(flags["--registration"]);
+    requireLookup(sha256(bytes) === flags["--sha256"], "lookup_registration_hash_mismatch");
+    if (JSON.parse(bytes).schema === "continuity-lookup-pilot-registration-v1") {
+      const { validateLookupPilotRegistration } = await import("./lib/continuity-lookup-pilot.mjs");
+      pilot = await validateLookupPilotRegistration(JSON.parse(bytes)); registration = pilot.registration;
+    } else registration = await readRegistration(flags["--registration"], flags["--sha256"]);
+  }
   const workload = registration?.common ?? await lookupWorkload(workloadOptions(flags));
   const profiles = ESTIMATE_PROFILES.map(profile => profile.id === "opus" && flags["--opus-model"] ? { ...profile, model: flags["--opus-model"] } : profile);
   const prices = await offlinePrices(profiles);
-  const result = workload.lookupSource ? estimateExternalLookup({ workload, catalog: await offlineCatalog(workload.reader.model) })
+  const result = pilot ? (await import("./lib/continuity-lookup-pilot.mjs")).estimateLookupPilot({ workload, catalog: workload.catalog, capUSD: pilot.descriptor.capUSD })
+    : workload.lookupSource ? estimateExternalLookup({ workload, catalog: await offlineCatalog(workload.reader.model) })
     : await estimateLookup({ workload, profiles, prices });
-  if (workload.lookupSource && workload.catalogCapUSD !== undefined) requireLookup(result.catalogCapUSD === workload.catalogCapUSD, "lookup_catalog_cap_mismatch");
+  if (!pilot && workload.lookupSource && workload.catalogCapUSD !== undefined) requireLookup(result.catalogCapUSD === workload.catalogCapUSD, "lookup_catalog_cap_mismatch");
   result.workloadDigest = digest(workload);
-  result.registrationDigest = registration ? digest(registration) : null;
+  result.registrationDigest = registration ? digest(pilot ?? registration) : null;
   result.pricingSource = { source: "installed local Pi catalog (offline)", lockfileSha256: sha256(await readFile(join(ROOT, "pnpm-lock.yaml"))) };
   stdout(JSON.stringify(result, null, 2)); return 0;
 }

@@ -241,3 +241,9 @@ it("renders skipped, unknown-inventory blocked and missing counts separately", a
   expect(markdown).toContain("| Planned slots | Skipped | Blocked | Missing |");
   expect(markdown).toContain("| native-lookup | 4 | 3 | 1 | 1 |");
 });
+
+it("does not accept assumption labels or a faux authorization object as ordinary readiness authority", () => {
+  const catalog = { model: "openai-codex:gpt-6.1-sol", cost: { input: 2, output: 10, cacheRead: .1, cacheWrite: 2.5 } };
+  const descriptor = { capPolicy: "cap-gated-v1", outputCap: "catalog_max_assumed", inputEnvelope: "assumed-v1" };
+  expect(lookupPilotReadiness({ catalog, descriptor, capPolicy: "cap-gated-v1", authorization: { schema: "faux" } }).ready).toBe(false);
+});

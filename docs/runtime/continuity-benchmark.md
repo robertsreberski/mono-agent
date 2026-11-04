@@ -1159,3 +1159,117 @@ check; the existing production child still refuses every non-offline lookup.
 Controller leases, durable permits, accounting, concurrency-one scheduling,
 resume refusal, authorization, readiness extension and re-registration are not
 part of this offline contract.
+
+
+### Cap-gated pilot artifacts and local attestations
+
+The separate `continuity-lookup-pilot-registration-v1` schema wraps an unchanged
+external full-upfront registration and a
+`continuity-lookup-pilot-descriptor-v1` descriptor. It is not a legacy
+registration and cannot enable the ordinary paid lookup routes. All seven
+ordinary refusal seams remain in force. There is no pilot dispatcher, capability
+issuer or authorization builder in these artifact helpers.
+
+The descriptor registers `cap-gated-v1`, an explicit numeric cap C, concurrency
+one, the complete `assumed-v1` registry and its digest, catalog binding, schedule
+seed/version/digest, deadlines and `controller-issued-transport-key-v1` cache
+policy. The schedule registration binds the inventory and selection; these
+helpers do not execute a schedule or allocate cache keys.
+
+The offline estimator uses exact decimal rational money arithmetic. It reports:
+
+- E and its scenario: two lookups, half the returned-byte budget, half cached
+  input, three rounds of up to 300 output tokens and 900 input allowance tokens
+  per round, at the default service tier; this is not measured usage;
+- Rmax = 2 × (272,000 × maximum applicable input/cache-class rate +
+  128,000 × maximum applicable output rate), divided by one million;
+- C, C − Rmax and C/E (null when E is zero).
+
+Sol's registered rates pin Rmax to $3.92. The maximum input-class rate includes
+cache writes ($2.50/M), not just uncached input ($2/M); the maximum output rate
+is $10/M. Only strictly exceeded input-tier thresholds at I = 272,000 apply.
+Missing prices, changed base assumptions, changed catalog bindings or an altered
+maximum refuse validation. C must be at least Rmax. A corrected full-upfront
+comparison remains available: ceil to cents of 1.25 × ten maximum reservations
+per eligible slot. It is not the admission gate, and the nested legacy
+registration retains its original full-upfront validation unchanged.
+
+`continuity-lookup-estimate --registration FILE --sha256 SHA256` accepts the
+separate pilot registration for this offline estimate. No credential is read
+and no provider is contacted by estimation. Artifact helper APIs are in
+`scripts/lib/continuity-lookup-pilot.mjs`; they do not add a CLI execution route.
+
+The registered accounting total is
+`T = sum(complete settled) + sum(max(retained hold, known partial)) + sum(active holds)`.
+Admission would require `T + Rmax <= C`. Lost requests and own aborts, including
+own latency aborts, are incomplete rather than invalid. Two consecutive such
+admitted slots trigger `lookup_repeated_loss`; other admitted terminal slots
+reset the streak, and unadmitted slots do not affect it. Alternating losses are
+still bounded by C, not by that consecutive-loss rule. These are registered
+rules only; the controller and accounting adapters are not supplied here.
+
+Ordinary readiness is unchanged and false. Cap-gated diagnostics independently
+show pricing and registered assumption readiness. With complete pricing and
+assumptions but no valid bound attestation, status is `awaiting_authorization`
+and its sole blocker is `lookup_authorization_required`, not unsupported caps
+mixed with missing authorization. Only a locally validated, descriptor-bound
+attestation can promote the assumed input/output components to ready. Incomplete
+pricing still blocks. Readiness is diagnostic, never dispatch authority.
+
+#### Private authorization and consumption
+
+A real-schema authorization is a trusted local attestation, not cryptographic
+proof of the approver's identity. Provisioning remains an external trusted-owner
+operation after fresh registration and separate numeric-cap approval. There is
+no production issuer, builder, environment upgrade or faux-to-real conversion.
+The faux schema has a distinct registry domain and cannot pass the real
+validator.
+
+The private attestation binds its ID, both raw and canonical registration
+hashes, controller checkout, both code/build bindings, protocol, catalog,
+policy/source/selection, reader/effort, complete descriptor including all
+assumptions, cap, schedule, cache policy and deadlines, canonical external
+output root and credential location. It also binds a random salt and a
+domain-separated commitment to the Codex account ID, plus timestamp, approver
+and numeric-approval reference. Account validation uses the resolver's local
+`readCredential` method without OAuth resolution or refresh, matching the same
+JWT account claim as Codex. Same-account token rotation is allowed; account
+substitution refuses. Tokens, token hashes, paths, path hashes, salt and account
+commitment never leave the validator through its opaque handle or consumption
+result. The private attestation and markers are not public exports.
+
+The real registry is fixed from `os.userInfo().homedir`, never `HOME`, XDG,
+configuration or arguments:
+`~/.local/state/mono-agent/lookup-pilot/consumed-v1/<key>/`.
+The key is SHA256 of the real domain followed by the authorization ID **only**;
+reformatting or renaming the artifact cannot create a second use of that ID.
+The raw artifact digest is stored inside the private claim, not in its key.
+Output and registry must be disjoint, outside both registered checkouts, and
+have owner-safe ancestors. Pilot directories are private. No-follow reads,
+owned regular files, single-link checks and private file modes reject aliases.
+
+While holding the output-root lease:
+
+1. Revalidate the attestation, bindings, safe files and local account. Require
+   the root to be unused (except its lease), with no `units/` or fixed marker.
+2. Exclusively create the registry entry first. Its existence alone burns the
+   ID. Each newly created registry ancestor's parent is synced before advancing,
+   and the entry's parent is synced before either claim is written.
+3. Exclusively write and sync `authorization-consumed.json` in the output root,
+   then `claim.json` in the registry entry via `durable()`.
+4. Verify the complete matching pair before setup. Claims bind authorization
+   ID/raw digest, output root, run ID, controller epoch and controller PID/process
+   start identity. There is no nonce file or IPC message authentication.
+5. Only **after consumption**, launch children. Future child setup must check
+   its parent PID against the recorded live controller PID/start identity.
+
+A partial or corrupt pair is permanently unusable. There is no identical-claim
+replay, repair or rollback. Recreating the output root does not undo a burn.
+The registry guards ordinary crash/root recreation, not deliberate destruction
+of all trusted per-user state. CI and debug-variable presence always refuse in
+production. Unit tests redirect only the home lookup to synthetic temporary
+homes and exercise the real filesystem; success fixtures clear CI only
+in-process with egress denied. They do not launch a production child with CI
+removed, access real credentials or write the user's registry. Physical
+power-loss durability, backend framing/billing assumptions and live OAuth are
+not established by these offline tests.

@@ -6,6 +6,8 @@ import { fileURLToPath } from "node:url";
 import { digest, loadTraces, makePlan, DEFAULT_ALTERNATE } from "./continuity-dataset.mjs";
 import { LOOKUP_MODE, LOOKUP_ROLE_PROTOCOL, LOOKUP_ROLES, LOOKUP_SOULS, LOOKUP_BUDGET, LOOKUP_SLOT_CODES, assertExternalPolicy, sha256 } from "./continuity-lookup.mjs";
 import { summarizeLookup } from "./continuity-lookup-score.mjs";
+import { LOOKUP_ASSUMPTIONS } from "./continuity-lookup-guard.mjs";
+import { lookupAuthorizationBinds } from "./continuity-lookup-authorization.mjs";
 import { BUILD_POLICY, prepareRealBuild, verifyRealBuild } from "./memory-e2e-build.mjs";
 
 export const ROOT = fileURLToPath(new URL("../../", import.meta.url)).replace(/\/$/u, "");
@@ -29,9 +31,15 @@ const json = async path => JSON.parse(await readFile(path, "utf8"));
 const save = (path, value, flag) => writeFile(path, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600, ...(flag ? { flag } : {}) });
 
 /** Local bytes only. Also exposed by each compatible A1 entrypoint, before any runtime load. */
+export const LOOKUP_PILOT_PROTOCOL_FILES = Object.freeze([
+  "scripts/lib/continuity-lookup-guard.mjs", "scripts/lib/continuity-lookup-pilot.mjs",
+  "scripts/lib/continuity-lookup-authorization.mjs", "scripts/continuity-lookup-estimate.mjs",
+  "scripts/lib/continuity-holdout-controller.mjs", "scripts/lib/continuity-holdout-workflow.mjs",
+]);
 export async function lookupProtocol(root = ROOT) {
   const hashFiles = async files => digest(await Promise.all(files.map(async path => [path, sha256(await readFile(join(root, path)))])));
   return { version: LOOKUP_ROLE_PROTOCOL, probeMode: LOOKUP_MODE,
+    pilotSha256: await hashFiles(LOOKUP_PILOT_PROTOCOL_FILES),
     budgetSha256: sha256(await readFile(join(root, "scripts/fixtures/continuity-lookup-budget-v1.json"))),
     lockfileSha256: sha256(await readFile(join(root, "pnpm-lock.yaml"))),
     entrypointSha256: await hashFiles(["scripts/continuity-benchmark.mjs", "scripts/lib/continuity-lookup-roles.mjs", "scripts/lib/continuity-dataset.mjs", "scripts/lib/continuity-generator.mjs"]),
@@ -191,12 +199,26 @@ export async function validateRegistration(registration) {
 /** Diagnostic only: catalog arithmetic is not capability evidence or authority.
  * B1 has no backend input-envelope proof and cannot promote caller-supplied caps.
  */
-export function lookupPilotReadiness({ model = DEFAULT_ALTERNATE, catalog } = {}) {
+export function lookupPilotReadiness({ model = DEFAULT_ALTERNATE, catalog, capPolicy, descriptor, authorization } = {}) {
   const rate = value => typeof value === "number" && Number.isFinite(value) && value >= 0;
   const rates = cost => ["input", "output", "cacheRead", "cacheWrite"].every(key => rate(cost?.[key]));
   const priced = catalog?.model === model && rates(catalog?.cost)
     && (catalog.cost.tiers === undefined || Array.isArray(catalog.cost.tiers)
       && catalog.cost.tiers.every(tier => rate(tier.inputTokensAbove) && rates(tier)));
+  if (capPolicy === "cap-gated-v1") {
+    const assumed = descriptor?.capPolicy === capPolicy && descriptor.outputCap === "catalog_max_assumed"
+      && descriptor.inputEnvelope === "assumed-v1" && same(descriptor.assumptions, LOOKUP_ASSUMPTIONS)
+      && descriptor.assumptionsSha256 === digest(LOOKUP_ASSUMPTIONS);
+    const bound = assumed && lookupAuthorizationBinds(authorization, descriptor, catalog);
+    const pricing = { status: priced ? "ready" : "unknown", code: priced ? "lookup_pricing_catalog_only" : "lookup_pricing_unknown" };
+    const assumptions = { status: assumed ? "ready" : "unknown", code: assumed ? "lookup_assumptions_registered" : "lookup_assumptions_mismatch" };
+    const authorizationStatus = { status: bound ? "ready" : "awaiting_authorization", code: bound ? "lookup_authorization_bound" : "lookup_authorization_required" };
+    return { ready: Boolean(bound && priced), status: !assumed || !priced ? "blocked" : bound ? "ready" : "awaiting_authorization",
+      outputCap: { status: assumed ? bound ? "ready" : "assumed" : "unknown", code: "lookup_output_cap_catalog_max_assumed" },
+      inputEnvelope: { status: assumed ? bound ? "ready" : "assumed" : "unknown", code: "lookup_input_envelope_assumed_v1" },
+      pricing, assumptions, authorization: authorizationStatus,
+      blockers: !assumed || !priced ? [assumptions, pricing].filter(p => p.status !== "ready").map(p => p.code) : bound ? [] : [authorizationStatus.code] };
+  }
   const outputCap = model === "openai-codex:gpt-6.1-sol"
     ? { status: "unsupported", code: "lookup_output_cap_unsupported" }
     : { status: "unknown", code: "lookup_output_cap_unknown" };

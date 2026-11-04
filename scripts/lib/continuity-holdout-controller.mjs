@@ -83,7 +83,7 @@ export async function terminateGroup(pid) {
   }
   need(!groupAlive(pid), "unreconciled_running_chunks");
 }
-function startIdentity(pid) {
+export function startIdentity(pid) {
   try { return execFileSync("ps", ["-p", String(pid), "-o", "lstart="], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim(); }
   catch { return null; }
 }
