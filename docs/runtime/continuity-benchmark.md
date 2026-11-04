@@ -1491,8 +1491,8 @@ proves the complete controller/child flow. No authorization issuer is provided.
 Ordinary benchmark/compare and probe-child refusal seams remain unchanged.
 
 The sole real-send factory independently checks the child's registered code,
-role, build and plan; PR1 authorization and raw-byte consumption binding; both
-markers; parent/child PID and start identity; epoch, slot and exact cache key;
+role, build and plan; the shared authorization validator and raw-byte consumption
+binding; both markers; parent/child PID and start identity; epoch, slot and exact cache key;
 live IPC; readiness; non-recovery state; and resolved safety. CI or debug-variable
 presence refuses, including empty values. There is no nonce file or IPC MAC.
 Registered pack children reuse the same authorization validator without becoming

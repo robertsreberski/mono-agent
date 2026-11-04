@@ -250,6 +250,9 @@ it.each(["codes", "protocol", "catalog", "policy", "source", "selection", "reade
 });
 it("rejects account substitution but allows same-account access token rotation without refresh", async () => {
   const bound = await validate(); expect(auth.lookupAuthorizationMatchesAccount(bound, f.account)).toBe(true);
+  expect(auth.lookupAuthorizationBindsPilot(bound, f.pilot)).toBe(true);
+  const changed = structuredClone(f.pilot); changed.descriptor.capUSD *= 10;
+  expect(auth.lookupAuthorizationBindsPilot(bound, changed)).toBe(false); expect(auth.lookupAuthorizationBindsPilot({}, f.pilot)).toBe(false);
   expect(auth.lookupAuthorizationMatchesAccount(bound, "other-fictional-account")).toBe(false);
   expect(auth.lookupAuthorizationMatchesAccount({}, f.account)).toBe(false);
   await save(f.args.credentialPath, credential("different-fictional-account"));

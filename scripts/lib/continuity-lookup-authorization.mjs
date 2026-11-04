@@ -119,6 +119,11 @@ async function validateAuthorization({ authorizationPath, registrationPath, regi
     args: { authorizationPath, registrationPath, registrationSha256, outputRoot, credentialPath, controllerRoot } });
   return handle;
 }
+/** Boolean-only binding of the entire approved pilot, including its cap. */
+export function lookupAuthorizationBindsPilot(handle, pilot) {
+  const ctx = handles.get(handle);
+  return Boolean(ctx && same(ctx.pilot, pilot));
+}
 /** Boolean-only final-header check; no account, salt, commitment or path leaves the handle. */
 export function lookupAuthorizationMatchesAccount(handle, account) {
   const ctx = handles.get(handle);

@@ -1,4 +1,5 @@
-// Internal faux probe only: no real Models, credentials, network transport or capability factory.
+// Internal assigned probe; real construction remains behind the shared entry gate.
+import { assertLookupPilotEntry } from "./continuity-lookup-pilot-entry.mjs";
 import { armById } from "./continuity-arms.mjs";
 import { assertResolvedLookupSafety, fauxLookupSafety } from "./continuity-lookup-pilot-runtime.mjs";
 import { fileURLToPath } from "node:url";
@@ -10,8 +11,9 @@ import { readPilotPrivate, pilotStatePath } from "./continuity-lookup-pilot-stat
 import { pilotNeed } from "./continuity-lookup-pilot-accounting.mjs";
 
 async function main(a) {
-  pilotNeed(!Object.hasOwn(process.env, "CONTINUITY_DEBUG"), "lookup_debug_forbidden");
   const real = a.authorization?.schema === "continuity-lookup-pilot-authorization-v1";
+  if (real) assertLookupPilotEntry();
+  pilotNeed(!Object.hasOwn(process.env, "CONTINUITY_DEBUG"), "lookup_debug_forbidden");
   if (real) await (await import("./continuity-lookup-real-capability.mjs")).verifyLookupRealAssignment(a, false);
   else await verifyLookupPilotParent(a);
   await validateLookupPilotRegistration(a.pilot);

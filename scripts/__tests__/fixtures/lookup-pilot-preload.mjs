@@ -197,7 +197,7 @@ if (probe) {
       evidence.descendants.push({ pid: descendant.pid, startIdentity: startIdentity(descendant.pid) }); record(); descendant.unref();
       evidence.descendantNoDelay = true; record();
     }
-    if (!changed && fault?.action?.startsWith("wire-") && m.version === "lookup-faux-ipc-v1" && (fault.action !== "wire-digest" || m.op === "consume")) {
+    if (!changed && fault?.action?.startsWith("wire-") && m.version === "lookup-pilot-ipc-v1" && (fault.action !== "wire-digest" || m.op === "consume")) {
       changed = true;
       if (fault.action === "wire-stale") m.epoch = "fictional-stale";
       if (fault.action === "wire-order") m.seq++;

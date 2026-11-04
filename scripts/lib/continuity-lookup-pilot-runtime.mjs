@@ -103,5 +103,5 @@ export async function lookupPilotFailureCode(failure) {
   const [{ LOOKUP_PRE_SEND_REFUSALS }, { LOOKUP_PILOT_STOPS }] = await Promise.all([
     import("./continuity-lookup-guard.mjs"), import("./continuity-lookup-pilot-accounting.mjs"),
   ]);
-  return [failure?.code, failure?.kind, failure?.message, failure?.details?.code, failure?.details?.message].find(value => LOOKUP_PILOT_STOPS.includes(value) || LOOKUP_PRE_SEND_REFUSALS.includes(value));
+  return [failure?.code, failure?.kind, failure?.message, failure?.details?.code, failure?.details?.message].find(value => LOOKUP_PILOT_STOPS.includes(value) || LOOKUP_PRE_SEND_REFUSALS.includes(value) || value === "pilot_empty_final_output");
 }

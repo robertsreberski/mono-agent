@@ -12,7 +12,7 @@ beforeEach(async () => {
   send = Object.assign(() => {}, { permit: { close: vi.fn(), stop: vi.fn(async () => {}) } }); mint = vi.fn(async () => send);
   vi.doMock("../lib/continuity-runner.mjs", () => runner);
   vi.doMock("../lib/continuity-dataset.mjs", () => ({ loadTraces: vi.fn(async () => ({ traces: [trace] })) }));
-  vi.doMock("../lib/continuity-lookup-real-capability.mjs", () => ({ createLookupRealSend: mint, realLookupSendForGuard: () => false }));
+  vi.doMock("../lib/continuity-lookup-real-capability.mjs", () => ({ createLookupRealSend: mint, isRealLookupSend: () => false, realLookupSendForGuard: () => false }));
   ({ runLookupConfiguredProbe: run } = await import("../lib/continuity-lookup-pilot-probe.mjs"));
   a = { outputRoot: "/fictional/output", slotId: "fictional-slot", plan: { reader: { model: "openai-codex:gpt-6.1-sol", effort: "high" } },
     authorization: { credentialPath: "/fictional/credential" }, slot: { code: "R0", suite: "holdout", traceId: "trace", probeId: "probe" },
@@ -47,4 +47,9 @@ it.each(["not_admitted_input_envelope", "lookup_request_limit", "not_admitted_ca
 it("does not classify SDK account mismatch as provider loss", async () => {
   runner.runProbe.mockResolvedValue({ status: "failed", failure: "lookup_account_mismatch" });
   expect(await run(a)).toEqual({ terminal: "integrity_stop", score: null });
+});
+
+it.each(["pilot_empty_final_output", "store_degraded", "boundary_unverified", "pressure_unverified"])("preserves non-provider terminal %s", async terminal => {
+  runner.runProbe.mockResolvedValue(terminal === "pilot_empty_final_output" ? { status: "failed", failure: terminal } : { status: terminal });
+  expect(await run(a)).toEqual({ terminal, score: null }); expect(send.permit.stop).not.toHaveBeenCalled(); expect(send.permit.close).toHaveBeenCalledTimes(1);
 });

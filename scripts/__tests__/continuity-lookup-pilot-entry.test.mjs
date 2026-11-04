@@ -22,3 +22,15 @@ it.each([createLookupPilotController, runLookupPilot])("also refuses a valid-loo
   } })).rejects.toMatchObject({ code: "lookup_pilot_real_route_unavailable" });
   await expect(lstat(outputRoot)).rejects.toMatchObject({ code: "ENOENT" });
 });
+
+it("keeps direct production verification and mint behind the same gate", async () => {
+  const { verifyLookupRealAssignment, createLookupRealSend } = await import("../lib/continuity-lookup-real-capability.mjs");
+  await expect(verifyLookupRealAssignment(null)).rejects.toMatchObject({ code: "lookup_pilot_real_route_unavailable" });
+  await expect(createLookupRealSend({}, {})).rejects.toMatchObject({ code: "lookup_pilot_real_route_unavailable" });
+});
+
+it("pins neutral IPC while retaining the deliberately incompatible faux identity", async () => {
+  const { LOOKUP_PILOT_IPC, LOOKUP_FAUX_CONTROLLER, LOOKUP_REAL_CONTROLLER } = await import("../lib/continuity-lookup-pilot-state.mjs");
+  expect(LOOKUP_PILOT_IPC).toBe("lookup-pilot-ipc-v1"); expect(LOOKUP_FAUX_CONTROLLER).toBe("continuity-lookup-faux-controller-v1");
+  expect(LOOKUP_REAL_CONTROLLER).toBe("continuity-lookup-controller-v1");
+});

@@ -1,5 +1,5 @@
 import { assertResolvedLookupSafety, lookupCacheKey } from "./continuity-lookup-pilot-runtime.mjs";
-import { realLookupSendForGuard } from "./continuity-lookup-real-capability.mjs";
+import { isRealLookupSend, realLookupSendForGuard } from "./continuity-lookup-real-capability.mjs";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { zstdDecompressSync } from "node:zlib";
@@ -243,7 +243,7 @@ export function guardedLookupModels(models, { contract, permit, send, assumption
   if (pilotSource && !resolvedSafety) refuse("lookup_auxiliary_callers_forbidden");
   if (Object.hasOwn(contract, "promptCacheKey") && !lookupCacheKey(contract.promptCacheKey)) refuse("lookup_prompt_cache_key_forbidden");
   if (resolvedSafety) assertResolvedLookupSafety(resolvedSafety);
-  if (permit?.testOnly !== true) {
+  if (permit?.testOnly !== true || isRealLookupSend(send)) {
     assertRealLookupPermitSource(permit);
     if (!realLookupSendForGuard(send, permit, contract)) refuse("lookup_pilot_capability_invalid");
   }

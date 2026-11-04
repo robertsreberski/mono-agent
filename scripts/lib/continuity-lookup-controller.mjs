@@ -58,6 +58,7 @@ async function initializeLookupPilot(options = {}) {
   const real = authorization?.schema === "continuity-lookup-pilot-authorization-v1";
   if (real) {
     (await import("./continuity-lookup-pilot-entry.mjs")).assertLookupPilotEntry();
+    pilotNeed(Object.keys(authorization).sort().join() === "authorizationPath,controllerRoot,credentialPath,registrationPath,registrationSha256,schema", "lookup_authorization_binding_mismatch");
     pilotNeed(!Object.hasOwn(process.env, "CI"), "paid_mode_refused_in_ci");
     pilotNeed(!Object.hasOwn(process.env, "CONTINUITY_DEBUG"), "lookup_debug_forbidden");
   }
@@ -65,12 +66,13 @@ async function initializeLookupPilot(options = {}) {
   pilotNeed(Object.keys(options).sort().join() === "authorization,outputRoot,pilot", "lookup_pilot_faux_required");
   await validateLookupPilotRegistration(pilot);
   pilotNeed(pilot.registration.codes.R0.path === ROOT, "lookup_controller_checkout_mismatch");
+  const auth = real ? await import("./continuity-lookup-authorization.mjs") : null;
+  const authorizationHandle = real ? await auth.validateLookupAuthorization({ ...authorization, outputRoot }) : null;
+  pilotNeed(!real || auth.lookupAuthorizationBindsPilot(authorizationHandle, pilot), "lookup_authorization_binding_mismatch");
   await verifyRegisteredCheckouts(pilot.registration);
   pilotNeed(await externalDirectory(outputRoot, false, Object.values(pilot.registration.codes).map(c => c.path)) === outputRoot, "lookup_receipt_invalid");
   const controller = { pid: process.pid, startIdentity: lookupProcessStartIdentity(process.pid) };
   pilotNeed(typeof controller.startIdentity === "string" && controller.startIdentity.length > 0, "lookup_ipc_invalid");
-  const auth = real ? await import("./continuity-lookup-authorization.mjs") : null;
-  const authorizationHandle = real ? await auth.validateLookupAuthorization({ ...authorization, outputRoot }) : null;
   const lease = await acquireLookupPilotLease(outputRoot), identity = { runId: randomUUID(), controllerEpoch: randomUUID(), controller };
   let state, failed = false, tail = Promise.resolve();
   const path = pilotStatePath(outputRoot), cap = lookupMoney(pilot.descriptor.capUSD), reserve = lookupMoney(pilot.descriptor.rmaxUSD);
@@ -206,7 +208,7 @@ async function initializeLookupPilot(options = {}) {
         stop(refusalCode); if (slot.holds.length) terminal = "integrity_stop";
       }
       // Account substitution is a safety violation, not a provider-loss observation.
-      // Keep B2a's retained settlement unchanged while projecting the slot correctly.
+      // Keep the retained settlement contract unchanged while projecting the slot correctly.
       if (state.stop === "lookup_account_mismatch" && slot.holds.length) slot.terminal = "integrity_stop";
       slot.terminal = slotTerminal(slot, terminal);
       slot.score = ["completed", "wrong"].includes(slot.terminal) ? score : null;
@@ -224,14 +226,14 @@ async function initializeLookupPilot(options = {}) {
 }
 function publicFailure(error) {
   const allowed = [...LOOKUP_PILOT_STOPS, "paid_mode_refused_in_ci", "lookup_pilot_real_route_unavailable", "lookup_pilot_faux_required", "lookup_debug_forbidden", "lookup_controller_checkout_mismatch",
-    "lookup_authorization_already_consumed", "lookup_authorization_lease_invalid", "lookup_pilot_resume_forbidden", "lookup_pilot_not_ready"];
+    "lookup_authorization_binding_mismatch", "lookup_authorization_already_consumed", "lookup_authorization_lease_invalid", "lookup_pilot_resume_forbidden", "lookup_pilot_not_ready"];
   pilotNeed(false, allowed.includes(error?.code) ? error.code : "lookup_pilot_not_ready");
 }
 export async function createLookupPilotController(options) {
   try { return await initializeLookupPilot(options); } catch (error) { publicFailure(error); }
 }
 /** Reconciliation never acquires a new writer lease, dispatches or signals an old group. */
-async function reconcileFauxPilot(outputRoot) {
+async function reconcilePilotState(outputRoot) {
   const state = await readPilotPrivate(pilotStatePath(outputRoot));
   pilotNeed([LOOKUP_FAUX_CONTROLLER, LOOKUP_REAL_CONTROLLER].includes(state.schema) && state.scheduleSha256 === digest(state.schedule), "lookup_receipt_invalid");
   let live = 0;
@@ -244,7 +246,7 @@ async function reconcileFauxPilot(outputRoot) {
   return { ...aggregateLookupPilot(state, state.slots.flatMap((s, i) => s.worker || s.terminal ? [lookupPilotReceipt(state, i)] : [])), reconciliation: true, unreconciledGroups: live };
 }
 export async function reconcileLookupPilot(outputRoot) {
-  try { return await reconcileFauxPilot(outputRoot); } catch (error) { publicFailure(error); }
+  try { return await reconcilePilotState(outputRoot); } catch (error) { publicFailure(error); }
 }
 async function runSlot(journal, pilot, authorization, root, index) {
   const state = journal.snapshot(), slot = state.schedule[index], code = pilot.registration.codes[slot.code];
@@ -351,7 +353,7 @@ async function runSlot(journal, pilot, authorization, root, index) {
     finally { if (child.connected) child.disconnect(); if (containmentFailed) { child.stderr.destroy(); child.unref(); } else await exited; }
   }
 }
-async function runFauxPilot(options) {
+async function runPilotSchedule(options) {
   const journal = await createLookupPilotController(options);
   try {
     const { pilot, authorization, outputRoot } = options;
@@ -371,5 +373,5 @@ async function runFauxPilot(options) {
 }
 
 export async function runLookupPilot(options) {
-  try { return await runFauxPilot(options); } catch (error) { publicFailure(error); }
+  try { return await runPilotSchedule(options); } catch (error) { publicFailure(error); }
 }

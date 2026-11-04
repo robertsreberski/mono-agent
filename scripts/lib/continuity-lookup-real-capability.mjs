@@ -1,5 +1,6 @@
 // Child-only authority. No issuer, transport injection, public registration or nonce.
 import process from "node:process";
+import { assertLookupPilotEntry } from "./continuity-lookup-pilot-entry.mjs";
 import { createHash } from "node:crypto";
 import { zstdDecompressSync } from "node:zlib";
 const sends = new WeakSet(), decorators = new WeakSet(), minted = new Set();
@@ -13,6 +14,7 @@ export const realLookupSendBinds = (send, profile) => sends.has(send) && send.bi
 
 /** Read-only verification, not authority. Minting never accepts its return value. */
 export async function verifyLookupRealAssignment(a, ready = true) {
+  assertLookupPilotEntry();
   if (Object.hasOwn(process.env, "CI")) fail("paid_mode_refused_in_ci");
   if (Object.hasOwn(process.env, "CONTINUITY_DEBUG")) fail("lookup_debug_forbidden");
   try { return await verifyAssignment(a, ready); } catch { fail(); }
@@ -46,6 +48,7 @@ async function verifyAssignment(a, ready) {
     && stateModule.samePilot(state.schedule[a.index], a.slot) && a.slot.roleId === a.roleRequest.binding.id
     && a.slot.code === a.roleRequest.binding.code && (!ready || slot.ready === true));
   const handle = await auth.validateLookupAuthorization({ ...a.authorization, outputRoot: a.outputRoot });
+  need(auth.lookupAuthorizationBindsPilot(handle, a.pilot));
   await auth.verifyLookupConsumption(handle, { runId: state.runId, controllerEpoch: state.epoch, controller: state.controller });
   return { state, handle };
 }
@@ -85,7 +88,7 @@ export async function createLookupRealSend(a, resolvedSafety) {
       const { state } = await verifyLookupRealAssignment(a), hold = state.slots[a.index].holds.at(-1);
       need(Date.now() < Math.min(state.deadlineAt, state.slots[a.index].startedAt + a.pilot.descriptor.deadlines.deadlineMs));
       const headers = new Headers(init.headers), encoding = headers.get("content-encoding");
-      need(encoding === null || encoding === "zstd");
+      need((encoding === null || encoding === "zstd") && headers.get("session-id") === a.cacheKey && headers.get("x-client-request-id") === a.cacheKey);
       const bytes = encoding === "zstd" ? zstdDecompressSync(init.body) : Buffer.from(init.body);
       need(hold?.consumed === true && !hold.revoked && !hold.settlement && !used.has(hold.permitId)
         && hold.payloadDigest === createHash("sha256").update(bytes).digest("hex"));
@@ -131,7 +134,7 @@ export async function createLookupRealSend(a, resolvedSafety) {
     decorators.add(decorator); sends.add(send); return Object.freeze(send);
   } catch (error) {
     // No paths, parser messages, credential values or arbitrary causes leave minting.
-    if (["lookup_pilot_capability_invalid", "paid_mode_refused_in_ci", "lookup_debug_forbidden"].includes(error?.code)) throw error;
+    if (["lookup_pilot_real_route_unavailable", "lookup_pilot_capability_invalid", "paid_mode_refused_in_ci", "lookup_debug_forbidden"].includes(error?.code)) throw error;
     fail();
   }
 }

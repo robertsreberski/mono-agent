@@ -33,6 +33,7 @@ export async function runLookupConfiguredProbe(a) {
     }
     if (LOOKUP_PRE_SEND_REFUSALS.includes(trial.failure)) return { terminal: "refused_pre_send", score: null, refusalCode: trial.failure };
     if (trial.failure === "lookup_account_mismatch") return { terminal: "integrity_stop", score: null };
+    if (["pilot_empty_final_output", "store_degraded", "boundary_unverified", "pressure_unverified"].includes(trial.failure ?? trial.status)) return { terminal: trial.failure ?? trial.status, score: null };
     return { terminal: trial.status === "completed" ? trial.score?.pass ? "completed" : "wrong" : "lost",
       score: trial.status === "completed" ? Number(trial.score?.pass === true) : null };
   } finally { send.permit.close(); }

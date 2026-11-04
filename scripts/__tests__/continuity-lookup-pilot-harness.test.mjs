@@ -254,7 +254,7 @@ it.each(["native-lookup", "continuity-pack-cold"])("resolves the internal %s pro
   expect(config.providers.piNative).toMatchObject({ transport: "sse", piMaxRetries: 0 });
 });
 
-it.each(["not_admitted_cap", "lookup_request_limit", "lookup_account_mismatch", "lookup_auth_failure", "lookup_quota_exhausted", "lookup_payload_repeated"])("preserves fixed SDK failure %s without exporting arbitrary messages", async code => {
+it.each(["not_admitted_cap", "lookup_request_limit", "lookup_account_mismatch", "lookup_auth_failure", "lookup_quota_exhausted", "lookup_payload_repeated", "pilot_empty_final_output"])("preserves fixed SDK failure %s without exporting arbitrary messages", async code => {
   expect(await lookupPilotFailureCode({ message: code })).toBe(code); expect(await lookupPilotFailureCode({ details: { message: code } })).toBe(code);
   expect(await lookupPilotFailureCode({ code })).toBe(code); expect(await lookupPilotFailureCode({ kind: code })).toBe(code); expect(await lookupPilotFailureCode({ details: { code } })).toBe(code);
   expect(await lookupPilotFailureCode({ message: "Fictional unclassified error text." })).toBeUndefined();

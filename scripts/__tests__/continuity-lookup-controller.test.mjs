@@ -20,7 +20,7 @@ async function kernel(capUSD = 100) {
 const hash = "a".repeat(64);
 async function message(k, op, payload, overrides = {}) {
   const s = k.journal.snapshot();
-  return k.journal.message(s.cursor, k.worker, { version: "lookup-faux-ipc-v1", epoch: s.epoch, slotId: s.slots[s.cursor].slotId, seq: k.seq++, op, payload, ...overrides });
+  return k.journal.message(s.cursor, k.worker, { version: "lookup-pilot-ipc-v1", epoch: s.epoch, slotId: s.slots[s.cursor].slotId, seq: k.seq++, op, payload, ...overrides });
 }
 async function admit(k, round = 1) {
   const s = k.journal.snapshot(); return (await message(k, "admit", { requestId: `${s.runId}:${round}`, slotId: s.slots[s.cursor].slotId, round, payloadDigest: hash, rmax: 3.92 })).result;
@@ -232,4 +232,14 @@ it.each(["lookup_auth_failure", "lookup_quota_exhausted", "lookup_account_mismat
   expect(k.journal.snapshot().slots[0].terminal).toBe(code === "lookup_account_mismatch" ? "integrity_stop" : "lost");
   const receipt = JSON.parse(await fs.readFile(join(k.options.outputRoot, "slots", `${k.journal.snapshot().slots[0].slotId}.json`)));
   expect(receipt.costs.retainedUSD).toBe(3.92); expect(receipt.holds[0].retained).toBe(true);
+});
+
+it.each(["pilot_empty_final_output", "store_degraded", "boundary_unverified", "pressure_unverified"])("records %s as invalid rather than provider loss", async terminal => {
+  const k = await kernel(), permit = await admit(k); await message(k, "consume", { permit, bodyDigest: hash });
+  await message(k, "settle", { permit, outcome: { kind: "settled", cost: .0003 }, rawUsage: { input_tokens: 100, output_tokens: 10 }, tier: "default" });
+  await k.journal.finish(0, terminal);
+  const state = k.journal.snapshot(), { accountLookupPilot } = await loadPilot(suite.fixture, "pilot-accounting");
+  expect(state.slots[0].terminal).toBe(terminal); expect(accountLookupPilot(state.slots)).toMatchObject({ invalid: 1, consecutiveProviderLosses: 0 });
+  const receipt = JSON.parse(await fs.readFile(join(k.options.outputRoot, "slots", `${state.slots[0].slotId}.json`)));
+  expect(receipt).toMatchObject({ terminal, terminalCode: terminal, score: null, costs: { completeUSD: .0003, retainedUSD: 0 } });
 });

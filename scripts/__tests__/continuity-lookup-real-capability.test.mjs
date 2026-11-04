@@ -9,9 +9,9 @@ const ACCOUNT = "fictional-account", SALT = "fictional-salt";
 const accountHash = account => sha(`mono-agent/lookup-pilot/account-v1\0${SALT}\0${account}`);
 const BODY = Buffer.from("fictional-body");
 const endpoint = "https://chatgpt.com/backend-api/codex/responses";
-const request = (account = ACCOUNT) => ({ method: "POST", body: BODY, headers: { "chatgpt-account-id": account } });
+const request = (account = ACCOUNT) => ({ method: "POST", body: BODY, headers: { "chatgpt-account-id": account, "session-id": "assigned", "x-client-request-id": "assigned" } });
 const hold = id => ({ permitId: id, consumed: true, revoked: false, settlement: null, payloadDigest: sha(BODY) });
-const paths = ["roles", "pilot", "authorization", "pilot-state", "ipc"].map(n => `../lib/continuity-lookup-${n}.mjs`);
+const paths = ["roles", "pilot", "authorization", "pilot-state", "ipc", "pilot-entry"].map(n => `../lib/continuity-lookup-${n}.mjs`);
 beforeEach(async () => {
   vi.resetModules();
   vi.spyOn(Socket.prototype, "connect").mockImplementation(() => { throw Error("test_egress_denied"); });
@@ -23,10 +23,12 @@ beforeEach(async () => {
   binding = { id: "native", code: "R0", arm: "native-lookup" };
   const slot = { slotId: "slot-fictional", roleId: "native", code: "R0", suite: "holdout" }; schedule = [slot];
   const common = { corpora: [{ suite: "holdout" }] }, build = { fictional: true };
-  a = { pilot: { registration: { roles: [binding], common, codes: { R0: { path: "/fictional/r0", build } } }, descriptor: { deadlines: { deadlineMs: 60000 } } },
+  a = { pilot: { registration: { roles: [binding], common, codes: { R0: { path: "/fictional/r0", build } } }, descriptor: { capUSD: 100, deadlines: { deadlineMs: 60000 } } },
     authorization: { schema: "continuity-lookup-pilot-authorization-v1", authorizationPath: "/fictional/authorization", credentialPath: "/fictional/credential", registrationSha256: "raw-registration" },
     outputRoot: "/fictional/output", epoch: "epoch-fictional", runId: "run-fictional", index: 0, cacheKey: "assigned", slotId: slot.slotId, slot,
     plan: { judge: null }, roleRequest: { binding, common, build } };
+  graph.approvedPilot = structuredClone(a.pilot);
+  vi.doMock("../lib/continuity-lookup-pilot-entry.mjs", () => ({ assertLookupPilotEntry: () => { if (graph.closed) throw Object.assign(Error("lookup_pilot_real_route_unavailable"), { code: "lookup_pilot_real_route_unavailable" }); } }));
   state = { schema: "continuity-lookup-controller-v1", recovery: false, cursor: 0, stop: null, binding: digest(a.pilot), runId: a.runId, epoch: a.epoch,
     deadlineAt: Date.now() + 60000, controller: { pid: 42, startIdentity: "parent" }, cacheKeysUnique: true, schedule,
     slots: [{ terminal: null, slotId: slot.slotId, cacheKey: "assigned", worker: { pid: 41, startIdentity: "child" }, ready: true, startedAt: Date.now(), holds: [hold("one")] }] };
@@ -45,6 +47,7 @@ beforeEach(async () => {
     verifyLookupConsumption: vi.fn(async (received, identity) => {
       if (received !== handle || !graph.markers || graph.raw !== "original" || identity.controllerEpoch !== "epoch-fictional") throw Error("fictional_marker_mismatch");
     }),
+    lookupAuthorizationBindsPilot: (received, pilot) => received === handle && digest(pilot) === digest(graph.approvedPilot),
     lookupAuthorizationMatchesAccount: (received, account) => received === handle && typeof account === "string" && accountHash(account) === graph.commitment,
   }));
   vi.doMock("../lib/continuity-lookup-pilot-state.mjs", () => ({ LOOKUP_REAL_CONTROLLER: "continuity-lookup-controller-v1",
@@ -65,6 +68,7 @@ it.each([
   ["missing marker", () => { graph.markers = false; }], ["raw artifact changed", () => { graph.raw = "changed"; }],
   ["registration bytes changed", () => { a.authorization.registrationSha256 = "changed"; }],
   ["checkout changed", () => { graph.checkout = false; }], ["role changed", () => { a.roleRequest = { ...a.roleRequest, binding: { ...binding, id: "other" } }; }],
+  ["unapproved cap", () => { a.pilot.descriptor.capUSD *= 10; state.binding = digest(a.pilot); }],
   ["cache changed", () => { a.cacheKey = "other"; }], ["not ready", () => { state.slots[0].ready = false; }],
   ["recovery", () => { a.recovery = true; }], ["recovered state", () => { state.recovery = true; }],
   ["disconnected", () => { graph.proc.connected = false; }], ["stopped", () => { state.stop = "lookup_auth_failure"; }],
@@ -76,6 +80,7 @@ it("rejects fabricated sends, faux permits and a duplicate mint; the real decora
   expect(cap.isRealLookupSend(send)).toBe(true); expect(cap.isRealLookupDecorator(send.decorator)).toBe(true); expect(guard.isFauxLookupDecorator(send.decorator)).toBe(false);
   const contract = { ...guard.LOOKUP_GUARD_CONTRACT, slotId: a.slotId, runId: a.runId, promptCacheKey: a.cacheKey };
   expect(() => guard.guardedLookupModels({}, { contract, permit: { ...permit }, send, resolvedSafety: safety })).toThrow("lookup_pilot_capability_invalid");
+  expect(() => guard.guardedLookupModels({}, { contract: { ...contract, promptCacheKey: "other" }, permit: { ...permit, testOnly: true }, send, resolvedSafety: safety })).toThrow("lookup_faux_permit_forbidden");
   expect(() => guard.guardedLookupModels({}, { contract, permit, send: async () => {}, resolvedSafety: safety })).toThrow("lookup_pilot_capability_invalid");
   expect(() => guard.guardedLookupModels({}, { contract: { ...contract, promptCacheKey: undefined }, permit, send, resolvedSafety: safety })).toThrow("lookup_prompt_cache_key_forbidden");
   expect(() => guard.guardedLookupModels({}, { contract, permit, send })).toThrow("lookup_auxiliary_callers_forbidden");
@@ -154,4 +159,20 @@ it("permits real harness credential configuration only for the owned binding bef
   const options = { model: safety.config.runtime.model, piTransport: "sse", piMaxRetries: 0, compaction: { enabled: false } };
   await runtime.run("fictional", options); await expect(runtime.run("fictional", options)).rejects.toThrow("lookup_unguarded_dispatch");
   expect(dispatch).toHaveBeenCalledTimes(1); await opened.close(); expect(network).not.toHaveBeenCalled();
+});
+
+it("checks the pilot binding again on every send", async () => {
+  const send = await cap.createLookupRealSend(a, safety);
+  graph.approvedPilot.descriptor.capUSD *= 10;
+  await expect(send(endpoint, request())).rejects.toThrow("lookup_pilot_capability_invalid"); expect(network).not.toHaveBeenCalled();
+});
+it.each(["session-id", "x-client-request-id"])("refuses a substituted %s independently of the guard", async key => {
+  const send = await cap.createLookupRealSend(a, safety), init = request(); init.headers[key] = "other";
+  await expect(send(endpoint, init)).rejects.toThrow("lookup_pilot_capability_invalid"); expect(network).not.toHaveBeenCalled();
+});
+it("honours the shared gate at mint and on sends before assignment reads", async () => {
+  const send = await cap.createLookupRealSend(a, safety); graph.closed = true;
+  await expect(cap.verifyLookupRealAssignment(null)).rejects.toThrow("lookup_pilot_real_route_unavailable");
+  await expect(cap.createLookupRealSend(a, safety)).rejects.toThrow("lookup_pilot_real_route_unavailable");
+  await expect(send(endpoint, request())).rejects.toThrow("lookup_pilot_real_route_unavailable"); expect(network).not.toHaveBeenCalled();
 });
