@@ -94,7 +94,10 @@ Native validation and schema assumptions come from `engine/journal-schema.ts`,
 physical conversation, host turn/run and call identity, not text similarity.
 Unsupported/imported/inherited/interrupted, invalid, open or duplicate journals
 are skipped, as are owner-missing, unsupported-API and duplicate boundaries.
-`skipped` publishes fixed reason counts; representativeness uses what remains.
+`skippedJournals` and `skippedBoundaries` publish separate fixed reason counts;
+representativeness uses what remains. A journal contributes nothing unless its
+entire replay succeeds. Same-journal re-prompts continue the existing boundary;
+only a matching boundary first seen in another journal is skipped.
 Only `SNAPSHOT_CHANGED`, `SIDECAR_NOT_OFFLINE`, `INPUT_INVALID` and `NO_JOURNALS`
 mark the snapshot globally incomplete.
 
@@ -134,14 +137,30 @@ returned-history growth are charged in both list-price and quota-share views.
 Every assistant message is a request. Off-arm request costs use its observed
 `input/cacheRead/cacheWrite/output` usage, otherwise an explicitly labeled
 uncached character-heuristic fallback. Assumptions publish request count, fallback
-count and share. Only the on-arm delta is modeled per request: removed tokens
-earn the cheapest usage-bucket credit, while retained native context S/(2C) and
-retrieved history are charged uncached. Summary-cycle differences and expected
-extra full-retrieval requests/responses are separate modeled deltas. Summary
-input growth charges delayed native growth plus at most 500 heuristic tokens
-per cleared result (the summarizer's 2,000-character limit). If the modeled summary
-cannot fit within the trigger, no pressure reduction is credited. Warm/unknown-cache full-prefix rewrite bounds are also
-reported, but warm clearing is not enabled. No quality improvement is inferred.
+count and share. More than 5% fallback requests means `USAGE_FALLBACK_EXCESSIVE`
+and DEFER: inflated uncached baselines must not manufacture a passing cost ratio.
+
+For each price/quota view, the observed blended prefix rate is
+`(input×inputWeight + cacheRead×readWeight + cacheWrite×writeWeight) / (input+cacheRead+cacheWrite)`.
+Output is excluded from this rate; a zero-input request contributes zero ordinary
+prefix delta. Removed tokens (capped to observed prefix occupancy), extra retained
+native context S/(2C), and retrieved-history growth use this **same** rate. This
+symmetric approximation assumes comparable cache mix for changed prefix tokens,
+not knowledge of their cache position. Expected extra retrieval round trips use
+the cohort's token-weighted prefix blend; their output remains output-priced.
+Summary-cycle changes and enlarged summaries are separate deltas. Summary input
+growth charges delayed native growth plus at most 500 heuristic tokens per
+cleared result (the summarizer's 2,000-character limit). If the summary cannot fit
+within the trigger, no pressure reduction is credited.
+
+`listDelta` and `quotaShareDelta` expose signed `retained`, `removed`, `summary`
+and `retrieval` components; their sum equals on minus off in the respective units.
+`allUncachedInformational` is a **non-gating** upper-bound scenario: reprice the
+remaining on-arm request prefixes and retrieval round trips at no less than
+uncached input, never discounting a higher observed write-premium blend; reprice
+summary drain recaches similarly. Its `gating` field is always false. Warm/unknown
+full-prefix rewrite figures are informational too; warm clearing is not enabled.
+No quality improvement is inferred.
 `--retrieval-rate` defaults to 5%, explicitly **pending lookup-pilot evidence**;
 0%, 5%, 20% and the supplied rate are always reported and cost-gated.
 
@@ -157,8 +176,15 @@ Per API, BUILD requires **all** of:
 
 Insufficient representativeness/cold evidence or an incomplete snapshot means
 DEFER. Candidates with no proven lower-bound identity yield `IDENTITY_UNPROVEN`;
-missing/stale qualification yields `PAYLOAD_UNQUALIFIED`. Both mean route DEFER,
-not STOP. Qualification must match the installed pi-ai version and digest of the
+missing/stale qualification yields `PAYLOAD_UNQUALIFIED`. These mean route DEFER,
+not STOP. Restrict journals to the period when continuity capture was enabled.
+Per-route `retention` counts unique proven-identity, successful, completed,
+returned-and-placed plain-text results, including protected ones. A match requires
+an identity-linked finalized, committed retained row with text and no tombstone;
+redaction/truncation/integrity remain separate eligibility checks. No matches
+means `RETENTION_UNMATCHED`; a matched share below the fixed **50%** floor means
+`RETENTION_COVERAGE_LOW`. Both DEFER: today's retention may omit pre-capture,
+unowned or evicted results and cannot establish historical opportunity absence. Qualification must match the installed pi-ai version and digest of the
 exact fixture-builder/diff/reference sources; the analyzer prints only the version,
 not the digest. With sufficient evidence, a failed criterion means STOP. Thresholds are fixed. Overall BUILD requires every supplied API to
 BUILD; otherwise STOP takes precedence over DEFER. Denominators are never pooled.

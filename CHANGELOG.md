@@ -4,7 +4,8 @@
 
 - Add read-only, aggregate-only tool-result clearing opportunity analysis and
   offline provider payload qualification, without enabling runtime clearing.
-  Keep missing evidence deferred and account for every observed request.
+  Defer weak retention/usage evidence, account for every request, and expose
+  symmetric cache-aware cost deltas and informational uncached bounds.
 
 - Add offline lookup pilot descriptors, exact cap estimates and private
   single-use authorization checks that prevent reuse after a crashed run.
