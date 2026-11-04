@@ -1257,9 +1257,14 @@ Acquire an opaque lease with `acquireLookupPilotLease(outputRoot)` from
 `consumeLookupAuthorization`, and retain it until controller shutdown. The
 helper exclusively creates a private SQLite lease, records this process's PID
 and UTC/C-locale start identity, and holds a writer transaction. Consumption
-checks the active local handle, controller metadata and SQLite lock; a matching
-filename, empty file, unrelated database or released/fabricated handle is not
-proof. The legacy holdout controller keeps its original persisted identity
+checks the active local handle, controller metadata and SQLite lock. Lease
+identity checks use `lstat` only: opening and closing a non-SQLite descriptor
+would release this process's POSIX locks, even with the SQLite transaction
+still marked active. A matching filename, empty file, unrelated database or
+released/fabricated handle is not proof. Real child-process tests demonstrate
+that writer exclusion survives consumption and repeated identity checks;
+a reader in another process accepts the live lease and refuses after release
+or controller death. The legacy holdout controller keeps its original persisted identity
 semantics and is not imported by the lookup identity helper.
 
 Under that verified lease:
@@ -1274,8 +1279,11 @@ Under that verified lease:
 4. Verify the complete matching pair before setup. Claims bind authorization
    ID/raw digest, output root, run ID, controller epoch and controller PID/process
    start identity, plus output-root device/inode and lease-file device/inode.
-   Verification rechecks these filesystem identities and the held SQLite lock;
-   a recreated root with a copied-back marker cannot pass. There is no nonce
+   Verification rechecks these filesystem identities without opening the lease
+   through filesystem read helpers, and checks the held SQLite writer lock.
+   Private JSON reads reject the lease filename, hardlinks and renamed live
+   lease inodes before opening them. A recreated root with a copied-back marker
+   cannot pass. There is no nonce
    file or IPC message authentication.
 5. Only **after consumption**, launch children. Future child setup must check
    its parent PID against the recorded live controller PID/start identity.

@@ -1,9 +1,10 @@
 import { afterAll, afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import * as fs from "node:fs/promises";
 import { Socket } from "node:net";
-import { execFileSync } from "node:child_process";
+import { DatabaseSync } from "node:sqlite";
+import { fork, execFileSync } from "node:child_process";
 import { userInfo, tmpdir } from "node:os";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { syntheticContext, fixtureLookupPolicy, fixtureCommit } from "./fixtures/holdout-synthetic.mjs";
 import { ROOT as worktree } from "../lib/continuity-lookup-roles.mjs";
 import { join } from "node:path";
@@ -17,6 +18,7 @@ let identity, shared, base, suiteRealBefore;
 let dir, home, auth, readiness, f, realBefore, network, fetch;
 const runningUnderCI = Object.hasOwn(process.env, "CI");
 let successfulConsumptions = 0;
+const children = new Map();
 const snapshot = async path => { try { const stat = await fs.lstat(path); return [stat.ino, stat.mtimeMs]; } catch (e) { if (e.code === "ENOENT") return null; throw e; } };
 const save = (path, data) => fs.writeFile(path, JSON.stringify(data), { mode: 0o600 });
 const token = (account, rotation = 1) => `fake.${Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: account }, rotation })).toString("base64url")}.fictional`;
@@ -86,8 +88,13 @@ afterEach(async () => {
     expect(network).not.toHaveBeenCalled(); expect(fetch).not.toHaveBeenCalled();
     expect(await snapshot(realRegistry)).toEqual(realBefore);
   } finally {
-    try { f?.lease?.release(); }
-    finally { vi.doUnmock("node:os"); vi.unstubAllEnvs(); vi.unstubAllGlobals(); vi.restoreAllMocks(); if (dir) await fs.rm(dir, { recursive: true, force: true }); }
+    try {
+      f?.lease?.release();
+    } finally {
+      for (const [child, exited] of children) { if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); await exited; }
+      children.clear();
+      vi.doUnmock("node:os"); vi.unstubAllEnvs(); vi.unstubAllGlobals(); vi.restoreAllMocks(); if (dir) await fs.rm(dir, { recursive: true, force: true });
+    }
   }
 });
 afterAll(async () => {
@@ -318,7 +325,7 @@ it.each(["empty", "unrelated"])("does not treat an %s lock filename as a held le
   await expect(acquireLookupPilotLease(f.args.outputRoot)).rejects.toThrow("lookup_authorization_lease_invalid");
   await expect(consume(await validate(), identity, {})).rejects.toThrow("lookup_authorization_lease_invalid");
 });
-it("uses a locale/time-zone-independent process identity without changing legacy identities", async () => {
+it("uses a locale/time-zone-independent lookup process identity", async () => {
   const { lookupProcessStartIdentity } = await local("continuity-process-identity");
   const expected = lookupProcessStartIdentity(process.pid);
   vi.stubEnv("TZ", "Pacific/Honolulu"); vi.stubEnv("LC_ALL", "fictional_invalid_locale");
@@ -329,4 +336,74 @@ it("reads and validates a real pilot registration through its public reader", as
   expect(await readLookupPilotRegistration(f.args.registrationPath, f.args.registrationSha256)).toEqual(f.pilot);
   await expect(readLookupPilotRegistration(f.args.registrationPath, "a".repeat(64))).rejects.toThrow("lookup_registration_hash_mismatch");
   await expect(registerLookupPilot({ suites: ["original"], capUSD: 4, scheduleSeed: 1, runDeadlineMs: 1000 })).rejects.toThrow("incompatible_lookup_registration");
+});
+
+async function leaseChild(mode, { outputRoot = f.args.outputRoot, controller = identity.controller } = {}) {
+  const child = fork(fileURLToPath(new URL("./fixtures/continuity-lookup-lease-child.mjs", import.meta.url)), [], {
+    cwd: shared.repo, execArgv: ["--no-warnings"], env: { ...process.env, CI: "1", HOME: home }, stdio: ["ignore", "ignore", "pipe", "ipc"],
+  });
+  let exitedResolve, replyResolve, replyReject, receiptSeen = false;
+  const exited = new Promise(resolve => { exitedResolve = resolve; });
+  const reply = new Promise((resolve, reject) => { replyResolve = resolve; replyReject = reject; });
+  const watchdog = setTimeout(() => { child.kill("SIGKILL"); replyReject(new Error("lease_child_watchdog")); }, 7500);
+  children.set(child, exited);
+  child.once("error", error => { replyReject(error); exitedResolve(); clearTimeout(watchdog); });
+  child.once("exit", (code, signal) => {
+    clearTimeout(watchdog); exitedResolve({ code, signal });
+    if (!receiptSeen) replyReject(new Error("lease_child_exited_before_receipt"));
+  });
+  child.on("message", message => {
+    if (message.ready) child.send({ mode, moduleRoot: shared.repo, outputRoot, controller });
+    else { receiptSeen = true; replyResolve(message); }
+  });
+  const receipt = await reply;
+  expect(receipt).toMatchObject({ egressDenied: true, egressAttempts: 0 });
+  if (mode !== "hold") expect(await exited).toEqual({ code: 0, signal: null });
+  return { child, exited, receipt };
+}
+it("preserves the OS writer lock after consumption and repeated assertions, visible to real child processes", async () => {
+  const handle = await validate(); await consume(handle);
+  const lease = await local("continuity-lookup-lease");
+  for (let i = 0; i < 4; i++) await lease.assertLookupPilotLease(f.lease, f.args.outputRoot, identity.controller);
+  const reader = await leaseChild("read");
+  const claim = JSON.parse(await fs.readFile(f.marker, "utf8"));
+  expect(reader.receipt).toMatchObject({ ok: true, binding: { outputIdentity: claim.outputIdentity, leaseIdentity: claim.leaseIdentity } });
+  expect((await leaseChild("probe")).receipt).toMatchObject({ ok: true, busy: true });
+  await verify(handle);
+  expect((await leaseChild("probe")).receipt).toMatchObject({ ok: true, busy: true });
+});
+it("refuses child reads and parent verification after the live controller releases its writer transaction", async () => {
+  const handle = await validate(); await consume(handle); f.lease.release();
+  expect((await leaseChild("read")).receipt).toMatchObject({ ok: false, code: "lookup_authorization_lease_invalid" });
+  await expect(verify(handle)).rejects.toThrow("lookup_authorization_lease_invalid");
+  expect((await leaseChild("probe")).receipt).toMatchObject({ ok: true, busy: false });
+});
+it("refuses lease reads after a real controller child is killed and reaped", async () => {
+  const outputRoot = join(dir, "child-controller"); await fs.mkdir(outputRoot, { mode: 0o700 });
+  const holder = await leaseChild("hold", { outputRoot }); expect(holder.receipt.ok).toBe(true);
+  const controller = holder.receipt.controller;
+  expect((await leaseChild("read", { outputRoot, controller })).receipt.ok).toBe(true);
+  holder.child.kill("SIGKILL"); expect(await holder.exited).toEqual({ code: null, signal: "SIGKILL" });
+  expect((await leaseChild("read", { outputRoot, controller })).receipt).toMatchObject({ ok: false, code: "lookup_authorization_lease_invalid" });
+});
+it("refuses a valid-schema crash-leftover SQLite lease naming a known dead child PID", async () => {
+  const identityChild = await leaseChild("identity"), controller = identityChild.receipt.controller;
+  const outputRoot = join(dir, "crash-leftover"); await fs.mkdir(outputRoot, { mode: 0o700 });
+  const path = join(outputRoot, "controller-lock.sqlite"), db = new DatabaseSync(path);
+  try {
+    db.exec("CREATE TABLE lookup_controller (id INTEGER PRIMARY KEY, pid INTEGER NOT NULL, start_identity TEXT NOT NULL)");
+    db.prepare("INSERT INTO lookup_controller VALUES (1, ?, ?)").run(controller.pid, controller.startIdentity);
+  } finally { db.close(); }
+  await fs.chmod(path, 0o600);
+  expect((await leaseChild("read", { outputRoot, controller })).receipt).toMatchObject({ ok: false, code: "lookup_authorization_lease_invalid" });
+});
+it.each(["named", "hardlink", "renamed"])("rejects %s lease aliases before authorization reads without dropping the OS lock", async kind => {
+  await consume(await validate());
+  const path = join(f.args.outputRoot, "controller-lock.sqlite"), alias = join(dir, "lease-alias.json");
+  if (kind === "hardlink") await fs.link(path, alias);
+  if (kind === "renamed") await fs.rename(path, alias);
+  await expect(auth.validateLookupAuthorization({ ...f.args, authorizationPath: kind === "named" ? path : alias })).rejects.toThrow("lookup_unsafe_authorization_file");
+  if (kind === "hardlink") await fs.unlink(alias);
+  if (kind === "renamed") await fs.rename(alias, path);
+  expect((await leaseChild("probe")).receipt).toMatchObject({ ok: true, busy: true });
 });

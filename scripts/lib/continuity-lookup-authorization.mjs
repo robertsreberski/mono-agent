@@ -10,7 +10,7 @@ import { sha256 } from "./continuity-lookup.mjs";
 import { ROOT, requireLookup } from "./continuity-lookup-roles.mjs";
 import { validateLookupPilotRegistration } from "./continuity-lookup-pilot.mjs";
 import { lookupProcessStartIdentity } from "./continuity-process-identity.mjs";
-import { assertLookupPilotLease, readLookupPilotLease } from "./continuity-lookup-lease.mjs";
+import { assertLookupPilotLease, isLookupLeaseFile, readLookupPilotLease } from "./continuity-lookup-lease.mjs";
 import { durable } from "./continuity-holdout-workflow.mjs";
 
 export const LOOKUP_AUTHORIZATION_SCHEMA = "continuity-lookup-pilot-authorization-v1";
@@ -42,6 +42,10 @@ async function safeDirectory(path, code, privateMode = false) {
 }
 async function safeRead(path, code) {
   await safeDirectory(dirname(path), code);
+  // Reject aliases BEFORE open: even closing a read-only fd could drop SQLite's POSIX locks.
+  const initial = await lstat(path);
+  need(initial.isFile() && initial.uid === userInfo().uid && initial.nlink === 1 && (initial.mode & 0o077) === 0
+    && !isLookupLeaseFile(path, initial), code);
   const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
     const stat = await file.stat();
