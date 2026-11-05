@@ -28,7 +28,7 @@ beforeEach(async () => {
     outputRoot: "/fictional/output", epoch: "epoch-fictional", runId: "run-fictional", index: 0, cacheKey: "assigned", slotId: slot.slotId, slot,
     plan: { judge: null }, roleRequest: { binding, common, build } };
   graph.approvedPilot = structuredClone(a.pilot);
-  vi.doMock("../lib/continuity-lookup-preparation.mjs", () => ({ verifyLookupPreparation: vi.fn(async () => { if (graph.preparationChanged) throw Error("lookup_preparation_invalid"); }) }));
+  vi.doMock("../lib/continuity-lookup-preparation.mjs", () => ({ verifyLookupPreparation: vi.fn(async () => { if (graph.preparationChanged) throw Object.assign(Error("lookup_preparation_invalid"), { code: "lookup_preparation_invalid" }); }) }));
   vi.doMock("../lib/continuity-lookup-pilot-entry.mjs", () => ({ assertLookupPilotEntry: () => { if (graph.closed) throw Object.assign(Error("lookup_pilot_real_route_unavailable"), { code: "lookup_pilot_real_route_unavailable" }); } }));
   state = { schema: "continuity-lookup-controller-v1", recovery: false, cursor: 0, stop: null, binding: digest(a.pilot), runId: a.runId, epoch: a.epoch,
     deadlineAt: Date.now() + 60000, controller: { pid: 42, startIdentity: "parent" }, cacheKeysUnique: true, schedule,
@@ -64,6 +64,8 @@ it.each([
   ["faux authorization", () => { a.authorization.schema = "continuity-lookup-faux-authorization-v1"; }],
   ["faux controller", () => { state.schema = "continuity-lookup-faux-controller-v1"; }],
   ["fake parent", () => { state.controller.pid++; }], ["swapped parent start", () => { state.controller.startIdentity = "other"; }],
+  ["preparation changed", () => { graph.preparationChanged = true; }],
+  ["preflight schema", () => { state.schema = "lookup-preflight-controller-v1"; }],
   ["preparation PID has no probe assignment", () => { state.slots[0].worker = null; }],
   ["wrong child", () => { state.slots[0].worker.pid++; }], ["wrong child start", () => { state.slots[0].worker.startIdentity = "other"; }],
   ["missing epoch", () => { delete a.epoch; }], ["swapped epoch", () => { a.epoch = "other"; }],
@@ -74,7 +76,7 @@ it.each([
   ["cache changed", () => { a.cacheKey = "other"; }], ["not ready", () => { state.slots[0].ready = false; }],
   ["recovery", () => { a.recovery = true; }], ["recovered state", () => { state.recovery = true; }],
   ["disconnected", () => { graph.proc.connected = false; }], ["stopped", () => { state.stop = "lookup_auth_failure"; }],
-])("does not mint for %s", async (_name, change) => { change(); const code = _name === "CI present" ? "paid_mode_refused_in_ci" : _name === "debug present" ? "lookup_debug_forbidden" : "lookup_pilot_capability_invalid"; await expect(cap.createLookupRealSend(a, safety)).rejects.toThrow(code); expect(network).not.toHaveBeenCalled(); });
+])("does not mint for %s", async (_name, change) => { change(); const code = _name === "CI present" ? "paid_mode_refused_in_ci" : _name === "debug present" ? "lookup_debug_forbidden" : _name === "preparation changed" ? "lookup_preparation_invalid" : "lookup_pilot_capability_invalid"; await expect(cap.createLookupRealSend(a, safety)).rejects.toThrow(code); expect(network).not.toHaveBeenCalled(); });
 
 it("rejects fabricated sends, faux permits and a duplicate mint; the real decorator is one-shot", async () => {
   expect(cap.isRealLookupSend(Object.assign(() => {}, { real: true }))).toBe(false);
@@ -190,5 +192,5 @@ it("ignores null SSE frames and still awaits the fixed quota stop", async () => 
 
 it("revalidates the durable preparation record on every send", async () => {
   const send = await cap.createLookupRealSend(a, safety); graph.preparationChanged = true;
-  await expect(send(endpoint, request())).rejects.toThrow("lookup_pilot_capability_invalid"); expect(network).not.toHaveBeenCalled();
+  await expect(send(endpoint, request())).rejects.toThrow("lookup_preparation_invalid"); expect(network).not.toHaveBeenCalled();
 });

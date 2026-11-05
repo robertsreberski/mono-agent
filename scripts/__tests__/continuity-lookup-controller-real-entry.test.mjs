@@ -45,3 +45,13 @@ it("refuses an unserved schedule before lease or consumption", async () => {
   approved.registration.roles[0].arm = "restart-switch-compact"; options.pilot = structuredClone(approved);
   await expect(entry(options)).rejects.toThrow("lookup_pilot_boundary_required"); expect(lease).not.toHaveBeenCalled(); expect(consume).not.toHaveBeenCalled();
 });
+
+it("snapshots accessor-backed pilot and authorization once before any validation await", async () => {
+  const source = structuredClone(options), pilotRead = vi.fn(() => source.pilot), authRead = vi.fn(() => source.authorization);
+  Object.defineProperties(options, { pilot: { enumerable: true, get: pilotRead }, authorization: { enumerable: true, get: authRead } });
+  const original = validate.getMockImplementation();
+  validate.mockImplementation(async received => { source.authorization.credentialPath = "/fictional/changed"; source.pilot.descriptor.capUSD *= 10;
+    expect(received.credentialPath).toBe("/fictional/credential"); return original(received); });
+  await expect(entry(options)).rejects.toThrow("lookup_authorization_lease_invalid");
+  expect(pilotRead).toHaveBeenCalledOnce(); expect(authRead).toHaveBeenCalledOnce(); expect(lease).toHaveBeenCalledOnce();
+});

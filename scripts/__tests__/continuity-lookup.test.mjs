@@ -465,3 +465,11 @@ it("refuses a policy without an external source in the planner itself", async ()
   const loadedForPolicyGuard = await loadTraces();
   expect(() => makePlan({ ...loadedForPolicyGuard, probeMode: "lookup-allowed-v1", lookupPolicy: {} })).toThrow("lookup_policy_requires_external_source");
 });
+
+it("pinned forwarding consumes upstream headers but exposes only its own HTTP endpoint", async () => {
+  const f = await forwarding(), forwarder = await lookupForwarder({pinEndpoint: true, meter: f.meter}); closers.push(() => forwarder.close());
+  const upstream = {type: "http", url: f.tools.url, headers: {"x-fictional-auth": "FICTIONAL-LOCAL-ONLY"}};
+  const rewritten = await forwarder.rewrite({mcpServers: {[HISTORY_SERVER]: upstream}});
+  expect(rewritten.mcpServers[HISTORY_SERVER]).toEqual({type: "http", url: forwarder.historyEndpoint});
+  expect(upstream.headers).toEqual({"x-fictional-auth": "FICTIONAL-LOCAL-ONLY"});
+});

@@ -17,6 +17,7 @@ export async function verifyLookupPilotParent(assignment) {
     await (await import("./continuity-lookup-real-capability.mjs")).verifyLookupRealAssignment(assignment);
     return state;
   }
+  pilotNeed(state.schema === LOOKUP_FAUX_CONTROLLER, "lookup_ipc_invalid");
   const slot = state.slots[assignment.index];
   assertLookupCacheAssignment(state, assignment);
   pilotNeed(samePilot(state.schedule, lookupPilotSchedule(assignment.pilot)), "lookup_ipc_invalid");
@@ -30,6 +31,7 @@ export async function verifyLookupPilotParent(assignment) {
   pilotNeed(state.schema === LOOKUP_FAUX_CONTROLLER && state.epoch === assignment.epoch && state.runId === assignment.runId && process.connected
     && slot?.worker?.pid === process.pid && slot.worker.startIdentity === lookupProcessStartIdentity(process.pid)
     && slot.slotId === assignment.slotId && slot.cacheKey === assignment.cacheKey && samePilot(state.schedule[assignment.index], assignment.slot), "lookup_ipc_invalid");
+  await (await import("./continuity-lookup-preparation.mjs")).verifyLookupPreparation(assignment, state);
   await readLookupPilotLease(assignment.outputRoot, state.controller);
   const consumed = await readPilotPrivate(join(assignment.outputRoot, "authorization-consumed.json"));
   const key = createHash("sha256").update(LOOKUP_FAUX_AUTHORIZATION_DOMAIN + consumed.authorizationId).digest("hex");

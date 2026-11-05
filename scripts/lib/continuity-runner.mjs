@@ -423,7 +423,8 @@ export async function runLiveTurn({ modules, work, authPath, plan, mode, configP
     try {
       if (isLookup && mode !== "offline") {
         const { isRealLookupSend } = await import("./continuity-lookup-real-capability.mjs");
-        if (!isRealLookupSend(pilot?.send)) throw new ContinuityError("lookup_real_not_authorized");
+        const faux = pilot?.routeKind === "faux" && (await import("./continuity-lookup-faux-capability.mjs")).fauxLookupSendBinds(pilot.send, {...pilot, work});
+        if (!isRealLookupSend(pilot?.send) && !faux) throw new ContinuityError("lookup_real_not_authorized");
       }
       if (isLookup) assertSoul(await readFile(join(work, "BENCHMARK-SOUL.md")), plan.lookup.soul);
       if (pilot) configPatch = pilotDispatchConfig(configPatch);
@@ -895,7 +896,7 @@ export function decodeBoundaryChildResult(code, raw, probeMode) {
 export async function runProbe({ modules, trace, arm, repeat, probe, checkpointWork, checkpointSnapshot = null, checkpointContinuity = null, checkpointUpkeep = null, checkpointConversationId, forkDir, plan, mode, authPath, keepWork = false, mid = null, root, lookupReference = false, pilot }) {
   const inPlace = arm.fork === "in-place";
   // A capability is assigned to this PID, not transferable to a nested child.
-  // Only the verified, once-restored offline-child proof can replace a nested child.
+  // Only the one-use prepared-boundary proof can replace a nested child.
   const prepared = pilot && lookupPreparedBoundary(pilot, arm, checkpointWork, checkpointConversationId);
   if (pilot && !prepared) throw new ContinuityError("lookup_pilot_boundary_required");
   if (inPlace && !prepared && checkpointSnapshot === null) throw new ContinuityError("in_place_fork_requires_snapshot");

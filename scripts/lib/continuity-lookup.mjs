@@ -274,7 +274,7 @@ export async function lookupForwarder({ meter, witness, pinEndpoint = false }) {
         // Publish only connected routes; a failed handshake must not poison later retries.
         route = { upstream: upstream.url, url: `http://127.0.0.1:${http.address().port}${path}`, client }; routes.set(path, route);
       }
-      return { ...options, mcpServers: { ...options.mcpServers, [HISTORY_SERVER]: { ...upstream, url: route.url } } };
+      return { ...options, mcpServers: { ...options.mcpServers, [HISTORY_SERVER]: pinEndpoint ? { type: "http", url: route.url } : { ...upstream, url: route.url } } };
     },
     async close() {
       await Promise.all([...clients].map(client => client.close()));

@@ -1489,12 +1489,12 @@ lease acquisition or output setup. `LOOKUP_PILOT_REAL_ROUTE_ENABLED` in
 must remain false until the separately reviewed configured-process smoke
 proves the complete controller/child flow. No authorization issuer is provided.
 Ordinary benchmark/compare and probe-child refusal seams remain unchanged.
-The real controller first launches a credential-free offline preparation child.
+Both verified controller schemas first launch a credential-free offline preparation child.
 After that child exits and its group is gone, the controller journals its PID,
 start identity and pristine snapshot digest before launching the probe child.
 The probe verifies the exited tuple and snapshot, restores the exact hashed bytes
 at the checkpoint's original root, then mints its PID-bound send. The once-only
-in-process boundary proof serves `native-lookup`, `continuity-pack-cold` and
+one-use prepared-boundary proof serves `native-lookup`, `continuity-pack-cold` and
 `continuity-pack-boundary`; the probe never builds a checkpoint or starts a nested
 probe process. Explicit restart and other unsupported arms still refuse with
 `lookup_pilot_boundary_required`, including at initialization before consumption.
@@ -1531,3 +1531,30 @@ The two-process native/pack smoke, explicit inherited egress/credential preload,
 per-process canaries, persisted hold/consumption listener checks and arrival-kill
 proof remain a separate required step. No live provider behavior, billing,
 power-loss durability or operator acceptance is established by these unit tests.
+
+
+### Offline preparation feasibility
+
+`continuity-lookup-compare.mjs preflight --registration FILE --sha256 SHA` runs
+only the production offline preparation child, once per scheduled slot. Its
+registered proposal is not cap approval. No authorization, consumption registry,
+probe or writer lease on a real output is involved; work and control records are
+created in a private temporary root and removed after contained exit. The real
+entry gate is irrelevant, and CI may run this non-authorizing command.
+
+The JSON report includes each slot's eligibility, file count, total/largest bytes,
+fixed rejected-entry classes and elapsed time against its watchdog. Preparation
+feasibility is independent of admission eligibility. A failure exits nonzero.
+The same tree limits apply: regular files with link count one, owner-only write,
+64 MiB per file and 512 MiB total. Preflight records and snapshots have separate
+schemas and cannot supply a one-use prepared-boundary proof to either probe.
+This is a feasibility observation, not power-loss durability or an SDK proof.
+
+Faux probes use a separately branded send and fictional in-memory credentials.
+Their optional `fixtureEndpoint` is bound only in faux controller state and must
+be a test-owned `http://127.0.0.1:PORT/codex/responses` listener; missing/invalid
+routing refuses instead of falling back to an external provider. Explicit
+`--import` arguments survive production child forks, but `NODE_OPTIONS`, ambient
+credential keys and non-allowlisted environment do not. CI/debug presence is
+preserved. Full configured smoke, egress and credentialed-Models proof remain
+required before any separately reviewed real-entry change.

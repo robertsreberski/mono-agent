@@ -1,22 +1,27 @@
-// Configured probe plumbing; minting precedes runtime construction, never JSON mode flags.
+import { readPilotPrivate, pilotStatePath, LOOKUP_REAL_CONTROLLER, LOOKUP_FAUX_CONTROLLER } from "./continuity-lookup-pilot-state.mjs";
+import { createLookupFauxSend } from "./continuity-lookup-faux-capability.mjs";
+// Configured probe with a one-use prepared-boundary proof, never JSON enablement.
 import { armById, mergePatch } from "./continuity-arms.mjs";
 import { LOOKUP_PRE_SEND_REFUSALS, LOOKUP_GUARD_POLICY_REFUSALS } from "./continuity-lookup-guard.mjs";
 import { loadTraces } from "./continuity-dataset.mjs";
 import { productionModules, runProbe, createJudge, configJson, lookupConfig, pilotDispatchConfig } from "./continuity-runner.mjs";
-import { lookupPilotWork } from "./continuity-lookup-pilot-runtime.mjs";
+import { lookupPilotWork, lookupOfflineBoundary } from "./continuity-lookup-pilot-runtime.mjs";
 import { assertLookupPilotArm, restoreLookupPreparation } from "./continuity-lookup-preparation.mjs";
 import { createLookupRealSend } from "./continuity-lookup-real-capability.mjs";
 
 export async function runLookupConfiguredProbe(a) {
   const arm = armById(a.roleRequest.binding.arm), common = a.roleRequest.common, root = a.pilot.registration.codes[a.slot.code].path;
   assertLookupPilotArm(arm);
+  const state = await readPilotPrivate(pilotStatePath(a.outputRoot));
+  if (![LOOKUP_REAL_CONTROLLER, LOOKUP_FAUX_CONTROLLER].includes(state.schema)) throw Object.assign(Error("lookup_preparation_invalid"), { code: "lookup_preparation_invalid" });
+  const real = state.schema === LOOKUP_REAL_CONTROLLER;
   const prepared = await restoreLookupPreparation(a);
-  const modules = await productionModules(root), work = lookupPilotWork(a), authPath = a.authorization.credentialPath;
+  const modules = await productionModules(root), work = lookupPilotWork(a), authPath = real ? a.authorization.credentialPath : lookupOfflineBoundary({ plan: a.plan, arm, work }).authPath;
   const configPatch = lookupConfig(work, a.plan, pilotDispatchConfig(mergePatch(arm.sessionConfig ?? {}, arm.probeConfig)), true);
   const config = modules.config.resolveJsonMonoAgentConfig({ json: configJson({ work, authPath, model: a.plan.reader.model,
     effort: a.plan.reader.effort, tools: false, configPatch }), cwd: work });
-  const send = await createLookupRealSend(a, { plan: a.plan, arm, config });
-  const pilot = { routeKind: "real", plan: a.plan, arm, send, preparation: prepared.proof };
+  const send = await (real ? createLookupRealSend : createLookupFauxSend)(a, { plan: a.plan, arm, config });
+  const pilot = { routeKind: real ? "real" : "faux", authorization: real ? undefined : { schema: "continuity-lookup-faux-authorization-v1" }, plan: a.plan, arm, send, preparation: prepared.proof };
   try {
     const loaded = await loadTraces({ suite: a.slot.suite, lookupSource: common.lookupSource, selectionSeed: common.lookupSelection.seed,
       perGroup: common.lookupSelection.perGroup, inputRoots: common.inputRoots });

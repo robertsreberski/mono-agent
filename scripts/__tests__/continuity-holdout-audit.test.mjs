@@ -171,11 +171,29 @@ it("adjudicates only disputed flags and cannot clear or restate agreed flags", a
   expect(resolved.unmasked.find(r => r.id === resolution.id).judgment.binding).toBe(true);
   for (const extra of [{ binding: false }, { binding: true }, { context: false }]) expect(() => auditors.resolveAuditors(collection, a, b, "a", "b", { ...adj, items: [{ ...resolution, ...extra }] })).toThrow("audit_response_invalid");
 });
+function expectNoAbsoluteOrdinals(items) {
+  const data = items.map(({ id, ...body }) => { expect(id).toMatch(/^[a-f0-9]{24}$/u); return body; });
+  expect(JSON.stringify(data)).not.toMatch(/ordinal|900|100/u);
+}
+it("does not confuse opaque audit IDs with ordinal leaks", () => {
+  const safe = [{ id: "100900".repeat(4), entry: { value: "Fictional entry." }, evidence: [{ citation: 1, hostOrder: 1, text: "Fictional evidence." }] }];
+  expect(() => expectNoAbsoluteOrdinals(safe)).not.toThrow();
+  for (const place of [
+    (item, value) => { item.unexpected = value; },
+    (item, value) => { item.entry.value = value; },
+    (item, value) => { item.evidence[0].unexpected = value; },
+    (item, value) => { item.evidence[0].nested = { value }; },
+  ]) for (const value of [100, 900, "100", "900", "ordinal"]) {
+    const leaked = structuredClone(safe); place(leaked[0], value);
+    expect(() => expectNoAbsoluteOrdinals(leaked)).toThrow();
+  }
+  for (const id of ["100", "not-an-opaque-id"]) expect(() => expectNoAbsoluteOrdinals([{ ...safe[0], id }])).toThrow();
+});
 it("exports item-relative dense host order with ties, not absolute ordinals", () => {
   const mechanical = structuredClone(collection.mechanical); mechanical.items = [mechanical.items[0]];
   const item = mechanical.items[0], source = item.sources[0]; item.sources = [{ ...source, ordinal: 900 }, { ...source, ordinal: 100 }, { ...source, ordinal: 900 }];
   const first = audit.blindExport(mechanical, collection.joined.sha256, exported.rubricSha256, orderSeed).exported;
-  expect(first.items[0].evidence.map(e => e.hostOrder)).toEqual([2, 1, 2]); expect(JSON.stringify(first.items)).not.toMatch(/ordinal|900|100/u);
+  expect(first.items[0].evidence.map(e => e.hostOrder)).toEqual([2, 1, 2]); expectNoAbsoluteOrdinals(first.items);
   item.sources[0].ordinal = 50;
   const second = audit.blindExport(mechanical, collection.joined.sha256, exported.rubricSha256, orderSeed).exported;
   expect(second.items[0].evidence.map(e => e.hostOrder)).toEqual([1, 2, 3]); expect(second.exportSha256).not.toBe(first.exportSha256);

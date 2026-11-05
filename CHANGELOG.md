@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Add offline preparation checks for native and continuity-pack lookup pilots;
+  reject unsupported startup and keep real execution closed.
+
 - Restore lookup-pilot checkpoints only after an offline preparation process exits
   and its snapshot is verified, while keeping the real route closed.
 

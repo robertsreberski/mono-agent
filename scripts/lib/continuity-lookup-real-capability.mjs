@@ -17,7 +17,7 @@ export async function verifyLookupRealAssignment(a, ready = true) {
   assertLookupPilotEntry();
   if (Object.hasOwn(process.env, "CI")) fail("paid_mode_refused_in_ci");
   if (Object.hasOwn(process.env, "CONTINUITY_DEBUG")) fail("lookup_debug_forbidden");
-  try { return await verifyAssignment(a, ready); } catch { fail(); }
+  try { return await verifyAssignment(a, ready); } catch (error) { fail(error.code === "lookup_preparation_invalid" ? error.code : undefined); }
 }
 async function verifyAssignment(a, ready) {
   need(!Object.hasOwn(process.env, "CI") && !Object.hasOwn(process.env, "CONTINUITY_DEBUG"));
@@ -135,7 +135,7 @@ export async function createLookupRealSend(a, resolvedSafety) {
     decorators.add(decorator); sends.add(send); return Object.freeze(send);
   } catch (error) {
     // No paths, parser messages, credential values or arbitrary causes leave minting.
-    if (["lookup_pilot_real_route_unavailable", "lookup_pilot_capability_invalid", "paid_mode_refused_in_ci", "lookup_debug_forbidden"].includes(error?.code)) throw error;
+    if (["lookup_pilot_real_route_unavailable", "lookup_preparation_invalid", "lookup_pilot_capability_invalid", "paid_mode_refused_in_ci", "lookup_debug_forbidden"].includes(error?.code)) throw error;
     fail();
   }
 }

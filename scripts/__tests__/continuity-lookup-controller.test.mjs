@@ -195,9 +195,9 @@ it.each(["unadmitted", "refused_pre_send", "fictional-unknown"])("persists a pro
   await expect(k.journal.finish(0, terminal)).rejects.toThrow("lookup_ipc_invalid");
   expect(k.journal.snapshot().stop).toBe("lookup_ipc_invalid");
 });
-it.each([["two_rounds", 6, "refused_pre_send"], ["lost", 8, "unadmitted"]])("reconciles a crash after %s admission refusal consistently with live classification", async (scenario, revision, terminal) => {
+it.each([["two_rounds", "refused_pre_send"], ["lost", "unadmitted"]])("reconciles a crash after %s admission refusal consistently with live classification", async (scenario, terminal) => {
   const f = suite.fixture, options = await runOptions(f, [scenario]), config = join(f.base, `refusal-crash-${scenario}.json`);
-  await fs.writeFile(config, JSON.stringify({ path: join(options.outputRoot, "lookup-pilot-controller.json"), revision, phase: "after" }), { mode: 0o600 });
+  await fs.writeFile(config, JSON.stringify({ path: join(options.outputRoot, "lookup-pilot-controller.json"), admissionRefusal: true, phase: "after" }), { mode: 0o600 });
   const p = await suite.spawn({ options }, { LOOKUP_FIXTURE_FAULT: config }); await p.reply; expect((await p.exit).signal).toBe("SIGKILL");
   const c = await loadPilot(f, "controller"), report = await c.reconcileLookupPilot(options.outputRoot);
   expect(report.receipts.at(-1)).toMatchObject({ terminal, terminalCode: "budget_admission" });
