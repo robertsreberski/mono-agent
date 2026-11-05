@@ -83,7 +83,9 @@ export async function createLookupRealSend(a, resolvedSafety) {
       need(digest(resolvedSafety.plan) === digest(a.plan) && resolvedSafety.arm.id === a.roleRequest.binding.arm);
       need(init && Object.keys(init).every(key => ["method", "headers", "body", "signal", "redirect"].includes(key)));
       const endpoint = String(url);
-      init = { ...init, headers: new Headers(init?.headers), body: Buffer.from(Buffer.from(init?.body ?? "")) };
+      const body = new Response(init.body ?? "").arrayBuffer();
+      init = { ...init, headers: new Headers(init.headers) };
+      init.body = Buffer.from(await body);
       need(endpoint === `${guard.LOOKUP_GUARD_CONTRACT.baseUrl}/codex/responses` && init?.method === "POST"
         && (init.redirect === undefined || init.redirect === "error") && process.connected);
       const { state } = await verifyLookupRealAssignment(a), hold = state.slots[a.index].holds.at(-1);

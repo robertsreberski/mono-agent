@@ -15,7 +15,7 @@ import { sha256 } from "../../lib/continuity-lookup.mjs";
 export const loadPilot = (f, name) => import(/* @vite-ignore */ pathToFileURL(join(f.repo, "scripts/lib", `continuity-lookup-${name}.mjs`)).href);
 const metadata = async path => { try { const s = await fs.lstat(path); return [s.ino, s.mtimeMs]; } catch (e) { if (e.code === "ENOENT") return null; throw e; } };
 const registry = join(userInfo().homedir, ".local/state/mono-agent/lookup-pilot/consumed-v1");
-export async function pilotProcessFixture({ configured = false } = {}) {
+export async function pilotProcessFixture({ configured = false, runDeadlineMs = configured ? 900000 : 60000 } = {}) {
   const base = await fs.realpath(await fs.mkdtemp(join(tmpdir(), "lookup-controller-fictional-")));
   await fs.chmod(base, 0o700);
   const env = { ...process.env }, home = join(base, "build-home"); await fs.mkdir(home, { mode: 0o700 });
@@ -65,7 +65,7 @@ export async function pilotProcessFixture({ configured = false } = {}) {
     const workload = await roles.lookupWorkload({ ...options, inputRoots: [f.repo, pack] });
     const policy = await fixtureLookupPolicy({ source: workload.corpora[0].source, selection: workload.corpora[0].traces, lookupSelection: workload.lookupSelection, reader: workload.reader, codes, protocol });
     const policyPath = join(f.inputs, "lookup-policy.json"); await fs.writeFile(policyPath, JSON.stringify(policy));
-    const pilot = await pilotModule.registerLookupPilot({ ...options, policyPath, policySha256: sha256(await fs.readFile(policyPath)), capUSD: 3.92, scheduleSeed: 13, runDeadlineMs: configured ? 900000 : 60000 });
+    const pilot = await pilotModule.registerLookupPilot({ ...options, policyPath, policySha256: sha256(await fs.readFile(policyPath)), capUSD: 3.92, scheduleSeed: 13, runDeadlineMs });
     return { ...f, base, pack, pilot, home };
   } catch (error) { await fs.rm(base, { recursive: true, force: true }); throw error; }
   finally { for (const key of Object.keys(process.env)) if (!(key in env)) delete process.env[key]; Object.assign(process.env, env); }

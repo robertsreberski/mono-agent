@@ -194,3 +194,11 @@ it("revalidates the durable preparation record on every send", async () => {
   const send = await cap.createLookupRealSend(a, safety); graph.preparationChanged = true;
   await expect(send(endpoint, request())).rejects.toThrow("lookup_preparation_invalid"); expect(network).not.toHaveBeenCalled();
 });
+
+it.each(["DataView", "Uint16Array"])("snapshots %s with fetch BodyInit byte semantics", async kind => {
+  const source = new Uint8Array([1, 2, 3, 4, 5, 6]);
+  const body = kind === "DataView" ? new DataView(source.buffer, 2, 4) : new Uint16Array(source.buffer, 2, 2);
+  const expected = Buffer.from(source.subarray(2)); state.slots[0].holds[0].payloadDigest = sha(expected);
+  const send = await cap.createLookupRealSend(a, safety), pending = send(endpoint, {...request(), body}); source.fill(0);
+  await pending; expect(network).toHaveBeenCalledOnce(); expect(Buffer.from(network.mock.calls[0][1].body)).toEqual(expected);
+});

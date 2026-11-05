@@ -65,3 +65,15 @@ it("maps the initial probe-child state read to the preparation refusal", async (
   await expect(run({outputRoot: "/fictional/output"})).rejects.toThrow("lookup_preparation_invalid");
   expect(realMint).not.toHaveBeenCalled(); expect(fauxDecorator).not.toHaveBeenCalled();
 });
+
+it.each(["DataView", "Uint16Array"])("faux transport snapshots %s as fetch would", async kind => {
+  const source = new Uint8Array([1, 2, 3, 4, 5, 6]), expected = Buffer.from(source.subarray(2));
+  const body = kind === "DataView" ? new DataView(source.buffer, 2, 4) : new Uint16Array(source.buffer, 2, 2), now = Date.now();
+  state.deadlineAt = now + 60000; state.slots[0] = {terminal: null, startedAt: now, holds: [{consumed: true, permitId: "fictional-permit", payloadDigest: createHash("sha256").update(expected).digest("hex")}]};
+  const a = {outputRoot: "/fictional/output", index: 0, slot: {code: "R0"}, cacheKey: "assigned", runId: "fictional-run", slotId: "fictional-slot", plan: {}, roleRequest: {},
+    pilot: {registration: {codes: {R0: {path: "/fictional/root"}}}, descriptor: {deadlines: {deadlineMs: 60000}}}};
+  fetch.mockResolvedValue(new Response("fictional response"));
+  const {createLookupFauxSend} = await import("../lib/continuity-lookup-faux-capability.mjs"), send = await createLookupFauxSend(a, {});
+  const pending = send("https://fixture.invalid/codex/responses", {method: "POST", body, headers: {"session-id": "assigned", "x-client-request-id": "assigned"}}); source.fill(0);
+  await pending; expect(fetch).toHaveBeenCalledOnce(); expect(Buffer.from(fetch.mock.calls[0][1].body)).toEqual(expected);
+});

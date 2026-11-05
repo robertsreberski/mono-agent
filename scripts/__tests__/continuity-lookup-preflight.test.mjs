@@ -43,8 +43,8 @@ it("faux mint cannot accept a preflight state even with the real entry gate mock
   const { createLookupFauxSend } = await import("../lib/continuity-lookup-faux-capability.mjs");
   await expect(createLookupFauxSend({outputRoot: root}, {})).rejects.toThrow("lookup_pilot_faux_required"); expect(fetch).not.toHaveBeenCalled();
 });
-it("runs full configured preparation for every scheduled slot, exits despite lingering handles and grants nothing", async () => {
-  const f = await pilotProcessFixture({configured: true}); roots.push(f.base);
+it("runs full configured preparation for every eligible scheduled slot, exits despite lingering handles and grants nothing", async () => {
+  const f = await pilotProcessFixture({configured: true, runDeadlineMs: 1800000}); roots.push(f.base);
   const witnesses = join(f.base, "preflight-witnesses"), settings = join(f.base, "preflight-settings.json"); await fs.mkdir(witnesses, {mode: 0o700});
   await fs.writeFile(settings, JSON.stringify({runtimeRoot: f.repo, witnesses, configured: true, linger: true}), {mode: 0o600});
   const checkoutStatus = () => [f.repo, f.pack].map(root => execFileSync("git", ["-C", root, "status", "--porcelain", "--untracked-files=all"], {encoding: "utf8"}));
@@ -55,15 +55,16 @@ it("runs full configured preparation for every scheduled slot, exits despite lin
   let stderr = ""; child.stderr.on("data", bytes => { stderr += bytes; }); const exit = new Promise(resolve => child.once("close", resolve)); children.push({child, exit});
   const reply = await new Promise((resolve, reject) => {
     let received = false; const timer = setTimeout(() => { child.kill("SIGKILL"); reject(Error("fixture_deadline")); }, f.pilot.descriptor.deadlines.runDeadlineMs + 60000);
-    child.on("message", m => { if (m.loaded) child.send({repo: f.repo, pilot: f.pilot}); else { received = true; clearTimeout(timer); resolve(m); } });
+    child.on("message", m => { if (m.loaded) child.send({repo: f.repo, pilot: f.pilot, timeoutMs: 120000, outputRoot: f.base}); else { received = true; clearTimeout(timer); resolve(m); } });
     child.once("error", error => { clearTimeout(timer); reject(error); }); child.once("close", () => { clearTimeout(timer); if (!received) reject(Error(`fixture_closed_without_result ${stderr.slice(-1000)}`)); });
   });
   await exit;
   expect(reply.failed, stderr).toBeUndefined(); expect(reply.result.feasible, JSON.stringify(reply.result)).toBe(true);
   const scheduled = (await loadPilot(f, "pilot-state")).lookupPilotSchedule(f.pilot);
-  expect(reply.result.slots.map(s => s.slotId)).toEqual(scheduled.map(s => s.slotId));
-  const rows = reply.result.slots; expect(rows).toHaveLength(scheduled.length); expect(rows.length).toBeGreaterThan(0);
-  expect(rows.some(s => s.eligible === false)).toBe(true);
+  expect(reply.result.slots.map(s => s.slotId)).toEqual(scheduled.filter(s => s.eligible).map(s => s.slotId));
+  const rows = reply.result.slots; expect(rows).toHaveLength(scheduled.filter(s => s.eligible).length); expect(rows.length).toBeGreaterThan(0);
+  expect(rows.every(s => s.eligible)).toBe(true);
+  expect(reply.result.ineligibleSlots.map(s => s.slotId)).toEqual(scheduled.filter(s => !s.eligible).map(s => s.slotId));
   for (const row of rows) { expect(row.fileCount).toBeGreaterThan(0); expect(row.totalBytes).toBeGreaterThan(0); expect(row.rejectedEntries).toEqual([]); expect(row.durationMs).toBeLessThanOrEqual(row.watchdogMs); }
   const evidence = await Promise.all((await fs.readdir(witnesses)).map(async file => JSON.parse(await fs.readFile(join(witnesses, file)))));
   const preparers = evidence.filter(e => e.preparing && e.isMainThread);
@@ -77,7 +78,9 @@ it("runs full configured preparation for every scheduled slot, exits despite lin
   expect(checkoutStatus()).toEqual(["", ""]);
   expect(reply.result.timing).toMatchObject({runDeadlineMs: f.pilot.descriptor.deadlines.runDeadlineMs, probeTimeExcluded: true});
   expect(reply.result.timing.restoreMs).toBeGreaterThan(0);
-}, 1080000);
+  expect(reply.result.timing.timeoutMs).toBe(120000);
+  expect(reply.result.disk.eligibleRetainedBytes).toBeGreaterThan(0);
+}, 1980000);
 
 it("keeps counting siblings after an unreadable metadata entry", async () => {
   const root = await temp(), bad = join(root, "b-unreadable");

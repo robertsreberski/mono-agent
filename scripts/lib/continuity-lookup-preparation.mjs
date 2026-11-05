@@ -68,7 +68,7 @@ export async function lookupPreparationDigest(a) { return (await contents(a)).tr
 export async function verifyLookupPreparation(a, state, restored = false) {
   try { return await verifyPreparation(a, state, restored); } catch { need(false); }
 }
-async function verifyPreparation(a, state, restored) {
+async function verifyPreparation(a, state, restored, source) {
   need([LOOKUP_REAL_CONTROLLER, LOOKUP_FAUX_CONTROLLER].includes(state.schema));
   assertLookupPilotArm(armById(a.roleRequest.binding.arm));
   const record = state.slots[a.index]?.preparation;
@@ -76,7 +76,7 @@ async function verifyPreparation(a, state, restored) {
   const saved = verified.get(key(a));
   if (saved) need(samePilot(saved.record, record));
   else {
-    need((await contents(a)).treeDigest === record.treeDigest);
+    need((source ?? await contents(a)).treeDigest === record.treeDigest);
     verified.set(key(a), { record: freeze(structuredClone(record)), restored: false });
   }
   need(!restored || verified.get(key(a)).restored);
@@ -95,9 +95,11 @@ export async function restoreLookupPreparation(a) {
 async function restorePreparation(a) {
   const state = await readPilotPrivate(pilotStatePath(a.outputRoot));
   need(state.slots[a.index]?.worker?.pid === process.pid && state.slots[a.index].worker.startIdentity === lookupProcessStartIdentity(process.pid));
-  await verifyLookupPreparation(a, state);
+  need([LOOKUP_REAL_CONTROLLER, LOOKUP_FAUX_CONTROLLER].includes(state.schema));
+  assertLookupPilotArm(armById(a.roleRequest.binding.arm));
+  const source = await restoreSource(a, state.slots[a.index].preparation, "lookup-preparation-v1", "lookup-preparation-record-v1");
+  await verifyPreparation(a, state, false, source);
   const saved = verified.get(key(a)); need(!saved.restored);
-  const source = await contents(a); need(source.treeDigest === saved.record.treeDigest);
   const p = paths(a); await installTree(p.work, source.rows);
   // A changed durable record cannot be installed as an in-process boundary proof.
   await verifyLookupPreparation(a, await readPilotPrivate(pilotStatePath(a.outputRoot)));
@@ -105,14 +107,31 @@ async function restorePreparation(a) {
   const proof = Object.freeze({}); proofs.set(proof, { work: p.work, arm: a.roleRequest.binding.arm, conversationId: source.manifest.conversationId });
   return { proof, work: p.work, manifest: freeze(source.manifest) };
 }
-/** Owner permissions only; lstat keeps symlinks out of the traversal. */
+async function restoreSource(a, record, schema, recordSchema) {
+  exitedRecord(record, recordSchema);
+  const first = await contents(a, schema); need(first.treeDigest === record.treeDigest);
+  const second = await contents(a, schema); need(second.treeDigest === first.treeDigest);
+  return second;
+}
+/** Descriptor-bound chmod; compare path identities around enumeration and descent. */
 export async function removeLookupWorkTree(root) {
-  const writable = async path => {
+  const same = async ({path, stat}) => { const now = await lstat(path); need(now.isDirectory() && now.dev === stat.dev && now.ino === stat.ino); };
+  const writable = async (path, ancestors = []) => {
+    for (const ancestor of ancestors) await same(ancestor);
     let stat; try { stat = await lstat(path); } catch (error) { if (error.code === "ENOENT") return; throw error; }
     if (!stat.isDirectory()) return;
     need(stat.uid === userInfo().uid);
-    await chmod(path, (stat.mode & 0o777) | 0o700);
-    for (const name of await readdir(path)) await writable(join(path, name));
+    const handle = await open(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+    try {
+      const bound = await handle.stat(); need(bound.dev === stat.dev && bound.ino === stat.ino && bound.isDirectory());
+      const checked = [...ancestors, {path, stat}];
+      for (const dir of checked) await same(dir);
+      await handle.chmod((stat.mode & 0o777) | 0o700);
+      for (const dir of checked) await same(dir);
+      const names = await readdir(path);
+      for (const dir of checked) await same(dir);
+      for (const name of names) await writable(join(path, name), checked);
+    } finally { await handle.close(); }
   };
   await writable(root); await rm(root, { recursive: true, force: true });
 }
@@ -132,8 +151,7 @@ export async function restoreLookupPreflight(a) {
     need(state.schema === LOOKUP_PREFLIGHT && state.controller.pid === process.pid
       && state.controller.startIdentity === lookupProcessStartIdentity(process.pid)
       && state.schedule[a.index]?.slotId === a.slotId && samePilot(state.schedule[a.index], a.slot));
-    const record = state.slots[a.index]?.preparation; exitedRecord(record, "lookup-preflight-record-v1");
-    const source = await contents(a, "lookup-preflight-snapshot-v1"); need(source.treeDigest === record.treeDigest);
+    const source = await restoreSource(a, state.slots[a.index]?.preparation, "lookup-preflight-snapshot-v1", "lookup-preflight-record-v1");
     await installTree(paths(a).work, source.rows);
   } catch { need(false); }
 }
@@ -166,4 +184,21 @@ export async function lookupPreparationStats(root) {
   if (stats.totalBytes > LOOKUP_TREE_LIMITS.totalBytes) reject("total_limit");
   stats.rejectedEntries = [...rejected].sort().map(([kind, count]) => ({ kind, count }));
   return stats;
+}
+
+/** Logical-or-allocated bytes, conservatively counting links independently. */
+export async function lookupRetainedBytes(slotRoot) {
+  const sizes = {snapshotBytes: 0, workBytes: 0, homeBytes: 0, otherBytes: 0};
+  const walk = async (path, relative = "") => {
+    const stat = await lstat(path);
+    const bytes = Math.max(stat.size, stat.blocks * 512);
+    need(Number.isSafeInteger(bytes) && bytes >= 0);
+    const field = relative === "checkpoint/snapshot" || relative.startsWith("checkpoint/snapshot/") ? "snapshotBytes"
+      : relative === "checkpoint/work" || relative.startsWith("checkpoint/work/") ? "workBytes"
+      : relative === "checkpoint/lease-home" || relative.startsWith("checkpoint/lease-home/") || relative && !relative.startsWith("checkpoint") ? "homeBytes" : "otherBytes";
+    sizes[field] += bytes;
+    if (stat.isDirectory()) for (const name of await readdir(path)) await walk(join(path, name), relative ? `${relative}/${name}` : name);
+  };
+  await walk(slotRoot); const retainedBytes = Object.values(sizes).reduce((a, b) => a + b, 0);
+  need(Number.isSafeInteger(retainedBytes)); return {...sizes, retainedBytes};
 }

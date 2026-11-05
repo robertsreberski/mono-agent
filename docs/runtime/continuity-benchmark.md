@@ -1537,33 +1537,96 @@ power-loss durability or operator acceptance is established by these unit tests.
 
 ### Offline preparation feasibility
 
-`continuity-lookup-compare.mjs preflight --registration FILE --sha256 SHA` runs
-only the production offline preparation child, once per scheduled slot. Its
-registered proposal is not cap approval. No authorization, consumption registry,
-probe or writer lease on a real output is involved; work and control records are
-created in a private temporary root and removed after contained exit. The real
-entry gate is irrelevant, and CI may run this non-authorizing command.
+The non-authorizing `continuity-lookup-compare.mjs preflight` command requires
+`--registration FILE --sha256 SHA --timeout-ms N --output-root ABSOLUTE_PATH`.
+Missing or malformed flags refuse with `lookup_registration_invalid`. The
+positive integer timeout has the same upper bound as the faux authorization's
+`timeoutMs`: `childWatchdogMs`. It is not silently defaulted. Each preparation
+and restore watchdog is the minimum of the requested timeout,
+`childWatchdogMs` (720 seconds), `deadlineMs` (600 seconds), and remaining run
+time. The report records the requested value and effective watchdogs. Real
+options still have exactly six keys and no timeout override: the real requested timeout
+is the registration's `childWatchdogMs`. The report records
+`realRequestedTimeoutMs` and `realEquivalent` (exact requested-timeout equality),
+and labels a mismatch `timeout_does_not_match_real_run`. Per-slot
+`probeWatchdogMs` and `realWatchdogMs` use the same `lookupPilotWatchdog` helper
+with requested and real-shaped options at the reported `probeRemainingRunMs`.
+`--require-real-equivalent` makes a mismatch exit non-zero even if the general
+feasibility verdict passes; it does not enable a real route.
 
-The JSON report includes each slot's eligibility, file count, total/largest bytes,
-fixed rejected-entry classes and elapsed time against its watchdog. Preparation
-feasibility is independent of admission eligibility. A failure exits nonzero.
-The same tree limits apply: regular files with link count one, owner-only write,
-64 MiB per file and 512 MiB total. Preflight records and snapshots have separate
-schemas and cannot supply a one-use prepared-boundary proof to either probe.
-Each slot also dry-restores the verified snapshot over the prepared workspace,
-including removal of existing owner-read-only directories and reapplication of
-recorded modes. Restore failures report `lookup_preparation_invalid` and make
-the preflight exit non-zero. The report totals preparation and dry-restore time
-against `runDeadlineMs`, using each phase's remaining run time for its watchdog.
-**Probe time is excluded**: passing this free lower-bound check does not show
-that the full run, including probes, fits the deadline.
-This is a feasibility observation, not power-loss durability or an SDK proof.
+Only eligible slots run the production offline preparation child. Ineligible
+slots are listed separately and do not consume the timing or disk estimates.
+The registration is a proposal, not cap approval. No authorization, consumption
+registry, probe or real-output writer lease is involved. Work and control
+records live in a private temporary root. The real entry gate is irrelevant,
+and CI may run this non-authorizing command.
 
-Faux probes use a separately branded send and fictional in-memory credentials.
-Their optional `fixtureEndpoint` is bound only in faux controller state and must
-be a test-owned `http://127.0.0.1:PORT/codex/responses` listener; missing/invalid
-routing refuses instead of falling back to an external provider. Explicit
-`--import` arguments survive production child forks, but `NODE_OPTIONS`, ambient
-credential keys and non-allowlisted environment do not. CI/debug presence is
-preserved. Full configured smoke, egress and credentialed-Models proof remain
-required before any separately reviewed real-entry change.
+For eligible slots, the JSON report gives file count, total/largest bytes,
+fixed rejection classes, preparation and restore times, and retained snapshot,
+restored-work and home bytes. It uses the same regular-file/link-count/ownership
+checks and 64 MiB/file, 512 MiB/snapshot limits. Preflight records and snapshots
+have disjoint schemas and cannot supply a one-use prepared-boundary proof.
+After successful preparation, **only while run time remains**, it dry-restores
+the verified snapshot over the prepared work tree, including owner-read-only
+directory removal and recorded modes. It uses the probe's same two-read
+verify-then-install path. Restore failure is `lookup_preparation_invalid` and
+infeasible reports exit non-zero.
+
+The aggregate verdict requires both time margins:
+
+- `1.5 × (eligible preparation + restore time) + sum(effective probe watchdogs)`
+  must be no greater than `runDeadlineMs`.
+- `timeoutMs` must be at least `1.5 × slowest eligible preparation time`.
+
+No probe executes: its effective watchdog (minimum of requested timeout,
+`deadlineMs` and remaining run time) is reserved per eligible slot rather than
+measured. The report states the 1.5 margin, reserved probe time and required run
+budget. Snapshot, restored work and homes are summed across eligible slots as
+retained data, even though the free check deletes them between slots. The
+output volume must have at least `1.25 × eligible retained bytes` free. Sizes
+use the greater of logical and allocated bytes and do not follow symlinks.
+`--output-root` is used **only for a statfs free-space read**, never a write or
+lease; a not-yet-created output uses its nearest existing ancestor's volume.
+The report does not expose that path. These are point-in-time estimates, not a
+reservation of future disk or provider capacity.
+
+#### Before requesting a cap
+
+1. Use the **exact registration SHA that will be authorized**, intended timeout
+   and intended output root. For a **real cap request**, set `--timeout-ms` to
+   that registration's `childWatchdogMs` and include `--require-real-equivalent`;
+   the real options contract has no timeout override. Other valid explicit
+   timeouts describe faux/future callers, not an equivalent current real run.
+   Set `TMPDIR` to an existing directory on the
+   output volume, at a similar path depth. For example, using fictional paths:
+
+   Set `CHILD_WATCHDOG_MS` from the exact registration (the current default is
+   720000 ms, not a value to assume for future registrations).
+
+   ```sh
+   TMPDIR=/tmp/lookup-volume/preflight pnpm exec node \
+     scripts/continuity-lookup-compare.mjs preflight \
+     --registration /tmp/lookup-registration.json --sha256 REGISTRATION_SHA \
+     --timeout-ms "$CHILD_WATCHDOG_MS" --require-real-equivalent \
+     --output-root /tmp/lookup-volume/output
+   ```
+
+2. Require exit zero, `realEquivalent: true` and `feasible: true`, including both
+   time inequalities and the 1.25 disk margin. Preserve the report, exact SHA and intended flag values
+   with the cap request. A preflight does not issue authorization or grant a cap.
+3. Re-run whenever registration changes, and again if timeout, output volume or
+   workload conditions change. Do not reuse a verdict for a different SHA.
+4. If containment or cleanup failed, private copies remain under
+   `$TMPDIR/lookup-preflight-*`. Resolve ownership and live-group containment,
+   verify quiescence, then remove only the specific owned root. Do not glob-delete
+   roots, remove a root while containment is unresolved or signal historical
+   recorded PIDs. A failed cleanup is not permission to bypass containment.
+
+Timing margins cover a single sample, warm caches, machine-load variance and
+lease-setup differences: preflight skips the real output lease, while the real
+run takes it. The native runtime lease is still exercised during preparation.
+Probe-time and post-probe disk growth are not measured here; configured process
+proof must measure that growth before relying on these estimates. No margin
+proves billing behavior, perfect PID incarnation identity, an OS sandbox or
+power-loss durability. The real-route gate remains closed; a cap request is a
+separate operator decision, not permission to execute.

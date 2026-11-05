@@ -2,13 +2,19 @@
 
 ## Unreleased
 
-- Make lookup preparation preflight test checkpoint restoration and the cumulative
-  run deadline, excluding probe time; exit non-zero for infeasible slots, report
-  `lookup_preparation_invalid` for restore failures, and reject unsupported pilot
-  arms before startup.
+- Require explicit lookup-preflight timeouts and read-only output-volume checks;
+  include eligible-slot time, probe reserves and retained disk margins before a
+  cap request, require real-timeout equivalence for real cap checks, and preserve
+  fetch body bytes for typed-array requests.
+
+- Restore checkpoints over owner-read-only directories and check the cumulative
+  preparation deadline; exit non-zero for infeasible preflight slots, report
+  `lookup_preparation_invalid` for restore failures and
+  `lookup_registration_invalid` for malformed flags, and resolve relative
+  `--import` paths against the parent directory.
 
 - Add offline preparation checks for native and continuity-pack lookup pilots;
-  reject unsupported startup and keep real execution closed.
+  reject unsupported pilot arms before startup and keep real execution closed.
 
 - Restore lookup-pilot checkpoints only after an offline preparation process exits
   and its snapshot is verified, while keeping the real route closed.
