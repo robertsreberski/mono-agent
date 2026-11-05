@@ -13,6 +13,7 @@ import { main as compareMain, lookupOutputPath, workloadOptions, WORKLOAD_FLAGS 
 import { main as budgetMain } from "../continuity-lookup-budget.mjs";
 import { main as estimateMain, estimateLookup, ESTIMATE_PROFILES, offlinePrices, priceLookupCall } from "../continuity-lookup-estimate.mjs";
 
+import { dependencyLeafSnapshot } from "./fixtures/lookup-leaf-witness.mjs";
 import { dependencySnapshot } from "./fixtures/lookup-dependency-witness.mjs";
 const dirs = [];
 let suiteModulesBefore;
@@ -75,9 +76,12 @@ async function overlaySource(source, dest, paths) {
   }
 }
 
-// Private installation metadata and workspace links; immutable third-party package
-// leaves may be read through links. Builds never install or mutate these leaves.
+// Deliberate exception to the no-shared-node_modules-with-pnpm rule: only
+// immutable third-party leaves are shared. Installation metadata/workspace links
+// stay private, builds are offline/no-install, and a recursive lstat witness of
+// EVERY linked leaf before/after the test fails on writes (including ctime).
 async function linkDependencies(source, dest) {
+  const leaves = new Set();
   async function copyModules(rel) {
     const from = join(source, rel), to = join(dest, rel);
     try { await access(from); } catch { return; }
@@ -89,7 +93,7 @@ async function linkDependencies(source, dest) {
         await mkdir(join(to, name));
         for (const leaf of await readdir(join(from, name))) {
           const input = join(from, name, leaf), output = join(to, name, leaf);
-          if (leaf !== "node_modules" && (await lstat(input)).isDirectory()) await symlink(input, output);
+          if (leaf !== "node_modules" && (await lstat(input)).isDirectory()) { leaves.add(input); await symlink(input, output); }
           else await cp(input, output, {recursive: true, dereference: false, verbatimSymlinks: true});
         }
       } else await cp(join(from, name), join(to, name), {recursive: true, dereference: false, verbatimSymlinks: true});
@@ -98,6 +102,7 @@ async function linkDependencies(source, dest) {
   await copyModules("node_modules");
   for (const parent of ["packages", "extras"]) for (const name of await readdir(join(source, parent))) await copyModules(join(parent, name, "node_modules"));
   await copyModules("packages/web/webapp/node_modules");
+  return leaves;
 }
 
 async function externalEstimateFixture() {
@@ -118,7 +123,7 @@ const externalOnlyOptions = [
   ["--output-limit", "300"], ["--output-limit-source", "enforced"], ["--catalog-cap-usd", "10"],
 ];
 
-it("runs all six faux/real-loopback roles across two clean synthetic checkouts with fresh builds and bound receipts", async () => {
+it("runs all six faux/real-loopback roles across two clean synthetic checkouts with fresh builds and bound receipts", async context => {
   const base = await scratch(), r0 = join(base, "r0"), rpack = join(base, "rpack");
   const home = join(base, "home"); await mkdir(home, { mode: 0o700 });
   vi.stubEnv("XDG_DATA_HOME", join(base, "fictional-host-data"));
@@ -142,7 +147,18 @@ it("runs all six faux/real-loopback roles across two clean synthetic checkouts w
   const r0Revision = commit(r0);
   git(ROOT, ["clone", "--shared", "--quiet", r0, rpack]);
   await writeFile(join(rpack, RENDER), shippedRender); await writeFile(join(rpack, PACK), shippedPack); const rpackRevision = commit(rpack);
-  await linkDependencies(ROOT, r0); await linkDependencies(ROOT, rpack);
+  const linkedLeaves = await linkDependencies(ROOT, r0), otherLeaves = await linkDependencies(ROOT, rpack);
+  expect(otherLeaves).toEqual(linkedLeaves);
+  const beforeStart = performance.now(), leavesBefore = await dependencyLeafSnapshot(linkedLeaves), beforeMs = performance.now() - beforeStart;
+  context.onTestFinished(async () => {
+    const afterStart = performance.now(), leavesAfter = await dependencyLeafSnapshot(linkedLeaves), afterMs = performance.now() - afterStart;
+    const compareStart = performance.now();
+    try { expect(leavesAfter).toEqual(leavesBefore); }
+    finally {
+      const compareMs = performance.now() - compareStart;
+      await writeFile(join(ROOT, ".worklab-tmp/lookup-leaf-witness-metrics.json"), JSON.stringify({leaves: linkedLeaves.size, entries: leavesBefore.length, beforeMs, afterMs, compareMs, totalMs: beforeMs + afterMs + compareMs}));
+    }
+  });
   const trace = (await loadTraces()).traces[0];
   const registration = await registerLookup({ checkouts: { R0: { path: r0, revision: r0Revision }, Rpack: { path: rpack, revision: rpackRevision } },
     suites: ["original"], traceIds: [trace.id], probeLimit: 1 });
@@ -150,15 +166,24 @@ it("runs all six faux/real-loopback roles across two clean synthetic checkouts w
   expect(() => guidanceDiff(rpack, r0)).toThrow("lookup_rpack_direction_invalid");
   expect(registration.codes.R0.build.policy).toBe(BUILD_POLICY);
   const output = join(base, "run"); let dispatches = 0;
-  const launch = async (root, args, timeoutMs, first) => {
-    if (!first) return runLookupRoleChild(root, args, timeoutMs);
+  const homeKeys = ["HOME", "XDG_CACHE_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME"];
+  const launch = async (root, args, timeoutMs, first, roleHome) => {
+    const env = {...process.env, ...Object.fromEntries(homeKeys.map(key => [key, roleHome])), LOOKUP_ROLE_HOME_WITNESS: "1",
+      NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ""} --import=${join(ROOT, "scripts/__tests__/fixtures/lookup-role-home-witness.mjs")}`};
+    if (!first) {
+      // The existing launcher captures process.env synchronously in spawn.
+      // Restore before any promise continuation; never overlap ambient changes.
+      const keys = [...homeKeys, "LOOKUP_ROLE_HOME_WITNESS", "NODE_OPTIONS"], previous = Object.fromEntries(keys.map(key => [key, process.env[key]]));
+      try { for (const key of keys) process.env[key] = env[key]; return runLookupRoleChild(root, args, timeoutMs); }
+      finally { for (const key of keys) { if (previous[key] === undefined) delete process.env[key]; else process.env[key] = previous[key]; } }
+    }
     // A real nonzero process exit AFTER main emitted a valid receipt must not stop later roles.
     const program = `const {main} = await import(${JSON.stringify(new URL("scripts/continuity-benchmark.mjs", `file://${root}/`).href)}); await main(${JSON.stringify(args)}); process.exit(1);`;
     const wrapper = join(base, "nonzero-after-receipt.mjs"); await writeFile(wrapper, program);
     // Match the launcher's file/async process shape; eval/synchronous invocation
     // interferes with native in-place replay and is not the production entry path.
     return new Promise((resolve, reject) => {
-      const child = spawn(process.execPath, [wrapper], { cwd: root, stdio: ["ignore", "ignore", "pipe"] }); child.stderr.resume();
+      const child = spawn(process.execPath, [wrapper], { cwd: root, env, stdio: ["ignore", "ignore", "pipe"] }); child.stderr.resume();
       let timedOut = false; const timer = setTimeout(() => { timedOut = true; child.kill("SIGKILL"); }, timeoutMs);
       child.once("error", error => { clearTimeout(timer); reject(error); });
       child.once("close", code => { clearTimeout(timer); resolve({ code, timedOut }); });
@@ -179,8 +204,9 @@ it("runs all six faux/real-loopback roles across two clean synthetic checkouts w
           const request = {...original, binding, build: code.build}; await writeFile(path, JSON.stringify(request));
           const argv = args.map(value => value === requestPath ? path : value === firstOutput ? dir : value === original.binding.arm ? role.arm : value);
           const plan = await rolePlan(registration.common, binding), deadline = plan.limits.maxLiveTurns * plan.lookup.childWatchdogMs + 300000;
-          const outcome = launch(code.path, argv, deadline, role.id === registration.roles[0].id).catch(error => ({error}));
-          jobs.set(role.id, {root: code.path, argv, deadline, request, outcome});
+          const roleHome = join(base, `home-${role.id}`); await mkdir(roleHome, {mode: 0o700});
+          const outcome = launch(code.path, argv, deadline, role.id === registration.roles[0].id, roleHome).catch(error => ({error}));
+          jobs.set(role.id, {root: code.path, argv, deadline, request, roleHome, outcome});
         }
       }
       const request = JSON.parse(await readFile(args[args.indexOf("--lookup-role") + 1])), job = jobs.get(request.binding.id);
@@ -189,6 +215,13 @@ it("runs all six faux/real-loopback roles across two clean synthetic checkouts w
       const outcome = await job.outcome; if (outcome.error) throw outcome.error; return outcome;
     }});
   } finally {await Promise.allSettled([...jobs.values()].map(job => job.outcome));}
+  const homeProofs = await Promise.all([...jobs.values()].map(async job => {
+    const proof = JSON.parse(await readFile(join(job.roleHome, "role-home.json")));
+    expect(proof.env).toEqual(Object.fromEntries(homeKeys.map(key => [key, job.roleHome])));
+    return proof;
+  }));
+  expect(new Set(homeProofs.map(proof => proof.pid)).size).toBe(6);
+  expect(new Set(homeProofs.map(proof => proof.env.HOME)).size).toBe(6);
   expect(dispatches).toBe(6);
   expect(result.launches[0]).toMatchObject({ role: "native", exitCode: 1, receiptVerified: true, reason: null });
   expect(result.coverage, JSON.stringify(result.slots)).toEqual({ planned: 6, completed: 6, skipped: 0, blocked: 0, missing: 0, duplicate: 0, observations: 6 });

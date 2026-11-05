@@ -68,12 +68,12 @@ it("serializes a stop/grant race and rejects consumption after the stop", async 
   await expect(message(k, "consume", { permit, bodyDigest: hash })).rejects.toThrow("lookup_permit_invalid");
 });
 
-it("refuses a complete real-schema artifact in a CI child before any lease or output write", async () => {
+it.serial("refuses a complete real-schema artifact in a CI child before any lease or output write", async () => {
   const f = suite.fixture, base = await fs.mkdtemp(join(f.base, "real-refusal-")), outputRoot = join(base, "output");
   await fs.mkdir(outputRoot, { mode: 0o700 });
   const options = { pilot: f.pilot, outputRoot, authorization: lookupAuthorizationArtifact(f.pilot, {
     registrationRawSha256: createHash("sha256").update(JSON.stringify(f.pilot)).digest("hex"), outputRoot, credentialPath: join(base, "fictional-credential.json") }) };
-  const p = await suite.spawn({ options }, { CI: "1" });
+  const p = await suite.spawn({ options }, { CI: "1" }, {deferReplyUntilExit: true});
   expect(await p.reply).toEqual({ failed: "lookup_pilot_real_route_unavailable" }); await p.exit;
   expect(await fs.readdir(outputRoot)).toEqual([]);
   for (const path of [join(outputRoot, "controller-lock.sqlite"), join(base, ".lookup-faux-consumed-v1")]) await expect(fs.lstat(path)).rejects.toMatchObject({ code: "ENOENT" });
@@ -92,7 +92,7 @@ it.each([1, 2, 3, 4, 5, 6, 8])("reconciles only after real SIGKILL before/after 
     // The fault configuration is outside the bound output, which must initially be unused.
     const config = join(f.base, `${options.authorization.authorizationId}.fault.json`);
     await fs.writeFile(config, JSON.stringify({ path: join(options.outputRoot, "lookup-pilot-controller.json"), revision, phase }), { mode: 0o600 });
-    const process = await suite.spawn({ options }, { LOOKUP_FIXTURE_FAULT: config }); await process.reply;
+    const process = await suite.spawn({ options }, { LOOKUP_FIXTURE_FAULT: config }); await expect(process.reply).rejects.toMatchObject({code: "fixture_reply_missing"});
     expect((await process.exit).signal).toBe("SIGKILL");
     const path = join(options.outputRoot, "lookup-pilot-controller.json");
     try {
@@ -118,7 +118,7 @@ it.each(["authorization-consumed.json", "claim.json"])("burns authorization acro
     const options = await runOptions(f), key = createHash("sha256").update(LOOKUP_FAUX_AUTHORIZATION_DOMAIN + options.authorization.authorizationId).digest("hex");
     const path = name === "claim.json" ? join(f.base, ".lookup-faux-consumed-v1", key, name) : join(options.outputRoot, name);
     const config = join(f.base, `${options.authorization.authorizationId}.fault.json`); await fs.writeFile(config, JSON.stringify({ path, phase }), { mode: 0o600 });
-    const p = await suite.spawn({ options }, { LOOKUP_FIXTURE_FAULT: config }); await p.reply; expect((await p.exit).signal).toBe("SIGKILL");
+    const p = await suite.spawn({ options }, { LOOKUP_FIXTURE_FAULT: config }); await expect(p.reply).rejects.toMatchObject({code: "fixture_reply_missing"}); expect((await p.exit).signal).toBe("SIGKILL");
     expect((await fs.lstat(join(f.base, ".lookup-faux-consumed-v1", key))).isDirectory()).toBe(true);
   }
 });
@@ -143,7 +143,7 @@ it.each([[0, 0, 0], [1, 0, 0], [1, 1, 0], [1, 1, 1]])("keeps a conservative jour
   for (const phase of ["before", "after"]) {
     const options = await runOptions(f), config = join(f.base, `${options.authorization.authorizationId}.fault.json`);
     await fs.writeFile(config, JSON.stringify({ path: join(options.outputRoot, "slots", `${first.slotId}.json`), phase, calls: { admitted, consumed, settled } }), { mode: 0o600 });
-    const p = await suite.spawn({ options }, { LOOKUP_FIXTURE_FAULT: config }); await p.reply; expect((await p.exit).signal).toBe("SIGKILL");
+    const p = await suite.spawn({ options }, { LOOKUP_FIXTURE_FAULT: config }); await expect(p.reply).rejects.toMatchObject({code: "fixture_reply_missing"}); expect((await p.exit).signal).toBe("SIGKILL");
     const report = await c.reconcileLookupPilot(options.outputRoot);
     if (admitted) expect(report.cost.totalUSD).toBe(3.92);
     else expect(report.counts.admitted).toBe(0);
@@ -167,7 +167,7 @@ it("reconciles before/after final report persistence without resuming", async ()
   for (const phase of ["before", "after"]) {
     const options = await runOptions(f), path = join(options.outputRoot, "report.json"), config = join(f.base, `${options.authorization.authorizationId}.fault.json`);
     await fs.writeFile(config, JSON.stringify({ path, phase }), { mode: 0o600 });
-    const p = await suite.spawn({ options }, { LOOKUP_FIXTURE_FAULT: config }); await p.reply; expect((await p.exit).signal).toBe("SIGKILL");
+    const p = await suite.spawn({ options }, { LOOKUP_FIXTURE_FAULT: config }); await expect(p.reply).rejects.toMatchObject({code: "fixture_reply_missing"}); expect((await p.exit).signal).toBe("SIGKILL");
     if (phase === "after") expect(JSON.parse(await fs.readFile(path)).stop).toBe("budget_admission");
     else await expect(fs.lstat(path)).rejects.toMatchObject({ code: "ENOENT" });
     expect((await c.reconcileLookupPilot(options.outputRoot)).cost.totalUSD).toBe(3.92);
@@ -179,7 +179,7 @@ it("preserves terminal journal status across before/after completed receipt pers
   for (const phase of ["before", "after"]) {
     const options = await runOptions(f, ["settled"]), path = join(options.outputRoot, "slots", `${first.slotId}.json`), config = join(f.base, `${options.authorization.authorizationId}.fault.json`);
     await fs.writeFile(config, JSON.stringify({ path, phase, calls: { admitted: 1, consumed: 1, settled: 1 }, terminal: "completed" }), { mode: 0o600 });
-    const p = await suite.spawn({ options }, { LOOKUP_FIXTURE_FAULT: config }); await p.reply; expect((await p.exit).signal).toBe("SIGKILL");
+    const p = await suite.spawn({ options }, { LOOKUP_FIXTURE_FAULT: config }); await expect(p.reply).rejects.toMatchObject({code: "fixture_reply_missing"}); expect((await p.exit).signal).toBe("SIGKILL");
     expect(JSON.parse(await fs.readFile(path)).terminal).toBe(phase === "after" ? "completed" : null);
     expect((await c.reconcileLookupPilot(options.outputRoot)).counts.completed).toBe(1);
   }
@@ -212,7 +212,7 @@ it.each(["unadmitted", "refused_pre_send", "fictional-unknown"])("persists a pro
 it.each([["two_rounds", "refused_pre_send"], ["lost", "unadmitted"]])("reconciles a crash after %s admission refusal consistently with live classification", async (scenario, terminal) => {
   const f = suite.fixture, options = await runOptions(f, [scenario]), config = join(f.base, `refusal-crash-${scenario}.json`);
   await fs.writeFile(config, JSON.stringify({ path: join(options.outputRoot, "lookup-pilot-controller.json"), admissionRefusal: true, phase: "after" }), { mode: 0o600 });
-  const p = await suite.spawn({ options }, { LOOKUP_FIXTURE_FAULT: config }); await p.reply; expect((await p.exit).signal).toBe("SIGKILL");
+  const p = await suite.spawn({ options }, { LOOKUP_FIXTURE_FAULT: config }); await expect(p.reply).rejects.toMatchObject({code: "fixture_reply_missing"}); expect((await p.exit).signal).toBe("SIGKILL");
   const c = await loadPilot(f, "controller"), report = await c.reconcileLookupPilot(options.outputRoot);
   expect(report.receipts.at(-1)).toMatchObject({ terminal, terminalCode: "budget_admission" });
   expect(report.counts).toMatchObject({ admitted: 1, incomplete: 1, invalid: 0, unadmitted: terminal === "unadmitted" ? 1 : 0 });

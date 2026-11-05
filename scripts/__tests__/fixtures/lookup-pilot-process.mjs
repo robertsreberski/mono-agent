@@ -8,6 +8,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { fork, execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { syntheticContext, fixtureCommit, fixtureLookupPolicy } from "./holdout-synthetic.mjs";
+import { fixtureDriverReply } from "./lookup-pilot-reply.mjs";
+import { pilotConcurrencyLimit, pilotSemaphore } from "./lookup-pilot-concurrency.mjs";
 import { dependencySnapshot } from "./lookup-dependency-witness.mjs";
 import { lookupProcessStartIdentity } from "../../lib/continuity-process-identity.mjs";
 import { ROOT } from "../../lib/continuity-lookup-roles.mjs";
@@ -78,7 +80,7 @@ export async function runOptions(f, scenarios = ["lost"], timeoutMs = 5000) {
     pilotSha256: digest(f.pilot), outputRoot, scenarios, timeoutMs } };
 }
 export function pilotSuite({ concurrent = false } = {}) {
-  let f, deps, real, testReal; const serialChildren = [], active = new AsyncLocalStorage();
+  let f, deps, real, testReal; const serialChildren = [], active = new AsyncLocalStorage(), permits = pilotSemaphore(pilotConcurrencyLimit());
   const children = () => active.getStore()?.children ?? serialChildren;
   beforeAll(async () => { deps = await dependencySnapshot(ROOT); real = await metadata(registry); f = await pilotProcessFixture(); }, 120000);
   if (!concurrent) beforeEach(async () => { testReal = await metadata(registry); });
@@ -111,9 +113,18 @@ export function pilotSuite({ concurrent = false } = {}) {
   }
   const scoped = register => {
     const run = (name, fn, ...options) => register(name, async context => {
-      const scope = {children: [], resources: []}, expected = await metadata(registry);
-      // Vitest calls this even on its own timeout; a finally inside fn would not.
-      context.onTestFinished(() => finish(scope.children, expected, scope.resources));
+      const scope = {children: [], resources: []}, admission = permits.enter();
+      let finished = false, started = false, expected;
+      // Register BEFORE waiting: a queued test may time out before admission.
+      context.onTestFinished(async () => {
+        finished = true; admission.cancel();
+        try { if (started) await finish(scope.children, expected, scope.resources); }
+        finally { admission.release(); }
+      });
+      if (!await admission.ready || finished) return;
+      expected = await metadata(registry);
+      if (finished) return;
+      started = true;
       return active.run(scope, () => fn(context));
     }, ...options);
     run.each = rows => (name, fn, ...options) => {
@@ -123,18 +134,25 @@ export function pilotSuite({ concurrent = false } = {}) {
   };
   const concurrentTest = scoped(test.concurrent); concurrentTest.serial = scoped(test);
   return { test: concurrentTest, cleanup: fn => { const scope = active.getStore(); if (!scope) throw Error("fixture_scope_missing"); scope.resources.push(fn); }, get fixture() { return f; },
-    async spawn(input, extraEnv = {}) {
+    async spawn(input, extraEnv = {}, {deferReplyUntilExit = false} = {}) {
       const witnesses = join(f.base, "witnesses"); await fs.mkdir(witnesses, { recursive: true, mode: 0o700 });
       const preload = fileURLToPath(new URL("./lookup-pilot-preload.mjs", import.meta.url));
       const child = fork(fileURLToPath(new URL("./lookup-pilot-driver.mjs", import.meta.url)), [], { cwd: f.repo, execArgv: ["--import", preload],
         env: { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_"))), HOME: f.home, XDG_CACHE_HOME: f.home, XDG_CONFIG_HOME: f.home, XDG_DATA_HOME: f.home, XDG_STATE_HOME: f.home, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1",  LOOKUP_FIXTURE_WITNESSES: witnesses, ...extraEnv }, stdio: ["ignore", "ignore", "pipe", "ipc"] });
-      child.stderr.resume(); let result;
-      const exit = new Promise(resolve => child.once("exit", (code, signal) => resolve({ code, signal })));
-      const reply = new Promise((resolve, reject) => {
-        const timer = setTimeout(() => { child.kill("SIGKILL"); reject(new Error("fixture_deadline")); }, 20000);
-        child.on("message", m => { if (m.ready) child.send({ ...input, repo: f.repo }); else { result = m; clearTimeout(timer); resolve(m); } });
-        child.once("exit", () => { clearTimeout(timer); resolve(result); }); child.once("error", reject);
-      });
+      if (deferReplyUntilExit) {
+        // Deterministically model the hosted exit-before-IPC-delivery ordering.
+        // The real child still executes the real CI refusal branch and sends IPC.
+        const emit = child.emit.bind(child), pending = []; let exited = false;
+        child.emit = (event, ...args) => {
+          if (event === "message" && !args[0]?.ready && !exited) { pending.push(args); return true; }
+          const handled = emit(event, ...args);
+          if (event === "exit") { exited = true; for (const message of pending.splice(0)) emit("message", ...message); }
+          return handled;
+        };
+      }
+      child.stderr.resume();
+      const exit = new Promise(resolve => child.once("close", (code, signal) => resolve({ code, signal })));
+      const reply = fixtureDriverReply(child, {...input, repo: f.repo});
       const record = { child, exit, reply, outputRoot: input.options?.outputRoot }; children().push(record); return record;
     },
     witnesses,

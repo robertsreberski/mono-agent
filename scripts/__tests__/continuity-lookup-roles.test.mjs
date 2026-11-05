@@ -75,30 +75,6 @@ async function overlaySource(source, dest, paths) {
   }
 }
 
-// Private installation metadata and workspace links; immutable third-party package
-// leaves may be read through links. Builds never install or mutate these leaves.
-async function linkDependencies(source, dest) {
-  async function copyModules(rel) {
-    const from = join(source, rel), to = join(dest, rel);
-    try { await access(from); } catch { return; }
-    expect((await lstat(from)).isDirectory()).toBe(true);
-    await mkdir(to, {recursive: true});
-    for (const name of await readdir(from)) {
-      if ([".cache", ".vite"].includes(name)) continue;
-      if (name === ".pnpm") {
-        await mkdir(join(to, name));
-        for (const leaf of await readdir(join(from, name))) {
-          const input = join(from, name, leaf), output = join(to, name, leaf);
-          if (leaf !== "node_modules" && (await lstat(input)).isDirectory()) await symlink(input, output);
-          else await cp(input, output, {recursive: true, dereference: false, verbatimSymlinks: true});
-        }
-      } else await cp(join(from, name), join(to, name), {recursive: true, dereference: false, verbatimSymlinks: true});
-    }
-  }
-  await copyModules("node_modules");
-  for (const parent of ["packages", "extras"]) for (const name of await readdir(join(source, parent))) await copyModules(join(parent, name, "node_modules"));
-  await copyModules("packages/web/webapp/node_modules");
-}
 
 async function externalEstimateFixture() {
   const selection = [{ id: "fixture-selected", family: "long", toolRecords: 64, probes: ["p01", "p04"] }];

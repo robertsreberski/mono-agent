@@ -29,7 +29,7 @@ it("runs the real forked probe and guard over IPC with persisted arrival witness
   expect(state.schedule.every(s => !Object.hasOwn(s, "cacheKey"))).toBe(true);
 });
 
-it.each(["disconnect", "die", "hang", "descendant"])("contains a real %s worker without admitting a replacement", async scenario => {
+it.serial.each(["disconnect", "die", "hang", "descendant"])("contains a real %s worker without admitting a replacement", async scenario => {
   const { result, options } = await run([scenario], scenario === "hang" ? 1000 : 5000);
   expect(result.failed).toBeUndefined(); expect(result.result.stop).not.toBe("completed");
   expect(result.result.schedule.visited).toBe(1); expect(result.result.counts.invalid).toBe(0);
@@ -70,7 +70,7 @@ it("rejects changed controller checkout before consuming a faux authorization", 
 it("reconciles a controller SIGKILL at one faux arrival without ever readmitting or signaling recovery groups", async () => {
   const f = suite.fixture, options = await runOptions(f), config = join(f.base, "arrival-kill.json");
   await fs.writeFile(config, JSON.stringify({ action: "arrival" }), { mode: 0o600 });
-  const p = await suite.spawn({ options }, { LOOKUP_FIXTURE_FAULT: config }); await p.reply; expect((await p.exit).signal).toBe("SIGKILL");
+  const p = await suite.spawn({ options }, { LOOKUP_FIXTURE_FAULT: config }); await expect(p.reply).rejects.toMatchObject({code: "fixture_reply_missing"}); expect((await p.exit).signal).toBe("SIGKILL");
   const state = JSON.parse(await fs.readFile(join(options.outputRoot, "lookup-pilot-controller.json")));
   expect(state.slots[0].holds[0].consumed).toBe(true); expect(state.slots[0].holds[0].settlement).toBeNull();
   const { reconcileLookupPilot } = await loadPilot(f, "controller");
@@ -141,7 +141,7 @@ it("persists unreconciled containment before surfacing termination failure", asy
   expect(JSON.parse(await fs.readFile(join(options.outputRoot, "lookup-pilot-controller.json"))).stop).toBe("lookup_unreconciled_processes");
 });
 
-it("settles after IPC stop then contains a stalled group within the settle grace, not the watchdog", async () => {
+it.serial("settles after IPC stop then contains a stalled group within the settle grace, not the watchdog", async () => {
   const f = suite.fixture, options = await runOptions(f, ["auth"], 10000), config = join(f.base, "stop-hang.json");
   await fs.writeFile(config, JSON.stringify({ action: "stop-hang" }), { mode: 0o600 });
   const p = await suite.spawn({ options }, { LOOKUP_FIXTURE_FAULT: config }), reply = await p.reply; await p.exit;
@@ -182,7 +182,7 @@ it("refuses a live foreign parent PID even when its intercepted start identity m
   expect(witness.foreignIdentityProvided).toBe(true);
 });
 
-it("drains a settlement delivered immediately before grace expiry before containing the real child", async () => {
+it.serial("drains a settlement delivered immediately before grace expiry before containing the real child", async () => {
   const f = suite.fixture, options = await runOptions(f, ["auth"], 10000), config = join(f.base, "settle-at-grace.json");
   await fs.writeFile(config, JSON.stringify({ action: "settle-at-grace" }), { mode: 0o600 });
   const p = await suite.spawn({ options }, { LOOKUP_FIXTURE_FAULT: config }), reply = await p.reply; await p.exit;
@@ -223,7 +223,7 @@ it.serial("isolates production checkout and build-source Git reads without the f
   } finally { vi.unstubAllEnvs(); await fs.rm(dirt, { force: true }); for (const root of [f.repo, f.pack]) fixtureGit(root, ["config", "--unset", "core.fsmonitor"]); }
 });
 
-it.each(["timeout-before-consume", "timeout-after-consume"])("classifies %s from durable consumption rather than timeout alone", async action => {
+it.serial.each(["timeout-before-consume", "timeout-after-consume"])("classifies %s from durable consumption rather than timeout alone", async action => {
   const f = suite.fixture, options = await runOptions(f, ["settled"], 3000), config = join(f.base, `${action}.json`);
   await fs.writeFile(config, JSON.stringify({ action }), { mode: 0o600 }); const p = await suite.spawn({ options }, { LOOKUP_FIXTURE_FAULT: config }), reply = await p.reply; await p.exit;
   expect(reply.failed).toBeUndefined(); expect(reply.result.stop).toBe("lookup_worker_timeout");
@@ -240,7 +240,7 @@ it.each(["arrival-persist", "arrival-receipt"])("makes %s a sticky integrity sto
   expect(reply.result.counts).toMatchObject({ admitted: 1, invalid: 1 }); expect(reply.result.receipts[0]).toMatchObject({ terminal: "integrity_stop", calls: { consumed: 1 }, costs: { retainedUSD: 3.92 } });
 });
 
-it.each(["identity-before-term", "identity-before-kill", "identity-before-gone"])("never signals an unproven child group at %s", async action => {
+it.serial.each(["identity-before-term", "identity-before-kill", "identity-before-gone"])("never signals an unproven child group at %s", async action => {
   const f = suite.fixture, options = await runOptions(f, ["auth"], 10000), config = join(f.base, `${action}.json`);
   await fs.writeFile(config, JSON.stringify({ action }), { mode: 0o600 }); const p = await suite.spawn({ options }, { LOOKUP_FIXTURE_FAULT: config });
   expect(await p.reply).toEqual({ failed: "lookup_unreconciled_processes" }); await p.exit;
@@ -267,7 +267,7 @@ it("invalidates an idle IPC permit source synchronously on close", async () => {
   expect(JSON.parse(await fs.readFile(join(f.base, "witnesses", `${state.slots[0].worker.pid}.json`))).closeCodes).toEqual(Array(4).fill("lookup_ipc_invalid"));
 });
 
-it.each(["identity-before-exit", "identity-before-signal-exit"])("reconciles an absent group after %s without further signaling", async action => {
+it.serial.each(["identity-before-exit", "identity-before-signal-exit"])("reconciles an absent group after %s without further signaling", async action => {
   const f = suite.fixture, options = await runOptions(f, ["auth"], 10000), config = join(f.base, `${action}.json`);
   await fs.writeFile(config, JSON.stringify({ action }), { mode: 0o600 }); const p = await suite.spawn({ options }, { LOOKUP_FIXTURE_FAULT: config }), reply = await p.reply; await p.exit;
   expect(reply.failed).toBeUndefined(); expect(reply.result.stop).toBe("lookup_auth_failure");
