@@ -90,6 +90,7 @@ export async function main(argv = process.argv.slice(2), { stdout = console.log 
   if (!argv.length || argv.length === 1 && argv[0] === "--help") { stdout(HELP); return 0; }
   if (argv[0] === "preflight") {
     const flags = parseLookupOptions(argv.slice(1), ["--registration", "--sha256"]);
+    requireLookup(typeof flags["--registration"] === "string" && flags["--registration"].length > 0 && /^[a-f0-9]{64}$/u.test(flags["--sha256"] ?? ""), "lookup_registration_invalid");
     const { readLookupPilotRegistration } = await import("./lib/continuity-lookup-pilot.mjs");
     const { runLookupPreparationPreflight } = await import("./lib/continuity-lookup-preflight.mjs");
     const result = await runLookupPreparationPreflight(await readLookupPilotRegistration(flags["--registration"], flags["--sha256"]));

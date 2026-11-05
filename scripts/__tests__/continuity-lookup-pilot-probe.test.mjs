@@ -1,6 +1,6 @@
 import { beforeEach, afterEach, expect, it, vi } from "vitest";
 import { Socket } from "node:net";
-let runner, mint, fauxMint, restore, send, run, a, state;
+let runner, mint, fauxMint, restore, send, run, a, state, readState;
 beforeEach(async () => {
   vi.resetModules();
   vi.spyOn(Socket.prototype, "connect").mockImplementation(() => { throw Error("test_egress_denied"); });
@@ -15,7 +15,8 @@ beforeEach(async () => {
   vi.doMock("../lib/continuity-lookup-real-capability.mjs", () => ({ createLookupRealSend: mint, isRealLookupSend: () => false, realLookupSendForGuard: () => false }));
   state = { schema: "continuity-lookup-controller-v1" };
   fauxMint = vi.fn(async () => send);
-  vi.doMock("../lib/continuity-lookup-pilot-state.mjs", () => ({ readPilotPrivate: async () => state, pilotStatePath: r => r,
+  readState = vi.fn(async () => state);
+  vi.doMock("../lib/continuity-lookup-pilot-state.mjs", () => ({ readPilotPrivate: readState, pilotStatePath: r => r,
     LOOKUP_REAL_CONTROLLER: "continuity-lookup-controller-v1", LOOKUP_FAUX_CONTROLLER: "continuity-lookup-faux-controller-v1" }));
   vi.doMock("../lib/continuity-lookup-faux-capability.mjs", () => ({ createLookupFauxSend: fauxMint }));
   restore = vi.fn(async () => ({ proof: {}, work: "/fictional/checkpoint", manifest: { conversationId: "fictional-conversation", continuity: null } }));
@@ -74,6 +75,12 @@ it("selects faux mint from durable schema even when assignment claims real autho
 });
 it("refuses preflight state before restoration or either mint", async () => {
   state.schema = "lookup-preflight-controller-v1";
+  await expect(run(a)).rejects.toThrow("lookup_preparation_invalid");
+  expect(restore).not.toHaveBeenCalled(); expect(mint).not.toHaveBeenCalled(); expect(fauxMint).not.toHaveBeenCalled();
+});
+
+it.each(["lookup_receipt_invalid", "EACCES", "ENOENT"])("maps state read failure %s to the fixed preparation code before mint", async code => {
+  readState.mockRejectedValue(Object.assign(Error("fictional private path"), {code}));
   await expect(run(a)).rejects.toThrow("lookup_preparation_invalid");
   expect(restore).not.toHaveBeenCalled(); expect(mint).not.toHaveBeenCalled(); expect(fauxMint).not.toHaveBeenCalled();
 });

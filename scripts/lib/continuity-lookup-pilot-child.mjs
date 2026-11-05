@@ -11,7 +11,9 @@ import { readPilotPrivate, pilotStatePath, LOOKUP_REAL_CONTROLLER, LOOKUP_FAUX_C
 import { pilotNeed } from "./continuity-lookup-pilot-accounting.mjs";
 
 export async function runLookupPilotChild(a) {
-  const state = await readPilotPrivate(pilotStatePath(a.outputRoot));
+  let state;
+  try { state = await readPilotPrivate(pilotStatePath(a.outputRoot)); }
+  catch { throw Object.assign(Error("lookup_preparation_invalid"), { code: "lookup_preparation_invalid" }); }
   pilotNeed([LOOKUP_REAL_CONTROLLER, LOOKUP_FAUX_CONTROLLER].includes(state.schema), "lookup_ipc_invalid");
   const real = state.schema === LOOKUP_REAL_CONTROLLER;
   if (real) assertLookupPilotEntry();

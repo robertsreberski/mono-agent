@@ -12,7 +12,9 @@ import { createLookupRealSend } from "./continuity-lookup-real-capability.mjs";
 export async function runLookupConfiguredProbe(a) {
   const arm = armById(a.roleRequest.binding.arm), common = a.roleRequest.common, root = a.pilot.registration.codes[a.slot.code].path;
   assertLookupPilotArm(arm);
-  const state = await readPilotPrivate(pilotStatePath(a.outputRoot));
+  let state;
+  try { state = await readPilotPrivate(pilotStatePath(a.outputRoot)); }
+  catch { throw Object.assign(Error("lookup_preparation_invalid"), { code: "lookup_preparation_invalid" }); }
   if (![LOOKUP_REAL_CONTROLLER, LOOKUP_FAUX_CONTROLLER].includes(state.schema)) throw Object.assign(Error("lookup_preparation_invalid"), { code: "lookup_preparation_invalid" });
   const real = state.schema === LOOKUP_REAL_CONTROLLER;
   const prepared = await restoreLookupPreparation(a);

@@ -11,6 +11,8 @@ afterEach(async () => { for (const c of children.splice(0)) { if (c.child.exitCo
 async function run(fault) {
   const f = suite.fixture, options = await runOptions(f, [], fault === "hang" ? 1500 : fault === "lease-home" ? 120000 : 15000);
   if (fault === "lease-home") {
+    const spaced = `${options.outputRoot} with space`; await fs.rename(options.outputRoot, spaced);
+    options.outputRoot = options.authorization.outputRoot = spaced;
     options.pilot = structuredClone(options.pilot); options.pilot.descriptor.deadlines.runDeadlineMs = 180000;
     options.authorization.pilotSha256 = (await import("../lib/continuity-dataset.mjs")).digest(options.pilot);
   }
@@ -26,7 +28,7 @@ async function run(fault) {
   const exit = new Promise(resolve => child.once("close", resolve)); children.push({ child, exit });
   let received = false;
   const result = await new Promise((resolve, reject) => {
-    const timer = setTimeout(() => { child.kill("SIGKILL"); reject(Error(`fixture_deadline ${stderr.slice(-1000)}`)); }, fault === "lease-home" ? 180000 : 45000);
+    const timer = setTimeout(() => { child.kill("SIGKILL"); reject(Error(`fixture_deadline ${stderr.slice(-1000)}`)); }, fault === "lease-home" ? options.pilot.descriptor.deadlines.runDeadlineMs + 30000 : 45000);
     child.on("message", m => { if (m.loaded) child.send({ repo: f.repo, options }); else { received = true; clearTimeout(timer); resolve(m); } });
     child.on("error", error => { clearTimeout(timer); reject(error); });
     child.once("close", () => { clearTimeout(timer); if (!received) reject(Error("fixture_closed_without_result")); });
@@ -71,7 +73,7 @@ it("production probe reacquires preparation's leftover lease-home without inheri
   const r = await run("lease-home"), prep = r.evidence.find(e => e.preparing), probe = r.evidence.find(e => e.pid === r.reply.pid);
   expect(r.reply, JSON.stringify(r.evidence)).toMatchObject({ verified: true }); expect(prep.leftoverOwner).toBe(prep.pid);
   expect(probe.leaseOwners, JSON.stringify(r.evidence)).toEqual([probe.pid]); expect(probe.pid).not.toBe(prep.pid);
-}, 180000);
+}, 240000);
 
 it("preparation child reports its fixed failure before exiting with status one", async () => {
   const r = await run("prepare-failure"), prep = r.evidence.find(e => e.preparing);

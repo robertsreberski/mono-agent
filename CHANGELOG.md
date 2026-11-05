@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Make lookup preparation preflight test checkpoint restoration and the cumulative
+  run deadline, excluding probe time; exit non-zero for infeasible slots, report
+  `lookup_preparation_invalid` for restore failures, and reject unsupported pilot
+  arms before startup.
+
 - Add offline preparation checks for native and continuity-pack lookup pilots;
   reject unsupported startup and keep real execution closed.
 

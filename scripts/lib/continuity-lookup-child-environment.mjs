@@ -1,3 +1,4 @@
+import { pathToFileURL } from "node:url";
 import { mkdir } from "node:fs/promises";
 
 /** No ambient credential keys or NODE_OPTIONS; presence-sensitive safety flags survive. */
@@ -10,9 +11,10 @@ export async function lookupChildEnvironment(home) {
 /** Only explicit imports, never inherited inspector/loader options or NODE_OPTIONS. */
 export function lookupChildImports() {
   const result = [];
+  const absolute = value => value.startsWith("./") || value.startsWith("../") ? new URL(value, pathToFileURL(`${process.cwd()}/`)).href : value;
   for (let i = 0; i < process.execArgv.length; i++) {
-    if (process.execArgv[i] === "--import" && process.execArgv[i + 1]) result.push("--import", process.execArgv[++i]);
-    else if (process.execArgv[i].startsWith("--import=")) result.push(process.execArgv[i]);
+    if (process.execArgv[i] === "--import" && process.execArgv[i + 1]) result.push("--import", absolute(process.execArgv[++i]));
+    else if (process.execArgv[i].startsWith("--import=")) result.push("--import=" + absolute(process.execArgv[i].slice("--import=".length)));
   }
   return result;
 }

@@ -7,7 +7,7 @@ import { Socket } from "node:net";
 import { Server } from "node:http";
 import { syncBuiltinESMExports, registerHooks } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 const settingsPath = process.env.LOOKUP_BOUNDARY_SETTINGS, settings = JSON.parse(fs.readFileSync(settingsPath));
 const preparing = process.argv[1].endsWith("continuity-lookup-preparation-child.mjs"), ports = new Set(settings.allowedPorts ?? []);
 const evidence = { pid: process.pid, isMainThread, ppid: process.ppid, preparing, ci: Object.hasOwn(process.env, "CI"),
@@ -83,7 +83,7 @@ globalThis.__lookupOwnership = (modules, work, homeDir) => {
   (evidence.leaseOwners ??= []).push(owner.pid); record();
 };
 globalThis.__lookupKeepLease = async (modules, work) => {
-  const homeDir = new URL("../lease-home/", `file://${work}/`).pathname.replace(/\/$/u, "");
+  const homeDir = join(dirname(work), "lease-home");
   globalThis.__lookupLeaseKeeper = await modules.coordinator.acquireAgentRootOwnership(work, {homeDir});
   evidence.leftoverOwner = JSON.parse(fs.readFileSync(join(modules.coordinator.agentRootLeasePath(work, homeDir), "owner.json"))).pid; record();
 };
