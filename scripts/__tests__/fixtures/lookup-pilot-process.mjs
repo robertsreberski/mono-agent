@@ -1,4 +1,6 @@
-import { beforeAll, afterAll, beforeEach, afterEach, expect } from "vitest";
+import { AsyncLocalStorage } from "node:async_hooks";
+import { format } from "node:util";
+import { beforeAll, afterAll, beforeEach, afterEach, expect, it as test } from "vitest";
 import * as fs from "node:fs/promises";
 import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
@@ -15,7 +17,7 @@ import { sha256 } from "../../lib/continuity-lookup.mjs";
 export const loadPilot = (f, name) => import(/* @vite-ignore */ pathToFileURL(join(f.repo, "scripts/lib", `continuity-lookup-${name}.mjs`)).href);
 const metadata = async path => { try { const s = await fs.lstat(path); return [s.ino, s.mtimeMs]; } catch (e) { if (e.code === "ENOENT") return null; throw e; } };
 const registry = join(userInfo().homedir, ".local/state/mono-agent/lookup-pilot/consumed-v1");
-export async function pilotProcessFixture({ configured = false, runDeadlineMs = configured ? 900000 : 60000 } = {}) {
+export async function pilotProcessFixture({ configured = false, runDeadlineMs = configured ? 900000 : 60000, eligibleRoles } = {}) {
   const base = await fs.realpath(await fs.mkdtemp(join(tmpdir(), "lookup-controller-fictional-")));
   await fs.chmod(base, 0o700);
   const env = { ...process.env }, home = join(base, "build-home"); await fs.mkdir(home, { mode: 0o700 });
@@ -63,7 +65,7 @@ export async function pilotProcessFixture({ configured = false, runDeadlineMs = 
       statisticalSpecPath: f.context.options.statisticalSpecPath }, reader: "openai-codex:gpt-6.1-sol", readerEffort: "high", selectionSeed: 42, perGroup: configured ? 1 : 2, probeLimit: 1,
       outputLimit: { source: "catalog_max", tokens: 128000 } };
     const workload = await roles.lookupWorkload({ ...options, inputRoots: [f.repo, pack] });
-    const policy = await fixtureLookupPolicy({ source: workload.corpora[0].source, selection: workload.corpora[0].traces, lookupSelection: workload.lookupSelection, reader: workload.reader, codes, protocol });
+    const policy = await fixtureLookupPolicy({ source: workload.corpora[0].source, selection: workload.corpora[0].traces, lookupSelection: workload.lookupSelection, reader: workload.reader, codes, protocol, eligibleRoles });
     const policyPath = join(f.inputs, "lookup-policy.json"); await fs.writeFile(policyPath, JSON.stringify(policy));
     const pilot = await pilotModule.registerLookupPilot({ ...options, policyPath, policySha256: sha256(await fs.readFile(policyPath)), capUSD: 3.92, scheduleSeed: 13, runDeadlineMs });
     return { ...f, base, pack, pilot, home };
@@ -75,24 +77,31 @@ export async function runOptions(f, scenarios = ["lost"], timeoutMs = 5000) {
   return { pilot: f.pilot, outputRoot, authorization: { schema: "continuity-lookup-faux-authorization-v1", authorizationId: randomUUID(),
     pilotSha256: digest(f.pilot), outputRoot, scenarios, timeoutMs } };
 }
-export function pilotSuite() {
-  let f, deps, real, testReal; const children = [];
+export function pilotSuite({ concurrent = false } = {}) {
+  let f, deps, real, testReal; const serialChildren = [], active = new AsyncLocalStorage();
+  const children = () => active.getStore()?.children ?? serialChildren;
   beforeAll(async () => { deps = await dependencySnapshot(ROOT); real = await metadata(registry); f = await pilotProcessFixture(); }, 120000);
-  beforeEach(async () => { testReal = await metadata(registry); });
-  afterEach(async () => {
-    try { expect(await metadata(registry)).toEqual(testReal); await witnesses(); }
-    finally { for (const c of children.splice(0)) {
-      const driverWitness = JSON.parse(await fs.readFile(join(f.base, "witnesses", `${c.child.pid}.json`)));
-      for (const probe of driverWitness.probes) {
-        let witness; try { witness = JSON.parse(await fs.readFile(join(f.base, "witnesses", `${probe.pid}.json`))); } catch (e) { if (e.code !== "ENOENT") throw e; }
-        for (const owned of [probe, ...(witness?.descendants ?? [])]) if (owned.startIdentity && lookupProcessStartIdentity(owned.pid) === owned.startIdentity) try { process.kill(owned.pid, "SIGKILL"); } catch (e) { if (e.code !== "ESRCH") throw e; }
+  if (!concurrent) beforeEach(async () => { testReal = await metadata(registry); });
+  async function finish(owned, expected, resources = []) {
+    try { expect(await metadata(registry)).toEqual(expected); await witnesses(owned); }
+    finally {
+      try { for (const release of resources) await release(); }
+      finally {
+        for (const c of owned.splice(0)) {
+          const driverWitness = JSON.parse(await fs.readFile(join(f.base, "witnesses", `${c.child.pid}.json`)));
+          for (const probe of driverWitness.probes) {
+            let witness; try { witness = JSON.parse(await fs.readFile(join(f.base, "witnesses", `${probe.pid}.json`))); } catch (e) { if (e.code !== "ENOENT") throw e; }
+            for (const owned of [probe, ...(witness?.descendants ?? [])]) if (owned.startIdentity && lookupProcessStartIdentity(owned.pid) === owned.startIdentity) try { process.kill(owned.pid, "SIGKILL"); } catch (e) { if (e.code !== "ESRCH") throw e; }
+          }
+          if (c.child.exitCode === null && c.child.signalCode === null) c.child.kill("SIGKILL"); await c.exit;
+        }
       }
-      if (c.child.exitCode === null && c.child.signalCode === null) c.child.kill("SIGKILL"); await c.exit;
-    } }
-  });
+    }
+  }
+  if (!concurrent) afterEach(() => finish(serialChildren, testReal));
   afterAll(async () => { try { if (f) await fs.rm(f.base, { recursive: true, force: true }); } finally { expect(await metadata(registry)).toEqual(real); expect(await dependencySnapshot(ROOT)).toEqual(deps); } });
-  async function witnesses() {
-    for (const c of children) {
+  async function witnesses(owned = children()) {
+    for (const c of owned) {
       const read = async pid => { const value = JSON.parse(await fs.readFile(join(f.base, "witnesses", `${pid}.json`))); expect(value).toMatchObject({ canaries: 3, unexpected: 0, git: ["/dev/null", "1"] }); expect(value.xdg).toEqual([value.home, value.home, value.home, value.home]); expect(value.home.startsWith(f.base)).toBe(true); return value; };
       const driver = await read(c.child.pid); expect(driver.home).toBe(f.home);
       const expected = new Set(driver.probes.map(p => p.pid));
@@ -100,7 +109,20 @@ export function pilotSuite() {
       for (const pid of expected) await read(pid);
     }
   }
-  return { get fixture() { return f; },
+  const scoped = register => {
+    const run = (name, fn, ...options) => register(name, async context => {
+      const scope = {children: [], resources: []}, expected = await metadata(registry);
+      // Vitest calls this even on its own timeout; a finally inside fn would not.
+      context.onTestFinished(() => finish(scope.children, expected, scope.resources));
+      return active.run(scope, () => fn(context));
+    }, ...options);
+    run.each = rows => (name, fn, ...options) => {
+      for (const row of rows) { const values = Array.isArray(row) ? row : [row]; const arity = [...name.matchAll(/%(?:s|d|i|f|j|o|O|c)/gu)].length; run(format(name, ...values.slice(0, arity)), () => fn(...values), ...options); }
+    };
+    return run;
+  };
+  const concurrentTest = scoped(test.concurrent); concurrentTest.serial = scoped(test);
+  return { test: concurrentTest, cleanup: fn => { const scope = active.getStore(); if (!scope) throw Error("fixture_scope_missing"); scope.resources.push(fn); }, get fixture() { return f; },
     async spawn(input, extraEnv = {}) {
       const witnesses = join(f.base, "witnesses"); await fs.mkdir(witnesses, { recursive: true, mode: 0o700 });
       const preload = fileURLToPath(new URL("./lookup-pilot-preload.mjs", import.meta.url));
@@ -113,7 +135,7 @@ export function pilotSuite() {
         child.on("message", m => { if (m.ready) child.send({ ...input, repo: f.repo }); else { result = m; clearTimeout(timer); resolve(m); } });
         child.once("exit", () => { clearTimeout(timer); resolve(result); }); child.once("error", reject);
       });
-      const record = { child, exit, reply, outputRoot: input.options?.outputRoot }; children.push(record); return record;
+      const record = { child, exit, reply, outputRoot: input.options?.outputRoot }; children().push(record); return record;
     },
     witnesses,
   };

@@ -3,13 +3,15 @@ import { Socket } from "node:net";
 import fs from "node:fs";
 import promises from "node:fs/promises";
 import childProcess from "node:child_process";
-import { syncBuiltinESMExports, registerHooks } from "node:module";
+import { syncBuiltinESMExports, registerHooks, enableCompileCache } from "node:module";
 import { pathToFileURL } from "node:url";
-import { join, basename } from "node:path";
+import { join, basename, dirname } from "node:path";
 const startIdentity = pid => { try { return childProcess.execFileSync("/bin/ps", ["-p", String(pid), "-o", "lstart="], { encoding: "utf8", env: { ...process.env, LC_ALL: "C", TZ: "UTC" }, stdio: ["ignore", "pipe", "ignore"] }).trim(); } catch { return null; } };
 const evidence = { startIdentity: startIdentity(process.pid), probes: [], descendants: [] };
 let canaries = 0, unexpected = 0, checking = true;
 const directory = process.env.LOOKUP_FIXTURE_WITNESSES;
+// Native child processes retain no JS state; only Node/content-keyed bytecode is reused.
+enableCompileCache(join(dirname(directory), "compile-cache"));
 const record = () => fs.writeFileSync(join(directory, `${process.pid}.json`), JSON.stringify({ canaries, unexpected, ci: process.env.CI ?? null, home: process.env.HOME, xdg: [process.env.XDG_CACHE_HOME, process.env.XDG_CONFIG_HOME, process.env.XDG_DATA_HOME, process.env.XDG_STATE_HOME], git: [process.env.GIT_CONFIG_GLOBAL, process.env.GIT_CONFIG_NOSYSTEM], ...evidence }), { mode: 0o600 });
 const deny = () => { if (checking) canaries++; else { unexpected++; record(); } throw new Error("fixture_egress_denied"); };
 Socket.prototype.connect = deny; globalThis.fetch = async () => deny(); globalThis.WebSocket = class { constructor() { deny(); } };
@@ -168,6 +170,19 @@ childProcess.fork = (...args) => {
   return child;
 };
 const exec = childProcess.execFileSync;
+// A killed child can remain a zombie until this synchronous injection returns.
+// Observe an exited state, rather than assuming a fixed number of ps calls won
+// the exit race. The deadline is only a fixture failure bound (not the event).
+function observeOwnedExit(pid) {
+  const deadline = Date.now() + 10000;
+  while (Date.now() < deadline) {
+    try {
+      const state = exec("ps", ["-p", String(pid), "-o", "stat="], {encoding: "utf8"}).trim();
+      if (!state || state.startsWith("Z")) return;
+    } catch (error) { if (error.status === 1) return; throw error; }
+  }
+  throw new Error("fixture_exit_not_observed");
+}
 childProcess.execFileSync = (command, args, ...rest) => {
   if (probe && fault?.action === "swap-foreign-ppid" && command === "/bin/ps" && args[1] === String(fault.foreignPid)) {
     evidence.foreignIdentityProvided = true; record(); return foreignControllerStart;
@@ -179,7 +194,7 @@ childProcess.execFileSync = (command, args, ...rest) => {
   if (driver && fault?.action === "identity-before-exit" && command === "/bin/ps" && args[1] === String(probePid) && new Error().stack.includes("containOwned")) {
     // Fixture owns this exact PID: make the leader disappear after the live-group snapshot.
     process.kill(probePid, "SIGKILL");
-    for (let i = 0; i < 20; i++) { try { if (exec("ps", ["-p", String(probePid), "-o", "stat="], { encoding: "utf8" }).trim().startsWith("Z")) break; } catch { break; } }
+    observeOwnedExit(probePid);
     evidence.leaderExitedAtCheck = true; record(); return "";
   }
   if (driver && fault?.action?.startsWith("identity-before-") && command === "/bin/ps" && args[1] === String(probePid) && new Error().stack.includes("containOwned")
@@ -237,7 +252,7 @@ if (driver) {
       record();
       if (fault?.action === "identity-before-signal-exit") {
         kill(probePid, "SIGKILL");
-        for (let i = 0; i < 20; i++) { try { if (exec("ps", ["-p", String(probePid), "-o", "stat="], { encoding: "utf8" }).trim().startsWith("Z")) break; } catch { break; } }
+        observeOwnedExit(probePid);
         evidence.signalRacedExit = true; record(); throw Object.assign(new Error("fictional_signal_race"), { code: "EPERM" });
       }
     }

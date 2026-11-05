@@ -44,7 +44,7 @@ it("faux mint cannot accept a preflight state even with the real entry gate mock
   await expect(createLookupFauxSend({outputRoot: root}, {})).rejects.toThrow("lookup_pilot_faux_required"); expect(fetch).not.toHaveBeenCalled();
 });
 it("runs full configured preparation for every eligible scheduled slot, exits despite lingering handles and grants nothing", async () => {
-  const f = await pilotProcessFixture({configured: true, runDeadlineMs: 1800000}); roots.push(f.base);
+  const f = await pilotProcessFixture({configured: true, runDeadlineMs: 1800000, eligibleRoles: ["shipping"]}); roots.push(f.base);
   const witnesses = join(f.base, "preflight-witnesses"), settings = join(f.base, "preflight-settings.json"); await fs.mkdir(witnesses, {mode: 0o700});
   await fs.writeFile(settings, JSON.stringify({runtimeRoot: f.repo, witnesses, configured: true, linger: true}), {mode: 0o600});
   const checkoutStatus = () => [f.repo, f.pack].map(root => execFileSync("git", ["-C", root, "status", "--porcelain", "--untracked-files=all"], {encoding: "utf8"}));
@@ -60,6 +60,8 @@ it("runs full configured preparation for every eligible scheduled slot, exits de
   });
   await exit;
   expect(reply.failed, stderr).toBeUndefined(); expect(reply.result.feasible, JSON.stringify(reply.result)).toBe(true);
+  // The four pack variants share this preparation branch. Both frozen-source
+  // groups retain full replay; role/soul/code substitution matrices live in role/IPC tests.
   const scheduled = (await loadPilot(f, "pilot-state")).lookupPilotSchedule(f.pilot);
   expect(reply.result.slots.map(s => s.slotId)).toEqual(scheduled.filter(s => s.eligible).map(s => s.slotId));
   const rows = reply.result.slots; expect(rows).toHaveLength(scheduled.filter(s => s.eligible).length); expect(rows.length).toBeGreaterThan(0);

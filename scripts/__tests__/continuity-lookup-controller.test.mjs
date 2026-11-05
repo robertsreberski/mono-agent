@@ -1,5 +1,5 @@
 import { lookupAuthorizationArtifact } from "./fixtures/lookup-authorization-artifact.mjs";
-import { it, expect, afterEach } from "vitest";
+import { expect } from "vitest";
 import * as fs from "node:fs/promises";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
@@ -7,12 +7,11 @@ import { pilotSuite, loadPilot, runOptions } from "./fixtures/lookup-pilot-proce
 import { digest } from "../lib/continuity-dataset.mjs";
 import { LOOKUP_FAUX_AUTHORIZATION_DOMAIN } from "../lib/continuity-lookup-pilot.mjs";
 
-const suite = pilotSuite(), journals = [];
-afterEach(() => { for (const j of journals.splice(0)) j.release(); });
+const suite = pilotSuite({concurrent: true}), it = suite.test;
 async function kernel(capUSD = 100) {
   const f = suite.fixture, options = await runOptions(f);
   options.pilot = structuredClone(options.pilot); options.pilot.descriptor.capUSD = capUSD; options.authorization.pilotSha256 = digest(options.pilot);
-  const c = await loadPilot(f, "controller"), journal = await c.createLookupPilotController(options); journals.push(journal);
+  const c = await loadPilot(f, "controller"), journal = await c.createLookupPilotController(options); suite.cleanup(() => journal.release());
   const idle = await suite.spawn({ mode: "idle" }), worker = await idle.reply;
   await journal.assign(0, worker);
   return { journal, worker, options, seq: 0 };
@@ -25,6 +24,7 @@ async function message(k, op, payload, overrides = {}) {
 async function admit(k, round = 1) {
   const s = k.journal.snapshot(); return (await message(k, "admit", { requestId: `${s.runId}:${round}`, slotId: s.slots[s.cursor].slotId, round, payloadDigest: hash, rmax: 3.92 })).result;
 }
+
 it("persists holds, one-time consumption, raw settlement and independent partial receipts before ACK", async () => {
   const k = await kernel(), permit = await admit(k), path = join(k.options.outputRoot, "lookup-pilot-controller.json");
   let disk = JSON.parse(await fs.readFile(path)); expect(disk.slots[0].holds[0].consumed).toBe(false);
@@ -34,6 +34,7 @@ it("persists holds, one-time consumption, raw settlement and independent partial
   const receipt = JSON.parse(await fs.readFile(join(k.options.outputRoot, "slots", `${disk.slots[0].slotId}.json`)));
   expect(receipt.calls).toEqual({ admitted: 1, consumed: 1, settled: 1 }); expect(disk.slots[0].terminal).toBeNull();
 });
+
 it("admits cap equality and persists a sticky cap refusal without readmission", async () => {
   const k = await kernel(3.92), permit = await admit(k);
   await message(k, "consume", { permit, bodyDigest: hash });
@@ -41,6 +42,7 @@ it("admits cap equality and persists a sticky cap refusal without readmission", 
   await k.journal.finish(0, "lost"); k.seq = 0; await k.journal.assign(1, k.worker);
   expect(await admit(k)).toEqual({ refused: true, code: "not_admitted_cap" }); expect(k.journal.snapshot().stop).toBe("budget_admission");
 });
+
 it("accepts a priced integrity settlement after stop, without reopening admission", async () => {
   const k = await kernel(), permit = await admit(k); await message(k, "consume", { permit, bodyDigest: hash });
   await message(k, "stop", { code: "lookup_auth_failure" });
@@ -48,6 +50,7 @@ it("accepts a priced integrity settlement after stop, without reopening admissio
     rawUsage: { input_tokens: 272000, output_tokens: 1000000 }, tier: null });
   const s = k.journal.snapshot(); expect(s.stop).toBe("lookup_auth_failure"); expect(BigInt(s.slots[0].holds[0].settlement.knownUnits)).toBeGreaterThan(78400000n);
 });
+
 it.each(["stale", "order", "digest", "duplicate", "cost"])("refuses %s messages durably and never repairs the channel", async variant => {
   const k = await kernel(), permit = await admit(k);
   if (variant === "stale") await expect(message(k, "consume", { permit, bodyDigest: hash }, { epoch: "old" })).rejects.toThrow("lookup_ipc_invalid");
@@ -57,12 +60,14 @@ it.each(["stale", "order", "digest", "duplicate", "cost"])("refuses %s messages 
   if (variant === "cost") { await message(k, "consume", { permit, bodyDigest: hash }); await expect(message(k, "settle", { permit, outcome: { kind: "settled", cost: 0 }, rawUsage: { input_tokens: 100, output_tokens: 10 }, tier: "default" })).rejects.toThrow("lookup_hold_exceeded"); }
   expect(k.journal.snapshot().stop).not.toBeNull();
 });
+
 it("serializes a stop/grant race and rejects consumption after the stop", async () => {
   const k = await kernel(), grant = admit(k), stopped = k.journal.stop("lookup_quota_exhausted");
   const permit = await grant; await stopped;
   expect(k.journal.snapshot().slots[0].holds[0].revoked).toBe(true);
   await expect(message(k, "consume", { permit, bodyDigest: hash })).rejects.toThrow("lookup_permit_invalid");
 });
+
 it("refuses a complete real-schema artifact in a CI child before any lease or output write", async () => {
   const f = suite.fixture, base = await fs.mkdtemp(join(f.base, "real-refusal-")), outputRoot = join(base, "output");
   await fs.mkdir(outputRoot, { mode: 0o700 });
@@ -74,10 +79,12 @@ it("refuses a complete real-schema artifact in a CI child before any lease or ou
   for (const path of [join(outputRoot, "controller-lock.sqlite"), join(base, ".lookup-faux-consumed-v1")]) await expect(fs.lstat(path)).rejects.toMatchObject({ code: "ENOENT" });
   expect(JSON.parse(await fs.readFile(join(f.base, "witnesses", `${p.child.pid}.json`))).ci).toBe("1");
 });
+
 it("holds the lease for the entire run and refuses competing controllers", async () => {
   const k = await kernel(); const c = await loadPilot(suite.fixture, "controller");
   await expect(c.createLookupPilotController(k.options)).rejects.toThrow("lookup_authorization_lease_invalid");
 });
+
 it.each([1, 2, 3, 4, 5, 6, 8])("reconciles only after real SIGKILL before/after state revision %s", async revision => {
   const f = suite.fixture, c = await loadPilot(f, "controller");
   for (const phase of ["before", "after"]) {
@@ -95,6 +102,7 @@ it.each([1, 2, 3, 4, 5, 6, 8])("reconciles only after real SIGKILL before/after 
     } catch (e) { if (revision !== 1 || phase !== "before" || e.code !== "ENOENT") throw e; }
   }
 });
+
 it("rejects a dropped journal replacement in the controller before issuing an ACK", async () => {
   const f = suite.fixture, options = await runOptions(f), config = join(f.base, "premature-ack.json");
   await fs.writeFile(config, JSON.stringify({ path: join(options.outputRoot, "lookup-pilot-controller.json"), revision: 3, action: "skip" }), { mode: 0o600 });
@@ -103,6 +111,7 @@ it("rejects a dropped journal replacement in the controller before issuing an AC
   const state = JSON.parse(await fs.readFile(join(options.outputRoot, "lookup-pilot-controller.json")));
   expect(state.revision).toBe(2); expect(state.slots[0].holds).toEqual([]);
 });
+
 it.each(["authorization-consumed.json", "claim.json"])("burns authorization across before/after %s persistence crashes", async name => {
   const f = suite.fixture;
   for (const phase of ["before", "after"]) {
@@ -119,10 +128,11 @@ it("retains independently priced partial usage even when the settlement claim li
   await expect(message(k, "settle", { permit, outcome: { kind: "settled", cost: 0 }, rawUsage: { input_tokens: 272000, output_tokens: 1000000 }, tier: null })).rejects.toThrow("lookup_hold_exceeded");
   expect(BigInt(k.journal.snapshot().slots[0].holds[0].settlement.knownUnits)).toBeGreaterThan(78400000n);
 });
+
 it("enforces the registered absolute run deadline before admission", async () => {
   const f = suite.fixture, options = await runOptions(f); options.pilot = structuredClone(options.pilot);
   options.pilot.descriptor.deadlines.runDeadlineMs = 1; options.authorization.pilotSha256 = digest(options.pilot);
-  const c = await loadPilot(f, "controller"), journal = await c.createLookupPilotController(options); journals.push(journal);
+  const c = await loadPilot(f, "controller"), journal = await c.createLookupPilotController(options); suite.cleanup(() => journal.release());
   const idle = await suite.spawn({ mode: "idle" }), worker = await idle.reply; await journal.assign(0, worker);
   const k = { journal, worker, options, seq: 0 }; expect(await admit(k)).toEqual({ refused: true, code: "lookup_stopped" });
   expect(journal.snapshot().stop).toBe("lookup_run_deadline");
@@ -163,6 +173,7 @@ it("reconciles before/after final report persistence without resuming", async ()
     expect((await c.reconcileLookupPilot(options.outputRoot)).cost.totalUSD).toBe(3.92);
   }
 });
+
 it("preserves terminal journal status across before/after completed receipt persistence", async () => {
   const f = suite.fixture, c = await loadPilot(f, "controller"), first = c.lookupPilotSchedule(f.pilot)[0];
   for (const phase of ["before", "after"]) {
@@ -178,12 +189,14 @@ it.each(["completed", "budget_admission", "lookup_recovery_only", "lookup_unreco
   const k = await kernel(); await expect(message(k, "stop", { code })).rejects.toThrow("lookup_ipc_invalid");
   expect(k.journal.snapshot().stop).toBe("lookup_ipc_invalid");
 });
+
 it("derives a zero-hold refusal as unadmitted despite a worker lost claim", async () => {
   const k = await kernel(3.92), permit = await admit(k); await message(k, "consume", { permit, bodyDigest: hash });
   await message(k, "settle", { permit, outcome: { kind: "lost" }, rawUsage: null, tier: null }); await k.journal.finish(0, "lost");
   k.seq = 0; await k.journal.assign(1, k.worker); expect(await admit(k)).toMatchObject({ refused: true }); await k.journal.finish(1, "lost");
   expect(k.journal.snapshot().slots[1]).toMatchObject({ terminal: "unadmitted", admissionRefusal: "budget_admission" });
 });
+
 it("refuses a worker with a null start identity", async () => {
   const k = await kernel(); await k.journal.finish(0, "lost");
   await expect(k.journal.assign(1, { ...k.worker, startIdentity: null })).rejects.toThrow("lookup_ipc_invalid");
@@ -195,6 +208,7 @@ it.each(["unadmitted", "refused_pre_send", "fictional-unknown"])("persists a pro
   await expect(k.journal.finish(0, terminal)).rejects.toThrow("lookup_ipc_invalid");
   expect(k.journal.snapshot().stop).toBe("lookup_ipc_invalid");
 });
+
 it.each([["two_rounds", "refused_pre_send"], ["lost", "unadmitted"]])("reconciles a crash after %s admission refusal consistently with live classification", async (scenario, terminal) => {
   const f = suite.fixture, options = await runOptions(f, [scenario]), config = join(f.base, `refusal-crash-${scenario}.json`);
   await fs.writeFile(config, JSON.stringify({ path: join(options.outputRoot, "lookup-pilot-controller.json"), admissionRefusal: true, phase: "after" }), { mode: 0o600 });
@@ -210,6 +224,7 @@ it.each(["settled", "lost", "own_abort_after_send"])("makes a non-null integrity
   const s = k.journal.snapshot(); expect(s.stop).toBe("lookup_ipc_invalid"); expect(s.slots[0].holds[0].settlement).toMatchObject({ kind: "integrity_stop", knownUnits: "6000" });
   await k.journal.finish(0, "lost"); expect(k.journal.snapshot().slots[0].terminal).toBe("integrity_stop");
 });
+
 it("makes a valid integrity settlement sticky independently of a later stop message", async () => {
   const k = await kernel(), permit = await admit(k); await message(k, "consume", { permit, bodyDigest: hash });
   await message(k, "settle", { permit, outcome: { kind: "integrity_stop", code: "lookup_payload_repeated" }, rawUsage: null, tier: null });

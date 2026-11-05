@@ -1,5 +1,5 @@
 import { DatabaseSync } from "node:sqlite";
-import { it, expect, vi } from "vitest";
+import { expect, vi } from "vitest";
 import * as fs from "node:fs/promises";
 import { join } from "node:path";
 import { pilotSuite, loadPilot, runOptions } from "./fixtures/lookup-pilot-process.mjs";
@@ -8,13 +8,15 @@ import { sourceState, assertSource } from "../lib/memory-e2e-build.mjs";
 import { groupAlive } from "../lib/continuity-holdout-controller.mjs";
 import { lookupProcessGroupSnapshot } from "../lib/continuity-process-identity.mjs";
 import { digest } from "../lib/continuity-dataset.mjs";
-const suite = pilotSuite();
+const suite = pilotSuite({concurrent: true});
+const it = suite.test;
 async function run(scenarios, timeoutMs, capUSD, extraEnv = {}) {
   const options = await runOptions(suite.fixture, scenarios, timeoutMs);
   if (capUSD !== undefined) { options.pilot = structuredClone(options.pilot); options.pilot.descriptor.capUSD = capUSD; options.authorization.pilotSha256 = digest(options.pilot); }
   const p = await suite.spawn({ options }, extraEnv);
   const result = await p.reply; await p.exit; await suite.witnesses(); return { options, result };
 }
+
 it("runs the real forked probe and guard over IPC with persisted arrival witnesses and inherited CI", async () => {
   const { options, result } = await run(["two_rounds", "lost"], undefined, 3.93, { CI: "1" });
   expect(result.failed).toBeUndefined(); expect(result.result.executionKind).toBe("faux-only");
@@ -26,6 +28,7 @@ it("runs the real forked probe and guard over IPC with persisted arrival witness
   expect(new Set(state.slots.filter(s => s.worker).map(s => s.worker.pid)).size).toBe(state.slots.filter(s => s.worker).length);
   expect(state.schedule.every(s => !Object.hasOwn(s, "cacheKey"))).toBe(true);
 });
+
 it.each(["disconnect", "die", "hang", "descendant"])("contains a real %s worker without admitting a replacement", async scenario => {
   const { result, options } = await run([scenario], scenario === "hang" ? 1000 : 5000);
   expect(result.failed).toBeUndefined(); expect(result.result.stop).not.toBe("completed");
@@ -38,20 +41,24 @@ it.each(["disconnect", "die", "hang", "descendant"])("contains a real %s worker 
     expect(driver.signals).toContain("SIGTERM"); expect(driver.stopAtSignals).toEqual(driver.signals.map(() => "lookup_worker_lost")); expect(groupAlive(slot.worker.pid)).toBe(false);
   }
 });
+
 it.each(["auth", "quota", "integrity_stop", "empty"])("persists the sticky %s outcome and partial receipt independently of exit", async scenario => {
   const { result } = await run([scenario]); expect(result.failed).toBeUndefined();
   const report = result.result; expect(report.stop).not.toBe("completed"); expect(report.receipts[0].admitted).toBe(true);
   if (scenario === "integrity_stop") expect(report.cost.knownPartialUSD).toBeGreaterThan(3.92);
   if (scenario === "empty") expect(report.counts.invalid).toBe(1);
 });
+
 it("treats a wrong answer as a completed observation rather than invalidity", async () => {
   const { result } = await run(["wrong", "lost"]); expect(result.result.counts.invalid).toBe(0);
   expect(result.result.receipts[0]).toMatchObject({ terminal: "wrong", score: 0 });
 });
+
 it("checks the live parent and rejects a directly invoked client without assigned durable state", async () => {
   const { createLookupPilotIPC } = await loadPilot(suite.fixture, "ipc");
   await expect(createLookupPilotIPC({ outputRoot: suite.fixture.base, epoch: "fake", index: 0 })).rejects.toThrow();
 });
+
 it("rejects changed controller checkout before consuming a faux authorization", async () => {
   const options = await runOptions(suite.fixture); options.pilot = structuredClone(options.pilot);
   options.pilot.registration.codes.R0.path = suite.fixture.pack; options.authorization.pilotSha256 = digest(options.pilot);
@@ -59,6 +66,7 @@ it("rejects changed controller checkout before consuming a faux authorization", 
   await expect(createLookupPilotController(options)).rejects.toThrow();
   expect(await fs.readdir(options.outputRoot)).toEqual([]);
 });
+
 it("reconciles a controller SIGKILL at one faux arrival without ever readmitting or signaling recovery groups", async () => {
   const f = suite.fixture, options = await runOptions(f), config = join(f.base, "arrival-kill.json");
   await fs.writeFile(config, JSON.stringify({ action: "arrival" }), { mode: 0o600 });
@@ -76,6 +84,7 @@ it.each(["cache", "plan", "build", "role", "pid", "epoch", "marker", "debug", "d
   const p = await suite.spawn({ options }, { LOOKUP_FIXTURE_FAULT: config }); const reply = await p.reply; await p.exit;
   expect(reply.result.counts.admitted).toBe(0); expect(reply.result.stop).not.toBe("completed"); await suite.witnesses();
 });
+
 it.each(["stale", "order", "duplicate", "digest"])("refuses real IPC %s interference with no consumed permit", async kind => {
   const f = suite.fixture, options = await runOptions(f), config = join(f.base, `wire-${kind}.json`);
   await fs.writeFile(config, JSON.stringify({ action: `wire-${kind}` }), { mode: 0o600 });
@@ -107,6 +116,7 @@ it.each(["ack-tamper-revision", "ack-tamper-permit"])("child refuses %s against 
   expect(reply.result.counts.admitted).toBeLessThanOrEqual(1);
   expect(reply.result.receipts[0].calls.consumed).toBe(0); await suite.witnesses();
 });
+
 it.each(["ppid", "parent-start", "null-parent-start"])("child refuses swapped parent identity %s", async kind => {
   const f = suite.fixture, options = await runOptions(f), config = join(f.base, `swap-${kind}.json`);
   await fs.writeFile(config, JSON.stringify({ action: `swap-${kind}` }), { mode: 0o600 });
@@ -114,6 +124,7 @@ it.each(["ppid", "parent-start", "null-parent-start"])("child refuses swapped pa
   expect(reply.failed).toBeUndefined(); expect(reply.result.stop).toBe("lookup_ipc_disconnected");
   expect(reply.result.counts.admitted).toBe(0); expect(reply.result.receipts[0].calls.consumed).toBe(0); await suite.witnesses();
 });
+
 it.each(["lost", "two_rounds"])("derives cap-refused %s receipts without adding provider losses", async scenario => {
   const { result, options } = await run([scenario], undefined, 3.92), zeroHolds = scenario === "lost";
   expect(result.failed).toBeUndefined(); expect(result.result.stop).toBe("budget_admission");
@@ -122,12 +133,14 @@ it.each(["lost", "two_rounds"])("derives cap-refused %s receipts without adding 
   const state = JSON.parse(await fs.readFile(join(options.outputRoot, "lookup-pilot-controller.json")));
   const { accountLookupPilot } = await loadPilot(suite.fixture, "pilot-accounting"); expect(accountLookupPilot(state.slots).consecutiveProviderLosses).toBe(zeroHolds ? 1 : 0);
 });
+
 it("persists unreconciled containment before surfacing termination failure", async () => {
   const f = suite.fixture, options = await runOptions(f, ["settled"]), config = join(f.base, "terminate-fail.json");
   await fs.writeFile(config, JSON.stringify({ action: "terminate-fail" }), { mode: 0o600 });
   const p = await suite.spawn({ options }, { LOOKUP_FIXTURE_FAULT: config }); expect(await p.reply).toEqual({ failed: "lookup_unreconciled_processes" }); await p.exit;
   expect(JSON.parse(await fs.readFile(join(options.outputRoot, "lookup-pilot-controller.json"))).stop).toBe("lookup_unreconciled_processes");
 });
+
 it("settles after IPC stop then contains a stalled group within the settle grace, not the watchdog", async () => {
   const f = suite.fixture, options = await runOptions(f, ["auth"], 10000), config = join(f.base, "stop-hang.json");
   await fs.writeFile(config, JSON.stringify({ action: "stop-hang" }), { mode: 0o600 });
@@ -139,13 +152,15 @@ it("settles after IPC stop then contains a stalled group within the settle grace
   expect(witness.terminatedAt - witness.stopSentAt).toBeGreaterThanOrEqual(200);
   expect(witness.terminatedAt - witness.stopSentAt).toBeLessThan(3000);
 });
+
 it("refuses a null controller start identity before acquiring a lease", async () => {
   const f = suite.fixture, options = await runOptions(f), config = join(f.base, "null-controller-start.json");
   await fs.writeFile(config, JSON.stringify({ action: "null-controller-start" }), { mode: 0o600 });
   const p = await suite.spawn({ options }, { LOOKUP_FIXTURE_FAULT: config }); expect(await p.reply).toEqual({ failed: "lookup_ipc_invalid" }); await p.exit;
   expect(await fs.readdir(options.outputRoot)).toEqual([]);
 });
-it("isolates controller and child HOME and inherited Git configuration", async () => {
+
+it.serial("isolates controller and child HOME and inherited Git configuration", async () => {
   const f = suite.fixture, marker = join(f.base, "fsmonitor-called"), hook = join(f.base, "fictional-fsmonitor"), config = join(f.base, "fictional-gitconfig");
   await fs.writeFile(hook, `#!/bin/sh\nprintf called > '${marker}'\n`, { mode: 0o700 });
   await fs.writeFile(config, `[core]\nfsmonitor = ${hook}\n`);
@@ -166,6 +181,7 @@ it("refuses a live foreign parent PID even when its intercepted start identity m
   const witness = JSON.parse(await fs.readFile(join(f.base, "witnesses", `${state.slots[0].worker.pid}.json`)));
   expect(witness.foreignIdentityProvided).toBe(true);
 });
+
 it("drains a settlement delivered immediately before grace expiry before containing the real child", async () => {
   const f = suite.fixture, options = await runOptions(f, ["auth"], 10000), config = join(f.base, "settle-at-grace.json");
   await fs.writeFile(config, JSON.stringify({ action: "settle-at-grace" }), { mode: 0o600 });
@@ -176,18 +192,21 @@ it("drains a settlement delivered immediately before grace expiry before contain
   expect(state.slots[0].holds[0].settlement).toMatchObject({ kind: "lost", knownUnits: "6000" });
   expect(JSON.parse(await fs.readFile(join(f.base, "witnesses", `${p.child.pid}.json`)))).toMatchObject({ settleDeliveredBeforeGrace: true, settleCheckPending: true });
 });
+
 it.each(["unadmitted", "refused_pre_send"])("refuses a real child's forged %s terminal", async terminal => {
   const f = suite.fixture, options = await runOptions(f, ["settled"]), config = join(f.base, `forge-${terminal}.json`);
   await fs.writeFile(config, JSON.stringify({ action: "forge-terminal", terminal }), { mode: 0o600 });
   const p = await suite.spawn({ options }, { LOOKUP_FIXTURE_FAULT: config }); expect(await p.reply).toEqual({ failed: "lookup_ipc_invalid" }); await p.exit;
   expect(JSON.parse(await fs.readFile(join(options.outputRoot, "lookup-pilot-controller.json"))).stop).toBe("lookup_ipc_invalid");
 });
+
 it("classifies an empty-output refusal in a later round as invalid, not an admission refusal", async () => {
   const { result } = await run(["empty_two_rounds"]);
   expect(result.failed).toBeUndefined(); expect(result.result.counts).toMatchObject({ admitted: 1, invalid: 1, incomplete: 0 });
   expect(result.result.receipts[0].terminal).toBe("pilot_empty_final_output");
 });
-it("isolates production checkout and build-source Git reads without the fixture spawn filter", async () => {
+
+it.serial("isolates production checkout and build-source Git reads without the fixture spawn filter", async () => {
   const f = suite.fixture, marker = join(f.base, "production-fsmonitor-called"), hook = join(f.base, "production-fsmonitor"), config = join(f.base, "production-gitconfig"), dirt = join(f.repo, "fictional-source-dirt");
   await fs.writeFile(hook, `#!/bin/sh\nprintf called > '${marker}'\n`, { mode: 0o700 }); await fs.writeFile(config, `[core]\nfsmonitor = ${hook}\n`);
   for (const root of [f.repo, f.pack]) fixtureGit(root, ["config", "core.fsmonitor", hook]);
@@ -213,12 +232,14 @@ it.each(["timeout-before-consume", "timeout-after-consume"])("classifies %s from
   const state = JSON.parse(await fs.readFile(join(options.outputRoot, "lookup-pilot-controller.json")));
   expect(JSON.parse(await fs.readFile(join(f.base, "witnesses", `${state.slots[0].worker.pid}.json`))).timeoutBoundary).toBe(action);
 });
+
 it.each(["arrival-persist", "arrival-receipt"])("makes %s a sticky integrity stop after consumed arrival", async action => {
   const f = suite.fixture, options = await runOptions(f), config = join(f.base, `${action}.json`);
   await fs.writeFile(config, JSON.stringify({ action }), { mode: 0o600 }); const p = await suite.spawn({ options }, { LOOKUP_FIXTURE_FAULT: config }), reply = await p.reply; await p.exit;
   expect(reply.failed).toBeUndefined(); expect(reply.result.stop).toBe(action === "arrival-persist" ? "lookup_arrival_persist_failed" : "lookup_arrival_receipt_invalid");
   expect(reply.result.counts).toMatchObject({ admitted: 1, invalid: 1 }); expect(reply.result.receipts[0]).toMatchObject({ terminal: "integrity_stop", calls: { consumed: 1 }, costs: { retainedUSD: 3.92 } });
 });
+
 it.each(["identity-before-term", "identity-before-kill", "identity-before-gone"])("never signals an unproven child group at %s", async action => {
   const f = suite.fixture, options = await runOptions(f, ["auth"], 10000), config = join(f.base, `${action}.json`);
   await fs.writeFile(config, JSON.stringify({ action }), { mode: 0o600 }); const p = await suite.spawn({ options }, { LOOKUP_FIXTURE_FAULT: config });
@@ -228,6 +249,7 @@ it.each(["identity-before-term", "identity-before-kill", "identity-before-gone"]
   const witness = JSON.parse(await fs.readFile(join(f.base, "witnesses", `${p.child.pid}.json`)));
   expect(witness.identityRefused).toBe(true); expect(witness.signals ?? []).toEqual(action === "identity-before-term" ? [] : ["SIGTERM"]);
 });
+
 it("requires current-process witnesses even when older valid witnesses exist", async () => {
   const older = await suite.spawn({ mode: "idle" }); await older.reply;
   const p = await suite.spawn({ mode: "idle" }); await p.reply;
@@ -246,7 +268,7 @@ it("invalidates an idle IPC permit source synchronously on close", async () => {
 });
 
 it.each(["identity-before-exit", "identity-before-signal-exit"])("reconciles an absent group after %s without further signaling", async action => {
-  const f = suite.fixture, options = await runOptions(f, ["auth"], 10000), config = join(f.base, "identity-exit.json");
+  const f = suite.fixture, options = await runOptions(f, ["auth"], 10000), config = join(f.base, `${action}.json`);
   await fs.writeFile(config, JSON.stringify({ action }), { mode: 0o600 }); const p = await suite.spawn({ options }, { LOOKUP_FIXTURE_FAULT: config }), reply = await p.reply; await p.exit;
   expect(reply.failed).toBeUndefined(); expect(reply.result.stop).toBe("lookup_auth_failure");
   const witness = JSON.parse(await fs.readFile(join(f.base, "witnesses", `${p.child.pid}.json`)));
@@ -259,6 +281,7 @@ it("accepts a real guard pre-send refusal and continues to a final report", asyn
   expect(result.result.counts.admitted).toBe(1); expect(result.result.receipts.length).toBeGreaterThan(1);
   expect(JSON.parse(await fs.readFile(join(options.outputRoot, "report.json"))).stop).toBe("budget_admission");
 });
+
 it("leaves a descendant group unsignalled when recorded membership cannot be re-proven", async () => {
   const f = suite.fixture, options = await runOptions(f, ["descendant"]), config = join(f.base, "descendant-unproven.json");
   await fs.writeFile(config, JSON.stringify({ action: "descendant-unproven" }), { mode: 0o600 });
@@ -267,6 +290,7 @@ it("leaves a descendant group unsignalled when recorded membership cannot be re-
   const witness = JSON.parse(await fs.readFile(join(f.base, "witnesses", `${p.child.pid}.json`))); expect(witness.descendantUnproven).toBe(true); expect(witness.signals ?? []).toEqual([]);
   expect(lookupProcessGroupSnapshot(state.slots[0].worker.pid).some(now => !now.zombie && state.slots[0].members.some(old => old.pid === now.pid && old.startIdentity === now.startIdentity))).toBe(true);
 });
+
 it("persists unique bounded ASCII cache keys for every slot", async () => {
   const { options } = await run(["lost"]), state = JSON.parse(await fs.readFile(join(options.outputRoot, "lookup-pilot-controller.json")));
   expect(state.cacheKeysUnique).toBe(true); const keys = state.slots.map(s => s.cacheKey); expect(new Set(keys).size).toBe(keys.length);

@@ -54,6 +54,70 @@ async function registrationFixture() {
     roles: LOOKUP_ROLES.map(def => ({ id: def.id, arm: def.arm, code: def.code, revision: codes[def.code].revision, buildHash: codes[def.code].build.outputSha256, soul: LOOKUP_SOULS[def.soul] })) };
 }
 
+async function artifactRole(reg, output, id, receipt = true) {
+  const role = reg.roles.find(r => r.id === id), corpus = reg.common.corpora[0], trace = corpus.traces[0];
+  const binding = roleBinding(reg, role, corpus), plan = await rolePlan(reg.common, binding);
+  const dir = join(output, id, corpus.suite); await mkdir(join(dir, "units"), { recursive: true });
+  const unit = { confirmation: plan.confirmation, executionKind: "offline", arm: role.arm, repeat: 1, traceId: trace.id,
+    manifest: { codeRevision: role.revision, dirty: false, buildPolicy: BUILD_POLICY, lookupRole: binding },
+    trials: trace.probes.map(probeId => ({ traceId: trace.id, probeId, arm: role.arm, repeat: 1, status: "completed", lookup: { exactAccuracy: true } })) };
+  const bytes = JSON.stringify(unit); await writeFile(join(dir, "units/unit.json"), bytes);
+  const request = { binding, build: reg.codes[role.code].build };
+  const results = { plan, executionKind: "offline", qualityMeasured: false, ...(receipt ? { lookupReceipt: roleReceipt(request, plan, [sha256(bytes)]) } : {}) };
+  await writeFile(join(dir, "results.json"), JSON.stringify(results)); return dir;
+}
+
+async function overlaySource(source, dest, paths) {
+  for (const path of paths) {
+    try { await lstat(join(source, path)); }
+    catch (error) { if (error.code !== "ENOENT") throw error; await rm(join(dest, path), { recursive: true, force: true }); continue; }
+    await mkdir(dirname(join(dest, path)), { recursive: true }); await cp(join(source, path), join(dest, path));
+  }
+}
+
+// Private installation metadata and workspace links; immutable third-party package
+// leaves may be read through links. Builds never install or mutate these leaves.
+async function linkDependencies(source, dest) {
+  async function copyModules(rel) {
+    const from = join(source, rel), to = join(dest, rel);
+    try { await access(from); } catch { return; }
+    expect((await lstat(from)).isDirectory()).toBe(true);
+    await mkdir(to, {recursive: true});
+    for (const name of await readdir(from)) {
+      if ([".cache", ".vite"].includes(name)) continue;
+      if (name === ".pnpm") {
+        await mkdir(join(to, name));
+        for (const leaf of await readdir(join(from, name))) {
+          const input = join(from, name, leaf), output = join(to, name, leaf);
+          if (leaf !== "node_modules" && (await lstat(input)).isDirectory()) await symlink(input, output);
+          else await cp(input, output, {recursive: true, dereference: false, verbatimSymlinks: true});
+        }
+      } else await cp(join(from, name), join(to, name), {recursive: true, dereference: false, verbatimSymlinks: true});
+    }
+  }
+  await copyModules("node_modules");
+  for (const parent of ["packages", "extras"]) for (const name of await readdir(join(source, parent))) await copyModules(join(parent, name, "node_modules"));
+  await copyModules("packages/web/webapp/node_modules");
+}
+
+async function externalEstimateFixture() {
+  const selection = [{ id: "fixture-selected", family: "long", toolRecords: 64, probes: ["p01", "p04"] }];
+  const source = { kind: "lookup-frozen-holdout", manifestSha256: "d".repeat(64), statisticalSpecSha256: "e".repeat(64) };
+  const { fixtureLookupPolicy } = await import("./fixtures/holdout-synthetic.mjs");
+  const policy = await fixtureLookupPolicy({ source, selection });
+  const workload = { lookupSource: { manifestPath: "/fictional/manifest.json", manifestSha256: source.manifestSha256, statisticalSpecPath: "/fictional/spec.json" },
+    policy, reader: { model: "fixture:reader", effort: "low" }, repeats: 1, corpora: [{ suite: "holdout", source, traces: selection }] };
+  const catalog = { model: workload.reader.model, fileSha256: "c".repeat(64), contextWindow: 300000, maxTokens: 10000,
+    cost: { input: 2, output: 10, cacheRead: .2, tiers: [{ inputTokensAbove: 272000, input: 4, output: 20, cacheRead: .4 }] } };
+  return { workload, catalog, outputLimit: { tokens: 10000, source: "catalog_max" } };
+}
+
+const externalOnlyOptions = [
+  ["--selection-seed", "42"], ["--per-group", "2"],
+  ["--lookup-policy", "/fictional/policy.json"], ["--lookup-policy-sha256", "a".repeat(64)],
+  ["--output-limit", "300"], ["--output-limit-source", "enforced"], ["--catalog-cap-usd", "10"],
+];
+
 it("pins ordinary A1 plan bytes in addition to the existing three recall-only digest tests", async () => {
   const plan = makePlan({ ...await loadTraces(), probeMode: LOOKUP_MODE, codeRevision: "a".repeat(40), profile: { judge: null } });
   expect(digest(plan)).toBe("48d89ea070e196d4c320041e451e79eb2bd0782dd1b36d41d00fce588d5db978");
@@ -227,19 +291,6 @@ it("estimates offline per profile with unknown prices retained, repeated input a
   expect(fetch).not.toHaveBeenCalled();
 });
 
-async function artifactRole(reg, output, id, receipt = true) {
-  const role = reg.roles.find(r => r.id === id), corpus = reg.common.corpora[0], trace = corpus.traces[0];
-  const binding = roleBinding(reg, role, corpus), plan = await rolePlan(reg.common, binding);
-  const dir = join(output, id, corpus.suite); await mkdir(join(dir, "units"), { recursive: true });
-  const unit = { confirmation: plan.confirmation, executionKind: "offline", arm: role.arm, repeat: 1, traceId: trace.id,
-    manifest: { codeRevision: role.revision, dirty: false, buildPolicy: BUILD_POLICY, lookupRole: binding },
-    trials: trace.probes.map(probeId => ({ traceId: trace.id, probeId, arm: role.arm, repeat: 1, status: "completed", lookup: { exactAccuracy: true } })) };
-  const bytes = JSON.stringify(unit); await writeFile(join(dir, "units/unit.json"), bytes);
-  const request = { binding, build: reg.codes[role.code].build };
-  const results = { plan, executionKind: "offline", qualityMeasured: false, ...(receipt ? { lookupReceipt: roleReceipt(request, plan, [sha256(bytes)]) } : {}) };
-  await writeFile(join(dir, "results.json"), JSON.stringify(results)); return dir;
-}
-
 it("keeps receipt-less post-aggregate failures missing with a reason, but rejects tampering and cross-role replay", async () => {
   const reg = await registrationFixture(), output = await scratch();
   const pack = await artifactRole(reg, output, "pack"), packOnly = await artifactRole(reg, output, "pack-only", false);
@@ -295,14 +346,6 @@ it("preserves catalog tiers and prices each call by its total input, including c
   expect(priceLookupCall(absent, 272001, 300, 0).usd).toBeNull();
 });
 
-async function overlaySource(source, dest, paths) {
-  for (const path of paths) {
-    try { await lstat(join(source, path)); }
-    catch (error) { if (error.code !== "ENOENT") throw error; await rm(join(dest, path), { recursive: true, force: true }); continue; }
-    await mkdir(dirname(join(dest, path)), { recursive: true }); await cp(join(source, path), join(dest, path));
-  }
-}
-
 it("overlays uncommitted deletions without copying nonexistent source files", async () => {
   const base = await scratch(), source = join(base, "source"), dest = join(base, "dest"); await mkdir(source); await mkdir(dest);
   await writeFile(join(source, "kept.txt"), "Fictional current text"); await writeFile(join(dest, "removed.txt"), "Fictional old text");
@@ -311,126 +354,6 @@ it("overlays uncommitted deletions without copying nonexistent source files", as
   await expect(access(join(dest, "removed.txt"))).rejects.toMatchObject({ code: "ENOENT" });
 });
 
-// Copy dependency directories, including virtual stores: nested builds may run install.
-async function linkDependencies(source, dest) {
-  async function copyModules(rel) {
-    const from = join(source, rel), to = join(dest, rel);
-    try { await access(from); } catch { return; }
-    expect((await lstat(from)).isDirectory()).toBe(true);
-    await cp(from, to, { recursive: true, dereference: false, verbatimSymlinks: true, mode: constants.COPYFILE_FICLONE,
-      filter: path => path !== join(from, ".cache") });
-  }
-  await copyModules("node_modules");
-  for (const parent of ["packages", "extras"]) for (const name of await readdir(join(source, parent))) await copyModules(join(parent, name, "node_modules"));
-  await copyModules("packages/web/webapp/node_modules");
-}
-
-it("runs all six faux/real-loopback roles across two clean synthetic checkouts with fresh builds and bound receipts", async () => {
-  const base = await scratch(), r0 = join(base, "r0"), rpack = join(base, "rpack");
-  const home = join(base, "home"); await mkdir(home, { mode: 0o700 });
-  vi.stubEnv("XDG_DATA_HOME", join(base, "fictional-host-data"));
-  for (const key of ["HOME", "XDG_CACHE_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME"]) vi.stubEnv(key, home);
-  expect(process.env.XDG_DATA_HOME).toBe(home);
-  git(ROOT, ["clone", "--shared", "--quiet", ROOT, r0]);
-  // Include this uncommitted implementation in the synthetic source commit; never change ROOT HEAD.
-  const overlay = new Set([...git(ROOT, ["diff", "--name-only", "HEAD"]).split("\n"), ...git(ROOT, ["ls-files", "--others", "--exclude-standard"]).split("\n")].filter(Boolean));
-  await overlaySource(ROOT, r0, overlay);
-  // Synthetic R0 has no retrieval clause; Rpack restores the actual runtime guidance.
-  const shippedRender = await readFile(join(ROOT, RENDER), "utf8"), shippedPack = await readFile(join(ROOT, PACK), "utf8");
-  await writeFile(join(r0, RENDER), shippedRender.replace(/^export const PACK_RETRIEVAL_GUIDANCE = .*;$/mu, 'export const SYNTHETIC_NO_GUIDANCE = "";'));
-  await writeFile(join(r0, PACK), shippedPack.replaceAll("PACK_RETRIEVAL_GUIDANCE", "SYNTHETIC_NO_GUIDANCE"));
-  // Already-installed private dependencies suffice; never run an install in a test build.
-  const webPackagePath = join(r0, "packages/web/package.json"), webPackage = JSON.parse(await readFile(webPackagePath, "utf8"));
-  expect(webPackage.scripts.build.startsWith("pnpm --dir webapp install --frozen-lockfile && ")).toBe(true);
-  webPackage.scripts.build = webPackage.scripts.build.replace("pnpm --dir webapp install --frozen-lockfile && ", "");
-  await writeFile(webPackagePath, JSON.stringify(webPackage, null, 2) + "\n");
-  // Both build workspaces forbid dependency verification/install, even under pnpm 11.
-  await writeFile(join(r0, ".npmrc"), "offline=true\nverify-deps-before-run=false\nmanage-package-manager-versions=false\n");
-  const r0Revision = commit(r0);
-  git(ROOT, ["clone", "--shared", "--quiet", r0, rpack]);
-  await writeFile(join(rpack, RENDER), shippedRender); await writeFile(join(rpack, PACK), shippedPack); const rpackRevision = commit(rpack);
-  await linkDependencies(ROOT, r0); await linkDependencies(ROOT, rpack);
-  const trace = (await loadTraces()).traces[0];
-  const registration = await registerLookup({ checkouts: { R0: { path: r0, revision: r0Revision }, Rpack: { path: rpack, revision: rpackRevision } },
-    suites: ["original"], traceIds: [trace.id], probeLimit: 1 });
-  expect(registration.diffFiles).toEqual([PACK, RENDER]);
-  expect(() => guidanceDiff(rpack, r0)).toThrow("lookup_rpack_direction_invalid");
-  expect(registration.codes.R0.build.policy).toBe(BUILD_POLICY);
-  const output = join(base, "run"); let dispatches = 0;
-  const result = await runLookupRoles(registration, output, { dispatch: async (root, args, timeoutMs) => {
-    if (dispatches++ > 0) return runLookupRoleChild(root, args, timeoutMs);
-    // A real nonzero process exit AFTER main emitted a valid receipt must not stop later roles.
-    const program = `const {main} = await import(${JSON.stringify(new URL("scripts/continuity-benchmark.mjs", `file://${root}/`).href)}); await main(${JSON.stringify(args)}); process.exit(1);`;
-    const wrapper = join(base, "nonzero-after-receipt.mjs"); await writeFile(wrapper, program);
-    // Match the launcher's file/async process shape; eval/synchronous invocation
-    // interferes with native in-place replay and is not the production entry path.
-    return new Promise((resolve, reject) => {
-      const child = spawn(process.execPath, [wrapper], { cwd: root, stdio: ["ignore", "ignore", "pipe"] }); child.stderr.resume();
-      let timedOut = false; const timer = setTimeout(() => { timedOut = true; child.kill("SIGKILL"); }, timeoutMs);
-      child.once("error", error => { clearTimeout(timer); reject(error); });
-      child.once("close", code => { clearTimeout(timer); resolve({ code, timedOut }); });
-    });
-  } });
-  expect(dispatches).toBe(6);
-  expect(result.launches[0]).toMatchObject({ role: "native", exitCode: 1, receiptVerified: true, reason: null });
-  expect(result.coverage, JSON.stringify(result.slots)).toEqual({ planned: 6, completed: 6, skipped: 0, blocked: 0, missing: 0, duplicate: 0, observations: 6 });
-  expect(result.slots.map(s => s.role)).toEqual(LOOKUP_ROLES.map(r => r.id));
-  expect(result.slots.every(s => s.calls > 0 && s.bytes > 0)).toBe(true);
-  for (const role of registration.roles) {
-    const aggregate = JSON.parse(await readFile(join(output, role.id, "original/results.json")));
-    expect(aggregate.inventory.traces.map(row => row.id)).toEqual([trace.id]);
-    expect(aggregate.coverage).toEqual({ unitsComplete: 1, unitsExpected: 1 });
-    expect(aggregate.summary.lookup.arms[role.arm]).toMatchObject({ planned: 1, statuses: { completed: 1 } });
-    expect(aggregate.summary.lookup.slots.map(slot => [slot.traceId, slot.probeId])).toEqual([[trace.id, trace.probes[0].id]]);
-  }
-  const request = JSON.parse(await readFile(join(output, "native/original-request.json")));
-  for (const [mutate, code] of [
-    [r => { r.binding.revision = "0".repeat(40); }, "lookup_role_scope_mismatch"],
-    [r => { r.build.outputSha256 = "0".repeat(64); }, "lookup_build_binding_mismatch"],
-    [r => { r.binding.soul = LOOKUP_SOULS.S1; }, "lookup_role_binding_mismatch"],
-    [r => { r.binding.arm = "continuity-pack-cold"; }, "lookup_role_binding_mismatch"],
-  ]) {
-    const changed = structuredClone(request); mutate(changed);
-    const path = join(base, "rejected-request.json"); await writeFile(path, JSON.stringify(changed));
-    const rejected = spawnSync(process.execPath, [join(r0, "scripts/continuity-benchmark.mjs"), "--probe-mode", LOOKUP_MODE, "--lookup-role", path,
-      "--arms", "native-lookup", "--no-judge", "--probe-limit", "1", "--output", join(base, "must-not-dispatch")], { cwd: r0, encoding: "utf8" });
-    expect(rejected.status).toBe(1); expect(rejected.stderr).toContain(code);
-    await expect(access(join(base, "must-not-dispatch"))).rejects.toMatchObject({ code: "ENOENT" });
-  }
-  const unitDir = join(output, "pack", "original", "units"), [name] = await readdir(unitDir);
-  const original = await readFile(join(unitDir, name));
-  await writeFile(join(unitDir, "duplicate.json"), original);
-  const duplicated = await aggregateRoleFiles(registration, output);
-  expect(duplicated.coverage.duplicate).toBe(1);
-  await rm(join(unitDir, "duplicate.json"));
-  const wrong = JSON.parse(original); wrong.manifest.codeRevision = "0".repeat(40);
-  await writeFile(join(unitDir, name), JSON.stringify(wrong));
-  await expect(aggregateRoleFiles(registration, output)).rejects.toThrow("lookup_role_unit_receipt_mismatch");
-  await writeFile(join(unitDir, name), original);
-  const changedPayload = JSON.parse(original); changedPayload.trials[0].lookup.calls += 1;
-  await writeFile(join(unitDir, name), JSON.stringify(changedPayload));
-  await expect(aggregateRoleFiles(registration, output)).rejects.toThrow("lookup_role_unit_digest_mismatch");
-  await writeFile(join(unitDir, name), original);
-  const appDist = join(r0, "packages/app/dist/index.js"), saved = await readFile(appDist);
-  await appendFile(appDist, "\n// Fictional stale build\n");
-  await expect(verifyRegisteredCheckouts(registration)).rejects.toThrow("build_output_changed");
-  await writeFile(appDist, saved); await verifyRealBuild(r0, registration.codes.R0.build);
-  // Explicit missing role: never silently substitute a different checkout or role.
-  await rm(join(output, "shipping"), { recursive: true });
-  expect((await aggregateRoleFiles(registration, output)).coverage.missing).toBe(1);
-}, 900000);
-
-async function externalEstimateFixture() {
-  const selection = [{ id: "fixture-selected", family: "long", toolRecords: 64, probes: ["p01", "p04"] }];
-  const source = { kind: "lookup-frozen-holdout", manifestSha256: "d".repeat(64), statisticalSpecSha256: "e".repeat(64) };
-  const { fixtureLookupPolicy } = await import("./fixtures/holdout-synthetic.mjs");
-  const policy = await fixtureLookupPolicy({ source, selection });
-  const workload = { lookupSource: { manifestPath: "/fictional/manifest.json", manifestSha256: source.manifestSha256, statisticalSpecPath: "/fictional/spec.json" },
-    policy, reader: { model: "fixture:reader", effort: "low" }, repeats: 1, corpora: [{ suite: "holdout", source, traces: selection }] };
-  const catalog = { model: workload.reader.model, fileSha256: "c".repeat(64), contextWindow: 300000, maxTokens: 10000,
-    cost: { input: 2, output: 10, cacheRead: .2, tiers: [{ inputTokensAbove: 272000, input: 4, output: 20, cacheRead: .4 }] } };
-  return { workload, catalog, outputLimit: { tokens: 10000, source: "catalog_max" } };
-}
 it("prices eligible external slots with ten no-cache rounds, per-call tiers and one run-wide cap", async () => {
   const { estimateExternalLookup } = await import("../continuity-lookup-estimate.mjs");
   const fixture = await externalEstimateFixture(), result = estimateExternalLookup(fixture);
@@ -449,6 +372,7 @@ it("prices eligible external slots with ten no-cache rounds, per-call tiers and 
   const enforced = structuredClone(fixture); enforced.outputLimit = { tokens: 1000, source: "enforced" };
   expect(estimateExternalLookup(enforced).reservationUSD).toBeLessThan(result.reservationUSD);
 });
+
 it("blocks external numerical approval on unknown slots, missing catalogs/limits/rates and ambiguous output bounds", async () => {
   const { estimateExternalLookup, offlineCatalog } = await import("../continuity-lookup-estimate.mjs");
   for (const mutate of [f => { f.catalog = null; }, f => { delete f.catalog.cost; }, f => { delete f.catalog.contextWindow; },
@@ -467,6 +391,7 @@ it("blocks external numerical approval on unknown slots, missing catalogs/limits
   expect(() => estimateExternalLookup(inconsistent)).toThrow("lookup_policy_feasibility_mismatch");
   await expect(offlineCatalog("fixture:reader", "/fictional/no-catalog")).rejects.toThrow("lookup_catalog_missing");
 });
+
 it("validates fixed policy hash, unchanged limits, complete role slots and independent source/selection bindings", async () => {
   const { assertExternalPolicy, FIXED_BUDGET_SHA256 } = await import("../lib/continuity-lookup.mjs");
   const fixture = await externalEstimateFixture(), policy = fixture.workload.policy;
@@ -510,11 +435,6 @@ it("refuses empty external options by presence instead of silently selecting leg
   await expect(access(join(base, "unused"))).rejects.toMatchObject({ code: "ENOENT" });
 });
 
-const externalOnlyOptions = [
-  ["--selection-seed", "42"], ["--per-group", "2"],
-  ["--lookup-policy", "/fictional/policy.json"], ["--lookup-policy-sha256", "a".repeat(64)],
-  ["--output-limit", "300"], ["--output-limit-source", "enforced"], ["--catalog-cap-usd", "10"],
-];
 it.each(externalOnlyOptions)("refuses source-less %s across register, estimate, budget and launcher", async (flag, value) => {
   const base = await scratch(), output = join(base, "unused"), code = "lookup_external_flag_requires_source";
   expect(() => workloadOptions({ [flag]: value })).toThrow(code);

@@ -120,12 +120,12 @@ export async function syntheticContext(directory, design = {}, repositoryOptions
 }
 
 /** Content-free, arithmetically valid fixed-policy records for offline tests. */
-export async function fixtureLookupPolicy({ source, selection, lookupSelection, reader, codes, protocol } = {}) {
+export async function fixtureLookupPolicy({ source, selection, lookupSelection, reader, codes, protocol, eligibleRoles } = {}) {
   const { LOOKUP_BUDGET, LOOKUP_ROLES, FIXED_BUDGET_SHA256, externalPathFeasibility, referenceFeasibility } = await import("../../lib/continuity-lookup.mjs");
   const paths = LOOKUP_ROLES.flatMap(role => selection.flatMap(trace => trace.probes.map(probeId => {
     const path = { role: role.id, arm: role.arm, traceId: trace.id, probeId,
       initialContextBytes: role.arm === "native-lookup" ? 900000 : 12000,
-      initialTokens: role.arm === "native-lookup" ? 300000 : 12000, admissionCap: 400000000,
+      initialTokens: role.arm === "native-lookup" ? 300000 : 12000, admissionCap: eligibleRoles && !eligibleRoles.includes(role.id) ? 1 : 400000000,
       method: probeId === "p01" ? "identifier-reference" : "conservative-full-budget",
       calls: 2, bytes: 100, cumulativeBytes: 150, discovered: true, exhausted: null,
       referenceFailure: false, sourceAvailability: "retained", sourceReturned: true };
