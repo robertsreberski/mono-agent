@@ -156,7 +156,7 @@ it("runs all six faux/real-loopback roles across two clean synthetic checkouts w
     try { expect(leavesAfter).toEqual(leavesBefore); }
     finally {
       const compareMs = performance.now() - compareStart;
-      await writeFile(join(ROOT, ".worklab-tmp/lookup-leaf-witness-metrics.json"), JSON.stringify({leaves: linkedLeaves.size, entries: leavesBefore.length, beforeMs, afterMs, compareMs, totalMs: beforeMs + afterMs + compareMs}));
+      if (process.env.LOOKUP_LEAF_WITNESS_METRICS === "1") await writeFile(join(ROOT, ".worklab-tmp/lookup-leaf-witness-metrics.json"), JSON.stringify({leaves: linkedLeaves.size, entries: leavesBefore.length, beforeMs, afterMs, compareMs, totalMs: beforeMs + afterMs + compareMs}));
     }
   });
   const trace = (await loadTraces()).traces[0];

@@ -1,3 +1,5 @@
+// Retired queue algorithm: retained only for its existing standalone regression
+// cases. No process fixture imports or runs this queue.
 import { availableParallelism } from "node:os";
 
 export const pilotConcurrencyLimit = (cores = availableParallelism()) => Math.max(1, Math.floor(cores / 2));

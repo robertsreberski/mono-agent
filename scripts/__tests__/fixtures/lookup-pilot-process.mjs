@@ -9,7 +9,6 @@ import { fork, execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { syntheticContext, fixtureCommit, fixtureLookupPolicy } from "./holdout-synthetic.mjs";
 import { fixtureDriverReply } from "./lookup-pilot-reply.mjs";
-import { pilotConcurrencyLimit, pilotSemaphore } from "./lookup-pilot-concurrency.mjs";
 import { dependencySnapshot } from "./lookup-dependency-witness.mjs";
 import { lookupProcessStartIdentity } from "../../lib/continuity-process-identity.mjs";
 import { ROOT } from "../../lib/continuity-lookup-roles.mjs";
@@ -79,11 +78,11 @@ export async function runOptions(f, scenarios = ["lost"], timeoutMs = 5000) {
   return { pilot: f.pilot, outputRoot, authorization: { schema: "continuity-lookup-faux-authorization-v1", authorizationId: randomUUID(),
     pilotSha256: digest(f.pilot), outputRoot, scenarios, timeoutMs } };
 }
-export function pilotSuite({ concurrent = false } = {}) {
-  let f, deps, real, testReal; const serialChildren = [], active = new AsyncLocalStorage(), permits = pilotSemaphore(pilotConcurrencyLimit());
+export function pilotSuite({ scoped = false } = {}) {
+  let f, deps, real, testReal; const serialChildren = [], active = new AsyncLocalStorage();
   const children = () => active.getStore()?.children ?? serialChildren;
   beforeAll(async () => { deps = await dependencySnapshot(ROOT); real = await metadata(registry); f = await pilotProcessFixture(); }, 120000);
-  if (!concurrent) beforeEach(async () => { testReal = await metadata(registry); });
+  if (!scoped) beforeEach(async () => { testReal = await metadata(registry); });
   async function finish(owned, expected, resources = []) {
     try { expect(await metadata(registry)).toEqual(expected); await witnesses(owned); }
     finally {
@@ -100,7 +99,7 @@ export function pilotSuite({ concurrent = false } = {}) {
       }
     }
   }
-  if (!concurrent) afterEach(() => finish(serialChildren, testReal));
+  if (!scoped) afterEach(() => finish(serialChildren, testReal));
   afterAll(async () => { try { if (f) await fs.rm(f.base, { recursive: true, force: true }); } finally { expect(await metadata(registry)).toEqual(real); expect(await dependencySnapshot(ROOT)).toEqual(deps); } });
   async function witnesses(owned = children()) {
     for (const c of owned) {
@@ -111,17 +110,16 @@ export function pilotSuite({ concurrent = false } = {}) {
       for (const pid of expected) await read(pid);
     }
   }
-  const scoped = register => {
+  const withScope = register => {
     const run = (name, fn, ...options) => register(name, async context => {
-      const scope = {children: [], resources: []}, admission = permits.enter();
+      const scope = {children: [], resources: []};
       let finished = false, started = false, expected;
-      // Register BEFORE waiting: a queued test may time out before admission.
       context.onTestFinished(async () => {
-        finished = true; admission.cancel();
-        try { if (started) await finish(scope.children, expected, scope.resources); }
-        finally { admission.release(); }
+        finished = true;
+        if (started) await finish(scope.children, expected, scope.resources);
       });
-      if (!await admission.ready || finished) return;
+      // No admission queue: Vitest starts this sequential case only when its
+      // preceding case (including cleanup) has finished.
       expected = await metadata(registry);
       if (finished) return;
       started = true;
@@ -132,8 +130,8 @@ export function pilotSuite({ concurrent = false } = {}) {
     };
     return run;
   };
-  const concurrentTest = scoped(test.concurrent); concurrentTest.serial = scoped(test);
-  return { test: concurrentTest, cleanup: fn => { const scope = active.getStore(); if (!scope) throw Error("fixture_scope_missing"); scope.resources.push(fn); }, get fixture() { return f; },
+  const serialTest = withScope(test);
+  return { test: serialTest, cleanup: fn => { const scope = active.getStore(); if (!scope) throw Error("fixture_scope_missing"); scope.resources.push(fn); }, get fixture() { return f; },
     async spawn(input, extraEnv = {}, {deferReplyUntilExit = false} = {}) {
       const witnesses = join(f.base, "witnesses"); await fs.mkdir(witnesses, { recursive: true, mode: 0o700 });
       const preload = fileURLToPath(new URL("./lookup-pilot-preload.mjs", import.meta.url));
@@ -153,6 +151,7 @@ export function pilotSuite({ concurrent = false } = {}) {
       child.stderr.resume();
       const exit = new Promise(resolve => child.once("close", (code, signal) => resolve({ code, signal })));
       const reply = fixtureDriverReply(child, {...input, repo: f.repo});
+      reply.catch(() => {}); // Handle early rejection; callers still receive the ORIGINAL promise.
       const record = { child, exit, reply, outputRoot: input.options?.outputRoot }; children().push(record); return record;
     },
     witnesses,

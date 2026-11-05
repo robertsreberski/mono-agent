@@ -44,6 +44,10 @@ it("faux mint cannot accept a preflight state even with the real entry gate mock
   await expect(createLookupFauxSend({outputRoot: root}, {})).rejects.toThrow("lookup_pilot_faux_required"); expect(fetch).not.toHaveBeenCalled();
 });
 it("runs full configured preparation for every eligible scheduled slot, exits despite lingering handles and grants nothing", async () => {
+  // This positive configured-flow smoke is not a timeout calibration test.
+  // Allow a 3x slower full replay AND the real 1.5x feasibility margin; keep
+  // deadline/rounding/refusal boundary tests in preflight-report unchanged.
+  const timeoutMs = 480000;
   const f = await pilotProcessFixture({configured: true, runDeadlineMs: 1800000, eligibleRoles: ["shipping"]}); roots.push(f.base);
   const witnesses = join(f.base, "preflight-witnesses"), settings = join(f.base, "preflight-settings.json"); await fs.mkdir(witnesses, {mode: 0o700});
   await fs.writeFile(settings, JSON.stringify({runtimeRoot: f.repo, witnesses, configured: true, linger: true}), {mode: 0o600});
@@ -55,7 +59,7 @@ it("runs full configured preparation for every eligible scheduled slot, exits de
   let stderr = ""; child.stderr.on("data", bytes => { stderr += bytes; }); const exit = new Promise(resolve => child.once("close", resolve)); children.push({child, exit});
   const reply = await new Promise((resolve, reject) => {
     let received = false; const timer = setTimeout(() => { child.kill("SIGKILL"); reject(Error("fixture_deadline")); }, f.pilot.descriptor.deadlines.runDeadlineMs + 60000);
-    child.on("message", m => { if (m.loaded) child.send({repo: f.repo, pilot: f.pilot, timeoutMs: 120000, outputRoot: f.base}); else { received = true; clearTimeout(timer); resolve(m); } });
+    child.on("message", m => { if (m.loaded) child.send({repo: f.repo, pilot: f.pilot, timeoutMs, outputRoot: f.base}); else { received = true; clearTimeout(timer); resolve(m); } });
     child.once("error", error => { clearTimeout(timer); reject(error); }); child.once("close", () => { clearTimeout(timer); if (!received) reject(Error(`fixture_closed_without_result ${stderr.slice(-1000)}`)); });
   });
   await exit;
@@ -82,7 +86,7 @@ it("runs full configured preparation for every eligible scheduled slot, exits de
   expect(checkoutStatus()).toEqual(["", ""]);
   expect(reply.result.timing).toMatchObject({runDeadlineMs: f.pilot.descriptor.deadlines.runDeadlineMs, probeTimeExcluded: true});
   expect(reply.result.timing.restoreMs).toBeGreaterThan(0);
-  expect(reply.result.timing.timeoutMs).toBe(120000);
+  expect(reply.result.timing.timeoutMs).toBe(timeoutMs);
   expect(reply.result.disk.eligibleRetainedBytes).toBeGreaterThan(0);
 }, 1980000);
 
