@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Restore lookup-pilot checkpoints only after an offline preparation process exits
+  and its snapshot is verified, while keeping the real route closed.
+
 - Keep pilot lookup comparisons isolated by per-slot caches, refuse auxiliary
   model routes, and stop runs on policy violations, while keeping the real-route
   entry closed.

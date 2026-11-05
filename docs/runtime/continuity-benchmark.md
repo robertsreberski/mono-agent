@@ -1486,12 +1486,22 @@ The explicit `continuity-lookup-compare pilot` command exists but refuses with
 `lookup_pilot_real_route_unavailable` before any argument-driven artifact read,
 lease acquisition or output setup. `LOOKUP_PILOT_REAL_ROUTE_ENABLED` in
 `scripts/lib/continuity-lookup-pilot-entry.mjs` is the single release gate. It
-must remain false until the separately reviewed two-process configured smoke
+must remain false until the separately reviewed configured-process smoke
 proves the complete controller/child flow. No authorization issuer is provided.
 Ordinary benchmark/compare and probe-child refusal seams remain unchanged.
-Pilot restart and in-place probes also refuse with `lookup_pilot_boundary_required`
-until their fresh-process boundary can be preserved; they never silently run as
-in-process substitutes.
+The real controller first launches a credential-free offline preparation child.
+After that child exits and its group is gone, the controller journals its PID,
+start identity and pristine snapshot digest before launching the probe child.
+The probe verifies the exited tuple and snapshot, restores the exact hashed bytes
+at the checkpoint's original root, then mints its PID-bound send. The once-only
+in-process boundary proof serves `native-lookup`, `continuity-pack-cold` and
+`continuity-pack-boundary`; the probe never builds a checkpoint or starts a nested
+probe process. Explicit restart and other unsupported arms still refuse with
+`lookup_pilot_boundary_required`, including at initialization before consumption.
+On every send the durable preparation record must remain the one verified at mint.
+Recovery observes both preparation and probe groups but never resumes or signals
+them. The older faux serializer route remains separate and unchanged; it is not
+the configured-process smoke or authority to open the real gate.
 
 The sole real-send factory independently checks the child's registered code,
 role, build and plan; the shared authorization validator and raw-byte consumption

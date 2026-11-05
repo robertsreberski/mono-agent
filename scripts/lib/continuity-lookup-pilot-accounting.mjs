@@ -4,7 +4,7 @@ export const LOOKUP_PILOT_STOPS = Object.freeze([...new Set([...LOOKUP_GUARD_POL
   "completed", "auth_failure", "lookup_auth_failure", "lookup_account_mismatch", "lookup_quota_exhausted",
   "unpriced_reservation", "invalid_unit_rate", "budget_admission", "lookup_run_deadline", "lookup_worker_timeout",
   "lookup_unreconciled_processes", "lookup_repeated_loss", "lookup_ipc_invalid", "lookup_ipc_disconnected",
-  "lookup_persist_failed", "lookup_receipt_invalid", "lookup_arrival_persist_failed", "lookup_arrival_receipt_invalid", "lookup_worker_lost", "lookup_recovery_only",
+  "lookup_preparation_invalid", "lookup_preparation_timeout", "lookup_persist_failed", "lookup_receipt_invalid", "lookup_arrival_persist_failed", "lookup_arrival_receipt_invalid", "lookup_worker_lost", "lookup_recovery_only",
   "lookup_invalid_usage", "lookup_unknown_tier", "lookup_hold_exceeded", "lookup_input_envelope_violated",
   "lookup_output_envelope_violated", "lookup_reasoning_envelope_violated", "lookup_body_mismatch",
   "lookup_permit_invalid", "lookup_settlement_failed", "lookup_stop_failed", "lookup_payload_repeated",
@@ -19,7 +19,7 @@ export const LOOKUP_GUARD_STOPS = Object.freeze([...new Set([...LOOKUP_GUARD_POL
 ])]);
 export const LOOKUP_INTEGRITY_STOPS = Object.freeze(LOOKUP_GUARD_STOPS.filter(code => !["auth_failure", "lookup_auth_failure", "lookup_account_mismatch", "lookup_quota_exhausted"].includes(code)));
 const outcomeCodes = Object.freeze({ settled: [null], lost: [null], own_abort_after_send: [null], integrity_stop: LOOKUP_INTEGRITY_STOPS });
-export const LOOKUP_SLOT_TERMINALS = Object.freeze(["completed", "wrong", "lost", "own_abort_after_send", "pilot_empty_final_output", "store_degraded", "boundary_unverified", "pressure_unverified", "integrity_stop", "refused_pre_send", "unadmitted"]);
+export const LOOKUP_SLOT_TERMINALS = Object.freeze(["completed", "wrong", "lost", "own_abort_after_send", "pilot_empty_final_output", "store_degraded", "boundary_unverified", "pressure_unverified", "integrity_stop", "refused_pre_send", "unadmitted", "skipped"]);
 export function pilotNeed(ok, code) { if (!ok) throw Object.assign(new Error(code), { code }); }
 export const fixedPilotCode = code => LOOKUP_PILOT_STOPS.includes(code) ? code : "lookup_ipc_invalid";
 export const USD_UNITS = 20000000n; // half of one tenth-microdollar; exact even for flex

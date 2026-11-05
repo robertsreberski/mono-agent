@@ -42,7 +42,7 @@ function inventory(sources, target) {
   const symbol = node => {
     let value = checker.getSymbolAtLocation(node);
     if (value?.flags & ts.SymbolFlags.Alias) value = checker.getAliasedSymbol(value);
-    return value?.name === "unknown" ? undefined : value;
+    return value?.declarations?.length ? value : undefined;
   };
   const named = node => ts.isIdentifier(node) && node.text === target
     || ts.isStringLiteral(node) && node.text === target && (ts.isElementAccessExpression(node.parent) || ts.isVariableDeclaration(node.parent));
@@ -84,7 +84,7 @@ it("inventories every authority reference and the sole pilot native fetch, not j
   const sources = new Map(await Promise.all((await scripts()).map(async path => [path, await readFile(join(ROOT, path), "utf8")])));
   const guard = inventory(sources, "guardedLookupModels"), real = inventory(sources, "createLookupRealSend");
   const fetches = inventory(sources, "fetch");
-  const runtimeFetches = Object.fromEntries(Object.entries(fetches).filter(([path]) => path.startsWith("scripts/lib/") || path.startsWith("scripts/continuity-lookup-")));
+  const runtimeFetches = Object.fromEntries(Object.entries(fetches).filter(([path]) => !path.includes("/__tests__/")));
   expect({ guard, real, runtimeFetches }).toEqual(INVENTORY);
   const native = parse("native", sources.get("scripts/lib/continuity-lookup-real-capability.mjs"));
   expect(calls(native, "nativeFetch")).toHaveLength(1);
@@ -102,13 +102,17 @@ const INVENTORY = {
     "scripts/lib/continuity-lookup-real-capability.mjs": 1,
   },
   real: {
+    "scripts/__tests__/fixtures/lookup-preparation-preload.mjs": 1,
     "scripts/__tests__/continuity-lookup-pilot-entry.test.mjs": 2,
     "scripts/__tests__/continuity-lookup-pilot-probe.test.mjs": 1,
-    "scripts/__tests__/continuity-lookup-real-capability.test.mjs": 17,
+    "scripts/__tests__/continuity-lookup-real-capability.test.mjs": 18,
     "scripts/lib/continuity-lookup-pilot-probe.mjs": 2,
     "scripts/lib/continuity-lookup-real-capability.mjs": 1,
   },
   runtimeFetches: {
+    "scripts/check-dependency-vulnerabilities.mjs": 2,
+    "scripts/memory-health-responsiveness.mjs": 1,
+    "scripts/smoke-process-job-wake.mjs": 2,
     // Existing non-pilot embedding/generation transports are inventoried too.
     "scripts/lib/memory-e2e-private-providers.mjs": 2,
     // An SDK hook definition and its faux invocation are not native network sites.
@@ -143,10 +147,28 @@ it("threads pilot through configured probe and all auxiliary helper boundaries",
   const preparation = calls(runner, "runBoundaryChild").filter(c => c.arguments[0]?.getText().includes('type: "preparation"'));
   expect(preparation).toHaveLength(1); expect(hasPilot(preparation[0].arguments[0])).toBe(true);
   const probe = parse("probe", await readFile(join(ROOT, "scripts/lib/continuity-lookup-pilot-probe.mjs"), "utf8"));
-  for (const name of ["buildCheckpoint", "runProbe", "createJudge"]) {
+  expect(calls(probe, "buildCheckpoint")).toHaveLength(0);
+  for (const name of ["runProbe", "createJudge"]) {
     const found = calls(probe, name); expect(found, name).toHaveLength(1); expect(hasPilot(found[0].arguments[0]), name).toBe(true);
   }
   const harnesses = calls(runner, "openHarness"); expect(harnesses.length).toBeGreaterThan(0);
   expect(harnesses.some(c => hasPilot(c.arguments[0]))).toBe(true);
   expect(functions.get("runProbe").getText()).toContain("owner: trace.owner.displayName, pilot");
+});
+
+it("cannot hide an authority alias in a user variable named unknown", () => {
+  const sources = new Map([["scripts/alias.mjs", "function guardedLookupModels() {} const unknown = guardedLookupModels; const x = unknown; x();"]]);
+  expect(inventory(sources, "guardedLookupModels")["scripts/alias.mjs"]).toBe(6);
+});
+
+it("keeps preparation entries and helpers free of authority and fetch references", async () => {
+  const paths = ["scripts/lib/continuity-lookup-preparation-child.mjs", "scripts/lib/continuity-lookup-preparation.mjs"];
+  const sources = new Map(await Promise.all(paths.map(async path => [path, await readFile(join(ROOT, path), "utf8")])));
+  for (const target of ["fetch", "guardedLookupModels", "createLookupRealSend", "verifyLookupRealAssignment", "createLookupPilotIPC", "validateLookupAuthorization", "consumeLookupAuthorization", "verifyLookupConsumption", "verifyLookupPilotParent", "assertRealLookupPermitSource", "createFauxLookupDecorator", "isRealLookupSend", "realLookupSendForGuard", "isRealLookupDecorator", "realLookupSendBinds"]) expect(inventory(sources, target), target).toEqual({});
+  for (const text of sources.values()) expect(text).not.toMatch(/from ["'][^"']*(?:real-capability|lookup-ipc)[^"']*["']/u);
+});
+it("includes a new top-level runtime fetch in the exact inventory", () => {
+  const sources = new Map([["scripts/new-runtime.mjs", 'const hidden = globalThis.fetch; hidden("fictional");']]);
+  const runtimeFetches = Object.fromEntries(Object.entries(inventory(sources, "fetch")).filter(([path]) => !path.includes("/__tests__/")));
+  expect(runtimeFetches).toEqual({ "scripts/new-runtime.mjs": 3 });
 });

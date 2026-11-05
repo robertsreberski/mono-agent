@@ -47,6 +47,7 @@ async function verifyAssignment(a, ready) {
     && slot.slotId === a.slotId && stateModule.samePilot(state.schedule, stateModule.lookupPilotSchedule(a.pilot))
     && stateModule.samePilot(state.schedule[a.index], a.slot) && a.slot.roleId === a.roleRequest.binding.id
     && a.slot.code === a.roleRequest.binding.code && (!ready || slot.ready === true));
+  await (await import("./continuity-lookup-preparation.mjs")).verifyLookupPreparation(a, state, ready);
   const handle = await auth.validateLookupAuthorization({ ...a.authorization, outputRoot: a.outputRoot });
   need(auth.lookupAuthorizationBindsPilot(handle, a.pilot));
   await auth.verifyLookupConsumption(handle, { runId: state.runId, controllerEpoch: state.epoch, controller: state.controller });

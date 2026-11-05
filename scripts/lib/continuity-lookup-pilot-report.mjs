@@ -1,12 +1,12 @@
 import { LOOKUP_PRE_SEND_REFUSALS } from "./continuity-lookup-guard.mjs";
 import { digest } from "./continuity-dataset.mjs";
-import { accountLookupPilot, lookupDollars, pilotNeed, LOOKUP_PILOT_STOPS } from "./continuity-lookup-pilot-accounting.mjs";
+import { accountLookupPilot, lookupDollars, pilotNeed, LOOKUP_PILOT_STOPS, LOOKUP_SLOT_TERMINALS } from "./continuity-lookup-pilot-accounting.mjs";
 import { LOOKUP_REAL_CONTROLLER, pilotHash, pilotId, samePilot } from "./continuity-lookup-pilot-state.mjs";
 
 /** Explicit projection: no paths, path digests, commitments, requests, answers or errors. */
 export function lookupPilotReceipt(state, index) {
   const slot = state.slots[index], planned = state.schedule[index];
-  pilotNeed(pilotId(state.runId) && pilotHash(planned.slotId) && slot.slotId === planned.slotId && ["completed", "wrong", "lost", "own_abort_after_send", "pilot_empty_final_output", "store_degraded", "boundary_unverified", "pressure_unverified", "integrity_stop", "skipped", "unadmitted", "refused_pre_send", null].includes(slot.terminal)
+  pilotNeed(pilotId(state.runId) && pilotHash(planned.slotId) && slot.slotId === planned.slotId && [...LOOKUP_SLOT_TERMINALS, null].includes(slot.terminal)
     && [null, 0, 1].includes(slot.score) && (["completed", "wrong"].includes(slot.terminal) || slot.score === null), "lookup_receipt_invalid");
   const bindings = { ...state.publicBindings[planned.code], sourceSha256: state.publicSources[planned.suite] };
   pilotNeed(/^[a-f0-9]{40}$/u.test(bindings.revision)
@@ -14,7 +14,7 @@ export function lookupPilotReceipt(state, index) {
   const a = accountLookupPilot([slot]), holds = slot.holds ?? [];
   const terminalCode = slot.admissionRefusal ?? slot.guardRefusal ?? holds.at(-1)?.settlement?.code ?? slot.terminal;
   pilotNeed(terminalCode === null || LOOKUP_PILOT_STOPS.includes(terminalCode) || LOOKUP_PRE_SEND_REFUSALS.includes(terminalCode)
-    || ["wrong", "lost", "own_abort_after_send", "pilot_empty_final_output", "store_degraded", "boundary_unverified", "pressure_unverified", "integrity_stop", "skipped", "unadmitted", "refused_pre_send"].includes(terminalCode), "lookup_receipt_invalid");
+    || LOOKUP_SLOT_TERMINALS.includes(terminalCode), "lookup_receipt_invalid");
   let input = 0, output = 0;
   for (const h of holds) { input += h.settlement?.rawUsage?.input_tokens ?? 0; output += h.settlement?.rawUsage?.output_tokens ?? 0; }
   const row = { schema: "lookup-pilot-slot-receipt-v1", runId: state.runId, slotId: planned.slotId, position: index, role: planned.roleId,
@@ -30,7 +30,7 @@ export function lookupPilotReceipt(state, index) {
 }
 export function aggregateLookupPilot(state, receipts) {
   pilotNeed(Number.isSafeInteger(state.cursor) && state.cursor >= 0 && state.cursor <= state.schedule.length, "lookup_receipt_invalid");
-  const visited = state.cursor + (state.slots[state.cursor]?.worker || state.slots[state.cursor]?.holds?.length ? 1 : 0);
+  const visited = state.cursor + (state.slots[state.cursor]?.preparation || state.slots[state.cursor]?.worker || state.slots[state.cursor]?.holds?.length ? 1 : 0);
   const seen = new Set();
   for (const row of receipts) {
     pilotNeed(Number.isSafeInteger(row?.position) && row.position >= 0 && row.position < visited && state.schedule[row.position]?.slotId === row.slotId && !seen.has(row.slotId)

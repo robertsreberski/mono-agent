@@ -16,6 +16,7 @@ import { cp, mkdir, readFile, rm, writeFile, realpath, lstat } from "node:fs/pro
 import { dirname, join, isAbsolute, relative, resolve, sep } from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { lookupPreparedBoundary } from "./continuity-lookup-preparation.mjs";
 import { assertResolvedLookupSafety, controlledLookupRuntime, lookupOfflineBoundary, lookupPilotFailureCode, createLookupPilotRoute } from "./continuity-lookup-pilot-runtime.mjs";
 import { armById, hasPackEvidence, checkpointKey, mergePatch, pressureMetrics, verifyBoundary, verifyPressure, verifyStore } from "./continuity-arms.mjs";
 import { LOOKUP_MODE, assertLookupServers, witnessedRecovery, installSoul, assertSoul, lookupPrompt, lookupMeter, lookupForwarder, lookupWitness, scriptedLookupReader, referenceReader, historyBody, sourceAnnotation, resolveSource } from "./continuity-lookup.mjs";
@@ -894,17 +895,18 @@ export function decodeBoundaryChildResult(code, raw, probeMode) {
 export async function runProbe({ modules, trace, arm, repeat, probe, checkpointWork, checkpointSnapshot = null, checkpointContinuity = null, checkpointUpkeep = null, checkpointConversationId, forkDir, plan, mode, authPath, keepWork = false, mid = null, root, lookupReference = false, pilot }) {
   const inPlace = arm.fork === "in-place";
   // A capability is assigned to this PID, not transferable to a nested child.
-  // Refuse rather than measure a restart/in-place arm without its fresh process.
-  if (pilot && (arm.restart || inPlace)) throw new ContinuityError("lookup_pilot_boundary_required");
-  if (inPlace && checkpointSnapshot === null) throw new ContinuityError("in_place_fork_requires_snapshot");
+  // Only the verified, once-restored offline-child proof can replace a nested child.
+  const prepared = pilot && lookupPreparedBoundary(pilot, arm, checkpointWork, checkpointConversationId);
+  if (pilot && !prepared) throw new ContinuityError("lookup_pilot_boundary_required");
+  if (inPlace && !prepared && checkpointSnapshot === null) throw new ContinuityError("in_place_fork_requires_snapshot");
   // In-place: restore the pristine snapshot at the checkpoint's own absolute
   // root (callers never overlap forks of one checkpoint) and probe in a fresh
   // process, so the sidecar's pinned artifact root matches. Copy: a new root.
   const work = inPlace ? checkpointWork : join(forkDir, "work");
-  if (inPlace) {
+  if (inPlace && !prepared) {
     await rm(work, { recursive: true, force: true });
     await cp(checkpointSnapshot, work, { recursive: true, verbatimSymlinks: true });
-  } else {
+  } else if (!prepared) {
     await mkdir(forkDir, { recursive: true, mode: 0o700 });
     await cp(checkpointWork, work, { recursive: true, verbatimSymlinks: true });
   }
@@ -917,7 +919,7 @@ export async function runProbe({ modules, trace, arm, repeat, probe, checkpointW
     const turn = { work, authPath, plan, mode, configPatch: mergePatch(arm.sessionConfig ?? {}, arm.probeConfig), userMessage: plan.probeMode === LOOKUP_MODE ? lookupPrompt(probe) : probePrompt(probe),
       ...(lookupAnnotation ? { lookupSource, lookupAnnotation, lookupReference } : {}),
       conversationId: checkpointConversationId, owner: trace.owner.displayName, pilot };
-    const live = arm.restart || inPlace
+    const live = !prepared && (arm.restart || inPlace)
       ? await runBoundaryChild({ type: "probe", ...turn, root, clockIso: clock.value.toISOString() }, { timeoutMs: plan.limits.perLiveTurnTimeoutMs })
       : await runLiveTurn({ modules, ...turn, clock });
     if (live.lookup) {

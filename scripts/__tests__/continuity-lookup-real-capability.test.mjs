@@ -11,7 +11,7 @@ const BODY = Buffer.from("fictional-body");
 const endpoint = "https://chatgpt.com/backend-api/codex/responses";
 const request = (account = ACCOUNT) => ({ method: "POST", body: BODY, headers: { "chatgpt-account-id": account, "session-id": "assigned", "x-client-request-id": "assigned" } });
 const hold = id => ({ permitId: id, consumed: true, revoked: false, settlement: null, payloadDigest: sha(BODY) });
-const paths = ["roles", "pilot", "authorization", "pilot-state", "ipc", "pilot-entry"].map(n => `../lib/continuity-lookup-${n}.mjs`);
+const paths = ["roles", "pilot", "authorization", "pilot-state", "ipc", "pilot-entry", "preparation"].map(n => `../lib/continuity-lookup-${n}.mjs`);
 beforeEach(async () => {
   vi.resetModules();
   vi.spyOn(Socket.prototype, "connect").mockImplementation(() => { throw Error("test_egress_denied"); });
@@ -28,6 +28,7 @@ beforeEach(async () => {
     outputRoot: "/fictional/output", epoch: "epoch-fictional", runId: "run-fictional", index: 0, cacheKey: "assigned", slotId: slot.slotId, slot,
     plan: { judge: null }, roleRequest: { binding, common, build } };
   graph.approvedPilot = structuredClone(a.pilot);
+  vi.doMock("../lib/continuity-lookup-preparation.mjs", () => ({ verifyLookupPreparation: vi.fn(async () => { if (graph.preparationChanged) throw Error("lookup_preparation_invalid"); }) }));
   vi.doMock("../lib/continuity-lookup-pilot-entry.mjs", () => ({ assertLookupPilotEntry: () => { if (graph.closed) throw Object.assign(Error("lookup_pilot_real_route_unavailable"), { code: "lookup_pilot_real_route_unavailable" }); } }));
   state = { schema: "continuity-lookup-controller-v1", recovery: false, cursor: 0, stop: null, binding: digest(a.pilot), runId: a.runId, epoch: a.epoch,
     deadlineAt: Date.now() + 60000, controller: { pid: 42, startIdentity: "parent" }, cacheKeysUnique: true, schedule,
@@ -63,6 +64,7 @@ it.each([
   ["faux authorization", () => { a.authorization.schema = "continuity-lookup-faux-authorization-v1"; }],
   ["faux controller", () => { state.schema = "continuity-lookup-faux-controller-v1"; }],
   ["fake parent", () => { state.controller.pid++; }], ["swapped parent start", () => { state.controller.startIdentity = "other"; }],
+  ["preparation PID has no probe assignment", () => { state.slots[0].worker = null; }],
   ["wrong child", () => { state.slots[0].worker.pid++; }], ["wrong child start", () => { state.slots[0].worker.startIdentity = "other"; }],
   ["missing epoch", () => { delete a.epoch; }], ["swapped epoch", () => { a.epoch = "other"; }],
   ["missing marker", () => { graph.markers = false; }], ["raw artifact changed", () => { graph.raw = "changed"; }],
@@ -184,4 +186,9 @@ it("ignores null SSE frames and still awaits the fixed quota stop", async () => 
   const send = await cap.createLookupRealSend(a, safety), response = await send(endpoint, request());
   await expect(response.text()).rejects.toMatchObject({ code: "lookup_quota_exhausted" });
   expect(stopped).toBe(true); expect(network).toHaveBeenCalledTimes(1); expect(permit.stop).toHaveBeenCalledTimes(1);
+});
+
+it("revalidates the durable preparation record on every send", async () => {
+  const send = await cap.createLookupRealSend(a, safety); graph.preparationChanged = true;
+  await expect(send(endpoint, request())).rejects.toThrow("lookup_pilot_capability_invalid"); expect(network).not.toHaveBeenCalled();
 });
