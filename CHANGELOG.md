@@ -2,10 +2,9 @@
 
 ## Unreleased
 
-- Require explicit lookup-preflight timeouts and read-only output-volume checks;
-  include eligible-slot time, probe reserves and retained disk margins before a
-  cap request, require real-timeout equivalence for real cap checks, and preserve
-  fetch body bytes for typed-array requests.
+- Require explicit lookup-preflight timeouts, check output-volume free space
+  without writing, and enforce effective timing and retained-disk margins before
+  a cap request; require real-timeout equivalence and consistent wire-body types.
 
 - Restore checkpoints over owner-read-only directories and check the cumulative
   preparation deadline; exit non-zero for infeasible preflight slots, report

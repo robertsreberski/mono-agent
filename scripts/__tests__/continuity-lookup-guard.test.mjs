@@ -17,7 +17,7 @@ const payload = () => ({ model: C.model, store: false, stream: true, reasoning: 
 function sized(U) { const p = payload(); p.input[0].content += "x".repeat(U - lookupInputEnvelope(p).U); return p; }
 const message = (stopReason = "stop", text = "Fictional answer.") => ({ stopReason, content: [{ type: "text", text }] });
 const usage = (input_tokens = 1, output_tokens = 1) => ({ input_tokens, output_tokens });
-function fixture({ body = payload(), raw = usage(), tier = "default", event = "response.completed", final = message(), failure, mutate, noSend = false, doubleSend = false, duplicateTerminal = false, repeatedPayload = false, sendUrl, sendHeaders, skipPayload = false, contractPatch = {}, permitSource, resolvedSafety } = {}) {
+function fixture({ body = payload(), raw = usage(), tier = "default", event = "response.completed", final = message(), failure, mutate, noSend = false, doubleSend = false, duplicateTerminal = false, repeatedPayload = false, sendUrl, sendHeaders, skipPayload = false, contractPatch = {}, permitSource, resolvedSafety, sendBody = value => value } = {}) {
   const permit = permitSource ?? createTestOnlyLookupPermitSource(), send = vi.fn(async () => new Response(""));
   const underlying = { streamSimple: vi.fn((_m, _c, options) => {
     const result = (async () => {
@@ -27,8 +27,8 @@ function fixture({ body = payload(), raw = usage(), tier = "default", event = "r
         if (repeatedPayload) await options.onPayload(body, model);
         mutate?.(p);
         if (noSend) throw Error("fictional_before_send_abort");
-        await options.fetch(sendUrl ?? `${C.baseUrl}/codex/responses`, { method: "POST", headers: sendHeaders, body: JSON.stringify(p) });
-        if (doubleSend) await options.fetch(sendUrl ?? `${C.baseUrl}/codex/responses`, { method: "POST", headers: sendHeaders, body: JSON.stringify(p) });
+        await options.fetch(sendUrl ?? `${C.baseUrl}/codex/responses`, { method: "POST", headers: sendHeaders, body: sendBody(JSON.stringify(p)) });
+        if (doubleSend) await options.fetch(sendUrl ?? `${C.baseUrl}/codex/responses`, { method: "POST", headers: sendHeaders, body: sendBody(JSON.stringify(p)) });
         if (failure) { failure(options); throw Error("fictional_stream_failure"); }
         await options.onProviderStreamEvent({ type: event, response: { usage: raw, ...(tier !== "OMIT" ? { service_tier: tier } : {}) } }, model);
         if (duplicateTerminal) await options.onProviderStreamEvent({ type: event, response: { usage: raw, service_tier: tier } }, model);
@@ -414,4 +414,19 @@ it("keeps repeated payload refusal a fixed sticky policy code", async () => {
   expect(settles(f)[0].outcome).toMatchObject({ kind: "integrity_stop", code: "lookup_payload_repeated" });
   expect(f.permit.events.some(e => e.type === "stop" && e.code === "lookup_payload_repeated")).toBe(true);
   expect(() => f.call()).toThrow("lookup_stopped"); expect(f.send).not.toHaveBeenCalled();
+});
+
+it.each(["string", "Uint8Array", "ArrayBuffer"])("guard consumes the same owned %s bytes sent by transports", async kind => {
+  const f = fixture({sendBody: text => kind === "string" ? text : kind === "Uint8Array" ? new Uint8Array(Buffer.from(text)) : Uint8Array.from(Buffer.from(text)).buffer});
+  await f.call();
+  expect(f.send).toHaveBeenCalledOnce(); const bytes = f.send.mock.calls[0][1].body;
+  expect(Buffer.isBuffer(bytes)).toBe(true);
+  expect(f.permit.events.find(e => e.type === "admit").payloadDigest).toBe(lookupBodyDigest(bytes));
+  expect(f.permit.events.filter(e => e.type === "consume")).toHaveLength(1);
+});
+it.each([new DataView(new ArrayBuffer(4)), new Uint16Array(2), new Int8Array(2), new Uint8ClampedArray(2), new FormData(), new URLSearchParams(), new Blob(["fictional"]), null, undefined])("guard refuses unsupported body %# before consume or send", async body => {
+  const f = fixture({sendBody: () => body});
+  await expect(f.call()).rejects.toMatchObject({code: "lookup_body_type_forbidden"});
+  expect(f.send).not.toHaveBeenCalled(); expect(f.permit.events.filter(e => e.type === "consume")).toHaveLength(0);
+  expect(f.permit.events).toContainEqual(expect.objectContaining({type: "stop", code: "lookup_body_type_forbidden"}));
 });

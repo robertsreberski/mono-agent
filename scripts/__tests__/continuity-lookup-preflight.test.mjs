@@ -69,6 +69,8 @@ it("runs full configured preparation for every eligible scheduled slot, exits de
   const evidence = await Promise.all((await fs.readdir(witnesses)).map(async file => JSON.parse(await fs.readFile(join(witnesses, file)))));
   const preparers = evidence.filter(e => e.preparing && e.isMainThread);
   expect(preparers).toHaveLength(rows.length);
+  const dry = evidence.find(e => e.isMainThread && !e.preparing);
+  expect(Object.values(dry.dryRestoreReads).length).toBeGreaterThan(0); expect(Object.values(dry.dryRestoreReads).every(n => n === 2)).toBe(true);
   expect(evidence.filter(e => e.isMainThread && !e.preparing)).toHaveLength(1);
   expect(preparers.every(e => e.ppid === child.pid)).toBe(true);
   for (const e of preparers) { expect(e).toMatchObject({builds: 1, lingering: true, lastSent: "prepared", exitCode: 0, unexpected: 0}); expect(e.turns).toBe(e.registeredTurns); expect(e.turns).toBeGreaterThan(1); }

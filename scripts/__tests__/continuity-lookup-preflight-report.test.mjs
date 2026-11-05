@@ -26,9 +26,9 @@ it.each(["lookup_preparation_invalid", "lookup_preparation_timeout"])("reports %
   expect(stdout.mock.calls[0][0]).not.toContain("FICTIONAL_PRIVATE_CONTENT"); expect(stdout.mock.calls[0][0]).not.toContain("fictional-private-name");
 });
 
-async function scenario({count = 2, runDeadlineMs = 1000000, prepare, restore, cleanup, timeoutMs = 600000, eligible = () => true, freeBytes, retained, outputRoot = "/fictional/output", deadlineMs = 720000, requireRealEquivalent = false} = {}) {
+async function scenario({count = 2, runDeadlineMs = 1000000, prepare, restore, cleanup, timeoutMs = 600000, eligible = () => true, freeBytes, retained, outputRoot = "/fictional/output", deadlineMs = 720000, childWatchdogMs = 600000, requireRealEquivalent = false} = {}) {
   vi.resetModules();
-  const pilot = {registration: {}, descriptor: {deadlines: {deadlineMs, childWatchdogMs: 600000, runDeadlineMs}}};
+  const pilot = {registration: {}, descriptor: {deadlines: {deadlineMs, childWatchdogMs, runDeadlineMs}}};
   const schedule = Array.from({length: count}, (_, i) => ({slotId: `fictional-${i}`, traceId: `trace-${i}`, eligible: eligible(i)}));
   vi.doMock("../lib/continuity-lookup-pilot.mjs", async original => ({...await original(), validateLookupPilotRegistration() {}, readLookupPilotRegistration: async () => pilot}));
   vi.doMock("../lib/continuity-lookup-roles.mjs", async original => ({...await original(), verifyRegisteredCheckouts() {}}));
@@ -104,10 +104,10 @@ it.each(["work", "root"])("emits the fixed infeasible report when %s cleanup fai
 });
 
 const footprint = {snapshotBytes: 10, workBytes: 10, homeBytes: 4, otherBytes: 0, retainedBytes: 24};
-it.each([[850, 200, true], [849, 200, false], [850, 149, false]])("applies the time margins to deadline=%s timeout=%s", async (runDeadlineMs, timeoutMs, feasible) => {
+it.each([[10850, 200, true], [10849, 200, false], [10850, 149, false]])("applies the time margins to deadline=%s timeout=%s", async (runDeadlineMs, timeoutMs, feasible) => {
   let clock = 0; vi.spyOn(Date, "now").mockImplementation(() => 1000000000 + clock); vi.spyOn(performance, "now").mockImplementation(() => clock);
   const {report} = await scenario({runDeadlineMs, timeoutMs, prepare: () => {clock += 100;}, restore: async () => {clock += 50;}, freeBytes: 10000, retained: footprint});
-  expect(report.feasible).toBe(feasible); expect(report.timing).toMatchObject({margin: 1.5, requiredTimeoutMs: 150, preparationAndRestoreMs: 300, probeReserveMs: 2 * timeoutMs, requiredRunMs: 450 + 2 * timeoutMs, timeoutMs});
+  expect(report.feasible).toBe(feasible); expect(report.timing).toMatchObject({margin: 1.5, requiredTimeoutMs: 150, preparationAndRestoreMs: 300, probeReserveMs: 2 * timeoutMs, requiredRunMs: 10450 + 2 * timeoutMs, timeoutMs});
 });
 it.each([[60, true], [59, false]])("requires the retained eligible bytes plus 25 percent with free=%s", async (freeBytes, feasible) => {
   const {report} = await scenario({runDeadlineMs: 2000000, restore: async () => {}, freeBytes, retained: footprint});
@@ -161,7 +161,7 @@ it.each([[600000, false, true, 0], [100000, false, false, 0], [100000, true, fal
   expect(result.report).toMatchObject({realRequestedTimeoutMs: 600000, realEquivalent, realEquivalentRequired: requireRealEquivalent,
     realEquivalence: realEquivalent ? "matches_real_run_timeout" : "timeout_does_not_match_real_run"});
 });
-it.each([1000, 100])("uses real-shaped effective watchdogs and reserves the effective probe time for run=%s", async runDeadlineMs => {
+it.each([20000, 100])("uses real-shaped effective watchdogs and reserves the effective probe time for run=%s", async runDeadlineMs => {
   vi.spyOn(Date, "now").mockReturnValue(1000000000); vi.spyOn(performance, "now").mockReturnValue(0);
   const {report} = await scenario({count: 2, timeoutMs: 600000, deadlineMs: 200, runDeadlineMs, restore: async () => {}, retained: footprint});
   const {lookupPilotWatchdog} = await import("../lib/continuity-lookup-pilot-runtime.mjs");
@@ -169,9 +169,41 @@ it.each([1000, 100])("uses real-shaped effective watchdogs and reserves the effe
   const effective = lookupPilotWatchdog(realOptions, {deadlineMs: 200, childWatchdogMs: 600000}, 1000000000 + runDeadlineMs, 1000000000);
   expect(report.realEquivalent).toBe(true);
   for (const row of report.slots) expect(row).toMatchObject({watchdogMs: effective, restoreWatchdogMs: effective, probeWatchdogMs: effective, realWatchdogMs: effective, probeRemainingRunMs: runDeadlineMs});
-  expect(report.timing.probeReserveMs).toBe(2 * effective); expect(report.timing.requiredRunMs).toBe(2 * effective);
-  expect(report.feasible).toBe(2 * effective <= runDeadlineMs);
+  expect(report.timing).toMatchObject({effectiveTimeoutMs: 200, perSlotAllowanceMs: 5000, controllerAllowanceMs: 10000, probeReserveMs: 400, requiredRunMs: 10400});
+  expect(report.feasible).toBe(10400 <= runDeadlineMs);
 });
 it.each([["--require-real-equivalent", "--require-real-equivalent"], ["--require-real-equivalent", "true"], ["--registration", "--require-real-equivalent", "fictional"]])("rejects malformed real-equivalence switch %j", async (...flags) => {
   const {main} = await import("../continuity-lookup-compare.mjs"); await expect(main(["preflight", ...flags])).rejects.toThrow("lookup_registration_invalid");
+});
+
+it.each([[470000, false], [400000, true], [400001, false]])("compares the preparation margin to the effective kill point for prep=%s", async (ms, feasible) => {
+  let clock = 0; vi.spyOn(Date, "now").mockImplementation(() => 1000000000 + clock); vi.spyOn(performance, "now").mockImplementation(() => clock);
+  const {report} = await scenario({count: 1, timeoutMs: 720000, childWatchdogMs: 720000, deadlineMs: 600000, runDeadlineMs: 3000000, prepare: () => {clock += ms;}, restore: async () => {}, retained: footprint});
+  expect(report.realEquivalent).toBe(true); expect(report.feasible).toBe(feasible);
+  expect(report.timing).toMatchObject({timeoutMs: 720000, effectiveTimeoutMs: 600000, requiredTimeoutMs: Math.ceil(ms * 1.5), probeReserveMs: 600000, controllerAllowanceMs: 5000});
+});
+it("compares very large free space as bigint and saturates only its JSON number", async () => {
+  const {report} = await scenario({count: 1, restore: async () => {}, retained: footprint, freeBytes: 2n ** 100n});
+  expect(report.feasible).toBe(true); expect(report.disk.freeBytes).toBe(Number.MAX_SAFE_INTEGER); expect(report.disk.requiredFreeBytes).toBe(30);
+});
+it.each([null, 1, {}, []].map(value => [value]))("refuses non-string direct outputRoot %j with the fixed code", async outputRoot => {
+  vi.doMock("../lib/continuity-lookup-pilot.mjs", async original => ({...await original(), validateLookupPilotRegistration() {}}));
+  const {runLookupPreparationPreflight} = await import("../lib/continuity-lookup-preflight.mjs");
+  await expect(runLookupPreparationPreflight({descriptor: {deadlines: {childWatchdogMs: 600000}}}, {timeoutMs: 600000, outputRoot})).rejects.toMatchObject({code: "lookup_registration_invalid"});
+});
+it.each(["--real", "--real=value"])("preserves the explicit real refusal for %s", async flag => {
+  const {main} = await import("../continuity-lookup-compare.mjs"); await expect(main(["preflight", flag])).rejects.toMatchObject({code: "lookup_real_not_authorized"});
+});
+it("retains a failed tree with an unreadable directory and names the safe cleanup step", async () => {
+  let retainedRoot, unreadable;
+  try {
+    const {report, preparer, status} = await scenario({prepare: async ({root, slot}) => {
+      retainedRoot = root; unreadable = join(root, "work", slot.slotId, "unreadable"); await mkdir(unreadable, {mode: 0});
+      throw Object.assign(Error("fictional_partial_preparation"), {code: "lookup_preparation_invalid"});
+    }, restore: async () => {}});
+    expect(status).toBe(1); expect(preparer).toHaveBeenCalledOnce();
+    expect(report).toMatchObject({feasible: false, cleanupFailed: true, cleanupFailure: "lookup_preparation_unreadable_directory", cleanupAction: "resolve_containment_then_remove_owned_root"});
+    expect(report.slots.every(s => !s.feasible)).toBe(true); expect((await lstat(unreadable)).mode & 0o777).toBe(0);
+    await expect(access(join(retainedRoot, "lookup-pilot-controller.json"))).resolves.toBeUndefined(); expect(JSON.stringify(report)).not.toContain(retainedRoot);
+  } finally {if (unreadable) await chmod(unreadable, 0o700); if (retainedRoot) await rm(retainedRoot, {recursive: true, force: true});}
 });

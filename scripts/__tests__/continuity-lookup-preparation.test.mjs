@@ -171,3 +171,32 @@ it.each([false, true])("uses the same two snapshot reads in restore (preflight=%
   vi.spyOn(fs, "open").mockImplementation((path, ...args) => {if (path === join(snapshot, "history.json")) reads++; return original(path, ...args);}); syncBuiltinESMExports();
   await (dry ? restoreLookupPreflight : restoreLookupPreparation)(a); expect(reads).toBe(2);
 });
+
+it("refuses a real mode-zero directory without chmodding or following anything outside it", async () => {
+  const checked = join(root, "unreadable"), outside = join(root, "outside");
+  await fs.mkdir(checked, {mode: 0o700}); await fs.mkdir(outside, {mode: 0o700});
+  await fs.writeFile(join(outside, "fictional"), "Unchanged fictional bytes.", {mode: 0o600}); await fs.chmod(outside, 0o500);
+  await fs.symlink(outside, join(checked, "external")); await fs.chmod(checked, 0);
+  try {
+    await expect(removeLookupWorkTree(checked)).rejects.toMatchObject({code: "lookup_preparation_unreadable_directory"});
+    expect((await fs.lstat(checked)).mode & 0o777).toBe(0); expect((await fs.lstat(outside)).mode & 0o777).toBe(0o500);
+    expect(await fs.readFile(join(outside, "fictional"), "utf8")).toBe("Unchanged fictional bytes.");
+  } finally {await fs.chmod(checked, 0o700);}
+});
+it("never recursively deletes a replacement introduced at final root removal", async () => {
+  const checked = join(root, "checked-final"); await fs.mkdir(checked, {mode: 0o700});
+  await fs.writeFile(join(checked, "verified"), "Owned fictional bytes.", {mode: 0o600});
+  const original = fs.rmdir.bind(fs);
+  vi.spyOn(fs, "rmdir").mockImplementation(async path => {
+    if (path === checked) {await fs.rename(checked, checked + "-original"); await fs.mkdir(checked, {mode: 0o700}); await fs.writeFile(join(checked, "replacement"), "Unverified fictional bytes.", {mode: 0o600});}
+    return original(path);
+  }); syncBuiltinESMExports();
+  await expect(removeLookupWorkTree(checked)).rejects.toMatchObject({code: "ENOTEMPTY"});
+  expect(await fs.readFile(join(checked, "replacement"), "utf8")).toBe("Unverified fictional bytes.");
+});
+it("counts exactly two reads across the actual normal verify-then-restore entry sequence", async () => {
+  const original = fs.open.bind(fs); let reads = 0;
+  vi.spyOn(fs, "open").mockImplementation((path, ...args) => {if (path === join(snapshot, "history.json")) reads++; return original(path, ...args);}); syncBuiltinESMExports();
+  await verifyLookupPreparation(a, state); expect(reads).toBe(1);
+  await restoreLookupPreparation(a); expect(reads).toBe(2);
+});

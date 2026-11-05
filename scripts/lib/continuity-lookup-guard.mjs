@@ -1,4 +1,4 @@
-import { assertResolvedLookupSafety, lookupCacheKey } from "./continuity-lookup-pilot-runtime.mjs";
+import { assertResolvedLookupSafety, lookupCacheKey, lookupBodyBytes } from "./continuity-lookup-pilot-runtime.mjs";
 import { isRealLookupSend, realLookupSendForGuard } from "./continuity-lookup-real-capability.mjs";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
@@ -29,7 +29,7 @@ export const LOOKUP_OUTCOMES = freeze({
 // Only capacity/terminal refusals may continue a pilot; policy violations are sticky.
 export const LOOKUP_PRE_SEND_REFUSALS = Object.freeze(["not_admitted_input_envelope", "lookup_request_limit", "not_admitted_cap", "lookup_stopped", "lookup_slot_terminal"]);
 export const LOOKUP_GUARD_POLICY_REFUSALS = Object.freeze([
-  "lookup_route_mismatch", "lookup_contract_mismatch", "lookup_option_forbidden", "lookup_external_fetch_forbidden",
+  "lookup_body_type_forbidden", "lookup_route_mismatch", "lookup_contract_mismatch", "lookup_option_forbidden", "lookup_external_fetch_forbidden",
   "lookup_headers_forbidden", "lookup_env_forbidden", "lookup_payload_forbidden", "lookup_initial_reasoning_forbidden",
   "lookup_prompt_cache_key_forbidden", "lookup_retry_profile_forbidden", "lookup_auxiliary_callers_forbidden",
   "lookup_method_forbidden", "lookup_model_switch_forbidden", "lookup_preparation_forbidden", "lookup_preparation_invalid", "lookup_tools_forbidden",
@@ -349,13 +349,14 @@ export function guardedLookupModels(models, { contract, permit, send, assumption
           integrity = "lookup_send_mismatch"; throw new LookupGuardError(integrity);
         }
         try {
-          const bytes = encoding === "zstd" ? zstdDecompressSync(init.body) : Buffer.from(init.body);
+          init = {...init, body: lookupBodyBytes(init.body)};
+          const bytes = encoding === "zstd" ? zstdDecompressSync(init.body) : init.body;
           const bodyDigest = lookupBodyDigest(bytes);
           if (bodyDigest !== admittedPayloadDigest) {
             integrity = "lookup_body_mismatch"; throw new LookupGuardError(integrity);
           }
           await permit.consume(admitted, bodyDigest);
-        } catch (error) { integrity ??= "lookup_permit_invalid"; throw error; }
+        } catch (error) { integrity ??= error.code === "lookup_body_type_forbidden" ? error.code : "lookup_permit_invalid"; throw error; }
         if (integrity) throw new LookupGuardError(integrity);
         sent = true;
         return send(url, init);

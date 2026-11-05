@@ -19,7 +19,7 @@ async function freeSpace(outputRoot) {
   let path = outputRoot;
   for (;;) try {
     const stat = await statfs(path, {bigint: true}), bytes = stat.bavail * stat.bsize;
-    need(bytes >= 0n && bytes <= BigInt(Number.MAX_SAFE_INTEGER)); return Number(bytes);
+    need(bytes >= 0n); return bytes;
   } catch (error) {
     if (error.code === "ENOENT" && dirname(path) !== path) { path = dirname(path); continue; }
     throw Object.assign(Error("lookup_preflight_output_invalid"), {code: "lookup_preflight_output_invalid"});
@@ -28,11 +28,12 @@ async function freeSpace(outputRoot) {
 export async function runLookupPreparationPreflight(pilot, {timeoutMs, outputRoot} = {}) {
   pilot = structuredClone(pilot);
   await validateLookupPilotRegistration(pilot);
-  if (!validLookupPilotTimeout(timeoutMs, pilot.descriptor.deadlines.childWatchdogMs) || !isAbsolute(outputRoot ?? ""))
+  if (!validLookupPilotTimeout(timeoutMs, pilot.descriptor.deadlines.childWatchdogMs) || typeof outputRoot !== "string" || !isAbsolute(outputRoot))
     throw Object.assign(Error("lookup_registration_invalid"), {code: "lookup_registration_invalid"});
   await verifyRegisteredCheckouts(pilot.registration);
   const realRequestedTimeoutMs = pilot.descriptor.deadlines.childWatchdogMs, realEquivalent = timeoutMs === realRequestedTimeoutMs;
   const freeBytes = await freeSpace(outputRoot);
+  const effectiveTimeoutMs = Math.min(timeoutMs, pilot.descriptor.deadlines.deadlineMs), perSlotAllowanceMs = 5000;
   const root = await realpath(await mkdtemp(join(tmpdir(), "lookup-preflight-"))); await chmod(root, 0o700);
   const schedule = lookupPilotSchedule(pilot), slots = [], ineligibleSlots = [], beganRun = performance.now();
   const runDeadlineMs = pilot.descriptor.deadlines.runDeadlineMs, deadlineAt = Date.now() + runDeadlineMs;
@@ -57,7 +58,9 @@ export async function runLookupPreparationPreflight(pilot, {timeoutMs, outputRoo
     stop(code) { return serial(async () => { state.stop ??= code; await save(); }); },
     finish() { return serial(save); },
   };
-  let contained = true, cleanupFailed = false, report;
+  let contained = true, cleanupFailed = false, cleanupFailure = null, report;
+  const cleanupAction = "resolve_containment_then_remove_owned_root";
+  const cleanupCode = error => error.code === "lookup_preparation_unreadable_directory" ? error.code : "lookup_preparation_invalid";
   try {
     need(typeof state.controller.startIdentity === "string" && state.controller.startIdentity.length > 0);
     for (let index = 0; index < schedule.length; index++) {
@@ -102,25 +105,25 @@ export async function runLookupPreparationPreflight(pilot, {timeoutMs, outputRoo
       slots.push(row);
       // Never remove a root while a preparation group is unreconciled.
       if (contained) try { await removeLookupWorkTree(join(root, "work")); }
-      catch { cleanupFailed = true; row.feasible = false; row.failure = "lookup_preparation_invalid"; }
+      catch (error) { cleanupFailed = true; cleanupFailure = cleanupCode(error); row.feasible = false; row.failure = "lookup_preparation_invalid"; }
     }
     const elapsedMs = Math.ceil(performance.now() - beganRun), preparationAndRestoreMs = preparationMs + restoreMs;
     const eligibleSlots = schedule.filter(s => s.eligible).length, slowestPreparationMs = Math.max(0, ...slots.map(s => s.preparationMs));
-    const requiredTimeoutMs = Math.ceil(slowestPreparationMs * 1.5), probeReserveMs = slots.reduce((sum, slot) => sum + slot.probeWatchdogMs, 0);
-    const requiredRunMs = Math.ceil(preparationAndRestoreMs * 1.5) + probeReserveMs, requiredFreeBytes = Math.ceil(retainedBytes * 1.25);
-    const timeFeasible = Number.isSafeInteger(requiredRunMs) && requiredRunMs <= runDeadlineMs && timeoutMs >= requiredTimeoutMs && elapsedMs < runDeadlineMs;
-    const diskFeasible = Number.isSafeInteger(requiredFreeBytes) && freeBytes >= requiredFreeBytes;
+    const requiredTimeoutMs = Math.ceil(slowestPreparationMs * 1.5), probeReserveMs = eligibleSlots * effectiveTimeoutMs, controllerAllowanceMs = eligibleSlots * perSlotAllowanceMs;
+    const requiredRunMs = Math.ceil(preparationAndRestoreMs * 1.5) + probeReserveMs + controllerAllowanceMs, requiredFreeBytes = Math.ceil(retainedBytes * 1.25);
+    const timeFeasible = Number.isSafeInteger(requiredRunMs) && requiredRunMs <= runDeadlineMs && effectiveTimeoutMs >= requiredTimeoutMs && elapsedMs < runDeadlineMs;
+    const diskFeasible = Number.isSafeInteger(requiredFreeBytes) && freeBytes >= BigInt(requiredFreeBytes);
     report = { schema: "lookup-preflight-report-v1", realRequestedTimeoutMs, realEquivalent,
       realEquivalence: realEquivalent ? "matches_real_run_timeout" : "timeout_does_not_match_real_run", limits: LOOKUP_TREE_LIMITS, slots, ineligibleSlots,
-      timing: { timeoutMs, eligibleSlots, preparationMs, restoreMs, preparationAndRestoreMs, elapsedMs, runDeadlineMs,
+      timing: { timeoutMs, effectiveTimeoutMs, perSlotAllowanceMs, controllerAllowanceMs, eligibleSlots, preparationMs, restoreMs, preparationAndRestoreMs, elapsedMs, runDeadlineMs,
         probeTimeExcluded: true, margin: 1.5, slowestPreparationMs, requiredTimeoutMs, probeReserveMs, requiredRunMs, feasible: timeFeasible },
-      disk: {eligibleRetainedBytes: retainedBytes, freeBytes, requiredFreeBytes, margin: 1.25, feasible: diskFeasible},
-      unreconciledProcesses: !contained, cleanupFailed,
+      disk: {eligibleRetainedBytes: retainedBytes, freeBytes: Number(freeBytes > BigInt(Number.MAX_SAFE_INTEGER) ? BigInt(Number.MAX_SAFE_INTEGER) : freeBytes), requiredFreeBytes, margin: 1.25, feasible: diskFeasible},
+      unreconciledProcesses: !contained, cleanupFailed, cleanupFailure, cleanupAction: !contained || cleanupFailed ? cleanupAction : null,
       feasible: eligibleSlots > 0 && slots.every(s => s.feasible) && timeFeasible && diskFeasible };
 
     return report;
   } finally {
     if (contained && !cleanupFailed) try { await removeLookupWorkTree(root); }
-    catch (error) { if (!report) throw error; report.cleanupFailed = true; report.feasible = false; report.failure = "lookup_preparation_invalid"; }
+    catch (error) { if (!report) throw error; report.cleanupFailed = true; report.cleanupFailure = cleanupCode(error); report.cleanupAction = cleanupAction; report.feasible = false; report.failure = "lookup_preparation_invalid"; }
   }
 }

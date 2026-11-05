@@ -1574,14 +1574,17 @@ infeasible reports exit non-zero.
 
 The aggregate verdict requires both time margins:
 
-- `1.5 × (eligible preparation + restore time) + sum(effective probe watchdogs)`
+- `1.5 × (eligible preparation + restore time) + eligible slots × (effectiveTimeoutMs + 5000)`
   must be no greater than `runDeadlineMs`.
-- `timeoutMs` must be at least `1.5 × slowest eligible preparation time`.
+- `effectiveTimeoutMs = min(timeoutMs, deadlineMs)` must be at least
+  `1.5 × slowest eligible preparation time`.
 
-No probe executes: its effective watchdog (minimum of requested timeout,
-`deadlineMs` and remaining run time) is reserved per eligible slot rather than
-measured. The report states the 1.5 margin, reserved probe time and required run
-budget. Snapshot, restored work and homes are summed across eligible slots as
+No probe executes: reserve `min(timeoutMs, deadlineMs)` per eligible probe,
+without clipping that reserve by the preflight's remaining time. Add 5000 ms per
+eligible slot for SIGTERM/SIGKILL, settling and controller overhead. The report
+states effectiveTimeoutMs, the 1.5 margin, probeReserveMs, perSlotAllowanceMs,
+controllerAllowanceMs and requiredRunMs. Observed phase watchdogs still clip by
+remaining time; they are distinct from these conservative budget reserves. Snapshot, restored work and homes are summed across eligible slots as
 retained data, even though the free check deletes them between slots. The
 output volume must have at least `1.25 × eligible retained bytes` free. Sizes
 use the greater of logical and allocated bytes and do not follow symlinks.
@@ -1592,41 +1595,63 @@ reservation of future disk or provider capacity.
 
 #### Before requesting a cap
 
-1. Use the **exact registration SHA that will be authorized**, intended timeout
-   and intended output root. For a **real cap request**, set `--timeout-ms` to
-   that registration's `childWatchdogMs` and include `--require-real-equivalent`;
-   the real options contract has no timeout override. Other valid explicit
-   timeouts describe faux/future callers, not an equivalent current real run.
-   Set `TMPDIR` to an existing directory on the
-   output volume, at a similar path depth. For example, using fictional paths:
-
-   Set `CHILD_WATCHDOG_MS` from the exact registration (the current default is
-   720000 ms, not a value to assume for future registrations).
+1. Use the **exact registration SHA that will be authorized**, the registration's
+   `childWatchdogMs` as `--timeout-ms`, and `--require-real-equivalent`. The real
+   options have no timeout override. Use **the canonical output path the
+   authorization will name**, not a symlink alias such as `/tmp` on macOS. Set
+   `TMPDIR` to an existing directory on that output volume at similar path depth.
+   For example, first create the fictional directories and resolve their paths:
 
    ```sh
-   TMPDIR=/tmp/lookup-volume/preflight pnpm exec node \
+   mkdir -p /tmp/lookup-volume/preflight /tmp/lookup-volume/output
+   OUTPUT_ROOT="$(pnpm exec node -p 'require("node:fs").realpathSync(process.argv[1])' /tmp/lookup-volume/output)"
+   PREFLIGHT_TMPDIR="$(pnpm exec node -p 'require("node:fs").realpathSync(process.argv[1])' /tmp/lookup-volume/preflight)"
+   TMPDIR="$PREFLIGHT_TMPDIR" pnpm exec node \
      scripts/continuity-lookup-compare.mjs preflight \
      --registration /tmp/lookup-registration.json --sha256 REGISTRATION_SHA \
      --timeout-ms "$CHILD_WATCHDOG_MS" --require-real-equivalent \
-     --output-root /tmp/lookup-volume/output
+     --output-root "$OUTPUT_ROOT"
    ```
 
-2. Require exit zero, `realEquivalent: true` and `feasible: true`, including both
-   time inequalities and the 1.25 disk margin. Preserve the report, exact SHA and intended flag values
-   with the cap request. A preflight does not issue authorization or grant a cap.
-3. Re-run whenever registration changes, and again if timeout, output volume or
-   workload conditions change. Do not reuse a verdict for a different SHA.
-4. If containment or cleanup failed, private copies remain under
-   `$TMPDIR/lookup-preflight-*`. Resolve ownership and live-group containment,
-   verify quiescence, then remove only the specific owned root. Do not glob-delete
-   roots, remove a root while containment is unresolved or signal historical
-   recorded PIDs. A failed cleanup is not permission to bypass containment.
+   Set `CHILD_WATCHDOG_MS` from the exact registration (current default 720000 ms,
+   not a constant to assume). Other valid explicit timeouts describe faux/future
+   callers rather than an equivalent current real run.
+2. Add the configured proof's **measured per-slot probe disk growth for every
+   eligible slot** to reported `eligibleRetainedBytes`, **before** applying the
+   1.25 margin. Require available output-volume bytes to cover that enlarged
+   total ×1.25. Until configured proof supplies those measurements, the report's
+   preparation-only estimate is a **lower bound**, not cap-request readiness;
+   its `feasible` verdict alone is insufficient.
+3. Require exit zero, `realEquivalent: true` and `feasible: true`, both time
+   inequalities above and the enlarged disk check. Preserve the report, exact
+   SHA, intended flags and growth measurements with the cap request. This
+   command does not issue authorization or grant a cap.
+4. Re-run whenever registration, timeout, output volume or workload conditions
+   change. Do not reuse a verdict for a different SHA.
+5. **Re-run immediately before authorization is issued**, rechecking free space,
+   time margins and the measured-growth disk check against current conditions.
+6. If containment or cleanup failed, private copies remain under
+   `$TMPDIR/lookup-preflight-*`; the report names
+   `resolve_containment_then_remove_owned_root`. Resolve ownership and live-group
+   containment, verify quiescence, then remove only the specific owned root. Do
+   not glob-delete roots, remove while containment is unresolved or signal
+   historical recorded PIDs. A failed cleanup is not permission to bypass
+   containment. **Platform limit:** pure Node cannot safely grant read permission
+   on an unreadable directory here; owner-owned directories without owner-read
+   refuse with `lookup_preparation_unreadable_directory`, remain for operator
+   cleanup and make preflight infeasible. No path-following chmod fallback is
+   used. Successful captured trees passed the readable snapshot scan; this limit
+   principally affects failed/partial trees and homes.
 
 Timing margins cover a single sample, warm caches, machine-load variance and
 lease-setup differences: preflight skips the real output lease, while the real
 run takes it. The native runtime lease is still exercised during preparation.
 Probe-time and post-probe disk growth are not measured here; configured process
-proof must measure that growth before relying on these estimates. No margin
+proof must measure that growth before relying on these estimates. The guard and
+both transports accept only strings, Uint8Array (including Buffer) and
+ArrayBuffer bodies, snapshotting the same bytes before awaits. Other typed
+arrays, DataView, FormData, URLSearchParams, Blob and absent bodies refuse with
+`lookup_body_type_forbidden`; no implicit MIME metadata is discarded. No margin
 proves billing behavior, perfect PID incarnation identity, an OS sandbox or
 power-loss durability. The real-route gate remains closed; a cap request is a
 separate operator decision, not permission to execute.

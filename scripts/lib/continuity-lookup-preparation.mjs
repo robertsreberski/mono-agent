@@ -1,6 +1,6 @@
 // Read-only preparation proof and verified-byte restoration. No dispatch authority.
 import { constants } from "node:fs";
-import { lstat, open, readdir, realpath, mkdir, rm, writeFile, chmod } from "node:fs/promises";
+import { lstat, open, readdir, realpath, mkdir, unlink, rmdir, writeFile, chmod } from "node:fs/promises";
 import { join, dirname } from "node:path";
 import { userInfo } from "node:os";
 import { digest } from "./continuity-dataset.mjs";
@@ -68,7 +68,7 @@ export async function lookupPreparationDigest(a) { return (await contents(a)).tr
 export async function verifyLookupPreparation(a, state, restored = false) {
   try { return await verifyPreparation(a, state, restored); } catch { need(false); }
 }
-async function verifyPreparation(a, state, restored, source) {
+async function verifyPreparation(a, state, restored) {
   need([LOOKUP_REAL_CONTROLLER, LOOKUP_FAUX_CONTROLLER].includes(state.schema));
   assertLookupPilotArm(armById(a.roleRequest.binding.arm));
   const record = state.slots[a.index]?.preparation;
@@ -76,7 +76,7 @@ async function verifyPreparation(a, state, restored, source) {
   const saved = verified.get(key(a));
   if (saved) need(samePilot(saved.record, record));
   else {
-    need((source ?? await contents(a)).treeDigest === record.treeDigest);
+    await verifySource(a, record, "lookup-preparation-v1", "lookup-preparation-record-v1");
     verified.set(key(a), { record: freeze(structuredClone(record)), restored: false });
   }
   need(!restored || verified.get(key(a)).restored);
@@ -97,8 +97,8 @@ async function restorePreparation(a) {
   need(state.slots[a.index]?.worker?.pid === process.pid && state.slots[a.index].worker.startIdentity === lookupProcessStartIdentity(process.pid));
   need([LOOKUP_REAL_CONTROLLER, LOOKUP_FAUX_CONTROLLER].includes(state.schema));
   assertLookupPilotArm(armById(a.roleRequest.binding.arm));
+  await verifyPreparation(a, state, false);
   const source = await restoreSource(a, state.slots[a.index].preparation, "lookup-preparation-v1", "lookup-preparation-record-v1");
-  await verifyPreparation(a, state, false, source);
   const saved = verified.get(key(a)); need(!saved.restored);
   const p = paths(a); await installTree(p.work, source.rows);
   // A changed durable record cannot be installed as an in-process boundary proof.
@@ -109,32 +109,45 @@ async function restorePreparation(a) {
 }
 async function restoreSource(a, record, schema, recordSchema) {
   exitedRecord(record, recordSchema);
-  const first = await contents(a, schema); need(first.treeDigest === record.treeDigest);
-  const second = await contents(a, schema); need(second.treeDigest === first.treeDigest);
-  return second;
+  const source = await contents(a, schema); need(source.treeDigest === record.treeDigest); return source;
+}
+async function verifySource(a, record, schema, recordSchema) {
+  // Drop this read's buffers before the restore read; dry and normal share this sequence.
+  await restoreSource(a, record, schema, recordSchema);
 }
 /** Descriptor-bound chmod; compare path identities around enumeration and descent. */
 export async function removeLookupWorkTree(root) {
-  const same = async ({path, stat}) => { const now = await lstat(path); need(now.isDirectory() && now.dev === stat.dev && now.ino === stat.ino); };
-  const writable = async (path, ancestors = []) => {
+  const same = async ({path, stat}) => {
+    const now = await lstat(path); need(now.dev === stat.dev && now.ino === stat.ino && now.mode === stat.mode);
+  };
+  const remove = async (path, ancestors = []) => {
     for (const ancestor of ancestors) await same(ancestor);
     let stat; try { stat = await lstat(path); } catch (error) { if (error.code === "ENOENT") return; throw error; }
-    if (!stat.isDirectory()) return;
     need(stat.uid === userInfo().uid);
+    if (!stat.isDirectory()) {
+      for (const ancestor of ancestors) await same(ancestor);
+      await same({path, stat}); await unlink(path); return;
+    }
+    if (!(stat.mode & 0o400)) throw Object.assign(Error("lookup_preparation_unreadable_directory"), {code: "lookup_preparation_unreadable_directory"});
     const handle = await open(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
     try {
       const bound = await handle.stat(); need(bound.dev === stat.dev && bound.ino === stat.ino && bound.isDirectory());
-      const checked = [...ancestors, {path, stat}];
+      let checked = [...ancestors, {path, stat}];
       for (const dir of checked) await same(dir);
       await handle.chmod((stat.mode & 0o777) | 0o700);
+      stat = await handle.stat(); checked = [...ancestors, {path, stat}];
       for (const dir of checked) await same(dir);
       const names = await readdir(path);
       for (const dir of checked) await same(dir);
-      for (const name of names) await writable(join(path, name), checked);
+      for (const name of names) await remove(join(path, name), checked);
+      for (const dir of checked) await same(dir);
+      // Recheck immediately; rmdir cannot traverse a replacement or new child.
+      await rmdir(path);
     } finally { await handle.close(); }
   };
-  await writable(root); await rm(root, { recursive: true, force: true });
+  await remove(root);
 }
+
 async function installTree(work, rows) {
   await removeLookupWorkTree(work);
   for (const row of rows) {
@@ -151,6 +164,7 @@ export async function restoreLookupPreflight(a) {
     need(state.schema === LOOKUP_PREFLIGHT && state.controller.pid === process.pid
       && state.controller.startIdentity === lookupProcessStartIdentity(process.pid)
       && state.schedule[a.index]?.slotId === a.slotId && samePilot(state.schedule[a.index], a.slot));
+    await verifySource(a, state.slots[a.index]?.preparation, "lookup-preflight-snapshot-v1", "lookup-preflight-record-v1");
     const source = await restoreSource(a, state.slots[a.index]?.preparation, "lookup-preflight-snapshot-v1", "lookup-preflight-record-v1");
     await installTree(paths(a).work, source.rows);
   } catch { need(false); }

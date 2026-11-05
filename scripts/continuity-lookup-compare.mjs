@@ -94,7 +94,7 @@ export async function main(argv = process.argv.slice(2), { stdout = console.log 
   if (argv[0] === "preflight") {
     let flags;
     try { flags = parseLookupOptions(argv.slice(1), ["--registration", "--sha256", "--timeout-ms", "--output-root"], ["--require-real-equivalent"]); }
-    catch { requireLookup(false, "lookup_registration_invalid"); }
+    catch (error) { if (error.code !== "lookup_invalid_arguments") throw error; requireLookup(false, "lookup_registration_invalid"); }
     requireLookup(typeof flags["--registration"] === "string" && flags["--registration"].length > 0 && /^[a-f0-9]{64}$/u.test(flags["--sha256"] ?? ""), "lookup_registration_invalid");
     const { readLookupPilotRegistration } = await import("./lib/continuity-lookup-pilot.mjs");
     const { runLookupPreparationPreflight } = await import("./lib/continuity-lookup-preflight.mjs");
