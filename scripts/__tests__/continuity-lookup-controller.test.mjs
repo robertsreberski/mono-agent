@@ -243,3 +243,13 @@ it.each(["pilot_empty_final_output", "store_degraded", "boundary_unverified", "p
   const receipt = JSON.parse(await fs.readFile(join(k.options.outputRoot, "slots", `${state.slots[0].slotId}.json`)));
   expect(receipt).toMatchObject({ terminal, terminalCode: terminal, score: null, costs: { completeUSD: .0003, retainedUSD: 0 } });
 });
+
+it("uses a frozen bound pilot for admission and settlement after caller mutation", async () => {
+  const k = await kernel(), original = structuredClone(k.journal.pilot);
+  k.options.pilot.descriptor.rmaxUSD = 0; k.options.pilot.descriptor.assumptions.inputMax = 0;
+  k.options.pilot.registration.codes.R0.path = "/fictional/changed";
+  expect(k.journal.pilot).toEqual(original); expect(Object.isFrozen(k.journal.pilot.descriptor.assumptions)).toBe(true);
+  const permit = await admit(k); await message(k, "consume", { permit, bodyDigest: hash });
+  await message(k, "settle", { permit, outcome: { kind: "settled", cost: .0003 }, rawUsage: { input_tokens: 100, output_tokens: 10 }, tier: "default" });
+  expect(k.journal.snapshot().stop).toBeNull(); expect(k.journal.snapshot().slots[0].holds[0].settlement.kind).toBe("settled");
+});

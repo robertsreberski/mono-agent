@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { syncBuiltinESMExports } from "node:module";
 import { readPilotPrivate } from "../lib/continuity-lookup-pilot-state.mjs";
 import { createHash } from "node:crypto";
-import { accountLookupPilot, priceLookupUsage, settleLookupHold, lookupMoney, lookupPilotStopReason } from "../lib/continuity-lookup-pilot-accounting.mjs";
+import { accountLookupPilot, priceLookupUsage, settleLookupHold, lookupMoney, lookupPilotStopReason, LOOKUP_SLOT_TERMINALS } from "../lib/continuity-lookup-pilot-accounting.mjs";
 import { lookupPilotReceipt, aggregateLookupPilot } from "../lib/continuity-lookup-pilot-report.mjs";
 import { lookupPilotSchedule } from "../lib/continuity-lookup-controller.mjs";
 const raw = { input_tokens: 100, output_tokens: 10 };
@@ -172,4 +172,17 @@ it.each([["completed", 1], ["wrong", 0]])("marks only a genuinely graded real %s
 it("does not claim a measured result without admission", () => {
   const state = reportState(); state.schema = "continuity-lookup-controller-v1"; Object.assign(state.slots[0], { holds: [], score: 1 });
   const receipt = lookupPilotReceipt(state, 0); expect(receipt.qualityMeasured).toBe(false); expect(aggregateLookupPilot(state, [receipt]).qualityMeasured).toBe(false);
+});
+
+it.each([...LOOKUP_SLOT_TERMINALS, null])("projects the canonical receipt terminal %s", terminal => {
+  const state = reportState(); state.slots[0].terminal = terminal; state.slots[0].score = null;
+  if (["skipped", "unadmitted", null].includes(terminal)) state.slots[0].holds = [];
+  expect(lookupPilotReceipt(state, 0).terminal).toBe(terminal);
+});
+it("counts a preparation-only partial slot without exporting its process or path proof", () => {
+  const state = reportState(); state.cursor = 0; state.slots[0].terminal = null; state.slots[0].holds = [];
+  state.slots[0].preparation = { pid: 123456, startIdentity: "fictional-start", treeDigest: "f".repeat(64), exited: false };
+  const result = aggregateLookupPilot(state, [lookupPilotReceipt(state, 0)]);
+  expect(result.counts).toMatchObject({ unadmitted: 1, admitted: 0, missing: 0 });
+  expect(JSON.stringify(result)).not.toContain("fictional-start"); expect(JSON.stringify(result)).not.toContain("f".repeat(64));
 });

@@ -271,7 +271,7 @@ it("bounds fallback, requested and elapsed watchdogs without timer coercion", ()
   expect(() => lookupPilotWatchdog({ timeoutMs: 1001 }, deadlines, 2000, 1000)).toThrow("lookup_ipc_invalid");
   expect(() => lookupPilotWatchdog({}, { ...deadlines, deadlineMs: NaN }, 2000, 1000)).toThrow("lookup_ipc_invalid");
 });
-it.each(["native-lookup", "continuity-pack-cold", "continuity-pack-boundary", "restart-switch-compact"])("refuses %s pilot probes before workspace operations rather than faking the process boundary", async id => {
+it.each(["native-lookup", "continuity-pack-cold", "continuity-pack-boundary", "restart-switch-compact", "cold-rebuild"])("refuses %s pilot probes before workspace operations rather than faking the process boundary", async id => {
   await expect(runProbe({ arm: armById(id), pilot: {} })).rejects.toMatchObject({ code: "lookup_pilot_boundary_required" });
 });
 it("pins history at forwarder setup and refuses changed output before forwarding", async () => {
