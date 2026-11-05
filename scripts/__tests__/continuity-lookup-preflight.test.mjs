@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { fork } from "node:child_process";
 import { lookupPreparationStats, LOOKUP_TREE_LIMITS } from "../lib/continuity-lookup-preparation.mjs";
 import { lookupChildEnvironment, lookupChildImports } from "../lib/continuity-lookup-child-environment.mjs";
-import { pilotProcessFixture } from "./fixtures/lookup-pilot-process.mjs";
+import { pilotProcessFixture, loadPilot } from "./fixtures/lookup-pilot-process.mjs";
 const roots = [], children = [];
 const temp = async () => { const p = await fs.realpath(await fs.mkdtemp(join(tmpdir(), "lookup-preflight-test-"))); await fs.chmod(p, 0o700); roots.push(p); return p; };
 afterEach(async () => {
@@ -42,7 +42,7 @@ it("faux mint cannot accept a preflight state even with the real entry gate mock
   const { createLookupFauxSend } = await import("../lib/continuity-lookup-faux-capability.mjs");
   await expect(createLookupFauxSend({outputRoot: root}, {})).rejects.toThrow("lookup_pilot_faux_required"); expect(fetch).not.toHaveBeenCalled();
 });
-it("runs full configured preparation for every scheduled feasible slot, exits despite lingering handles and grants nothing", async () => {
+it("runs full configured preparation for every scheduled slot, exits despite lingering handles and grants nothing", async () => {
   const f = await pilotProcessFixture({configured: true}); roots.push(f.base);
   const witnesses = join(f.base, "preflight-witnesses"), settings = join(f.base, "preflight-settings.json"); await fs.mkdir(witnesses, {mode: 0o700});
   await fs.writeFile(settings, JSON.stringify({runtimeRoot: f.repo, witnesses, configured: true, linger: true}), {mode: 0o600});
@@ -57,7 +57,10 @@ it("runs full configured preparation for every scheduled feasible slot, exits de
   });
   await exit;
   expect(reply.failed, stderr).toBeUndefined(); expect(reply.result.feasible, JSON.stringify(reply.result)).toBe(true);
-  const rows = reply.result.slots.filter(s => !s.skipped); expect(rows.length).toBeGreaterThan(0);
+  const scheduled = (await loadPilot(f, "pilot-state")).lookupPilotSchedule(f.pilot);
+  expect(reply.result.slots.map(s => s.slotId)).toEqual(scheduled.map(s => s.slotId));
+  const rows = reply.result.slots; expect(rows).toHaveLength(scheduled.length); expect(rows.length).toBeGreaterThan(0);
+  expect(rows.some(s => s.eligible === false)).toBe(true);
   for (const row of rows) { expect(row.fileCount).toBeGreaterThan(0); expect(row.totalBytes).toBeGreaterThan(0); expect(row.rejectedEntries).toEqual([]); expect(row.durationMs).toBeLessThanOrEqual(row.watchdogMs); }
   const evidence = await Promise.all((await fs.readdir(witnesses)).map(async file => JSON.parse(await fs.readFile(join(witnesses, file)))));
   const preparers = evidence.filter(e => e.preparing && e.isMainThread);
