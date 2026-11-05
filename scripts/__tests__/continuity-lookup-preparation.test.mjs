@@ -7,6 +7,7 @@ import { Socket } from "node:net";
 import { lookupPilotWork } from "../lib/continuity-lookup-pilot-runtime.mjs";
 import { lookupProcessStartIdentity } from "../lib/continuity-process-identity.mjs";
 import { writeLookupPreparation, verifyLookupPreparation, restoreLookupPreparation, lookupPreparedBoundary, lookupPilotServesArm } from "../lib/continuity-lookup-preparation.mjs";
+import { acquireLookupPilotLease } from "../lib/continuity-lookup-lease.mjs";
 import { armById } from "../lib/continuity-arms.mjs";
 let root, a, state, snapshot, work;
 const save = () => fs.writeFile(join(root, "lookup-pilot-controller.json"), JSON.stringify(state), { mode: 0o600 });
@@ -80,4 +81,13 @@ it.each(["symlink", "hardlink"])("refuses a %s in the snapshot", async kind => {
 it.each(["native-lookup", "continuity-pack-cold", "continuity-pack-boundary"])("serves only the intended in-place arm %s", id => { expect(lookupPilotServesArm(armById(id))).toBe(true); });
 it("refuses explicit restart and auxiliary preparation arms", () => {
   for (const id of ["restart-switch-compact", "continuity-ledger-cold", "continuity-store-compaction", "cold-rebuild"]) expect(lookupPilotServesArm(armById(id))).toBe(false);
+});
+
+it("rejects a renamed live lease inode before opening a non-SQLite descriptor", async () => {
+  const lease = await acquireLookupPilotLease(root), original = join(root, "controller-lock.sqlite"), alias = join(snapshot, "renamed-lease");
+  try {
+    await fs.rename(original, alias); const opened = vi.spyOn(fs, "open"); syncBuiltinESMExports();
+    await expect(restoreLookupPreparation(a)).rejects.toThrow("lookup_preparation_invalid");
+    expect(opened.mock.calls.some(([path]) => path === alias)).toBe(false);
+  } finally { await fs.rename(alias, original); lease.release(); }
 });

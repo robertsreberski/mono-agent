@@ -8,6 +8,7 @@ import { armById } from "./continuity-arms.mjs";
 import { lookupPilotWork } from "./continuity-lookup-pilot-runtime.mjs";
 import { lookupProcessStartIdentity } from "./continuity-process-identity.mjs";
 import { readPilotPrivate, pilotStatePath, samePilot } from "./continuity-lookup-pilot-state.mjs";
+import { isLookupLeaseFile, markLookupLeaseCompromised } from "./continuity-lookup-lease.mjs";
 import { durable } from "./continuity-holdout-workflow.mjs";
 const verified = new Map(), proofs = new WeakMap();
 const need = ok => { if (!ok) throw Object.assign(new Error("lookup_preparation_invalid"), { code: "lookup_preparation_invalid" }); };
@@ -31,10 +32,10 @@ async function tree(root) {
       rows.push({ path: relative, directory: true, mode: before.mode & 0o777 });
       for (const name of (await readdir(path)).sort()) await walk(join(path, name), relative ? `${relative}/${name}` : name);
     } else {
-      need(before.isFile() && before.nlink === 1 && before.size <= 64 * 1024 * 1024);
+      need(before.isFile() && before.nlink === 1 && before.size <= 64 * 1024 * 1024 && !isLookupLeaseFile(path, before));
       const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
       try {
-        const stat = await file.stat(); need(stat.dev === before.dev && stat.ino === before.ino);
+        const stat = await file.stat(); need(!markLookupLeaseCompromised(stat) && stat.dev === before.dev && stat.ino === before.ino);
         const bytes = await file.readFile(), after = await file.stat(); total += bytes.length;
         need(total <= 512 * 1024 * 1024 && bytes.length === stat.size && after.size === stat.size && after.mtimeMs === stat.mtimeMs && after.ctimeMs === stat.ctimeMs);
         rows.push({ path: relative, directory: false, mode: stat.mode & 0o777, sha256: digest(bytes.toString("base64")), bytes });

@@ -563,6 +563,8 @@ it("binds all present pilot artifact files, including guard assumptions, in the 
   const protocol = await lookupProtocol();
   expect(protocol.pilotSha256).toBe(digest(await Promise.all(LOOKUP_PILOT_PROTOCOL_FILES.map(async path => [path, sha256(await readFile(join(ROOT, path)))]))));
   expect(LOOKUP_PILOT_PROTOCOL_FILES).toEqual([
+    "scripts/lib/continuity-lookup-preparation.mjs",
+    "scripts/lib/continuity-lookup-preparation-child.mjs",
     "scripts/lib/continuity-lookup-pilot-runtime.mjs",
   "scripts/lib/continuity-lookup-real-capability.mjs",
   "scripts/lib/continuity-lookup-pilot-entry.mjs",
