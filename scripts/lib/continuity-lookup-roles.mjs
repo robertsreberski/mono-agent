@@ -35,6 +35,9 @@ const json = async path => JSON.parse(await readFile(path, "utf8"));
 const save = (path, value, flag) => writeFile(path, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600, ...(flag ? { flag } : {}) });
 
 export const LOOKUP_PILOT_PROTOCOL_FILES = Object.freeze([
+  "scripts/lib/continuity-lookup-child-environment.mjs",
+  "scripts/lib/continuity-lookup-faux-capability.mjs",
+  "scripts/lib/continuity-lookup-preflight.mjs",
   "scripts/lib/continuity-lookup-preparation.mjs",
   "scripts/lib/continuity-lookup-preparation-child.mjs",
   "scripts/lib/continuity-lookup-pilot-runtime.mjs",

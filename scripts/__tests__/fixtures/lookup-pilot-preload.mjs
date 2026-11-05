@@ -22,7 +22,7 @@ const driver = process.argv[1]?.endsWith("lookup-pilot-driver.mjs"), probe = pro
 // Alter only caller inputs in the real child; the guard itself is loaded unchanged.
 if (probe && ["guard-model-switch", "guard-cache-key", "guard-after-hold"].includes(fault?.action)) registerHooks({ load(url, context, nextLoad) {
   const loaded = nextLoad(url, context);
-  if (!url.endsWith("/continuity-lookup-pilot-child.mjs")) return loaded;
+  if (!url.endsWith("/lookup-pilot-mechanics.mjs")) return loaded;
   const marker = fault.action === "guard-after-hold" ? "const result = await guarded.streamSimple" : "const guarded = guardedLookupModels";
   const injection = fault.action === "guard-cache-key" ? "delete contract.promptCacheKey;"
     : `${fault.action === "guard-after-hold" ? "if (round === 1) " : ""}resolvedSafety.config.runtime.session.modelSwitch = { enabled: true };`;
@@ -40,6 +40,7 @@ for (const method of ["rename", "link"]) {
     if (driver && fault && destination === fault.path) {
       const data = JSON.parse(fs.readFileSync(source, "utf8"));
       match = (fault.revision === undefined || data.revision === fault.revision)
+        && (!fault.admissionRefusal || data.stop === "budget_admission" && data.slots?.some(s => s.admissionRefusal))
         && (fault.calls === undefined || JSON.stringify(data.calls) === JSON.stringify(fault.calls))
         && (fault.terminal === undefined || data.terminal === fault.terminal);
     }
@@ -150,6 +151,9 @@ process.emit = (event, ...args) => {
 let probePid, controllerOutputRoot;
 const fork = childProcess.fork;
 childProcess.fork = (...args) => {
+  const options = args[2];
+  args[2] = { ...options, execArgv: ["--import", new URL(import.meta.url).pathname],
+    env: { ...options.env, LOOKUP_FIXTURE_WITNESSES: directory, ...(process.env.LOOKUP_FIXTURE_FAULT ? { LOOKUP_FIXTURE_FAULT: process.env.LOOKUP_FIXTURE_FAULT } : {}) } };
   const child = fork(...args);
   if (args[0].endsWith("continuity-lookup-pilot-child.mjs")) {
     probePid = child.pid; evidence.probes.push({ pid: child.pid, startIdentity: startIdentity(child.pid) }); record(); const send = child.send.bind(child), deliver = child.emit.bind(child);
@@ -252,3 +256,19 @@ if (probe && ["timeout-before-consume", "timeout-after-consume", "close-idle"].i
   };
 }
 syncBuiltinESMExports();
+
+// Old tests prove journal/IPC fault mechanics only, not configured preparation/replay.
+registerHooks({ load(url, context, next) {
+  const loaded = next(url, context);
+  if (url.endsWith("/continuity-lookup-pilot-probe.mjs")) return { ...loaded,
+    source: `export { runLookupConfiguredProbe } from ${JSON.stringify(new URL("./lookup-pilot-mechanics.mjs", import.meta.url).href)};` };
+  if (!url.endsWith("/continuity-runner.mjs")) return loaded;
+  return { ...loaded, source: String(loaded.source).replace("export async function productionModules(", "async function unusedMechanicsModules(").replace("export async function buildCheckpoint(", "async function unusedMechanicsCheckpoint(") + `
+    export async function productionModules() { return {}; }
+    export async function buildCheckpoint({ dir, trace }) {
+      const work = join(dir, "work"), snapshot = join(dir, "snapshot");
+      await mkdir(work, { recursive: true }); await mkdir(snapshot, { recursive: true });
+      await writeFile(join(snapshot, "fictional.txt"), "Fictional mechanics.", {mode: 0o600});
+      return {work, snapshot, record: {conversationId: "fictional-mechanics"}};
+    }` };
+} });

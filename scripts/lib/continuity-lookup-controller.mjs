@@ -1,3 +1,5 @@
+import { LOOKUP_PREFLIGHT, lookupPreflightDigest } from "./continuity-lookup-preparation.mjs";
+import { lookupChildEnvironment, lookupChildImports } from "./continuity-lookup-child-environment.mjs";
 // Single journal and containment policy; paid entry remains explicitly gated.
 import { fork } from "node:child_process";
 import { constants } from "node:fs";
@@ -30,7 +32,7 @@ async function syncDirectory(path) {
 }
 async function fauxConsume(authorization, pilot, root, identity, lease) {
   await assertLookupPilotLease(lease, root, identity.controller);
-  pilotNeed(Object.keys(authorization).sort().join() === "authorizationId,outputRoot,pilotSha256,scenarios,schema,timeoutMs"
+  pilotNeed(Object.keys(authorization).filter(k => k !== "fixtureEndpoint").sort().join() === "authorizationId,outputRoot,pilotSha256,scenarios,schema,timeoutMs"
     && Array.isArray(authorization.scenarios) && authorization.scenarios.every(s => ["settled", "two_rounds", "wrong", "empty", "empty_two_rounds", "lost", "own_abort_after_send", "integrity_stop", "auth", "quota", "input_refusal", "request_limit"].includes(s))
     && pilotId(authorization.authorizationId) && authorization.outputRoot === root && authorization.pilotSha256 === digest(pilot)
     && Number.isSafeInteger(authorization.timeoutMs) && authorization.timeoutMs > 0 && authorization.timeoutMs <= pilot.descriptor.deadlines.childWatchdogMs,
@@ -56,8 +58,11 @@ function slotTerminal(slot, claimed = "lost") {
 }
 /** Serialized durable journal, independently testable without dispatch or an injectable send. */
 async function initializeLookupPilot(options = {}) {
-  let { pilot } = options;
-  const { authorization, outputRoot } = options;
+  // Take the owned snapshot before validation can await or invoke caller accessors again.
+  try { options = structuredClone(options); } catch { pilotNeed(false, "lookup_pilot_faux_required"); }
+  const freeze = value => { if (value && typeof value === "object") { Object.values(value).forEach(freeze); Object.freeze(value); } return value; };
+  freeze(options);
+  const { pilot, authorization, outputRoot } = options;
   const real = authorization?.schema === "continuity-lookup-pilot-authorization-v1";
   if (real) {
     (await import("./continuity-lookup-pilot-entry.mjs")).assertLookupPilotEntry();
@@ -72,10 +77,7 @@ async function initializeLookupPilot(options = {}) {
   const auth = real ? await import("./continuity-lookup-authorization.mjs") : null;
   const authorizationHandle = real ? await auth.validateLookupAuthorization({ ...authorization, outputRoot }) : null;
   pilotNeed(!real || auth.lookupAuthorizationBindsPilot(authorizationHandle, pilot), "lookup_authorization_binding_mismatch");
-  // Bind once; no admission, worker or settlement reads caller-owned objects.
-  pilot = structuredClone(pilot);
-  const freeze = value => { if (value && typeof value === "object") { Object.values(value).forEach(freeze); Object.freeze(value); } return value; };
-  freeze(pilot);
+
   for (const role of pilot.registration.roles) assertLookupPilotArm(armById(role.arm));
   await verifyRegisteredCheckouts(pilot.registration);
   pilotNeed(await externalDirectory(outputRoot, false, Object.values(pilot.registration.codes).map(c => c.path)) === outputRoot, "lookup_receipt_invalid");
@@ -114,7 +116,7 @@ async function initializeLookupPilot(options = {}) {
     if (real) await auth.consumeLookupAuthorization(authorizationHandle, identity, lease);
     else await fauxConsume(authorization, pilot, outputRoot, identity, lease);
     const schedule = lookupPilotSchedule(pilot);
-    state = { schema: real ? LOOKUP_REAL_CONTROLLER : LOOKUP_FAUX_CONTROLLER, ...(real ? { recovery: false } : {}), binding: digest(pilot), runId: identity.runId, epoch: identity.controllerEpoch,
+    state = { schema: real ? LOOKUP_REAL_CONTROLLER : LOOKUP_FAUX_CONTROLLER, ...(real ? { recovery: false } : {}), ...(!real ? { fauxEndpoint: authorization.fixtureEndpoint ?? null } : {}), binding: digest(pilot), runId: identity.runId, epoch: identity.controllerEpoch,
       controller: identity.controller, capUSD: pilot.descriptor.capUSD, rmaxUSD: pilot.descriptor.rmaxUSD, revision: 0, deadlineAt: Date.now() + pilot.descriptor.deadlines.runDeadlineMs,
       schedule, scheduleSha256: digest(schedule), cursor: 0, stop: null,
       cacheKeysUnique: true, roleCount: pilot.registration.roles.length, publicSources: Object.fromEntries(pilot.registration.common.corpora.map(c => [c.suite, c.sha256])),
@@ -127,14 +129,15 @@ async function initializeLookupPilot(options = {}) {
     await save();
   } catch (error) { lease.release(); throw error; }
   const api = {
-    pilot,
+    pilot, authorization, outputRoot,
     snapshot: () => structuredClone(state),
     async prepare(index) { return runSlot(api, pilot, authorization, outputRoot, index, true); },
+    async probe(index) { return runSlot(api, pilot, authorization, outputRoot, index); },
     async assignPreparation(index, worker) { return serial(async () => {
       await check(); const slot = state.slots[index];
       pilotNeed(!state.stop && state.cursor === index && !slot.preparation && !slot.worker && !slot.holds.length
         && worker.pid > 1 && worker.pid !== process.pid && worker.startIdentity && worker.startIdentity === lookupProcessStartIdentity(worker.pid), "lookup_preparation_invalid");
-      slot.preparation = { pid: worker.pid, startIdentity: worker.startIdentity, exited: false }; await save();
+      slot.preparation = { schema: "lookup-preparation-record-v1", pid: worker.pid, startIdentity: worker.startIdentity, exited: false }; await save();
     }); },
     async prepared(index, treeDigest) { return serial(async () => {
       await check(); const slot = state.slots[index], p = slot.preparation;
@@ -279,12 +282,10 @@ async function runSlot(journal, pilot, authorization, root, index, preparation =
   const role = pilot.registration.roles.find(r => r.id === slot.roleId), corpus = pilot.registration.common.corpora.find(c => c.suite === slot.suite);
   const binding = roleBinding(pilot.registration, role, corpus), plan = await rolePlan(pilot.registration.common, binding);
   const timeoutMs = lookupPilotWatchdog(authorization, pilot.descriptor.deadlines, state.deadlineAt);
-  const preparationHome = join(root, "work", slot.slotId, "preparation-home");
-  if (preparation) await mkdir(preparationHome, { mode: 0o700, recursive: true });
-  const env = preparation ? { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => ["PATH", "LANG", "LC_ALL", "TZ", "TMPDIR", "CI", "CONTINUITY_DEBUG"].includes(key))),
-    HOME: preparationHome, XDG_CACHE_HOME: preparationHome, XDG_CONFIG_HOME: preparationHome, XDG_DATA_HOME: preparationHome, XDG_STATE_HOME: preparationHome, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" } : { ...process.env };
+  const preparationHome = join(root, "work", slot.slotId, preparation ? "preparation-home" : "probe-home");
+  const env = await lookupChildEnvironment(preparationHome);
   const child = fork(join(code.path, preparation ? "scripts/lib/continuity-lookup-preparation-child.mjs" : "scripts/lib/continuity-lookup-pilot-child.mjs"), [], {
-    cwd: code.path, detached: true, stdio: ["ignore", "ignore", "pipe", "ipc"], execArgv: [], env,
+    cwd: code.path, detached: true, stdio: ["ignore", "ignore", "pipe", "ipc"], execArgv: lookupChildImports(), env,
   });
   const owned = { pid: child.pid, startIdentity: lookupProcessStartIdentity(child.pid) };
   child.stderr.resume();
@@ -350,6 +351,14 @@ async function runSlot(journal, pilot, authorization, root, index, preparation =
         child.send({ pilot, runId: state.runId, outputRoot: root, epoch: state.epoch, slotId: slot.slotId, slot, index, timeoutMs,
           cacheKey: journal.snapshot().slots[index].cacheKey, ...(!preparation && state.schema === LOOKUP_REAL_CONTROLLER ? { authorization } : {}), roleRequest: { schema: "lookup-role-request-v1", binding, common: pilot.registration.common, build: code.build },
           plan, scenario: authorization.scenarios?.[index] ?? "settled" });
+      } else if (preparation && message?.type === "preparation-failed") {
+        pilotNeed(message.epoch === state.epoch && message.slotId === slot.slotId && message.code === "lookup_preparation_invalid", "lookup_ipc_invalid");
+        failure = message.code; done = {}; stage = "done"; await stopFailure();
+      } else if (!preparation && message?.type === "done" && stage === "ready") {
+        pilotNeed(message.epoch === state.epoch && message.slotId === slot.slotId && message.terminal === "refused_pre_send"
+          && message.refusalCode === "lookup_preparation_invalid", "lookup_ipc_invalid");
+        done = { terminal: message.terminal, score: null, refusalCode: message.refusalCode }; stage = "done";
+        try { await journal.stop(message.refusalCode); } finally { if (child.connected) child.send({ type: "done-ack", epoch: state.epoch, slotId: slot.slotId }); }
       } else if (stage === "ready") {
         pilotNeed(message?.type === "ready" && message.epoch === state.epoch && message.slotId === slot.slotId, "lookup_ipc_invalid");
         if (!preparation && state.schema === LOOKUP_REAL_CONTROLLER) await journal.ready(index);
@@ -391,7 +400,7 @@ async function runSlot(journal, pilot, authorization, root, index, preparation =
       if (!failure && done?.treeDigest && child.exitCode === 0) {
         try {
           const a = { outputRoot: root, slotId: slot.slotId, slot };
-          pilotNeed(await lookupPreparationDigest(a) === done.treeDigest, "lookup_preparation_invalid");
+          pilotNeed(await (state.schema === LOOKUP_PREFLIGHT ? lookupPreflightDigest : lookupPreparationDigest)(a) === done.treeDigest, "lookup_preparation_invalid");
           await journal.prepared(index, done.treeDigest); return true;
         } catch { failure = "lookup_preparation_invalid"; }
       }
@@ -410,14 +419,13 @@ async function runSlot(journal, pilot, authorization, root, index, preparation =
 async function runPilotSchedule(options) {
   const journal = await createLookupPilotController(options);
   try {
-    const { authorization, outputRoot } = options;
-    const pilot = journal.pilot;
+    const { outputRoot } = journal;
     for (let i = 0; i < journal.snapshot().schedule.length; i++) {
       const state = journal.snapshot(); if (state.stop) break;
       if (Date.now() >= state.deadlineAt) { await journal.stop("lookup_run_deadline"); break; }
       if (!state.schedule[i].eligible) { await journal.skip(i); continue; }
-      if (state.schema === LOOKUP_REAL_CONTROLLER && !await journal.prepare(i)) break;
-      await runSlot(journal, pilot, authorization, outputRoot, i);
+      if (!await journal.prepare(i)) break;
+      await journal.probe(i);
     }
     if (!journal.snapshot().stop) await journal.stop("completed");
     const state = journal.snapshot(), receipts = [];
@@ -430,4 +438,10 @@ async function runPilotSchedule(options) {
 
 export async function runLookupPilot(options) {
   try { return await runPilotSchedule(options); } catch (error) { publicFailure(error); }
+}
+
+/** Non-authorizing preparation parent; never initializes a paid/faux journal. */
+export async function runLookupPreparationSlot(journal, pilot, root, index) {
+  pilotNeed(journal.snapshot().schema === LOOKUP_PREFLIGHT && (await readPilotPrivate(pilotStatePath(root))).schema === LOOKUP_PREFLIGHT, "lookup_preparation_invalid");
+  return runSlot(journal, pilot, { timeoutMs: pilot.descriptor.deadlines.childWatchdogMs }, root, index, true);
 }

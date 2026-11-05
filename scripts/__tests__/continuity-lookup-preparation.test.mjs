@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { Socket } from "node:net";
 import { lookupPilotWork } from "../lib/continuity-lookup-pilot-runtime.mjs";
 import { lookupProcessStartIdentity } from "../lib/continuity-process-identity.mjs";
-import { writeLookupPreparation, verifyLookupPreparation, restoreLookupPreparation, lookupPreparedBoundary, lookupPilotServesArm } from "../lib/continuity-lookup-preparation.mjs";
+import { writeLookupPreparation, writeLookupPreflight, verifyLookupPreparation, restoreLookupPreparation, lookupPreparedBoundary, lookupPilotServesArm } from "../lib/continuity-lookup-preparation.mjs";
 import { acquireLookupPilotLease } from "../lib/continuity-lookup-lease.mjs";
 import { armById } from "../lib/continuity-arms.mjs";
 let root, a, state, snapshot, work;
@@ -19,7 +19,7 @@ beforeEach(async () => {
   work = lookupPilotWork(a); snapshot = join(dirname(work), "snapshot"); await fs.mkdir(snapshot, { recursive: true, mode: 0o700 });
   await fs.writeFile(join(snapshot, "history.json"), "fictional-pristine", { mode: 0o600 });
   const treeDigest = await writeLookupPreparation(a, { work, snapshot, record: { conversationId: "fictional-conversation" } });
-  state = { slots: [{ worker: { pid: process.pid, startIdentity: lookupProcessStartIdentity(process.pid) }, preparation: { pid: 2147483647, startIdentity: "fictional-exited", exited: true, treeDigest } }] }; await save();
+  state = { schema: "continuity-lookup-faux-controller-v1", slots: [{ worker: { pid: process.pid, startIdentity: lookupProcessStartIdentity(process.pid) }, preparation: { schema: "lookup-preparation-record-v1", pid: 2147483647, startIdentity: "fictional-exited", exited: true, treeDigest } }] }; await save();
 });
 afterEach(async () => { vi.restoreAllMocks(); syncBuiltinESMExports(); vi.unstubAllGlobals(); if (root) await fs.rm(root, { recursive: true, force: true }); });
 it("restores only verified bytes and produces an opaque same-work boundary", async () => {
@@ -90,4 +90,20 @@ it("rejects a renamed live lease inode before opening a non-SQLite descriptor", 
     await expect(restoreLookupPreparation(a)).rejects.toThrow("lookup_preparation_invalid");
     expect(opened.mock.calls.some(([path]) => path === alias)).toBe(false);
   } finally { await fs.rename(alias, original); lease.release(); }
+});
+
+it("restores children before applying read-only directory modes", async () => {
+  const nested = join(snapshot, "readonly"); await fs.mkdir(nested, {mode: 0o700}); await fs.writeFile(join(nested, "item"), "Fictional child.", {mode: 0o400}); await fs.chmod(nested, 0o500);
+  await fs.unlink(join(dirname(work), "preparation.json"));
+  state.slots[0].preparation.treeDigest = await writeLookupPreparation(a, { work, snapshot, record: {conversationId: "fictional-conversation"} }); await save();
+  try { await restoreLookupPreparation(a); expect(await fs.readFile(join(work, "readonly/item"), "utf8")).toBe("Fictional child."); expect((await fs.stat(join(work, "readonly"))).mode & 0o777).toBe(0o500); }
+  finally { await fs.chmod(nested, 0o700); await fs.chmod(join(work, "readonly"), 0o700).catch(() => {}); }
+});
+it.each(["continuity-lookup-controller-v1", "continuity-lookup-faux-controller-v1"])("rejects a preflight record and snapshot under %s", async schema => {
+  state.schema = schema; state.slots[0].preparation.schema = "lookup-preflight-record-v1";
+  await expect(verifyLookupPreparation(a, state)).rejects.toThrow("lookup_preparation_invalid");
+  state.slots[0].preparation.schema = "lookup-preparation-record-v1";
+  await fs.unlink(join(dirname(work), "preparation.json"));
+  state.slots[0].preparation.treeDigest = await writeLookupPreflight(a, { work, snapshot, record: {conversationId: "fictional-preflight"} }); await save();
+  await expect(verifyLookupPreparation(a, state)).rejects.toThrow("lookup_preparation_invalid");
 });

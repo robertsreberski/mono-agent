@@ -1,15 +1,17 @@
 // Read-only preparation proof and verified-byte restoration. No dispatch authority.
 import { constants } from "node:fs";
-import { lstat, open, readdir, realpath, mkdir, rm, writeFile } from "node:fs/promises";
+import { lstat, open, readdir, realpath, mkdir, rm, writeFile, chmod } from "node:fs/promises";
 import { join, dirname } from "node:path";
 import { userInfo } from "node:os";
 import { digest } from "./continuity-dataset.mjs";
 import { armById } from "./continuity-arms.mjs";
 import { lookupPilotWork } from "./continuity-lookup-pilot-runtime.mjs";
 import { lookupProcessStartIdentity } from "./continuity-process-identity.mjs";
-import { readPilotPrivate, pilotStatePath, samePilot } from "./continuity-lookup-pilot-state.mjs";
+import { readPilotPrivate, pilotStatePath, samePilot, LOOKUP_REAL_CONTROLLER, LOOKUP_FAUX_CONTROLLER } from "./continuity-lookup-pilot-state.mjs";
 import { isLookupLeaseFile, markLookupLeaseCompromised } from "./continuity-lookup-lease.mjs";
 import { durable } from "./continuity-holdout-workflow.mjs";
+export const LOOKUP_PREFLIGHT = "lookup-preflight-controller-v1";
+export const LOOKUP_TREE_LIMITS = Object.freeze({ fileBytes: 64 * 1024 * 1024, totalBytes: 512 * 1024 * 1024 });
 const verified = new Map(), proofs = new WeakMap();
 const need = ok => { if (!ok) throw Object.assign(new Error("lookup_preparation_invalid"), { code: "lookup_preparation_invalid" }); };
 export function lookupPilotServesArm(arm) {
@@ -32,12 +34,12 @@ async function tree(root) {
       rows.push({ path: relative, directory: true, mode: before.mode & 0o777 });
       for (const name of (await readdir(path)).sort()) await walk(join(path, name), relative ? `${relative}/${name}` : name);
     } else {
-      need(before.isFile() && before.nlink === 1 && before.size <= 64 * 1024 * 1024 && !isLookupLeaseFile(path, before));
+      need(before.isFile() && before.nlink === 1 && before.size <= LOOKUP_TREE_LIMITS.fileBytes && !isLookupLeaseFile(path, before));
       const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
       try {
         const stat = await file.stat(); need(!markLookupLeaseCompromised(stat) && stat.dev === before.dev && stat.ino === before.ino);
         const bytes = await file.readFile(), after = await file.stat(); total += bytes.length;
-        need(total <= 512 * 1024 * 1024 && bytes.length === stat.size && after.size === stat.size && after.mtimeMs === stat.mtimeMs && after.ctimeMs === stat.ctimeMs);
+        need(total <= LOOKUP_TREE_LIMITS.totalBytes && bytes.length === stat.size && after.size === stat.size && after.mtimeMs === stat.mtimeMs && after.ctimeMs === stat.ctimeMs);
         rows.push({ path: relative, directory: false, mode: stat.mode & 0o777, sha256: digest(bytes.toString("base64")), bytes });
       } finally { await file.close(); }
     }
@@ -46,24 +48,31 @@ async function tree(root) {
   };
   await walk(root); return rows;
 }
-async function contents(a) {
+async function contents(a, schema = "lookup-preparation-v1") {
   const p = paths(a), manifest = await readPilotPrivate(p.manifest), rows = await tree(p.snapshot);
-  need(manifest.schema === "lookup-preparation-v1" && manifest.slotId === a.slotId && manifest.traceId === a.slot.traceId
+  need(manifest.schema === schema && manifest.slotId === a.slotId && manifest.traceId === a.slot.traceId
     && typeof manifest.conversationId === "string" && manifest.conversationId.length > 0 && manifest.conversationId.length <= 512);
   return { manifest, rows, treeDigest: digest({ manifest, tree: rows.map(({ bytes: _bytes, ...row }) => row) }) };
 }
-export async function writeLookupPreparation(a, checkpoint) {
+export async function writeLookupPreparation(a, checkpoint) { return writeSnapshot(a, checkpoint, "lookup-preparation-v1"); }
+export async function writeLookupPreflight(a, checkpoint) { return writeSnapshot(a, checkpoint, "lookup-preflight-snapshot-v1"); }
+async function writeSnapshot(a, checkpoint, schema) {
   const p = paths(a); need(checkpoint.work === p.work && checkpoint.snapshot === p.snapshot);
-  await durable(p.manifest, { schema: "lookup-preparation-v1", slotId: a.slotId, traceId: a.slot.traceId,
+  await durable(p.manifest, { schema, slotId: a.slotId, traceId: a.slot.traceId,
     conversationId: checkpoint.record.conversationId, continuity: checkpoint.record.continuity ?? null }, true);
-  return (await contents(a)).treeDigest;
+  return (await contents(a, schema)).treeDigest;
 }
+export async function lookupPreflightDigest(a) { return (await contents(a, "lookup-preflight-snapshot-v1")).treeDigest; }
 export async function lookupPreparationDigest(a) { return (await contents(a)).treeDigest; }
 /** The controller's observed exit and a fresh tuple check are both required. */
 export async function verifyLookupPreparation(a, state, restored = false) {
+  try { return await verifyPreparation(a, state, restored); } catch { need(false); }
+}
+async function verifyPreparation(a, state, restored) {
+  need([LOOKUP_REAL_CONTROLLER, LOOKUP_FAUX_CONTROLLER].includes(state.schema));
   assertLookupPilotArm(armById(a.roleRequest.binding.arm));
   const record = state.slots[a.index]?.preparation;
-  need(record?.exited === true && Number.isSafeInteger(record.pid) && record.pid > 1 && record.pid !== process.pid
+  need(record?.schema === "lookup-preparation-record-v1" && record.exited === true && Number.isSafeInteger(record.pid) && record.pid > 1 && record.pid !== process.pid
     && typeof record.startIdentity === "string" && record.startIdentity.length > 0
     && typeof record.treeDigest === "string" && /^[a-f0-9]{64}$/u.test(record.treeDigest)
     && lookupProcessStartIdentity(record.pid) !== record.startIdentity);
@@ -78,6 +87,9 @@ export async function verifyLookupPreparation(a, state, restored = false) {
 }
 /** Copy from the exact verified buffers; no re-opening the mutable source after hashing. */
 export async function restoreLookupPreparation(a) {
+  try { return await restorePreparation(a); } catch { need(false); }
+}
+async function restorePreparation(a) {
   const state = await readPilotPrivate(pilotStatePath(a.outputRoot));
   need(state.slots[a.index]?.worker?.pid === process.pid && state.slots[a.index].worker.startIdentity === lookupProcessStartIdentity(process.pid));
   await verifyLookupPreparation(a, state);
@@ -86,9 +98,10 @@ export async function restoreLookupPreparation(a) {
   const p = paths(a); await rm(p.work, { recursive: true, force: true });
   for (const row of source.rows) {
     const path = row.path ? join(p.work, row.path) : p.work;
-    if (row.directory) await mkdir(path, { mode: row.mode });
+    if (row.directory) await mkdir(path, { mode: 0o700 });
     else await writeFile(path, row.bytes, { mode: row.mode, flag: "wx" });
   }
+  for (const row of [...source.rows].reverse()) if (row.directory) await chmod(row.path ? join(p.work, row.path) : p.work, row.mode);
   // A changed durable record cannot be installed as an in-process boundary proof.
   await verifyLookupPreparation(a, await readPilotPrivate(pilotStatePath(a.outputRoot)));
   saved.restored = true;
@@ -100,4 +113,26 @@ export function lookupPreparedBoundary(pilot, arm, work, conversationId) {
   const valid = lookupPilotServesArm(arm) && proof?.arm === arm.id && proof.work === work && proof.conversationId === conversationId;
   if (valid) proofs.delete(pilot.preparation);
   return valid;
+}
+
+/** Metadata only: never follow rejected links or open oversized/non-regular files. */
+export async function lookupPreparationStats(root) {
+  const stats = { fileCount: 0, totalBytes: 0, largestFileBytes: 0, rejectedEntries: [] }, rejected = new Map();
+  const reject = kind => rejected.set(kind, (rejected.get(kind) ?? 0) + 1);
+  const walk = async path => {
+    const stat = await lstat(path);
+    if (stat.uid !== userInfo().uid) { reject("foreign_owner"); return; }
+    if (stat.mode & 0o022) reject("writable_mode");
+    if (stat.isSymbolicLink()) { reject("symbolic_link"); return; }
+    if (stat.isDirectory()) { for (const name of await readdir(path)) await walk(join(path, name)); return; }
+    if (!stat.isFile()) { reject(stat.isFIFO() ? "fifo" : stat.isSocket() ? "socket" : stat.isBlockDevice() || stat.isCharacterDevice() ? "device" : "non_regular"); return; }
+    stats.fileCount++; stats.totalBytes += stat.size; stats.largestFileBytes = Math.max(stats.largestFileBytes, stat.size);
+    if (stat.nlink !== 1) reject("hard_link");
+    if (isLookupLeaseFile(path, stat)) reject("lease_inode");
+    if (stat.size > LOOKUP_TREE_LIMITS.fileBytes) reject("file_limit");
+  };
+  try { await walk(root); } catch { reject("unreadable_entry"); }
+  if (stats.totalBytes > LOOKUP_TREE_LIMITS.totalBytes) reject("total_limit");
+  stats.rejectedEntries = [...rejected].sort().map(([kind, count]) => ({ kind, count }));
+  return stats;
 }

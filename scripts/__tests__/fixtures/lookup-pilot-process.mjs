@@ -15,7 +15,7 @@ import { sha256 } from "../../lib/continuity-lookup.mjs";
 export const loadPilot = (f, name) => import(/* @vite-ignore */ pathToFileURL(join(f.repo, "scripts/lib", `continuity-lookup-${name}.mjs`)).href);
 const metadata = async path => { try { const s = await fs.lstat(path); return [s.ino, s.mtimeMs]; } catch (e) { if (e.code === "ENOENT") return null; throw e; } };
 const registry = join(userInfo().homedir, ".local/state/mono-agent/lookup-pilot/consumed-v1");
-export async function pilotProcessFixture() {
+export async function pilotProcessFixture({ configured = false } = {}) {
   const base = await fs.realpath(await fs.mkdtemp(join(tmpdir(), "lookup-controller-fictional-")));
   await fs.chmod(base, 0o700);
   const env = { ...process.env }, home = join(base, "build-home"); await fs.mkdir(home, { mode: 0o700 });
@@ -26,12 +26,32 @@ export async function pilotProcessFixture() {
     const bridge = join(base, "node_modules/@mono-agent"); await fs.mkdir(bridge, { recursive: true });
     for (const name of ["turn", "conversation"]) await fs.symlink(join(ROOT, "packages", name), join(bridge, name));
     await fs.symlink(join(ROOT, "node_modules/typescript"), join(base, "node_modules/typescript"));
+    if (configured) {
+      const pkg = JSON.parse(await fs.readFile(join(ROOT, "packages/app/package.json")));
+      for (const name of Object.keys(pkg.dependencies).filter(n => !n.startsWith("@mono-agent/"))) {
+        const destination = join(base, "node_modules", name);
+        await fs.mkdir(join(destination, ".."), {recursive: true});
+        await fs.symlink(await fs.realpath(join(ROOT, "packages/app/node_modules", name)), destination);
+      }
+      for (const name of await fs.readdir(join(ROOT, "packages"))) {
+        try { await fs.access(join(ROOT, "packages", name, "package.json")); await fs.symlink(join(ROOT, "packages", name), join(bridge, name)); }
+        catch (error) { if (!["ENOENT", "EEXIST"].includes(error.code)) throw error; }
+      }
+      const mcp = join(base, "node_modules/@modelcontextprotocol"); await fs.mkdir(mcp, {recursive: true});
+      try { await fs.symlink(join(ROOT, "node_modules/@modelcontextprotocol/sdk"), join(mcp, "sdk")); } catch (error) { if (error.code !== "EEXIST") throw error; }
+      await fs.cp(join(ROOT, "packages/app/dist"), join(base, "app-runtime"), { recursive: true });
+    }
     const f = await syntheticContext(base, { families: 4, conversationsPerFamily: 1, conversationsPerCorpus: 2, shards: 2, perCorpusPerShard: 1 }, { isolatedDependencies: true });
     await fs.chmod(f.repo, 0o700); await fs.rm(join(f.repo, "packages/app/dist"));
     await fs.writeFile(join(f.repo, "package.json"), '{"name":"fictional-controller","private":true}');
     await fs.writeFile(join(f.repo, "pnpm-workspace.yaml"), "packages:\n  - packages/app\n");
     await fs.writeFile(join(f.repo, ".npmrc"), "offline=true\nverify-deps-before-run=false\nmanage-package-manager-versions=false\n");
     await fs.writeFile(join(f.repo, "packages/app/package.json"), JSON.stringify({ name: "@mono-agent/app", private: true, scripts: { build: `node --input-type=module -e "import{mkdirSync,writeFileSync}from'node:fs';mkdirSync('dist',{recursive:true});writeFileSync('dist/index.js','export const fictional = true;')"` } }));
+    if (configured) {
+      // Build-owned physical runtime artifacts at the registered root, no runtime redirection.
+      const script = `import {cpSync,mkdirSync} from 'node:fs'; mkdirSync('dist',{recursive:true}); cpSync(${JSON.stringify(join(base, "app-runtime"))},'dist',{recursive:true});`;
+      await fs.writeFile(join(f.repo, "packages/app/package.json"), JSON.stringify({ name: "@mono-agent/app", private: true, type: "module", scripts: { build: `node --input-type=module -e ${JSON.stringify(script)}` } }));
+    }
     const render = "packages/conversation/src/continuity/render-fit.ts"; await fs.writeFile(join(f.repo, render), "// Fictional no-guidance baseline\n"); fixtureCommit(f.repo);
     const pack = join(base, "rpack"); await fs.cp(f.repo, pack, { recursive: true }); await fs.chmod(pack, 0o700);
     await fs.appendFile(join(pack, render), '\nexport const PACK_RETRIEVAL_GUIDANCE = "Fictional guidance";\n'); fixtureCommit(pack);
@@ -40,7 +60,7 @@ export async function pilotProcessFixture() {
     const roles = await loadPilot(f, "roles"), pilotModule = await loadPilot(f, "pilot");
     const { codes, protocol } = await roles.prepareLookupCodes(checkouts);
     const options = { checkouts, suites: ["holdout"], lookupSource: { manifestPath: f.context.options.manifestPath, manifestSha256: f.context.options.manifestSha256,
-      statisticalSpecPath: f.context.options.statisticalSpecPath }, reader: "openai-codex:gpt-6.1-sol", readerEffort: "high", selectionSeed: 42, perGroup: 2, probeLimit: 1,
+      statisticalSpecPath: f.context.options.statisticalSpecPath }, reader: "openai-codex:gpt-6.1-sol", readerEffort: "high", selectionSeed: 42, perGroup: configured ? 1 : 2, probeLimit: 1,
       outputLimit: { source: "catalog_max", tokens: 128000 } };
     const workload = await roles.lookupWorkload({ ...options, inputRoots: [f.repo, pack] });
     const policy = await fixtureLookupPolicy({ source: workload.corpora[0].source, selection: workload.corpora[0].traces, lookupSelection: workload.lookupSelection, reader: workload.reader, codes, protocol });
@@ -73,7 +93,7 @@ export function pilotSuite() {
   afterAll(async () => { try { if (f) await fs.rm(f.base, { recursive: true, force: true }); } finally { expect(await metadata(registry)).toEqual(real); expect(await dependencySnapshot(ROOT)).toEqual(deps); } });
   async function witnesses() {
     for (const c of children) {
-      const read = async pid => { const value = JSON.parse(await fs.readFile(join(f.base, "witnesses", `${pid}.json`))); expect(value).toMatchObject({ canaries: 3, unexpected: 0, home: f.home, xdg: [f.home, f.home, f.home, f.home], git: ["/dev/null", "1"] }); return value; };
+      const read = async pid => { const value = JSON.parse(await fs.readFile(join(f.base, "witnesses", `${pid}.json`))); expect(value).toMatchObject({ canaries: 3, unexpected: 0, git: ["/dev/null", "1"] }); expect(value.xdg).toEqual([value.home, value.home, value.home, value.home]); expect(value.home.startsWith(f.base)).toBe(true); return value; };
       const driver = await read(c.child.pid), expected = new Set(driver.probes.map(p => p.pid));
       if (c.outputRoot) try { const state = JSON.parse(await fs.readFile(join(c.outputRoot, "lookup-pilot-controller.json"))); for (const s of state.slots) if (s.worker) expected.add(s.worker.pid); } catch (e) { if (e.code !== "ENOENT") throw e; }
       for (const pid of expected) await read(pid);
@@ -83,8 +103,8 @@ export function pilotSuite() {
     async spawn(input, extraEnv = {}) {
       const witnesses = join(f.base, "witnesses"); await fs.mkdir(witnesses, { recursive: true, mode: 0o700 });
       const preload = fileURLToPath(new URL("./lookup-pilot-preload.mjs", import.meta.url));
-      const child = fork(fileURLToPath(new URL("./lookup-pilot-driver.mjs", import.meta.url)), [], { cwd: f.repo, execArgv: [],
-        env: { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_"))), HOME: f.home, XDG_CACHE_HOME: f.home, XDG_CONFIG_HOME: f.home, XDG_DATA_HOME: f.home, XDG_STATE_HOME: f.home, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ""} --import=${preload}`, LOOKUP_FIXTURE_WITNESSES: witnesses, ...extraEnv }, stdio: ["ignore", "ignore", "pipe", "ipc"] });
+      const child = fork(fileURLToPath(new URL("./lookup-pilot-driver.mjs", import.meta.url)), [], { cwd: f.repo, execArgv: ["--import", preload],
+        env: { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_"))), HOME: f.home, XDG_CACHE_HOME: f.home, XDG_CONFIG_HOME: f.home, XDG_DATA_HOME: f.home, XDG_STATE_HOME: f.home, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1",  LOOKUP_FIXTURE_WITNESSES: witnesses, ...extraEnv }, stdio: ["ignore", "ignore", "pipe", "ipc"] });
       child.stderr.resume(); let result;
       const exit = new Promise(resolve => child.once("exit", (code, signal) => resolve({ code, signal })));
       const reply = new Promise((resolve, reject) => {

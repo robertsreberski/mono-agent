@@ -10,14 +10,15 @@ import { readLookupPilotLease } from "./continuity-lookup-lease.mjs";
 import { readPilotPrivate, pilotStatePath, LOOKUP_REAL_CONTROLLER, LOOKUP_FAUX_CONTROLLER, samePilot } from "./continuity-lookup-pilot-state.mjs";
 import { productionModules, buildCheckpoint } from "./continuity-runner.mjs";
 import { lookupPilotWork, lookupOfflineBoundary } from "./continuity-lookup-pilot-runtime.mjs";
-import { assertLookupPilotArm, writeLookupPreparation } from "./continuity-lookup-preparation.mjs";
+import { assertLookupPilotArm, writeLookupPreparation, writeLookupPreflight, LOOKUP_PREFLIGHT } from "./continuity-lookup-preparation.mjs";
 const need = ok => { if (!ok) throw Object.assign(new Error("lookup_preparation_invalid"), { code: "lookup_preparation_invalid" }); };
 export async function prepareLookupCheckpoint(a) {
   need(!Object.hasOwn(process.env, "CONTINUITY_DEBUG"));
   const state = await readPilotPrivate(pilotStatePath(a.outputRoot)), preparing = state.slots[a.index]?.preparation;
+  const preflight = state.schema === LOOKUP_PREFLIGHT;
   if (state.schema === LOOKUP_REAL_CONTROLLER) {
     assertLookupPilotEntry(); need(!Object.hasOwn(process.env, "CI"));
-  } else need(state.schema === LOOKUP_FAUX_CONTROLLER);
+  } else need(state.schema === LOOKUP_FAUX_CONTROLLER || preflight);
   need(a.authorization === undefined && process.connected && state.stop === null && state.cursor === a.index
     && state.binding === digest(a.pilot) && state.runId === a.runId && state.epoch === a.epoch
     && state.controller.pid === process.ppid && state.controller.startIdentity === lookupProcessStartIdentity(process.ppid)
@@ -25,7 +26,7 @@ export async function prepareLookupCheckpoint(a) {
     && ROOT === a.pilot.registration.codes[a.slot.code]?.path && a.roleRequest.binding.id === a.slot.roleId
     && a.roleRequest.binding.registrationSha256 === digest(a.pilot.registration) && samePilot(a.roleRequest.common, a.pilot.registration.common)
     && samePilot(state.schedule[a.index], a.slot) && state.slots[a.index].worker === null && !state.slots[a.index].holds.length);
-  await readLookupPilotLease(a.outputRoot, state.controller);
+  if (!preflight) await readLookupPilotLease(a.outputRoot, state.controller);
   await verifyRoleRequest(ROOT, a.roleRequest, a.plan);
   const arm = armById(a.roleRequest.binding.arm); assertLookupPilotArm(arm);
   const common = a.roleRequest.common, work = lookupPilotWork(a);
@@ -35,7 +36,7 @@ export async function prepareLookupCheckpoint(a) {
   const trace = loaded.traces.find(t => t.id === a.slot.traceId); need(trace);
   const modules = await productionModules(ROOT);
   const checkpoint = await buildCheckpoint({ modules, trace, arm, repeat: 1, dir: dirname(work), plan: a.plan, mode, authPath });
-  const treeDigest = await writeLookupPreparation(a, checkpoint);
+  const treeDigest = await (preflight ? writeLookupPreflight : writeLookupPreparation)(a, checkpoint);
   return treeDigest;
 }
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
@@ -48,7 +49,13 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     const ack = new Promise(resolve => process.once("message", resolve));
     process.send({ type: "prepared", epoch: a.epoch, slotId: a.slotId, treeDigest });
     const done = await ack; need(done?.type === "done-ack" && done.epoch === a.epoch && done.slotId === a.slotId);
-    process.disconnect();
-  })().catch(() => { process.exitCode = 1; process.disconnect?.(); }); });
+    if (process.connected) process.disconnect();
+    process.exit(0);
+  })().catch(async () => {
+    process.exitCode = 1;
+    try {
+      if (process.connected) await new Promise(resolve => process.send({ type: "preparation-failed", epoch: a.epoch, slotId: a.slotId, code: "lookup_preparation_invalid" }, resolve));
+    } finally { if (process.connected) process.disconnect(); process.exit(1); }
+  }); });
   process.send({ type: "loaded" });
 }
