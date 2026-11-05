@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { Socket } from "node:net";
 import { lookupPilotWork } from "../lib/continuity-lookup-pilot-runtime.mjs";
 import { lookupProcessStartIdentity } from "../lib/continuity-process-identity.mjs";
-import { writeLookupPreparation, writeLookupPreflight, verifyLookupPreparation, restoreLookupPreparation, lookupPreparedBoundary, lookupPilotServesArm } from "../lib/continuity-lookup-preparation.mjs";
+import { writeLookupPreparation, writeLookupPreflight, verifyLookupPreparation, restoreLookupPreparation, lookupPreparedBoundary, lookupPilotServesArm, restoreLookupPreflight, removeLookupWorkTree } from "../lib/continuity-lookup-preparation.mjs";
 import { acquireLookupPilotLease } from "../lib/continuity-lookup-lease.mjs";
 import { armById } from "../lib/continuity-arms.mjs";
 let root, a, state, snapshot, work;
@@ -21,7 +21,7 @@ beforeEach(async () => {
   const treeDigest = await writeLookupPreparation(a, { work, snapshot, record: { conversationId: "fictional-conversation" } });
   state = { schema: "continuity-lookup-faux-controller-v1", slots: [{ worker: { pid: process.pid, startIdentity: lookupProcessStartIdentity(process.pid) }, preparation: { schema: "lookup-preparation-record-v1", pid: 2147483647, startIdentity: "fictional-exited", exited: true, treeDigest } }] }; await save();
 });
-afterEach(async () => { vi.restoreAllMocks(); syncBuiltinESMExports(); vi.unstubAllGlobals(); if (root) await fs.rm(root, { recursive: true, force: true }); });
+afterEach(async () => { vi.restoreAllMocks(); syncBuiltinESMExports(); vi.unstubAllGlobals(); if (root) await removeLookupWorkTree(root); });
 it("restores only verified bytes and produces an opaque same-work boundary", async () => {
   const restored = await restoreLookupPreparation(a);
   expect(await fs.readFile(join(work, "history.json"), "utf8")).toBe("fictional-pristine");
@@ -106,4 +106,30 @@ it.each(["continuity-lookup-controller-v1", "continuity-lookup-faux-controller-v
   await fs.unlink(join(dirname(work), "preparation.json"));
   state.slots[0].preparation.treeDigest = await writeLookupPreflight(a, { work, snapshot, record: {conversationId: "fictional-preflight"} }); await save();
   await expect(verifyLookupPreparation(a, state)).rejects.toThrow("lookup_preparation_invalid");
+});
+
+it("removes an existing nested read-only work tree without following links and reapplies snapshot modes", async () => {
+  const nested = join(snapshot, "readonly/nested"); await fs.mkdir(nested, {recursive: true, mode: 0o700});
+  await fs.writeFile(join(nested, "fictional.txt"), "verified fictional bytes", {mode: 0o400});
+  await fs.chmod(nested, 0o500); await fs.chmod(dirname(nested), 0o500);
+  await fs.unlink(join(dirname(work), "preparation.json"));
+  state.slots[0].preparation.treeDigest = await writeLookupPreparation(a, {work, snapshot, record: {conversationId: "fictional-conversation"}}); await save();
+  await fs.cp(snapshot, work, {recursive: true});
+  const outside = join(root, "outside"); await fs.mkdir(outside, {mode: 0o500});
+  await fs.symlink(outside, join(work, "external-link"));
+  await restoreLookupPreparation(a);
+  expect(await fs.readFile(join(work, "readonly/nested/fictional.txt"), "utf8")).toBe("verified fictional bytes");
+  for (const path of [join(work, "readonly"), join(work, "readonly/nested"), outside]) expect((await fs.lstat(path)).mode & 0o777).toBe(0o500);
+  await expect(fs.lstat(join(work, "external-link"))).rejects.toMatchObject({code: "ENOENT"});
+});
+it("dry restores the disjoint preflight domain with no normal boundary proof", async () => {
+  a.slot.slotId = a.slotId;
+  await fs.unlink(join(dirname(work), "preparation.json"));
+  const treeDigest = await writeLookupPreflight(a, {work, snapshot, record: {conversationId: "fictional-conversation"}});
+  state = {schema: "lookup-preflight-controller-v1", controller: {pid: process.pid, startIdentity: lookupProcessStartIdentity(process.pid)}, schedule: [a.slot],
+    slots: [{worker: null, preparation: {...state.slots[0].preparation, schema: "lookup-preflight-record-v1", treeDigest}}]}; await save();
+  expect(await restoreLookupPreflight(a)).toBeUndefined();
+  expect(await fs.readFile(join(work, "history.json"), "utf8")).toBe("fictional-pristine");
+  expect(lookupPreparedBoundary({preparation: {}}, armById("native-lookup"), work, "fictional-conversation")).toBe(false);
+  await expect(restoreLookupPreparation(a)).rejects.toThrow("lookup_preparation_invalid");
 });

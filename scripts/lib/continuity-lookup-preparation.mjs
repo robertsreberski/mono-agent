@@ -72,10 +72,7 @@ async function verifyPreparation(a, state, restored) {
   need([LOOKUP_REAL_CONTROLLER, LOOKUP_FAUX_CONTROLLER].includes(state.schema));
   assertLookupPilotArm(armById(a.roleRequest.binding.arm));
   const record = state.slots[a.index]?.preparation;
-  need(record?.schema === "lookup-preparation-record-v1" && record.exited === true && Number.isSafeInteger(record.pid) && record.pid > 1 && record.pid !== process.pid
-    && typeof record.startIdentity === "string" && record.startIdentity.length > 0
-    && typeof record.treeDigest === "string" && /^[a-f0-9]{64}$/u.test(record.treeDigest)
-    && lookupProcessStartIdentity(record.pid) !== record.startIdentity);
+  exitedRecord(record, "lookup-preparation-record-v1");
   const saved = verified.get(key(a));
   if (saved) need(samePilot(saved.record, record));
   else {
@@ -84,6 +81,12 @@ async function verifyPreparation(a, state, restored) {
   }
   need(!restored || verified.get(key(a)).restored);
   return verified.get(key(a)).record;
+}
+function exitedRecord(record, schema) {
+  need(record?.schema === schema && record.exited === true && Number.isSafeInteger(record.pid) && record.pid > 1 && record.pid !== process.pid
+    && typeof record.startIdentity === "string" && record.startIdentity.length > 0
+    && typeof record.treeDigest === "string" && /^[a-f0-9]{64}$/u.test(record.treeDigest)
+    && lookupProcessStartIdentity(record.pid) !== record.startIdentity);
 }
 /** Copy from the exact verified buffers; no re-opening the mutable source after hashing. */
 export async function restoreLookupPreparation(a) {
@@ -95,18 +98,44 @@ async function restorePreparation(a) {
   await verifyLookupPreparation(a, state);
   const saved = verified.get(key(a)); need(!saved.restored);
   const source = await contents(a); need(source.treeDigest === saved.record.treeDigest);
-  const p = paths(a); await rm(p.work, { recursive: true, force: true });
-  for (const row of source.rows) {
-    const path = row.path ? join(p.work, row.path) : p.work;
-    if (row.directory) await mkdir(path, { mode: 0o700 });
-    else await writeFile(path, row.bytes, { mode: row.mode, flag: "wx" });
-  }
-  for (const row of [...source.rows].reverse()) if (row.directory) await chmod(row.path ? join(p.work, row.path) : p.work, row.mode);
+  const p = paths(a); await installTree(p.work, source.rows);
   // A changed durable record cannot be installed as an in-process boundary proof.
   await verifyLookupPreparation(a, await readPilotPrivate(pilotStatePath(a.outputRoot)));
   saved.restored = true;
   const proof = Object.freeze({}); proofs.set(proof, { work: p.work, arm: a.roleRequest.binding.arm, conversationId: source.manifest.conversationId });
   return { proof, work: p.work, manifest: freeze(source.manifest) };
+}
+/** Owner permissions only; lstat keeps symlinks out of the traversal. */
+export async function removeLookupWorkTree(root) {
+  const writable = async path => {
+    let stat; try { stat = await lstat(path); } catch (error) { if (error.code === "ENOENT") return; throw error; }
+    if (!stat.isDirectory()) return;
+    need(stat.uid === userInfo().uid);
+    await chmod(path, (stat.mode & 0o777) | 0o700);
+    for (const name of await readdir(path)) await writable(join(path, name));
+  };
+  await writable(root); await rm(root, { recursive: true, force: true });
+}
+async function installTree(work, rows) {
+  await removeLookupWorkTree(work);
+  for (const row of rows) {
+    const path = row.path ? join(work, row.path) : work;
+    if (row.directory) await mkdir(path, { mode: 0o700 });
+    else await writeFile(path, row.bytes, { mode: row.mode, flag: "wx" });
+  }
+  for (const row of [...rows].reverse()) if (row.directory) await chmod(row.path ? join(work, row.path) : work, row.mode);
+}
+/** Same byte installation as the probe, but never produces a boundary proof. */
+export async function restoreLookupPreflight(a) {
+  try {
+    const state = await readPilotPrivate(pilotStatePath(a.outputRoot));
+    need(state.schema === LOOKUP_PREFLIGHT && state.controller.pid === process.pid
+      && state.controller.startIdentity === lookupProcessStartIdentity(process.pid)
+      && state.schedule[a.index]?.slotId === a.slotId && samePilot(state.schedule[a.index], a.slot));
+    const record = state.slots[a.index]?.preparation; exitedRecord(record, "lookup-preflight-record-v1");
+    const source = await contents(a, "lookup-preflight-snapshot-v1"); need(source.treeDigest === record.treeDigest);
+    await installTree(paths(a).work, source.rows);
+  } catch { need(false); }
 }
 export function lookupPreparedBoundary(pilot, arm, work, conversationId) {
   const proof = proofs.get(pilot?.preparation);
@@ -120,18 +149,20 @@ export async function lookupPreparationStats(root) {
   const stats = { fileCount: 0, totalBytes: 0, largestFileBytes: 0, rejectedEntries: [] }, rejected = new Map();
   const reject = kind => rejected.set(kind, (rejected.get(kind) ?? 0) + 1);
   const walk = async path => {
-    const stat = await lstat(path);
-    if (stat.uid !== userInfo().uid) { reject("foreign_owner"); return; }
-    if (stat.mode & 0o022) reject("writable_mode");
-    if (stat.isSymbolicLink()) { reject("symbolic_link"); return; }
-    if (stat.isDirectory()) { for (const name of await readdir(path)) await walk(join(path, name)); return; }
-    if (!stat.isFile()) { reject(stat.isFIFO() ? "fifo" : stat.isSocket() ? "socket" : stat.isBlockDevice() || stat.isCharacterDevice() ? "device" : "non_regular"); return; }
-    stats.fileCount++; stats.totalBytes += stat.size; stats.largestFileBytes = Math.max(stats.largestFileBytes, stat.size);
-    if (stat.nlink !== 1) reject("hard_link");
-    if (isLookupLeaseFile(path, stat)) reject("lease_inode");
-    if (stat.size > LOOKUP_TREE_LIMITS.fileBytes) reject("file_limit");
+    try {
+      const stat = await lstat(path);
+      if (stat.uid !== userInfo().uid) { reject("foreign_owner"); return; }
+      if (stat.mode & 0o022) reject("writable_mode");
+      if (stat.isSymbolicLink()) { reject("symbolic_link"); return; }
+      if (stat.isDirectory()) { for (const name of await readdir(path)) await walk(join(path, name)); return; }
+      if (!stat.isFile()) { reject(stat.isFIFO() ? "fifo" : stat.isSocket() ? "socket" : stat.isBlockDevice() || stat.isCharacterDevice() ? "device" : "non_regular"); return; }
+      stats.fileCount++; stats.totalBytes += stat.size; stats.largestFileBytes = Math.max(stats.largestFileBytes, stat.size);
+      if (stat.nlink !== 1) reject("hard_link");
+      if (isLookupLeaseFile(path, stat)) reject("lease_inode");
+      if (stat.size > LOOKUP_TREE_LIMITS.fileBytes) reject("file_limit");
+    } catch { reject("unreadable_entry"); }
   };
-  try { await walk(root); } catch { reject("unreadable_entry"); }
+  await walk(root);
   if (stats.totalBytes > LOOKUP_TREE_LIMITS.totalBytes) reject("total_limit");
   stats.rejectedEntries = [...rejected].sort().map(([kind, count]) => ({ kind, count }));
   return stats;

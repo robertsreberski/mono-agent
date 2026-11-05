@@ -30,6 +30,9 @@ export async function createLookupFauxSend(a, safety) {
   const contract = Object.freeze({ ...LOOKUP_GUARD_CONTRACT, runId: a.runId, slotId: a.slotId, promptCacheKey: a.cacheKey });
   const used = new Set();
   const send = async (url, init) => {
+    need(init && Object.keys(init).every(key => ["method", "headers", "body", "signal", "redirect"].includes(key)));
+    init = { ...init, headers: new Headers(init.headers), body: Buffer.from(Buffer.from(init.body ?? "")) };
+    need(init.method === "POST" && (init.redirect === undefined || init.redirect === "error"));
     const current = await verifyLookupPilotParent(a);
     need(current.schema === LOOKUP_FAUX_CONTROLLER && current.fauxEndpoint === endpoint && String(url) === `${contract.baseUrl}/codex/responses`);
     await verifyLookupPreparation(a, current, true);

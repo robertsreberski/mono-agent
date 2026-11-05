@@ -65,7 +65,7 @@ export async function pilotProcessFixture({ configured = false } = {}) {
     const workload = await roles.lookupWorkload({ ...options, inputRoots: [f.repo, pack] });
     const policy = await fixtureLookupPolicy({ source: workload.corpora[0].source, selection: workload.corpora[0].traces, lookupSelection: workload.lookupSelection, reader: workload.reader, codes, protocol });
     const policyPath = join(f.inputs, "lookup-policy.json"); await fs.writeFile(policyPath, JSON.stringify(policy));
-    const pilot = await pilotModule.registerLookupPilot({ ...options, policyPath, policySha256: sha256(await fs.readFile(policyPath)), capUSD: 3.92, scheduleSeed: 13, runDeadlineMs: 60000 });
+    const pilot = await pilotModule.registerLookupPilot({ ...options, policyPath, policySha256: sha256(await fs.readFile(policyPath)), capUSD: 3.92, scheduleSeed: 13, runDeadlineMs: configured ? 900000 : 60000 });
     return { ...f, base, pack, pilot, home };
   } catch (error) { await fs.rm(base, { recursive: true, force: true }); throw error; }
   finally { for (const key of Object.keys(process.env)) if (!(key in env)) delete process.env[key]; Object.assign(process.env, env); }
@@ -94,7 +94,8 @@ export function pilotSuite() {
   async function witnesses() {
     for (const c of children) {
       const read = async pid => { const value = JSON.parse(await fs.readFile(join(f.base, "witnesses", `${pid}.json`))); expect(value).toMatchObject({ canaries: 3, unexpected: 0, git: ["/dev/null", "1"] }); expect(value.xdg).toEqual([value.home, value.home, value.home, value.home]); expect(value.home.startsWith(f.base)).toBe(true); return value; };
-      const driver = await read(c.child.pid), expected = new Set(driver.probes.map(p => p.pid));
+      const driver = await read(c.child.pid); expect(driver.home).toBe(f.home);
+      const expected = new Set(driver.probes.map(p => p.pid));
       if (c.outputRoot) try { const state = JSON.parse(await fs.readFile(join(c.outputRoot, "lookup-pilot-controller.json"))); for (const s of state.slots) if (s.worker) expected.add(s.worker.pid); } catch (e) { if (e.code !== "ENOENT") throw e; }
       for (const pid of expected) await read(pid);
     }

@@ -1489,7 +1489,9 @@ lease acquisition or output setup. `LOOKUP_PILOT_REAL_ROUTE_ENABLED` in
 must remain false until the separately reviewed configured-process smoke
 proves the complete controller/child flow. No authorization issuer is provided.
 Ordinary benchmark/compare and probe-child refusal seams remain unchanged.
-Both verified controller schemas first launch a credential-free offline preparation child.
+Both verified controller schemas, faux `continuity-lookup-faux-controller-v1` and
+real `continuity-lookup-controller-v1`, first launch a credential-free offline
+preparation child.
 After that child exits and its group is gone, the controller journals its PID,
 start identity and pristine snapshot digest before launching the probe child.
 The probe verifies the exited tuple and snapshot, restores the exact hashed bytes
@@ -1548,6 +1550,13 @@ feasibility is independent of admission eligibility. A failure exits nonzero.
 The same tree limits apply: regular files with link count one, owner-only write,
 64 MiB per file and 512 MiB total. Preflight records and snapshots have separate
 schemas and cannot supply a one-use prepared-boundary proof to either probe.
+Each slot also dry-restores the verified snapshot over the prepared workspace,
+including removal of existing owner-read-only directories and reapplication of
+recorded modes. Restore failures report `lookup_preparation_invalid` and make
+the preflight exit non-zero. The report totals preparation and dry-restore time
+against `runDeadlineMs`, using each phase's remaining run time for its watchdog.
+**Probe time is excluded**: passing this free lower-bound check does not show
+that the full run, including probes, fits the deadline.
 This is a feasibility observation, not power-loss durability or an SDK proof.
 
 Faux probes use a separately branded send and fictional in-memory credentials.

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
-let run, state, realMint, fauxDecorator, realVerify, runner;
+let run, state, realMint, fauxDecorator, realVerify, runner, readState;
 const mocks = ["lookup-pilot-state", "lookup-real-capability", "lookup-ipc", "lookup-preparation", "lookup-pilot-entry", "lookup-roles", "lookup-pilot", "lookup-guard", "lookup-pilot-runtime", "dataset", "runner"];
 beforeEach(async () => {
   vi.resetModules();
@@ -9,7 +10,8 @@ beforeEach(async () => {
   realMint = vi.fn(async () => send); realVerify = vi.fn(); fauxDecorator = vi.fn(async () => () => {});
   runner = { productionModules: async () => ({config: {resolveJsonMonoAgentConfig: () => ({})}}), configJson: () => ({}), lookupConfig: () => ({}), pilotDispatchConfig: p => p,
     createJudge: () => null, runProbe: vi.fn(async () => ({status: "completed", score: {pass: true}})) };
-  vi.doMock("../lib/continuity-lookup-pilot-state.mjs", () => ({readPilotPrivate: async () => state, pilotStatePath: p => p, LOOKUP_REAL_CONTROLLER: "continuity-lookup-controller-v1", LOOKUP_FAUX_CONTROLLER: "continuity-lookup-faux-controller-v1"}));
+  readState = vi.fn(async () => state);
+  vi.doMock("../lib/continuity-lookup-pilot-state.mjs", () => ({readPilotPrivate: readState, pilotStatePath: p => p, LOOKUP_REAL_CONTROLLER: "continuity-lookup-controller-v1", LOOKUP_FAUX_CONTROLLER: "continuity-lookup-faux-controller-v1"}));
   vi.doMock("../lib/continuity-lookup-real-capability.mjs", () => ({createLookupRealSend: realMint, verifyLookupRealAssignment: realVerify}));
   vi.doMock("../lib/continuity-lookup-ipc.mjs", () => ({verifyLookupPilotParent: async () => state, createLookupPilotIPC: async () => permit}));
   vi.doMock("../lib/continuity-lookup-preparation.mjs", () => ({assertLookupPilotArm() {}, verifyLookupPreparation() {}, restoreLookupPreparation: async () => ({proof: {}, work: "/fictional/work", manifest: {conversationId: "fictional"}})}));
@@ -24,10 +26,10 @@ beforeEach(async () => {
   ({runLookupPilotChild: run} = await import("../lib/continuity-lookup-pilot-child.mjs"));
 });
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); for (const name of mocks) vi.doUnmock(`../lib/continuity-${name}.mjs`); });
-it.each([false, true])("production probe child selects only its durable mint (real=%s)", async real => {
+it.each([[false, false], [true, false], [false, true], [true, true]])("production probe child selects only its durable mint (real=%s, opposite caller flag=%s)", async (real, opposite) => {
   state.schema = real ? "continuity-lookup-controller-v1" : "continuity-lookup-faux-controller-v1";
   const emitter = new EventEmitter(), a = {index: 0, outputRoot: "/fictional/output", epoch: "epoch", slotId: "slot", runId: "run", cacheKey: "assigned",
-    authorization: {schema: real ? "continuity-lookup-faux-authorization-v1" : "continuity-lookup-pilot-authorization-v1", credentialPath: "/fictional/credential"},
+    authorization: {schema: real !== opposite ? "continuity-lookup-pilot-authorization-v1" : "continuity-lookup-faux-authorization-v1", credentialPath: "/fictional/credential"},
     plan: {judge: null, reader: {model: "fictional:model", effort: "high"}}, roleRequest: {binding: {arm: "native-lookup"}, common: {lookupSelection: {seed: 1, perGroup: 2}}},
     slot: {code: "R0", suite: "holdout", traceId: "trace", probeId: "probe"}, pilot: {registration: {codes: {R0: {path: "/fictional/root"}}}}};
   const proc = {...process, connected: true, on: emitter.on.bind(emitter), once: emitter.once.bind(emitter), off: emitter.off.bind(emitter),
@@ -44,4 +46,22 @@ it.each(["https://fixture.invalid/codex/responses", "http://localhost:12345/code
   const {createLookupFauxSend} = await import("../lib/continuity-lookup-faux-capability.mjs");
   await expect(createLookupFauxSend({outputRoot: "/fictional/output", index: 0, slot: {code: "R0"}, plan: {}, roleRequest: {}, pilot: {registration: {codes: {R0: {path: "/fictional/root"}}}}}, {})).rejects.toThrow("lookup_pilot_faux_required");
   expect(fauxDecorator).not.toHaveBeenCalled(); expect(realMint).not.toHaveBeenCalled(); expect(fetch).not.toHaveBeenCalled();
+});
+
+it.each([undefined, {}, Object.create({method: "POST"}), {method: "GET"}, {method: "POST", credentials: "include"}, {method: "POST", dispatcher: {}}, {method: "POST", cache: "no-store"}, {method: "POST", redirect: "follow"}])("faux send refuses unsupported init %j without spending its permit", async bad => {
+  const now = Date.now(), body = Buffer.from("fictional guarded body");
+  state.deadlineAt = now + 60000; state.slots[0] = {terminal: null, startedAt: now, holds: [{consumed: true, permitId: "fictional-permit", payloadDigest: createHash("sha256").update(body).digest("hex")}]};
+  const a = {outputRoot: "/fictional/output", index: 0, slot: {code: "R0"}, cacheKey: "assigned", runId: "fictional-run", slotId: "fictional-slot", plan: {}, roleRequest: {},
+    pilot: {registration: {codes: {R0: {path: "/fictional/root"}}}, descriptor: {deadlines: {deadlineMs: 60000}}}};
+  fetch.mockResolvedValue(new Response("fictional response"));
+  const {createLookupFauxSend} = await import("../lib/continuity-lookup-faux-capability.mjs"), send = await createLookupFauxSend(a, {});
+  await expect(send("https://fixture.invalid/codex/responses", bad)).rejects.toThrow("lookup_pilot_faux_required"); expect(fetch).not.toHaveBeenCalled();
+  await send("https://fixture.invalid/codex/responses", {method: "POST", body, headers: {"session-id": "assigned", "x-client-request-id": "assigned"}, redirect: "error"});
+  expect(fetch).toHaveBeenCalledOnce(); expect(fetch.mock.calls[0][0]).toBe(state.fauxEndpoint);
+});
+
+it("maps the initial probe-child state read to the preparation refusal", async () => {
+  readState.mockRejectedValue(Object.assign(Error("fictional private location"), {code: "lookup_receipt_invalid"}));
+  await expect(run({outputRoot: "/fictional/output"})).rejects.toThrow("lookup_preparation_invalid");
+  expect(realMint).not.toHaveBeenCalled(); expect(fauxDecorator).not.toHaveBeenCalled();
 });
