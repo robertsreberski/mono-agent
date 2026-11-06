@@ -6,7 +6,11 @@ const mocks = ["roles", "pilot", "authorization", "lease", "pilot-entry"];
 beforeEach(async () => {
   vi.resetModules(); vi.stubEnv("CI", undefined); vi.stubEnv("CONTINUITY_DEBUG", undefined);
   vi.stubGlobal("fetch", () => { throw Error("test_egress_denied"); });
-  approved = { registration: { roles: [{ id: "native", arm: "native-lookup" }], codes: { R0: { path: "/fictional/r0" } } }, descriptor: { capUSD: 100 } };
+  // A measured feasible slot lets these authorization tests reach the mocked lease.
+  approved = { registration: { roles: [{ id: "pack", arm: "continuity-pack-cold", code: "R0" }], codes: { R0: { path: "/fictional/r0" } },
+    common: { corpora: [{ suite: "holdout", traces: [{ id: "fictional-trace", probes: ["fictional-probe"] }] }],
+      policy: { budget: { paths: [{ role: "pack", traceId: "fictional-trace", probeId: "fictional-probe", feasibility: { classification: "feasible" } }] } } },
+  }, descriptor: { capUSD: 100, schedule: { seed: 13 } } };
   options = { pilot: structuredClone(approved), outputRoot: "/fictional/output", authorization: {
     schema: "continuity-lookup-pilot-authorization-v1", authorizationPath: "/fictional/authorization", registrationPath: "/fictional/registration",
     registrationSha256: "a".repeat(64), credentialPath: "/fictional/credential", controllerRoot: "/fictional/r0",

@@ -80,6 +80,8 @@ async function initializeLookupPilot(options = {}) {
 
   for (const role of pilot.registration.roles) assertLookupPilotArm(armById(role.arm));
   await verifyRegisteredCheckouts(pilot.registration);
+  const schedule = lookupPilotSchedule(pilot);
+  pilotNeed(!real || schedule.some(slot => slot.eligible), "lookup_pilot_no_eligible_slots");
   pilotNeed(await externalDirectory(outputRoot, false, Object.values(pilot.registration.codes).map(c => c.path)) === outputRoot, "lookup_receipt_invalid");
   const controller = { pid: process.pid, startIdentity: lookupProcessStartIdentity(process.pid) };
   pilotNeed(typeof controller.startIdentity === "string" && controller.startIdentity.length > 0, "lookup_ipc_invalid");
@@ -115,7 +117,6 @@ async function initializeLookupPilot(options = {}) {
   try {
     if (real) await auth.consumeLookupAuthorization(authorizationHandle, identity, lease);
     else await fauxConsume(authorization, pilot, outputRoot, identity, lease);
-    const schedule = lookupPilotSchedule(pilot);
     state = { schema: real ? LOOKUP_REAL_CONTROLLER : LOOKUP_FAUX_CONTROLLER, ...(real ? { recovery: false } : {}), ...(!real ? { fauxEndpoint: authorization.fixtureEndpoint ?? null } : {}), binding: digest(pilot), runId: identity.runId, epoch: identity.controllerEpoch,
       controller: identity.controller, capUSD: pilot.descriptor.capUSD, rmaxUSD: pilot.descriptor.rmaxUSD, revision: 0, deadlineAt: Date.now() + pilot.descriptor.deadlines.runDeadlineMs,
       schedule, scheduleSha256: digest(schedule), cursor: 0, stop: null,
@@ -225,7 +226,8 @@ async function initializeLookupPilot(options = {}) {
       }
     }); },
     async finish(index, terminal, score = null, refusalCode = null) { return serial(async () => {
-      await check(); const slot = state.slots[index];
+      await check(); pilotNeed(state.schedule[index]?.eligible, "lookup_pilot_slot_ineligible");
+      const slot = state.slots[index];
       if (!slot || state.cursor !== index || !LOOKUP_SLOT_TERMINALS.includes(terminal) || terminal === "unadmitted" || terminal === "skipped"
         || terminal === "refused_pre_send" && !slot?.admissionRefusal && ![...LOOKUP_PRE_SEND_REFUSALS, ...LOOKUP_GUARD_POLICY_REFUSALS].includes(refusalCode) || ![null, 0, 1].includes(score) || refusalCode !== null && ![...LOOKUP_PRE_SEND_REFUSALS, ...LOOKUP_GUARD_POLICY_REFUSALS].includes(refusalCode)) {
         if (slot?.holds.length) slot.terminal = "integrity_stop";
@@ -254,7 +256,7 @@ async function initializeLookupPilot(options = {}) {
 }
 function publicFailure(error) {
   const allowed = [...LOOKUP_PILOT_STOPS, "paid_mode_refused_in_ci", "lookup_pilot_real_route_unavailable", "lookup_pilot_faux_required", "lookup_debug_forbidden", "lookup_controller_checkout_mismatch",
-    "lookup_pilot_boundary_required", "lookup_authorization_binding_mismatch", "lookup_authorization_already_consumed", "lookup_authorization_lease_invalid", "lookup_pilot_resume_forbidden", "lookup_pilot_not_ready"];
+    "lookup_pilot_no_eligible_slots", "lookup_pilot_boundary_required", "lookup_authorization_binding_mismatch", "lookup_authorization_already_consumed", "lookup_authorization_lease_invalid", "lookup_pilot_resume_forbidden", "lookup_pilot_not_ready"];
   pilotNeed(false, allowed.includes(error?.code) ? error.code : "lookup_pilot_not_ready");
 }
 export async function createLookupPilotController(options) {
