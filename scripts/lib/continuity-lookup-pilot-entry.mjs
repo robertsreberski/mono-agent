@@ -1,5 +1,5 @@
 // Enable only after the separately reviewed two-process proof is complete.
-export const LOOKUP_PILOT_REAL_ROUTE_ENABLED = false;
+export const LOOKUP_PILOT_REAL_ROUTE_ENABLED = true;
 export function assertLookupPilotEntry() {
   if (!LOOKUP_PILOT_REAL_ROUTE_ENABLED) throw Object.assign(new Error("lookup_pilot_real_route_unavailable"), { code: "lookup_pilot_real_route_unavailable" });
 }

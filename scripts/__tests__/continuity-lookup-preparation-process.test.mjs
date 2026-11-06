@@ -46,7 +46,7 @@ it("journals an exited preparation before a fresh verifier restores; only prepar
   expect(p.pid).not.toBe(r.reply.pid); expect(p.pid).not.toBe(r.driver);
   expect(r.state.slots[0].holds).toEqual([]);
   const preparation = r.evidence.find(e => e.pid === p.pid), probe = r.evidence.find(e => e.pid === r.reply.pid);
-  expect(preparation).toMatchObject({ preparing: true, credentialKeys: [], builds: 1, verify: "lookup_pilot_real_route_unavailable", mint: "lookup_pilot_real_route_unavailable" });
+  expect(preparation).toMatchObject({ preparing: true, credentialKeys: [], builds: 1, verify: Object.hasOwn(process.env, "CI") ? "paid_mode_refused_in_ci" : "lookup_pilot_capability_invalid", mint: Object.hasOwn(process.env, "CI") ? "paid_mode_refused_in_ci" : "lookup_pilot_capability_invalid" });
   expect(probe.builds).toBe(0); expect(r.evidence).toHaveLength(3);
 }, 60000);
 it("refuses a digest changed between preparation exit and verifier launch", async () => {

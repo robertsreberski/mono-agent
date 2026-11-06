@@ -974,8 +974,8 @@ stay outside checkouts; share only counts, IDs, hashes and numerical summaries.
 
 `scripts/lib/continuity-lookup-guard.mjs` exports `guardedLookupModels(models,
 { contract, permit, send, assumptions })`. It is plumbing, **not execution authority**:
-no pilot command, controller, authorization, or real route is enabled. All seven
-existing refusal sites remain unchanged (compare parser/main, benchmark
+it cannot grant pilot authority or bypass the separately authorized real route.
+All seven ordinary refusal sites remain unchanged (compare parser/main, benchmark
 main/execute, runner non-offline branch/enclosing lookup guard, and probe child).
 The private runner branch is still unreachable for non-offline lookup; it is not
 itself an authorization check. Ordinary readiness remains false.
@@ -1325,11 +1325,11 @@ not established by these offline tests.
 
 ### Pilot controller and partial reports
 
-The internal `runLookupPilot` controller currently accepts only
-`continuity-lookup-faux-authorization-v1`. A real-schema authorization refuses
-with `lookup_pilot_real_route_unavailable` before artifact-driven setup or lease acquisition. There is
-a closed `pilot` command; real send construction is child-gated and its production
-entry remains unavailable pending the separate process proof.
+The `runLookupPilot` controller supports separate faux and real authorization
+paths. The real `pilot` entry is enabled behind the exact six-key locator,
+verified single-use authorization and cap; it does not issue authorization.
+Real send construction remains restricted to the assigned probe child after
+registration and preparation verification, never to the controller or preparer.
 Faux runs are accepted under CI; debug-variable presence refuses in every
 process. Neither controller nor worker removes CI from its environment.
 
@@ -1492,15 +1492,22 @@ fetches are recorded too, so swallowed errors cannot hide auxiliary egress. Clea
 has an explicit hook budget. Scripted checkpoint work uses absent credentials;
 no provider call, paid smoke or full pilot execution is established by this proof.
 
-### Child-authorized pilot construction (entry unavailable)
+### Child-authorized pilot construction
 
-The explicit `continuity-lookup-compare pilot` command exists but refuses with
-`lookup_pilot_real_route_unavailable` before any argument-driven artifact read,
-lease acquisition or output setup. `LOOKUP_PILOT_REAL_ROUTE_ENABLED` in
-`scripts/lib/continuity-lookup-pilot-entry.mjs` is the single release gate. It
-must remain false until the separately reviewed configured-process smoke
-proves the complete controller/child flow. No authorization issuer is provided.
-Ordinary benchmark/compare and probe-child refusal seams remain unchanged.
+The explicit `continuity-lookup-compare pilot` real route is enabled by
+`LOOKUP_PILOT_REAL_ROUTE_ENABLED` in
+`scripts/lib/continuity-lookup-pilot-entry.mjs`. This is not permission to run:
+a pilot still requires clean code-bound registration, real-equivalent offline
+preparation preflight on the intended output volume, read-only registry readiness
+and a separately approved exact-cap, single-use authorization. No authorization
+issuer is provided. The enabled gate changes the protocol digest, so registration
+must be generated at the enabled revision, after independent process-proof
+reproduction. Ordinary benchmark/compare and probe-child refusal seams remain
+unchanged.
+
+The pilot measures only `pack`, `pack-only`, `soul-only` and `shipping`. Native
+roles are not admissible under the preserved conservative input bound; retain
+them only as ineligible inventory rows, never as authorized dispatch slots.
 Both verified controller schemas, faux `continuity-lookup-faux-controller-v1` and
 real `continuity-lookup-controller-v1`, first launch a credential-free offline
 preparation child.
@@ -1764,5 +1771,6 @@ ArrayBuffer bodies, snapshotting the same bytes before awaits. Other typed
 arrays, DataView, FormData, URLSearchParams, Blob and absent bodies refuse with
 `lookup_body_type_forbidden`; no implicit MIME metadata is discarded. No margin
 proves billing behavior, perfect PID incarnation identity, an OS sandbox or
-power-loss durability. The real-route gate remains closed; a cap request is a
-separate operator decision, not permission to execute.
+power-loss durability. The real route is enabled only behind the single-use
+authorization and cap; a cap request remains a separate operator decision,
+not permission to execute.

@@ -32,9 +32,9 @@ it("clips the pilot kill to the latency deadline rather than adding turn or clea
   expect(() => lookupPilotWatchdog({timeoutMs: 720001}, deadlines, 1800000, 0)).toThrow("lookup_ipc_invalid");
 });
 
-it("keeps the real entry closed regardless of the configured-path test coverage", () => {
-  expect(LOOKUP_PILOT_REAL_ROUTE_ENABLED).toBe(false);
-  expect(() => assertLookupPilotEntry()).toThrow("lookup_pilot_real_route_unavailable");
+it("opens the explicit entry without removing downstream authorization checks", () => {
+  expect(LOOKUP_PILOT_REAL_ROUTE_ENABLED).toBe(true);
+  expect(() => assertLookupPilotEntry()).not.toThrow();
 });
 
 it("audits canonical ROOT code reads, refuses a home-store escape and blocks credential and ROOT writes", async () => {

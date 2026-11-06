@@ -36,16 +36,25 @@ it.each(["stale", "order", "digest", "duplicate", "cost"])("refuses %s messages 
   expect(k.journal.snapshot().stop).not.toBeNull();
 });
 
-it("refuses a complete real-schema artifact in a CI child before any lease or output write", async () => {
+it("refuses a complete artifact instead of the six-key real locator before any lease or output write", async () => {
   const f = suite.fixture, base = await fs.mkdtemp(join(f.base, "real-refusal-")), outputRoot = join(base, "output");
   await fs.mkdir(outputRoot, { mode: 0o700 });
   const options = { pilot: f.pilot, outputRoot, authorization: lookupAuthorizationArtifact(f.pilot, {
     registrationRawSha256: createHash("sha256").update(JSON.stringify(f.pilot)).digest("hex"), outputRoot, credentialPath: join(base, "fictional-credential.json") }) };
   const p = await suite.spawn({ options }, { CI: "1" }, {deferReplyUntilExit: true});
-  expect(await p.reply).toEqual({ failed: "lookup_pilot_real_route_unavailable" }); await p.exit;
+  expect(await p.reply).toEqual({ failed: "lookup_authorization_binding_mismatch" }); await p.exit;
   expect(await fs.readdir(outputRoot)).toEqual([]);
   for (const path of [join(outputRoot, "controller-lock.sqlite"), join(base, ".lookup-faux-consumed-v1")]) await expect(fs.lstat(path)).rejects.toMatchObject({ code: "ENOENT" });
   expect(JSON.parse(await fs.readFile(join(f.base, "witnesses", `${p.child.pid}.json`))).ci).toBe("1");
+});
+
+it("refuses the exact real locator in a CI child before registration, credentials or lease", async () => {
+  const f = suite.fixture, base = await fs.mkdtemp(join(f.base, "real-ci-refusal-")), outputRoot = join(base, "output");
+  await fs.mkdir(outputRoot, {mode: 0o700});
+  const options = {pilot: f.pilot, outputRoot, authorization: {schema: "continuity-lookup-pilot-authorization-v1", authorizationPath: join(base, "absent-authorization.json"), registrationPath: join(base, "absent-registration.json"), registrationSha256: "a".repeat(64), credentialPath: join(base, "absent-credential.json"), controllerRoot: f.repo}};
+  const p = await suite.spawn({options}, {CI: "1"}, {deferReplyUntilExit: true});
+  expect(await p.reply).toEqual({failed: "paid_mode_refused_in_ci"}); await p.exit;
+  expect(await fs.readdir(outputRoot)).toEqual([]);
 });
 
 it("holds the lease for the entire run and refuses competing controllers", async () => {

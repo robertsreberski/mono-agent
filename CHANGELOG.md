@@ -6,13 +6,15 @@
   improve tablet touch targets and conversation spacing. Remove and re-add
   existing Home Screen installs to adopt the opaque system status bar.
 
+- Enable the guarded lookup pilot for the four pack-family roles behind verified
+  registration, preparation preflight and an exact-cap single-use authorization.
+
 - Recheck normalized faux lookup transport methods and redirects before sending,
   rejecting request accessors that change after initial validation.
 
 - Add read-only lookup consumption-registry readiness checks and reject symlinked
   or non-directory preflight output roots before preparation, keeping missing-path
-  disk checks read-only, checking the private consumed registry, and keeping real
-  lookup execution closed.
+  disk checks read-only and checking the private consumed registry before execution.
 
 - Require explicit lookup-preflight timeouts, check output-volume free space
   without writing, and enforce effective timing and retained-disk margins before
@@ -25,14 +27,13 @@
   `--import` paths against the parent directory.
 
 - Add offline preparation checks for native and continuity-pack lookup pilots;
-  reject unsupported pilot arms before startup and keep real execution closed.
+  reject unsupported pilot arms before startup and authorization consumption.
 
 - Restore lookup-pilot checkpoints only after an offline preparation process exits
-  and its snapshot is verified, while keeping the real route closed.
+  and its snapshot is verified, before granting a probe-bound send.
 
 - Keep pilot lookup comparisons isolated by per-slot caches, refuse auxiliary
-  model routes, and stop runs on policy violations, while keeping the real-route
-  entry closed.
+  model routes, and stop authorized runs on policy violations.
 
 - Add read-only, aggregate-only tool-result clearing opportunity analysis and
   offline provider payload qualification, without enabling runtime clearing.
