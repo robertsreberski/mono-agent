@@ -1533,16 +1533,33 @@ and no retry. Final account headers must match the salted commitment; same-accou
 token rotation is permitted. Account mismatch, HTTP 401/403, HTTP 429 and known
 Codex usage-limit JSON/SSE errors await their fixed sticky stops. The guard's
 settlement contract is unchanged. The credentialed-path proof enters the real
-configured harness and post-credential Models decorator with an unexpired
-fictional OAuth file. The installed SDK derives the account and exact cache
+configured live-turn construction, including the production config and route,
+a real probe-owned History forwarder and post-credential Models decorator, with
+an unexpired fictional OAuth file. The SDK's accepted request includes the actual
+ConversationHistory tool schema, with no fallbacks or model switching. The
+installed SDK derives the account and exact cache
 payload/headers. Success and retryable-failure cases make one SDK fetch attempt;
 account mismatch makes no native attempt. Coverage counts actual credential
 reads, Models construction and OAuth derivation, with zero refresh calls.
 Credential writes and global-fetch fallback fail; the closure's captured native
 fetch is routed only to its test-owned loopback listener. The home-data canary
 allows read-only canonical checkout access, refuses home access outside it and
-all home/checkout writes, and audits post-construction checkout reads as installed
-module code. These tests use mocked authority, not execution-valid authorizations.
+all home/checkout writes, and audits post-construction checkout metadata and
+reads as installed module code or production `scripts/lib/**/*.mjs` code. Script
+accesses are recorded separately with their filesystem API kind; other checkout
+data reads after construction fail. This is a JavaScript filesystem-API canary in the main thread and
+its worker threads, including nested workers, not an OS sandbox. Native and
+SQLite file I/O and internal ESM-loader bindings are outside that API canary;
+the proof additionally asserts that actual SQLite connection paths are test-owned.
+The process proof checks file-URL loader paths as well; native bindings and
+`sqlite.backup` remain outside the JavaScript API coverage.
+OS process-identity subprocesses are allowed by exact executable and argv. The
+full-process proof additionally allows `ps -axo` group-liveness listings, exact
+read-only Git/protocol-verification commands and the production preparation/probe forks. Other subprocess calls throw.
+These subprocesses are not covered by the filesystem canary; the OS-identity
+commands read no home data. Git verification uses the test home, global config
+`/dev/null` and disabled system config. These tests use mocked authority, not
+execution-valid authorizations.
 
 Containment retains proven members in memory when journal persistence fails.
 Fresh PID/start/pgid proof remains mandatory for every signal; persistence failure
@@ -1550,16 +1567,76 @@ is never treated as a grant or a successful durable write. Done ACK cleanup and
 containment rejection remain bounded even when the journal is sticky-failed.
 The controller releases its lease; observation-only recovery cannot grant more.
 
-The complete three-process native/pack smoke still requires full registered
-preparation replay, explicit inherited egress/credential denial, per-process
-canaries, persisted hold/consumption listener checks, arrival-kill reconciliation
-and disk/wall/RSS measurements. Its provider listener belongs to the controller;
-production ConversationHistory and its forwarder stay probe-owned. That full
-proof and the literal 600-second late-usage case are separate from the default
-unit lane and remain required before opening the gate. Their measurements are
-not yet established. No live provider behavior, billing, power-loss durability
-or operator acceptance is established by these unit tests.
+The explicit off-lane configured-process proof uses full frozen fictional
+80-turn/64-tool replay, actual registered-source closure builds, the production
+controller library (`runLookupPilot`), production preparation/probe child
+entrypoints and installed serializer. All four pack/soul variants exercise the
+three-process flow in the multi-round case. Native inventory rows are
+ineligible in this fixture: assert no native preparation, probe or hold, and do
+not describe this as an admitted-native topology. Skipping a row acquires no
+row-specific lease or claim; the faux controller still consumes its run-wide
+authorization before scheduling the eligible pack rows.
 
+Its provider listener belongs to the controller; production ConversationHistory
+and its forwarder stay probe-owned, with dynamically allowed loopback ports.
+Every arrival independently rereads the persisted consumed hold and both claims.
+Inherited per-process/thread API and egress canaries, restored native-journal
+identity and full replay counts, leftover lease-home reuse, two History rounds,
+capacity refusal, request ceilings, SDK/empty-final/sticky-tier outcomes and
+controller-crash read-only reconciliation are recorded. The request-ceiling case
+uses an unrecognized tool response so History's eight-call meter does not mask
+the configured runtime's ten-turn ceiling; the guard's independent eleventh-call
+refusal remains separately unit-tested. No runtime limit is enlarged.
+
+The full proof requires macOS (Darwin) and Node **24.18.0 exactly**.
+
+```sh
+LOOKUP_CONFIGURED_PROOF=full node scripts/proofs/lookup-configured-full.mjs
+CI=1 LOOKUP_CONFIGURED_PROOF=full node scripts/proofs/lookup-configured-full.mjs
+node scripts/proofs/lookup-configured-full.mjs \
+  --verify-evidence .worklab-tmp/lookup-configured-full-normal.json \
+  .worklab-tmp/lookup-configured-full-ci.json
+```
+
+The required environment is fail-loud, never a silent skip. `--case=NAME` is
+explicit partial/debug evidence, not the complete proof. Evidence binds the
+exact clean source HEAD/tree, every tracked script, registered protocol/build
+hashes, Node executable and loaded dependency bytes; verification refuses stale
+evidence, including incomplete, failed or single-case output; verification requires
+one normal and one CI run at distinct paths. Loader hooks check paths and observe
+unmodified module bytes. Recursive dependency-leaf identity/size/nanosecond time
+witnesses surround both fixture builds and each complete run. Ordinary installed
+dependency links are reused read-only: no SDK copies or resolution aliases. The
+webapp build uses privately cloned nested dependencies and bypasses its install
+step; both registered source trees receive the same offline build-only change.
+Per-slot wall, process high-water RSS, retained totals and post-probe minus
+post-restore disk deltas (logical-or-allocated bytes) are
+instrumented measurements, not uninstrumented runtime guarantees. Killed-process
+RSS is the last observed high-water mark, not an exact post-kill peak. The literal
+600-second outer-kill case keeps a live SSE stream with nonterminal keepalives,
+withholds terminal usage, then actually attempts a terminal write after containment.
+It records the write callback/error outcome separately from provider availability
+and accepted settles; unavailable usage stays conservatively reserved.
+These off-lane checks remain required at the exact reviewed head before opening
+the gate. No live provider behavior, evaluation quality, billing, power-loss
+durability or operator acceptance is established by faux proof results.
+
+
+### Read-only consumption-registry readiness
+
+Before requesting a cap, run
+`node scripts/continuity-lookup-compare.mjs registry-preflight`.
+It accepts no flags or home override. It checks the OS
+account home's registry-parent ownership, permissions and canonical directory
+ancestry using metadata only: no writes, creation, claims or authorization.
+A missing parent is reported as safe-to-create only when every existing ancestor
+is safe; private existing registry directories, including `consumed-v1`, must be owner-only. The report
+contains no home path and is a point-in-time diagnostic, not a grant.
+
+Real consumption, whose fixed registry is derived from `userInfo().homedir`,
+first executes in the live pilot. The faux process smoke and credentialed unit
+proof do not exercise that real write path. This read-only check cannot establish
+power-loss durability or guarantee that permissions will stay unchanged.
 
 ### Offline preparation feasibility
 
@@ -1634,9 +1711,17 @@ reservation of future disk or provider capacity.
 
    ```sh
    mkdir -p /tmp/lookup-volume/preflight /tmp/lookup-volume/output
-   OUTPUT_ROOT="$(pnpm exec node -p 'require("node:fs").realpathSync(process.argv[1])' /tmp/lookup-volume/output)"
-   PREFLIGHT_TMPDIR="$(pnpm exec node -p 'require("node:fs").realpathSync(process.argv[1])' /tmp/lookup-volume/preflight)"
-   TMPDIR="$PREFLIGHT_TMPDIR" pnpm exec node \
+   OUTPUT_ROOT="$(node -p 'require("node:fs").realpathSync(process.argv[1])' /tmp/lookup-volume/output)"
+   PREFLIGHT_TMPDIR="$(node -p 'require("node:fs").realpathSync(process.argv[1])' /tmp/lookup-volume/preflight)"
+   CHILD_WATCHDOG_MS="$(node --input-type=module -e '
+     import { readFile } from "node:fs/promises";
+     const registration = JSON.parse(await readFile(process.argv[1], "utf8"));
+     const ms = registration.descriptor.deadlines.childWatchdogMs;
+     if (!Number.isSafeInteger(ms) || ms < 1) throw new Error("invalid childWatchdogMs");
+     console.log(ms);
+   ' /tmp/lookup-registration.json)" || exit 1
+   export CHILD_WATCHDOG_MS
+   TMPDIR="$PREFLIGHT_TMPDIR" node \
      scripts/continuity-lookup-compare.mjs preflight \
      --registration /tmp/lookup-registration.json --sha256 REGISTRATION_SHA \
      --timeout-ms "$CHILD_WATCHDOG_MS" --require-real-equivalent \

@@ -1,5 +1,5 @@
 // Offline feasibility only. No authorization, registry consumption or output writer lease.
-import { mkdtemp, realpath, chmod, stat, statfs } from "node:fs/promises";
+import { mkdtemp, realpath, chmod, lstat, statfs } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, dirname, isAbsolute } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -18,7 +18,7 @@ const need = ok => { if (!ok) throw Object.assign(Error("lookup_preparation_inva
 async function freeSpace(outputRoot) {
   let path = outputRoot;
   for (;;) try {
-    if (!(await stat(path)).isDirectory()) throw Object.assign(Error("not_directory"), {code: "ENOTDIR"});
+    if (!(await lstat(path)).isDirectory()) throw Object.assign(Error("not_directory"), {code: "ENOTDIR"});
     const volume = await statfs(path, {bigint: true}), bytes = volume.bavail * volume.bsize;
     need(bytes >= 0n); return bytes;
   } catch (error) {

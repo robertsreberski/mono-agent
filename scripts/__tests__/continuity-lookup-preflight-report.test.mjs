@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { mkdir, writeFile, chmod, access, mkdtemp, lstat, readdir, rm } from "node:fs/promises";
+import { mkdir, writeFile, chmod, access, mkdtemp, lstat, readdir, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { performance } from "node:perf_hooks";
 import { join } from "node:path";
@@ -226,4 +226,15 @@ it("uses the nearest existing directory for a missing output root without creati
     expect(status).toBe(0); expect(report.feasible).toBe(true);
     await expect(access(outputRoot)).rejects.toMatchObject({code: "ENOENT"}); expect(await readdir(root)).toEqual([]);
   } finally { await rm(root, {recursive: true, force: true}); }
+});
+
+it.each([true, false])("refuses a symlink output root before preparation (dangling=%s)", async dangling => {
+  const root = await mkdtemp(join(tmpdir(), "lookup-output-link-")), target = join(root, "target"), outputRoot = join(root, "output");
+  try {
+    if (!dangling) await mkdir(target);
+    await symlink(target, outputRoot);
+    await expect(scenario({outputRoot, restore: async () => {}})).rejects.toMatchObject({code: "lookup_preflight_output_invalid"});
+    expect((await import("../lib/continuity-lookup-controller.mjs")).runLookupPreparationSlot).not.toHaveBeenCalled();
+    expect((await lstat(outputRoot)).isSymbolicLink()).toBe(true);
+  } finally {await rm(root, {recursive: true, force: true});}
 });

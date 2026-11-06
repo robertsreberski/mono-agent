@@ -140,6 +140,18 @@ it("refuses endpoint, method and redirect substitution; never retries a rejected
   await expect(send(endpoint, request())).rejects.toThrow("fictional_network_failure"); await expect(send(endpoint, request())).rejects.toThrow("lookup_pilot_capability_invalid"); expect(network).toHaveBeenCalledTimes(1);
 });
 
+it("validates the captured method, not a mutable request accessor", async () => {
+  const send = await cap.createLookupRealSend(a, safety), bad = request();
+  let reads = 0;
+  Object.defineProperty(bad, "method", {enumerable: true, get: () => ++reads === 1 ? "PUT" : "POST"});
+  await expect(send(endpoint, bad)).rejects.toThrow("lookup_pilot_capability_invalid");
+  expect(network).not.toHaveBeenCalled(); expect(reads).toBe(1);
+  const good = request(); reads = 0;
+  Object.defineProperty(good, "method", {enumerable: true, get: () => ++reads === 1 ? "POST" : "PUT"});
+  await send(endpoint, good);
+  expect(reads).toBe(1); expect(network).toHaveBeenCalledOnce(); expect(network.mock.calls[0][1]).toMatchObject({method: "POST", redirect: "error"});
+});
+
 it("does not promote a faux IPC source into real send authority", async () => {
   permit = Object.freeze({ ...permit, testOnly: true, brand: "lookup-faux-test-only-v1" });
   await expect(cap.createLookupRealSend(a, safety)).rejects.toThrow("lookup_pilot_capability_invalid"); expect(network).not.toHaveBeenCalled();
@@ -207,4 +219,15 @@ it.each([new DataView(new ArrayBuffer(4)), new Uint16Array(2), new Int8Array(2),
   const send = await cap.createLookupRealSend(a, safety);
   await expect(send(endpoint, {...request(), body})).rejects.toMatchObject({code: "lookup_body_type_forbidden"});
   expect(network).not.toHaveBeenCalled();
+});
+
+it("refuses extra normalized keys introduced while the endpoint is captured", async () => {
+  const send = await cap.createLookupRealSend(a, safety), bad = request();
+  const url = {toString() {bad.dispatcher = {}; return endpoint;}};
+  await expect(send(url, bad)).rejects.toThrow("lookup_pilot_capability_invalid"); expect(network).not.toHaveBeenCalled();
+});
+it("does not copy a dispatcher added during the real method snapshot", async () => {
+  const send = await cap.createLookupRealSend(a, safety), bad = request();
+  Object.defineProperty(bad, "method", {enumerable: true, get() {bad.dispatcher = {}; return "POST";}});
+  await send(endpoint, bad); expect(network).toHaveBeenCalledOnce(); expect(network.mock.calls[0][1]).not.toHaveProperty("dispatcher");
 });
