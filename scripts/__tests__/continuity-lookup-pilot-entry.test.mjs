@@ -1,17 +1,16 @@
-import { afterEach, afterAll, beforeAll, beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, vi } from "vitest";
 import { lstat, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import net from "node:net";
 import * as pilotModule from "../lib/continuity-lookup-pilot.mjs";
-import {pilotProcessFixture} from "./fixtures/lookup-pilot-process.mjs";
+import {pilotSuite} from "./fixtures/lookup-pilot-process.mjs";
 import { main } from "../continuity-lookup-compare.mjs";
 import { createLookupPilotController, runLookupPilot } from "../lib/continuity-lookup-controller.mjs";
 import { LOOKUP_PILOT_REAL_ROUTE_ENABLED, assertLookupPilotEntry } from "../lib/continuity-lookup-pilot-entry.mjs";
 
-let base, network, fetch, registrationFixture;
-beforeAll(async () => {registrationFixture = await pilotProcessFixture();}, 120000);
-afterAll(async () => {await rm(registrationFixture.base, {recursive: true, force: true});}, 120000);
+const suite = pilotSuite({scoped: true}), it = suite.test;
+let base, network, fetch;
 beforeEach(async () => {
   // Units select their own CI/debug case; production forks retain these variables.
   vi.stubEnv("CI", undefined); vi.stubEnv("CONTINUITY_DEBUG", undefined);
@@ -37,7 +36,7 @@ it("opens the pilot command but still verifies the registration before output se
   await expect(lstat(options.outputRoot)).rejects.toMatchObject({code: "ENOENT"});
 });
 it.each([createLookupPilotController, runLookupPilot])("requires the registration validator at the open controller entry before a lease", async entry => {
-  const options = {...realOptions(), pilot: structuredClone(registrationFixture.pilot)};
+  const options = {...realOptions(), pilot: structuredClone(suite.fixture.pilot)};
   // Full registration structure, with exactly the schema discriminator invalidated.
   options.pilot.registration.schema = "fictional-invalid-registration";
   const validation = vi.spyOn(pilotModule, "validateLookupPilotRegistration");

@@ -82,6 +82,7 @@ it("estimates and schedules only the four measured roles even when every invento
     path.initialTokens += 1000;
     path.initialAdmission = referenceFeasibility({calls: 0, bytes: 0, cumulativeBytes: 0, discovered: true}, f.workload.policy.budget, path);
     path.feasibility = externalPathFeasibility(path, f.workload.policy.budget);
+    expect(path.feasibility.classification).toBe("feasible");
   }
   expect(estimateLookupPilot(f)).toEqual(estimate);
 });

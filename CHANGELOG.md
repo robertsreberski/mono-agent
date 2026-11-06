@@ -8,6 +8,7 @@
 
 - Enable the lookup pilot only for four pack-family roles, enforcing code-bound
   registration, an exact cap, single-use authorization and registry safety.
+  Refuse ineligible journal slots before preparation, probes or admission.
   Preparation and registry preflights remain mandatory operator steps.
 
 - Recheck normalized faux lookup transport methods and redirects before sending,
