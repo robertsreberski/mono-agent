@@ -7,24 +7,14 @@ import { registerHooks, syncBuiltinESMExports } from "node:module";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isMainThread } from "node:worker_threads";
+import { retainedSync } from "./lookup-configured-retained.mjs";
 import { installLookupProofScope } from "../../__tests__/fixtures/lookup-proof-scope.mjs";
 const encoded = new URL(import.meta.url).searchParams.get("policy");
 if (!encoded) throw Error("lookup_configured_proof_policy_required");
 const policy = JSON.parse(Buffer.from(encoded, "base64url").toString());
 const loaded = new Map(), events = [], forks = [], httpCalls = [], startedAt = Date.now();
 let peakRSSBytes = 0, sentinel = false, globalFetchCalls = 0, postRestoreRetained = null;
-function retainedSync(slotRoot) {
-  const sizes = {snapshotBytes: 0, workBytes: 0, homeBytes: 0, otherBytes: 0};
-  const walk = (path, relative = "") => {
-    const stat = fs.lstatSync(path), bytes = Math.max(stat.size, stat.blocks * 512);
-    const field = relative === "checkpoint/snapshot" || relative.startsWith("checkpoint/snapshot/") ? "snapshotBytes"
-      : relative === "checkpoint/work" || relative.startsWith("checkpoint/work/") ? "workBytes"
-      : relative === "checkpoint/lease-home" || relative.startsWith("checkpoint/lease-home/") || relative && !relative.startsWith("checkpoint") ? "homeBytes" : "otherBytes";
-    sizes[field] += bytes;
-    if (stat.isDirectory()) for (const name of fs.readdirSync(path)) walk(join(path, name), relative ? `${relative}/${name}` : name);
-  };
-  walk(slotRoot); return {...sizes, retainedBytes: Object.values(sizes).reduce((a, b) => a + b, 0)};
-}
+
 const snapshot = () => ({role: policy.role, home: process.env.HOME, xdg: [process.env.XDG_CACHE_HOME, process.env.XDG_CONFIG_HOME, process.env.XDG_DATA_HOME, process.env.XDG_STATE_HOME], git: [process.env.GIT_CONFIG_GLOBAL, process.env.GIT_CONFIG_NOSYSTEM], startedAt, at: Date.now(), elapsedMs: Date.now() - startedAt, postRestoreRetained, httpCalls, peakRSSBytes: Math.max(peakRSSBytes, process.resourceUsage().maxRSS * 1024), events, forks, loaded: [...loaded.values()], globalFetchSentinel: sentinel, globalFetchCalls});
 policy.preloadUrl = new URL(import.meta.url).href.split("?")[0];
 policy.onFork = ({command, args, options, role}) => {

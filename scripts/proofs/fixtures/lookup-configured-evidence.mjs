@@ -11,16 +11,19 @@ export function assertConfiguredEvidence(evidence) {
   for (const row of evidence.results) {
     assert.ok(row.arrivals.length > 0); assert.deepEqual(row.errors ?? [], []);
     assert.ok(row.arrivals.every(a => a.holdConsumed === true && a.bothMarkers === true));
-    assert.ok(row.metrics.length > 0 && row.metrics.every(m => m.preparationToolCalls === 64 && m.nativeSessions.length > 0 && m.nativeSessions.every(s => s.hostReplayTurns === 80 && s.restoredAtOriginalRoot)));
+    assert.ok(row.metrics.length > 0 && row.metrics.every(m => m.preparationToolCalls === 64 && m.nativeSessions.length > 0 && m.nativeSessions.every(s => s.hostReplayTurns === 80 && s.restoredAtOriginalRoot === true)));
     const slots = row.state.slots.filter(s => s.worker), holds = slots.flatMap(s => s.holds);
     assert.ok(slots.length > 0 && holds.length > 0);
     const expectedStop = {rounds: "completed", cap: "budget_admission", limit: "lookup_repeated_loss", sdk: "lookup_repeated_loss", empty: "invalid_unit_rate", tier: "lookup_unknown_tier", kill: null, late: "lookup_worker_timeout"};
     assert.equal(row.state.stop, expectedStop[row.case]);
+    const workerSlotIds = [...new Set(slots.map(s => s.slotId))].sort();
+    assert.deepEqual([...new Set(row.arrivals.map(a => a.slotId))].sort(), workerSlotIds);
     const counts = new Map(); for (const a of row.arrivals) counts.set(a.slotId, (counts.get(a.slotId) ?? 0) + 1);
     assert.ok([...counts.values()].every(n => n === (row.case === "rounds" ? 3 : row.case === "limit" ? 10 : 1)));
     if (row.case === "rounds") {
       assert.deepEqual([...new Set(row.metrics.map(m => m.role))].sort(), ["pack", "pack-only", "shipping", "soul-only"]);
       assert.ok(holds.every(h => h.settlement?.kind === "settled"));
+      for (const slotId of workerSlotIds) assert.deepEqual(row.arrivals.filter(a => a.slotId === slotId).map(a => a.number).sort((a, b) => a - b), [1, 2, 3]);
       assert.ok(row.arrivals.filter(a => a.number === 3).every(a => a.priorToolOutputs >= 2));
     }
     if (row.case === "cap") assert.ok(slots.some(s => s.guardRefusal === "not_admitted_cap"));

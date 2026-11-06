@@ -96,5 +96,8 @@ export async function fullConfiguredFixture(root, base) {
     const roundsPilot = await register(roundsPath, roundsPolicy);
     assert.deepEqual(await dependencyLeafSnapshot(leaves), leafBefore, "fixture build mutated shared dependency leaves");
     return {base, repo: f.repo, pack, home, pilot, roundsPilot, commands, webBuild: {installBypassed: true, nestedDependencies: "private APFS clone", flags: OFFLINE_FLAGS}, dependencyLeaves: {count: leafBefore.length, unchanged: true}};
-  } finally {assert.deepEqual(await dependencyLeafSnapshot(leaves), leafBefore, "fixture build mutated shared dependency leaves"); for (const key of Object.keys(process.env)) if (!(key in previous)) delete process.env[key]; Object.assign(process.env, previous);}
+  } finally {
+    try {assert.deepEqual(await dependencyLeafSnapshot(leaves), leafBefore, "fixture build mutated shared dependency leaves");}
+    finally {for (const key of Object.keys(process.env)) if (!(key in previous)) delete process.env[key]; Object.assign(process.env, previous);}
+  }
 }
