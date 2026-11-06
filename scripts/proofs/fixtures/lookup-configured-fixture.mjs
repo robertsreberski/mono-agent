@@ -68,6 +68,7 @@ export async function fullConfiguredFixture(root, base) {
       // APFS copy-on-write clone: nested bundler caches and install metadata
       // are private, and relative dependency symlinks keep the original layout.
       execFileSync("/bin/cp", ["-cR", join(root, "packages/web/webapp/node_modules"), join(path, "packages/web/webapp/node_modules")]);
+      assert.ok((await fs.readFile(join(path, "packages/web/webapp/node_modules/.pnpm/lock.yaml"))).equals(await fs.readFile(join(path, "packages/web/webapp/pnpm-lock.yaml"))), "cloned webapp dependency lock mismatch");
       await linkDependencies(root, path); fixtureGit(path, ["init", "-q"]); fixtureCommit(path);
     }
     const checkouts = Object.fromEntries([["R0", f.repo], ["Rpack", pack]].map(([id, path]) => [id, {path, revision: fixtureGit(path, ["rev-parse", "HEAD"]).trim()}]));

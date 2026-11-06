@@ -7,13 +7,13 @@ import { assertConfiguredEvidence, assertConfiguredEvidencePair, CONFIGURED_PROO
 
 function evidence(ci = false) {
   const stops = ["completed", "budget_admission", "lookup_repeated_loss", "lookup_repeated_loss", "invalid_unit_rate", "lookup_unknown_tier", null, "lookup_worker_timeout"];
-  return {schema: "lookup-configured-full-proof-v1", complete: true, ci, results: CONFIGURED_PROOF_CASES.map((name, index) => {
+  return {schema: "lookup-configured-full-proof-v1", complete: true, ci, ciValue: ci ? "1" : null, results: CONFIGURED_PROOF_CASES.map((name, index) => {
     const roles = name === "rounds" ? ["pack", "pack-only", "shipping", "soul-only"] : ["pack"];
     return {case: name, errors: [], state: {stop: stops[index], slots: roles.map(role => ({worker: {}, guardRefusal: "not_admitted_cap", terminal: "pilot_empty_final_output", holds: [{settlement: ["kill", "late"].includes(name) ? null : {kind: name === "sdk" ? "lost" : "settled"}}]}))},
       arrivals: roles.flatMap(role => Array.from({length: name === "rounds" ? 3 : name === "limit" ? 10 : 1}, (_, n) => ({slotId: role, number: n + 1, priorToolOutputs: n, holdConsumed: true, bothMarkers: true}))),
       metrics: roles.map(role => ({role, preparationToolCalls: 64, nativeSessions: [{hostReplayTurns: 80, restoredAtOriginalRoot: true}], observedOuterMs: 600100})),
       finalReconciliation: {unreconciledGroups: 0}, lateAvailable: 1, lateAcceptedSettles: 0, providerTerminalDelivered: 0,
-      lateDelivery: {attempted: true, delivered: false, callbackError: "ERR_STREAM_DESTROYED"}, providerLateAvailableAt: 2, outerCompletedAt: 1};
+      lateDelivery: {attempted: true, delivered: false, destroyedBeforeWrite: true, callbackError: "ERR_STREAM_DESTROYED"}, providerLateAvailableAt: 2, outerCompletedAt: 1};
   })};
 }
 it("requires complete successful evidence and distinct CI modes", () => {
@@ -26,6 +26,22 @@ it("requires complete successful evidence and distinct CI modes", () => {
   for (const mutate of [e => e.results[7].lateDelivery.attempted = false, e => e.results[0].metrics.pop(), e => e.results[3].state.stop = "completed"]) {
     const e = evidence(); mutate(e); expect(() => assertConfiguredEvidence(e)).toThrow();
   }
+});
+it.each(["other_error", null, undefined])("requires the observed destroyed-stream error, not %s", callbackError => {
+  const e = evidence(); e.results[7].lateDelivery.callbackError = callbackError;
+  expect(() => assertConfiguredEvidence(e)).toThrow();
+});
+it("requires the response to be destroyed before the late write", () => {
+  const e = evidence(); e.results[7].lateDelivery.destroyedBeforeWrite = false;
+  expect(() => assertConfiguredEvidence(e)).toThrow();
+});
+it.each(["0", "", "true", null, undefined])("rejects CI evidence with actual CI=%s", ciValue => {
+  const e = evidence(true); e.ciValue = ciValue;
+  expect(() => assertConfiguredEvidencePair([evidence(), e])).toThrow();
+});
+it.each(["0", "", "1"])("does not relabel a present CI=%s as normal", ciValue => {
+  const e = evidence(); e.ciValue = ciValue;
+  expect(() => assertConfiguredEvidence(e)).toThrow();
 });
 it("verifies dependency lock/importer/links read-only and rejects mismatches", async () => {
   const root = await mkdtemp(join(tmpdir(), "lookup-dependency-witness-"));

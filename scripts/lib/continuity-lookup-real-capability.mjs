@@ -85,7 +85,7 @@ export async function createLookupRealSend(a, resolvedSafety) {
       need(init && Object.keys(init).every(key => ["method", "headers", "body", "signal", "redirect"].includes(key)));
       const endpoint = String(url);
       init = { ...init, headers: new Headers(init.headers), body: lookupBodyBytes(init.body) };
-    need(Object.keys(init).every(key => ["method", "headers", "body", "signal", "redirect"].includes(key)));
+      need(Object.keys(init).every(key => ["method", "headers", "body", "signal", "redirect"].includes(key)));
       need(endpoint === `${guard.LOOKUP_GUARD_CONTRACT.baseUrl}/codex/responses` && init?.method === "POST"
         && (init.redirect === undefined || init.redirect === "error") && process.connected);
       const { state } = await verifyLookupRealAssignment(a), hold = state.slots[a.index].holds.at(-1);

@@ -5,6 +5,8 @@ export function assertConfiguredEvidence(evidence) {
   assert.equal(evidence.complete, true, "partial/debug evidence is not a complete proof");
   assert.equal(Object.hasOwn(evidence, "failure"), false, "failed evidence cannot verify");
   assert.equal(typeof evidence.ci, "boolean");
+  // Only absent CI is normal; any present value other than exactly 1 is invalid.
+  assert.equal(evidence.ciValue, evidence.ci ? "1" : null);
   assert.deepEqual(evidence.results.map(row => row.case), CONFIGURED_PROOF_CASES);
   for (const row of evidence.results) {
     assert.ok(row.arrivals.length > 0); assert.deepEqual(row.errors ?? [], []);
@@ -29,7 +31,8 @@ export function assertConfiguredEvidence(evidence) {
     if (row.case === "late") {
       assert.equal(row.lateAvailable, 1); assert.equal(row.lateAcceptedSettles, 0);
       assert.equal(row.lateDelivery.attempted, true); assert.equal(row.providerTerminalDelivered, 0);
-      assert.equal(row.lateDelivery.delivered, false); assert.equal(typeof row.lateDelivery.callbackError, "string");
+      assert.equal(row.lateDelivery.delivered, false); assert.equal(row.lateDelivery.callbackError, "ERR_STREAM_DESTROYED");
+      assert.equal(row.lateDelivery.destroyedBeforeWrite, true);
       assert.ok(row.providerLateAvailableAt >= row.outerCompletedAt);
       assert.ok(row.metrics.every(m => m.observedOuterMs >= 600000 && m.observedOuterMs < 630000));
     }
