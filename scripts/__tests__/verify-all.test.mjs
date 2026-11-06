@@ -1,5 +1,7 @@
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 import { Scalar, isAlias, isMap, isScalar, isSeq, parseDocument } from "yaml";
@@ -330,23 +332,37 @@ describe("verify-all", () => {
       RELEASE_DRY_RUN_RESULT: "${{ needs.release-dry-run.result }}",
     });
     const green = Object.fromEntries(Object.keys(step.env).map((key) => [key, "success"]));
-    const runVerdict = (overrides) => spawnSync("bash", ["-c", step.run], {
-      encoding: "utf8",
-      env: { ...process.env, ...green, EVENT_NAME: "pull_request", ...overrides, GITHUB_STEP_SUMMARY: "/dev/stdout" },
-    });
-    const passed = runVerdict({});
-    expect(passed.status).toBe(0);
-    expect(passed.stdout).toContain("- Package tests: success");
-    expect(passed.stdout).toContain("- Checks and packaging: success");
-    expect(passed.stdout).toContain("CI VERDICT: GREEN");
-    for (const key of Object.keys(green).filter((key) => key !== "EVENT_NAME")) {
-      for (const result of ["failure", "cancelled", "skipped"]) {
-        const failed = runVerdict({ [key]: result });
-        expect(failed.status, `${key}: ${result}`).toBe(1);
-        expect(failed.stdout).toContain("CI VERDICT: FAILED");
+    // A real file, not /dev/stdout: on Linux the child's stdout is a socket,
+    // which cannot be reopened through /proc/self/fd.
+    const summaryDir = mkdtempSync(join(tmpdir(), "ci-verdict-"));
+    let runs = 0;
+    const runVerdict = (overrides) => {
+      const summary = join(summaryDir, `summary-${runs++}.md`);
+      const result = spawnSync("bash", ["-c", step.run], {
+        encoding: "utf8",
+        env: { ...process.env, ...green, EVENT_NAME: "pull_request", ...overrides, GITHUB_STEP_SUMMARY: summary },
+      });
+      let written = "";
+      try { written = readFileSync(summary, "utf8"); } catch (error) { if (error.code !== "ENOENT") throw error; }
+      return { ...result, stdout: `${written}${result.stdout}` };
+    };
+    try {
+      const passed = runVerdict({});
+      expect(passed.status).toBe(0);
+      expect(passed.stdout).toContain("- Package tests: success");
+      expect(passed.stdout).toContain("- Checks and packaging: success");
+      expect(passed.stdout).toContain("CI VERDICT: GREEN");
+      for (const key of Object.keys(green).filter((key) => key !== "EVENT_NAME")) {
+        for (const result of ["failure", "cancelled", "skipped"]) {
+          const failed = runVerdict({ [key]: result });
+          expect(failed.status, `${key}: ${result}`).toBe(1);
+          expect(failed.stdout).toContain("CI VERDICT: FAILED");
+        }
       }
+      expect(runVerdict({ EVENT_NAME: "push", RELEASE_DRY_RUN_RESULT: "skipped" }).status).toBe(0);
+    } finally {
+      rmSync(summaryDir, { recursive: true, force: true });
     }
-    expect(runVerdict({ EVENT_NAME: "push", RELEASE_DRY_RUN_RESULT: "skipped" }).status).toBe(0);
   });
 
   it("rejects deleting, moving, or changing the pnpm policy gate", () => {
