@@ -165,6 +165,9 @@ beforeEach(async () => {
 
 afterEach(async () => {
   cleanup();
+  document.documentElement.classList.remove("keyboard-viewport");
+  document.documentElement.style.removeProperty("--app-viewport-height");
+  document.documentElement.style.removeProperty("--app-viewport-top");
   document.querySelectorAll(".status-bar-surface, #root").forEach((element) => element.remove());
   document.documentElement.style.removeProperty("--status-bar-inset");
   restoreStandaloneStyles?.();
@@ -820,5 +823,86 @@ describe("narrow touch windows retain the phone layout", () => {
     expect(getComputedStyle(element(".composer-input")).fontSize).toBe("16px");
     expectInside(element(".composer-root"), element(".chat-panel"));
     expect(document.documentElement.scrollWidth).toBe(500);
+  });
+});
+
+const keyboardShots = import.meta.env.VITE_KEYBOARD_SHOTS as string | undefined;
+const keyboardViewports = [
+  { name: "tablet-portrait", width: 744, height: 1133, visualHeight: 786, top: 340 },
+  { name: "phone-offset-pan", width: 390, height: 1133, visualHeight: 786, top: 340 },
+  { name: "phone-portrait", width: 390, height: 844, visualHeight: 500, top: 0 },
+] as const;
+const simulateKeyboard = (height: number, top: number) => {
+  document.documentElement.style.setProperty("--app-viewport-height", height + "px");
+  document.documentElement.style.setProperty("--app-viewport-top", top + "px");
+  document.documentElement.classList.add("keyboard-viewport");
+};
+const expectKeyboardBox = (node: HTMLElement, height: number, top: number) => {
+  const box = node.getBoundingClientRect();
+  expect(box.top).toBeCloseTo(top, 0);
+  expect(box.height).toBeCloseTo(height, 0);
+};
+
+describe.each(keyboardViewports)("synthetic keyboard at $name", (viewport) => {
+  it.each(["light", "dark"] as const)("fits the shell, mobile chat and composer in %s", async (scheme) => {
+    await page.viewport(viewport.width, viewport.height);
+    await commands.emulateColorScheme(scheme);
+    openConsole();
+    await userEvent.click(await screen.findByRole("button", { name: "Open Alpha thread" }));
+    await settled();
+    await slideSettled();
+    await userEvent.fill(element(".composer-input"), "A fictional draft for Morgan");
+    simulateKeyboard(viewport.visualHeight, viewport.top);
+    await waitFor(() => {
+      expectKeyboardBox(element(".app-shell"), viewport.visualHeight, viewport.top);
+      expectKeyboardBox(element(".chat-region"), viewport.visualHeight, viewport.top);
+      expectInside(element(".composer-root"), element(".app-shell"));
+      expectInside(element(".composer-input"), element(".app-shell"));
+      expect(element(".thread-footer").getBoundingClientRect().bottom)
+        .toBeCloseTo(viewport.top + viewport.visualHeight, 0);
+    });
+    expect(getComputedStyle(element(".thread-root")).overflow).toBe("clip");
+    expect(window.scrollY).toBe(0);
+    if (keyboardShots && touchPointer && viewport.name !== "phone-offset-pan") {
+      await page.screenshot({ path: keyboardShots + "/synthetic-chromium-touch-keyboard-" + viewport.name + "-" + scheme + ".png" });
+    }
+    document.documentElement.classList.remove("keyboard-viewport");
+    document.documentElement.style.removeProperty("--app-viewport-height");
+    document.documentElement.style.removeProperty("--app-viewport-top");
+    await waitFor(() => expectKeyboardBox(element(".app-shell"), viewport.height, 0));
+    expect(element(".composer-input")).toHaveValue("A fictional draft for Morgan");
+  });
+
+  it("pins the real settings screen to the same box", async () => {
+    await page.viewport(viewport.width, viewport.height);
+    openConsole();
+    await userEvent.click(await screen.findByRole("button", { name: "Agent settings" }));
+    await waitFor(() => expect(element(".settings-screen")).toBeVisible());
+    await waitFor(() => expect(element(".settings-region").getBoundingClientRect().left).toBeCloseTo(0, 0));
+    simulateKeyboard(viewport.visualHeight, viewport.top);
+    await waitFor(() => expectKeyboardBox(element(".settings-region"), viewport.visualHeight, viewport.top));
+  });
+});
+
+describe("synthetic keyboard input portals", () => {
+  it.each([744, 390, 1133])("contains sheet, project context, dialog and wake inputs at %ipx", async (width) => {
+    await page.viewport(width, 1133);
+    simulateKeyboard(786, 340);
+    // Use the production portal classes, independently of their open/close state.
+    render(<>
+      <div className="sheet-layer"><section className="sheet"><label className="sheet-field">Project context<textarea defaultValue="Fictional context" /></label></section></div>
+      <div className="dialog-layer"><section className="cron-dialog"><header>Schedule</header><div className="cron-dialog-body"><input aria-label="Schedule name" /></div><footer>Actions</footer></section></div>
+      <section className="wake-schedule-sheet sheet"><div className="wake-schedule-scroll"><input aria-label="Wake note" /></div></section>
+    </>);
+    expectKeyboardBox(element(".sheet-layer"), 786, 340);
+    expectKeyboardBox(element(".dialog-layer"), 786, 340);
+    for (const selector of [".sheet-layer .sheet", ".cron-dialog", ".wake-schedule-sheet"]) {
+      const box = element(selector).getBoundingClientRect();
+      expect(box.top).toBeGreaterThanOrEqual(340);
+      expect(box.bottom).toBeLessThanOrEqual(1126);
+      for (const input of element(selector).querySelectorAll<HTMLElement>("input, textarea")) {
+        expectInside(input, element(selector));
+      }
+    }
   });
 });

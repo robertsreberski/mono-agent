@@ -1560,6 +1560,17 @@ not a contracts package install or dist tree. Normal local browser tests still u
 
 ### Tablet layout coverage
 
+On touch devices at normal zoom, a keyboard-reduced or panned visual viewport
+pins the shell and input overlays to its height and top offset. Mobile chat
+inherits that box; no keyboard-height subtraction is applied a second time.
+Document scrolling remains browser-owned: the tracker only follows the reported
+visual viewport, without scroll resets that could undo WebKit's keyboard pan.
+Without the keyboard (or during pinch zoom), the existing `100dvh` layout stays
+browser-owned. `visual-viewport.test.ts` covers activation/cleanup;
+`Dashboard.browser.test.tsx` checks synthetic keyboard geometry on tablet and
+phone widths. Set `VITE_KEYBOARD_SHOTS=<absolute dir>` for labeled synthetic
+Chromium screenshots; these do not prove iPadOS keyboard/panning behavior.
+
 Screens wider than 560 CSS pixels with a coarse pointer or no hover (touch
 tablets, including no-hover devices without a coarse pointer) keep 44px primary
 navigation/composer targets and omit the keyboard-shortcut hint. Outlined filter

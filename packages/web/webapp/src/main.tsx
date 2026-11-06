@@ -8,7 +8,11 @@ import { observeTransferredResources } from "./data-usage";
 import { NotificationsProvider } from "./notifications";
 import { WebRuntimeProvider } from "./runtime";
 import { registerServiceWorkerUpdates } from "./service-worker-update";
+import { installVisualViewport } from "./visual-viewport";
 import "./styles.css";
+
+const disposeVisualViewport = installVisualViewport();
+if (import.meta.hot) import.meta.hot.dispose(disposeVisualViewport);
 
 // `prompt` mode: a new build is downloaded and staged, and `App` decides when
 // it takes over -- never in the middle of a turn the operator is watching.
