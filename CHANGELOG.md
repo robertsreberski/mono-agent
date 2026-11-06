@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Fix lock reacquisition occasionally reporting this process's own lock as held
+  by another process when the filesystem is slow.
+
 - Keep the dashboard's Chats and Automations filter chips compact on touch tablets
   while preserving a 44px tap target.
 
