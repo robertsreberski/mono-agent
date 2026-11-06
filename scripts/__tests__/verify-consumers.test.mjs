@@ -18,14 +18,14 @@ describe("verify-consumers", () => {
       readFile(resolve(repoRoot, "package.json"), "utf8"),
     ]);
     const packageJson = JSON.parse(packageJsonText);
-    const verifyStart = workflow.indexOf("  verify:\n");
-    const websiteStart = workflow.indexOf("\n  website:\n", verifyStart);
+    const checksStart = workflow.indexOf("  checks-and-packaging:\n");
+    const websiteStart = workflow.indexOf("\n  website:\n", checksStart);
 
     expect(packageJson.scripts?.["verify:consumers"]).toBe("node scripts/verify-consumers.mjs");
-    expect(verifyStart).toBeGreaterThanOrEqual(0);
-    expect(websiteStart).toBeGreaterThan(verifyStart);
+    expect(checksStart).toBeGreaterThanOrEqual(0);
+    expect(websiteStart).toBeGreaterThan(checksStart);
 
-    const verifyJob = workflow.slice(verifyStart, websiteStart);
+    const checksJob = workflow.slice(checksStart, websiteStart);
     const command = "pnpm run verify:consumers --skip-build";
     const expectedSequence = [
       "      - name: Build packages",
@@ -41,8 +41,8 @@ describe("verify-consumers", () => {
       `        run: ${command}`,
     ].join("\n");
 
-    expect(verifyJob).toContain(expectedSequence);
-    expect(verifyJob.split(command)).toHaveLength(2);
+    expect(checksJob).toContain(expectedSequence);
+    expect(checksJob.split(command)).toHaveLength(2);
   });
 
   it("accepts every package-script form advertised by help and rejects a standalone separator", async () => {

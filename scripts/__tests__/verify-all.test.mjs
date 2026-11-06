@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 
 import { describe, expect, it } from "vitest";
@@ -276,7 +277,7 @@ describe("verify-all", () => {
 
     expect(releaseDryRun.name).toBe("Release dry run");
     expect(releaseDryRun.if).toBe("github.event_name == 'pull_request'");
-    expect(releaseDryRun.needs).toBe("verify");
+    expect(releaseDryRun.needs).toEqual(["verify", "checks-and-packaging"]);
     expect(releaseDryRun.steps.some((step) =>
       typeof step.run === "string"
       && step.run.includes("pnpm run release:publish -- --dry-run --tag \"$TAG\""),
@@ -284,11 +285,68 @@ describe("verify-all", () => {
 
     expect(verdict.name).toBe("Required verdict");
     expect(verdict.if).toBe("always()");
-    expect(verdict.needs).toEqual(["verify", "website", "marketing", "webapp-browser", "release-dry-run"]);
+    expect(verdict.needs).toEqual(["verify", "checks-and-packaging", "website", "marketing", "webapp-browser", "release-dry-run"]);
     expect(verdict.steps).toHaveLength(1);
     expect(verdict.steps[0].run).toContain("CI VERDICT: GREEN");
     expect(verdict.steps[0].run).toContain("CI VERDICT: FAILED");
     expect(Object.values(workflow.jobs).filter((job) => job.name === "Required verdict")).toHaveLength(1);
+  });
+
+  it.each(["verify", "checks-and-packaging"])("pins %s to 60 minutes and an independent exact Node matrix", (jobId) => {
+    for (const [original, replacement] of [
+      ["timeout-minutes: 60", "timeout-minutes: 61"],
+      ["timeout-minutes: 60", "timeout-minutes: 59"],
+      ['node-version: ["24.18.0"]', 'node-version: ["24"]'],
+      ["    strategy:", "    needs: verify\n    strategy:"],
+      ["    strategy:", "    if: false\n    strategy:"],
+    ]) {
+      const mutation = mutateCiJob(readCiWorkflow(), jobId, (job) => replaceExactly(job, original, replacement));
+      expect(() => expectCiParity(mutation)).toThrow();
+    }
+  });
+
+  it.each(["verify", "checks-and-packaging"])("rejects dropping any run step from %s", (jobId) => {
+    const source = readCiWorkflow();
+    const job = parseDocument(source).toJS().jobs[jobId];
+    for (const step of job.steps.filter((candidate) => candidate.run !== undefined)) {
+      const mutation = mutateCiJob(source, jobId, (body) => {
+        const start = body.indexOf(`      - name: ${step.name}\n`);
+        const next = body.indexOf("\n      - name:", start + 1);
+        return body.slice(0, start) + (next === -1 ? "" : body.slice(next));
+      });
+      expect(() => expectCiParity(mutation), `${jobId}: ${step.name}`).toThrow();
+    }
+  });
+
+  it("fails the aggregate verdict for every non-green required lane and reports both package lanes", () => {
+    const step = parseDocument(readCiWorkflow()).toJS().jobs.verdict.steps[0];
+    expect(step.env).toEqual({
+      EVENT_NAME: "${{ github.event_name }}",
+      VERIFY_RESULT: "${{ needs.verify.result }}",
+      CHECKS_AND_PACKAGING_RESULT: "${{ needs.checks-and-packaging.result }}",
+      WEBSITE_RESULT: "${{ needs.website.result }}",
+      MARKETING_RESULT: "${{ needs.marketing.result }}",
+      WEBAPP_BROWSER_RESULT: "${{ needs.webapp-browser.result }}",
+      RELEASE_DRY_RUN_RESULT: "${{ needs.release-dry-run.result }}",
+    });
+    const green = Object.fromEntries(Object.keys(step.env).map((key) => [key, "success"]));
+    const runVerdict = (overrides) => spawnSync("bash", ["-c", step.run], {
+      encoding: "utf8",
+      env: { ...process.env, ...green, EVENT_NAME: "pull_request", ...overrides, GITHUB_STEP_SUMMARY: "/dev/stdout" },
+    });
+    const passed = runVerdict({});
+    expect(passed.status).toBe(0);
+    expect(passed.stdout).toContain("- Package tests: success");
+    expect(passed.stdout).toContain("- Checks and packaging: success");
+    expect(passed.stdout).toContain("CI VERDICT: GREEN");
+    for (const key of Object.keys(green).filter((key) => key !== "EVENT_NAME")) {
+      for (const result of ["failure", "cancelled", "skipped"]) {
+        const failed = runVerdict({ [key]: result });
+        expect(failed.status, `${key}: ${result}`).toBe(1);
+        expect(failed.stdout).toContain("CI VERDICT: FAILED");
+      }
+    }
+    expect(runVerdict({ EVENT_NAME: "push", RELEASE_DRY_RUN_RESULT: "skipped" }).status).toBe(0);
   });
 
   it("rejects deleting, moving, or changing the pnpm policy gate", () => {
@@ -910,7 +968,8 @@ describe("verify-all", () => {
 });
 
 function expectCiParity(source) {
-  const { steps: ciSteps, matrixVersions } = parseCiVerifyJob(source);
+  const { stepsByJob, matrixVersions } = parseCiVerifyJob(source);
+  const ciSteps = stepsByJob["checks-and-packaging"];
   const allDeltaEntries = [
     ...VERIFY_GATE_DELTA.ciSetup,
     ...VERIFY_GATE_DELTA.ciOnly,
@@ -1000,7 +1059,20 @@ function expectCiParity(source) {
       expectedCiSteps.splice(ciAnchorIndexes[0] + 1, 0, toGateStep(entry.ci));
     }
 
-    expect(actualCiSteps, `CI semantic step sequence for Node ${nodeVersion}`).toEqual(expectedCiSteps);
+    // Preserve the old ordered gate set across the split, allowing only the
+    // explicit shared setup/build duplication. No command or argument is lost.
+    expect(actualCiSteps, `CI checks sequence for Node ${nodeVersion}`)
+      .toEqual(expectedCiSteps.filter((step) => step.label !== "test"));
+    const testLaneKeys = new Set([
+      "checkout", "Node setup", "pnpm setup", "check:pnpm-policy",
+      "dependency install", "build", "test",
+    ]);
+    expect(projectCiSteps(stepsByJob.verify, nodeVersion), `CI test sequence for Node ${nodeVersion}`)
+      .toEqual(expectedCiSteps.filter((step) => testLaneKeys.has(step.key ?? step.label)));
+    const stepSignature = (step) => JSON.stringify(step);
+    expect([...new Set([
+      ...actualCiSteps, ...projectCiSteps(stepsByJob.verify, nodeVersion),
+    ].map(stepSignature))].sort()).toEqual([...new Set(expectedCiSteps.map(stepSignature))].sort());
   }
 }
 
@@ -1037,41 +1109,55 @@ function parseCiVerifyJob(source) {
   const jobFields = readYamlMap(jobs, "ci.yml jobs");
   assertExactMapFields(
     jobFields,
-    ["verify", "website", "marketing", "webapp-browser", "release-dry-run", "verdict"],
+    ["verify", "checks-and-packaging", "website", "marketing", "webapp-browser", "release-dry-run", "verdict"],
     "CI workflow jobs",
   );
-  const verifyJob = requireMapField(jobFields, "verify", "ci.yml jobs");
+
   requireYamlMap(jobFields.get("website"), "ci.yml website job");
   requireYamlMap(jobFields.get("marketing"), "ci.yml marketing job");
   requireYamlMap(jobFields.get("webapp-browser"), "ci.yml webapp-browser job");
   requireYamlMap(jobFields.get("release-dry-run"), "ci.yml release-dry-run job");
   requireYamlMap(jobFields.get("verdict"), "ci.yml verdict job");
 
-  const verifyFields = readYamlMap(verifyJob, "CI verify job");
+  const stepsByJob = {};
+  let matrixVersions;
+  for (const jobId of ["verify", "checks-and-packaging"]) {
+    const job = requireMapField(jobFields, jobId, "ci.yml jobs");
+    const parsed = parseCiMatrixJob(job, jobId);
+    stepsByJob[jobId] = parsed.steps;
+    matrixVersions = parsed.matrixVersions;
+  }
+  return { stepsByJob, matrixVersions };
+}
+
+function parseCiMatrixJob(job, jobId) {
+  const context = `CI ${jobId} job`;
+  const expectedName = jobId === "verify" ? "Verify" : "Checks and packaging";
+  const jobFields = readYamlMap(job, context);
   assertExactMapFields(
-    verifyFields,
+    jobFields,
     ["name", "runs-on", "timeout-minutes", "strategy", "steps"],
-    "CI verify job",
+    context,
   );
-  if (requireStringField(verifyFields, "name", "CI verify job") !== "Verify (Node ${{ matrix.node-version }})") {
-    throw new Error("The CI verify check name must remain derived from the Node matrix.");
+  if (requireStringField(jobFields, "name", context) !== `${expectedName} (Node \${{ matrix.node-version }})`) {
+    throw new Error(`The CI ${jobId} check name must remain derived from the Node matrix.`);
   }
-  if (requireScalarField(verifyFields, "runs-on", "CI verify job") !== "ubuntu-latest") {
-    throw new Error("The CI verify job must run on ubuntu-latest.");
+  if (requireScalarField(jobFields, "runs-on", context) !== "ubuntu-latest") {
+    throw new Error(`The ${context} must run on ubuntu-latest.`);
   }
-  if (requireScalarField(verifyFields, "timeout-minutes", "CI verify job") !== 60) {
-    throw new Error("The CI verify job timeout must remain 60 minutes.");
+  if (requireScalarField(jobFields, "timeout-minutes", context) !== 60) {
+    throw new Error(`The CI ${jobId} job timeout must remain 60 minutes.`);
   }
 
-  const strategy = requireMapField(verifyFields, "strategy", "CI verify job");
-  const strategyFields = readYamlMap(strategy, "CI verify strategy");
-  assertExactMapFields(strategyFields, ["fail-fast", "matrix"], "CI verify strategy");
-  if (requireScalarField(strategyFields, "fail-fast", "CI verify strategy") !== false) {
-    throw new Error("The CI verify matrix must keep fail-fast disabled so every Node leg reports.");
+  const strategy = requireMapField(jobFields, "strategy", context);
+  const strategyFields = readYamlMap(strategy, `${context} strategy`);
+  assertExactMapFields(strategyFields, ["fail-fast", "matrix"], `${context} strategy`);
+  if (requireScalarField(strategyFields, "fail-fast", `${context} strategy`) !== false) {
+    throw new Error(`The ${context} matrix must keep fail-fast disabled so every Node leg reports.`);
   }
-  const matrix = requireMapField(strategyFields, "matrix", "CI verify strategy");
-  const matrixFields = readYamlMap(matrix, "CI verify matrix");
-  assertExactMapFields(matrixFields, ["node-version"], "CI verify matrix");
+  const matrix = requireMapField(strategyFields, "matrix", `${context} strategy`);
+  const matrixFields = readYamlMap(matrix, `${context} matrix`);
+  assertExactMapFields(matrixFields, ["node-version"], `${context} matrix`);
   const nodeVersions = requireYamlSeq(matrixFields.get("node-version"), "CI Node matrix");
   const matrixVersions = nodeVersions.items.map((node, index) => (
     requireYamlString(node, `CI Node matrix item ${index + 1}`)
@@ -1080,16 +1166,16 @@ function parseCiVerifyJob(source) {
     throw new Error(`The CI Node matrix must remain exactly ${JSON.stringify(EXPECTED_CI_NODE_MATRIX)}.`);
   }
 
-  const steps = requireYamlSeq(verifyFields.get("steps"), "CI verify steps").items;
+  const steps = requireYamlSeq(jobFields.get("steps"), `${context} steps`).items;
   if (steps.length === 0) {
-    throw new Error("The CI verify job must contain at least one step.");
+    throw new Error(`The ${context} must contain at least one step.`);
   }
 
   const parsedSteps = [];
   for (const [stepIndex, stepNode] of steps.entries()) {
-    const step = requireYamlMap(stepNode, `CI verify step ${stepIndex + 1}`);
-    const fields = readYamlMap(step, `CI verify step ${stepIndex + 1}`);
-    const name = optionalStringField(fields, "name", `CI verify step ${stepIndex + 1}`) ?? "<unnamed>";
+    const step = requireYamlMap(stepNode, `${context} step ${stepIndex + 1}`);
+    const fields = readYamlMap(step, `${context} step ${stepIndex + 1}`);
+    const name = optionalStringField(fields, "name", `${context} step ${stepIndex + 1}`) ?? "<unnamed>";
     if (fields.has("env")) {
       assertChangelogPrContextEnv(fields.get("env"), name);
       fields.delete("env");
@@ -1589,9 +1675,18 @@ function gateRunContract(command, gate, style = "scalar") {
   });
 }
 
+function mutateCiJob(source, jobId, mutate) {
+  const start = source.indexOf(`\n  ${jobId}:`);
+  const remainder = source.slice(start + 1);
+  const next = /\n  [a-z][a-z0-9-]*:/u.exec(remainder);
+  const end = next === null ? source.length : start + 1 + next.index;
+  return source.slice(0, start) + mutate(source.slice(start, end)) + source.slice(end);
+}
+
 function replaceExactly(source, original, replacement) {
-  expect(source.split(original), `mutation fixture: ${original}`).toHaveLength(2);
-  return source.replace(original, replacement);
+  expect(source.split(original).length, `mutation fixture: ${original}`).toBeGreaterThan(1);
+  // Shared setup is deliberately pinned in both independent jobs.
+  return source.replaceAll(original, replacement);
 }
 
 function readCiWorkflow() {

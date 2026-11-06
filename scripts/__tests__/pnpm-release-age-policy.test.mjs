@@ -444,8 +444,10 @@ describe("pnpm release-age policy", () => {
     expect(packageJson.scripts["check:pnpm-policy"]).toBe("node scripts/pnpm-release-age-policy.mjs");
     expect(packageJson.scripts["pnpm:devPreinstall"]).toBe(expectedLifecycle);
     expect(packageJson.scripts.preinstall).toBe(expectedLifecycle);
-    const ciVerifyJob = ci.split("\n  website:")[0];
-    for (const workflow of [ciVerifyJob, release]) {
+    const ciLanes = ["verify", "checks-and-packaging"].map((job) =>
+      ci.split(`\n  ${job}:`)[1].split(/\n  [a-z][a-z0-9-]*:/u)[0],
+    );
+    for (const workflow of [...ciLanes, release]) {
       expect(workflow).toContain([
         "      - name: Install pinned pnpm",
         `        run: npm install --global pnpm@${pinnedPnpmVersion(packageJson.packageManager)}`,

@@ -28,8 +28,8 @@ concurrency:
 jobs:
   verify:
     name: Verify (Node ${{ matrix.node-version }})
-    # scripts/__tests__/verify-all.test.mjs enforces the complete ordered action,
-    # environment, and exact run-script projection; VERIFY_GATE_DELTA declares exceptions.
+    # Keep the test check name stable; checks and packaging run independently.
+    # scripts/__tests__/verify-all.test.mjs pins both lanes and their combined gates.
     runs-on: ubuntu-latest
     timeout-minutes: 60
     strategy:
@@ -40,9 +40,47 @@ jobs:
         node-version: ["24.18.0"]
 
     steps:
-      # Full history and tags: the changelog gate diffs the PR against its base
-      # and checks every reachable tag. A shallow checkout would make both
-      # sub-checks no-op silently.
+      # Match the checks lane checkout so tests see the same history and tags.
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: "0"
+          fetch-tags: "true"
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "${{ matrix.node-version }}"
+
+      - name: Install pinned pnpm
+        run: npm install --global pnpm@11.18.0
+
+      - name: Check pnpm release-age policy
+        run: node scripts/pnpm-release-age-policy.mjs
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build packages
+        run: pnpm run build
+
+      - name: Run tests
+        run: pnpm test
+
+  checks-and-packaging:
+    name: Checks and packaging (Node ${{ matrix.node-version }})
+    # Independent runner: duplicate setup/build rather than transfer artifacts.
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        # Node 24.19.0 regressed native ObjectWrap teardown. Restore the
+        # floating "24" lane after https://github.com/nodejs/node/pull/65042 ships.
+        node-version: ["24.18.0"]
+
+    steps:
+      # Full history and tags are required by the changelog gate.
       - name: Checkout
         uses: actions/checkout@v4
         with:
@@ -138,9 +176,6 @@ jobs:
 
       - name: Typecheck packages
         run: pnpm run typecheck
-
-      - name: Run tests
-        run: pnpm test
 
       - name: Check whitespace
         run: node scripts/check-committed-whitespace.mjs
@@ -262,7 +297,7 @@ jobs:
   release-dry-run:
     name: Release dry run
     if: github.event_name == 'pull_request'
-    needs: verify
+    needs: [verify, checks-and-packaging]
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -304,6 +339,7 @@ jobs:
     if: always()
     needs:
       - verify
+      - checks-and-packaging
       - website
       - marketing
       - webapp-browser
@@ -316,6 +352,7 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           VERIFY_RESULT: ${{ needs.verify.result }}
+          CHECKS_AND_PACKAGING_RESULT: ${{ needs.checks-and-packaging.result }}
           WEBSITE_RESULT: ${{ needs.website.result }}
           MARKETING_RESULT: ${{ needs.marketing.result }}
           WEBAPP_BROWSER_RESULT: ${{ needs.webapp-browser.result }}
@@ -325,14 +362,15 @@ jobs:
           {
             echo "## Required CI verdict"
             echo
-            echo "- Package matrix: $VERIFY_RESULT"
+            echo "- Package tests: $VERIFY_RESULT"
+            echo "- Checks and packaging: $CHECKS_AND_PACKAGING_RESULT"
             echo "- Website: $WEBSITE_RESULT"
             echo "- Marketing: $MARKETING_RESULT"
             echo "- Webapp browser: $WEBAPP_BROWSER_RESULT"
             echo "- Release dry run: $RELEASE_DRY_RUN_RESULT"
           } >> "$GITHUB_STEP_SUMMARY"
 
-          if [[ "$VERIFY_RESULT" != "success" || "$WEBSITE_RESULT" != "success" || "$MARKETING_RESULT" != "success" || "$WEBAPP_BROWSER_RESULT" != "success" ]]; then
+          if [[ "$VERIFY_RESULT" != "success" || "$CHECKS_AND_PACKAGING_RESULT" != "success" || "$WEBSITE_RESULT" != "success" || "$MARKETING_RESULT" != "success" || "$WEBAPP_BROWSER_RESULT" != "success" ]]; then
             echo "CI VERDICT: FAILED"
             exit 1
           fi
