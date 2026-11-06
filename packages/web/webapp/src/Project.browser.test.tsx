@@ -1,3 +1,5 @@
+import { forceStandaloneStyles } from "./test/standalone-styles";
+
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { commands, page, userEvent } from "@vitest/browser/context";
 import indexHtml from "../index.html?raw";
@@ -7,6 +9,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { agent, project, thread, uploadLimits } from "./test/fixtures";
 import type { TagSummary, ThreadSummary } from "./types";
 import "./styles.css";
+
+let restoreStandaloneStyles: (() => void) | undefined;
 
 const storeMock = vi.hoisted(() => ({ current: null as Record<string, unknown> | null }));
 
@@ -168,6 +172,8 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  restoreStandaloneStyles?.();
+  restoreStandaloneStyles = undefined;
   await commands.emulateColorScheme(null);
   cleanup();
   document.querySelectorAll(".status-bar-surface, #root").forEach((element) => element.remove());
@@ -314,9 +320,10 @@ describe.each([
     expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width);
   });
 
-  it("exposes the fixed top edge above the project page without covering its header controls", async () => {
+  it.each([0, 47])("exposes the fixed standalone top edge at inset %ipx without covering project controls", async (inset) => {
     await page.viewport(width, height);
-    document.documentElement.style.setProperty("--status-bar-inset", "47px");
+    document.documentElement.style.setProperty("--status-bar-inset", `${inset}px`);
+    restoreStandaloneStyles = forceStandaloneStyles();
     const initial = new DOMParser().parseFromString(indexHtml, "text/html");
     const strip = initial.querySelector<HTMLElement>(".status-bar-surface")!;
     const root = initial.getElementById("root")!;
@@ -331,8 +338,8 @@ describe.each([
     render(<WebRuntimeProvider><Dashboard highlightSelected={false} /></WebRuntimeProvider>, { container: panel });
     expect(await screen.findByRole("heading", { name: "Web console" })).toBeVisible();
     const header = document.querySelector<HTMLElement>(".project-header")!;
-    expect(getComputedStyle(header).paddingTop).toBe("47px");
-    expect(strip.getBoundingClientRect().height).toBe(47);
+    expect(getComputedStyle(header).paddingTop).toBe(`${Math.max(width <= 900 ? 7 : 10, inset)}px`);
+    expect(strip.getBoundingClientRect().height).toBe(Math.max(6, inset));
     for (const control of header.querySelectorAll<HTMLElement>("button")) {
       expect(control.getBoundingClientRect().top).toBeGreaterThanOrEqual(strip.getBoundingClientRect().bottom);
     }

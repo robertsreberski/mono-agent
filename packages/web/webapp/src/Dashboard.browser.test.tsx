@@ -13,6 +13,9 @@ import { WebRuntimeProvider } from "./runtime";
 import { agent, bootstrap, thread } from "./test/fixtures";
 import type { ThreadDetail, ThreadSummary, WebMessage } from "./types";
 import "./styles.css";
+import { forceStandaloneStyles } from "./test/standalone-styles";
+
+let restoreStandaloneStyles: (() => void) | undefined;
 
 vi.mock("./api", async (importOriginal) => ({
   ...await importOriginal<typeof import("./api")>(),
@@ -164,7 +167,8 @@ afterEach(async () => {
   cleanup();
   document.querySelectorAll(".status-bar-surface, #root").forEach((element) => element.remove());
   document.documentElement.style.removeProperty("--status-bar-inset");
-  document.documentElement.style.removeProperty("--top-edge-clearance");
+  restoreStandaloneStyles?.();
+  restoreStandaloneStyles = undefined;
   await commands.emulateColorScheme(null);
   await persistence.clearAll();
   localStorage.clear();
@@ -287,7 +291,7 @@ describe("the dashboard as the desktop column", () => {
     expect(firstRow.getBoundingClientRect().top - search.getBoundingClientRect().bottom)
       .toBeGreaterThanOrEqual(12);
     expect(getComputedStyle(scroll).paddingBottom).toBe("28px");
-    expect(getComputedStyle(search).marginBottom).toBe("12px");
+    expect(getComputedStyle(search).marginBottom).toBe(matchMedia("(pointer: coarse)").matches ? "8px" : "12px");
   });
 
   it("lets the agent strip run to the screen edge while its first square keeps the gutter", async () => {
@@ -491,15 +495,15 @@ const statusBarViewports = [
   { name: "desktop", width: 1440, height: 900 },
 ] as const;
 
-function expectStatusBarSurface(surface: Element): void {
+function expectStatusBarSurface(surface: Element, height = 47): void {
   const sampler = document.querySelector<HTMLElement>(".status-bar-surface")!;
   const color = getComputedStyle(surface).backgroundColor;
   expect(getComputedStyle(sampler).backgroundColor).toBe(color);
   expect(getComputedStyle(document.body).backgroundColor).toBe(color);
   expect(getComputedStyle(document.documentElement).backgroundColor).toBe(color);
   expect(sampler.getBoundingClientRect().top).toBe(0);
-  expect(sampler.getBoundingClientRect().height).toBe(47);
-  expect(sampler.getBoundingClientRect().width).toBeGreaterThanOrEqual(window.innerWidth * 0.9);
+  expect(sampler.getBoundingClientRect().height).toBe(height);
+  expect(sampler.getBoundingClientRect().width).toBe(window.innerWidth);
   expect(sampler.inert).toBe(true);
   const style = getComputedStyle(sampler);
   expect(style.position).toBe("fixed");
@@ -507,6 +511,7 @@ function expectStatusBarSurface(surface: Element): void {
   expect(style.opacity).toBe("1");
   expect(style.backdropFilter).toBe("none");
   expect(style.pointerEvents).toBe("none");
+  expect(document.elementFromPoint(window.innerWidth / 2, 4)).not.toBe(sampler);
   // Chromium excludes inert nodes from normal hit tests too; remove inert only
   // for this geometric probe and restore both interaction guards immediately.
   sampler.inert = false;
@@ -647,33 +652,163 @@ describe.each(statusBarViewports)("status-bar surface on $name", (viewport) => {
   });
 });
 
-const ipadClearanceShots = import.meta.env.VITE_IPAD_CLEARANCE_SHOTS as string | undefined;
-describe("installed iPad header clearance (Chromium simulation)", () => {
-  it.each(["light", "dark"] as const)("keeps %s dashboard and conversation content below the blur", async (scheme) => {
-    await page.viewport(1366, 1024);
+/** Synthetic browser geometry, not evidence of iPadOS system chrome/keyboard. */
+const tabletShots = import.meta.env.VITE_IPAD_MINI_SHOTS as string | undefined;
+const tabletViewports = [
+  { name: "mini-portrait", width: 744, height: 1133 },
+  { name: "mini-landscape", width: 1133, height: 744 },
+  { name: "windowed", width: 600, height: 900 },
+] as const;
+const touchPointer = matchMedia("(pointer: coarse)").matches;
+const element = (selector: string): HTMLElement => document.querySelector<HTMLElement>(selector)!;
+const expectInside = (child: HTMLElement, parent: HTMLElement): void => {
+  const rect = child.getBoundingClientRect();
+  const bounds = parent.getBoundingClientRect();
+  expect(rect.left).toBeGreaterThanOrEqual(bounds.left);
+  expect(rect.right).toBeLessThanOrEqual(bounds.right + SUBPIXEL);
+  expect(rect.top).toBeGreaterThanOrEqual(bounds.top);
+  expect(rect.bottom).toBeLessThanOrEqual(bounds.bottom + SUBPIXEL);
+};
+const tabletShot = async (name: string): Promise<void> => {
+  if (!tabletShots || !touchPointer) return;
+  await page.elementLocator(element(".app-shell")).screenshot({
+    path: `${tabletShots}/synthetic-chromium-touch-forced-standalone-${name}.png`,
+  });
+};
+
+describe.each(tabletViewports)("tablet layout at $name", (viewport) => {
+  it.each(["light", "dark"] as const)("keeps %s navigation and composer inside the window", async (scheme) => {
+    await page.viewport(viewport.width, viewport.height);
     await commands.emulateColorScheme(scheme);
-    document.documentElement.style.setProperty("--status-bar-inset", "32px");
-    // Chromium is a browser tab: override the single media-gated property with
-    // the same expression used by the installed iPad rule, not the header CSS.
-    document.documentElement.style.setProperty("--top-edge-clearance", "min(40px, calc(var(--status-bar-inset) * 100))");
+    document.documentElement.style.setProperty("--status-bar-inset", "0px");
+    restoreStandaloneStyles = forceStandaloneStyles();
+    vi.mocked(api.thread).mockResolvedValue(detail(alphaThread,
+      "Alpha transcript\n\n## A reading corner\n\nMorgan is comparing two fictional room layouts. Keep the chair near the window, leave a clear path to the door, and put the lamp within reach.\n\n### Next steps\n\n- Measure the space beside the bookshelf.\n- Compare a compact chair with a small bench.\n- Choose a warm, adjustable reading light.\n\nA narrow side table can hold a book without blocking the walkway. Try the arrangement before buying new furniture.\n\n**Recommendation:** start with the chair and lamp, then add storage only if it is needed.",
+    ));
     openConsole();
-    expect(await screen.findByRole("button", { name: "Open Alpha thread" })).toBeVisible();
-    const sampler = document.querySelector<HTMLElement>(".status-bar-surface")!;
-    expect(sampler.getBoundingClientRect().height).toBe(32);
-    expect(sampler.getBoundingClientRect().top).toBe(0);
-    const dashboard = document.querySelector<HTMLElement>(".dashboard-header")!;
-    expect(getComputedStyle(dashboard).paddingTop).toBe("72px");
-    for (const child of dashboard.querySelectorAll<HTMLElement>(".eyebrow, button")) {
-      expect(child.getBoundingClientRect().top).toBeGreaterThanOrEqual(72);
+    const open = await screen.findByRole("button", { name: "Open Alpha thread" });
+    expect(open).toBeVisible();
+    const shell = element(".app-shell");
+    expectStatusBarSurface(shell, 6);
+    expect(getComputedStyle(element(".dashboard-header")).paddingTop).toBe(viewport.width > 900 ? "10px" : "7px");
+    expect(shell.getBoundingClientRect().height).toBe(viewport.height);
+    const sidebar = viewport.width > 900;
+    if (sidebar) {
+      await settled();
+      await userEvent.clear(element(".composer-input"));
     }
-    if (ipadClearanceShots) await page.elementLocator(document.querySelector<HTMLElement>(".app-shell")!).screenshot({ path: `${ipadClearanceShots}/simulated-installed-ipad-1366x1024-${scheme}-dashboard.png` });
-    await userEvent.click(screen.getByRole("button", { name: "Open Alpha thread" }));
-    expect(await screen.findByText("Alpha transcript")).toBeVisible();
-    const header = document.querySelector<HTMLElement>(".chat-header")!;
-    expect(getComputedStyle(header).paddingTop).toBe("72px");
-    for (const child of header.querySelectorAll<HTMLElement>(".eyebrow, button")) {
-      if (child.getClientRects().length > 0) expect(child.getBoundingClientRect().top).toBeGreaterThanOrEqual(72);
+    expect(element(".dashboard").getBoundingClientRect().width).toBe(sidebar ? 340 : viewport.width);
+    for (const control of document.querySelectorAll<HTMLElement>(".dashboard-header-actions > button")) {
+      expect(control.getBoundingClientRect().width).toBe(touchPointer ? 44 : 36);
+      expect(control.getBoundingClientRect().top).toBeGreaterThanOrEqual(6);
+      expectInside(control, element(".dashboard-header"));
     }
-    if (ipadClearanceShots) await page.elementLocator(document.querySelector<HTMLElement>(".app-shell")!).screenshot({ path: `${ipadClearanceShots}/simulated-installed-ipad-1366x1024-${scheme}-conversation.png` });
+    expect(element(".dashboard-chip").getBoundingClientRect().height).toBe(touchPointer ? 44 : 26);
+    await tabletShot(`${viewport.name}-${scheme}-zero-inset-dashboard-navigation`);
+
+    await userEvent.click(open);
+    await settled();
+    await slideSettled();
+    await userEvent.clear(element(".composer-input"));
+    expect(element(".chat-panel").getBoundingClientRect().left).toBe(sidebar ? 340 : 0);
+    expect(element(".chat-panel").getBoundingClientRect().width).toBe(viewport.width - (sidebar ? 340 : 0));
+    expectStatusBarSurface(element(".chat-panel"), 6);
+    expect(getComputedStyle(element(".chat-header")).paddingTop).toBe(sidebar ? "10px" : "7px");
+    for (const control of element(".chat-header").querySelectorAll<HTMLElement>("button")) {
+      if (control.getClientRects().length) expect(control.getBoundingClientRect().top).toBeGreaterThanOrEqual(6);
+    }
+    expect(element(".composer-input")).toBeVisible();
+    expect(getComputedStyle(element(".composer-input")).fontSize).toBe(touchPointer ? "16px" : "14px");
+    expect(getComputedStyle(element(".composer-hint-keys")).display).toBe(touchPointer || !sidebar ? "none" : "inline");
+    for (const selector of [".composer-root", ".composer-input", ".composer-send", ".composer-tool"]) {
+      expectInside(element(selector), element(".chat-panel"));
+    }
+    expect(element(".composer-send").getBoundingClientRect().height).toBe(touchPointer ? 44 : 34);
+    expect(element(".composer-tool").getBoundingClientRect().width).toBe(touchPointer ? 44 : 32);
+    expect(getComputedStyle(element(".thread-footer")).paddingBottom).toBe(touchPointer ? "10px" : "18px");
+    expect(document.documentElement.scrollWidth).toBe(viewport.width);
+    expect(window.scrollY).toBe(0);
+    await tabletShot(`${viewport.name}-${scheme}-zero-inset-conversation-composer`);
+    // A real header tap still opens the menu; its portal stays above the edge.
+    await userEvent.click(screen.getByRole("button", { name: "Conversation actions" }));
+    const menu = await screen.findByRole("menu", { name: "Conversation actions" });
+    expect(menu).toBeVisible();
+    expect(Number(getComputedStyle(menu.parentElement!).zIndex)).toBeGreaterThan(50);
+    await userEvent.keyboard("{Escape}");
+
+    // Resizing an open conversation crosses the same navigation breakpoint as
+    // rotation or Stage Manager, without losing the draft or opening an overlay.
+    await userEvent.fill(element(".composer-input"), "A fictional draft for Morgan");
+    await page.viewport(600, 600);
+    await slideSettled();
+    expect(element(".composer-input")).toHaveValue("A fictional draft for Morgan");
+    expectInside(element(".composer-root"), element(".chat-panel"));
+    expect(element(".chat-panel").getBoundingClientRect().left).toBe(0);
+    expect(element(".thread-viewport").getBoundingClientRect().height).toBeGreaterThan(300);
+    await userEvent.click(screen.getByRole("button", { name: "Back to dashboard" }));
+    await waitFor(() => expect(element(".chat-region")).not.toBeVisible());
+    expect(screen.getByRole("button", { name: "Open Alpha thread" })).toBeVisible();
+  });
+
+  it.each(["loading", "service-error", "render-error"] as const)("keeps the standalone edge clear of %s content", async (state) => {
+    await page.viewport(viewport.width, viewport.height);
+    document.documentElement.style.setProperty("--status-bar-inset", "0px");
+    restoreStandaloneStyles = forceStandaloneStyles();
+    if (state === "render-error") {
+      render(<RootErrorFallback />, { container: mountDocument() });
+    } else {
+      vi.mocked(api.bootstrap).mockImplementation(() => state === "loading"
+        ? new Promise(() => undefined)
+        : Promise.reject(new Error("Test service unavailable")));
+      openConsole();
+    }
+    const surface = await waitFor(() => {
+      const node = document.querySelector<HTMLElement>(".initial-state, .fatal-state");
+      expect(node).not.toBeNull();
+      if (state !== "loading") expect(node).toHaveClass("fatal-state");
+      return node!;
+    });
+    for (const scheme of ["light", "dark"] as const) {
+      await commands.emulateColorScheme(scheme);
+      expectStatusBarSurface(surface, 6);
+      for (const content of Array.from(surface.children) as HTMLElement[]) {
+        expect(content.getBoundingClientRect().top).toBeGreaterThanOrEqual(6);
+      }
+    }
+  });
+
+  it("retains a reported safe inset without adding clearance", async () => {
+    await page.viewport(viewport.width, viewport.height);
+    document.documentElement.style.setProperty("--status-bar-inset", "32px");
+    restoreStandaloneStyles = forceStandaloneStyles();
+    openConsole();
+    const open = await screen.findByRole("button", { name: "Open Alpha thread" });
+    expect(getComputedStyle(element(".dashboard-header")).paddingTop).toBe("32px");
+    await userEvent.click(open);
+    await settled();
+    await slideSettled();
+    expect(getComputedStyle(element(".chat-header")).paddingTop).toBe("32px");
+    for (const control of element(".chat-header").querySelectorAll<HTMLElement>("button")) {
+      if (control.getClientRects().length) expect(control.getBoundingClientRect().top).toBeGreaterThanOrEqual(32);
+    }
+    expectInside(element(".composer-root"), element(".chat-panel"));
+  });
+});
+
+
+describe("narrow touch windows retain the phone layout", () => {
+  it("fits the existing composer and navigation at 500 × 600", async () => {
+    await page.viewport(500, 600);
+    openConsole();
+    await userEvent.click(await screen.findByRole("button", { name: "Open Alpha thread" }));
+    await settled();
+    await slideSettled();
+    expect(element(".dashboard").getBoundingClientRect().width).toBe(500);
+    expect(element(".chat-panel").getBoundingClientRect().left).toBe(0);
+    expect(element(".composer-send").getBoundingClientRect().height).toBe(34);
+    expect(element(".composer-tool").getBoundingClientRect().width).toBe(32);
+    expect(getComputedStyle(element(".composer-input")).fontSize).toBe("16px");
+    expectInside(element(".composer-root"), element(".chat-panel"));
+    expect(document.documentElement.scrollWidth).toBe(500);
   });
 });

@@ -1,3 +1,4 @@
+import { forceStandaloneStyles } from "./test/standalone-styles";
 import { commands, page } from "@vitest/browser/context";
 import { afterEach, describe, expect, it } from "vitest";
 import indexHtml from "../index.html?raw";
@@ -186,7 +187,8 @@ afterEach(async () => {
   await page.viewport(414, 896);
   delete document.documentElement.dataset.consoleTheme;
   document.documentElement.style.removeProperty("--status-bar-inset");
-  document.documentElement.style.removeProperty("--top-edge-clearance");
+  restoreStandaloneStyles?.();
+  restoreStandaloneStyles = undefined;
   document.title = "";
   document.head.querySelectorAll('meta[name="theme-color"]').forEach((meta) => meta.remove());
   document.body.replaceChildren();
@@ -277,26 +279,27 @@ describe.each(VIEWPORTS)("header chrome at $name viewport", (viewport) => {
   });
 });
 
-// Chromium's browser-tab context cannot emulate a Home Screen display-mode.
-// Override the *one* media-gated property with the production expression for
-// installed iPad cases; leave it untouched for excluded phone/tab cases.
+// Exercise the production standalone rule via CSSOM; Chromium still supplies
+// browser-tab system chrome, not an installed iOS status bar.
+let restoreStandaloneStyles: (() => void) | undefined;
 describe.each([
-  { name: "installed iPad", width: 1366, height: 1024, inset: 32, installed: true, padding: 72, floor: 72 },
-  { name: "inset-zero iPad window", width: 1366, height: 1024, inset: 0, installed: true, padding: 10, floor: 10 },
-  { name: "iPhone portrait", width: 390, height: 844, inset: 47, installed: false, padding: 47, floor: 47 },
-  { name: "iPhone landscape", width: 844, height: 390, inset: 0, installed: false, padding: 7, floor: 7 },
-  { name: "desktop browser tab", width: 1440, height: 900, inset: 0, installed: false, padding: 10, floor: 10 },
-  { name: "browser tab with inset", width: 1440, height: 900, inset: 32, installed: false, padding: 32, floor: 32 },
-] as const)("top-edge clearance on $name", (scenario) => {
-  it("clears header content and the toast without shifting excluded layouts", async () => {
+  { name: "standalone mini portrait", width: 744, height: 1133, inset: 0, installed: true },
+  { name: "standalone mini landscape", width: 1133, height: 744, inset: 0, installed: true },
+  { name: "standalone window", width: 600, height: 900, inset: 0, installed: true },
+  { name: "older install with inset", width: 744, height: 1133, inset: 32, installed: true },
+  { name: "standalone iPhone portrait", width: 390, height: 844, inset: 0, installed: true },
+  { name: "iPhone portrait tab", width: 390, height: 844, inset: 47, installed: false },
+  { name: "standalone iPhone landscape", width: 844, height: 390, inset: 0, installed: true },
+  { name: "desktop browser tab", width: 1440, height: 900, inset: 0, installed: false },
+  { name: "browser tab with inset", width: 1440, height: 900, inset: 32, installed: false },
+] as const)("native top edge on $name", (scenario) => {
+  it("uses only the safe inset, keeping all headers, dialogs and toast clear", async () => {
     await page.viewport(scenario.width, scenario.height);
     const html = document.documentElement;
     html.style.setProperty("--status-bar-inset", `${scenario.inset}px`);
-    if (scenario.installed) {
-      html.style.setProperty("--top-edge-clearance", "min(40px, calc(var(--status-bar-inset) * 100))");
-    }
+    if (scenario.installed) restoreStandaloneStyles = forceStandaloneStyles();
     const initialDocument = new DOMParser().parseFromString(indexHtml, "text/html");
-    const strip = initialDocument.querySelector(".status-bar-surface")!;
+    const strip = initialDocument.querySelector<HTMLElement>(".status-bar-surface")!;
     const root = document.createElement("div");
     root.id = "root";
     root.innerHTML = `<div class="app-shell">
@@ -307,25 +310,50 @@ describe.each([
         <div class="chat-title-block"><span class="eyebrow">Conversation</span><button>Title</button></div>
         <button>Options</button></header></div></div></div>
       <div class="project-page" style="position:absolute;top:0;width:340px;height:100%"><header class="project-header"><button class="project-back">Back</button>
-        <button>Project actions</button></header></div><div class="console-error"><button>Retry</button></div>`;
+        <button>Project actions</button></header></div>
+      <div class="settings-screen" style="position:absolute;top:0;width:340px;height:100%"><header class="settings-header"><span class="eyebrow">Settings</span><button>Close settings</button></header></div>
+      <div class="console-error"><button>Retry</button></div>`;
     document.body.append(strip, root);
-    const sampler = strip.getBoundingClientRect();
-    expect(sampler.top).toBe(0);
-    expect(sampler.height).toBe(scenario.inset);
-    // Same fixed y=4 edge geometry as the iPhone soft-pocket fix.
-    if (scenario.inset >= 5) expect(sampler.bottom).toBeGreaterThan(4);
-    for (const selector of [".dashboard-header", ".chat-header", ".project-header"]) {
-      const header = document.querySelector<HTMLElement>(selector)!;
-      const computed = getComputedStyle(header);
-      const top = scenario.width <= 900 ? (scenario.installed ? scenario.padding : Math.max(7, scenario.inset)) : scenario.padding;
-      expect(computed.paddingTop).toBe(`${top}px`);
-      expect(header.getBoundingClientRect().top).toBe(0);
-      for (const content of header.querySelectorAll<HTMLElement>("button, .eyebrow")) {
-        expect(content.getBoundingClientRect().top).toBeGreaterThanOrEqual(scenario.floor);
+    for (const scheme of ["light", "dark"] as const) {
+      await emulateColorScheme(scheme);
+      const sampler = strip.getBoundingClientRect();
+      expect(sampler.top).toBe(0);
+      expect(sampler.width).toBe(scenario.width);
+      expect(sampler.height).toBe(scenario.installed ? Math.max(6, scenario.inset) : scenario.inset);
+      const style = getComputedStyle(strip);
+      expect(style.position).toBe("fixed");
+      expect(style.zIndex).toBe("50");
+      expect(style.opacity).toBe("1");
+      expect(style.pointerEvents).toBe("none");
+      expect(style.backgroundColor).toBe(getComputedStyle(document.querySelector(".app-shell")!).backgroundColor);
+      expect(parseComputedColor(style.backgroundColor).alpha).toBe(1);
+      expect(document.elementFromPoint(innerWidth / 2, 4)).not.toBe(strip);
+      if (sampler.height >= 6) {
+        strip.inert = false;
+        strip.style.pointerEvents = "auto";
+        expect(document.elementFromPoint(innerWidth / 2, 4)).toBe(strip);
+        strip.style.removeProperty("pointer-events");
+        strip.inert = true;
       }
+      for (const selector of [".dashboard-header", ".chat-header", ".project-header", ".settings-header"]) {
+        const header = document.querySelector<HTMLElement>(selector)!;
+        expect(getComputedStyle(header).paddingTop).toBe(`${Math.max(scenario.width <= 900 ? 7 : 10, scenario.inset)}px`);
+        expect(header.getBoundingClientRect().top).toBe(0);
+        for (const content of header.querySelectorAll<HTMLElement>("button, .eyebrow")) {
+          expect(content.getBoundingClientRect().top).toBeGreaterThanOrEqual(sampler.bottom);
+        }
+      }
+      expect(document.querySelector(".console-error")!.getBoundingClientRect().top).toBe(Math.max(12, scenario.inset));
     }
-    const toast = document.querySelector<HTMLElement>(".console-error")!;
-    expect(toast.getBoundingClientRect().top).toBe(Math.max(12, scenario.inset + (scenario.installed && scenario.inset > 0 ? 40 : 0)));
-    if (!scenario.installed) expect(getComputedStyle(html).getPropertyValue("--top-edge-clearance").trim()).toBe("0px");
+    const dialog = document.createElement("div");
+    dialog.className = "sheet-layer";
+    dialog.innerHTML = '<section class="sheet" role="dialog"><header class="sheet-head"><button class="sheet-cancel">Cancel</button><h2>Fictional project</h2><button class="sheet-save">Save</button></header></section>';
+    document.body.append(dialog);
+    expect(Number(getComputedStyle(dialog).zIndex)).toBeGreaterThan(Number(getComputedStyle(strip).zIndex));
+    for (const button of dialog.querySelectorAll("button")) {
+      const rect = button.getBoundingClientRect();
+      expect(rect.top).toBeGreaterThanOrEqual(strip.getBoundingClientRect().bottom);
+      expect(document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2)?.closest("button")).toBe(button);
+    }
   });
 });

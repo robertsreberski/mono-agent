@@ -144,31 +144,20 @@
    while leaving the reader's own text-size preference working; `none` would
    take that away too. It belongs here and nowhere else: scoping it to one
    subtree only moves the bug to the next one. */
-/* The document box is `100dvh`, not `100%`, because a percentage resolves
-   against the initial containing block and the ICB is not the visible area of
-   an installed iOS/iPadOS 26 web app. A Home Screen app installed without
-   `apple-mobile-web-app-status-bar-style: black-translucent` — which this
-   console deliberately is, see index.html — is laid out below an opaque system
-   bar, yet `vh`, `lvh` and the ICB still measure the whole screen, while `svh`
-   and `dvh` measure the content area (WebKit 316008, 301994). The document was
-   therefore exactly that bar taller than the app shell below it, and the extra
-   strip was pannable: a drag pushed the chat header up under the system bar.
-   `dvh` is the same unit `.app-shell` already uses, so the shell and the
-   document it lives in now measure the same viewport everywhere. */
+/* The document and shell share `100dvh`, the visible content area. Under the
+   installed app's `default` status-bar mode, iOS/iPadOS lays the web view below
+   the opaque system bar, but `vh`, `lvh` and the initial containing block can
+   still include that bar (WebKit 316008, 301994). Using a percentage height here
+   would make the document taller than the shell and let a drag pan the header
+   under system UI. Keep both boxes on the same dynamic viewport measurement. */
 html, body, #root { width: 100%; min-width: 320px; height: 100dvh; margin: 0; -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
 /* WebKit's LocalFrameView::fixedContainerEdges hit-tests the viewport's top
    midpoint at y=4 and needs a fixed/sticky box spanning >=90% of that edge.
    The full-width, opaque status band below is that box: WebKit extends its
-   colour into the status bar and hides the installed app's soft scroll pocket.
+   colour into the opaque system bar and suppresses its scroll-edge effect.
    The shared inset also lets browser tests simulate the safe area in Chromium;
    without an override it is exactly the platform's safe-area-inset-top. */
-html { --status-bar-inset: env(safe-area-inset-top); --top-edge-clearance: 0px; --status-bar-bg: var(--panel); background: var(--status-bar-bg); }
-/* iPadOS 27's hard scroll-edge blur reaches ~64pt from the top on a full-screen
-   installed iPad. The extra 40px is device-measured: leave only flat header
-   colour in that band. Zero inset (Stage Manager) gives zero clearance. */
-@media (display-mode: standalone) and (min-width: 600px) {
-  html { --top-edge-clearance: min(40px, calc(var(--status-bar-inset) * 100)); }
-}
+html { --status-bar-inset: env(safe-area-inset-top); --status-bar-bg: var(--panel); background: var(--status-bar-bg); }
 /* These full-screen states deliberately use a different surface. */
 html:has(#root > :is(.initial-state, .fatal-state)) { --status-bar-bg: var(--surface); }
 /* `overscroll-behavior: none` is the second half of that fix: the console owns
@@ -186,10 +175,10 @@ body { overflow: hidden; overscroll-behavior: none; background: var(--status-bar
   pointer-events: none;
   z-index: 50; /* Above the phone chat (40), below dialogs and popovers (100+). */
 }
-/* Some installed iOS apps report a zero safe-area inset. Five pixels still
-   contain WebKit's y=4 probe, inside the headers' >=7px top-padding floor. */
+/* The opaque-system-bar mode normally reports a zero safe-area inset. Keep a
+   6px edge for WebKit's y=4 colour probe, below the headers' >=7px padding floor. */
 @media (display-mode: standalone) {
-  .status-bar-surface { height: max(5px, var(--status-bar-inset)); }
+  .status-bar-surface { height: max(6px, var(--status-bar-inset)); }
 }
 button, input, textarea, select { font: inherit; color: inherit; }
 button { border: 0; }
@@ -278,7 +267,7 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
   background: var(--panel);
   border-right: 1px solid var(--line);
 }
-.dashboard-header { min-height: 64px; display: flex; align-items: center; gap: 12px; flex: none; padding: max(10px, calc(var(--status-bar-inset) + var(--top-edge-clearance))) var(--gutter-right) 10px var(--gutter-left); }
+.dashboard-header { min-height: 64px; display: flex; align-items: center; gap: 12px; flex: none; padding: max(10px, var(--status-bar-inset)) var(--gutter-right) 10px var(--gutter-left); }
 .dashboard-title-block { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 3px; }
 .dashboard-brand { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dashboard-agent-name { min-width: 0; margin: 0; overflow: hidden; color: var(--text); font-size: 18px; font-weight: 700; letter-spacing: -0.01em; line-height: 1.2; text-overflow: ellipsis; white-space: nowrap; }
@@ -560,7 +549,7 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
    on the Dashboard's scale (the rows' 12px title, the labels' 10px caps), so
    the page and the list it came from read as one surface. */
 .project-page { --gutter-left: 17px; --gutter-right: 17px; width: 100%; height: 100%; min-width: 0; display: flex; flex-direction: column; background: var(--panel); border-right: 1px solid var(--line); }
-.project-header { min-height: 64px; display: flex; align-items: center; justify-content: space-between; gap: 12px; flex: none; padding: max(10px, calc(var(--status-bar-inset) + var(--top-edge-clearance))) var(--gutter-right) 10px var(--gutter-left); }
+.project-header { min-height: 64px; display: flex; align-items: center; justify-content: space-between; gap: 12px; flex: none; padding: max(10px, var(--status-bar-inset)) var(--gutter-right) 10px var(--gutter-left); }
 /* Back is navigation, not a tile: the bare glyph and the thumb-sized target
    the conversation header's back control keeps. */
 .project-back { min-width: 0; min-height: 44px; display: flex; align-items: center; gap: 4px; flex: 1; margin-left: -6px; padding: 0; color: var(--text-soft); background: transparent; cursor: pointer; text-align: left; font-size: 13px; font-weight: 500; }
@@ -636,7 +625,7 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
 @media (max-width: 900px) {
   .dashboard-panel .project-page { border-right: 0; }
   .project-page { --gutter-left: max(17px, env(safe-area-inset-left)); --gutter-right: max(17px, env(safe-area-inset-right)); }
-  .project-header { min-height: 58px; padding-block: max(7px, calc(var(--status-bar-inset) + var(--top-edge-clearance))) 7px; }
+  .project-header { min-height: 58px; padding-block: max(7px, var(--status-bar-inset)) 7px; }
 }
 
 /* Chat shell
@@ -646,7 +635,7 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
    already share their measures; sharing the palette is what makes them read as
    one interface rather than two apps in one window. */
 .chat-panel { position: relative; min-width: 0; height: 100%; display: flex; flex-direction: column; overflow: hidden; background: var(--panel); }
-.chat-header { min-height: 64px; display: flex; align-items: center; gap: 15px; padding: max(10px, calc(var(--status-bar-inset) + var(--top-edge-clearance))) max(17px, env(safe-area-inset-right)) 10px max(17px, env(safe-area-inset-left)); background: color-mix(in srgb, var(--panel) 94%, transparent); border-bottom: 1px solid var(--line); z-index: 5; }
+.chat-header { min-height: 64px; display: flex; align-items: center; gap: 15px; padding: max(10px, var(--status-bar-inset)) max(17px, env(safe-area-inset-right)) 10px max(17px, env(safe-area-inset-left)); background: color-mix(in srgb, var(--panel) 94%, transparent); border-bottom: 1px solid var(--line); z-index: 5; }
 /* The conversation's trailing actions are the Dashboard header's trailing
    actions: the same 36px tile, the same subtle fill, the same hover. Back is
    not one of them -- it is navigation, and it keeps the bare glyph and the
@@ -1386,7 +1375,7 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
 .palette-results p { margin: 30px; color: var(--text-muted); text-align: center; font-size: 12px; }
 .command-palette footer { min-height: 40px; display: flex; align-items: center; justify-content: flex-end; gap: 14px; padding: 0 13px; color: var(--text-muted); background: var(--surface-subtle); border-top: 1px solid var(--line); font-size: 9px; }
 .command-palette footer span { display: inline-flex; align-items: center; gap: 4px; }
-.console-error { position: fixed; top: max(12px, calc(var(--status-bar-inset) + var(--top-edge-clearance))); left: 50%; transform: translateX(-50%); max-width: min(560px, calc(100vw - 24px)); display: flex; align-items: center; gap: 10px; padding: 8px 8px 8px 13px; color: var(--danger); background: color-mix(in srgb, var(--danger) 10%, var(--surface)); border: 1px solid color-mix(in srgb, var(--danger) 30%, var(--line)); border-radius: 11px; box-shadow: var(--shadow-lg); font-size: 12px; line-height: 1.4; z-index: 130; }
+.console-error { position: fixed; top: max(12px, var(--status-bar-inset)); left: 50%; transform: translateX(-50%); max-width: min(560px, calc(100vw - 24px)); display: flex; align-items: center; gap: 10px; padding: 8px 8px 8px 13px; color: var(--danger); background: color-mix(in srgb, var(--danger) 10%, var(--surface)); border: 1px solid color-mix(in srgb, var(--danger) 30%, var(--line)); border-radius: 11px; box-shadow: var(--shadow-lg); font-size: 12px; line-height: 1.4; z-index: 130; }
 .console-error span { min-width: 0; flex: 1; }
 .console-error button { flex: none; display: grid; place-items: center; color: inherit; background: transparent; border-radius: 7px; cursor: pointer; }
 .console-error button:hover { background: color-mix(in srgb, var(--danger) 14%, transparent); }
@@ -1829,8 +1818,8 @@ button.process-job-call-head:focus-visible { outline: 2px solid var(--accent); o
   .app-shell { grid-template-columns: minmax(0, 1fr); }
   .mobile-navigation { display: flex; align-items: center; gap: 2px; margin-left: -6px; }
   .mobile-navigation .icon-button { width: 44px; height: 44px; }
-  .chat-header { min-height: 58px; gap: 8px; padding-block: max(7px, calc(var(--status-bar-inset) + var(--top-edge-clearance))) 7px; }
-  .dashboard-header { min-height: 58px; padding-block: max(7px, calc(var(--status-bar-inset) + var(--top-edge-clearance))) 7px; }
+  .chat-header { min-height: 58px; gap: 8px; padding-block: max(7px, var(--status-bar-inset)) 7px; }
+  .dashboard-header { min-height: 58px; padding-block: max(7px, var(--status-bar-inset)) 7px; }
   .conversation-title { max-width: min(42vw, 340px); }
   .chat-status { display: none; }
   /* The mobile shell has no ⌘↵: the shortcut line is noise there, and the row
@@ -1861,6 +1850,35 @@ button.process-job-call-head:focus-visible { outline: 2px solid var(--accent); o
     transition: transform 220ms ease, visibility 0s;
   }
   .dashboard-panel .dashboard { border-right: 0; }
+}
+
+/* Tablet touch layout follows the existing navigation breakpoint: a full-width
+   push/pop conversation through 900px, two columns above it. Spend space on
+   targets rather than empty footer bands. Phones and fine-pointer desktops keep
+   their own rhythm. Header insets intentionally remain owned by the shared
+   --status-bar-inset rules above. */
+@media (min-width: 561px) and (hover: none), (min-width: 561px) and (pointer: coarse) {
+  .dashboard-header-actions > button,
+  .chat-header-actions .icon-button,
+  .project-header > .icon-button { width: 44px; height: 44px; }
+  .dashboard-search { height: 44px; margin-block: 8px; padding-right: 4px; }
+  .dashboard-search button { width: 44px; height: 44px; margin-right: 0; }
+  .dashboard-scroll { padding-top: 12px; }
+  .dashboard-section + .dashboard-section { margin-top: 20px; }
+  .dashboard-chip, .dashboard-new-action, .dashboard-section-toggle,
+  .thread-load-more, .running-more, .archive-toggle, .data-mode-indicator {
+    min-height: 44px;
+  }
+  .chat-header { flex: none; }
+  .message-column { --column-padding: 24px; padding-block: 24px 12px; }
+  .thread-footer {
+    padding: 16px max(14px, env(safe-area-inset-right)) max(10px, env(safe-area-inset-bottom)) max(14px, env(safe-area-inset-left));
+  }
+  .composer-hint-keys { display: none; }
+  .composer-input, .title-input { font-size: 16px; }
+  .composer-tool, .composer-send, .composer-stop { width: 44px; height: 44px; }
+  .composer-actions .model-selector__trigger, .context-display-trigger { min-height: 44px; }
+  .message-action { min-width: 44px; min-height: 44px; }
 }
 
 @media (max-width: 560px) {
@@ -2363,7 +2381,7 @@ textarea.wake-text { min-height: calc(3lh + 24px); max-height: calc(12lh + 24px)
 }
 
 /* ---- Header (the chat header's 64px band) ------------------------------ */
-.settings-header { min-height: 64px; display: flex; align-items: center; gap: 12px; flex: none; padding: max(10px, calc(var(--status-bar-inset) + var(--top-edge-clearance))) var(--gutter-right) 10px var(--gutter-left); border-bottom: 1px solid var(--line); }
+.settings-header { min-height: 64px; display: flex; align-items: center; gap: 12px; flex: none; padding: max(10px, var(--status-bar-inset)) var(--gutter-right) 10px var(--gutter-left); border-bottom: 1px solid var(--line); }
 .settings-identity { min-width: 0; flex: 1; display: flex; align-items: center; gap: 11px; }
 .settings-agent-tile { width: 36px; height: 36px; display: grid; place-items: center; flex: none; color: var(--text); background: var(--app-bg); border-radius: 10px; box-shadow: inset 0 0 0 1px var(--line-strong); font-size: 11px; font-weight: 700; letter-spacing: 0.02em; }
 .settings-title-block { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
@@ -2493,7 +2511,7 @@ textarea.wake-text { min-height: calc(3lh + 24px); max-height: calc(12lh + 24px)
 @media (max-width: 900px) {
   .settings-region { grid-area: auto; position: fixed; inset: 0; width: 100%; height: 100dvh; z-index: 45; }
   .settings-screen { --gutter-left: max(17px, env(safe-area-inset-left)); --gutter-right: max(17px, env(safe-area-inset-right)); }
-  .settings-header { min-height: 58px; padding-block: max(7px, calc(var(--status-bar-inset) + var(--top-edge-clearance))) 7px; border-bottom: 0; }
+  .settings-header { min-height: 58px; padding-block: max(7px, var(--status-bar-inset)) 7px; border-bottom: 0; }
   .settings-pane { max-width: none; gap: 16px; }
   .settings-section-title { font-size: 18px; }
   .settings-section-summary { font-size: 12px; }

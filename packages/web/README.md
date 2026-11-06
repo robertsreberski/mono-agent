@@ -308,22 +308,20 @@ The hint stays visible on phones as well as desktops. Escape dismisses input
 suggestions without stopping a run; use Stop response (or `/stop`) deliberately.
 Mid-turn plain-text sends use the active turn’s live-input admission path.
 
-On iPhone and iPad the installed console paints the band behind the status bar
-itself (`apple-mobile-web-app-status-bar-style: black-translucent`). A fixed,
-full-width, header-coloured band covers the safe-area inset: WebKit's
-`LocalFrameView::fixedContainerEdges` probes the top midpoint at y=4 for a
-fixed/sticky box spanning at least 90% of the viewport. Recognising this edge
-hides the installed console's soft scroll-edge blur (or colours the hard pocket
-on iPad), without covering header content or using layout space. On a full-screen
-installed iPad with a nonzero top inset, the Dashboard, Project and conversation
-headers add up to 40px of top clearance so their content sits below the iPadOS 27
-hard pocket's measured ~64pt blur; the error toast clears it too. iPhone, browser
-tabs and inset-zero Stage Manager windows keep their original layout. The band
-follows the active theme instead of a system strip whose colour iOS samples
-once and caches until relaunch. iOS reads the status-bar style when the app is
-added to the Home Screen: an older install must be removed and added again.
-Status-bar glyph contrast follows the system appearance, which the console’s
-light and dark themes follow as well.
+On iPhone and iPad the installed console uses an opaque system status bar
+(`apple-mobile-web-app-status-bar-style: default`) and starts the web view below
+it, rather than placing headers behind the iOS/iPadOS 27 hard scroll-edge blur.
+A fixed, full-width, opaque header-coloured top edge (at least 6px in standalone
+mode) drives WebKit's colour extension without extra header clearance. Headers
+still respect any reported safe-area inset for browser tabs and older installs.
+
+**Existing iOS/iPadOS Home Screen installs must be removed and added again** to
+adopt this status-bar mode: updating the service worker or reloading is not
+enough (WebKit 316008). The system band's colour may be sampled and cached until
+relaunch (WebKit 301994), so a live theme change is not guaranteed to recolour
+that system-owned area. Status-bar glyph contrast follows system appearance.
+Stage Manager window controls and theme switching still need physical-device
+validation; the console does not guess a window-controls exclusion zone.
 
 Cancellation requests accept an optional `origin` (`user-stop`,
 `client-disconnect`, `client-reconnect`, `service-shutdown`, or `api`) on
@@ -1559,6 +1557,21 @@ then runs focused unit checks, typecheck, production build and the full browser
 suite. It copies the canonical contract source and the existing pure web helpers,
 not a contracts package install or dist tree. Normal local browser tests still use
 `pnpm --dir packages/web/webapp run test:browser`.
+
+### Tablet layout coverage
+
+Touch screens above 560 CSS pixels keep 44px primary navigation/composer targets
+and omit the keyboard-shortcut hint. The existing navigation remains full-width
+push/pop through 900px, with a persistent 340px sidebar above that breakpoint;
+phone and fine-pointer desktop spacing is unchanged. Header top padding respects the shared
+status-bar inset independently of tablet spacing; no extra clearance is added.
+
+`Dashboard.browser.test.tsx` runs in both fine-pointer and touch Chromium contexts,
+including 744×1133, 1133×744 and 600×900 layouts, plus a 600px-tall resize and a
+500px-wide window. Set `VITE_IPAD_MINI_SHOTS=<absolute dir>` to capture synthetic
+light/dark dashboard/navigation and conversation/composer screenshots. These
+forced-standalone, zero-inset browser fixtures do not reproduce installed iPadOS system chrome,
+window controls or the on-screen keyboard.
 
 ### Synthetic voice round trip
 
