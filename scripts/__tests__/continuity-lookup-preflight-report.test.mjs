@@ -207,3 +207,23 @@ it("retains a failed tree with an unreadable directory and names the safe cleanu
     await expect(access(join(retainedRoot, "lookup-pilot-controller.json"))).resolves.toBeUndefined(); expect(JSON.stringify(report)).not.toContain(retainedRoot);
   } finally {if (unreadable) await chmod(unreadable, 0o700); if (retainedRoot) await rm(retainedRoot, {recursive: true, force: true});}
 });
+
+it("refuses an existing file output root before preparation instead of using its volume", async () => {
+  const root = await mkdtemp(join(tmpdir(), "lookup-output-user-")), file = join(root, "not-a-directory");
+  try {
+    await writeFile(file, "Fictional output marker", {mode: 0o600});
+    await expect(scenario({outputRoot: file, restore: async () => {}})).rejects.toMatchObject({code: "lookup_preflight_output_invalid"});
+    expect((await import("../lib/continuity-lookup-controller.mjs")).runLookupPreparationSlot).not.toHaveBeenCalled();
+    await expect(scenario({outputRoot: join(file, "missing"), restore: async () => {}})).rejects.toMatchObject({code: "lookup_preflight_output_invalid"});
+    expect((await import("../lib/continuity-lookup-controller.mjs")).runLookupPreparationSlot).not.toHaveBeenCalled();
+    expect((await lstat(file)).isFile()).toBe(true);
+  } finally { await rm(root, {recursive: true, force: true}); }
+});
+it("uses the nearest existing directory for a missing output root without creating it", async () => {
+  const root = await mkdtemp(join(tmpdir(), "lookup-output-user-")), outputRoot = join(root, "missing/deeper");
+  try {
+    const {status, report} = await scenario({count: 1, outputRoot, restore: async () => {}, retained: footprint});
+    expect(status).toBe(0); expect(report.feasible).toBe(true);
+    await expect(access(outputRoot)).rejects.toMatchObject({code: "ENOENT"}); expect(await readdir(root)).toEqual([]);
+  } finally { await rm(root, {recursive: true, force: true}); }
+});

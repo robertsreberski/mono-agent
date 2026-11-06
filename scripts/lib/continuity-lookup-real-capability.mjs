@@ -1,5 +1,5 @@
-import { lookupBodyBytes } from "./continuity-lookup-pilot-runtime.mjs";
 // Child-only authority. No issuer, transport injection, public registration or nonce.
+import { lookupBodyBytes } from "./continuity-lookup-pilot-runtime.mjs";
 import process from "node:process";
 import { assertLookupPilotEntry } from "./continuity-lookup-pilot-entry.mjs";
 import { createHash } from "node:crypto";

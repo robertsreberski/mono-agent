@@ -1600,6 +1600,10 @@ reservation of future disk or provider capacity.
    options have no timeout override. Use **the canonical output path the
    authorization will name**, not a symlink alias such as `/tmp` on macOS. Set
    `TMPDIR` to an existing directory on that output volume at similar path depth.
+   Set `CHILD_WATCHDOG_MS` from the exact registration (current default 720000 ms,
+   not a constant to assume). Other valid explicit timeouts describe faux/future
+   callers rather than an equivalent current real run.
+
    For example, first create the fictional directories and resolve their paths:
 
    ```sh
@@ -1612,10 +1616,6 @@ reservation of future disk or provider capacity.
      --timeout-ms "$CHILD_WATCHDOG_MS" --require-real-equivalent \
      --output-root "$OUTPUT_ROOT"
    ```
-
-   Set `CHILD_WATCHDOG_MS` from the exact registration (current default 720000 ms,
-   not a constant to assume). Other valid explicit timeouts describe faux/future
-   callers rather than an equivalent current real run.
 2. Add the configured proof's **measured per-slot probe disk growth for every
    eligible slot** to reported `eligibleRetainedBytes`, **before** applying the
    1.25 margin. Require available output-volume bytes to cover that enlarged
