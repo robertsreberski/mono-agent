@@ -56,18 +56,22 @@ syncBuiltinESMExports();
 // imports, before runProbe starts its own History listener. Install the global
 // fetch sentinel at that listener, not by pre-importing/warming any SDK.
 import net from "node:net";
-import { Server as HttpServer } from "node:http";
-const emit = HttpServer.prototype.emit;
+import { Server as HttpServer, IncomingMessage } from "node:http";
+const requests = new WeakMap(), emit = HttpServer.prototype.emit, incomingEmit = IncomingMessage.prototype.emit;
 HttpServer.prototype.emit = function (event, ...args) {
-  if (event === "request" && policy.role !== "controller") {
-    const chunks = [], request = args[0];
-    request.on("data", chunk => chunks.push(Buffer.from(chunk)));
-    request.on("end", () => {try {
-      const body = JSON.parse(Buffer.concat(chunks));
-      for (const rpc of [body].flat()) if (rpc.method) httpCalls.push({method: rpc.method, tool: rpc.params?.name ?? null, action: rpc.params?.arguments?.action ?? null, port: this.address()?.port, at: Date.now()});
-    } catch { /* Observe JSON RPC only; no parsing or transport substitution. */ }});
-  }
+  if (event === "request" && policy.role !== "controller") requests.set(args[0], {chunks: [], port: this.address()?.port});
   return emit.call(this, event, ...args);
+};
+// Observe only data the real handler consumes. Adding a `data` listener would
+// switch IncomingMessage into flowing mode and race the forwarder's async reader.
+IncomingMessage.prototype.emit = function (event, ...args) {
+  const request = requests.get(this);
+  if (request && event === "data") request.chunks.push(Buffer.from(args[0]));
+  if (request && event === "end") {
+    try {for (const rpc of [JSON.parse(Buffer.concat(request.chunks))].flat()) if (rpc.method) httpCalls.push({method: rpc.method, tool: rpc.params?.name ?? null, action: rpc.params?.arguments?.action ?? null, port: request.port, at: Date.now()});} catch { /* JSON RPC observation only. */ }
+    requests.delete(this);
+  }
+  return incomingEmit.call(this, event, ...args);
 };
 const listen = net.Server.prototype.listen;
 net.Server.prototype.listen = function (...args) {
