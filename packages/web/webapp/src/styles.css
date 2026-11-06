@@ -1863,6 +1863,35 @@ button.process-job-call-head:focus-visible { outline: 2px solid var(--accent); o
   .dashboard-panel .dashboard { border-right: 0; }
 }
 
+/* Tablet touch layout follows the existing navigation breakpoint: a full-width
+   push/pop conversation through 900px, two columns above it. Spend space on
+   targets rather than empty footer bands. Phones and fine-pointer desktops keep
+   their own rhythm. Header insets intentionally remain owned by the shared
+   --status-bar-inset / --top-edge-clearance rules above. */
+@media (min-width: 561px) and (hover: none), (min-width: 561px) and (pointer: coarse) {
+  .dashboard-header-actions > button,
+  .chat-header-actions .icon-button,
+  .project-header > .icon-button { width: 44px; height: 44px; }
+  .dashboard-search { height: 44px; margin-block: 8px; padding-right: 4px; }
+  .dashboard-search button { width: 44px; height: 44px; margin-right: 0; }
+  .dashboard-scroll { padding-top: 12px; }
+  .dashboard-section + .dashboard-section { margin-top: 20px; }
+  .dashboard-chip, .dashboard-new-action, .dashboard-section-toggle,
+  .thread-load-more, .running-more, .archive-toggle, .data-mode-indicator {
+    min-height: 44px;
+  }
+  .chat-header { flex: none; }
+  .message-column { --column-padding: 24px; padding-block: 24px 12px; }
+  .thread-footer {
+    padding: 16px max(14px, env(safe-area-inset-right)) max(10px, env(safe-area-inset-bottom)) max(14px, env(safe-area-inset-left));
+  }
+  .composer-hint-keys { display: none; }
+  .composer-input, .title-input { font-size: 16px; }
+  .composer-tool, .composer-send, .composer-stop { width: 44px; height: 44px; }
+  .composer-actions .model-selector__trigger, .context-display-trigger { min-height: 44px; }
+  .message-action { min-width: 44px; min-height: 44px; }
+}
+
 @media (max-width: 560px) {
   .chat-header { flex-wrap: nowrap; padding-left: max(9px, env(safe-area-inset-left)); padding-right: max(9px, env(safe-area-inset-right)); }
   .chat-title-block { min-width: 0; flex: 1; gap: 0; }

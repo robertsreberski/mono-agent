@@ -287,7 +287,7 @@ describe("the dashboard as the desktop column", () => {
     expect(firstRow.getBoundingClientRect().top - search.getBoundingClientRect().bottom)
       .toBeGreaterThanOrEqual(12);
     expect(getComputedStyle(scroll).paddingBottom).toBe("28px");
-    expect(getComputedStyle(search).marginBottom).toBe("12px");
+    expect(getComputedStyle(search).marginBottom).toBe(matchMedia("(pointer: coarse)").matches ? "8px" : "12px");
   });
 
   it("lets the agent strip run to the screen edge while its first square keeps the gutter", async () => {
@@ -675,5 +675,124 @@ describe("installed iPad header clearance (Chromium simulation)", () => {
       if (child.getClientRects().length > 0) expect(child.getBoundingClientRect().top).toBeGreaterThanOrEqual(72);
     }
     if (ipadClearanceShots) await page.elementLocator(document.querySelector<HTMLElement>(".app-shell")!).screenshot({ path: `${ipadClearanceShots}/simulated-installed-ipad-1366x1024-${scheme}-conversation.png` });
+  });
+});
+
+/** Synthetic browser geometry, not evidence of iPadOS system chrome/keyboard. */
+const tabletShots = import.meta.env.VITE_IPAD_MINI_SHOTS as string | undefined;
+const tabletViewports = [
+  { name: "mini-portrait", width: 744, height: 1133 },
+  { name: "mini-landscape", width: 1133, height: 744 },
+  { name: "windowed", width: 600, height: 900 },
+] as const;
+const touchPointer = matchMedia("(pointer: coarse)").matches;
+const element = (selector: string): HTMLElement => document.querySelector<HTMLElement>(selector)!;
+const expectInside = (child: HTMLElement, parent: HTMLElement): void => {
+  const rect = child.getBoundingClientRect();
+  const bounds = parent.getBoundingClientRect();
+  expect(rect.left).toBeGreaterThanOrEqual(bounds.left);
+  expect(rect.right).toBeLessThanOrEqual(bounds.right + SUBPIXEL);
+  expect(rect.top).toBeGreaterThanOrEqual(bounds.top);
+  expect(rect.bottom).toBeLessThanOrEqual(bounds.bottom + SUBPIXEL);
+};
+const tabletShot = async (name: string): Promise<void> => {
+  if (!tabletShots || !touchPointer) return;
+  await page.elementLocator(element(".app-shell")).screenshot({
+    path: `${tabletShots}/synthetic-chromium-touch-${name}.png`,
+  });
+};
+
+describe.each(tabletViewports)("tablet layout at $name", (viewport) => {
+  it.each(["light", "dark"] as const)("keeps %s navigation and composer inside the window", async (scheme) => {
+    await page.viewport(viewport.width, viewport.height);
+    await commands.emulateColorScheme(scheme);
+    document.documentElement.style.setProperty("--status-bar-inset", "0px");
+    vi.mocked(api.thread).mockResolvedValue(detail(alphaThread,
+      "Alpha transcript\n\n## A reading corner\n\nMorgan is comparing two fictional room layouts. Keep the chair near the window, leave a clear path to the door, and put the lamp within reach.\n\n### Next steps\n\n- Measure the space beside the bookshelf.\n- Compare a compact chair with a small bench.\n- Choose a warm, adjustable reading light.\n\nA narrow side table can hold a book without blocking the walkway. Try the arrangement before buying new furniture.\n\n**Recommendation:** start with the chair and lamp, then add storage only if it is needed.",
+    ));
+    openConsole();
+    const open = await screen.findByRole("button", { name: "Open Alpha thread" });
+    expect(open).toBeVisible();
+    const shell = element(".app-shell");
+    expect(shell.getBoundingClientRect().height).toBe(viewport.height);
+    const sidebar = viewport.width > 900;
+    if (sidebar) {
+      await settled();
+      await userEvent.clear(element(".composer-input"));
+    }
+    expect(element(".dashboard").getBoundingClientRect().width).toBe(sidebar ? 340 : viewport.width);
+    for (const control of document.querySelectorAll<HTMLElement>(".dashboard-header-actions > button")) {
+      expect(control.getBoundingClientRect().width).toBe(touchPointer ? 44 : 36);
+      expectInside(control, element(".dashboard-header"));
+    }
+    expect(element(".dashboard-chip").getBoundingClientRect().height).toBe(touchPointer ? 44 : 26);
+    await tabletShot(`${viewport.name}-${scheme}-zero-inset-dashboard-navigation`);
+
+    await userEvent.click(open);
+    await settled();
+    await slideSettled();
+    await userEvent.clear(element(".composer-input"));
+    expect(element(".chat-panel").getBoundingClientRect().left).toBe(sidebar ? 340 : 0);
+    expect(element(".chat-panel").getBoundingClientRect().width).toBe(viewport.width - (sidebar ? 340 : 0));
+    expect(element(".composer-input")).toBeVisible();
+    expect(getComputedStyle(element(".composer-input")).fontSize).toBe(touchPointer ? "16px" : "14px");
+    expect(getComputedStyle(element(".composer-hint-keys")).display).toBe(touchPointer || !sidebar ? "none" : "inline");
+    for (const selector of [".composer-root", ".composer-input", ".composer-send", ".composer-tool"]) {
+      expectInside(element(selector), element(".chat-panel"));
+    }
+    expect(element(".composer-send").getBoundingClientRect().height).toBe(touchPointer ? 44 : 34);
+    expect(element(".composer-tool").getBoundingClientRect().width).toBe(touchPointer ? 44 : 32);
+    expect(getComputedStyle(element(".thread-footer")).paddingBottom).toBe(touchPointer ? "10px" : "18px");
+    expect(document.documentElement.scrollWidth).toBe(viewport.width);
+    expect(window.scrollY).toBe(0);
+    await tabletShot(`${viewport.name}-${scheme}-zero-inset-conversation-composer`);
+
+    // Resizing an open conversation crosses the same navigation breakpoint as
+    // rotation or Stage Manager, without losing the draft or opening an overlay.
+    await userEvent.fill(element(".composer-input"), "A fictional draft for Morgan");
+    await page.viewport(600, 600);
+    await slideSettled();
+    expect(element(".composer-input")).toHaveValue("A fictional draft for Morgan");
+    expectInside(element(".composer-root"), element(".chat-panel"));
+    expect(element(".chat-panel").getBoundingClientRect().left).toBe(0);
+    expect(element(".thread-viewport").getBoundingClientRect().height).toBeGreaterThan(300);
+    await userEvent.click(screen.getByRole("button", { name: "Back to dashboard" }));
+    await waitFor(() => expect(element(".chat-region")).not.toBeVisible());
+    expect(screen.getByRole("button", { name: "Open Alpha thread" })).toBeVisible();
+  });
+
+  it("continues to use the shared installed top inset without changing clearance policy", async () => {
+    await page.viewport(viewport.width, viewport.height);
+    document.documentElement.style.setProperty("--status-bar-inset", "32px");
+    document.documentElement.style.setProperty("--top-edge-clearance", "40px");
+    openConsole();
+    const open = await screen.findByRole("button", { name: "Open Alpha thread" });
+    expect(getComputedStyle(element(".dashboard-header")).paddingTop).toBe("72px");
+    await userEvent.click(open);
+    await settled();
+    await slideSettled();
+    expect(getComputedStyle(element(".chat-header")).paddingTop).toBe("72px");
+    for (const control of element(".chat-header").querySelectorAll<HTMLElement>("button")) {
+      if (control.getClientRects().length) expect(control.getBoundingClientRect().top).toBeGreaterThanOrEqual(72);
+    }
+    expectInside(element(".composer-root"), element(".chat-panel"));
+  });
+});
+
+
+describe("narrow touch windows retain the phone layout", () => {
+  it("fits the existing composer and navigation at 500 × 600", async () => {
+    await page.viewport(500, 600);
+    openConsole();
+    await userEvent.click(await screen.findByRole("button", { name: "Open Alpha thread" }));
+    await settled();
+    await slideSettled();
+    expect(element(".dashboard").getBoundingClientRect().width).toBe(500);
+    expect(element(".chat-panel").getBoundingClientRect().left).toBe(0);
+    expect(element(".composer-send").getBoundingClientRect().height).toBe(34);
+    expect(element(".composer-tool").getBoundingClientRect().width).toBe(32);
+    expect(getComputedStyle(element(".composer-input")).fontSize).toBe("16px");
+    expectInside(element(".composer-root"), element(".chat-panel"));
+    expect(document.documentElement.scrollWidth).toBe(500);
   });
 });

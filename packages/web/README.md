@@ -1560,6 +1560,21 @@ suite. It copies the canonical contract source and the existing pure web helpers
 not a contracts package install or dist tree. Normal local browser tests still use
 `pnpm --dir packages/web/webapp run test:browser`.
 
+### Tablet layout coverage
+
+Touch screens above 560 CSS pixels keep 44px primary navigation/composer targets
+and omit the keyboard-shortcut hint. The existing navigation remains full-width
+push/pop through 900px, with a persistent 340px sidebar above that breakpoint;
+phone and fine-pointer desktop spacing is unchanged. Top-edge clearance remains
+owned by the shared status-bar inset variables, independently of tablet spacing.
+
+`Dashboard.browser.test.tsx` runs in both fine-pointer and touch Chromium contexts,
+including 744×1133, 1133×744 and 600×900 layouts, plus a 600px-tall resize and a
+500px-wide window. Set `VITE_IPAD_MINI_SHOTS=<absolute dir>` to capture synthetic
+light/dark dashboard/navigation and conversation/composer screenshots. These
+zero-inset browser fixtures do not reproduce installed iPadOS system chrome,
+window controls or the on-screen keyboard.
+
 ### Synthetic voice round trip
 
 After the dependency-closure build, capture a synthetic Chromium microphone

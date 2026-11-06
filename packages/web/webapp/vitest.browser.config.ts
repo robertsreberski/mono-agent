@@ -76,6 +76,17 @@ export default defineConfig({
           provide: { providerUsageTouch: false },
           context: { viewport: { width: 1440, height: 1000 }, hasTouch: false },
         },
+        // Tablet layout must exercise real coarse-pointer / no-hover CSS,
+        // not just a desktop browser resized to an iPad viewport.
+        {
+          browser: "chromium",
+          name: "chromium-tablet",
+          include: ["src/Dashboard.browser.test.tsx"],
+          exclude: ["src/**/!(Dashboard).browser.test.tsx"],
+          // Keep the runner larger than every tested viewport so screenshots
+          // are captured at 1 CSS px per pixel, without iframe downscaling.
+          context: { viewport: { width: 1440, height: 1200 }, hasTouch: true },
+        },
         // Local iOS-engine coverage without requiring WebKit in the existing
         // Chromium-only CI/standalone installation: WEBAPP_TEST_WEBKIT=1.
         ...(process.env.WEBAPP_TEST_WEBKIT === "1" ? [{

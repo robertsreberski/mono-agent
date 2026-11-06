@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Keep tablet console navigation and composer controls comfortable to tap while
+  reclaiming empty space around conversations on touch screens above phone size.
+
 - Recheck normalized faux lookup transport methods and redirects before sending,
   rejecting request accessors that change after initial validation.
 
