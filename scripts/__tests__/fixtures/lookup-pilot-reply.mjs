@@ -19,3 +19,12 @@ export function fixtureDriverReply(child, input, timeoutMs = 20000) {
     child.once("error", error => finish(reject, error));
   });
 }
+
+// Stop every owned driver before its final witness is read: it may record one
+// last probe while shutdown is in flight. Probe cleanup still checks identities.
+export async function stopFixtureDrivers(records) {
+  for (const {child, exit} of records) {
+    if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    await exit;
+  }
+}

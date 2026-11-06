@@ -458,6 +458,7 @@ it("refuses even empty workload overrides before reading an estimator registrati
 it("binds all present pilot artifact files, including guard assumptions, in the local protocol", async () => {
   const protocol = await lookupProtocol();
   expect(protocol.pilotSha256).toBe(digest(await Promise.all(LOOKUP_PILOT_PROTOCOL_FILES.map(async path => [path, sha256(await readFile(join(ROOT, path)))]))));
+  expect(new Set(LOOKUP_PILOT_PROTOCOL_FILES).size).toBe(LOOKUP_PILOT_PROTOCOL_FILES.length);
   expect(LOOKUP_PILOT_PROTOCOL_FILES).toEqual([
     "scripts/lib/continuity-lookup-child-environment.mjs",
     "scripts/lib/continuity-lookup-faux-capability.mjs",
@@ -465,10 +466,10 @@ it("binds all present pilot artifact files, including guard assumptions, in the 
     "scripts/lib/continuity-lookup-preparation.mjs",
     "scripts/lib/continuity-lookup-preparation-child.mjs",
     "scripts/lib/continuity-lookup-pilot-runtime.mjs",
-  "scripts/lib/continuity-lookup-real-capability.mjs",
-  "scripts/lib/continuity-lookup-pilot-entry.mjs",
-  "scripts/lib/continuity-lookup-pilot-probe.mjs",
-  "scripts/lib/continuity-runner.mjs",
+    "scripts/lib/continuity-lookup-real-capability.mjs",
+    "scripts/lib/continuity-lookup-pilot-entry.mjs",
+    "scripts/lib/continuity-lookup-pilot-probe.mjs",
+    "scripts/lib/continuity-runner.mjs",
     "scripts/lib/continuity-lookup-controller.mjs",
     "scripts/lib/continuity-lookup-ipc.mjs",
     "scripts/lib/continuity-lookup-pilot-accounting.mjs",

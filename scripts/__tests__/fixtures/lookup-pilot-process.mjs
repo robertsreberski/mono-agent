@@ -8,7 +8,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { fork, execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { syntheticContext, fixtureCommit, fixtureLookupPolicy } from "./holdout-synthetic.mjs";
-import { fixtureDriverReply } from "./lookup-pilot-reply.mjs";
+import { fixtureDriverReply, stopFixtureDrivers } from "./lookup-pilot-reply.mjs";
 import { dependencySnapshot } from "./lookup-dependency-witness.mjs";
 import { lookupProcessStartIdentity } from "../../lib/continuity-process-identity.mjs";
 import { ROOT } from "../../lib/continuity-lookup-roles.mjs";
@@ -84,7 +84,7 @@ export function pilotSuite({ scoped = false } = {}) {
   beforeAll(async () => { deps = await dependencySnapshot(ROOT); real = await metadata(registry); f = await pilotProcessFixture(); }, 120000);
   if (!scoped) beforeEach(async () => { testReal = await metadata(registry); });
   async function finish(owned, expected, resources = []) {
-    try { expect(await metadata(registry)).toEqual(expected); await witnesses(owned); }
+    try { await stopFixtureDrivers(owned); expect(await metadata(registry)).toEqual(expected); await witnesses(owned); }
     finally {
       try { for (const release of resources) await release(); }
       finally {
@@ -94,7 +94,6 @@ export function pilotSuite({ scoped = false } = {}) {
             let witness; try { witness = JSON.parse(await fs.readFile(join(f.base, "witnesses", `${probe.pid}.json`))); } catch (e) { if (e.code !== "ENOENT") throw e; }
             for (const owned of [probe, ...(witness?.descendants ?? [])]) if (owned.startIdentity && lookupProcessStartIdentity(owned.pid) === owned.startIdentity) try { process.kill(owned.pid, "SIGKILL"); } catch (e) { if (e.code !== "ESRCH") throw e; }
           }
-          if (c.child.exitCode === null && c.child.signalCode === null) c.child.kill("SIGKILL"); await c.exit;
         }
       }
     }

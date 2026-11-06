@@ -33,7 +33,6 @@ export async function createLookupFauxSend(a, safety) {
     need(init && Object.keys(init).every(key => ["method", "headers", "body", "signal", "redirect"].includes(key)));
     need(Object.hasOwn(init, "method") && init.method === "POST" && (init.redirect === undefined || init.redirect === "error"));
     init = { ...init, headers: new Headers(init.headers), body: lookupBodyBytes(init.body) };
-    need(init.method === "POST" && (init.redirect === undefined || init.redirect === "error"));
     const current = await verifyLookupPilotParent(a);
     need(current.schema === LOOKUP_FAUX_CONTROLLER && current.fauxEndpoint === endpoint && String(url) === `${contract.baseUrl}/codex/responses`);
     await verifyLookupPreparation(a, current, true);
