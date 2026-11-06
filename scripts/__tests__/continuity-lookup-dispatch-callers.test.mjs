@@ -110,7 +110,7 @@ const INVENTORY = {
     "scripts/__tests__/fixtures/lookup-preparation-preload.mjs": 1,
     "scripts/__tests__/continuity-lookup-pilot-entry.test.mjs": 2,
     "scripts/__tests__/continuity-lookup-pilot-probe.test.mjs": 1,
-    "scripts/__tests__/continuity-lookup-real-capability.test.mjs": 20,
+    "scripts/__tests__/continuity-lookup-real-capability.test.mjs": 21,
     "scripts/lib/continuity-lookup-pilot-probe.mjs": 2,
     "scripts/lib/continuity-lookup-real-capability.mjs": 1,
   },
@@ -125,6 +125,8 @@ const INVENTORY = {
     "scripts/lib/continuity-lookup-faux-capability.mjs": 3,
     // Capture, local alias declaration and exactly one native invocation.
     "scripts/lib/continuity-lookup-real-capability.mjs": 3,
+    // Off-lane proof sentinel: capture, owned-loopback delegation and denied probe.
+    "scripts/proofs/fixtures/lookup-configured-preload.mjs": 5,
   },
 };
 it("finds aliases, call/apply/bind, callbacks, renamed and star re-exports across files", () => {
