@@ -80,6 +80,8 @@ function inventory(sources, target) {
   }
   return result;
 }
+// Whole-tree TypeScript parsing: CPU-bound and slow on a busy shared runner,
+// so budget like the other heavy static suites; a hang still fails loudly.
 it("inventories every authority reference and separate real/loopback native fetches, not just calls", async () => {
   const sources = new Map(await Promise.all((await scripts()).map(async path => [path, await readFile(join(ROOT, path), "utf8")])));
   const guard = inventory(sources, "guardedLookupModels"), real = inventory(sources, "createLookupRealSend");
@@ -89,7 +91,7 @@ it("inventories every authority reference and separate real/loopback native fetc
   const native = parse("native", sources.get("scripts/lib/continuity-lookup-real-capability.mjs"));
   expect(calls(native, "nativeFetch")).toHaveLength(1);
   expect(calls(parse("local", sources.get("scripts/lib/continuity-lookup-faux-capability.mjs")), "nativeFetch")).toHaveLength(1);
-});
+}, 120_000);
 // Definition/import/alias references are intentional entries too. Test mocks are
 // listed explicitly; no new production constructor may hide behind a callback.
 const INVENTORY = {
