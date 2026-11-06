@@ -20,7 +20,7 @@ let lateAvailable = 0, lateAcceptedSettles = 0, killedAt = null, resolveLate;
 const late = new Promise(resolve => {resolveLate = resolve;});
 function sse(payload, number, tool) {
   const id = `fictional-${number}`;
-  const item = tool ? {type: "function_call", id: `fc_${id}`, call_id: `call_${id}`, name: tool.name, arguments: JSON.stringify({action: "search", query: `FXEARLY ${number}`, limit: 1}), status: "completed"}
+  const item = tool ? {type: "function_call", id: `fc_${id}`, call_id: `call_${id}`, name: config.case === "limit" ? "FictionalUnknownTool" : tool.name, arguments: JSON.stringify({action: "search", query: `FXEARLY ${number}`, limit: 1}), status: "completed"}
     : {type: "message", id: `msg_${id}`, role: "assistant", status: "completed", content: [{type: "output_text", text: config.case === "empty" ? "" : "Fictional answer.", annotations: []}]};
   const events = [{type: "response.output_item.added", output_index: 0, item: {...item, ...(tool ? {arguments: ""} : {content: []})}},
     ...(tool ? [{type: "response.function_call_arguments.delta", output_index: 0, item_id: item.id, delta: item.arguments}] : [{type: "response.content_part.added", output_index: 0, content_index: 0, item_id: item.id, part: {type: "output_text", text: "", annotations: []}}, {type: "response.output_text.delta", output_index: 0, content_index: 0, item_id: item.id, delta: item.content[0].text}]),

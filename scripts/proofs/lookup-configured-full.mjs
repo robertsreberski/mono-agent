@@ -37,6 +37,8 @@ if (verify !== -1) {
   let fixture, settingsPath = join(base, "fixture.json");
   if (process.env.LOOKUP_PROOF_FIXTURE) {fixture = await json(settingsPath); assert.deepEqual(fixture.sourceBinding, sourceBinding, "stale registered fixture");}
   else {fixture = await fullConfiguredFixture(ROOT, base); fixture.sourceBinding = sourceBinding; await fs.writeFile(settingsPath, JSON.stringify(fixture), {mode: 0o600});}
+  for (const key of ["HOME", "XDG_CACHE_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME"]) process.env[key] = fixture.home;
+  process.env.GIT_CONFIG_GLOBAL = "/dev/null"; process.env.GIT_CONFIG_NOSYSTEM = "1";
   const results = [], witnesses = [], dependenciesLoaded = new Map();
   await fs.writeFile(`${output}.checkpoint`, JSON.stringify({base, sourceBinding, status: "fixture-built"}));
   const identity = await import(pathToFileURL(join(fixture.repo, "scripts/lib/continuity-process-identity.mjs")).href);
@@ -49,12 +51,12 @@ if (verify !== -1) {
       await fs.writeFile(configPath, JSON.stringify({...fixture, case: name, outputRoot, result: resultPath}), {mode: 0o600});
       const policy = {mode: "configured", role: "controller", root: ROOT, home: await fs.realpath(userInfo().homedir), testHome: home, ownedRoot: base, evidence, outputRoot, codeRoots: [fixture.repo, fixture.pack], forkPaths: [fixture.repo, fixture.pack].flatMap(root => ["continuity-lookup-preparation-child.mjs", "continuity-lookup-pilot-child.mjs"].map(file => join(root, "scripts/lib", file)))};
       const preload = new URL("./fixtures/lookup-configured-preload.mjs", import.meta.url); preload.searchParams.set("policy", Buffer.from(JSON.stringify(policy)).toString("base64url"));
-      const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => ["PATH", "LANG", "LC_ALL", "TZ", "TMPDIR", "CI"].includes(key)));
+      const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => ["PATH", "LANG", "LC_ALL", "TZ", "TMPDIR", "CI", "CONTINUITY_DEBUG"].includes(key)));
       Object.assign(env, {HOME: home, XDG_CACHE_HOME: home, XDG_CONFIG_HOME: home, XDG_DATA_HOME: home, XDG_STATE_HOME: home, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1"});
       const child = fork(fileURLToPath(new URL("./fixtures/lookup-configured-driver.mjs", import.meta.url)), [configPath], {cwd: fixture.repo, execArgv: ["--import", preload.href], env, stdio: ["ignore", "ignore", "pipe", "ipc"]});
       const stderr = []; child.stderr.on("data", bytes => stderr.push(bytes));
       const startedAt = Date.now(), exit = new Promise(resolve => child.once("close", (code, signal) => resolve({code, signal})));
-      const watchdog = setTimeout(() => {child.kill("SIGKILL");}, name === "late" ? 750000 : 360000);
+      const watchdog = setTimeout(() => {child.kill("SIGKILL");}, name === "late" ? 2100000 : 360000);
       let outcome;
       try {outcome = await exit;} finally {clearTimeout(watchdog);}
       const errorLog = join(base, `${id}-stderr.log`); await fs.writeFile(errorLog, Buffer.concat(stderr));
@@ -90,9 +92,9 @@ if (verify !== -1) {
         const arrivals = value.arrivals.filter(a => a.slotId === key);
         if (name === "rounds") {assert.equal(arrivals.length, 3); assert.ok(arrivals[2].priorToolOutputs >= 2);}
         if (["cap", "sdk", "empty", "tier", "late", "kill", "smoke"].includes(name)) assert.equal(arrivals.length, 1);
-        if (name === "limit") assert.ok(arrivals.length <= 10);
+        if (name === "limit") assert.equal(arrivals.length, 10);
       }
-      if (name === "cap") assert.ok(state.slots.some(s => s.admissionRefusal === "not_admitted_cap"));
+      if (name === "cap") assert.ok(state.slots.some(s => s.guardRefusal === "not_admitted_cap"));
       if (name === "empty") assert.ok(state.slots.some(s => s.terminal === "pilot_empty_final_output"));
       if (name === "tier") assert.equal(state.stop, "lookup_unknown_tier");
       if (name === "late") {assert.equal(value.lateAvailable, 1); assert.equal(value.lateAcceptedSettles, 0); assert.equal(state.stop, "lookup_worker_timeout"); assert.ok(value.arrivals[0].at < value.providerLateAvailableAt);}
@@ -118,7 +120,18 @@ if (verify !== -1) {
         const forkRecord = main.forks.find(f => f.slotId === slot.slotId && f.role === "probe");
         assert.ok(forkRecord.preparation.exited); assert.equal(forkRecord.preparation.treeDigest, slot.preparation.treeDigest);
         assert.ok(probe.events.some(e => e.phase === "installTree" && e.path.startsWith(forkRecord.work)), "restore did not target original work root");
-        metrics.push({slotId: slot.slotId, role: state.schedule[index].roleId, probeWallMs: probe.elapsedMs, peakRSSBytes: probe.peakRSSBytes, rssExactAtExit: !["late", "kill"].includes(name), retained: await retained.lookupRetainedBytes(join(outputRoot, "work", slot.slotId)), preparationToolCalls: preparation.httpCalls.filter(r => r.method === "tools/call").length});
+        assert.equal(preparation.httpCalls.filter(r => r.method === "tools/call").length, 64);
+        const nativeSessions = [];
+        for (const file of await fs.readdir(join(forkRecord.work, "../snapshot/sessions/journals"))) {
+          const bytes = await fs.readFile(join(forkRecord.work, "../snapshot/sessions/journals", file)), rows = bytes.toString().trim().split("\n").map(line => JSON.parse(line)), header = rows[0];
+          assert.equal(rows.filter(row => row.kind === "turn_start" && row.payload.identitySource === "host").length, 80);
+          assert.equal(header.cwd, forkRecord.work);
+          assert.ok(probe.events.some(event => event.nativeHeader?.id === header.id && event.nativeHeader.journalId === header.journalId && event.nativeHeader.cwd === header.cwd && event.nativeHeader.sha256 === sha(bytes)));
+          nativeSessions.push({id: header.id, journalId: header.journalId, restoredAtOriginalRoot: true, hostReplayTurns: 80});
+        }
+        assert.ok(preparation.databases.some(path => path.includes("/checkpoint/lease-home/") && probe.databases.includes(path)), "leftover physical lease-home was not reused");
+        const disk = await retained.lookupRetainedBytes(join(outputRoot, "work", slot.slotId));
+        metrics.push({nativeSessions, probeDiskGrowthBytes: disk.workBytes - disk.snapshotBytes, slotId: slot.slotId, role: state.schedule[index].roleId, probeWallMs: probe.elapsedMs, peakRSSBytes: probe.peakRSSBytes, rssExactAtExit: !["late", "kill"].includes(name), retained: await retained.lookupRetainedBytes(join(outputRoot, "work", slot.slotId)), preparationToolCalls: preparation.httpCalls.filter(r => r.method === "tools/call").length});
       }
       witnesses.push(...rows); results.push({...value, metrics, wallMs: Date.now() - startedAt});
       await fs.writeFile(`${output}.checkpoint`, JSON.stringify({base, sourceBinding, completed: results.map(r => r.case)}));

@@ -60,18 +60,19 @@ export function installLookupProofScope(policy) {
       ...(["git", "fork"].includes(kind) ? {globalConfig: env.GIT_CONFIG_GLOBAL, systemConfig: "disabled"} : {})};
     const previous = allowed.find(x => JSON.stringify({...x, count: 1}) === JSON.stringify(row));
     if (previous) previous.count++; else allowed.push(row);
-    return {kind, options: {...options, env, shell: false}};
+    return {kind, record: previous ?? row, options: {...options, env, shell: false}};
   }
   const preload = (overrides = {}) => { const url = new URL(policy.preloadUrl ?? import.meta.url); url.searchParams.set("policy", Buffer.from(JSON.stringify({...policy, ...overrides, origins: [...ports].map(port => `http://127.0.0.1:${port}`)})).toString("base64url")); return url.href; };
   const imports = (args, extra) => { const result = []; for (let i = 0; i < args.length; i++) { const arg = args[i], value = arg === "--import" ? args[i + 1] : arg.startsWith("--import=") ? arg.slice(9) : null; if (value && /lookup-(?:proof-scope|configured-preload)\.mjs/u.test(value)) {if (arg === "--import") i++; continue;} result.push(arg); } return [...result, "--import", preload(extra)]; };
   for (const family of ["spawn", "spawnSync", "execFile", "execFileSync", "fork"]) patch(child, family, original => function (command, args = [], options = {}, callback) {
     if (typeof options === "function") {callback = options; options = {};}
     const call = invocation(command, args, options, family);
-    if (call.kind === "protocol") args = ["--import", preload({role: "verification"}), ...args];
+    if (call.kind === "protocol") {args = ["--import", preload({role: "verification"}), ...args]; call.record.actualArgv = args;}
     if (family === "fork") {
       const role = command.endsWith("continuity-lookup-preparation-child.mjs") ? "preparation" : "probe";
       policy.onFork?.({command, args, options: call.options, role});
       call.options.execArgv = imports(options.execArgv ?? process.execArgv, {testHome: call.options.env.HOME, role});
+      call.record.actualArgv = [...call.options.execArgv, resolve(command), ...args];
     }
     spawning++;
     try {return callback ? original.call(this, command, args, call.options, callback) : original.call(this, command, args, call.options);}
@@ -107,7 +108,7 @@ export function installLookupProofScope(policy) {
     constructor(path, ...args) {
       if (path !== ":memory:") {
         const resolved = resolve(path instanceof URL ? fileURLToPath(path) : path), canonical = files.check(resolved, true);
-        if (!within(policy.ownedRoot, canonical)) throw Error("test_sqlite_path_denied"); databases.push(resolved);
+        if (!within(policy.ownedRoot, canonical)) throw Error("test_sqlite_path_denied"); if (!databases.includes(resolved)) databases.push(resolved);
       }
       super(path, ...args);
     }

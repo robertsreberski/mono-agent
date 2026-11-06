@@ -73,7 +73,7 @@ export async function fullConfiguredFixture(root, base) {
     const options = {checkouts, suites: ["holdout"], lookupSource: {manifestPath: f.context.options.manifestPath, manifestSha256: f.context.options.manifestSha256, statisticalSpecPath: f.context.options.statisticalSpecPath}, reader: "openai-codex:gpt-6.1-sol", readerEffort: "high", selectionSeed: 42, perGroup: 1, probeLimit: 1, outputLimit: {source: "catalog_max", tokens: 128000}};
     const workload = await roles.lookupWorkload({...options, inputRoots: [f.repo, pack]});
     // Arithmetic-only faux feasibility, never a real feasibility measurement or grant.
-    const policy = await fixtureLookupPolicy({source: workload.corpora[0].source, selection: workload.corpora[0].traces, lookupSelection: workload.lookupSelection, reader: workload.reader, codes, protocol, eligibleRoles: ["pack"]});
+    const policy = await fixtureLookupPolicy({source: workload.corpora[0].source, selection: workload.corpora[0].traces, lookupSelection: workload.lookupSelection, reader: workload.reader, codes, protocol, eligibleRoles: ["pack", "pack-only"]});
     const dataset = await import(pathToFileURL(join(f.repo, "scripts/lib/continuity-dataset.mjs")).href);
     const lookup = await import(pathToFileURL(join(f.repo, "scripts/lib/continuity-lookup.mjs")).href);
     const loaded = await dataset.loadTraces({suite: "holdout", lookupSource: options.lookupSource, selectionSeed: 42, perGroup: 1, inputRoots: [f.repo, pack]});

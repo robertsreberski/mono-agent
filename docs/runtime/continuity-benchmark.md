@@ -1565,15 +1565,47 @@ is never treated as a grant or a successful durable write. Done ACK cleanup and
 containment rejection remain bounded even when the journal is sticky-failed.
 The controller releases its lease; observation-only recovery cannot grant more.
 
-The complete three-process native/pack smoke still requires full registered
-preparation replay, explicit inherited egress/credential denial, per-process
-canaries, persisted hold/consumption listener checks, arrival-kill reconciliation
-and disk/wall/RSS measurements. Its provider listener belongs to the controller;
-production ConversationHistory and its forwarder stay probe-owned. That full
-proof and the literal 600-second late-usage case are separate from the default
-unit lane and remain required before opening the gate. Their measurements are
-not yet established. No live provider behavior, billing, power-loss durability
-or operator acceptance is established by these unit tests.
+The explicit off-lane configured-process proof uses full frozen fictional
+80-turn/64-tool replay, actual registered-source closure builds, the production
+controller/preparation/probe entrypoints and installed serializer. Baseline and
+guidance pack roles exercise the three-process flow. Native inventory rows are
+ineligible in this fixture: assert no native preparation, probe or hold, and do
+not describe this as an admitted-native topology. Skipping a row acquires no
+row-specific lease or claim; the faux controller still consumes its run-wide
+authorization before scheduling the eligible pack rows.
+
+Its provider listener belongs to the controller; production ConversationHistory
+and its forwarder stay probe-owned, with dynamically allowed loopback ports.
+Every arrival independently rereads the persisted consumed hold and both claims.
+Inherited per-process/thread API and egress canaries, restored native-journal
+identity and full replay counts, leftover lease-home reuse, two History rounds,
+capacity refusal, request ceilings, SDK/empty-final/sticky-tier outcomes and
+controller-crash read-only reconciliation are recorded. The request-ceiling case
+uses an unrecognized tool response so History's eight-call meter does not mask
+the configured runtime's ten-turn ceiling; the guard's independent eleventh-call
+refusal remains separately unit-tested. No runtime limit is enlarged.
+
+```sh
+LOOKUP_CONFIGURED_PROOF=full node scripts/proofs/lookup-configured-full.mjs
+CI=1 LOOKUP_CONFIGURED_PROOF=full node scripts/proofs/lookup-configured-full.mjs
+node scripts/proofs/lookup-configured-full.mjs \
+  --verify-evidence .worklab-tmp/lookup-configured-full.json
+```
+
+The required environment is fail-loud, never a silent skip. `--case=NAME` is
+explicit partial/debug evidence, not the complete proof. Evidence binds the
+exact clean source HEAD/tree, every tracked script, registered protocol/build
+hashes, Node executable and loaded dependency bytes; verification refuses stale
+evidence. Loader hooks only observe unmodified module bytes. Ordinary installed
+dependency links are reused read-only: no SDK copies or resolution aliases.
+Per-slot wall, process high-water RSS and retained logical-byte disk deltas are
+instrumented measurements, not uninstrumented runtime guarantees. Killed-process
+RSS is the last observed high-water mark, not an exact post-kill peak. The literal
+600-second outer-kill case records provider-late usage availability separately
+from accepted settles; unavailable usage stays conservatively reserved.
+These off-lane checks remain required at the exact reviewed head before opening
+the gate. No live provider behavior, evaluation quality, billing, power-loss
+durability or operator acceptance is established by faux proof results.
 
 
 ### Read-only consumption-registry readiness

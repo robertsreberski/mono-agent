@@ -45,6 +45,10 @@ const originals = [], observe = (object, name) => {
     for (const phase of ["buildCheckpoint", "restorePreparation", "installTree", "runProbe"]) if (stack.includes(phase) && path && path.startsWith(policy.ownedRoot)) {
       if (phase === "buildCheckpoint" && policy.role === "probe") throw Error("test_probe_build_checkpoint_denied");
       const entry = {phase, api: name, path, at: Date.now()};
+      if (phase === "installTree" && name === "writeFile" && path.includes("/sessions/journals/") && path.endsWith(".jsonl")) {
+        const bytes = Buffer.from(args[1]), header = JSON.parse(bytes.toString("utf8").split("\n", 1)[0]);
+        entry.nativeHeader = {id: header.id, journalId: header.journalId, cwd: header.cwd, sha256: createHash("sha256").update(bytes).digest("hex")};
+      }
       if (!events.some(e => e.phase === phase && e.path === path && e.api === name)) events.push(entry);
     }
     return original.apply(this, args);
@@ -89,8 +93,10 @@ net.Server.prototype.listen = function (...args) {
   });
   return listen.apply(this, args);
 };
+const nativeSave = scope.save.bind(scope);
+scope.save = (extra = {}) => nativeSave({...snapshot(), processCanaries, ...extra});
 const save = () => {peakRSSBytes = Math.max(peakRSSBytes, process.resourceUsage().maxRSS * 1024); scope.save({...snapshot(), processCanaries});};
-const sampler = setInterval(save, 100); sampler.unref();
+const sampler = setInterval(save, 1000); sampler.unref();
 if (!isMainThread) scope.files.constructed();
 process.on("exit", save);
 save();
