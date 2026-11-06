@@ -1560,8 +1560,10 @@ not a contracts package install or dist tree. Normal local browser tests still u
 
 ### Tablet layout coverage
 
-Touch screens above 560 CSS pixels keep 44px primary navigation/composer targets
-and omit the keyboard-shortcut hint. The existing navigation remains full-width
+Screens wider than 560 CSS pixels with a coarse pointer or no hover (touch
+tablets, including no-hover devices without a coarse pointer) keep 44px primary
+navigation/composer targets and omit the keyboard-shortcut hint. Outlined filter
+chips keep their compact 26px pill and extend only an invisible tap band to 44px. The existing navigation remains full-width
 push/pop through 900px, with a persistent 340px sidebar above that breakpoint;
 phone and fine-pointer desktop spacing is unchanged. Header top padding respects the shared
 status-bar inset independently of tablet spacing; no extra clearance is added.

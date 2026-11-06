@@ -703,7 +703,17 @@ describe.each(tabletViewports)("tablet layout at $name", (viewport) => {
       expect(control.getBoundingClientRect().top).toBeGreaterThanOrEqual(6);
       expectInside(control, element(".dashboard-header"));
     }
-    expect(element(".dashboard-chip").getBoundingClientRect().height).toBe(touchPointer ? 44 : 26);
+    const chip = element(".dashboard-chip");
+    const chipRect = chip.getBoundingClientRect();
+    expect(chipRect.height).toBe(26);
+    if (touchPointer) {
+      // The visible 26px pill stays compact; its invisible band takes taps across a 44px height.
+      const x = chipRect.left + chipRect.width / 2;
+      expect(chip.contains(document.elementFromPoint(x, chipRect.top - 9))).toBe(true);
+      expect(chip.contains(document.elementFromPoint(x, chipRect.bottom + 8))).toBe(true);
+      // The band ends before the first row, so it never steals that row's taps.
+      expect(element(".thread-list").getBoundingClientRect().top).toBeGreaterThanOrEqual(chipRect.bottom + 9);
+    }
     await tabletShot(`${viewport.name}-${scheme}-zero-inset-dashboard-navigation`);
 
     await userEvent.click(open);

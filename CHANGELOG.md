@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Keep the dashboard's Chats and Automations filter chips compact on touch tablets
+  while preserving a 44px tap target.
+
 - Fix installed iOS/iPadOS console header blur without extra top padding, and
   improve tablet touch targets and conversation spacing. Remove and re-add
   existing Home Screen installs to adopt the opaque system status bar.
