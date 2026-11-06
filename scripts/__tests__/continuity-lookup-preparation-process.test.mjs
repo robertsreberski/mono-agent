@@ -72,6 +72,7 @@ it("cannot mint/verify from the assigned preparation even with the entry gate mo
 it("production probe reacquires preparation's leftover lease-home without inheriting its owner", async () => {
   const r = await run("lease-home"), prep = r.evidence.find(e => e.preparing), probe = r.evidence.find(e => e.pid === r.reply.pid);
   expect(r.reply, JSON.stringify(r.evidence)).toMatchObject({ verified: true }); expect(prep.leftoverOwner).toBe(prep.pid);
+  expect(Object.values(probe.snapshotReads).length).toBeGreaterThan(0); expect(Object.values(probe.snapshotReads).every(n => n === 2)).toBe(true);
   expect(probe.leaseOwners, JSON.stringify(r.evidence)).toEqual([probe.pid]); expect(probe.pid).not.toBe(prep.pid);
 }, 240000);
 

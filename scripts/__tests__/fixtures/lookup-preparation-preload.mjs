@@ -42,7 +42,16 @@ childProcess.fork = function (path, args, options) {
 const originalOpen = promises.open;
 promises.open = async (path, ...args) => {
   if (typeof path === "string" && settings.forbiddenCredential && path === settings.forbiddenCredential) { evidence.credentialDenied++; record(); throw Error("test_credential_denied"); }
-  return originalOpen(path, ...args);
+  const handle = await originalOpen(path, ...args);
+  if (!preparing && typeof path === "string" && path.includes("/checkpoint/snapshot/")) {
+    const read = handle.readFile.bind(handle);
+    handle.readFile = async (...args) => {
+      const bytes = await read(...args); (evidence.snapshotReads ??= {})[path] = (evidence.snapshotReads[path] ?? 0) + 1;
+      if (globalThis.__lookupDryRestoring) (evidence.dryRestoreReads ??= {})[path] = (evidence.dryRestoreReads[path] ?? 0) + 1;
+      record(); return bytes;
+    };
+  }
+  return handle;
 };
 syncBuiltinESMExports();
 if (settings.forbiddenCredential) {
@@ -51,6 +60,12 @@ if (settings.forbiddenCredential) {
 }
 registerHooks({ load(url, context, next) {
   const loaded = next(url, context);
+  if (url.endsWith("/scripts/lib/continuity-lookup-preparation.mjs")) return {...loaded,
+    source: String(loaded.source).replace("export async function restoreLookupPreflight(a) {", "async function instrumentedDryRestore(a) {") + `
+      export async function restoreLookupPreflight(a) {
+        globalThis.__lookupDryRestoring = true;
+        try { return await instrumentedDryRestore(a); } finally { globalThis.__lookupDryRestoring = false; }
+      }`};
   if (settings.gateOpen && url.endsWith("/continuity-lookup-pilot-entry.mjs")) return { ...loaded,
     source: 'export const LOOKUP_PILOT_REAL_ROUTE_ENABLED = true; export function assertLookupPilotEntry() {}' };
   if (settings.fault === "lease-home" && url.endsWith("/scripts/lib/continuity-lookup-pilot-runtime.mjs")) return { ...loaded,

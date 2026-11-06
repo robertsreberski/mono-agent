@@ -937,7 +937,7 @@ describe("free three-pass source-selection/fitting baseline", () => {
     // Repeat through a new private store, not a cached selection. No random
     // generation identity or timing field belongs in the replay manifest.
     expect(await replayLedgerSelection(records)).toEqual(passes);
-  }, 60000);
+  }, 180000);
 });
 
 

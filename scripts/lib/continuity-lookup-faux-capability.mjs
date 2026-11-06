@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { zstdDecompressSync } from "node:zlib";
 // Test-only authority, incompatible with the real factory and external transport.
 import { digest } from "./continuity-dataset.mjs";
-import { lookupPilotWork } from "./continuity-lookup-pilot-runtime.mjs";
+import { lookupPilotWork, lookupBodyBytes } from "./continuity-lookup-pilot-runtime.mjs";
 import { createLookupPilotIPC, verifyLookupPilotParent } from "./continuity-lookup-ipc.mjs";
 import { ROOT, verifyRoleRequest } from "./continuity-lookup-roles.mjs";
 import { LOOKUP_FAUX_CONTROLLER, readPilotPrivate, pilotStatePath } from "./continuity-lookup-pilot-state.mjs";
@@ -31,7 +31,8 @@ export async function createLookupFauxSend(a, safety) {
   const used = new Set();
   const send = async (url, init) => {
     need(init && Object.keys(init).every(key => ["method", "headers", "body", "signal", "redirect"].includes(key)));
-    init = { ...init, headers: new Headers(init.headers), body: Buffer.from(Buffer.from(init.body ?? "")) };
+    need(Object.hasOwn(init, "method") && init.method === "POST" && (init.redirect === undefined || init.redirect === "error"));
+    init = { ...init, headers: new Headers(init.headers), body: lookupBodyBytes(init.body) };
     need(init.method === "POST" && (init.redirect === undefined || init.redirect === "error"));
     const current = await verifyLookupPilotParent(a);
     need(current.schema === LOOKUP_FAUX_CONTROLLER && current.fauxEndpoint === endpoint && String(url) === `${contract.baseUrl}/codex/responses`);

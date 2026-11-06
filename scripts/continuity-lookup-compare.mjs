@@ -7,12 +7,15 @@ import { sha256 } from "./lib/continuity-lookup.mjs";
 import { digest } from "./lib/continuity-dataset.mjs";
 import { registerLookup, readRegistration, runLookupRoles, aggregateRoleFiles, requireLookup } from "./lib/continuity-lookup-roles.mjs";
 
-export function parseLookupOptions(argv, valued) {
+export function parseLookupOptions(argv, valued, switches = []) {
   // Refuse before reading a registration, build, catalog or credentials.
   requireLookup(!argv.some(arg => arg === "--real" || arg.startsWith("--real=")), "lookup_real_not_authorized");
   const flags = {};
   for (let i = 0; i < argv.length; i++) {
     const flag = argv[i];
+    if (switches.includes(flag)) {
+      requireLookup(!Object.hasOwn(flags, flag), "lookup_invalid_arguments"); flags[flag] = true; continue;
+    }
     requireLookup(valued.includes(flag) && !Object.hasOwn(flags, flag) && argv[i + 1] !== undefined && !argv[i + 1].startsWith("--"), "lookup_invalid_arguments");
     flags[flag] = argv[++i];
   }
@@ -70,7 +73,7 @@ export async function lookupOutputPath(output, roots) {
   return canonical;
 }
 export const WORKLOAD_FLAGS = ["--selection-seed", "--per-group", "--r0", "--rpack","--suites", "--traces", "--repeats", "--probe-limit", "--reader", "--reader-effort", "--corpus-manifest", "--manifest-sha256", "--statistical-spec", "--lookup-policy", "--lookup-policy-sha256", "--output-limit", "--output-limit-source", "--catalog-cap-usd"];
-const HELP = `Offline preparation: preflight --registration FILE --sha256 SHA
+const HELP = `Offline preparation: preflight --registration FILE --sha256 SHA --timeout-ms N --output-root ABSOLUTE_DIR [--require-real-equivalent]
 continuity-lookup-compare (offline only)
   register --r0 PATH --r0-revision FULL_SHA --rpack PATH --rpack-revision FULL_SHA --output NEW_DIR
            [--suites original,hard,hard-distractors] [--traces ID,...] [--probe-limit N] [--repeats N]
@@ -89,12 +92,16 @@ No provider calls, fetch, checkout, cherry-pick, significance claims or spending
 export async function main(argv = process.argv.slice(2), { stdout = console.log } = {}) {
   if (!argv.length || argv.length === 1 && argv[0] === "--help") { stdout(HELP); return 0; }
   if (argv[0] === "preflight") {
-    const flags = parseLookupOptions(argv.slice(1), ["--registration", "--sha256"]);
+    let flags;
+    try { flags = parseLookupOptions(argv.slice(1), ["--registration", "--sha256", "--timeout-ms", "--output-root"], ["--require-real-equivalent"]); }
+    catch (error) { if (error.code !== "lookup_invalid_arguments") throw error; requireLookup(false, "lookup_registration_invalid"); }
     requireLookup(typeof flags["--registration"] === "string" && flags["--registration"].length > 0 && /^[a-f0-9]{64}$/u.test(flags["--sha256"] ?? ""), "lookup_registration_invalid");
     const { readLookupPilotRegistration } = await import("./lib/continuity-lookup-pilot.mjs");
     const { runLookupPreparationPreflight } = await import("./lib/continuity-lookup-preflight.mjs");
-    const result = await runLookupPreparationPreflight(await readLookupPilotRegistration(flags["--registration"], flags["--sha256"]));
-    stdout(JSON.stringify(result)); return result.feasible ? 0 : 1;
+    requireLookup(typeof flags["--timeout-ms"] === "string" && /^[0-9]+$/u.test(flags["--timeout-ms"]) && isAbsolute(flags["--output-root"] ?? ""), "lookup_registration_invalid");
+    const result = await runLookupPreparationPreflight(await readLookupPilotRegistration(flags["--registration"], flags["--sha256"]), {timeoutMs: Number(flags["--timeout-ms"]), outputRoot: flags["--output-root"]});
+    result.realEquivalentRequired = flags["--require-real-equivalent"] === true;
+    stdout(JSON.stringify(result)); return result.feasible && (!result.realEquivalentRequired || result.realEquivalent) ? 0 : 1;
   }
   if (argv[0] === "pilot") return (await import("./lib/continuity-lookup-pilot-entry.mjs")).runLookupPilotCommand(argv.slice(1), stdout);
   requireLookup(!argv.includes("--real"), "lookup_real_not_authorized");

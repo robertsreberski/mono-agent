@@ -19,7 +19,7 @@ beforeEach(async () => {
   vi.doMock("../lib/continuity-lookup-roles.mjs", () => ({ROOT: "/fictional/root", verifyRoleRequest() {}}));
   vi.doMock("../lib/continuity-lookup-pilot.mjs", () => ({validateLookupPilotRegistration() {}}));
   vi.doMock("../lib/continuity-lookup-guard.mjs", () => ({createFauxLookupDecorator: fauxDecorator, LOOKUP_GUARD_CONTRACT: {baseUrl: "https://fixture.invalid"}, LOOKUP_GUARD_POLICY_REFUSALS: ["lookup_preparation_invalid"], LOOKUP_PRE_SEND_REFUSALS: [], assertLookupChildSafety() {}}));
-  vi.doMock("../lib/continuity-lookup-pilot-runtime.mjs", () => ({lookupPilotWork: () => "/fictional/work", lookupOfflineBoundary: () => ({authPath: "/fictional/absent"}), fauxLookupSafety: () => ({}), assertResolvedLookupSafety() {}}));
+  vi.doMock("../lib/continuity-lookup-pilot-runtime.mjs", async original => ({...await original(), lookupPilotWork: () => "/fictional/work", lookupOfflineBoundary: () => ({authPath: "/fictional/absent"}), fauxLookupSafety: () => ({}), assertResolvedLookupSafety() {}}));
   vi.doMock("../lib/continuity-dataset.mjs", () => ({loadTraces: async () => ({traces: [{id: "trace", probes: [{id: "probe"}]}]})}));
   vi.doMock("../lib/continuity-runner.mjs", () => runner);
   vi.stubGlobal("fetch", vi.fn(() => { throw Error("test_egress_denied"); }));
@@ -64,4 +64,24 @@ it("maps the initial probe-child state read to the preparation refusal", async (
   readState.mockRejectedValue(Object.assign(Error("fictional private location"), {code: "lookup_receipt_invalid"}));
   await expect(run({outputRoot: "/fictional/output"})).rejects.toThrow("lookup_preparation_invalid");
   expect(realMint).not.toHaveBeenCalled(); expect(fauxDecorator).not.toHaveBeenCalled();
+});
+
+it.each(["Uint8Array", "ArrayBuffer"])("faux transport snapshots %s as fetch would", async kind => {
+  const source = new Uint8Array([1, 2, 3, 4, 5, 6]), expected = Buffer.from(source.subarray(2));
+  const body = kind === "Uint8Array" ? source.subarray(2) : source.buffer.slice(2), now = Date.now();
+  state.deadlineAt = now + 60000; state.slots[0] = {terminal: null, startedAt: now, holds: [{consumed: true, permitId: "fictional-permit", payloadDigest: createHash("sha256").update(expected).digest("hex")}]};
+  const a = {outputRoot: "/fictional/output", index: 0, slot: {code: "R0"}, cacheKey: "assigned", runId: "fictional-run", slotId: "fictional-slot", plan: {}, roleRequest: {},
+    pilot: {registration: {codes: {R0: {path: "/fictional/root"}}}, descriptor: {deadlines: {deadlineMs: 60000}}}};
+  fetch.mockResolvedValue(new Response("fictional response"));
+  const {createLookupFauxSend} = await import("../lib/continuity-lookup-faux-capability.mjs"), send = await createLookupFauxSend(a, {});
+  const pending = send("https://fixture.invalid/codex/responses", {method: "POST", body, headers: {"session-id": "assigned", "x-client-request-id": "assigned"}}); source.fill(0);
+  await pending; expect(fetch).toHaveBeenCalledOnce(); expect(Buffer.from(fetch.mock.calls[0][1].body)).toEqual(expected);
+});
+
+it.each([new DataView(new ArrayBuffer(4)), new Uint16Array(2), new Int8Array(2), new Uint8ClampedArray(2), new FormData(), new URLSearchParams(), new Blob(["fictional"]), null, undefined])("refuses unsupported faux transport body %# before native fetch", async body => {
+  const {createLookupFauxSend} = await import("../lib/continuity-lookup-faux-capability.mjs");
+  const a = {index: 0, outputRoot: "/fictional/output", pilot: {registration: {codes: {R0: {path: "/fictional/root"}}}}, slot: {code: "R0"}, plan: {}, roleRequest: {}};
+  const send = await createLookupFauxSend(a, {});
+  await expect(send("https://fixture.invalid/codex/responses", {method: "POST", body})).rejects.toMatchObject({code: "lookup_body_type_forbidden"});
+  expect(fetch).not.toHaveBeenCalled();
 });

@@ -106,6 +106,14 @@ export async function lookupPilotFailureCode(failure) {
   return [failure?.code, failure?.kind, failure?.message, failure?.details?.code, failure?.details?.message].find(value => LOOKUP_PILOT_STOPS.includes(value) || LOOKUP_PRE_SEND_REFUSALS.includes(value) || value === "pilot_empty_final_output");
 }
 
+/** One owned wire-byte snapshot for guard and transports; no implicit MIME metadata. */
+export function lookupBodyBytes(body) {
+  need(typeof body === "string" || body instanceof Uint8Array || body instanceof ArrayBuffer, "lookup_body_type_forbidden");
+  return Buffer.from(body instanceof ArrayBuffer ? new Uint8Array(body) : body);
+}
+
+export const validLookupPilotTimeout = (timeoutMs, childWatchdogMs) => Number.isSafeInteger(timeoutMs) && timeoutMs > 0 && timeoutMs <= childWatchdogMs;
+
 /** Bound timer values explicitly; never let timer coercion select a watchdog. */
 export function lookupPilotWatchdog(authorization, deadlines, deadlineAt, now = Date.now()) {
   const requested = authorization.timeoutMs ?? deadlines.childWatchdogMs;

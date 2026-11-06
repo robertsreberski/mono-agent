@@ -11,7 +11,7 @@ import { userInfo } from "node:os";
 import { assertLookupPilotArm, lookupPreparationDigest } from "./continuity-lookup-preparation.mjs";
 import { armById } from "./continuity-arms.mjs";
 import { LOOKUP_PRE_SEND_REFUSALS, LOOKUP_GUARD_POLICY_REFUSALS } from "./continuity-lookup-guard.mjs";
-import { assertLookupCacheAssignment, issueLookupCacheKey, lookupPilotWatchdog } from "./continuity-lookup-pilot-runtime.mjs";
+import { assertLookupCacheAssignment, issueLookupCacheKey, lookupPilotWatchdog, validLookupPilotTimeout } from "./continuity-lookup-pilot-runtime.mjs";
 import { digest } from "./continuity-dataset.mjs";
 import { durable } from "./continuity-holdout-workflow.mjs";
 import { externalDirectory } from "./continuity-holdout-files.mjs";
@@ -35,7 +35,7 @@ async function fauxConsume(authorization, pilot, root, identity, lease) {
   pilotNeed(Object.keys(authorization).filter(k => k !== "fixtureEndpoint").sort().join() === "authorizationId,outputRoot,pilotSha256,scenarios,schema,timeoutMs"
     && Array.isArray(authorization.scenarios) && authorization.scenarios.every(s => ["settled", "two_rounds", "wrong", "empty", "empty_two_rounds", "lost", "own_abort_after_send", "integrity_stop", "auth", "quota", "input_refusal", "request_limit"].includes(s))
     && pilotId(authorization.authorizationId) && authorization.outputRoot === root && authorization.pilotSha256 === digest(pilot)
-    && Number.isSafeInteger(authorization.timeoutMs) && authorization.timeoutMs > 0 && authorization.timeoutMs <= pilot.descriptor.deadlines.childWatchdogMs,
+    && validLookupPilotTimeout(authorization.timeoutMs, pilot.descriptor.deadlines.childWatchdogMs),
   "lookup_pilot_faux_required");
   pilotNeed((await readdir(root)).every(n => n === "controller-lock.sqlite"), "lookup_pilot_resume_forbidden");
   const parent = join(dirname(root), ".lookup-faux-consumed-v1");
@@ -443,5 +443,7 @@ export async function runLookupPilot(options) {
 /** Non-authorizing preparation parent; never initializes a paid/faux journal. */
 export async function runLookupPreparationSlot(journal, pilot, root, index) {
   pilotNeed(journal.snapshot().schema === LOOKUP_PREFLIGHT && (await readPilotPrivate(pilotStatePath(root))).schema === LOOKUP_PREFLIGHT, "lookup_preparation_invalid");
-  return runSlot(journal, pilot, { timeoutMs: pilot.descriptor.deadlines.childWatchdogMs }, root, index, true);
+  const timeoutMs = journal.snapshot().timeoutMs;
+  pilotNeed(validLookupPilotTimeout(timeoutMs, pilot.descriptor.deadlines.childWatchdogMs), "lookup_preparation_invalid");
+  return runSlot(journal, pilot, { timeoutMs }, root, index, true);
 }
