@@ -28,7 +28,11 @@ export function installLookupProofScope(policy) {
   const git = policy.mode === "configured" ? executable("git", process.env) : null;
   function invocation(command, args, options = {}, family) {
     if (!Array.isArray(args) || options.shell) return deny("subprocess");
-    const env = {...(options.env ?? process.env), HOME: policy.testHome};
+    const env = {...(options.env ?? process.env)};
+    // Production POSIX identity uses PATH/LANG/LC_ALL/TZ only. Add the approved
+    // test HOME without replacing its locale, and retain per-role fork homes.
+    if (!Object.hasOwn(env, "HOME")) env.HOME = policy.testHome;
+    if (env.HOME !== policy.testHome && !(policy.mode === "configured" && family === "fork" && within(policy.ownedRoot, env.HOME ?? "/"))) return deny("subprocess");
     const binary = executable(command, env), same = expected => JSON.stringify(args) === JSON.stringify(expected);
     let kind;
     if (binary === ps && args.length === 4 && args[0] === "-p" && /^[1-9]\d*$/u.test(args[1]) && args[2] === "-o" && args[3] === "lstart=") kind = "identity";
@@ -43,20 +47,30 @@ export function installLookupProofScope(policy) {
         const tail = args.slice(prefix.length), fixed = [["rev-parse", "HEAD"], ["rev-parse", "--show-toplevel"], ["status", "--porcelain=v1"], ["status", "--porcelain=v1", "--untracked-files=all", "--ignore-submodules=none"], ["ls-files", "-v", "-z"], ["ls-tree", "-rz", "--full-tree", "HEAD"], ["show", "HEAD:packages/conversation/src/continuity/render-fit.ts"]];
         if (policy.codeRoots?.includes(root) && JSON.stringify(args.slice(0, prefix.length)) === JSON.stringify(prefix) && fixed.some(x => JSON.stringify(x) === JSON.stringify(tail)) && env.GIT_CONFIG_GLOBAL === "/dev/null" && env.GIT_CONFIG_NOSYSTEM === "1") kind = "git";
       }
-      if (family === "fork" && policy.forkPaths?.includes(resolve(command))) kind = "fork";
+      if (family === "fork" && policy.forkPaths?.includes(resolve(command)) && args.length === 0 && options.detached === true
+        && options.cwd === resolve(command, "../../..") && JSON.stringify(options.stdio) === JSON.stringify(["ignore", "ignore", "pipe", "ipc"])
+        && ["HOME", "XDG_CACHE_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME"].every(key => env[key] === env.HOME)
+        && env.GIT_CONFIG_GLOBAL === "/dev/null" && env.GIT_CONFIG_NOSYSTEM === "1") kind = "fork";
     }
     if (!kind) return deny("subprocess");
     const argv = kind === "identity" && args[0] === "-p" ? ["-p", "<pid>", ...args.slice(2)] : args;
-    allowed.push({pid: process.pid, threadId: workers.threadId, executable: binary, argv, family, kind, shell: false, home: env.HOME, count: 1, environmentKeys: Object.keys(env).sort(),
-      ...(kind === "git" ? {globalConfig: env.GIT_CONFIG_GLOBAL, systemConfig: "disabled"} : {})});
+    const row = {pid: process.pid, threadId: workers.threadId, executable: kind === "fork" ? node : binary, argv: kind === "fork" ? [resolve(command), ...args] : argv, family, kind, shell: false, home: env.HOME, count: 1, environmentKeys: Object.keys(env).sort(),
+      ...(["git", "fork"].includes(kind) ? {globalConfig: env.GIT_CONFIG_GLOBAL, systemConfig: "disabled"} : {})};
+    const previous = allowed.find(x => JSON.stringify({...x, count: 1}) === JSON.stringify(row));
+    if (previous) previous.count++; else allowed.push(row);
     return {kind, options: {...options, env, shell: false}};
   }
-  const preload = () => { const url = new URL(import.meta.url); url.searchParams.set("policy", Buffer.from(JSON.stringify(policy)).toString("base64url")); return url.href; };
+  const preload = (overrides = {}) => { const url = new URL(policy.preloadUrl ?? import.meta.url); url.searchParams.set("policy", Buffer.from(JSON.stringify({...policy, ...overrides, origins: [...ports].map(port => `http://127.0.0.1:${port}`)})).toString("base64url")); return url.href; };
+  const imports = (args, extra) => { const result = []; for (let i = 0; i < args.length; i++) { const arg = args[i], value = arg === "--import" ? args[i + 1] : arg.startsWith("--import=") ? arg.slice(9) : null; if (value && /lookup-(?:proof-scope|configured-preload)\.mjs/u.test(value)) {if (arg === "--import") i++; continue;} result.push(arg); } return [...result, "--import", preload(extra)]; };
   for (const family of ["spawn", "spawnSync", "execFile", "execFileSync", "fork"]) patch(child, family, original => function (command, args = [], options = {}, callback) {
     if (typeof options === "function") {callback = options; options = {};}
     const call = invocation(command, args, options, family);
-    if (call.kind === "protocol") args = ["--import", preload(), ...args];
-    if (family === "fork") call.options.execArgv = [...(options.execArgv ?? process.execArgv), "--import", preload()];
+    if (call.kind === "protocol") args = ["--import", preload({role: "verification"}), ...args];
+    if (family === "fork") {
+      const role = command.endsWith("continuity-lookup-preparation-child.mjs") ? "preparation" : "probe";
+      policy.onFork?.({command, args, options: call.options, role});
+      call.options.execArgv = imports(options.execArgv ?? process.execArgv, {testHome: call.options.env.HOME, role});
+    }
     spawning++;
     try {return callback ? original.call(this, command, args, call.options, callback) : original.call(this, command, args, call.options);}
     finally {spawning--;}
@@ -100,7 +114,7 @@ export function installLookupProofScope(policy) {
   patch(workers, "Worker", NativeWorker => class extends NativeWorker {
     constructor(entry, options = {}) {
       // Each level installs this same wrapper; nested threads cannot drop the preload.
-      super(entry, {...options, execArgv: [...(options.execArgv ?? process.execArgv), "--import", preload()]});
+      super(entry, {...options, execArgv: imports(options.execArgv ?? process.execArgv, policy.mode === "configured" ? {role: "worker", parentRole: policy.role} : {})});
     }
   });
   syncBuiltinESMExports();
