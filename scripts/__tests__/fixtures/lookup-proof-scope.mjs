@@ -40,7 +40,7 @@ export function installLookupProofScope(policy) {
     if (binary === sysctl && same(["-n", "kern.boottime"]) && new Error().stack.includes("/packages/conversation/dist/process-incarnation.js")) kind = "legacy-identity";
     // Legacy identity is allowed only from the actual production identity module.
     if (policy.mode === "configured") {
-      if (binary === ps && same(["-axo", "pid=,pgid=,lstart=,stat="])) kind = "group";
+      if (binary === ps && (same(["-axo", "pid=,pgid=,lstart=,stat="]) || same(["-axo", "pid=,pgid=,stat="]))) kind = "group";
       if (binary === node && args.length === 2 && args[1] === "--lookup-protocol" && policy.codeRoots?.some(root => args[0] === join(root, "scripts/continuity-benchmark.mjs"))) kind = "protocol";
       if (binary === git) {
         const root = args[2], prefix = ["--no-optional-locks", "-C", root, "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "gc.auto=0", "-c", "maintenance.auto=false"];
