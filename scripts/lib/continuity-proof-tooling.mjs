@@ -5,13 +5,14 @@ import { createHash } from "node:crypto";
 import { parse } from "yaml";
 
 const hash = bytes => createHash("sha256").update(bytes).digest("hex");
+const canonical = value => value && typeof value === "object" ? (Array.isArray(value) ? value.map(canonical) : Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical(value[key])]))) : value;
 const need = ok => {if (!ok) throw Error("lookup_dependency_lock_mismatch");};
 export async function lookupDependencyWitness(root) {
   const lockBytes = await readFile(join(root, "pnpm-lock.yaml")), installed = await readFile(join(root, "node_modules/.pnpm/lock.yaml"));
   need(lockBytes.equals(installed));
   const lock = parse(lockBytes.toString()), manifest = JSON.parse(await readFile(join(root, "package.json")));
   const workspace = parse(await readFile(join(root, "pnpm-workspace.yaml"), "utf8"));
-  need(JSON.stringify(lock.overrides ?? {}) === JSON.stringify(workspace.overrides ?? {}));
+  need(JSON.stringify(canonical(lock.overrides ?? {})) === JSON.stringify(canonical(workspace.overrides ?? {})));
   const importer = lock.importers["."], links = [];
   for (const group of ["dependencies", "devDependencies", "optionalDependencies"]) {
     need(JSON.stringify(Object.keys(manifest[group] ?? {}).sort()) === JSON.stringify(Object.keys(importer[group] ?? {}).sort()));

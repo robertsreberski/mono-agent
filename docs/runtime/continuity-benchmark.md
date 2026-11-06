@@ -1588,6 +1588,8 @@ uses an unrecognized tool response so History's eight-call meter does not mask
 the configured runtime's ten-turn ceiling; the guard's independent eleventh-call
 refusal remains separately unit-tested. No runtime limit is enlarged.
 
+The full proof requires macOS (Darwin) and Node **24.18.0 exactly**.
+
 ```sh
 LOOKUP_CONFIGURED_PROOF=full node scripts/proofs/lookup-configured-full.mjs
 CI=1 LOOKUP_CONFIGURED_PROOF=full node scripts/proofs/lookup-configured-full.mjs
@@ -1604,7 +1606,9 @@ evidence, including incomplete, failed or single-case output; verification requi
 one normal and one CI run at distinct paths. Loader hooks check paths and observe
 unmodified module bytes. Recursive dependency-leaf identity/size/nanosecond time
 witnesses surround both fixture builds and each complete run. Ordinary installed
-dependency links are reused read-only: no SDK copies or resolution aliases.
+dependency links are reused read-only: no SDK copies or resolution aliases. The
+webapp build uses privately cloned nested dependencies and bypasses its install
+step; both registered source trees receive the same offline build-only change.
 Per-slot wall, process high-water RSS, retained totals and post-probe minus
 post-restore disk deltas (logical-or-allocated bytes) are
 instrumented measurements, not uninstrumented runtime guarantees. Killed-process

@@ -220,3 +220,14 @@ it.each([new DataView(new ArrayBuffer(4)), new Uint16Array(2), new Int8Array(2),
   await expect(send(endpoint, {...request(), body})).rejects.toMatchObject({code: "lookup_body_type_forbidden"});
   expect(network).not.toHaveBeenCalled();
 });
+
+it("refuses extra normalized keys introduced while the endpoint is captured", async () => {
+  const send = await cap.createLookupRealSend(a, safety), bad = request();
+  const url = {toString() {bad.dispatcher = {}; return endpoint;}};
+  await expect(send(url, bad)).rejects.toThrow("lookup_pilot_capability_invalid"); expect(network).not.toHaveBeenCalled();
+});
+it("does not copy a dispatcher added during the real method snapshot", async () => {
+  const send = await cap.createLookupRealSend(a, safety), bad = request();
+  Object.defineProperty(bad, "method", {enumerable: true, get() {bad.dispatcher = {}; return "POST";}});
+  await send(endpoint, bad); expect(network).toHaveBeenCalledOnce(); expect(network.mock.calls[0][1]).not.toHaveProperty("dispatcher");
+});

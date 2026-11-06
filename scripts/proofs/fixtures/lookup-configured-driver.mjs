@@ -38,6 +38,7 @@ async function arrival(request, response) {
   assert.deepEqual(claim.controller, state.controller); assert.equal(state.controller.pid, process.pid); assert.equal(state.stop, null); assert.equal(planned.eligible, true);
   assert.equal(claim.runId, state.runId); assert.equal(claim.controllerEpoch, state.epoch); assert.equal(claim.binding, digest(pilot));
   assert.equal(hold.consumed, true); assert.equal(hold.revoked, false); assert.equal(hold.settlement, null); assert.equal(hold.payloadDigest, sha(bytes));
+  assert.equal(request.headers["chatgpt-account-id"], "FAKE-TEST-ACCOUNT-NOT-REAL");
   assert.equal(payload.prompt_cache_key, slot.cacheKey); assert.equal(request.headers["session-id"], slot.cacheKey); assert.equal(request.headers["x-client-request-id"], slot.cacheKey);
   assert.equal(request.method, "POST"); assert.ok(slot.preparation.exited); assert.ok(slot.preparation.treeDigest); assert.ok(payload.tools.length);
   const number = arrivals.filter(a => a.slotId === slot.slotId).length + 1;

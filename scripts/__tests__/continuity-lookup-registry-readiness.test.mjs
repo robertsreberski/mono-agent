@@ -7,7 +7,7 @@ import { lookupRegistryReadiness } from "../lib/continuity-lookup-registry-readi
 
 const dirs = [];
 async function fixture() {const dir = await mkdtemp(join(realpathSync(tmpdir()), "lookup-registry-check-")); dirs.push(dir); return dir;}
-afterEach(async () => {vi.restoreAllMocks(); vi.doUnmock("node:os"); vi.resetModules(); for (const dir of dirs.splice(0)) await rm(dir, {recursive: true, force: true});});
+afterEach(async () => {vi.restoreAllMocks(); vi.doUnmock("node:os"); vi.doUnmock("node:fs/promises"); vi.resetModules(); for (const dir of dirs.splice(0)) await rm(dir, {recursive: true, force: true});});
 it("checks a missing registry parent without creating it or changing its nearest ancestor", async () => {
   const home = await fixture(), before = await lstat(home, {bigint: true});
   expect(await lookupRegistryReadiness(home)).toEqual({ready: true, parentExists: false, checked: 0, missing: 5, code: "lookup_registry_parent_will_be_created"});
@@ -21,6 +21,7 @@ it.each([0o700, 0o755, 0o722])("checks existing registry parent permissions read
 });
 it("refuses aliases and foreign-owned ancestors without creating registry files", async () => {
   const home = await fixture(); await symlink(home, join(home, "alias")); expect((await lookupRegistryReadiness(join(home, "alias"))).ready).toBe(false);
+  await mkdir(join(home, ".local/state/mono-agent/lookup-pilot/consumed-v1"), {recursive: true, mode: 0o700});
   vi.doMock("node:os", async original => ({...await original(), userInfo: () => ({uid: -2, homedir: home})}));
   const module = await import("../lib/continuity-lookup-registry-readiness.mjs?foreign");
   expect((await module.lookupRegistryReadiness(home)).ready).toBe(false);
@@ -38,4 +39,14 @@ it("refuses a consumed-directory alias", async () => {
   const home = await fixture(), parent = join(home, ".local/state/mono-agent/lookup-pilot");
   await mkdir(parent, {recursive: true, mode: 0o700}); await symlink(home, join(parent, "consumed-v1"));
   expect((await lookupRegistryReadiness(home)).ready).toBe(false);
+});
+
+it.each(["missing", "lookup-pilot", "consumed-v1"])("requires effective access at the %s registry boundary", async boundary => {
+  vi.resetModules(); const home = await fixture();
+  if (boundary !== "missing") await mkdir(join(home, ".local/state/mono-agent/lookup-pilot/consumed-v1"), {recursive: true, mode: 0o700});
+  const denied = boundary === "missing" ? home : join(home, ".local/state/mono-agent/lookup-pilot", ...(boundary === "consumed-v1" ? [boundary] : []));
+  const calls = [];
+  vi.doMock("node:fs/promises", async original => {const actual = await original(); return {...actual, access: async (path, mode) => {calls.push([path, mode]); if (path === denied) throw Object.assign(Error("fictional effective denial"), {code: "EACCES"}); return actual.access(path, mode);}};});
+  const {lookupRegistryReadiness: check} = await import("../lib/continuity-lookup-registry-readiness.mjs");
+  expect((await check(home)).ready).toBe(false); expect(calls.some(([path]) => path === denied)).toBe(true);
 });

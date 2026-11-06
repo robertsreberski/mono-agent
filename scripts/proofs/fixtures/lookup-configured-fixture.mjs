@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { dependencyLeafSnapshot } from "../../__tests__/fixtures/lookup-leaf-witness.mjs";
 import fs from "node:fs/promises";
 import { execFileSync } from "node:child_process";
-import { withOfflineBuilds } from "../../__tests__/fixtures/lookup-offline-builds.mjs";
+import { withOfflineBuilds, OFFLINE_FLAGS } from "../../__tests__/fixtures/lookup-offline-builds.mjs";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { syntheticContext, fixtureGit, fixtureCommit, fixtureLookupPolicy } from "../../__tests__/fixtures/holdout-synthetic.mjs";
@@ -31,8 +31,9 @@ async function linkDependencies(source, target) {
     }
   }
 }
+export const configuredDependencyRoots = root => [join(root, "node_modules"), join(root, "packages/web/webapp/node_modules")];
 export async function fullConfiguredFixture(root, base) {
-  const leaves = [join(root, "node_modules")], leafBefore = await dependencyLeafSnapshot(leaves);
+  const leaves = configuredDependencyRoots(root), leafBefore = await dependencyLeafSnapshot(leaves);
   const previous = {...process.env}, home = join(base, "build-home"), commands = [];
   await fs.mkdir(home);
   for (const key of Object.keys(process.env)) if (key.startsWith("GIT_") || /(?:_API_KEY|_TOKEN)$/u.test(key)) delete process.env[key];
@@ -55,7 +56,20 @@ export async function fullConfiguredFixture(root, base) {
     const source = await fs.readFile(join(f.repo, implementation), "utf8");
     if (!source.includes('const guidance = conversationHistoryAvailable ? PACK_RETRIEVAL_GUIDANCE : "";')) throw Error("proof_guidance_baseline_changed");
     await fs.writeFile(join(f.repo, implementation), source.replace(", PACK_RETRIEVAL_GUIDANCE }", " }").replace("conversationHistoryAvailable = false): ContinuityPack", "_conversationHistoryAvailable = false): ContinuityPack").replace('const guidance = conversationHistoryAvailable ? PACK_RETRIEVAL_GUIDANCE : "";', 'const guidance = "";'));
-    for (const path of [f.repo, pack]) {await linkDependencies(root, path); fixtureGit(path, ["init", "-q"]); fixtureCommit(path);}
+    for (const path of [f.repo, pack]) {
+      // The real app closure includes web. Its explicit install step is not
+      // permitted in a shared-dependency proof; retain the actual build only.
+      const manifestPath = join(path, "packages/web/package.json"), manifest = JSON.parse(await fs.readFile(manifestPath));
+      const install = "pnpm --dir webapp install --frozen-lockfile && ";
+      assert.ok(manifest.scripts.build.startsWith(install));
+      manifest.scripts.build = manifest.scripts.build.slice(install.length).replaceAll("pnpm ", `pnpm ${OFFLINE_FLAGS.join(" ")} `);
+      await fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
+      await fs.writeFile(join(path, ".npmrc"), "offline=true\nverify-deps-before-run=false\nmanage-package-manager-versions=false\n");
+      // APFS copy-on-write clone: nested bundler caches and install metadata
+      // are private, and relative dependency symlinks keep the original layout.
+      execFileSync("/bin/cp", ["-cR", join(root, "packages/web/webapp/node_modules"), join(path, "packages/web/webapp/node_modules")]);
+      await linkDependencies(root, path); fixtureGit(path, ["init", "-q"]); fixtureCommit(path);
+    }
     const checkouts = Object.fromEntries([["R0", f.repo], ["Rpack", pack]].map(([id, path]) => [id, {path, revision: fixtureGit(path, ["rev-parse", "HEAD"]).trim()}]));
     const load = name => import(pathToFileURL(join(f.repo, "scripts/lib", `continuity-lookup-${name}.mjs`)).href);
     const roles = await load("roles"), module = await load("pilot");
@@ -80,6 +94,6 @@ export async function fullConfiguredFixture(root, base) {
     const roundsPath = join(f.inputs, "lookup-rounds-policy.json"); await fs.writeFile(roundsPath, JSON.stringify(roundsPolicy));
     const roundsPilot = await register(roundsPath, roundsPolicy);
     assert.deepEqual(await dependencyLeafSnapshot(leaves), leafBefore, "fixture build mutated shared dependency leaves");
-    return {base, repo: f.repo, pack, home, pilot, roundsPilot, commands, dependencyLeaves: {count: leafBefore.length, unchanged: true}};
+    return {base, repo: f.repo, pack, home, pilot, roundsPilot, commands, webBuild: {installBypassed: true, nestedDependencies: "private APFS clone", flags: OFFLINE_FLAGS}, dependencyLeaves: {count: leafBefore.length, unchanged: true}};
   } finally {assert.deepEqual(await dependencyLeafSnapshot(leaves), leafBefore, "fixture build mutated shared dependency leaves"); for (const key of Object.keys(process.env)) if (!(key in previous)) delete process.env[key]; Object.assign(process.env, previous);}
 }

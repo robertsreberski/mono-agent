@@ -38,6 +38,10 @@ it("verifies dependency lock/importer/links read-only and rejects mismatches", a
     await writeFile(join(root, "fixture-dep/package.json"), JSON.stringify({name: "fictional-dep", version: "1.0.0"}));
     await symlink(join(root, "fixture-dep"), join(root, "node_modules/fictional-dep"));
     const before = await lookupDependencyWitness(root); expect(await lookupDependencyWitness(root)).toEqual(before); expect(before.links).toHaveLength(1);
+    const reordered = JSON.parse(lock); reordered.overrides = {"fictional-a": "1", "fictional-b": "2"};
+    await writeFile(join(root, "pnpm-lock.yaml"), JSON.stringify(reordered)); await writeFile(join(root, "node_modules/.pnpm/lock.yaml"), JSON.stringify(reordered));
+    await writeFile(join(root, "pnpm-workspace.yaml"), JSON.stringify({overrides: {"fictional-b": "2", "fictional-a": "1"}}));
+    await expect(lookupDependencyWitness(root)).resolves.toHaveProperty("links");
     await writeFile(join(root, "fixture-dep/package.json"), JSON.stringify({name: "fictional-dep", version: "2.0.0"}));
     await expect(lookupDependencyWitness(root)).rejects.toThrow("lookup_dependency_lock_mismatch");
     await writeFile(join(root, "node_modules/.pnpm/lock.yaml"), "{}");

@@ -6,7 +6,7 @@ import { tmpdir, userInfo } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import assert from "node:assert/strict";
-import { fullConfiguredFixture } from "./fixtures/lookup-configured-fixture.mjs";
+import { fullConfiguredFixture, configuredDependencyRoots } from "./fixtures/lookup-configured-fixture.mjs";
 import { lookupDependencyWitness } from "../lib/continuity-proof-tooling.mjs";
 import { dependencyLeafSnapshot } from "../__tests__/fixtures/lookup-leaf-witness.mjs";
 import { assertConfiguredEvidence, assertConfiguredEvidencePair } from "./fixtures/lookup-configured-evidence.mjs";
@@ -30,7 +30,7 @@ if (verify !== -1) {
   const evidences = await Promise.all(paths.map(json)); assertConfiguredEvidencePair(evidences);
   for (const evidence of evidences) {
     assert.deepEqual(evidence.binding, await binding(), "proof evidence invalidated by current tree/runtime");
-    const leaves = await dependencyLeafSnapshot([join(ROOT, "node_modules")]);
+    const leaves = await dependencyLeafSnapshot(configuredDependencyRoots(ROOT));
     assert.deepEqual(evidence.dependencyLeaves, {count: leaves.length, sha256: sha(JSON.stringify(leaves)), unchanged: true}, "dependency leaves changed");
     assert.deepEqual(evidence.dependencyWitness, await lookupDependencyWitness(ROOT), "installed dependency metadata changed");
     for (const row of evidence.dependenciesLoaded) {
@@ -42,12 +42,13 @@ if (verify !== -1) {
 } else {
   if (process.env.LOOKUP_CONFIGURED_PROOF !== "full") throw Error("LOOKUP_CONFIGURED_PROOF=full is required; this proof never silently skips");
   assert.equal(process.version, "v24.18.0"); assert.equal(process.platform, "darwin", "approved subprocess policy is Darwin-specific");
-  const sourceBinding = await binding(), depsBefore = await lookupDependencyWitness(ROOT), leafBefore = await dependencyLeafSnapshot([join(ROOT, "node_modules")]);
+  const sourceBinding = await binding(), depsBefore = await lookupDependencyWitness(ROOT), leafBefore = await dependencyLeafSnapshot(configuredDependencyRoots(ROOT));
   const selected = process.argv.find(arg => arg.startsWith("--case="))?.slice(7);
   const cases = selected ? [selected] : ["rounds", "cap", "limit", "sdk", "empty", "tier", "kill", "late"];
   assert.ok(cases.every(name => ["smoke", "rounds", "cap", "limit", "sdk", "empty", "tier", "kill", "late"].includes(name)), "unknown proof case");
   const output = resolve(process.env.LOOKUP_PROOF_OUTPUT ?? join(ROOT, `.worklab-tmp/lookup-configured-full-${Object.hasOwn(process.env, "CI") ? "ci" : "normal"}.json`));
   assert.ok(output.startsWith(join(ROOT, ".worklab-tmp/")), "evidence must remain in the owned ignored directory");
+  await fs.mkdir(dirname(output), {recursive: true, mode: 0o700});
   const base = process.env.LOOKUP_PROOF_FIXTURE ? await fs.realpath(process.env.LOOKUP_PROOF_FIXTURE) : await fs.realpath(await fs.mkdtemp(join(tmpdir(), "lookup-configured-proof-")));
   let fixture, settingsPath = join(base, "fixture.json");
   if (process.env.LOOKUP_PROOF_FIXTURE) {fixture = await json(settingsPath); assert.deepEqual(fixture.sourceBinding, sourceBinding, "stale registered fixture");}
@@ -175,9 +176,9 @@ if (verify !== -1) {
       witnesses.push(...rows); results.push({...projected, metrics, wallMs: Date.now() - startedAt});
       await fs.writeFile(`${output}.checkpoint`, JSON.stringify({base, sourceBinding, completed: results.map(r => r.case)}));
     }
-    assert.deepEqual(await dependencyLeafSnapshot([join(ROOT, "node_modules")]), leafBefore, "D mutated shared dependency leaves");
+    assert.deepEqual(await dependencyLeafSnapshot(configuredDependencyRoots(ROOT)), leafBefore, "D mutated shared dependency leaves");
     assert.deepEqual(await binding(), sourceBinding); assert.deepEqual(await lookupDependencyWitness(ROOT), depsBefore);
-    const report = {schema: "lookup-configured-full-proof-v1", complete: !selected, ci: Object.hasOwn(process.env, "CI"), binding: sourceBinding, dependencyWitness: depsBefore, dependencyLeaves: {count: leafBefore.length, sha256: sha(JSON.stringify(leafBefore)), unchanged: true}, results, witnesses, dependenciesLoaded: [...dependenciesLoaded.values()], fixtureBuilds: fixture.commands, nativeTopology: "ineligible; no native dispatch; no admitted native proof", limits: ["JS API canary, not OS/native-I/O sandbox", "SQLite connection paths checked; SQL ATTACH/native loader not sandboxed", "kill-case RSS is last observed process high-water mark", "faux data/feasibility/provider usage, not evaluation or real authorization"]};
+    const report = {schema: "lookup-configured-full-proof-v1", complete: !selected, ci: Object.hasOwn(process.env, "CI"), binding: sourceBinding, dependencyWitness: depsBefore, dependencyLeaves: {count: leafBefore.length, sha256: sha(JSON.stringify(leafBefore)), unchanged: true}, results, witnesses, dependenciesLoaded: [...dependenciesLoaded.values()], fixtureBuilds: fixture.commands, fixtureProvisioning: fixture.webBuild, nativeTopology: "ineligible; no native dispatch; no admitted native proof", limits: ["JS API canary, not OS/native-I/O sandbox", "SQLite connection paths checked; SQL ATTACH/native loader not sandboxed", "kill-case RSS is last observed process high-water mark", "faux data/feasibility/provider usage, not evaluation or real authorization"]};
     if (!selected) assertConfiguredEvidence(report);
     await fs.writeFile(output, JSON.stringify(report), {mode: 0o600}); delivered = true; console.log(JSON.stringify({complete: report.complete, cases, output, base}));
   } catch (error) {
@@ -185,7 +186,7 @@ if (verify !== -1) {
     throw error;
   } finally {
     assert.deepEqual(await lookupDependencyWitness(ROOT), depsBefore);
-    assert.deepEqual(await dependencyLeafSnapshot([join(ROOT, "node_modules")]), leafBefore, "D mutated shared dependency leaves");
+    assert.deepEqual(await dependencyLeafSnapshot(configuredDependencyRoots(ROOT)), leafBefore, "D mutated shared dependency leaves");
     // Debug retains a source-bound fixture for investigation; full delivery cleans it.
     if (delivered && !selected && !process.env.LOOKUP_PROOF_KEEP) await fs.rm(base, {recursive: true, force: true});
   }

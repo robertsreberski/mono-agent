@@ -69,9 +69,9 @@ it.each(["method", "redirect"])("rejects a mutating enumerable %s accessor after
   const {createLookupFauxSend} = await import("../lib/continuity-lookup-faux-capability.mjs"), send = await createLookupFauxSend(a, {});
   const good = {method: "POST", body, headers: {"session-id": "assigned", "x-client-request-id": "assigned"}, redirect: "error"}, bad = {...good};
   let reads = 0;
-  Object.defineProperty(bad, key, {enumerable: true, get: () => ++reads <= (key === "method" ? 1 : 2) ? good[key] : key === "method" ? "PUT" : "follow"});
+  Object.defineProperty(bad, key, {enumerable: true, get: () => ++reads === 1 ? (key === "redirect" ? undefined : good[key]) : key === "method" ? "PUT" : "follow"});
   await expect(send("https://fixture.invalid/codex/responses", bad)).rejects.toThrow("lookup_pilot_faux_required");
-  expect(fetch).not.toHaveBeenCalled(); expect(reads).toBe(key === "method" ? 2 : 3);
+  expect(fetch).not.toHaveBeenCalled(); expect(reads).toBe(2);
   await send("https://fixture.invalid/codex/responses", good);
   expect(fetch).toHaveBeenCalledOnce(); expect(fetch.mock.calls[0][1]).toMatchObject({method: "POST", redirect: "error"});
 });
@@ -99,5 +99,16 @@ it.each([new DataView(new ArrayBuffer(4)), new Uint16Array(2), new Int8Array(2),
   const a = {index: 0, outputRoot: "/fictional/output", pilot: {registration: {codes: {R0: {path: "/fictional/root"}}}}, slot: {code: "R0"}, plan: {}, roleRequest: {}};
   const send = await createLookupFauxSend(a, {});
   await expect(send("https://fixture.invalid/codex/responses", {method: "POST", body})).rejects.toMatchObject({code: "lookup_body_type_forbidden"});
+  expect(fetch).not.toHaveBeenCalled();
+});
+
+it.each(["dispatcher", "credentials"])("refuses %s introduced by a method accessor", async key => {
+  const body = Buffer.from("fictional guarded body"), now = Date.now();
+  state.deadlineAt = now + 60000; state.slots[0] = {terminal: null, startedAt: now, holds: [{consumed: true, permitId: "fictional-permit", payloadDigest: createHash("sha256").update(body).digest("hex")}]};
+  const a = {outputRoot: "/fictional/output", index: 0, slot: {code: "R0"}, cacheKey: "assigned", runId: "fictional-run", slotId: "fictional-slot", plan: {}, roleRequest: {}, pilot: {registration: {codes: {R0: {path: "/fictional/root"}}}, descriptor: {deadlines: {deadlineMs: 60000}}}};
+  const {createLookupFauxSend} = await import("../lib/continuity-lookup-faux-capability.mjs"), send = await createLookupFauxSend(a, {});
+  const bad = {body, headers: {"session-id": "assigned", "x-client-request-id": "assigned"}};
+  Object.defineProperty(bad, "method", {enumerable: true, get() {bad[key] = {}; return "POST";}});
+  await expect(send("https://fixture.invalid/codex/responses", bad)).rejects.toThrow("lookup_pilot_faux_required");
   expect(fetch).not.toHaveBeenCalled();
 });
