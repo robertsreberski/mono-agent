@@ -47,7 +47,6 @@ describe("keyboard visual viewport", () => {
     dispose?.();
     dispose = undefined;
     vi.restoreAllMocks();
-    Reflect.deleteProperty(document, "scrollingElement");
     vi.unstubAllGlobals();
   });
 
@@ -119,22 +118,13 @@ describe("keyboard visual viewport", () => {
     expect(active()).toBe(false);
   });
 
-  it("resets document scrolling only while active, never nested scroll owners", () => {
-    const scroller = document.createElement("div");
-    const transcript = document.createElement("div");
-    transcript.scrollTop = 70;
-    Object.defineProperty(document, "scrollingElement", { configurable: true, value: scroller });
+  it("stays active on a panned tablet when layout and visual heights both shrink", () => {
+    vi.spyOn(root, "clientHeight", "get").mockReturnValue(786);
     dispose = installVisualViewport();
-    scroller.scrollTop = 25;
-    flush();
-    expect(scroller.scrollTop).toBe(25);
     resize(786, 340);
-    expect(scroller.scrollTop).toBe(0);
-    scroller.scrollTop = 40;
-    window.dispatchEvent(new Event("scroll"));
-    flush();
-    expect(scroller.scrollTop).toBe(0);
-    expect(transcript.scrollTop).toBe(70);
+    expect(active()).toBe(true);
+    expect(root.style.getPropertyValue("--app-viewport-height")).toBe("786px");
+    expect(root.style.getPropertyValue("--app-viewport-top")).toBe("340px");
   });
 
   it("cancels pending work, removes all listeners and clears styles on cleanup", () => {

@@ -1563,6 +1563,8 @@ not a contracts package install or dist tree. Normal local browser tests still u
 On touch devices at normal zoom, a keyboard-reduced or panned visual viewport
 pins the shell and input overlays to its height and top offset. Mobile chat
 inherits that box; no keyboard-height subtraction is applied a second time.
+Document scrolling remains browser-owned: the tracker only follows the reported
+visual viewport, without scroll resets that could undo WebKit's keyboard pan.
 Without the keyboard (or during pinch zoom), the existing `100dvh` layout stays
 browser-owned. `visual-viewport.test.ts` covers activation/cleanup;
 `Dashboard.browser.test.tsx` checks synthetic keyboard geometry on tablet and

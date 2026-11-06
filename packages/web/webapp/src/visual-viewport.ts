@@ -24,11 +24,9 @@ export function installVisualViewport(): () => void {
       return;
     }
 
-    // WebKit can scroll the document as well as pan the visual viewport during
-    // focus. Only undo document scrolling: transcript/settings scroll stays owned
-    // by its own scroller. Read offsetTop afterwards, in case that reset moves it.
-    const scroller = document.scrollingElement;
-    if (scroller && scroller.scrollTop !== 0) scroller.scrollTop = 0;
+    // Follow WebKit's reported box without writing document scroll. Resetting
+    // scroll can erase the offset that keeps this active after a layout resize,
+    // making the shell and browser repeatedly undo each other's adjustments.
     root.style.setProperty("--app-viewport-height", `${viewport.height}px`);
     root.style.setProperty("--app-viewport-top", `${viewport.offsetTop}px`);
     root.classList.add("keyboard-viewport");
