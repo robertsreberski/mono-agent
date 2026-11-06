@@ -2,8 +2,9 @@
 
 ## Unreleased
 
-- Keep tablet console navigation and composer controls comfortable to tap while
-  reclaiming empty space around conversations on touch screens above phone size.
+- Fix installed iOS/iPadOS console header blur without extra top padding, and
+  improve tablet touch targets and conversation spacing. Remove and re-add
+  existing Home Screen installs to adopt the opaque system status bar.
 
 - Recheck normalized faux lookup transport methods and redirects before sending,
   rejecting request accessors that change after initial validation.

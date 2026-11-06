@@ -16,30 +16,27 @@
       distinguishable on the same home screen. A constant here would name them
       both "mono-agent". iOS 16.4+ takes the name from the manifest.
 
-      The status bar is `black-translucent`, so the console -- not the system --
-      paints the band behind the clock. Under `default` that band is drawn above
-      the web layer and is unreachable from the document: WebKit 301994 reports
-      it as an opaque strip whose color is sampled once and then cached until the
-      app is relaunched, so a theme change leaves a mismatched bar that no CSS
-      here can repair. `black-translucent` extends the document under the strip
-      instead. A fixed, full-width `.status-bar-surface` fills the inset, and
-      every header reserves the same `env(safe-area-inset-top)` with
-      `viewport-fit=cover`. WebKit's `LocalFrameView::fixedContainerEdges`
-      hit-tests the top midpoint at y=4; a fixed box covering >=90% of the
-      viewport width there gives the status bar its header colour and hides
-      the installed app's soft scroll-edge blur.
+      Use the opaque system status bar (`default`): iOS/iPadOS 27's hard
+      scroll-edge blur cannot be suppressed under `black-translucent`. With
+      `default` the web view starts below the system bar instead of extending
+      behind it. A real fixed, full-width, opaque `.status-bar-surface` at the
+      document's top edge drives WebKit's colour extension into the system bar
+      and suppresses the scroll-edge effect without extra header clearance.
+      WebKit's `LocalFrameView::fixedContainerEdges` probes the top midpoint at
+      y=4; the standalone strip is at least 6px tall even with a zero safe inset.
+      Headers retain `env(safe-area-inset-top)` for tabs and older installs that
+      still lay out beneath system UI, with a padding floor above the strip.
 
-      Two caveats this cannot fix from here. iOS reads this meta at INSTALL time
-      (WebKit 316008): an already-installed console keeps its old strip until it
-      is removed from the Home Screen and added again. And the same versions that
-      regressed 301994 can report `env(safe-area-inset-top)` as 0; the top edges
-      keep a padding floor (7px on phones), and standalone mode keeps a 5px
-      fixed band for WebKit's y=4 probe without covering header content. Glyph contrast follows the system
-      appearance, which is also what the console's own light/dark themes follow.
+      iOS reads this meta at INSTALL time (WebKit 316008): existing installs must
+      be removed from the Home Screen and added again to adopt the new mode.
+      Under `default`, WebKit may sample and cache the system band's colour
+      until relaunch (WebKit 301994); CSS can update the document's edge but
+      cannot guarantee a live system-bar recolour. Glyph contrast follows the
+      system appearance, as do the console's light/dark themes.
     -->
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="icon" type="image/svg+xml" href="/icon.svg" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
