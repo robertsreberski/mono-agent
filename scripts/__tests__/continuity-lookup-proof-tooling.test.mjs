@@ -1,19 +1,21 @@
-import { expect, it } from "vitest";
-import { mkdtemp, mkdir, writeFile, symlink, rm } from "node:fs/promises";
+import { expect, it, vi } from "vitest";
+import { mkdtemp, mkdir, writeFile, symlink, rm, truncate, link, lstat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { retainedSync } from "../proofs/fixtures/lookup-configured-retained.mjs";
+import { lookupRetainedBytes } from "../lib/continuity-lookup-preparation.mjs";
 import { lookupDependencyWitness } from "../lib/continuity-proof-tooling.mjs";
-import { assertConfiguredEvidence, assertConfiguredEvidencePair, CONFIGURED_PROOF_CASES } from "../proofs/fixtures/lookup-configured-evidence.mjs";
+import { assertConfiguredEvidence, assertConfiguredEvidencePair, CONFIGURED_PROOF_CASES, assertConfiguredCIValue, configuredCaseWatchdogMs } from "../proofs/fixtures/lookup-configured-evidence.mjs";
 
 function evidence(ci = false) {
   const stops = ["completed", "budget_admission", "lookup_repeated_loss", "lookup_repeated_loss", "invalid_unit_rate", "lookup_unknown_tier", null, "lookup_worker_timeout"];
-  return {schema: "lookup-configured-full-proof-v1", complete: true, ci, results: CONFIGURED_PROOF_CASES.map((name, index) => {
+  return {schema: "lookup-configured-full-proof-v1", complete: true, ci, ciValue: ci ? "1" : null, results: CONFIGURED_PROOF_CASES.map((name, index) => {
     const roles = name === "rounds" ? ["pack", "pack-only", "shipping", "soul-only"] : ["pack"];
-    return {case: name, errors: [], state: {stop: stops[index], slots: roles.map(role => ({worker: {}, guardRefusal: "not_admitted_cap", terminal: "pilot_empty_final_output", holds: [{settlement: ["kill", "late"].includes(name) ? null : {kind: name === "sdk" ? "lost" : "settled"}}]}))},
+    return {case: name, errors: [], state: {stop: stops[index], slots: roles.map(role => ({slotId: role, worker: {}, guardRefusal: "not_admitted_cap", terminal: "pilot_empty_final_output", holds: [{settlement: ["kill", "late"].includes(name) ? null : {kind: name === "sdk" ? "lost" : "settled"}}]}))},
       arrivals: roles.flatMap(role => Array.from({length: name === "rounds" ? 3 : name === "limit" ? 10 : 1}, (_, n) => ({slotId: role, number: n + 1, priorToolOutputs: n, holdConsumed: true, bothMarkers: true}))),
       metrics: roles.map(role => ({role, preparationToolCalls: 64, nativeSessions: [{hostReplayTurns: 80, restoredAtOriginalRoot: true}], observedOuterMs: 600100})),
       finalReconciliation: {unreconciledGroups: 0}, lateAvailable: 1, lateAcceptedSettles: 0, providerTerminalDelivered: 0,
-      lateDelivery: {attempted: true, delivered: false, callbackError: "ERR_STREAM_DESTROYED"}, providerLateAvailableAt: 2, outerCompletedAt: 1};
+      lateDelivery: {attempted: true, delivered: false, destroyedBeforeWrite: true, callbackError: "ERR_STREAM_DESTROYED"}, providerLateAvailableAt: 2, outerCompletedAt: 1};
   })};
 }
 it("requires complete successful evidence and distinct CI modes", () => {
@@ -26,6 +28,93 @@ it("requires complete successful evidence and distinct CI modes", () => {
   for (const mutate of [e => e.results[7].lateDelivery.attempted = false, e => e.results[0].metrics.pop(), e => e.results[3].state.stop = "completed"]) {
     const e = evidence(); mutate(e); expect(() => assertConfiguredEvidence(e)).toThrow();
   }
+});
+it.each(["other_error", null, undefined])("requires the observed destroyed-stream error, not %s", callbackError => {
+  const e = evidence(); e.results[7].lateDelivery.callbackError = callbackError;
+  expect(() => assertConfiguredEvidence(e)).toThrow();
+});
+it("requires the response to be destroyed before the late write", () => {
+  const e = evidence(); e.results[7].lateDelivery.destroyedBeforeWrite = false;
+  expect(() => assertConfiguredEvidence(e)).toThrow();
+});
+it.each(["0", "", "true", null, undefined])("rejects CI evidence with actual CI=%s", ciValue => {
+  const e = evidence(true); e.ciValue = ciValue;
+  expect(() => assertConfiguredEvidencePair([evidence(), e])).toThrow();
+});
+it.each(["0", "", "1"])("does not relabel a present CI=%s as normal", ciValue => {
+  const e = evidence(); e.ciValue = ciValue;
+  expect(() => assertConfiguredEvidence(e)).toThrow();
+});
+it.each(["true", 1, {}, undefined, false])("requires a boolean original-root restoration witness, not %j", restored => {
+  const e = evidence(); e.results[0].metrics[0].nativeSessions[0].restoredAtOriginalRoot = restored;
+  expect(() => assertConfiguredEvidence(e)).toThrow();
+});
+it.each(["foreign", "missing"])("binds arrival slot IDs to worker slots: %s", variant => {
+  const e = evidence(), row = e.results[0];
+  if (variant === "foreign") for (const arrival of row.arrivals) {if (arrival.slotId === "pack") arrival.slotId = "foreign-slot";}
+  else row.arrivals = row.arrivals.filter(a => a.slotId !== "pack");
+  expect(() => assertConfiguredEvidence(e)).toThrow();
+});
+it.each([[1, 2, 2], [1, 2, 4], [1, 1, 1], [0, 1, 2], ["1", "2", "3"]])("requires each slot's exact three round labels: %j/%j/%j", (...numbers) => {
+  const e = evidence(), arrivals = e.results[0].arrivals.filter(a => a.slotId === "pack");
+  arrivals.forEach((a, i) => a.number = numbers[i]);
+  expect(() => assertConfiguredEvidence(e)).toThrow();
+});
+it("requires two prior tool outputs at the now-mandatory third round", () => {
+  const e = evidence(); e.results[0].arrivals.find(a => a.slotId === "pack" && a.number === 3).priorToolOutputs = 1;
+  expect(() => assertConfiguredEvidence(e)).toThrow();
+});
+it("accepts valid rounds regardless of arrival order", () => {
+  const e = evidence(); e.results[0].arrivals.reverse();
+  expect(() => assertConfiguredEvidence(e)).not.toThrow();
+});
+it("restores the fixture environment even when its cleanup snapshot assertion throws", async () => {
+  const base = await mkdtemp(join(tmpdir(), "lookup-env-finally-")), original = {...process.env};
+  process.env.FICTIONAL_FIXTURE_ORIGINAL = "before";
+  const setupError = Error("fictional_setup_failure");
+  const previous = {...process.env}, snapshot = vi.fn().mockResolvedValueOnce([]).mockResolvedValueOnce([["changed"]]);
+  vi.resetModules();
+  vi.doMock("./fixtures/lookup-leaf-witness.mjs", () => ({dependencyLeafSnapshot: snapshot}));
+  vi.doMock("./fixtures/holdout-synthetic.mjs", () => ({
+    syntheticContext: async () => {
+      expect(process.env.HOME).toBe(join(base, "build-home"));
+      delete process.env.FICTIONAL_FIXTURE_ORIGINAL; process.env.FICTIONAL_FIXTURE_ADDED = "during";
+      throw setupError;
+    }, fixtureGit: vi.fn(), fixtureCommit: vi.fn(), fixtureLookupPolicy: vi.fn(),
+  }));
+  try {
+    const {fullConfiguredFixture} = await import("../proofs/fixtures/lookup-configured-fixture.mjs");
+    const failure = fullConfiguredFixture(join(base, "source"), base);
+    await expect(failure).rejects.toThrow("fixture build mutated shared dependency leaves");
+    await expect(failure).rejects.toHaveProperty("cause", setupError);
+    expect(snapshot).toHaveBeenCalledTimes(2);
+    // Compare without printing any inherited environment values on a failure.
+    expect(Object.keys(process.env).sort()).toEqual(Object.keys(previous).sort());
+    for (const [key, value] of Object.entries(previous)) expect(process.env[key] === value, "original environment value restored").toBe(true);
+  } finally {
+    for (const key of Object.keys(process.env)) if (!(key in original)) delete process.env[key]; Object.assign(process.env, original);
+    vi.doUnmock("./fixtures/lookup-leaf-witness.mjs"); vi.doUnmock("./fixtures/holdout-synthetic.mjs"); vi.resetModules();
+    await rm(base, {recursive: true, force: true});
+  }
+});
+it("pins synchronous retained accounting to async preflight accounting across every category", async () => {
+  const base = await mkdtemp(join(tmpdir(), "lookup-retained-parity-")), slot = join(base, "slot");
+  const directories = [["", "otherBytes"], ["checkpoint", "otherBytes"], ["checkpoint/snapshot", "snapshotBytes"], ["checkpoint/snapshot/deep", "snapshotBytes"], ["checkpoint/work", "workBytes"], ["checkpoint/lease-home", "homeBytes"], ["probe-home", "homeBytes"], ["checkpoint/snapshot-neighbor", "otherBytes"], ["checkpoint/work-neighbor", "otherBytes"], ["checkpoint/lease-home-neighbor", "otherBytes"], ["checkpoint-other", "otherBytes"]];
+  const files = [["checkpoint/snapshot/deep/sparse", "snapshotBytes"], ["checkpoint/work/allocated", "workBytes"], ["checkpoint/lease-home/state", "homeBytes"], ["probe-home/state", "homeBytes"], ["receipt.json", "homeBytes"]];
+  try {
+    for (const [path] of directories) await mkdir(join(slot, path));
+    for (const [path] of files) await writeFile(join(slot, path), Buffer.alloc(4097, 7));
+    await truncate(join(slot, files[0][0]), 2 * 1024 * 1024);
+    await link(join(slot, "checkpoint/work/allocated"), join(slot, "checkpoint/snapshot/linked"));
+    await writeFile(join(base, "outside-target"), Buffer.alloc(65536, 7));
+    await symlink(join(base, "outside-target"), join(slot, "probe-home/pointer"));
+    const expected = {snapshotBytes: 0, workBytes: 0, homeBytes: 0, otherBytes: 0};
+    for (const [path, field] of [...directories, ...files, ["checkpoint/snapshot/linked", "snapshotBytes"], ["probe-home/pointer", "homeBytes"]]) {
+      const stat = await lstat(join(slot, path)); expected[field] += Math.max(stat.size, stat.blocks * 512);
+    }
+    expected.retainedBytes = Object.values(expected).reduce((a, b) => a + b, 0);
+    expect(retainedSync(slot)).toEqual(expected); expect(await lookupRetainedBytes(slot)).toEqual(expected);
+  } finally {await rm(base, {recursive: true, force: true});}
 });
 it("verifies dependency lock/importer/links read-only and rejects mismatches", async () => {
   const root = await mkdtemp(join(tmpdir(), "lookup-dependency-witness-"));
@@ -47,4 +136,16 @@ it("verifies dependency lock/importer/links read-only and rejects mismatches", a
     await writeFile(join(root, "node_modules/.pnpm/lock.yaml"), "{}");
     await expect(lookupDependencyWitness(root)).rejects.toThrow("lookup_dependency_lock_mismatch");
   } finally {await rm(root, {recursive: true, force: true});}
+});
+
+it.each(["", "0", "true", undefined])("refuses present CI=%s before a configured proof starts", CI => {
+  expect(() => assertConfiguredCIValue({CI})).toThrow("configured proof requires CI absent or exactly 1");
+});
+it("accepts only absent CI or CI=1 at configured proof startup", () => {
+  expect(() => assertConfiguredCIValue({})).not.toThrow(); expect(() => assertConfiguredCIValue({CI: "1"})).not.toThrow();
+});
+it("budgets rounds hang detection by eligible slots without changing other proof watchdogs", () => {
+  expect(configuredCaseWatchdogMs("rounds", 8)).toBe(1080000); expect(configuredCaseWatchdogMs("rounds", 4)).toBe(600000);
+  for (const name of CONFIGURED_PROOF_CASES.filter(n => !["rounds", "late"].includes(n))) expect(configuredCaseWatchdogMs(name, 8)).toBe(360000);
+  expect(configuredCaseWatchdogMs("late", 8)).toBe(2100000);
 });

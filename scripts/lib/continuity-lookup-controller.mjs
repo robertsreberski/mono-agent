@@ -80,6 +80,8 @@ async function initializeLookupPilot(options = {}) {
 
   for (const role of pilot.registration.roles) assertLookupPilotArm(armById(role.arm));
   await verifyRegisteredCheckouts(pilot.registration);
+  const schedule = lookupPilotSchedule(pilot);
+  pilotNeed(!real || schedule.some(slot => slot.eligible), "lookup_pilot_no_eligible_slots");
   pilotNeed(await externalDirectory(outputRoot, false, Object.values(pilot.registration.codes).map(c => c.path)) === outputRoot, "lookup_receipt_invalid");
   const controller = { pid: process.pid, startIdentity: lookupProcessStartIdentity(process.pid) };
   pilotNeed(typeof controller.startIdentity === "string" && controller.startIdentity.length > 0, "lookup_ipc_invalid");
@@ -115,7 +117,6 @@ async function initializeLookupPilot(options = {}) {
   try {
     if (real) await auth.consumeLookupAuthorization(authorizationHandle, identity, lease);
     else await fauxConsume(authorization, pilot, outputRoot, identity, lease);
-    const schedule = lookupPilotSchedule(pilot);
     state = { schema: real ? LOOKUP_REAL_CONTROLLER : LOOKUP_FAUX_CONTROLLER, ...(real ? { recovery: false } : {}), ...(!real ? { fauxEndpoint: authorization.fixtureEndpoint ?? null } : {}), binding: digest(pilot), runId: identity.runId, epoch: identity.controllerEpoch,
       controller: identity.controller, capUSD: pilot.descriptor.capUSD, rmaxUSD: pilot.descriptor.rmaxUSD, revision: 0, deadlineAt: Date.now() + pilot.descriptor.deadlines.runDeadlineMs,
       schedule, scheduleSha256: digest(schedule), cursor: 0, stop: null,
@@ -135,6 +136,7 @@ async function initializeLookupPilot(options = {}) {
     async probe(index) { return runSlot(api, pilot, authorization, outputRoot, index); },
     async assignPreparation(index, worker) { return serial(async () => {
       await check(); const slot = state.slots[index];
+      pilotNeed(state.schedule[index]?.eligible, "lookup_pilot_slot_ineligible");
       pilotNeed(!state.stop && state.cursor === index && !slot.preparation && !slot.worker && !slot.holds.length
         && worker.pid > 1 && worker.pid !== process.pid && worker.startIdentity && worker.startIdentity === lookupProcessStartIdentity(worker.pid), "lookup_preparation_invalid");
       slot.preparation = { schema: "lookup-preparation-record-v1", pid: worker.pid, startIdentity: worker.startIdentity, exited: false }; await save();
@@ -147,7 +149,8 @@ async function initializeLookupPilot(options = {}) {
     }); },
     release: () => lease.release(),
     async assign(index, worker) { return serial(async () => {
-      await check(); pilotNeed(!state.stop && state.cursor === index && !state.slots[index].worker, "lookup_ipc_invalid");
+      await check(); pilotNeed(state.schedule[index]?.eligible, "lookup_pilot_slot_ineligible");
+      pilotNeed(!state.stop && state.cursor === index && !state.slots[index].worker, "lookup_ipc_invalid");
       pilotNeed(worker.pid > 1 && worker.pid !== process.pid && typeof worker.startIdentity === "string" && worker.startIdentity.length > 0 && worker.startIdentity === lookupProcessStartIdentity(worker.pid), "lookup_ipc_invalid");
       state.slots[index].worker = { pid: worker.pid, startIdentity: worker.startIdentity }; state.slots[index].startedAt = Date.now(); await save();
     }); },
@@ -169,6 +172,7 @@ async function initializeLookupPilot(options = {}) {
           && message.seq === slot.nextMessage && ["admit", "consume", "settle", "stop"].includes(message.op), "lookup_ipc_invalid");
         const p = message.payload; let result = {};
         if (message.op === "admit") {
+          pilotNeed(state.schedule[index]?.eligible, "lookup_pilot_slot_ineligible");
           pilotNeed(p && Object.keys(p).sort().join() === "payloadDigest,requestId,rmax,round,slotId" && p.slotId === slot.slotId
             && typeof p.requestId === "string" && p.requestId === `${state.runId}:${p.round}` && pilotHash(p.payloadDigest)
             && p.round === slot.holds.length + 1 && p.round <= 10 && p.rmax === pilot.descriptor.rmaxUSD
@@ -222,7 +226,8 @@ async function initializeLookupPilot(options = {}) {
       }
     }); },
     async finish(index, terminal, score = null, refusalCode = null) { return serial(async () => {
-      await check(); const slot = state.slots[index];
+      await check(); pilotNeed(state.schedule[index]?.eligible, "lookup_pilot_slot_ineligible");
+      const slot = state.slots[index];
       if (!slot || state.cursor !== index || !LOOKUP_SLOT_TERMINALS.includes(terminal) || terminal === "unadmitted" || terminal === "skipped"
         || terminal === "refused_pre_send" && !slot?.admissionRefusal && ![...LOOKUP_PRE_SEND_REFUSALS, ...LOOKUP_GUARD_POLICY_REFUSALS].includes(refusalCode) || ![null, 0, 1].includes(score) || refusalCode !== null && ![...LOOKUP_PRE_SEND_REFUSALS, ...LOOKUP_GUARD_POLICY_REFUSALS].includes(refusalCode)) {
         if (slot?.holds.length) slot.terminal = "integrity_stop";
@@ -251,7 +256,7 @@ async function initializeLookupPilot(options = {}) {
 }
 function publicFailure(error) {
   const allowed = [...LOOKUP_PILOT_STOPS, "paid_mode_refused_in_ci", "lookup_pilot_real_route_unavailable", "lookup_pilot_faux_required", "lookup_debug_forbidden", "lookup_controller_checkout_mismatch",
-    "lookup_pilot_boundary_required", "lookup_authorization_binding_mismatch", "lookup_authorization_already_consumed", "lookup_authorization_lease_invalid", "lookup_pilot_resume_forbidden", "lookup_pilot_not_ready"];
+    "lookup_pilot_no_eligible_slots", "lookup_pilot_boundary_required", "lookup_authorization_binding_mismatch", "lookup_authorization_already_consumed", "lookup_authorization_lease_invalid", "lookup_pilot_resume_forbidden", "lookup_pilot_not_ready"];
   pilotNeed(false, allowed.includes(error?.code) ? error.code : "lookup_pilot_not_ready");
 }
 export async function createLookupPilotController(options) {
@@ -278,7 +283,10 @@ export async function reconcileLookupPilot(outputRoot) {
   try { return await reconcilePilotState(outputRoot); } catch (error) { publicFailure(error); }
 }
 async function runSlot(journal, pilot, authorization, root, index, preparation = false) {
-  const state = journal.snapshot(), slot = state.schedule[index], code = pilot.registration.codes[slot.code];
+  const state = journal.snapshot(), slot = state.schedule[index];
+  // Assignment is persisted after fork; refuse excluded slots before any child setup.
+  pilotNeed(slot?.eligible, "lookup_pilot_slot_ineligible");
+  const code = pilot.registration.codes[slot.code];
   const role = pilot.registration.roles.find(r => r.id === slot.roleId), corpus = pilot.registration.common.corpora.find(c => c.suite === slot.suite);
   const binding = roleBinding(pilot.registration, role, corpus), plan = await rolePlan(pilot.registration.common, binding);
   const timeoutMs = lookupPilotWatchdog(authorization, pilot.descriptor.deadlines, state.deadlineAt);

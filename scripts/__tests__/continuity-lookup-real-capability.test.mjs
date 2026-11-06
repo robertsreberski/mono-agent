@@ -20,8 +20,8 @@ beforeEach(async () => {
   const proc = { env: {}, pid: 41, ppid: 42, connected: true };
   graph = { proc, raw: "original", markers: true, checkout: true, commitment: accountHash(ACCOUNT) };
   vi.doMock("node:process", () => ({ default: proc }));
-  binding = { id: "native", code: "R0", arm: "native-lookup" };
-  const slot = { slotId: "slot-fictional", roleId: "native", code: "R0", suite: "holdout" }; schedule = [slot];
+  binding = { id: "pack", code: "R0", arm: "continuity-pack-cold" };
+  const slot = { slotId: "slot-fictional", roleId: "pack", code: "R0", suite: "holdout" }; schedule = [slot];
   const common = { corpora: [{ suite: "holdout" }] }, build = { fictional: true };
   a = { pilot: { registration: { roles: [binding], common, codes: { R0: { path: "/fictional/r0", build } } }, descriptor: { capUSD: 100, deadlines: { deadlineMs: 60000 } } },
     authorization: { schema: "continuity-lookup-pilot-authorization-v1", authorizationPath: "/fictional/authorization", credentialPath: "/fictional/credential", registrationSha256: "raw-registration" },
@@ -230,4 +230,20 @@ it("does not copy a dispatcher added during the real method snapshot", async () 
   const send = await cap.createLookupRealSend(a, safety), bad = request();
   Object.defineProperty(bad, "method", {enumerable: true, get() {bad.dispatcher = {}; return "POST";}});
   await send(endpoint, bad); expect(network).toHaveBeenCalledOnce(); expect(network.mock.calls[0][1]).not.toHaveProperty("dispatcher");
+});
+
+it.each(["native", "native-soul"])("refuses a forged %s assignment at verification and mint with the measured-role code", async roleId => {
+  binding.id = roleId; binding.arm = "native-lookup"; a.slot.roleId = roleId;
+  const auth = await import("../lib/continuity-lookup-authorization.mjs"), preparation = await import("../lib/continuity-lookup-preparation.mjs");
+  await expect(cap.verifyLookupRealAssignment(a)).rejects.toMatchObject({code: "lookup_pilot_role_not_measured"});
+  await expect(cap.createLookupRealSend(a, safety)).rejects.toMatchObject({code: "lookup_pilot_role_not_measured"});
+  expect(auth.validateLookupAuthorization).not.toHaveBeenCalled(); expect(preparation.verifyLookupPreparation).not.toHaveBeenCalled(); expect(network).not.toHaveBeenCalled();
+});
+it.each(["verification", "mint"])("requires the authorization validator on a structurally valid %s assignment", async entry => {
+  const auth = await import("../lib/continuity-lookup-authorization.mjs"), error = Object.assign(Error("lookup_authorization_binding_mismatch"), {code: "lookup_authorization_binding_mismatch"});
+  auth.validateLookupAuthorization.mockRejectedValue(error);
+  await expect(entry === "mint" ? cap.createLookupRealSend(a, safety) : cap.verifyLookupRealAssignment(a)).rejects.toMatchObject({code: "lookup_pilot_capability_invalid"});
+  expect(auth.validateLookupAuthorization).toHaveBeenCalledExactlyOnceWith({...a.authorization, outputRoot: a.outputRoot});
+  await expect(auth.validateLookupAuthorization.mock.results[0].value).rejects.toBe(error);
+  expect(auth.verifyLookupConsumption).not.toHaveBeenCalled(); expect(network).not.toHaveBeenCalled();
 });

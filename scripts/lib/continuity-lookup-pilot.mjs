@@ -1,7 +1,7 @@
 // Artifact contracts only. Nothing in this module dispatches or grants authority.
 import { readFile } from "node:fs/promises";
 import { digest } from "./continuity-dataset.mjs";
-import { sha256, LOOKUP_TIMING } from "./continuity-lookup.mjs";
+import { sha256, LOOKUP_TIMING, LOOKUP_PILOT_MEASURED_ROLES } from "./continuity-lookup.mjs";
 import { LOOKUP_ASSUMPTIONS } from "./continuity-lookup-guard.mjs";
 import { registerLookup, lookupWorkload, validateRegistration, requireLookup } from "./continuity-lookup-roles.mjs";
 import { offlineCatalog, estimateExternalLookup } from "../continuity-lookup-estimate.mjs";
@@ -70,19 +70,20 @@ export function estimateLookupPilot({ workload, catalog, capUSD, assumptions = L
   need(!less(cap, rmax) && cap[0] * 100n % cap[1] === 0n
     && cap[0] * 100n / cap[1] < 10n ** 15n, "lookup_cap_invalid"); // <15 significant digits: the float dollar value round-trips
   const legacy = estimateExternalLookup({ workload, catalog }); // retains complete inventory/context checks
-  let expected = [0n, 1n];
-  for (const path of workload.policy.budget.paths) if (path.feasibility.classification === "feasible") {
+  let expected = [0n, 1n], eligible = 0;
+  for (const path of workload.policy.budget.paths) if (LOOKUP_PILOT_MEASURED_ROLES.includes(path.role) && path.feasibility.classification === "feasible") {
+    eligible++;
     const initial = path.initialTokens + 900, later = initial + Math.floor(workload.policy.budget.byteBudget / 2);
     for (const input of [initial, later, later]) expected = add(expected, scenarioCall(catalog, input, Math.min(300, workload.outputLimit.tokens)));
   }
   const headroom = add(cap, [-rmax[0], rmax[1]]);
-  const eligible = legacy.eligible;
+  const skipped = legacy.planned - eligible;
   // Corrected full-upfront comparison: ten maximum requests per eligible slot, 25% buffer, ceil cents.
   const upfront = mul(rmax, eligible * 10 * 125), cents = (upfront[0] + upfront[1] - 1n) / upfront[1];
   return { schema: "continuity-lookup-pilot-estimate-v1", executionKind: "offline-estimate", authorizedSpend: false,
     expectedUSD: usd(expected), rmaxUSD: usd(rmax), capUSD: usd(cap), lastAdmissibleHeadroomUSD: usd(headroom),
     capOverExpected: expected[0] === 0n ? null : usd([cap[0] * expected[1], cap[1] * expected[0]]),
-    fullUpfrontComparisonUSD: Number(cents) / 100, eligible, skipped: legacy.skipped,
+    fullUpfrontComparisonUSD: Number(cents) / 100, eligible, skipped,
     scenario: { lookups: 2, returnedByteFraction: "1/2", cacheFraction: "1/2", outputTokensPerRound: 300,
       inputAllowanceTokens: 900, serviceTier: "default", measurement: false },
     assumptions, assumptionsSha256: digest(assumptions), catalogSha256: digest(catalog) };

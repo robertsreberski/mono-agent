@@ -1,5 +1,5 @@
-import { LOOKUP_REGISTRY_LAYOUT } from "./continuity-lookup-registry-readiness.mjs";
 // Private local attestations, not authenticated approval. No issuer and no dispatch.
+import { LOOKUP_REGISTRY_LAYOUT } from "./continuity-lookup-registry-readiness.mjs";
 import { constants } from "node:fs";
 import { lstat, mkdir, open, realpath, readdir } from "node:fs/promises";
 import { userInfo } from "node:os";

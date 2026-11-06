@@ -20,7 +20,7 @@ const { Agent, getGlobalDispatcher, setGlobalDispatcher } = require("undici");
 const mocked = ["roles", "pilot", "authorization", "pilot-state", "ipc", "pilot-entry", "preparation"].map(name => `../lib/continuity-lookup-${name}.mjs`);
 let oldStackFormatter, coverage, sdkFetchOffset;
 const knownRefreshFunctions = new Set();
-let basePlan, nativeArm, nativePatch, soulBytes;
+let basePlan, measuredArm, measuredPatch, soulBytes;
 let base, guard, scope, server, agent, oldDispatcher, modules, runner, cap, current, state, permit, binding, schedule;
 let arrivals = [], nativeAttempts = 0, globalCalls = 0, refreshAttempts = 0;
 const handle = Object.freeze({});
@@ -111,9 +111,9 @@ beforeAll(async () => {
   const {LOOKUP_MODE} = await import("../lib/continuity-lookup.mjs");
   const {armById, mergePatch} = await import("../lib/continuity-arms.mjs");
   const loaded = await loadTraces({suite: "original"});
-  basePlan = makePlan({...loaded, probeMode: LOOKUP_MODE, arms: ["native-lookup"], profile: {reader: "openai-codex:gpt-6.1-sol", readerEffort: "high", judge: null}});
-  nativeArm = armById("native-lookup");
-  nativePatch = mergePatch(nativeArm.sessionConfig ?? {}, nativeArm.probeConfig);
+  basePlan = makePlan({...loaded, probeMode: LOOKUP_MODE, arms: ["native-lookup", "continuity-pack-cold"], profile: {reader: "openai-codex:gpt-6.1-sol", readerEffort: "high", judge: null}});
+  measuredArm = armById("continuity-pack-cold");
+  measuredPatch = mergePatch(measuredArm.sessionConfig ?? {}, measuredArm.probeConfig);
   soulBytes = await readFile(new URL(`../fixtures/${basePlan.lookup.soul.file}`, import.meta.url));
   coverage = new Session(); coverage.connect();
   await coverage.post("Profiler.enable"); await coverage.post("Profiler.startPreciseCoverage", {callCount: true, detailed: true});
@@ -144,8 +144,8 @@ it.each([[200, false], [503, false], [200, true]])("credentialed configured harn
   const {lookupPilotWork} = await import("../lib/continuity-lookup-pilot-runtime.mjs");
   const id = `slot-${status}-${mismatch}`;
   current = {status, commitment: commitment(mismatch ? "FICTIONAL-OTHER-ACCOUNT" : ACCOUNT)};
-  binding = {id: "native", code: "R0", arm: "native-lookup"};
-  const slot = {slotId: id, roleId: "native", code: "R0", suite: "original"}; schedule = [slot];
+  binding = {id: "pack", code: "R0", arm: "continuity-pack-cold"};
+  const slot = {slotId: id, roleId: "pack", code: "R0", suite: "original"}; schedule = [slot];
   const common = {corpora: [{suite: "original"}]}, build = {fictional: true};
   const a = {pilot: {registration: {roles: [binding], common, codes: {R0: {path: ROOT, build}}}, descriptor: {capUSD: 100, deadlines: {deadlineMs: 600000}}},
     authorization: {schema: "continuity-lookup-pilot-authorization-v1", authorizationPath: join(base, "absent-authorization"), registrationPath: join(base, "absent-registration"), registrationSha256: "a".repeat(64), credentialPath: join(base, "credential", "auth.json"), controllerRoot: ROOT, outputRoot: base},
@@ -160,8 +160,8 @@ it.each([[200, false], [503, false], [200, true]])("credentialed configured harn
   const work = lookupPilotWork(a); await mkdir(work, {recursive: true});
   await writeFile(join(work, "IDENTITY.md"), "You are a fictional test assistant.");
   await writeFile(join(work, "BENCHMARK-SOUL.md"), soulBytes);
-  const arm = nativeArm;
-  const configPatch = runner.lookupConfig(work, plan, runner.pilotDispatchConfig(nativePatch), true);
+  const arm = measuredArm;
+  const configPatch = runner.lookupConfig(work, plan, runner.pilotDispatchConfig(measuredPatch), true);
   const config = modules.config.resolveJsonMonoAgentConfig({json: runner.configJson({work, authPath: a.authorization.credentialPath, model: plan.reader.model, effort: plan.reader.effort, tools: false, configPatch}), cwd: work});
   const beforeCredential = await readFile(a.authorization.credentialPath);
   const send = await cap.createLookupRealSend(a, {plan: a.plan, arm, config});
@@ -170,7 +170,7 @@ it.each([[200, false], [503, false], [200, true]])("credentialed configured harn
   let result;
   guard.constructed();
   try {
-    const live = await runner.runLiveTurn({modules, work, authPath: a.authorization.credentialPath, plan, mode: "paid", configPatch: nativePatch, userMessage: "Give a fictional answer.", clock: {value: new Date("2030-01-01T00:00:00Z")}, conversationId: `fictional-${id}`, owner: "Morgan", pilot: {routeKind: "real", plan, arm, send}});
+    const live = await runner.runLiveTurn({modules, work, authPath: a.authorization.credentialPath, plan, mode: "paid", configPatch: measuredPatch, userMessage: "Give a fictional answer.", clock: {value: new Date("2030-01-01T00:00:00Z")}, conversationId: `fictional-${id}`, owner: "Morgan", pilot: {routeKind: "real", plan, arm, send}});
     result = {text: live.text, failure: live.failureKind};
   } catch (error) {result = {failure: {kind: error.code ?? error.message}};}
   const executed = (await coverage.post("Profiler.takePreciseCoverage")).result;

@@ -19,7 +19,7 @@ import { sha256 } from "../../lib/continuity-lookup.mjs";
 export const loadPilot = (f, name) => import(/* @vite-ignore */ pathToFileURL(join(f.repo, "scripts/lib", `continuity-lookup-${name}.mjs`)).href);
 const metadata = async path => { try { const s = await fs.lstat(path); return [s.ino, s.mtimeMs]; } catch (e) { if (e.code === "ENOENT") return null; throw e; } };
 const registry = join(userInfo().homedir, ".local/state/mono-agent/lookup-pilot/consumed-v1");
-export async function pilotProcessFixture({ configured = false, runDeadlineMs = configured ? 900000 : 60000, eligibleRoles } = {}) {
+export async function pilotProcessFixture({ configured = false, runDeadlineMs = configured ? 900000 : 60000, eligibleRoles, nativeFeasible = false } = {}) {
   const base = await fs.realpath(await fs.mkdtemp(join(tmpdir(), "lookup-controller-fictional-")));
   await fs.chmod(base, 0o700);
   const env = { ...process.env }, home = join(base, "build-home"); await fs.mkdir(home, { mode: 0o700 });
@@ -67,7 +67,7 @@ export async function pilotProcessFixture({ configured = false, runDeadlineMs = 
       statisticalSpecPath: f.context.options.statisticalSpecPath }, reader: "openai-codex:gpt-6.1-sol", readerEffort: "high", selectionSeed: 42, perGroup: configured ? 1 : 2, probeLimit: 1,
       outputLimit: { source: "catalog_max", tokens: 128000 } };
     const workload = await roles.lookupWorkload({ ...options, inputRoots: [f.repo, pack] });
-    const policy = await fixtureLookupPolicy({ source: workload.corpora[0].source, selection: workload.corpora[0].traces, lookupSelection: workload.lookupSelection, reader: workload.reader, codes, protocol, eligibleRoles });
+    const policy = await fixtureLookupPolicy({ source: workload.corpora[0].source, selection: workload.corpora[0].traces, lookupSelection: workload.lookupSelection, reader: workload.reader, codes, protocol, eligibleRoles, nativeFeasible });
     const policyPath = join(f.inputs, "lookup-policy.json"); await fs.writeFile(policyPath, JSON.stringify(policy));
     const policySha256 = sha256(await fs.readFile(policyPath));
     const pilot = await withOfflineBuilds(() => pilotModule.registerLookupPilot({ ...options, policyPath, policySha256, capUSD: 3.92, scheduleSeed: 13, runDeadlineMs }));
@@ -80,10 +80,10 @@ export async function runOptions(f, scenarios = ["lost"], timeoutMs = 5000) {
   return { pilot: f.pilot, outputRoot, authorization: { schema: "continuity-lookup-faux-authorization-v1", authorizationId: randomUUID(),
     pilotSha256: digest(f.pilot), outputRoot, scenarios, timeoutMs } };
 }
-export function pilotSuite({ scoped = false } = {}) {
+export function pilotSuite({ scoped = false, fixtureOptions = {} } = {}) {
   let f, deps, real, testReal; const serialChildren = [], active = new AsyncLocalStorage();
   const children = () => active.getStore()?.children ?? serialChildren;
-  beforeAll(async () => { deps = await dependencySnapshot(ROOT); real = await metadata(registry); f = await pilotProcessFixture(); }, 120000);
+  beforeAll(async () => { deps = await dependencySnapshot(ROOT); real = await metadata(registry); f = await pilotProcessFixture(fixtureOptions); }, 120000);
   if (!scoped) beforeEach(async () => { testReal = await metadata(registry); });
   async function finish(owned, expected, resources = []) {
     try { await stopFixtureDrivers(owned); expect(await metadata(registry)).toEqual(expected); await witnesses(owned); }

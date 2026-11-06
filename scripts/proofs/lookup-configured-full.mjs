@@ -9,7 +9,8 @@ import assert from "node:assert/strict";
 import { fullConfiguredFixture, configuredDependencyRoots } from "./fixtures/lookup-configured-fixture.mjs";
 import { lookupDependencyWitness } from "../lib/continuity-proof-tooling.mjs";
 import { dependencyLeafSnapshot } from "../__tests__/fixtures/lookup-leaf-witness.mjs";
-import { assertConfiguredEvidence, assertConfiguredEvidencePair } from "./fixtures/lookup-configured-evidence.mjs";
+import { assertConfiguredEvidence, assertConfiguredEvidencePair, assertConfiguredCIValue, configuredCaseWatchdogMs } from "./fixtures/lookup-configured-evidence.mjs";
+assertConfiguredCIValue(process.env);
 const ROOT = await fs.realpath(fileURLToPath(new URL("../../", import.meta.url)));
 const sha = data => createHash("sha256").update(data).digest("hex");
 const git = args => execFileSync("git", ["-C", ROOT, ...args], {encoding: "utf8", env: {...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1"}}).trim();
@@ -70,10 +71,11 @@ if (verify !== -1) {
       const preload = new URL("./fixtures/lookup-configured-preload.mjs", import.meta.url); preload.searchParams.set("policy", Buffer.from(JSON.stringify(policy)).toString("base64url"));
       const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => ["PATH", "LANG", "LC_ALL", "TZ", "TMPDIR", "CI", "CONTINUITY_DEBUG"].includes(key)));
       Object.assign(env, {HOME: home, XDG_CACHE_HOME: home, XDG_CONFIG_HOME: home, XDG_DATA_HOME: home, XDG_STATE_HOME: home, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1"});
+      const watchdogMs = configuredCaseWatchdogMs(name, name === "rounds" ? controller.lookupPilotSchedule(fixture.roundsPilot).filter(s => s.eligible).length : 0);
       const child = fork(fileURLToPath(new URL("./fixtures/lookup-configured-driver.mjs", import.meta.url)), [configPath], {cwd: fixture.repo, execArgv: ["--import", preload.href], env, stdio: ["ignore", "ignore", "pipe", "ipc"]});
       const stderr = []; child.stderr.on("data", bytes => stderr.push(bytes));
       const startedAt = Date.now(), exit = new Promise(resolve => child.once("close", (code, signal) => resolve({code, signal})));
-      const watchdog = setTimeout(() => {child.kill("SIGKILL");}, name === "late" ? 2100000 : 360000);
+      const watchdog = setTimeout(() => {child.kill("SIGKILL");}, watchdogMs);
       let outcome;
       try {outcome = await exit;} finally {clearTimeout(watchdog);}
       const errorLog = join(base, `${id}-stderr.log`); await fs.writeFile(errorLog, Buffer.concat(stderr));
@@ -178,7 +180,7 @@ if (verify !== -1) {
     }
     assert.deepEqual(await dependencyLeafSnapshot(configuredDependencyRoots(ROOT)), leafBefore, "D mutated shared dependency leaves");
     assert.deepEqual(await binding(), sourceBinding); assert.deepEqual(await lookupDependencyWitness(ROOT), depsBefore);
-    const report = {schema: "lookup-configured-full-proof-v1", complete: !selected, ci: Object.hasOwn(process.env, "CI"), binding: sourceBinding, dependencyWitness: depsBefore, dependencyLeaves: {count: leafBefore.length, sha256: sha(JSON.stringify(leafBefore)), unchanged: true}, results, witnesses, dependenciesLoaded: [...dependenciesLoaded.values()], fixtureBuilds: fixture.commands, fixtureProvisioning: fixture.webBuild, nativeTopology: "ineligible; no native dispatch; no admitted native proof", limits: ["JS API canary, not OS/native-I/O sandbox", "SQLite connection paths checked; SQL ATTACH/native loader not sandboxed", "kill-case RSS is last observed process high-water mark", "faux data/feasibility/provider usage, not evaluation or real authorization"]};
+    const report = {schema: "lookup-configured-full-proof-v1", complete: !selected, ci: Object.hasOwn(process.env, "CI"), ciValue: process.env.CI ?? null, binding: sourceBinding, dependencyWitness: depsBefore, dependencyLeaves: {count: leafBefore.length, sha256: sha(JSON.stringify(leafBefore)), unchanged: true}, results, witnesses, dependenciesLoaded: [...dependenciesLoaded.values()], fixtureBuilds: fixture.commands, fixtureProvisioning: fixture.webBuild, nativeTopology: "ineligible; no native dispatch; no admitted native proof", limits: ["JS API canary, not OS/native-I/O sandbox", "SQLite connection paths checked; SQL ATTACH/native loader not sandboxed", "kill-case RSS is last observed process high-water mark", "faux data/feasibility/provider usage, not evaluation or real authorization"]};
     if (!selected) assertConfiguredEvidence(report);
     await fs.writeFile(output, JSON.stringify(report), {mode: 0o600}); delivered = true; console.log(JSON.stringify({complete: report.complete, cases, output, base}));
   } catch (error) {
