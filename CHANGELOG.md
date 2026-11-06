@@ -69,7 +69,7 @@
 - Add an advanced turn `piModelsDecorator` seam over normally credentialed Models,
   mutually exclusive with `piResolvedModels`.
 - Add offline-only guarded lookup request contracts and assumption checks; keep
-  every real lookup execution route unauthorized.
+  ordinary real lookup execution routes unauthorized.
 
 - Add offline lookup readiness reports that show why real execution is blocked,
   and list infeasible probes as skipped instead of missing or failed. Keep
