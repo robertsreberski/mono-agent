@@ -1865,10 +1865,15 @@ button.process-job-call-head:focus-visible { outline: 2px solid var(--accent); o
   .dashboard-search button { width: 44px; height: 44px; margin-right: 0; }
   .dashboard-scroll { padding-top: 12px; }
   .dashboard-section + .dashboard-section { margin-top: 20px; }
-  .dashboard-chip, .dashboard-new-action, .dashboard-section-toggle,
+  .dashboard-new-action, .dashboard-section-toggle,
   .thread-load-more, .running-more, .archive-toggle, .data-mode-indicator {
     min-height: 44px;
   }
+  /* Outlined filter chips keep their compact look; an invisible band extends
+     the tap target to 44px instead of stretching the visible pill. */
+  .dashboard-chip { position: relative; }
+  .dashboard-section-head:has(.dashboard-chips) { margin-bottom: 10px; }
+  .dashboard-chip::after { content: ""; position: absolute; inset: -10px 0; } /* Padding-box relative: 24 + 20 = 44px. */
   .chat-header { flex: none; }
   .message-column { --column-padding: 24px; padding-block: 24px 12px; }
   .thread-footer {
