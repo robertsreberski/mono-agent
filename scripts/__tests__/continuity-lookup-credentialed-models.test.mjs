@@ -170,7 +170,7 @@ it.each([[200, false], [503, false], [200, true]])("credentialed configured harn
   let result;
   guard.constructed();
   try {
-    const live = await runner.runLiveTurn({modules, work, authPath: a.authorization.credentialPath, plan, mode: "paid", configPatch, userMessage: "Give a fictional answer.", clock: {value: new Date("2030-01-01T00:00:00Z")}, conversationId: `fictional-${id}`, owner: "Morgan", pilot: {routeKind: "real", plan, arm, send}});
+    const live = await runner.runLiveTurn({modules, work, authPath: a.authorization.credentialPath, plan, mode: "paid", configPatch: nativePatch, userMessage: "Give a fictional answer.", clock: {value: new Date("2030-01-01T00:00:00Z")}, conversationId: `fictional-${id}`, owner: "Morgan", pilot: {routeKind: "real", plan, arm, send}});
     result = {text: live.text, failure: live.failureKind};
   } catch (error) {result = {failure: {kind: error.code ?? error.message}};}
   const executed = (await coverage.post("Profiler.takePreciseCoverage")).result;
@@ -205,5 +205,5 @@ it.each([[200, false], [503, false], [200, true]])("credentialed configured harn
   const home = guard.result(); expect(home.credentialReads).toBeGreaterThan(0); expect(home.credentialWrites).toBe(0); expect(home.denied).toEqual([]); expect(home.constructed).toBe(true); expect(home.nonModuleReads).toEqual([]);
   const workerFiles = (await readdir(join(base, "evidence"))).filter(name => name.startsWith("home-") && !name.endsWith("-0.json"));
   expect(workerFiles.length).toBeGreaterThan(0);
-  for (const name of workerFiles) { const proof = JSON.parse(await readFile(join(base, "evidence", name))); expect(proof).toMatchObject({constructed: true, canaries: 4, denied: [], credentialWrites: 0, nonModuleReads: []}); }
+  for (const name of workerFiles) { const proof = JSON.parse(await readFile(join(base, "evidence", name))); expect(proof).toMatchObject({constructed: true, canaries: 4, processCanaries: 9, unexpected: [], denied: [], credentialWrites: 0, nonModuleReads: []}); }
 }, 120000);

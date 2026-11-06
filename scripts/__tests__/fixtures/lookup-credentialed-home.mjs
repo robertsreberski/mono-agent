@@ -81,6 +81,9 @@ export function credentialedHomeCanary({ root, home, credential, evidence }) {
       });
     }
   }
+  for (const [name, write] of [["ReadStream", false], ["WriteStream", true]]) patch(fs, name, Native => class extends Native {
+    constructor(path, options) {check(path, write, name); if (options?.fd != null) check(options.fd, write, name); super(path, options);}
+  });
   const writable = flags => typeof flags === "number" ? Boolean(flags & (fs.constants.O_WRONLY | fs.constants.O_RDWR | fs.constants.O_CREAT | fs.constants.O_TRUNC | fs.constants.O_APPEND)) : /[wa+]/u.test(flags ?? "r");
   patch(fs, "openSync", original => function (path, flags, ...args) { check(path, writable(flags)); const fd = original.call(this, path, flags, ...args); descriptors.set(fd, path); return fd; });
   patch(fs, "open", original => function (path, flags, ...args) { check(path, writable(flags)); const callback = args.pop(); return original.call(this, path, flags, ...args, (error, fd) => { if (!error) descriptors.set(fd, path); callback(error, fd); }); });

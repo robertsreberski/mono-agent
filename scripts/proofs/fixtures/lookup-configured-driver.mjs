@@ -10,13 +10,13 @@ const config = JSON.parse(await fs.readFile(process.argv[2], "utf8"));
 const load = name => import(pathToFileURL(join(config.repo, "scripts/lib", `continuity-lookup-${name}.mjs`)).href);
 const {runLookupPilot, reconcileLookupPilot} = await load("controller"), {digest} = await import(pathToFileURL(join(config.repo, "scripts/lib/continuity-dataset.mjs")).href);
 const {lookupPilotDescriptor, LOOKUP_FAUX_AUTHORIZATION_DOMAIN} = await load("pilot");
-const pilot = config.pilot;
+const pilot = config.case === "rounds" ? config.roundsPilot : config.pilot;
 if (config.case === "cap") pilot.descriptor = lookupPilotDescriptor({workload: pilot.registration.common, catalog: pilot.registration.common.catalog, capUSD: 3.92, scheduleSeed: pilot.descriptor.schedule.seed, runDeadlineMs: pilot.descriptor.deadlines.runDeadlineMs});
 const sha = data => createHash("sha256").update(data).digest("hex");
 const statePath = join(config.outputRoot, "lookup-pilot-controller.json"), readState = async () => JSON.parse(await fs.readFile(statePath));
 const authorization = {schema: "continuity-lookup-faux-authorization-v1", authorizationId: randomUUID(), pilotSha256: digest(pilot), outputRoot: config.outputRoot, scenarios: ["settled"], timeoutMs: config.case === "late" ? pilot.descriptor.deadlines.childWatchdogMs : 120000};
 const arrivals = [], errors = [], partials = [];
-let lateAvailable = 0, lateAcceptedSettles = 0, killedAt = null, outerCompletedAt = null, resolveLate, resolveFinished;
+let lateAvailable = 0, lateAcceptedSettles = 0, providerTerminalDelivered = 0, lateDelivery = null, killedAt = null, outerCompletedAt = null, resolveLate, resolveFinished;
 const late = new Promise(resolve => {resolveLate = resolve;}), finished = new Promise(resolve => {resolveFinished = resolve;});
 function sse(payload, number, tool) {
   const id = `fictional-${number}`;
@@ -63,10 +63,17 @@ async function arrival(request, response) {
       try {
         await finished; // Availability is after actual containment, not merely the deadline timestamp.
         killedAt = Date.now(); lateAvailable++; const current = await readState();
-        assert.equal(current.stop, "lookup_worker_timeout"); assert.ok(response.destroyed);
+        assert.equal(current.stop, "lookup_worker_timeout");
         lateAcceptedSettles = current.slots[state.cursor].holds.filter(h => h.settlement).length;
         // A provider can have terminal usage available without a surviving client.
-        assert.ok(sse(payload, number).includes("response.completed")); resolveLate();
+        const destroyedBeforeWrite = response.destroyed;
+        lateDelivery = await new Promise(resolve => {
+          const done = error => resolve({attempted: true, destroyedBeforeWrite, writeAccepted, callbackError: error?.code ?? null, delivered: !error && !response.destroyed});
+          let writeAccepted = null;
+          try {writeAccepted = response.write(sse(payload, number), done);} catch (error) {done(error);}
+        });
+        if (lateDelivery.delivered) providerTerminalDelivered++;
+        resolveLate();
       }
       catch (error) {errors.push(error.message); resolveLate();}
     }, Math.max(0, target - Date.now()));
@@ -84,7 +91,7 @@ try {
   outerCompletedAt = Date.now(); resolveFinished();
   if (config.case === "late" && arrivals.length) await late;
   const state = await readState();
-  const result = {case: config.case, pilotSha256: digest(pilot), report, state, arrivals, partials, errors, lateAvailable, lateAcceptedSettles, outerCompletedAt, ...(config.case === "late" ? {providerTerminalDelivered: 0} : {}), providerLateAvailableAt: killedAt};
+  const result = {case: config.case, pilotSha256: digest(pilot), report, state, arrivals, partials, errors, lateAvailable, lateAcceptedSettles, outerCompletedAt, ...(config.case === "late" ? {providerTerminalDelivered, lateDelivery} : {}), providerLateAvailableAt: killedAt};
   await fs.writeFile(config.result, JSON.stringify(result));
   assert.deepEqual(errors, []);
 } finally {resolveFinished(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve));}

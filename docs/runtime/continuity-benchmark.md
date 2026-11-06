@@ -1551,9 +1551,11 @@ data reads after construction fail. This is a JavaScript filesystem-API canary i
 its worker threads, including nested workers, not an OS sandbox. Native and
 SQLite file I/O and internal ESM-loader bindings are outside that API canary;
 the proof additionally asserts that actual SQLite connection paths are test-owned.
+The process proof checks file-URL loader paths as well; native bindings and
+`sqlite.backup` remain outside the JavaScript API coverage.
 OS process-identity subprocesses are allowed by exact executable and argv. The
-full-process proof additionally allows exact read-only Git/protocol-verification
-commands and the production preparation/probe forks. Other subprocess calls throw.
+full-process proof additionally allows `ps -axo` group-liveness listings, exact
+read-only Git/protocol-verification commands and the production preparation/probe forks. Other subprocess calls throw.
 These subprocesses are not covered by the filesystem canary; the OS-identity
 commands read no home data. Git verification uses the test home, global config
 `/dev/null` and disabled system config. These tests use mocked authority, not
@@ -1567,8 +1569,9 @@ The controller releases its lease; observation-only recovery cannot grant more.
 
 The explicit off-lane configured-process proof uses full frozen fictional
 80-turn/64-tool replay, actual registered-source closure builds, the production
-controller/preparation/probe entrypoints and installed serializer. Baseline and
-guidance pack roles exercise the three-process flow. Native inventory rows are
+controller library (`runLookupPilot`), production preparation/probe child
+entrypoints and installed serializer. All four pack/soul variants exercise the
+three-process flow in the multi-round case. Native inventory rows are
 ineligible in this fixture: assert no native preparation, probe or hold, and do
 not describe this as an admitted-native topology. Skipping a row acquires no
 row-specific lease or claim; the faux controller still consumes its run-wide
@@ -1589,21 +1592,27 @@ refusal remains separately unit-tested. No runtime limit is enlarged.
 LOOKUP_CONFIGURED_PROOF=full node scripts/proofs/lookup-configured-full.mjs
 CI=1 LOOKUP_CONFIGURED_PROOF=full node scripts/proofs/lookup-configured-full.mjs
 node scripts/proofs/lookup-configured-full.mjs \
-  --verify-evidence .worklab-tmp/lookup-configured-full.json
+  --verify-evidence .worklab-tmp/lookup-configured-full-normal.json \
+  .worklab-tmp/lookup-configured-full-ci.json
 ```
 
 The required environment is fail-loud, never a silent skip. `--case=NAME` is
 explicit partial/debug evidence, not the complete proof. Evidence binds the
 exact clean source HEAD/tree, every tracked script, registered protocol/build
 hashes, Node executable and loaded dependency bytes; verification refuses stale
-evidence. Loader hooks only observe unmodified module bytes. Ordinary installed
+evidence, including incomplete, failed or single-case output; verification requires
+one normal and one CI run at distinct paths. Loader hooks check paths and observe
+unmodified module bytes. Recursive dependency-leaf identity/size/nanosecond time
+witnesses surround both fixture builds and each complete run. Ordinary installed
 dependency links are reused read-only: no SDK copies or resolution aliases.
-Per-slot wall, process high-water RSS and retained logical-byte disk deltas are
+Per-slot wall, process high-water RSS, retained totals and post-probe minus
+post-restore disk deltas (logical-or-allocated bytes) are
 instrumented measurements, not uninstrumented runtime guarantees. Killed-process
 RSS is the last observed high-water mark, not an exact post-kill peak. The literal
 600-second outer-kill case keeps a live SSE stream with nonterminal keepalives,
-withholds terminal usage, and records provider-late availability separately from
-accepted settles after containment; unavailable usage stays conservatively reserved.
+withholds terminal usage, then actually attempts a terminal write after containment.
+It records the write callback/error outcome separately from provider availability
+and accepted settles; unavailable usage stays conservatively reserved.
 These off-lane checks remain required at the exact reviewed head before opening
 the gate. No live provider behavior, evaluation quality, billing, power-loss
 durability or operator acceptance is established by faux proof results.
@@ -1617,7 +1626,7 @@ It accepts no flags or home override. It checks the OS
 account home's registry-parent ownership, permissions and canonical directory
 ancestry using metadata only: no writes, creation, claims or authorization.
 A missing parent is reported as safe-to-create only when every existing ancestor
-is safe; private existing registry directories must be owner-only. The report
+is safe; private existing registry directories, including `consumed-v1`, must be owner-only. The report
 contains no home path and is a point-in-time diagnostic, not a grant.
 
 Real consumption, whose fixed registry is derived from `userInfo().homedir`,
@@ -1698,9 +1707,9 @@ reservation of future disk or provider capacity.
 
    ```sh
    mkdir -p /tmp/lookup-volume/preflight /tmp/lookup-volume/output
-   OUTPUT_ROOT="$(pnpm exec node -p 'require("node:fs").realpathSync(process.argv[1])' /tmp/lookup-volume/output)"
-   PREFLIGHT_TMPDIR="$(pnpm exec node -p 'require("node:fs").realpathSync(process.argv[1])' /tmp/lookup-volume/preflight)"
-   CHILD_WATCHDOG_MS="$(pnpm exec node --input-type=module -e '
+   OUTPUT_ROOT="$(node -p 'require("node:fs").realpathSync(process.argv[1])' /tmp/lookup-volume/output)"
+   PREFLIGHT_TMPDIR="$(node -p 'require("node:fs").realpathSync(process.argv[1])' /tmp/lookup-volume/preflight)"
+   CHILD_WATCHDOG_MS="$(node --input-type=module -e '
      import { readFile } from "node:fs/promises";
      const registration = JSON.parse(await readFile(process.argv[1], "utf8"));
      const ms = registration.descriptor.deadlines.childWatchdogMs;
@@ -1708,7 +1717,7 @@ reservation of future disk or provider capacity.
      console.log(ms);
    ' /tmp/lookup-registration.json)" || exit 1
    export CHILD_WATCHDOG_MS
-   TMPDIR="$PREFLIGHT_TMPDIR" pnpm exec node \
+   TMPDIR="$PREFLIGHT_TMPDIR" node \
      scripts/continuity-lookup-compare.mjs preflight \
      --registration /tmp/lookup-registration.json --sha256 REGISTRATION_SHA \
      --timeout-ms "$CHILD_WATCHDOG_MS" --require-real-equivalent \

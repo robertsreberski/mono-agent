@@ -1,3 +1,5 @@
+import assert from "node:assert/strict";
+import { dependencyLeafSnapshot } from "../../__tests__/fixtures/lookup-leaf-witness.mjs";
 import fs from "node:fs/promises";
 import { execFileSync } from "node:child_process";
 import { withOfflineBuilds } from "../../__tests__/fixtures/lookup-offline-builds.mjs";
@@ -30,6 +32,7 @@ async function linkDependencies(source, target) {
   }
 }
 export async function fullConfiguredFixture(root, base) {
+  const leaves = [join(root, "node_modules")], leafBefore = await dependencyLeafSnapshot(leaves);
   const previous = {...process.env}, home = join(base, "build-home"), commands = [];
   await fs.mkdir(home);
   for (const key of Object.keys(process.env)) if (key.startsWith("GIT_") || /(?:_API_KEY|_TOKEN)$/u.test(key)) delete process.env[key];
@@ -66,7 +69,17 @@ export async function fullConfiguredFixture(root, base) {
     const loaded = await dataset.loadTraces({suite: "holdout", lookupSource: options.lookupSource, selectionSeed: 42, perGroup: 1, inputRoots: [f.repo, pack]});
     for (const path of policy.budget.paths) {const trace = loaded.traces.find(t => t.id === path.traceId); path.sourceSha256 = lookup.sourceAnnotation(trace, trace.probes.find(p => p.id === path.probeId)).sourceSha256;}
     const policyPath = join(f.inputs, "lookup-policy.json"); await fs.writeFile(policyPath, JSON.stringify(policy));
-    const pilot = await withOfflineBuilds(() => module.registerLookupPilot({...options, policyPath, policySha256: sha256(JSON.stringify(policy)), capUSD: 100, scheduleSeed: 13, runDeadlineMs: 1800000}), commands);
-    return {base, repo: f.repo, pack, home, pilot, commands};
-  } finally {for (const key of Object.keys(process.env)) if (!(key in previous)) delete process.env[key]; Object.assign(process.env, previous);}
+    const register = (policyPath, policy) => withOfflineBuilds(() => module.registerLookupPilot({...options, policyPath, policySha256: sha256(JSON.stringify(policy)), capUSD: 100, scheduleSeed: 13, runDeadlineMs: 1800000}), commands);
+    const pilot = await register(policyPath, policy);
+    const roundsPolicy = structuredClone(policy);
+    for (const path of roundsPolicy.budget.paths) if (["soul-only", "shipping"].includes(path.role)) {
+      path.admissionCap = 400000000;
+      path.initialAdmission = lookup.referenceFeasibility({calls: 0, bytes: 0, cumulativeBytes: 0, discovered: true}, roundsPolicy.budget, path);
+      path.feasibility = lookup.externalPathFeasibility(path, roundsPolicy.budget);
+    }
+    const roundsPath = join(f.inputs, "lookup-rounds-policy.json"); await fs.writeFile(roundsPath, JSON.stringify(roundsPolicy));
+    const roundsPilot = await register(roundsPath, roundsPolicy);
+    assert.deepEqual(await dependencyLeafSnapshot(leaves), leafBefore, "fixture build mutated shared dependency leaves");
+    return {base, repo: f.repo, pack, home, pilot, roundsPilot, commands, dependencyLeaves: {count: leafBefore.length, unchanged: true}};
+  } finally {assert.deepEqual(await dependencyLeafSnapshot(leaves), leafBefore, "fixture build mutated shared dependency leaves"); for (const key of Object.keys(process.env)) if (!(key in previous)) delete process.env[key]; Object.assign(process.env, previous);}
 }

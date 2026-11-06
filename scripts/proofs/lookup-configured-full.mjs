@@ -8,6 +8,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import assert from "node:assert/strict";
 import { fullConfiguredFixture } from "./fixtures/lookup-configured-fixture.mjs";
 import { lookupDependencyWitness } from "../lib/continuity-proof-tooling.mjs";
+import { dependencyLeafSnapshot } from "../__tests__/fixtures/lookup-leaf-witness.mjs";
+import { assertConfiguredEvidence, assertConfiguredEvidencePair } from "./fixtures/lookup-configured-evidence.mjs";
 const ROOT = await fs.realpath(fileURLToPath(new URL("../../", import.meta.url)));
 const sha = data => createHash("sha256").update(data).digest("hex");
 const git = args => execFileSync("git", ["-C", ROOT, ...args], {encoding: "utf8", env: {...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1"}}).trim();
@@ -23,21 +25,28 @@ async function binding() {
 }
 const verify = process.argv.indexOf("--verify-evidence");
 if (verify !== -1) {
-  const evidence = await json(process.argv[verify + 1]); assert.deepEqual(evidence.binding, await binding(), "proof evidence invalidated by current tree/runtime");
-  assert.deepEqual(evidence.dependencyWitness, await lookupDependencyWitness(ROOT), "installed dependency metadata changed");
-  for (const row of evidence.dependenciesLoaded) {
-    if (row.sha256 === null) await assert.rejects(fs.access(row.path), {code: row.absentCode ?? "ENOENT"});
-    else assert.equal(sha(await fs.readFile(row.path)), row.sha256, `changed dependency: ${row.path}`);
+  const paths = process.argv.slice(verify + 1).map(path => resolve(path));
+  assert.equal(new Set(paths).size, 2, "require two distinct evidence paths");
+  const evidences = await Promise.all(paths.map(json)); assertConfiguredEvidencePair(evidences);
+  for (const evidence of evidences) {
+    assert.deepEqual(evidence.binding, await binding(), "proof evidence invalidated by current tree/runtime");
+    const leaves = await dependencyLeafSnapshot([join(ROOT, "node_modules")]);
+    assert.deepEqual(evidence.dependencyLeaves, {count: leaves.length, sha256: sha(JSON.stringify(leaves)), unchanged: true}, "dependency leaves changed");
+    assert.deepEqual(evidence.dependencyWitness, await lookupDependencyWitness(ROOT), "installed dependency metadata changed");
+    for (const row of evidence.dependenciesLoaded) {
+      if (row.sha256 === null) await assert.rejects(fs.access(row.path), {code: row.absentCode ?? "ENOENT"});
+      else assert.equal(sha(await fs.readFile(row.path)), row.sha256, `changed dependency: ${row.path}`);
+    }
   }
-  console.log("lookup configured proof binding matches");
+  console.log("lookup configured complete normal + CI proof bindings match");
 } else {
   if (process.env.LOOKUP_CONFIGURED_PROOF !== "full") throw Error("LOOKUP_CONFIGURED_PROOF=full is required; this proof never silently skips");
   assert.equal(process.version, "v24.18.0"); assert.equal(process.platform, "darwin", "approved subprocess policy is Darwin-specific");
-  const sourceBinding = await binding(), depsBefore = await lookupDependencyWitness(ROOT);
+  const sourceBinding = await binding(), depsBefore = await lookupDependencyWitness(ROOT), leafBefore = await dependencyLeafSnapshot([join(ROOT, "node_modules")]);
   const selected = process.argv.find(arg => arg.startsWith("--case="))?.slice(7);
   const cases = selected ? [selected] : ["rounds", "cap", "limit", "sdk", "empty", "tier", "kill", "late"];
   assert.ok(cases.every(name => ["smoke", "rounds", "cap", "limit", "sdk", "empty", "tier", "kill", "late"].includes(name)), "unknown proof case");
-  const output = resolve(process.env.LOOKUP_PROOF_OUTPUT ?? join(ROOT, ".worklab-tmp/lookup-configured-full.json"));
+  const output = resolve(process.env.LOOKUP_PROOF_OUTPUT ?? join(ROOT, `.worklab-tmp/lookup-configured-full-${Object.hasOwn(process.env, "CI") ? "ci" : "normal"}.json`));
   assert.ok(output.startsWith(join(ROOT, ".worklab-tmp/")), "evidence must remain in the owned ignored directory");
   const base = process.env.LOOKUP_PROOF_FIXTURE ? await fs.realpath(process.env.LOOKUP_PROOF_FIXTURE) : await fs.realpath(await fs.mkdtemp(join(tmpdir(), "lookup-configured-proof-")));
   let fixture, settingsPath = join(base, "fixture.json");
@@ -95,6 +104,7 @@ if (verify !== -1) {
         await assert.rejects(fs.access(join(outputRoot, "work", state.schedule[i].slotId)), {code: "ENOENT"});
       }
       assert.ok(value.arrivals.length > 0, "full configured path made no provider arrival");
+      if (name === "rounds") assert.deepEqual([...new Set(state.schedule.filter((_, i) => state.slots[i].worker).map(s => s.roleId))].sort(), ["pack", "pack-only", "shipping", "soul-only"]);
       if (["smoke", "rounds"].includes(name)) assert.ok(state.slots.filter(s => s.worker).every(s => s.terminal === "wrong" && s.holds.every(h => h.settlement?.kind === "settled")));
       const keys = new Set(value.arrivals.map(a => a.slotId));
       for (const key of keys) {
@@ -108,7 +118,7 @@ if (verify !== -1) {
       if (name === "tier") assert.equal(state.stop, "lookup_unknown_tier");
       if (name === "late") {
         assert.equal(fixture.pilot.descriptor.deadlines.deadlineMs, 600000); assert.equal(value.lateAvailable, 1); assert.equal(value.lateAcceptedSettles, 0); assert.equal(state.stop, "lookup_worker_timeout");
-        assert.equal(value.providerTerminalDelivered, 0); assert.ok(value.providerLateAvailableAt >= value.outerCompletedAt); assert.ok(value.arrivals[0].at < value.providerLateAvailableAt);
+        assert.equal(value.providerTerminalDelivered, 0); assert.equal(value.lateDelivery.attempted, true); assert.equal(value.lateDelivery.delivered, false); assert.equal(typeof value.lateDelivery.callbackError, "string"); assert.ok(value.providerLateAvailableAt >= value.outerCompletedAt); assert.ok(value.arrivals[0].at < value.providerLateAvailableAt);
       }
       assert.ok(value.partials.every(p => p.qualityMeasured === false && p.authorizedSpend === false && p.cost.totalUSD >= 3.92));
       const rows = [];
@@ -149,23 +159,33 @@ if (verify !== -1) {
         }
         assert.ok(preparation.databases.some(path => path.includes("/checkpoint/lease-home/") && probe.databases.includes(path)), "leftover physical lease-home was not reused");
         const disk = await retained.lookupRetainedBytes(join(outputRoot, "work", slot.slotId));
+        assert.ok(probe.postRestoreRetained, "missing post-restore baseline");
+        const postRestore = probe.postRestoreRetained, retainedTotal = disk.retainedBytes;
+        const postProbeMinusPostRestoreBytes = retainedTotal - postRestore.retainedBytes;
+        const additionalProbeAllowanceBytes = Math.max(0, postProbeMinusPostRestoreBytes);
+        const preflightPerSlotRetainedBytes = forkRecord.preflightEquivalentRetainedBytes;
+        const postProbeExcessOverPreflightBytes = retainedTotal - preflightPerSlotRetainedBytes;
+        const requiredWithProbeAndMarginBytes = Math.ceil((preflightPerSlotRetainedBytes + additionalProbeAllowanceBytes) * 1.25);
         const observedOuterMs = value.outerCompletedAt == null ? null : value.outerCompletedAt - forkRecord.at;
         if (name === "late") {assert.ok(observedOuterMs >= 600000 && observedOuterMs < 630000); assert.ok(value.report.cost.totalUSD >= 3.92);}
-        metrics.push({nativeSessions, observedOuterMs, probeDiskGrowthBytes: disk.workBytes - disk.snapshotBytes, slotId: slot.slotId, role: state.schedule[index].roleId, probeWallMs: probe.elapsedMs, peakRSSBytes: probe.peakRSSBytes, rssExactAtExit: !["late", "kill"].includes(name), retained: await retained.lookupRetainedBytes(join(outputRoot, "work", slot.slotId)), preparationToolCalls: preparation.httpCalls.filter(r => r.method === "tools/call").length});
+        metrics.push({nativeSessions, observedOuterMs, workMinusSnapshotBytes: disk.workBytes - disk.snapshotBytes, postRestore, retainedTotal, postProbeMinusPostRestoreBytes, additionalProbeAllowanceBytes, preflightPerSlotRetainedBytes, postProbeExcessOverPreflightBytes, requiredWithProbeAndMarginBytes, slotId: slot.slotId, role: state.schedule[index].roleId, probeWallMs: probe.elapsedMs, peakRSSBytes: probe.peakRSSBytes, rssExactAtExit: !["late", "kill"].includes(name), retained: await retained.lookupRetainedBytes(join(outputRoot, "work", slot.slotId)), preparationToolCalls: preparation.httpCalls.filter(r => r.method === "tools/call").length});
       }
       const projected = structuredClone(value);
       for (const slot of projected.state.slots) if (slot.cacheKey) {slot.cacheAssignmentDigest = sha(slot.cacheKey); slot.cacheKey = "REDACTED";}
       witnesses.push(...rows); results.push({...projected, metrics, wallMs: Date.now() - startedAt});
       await fs.writeFile(`${output}.checkpoint`, JSON.stringify({base, sourceBinding, completed: results.map(r => r.case)}));
     }
+    assert.deepEqual(await dependencyLeafSnapshot([join(ROOT, "node_modules")]), leafBefore, "D mutated shared dependency leaves");
     assert.deepEqual(await binding(), sourceBinding); assert.deepEqual(await lookupDependencyWitness(ROOT), depsBefore);
-    const report = {schema: "lookup-configured-full-proof-v1", complete: !selected, ci: Object.hasOwn(process.env, "CI"), binding: sourceBinding, dependencyWitness: depsBefore, results, witnesses, dependenciesLoaded: [...dependenciesLoaded.values()], fixtureBuilds: fixture.commands, nativeTopology: "ineligible; no native dispatch; no admitted native proof", limits: ["JS API canary, not OS/native-I/O sandbox", "SQLite connection paths checked; SQL ATTACH/native loader not sandboxed", "kill-case RSS is last observed process high-water mark", "faux data/feasibility/provider usage, not evaluation or real authorization"]};
+    const report = {schema: "lookup-configured-full-proof-v1", complete: !selected, ci: Object.hasOwn(process.env, "CI"), binding: sourceBinding, dependencyWitness: depsBefore, dependencyLeaves: {count: leafBefore.length, sha256: sha(JSON.stringify(leafBefore)), unchanged: true}, results, witnesses, dependenciesLoaded: [...dependenciesLoaded.values()], fixtureBuilds: fixture.commands, nativeTopology: "ineligible; no native dispatch; no admitted native proof", limits: ["JS API canary, not OS/native-I/O sandbox", "SQLite connection paths checked; SQL ATTACH/native loader not sandboxed", "kill-case RSS is last observed process high-water mark", "faux data/feasibility/provider usage, not evaluation or real authorization"]};
+    if (!selected) assertConfiguredEvidence(report);
     await fs.writeFile(output, JSON.stringify(report), {mode: 0o600}); delivered = true; console.log(JSON.stringify({complete: report.complete, cases, output, base}));
   } catch (error) {
     await fs.writeFile(output, JSON.stringify({schema: "lookup-configured-full-proof-v1", complete: false, binding: sourceBinding, dependencyWitness: depsBefore, fixtureBase: base, results, witnesses, dependenciesLoaded: [...dependenciesLoaded.values()], failure: error.message}), {mode: 0o600});
     throw error;
   } finally {
     assert.deepEqual(await lookupDependencyWitness(ROOT), depsBefore);
+    assert.deepEqual(await dependencyLeafSnapshot([join(ROOT, "node_modules")]), leafBefore, "D mutated shared dependency leaves");
     // Debug retains a source-bound fixture for investigation; full delivery cleans it.
     if (delivered && !selected && !process.env.LOOKUP_PROOF_KEEP) await fs.rm(base, {recursive: true, force: true});
   }

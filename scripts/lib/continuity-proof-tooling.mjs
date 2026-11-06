@@ -4,7 +4,6 @@ import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { parse } from "yaml";
 
-export const PNPM_NO_INSTALL = Object.freeze(["--config.verify-deps-before-run=false", "--config.manage-package-manager-versions=false", "--config.offline=true"]);
 const hash = bytes => createHash("sha256").update(bytes).digest("hex");
 const need = ok => {if (!ok) throw Error("lookup_dependency_lock_mismatch");};
 export async function lookupDependencyWitness(root) {

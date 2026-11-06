@@ -3,8 +3,12 @@ import { lstat, realpath } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { userInfo } from "node:os";
 
+export const LOOKUP_REGISTRY_LAYOUT = Object.freeze([
+  [".local", false], ["state", false], ["mono-agent", true], ["lookup-pilot", true], ["consumed-v1", true],
+].map(row => Object.freeze(row)));
+
 export async function lookupRegistryReadiness(home = userInfo().homedir) {
-  const uid = userInfo().uid, segments = [".local", "state", "mono-agent", "lookup-pilot"];
+  const uid = userInfo().uid, segments = LOOKUP_REGISTRY_LAYOUT;
   let checked = 0;
   try {
     if (!isAbsolute(home) || resolve(home) !== home) throw Error("unsafe");
@@ -16,7 +20,7 @@ export async function lookupRegistryReadiness(home = userInfo().homedir) {
     }
     if (await realpath(home) !== home) throw Error("unsafe");
     let path = home;
-    for (const name of segments) {
+    for (const [name, privateMode] of segments) {
       path = join(path, name);
       let stat;
       try {stat = await lstat(path);} catch (error) {
@@ -24,7 +28,7 @@ export async function lookupRegistryReadiness(home = userInfo().homedir) {
         throw error;
       }
       if (!stat.isDirectory() || ![uid, 0].includes(stat.uid) || (stat.mode & 0o022) !== 0 || await realpath(path) !== path) throw Error("unsafe");
-      if (["mono-agent", "lookup-pilot"].includes(name) && (stat.uid !== uid || (stat.mode & 0o077) !== 0)) throw Error("unsafe");
+      if (privateMode && (stat.uid !== uid || (stat.mode & 0o077) !== 0)) throw Error("unsafe");
       checked++;
     }
     return {ready: true, parentExists: true, checked, missing: 0, code: "lookup_registry_parent_ready"};

@@ -29,6 +29,8 @@ it("covers path APIs, ROOT script code and strict noncode reads without permitti
     expect(guard.result().scriptCodeAccesses).toEqual([{api: "existsSync", path: "scripts/lib/module.mjs"}, {api: "readFileSync", path: "scripts/lib/module.mjs"}]);
     expect(() => fs.existsSync(join(p.root, "auth.json"))).toThrow("test_root_data_read_denied");
     expect(() => fs.readFileSync(join(p.root, "data.json"))).toThrow("test_root_data_read_denied");
+    expect(() => new fs.ReadStream(path)).toThrow("test_real_home_denied");
+    expect(() => new fs.WriteStream(path)).toThrow("test_real_home_denied");
     expect(() => fs.writeFileSync(script, "no")).toThrow("test_real_home_denied");
   } finally {guard.restore(); await fsp.rm(p.ownedRoot, {recursive: true, force: true});}
 }, 30000);

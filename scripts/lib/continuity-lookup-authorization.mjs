@@ -1,3 +1,4 @@
+import { LOOKUP_REGISTRY_LAYOUT } from "./continuity-lookup-registry-readiness.mjs";
 // Private local attestations, not authenticated approval. No issuer and no dispatch.
 import { constants } from "node:fs";
 import { lstat, mkdir, open, realpath, readdir } from "node:fs/promises";
@@ -144,18 +145,18 @@ async function registry(ctx, create) {
   try {
     const home = userInfo().homedir;
     await safeDirectory(home, code);
-    const fixed = join(home, ".local/state/mono-agent/lookup-pilot/consumed-v1");
+    const fixed = join(home, ...LOOKUP_REGISTRY_LAYOUT.map(([name]) => name));
     need(disjoint(fixed, ctx.outputRoot), code);
     for (const c of Object.values(ctx.pilot.registration.codes)) need(disjoint(fixed, await realpath(c.path)), code);
     let path = home;
-    for (const segment of [".local", "state", "mono-agent", "lookup-pilot", "consumed-v1"]) {
+    for (const [segment, privateMode] of LOOKUP_REGISTRY_LAYOUT) {
       path = join(path, segment);
       if (create) {
         try { await mkdir(path, { mode: 0o700 }); } catch (e) { if (e.code !== "EEXIST") throw e; }
         await syncDirectory(dirname(path));
       }
       if (!create && !await exists(path)) return { absent: true };
-      await safeDirectory(path, code, ["mono-agent", "lookup-pilot", "consumed-v1"].includes(segment));
+      await safeDirectory(path, code, privateMode);
     }
     need(disjoint(path, ctx.outputRoot), code);
     for (const c of Object.values(ctx.pilot.registration.codes)) need(disjoint(path, await realpath(c.path)), code);
