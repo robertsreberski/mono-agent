@@ -48,7 +48,7 @@ export async function fullConfiguredFixture(root, base) {
   for (const key of Object.keys(process.env)) if (key.startsWith("GIT_") || /(?:_API_KEY|_TOKEN)$/u.test(key)) delete process.env[key];
   Object.assign(process.env, {HOME: home, XDG_CACHE_HOME: home, XDG_CONFIG_HOME: home, XDG_DATA_HOME: home, XDG_STATE_HOME: home, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", COREPACK_ENABLE_NETWORK: "0"});
   try {
-    const f = await syntheticContext(base, {families: 4, conversationsPerFamily: 1, conversationsPerCorpus: 2, shards: 2, perCorpusPerShard: 1}, {isolatedDependencies: true});
+    const f = await syntheticContext(base, {families: 4, conversationsPerFamily: 1, conversationsPerCorpus: 2, shards: 2, perCorpusPerShard: 1}, {isolatedDependencies: false});
     // Retain the complete registered frozen data, replace ONLY the synthetic code
     // repository with the actual tracked source and genuine closure builds.
     await fs.rm(f.repo, {recursive: true});
