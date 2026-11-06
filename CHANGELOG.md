@@ -59,16 +59,17 @@
 - Add offline lookup-pilot accounting and partial-run reports with durable
   admission holds, drained settlements and identity-bound worker containment.
   Partial coverage includes assigned in-flight slots; refused rounds are not
-  provider losses. Real authorizations and paid dispatch remain unavailable.
+  provider losses. Paid dispatch is limited to the authorization-gated pilot
+  route above; no authorization issuer ships.
 
 - Add offline lookup pilot descriptors, exact cap estimates and private
   single-use authorization checks that prevent reuse after a crashed run.
-  Ordinary paid lookup routes remain refused; no pilot dispatch is enabled.
+  Ordinary paid lookup routes remain refused.
 
 - Add an advanced turn `piModelsDecorator` seam over normally credentialed Models,
   mutually exclusive with `piResolvedModels`.
 - Add offline-only guarded lookup request contracts and assumption checks; keep
-  every real lookup execution route unauthorized.
+  ordinary real lookup execution routes unauthorized.
 
 - Add offline lookup readiness reports that show why real execution is blocked,
   and list infeasible probes as skipped instead of missing or failed. Keep
