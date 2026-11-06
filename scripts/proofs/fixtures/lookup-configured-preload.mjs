@@ -74,8 +74,12 @@ net.Server.prototype.listen = function (...args) {
   this.prependOnceListener("listening", () => {
     scope.files.constructed();
     if (!sentinel) {
-      globalThis.fetch = () => {globalFetchCalls++; throw Error("test_global_fetch_denied");}; sentinel = true;
-      try {globalThis.fetch();} catch (error) {if (error.message !== "test_global_fetch_denied") throw error;}
+      const nativeFetch = globalThis.fetch.bind(globalThis);
+      globalThis.fetch = (url, options) => {
+        if (scope.ownsOrigin(typeof url === "string" || url instanceof URL ? String(url) : url.url)) return nativeFetch(url, options);
+        globalFetchCalls++; throw Error("test_global_fetch_denied");
+      }; sentinel = true;
+      try {globalThis.fetch("https://example.invalid/denied-canary");} catch (error) {if (error.message !== "test_global_fetch_denied") throw error;}
       globalFetchCalls = 0;
     }
   });

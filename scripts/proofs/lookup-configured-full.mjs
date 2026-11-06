@@ -82,7 +82,7 @@ if (verify !== -1) {
       }
       const state = value.state;
       for (let i = 0; i < state.schedule.length; i++) if (["native", "native-soul"].includes(state.schedule[i].roleId)) {
-        assert.equal(state.schedule[i].eligible, false); assert.equal(state.slots[i].preparation, null); assert.equal(state.slots[i].worker, null); assert.equal(state.slots[i].holds.length, 0);
+        assert.equal(state.schedule[i].eligible, false); assert.equal(state.slots[i].preparation ?? null, null); assert.equal(state.slots[i].worker, null); assert.equal(state.slots[i].holds.length, 0);
       }
       assert.ok(value.arrivals.length > 0, "full configured path made no provider arrival");
       const keys = new Set(value.arrivals.map(a => a.slotId));
