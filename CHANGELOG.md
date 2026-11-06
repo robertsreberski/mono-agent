@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Reject non-directory lookup-preflight output roots before preparation while
+  keeping missing-path disk checks read-only and real lookup execution closed.
+
 - Require explicit lookup-preflight timeouts, check output-volume free space
   without writing, and enforce effective timing and retained-disk margins before
   a cap request; require real-timeout equivalence and consistent wire-body types.

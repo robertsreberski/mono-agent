@@ -146,13 +146,22 @@ metered ConversationHistory server only: **SessionHistory is not part of
 `lookup-allowed-v1`**, nor is any other history/tool-history alias or MCP server.
 Unexpected endpoints fail closed rather than exposing an unmetered route.
 
-The probe deadline is 600 seconds, with a 60-second cleanup allowance, a
-690-second turn safety timeout and a 720-second parent-enforced child watchdog.
+The lookup limits are a 600-second probe deadline, a 60-second cleanup allowance,
+a 690-second turn safety timeout and a 720-second child watchdog. In a pilot the
+outer kill is the minimum of the requested watchdog, 720 seconds, the 600-second
+latency deadline and remaining run time. It therefore coincides with the latency
+deadline or fires earlier: the 690-second turn timeout and 60 seconds of
+post-deadline cleanup cannot extend that outer limit. Usage arriving after the
+kill cannot release the reservation; unknown usage stays conservatively reserved.
+Late provider usage availability is distinct from a settlement accepted by the
+controller. A literal-deadline measurement remains required; no late-usage
+frequency or live-provider timing is established here.
 For probe turns, `maxTurns = callBudget + 2 = 10` stays within the config maximum of 100; this
 probe ceiling does not constrain scripted checkpoint replay. Child failures
 retain their explicit code and accumulated content-free meter/witness state
-even on a nonzero exit. Latency exhaustion is distinct from the hard child watchdog; test clocks prove deadline
-admission without waiting ten minutes.
+even on a nonzero exit. Probe-side latency exhaustion and hard-watchdog failure
+have distinct classifications; test clocks prove deadline admission without
+waiting ten minutes, not extra cleanup time beyond the pilot's outer kill.
 
 The lookup report keeps **every planned slot**, including missing, duplicate,
 unstarted, failed and budget-infeasible slots. Per arm it reports source
@@ -1337,8 +1346,10 @@ requires that exact key in `prompt_cache_key`, `session-id` and
 `x-client-request-id`; all three must be present. Only the inner serializer
 receives this key as its `sessionId`. Harness/runtime session IDs, native
 authority, provider session IDs and restored messages are not replaced. Native
-and pack slots use the same allocation policy. Configured-harness tests use
-faux sends only; the real route remains unavailable.
+and pack slots use the same allocation policy. Controller tests use faux
+consumption; a separate credentialed-path unit proof exercises the real branded
+send with mocked authority and an exclusively loopback dispatcher. Neither test
+can enable the real route.
 
 One serialized writer holds the lease from faux consumption through reporting.
 The faux burn registry has its own domain under the output's parent, never the
@@ -1349,8 +1360,9 @@ spares, retry, resume or public-trace substitution.
 
 Guard admission, consumption, settlement and stop use lockstep IPC, with no
 retries. Epoch, slot, worker identity and the expected next message bind each
-exchange. Holds and one-time consumption are persisted before acknowledgement;
-the client independently reads the acknowledgement from disk. A disconnect,
+exchange. Holds and one-time consumption are persisted before acknowledgement
+and before send; the client independently reads the acknowledgement from disk.
+This is persisted-before-send ordering, not a power-loss durability guarantee. A disconnect,
 integrity error or timeout stops and contains the owned group before another
 slot can start. Settlement remains legal after a sticky stop, never admission. An IPC stop
 allows a bounded 250 ms settle grace, drains messages already received, then
@@ -1520,8 +1532,17 @@ body digest and allows only one native fetch per hold, with redirects refused
 and no retry. Final account headers must match the salted commitment; same-account
 token rotation is permitted. Account mismatch, HTTP 401/403, HTTP 429 and known
 Codex usage-limit JSON/SSE errors await their fixed sticky stops. The guard's
-settlement contract is unchanged. Unit tests use mocked verification graphs,
-fictional values and denied egress, not execution-valid authorizations.
+settlement contract is unchanged. The credentialed-path proof enters the real
+configured harness and post-credential Models decorator with an unexpired
+fictional OAuth file. The installed SDK derives the account and exact cache
+payload/headers. Success and retryable-failure cases make one SDK fetch attempt;
+account mismatch makes no native attempt. Coverage counts actual credential
+reads, Models construction and OAuth derivation, with zero refresh calls.
+Credential writes and global-fetch fallback fail; the closure's captured native
+fetch is routed only to its test-owned loopback listener. The home-data canary
+allows read-only canonical checkout access, refuses home access outside it and
+all home/checkout writes, and audits post-construction checkout reads as installed
+module code. These tests use mocked authority, not execution-valid authorizations.
 
 Containment retains proven members in memory when journal persistence fails.
 Fresh PID/start/pgid proof remains mandatory for every signal; persistence failure
@@ -1529,10 +1550,15 @@ is never treated as a grant or a successful durable write. Done ACK cleanup and
 containment rejection remain bounded even when the journal is sticky-failed.
 The controller releases its lease; observation-only recovery cannot grant more.
 
-The two-process native/pack smoke, explicit inherited egress/credential preload,
-per-process canaries, persisted hold/consumption listener checks and arrival-kill
-proof remain a separate required step. No live provider behavior, billing,
-power-loss durability or operator acceptance is established by these unit tests.
+The complete three-process native/pack smoke still requires full registered
+preparation replay, explicit inherited egress/credential denial, per-process
+canaries, persisted hold/consumption listener checks, arrival-kill reconciliation
+and disk/wall/RSS measurements. Its provider listener belongs to the controller;
+production ConversationHistory and its forwarder stay probe-owned. That full
+proof and the literal 600-second late-usage case are separate from the default
+unit lane and remain required before opening the gate. Their measurements are
+not yet established. No live provider behavior, billing, power-loss durability
+or operator acceptance is established by these unit tests.
 
 
 ### Offline preparation feasibility
