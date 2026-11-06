@@ -46,3 +46,16 @@ export function assertConfiguredEvidencePair(evidences) {
   for (const evidence of evidences) assertConfiguredEvidence(evidence);
   assert.deepEqual(evidences.map(e => e.ci).sort(), [false, true]);
 }
+
+export function assertConfiguredCIValue(env) {
+  assert.ok(!Object.hasOwn(env, "CI") || env.CI === "1", "configured proof requires CI absent or exactly 1");
+}
+export function configuredCaseWatchdogMs(name, eligibleSlots) {
+  // Hang detection only: sequential rounds need per-slot slack, not a pilot deadline change.
+  if (name === "rounds") {
+    assert.ok(Number.isSafeInteger(eligibleSlots) && eligibleSlots >= 0);
+    const milliseconds = 120000 * eligibleSlots + 120000;
+    assert.ok(Number.isSafeInteger(milliseconds)); return milliseconds;
+  }
+  return name === "late" ? 2100000 : 360000;
+}

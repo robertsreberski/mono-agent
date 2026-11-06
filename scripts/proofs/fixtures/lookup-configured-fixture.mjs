@@ -38,6 +38,7 @@ export async function fullConfiguredFixture(root, base) {
   await fs.mkdir(home);
   for (const key of Object.keys(process.env)) if (key.startsWith("GIT_") || /(?:_API_KEY|_TOKEN)$/u.test(key)) delete process.env[key];
   Object.assign(process.env, {HOME: home, XDG_CACHE_HOME: home, XDG_CONFIG_HOME: home, XDG_DATA_HOME: home, XDG_STATE_HOME: home, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", COREPACK_ENABLE_NETWORK: "0"});
+  let setupError, setupFailed = false;
   try {
     const f = await syntheticContext(base, {families: 4, conversationsPerFamily: 1, conversationsPerCorpus: 2, shards: 2, perCorpusPerShard: 1}, {isolatedDependencies: false});
     // Retain the complete registered frozen data, replace ONLY the synthetic code
@@ -96,8 +97,9 @@ export async function fullConfiguredFixture(root, base) {
     const roundsPilot = await register(roundsPath, roundsPolicy);
     assert.deepEqual(await dependencyLeafSnapshot(leaves), leafBefore, "fixture build mutated shared dependency leaves");
     return {base, repo: f.repo, pack, home, pilot, roundsPilot, commands, webBuild: {installBypassed: true, nestedDependencies: "private APFS clone", flags: OFFLINE_FLAGS}, dependencyLeaves: {count: leafBefore.length, unchanged: true}};
-  } finally {
+  } catch (error) {setupFailed = true; setupError = error; throw error;} finally {
     try {assert.deepEqual(await dependencyLeafSnapshot(leaves), leafBefore, "fixture build mutated shared dependency leaves");}
+    catch (error) {if (setupFailed) error.cause = setupError; throw error;}
     finally {for (const key of Object.keys(process.env)) if (!(key in previous)) delete process.env[key]; Object.assign(process.env, previous);}
   }
 }

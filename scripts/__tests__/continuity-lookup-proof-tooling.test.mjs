@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { retainedSync } from "../proofs/fixtures/lookup-configured-retained.mjs";
 import { lookupRetainedBytes } from "../lib/continuity-lookup-preparation.mjs";
 import { lookupDependencyWitness } from "../lib/continuity-proof-tooling.mjs";
-import { assertConfiguredEvidence, assertConfiguredEvidencePair, CONFIGURED_PROOF_CASES } from "../proofs/fixtures/lookup-configured-evidence.mjs";
+import { assertConfiguredEvidence, assertConfiguredEvidencePair, CONFIGURED_PROOF_CASES, assertConfiguredCIValue, configuredCaseWatchdogMs } from "../proofs/fixtures/lookup-configured-evidence.mjs";
 
 function evidence(ci = false) {
   const stops = ["completed", "budget_admission", "lookup_repeated_loss", "lookup_repeated_loss", "invalid_unit_rate", "lookup_unknown_tier", null, "lookup_worker_timeout"];
@@ -71,6 +71,7 @@ it("accepts valid rounds regardless of arrival order", () => {
 it("restores the fixture environment even when its cleanup snapshot assertion throws", async () => {
   const base = await mkdtemp(join(tmpdir(), "lookup-env-finally-")), original = {...process.env};
   process.env.FICTIONAL_FIXTURE_ORIGINAL = "before";
+  const setupError = Error("fictional_setup_failure");
   const previous = {...process.env}, snapshot = vi.fn().mockResolvedValueOnce([]).mockResolvedValueOnce([["changed"]]);
   vi.resetModules();
   vi.doMock("./fixtures/lookup-leaf-witness.mjs", () => ({dependencyLeafSnapshot: snapshot}));
@@ -78,12 +79,14 @@ it("restores the fixture environment even when its cleanup snapshot assertion th
     syntheticContext: async () => {
       expect(process.env.HOME).toBe(join(base, "build-home"));
       delete process.env.FICTIONAL_FIXTURE_ORIGINAL; process.env.FICTIONAL_FIXTURE_ADDED = "during";
-      throw Error("fictional_setup_failure");
+      throw setupError;
     }, fixtureGit: vi.fn(), fixtureCommit: vi.fn(), fixtureLookupPolicy: vi.fn(),
   }));
   try {
     const {fullConfiguredFixture} = await import("../proofs/fixtures/lookup-configured-fixture.mjs");
-    await expect(fullConfiguredFixture(join(base, "source"), base)).rejects.toThrow("fixture build mutated shared dependency leaves");
+    const failure = fullConfiguredFixture(join(base, "source"), base);
+    await expect(failure).rejects.toThrow("fixture build mutated shared dependency leaves");
+    await expect(failure).rejects.toHaveProperty("cause", setupError);
     expect(snapshot).toHaveBeenCalledTimes(2);
     // Compare without printing any inherited environment values on a failure.
     expect(Object.keys(process.env).sort()).toEqual(Object.keys(previous).sort());
@@ -133,4 +136,16 @@ it("verifies dependency lock/importer/links read-only and rejects mismatches", a
     await writeFile(join(root, "node_modules/.pnpm/lock.yaml"), "{}");
     await expect(lookupDependencyWitness(root)).rejects.toThrow("lookup_dependency_lock_mismatch");
   } finally {await rm(root, {recursive: true, force: true});}
+});
+
+it.each(["", "0", "true", undefined])("refuses present CI=%s before a configured proof starts", CI => {
+  expect(() => assertConfiguredCIValue({CI})).toThrow("configured proof requires CI absent or exactly 1");
+});
+it("accepts only absent CI or CI=1 at configured proof startup", () => {
+  expect(() => assertConfiguredCIValue({})).not.toThrow(); expect(() => assertConfiguredCIValue({CI: "1"})).not.toThrow();
+});
+it("budgets rounds hang detection by eligible slots without changing other proof watchdogs", () => {
+  expect(configuredCaseWatchdogMs("rounds", 8)).toBe(1080000); expect(configuredCaseWatchdogMs("rounds", 4)).toBe(600000);
+  for (const name of CONFIGURED_PROOF_CASES.filter(n => !["rounds", "late"].includes(n))) expect(configuredCaseWatchdogMs(name, 8)).toBe(360000);
+  expect(configuredCaseWatchdogMs("late", 8)).toBe(2100000);
 });
