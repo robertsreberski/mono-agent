@@ -33,6 +33,21 @@ it("covers path APIs, ROOT script code and strict noncode reads without permitti
   } finally {guard.restore(); await fsp.rm(p.ownedRoot, {recursive: true, force: true});}
 }, 30000);
 
+it("opens and consumes an owned Blob while refusing home and noncode ROOT Blob reads", async () => {
+  const p = await fixture(), owned = join(p.evidence, "blob.txt"), script = join(p.root, "scripts/lib/blob.mjs");
+  await fsp.mkdir(join(p.root, "scripts/lib"), {recursive: true});
+  await fsp.writeFile(owned, "fictional blob bytes"); await fsp.writeFile(script, "export {};\n");
+  const guard = credentialedHomeCanary(p);
+  try {
+    guard.constructed();
+    expect(await (await fs.openAsBlob(owned)).text()).toBe("fictional blob bytes");
+    expect(await (await fs.openAsBlob(script)).text()).toBe("export {};\n");
+    expect(guard.result().scriptCodeAccesses).toContainEqual({api: "openAsBlob", path: "scripts/lib/blob.mjs"});
+    expect(() => fs.openAsBlob(join(p.home, "private.txt"))).toThrow("test_real_home_denied");
+    expect(() => fs.openAsBlob(join(p.root, "private.txt"))).toThrow("test_root_data_read_denied");
+  } finally {guard.restore(); await fsp.rm(p.ownedRoot, {recursive: true, force: true});}
+}, 30000);
+
 it.each(["spawn", "spawnSync", "exec", "execSync", "execFile", "execFileSync", "fork"])("refuses non-allowlisted child_process.%s", async family => {
   const p = await fixture(), scope = installLookupProofScope(p);
   try {expect(() => child[family]("/bin/echo", ["denied"])).toThrow("test_subprocess_denied");}

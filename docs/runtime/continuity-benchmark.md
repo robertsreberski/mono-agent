@@ -1667,6 +1667,14 @@ reservation of future disk or provider capacity.
    mkdir -p /tmp/lookup-volume/preflight /tmp/lookup-volume/output
    OUTPUT_ROOT="$(pnpm exec node -p 'require("node:fs").realpathSync(process.argv[1])' /tmp/lookup-volume/output)"
    PREFLIGHT_TMPDIR="$(pnpm exec node -p 'require("node:fs").realpathSync(process.argv[1])' /tmp/lookup-volume/preflight)"
+   CHILD_WATCHDOG_MS="$(pnpm exec node --input-type=module -e '
+     import { readFile } from "node:fs/promises";
+     const registration = JSON.parse(await readFile(process.argv[1], "utf8"));
+     const ms = registration.descriptor.deadlines.childWatchdogMs;
+     if (!Number.isSafeInteger(ms) || ms < 1) throw new Error("invalid childWatchdogMs");
+     console.log(ms);
+   ' /tmp/lookup-registration.json)" || exit 1
+   export CHILD_WATCHDOG_MS
    TMPDIR="$PREFLIGHT_TMPDIR" pnpm exec node \
      scripts/continuity-lookup-compare.mjs preflight \
      --registration /tmp/lookup-registration.json --sha256 REGISTRATION_SHA \

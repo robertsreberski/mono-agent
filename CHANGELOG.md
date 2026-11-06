@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Recheck normalized faux lookup transport methods and redirects before sending,
+  rejecting request accessors that change after initial validation.
+
 - Add read-only lookup consumption-registry readiness checks and reject symlinked
   or non-directory preflight output roots before preparation, keeping missing-path
   disk checks read-only and real lookup execution closed.

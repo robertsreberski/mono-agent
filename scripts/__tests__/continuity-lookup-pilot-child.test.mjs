@@ -60,6 +60,22 @@ it.each([undefined, {}, Object.create({method: "POST"}), {method: "GET"}, {metho
   expect(fetch).toHaveBeenCalledOnce(); expect(fetch.mock.calls[0][0]).toBe(state.fauxEndpoint);
 });
 
+it.each(["method", "redirect"])("rejects a mutating enumerable %s accessor after normalization without spending its permit", async key => {
+  const body = Buffer.from("fictional guarded body"), now = Date.now();
+  state.deadlineAt = now + 60000; state.slots[0] = {terminal: null, startedAt: now, holds: [{consumed: true, permitId: "fictional-permit", payloadDigest: createHash("sha256").update(body).digest("hex")}]};
+  const a = {outputRoot: "/fictional/output", index: 0, slot: {code: "R0"}, cacheKey: "assigned", runId: "fictional-run", slotId: "fictional-slot", plan: {}, roleRequest: {},
+    pilot: {registration: {codes: {R0: {path: "/fictional/root"}}}, descriptor: {deadlines: {deadlineMs: 60000}}}};
+  fetch.mockResolvedValue(new Response("fictional response"));
+  const {createLookupFauxSend} = await import("../lib/continuity-lookup-faux-capability.mjs"), send = await createLookupFauxSend(a, {});
+  const good = {method: "POST", body, headers: {"session-id": "assigned", "x-client-request-id": "assigned"}, redirect: "error"}, bad = {...good};
+  let reads = 0;
+  Object.defineProperty(bad, key, {enumerable: true, get: () => ++reads <= (key === "method" ? 1 : 2) ? good[key] : key === "method" ? "PUT" : "follow"});
+  await expect(send("https://fixture.invalid/codex/responses", bad)).rejects.toThrow("lookup_pilot_faux_required");
+  expect(fetch).not.toHaveBeenCalled(); expect(reads).toBe(key === "method" ? 2 : 3);
+  await send("https://fixture.invalid/codex/responses", good);
+  expect(fetch).toHaveBeenCalledOnce(); expect(fetch.mock.calls[0][1]).toMatchObject({method: "POST", redirect: "error"});
+});
+
 it("maps the initial probe-child state read to the preparation refusal", async () => {
   readState.mockRejectedValue(Object.assign(Error("fictional private location"), {code: "lookup_receipt_invalid"}));
   await expect(run({outputRoot: "/fictional/output"})).rejects.toThrow("lookup_preparation_invalid");
