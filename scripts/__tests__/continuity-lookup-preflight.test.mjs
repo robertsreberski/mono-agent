@@ -10,11 +10,12 @@ import { lookupChildEnvironment, lookupChildImports } from "../lib/continuity-lo
 import { pilotProcessFixture, loadPilot } from "./fixtures/lookup-pilot-process.mjs";
 const roots = [], children = [];
 const temp = async () => { const p = await fs.realpath(await fs.mkdtemp(join(tmpdir(), "lookup-preflight-test-"))); await fs.chmod(p, 0o700); roots.push(p); return p; };
+// Teardown removes the large preparation fixture roots.
 afterEach(async () => {
   vi.restoreAllMocks(); syncBuiltinESMExports(); vi.unstubAllEnvs(); vi.unstubAllGlobals(); vi.doUnmock("../lib/continuity-lookup-pilot-entry.mjs");
   for (const {child, exit} of children.splice(0)) { if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); await exit; }
   for (const p of roots.splice(0)) await fs.rm(p, {recursive: true, force: true});
-});
+}, 120000);
 it("counts sparse boundary-sized files without reading them and reports only rejection classes", async () => {
   const root = await temp();
   for (let i = 0; i < 8; i++) { const p = join(root, `fictional-${i}`); await fs.writeFile(p, "", {mode: 0o600}); await fs.truncate(p, LOOKUP_TREE_LIMITS.fileBytes); }
