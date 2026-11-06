@@ -13,7 +13,7 @@ The dead-code scan runs Knip **5.88.1** in default, production, and
 `--include-entry-exports` modes. The cycle scan runs Madge **8.0.0** separately on
 contracts, config, turn, conversation, and app. Knip is an exact-pinned root
 devDependency, invoked through `pnpm exec knip`; all three modes are a required
-step in the existing CI verify job and local `verify:all` gate. Madge remains
+step in the CI checks-and-packaging job and local `verify:all` gate. Madge remains
 pinned in the launcher and fetched with `pnpm dlx`, outside the CI guard.
 Run `pnpm run build` before dead-code scanning: Knip resolves cross-package
 consumers through manifest runtime/declaration entry points. CI and `verify:all`

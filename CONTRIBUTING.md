@@ -60,6 +60,12 @@ golden consumer fixtures for `local-agent-alpha` and `local-agent-beta`. The con
 checks use redacted fixtures, `liveness:false`, no network probes, and no
 secrets by default.
 
+Hosted CI runs two independent Node-matrix jobs with 60-minute limits:
+`Verify` builds and tests packages; `Checks and packaging` runs the remaining
+checks, consumer contracts, typecheck, and tarball/packed-consumer validation.
+Both install and build their own workspace. The PR release dry run waits for
+both, and `Required verdict` aggregates both alongside the site/browser jobs.
+
 To run only the consumer fixture contracts:
 
 ```bash

@@ -10,11 +10,12 @@ import { runVerifyConsumers } from "./verify-consumers.mjs";
 export const CI_RELEASE_TAG_EXPRESSION = "${{ steps.release-smoke.outputs.tag }}";
 
 /**
- * Intentional semantic differences from the CI verify job.
+ * Intentional semantic differences from the combined CI verification lanes.
  *
  * scripts/__tests__/verify-all.test.mjs checks the complete ordered action,
- * environment, and gate sequence for every CI Node-matrix leg. The separate
- * website job is not a repo gate.
+ * environment, and combined gate sequence for every CI Node-matrix leg,
+ * including shared setup/build duplication across verify and checks-and-packaging.
+ * The separate website job is not a repo gate.
  */
 export const VERIFY_GATE_DELTA = Object.freeze({
   ciSetup: Object.freeze([
