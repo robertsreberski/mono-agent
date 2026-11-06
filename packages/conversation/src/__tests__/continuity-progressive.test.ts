@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { lstatSync, unlinkSync, writeFileSync } from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
@@ -24,13 +24,21 @@ const parse = (prompt: string) => prompt.split("\nSources:\n")[1]!.trim().split(
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), "progressive-ledger-")), writer = await ToolHistoryWriter.open({ root, continuityEnabled: true, persistenceCeilingMs: 5000 });
   resources.push({ root, writer });
+  const recorderNamespace = join(root, "recorder");
+  await mkdir(recorderNamespace, { mode: 0o700 });
+  const recording = async (runId: string, conversationId = "fictional") => {
+    // Fixture run IDs are UUIDs or fixed path-safe labels. A real origin makes
+    // exports terminal, unlike a missing namespace which arms future retries.
+    await writeFile(join(recorderNamespace, `${runId}.summary.json`), JSON.stringify({ runId, conversationId }), { mode: 0o600 });
+    return recorderNamespace;
+  };
   const reader = new ToolHistoryReader(root), selections: any[][] = [], budgets: number[] = [], caps: number[] = [];
   let response: (rows: any[], cap: number) => any[] | Promise<any[]> = (rows, _cap) => [{ kind: "open_work", value: `Fictional state ${rows[0].ordinal}/${rows[0].start}.`, status: "unknown", sources: [rows[0].id] }];
   const complete = vi.fn(async (prompt: string, _signal: AbortSignal, budget: { operationId: string; inputTokens: number; maxEntries?: number }) => {
     const rows = parse(prompt); selections.push(rows); budgets.push(budget.inputTokens); caps.push(budget.maxEntries ?? 24);
     return { text: JSON.stringify({ entries: await response(rows, budget.maxEntries ?? 24), covered: rows.map(row => row.id) }), receipt: { operationId: budget.operationId, model: "fictional:base", status: "valid", reason: "completed", providerInvoked: true, capEnforcement: "request" } };
   });
-  const ports = { writer, reader, mutateUpkeep: writer.mutateUpkeep.bind(writer), publishLedger: writer.publishLedger.bind(writer), continuityEnabled: true, logicalConversationId: () => "fictional", upkeep: { enabled: true, recorderNamespace: resolve("/fictional-recorder"), model: "fictional:base", complete } };
+  const ports = { writer, reader, mutateUpkeep: writer.mutateUpkeep.bind(writer), publishLedger: writer.publishLedger.bind(writer), continuityEnabled: true, logicalConversationId: () => "fictional", upkeep: { enabled: true, recorderNamespace, model: "fictional:base", complete } };
   let serial = 0; // Accounting fixtures are distinct evidence, not one repeated template.
   const capture = async (count = 1, text = "Rule.", physical = "fictional", neutral = false) => {
     for (let left = count; left > 0; left -= 128) {
@@ -42,19 +50,26 @@ async function fixture() {
   };
   const db = <T>(fn: (db: DatabaseSync) => T, writable = false): T => { const database = new DatabaseSync(reader.databasePath, { readOnly: !writable }); try { database.exec("PRAGMA busy_timeout=5000;PRAGMA foreign_keys=ON"); return fn(database); } finally { database.close(); } };
   // Raw fixture writes bypass the store's single-writer contract. An RPC ack is
-  // not accounting-export completion: drain its journal cleanup before opening
-  // a second writable connection, including inside a completion callback.
-  const mutateDb = async <T>(fn: (db: DatabaseSync) => T): Promise<T> => {
+  // not accounting-export completion. Drain real terminal exports, then verify
+  // no pending row can arm another retry before opening a writable connection.
+  const settleAccounting = async () => {
     await writer.replayUpkeepAccounting();
+    const pending = db(database => database.prepare("SELECT 1 FROM sqlite_master WHERE name='continuity_upkeep_accounting'").get()
+      ? database.prepare("SELECT count(*) n FROM continuity_upkeep_accounting WHERE exported IS NULL").get() : { n: 0 });
+    expect(pending).toEqual({ n: 0 });
+  };
+  const mutateDb = async <T>(fn: (db: DatabaseSync) => T): Promise<T> => {
+    await settleAccounting();
     return db(fn, true);
   };
   const prepare = async (maxTokens = 8000, physical = "fictional", twice = false) => {
-    const events: any[] = [], supplier = createContinuityPackSupplier({ toolHistory: ports } as unknown as ConversationHarnessOptions, { conversationId: physical, userMessage: "Current fictional boundary.", abortSignal: new AbortController().signal }, randomUUID())!;
+    const runId = randomUUID(); await recording(runId, physical);
+    const events: any[] = [], supplier = createContinuityPackSupplier({ toolHistory: ports } as unknown as ConversationHarnessOptions, { conversationId: physical, userMessage: "Current fictional boundary.", abortSignal: new AbortController().signal }, runId)!;
     await supplier.prepare({ ...eligibility, maxTokens }, "cold_rebuild", event => events.push(event));
     if (twice) await supplier.prepare({ ...eligibility, maxTokens }, "cold_rebuild", event => events.push(event));
     return { events, pack: () => JSON.stringify(supplier([], maxTokens, "cold_rebuild", () => {})) };
   };
-  return { root, writer, reader, complete, capture, prepare, selections, budgets, caps, db, mutateDb, ports, respond: (fn: typeof response) => { response = fn; } };
+  return { root, writer, reader, complete, capture, prepare, selections, budgets, caps, db, mutateDb, settleAccounting, recording, ports, respond: (fn: typeof response) => { response = fn; } };
 }
 
 it("progresses beyond 512 records, preserves earlier stable entries, and reaches actual tool interiors", async () => {
@@ -356,8 +371,9 @@ it("rechecks actual headroom after the provider returns and rejects only the del
   const f = await fixture(); await f.capture(); await f.prepare(); const prior = f.reader.ledger(scope)!.generation;
   await f.capture(1, "Additional rule."); const context = { ...eligibility }, complete = f.complete.getMockImplementation()!;
   f.complete.mockImplementationOnce(async (...args) => { const result = await complete(...args); context.maxTokens = 500; return result; });
-  const events: any[] = [], publish = vi.spyOn(f.ports, "publishLedger");
-  const supplier = createContinuityPackSupplier({ toolHistory: f.ports } as unknown as ConversationHarnessOptions, { conversationId: "fictional", userMessage: "Current.", abortSignal: new AbortController().signal }, randomUUID())!;
+  const events: any[] = [], publish = vi.spyOn(f.ports, "publishLedger"), runId = randomUUID();
+  await f.recording(runId);
+  const supplier = createContinuityPackSupplier({ toolHistory: f.ports } as unknown as ConversationHarnessOptions, { conversationId: "fictional", userMessage: "Current.", abortSignal: new AbortController().signal }, runId)!;
   await supplier.prepare(context, "cold_rebuild", event => events.push(event));
   expect(events).toContainEqual(expect.objectContaining({ failure: "ledger_render_budget" }));
   expect(publish).not.toHaveBeenCalled(); expect(f.reader.ledger(scope)!.generation.id).toBe(prior.id);
@@ -433,7 +449,7 @@ it.each([false, true])("migrates legacy reservations once without a retention ba
   const f = await fixture(); await f.capture();
   const expected = (await f.writer.mutateUpkeep({ kind: "inspect", scope: { logicalId: "fictional", conversationId: "fictional" } }))!;
   const fence = (await f.writer.mutateUpkeep({ kind: "claim", expected, ownerToken: "legacy-owner" }))!;
-  const reservation = { ...fence, operationId: randomUUID(), runId: "legacy-run", recorderNamespace: resolve("/fictional"), model: "fictional:base", manifest: "a".repeat(64), parent: null, budget: "bootstrap" as const };
+  const reservation = { ...fence, operationId: randomUUID(), runId: "legacy-run", recorderNamespace: await f.recording("legacy-run"), model: "fictional:base", manifest: "a".repeat(64), parent: null, budget: "bootstrap" as const };
   await f.writer.mutateUpkeep({ kind: "reserve", reservation }); await f.writer.mutateUpkeep({ kind: "dispatch", reservation });
   if (!uncertain) await f.writer.mutateUpkeep({ kind: "outcome", reservation, receipt: { operationId: reservation.operationId, model: reservation.model, providerInvoked: true, status: "invalid" } as any });
   await f.mutateDb(db => db.exec("DROP TRIGGER continuity_upkeep_privacy_delete; DROP TRIGGER continuity_upkeep_privacy_update; DROP TRIGGER continuity_upkeep_privacy_tombstone; DROP TRIGGER continuity_upkeep_privacy_generation; DROP TABLE continuity_upkeep_offers; DROP TABLE continuity_upkeep_progress; DROP TABLE continuity_upkeep_migrations"));
@@ -481,6 +497,34 @@ it("does not rewind a frontier beyond 512 represented anchors on an old tombston
   expect(f.db(db => JSON.parse((db.prepare("SELECT cursor FROM continuity_upkeep_progress").get() as any).cursor).ordinal)).toBe(641);
   await f.capture(1, "Later tool evidence.", "fictional", true); await f.prepare(); await f.prepare();
   expect(f.complete).toHaveBeenCalledTimes(1); expect(f.selections[0]!.map(row => row.ordinal)).toEqual([641]);
+});
+
+it("prevents a post-drain retry from interposing a raw fixture mutation", async () => {
+  const f = await fixture(); await f.capture(); await f.prepare();
+  const replay = f.writer.replayUpkeepAccounting.bind(f.writer);
+  let retryStarted = false, finishRetry = () => {};
+  vi.spyOn(f.writer, "replayUpkeepAccounting").mockImplementationOnce(async () => {
+    await replay();
+    const pending = f.db(db => db.prepare("SELECT 1 FROM continuity_upkeep_accounting WHERE exported IS NULL").get());
+    if (pending) {
+      // Deterministically resume an armed retry just AFTER flush, rather than
+      // waiting for its deadline. Its cleanup observes the prepared journal;
+      // the unlink resumes while the raw transaction below is still open.
+      retryStarted = true;
+      const journal = `${f.reader.databasePath}-journal`;
+      writeFileSync(journal, "", { mode: 0o600 });
+      const observed = lstatSync(journal);
+      finishRetry = () => { if (observed.size === 0) unlinkSync(journal); };
+    }
+  });
+  await f.mutateDb(db => {
+    db.exec("BEGIN IMMEDIATE; UPDATE continuity_records SET retained_text=NULL WHERE ordinal=1");
+    finishRetry();
+    db.exec("COMMIT");
+  });
+  expect(retryStarted).toBe(false);
+  expect(f.db(db => db.prepare("SELECT count(*) n FROM continuity_upkeep_accounting WHERE exported IS NULL").get())).toEqual({ n: 0 });
+  expect(f.db(db => db.prepare("SELECT retained_text FROM continuity_records WHERE ordinal=1").get())).toEqual({ retained_text: null });
 });
 
 it.each([false, true])("does not scrub an unrelated in-flight reservation between dispatch and outcome (interposed accounting cleanup: %s)", async interposed => {
@@ -550,11 +594,11 @@ it("reclaims LRU working sets under the shared quota without losing unknowns or 
   await f.capture(1, "Newer working set.", "newer"); await f.prepare(8000, "newer");
   const expected = (await f.writer.mutateUpkeep({ kind: "inspect", scope: { logicalId: "other", conversationId: "other" } }))!;
   const fence = (await f.writer.mutateUpkeep({ kind: "claim", expected, ownerToken: "other-owner" }))!;
-  const reservation = { ...fence, operationId: randomUUID(), runId: "other-run", recorderNamespace: resolve("/fictional"), model: "fictional:base", manifest: "a".repeat(64), parent: null, budget: "bootstrap" as const };
+  const reservation = { ...fence, operationId: randomUUID(), runId: "other-run", recorderNamespace: await f.recording("other-run", "other"), model: "fictional:base", manifest: "a".repeat(64), parent: null, budget: "bootstrap" as const };
   await f.writer.mutateUpkeep({ kind: "reserve", reservation }); await f.writer.mutateUpkeep({ kind: "dispatch", reservation });
   // Dispatch acknowledges the journal, not its asynchronous accounting export.
-  // Settle that export before deriving a quota just one byte below the snapshot.
-  await f.writer.replayUpkeepAccounting();
+  // Terminal exports cannot restart during the one-byte quota snapshot.
+  await f.settleAccounting();
   const before = f.reader.stats()!, metadata = f.db(upkeepBytes); expect(metadata).toBeGreaterThan(0);
   const unknown = f.db(db => db.prepare("SELECT * FROM continuity_upkeep_operations WHERE operation_id=?").get(reservation.operationId));
   await f.mutateDb(db => retainContinuity(db, { ...before.limits, maxBytes: before.retainedBytes - 1 }, Date.now()));
@@ -573,7 +617,7 @@ it("erases a reserved first operation before the first dispatch without advancin
   const expected = (await f.writer.mutateUpkeep({ kind: "inspect", scope: { logicalId: "fictional", conversationId: "fictional" } }))!;
   const fence = (await f.writer.mutateUpkeep({ kind: "claim", expected, ownerToken: "owner" }))!;
   const selection = selectLedgerSources(f.reader.snapshotContinuity({ ...scope, selection: "upkeep" }));
-  const reservation = { ...fence, operationId: randomUUID(), runId: "reserved", recorderNamespace: resolve("/fictional"), model: "fictional:base", manifest: selection.manifest, parent: null, budget: "bootstrap" as const, progress: selection.progress! };
+  const reservation = { ...fence, operationId: randomUUID(), runId: "reserved", recorderNamespace: await f.recording("reserved"), model: "fictional:base", manifest: selection.manifest, parent: null, budget: "bootstrap" as const, progress: selection.progress! };
   await f.writer.mutateUpkeep({ kind: "reserve", reservation });
   await f.mutateDb(db => db.exec("UPDATE continuity_records SET retained_text=NULL"));
   const row = f.db(db => db.prepare("SELECT reservation,state FROM continuity_upkeep_operations").get()) as any;
@@ -719,7 +763,7 @@ it("batches lifecycle bindings once per run across read pages", async () => {
 });
 it("releases each page transaction and rejects a selected source deleted between pages", async () => {
   const f = await fixture(); await f.capture(150);
-  await f.writer.replayUpkeepAccounting(); // This read-only scan never dispatches an export.
+  await f.settleAccounting(); // This read-only scan never dispatches an export.
   const prepare = DatabaseSync.prototype.prepare, exec = DatabaseSync.prototype.exec;
   let page = false, mutated = false;
   vi.spyOn(DatabaseSync.prototype, "prepare").mockImplementation(function(this: DatabaseSync, sql: string) { if (sql.includes("ORDER BY r.ordinal LIMIT 64")) page = true; return prepare.call(this, sql); });
