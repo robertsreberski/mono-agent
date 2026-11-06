@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Finish this process's deferred lock release before reacquiring, even when
+  filesystem work takes longer than the mutation gate's contention budget.
+
 - Keep the dashboard's Chats and Automations filter chips compact on touch tablets
   while preserving a 44px tap target.
 
@@ -489,6 +492,7 @@
   within target headroom and without model calls. Set
   `runtime.session.continuity.packEnabled: false` to keep recording and retrieval
   without injection; historical evidence never renews approval.
+
 
 ## 0.26.0 — Owned Pi harness, renamed packages and core cleanup (2026-10-20)
 

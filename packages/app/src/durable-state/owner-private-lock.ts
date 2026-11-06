@@ -267,7 +267,10 @@ async function acquireUnmapped(options: OwnerPrivateLockOptions): Promise<OwnerP
       const own = ownPendingRelease(options.path, observed);
       if (own !== undefined && !finishedOwnReleases.has(own)) {
         finishedOwnReleases.add(own);
-        await finishOwnRelease(own, timeout > 0 ? Math.max(0, deadline - now()) : gateWaitMs(options));
+        // Bound contention at the gate, not the filesystem work after it is held.
+        // Racing the whole release against that bound could report our own
+        // still-in-flight release as another holder on a slow filesystem.
+        await own.finish(gateBudget).catch(() => undefined);
         // Still pending means the gate stayed busy: the caller's busy-gate outcome.
         if (pendingReleases.get(resolve(options.path)) === own) {
           const busy = new OwnerLockCoordinationBusyError(options.label);
@@ -384,13 +387,13 @@ function makeHeld(
     if (pending !== undefined && pendingReleases.get(pendingKey) === pending) pendingReleases.delete(pendingKey);
     pending = undefined;
   };
-  const release = async (releaseOptions: ReleaseOptions = {}): Promise<void> => {
+  const release = async (releaseOptions: ReleaseOptions = {}, gateBudget?: () => number): Promise<void> => {
     if (released) return;
     if (inflight !== undefined) return await inflight;
     if (retry !== undefined) { clearTimeout(retry); retry = undefined; }
     inflight = (async () => {
       try {
-        await releaseOnce(releaseOptions);
+        await releaseOnce(releaseOptions, gateBudget);
         settlePending();
       } catch (error) {
         if (!(error instanceof OwnerLockCoordinationBusyError) || options.releaseGateBusy !== "background") {
@@ -402,7 +405,7 @@ function makeHeld(
         if (pending === undefined) {
           pending = {
             expected: { kind: "owned", identity: expectedIdentity, owner: expectedOwner },
-            finish: async () => await release(releaseOptions),
+            finish: async (budget) => await release(releaseOptions, budget),
           };
           pendingReleases.set(pendingKey, pending);
         }
@@ -417,14 +420,14 @@ function makeHeld(
     })().finally(() => { inflight = undefined; });
     return await inflight;
   };
-  const releaseOnce = async (releaseOptions: ReleaseOptions): Promise<void> => {
+  const releaseOnce = async (releaseOptions: ReleaseOptions, gateBudget?: () => number): Promise<void> => {
     if (released) return;
     const expected: Observed = { kind: "owned", identity: expectedIdentity, owner: expectedOwner };
     if (!await matchesObserved(options.path, options, expected)) {
       throw unsafe(options, `${options.label} identity or owner changed before release; the replacement was left untouched.`);
     }
     await releaseOptions.beforeRename?.(options.path);
-    const releasedPath = await gated(options, undefined, async () => {
+    const releasedPath = await gated(options, gateBudget, async () => {
       if (!await matchesObserved(options.path, options, expected)) {
         throw unsafe(options, `${options.label} changed at the release boundary; the replacement was left untouched.`);
       }
@@ -457,7 +460,7 @@ const BUSY_GATE_RETRY: unique symbol = Symbol("busy-gate-retry");
 interface PendingRelease {
   readonly expected: Observed;
   /** Retry that release now; settles when the attempt does (busy again re-defers it). */
-  readonly finish: () => Promise<void>;
+  readonly finish: (gateBudget?: () => number) => Promise<void>;
 }
 /** Keyed by resolved lock path. Only this process's own held locks ever appear here. */
 const pendingReleases = new Map<string, PendingRelease>();
@@ -469,31 +472,6 @@ function ownPendingRelease(path: string, observed: Observed): PendingRelease | u
     : undefined;
 }
 
-/**
- * Drive this process's own deferred release now instead of after its backoff
- * timer, bounded by the acquirer's remaining wait (or, without a wait, one gate
- * wait). The release re-verifies the exact identity under the gate, so it can
- * never move another process's lock. Its outcome is decided by re-inspection.
- */
-async function finishOwnRelease(pending: PendingRelease, boundMs: number): Promise<void> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    await Promise.race([
-      pending.finish().catch(() => undefined),
-      new Promise<void>((resolvePromise) => {
-        timer = setTimeout(resolvePromise, boundMs);
-        timer.unref?.();
-      }),
-    ]);
-  } finally {
-    if (timer !== undefined) clearTimeout(timer);
-  }
-}
-
-/** One gate wait for this lock, as the gate itself clamps it. */
-function gateWaitMs(options: OwnerPrivateLockOptions): number {
-  return Math.min(5_000, Math.max(0, options.mutationGate?.busyTimeoutMs ?? 3_000));
-}
 type ReleaseOptions = { readonly beforeRename?: (path: string) => void | Promise<void> };
 const RELEASE_RETRY_BASE_MS = 250;
 const RELEASE_RETRY_MAX_MS = 30_000;

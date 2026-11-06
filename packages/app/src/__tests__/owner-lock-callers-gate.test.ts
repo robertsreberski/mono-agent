@@ -389,8 +389,13 @@ describe("same-process reacquire over a deferred release", () => {
     return async () => { hold.resolve(); await holder; };
   }
 
-  it("finishes its own pending release before judging the lock held", async () => {
-    const { options, gatePath } = await stateLock();
+  it.each([0, 150])("finishes its own pending release before judging the lock held (release I/O delay: %i ms)", async (delayMs) => {
+    const state = await stateLock();
+    const gatePath = state.gatePath;
+    const options = { ...state.options, mutationStep: async (step: OwnerPrivateLockMutationStep) => {
+      // The gate has been acquired: slow filesystem work is not gate contention.
+      if (step === "release-verified" && delayMs) await new Promise(resolve => setTimeout(resolve, delayMs));
+    } };
     const first = await acquireOwnerPrivateLock(options);
     expect(first).toBeDefined();
     const freeGate = await deferRelease(first!, gatePath);
@@ -400,6 +405,7 @@ describe("same-process reacquire over a deferred release", () => {
     // The gate is free, but the deferred retry (250 ms) has not fired yet. A
     // zero-wait reacquire must not report this process's own lock as held.
     const second = await acquireOwnerPrivateLock(options);
+    await first!.release(); // Also drain an in-flight release if acquisition regresses.
     expect(second).toBeDefined();
     await second!.release();
     await expect(lstat(options.path)).rejects.toMatchObject({ code: "ENOENT" });
