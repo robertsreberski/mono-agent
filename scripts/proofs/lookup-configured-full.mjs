@@ -16,7 +16,7 @@ const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function binding() {
   assert.equal(git(["status", "--porcelain=v1"]), "", "proof requires a clean committed source");
   const files = git(["ls-files", "-z", "--", "scripts"]).split("\0").filter(path => /\.(?:mjs|json|md)$/u.test(path));
-  const scripts = Object.fromEntries(await Promise.all(files.map(async path => [path, sha(await fs.readFile(join(ROOT, path)))])));
+  const scripts = await Promise.all(files.map(async path => [path, sha(await fs.readFile(join(ROOT, path)))]));
   return {sourceHead: git(["rev-parse", "HEAD"]), sourceTree: git(["rev-parse", "HEAD^{tree}"]), node: process.version, platform: process.platform, arch: process.arch, executableSha256: sha(await fs.readFile(process.execPath)), scripts};
 }
 const verify = process.argv.indexOf("--verify-evidence");
@@ -150,7 +150,9 @@ if (verify !== -1) {
         if (name === "late") {assert.ok(observedOuterMs >= 600000 && observedOuterMs < 630000); assert.ok(value.report.cost.totalUSD >= 3.92);}
         metrics.push({nativeSessions, observedOuterMs, probeDiskGrowthBytes: disk.workBytes - disk.snapshotBytes, slotId: slot.slotId, role: state.schedule[index].roleId, probeWallMs: probe.elapsedMs, peakRSSBytes: probe.peakRSSBytes, rssExactAtExit: !["late", "kill"].includes(name), retained: await retained.lookupRetainedBytes(join(outputRoot, "work", slot.slotId)), preparationToolCalls: preparation.httpCalls.filter(r => r.method === "tools/call").length});
       }
-      witnesses.push(...rows); results.push({...value, metrics, wallMs: Date.now() - startedAt});
+      const projected = structuredClone(value);
+      for (const slot of projected.state.slots) if (slot.cacheKey) {slot.cacheAssignmentDigest = sha(slot.cacheKey); slot.cacheKey = "REDACTED";}
+      witnesses.push(...rows); results.push({...projected, metrics, wallMs: Date.now() - startedAt});
       await fs.writeFile(`${output}.checkpoint`, JSON.stringify({base, sourceBinding, completed: results.map(r => r.case)}));
     }
     assert.deepEqual(await binding(), sourceBinding); assert.deepEqual(await lookupDependencyWitness(ROOT), depsBefore);
