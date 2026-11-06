@@ -6,8 +6,9 @@
   improve tablet touch targets and conversation spacing. Remove and re-add
   existing Home Screen installs to adopt the opaque system status bar.
 
-- Enable the guarded lookup pilot for the four pack-family roles behind verified
-  registration, preparation preflight and an exact-cap single-use authorization.
+- Enable the lookup pilot only for four pack-family roles, enforcing code-bound
+  registration, an exact cap, single-use authorization and registry safety.
+  Preparation and registry preflights remain mandatory operator steps.
 
 - Recheck normalized faux lookup transport methods and redirects before sending,
   rejecting request accessors that change after initial validation.

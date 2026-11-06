@@ -30,6 +30,8 @@ export const LOOKUP_ROLES = Object.freeze([
   { id: "shipping", arm: "continuity-pack-cold", code: "Rpack", soul: "S1" },
   { id: "native-soul", arm: "native-lookup", code: "R0", soul: "S1" },
 ].map(Object.freeze));
+// The pilot measures only these inventory roles, regardless of path feasibility.
+export const LOOKUP_PILOT_MEASURED_ROLES = Object.freeze(LOOKUP_ROLES.filter(({ id }) => ["pack", "pack-only", "soul-only", "shipping"].includes(id)).map(({ id }) => id));
 export function assertLookupRole(role) {
   const def = LOOKUP_ROLES.find(row => row.id === role?.id);
   const soul = def && LOOKUP_SOULS[def.soul];

@@ -120,7 +120,7 @@ export async function syntheticContext(directory, design = {}, repositoryOptions
 }
 
 /** Content-free, arithmetically valid fixed-policy records for offline tests. */
-export async function fixtureLookupPolicy({ source, selection, lookupSelection, reader, codes, protocol, eligibleRoles } = {}) {
+export async function fixtureLookupPolicy({ source, selection, lookupSelection, reader, codes, protocol, eligibleRoles, nativeFeasible = false } = {}) {
   const { LOOKUP_BUDGET, LOOKUP_ROLES, FIXED_BUDGET_SHA256, externalPathFeasibility, referenceFeasibility } = await import("../../lib/continuity-lookup.mjs");
   const paths = LOOKUP_ROLES.flatMap(role => selection.flatMap(trace => trace.probes.map(probeId => {
     const path = { role: role.id, arm: role.arm, traceId: trace.id, probeId,
@@ -129,6 +129,7 @@ export async function fixtureLookupPolicy({ source, selection, lookupSelection, 
       method: probeId === "p01" ? "identifier-reference" : "conservative-full-budget",
       calls: 2, bytes: 100, cumulativeBytes: 150, discovered: true, exhausted: null,
       referenceFailure: false, sourceAvailability: "retained", sourceReturned: true };
+    if (nativeFeasible && role.arm === "native-lookup") Object.assign(path, {initialTokens: 12000, initialContextBytes: 200000});
     if (path.method === "conservative-full-budget") Object.assign(path, { calls: LOOKUP_BUDGET.callBudget, bytes: LOOKUP_BUDGET.byteBudget, cumulativeBytes: 9 * LOOKUP_BUDGET.byteBudget });
     path.initialAdmission = referenceFeasibility({ calls: 0, bytes: 0, cumulativeBytes: 0, discovered: true }, LOOKUP_BUDGET, path);
     path.feasibility = externalPathFeasibility(path, LOOKUP_BUDGET); return path;

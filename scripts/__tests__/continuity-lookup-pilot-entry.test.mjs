@@ -1,13 +1,17 @@
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { afterEach, afterAll, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import { lstat, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import net from "node:net";
+import * as pilotModule from "../lib/continuity-lookup-pilot.mjs";
+import {pilotProcessFixture} from "./fixtures/lookup-pilot-process.mjs";
 import { main } from "../continuity-lookup-compare.mjs";
 import { createLookupPilotController, runLookupPilot } from "../lib/continuity-lookup-controller.mjs";
 import { LOOKUP_PILOT_REAL_ROUTE_ENABLED, assertLookupPilotEntry } from "../lib/continuity-lookup-pilot-entry.mjs";
 
-let base, network, fetch;
+let base, network, fetch, registrationFixture;
+beforeAll(async () => {registrationFixture = await pilotProcessFixture();}, 120000);
+afterAll(async () => {await rm(registrationFixture.base, {recursive: true, force: true});}, 120000);
 beforeEach(async () => {
   // Units select their own CI/debug case; production forks retain these variables.
   vi.stubEnv("CI", undefined); vi.stubEnv("CONTINUITY_DEBUG", undefined);
@@ -32,9 +36,14 @@ it("opens the pilot command but still verifies the registration before output se
     .rejects.toMatchObject({code: "lookup_registration_hash_mismatch"});
   await expect(lstat(options.outputRoot)).rejects.toMatchObject({code: "ENOENT"});
 });
-it.each([createLookupPilotController, runLookupPilot])("refuses an invalid registration at the open controller entry before a lease", async entry => {
-  const options = realOptions();
+it.each([createLookupPilotController, runLookupPilot])("requires the registration validator at the open controller entry before a lease", async entry => {
+  const options = {...realOptions(), pilot: structuredClone(registrationFixture.pilot)};
+  // Full registration structure, with exactly the schema discriminator invalidated.
+  options.pilot.registration.schema = "fictional-invalid-registration";
+  const validation = vi.spyOn(pilotModule, "validateLookupPilotRegistration");
   await expect(entry(options)).rejects.toMatchObject({code: "lookup_pilot_not_ready"});
+  expect(validation).toHaveBeenCalledExactlyOnceWith(options.pilot);
+  await expect(validation.mock.results[0].value).rejects.toMatchObject({code: "incompatible_lookup_registration"});
   await expect(lstat(options.outputRoot)).rejects.toMatchObject({code: "ENOENT"});
 });
 it.each([undefined, {schema: "fictional-authorization"}, {schema: "continuity-lookup-pilot-authorization-v1"}])("refuses missing or malformed authorization without output setup: %j", async authorization => {
@@ -56,11 +65,7 @@ it.each(["", "1"])("refuses debug presence at open controller/verification/mint 
     await expect(call()).rejects.toMatchObject({code: "lookup_debug_forbidden"});
   expect(await readdir(base)).toEqual([]);
 });
-it("keeps direct production verification and mint behind assignment/authorization checks", async () => {
-  const {verifyLookupRealAssignment, createLookupRealSend} = await import("../lib/continuity-lookup-real-capability.mjs");
-  await expect(verifyLookupRealAssignment(null)).rejects.toMatchObject({code: "lookup_pilot_capability_invalid"});
-  await expect(createLookupRealSend({}, {})).rejects.toMatchObject({code: "lookup_pilot_capability_invalid"});
-});
+// Structurally valid verification/mint authorization witnesses live in real-capability.test.mjs.
 it("pins neutral IPC while retaining the deliberately incompatible faux identity", async () => {
   const {LOOKUP_PILOT_IPC, LOOKUP_FAUX_CONTROLLER, LOOKUP_REAL_CONTROLLER} = await import("../lib/continuity-lookup-pilot-state.mjs");
   expect(LOOKUP_PILOT_IPC).toBe("lookup-pilot-ipc-v1"); expect(LOOKUP_FAUX_CONTROLLER).toBe("continuity-lookup-faux-controller-v1");

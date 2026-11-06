@@ -1497,17 +1497,24 @@ no provider call, paid smoke or full pilot execution is established by this proo
 The explicit `continuity-lookup-compare pilot` real route is enabled by
 `LOOKUP_PILOT_REAL_ROUTE_ENABLED` in
 `scripts/lib/continuity-lookup-pilot-entry.mjs`. This is not permission to run:
-a pilot still requires clean code-bound registration, real-equivalent offline
-preparation preflight on the intended output volume, read-only registry readiness
-and a separately approved exact-cap, single-use authorization. No authorization
-issuer is provided. The enabled gate changes the protocol digest, so registration
-must be generated at the enabled revision, after independent process-proof
-reproduction. Ordinary benchmark/compare and probe-child refusal seams remain
-unchanged.
+code enforces clean code-bound registration at the enabled revision, an exact
+cap and single-use authorization, registry safety before consumption, the
+measured-role allowlist, and refusal on CI or debug-variable presence. No
+authorization issuer is provided. The enabled gate changes the protocol digest;
+registration must therefore be generated at that enabled revision after independent
+process-proof reproduction. Ordinary benchmark/compare and probe-child refusal
+seams remain unchanged.
 
-The pilot measures only `pack`, `pack-only`, `soul-only` and `shipping`. Native
-roles are not admissible under the preserved conservative input bound; retain
-them only as ineligible inventory rows, never as authorized dispatch slots.
+Separately, the operator must run real-root preparation preflight on the intended
+output volume and the read-only `registry-preflight` diagnostic before the cap
+request. These mandatory operator steps are not artifacts consumed by the
+controller or bound by authorization; they do not grant execution authority.
+
+The pilot measures only `pack`, `pack-only`, `soul-only` and `shipping`. A frozen
+role allowlist excludes native roles regardless of path feasibility, both from
+scheduling and the estimate; real-send minting independently refuses them.
+Registrations retain all six roles as inventory. Native rows remain ineligible
+and never become authorized dispatch slots, even when their input bound is feasible.
 Both verified controller schemas, faux `continuity-lookup-faux-controller-v1` and
 real `continuity-lookup-controller-v1`, first launch a credential-free offline
 preparation child.
@@ -1624,8 +1631,8 @@ RSS is the last observed high-water mark, not an exact post-kill peak. The liter
 withholds terminal usage, then actually attempts a terminal write after containment.
 It records the write callback/error outcome separately from provider availability
 and accepted settles; unavailable usage stays conservatively reserved.
-These off-lane checks remain required at the exact reviewed head before opening
-the gate. No live provider behavior, evaluation quality, billing, power-loss
+These off-lane checks remain required at the enabled revision, before registration
+and the cap request. No live provider behavior, evaluation quality, billing, power-loss
 durability or operator acceptance is established by faux proof results.
 
 

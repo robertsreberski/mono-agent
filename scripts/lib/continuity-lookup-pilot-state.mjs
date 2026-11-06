@@ -2,6 +2,7 @@ import { constants } from "node:fs";
 import { lstat, open, realpath } from "node:fs/promises";
 import { userInfo } from "node:os";
 import { join, dirname, resolve, isAbsolute } from "node:path";
+import { LOOKUP_PILOT_MEASURED_ROLES } from "./continuity-lookup.mjs";
 import { digest } from "./continuity-dataset.mjs";
 import { isLookupLeaseFile, markLookupLeaseCompromised } from "./continuity-lookup-lease.mjs";
 import { LOOKUP_AUTHORIZATION_SCHEMA } from "./continuity-lookup-authorization.mjs";
@@ -62,6 +63,6 @@ export function lookupPilotSchedule(pilot) {
   return pairs.flatMap(pair => [...roles].sort((a, b) => rank([pair, a.id]).localeCompare(rank([pair, b.id]))).map(role => {
     const path = common.policy.budget.paths.find(p => p.role === role.id && p.traceId === pair.traceId && p.probeId === pair.probeId);
     pilotNeed(path, "lookup_receipt_invalid");
-    return { ...pair, roleId: role.id, code: role.code, slotId: rank([pair, role.id]), eligible: path.feasibility.classification === "feasible" };
+    return { ...pair, roleId: role.id, code: role.code, slotId: rank([pair, role.id]), eligible: LOOKUP_PILOT_MEASURED_ROLES.includes(role.id) && path.feasibility.classification === "feasible" };
   }));
 }

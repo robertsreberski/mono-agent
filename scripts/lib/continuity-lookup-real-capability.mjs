@@ -1,4 +1,5 @@
 // Child-only authority. No issuer, transport injection, public registration or nonce.
+import { LOOKUP_PILOT_MEASURED_ROLES } from "./continuity-lookup.mjs";
 import { lookupBodyBytes } from "./continuity-lookup-pilot-runtime.mjs";
 import process from "node:process";
 import { assertLookupPilotEntry } from "./continuity-lookup-pilot-entry.mjs";
@@ -18,7 +19,7 @@ export async function verifyLookupRealAssignment(a, ready = true) {
   assertLookupPilotEntry();
   if (Object.hasOwn(process.env, "CI")) fail("paid_mode_refused_in_ci");
   if (Object.hasOwn(process.env, "CONTINUITY_DEBUG")) fail("lookup_debug_forbidden");
-  try { return await verifyAssignment(a, ready); } catch (error) { fail(error.code === "lookup_preparation_invalid" ? error.code : undefined); }
+  try { return await verifyAssignment(a, ready); } catch (error) { fail(["lookup_preparation_invalid", "lookup_pilot_role_not_measured"].includes(error.code) ? error.code : undefined); }
 }
 async function verifyAssignment(a, ready) {
   need(!Object.hasOwn(process.env, "CI") && !Object.hasOwn(process.env, "CONTINUITY_DEBUG"));
@@ -30,6 +31,7 @@ async function verifyAssignment(a, ready) {
   await validateLookupPilotRegistration(a.pilot);
   const { digest } = await import("./continuity-dataset.mjs"), registration = a.pilot.registration;
   const role = registration.roles.find(r => r.id === a.slot.roleId), corpus = registration.common.corpora.find(c => c.suite === a.slot.suite);
+  if (role && !LOOKUP_PILOT_MEASURED_ROLES.includes(role.id)) fail("lookup_pilot_role_not_measured");
   need(role && corpus && ROOT === registration.codes[a.slot.code]?.path
     && stateModule.samePilot(a.roleRequest.binding, roleBinding(registration, role, corpus))
     && stateModule.samePilot(a.roleRequest.common, registration.common)
@@ -137,7 +139,7 @@ export async function createLookupRealSend(a, resolvedSafety) {
     decorators.add(decorator); sends.add(send); return Object.freeze(send);
   } catch (error) {
     // No paths, parser messages, credential values or arbitrary causes leave minting.
-    if (["lookup_pilot_real_route_unavailable", "lookup_preparation_invalid", "lookup_pilot_capability_invalid", "paid_mode_refused_in_ci", "lookup_debug_forbidden"].includes(error?.code)) throw error;
+    if (["lookup_pilot_real_route_unavailable", "lookup_preparation_invalid", "lookup_pilot_role_not_measured", "lookup_pilot_capability_invalid", "paid_mode_refused_in_ci", "lookup_debug_forbidden"].includes(error?.code)) throw error;
     fail();
   }
 }

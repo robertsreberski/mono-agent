@@ -3,7 +3,8 @@ import { digest } from "../lib/continuity-dataset.mjs";
 import { LOOKUP_ASSUMPTIONS } from "../lib/continuity-lookup-guard.mjs";
 import { estimateLookupPilot, lookupPilotDescriptor, validateLookupPilotRegistration, LOOKUP_FAUX_AUTHORIZATION_DOMAIN } from "../lib/continuity-lookup-pilot.mjs";
 import { offlineCatalog } from "../continuity-lookup-estimate.mjs";
-import { LOOKUP_ROLES, externalPathFeasibility, referenceFeasibility } from "../lib/continuity-lookup.mjs";
+import { lookupPilotSchedule } from "../lib/continuity-lookup-pilot-state.mjs";
+import { LOOKUP_ROLES, LOOKUP_PILOT_MEASURED_ROLES, externalPathFeasibility, referenceFeasibility } from "../lib/continuity-lookup.mjs";
 import { fixtureLookupPolicy } from "./fixtures/holdout-synthetic.mjs";
 
 async function fixture() {
@@ -24,7 +25,7 @@ async function fixture() {
 it("pins exact maximum-class reservation, headroom, ratio and scenario independently of legacy cap", async () => {
   const f = await fixture(), e = estimateLookupPilot(f);
   expect(e.rmaxUSD).toBe(3.92); expect(e.capUSD).toBe(4); expect(e.lastAdmissibleHeadroomUSD).toBe(.08);
-  expect(e.fullUpfrontComparisonUSD).toBe(294); expect(e.capOverExpected).toBeCloseTo(4 / e.expectedUSD, 12);
+  expect(e.fullUpfrontComparisonUSD).toBe(196); expect(e.capOverExpected).toBeCloseTo(4 / e.expectedUSD, 12);
   expect(e.scenario).toMatchObject({ cacheFraction: "1/2", lookups: 2, measurement: false });
   expect(e.authorizedSpend).toBe(false);
   expect(estimateLookupPilot({ ...f, capUSD: 3.92 }).lastAdmissibleHeadroomUSD).toBe(0);
@@ -68,4 +69,30 @@ it("registers complete policy, assumptions and deterministic schedule digests, n
   expect(d.deadlines).toMatchObject({ runDeadlineMs: 3600000, childWatchdogMs: 720000 });
   expect(() => lookupPilotDescriptor({ ...f, runDeadlineMs: 0 })).toThrow("lookup_pilot_not_ready");
   await expect(validateLookupPilotRegistration({ schema: "continuity-lookup-pilot-faux-v1", descriptor: d })).rejects.toThrow("incompatible_lookup_registration");
+});
+
+it("estimates and schedules only the four measured roles even when every inventory path is feasible", async () => {
+  const f = await fixture(), paths = f.workload.policy.budget.paths;
+  expect(paths.every(p => p.feasibility.classification === "feasible")).toBe(true);
+  const pilot = {registration: {common: f.workload, roles: LOOKUP_ROLES}, descriptor: lookupPilotDescriptor(f)};
+  expect(lookupPilotSchedule(pilot).filter(s => s.eligible).map(s => s.roleId).sort()).toEqual([...LOOKUP_PILOT_MEASURED_ROLES].sort());
+  expect(lookupPilotSchedule(pilot).filter(s => s.roleId.startsWith("native")).every(s => !s.eligible)).toBe(true);
+  const estimate = estimateLookupPilot(f); expect(estimate).toMatchObject({eligible: 4, skipped: 2, fullUpfrontComparisonUSD: 196});
+  for (const path of paths.filter(p => p.role.startsWith("native"))) {
+    path.initialTokens += 1000;
+    path.initialAdmission = referenceFeasibility({calls: 0, bytes: 0, cumulativeBytes: 0, discovered: true}, f.workload.policy.budget, path);
+    path.feasibility = externalPathFeasibility(path, f.workload.policy.budget);
+  }
+  expect(estimateLookupPilot(f)).toEqual(estimate);
+});
+
+it("excludes small native paths even at the 150000-token floor when their input bound is feasible", async () => {
+  const f = await fixture(), pilot = {registration: {common: f.workload, roles: LOOKUP_ROLES}, descriptor: lookupPilotDescriptor(f)};
+  for (const path of f.workload.policy.budget.paths.filter(p => p.role.startsWith("native"))) {
+    Object.assign(path, {method: "identifier-reference", initialTokens: 150000, initialContextBytes: 200000, calls: 2, bytes: 100, cumulativeBytes: 150});
+    path.initialAdmission = referenceFeasibility({calls: 0, bytes: 0, cumulativeBytes: 0, discovered: true}, f.workload.policy.budget, path);
+    path.feasibility = externalPathFeasibility(path, f.workload.policy.budget);
+    expect(path.feasibility.classification).toBe("feasible");
+  }
+  expect(lookupPilotSchedule(pilot).filter(s => s.roleId.startsWith("native")).every(s => s.eligible === false)).toBe(true);
 });
