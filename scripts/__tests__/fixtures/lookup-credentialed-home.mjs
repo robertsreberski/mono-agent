@@ -53,7 +53,7 @@ export function credentialedHomeCanary({ root, home, credential, evidence }) {
     const original = target[name]; target[name] = wrap(original);
     apis.push(`${target === fs ? "fs" : "fsp"}.${name}`);
     if (typeof original.native === "function") {
-      target[name].native = function (...args) { check(args[0]); return original.native.apply(this, args); };
+      target[name].native = function (...args) { check(args[0], false, `${name}.native`); return original.native.apply(this, args); };
       apis.push(`fs.${name}.native`);
     }
     originals.push(() => { target[name] = original; });

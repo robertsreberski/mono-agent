@@ -1,24 +1,11 @@
 import fs from "node:fs/promises";
 import { execFileSync } from "node:child_process";
-import { syncBuiltinESMExports } from "node:module";
-import child from "node:child_process";
+import { withOfflineBuilds } from "../../__tests__/fixtures/lookup-offline-builds.mjs";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { syntheticContext, fixtureGit, fixtureCommit, fixtureLookupPolicy } from "../../__tests__/fixtures/holdout-synthetic.mjs";
 import { sha256 } from "../../lib/continuity-lookup.mjs";
 
-export const OFFLINE_FLAGS = ["--config.verify-deps-before-run=false", "--config.manage-package-manager-versions=false", "--config.offline=true"];
-// Only execution flags are added. Every production build/verification command runs;
-// no output, source, module resolution or result is substituted.
-export async function withOfflineBuilds(fn, commands) {
-  const original = child.execFileSync;
-  child.execFileSync = function (file, args, options) {
-    if (file === "pnpm") { args = [...OFFLINE_FLAGS, ...args]; commands.push({file, args}); }
-    return original.call(this, file, args, options);
-  };
-  syncBuiltinESMExports();
-  try {return await fn();} finally {child.execFileSync = original; syncBuiltinESMExports();}
-}
 async function linkDependencies(source, target) {
   await fs.mkdir(join(target, "node_modules"));
   for (const name of await fs.readdir(join(source, "node_modules"))) {

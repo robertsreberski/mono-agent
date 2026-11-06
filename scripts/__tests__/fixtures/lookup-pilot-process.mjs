@@ -1,3 +1,4 @@
+import { withOfflineBuilds } from "./lookup-offline-builds.mjs";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { format } from "node:util";
 import { beforeAll, afterAll, beforeEach, afterEach, expect, it as test } from "vitest";
@@ -61,14 +62,15 @@ export async function pilotProcessFixture({ configured = false, runDeadlineMs = 
     const revision = root => execFileSync("git", ["-C", root, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
     const checkouts = { R0: { path: f.repo, revision: revision(f.repo) }, Rpack: { path: pack, revision: revision(pack) } };
     const roles = await loadPilot(f, "roles"), pilotModule = await loadPilot(f, "pilot");
-    const { codes, protocol } = await roles.prepareLookupCodes(checkouts);
+    const { codes, protocol } = await withOfflineBuilds(() => roles.prepareLookupCodes(checkouts));
     const options = { checkouts, suites: ["holdout"], lookupSource: { manifestPath: f.context.options.manifestPath, manifestSha256: f.context.options.manifestSha256,
       statisticalSpecPath: f.context.options.statisticalSpecPath }, reader: "openai-codex:gpt-6.1-sol", readerEffort: "high", selectionSeed: 42, perGroup: configured ? 1 : 2, probeLimit: 1,
       outputLimit: { source: "catalog_max", tokens: 128000 } };
     const workload = await roles.lookupWorkload({ ...options, inputRoots: [f.repo, pack] });
     const policy = await fixtureLookupPolicy({ source: workload.corpora[0].source, selection: workload.corpora[0].traces, lookupSelection: workload.lookupSelection, reader: workload.reader, codes, protocol, eligibleRoles });
     const policyPath = join(f.inputs, "lookup-policy.json"); await fs.writeFile(policyPath, JSON.stringify(policy));
-    const pilot = await pilotModule.registerLookupPilot({ ...options, policyPath, policySha256: sha256(await fs.readFile(policyPath)), capUSD: 3.92, scheduleSeed: 13, runDeadlineMs });
+    const policySha256 = sha256(await fs.readFile(policyPath));
+    const pilot = await withOfflineBuilds(() => pilotModule.registerLookupPilot({ ...options, policyPath, policySha256, capUSD: 3.92, scheduleSeed: 13, runDeadlineMs }));
     return { ...f, base, pack, pilot, home };
   } catch (error) { await fs.rm(base, { recursive: true, force: true }); throw error; }
   finally { for (const key of Object.keys(process.env)) if (!(key in env)) delete process.env[key]; Object.assign(process.env, env); }

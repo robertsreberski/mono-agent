@@ -34,7 +34,10 @@ globalThis[Symbol.for("lookup.proof.scope")] = scope;
 // I/O itself is not claimed to be mediated by the JavaScript fs wrappers.
 registerHooks({load(url, context, next) {
   const result = next(url, context);
-  if (url.startsWith("file:") && result.source != null) loaded.set(url, {url, format: result.format, sha256: createHash("sha256").update(result.source).digest("hex")});
+  if (url.startsWith("file:")) {
+    const bytes = result.source ?? (fileURLToPath(url).endsWith(".node") ? fs.readFileSync(fileURLToPath(url)) : null);
+    if (bytes != null) loaded.set(url, {url, format: result.format, sha256: createHash("sha256").update(bytes).digest("hex")});
+  }
   return result;
 }});
 const originals = [], observe = (object, name) => {

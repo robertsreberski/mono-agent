@@ -13,7 +13,7 @@ import { credentialedHomeCanary } from "./lookup-credentialed-home.mjs";
 // Observation only. Never substitutes an entrypoint, response, serializer or identity.
 export function installLookupProofScope(policy) {
   const nativeRealpath = fs.realpathSync.native, originals = [], allowed = [], refused = [], refusedInvocations = [], databases = [];
-  let spawning = 0;
+  let spawning = 0, listeners = 0;
   const files = credentialedHomeCanary(policy), ports = new Set((policy.origins ?? []).map(origin => new URL(origin).port));
   const within = (base, path) => { const r = relative(base, path); return r === "" || (r !== ".." && !r.startsWith("../") && !isAbsolute(r)); };
   const patch = (object, name, wrapper) => { if (typeof object[name] !== "function") return; const fn = object[name]; object[name] = wrapper(fn); originals.push(() => {object[name] = fn;}); };
@@ -62,7 +62,7 @@ export function installLookupProofScope(policy) {
     if (previous) previous.count++; else allowed.push(row);
     return {kind, record: previous ?? row, options: {...options, env, shell: false}};
   }
-  const preload = (overrides = {}) => { const url = new URL(policy.preloadUrl ?? import.meta.url); url.searchParams.set("policy", Buffer.from(JSON.stringify({...policy, ...overrides, origins: [...ports].map(port => `http://127.0.0.1:${port}`)})).toString("base64url")); return url.href; };
+  const preload = (overrides = {}) => { const url = new URL(policy.preloadUrl ?? import.meta.url); url.searchParams.set("policy", Buffer.from(JSON.stringify({...policy, ...overrides, origins: overrides.origins ?? [...ports].map(port => `http://127.0.0.1:${port}`)})).toString("base64url")); return url.href; };
   const imports = (args, extra) => { const result = []; for (let i = 0; i < args.length; i++) { const arg = args[i], value = arg === "--import" ? args[i + 1] : arg.startsWith("--import=") ? arg.slice(9) : null; if (value && /lookup-(?:proof-scope|configured-preload)\.mjs/u.test(value)) {if (arg === "--import") i++; continue;} result.push(arg); } return [...result, "--import", preload(extra)]; };
   for (const family of ["spawn", "spawnSync", "execFile", "execFileSync", "fork"]) patch(child, family, original => function (command, args = [], options = {}, callback) {
     if (typeof options === "function") {callback = options; options = {};}
@@ -90,6 +90,7 @@ export function installLookupProofScope(policy) {
   patch(net.Server.prototype, "listen", original => function (...args) {
     const options = typeof args[0] === "object" ? args[0] : {port: args[0], host: args[1]};
     if (options.host !== "127.0.0.1" || !Number.isInteger(options.port) || options.port < 0) return deny("listen");
+    if (policy.mode === "configured" && ++listeners > ({controller: 1, preparation: 1, probe: 2}[policy.role] ?? 0)) return deny("listen");
     this.prependOnceListener("listening", () => {const address = this.address(); if (address.address !== "127.0.0.1") deny("listen"); ports.add(String(address.port));});
     return original.apply(this, args);
   });
@@ -117,7 +118,7 @@ export function installLookupProofScope(policy) {
   patch(workers, "Worker", NativeWorker => class extends NativeWorker {
     constructor(entry, options = {}) {
       // Each level installs this same wrapper; nested threads cannot drop the preload.
-      super(entry, {...options, execArgv: imports(options.execArgv ?? process.execArgv, policy.mode === "configured" ? {role: "worker", parentRole: policy.role} : {})});
+      super(entry, {...options, execArgv: imports(options.execArgv ?? process.execArgv, policy.mode === "configured" ? {role: "worker", parentRole: policy.role, origins: []} : {})});
     }
   });
   syncBuiltinESMExports();

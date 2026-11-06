@@ -16,8 +16,8 @@ const sha = data => createHash("sha256").update(data).digest("hex");
 const statePath = join(config.outputRoot, "lookup-pilot-controller.json"), readState = async () => JSON.parse(await fs.readFile(statePath));
 const authorization = {schema: "continuity-lookup-faux-authorization-v1", authorizationId: randomUUID(), pilotSha256: digest(pilot), outputRoot: config.outputRoot, scenarios: ["settled"], timeoutMs: config.case === "late" ? pilot.descriptor.deadlines.childWatchdogMs : 120000};
 const arrivals = [], errors = [], partials = [];
-let lateAvailable = 0, lateAcceptedSettles = 0, killedAt = null, resolveLate;
-const late = new Promise(resolve => {resolveLate = resolve;});
+let lateAvailable = 0, lateAcceptedSettles = 0, killedAt = null, outerCompletedAt = null, resolveLate, resolveFinished;
+const late = new Promise(resolve => {resolveLate = resolve;}), finished = new Promise(resolve => {resolveFinished = resolve;});
 function sse(payload, number, tool) {
   const id = `fictional-${number}`;
   const item = tool ? {type: "function_call", id: `fc_${id}`, call_id: `call_${id}`, name: config.case === "limit" ? "FictionalUnknownTool" : tool.name, arguments: JSON.stringify({action: "search", query: `FXEARLY ${number}`, limit: 1}), status: "completed"}
@@ -34,7 +34,9 @@ async function arrival(request, response) {
   const state = await readState(), slot = state.slots[state.cursor], planned = state.schedule[state.cursor], hold = slot.holds.at(-1);
   const claim = JSON.parse(await fs.readFile(join(config.outputRoot, "authorization-consumed.json")));
   const twin = JSON.parse(await fs.readFile(join(dirname(config.outputRoot), ".lookup-faux-consumed-v1", sha(LOOKUP_FAUX_AUTHORIZATION_DOMAIN + authorization.authorizationId), "claim.json")));
-  assert.deepEqual(claim, twin); assert.equal(claim.runId, state.runId); assert.equal(claim.controllerEpoch, state.epoch); assert.equal(claim.binding, digest(pilot));
+  assert.deepEqual(claim, twin); assert.equal(claim.authorizationId, authorization.authorizationId); assert.equal(claim.outputRoot, config.outputRoot);
+  assert.deepEqual(claim.controller, state.controller); assert.equal(state.controller.pid, process.pid); assert.equal(state.stop, null); assert.equal(planned.eligible, true);
+  assert.equal(claim.runId, state.runId); assert.equal(claim.controllerEpoch, state.epoch); assert.equal(claim.binding, digest(pilot));
   assert.equal(hold.consumed, true); assert.equal(hold.revoked, false); assert.equal(hold.settlement, null); assert.equal(hold.payloadDigest, sha(bytes));
   assert.equal(payload.prompt_cache_key, slot.cacheKey); assert.equal(request.headers["session-id"], slot.cacheKey); assert.equal(request.headers["x-client-request-id"], slot.cacheKey);
   assert.equal(request.method, "POST"); assert.ok(slot.preparation.exited); assert.ok(slot.preparation.treeDigest); assert.ok(payload.tools.length);
@@ -52,7 +54,14 @@ async function arrival(request, response) {
   if (config.case === "late") {
     const target = slot.startedAt + pilot.descriptor.deadlines.deadlineMs + 500;
     setTimeout(async () => {
-      try {killedAt = Date.now(); lateAvailable++; const current = await readState(); lateAcceptedSettles = current.slots[state.cursor].holds.filter(h => h.settlement).length; response.end(sse(payload, number)); resolveLate();}
+      try {
+        await finished; // Availability is after actual containment, not merely the deadline timestamp.
+        killedAt = Date.now(); lateAvailable++; const current = await readState();
+        assert.equal(current.stop, "lookup_worker_timeout"); assert.ok(response.destroyed);
+        lateAcceptedSettles = current.slots[state.cursor].holds.filter(h => h.settlement).length;
+        // A provider can have terminal usage available without a surviving client.
+        assert.ok(sse(payload, number).includes("response.completed")); resolveLate();
+      }
       catch (error) {errors.push(error.message); resolveLate();}
     }, Math.max(0, target - Date.now()));
     return;
@@ -66,9 +75,10 @@ server.listen(0, "127.0.0.1"); await once(server, "listening");
 authorization.fixtureEndpoint = `http://127.0.0.1:${server.address().port}/codex/responses`;
 try {
   const report = await runLookupPilot({pilot, outputRoot: config.outputRoot, authorization});
+  outerCompletedAt = Date.now(); resolveFinished();
   if (config.case === "late" && arrivals.length) await late;
   const state = await readState();
-  const result = {case: config.case, pilotSha256: digest(pilot), report, state, arrivals, partials, errors, lateAvailable, lateAcceptedSettles, providerLateAvailableAt: killedAt};
+  const result = {case: config.case, pilotSha256: digest(pilot), report, state, arrivals, partials, errors, lateAvailable, lateAcceptedSettles, outerCompletedAt, ...(config.case === "late" ? {providerTerminalDelivered: 0} : {}), providerLateAvailableAt: killedAt};
   await fs.writeFile(config.result, JSON.stringify(result));
   assert.deepEqual(errors, []);
-} finally {server.closeAllConnections(); await new Promise(resolve => server.close(resolve));}
+} finally {resolveFinished(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve));}
