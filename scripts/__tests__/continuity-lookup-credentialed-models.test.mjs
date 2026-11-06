@@ -28,6 +28,10 @@ const handle = Object.freeze({});
 const nativeWorker = workers.Worker;
 
 beforeAll(async () => {
+  // Opt out of the root test setup's account-home mocks: the real app must not
+  // need them when openHarness owns an explicit private lease-home.
+  vi.doUnmock("../../packages/app/src/host/account-home.js");
+  vi.doUnmock("../../packages/app/dist/host/account-home.js");
   vi.resetModules();
   const temp = fs.realpathSync(tmpdir()), homeRelative = relative(fs.realpathSync(userInfo().homedir), temp);
   expect(homeRelative.startsWith("..") || isAbsolute(homeRelative)).toBe(true);
@@ -107,6 +111,8 @@ beforeAll(async () => {
   expect(sdkFetchOffset).toBeGreaterThan(0);
   cap = await import("../lib/continuity-lookup-real-capability.mjs"); // Captures native fetch, before sentinel.
   runner = await import("../lib/continuity-runner.mjs"); modules = await runner.productionModules(ROOT);
+  const {accountHomeDirectory} = await import("../../packages/app/dist/host/account-home.js");
+  expect(accountHomeDirectory()).toBe(userInfo().homedir);
   vi.stubGlobal("fetch", () => { globalCalls++; throw Error("test_global_fetch_denied"); });
   // Vitest sourcemap diagnostics are not application I/O. Avoid .map reads without warming or substituting SDK code.
   expect(() => globalThis.fetch("https://example.invalid/denied-canary")).toThrow("test_global_fetch_denied"); globalCalls = 0;
