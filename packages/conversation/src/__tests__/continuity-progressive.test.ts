@@ -6,7 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import { afterEach, expect, it, vi } from "vitest";
 import { ToolHistoryWriter } from "../tool-history/writer.js";
 import { ToolHistoryReader } from "../tool-history/reader.js";
-import { continuityGenerationId, continuityRecordId, retainContinuity } from "../tool-history/continuity-storage.js";
+import { continuityGenerationId, continuityRecordId, continuityRetainedBytes, retainContinuity, toolRetainedBytes } from "../tool-history/continuity-storage.js";
 import { persistContinuityPurge } from "../tool-history/continuity-purge.js";
 import { createContinuityPackSupplier } from "../continuity/pack.js";
 import { reclaimProgress, upkeepBytes } from "../continuity/progress.js";
@@ -40,13 +40,19 @@ async function fixture() {
     }
   };
   const db = <T>(fn: (db: DatabaseSync) => T): T => { const database = new DatabaseSync(reader.databasePath); try { database.exec("PRAGMA busy_timeout=5000;PRAGMA foreign_keys=ON"); return fn(database); } finally { database.close(); } };
+  const writeTransaction = <T>(fn: (db: DatabaseSync) => T): T => db(database => {
+    // Exclude the writer's accounting drain from quota measurements and retention.
+    database.exec("BEGIN IMMEDIATE");
+    try { const result = fn(database); database.exec("COMMIT"); return result; }
+    catch (error) { database.exec("ROLLBACK"); throw error; }
+  });
   const prepare = async (maxTokens = 8000, physical = "fictional", twice = false) => {
     const events: any[] = [], supplier = createContinuityPackSupplier({ toolHistory: ports } as unknown as ConversationHarnessOptions, { conversationId: physical, userMessage: "Current fictional boundary.", abortSignal: new AbortController().signal }, randomUUID())!;
     await supplier.prepare({ ...eligibility, maxTokens }, "cold_rebuild", event => events.push(event));
     if (twice) await supplier.prepare({ ...eligibility, maxTokens }, "cold_rebuild", event => events.push(event));
     return { events, pack: () => JSON.stringify(supplier([], maxTokens, "cold_rebuild", () => {})) };
   };
-  return { root, writer, reader, complete, capture, prepare, selections, budgets, caps, db, ports, respond: (fn: typeof response) => { response = fn; } };
+  return { root, writer, reader, complete, capture, prepare, selections, budgets, caps, db, writeTransaction, ports, respond: (fn: typeof response) => { response = fn; } };
 }
 
 it("progresses beyond 512 records, preserves earlier stable entries, and reaches actual tool interiors", async () => {
@@ -504,15 +510,18 @@ it("reclaims LRU working sets under the shared quota without losing unknowns or 
   const fence = (await f.writer.mutateUpkeep({ kind: "claim", expected, ownerToken: "other-owner" }))!;
   const reservation = { ...fence, operationId: randomUUID(), runId: "other-run", recorderNamespace: resolve("/fictional"), model: "fictional:base", manifest: "a".repeat(64), parent: null, budget: "bootstrap" as const };
   await f.writer.mutateUpkeep({ kind: "reserve", reservation }); await f.writer.mutateUpkeep({ kind: "dispatch", reservation });
-  const before = f.reader.stats()!, metadata = f.db(upkeepBytes); expect(metadata).toBeGreaterThan(0);
-  const unknown = f.db(db => db.prepare("SELECT * FROM continuity_upkeep_operations WHERE operation_id=?").get(reservation.operationId));
-  f.db(db => retainContinuity(db, { ...before.limits, maxBytes: before.retainedBytes - 1 }, Date.now()));
-  expect(f.db(db => db.prepare("SELECT count(*) n FROM continuity_upkeep_operations WHERE logical_id='fictional' AND conversation_id='fictional'").get())).toEqual({ n: 0 });
-  expect(f.db(db => db.prepare("SELECT * FROM continuity_upkeep_operations WHERE operation_id=?").get(reservation.operationId))).toEqual(unknown);
-  expect(f.db(db => db.prepare("SELECT bootstrap_operation FROM continuity_upkeep_admissions WHERE logical_id='fictional' AND conversation_id='fictional'").get())).toEqual(oldMarker);
-  expect(f.db(db => db.prepare("SELECT count(*) n FROM continuity_upkeep_operations WHERE conversation_id='newer'").get())).toEqual({ n: 1 });
-  expect(f.db(db => db.prepare("SELECT bootstrap_operation FROM continuity_upkeep_admissions WHERE logical_id='other'").get())).toEqual({ bootstrap_operation: reservation.operationId });
-  expect(f.db(upkeepBytes)).toBeLessThan(metadata); expect(f.reader.stats()!.retainedBytes).toBeLessThan(before.retainedBytes);
+  const { limits } = f.reader.stats()!;
+  f.writeTransaction(db => {
+    const before = continuityRetainedBytes(db) + toolRetainedBytes(db), metadata = upkeepBytes(db); expect(metadata).toBeGreaterThan(0);
+    const unknown = db.prepare("SELECT * FROM continuity_upkeep_operations WHERE operation_id=?").get(reservation.operationId);
+    retainContinuity(db, { ...limits, maxBytes: before - 1 }, Date.now());
+    expect(db.prepare("SELECT count(*) n FROM continuity_upkeep_operations WHERE logical_id='fictional' AND conversation_id='fictional'").get()).toEqual({ n: 0 });
+    expect(db.prepare("SELECT * FROM continuity_upkeep_operations WHERE operation_id=?").get(reservation.operationId)).toEqual(unknown);
+    expect(db.prepare("SELECT bootstrap_operation FROM continuity_upkeep_admissions WHERE logical_id='fictional' AND conversation_id='fictional'").get()).toEqual(oldMarker);
+    expect(db.prepare("SELECT count(*) n FROM continuity_upkeep_operations WHERE conversation_id='newer'").get()).toEqual({ n: 1 });
+    expect(db.prepare("SELECT bootstrap_operation FROM continuity_upkeep_admissions WHERE logical_id='other'").get()).toEqual({ bootstrap_operation: reservation.operationId });
+    expect(upkeepBytes(db)).toBeLessThan(metadata); expect(continuityRetainedBytes(db) + toolRetainedBytes(db)).toBeLessThan(before);
+  });
   await f.prepare(); expect(f.complete).toHaveBeenCalledTimes(3); // Exact compact count preserves its one remaining offer.
   await f.capture(1, "Fresh after reclamation."); await f.prepare(); expect(f.complete).toHaveBeenCalledTimes(4); expect(f.budgets.slice(2)).toEqual([64000, 64000]);
 });
@@ -537,10 +546,13 @@ it("counts an idle scope claim as LRU use after its analyzed allowance is exhaus
   await f.capture(1, "Newer scope.", "newer"); await f.prepare(8000, "newer");
   f.db(db => db.exec("UPDATE continuity_upkeep_progress SET cursor=json_set(cursor,'$.touchedAt',CASE WHEN conversation_id='fictional' THEN 0 ELSE 1 END)"));
   await f.prepare(); expect(f.complete).toHaveBeenCalledTimes(3);
-  const stats = f.reader.stats()!;
-  f.db(db => retainContinuity(db, { ...stats.limits, maxBytes: stats.retainedBytes - 1 }, Date.now()));
-  expect(f.db(db => db.prepare("SELECT conversation_id FROM continuity_upkeep_operations").all())).toEqual([{ conversation_id: "fictional" }, { conversation_id: "fictional" }]);
-  expect(f.db(db => db.prepare("SELECT count(*) n FROM continuity_upkeep_admissions WHERE bootstrap_operation IS NOT NULL").get())).toEqual({ n: 2 });
+  const { limits } = f.reader.stats()!;
+  f.writeTransaction(db => {
+    const before = continuityRetainedBytes(db) + toolRetainedBytes(db);
+    retainContinuity(db, { ...limits, maxBytes: before - 1 }, Date.now());
+    expect(db.prepare("SELECT conversation_id FROM continuity_upkeep_operations").all()).toEqual([{ conversation_id: "fictional" }, { conversation_id: "fictional" }]);
+    expect(db.prepare("SELECT count(*) n FROM continuity_upkeep_admissions WHERE bootstrap_operation IS NOT NULL").get()).toEqual({ n: 2 });
+  });
 });
 
 it("accounts a paid related-source tombstone without publishing or blocking the scope", async () => {
