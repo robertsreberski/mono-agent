@@ -12,7 +12,7 @@ import { credentialedHomeCanary } from "./lookup-credentialed-home.mjs";
 
 // Observation only. Never substitutes an entrypoint, response, serializer or identity.
 export function installLookupProofScope(policy) {
-  const nativeRealpath = fs.realpathSync.native, originals = [], allowed = [], refused = [], databases = [];
+  const nativeRealpath = fs.realpathSync.native, originals = [], allowed = [], refused = [], refusedInvocations = [], databases = [];
   let spawning = 0;
   const files = credentialedHomeCanary(policy), ports = new Set((policy.origins ?? []).map(origin => new URL(origin).port));
   const within = (base, path) => { const r = relative(base, path); return r === "" || (r !== ".." && !r.startsWith("../") && !isAbsolute(r)); };
@@ -46,13 +46,15 @@ export function installLookupProofScope(policy) {
         const root = args[2], prefix = ["--no-optional-locks", "-C", root, "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "gc.auto=0", "-c", "maintenance.auto=false"];
         const tail = args.slice(prefix.length), fixed = [["rev-parse", "HEAD"], ["rev-parse", "--show-toplevel"], ["status", "--porcelain=v1"], ["status", "--porcelain=v1", "--untracked-files=all", "--ignore-submodules=none"], ["ls-files", "-v", "-z"], ["ls-tree", "-rz", "--full-tree", "HEAD"], ["show", "HEAD:packages/conversation/src/continuity/render-fit.ts"]];
         if (policy.codeRoots?.includes(root) && JSON.stringify(args.slice(0, prefix.length)) === JSON.stringify(prefix) && fixed.some(x => JSON.stringify(x) === JSON.stringify(tail)) && env.GIT_CONFIG_GLOBAL === "/dev/null" && env.GIT_CONFIG_NOSYSTEM === "1") kind = "git";
+        const legacy = [["rev-parse", "HEAD"], ["status", "--porcelain", "--untracked-files=all"], ["ls-files", "-z", "--", "scripts/continuity-*", "scripts/lib/continuity-*", "scripts/holdout-validate.mjs", "scripts/fixtures/continuity/", "scripts/fixtures/continuity-*", "packages/contracts/src/upkeep-accounting.ts", "packages/conversation/src/continuity/ledger.ts", "packages/conversation/src/continuity/ranking.ts"]];
+        if (policy.codeRoots?.some(root => legacy.some(tail => same(["-C", `${root}/`, ...tail]))) && env.GIT_CONFIG_GLOBAL === "/dev/null" && env.GIT_CONFIG_NOSYSTEM === "1") kind = "git";
       }
       if (family === "fork" && policy.forkPaths?.includes(resolve(command)) && args.length === 0 && options.detached === true
         && options.cwd === resolve(command, "../../..") && JSON.stringify(options.stdio) === JSON.stringify(["ignore", "ignore", "pipe", "ipc"])
         && ["HOME", "XDG_CACHE_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME"].every(key => env[key] === env.HOME)
         && env.GIT_CONFIG_GLOBAL === "/dev/null" && env.GIT_CONFIG_NOSYSTEM === "1") kind = "fork";
     }
-    if (!kind) return deny("subprocess");
+    if (!kind) {if (policy.mode === "configured") refusedInvocations.push({command, args, family}); return deny("subprocess");}
     const argv = kind === "identity" && args[0] === "-p" ? ["-p", "<pid>", ...args.slice(2)] : args;
     const row = {pid: process.pid, threadId: workers.threadId, executable: kind === "fork" ? node : binary, argv: kind === "fork" ? [resolve(command), ...args] : argv, family, kind, shell: false, home: env.HOME, count: 1, environmentKeys: Object.keys(env).sort(),
       ...(["git", "fork"].includes(kind) ? {globalConfig: env.GIT_CONFIG_GLOBAL, systemConfig: "disabled"} : {})};
@@ -118,14 +120,14 @@ export function installLookupProofScope(policy) {
     }
   });
   syncBuiltinESMExports();
-  const result = () => ({subprocesses: allowed, unexpected: [...refused], databases: [...databases], networkPorts: [...ports].sort()});
+  const result = () => ({subprocesses: allowed, unexpected: [...refused], refusedInvocations, databases: [...databases], networkPorts: [...ports].sort()});
   return {
     files, result, ownsOrigin: origin => {const url = new URL(origin); return url.protocol === "http:" && url.hostname === "127.0.0.1" && ports.has(url.port);},
     canaries() {
       const families = [() => child.spawn("/bin/echo", ["denied"]), () => child.spawnSync("/bin/echo", ["denied"]), () => child.exec("echo denied"), () => child.execSync("echo denied"), () => child.execFile("/bin/echo", ["denied"]), () => child.execFileSync("/bin/echo", ["denied"]), () => child.fork("/fictional/denied.mjs"), () => child.spawn("/bin/ps", ["-p", String(process.pid), "-o", "lstart="], {shell: true})];
       for (const probe of families) {try {probe(); throw Error("test_canary_bypassed");} catch (error) {if (error.message !== "test_subprocess_denied") throw error;}}
       try {new net.Socket().connect({host: "203.0.113.1", port: 443}); throw Error("test_canary_bypassed");} catch (error) {if (error.message !== "test_egress_denied") throw error;}
-      refused.length = 0; files.canaries(); return families.length + 1;
+      refused.length = 0; refusedInvocations.length = 0; files.canaries(); return families.length + 1;
     },
     save(extra = {}) {files.save({...result(), ...extra});},
     restore() {for (const undo of originals.reverse()) undo(); files.restore(); syncBuiltinESMExports();},
