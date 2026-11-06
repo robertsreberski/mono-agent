@@ -463,6 +463,7 @@ it("binds all present pilot artifact files, including guard assumptions, in the 
     "scripts/lib/continuity-lookup-child-environment.mjs",
     "scripts/lib/continuity-lookup-faux-capability.mjs",
     "scripts/lib/continuity-lookup-preflight.mjs",
+    "scripts/lib/continuity-lookup-registry-readiness.mjs",
     "scripts/lib/continuity-lookup-preparation.mjs",
     "scripts/lib/continuity-lookup-preparation-child.mjs",
     "scripts/lib/continuity-lookup-pilot-runtime.mjs",

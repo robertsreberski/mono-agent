@@ -73,7 +73,8 @@ export async function lookupOutputPath(output, roots) {
   return canonical;
 }
 export const WORKLOAD_FLAGS = ["--selection-seed", "--per-group", "--r0", "--rpack","--suites", "--traces", "--repeats", "--probe-limit", "--reader", "--reader-effort", "--corpus-manifest", "--manifest-sha256", "--statistical-spec", "--lookup-policy", "--lookup-policy-sha256", "--output-limit", "--output-limit-source", "--catalog-cap-usd"];
-const HELP = `Offline preparation: preflight --registration FILE --sha256 SHA --timeout-ms N --output-root ABSOLUTE_DIR [--require-real-equivalent]
+const HELP = `Read-only registry readiness: registry-preflight (no flags; OS account home)
+Offline preparation: preflight --registration FILE --sha256 SHA --timeout-ms N --output-root ABSOLUTE_DIR [--require-real-equivalent]
 continuity-lookup-compare (offline only)
   register --r0 PATH --r0-revision FULL_SHA --rpack PATH --rpack-revision FULL_SHA --output NEW_DIR
            [--suites original,hard,hard-distractors] [--traces ID,...] [--probe-limit N] [--repeats N]
@@ -91,6 +92,11 @@ Registration/run output directories must be outside both checkouts (symlinks res
 No provider calls, fetch, checkout, cherry-pick, significance claims or spending authorization.`;
 export async function main(argv = process.argv.slice(2), { stdout = console.log } = {}) {
   if (!argv.length || argv.length === 1 && argv[0] === "--help") { stdout(HELP); return 0; }
+  if (argv[0] === "registry-preflight") {
+    parseLookupOptions(argv.slice(1), []);
+    const {lookupRegistryReadiness} = await import("./lib/continuity-lookup-registry-readiness.mjs");
+    const result = await lookupRegistryReadiness(); stdout(JSON.stringify(result)); return result.ready ? 0 : 1;
+  }
   if (argv[0] === "preflight") {
     let flags;
     try { flags = parseLookupOptions(argv.slice(1), ["--registration", "--sha256", "--timeout-ms", "--output-root"], ["--require-real-equivalent"]); }

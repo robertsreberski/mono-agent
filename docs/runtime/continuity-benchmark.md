@@ -1576,6 +1576,22 @@ not yet established. No live provider behavior, billing, power-loss durability
 or operator acceptance is established by these unit tests.
 
 
+### Read-only consumption-registry readiness
+
+Before requesting a cap, run
+`node scripts/continuity-lookup-compare.mjs registry-preflight`.
+It accepts no flags or home override. It checks the OS
+account home's registry-parent ownership, permissions and canonical directory
+ancestry using metadata only: no writes, creation, claims or authorization.
+A missing parent is reported as safe-to-create only when every existing ancestor
+is safe; private existing registry directories must be owner-only. The report
+contains no home path and is a point-in-time diagnostic, not a grant.
+
+Real consumption, whose fixed registry is derived from `userInfo().homedir`,
+first executes in the live pilot. The faux process smoke and credentialed unit
+proof do not exercise that real write path. This read-only check cannot establish
+power-loss durability or guarantee that permissions will stay unchanged.
+
 ### Offline preparation feasibility
 
 The non-authorizing `continuity-lookup-compare.mjs preflight` command requires
