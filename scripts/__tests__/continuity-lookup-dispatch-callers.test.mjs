@@ -110,7 +110,7 @@ const INVENTORY = {
     "scripts/__tests__/fixtures/lookup-preparation-preload.mjs": 1,
     "scripts/__tests__/continuity-lookup-pilot-entry.test.mjs": 2,
     "scripts/__tests__/continuity-lookup-pilot-probe.test.mjs": 1,
-    "scripts/__tests__/continuity-lookup-real-capability.test.mjs": 21,
+    "scripts/__tests__/continuity-lookup-real-capability.test.mjs": 23,
     "scripts/lib/continuity-lookup-pilot-probe.mjs": 2,
     "scripts/lib/continuity-lookup-real-capability.mjs": 1,
   },
