@@ -57,7 +57,7 @@ it("audits canonical ROOT code reads, refuses a home-store escape and blocks cre
     expect(fs.readFileSync(module, "utf8")).toBe("export {};\n");
     expect(guard.result().postConstructionReads).toEqual(["node_modules/module.js"]);
     expect(guard.result().nonModuleReads).toEqual([]);
-    fs.readFileSync(readme); expect(guard.result().nonModuleReads).toEqual(["README.md"]);
+    expect(() => fs.readFileSync(readme)).toThrow("test_root_data_read_denied"); expect(guard.result().nonModuleReads).toEqual(["README.md"]);
     expect(guard.result().credentialWrites).toBe(1);
   } finally { guard?.restore(); await rm(dir, {recursive: true, force: true}); }
 }, 30000);

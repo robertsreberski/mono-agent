@@ -12,7 +12,11 @@ let canaries = 0, unexpected = 0, checking = true;
 const directory = process.env.LOOKUP_FIXTURE_WITNESSES;
 // Native child processes retain no JS state; only Node/content-keyed bytecode is reused.
 enableCompileCache(join(dirname(directory), "compile-cache"));
-const record = () => fs.writeFileSync(join(directory, `${process.pid}.json`), JSON.stringify({ canaries, unexpected, ci: process.env.CI ?? null, home: process.env.HOME, xdg: [process.env.XDG_CACHE_HOME, process.env.XDG_CONFIG_HOME, process.env.XDG_DATA_HOME, process.env.XDG_STATE_HOME], git: [process.env.GIT_CONFIG_GLOBAL, process.env.GIT_CONFIG_NOSYSTEM], ...evidence }), { mode: 0o600 });
+const record = () => {
+  const path = join(directory, `${process.pid}.json`), temporary = `${path}.tmp`;
+  fs.writeFileSync(temporary, JSON.stringify({ canaries, unexpected, ci: process.env.CI ?? null, home: process.env.HOME, xdg: [process.env.XDG_CACHE_HOME, process.env.XDG_CONFIG_HOME, process.env.XDG_DATA_HOME, process.env.XDG_STATE_HOME], git: [process.env.GIT_CONFIG_GLOBAL, process.env.GIT_CONFIG_NOSYSTEM], ...evidence }), { mode: 0o600 });
+  fs.renameSync(temporary, path);
+};
 const deny = () => { if (checking) canaries++; else { unexpected++; record(); } throw new Error("fixture_egress_denied"); };
 Socket.prototype.connect = deny; globalThis.fetch = async () => deny(); globalThis.WebSocket = class { constructor() { deny(); } };
 try { await fetch("fictional-invalid-url"); } catch {}

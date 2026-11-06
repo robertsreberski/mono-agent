@@ -1533,16 +1533,31 @@ and no retry. Final account headers must match the salted commitment; same-accou
 token rotation is permitted. Account mismatch, HTTP 401/403, HTTP 429 and known
 Codex usage-limit JSON/SSE errors await their fixed sticky stops. The guard's
 settlement contract is unchanged. The credentialed-path proof enters the real
-configured harness and post-credential Models decorator with an unexpired
-fictional OAuth file. The installed SDK derives the account and exact cache
+configured live-turn construction, including the production config and route,
+a real probe-owned History forwarder and post-credential Models decorator, with
+an unexpired fictional OAuth file. The SDK's accepted request includes the actual
+ConversationHistory tool schema, with no fallbacks or model switching. The
+installed SDK derives the account and exact cache
 payload/headers. Success and retryable-failure cases make one SDK fetch attempt;
 account mismatch makes no native attempt. Coverage counts actual credential
 reads, Models construction and OAuth derivation, with zero refresh calls.
 Credential writes and global-fetch fallback fail; the closure's captured native
 fetch is routed only to its test-owned loopback listener. The home-data canary
 allows read-only canonical checkout access, refuses home access outside it and
-all home/checkout writes, and audits post-construction checkout reads as installed
-module code. These tests use mocked authority, not execution-valid authorizations.
+all home/checkout writes, and audits post-construction checkout metadata and
+reads as installed module code or production `scripts/lib/**/*.mjs` code. Script
+accesses are recorded separately with their filesystem API kind; other checkout
+data reads after construction fail. This is a JavaScript filesystem-API canary in the main thread and
+its worker threads, including nested workers, not an OS sandbox. Native and
+SQLite file I/O and internal ESM-loader bindings are outside that API canary;
+the proof additionally asserts that actual SQLite connection paths are test-owned.
+OS process-identity subprocesses are allowed by exact executable and argv. The
+full-process proof additionally allows exact read-only Git/protocol-verification
+commands and the production preparation/probe forks. Other subprocess calls throw.
+These subprocesses are not covered by the filesystem canary; the OS-identity
+commands read no home data. Git verification uses the test home, global config
+`/dev/null` and disabled system config. These tests use mocked authority, not
+execution-valid authorizations.
 
 Containment retains proven members in memory when journal persistence fails.
 Fresh PID/start/pgid proof remains mandatory for every signal; persistence failure

@@ -2,16 +2,14 @@ import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import fs from "node:fs";
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
-import { Socket } from "node:net";
-import workers from "node:worker_threads";
-import { syncBuiltinESMExports, createRequire } from "node:module";
+import { createRequire } from "node:module";
 import { userInfo, tmpdir } from "node:os";
 import { join, relative, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Session } from "node:inspector/promises";
 import { createHash } from "node:crypto";
 import { zstdDecompressSync } from "node:zlib";
-import { credentialedHomeCanary } from "./fixtures/lookup-credentialed-home.mjs";
+import { installLookupProofScope } from "./fixtures/lookup-proof-scope.mjs";
 
 const ROOT = fileURLToPath(new URL("../../", import.meta.url));
 const sha = value => createHash("sha256").update(value).digest("hex");
@@ -22,10 +20,10 @@ const { Agent, getGlobalDispatcher, setGlobalDispatcher } = require("undici");
 const mocked = ["roles", "pilot", "authorization", "pilot-state", "ipc", "pilot-entry", "preparation"].map(name => `../lib/continuity-lookup-${name}.mjs`);
 let oldStackFormatter, coverage, sdkFetchOffset;
 const knownRefreshFunctions = new Set();
-let base, guard, server, agent, oldDispatcher, modules, runner, cap, current, state, permit, binding, schedule;
-let arrivals = [], nativeAttempts = 0, globalCalls = 0, forbiddenConnections = 0, refreshAttempts = 0;
+let basePlan, nativeArm, nativePatch, soulBytes;
+let base, guard, scope, server, agent, oldDispatcher, modules, runner, cap, current, state, permit, binding, schedule;
+let arrivals = [], nativeAttempts = 0, globalCalls = 0, refreshAttempts = 0;
 const handle = Object.freeze({});
-const nativeWorker = workers.Worker;
 
 beforeAll(async () => {
   // Opt out of the root test setup's account-home mocks: the real app must not
@@ -46,6 +44,7 @@ beforeAll(async () => {
       const chunks = []; for await (const chunk of request) chunks.push(chunk);
       const raw = Buffer.concat(chunks), bytes = request.headers["content-encoding"] === "zstd" ? zstdDecompressSync(raw) : raw;
       const body = JSON.parse(bytes);
+      expect(body.tools).toHaveLength(1); expect(body.tools[0]).toMatchObject({type: "function", name: "ConversationHistory"});
       // The authority graph is unit-only; transport/credential/serializer paths are real.
       expect(state.slots[0].holds.at(-1)).toMatchObject({consumed: true, payloadDigest: sha(bytes)});
       arrivals.push({account: request.headers["chatgpt-account-id"], cache: body.prompt_cache_key,
@@ -64,15 +63,9 @@ beforeAll(async () => {
   });
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
   const origin = `http://127.0.0.1:${server.address().port}`;
-  const connect = Socket.prototype.connect;
-  vi.spyOn(Socket.prototype, "connect").mockImplementation(function (...args) {
-    let options = args[0]; if (Array.isArray(options)) options = options[0];
-    if (options?.host !== "127.0.0.1" || Number(options?.port) !== server.address().port) { forbiddenConnections++; throw Error("test_egress_denied"); }
-    return connect.apply(this, args);
-  });
-  vi.stubGlobal("WebSocket", class { constructor() { throw Error("test_websocket_denied"); } });
   agent = new Agent(); oldDispatcher = getGlobalDispatcher();
   setGlobalDispatcher({dispatch(options, handler) {
+    if (scope?.ownsOrigin(String(options.origin))) return agent.dispatch(options, handler);
     if (String(options.origin) !== "https://chatgpt.com" || options.path !== "/backend-api/codex/responses") {
       refreshAttempts++; throw Error("test_refresh_or_egress_denied");
     }
@@ -98,25 +91,30 @@ beforeAll(async () => {
     pilotStatePath: root => `${root}/state`, samePilot: (a, b) => JSON.stringify(a) === JSON.stringify(b), lookupPilotSchedule: () => schedule}));
   vi.doMock("../lib/continuity-process-identity.mjs", () => ({lookupProcessStartIdentity: pid => pid === process.ppid ? "parent" : "child"}));
   vi.doMock("../lib/continuity-lookup-ipc.mjs", () => ({createLookupPilotIPC: async () => permit}));
-  const policy = {root: ROOT, home: userInfo().homedir, credential, evidence: join(base, "evidence")};
-  guard = credentialedHomeCanary(policy); guard.canaries();
-  workers.Worker = class extends nativeWorker {
-    constructor(entry, options = {}) {
-      const preload = new URL("./fixtures/lookup-credentialed-home.mjs", import.meta.url);
-      preload.searchParams.set("canary", Buffer.from(JSON.stringify(policy)).toString("base64url"));
-      super(entry, {...options, execArgv: [...(options.execArgv ?? process.execArgv), "--import", preload.href]});
-    }
-  }; syncBuiltinESMExports();
+  const policy = {root: ROOT, home: userInfo().homedir, credential, evidence: join(base, "evidence"), ownedRoot: base, testHome: join(base, "home"), mode: "unit", origins: [origin]};
+  scope = installLookupProofScope(policy); guard = scope.files; expect(scope.canaries()).toBe(9);
   sdkFetchOffset = (await readFile(new URL("../../packages/turn/node_modules/@earendil-works/pi-ai/dist/api/openai-codex-responses.js", import.meta.url), "utf8")).indexOf("response = await (options?.fetch");
   expect(sdkFetchOffset).toBeGreaterThan(0);
   cap = await import("../lib/continuity-lookup-real-capability.mjs"); // Captures native fetch, before sentinel.
   runner = await import("../lib/continuity-runner.mjs"); modules = await runner.productionModules(ROOT);
   const {accountHomeDirectory} = await import("../../packages/app/dist/host/account-home.js");
   expect(accountHomeDirectory()).toBe(userInfo().homedir);
-  vi.stubGlobal("fetch", () => { globalCalls++; throw Error("test_global_fetch_denied"); });
+  const native = globalThis.fetch.bind(globalThis);
+  vi.stubGlobal("fetch", (url, options) => {
+    if (scope.ownsOrigin(typeof url === "string" || url instanceof URL ? String(url) : url.url)) return native(url, options);
+    globalCalls++; throw Error("test_global_fetch_denied");
+  });
   // Vitest sourcemap diagnostics are not application I/O. Avoid .map reads without warming or substituting SDK code.
   expect(() => globalThis.fetch("https://example.invalid/denied-canary")).toThrow("test_global_fetch_denied"); globalCalls = 0;
   expect(() => getGlobalDispatcher().dispatch({origin: "https://example.invalid", path: "/denied-canary"}, {})).toThrow("test_refresh_or_egress_denied"); refreshAttempts = 0;
+  const {loadTraces, makePlan} = await import("../lib/continuity-dataset.mjs");
+  const {LOOKUP_MODE} = await import("../lib/continuity-lookup.mjs");
+  const {armById, mergePatch} = await import("../lib/continuity-arms.mjs");
+  const loaded = await loadTraces({suite: "original"});
+  basePlan = makePlan({...loaded, probeMode: LOOKUP_MODE, arms: ["native-lookup"], profile: {reader: "openai-codex:gpt-6.1-sol", readerEffort: "high", judge: null}});
+  nativeArm = armById("native-lookup");
+  nativePatch = mergePatch(nativeArm.sessionConfig ?? {}, nativeArm.probeConfig);
+  soulBytes = await readFile(new URL(`../fixtures/${basePlan.lookup.soul.file}`, import.meta.url));
   coverage = new Session(); coverage.connect();
   await coverage.post("Profiler.enable"); await coverage.post("Profiler.startPreciseCoverage", {callCount: true, detailed: true});
   oldStackFormatter = Error.prepareStackTrace; Error.prepareStackTrace = (error, frames) => `${error.name}: ${error.message}\n${frames.map(frame => `    at ${frame}`).join("\n")}`;
@@ -128,13 +126,12 @@ afterAll(async () => {
     if (oldDispatcher) setGlobalDispatcher(oldDispatcher);
     await agent?.close(); server?.closeAllConnections();
     if (server) await new Promise(resolve => server.close(resolve));
-    guard?.save();
+    scope?.save();
     const metrics = process.env.LOOKUP_CREDENTIALED_METRICS_FILE;
-    if (metrics) await writeFile(metrics, JSON.stringify({parent: guard?.result(), workers: base ? await Promise.all((await readdir(join(base, "evidence"))).map(async name => [name, JSON.parse(await readFile(join(base, "evidence", name)))])) : []}));
+    if (metrics) await writeFile(metrics, JSON.stringify({parent: {...guard?.result(), ...scope?.result()}, workers: base ? await Promise.all((await readdir(join(base, "evidence"))).map(async name => [name, JSON.parse(await readFile(join(base, "evidence", name)))])) : []}));
     if (guard) { expect(guard.result().denied).toEqual([]); expect(guard.result().nonModuleReads).toEqual([]); }
   } finally {
-    guard?.restore(); Error.prepareStackTrace = oldStackFormatter;
-    workers.Worker = nativeWorker; syncBuiltinESMExports();
+    scope?.restore(); Error.prepareStackTrace = oldStackFormatter;
     vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.unstubAllEnvs();
     for (const path of mocked) vi.doUnmock(path); vi.doUnmock("node:process"); vi.doUnmock("../lib/continuity-process-identity.mjs");
     if (base) await rm(base, {recursive: true, force: true});
@@ -143,16 +140,17 @@ afterAll(async () => {
 
 it.each([[200, false], [503, false], [200, true]])("credentialed configured harness uses the installed SDK once (status=%s, mismatched account=%s)", async (status, mismatch) => {
   const {digest} = await import("../lib/continuity-dataset.mjs");
+  const plan = basePlan;
   const {lookupPilotWork} = await import("../lib/continuity-lookup-pilot-runtime.mjs");
   const id = `slot-${status}-${mismatch}`;
   current = {status, commitment: commitment(mismatch ? "FICTIONAL-OTHER-ACCOUNT" : ACCOUNT)};
   binding = {id: "native", code: "R0", arm: "native-lookup"};
-  const slot = {slotId: id, roleId: "native", code: "R0", suite: "holdout"}; schedule = [slot];
-  const common = {corpora: [{suite: "holdout"}]}, build = {fictional: true};
+  const slot = {slotId: id, roleId: "native", code: "R0", suite: "original"}; schedule = [slot];
+  const common = {corpora: [{suite: "original"}]}, build = {fictional: true};
   const a = {pilot: {registration: {roles: [binding], common, codes: {R0: {path: ROOT, build}}}, descriptor: {capUSD: 100, deadlines: {deadlineMs: 600000}}},
     authorization: {schema: "continuity-lookup-pilot-authorization-v1", authorizationPath: join(base, "absent-authorization"), registrationPath: join(base, "absent-registration"), registrationSha256: "a".repeat(64), credentialPath: join(base, "credential", "auth.json"), controllerRoot: ROOT, outputRoot: base},
     outputRoot: base, epoch: "epoch-fictional", runId: "run-fictional", index: 0, cacheKey: `assigned-${status}-${mismatch}`, slotId: id, slot,
-    plan: {judge: null}, roleRequest: {binding, common, build}};
+    plan, roleRequest: {binding, common, build}};
   state = {schema: "continuity-lookup-controller-v1", recovery: false, cursor: 0, stop: null, binding: digest(a.pilot), runId: a.runId, epoch: a.epoch,
     deadlineAt: Date.now() + 600000, controller: {pid: process.ppid, startIdentity: "parent"}, cacheKeysUnique: true, schedule,
     slots: [{terminal: null, slotId: id, cacheKey: a.cacheKey, worker: {pid: process.pid, startIdentity: "child"}, ready: true, startedAt: Date.now(), holds: []}]};
@@ -161,29 +159,29 @@ it.each([[200, false], [503, false], [200, true]])("credentialed configured harn
     consume: vi.fn(async hold => { hold.consumed = true; }), settle: vi.fn(async () => {}), stop: vi.fn(async () => {}), close: vi.fn()});
   const work = lookupPilotWork(a); await mkdir(work, {recursive: true});
   await writeFile(join(work, "IDENTITY.md"), "You are a fictional test assistant.");
-  await writeFile(join(work, "SOUL.md"), "Give a fictional answer.");
-  const arm = {id: binding.arm, midCheckpoint: null, ledgerUpkeep: false};
-  const configPatch = {runtime: {compaction: {enabled: false}, retry: {primaryAttempts: 1}}, providers: {piNative: {transport: "sse", piMaxRetries: 0}}, context: {soulPath: join(work, "SOUL.md")}};
-  const input = {work, authPath: a.authorization.credentialPath, model: "openai-codex:gpt-6.1-sol", effort: "high", tools: false, configPatch, clock: {value: new Date("2030-01-01T00:00:00Z")}};
-  const config = modules.config.resolveJsonMonoAgentConfig({json: runner.configJson(input), cwd: work});
+  await writeFile(join(work, "BENCHMARK-SOUL.md"), soulBytes);
+  const arm = nativeArm;
+  const configPatch = runner.lookupConfig(work, plan, runner.pilotDispatchConfig(nativePatch), true);
+  const config = modules.config.resolveJsonMonoAgentConfig({json: runner.configJson({work, authPath: a.authorization.credentialPath, model: plan.reader.model, effort: plan.reader.effort, tools: false, configPatch}), cwd: work});
   const beforeCredential = await readFile(a.authorization.credentialPath);
   const send = await cap.createLookupRealSend(a, {plan: a.plan, arm, config});
   expect(cap.isRealLookupSend(send)).toBe(true); expect(cap.isRealLookupDecorator(send.decorator)).toBe(true);
   const start = nativeAttempts, arrived = arrivals.length;
-  let opened, result;
+  let result;
+  guard.constructed();
   try {
-    guard.constructed();
-    opened = await runner.openHarness({...input, modules, pilot: {routeKind: "real", plan: a.plan, arm, send}, route: () => ({piModelsDecorator: send.decorator})});
-    result = await opened.harness.run({conversationId: `fictional-${id}`, userMessage: "Give a fictional answer.", abortSignal: AbortSignal.timeout(30000), captureSpeakerKind: "human-turn", metadata: {source: "web"}, sender: {displayName: "Morgan"}});
-  } finally { await opened?.close(); }
+    const live = await runner.runLiveTurn({modules, work, authPath: a.authorization.credentialPath, plan, mode: "paid", configPatch, userMessage: "Give a fictional answer.", clock: {value: new Date("2030-01-01T00:00:00Z")}, conversationId: `fictional-${id}`, owner: "Morgan", pilot: {routeKind: "real", plan, arm, send}});
+    result = {text: live.text, failure: live.failureKind};
+  } catch (error) {result = {failure: {kind: error.code ?? error.message}};}
   const executed = (await coverage.post("Profiler.takePreciseCoverage")).result;
   const calls = (suffix, names) => executed.filter(script => script.url.endsWith(suffix)).flatMap(script => script.functions).filter(fn => names.includes(fn.functionName)).reduce((sum, fn) => sum + fn.ranges[0].count, 0);
   const sdkRanges = executed.filter(script => script.url.endsWith("/api/openai-codex-responses.js")).flatMap(script => script.functions).flatMap(fn => fn.ranges).filter(range => range.startOffset <= sdkFetchOffset && range.endOffset > sdkFetchOffset).sort((a, b) => (a.endOffset-a.startOffset) - (b.endOffset-b.startOffset));
   for (const fn of executed.filter(script => script.url.endsWith("/auth/oauth/openai-codex.js")).flatMap(script => script.functions)) if (["refresh", "refreshOpenAICodexToken", "refreshAccessToken"].includes(fn.functionName)) knownRefreshFunctions.add(fn.functionName);
   const refreshFunctions = knownRefreshFunctions.size;
   const proof = {sdkFetchCalls: sdkRanges[0]?.count, refreshFunctions, nativeAttempts: nativeAttempts - start, refresh: calls("/auth/oauth/openai-codex.js", ["refresh", "refreshOpenAICodexToken", "refreshAccessToken"]),
-    oauth: calls("/auth/oauth/openai-codex.js", ["toAuth"]), credential: calls("/providers/pi/auth.js", ["readCredential"]), models: calls("/execution/pi/run.js", ["buildRunModels"])};
+    oauth: calls("/auth/oauth/openai-codex.js", ["toAuth"]), credential: calls("/providers/pi/auth.js", ["readCredential"]), models: calls("/execution/pi/run.js", ["buildRunModels"]), route: calls("/continuity-lookup-pilot-runtime.mjs", ["createLookupPilotRoute"]), forwarder: calls("/continuity-lookup.mjs", ["lookupForwarder"])};
   if (process.env.LOOKUP_CREDENTIALED_METRICS_FILE) await writeFile(join(base, "evidence", `result-${id}.json`), JSON.stringify({result, proof}));
+  expect(proof.route).toBe(1); expect(proof.forwarder).toBe(1);
   expect(proof.sdkFetchCalls).toBe(1); expect(proof.refreshFunctions).toBeGreaterThanOrEqual(3);
   expect(proof.refresh).toBe(0); expect(proof.oauth).toBeGreaterThan(0); expect(proof.credential).toBeGreaterThan(0); expect(proof.models).toBeGreaterThan(0);
   if (current.listenerError) throw current.listenerError;
@@ -202,9 +200,10 @@ it.each([[200, false], [503, false], [200, true]])("credentialed configured harn
   }
   if (status === 200 && !mismatch) { expect(result.failure).toBeFalsy(); expect(result.text).toBe("Fictional answer."); }
   else expect(result.failure).toBeTruthy();
-  expect(globalCalls).toBe(0); expect(forbiddenConnections).toBe(0); expect(refreshAttempts).toBe(0);
+  expect(globalCalls).toBe(0); expect(refreshAttempts).toBe(0);
+  expect(scope.result().unexpected).toEqual([]); expect(scope.result().databases.length).toBeGreaterThan(0);
   const home = guard.result(); expect(home.credentialReads).toBeGreaterThan(0); expect(home.credentialWrites).toBe(0); expect(home.denied).toEqual([]); expect(home.constructed).toBe(true); expect(home.nonModuleReads).toEqual([]);
-  const workerFiles = (await readdir(join(base, "evidence"))).filter(name => name.startsWith("home-") && name !== "home-0.json");
+  const workerFiles = (await readdir(join(base, "evidence"))).filter(name => name.startsWith("home-") && !name.endsWith("-0.json"));
   expect(workerFiles.length).toBeGreaterThan(0);
-  for (const name of workerFiles) { const proof = JSON.parse(await readFile(join(base, "evidence", name))); expect(proof).toMatchObject({constructed: true, canaries: 3, denied: [], credentialWrites: 0, nonModuleReads: []}); }
+  for (const name of workerFiles) { const proof = JSON.parse(await readFile(join(base, "evidence", name))); expect(proof).toMatchObject({constructed: true, canaries: 4, denied: [], credentialWrites: 0, nonModuleReads: []}); }
 }, 120000);
