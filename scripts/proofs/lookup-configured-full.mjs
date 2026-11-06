@@ -44,6 +44,7 @@ if (verify !== -1) {
   for (const key of ["HOME", "XDG_CACHE_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME"]) process.env[key] = fixture.home;
   process.env.GIT_CONFIG_GLOBAL = "/dev/null"; process.env.GIT_CONFIG_NOSYSTEM = "1";
   const results = [], witnesses = [], dependenciesLoaded = new Map();
+  let delivered = false;
   await fs.writeFile(`${output}.checkpoint`, JSON.stringify({base, sourceBinding, status: "fixture-built"}));
   const identity = await import(pathToFileURL(join(fixture.repo, "scripts/lib/continuity-process-identity.mjs")).href);
   const controller = await import(pathToFileURL(join(fixture.repo, "scripts/lib/continuity-lookup-controller.mjs")).href);
@@ -157,10 +158,13 @@ if (verify !== -1) {
     }
     assert.deepEqual(await binding(), sourceBinding); assert.deepEqual(await lookupDependencyWitness(ROOT), depsBefore);
     const report = {schema: "lookup-configured-full-proof-v1", complete: !selected, ci: Object.hasOwn(process.env, "CI"), binding: sourceBinding, dependencyWitness: depsBefore, results, witnesses, dependenciesLoaded: [...dependenciesLoaded.values()], fixtureBuilds: fixture.commands, nativeTopology: "ineligible; no native dispatch; no admitted native proof", limits: ["JS API canary, not OS/native-I/O sandbox", "SQLite connection paths checked; SQL ATTACH/native loader not sandboxed", "kill-case RSS is last observed process high-water mark", "faux data/feasibility/provider usage, not evaluation or real authorization"]};
-    await fs.writeFile(output, JSON.stringify(report), {mode: 0o600}); console.log(JSON.stringify({complete: report.complete, cases, output, base}));
+    await fs.writeFile(output, JSON.stringify(report), {mode: 0o600}); delivered = true; console.log(JSON.stringify({complete: report.complete, cases, output, base}));
+  } catch (error) {
+    await fs.writeFile(output, JSON.stringify({schema: "lookup-configured-full-proof-v1", complete: false, binding: sourceBinding, dependencyWitness: depsBefore, fixtureBase: base, results, witnesses, dependenciesLoaded: [...dependenciesLoaded.values()], failure: error.message}), {mode: 0o600});
+    throw error;
   } finally {
     assert.deepEqual(await lookupDependencyWitness(ROOT), depsBefore);
     // Debug retains a source-bound fixture for investigation; full delivery cleans it.
-    if (!selected && !process.env.LOOKUP_PROOF_KEEP) await fs.rm(base, {recursive: true, force: true});
+    if (delivered && !selected && !process.env.LOOKUP_PROOF_KEEP) await fs.rm(base, {recursive: true, force: true});
   }
 }

@@ -52,6 +52,12 @@ async function arrival(request, response) {
     process.kill(process.pid, "SIGKILL"); return;
   }
   if (config.case === "late") {
+    // A live SSE response, not an idle pre-header connection: preserve Node's
+    // unchanged 300-second transport timeouts while withholding terminal usage.
+    response.writeHead(200, {"content-type": "text/event-stream"});
+    response.write(`data: ${JSON.stringify({type: "response.created", response: {id: "fictional-pending", status: "in_progress", output: []}})}\n\n`);
+    const heartbeat = setInterval(() => {if (!response.destroyed) response.write(": fictional keepalive\n\n");}, 10000);
+    response.once("close", () => clearInterval(heartbeat));
     const target = slot.startedAt + pilot.descriptor.deadlines.deadlineMs + 500;
     setTimeout(async () => {
       try {

@@ -1601,8 +1601,9 @@ dependency links are reused read-only: no SDK copies or resolution aliases.
 Per-slot wall, process high-water RSS and retained logical-byte disk deltas are
 instrumented measurements, not uninstrumented runtime guarantees. Killed-process
 RSS is the last observed high-water mark, not an exact post-kill peak. The literal
-600-second outer-kill case records provider-late usage availability separately
-from accepted settles; unavailable usage stays conservatively reserved.
+600-second outer-kill case keeps a live SSE stream with nonterminal keepalives,
+withholds terminal usage, and records provider-late availability separately from
+accepted settles after containment; unavailable usage stays conservatively reserved.
 These off-lane checks remain required at the exact reviewed head before opening
 the gate. No live provider behavior, evaluation quality, billing, power-loss
 durability or operator acceptance is established by faux proof results.
