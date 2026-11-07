@@ -1425,11 +1425,10 @@ function AssistantParts() {
     | "running" | "complete" | "failed" | "cancelled" | "interrupted" | undefined;
   const timing = useMemo(() => activityTiming(startedAt, finishedAt), [startedAt, finishedAt]);
   // Grouping coalesces ADJACENT parts, so prose between two runs of work
-  // splits a streaming turn into several Activity bands. Each counts its own
-  // steps; the clock belongs to the band holding the turn's last activity —
-  // the one the turn is still working in — because earlier bands are finished
-  // and the window is the turn's, not theirs. A settled turn folds to a single
-  // band, which then owns it.
+  // splits a turn into several Activity bands, including after settlement.
+  // Each counts its own steps; the clock belongs to the band holding the turn's
+  // last activity because earlier bands are finished and the window is the
+  // turn's, not theirs.
   const openBandIndex = lastActivityIndex(content);
   return (
     <>

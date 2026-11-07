@@ -2599,8 +2599,8 @@ describe("WebStore", () => {
       { type: "text", text: "Checking options." },
       { type: "text", text: answer },
     ];
-    // The webapp folds every text part except the last into Activity notes.
-    // Only genuine narration remains there; promoted prose lives once in reply.
+    // Unpromoted prose keeps its streamed slot; promoted prose lives once in
+    // the canonical reply. The webapp presents both as ordinary response text.
     expect(detail.messages.at(-1)?.parts.filter((part) => part.type === "text")).toEqual(expected);
     expect(detail.messages.at(-1)?.parts.filter((part) => part.type === "tool-call")).toHaveLength(3);
     store.close();

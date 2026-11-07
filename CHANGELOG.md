@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Keep interim assistant responses visible between chronological Activity bands
+  in the web console after completion and reload, including before suggested replies.
+
 - Fix lock reacquisition occasionally reporting this process's own lock as held
   by another process when the filesystem is slow.
 

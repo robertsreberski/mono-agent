@@ -945,7 +945,7 @@ describe("AssistantMessage grouped parts", () => {
     expect(screen.queryByText(/0\.0s/u)).toBeNull();
   });
 
-  it("collects a settled turn's interleaved work into one Activity block over the answer", () => {
+  it("keeps a settled turn's response prose between separate Activity blocks", () => {
     const { container } = render(<MessageHarness message={{
       ...assistantMessage("complete"),
       parts: [
@@ -971,21 +971,22 @@ describe("AssistantMessage grouped parts", () => {
       ],
     }} />);
 
-    // One disclosure, not one per band of prose the model wrote mid-turn.
-    expect(container.querySelectorAll(".activity-root")).toHaveLength(1);
+    expect(container.querySelectorAll(".activity-root")).toHaveLength(2);
     const answer = screen.getByText("Here is the summary.");
     expect(answer).toBeVisible();
     expect(answer.closest(".activity-root")).toBeNull();
 
-    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
-    const activity = container.querySelector(".activity-root")!;
-    expect(within(activity as HTMLElement).getByText("Let me look at the inbox.")).toBeVisible();
-    expect(within(activity as HTMLElement).getByText("Now the calendar.")).toBeVisible();
-    expect(within(activity as HTMLElement).getByText("Read inbox")).toBeVisible();
-    expect(within(activity as HTMLElement).getByText("Read calendar")).toBeVisible();
+    for (const text of ["Let me look at the inbox.", "Now the calendar."]) {
+      expect(screen.getByText(text)).toBeVisible();
+      expect(screen.getByText(text).closest(".activity-root")).toBeNull();
+    }
+    for (const button of screen.getAllByRole("button", { name: "Activity" })) fireEvent.click(button);
+    const activity = container.querySelectorAll<HTMLElement>(".activity-root");
+    expect(within(activity[0]!).getByText("Read inbox")).toBeVisible();
+    expect(within(activity[1]!).getByText("Read calendar")).toBeVisible();
   });
 
-  it("copies the answer alone, not the narration folded into the activity log", async () => {
+  it("copies all response prose, without including activity", async () => {
     const writeText = vi.fn(async () => undefined);
     vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
     render(<MessageHarness message={{
@@ -1006,7 +1007,7 @@ describe("AssistantMessage grouped parts", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Copy response" }));
     await screen.findByRole("button", { name: "Copied" });
-    expect(writeText).toHaveBeenCalledWith("Here is the summary.");
+    expect(writeText).toHaveBeenCalledWith("Let me look at the inbox.\n\nHere is the summary.");
     vi.unstubAllGlobals();
   });
 
