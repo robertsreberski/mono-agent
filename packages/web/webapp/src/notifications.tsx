@@ -93,6 +93,17 @@ const pageNotificationsSupported = (): boolean =>
 const pushSupported = (): boolean =>
   pageNotificationsSupported() && "PushManager" in window;
 
+/**
+ * Whether the page already holds notification permission.
+ *
+ * iOS and iPadOS expose the `Notification` global only to Home Screen web
+ * apps, so an ordinary Safari tab has no such binding at all and a bare
+ * `Notification.permission` read throws a ReferenceError. Every read outside
+ * a `pageNotificationsSupported()` guard must go through this helper.
+ */
+const permissionGranted = (): boolean =>
+  typeof Notification !== "undefined" && Notification.permission === "granted";
+
 const preference = (): NotificationPreference => {
   if (!pageNotificationsSupported()) return "unsupported";
   if (Notification.permission === "denied") return "denied";
@@ -166,7 +177,7 @@ export function NotificationsProvider({ children }: { readonly children: ReactNo
     };
     reconciling.current = true;
     const wantsPush = localStorage.getItem(NOTIFICATIONS_STORAGE_KEY) === "1"
-      && Notification.permission === "granted";
+      && permissionGranted();
     try {
       await finishPendingDeletion();
       if (!wantsPush) {
@@ -308,7 +319,7 @@ export function NotificationsProvider({ children }: { readonly children: ReactNo
     // runs when the first bootstrap arrives and then only when the server
     // rotates its key or ships a new service worker.
     if (pushKeyFingerprint === undefined) return;
-    void reconcile(Notification.permission === "granted");
+    void reconcile(permissionGranted());
   }, [pushKeyFingerprint, reconcile]);
 
   useEffect(() => {
@@ -380,7 +391,7 @@ export function NotificationsProvider({ children }: { readonly children: ReactNo
       if (
         pushActive ||
         (currentPreference !== "enabled" && currentPreference !== "degraded") ||
-        Notification.permission !== "granted" ||
+        !permissionGranted() ||
         (document.visibilityState === "visible" && document.hasFocus())
       ) continue;
 
