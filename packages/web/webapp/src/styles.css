@@ -2687,7 +2687,16 @@ textarea.wake-text { min-height: calc(3lh + 24px); max-height: calc(12lh + 24px)
 .message-attachments:has(.voice-note) { flex-direction: column; align-items: flex-end; }
 .message-attachments .voice-note { flex-basis: auto; }
 .message-attachments .voice-note-player::before { display: none; }
+/* Sent audio uses the bubble's inset, not another padded attachment card.
+   A bare player is about one text line tall; captions add only their own line.
+   Composer chips and the coarse-pointer hit areas below remain unchanged. */
+.message-user-content:has(.message-attachments .voice-note) { padding-block: 6px; }
+.message-attachments:has(.voice-note) { margin-bottom: 0; }
+.message-attachments:has(.voice-note) + .markdown:not(:empty) { margin-top: 4px; }
+.message-attachments .voice-caption { margin: 0; font-size: 12px; line-height: 1.68; }
+
 @media (pointer: coarse), (max-width: 700px) {
+  .message-user-content:has(.message-attachments .voice-note) { padding-block: 2px; }
   .capture-pill, .voice-note-player { height: 44px; min-height: 44px; }
   .recording-draft .icon-button, .capture-pill .icon-button, .voice-note .icon-button, .voice-face-slot { width: 44px; height: 44px; min-width: 44px; }
   .attachment-menu .menu-item, .attachment-retry, .voice-caption summary { min-height: 44px; }

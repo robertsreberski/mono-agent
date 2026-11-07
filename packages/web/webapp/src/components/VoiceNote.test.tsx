@@ -118,3 +118,12 @@ it("shows a local waveform and duration before the first Play without creating a
   expect([...view.container.querySelectorAll<HTMLElement>(".voice-waveform i")].every(bar => parseFloat(bar.style.height) > 3)).toBe(true);
   expect(URL.createObjectURL).not.toHaveBeenCalled(); expect(HTMLMediaElement.prototype.play).not.toHaveBeenCalled();
 });
+
+it("keeps long transcripts in a named, initially collapsed disclosure", () => {
+  const caption = "A synthetic reminder to water the plants. ".repeat(8);
+  const view = render(<VoiceNote id="long-caption" name="recording.webm" contentType="audio/webm" caption={caption} />);
+  const details = view.container.querySelector("details.voice-caption");
+  expect(details).not.toBeNull(); expect(details).not.toHaveAttribute("open");
+  expect(details?.querySelector("summary")).toHaveTextContent("Transcript");
+  expect(details?.querySelector("p")).toHaveTextContent(caption.trim());
+});

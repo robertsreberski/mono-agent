@@ -226,7 +226,10 @@ starts directly in the Play gesture; remote audio blocked by gesture policy says
 “Tap to play”. Sent transcripts appear as quiet captions beneath the matching
 audio (long captions expand), while stored and model-facing text stays unchanged.
 Explicit playback uses bounded local/same-origin Blob URLs, never autoplay;
-Download keeps the normal forced-download/no-sniff boundary.
+Download keeps the normal forced-download/no-sniff boundary. The app-shell
+CSP allows only same-origin and `blob:` media. Sent players share the message
+bubble's inset, with transcript captions directly below; draft chips retain
+separate attachment styling and touch controls keep their 44px hit areas.
 
 Bootstrap no longer emits `voice.maxSeconds`. It is deprecated and optional in
 the v1 read schema solely for older-server compatibility; clients must not treat
@@ -1531,6 +1534,19 @@ import another operator surface or start the operator adapter server.
 - [Reply files and MCP Apps](https://docs.mono-agent.dev/tools/rich-replies/)
 
 ## Verification
+
+After building the web package, opt into the production-CSP playback regression:
+
+```bash
+pnpm --filter @mono-agent/web... run build
+VITE_SERVER_PLAYBACK=1 pnpm --dir packages/web/webapp run test:browser src/VoiceConversation.browser.test.tsx
+```
+
+This starts an isolated automated server using the built app and real security
+headers. Synthetic API data and native Chromium synthetic-microphone WebM/Opus
+bytes exercise actual blob playback and 44px touch controls, without media mocks.
+The ordinary standalone browser lane skips only this build-dependent regression;
+its layout, composer and recording coverage remains independent of server builds.
 
 `pnpm --filter @mono-agent/web run generate:api-contract` refreshes the four
 committed JSON artifacts. `check:api-contract` validates fixtures and rejects

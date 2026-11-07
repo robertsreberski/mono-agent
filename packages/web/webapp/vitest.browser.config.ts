@@ -1,7 +1,7 @@
 /// <reference types="vitest/config" />
 /// <reference types="@vitest/browser/providers/playwright" />
 
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import react from "@vitejs/plugin-react";
 import { sharedSourceAliases } from "./shared-sources";
@@ -53,6 +53,85 @@ const saveVoiceFixture: BrowserCommand<[number[]]> = async (_context, bytes) => 
   if (bytes.length === 0 || bytes.length > 10 * 1024 * 1024) throw new Error("Invalid synthetic voice fixture size");
   await mkdir(directory, { recursive: true });
   await writeFile(join(directory, "chromium-synthetic-recording.webm"), Buffer.from(bytes));
+};
+
+// Real production shell + security middleware, in an isolated automated server.
+// Only API data/audio are synthetic; no media method or CSP is mocked.
+const checkServerVoicePlayback: BrowserCommand<[object, object, number[]]> = async (context, bootstrap, detail, bytes) => {
+  if (context.provider.name !== "playwright") throw new Error("Playwright required");
+  // Browser tests run after the package build. Load its actual server rather
+  // than importing server sources into the webapp TypeScript project.
+  const serverUrl = new URL("../dist/server.js", import.meta.url).href;
+  const { startWebServer } = await import(/* @vite-ignore */ serverUrl);
+  const cache = new URL("./node_modules/.cache/", import.meta.url);
+  await mkdir(cache, { recursive: true });
+  const root = await mkdtemp(new URL("voice-playback-", cache).pathname);
+  let server: { port: number; stop(): Promise<void> } | undefined;
+  const browser = await context.page.context().browser()!.newContext({
+    serviceWorkers: "block", viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true,
+  });
+  try {
+    const handle: NonNullable<typeof server> = await startWebServer({
+      port: 0, host: "127.0.0.1", stateDir: join(root, "state"),
+      staticDir: new URL("./dist/", import.meta.url).pathname,
+      discoveryIntervalMs: 0, purgeIntervalMs: 0, discoverImpl: async () => [],
+    });
+    server = handle;
+    const tab = await browser.newPage();
+    tab.setDefaultTimeout(5000);
+    const violations: string[] = [];
+    await tab.exposeFunction("recordMediaViolation", (directive: string) => violations.push(directive));
+    await tab.addInitScript(`
+      localStorage.setItem("mono-agent.web.selected-agent", "alpha");
+      document.addEventListener("securitypolicyviolation", event => {
+        if (event.effectiveDirective === "media-src") {
+          void window.recordMediaViolation(event.effectiveDirective);
+        }
+      });
+    `);
+    await tab.route("**/api/v1/**", async route => {
+      const path = new URL(route.request().url()).pathname;
+      if (path.endsWith("/content")) {
+        await route.fulfill({ body: Buffer.from(bytes), contentType: "application/octet-stream", headers: { "X-Content-Type-Options": "nosniff", "Content-Disposition": "attachment" } });
+        return;
+      }
+      const body = path === "/api/v1/bootstrap" ? bootstrap
+        : path === "/api/v1/threads/voice-created" ? detail
+        : path === "/api/v1/threads" ? { threads: [(detail as { thread: object }).thread] }
+        : path === "/api/v1/threads/active" ? { threads: [], total: 0, truncated: false, runningCounts: {} }
+        : path.endsWith("/skills") ? { status: "unsupported", items: [] }
+        : path.endsWith("/projects") || path.endsWith("/tags") ? []
+        : path.endsWith("/events") ? null : {};
+      await route.fulfill(body === null
+        ? { contentType: "text/event-stream", body: ": synthetic idle\n\n" }
+        : { json: body });
+    });
+    const response = await tab.goto(`http://127.0.0.1:${handle.port}/`);
+    const csp = response?.headers()["content-security-policy"];
+    if (!csp?.split("; ").includes("media-src 'self' blob:")) throw new Error(`Unexpected shell CSP: ${csp}`);
+    // Selecting through the real UI also exercises the production message path.
+    await tab.getByRole("button", { name: "Open Synthetic voice conversation", exact: true }).click();
+    const play = tab.getByRole("button", { name: /^Play voice note/ });
+    for (const control of [play, tab.getByRole("link", { name: "Download synthetic.webm" })]) {
+      const bounds = await control.boundingBox();
+      if (!bounds || bounds.width < 44 || bounds.height < 44) throw new Error("Touch target smaller than 44px");
+    }
+    await play.click();
+    const audio = tab.locator(".message-attachments audio");
+    await audio.evaluate(async node => {
+      const media = node as unknown as { paused: boolean; currentTime: number; src: string; error: { code: number } | null };
+      const deadline = Date.now() + 5000;
+      while (media.paused || media.currentTime <= 0) {
+        if (media.error) throw new Error(`Native audio error ${media.error.code}`);
+        if (Date.now() > deadline) throw new Error("Blob audio did not advance");
+        await new Promise(resolve => setTimeout(resolve, 20));
+      }
+      if (!media.src.startsWith("blob:")) throw new Error("Expected blob playback");
+    });
+    if (await tab.getByText("Audio preview unavailable. Use Download.", { exact: true }).count()) throw new Error("Voice note entered its error path");
+    if (violations.length) throw new Error(`CSP violations: ${violations.join(", ")}`);
+    return { csp, played: true, mediaViolations: violations };
+  } finally { await browser.close(); await server?.stop(); await rm(root, { recursive: true, force: true }); }
 };
 
 export default defineConfig({
@@ -107,7 +186,7 @@ export default defineConfig({
           context: { viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true },
         },
       ],
-      commands: { dragVoiceNote, emulateColorScheme, emulateReducedMotion, saveVoiceFixture },
+      commands: { checkServerVoicePlayback, dragVoiceNote, emulateColorScheme, emulateReducedMotion, saveVoiceFixture },
     },
   },
 });

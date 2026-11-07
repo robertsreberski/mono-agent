@@ -9,6 +9,10 @@
   when push notifications are configured; the notification bell now shows as
   unavailable there, while Home Screen installs keep push notifications.
 
+- Fix browser voice-note playback for local and sent recordings while keeping
+  downloads isolated; compact sent players and transcript captions within the
+  normal message bubble.
+
 - Fix lock reacquisition occasionally reporting this process's own lock as held
   by another process when the filesystem is slow.
 

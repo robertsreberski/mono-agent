@@ -69,7 +69,13 @@ vi.mock("./api", async (original) => ({
   },
 }));
 vi.mock("./notifications", () => ({ NotificationBell: () => null }));
-declare module "@vitest/browser/context" { interface BrowserCommands { saveVoiceFixture(bytes: number[]): Promise<void>; dragVoiceNote(): Promise<void>; } }
+declare module "@vitest/browser/context" {
+  interface BrowserCommands {
+    checkServerVoicePlayback(bootstrap: object, detail: object, bytes: number[]): Promise<{ csp: string; played: boolean; mediaViolations: string[] }>;
+    saveVoiceFixture(bytes: number[]): Promise<void>;
+    dragVoiceNote(): Promise<void>;
+  }
+}
 class FixtureEventSource {
   static current: FixtureEventSource;
   constructor() { FixtureEventSource.current = this; }
@@ -183,6 +189,88 @@ const shot = async (name: string) => { if (shots) await page.screenshot({ path: 
 function message(id: string, threadId: string, role: WebMessage["role"], text: string): WebMessage {
   return { id, threadId, role, parts: [{ type: "text", text }], attachments: [], status: "complete", seq: 0,
     createdAt: "2026-07-17T10:00:00.000Z", updatedAt: "2026-07-17T10:00:00.000Z" };
+}
+
+// The normal browser/standalone lane intentionally has no built framework.
+// Opt in after building @mono-agent/web to exercise the production boundary.
+it.skipIf(import.meta.env.VITE_SERVER_PLAYBACK !== "1" || !navigator.userAgent.includes("Chrome"))(
+  "plays real WebM/Opus blob audio in the built app under the real server CSP",
+  async () => {
+    fixture.restore();
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const recorder = new MediaRecorder(stream, { mimeType: "audio/webm;codecs=opus" });
+    const chunks: Blob[] = [];
+    recorder.addEventListener("dataavailable", event => { if (event.data.size) chunks.push(event.data); });
+    try {
+      recorder.start(100);
+      await waitFor(() => expect(chunks.length).toBeGreaterThanOrEqual(3));
+      await new Promise<void>(resolve => { recorder.addEventListener("stop", () => resolve(), { once: true }); recorder.stop(); });
+      const bytes = new Uint8Array(await new Blob(chunks).arrayBuffer());
+      expect([...bytes.slice(0, 4)]).toEqual([0x1a, 0x45, 0xdf, 0xa3]);
+      const audio = attachment("csp-audio", { name: "synthetic.webm", contentType: "audio/webm", kind: "document", status: "committed", uploaded: true, contentUrl: "/api/v1/uploads/csp-audio/content" });
+      const sent = { ...message("csp-message", created.id, "user", 'Audio transcript 1 ("synthetic.webm"):\nWater the plants.'), attachments: [audio] };
+      const result = await commands.checkServerVoicePlayback(
+        bootstrap([fixtureAgent], [created], created.id), { thread: created, messages: [sent] }, [...bytes],
+      );
+      expect(result.csp).toContain("media-src 'self' blob:");
+      expect(result.played).toBe(true); expect(result.mediaViolations).toEqual([]);
+    } finally {
+      if (recorder.state !== "inactive") recorder.stop();
+      stream.getTracks().forEach(track => track.stop());
+    }
+  },
+);
+
+for (const width of [1280, 390]) {
+  it(`compact sent voice variants at ${width}px (synthetic audio and conversation)`, async () => {
+    await page.viewport(width, width === 1280 ? 900 : 844);
+    await commands.emulateColorScheme("dark");
+    seed(created);
+    const variants = [
+      message("plain", created.id, "user", "Water the plants."),
+      ...[false, true].flatMap(caption => [false, true].map(typed => {
+        const id = `compact-${caption}-${typed}`;
+        const text = [typed ? "A quick reminder." : "", caption ? 'Audio transcript 1 ("synthetic.webm"):\nWater the plants.' : ""].filter(Boolean).join("\n\n");
+        return { ...message(id, created.id, "user", text), attachments: [attachment(id, { name: "synthetic.webm", contentType: "audio/webm", kind: "document", status: "committed", uploaded: true, contentUrl: `/api/v1/uploads/${id}/content` })] };
+      })),
+    ];
+    vi.mocked(api.thread).mockResolvedValue({ thread: created, messages: variants });
+    // Generated WAVE samples exercise preview decoding; attachment metadata is
+    // a supported recorder MIME, matching the existing visual fixture seam.
+    vi.spyOn(window, "fetch").mockImplementation(async () => new Response(syntheticAudio(7), { headers: { "Content-Type": "audio/webm" } }));
+    const view = mount();
+    await screen.findAllByRole("link", { name: "Download synthetic.webm" });
+    await waitFor(() => {
+      expect(view.container.querySelectorAll(".message-user-content")).toHaveLength(5);
+      expect(view.container.querySelectorAll(".message-attachments .voice-note")).toHaveLength(4);
+    });
+    const bubbles = [...view.container.querySelectorAll<HTMLElement>(".message-user-content")];
+    const plainHeight = bubbles.find(bubble => !bubble.querySelector(".voice-note"))!.getBoundingClientRect().height;
+    for (const bubble of bubbles) {
+      const note = bubble.querySelector<HTMLElement>(".voice-note");
+      if (!note) continue;
+      const player = note.querySelector<HTMLElement>(".voice-note-player")!;
+      const caption = note.querySelector<HTMLElement>(".voice-caption");
+      const typed = bubble.querySelector<HTMLElement>(".markdown");
+      const rect = bubble.getBoundingClientRect();
+      expect(player.getBoundingClientRect().top - rect.top).toBe(width <= 700 ? 3 : 7); // Bubble inset + border only.
+      expect(getComputedStyle(bubble.querySelector(".message-attachments")!).marginBottom).toBe("0px");
+      if (caption) {
+        expect(caption.getBoundingClientRect().top - player.getBoundingClientRect().bottom).toBe(0);
+        expect(getComputedStyle(caption).marginLeft).toBe("0px");
+      }
+      const extraLines = Number(Boolean(caption)) + Number(Boolean(typed?.textContent));
+      expect(rect.height).toBeLessThanOrEqual(plainHeight + 10 + extraLines * 25);
+      expect(bubble.scrollWidth).toBeLessThanOrEqual(bubble.clientWidth);
+      expect(note.getBoundingClientRect().left).toBeGreaterThan(rect.left);
+      for (const control of note.querySelectorAll<HTMLElement>("button, a")) {
+        expect(control.getBoundingClientRect().height).toBeGreaterThanOrEqual(matchMedia("(pointer: coarse), (max-width: 700px)").matches ? 44 : 32);
+      }
+    }
+    await waitFor(() => expect(view.container.querySelectorAll('.message-attachments button[aria-label$="0:07"]')).toHaveLength(4));
+    const directory = import.meta.env.VITE_PLAYBACK_SHOTS as string | undefined;
+    if (directory) await page.screenshot({ path: `${directory}/sent-voice-synthetic-${width === 1280 ? "desktop" : "mobile"}.png` });
+  });
 }
 
 it("caps an oversize remote preview without refetching, then lets explicit Play load it", async () => {
