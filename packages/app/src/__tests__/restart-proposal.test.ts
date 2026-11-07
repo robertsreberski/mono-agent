@@ -54,8 +54,20 @@ describe("ProposeRestart request-scoped tool", () => {
           const first = await client.callTool({ name: PROPOSE_RESTART_TOOL_NAME, arguments: { reason: `Useful\n${"x".repeat(300)}` } });
           expect(first.structuredContent).toEqual({ status: "proposed", restarted: false });
           expect(JSON.stringify(first.content)).toContain("Nothing has been restarted");
+          expect(JSON.stringify(first.content)).toContain("the user must confirm separately");
           expect(JSON.stringify(first.content)).toContain("beneath your reply text");
-          expect(JSON.stringify(first.content)).toContain("must still write your user-facing reply as normal assistant text");
+          for (const guidance of [
+            (await client.listTools()).tools.find((tool) => tool.name === PROPOSE_RESTART_TOOL_NAME)?.description,
+            JSON.stringify(first.content),
+          ]) {
+            expect(guidance).toContain("An answer already written before this call counts as the reply");
+            expect(guidance).toContain("do not repeat or rephrase it");
+            expect(guidance).toContain("If you have not answered yet, write the answer as normal assistant prose");
+            expect(guidance).toContain("progress updates alone do not count");
+            expect(guidance).toContain("add only genuinely new information if needed");
+            expect(guidance).toContain("otherwise end without extra prose");
+            expect(guidance).not.toContain("must still write");
+          }
           const second = await client.callTool({ name: PROPOSE_RESTART_TOOL_NAME, arguments: { reason: "another" } });
           expect(second.structuredContent).toEqual({ status: "already_proposed", restarted: false });
         } finally {

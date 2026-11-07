@@ -25,6 +25,31 @@ describe("final reply text", () => {
     ])).toBe("Approve option A");
   });
 
+  it.each(["SuggestReplies", "PublishReplyFile", "ProposeRestart"])(
+    "lets %s end without repeating prior prose, or add new prose when needed", (name) => {
+      expect(select([
+        assistant("Checking the draft.", "Read"),
+        assistant("The draft is ready.", name),
+        assistant(""),
+      ])).toBe("The draft is ready.");
+      expect(select([
+        assistant("The draft is ready.", name),
+        assistant("An offline copy is available too."),
+      ])).toBe("The draft is ready.\n\nAn offline copy is available too.");
+      expect(select([
+        assistant("", name),
+        assistant("The draft is ready."),
+      ])).toBe("The draft is ready.");
+      // Progress before an ordinary tool is not an answer. An empty
+      // presentation call must still allow the actual answer afterward.
+      expect(select([
+        assistant("Checking the draft.", "Read"),
+        assistant("", name),
+        assistant("The draft is ready."),
+      ])).toBe("The draft is ready.");
+    },
+  );
+
   it("skips a retried failed partial inside the presentation chain", () => {
     const partial = { ...assistant("Fictional partial", "SuggestReplies"), stopReason: "error", errorMessage: "WebSocket error" };
     expect(select([assistant("Approve option A", "SuggestReplies"), partial, assistant("Saved.")]))
