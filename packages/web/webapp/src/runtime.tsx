@@ -272,6 +272,7 @@ const joinAdjacentText = (parts: readonly ConvertedPart[], joinReasoning = false
 const ACTIVITY_PART_TYPES: ReadonlySet<string> = new Set([
   "reasoning",
   "tool-call",
+  "data-note",
   "data-subagent",
   "data-process-job",
   "data-process-job-event",
