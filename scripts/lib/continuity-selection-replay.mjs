@@ -8,9 +8,12 @@ import { createHash } from "node:crypto";
 import { ToolHistoryWriter, ToolHistoryReader } from "@mono-agent/conversation";
 import { continuityRecordId } from "../../packages/conversation/dist/tool-history/continuity-storage.js";
 import { createContinuityPackSupplier } from "../../packages/conversation/dist/continuity/pack.js";
+import { runWithinToolHistoryBusyDeadline } from "../../packages/conversation/dist/tool-history/busy-wait.js";
 
 const hash = text => createHash("sha256").update(text).digest("hex");
 const scope = { logicalConversationId: "fictional", currentConversationId: "fictional", currentRunId: "reader" };
+// Post-ack accounting exports can hold the commit lock; match upkeep.ts's 10 s read ceiling.
+const read = operation => runWithinToolHistoryBusyDeadline(operation, 10_000);
 
 /** Source-only development trace projection; not a replacement for harness replay.
  * Ordering is owner input, applied steer, tool result, then assistant reply.
@@ -90,7 +93,7 @@ export async function replayLedgerSelection(records, { entriesForPass = (pass, r
     const snapshot = reader.snapshotContinuity.bind(reader);
     reader.snapshotContinuity = input => { sourceSnapshot = snapshot(input); return sourceSnapshot; };
     for (let pass = 1; pass <= 3; pass++) {
-      const prior = reader.ledger(scope)?.generation;
+      const prior = read(() => reader.ledger(scope))?.generation;
       const result = { pass, offered: [], records: [], deltaEntries: null, published: false };
       const events = [];
       const complete = async (prompt, _signal, budget) => {
@@ -118,7 +121,7 @@ export async function replayLedgerSelection(records, { entriesForPass = (pass, r
       const receipt = events.find(event => event.type === "continuity_upkeep");
       if (receipt?.status !== "valid" || result.deltaEntries === null) throw new Error(`replay_pass_failed:${pass}:${receipt?.reason}:${receipt?.failure ?? ""}`);
       if (result.records.length !== new Set(result.offered.map(row => row.recordId)).size) throw new Error("replay_record_capture_incomplete");
-      result.published = reader.ledger(scope)?.generation.id !== prior?.id;
+      result.published = read(() => reader.ledger(scope))?.generation.id !== prior?.id;
       result.selection = { candidates: selection.candidates, fitted: selection.fitted, deltaCap: selection.deltaCap,
         projectedBytes: selection.projectedBytes, lineageBytes: selection.lineageBytes, exclusions: selection.exclusions };
       passes.push(result);
