@@ -105,14 +105,14 @@ function createProposalServer(propose: (reason: string | undefined) => { readonl
   const server = new McpServer({ name: PROPOSE_RESTART_SERVER_NAME, version: "1.0.0" });
   server.registerTool(PROPOSE_RESTART_TOOL_NAME, {
     title: "Propose an agent restart",
-    description: "Show one restart suggestion below this reply in the web console. This tool NEVER restarts the agent: the human must review the interruption warning and confirm separately. Do not claim that a restart occurred.",
+    description: "Show one restart suggestion below this reply in the web console. This tool NEVER restarts the agent: the human must review the interruption warning and confirm separately. Do not claim that a restart occurred. An answer already written before this call counts as the reply; do not repeat or rephrase it. After success, add only genuinely new information if needed; otherwise end without extra prose. If you have not answered yet, write the answer as normal assistant prose; progress updates alone do not count.",
     inputSchema: INPUT,
   }, async ({ reason }) => {
     const result = propose(reason);
     return {
       ...(result.status === "unavailable" ? { isError: true } : {}),
       content: [{ type: "text" as const, text: result.status === "proposed"
-        ? "A restart proposal will appear beneath your reply text in the web console. You must still write your user-facing reply as normal assistant text. Nothing has been restarted; the user must confirm separately."
+        ? "A restart proposal will appear beneath your reply text in the web console. An answer already written before this call counts as the reply; do not repeat or rephrase it. After success, add only genuinely new information if needed; otherwise end without extra prose. If you have not answered yet, write the answer as normal assistant prose; progress updates alone do not count. Nothing has been restarted; the user must confirm separately."
         : result.status === "already_proposed"
           ? "A restart was already proposed in this reply. Nothing has been restarted."
           : "A restart proposal could not be added to this reply. Nothing has been restarted." }],
