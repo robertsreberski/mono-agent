@@ -30,6 +30,9 @@ import {
   diffParts,
   type StoredTurnFinish,
 } from "../store.js";
+// Exercise the actual turn selector and store together, without a provider or
+// a substitute runtime. This source import intentionally adds no public API.
+import { finalReplyText } from "../../../turn/src/execution/pi/reply-text.js";
 import { WebConsoleError } from "../errors.js";
 import { WEB_STORAGE_SCHEMA_VERSION } from "../store-migrations.js";
 import { fakeProcessJob, temporaryRoot, pendingParentInterruptions } from "./helpers.js";
@@ -2576,33 +2579,51 @@ describe("WebStore", () => {
     store.close();
   });
 
-  it.each(["Saved.", ""])("settles promoted presentation prose once, preserving activity (final: %j)", async (finalText) => {
+  it.each([
+    { file: false, before: "The draft is ready.", terminal: "" },
+    { file: false, before: "The draft is ready.", terminal: "An offline copy is available too." },
+    { file: true, before: "The draft is ready.", terminal: "" },
+    { file: true, before: "The draft is ready.", terminal: "An offline copy is available too." },
+    { file: false, before: "", terminal: "The draft is ready." },
+  ])("stores selected presentation prose once, preserving earlier responses (%j)", async ({ file, before, terminal }) => {
     const base = await temporaryRoot();
     cleanup.push(base);
     const stateDir = join(base, "state");
     const store = await WebStore.open({ stateDir });
     store.replaceAgents([agent()]);
     const thread = store.createThread("agent-one");
-    const turn = store.beginTurn({ threadId: thread.id, text: "Compare the options", attachmentIds: [] });
-    store.applyStreamFrames(turn.turnId, [
-      { kind: "append", delta: "Checking options." },
-      { kind: "event", event: { type: "tool_call_started", id: "read-1", name: "Read", arguments: {} } },
-      { kind: "append", delta: "Approve option A" },
-      { kind: "event", event: { type: "tool_call_started", id: "choices-1", name: "mcp__reply__SuggestReplies", arguments: {} } },
-      { kind: "append", delta: "File attached." },
-      { kind: "event", event: { type: "tool_call_started", id: "file-1", name: "PublishReplyFile", arguments: {} } },
-      ...(finalText ? [{ kind: "append" as const, delta: finalText }] : []),
+    const turn = store.beginTurn({ threadId: thread.id, text: "Prepare a draft", attachmentIds: [] });
+    const messages = [
+      { text: "Checking the draft.", tool: "Read" },
+      { text: before, tool: "mcp__reply__SuggestReplies" },
+      ...(file ? [{ text: "File attached.", tool: "PublishReplyFile" }] : []),
+      { text: terminal },
+    ];
+    const nativeMessages = messages.map(({ text, tool }) => ({
+      role: "assistant",
+      content: [
+        { type: "text", text },
+        ...(tool ? [{ type: "toolCall", name: tool }] : []),
+      ],
+    }));
+    const frames: AgentStreamWireFrame[] = messages.flatMap(({ text, tool }, index) => [
+      ...(text ? [{ kind: "append" as const, delta: text }] : []),
+      ...(tool ? [{ kind: "event" as const, event: {
+        type: "tool_call_started" as const, id: `tool-${index}`, name: tool, arguments: {},
+      } }] : []),
     ]);
-    const answer = ["Approve option A", "File attached.", finalText].filter(Boolean).join("\n\n");
+    store.applyStreamFrames(turn.turnId, frames);
+    const answer = finalReplyText(nativeMessages, messages.map(({ text }) => text));
+    expect(answer).toBe([before, ...(file ? ["File attached."] : []), terminal].filter(Boolean).join("\n\n"));
     const detail = store.completeTurn(turn.turnId, answer);
     const expected = [
-      { type: "text", text: "Checking options." },
+      { type: "text", text: "Checking the draft." },
       { type: "text", text: answer },
     ];
-    // Unpromoted prose keeps its streamed slot; promoted prose lives once in
-    // the canonical reply. The webapp presents both as ordinary response text.
+    // Ordinary tool prose stays visible in its streamed slot; the selected
+    // answer moves into canonical storage exactly once, even with no ending.
     expect(detail.messages.at(-1)?.parts.filter((part) => part.type === "text")).toEqual(expected);
-    expect(detail.messages.at(-1)?.parts.filter((part) => part.type === "tool-call")).toHaveLength(3);
+    expect(detail.messages.at(-1)?.parts.filter((part) => part.type === "tool-call")).toHaveLength(file ? 3 : 2);
     store.close();
     const reopened = await WebStore.open({ stateDir });
     expect(reopened.getThreadDetail(thread.id)?.messages.at(-1)?.parts.filter((part) => part.type === "text"))
