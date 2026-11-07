@@ -45,6 +45,16 @@ const valid: Record<string, unknown> = {
     runtime: { ...base.runtime, fallbacks: [{ model: "zebra:fictional", attempts: 2 }] } },
 };
 
+// Preserve the pre-outage-budget view fingerprints as a differential guard:
+// removing only the intentionally added row must recover every original byte,
+// including field/section order and absent-versus-present properties.
+const legacyViews: Record<string, string> = {
+  defaults: "1b57115c7f3e1e6d5cd9fe777bb9009c9237c9223ff54399793727ca8baf6945",
+  domains: "6abff74b3da455a00c07144859ff8ad376f84ce4c21892956e77f8c826a0abcb",
+  providers: "47b5a6c08d6c6b43fc6e0beaf9f790d2cc9693b8ec6b4f88efa25d778fab52e3",
+  sparse: "6ac10ec1ba6eab684cb887c4649f6d551e1e802b6a0706ce5b299af2d1288169",
+};
+
 const invalid: Record<string, { json: unknown; cwd?: string }> = {
   "retired before cwd": { json: { runtime: { permissionMode: "fictional" } }, cwd: "" },
   "cwd before model": { json: {}, cwd: "" },
@@ -68,6 +78,16 @@ const invalid: Record<string, { json: unknown; cwd?: string }> = {
 
 describe("resolver extraction preservation", () => {
   for (const [name, json] of Object.entries(valid)) {
+    it(`adds only the conversation outage-budget view row: ${name}`, () => {
+      const config = resolveJsonMonoAgentConfig({ cwd: "/fictional/repo", json: json as MonoAgentConfigJson });
+      const view = buildMonoAgentConfigView({ redacted: redactMonoAgentConfig(config), json: json as MonoAgentConfigJson });
+      const id = "providers.piNative.requestRetryBudgetMs";
+      expect(view.flatMap((section) => section.fields).filter((field) => field.id === id)).toEqual([
+        { id, label: "Pi request outage budget (ms)", value: "120000", source: "default" },
+      ]);
+      const withoutBudgetRow = view.map((section) => ({ ...section, fields: section.fields.filter((field) => field.id !== id) }));
+      expect(fingerprint(withoutBudgetRow)).toBe(legacyViews[name]);
+    });
     it(`preserves complete shapes and ordered views: ${name}`, () => {
       const config = resolveJsonMonoAgentConfig({ cwd: "/fictional/repo", json: json as MonoAgentConfigJson });
       const redacted = redactMonoAgentConfig(config);

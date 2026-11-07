@@ -204,7 +204,8 @@ the legacy profile for that scope. Direct runtime callers can opt in with
 Bedrock always keeps AWS SDK retry ownership.
 `providers.piNative.piMaxRetries: 0` disables both short and outage retries,
 even when the recovery window is positive. Provider checks and summary calls
-remain single-shot. The router still refuses whole-turn retry or failover after
+are single-shot at the framework layer; Bedrock still retains AWS-owned SDK
+retries. The router still refuses whole-turn retry or failover after
 a tool was admitted or live input consumed; request-local recovery does not
 relax that guard.
 

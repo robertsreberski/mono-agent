@@ -48,6 +48,17 @@ describe("buildMonoAgentConfigView", () => {
       .toMatchObject({ source: "json", restatesDefault: true });
   });
 
+  it("shows the numeric conversation outage budget and JSON provenance even when retries are disabled", () => {
+    const id = "providers.piNative.requestRetryBudgetMs";
+    expect(field(buildView({}), id)).toEqual({ id, label: "Pi request outage budget (ms)", value: "120000", source: "default" });
+    expect(field(buildView({ providers: { piNative: { piMaxRetries: 0 } } }), id))
+      .toMatchObject({ value: "120000", source: "default" });
+    for (const requestRetryBudgetMs of [0, 120_000, 180_000]) {
+      expect(field(buildView({ providers: { piNative: { piMaxRetries: 0, requestRetryBudgetMs } } }), id))
+        .toEqual({ id, label: "Pi request outage budget (ms)", value: String(requestRetryBudgetMs), source: "json" });
+    }
+  });
+
   it("marks JSON values that restate a default", () => {
     expect(field(buildView({ traceability: { heartbeatMs: 10_000 } }), "traceability.heartbeatMs"))
       .toMatchObject({ source: "json", restatesDefault: true });

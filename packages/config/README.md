@@ -111,6 +111,8 @@ Pi auth file. The default path is
 Only the path is stored in config. Token contents stay in the auth JSON file and
 are never included in `redactMonoAgentConfig()`.
 
+### Pi-native runtime tuning
+
 Pi-native transport selection is optional and defaults to `auto`. Configure
 `providers.piNative.transport` with `auto`, `sse`,
 `websocket`, or `websocket-cached`; unsupported providers ignore the choice.
@@ -119,7 +121,8 @@ Configured parent turns recover transient Anthropic Messages, OpenAI Responses
 and Codex failures within `providers.piNative.requestRetryBudgetMs` (default
 120000 ms, integer 0–180000). Zero restores legacy request retries;
 `piMaxRetries: 0` disables both policies. Only the failed model request is
-retried, never earlier tools or live input. Children independently retain
+retried, never earlier tools or live input. Unknown-outcome resends can duplicate
+provider billing. Children independently retain
 `subagents.providerRetryBudgetMs`. Memory capture, reconciliation and curation
 keep legacy request retries and their existing timeout. Bedrock keeps AWS retry
 ownership. See

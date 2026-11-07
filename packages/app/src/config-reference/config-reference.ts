@@ -1847,10 +1847,10 @@ function descriptionFor(id: string): string {
     return "Public display identity used for trace labels and default A2A metadata; never used in paths or service ids.";
   }
   if (id === "providers.piNative.piMaxRetries") {
-    return "Short provider retries (0–8, default 2). With outage recovery enabled, the driver owns connection/server retries and disables adapter retries; HTTP throttling stays short. With outage budget 0 or unsupported adapters, legacy SDK pre-response and up to three driver post-response retries apply. 0 disables both policies. Probes and summaries are single-shot.";
+    return "Short provider retries (0–8, default 2). With outage recovery enabled, the driver owns connection/server retries and disables adapter retries; HTTP throttling stays short. With outage budget 0 or unsupported adapters, legacy SDK pre-response and up to three driver post-response retries apply. 0 disables both policies. Provider checks and summaries disable framework request retries; Bedrock retains AWS-owned SDK retries.";
   }
   if (id === "providers.piNative.requestRetryBudgetMs") {
-    return "Conversation assistant-request outage recovery window (integer 0–180000 ms, default 120000) for Anthropic Messages, OpenAI Responses and Codex. Retries only the failed model request, never completed tools or consumed live input. 0 restores legacy retries; piMaxRetries:0 disables both policies. Children use subagents.providerRetryBudgetMs independently; memory capture, reconciliation and curation keep legacy request retries. Bedrock retains AWS retry ownership; probes and summaries remain single-shot.";
+    return "Conversation assistant-request outage recovery window (integer 0–180000 ms, default 120000) for Anthropic Messages, OpenAI Responses and Codex. Retries only the failed model request, never completed tools or consumed live input. 0 restores legacy retries; piMaxRetries:0 disables both policies. Children use subagents.providerRetryBudgetMs independently; memory capture, reconciliation and curation keep legacy request retries. Unknown-outcome resends may duplicate provider billing. Provider checks and summaries disable framework request retries; Bedrock retains AWS-owned SDK retries.";
   }
   if (id === "providers.piNative.maxRetryDelayMs") {
     return "Ceiling for provider-requested retry delays in milliseconds (default 60000). Nonpositive embedder values use the default; longer requested delays fail.";

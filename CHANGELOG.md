@@ -2,10 +2,11 @@
 
 ## Unreleased
 
-- Fix transient provider outages in normal conversations with bounded recovery of
-  only the failed model request, without replaying tools or live input. Configure
-  `providers.piNative.requestRetryBudgetMs` (default 120000 ms; 0 restores legacy
-  retries); `piMaxRetries: 0` still disables request retries.
+- Fix transient outages on Anthropic Messages, OpenAI Responses and Codex in
+  normal conversations by retrying only the failed model request, never tools or
+  live input. `providers.piNative.requestRetryBudgetMs` defaults to 120000 ms
+  (0–180000; 0 restores legacy); `piMaxRetries: 0` disables request retries.
+  Unknown-outcome resends can duplicate provider billing.
 
 - Fix presentation-tool guidance asking for another reply after an answer was
   already written. Still require an answer when only progress updates or no text
