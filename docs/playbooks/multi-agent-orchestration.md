@@ -139,10 +139,9 @@ request on Anthropic, OpenAI Responses and Codex. Configure
 Parent conversations independently use `providers.piNative.requestRetryBudgetMs`
 with the same default/range, without replaying completed tools or live input.
 Set `providers.piNative.piMaxRetries: 0` to disable both request policies.
-Inherited `providers.piNative.piMaxRetries:0` disables both kinds of retry.
 Leave enough whole-child/job time for recovery: the window is not a hard request
 timeout, tools are not replayed, and unknown-outcome resends may duplicate billing.
-Ordinary throttling keeps short header-aware retries; parent turns and Bedrock
-are unchanged. On exhaustion inspect the bounded phase/attempt/elapsed/cause
+Ordinary throttling keeps short header-aware retries; Bedrock retains AWS retry
+ownership. On exhaustion inspect the bounded phase/attempt/elapsed/cause
 suffix before deciding how to continue certified retained context. See
 [provider outage timing and diagnostics](/runtime/fallback/#provider-outage-window).

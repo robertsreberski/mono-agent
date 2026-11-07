@@ -348,7 +348,7 @@ export type RuntimeRunOptions = Readonly<Pick<RuntimeContracts.RuntimeRunOptions
   // Pi-native provider knobs (all optional; Pi is the only bridge).
   readonly piTransport?: PiTransport;
   readonly piMaxRetries?: number;
-  /** Request-local outage window; direct default/zero keeps legacy retries. Configured hosts default to 120000 ms. */
+  /** Request-local outage window; direct default/zero keeps legacy retries. Configured conversations default to 120000 ms. */
   readonly piRequestRetryBudgetMs?: number;
   readonly maxRetryDelayMs?: number;
   readonly sessionsRoot?: string;

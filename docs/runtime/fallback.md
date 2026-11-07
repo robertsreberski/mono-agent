@@ -191,12 +191,14 @@ turns; a turn with several assistant requests can exceed a per-request bound.
 
 ### Provider outage window
 
-Configured parent turns default to
+Configured parent conversation turns default to
 `providers.piNative.requestRetryBudgetMs: 120000` on Anthropic Messages, OpenAI
 Responses and OpenAI Codex, even with no `piNative` configuration. Native `Agent`
 children (foreground and background, persistent and stateless) independently
 retain `subagents.providerRetryBudgetMs: 120000`; the parent setting does not
-change child policy. Both integers accept 0–180000 milliseconds; zero restores
+change child policy. Memory capture, reconciliation and operator curation retain
+their legacy request retries and existing memory timeout; this conversation
+setting does not apply to them. Both integers accept 0–180000 milliseconds; zero restores
 the legacy profile for that scope. Direct runtime callers can opt in with
 `piRequestRetryBudgetMs` (default zero). Other adapters retain legacy behavior;
 Bedrock always keeps AWS SDK retry ownership.

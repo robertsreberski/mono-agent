@@ -62,7 +62,7 @@ vi.mock("@mono-agent/conversation/process-incarnation", async (importOriginal) =
 }));
 
 const { createConfiguredMemory } = await import("../index.js");
-const { createConfiguredMemoryForApp } = await import("../composition/configured-memory.js");
+const { createConfiguredMemoryForApp, createConfiguredCurationLlm } = await import("../composition/configured-memory.js");
 const {
   acquireAgentRootOwnership,
   releaseAgentRootOwnershipWhenIdle,
@@ -72,6 +72,7 @@ const {
   registerProcessJobsRoot,
   processJobsRootRegistryPaths,
 } = await import("../process-jobs/process-jobs-root-registry.js");
+const { configRuntimeFlags } = await import("../composition/configured-runtime-options.js");
 const { resolveProcessJobsProtectionPosture } = await import("../process-jobs/process-jobs-protection.js");
 
 const tempDirs: string[] = [];
@@ -139,6 +140,46 @@ describe("memory LLM honours config.memory.llm.model", () => {
     expect(memoryRuntimeOptions.length).toBeGreaterThanOrEqual(1);
     for (const options of memoryRuntimeOptions) {
       expect(options.fallbackChain).toBeUndefined();
+    }
+  });
+
+  it.each([undefined, 0, 180_000])("keeps capture, reconcile and curation on legacy retries with conversation budget %s", async (requestRetryBudgetMs) => {
+    const dir = await tempDir();
+    const base = memoryModelConfig(dir);
+    const reconcileModel = "anthropic:claude-haiku-5-5";
+    const config: MonoAgentConfig = { ...base,
+      memory: { ...base.memory!, writeMode: "capture", capture: { reconcileModel } },
+      providers: { piNative: {
+      transport: "sse", piMaxRetries: 4, maxRetryDelayMs: 500,
+      ...(requestRetryBudgetMs === undefined ? {} : { requestRetryBudgetMs }),
+    } } };
+    expect(configRuntimeFlags(config).piRequestRetryBudgetMs).toBe(requestRetryBudgetMs ?? 120_000);
+    const bujo = await import("@mono-agent/memory/bujo");
+    const createStore = vi.spyOn(bujo, "createBujoMemoryStore");
+    let store: { persistCompletedTurn(turn: MemoryCompletedTurn): Promise<MemoryCompletedTurnResult>;
+      flush(): Promise<void>; close(): Promise<void> };
+    let composedLlm: Parameters<typeof bujo.createBujoMemoryStore>[0]["llm"];
+    try {
+      store = await createConfiguredMemory(config, {}) as unknown as typeof store;
+      composedLlm = createStore.mock.calls[0]?.[0]?.llm;
+    } finally { createStore.mockRestore(); }
+    try {
+      await store.persistCompletedTurn({ runId: "fictional-memory", conversationId: "fictional-conversation",
+        summary: "A fictional preference.", captureText: "A fictional preference." });
+      await store.flush();
+      // Invoke the classifier through the actual composed memory LLM, without
+      // relying on retrieval/embedding work to choose a reconciliation batch.
+      await composedLlm!.complete("Fictional reconciliation prompt", { label: "capture:reconcile" });
+      expect(runCalls.at(-1)?.options.model?.reference).toBe(reconcileModel);
+    } finally { await store.close(); }
+    const captureCalls = runCalls.length;
+    expect(captureCalls).toBeGreaterThan(0);
+    const curation = await createConfiguredCurationLlm(config, undefined, fakeRuntime);
+    await curation.complete("Fictional curation prompt");
+    expect(runCalls).toHaveLength(captureCalls + 1);
+    for (const { options } of runCalls) {
+      expect(options).toMatchObject({ piTransport: "sse", piMaxRetries: 4, maxRetryDelayMs: 500 });
+      expect(options).not.toHaveProperty("piRequestRetryBudgetMs");
     }
   });
 

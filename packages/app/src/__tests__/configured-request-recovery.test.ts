@@ -6,6 +6,8 @@ import { afterEach, expect, it, vi } from "vitest";
 import { builtinModels, getBuiltinModel } from "@earendil-works/pi-ai/providers/all";
 import type { AgentResponder } from "@mono-agent/contracts";
 import { createMonoRuntime } from "@mono-agent/turn/host";
+import type { RuntimeResult } from "@mono-agent/turn/host/types";
+import { createConfiguredAgentRuntimeForApp } from "../composition/configured-runtime.js";
 import { resolveJsonMonoAgentConfig } from "@mono-agent/config";
 import { createConfiguredAgentResponderForApp } from "../composition/configured-agent.js";
 import { configProviderOptions, configRuntimeFlags } from "../composition/configured-runtime-options.js";
@@ -47,13 +49,16 @@ function stream(route: Route, kind: "tool" | "partial" | "answer", file: string)
   } }), { headers: { "content-type": "text/event-stream" } });
 }
 
-async function fixture(route: Route, phase: "pre-response" | "post-response", piNative?: { piMaxRetries?: number; requestRetryBudgetMs?: number }) {
+async function fixture(route: Route, phase: "pre-response" | "post-response", piNative?: { piMaxRetries?: number; requestRetryBudgetMs?: number },
+  behavior: { fallback?: boolean; exhaust?: boolean; abortOnRetry?: boolean; maxRetryDelayMs?: number } = {}) {
   const root = await mkdtemp(join(tmpdir(), "configured-request-recovery-")); cleanup.push(() => rm(root, { recursive: true, force: true }));
   const file = join(root, "fictional.txt"), identityPath = join(root, "IDENTITY.md");
   await writeFile(file, "Fictional contents"); await writeFile(identityPath, "Fictional instructions");
   const model = route === "anthropic" ? getBuiltinModel("anthropic", "claude-haiku-5-5")! : getBuiltinModel("openai-codex", "gpt-6.1-sol")!;
   const config = resolveJsonMonoAgentConfig({ cwd: root, json: {
-    runtime: { model: `${route}:${model.id}`, workspace: root, session: { mode: "continuous", rollover: "none" } },
+    runtime: { model: `${route}:${model.id}`, workspace: root, session: { mode: "continuous", rollover: "none" },
+      ...(behavior.fallback ? { fallbacks: [{ model: route === "anthropic" ? "openai-codex:gpt-6.1-sol" : "anthropic:claude-haiku-5-5" }],
+        retry: { primaryAttempts: 2, backoffMs: 0, maxBackoffMs: 0 } } : {}) },
     ...(piNative === undefined ? {} : { providers: { piNative } }),
     context: { identityPath }, tools: { allowedTools: ["Read"] }, artifacts: { dir: join(root, "artifacts") },
   } });
@@ -64,7 +69,7 @@ async function fixture(route: Route, phase: "pre-response" | "post-response", pi
     const body = init?.body as Uint8Array;
     bodies.push(JSON.parse(new Headers(init?.headers).get("content-encoding") === "zstd" ? zstdDecompressSync(body).toString() : String(body)));
     if (fetch.mock.calls.length === 1) return stream(route, "tool", file);
-    if (fetch.mock.calls.length === 2) {
+    if (fetch.mock.calls.length === 2 || behavior.exhaust) {
       if (phase === "pre-response") throw new TypeError("fetch failed");
       return stream(route, "partial", file);
     }
@@ -72,21 +77,33 @@ async function fixture(route: Route, phase: "pre-response" | "post-response", pi
   });
   vi.stubGlobal("fetch", fetch);
   const requests = vi.spyOn(models, "streamSimple");
-  const runtime = createMonoRuntime({ workspace: root }); cleanup.push(() => runtime.disposeAllSessions!());
+  const runtime = behavior.fallback ? createConfiguredAgentRuntimeForApp(config) : createMonoRuntime({ workspace: root });
+  cleanup.push(() => runtime.disposeAllSessions!());
+  const controller = new AbortController();
+  const results: RuntimeResult[] = [];
+  let retries = 0;
   let toolRuns = 0;
   const run = runtime.run.bind(runtime);
-  const runs = vi.spyOn(runtime, "run").mockImplementation((prompt, options) => run(prompt, { ...options,
+  const runs = vi.spyOn(runtime, "run").mockImplementation(async (prompt, options) => {
+    const result = await run(prompt, { ...options,
     onEvent: (event) => {
       const message = event.message as { content?: Array<{ type: string }> } | undefined;
       if (event.type === "assistant" && message?.content?.some((block) => block.type === "tool_use")) toolRuns++;
+      if (event.type === "runtime_warning" && event.warning_kind === "provider_request_retry") {
+        retries++;
+        if (behavior.abortOnRetry) controller.abort("Fictional cancellation during recovery");
+      }
       options.onEvent?.(event);
     },
-  }));
+    });
+    results.push(result);
+    return result;
+  });
   const responder = await createConfiguredAgentResponderForApp({ config, cwd: root, runtime,
-    runtimeOptions: { piResolvedModels: models, piResolvedModel: model, piTransport: "sse", maxRetryDelayMs: 1, compaction: { enabled: false } } }, {});
+    runtimeOptions: { piResolvedModels: models, piTransport: "sse", maxRetryDelayMs: behavior.maxRetryDelayMs ?? 1, compaction: { enabled: false } } }, {});
   cleanup.push(() => (responder as AgentResponder & { dispose(): Promise<void> }).dispose());
-  const respond = () => responder.respond({ conversationId: "test:fictional-conversation", text: "Read the fictional file, then answer.", abortSignal: new AbortController().signal }, { append: async () => {} });
-  return { respond, bodies, fetch, requests, runs, toolRuns: () => toolRuns };
+  const respond = () => responder.respond({ conversationId: "test:fictional-conversation", text: "Read the fictional file, then answer.", abortSignal: controller.signal }, { append: async () => {} });
+  return { respond, bodies, fetch, requests, runs, results, controller, retries: () => retries, toolRuns: () => toolRuns };
 }
 
 it.each(["anthropic", "openai-codex"] as const)("configured %s parent recovers only the failed model request in both phases", async (route) => {
@@ -117,6 +134,35 @@ it("configured requestRetryBudgetMs:0 explicitly restores legacy SDK recovery", 
   expect(f.fetch).toHaveBeenCalledTimes(3); expect(f.requests).toHaveBeenCalledTimes(2);
   expect(f.requests.mock.calls[1]?.[2]?.maxRetries).toBe(2);
   expect(f.requests.mock.calls[1]?.[2]).not.toHaveProperty("fetch");
+});
+
+it.each(["anthropic", "openai-codex"] as const)("configured %s fallback chain refuses replay after request recovery exhausts following a tool", async (route) => {
+  const f = await fixture(route, "pre-response", { requestRetryBudgetMs: 30 }, {
+    fallback: true, exhaust: true, maxRetryDelayMs: 10,
+  });
+  await expect(f.respond()).rejects.toThrow(/provider_retry.*exhausted=budget/);
+  expect(f.toolRuns()).toBe(1); expect(f.runs).toHaveBeenCalledOnce();
+  expect(f.retries()).toBeGreaterThan(0);
+  // The elapsed budget can expire while sleeping; do not require another send
+  // after a scheduled retry or depend on exact wall-clock/jitter timing.
+  expect(f.requests.mock.calls.length).toBeGreaterThanOrEqual(2);
+  expect(f.requests.mock.calls.length).toBeLessThanOrEqual(18);
+  expect(f.requests.mock.calls.every(([model]) => model.provider === route)).toBe(true);
+  expect(f.results[0]?.failureKind).toBe("provider_unavailable");
+  expect(f.results[0]?.failoverHistory).toHaveLength(1);
+  expect(f.results[0]?.failoverHistory).toEqual([expect.objectContaining({ model: expect.objectContaining({ provider: route }) })]);
+  for (const body of f.bodies.slice(2)) expect(body).toEqual(f.bodies[1]);
+});
+
+it.each(["anthropic", "openai-codex"] as const)("configured %s cancellation during recovery stops before another send", async (route) => {
+  const f = await fixture(route, "pre-response", undefined, { fallback: true, abortOnRetry: true, maxRetryDelayMs: 60_000 });
+  // The responder may project cancellation as a failure; the real runtime's
+  // terminal cancellation and exact send counts are the ownership evidence.
+  await f.respond().catch(() => undefined);
+  expect(f.controller.signal.aborted).toBe(true);
+  expect(f.results[0]?.cancelled).toBe(true); expect(f.retries()).toBe(1);
+  expect(f.fetch).toHaveBeenCalledTimes(2); expect(f.requests).toHaveBeenCalledTimes(2);
+  expect(f.toolRuns()).toBe(1); expect(f.runs).toHaveBeenCalledOnce();
 });
 
 it("composes default/empty/explicit parent budgets independently of child budgets", () => {

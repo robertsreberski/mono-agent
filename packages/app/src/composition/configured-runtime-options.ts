@@ -77,7 +77,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 
-export function configRuntimeFlags(config: MonoAgentConfig): StaticRuntimeOptions {
+export function configRuntimeFlags(config: MonoAgentConfig, scope: "conversation" | "memory" = "conversation"): StaticRuntimeOptions {
   const { compaction } = config.runtime;
   // NOTE: there is intentionally no reasoning-summary runtime option. The sole pi
   // runtime (pi-native) derives reasoning from `effort` and does not consume an
@@ -85,6 +85,9 @@ export function configRuntimeFlags(config: MonoAgentConfig): StaticRuntimeOption
   // unconditionally — so the former `piReasoningSummary` runtime option was dead
   // plumbing and the `runtime.reasoningSummary` config field was removed.
   const piNative = config.providers?.piNative;
+  // Memory maintenance keeps its legacy request policy, independently of the
+  // conversation outage window, while retaining transport and short retry knobs.
+  const { piRequestRetryBudgetMs, ...providerOptions } = configProviderOptions(config);
   // Typed MCP limits override runtime defaults only when explicitly configured.
   const { mcpCallTimeoutMs, mcpCallMaxTotalTimeoutMs } = config.tools;
   const webSearchConfig = config.tools.web?.search;
@@ -98,7 +101,8 @@ export function configRuntimeFlags(config: MonoAgentConfig): StaticRuntimeOption
           : { mcpCallMaxTotalTimeoutMs }),
       };
   return {
-    ...configProviderOptions(config),
+    ...providerOptions,
+    ...(scope === "conversation" && piRequestRetryBudgetMs !== undefined ? { piRequestRetryBudgetMs } : {}),
     ...(piNative?.cacheRetention === undefined ? {} : { cacheRetention: piNative.cacheRetention }),
     ...(piNative?.promptCacheDiagnostics === undefined ? {} : { promptCacheDiagnostics: piNative.promptCacheDiagnostics }),
     ...(compaction === undefined ? {} : { compaction }),

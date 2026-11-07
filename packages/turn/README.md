@@ -1464,7 +1464,8 @@ Chain entries can require backend capabilities via `requires: { structured_outpu
 App-configured parent turns use `providers.piNative.requestRetryBudgetMs`;
 native children independently use `subagents.providerRetryBudgetMs`. Both default
 to 120000 ms (integer 0–180000; zero restores legacy). Direct callers opt in with
-`piRequestRetryBudgetMs`, default zero.
+`piRequestRetryBudgetMs`, default zero. Memory capture, reconciliation and
+operator curation keep legacy request retries and their existing timeout.
 The profile covers Anthropic messages, OpenAI Responses and Codex; other
 adapters retain legacy policy and Bedrock keeps AWS SDK retries. Inherited
 `piMaxRetries: 0` disables this profile as well as legacy retries.

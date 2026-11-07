@@ -2340,7 +2340,7 @@
               "default": 60000
             },
             "requestRetryBudgetMs": {
-              "description": "Parent assistant-request outage recovery window (integer 0–180000 ms, default 120000) for Anthropic Messages, OpenAI Responses and Codex. Retries only the failed model request, never completed tools or consumed live input. 0 restores legacy retries; piMaxRetries:0 disables both policies. Children use subagents.providerRetryBudgetMs independently. Bedrock retains AWS retry ownership; probes and summaries remain single-shot.",
+              "description": "Conversation assistant-request outage recovery window (integer 0–180000 ms, default 120000) for Anthropic Messages, OpenAI Responses and Codex. Retries only the failed model request, never completed tools or consumed live input. 0 restores legacy retries; piMaxRetries:0 disables both policies. Children use subagents.providerRetryBudgetMs independently; memory capture, reconciliation and curation keep legacy request retries. Bedrock retains AWS retry ownership; probes and summaries remain single-shot.",
               "examples": [
                 120000
               ],

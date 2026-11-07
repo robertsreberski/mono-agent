@@ -510,7 +510,7 @@ export interface PiNativeProviderConfig {
   readonly piMaxRetries?: number;
   /** Maximum delay between retry attempts, in milliseconds (default 60000). */
   readonly maxRetryDelayMs?: number;
-  /** Parent assistant-request outage window (0–180000 ms, default 120000; 0 restores legacy). */
+  /** Conversation assistant-request outage window (0–180000 ms, default 120000; 0 restores legacy). */
   readonly requestRetryBudgetMs?: number;
   /**
    * Directory for durable JSONL session storage. When set, provider sessions

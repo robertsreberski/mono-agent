@@ -120,7 +120,9 @@ and Codex failures within `providers.piNative.requestRetryBudgetMs` (default
 120000 ms, integer 0–180000). Zero restores legacy request retries;
 `piMaxRetries: 0` disables both policies. Only the failed model request is
 retried, never earlier tools or live input. Children independently retain
-`subagents.providerRetryBudgetMs`. Bedrock keeps AWS retry ownership. See
+`subagents.providerRetryBudgetMs`. Memory capture, reconciliation and curation
+keep legacy request retries and their existing timeout. Bedrock keeps AWS retry
+ownership. See
 [retry ownership and limits](../../docs/runtime/fallback.md#provider-outage-window).
 
 ### Local providers

@@ -262,7 +262,7 @@ export async function createConfiguredCurationLlm(
   const model = parseMonoRuntimeModelReference(llmConfig.model);
   const runtime = memoryRuntime ?? createMonoRuntime(runtimeHostOptionsForConfig(config));
   const llm = createAgentHostMemoryLlm({ runtime, model, cwd: config.runtime.workspace,
-    runtimeOptions: mergeStaticRuntimeOptions(runtimeOptionsForLocalProvider(model, config.providers?.local), configRuntimeFlags(config)),
+    runtimeOptions: mergeStaticRuntimeOptions(runtimeOptionsForLocalProvider(model, config.providers?.local), configRuntimeFlags(config, "memory")),
     ...("timeoutMs" in llmConfig && llmConfig.timeoutMs !== undefined ? { timeoutMs: llmConfig.timeoutMs } : {}) });
   return { ...llm, async complete(prompt, options) {
     try { return await llm.complete(prompt, options); }
@@ -320,7 +320,7 @@ function configuredMemoryLlm(
     cwd: config.runtime.workspace,
     runtimeOptions: mergeStaticRuntimeOptions(
       runtimeOptionsForLocalProvider(model, config.providers?.local),
-      configRuntimeFlags(config),
+      configRuntimeFlags(config, "memory"),
     ),
     // Per-call timeout; default 60s. Configurable so a slow local model can be
     // given room on the heavier reconcile/entities steps.
