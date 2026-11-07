@@ -871,13 +871,13 @@ function createPublishServer(
   const server = new McpServer({ name: REPLY_ARTIFACT_MCP_SERVER_NAME, version: "1.0.0" });
   server.registerTool(PUBLISH_REPLY_FILE_TOOL_NAME, {
     title: "Attach a generated file",
-    description: "Publish one generated workspace file with the assistant reply. Call once per file after writing it. The host copies, hashes, retains, and authorizes the file; the response carries only an opaque id and sanitized metadata. Paths outside the workspace or this run's MCP output directory, anything under the agent's private state (.mono-agent/, the artifacts directory, memory, credentials), symlinks, non-files, and files over 20 MiB are rejected; write files meant for publication to an ordinary workspace directory such as tmp/ or output/. A rejection names its reason so the file can be rewritten to an allowed location.",
+    description: "Publish one generated workspace file with the assistant reply. Call once per file after writing it. The host copies, hashes, retains, and authorizes the file; the response carries only an opaque id and sanitized metadata. Paths outside the workspace or this run's MCP output directory, anything under the agent's private state (.mono-agent/, the artifacts directory, memory, credentials), symlinks, non-files, and files over 20 MiB are rejected; write files meant for publication to an ordinary workspace directory such as tmp/ or output/. A rejection names its reason so the file can be rewritten to an allowed location. Normal assistant prose written before this call counts as the reply; do not repeat or rephrase it. Write normal assistant prose if none was written. After success, add only genuinely new information if needed; otherwise end without extra prose.",
     inputSchema: PUBLISH_INPUT,
   }, async (input) => {
     const part = await publish(input);
     if (part.type === "attachment") {
       return {
-        content: [{ type: "text" as const, text: `Published ${part.name} (${part.sizeBytes} bytes, ${part.integrityId}). It will appear beneath your reply text. You must still write your user-facing reply as normal assistant text.` }],
+        content: [{ type: "text" as const, text: `Published ${part.name} (${part.sizeBytes} bytes, ${part.integrityId}). It will appear beneath your reply text. Normal assistant prose written before this call counts as the reply; do not repeat or rephrase it. Write normal assistant prose if none was written. After success, add only genuinely new information if needed; otherwise end without extra prose.` }],
         structuredContent: {
           published: true,
           attachmentId: part.reference.id,

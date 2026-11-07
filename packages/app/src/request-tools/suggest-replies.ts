@@ -102,14 +102,14 @@ function createSuggestionServer(suggest: (options: readonly string[]) => { reado
   const server = new McpServer({ name: SUGGEST_REPLIES_SERVER_NAME, version: "1.0.0" });
   server.registerTool(SUGGEST_REPLIES_TOOL_NAME, {
     title: "Suggest quick replies",
-    description: "Attach 2–8 non-blocking quick reply buttons beneath your final answer in the web console. Clicking a button sends its label later as a new user turn in this conversation. Use AskUser when this run must wait for a selection. A later call replaces this reply's earlier choices. Labels must be distinct, single-line, trimmed, and 1–75 characters.",
+    description: "Attach 2–8 non-blocking quick reply buttons beneath your final answer in the web console. Clicking a button sends its label later as a new user turn in this conversation. Use AskUser when this run must wait for a selection. A later call replaces this reply's earlier choices. Labels must be distinct, single-line, trimmed, and 1–75 characters. Normal assistant prose written before this call counts as the reply; do not repeat or rephrase it. Write normal assistant prose if none was written. After success, add only genuinely new information if needed; otherwise end without extra prose.",
     inputSchema: INPUT,
   }, async ({ options }) => {
     const result = suggest(options);
     return {
       ...(result.status === "unavailable" ? { isError: true } : {}),
       content: [{ type: "text" as const, text: result.status === "suggested"
-        ? "Quick reply choices will appear beneath your reply text. You must still write your user-facing reply as normal assistant text. This run does not wait for a selection."
+        ? "Quick reply choices will appear beneath your reply text. Normal assistant prose written before this call counts as the reply; do not repeat or rephrase it. Write normal assistant prose if none was written. After success, add only genuinely new information if needed; otherwise end without extra prose. This run does not wait for a selection."
         : "Quick reply choices could not be added because the reply-part budget is full." }],
       structuredContent: result,
     };

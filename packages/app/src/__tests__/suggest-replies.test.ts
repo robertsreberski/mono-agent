@@ -44,8 +44,19 @@ describe("SuggestReplies", () => {
           }
           const suggested = await client.callTool({ name: SUGGEST_REPLIES_TOOL_NAME, arguments: { options: [" first ", "second"] } });
           expect(suggested.structuredContent).toEqual({ status: "suggested" });
+          expect(JSON.stringify(suggested.content)).toContain("This run does not wait for a selection");
           expect(JSON.stringify(suggested.content)).toContain("beneath your reply text");
-          expect(JSON.stringify(suggested.content)).toContain("must still write your user-facing reply as normal assistant text");
+          for (const guidance of [
+            (await client.listTools()).tools.find((tool) => tool.name === SUGGEST_REPLIES_TOOL_NAME)?.description,
+            JSON.stringify(suggested.content),
+          ]) {
+            expect(guidance).toContain("prose written before this call counts as the reply");
+            expect(guidance).toContain("do not repeat or rephrase it");
+            expect(guidance).toContain("Write normal assistant prose if none was written");
+            expect(guidance).toContain("add only genuinely new information if needed");
+            expect(guidance).toContain("otherwise end without extra prose");
+            expect(guidance).not.toContain("must still write");
+          }
           expect(JSON.stringify(suggested.content)).not.toContain("this final reply");
           expect(budget.claim("run-1", "another-part")).toBe("limit");
           expect((await client.callTool({ name: SUGGEST_REPLIES_TOOL_NAME, arguments: { options: [" Review draft ", "Keep going", "x".repeat(75)] } })).structuredContent).toEqual({ status: "suggested" });

@@ -116,6 +116,12 @@ keyed restart support verifies successfully and tool policy allows it.
 Restrictive `tools.allowedTools` must name `ProposeRestart`; its reply part is
 only a proposal and requires the operator to confirm in the web console.
 
+These three presentation tools count normal assistant prose already written as
+the reply, not a request to repeat or rephrase it. Write normal prose if none was
+written; after success, add only genuinely new information if needed, otherwise
+end without extra prose. This is model guidance, not guaranteed compliance or a
+repair of existing duplicated history.
+
 ```ts
 import { createToolPolicy, toolPolicyToRuntimeOptions } from "@mono-agent/conversation";
 

@@ -1314,6 +1314,14 @@ title remains the fallback.
 
 ### Web-console quick replies
 
+Presentation tools (`SuggestReplies`, `PublishReplyFile`, `ProposeRestart`) attach
+parts without requiring a second rendition of the answer. Their descriptions and
+successful results tell the model that normal assistant prose already written
+counts as the reply: do not repeat or rephrase it. If none was written, write it
+normally; after success, add only genuinely new information if needed, otherwise
+end without extra prose. This guidance does not guarantee model compliance or
+repair existing duplicated history.
+
 `SuggestReplies` attaches non-blocking quick-action buttons to a final reply
 on web-console turns, including web-bound background/job wakes. It accepts
 `{ options: string[] }`: 2–8 distinct trimmed single-line labels of 1–75

@@ -159,7 +159,17 @@ describe("reply artifact publication", () => {
         arguments: { path: "one.txt", name: "report.txt", mediaType: "text/plain" },
       });
       expect(JSON.stringify(published.content)).toContain("beneath your reply text");
-      expect(JSON.stringify(published.content)).toContain("must still write your user-facing reply as normal assistant text");
+      for (const guidance of [
+        (await publisher.client.listTools()).tools.find((tool) => tool.name === PUBLISH_REPLY_FILE_TOOL_NAME)?.description,
+        JSON.stringify(published.content),
+      ]) {
+        expect(guidance).toContain("prose written before this call counts as the reply");
+        expect(guidance).toContain("do not repeat or rephrase it");
+        expect(guidance).toContain("Write normal assistant prose if none was written");
+        expect(guidance).toContain("add only genuinely new information if needed");
+        expect(guidance).toContain("otherwise end without extra prose");
+        expect(guidance).not.toContain("must still write");
+      }
       await publisher.client.callTool({
         name: PUBLISH_REPLY_FILE_TOOL_NAME,
         arguments: { path: "two.txt", name: "report.txt", mediaType: "text/plain" },
