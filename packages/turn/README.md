@@ -1459,11 +1459,12 @@ Behaviour:
 
 Chain entries can require backend capabilities via `requires: { structured_output: true, supports_mcp: true, ... }`; entries that don't satisfy the requirements are skipped (logged in `failoverHistory` as `failureKind: "skipped_capability_mismatch"`).
 
-### Child provider outage recovery
+### Provider outage recovery
 
-App-configured native children use `subagents.providerRetryBudgetMs` (default
-120000, integer 0–180000; zero restores legacy). Direct callers opt in with
-`piRequestRetryBudgetMs`, default zero. Interactive parent turns stay unchanged.
+App-configured parent turns use `providers.piNative.requestRetryBudgetMs`;
+native children independently use `subagents.providerRetryBudgetMs`. Both default
+to 120000 ms (integer 0–180000; zero restores legacy). Direct callers opt in with
+`piRequestRetryBudgetMs`, default zero.
 The profile covers Anthropic messages, OpenAI Responses and Codex; other
 adapters retain legacy policy and Bedrock keeps AWS SDK retries. Inherited
 `piMaxRetries: 0` disables this profile as well as legacy retries.
@@ -1482,7 +1483,7 @@ live inputs are never replayed.
 One window starts at the first eligible failure, with 1/2/4/8/16-second delays,
 a 20-second cap, downward jitter, server delay lower bounds and the existing
 per-delay ceiling. DNS/TLS errors surfacing as `fetch failed` can use the whole
-child window even when retries cannot repair the underlying configuration.
+recovery window even when retries cannot repair the underlying configuration.
 There are at most 16 resends; the default unjittered window
 fits about nine, plus a shortened final wait toward expiry when permitted. No
 driver resend starts after expiry. This is not a hard

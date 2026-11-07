@@ -95,6 +95,8 @@ type MonoAgentPiNativeProviderJson = {
   readonly cacheRetention?: "short" | "long";
   readonly piMaxRetries?: number;
   readonly maxRetryDelayMs?: number;
+  /** Parent assistant-request outage window (0–180000 ms, default 120000; 0 restores legacy). */
+  readonly requestRetryBudgetMs?: number;
 };
 
 export type MonoAgentProvidersJson = {

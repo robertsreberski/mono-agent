@@ -115,6 +115,31 @@ it.each([0, 120_000])("never re-runs an earlier tool or partial call (outage bud
   expect(JSON.stringify(f.contexts[2])).not.toContain("partial-call");
 });
 
+it("does not consume live input again while recovering a failed request", async () => {
+  const f = await fixture([], { allowedTools: ["Read"], piRequestRetryBudgetMs: 120_000, maxRetryDelayMs: 1 });
+  f.options.piResolvedModel = { ...f.faux.getModel(), api: "anthropic-messages" };
+  await writeFile(join(f.root, "fictional.txt"), "Fictional contents");
+  let started!: () => void, accepted!: () => void;
+  const ready = new Promise<void>((resolve) => { started = resolve; });
+  const admitted = new Promise<void>((resolve) => { accepted = resolve; });
+  const acknowledge = vi.fn();
+  f.faux.setResponses([
+    async (context) => {
+      f.contexts.push(structuredClone(context)); started(); await admitted;
+      return fauxAssistantMessage([fauxToolCall("Read", { file_path: join(f.root, "fictional.txt") }, { id: "completed-call" })], { stopReason: "toolUse" });
+    },
+    (context) => { f.contexts.push(structuredClone(context)); return failed("WebSocket error"); },
+    (context) => { f.contexts.push(structuredClone(context)); return answer(); },
+  ]);
+  const result = await generateEngineTurnResponse("Fictional rules", { ...f.options,
+    liveInput: (async function* () { await ready; yield { id: "fictional-steer", body: "Fictional live guidance", accepted, acknowledge }; })(),
+  });
+  expect(result.error).toBeNull(); expect(f.faux.state.callCount).toBe(3);
+  expect(acknowledge).toHaveBeenCalledOnce();
+  expect(f.contexts[2]!.messages).toEqual(f.contexts[1]!.messages);
+  expect(JSON.stringify(f.contexts[2]!.messages).split("Fictional live guidance")).toHaveLength(2);
+});
+
 it.each([
   "401 Unauthorized: invalid api key",
   "You have hit your ChatGPT usage limit (fictional plan). Try again in 20 min.",

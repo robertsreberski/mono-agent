@@ -125,9 +125,9 @@ its own request id and failure subkind.
 
 ### Legacy request retries
 
-Interactive parent turns and direct runtime calls keep the following legacy
-policy by default. Children use the outage profile below on supported adapters
-unless `subagents.providerRetryBudgetMs` is zero.
+Direct runtime calls keep the following legacy policy by default. Configured
+parent turns and children use the outage profile below on supported adapters
+unless their respective recovery budget is zero.
 
 Router attempts compose with provider-transport retries inside each Pi attempt.
 `providers.piNative.piMaxRetries` (0–8, default 2) sizes SDK retries before a
@@ -187,23 +187,31 @@ primary-only, without router fallback or re-attempt, so their bound is 12
 requests and 4 started responses. These retries never replay tools or whole
 turns; a turn with several assistant requests can exceed a per-request bound.
 
-### Child provider outage window
+<a id="child-provider-outage-window"></a>
 
-Native `Agent` children (foreground and background, persistent and stateless)
-default to `subagents.providerRetryBudgetMs: 120000` on Anthropic messages,
-OpenAI Responses and OpenAI Codex. This integer accepts 0–180000 milliseconds;
-zero restores the legacy profile. Direct runtime callers can opt in with
+### Provider outage window
+
+Configured parent turns default to
+`providers.piNative.requestRetryBudgetMs: 120000` on Anthropic Messages, OpenAI
+Responses and OpenAI Codex, even with no `piNative` configuration. Native `Agent`
+children (foreground and background, persistent and stateless) independently
+retain `subagents.providerRetryBudgetMs: 120000`; the parent setting does not
+change child policy. Both integers accept 0–180000 milliseconds; zero restores
+the legacy profile for that scope. Direct runtime callers can opt in with
 `piRequestRetryBudgetMs` (default zero). Other adapters retain legacy behavior;
-Bedrock always keeps AWS SDK retry ownership. An inherited
+Bedrock always keeps AWS SDK retry ownership.
 `providers.piNative.piMaxRetries: 0` disables both short and outage retries,
-even when the child window is positive.
+even when the recovery window is positive. Provider checks and summary calls
+remain single-shot. The router still refuses whole-turn retry or failover after
+a tool was admitted or live input consumed; request-local recovery does not
+relax that guard.
 
 The outage profile passes **zero retries to the adapter**. The native driver
 owns transient connection/server failures both before and after generation
 starts, within one recovery window per assistant request. An opaque
 `Connection error.` or `fetch failed`, failed body read, websocket loss, timeout
 or transient 5xx/529 can recover. DNS/TLS failures that surface as `fetch failed`
-can also consume this whole window in children, even when retrying cannot repair
+can also consume this whole window, even when retrying cannot repair
 the underlying configuration. Auth, quota, context, validation and safety
 failures never enter this window. `x-should-retry: false` vetoes resends.
 

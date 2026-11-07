@@ -136,10 +136,13 @@ parent turns and NodeRepl keep their existing 120-second caps.
 Native `Agent` children default to a two-minute recovery window per assistant
 request on Anthropic, OpenAI Responses and Codex. Configure
 `subagents.providerRetryBudgetMs` (0–180000 ms); zero restores legacy policy.
+Parent conversations independently use `providers.piNative.requestRetryBudgetMs`
+with the same default/range, without replaying completed tools or live input.
+Set `providers.piNative.piMaxRetries: 0` to disable both request policies.
 Inherited `providers.piNative.piMaxRetries:0` disables both kinds of retry.
 Leave enough whole-child/job time for recovery: the window is not a hard request
 timeout, tools are not replayed, and unknown-outcome resends may duplicate billing.
 Ordinary throttling keeps short header-aware retries; parent turns and Bedrock
 are unchanged. On exhaustion inspect the bounded phase/attempt/elapsed/cause
 suffix before deciding how to continue certified retained context. See
-[provider outage timing and diagnostics](/runtime/fallback/#child-provider-outage-window).
+[provider outage timing and diagnostics](/runtime/fallback/#provider-outage-window).

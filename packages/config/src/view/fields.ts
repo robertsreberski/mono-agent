@@ -134,6 +134,7 @@ export const CORE_CONFIG_FIELD_IDS = {
   "providers.piNative.cacheRetention": true,
   "providers.piNative.piMaxRetries": true,
   "providers.piNative.maxRetryDelayMs": true,
+  "providers.piNative.requestRetryBudgetMs": true,
   "runtime.session.root": true,
 } as const satisfies Record<string, true>;
 

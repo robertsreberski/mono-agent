@@ -115,6 +115,14 @@ Pi-native transport selection is optional and defaults to `auto`. Configure
 `providers.piNative.transport` with `auto`, `sse`,
 `websocket`, or `websocket-cached`; unsupported providers ignore the choice.
 
+Configured parent turns recover transient Anthropic Messages, OpenAI Responses
+and Codex failures within `providers.piNative.requestRetryBudgetMs` (default
+120000 ms, integer 0–180000). Zero restores legacy request retries;
+`piMaxRetries: 0` disables both policies. Only the failed model request is
+retried, never earlier tools or live input. Children independently retain
+`subagents.providerRetryBudgetMs`. Bedrock keeps AWS retry ownership. See
+[retry ownership and limits](../../docs/runtime/fallback.md#provider-outage-window).
+
 ### Local providers
 
 Core config can also define local Pi providers under `providers.local`. The primary supported path is Ollama:

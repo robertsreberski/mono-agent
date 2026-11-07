@@ -171,7 +171,8 @@ forward configured provider retry/transport policy, preserving explicit zero.
 `subagents.providerRetryBudgetMs` defaults to 120000 ms (integer 0–180000) per
 assistant request on Anthropic, OpenAI Responses and Codex; 0 restores legacy.
 Inherited `providers.piNative.piMaxRetries:0` disables both retry kinds. Parent
-turns and Bedrock keep their existing policy. Ordinary throttling stays on short
+turns independently use `providers.piNative.requestRetryBudgetMs` with the same
+default/range and zero opt-out; Bedrock keeps AWS retry ownership. Ordinary throttling stays on short
 header-aware retries; outages share one pre/post-generation recovery window,
 never replaying tools. This is not a hard timeout and resends can duplicate
 provider billing. Exhaustion reports bounded attributed phase/count/time/cause

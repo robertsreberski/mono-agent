@@ -143,7 +143,7 @@ it.each(["outage", "short"])("cancels promptly in %s backoff", async (kind) => {
   expect(result.cancelled).toBe(true); expect(fetch).toHaveBeenCalledOnce(); expect(Date.now() - started).toBeLessThan(2000);
 });
 
-it.each([undefined, 0])("leaves parent/legacy adapter options unchanged (budget=%s)", async (piRequestRetryBudgetMs) => {
+it.each([undefined, 0])("leaves direct-runtime/legacy adapter options unchanged (budget=%s)", async (piRequestRetryBudgetMs) => {
   const fetch = vi.fn(async () => Response.json({ error: { message: "Fictional overload" } }, { status: 503, headers: { "retry-after-ms": "0" } }));
   const { requests } = await run("openai", fetch, { piRequestRetryBudgetMs });
   expect(fetch).toHaveBeenCalledTimes(3); expect(requests).toHaveLength(1);
@@ -155,6 +155,13 @@ it("keeps explicit zero single-shot and does not install a fetch wrapper", async
   const { requests, result } = await run("anthropic", fetch, { piMaxRetries: 0 });
   expect(fetch).toHaveBeenCalledOnce(); expect(requests[0]?.maxRetries).toBe(0); expect(requests[0]).not.toHaveProperty("fetch");
   expect(result.error).not.toContain("[provider_retry");
+});
+
+it.each(routes)("keeps %s provider checks single-shot with a positive outage budget", async (route) => {
+  const fetch = vi.fn(async () => { throw new TypeError("fetch failed"); });
+  const { requests, result } = await run(route, fetch, { providerCheckMaxTokens: 16, piRequestRetryBudgetMs: 120_000 });
+  expect(fetch).toHaveBeenCalledOnce(); expect(requests[0]?.maxRetries).toBe(0);
+  expect(requests[0]).not.toHaveProperty("fetch"); expect(result.error).toBeTruthy();
 });
 
 it("never buffers a successful body and propagates cancellation with metadata", async () => {

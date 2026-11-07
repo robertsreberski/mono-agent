@@ -310,7 +310,7 @@ function readProviderPiNative(value: unknown): Readonly<Record<string, unknown>>
   if (hasRetiredPiSessionsRoot(record)) throw new MonoAgentConfigError(
     "invalid_json", "providers.piNative.piSessionsRoot was renamed to runtime.session.root; move the value there",
     { path: "providers.piNative.piSessionsRoot" });
-  const allowed = new Set(["transport", "cacheRetention", "promptCacheDiagnostics", "piMaxRetries", "maxRetryDelayMs"]);
+  const allowed = new Set(["transport", "cacheRetention", "promptCacheDiagnostics", "piMaxRetries", "maxRetryDelayMs", "requestRetryBudgetMs"]);
   const unknownKeys = Object.keys(record).filter((key) => !allowed.has(key)).sort();
   if (unknownKeys.length > 0) {
     throw new MonoAgentConfigError("invalid_json", `${source} contains unknown field${unknownKeys.length === 1 ? "" : "s"}: ${unknownKeys.join(", ")}.`, {
@@ -367,7 +367,9 @@ export function readPiNativeProviderConfig(
   const piMaxRetriesValue = normalizeOptionalString(jsonString(piNative.piMaxRetries, "providers.piNative.piMaxRetries"));
   const piMaxRetries = jsonOptionalInteger(piMaxRetriesValue, "providers.piNative.piMaxRetries", { min: 0, max: 8 });
   const maxRetryDelayMs = jsonOptionalInteger(piNative.maxRetryDelayMs, "providers.piNative.maxRetryDelayMs", { min: 100, max: 3_600_000 });
+  const requestRetryBudgetMs = jsonOptionalInteger(piNative.requestRetryBudgetMs, "providers.piNative.requestRetryBudgetMs", { min: 0, max: 180_000 });
   return {
+    ...(requestRetryBudgetMs === undefined ? {} : { requestRetryBudgetMs }),
     ...(transport === undefined ? {} : { transport }),
     ...(promptCacheDiagnostics === undefined ? {} : { promptCacheDiagnostics }),
     cacheRetention,

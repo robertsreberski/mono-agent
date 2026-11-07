@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Fix transient provider outages in normal conversations with bounded recovery of
+  only the failed model request, without replaying tools or live input. Configure
+  `providers.piNative.requestRetryBudgetMs` (default 120000 ms; 0 restores legacy
+  retries); `piMaxRetries: 0` still disables request retries.
+
 - Keep interim assistant responses visible between chronological Activity bands
   in the web console after completion and reload, including before suggested replies.
 
