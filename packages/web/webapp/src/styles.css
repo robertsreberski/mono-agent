@@ -2685,9 +2685,35 @@ textarea.wake-text { min-height: calc(3lh + 24px); max-height: calc(12lh + 24px)
 .voice-ready { margin: 0 6px 4px; color: var(--text-muted); font-size: 11px; }
 .composer-attachments:has(.voice-note, .capture-pill) { align-items: center; padding: 3px; }
 .message-attachments:has(.voice-note) { flex-direction: column; align-items: flex-end; }
-.message-attachments .voice-note { flex-basis: auto; }
+.message-attachments .voice-note { flex-basis: auto; width: 100%; }
 .message-attachments .voice-note-player::before { display: none; }
+/* Align the drawn controls, not their larger transparent hit boxes, with prose.
+   Hit boxes extend into the bubble inset; draft chips/pills are unaffected. */
+.message-user-content:has(.message-attachments .voice-note) {
+  --sent-voice-inset: 15px;
+  --sent-voice-row-size: 34px;
+  --sent-voice-hit-size: 32px;
+  min-width: min(calc(250px + 2 * var(--sent-voice-inset) + 2px), 78%);
+  padding-block: calc(var(--sent-voice-inset) - (var(--sent-voice-row-size) - 26px) / 2);
+}
+.message-attachments .voice-note-play { margin-inline-start: calc((26px - var(--sent-voice-hit-size)) / 2); }
+.message-attachments .voice-note-actions a[download] {
+  margin-inline-end: calc(-1 * var(--sent-voice-inset));
+  padding-inline-end: var(--sent-voice-inset);
+  justify-content: flex-end;
+}
+/* The 14px download SVG has ~2.42px of empty viewport beyond its stroke. */
+.message-attachments .voice-note-actions a[download] svg { transform: translateX(2.5px); }
+.message-attachments .voice-waveform { justify-content: space-between; }
+.message-attachments:has(.voice-note) { margin-bottom: 0; }
+.message-attachments:has(.voice-note) + .markdown:not(:empty) { margin-top: 4px; }
+.message-attachments .voice-caption { margin: 0; font-size: 12px; line-height: 1.68; }
+
+@media (max-width: 560px) {
+  .message-user-content:has(.message-attachments .voice-note) { --sent-voice-inset: 12px; min-width: min(276px, 88%); }
+}
 @media (pointer: coarse), (max-width: 700px) {
+  .message-user-content:has(.message-attachments .voice-note) { --sent-voice-row-size: 44px; --sent-voice-hit-size: 44px; }
   .capture-pill, .voice-note-player { height: 44px; min-height: 44px; }
   .recording-draft .icon-button, .capture-pill .icon-button, .voice-note .icon-button, .voice-face-slot { width: 44px; height: 44px; min-width: 44px; }
   .attachment-menu .menu-item, .attachment-retry, .voice-caption summary { min-height: 44px; }

@@ -551,6 +551,17 @@ describe("web HTTP server", () => {
     expect(page.nextCursor).toEqual(expect.any(String));
   });
 
+  it("allows only same-origin and blob media without changing other shell directives", async () => {
+    const { baseUrl } = await start();
+    const expected = "default-src 'self'; connect-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; font-src 'self' data:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'";
+    // Direct shell, SPA fallback and workers all pass through securityHeaders.
+    for (const path of ["/", "/index.html", "/conversations/example", "/sw.js", "/notification-sw.js"]) {
+      const response = await fetch(`${baseUrl}${path}`);
+      expect(response.status).toBe(200);
+      expect(response.headers.get("content-security-policy")).toBe(expected);
+    }
+  });
+
   it("caches hashed assets immutably while the shell and service workers revalidate", async () => {
     const { baseUrl } = await start();
 
