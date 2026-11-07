@@ -8,6 +8,7 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import { commands, page } from "@vitest/browser/context";
 import { describe, expect, it, vi } from "vitest";
 import { convertWebMessage } from "../runtime";
+import { interimResponseFixture } from "../test/interim-response-fixture";
 import { ProcessJobStack } from "./ProcessJobStack";
 import { backgroundSubagentJob, backgroundSubagentMessages } from "../test/background-subagent-fixtures";
 import { api } from "../api";
@@ -940,6 +941,57 @@ describe("quick reply choices in Chromium", () => {
       await waitFor(() => expect(onSend).toHaveBeenCalledExactlyOnceWith("Review draft"));
       await waitFor(() => expect(container.querySelector(".message-user")?.textContent).toContain("Review draft"));
       expect(screen.getByRole("button", { name: "Keep going" })).toBeDisabled();
+    },
+  );
+});
+
+
+describe("interim response chronology in Chromium", () => {
+  it.each([[1280, 900, "desktop"], [390, 844, "mobile"]] as const)(
+    "keeps prose outside Activity through settlement and history remount at %ipx (%s)", async (width, height, label) => {
+      await page.viewport(width, height);
+      const frame = (response: WebMessage) => <section style={{ width: Math.min(width, 760), margin: "0 auto", padding: 16, boxSizing: "border-box" }}>
+        <h2>Synthetic fixture · sample project report</h2>
+        <SteerHarness width={Math.min(width, 760) - 32} messages={[response]} />
+      </section>;
+      const running: WebMessage = { ...interimResponseFixture, status: "running", finishedAt: undefined,
+        parts: interimResponseFixture.parts.slice(0, -1) };
+      const view = render(frame(running));
+      const texts = interimResponseFixture.parts.flatMap((part) => part.type === "text" ? [part.text] : []);
+      for (const text of texts.slice(0, -1)) {
+        expect(await screen.findByText(text, {}, { timeout: 10_000 })).toBeVisible();
+        expect(screen.getByText(text).closest(".activity-root")).toBeNull();
+      }
+      const assertSettled = async () => {
+        const prose = await Promise.all(texts.map((text) => screen.findByText(text)));
+        const bands = screen.getAllByRole("button", { name: "Activity" });
+        expect(bands).toHaveLength(3);
+        for (const paragraph of prose) {
+          expect(paragraph).toBeVisible();
+          expect(paragraph.closest(".activity-root")).toBeNull();
+        }
+        const sequence = [bands[0]!, prose[0]!, bands[1]!, prose[1]!, bands[2]!, prose[2]!];
+        for (let index = 1; index < sequence.length; index += 1) {
+          expect(sequence[index]!.getBoundingClientRect().top)
+            .toBeGreaterThanOrEqual(sequence[index - 1]!.getBoundingClientRect().bottom);
+        }
+        const choices = screen.getByRole("group", { name: "Suggested replies" });
+        expect(choices.closest(".activity-root")).toBeNull();
+        expect(choices.getBoundingClientRect().top).toBeGreaterThanOrEqual(prose[2]!.getBoundingClientRect().bottom);
+        expect(within(choices).getByRole("button", { name: "Review report" })).toBeVisible();
+        expect(document.querySelector(".activity-note")).toBeNull();
+        expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width);
+      };
+      view.rerender(frame(interimResponseFixture));
+      await assertSettled();
+      view.unmount();
+      // Reconvert a serialized completed DTO with a fresh runtime, as history
+      // loading does. This is not a storage/server or live-provider smoke test.
+      const reloaded = render(frame(JSON.parse(JSON.stringify(interimResponseFixture)) as WebMessage));
+      await assertSettled();
+      const directory = import.meta.env.VITE_INTERIM_RESPONSE_SHOTS as string | undefined;
+      if (directory) await page.screenshot({ path: `${directory}/interim-response-${label}.png` });
+      reloaded.unmount();
     },
   );
 });

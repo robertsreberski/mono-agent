@@ -272,6 +272,7 @@ const joinAdjacentText = (parts: readonly ConvertedPart[], joinReasoning = false
 const ACTIVITY_PART_TYPES: ReadonlySet<string> = new Set([
   "reasoning",
   "tool-call",
+  "data-note",
   "data-subagent",
   "data-process-job",
   "data-process-job-event",
@@ -284,28 +285,16 @@ const isBlankText = (part: ConvertedPart): boolean =>
 const isSteerPart = (part: ConvertedPart): boolean => part.type === "data-steer";
 
 /**
- * Lay a completed assistant turn out as one activity log over one answer.
+ * Keep response prose and activity in source order, including after settlement.
+ * Earlier text is still a response, not a thought or an activity note. The text
+ * join above repairs split sentences without crossing tools or message boundaries.
  *
- * The renderer coalesces only ADJACENT activity parts, so prose the model writes
- * between tool calls splits a turn into alternating bands of answer and
- * activity — which is how a settled message ended up reading as four disclosures
- * wedged into three paragraphs. In a completed turn the last prose IS the answer
- * and everything before it is working-out, so interim prose becomes a `note`
- * (activity, like a tool row) and the whole run closes up.
- *
- * A consumed steer is an ordering barrier inside that log: activity produced
- * before the steer stays before it and activity produced after stays after, so
- * the band splits at exactly the point the run consumed the follow-up. The
- * answer still closes the turn.
- *
- * A compaction before the final answer is an ordering barrier, like a steer:
- * it separates adjacent Activity bands at the instant it happened. A manual
- * result attached after the answer stays after it. Running turns already keep
- * this source order. Neither divider hides inside Activity. An error part likewise
- * stays behind the answer, as does any newer unplaced data part. A turn with
- * no answer text keeps its original stream order.
+ * Only reply adornments move: choices, restart cards, files and errors retain
+ * their existing placement below the last response text. Steers, scheduled wakes
+ * and pre-answer compactions stay inline; manual after-answer compactions stay
+ * below the reply. A turn without response text keeps its original order.
  */
-const foldSettledActivity = (parts: readonly ConvertedPart[]): ConvertedPart[] => {
+const layoutSettledReply = (parts: readonly ConvertedPart[]): ConvertedPart[] => {
   const visible = parts.filter((part) => !isBlankText(part));
   let answerIndex = -1;
   visible.forEach((part, index) => {
@@ -313,32 +302,21 @@ const foldSettledActivity = (parts: readonly ConvertedPart[]): ConvertedPart[] =
   });
   if (answerIndex < 0) return visible;
 
-  const folded: ConvertedPart[] = [];
-  let activity: ConvertedPart[] = [];
+  const chronological: ConvertedPart[] = [];
   const afterAnswer: ConvertedPart[] = [];
-  const flush = (): void => {
-    folded.push(...activity);
-    activity = [];
-  };
   visible.forEach((part, index) => {
-    if (index === answerIndex) return;
-    if (isSteerPart(part) || part.type === "data-scheduled-wake"
+    if (part.type === "text" || ACTIVITY_PART_TYPES.has(part.type)
+      || isSteerPart(part) || part.type === "data-scheduled-wake"
       || (part.type === "data-context-compaction" && index < answerIndex)) {
-      flush();
-      folded.push(part);
-      return;
+      chronological.push(part);
+    } else {
+      afterAnswer.push(part);
     }
-    if (part.type === "text") {
-      activity.push({ type: "data-note", data: { text: part.text } });
-      return;
-    }
-    (ACTIVITY_PART_TYPES.has(part.type) ? activity : afterAnswer).push(part);
   });
-  flush();
   // Answer actions belong beneath the reply, not in Activity or after files.
   const choices = afterAnswer.filter((part) => part.type === "data-reply-options");
   const proposals = afterAnswer.filter((part) => part.type === "data-restart-proposal");
-  return [...folded, visible[answerIndex]!, ...choices, ...proposals,
+  return [...chronological, ...choices, ...proposals,
     ...afterAnswer.filter((part) => part.type !== "data-restart-proposal" && part.type !== "data-reply-options")];
 };
 
@@ -457,18 +435,13 @@ export const convertWebMessage = (
     }));
   }), message.role === "assistant" && !hasCronReplyContext);
   const converted = joined.filter((part) => part.type !== "data-assistant-message-boundary");
-  // Only a COMPLETED turn is known to have an answer. Streaming is still
-  // writing one, and a cancelled/failed/interrupted turn was stopped with none
-  // (the store finalizes all three with no final text), so its last prose is
-  // narration: folding would invert the chronology and dress that narration up
-  // as the answer. Those turns keep arrival order apart from the text join
-  // above, which only repairs a thought splitting one sentence in two.
+  // Preserve the same prose/activity chronology for live and completed turns.
+  // Settlement only arranges reply adornments below the response.
   const ordered = message.role === "assistant" && message.status === "complete" && !hasCronReplyContext
-    ? foldSettledActivity(converted)
+    ? layoutSettledReply(converted)
     : converted;
-  // Clustering runs after folding so a settled turn and the streaming turn that
-  // preceded it cluster the same runs; folding first would regroup the parts
-  // underneath an already-built cluster.
+  // Cluster only adjacent calls after laying out the reply; prose and visible
+  // ordering barriers must continue to split the activity bands.
   const content = clusterToolCalls(ordered) as typeof ordered;
   const status: ThreadMessageLike["status"] =
     message.status === "running"

@@ -1,3 +1,4 @@
+import { interimResponseFixture } from "./test/interim-response-fixture";
 import { describe, expect, it } from "vitest";
 import {
   canSendInConsole,
@@ -347,7 +348,7 @@ describe("inline steer", () => {
     expect(content.at(-1)).toMatchObject({ type: "text" });
   });
 
-  it("folds interim prose into notes inside its own segment rather than across the steer", () => {
+  it("keeps interim response text inside its own segment rather than across the steer", () => {
     const content = convertWebMessage(steeredAssistant({
       parts: [
         { type: "text", text: "First I will look." },
@@ -359,10 +360,10 @@ describe("inline steer", () => {
       ],
     })).content as readonly { readonly type: string }[];
     expect(content.map((part) => part.type)).toEqual([
-      "data-note",
+      "text",
       "tool-call",
       "data-steer",
-      "data-note",
+      "text",
       "tool-call",
       "text",
     ]);
@@ -412,12 +413,12 @@ describe("inline steer", () => {
       readonly type: string; readonly data?: { readonly inputId?: unknown };
     }[];
     expect(content.map((part) => part.type)).toEqual([
-      "data-note",
+      "text",
       "tool-call",
       "data-steer",
       "tool-call",
       "data-steer",
-      "data-note",
+      "text",
       "tool-call",
       "text",
     ]);
@@ -887,7 +888,7 @@ describe("convertWebMessage", () => {
 
     if (!Array.isArray(converted.content)) throw new Error("Expected structured content");
     expect(converted.content.map((part) => part.type)).toEqual([
-      "data-note",
+      "text",
       "data-subagent",
       "text",
     ]);
@@ -901,11 +902,8 @@ describe("convertWebMessage", () => {
         { type: "text", text: "ally fair." },
       ] }));
       if (!Array.isArray(converted.content)) throw new Error("Expected structured content");
-      // The later text joins into the earlier part, so the reader always sees
-      // one sentence; only the settled fold moves the thought row above it.
-      expect(converted.content).toEqual(status === "complete" ? [
-        { type: "reasoning", text: "hmm" }, { type: "text", text: "Totally fair." },
-      ] : [
+      // Sentence repair and thought placement remain stable through settlement.
+      expect(converted.content).toEqual([
         { type: "text", text: "Totally fair." }, { type: "reasoning", text: "hmm" },
       ]);
     },
@@ -988,13 +986,12 @@ describe("convertWebMessage", () => {
     }));
     if (!Array.isArray(converted.content)) throw new Error("Expected structured content");
     expect(converted.content.filter((part) => part.type === "text"))
-      .toEqual([{ type: "text", text: "Totally fair — yes." }]);
-    expect(converted.content.filter((part) => part.type === "data-note"))
-      .toEqual([{ type: "data-note", data: { text: "Looking." } }]);
+      .toEqual([{ type: "text", text: "Looking." }, { type: "text", text: "Totally fair — yes." }]);
+    expect(converted.content.filter((part) => part.type === "data-note")).toEqual([]);
     expect(converted.content.filter((part) => part.type === "reasoning")).toHaveLength(4);
   });
 
-  it("folds a settled turn into one run of activity over the answer", () => {
+  it("keeps multiple response and activity bands in chronological order after settlement", () => {
     const converted = convertWebMessage(
       message({
         role: "assistant",
@@ -1011,20 +1008,52 @@ describe("convertWebMessage", () => {
     );
 
     if (!Array.isArray(converted.content)) throw new Error("Expected structured content");
-    // Everything before the answer is adjacent, so the renderer coalesces it
-    // into exactly one Activity disclosure instead of four interleaved ones.
+    // Prose remains response text and continues to split adjacent activity bands.
     expect(converted.content.map((part) => part.type)).toEqual([
       "reasoning",
-      "data-note",
+      "text",
       "tool-call",
-      "data-note",
+      "text",
       "tool-call",
       "text",
     ]);
     expect(converted.content.at(0)).toEqual({ type: "reasoning", text: "Planning" });
-    expect(converted.content.at(1)).toEqual({ type: "data-note", data: { text: "Let me look at the inbox." } });
+    expect(converted.content.at(1)).toEqual({ type: "text", text: "Let me look at the inbox." });
     expect(converted.content.at(-1)).toEqual({ type: "text", text: "Here is the summary." });
   });
+
+  it("preserves prose before SuggestReplies and later final text through settlement and history conversion", () => {
+    const live = convertWebMessage({ ...interimResponseFixture, status: "running" });
+    const settled = convertWebMessage(interimResponseFixture);
+    const reloaded = convertWebMessage(JSON.parse(JSON.stringify(interimResponseFixture)) as WebMessage);
+    const types = ["reasoning", "text", "tool-call", "text", "tool-call", "tool-call", "text", "data-reply-options"];
+    expect((settled.content as readonly { type: string }[]).map((part) => part.type)).toEqual(types);
+    const proseAndActivity = (content: typeof live.content) => Array.isArray(content)
+      ? content.filter((part) => part.type !== "data-reply-options") : [];
+    expect(proseAndActivity(settled.content)).toEqual(proseAndActivity(live.content));
+    expect(reloaded.content).toEqual(settled.content);
+    expect(proseAndActivity(settled.content).filter((part) => part.type === "text"))
+      .toEqual(interimResponseFixture.parts.filter((part) => part.type === "text"));
+  });
+
+  it.each(["assistant_message_boundary", "context_usage"])(
+    "does not join separate assistant messages across a %s marker", (kind) => {
+      const parts: WebMessage["parts"] = [
+        { type: "text", text: "First response." },
+        { type: "telemetry", event: "runtime_telemetry", data: { kind } },
+        { type: "reasoning", text: "Checking the next response." },
+        { type: "text", text: "Second response." },
+      ];
+      const live = convertWebMessage(message({ role: "assistant", status: "running", parts }));
+      const settled = convertWebMessage(message({ role: "assistant", status: "complete", parts }));
+      expect(settled.content).toEqual([
+        { type: "text", text: "First response." },
+        { type: "reasoning", text: "Checking the next response." },
+        { type: "text", text: "Second response." },
+      ]);
+      expect(settled.content).toEqual(live.content);
+    },
+  );
 
   it("leaves a running turn interleaved, because the answer is not written yet", () => {
     const converted = convertWebMessage(
@@ -1136,14 +1165,13 @@ describe("convertWebMessage", () => {
       ],
     }));
     if (!Array.isArray(converted.content)) throw new Error("Expected structured content");
-    expect(converted.content.filter((part) => part.type === "data-note"))
-      .toEqual([{ type: "data-note", data: { text: "Checking options." } }]);
+    expect(converted.content.filter((part) => part.type === "data-note")).toEqual([]);
     expect(converted.content.filter((part) => part.type === "text"))
-      .toEqual([{ type: "text", text: answer }]);
+      .toEqual([{ type: "text", text: "Checking options." }, { type: "text", text: answer }]);
     expect(converted.content.at(-1)?.type).toBe("data-reply-options");
   });
 
-  it("drops blank interim prose rather than folding an empty note into the log", () => {
+  it("drops blank interim prose rather than rendering an empty response block", () => {
     const converted = convertWebMessage(
       message({
         role: "assistant",
@@ -1439,16 +1467,16 @@ it("places quick replies immediately after the answer outside activity", () => {
 });
 
 describe("cold model context warning projection", () => {
-  it("maps only degraded_native_context runtime warnings to an existing activity note", () => {
-    const result = convertWebMessage(message({ role: "assistant", parts: [
+  it.each(["running", "complete"] as const)("keeps only degraded-context warnings as chronological activity notes in a %s turn", (status) => {
+    const result = convertWebMessage(message({ role: "assistant", status, parts: [
       { type: "telemetry", event: "runtime_warning", data: { type: "runtime_warning", warningKind: "degraded_native_context", message: "Fictional model change: key details may need repeating." } },
       { type: "telemetry", event: "runtime_warning", data: { warningKind: "provider", message: "Fictional provider diagnostics remain hidden." } },
       { type: "telemetry", event: "runtime_telemetry", data: { warningKind: "degraded_native_context", message: "Wrong event remains hidden." } },
       { type: "text", text: "Fictional answer." },
     ] }));
     expect(result.content).toEqual([
-      { type: "text", text: "Fictional answer." },
       { type: "data-note", data: { text: "Fictional model change: key details may need repeating." } },
+      { type: "text", text: "Fictional answer." },
     ]);
   });
   it.each([undefined, null, 7, " "])("does not render a missing or malformed cold warning message: %s", (value) => {

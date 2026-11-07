@@ -44,8 +44,7 @@ const ACTIVITY_GROUP_BY_TYPE = groupPartByType({
 
 /**
  * Named data parts that are user-visible activity rather than diagnostics.
- * `note` is the prose a settled turn wrote between its tool calls: working-out,
- * not the answer, so it belongs in the log with the rows it narrates.
+ * `note` carries explicit runtime warnings, not ordinary response prose.
  */
 export const ACTIVITY_DATA_PARTS: ReadonlySet<string> = new Set(
   ["subagent", "note", "tool-cluster", "process-job-event"],
