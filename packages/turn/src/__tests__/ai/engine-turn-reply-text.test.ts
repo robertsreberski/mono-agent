@@ -40,6 +40,13 @@ describe("final reply text", () => {
         assistant("", name),
         assistant("The draft is ready."),
       ])).toBe("The draft is ready.");
+      // Progress before an ordinary tool is not an answer. An empty
+      // presentation call must still allow the actual answer afterward.
+      expect(select([
+        assistant("Checking the draft.", "Read"),
+        assistant("", name),
+        assistant("The draft is ready."),
+      ])).toBe("The draft is ready.");
     },
   );
 

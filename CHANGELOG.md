@@ -2,10 +2,11 @@
 
 ## Unreleased
 
-- Fix presentation-tool guidance asking for another reply after prose was already
-  written. Keep normal replies when no prose exists and useful new information
-  after quick replies, file publication, or restart proposals; existing history
-  is unchanged, and model compliance is not guaranteed.
+- Fix presentation-tool guidance asking for another reply after an answer was
+  already written. Still require an answer when only progress updates or no text
+  preceded quick replies, file publication, or restart proposals, and allow useful
+  new information afterward. Existing history is unchanged; model compliance is
+  not guaranteed.
 
 - Keep interim assistant responses visible between chronological Activity bands
   in the web console after completion and reload, including before suggested replies.

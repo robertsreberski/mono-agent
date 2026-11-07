@@ -1316,10 +1316,11 @@ title remains the fallback.
 
 Presentation tools (`SuggestReplies`, `PublishReplyFile`, `ProposeRestart`) attach
 parts without requiring a second rendition of the answer. Their descriptions and
-successful results tell the model that normal assistant prose already written
-counts as the reply: do not repeat or rephrase it. If none was written, write it
-normally; after success, add only genuinely new information if needed, otherwise
-end without extra prose. This guidance does not guarantee model compliance or
+successful results tell the model that an answer already written counts as the
+reply: do not repeat or rephrase it. After success, add only genuinely new
+information if needed, otherwise end without extra prose. If you have not
+answered yet, write the answer as normal assistant prose; progress updates alone
+do not count as an answer. This guidance does not guarantee model compliance or
 repair existing duplicated history.
 
 `SuggestReplies` attaches non-blocking quick-action buttons to a final reply

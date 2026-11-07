@@ -67,12 +67,13 @@ shows promoted text in the answer, not again in Activity.
 
 Presentation tools attach parts beneath the reply text; they do not replace the
 answer or themselves finish the turn. They do not require a second rendition of
-it: normal assistant prose already written before a presentation call counts as
-the reply. Do not repeat or rephrase it just because the tool returned. If no
-user-facing prose was written, write it normally.
-After success, add only genuinely new information if needed; otherwise the turn
-can end without extra prose. This is model guidance, not a guarantee that a model
-will never repeat itself; existing duplicated history is not changed.
+it: an answer already written before a presentation call counts as the reply.
+Do not repeat or rephrase it just because the tool returned. After success, add
+only genuinely new information if needed; otherwise the turn can end without
+extra prose. If you have not answered yet, write the answer as normal assistant
+prose; progress updates alone do not count as an answer. This is model guidance,
+not a guarantee that a model will never repeat itself; existing duplicated
+history is not changed.
 
 If a normally settled session turn contains no text at all, the runtime makes one
 same-session finalization request with tools disabled.

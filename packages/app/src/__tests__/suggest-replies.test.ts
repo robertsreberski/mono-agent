@@ -50,9 +50,10 @@ describe("SuggestReplies", () => {
             (await client.listTools()).tools.find((tool) => tool.name === SUGGEST_REPLIES_TOOL_NAME)?.description,
             JSON.stringify(suggested.content),
           ]) {
-            expect(guidance).toContain("prose written before this call counts as the reply");
+            expect(guidance).toContain("An answer already written before this call counts as the reply");
             expect(guidance).toContain("do not repeat or rephrase it");
-            expect(guidance).toContain("Write normal assistant prose if none was written");
+            expect(guidance).toContain("If you have not answered yet, write the answer as normal assistant prose");
+            expect(guidance).toContain("progress updates alone do not count");
             expect(guidance).toContain("add only genuinely new information if needed");
             expect(guidance).toContain("otherwise end without extra prose");
             expect(guidance).not.toContain("must still write");
