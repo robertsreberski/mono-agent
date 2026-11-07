@@ -430,6 +430,39 @@ describe("response notifications", () => {
     expect(showNotification).not.toHaveBeenCalled();
   });
 
+  it("renders in a Safari tab that exposes no Notification global", async () => {
+    // iOS and iPadOS give `Notification` only to Home Screen web apps; an
+    // ordinary Safari tab has no binding at all, so a bare read throws.
+    Reflect.deleteProperty(globalThis, "Notification");
+    expect(typeof Notification).toBe("undefined");
+    enablePushSupport();
+    localStorage.setItem(NOTIFICATIONS_STORAGE_KEY, "1");
+    const store = createStore();
+    expect(store.bootstrap.push?.keyFingerprint).toBeDefined();
+    storeMock.current = store;
+
+    const view = render(
+      <NotificationsProvider>
+        <NotificationBell />
+      </NotificationsProvider>,
+    );
+    storeMock.current = {
+      ...createStore(complete),
+      bootstrap: bootstrap([source], [complete]),
+      threads: [complete],
+    };
+    view.rerender(
+      <NotificationsProvider>
+        <NotificationBell />
+      </NotificationsProvider>,
+    );
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "Push notifications unavailable" })).toBeDisabled());
+    expect(api.pushSubscription).not.toHaveBeenCalled();
+    expect(api.thread).not.toHaveBeenCalled();
+    expect(showNotification).not.toHaveBeenCalled();
+  });
+
   it("requests permission only from the explicit bell action", async () => {
     FakeNotification.permission = "default";
     storeMock.current = createStore();

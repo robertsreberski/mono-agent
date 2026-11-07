@@ -5,6 +5,10 @@
 - Keep interim assistant responses visible between chronological Activity bands
   in the web console after completion and reload, including before suggested replies.
 
+- Fix the web console failing to load in an ordinary iPhone or iPad Safari tab
+  when push notifications are configured; the notification bell now shows as
+  unavailable there, while Home Screen installs keep push notifications.
+
 - Fix lock reacquisition occasionally reporting this process's own lock as held
   by another process when the filesystem is slow.
 
