@@ -151,6 +151,7 @@ const EXPECTED_CORE_FIELD_TYPES: Record<keyof typeof CORE_CONFIG_FIELD_IDS, Conf
   "providers.piNative.promptCacheDiagnostics": "boolean",
   "providers.piNative.piMaxRetries": "integer",
   "providers.piNative.maxRetryDelayMs": "integer",
+  "providers.piNative.requestRetryBudgetMs": "integer",
   "runtime.session.root": "string",
 };
 
@@ -834,4 +835,13 @@ it("describes the dynamic extraction default without adding a literal schema def
   const field = allConfigReferenceFields().find(field => field.jsonPath === "runtime.session.continuity.upkeep.extractionModel")!;
   expect(field.defaultLabel).toBe("conversation model");
   expect(schemaForField(field)).not.toHaveProperty("default");
+});
+
+
+it("advertises the independent parent outage window and its validated bounds", () => {
+  const schema = buildMonoAgentConfigSchema();
+  expect(schema).toMatchObject({ properties: { providers: { properties: { piNative: { properties: {
+    requestRetryBudgetMs: { type: "integer", minimum: 0, maximum: 180_000, default: 120_000 },
+  } } } } } });
+  expect(findUnknownAppConfigPaths({ providers: { piNative: { requestRetryBudgetMs: 0 } } })).toEqual([]);
 });

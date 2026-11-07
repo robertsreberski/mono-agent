@@ -984,6 +984,22 @@ describe("resolveJsonMonoAgentConfig", () => {
     expect(resolveBudget(0).providers?.piNative?.piMaxRetries).toBe(0);
   });
 
+  it("validates the independent parent request outage window, preserving zero", () => {
+    const resolveBudget = (requestRetryBudgetMs?: number) => resolveJsonMonoAgentConfig({
+      cwd: "/repo", json: { runtime: { model: "anthropic:claude-haiku-5-5" }, context: { identityPath: "IDENTITY.md" },
+        providers: { piNative: requestRetryBudgetMs === undefined ? {} : { requestRetryBudgetMs } } },
+    });
+    expect(resolveBudget().providers?.piNative?.requestRetryBudgetMs).toBeUndefined();
+    for (const budget of [0, 120_000, 180_000]) {
+      const config = resolveBudget(budget);
+      expect(config.providers?.piNative?.requestRetryBudgetMs).toBe(budget);
+      expect(redactMonoAgentConfig(config).providers?.piNative?.requestRetryBudgetMs).toBe(budget);
+    }
+    for (const invalid of [-1, 180_001, 1.5, Infinity, NaN, null, true, "bad"]) {
+      expect(() => resolveBudget(invalid as number)).toThrowError(expect.objectContaining({ code: "invalid_json" }));
+    }
+  });
+
   it("rejects an invalid pi transport", () => {
     expect(() =>
       resolveJsonMonoAgentConfig({

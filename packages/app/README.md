@@ -166,7 +166,8 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
   `subagents.providerRetryBudgetMs` gives Anthropic/Responses/Codex children a
   per-request outage recovery window (default 120000 ms, integer 0–180000;
   zero restores legacy). Inherited `piMaxRetries: 0` disables both policies;
-  parent turns and Bedrock retain their existing retry ownership.
+  parent turns use their independent `providers.piNative.requestRetryBudgetMs`
+  window (also default 120000 ms); Bedrock retains AWS retry ownership.
   Ordinary successful foreground continuation and AskParent are unchanged.
   Bounded private command receipts
   retain actual exit/budget/cleanup measurements without argv, environment,

@@ -77,7 +77,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 
-export function configRuntimeFlags(config: MonoAgentConfig): StaticRuntimeOptions | undefined {
+export function configRuntimeFlags(config: MonoAgentConfig, scope: "conversation" | "memory" = "conversation"): StaticRuntimeOptions {
   const { compaction } = config.runtime;
   // NOTE: there is intentionally no reasoning-summary runtime option. The sole pi
   // runtime (pi-native) derives reasoning from `effort` and does not consume an
@@ -85,6 +85,9 @@ export function configRuntimeFlags(config: MonoAgentConfig): StaticRuntimeOption
   // unconditionally — so the former `piReasoningSummary` runtime option was dead
   // plumbing and the `runtime.reasoningSummary` config field was removed.
   const piNative = config.providers?.piNative;
+  // Memory maintenance keeps its legacy request policy, independently of the
+  // conversation outage window, while retaining transport and short retry knobs.
+  const { piRequestRetryBudgetMs, ...providerOptions } = configProviderOptions(config);
   // Typed MCP limits override runtime defaults only when explicitly configured.
   const { mcpCallTimeoutMs, mcpCallMaxTotalTimeoutMs } = config.tools;
   const webSearchConfig = config.tools.web?.search;
@@ -97,22 +100,9 @@ export function configRuntimeFlags(config: MonoAgentConfig): StaticRuntimeOption
           ? {}
           : { mcpCallMaxTotalTimeoutMs }),
       };
-  if (
-    piNative?.transport === undefined
-    && piNative?.cacheRetention === undefined
-    && piNative?.promptCacheDiagnostics === undefined
-    && piNative?.piMaxRetries === undefined
-    && piNative?.maxRetryDelayMs === undefined
-    && compaction === undefined
-    && config.runtime.context1MModels === undefined
-    && toolLimits === undefined
-    && webSearchConfig === undefined
-    && webFetchConfig === undefined
-  ) {
-    return undefined;
-  }
   return {
-    ...configProviderOptions(config),
+    ...providerOptions,
+    ...(scope === "conversation" && piRequestRetryBudgetMs !== undefined ? { piRequestRetryBudgetMs } : {}),
     ...(piNative?.cacheRetention === undefined ? {} : { cacheRetention: piNative.cacheRetention }),
     ...(piNative?.promptCacheDiagnostics === undefined ? {} : { promptCacheDiagnostics: piNative.promptCacheDiagnostics }),
     ...(compaction === undefined ? {} : { compaction }),
@@ -128,7 +118,11 @@ export function configRuntimeFlags(config: MonoAgentConfig): StaticRuntimeOption
 export function configProviderOptions(config: MonoAgentConfig, { subagent = false }: { subagent?: boolean } = {}): Partial<Pick<StaticRuntimeOptions, "piTransport" | "piMaxRetries" | "maxRetryDelayMs" | "piRequestRetryBudgetMs">> {
   const piNative = config.providers?.piNative;
   return {
-    ...(subagent ? { piRequestRetryBudgetMs: config.subagents?.providerRetryBudgetMs ?? 120_000 } : {}),
+    // Disabled parent requests must also stay compatible with single-shot hosts
+    // that reject any retry-profile field. Children retain their existing shape.
+    ...(subagent || piNative?.piMaxRetries !== 0 ? { piRequestRetryBudgetMs: subagent
+      ? config.subagents?.providerRetryBudgetMs ?? 120_000
+      : piNative?.requestRetryBudgetMs ?? 120_000 } : {}),
     ...(piNative?.transport === undefined ? {} : { piTransport: piNative.transport }),
     ...(piNative?.piMaxRetries === undefined ? {} : { piMaxRetries: piNative.piMaxRetries }),
     ...(piNative?.maxRetryDelayMs === undefined ? {} : { maxRetryDelayMs: piNative.maxRetryDelayMs }),

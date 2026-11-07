@@ -153,7 +153,7 @@ describe("configured subagents", () => {
       model: HAIKU, maxTurns: 5, depth: 1, abortSignal: new AbortController().signal });
     expect(runtime.run.mock.calls[0]?.[1]).toHaveProperty("piRequestRetryBudgetMs", providerRetryBudgetMs);
     const options = harnessMock.mock.calls[0]?.[0] as { runtimeOptions?: Record<string, unknown> };
-    expect(options.runtimeOptions).not.toHaveProperty("piRequestRetryBudgetMs");
+    expect(options.runtimeOptions).toHaveProperty("piRequestRetryBudgetMs", 120_000);
   });
 
   it("keeps child context policy on config rather than the parent's turn overlay", async () => {

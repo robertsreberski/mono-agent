@@ -63,6 +63,12 @@ export function buildProvidersSection(input: BuildMonoAgentConfigViewInput): Con
         jsonPresent: json.providers?.piNative?.piMaxRetries !== undefined,
       }),
       toField({
+        id: "providers.piNative.requestRetryBudgetMs",
+        label: "Pi request outage budget (ms)",
+        value: String(providers?.piNative?.requestRetryBudgetMs ?? 120_000),
+        jsonPresent: json.providers?.piNative?.requestRetryBudgetMs !== undefined,
+      }),
+      toField({
         id: "providers.piNative.maxRetryDelayMs",
         label: "Pi max retry delay (ms)",
         value: providers?.piNative?.maxRetryDelayMs === undefined ? "default" : String(providers.piNative.maxRetryDelayMs),
