@@ -2,12 +2,13 @@
 
 ## Unreleased
 
-- Add an offline recorded-conversation importer for explicit read-only snapshots,
-  with private source artifacts, content-free inventory counts and inert recorded
-  tools that retain original names and refuse ambiguous parallel results.
-  Reconcile redacted and host-filled arguments, recover complete result copies,
-  distinguish replay, item and fidelity gaps, and recover historical model steps
-  from usage telemetry without double-counting explicit boundaries.
+- Add an offline importer for explicitly selected read-only conversation
+  snapshots, with private source files and a counts-only inventory. It compares
+  recorded tool arguments and results across stores and reports missing or
+  conflicting evidence. Localhost-only inert tools return recorded results but
+  never execute actions; no paid or model-backed replay is included. Tool schemas
+  are labelled generic stand-ins unless supplied by the caller. Importing
+  requires building `@mono-agent/observability` first.
 
 - Add a read-only continuity observation script for snapshot-based boundary,
   continuity-pack and retrieval counts with content-free, agent-scoped aggregate

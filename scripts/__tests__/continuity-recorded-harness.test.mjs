@@ -13,7 +13,12 @@ import { startRecordedTools, RECORDED_SERVER_NAME } from "../lib/continuity-reco
 import { productionModules, openHarness, scriptedModels, pilotDispatchConfig } from "../lib/continuity-runner.mjs";
 import { snapshots, tool, assistant, result, CONVERSATION } from "./fixtures/continuity-recorded/snapshots.mjs";
 const cleanup = [];
-afterEach(async () => { try { for (const fn of cleanup.splice(0).reverse()) await fn(); } finally { vi.restoreAllMocks(); syncBuiltinESMExports(); vi.unstubAllGlobals(); vi.unstubAllEnvs(); } }, 60_000);
+async function runCleanups(callbacks) {
+  const errors = [];
+  for (const fn of callbacks.splice(0).reverse()) { try { await fn(); } catch (error) { errors.push(error); } }
+  if (errors.length) throw new AggregateError(errors, "Recorded harness cleanup failed");
+}
+afterEach(async () => { try { await runCleanups(cleanup); } finally { vi.restoreAllMocks(); syncBuiltinESMExports(); vi.unstubAllGlobals(); vi.unstubAllEnvs(); } }, 60_000);
 
 it("keeps Read/Exec/Bash/WebFetch names and args in outgoing contexts and configured retained capture", async () => {
   const parent = join(ROOT, ".worklab-tmp"); await mkdir(parent, { recursive: true });
@@ -118,4 +123,12 @@ it("pins ownership probe executable, pid, environment and argument shapes", () =
     ["/usr/sbin/sysctl", ["-n", "kern.bootsessionuuid"], { ...options, env: { ...env, PATH: "/fictional" } }, stack],
     ["/usr/sbin/sysctl", ["-n", "kern.bootsessionuuid"], options, "/fictional/recorded-tool.js"],
   ]) expect(identityProbeAllowed(file, args, opts, trace)).toBe(false);
+});
+
+
+it("runs every cleanup after failures, including guard restoration and directory removal", async () => {
+  const order = [], first = new Error("Fictional close failure"), second = new Error("Fictional guard failure");
+  const callbacks = [() => order.push("remove-directory"), () => { order.push("restore-guard"); throw second; }, async () => { order.push("close-server"); throw first; }];
+  await expect(runCleanups(callbacks)).rejects.toMatchObject({ errors: [first, second] });
+  expect(order).toEqual(["close-server", "restore-guard", "remove-directory"]); expect(callbacks).toEqual([]);
 });

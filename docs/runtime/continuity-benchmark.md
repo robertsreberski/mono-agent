@@ -296,17 +296,28 @@ native suffix merge using their shared web provenance rather than appending the
 earlier groups after the journal. Unanchored mixed/native-only order is still
 explicitly unknown.
 
-All available result representations keep store provenance, retained bytes,
-original-byte metadata and truncation state. A complete copy wins over a clipped
-one; complete unredacted web data is preferred. If every copy is clipped, select
-the best retained/original coverage, then retained bytes. When original lengths
-are unknown, keep them unknown and rank partial copies by retained bytes instead.
-A clipped copy in just
-one store is not a conflict or a truncation gap when another complete copy is
-available. Truncation gaps are fidelity-only when no complete copy remains.
-Returned/placed native receipts participate separately when their bytes differ.
-No restored bytes are invented. Source/question/evaluator schemas remain
-separate; source and inventory are now v2 and reject the old boolean-gap shape.
+Result representations keep store provenance, retained bytes, explicit
+original-byte/truncation metadata and the recognized clipping suffix. Ordinary
+payload keys named `truncated` or `originalBytes` are data, not metadata. Across
+stores, a complete copy wins over a clipped one; complete unredacted web data is
+preferred. If every copy is clipped, select the best retained/original coverage,
+then retained bytes. Unknown original lengths remain unknown; partial copies
+then rank by retained bytes. Result truncation is fidelity-only when no complete
+copy remains. Clipped replay arguments instead produce the replay-tier
+`arguments_truncated` gap unless an original journal invocation restores them.
+
+Journal receipts are stricter: only one exact returned/placed pair is deduplicated.
+Any disagreement, even if one receipt matches the web or is clipped, or unresolved
+multiplicity produces a replay-tier conflict. Ambiguous journal candidates are
+not selected, and a web/sidecar copy does not erase that gap. Missing/ambiguous
+native receipt evidence remains explicitly replay-tier. No restored bytes are
+invented. Source/question/evaluator schemas remain separate; source and inventory
+are v2 and reject the old boolean-gap shape.
+
+The importer accepts web `failed` calls as terminal errors. Result envelopes
+preserve structured results in every adaptation branch. Only non-empty arrays
+of objects with a non-empty string `type` are treated as content blocks, equally
+for direct arrays and wrapped `content`; other values, including `[]`, are text.
 
 ### Coverage tiers
 
@@ -317,12 +328,12 @@ The closed code-to-tier map in `continuity-recorded-schema.mjs` is authoritative
 | Tier | Codes | Consequence |
 | --- | --- | --- |
 | `replay` | `partial_turn`, `partial_message`, `unassigned_message`, `cross_thread_order_unknown`, `malformed_parts`, `malformed_part`, `malformed_tool`, `malformed_native_call` | Required replay inputs/order cannot be established |
-| `replay` | `journal_rewind_requires_branch_selection`, `native_interruption`, `arguments_missing`, `arguments_not_object`, `tool_terminal_state_unknown`, `result_missing` | Incomplete or ambiguous replayed state |
+| `replay` | `journal_rewind_requires_branch_selection`, `native_interruption`, `arguments_missing`, `arguments_not_object`, `arguments_truncated`, `native_result_missing_or_ambiguous`, `tool_terminal_state_unknown`, `result_missing` | Incomplete or ambiguous replayed state |
 | `replay` | `duplicate_web_conflict`, `journal_arguments_conflict`, `journal_result_conflict`, `journal_state_conflict`, `duplicate_native_identity`, `ambiguous_sidecar_identity`, `sidecar_conflict` | Genuine identity/argument/result/state contradiction |
 | `replay` | `ambiguous_parallel_results`, `assistant_step_boundaries_unknown`, `mixed_step_order_unknown` | Unsound parallel dispatch or step order |
 | `item` | `attachment_bytes_unavailable`, `subagent_outcome_missing`, `subagent_outcome_truncated`, `subagent_terminal_state_unknown` | Exclude probes requiring that item, not the whole replay |
 | `fidelity` | `source_truncated`, `sidecar_truncated`, `arguments_may_include_host_defaults`, `web_effective_arguments`, `sidecar_redacted`, `sidecar_redacted_unverified` | Replayable representation loss/normalization |
-| `fidelity` | `malformed_sidecar_payload`, `sidecar_phase_missing`, `sidecar_only_tool`, `native_result_missing_or_ambiguous` | Auxiliary evidence is incomplete; do not invent replay calls |
+| `fidelity` | `malformed_sidecar_payload`, `sidecar_phase_missing`, `sidecar_only_tool` | Auxiliary evidence is incomplete; do not invent replay calls |
 
 The queue refuses replay-tier step/tool/coverage gaps, not item/fidelity gaps.
 `excludedSteps` explicitly removes affected scripted steps; `excludedCoverage`
@@ -340,6 +351,12 @@ input capacity limits, **not a measured peak-memory bound**. Source file stamps
 are checked again before output; these checks are not a live-store lock.
 Capacity refusal does not produce a partial source. Malformed parts and missing
 results within capacity remain raw evidence plus explicit coverage gaps.
+
+The CLI accepts `--help`. Invalid flags print a fixed usage line; import
+refusals print allowlisted codes (including `EEXIST` for an existing output or
+`RECORDED_CONVERSATION_NOT_FOUND`), never paths, arguments or raw error text.
+Unknown failures remain `RECORDED_IMPORT_REFUSED`. Successful imports still emit
+only inventory counts.
 
 ### Inert recorded tools
 
@@ -362,7 +379,8 @@ argument values are sent without any identity wrapper. Different keys within a
 parallel step may arrive in either order; future-step, unmatched and exhausted
 calls are refused. Sequential identical calls with different results resolve in
 recorded order. Parallel identical calls with identical results are safe. When
-identical keys in one step have different result bytes or error state, the
+identical keys in one step have different result bytes, error state or `structuredResult` values (returned as
+`structuredContent`), the
 inventory increments `ambiguousParallelGroups` and the trace marks a replay-tier
 gap. Queue construction recomputes ambiguity and refuses those groups unless
 the caller explicitly excludes their step indices. A future replay must refuse

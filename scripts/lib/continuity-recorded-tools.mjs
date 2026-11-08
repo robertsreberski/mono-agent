@@ -26,21 +26,42 @@ export function createRecordedQueue(source, { excludedSteps = [], excludedCovera
   // Recompute, rather than trusting an editable coverage flag.
   for (let i = 0; i < source.steps.length; i++) if (!excluded.has(i) && ambiguous.has(source.steps[i])) fail("RECORDED_AMBIGUOUS_PARALLEL_GROUP");
   if (!Array.isArray(excludedCoverage) || excludedCoverage.some(i => !Number.isInteger(i) || !source.coverage[i])) fail("RECORDED_EXCLUSIONS_INVALID");
-  const matches = (location, value, key) => Object.hasOwn(location, key) && location[key] !== null && location[key] === value[key];
-  const applies = (gap, step, index) => Object.hasOwn(gap.location, "stepIndex") ? gap.location.stepIndex === index : matches(gap.location, step, "messageId") || matches(gap.location, step, "turnId")
-    || step.calls.some(i => gap.location.toolCallId === source.tools[i].id || source.tools[i].provenance.some(p => matches(gap.location, p, "messageId") || matches(gap.location, p, "turnId")));
-  for (const [index, gap] of source.coverage.entries()) if (gap.tier === "replay" && !excludedCoverage.includes(index)) {
-    const affected = source.steps.flatMap((step, i) => applies(gap, step, i) ? [i] : []);
-    if (!affected.length || affected.some(i => !excluded.has(i))) fail("RECORDED_REPLAY_COVERAGE_GAP");
+  const skippedCoverage = new Set(excludedCoverage);
+  // Index whether each scope has any included step. Do not materialize every
+  // affected-step list for every gap: excluded branches can carry many gaps.
+  const scopes = { messageId: new Map(), turnId: new Map(), toolCallId: new Map() };
+  const add = (key, value, included) => {
+    if (value !== null && value !== undefined) scopes[key].set(value, scopes[key].get(value) === true || included);
+  };
+  for (const [index, step] of source.steps.entries()) {
+    const included = !excluded.has(index);
+    add("messageId", step.messageId, included); add("turnId", step.turnId, included);
+    for (const call of step.calls) {
+      const tool = source.tools[call]; add("toolCallId", tool.id, included);
+      for (const p of tool.provenance) { add("messageId", p.messageId, included); add("turnId", p.turnId, included); }
+    }
   }
-  const queues = new Map(), groups = [], served = [], observations = [];
+  for (const [index, gap] of source.coverage.entries()) if (gap.tier === "replay" && !skippedCoverage.has(index)) {
+    const location = gap.location;
+    if (Object.hasOwn(location, "stepIndex")) {
+      if (!Number.isInteger(location.stepIndex) || !source.steps[location.stepIndex] || !excluded.has(location.stepIndex)) fail("RECORDED_REPLAY_COVERAGE_GAP");
+      continue;
+    }
+    let found = false;
+    for (const key of Object.keys(scopes)) if (Object.hasOwn(location, key) && scopes[key].has(location[key])) {
+      found = true;
+      if (scopes[key].get(location[key])) fail("RECORDED_REPLAY_COVERAGE_GAP");
+    }
+    if (!found) fail("RECORDED_REPLAY_COVERAGE_GAP");
+  }
+  const queues = new Map(), groups = [], served = [], servedSet = new Set(), observations = [];
   for (const [stepIndex, step] of source.steps.entries()) {
     if (excluded.has(stepIndex) || !step.calls.length) continue;
     const group = groups.length; groups.push(step.calls.length);
     for (const index of step.calls) {
       const tool = source.tools[index];
       if (step.gaps.some(code => gapTier(code) === "replay")) fail("RECORDED_REPLAY_COVERAGE_GAP");
-      if (!Object.hasOwn(tool, "args") || !Object.hasOwn(tool, "result") || tool.gaps.some(code => gapTier(code) === "replay")) fail("RECORDED_TOOL_COVERAGE_GAP");
+      if (!Object.hasOwn(tool, "args") || tool.argsTruncated === true || !Object.hasOwn(tool, "result") || tool.gaps.some(code => gapTier(code) === "replay")) fail("RECORDED_TOOL_COVERAGE_GAP");
       const key = callKey(tool.name, tool.args);
       if (!queues.has(key)) queues.set(key, []);
       queues.get(key).push({ index, group });
@@ -51,13 +72,13 @@ export function createRecordedQueue(source, { excludedSteps = [], excludedCovera
     dispatch(name, args) {
       const queue = queues.get(callKey(name, args)), next = queue?.[0];
       if (!next || next.group !== current) { refused++; fail("RECORDED_UNEXPECTED_CALL"); }
-      queue.shift(); served.push(next.index);
+      queue.shift(); served.push(next.index); servedSet.add(next.index);
       if (--groups[current] === 0) current++;
       return structuredClone(resultEnvelope(source.tools[next.index]));
     },
     observe(index, observedContent) {
       const tool = source.tools[index];
-      if (!tool || !served.includes(index)) fail("RECORDED_OBSERVATION_REFUSED");
+      if (!tool || !servedSet.has(index)) fail("RECORDED_OBSERVATION_REFUSED");
       const expected = bytes(resultEnvelope(tool).content), observed = bytes(observedContent);
       const row = { toolIndex: index, expectedBytes: Buffer.byteLength(expected), observedBytes: Buffer.byteLength(observed),
         exact: digest(expected) === digest(observed), representationDifference: digest(expected) !== digest(observed),

@@ -38,7 +38,7 @@ export function snapshots(dir, { parts = [tool()], status = "complete", sidecar,
         if (value === undefined) continue;
         // Sidecar payloads are JSON, including strings.
         const json = JSON.stringify(value);
-        d.prepare("INSERT INTO tool_records VALUES(?,?,?,?,?,?,?,?,?,?,?)").run(`${call.toolCallId}-${phase}`, CONVERSATION, "run-one", call.toolCallId, phase, json, call.truncated ? 1 : 0, ++seq, digest(json), Buffer.byteLength(json), Buffer.byteLength(json));
+        d.prepare("INSERT INTO tool_records VALUES(?,?,?,?,?,?,?,?,?,?,?)").run(`${call.toolCallId}-${phase}`, CONVERSATION, "run-one", call.toolCallId, phase, json, call.truncated ? 1 : 0, ++seq, digest(json), call.originalBytes ?? Buffer.byteLength(json), Buffer.byteLength(json));
       }
     }
     d.close(); manifest.sidecar = path;
@@ -58,4 +58,4 @@ export function snapshots(dir, { parts = [tool()], status = "complete", sidecar,
   return { manifest: path, value: manifest, web };
 }
 export const assistant = calls => ({ role: "assistant", content: calls.map(t => ({ type: "toolCall", id: t.toolCallId, name: t.toolName, arguments: t.args })) });
-export const result = t => ({ role: "toolResult", toolCallId: t.toolCallId, toolName: t.toolName, content: t.result, isError: t.status === "error" });
+export const result = t => ({ role: "toolResult", toolCallId: t.toolCallId, toolName: t.toolName, content: t.result, isError: ["error", "failed"].includes(t.status) });

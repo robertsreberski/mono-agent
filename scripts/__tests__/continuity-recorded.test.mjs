@@ -15,10 +15,10 @@ import { syncBuiltinESMExports } from "node:module";
 import ts from "typescript";
 import { ROOT } from "../lib/continuity-observation-input.mjs";
 import { readRecordedSource, readRecordedManifest, importRecorded, privateOutput, readRedactor } from "../lib/continuity-recorded-import.mjs";
-import { validateSource, emptyQuestions, emptyKeys, validateQuestions, validateKeys, INVENTORY_FIELDS } from "../lib/continuity-recorded-schema.mjs";
-import { normalizeSidecar, compareCopies, REDACTION_OPTIONS, EFFECTIVE_ARGUMENT_KEYS, resultCopy, selectResult } from "../lib/continuity-recorded-reconcile.mjs";
+import { validateSource, emptyQuestions, emptyKeys, validateQuestions, validateKeys, INVENTORY_FIELDS, resultEnvelope } from "../lib/continuity-recorded-schema.mjs";
+import { normalizeSidecar, compareCopies, REDACTION_OPTIONS, EFFECTIVE_ARGUMENT_KEYS, resultCopy, selectResult, textResult } from "../lib/continuity-recorded-reconcile.mjs";
 import { createRecordedQueue, recordedDefinitions, startRecordedTools } from "../lib/continuity-recorded-tools.mjs";
-import { main, parseArgs } from "../continuity-import-recorded.mjs";
+import { main, parseArgs, USAGE } from "../continuity-import-recorded.mjs";
 import { snapshots, tool, assistant, result, CONVERSATION, AT, boundary, usage } from "./fixtures/continuity-recorded/snapshots.mjs";
 
 const cleanup = [];
@@ -169,7 +169,7 @@ it("keeps CLI stdout counts-only and all failures content-free", async () => {
   stdout.mockClear(); expect(await main(["--manifest", "fictional-private-path", "--conversation", "private-canary", "--output", join(dir, "denied")], { stdout, stderr })).toBe(1);
   expect(stdout).not.toHaveBeenCalled(); expect(stderr).toHaveBeenCalledWith("RECORDED_IMPORT_REFUSED\n");
   for (const flag of ["__proto__", "constructor", "toString", "--unknown"]) expect(() => parseArgs([flag, "fictional"])).toThrow("INVALID_RECORDED_ARGUMENTS");
-  expect(() => readRecordedManifest(f.web)).toThrow();
+  expect(() => readRecordedManifest(f.web)).toThrow("INVALID_RECORDED_MANIFEST");
 });
 
 it("measures result representation/clipping instead of claiming built-in byte equivalence", async () => {
@@ -376,7 +376,7 @@ it("counts tiered gaps and only refuses replay-tier coverage unless explicitly e
   expect(inventory).toMatchObject({ replayGaps: 0, itemGaps: 2 }); expect(inventory.coverageGaps).toBe(inventory.itemGaps + inventory.fidelityGaps);
   expect(source.coverage.every(g => !Object.hasOwn(g, "blocking"))).toBe(true); expect(() => createRecordedQueue(source)).not.toThrow();
   const unknown = await read(snapshots(scratch(), { parts: [t], boundaries: false }));
-  expect(() => createRecordedQueue(unknown.source)).toThrow(); expect(createRecordedQueue(unknown.source, { excludedSteps: [0] }).report().pending).toBe(0);
+  expect(() => createRecordedQueue(unknown.source)).toThrow("RECORDED_REPLAY_COVERAGE_GAP"); expect(createRecordedQueue(unknown.source, { excludedSteps: [0] }).report().pending).toBe(0);
 });
 
 it("returns a coded build-prerequisite refusal without loading another product surface", async () => {
@@ -388,11 +388,12 @@ it("returns a coded build-prerequisite refusal without loading another product s
   expect(stdout).not.toHaveBeenCalled(); expect(stderr).toHaveBeenCalledWith("RECORDED_REDACTION_BUILD_REQUIRED\n");
 });
 
-it("recovers a complete native returned result even when the placed receipt was clipped", async () => {
+it("refuses differing native returned and placed receipts even when one is complete", async () => {
   const t = tool("native-recovery", "Fictional full receipt."), web = { ...t, result: "Fictional", resultTruncated: true };
   const { source, inventory } = await read(snapshots(scratch(), { parts: [web], journal: [assistant([t]), { kind: "tool_result", payload: { phase: "returned", message: result(t) } }, { ...result(t), content: "Fictional", truncated: true, originalBytes: 100 }] }));
-  expect(source.tools[0].result).toBe(t.result); expect(inventory).toMatchObject({ recoveredResults: 1, conflicts: 0, replayGaps: 0 });
-  expect(gaps(source)).not.toContain("source_truncated");
+  expect(source.tools[0].result).toBe(web.result); expect(inventory).toMatchObject({ recoveredResults: 0, conflicts: 1, replayGaps: 2 });
+  expect(gaps(source)).toEqual(expect.arrayContaining(["journal_result_conflict", "native_result_missing_or_ambiguous"]));
+  expect(() => createRecordedQueue(source)).toThrow("RECORDED_REPLAY_COVERAGE_GAP");
 });
 
 
@@ -451,4 +452,148 @@ it.each([
   expect(source.steps).toMatchObject([{ calls: [0, 1], origin: "web-message-conservative", gaps: expect.arrayContaining(["assistant_step_boundaries_unknown"]) }]);
   expect(source.coverage.find(g => g.code === "assistant_step_boundaries_unknown").tier).toBe("replay"); expect(inventory.replayGaps).toBeGreaterThan(0);
   expect(() => createRecordedQueue(source)).toThrow();
+});
+
+
+it.each([
+  ["matching plus differing", t => [result(t), { ...result(t), content: "Different fictional receipt" }]],
+  ["duplicate placed receipts", t => [result(t), result(t)]],
+  ["duplicate returned receipts", t => [{ kind: "tool_result", payload: { phase: "returned", message: result(t) } }, { kind: "tool_result", payload: { phase: "returned", message: result(t) } }]],
+  ["extra receipt after a deduplicated pair", t => [{ kind: "tool_result", payload: { phase: "returned", message: result(t) } }, result(t), { kind: "tool_result", payload: { phase: "returned", message: result(t) } }]],
+  ["different structured receipts", t => [{ kind: "tool_result", payload: { phase: "returned", message: { ...result(t), structuredContent: { note: "cedar" } } } }, { ...result(t), structuredContent: { note: "pine" } }]],
+])("never clears a replay-tier journal receipt conflict: %s", async (_label, receipts) => {
+  const t = tool("receipt-conflict"), { source, inventory } = await read(snapshots(scratch(), { parts: [t], journal: [assistant([t]), ...receipts(t)] }));
+  expect(source.tools[0].result).toBe(t.result); expect(source.tools[0].resultRepresentations.some(c => c.store === "journal")).toBe(false);
+  expect(source.tools[0].gaps).toEqual(expect.arrayContaining(["journal_result_conflict", "native_result_missing_or_ambiguous"]));
+  expect(source.coverage.filter(g => ["journal_result_conflict", "native_result_missing_or_ambiguous"].includes(g.code)).every(g => g.tier === "replay")).toBe(true);
+  expect(inventory.conflicts).toBe(1); expect(() => createRecordedQueue(source)).toThrow("RECORDED_REPLAY_COVERAGE_GAP");
+});
+
+it("retains ambiguous or missing native evidence even without a web copy", async () => {
+  const t = tool("native-ambiguous"), ambiguous = await read(snapshots(scratch(), { parts: [], journal: [assistant([t]), result(t), { ...result(t), content: "Other fictional receipt" }] }));
+  expect(ambiguous.source.tools[0]).not.toHaveProperty("result"); expect(ambiguous.inventory).toMatchObject({ conflicts: 1, missingResults: 1 });
+  expect(() => createRecordedQueue(ambiguous.source)).toThrow("RECORDED_REPLAY_COVERAGE_GAP");
+  const missing = await read(snapshots(scratch(), { parts: [t], journal: [assistant([t])] }));
+  expect(missing.source.coverage.find(g => g.code === "native_result_missing_or_ambiguous").tier).toBe("replay");
+  expect(() => createRecordedQueue(missing.source)).toThrow("RECORDED_REPLAY_COVERAGE_GAP");
+});
+
+it("requires original arguments for replay but leaves only-result clipping at fidelity", async () => {
+  const t = tool("clipped-arguments", "Fictional intact result", { argsTruncated: true });
+  const clipped = await read(snapshots(scratch(), { parts: [t] }));
+  expect(clipped.source.coverage.find(g => g.code === "arguments_truncated").tier).toBe("replay");
+  expect(() => createRecordedQueue(clipped.source)).toThrow("RECORDED_REPLAY_COVERAGE_GAP");
+  clipped.source.coverage = []; clipped.source.tools[0].gaps = [];
+  expect(() => createRecordedQueue(clipped.source)).toThrow("RECORDED_TOOL_COVERAGE_GAP");
+  const restored = await read(snapshots(scratch(), { parts: [t], journal: [assistant([t]), result(t)] }));
+  expect(gaps(restored.source)).not.toContain("arguments_truncated"); expect(() => createRecordedQueue(restored.source)).not.toThrow();
+  const resultOnly = await read(snapshots(scratch(), { parts: [tool("clipped-result", "Fictional prefix", { resultTruncated: true })] }));
+  expect(resultOnly.source.coverage.find(g => g.code === "source_truncated").tier).toBe("fidelity"); expect(resultOnly.inventory.replayGaps).toBe(0);
+});
+
+it("accepts failed web tools and failed subagent outcomes as terminal errors", async () => {
+  const t = tool("failed-web", "Fictional failure", { status: "failed" });
+  const { source, inventory } = await read(snapshots(scratch(), { parts: [t, { type: "subagent", toolCallId: "failed-fictional-child", status: "failed", result: "Fictional child failure" }], journal: [assistant([t]), result(t)] }));
+  expect(inventory).toMatchObject({ failedTools: 1, replayGaps: 0, itemGaps: 0 }); expect(source.tools[0].state).toBe("failed");
+  expect(createRecordedQueue(source).dispatch(t.toolName, t.args)).toMatchObject({ isError: true, content: [{ text: t.result }] });
+});
+
+it.each([
+  ["content object", { content: [{ type: "text", text: "Fictional body" }] }],
+  ["content array", [{ type: "text", text: "Fictional body" }]],
+  ["plain text", "Fictional body"],
+])("preserves structured results in the %s envelope branch", (_label, value) => {
+  expect(resultEnvelope({ result: value, structuredResult: { note: "cedar" } }).structuredContent).toEqual({ note: "cedar" });
+});
+
+it.each([[], [1], [null], [{ type: 4 }], [{ type: "" }]])("serializes non-block arrays consistently: %j", value => {
+  expect(resultEnvelope({ result: value }).content).toEqual([{ type: "text", text: JSON.stringify(value) }]);
+  expect(resultEnvelope({ result: { content: value }, structuredResult: { note: "cedar" } })).toMatchObject({ content: [{ type: "text", text: JSON.stringify({ content: value }) }], structuredContent: { note: "cedar" } });
+  expect(textResult(value)).toBeUndefined(); expect(textResult({ content: value })).toBeUndefined();
+});
+
+it("keeps structured results after journal selection and rejects differing parallel structures", async () => {
+  const t = tool("structured-recovery", "Fictional prefix", { structuredResult: { note: "cedar" }, resultTruncated: true });
+  const recovered = await read(snapshots(scratch(), { parts: [t], journal: [assistant([t]), { ...result(t), content: [{ type: "text", text: "Fictional full result" }] }] }));
+  expect(recovered.source.tools[0]).toMatchObject({ resultOrigin: "journal", structuredResult: t.structuredResult });
+  expect(createRecordedQueue(recovered.source).dispatch(t.toolName, t.args).structuredContent).toEqual(t.structuredResult);
+  const second = { ...t, toolCallId: "structured-other", structuredResult: { note: "pine" }, resultTruncated: false }, first = { ...t, resultTruncated: false };
+  const parallel = await read(snapshots(scratch(), { parts: [first, second] })); expect(parallel.inventory.ambiguousParallelGroups).toBe(1);
+  expect(() => createRecordedQueue(parallel.source)).toThrow("RECORDED_AMBIGUOUS_PARALLEL_GROUP");
+  const native = await read(snapshots(scratch(), { parts: [], journal: [assistant([first]), { ...result(first), structuredContent: first.structuredResult }] }));
+  expect(createRecordedQueue(native.source).dispatch(first.toolName, first.args).structuredContent).toEqual(first.structuredResult);
+});
+
+it("does not interpret payload fields as result-copy metadata and models real sidecar byte loss", async () => {
+  const value = { truncated: true, originalBytes: 100000, note: "Fictional complete business payload" };
+  expect(resultCopy("web", value)).toMatchObject({ value, truncated: false, retainedBytes: Buffer.byteLength(JSON.stringify(value)), originalBytes: Buffer.byteLength(JSON.stringify(value)) });
+  expect(resultCopy("web", "Fictional…[truncated 20 bytes]").truncated).toBe(true);
+  expect(resultCopy("web", "Fictional", { originalBytes: 100 }).truncated).toBe(true);
+  const f = snapshots(scratch(), { sidecar: [{ ...tool(), truncated: true, originalBytes: 100 }] }), db = new DatabaseSync(f.value.sidecar);
+  try { expect(db.prepare("SELECT original_bytes,retained_bytes FROM tool_records").all().every(r => r.original_bytes === 100 && r.original_bytes > r.retained_bytes)).toBe(true); } finally { db.close(); }
+});
+
+it.each([null, false, 4, "fictional", []])("refuses invalid coverage locations with a code: %j", async location => {
+  const { source } = await read(snapshots(scratch())); source.coverage = [{ code: "partial_message", tier: "replay", location }];
+  expect(() => validateSource(source)).toThrow("INVALID_RECORDED_GAP"); expect(() => createRecordedQueue(source)).toThrow("INVALID_RECORDED_GAP");
+});
+
+it("indexes excluded replay gaps without rescanning every step for each gap", async () => {
+  const { source } = await read(snapshots(scratch())), t = source.tools[0], count = 600;
+  source.tools = Array.from({ length: count }, (_, i) => ({ ...t, id: `fictional-index-${i}`, provenance: [], gaps: [] }));
+  source.steps = source.tools.map((_, i) => ({ messageId: `fictional-message-${i}`, turnId: `fictional-turn-${i}`, calls: [i], gaps: [] }));
+  source.coverage = source.tools.map(t => ({ code: "partial_message", tier: "replay", location: { toolCallId: t.id } }));
+  const original = Object.hasOwn; let calls = 0;
+  const spy = vi.spyOn(Object, "hasOwn").mockImplementation((...args) => { calls++; return original(...args); });
+  let queue; try { queue = createRecordedQueue(source, { excludedSteps: source.steps.map((_, i) => i) }); } finally { spy.mockRestore(); }
+  expect(queue.report().pending).toBe(0); expect(calls).toBeLessThan(30 * count);
+  expect(() => createRecordedQueue(source, { excludedSteps: source.steps.slice(1).map((_, i) => i + 1) })).toThrow("RECORDED_REPLAY_COVERAGE_GAP");
+});
+
+it("indexes provenance and combined gap scopes without bypassing included steps", async () => {
+  const { source } = await read(snapshots(scratch())), t = source.tools[0];
+  source.tools = [{ ...t, provenance: [{ messageId: "fictional-archived", turnId: "fictional-shared-turn" }], gaps: [] }, { ...t, id: "fictional-next", provenance: [], gaps: [] }];
+  source.steps = [{ calls: [0], gaps: [] }, { calls: [1], messageId: "fictional-current", turnId: "fictional-shared-turn", gaps: [] }];
+  source.coverage = [{ code: "partial_message", tier: "replay", location: { messageId: "fictional-archived" } }];
+  expect(createRecordedQueue(source, { excludedSteps: [0] }).report().pending).toBe(1);
+  source.coverage[0].location.turnId = "fictional-shared-turn";
+  expect(() => createRecordedQueue(source, { excludedSteps: [0] })).toThrow("RECORDED_REPLAY_COVERAGE_GAP");
+  expect(createRecordedQueue(source, { excludedSteps: [0], excludedCoverage: [0] }).report().pending).toBe(1);
+  source.coverage[0].location = { stepIndex: 0, messageId: "fictional-current" };
+  expect(createRecordedQueue(source, { excludedSteps: [0] }).report().pending).toBe(1);
+});
+
+it("checks served membership in constant time while retaining ordered reports", async () => {
+  const { source } = await read(snapshots(scratch())), t = source.tools[0], count = 800;
+  source.tools = Array.from({ length: count }, (_, i) => ({ ...t, id: `fictional-served-${i}`, args: { path: `fictional-note-${i}` }, provenance: [], gaps: [] }));
+  source.steps = [{ calls: source.tools.map((_, i) => i), gaps: [] }]; source.coverage = [];
+  const queue = createRecordedQueue(source); expect(() => queue.observe(0, [])).toThrow("RECORDED_OBSERVATION_REFUSED");
+  for (const tool of source.tools) queue.dispatch(tool.name, tool.args);
+  const original = Array.prototype.includes; let scanned = 0;
+  const spy = vi.spyOn(Array.prototype, "includes").mockImplementation(function (value, start) { if (typeof value === "number") scanned += this.length; return original.call(this, value, start); });
+  try { for (let i = 0; i < count; i++) queue.observe(i, resultEnvelope(source.tools[i]).content); } finally { spy.mockRestore(); }
+  expect(scanned).toBeLessThan(count); expect(queue.report().served).toEqual(source.tools.map((_, i) => i));
+});
+
+it("distinguishes fixed CLI usage, help and coded refusals without echoing inputs", async () => {
+  const f = snapshots(scratch()), stdout = vi.fn(), stderr = vi.fn(), output = join(scratch(), "already-present"); mkdirSync(output);
+  expect(await main(["--help"], { stdout, stderr })).toBe(0); expect(stdout).toHaveBeenLastCalledWith(`${USAGE}\n`); expect(stderr).not.toHaveBeenCalled(); stdout.mockClear();
+  for (const argv of [[], ["--manifest", "fictional-private-argument"], ["--unknown", "fictional-private-argument"]]) {
+    expect(await main(argv, { stdout, stderr })).toBe(1); expect(stderr).toHaveBeenLastCalledWith(`${USAGE}\n`);
+  }
+  expect(await main(["--manifest", f.manifest, "--conversation", CONVERSATION, "--output", output], { stdout, stderr })).toBe(1); expect(stderr).toHaveBeenLastCalledWith("EEXIST\n");
+  expect(await main(["--manifest", f.manifest, "--conversation", "web:fictional-absent", "--output", join(scratch(), "new")], { stdout, stderr })).toBe(1); expect(stderr).toHaveBeenLastCalledWith("RECORDED_CONVERSATION_NOT_FOUND\n");
+  vi.spyOn(fs, "statSync").mockImplementation(() => { throw { code: "fictional-private-code", message: "fictional-private-message" }; }); syncBuiltinESMExports();
+  expect(await main(["--manifest", f.manifest, "--conversation", CONVERSATION, "--output", output], { stdout, stderr })).toBe(1); expect(stderr).toHaveBeenLastCalledWith("RECORDED_IMPORT_REFUSED\n");
+  expect(stdout).not.toHaveBeenCalled(); expect(stderr.mock.calls.flat().join("")).not.toMatch(/fictional-private|fictional-absent|already-present/);
+});
+
+
+it("guards conflicting journal receipts even when their assistant record is unavailable", async () => {
+  const t = tool("unassigned-receipt"), journal = [result(t), { ...result(t), content: "Other fictional receipt" }];
+  for (const parts of [[t], []]) {
+    const { source } = await read(snapshots(scratch(), { parts, journal }));
+    expect(source.coverage.some(g => g.code === "journal_result_conflict" && g.tier === "replay")).toBe(true);
+    expect(() => createRecordedQueue(source)).toThrow("RECORDED_REPLAY_COVERAGE_GAP");
+  }
 });

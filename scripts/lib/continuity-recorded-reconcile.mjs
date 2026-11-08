@@ -1,5 +1,5 @@
 import { object } from "./continuity-observation-input.mjs";
-import { bytes, callKey } from "./continuity-recorded-schema.mjs";
+import { bytes, callKey, contentBlocks } from "./continuity-recorded-schema.mjs";
 
 // eventToolArgs fills these public declaration fields. Keep this closed; do not
 // allow arbitrary extra web keys to excuse a changed model invocation.
@@ -18,7 +18,7 @@ export function normalizeSidecar(value, redactJsonValue) {
 export function textResult(value) {
   if (typeof value === "string") return value;
   const content = Array.isArray(value) ? value : value?.content;
-  return Array.isArray(content) && content.every(p => p?.type === "text" && typeof p.text === "string") ? content.map(p => p.text).join("\n") : undefined;
+  return contentBlocks(content) && content.every(p => p?.type === "text" && typeof p.text === "string") ? content.map(p => p.text).join("\n") : undefined;
 }
 const TOKENS = /\[home-path\]|\[host-path\]|\[private-path\]|\[redacted\]|\[tool payload omitted because it contained a private host path\]|\[diagnostic omitted because it contained private host data\]/g;
 // Legacy fallback: only token-bearing spans may vary. Keys, array topology,
@@ -58,8 +58,7 @@ export function compareCopies(web, sidecar, redact, argumentsOnly = false) {
 }
 export function resultCopy(store, value, { truncated = false, originalBytes, redacted = false } = {}) {
   const retainedBytes = Buffer.byteLength(textResult(value) ?? bytes(value));
-  originalBytes ??= object(value) ? value.originalBytes : undefined;
-  truncated ||= value?.truncated === true || /…\[truncated(?: \d+ bytes)?\]$/.test(textResult(value) ?? "")
+  truncated ||= /…\[truncated(?: \d+ bytes)?\]$/.test(textResult(value) ?? "")
     || store !== "sidecar" && Number.isSafeInteger(originalBytes) && originalBytes > retainedBytes;
   return { store, value, truncated, retainedBytes, originalBytes: Number.isSafeInteger(originalBytes) && originalBytes > 0 ? originalBytes : (truncated ? null : retainedBytes), redacted };
 }

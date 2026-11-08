@@ -66,7 +66,7 @@ function compare(aPresent, a, bPresent, b) {
   if (textResult(a) !== undefined && textResult(a) === textResult(b)) return "text_equivalent";
   return "different";
 }
-const failed = state => ["error", "rejected", "exit_nonzero", "timeout", "signal", "cancelled", "interrupted"].includes(state);
+const failed = state => ["error", "failed", "rejected", "exit_nonzero", "timeout", "signal", "cancelled", "interrupted"].includes(state);
 
 export async function readRecordedSource(manifest, conversationId) {
   if (typeof conversationId !== "string" || !conversationId || conversationId.length > 512 || conversationId.includes("\0")) fail("INVALID_RECORDED_CONVERSATION");
@@ -131,17 +131,17 @@ export async function readRecordedSource(manifest, conversationId) {
             childrenReplayed: false });
           if (!Object.hasOwn(part, "result")) gap("subagent_outcome_missing", provenance);
           if (part.argsTruncated === true || part.resultTruncated === true || part.history?.truncated === true) { counts.truncated++; gap("subagent_outcome_truncated", provenance); }
-          if (!["complete", "completed", "error"].includes(part.status)) gap("subagent_terminal_state_unknown", provenance);
+          if (!["complete", "completed", "error", "failed"].includes(part.status)) gap("subagent_terminal_state_unknown", provenance);
           continue; // Child calls stay opaque in raw parts, never enter the parent queue.
         }
         if (part.type !== "tool-call" || subagentIds.has(part.toolCallId)) continue;
         if (typeof part.toolCallId !== "string" || !part.toolCallId || typeof part.toolName !== "string" || !part.toolName) { counts.malformedParts++; gap("malformed_tool", provenance); continue; }
         const tool = { id: part.toolCallId, name: part.toolName, ...(Object.hasOwn(part, "args") ? { args: part.args } : {}),
           ...(Object.hasOwn(part, "result") ? { result: part.result } : {}), ...(Object.hasOwn(part, "structuredResult") ? { structuredResult: part.structuredResult } : {}), state: part.status ?? "unknown",
-          isError: part.status === "error" || part.result?.isError === true, history: part.history ?? null, provenance: [provenance], gaps: [], reconciliation: "web_only" };
+          isError: ["error", "failed"].includes(part.status) || part.result?.isError === true, history: part.history ?? null, provenance: [provenance], gaps: [], reconciliation: "web_only" };
         if (!Object.hasOwn(tool, "args")) tool.gaps.push("arguments_missing");
         else if (!object(tool.args)) tool.gaps.push("arguments_not_object");
-        if (!["complete", "completed", "error"].includes(tool.state)) tool.gaps.push("tool_terminal_state_unknown");
+        if (!["complete", "completed", "error", "failed"].includes(tool.state)) tool.gaps.push("tool_terminal_state_unknown");
         tool.webArgs = part.args;
         tool.argsTruncated = part.argsTruncated === true;
         tool.resultRepresentations = Object.hasOwn(tool, "result") ? [resultCopy("web", tool.result, { truncated: part.resultTruncated === true, originalBytes: part.resultBytes })] : [];
@@ -187,9 +187,9 @@ export async function readRecordedSource(manifest, conversationId) {
         if ((r.kind === "message" || r.kind === "tool_result" && r.payload.phase === "returned") && msg?.role === "toolResult") {
           const key = `${r.operationId ?? r.turnId}\0${msg.toolCallId}`;
           if (!nativeResults.has(key)) nativeResults.set(key, []);
-          const candidates = nativeResults.get(key), receipt = candidates.find(c => c.r.kind !== r.kind && bytes(c.msg.content) === bytes(msg.content) && c.msg.isError === msg.isError && c.msg.toolName === msg.toolName);
-          if (receipt) { receipt.refs.push(r.id); if (r.kind === "message") { receipt.r = r; receipt.msg = msg; } }
-          else candidates.push({ r, msg, refs: [r.id] });
+          const candidates = nativeResults.get(key), receipt = candidates.find(c => c.kinds.size === 1 && !c.kinds.has(r.kind) && bytes(c.msg) === bytes(msg));
+          if (receipt) { receipt.kinds.add(r.kind); receipt.refs.push(r.id); if (r.kind === "message") { receipt.r = r; receipt.msg = msg; } }
+          else candidates.push({ r, msg, refs: [r.id], kinds: new Set([r.kind]) });
         }
       }
       const placed = new Set();
@@ -215,7 +215,7 @@ export async function readRecordedSource(manifest, conversationId) {
           const results = nativeResults.get(`${r.operationId ?? r.turnId}\0${part.id}`) ?? [];
           if (!tool) {
             counts.journalOnly++;
-            tool = { id: part.id, name: part.name, ...(Object.hasOwn(part, "arguments") ? { args: part.arguments } : {}), ...(results.length === 1 && Object.hasOwn(results[0].msg, "content") ? { result: results[0].msg.content } : {}), state: typeof results[0]?.msg.isError === "boolean" ? (results[0].msg.isError ? "error" : "complete") : "unknown", isError: results[0]?.msg.isError === true, history: null, provenance: [], gaps: [], reconciliation: "journal_only" };
+            tool = { id: part.id, name: part.name, ...(Object.hasOwn(part, "arguments") ? { args: part.arguments } : {}), ...(results.length === 1 && Object.hasOwn(results[0].msg, "content") ? { result: results[0].msg.content } : {}), state: results.length === 1 && typeof results[0]?.msg.isError === "boolean" ? (results[0].msg.isError ? "error" : "complete") : "unknown", isError: results.length === 1 && results[0]?.msg.isError === true, history: null, provenance: [], gaps: [], reconciliation: "journal_only" };
             if (!object(tool.args)) tool.gaps.push("arguments_not_object");
             tool.resultRepresentations = [];
             if (tool.state === "unknown") tool.gaps.push("tool_terminal_state_unknown");
@@ -227,21 +227,38 @@ export async function readRecordedSource(manifest, conversationId) {
               else if (!tool.argsTruncated) tool.gaps.push("journal_arguments_conflict");
             }
             tool.args = part.arguments; tool.argsTruncated = false; tool.argumentsOrigin = "journal";
-            if (results.length) {
+            if (results.length === 1) {
               const complete = results.filter(r => Object.hasOwn(r.msg, "content") && !resultCopy("journal", r.msg.content, { truncated: r.msg.truncated === true, originalBytes: r.msg.originalBytes }).truncated);
               const comparisons = complete.map(r => compare(Object.hasOwn(tool, "result"), tool.result, true, r.msg.content));
-              if (comparisons.length && comparisons.every(c => c === "different") && !tool.resultRepresentations.some(c => c.truncated)) tool.gaps.push("journal_result_conflict");
+              if (comparisons.length && comparisons.some(c => c === "different") && !tool.resultRepresentations.some(c => c.truncated)) tool.gaps.push("journal_result_conflict");
               if (results.some(r => typeof r.msg.isError === "boolean" && r.msg.isError !== tool.isError)) tool.gaps.push("journal_state_conflict");
               if (comparisons.includes("text_equivalent")) counts.representationDifferences++;
             } else tool.gaps.push("native_result_missing_or_ambiguous");
           }
           tool.argumentsOrigin = "journal"; tool.args = part.arguments; tool.argsTruncated = false;
-          for (const result of results) if (Object.hasOwn(result.msg, "content")) tool.resultRepresentations.push(resultCopy("journal", result.msg.content, { truncated: result.msg.truncated === true, originalBytes: result.msg.originalBytes }));
+          if (results.length > 1) tool.gaps.push("journal_result_conflict", "native_result_missing_or_ambiguous");
+          if (results.length === 1) {
+            const msg = results[0].msg;
+            if (!Object.hasOwn(msg, "content")) tool.gaps.push("native_result_missing_or_ambiguous");
+            else tool.resultRepresentations.push(resultCopy("journal", msg.content, { truncated: msg.truncated === true, originalBytes: msg.originalBytes }));
+            const structured = msg.structuredContent !== undefined ? msg.structuredContent : msg.structuredResult;
+            if (structured !== undefined) {
+              if (Object.hasOwn(tool, "structuredResult") && bytes(tool.structuredResult) !== bytes(structured)) tool.gaps.push("journal_result_conflict");
+              else tool.structuredResult = structured;
+            }
+          }
           tool.provenance.push(provenance, ...results.map(result => ({ source: "journal", phase: "result", recordIds: result.refs })));
           if (placed.has(index)) { tool.gaps.push("duplicate_native_identity"); continue; }
           placed.add(index); step.calls.push(index);
         }
         if (step.calls.length) source.steps.push(step);
+      }
+      // A compacted/partial journal may retain receipts without the issuing
+      // assistant record. Their disagreement must not disappear in web replay.
+      for (const candidates of nativeResults.values()) if (candidates.length > 1) {
+        const tool = source.tools[byId.get(candidates[0].msg.toolCallId)];
+        if (tool) tool.gaps.push("journal_result_conflict", "native_result_missing_or_ambiguous");
+        else gap("journal_result_conflict", { recordId: candidates[0].r.id, toolCallId: candidates[0].msg.toolCallId ?? null });
       }
       const native = source.steps;
       const remaining = webSteps.map(step => ({ ...step, calls: step.calls.filter(i => !placed.has(i)) })).filter(step => step.calls.length);
@@ -321,10 +338,8 @@ export async function readRecordedSource(manifest, conversationId) {
         tool.result = selected.value; tool.resultOrigin = selected.store;
         if (selected.store !== "web" && tool.resultRepresentations.some(c => c.store === "web" && c.truncated)) counts.recoveredResults++;
         if (tool.resultRepresentations.every(c => c.truncated)) tool.gaps.push(selected.store === "sidecar" ? "sidecar_truncated" : "source_truncated");
-        if (selected.store !== "web") delete tool.structuredResult;
-        tool.gaps = tool.gaps.filter(code => code !== "native_result_missing_or_ambiguous");
       } else { tool.gaps.push("result_missing"); counts.missingResults++; }
-      if (tool.argsTruncated) tool.gaps.push("source_truncated");
+      if (tool.argsTruncated) tool.gaps.push("arguments_truncated");
       tool.gaps = [...new Set(tool.gaps)];
     }
     for (const step of ambiguousSteps(source)) { counts.ambiguousParallelGroups++; step.gaps.push("ambiguous_parallel_results"); }
