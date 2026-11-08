@@ -8,6 +8,7 @@ import { productionModules, runProbe, createJudge, configJson, lookupConfig, pil
 import { lookupPilotWork, lookupOfflineBoundary } from "./continuity-lookup-pilot-runtime.mjs";
 import { assertLookupPilotArm, restoreLookupPreparation } from "./continuity-lookup-preparation.mjs";
 import { createLookupRealSend } from "./continuity-lookup-real-capability.mjs";
+import { writeLookupSlotRecord } from "./continuity-lookup-slot-record.mjs";
 
 export async function runLookupConfiguredProbe(a) {
   const arm = armById(a.roleRequest.binding.arm), common = a.roleRequest.common, root = a.pilot.registration.codes[a.slot.code].path;
@@ -35,6 +36,10 @@ export async function runLookupConfiguredProbe(a) {
       checkpointContinuity: prepared.manifest.continuity, checkpointConversationId: prepared.manifest.conversationId,
       forkDir: prepared.work,
       plan: a.plan, mode: "paid", authPath, root, pilot });
+    // Before any outcome branch, so completed, wrong, lost and failed trials all keep
+    // their content-free evidence. Evidence only: a write failure leaves no record
+    // (missing, never zero) and cannot reclassify a slot that may already have spent.
+    if (trial.lookup) await writeLookupSlotRecord(a, trial.lookup).catch(() => {});
     if (LOOKUP_GUARD_POLICY_REFUSALS.includes(trial.failure)) {
       await send.permit.stop(trial.failure); return { terminal: "refused_pre_send", score: null, refusalCode: trial.failure };
     }
