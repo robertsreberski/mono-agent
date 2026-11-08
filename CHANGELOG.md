@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Add a read-only continuity observation script for snapshot-based boundary,
+  continuity-pack and retrieval counts with content-free aggregate reports.
+
 - Fix continuity lookup pilot runs never recording whether a looked-up detail
   was already in the model's starting context. Pilot runs now keep that, with
   other content-free lookup counts, privately for each probe. The pilot's

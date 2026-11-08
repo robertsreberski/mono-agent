@@ -29,6 +29,112 @@ driver, but the reader and summarizer are scripted. It proves that every arm
 crosses its boundary and that scoring and accounting run; its accuracy numbers
 mean nothing. CI runs the offline unit and contract tests only.
 
+## Offline snapshot observation
+
+`continuity-observe.mjs` is a separate, offline, read-only observation tool. It
+never starts an application, finds stores through HOME, or calls a model. Supply
+only explicit **backup snapshots**, not live stores or HTTP-shaped transcripts
+(which can strip persisted telemetry). Keep inputs and results private.
+
+Take a SQLite backup with a read-only source URI, not a database-file-only copy:
+
+```python
+import pathlib, sqlite3, time
+
+source = pathlib.Path("/private-snapshots/source.sqlite").resolve()
+target = pathlib.Path("/private-snapshots/backup.sqlite")  # Must not exist.
+if target.exists():
+    raise RuntimeError("Backup target already exists")
+started = time.monotonic()
+wal = pathlib.Path(str(source) + "-wal")
+initial_wal = wal.stat().st_size if wal.exists() else 0
+
+def bounded(status, remaining, total):
+    growth = (wal.stat().st_size if wal.exists() else 0) - initial_wal
+    if time.monotonic() - started > 30 or growth > 64 * 1024 * 1024:
+        raise RuntimeError("Backup limit exceeded; discard incomplete target")
+
+with sqlite3.connect(source.as_uri() + "?mode=ro", uri=True, timeout=1) as src:
+    with sqlite3.connect(target, timeout=1) as dst:
+        src.backup(dst, pages=256, progress=bounded, sleep=0.05)
+        dst.execute("PRAGMA journal_mode=DELETE")  # Destination only.
+```
+
+Use a private directory with mode 0700 and files with mode 0600 (set a restrictive
+umask before creating them). Close both connections promptly. Never checkpoint,
+migrate or change the live source. Abort excessive contention/WAL growth; discard
+incomplete backups. The observer refuses WAL-format files and any adjacent WAL,
+SHM or journal **before opening SQLite**, avoiding read-only SQLite shared-memory
+side effects. It opens standalone rollback-format snapshots with `mode=ro`, never
+`immutable=1`. Sidecar backups follow the same procedure. Copy journals as stable,
+newline-terminated prefixes; stores captured separately are not globally atomic.
+
+The versioned manifest supplies a UTC half-open interval, capture availability,
+explicit paths (relative to the manifest or absolute), telemetry coverage and
+contiguous, non-overlapping closure/soul periods covering the entire interval:
+
+```json
+{
+  "schema": "continuity-observation-manifest-v1",
+  "interval": { "start": "2042-03-01T00:00:00.000Z", "end": "2042-03-02T00:00:00.000Z" },
+  "snapshots": [{
+    "web": "backup.sqlite",
+    "captureAvailableFrom": "2042-03-01T00:00:00.000Z",
+    "telemetry": "unknown",
+    "strata": [{
+      "start": "2042-03-01T00:00:00.000Z", "end": "2042-03-02T00:00:00.000Z",
+      "closure": "unknown", "soul": "unknown"
+    }]
+  }]
+}
+```
+
+Each snapshot may also name `sidecar` and `journal` paths. Supported inputs are
+web schema 43 (validated column types), tool-history schema
+`mono-agent.session-tool-history.v1` (SQLite versions 2/3), and structurally
+validated `mono-harness` v2 journals. Other schemas are refused, not migrated or
+guessed. Multiple web snapshots must have disjoint conversations in the selected
+interval. Select turns by start time; do not begin before capture availability.
+Use closure `target`/`other` and soul `default`/`custom` only with independently
+verified deployment evidence; otherwise use `unknown`. These are declarations,
+not code/soul verification. Telemetry is `complete`, `stripped` or `unknown`;
+`complete` requires independently verified capture, not merely some observed
+telemetry. Missing coverage exports `unknown`, never an inferred zero.
+
+```bash
+node scripts/continuity-observe.mjs --manifest /private-snapshots/manifest.json \
+  --output /private-results/new-observation \
+  --private-worklist /private-results/review.jsonl
+```
+
+The output directory must be new. `inventory.json`, `metrics.json`, `outcomes.json`
+and `report.md` contain strictly allowlisted enums and numeric aggregates, with no
+identifiers, timestamps, paths, queries, source digests or free-form errors. The
+optional worklist is separate, exclusive-created with mode 0600, and refused
+inside any repository or the export directory. It contains private source
+references: **never export it**. For adjudication, copy each eligible worklist
+`window` ordinal into a separate JSONL file with `reask`, `correction`,
+`repeatedEffectCandidate` and `confirmed` set to `yes`, `no` or `ambiguous`.
+Declare that file as manifest `reviews` and rerun into a new output directory.
+Reviews must be ordered by ordinal and bound operationally to the exact same
+manifest/snapshots; no automatic classifier or correctness inference is used.
+
+Windows cover calls after a session boundary or successful compaction in its
+turn, plus the next three subsequent owner turns. Cancelled, unfinished, missing
+follow-up, invalid-row and stratum-crossing windows are excluded from review.
+Cron/webhook and non-owner turns have separate inventory exclusions. Unassigned
+messages are inventoried and their telemetry counted, but cannot create
+owner-linked review windows; missing turn links downgrade coverage. Metrics
+count observed persisted events, including excluded turns. Deduplication is
+turn-local; journal counts stay separate, and unique sidecar matches can expose
+lifecycle conflicts but cannot establish semantic retrieval success. Only
+structured availability results establish success; prose/absent results remain
+unknown. Nested subagent tool activity is not counted as owner retrieval.
+The reader streams rows, retains bounded normalized events per turn,
+marks rows above 8 MiB invalid and refuses turns above 8192 recognized events.
+Observation sizes later tests; it does not establish correctness, causal benefit,
+representative prevalence or replace controlled boundary proofs.
+
 ## Offline lookup mechanics (opt-in)
 
 Recall-only remains the default: omitting `--probe-mode` preserves its prompt
