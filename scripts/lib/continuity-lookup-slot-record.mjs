@@ -1,6 +1,7 @@
 // Private, content-free per-slot lookup evidence. Counts, booleans and fixed codes only;
 // never record IDs, digests, paths, questions, answers or retrieved text.
-import { closeSync, constants, openSync, writeSync } from "node:fs";
+import { linkSync, unlinkSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 import { lookupPilotWork } from "./continuity-lookup-pilot-runtime.mjs";
 import { readPilotPrivate } from "./continuity-lookup-pilot-state.mjs";
@@ -40,15 +41,21 @@ export function lookupSlotRecord(lookup) {
   }));
 }
 
-/** Owner-only, exclusive, no-follow and synchronous; an existing record is never replaced.
- * Evidence only, deliberately NOT crash-durable (no fsync): after an IPC stop the
- * controller contains the child within a short grace, so this write must never delay
- * the child's done message with file/directory syncs.
+/** Synchronous, owner-only and atomic: write an exclusive private temp file, then publish it
+ * with an exclusive hard link, so a reader sees either no record or the complete record and an
+ * existing entry (including a symlink) is never replaced or followed. Evidence only and
+ * deliberately NOT crash-durable (no file or directory fsync): after an IPC stop the controller
+ * contains the child within a short grace, so this write must never delay the child's done
+ * message. Readers always validate; a leftover second link fails readPilotPrivate's nlink check.
  */
 export function writeLookupSlotRecord(a, lookup) {
-  const record = lookupSlotRecord(lookup), bytes = Buffer.from(JSON.stringify(record));
-  const fd = openSync(lookupSlotRecordPath(a), constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
-  try { if (writeSync(fd, bytes) !== bytes.length) fail(); } finally { closeSync(fd); }
+  const record = lookupSlotRecord(lookup), path = lookupSlotRecordPath(a), temp = `${path}.${randomUUID()}.pending`;
+  try {
+    writeFileSync(temp, JSON.stringify(record), { flag: "wx", mode: 0o600 });
+    linkSync(temp, path);
+  } finally {
+    try { unlinkSync(temp); } catch (error) { if (error.code !== "ENOENT") throw error; }
+  }
   return record;
 }
 export async function readLookupSlotRecord(a) {

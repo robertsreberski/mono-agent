@@ -443,17 +443,34 @@ it("observes each forwarded context synchronously after the persisted consume an
 });
 it("still sends exactly once with the identical admitted body when the observer throws, leaving presence unknown", async () => {
   const witness = lookupWitness({ availability: "retained" }, { value: "MORGAN-7Q4" }), observer = lookupForwardedObserver();
-  observer.register(context => witness.initial(context));
+  const attempted = vi.fn(context => witness.initial(context)); observer.register(attempted);
   const f = fixture({ onForwarded: observer.notify });
   // A BigInt makes the witness's own serialization throw before it records anything.
-  await f.call({}, { messages: [{ role: "user", content: "MORGAN-7Q4", unserializable: 1n }] });
+  const context = { messages: [{ role: "user", content: "MORGAN-7Q4", unserializable: 1n }] };
+  await f.call({}, context);
+  expect(attempted).toHaveBeenCalledExactlyOnceWith(context, 1); expect(attempted.mock.results[0].type).toBe("throw");
   expect(f.send).toHaveBeenCalledOnce();
   const admitted = f.permit.events.find(e => e.type === "admit");
   expect(lookupBodyDigest(Buffer.from(f.send.mock.calls[0][1].body))).toBe(admitted.payloadDigest);
   expect(settles(f)[0].outcome.kind).toBe("settled");
   expect(witness.snapshot()).toMatchObject({ initiallyPresent: "unknown", initialContextBytes: null });
-  const raw = fixture({ onForwarded: () => { throw Error("fictional_observer_failure"); } });
-  await raw.call(); expect(raw.send).toHaveBeenCalledOnce(); expect(settles(raw)[0].outcome.kind).toBe("settled");
+  const throwing = vi.fn(() => { throw Error("fictional_observer_failure"); }), raw = fixture({ onForwarded: throwing });
+  await raw.call(); expect(throwing).toHaveBeenCalledExactlyOnceWith({}, 1); expect(throwing.mock.results[0].type).toBe("throw");
+  expect(raw.send).toHaveBeenCalledOnce(); expect(settles(raw)[0].outcome.kind).toBe("settled");
+});
+it("never awaits or leaks a rejected thenable from an observer, directly or through the runtime channel", async () => {
+  const unhandled = []; const onUnhandled = reason => unhandled.push(reason); process.on("unhandledRejection", onUnhandled);
+  try {
+    const observer = lookupForwardedObserver(), rejecting = vi.fn(() => Promise.reject(Error("fictional_async_observer")));
+    observer.register(rejecting);
+    const viaChannel = fixture({ onForwarded: observer.notify }), direct = fixture({ onForwarded: () => Promise.reject(Error("fictional_direct_observer")) });
+    await viaChannel.call(); await direct.call();
+    const getter = lookupForwardedObserver(); getter.register(() => ({ get then() { throw Error("fictional_then_getter"); } }));
+    expect(() => getter.notify({}, 1)).not.toThrow();
+    for (let i = 0; i < 3; i++) await new Promise(resolve => setImmediate(resolve));
+    expect(rejecting).toHaveBeenCalledExactlyOnceWith({}, 1);
+    expect(viaChannel.send).toHaveBeenCalledOnce(); expect(direct.send).toHaveBeenCalledOnce(); expect(unhandled).toEqual([]);
+  } finally { process.off("unhandledRejection", onUnhandled); }
 });
 it("does not observe refused requests and refuses a non-function observer binding", async () => {
   const onForwarded = vi.fn(), f = fixture({ body: sized(A.inputMax + 1), onForwarded });

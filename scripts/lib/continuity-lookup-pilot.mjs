@@ -4,7 +4,7 @@ import { digest } from "./continuity-dataset.mjs";
 import { sha256, LOOKUP_TIMING, LOOKUP_PILOT_MEASURED_ROLES } from "./continuity-lookup.mjs";
 import { LOOKUP_ASSUMPTIONS } from "./continuity-lookup-guard.mjs";
 import { registerLookup, lookupWorkload, validateRegistration, requireLookup } from "./continuity-lookup-roles.mjs";
-import { offlineCatalog, estimateExternalLookup, LOOKUP_EXPECTED_SCENARIO } from "../continuity-lookup-estimate.mjs";
+import { offlineCatalog, estimateExternalLookup, LOOKUP_EXPECTED_SCENARIO, lookupExpectedRequestInputs } from "../continuity-lookup-estimate.mjs";
 
 export const LOOKUP_FAUX_AUTHORIZATION_DOMAIN = "mono-agent/lookup-pilot/faux-consumed-v1\0";
 export const LOOKUP_PILOT_SCHEMA = "continuity-lookup-pilot-descriptor-v1";
@@ -74,8 +74,8 @@ export function estimateLookupPilot({ workload, catalog, capUSD, assumptions = L
   let expected = [0n, 1n], eligible = 0;
   for (const path of workload.policy.budget.paths) if (LOOKUP_PILOT_MEASURED_ROLES.includes(path.role) && path.feasibility.classification === "feasible") {
     eligible++;
-    const S = LOOKUP_EXPECTED_SCENARIO, initial = path.initialTokens + S.inputAllowanceTokens, later = initial + S.laterInputIncrementTokens;
-    for (const input of [initial, ...Array(S.requestsPerSlot - 1).fill(later)]) expected = add(expected, scenarioCall(catalog, input, Math.min(S.outputTokensPerRequest, workload.outputLimit.tokens)));
+    for (const input of lookupExpectedRequestInputs(path.initialTokens))
+      expected = add(expected, scenarioCall(catalog, input, Math.min(LOOKUP_EXPECTED_SCENARIO.outputTokensPerRequest, workload.outputLimit.tokens)));
   }
   const headroom = add(cap, [-rmax[0], rmax[1]]);
   const skipped = legacy.planned - eligible;

@@ -362,7 +362,10 @@ export function guardedLookupModels(models, { contract, permit, send, assumption
         sent = true;
         // Content-free witness of the forwarded context: synchronous, after the
         // persisted consume and before the one send; it can never skip or alter it.
-        try { onForwarded?.(context, round); } catch { /* Observation only. */ }
+        try {
+          const observed = onForwarded?.(context, round);
+          if (observed !== null && (typeof observed === "object" || typeof observed === "function") && typeof observed.then === "function") Promise.resolve(observed).catch(() => {});
+        } catch { /* Observation only. */ }
         return send(url, init);
       },
       onProviderStreamEvent: async (event, selected) => {

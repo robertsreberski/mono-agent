@@ -130,7 +130,13 @@ export function lookupForwardedObserver() {
   let observer = null;
   return Object.freeze({
     register(fn) { need(typeof fn === "function" && observer === null, "lookup_pilot_capability_invalid"); observer = fn; },
-    notify(context, round) { try { observer?.(context, round); } catch { /* Presence stays unknown. */ } },
+    notify(context, round) {
+      try {
+        const value = observer?.(context, round);
+        // Never awaited; a rejected thenable must not become an unhandled rejection.
+        if (value !== null && (typeof value === "object" || typeof value === "function") && typeof value.then === "function") Promise.resolve(value).catch(() => {});
+      } catch { /* Presence stays unknown. */ }
+    },
   });
 }
 /** Pin to the forwarder's setup-owned endpoint, never to its rewrite output. */

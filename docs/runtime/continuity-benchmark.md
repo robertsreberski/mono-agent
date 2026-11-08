@@ -916,8 +916,8 @@ blocks unknown slots. It reports per-role/per-trial expected, worst/reservation,
 lookup overhead, tier crossings and C/expected. Expected is only a scenario,
 shared with the pilot estimate below (`pilot-calibrated-v1`): four requests per
 slot (three lookups), a first request of the frozen initial bound plus 900
-tokens, 9,216 more input tokens on each later request, 19/32 cached input and up
-to 150 output tokens per request.
+tokens, each later request a flat 9,216 input tokens above the first request
+(not cumulative), 19/32 cached input and up to 150 output tokens per request.
 Reservation uses **ten rounds**, **no cache**, the **full catalog context input
 bound on every call** (including replay) and the explicit per-call output limit.
 C is `ceil-to-cents(1.25 * summed eligible reservations)`, a run-wide proposed
@@ -1203,7 +1203,8 @@ The offline estimator uses exact decimal rational money arithmetic. It reports:
 
 - E and its `pilot-calibrated-v1` scenario: four requests per slot (three
   lookups); the first request is the frozen inventory `initialTokens` plus 900;
-  each later request adds 9,216 input tokens; 19/32 of input is cached; up to
+  each later request is a flat 9,216 input tokens above the first request, not
+  cumulative across rounds; 19/32 of input is cached; up to
   150 output tokens per request; default service tier. This is a scenario, not
   measured usage;
 - Rmax = 2 × (272,000 × maximum applicable input/cache-class rate +
@@ -1219,8 +1220,11 @@ conservative direction: 4 requests, 150 output tokens, 9,216 increment tokens
 and 13/32 = 40.625% uncached input (≥ 1.25 × 32.5%). For that same 240-slot
 workload, E falls from $65.07 (two lookups, half the byte budget per later
 request, half cached, 300 output tokens) to $41.45, against $18.19 of settled
-catalog-equivalent spend. The first-request bound, `ceil(context bytes / 3)` +
-900, is deliberately model-independent and conservative rather than a tokenizer
+catalog-equivalent spend. The first-request bound is the frozen inventory
+`initialTokens` + 900. `initialTokens` is the larger of `ceil(observed initial
+context bytes / 3)` and a trace-shape floor: the cold estimate + 12,000 for pack
+paths, which the pilot measured, and at least 150,000 for native paths. It is
+deliberately model-independent and conservative rather than a tokenizer
 measurement. It accounts for most of the remaining gap: Sol's measured first
 input averaged about 0.67 of that bound. Only E changed. The `assumed-v1`
 registry, input/output envelope maxima, the tier multiplier, Rmax and every cap
@@ -1441,10 +1445,13 @@ are strictly projected to opaque identities, content hashes, fixed codes and
 numeric usage/cost/scoring. They exclude paths and path hashes, commitments,
 salts, credentials, requests, answers, stderr and free-form errors.
 Per-slot lookup evidence stays out of receipts and reports. The probe child
-synchronously writes a private, exclusive, no-follow 0600
+synchronously publishes a private
 `work/<slot>/checkpoint/lookup-record.json` (`lookup-pilot-slot-lookup-v1`)
-beside the preparation manifest, outside the digested snapshot. It is evidence
-only and deliberately not synced or crash-durable, so writing it never delays
+beside the preparation manifest, outside the digested snapshot. It writes an
+exclusive owner-only (0600) temporary file, then publishes it with an exclusive
+hard link. A successful write is therefore atomic and owner-only and never
+replaces or follows an existing entry. It is evidence only and deliberately not
+crash-durable: there is no file or directory fsync, so the write never delays
 the child's done message past the controller's post-stop containment grace. It holds only
 initial presence and context bytes, source availability, whether the verified
 source was returned, lookup calls, responses, bytes, search pages and get
@@ -1453,8 +1460,9 @@ holds record IDs, digests, paths, questions, answers or retrieved text, and a
 strict validator rejects any other field. It is written for every trial that
 returns lookup evidence: completed, wrong, lost, failed and refused trials
 alike. No record exists when the probe never produced lookup evidence. A failed
-write leaves the record missing, which means missing evidence and never zero;
-the slot's outcome is never reclassified. Faux scores
+write normally leaves no record, which means missing evidence and never zero;
+the slot's outcome is never reclassified. Readers always validate the record
+through the private-file reader, which also refuses a leftover second link. Faux scores
 are mechanics fixtures, not measured quality. Physical power-loss and provider
 billing behavior are not established by these local tests. Private reads require
 canonical roots and refuse aliases. Their before/after path checks are best-effort

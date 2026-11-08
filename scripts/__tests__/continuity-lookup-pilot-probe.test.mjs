@@ -155,9 +155,12 @@ it("writes the record synchronously, owner-only and exclusively, never following
     expect(validateLookupSlotRecord(JSON.parse(await readFile(path, "utf8")))).toEqual(projected);
     expect(() => writeLookupSlotRecord(a, { ...snapshot(), calls: 9 })).toThrow(expect.objectContaining({ code: "EEXIST" }));
     expect(JSON.parse(await readFile(path, "utf8")).calls).toBe(2);
+    expect((await stat(path)).nlink).toBe(1); // Published by link, temp removed.
     await rm(path); const target = `${path}.fictional-target`; await writeFile(target, "fictional"); await symlink(target, path);
-    expect(() => writeLookupSlotRecord(a, snapshot())).toThrow(); expect(await readFile(target, "utf8")).toBe("fictional");
+    expect(() => writeLookupSlotRecord(a, snapshot())).toThrow(expect.objectContaining({ code: "EEXIST" })); expect(await readFile(target, "utf8")).toBe("fictional");
     expect((await lstat(path)).isSymbolicLink()).toBe(true);
     await rm(path); expect(() => writeLookupSlotRecord(a, { ...snapshot(), rounds: -1 })).toThrow("lookup_slot_record_invalid"); expect(existsSync(path)).toBe(false);
+    const { readdir } = await import("node:fs/promises"), { dirname } = await import("node:path");
+    expect((await readdir(dirname(path))).filter(name => name.endsWith(".pending"))).toEqual([]);
   } finally { await rm(a.outputRoot, { recursive: true, force: true }); }
 });

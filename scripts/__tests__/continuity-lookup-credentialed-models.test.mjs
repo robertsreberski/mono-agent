@@ -138,18 +138,18 @@ afterAll(async () => {
   }
 }, 120000);
 
-it.each([[200, false], [503, false], [200, true]])("credentialed configured harness uses the installed SDK once (status=%s, mismatched account=%s)", async (status, mismatch) => {
+it.each([[200, false, true], [503, false, true], [200, false, false], [200, true, false]])("credentialed configured harness uses the installed SDK once (status=%s, mismatched account=%s, marker in first context=%s)", async (status, mismatch, present) => {
   const {digest} = await import("../lib/continuity-dataset.mjs");
   const plan = basePlan;
   const {lookupPilotWork} = await import("../lib/continuity-lookup-pilot-runtime.mjs");
-  const id = `slot-${status}-${mismatch}`;
+  const id = `slot-${status}-${mismatch}-${present}`;
   current = {status, commitment: commitment(mismatch ? "FICTIONAL-OTHER-ACCOUNT" : ACCOUNT)};
   binding = {id: "pack", code: "R0", arm: "continuity-pack-cold"};
   const slot = {slotId: id, roleId: "pack", code: "R0", suite: "original"}; schedule = [slot];
   const common = {corpora: [{suite: "original"}]}, build = {fictional: true};
   const a = {pilot: {registration: {roles: [binding], common, codes: {R0: {path: ROOT, build}}}, descriptor: {capUSD: 100, deadlines: {deadlineMs: 600000}}},
     authorization: {schema: "continuity-lookup-pilot-authorization-v1", authorizationPath: join(base, "absent-authorization"), registrationPath: join(base, "absent-registration"), registrationSha256: "a".repeat(64), credentialPath: join(base, "credential", "auth.json"), controllerRoot: ROOT, outputRoot: base},
-    outputRoot: base, epoch: "epoch-fictional", runId: "run-fictional", index: 0, cacheKey: `assigned-${status}-${mismatch}`, slotId: id, slot,
+    outputRoot: base, epoch: "epoch-fictional", runId: "run-fictional", index: 0, cacheKey: `assigned-${status}-${mismatch}-${present}`, slotId: id, slot,
     plan, roleRequest: {binding, common, build}};
   state = {schema: "continuity-lookup-controller-v1", recovery: false, cursor: 0, stop: null, binding: digest(a.pilot), runId: a.runId, epoch: a.epoch,
     deadlineAt: Date.now() + 600000, controller: {pid: process.ppid, startIdentity: "parent"}, cacheKeysUnique: true, schedule,
@@ -168,16 +168,17 @@ it.each([[200, false], [503, false], [200, true]])("credentialed configured harn
   expect(cap.isRealLookupSend(send)).toBe(true); expect(cap.isRealLookupDecorator(send.decorator)).toBe(true);
   const start = nativeAttempts, arrived = arrivals.length;
   let result, lookup;
-  // Fictional evaluator annotation: present in the first forwarded context except in the 503 case.
-  const marker = status === 503 ? "MORGAN-ABSENT-9Z" : "MORGAN-7Q4";
+  // Fictional evaluator annotation, chosen per row independently of status/account outcome.
+  const marker = present ? "MORGAN-7Q4" : "MORGAN-ABSENT-9Z";
   guard.constructed();
   try {
     const live = await runner.runLiveTurn({modules, work, authPath: a.authorization.credentialPath, plan, mode: "paid", configPatch: measuredPatch, userMessage: "Give a fictional answer about MORGAN-7Q4.", clock: {value: new Date("2030-01-01T00:00:00Z")}, conversationId: `fictional-${id}`, owner: "Morgan", pilot: {routeKind: "real", plan, arm, send},
       lookupSource: {availability: "unknown"}, lookupAnnotation: {availability: "annotated", value: marker}});
     result = {text: live.text, failure: live.failureKind}; lookup = live.lookup;
   } catch (error) {result = {failure: {kind: error.code ?? error.message}}; lookup = error.lookup;}
-  // The real decorator reports the request it hands to the native send, even when that send then refuses it.
-  expect(lookup).toMatchObject({initiallyPresent: status !== 503, rounds: 1});
+  // The real decorator reports the request it hands to the native send: on a 503 response and
+  // also when the send itself then refuses a mismatched account before any native call.
+  expect(lookup).toMatchObject({initiallyPresent: present, rounds: 1});
   expect(lookup.initialContextBytes).toBeGreaterThan(0); expect(JSON.stringify(lookup)).not.toContain(marker);
   const executed = (await coverage.post("Profiler.takePreciseCoverage")).result;
   const calls = (suffix, names) => executed.filter(script => script.url.endsWith(suffix)).flatMap(script => script.functions).filter(fn => names.includes(fn.functionName)).reduce((sum, fn) => sum + fn.ranges[0].count, 0);

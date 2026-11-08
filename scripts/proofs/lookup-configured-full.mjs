@@ -166,6 +166,10 @@ if (verify !== -1) {
           // The configured probe child wrote its private content-free record, fed by the forwarded-context witness.
           const owner = {outputRoot, slotId: slot.slotId}, record = await slotRecords.readLookupSlotRecord(owner);
           assert.equal(record.rounds, 3, "lookup record must count every forwarded request"); assert.ok(record.initialContextBytes > 0, "first forwarded context was not witnessed");
+          // Every rounds slot is an evaluator-annotated identifier path, so presence must be decided, not unknown.
+          const planned = state.schedule[index], path = fixture.roundsPilot.registration.common.policy.budget.paths.find(p => p.role === planned.roleId && p.traceId === planned.traceId && p.probeId === planned.probeId);
+          assert.match(path?.sourceSha256 ?? "", /^[a-f0-9]{64}$/u, "rounds slot lost its evaluator annotation");
+          assert.equal(typeof record.initiallyPresent, "boolean", "annotated first forwarded context must decide initial presence");
           assert.equal((await fs.stat(slotRecords.lookupSlotRecordPath(owner))).mode & 0o777, 0o600);
         }
         const disk = await retained.lookupRetainedBytes(join(outputRoot, "work", slot.slotId));
