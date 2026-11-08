@@ -134,6 +134,10 @@ node scripts/continuity-observe.mjs --manifest /private-snapshots/manifest.json 
   --private-worklist /private-results/review.jsonl
 ```
 
+Observation scans web messages in product `created_at,rowid` order, so
+post-boundary retrieval positions follow chronology, not `messages.seq` (a
+parts-write counter) or UUID ordering. Equal timestamps use insertion order.
+
 The output directory must be new. `inventory.json`, `metrics.json`, `outcomes.json`
 and `report.md` use v2 export schemas containing strictly allowlisted enums and
 numeric aggregates, with no identifiers, timestamps, paths, queries, source
@@ -244,14 +248,30 @@ artifacts are produced:
 
 Stdout contains only the inventory. No IDs, hashes, names, arguments, results,
 paths or snippets are exported there. The private source retains original web
-rows (including exact `parts_json` strings), timestamps, identities, sequence,
+rows (including exact `parts_json` strings), timestamps, identities, write counters,
 steer markers and user rows, partial/cancelled statuses, failures, boundary
 markers and telemetry. Raw selected sidecar rows and journal records retain
 provenance and representations; they are **not concatenated into replay calls**.
-Missing attachment bytes affect only probes touching that item; references remain private and
-are never fetched. Subagent reports become assistant-side parent-visible
-outcomes with provenance. Child calls remain opaque in raw source; they are
-never flattened into the parent queue or executed.
+Messages use the product's `created_at,rowid` ordering **within each thread**.
+The combined array has no known cross-thread chronological order; imports with
+multiple threads already carry the replay-tier `cross_thread_order_unknown` gap.
+Web `seq` counts parts writes, not chronological positions. The transport
+metadata records this order;
+older source files require a fresh import and a new ordinal registration.
+The importer also reads the selected messages' `attachments` table metadata in
+`created_at,rowid` order, attached by `message_id` and matching thread. It selects
+only known metadata columns, never byte/blob columns or storage files. Legacy
+attachment parts are combined without double-counting the same ID. Every
+reference adds an item-tier `attachment_bytes_unavailable` gap. Inventory counts
+`attachments`, `attachmentImages`, `attachmentDocuments`, `attachmentOther`;
+unrelated/draft messages' attachments are not imported. Missing attachment bytes
+affect only probes touching that item; references remain private and are never
+fetched. Each parent-level delegation is an inert original
+`Agent` invocation with recorded args and its parent-visible result, marked
+`kind: "subagent_outcome"`, `childrenReplayed: false`. A subagent part's `name`
+is a child label, not a replacement tool name. Child calls remain opaque in raw
+source; they are never flattened into the parent queue or executed. Missing
+parent arguments/results produce replay-tier gaps for that step.
 
 Normalized tools reconcile by recorded call ID, scoped sidecar run and, when
 present, durable record ID. The importer replicates the writer's secure payload
@@ -273,6 +293,28 @@ the original model-emitted journal arguments. Raw web values remain in
 that web arguments may include host-filled defaults; arbitrary extra keys or
 changed shared values are not excused.
 
+Parent `Agent` calls differ from ordinary host-default handling: web subagent
+args are a **display projection**. The lifecycle bookend constructs only
+`{name, description}` in
+`packages/turn/src/tools/delegation/agent-tool.ts:1104`, omitting `prompt`,
+`effort` and `model`. After conversion retains the previous args
+(`packages/web/src/store.ts:8857`), its lifecycle handler overwrites those args
+with the bookend (`store.ts:8521–8526`). This is why a completed web subagent
+part need not retain the original invocation prompt.
+
+The inert parent call uses full journal toolCall arguments, else the complete
+sidecar invocation payload. A strict web key-subset limited to the published
+`name` and `description` display fields, with equal shared values
+(or equality after normal sidecar redaction preprocessing) adds fidelity-tier
+`web_projection_arguments`, not a conflict. Changed shared values and web-only
+keys remain replay-tier conflicts, even when the two full stores agree.
+Journal/sidecar full-argument disagreement still conflicts. Sidecar-only
+redacted arguments remain `sidecar_redacted_unverified`; they are not represented
+as recovered original prompts. Without either authoritative argument copy the
+parent step has an `arguments_missing` replay gap; display-only args are never
+executed as though complete. The general host-default exception does not excuse
+extra Agent keys.
+
 Web `context_usage` telemetry ends an assistant message before its tools begin
 executing, including older builds that only emitted an explicit
 `assistant_message_boundary` for final prose. Each web step takes the preceding
@@ -286,8 +328,10 @@ recognition follows the bounded legacy telemetry unwrapping in
 
 Web steps retain `partStartIndex`, `partEndIndex`, `boundaryIndex`, optional
 `usageBoundaryIndex` and `subagentPartIndices` into the unchanged raw row. Only
-steps with queued parent tool calls are emitted in `steps`; prose-only and
-subagent-only messages remain in raw source/outcomes, never executable calls.
+steps with queued parent calls are emitted in `steps`, including inert
+subagent-only invocations. Prose-only model messages remain in raw source;
+E2 segments them with the same explicit/usage-boundary rule, rather than
+collapsing a whole assistant row into one response.
 Optional `history.sequence` receipts cross-check lifecycle order across groups;
 parallel completions may reorder inside a group, but reversed/duplicate/invalid
 sequences or tools without their preceding step-end marker remain
@@ -334,9 +378,9 @@ The closed code-to-tier map in `continuity-recorded-schema.mjs` is authoritative
 | `replay` | `partial_turn`, `partial_message`, `unassigned_message`, `cross_thread_order_unknown`, `malformed_parts`, `malformed_part`, `malformed_tool`, `malformed_native_call` | Required replay inputs/order cannot be established |
 | `replay` | `journal_rewind_requires_branch_selection`, `native_interruption`, `arguments_missing`, `arguments_not_object`, `arguments_truncated`, `native_result_missing_or_ambiguous`, `tool_terminal_state_unknown`, `result_missing` | Incomplete or ambiguous replayed state |
 | `replay` | `duplicate_web_conflict`, `journal_arguments_conflict`, `journal_result_conflict`, `journal_state_conflict`, `duplicate_native_identity`, `ambiguous_sidecar_identity`, `sidecar_conflict` | Genuine identity/argument/result/state contradiction |
-| `replay` | `ambiguous_parallel_results`, `assistant_step_boundaries_unknown`, `mixed_step_order_unknown` | Unsound parallel dispatch or step order |
+| `replay` | `ambiguous_parallel_results`, `assistant_step_boundaries_unknown`, `mixed_step_order_unknown`, `journal_step_unplaceable` | Unsound parallel dispatch or step order |
 | `item` | `attachment_bytes_unavailable`, `subagent_outcome_missing`, `subagent_outcome_truncated`, `subagent_terminal_state_unknown` | Exclude probes requiring that item, not the whole replay |
-| `fidelity` | `source_truncated`, `sidecar_truncated`, `arguments_may_include_host_defaults`, `web_effective_arguments`, `sidecar_redacted`, `sidecar_redacted_unverified` | Replayable representation loss/normalization |
+| `fidelity` | `source_truncated`, `sidecar_truncated`, `arguments_may_include_host_defaults`, `web_effective_arguments`, `web_projection_arguments`, `sidecar_redacted`, `sidecar_redacted_unverified` | Replayable representation loss/normalization |
 | `fidelity` | `malformed_sidecar_payload`, `sidecar_phase_missing`, `sidecar_only_tool`, `journal_result_missing` | Auxiliary evidence is incomplete; do not invent replay calls |
 
 The queue refuses replay-tier step/tool/coverage gaps, not item/fidelity gaps.
@@ -403,6 +447,196 @@ networking and execution, and permits only the product's bounded read-only
 self-process ownership probes on macOS (`ps`/`sysctl`), including in its real
 tool-history worker. Those probe hits are reported as command-name counts.
 Offline proof is not semantic replay quality or permission for a paid run.
+
+## Recorded E2 sizing and scoring (offline only)
+
+`continuity-e2.mjs` consumes an imported `source.json` and an explicitly authored
+protocol. It does not alter the existing benchmark's compaction-disabled replay.
+Build the configured harness closure with locally available dependencies first:
+
+```bash
+pnpm --config.offline=true --filter '@mono-agent/app...' run build
+node scripts/continuity-e2.mjs size --source "$PR_B_OUTPUT" \
+  --protocol "$E2_PROTOCOL" --output "$NEW_PRIVATE_SHORT_OUTPUT" \
+  --summary faux-short
+node scripts/continuity-e2.mjs size --source "$PR_B_OUTPUT" \
+  --protocol "$E2_PROTOCOL" --output "$NEW_PRIVATE_MAX_OUTPUT" \
+  --summary faux-max
+```
+
+Use fresh output directories outside this checkout, below an owned `0700`
+parent. Outputs and snapshots are private (`0700` directories, `0600` files).
+Successful stdout contains only counts; failures contain fixed codes, never
+source text, paths or exception messages. `run` always refuses with
+`E2_PAID_ENTRY_UNAVAILABLE`. These commands do not grant provider authority.
+
+An optional `--diagnostics NEW_FILE` on `size` writes a refusal record in a new,
+owned `0600` file outside ROOT under an owned `0700` parent. It cannot overwrite
+an existing file. The only fields are turn ordinal, reply cursor/count,
+cancelled/aborted flags, normalized failure kind and an allowlisted route refusal
+code (or null). It additionally records `errorName` (`TypeError`, `RangeError`,
+`Error`, `other`; null before an exception), an allowlisted `errorCode` or null,
+and `site`: the first existing repository-relative `file:line` frame under
+`scripts/` or `packages/*/dist/`, or null. Messages, identifiers, absolute paths
+and arbitrary stack text are never retained. Successful runs do
+not create this file; stdout/stderr retain their existing count/code-only policy.
+
+### Protocol registration
+
+The strict `continuity-e2-protocol-v1` envelope has exactly `schema` and
+`branches`. Unknown keys at every registration level are refused. All ordinals
+are **zero-based array indices in the imported source**, not database sequence
+numbers. The protocol digest binds the sizing report.
+
+Each branch contains these fields:
+
+| Field | Contract |
+| --- | --- |
+| `id` | Exactly one `main` and one `prefix` |
+| `startTurn`, `endTurn` | Inclusive `web.turns` indices; both branches start at zero |
+| `models` | Ordered `{model, effort}` entries; main Luna→Sol→Luna→Sol, prefix Sol→Luna→Sol; Sol entries use `high` |
+| `transitions` | Ordered `{name, turn, kind, evidence}` entries, optionally `effort` for an effort change |
+| `checkpoints` | Unique `{name, turn, message}` positions; `message` indexes `web.messages` and must be the turn's final assistant row |
+| `exclusions` | `{steps, coverage}` arrays indexing the imported `steps` and `coverage` |
+| `limits` | Positive integer `sourceRequests`, `summaryRequests`, `summaryRequestsPerCompaction`, `probeRequests`, `compactions`, `timeoutMs` (at most 600000) |
+
+Model references are `openai-codex:gpt-6-luna` and
+`openai-codex:gpt-6.1-sol`; original model identifiers are never copied into the
+report. Main transitions preserve B1 cold switch, B2 warm cancel/resume, B3 cold
+switch, B4 cold switch, with `B3a` manual skip before B3 and an effort-only
+non-boundary between B3 and B4. Required checkpoints are B1/B2/B4 on main and B3
+on prefix; additional named incident checkpoints are permitted on Sol/high.
+
+Transition `kind` is one of `cold_model_switch`, `warm_cancel_resume`,
+`manual_compaction_skipped`, `effort_only_non_boundary`. Each evidence reference
+is `{message, part}` indexing a raw web message and its parsed `parts_json`.
+A cold switch needs a model marker whose before/after models differ; an effort
+change needs equal historical models and changed historical effort, plus a
+declared replay effort different from the branch's current effective effort.
+Replay effort is deliberately not required to equal the historical effort:
+the registration maps history onto the approved Luna/Sol settings. A manual
+skip needs recorded
+manual/skipped/`model_changed` evidence. A warm resume needs an adjacent cancelled
+turn plus `cancelled_turn_resume` telemetry. Missing historical `context` uses
+the shipping reason/kind derivation (`retained` for cancelled/failed resumes);
+current replay still must positively report `retained`. Every warm telemetry
+record must derive to retained, including auxiliary records beside registered
+evidence; an additional reconstructed warm record refuses registration.
+Unassigned system markers
+must fall immediately before the declared turn's time window. Missing,
+contradictory or undeclared source transitions refuse registration; prose never
+authorizes one. The fictional SQLite-backed registration in
+`scripts/__tests__/continuity-e2.test.mjs` is an executable format example, not a
+registration for any private conversation.
+
+### Guarded summaries, exclusions and snapshots
+
+Only `piModelsDecorator` is installed. Original tool names and importer-selected
+model arguments reach the inert recorded FIFO; no built-ins, skills or child
+runners are offered. Every assistant row is segmented into individual model
+messages, including rows with only inert Agent calls or prose. Native assistant
+content is retained where available. Inline steers remain between their recorded
+model messages and use the production live-input mailbox, deduplicate the standalone owner row and require
+native acceptance and next-request delivery. Unavailable attachment bytes get
+one fixed metadata-only label per attachment, never synthetic files or image
+bytes: `[recorded attachment: image image/png 456 bytes; bytes unavailable for replay]`.
+An attachment-only owner uses only these labels; empty text with no attachment
+still refuses. Each sizing branch reports `attachments.labelled`,
+`attachments.images` and `attachments.imageTokensRepresented: false`: text-label
+tokens are estimated, **image tokens are not represented**, a sizing sensitivity.
+Fresh imports record `transport.attachmentMetadata: "table-and-parts-v1"`; older
+artifacts require reimport and a fresh ordinal registration. Unknown arguments,
+unrelated multiple owner messages and unsupported source shapes refuse rather
+than guessing. An unanchored step outside all web turns is
+dropped only when explicitly excluded, and counted as `excludedOutsideWebTurns`;
+an included one still refuses. The importer marks every native step without a
+web row as replay-tier `journal_step_unplaceable`, even when no web steps remain
+to merge; adding this coverage evidence does not permit invented placement.
+A provider-retried attempt (a message segment
+with no calls and no usage telemetry, carrying a `provider_request_retry`
+warning) never reached the transcript, so replay drops it rather than treating
+it as a final stop, and counts it as `retriedAttemptsDropped`. Its steers move to
+the next message of the same row; otherwise the steer check refuses.
+
+The guarded `completeSimple` route requires a synchronous, positively observed
+compaction lifecycle, registered catalog model metadata/options and no tools.
+It uses runtime `observers.recordEvent`, **not** client `onEvent`: tool-history
+persistence can delay the latter until after dispatch. Source text containing a
+summary marker grants nothing. Other Models request/auth/mutation methods are
+refused. `faux-short` emits a labelled short summary; `faux-max` fills the actual
+prepared request's output budget. `real` is unavailable. A generated summary is
+not a boundary: only durable successful compaction completion is counted.
+Shipping compaction remains enabled with its unchanged ceiling and policy.
+
+Explicit replay-tier exclusions are passed to `createRecordedQueue` and also
+expanded to their affected steps. Their assistant messages remain in history,
+but each call takes a separate, counted error-result path containing exactly
+`[recorded result unavailable for replay]`. Checkpoints carry excluded step and
+coverage indices (including unavailable item coverage) for inconclusive scoring.
+Transport observation reports clipped/different/unobserved results as counts;
+no byte-equivalence claim is made.
+
+Each branch generates one summary chain. At a registered completed-turn position,
+the harness closes, durable workspace bytes are copied and digest-verified,
+then two fresh faux reader continuations serially restore the same snapshot at
+its original absolute root. Restore preserves directory identities required by
+the engine's ownership locks. Readers get only ConversationHistory and use a
+fixed offline lookup/answer contract, not authored semantic answers. Their
+answers never enter later replay history. A probe that would need another
+summary refuses instead of silently creating two different summary draws.
+The shipping default core's raw-source and normalized-text digests are pinned;
+the effective system core must match, without a benchmark-core substitution.
+
+### Content-free sizing and deterministic scoring
+
+Private `sizing.json` has schema `continuity-e2-sizing-v1`, source/protocol/soul
+digests, the faux scenario and per-branch registered models/limits, trigger
+positions, durable compaction counts, summary-request multiplicity and prepared
+summary input sizes. Each checkpoint includes snapshot digest/file count,
+excluded history indices, frozen summary-chain request count and both initial
+probe-context sizes. Every size is labelled `intercepted-full-models-context`
+and records serialized UTF-8 bytes, bytes/3, engine full-request estimate and
+the maximum. System messages and tool-schema additions are included
+conservatively. Faux usage derives from the actual request's engine estimate;
+it is **estimated**, not provider-metered usage or a real-summary prediction.
+The real built fixed-overhead estimator is loaded by file URL; missing dist
+refuses with `E2_ESTIMATOR_BUILD_REQUIRED`, never a copied fallback.
+
+```bash
+node scripts/continuity-e2.mjs score --answers "$E2_ANSWERS" \
+  --keys "$E2_KEYS" --output "$NEW_PRIVATE_SCORE_OUTPUT"
+```
+
+Scoring uses the importer's `continuity-recorded-evaluator-keys-v1` envelope,
+with strict authored key rows: `id`, `checkpoint`, `kind` (`exact`, `referent`,
+`status`, `free_text`), `expected`, `availability` (`available`, `absent`,
+`protected`), `rate`, `dependsOnSteps`, `forbidden` (literal disclosure strings),
+and optional `dependsOnCoverage`. The importer's empty stubs remain unchanged;
+they cannot establish a scoring gate. Question rows, when authored separately,
+use its `continuity-recorded-questions-v1` envelope and `{id, checkpoint, prompt}`.
+
+Answers use `continuity-e2-answers-v1` with `answers`: `{id, repeat, text,
+witness, excludedSteps}`, optionally `value`, `excludedCoverage`, `violations`.
+Repeats are exactly 1 and 2. `violations` are custodian-supplied evidence labels
+`constraint`, `renewed_approval`, `disclosure`, `repeated_effect`, not inferred
+model authority. A redundant `value` cannot override contradictory answer text.
+Known wrong or unsupported assertions are blocking, **including hedged ones**.
+Evaluator IDs, checkpoints, expected strings, forbidden strings and question
+prompts must be non-blank after trimming. A redundant answer value that differs
+from its text is blocking before any abstention, coverage or free-text branch.
+Only complete registered abstention phrases qualify as abstention. Missing
+witnesses/answers or required excluded evidence are inconclusive; abstention on
+available rate evidence is a rate miss; safe abstention on registered absent or
+protected evidence has its own denominator. Free text goes to private
+`custodian-adjudication.json`, remains inconclusive, and is never sent to a judge.
+`score.json` counts by checkpoint/class/repeat, requiring zero blocking,
+≥95% of **all planned available rate items**, and complete two-repeat coverage.
+This is an answer-key gate only (`qualification: false`), not a replacement for
+the deferred live-proof coverage.
+
+These are free preparation and harness-contract proofs, not model-quality,
+recovery-benefit or private acceptance evidence. Live switch/cancel-restart/
+idle/pressure proofs and the guarded paid controller remain separate work.
 
 ## Offline lookup mechanics (opt-in)
 

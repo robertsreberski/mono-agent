@@ -89,7 +89,7 @@ export function createRecordedQueue(source, { excludedSteps = [], excludedCovera
       pending: groups.reduce((a, b) => a + b, 0), observations: structuredClone(observations) }; },
   };
 }
-export async function startRecordedTools({ source, definitions, reservedNames, excludedSteps, excludedCoverage } = {}) {
+export async function startRecordedTools({ source, definitions, reservedNames, excludedSteps, excludedCoverage, dispatch } = {}) {
   // Validate all replay data before opening even a loopback listener.
   const tools = recordedDefinitions(source, definitions, reservedNames), queue = createRecordedQueue(source, { excludedSteps, excludedCoverage });
   const [{ Server }, { StreamableHTTPServerTransport }, { CallToolRequestSchema, ListToolsRequestSchema }] = await Promise.all([
@@ -103,7 +103,11 @@ export async function startRecordedTools({ source, definitions, reservedNames, e
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
     response.on("close", () => { void transport.close(); void server.close(); });
     server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools }));
-    server.setRequestHandler(CallToolRequestSchema, async call => queue.dispatch(call.params.name, call.params.arguments));
+    // E2's explicit excluded-result path may wrap dispatch; ordinary PR-B
+    // callers always use the unchanged queue. Validation still precedes listen.
+    server.setRequestHandler(CallToolRequestSchema, async call => dispatch
+      ? dispatch(call.params.name, call.params.arguments, queue)
+      : queue.dispatch(call.params.name, call.params.arguments));
     try {
       if (request.url !== endpoint) { response.writeHead(404); response.end(); return; }
       if (request.headers.origin !== undefined || request.headers.host !== `127.0.0.1:${http.address()?.port}`) { response.writeHead(403); response.end(); return; }

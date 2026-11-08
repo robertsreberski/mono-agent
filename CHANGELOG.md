@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+- Tighten offline continuity registration and scoring: reject no-op effort
+  changes, incomplete checkpoints, contradictory warm telemetry and blank
+  evaluator terms; flag unplaceable journal steps and hidden delegation fields,
+  preserve probe-limit refusals, and block contradictory abstention records.
+
+- Fix continuity observation event ordering to use message creation time and
+  insertion order, rather than parts-write counters or lexical identifiers.
+- Replay attachment-only recorded inputs using metadata-only unavailable labels,
+  recover parent delegation arguments from authoritative invocation records, and
+  include safe exception type, refusal code and repository site in private
+  replay diagnostics. Attachment bytes and image tokens remain unavailable.
+
+- Fix recorded replay ordering and message boundaries, including inert parent
+  delegation calls and live follow-ups, without executing child work. Add
+  optional private, content-free refusal diagnostics. Reimport older source
+  files before replaying; protocol ordinals must bind the corrected import.
+
+- Add an offline recorded-conversation sizing replay with shipping compaction,
+  inert tool results, private checkpoint snapshots and deterministic scoring.
+  Summaries and readers are scripted, not model-quality evidence. Real-model
+  entry stays unavailable; excluded results are visibly labelled, not invented.
+
 - Add an offline importer for explicitly selected read-only conversation
   snapshots, with private source files and a counts-only inventory. It compares
   recorded tool arguments and results across stores and reports missing or

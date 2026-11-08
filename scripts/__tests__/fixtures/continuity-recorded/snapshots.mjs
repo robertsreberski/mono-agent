@@ -7,19 +7,21 @@ export const CONVERSATION = "web:fictional-cedar", AT = "2042-03-01T09:00:00.000
 export const tool = (id = "read-one", result = "Fictional note.", extra = {}) => ({ type: "tool-call", toolCallId: id, toolName: "Read", args: { path: "fictional-note.txt" }, result, status: "complete", ...extra });
 export const boundary = () => ({ type: "telemetry", event: "runtime_telemetry", data: { type: "runtime_telemetry", kind: "assistant_message_boundary", data: {} } });
 export const usage = () => ({ type: "telemetry", event: "runtime_telemetry", data: { type: "runtime_telemetry", kind: "context_usage", data: {} } });
-export function snapshots(dir, { parts = [tool()], status = "complete", sidecar, journal, malformed = false, boundaries = true, pairedResults = true } = {}) {
+export function snapshots(dir, { parts = [tool()], status = "complete", sidecar, journal, malformed = false, boundaries = true, pairedResults = true, attachments = [], userParts = [{ type: "text", text: "Read the fictional note." }], turnText = "Morgan asks about Cedar." } = {}) {
   if (boundaries && !parts.some(p => p?.data?.kind === "assistant_message_boundary")) parts = [boundary(), ...parts];
   const web = join(dir, "web.sqlite"), db = new DatabaseSync(web);
   db.exec(`PRAGMA user_version=43;
     CREATE TABLE threads(id TEXT PRIMARY KEY,source_id TEXT,conversation_id TEXT,trigger_kind TEXT,title TEXT);
     CREATE TABLE turns(id TEXT PRIMARY KEY,thread_id TEXT,status TEXT,started_at TEXT,finished_at TEXT,text TEXT,error_message TEXT);
+    CREATE TABLE attachments(id TEXT PRIMARY KEY,thread_id TEXT,message_id TEXT,name TEXT,content_type TEXT,size_bytes INTEGER,kind TEXT,status TEXT,uploaded INTEGER,storage_name TEXT,created_at TEXT,updated_at TEXT,origin TEXT);
     CREATE TABLE messages(id TEXT PRIMARY KEY,thread_id TEXT,turn_id TEXT,role TEXT,parts_json TEXT,created_at TEXT,updated_at TEXT,status TEXT,seq INTEGER,cron_suppressed INTEGER);
   `);
   db.prepare("INSERT INTO threads VALUES(?,?,?,?,?)").run("thread-one", "fictional-agent", CONVERSATION, null, "Cedar notes");
-  db.prepare("INSERT INTO turns VALUES(?,?,?,?,?,?,?)").run("turn-one", "thread-one", status, AT, status === "running" ? null : AT, "Morgan asks about Cedar.", status === "failed" ? "Fictional failure" : null);
+  db.prepare("INSERT INTO turns VALUES(?,?,?,?,?,?,?)").run("turn-one", "thread-one", status, AT, status === "running" ? null : AT, turnText, status === "failed" ? "Fictional failure" : null);
   const msg = db.prepare("INSERT INTO messages VALUES(?,?,?,?,?,?,?,?,?,?)");
-  msg.run("user-one", "thread-one", "turn-one", "user", '[{"type":"text","text":"Read the fictional note."}]', AT, AT, "complete", 1, 0);
+  msg.run("user-one", "thread-one", "turn-one", "user", JSON.stringify(userParts), AT, AT, "complete", 1, 0);
   msg.run("assistant-one", "thread-one", "turn-one", "assistant", malformed ? "{bad fictional parts" : JSON.stringify(parts), AT, AT, status, 2, 0);
+  for (const a of attachments) db.prepare("INSERT INTO attachments VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)").run(a.id, a.threadId ?? "thread-one", a.messageId ?? "user-one", a.name ?? "fictional-file", a.contentType, a.sizeBytes, a.kind, "complete", 1, a.storageName ?? "never-open-fictional-file", a.createdAt ?? AT, a.createdAt ?? AT, "upload");
   db.close();
   const manifest = { schema: "continuity-recorded-manifest-v1", web, agent: "fictional-agent" };
   if (sidecar) {

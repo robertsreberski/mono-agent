@@ -28,7 +28,7 @@ export function statements(db) {
   return {
     threads: db.prepare("SELECT id,source_id,conversation_id,trigger_kind FROM threads ORDER BY id"),
     turns: db.prepare("SELECT id,status,started_at,finished_at FROM turns WHERE thread_id=? AND started_at>=? AND started_at<? ORDER BY started_at,id"),
-    messages: db.prepare("SELECT id,role,status,seq,cron_suppressed FROM messages WHERE turn_id=? ORDER BY seq,id"),
+    messages: db.prepare("SELECT id,role,status,seq,cron_suppressed FROM messages WHERE turn_id=? ORDER BY created_at,rowid"),
     parts: db.prepare(`SELECT CASE WHEN length(CAST(parts_json AS BLOB))<=${MAX_ROW_BYTES} THEN parts_json ELSE NULL END AS parts_json, CASE WHEN length(CAST(parts_json AS BLOB))>${MAX_ROW_BYTES} THEN 1 ELSE 0 END AS oversized FROM messages WHERE id=?`),
     owner: db.prepare("SELECT 1 FROM messages WHERE turn_id=? AND role='user' AND cron_suppressed=0 LIMIT 1"),
     unassigned: db.prepare("SELECT id,role,status,seq,cron_suppressed,created_at,turn_id FROM messages WHERE thread_id=? AND created_at>=? AND created_at<? AND (turn_id IS NULL OR NOT EXISTS (SELECT 1 FROM turns WHERE turns.id=messages.turn_id)) ORDER BY id"),
