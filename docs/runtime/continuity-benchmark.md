@@ -404,6 +404,156 @@ self-process ownership probes on macOS (`ps`/`sysctl`), including in its real
 tool-history worker. Those probe hits are reported as command-name counts.
 Offline proof is not semantic replay quality or permission for a paid run.
 
+## Recorded E2 sizing and scoring (offline only)
+
+`continuity-e2.mjs` consumes an imported `source.json` and an explicitly authored
+protocol. It does not alter the existing benchmark's compaction-disabled replay.
+Build the configured harness closure with locally available dependencies first:
+
+```bash
+pnpm --config.offline=true --filter '@mono-agent/app...' run build
+node scripts/continuity-e2.mjs size --source "$PR_B_OUTPUT" \
+  --protocol "$E2_PROTOCOL" --output "$NEW_PRIVATE_SHORT_OUTPUT" \
+  --summary faux-short
+node scripts/continuity-e2.mjs size --source "$PR_B_OUTPUT" \
+  --protocol "$E2_PROTOCOL" --output "$NEW_PRIVATE_MAX_OUTPUT" \
+  --summary faux-max
+```
+
+Use fresh output directories outside this checkout, below an owned `0700`
+parent. Outputs and snapshots are private (`0700` directories, `0600` files).
+Successful stdout contains only counts; failures contain fixed codes, never
+source text, paths or exception messages. `run` always refuses with
+`E2_PAID_ENTRY_UNAVAILABLE`. These commands do not grant provider authority.
+
+### Protocol registration
+
+The strict `continuity-e2-protocol-v1` envelope has exactly `schema` and
+`branches`. Unknown keys at every registration level are refused. All ordinals
+are **zero-based array indices in the imported source**, not database sequence
+numbers. The protocol digest binds the sizing report.
+
+Each branch contains these fields:
+
+| Field | Contract |
+| --- | --- |
+| `id` | Exactly one `main` and one `prefix` |
+| `startTurn`, `endTurn` | Inclusive `web.turns` indices; both branches start at zero |
+| `models` | Ordered `{model, effort}` entries; main Luna→Sol→Luna→Sol, prefix Sol→Luna→Sol; Sol entries use `high` |
+| `transitions` | Ordered `{name, turn, kind, evidence}` entries, optionally `effort` for an effort change |
+| `checkpoints` | Unique `{name, turn, message}` positions; `message` indexes `web.messages` and must be the turn's final assistant row |
+| `exclusions` | `{steps, coverage}` arrays indexing the imported `steps` and `coverage` |
+| `limits` | Positive integer `sourceRequests`, `summaryRequests`, `summaryRequestsPerCompaction`, `probeRequests`, `compactions`, `timeoutMs` (at most 600000) |
+
+Model references are `openai-codex:gpt-6-luna` and
+`openai-codex:gpt-6.1-sol`; original model identifiers are never copied into the
+report. Main transitions preserve B1 cold switch, B2 warm cancel/resume, B3 cold
+switch, B4 cold switch, with `B3a` manual skip before B3 and an effort-only
+non-boundary between B3 and B4. Required checkpoints are B1/B2/B4 on main and B3
+on prefix; additional named incident checkpoints are permitted on Sol/high.
+
+Transition `kind` is one of `cold_model_switch`, `warm_cancel_resume`,
+`manual_compaction_skipped`, `effort_only_non_boundary`. Each evidence reference
+is `{message, part}` indexing a raw web message and its parsed `parts_json`.
+A cold switch needs a model marker whose before/after models differ; an effort
+change needs equal models and changed effort. A manual skip needs recorded
+manual/skipped/`model_changed` evidence. A warm resume needs an adjacent cancelled
+turn plus retained `cancelled_turn_resume` telemetry. Unassigned system markers
+must fall immediately before the declared turn's time window. Missing,
+contradictory or undeclared source transitions refuse registration; prose never
+authorizes one. The fictional SQLite-backed registration in
+`scripts/__tests__/continuity-e2.test.mjs` is an executable format example, not a
+registration for any private conversation.
+
+### Guarded summaries, exclusions and snapshots
+
+Only `piModelsDecorator` is installed. Original tool names and importer-selected
+model arguments reach the inert recorded FIFO; no built-ins, skills or child
+agents are offered. Source replies retain native assistant content where
+available, or the indexed web step and trailing prose. Inline steers use the
+production live-input mailbox, deduplicate the standalone owner row and require
+native acceptance and next-request delivery. Unavailable attachment bytes get
+an explicit unavailable label, never synthetic image bytes. Unanchored native
+steps, unknown arguments, unrelated multiple owner messages and unsupported
+source shapes refuse rather than guessing.
+
+The guarded `completeSimple` route requires a synchronous, positively observed
+compaction lifecycle, registered catalog model metadata/options and no tools.
+It uses runtime `observers.recordEvent`, **not** client `onEvent`: tool-history
+persistence can delay the latter until after dispatch. Source text containing a
+summary marker grants nothing. Other Models request/auth/mutation methods are
+refused. `faux-short` emits a labelled short summary; `faux-max` fills the actual
+prepared request's output budget. `real` is unavailable. A generated summary is
+not a boundary: only durable successful compaction completion is counted.
+Shipping compaction remains enabled with its unchanged ceiling and policy.
+
+Explicit replay-tier exclusions are passed to `createRecordedQueue` and also
+expanded to their affected steps. Their assistant messages remain in history,
+but each call takes a separate, counted error-result path containing exactly
+`[recorded result unavailable for replay]`. Checkpoints carry excluded step and
+coverage indices (including unavailable item coverage) for inconclusive scoring.
+Transport observation reports clipped/different/unobserved results as counts;
+no byte-equivalence claim is made.
+
+Each branch generates one summary chain. At a registered completed-turn position,
+the harness closes, durable workspace bytes are copied and digest-verified,
+then two fresh faux reader continuations serially restore the same snapshot at
+its original absolute root. Restore preserves directory identities required by
+the engine's ownership locks. Readers get only ConversationHistory and use a
+fixed offline lookup/answer contract, not authored semantic answers. Their
+answers never enter later replay history. A probe that would need another
+summary refuses instead of silently creating two different summary draws.
+The shipping default core's raw-source and normalized-text digests are pinned;
+the effective system core must match, without a benchmark-core substitution.
+
+### Content-free sizing and deterministic scoring
+
+Private `sizing.json` has schema `continuity-e2-sizing-v1`, source/protocol/soul
+digests, the faux scenario and per-branch registered models/limits, trigger
+positions, durable compaction counts, summary-request multiplicity and prepared
+summary input sizes. Each checkpoint includes snapshot digest/file count,
+excluded history indices, frozen summary-chain request count and both initial
+probe-context sizes. Every size is labelled `intercepted-full-models-context`
+and records serialized UTF-8 bytes, bytes/3, engine full-request estimate and
+the maximum. System messages and tool-schema additions are included
+conservatively. Faux usage derives from the actual request's engine estimate;
+it is **estimated**, not provider-metered usage or a real-summary prediction.
+The real built fixed-overhead estimator is loaded by file URL; missing dist
+refuses with `E2_ESTIMATOR_BUILD_REQUIRED`, never a copied fallback.
+
+```bash
+node scripts/continuity-e2.mjs score --answers "$E2_ANSWERS" \
+  --keys "$E2_KEYS" --output "$NEW_PRIVATE_SCORE_OUTPUT"
+```
+
+Scoring uses the importer's `continuity-recorded-evaluator-keys-v1` envelope,
+with strict authored key rows: `id`, `checkpoint`, `kind` (`exact`, `referent`,
+`status`, `free_text`), `expected`, `availability` (`available`, `absent`,
+`protected`), `rate`, `dependsOnSteps`, `forbidden` (literal disclosure strings),
+and optional `dependsOnCoverage`. The importer's empty stubs remain unchanged;
+they cannot establish a scoring gate. Question rows, when authored separately,
+use its `continuity-recorded-questions-v1` envelope and `{id, checkpoint, prompt}`.
+
+Answers use `continuity-e2-answers-v1` with `answers`: `{id, repeat, text,
+witness, excludedSteps}`, optionally `value`, `excludedCoverage`, `violations`.
+Repeats are exactly 1 and 2. `violations` are custodian-supplied evidence labels
+`constraint`, `renewed_approval`, `disclosure`, `repeated_effect`, not inferred
+model authority. A redundant `value` cannot override contradictory answer text.
+Known wrong or unsupported assertions are blocking, **including hedged ones**.
+Only complete registered abstention phrases qualify as abstention. Missing
+witnesses/answers or required excluded evidence are inconclusive; abstention on
+available rate evidence is a rate miss; safe abstention on registered absent or
+protected evidence has its own denominator. Free text goes to private
+`custodian-adjudication.json`, remains inconclusive, and is never sent to a judge.
+`score.json` counts by checkpoint/class/repeat, requiring zero blocking,
+≥95% of **all planned available rate items**, and complete two-repeat coverage.
+This is an answer-key gate only (`qualification: false`), not a replacement for
+the deferred live-proof coverage.
+
+These are free preparation and harness-contract proofs, not model-quality,
+recovery-benefit or private acceptance evidence. Live switch/cancel-restart/
+idle/pressure proofs and the guarded paid controller remain separate work.
+
 ## Offline lookup mechanics (opt-in)
 
 Recall-only remains the default: omitting `--probe-mode` preserves its prompt

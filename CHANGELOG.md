@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Add an offline recorded-conversation sizing replay with shipping compaction,
+  inert tool results, private checkpoint snapshots and deterministic scoring.
+  Summaries and readers are scripted, not model-quality evidence. Real-model
+  entry stays unavailable; excluded results are visibly labelled, not invented.
+
 - Add an offline importer for explicitly selected read-only conversation
   snapshots, with private source files and a counts-only inventory. It compares
   recorded tool arguments and results across stores and reports missing or

@@ -1,0 +1,300 @@
+import { afterEach, expect, it, vi } from "vitest";
+import fs from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync, rmSync, existsSync } from "node:fs";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { DatabaseSync } from "node:sqlite";
+import { Socket } from "node:net";
+import workerThreads from "node:worker_threads";
+import { syncBuiltinESMExports } from "node:module";
+import ts from "typescript";
+import { ROOT } from "../lib/continuity-observation-input.mjs";
+import { readRecordedSource } from "../lib/continuity-recorded-import.mjs";
+import { createRecordedQueue } from "../lib/continuity-recorded-tools.mjs";
+import { snapshots, CONVERSATION, AT, tool } from "./fixtures/continuity-recorded/snapshots.mjs";
+import { installProcessGuard } from "./fixtures/continuity-recorded/process-guard.mjs";
+import { LUNA, SOL, validateProtocol } from "../lib/continuity-e2-protocol.mjs";
+import { createE2Models, loadE2Estimators, shippingSoul, sizeContext, assertEffectiveSoul } from "../lib/continuity-e2-models.mjs";
+import { excludedDispatch, freezeCheckpoint, restoreCheckpoint, treeReceipt, runE2Sizing, PLACEHOLDER } from "../lib/continuity-e2-replay.mjs";
+import { scoreE2 } from "../lib/continuity-e2-score.mjs";
+import { parseE2Args, main, USAGE } from "../continuity-e2.mjs";
+const cleanup = [];
+afterEach(async () => {
+  const errors = [];
+  for (const fn of cleanup.splice(0).reverse()) try { await fn(); } catch (e) { errors.push(e); }
+  vi.restoreAllMocks(); syncBuiltinESMExports(); vi.unstubAllGlobals(); vi.unstubAllEnvs();
+  if (errors.length) throw new AggregateError(errors);
+}, 60_000);
+function scratch() {
+  const parent = join(ROOT, ".worklab-tmp"); mkdirSync(parent, { recursive: true });
+  const dir = mkdtempSync(join(parent, "e2-fictional-")); cleanup.push(() => rm(dir, { recursive: true, force: true })); return dir;
+}
+const limits = () => ({ sourceRequests: 40, summaryRequests: 20, summaryRequestsPerCompaction: 2, probeRequests: 24, compactions: 20, timeoutMs: 30_000 });
+const modelMarker = (same = false) => ({ type: "conversation-marker", kind: "model", at: AT,
+  before: { model: "fictional-a", effort: "high" }, after: { model: same ? "fictional-a" : "fictional-b", effort: "xhigh" } });
+async function trace({ padding = false, steer = false } = {}) {
+  const dir = scratch(), f = snapshots(dir), db = new DatabaseSync(f.web);
+  db.exec("DELETE FROM turns; DELETE FROM messages;");
+  for (let i = 0; i < 8; i++) {
+    const status = i === 2 ? "cancelled" : "complete", id = `turn-${i}`;
+    db.prepare("INSERT INTO turns VALUES(?,?,?,?,?,?,?)").run(id, "thread-one", status, AT, AT, "Fictional request", null);
+    db.prepare("INSERT INTO messages VALUES(?,?,?,?,?,?,?,?,?,?)").run(`user-${i}`, "thread-one", id, "user", JSON.stringify([{ type: "text", text: `Fictional request ${i}` }]), AT, AT, "complete", i * 2, 0);
+    const marker = [1, 5, 7].includes(i) ? modelMarker() : i === 3 ? { type: "telemetry", data: { type: "session_boundary", kind: "resume_replay", context: "retained", reason: "cancelled_turn_resume" } }
+      : i === 4 ? { type: "conversation-marker", kind: "compaction", at: AT, trigger: "manual", status: "skipped", reason: "model_changed" } : i === 6 ? modelMarker(true) : null;
+    const body = [{ type: "text", text: `Fictional response ${i}` }];
+    if (marker) body.unshift(marker);
+    if (i === 0) body.push({ type: "telemetry", data: { kind: "assistant_message_boundary" } }, tool("fixture-call", "Fictional inert note."), { type: "text", text: "Fictional read completed." });
+    if (padding && i === 4) for (let j = 0; j < 24; j++) body.push({ type: "text", text: `Fictional source step ${j}` },
+      { type: "telemetry", data: { kind: "context_usage" } }, tool(`pressure-${j}`, "Fictional source canary. ".repeat(1700), { args: { path: `fictional-${j}.txt` } }));
+    if (padding && i === 4) body.push({ type: "text", text: "Fictional pressure reads completed." });
+    if (steer && i === 0) {
+      body.splice(body.length - 1, 0, { type: "subagent", toolCallId: "fictional-child", status: "complete", result: "Fictional parent-visible child outcome." });
+      body.splice(body.length - 1, 0, { type: "steer", inputId: "fictional-steer", messageId: "z-steered-owner", text: "Fictional live follow-up" });
+      db.prepare("INSERT INTO messages VALUES(?,?,?,?,?,?,?,?,?,?)").run("z-steered-owner", "thread-one", id, "user", JSON.stringify([{ type: "text", text: "Fictional live follow-up" }]), AT, AT, "complete", 1, 0);
+    }
+    db.prepare("INSERT INTO messages VALUES(?,?,?,?,?,?,?,?,?,?)").run(`assistant-${i}`, "thread-one", id, "assistant", JSON.stringify(body), AT, AT, status, i * 2 + 1, 0);
+  }
+  db.close();
+  const { source } = await readRecordedSource(f.manifest, CONVERSATION);
+  const transitions = [
+    { name: "B1", turn: 1, kind: "cold_model_switch", evidence: [{ message: 3, part: 0 }] },
+    { name: "B2", turn: 3, kind: "warm_cancel_resume", evidence: [{ message: 7, part: 0 }] },
+    { name: "B3a", turn: 4, kind: "manual_compaction_skipped", evidence: [{ message: 9, part: 0 }] },
+    { name: "B3", turn: 5, kind: "cold_model_switch", evidence: [{ message: 11, part: 0 }] },
+    { name: "effort", turn: 6, kind: "effort_only_non_boundary", effort: "xhigh", evidence: [{ message: 13, part: 0 }] },
+    { name: "B4", turn: 7, kind: "cold_model_switch", evidence: [{ message: 15, part: 0 }] },
+  ];
+  if (steer) for (const t of transitions) for (const e of t.evidence) e.message++;
+  const shift = steer ? 1 : 0;
+  const protocol = { schema: "continuity-e2-protocol-v1", branches: [
+    { id: "main", startTurn: 0, endTurn: 7, models: [LUNA, SOL, LUNA, SOL].map(model => ({ model, effort: "high" })), transitions,
+      checkpoints: [1, 3, 7].map((turn, i) => ({ name: ["B1", "B2", "B4"][i], turn, message: turn * 2 + 1 + shift })), exclusions: { steps: [0], coverage: source.coverage.map((_, i) => i) }, limits: limits() },
+    { id: "prefix", startTurn: 0, endTurn: 5, models: [SOL, LUNA, SOL].map(model => ({ model, effort: "high" })), transitions: transitions.filter(t => t.turn <= 5),
+      checkpoints: [{ name: "B3", turn: 5, message: 11 + shift }], exclusions: { steps: [0], coverage: source.coverage.map((_, i) => i) }, limits: limits() },
+  ] };
+  return { source, protocol, dir };
+}
+it("loads the actual shipping estimator without a copy or fallback", async () => {
+  const e = await loadE2Estimators();
+  expect(e.estimateFixedOverheadTokens({ systemPrompt: "1234", tools: [], messages: [] })).toEqual({ systemPromptTokens: 1, toolSchemaTokens: 0, userMessageTokens: 0, fixedOverheadTokens: 1 });
+  expect(e.resolveAgentCompactionPolicy({}, { contextWindow: 400_000 })).toMatchObject({ enabled: true, triggerTokens: 200_000, maxInputTokens: 200_000 });
+  const size = sizeContext({ systemPrompt: "1234", messages: [{ role: "user", content: "Fictional" }] }, e);
+  expect(size.maximum).toBe(Math.max(size.engineFullRequest, size.serializedBytesOver3));
+});
+it("validates registered ordinals, models, kinds and evidence instead of source prose", async () => {
+  const { source, protocol } = await trace(); expect(validateProtocol(protocol, source)).toEqual(protocol);
+  for (const change of [p => p.extra = true, p => p.branches[0].limits.extra = 1, p => p.branches[0].transitions[0].turn = 90,
+    p => p.branches[0].transitions[0].evidence[0].part = 1, p => p.branches[0].models[0].model = SOL,
+    p => p.branches[0].checkpoints[0].message = 100, p => p.branches[0].transitions[1].kind = "cold_model_switch"]) {
+    const p = structuredClone(protocol); change(p); expect(() => validateProtocol(p, source)).toThrow("E2_PROTOCOL_INVALID");
+  }
+  const s = structuredClone(source); s.web.turns[2].status = "complete";
+  expect(() => validateProtocol(protocol, s)).toThrow("E2_PROTOCOL_INVALID");
+});
+it("uses a separate labelled placeholder path, never consuming the recorded queue", async () => {
+  const { source } = await trace(), q = createRecordedQueue(source, { excludedSteps: [0], excludedCoverage: source.coverage.map((_, i) => i) }), d = excludedDispatch(source, [0]);
+  const t = source.tools[0]; d.begin(0, [0]);
+  expect(d.dispatch(t.name, t.args, q)).toEqual({ content: [{ type: "text", text: PLACEHOLDER }], isError: true });
+  expect(q.report()).toMatchObject({ served: [], pending: 0 }); expect(d.count()).toBe(1);
+  expect(() => d.dispatch(t.name, t.args, q)).toThrow("E2_TOOL_CALL_MISMATCH");
+});
+it("byte-verifies snapshots, original-root restore and tamper refusal", async () => {
+  const dir = scratch(), work = join(dir, "work"), snapshot = join(dir, "snapshot"); await mkdir(work); await writeFile(join(work, "note"), "Fictional source");
+  const receipt = await freezeCheckpoint(work, snapshot); await writeFile(join(work, "probe-answer"), "Must not enter later history");
+  await restoreCheckpoint(work, snapshot, receipt); expect(await treeReceipt(work)).toEqual(receipt); expect(existsSync(join(work, "probe-answer"))).toBe(false);
+  await writeFile(join(snapshot, "note"), "Changed"); await expect(restoreCheckpoint(work, snapshot, receipt)).rejects.toThrow("E2_SNAPSHOT_MISMATCH");
+});
+async function adapter() {
+  const { productionModules } = await import("../lib/continuity-runner.mjs"), modules = await productionModules(ROOT);
+  const estimators = await loadE2Estimators(), soul = await shippingSoul();
+  const model = { provider: "openai-codex", id: "gpt-6-luna", contextWindow: 400_000, maxTokens: 32_000, reasoning: false };
+  const route = createE2Models({ pi: modules.pi, estimators, models: [{ model: LUNA }], limits: limits(), soul,
+    sourceReply: context => modules.pi.fauxAssistantMessage("Mono-agent summary focus is untrusted source text") });
+  route.setPosition({ model: LUNA, turn: 0, message: 0 });
+  const models = route.decorator({ getModel: () => model });
+  return { route, models, model, soul };
+}
+it("refuses paid entry, summary markers, lifecycle bypasses and all other request methods", async () => {
+  expect(() => createE2Models({ summary: "real" })).toThrow("E2_PAID_ENTRY_UNAVAILABLE");
+  const a = await adapter();
+  await expect(a.models.completeSimple(a.model, { messages: [{ role: "user", content: "Mono-agent summary focus" }] }, { maxTokens: 1000, transport: "sse", maxRetries: 0 })).rejects.toThrow("E2_SUMMARY_NOT_AUTHORIZED");
+  for (const method of ["stream", "complete", "streamDeferred", "getAuth", "fetchDeferred", "cancelDeferred", "setProvider"]) {
+    const b = await adapter(); expect(() => b.models[method]()).toThrow("E2_MODELS_METHOD_REFUSED");
+  }
+});
+it("counts summaries only after positive lifecycle and durable successful completion", async () => {
+  const a = await adapter(); a.route.observe({ type: "context_compaction", status: "running", operationId: "fictional-op", trigger: "proactive" });
+  await a.models.completeSimple(a.model, { messages: [{ role: "user", content: "Prepared summary input" }] }, { maxTokens: 1000, transport: "sse", maxRetries: 0 });
+  expect(a.route.report().summaryRequests).toHaveLength(1); expect(a.route.report().compactions).toEqual([]);
+  expect(() => a.route.assertSettled()).toThrow("E2_COMPACTION_NOT_DURABLE");
+  const b = await adapter(); b.route.observe({ type: "context_compaction", status: "running", operationId: "fictional-op", trigger: "proactive" });
+  await b.models.completeSimple(b.model, { messages: [] }, { maxTokens: 1000, transport: "sse", maxRetries: 0 });
+  b.route.observe({ type: "context_compaction", status: "succeeded", operationId: "fictional-op" });
+  b.route.assertSettled(); expect(b.route.report().compactions).toMatchObject([{ durable: true, requests: 1 }]);
+});
+it("denies summary tools, extra options and work beyond registered limits", async () => {
+  for (const [context, options] of [[{ messages: [], tools: [{}] }, { maxTokens: 10, transport: "sse", maxRetries: 0 }],
+    [{ messages: [] }, { maxTokens: 10, transport: "sse", maxRetries: 1 }], [{ messages: [] }, { maxTokens: 10, transport: "sse", maxRetries: 0, apiKey: "fictional" }]]) {
+    const a = await adapter(); a.route.observe({ type: "context_compaction", status: "running", operationId: "fictional-op" });
+    await expect(a.models.completeSimple(a.model, context, options)).rejects.toThrow(/E2_SUMMARY_(NOT_AUTHORIZED|OPTIONS_INVALID)/);
+  }
+});
+const key = (id, extra = {}) => ({ id, checkpoint: "B1", kind: "exact", expected: "Cedar", availability: "available", rate: true, dependsOnSteps: [], forbidden: [], ...extra });
+const answer = (id, text, extra = {}) => ({ id, repeat: 1, text, witness: true, excludedSteps: [], ...extra });
+function scored(keys, answers) { return scoreE2({ schema: "continuity-e2-answers-v1", answers }, { schema: "continuity-recorded-evaluator-keys-v1", keys }); }
+it("classifies hedged unsupported assertions as blocking, separately from misses, unavailable evidence and safe abstentions", () => {
+  const keys = [key("wrong"), key("miss"), key("excluded", { dependsOnSteps: [0] }), key("safe", { availability: "protected", expected: null, rate: false }), key("free", { kind: "free_text" })];
+  const result = scored(keys, [answer("wrong", "Maybe it is Birch"), answer("miss", "I don't know"), answer("excluded", "Cedar", { excludedSteps: [0] }), answer("safe", "I cannot disclose that"), answer("free", "Fictional explanation")]);
+  expect(result.report.totals).toMatchObject({ blocking: 1, rateMiss: 1, expectedSafe: 1, inconclusive: 7 });
+  expect(result.report.gate).toBe(false); expect(result.adjudication.items).toHaveLength(1);
+});
+it("requires complete two-repeat coverage and 95% of all planned rate items", () => {
+  const keys = Array.from({ length: 10 }, (_, i) => key(`k${i}`)), all = keys.flatMap(k => [1, 2].map(repeat => answer(k.id, "Cedar", { repeat })));
+  expect(scored(keys, all).report).toMatchObject({ gate: true, rate: 1, complete: true });
+  all[0].text = "unknown"; expect(scored(keys, all).report).toMatchObject({ gate: true, rate: 0.95 });
+  all[1].text = "unknown"; expect(scored(keys, all).report).toMatchObject({ gate: false, rate: 0.9 });
+  expect(scored(keys, all.slice(1)).report.complete).toBe(false);
+  expect(scored([key("contradiction")], [answer("contradiction", "Maybe Birch", { value: "Cedar" })]).report.totals.blocking).toBe(1);
+  all[0].text = "Cedar"; all[0].violations = ["renewed_approval"]; expect(scored(keys, all).report.totals.blocking).toBe(1);
+});
+it("prints fixed usage/refusal codes and never echoes private arguments", async () => {
+  const stdout = [], stderr = [], io = { stdout: s => stdout.push(s), stderr: s => stderr.push(s) };
+  expect(await main(["--help"], io)).toBe(0); expect(stdout.join("")).toBe(`${USAGE}\n`);
+  expect(await main(["run", "--source", "fictional-private-canary"], io)).toBe(1); expect(stderr.pop()).toBe("E2_PAID_ENTRY_UNAVAILABLE\n");
+  expect(await main(["size", "--source", "fictional-private-canary"], io)).toBe(1); expect(stderr.pop()).toBe(`${USAGE}\n`);
+  expect(() => parseE2Args(["size", "--source", "a", "--protocol", "p", "--output", "b", "--summary", "real"])).toThrow("E2_ARGUMENTS_INVALID");
+});
+
+it.each(["faux-short", "faux-max"])("replays configured shipping compaction with %s, registered boundaries and two uncontaminated snapshot probes", async summary => {
+  const { source, protocol, dir } = await trace({ padding: true, steer: true });
+  for (const key of ["HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME", "XDG_DATA_HOME", "XDG_CONFIG_HOME"]) vi.stubEnv(key, dir);
+  const rejected = [], connect = Socket.prototype.connect;
+  vi.spyOn(Socket.prototype, "connect").mockImplementation(function (...args) {
+    const input = Array.isArray(args[0]) ? args[0][0] : args[0], host = input?.host ?? input?.hostname ?? args[1];
+    if (host !== "127.0.0.1") { rejected.push("socket"); throw Error("fictional_egress_denied"); }
+    return connect.apply(this, args);
+  });
+  const realFetch = globalThis.fetch;
+  vi.stubGlobal("fetch", (url, init) => { if (new URL(String(url)).hostname !== "127.0.0.1") { rejected.push("fetch"); throw Error("fictional_egress_denied"); } return realFetch(url, init); });
+  vi.stubGlobal("WebSocket", class { constructor() { throw Error("fictional_egress_denied"); } });
+  const hits = [], refusals = [], workerErrors = []; cleanup.push(installProcessGuard({ hit: c => hits.push(c), refuse: () => refusals.push("process") }));
+  const RealWorker = workerThreads.Worker; let ready = 0;
+  const workerSpy = vi.spyOn(workerThreads, "Worker").mockImplementation(function (url, options = {}) {
+    if (!String(url).endsWith("/packages/conversation/dist/tool-history/writer-worker.js")) throw Error("fictional_worker_denied");
+    const { port1, port2 } = new workerThreads.MessageChannel(); cleanup.push(() => port1.close());
+    port1.on("message", m => m.kind === "ready" ? ready++ : m.kind === "allowed" ? hits.push(m.command) : refusals.push("worker"));
+    const w = new RealWorker(url, { ...options, workerData: { ...options.workerData, recordedTestGuardPort: port2 }, transferList: [...(options.transferList ?? []), port2], execArgv: [...(options.execArgv ?? process.execArgv), "--import", new URL("./fixtures/continuity-recorded/worker-guard.mjs", import.meta.url).href] });
+    w.on("error", e => workerErrors.push(e.message)); return w;
+  }); syncBuiltinESMExports();
+  const contexts = [];
+  const report = await runE2Sizing({ source, protocol, output: join(dir, "output"), summary, onContext: c => contexts.push(c) });
+  expect(report.branches).toHaveLength(2);
+  for (const branch of report.branches) {
+    expect(branch.compactions.length).toBeGreaterThan(0); expect(branch.summaryRequests.length).toBeGreaterThan(0);
+    expect(branch.compactions.every(c => c.trigger === "proactive" && c.policy.triggerTokens === 200_000)).toBe(true);
+    expect(branch.placeholderCalls).toBe(1); expect(branch.steerCount).toBe(1);
+    expect(branch.transport.observed).toBeGreaterThan(0);
+    for (const cp of branch.checkpoints) {
+      expect(cp.excludedStepsInHistory).toEqual([0]); expect(cp.probes).toHaveLength(2);
+      expect(cp.probes[0].snapshotDigest).toBe(cp.probes[1].snapshotDigest);
+      expect(cp.probes[0].initialContext).toEqual(cp.probes[1].initialContext);
+    }
+  }
+  const largestSource = Math.max(...contexts.filter(c => !c.probe).map(c => Buffer.byteLength(JSON.stringify(c.context))));
+  expect(report.branches.flatMap(b => b.summaryRequests).every(r => r.size.serializedBytes < largestSource)).toBe(true);
+  expect(report.branches[0].boundaries.map(b => b.kind)).toEqual(["cold_model_switch", "warm_cancel_resume", "manual_compaction_skipped", "cold_model_switch", "effort_only_non_boundary", "cold_model_switch"]);
+  expect(report.branches[0].models.map(m => m.model)).toEqual([LUNA, SOL, LUNA, SOL]);
+  expect(report.branches[1].models.map(m => m.model)).toEqual([SOL, LUNA, SOL]);
+  expect(JSON.stringify(report)).not.toContain("Fictional source canary"); expect(JSON.stringify(report)).not.toContain(source.conversationId);
+  const later = contexts.filter(c => !c.probe).map(c => JSON.stringify(c.context));
+  expect(later.every(c => !c.includes("Faux probe continuation"))).toBe(true);
+  expect(later.some(c => c.includes(PLACEHOLDER))).toBe(true);
+  expect(later.some(c => c.includes("Fictional parent-visible child outcome."))).toBe(true);
+  expect(workerSpy).toHaveBeenCalled(); expect(ready).toBe(workerSpy.mock.calls.length); expect(workerErrors).toEqual([]);
+  expect(rejected).toEqual([]); expect(refusals).toEqual([]); expect(hits.every(c => ["ps", "sysctl"].includes(c))).toBe(true);
+}, 180_000);
+
+it("refuses missing built estimator even when an earlier import was cached", async () => {
+  await loadE2Estimators();
+  const real = fs.existsSync;
+  vi.spyOn(fs, "existsSync").mockImplementation(path => String(path).endsWith("/packages/turn/dist/agent/compaction.js") ? false : real(path));
+  syncBuiltinESMExports();
+  await expect(loadE2Estimators()).rejects.toThrow("E2_ESTIMATOR_BUILD_REQUIRED");
+});
+it("pins the effective core, not an occurrence in untrusted owner text", async () => {
+  const soul = await shippingSoul(); expect(soul.rawDigest).toMatch(/^[a-f0-9]{64}$/);
+  assertEffectiveSoul({ messages: [{ role: "system", content: `## Core Guardrails\n\n${soul.text}\n\n## Identity\n\nFictional` }] }, soul);
+  expect(() => assertEffectiveSoul({ messages: [{ role: "user", content: `## Core Guardrails\n\n${soul.text}` }] }, soul)).toThrow("E2_SOUL_MISMATCH");
+  expect(() => assertEffectiveSoul({ systemPrompt: "## Core Guardrails\n\nA benchmark substitute" }, soul)).toThrow("E2_SOUL_MISMATCH");
+});
+it("refuses model metadata changes, embedded summary tools and extra requests", async () => {
+  const a = await adapter(); a.route.observe({ type: "context_compaction", status: "running", operationId: "fictional" });
+  await expect(a.models.completeSimple({ ...a.model, maxTokens: a.model.maxTokens + 1 }, { messages: [] }, { maxTokens: 1000, transport: "sse", maxRetries: 0 })).rejects.toThrow("E2_MODEL_UNREGISTERED");
+  const b = await adapter(); b.route.observe({ type: "context_compaction", status: "running", operationId: "fictional" });
+  await expect(b.models.completeSimple(b.model, { messages: [{ role: "system", content: "", toolsAdded: [{}] }] }, { maxTokens: 1000, transport: "sse", maxRetries: 0 })).rejects.toThrow("E2_SUMMARY_NOT_AUTHORIZED");
+  const c = await adapter(); c.route.observe({ type: "context_compaction", status: "running", operationId: "fictional" });
+  const options = { maxTokens: 1000, transport: "sse", maxRetries: 0 };
+  await c.models.completeSimple(c.model, { messages: [] }, options); await c.models.completeSimple(c.model, { messages: [] }, options);
+  await expect(c.models.completeSimple(c.model, { messages: [] }, options)).rejects.toThrow("E2_SUMMARY_REQUEST_LIMIT");
+  expect(() => c.route.assertSettled()).toThrow("E2_SUMMARY_REQUEST_LIMIT");
+});
+it("rejects undeclared source transitions and unknown nested protocol keys", async () => {
+  const { source, protocol } = await trace();
+  const p = structuredClone(protocol); p.branches[1].transitions = p.branches[1].transitions.filter(t => t.kind !== "warm_cancel_resume");
+  expect(() => validateProtocol(p, source)).toThrow("E2_PROTOCOL_INVALID");
+  const q = structuredClone(protocol); q.branches[0].transitions[0].evidence[0].extra = true;
+  expect(() => validateProtocol(q, source)).toThrow("E2_PROTOCOL_INVALID");
+});
+it("scores statuses/referents, explicit effects and coverage-dependent inconclusive items", () => {
+  const keys = [key("status", { kind: "status", expected: "pending" }), key("referent", { kind: "referent" }), key("coverage", { dependsOnCoverage: [2] }), key("constraint", { forbidden: ["send again"] })];
+  const result = scored(keys, [answer("status", "pending"), answer("referent", "Cedar"), answer("coverage", "Cedar", { excludedCoverage: [2] }), answer("constraint", "Maybe send again")]);
+  expect(result.report.totals).toMatchObject({ ratePass: 2, blocking: 1, inconclusive: 5 });
+  expect(result.report.byCheckpointAndRepeat).toHaveLength(2);
+});
+it("writes scoring artifacts privately and refuses outputs in the checkout", async () => {
+  const parent = await mkdtemp(join(tmpdir(), "e2-fictional-private-")); await fs.promises.chmod(parent, 0o700); cleanup.push(() => rm(parent, { recursive: true, force: true }));
+  const keys = join(parent, "keys.json"), answers = join(parent, "answers.json"), output = join(parent, "result");
+  await writeFile(keys, JSON.stringify({ schema: "continuity-recorded-evaluator-keys-v1", keys: [key("private-canary")] }));
+  await writeFile(answers, JSON.stringify({ schema: "continuity-e2-answers-v1", answers: [1, 2].map(repeat => answer("private-canary", "Cedar", { repeat })) }));
+  const out = [], err = [], io = { stdout: v => out.push(v), stderr: v => err.push(v) };
+  expect(await main(["score", "--answers", answers, "--keys", keys, "--output", join(scratch(), "refused")], io)).toBe(1);
+  expect(err.pop()).toBe("RECORDED_OUTPUT_REFUSED\n");
+  expect(await main(["score", "--answers", answers, "--keys", keys, "--output", output], io)).toBe(0);
+  expect(out.join("")).not.toContain("private-canary");
+  expect(fs.statSync(output).mode & 0o777).toBe(0o700); expect(fs.statSync(join(output, "score.json")).mode & 0o777).toBe(0o600);
+  expect(JSON.parse(await readFile(join(output, "score.json"), "utf8")).gate).toBe(true);
+  expect(await main(["score", "--answers", answers, "--keys", keys, "--output", output], io)).toBe(1); expect(err.pop()).toBe("EEXIST\n");
+});
+it("statically confines new scripts and the real estimator closure to registered capabilities", () => {
+  const paths = ["scripts/continuity-e2.mjs", ...readdirSync(join(ROOT, "scripts/lib")).filter(n => /^continuity-e2-.*\.mjs$/.test(n)).map(n => `scripts/lib/${n}`),
+    "packages/turn/dist/agent/compaction.js", "packages/turn/dist/tools/mcp/timeouts.js"];
+  const builtins = new Set(["node:fs", "node:fs/promises", "node:path", "node:url"]);
+  const existing = new Set(["./continuity-observation-input.mjs", "./continuity-recorded-schema.mjs", "./continuity-recorded-import.mjs", "./continuity-recorded-tools.mjs", "./continuity-runner.mjs"]);
+  for (const path of paths) {
+    const source = readFileSync(join(ROOT, path), "utf8"), ast = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+    const product = path.startsWith("packages/");
+    function visit(node) {
+      if (ts.isImportDeclaration(node)) {
+        const spec = node.moduleSpecifier.text;
+        const ok = builtins.has(spec) || existing.has(spec) || /^\.\/(?:lib\/)?continuity-e2-[a-z]+\.mjs$/.test(spec)
+          || /^\.\/lib\/continuity-(?:recorded-(?:schema|import)|observation-input)\.mjs$/.test(spec) || product && spec === "../tools/mcp/timeouts.js";
+        expect(ok, `${path}:${spec}`).toBe(true);
+        if (spec === "./continuity-runner.mjs") expect(node.importClause.namedBindings.elements.map(e => e.name.text).sort()).toEqual(["openHarness", "productionModules"]);
+      }
+      if (ts.isCallExpression(node)) {
+        if (node.expression.kind === ts.SyntaxKind.ImportKeyword) {
+          const value = node.arguments[0];
+          expect(ts.isStringLiteral(value) && ["@mono-agent/turn/engine", "./lib/continuity-e2-replay.mjs"].includes(value.text)
+            || path === "scripts/lib/continuity-e2-models.mjs" && value.getText(ast) === 'new URL("../../packages/turn/dist/agent/compaction.js", import.meta.url).href').toBe(true);
+        }
+        const name = node.expression.getText(ast);
+        const regexExec = ts.isPropertyAccessExpression(node.expression) && node.expression.name.text === "exec" && node.expression.expression.kind === ts.SyntaxKind.RegularExpressionLiteral;
+        expect(!regexExec && /\b(fetch|spawn|exec|execFile|fork|eval|Function|require|createRequire|request|connect|createConnection|createSocket|getBuiltinModule|binding|dlopen)\b/.test(name), `${path}:${name}`).toBe(false);
+      }
+      if (ts.isNewExpression(node)) expect(!/\b(?:Worker|WebSocket|Agent|Socket|Function)\b/.test(node.expression.getText(ast)), path).toBe(true);
+      ts.forEachChild(node, visit);
+    }
+    visit(ast);
+  }
+});
