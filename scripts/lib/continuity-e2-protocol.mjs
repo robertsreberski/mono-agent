@@ -10,6 +10,15 @@ export function parts(row) {
   try { const v = JSON.parse(row.parts_json); if (Array.isArray(v)) return v; } catch { /* refusal below */ }
   fail("E2_SOURCE_PARTS_INVALID");
 }
+// Same reason/kind fallback as conversation/src/harness/session-events.ts.
+export function historicalContext(event) {
+  return event.context ?? (event.reason === "cancelled_turn_resume" || event.reason === "failed_turn_resume"
+    ? "retained"
+    : event.kind === "rollover" || event.kind === "isolated"
+      || ["model_change", "legacy_unbound_model", "cancelled_turn_reseed", "failed_turn_reseed",
+        "resume_error", "runtime_result", "detached_context"].includes(event.reason ?? "")
+      ? "reconstructed" : undefined);
+}
 export function telemetry(part) {
   let value = part?.data;
   for (let i = 0; i < 8 && object(value); i++, value = value.data) {
@@ -67,7 +76,7 @@ export function validateProtocol(p, source) {
       } else {
         const previous = source.web.turns[t.turn - 1];
         if (!previous || !["cancelled", "canceled"].includes(previous.status)
-          || !evidence.some(v => { const data = telemetry(v); return data?.reason === "cancelled_turn_resume" && data.context === "retained"; })) refuse();
+          || !evidence.some(v => { const data = telemetry(v); return data?.reason === "cancelled_turn_resume" && historicalContext(data) === "retained"; })) refuse();
       }
     }
     // Source semantics cannot hide an undeclared transition. Auxiliary telemetry

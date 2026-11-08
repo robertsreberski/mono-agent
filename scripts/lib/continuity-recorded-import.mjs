@@ -82,7 +82,7 @@ export async function readRecordedSource(manifest, conversationId) {
   const source = { schema: SOURCE_SCHEMA, dataClass: "private-recorded", conversationId,
     provenance: paths.map((path, index) => ({ index, path, stamp: stamps[index][1] })),
     web: { threads: [], turns: [], messages: [] }, sidecar: null, journal: null, tools: [], steps: [], outcomes: [], coverage: [],
-    transport: { identity: "name-canonical-arguments-fifo", identityReason: "packages/turn/src/tools/mcp/tools.ts:178-179 omits toolCallId from MCP requests", arguments: "unchanged", schemas: "unavailable-unless-explicitly-supplied", resultAdaptation: "native-content-or-text-envelope", byteEquivalence: "not-claimed", clipping: "must-be-measured-by-replay" } };
+    transport: { webMessageOrder: "created_at,rowid", identity: "name-canonical-arguments-fifo", identityReason: "packages/turn/src/tools/mcp/tools.ts:178-179 omits toolCallId from MCP requests", arguments: "unchanged", schemas: "unavailable-unless-explicitly-supplied", resultAdaptation: "native-content-or-text-envelope", byteEquivalence: "not-claimed", clipping: "must-be-measured-by-replay" } };
   const gap = (code, location) => source.coverage.push({ code, location, tier: gapTier(code) });
   const redact = await readRedactor();
   let web, sidecar;
@@ -92,7 +92,7 @@ export async function readRecordedSource(manifest, conversationId) {
       if (m.agent !== undefined && thread.source_id !== m.agent) continue;
       source.web.threads.push(thread);
       for (const turn of rows(web, "turns", "thread_id=?", [thread.id], "started_at,id", retain)) source.web.turns.push(turn);
-      for (const message of rows(web, "messages", "thread_id=?", [thread.id], "seq,id", retain)) source.web.messages.push(message);
+      for (const message of rows(web, "messages", "thread_id=?", [thread.id], "created_at,rowid", retain)) source.web.messages.push(message);
     }
     if (!source.web.threads.length) fail("RECORDED_CONVERSATION_NOT_FOUND");
     if (new Set(source.web.threads.map(t => t.source_id)).size !== 1) fail("RECORDED_AGENT_AMBIGUOUS");
@@ -132,11 +132,13 @@ export async function readRecordedSource(manifest, conversationId) {
           if (!Object.hasOwn(part, "result")) gap("subagent_outcome_missing", provenance);
           if (part.argsTruncated === true || part.resultTruncated === true || part.history?.truncated === true) { counts.truncated++; gap("subagent_outcome_truncated", provenance); }
           if (!["complete", "completed", "error", "failed"].includes(part.status)) gap("subagent_terminal_state_unknown", provenance);
-          continue; // Child calls stay opaque in raw parts, never enter the parent queue.
+          // Only the parent invocation enters the inert queue; child calls stay opaque.
         }
-        if (part.type !== "tool-call" || subagentIds.has(part.toolCallId)) continue;
-        if (typeof part.toolCallId !== "string" || !part.toolCallId || typeof part.toolName !== "string" || !part.toolName) { counts.malformedParts++; gap("malformed_tool", provenance); continue; }
-        const tool = { id: part.toolCallId, name: part.toolName, ...(Object.hasOwn(part, "args") ? { args: part.args } : {}),
+        const subagent = part.type === "subagent" || part.type === "tool-call" && part.toolName === "Agent";
+        if (part.type !== "tool-call" && !subagent) continue;
+        const toolName = part.type === "subagent" ? "Agent" : part.toolName;
+        if (typeof part.toolCallId !== "string" || !part.toolCallId || typeof toolName !== "string" || !toolName) { counts.malformedParts++; gap("malformed_tool", provenance); continue; }
+        const tool = { id: part.toolCallId, name: toolName, ...(subagent ? { kind: "subagent_outcome", childrenReplayed: false } : {}), ...(Object.hasOwn(part, "args") ? { args: part.args } : {}),
           ...(Object.hasOwn(part, "result") ? { result: part.result } : {}), ...(Object.hasOwn(part, "structuredResult") ? { structuredResult: part.structuredResult } : {}), state: part.status ?? "unknown",
           isError: ["error", "failed"].includes(part.status) || part.result?.isError === true, history: part.history ?? null, provenance: [provenance], gaps: [], reconciliation: "web_only" };
         if (!Object.hasOwn(tool, "args")) tool.gaps.push("arguments_missing");
@@ -211,13 +213,12 @@ export async function readRecordedSource(manifest, conversationId) {
               if (results.length !== 1) gap("subagent_outcome_missing", provenance);
               subagentIds.add(part.id);
             }
-            continue;
           }
           let index = byId.get(part.id), tool = source.tools[index];
           const results = nativeResults.get(`${r.operationId ?? r.turnId}\0${part.id}`) ?? [];
           if (!tool) {
             counts.journalOnly++;
-            tool = { id: part.id, name: part.name, ...(Object.hasOwn(part, "arguments") ? { args: part.arguments } : {}), ...(results.length === 1 && Object.hasOwn(results[0].msg, "content") ? { result: results[0].msg.content } : {}), state: results.length === 1 && typeof results[0]?.msg.isError === "boolean" ? (results[0].msg.isError ? "error" : "complete") : "unknown", isError: results.length === 1 && results[0]?.msg.isError === true, history: null, provenance: [], gaps: [], reconciliation: "journal_only" };
+            tool = { id: part.id, name: part.name, ...(subagentIds.has(part.id) || part.name === "Agent" ? { kind: "subagent_outcome", childrenReplayed: false } : {}), ...(Object.hasOwn(part, "arguments") ? { args: part.arguments } : {}), ...(results.length === 1 && Object.hasOwn(results[0].msg, "content") ? { result: results[0].msg.content } : {}), state: results.length === 1 && typeof results[0]?.msg.isError === "boolean" ? (results[0].msg.isError ? "error" : "complete") : "unknown", isError: results.length === 1 && results[0]?.msg.isError === true, history: null, provenance: [], gaps: [], reconciliation: "journal_only" };
             if (!object(tool.args)) tool.gaps.push("arguments_not_object");
             tool.resultRepresentations = [];
             if (tool.state === "unknown") tool.gaps.push("tool_terminal_state_unknown");
@@ -350,6 +351,9 @@ export async function readRecordedSource(manifest, conversationId) {
       } else { tool.gaps.push("result_missing"); counts.missingResults++; }
       if (tool.argsTruncated) tool.gaps.push("arguments_truncated");
       tool.gaps = [...new Set(tool.gaps)];
+    }
+    for (const step of source.steps) for (const index of step.calls) if (source.tools[index].kind === "subagent_outcome") {
+      for (const code of source.tools[index].gaps) if (gapTier(code) === "replay" && !step.gaps.includes(code)) step.gaps.push(code);
     }
     for (const step of ambiguousSteps(source)) { counts.ambiguousParallelGroups++; step.gaps.push("ambiguous_parallel_results"); }
     for (const [stepIndex, step] of source.steps.entries()) for (const code of step.gaps) gap(code, { stepIndex, messageId: step.messageId });

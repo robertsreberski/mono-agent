@@ -14,10 +14,11 @@ import { readRecordedSource } from "../lib/continuity-recorded-import.mjs";
 import { createRecordedQueue } from "../lib/continuity-recorded-tools.mjs";
 import { snapshots, CONVERSATION, AT, tool } from "./fixtures/continuity-recorded/snapshots.mjs";
 import { installProcessGuard } from "./fixtures/continuity-recorded/process-guard.mjs";
-import { LUNA, SOL, validateProtocol } from "../lib/continuity-e2-protocol.mjs";
+import { LUNA, SOL, validateProtocol, historicalContext } from "../lib/continuity-e2-protocol.mjs";
 import { createE2Models, loadE2Estimators, shippingSoul, sizeContext, assertEffectiveSoul } from "../lib/continuity-e2-models.mjs";
-import { excludedDispatch, freezeCheckpoint, restoreCheckpoint, treeReceipt, runE2Sizing, PLACEHOLDER } from "../lib/continuity-e2-replay.mjs";
+import { excludedDispatch, freezeCheckpoint, restoreCheckpoint, treeReceipt, runE2Sizing, PLACEHOLDER, recordedTurns } from "../lib/continuity-e2-replay.mjs";
 import { scoreE2 } from "../lib/continuity-e2-score.mjs";
+import { diagnosticRecord } from "../lib/continuity-e2-diagnostics.mjs";
 import { parseE2Args, main, USAGE } from "../continuity-e2.mjs";
 const cleanup = [];
 afterEach(async () => {
@@ -37,42 +38,63 @@ async function trace({ padding = false, steer = false } = {}) {
   const dir = scratch(), f = snapshots(dir), db = new DatabaseSync(f.web);
   db.exec("DELETE FROM turns; DELETE FROM messages;");
   for (let i = 0; i < 8; i++) {
-    const status = i === 2 ? "cancelled" : "complete", id = `turn-${i}`;
-    db.prepare("INSERT INTO turns VALUES(?,?,?,?,?,?,?)").run(id, "thread-one", status, AT, AT, "Fictional request", null);
-    db.prepare("INSERT INTO messages VALUES(?,?,?,?,?,?,?,?,?,?)").run(`user-${i}`, "thread-one", id, "user", JSON.stringify([{ type: "text", text: `Fictional request ${i}` }]), AT, AT, "complete", i * 2, 0);
-    const marker = [1, 5, 7].includes(i) ? modelMarker() : i === 3 ? { type: "telemetry", data: { type: "session_boundary", kind: "resume_replay", context: "retained", reason: "cancelled_turn_resume" } }
+    const status = i === 2 ? "cancelled" : "complete", id = `turn-${i}`, at = new Date(Date.parse(AT) + i * 60_000).toISOString(), replyAt = new Date(Date.parse(at) + 1000).toISOString();
+    db.prepare("INSERT INTO turns VALUES(?,?,?,?,?,?,?)").run(id, "thread-one", status, at, replyAt, "Fictional request", null);
+    db.prepare("INSERT INTO messages VALUES(?,?,?,?,?,?,?,?,?,?)").run(`user-${i}`, "thread-one", id, "user", JSON.stringify([{ type: "text", text: `Fictional request ${i}` }]), at, at, "complete", i % 2 ? 0 : 17, 0);
+    const marker = [1, 5, 7].includes(i) ? modelMarker() : i === 3 ? { type: "telemetry", data: { type: "session_boundary", kind: "resume_replay", reason: "cancelled_turn_resume" } }
       : i === 4 ? { type: "conversation-marker", kind: "compaction", at: AT, trigger: "manual", status: "skipped", reason: "model_changed" } : i === 6 ? modelMarker(true) : null;
     const body = [{ type: "text", text: `Fictional response ${i}` }];
-    if (marker) body.unshift(marker);
+    if (marker && i !== 1) body.unshift(marker);
+    if (i === 1) {
+      const markerAt = new Date(Date.parse(at) - 1).toISOString();
+      db.prepare("INSERT INTO messages VALUES(?,?,?,?,?,?,?,?,?,?)").run("unassigned-switch", "thread-one", null, "system", JSON.stringify([marker]), markerAt, markerAt, "complete", 0, 0);
+    }
     if (i === 0) body.push({ type: "telemetry", data: { kind: "assistant_message_boundary" } }, tool("fixture-call", "Fictional inert note."), { type: "text", text: "Fictional read completed." });
     if (padding && i === 4) for (let j = 0; j < 24; j++) body.push({ type: "text", text: `Fictional source step ${j}` },
       { type: "telemetry", data: { kind: "context_usage" } }, tool(`pressure-${j}`, "Fictional source canary. ".repeat(1700), { args: { path: `fictional-${j}.txt` } }));
     if (padding && i === 4) body.push({ type: "text", text: "Fictional pressure reads completed." });
     if (steer && i === 0) {
-      body.splice(body.length - 1, 0, { type: "subagent", toolCallId: "fictional-child", status: "complete", result: "Fictional parent-visible child outcome." });
+      body.splice(body.length - 1, 0, { type: "reasoning", text: "Fictional review preparation" }, { type: "telemetry", data: { kind: "assistant_message_boundary" } },
+        { type: "subagent", toolCallId: "fictional-child", name: "fictional-reviewer", label: "Review", args: { task: "Fictional review" }, status: "complete", calls: [tool("never-child", "Never flattened", { toolName: "Bash" })], executionMs: 1, costUsd: 0, history: {}, attribution: {}, usage: {}, result: "Fictional parent-visible child outcome." });
       body.splice(body.length - 1, 0, { type: "steer", inputId: "fictional-steer", messageId: "z-steered-owner", text: "Fictional live follow-up" });
-      db.prepare("INSERT INTO messages VALUES(?,?,?,?,?,?,?,?,?,?)").run("z-steered-owner", "thread-one", id, "user", JSON.stringify([{ type: "text", text: "Fictional live follow-up" }]), AT, AT, "complete", 1, 0);
+      db.prepare("INSERT INTO messages VALUES(?,?,?,?,?,?,?,?,?,?)").run("z-steered-owner", "thread-one", id, "user", JSON.stringify([{ type: "text", text: "Fictional live follow-up" }]), replyAt, replyAt, "complete", 0, 0);
     }
-    db.prepare("INSERT INTO messages VALUES(?,?,?,?,?,?,?,?,?,?)").run(`assistant-${i}`, "thread-one", id, "assistant", JSON.stringify(body), AT, AT, status, i * 2 + 1, 0);
+    if (steer && i === 1) {
+      const b = () => ({ type: "telemetry", data: { kind: "assistant_message_boundary" } });
+      const child = id => ({ type: "subagent", toolCallId: id, name: "fictional-reviewer", label: "Review", args: { task: `Review ${id}` }, status: "complete", calls: [], executionMs: 1, costUsd: 0, result: "Fictional parent report", history: {}, attribution: {}, usage: {} });
+      body.splice(0, body.length, { type: "reasoning", text: "First fictional model message" }, b(), child("parent-first"),
+        { type: "reasoning", text: "Second fictional model message" }, { type: "text", text: "Fictional progress" }, b(),
+        { type: "steer", inputId: "fictional-second-steer", messageId: "z-steered-next", text: "Fictional next instruction" },
+        { type: "reasoning", text: "Third fictional model message" }, b(), child("parent-next"), { type: "text", text: "Fictional completion" }, b());
+      db.prepare("INSERT INTO messages VALUES(?,?,?,?,?,?,?,?,?,?)").run("z-steered-next", "thread-one", id, "user", JSON.stringify([{ type: "text", text: "Fictional next instruction" }]), replyAt, replyAt, "complete", 23, 0);
+    }
+    db.prepare("INSERT INTO messages VALUES(?,?,?,?,?,?,?,?,?,?)").run(`assistant-${i}`, "thread-one", id, "assistant", JSON.stringify(body), replyAt, replyAt, status, i % 2 ? 29 : 0, 0);
   }
   db.close();
   const { source } = await readRecordedSource(f.manifest, CONVERSATION);
+  const ref = turn => ({ message: source.web.messages.findIndex(m => m.id === (turn === 1 ? "unassigned-switch" : `assistant-${turn}`)), part: 0 });
   const transitions = [
-    { name: "B1", turn: 1, kind: "cold_model_switch", evidence: [{ message: 3, part: 0 }] },
-    { name: "B2", turn: 3, kind: "warm_cancel_resume", evidence: [{ message: 7, part: 0 }] },
-    { name: "B3a", turn: 4, kind: "manual_compaction_skipped", evidence: [{ message: 9, part: 0 }] },
-    { name: "B3", turn: 5, kind: "cold_model_switch", evidence: [{ message: 11, part: 0 }] },
-    { name: "effort", turn: 6, kind: "effort_only_non_boundary", effort: "xhigh", evidence: [{ message: 13, part: 0 }] },
-    { name: "B4", turn: 7, kind: "cold_model_switch", evidence: [{ message: 15, part: 0 }] },
+    { name: "B1", turn: 1, kind: "cold_model_switch", evidence: [ref(1)] },
+    { name: "B2", turn: 3, kind: "warm_cancel_resume", evidence: [ref(3)] },
+    { name: "B3a", turn: 4, kind: "manual_compaction_skipped", evidence: [ref(4)] },
+    { name: "B3", turn: 5, kind: "cold_model_switch", evidence: [ref(5)] },
+    { name: "effort", turn: 6, kind: "effort_only_non_boundary", effort: "xhigh", evidence: [ref(6)] },
+    { name: "B4", turn: 7, kind: "cold_model_switch", evidence: [ref(7)] },
   ];
-  if (steer) for (const t of transitions) for (const e of t.evidence) e.message++;
-  const shift = steer ? 1 : 0;
+
   const protocol = { schema: "continuity-e2-protocol-v1", branches: [
     { id: "main", startTurn: 0, endTurn: 7, models: [LUNA, SOL, LUNA, SOL].map(model => ({ model, effort: "high" })), transitions,
-      checkpoints: [1, 3, 7].map((turn, i) => ({ name: ["B1", "B2", "B4"][i], turn, message: turn * 2 + 1 + shift })), exclusions: { steps: [0], coverage: source.coverage.map((_, i) => i) }, limits: limits() },
+      checkpoints: [1, 3, 7].map((turn, i) => ({ name: ["B1", "B2", "B4"][i], turn, message: source.web.messages.findIndex(m => m.id === `assistant-${turn}`) })), exclusions: { steps: [0], coverage: source.coverage.map((_, i) => i) }, limits: limits() },
     { id: "prefix", startTurn: 0, endTurn: 5, models: [SOL, LUNA, SOL].map(model => ({ model, effort: "high" })), transitions: transitions.filter(t => t.turn <= 5),
-      checkpoints: [{ name: "B3", turn: 5, message: 11 + shift }], exclusions: { steps: [0], coverage: source.coverage.map((_, i) => i) }, limits: limits() },
+      checkpoints: [{ name: "B3", turn: 5, message: source.web.messages.findIndex(m => m.id === "assistant-5") }], exclusions: { steps: [0], coverage: source.coverage.map((_, i) => i) }, limits: limits() },
   ] };
+  if (steer) {
+    const outside = source.steps.length, call = source.tools.length;
+    source.tools.push({ ...structuredClone(source.tools[0]), id: "fictional-outside", provenance: [], gaps: [] });
+    source.steps.push({ origin: "journal-assistant-message", messageId: "unanchored", turnId: "outside-web-turns", calls: [call], gaps: ["mixed_step_order_unknown"] });
+    source.coverage.push({ code: "mixed_step_order_unknown", tier: "replay", location: { stepIndex: outside } });
+    for (const branch of protocol.branches) { branch.exclusions.steps.push(outside); branch.exclusions.coverage.push(source.coverage.length - 1); }
+  }
   return { source, protocol, dir };
 }
 it("loads the actual shipping estimator without a copy or fallback", async () => {
@@ -193,7 +215,7 @@ it.each(["faux-short", "faux-max"])("replays configured shipping compaction with
   for (const branch of report.branches) {
     expect(branch.compactions.length).toBeGreaterThan(0); expect(branch.summaryRequests.length).toBeGreaterThan(0);
     expect(branch.compactions.every(c => c.trigger === "proactive" && c.policy.triggerTokens === 200_000)).toBe(true);
-    expect(branch.placeholderCalls).toBe(1); expect(branch.steerCount).toBe(1);
+    expect(branch.excludedOutsideWebTurns).toBe(1); expect(branch.placeholderCalls).toBe(1); expect(branch.steerCount).toBe(2);
     expect(branch.transport.observed).toBeGreaterThan(0);
     for (const cp of branch.checkpoints) {
       expect(cp.excludedStepsInHistory).toEqual([0]); expect(cp.probes).toHaveLength(2);
@@ -211,6 +233,23 @@ it.each(["faux-short", "faux-max"])("replays configured shipping compaction with
   expect(later.every(c => !c.includes("Faux probe continuation"))).toBe(true);
   expect(later.some(c => c.includes(PLACEHOLDER))).toBe(true);
   expect(later.some(c => c.includes("Fictional parent-visible child outcome."))).toBe(true);
+  expect(workerSpy).toHaveBeenCalled(); expect(ready).toBe(workerSpy.mock.calls.length); expect(workerErrors).toEqual([]);
+  const privateParent = await mkdtemp(join(tmpdir(), "e2-fictional-diagnostics-")); await fs.promises.chmod(privateParent, 0o700); cleanup.push(() => rm(privateParent, { recursive: true, force: true }));
+  const frozen = structuredClone(protocol); frozen.branches[0].limits.sourceRequests = 1;
+  await writeFile(join(dir, "source.json"), JSON.stringify(source)); await writeFile(join(dir, "protocol.json"), JSON.stringify(frozen));
+  const diagnostic = join(privateParent, "refusal.json"), stdout = [], stderr = [];
+  expect(await main(["size", "--source", dir, "--protocol", join(dir, "protocol.json"), "--output", join(privateParent, "new-output"), "--diagnostics", diagnostic], { stdout: t => stdout.push(t), stderr: t => stderr.push(t) })).toBe(1);
+  expect(stdout).toEqual([]); expect(stderr).toEqual(["E2_SOURCE_REQUEST_LIMIT\n"]);
+  const rawDiagnostic = await readFile(diagnostic, "utf8");
+  expect(JSON.parse(rawDiagnostic)).toEqual({ turnOrdinal: 0, replyCursor: 1, replyCount: 3, cancelled: false, aborted: false, failureKind: "provider_unavailable", routeRefusalCode: "E2_SOURCE_REQUEST_LIMIT" });
+  for (const canary of ["Fictional", source.conversationId, ROOT, dir]) expect(rawDiagnostic).not.toContain(canary);
+  expect(fs.statSync(diagnostic).mode & 0o777).toBe(0o600);
+  const retryArgs = ["size", "--source", dir, "--protocol", join(dir, "protocol.json"), "--output", join(privateParent, "other-output"), "--diagnostics", diagnostic];
+  expect(await main(retryArgs, { stdout: t => stdout.push(t), stderr: t => stderr.push(t) })).toBe(1);
+  expect(stderr.at(-1)).toBe("EEXIST\n"); expect(await readFile(diagnostic, "utf8")).toBe(rawDiagnostic);
+  retryArgs[retryArgs.length - 1] = join(dir, "forbidden-diagnostics.json");
+  expect(await main(retryArgs, { stdout: t => stdout.push(t), stderr: t => stderr.push(t) })).toBe(1);
+  expect(stderr.at(-1)).toBe("RECORDED_OUTPUT_REFUSED\n"); expect(existsSync(join(dir, "forbidden-diagnostics.json"))).toBe(false);
   expect(workerSpy).toHaveBeenCalled(); expect(ready).toBe(workerSpy.mock.calls.length); expect(workerErrors).toEqual([]);
   expect(rejected).toEqual([]); expect(refusals).toEqual([]); expect(hits.every(c => ["ps", "sysctl"].includes(c))).toBe(true);
 }, 180_000);
@@ -270,7 +309,7 @@ it("statically confines new scripts and the real estimator closure to registered
   const paths = ["scripts/continuity-e2.mjs", ...readdirSync(join(ROOT, "scripts/lib")).filter(n => /^continuity-e2-.*\.mjs$/.test(n)).map(n => `scripts/lib/${n}`),
     "packages/turn/dist/agent/compaction.js", "packages/turn/dist/tools/mcp/timeouts.js"];
   const builtins = new Set(["node:fs", "node:fs/promises", "node:path", "node:url"]);
-  const existing = new Set(["./continuity-observation-input.mjs", "./continuity-recorded-schema.mjs", "./continuity-recorded-import.mjs", "./continuity-recorded-tools.mjs", "./continuity-runner.mjs"]);
+  const existing = new Set(["./continuity-observation-input.mjs", "./continuity-recorded-schema.mjs", "./continuity-recorded-import.mjs", "./continuity-recorded-tools.mjs", "./continuity-recorded-reconcile.mjs", "./continuity-runner.mjs"]);
   for (const path of paths) {
     const source = readFileSync(join(ROOT, path), "utf8"), ast = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
     const product = path.startsWith("packages/");
@@ -297,4 +336,42 @@ it("statically confines new scripts and the real estimator closure to registered
     }
     visit(ast);
   }
+});
+
+it("matches the shipping historical session-boundary context derivation, without relaxing live assertions", async () => {
+  const { withSessionBoundaryTimestamp } = await import(new URL("../../packages/conversation/dist/harness/session-events.js", import.meta.url).href);
+  const product = readFileSync(join(ROOT, "packages/conversation/src/harness/session-events.ts"), "utf8");
+  const local = readFileSync(join(ROOT, "scripts/lib/continuity-e2-protocol.mjs"), "utf8");
+  const normalize = s => s.replace(/\s/g, "");
+  expect(normalize(product.match(/const context = ([\s\S]*?);/)[1])).toBe(normalize(local.match(/return (event.context[\s\S]*?);/)[1]));
+  for (const kind of ["resume_replay", "rollover", "isolated"]) for (const reason of [undefined, "cancelled_turn_resume", "failed_turn_resume", "model_change", "legacy_unbound_model", "cancelled_turn_reseed", "failed_turn_reseed", "resume_error", "runtime_result", "detached_context", "other"]) for (const context of [undefined, "retained", "reconstructed", "handoff"]) {
+    const event = { kind, reason, context };
+    expect(historicalContext(event)).toBe(withSessionBoundaryTimestamp(event, AT).context);
+  }
+});
+it("segments subagent-only rows and between-message steers, and drops outside-web steps only under explicit exclusions", async () => {
+  const { source, protocol } = await trace({ steer: true });
+  expect(() => recordedTurns(source)).toThrow("E2_ASSISTANT_SOURCE_UNAVAILABLE");
+  const replay = recordedTurns(source, { excludedSteps: protocol.branches[0].exclusions.steps });
+  expect(replay.excludedOutsideWebTurns).toBe(1);
+  const turn = replay.turns[1];
+  expect(turn.replies.map(r => r.calls.length)).toEqual([1, 0, 1, 0]);
+  expect(turn.replies.map(r => r.steers.length)).toEqual([0, 1, 0, 0]);
+  expect(turn.replies.flatMap(r => r.content).filter(p => p.type === "toolCall").map(c => c.name)).toEqual(["Agent", "Agent"]);
+  const t = protocol.branches[0].transitions[0];
+  expect(source.web.messages[t.evidence[0].message]).toMatchObject({ turn_id: null, role: "system" });
+  expect(validateProtocol(protocol, source)).toEqual(protocol);
+});
+it("projects only closed diagnostic fields, never arbitrary failure text, ids or paths", () => {
+  const d = diagnosticRecord({ turnOrdinal: 2, replyCursor: 3, replyCount: 4, cancelled: true, aborted: false,
+    failureKind: "fictional-canary", routeRefusalCode: "E2_FICTIONAL_CANARY", message: "fictional-canary", id: "fictional-canary", path: "/Users/example/fictional-canary" });
+  expect(d).toEqual({ turnOrdinal: 2, replyCursor: 3, replyCount: 4, cancelled: true, aborted: false, failureKind: "runtime_error", routeRefusalCode: null });
+  expect(JSON.stringify(d)).not.toContain("fictional-canary");
+});
+
+it("refuses old imports and inverted chronology instead of reusing obsolete ordinals", async () => {
+  const { source } = await trace(); const old = structuredClone(source); delete old.transport.webMessageOrder;
+  expect(() => recordedTurns(old)).toThrow("E2_SOURCE_REIMPORT_REQUIRED");
+  const inverted = structuredClone(source); [inverted.web.messages[0], inverted.web.messages[1]] = [inverted.web.messages[1], inverted.web.messages[0]];
+  expect(() => recordedTurns(inverted)).toThrow("E2_SOURCE_REIMPORT_REQUIRED");
 });

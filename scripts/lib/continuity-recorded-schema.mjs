@@ -56,7 +56,7 @@ export function validateSource(s) {
     || !Array.isArray(s.tools) || !Array.isArray(s.steps) || !Array.isArray(s.coverage) || !Array.isArray(s.outcomes)
     || !Array.isArray(s.provenance) || !object(s.transport)) fail("INVALID_RECORDED_SOURCE");
   for (const t of s.tools) if (!object(t) || typeof t.id !== "string" || typeof t.name !== "string" || !t.name
-    || !Array.isArray(t.provenance) || !Array.isArray(t.gaps)) fail("INVALID_RECORDED_TOOL");
+    || !Array.isArray(t.provenance) || !Array.isArray(t.gaps) || t.kind !== undefined && (t.kind !== "subagent_outcome" || t.childrenReplayed !== false)) fail("INVALID_RECORDED_TOOL");
   const used = new Set();
   for (const step of s.steps) {
     if (!object(step) || !Array.isArray(step.calls) || !Array.isArray(step.gaps)) fail("INVALID_RECORDED_STEP");

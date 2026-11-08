@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Fix recorded replay ordering and message boundaries, including inert parent
+  delegation calls and live follow-ups, without executing child work. Add
+  optional private, content-free refusal diagnostics. Reimport older source
+  files before replaying; protocol ordinals must bind the corrected import.
+
 - Add an offline recorded-conversation sizing replay with shipping compaction,
   inert tool results, private checkpoint snapshots and deterministic scoring.
   Summaries and readers are scripted, not model-quality evidence. Real-model

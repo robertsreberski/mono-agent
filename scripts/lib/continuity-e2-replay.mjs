@@ -2,6 +2,8 @@
 import { chmod, copyFile, cp, lstat, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fail, object, ROOT } from "./continuity-observation-input.mjs";
+import { diagnosticRecord } from "./continuity-e2-diagnostics.mjs";
+import { webGroups } from "./continuity-recorded-reconcile.mjs";
 import { callKey, digest, validateSource } from "./continuity-recorded-schema.mjs";
 import { startRecordedTools, RECORDED_SERVER_NAME } from "./continuity-recorded-tools.mjs";
 import { openHarness, productionModules } from "./continuity-runner.mjs";
@@ -61,71 +63,76 @@ export async function restoreCheckpoint(work, snapshot, receipt) {
 function stepRow(source, step) {
   return source.web.messages.find(row => row.id === step.messageId) ?? source.web.messages.find(row => step.calls.some(index => source.tools[index].provenance.some(p => p.source === "web" && p.messageId === row.id)));
 }
-export function recordedTurns(source) {
+export function recordedTurns(source, { excludedSteps = [] } = {}) {
   validateSource(source);
+  if (source.transport.webMessageOrder !== "created_at,rowid") fail("E2_SOURCE_REIMPORT_REQUIRED");
+  const latest = new Map();
+  for (const row of source.web.messages) {
+    if (latest.has(row.thread_id) && row.created_at < latest.get(row.thread_id)) fail("E2_SOURCE_REIMPORT_REQUIRED");
+    latest.set(row.thread_id, row.created_at);
+  }
+  const excluded = new Set(excludedSteps), webTurns = new Set(source.web.turns.map(t => t.id));
   const journals = new Map((source.journal?.records ?? []).map(r => [r.id, r]));
-  const byMessage = new Map();
+  const owners = new Map(), byMessage = new Map(); let excludedOutsideWebTurns = 0;
   for (const [index, step] of source.steps.entries()) {
     const row = stepRow(source, step);
-    if (!row) fail("E2_ASSISTANT_SOURCE_UNAVAILABLE");
+    if (!row) {
+      if (excluded.has(index) && !webTurns.has(step.turnId)) { excludedOutsideWebTurns++; continue; }
+      fail("E2_ASSISTANT_SOURCE_UNAVAILABLE");
+    }
+    for (const call of step.calls) owners.set(call, index);
     if (!byMessage.has(row.id)) byMessage.set(row.id, []);
-    byMessage.get(row.id).push({ index, step });
+    byMessage.get(row.id).push(index);
   }
-  return source.web.turns.map((turn, ordinal) => {
+  const turns = source.web.turns.map((turn, ordinal) => {
     const rows = source.web.messages.filter(row => row.turn_id === turn.id);
     const steeredRows = new Set(rows.filter(row => row.role === "assistant").flatMap(row => parts(row).filter(p => p.type === "steer").map(p => p.messageId)));
     const user = rows.filter(row => row.role === "user" && !steeredRows.has(row.id));
-    // Inline steer markers identify duplicate standalone owner rows. Never
-    // coalesce unrelated owners or invent attachment bytes.
     if (user.length !== 1) fail("E2_OWNER_SOURCE_UNAVAILABLE");
     const userParts = parts(user[0]);
     if (userParts.some(p => !["text", "attachment"].includes(p.type))) fail("E2_OWNER_SOURCE_UNAVAILABLE");
-    const replies = []; const assignedSteers = new Set();
+    const replies = [];
     for (const row of rows.filter(r => r.role === "assistant")) {
-      const raw = parts(row), grouped = byMessage.get(row.id) ?? [];
-      if (!grouped.length) {
-        const content = visibleParts(raw); if (content.length) replies.push({ content, steers: raw.filter(p => p.type === "steer"), step: null, calls: [], message: source.web.messages.indexOf(row) });
-        continue;
+      const firstReply = replies.length, raw = parts(row), indices = byMessage.get(row.id) ?? [], calls = indices.flatMap(i => source.steps[i].calls), toolAt = new Map();
+      for (const call of calls) {
+        const refs = source.tools[call].provenance.filter(p => p.source === "web" && p.messageId === row.id);
+        if (refs.length) toolAt.set(call, refs[0].partIndex);
       }
-      let end = -1;
-      for (const [groupIndex, { index, step }] of grouped.entries()) {
-        const native = journals.get(step.messageId)?.payload?.message;
-        const selected = raw.slice(step.partStartIndex ?? 0, (step.partEndIndex ?? raw.length - 1) + 1);
-        const content = native?.role === "assistant" && Array.isArray(native.content) ? structuredClone(native.content) : visibleParts(selected);
-        // The importer-selected model arguments are authoritative, not web's
-        // host-enriched arguments. Calls keep their original names and ids.
-        const calls = [];
-        for (const toolIndex of step.calls) {
-          const t = source.tools[toolIndex];
-          if (!object(t.args)) fail("E2_RECORDED_ARGUMENTS_UNAVAILABLE");
-          calls.push({ type: "toolCall", id: t.id, name: t.name, arguments: structuredClone(t.args) });
+      // Old imports omitted parent Agent calls and cannot safely provide this
+      // message's call/result/continuation structure. Require a fresh import.
+      if (raw.some((p, i) => (p.type === "subagent" || p.type === "tool-call" && p.toolName === "Agent") && ![...toolAt.values()].includes(i))) fail("E2_SOURCE_REIMPORT_REQUIRED");
+      const emitted = new Set();
+      for (const group of webGroups(raw, calls, toolAt, { allMessages: true })) {
+        const selected = raw.slice(group.partStartIndex ?? 0, (group.partEndIndex ?? raw.length - 1) + 1);
+        const steps = [...new Set(group.calls.map(c => owners.get(c)))];
+        if (!steps.length) steps.push(null);
+        for (const [part, index] of steps.entries()) {
+          if (index !== null && (emitted.has(index) || source.steps[index].calls.some(c => !group.calls.includes(c)))) fail("E2_ASSISTANT_SOURCE_UNAVAILABLE");
+          if (index !== null) emitted.add(index);
+          const step = index === null ? null : source.steps[index], native = journals.get(step?.messageId)?.payload?.message;
+          const toolCalls = (step?.calls ?? []).map(i => {
+            const t = source.tools[i]; if (!object(t.args)) fail("E2_RECORDED_ARGUMENTS_UNAVAILABLE");
+            return { type: "toolCall", id: t.id, name: t.name, arguments: structuredClone(t.args) };
+          });
+          const content = native?.role === "assistant" && Array.isArray(native.content)
+            ? native.content.map(p => p.type === "toolCall" ? toolCalls.find(c => c.id === p.id) ?? fail("E2_ASSISTANT_SOURCE_UNAVAILABLE") : structuredClone(p))
+            : [...(part === 0 ? visibleParts(selected) : []), ...toolCalls];
+          replies.push({ content, steers: part === steps.length - 1 ? selected.filter(p => p.type === "steer") : [],
+            step: index, calls: step?.calls ?? [], message: source.web.messages.indexOf(row) });
         }
-        const blocks = native ? content.map(p => {
-          if (p.type !== "toolCall") return p;
-          const call = calls.find(c => c.id === p.id); if (call) return call;
-          const outcome = source.outcomes.find(o => o.toolCallId === p.id);
-          if (p.name === "Agent" && outcome) return { type: "text", text: `[recorded parent-visible subagent outcome]\n${Object.hasOwn(outcome, "result") ? JSON.stringify(outcome.result) : "[outcome unavailable]"}` };
-          fail("E2_ASSISTANT_SOURCE_UNAVAILABLE");
-        }) : [...content, ...calls];
-        const next = grouped[groupIndex + 1]?.step;
-        const nextPart = next ? Math.min(...next.calls.flatMap(c => source.tools[c].provenance.filter(p => p.source === "web" && p.messageId === row.id).map(p => p.partIndex))) : raw.length;
-        const steers = (native ? raw.slice(end + 1, nextPart) : selected).filter(p => p.type === "steer" && !assignedSteers.has(p.inputId));
-        for (const steer of steers) assignedSteers.add(steer.inputId);
-        replies.push({ content: blocks, steers, step: index, calls: step.calls, message: source.web.messages.indexOf(row) });
-        const lastCallPart = Math.max(-1, ...step.calls.flatMap(c => source.tools[c].provenance.filter(p => p.source === "web" && p.messageId === row.id).map(p => p.partIndex)));
-        end = Math.max(end, step.partEndIndex ?? lastCallPart);
       }
-      const tail = visibleParts(raw.slice(end + 1));
-      if (tail.length) replies.push({ content: tail, step: null, calls: [], message: source.web.messages.indexOf(row) });
+      const recordedSteers = raw.filter(p => p.type === "steer").map(p => p.inputId);
+      const replayedSteers = replies.slice(firstReply).flatMap(r => r.steers.map(p => p.inputId));
+      if (JSON.stringify(recordedSteers) !== JSON.stringify(replayedSteers)) fail("E2_STEER_NOT_DELIVERED");
     }
-    if (!replies.length || replies.at(-1).calls.length) replies.push({ content: [], step: null, calls: [], message: source.web.messages.indexOf(rows.at(-1)) });
+    if (!replies.length || replies.at(-1).calls.length) replies.push({ content: [], step: null, calls: [], steers: [], message: source.web.messages.indexOf(rows.at(-1)) });
     return { ordinal, id: turn.id, user: userParts.map(p => p.type === "attachment" ? "[recorded attachment bytes unavailable]" : p.text ?? "").join("\n"), cancelled: ["cancelled", "canceled"].includes(turn.status), replies };
   });
+  return { turns, excludedOutsideWebTurns };
 }
 function visibleParts(raw) {
   return raw.flatMap(p => p.type === "text" && typeof p.text === "string" ? [{ type: "text", text: p.text }]
-    : p.type === "reasoning" && typeof (p.text ?? p.reasoning) === "string" ? [{ type: "thinking", thinking: p.text ?? p.reasoning }]
-    : (p.type === "subagent" || p.type === "tool-call" && p.toolName === "Agent") && Object.hasOwn(p, "result") ? [{ type: "text", text: `[recorded parent-visible subagent outcome]\n${typeof p.result === "string" ? p.result : JSON.stringify(p.result)}` }] : []);
+    : p.type === "reasoning" && typeof (p.text ?? p.reasoning) === "string" ? [{ type: "thinking", thinking: p.text ?? p.reasoning }] : []);
 }
 export function excludedDispatch(source, excludedSteps) {
   const excluded = new Set(excludedSteps), placeholder = { content: [{ type: "text", text: PLACEHOLDER }], isError: true };
@@ -160,10 +167,10 @@ function exclusions(source, branch) {
 }
 
 /** No real routes, credential lookup overrides, or resolved-model overrides. */
-export async function runE2Sizing({ source, protocol, output, summary = "faux-short", modules, onContext = () => {} }) {
+export async function runE2Sizing({ source, protocol, output, summary = "faux-short", modules, onContext = () => {}, onDiagnostic = () => {} }) {
   if (summary === "real") fail("E2_PAID_ENTRY_UNAVAILABLE");
   protocol = validateProtocol(protocol, source);
-  const turns = recordedTurns(source), estimators = await loadE2Estimators(), soul = await shippingSoul();
+  const estimators = await loadE2Estimators(), soul = await shippingSoul();
   modules ??= await productionModules(ROOT);
   const report = { schema: "continuity-e2-sizing-v1", sourceDigest: digest(JSON.stringify(source)), protocolDigest: protocolDigest(protocol), summary,
     soul: { rawDigest: soul.rawDigest, normalizedDigest: soul.normalizedDigest }, usage: "estimated-not-measured", semanticQualification: false, branches: [] };
@@ -173,7 +180,7 @@ export async function runE2Sizing({ source, protocol, output, summary = "faux-sh
       const base = join(output, `branch-${branchIndex}`), work = join(base, "work"), snapshots = join(base, "snapshots");
       await mkdir(work, { recursive: true, mode: 0o700 }); await mkdir(snapshots, { mode: 0o700 });
       await writeFile(join(work, "IDENTITY.md"), "Fictional isolated recorded-replay reader.\n", { mode: 0o600 });
-      const excluded = exclusions(source, branch), active = new Set(turns.slice(branch.startTurn, branch.endTurn + 1).flatMap(t => t.replies.map(r => r.step).filter(i => i !== null)));
+      const excluded = exclusions(source, branch), { turns, excludedOutsideWebTurns } = recordedTurns(source, { excludedSteps: excluded.steps }), active = new Set(turns.slice(branch.startTurn, branch.endTurn + 1).flatMap(t => t.replies.map(r => r.step).filter(i => i !== null)));
       const skipped = [...new Set([...excluded.steps, ...source.steps.map((_, i) => i).filter(i => !active.has(i))])];
       const dispatch = excludedDispatch(source, excluded.steps);
       const server = await startRecordedTools({ source, excludedSteps: skipped, excludedCoverage: excluded.coverage, dispatch: dispatch.dispatch });
@@ -244,7 +251,7 @@ export async function runE2Sizing({ source, protocol, output, summary = "faux-sh
               mcpServers: probeMode ? { [HISTORY]: options.mcpServers?.[HISTORY] } : { [RECORDED_SERVER_NAME]: { type: "http", url: server.url } } };
           } });
       };
-      const branchReport = { branch: branchIndex, models: branch.models, limits: branch.limits, boundaries: [], checkpoints: [], excludedSteps: excluded.steps.length, excludedCoverage: excluded.coverage.length };
+      const branchReport = { branch: branchIndex, excludedOutsideWebTurns, models: branch.models, limits: branch.limits, boundaries: [], checkpoints: [], excludedSteps: excluded.steps.length, excludedCoverage: excluded.coverage.length };
       try {
         await open(); let modelIndex = 0;
         for (const turn of turns.slice(branch.startTurn, branch.endTurn + 1)) {
@@ -262,11 +269,18 @@ export async function runE2Sizing({ source, protocol, output, summary = "faux-sh
           }
           position = { turn: turn.ordinal, message: turn.replies[0].message, model: binding.model }; route.setPosition(position);
           const before = observed.length; turnController = new AbortController();
-          const response = await opened.harness.run({ conversationId: source.conversationId, userMessage: turn.user,
-            metadata: { source: "web", web: { model: binding.model, effort: binding.effort } }, onEvent: onHostEvent, abortSignal: AbortSignal.any([turnController.signal, AbortSignal.timeout(branch.limits.timeoutMs)]) });
-          route.assertSettled(); dispatch.assertSettled();
-          if (pendingSteers.length || steerWaiter) fail("E2_STEER_NOT_DELIVERED");
-          if (cursor !== turn.replies.length || turn.cancelled && (!turnController.signal.aborted || response.failure?.kind !== "cancelled") || response.failure && !(turn.cancelled && response.failure.kind === "cancelled")) fail("E2_REPLAY_FAILED");
+          const turnSignal = AbortSignal.any([turnController.signal, AbortSignal.timeout(branch.limits.timeoutMs)]);
+          let response;
+          try {
+            response = await opened.harness.run({ conversationId: source.conversationId, userMessage: turn.user,
+              metadata: { source: "web", web: { model: binding.model, effort: binding.effort } }, onEvent: onHostEvent, abortSignal: turnSignal });
+            route.assertSettled(); dispatch.assertSettled();
+            if (pendingSteers.length || steerWaiter) fail("E2_STEER_NOT_DELIVERED");
+            if (cursor !== turn.replies.length || turn.cancelled && (!turnController.signal.aborted || response.failure?.kind !== "cancelled") || response.failure && !(turn.cancelled && response.failure.kind === "cancelled")) fail("E2_REPLAY_FAILED");
+          } finally {
+            onDiagnostic(diagnosticRecord({ turnOrdinal: turn.ordinal, replyCursor: cursor, replyCount: turn.replies.length,
+              cancelled: turn.cancelled, aborted: turnSignal.aborted, failureKind: response?.failure?.kind, routeRefusalCode: route.refusalCode() }));
+          }
           const actual = observed.slice(before).filter(e => ["model_change", "cancelled_turn_resume"].includes(e.reason));
           const expected = transitions.filter(t => ["cold_model_switch", "warm_cancel_resume"].includes(t.kind));
           if (actual.length !== expected.length || actual.some((e, i) => e.reason !== (expected[i].kind === "cold_model_switch" ? "model_change" : "cancelled_turn_resume")
@@ -289,8 +303,11 @@ export async function runE2Sizing({ source, protocol, output, summary = "faux-sh
             for (const repeat of [1, 2]) {
               await restoreCheckpoint(work, snapshot, receipt); probeMode = true; probeRound = 0; firstProbeContext = null;
               route.setPosition({ ...position, model: binding.model, probe: true }); await open();
+              const probeSignal = AbortSignal.timeout(branch.limits.timeoutMs);
               const response = await opened.harness.run({ conversationId: source.conversationId, userMessage: PROBE_PROMPT,
-                metadata: { source: "web", web: { model: binding.model, effort: binding.effort } }, onEvent: onHostEvent, abortSignal: AbortSignal.timeout(branch.limits.timeoutMs) });
+                metadata: { source: "web", web: { model: binding.model, effort: binding.effort } }, onEvent: onHostEvent, abortSignal: probeSignal });
+              onDiagnostic(diagnosticRecord({ turnOrdinal: turn.ordinal, replyCursor: cursor, replyCount: turn.replies.length,
+                cancelled: false, aborted: probeSignal.aborted, failureKind: response.failure?.kind, routeRefusalCode: route.refusalCode() }));
               route.assertSettled();
               if (response.failure || !firstProbeContext || probeRound !== 2) fail("E2_PROBE_FAILED");
               await opened.close(); opened = null;

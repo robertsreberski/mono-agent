@@ -244,14 +244,20 @@ artifacts are produced:
 
 Stdout contains only the inventory. No IDs, hashes, names, arguments, results,
 paths or snippets are exported there. The private source retains original web
-rows (including exact `parts_json` strings), timestamps, identities, sequence,
+rows (including exact `parts_json` strings), timestamps, identities, write counters,
 steer markers and user rows, partial/cancelled statuses, failures, boundary
 markers and telemetry. Raw selected sidecar rows and journal records retain
 provenance and representations; they are **not concatenated into replay calls**.
-Missing attachment bytes affect only probes touching that item; references remain private and
-are never fetched. Subagent reports become assistant-side parent-visible
-outcomes with provenance. Child calls remain opaque in raw source; they are
-never flattened into the parent queue or executed.
+Messages use the product's `created_at,rowid` ordering. Web `seq` counts parts
+writes, not chronological positions. The transport metadata records this order;
+older source files require a fresh import and a new ordinal registration.
+Missing attachment bytes affect only probes touching that item; references remain
+private and are never fetched. Each parent-level delegation is an inert original
+`Agent` invocation with recorded args and its parent-visible result, marked
+`kind: "subagent_outcome"`, `childrenReplayed: false`. A subagent part's `name`
+is a child label, not a replacement tool name. Child calls remain opaque in raw
+source; they are never flattened into the parent queue or executed. Missing
+parent arguments/results produce replay-tier gaps for that step.
 
 Normalized tools reconcile by recorded call ID, scoped sidecar run and, when
 present, durable record ID. The importer replicates the writer's secure payload
@@ -286,8 +292,10 @@ recognition follows the bounded legacy telemetry unwrapping in
 
 Web steps retain `partStartIndex`, `partEndIndex`, `boundaryIndex`, optional
 `usageBoundaryIndex` and `subagentPartIndices` into the unchanged raw row. Only
-steps with queued parent tool calls are emitted in `steps`; prose-only and
-subagent-only messages remain in raw source/outcomes, never executable calls.
+steps with queued parent calls are emitted in `steps`, including inert
+subagent-only invocations. Prose-only model messages remain in raw source;
+E2 segments them with the same explicit/usage-boundary rule, rather than
+collapsing a whole assistant row into one response.
 Optional `history.sequence` receipts cross-check lifecycle order across groups;
 parallel completions may reorder inside a group, but reversed/duplicate/invalid
 sequences or tools without their preceding step-end marker remain
@@ -426,6 +434,13 @@ Successful stdout contains only counts; failures contain fixed codes, never
 source text, paths or exception messages. `run` always refuses with
 `E2_PAID_ENTRY_UNAVAILABLE`. These commands do not grant provider authority.
 
+An optional `--diagnostics NEW_FILE` on `size` writes a refusal record in a new,
+owned `0600` file outside ROOT under an owned `0700` parent. It cannot overwrite
+an existing file. The only fields are turn ordinal, reply cursor/count,
+cancelled/aborted flags, normalized failure kind and an allowlisted route refusal
+code (or null). No text, identifiers or paths are retained. Successful runs do
+not create this file; stdout/stderr retain their existing count/code-only policy.
+
 ### Protocol registration
 
 The strict `continuity-e2-protocol-v1` envelope has exactly `schema` and
@@ -458,7 +473,9 @@ is `{message, part}` indexing a raw web message and its parsed `parts_json`.
 A cold switch needs a model marker whose before/after models differ; an effort
 change needs equal models and changed effort. A manual skip needs recorded
 manual/skipped/`model_changed` evidence. A warm resume needs an adjacent cancelled
-turn plus retained `cancelled_turn_resume` telemetry. Unassigned system markers
+turn plus `cancelled_turn_resume` telemetry. Missing historical `context` uses
+the shipping reason/kind derivation (`retained` for cancelled/failed resumes);
+current replay still must positively report `retained`. Unassigned system markers
 must fall immediately before the declared turn's time window. Missing,
 contradictory or undeclared source transitions refuse registration; prose never
 authorizes one. The fictional SQLite-backed registration in
@@ -469,13 +486,16 @@ registration for any private conversation.
 
 Only `piModelsDecorator` is installed. Original tool names and importer-selected
 model arguments reach the inert recorded FIFO; no built-ins, skills or child
-agents are offered. Source replies retain native assistant content where
-available, or the indexed web step and trailing prose. Inline steers use the
-production live-input mailbox, deduplicate the standalone owner row and require
+runners are offered. Every assistant row is segmented into individual model
+messages, including rows with only inert Agent calls or prose. Native assistant
+content is retained where available. Inline steers remain between their recorded
+model messages and use the production live-input mailbox, deduplicate the standalone owner row and require
 native acceptance and next-request delivery. Unavailable attachment bytes get
-an explicit unavailable label, never synthetic image bytes. Unanchored native
-steps, unknown arguments, unrelated multiple owner messages and unsupported
-source shapes refuse rather than guessing.
+an explicit unavailable label, never synthetic image bytes. Unknown arguments,
+unrelated multiple owner messages and unsupported source shapes refuse rather
+than guessing. An unanchored step outside all web turns is
+dropped only when explicitly excluded, and counted as `excludedOutsideWebTurns`;
+an included one still refuses.
 
 The guarded `completeSimple` route requires a synchronous, positively observed
 compaction lifecycle, registered catalog model metadata/options and no tools.

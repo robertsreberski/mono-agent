@@ -59,6 +59,7 @@ export function createE2Models({ pi, estimators, models, limits, summary = "faux
   let position = null, sticky = null;
   const refuse = code => { sticky ??= code; fail(sticky); };
   const check = () => { if (sticky) fail(sticky); };
+  const sourceCodes = new Set(["E2_SOURCE_REQUEST_LIMIT", "E2_TOOL_CALL_MISMATCH", "E2_STEER_INVALID", "E2_STEER_REFUSED", "E2_STEER_NOT_DELIVERED"]);
   const keyOf = model => `${model?.provider}:${model?.id}`;
   function backend(model) {
     const key = keyOf(model);
@@ -104,8 +105,8 @@ export function createE2Models({ pi, estimators, models, limits, summary = "faux
           check(); validateModel(model, original);
           if (lifecycle.size) refuse("E2_SOURCE_REQUEST_LIMIT");
           if (position.probe ? ++report.probeRequests > limits.probeRequests : ++report.sourceRequests > limits.sourceRequests) refuse("E2_SOURCE_REQUEST_LIMIT");
-          assertEffectiveSoul(context, soul); sourceContext(context);
-          const bound = backend(model); bound.provider.setResponses([() => sourceReply(context)]);
+          try { assertEffectiveSoul(context, soul); sourceContext(context); } catch (error) { refuse(error?.code === "E2_SOUL_MISMATCH" || ["E2_PROBE_REQUEST_LIMIT", "E2_PROBE_TOOLS_REFUSED", "E2_STEER_NOT_DELIVERED"].includes(error?.code) ? error.code : "E2_SOURCE_REPLY_REFUSED"); }
+          const bound = backend(model); bound.provider.setResponses([async () => { try { return await sourceReply(context); } catch (error) { refuse(sourceCodes.has(error?.code) ? error.code : "E2_SOURCE_REPLY_REFUSED"); } }]);
           return bound.collection.streamSimple(bound.model, context, options);
         };
         if (method === "completeSimple") return async (model, context, options = {}) => {
@@ -134,6 +135,7 @@ export function createE2Models({ pi, estimators, models, limits, summary = "faux
         return () => refuse("E2_MODELS_METHOD_REFUSED");
       } });
     },
+    refusalCode() { return sticky; },
     assertSettled() { check(); if (lifecycle.size) refuse("E2_COMPACTION_NOT_DURABLE"); },
     report() { check(); return structuredClone(report); },
   };

@@ -82,11 +82,11 @@ export function isBoundary(part, kind = "assistant_message_boundary") {
 }
 // Usage ends each assistant message before tool execution starts (pi/events.ts).
 // An explicit marker for that same message replaces usage, never adds a step.
-export function webGroups(parts, calls, toolAt) {
+export function webGroups(parts, calls, toolAt, { allMessages = false } = {}) {
   const callAt = new Map(calls.map(index => [toolAt.get(index), index])), groups = [];
   let active = null, start = 0, valid = true;
   const finish = end => {
-    if (active?.calls.length) { active.partEndIndex = end; groups.push(active); }
+    if (active && (active.calls.length || allMessages && parts.slice(active.partStartIndex, end + 1).some(p => ["text", "reasoning"].includes(p?.type)))) { active.partEndIndex = end; groups.push(active); }
     active = null;
   };
   for (let index = 0; index < parts.length; index++) {
@@ -115,7 +115,8 @@ export function webGroups(parts, calls, toolAt) {
     if (part.type === "subagent" || part.toolName === "Agent") active.subagentPartIndices.push(index);
     if (callAt.has(index)) active.calls.push(callAt.get(index));
   }
-  finish(parts.length - 1);
+  if (active) finish(parts.length - 1);
+  else if (allMessages && parts.slice(start).some(p => ["text", "reasoning"].includes(p?.type))) groups.push({ calls: [], origin: "web-prose", partStartIndex: start, partEndIndex: parts.length - 1, gaps: [] });
   if (groups.reduce((n, group) => n + group.calls.length, 0) !== calls.length) valid = false;
   // Terminal receipts may complete out of order *within* a parallel group.
   // They must not reverse or duplicate lifecycle sequence across groups.

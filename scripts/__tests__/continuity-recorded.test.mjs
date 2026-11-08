@@ -90,12 +90,15 @@ it("retains clipping, malformed records and missing tool results as explicit blo
   expect(malformed.inventory.malformedParts).toBe(1); expect(malformed.source.web.messages[1].parts_json).toContain("{bad fictional");
 });
 
-it("turns subagents into parent-visible assistant outcomes without queueing children or Agent calls", async () => {
-  const delegated = { type: "subagent", toolCallId: "delegation", name: "fictional-reviewer", status: "complete", result: "Fictional parent-visible report.", calls: [tool("child", "Fictional child output", { toolName: "Bash" })] };
-  const native = tool("delegation", delegated.result, { toolName: "Agent" });
+it("queues only the original parent Agent invocation and outcome, never child calls", async () => {
+  const delegated = { type: "subagent", toolCallId: "delegation", name: "fictional-reviewer", args: { task: "Fictional review" }, status: "complete", result: "Fictional parent-visible report.", calls: [tool("child", "Fictional child output", { toolName: "Bash" })] };
+  const native = tool("delegation", delegated.result, { toolName: "Agent", args: delegated.args });
   const { source, inventory } = await read(snapshots(scratch(), { parts: [delegated], journal: [assistant([native]), result(native)] }));
-  expect(inventory).toMatchObject({ tools: 0, subagentOutcomes: 1 }); expect(source.outcomes[0]).toMatchObject({ role: "assistant", childrenReplayed: false, result: delegated.result });
-  expect(JSON.stringify(source.web)).toContain("child"); expect(source.tools).toEqual([]);
+  expect(inventory).toMatchObject({ tools: 1, subagentOutcomes: 1 }); expect(source.outcomes[0]).toMatchObject({ role: "assistant", childrenReplayed: false, result: delegated.result });
+  expect(JSON.stringify(source.web)).toContain("child");
+  expect(source.tools).toMatchObject([{ id: "delegation", name: "Agent", args: delegated.args, kind: "subagent_outcome", childrenReplayed: false }]);
+  const q = createRecordedQueue(source); expect(q.dispatch("Agent", delegated.args).content[0].text).toBe(delegated.result); expect(q.report().pending).toBe(0);
+  expect(source.tools.some(t => t.id === "child")).toBe(false);
 });
 
 it("uses native assistant steps, retains timestamps and boundaries, and binds repeated identical calls FIFO", async () => {
@@ -372,7 +375,7 @@ it("uses the most complete result and emits truncation fidelity only when all av
 });
 
 it("counts tiered gaps and only refuses replay-tier coverage unless explicitly excluded", async () => {
-  const t = tool(), { source, inventory } = await read(snapshots(scratch(), { parts: [t, { type: "attachment", id: "fictional-attachment" }, { type: "subagent", toolCallId: "fictional-child", result: "Fictional preview", resultTruncated: true, status: "complete" }] }));
+  const t = tool(), { source, inventory } = await read(snapshots(scratch(), { parts: [t, { type: "attachment", id: "fictional-attachment" }, { type: "subagent", toolCallId: "fictional-child", args: {}, result: "Fictional preview", resultTruncated: true, status: "complete" }] }));
   expect(inventory).toMatchObject({ replayGaps: 0, itemGaps: 2 }); expect(inventory.coverageGaps).toBe(inventory.itemGaps + inventory.fidelityGaps);
   expect(source.coverage.every(g => !Object.hasOwn(g, "blocking"))).toBe(true); expect(() => createRecordedQueue(source)).not.toThrow();
   const unknown = await read(snapshots(scratch(), { parts: [t], boundaries: false }));
@@ -399,19 +402,19 @@ it("refuses differing native returned and placed receipts even when one is compl
 
 it("groups usage-only steps with their preceding prose and following tools/subagent outcome", async () => {
   const one = tool("usage-first", "First fictional note", { history: { sequence: 3 } }), two = tool("usage-next", "Second fictional note", { history: { sequence: 7 } });
-  const child = { type: "subagent", toolCallId: "fictional-usage-child", status: "complete", result: "Fictional assistant-side outcome" };
+  const child = { type: "subagent", toolCallId: "fictional-usage-child", args: {}, status: "complete", result: "Fictional assistant-side outcome" };
   const parts = [{ type: "reasoning", text: "Inspect the fictional note." }, usage(), one, child,
     { type: "text", text: "Read the next fictional revision." }, usage(), two,
     { type: "text", text: "Fictional final answer." }, usage()];
   const { source, inventory } = await read(snapshots(scratch(), { parts, boundaries: false }));
-  expect(source.steps.map(s => s.calls)).toEqual([[0], [1]]);
+  expect(source.steps.map(s => s.calls)).toEqual([[0, 1], [2]]);
   expect(source.steps).toMatchObject([
     { origin: "web-usage-boundary", boundaryIndex: 1, usageBoundaryIndex: 1, partStartIndex: 0, partEndIndex: 3, subagentPartIndices: [3] },
     { origin: "web-usage-boundary", boundaryIndex: 5, usageBoundaryIndex: 5, partStartIndex: 4, partEndIndex: 6, subagentPartIndices: [] },
   ]);
-  expect(inventory).toMatchObject({ steps: 2, tools: 2, subagentOutcomes: 1, ambiguousParallelGroups: 0, replayGaps: 0 });
+  expect(inventory).toMatchObject({ steps: 2, tools: 3, subagentOutcomes: 1, ambiguousParallelGroups: 0, replayGaps: 0 });
   expect(JSON.parse(source.web.messages.find(m => m.id === "assistant-one").parts_json)).toEqual(parts);
-  const queue = createRecordedQueue(source); expect(queue.dispatch(one.toolName, one.args).content[0].text).toBe(one.result); expect(queue.dispatch(two.toolName, two.args).content[0].text).toBe(two.result);
+  const queue = createRecordedQueue(source); expect(queue.dispatch(one.toolName, one.args).content[0].text).toBe(one.result); expect(queue.dispatch("Agent", {}).content[0].text).toBe(child.result); expect(queue.dispatch(two.toolName, two.args).content[0].text).toBe(two.result);
 });
 
 it("prefers a coincident explicit boundary without counting legacy-wrapped usage as an extra step", async () => {
@@ -491,8 +494,8 @@ it("requires original arguments for replay but leaves only-result clipping at fi
 
 it("accepts failed web tools and failed subagent outcomes as terminal errors", async () => {
   const t = tool("failed-web", "Fictional failure", { status: "failed" });
-  const { source, inventory } = await read(snapshots(scratch(), { parts: [t, { type: "subagent", toolCallId: "failed-fictional-child", status: "failed", result: "Fictional child failure" }], journal: [assistant([t]), result(t)] }));
-  expect(inventory).toMatchObject({ failedTools: 1, replayGaps: 0, itemGaps: 0 }); expect(source.tools[0].state).toBe("failed");
+  const { source, inventory } = await read(snapshots(scratch(), { parts: [t, { type: "subagent", toolCallId: "failed-fictional-child", args: {}, status: "failed", result: "Fictional child failure" }], journal: [assistant([t]), result(t)] }));
+  expect(inventory).toMatchObject({ failedTools: 2, replayGaps: 0, itemGaps: 0 }); expect(source.tools[0].state).toBe("failed");
   expect(createRecordedQueue(source).dispatch(t.toolName, t.args)).toMatchObject({ isError: true, content: [{ text: t.result }] });
 });
 
@@ -648,4 +651,31 @@ it("does not downgrade zero receipts without a complete result or a malformed no
     expect(source.coverage.find(g => g.code === "native_result_missing_or_ambiguous").tier).toBe("replay");
     expect(() => createRecordedQueue(source)).toThrow("RECORDED_REPLAY_COVERAGE_GAP");
   }
+});
+
+it("orders web messages by creation time and rowid, never parts-write counters or lexical ids", async () => {
+  const f = snapshots(scratch()), db = new DatabaseSync(f.web);
+  db.exec("DELETE FROM messages");
+  const add = (id, at, seq, role = "assistant", turn = "turn-one") => db.prepare("INSERT INTO messages VALUES(?,?,?,?,?,?,?,?,?,?)").run(id, "thread-one", turn, role, JSON.stringify([{ type: "text", text: "Fictional chronology" }]), at, at, "complete", seq, 0);
+  add("a-latest", "2042-03-01T09:00:04.000Z", 0);
+  add("z-owner", "2042-03-01T09:00:01.000Z", 19, "user");
+  add("z-tie-first", "2042-03-01T09:00:02.000Z", 0);
+  add("a-tie-next", "2042-03-01T09:00:02.000Z", 87);
+  add("m-system", "2042-03-01T08:59:59.999Z", 0, "system", null); db.close();
+  const { source } = await read(f);
+  expect(source.web.messages.map(m => m.id)).toEqual(["m-system", "z-owner", "z-tie-first", "a-tie-next", "a-latest"]);
+});
+it.each(["args", "result"])("requires parent Agent %s as replay-tier state, without exposing children", async missing => {
+  const parent = { type: "subagent", toolCallId: "parent-missing", name: "fictional-reviewer", args: { task: "Fictional task" }, result: "Fictional report", status: "complete", calls: [tool("never-child")] };
+  delete parent[missing];
+  const { source } = await read(snapshots(scratch(), { parts: [parent] }));
+  const code = missing === "args" ? "arguments_missing" : "result_missing";
+  expect(source.tools).toHaveLength(1); expect(source.tools[0]).toMatchObject({ name: "Agent", kind: "subagent_outcome", childrenReplayed: false });
+  expect(source.steps[0].gaps).toContain(code); expect(source.coverage.some(g => g.code === code && g.tier === "replay")).toBe(true);
+  expect(() => createRecordedQueue(source)).toThrow(/RECORDED_(REPLAY|TOOL)_COVERAGE_GAP/);
+});
+it("preserves a failed parent Agent outcome as an inert error result", async () => {
+  const parent = { type: "subagent", toolCallId: "failed-parent", name: "fictional-reviewer", args: { task: "Fictional task" }, result: "Fictional failure", status: "failed", calls: [] };
+  const { source } = await read(snapshots(scratch(), { parts: [parent] }));
+  expect(createRecordedQueue(source).dispatch("Agent", parent.args)).toEqual({ content: [{ type: "text", text: parent.result }], isError: true });
 });
