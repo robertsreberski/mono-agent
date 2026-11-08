@@ -231,7 +231,7 @@ export async function createFauxLookupDecorator(options) {
 }
 
 /** One wrapper per sequential probe run. Never share it between slots. No default fetch. */
-export function guardedLookupModels(models, { contract, permit, send, assumptions = LOOKUP_ASSUMPTIONS, resolvedSafety }) {
+export function guardedLookupModels(models, { contract, permit, send, assumptions = LOOKUP_ASSUMPTIONS, resolvedSafety, onForwarded }) {
   if (JSON.stringify(assumptions) !== JSON.stringify(LOOKUP_ASSUMPTIONS)) refuse("lookup_assumptions_mismatch");
   for (const key of ["provider", "model", "api", "baseUrl", "effort", "version"])
     if (contract?.[key] !== LOOKUP_GUARD_CONTRACT[key]) refuse("lookup_contract_mismatch");
@@ -248,6 +248,7 @@ export function guardedLookupModels(models, { contract, permit, send, assumption
     if (!realLookupSendForGuard(send, permit, contract)) refuse("lookup_pilot_capability_invalid");
   }
   if (typeof send !== "function") refuse("lookup_single_shot_send_required");
+  if (onForwarded !== undefined && typeof onForwarded !== "function") refuse("lookup_pilot_capability_invalid");
   contract = Object.freeze({ ...contract });
   assumptions = LOOKUP_ASSUMPTIONS;
   const outputs = []; let rounds = 0, active = false, stopped = false, slotTerminal = false, finalizationBlocked = false;
@@ -359,6 +360,9 @@ export function guardedLookupModels(models, { contract, permit, send, assumption
         } catch (error) { integrity ??= error.code === "lookup_body_type_forbidden" ? error.code : "lookup_permit_invalid"; throw error; }
         if (integrity) throw new LookupGuardError(integrity);
         sent = true;
+        // Content-free witness of the forwarded context: synchronous, after the
+        // persisted consume and before the one send; it can never skip or alter it.
+        try { onForwarded?.(context, round); } catch { /* Observation only. */ }
         return send(url, init);
       },
       onProviderStreamEvent: async (event, selected) => {

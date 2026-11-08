@@ -5,7 +5,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { Socket } from "node:net";
 import { guardedLookupModels, LOOKUP_GUARD_POLICY_REFUSALS, LOOKUP_PRE_SEND_REFUSALS, LOOKUP_ASSUMPTIONS as A, LOOKUP_GUARD_CONTRACT as C, lookupInputEnvelope, lookupBodyDigest,
   createTestOnlyLookupPermitSource, assertRealLookupPermitSource, assertLookupAuxiliaryCallersOff, assertLookupChildSafety, lookupSettledCost } from "../lib/continuity-lookup-guard.mjs";
-import { fauxLookupSafety } from "../lib/continuity-lookup-pilot-runtime.mjs";
+import { fauxLookupSafety, lookupForwardedObserver } from "../lib/continuity-lookup-pilot-runtime.mjs";
+import { lookupWitness } from "../lib/continuity-lookup.mjs";
 let network, fetch;
 beforeEach(() => {
   network = vi.spyOn(Socket.prototype, "connect").mockImplementation(() => { throw Error("egress_denied"); });
@@ -17,7 +18,7 @@ const payload = () => ({ model: C.model, store: false, stream: true, reasoning: 
 function sized(U) { const p = payload(); p.input[0].content += "x".repeat(U - lookupInputEnvelope(p).U); return p; }
 const message = (stopReason = "stop", text = "Fictional answer.") => ({ stopReason, content: [{ type: "text", text }] });
 const usage = (input_tokens = 1, output_tokens = 1) => ({ input_tokens, output_tokens });
-function fixture({ body = payload(), raw = usage(), tier = "default", event = "response.completed", final = message(), failure, mutate, noSend = false, doubleSend = false, duplicateTerminal = false, repeatedPayload = false, sendUrl, sendHeaders, skipPayload = false, contractPatch = {}, permitSource, resolvedSafety, sendBody = value => value } = {}) {
+function fixture({ body = payload(), raw = usage(), tier = "default", event = "response.completed", final = message(), failure, mutate, noSend = false, doubleSend = false, duplicateTerminal = false, repeatedPayload = false, sendUrl, sendHeaders, skipPayload = false, contractPatch = {}, onForwarded, permitSource, resolvedSafety, sendBody = value => value } = {}) {
   const permit = permitSource ?? createTestOnlyLookupPermitSource(), send = vi.fn(async () => new Response(""));
   const underlying = { streamSimple: vi.fn((_m, _c, options) => {
     const result = (async () => {
@@ -37,9 +38,9 @@ function fixture({ body = payload(), raw = usage(), tier = "default", event = "r
     })();
     return { result: () => result, async *[Symbol.asyncIterator]() { yield { type: "done", message: await result }; } };
   }), getModel: () => model };
-  const guarded = guardedLookupModels(underlying, { contract: { ...C, slotId: "fictional-slot", runId: "fictional-run", ...contractPatch }, permit, send, resolvedSafety });
+  const guarded = guardedLookupModels(underlying, { contract: { ...C, slotId: "fictional-slot", runId: "fictional-run", ...contractPatch }, permit, send, resolvedSafety, onForwarded });
   const options = { reasoning: "high", transport: "sse", maxRetries: 0 };
-  return { guarded, permit, send, underlying, options, call: (overrides = {}) => guarded.streamSimple(model, {}, { ...options, ...overrides }).result() };
+  return { guarded, permit, send, underlying, options, call: (overrides = {}, context = {}) => guarded.streamSimple(model, context, { ...options, ...overrides }).result() };
 }
 const settles = f => f.permit.events.filter(e => e.type === "settle");
 it.each([271999, 272000, 272001])("gates final U=%i after all payload mutations", async U => {
@@ -429,4 +430,39 @@ it.each([new DataView(new ArrayBuffer(4)), new Uint16Array(2), new Int8Array(2),
   await expect(f.call()).rejects.toMatchObject({code: "lookup_body_type_forbidden"});
   expect(f.send).not.toHaveBeenCalled(); expect(f.permit.events.filter(e => e.type === "consume")).toHaveLength(0);
   expect(f.permit.events).toContainEqual(expect.objectContaining({type: "stop", code: "lookup_body_type_forbidden"}));
+});
+
+it("observes each forwarded context synchronously after the persisted consume and before the single send", async () => {
+  const seen = [];
+  const f = fixture({ onForwarded: (context, round) => { seen.push({ context, round, events: f.permit.events.map(e => e.type), sends: f.send.mock.calls.length }); } });
+  const first = { messages: [{ role: "user", content: "Fictional first context." }] }, second = { messages: [] };
+  await f.call({}, first); await f.call({}, second);
+  expect(seen).toEqual([{ context: first, round: 1, events: ["admit", "consume"], sends: 0 },
+    { context: second, round: 2, events: ["admit", "consume", "settle", "admit", "consume"], sends: 1 }]);
+  expect(f.send).toHaveBeenCalledTimes(2);
+});
+it("still sends exactly once with the identical admitted body when the observer throws, leaving presence unknown", async () => {
+  const witness = lookupWitness({ availability: "retained" }, { value: "MORGAN-7Q4" }), observer = lookupForwardedObserver();
+  observer.register(context => witness.initial(context));
+  const f = fixture({ onForwarded: observer.notify });
+  // A BigInt makes the witness's own serialization throw before it records anything.
+  await f.call({}, { messages: [{ role: "user", content: "MORGAN-7Q4", unserializable: 1n }] });
+  expect(f.send).toHaveBeenCalledOnce();
+  const admitted = f.permit.events.find(e => e.type === "admit");
+  expect(lookupBodyDigest(Buffer.from(f.send.mock.calls[0][1].body))).toBe(admitted.payloadDigest);
+  expect(settles(f)[0].outcome.kind).toBe("settled");
+  expect(witness.snapshot()).toMatchObject({ initiallyPresent: "unknown", initialContextBytes: null });
+  const raw = fixture({ onForwarded: () => { throw Error("fictional_observer_failure"); } });
+  await raw.call(); expect(raw.send).toHaveBeenCalledOnce(); expect(settles(raw)[0].outcome.kind).toBe("settled");
+});
+it("does not observe refused requests and refuses a non-function observer binding", async () => {
+  const onForwarded = vi.fn(), f = fixture({ body: sized(A.inputMax + 1), onForwarded });
+  await expect(f.call()).rejects.toThrow("not_admitted_input_envelope"); expect(onForwarded).not.toHaveBeenCalled();
+  expect(() => fixture({ onForwarded: "observer" })).toThrow("lookup_pilot_capability_invalid");
+});
+it("registers exactly one forwarded observer", () => {
+  const observer = lookupForwardedObserver(), fn = vi.fn();
+  expect(() => observer.register(null)).toThrow("lookup_pilot_capability_invalid");
+  observer.register(fn); expect(() => observer.register(fn)).toThrow("lookup_pilot_capability_invalid");
+  observer.notify("fictional-context", 1); expect(fn).toHaveBeenCalledExactlyOnceWith("fictional-context", 1);
 });

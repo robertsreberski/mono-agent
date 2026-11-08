@@ -123,6 +123,16 @@ export function lookupPilotWatchdog(authorization, deadlines, deadlineAt, now = 
   const timeout = Math.min(requested, deadlines.deadlineMs, Math.max(1, deadlineAt - now));
   need(valid(timeout), "lookup_ipc_invalid"); return timeout;
 }
+/** Set-once, synchronous observer of each request the guard hands to its single-shot send.
+ * Observation only: a missing or throwing observer can never skip, delay or alter the send.
+ */
+export function lookupForwardedObserver() {
+  let observer = null;
+  return Object.freeze({
+    register(fn) { need(typeof fn === "function" && observer === null, "lookup_pilot_capability_invalid"); observer = fn; },
+    notify(context, round) { try { observer?.(context, round); } catch { /* Presence stays unknown. */ } },
+  });
+}
 /** Pin to the forwarder's setup-owned endpoint, never to its rewrite output. */
 export function createLookupPilotRoute({ pilot, forwarder, noteOffered }) {
   const historyEndpoint = forwarder?.historyEndpoint;

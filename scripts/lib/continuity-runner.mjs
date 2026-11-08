@@ -426,6 +426,15 @@ export async function runLiveTurn({ modules, work, authPath, plan, mode, configP
         const faux = pilot?.routeKind === "faux" && (await import("./continuity-lookup-faux-capability.mjs")).fauxLookupSendBinds(pilot.send, {...pilot, work});
         if (!isRealLookupSend(pilot?.send) && !faux) throw new ContinuityError("lookup_real_not_authorized");
       }
+      if (lookup && pilot) {
+        // The guard reports each request handed to its send; only the first
+        // forwarded context feeds the same content-free witness as offline.
+        if (typeof pilot.send?.observeForwarded !== "function") throw new ContinuityError("lookup_pilot_capability_invalid");
+        pilot.send.observeForwarded((context, round) => {
+          lookup.round = Math.max(lookup.round, round);
+          if (round === 1) lookup.witness.initial(context);
+        });
+      }
       if (isLookup) assertSoul(await readFile(join(work, "BENCHMARK-SOUL.md")), plan.lookup.soul);
       if (pilot) configPatch = pilotDispatchConfig(configPatch);
       const reader = modules.host.parseMonoRuntimeModelReference(plan.reader.model);

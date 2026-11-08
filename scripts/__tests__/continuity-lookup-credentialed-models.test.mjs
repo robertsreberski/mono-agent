@@ -167,12 +167,18 @@ it.each([[200, false], [503, false], [200, true]])("credentialed configured harn
   const send = await cap.createLookupRealSend(a, {plan: a.plan, arm, config});
   expect(cap.isRealLookupSend(send)).toBe(true); expect(cap.isRealLookupDecorator(send.decorator)).toBe(true);
   const start = nativeAttempts, arrived = arrivals.length;
-  let result;
+  let result, lookup;
+  // Fictional evaluator annotation: present in the first forwarded context except in the 503 case.
+  const marker = status === 503 ? "MORGAN-ABSENT-9Z" : "MORGAN-7Q4";
   guard.constructed();
   try {
-    const live = await runner.runLiveTurn({modules, work, authPath: a.authorization.credentialPath, plan, mode: "paid", configPatch: measuredPatch, userMessage: "Give a fictional answer.", clock: {value: new Date("2030-01-01T00:00:00Z")}, conversationId: `fictional-${id}`, owner: "Morgan", pilot: {routeKind: "real", plan, arm, send}});
-    result = {text: live.text, failure: live.failureKind};
-  } catch (error) {result = {failure: {kind: error.code ?? error.message}};}
+    const live = await runner.runLiveTurn({modules, work, authPath: a.authorization.credentialPath, plan, mode: "paid", configPatch: measuredPatch, userMessage: "Give a fictional answer about MORGAN-7Q4.", clock: {value: new Date("2030-01-01T00:00:00Z")}, conversationId: `fictional-${id}`, owner: "Morgan", pilot: {routeKind: "real", plan, arm, send},
+      lookupSource: {availability: "unknown"}, lookupAnnotation: {availability: "annotated", value: marker}});
+    result = {text: live.text, failure: live.failureKind}; lookup = live.lookup;
+  } catch (error) {result = {failure: {kind: error.code ?? error.message}}; lookup = error.lookup;}
+  // The real decorator reports the request it hands to the native send, even when that send then refuses it.
+  expect(lookup).toMatchObject({initiallyPresent: status !== 503, rounds: 1});
+  expect(lookup.initialContextBytes).toBeGreaterThan(0); expect(JSON.stringify(lookup)).not.toContain(marker);
   const executed = (await coverage.post("Profiler.takePreciseCoverage")).result;
   const calls = (suffix, names) => executed.filter(script => script.url.endsWith(suffix)).flatMap(script => script.functions).filter(fn => names.includes(fn.functionName)).reduce((sum, fn) => sum + fn.ranges[0].count, 0);
   const sdkRanges = executed.filter(script => script.url.endsWith("/api/openai-codex-responses.js")).flatMap(script => script.functions).flatMap(fn => fn.ranges).filter(range => range.startOffset <= sdkFetchOffset && range.endOffset > sdkFetchOffset).sort((a, b) => (a.endOffset-a.startOffset) - (b.endOffset-b.startOffset));
