@@ -4,8 +4,8 @@
 
 - Fix the continuity lookup pilot never recording whether a looked-up value was
   already in the first model request, so witnessed recovery can now be measured
-  on real runs. Each probe keeps a private, content-free per-slot lookup record
-  outside reports. The pilot's expected-cost estimate is recalibrated from
+  on real runs. Each probe keeps a private, content-free, evidence-only (not
+  synced) per-slot lookup record outside reports. The pilot's expected-cost estimate is recalibrated from
   measured usage (about $41 instead of $65 for the first pilot's workload).
   Reservations, envelopes and caps are unchanged.
 

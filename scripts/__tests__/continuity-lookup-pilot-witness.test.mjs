@@ -116,7 +116,7 @@ it.each([["present", `Quick fictional check about ${MARKER}.`, true], ["absent",
   expect(JSON.stringify(live.lookup)).not.toContain(MARKER);
   expect(() => send.observeForwarded(() => {})).toThrow("lookup_pilot_capability_invalid"); // set once by runLiveTurn
   // The private slot record round-trips through the production writer/validator, content-free.
-  const record = await records.writeLookupSlotRecord(a, { ...live.lookup, witnessedRecovery: false });
+  const record = records.writeLookupSlotRecord(a, { ...live.lookup, witnessedRecovery: false });
   expect(await records.readLookupSlotRecord(a)).toEqual(record);
   expect(record).toMatchObject({ initiallyPresent: expected, rounds: 2, calls: 1, sourceAvailability: "unknown", witnessedRecovery: false });
   expect((await stat(records.lookupSlotRecordPath(a))).mode & 0o777).toBe(0o600);

@@ -37,9 +37,10 @@ export async function runLookupConfiguredProbe(a) {
       forkDir: prepared.work,
       plan: a.plan, mode: "paid", authPath, root, pilot });
     // Before any outcome branch, so completed, wrong, lost and failed trials all keep
-    // their content-free evidence. Evidence only: a write failure leaves no record
+    // their content-free evidence. Evidence only: synchronous and unsynced, so it never
+    // delays done past a stop's containment grace; a write failure leaves no record
     // (missing, never zero) and cannot reclassify a slot that may already have spent.
-    if (trial.lookup) await writeLookupSlotRecord(a, trial.lookup).catch(() => {});
+    if (trial.lookup) try { writeLookupSlotRecord(a, trial.lookup); } catch { /* Missing evidence. */ }
     if (LOOKUP_GUARD_POLICY_REFUSALS.includes(trial.failure)) {
       await send.permit.stop(trial.failure); return { terminal: "refused_pre_send", score: null, refusalCode: trial.failure };
     }

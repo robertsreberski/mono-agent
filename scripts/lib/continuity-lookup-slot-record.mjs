@@ -1,7 +1,7 @@
 // Private, content-free per-slot lookup evidence. Counts, booleans and fixed codes only;
 // never record IDs, digests, paths, questions, answers or retrieved text.
+import { closeSync, constants, openSync, writeSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { durable } from "./continuity-holdout-workflow.mjs";
 import { lookupPilotWork } from "./continuity-lookup-pilot-runtime.mjs";
 import { readPilotPrivate } from "./continuity-lookup-pilot-state.mjs";
 
@@ -40,10 +40,15 @@ export function lookupSlotRecord(lookup) {
   }));
 }
 
-/** 0600, exclusive and synced; an existing record is never replaced. */
-export async function writeLookupSlotRecord(a, lookup) {
-  const record = lookupSlotRecord(lookup);
-  await durable(lookupSlotRecordPath(a), record, true);
+/** Owner-only, exclusive, no-follow and synchronous; an existing record is never replaced.
+ * Evidence only, deliberately NOT crash-durable (no fsync): after an IPC stop the
+ * controller contains the child within a short grace, so this write must never delay
+ * the child's done message with file/directory syncs.
+ */
+export function writeLookupSlotRecord(a, lookup) {
+  const record = lookupSlotRecord(lookup), bytes = Buffer.from(JSON.stringify(record));
+  const fd = openSync(lookupSlotRecordPath(a), constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+  try { if (writeSync(fd, bytes) !== bytes.length) fail(); } finally { closeSync(fd); }
   return record;
 }
 export async function readLookupSlotRecord(a) {

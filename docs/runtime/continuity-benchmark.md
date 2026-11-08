@@ -1441,9 +1441,11 @@ are strictly projected to opaque identities, content hashes, fixed codes and
 numeric usage/cost/scoring. They exclude paths and path hashes, commitments,
 salts, credentials, requests, answers, stderr and free-form errors.
 Per-slot lookup evidence stays out of receipts and reports. The probe child
-writes a private, exclusive, synced 0600
+synchronously writes a private, exclusive, no-follow 0600
 `work/<slot>/checkpoint/lookup-record.json` (`lookup-pilot-slot-lookup-v1`)
-beside the preparation manifest, outside the digested snapshot. It holds only
+beside the preparation manifest, outside the digested snapshot. It is evidence
+only and deliberately not synced or crash-durable, so writing it never delays
+the child's done message past the controller's post-stop containment grace. It holds only
 initial presence and context bytes, source availability, whether the verified
 source was returned, lookup calls, responses, bytes, search pages and get
 chunks, the exhaustion cause, forwarded rounds and witnessed recovery. It never
