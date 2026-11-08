@@ -2,7 +2,7 @@
 import { createHash } from "node:crypto";
 import { fail, keys, object } from "./continuity-observation-input.mjs";
 
-export const SOURCE_SCHEMA = "continuity-recorded-source-v1";
+export const SOURCE_SCHEMA = "continuity-recorded-source-v2";
 export const QUESTIONS_SCHEMA = "continuity-recorded-questions-v1";
 export const EVALUATOR_SCHEMA = "continuity-recorded-evaluator-keys-v1";
 export const MAX_SOURCE_BYTES = 128 * 1024 * 1024;
@@ -62,12 +62,19 @@ export function validateSource(s) {
       used.add(index);
     }
   }
+  for (const gap of s.coverage) if (!keys(gap, ["code", "location", "tier"]) || gap.tier !== gapTier(gap.code)) fail("INVALID_RECORDED_GAP");
   return s;
 }
-export const INVENTORY_FIELDS = ["threads", "turns", "messages", "tools", "steps", "attachments", "subagentOutcomes", "markers", "telemetry", "steers", "partialTurns", "failedTools", "matched", "conflicts", "webOnly", "sidecarOnly", "journalOnly", "representationDifferences", "truncated", "malformedParts", "missingResults", "ambiguousParallelGroups", "coverageGaps", "journalRecords"];
+export const INVENTORY_FIELDS = ["threads", "turns", "messages", "tools", "steps", "attachments", "subagentOutcomes", "markers", "telemetry", "steers", "partialTurns", "failedTools", "matched", "conflicts", "webOnly", "sidecarOnly", "journalOnly", "representationDifferences", "truncated", "malformedParts", "missingResults", "ambiguousParallelGroups", "coverageGaps", "replayGaps", "itemGaps", "fidelityGaps", "sidecarRedacted", "sidecarRedactedUnverified", "webEffectiveArguments", "recoveredResults", "journalRecords"];
+export const GAP_TIERS = Object.freeze(Object.fromEntries([
+  ...["partial_turn", "partial_message", "unassigned_message", "cross_thread_order_unknown", "malformed_parts", "malformed_part", "malformed_tool", "malformed_native_call", "journal_rewind_requires_branch_selection", "native_interruption", "arguments_missing", "arguments_not_object", "tool_terminal_state_unknown", "result_missing", "duplicate_web_conflict", "journal_arguments_conflict", "journal_result_conflict", "journal_state_conflict", "duplicate_native_identity", "ambiguous_sidecar_identity", "sidecar_conflict", "ambiguous_parallel_results", "assistant_step_boundaries_unknown", "mixed_step_order_unknown"].map(code => [code, "replay"]),
+  ...["attachment_bytes_unavailable", "subagent_outcome_missing", "subagent_outcome_truncated", "subagent_terminal_state_unknown"].map(code => [code, "item"]),
+  ...["source_truncated", "sidecar_truncated", "arguments_may_include_host_defaults", "web_effective_arguments", "sidecar_redacted", "sidecar_redacted_unverified", "malformed_sidecar_payload", "sidecar_phase_missing", "sidecar_only_tool", "native_result_missing_or_ambiguous"].map(code => [code, "fidelity"]),
+]));
+export function gapTier(code) { if (!Object.hasOwn(GAP_TIERS, code)) fail("INVALID_RECORDED_GAP"); return GAP_TIERS[code]; }
 export function inventory(source, counts) {
   validateSource(source);
-  const result = { schema: "continuity-recorded-inventory-v1" };
+  const result = { schema: "continuity-recorded-inventory-v2" };
   for (const key of INVENTORY_FIELDS) {
     if (!Number.isSafeInteger(counts[key]) || counts[key] < 0) fail("INVALID_RECORDED_INVENTORY");
     result[key] = counts[key];

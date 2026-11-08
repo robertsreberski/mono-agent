@@ -1,9 +1,19 @@
-// Offline importer. No runtime/product/provider imports; every input is explicit.
+// Offline importer. Only the explicitly allowlisted pure product redactor loads.
 import { readFileSync, statSync, realpathSync, mkdirSync, writeFileSync, rmSync, existsSync } from "node:fs";
 import { dirname, basename, resolve, join } from "node:path";
 import { ROOT, MAX_ROW_BYTES, fail, keys, object, within, inputPath, openSnapshot, sourceStamps, assertUnchanged, jsonLines } from "./continuity-observation-input.mjs";
-import { SOURCE_SCHEMA, MAX_SOURCE_BYTES, MAX_RECORDS, INVENTORY_FIELDS, bytes, callKey, digest, emptyQuestions, emptyKeys, inventory, validateSource, ambiguousSteps } from "./continuity-recorded-schema.mjs";
+import { SOURCE_SCHEMA, MAX_SOURCE_BYTES, MAX_RECORDS, INVENTORY_FIELDS, bytes, callKey, digest, emptyQuestions, emptyKeys, inventory, validateSource, ambiguousSteps, gapTier } from "./continuity-recorded-schema.mjs";
 
+import { effectiveArguments, compareCopies, resultCopy, selectResult, textResult, webGroups, normalizeSidecar } from "./continuity-recorded-reconcile.mjs";
+export async function readRedactor() {
+  if (!existsSync(new URL("../../packages/observability/dist/redaction.js", import.meta.url)) || !existsSync(new URL("../../packages/observability/dist/guards.js", import.meta.url))) fail("RECORDED_REDACTION_BUILD_REQUIRED");
+  try {
+    const { redactJsonValue } = await import("../../packages/observability/dist/redaction.js");
+    if (typeof redactJsonValue !== "function") fail("RECORDED_REDACTION_BUILD_REQUIRED");
+    return redactJsonValue;
+  }
+  catch { fail("RECORDED_REDACTION_BUILD_REQUIRED"); }
+}
 export function readRecordedManifest(path) {
   path = inputPath(process.cwd(), path);
   if (statSync(path).size > MAX_ROW_BYTES) fail("RECORDED_MANIFEST_TOO_LARGE");
@@ -50,11 +60,6 @@ function parsePayload(record) {
   }
   catch { return { present: false, malformed: true }; }
 }
-function textResult(value) {
-  if (typeof value === "string") return value;
-  const content = Array.isArray(value) ? value : value?.content;
-  return Array.isArray(content) && content.every(p => p?.type === "text" && typeof p.text === "string") ? content.map(p => p.text).join("\n") : undefined;
-}
 function compare(aPresent, a, bPresent, b) {
   if (!aPresent || !bPresent) return "missing";
   if (bytes(a) === bytes(b)) return "exact";
@@ -78,7 +83,8 @@ export async function readRecordedSource(manifest, conversationId) {
     provenance: paths.map((path, index) => ({ index, path, stamp: stamps[index][1] })),
     web: { threads: [], turns: [], messages: [] }, sidecar: null, journal: null, tools: [], steps: [], outcomes: [], coverage: [],
     transport: { identity: "name-canonical-arguments-fifo", identityReason: "packages/turn/src/tools/mcp/tools.ts:178-179 omits toolCallId from MCP requests", arguments: "unchanged", schemas: "unavailable-unless-explicitly-supplied", resultAdaptation: "native-content-or-text-envelope", byteEquivalence: "not-claimed", clipping: "must-be-measured-by-replay" } };
-  const gap = (code, location, blocking = true) => source.coverage.push({ code, location, blocking });
+  const gap = (code, location) => source.coverage.push({ code, location, tier: gapTier(code) });
+  const redact = await readRedactor();
   let web, sidecar;
   try {
     web = openSnapshot(m.web, "web");
@@ -102,10 +108,11 @@ export async function readRecordedSource(manifest, conversationId) {
     }
     for (const row of source.web.messages) {
       if (!turnIds.has(row.turn_id)) gap("unassigned_message", { messageId: row.id });
+      if (!["complete", "completed"].includes(row.status)) gap("partial_message", { messageId: row.id });
       let parts;
       try { parts = JSON.parse(row.parts_json); } catch { /* retain the original malformed string */ }
       if (!Array.isArray(parts)) { counts.malformedParts++; gap("malformed_parts", { messageId: row.id }); continue; }
-      const step = { origin: "web-message-conservative", messageId: row.id, turnId: row.turn_id, calls: [], gaps: [] };
+      const step = { messageId: row.id, turnId: row.turn_id, calls: [] }, toolAt = new Map();
       for (let index = 0; index < parts.length; index++) {
         const part = parts[index], provenance = { source: "web", messageId: row.id, turnId: row.turn_id, partIndex: index };
         if (!object(part) || typeof part.type !== "string") { counts.malformedParts++; gap("malformed_part", provenance); continue; }
@@ -135,8 +142,10 @@ export async function readRecordedSource(manifest, conversationId) {
         if (!Object.hasOwn(tool, "args")) tool.gaps.push("arguments_missing");
         else if (!object(tool.args)) tool.gaps.push("arguments_not_object");
         if (!["complete", "completed", "error"].includes(tool.state)) tool.gaps.push("tool_terminal_state_unknown");
-        if (!Object.hasOwn(tool, "result")) { tool.gaps.push("result_missing"); counts.missingResults++; }
-        if (part.argsTruncated === true || part.resultTruncated === true || part.history?.truncated === true) { tool.gaps.push("source_truncated"); counts.truncated++; }
+        tool.webArgs = part.args;
+        tool.argsTruncated = part.argsTruncated === true;
+        tool.resultRepresentations = Object.hasOwn(tool, "result") ? [resultCopy("web", tool.result, { truncated: part.resultTruncated === true, originalBytes: part.resultBytes })] : [];
+        if (tool.argsTruncated || part.resultTruncated === true) counts.truncated++;
         // Repeated materializations of a call are references, not a second execution.
         const oldIndex = byId.get(tool.id), old = source.tools[oldIndex];
         if (old) {
@@ -144,9 +153,9 @@ export async function readRecordedSource(manifest, conversationId) {
           if (callKey(old.name, old.args) !== callKey(tool.name, tool.args) || bytes(old.result) !== bytes(tool.result)) old.gaps.push("duplicate_web_conflict");
           continue;
         }
-        byId.set(tool.id, source.tools.length); step.calls.push(source.tools.length); source.tools.push(tool);
+        byId.set(tool.id, source.tools.length); step.calls.push(source.tools.length); toolAt.set(source.tools.length, index); source.tools.push(tool);
       }
-      if (step.calls.length) webSteps.push(step);
+      if (step.calls.length) for (const group of webGroups(parts, step.calls, toolAt)) webSteps.push({ ...step, ...group });
     }
     if (m.journal) {
       source.journal = { header: null, records: [], binding: "caller-asserted", conversationId };
@@ -208,30 +217,39 @@ export async function readRecordedSource(manifest, conversationId) {
             counts.journalOnly++;
             tool = { id: part.id, name: part.name, ...(Object.hasOwn(part, "arguments") ? { args: part.arguments } : {}), ...(results.length === 1 && Object.hasOwn(results[0].msg, "content") ? { result: results[0].msg.content } : {}), state: typeof results[0]?.msg.isError === "boolean" ? (results[0].msg.isError ? "error" : "complete") : "unknown", isError: results[0]?.msg.isError === true, history: null, provenance: [], gaps: [], reconciliation: "journal_only" };
             if (!object(tool.args)) tool.gaps.push("arguments_not_object");
-            if (!Object.hasOwn(tool, "result")) counts.missingResults++;
+            tool.resultRepresentations = [];
             if (tool.state === "unknown") tool.gaps.push("tool_terminal_state_unknown");
             if (results.length !== 1 || !Object.hasOwn(tool, "result")) tool.gaps.push("native_result_missing_or_ambiguous");
             index = source.tools.length; byId.set(tool.id, index); source.tools.push(tool);
           } else {
-            if (callKey(tool.name, tool.args) !== callKey(part.name, part.arguments)) tool.gaps.push("journal_arguments_conflict");
-            if (results.length === 1) {
-              const comparison = compare(Object.hasOwn(tool, "result"), tool.result, true, results[0].msg.content);
-              if (comparison === "different") tool.gaps.push("journal_result_conflict");
-              if (typeof results[0].msg.isError === "boolean" && results[0].msg.isError !== tool.isError) tool.gaps.push("journal_state_conflict");
-              if (comparison === "text_equivalent") counts.representationDifferences++;
+            if (callKey(tool.name, tool.args) !== callKey(part.name, part.arguments)) {
+              if (tool.name === part.name && effectiveArguments(tool.args, part.arguments)) { tool.gaps.push("web_effective_arguments"); counts.webEffectiveArguments++; }
+              else if (!tool.argsTruncated) tool.gaps.push("journal_arguments_conflict");
+            }
+            tool.args = part.arguments; tool.argsTruncated = false; tool.argumentsOrigin = "journal";
+            if (results.length) {
+              const complete = results.filter(r => Object.hasOwn(r.msg, "content") && !resultCopy("journal", r.msg.content, { truncated: r.msg.truncated === true, originalBytes: r.msg.originalBytes }).truncated);
+              const comparisons = complete.map(r => compare(Object.hasOwn(tool, "result"), tool.result, true, r.msg.content));
+              if (comparisons.length && comparisons.every(c => c === "different") && !tool.resultRepresentations.some(c => c.truncated)) tool.gaps.push("journal_result_conflict");
+              if (results.some(r => typeof r.msg.isError === "boolean" && r.msg.isError !== tool.isError)) tool.gaps.push("journal_state_conflict");
+              if (comparisons.includes("text_equivalent")) counts.representationDifferences++;
             } else tool.gaps.push("native_result_missing_or_ambiguous");
           }
+          tool.argumentsOrigin = "journal"; tool.args = part.arguments; tool.argsTruncated = false;
+          for (const result of results) if (Object.hasOwn(result.msg, "content")) tool.resultRepresentations.push(resultCopy("journal", result.msg.content, { truncated: result.msg.truncated === true, originalBytes: result.msg.originalBytes }));
           tool.provenance.push(provenance, ...results.map(result => ({ source: "journal", phase: "result", recordIds: result.refs })));
           if (placed.has(index)) { tool.gaps.push("duplicate_native_identity"); continue; }
           placed.add(index); step.calls.push(index);
         }
         if (step.calls.length) source.steps.push(step);
       }
-      for (const step of webSteps) {
-        step.calls = step.calls.filter(i => !placed.has(i));
-        if (step.calls.length) { step.gaps.push("assistant_step_boundaries_unknown", "mixed_step_order_unknown"); source.steps.push(step); }
-      }
-    } else source.steps = webSteps.map(s => ({ ...s, gaps: ["assistant_step_boundaries_unknown"] }));
+      const native = source.steps;
+      const remaining = webSteps.map(step => ({ ...step, calls: step.calls.filter(i => !placed.has(i)) })).filter(step => step.calls.length);
+      const messageOrder = new Map(source.web.messages.map((r, i) => [r.id, i]));
+      const anchor = step => Math.min(...step.calls.flatMap(i => source.tools[i].provenance.filter(p => p.source === "web").map(p => messageOrder.get(p.messageId) * (MAX_ROW_BYTES + 1) + p.partIndex)));
+      for (const step of native) if (!Number.isFinite(anchor(step)) && remaining.length) step.gaps.push("mixed_step_order_unknown");
+      source.steps = [...native, ...remaining].sort((a, b) => anchor(a) - anchor(b));
+    } else source.steps = webSteps;
     if (m.sidecar) {
       sidecar = openSnapshot(m.sidecar, "sidecar");
       requireColumns(sidecar, "tool_records", { payload_json: "TEXT", truncated: "INTEGER", seq: "INTEGER", payload_sha256: "TEXT", original_bytes: "INTEGER", retained_bytes: "INTEGER" });
@@ -265,19 +283,52 @@ export async function readRecordedSource(manifest, conversationId) {
         tool.provenance.push({ source: "sidecar", conversationId: c.conversation_id, runId: c.run_id, recordIds: records.map(r => r.record_id) });
         const invocation = records.filter(r => r.phase === "invocation"), results = records.filter(r => r.phase === "result");
         const a = parsePayload(invocation[0]), b = parsePayload(results[0]);
-        tool.comparison = { arguments: a.present && Object.hasOwn(tool, "args") ? (callKey(tool.name, tool.args) === callKey(tool.name, a.value) ? "exact" : "different") : "missing",
-          result: compare(Object.hasOwn(tool, "result"), tool.result, b.present, b.value), state: c.state === "success" || failed(c.state) ? (failed(c.state) === tool.isError ? "compatible" : "different") : "missing" };
-        if (a.truncated || b.truncated) { tool.gaps.push("sidecar_truncated"); counts.truncated++; }
+        const webArgs = Object.hasOwn(tool, "webArgs") ? tool.webArgs : tool.args;
+        let argsComparison = a.present && webArgs !== undefined ? compareCopies(webArgs, a.value, redact, true) : "missing";
+        if (argsComparison === "different" && Object.hasOwn(tool, "webArgs")) {
+          const modelComparison = compareCopies(tool.args, a.value, redact, true);
+          if (modelComparison !== "different") argsComparison = modelComparison;
+        }
+        if (argsComparison === "different" && a.present && effectiveArguments(normalizeSidecar(webArgs, redact), a.value)) {
+          argsComparison = "web_effective_arguments";
+          if (!tool.gaps.includes("web_effective_arguments")) { tool.gaps.push("web_effective_arguments"); counts.webEffectiveArguments++; }
+        }
+        if (a.truncated) argsComparison = "truncated_copy";
+        let resultComparison = b.present && Object.hasOwn(tool, "result") ? compareCopies(tool.result, b.value, redact) : "missing";
+        if (b.present && (b.truncated || tool.resultRepresentations.some(c => c.truncated))) resultComparison = "truncated_copy";
+        if (b.present) tool.resultRepresentations.push(resultCopy("sidecar", b.value, { truncated: b.truncated, originalBytes: results[0].original_bytes, redacted: ["sidecar_redacted", "sidecar_redacted_unverified"].includes(resultComparison) }));
+        tool.comparison = { arguments: argsComparison, result: resultComparison,
+          state: c.state === "success" || failed(c.state) ? (failed(c.state) === tool.isError ? "compatible" : "different") : "missing" };
+        if (a.truncated || b.truncated) counts.truncated++;
+        for (const code of ["sidecar_redacted", "sidecar_redacted_unverified"]) if (Object.values(tool.comparison).includes(code)) {
+          tool.gaps.push(code); counts[code === "sidecar_redacted" ? "sidecarRedacted" : "sidecarRedactedUnverified"]++;
+        }
         if (a.malformed || b.malformed) tool.gaps.push("malformed_sidecar_payload");
         if (invocation.length > 1 || results.length > 1 || c.tool_name !== tool.name || Object.values(tool.comparison).includes("different")) { tool.reconciliation = "conflict"; tool.gaps.push("sidecar_conflict"); }
         else if (Object.values(tool.comparison).includes("missing")) { tool.reconciliation = "incomplete"; tool.gaps.push("sidecar_phase_missing"); }
-        else if (tool.comparison.result === "text_equivalent") { tool.reconciliation = "representation_difference"; counts.representationDifferences++; }
+        else if (Object.values(tool.comparison).some(v => ["sidecar_redacted", "sidecar_redacted_unverified"].includes(v))) {
+          tool.reconciliation = Object.values(tool.comparison).includes("sidecar_redacted_unverified") ? "sidecar_redacted_unverified" : "sidecar_redacted"; counts.representationDifferences++;
+        }
+        else if (["text_equivalent", "representation_difference"].includes(tool.comparison.result)) { tool.reconciliation = "representation_difference"; counts.representationDifferences++; }
         else tool.reconciliation = "matched";
       }
       for (const call of source.sidecar.calls) if (!consumed.has(call)) { counts.sidecarOnly++; gap("sidecar_only_tool", { conversationId: call.conversation_id, runId: call.run_id, toolCallId: call.tool_call_id }); }
     }
+    for (const tool of source.tools) {
+      if (!tool.argumentsOrigin) { tool.argumentsOrigin = "web"; tool.gaps.push("arguments_may_include_host_defaults"); }
+      const selected = selectResult(tool.resultRepresentations);
+      if (selected) {
+        tool.result = selected.value; tool.resultOrigin = selected.store;
+        if (selected.store !== "web" && tool.resultRepresentations.some(c => c.store === "web" && c.truncated)) counts.recoveredResults++;
+        if (tool.resultRepresentations.every(c => c.truncated)) tool.gaps.push(selected.store === "sidecar" ? "sidecar_truncated" : "source_truncated");
+        if (selected.store !== "web") delete tool.structuredResult;
+        tool.gaps = tool.gaps.filter(code => code !== "native_result_missing_or_ambiguous");
+      } else { tool.gaps.push("result_missing"); counts.missingResults++; }
+      if (tool.argsTruncated) tool.gaps.push("source_truncated");
+      tool.gaps = [...new Set(tool.gaps)];
+    }
     for (const step of ambiguousSteps(source)) { counts.ambiguousParallelGroups++; step.gaps.push("ambiguous_parallel_results"); }
-    for (const step of source.steps) for (const code of step.gaps) gap(code, { messageId: step.messageId });
+    for (const [stepIndex, step] of source.steps.entries()) for (const code of step.gaps) gap(code, { stepIndex, messageId: step.messageId });
     for (const tool of source.tools) {
       if (tool.reconciliation === "web_only") counts.webOnly++;
       if (tool.reconciliation === "matched") counts.matched++;
@@ -285,6 +336,7 @@ export async function readRecordedSource(manifest, conversationId) {
       if (tool.isError) counts.failedTools++;
       for (const code of tool.gaps) gap(code, { toolCallId: tool.id });
     }
+    for (const entry of source.coverage) counts[`${entry.tier}Gaps`]++;
     counts.tools = source.tools.length; counts.steps = source.steps.length; counts.coverageGaps = source.coverage.length;
     assertUnchanged(stamps);
     return { source: validateSource(source), inventory: inventory(source, counts) };

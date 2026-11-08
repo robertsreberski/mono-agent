@@ -1,7 +1,8 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { mkdtempSync, readFileSync, writeFileSync, rmSync, chmodSync, statSync, readdirSync, mkdirSync, symlinkSync } from "node:fs";
+import fs from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve, dirname, relative } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import http from "node:http";
 import https from "node:https";
@@ -13,11 +14,12 @@ import workerThreads from "node:worker_threads";
 import { syncBuiltinESMExports } from "node:module";
 import ts from "typescript";
 import { ROOT } from "../lib/continuity-observation-input.mjs";
-import { readRecordedSource, readRecordedManifest, importRecorded, privateOutput } from "../lib/continuity-recorded-import.mjs";
+import { readRecordedSource, readRecordedManifest, importRecorded, privateOutput, readRedactor } from "../lib/continuity-recorded-import.mjs";
 import { validateSource, emptyQuestions, emptyKeys, validateQuestions, validateKeys, INVENTORY_FIELDS } from "../lib/continuity-recorded-schema.mjs";
+import { normalizeSidecar, compareCopies, REDACTION_OPTIONS, EFFECTIVE_ARGUMENT_KEYS, resultCopy, selectResult } from "../lib/continuity-recorded-reconcile.mjs";
 import { createRecordedQueue, recordedDefinitions, startRecordedTools } from "../lib/continuity-recorded-tools.mjs";
 import { main, parseArgs } from "../continuity-import-recorded.mjs";
-import { snapshots, tool, assistant, result, CONVERSATION, AT } from "./fixtures/continuity-recorded/snapshots.mjs";
+import { snapshots, tool, assistant, result, CONVERSATION, AT, boundary } from "./fixtures/continuity-recorded/snapshots.mjs";
 
 const cleanup = [];
 function scratch() { const dir = mkdtempSync(join(tmpdir(), "recorded-fictional-")); chmodSync(dir, 0o700); cleanup.push(() => rmSync(dir, { recursive: true, force: true })); return dir; }
@@ -32,8 +34,8 @@ it("exports only count inventory and keeps private source, questions and keys is
   expect(Object.keys(inventory)).toEqual(["schema", ...INVENTORY_FIELDS]);
   expect(INVENTORY_FIELDS.every(k => Number.isSafeInteger(inventory[k]))).toBe(true);
   const source = JSON.parse(readFileSync(join(output, "source.json"), "utf8"));
-  expect(source).toMatchObject({ schema: "continuity-recorded-source-v1", dataClass: "private-recorded", conversationId: CONVERSATION });
-  expect(source.web.messages[1].parts_json).toBe(JSON.stringify([tool()]));
+  expect(source).toMatchObject({ schema: "continuity-recorded-source-v2", dataClass: "private-recorded", conversationId: CONVERSATION });
+  expect(source.web.messages[1].parts_json).toBe(JSON.stringify([boundary(), tool()]));
   expect(JSON.stringify(source)).not.toMatch(/reader-questions|evaluator-keys/);
   expect(JSON.parse(readFileSync(join(output, "reader-questions.json")))).toEqual(emptyQuestions());
   expect(JSON.parse(readFileSync(join(output, "evaluator-keys.json")))).toEqual(emptyKeys());
@@ -57,10 +59,10 @@ it("preserves steers, partial/cancelled turns, failures, attachments, markers an
     { type: "conversation-marker", kind: "compaction", message: "Fictional boundary." },
     { type: "telemetry", event: "runtime_telemetry", data: { type: "runtime_telemetry", kind: "session_boundary", data: { kind: "resume_replay", reason: "model_change" } } }];
   const { source, inventory } = await read(snapshots(scratch(), { parts, status: "cancelled" }));
-  expect(source.web.turns[0].status).toBe("cancelled"); expect(source.web.messages[1].parts_json).toBe(JSON.stringify(parts));
-  expect(inventory).toMatchObject({ partialTurns: 1, failedTools: 1, attachments: 1, markers: 1, telemetry: 1, steers: 1 });
+  expect(source.web.turns[0].status).toBe("cancelled"); expect(source.web.messages[1].parts_json).toBe(JSON.stringify([boundary(), ...parts]));
+  expect(inventory).toMatchObject({ partialTurns: 1, failedTools: 1, attachments: 1, markers: 1, telemetry: 2, steers: 1 });
   expect(gaps(source)).toEqual(expect.arrayContaining(["partial_turn", "attachment_bytes_unavailable"]));
-  expect(source.coverage.find(g => g.code === "attachment_bytes_unavailable").blocking).toBe(true);
+  expect(source.coverage.find(g => g.code === "attachment_bytes_unavailable").tier).toBe("item");
 });
 
 it.each(["running", "failed", "cancelled"])("never coerces a %s turn into complete", async status => {
@@ -82,8 +84,8 @@ it("retains clipping, malformed records and missing tool results as explicit blo
   const clipped = tool("clipped", "Fictional preview", { resultTruncated: true, argsTruncated: true }), missing = tool("missing"); delete missing.result;
   const { source, inventory } = await read(snapshots(scratch(), { parts: [clipped, missing, null, { type: "tool-call", toolName: "Read" }], sidecar: [{ ...clipped, truncated: true }] }));
   expect(inventory).toMatchObject({ truncated: 2, missingResults: 1, malformedParts: 2 });
-  expect(gaps(source)).toEqual(expect.arrayContaining(["source_truncated", "sidecar_truncated", "result_missing", "malformed_part", "malformed_tool"]));
-  expect(() => createRecordedQueue(source)).toThrow("RECORDED_TOOL_COVERAGE_GAP");
+  expect(gaps(source)).toEqual(expect.arrayContaining(["source_truncated", "result_missing", "malformed_part", "malformed_tool"]));
+  expect(() => createRecordedQueue(source)).toThrow("RECORDED_REPLAY_COVERAGE_GAP");
   const malformed = await read(snapshots(scratch(), { malformed: true }));
   expect(malformed.inventory.malformedParts).toBe(1); expect(malformed.source.web.messages[1].parts_json).toContain("{bad fictional");
 });
@@ -178,16 +180,23 @@ it("measures result representation/clipping instead of claiming built-in byte eq
   expect(source.transport).toMatchObject({ byteEquivalence: "not-claimed", arguments: "unchanged" });
 });
 
-it("contains no importer network, provider, executable, dynamic import or loader capability", () => {
+it("limits imports to offline helpers, the inert listener and the scanned pure redaction closure", () => {
   const files = ["scripts/continuity-import-recorded.mjs", "scripts/continuity-observe.mjs", ...readdirSync(join(ROOT, "scripts/lib")).filter(n => /^continuity-(recorded|observation)-.*\.mjs$/.test(n)).map(n => `scripts/lib/${n}`)];
+  files.push("packages/observability/dist/redaction.js");
+  const pureFiles = new Set(["packages/observability/dist/redaction.js", "packages/observability/dist/guards.js"]);
   const builtin = new Set(["node:fs", "node:path", "node:url", "node:crypto", "node:sqlite"]);
   const imports = new Set(files.filter(p => p.startsWith("scripts/lib/")).flatMap(p => [`./${p.slice("scripts/lib/".length)}`, `./lib/${p.slice("scripts/lib/".length)}`]));
   for (const path of files) {
+    const product = path.startsWith("packages/");
     const tools = path.endsWith("continuity-recorded-tools.mjs"), ast = ts.createSourceFile(path, readFileSync(join(ROOT, path), "utf8"), ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
     const walk = node => {
       if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node) && node.moduleSpecifier) {
         const spec = node.moduleSpecifier.text;
-        expect(builtin.has(spec) || imports.has(spec) || tools && spec === "node:http", `${path}:${spec}`).toBe(true);
+        if (product) {
+          const dependency = relative(ROOT, resolve(dirname(join(ROOT, path)), spec));
+          expect(spec.startsWith("./") && pureFiles.has(dependency), `${path}:${spec}`).toBe(true);
+          if (!files.includes(dependency)) files.push(dependency);
+        } else expect(builtin.has(spec) || imports.has(spec) || tools && spec === "node:http", `${path}:${spec}`).toBe(true);
         if (!tools) expect(spec.includes("continuity-recorded-tools")).toBe(false);
         if (spec === "node:http") {
           expect(node.importClause?.name).toBeUndefined();
@@ -196,17 +205,19 @@ it("contains no importer network, provider, executable, dynamic import or loader
         }
       }
       if (ts.isCallExpression(node)) {
-        if (node.expression.kind === ts.SyntaxKind.ImportKeyword) expect(tools && ["@modelcontextprotocol/sdk/server/index.js", "@modelcontextprotocol/sdk/server/streamableHttp.js", "@modelcontextprotocol/sdk/types.js"].includes(node.arguments[0]?.text)).toBe(true);
+        if (node.expression.kind === ts.SyntaxKind.ImportKeyword) expect(path === "scripts/lib/continuity-recorded-import.mjs" && node.arguments[0]?.text === "../../packages/observability/dist/redaction.js" || tools && ["@modelcontextprotocol/sdk/server/index.js", "@modelcontextprotocol/sdk/server/streamableHttp.js", "@modelcontextprotocol/sdk/types.js"].includes(node.arguments[0]?.text)).toBe(true);
         const name = node.expression.getText(ast);
-        const regexExec = ts.isPropertyAccessExpression(node.expression) && node.expression.name.text === "exec" && node.expression.expression.kind === ts.SyntaxKind.RegularExpressionLiteral;
+        const regexExec = product && ts.isPropertyAccessExpression(node.expression) && node.expression.name.text === "exec" || ts.isPropertyAccessExpression(node.expression) && node.expression.name.text === "exec" && node.expression.expression.kind === ts.SyntaxKind.RegularExpressionLiteral;
         expect(!regexExec && /\b(fetch|spawn|exec|execFile|fork|eval|Function|require|createRequire|load|request|Agent|connect|createConnection|createSocket|constructor|getBuiltinModule|binding|dlopen|Reflect|Proxy)\b/.test(name) && name !== "server.connect", `${path}:${name}`).toBe(false);
         expect(name).not.toBe("http.get");
         if (name === "http.listen") expect(node.arguments.map(a => a.getText(ast))).toEqual(["0", '"127.0.0.1"', "resolve"]);
       }
       if (ts.isNewExpression(node)) expect(/\b(Agent|Worker|WebSocket|Function)\b/.test(node.expression.getText(ast))).toBe(false);
+      if (product && ts.isIdentifier(node)) expect(["process", "fetch", "require", "globalThis"].includes(node.text)).toBe(false);
       ts.forEachChild(node, walk);
     }; walk(ast);
   }
+  expect(files).toEqual(expect.arrayContaining([...pureFiles]));
 });
 
 it("imports and starts only a closable loopback listener under outbound/process/worker guards", async () => {
@@ -233,7 +244,7 @@ it("reconciles journal-only calls with sidecar evidence and deduplicates returne
   const f = snapshots(scratch(), { parts: [], sidecar: [t], journal: [assistant([t]), { kind: "tool_result", payload: { phase: "returned", callId: t.toolCallId, message: result(t) } }, result(t)] });
   const { source, inventory } = await read(f);
   expect(inventory).toMatchObject({ tools: 1, journalOnly: 1, sidecarOnly: 0, matched: 1 });
-  expect(source.tools[0].gaps).toEqual([]);
+  expect(source.tools[0].gaps.filter(code => code !== "arguments_may_include_host_defaults")).toEqual([]);
   expect(source.tools[0].provenance.find(p => p.phase === "result").recordIds).toEqual(["record-2", "record-3"]);
   expect(createRecordedQueue(source).dispatch(t.toolName, t.args).content).toEqual(t.result);
 });
@@ -268,4 +279,118 @@ it("refuses invalid journal chains and explicit mismatched bindings", async () =
   await expect(read(f)).rejects.toThrow("INVALID_JOURNAL_RECORD");
   f.value.journal.conversationId = "web:another-fictional"; writeFileSync(f.manifest, JSON.stringify(f.value));
   await expect(read(f)).rejects.toThrow("RECORDED_JOURNAL_BINDING_MISMATCH");
+});
+
+it("matches the writer's exact redaction options and secure preprocessing without importing its runtime", async () => {
+  const writer = readFileSync(join(ROOT, "packages/conversation/src/tool-history/payload.ts"), "utf8"), helper = readFileSync(join(ROOT, "scripts/lib/continuity-recorded-reconcile.mjs"), "utf8");
+  const ast = text => ts.createSourceFile("payload.ts", text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const functions = tree => tree.statements.filter(n => ts.isFunctionDeclaration(n) && ["securelyPreprocessPayload", "securePayloadValue", "defineSecurePayloadProperty", "securePayloadString"].includes(n.name?.text)).map(n => n.getText(tree)).join("\n");
+  const compile = text => ts.transpileModule(text, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } }).outputText;
+  expect(compile(functions(ast(helper)))).toBe(compile(functions(ast(writer))));
+  const constants = tree => tree.statements.filter(n => ts.isVariableStatement(n) && n.declarationList.declarations.some(d => d.name.getText(tree).startsWith("PRE_REDACTION_"))).map(n => n.getText(tree)).join("\n");
+  expect(compile(constants(ast(helper)))).toBe(compile(constants(ast(writer))));
+  const literal = n => ts.isObjectLiteralExpression(n) ? Object.fromEntries(n.properties.map(p => [p.name.getText().replaceAll('"', ''), literal(p.initializer)]))
+    : n.kind === ts.SyntaxKind.TrueKeyword ? true : n.kind === ts.SyntaxKind.FalseKeyword ? false : n.text;
+  const calls = []; const visit = n => { if (ts.isCallExpression(n) && n.expression.getText() === "redactJsonValue") calls.push(n); ts.forEachChild(n, visit); }; visit(ast(writer));
+  expect(calls).toHaveLength(1); expect(calls[0].arguments[0].getText()).toBe("preprocessed.value");
+  expect(literal(calls[0].arguments[2])).toEqual(REDACTION_OPTIONS);
+  expect(writer).toContain("const STRING_MAX_BYTES = 4 * 1024;");
+  expect(writer).toContain("const maxStringBytes = Math.min(options.maxStringBytes ?? STRING_MAX_BYTES, maxBytes)");
+  expect(calls[0].arguments[1].getText()).toBe("maxStringBytes");
+  expect(helper).toContain("redactJsonValue(preprocessed.value, 4096, REDACTION_OPTIONS)");
+  for (const key of EFFECTIVE_ARGUMENT_KEYS) expect(readFileSync(join(ROOT, key === "head_limit" ? "packages/turn/src/tools/files/grep.ts" : "packages/turn/src/tools/commands/exec.ts"), "utf8")).toContain(key);
+  const redactor = await readRedactor(); expect(normalizeSidecar({ text: "x".repeat(65537) }, redactor)).toEqual({ text: "[oversized value omitted before redaction]" });
+});
+
+it.each(["/Users/morgan/projects/cedar/note.txt", "/srv/fictional/cedar/note.txt"])("reconciles product-redacted fictional path arguments without changing replay values: %s", async path => {
+  const redact = await readRedactor(), t = tool("redacted", "Fictional unchanged result", { args: { path } });
+  const side = { ...t, args: normalizeSidecar(t.args, redact) };
+  const { source, inventory } = await read(snapshots(scratch(), { parts: [t], sidecar: [side] }));
+  expect(source.tools[0].reconciliation).toBe("sidecar_redacted"); expect(source.tools[0].args).toEqual(t.args);
+  expect(inventory).toMatchObject({ conflicts: 0, sidecarRedacted: 1, replayGaps: 0 });
+  expect(source.coverage.find(g => g.code === "sidecar_redacted").tier).toBe("fidelity");
+  expect(createRecordedQueue(source).dispatch(t.toolName, t.args).content[0].text).toBe(t.result);
+});
+
+it("limits legacy redaction fallback to token-bearing spans and keeps ordinary mismatches conflicting", async () => {
+  const redact = await readRedactor(), web = { path: "/Users/morgan/legacy/cedar/note.txt", query: "cedar" };
+  expect(compareCopies(web, { path: "[home-path]/note.txt", query: "cedar" }, redact, true)).toBe("sidecar_redacted_unverified");
+  expect(compareCopies(web, { path: "[home-path]/note.txt", query: "pine" }, redact, true)).toBe("different");
+  expect(compareCopies(web, { path: "[home-path]/other.txt", query: "cedar" }, redact, true)).toBe("different");
+  expect(compareCopies({ value: "fictional" }, { value: "[redacted]" }, redact, true)).toBe("sidecar_redacted_unverified");
+  const t = tool("legacy", "Fictional result", { args: web });
+  const good = await read(snapshots(scratch(), { parts: [t], sidecar: [{ ...t, args: { path: "[home-path]/note.txt", query: "cedar" } }] }));
+  expect(good.inventory).toMatchObject({ conflicts: 0, sidecarRedactedUnverified: 1, replayGaps: 0 });
+  const bad = await read(snapshots(scratch(), { parts: [t], sidecar: [{ ...t, args: { path: "[home-path]/note.txt", query: "pine" } }] }));
+  expect(bad.inventory.conflicts).toBe(1); expect(() => createRecordedQueue(bad.source)).toThrow("RECORDED_REPLAY_COVERAGE_GAP");
+});
+
+it("uses model-emitted arguments, permits only declared effective extras, and records web-only uncertainty", async () => {
+  const model = tool("effective"), web = { ...model, args: { ...model.args, workdir: "/srv/fictional/cedar", timeout_ms: 1000, max_output_chars: 100, head_limit: 4 } };
+  const imported = await read(snapshots(scratch(), { parts: [web], journal: [assistant([model]), result(model)] }));
+  expect(imported.source.tools[0]).toMatchObject({ args: model.args, webArgs: web.args, argumentsOrigin: "journal" });
+  expect(imported.inventory).toMatchObject({ conflicts: 0, webEffectiveArguments: 1, replayGaps: 0 });
+  expect(createRecordedQueue(imported.source).dispatch(model.toolName, model.args).content[0].text).toBe(model.result);
+  const unknown = await read(snapshots(scratch(), { parts: [web] }));
+  expect(unknown.source.coverage.find(g => g.code === "arguments_may_include_host_defaults").tier).toBe("fidelity");
+  const bad = await read(snapshots(scratch(), { parts: [{ ...web, args: { ...web.args, path: "different-fictional.txt", unsafeExtra: true } }], journal: [assistant([model]), result(model)] }));
+  expect(bad.inventory.conflicts).toBe(1);
+});
+
+it("uses web telemetry boundaries for sequential identical calls and rejects absent/inconsistent boundaries", async () => {
+  const one = tool("step-one", "First fictional answer", { history: { sequence: 2 } }), two = tool("step-two", "Second fictional answer", { history: { sequence: 4 } });
+  const f = snapshots(scratch(), { parts: [boundary(), one, boundary(), two, boundary()] });
+  const { source, inventory } = await read(f);
+  expect(source.steps.map(s => s.calls)).toEqual([[0], [1]]); expect(source.steps.every(s => s.origin === "web-assistant-boundary")).toBe(true);
+  expect(inventory).toMatchObject({ replayGaps: 0, ambiguousParallelGroups: 0 });
+  const queue = createRecordedQueue(source); expect(queue.dispatch(one.toolName, one.args).content[0].text).toBe(one.result); expect(queue.dispatch(two.toolName, two.args).content[0].text).toBe(two.result);
+  for (const parts of [[one, two], [boundary(), { ...one, history: { sequence: 9 } }, boundary(), two], [one, boundary(), two], [boundary(), one, { type: "telemetry", event: "runtime_telemetry", data: { type: "runtime_telemetry", kind: "context_usage", data: {} } }, two]]) {
+    const invalid = await read(snapshots(scratch(), { parts, boundaries: false }));
+    expect(gaps(invalid.source)).toContain("assistant_step_boundaries_unknown"); expect(() => createRecordedQueue(invalid.source)).toThrow();
+  }
+});
+
+it("merges earlier web steps with the journal suffix without inventing mixed-order gaps", async () => {
+  const one = tool("earlier", "Earlier fictional answer"), two = tool("later", "Later fictional answer");
+  const { source, inventory } = await read(snapshots(scratch(), { parts: [boundary(), one, boundary(), two], journal: [assistant([two]), result(two)] }));
+  expect(source.steps.map(s => s.calls)).toEqual([[0], [1]]); expect(gaps(source)).not.toContain("mixed_step_order_unknown"); expect(inventory.replayGaps).toBe(0);
+});
+
+it("uses the most complete result and emits truncation fidelity only when all available copies are truncated", async () => {
+  const full = "Fictional complete note.", clipped = tool("recover", "Fictional", { resultTruncated: true, resultBytes: 100 });
+  const recovered = await read(snapshots(scratch(), { parts: [clipped], sidecar: [{ ...clipped, result: full }], journal: [assistant([clipped]), { ...result(clipped), content: full }] }));
+  expect(recovered.source.tools[0].result).toBe(full); expect(recovered.inventory).toMatchObject({ conflicts: 0, replayGaps: 0, recoveredResults: 1 });
+  expect(gaps(recovered.source)).not.toContain("source_truncated"); expect(gaps(recovered.source)).not.toContain("sidecar_truncated");
+  const webFull = tool("web-full", full), onlySideClipped = await read(snapshots(scratch(), { parts: [webFull], sidecar: [{ ...webFull, result: "Fictional", truncated: true }] }));
+  expect(onlySideClipped.source.tools[0].result).toBe(full); expect(onlySideClipped.inventory.conflicts).toBe(0); expect(gaps(onlySideClipped.source)).not.toContain("sidecar_truncated");
+  const partial = await read(snapshots(scratch(), { parts: [clipped], sidecar: [{ ...clipped, result: "Fictional complete", truncated: true }], journal: [assistant([clipped]), { ...result(clipped), truncated: true, originalBytes: 200 }] }));
+  expect(partial.source.tools[0].result).toBe("Fictional complete");
+  expect(partial.source.coverage.some(g => g.code.endsWith("truncated") && g.tier === "fidelity")).toBe(true);
+  expect(partial.inventory.replayGaps).toBe(0); expect(() => createRecordedQueue(partial.source)).not.toThrow();
+  const unknownLength = resultCopy("web", "short", { truncated: true }); expect(unknownLength.originalBytes).toBeNull();
+  expect(selectResult([unknownLength, resultCopy("sidecar", "longer partial", { truncated: true, originalBytes: 100 })]).store).toBe("sidecar");
+});
+
+it("counts tiered gaps and only refuses replay-tier coverage unless explicitly excluded", async () => {
+  const t = tool(), { source, inventory } = await read(snapshots(scratch(), { parts: [t, { type: "attachment", id: "fictional-attachment" }, { type: "subagent", toolCallId: "fictional-child", result: "Fictional preview", resultTruncated: true, status: "complete" }] }));
+  expect(inventory).toMatchObject({ replayGaps: 0, itemGaps: 2 }); expect(inventory.coverageGaps).toBe(inventory.itemGaps + inventory.fidelityGaps);
+  expect(source.coverage.every(g => !Object.hasOwn(g, "blocking"))).toBe(true); expect(() => createRecordedQueue(source)).not.toThrow();
+  const unknown = await read(snapshots(scratch(), { parts: [t], boundaries: false }));
+  expect(() => createRecordedQueue(unknown.source)).toThrow(); expect(createRecordedQueue(unknown.source, { excludedSteps: [0] }).report().pending).toBe(0);
+});
+
+it("returns a coded build-prerequisite refusal without loading another product surface", async () => {
+  const f = snapshots(scratch()), original = fs.existsSync;
+  vi.spyOn(fs, "existsSync").mockImplementation(path => String(path).endsWith("/observability/dist/redaction.js") ? false : original(path)); syncBuiltinESMExports();
+  await expect(readRedactor()).rejects.toThrow("RECORDED_REDACTION_BUILD_REQUIRED");
+  const stdout = vi.fn(), stderr = vi.fn();
+  expect(await main(["--manifest", f.manifest, "--conversation", CONVERSATION, "--output", join(scratch(), "output")], { stdout, stderr })).toBe(1);
+  expect(stdout).not.toHaveBeenCalled(); expect(stderr).toHaveBeenCalledWith("RECORDED_REDACTION_BUILD_REQUIRED\n");
+});
+
+it("recovers a complete native returned result even when the placed receipt was clipped", async () => {
+  const t = tool("native-recovery", "Fictional full receipt."), web = { ...t, result: "Fictional", resultTruncated: true };
+  const { source, inventory } = await read(snapshots(scratch(), { parts: [web], journal: [assistant([t]), { kind: "tool_result", payload: { phase: "returned", message: result(t) } }, { ...result(t), content: "Fictional", truncated: true, originalBytes: 100 }] }));
+  expect(source.tools[0].result).toBe(t.result); expect(inventory).toMatchObject({ recoveredResults: 1, conflicts: 0, replayGaps: 0 });
+  expect(gaps(source)).not.toContain("source_truncated");
 });

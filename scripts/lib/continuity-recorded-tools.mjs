@@ -2,7 +2,7 @@
 import { createServer } from "node:http";
 import { randomBytes } from "node:crypto";
 import { MAX_ROW_BYTES, fail, object } from "./continuity-observation-input.mjs";
-import { validateSource, ambiguousSteps, callKey, bytes, digest, resultEnvelope } from "./continuity-recorded-schema.mjs";
+import { validateSource, ambiguousSteps, callKey, bytes, digest, resultEnvelope, gapTier } from "./continuity-recorded-schema.mjs";
 
 export const RECORDED_SERVER_NAME = "continuity-recorded";
 export function recordedDefinitions(source, definitions, reservedNames = []) {
@@ -19,19 +19,28 @@ export function recordedDefinitions(source, definitions, reservedNames = []) {
   if (seen.size !== names.size) fail("RECORDED_TOOL_DEFINITIONS_REFUSED");
   return structuredClone(result);
 }
-export function createRecordedQueue(source, { excludedSteps = [] } = {}) {
+export function createRecordedQueue(source, { excludedSteps = [], excludedCoverage = [] } = {}) {
   source = structuredClone(validateSource(source));
   if (!Array.isArray(excludedSteps) || excludedSteps.some(i => !Number.isInteger(i) || !source.steps[i]) || new Set(excludedSteps).size !== excludedSteps.length) fail("RECORDED_EXCLUSIONS_INVALID");
   const excluded = new Set(excludedSteps), ambiguous = new Set(ambiguousSteps(source));
   // Recompute, rather than trusting an editable coverage flag.
   for (let i = 0; i < source.steps.length; i++) if (!excluded.has(i) && ambiguous.has(source.steps[i])) fail("RECORDED_AMBIGUOUS_PARALLEL_GROUP");
+  if (!Array.isArray(excludedCoverage) || excludedCoverage.some(i => !Number.isInteger(i) || !source.coverage[i])) fail("RECORDED_EXCLUSIONS_INVALID");
+  const matches = (location, value, key) => Object.hasOwn(location, key) && location[key] !== null && location[key] === value[key];
+  const applies = (gap, step, index) => Object.hasOwn(gap.location, "stepIndex") ? gap.location.stepIndex === index : matches(gap.location, step, "messageId") || matches(gap.location, step, "turnId")
+    || step.calls.some(i => gap.location.toolCallId === source.tools[i].id || source.tools[i].provenance.some(p => matches(gap.location, p, "messageId") || matches(gap.location, p, "turnId")));
+  for (const [index, gap] of source.coverage.entries()) if (gap.tier === "replay" && !excludedCoverage.includes(index)) {
+    const affected = source.steps.flatMap((step, i) => applies(gap, step, i) ? [i] : []);
+    if (!affected.length || affected.some(i => !excluded.has(i))) fail("RECORDED_REPLAY_COVERAGE_GAP");
+  }
   const queues = new Map(), groups = [], served = [], observations = [];
   for (const [stepIndex, step] of source.steps.entries()) {
     if (excluded.has(stepIndex) || !step.calls.length) continue;
     const group = groups.length; groups.push(step.calls.length);
     for (const index of step.calls) {
       const tool = source.tools[index];
-      if (!Object.hasOwn(tool, "args") || !Object.hasOwn(tool, "result") || tool.gaps.length) fail("RECORDED_TOOL_COVERAGE_GAP");
+      if (step.gaps.some(code => gapTier(code) === "replay")) fail("RECORDED_REPLAY_COVERAGE_GAP");
+      if (!Object.hasOwn(tool, "args") || !Object.hasOwn(tool, "result") || tool.gaps.some(code => gapTier(code) === "replay")) fail("RECORDED_TOOL_COVERAGE_GAP");
       const key = callKey(tool.name, tool.args);
       if (!queues.has(key)) queues.set(key, []);
       queues.get(key).push({ index, group });
@@ -59,9 +68,9 @@ export function createRecordedQueue(source, { excludedSteps = [] } = {}) {
       pending: groups.reduce((a, b) => a + b, 0), observations: structuredClone(observations) }; },
   };
 }
-export async function startRecordedTools({ source, definitions, reservedNames, excludedSteps } = {}) {
+export async function startRecordedTools({ source, definitions, reservedNames, excludedSteps, excludedCoverage } = {}) {
   // Validate all replay data before opening even a loopback listener.
-  const tools = recordedDefinitions(source, definitions, reservedNames), queue = createRecordedQueue(source, { excludedSteps });
+  const tools = recordedDefinitions(source, definitions, reservedNames), queue = createRecordedQueue(source, { excludedSteps, excludedCoverage });
   const [{ Server }, { StreamableHTTPServerTransport }, { CallToolRequestSchema, ListToolsRequestSchema }] = await Promise.all([
     import("@modelcontextprotocol/sdk/server/index.js"), import("@modelcontextprotocol/sdk/server/streamableHttp.js"), import("@modelcontextprotocol/sdk/types.js"),
   ]);

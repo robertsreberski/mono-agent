@@ -17,7 +17,7 @@ export function parseArgs(argv) {
 }
 export async function main(argv, { stdout = text => process.stdout.write(text), stderr = text => process.stderr.write(text) } = {}) {
   try { stdout(`${JSON.stringify(await importRecorded(parseArgs(argv)))}\n`); return 0; }
-  catch { stderr("RECORDED_IMPORT_REFUSED\n"); return 1; }
+  catch (error) { stderr(error.code === "RECORDED_REDACTION_BUILD_REQUIRED" ? "RECORDED_REDACTION_BUILD_REQUIRED\n" : "RECORDED_IMPORT_REFUSED\n"); return 1; }
 }
 let entry = false;
 try { entry = realpathSync(resolve(process.argv[1])) === fileURLToPath(import.meta.url); } catch { /* imported module */ }

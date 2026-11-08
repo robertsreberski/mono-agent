@@ -5,6 +5,8 @@
 - Add an offline recorded-conversation importer for explicit read-only snapshots,
   with private source artifacts, content-free inventory counts and inert recorded
   tools that retain original names and refuse ambiguous parallel results.
+  Reconcile redacted and host-filled arguments, recover complete result copies,
+  and distinguish replay, item and fidelity gaps.
 
 - Add a read-only continuity observation script for snapshot-based boundary,
   continuity-pack and retrieval counts with content-free, agent-scoped aggregate
