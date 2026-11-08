@@ -6,7 +6,8 @@
   with private source artifacts, content-free inventory counts and inert recorded
   tools that retain original names and refuse ambiguous parallel results.
   Reconcile redacted and host-filled arguments, recover complete result copies,
-  and distinguish replay, item and fidelity gaps.
+  distinguish replay, item and fidelity gaps, and recover historical model steps
+  from usage telemetry without double-counting explicit boundaries.
 
 - Add a read-only continuity observation script for snapshot-based boundary,
   continuity-pack and retrieval counts with content-free, agent-scoped aggregate

@@ -6,6 +6,7 @@ import { digest } from "../../../lib/continuity-recorded-schema.mjs";
 export const CONVERSATION = "web:fictional-cedar", AT = "2042-03-01T09:00:00.000Z";
 export const tool = (id = "read-one", result = "Fictional note.", extra = {}) => ({ type: "tool-call", toolCallId: id, toolName: "Read", args: { path: "fictional-note.txt" }, result, status: "complete", ...extra });
 export const boundary = () => ({ type: "telemetry", event: "runtime_telemetry", data: { type: "runtime_telemetry", kind: "assistant_message_boundary", data: {} } });
+export const usage = () => ({ type: "telemetry", event: "runtime_telemetry", data: { type: "runtime_telemetry", kind: "context_usage", data: {} } });
 export function snapshots(dir, { parts = [tool()], status = "complete", sidecar, journal, malformed = false, boundaries = true } = {}) {
   if (boundaries && !parts.some(p => p?.data?.kind === "assistant_message_boundary")) parts = [boundary(), ...parts];
   const web = join(dir, "web.sqlite"), db = new DatabaseSync(web);

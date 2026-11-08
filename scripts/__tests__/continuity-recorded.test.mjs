@@ -19,7 +19,7 @@ import { validateSource, emptyQuestions, emptyKeys, validateQuestions, validateK
 import { normalizeSidecar, compareCopies, REDACTION_OPTIONS, EFFECTIVE_ARGUMENT_KEYS, resultCopy, selectResult } from "../lib/continuity-recorded-reconcile.mjs";
 import { createRecordedQueue, recordedDefinitions, startRecordedTools } from "../lib/continuity-recorded-tools.mjs";
 import { main, parseArgs } from "../continuity-import-recorded.mjs";
-import { snapshots, tool, assistant, result, CONVERSATION, AT, boundary } from "./fixtures/continuity-recorded/snapshots.mjs";
+import { snapshots, tool, assistant, result, CONVERSATION, AT, boundary, usage } from "./fixtures/continuity-recorded/snapshots.mjs";
 
 const cleanup = [];
 function scratch() { const dir = mkdtempSync(join(tmpdir(), "recorded-fictional-")); chmodSync(dir, 0o700); cleanup.push(() => rmSync(dir, { recursive: true, force: true })); return dir; }
@@ -344,7 +344,7 @@ it("uses web telemetry boundaries for sequential identical calls and rejects abs
   expect(source.steps.map(s => s.calls)).toEqual([[0], [1]]); expect(source.steps.every(s => s.origin === "web-assistant-boundary")).toBe(true);
   expect(inventory).toMatchObject({ replayGaps: 0, ambiguousParallelGroups: 0 });
   const queue = createRecordedQueue(source); expect(queue.dispatch(one.toolName, one.args).content[0].text).toBe(one.result); expect(queue.dispatch(two.toolName, two.args).content[0].text).toBe(two.result);
-  for (const parts of [[one, two], [boundary(), { ...one, history: { sequence: 9 } }, boundary(), two], [one, boundary(), two], [boundary(), one, { type: "telemetry", event: "runtime_telemetry", data: { type: "runtime_telemetry", kind: "context_usage", data: {} } }, two]]) {
+  for (const parts of [[one, two], [boundary(), { ...one, history: { sequence: 9 } }, boundary(), two], [one, boundary(), two], [boundary(), one, usage(), { type: "reasoning", text: "Fictional next-step reasoning without its end marker." }, two]]) {
     const invalid = await read(snapshots(scratch(), { parts, boundaries: false }));
     expect(gaps(invalid.source)).toContain("assistant_step_boundaries_unknown"); expect(() => createRecordedQueue(invalid.source)).toThrow();
   }
@@ -393,4 +393,62 @@ it("recovers a complete native returned result even when the placed receipt was 
   const { source, inventory } = await read(snapshots(scratch(), { parts: [web], journal: [assistant([t]), { kind: "tool_result", payload: { phase: "returned", message: result(t) } }, { ...result(t), content: "Fictional", truncated: true, originalBytes: 100 }] }));
   expect(source.tools[0].result).toBe(t.result); expect(inventory).toMatchObject({ recoveredResults: 1, conflicts: 0, replayGaps: 0 });
   expect(gaps(source)).not.toContain("source_truncated");
+});
+
+
+it("groups usage-only steps with their preceding prose and following tools/subagent outcome", async () => {
+  const one = tool("usage-first", "First fictional note", { history: { sequence: 3 } }), two = tool("usage-next", "Second fictional note", { history: { sequence: 7 } });
+  const child = { type: "subagent", toolCallId: "fictional-usage-child", status: "complete", result: "Fictional assistant-side outcome" };
+  const parts = [{ type: "reasoning", text: "Inspect the fictional note." }, usage(), one, child,
+    { type: "text", text: "Read the next fictional revision." }, usage(), two,
+    { type: "text", text: "Fictional final answer." }, usage()];
+  const { source, inventory } = await read(snapshots(scratch(), { parts, boundaries: false }));
+  expect(source.steps.map(s => s.calls)).toEqual([[0], [1]]);
+  expect(source.steps).toMatchObject([
+    { origin: "web-usage-boundary", boundaryIndex: 1, usageBoundaryIndex: 1, partStartIndex: 0, partEndIndex: 3, subagentPartIndices: [3] },
+    { origin: "web-usage-boundary", boundaryIndex: 5, usageBoundaryIndex: 5, partStartIndex: 4, partEndIndex: 6, subagentPartIndices: [] },
+  ]);
+  expect(inventory).toMatchObject({ steps: 2, tools: 2, subagentOutcomes: 1, ambiguousParallelGroups: 0, replayGaps: 0 });
+  expect(JSON.parse(source.web.messages.find(m => m.id === "assistant-one").parts_json)).toEqual(parts);
+  const queue = createRecordedQueue(source); expect(queue.dispatch(one.toolName, one.args).content[0].text).toBe(one.result); expect(queue.dispatch(two.toolName, two.args).content[0].text).toBe(two.result);
+});
+
+it("prefers a coincident explicit boundary without counting legacy-wrapped usage as an extra step", async () => {
+  const one = tool("paired-first", "Fictional parallel answer", { history: { sequence: 8 } }), two = tool("paired-next", "Other fictional answer", { args: { path: "other-fictional-note.txt" }, history: { sequence: 6 } });
+  const wrappedUsage = { type: "telemetry", data: { data: usage().data } };
+  const parts = [{ type: "reasoning", text: "Fictional parallel reads." }, wrappedUsage,
+    { type: "telemetry", event: "fictional-passive-metric", data: {} }, boundary(), one, two,
+    { type: "text", text: "Fictional final answer." }, usage(), boundary()];
+  const { source, inventory } = await read(snapshots(scratch(), { parts, boundaries: false }));
+  expect(source.steps).toHaveLength(1); expect(source.steps[0]).toMatchObject({ calls: [0, 1], origin: "web-assistant-boundary", usageBoundaryIndex: 1, boundaryIndex: 3, partStartIndex: 0, partEndIndex: 5 });
+  expect(inventory).toMatchObject({ steps: 1, replayGaps: 0 });
+  const queue = createRecordedQueue(source); expect(queue.dispatch(two.toolName, two.args).content[0].text).toBe(two.result); expect(queue.dispatch(one.toolName, one.args).content[0].text).toBe(one.result);
+});
+
+it("mixes usage-only, explicit-only and paired markers without merging adjacent scripted steps", async () => {
+  const one = tool("mixed-first", "First fictional answer", { history: { sequence: 2 } }), two = tool("mixed-next", "Second fictional answer", { history: { sequence: 5 } }), three = tool("mixed-last", "Third fictional answer", { history: { sequence: 9 } });
+  const parts = [{ type: "text", text: "Fictional first narration." }, usage(), one,
+    { type: "reasoning", text: "Fictional second reasoning." }, boundary(), two,
+    { type: "reasoning", text: "Fictional third reasoning." }, usage(), boundary(), three,
+    { type: "text", text: "Fictional final answer." }, usage()];
+  const { source, inventory } = await read(snapshots(scratch(), { parts, boundaries: false }));
+  expect(source.steps.map(s => s.calls)).toEqual([[0], [1], [2]]);
+  expect(source.steps.map(s => s.origin)).toEqual(["web-usage-boundary", "web-assistant-boundary", "web-assistant-boundary"]);
+  expect(inventory).toMatchObject({ steps: 3, ambiguousParallelGroups: 0, replayGaps: 0 });
+  const queue = createRecordedQueue(source); for (const call of [one, two, three]) expect(queue.dispatch(call.toolName, call.args).content[0].text).toBe(call.result);
+});
+
+it.each([
+  ["reversed sequence across steps", (one, two) => [usage(), { ...one, history: { sequence: 9 } }, usage(), { ...two, history: { sequence: 3 } }]],
+  ["duplicate sequence across steps", (one, two) => [usage(), { ...one, history: { sequence: 4 } }, usage(), { ...two, history: { sequence: 4 } }]],
+  ["duplicate sequence within a parallel step", (one, two) => [usage(), { ...one, history: { sequence: 4 } }, { ...two, history: { sequence: 4 } }]],
+  ["invalid sequence", (one, two) => [usage(), { ...one, history: { sequence: 1.5 } }, usage(), two]],
+  ["tool before the first marker", (one, two) => [one, usage(), two]],
+  ["new prose before an unmarked tool", (one, two) => [usage(), one, { type: "text", text: "Fictional next-step narration." }, two]],
+])("keeps usage boundary inconsistency replay-tier: %s", async (_name, makeParts) => {
+  const one = tool("invalid-first"), two = tool("invalid-next", "Different fictional note");
+  const { source, inventory } = await read(snapshots(scratch(), { parts: makeParts(one, two), boundaries: false }));
+  expect(source.steps).toMatchObject([{ calls: [0, 1], origin: "web-message-conservative", gaps: expect.arrayContaining(["assistant_step_boundaries_unknown"]) }]);
+  expect(source.coverage.find(g => g.code === "assistant_step_boundaries_unknown").tier).toBe("replay"); expect(inventory.replayGaps).toBeGreaterThan(0);
+  expect(() => createRecordedQueue(source)).toThrow();
 });

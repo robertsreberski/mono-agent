@@ -273,13 +273,28 @@ the original model-emitted journal arguments. Raw web values remain in
 that web arguments may include host-filled defaults; arbitrary extra keys or
 changed shared values are not excused.
 
-Web `assistant_message_boundary` telemetry positions delimit model steps;
-product emission places those markers before their tool executions. Optional
-`history.sequence` receipts cross-check lifecycle order across groups (parallel
-completions may reorder inside a group). Missing or inconsistent markers alone
-fall back to unknown boundaries. Earlier web groups and the native suffix merge
-using their shared web provenance rather than appending the earlier groups after
-the journal. Unanchored mixed/native-only order is still explicitly unknown.
+Web `context_usage` telemetry ends an assistant message before its tools begin
+executing, including older builds that only emitted an explicit
+`assistant_message_boundary` for final prose. Each web step takes the preceding
+reasoning/text, its usage marker and the following tool-call/subagent parts up
+to the next reasoning/text/usage part. Usage-only steps are labeled
+`web-usage-boundary`. An explicit marker is preferred for its own message; a
+coincident usage + explicit pair is one step, never two. Mixed historical builds
+can use usage-only, explicit-only and paired markers in the same web row. Marker
+recognition follows the bounded legacy telemetry unwrapping in
+`packages/web/src/wake-reply.ts`, without importing that runtime.
+
+Web steps retain `partStartIndex`, `partEndIndex`, `boundaryIndex`, optional
+`usageBoundaryIndex` and `subagentPartIndices` into the unchanged raw row. Only
+steps with queued parent tool calls are emitted in `steps`; prose-only and
+subagent-only messages remain in raw source/outcomes, never executable calls.
+Optional `history.sequence` receipts cross-check lifecycle order across groups;
+parallel completions may reorder inside a group, but reversed/duplicate/invalid
+sequences or tools without their preceding step-end marker remain
+`assistant_step_boundaries_unknown` at replay tier. Earlier web groups and the
+native suffix merge using their shared web provenance rather than appending the
+earlier groups after the journal. Unanchored mixed/native-only order is still
+explicitly unknown.
 
 All available result representations keep store provenance, retained bytes,
 original-byte metadata and truncation state. A complete copy wins over a clipped

@@ -70,38 +70,64 @@ export function selectResult(copies) {
     || Number(a.redacted) - Number(b.redacted)
     || ["web", "journal", "sidecar"].indexOf(a.store) - ["web", "journal", "sidecar"].indexOf(b.store))[0];
 }
-export function isBoundary(part) {
-  if (part?.type !== "telemetry" || part.event !== "runtime_telemetry") return false;
+// Same bounded legacy telemetry unwrapping as web/src/wake-reply.ts.
+export function isBoundary(part, kind = "assistant_message_boundary") {
+  if (part?.type !== "telemetry") return false;
   let current = part.data;
-  for (let depth = 0; depth < 8 && object(current); depth++, current = current.data) if (current.type === "runtime_telemetry" && current.kind === "assistant_message_boundary" && object(current.data)) return true;
+  const seen = new Set();
+  for (let depth = 0; depth < 8 && object(current) && !seen.has(current); depth++, current = current.data) {
+    seen.add(current);
+    if (current.kind === kind) return true;
+  }
   return false;
 }
-// Native boundaries precede tool_execution_start (execution/pi/events.ts:160–219).
+// Usage ends each assistant message before tool execution starts (pi/events.ts).
+// An explicit marker for that same message replaces usage, never adds a step.
 export function webGroups(parts, calls, toolAt) {
-  const boundaries = parts.flatMap((p, i) => isBoundary(p) ? [i] : []);
-  const groups = new Map(); let valid = boundaries.length > 0, pendingUsage = false;
-  for (const part of parts) {
-    if (part?.type === "telemetry" && part.data?.kind === "context_usage") { if (pendingUsage) valid = false; pendingUsage = true; }
-    if (isBoundary(part)) pendingUsage = false;
-    else if (part?.type === "tool-call" && pendingUsage) { valid = false; pendingUsage = false; }
+  const callAt = new Map(calls.map(index => [toolAt.get(index), index])), groups = [];
+  let active = null, start = 0, valid = true;
+  const finish = end => {
+    if (active?.calls.length) { active.partEndIndex = end; groups.push(active); }
+    active = null;
+  };
+  for (let index = 0; index < parts.length; index++) {
+    const part = parts[index];
+    if (part?.type === "reasoning" || part?.type === "text") {
+      if (active) { finish(index - 1); start = index; }
+      continue;
+    }
+    const usage = isBoundary(part, "context_usage"), explicit = isBoundary(part);
+    if (usage || explicit) {
+      // Other telemetry may sit between the two markers, but prose, another
+      // usage marker or any execution means they cannot be the same message.
+      if (explicit && active?.origin === "web-usage-boundary" && !active.executed) {
+        active.boundaryIndex = index; active.origin = "web-assistant-boundary";
+      } else {
+        if (active) { finish(index - 1); start = index; }
+        active = { calls: [], boundaryIndex: index, partStartIndex: start,
+          ...(usage ? { usageBoundaryIndex: index } : {}), subagentPartIndices: [],
+          origin: usage ? "web-usage-boundary" : "web-assistant-boundary", gaps: [] };
+      }
+      continue;
+    }
+    if (part?.type !== "tool-call" && part?.type !== "subagent") continue;
+    if (!active) { valid = false; continue; }
+    active.executed = true;
+    if (part.type === "subagent" || part.toolName === "Agent") active.subagentPartIndices.push(index);
+    if (callAt.has(index)) active.calls.push(callAt.get(index));
   }
-  if (pendingUsage) valid = false;
-  for (const index of calls) {
-    const position = toolAt.get(index), boundary = boundaries.findLast(b => b < position);
-    if (boundary === undefined) valid = false;
-    const key = boundary ?? -1;
-    if (!groups.has(key)) groups.set(key, []); groups.get(key).push(index);
-  }
+  finish(parts.length - 1);
+  if (groups.reduce((n, group) => n + group.calls.length, 0) !== calls.length) valid = false;
   // Terminal receipts may complete out of order *within* a parallel group.
   // They must not reverse or duplicate lifecycle sequence across groups.
   let previousMax = -1;
-  for (const indices of groups.values()) {
-    const seqs = indices.map(i => parts[toolAt.get(i)].history?.sequence).filter(v => v !== undefined);
+  for (const group of groups) {
+    const seqs = group.calls.map(i => parts[toolAt.get(i)].history?.sequence).filter(v => v !== undefined);
     if (seqs.some(v => !Number.isSafeInteger(v) || v < 0 || v <= previousMax) || new Set(seqs).size !== seqs.length) valid = false;
     if (seqs.length) previousMax = Math.max(...seqs);
+    delete group.executed;
   }
-  return valid ? [...groups].map(([boundary, group]) => ({ calls: group, boundaryIndex: boundary, origin: "web-assistant-boundary", gaps: [] }))
-    : [{ calls, origin: "web-message-conservative", gaps: ["assistant_step_boundaries_unknown"] }];
+  return valid ? groups : [{ calls, origin: "web-message-conservative", gaps: ["assistant_step_boundaries_unknown"] }];
 }
 
 // Exact secure preprocessing from tool-history/payload.ts; parity-tested.
