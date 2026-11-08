@@ -15,7 +15,7 @@ import tls from "node:tls";
 import dgram from "node:dgram";
 import { main, observe } from "../continuity-observe.mjs";
 import { openSnapshot, ROOT, MAX_ROW_BYTES, sourceStamps, assertUnchanged } from "../lib/continuity-observation-input.mjs";
-import { PACK_REASONS } from "../lib/continuity-observation-events.mjs";
+import { PACK_REASONS, statements, scanTurn } from "../lib/continuity-observation-events.mjs";
 import { HISTORY_NOTICE, HISTORY_HEADER, parseConversationHistoryText } from "../lib/continuity-observation-retrieval.mjs";
 import { historyBody, historyResponse, historyText } from "./fixtures/continuity-observation/text-result.mjs";
 import { EXPORT_ALLOWLIST, assertAllowed } from "../lib/continuity-observation-report.mjs";
@@ -568,4 +568,21 @@ describe("read-only continuity observation", () => {
     f.value.snapshots[0].captureAvailableFrom = START; f.value.snapshots[0].strata[0].start = at(1); update(f); await expect(run(f)).rejects.toThrow("INVALID_STRATA");
     f.value.snapshots[0].strata[0].start = START; f.value.snapshots.push(structuredClone(f.value.snapshots[0])); update(f); await expect(run(f)).rejects.toThrow("DUPLICATE_SNAPSHOT");
   });
+});
+
+it("uses creation time and rowid for message order and post-boundary retrieval, not write counters or UUID order", async () => {
+  const f = fixture(temp(), { count: 1 });
+  editDb(f, db => {
+    db.prepare("DELETE FROM messages WHERE role='assistant'").run();
+    const add = (id, second, seq, parts) => { const at = `2042-03-01T01:00:0${second}.000Z`;
+      db.prepare("INSERT INTO messages VALUES(?,?,?,?,?,?,?,?,?,?)").run(id, CANARY, `${CANARY}_turn_1`, "assistant", JSON.stringify(parts), at, at, "complete", seq, 0); };
+    add("a-late-retrieval", 3, 0, [tool()]); add("z-early-boundary", 1, 49, [boundary()]);
+    add("z-tie-first", 2, 0, [{ type: "text", text: "Fictional first tie" }]); add("a-tie-next", 2, 87, [{ type: "text", text: "Fictional next tie" }]);
+    const sql = statements(db), rows = sql.messages.all(`${CANARY}_turn_1`);
+    expect(rows.slice(1).map(r => r.id)).toEqual(["z-early-boundary", "z-tie-first", "a-tie-next", "a-late-retrieval"]);
+    const scanned = scanTurn(sql, { id: `${CANARY}_turn_1` });
+    expect(scanned.events.map(e => e.kind)).toEqual(["session_boundary", "retrieval"]);
+    expect(scanned.events[1].position).toBeGreaterThan(scanned.events[0].position);
+  });
+  const r = await run(f); expect(r.metrics.strata[0].followup.observedRetrieval).toBe(1);
 });

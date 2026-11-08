@@ -134,6 +134,10 @@ node scripts/continuity-observe.mjs --manifest /private-snapshots/manifest.json 
   --private-worklist /private-results/review.jsonl
 ```
 
+Observation scans web messages in product `created_at,rowid` order, so
+post-boundary retrieval positions follow chronology, not `messages.seq` (a
+parts-write counter) or UUID ordering. Equal timestamps use insertion order.
+
 The output directory must be new. `inventory.json`, `metrics.json`, `outcomes.json`
 and `report.md` use v2 export schemas containing strictly allowlisted enums and
 numeric aggregates, with no identifiers, timestamps, paths, queries, source
@@ -251,8 +255,15 @@ provenance and representations; they are **not concatenated into replay calls**.
 Messages use the product's `created_at,rowid` ordering. Web `seq` counts parts
 writes, not chronological positions. The transport metadata records this order;
 older source files require a fresh import and a new ordinal registration.
-Missing attachment bytes affect only probes touching that item; references remain
-private and are never fetched. Each parent-level delegation is an inert original
+The importer also reads the selected messages' `attachments` table metadata in
+`created_at,rowid` order, attached by `message_id` and matching thread. It selects
+only known metadata columns, never byte/blob columns or storage files. Legacy
+attachment parts are combined without double-counting the same ID. Every
+reference adds an item-tier `attachment_bytes_unavailable` gap. Inventory counts
+`attachments`, `attachmentImages`, `attachmentDocuments`, `attachmentOther`;
+unrelated/draft messages' attachments are not imported. Missing attachment bytes
+affect only probes touching that item; references remain private and are never
+fetched. Each parent-level delegation is an inert original
 `Agent` invocation with recorded args and its parent-visible result, marked
 `kind: "subagent_outcome"`, `childrenReplayed: false`. A subagent part's `name`
 is a child label, not a replacement tool name. Child calls remain opaque in raw
@@ -278,6 +289,27 @@ the original model-emitted journal arguments. Raw web values remain in
 `webArgs` and the untouched source rows. Without a journal, a fidelity gap notes
 that web arguments may include host-filled defaults; arbitrary extra keys or
 changed shared values are not excused.
+
+Parent `Agent` calls differ from ordinary host-default handling: web subagent
+args are a **display projection**. The lifecycle bookend constructs only
+`{name, description}` in
+`packages/turn/src/tools/delegation/agent-tool.ts:1104`, omitting `prompt`,
+`effort` and `model`. After conversion retains the previous args
+(`packages/web/src/store.ts:8857`), its lifecycle handler overwrites those args
+with the bookend (`store.ts:8521–8526`). This is why a completed web subagent
+part need not retain the original invocation prompt.
+
+The inert parent call uses full journal toolCall arguments, else the complete
+sidecar invocation payload. A strict web key-subset with equal shared values
+(or equality after normal sidecar redaction preprocessing) adds fidelity-tier
+`web_projection_arguments`, not a conflict. Changed shared values and web-only
+keys remain replay-tier conflicts, even when the two full stores agree.
+Journal/sidecar full-argument disagreement still conflicts. Sidecar-only
+redacted arguments remain `sidecar_redacted_unverified`; they are not represented
+as recovered original prompts. Without either authoritative argument copy the
+parent step has an `arguments_missing` replay gap; display-only args are never
+executed as though complete. The general host-default exception does not excuse
+extra Agent keys.
 
 Web `context_usage` telemetry ends an assistant message before its tools begin
 executing, including older builds that only emitted an explicit
@@ -344,7 +376,7 @@ The closed code-to-tier map in `continuity-recorded-schema.mjs` is authoritative
 | `replay` | `duplicate_web_conflict`, `journal_arguments_conflict`, `journal_result_conflict`, `journal_state_conflict`, `duplicate_native_identity`, `ambiguous_sidecar_identity`, `sidecar_conflict` | Genuine identity/argument/result/state contradiction |
 | `replay` | `ambiguous_parallel_results`, `assistant_step_boundaries_unknown`, `mixed_step_order_unknown` | Unsound parallel dispatch or step order |
 | `item` | `attachment_bytes_unavailable`, `subagent_outcome_missing`, `subagent_outcome_truncated`, `subagent_terminal_state_unknown` | Exclude probes requiring that item, not the whole replay |
-| `fidelity` | `source_truncated`, `sidecar_truncated`, `arguments_may_include_host_defaults`, `web_effective_arguments`, `sidecar_redacted`, `sidecar_redacted_unverified` | Replayable representation loss/normalization |
+| `fidelity` | `source_truncated`, `sidecar_truncated`, `arguments_may_include_host_defaults`, `web_effective_arguments`, `web_projection_arguments`, `sidecar_redacted`, `sidecar_redacted_unverified` | Replayable representation loss/normalization |
 | `fidelity` | `malformed_sidecar_payload`, `sidecar_phase_missing`, `sidecar_only_tool`, `journal_result_missing` | Auxiliary evidence is incomplete; do not invent replay calls |
 
 The queue refuses replay-tier step/tool/coverage gaps, not item/fidelity gaps.
@@ -438,7 +470,11 @@ An optional `--diagnostics NEW_FILE` on `size` writes a refusal record in a new,
 owned `0600` file outside ROOT under an owned `0700` parent. It cannot overwrite
 an existing file. The only fields are turn ordinal, reply cursor/count,
 cancelled/aborted flags, normalized failure kind and an allowlisted route refusal
-code (or null). No text, identifiers or paths are retained. Successful runs do
+code (or null). It additionally records `errorName` (`TypeError`, `RangeError`,
+`Error`, `other`; null before an exception), an allowlisted `errorCode` or null,
+and `site`: the first existing repository-relative `file:line` frame under
+`scripts/` or `packages/*/dist/`, or null. Messages, identifiers, absolute paths
+and arbitrary stack text are never retained. Successful runs do
 not create this file; stdout/stderr retain their existing count/code-only policy.
 
 ### Protocol registration
@@ -491,7 +527,14 @@ messages, including rows with only inert Agent calls or prose. Native assistant
 content is retained where available. Inline steers remain between their recorded
 model messages and use the production live-input mailbox, deduplicate the standalone owner row and require
 native acceptance and next-request delivery. Unavailable attachment bytes get
-an explicit unavailable label, never synthetic image bytes. Unknown arguments,
+one fixed metadata-only label per attachment, never synthetic files or image
+bytes: `[recorded attachment: image image/png 456 bytes; bytes unavailable for replay]`.
+An attachment-only owner uses only these labels; empty text with no attachment
+still refuses. Each sizing branch reports `attachments.labelled`,
+`attachments.images` and `attachments.imageTokensRepresented: false`: text-label
+tokens are estimated, **image tokens are not represented**, a sizing sensitivity.
+Fresh imports record `transport.attachmentMetadata: "table-and-parts-v1"`; older
+artifacts require reimport and a fresh ordinal registration. Unknown arguments,
 unrelated multiple owner messages and unsupported source shapes refuse rather
 than guessing. An unanchored step outside all web turns is
 dropped only when explicitly excluded, and counted as `excludedOutsideWebTurns`;

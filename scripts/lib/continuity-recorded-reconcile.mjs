@@ -8,6 +8,12 @@ export function effectiveArguments(web, model) {
   return object(web) && object(model) && Object.keys(model).every(k => Object.hasOwn(web, k) && callKey("", { value: web[k] }) === callKey("", { value: model[k] }))
     && Object.keys(web).every(k => Object.hasOwn(model, k) || EFFECTIVE_ARGUMENT_KEYS.includes(k));
 }
+// Agent lifecycle bookends publish only name/description (agent-tool.ts:1104).
+// A display projection must omit keys, never add or change shared values.
+export function webProjectionArguments(web, authoritative) {
+  return object(web) && object(authoritative) && Object.keys(web).length < Object.keys(authoritative).length
+    && Object.keys(web).every(k => Object.hasOwn(authoritative, k) && callKey("", { value: web[k] }) === callKey("", { value: authoritative[k] }));
+}
 export const REDACTION_OPTIONS = { contentPatternRedaction: true, visibleTextSanitization: {
   omitFilesystemPaths: true, omission: "[tool payload omitted because it contained a private host path]",
 } };
@@ -43,6 +49,7 @@ export function redactedSpansMatch(web, sidecar) {
   if (object(web) && object(sidecar)) return Object.keys(web).length === Object.keys(sidecar).length && Object.keys(web).every(k => Object.hasOwn(sidecar, k) && redactedSpansMatch(web[k], sidecar[k]));
   return false;
 }
+export const hasRedactions = value => new RegExp(TOKENS.source).test(JSON.stringify(value) ?? "");
 export function compareCopies(web, sidecar, redact, argumentsOnly = false) {
   const same = callKey("", { value: web }) === callKey("", { value: sidecar });
   if (argumentsOnly ? same : bytes(web) === bytes(sidecar)) return "exact";

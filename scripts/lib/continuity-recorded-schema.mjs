@@ -49,6 +49,18 @@ export function ambiguousSteps(source) {
     return false;
   });
 }
+// Combine legacy attachment parts with table metadata without inventing bytes.
+export function attachmentReferences(row, parts) {
+  const refs = (row.attachments ?? []).map((a, attachmentIndex) => ({ ...a, attachmentIndex }));
+  for (const [partIndex, p] of parts.entries()) if (p?.type === "attachment" && !refs.some(a => typeof p.id === "string" && a.id === p.id)) {
+    refs.push({ id: p.id, kind: p.kind, content_type: p.mediaType ?? p.contentType, size_bytes: p.sizeBytes, partIndex });
+  }
+  return refs.map(a => {
+    const contentType = typeof a.content_type === "string" && /^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/i.test(a.content_type) ? a.content_type.toLowerCase() : "unknown";
+    return { ...a, contentType, kind: ["image", "document"].includes(a.kind) ? a.kind : contentType.startsWith("image/") ? "image" : a.kind == null && contentType !== "unknown" ? "document" : "other",
+      sizeBytes: Number.isSafeInteger(a.size_bytes) && a.size_bytes >= 0 ? a.size_bytes : null };
+  });
+}
 export function validateSource(s) {
   if (!keys(s, ["schema", "dataClass", "conversationId", "provenance", "web", "sidecar", "journal", "tools", "steps", "outcomes", "coverage", "transport"])
     || s.schema !== SOURCE_SCHEMA || s.dataClass !== "private-recorded" || typeof s.conversationId !== "string"
@@ -57,6 +69,7 @@ export function validateSource(s) {
     || !Array.isArray(s.provenance) || !object(s.transport)) fail("INVALID_RECORDED_SOURCE");
   for (const t of s.tools) if (!object(t) || typeof t.id !== "string" || typeof t.name !== "string" || !t.name
     || !Array.isArray(t.provenance) || !Array.isArray(t.gaps) || t.kind !== undefined && (t.kind !== "subagent_outcome" || t.childrenReplayed !== false)) fail("INVALID_RECORDED_TOOL");
+  for (const row of s.web.messages) if (!object(row) || row.attachments !== undefined && (!Array.isArray(row.attachments) || row.attachments.some(a => !object(a) || typeof a.id !== "string" || !Number.isSafeInteger(a.size_bytes) || a.size_bytes < 0 || typeof a.kind !== "string" || typeof a.content_type !== "string"))) fail("INVALID_RECORDED_SOURCE");
   const used = new Set();
   for (const step of s.steps) {
     if (!object(step) || !Array.isArray(step.calls) || !Array.isArray(step.gaps)) fail("INVALID_RECORDED_STEP");
@@ -68,11 +81,11 @@ export function validateSource(s) {
   for (const gap of s.coverage) if (!keys(gap, ["code", "location", "tier"]) || !object(gap.location) || gap.tier !== gapTier(gap.code)) fail("INVALID_RECORDED_GAP");
   return s;
 }
-export const INVENTORY_FIELDS = ["threads", "turns", "messages", "tools", "steps", "attachments", "subagentOutcomes", "markers", "telemetry", "steers", "partialTurns", "failedTools", "matched", "conflicts", "webOnly", "sidecarOnly", "journalOnly", "representationDifferences", "truncated", "malformedParts", "missingResults", "ambiguousParallelGroups", "coverageGaps", "replayGaps", "itemGaps", "fidelityGaps", "sidecarRedacted", "sidecarRedactedUnverified", "webEffectiveArguments", "recoveredResults", "journalRecords"];
+export const INVENTORY_FIELDS = ["threads", "turns", "messages", "tools", "steps", "attachments", "attachmentImages", "attachmentDocuments", "attachmentOther", "subagentOutcomes", "markers", "telemetry", "steers", "partialTurns", "failedTools", "matched", "conflicts", "webOnly", "sidecarOnly", "journalOnly", "representationDifferences", "truncated", "malformedParts", "missingResults", "ambiguousParallelGroups", "coverageGaps", "replayGaps", "itemGaps", "fidelityGaps", "sidecarRedacted", "sidecarRedactedUnverified", "webEffectiveArguments", "recoveredResults", "journalRecords"];
 export const GAP_TIERS = Object.freeze(Object.fromEntries([
   ...["partial_turn", "partial_message", "unassigned_message", "cross_thread_order_unknown", "malformed_parts", "malformed_part", "malformed_tool", "malformed_native_call", "journal_rewind_requires_branch_selection", "native_interruption", "arguments_missing", "arguments_not_object", "arguments_truncated", "native_result_missing_or_ambiguous", "tool_terminal_state_unknown", "result_missing", "duplicate_web_conflict", "journal_arguments_conflict", "journal_result_conflict", "journal_state_conflict", "duplicate_native_identity", "ambiguous_sidecar_identity", "sidecar_conflict", "ambiguous_parallel_results", "assistant_step_boundaries_unknown", "mixed_step_order_unknown"].map(code => [code, "replay"]),
   ...["attachment_bytes_unavailable", "subagent_outcome_missing", "subagent_outcome_truncated", "subagent_terminal_state_unknown"].map(code => [code, "item"]),
-  ...["source_truncated", "sidecar_truncated", "arguments_may_include_host_defaults", "web_effective_arguments", "sidecar_redacted", "sidecar_redacted_unverified", "malformed_sidecar_payload", "sidecar_phase_missing", "sidecar_only_tool", "journal_result_missing"].map(code => [code, "fidelity"]),
+  ...["source_truncated", "sidecar_truncated", "arguments_may_include_host_defaults", "web_effective_arguments", "web_projection_arguments", "sidecar_redacted", "sidecar_redacted_unverified", "malformed_sidecar_payload", "sidecar_phase_missing", "sidecar_only_tool", "journal_result_missing"].map(code => [code, "fidelity"]),
 ]));
 export function gapTier(code) { if (!Object.hasOwn(GAP_TIERS, code)) fail("INVALID_RECORDED_GAP"); return GAP_TIERS[code]; }
 export function inventory(source, counts) {

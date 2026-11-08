@@ -2,9 +2,9 @@
 import { readFileSync, statSync, realpathSync, mkdirSync, writeFileSync, rmSync, existsSync } from "node:fs";
 import { dirname, basename, resolve, join } from "node:path";
 import { ROOT, MAX_ROW_BYTES, fail, keys, object, within, inputPath, openSnapshot, sourceStamps, assertUnchanged, jsonLines } from "./continuity-observation-input.mjs";
-import { SOURCE_SCHEMA, MAX_SOURCE_BYTES, MAX_RECORDS, INVENTORY_FIELDS, bytes, callKey, digest, emptyQuestions, emptyKeys, inventory, validateSource, ambiguousSteps, gapTier } from "./continuity-recorded-schema.mjs";
+import { SOURCE_SCHEMA, MAX_SOURCE_BYTES, MAX_RECORDS, INVENTORY_FIELDS, bytes, callKey, digest, emptyQuestions, emptyKeys, inventory, validateSource, ambiguousSteps, gapTier, attachmentReferences } from "./continuity-recorded-schema.mjs";
 
-import { effectiveArguments, compareCopies, resultCopy, selectResult, textResult, webGroups, normalizeSidecar } from "./continuity-recorded-reconcile.mjs";
+import { effectiveArguments, webProjectionArguments, hasRedactions, compareCopies, resultCopy, selectResult, textResult, webGroups, normalizeSidecar } from "./continuity-recorded-reconcile.mjs";
 export async function readRedactor() {
   if (!existsSync(new URL("../../packages/observability/dist/redaction.js", import.meta.url)) || !existsSync(new URL("../../packages/observability/dist/guards.js", import.meta.url))) fail("RECORDED_REDACTION_BUILD_REQUIRED");
   try {
@@ -42,12 +42,12 @@ function requireColumns(db, table, columns) {
   if (!Object.entries(columns).every(([name, type]) => actual.some(c => c.name === name && c.type.toUpperCase() === type))) fail("UNSUPPORTED_RECORDED_SCHEMA");
 }
 // Bound TEXT/BLOB allocations before selecting a row, including optional columns.
-function* rows(db, table, where, args, order, retain) {
-  const columns = db.prepare(`PRAGMA table_info(${table})`).all();
+function* rows(db, table, where, args, order, retain, select) {
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all().filter(c => !select || select.includes(c.name));
   const quote = name => `"${name.replaceAll('"', '""')}"`;
   const rowBytes = columns.map(c => `coalesce(length(CAST(${quote(c.name)} AS BLOB)),0)`).join("+");
   if (db.prepare(`SELECT 1 FROM ${table} WHERE (${where}) AND (${rowBytes})>${MAX_ROW_BYTES} LIMIT 1`).get(...args)) fail("RECORDED_ROW_TOO_LARGE");
-  for (const row of db.prepare(`SELECT * FROM ${table} WHERE ${where} ORDER BY ${order}`).iterate(...args)) {
+  for (const row of db.prepare(`SELECT ${select ? select.map(quote).join(",") : "*"} FROM ${table} WHERE ${where} ORDER BY ${order}`).iterate(...args)) {
     retain(row); yield row;
   }
 }
@@ -82,7 +82,7 @@ export async function readRecordedSource(manifest, conversationId) {
   const source = { schema: SOURCE_SCHEMA, dataClass: "private-recorded", conversationId,
     provenance: paths.map((path, index) => ({ index, path, stamp: stamps[index][1] })),
     web: { threads: [], turns: [], messages: [] }, sidecar: null, journal: null, tools: [], steps: [], outcomes: [], coverage: [],
-    transport: { webMessageOrder: "created_at,rowid", identity: "name-canonical-arguments-fifo", identityReason: "packages/turn/src/tools/mcp/tools.ts:178-179 omits toolCallId from MCP requests", arguments: "unchanged", schemas: "unavailable-unless-explicitly-supplied", resultAdaptation: "native-content-or-text-envelope", byteEquivalence: "not-claimed", clipping: "must-be-measured-by-replay" } };
+    transport: { attachmentMetadata: "table-and-parts-v1", webMessageOrder: "created_at,rowid", identity: "name-canonical-arguments-fifo", identityReason: "packages/turn/src/tools/mcp/tools.ts:178-179 omits toolCallId from MCP requests", arguments: "unchanged", schemas: "unavailable-unless-explicitly-supplied", resultAdaptation: "native-content-or-text-envelope", byteEquivalence: "not-claimed", clipping: "must-be-measured-by-replay" } };
   const gap = (code, location) => source.coverage.push({ code, location, tier: gapTier(code) });
   const redact = await readRedactor();
   let web, sidecar;
@@ -106,7 +106,19 @@ export async function readRecordedSource(manifest, conversationId) {
     for (const row of source.web.messages) {
       try { for (const part of JSON.parse(row.parts_json)) if (part?.type === "subagent" || part?.type === "tool-call" && part.toolName === "Agent") subagentIds.add(part.toolCallId); } catch { /* diagnosed below */ }
     }
+    const attachmentColumns = { id: "TEXT", thread_id: "TEXT", message_id: "TEXT", name: "TEXT", content_type: "TEXT", size_bytes: "INTEGER", kind: "TEXT", status: "TEXT", uploaded: "INTEGER", storage_name: "TEXT", created_at: "TEXT", updated_at: "TEXT", origin: "TEXT" };
+    const hasAttachments = web.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='attachments'").get();
+    if (hasAttachments) requireColumns(web, "attachments", attachmentColumns);
     for (const row of source.web.messages) {
+      row.attachments = hasAttachments ? [...rows(web, "attachments", "message_id=? AND thread_id=?", [row.id, row.thread_id], "created_at,rowid", retain, Object.keys(attachmentColumns))] : [];
+      if (row.attachments.some(a => typeof a.id !== "string" || typeof a.content_type !== "string" || typeof a.kind !== "string" || !Number.isSafeInteger(a.size_bytes) || a.size_bytes < 0)) fail("UNSUPPORTED_RECORDED_SCHEMA");
+      // Table metadata still counts if parts_json is malformed. No storage file is opened.
+      let parsed; try { parsed = JSON.parse(row.parts_json); } catch { /* diagnosed below */ }
+      for (const a of attachmentReferences(row, Array.isArray(parsed) ? parsed : [])) {
+        counts.attachments++; counts[{ image: "attachmentImages", document: "attachmentDocuments", other: "attachmentOther" }[a.kind]]++;
+        gap("attachment_bytes_unavailable", { source: "web", messageId: row.id, turnId: row.turn_id,
+          ...(a.partIndex === undefined ? { attachmentIndex: a.attachmentIndex } : { partIndex: a.partIndex }) });
+      }
       if (!turnIds.has(row.turn_id)) gap("unassigned_message", { messageId: row.id });
       if (!["complete", "completed"].includes(row.status)) gap("partial_message", { messageId: row.id });
       let parts;
@@ -116,7 +128,6 @@ export async function readRecordedSource(manifest, conversationId) {
       for (let index = 0; index < parts.length; index++) {
         const part = parts[index], provenance = { source: "web", messageId: row.id, turnId: row.turn_id, partIndex: index };
         if (!object(part) || typeof part.type !== "string") { counts.malformedParts++; gap("malformed_part", provenance); continue; }
-        if (part.type === "attachment") { counts.attachments++; gap("attachment_bytes_unavailable", provenance); }
         if (part.type === "conversation-marker") counts.markers++;
         if (part.type === "telemetry") counts.telemetry++;
         if (part.type === "steer" || part.type === "live-input") {
@@ -225,11 +236,12 @@ export async function readRecordedSource(manifest, conversationId) {
             if (results.length !== 1 || !Object.hasOwn(tool, "result")) tool.gaps.push("native_result_missing_or_ambiguous");
             index = source.tools.length; byId.set(tool.id, index); source.tools.push(tool);
           } else {
-            if (callKey(tool.name, tool.args) !== callKey(part.name, part.arguments)) {
-              if (tool.name === part.name && effectiveArguments(tool.args, part.arguments)) { tool.gaps.push("web_effective_arguments"); counts.webEffectiveArguments++; }
+            if ((tool.kind !== "subagent_outcome" || object(part.arguments)) && callKey(tool.name, tool.args) !== callKey(part.name, part.arguments)) {
+              if (tool.kind === "subagent_outcome" && tool.name === part.name && tool.webArgs === undefined) { /* No display copy to contradict the native authority. */ }
+              else if (tool.kind === "subagent_outcome" && tool.name === part.name && webProjectionArguments(tool.webArgs, part.arguments)) tool.gaps.push("web_projection_arguments");
+              else if (tool.kind !== "subagent_outcome" && tool.name === part.name && effectiveArguments(tool.args, part.arguments)) { tool.gaps.push("web_effective_arguments"); counts.webEffectiveArguments++; }
               else if (!tool.argsTruncated) tool.gaps.push("journal_arguments_conflict");
             }
-            tool.args = part.arguments; tool.argsTruncated = false; tool.argumentsOrigin = "journal";
             if (results.length === 1) {
               const complete = results.filter(r => Object.hasOwn(r.msg, "content") && !resultCopy("journal", r.msg.content, { truncated: r.msg.truncated === true, originalBytes: r.msg.originalBytes }).truncated);
               const comparisons = complete.map(r => compare(Object.hasOwn(tool, "result"), tool.result, true, r.msg.content));
@@ -238,7 +250,9 @@ export async function readRecordedSource(manifest, conversationId) {
               if (comparisons.includes("text_equivalent")) counts.representationDifferences++;
             } else tool.gaps.push("native_result_missing_or_ambiguous");
           }
-          tool.argumentsOrigin = "journal"; tool.args = part.arguments; tool.argsTruncated = false;
+          if (tool.kind !== "subagent_outcome" || object(part.arguments)) {
+            tool.argumentsOrigin = "journal"; tool.args = part.arguments; tool.argsTruncated = false;
+          } else tool.gaps.push("arguments_missing");
           journalResultCounts.set(tool, (journalResultCounts.get(tool) ?? 0) + results.length);
           if (results.length > 1) tool.gaps.push("journal_result_conflict", "native_result_missing_or_ambiguous");
           if (results.length === 1) {
@@ -306,13 +320,27 @@ export async function readRecordedSource(manifest, conversationId) {
         const a = parsePayload(invocation[0]), b = parsePayload(results[0]);
         const webArgs = Object.hasOwn(tool, "webArgs") ? tool.webArgs : tool.args;
         let argsComparison = a.present && webArgs !== undefined ? compareCopies(webArgs, a.value, redact, true) : "missing";
-        if (argsComparison === "different" && Object.hasOwn(tool, "webArgs")) {
-          const modelComparison = compareCopies(tool.args, a.value, redact, true);
-          if (modelComparison !== "different") argsComparison = modelComparison;
-        }
-        if (argsComparison === "different" && a.present && effectiveArguments(normalizeSidecar(webArgs, redact), a.value)) {
-          argsComparison = "web_effective_arguments";
-          if (!tool.gaps.includes("web_effective_arguments")) { tool.gaps.push("web_effective_arguments"); counts.webEffectiveArguments++; }
+        if (tool.kind === "subagent_outcome") {
+          const projection = a.present && (webProjectionArguments(webArgs, a.value) || object(webArgs) && webProjectionArguments(normalizeSidecar(webArgs, redact), a.value));
+          if (projection) tool.gaps.push("web_projection_arguments");
+          const webComparison = projection ? "web_projection_arguments" : argsComparison;
+          argsComparison = tool.argumentsOrigin === "journal" && a.present ? compareCopies(tool.args, a.value, redact, true) : webComparison;
+          // Full journal/sidecar agreement must not hide a differing web shared key.
+          if (webComparison === "different") argsComparison = "different";
+          if (tool.argumentsOrigin !== "journal" && invocation.length === 1 && a.present && object(a.value) && !a.truncated && !a.malformed) {
+            tool.args = a.value; tool.argumentsOrigin = "sidecar"; tool.argsTruncated = false;
+            tool.gaps = tool.gaps.filter(c => !["arguments_missing", "arguments_not_object"].includes(c));
+            if (hasRedactions(a.value)) tool.gaps.push("sidecar_redacted_unverified");
+          }
+        } else {
+          if (argsComparison === "different" && Object.hasOwn(tool, "webArgs")) {
+            const modelComparison = compareCopies(tool.args, a.value, redact, true);
+            if (modelComparison !== "different") argsComparison = modelComparison;
+          }
+          if (argsComparison === "different" && a.present && effectiveArguments(normalizeSidecar(webArgs, redact), a.value)) {
+            argsComparison = "web_effective_arguments";
+            if (!tool.gaps.includes("web_effective_arguments")) { tool.gaps.push("web_effective_arguments"); counts.webEffectiveArguments++; }
+          }
         }
         if (a.truncated) argsComparison = "truncated_copy";
         let resultComparison = b.present && Object.hasOwn(tool, "result") ? compareCopies(tool.result, b.value, redact) : "missing";
@@ -322,7 +350,7 @@ export async function readRecordedSource(manifest, conversationId) {
           state: c.state === "success" || failed(c.state) ? (failed(c.state) === tool.isError ? "compatible" : "different") : "missing" };
         if (a.truncated || b.truncated) counts.truncated++;
         for (const code of ["sidecar_redacted", "sidecar_redacted_unverified"]) if (Object.values(tool.comparison).includes(code)) {
-          tool.gaps.push(code); counts[code === "sidecar_redacted" ? "sidecarRedacted" : "sidecarRedactedUnverified"]++;
+          tool.gaps.push(code);
         }
         if (a.malformed || b.malformed) tool.gaps.push("malformed_sidecar_payload");
         if (invocation.length > 1 || results.length > 1 || c.tool_name !== tool.name || Object.values(tool.comparison).includes("different")) { tool.reconciliation = "conflict"; tool.gaps.push("sidecar_conflict"); }
@@ -336,6 +364,10 @@ export async function readRecordedSource(manifest, conversationId) {
       for (const call of source.sidecar.calls) if (!consumed.has(call)) { counts.sidecarOnly++; gap("sidecar_only_tool", { conversationId: call.conversation_id, runId: call.run_id, toolCallId: call.tool_call_id }); }
     }
     for (const tool of source.tools) {
+      if (tool.kind === "subagent_outcome") {
+        if (!["journal", "sidecar"].includes(tool.argumentsOrigin)) { delete tool.args; tool.argumentsOrigin = "unavailable"; tool.gaps.push("arguments_missing"); }
+        else if (object(tool.args)) tool.gaps = tool.gaps.filter(c => !["arguments_missing", "arguments_not_object"].includes(c));
+      }
       if (!tool.argumentsOrigin) { tool.argumentsOrigin = "web"; tool.gaps.push("arguments_may_include_host_defaults"); }
       const selected = selectResult(tool.resultRepresentations);
       if (selected) {
@@ -351,6 +383,7 @@ export async function readRecordedSource(manifest, conversationId) {
       } else { tool.gaps.push("result_missing"); counts.missingResults++; }
       if (tool.argsTruncated) tool.gaps.push("arguments_truncated");
       tool.gaps = [...new Set(tool.gaps)];
+      for (const code of ["sidecar_redacted", "sidecar_redacted_unverified"]) if (tool.gaps.includes(code)) counts[code === "sidecar_redacted" ? "sidecarRedacted" : "sidecarRedactedUnverified"]++;
     }
     for (const step of source.steps) for (const index of step.calls) if (source.tools[index].kind === "subagent_outcome") {
       for (const code of source.tools[index].gaps) if (gapTier(code) === "replay" && !step.gaps.includes(code)) step.gaps.push(code);

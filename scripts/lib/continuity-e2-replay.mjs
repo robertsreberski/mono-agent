@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { fail, object, ROOT } from "./continuity-observation-input.mjs";
 import { diagnosticRecord } from "./continuity-e2-diagnostics.mjs";
 import { webGroups } from "./continuity-recorded-reconcile.mjs";
-import { callKey, digest, validateSource } from "./continuity-recorded-schema.mjs";
+import { callKey, digest, validateSource, attachmentReferences } from "./continuity-recorded-schema.mjs";
 import { startRecordedTools, RECORDED_SERVER_NAME } from "./continuity-recorded-tools.mjs";
 import { openHarness, productionModules } from "./continuity-runner.mjs";
 import { createE2Models, estimatedReply, loadE2Estimators, shippingSoul, sizeContext } from "./continuity-e2-models.mjs";
@@ -65,7 +65,7 @@ function stepRow(source, step) {
 }
 export function recordedTurns(source, { excludedSteps = [] } = {}) {
   validateSource(source);
-  if (source.transport.webMessageOrder !== "created_at,rowid") fail("E2_SOURCE_REIMPORT_REQUIRED");
+  if (source.transport.webMessageOrder !== "created_at,rowid" || source.transport.attachmentMetadata !== "table-and-parts-v1") fail("E2_SOURCE_REIMPORT_REQUIRED");
   const latest = new Map();
   for (const row of source.web.messages) {
     if (latest.has(row.thread_id) && row.created_at < latest.get(row.thread_id)) fail("E2_SOURCE_REIMPORT_REQUIRED");
@@ -126,7 +126,11 @@ export function recordedTurns(source, { excludedSteps = [] } = {}) {
       if (JSON.stringify(recordedSteers) !== JSON.stringify(replayedSteers)) fail("E2_STEER_NOT_DELIVERED");
     }
     if (!replies.length || replies.at(-1).calls.length) replies.push({ content: [], step: null, calls: [], steers: [], message: source.web.messages.indexOf(rows.at(-1)) });
-    return { ordinal, id: turn.id, user: userParts.map(p => p.type === "attachment" ? "[recorded attachment bytes unavailable]" : p.text ?? "").join("\n"), cancelled: ["cancelled", "canceled"].includes(turn.status), replies };
+    const attachments = attachmentReferences(user[0], userParts), text = userParts.filter(p => p.type === "text").map(p => p.text ?? "").join("\n");
+    if (!text.trim() && !attachments.length) fail("E2_OWNER_SOURCE_UNAVAILABLE");
+    const labels = attachments.map(a => `[recorded attachment: ${a.kind} ${a.contentType} ${a.sizeBytes ?? "unknown"} bytes; bytes unavailable for replay]`);
+    return { ordinal, id: turn.id, user: [text, ...labels].filter(t => t.length).join("\n"), attachments: { labelled: attachments.length, images: attachments.filter(a => a.kind === "image").length },
+      cancelled: ["cancelled", "canceled"].includes(turn.status), replies };
   });
   return { turns, excludedOutsideWebTurns };
 }
@@ -251,7 +255,7 @@ export async function runE2Sizing({ source, protocol, output, summary = "faux-sh
               mcpServers: probeMode ? { [HISTORY]: options.mcpServers?.[HISTORY] } : { [RECORDED_SERVER_NAME]: { type: "http", url: server.url } } };
           } });
       };
-      const branchReport = { branch: branchIndex, excludedOutsideWebTurns, models: branch.models, limits: branch.limits, boundaries: [], checkpoints: [], excludedSteps: excluded.steps.length, excludedCoverage: excluded.coverage.length };
+      const branchReport = { branch: branchIndex, excludedOutsideWebTurns, attachments: { labelled: turns.slice(branch.startTurn, branch.endTurn + 1).reduce((n, t) => n + t.attachments.labelled, 0), images: turns.slice(branch.startTurn, branch.endTurn + 1).reduce((n, t) => n + t.attachments.images, 0), imageTokensRepresented: false }, models: branch.models, limits: branch.limits, boundaries: [], checkpoints: [], excludedSteps: excluded.steps.length, excludedCoverage: excluded.coverage.length };
       try {
         await open(); let modelIndex = 0;
         for (const turn of turns.slice(branch.startTurn, branch.endTurn + 1)) {

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Fix continuity observation event ordering to use message creation time and
+  insertion order, rather than parts-write counters or lexical identifiers.
+- Replay attachment-only recorded inputs using metadata-only unavailable labels,
+  recover parent delegation arguments from authoritative invocation records, and
+  include safe exception type, refusal code and repository site in private
+  replay diagnostics. Attachment bytes and image tokens remain unavailable.
+
 - Fix recorded replay ordering and message boundaries, including inert parent
   delegation calls and live follow-ups, without executing child work. Add
   optional private, content-free refusal diagnostics. Reimport older source

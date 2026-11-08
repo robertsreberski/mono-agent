@@ -18,7 +18,7 @@ import { LUNA, SOL, validateProtocol, historicalContext } from "../lib/continuit
 import { createE2Models, loadE2Estimators, shippingSoul, sizeContext, assertEffectiveSoul } from "../lib/continuity-e2-models.mjs";
 import { excludedDispatch, freezeCheckpoint, restoreCheckpoint, treeReceipt, runE2Sizing, PLACEHOLDER, recordedTurns } from "../lib/continuity-e2-replay.mjs";
 import { scoreE2 } from "../lib/continuity-e2-score.mjs";
-import { diagnosticRecord } from "../lib/continuity-e2-diagnostics.mjs";
+import { diagnosticRecord, errorDiagnostic } from "../lib/continuity-e2-diagnostics.mjs";
 import { parseE2Args, main, USAGE } from "../continuity-e2.mjs";
 const cleanup = [];
 afterEach(async () => {
@@ -35,7 +35,8 @@ const limits = () => ({ sourceRequests: 40, summaryRequests: 20, summaryRequests
 const modelMarker = (same = false) => ({ type: "conversation-marker", kind: "model", at: AT,
   before: { model: "fictional-a", effort: "high" }, after: { model: same ? "fictional-a" : "fictional-b", effort: "xhigh" } });
 async function trace({ padding = false, steer = false } = {}) {
-  const dir = scratch(), f = snapshots(dir), db = new DatabaseSync(f.web);
+  const sidecar = steer ? ["fictional-child", "parent-first", "parent-next"].map(id => ({ toolCallId: id, toolName: "Agent", args: { name: "fictional-reviewer", description: "Fictional review", prompt: `Review ${id}`, effort: "high" }, result: id === "fictional-child" ? "Fictional parent-visible child outcome." : "Fictional parent report" })) : undefined;
+  const dir = scratch(), f = snapshots(dir, { sidecar }), db = new DatabaseSync(f.web);
   db.exec("DELETE FROM turns; DELETE FROM messages;");
   for (let i = 0; i < 8; i++) {
     const status = i === 2 ? "cancelled" : "complete", id = `turn-${i}`, at = new Date(Date.parse(AT) + i * 60_000).toISOString(), replyAt = new Date(Date.parse(at) + 1000).toISOString();
@@ -55,13 +56,13 @@ async function trace({ padding = false, steer = false } = {}) {
     if (padding && i === 4) body.push({ type: "text", text: "Fictional pressure reads completed." });
     if (steer && i === 0) {
       body.splice(body.length - 1, 0, { type: "reasoning", text: "Fictional review preparation" }, { type: "telemetry", data: { kind: "assistant_message_boundary" } },
-        { type: "subagent", toolCallId: "fictional-child", name: "fictional-reviewer", label: "Review", args: { task: "Fictional review" }, status: "complete", calls: [tool("never-child", "Never flattened", { toolName: "Bash" })], executionMs: 1, costUsd: 0, history: {}, attribution: {}, usage: {}, result: "Fictional parent-visible child outcome." });
+        { type: "subagent", toolCallId: "fictional-child", name: "fictional-reviewer", label: "Review", args: { name: "fictional-reviewer", description: "Fictional review" }, status: "complete", calls: [tool("never-child", "Never flattened", { toolName: "Bash" })], executionMs: 1, costUsd: 0, history: {}, attribution: {}, usage: {}, result: "Fictional parent-visible child outcome." });
       body.splice(body.length - 1, 0, { type: "steer", inputId: "fictional-steer", messageId: "z-steered-owner", text: "Fictional live follow-up" });
       db.prepare("INSERT INTO messages VALUES(?,?,?,?,?,?,?,?,?,?)").run("z-steered-owner", "thread-one", id, "user", JSON.stringify([{ type: "text", text: "Fictional live follow-up" }]), replyAt, replyAt, "complete", 0, 0);
     }
     if (steer && i === 1) {
       const b = () => ({ type: "telemetry", data: { kind: "assistant_message_boundary" } });
-      const child = id => ({ type: "subagent", toolCallId: id, name: "fictional-reviewer", label: "Review", args: { task: `Review ${id}` }, status: "complete", calls: [], executionMs: 1, costUsd: 0, result: "Fictional parent report", history: {}, attribution: {}, usage: {} });
+      const child = id => ({ type: "subagent", toolCallId: id, name: "fictional-reviewer", label: "Review", args: { name: "fictional-reviewer", description: "Fictional review" }, status: "complete", calls: [], executionMs: 1, costUsd: 0, result: "Fictional parent report", history: {}, attribution: {}, usage: {} });
       body.splice(0, body.length, { type: "reasoning", text: "First fictional model message" }, b(), child("parent-first"),
         { type: "reasoning", text: "Second fictional model message" }, { type: "text", text: "Fictional progress" }, b(),
         { type: "steer", inputId: "fictional-second-steer", messageId: "z-steered-next", text: "Fictional next instruction" },
@@ -70,6 +71,8 @@ async function trace({ padding = false, steer = false } = {}) {
     }
     db.prepare("INSERT INTO messages VALUES(?,?,?,?,?,?,?,?,?,?)").run(`assistant-${i}`, "thread-one", id, "assistant", JSON.stringify(body), replyAt, replyAt, status, i % 2 ? 29 : 0, 0);
   }
+  db.prepare("UPDATE messages SET parts_json='[]' WHERE id='user-3'").run(); db.prepare("UPDATE turns SET text='' WHERE id='turn-3'").run();
+  for (const [i, kind, type, size] of [[3, "document", "application/zip", 123], [4, "image", "image/png", 456]]) db.prepare("INSERT INTO attachments VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)").run(`fictional-file-${i}`, "thread-one", `user-${i}`, "Never used filename", type, size, kind, "complete", 1, "/Users/example/never-open", AT, AT, "upload");
   db.close();
   const { source } = await readRecordedSource(f.manifest, CONVERSATION);
   const ref = turn => ({ message: source.web.messages.findIndex(m => m.id === (turn === 1 ? "unassigned-switch" : `assistant-${turn}`)), part: 0 });
@@ -215,6 +218,7 @@ it.each(["faux-short", "faux-max"])("replays configured shipping compaction with
   for (const branch of report.branches) {
     expect(branch.compactions.length).toBeGreaterThan(0); expect(branch.summaryRequests.length).toBeGreaterThan(0);
     expect(branch.compactions.every(c => c.trigger === "proactive" && c.policy.triggerTokens === 200_000)).toBe(true);
+    expect(branch.attachments).toEqual({ labelled: 2, images: 1, imageTokensRepresented: false });
     expect(branch.excludedOutsideWebTurns).toBe(1); expect(branch.placeholderCalls).toBe(1); expect(branch.steerCount).toBe(2);
     expect(branch.transport.observed).toBeGreaterThan(0);
     for (const cp of branch.checkpoints) {
@@ -233,6 +237,9 @@ it.each(["faux-short", "faux-max"])("replays configured shipping compaction with
   expect(later.every(c => !c.includes("Faux probe continuation"))).toBe(true);
   expect(later.some(c => c.includes(PLACEHOLDER))).toBe(true);
   expect(later.some(c => c.includes("Fictional parent-visible child outcome."))).toBe(true);
+  expect(later.some(c => c.includes("[recorded attachment: document application/zip 123 bytes; bytes unavailable for replay]"))).toBe(true);
+  expect(later.some(c => c.includes("[recorded attachment: image image/png 456 bytes; bytes unavailable for replay]"))).toBe(true);
+  expect(later.every(c => !c.includes("never-open") && !c.includes("Never used filename"))).toBe(true);
   expect(workerSpy).toHaveBeenCalled(); expect(ready).toBe(workerSpy.mock.calls.length); expect(workerErrors).toEqual([]);
   const privateParent = await mkdtemp(join(tmpdir(), "e2-fictional-diagnostics-")); await fs.promises.chmod(privateParent, 0o700); cleanup.push(() => rm(privateParent, { recursive: true, force: true }));
   const frozen = structuredClone(protocol); frozen.branches[0].limits.sourceRequests = 1;
@@ -241,7 +248,7 @@ it.each(["faux-short", "faux-max"])("replays configured shipping compaction with
   expect(await main(["size", "--source", dir, "--protocol", join(dir, "protocol.json"), "--output", join(privateParent, "new-output"), "--diagnostics", diagnostic], { stdout: t => stdout.push(t), stderr: t => stderr.push(t) })).toBe(1);
   expect(stdout).toEqual([]); expect(stderr).toEqual(["E2_SOURCE_REQUEST_LIMIT\n"]);
   const rawDiagnostic = await readFile(diagnostic, "utf8");
-  expect(JSON.parse(rawDiagnostic)).toEqual({ turnOrdinal: 0, replyCursor: 1, replyCount: 3, cancelled: false, aborted: false, failureKind: "provider_unavailable", routeRefusalCode: "E2_SOURCE_REQUEST_LIMIT" });
+  expect(JSON.parse(rawDiagnostic)).toEqual({ turnOrdinal: 0, replyCursor: 1, replyCount: 3, cancelled: false, aborted: false, failureKind: "provider_unavailable", routeRefusalCode: "E2_SOURCE_REQUEST_LIMIT", errorName: "Error", errorCode: "E2_SOURCE_REQUEST_LIMIT", site: "scripts/lib/continuity-observation-input.mjs:8" });
   for (const canary of ["Fictional", source.conversationId, ROOT, dir]) expect(rawDiagnostic).not.toContain(canary);
   expect(fs.statSync(diagnostic).mode & 0o777).toBe(0o600);
   const retryArgs = ["size", "--source", dir, "--protocol", join(dir, "protocol.json"), "--output", join(privateParent, "other-output"), "--diagnostics", diagnostic];
@@ -365,7 +372,7 @@ it("segments subagent-only rows and between-message steers, and drops outside-we
 it("projects only closed diagnostic fields, never arbitrary failure text, ids or paths", () => {
   const d = diagnosticRecord({ turnOrdinal: 2, replyCursor: 3, replyCount: 4, cancelled: true, aborted: false,
     failureKind: "fictional-canary", routeRefusalCode: "E2_FICTIONAL_CANARY", message: "fictional-canary", id: "fictional-canary", path: "/Users/example/fictional-canary" });
-  expect(d).toEqual({ turnOrdinal: 2, replyCursor: 3, replyCount: 4, cancelled: true, aborted: false, failureKind: "runtime_error", routeRefusalCode: null });
+  expect(d).toEqual({ turnOrdinal: 2, replyCursor: 3, replyCount: 4, cancelled: true, aborted: false, failureKind: "runtime_error", routeRefusalCode: null, errorName: null, errorCode: null, site: null });
   expect(JSON.stringify(d)).not.toContain("fictional-canary");
 });
 
@@ -374,4 +381,45 @@ it("refuses old imports and inverted chronology instead of reusing obsolete ordi
   expect(() => recordedTurns(old)).toThrow("E2_SOURCE_REIMPORT_REQUIRED");
   const inverted = structuredClone(source); [inverted.web.messages[0], inverted.web.messages[1]] = [inverted.web.messages[1], inverted.web.messages[0]];
   expect(() => recordedTurns(inverted)).toThrow("E2_SOURCE_REIMPORT_REQUIRED");
+});
+
+it("replays attachment-only owners as fixed metadata labels and refuses genuinely empty owners", async () => {
+  const { source } = await trace(), replay = recordedTurns(source);
+  expect(replay.turns[3].user).toBe("[recorded attachment: document application/zip 123 bytes; bytes unavailable for replay]");
+  expect(replay.turns[4].user).toBe("Fictional request 4\n[recorded attachment: image image/png 456 bytes; bytes unavailable for replay]");
+  const empty = structuredClone(source); empty.web.messages.find(m => m.id === "user-3").attachments = [];
+  expect(() => recordedTurns(empty)).toThrow("E2_OWNER_SOURCE_UNAVAILABLE");
+  const old = structuredClone(source); delete old.transport.attachmentMetadata;
+  expect(() => recordedTurns(old)).toThrow("E2_SOURCE_REIMPORT_REQUIRED");
+});
+it("sanitizes error type/code/site and ignores arbitrary names, codes, outside paths and message canaries", () => {
+  const error = new TypeError("fictional-canary /Users/example/private-note"); error.code = "E2_FICTIONAL_CANARY";
+  error.stack = `TypeError: fictional-canary\n at outside (/Users/example/fictional-canary.mjs:3:4)\n at missing (${ROOT}/scripts/fictional-canary.mjs:3:4)\n at publicFrame (file://${ROOT}/scripts/continuity-e2.mjs:44:3)`;
+  const d = diagnosticRecord(errorDiagnostic(error));
+  expect(d).toMatchObject({ errorName: "TypeError", errorCode: null, site: "scripts/continuity-e2.mjs:44" });
+  expect(JSON.stringify(d)).not.toMatch(/fictional-canary|\/Users\//);
+  expect(diagnosticRecord({ errorName: "fictional-canary", errorCode: "E2_FICTIONAL_CANARY", site: "scripts/../fictional-canary.mjs:4" })).toMatchObject({ errorName: "other", errorCode: null, site: null });
+  expect(errorDiagnostic(new RangeError("fictional-canary")).errorName).toBe("RangeError");
+});
+it("writes a genuine harness validation TypeError without exposing its message or paths", async () => {
+  const { source, protocol } = await trace(), parent = await mkdtemp(join(tmpdir(), "e2-fictional-errors-")); await fs.promises.chmod(parent, 0o700); cleanup.push(() => rm(parent, { recursive: true, force: true }));
+  await writeFile(join(parent, "source.json"), JSON.stringify(source)); await writeFile(join(parent, "protocol.json"), JSON.stringify(protocol));
+  const replayModule = await import("../lib/continuity-e2-replay.mjs"), { validateRequest } = await import(new URL("../../packages/conversation/dist/harness/validation.js", import.meta.url).href);
+  vi.spyOn(replayModule, "runE2Sizing").mockImplementation(async () => {
+    try { validateRequest({ conversationId: "fictional-canary", userMessage: "" }); } catch (e) { e.message = "fictional-canary /Users/example/private-note"; throw e; }
+  });
+  const out = [], err = [], file = join(parent, "diagnostic.json");
+  expect(await main(["size", "--source", parent, "--protocol", join(parent, "protocol.json"), "--output", join(parent, "result"), "--diagnostics", file], { stdout: s => out.push(s), stderr: s => err.push(s) })).toBe(1);
+  expect(out).toEqual([]); expect(err).toEqual(["E2_REFUSED\n"]);
+  const raw = await readFile(file, "utf8"), d = JSON.parse(raw);
+  expect(d).toMatchObject({ errorName: "TypeError", errorCode: null }); // Vitest maps the validation frame to src/, which is deliberately ineligible.
+  // The first eligible frame is the test caller. Native dist frames are tested below.
+  expect(d.site).toMatch(/^scripts\/__tests__\/continuity-e2\.test\.mjs:[1-9][0-9]*$/);
+  expect(raw).not.toMatch(/fictional-canary|\/Users\//); expect(fs.statSync(file).mode & 0o777).toBe(0o600);
+});
+
+it("selects the first native dist frame before a later script frame", () => {
+  const error = new TypeError("fictional-canary");
+  error.stack = `TypeError: fictional-canary\n at validateRequest (file://${ROOT}/packages/conversation/dist/harness/validation.js:59:15)\n at caller (${ROOT}/scripts/continuity-e2.mjs:44:3)`;
+  expect(errorDiagnostic(error)).toEqual({ errorName: "TypeError", errorCode: null, site: "packages/conversation/dist/harness/validation.js:59" });
 });

@@ -15,7 +15,7 @@ import { syncBuiltinESMExports } from "node:module";
 import ts from "typescript";
 import { ROOT } from "../lib/continuity-observation-input.mjs";
 import { readRecordedSource, readRecordedManifest, importRecorded, privateOutput, readRedactor } from "../lib/continuity-recorded-import.mjs";
-import { validateSource, emptyQuestions, emptyKeys, validateQuestions, validateKeys, INVENTORY_FIELDS, resultEnvelope } from "../lib/continuity-recorded-schema.mjs";
+import { validateSource, emptyQuestions, emptyKeys, validateQuestions, validateKeys, INVENTORY_FIELDS, resultEnvelope, digest } from "../lib/continuity-recorded-schema.mjs";
 import { normalizeSidecar, compareCopies, REDACTION_OPTIONS, EFFECTIVE_ARGUMENT_KEYS, resultCopy, selectResult, textResult } from "../lib/continuity-recorded-reconcile.mjs";
 import { createRecordedQueue, recordedDefinitions, startRecordedTools } from "../lib/continuity-recorded-tools.mjs";
 import { main, parseArgs, USAGE } from "../continuity-import-recorded.mjs";
@@ -375,7 +375,7 @@ it("uses the most complete result and emits truncation fidelity only when all av
 });
 
 it("counts tiered gaps and only refuses replay-tier coverage unless explicitly excluded", async () => {
-  const t = tool(), { source, inventory } = await read(snapshots(scratch(), { parts: [t, { type: "attachment", id: "fictional-attachment" }, { type: "subagent", toolCallId: "fictional-child", args: {}, result: "Fictional preview", resultTruncated: true, status: "complete" }] }));
+  const t = tool(), { source, inventory } = await read(snapshots(scratch(), { parts: [t, { type: "attachment", id: "fictional-attachment" }, { type: "subagent", toolCallId: "fictional-child", args: {}, result: "Fictional preview", resultTruncated: true, status: "complete" }], sidecar: [{ toolCallId: "fictional-child", toolName: "Agent", args: {}, result: "Fictional preview" }] }));
   expect(inventory).toMatchObject({ replayGaps: 0, itemGaps: 2 }); expect(inventory.coverageGaps).toBe(inventory.itemGaps + inventory.fidelityGaps);
   expect(source.coverage.every(g => !Object.hasOwn(g, "blocking"))).toBe(true); expect(() => createRecordedQueue(source)).not.toThrow();
   const unknown = await read(snapshots(scratch(), { parts: [t], boundaries: false }));
@@ -406,7 +406,7 @@ it("groups usage-only steps with their preceding prose and following tools/subag
   const parts = [{ type: "reasoning", text: "Inspect the fictional note." }, usage(), one, child,
     { type: "text", text: "Read the next fictional revision." }, usage(), two,
     { type: "text", text: "Fictional final answer." }, usage()];
-  const { source, inventory } = await read(snapshots(scratch(), { parts, boundaries: false }));
+  const { source, inventory } = await read(snapshots(scratch(), { parts, boundaries: false, sidecar: [{ toolCallId: child.toolCallId, toolName: "Agent", args: {}, result: child.result }] }));
   expect(source.steps.map(s => s.calls)).toEqual([[0, 1], [2]]);
   expect(source.steps).toMatchObject([
     { origin: "web-usage-boundary", boundaryIndex: 1, usageBoundaryIndex: 1, partStartIndex: 0, partEndIndex: 3, subagentPartIndices: [3] },
@@ -494,7 +494,7 @@ it("requires original arguments for replay but leaves only-result clipping at fi
 
 it("accepts failed web tools and failed subagent outcomes as terminal errors", async () => {
   const t = tool("failed-web", "Fictional failure", { status: "failed" });
-  const { source, inventory } = await read(snapshots(scratch(), { parts: [t, { type: "subagent", toolCallId: "failed-fictional-child", args: {}, status: "failed", result: "Fictional child failure" }], journal: [assistant([t]), result(t)] }));
+  const { source, inventory } = await read(snapshots(scratch(), { parts: [t, { type: "subagent", toolCallId: "failed-fictional-child", args: {}, status: "failed", result: "Fictional child failure" }], journal: [assistant([t]), result(t)], sidecar: [{ toolCallId: "failed-fictional-child", toolName: "Agent", args: {}, result: "Fictional child failure", state: "error" }] }));
   expect(inventory).toMatchObject({ failedTools: 2, replayGaps: 0, itemGaps: 0 }); expect(source.tools[0].state).toBe("failed");
   expect(createRecordedQueue(source).dispatch(t.toolName, t.args)).toMatchObject({ isError: true, content: [{ text: t.result }] });
 });
@@ -676,6 +676,83 @@ it.each(["args", "result"])("requires parent Agent %s as replay-tier state, with
 });
 it("preserves a failed parent Agent outcome as an inert error result", async () => {
   const parent = { type: "subagent", toolCallId: "failed-parent", name: "fictional-reviewer", args: { task: "Fictional task" }, result: "Fictional failure", status: "failed", calls: [] };
-  const { source } = await read(snapshots(scratch(), { parts: [parent] }));
+  const native = tool(parent.toolCallId, parent.result, { toolName: "Agent", args: parent.args, status: "failed" });
+  const { source } = await read(snapshots(scratch(), { parts: [parent], journal: [assistant([native]), result(native)] }));
   expect(createRecordedQueue(source).dispatch("Agent", parent.args)).toEqual({ content: [{ type: "text", text: parent.result }], isError: true });
+});
+
+it("imports only message-bound attachment metadata, in creation/rowid order, never bytes or storage files", async () => {
+  const attachments = [
+    { id: "a-later", contentType: "image/png", sizeBytes: 456, kind: "image", createdAt: "2042-03-01T09:00:02.000Z" },
+    { id: "z-first", contentType: "application/zip", sizeBytes: 123, kind: "document", createdAt: AT },
+    { id: "a-tie-next", contentType: "image/png", sizeBytes: 42, kind: "image", createdAt: AT },
+    { id: "unrelated", messageId: "not-selected", contentType: "image/png", sizeBytes: 9, kind: "image" },
+  ];
+  const f = snapshots(scratch(), { attachments, userParts: [], turnText: "" }), db = new DatabaseSync(f.web);
+  db.exec("ALTER TABLE attachments ADD COLUMN bytes BLOB; UPDATE attachments SET bytes=zeroblob(9000000) WHERE id='z-first'"); db.close();
+  const before = digest(readFileSync(f.web)), { source, inventory } = await read(f);
+  expect(digest(readFileSync(f.web))).toBe(before);
+  expect(source.web.messages.find(m => m.id === "user-one").attachments.map(a => a.id)).toEqual(["z-first", "a-tie-next", "a-later"]);
+  expect(source.web.messages.flatMap(m => m.attachments).every(a => !Object.hasOwn(a, "bytes"))).toBe(true);
+  expect(inventory).toMatchObject({ attachments: 3, attachmentImages: 2, attachmentDocuments: 1, attachmentOther: 0, itemGaps: 3 });
+  expect(source.coverage.filter(g => g.code === "attachment_bytes_unavailable")).toHaveLength(3);
+});
+it("does not double-count a table attachment repeated as a legacy part", async () => {
+  const a = { id: "same-attachment", contentType: "image/png", sizeBytes: 42, kind: "image" };
+  const { inventory } = await read(snapshots(scratch(), { attachments: [a], userParts: [{ type: "attachment", id: a.id, mediaType: a.contentType, sizeBytes: a.sizeBytes }] }));
+  expect(inventory).toMatchObject({ attachments: 1, attachmentImages: 1, itemGaps: 1 });
+});
+const projectionParent = (args = { name: "fictional-reviewer", description: "Fictional review" }) => ({ type: "subagent", toolCallId: "projection-parent", name: "fictional-reviewer", args, result: "Fictional report", status: "complete", calls: [tool("opaque-never-child")] });
+const fullParent = { name: "fictional-reviewer", description: "Fictional review", prompt: "Review a fictional note", effort: "high", model: "fictional-model" };
+it.each([false, true])("uses full authoritative Agent arguments for a strict web projection (journal: %s)", async journal => {
+  const web = projectionParent(), native = tool(web.toolCallId, web.result, { toolName: "Agent", args: fullParent });
+  const { source, inventory } = await read(snapshots(scratch(), { parts: [web], sidecar: [native], ...(journal ? { journal: [assistant([native]), result(native)] } : {}) }));
+  expect(source.tools[0]).toMatchObject({ args: fullParent, argumentsOrigin: journal ? "journal" : "sidecar", kind: "subagent_outcome", childrenReplayed: false });
+  expect(source.tools[0].gaps).toContain("web_projection_arguments");
+  expect(source.coverage.some(g => g.code === "web_projection_arguments" && g.tier === "fidelity")).toBe(true);
+  expect(inventory).toMatchObject({ replayGaps: 0, conflicts: 0 });
+  expect(createRecordedQueue(source).dispatch("Agent", fullParent).content[0].text).toBe(web.result);
+});
+it.each(["shared", "extra"])("keeps %s web Agent argument differences as conflicts even when full stores agree", async kind => {
+  const args = kind === "shared" ? { name: "different-fictional-reviewer" } : { name: "fictional-reviewer", unexpected: "Fictional value" };
+  const web = projectionParent(args), native = tool(web.toolCallId, web.result, { toolName: "Agent", args: fullParent });
+  const { source, inventory } = await read(snapshots(scratch(), { parts: [web], sidecar: [native], journal: [assistant([native]), result(native)] }));
+  expect(source.tools[0].gaps).toEqual(expect.arrayContaining(["journal_arguments_conflict", "sidecar_conflict"]));
+  expect(inventory.conflicts).toBe(1); expect(() => createRecordedQueue(source)).toThrow("RECORDED_REPLAY_COVERAGE_GAP");
+});
+it("does not let Agent projection rules excuse conflicting full journal and sidecar arguments", async () => {
+  const web = projectionParent(), native = tool(web.toolCallId, web.result, { toolName: "Agent", args: fullParent });
+  const { source } = await read(snapshots(scratch(), { parts: [web], journal: [assistant([native]), result(native)], sidecar: [{ ...native, args: { ...fullParent, prompt: "Different fictional task" } }] }));
+  expect(source.tools[0].args).toEqual(fullParent); expect(source.tools[0].argumentsOrigin).toBe("journal");
+  expect(source.tools[0].gaps).toContain("sidecar_conflict"); expect(() => createRecordedQueue(source)).toThrow("RECORDED_REPLAY_COVERAGE_GAP");
+});
+it("labels redacted sidecar-only Agent arguments unverified, never pretending to recover the original prompt", async () => {
+  const web = projectionParent(), native = tool(web.toolCallId, web.result, { toolName: "Agent", args: { ...fullParent, prompt: "[redacted]" } });
+  const { source, inventory } = await read(snapshots(scratch(), { parts: [web], sidecar: [native] }));
+  expect(inventory.sidecarRedactedUnverified).toBe(1);
+  expect(source.tools[0].args.prompt).toBe("[redacted]");
+  expect(source.tools[0].gaps).toEqual(expect.arrayContaining(["web_projection_arguments", "sidecar_redacted_unverified"]));
+  expect(source.coverage.some(g => g.code === "sidecar_redacted_unverified" && g.tier === "fidelity")).toBe(true);
+  expect(createRecordedQueue(source).dispatch("Agent", native.args).content[0].text).toBe(web.result);
+});
+it("refuses a web-only Agent display projection without authoritative arguments", async () => {
+  const { source } = await read(snapshots(scratch(), { parts: [projectionParent()] }));
+  expect(source.tools[0].args).toBeUndefined(); expect(source.steps[0].gaps).toContain("arguments_missing");
+  expect(() => createRecordedQueue(source)).toThrow("RECORDED_REPLAY_COVERAGE_GAP");
+});
+
+it("normalizes redacted shared projection keys without discarding authoritative sidecar arguments", async () => {
+  const args = { ...fullParent, description: "Review /Users/example/fictional-note.txt" }, web = projectionParent({ name: args.name, description: args.description });
+  const normalized = normalizeSidecar(args, await readRedactor()), native = tool(web.toolCallId, web.result, { toolName: "Agent", args: normalized });
+  const { source, inventory } = await read(snapshots(scratch(), { parts: [web], sidecar: [native] }));
+  expect(source.tools[0]).toMatchObject({ args: normalized, argumentsOrigin: "sidecar" });
+  expect(source.tools[0].gaps).toEqual(expect.arrayContaining(["web_projection_arguments", "sidecar_redacted_unverified"]));
+  expect(inventory).toMatchObject({ replayGaps: 0, conflicts: 0, sidecarRedactedUnverified: 1 });
+});
+
+it("falls back to sidecar Agent arguments when the journal call lacks arguments", async () => {
+  const web = projectionParent(), native = tool(web.toolCallId, web.result, { toolName: "Agent", args: fullParent }), call = assistant([native]); delete call.content[0].arguments;
+  const { source, inventory } = await read(snapshots(scratch(), { parts: [web], journal: [call, result(native)], sidecar: [native] }));
+  expect(source.tools[0]).toMatchObject({ args: fullParent, argumentsOrigin: "sidecar" });
+  expect(inventory).toMatchObject({ replayGaps: 0, conflicts: 0 });
 });
