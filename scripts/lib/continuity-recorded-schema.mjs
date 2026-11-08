@@ -72,7 +72,7 @@ export const INVENTORY_FIELDS = ["threads", "turns", "messages", "tools", "steps
 export const GAP_TIERS = Object.freeze(Object.fromEntries([
   ...["partial_turn", "partial_message", "unassigned_message", "cross_thread_order_unknown", "malformed_parts", "malformed_part", "malformed_tool", "malformed_native_call", "journal_rewind_requires_branch_selection", "native_interruption", "arguments_missing", "arguments_not_object", "arguments_truncated", "native_result_missing_or_ambiguous", "tool_terminal_state_unknown", "result_missing", "duplicate_web_conflict", "journal_arguments_conflict", "journal_result_conflict", "journal_state_conflict", "duplicate_native_identity", "ambiguous_sidecar_identity", "sidecar_conflict", "ambiguous_parallel_results", "assistant_step_boundaries_unknown", "mixed_step_order_unknown"].map(code => [code, "replay"]),
   ...["attachment_bytes_unavailable", "subagent_outcome_missing", "subagent_outcome_truncated", "subagent_terminal_state_unknown"].map(code => [code, "item"]),
-  ...["source_truncated", "sidecar_truncated", "arguments_may_include_host_defaults", "web_effective_arguments", "sidecar_redacted", "sidecar_redacted_unverified", "malformed_sidecar_payload", "sidecar_phase_missing", "sidecar_only_tool"].map(code => [code, "fidelity"]),
+  ...["source_truncated", "sidecar_truncated", "arguments_may_include_host_defaults", "web_effective_arguments", "sidecar_redacted", "sidecar_redacted_unverified", "malformed_sidecar_payload", "sidecar_phase_missing", "sidecar_only_tool", "journal_result_missing"].map(code => [code, "fidelity"]),
 ]));
 export function gapTier(code) { if (!Object.hasOwn(GAP_TIERS, code)) fail("INVALID_RECORDED_GAP"); return GAP_TIERS[code]; }
 export function inventory(source, counts) {

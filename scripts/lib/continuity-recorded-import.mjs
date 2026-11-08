@@ -102,7 +102,7 @@ export async function readRecordedSource(manifest, conversationId) {
     }
     if (source.web.threads.length > 1) gap("cross_thread_order_unknown", { source: "web" });
     const turnIds = new Set(source.web.turns.map(t => t.id));
-    const byId = new Map(), webSteps = [], steerIds = new Set(), subagentIds = new Set(), outcomesAdded = new Set();
+    const byId = new Map(), webSteps = [], steerIds = new Set(), subagentIds = new Set(), outcomesAdded = new Set(), journalResultCounts = new Map();
     for (const row of source.web.messages) {
       try { for (const part of JSON.parse(row.parts_json)) if (part?.type === "subagent" || part?.type === "tool-call" && part.toolName === "Agent") subagentIds.add(part.toolCallId); } catch { /* diagnosed below */ }
     }
@@ -187,9 +187,11 @@ export async function readRecordedSource(manifest, conversationId) {
         if ((r.kind === "message" || r.kind === "tool_result" && r.payload.phase === "returned") && msg?.role === "toolResult") {
           const key = `${r.operationId ?? r.turnId}\0${msg.toolCallId}`;
           if (!nativeResults.has(key)) nativeResults.set(key, []);
-          const candidates = nativeResults.get(key), receipt = candidates.find(c => c.kinds.size === 1 && !c.kinds.has(r.kind) && bytes(c.msg) === bytes(msg));
+          // Receipt/placement clocks differ; no other message field is omitted.
+          const signature = bytes(Object.fromEntries(Object.entries(msg).filter(([key]) => key !== "timestamp")));
+          const candidates = nativeResults.get(key), receipt = candidates.find(c => c.kinds.size === 1 && !c.kinds.has(r.kind) && c.signature === signature);
           if (receipt) { receipt.kinds.add(r.kind); receipt.refs.push(r.id); if (r.kind === "message") { receipt.r = r; receipt.msg = msg; } }
-          else candidates.push({ r, msg, refs: [r.id], kinds: new Set([r.kind]) });
+          else candidates.push({ r, msg, signature, refs: [r.id], kinds: new Set([r.kind]) });
         }
       }
       const placed = new Set();
@@ -236,6 +238,7 @@ export async function readRecordedSource(manifest, conversationId) {
             } else tool.gaps.push("native_result_missing_or_ambiguous");
           }
           tool.argumentsOrigin = "journal"; tool.args = part.arguments; tool.argsTruncated = false;
+          journalResultCounts.set(tool, (journalResultCounts.get(tool) ?? 0) + results.length);
           if (results.length > 1) tool.gaps.push("journal_result_conflict", "native_result_missing_or_ambiguous");
           if (results.length === 1) {
             const msg = results[0].msg;
@@ -338,6 +341,12 @@ export async function readRecordedSource(manifest, conversationId) {
         tool.result = selected.value; tool.resultOrigin = selected.store;
         if (selected.store !== "web" && tool.resultRepresentations.some(c => c.store === "web" && c.truncated)) counts.recoveredResults++;
         if (tool.resultRepresentations.every(c => c.truncated)) tool.gaps.push(selected.store === "sidecar" ? "sidecar_truncated" : "source_truncated");
+        // Zero journal receipts are auxiliary evidence loss when another store
+        // supplies a complete result. Never clear multiplicity/conflict gaps.
+        if (journalResultCounts.get(tool) === 0 && !selected.truncated && ["web", "sidecar"].includes(selected.store) && !tool.gaps.includes("journal_result_conflict")) {
+          tool.gaps = tool.gaps.filter(code => code !== "native_result_missing_or_ambiguous");
+          tool.gaps.push("journal_result_missing");
+        }
       } else { tool.gaps.push("result_missing"); counts.missingResults++; }
       if (tool.argsTruncated) tool.gaps.push("arguments_truncated");
       tool.gaps = [...new Set(tool.gaps)];

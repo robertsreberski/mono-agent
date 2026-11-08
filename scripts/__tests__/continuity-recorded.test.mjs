@@ -102,7 +102,7 @@ it("uses native assistant steps, retains timestamps and boundaries, and binds re
   const one = tool("one", "First fictional result"), two = tool("two", "Second fictional result");
   const journal = [assistant([one]), result(one), { kind: "model_change", payload: { before: "fictional-small", after: "fictional-large" } }, assistant([two]), result(two)];
   const { source, inventory } = await read(snapshots(scratch(), { parts: [one, two], journal }));
-  expect(inventory).toMatchObject({ steps: 2, ambiguousParallelGroups: 0, journalRecords: 5 });
+  expect(inventory).toMatchObject({ steps: 2, ambiguousParallelGroups: 0, journalRecords: 7 });
   expect(source.steps.map(s => s.calls)).toEqual([[0], [1]]); expect(source.journal.records[0].timestamp).toBe(Date.parse(AT));
   const queue = createRecordedQueue(source);
   expect(queue.dispatch(one.toolName, one.args).content[0].text).toBe(one.result);
@@ -241,7 +241,7 @@ it("keeps an owned frozen queue even if its caller mutates the imported source",
 
 it("reconciles journal-only calls with sidecar evidence and deduplicates returned/placed receipts", async () => {
   const t = tool("native-only", [{ type: "text", text: "Fictional native result" }]);
-  const f = snapshots(scratch(), { parts: [], sidecar: [t], journal: [assistant([t]), { kind: "tool_result", payload: { phase: "returned", callId: t.toolCallId, message: result(t) } }, result(t)] });
+  const f = snapshots(scratch(), { parts: [], sidecar: [t], pairedResults: false, journal: [assistant([t]), { kind: "tool_result", payload: { phase: "returned", callId: t.toolCallId, message: result(t) } }, result(t)] });
   const { source, inventory } = await read(f);
   expect(inventory).toMatchObject({ tools: 1, journalOnly: 1, sidecarOnly: 0, matched: 1 });
   expect(source.tools[0].gaps.filter(code => code !== "arguments_may_include_host_defaults")).toEqual([]);
@@ -390,7 +390,7 @@ it("returns a coded build-prerequisite refusal without loading another product s
 
 it("refuses differing native returned and placed receipts even when one is complete", async () => {
   const t = tool("native-recovery", "Fictional full receipt."), web = { ...t, result: "Fictional", resultTruncated: true };
-  const { source, inventory } = await read(snapshots(scratch(), { parts: [web], journal: [assistant([t]), { kind: "tool_result", payload: { phase: "returned", message: result(t) } }, { ...result(t), content: "Fictional", truncated: true, originalBytes: 100 }] }));
+  const { source, inventory } = await read(snapshots(scratch(), { parts: [web], pairedResults: false, journal: [assistant([t]), { kind: "tool_result", payload: { phase: "returned", message: result(t) } }, { ...result(t), content: "Fictional", truncated: true, originalBytes: 100 }] }));
   expect(source.tools[0].result).toBe(web.result); expect(inventory).toMatchObject({ recoveredResults: 0, conflicts: 1, replayGaps: 2 });
   expect(gaps(source)).toEqual(expect.arrayContaining(["journal_result_conflict", "native_result_missing_or_ambiguous"]));
   expect(() => createRecordedQueue(source)).toThrow("RECORDED_REPLAY_COVERAGE_GAP");
@@ -462,20 +462,18 @@ it.each([
   ["extra receipt after a deduplicated pair", t => [{ kind: "tool_result", payload: { phase: "returned", message: result(t) } }, result(t), { kind: "tool_result", payload: { phase: "returned", message: result(t) } }]],
   ["different structured receipts", t => [{ kind: "tool_result", payload: { phase: "returned", message: { ...result(t), structuredContent: { note: "cedar" } } } }, { ...result(t), structuredContent: { note: "pine" } }]],
 ])("never clears a replay-tier journal receipt conflict: %s", async (_label, receipts) => {
-  const t = tool("receipt-conflict"), { source, inventory } = await read(snapshots(scratch(), { parts: [t], journal: [assistant([t]), ...receipts(t)] }));
+  const t = tool("receipt-conflict"), { source, inventory } = await read(snapshots(scratch(), { parts: [t], pairedResults: false, journal: [assistant([t]), ...receipts(t)] }));
   expect(source.tools[0].result).toBe(t.result); expect(source.tools[0].resultRepresentations.some(c => c.store === "journal")).toBe(false);
   expect(source.tools[0].gaps).toEqual(expect.arrayContaining(["journal_result_conflict", "native_result_missing_or_ambiguous"]));
   expect(source.coverage.filter(g => ["journal_result_conflict", "native_result_missing_or_ambiguous"].includes(g.code)).every(g => g.tier === "replay")).toBe(true);
   expect(inventory.conflicts).toBe(1); expect(() => createRecordedQueue(source)).toThrow("RECORDED_REPLAY_COVERAGE_GAP");
 });
 
-it("retains ambiguous or missing native evidence even without a web copy", async () => {
-  const t = tool("native-ambiguous"), ambiguous = await read(snapshots(scratch(), { parts: [], journal: [assistant([t]), result(t), { ...result(t), content: "Other fictional receipt" }] }));
+it("retains ambiguous native evidence even without a web copy", async () => {
+  const t = tool("native-ambiguous"), ambiguous = await read(snapshots(scratch(), { parts: [], pairedResults: false, journal: [assistant([t]), result(t), { ...result(t), content: "Other fictional receipt" }] }));
   expect(ambiguous.source.tools[0]).not.toHaveProperty("result"); expect(ambiguous.inventory).toMatchObject({ conflicts: 1, missingResults: 1 });
   expect(() => createRecordedQueue(ambiguous.source)).toThrow("RECORDED_REPLAY_COVERAGE_GAP");
-  const missing = await read(snapshots(scratch(), { parts: [t], journal: [assistant([t])] }));
-  expect(missing.source.coverage.find(g => g.code === "native_result_missing_or_ambiguous").tier).toBe("replay");
-  expect(() => createRecordedQueue(missing.source)).toThrow("RECORDED_REPLAY_COVERAGE_GAP");
+
 });
 
 it("requires original arguments for replay but leaves only-result clipping at fidelity", async () => {
@@ -592,8 +590,62 @@ it("distinguishes fixed CLI usage, help and coded refusals without echoing input
 it("guards conflicting journal receipts even when their assistant record is unavailable", async () => {
   const t = tool("unassigned-receipt"), journal = [result(t), { ...result(t), content: "Other fictional receipt" }];
   for (const parts of [[t], []]) {
-    const { source } = await read(snapshots(scratch(), { parts, journal }));
+    const { source } = await read(snapshots(scratch(), { parts, pairedResults: false, journal }));
     expect(source.coverage.some(g => g.code === "journal_result_conflict" && g.tier === "replay")).toBe(true);
+    expect(() => createRecordedQueue(source)).toThrow("RECORDED_REPLAY_COVERAGE_GAP");
+  }
+});
+
+
+it("deduplicates the default returned/placed fixture pair despite different message timestamps", async () => {
+  const t = tool("timestamp-pair"), { source, inventory } = await read(snapshots(scratch(), { parts: [t], journal: [assistant([t]), result(t)] }));
+  const receipts = source.journal.records.filter(r => r.payload.message?.role === "toolResult");
+  expect(receipts.map(r => r.kind)).toEqual(["tool_result", "message"]);
+  expect(receipts[0].payload.message.timestamp).not.toBe(receipts[1].payload.message.timestamp);
+  const [returned, placed] = receipts.map(r => { const { timestamp, ...rest } = r.payload.message; return rest; });
+  expect(returned).toEqual(placed);
+  expect(source.tools[0].provenance.find(p => p.phase === "result").recordIds).toEqual(["record-2", "record-3"]);
+  expect(inventory).toMatchObject({ conflicts: 0, replayGaps: 0, journalRecords: 3 });
+  expect(createRecordedQueue(source).dispatch(t.toolName, t.args).content[0].text).toBe(t.result);
+});
+
+it.each([
+  ["error flag", { isError: true }],
+  ["tool name", { toolName: "FictionalOther" }],
+  ["future field", { fictionalReceiptMetadata: true }],
+])("does not omit other journal receipt fields: %s", async (_label, difference) => {
+  const t = tool("other-receipt-field"), journal = [assistant([t]), { kind: "tool_result", payload: { phase: "returned", message: result(t) } }, { ...result(t), ...difference }];
+  const { source } = await read(snapshots(scratch(), { parts: [t], pairedResults: false, journal }));
+  expect(gaps(source)).toContain("journal_result_conflict"); expect(() => createRecordedQueue(source)).toThrow("RECORDED_REPLAY_COVERAGE_GAP");
+});
+
+it("does not omit a nested result timestamp or absorb a third timestamp-only receipt", async () => {
+  const t = tool("nested-time", { timestamp: 1, note: "Fictional result data" });
+  for (const journal of [
+    [assistant([t]), { kind: "tool_result", payload: { phase: "returned", message: result(t) } }, { ...result(t), content: { ...t.result, timestamp: 2 } }],
+    [assistant([t]), { kind: "tool_result", payload: { phase: "returned", message: result(t) } }, result(t), { ...result(t), timestamp: Date.parse(AT) + 73 }],
+  ]) {
+    const { source } = await read(snapshots(scratch(), { parts: [t], pairedResults: false, journal }));
+    expect(gaps(source)).toContain("journal_result_conflict"); expect(() => createRecordedQueue(source)).toThrow("RECORDED_REPLAY_COVERAGE_GAP");
+  }
+});
+
+it.each(["web", "sidecar"])("treats zero journal receipts plus a complete %s result as fidelity-only missing evidence", async store => {
+  const t = tool("zero-receipts"), web = { ...t }; if (store === "sidecar") delete web.result;
+  const { source, inventory } = await read(snapshots(scratch(), { parts: [web], ...(store === "sidecar" ? { sidecar: [t] } : {}), journal: [assistant([t])] }));
+  expect(source.tools[0].resultOrigin).toBe(store); expect(source.tools[0].result).toBe(t.result);
+  expect(source.coverage.find(g => g.code === "journal_result_missing").tier).toBe("fidelity");
+  expect(gaps(source)).not.toContain("native_result_missing_or_ambiguous"); expect(inventory).toMatchObject({ conflicts: 0, replayGaps: 0 });
+  expect(createRecordedQueue(source).dispatch(t.toolName, t.args).content[0].text).toBe(t.result);
+});
+
+it("does not downgrade zero receipts without a complete result or a malformed nonzero receipt", async () => {
+  const t = tool("missing-result"), absent = { ...t }; delete absent.result;
+  const malformed = result(t); delete malformed.content;
+  for (const [web, receipts] of [[absent, []], [{ ...t, resultTruncated: true }, []], [t, [malformed]]]) {
+    const { source } = await read(snapshots(scratch(), { parts: [web], journal: [assistant([t]), ...receipts] }));
+    expect(gaps(source)).not.toContain("journal_result_missing");
+    expect(source.coverage.find(g => g.code === "native_result_missing_or_ambiguous").tier).toBe("replay");
     expect(() => createRecordedQueue(source)).toThrow("RECORDED_REPLAY_COVERAGE_GAP");
   }
 });

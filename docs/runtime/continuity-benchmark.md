@@ -306,13 +306,17 @@ then rank by retained bytes. Result truncation is fidelity-only when no complete
 copy remains. Clipped replay arguments instead produce the replay-tier
 `arguments_truncated` gap unless an original journal invocation restores them.
 
-Journal receipts are stricter: only one exact returned/placed pair is deduplicated.
-Any disagreement, even if one receipt matches the web or is clipped, or unresolved
-multiplicity produces a replay-tier conflict. Ambiguous journal candidates are
-not selected, and a web/sidecar copy does not erase that gap. Missing/ambiguous
-native receipt evidence remains explicitly replay-tier. No restored bytes are
-invented. Source/question/evaluator schemas remain separate; source and inventory
-are v2 and reject the old boolean-gap shape.
+Journal receipts are stricter: only one returned/placed pair identical after
+omitting the top-level message `timestamp` is deduplicated. No other field is
+omitted, including nested timestamps; any third receipt stays ambiguous.
+Any other disagreement, even if one receipt matches the web or is clipped, or
+unresolved multiplicity produces a replay-tier conflict. Ambiguous journal
+candidates are not selected, and a web/sidecar copy does not erase that gap.
+Zero journal receipts with a complete selected web/sidecar result instead produce
+fidelity-tier `journal_result_missing`: the result to replay is known. Without a
+complete result, malformed receipt content or unresolved multiplicity remains
+replay-tier. No restored bytes are invented. Source/question/evaluator schemas
+remain separate; source and inventory are v2 and reject the old boolean-gap shape.
 
 The importer accepts web `failed` calls as terminal errors. Result envelopes
 preserve structured results in every adaptation branch. Only non-empty arrays
@@ -333,7 +337,7 @@ The closed code-to-tier map in `continuity-recorded-schema.mjs` is authoritative
 | `replay` | `ambiguous_parallel_results`, `assistant_step_boundaries_unknown`, `mixed_step_order_unknown` | Unsound parallel dispatch or step order |
 | `item` | `attachment_bytes_unavailable`, `subagent_outcome_missing`, `subagent_outcome_truncated`, `subagent_terminal_state_unknown` | Exclude probes requiring that item, not the whole replay |
 | `fidelity` | `source_truncated`, `sidecar_truncated`, `arguments_may_include_host_defaults`, `web_effective_arguments`, `sidecar_redacted`, `sidecar_redacted_unverified` | Replayable representation loss/normalization |
-| `fidelity` | `malformed_sidecar_payload`, `sidecar_phase_missing`, `sidecar_only_tool` | Auxiliary evidence is incomplete; do not invent replay calls |
+| `fidelity` | `malformed_sidecar_payload`, `sidecar_phase_missing`, `sidecar_only_tool`, `journal_result_missing` | Auxiliary evidence is incomplete; do not invent replay calls |
 
 The queue refuses replay-tier step/tool/coverage gaps, not item/fidelity gaps.
 `excludedSteps` explicitly removes affected scripted steps; `excludedCoverage`

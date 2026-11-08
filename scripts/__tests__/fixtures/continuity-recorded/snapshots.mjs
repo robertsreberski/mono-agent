@@ -7,7 +7,7 @@ export const CONVERSATION = "web:fictional-cedar", AT = "2042-03-01T09:00:00.000
 export const tool = (id = "read-one", result = "Fictional note.", extra = {}) => ({ type: "tool-call", toolCallId: id, toolName: "Read", args: { path: "fictional-note.txt" }, result, status: "complete", ...extra });
 export const boundary = () => ({ type: "telemetry", event: "runtime_telemetry", data: { type: "runtime_telemetry", kind: "assistant_message_boundary", data: {} } });
 export const usage = () => ({ type: "telemetry", event: "runtime_telemetry", data: { type: "runtime_telemetry", kind: "context_usage", data: {} } });
-export function snapshots(dir, { parts = [tool()], status = "complete", sidecar, journal, malformed = false, boundaries = true } = {}) {
+export function snapshots(dir, { parts = [tool()], status = "complete", sidecar, journal, malformed = false, boundaries = true, pairedResults = true } = {}) {
   if (boundaries && !parts.some(p => p?.data?.kind === "assistant_message_boundary")) parts = [boundary(), ...parts];
   const web = join(dir, "web.sqlite"), db = new DatabaseSync(web);
   db.exec(`PRAGMA user_version=43;
@@ -47,9 +47,19 @@ export function snapshots(dir, { parts = [tool()], status = "complete", sidecar,
     const path = join(dir, "native.jsonl");
     const header = { format: "mono-harness", version: 2, ownershipSchemaVersion: 1, ownership: { kind: "unbound" }, journalId: "fictional-journal", initialHandle: { id: "native-one" }, id: "native-one", createdAt: Date.parse(AT), cwd: "fictional-workspace" };
     const records = []; let seq = 0, previous = null;
-    for (const payload of journal) {
-      const r = { schemaVersion: 2, id: `record-${++seq}`, parentId: previous, seq, timestamp: Date.parse(AT), turnId: "turn-one", operationId: "operation-one", kind: payload.kind ?? "message", payload: payload.payload ?? { message: payload } };
-      previous = r.id; records.push(r);
+    for (const input of journal) {
+      // Ordinary result messages model both durable receipts by default. Tests
+      // of malformed/multiple receipts opt out to control the exact records.
+      const entries = pairedResults && input.role === "toolResult" && !input.kind
+        ? [{ kind: "tool_result", payload: { phase: "returned", message: input } }, { kind: "message", payload: { message: input } }]
+        : [input];
+      for (const entry of entries) {
+        const kind = entry.kind ?? "message", payload = entry.payload ?? { message: entry };
+        const message = payload.message;
+        const r = { schemaVersion: 2, id: `record-${++seq}`, parentId: previous, seq, timestamp: Date.parse(AT), turnId: "turn-one", operationId: "operation-one", kind,
+          payload: message?.role === "toolResult" ? { ...payload, message: { ...message, timestamp: message.timestamp ?? Date.parse(AT) + (kind === "tool_result" ? 11 : 29) } } : payload };
+        previous = r.id; records.push(r);
+      }
     }
     writeFileSync(path, [header, ...records].map(r => JSON.stringify(r)).join("\n") + "\n");
     manifest.journal = { path, conversationId: CONVERSATION };
