@@ -1,15 +1,15 @@
 import { existsSync, realpathSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, resolve, join, basename } from "node:path";
 import { readManifest, openSnapshot, privateWriter, sourceStamps, assertUnchanged, jsonLines, fail, keys, time, within } from "./continuity-observation-input.mjs";
-import { REASONS, CONTEXTS, COMPACTION_STATUSES, TRIGGERS, enumValue, statements, scanTurn, scanRows, stratumAt, retrieval, reviewWindow, journalInventory } from "./continuity-observation-events.mjs";
+import { REASONS, CONTEXTS, COMPACTION_STATUSES, TRIGGERS, PACK_REASONS, PACK_GAP_REASONS, PACK_BOUNDED_REASONS, enumValue, statements, scanTurn, scanRows, stratumAt, retrieval, reviewWindow, journalInventory } from "./continuity-observation-events.mjs";
 import { EXPORT_ALLOWLIST, RECORD_FIELDS, OUTCOME_FIELDS, PACK_FIELDS, WINDOW_STATUSES, assertAllowed, renderReport } from "./continuity-observation-report.mjs";
 
 const zeros = (fields) => Object.fromEntries(fields.map(k => [k, 0]));
 const cells = (field, values) => values.map(value => ({ [field]: value, count: 0 }));
 const increment = (rows, field, value) => { rows.find(r => r[field] === value).count++; };
 const distribution = () => ({ samples: 0, sum: 0, min: 0, max: 0, missing: 0 });
-function group(closure, soul) {
-  const strata = { closure, soul };
+function group(closure, soul, entry) {
+  const strata = { entry, closure, soul };
   return {
     complete: true,
     inventory: { ...strata, ...zeros(["conversations", "excludedConversations", "turns", "excludedTurns", "cancelledTurns", "windows", "eligibleWindows", "excludedWindows"]) },
@@ -17,7 +17,7 @@ function group(closure, soul) {
     metrics: { ...strata,
       boundaries: { coverage: "unknown", total: 0, kinds: cells("kind", ["rollover", "isolated", "resume_replay", "unknown"]), reasons: cells("reason", REASONS), contexts: cells("context", CONTEXTS) },
       compactions: { coverage: "unknown", total: 0, statuses: cells("status", COMPACTION_STATUSES), triggers: cells("trigger", TRIGGERS) },
-      packs: { coverage: "unknown", injected: 0, skipped: 0, degraded: 0, unknownDegradation: 0, distributions: Object.fromEntries(PACK_FIELDS.map(k => [k, distribution()])) },
+      packs: { coverage: "unknown", injected: 0, skipped: 0, degraded: 0, gap: 0, boundedSelection: 0, unknownDegradation: 0, reasons: cells("reason", PACK_REASONS), distributions: Object.fromEntries(PACK_FIELDS.map(k => [k, distribution()])) },
       retrieval: { coverage: "unknown", total: 0, actions: cells("action", ["search", "get", "unknown"]), outcomes: cells("outcome", ["success", "error", "unavailable", "unknown"]), reconciliation: cells("status", ["not_supplied", "matched", "unmatched", "ambiguous", "conflict"]) },
       followup: { ...zeros(["windows", "observedRetrieval", "noObservedRetrieval", "unknownRetrieval"]), statuses: cells("status", WINDOW_STATUSES) },
     },
@@ -32,8 +32,11 @@ function observeEvent(g, e, sidecar, conversationId, interval) {
     m.compactions.total++; increment(m.compactions.statuses, "status", enumValue(d.status, COMPACTION_STATUSES)); increment(m.compactions.triggers, "trigger", enumValue(d.trigger, TRIGGERS));
   } else if (e.kind.startsWith("continuity_pack_")) {
     m.packs[e.kind === "continuity_pack_injected" ? "injected" : "skipped"]++;
-    if (typeof d.degradedReason !== "string") m.packs.unknownDegradation++;
+    increment(m.packs.reasons, "reason", d.degradedReason);
+    if (d.degradedReason === "unknown") m.packs.unknownDegradation++;
     else if (!["none", "empty"].includes(d.degradedReason)) m.packs.degraded++;
+    if (PACK_GAP_REASONS.includes(d.degradedReason)) m.packs.gap++;
+    if (PACK_BOUNDED_REASONS.includes(d.degradedReason)) m.packs.boundedSelection++;
     for (const k of PACK_FIELDS) {
       const s = m.packs.distributions[k], v = d[k];
       if (!Number.isSafeInteger(v) || v < 0 || !Number.isSafeInteger(s.sum + v)) { s.missing++; continue; }
@@ -86,19 +89,20 @@ export async function observe({ manifest: manifestPath, output, privateWorklist 
   try {
     reviews = await reviewsReader(manifest.reviews);
     const groups = new Map();
-    const getGroup = p => {
-      const key = `${p.closure}/${p.soul}`;
-      if (!groups.has(key)) groups.set(key, group(p.closure, p.soul));
+    const getGroup = (p, entry) => {
+      const key = `${entry}/${p.closure}/${p.soul}`;
+      if (!groups.has(key)) groups.set(key, group(p.closure, p.soul, entry));
       return groups.get(key);
     };
-    const inventory = { schema: "continuity-observation-inventory-v1", sources: { web: manifest.snapshots.length, sidecar: 0, journal: 0 }, records: zeros(RECORD_FIELDS),
+    const inventory = { schema: "continuity-observation-inventory-v2", sources: { web: new Set(manifest.snapshots.map(s => s.web)).size, sidecar: 0, journal: 0 },
+      entries: manifest.snapshots.map((_, i) => ({ entry: i + 1, excludedAgentThreads: 0 })), records: zeros(RECORD_FIELDS),
       auxiliary: { sidecarCoverage: "unknown", journalCoverage: "unknown", ...zeros(["sidecarCalls", "sidecarRecords", "continuityRecords", "continuityGenerations", "journalRecords", "journalCompactions", "journalToolCalls", "journalToolResults"]) }, strata: [] };
     const countedSidecars = new Set(), countedJournals = new Set();
     let continuityCoverage = true;
     let ordinal = 0;
     for (let sourceIndex = 0; sourceIndex < manifest.snapshots.length; sourceIndex++) {
-      const snapshot = { ...manifest.snapshots[sourceIndex], interval: manifest.interval };
-      for (const p of snapshot.strata) getGroup(p).complete &&= snapshot.telemetry === "complete";
+      const snapshot = { ...manifest.snapshots[sourceIndex], interval: manifest.interval }, entry = sourceIndex + 1;
+      for (const p of snapshot.strata) getGroup(p, entry).complete &&= snapshot.telemetry === "complete";
       const db = openSnapshot(snapshot.web, "web"); let sidecar;
       try {
         sidecar = snapshot.sidecar ? openSnapshot(snapshot.sidecar, "sidecar") : undefined;
@@ -117,23 +121,28 @@ export async function observe({ manifest: manifestPath, output, privateWorklist 
           const j = await journalInventory(snapshot.journal, manifest.interval);
           for (const [k, v] of Object.entries(j)) inventory.auxiliary[`journal${k[0].toUpperCase()}${k.slice(1)}`] += v;
         }
-        // Separate web snapshots must be disjoint in the selected interval.
+        // Agent-selected conversations must be disjoint across different web
+        // snapshots. Same-file entries were already checked for disjoint agents.
         // Query each prior snapshot rather than retaining all private identities.
         for (const previous of manifest.snapshots.slice(0, sourceIndex)) {
+          if (previous.web === snapshot.web) continue;
           const prior = openSnapshot(previous.web, "web");
           try {
-            const overlapping = db.prepare(`SELECT 1 FROM threads h WHERE h.conversation_id=? AND EXISTS (SELECT 1 FROM turns t WHERE t.thread_id=h.id AND t.started_at>=? AND t.started_at<?) LIMIT 1`);
-            for (const t of prior.prepare(`SELECT h.conversation_id FROM threads h WHERE EXISTS (SELECT 1 FROM turns t WHERE t.thread_id=h.id AND t.started_at>=? AND t.started_at<?)`).iterate(manifest.interval.start, manifest.interval.end)) {
-              if (overlapping.get(t.conversation_id, manifest.interval.start, manifest.interval.end)) fail("OVERLAPPING_SNAPSHOTS");
+            const selected = snapshot.agents ? `h.source_id IN (${snapshot.agents.map(() => "?").join(",")})` : "1";
+            const priorSelected = previous.agents ? `h.source_id IN (${previous.agents.map(() => "?").join(",")})` : "1";
+            const overlapping = db.prepare(`SELECT 1 FROM threads h WHERE h.conversation_id=? AND ${selected} AND EXISTS (SELECT 1 FROM turns t WHERE t.thread_id=h.id AND t.started_at>=? AND t.started_at<?) LIMIT 1`);
+            for (const t of prior.prepare(`SELECT h.conversation_id FROM threads h WHERE ${priorSelected} AND EXISTS (SELECT 1 FROM turns t WHERE t.thread_id=h.id AND t.started_at>=? AND t.started_at<?)`).iterate(...(previous.agents ?? []), manifest.interval.start, manifest.interval.end)) {
+              if (overlapping.get(t.conversation_id, ...(snapshot.agents ?? []), manifest.interval.start, manifest.interval.end)) fail("OVERLAPPING_SNAPSHOTS");
             }
           } finally { prior.close(); }
         }
         const sql = statements(db);
         for (const thread of sql.threads.iterate()) {
+          if (snapshot.agents && !snapshot.agents.includes(thread.source_id)) { inventory.entries[sourceIndex].excludedAgentThreads++; continue; }
           const countedGroups = new Map(); // At most the nine declared strata.
           for (const row of sql.unassigned.iterate(thread.id, manifest.interval.start, manifest.interval.end)) {
             if (!time(row.created_at)) fail("INVALID_TURN_TIMESTAMP");
-            const g = getGroup(stratumAt(snapshot, row.created_at)), scanned = scanRows(sql, [row]);
+            const g = getGroup(stratumAt(snapshot, row.created_at), entry), scanned = scanRows(sql, [row]);
             countedGroups.set(g, false); inventory.records.unassignedMessages++;
             if (row.turn_id !== null) scanned.stats.missingRecords++;
             for (const [k, v] of Object.entries(scanned.stats)) inventory.records[k] += v;
@@ -142,7 +151,7 @@ export async function observe({ manifest: manifestPath, output, privateWorklist 
           }
           for (const turn of sql.turns.iterate(thread.id, manifest.interval.start, manifest.interval.end)) {
             if (!time(turn.started_at)) fail("INVALID_TURN_TIMESTAMP");
-            const p = stratumAt(snapshot, turn.started_at), g = getGroup(p);
+            const p = stratumAt(snapshot, turn.started_at), g = getGroup(p, entry);
             const excluded = thread.trigger_kind !== null || !sql.owner.get(turn.id);
             countedGroups.set(g, (countedGroups.get(g) ?? false) || !excluded);
             g.inventory[excluded ? "excludedTurns" : "turns"]++;
@@ -178,7 +187,7 @@ export async function observe({ manifest: manifestPath, output, privateWorklist 
     if (!inventory.sources.sidecar) for (const k of ["sidecarCalls", "sidecarRecords", "continuityRecords", "continuityGenerations"]) inventory.auxiliary[k] = "unknown";
     if (!continuityCoverage) for (const k of ["continuityRecords", "continuityGenerations"]) inventory.auxiliary[k] = "unknown";
     if (!inventory.sources.journal) for (const k of ["journalRecords", "journalCompactions", "journalToolCalls", "journalToolResults"]) inventory.auxiliary[k] = "unknown";
-    const all = [...groups.values()].sort((a, b) => `${a.inventory.closure}/${a.inventory.soul}`.localeCompare(`${b.inventory.closure}/${b.inventory.soul}`));
+    const all = [...groups.values()].sort((a, b) => a.inventory.entry - b.inventory.entry || `${a.inventory.closure}/${a.inventory.soul}`.localeCompare(`${b.inventory.closure}/${b.inventory.soul}`));
     for (const g of all) {
       g.outcomes.coverage = g.outcomes.reviewed ? (g.outcomes.unreviewed ? "partial" : "complete") : "unknown";
       if (!g.outcomes.reviewed) for (const k of ["reasks", "corrections", "repeatedEffectCandidates", "confirmedCases", "ambiguousCases"]) g.outcomes[k] = "unknown";
@@ -190,7 +199,7 @@ export async function observe({ manifest: manifestPath, output, privateWorklist 
       for (const d of Object.values(g.metrics.packs.distributions)) if (d.samples === 0) { d.min = "unknown"; d.max = "unknown"; }
     }
     inventory.strata = all.map(g => g.inventory);
-    const reports = { inventory, metrics: { schema: "continuity-observation-metrics-v1", strata: all.map(g => g.metrics) }, outcomes: { schema: "continuity-observation-outcomes-v1", strata: all.map(g => g.outcomes) } };
+    const reports = { inventory, metrics: { schema: "continuity-observation-metrics-v2", strata: all.map(g => g.metrics) }, outcomes: { schema: "continuity-observation-outcomes-v2", strata: all.map(g => g.outcomes) } };
     for (const [k, contract] of Object.entries(EXPORT_ALLOWLIST)) assertAllowed(reports[k], contract);
     const markdown = renderReport(reports);
     assertUnchanged(stamps);

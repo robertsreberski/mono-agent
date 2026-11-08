@@ -1,9 +1,14 @@
 import { createHash } from "node:crypto";
+import { parseConversationHistoryText } from "./continuity-observation-retrieval.mjs";
 import { MAX_ROW_BYTES, fail, object, time, jsonLines } from "./continuity-observation-input.mjs";
 
 export const REASONS = ["model_change", "legacy_unbound_model", "detached_context", "idle_timeout", "rollover", "cancelled", "resume", "continuation", "proactive", "cancelled_turn_reseed", "failed_turn_reseed", "cancelled_turn_resume", "failed_turn_resume", "unknown"];
 export const CONTEXTS = ["retained", "reconstructed", "handoff", "unknown"];
 export const COMPACTION_STATUSES = ["running", "succeeded", "failed", "skipped", "unknown"];
+// pack.ts, continuity-reader.ts and continuity-contracts.ts define these values.
+export const PACK_REASONS = ["none", "empty", "overflow", "snapshot_bounds", "headroom", "trigger_headroom", "coverage_gap", "upkeep_gap", "purge_pending", "source_changed", "source_unavailable", "boundary_unavailable", "unavailable", "scan_capacity", "other", "unknown"];
+export const PACK_GAP_REASONS = ["coverage_gap", "upkeep_gap", "purge_pending", "source_changed", "source_unavailable", "boundary_unavailable", "unavailable"];
+export const PACK_BOUNDED_REASONS = ["overflow", "snapshot_bounds", "headroom", "trigger_headroom"];
 export const TRIGGERS = ["manual", "proactive", "reactive", "unknown"];
 export const enumValue = (v, allowed) => allowed.includes(v) ? v : "unknown";
 const TOOL_NAMES = ["ConversationHistory", "conversation_history", "mcp__mono-agent-conversation-history__ConversationHistory"];
@@ -20,7 +25,7 @@ export function parseParts(row) {
 }
 export function statements(db) {
   return {
-    threads: db.prepare("SELECT id,conversation_id,trigger_kind FROM threads ORDER BY id"),
+    threads: db.prepare("SELECT id,source_id,conversation_id,trigger_kind FROM threads ORDER BY id"),
     turns: db.prepare("SELECT id,status,started_at,finished_at FROM turns WHERE thread_id=? AND started_at>=? AND started_at<? ORDER BY started_at,id"),
     messages: db.prepare("SELECT id,role,status,seq,cron_suppressed FROM messages WHERE turn_id=? ORDER BY seq,id"),
     parts: db.prepare(`SELECT CASE WHEN length(CAST(parts_json AS BLOB))<=${MAX_ROW_BYTES} THEN parts_json ELSE NULL END AS parts_json FROM messages WHERE id=?`),
@@ -99,14 +104,15 @@ function compactEvent(event) {
   }
   if (event.kind === "session_boundary") return { kind: event.kind, data: { kind: enumValue(d.kind, ["rollover", "isolated", "resume_replay"]), reason: enumValue(d.reason, REASONS), context: enumValue(d.context, CONTEXTS) } };
   if (event.kind === "context_compaction") return { kind: event.kind, data: { status: enumValue(d.status, COMPACTION_STATUSES), trigger: enumValue(d.trigger, TRIGGERS) } };
-  const data = { degradedReason: typeof d.degradedReason === "string" ? (["none", "empty"].includes(d.degradedReason) ? d.degradedReason : "degraded") : undefined };
+  const data = { degradedReason: typeof d.degradedReason === "string" ? (PACK_REASONS.includes(d.degradedReason) && d.degradedReason !== "unknown" ? d.degradedReason : "other") : "unknown" };
   for (const k of ["ownerEntries", "toolEntries", "summaryEntries", "evidenceEntries", "omittedCount", "tokens"]) data[k] = Number.isSafeInteger(d[k]) && d[k] >= 0 ? d[k] : undefined;
   return { kind: event.kind, data };
 }
 function structured(p) {
-  if (object(p.structuredResult)) return p.structuredResult;
-  if (object(p.result) && object(p.result.structuredContent)) return p.result.structuredContent;
-  return undefined;
+  const direct = object(p.structuredResult) ? p.structuredResult : object(p.result?.structuredContent) ? p.result.structuredContent : undefined;
+  const parsed = parseConversationHistoryText(p.result);
+  if (direct && parsed && (direct.status !== parsed.status || direct.error?.code !== parsed.error?.code)) return undefined;
+  return direct ?? parsed;
 }
 export function retrieval(p, sidecar, conversationId, interval) {
   const args = object(p.args) ? p.args : undefined, result = structured(p);

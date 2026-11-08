@@ -28,12 +28,16 @@ export function readManifest(path) {
   if (!keys(m, ["schema", "interval", "snapshots"], ["reviews"]) || m.schema !== "continuity-observation-manifest-v1"
     || !keys(m.interval, ["start", "end"]) || !time(m.interval.start) || !time(m.interval.end) || m.interval.start >= m.interval.end
     || !Array.isArray(m.snapshots) || !m.snapshots.length || m.snapshots.length > 100) fail("INVALID_MANIFEST");
-  const seen = new Set();
+  const seen = [], sidecars = new Map();
   const snapshots = m.snapshots.map(s => {
-    if (!keys(s, ["web", "captureAvailableFrom", "telemetry", "strata"], ["sidecar", "journal"])
+    if (!keys(s, ["web", "captureAvailableFrom", "telemetry", "strata"], ["sidecar", "journal", "agents"])
       || !time(s.captureAvailableFrom) || s.captureAvailableFrom > m.interval.start
       || !["complete", "unknown", "stripped"].includes(s.telemetry)
       || !Array.isArray(s.strata) || !s.strata.length || s.strata.length > 1000) fail("INVALID_SNAPSHOT");
+    if (s.agents !== undefined && (!Array.isArray(s.agents) || !s.agents.length || s.agents.length > 1000
+      || !s.agents.every(a => typeof a === "string" && a.length > 0 && a.length <= 512 && !a.includes("\0"))
+      || new Set(s.agents).size !== s.agents.length)) fail("INVALID_AGENT_BINDING");
+    if (s.sidecar !== undefined && s.agents === undefined) fail("SIDECAR_AGENT_BINDING_REQUIRED");
     let previous = m.interval.start;
     for (const p of s.strata) {
       if (!keys(p, ["start", "end", "closure", "soul"]) || p.start !== previous || !time(p.end) || p.end <= p.start
@@ -42,10 +46,15 @@ export function readManifest(path) {
     }
     if (previous !== m.interval.end) fail("INVALID_STRATA");
     const web = inputPath(base, s.web);
-    if (seen.has(web)) fail("DUPLICATE_SNAPSHOT");
-    seen.add(web);
-    return { ...s, web, sidecar: s.sidecar === undefined ? undefined : inputPath(base, s.sidecar),
-      journal: s.journal === undefined ? undefined : inputPath(base, s.journal) };
+    for (const prior of seen) if (prior.web === web && (!prior.agents || !s.agents || s.agents.some(a => prior.agents.includes(a)))) fail("DUPLICATE_SNAPSHOT");
+    seen.push({ web, agents: s.agents });
+    const sidecar = s.sidecar === undefined ? undefined : inputPath(base, s.sidecar);
+    if (sidecar) {
+      const binding = JSON.stringify([...s.agents].sort());
+      if (sidecars.has(sidecar) && sidecars.get(sidecar) !== binding) fail("SIDECAR_AGENT_BINDING_MISMATCH");
+      sidecars.set(sidecar, binding);
+    }
+    return { ...s, web, sidecar, journal: s.journal === undefined ? undefined : inputPath(base, s.journal) };
   });
   return { ...m, snapshots, manifestPath: path, reviews: m.reviews === undefined ? undefined : inputPath(base, m.reviews) };
 }
@@ -67,7 +76,7 @@ export function openSnapshot(path, role) {
       if (version !== 43) fail("UNSUPPORTED_WEB_SCHEMA");
       assertColumns(db, "messages", { id: "TEXT", thread_id: "TEXT", turn_id: "TEXT", role: "TEXT", parts_json: "TEXT", created_at: "TEXT", updated_at: "TEXT", status: "TEXT", seq: "INTEGER", cron_suppressed: "INTEGER" }, true);
       assertColumns(db, "turns", { id: "TEXT", thread_id: "TEXT", status: "TEXT", started_at: "TEXT", finished_at: "TEXT" });
-      assertColumns(db, "threads", { id: "TEXT", conversation_id: "TEXT", trigger_kind: "TEXT" });
+      assertColumns(db, "threads", { id: "TEXT", source_id: "TEXT", conversation_id: "TEXT", trigger_kind: "TEXT" });
     } else {
       if (application !== 0x4d415448 || ![2, 3].includes(version)) fail("UNSUPPORTED_SIDECAR_SCHEMA");
       assertColumns(db, "metadata", { key: "TEXT", value: "TEXT" }, true);
@@ -110,10 +119,8 @@ export function privateWriter(path, protectedPaths, outputDirectory) {
   if (within(ROOT, resolve(path)) || within(outputDirectory, resolve(path))) fail("PRIVATE_WORKLIST_PATH_REFUSED");
   const parent = realpathSync(dirname(resolve(path))), target = resolve(parent, basename(path));
   if (within(ROOT, target) || within(outputDirectory, target) || protectedPaths.includes(target)) fail("PRIVATE_WORKLIST_PATH_REFUSED");
-  for (let ancestor = parent; ; ancestor = dirname(ancestor)) {
-    if (existsSync(resolve(ancestor, ".git"))) fail("PRIVATE_WORKLIST_PATH_REFUSED");
-    if (dirname(ancestor) === ancestor) break;
-  }
+  const ownership = statSync(parent);
+  if (typeof process.getuid !== "function" || ownership.uid !== process.getuid() || (ownership.mode & 0o7777) !== 0o700) fail("PRIVATE_WORKLIST_DIRECTORY_REFUSED");
   // Exclusive creation also refuses symlinks/hardlinks and prevents clobbering a source.
   const fd = openSync(target, "wx", 0o600);
   return { write: value => writeSync(fd, `${JSON.stringify(value)}\n`), close: () => closeSync(fd) };

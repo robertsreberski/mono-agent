@@ -14,13 +14,13 @@ export const tool = (overrides = {}) => ({ type: "tool-call", toolCallId: `${CAN
 export function fixture(dir, { parts, statuses = [], count = 4, telemetryCoverage = "complete", soul = "default", closure = "target", strata, sidecar = false, journal = false } = {}) {
   const web = join(dir, "snapshot.sqlite"), db = new DatabaseSync(web);
   db.exec(`PRAGMA user_version=43;
-    CREATE TABLE threads(id TEXT PRIMARY KEY,conversation_id TEXT NOT NULL,trigger_kind TEXT,title TEXT);
+    CREATE TABLE threads(id TEXT PRIMARY KEY,source_id TEXT NOT NULL,conversation_id TEXT NOT NULL,trigger_kind TEXT,title TEXT);
     CREATE TABLE turns(id TEXT PRIMARY KEY,thread_id TEXT,status TEXT,started_at TEXT,finished_at TEXT,text TEXT,error_message TEXT);
     CREATE INDEX turns_by_thread_started ON turns(thread_id,started_at);
     CREATE TABLE messages(id TEXT PRIMARY KEY,thread_id TEXT,turn_id TEXT,role TEXT,parts_json TEXT,created_at TEXT,updated_at TEXT,status TEXT,seq INTEGER,cron_suppressed INTEGER);
     CREATE INDEX messages_by_turn ON messages(turn_id);
   `);
-  db.prepare("INSERT INTO threads VALUES(?,?,NULL,?)").run(CANARY, CANARY, CANARY);
+  db.prepare("INSERT INTO threads VALUES(?,?,?,NULL,?)").run(CANARY, `${CANARY}_agent`, CANARY, CANARY);
   const turn = db.prepare("INSERT INTO turns VALUES(?,?,?,?,?,?,?)"), message = db.prepare("INSERT INTO messages VALUES(?,?,?,?,?,?,?,?,?,?)");
   for (let i = 1; i <= count; i++) {
     const id = `${CANARY}_turn_${i}`, status = statuses[i - 1] ?? "complete";
@@ -31,7 +31,7 @@ export function fixture(dir, { parts, statuses = [], count = 4, telemetryCoverag
     message.run(`${id}_assistant`, CANARY, id, "assistant", JSON.stringify(assistant), at(i), at(i), status, 2 * i + 1, 0);
   }
   db.close();
-  const manifest = { schema: "continuity-observation-manifest-v1", interval: { start: START, end: END }, snapshots: [{ web, captureAvailableFrom: START, telemetry: telemetryCoverage,
+  const manifest = { schema: "continuity-observation-manifest-v1", interval: { start: START, end: END }, snapshots: [{ web, agents: [`${CANARY}_agent`], captureAvailableFrom: START, telemetry: telemetryCoverage,
     strata: strata ?? [{ start: START, end: END, closure, soul }] }] };
   if (sidecar) {
     const path = join(dir, "lifecycle.sqlite"), d = new DatabaseSync(path);

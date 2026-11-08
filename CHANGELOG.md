@@ -3,7 +3,8 @@
 ## Unreleased
 
 - Add a read-only continuity observation script for snapshot-based boundary,
-  continuity-pack and retrieval counts with content-free aggregate reports.
+  continuity-pack and retrieval counts with content-free, agent-scoped aggregate
+  reports and recognition of tool-authored retrieval results.
 
 - Fix continuity lookup pilot runs never recording whether a looked-up detail
   was already in the model's starting context. Pilot runs now keep that, with

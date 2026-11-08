@@ -1,4 +1,4 @@
-import { REASONS, CONTEXTS, COMPACTION_STATUSES, TRIGGERS } from "./continuity-observation-events.mjs";
+import { REASONS, CONTEXTS, COMPACTION_STATUSES, TRIGGERS, PACK_REASONS } from "./continuity-observation-events.mjs";
 import { fail, object } from "./continuity-observation-input.mjs";
 
 const count = "count";
@@ -15,27 +15,30 @@ const distribution = { samples: count, sum: count, min: count, max: count, missi
 const cells = (field, values) => array({ [field]: enums(...values), count });
 export const EXPORT_ALLOWLIST = {
   inventory: {
-    schema: enums("continuity-observation-inventory-v1"), sources: numeric(["web", "sidecar", "journal"]),
+    schema: enums("continuity-observation-inventory-v2"), sources: numeric(["web", "sidecar", "journal"]),
+    entries: array({ entry: "ordinal", excludedAgentThreads: count }),
     records: numeric(RECORD_FIELDS), auxiliary: {
       sidecarCoverage: enums("supplied", "unknown"), journalCoverage: enums("supplied", "unknown"),
       ...numeric(["sidecarCalls", "sidecarRecords", "continuityRecords", "continuityGenerations", "journalRecords", "journalCompactions", "journalToolCalls", "journalToolResults"]),
     },
-    strata: array({ closure, soul, ...numeric(["conversations", "excludedConversations", "turns", "excludedTurns", "cancelledTurns", "windows", "eligibleWindows", "excludedWindows"]) }),
+    strata: array({ entry: "ordinal", closure, soul, ...numeric(["conversations", "excludedConversations", "turns", "excludedTurns", "cancelledTurns", "windows", "eligibleWindows", "excludedWindows"]) }),
   },
-  metrics: { schema: enums("continuity-observation-metrics-v1"), strata: array({ closure, soul,
+  metrics: { schema: enums("continuity-observation-metrics-v2"), strata: array({ entry: "ordinal", closure, soul,
     boundaries: { coverage, total: count, kinds: cells("kind", ["rollover", "isolated", "resume_replay", "unknown"]), reasons: cells("reason", REASONS), contexts: cells("context", CONTEXTS) },
     compactions: { coverage, total: count, statuses: cells("status", COMPACTION_STATUSES), triggers: cells("trigger", TRIGGERS) },
-    packs: { coverage, injected: count, skipped: count, degraded: count, unknownDegradation: count, distributions: Object.fromEntries(PACK_FIELDS.map(k => [k, distribution])) },
+    packs: { coverage, injected: count, skipped: count, degraded: count, gap: count, boundedSelection: count, unknownDegradation: count, reasons: cells("reason", PACK_REASONS), distributions: Object.fromEntries(PACK_FIELDS.map(k => [k, distribution])) },
     retrieval: { coverage, total: count, actions: cells("action", ["search", "get", "unknown"]), outcomes: cells("outcome", ["success", "error", "unavailable", "unknown"]),
       reconciliation: cells("status", ["not_supplied", "matched", "unmatched", "ambiguous", "conflict"]) },
     followup: { ...numeric(["windows", "observedRetrieval", "noObservedRetrieval", "unknownRetrieval"]), statuses: cells("status", WINDOW_STATUSES) },
   }) },
-  outcomes: { schema: enums("continuity-observation-outcomes-v1"), strata: array({ closure, soul, coverage, ...numeric(OUTCOME_FIELDS) }) },
+  outcomes: { schema: enums("continuity-observation-outcomes-v2"), strata: array({ entry: "ordinal", closure, soul, coverage, ...numeric(OUTCOME_FIELDS) }) },
 };
 // This is also run immediately before serializing. No source-provided key or
 // string can enter exports, including report.md, through a generic spread.
 export function assertAllowed(value, contract) {
-  if (contract === count) {
+  if (contract === "ordinal") {
+    if (!Number.isSafeInteger(value) || value < 1) fail("INVALID_EXPORT");
+  } else if (contract === count) {
     if (value !== "unknown" && (!Number.isSafeInteger(value) || value < 0)) fail("INVALID_EXPORT");
   } else if (contract.enum) {
     if (!contract.enum.includes(value)) fail("INVALID_EXPORT");
@@ -57,6 +60,8 @@ export function renderReport(reports) {
     "Auxiliary snapshots are not globally atomic. Journal counts are separate and never added to web telemetry.",
     "Deduplication is scoped to a turn. Markers are inventory only, not substitutes for telemetry.",
     "Retrieval counts cover top-level web tool-call parts, not nested subagent activity.",
+    "Entry ordinals separate agent-bound declarations; no agent identities are exported.",
+    "Pack degraded counts include all non-empty flags; gap and boundedSelection separate their meanings.",
     "Follow-up includes later calls in the boundary turn and the next three subsequent owner turns.",
     "Cancelled, unfinished, truncated and stratum-crossing windows are excluded from adjudication.",
     "Review ordinals are local to this exact manifest and its unchanged snapshots. No automated text classification.", ""];

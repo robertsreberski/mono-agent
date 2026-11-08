@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DatabaseSync } from "node:sqlite";
+import ts from "typescript";
 import * as fs from "node:fs";
-import { join, resolve } from "node:path";
+import { join, resolve, dirname as dirnameOf } from "node:path";
 import { tmpdir } from "node:os";
 import { createHash } from "node:crypto";
 import childProcess from "node:child_process";
@@ -12,6 +13,9 @@ import tls from "node:tls";
 import dgram from "node:dgram";
 import { main, observe } from "../continuity-observe.mjs";
 import { openSnapshot, ROOT, MAX_ROW_BYTES } from "../lib/continuity-observation-input.mjs";
+import { PACK_REASONS } from "../lib/continuity-observation-events.mjs";
+import { HISTORY_NOTICE, HISTORY_HEADER, parseConversationHistoryText } from "../lib/continuity-observation-retrieval.mjs";
+import { historyBody, historyResponse, historyText } from "./fixtures/continuity-observation/text-result.mjs";
 import { EXPORT_ALLOWLIST, assertAllowed } from "../lib/continuity-observation-report.mjs";
 import { fixture, CANARY, START, END, at, telemetry, boundary, pack, tool, compaction } from "./fixtures/continuity-observation/snapshots.mjs";
 
@@ -23,6 +27,15 @@ const field = (cells, key, value) => cells.find(c => c[key] === value).count;
 const digest = (p) => createHash("sha256").update(fs.readFileSync(p)).digest("hex");
 const stamps = (dir) => Object.fromEntries(fs.readdirSync(dir).map(n => [n, digest(join(dir, n))]));
 const editDb = (f, edit) => { const db = new DatabaseSync(f.web); try { edit(db); } finally { db.close(); } };
+const addAgent = (f) => {
+  const agent = `${CANARY}_other_agent`, thread = `${CANARY}_other_thread`, conversation = `${CANARY}_other_conversation`;
+  editDb(f, db => {
+    db.prepare("INSERT INTO threads VALUES(?,?,?,NULL,?)").run(thread, agent, conversation, CANARY);
+    db.prepare("INSERT INTO turns SELECT id||'_other',?,status,started_at,finished_at,text,error_message FROM turns WHERE thread_id=?").run(thread, CANARY);
+    db.prepare("INSERT INTO messages SELECT id||'_other',?,turn_id||'_other',role,parts_json,created_at,updated_at,status,seq,cron_suppressed FROM messages WHERE thread_id=?").run(thread, CANARY);
+  });
+  return { agent, thread, conversation };
+};
 afterEach(() => { vi.restoreAllMocks(); for (const p of dirs.splice(0)) fs.rmSync(p, { recursive: true, force: true }); });
 
 function assertExports(dir, reports) {
@@ -107,6 +120,67 @@ describe("read-only continuity observation", () => {
     const m = (await run(f)).metrics.strata[0].retrieval;
     expect(field(m.outcomes, "outcome", "error")).toBe(1); expect(field(m.outcomes, "outcome", "unavailable")).toBe(2);
     expect(field(m.outcomes, "outcome", "unknown")).toBe(1); expect(field(m.actions, "action", "get")).toBe(1);
+  });
+
+  it("matches the product's exact formatter, section splitter and persisted text join", () => {
+    function pureFunction(file, name, bindings = {}) {
+      const source = fs.readFileSync(join(ROOT, file), "utf8"), start = source.indexOf(`function ${name}(`);
+      expect(start).toBeGreaterThanOrEqual(0);
+      const code = source.slice(start, source.indexOf("\n}", start) + 2);
+      const js = ts.transpileModule(code, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None } }).outputText;
+      return new Function(...Object.keys(bindings), `${js}; return ${name};`)(...Object.values(bindings));
+    }
+    const source = fs.readFileSync(join(ROOT, "packages/app/src/request-tools/conversation-history.ts"), "utf8");
+    expect(JSON.parse(source.match(/^const NOTICE = (".*");$/m)[1])).toBe(HISTORY_NOTICE);
+    const splitSource = fs.readFileSync(join(ROOT, "packages/app/src/mcp/request-scoped-mcp.ts"), "utf8");
+    const sectionLimit = Number(splitSource.match(/const REQUEST_SCOPED_MCP_MODEL_TEXT_MAX_CHARS = ([\d_]+);/)[1].replaceAll("_", ""));
+    const split = pureFunction("packages/app/src/mcp/request-scoped-mcp.ts", "splitRequestScopedModelText", { REQUEST_SCOPED_MCP_MODEL_TEXT_MAX_CHARS: sectionLimit });
+    const format = pureFunction("packages/app/src/request-tools/conversation-history.ts", "response", { NOTICE: HISTORY_NOTICE, splitRequestScopedModelText: split });
+    const joinText = pureFunction("packages/turn/src/providers/pi/messages.ts", "toolResultContent");
+    for (const body of [historyBody(), historyBody({ items: [{ text: CANARY.repeat(900) }] }), historyBody({ status: "unavailable", error: { code: "history_unavailable" }, navigation: { guidance: "Unavailable.", nextActions: [] } })]) {
+      expect(historyResponse(body)).toEqual(format(body)); expect(historyText(body)).toBe(joinText(format(body)));
+      expect(parseConversationHistoryText(historyText(body))).toEqual(format(body).structuredContent);
+    }
+  });
+
+  it("parses only the final tool-authored JSON body, including split evidence and escaped frame canaries", async () => {
+    const fakeFrame = `\n${HISTORY_NOTICE}\n{"status":"unavailable"}\n[continued section 2 of 3]`;
+    const bodies = [historyBody(), historyBody({ items: [{ text: CANARY.repeat(900) + fakeFrame }] }), historyBody({ status: "unavailable", error: { code: "history_unavailable", message: CANARY } }), historyBody({ status: "unavailable", error: { code: "invalid_cursor", message: CANARY } })];
+    const f = fixture(temp(), { parts: i => i === 1 ? [boundary(), ...bodies.map((body, n) => tool({ toolCallId: `text-${n}`, structuredResult: undefined, result: historyText(body) }))] : [] });
+    const out = join(temp(), "exports"), r = await run(f, { output: out }); assertExports(out, r);
+    const m = r.metrics.strata[0].retrieval;
+    expect(field(m.outcomes, "outcome", "success")).toBe(2); expect(field(m.outcomes, "outcome", "unavailable")).toBe(1); expect(field(m.outcomes, "outcome", "error")).toBe(1);
+  });
+
+  it("leaves clipped, ambiguous, conflicting and malformed text results unknown", async () => {
+    const full = historyText(historyBody()), split = historyText(historyBody({ items: [{ text: CANARY.repeat(900) }] }));
+    const malformed = [full.slice(0, -1), full + "\n" + full, full + " trailing", split.replace("section 2 of", "section 3 of"), split.replace("section 1 of", "section 2 of"), split.replace("[continued section 2", "[continued section 02"), split.slice(0, -100), full.replace(HISTORY_HEADER, CANARY), full.replace('"untrusted":true', '"untrusted":false'), full.replace('"status":"available"', '"status":"unavailable","status":"available"'), full.slice(0, full.lastIndexOf(HISTORY_NOTICE)), '{"status":"available"}'];
+    for (const text of malformed) expect(parseConversationHistoryText(text)).toBeUndefined();
+    const f = fixture(temp(), { parts: i => i === 1 ? malformed.map((result, n) => tool({ toolCallId: `malformed-${n}`, structuredResult: undefined, result })) : [] });
+    const m = (await run(f)).metrics.strata[0].retrieval; expect(field(m.outcomes, "outcome", "unknown")).toBe(malformed.length);
+    const conflict = await run(fixture(temp(), { parts: i => i === 1 ? [tool({ result: historyText(historyBody({ status: "unavailable" })) })] : [] }));
+    expect(field(conflict.metrics.strata[0].retrieval.outcomes, "outcome", "unknown")).toBe(1);
+  });
+
+  it("pins the reason allowlist to source-defined pack and snapshot reasons", () => {
+    const contracts = fs.readFileSync(join(ROOT, "packages/conversation/src/tool-history/continuity-contracts.ts"), "utf8");
+    const packSource = fs.readFileSync(join(ROOT, "packages/conversation/src/continuity/pack.ts"), "utf8");
+    const snapshotReasons = [...contracts.match(/readonly degradedReason\?: (.*);/)[1].matchAll(/"([^"]+)"/g)].map(m => m[1]);
+    const packReasons = [...packSource.matchAll(/degradedReason: "([^"]+)"/g)].map(m => m[1]);
+    const implicit = ["none", "empty", "overflow", "coverage_gap", "upkeep_gap"];
+    for (const reason of implicit) expect(packSource).toContain(`"${reason}"`);
+    expect(PACK_REASONS.filter(r => !["other", "unknown"].includes(r)).sort()).toEqual([...new Set([...snapshotReasons, ...packReasons, ...implicit])].sort());
+  });
+
+  it("separates pack reason enums, coverage gaps and ordinary bounded selection", async () => {
+    const bounded = ["overflow", "snapshot_bounds", "headroom", "trigger_headroom"];
+    const gaps = ["coverage_gap", "upkeep_gap", "purge_pending", "source_changed", "source_unavailable", "boundary_unavailable", "unavailable"];
+    const reasons = ["none", "empty", ...bounded, ...gaps, "scan_capacity", CANARY];
+    const f = fixture(temp(), { parts: i => i === 1 ? reasons.map(reason => telemetry(reason === "trigger_headroom" ? "continuity_pack_skipped" : "continuity_pack_injected", { degradedReason: reason })) : [] });
+    const out = join(temp(), "exports"), r = await run(f, { output: out }); assertExports(out, r);
+    const packs = r.metrics.strata[0].packs; expect(packs.gap).toBe(gaps.length); expect(packs.boundedSelection).toBe(bounded.length);
+    for (const reason of reasons.slice(0, -1)) expect(field(packs.reasons, "reason", reason)).toBe(1);
+    expect(field(packs.reasons, "reason", "other")).toBe(1);
   });
 
   it("distinguishes observed absence from unknown retrieval follow-up", async () => {
@@ -214,17 +288,30 @@ describe("read-only continuity observation", () => {
     finally { db.close(); }
   });
 
-  it("refuses worklists inside a repository, via symlinks, or within the export set", async () => {
+  it("refuses worklists inside this repository, via symlinks, or within the export set", async () => {
     const f = fixture(temp()), inside = join(ROOT, "scripts", "must-not-exist-private-review.jsonl");
     await expect(run(f, { privateWorklist: inside })).rejects.toThrow("PRIVATE_WORKLIST_PATH_REFUSED"); expect(fs.existsSync(inside)).toBe(false);
     const alias = join(temp(), "alias"); fs.symlinkSync(join(ROOT, "scripts"), alias);
     await expect(run(f, { privateWorklist: join(alias, "must-not-exist.jsonl") })).rejects.toThrow("PRIVATE_WORKLIST_PATH_REFUSED");
     const newOutput = join(temp(), "new-output");
     await expect(run(f, { output: newOutput, privateWorklist: join(newOutput, "review.jsonl") })).rejects.toThrow("PRIVATE_WORKLIST_PATH_REFUSED");
-    const parent = temp(), nested = join(parent, "exports"); fs.mkdirSync(nested);
+    const parent = temp(), nested = join(parent, "exports"); fs.mkdirSync(nested, { mode: 0o700 });
     await expect(run(f, { output: join(parent, "new"), privateWorklist: join(nested, "review") })).resolves.toBeDefined(); // Separate private directory is allowed.
+    await expect(run(f, { privateWorklist: f.web })).rejects.toThrow("PRIVATE_WORKLIST_PATH_REFUSED");
     const existing = join(temp(), "existing"); fs.writeFileSync(existing, CANARY);
     await expect(run(f, { privateWorklist: existing })).rejects.toThrow(); expect(fs.readFileSync(existing, "utf8")).toBe(CANARY);
+  });
+
+  it("permits a private directory inside a different consumer repository, requiring uid ownership and 0700", async () => {
+    const consumer = temp(); fs.mkdirSync(join(consumer, ".git")); const privateDir = join(consumer, "ignored-private"); fs.mkdirSync(privateDir, { mode: 0o700 });
+    const f = fixture(temp()), path = join(privateDir, "worklist.jsonl"); await run(f, { privateWorklist: path }); expect(fs.existsSync(path)).toBe(true);
+    for (const mode of [0o755, 0o750, 0o770, 0o777]) {
+      fs.chmodSync(privateDir, mode);
+      await expect(run(f, { privateWorklist: join(privateDir, `refused-${mode}`) })).rejects.toThrow("PRIVATE_WORKLIST_DIRECTORY_REFUSED");
+    }
+    fs.chmodSync(privateDir, 0o700); const uid = process.getuid();
+    const fakeUid = vi.spyOn(process, "getuid").mockReturnValue(uid + 1);
+    await expect(run(f, { privateWorklist: join(privateDir, "wrong-owner") })).rejects.toThrow("PRIVATE_WORKLIST_DIRECTORY_REFUSED"); fakeUid.mockRestore();
   });
 
   it("makes no network calls or child processes, including the CLI path", async () => {
@@ -237,7 +324,7 @@ describe("read-only continuity observation", () => {
     const f = fixture(temp(), { sidecar: true, journal: true });
     expect(await main(["--manifest", f.manifest, "--output", join(temp(), "exports")])).toBe(0);
     for (const spy of forbidden) expect(spy).not.toHaveBeenCalled();
-    const toolFiles = ["continuity-observe.mjs", ...["input", "events", "aggregate", "report"].map(n => `lib/continuity-observation-${n}.mjs`)];
+    const toolFiles = ["continuity-observe.mjs", ...["input", "events", "aggregate", "report", "retrieval"].map(n => `lib/continuity-observation-${n}.mjs`)];
     for (const file of toolFiles) {
       const source = fs.readFileSync(resolve(ROOT, "scripts", file), "utf8");
       for (const match of source.matchAll(/from\s+["']([^"']+)/g)) expect(match[1]).toMatch(/^(node:(fs|path|url|crypto|sqlite)|\.\/.*continuity-observation-.*\.mjs)$/);
@@ -296,6 +383,63 @@ describe("read-only continuity observation", () => {
     const r = await run(f); expect(fs.statSync(f.web).size).toBeGreaterThan(1024 ** 3); expect(r.inventory.records.messages).toBe(8);
   });
 
+  it("isolates agents sharing one web snapshot into content-free entry strata, even with identical enums", async () => {
+    const f = fixture(temp(), { sidecar: true }), other = addAgent(f), otherFixture = fixture(temp(), { sidecar: true });
+    const otherSidecar = otherFixture.value.snapshots[0].sidecar, d = new DatabaseSync(otherSidecar);
+    d.prepare("UPDATE runs SET conversation_id=?,logical_id=?").run(other.conversation, other.conversation);
+    for (const table of ["tool_calls", "tool_records", "continuity_generations"]) d.prepare(`UPDATE ${table} SET conversation_id=?`).run(other.conversation);
+    d.close();
+    f.value.snapshots.push({ ...structuredClone(f.value.snapshots[0]), agents: [other.agent], sidecar: otherSidecar }); update(f);
+    const out = join(temp(), "exports"), worklist = join(temp(), "private.jsonl"), before = stamps(dirnameOf(f.web));
+    const r = await run(f, { output: out, privateWorklist: worklist }); assertExports(out, r); expect(stamps(dirnameOf(f.web))).toEqual(before);
+    expect(r.inventory.sources.web).toBe(1); expect(r.inventory.sources.sidecar).toBe(2);
+    expect(r.inventory.entries).toEqual([{ entry: 1, excludedAgentThreads: 1 }, { entry: 2, excludedAgentThreads: 1 }]);
+    expect(r.inventory.records.messages).toBe(16); expect(r.metrics.strata.map(g => g.entry)).toEqual([1, 2]);
+    for (const m of r.metrics.strata) { expect(m.boundaries.total).toBe(1); expect(m.compactions.total).toBe(1); expect(m.packs.injected).toBe(1); expect(field(m.retrieval.reconciliation, "status", "matched")).toBe(1); }
+    expect(r.outcomes.strata.map(g => g.windows)).toEqual([2, 2]);
+    const lines = fs.readFileSync(worklist, "utf8").trim().split("\n").map(JSON.parse);
+    expect(lines.filter(l => l.sourceIndex === 0).every(l => l.threadId === CANARY)).toBe(true);
+    expect(lines.filter(l => l.sourceIndex === 1).every(l => l.threadId === other.thread)).toBe(true);
+  });
+
+  it("counts only excludedAgentThreads for unselected agents and never scans their parts", async () => {
+    const f = fixture(temp()), other = addAgent(f);
+    editDb(f, db => db.prepare("UPDATE messages SET parts_json=? WHERE thread_id=?").run(`{${CANARY}`, other.thread));
+    const r = await run(f); expect(r.inventory.entries[0].excludedAgentThreads).toBe(1);
+    expect(r.inventory.records.messages).toBe(8); expect(r.inventory.records.invalidRecords).toBe(0);
+    expect(r.metrics.strata[0].boundaries.total).toBe(1); expect(r.metrics.strata[0].boundaries.coverage).toBe("complete");
+  });
+
+  it("refuses duplicate/overlapping agent sets and inconsistent sidecar bindings", async () => {
+    for (const agents of [[`${CANARY}_agent`], [`${CANARY}_agent`, `${CANARY}_other_agent`], undefined]) {
+      const f = fixture(temp()); f.value.snapshots.push({ ...structuredClone(f.value.snapshots[0]), agents }); update(f);
+      await expect(run(f)).rejects.toThrow("DUPLICATE_SNAPSHOT");
+    }
+    for (const agents of [[], [CANARY, CANARY], [1]]) {
+      const f = fixture(temp()); f.value.snapshots[0].agents = agents; update(f); await expect(run(f)).rejects.toThrow("INVALID_AGENT_BINDING");
+    }
+    const f = fixture(temp(), { sidecar: true }); delete f.value.snapshots[0].agents; update(f);
+    await expect(run(f)).rejects.toThrow("SIDECAR_AGENT_BINDING_REQUIRED");
+    f.value.snapshots[0].agents = [`${CANARY}_agent`]; f.value.snapshots.push({ ...structuredClone(f.value.snapshots[0]), agents: [`${CANARY}_other_agent`] }); update(f);
+    await expect(run(f)).rejects.toThrow("SIDECAR_AGENT_BINDING_MISMATCH");
+  });
+
+  it("applies overlap checks only to each entry's selected agents in different web snapshots", async () => {
+    const first = fixture(temp()), other = addAgent(first), second = fixture(temp()); addAgent(second);
+    second.value.snapshots[0].agents = [other.agent]; first.value.snapshots.push(second.value.snapshots[0]); update(first);
+    const r = await run(first); expect(r.metrics.strata.map(m => m.boundaries.total)).toEqual([1, 1]);
+    expect(r.inventory.entries.map(e => e.excludedAgentThreads)).toEqual([1, 1]);
+  });
+
+  it("does not reconcile another agent's lifecycle failure, even with a colliding tool-call/record id", async () => {
+    const f = fixture(temp(), { sidecar: true }), other = addAgent(f);
+    f.value.snapshots[0].agents = [other.agent]; update(f);
+    const d = new DatabaseSync(f.value.snapshots[0].sidecar); d.exec("UPDATE tool_calls SET state='error'"); d.close();
+    editDb(f, db => db.prepare("UPDATE messages SET parts_json=? WHERE thread_id=? AND role='assistant' AND seq=3").run(JSON.stringify([tool({ structuredResult: undefined })]), other.thread));
+    const r = await run(f), m = r.metrics.strata[0].retrieval;
+    expect(field(m.reconciliation, "status", "unmatched")).toBe(1); expect(field(m.outcomes, "outcome", "unknown")).toBe(1);
+  });
+
   it("refuses overlapping conversations in separately copied web snapshots", async () => {
     const f = fixture(temp()), duplicate = fixture(temp()); f.value.snapshots.push(duplicate.value.snapshots[0]); update(f);
     await expect(run(f)).rejects.toThrow("OVERLAPPING_SNAPSHOTS");
@@ -306,6 +450,22 @@ describe("read-only continuity observation", () => {
     const r = await run(f); expect(r.inventory.strata[0].excludedTurns).toBe(4);
     expect(r.inventory.strata[0].excludedConversations).toBe(1); expect(r.outcomes.strata[0].windows).toBe(0);
     expect(r.metrics.strata[0].boundaries.total).toBe(1);
+  });
+
+  it.each(["cron", "ownerless-wake"])("counts all boundary/compaction/pack metrics in excluded %s turns, with no review windows", async (kind) => {
+    const f = fixture(temp());
+    editDb(f, db => {
+      if (kind === "cron") db.exec("UPDATE threads SET trigger_kind='cron'");
+      else {
+        db.exec("DELETE FROM messages WHERE role='user'");
+        const parts = [ { type: "process-job-wake", jobId: CANARY, deliveryKey: CANARY }, boundary(), compaction(), pack(), tool() ];
+        db.prepare("UPDATE messages SET parts_json=? WHERE id=?").run(JSON.stringify(parts), `${CANARY}_turn_1_assistant`);
+      }
+    });
+    const r = await run(f), m = r.metrics.strata[0];
+    expect(r.inventory.strata[0].excludedTurns).toBe(4); expect(m.boundaries.total).toBe(1);
+    expect(m.compactions.total).toBe(1); expect(m.packs.injected).toBe(1); expect(m.retrieval.total).toBe(1);
+    expect(m.followup.windows).toBe(0); expect(r.outcomes.strata[0].windows).toBe(0);
   });
 
   it("inventories unassigned system parts and missing turn records without losing their telemetry", async () => {
