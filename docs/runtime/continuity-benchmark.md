@@ -173,6 +173,134 @@ marks rows above 8 MiB invalid and refuses turns above 8192 recognized events.
 Observation sizes later tests; it does not establish correctness, causal benefit,
 representative prevalence or replace controlled boundary proofs.
 
+## Private recorded-conversation import (offline only)
+
+`continuity-import-recorded.mjs` imports **one explicitly selected conversation**
+from backup snapshots. It does not replay turns, run tools, discover stores,
+read credentials, or call a provider. Use the standalone rollback-mode snapshot
+recipe in [Offline snapshot observation](#offline-snapshot-observation), never a
+live database. The observer and fictional dataset validator are unchanged.
+
+A separate manifest uses paths relative to the manifest file:
+
+```json
+{
+  "schema": "continuity-recorded-manifest-v1",
+  "web": "web-snapshot.sqlite",
+  "agent": "example-agent",
+  "sidecar": "tool-history-snapshot.sqlite",
+  "journal": {
+    "path": "native-snapshot.jsonl",
+    "conversationId": "web:example-conversation"
+  }
+}
+```
+
+Only `schema` and `web` are required. `agent` restricts the web thread's source
+identity; conflicting source identities are refused. Sidecar runs are selected by
+exact conversation or logical identity. A journal must explicitly bind to the
+selected conversation; this is a **caller assertion**, not inferred ownership.
+The importer structurally validates native journal v2 and its record chain; it
+is not the product journal's full semantic validator. It supports web SQLite
+version 43 and tool-history SQLite versions 2/3 with the product application ID,
+schema marker and required lifecycle columns. Unsupported schemas, WAL-format
+headers and adjacent WAL/SHM/journal files are refused before reading SQLite.
+Connections use escaped `file:` URIs with `mode=ro`, `readOnly: true` and
+`allowExtension: false`; no migrations, checkpoints or source writes occur.
+
+Choose a **new** output directory outside this checkout, under an existing
+current-user-owned parent with exact mode 0700. Symlink parents are canonicalized
+before the containment check. No output location is discovered automatically:
+
+```bash
+node scripts/continuity-import-recorded.mjs \
+  --manifest /private-snapshots/recorded-manifest.json \
+  --conversation web:example-conversation \
+  --output /private-replay/new-import
+```
+
+The directory is created with mode 0700 and its four files with mode 0600;
+existing output is never overwritten. All errors on the CLI are content-free
+refusal codes, not paths, source text or database error messages. Only these
+artifacts are produced:
+
+| File | Versioned schema | Handling |
+| --- | --- | --- |
+| `source.json` | `continuity-recorded-source-v1` | Private recorded data, never fictional; never publish or use as a test fixture |
+| `reader-questions.json` | `continuity-recorded-questions-v1` | Empty `questions` stub; not referenced or embedded in source |
+| `evaluator-keys.json` | `continuity-recorded-evaluator-keys-v1` | Empty `keys` stub; isolated from reader and source |
+| `inventory.json` | `continuity-recorded-inventory-v1` | Sole exportable artifact: strict numeric counts and a schema identifier |
+
+Stdout contains only the inventory. No IDs, hashes, names, arguments, results,
+paths or snippets are exported there. The private source retains original web
+rows (including exact `parts_json` strings), timestamps, identities, sequence,
+steer markers and user rows, partial/cancelled statuses, failures, boundary
+markers and telemetry. Raw selected sidecar rows and journal records retain
+provenance and representations; they are **not concatenated into replay calls**.
+Missing attachment bytes block affected coverage; references remain private and
+are never fetched. Subagent reports become assistant-side parent-visible
+outcomes with provenance. Child calls remain opaque in raw source; they are
+never flattened into the parent queue or executed.
+
+Normalized tools reconcile by recorded call ID, scoped sidecar run and, when
+present, durable record ID. Comparisons record missing phases, digest damage,
+clipping, state/argument/result conflicts, exact matches and text-equivalent but
+byte-different representations. Web-only, sidecar-only and journal-only evidence
+remains explicit. Native assistant messages supply parallel-step boundaries.
+Without them, a web message is a conservative candidate group, with unknown
+step-boundary coverage; mixed unplaced web/native ordering, rewinds and
+cross-thread ordering also carry blocking gaps. Initial native input is not
+counted as a steer, and duplicated web/native steer identities count once.
+
+Reads iterate selected rows, refusing more than 8 MiB of raw cell bytes per row
+or journal line, 100,000 retained records, or 128 MiB of selected serialized
+source rows. The bounded conversation is then assembled in memory; these are
+input capacity limits, **not a measured peak-memory bound**. Source file stamps
+are checked again before output; these checks are not a live-store lock.
+Capacity refusal does not produce a partial source. Malformed parts and missing
+results within capacity remain raw evidence plus explicit coverage gaps.
+
+### Inert recorded tools
+
+`scripts/lib/continuity-recorded-tools.mjs` exposes an inert MCP endpoint on
+`127.0.0.1` and an ephemeral port, behind an unguessable per-run endpoint URI.
+Keep that URI private; browser-origin and non-loopback-host requests are refused.
+It only returns recorded results. It has no
+built-ins, skills, executable adapters, child-agent runner, worker or outbound
+network client. Teardown closes its listener. Original names (including `Read`,
+`Exec`, `Bash` and `WebFetch`) remain unchanged, preserving product continuity
+classification; duplicate definitions and reserved-name collisions are refused,
+not renamed. Optional caller-supplied tool definitions retain their schemas.
+Snapshots do not supply original tool definitions: absent explicit definitions,
+inert schemas are generic and reported as such, never claimed to be original.
+
+MCP dispatch in `packages/turn/src/tools/mcp/tools.ts:178–179` does not transmit
+the model's `toolCallId`. Identity therefore binds by **original name + canonical
+arguments + FIFO recorded order**, not by a tool-call ID on the wire. Original
+argument values are sent without any identity wrapper. Different keys within a
+parallel step may arrive in either order; future-step, unmatched and exhausted
+calls are refused. Sequential identical calls with different results resolve in
+recorded order. Parallel identical calls with identical results are safe. When
+identical keys in one step have different result bytes or error state, the
+inventory increments `ambiguousParallelGroups` and the trace marks a blocking
+gap. Queue construction recomputes ambiguity and refuses those groups unless
+the caller explicitly excludes their step indices. A future replay must refuse
+a branch crossing any blocking coverage gap unless affected coverage is
+explicitly excluded; this importer is not a replay runner.
+
+The private transport descriptor records representation adaptation rather than
+claiming built-in byte equivalence. Text uses an MCP content envelope; native
+content is retained when available. The queue's `observe` seam measures actual
+model-visible content bytes against expected content, reporting representation
+differences and possible clipping. The configured faux-harness test exercises
+real loopback MCP, unchanged outgoing tool names/arguments, host-observed
+read/execute/search categories and durable continuity capture. It also measures
+actual MCP text clipping. It uses fictional snapshots only, refuses external
+networking and execution, and permits only the product's bounded read-only
+self-process ownership probes on macOS (`ps`/`sysctl`), including in its real
+tool-history worker. Those probe hits are reported as command-name counts.
+Offline proof is not semantic replay quality or permission for a paid run.
+
 ## Offline lookup mechanics (opt-in)
 
 Recall-only remains the default: omitting `--probe-mode` preserves its prompt
