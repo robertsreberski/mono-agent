@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { zstdDecompressSync } from "node:zlib";
 // Test-only authority, incompatible with the real factory and external transport.
 import { digest } from "./continuity-dataset.mjs";
-import { lookupPilotWork, lookupBodyBytes } from "./continuity-lookup-pilot-runtime.mjs";
+import { lookupPilotWork, lookupBodyBytes, lookupForwardedObserver } from "./continuity-lookup-pilot-runtime.mjs";
 import { createLookupPilotIPC, verifyLookupPilotParent } from "./continuity-lookup-ipc.mjs";
 import { ROOT, verifyRoleRequest } from "./continuity-lookup-roles.mjs";
 import { LOOKUP_FAUX_CONTROLLER, readPilotPrivate, pilotStatePath } from "./continuity-lookup-pilot-state.mjs";
@@ -50,7 +50,8 @@ export async function createLookupFauxSend(a, safety) {
     // No external fallback, including redirects. No real credentials are resolved.
     return nativeFetch(endpoint, { ...init, redirect: "error" });
   };
-  const decorator = await createFauxLookupDecorator({ contract, permit, send, resolvedSafety: safety });
-  Object.defineProperties(send, { binds: {value: profile => profile?.routeKind === "faux" && profile.work === lookupPilotWork(a) && profile.arm?.id === a.roleRequest.binding.arm && digest(profile.plan) === digest(a.plan)}, permit: { value: permit }, decorator: { value: decorator } });
+  const forwarded = lookupForwardedObserver();
+  const decorator = await createFauxLookupDecorator({ contract, permit, send, resolvedSafety: safety, onForwarded: forwarded.notify });
+  Object.defineProperties(send, { observeForwarded: { value: forwarded.register }, binds: {value: profile => profile?.routeKind === "faux" && profile.work === lookupPilotWork(a) && profile.arm?.id === a.roleRequest.binding.arm && digest(profile.plan) === digest(a.plan)}, permit: { value: permit }, decorator: { value: decorator } });
   sends.add(send); return Object.freeze(send);
 }

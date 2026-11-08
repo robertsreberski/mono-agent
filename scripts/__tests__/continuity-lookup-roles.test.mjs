@@ -342,6 +342,18 @@ it("prices eligible external slots with ten no-cache rounds, per-call tiers and 
   expect(result.capOverExpected).toBe(result.catalogCapUSD / result.expectedUSD);
   expect(result.tokenEnvelope.roundsPerEligibleTrial).toBe(10);
   expect(result.roles.pack.expectedUSD).toBeCloseTo(result.trials.filter(t => t.role === "pack").reduce((s, t) => s + t.expectedUSD, 0));
+  // Expected value uses the shared pilot-calibrated scenario; reservations above are unchanged safety bounds.
+  const { LOOKUP_EXPECTED_SCENARIO, LOOKUP_EXPECTED_SCENARIO_TEXT, lookupExpectedRequestInputs } = await import("../continuity-lookup-estimate.mjs");
+  expect(lookupExpectedRequestInputs(10000)).toEqual([10900, 20116, 20116, 20116]);
+  expect(result.assumptions.expected).toBe(LOOKUP_EXPECTED_SCENARIO_TEXT);
+  expect(LOOKUP_EXPECTED_SCENARIO_TEXT).toBe("pilot-calibrated-v1: 4 requests (3 lookups), first request initialTokens + 900, each later request a flat +9216 input tokens over the first, 19/32 cached input, up to 150 output tokens/request; scenario, not measurement");
+  expect(LOOKUP_EXPECTED_SCENARIO).toEqual({ version: "pilot-calibrated-v1", requestsPerSlot: 4, lookupsPerSlot: 3, inputAllowanceTokens: 900, laterInputIncrementTokens: 9216,
+    outputTokensPerRequest: 150, cachedInput: { numerator: 19, denominator: 32 }, serviceTier: "default", margin: 1.25, measurement: false });
+  for (const trial of result.trials.filter(t => t.eligible)) {
+    const path = fixture.workload.policy.budget.paths.find(p => p.role === trial.role && p.traceId === trial.traceId && p.probeId === trial.probeId), first = path.initialTokens + 900;
+    const calls = [first, first + 9216, first + 9216, first + 9216].map(input => priceLookupCall(fixture.catalog.cost, input, Math.min(150, fixture.outputLimit.tokens), 19 / 32).usd);
+    expect(trial.expectedUSD).toBeCloseTo(calls.reduce((a, b) => a + b, 0), 12); expect(trial.expectedLookupOverheadUSD).toBeCloseTo(calls[1] + calls[2] + calls[3], 12);
+  }
   const altered = structuredClone(fixture);
   altered.workload.transportSpec = { design: { repeats: 2, shardCostCapUSD: 999999 }, gates: { arbitrary: true } };
   expect(estimateExternalLookup(altered)).toEqual(result);
@@ -470,6 +482,7 @@ it("binds all present pilot artifact files, including guard assumptions, in the 
     "scripts/lib/continuity-lookup-real-capability.mjs",
     "scripts/lib/continuity-lookup-pilot-entry.mjs",
     "scripts/lib/continuity-lookup-pilot-probe.mjs",
+    "scripts/lib/continuity-lookup-slot-record.mjs",
     "scripts/lib/continuity-runner.mjs",
     "scripts/lib/continuity-lookup-controller.mjs",
     "scripts/lib/continuity-lookup-ipc.mjs",

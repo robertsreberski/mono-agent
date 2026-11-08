@@ -4,7 +4,7 @@ import { digest } from "./continuity-dataset.mjs";
 import { sha256, LOOKUP_TIMING, LOOKUP_PILOT_MEASURED_ROLES } from "./continuity-lookup.mjs";
 import { LOOKUP_ASSUMPTIONS } from "./continuity-lookup-guard.mjs";
 import { registerLookup, lookupWorkload, validateRegistration, requireLookup } from "./continuity-lookup-roles.mjs";
-import { offlineCatalog, estimateExternalLookup } from "../continuity-lookup-estimate.mjs";
+import { offlineCatalog, estimateExternalLookup, LOOKUP_EXPECTED_SCENARIO, lookupExpectedRequestInputs } from "../continuity-lookup-estimate.mjs";
 
 export const LOOKUP_FAUX_AUTHORIZATION_DOMAIN = "mono-agent/lookup-pilot/faux-consumed-v1\0";
 export const LOOKUP_PILOT_SCHEMA = "continuity-lookup-pilot-descriptor-v1";
@@ -56,11 +56,12 @@ function requestMaximum(catalog, assumptions) {
   need(!less(result, decimal(3.92)) && !less(decimal(3.92), result), "lookup_catalog_binding_mismatch");
   return result;
 }
-function scenarioCall(catalog, input, output) {
+function scenarioCall(catalog, input, output, { numerator: cached, denominator: parts } = LOOKUP_EXPECTED_SCENARIO.cachedInput) {
   let rate = catalog.cost, threshold = -1;
   for (const tier of catalog.cost.tiers ?? []) if (input > tier.inputTokensAbove && tier.inputTokensAbove > threshold) { rate = tier; threshold = tier.inputTokensAbove; }
-  const result = add(mul(add(decimal(rate.input), decimal(rate.cacheRead)), input), mul(decimal(rate.output), output * 2));
-  result[1] *= 2000000n; // exactly half cached input, default service tier
+  const inputRate = add(mul(decimal(rate.input), parts - cached), mul(decimal(rate.cacheRead), cached));
+  const result = add(mul(inputRate, input), mul(decimal(rate.output), output * parts));
+  result[1] *= BigInt(parts) * 1000000n; // exact cached/uncached split, default service tier
   return result;
 }
 /** E is a scenario, not an invoice or permission. Full-upfront is comparison only. */
@@ -73,8 +74,8 @@ export function estimateLookupPilot({ workload, catalog, capUSD, assumptions = L
   let expected = [0n, 1n], eligible = 0;
   for (const path of workload.policy.budget.paths) if (LOOKUP_PILOT_MEASURED_ROLES.includes(path.role) && path.feasibility.classification === "feasible") {
     eligible++;
-    const initial = path.initialTokens + 900, later = initial + Math.floor(workload.policy.budget.byteBudget / 2);
-    for (const input of [initial, later, later]) expected = add(expected, scenarioCall(catalog, input, Math.min(300, workload.outputLimit.tokens)));
+    for (const input of lookupExpectedRequestInputs(path.initialTokens))
+      expected = add(expected, scenarioCall(catalog, input, Math.min(LOOKUP_EXPECTED_SCENARIO.outputTokensPerRequest, workload.outputLimit.tokens)));
   }
   const headroom = add(cap, [-rmax[0], rmax[1]]);
   const skipped = legacy.planned - eligible;
@@ -84,8 +85,11 @@ export function estimateLookupPilot({ workload, catalog, capUSD, assumptions = L
     expectedUSD: usd(expected), rmaxUSD: usd(rmax), capUSD: usd(cap), lastAdmissibleHeadroomUSD: usd(headroom),
     capOverExpected: expected[0] === 0n ? null : usd([cap[0] * expected[1], cap[1] * expected[0]]),
     fullUpfrontComparisonUSD: Number(cents) / 100, eligible, skipped,
-    scenario: { lookups: 2, returnedByteFraction: "1/2", cacheFraction: "1/2", outputTokensPerRound: 300,
-      inputAllowanceTokens: 900, serviceTier: "default", measurement: false },
+    scenario: { version: LOOKUP_EXPECTED_SCENARIO.version, requests: LOOKUP_EXPECTED_SCENARIO.requestsPerSlot, lookups: LOOKUP_EXPECTED_SCENARIO.lookupsPerSlot,
+      laterInputIncrementTokens: LOOKUP_EXPECTED_SCENARIO.laterInputIncrementTokens,
+      cacheFraction: `${LOOKUP_EXPECTED_SCENARIO.cachedInput.numerator}/${LOOKUP_EXPECTED_SCENARIO.cachedInput.denominator}`,
+      outputTokensPerRound: LOOKUP_EXPECTED_SCENARIO.outputTokensPerRequest, inputAllowanceTokens: LOOKUP_EXPECTED_SCENARIO.inputAllowanceTokens,
+      margin: LOOKUP_EXPECTED_SCENARIO.margin, serviceTier: "default", measurement: false },
     assumptions, assumptionsSha256: digest(assumptions), catalogSha256: digest(catalog) };
 }
 export function lookupPilotDescriptor({ workload, catalog, capUSD, scheduleSeed, runDeadlineMs, assumptions = LOOKUP_ASSUMPTIONS }) {

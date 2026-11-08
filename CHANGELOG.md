@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Fix continuity lookup pilot runs never recording whether a looked-up detail
+  was already in the model's starting context. Pilot runs now keep that, with
+  other content-free lookup counts, privately for each probe. The pilot's
+  expected-cost estimate is recalibrated from measured usage, to about $41
+  instead of $65 for the first pilot's workload; spending limits are unchanged.
+
 - Fix transient outages on Anthropic Messages, OpenAI Responses and Codex in
   normal conversations by retrying only the failed model request, never tools or
   live input. `providers.piNative.requestRetryBudgetMs` defaults to 120000 ms

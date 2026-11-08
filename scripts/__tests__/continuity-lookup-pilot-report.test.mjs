@@ -186,3 +186,13 @@ it("counts a preparation-only partial slot without exporting its process or path
   expect(result.counts).toMatchObject({ unadmitted: 1, admitted: 0, missing: 0 });
   expect(JSON.stringify(result)).not.toContain("fictional-start"); expect(JSON.stringify(result)).not.toContain("f".repeat(64));
 });
+it("keeps the private per-slot lookup record out of receipts and the report", () => {
+  const s = reportState(), record = { schema: "lookup-pilot-slot-lookup-v1", initiallyPresent: false, initialContextBytes: 1234, sourceAvailability: "retained",
+    sourceReturned: true, calls: 2, responses: 2, bytes: 300, searchPages: 1, getChunks: 1, rounds: 3, exhausted: null, witnessedRecovery: true };
+  s.slots[0].lookup = record; s.slots[0].lookupRecordPath = "/fictional/private-path/lookup-record.json";
+  const receipt = lookupPilotReceipt(s, 0), bytes = JSON.stringify(aggregateLookupPilot(s, [receipt]));
+  expect(Object.keys(receipt)).not.toContain("lookup");
+  for (const value of ["lookup-pilot-slot-lookup-v1", "initiallyPresent", "witnessedRecovery", "/fictional/private-path"]) expect(bytes).not.toContain(value);
+  for (const extra of [{ lookup: record }, { initiallyPresent: false }, { witnessedRecovery: true }])
+    expect(() => aggregateLookupPilot(s, [{ ...receipt, ...extra }])).toThrow("lookup_receipt_invalid");
+});

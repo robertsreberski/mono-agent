@@ -62,6 +62,7 @@ if (verify !== -1) {
   const identity = await import(pathToFileURL(join(fixture.repo, "scripts/lib/continuity-process-identity.mjs")).href);
   const controller = await import(pathToFileURL(join(fixture.repo, "scripts/lib/continuity-lookup-controller.mjs")).href);
   const retained = await import(pathToFileURL(join(fixture.repo, "scripts/lib/continuity-lookup-preparation.mjs")).href);
+  const slotRecords = await import(pathToFileURL(join(fixture.repo, "scripts/lib/continuity-lookup-slot-record.mjs")).href);
   try {
     for (const name of cases) {
       const id = `${name}-${Date.now()}`, outputRoot = join(base, id), evidence = join(base, `${id}-witnesses`), home = join(base, `${id}-home`), resultPath = join(base, `${id}-result.json`), configPath = join(base, `${id}-config.json`);
@@ -161,6 +162,16 @@ if (verify !== -1) {
           nativeSessions.push({id: header.id, journalId: header.journalId, restoredAtOriginalRoot: true, hostReplayTurns: 80});
         }
         assert.ok(preparation.databases.some(path => path.includes("/checkpoint/lease-home/") && probe.databases.includes(path)), "leftover physical lease-home was not reused");
+        if (name === "rounds") {
+          // The configured probe child wrote its private content-free record, fed by the forwarded-context witness.
+          const owner = {outputRoot, slotId: slot.slotId}, record = await slotRecords.readLookupSlotRecord(owner);
+          assert.equal(record.rounds, 3, "lookup record must count every forwarded request"); assert.ok(record.initialContextBytes > 0, "first forwarded context was not witnessed");
+          // Every rounds slot is an evaluator-annotated identifier path, so presence must be decided, not unknown.
+          const planned = state.schedule[index], path = fixture.roundsPilot.registration.common.policy.budget.paths.find(p => p.role === planned.roleId && p.traceId === planned.traceId && p.probeId === planned.probeId);
+          assert.match(path?.sourceSha256 ?? "", /^[a-f0-9]{64}$/u, "rounds slot lost its evaluator annotation");
+          assert.equal(typeof record.initiallyPresent, "boolean", "annotated first forwarded context must decide initial presence");
+          assert.equal((await fs.stat(slotRecords.lookupSlotRecordPath(owner))).mode & 0o777, 0o600);
+        }
         const disk = await retained.lookupRetainedBytes(join(outputRoot, "work", slot.slotId));
         assert.ok(probe.postRestoreRetained, "missing post-restore baseline");
         const postRestore = probe.postRestoreRetained, retainedTotal = disk.retainedBytes;

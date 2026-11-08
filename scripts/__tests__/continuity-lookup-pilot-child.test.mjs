@@ -112,3 +112,15 @@ it.each(["dispatcher", "credentials"])("refuses %s introduced by a method access
   await expect(send("https://fixture.invalid/codex/responses", bad)).rejects.toThrow("lookup_pilot_faux_required");
   expect(fetch).not.toHaveBeenCalled();
 });
+it("wires the faux decorator's forwarded-context observer to a set-once send registration", async () => {
+  state.deadlineAt = Date.now() + 60000; state.slots[0] = {terminal: null, startedAt: Date.now(), holds: []};
+  const a = {outputRoot: "/fictional/output", index: 0, slot: {code: "R0"}, cacheKey: "assigned", runId: "fictional-run", slotId: "fictional-slot", plan: {}, roleRequest: {},
+    pilot: {registration: {codes: {R0: {path: "/fictional/root"}}}, descriptor: {deadlines: {deadlineMs: 60000}}}};
+  const {createLookupFauxSend} = await import("../lib/continuity-lookup-faux-capability.mjs"), send = await createLookupFauxSend(a, {});
+  const {onForwarded} = fauxDecorator.mock.calls[0][0], observer = vi.fn();
+  expect(typeof onForwarded).toBe("function");
+  onForwarded({fictional: "unregistered"}, 1); // No observer yet: a no-op, never a send-path failure.
+  send.observeForwarded(observer); expect(() => send.observeForwarded(observer)).toThrow("lookup_pilot_capability_invalid");
+  onForwarded({fictional: "context"}, 1); expect(observer).toHaveBeenCalledExactlyOnceWith({fictional: "context"}, 1);
+  expect(fetch).not.toHaveBeenCalled();
+});

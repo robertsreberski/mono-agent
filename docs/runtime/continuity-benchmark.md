@@ -175,7 +175,14 @@ failure count appear in the lookup table. Witnesses persist only IDs, digests,
 counts and classifications. Recovery requires an initially absent value, an
 available retained source fully returned with a verified digest, and a correct
 answer. Unknown initial presence/provenance or protected bytes cannot establish
-recovery. This is descriptive evidence, not a causal treatment-benefit estimate.
+recovery. On the configured pilot route, the guard reports each request it hands
+to the single-shot send, synchronously after the persisted permit consume and
+before that send. The first forwarded context feeds the same content-free
+witness as the offline route (a presence boolean and a byte count, never
+retained text). A failing observer cannot skip or alter the send; presence then
+stays unknown. There, `rounds` counts forwarded Models requests rather than
+offline tool rounds.
+This is descriptive evidence, not a causal treatment-benefit estimate.
 Cross-checkout role attribution and paid qualification are separate work.
 
 ## Cross-checkout lookup roles (offline only)
@@ -906,8 +913,11 @@ roots (or a policy that binds them), and optional hash-bound policy. Role-aware 
 
 Pricing retains planned denominators, excludes inventory-infeasible slots and
 blocks unknown slots. It reports per-role/per-trial expected, worst/reservation,
-lookup overhead, tier crossings and C/expected. Expected is only a scenario:
-two lookups, half the byte budget, 50% cache and 300 output tokens per round.
+lookup overhead, tier crossings and C/expected. Expected is only a scenario,
+shared with the pilot estimate below (`pilot-calibrated-v1`): four requests per
+slot (three lookups), a first request of the frozen initial bound plus 900
+tokens, each later request a flat 9,216 input tokens above the first request
+(not cumulative), 19/32 cached input and up to 150 output tokens per request.
 Reservation uses **ten rounds**, **no cache**, the **full catalog context input
 bound on every call** (including replay) and the explicit per-call output limit.
 C is `ceil-to-cents(1.25 * summed eligible reservations)`, a run-wide proposed
@@ -1191,12 +1201,35 @@ helpers do not execute a schedule or allocate cache keys.
 
 The offline estimator uses exact decimal rational money arithmetic. It reports:
 
-- E and its scenario: two lookups, half the returned-byte budget, half cached
-  input, three rounds of up to 300 output tokens and 900 input allowance tokens
-  per round, at the default service tier; this is not measured usage;
+- E and its `pilot-calibrated-v1` scenario: four requests per slot (three
+  lookups); the first request is the frozen inventory `initialTokens` plus 900;
+  each later request is a flat 9,216 input tokens above the first request, not
+  cumulative across rounds; 19/32 of input is cached; up to
+  150 output tokens per request; default service tier. This is a scenario, not
+  measured usage;
 - Rmax = 2 × (272,000 × maximum applicable input/cache-class rate +
   128,000 × maximum applicable output rate), divided by one million;
 - C, C − Rmax and C/E (null when E is zero).
+
+The scenario was calibrated from counts of the first completed Sol pilot: 240
+admitted slots and 748 model requests. Measured means were 3.117 requests and
+2.329 `ConversationHistory` calls per slot, 116.8 output tokens per request,
+7,362.5 input tokens per later request above that slot's first request, and
+67.5% cached input. Each quantity takes a 1.25 margin, rounded in the
+conservative direction: 4 requests, 150 output tokens, 9,216 increment tokens
+and 13/32 = 40.625% uncached input (≥ 1.25 × 32.5%). For that same 240-slot
+workload, E falls from $65.07 (two lookups, half the byte budget per later
+request, half cached, 300 output tokens) to $41.45, against $18.19 of settled
+catalog-equivalent spend. The first-request bound is the frozen inventory
+`initialTokens` + 900. `initialTokens` is the larger of `ceil(observed initial
+context bytes / 3)` and a trace-shape floor: the cold estimate + 12,000 for pack
+paths, which the pilot measured, and the larger of 150,000 and the full
+trace-shape estimate for native paths. It is
+deliberately model-independent and conservative rather than a tokenizer
+measurement. It accounts for most of the remaining gap: Sol's measured first
+input averaged about 0.67 of that bound. Only E changed. The `assumed-v1`
+registry, input/output envelope maxima, the tier multiplier, Rmax and every cap
+rule are unchanged safety bounds.
 
 Sol's registered rates pin Rmax to $3.92. The maximum input-class rate includes
 cache writes ($2.50/M), not just uncached input ($2/M); the maximum output rate
@@ -1411,7 +1444,26 @@ receipt copies are independent coverage counters;
 paired blocks require verified receipt copies. Reports
 are strictly projected to opaque identities, content hashes, fixed codes and
 numeric usage/cost/scoring. They exclude paths and path hashes, commitments,
-salts, credentials, requests, answers, stderr and free-form errors. Faux scores
+salts, credentials, requests, answers, stderr and free-form errors.
+Per-slot lookup evidence stays out of receipts and reports. The probe child
+synchronously publishes a private
+`work/<slot>/checkpoint/lookup-record.json` (`lookup-pilot-slot-lookup-v1`)
+beside the preparation manifest, outside the digested snapshot. It writes an
+exclusive owner-only (0600) temporary file, then publishes it with an exclusive
+hard link. A successful write is therefore atomic and owner-only and never
+replaces or follows an existing entry. It is evidence only and deliberately not
+crash-durable: there is no file or directory fsync, so the write never delays
+the child's done message past the controller's post-stop containment grace. It holds only
+initial presence and context bytes, source availability, whether the verified
+source was returned, lookup calls, responses, bytes, search pages and get
+chunks, the exhaustion cause, forwarded rounds and witnessed recovery. It never
+holds record IDs, digests, paths, questions, answers or retrieved text, and a
+strict validator rejects any other field. It is written for every trial that
+returns lookup evidence: completed, wrong, lost, failed and refused trials
+alike. No record exists when the probe never produced lookup evidence. A failed
+write normally leaves no record, which means missing evidence and never zero;
+the slot's outcome is never reclassified. Readers always validate the record
+through the private-file reader, which also refuses a leftover second link. Faux scores
 are mechanics fixtures, not measured quality. Physical power-loss and provider
 billing behavior are not established by these local tests. Private reads require
 canonical roots and refuse aliases. Their before/after path checks are best-effort

@@ -45,6 +45,7 @@ export const LOOKUP_PILOT_PROTOCOL_FILES = Object.freeze([
   "scripts/lib/continuity-lookup-real-capability.mjs",
   "scripts/lib/continuity-lookup-pilot-entry.mjs",
   "scripts/lib/continuity-lookup-pilot-probe.mjs",
+  "scripts/lib/continuity-lookup-slot-record.mjs",
   "scripts/lib/continuity-runner.mjs",
   "scripts/lib/continuity-lookup-controller.mjs",
   "scripts/lib/continuity-lookup-ipc.mjs",

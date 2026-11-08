@@ -62,7 +62,7 @@ export async function createLookupRealSend(a, resolvedSafety) {
   try {
     a = structuredClone(a);
     const { handle } = await verifyLookupRealAssignment(a);
-    const [{ assertResolvedLookupSafety, lookupPilotWork }, guard, auth, { createLookupPilotIPC }, { digest }] = await Promise.all([
+    const [{ assertResolvedLookupSafety, lookupPilotWork, lookupForwardedObserver }, guard, auth, { createLookupPilotIPC }, { digest }] = await Promise.all([
       import("./continuity-lookup-pilot-runtime.mjs"), import("./continuity-lookup-guard.mjs"), import("./continuity-lookup-authorization.mjs"),
       import("./continuity-lookup-ipc.mjs"), import("./continuity-dataset.mjs"),
     ]);
@@ -70,7 +70,7 @@ export async function createLookupRealSend(a, resolvedSafety) {
     need(digest(resolvedSafety.plan) === digest(a.plan) && resolvedSafety.arm.id === a.roleRequest.binding.arm);
     const mintKey = digest([a.outputRoot, a.epoch, a.slotId, process.pid]);
     need(!minted.has(mintKey)); minted.add(mintKey);
-    const permit = await createLookupPilotIPC(a), used = new Set();
+    const permit = await createLookupPilotIPC(a), used = new Set(), forwarded = lookupForwardedObserver();
     guard.assertRealLookupPermitSource(permit);
     const stop = async code => {
       let cause;
@@ -129,11 +129,11 @@ export async function createLookupRealSend(a, resolvedSafety) {
     };
     const decorator = models => {
       need(decorators.delete(decorator));
-      return guard.guardedLookupModels(models, { permit, send, resolvedSafety, contract: {
+      return guard.guardedLookupModels(models, { permit, send, resolvedSafety, onForwarded: forwarded.notify, contract: {
         ...guard.LOOKUP_GUARD_CONTRACT, runId: a.runId, slotId: a.slotId, promptCacheKey: a.cacheKey,
       } });
     };
-    Object.defineProperties(send, { matchesContract: { value: contract => contract?.slotId === a.slotId && contract.runId === a.runId && contract.promptCacheKey === a.cacheKey }, permit: { value: permit }, decorator: { value: Object.freeze(decorator) }, binds: { value: profile =>
+    Object.defineProperties(send, { matchesContract: { value: contract => contract?.slotId === a.slotId && contract.runId === a.runId && contract.promptCacheKey === a.cacheKey }, permit: { value: permit }, decorator: { value: Object.freeze(decorator) }, observeForwarded: { value: forwarded.register }, binds: { value: profile =>
       profile?.routeKind === "real" && profile.authPath === a.authorization.credentialPath && profile.work === lookupPilotWork(a)
       && digest(profile.plan) === digest(a.plan) && profile.arm?.id === a.roleRequest.binding.arm } });
     decorators.add(decorator); sends.add(send); return Object.freeze(send);

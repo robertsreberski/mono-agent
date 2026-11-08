@@ -13,6 +13,28 @@ export const ESTIMATE_PROFILES = Object.freeze([
   { id: "luna", model: "openai-codex:gpt-6-luna", purpose: "development screening only" },
   { id: "opus", model: "anthropic:claude-opus-5-5", purpose: "separate sensitivity; never pooled with Sol" },
 ].map(Object.freeze));
+/** Expected-value scenario E only, never a safety bound. Calibrated from the completed
+ * Sol pilot's counts (240 slots, 748 requests): means of 3.117 requests and 2.329
+ * ConversationHistory calls per slot, 116.8 output tokens per request, 7,362.5
+ * later-request input tokens above the slot's first request and 32.5% uncached input.
+ * Each takes a 1.25 margin, rounded conservatively. The first request keeps the frozen,
+ * model-independent inventory bound initialTokens + 900, where initialTokens is the larger
+ * of ceil(observed initial context bytes / 3) and a trace-shape floor (pack paths: cold
+ * estimate + 12,000; native paths: max(150,000, full trace-shape estimate)). Each later request is a flat
+ * +laterInputIncrementTokens over the first request, not cumulative.
+ */
+export const LOOKUP_EXPECTED_SCENARIO = Object.freeze({
+  version: "pilot-calibrated-v1", requestsPerSlot: 4, lookupsPerSlot: 3, inputAllowanceTokens: 900,
+  laterInputIncrementTokens: 9216, outputTokensPerRequest: 150,
+  cachedInput: Object.freeze({ numerator: 19, denominator: 32 }), serviceTier: "default", margin: 1.25, measurement: false,
+});
+/** Input tokens of each expected request for one slot; pricing stays with each caller. */
+export function lookupExpectedRequestInputs(initialTokens, S = LOOKUP_EXPECTED_SCENARIO) {
+  const first = initialTokens + S.inputAllowanceTokens;
+  return [first, ...Array(S.requestsPerSlot - 1).fill(first + S.laterInputIncrementTokens)];
+}
+const S0 = LOOKUP_EXPECTED_SCENARIO;
+export const LOOKUP_EXPECTED_SCENARIO_TEXT = `${S0.version}: ${S0.requestsPerSlot} requests (${S0.lookupsPerSlot} lookups), first request initialTokens + ${S0.inputAllowanceTokens}, each later request a flat +${S0.laterInputIncrementTokens} input tokens over the first, ${S0.cachedInput.numerator}/${S0.cachedInput.denominator} cached input, up to ${S0.outputTokensPerRequest} output tokens/request; scenario, not measurement`;
 const finitePrice = value => typeof value === "number" && Number.isFinite(value) && value >= 0;
 /** Only the installed local catalog. Missing prices are not zero or invented. */
 export async function offlinePrices(profiles, root = ROOT) {
@@ -176,16 +198,16 @@ export function estimateExternalLookup({ workload, catalog, outputLimit = worklo
     }
     requireLookup(positive(p.initialTokens) && p.initialTokens + workload.policy.budget.byteBudget + 3000 + workload.policy.budget.contextMarginTokens <= catalog.contextWindow, "lookup_catalog_context_incompatible");
     row.eligible++;
-    const calls = [p.initialTokens + 900, p.initialTokens + Math.floor(workload.policy.budget.byteBudget / 2) + 900,
-      p.initialTokens + Math.floor(workload.policy.budget.byteBudget / 2) + 900];
+    const S = LOOKUP_EXPECTED_SCENARIO, cached = S.cachedInput.numerator / S.cachedInput.denominator;
+    const calls = lookupExpectedRequestInputs(p.initialTokens);
     requireLookup(calls.every(input => input <= catalog.contextWindow), "lookup_catalog_context_incompatible");
-    const expectedCalls = calls.map(input => priceLookupCall(price, input, Math.min(300, outputLimit.tokens), .5));
+    const expectedCalls = calls.map(input => priceLookupCall(price, input, Math.min(S.outputTokensPerRequest, outputLimit.tokens), cached));
     const expectedUSD = expectedCalls.reduce((sum, call) => sum + call.usd, 0);
     // Ten rounds, no cache. Full catalog context on EVERY round bounds all replay,
     // tool schemas, reasoning history and wrappers without assuming output=300.
     const reservedCall = priceLookupCall(price, catalog.contextWindow, outputLimit.tokens, 0);
     const reservationUSD = 10 * reservedCall.usd;
-    const baseline = priceLookupCall(price, calls[0], Math.min(300, outputLimit.tokens), .5).usd;
+    const baseline = expectedCalls[0].usd;
     row.expectedUSD += expectedUSD; row.reservationUSD += reservationUSD; row.expectedLookupOverheadUSD += expectedUSD - baseline;
     trials.push({ role: p.role, traceId: p.traceId, probeId: p.probeId, eligible: true, expectedUSD, reservationUSD,
       expectedLookupOverheadUSD: expectedUSD - baseline, expectedTieredCalls: expectedCalls.filter(c => c.tierInputTokensAbove !== null).length,
@@ -212,7 +234,8 @@ export function estimateExternalLookup({ workload, catalog, outputLimit = worklo
     expectedLookupOverheadUSD: total("expectedLookupOverheadUSD"),
     tokenEnvelope: { roundsPerEligibleTrial: 10, inputTokensPerCall: catalog.contextWindow, outputTokensPerCall: outputLimit.tokens,
       totalInputTokens: total("eligible") * 10 * catalog.contextWindow, totalOutputTokens: total("eligible") * 10 * outputLimit.tokens },
-    assumptions: { expected: "two lookups, half byte budget, 50% cache, up to 300 output tokens/round; scenario, not measurement",
+    assumptions: { expected: LOOKUP_EXPECTED_SCENARIO_TEXT,
+      expectedScenario: LOOKUP_EXPECTED_SCENARIO,
       reservation: "10 rounds, no cache, full catalog context per call including replay, explicit outputLimit",
       cap: "ceil-to-cents(1.25 * sum eligible reservations); run-wide, not per shard",
       ignoredTransport: ["repeats", "shardCostCapUSD", "legacy statistical gates"],
