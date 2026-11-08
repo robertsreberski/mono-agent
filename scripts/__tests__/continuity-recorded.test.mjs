@@ -302,7 +302,7 @@ it("matches the writer's exact redaction options and secure preprocessing withou
   const redactor = await readRedactor(); expect(normalizeSidecar({ text: "x".repeat(65537) }, redactor)).toEqual({ text: "[oversized value omitted before redaction]" });
 });
 
-it.each(["/Users/morgan/projects/cedar/note.txt", "/srv/fictional/cedar/note.txt"])("reconciles product-redacted fictional path arguments without changing replay values: %s", async path => {
+it.each(["/Users/example/projects/cedar/note.txt", "/srv/fictional/cedar/note.txt"])("reconciles product-redacted fictional path arguments without changing replay values: %s", async path => {
   const redact = await readRedactor(), t = tool("redacted", "Fictional unchanged result", { args: { path } });
   const side = { ...t, args: normalizeSidecar(t.args, redact) };
   const { source, inventory } = await read(snapshots(scratch(), { parts: [t], sidecar: [side] }));
@@ -313,7 +313,7 @@ it.each(["/Users/morgan/projects/cedar/note.txt", "/srv/fictional/cedar/note.txt
 });
 
 it("limits legacy redaction fallback to token-bearing spans and keeps ordinary mismatches conflicting", async () => {
-  const redact = await readRedactor(), web = { path: "/Users/morgan/legacy/cedar/note.txt", query: "cedar" };
+  const redact = await readRedactor(), web = { path: "/Users/example/legacy/cedar/note.txt", query: "cedar" };
   expect(compareCopies(web, { path: "[home-path]/note.txt", query: "cedar" }, redact, true)).toBe("sidecar_redacted_unverified");
   expect(compareCopies(web, { path: "[home-path]/note.txt", query: "pine" }, redact, true)).toBe("different");
   expect(compareCopies(web, { path: "[home-path]/other.txt", query: "cedar" }, redact, true)).toBe("different");
