@@ -91,7 +91,7 @@ export function recordedTurns(source, { excludedSteps = [] } = {}) {
     if (user.length !== 1) fail("E2_OWNER_SOURCE_UNAVAILABLE");
     const userParts = parts(user[0]);
     if (userParts.some(p => !["text", "attachment"].includes(p.type))) fail("E2_OWNER_SOURCE_UNAVAILABLE");
-    const replies = [];
+    const replies = []; let retriedAttempts = 0, carriedSteers = [];
     for (const row of rows.filter(r => r.role === "assistant")) {
       const firstReply = replies.length, raw = parts(row), indices = byMessage.get(row.id) ?? [], calls = indices.flatMap(i => source.steps[i].calls), toolAt = new Map();
       for (const call of calls) {
@@ -117,7 +117,13 @@ export function recordedTurns(source, { excludedSteps = [] } = {}) {
           const content = native?.role === "assistant" && Array.isArray(native.content)
             ? native.content.map(p => p.type === "toolCall" ? toolCalls.find(c => c.id === p.id) ?? fail("E2_ASSISTANT_SOURCE_UNAVAILABLE") : structuredClone(p))
             : [...(part === 0 ? visibleParts(selected) : []), ...toolCalls];
-          replies.push({ content, steers: part === steps.length - 1 ? selected.filter(p => p.type === "steer") : [],
+          // A provider-retried attempt never reached the transcript: Pi re-sent the
+          // same context. Replaying it as a message would end the turn early.
+          // Its steers move to the next message of the same row; a steer that
+          // cannot be placed there is refused by the per-row steer check below.
+          if (index === null && retriedAttempt(selected)) { retriedAttempts++; carriedSteers.push(...selected.filter(p => p.type === "steer")); continue; }
+          const ownSteers = part === steps.length - 1 ? selected.filter(p => p.type === "steer") : [];
+          replies.push({ content, steers: [...carriedSteers.splice(0), ...ownSteers],
             step: index, calls: step?.calls ?? [], message: source.web.messages.indexOf(row) });
         }
       }
@@ -130,9 +136,14 @@ export function recordedTurns(source, { excludedSteps = [] } = {}) {
     if (!text.trim() && !attachments.length) fail("E2_OWNER_SOURCE_UNAVAILABLE");
     const labels = attachments.map(a => `[recorded attachment: ${a.kind} ${a.contentType} ${a.sizeBytes ?? "unknown"} bytes; bytes unavailable for replay]`);
     return { ordinal, id: turn.id, user: [text, ...labels].filter(t => t.length).join("\n"), attachments: { labelled: attachments.length, images: attachments.filter(a => a.kind === "image").length },
-      cancelled: ["cancelled", "canceled"].includes(turn.status), replies };
+      cancelled: ["cancelled", "canceled"].includes(turn.status), retriedAttempts, replies };
   });
   return { turns, excludedOutsideWebTurns };
+}
+function retriedAttempt(selected) {
+  const kind = p => p?.type === "telemetry" ? (p.data?.kind ?? p.data?.data?.kind) : null;
+  return !selected.some(p => p.type === "tool-call" || p.type === "subagent" || kind(p) === "context_usage")
+    && selected.some(p => p.type === "telemetry" && p.data?.type === "runtime_warning" && p.data.warningKind === "provider_request_retry");
 }
 function visibleParts(raw) {
   return raw.flatMap(p => p.type === "text" && typeof p.text === "string" ? [{ type: "text", text: p.text }]
@@ -255,7 +266,7 @@ export async function runE2Sizing({ source, protocol, output, summary = "faux-sh
               mcpServers: probeMode ? { [HISTORY]: options.mcpServers?.[HISTORY] } : { [RECORDED_SERVER_NAME]: { type: "http", url: server.url } } };
           } });
       };
-      const branchReport = { branch: branchIndex, excludedOutsideWebTurns, attachments: { labelled: turns.slice(branch.startTurn, branch.endTurn + 1).reduce((n, t) => n + t.attachments.labelled, 0), images: turns.slice(branch.startTurn, branch.endTurn + 1).reduce((n, t) => n + t.attachments.images, 0), imageTokensRepresented: false }, models: branch.models, limits: branch.limits, boundaries: [], checkpoints: [], excludedSteps: excluded.steps.length, excludedCoverage: excluded.coverage.length };
+      const branchReport = { branch: branchIndex, excludedOutsideWebTurns, retriedAttemptsDropped: turns.slice(branch.startTurn, branch.endTurn + 1).reduce((n, t) => n + t.retriedAttempts, 0), attachments: { labelled: turns.slice(branch.startTurn, branch.endTurn + 1).reduce((n, t) => n + t.attachments.labelled, 0), images: turns.slice(branch.startTurn, branch.endTurn + 1).reduce((n, t) => n + t.attachments.images, 0), imageTokensRepresented: false }, models: branch.models, limits: branch.limits, boundaries: [], checkpoints: [], excludedSteps: excluded.steps.length, excludedCoverage: excluded.coverage.length };
       try {
         await open(); let modelIndex = 0;
         for (const turn of turns.slice(branch.startTurn, branch.endTurn + 1)) {

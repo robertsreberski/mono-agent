@@ -538,7 +538,11 @@ artifacts require reimport and a fresh ordinal registration. Unknown arguments,
 unrelated multiple owner messages and unsupported source shapes refuse rather
 than guessing. An unanchored step outside all web turns is
 dropped only when explicitly excluded, and counted as `excludedOutsideWebTurns`;
-an included one still refuses.
+an included one still refuses. A provider-retried attempt (a message segment
+with no calls and no usage telemetry, carrying a `provider_request_retry`
+warning) never reached the transcript, so replay drops it rather than treating
+it as a final stop, and counts it as `retriedAttemptsDropped`. Its steers move to
+the next message of the same row; otherwise the steer check refuses.
 
 The guarded `completeSimple` route requires a synchronous, positively observed
 compaction lifecycle, registered catalog model metadata/options and no tools.

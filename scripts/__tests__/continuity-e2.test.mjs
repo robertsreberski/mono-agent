@@ -34,7 +34,7 @@ function scratch() {
 const limits = () => ({ sourceRequests: 40, summaryRequests: 20, summaryRequestsPerCompaction: 2, probeRequests: 24, compactions: 20, timeoutMs: 30_000 });
 const modelMarker = (same = false) => ({ type: "conversation-marker", kind: "model", at: AT,
   before: { model: "fictional-a", effort: "high" }, after: { model: same ? "fictional-a" : "fictional-b", effort: "xhigh" } });
-async function trace({ padding = false, steer = false } = {}) {
+async function trace({ padding = false, steer = false, retry = false } = {}) {
   const sidecar = steer ? ["fictional-child", "parent-first", "parent-next"].map(id => ({ toolCallId: id, toolName: "Agent", args: { name: "fictional-reviewer", description: "Fictional review", prompt: `Review ${id}`, effort: "high" }, result: id === "fictional-child" ? "Fictional parent-visible child outcome." : "Fictional parent report" })) : undefined;
   const dir = scratch(), f = snapshots(dir, { sidecar }), db = new DatabaseSync(f.web);
   db.exec("DELETE FROM turns; DELETE FROM messages;");
@@ -51,6 +51,10 @@ async function trace({ padding = false, steer = false } = {}) {
       db.prepare("INSERT INTO messages VALUES(?,?,?,?,?,?,?,?,?,?)").run("unassigned-switch", "thread-one", null, "system", JSON.stringify([marker]), markerAt, markerAt, "complete", 0, 0);
     }
     if (i === 0) body.push({ type: "telemetry", data: { kind: "assistant_message_boundary" } }, tool("fixture-call", "Fictional inert note."), { type: "text", text: "Fictional read completed." });
+    // A provider-retried attempt: reasoning and an explicit boundary without
+    // usage, followed by the retry warning, as recorded web rows show.
+    if (retry && i === 0) body.splice(body.length - 1, 0, { type: "reasoning", text: "Fictional abandoned attempt" }, { type: "telemetry", data: { kind: "assistant_message_boundary" } },
+      { type: "telemetry", event: "runtime_warning", data: { type: "runtime_warning", message: "Fictional retry notice", warningKind: "provider_request_retry" } });
     if (padding && i === 4) for (let j = 0; j < 24; j++) body.push({ type: "text", text: `Fictional source step ${j}` },
       { type: "telemetry", data: { kind: "context_usage" } }, tool(`pressure-${j}`, "Fictional source canary. ".repeat(1700), { args: { path: `fictional-${j}.txt` } }));
     if (padding && i === 4) body.push({ type: "text", text: "Fictional pressure reads completed." });
@@ -422,4 +426,11 @@ it("selects the first native dist frame before a later script frame", () => {
   const error = new TypeError("fictional-canary");
   error.stack = `TypeError: fictional-canary\n at validateRequest (file://${ROOT}/packages/conversation/dist/harness/validation.js:59:15)\n at caller (${ROOT}/scripts/continuity-e2.mjs:44:3)`;
   expect(errorDiagnostic(error)).toEqual({ errorName: "TypeError", errorCode: null, site: "packages/conversation/dist/harness/validation.js:59" });
+});
+it("drops provider-retried attempts instead of replaying them as a final stop", async () => {
+  const plain = recordedTurns((await trace()).source), retried = recordedTurns((await trace({ retry: true })).source);
+  expect(retried.turns[0].retriedAttempts).toBe(1); expect(plain.turns[0].retriedAttempts).toBe(0);
+  expect(retried.turns[0].replies.map(r => r.calls.length)).toEqual(plain.turns[0].replies.map(r => r.calls.length));
+  expect(JSON.stringify(retried.turns[0].replies)).not.toContain("Fictional abandoned attempt");
+  for (const turn of retried.turns) expect(turn.replies.slice(0, -1).every(r => r.calls.length || r.steers.length)).toBe(true);
 });
