@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Add an offline importer for explicitly selected read-only conversation
+  snapshots, with private source files and a counts-only inventory. It compares
+  recorded tool arguments and results across stores and reports missing or
+  conflicting evidence. Localhost-only inert tools return recorded results but
+  never execute actions; no paid or model-backed replay is included. Tool schemas
+  are labelled generic stand-ins unless supplied by the caller. Importing
+  requires building `@mono-agent/observability` first. Duplicate receipts that
+  differ only in capture time count as one, and a missing journal receipt is
+  accepted when another snapshot contains the complete result.
+
 - Add a read-only continuity observation script for snapshot-based boundary,
   continuity-pack and retrieval counts with content-free, agent-scoped aggregate
   reports, eligible-window review coverage, and recognition of tool-authored

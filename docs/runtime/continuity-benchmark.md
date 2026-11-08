@@ -173,6 +173,237 @@ marks rows above 8 MiB invalid and refuses turns above 8192 recognized events.
 Observation sizes later tests; it does not establish correctness, causal benefit,
 representative prevalence or replace controlled boundary proofs.
 
+## Private recorded-conversation import (offline only)
+
+Build its one pure product-helper prerequisite offline (also included in the
+app dependency-closure build):
+
+```bash
+pnpm --config.offline=true --filter @mono-agent/observability run build
+```
+
+Missing `dist/redaction.js` or `dist/guards.js` produces the content-free
+`RECORDED_REDACTION_BUILD_REQUIRED` refusal. Only this Node-free redaction closure
+is imported; the package barrel and runtime/provider modules remain forbidden.
+
+`continuity-import-recorded.mjs` imports **one explicitly selected conversation**
+from backup snapshots. It does not replay turns, run tools, discover stores,
+read credentials, or call a provider. Use the standalone rollback-mode snapshot
+recipe in [Offline snapshot observation](#offline-snapshot-observation), never a
+live database. The observer and fictional dataset validator are unchanged.
+
+A separate manifest uses paths relative to the manifest file:
+
+```json
+{
+  "schema": "continuity-recorded-manifest-v1",
+  "web": "web-snapshot.sqlite",
+  "agent": "example-agent",
+  "sidecar": "tool-history-snapshot.sqlite",
+  "journal": {
+    "path": "native-snapshot.jsonl",
+    "conversationId": "web:example-conversation"
+  }
+}
+```
+
+Only `schema` and `web` are required. `agent` restricts the web thread's source
+identity; conflicting source identities are refused. Sidecar runs are selected by
+exact conversation or logical identity. A journal must explicitly bind to the
+selected conversation; this is a **caller assertion**, not inferred ownership.
+The importer structurally validates native journal v2 and its record chain; it
+is not the product journal's full semantic validator. It supports web SQLite
+version 43 and tool-history SQLite versions 2/3 with the product application ID,
+schema marker and required lifecycle columns. Unsupported schemas, WAL-format
+headers and adjacent WAL/SHM/journal files are refused before reading SQLite.
+Connections use escaped `file:` URIs with `mode=ro`, `readOnly: true` and
+`allowExtension: false`; no migrations, checkpoints or source writes occur.
+
+Choose a **new** output directory outside this checkout, under an existing
+current-user-owned parent with exact mode 0700. Symlink parents are canonicalized
+before the containment check. No output location is discovered automatically:
+
+```bash
+node scripts/continuity-import-recorded.mjs \
+  --manifest /private-snapshots/recorded-manifest.json \
+  --conversation web:example-conversation \
+  --output /private-replay/new-import
+```
+
+The directory is created with mode 0700 and its four files with mode 0600;
+existing output is never overwritten. All errors on the CLI are content-free
+refusal codes, not paths, source text or database error messages. Only these
+artifacts are produced:
+
+| File | Versioned schema | Handling |
+| --- | --- | --- |
+| `source.json` | `continuity-recorded-source-v2` | Private recorded data, never fictional; never publish or use as a test fixture |
+| `reader-questions.json` | `continuity-recorded-questions-v1` | Empty `questions` stub; not referenced or embedded in source |
+| `evaluator-keys.json` | `continuity-recorded-evaluator-keys-v1` | Empty `keys` stub; isolated from reader and source |
+| `inventory.json` | `continuity-recorded-inventory-v2` | Sole exportable artifact: strict numeric counts and a schema identifier |
+
+Stdout contains only the inventory. No IDs, hashes, names, arguments, results,
+paths or snippets are exported there. The private source retains original web
+rows (including exact `parts_json` strings), timestamps, identities, sequence,
+steer markers and user rows, partial/cancelled statuses, failures, boundary
+markers and telemetry. Raw selected sidecar rows and journal records retain
+provenance and representations; they are **not concatenated into replay calls**.
+Missing attachment bytes affect only probes touching that item; references remain private and
+are never fetched. Subagent reports become assistant-side parent-visible
+outcomes with provenance. Child calls remain opaque in raw source; they are
+never flattened into the parent queue or executed.
+
+Normalized tools reconcile by recorded call ID, scoped sidecar run and, when
+present, durable record ID. The importer replicates the writer's secure payload
+preprocessing and exact `redactJsonValue(value, 4096, options)` call, including
+content-pattern redaction and private-host-path omission. Current-product
+normalization that matches the sidecar is `sidecar_redacted`, not a conflict.
+Older-build differences confined to `[home-path]`, `[host-path]`, `[private-path]`,
+`[redacted]` or the known omission markers are `sidecar_redacted_unverified`.
+This fallback requires matching object keys/array topology and every ordinary
+sibling value and non-token string fragment; a difference outside those spans
+is still a conflict. Both redaction classifications are fidelity-tier evidence;
+unredacted web arguments/results are preferred over redacted copies.
+
+When journal model arguments and web arguments share identical values, and the
+web adds only `workdir`, `timeout_ms`, `max_output_chars` or `head_limit`, the
+classification is `web_effective_arguments`, not a conflict. Scripted steps use
+the original model-emitted journal arguments. Raw web values remain in
+`webArgs` and the untouched source rows. Without a journal, a fidelity gap notes
+that web arguments may include host-filled defaults; arbitrary extra keys or
+changed shared values are not excused.
+
+Web `context_usage` telemetry ends an assistant message before its tools begin
+executing, including older builds that only emitted an explicit
+`assistant_message_boundary` for final prose. Each web step takes the preceding
+reasoning/text, its usage marker and the following tool-call/subagent parts up
+to the next reasoning/text/usage part. Usage-only steps are labeled
+`web-usage-boundary`. An explicit marker is preferred for its own message; a
+coincident usage + explicit pair is one step, never two. Mixed historical builds
+can use usage-only, explicit-only and paired markers in the same web row. Marker
+recognition follows the bounded legacy telemetry unwrapping in
+`packages/web/src/wake-reply.ts`, without importing that runtime.
+
+Web steps retain `partStartIndex`, `partEndIndex`, `boundaryIndex`, optional
+`usageBoundaryIndex` and `subagentPartIndices` into the unchanged raw row. Only
+steps with queued parent tool calls are emitted in `steps`; prose-only and
+subagent-only messages remain in raw source/outcomes, never executable calls.
+Optional `history.sequence` receipts cross-check lifecycle order across groups;
+parallel completions may reorder inside a group, but reversed/duplicate/invalid
+sequences or tools without their preceding step-end marker remain
+`assistant_step_boundaries_unknown` at replay tier. Earlier web groups and the
+native suffix merge using their shared web provenance rather than appending the
+earlier groups after the journal. Unanchored mixed/native-only order is still
+explicitly unknown.
+
+Result representations keep store provenance, retained bytes, explicit
+original-byte/truncation metadata and the recognized clipping suffix. Ordinary
+payload keys named `truncated` or `originalBytes` are data, not metadata. Across
+stores, a complete copy wins over a clipped one; complete unredacted web data is
+preferred. If every copy is clipped, select the best retained/original coverage,
+then retained bytes. Unknown original lengths remain unknown; partial copies
+then rank by retained bytes. Result truncation is fidelity-only when no complete
+copy remains. Clipped replay arguments instead produce the replay-tier
+`arguments_truncated` gap unless an original journal invocation restores them.
+
+Journal receipts are stricter: only one returned/placed pair identical after
+omitting the top-level message `timestamp` is deduplicated. No other field is
+omitted, including nested timestamps; any third receipt stays ambiguous.
+Any other disagreement, even if one receipt matches the web or is clipped, or
+unresolved multiplicity produces a replay-tier conflict. Ambiguous journal
+candidates are not selected, and a web/sidecar copy does not erase that gap.
+Zero journal receipts with a complete selected web/sidecar result instead produce
+fidelity-tier `journal_result_missing`: the result to replay is known. Without a
+complete result, malformed receipt content or unresolved multiplicity remains
+replay-tier. No restored bytes are invented. Source/question/evaluator schemas
+remain separate; source and inventory are v2 and reject the old boolean-gap shape.
+
+The importer accepts web `failed` calls as terminal errors. Result envelopes
+preserve structured results in every adaptation branch. Only non-empty arrays
+of objects with a non-empty string `type` are treated as content blocks, equally
+for direct arrays and wrapped `content`; other values, including `[]`, are text.
+
+### Coverage tiers
+
+Every coverage entry has a `tier`, never a `blocking` boolean. Inventory counts
+`replayGaps`, `itemGaps` and `fidelityGaps` as well as their total `coverageGaps`.
+The closed code-to-tier map in `continuity-recorded-schema.mjs` is authoritative:
+
+| Tier | Codes | Consequence |
+| --- | --- | --- |
+| `replay` | `partial_turn`, `partial_message`, `unassigned_message`, `cross_thread_order_unknown`, `malformed_parts`, `malformed_part`, `malformed_tool`, `malformed_native_call` | Required replay inputs/order cannot be established |
+| `replay` | `journal_rewind_requires_branch_selection`, `native_interruption`, `arguments_missing`, `arguments_not_object`, `arguments_truncated`, `native_result_missing_or_ambiguous`, `tool_terminal_state_unknown`, `result_missing` | Incomplete or ambiguous replayed state |
+| `replay` | `duplicate_web_conflict`, `journal_arguments_conflict`, `journal_result_conflict`, `journal_state_conflict`, `duplicate_native_identity`, `ambiguous_sidecar_identity`, `sidecar_conflict` | Genuine identity/argument/result/state contradiction |
+| `replay` | `ambiguous_parallel_results`, `assistant_step_boundaries_unknown`, `mixed_step_order_unknown` | Unsound parallel dispatch or step order |
+| `item` | `attachment_bytes_unavailable`, `subagent_outcome_missing`, `subagent_outcome_truncated`, `subagent_terminal_state_unknown` | Exclude probes requiring that item, not the whole replay |
+| `fidelity` | `source_truncated`, `sidecar_truncated`, `arguments_may_include_host_defaults`, `web_effective_arguments`, `sidecar_redacted`, `sidecar_redacted_unverified` | Replayable representation loss/normalization |
+| `fidelity` | `malformed_sidecar_payload`, `sidecar_phase_missing`, `sidecar_only_tool`, `journal_result_missing` | Auxiliary evidence is incomplete; do not invent replay calls |
+
+The queue refuses replay-tier step/tool/coverage gaps, not item/fidelity gaps.
+`excludedSteps` explicitly removes affected scripted steps; `excludedCoverage`
+indices can explicitly acknowledge coverage excluded by a caller's branch
+selection (including non-tool messages). These are caller obligations, not an
+implicit repair or permission to replay an incomplete message. Missing tool
+arguments/results and recomputed parallel ambiguity still cannot be bypassed by
+editing a coverage flag. A future probe selector must exclude item-dependent
+questions when item-tier evidence is unavailable.
+
+Reads iterate selected rows, refusing more than 8 MiB of raw cell bytes per row
+or journal line, 100,000 retained records, or 128 MiB of selected serialized
+source rows. The bounded conversation is then assembled in memory; these are
+input capacity limits, **not a measured peak-memory bound**. Source file stamps
+are checked again before output; these checks are not a live-store lock.
+Capacity refusal does not produce a partial source. Malformed parts and missing
+results within capacity remain raw evidence plus explicit coverage gaps.
+
+The CLI accepts `--help`. Invalid flags print a fixed usage line; import
+refusals print allowlisted codes (including `EEXIST` for an existing output or
+`RECORDED_CONVERSATION_NOT_FOUND`), never paths, arguments or raw error text.
+Unknown failures remain `RECORDED_IMPORT_REFUSED`. Successful imports still emit
+only inventory counts.
+
+### Inert recorded tools
+
+`scripts/lib/continuity-recorded-tools.mjs` exposes an inert MCP endpoint on
+`127.0.0.1` and an ephemeral port, behind an unguessable per-run endpoint URI.
+Keep that URI private; browser-origin and non-loopback-host requests are refused.
+It only returns recorded results. It has no
+built-ins, skills, executable adapters, child-agent runner, worker or outbound
+network client. Teardown closes its listener. Original names (including `Read`,
+`Exec`, `Bash` and `WebFetch`) remain unchanged, preserving product continuity
+classification; duplicate definitions and reserved-name collisions are refused,
+not renamed. Optional caller-supplied tool definitions retain their schemas.
+Snapshots do not supply original tool definitions: absent explicit definitions,
+inert schemas are generic and reported as such, never claimed to be original.
+
+MCP dispatch in `packages/turn/src/tools/mcp/tools.ts:178–179` does not transmit
+the model's `toolCallId`. Identity therefore binds by **original name + canonical
+arguments + FIFO recorded order**, not by a tool-call ID on the wire. Original
+argument values are sent without any identity wrapper. Different keys within a
+parallel step may arrive in either order; future-step, unmatched and exhausted
+calls are refused. Sequential identical calls with different results resolve in
+recorded order. Parallel identical calls with identical results are safe. When
+identical keys in one step have different result bytes, error state or `structuredResult` values (returned as
+`structuredContent`), the
+inventory increments `ambiguousParallelGroups` and the trace marks a replay-tier
+gap. Queue construction recomputes ambiguity and refuses those groups unless
+the caller explicitly excludes their step indices. A future replay must refuse
+a branch crossing any replay-tier coverage gap unless affected coverage is
+explicitly excluded; this importer is not a replay runner.
+
+The private transport descriptor records representation adaptation rather than
+claiming built-in byte equivalence. Text uses an MCP content envelope; native
+content is retained when available. The queue's `observe` seam measures actual
+model-visible content bytes against expected content, reporting representation
+differences and possible clipping. The configured faux-harness test exercises
+real loopback MCP, unchanged outgoing tool names/arguments, host-observed
+read/execute/search categories and durable continuity capture. It also measures
+actual MCP text clipping. It uses fictional snapshots only, refuses external
+networking and execution, and permits only the product's bounded read-only
+self-process ownership probes on macOS (`ps`/`sysctl`), including in its real
+tool-history worker. Those probe hits are reported as command-name counts.
+Offline proof is not semantic replay quality or permission for a paid run.
+
 ## Offline lookup mechanics (opt-in)
 
 Recall-only remains the default: omitting `--probe-mode` preserves its prompt
