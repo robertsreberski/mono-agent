@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Fix the continuity lookup pilot never recording whether a looked-up value was
+  already in the first model request, so witnessed recovery can now be measured
+  on real runs. Each probe keeps a private, content-free per-slot lookup record
+  outside reports. The pilot's expected-cost estimate is recalibrated from
+  measured usage (about $41 instead of $65 for the first pilot's workload).
+  Reservations, envelopes and caps are unchanged.
+
 - Fix transient outages on Anthropic Messages, OpenAI Responses and Codex in
   normal conversations by retrying only the failed model request, never tools or
   live input. `providers.piNative.requestRetryBudgetMs` defaults to 120000 ms
