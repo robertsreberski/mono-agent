@@ -342,6 +342,15 @@ it("prices eligible external slots with ten no-cache rounds, per-call tiers and 
   expect(result.capOverExpected).toBe(result.catalogCapUSD / result.expectedUSD);
   expect(result.tokenEnvelope.roundsPerEligibleTrial).toBe(10);
   expect(result.roles.pack.expectedUSD).toBeCloseTo(result.trials.filter(t => t.role === "pack").reduce((s, t) => s + t.expectedUSD, 0));
+  // Expected value uses the shared pilot-calibrated scenario; reservations above are unchanged safety bounds.
+  const { LOOKUP_EXPECTED_SCENARIO } = await import("../continuity-lookup-estimate.mjs");
+  expect(LOOKUP_EXPECTED_SCENARIO).toEqual({ version: "pilot-calibrated-v1", requestsPerSlot: 4, lookupsPerSlot: 3, inputAllowanceTokens: 900, laterInputIncrementTokens: 9216,
+    outputTokensPerRequest: 150, cachedInput: { numerator: 19, denominator: 32 }, serviceTier: "default", margin: 1.25, measurement: false });
+  for (const trial of result.trials.filter(t => t.eligible)) {
+    const path = fixture.workload.policy.budget.paths.find(p => p.role === trial.role && p.traceId === trial.traceId && p.probeId === trial.probeId), first = path.initialTokens + 900;
+    const calls = [first, first + 9216, first + 9216, first + 9216].map(input => priceLookupCall(fixture.catalog.cost, input, Math.min(150, fixture.outputLimit.tokens), 19 / 32).usd);
+    expect(trial.expectedUSD).toBeCloseTo(calls.reduce((a, b) => a + b, 0), 12); expect(trial.expectedLookupOverheadUSD).toBeCloseTo(calls[1] + calls[2] + calls[3], 12);
+  }
   const altered = structuredClone(fixture);
   altered.workload.transportSpec = { design: { repeats: 2, shardCostCapUSD: 999999 }, gates: { arbitrary: true } };
   expect(estimateExternalLookup(altered)).toEqual(result);

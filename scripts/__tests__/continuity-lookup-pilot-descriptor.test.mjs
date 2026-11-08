@@ -26,7 +26,11 @@ it("pins exact maximum-class reservation, headroom, ratio and scenario independe
   const f = await fixture(), e = estimateLookupPilot(f);
   expect(e.rmaxUSD).toBe(3.92); expect(e.capUSD).toBe(4); expect(e.lastAdmissibleHeadroomUSD).toBe(.08);
   expect(e.fullUpfrontComparisonUSD).toBe(196); expect(e.capOverExpected).toBeCloseTo(4 / e.expectedUSD, 12);
-  expect(e.scenario).toMatchObject({ cacheFraction: "1/2", lookups: 2, measurement: false });
+  expect(e.scenario).toEqual({ version: "pilot-calibrated-v1", requests: 4, lookups: 3, laterInputIncrementTokens: 9216, cacheFraction: "19/32",
+    outputTokensPerRound: 150, inputAllowanceTokens: 900, margin: 1.25, serviceTier: "default", measurement: false });
+  // Four measured-role slots: (10,900 + 3 x 20,116) input at 13/32 x $2 + 19/32 x $0.10 per M, plus 4 x 150 output at $10 per M.
+  expect(e.expectedUSD).toBeCloseTo(4 * ((71248 * 279) / 320e6 + 600 * 10 / 1e6), 12);
+  expect(e.expectedUSD).toBeCloseTo(0.2724774, 12);
   expect(e.authorizedSpend).toBe(false);
   expect(estimateLookupPilot({ ...f, capUSD: 3.92 }).lastAdmissibleHeadroomUSD).toBe(0);
 });
@@ -96,4 +100,11 @@ it("excludes small native paths even at the 150000-token floor when their input 
     expect(path.feasibility.classification).toBe("feasible");
   }
   expect(lookupPilotSchedule(pilot).filter(s => s.roleId.startsWith("native")).every(s => s.eligible === false)).toBe(true);
+});
+it("keeps every safety maximum unchanged by the expected-scenario recalibration", async () => {
+  expect(LOOKUP_ASSUMPTIONS).toMatchObject({ version: "assumed-v1", inputMax: 272000, outputMax: 128000, tierMultiplierMax: 2, rmax: 3.92 });
+  expect(digest(LOOKUP_ASSUMPTIONS)).toBe("5bfba1c9dab016a079700a5edf5e364c2ad7e58123e5d6056ef29ac4bc157a64");
+  const f = await fixture(), d = lookupPilotDescriptor(f);
+  expect(d).toMatchObject({ capUSD: 4, rmaxUSD: 3.92, assumptionsSha256: "5bfba1c9dab016a079700a5edf5e364c2ad7e58123e5d6056ef29ac4bc157a64" });
+  expect(Object.keys(d)).not.toContain("scenario");
 });
