@@ -282,7 +282,10 @@ export async function readRecordedSource(manifest, conversationId) {
       const remaining = webSteps.map(step => ({ ...step, calls: step.calls.filter(i => !placed.has(i)) })).filter(step => step.calls.length);
       const messageOrder = new Map(source.web.messages.map((r, i) => [r.id, i]));
       const anchor = step => Math.min(...step.calls.flatMap(i => source.tools[i].provenance.filter(p => p.source === "web").map(p => messageOrder.get(p.messageId) * (MAX_ROW_BYTES + 1) + p.partIndex)));
-      for (const step of native) if (!Number.isFinite(anchor(step)) && remaining.length) step.gaps.push("mixed_step_order_unknown");
+      for (const step of native) {
+        if (!messageOrder.has(step.messageId) && !step.calls.some(i => source.tools[i].provenance.some(p => p.source === "web" && messageOrder.has(p.messageId)))) step.gaps.push("journal_step_unplaceable");
+        if (!Number.isFinite(anchor(step)) && remaining.length) step.gaps.push("mixed_step_order_unknown");
+      }
       source.steps = [...native, ...remaining].sort((a, b) => anchor(a) - anchor(b));
     } else source.steps = webSteps;
     if (m.sidecar) {

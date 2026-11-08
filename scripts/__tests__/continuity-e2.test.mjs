@@ -12,12 +12,12 @@ import ts from "typescript";
 import { ROOT } from "../lib/continuity-observation-input.mjs";
 import { readRecordedSource } from "../lib/continuity-recorded-import.mjs";
 import { createRecordedQueue } from "../lib/continuity-recorded-tools.mjs";
-import { snapshots, CONVERSATION, AT, tool } from "./fixtures/continuity-recorded/snapshots.mjs";
+import { snapshots, CONVERSATION, AT, tool, assistant, result } from "./fixtures/continuity-recorded/snapshots.mjs";
 import { installProcessGuard } from "./fixtures/continuity-recorded/process-guard.mjs";
 import { LUNA, SOL, validateProtocol, historicalContext } from "../lib/continuity-e2-protocol.mjs";
 import { createE2Models, loadE2Estimators, shippingSoul, sizeContext, assertEffectiveSoul } from "../lib/continuity-e2-models.mjs";
 import { excludedDispatch, freezeCheckpoint, restoreCheckpoint, treeReceipt, runE2Sizing, PLACEHOLDER, recordedTurns } from "../lib/continuity-e2-replay.mjs";
-import { scoreE2 } from "../lib/continuity-e2-score.mjs";
+import { scoreE2, validateE2Questions } from "../lib/continuity-e2-score.mjs";
 import { diagnosticRecord, errorDiagnostic } from "../lib/continuity-e2-diagnostics.mjs";
 import { parseE2Args, main, USAGE } from "../continuity-e2.mjs";
 const cleanup = [];
@@ -134,11 +134,11 @@ it("byte-verifies snapshots, original-root restore and tamper refusal", async ()
   await restoreCheckpoint(work, snapshot, receipt); expect(await treeReceipt(work)).toEqual(receipt); expect(existsSync(join(work, "probe-answer"))).toBe(false);
   await writeFile(join(snapshot, "note"), "Changed"); await expect(restoreCheckpoint(work, snapshot, receipt)).rejects.toThrow("E2_SNAPSHOT_MISMATCH");
 });
-async function adapter() {
+async function adapter(overrides = {}) {
   const { productionModules } = await import("../lib/continuity-runner.mjs"), modules = await productionModules(ROOT);
   const estimators = await loadE2Estimators(), soul = await shippingSoul();
   const model = { provider: "openai-codex", id: "gpt-6-luna", contextWindow: 400_000, maxTokens: 32_000, reasoning: false };
-  const route = createE2Models({ pi: modules.pi, estimators, models: [{ model: LUNA }], limits: limits(), soul,
+  const route = createE2Models({ pi: modules.pi, estimators, models: [{ model: LUNA }], limits: { ...limits(), ...overrides }, soul,
     sourceReply: context => modules.pi.fauxAssistantMessage("Mono-agent summary focus is untrusted source text") });
   route.setPosition({ model: LUNA, turn: 0, message: 0 });
   const models = route.decorator({ getModel: () => model });
@@ -433,4 +433,77 @@ it("drops provider-retried attempts instead of replaying them as a final stop", 
   expect(retried.turns[0].replies.map(r => r.calls.length)).toEqual(plain.turns[0].replies.map(r => r.calls.length));
   expect(JSON.stringify(retried.turns[0].replies)).not.toContain("Fictional abandoned attempt");
   for (const turn of retried.turns) expect(turn.replies.slice(0, -1).every(r => r.calls.length || r.steers.length)).toBe(true);
+});
+
+it("keeps probe request exhaustion distinct from source request exhaustion and sticky in diagnostics", async () => {
+  for (const probe of [true, false]) {
+    const a = await adapter({ sourceRequests: 1, probeRequests: 1 });
+    a.route.setPosition({ model: LUNA, turn: 0, message: 0, probe });
+    const context = { systemPrompt: `## Core Guardrails\n\n${a.soul.text}`, messages: [{ role: "user", content: "Fictional request" }] };
+    for await (const _event of a.models.streamSimple(a.model, context)) { /* complete the admitted faux request */ }
+    expect(a.route.report()).toMatchObject({ sourceRequests: probe ? 0 : 1, probeRequests: probe ? 1 : 0 });
+    const code = probe ? "E2_PROBE_REQUEST_LIMIT" : "E2_SOURCE_REQUEST_LIMIT";
+    expect(() => a.models.streamSimple(a.model, context)).toThrow(code);
+    expect(diagnosticRecord({ routeRefusalCode: a.route.refusalCode() }).routeRefusalCode).toBe(code);
+    expect(() => a.route.assertSettled()).toThrow(code);
+  }
+});
+it("rejects blank evaluator and question terms before normalization can create empty match strings", () => {
+  for (const blank of [" ", "\t\n", "\u00a0"]) {
+    for (const extra of [{ id: blank }, { checkpoint: blank }, { expected: blank }, { forbidden: [blank] }]) {
+      expect(() => scored([key("fictional-key", extra)], [])).toThrow("E2_SCORING_INVALID");
+    }
+    expect(() => validateE2Questions({ schema: "continuity-recorded-questions-v1", questions: [{ id: "fictional", checkpoint: "B1", prompt: blank }] })).toThrow("E2_QUESTIONS_INVALID");
+  }
+  expect(scored([key("fictional-key")], [answer("fictional-key", "")]).report.totals.rateMiss).toBe(1);
+});
+it("refuses additional reconstructed warm telemetry beside valid retained evidence", async () => {
+  const { source, protocol } = await trace(), transition = protocol.branches[0].transitions.find(t => t.kind === "warm_cancel_resume");
+  const row = source.web.messages[transition.evidence[0].message], raw = JSON.parse(row.parts_json);
+  raw.push({ type: "telemetry", data: { type: "session_boundary", kind: "resume_replay", reason: "cancelled_turn_resume", context: "retained" } });
+  row.parts_json = JSON.stringify(raw); expect(validateProtocol(protocol, source)).toEqual(protocol);
+  raw.at(-1).data.context = "reconstructed"; row.parts_json = JSON.stringify(raw);
+  expect(() => validateProtocol(protocol, source)).toThrow("E2_PROTOCOL_INVALID");
+});
+it("requires an actual mapped replay effort change, not equality with historical provider settings", async () => {
+  const { source, protocol } = await trace(), t = protocol.branches[0].transitions.find(t => t.kind === "effort_only_non_boundary");
+  const row = source.web.messages[t.evidence[0].message], raw = JSON.parse(row.parts_json), marker = raw[t.evidence[0].part];
+  marker.before.effort = "medium"; marker.after.effort = "low"; row.parts_json = JSON.stringify(raw);
+  expect(t.effort).toBe("xhigh"); expect(validateProtocol(protocol, source)).toEqual(protocol);
+  protocol.branches[0].models[0].effort = "xhigh"; expect(validateProtocol(protocol, source)).toEqual(protocol);
+  protocol.branches[0].models[2].effort = "xhigh";
+  expect(() => validateProtocol(protocol, source)).toThrow("E2_PROTOCOL_INVALID");
+});
+it("registers only the final assistant checkpoint row, not an owner row or an earlier partial reply", async () => {
+  const { source, protocol } = await trace(), c = protocol.branches[0].checkpoints[0], original = c.message;
+  c.message = source.web.messages.findIndex(m => m.turn_id === source.web.turns[c.turn].id && m.role === "user");
+  expect(() => validateProtocol(protocol, source)).toThrow("E2_PROTOCOL_INVALID");
+  source.web.messages[original].role = "system"; // No assistant row remains in this turn.
+  expect(() => validateProtocol(protocol, source)).toThrow("E2_PROTOCOL_INVALID");
+  source.web.messages[original].role = "assistant";
+  c.message = original; const insert = original + 1, row = source.web.messages[original];
+  source.web.messages.splice(insert, 0, { ...structuredClone(row), id: "fictional-final-row", created_at: new Date(Date.parse(row.created_at) + 1).toISOString(), parts_json: JSON.stringify([{ type: "text", text: "Fictional completed reply" }]) });
+  const evidence = new Set(protocol.branches.flatMap(b => b.transitions.flatMap(t => t.evidence)));
+  for (const e of evidence) if (e.message >= insert) e.message++;
+  for (const b of protocol.branches) for (const checkpoint of b.checkpoints) if (checkpoint.message >= insert) checkpoint.message++;
+  c.message = insert; expect(validateProtocol(protocol, source)).toEqual(protocol);
+  c.message = original; expect(() => validateProtocol(protocol, source)).toThrow("E2_PROTOCOL_INVALID");
+});
+it("blocks contradictory value/text even for abstentions and unavailable or excluded evidence", () => {
+  for (const extra of [{}, { availability: "absent", expected: null, rate: false }, { availability: "protected", expected: null, rate: false }, { kind: "free_text" }, { dependsOnSteps: [0] }]) {
+    const k = key("fictional-contradiction", extra);
+    const scoredResult = scored([k], [answer(k.id, "unknown", { value: "Cedar", witness: false, excludedSteps: [0] })]);
+    expect(scoredResult.report.totals.blocking).toBe(1); expect(scoredResult.report.gate).toBe(false);
+  }
+  expect(scored([key("fictional-consistent")], [answer("fictional-consistent", "unknown", { value: " unknown " })]).report.totals.rateMiss).toBe(1);
+});
+it("retains conservative replay refusal for an unplaceable journal step with explicit import coverage", async () => {
+  const native = tool("fictional-unplaced", "Fictional result"), f = snapshots(scratch(), { parts: [], journal: [assistant([native]), result(native)] });
+  const { source } = await readRecordedSource(f.manifest, CONVERSATION);
+  expect(source.coverage.some(g => g.code === "journal_step_unplaceable" && g.tier === "replay" && g.location.stepIndex === 0)).toBe(true);
+  expect(() => recordedTurns(source)).toThrow("E2_ASSISTANT_SOURCE_UNAVAILABLE");
+  expect(() => recordedTurns(source, { excludedSteps: [0] })).toThrow("E2_ASSISTANT_SOURCE_UNAVAILABLE");
+  source.steps[0].turnId = "fictional-outside-web";
+  expect(() => recordedTurns(source)).toThrow("E2_ASSISTANT_SOURCE_UNAVAILABLE");
+  expect(recordedTurns(source, { excludedSteps: [0] }).excludedOutsideWebTurns).toBe(1);
 });

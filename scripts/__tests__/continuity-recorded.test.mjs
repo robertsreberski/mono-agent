@@ -246,10 +246,13 @@ it("reconciles journal-only calls with sidecar evidence and deduplicates returne
   const t = tool("native-only", [{ type: "text", text: "Fictional native result" }]);
   const f = snapshots(scratch(), { parts: [], sidecar: [t], pairedResults: false, journal: [assistant([t]), { kind: "tool_result", payload: { phase: "returned", callId: t.toolCallId, message: result(t) } }, result(t)] });
   const { source, inventory } = await read(f);
-  expect(inventory).toMatchObject({ tools: 1, journalOnly: 1, sidecarOnly: 0, matched: 1 });
+  expect(inventory).toMatchObject({ tools: 1, journalOnly: 1, sidecarOnly: 0, matched: 1, replayGaps: 1 });
+  expect(source.steps[0].gaps).toContain("journal_step_unplaceable");
   expect(source.tools[0].gaps.filter(code => code !== "arguments_may_include_host_defaults")).toEqual([]);
   expect(source.tools[0].provenance.find(p => p.phase === "result").recordIds).toEqual(["record-2", "record-3"]);
-  expect(createRecordedQueue(source).dispatch(t.toolName, t.args).content).toEqual(t.result);
+  expect(() => createRecordedQueue(source)).toThrow("RECORDED_REPLAY_COVERAGE_GAP");
+  expect(resultEnvelope(source.tools[0]).content).toEqual(t.result);
+  expect(createRecordedQueue(source, { excludedSteps: [0] }).report().pending).toBe(0);
 });
 
 it("does not double-count native/web steers or count initial native input as a steer", async () => {
@@ -522,7 +525,8 @@ it("keeps structured results after journal selection and rejects differing paral
   const parallel = await read(snapshots(scratch(), { parts: [first, second] })); expect(parallel.inventory.ambiguousParallelGroups).toBe(1);
   expect(() => createRecordedQueue(parallel.source)).toThrow("RECORDED_AMBIGUOUS_PARALLEL_GROUP");
   const native = await read(snapshots(scratch(), { parts: [], journal: [assistant([first]), { ...result(first), structuredContent: first.structuredResult }] }));
-  expect(createRecordedQueue(native.source).dispatch(first.toolName, first.args).structuredContent).toEqual(first.structuredResult);
+  expect(resultEnvelope(native.source.tools[0]).structuredContent).toEqual(first.structuredResult);
+  expect(() => createRecordedQueue(native.source)).toThrow("RECORDED_REPLAY_COVERAGE_GAP");
 });
 
 it("does not interpret payload fields as result-copy metadata and models real sidecar byte loss", async () => {
@@ -755,4 +759,15 @@ it("falls back to sidecar Agent arguments when the journal call lacks arguments"
   const { source, inventory } = await read(snapshots(scratch(), { parts: [web], journal: [call, result(native)], sidecar: [native] }));
   expect(source.tools[0]).toMatchObject({ args: fullParent, argumentsOrigin: "sidecar" });
   expect(inventory).toMatchObject({ replayGaps: 0, conflicts: 0 });
+});
+
+it("refuses hidden Agent fields as display projections even when every shared value matches", async () => {
+  for (const hidden of ["prompt", "effort", "model", "persist"]) {
+    const authoritative = { ...fullParent, persist: true }, web = projectionParent({ name: authoritative.name, [hidden]: authoritative[hidden] });
+    const native = tool(web.toolCallId, web.result, { toolName: "Agent", args: authoritative });
+    const { source } = await read(snapshots(scratch(), { parts: [web], sidecar: [native], journal: [assistant([native]), result(native)] }));
+    expect(source.tools[0].gaps).toEqual(expect.arrayContaining(["journal_arguments_conflict", "sidecar_conflict"]));
+    expect(source.tools[0].gaps).not.toContain("web_projection_arguments");
+    expect(() => createRecordedQueue(source)).toThrow("RECORDED_REPLAY_COVERAGE_GAP");
+  }
 });

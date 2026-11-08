@@ -46,7 +46,7 @@ export function validateProtocol(p, source) {
     if (!Array.isArray(b.models) || b.models.length !== expected.length || b.models.some((m, i) => !keys(m, ["model", "effort"])
       || m.model !== expected[i] || !["none", "low", "medium", "high", "xhigh"].includes(m.effort) || m.model === SOL && m.effort !== "high")) refuse();
     if (!Array.isArray(b.transitions) || !Array.isArray(b.checkpoints) || !b.checkpoints.length || b.checkpoints.length > 48) refuse();
-    let last = b.startTurn - 1, switches = 0;
+    let last = b.startTurn - 1, switches = 0, currentEffort = b.models[0].effort;
     const transitionNames = new Set();
     for (const t of b.transitions) {
       if (!keys(t, ["name", "turn", "kind", "evidence"], ["effort"]) || !label(t.name) || transitionNames.has(t.name) || !integer(t.turn) || t.turn < b.startTurn || t.turn > b.endTurn || t.turn < last
@@ -68,9 +68,13 @@ export function validateProtocol(p, source) {
       if (t.kind === "cold_model_switch") {
         if (!marker || marker.kind !== "model" || !marker.before?.model || !marker.after?.model || marker.before.model === marker.after.model) refuse();
         switches++;
+        if (!b.models[switches]) refuse();
+        currentEffort = b.models[switches].effort;
       } else if (t.kind === "effort_only_non_boundary") {
         if (!marker || marker.kind !== "model" || !marker.before?.model || marker.before.model !== marker.after?.model
-          || marker.before.effort === marker.after.effort || !["none", "low", "medium", "high", "xhigh"].includes(t.effort)) refuse();
+          || marker.before.effort === marker.after.effort || !["none", "low", "medium", "high", "xhigh"].includes(t.effort) || t.effort === currentEffort) refuse();
+        // Historical settings are evidence of a change, not replay settings.
+        currentEffort = t.effort;
       } else if (t.kind === "manual_compaction_skipped") {
         if (!marker || marker.kind !== "compaction" || marker.trigger !== "manual" || marker.status !== "skipped" || marker.reason !== "model_changed") refuse();
       } else {
@@ -91,6 +95,7 @@ export function validateProtocol(p, source) {
         else if (part.type === "conversation-marker" && part.kind === "compaction" && part.trigger === "manual" && part.status === "skipped") kind = "manual_compaction_skipped";
         else if (data?.reason === "model_change") kind = "cold_model_switch";
         else if (data?.reason === "cancelled_turn_resume") kind = "warm_cancel_resume";
+        if (kind === "warm_cancel_resume" && historicalContext(data) !== "retained") refuse();
         if (kind && !b.transitions.some(t => t.turn === ordinal && t.kind === kind && (data || t.evidence.some(e => e.message === message && e.part === partIndex)))) refuse();
       }
     }
@@ -107,7 +112,9 @@ export function validateProtocol(p, source) {
     const names = new Set();
     for (const c of b.checkpoints) {
       if (!keys(c, ["name", "turn", "message"]) || !label(c.name) || names.has(c.name) || !integer(c.turn) || c.turn < b.startTurn || c.turn > b.endTurn
-        || !integer(c.message) || source.web.messages[c.message]?.turn_id !== source.web.turns[c.turn].id) refuse();
+        || !integer(c.message) || source.web.messages[c.message]?.role !== "assistant"
+        || source.web.messages[c.message]?.turn_id !== source.web.turns[c.turn].id
+        || c.message !== source.web.messages.findLastIndex(row => row.turn_id === source.web.turns[c.turn].id && row.role === "assistant")) refuse();
       names.add(c.name);
     }
     for (const name of b.id === "main" ? ["B1", "B2", "B4"] : ["B3"]) if (!names.has(name)) refuse();

@@ -8,11 +8,12 @@ export function effectiveArguments(web, model) {
   return object(web) && object(model) && Object.keys(model).every(k => Object.hasOwn(web, k) && callKey("", { value: web[k] }) === callKey("", { value: model[k] }))
     && Object.keys(web).every(k => Object.hasOwn(model, k) || EFFECTIVE_ARGUMENT_KEYS.includes(k));
 }
-// Agent lifecycle bookends publish only name/description (agent-tool.ts:1104).
+// Agent lifecycle bookends publish only name/description (agent-tool.ts:1104);
+// web/src/store.ts:8521-8526 replaces group.args with those display arguments.
 // A display projection must omit keys, never add or change shared values.
 export function webProjectionArguments(web, authoritative) {
   return object(web) && object(authoritative) && Object.keys(web).length < Object.keys(authoritative).length
-    && Object.keys(web).every(k => Object.hasOwn(authoritative, k) && callKey("", { value: web[k] }) === callKey("", { value: authoritative[k] }));
+    && Object.keys(web).every(k => ["name", "description"].includes(k) && Object.hasOwn(authoritative, k) && callKey("", { value: web[k] }) === callKey("", { value: authoritative[k] }));
 }
 export const REDACTION_OPTIONS = { contentPatternRedaction: true, visibleTextSanitization: {
   omitFilesystemPaths: true, omission: "[tool payload omitted because it contained a private host path]",

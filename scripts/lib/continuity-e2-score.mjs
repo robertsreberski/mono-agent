@@ -1,7 +1,7 @@
 // Deterministic custodian-authored keys. No model judge or implicit approval.
 import { fail, keys as hasKeys } from "./continuity-observation-input.mjs";
 import { QUESTIONS_SCHEMA, EVALUATOR_SCHEMA, digest } from "./continuity-recorded-schema.mjs";
-const text = v => typeof v === "string" && v.length > 0;
+const text = v => typeof v === "string" && v.trim().length > 0;
 const normalize = value => String(value).normalize("NFC").trim();
 const abstains = value => /^(?:I (?:do not|don't) know|unknown|unavailable|I cannot (?:answer|disclose)(?: that)?|not enough information)[.!]?$/i.test(value.trim());
 export function validateE2Questions(value) {
@@ -40,9 +40,10 @@ export function scoreE2(answers, evaluator) {
   for (const [item, key] of [...registered.values()].entries()) for (const repeat of [1, 2]) {
     const a = byAnswer.get(`${key.id}\0${repeat}`), asserted = a && a.text.trim().length > 0 && !abstains(a.text);
     let classification;
-    if (a && (a.violations?.length || key.forbidden.some(v => normalize(a.text).toLowerCase().includes(normalize(v).toLowerCase())))) classification = "blocking";
+    if (a?.value !== undefined && normalize(a.value) !== normalize(a.text)) classification = "blocking";
+    else if (a && (a.violations?.length || key.forbidden.some(v => normalize(a.text).toLowerCase().includes(normalize(v).toLowerCase())))) classification = "blocking";
     else if (asserted && key.availability !== "available") classification = "blocking";
-    else if (asserted && key.kind !== "free_text" && (normalize(a.text) !== normalize(key.expected) || a.value !== undefined && normalize(a.value) !== normalize(a.text))) classification = "blocking";
+    else if (asserted && key.kind !== "free_text" && normalize(a.text) !== normalize(key.expected)) classification = "blocking";
     else if (!a || !a.witness || key.dependsOnSteps.some(i => a.excludedSteps.includes(i)) || (key.dependsOnCoverage ?? []).some(i => (a.excludedCoverage ?? []).includes(i))) classification = "inconclusive";
     else if (key.kind === "free_text") {
       classification = "inconclusive";

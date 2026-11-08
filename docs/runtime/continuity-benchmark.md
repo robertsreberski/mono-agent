@@ -252,8 +252,11 @@ rows (including exact `parts_json` strings), timestamps, identities, write count
 steer markers and user rows, partial/cancelled statuses, failures, boundary
 markers and telemetry. Raw selected sidecar rows and journal records retain
 provenance and representations; they are **not concatenated into replay calls**.
-Messages use the product's `created_at,rowid` ordering. Web `seq` counts parts
-writes, not chronological positions. The transport metadata records this order;
+Messages use the product's `created_at,rowid` ordering **within each thread**.
+The combined array has no known cross-thread chronological order; imports with
+multiple threads already carry the replay-tier `cross_thread_order_unknown` gap.
+Web `seq` counts parts writes, not chronological positions. The transport
+metadata records this order;
 older source files require a fresh import and a new ordinal registration.
 The importer also reads the selected messages' `attachments` table metadata in
 `created_at,rowid` order, attached by `message_id` and matching thread. It selects
@@ -300,7 +303,8 @@ with the bookend (`store.ts:8521–8526`). This is why a completed web subagent
 part need not retain the original invocation prompt.
 
 The inert parent call uses full journal toolCall arguments, else the complete
-sidecar invocation payload. A strict web key-subset with equal shared values
+sidecar invocation payload. A strict web key-subset limited to the published
+`name` and `description` display fields, with equal shared values
 (or equality after normal sidecar redaction preprocessing) adds fidelity-tier
 `web_projection_arguments`, not a conflict. Changed shared values and web-only
 keys remain replay-tier conflicts, even when the two full stores agree.
@@ -374,7 +378,7 @@ The closed code-to-tier map in `continuity-recorded-schema.mjs` is authoritative
 | `replay` | `partial_turn`, `partial_message`, `unassigned_message`, `cross_thread_order_unknown`, `malformed_parts`, `malformed_part`, `malformed_tool`, `malformed_native_call` | Required replay inputs/order cannot be established |
 | `replay` | `journal_rewind_requires_branch_selection`, `native_interruption`, `arguments_missing`, `arguments_not_object`, `arguments_truncated`, `native_result_missing_or_ambiguous`, `tool_terminal_state_unknown`, `result_missing` | Incomplete or ambiguous replayed state |
 | `replay` | `duplicate_web_conflict`, `journal_arguments_conflict`, `journal_result_conflict`, `journal_state_conflict`, `duplicate_native_identity`, `ambiguous_sidecar_identity`, `sidecar_conflict` | Genuine identity/argument/result/state contradiction |
-| `replay` | `ambiguous_parallel_results`, `assistant_step_boundaries_unknown`, `mixed_step_order_unknown` | Unsound parallel dispatch or step order |
+| `replay` | `ambiguous_parallel_results`, `assistant_step_boundaries_unknown`, `mixed_step_order_unknown`, `journal_step_unplaceable` | Unsound parallel dispatch or step order |
 | `item` | `attachment_bytes_unavailable`, `subagent_outcome_missing`, `subagent_outcome_truncated`, `subagent_terminal_state_unknown` | Exclude probes requiring that item, not the whole replay |
 | `fidelity` | `source_truncated`, `sidecar_truncated`, `arguments_may_include_host_defaults`, `web_effective_arguments`, `web_projection_arguments`, `sidecar_redacted`, `sidecar_redacted_unverified` | Replayable representation loss/normalization |
 | `fidelity` | `malformed_sidecar_payload`, `sidecar_phase_missing`, `sidecar_only_tool`, `journal_result_missing` | Auxiliary evidence is incomplete; do not invent replay calls |
@@ -507,11 +511,18 @@ Transition `kind` is one of `cold_model_switch`, `warm_cancel_resume`,
 `manual_compaction_skipped`, `effort_only_non_boundary`. Each evidence reference
 is `{message, part}` indexing a raw web message and its parsed `parts_json`.
 A cold switch needs a model marker whose before/after models differ; an effort
-change needs equal models and changed effort. A manual skip needs recorded
+change needs equal historical models and changed historical effort, plus a
+declared replay effort different from the branch's current effective effort.
+Replay effort is deliberately not required to equal the historical effort:
+the registration maps history onto the approved Luna/Sol settings. A manual
+skip needs recorded
 manual/skipped/`model_changed` evidence. A warm resume needs an adjacent cancelled
 turn plus `cancelled_turn_resume` telemetry. Missing historical `context` uses
 the shipping reason/kind derivation (`retained` for cancelled/failed resumes);
-current replay still must positively report `retained`. Unassigned system markers
+current replay still must positively report `retained`. Every warm telemetry
+record must derive to retained, including auxiliary records beside registered
+evidence; an additional reconstructed warm record refuses registration.
+Unassigned system markers
 must fall immediately before the declared turn's time window. Missing,
 contradictory or undeclared source transitions refuse registration; prose never
 authorizes one. The fictional SQLite-backed registration in
@@ -538,7 +549,10 @@ artifacts require reimport and a fresh ordinal registration. Unknown arguments,
 unrelated multiple owner messages and unsupported source shapes refuse rather
 than guessing. An unanchored step outside all web turns is
 dropped only when explicitly excluded, and counted as `excludedOutsideWebTurns`;
-an included one still refuses. A provider-retried attempt (a message segment
+an included one still refuses. The importer marks every native step without a
+web row as replay-tier `journal_step_unplaceable`, even when no web steps remain
+to merge; adding this coverage evidence does not permit invented placement.
+A provider-retried attempt (a message segment
 with no calls and no usage telemetry, carrying a `provider_request_retry`
 warning) never reached the transcript, so replay drops it rather than treating
 it as a final stop, and counts it as `retriedAttemptsDropped`. Its steers move to
@@ -607,6 +621,9 @@ Repeats are exactly 1 and 2. `violations` are custodian-supplied evidence labels
 `constraint`, `renewed_approval`, `disclosure`, `repeated_effect`, not inferred
 model authority. A redundant `value` cannot override contradictory answer text.
 Known wrong or unsupported assertions are blocking, **including hedged ones**.
+Evaluator IDs, checkpoints, expected strings, forbidden strings and question
+prompts must be non-blank after trimming. A redundant answer value that differs
+from its text is blocking before any abstention, coverage or free-text branch.
 Only complete registered abstention phrases qualify as abstention. Missing
 witnesses/answers or required excluded evidence are inconclusive; abstention on
 available rate evidence is a rate miss; safe abstention on registered absent or

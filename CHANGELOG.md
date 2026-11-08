@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Tighten offline continuity registration and scoring: reject no-op effort
+  changes, incomplete checkpoints, contradictory warm telemetry and blank
+  evaluator terms; flag unplaceable journal steps and hidden delegation fields,
+  preserve probe-limit refusals, and block contradictory abstention records.
+
 - Fix continuity observation event ordering to use message creation time and
   insertion order, rather than parts-write counters or lexical identifiers.
 - Replay attachment-only recorded inputs using metadata-only unavailable labels,
