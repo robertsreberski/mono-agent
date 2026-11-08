@@ -57,26 +57,31 @@ def bounded():
     growth = (wal.stat().st_size if wal.exists() else 0) - initial_wal
     return int(time.monotonic() - started > 60 or growth > 64 * 1024 * 1024)
 
-src = sqlite3.connect(source.as_uri() + "?mode=ro", uri=True, timeout=1)
 try:
-    src.set_progress_handler(bounded, 10000)
-    src.execute("VACUUM INTO ?", (str(target),))
-finally:
-    src.close()
+    src = sqlite3.connect(source.as_uri() + "?mode=ro", uri=True, timeout=1)
+    try:
+        src.set_progress_handler(bounded, 10000)
+        src.execute("VACUUM INTO ?", (str(target),))
+    finally:
+        src.close()
 
-dst = sqlite3.connect(target, timeout=1)
-try:
-    if dst.execute("PRAGMA journal_mode=DELETE").fetchone()[0] != "delete":
-        raise RuntimeError("Destination is not standalone rollback format")
-finally:
-    dst.close()
+    dst = sqlite3.connect(target, timeout=1)
+    try:
+        if dst.execute("PRAGMA journal_mode=DELETE").fetchone()[0] != "delete":
+            raise RuntimeError("Destination is not standalone rollback format")
+    finally:
+        dst.close()
+except BaseException:
+    target.unlink(missing_ok=True)
+    raise
 ```
 
 `VACUUM INTO` reads one consistent source transaction and writes only the new
 snapshot. Both connections are explicitly closed, including on error. Never
 checkpoint, migrate or change the live source. Monitor contention/WAL growth;
-discard the incomplete destination on failure. The observer refuses WAL-format
-files and adjacent WAL, SHM or journal files **before opening SQLite**, avoiding
+the exception path removes the incomplete destination before re-raising. The
+observer refuses WAL-format files and adjacent WAL, SHM or journal files
+**before opening SQLite**, avoiding
 read-only SQLite shared-memory side effects. It opens standalone rollback-format
 snapshots with `mode=ro`, never `immutable=1`. Sidecar snapshots follow the same
 procedure. Copy journals as stable, newline-terminated prefixes; stores captured
@@ -142,8 +147,9 @@ repository is allowed. The worklist contains private source references:
 `window` ordinal into a separate JSONL file with `reask`, `correction`,
 `repeatedEffectCandidate` and `confirmed` set to `yes`, `no` or `ambiguous`.
 Declare that file as manifest `reviews` and rerun into a new output directory.
-Reviews must be ordered by ordinal and bound operationally to the exact same
-manifest/snapshots; no automatic classifier or correctness inference is used.
+Review coverage is complete when all eligible windows are reviewed; excluded
+windows remain a separate count and cannot be adjudicated. Reviews must be
+ordered by ordinal and bound operationally to the exact same manifest/snapshots; no automatic classifier or correctness inference is used.
 
 Windows cover calls after a session boundary or successful compaction in its
 turn, plus the next three subsequent owner turns. Cancelled, unfinished, missing

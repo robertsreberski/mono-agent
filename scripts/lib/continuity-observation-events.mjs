@@ -16,7 +16,8 @@ const MAX_TURN_EVENTS = 8192;
 export const stratumAt = (snapshot, timestamp) => snapshot.strata.find(p => timestamp >= p.start && timestamp < p.end);
 export const sameStratum = (a, b) => a && b && a.closure === b.closure && a.soul === b.soul;
 export function parseParts(row) {
-  if (row.parts_json === null) return { parts: [], invalid: 1, oversized: 1 };
+  if (row?.oversized === 1) return { parts: [], invalid: 1, oversized: 1 };
+  if (typeof row?.parts_json !== "string") return { parts: [], invalid: 1, oversized: 0 };
   try {
     const parts = JSON.parse(row.parts_json);
     if (!Array.isArray(parts) || parts.length > MAX_TURN_EVENTS) return { parts: [], invalid: 1, oversized: 0 };
@@ -28,7 +29,7 @@ export function statements(db) {
     threads: db.prepare("SELECT id,source_id,conversation_id,trigger_kind FROM threads ORDER BY id"),
     turns: db.prepare("SELECT id,status,started_at,finished_at FROM turns WHERE thread_id=? AND started_at>=? AND started_at<? ORDER BY started_at,id"),
     messages: db.prepare("SELECT id,role,status,seq,cron_suppressed FROM messages WHERE turn_id=? ORDER BY seq,id"),
-    parts: db.prepare(`SELECT CASE WHEN length(CAST(parts_json AS BLOB))<=${MAX_ROW_BYTES} THEN parts_json ELSE NULL END AS parts_json FROM messages WHERE id=?`),
+    parts: db.prepare(`SELECT CASE WHEN length(CAST(parts_json AS BLOB))<=${MAX_ROW_BYTES} THEN parts_json ELSE NULL END AS parts_json, CASE WHEN length(CAST(parts_json AS BLOB))>${MAX_ROW_BYTES} THEN 1 ELSE 0 END AS oversized FROM messages WHERE id=?`),
     owner: db.prepare("SELECT 1 FROM messages WHERE turn_id=? AND role='user' AND cron_suppressed=0 LIMIT 1"),
     unassigned: db.prepare("SELECT id,role,status,seq,cron_suppressed,created_at,turn_id FROM messages WHERE thread_id=? AND created_at>=? AND created_at<? AND (turn_id IS NULL OR NOT EXISTS (SELECT 1 FROM turns WHERE turns.id=messages.turn_id)) ORDER BY id"),
     followup: db.prepare(`SELECT t.id,t.status,t.started_at,t.finished_at FROM turns t WHERE t.thread_id=? AND (t.started_at>? OR (t.started_at=? AND t.id>?)) AND t.started_at<? AND EXISTS (SELECT 1 FROM messages m WHERE m.turn_id=t.id AND m.role='user' AND m.cron_suppressed=0) ORDER BY t.started_at,t.id LIMIT 3`),

@@ -6,13 +6,15 @@ import { join, resolve, dirname as dirnameOf } from "node:path";
 import { tmpdir } from "node:os";
 import { createHash } from "node:crypto";
 import childProcess from "node:child_process";
-import http from "node:http";
+import http, { request as namedHttpRequest } from "node:http";
+import workerThreads from "node:worker_threads";
+import { syncBuiltinESMExports } from "node:module";
 import https from "node:https";
 import net from "node:net";
 import tls from "node:tls";
 import dgram from "node:dgram";
 import { main, observe } from "../continuity-observe.mjs";
-import { openSnapshot, ROOT, MAX_ROW_BYTES } from "../lib/continuity-observation-input.mjs";
+import { openSnapshot, ROOT, MAX_ROW_BYTES, sourceStamps, assertUnchanged } from "../lib/continuity-observation-input.mjs";
 import { PACK_REASONS } from "../lib/continuity-observation-events.mjs";
 import { HISTORY_NOTICE, HISTORY_HEADER, parseConversationHistoryText } from "../lib/continuity-observation-retrieval.mjs";
 import { historyBody, historyResponse, historyText } from "./fixtures/continuity-observation/text-result.mjs";
@@ -36,7 +38,23 @@ const addAgent = (f) => {
   });
   return { agent, thread, conversation };
 };
-afterEach(() => { vi.restoreAllMocks(); for (const p of dirs.splice(0)) fs.rmSync(p, { recursive: true, force: true }); });
+afterEach(() => { vi.restoreAllMocks(); syncBuiltinESMExports(); for (const p of dirs.splice(0)) fs.rmSync(p, { recursive: true, force: true }); });
+
+function assertObserverSourceSafe(source) {
+  const parsed = ts.createSourceFile("observer.mjs", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+  if (parsed.parseDiagnostics.length) throw new Error("INVALID_OBSERVER_SOURCE");
+  const blocked = new Set(["fetch", "require", "createRequire", "getBuiltinModule", "eval", "Function"]);
+  function visit(node) {
+    if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) && node.moduleSpecifier) {
+      if (!ts.isStringLiteral(node.moduleSpecifier) || !/^(node:(fs|path|url|crypto|sqlite)|\.\/(?:lib\/)?continuity-observation-[a-z-]+\.mjs)$/.test(node.moduleSpecifier.text)) throw new Error("FORBIDDEN_OBSERVER_IMPORT");
+    }
+    if (ts.isImportEqualsDeclaration(node) || (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword)
+      || (ts.isIdentifier(node) && blocked.has(node.text))
+      || (ts.isElementAccessExpression(node) && ts.isStringLiteralLike(node.argumentExpression) && blocked.has(node.argumentExpression.text))) throw new Error("FORBIDDEN_OBSERVER_CAPABILITY");
+    ts.forEachChild(node, visit);
+  }
+  visit(parsed);
+}
 
 function assertExports(dir, reports) {
   expect(fs.readdirSync(dir).sort()).toEqual(["inventory.json", "metrics.json", "outcomes.json", "report.md"]);
@@ -253,6 +271,18 @@ describe("read-only continuity observation", () => {
     await expect(run(f)).rejects.toThrow("REVIEW_WINDOW_EXCLUDED");
   });
 
+  it("marks review coverage complete when all eligible windows are reviewed despite excluded windows", async () => {
+    const dir = temp(), f = fixture(dir, { count: 6, parts: i => [1, 2, 5].includes(i) ? [boundary()] : [] });
+    const reviews = join(dir, "reviews.jsonl"), review = window => ({ window, reask: "no", correction: "no", repeatedEffectCandidate: "no", confirmed: "no" });
+    f.value.reviews = reviews; update(f);
+    fs.writeFileSync(reviews, JSON.stringify(review(1)) + "\n");
+    const partial = (await run(f)).outcomes.strata[0];
+    expect(partial).toMatchObject({ windows: 3, eligible: 2, excluded: 1, reviewed: 1, unreviewed: 2, coverage: "partial" });
+    fs.writeFileSync(reviews, [review(1), review(2)].map(JSON.stringify).join("\n") + "\n");
+    const complete = (await run(f)).outcomes.strata[0];
+    expect(complete).toMatchObject({ windows: 3, eligible: 2, excluded: 1, reviewed: 2, unreviewed: 1, coverage: "complete" });
+  });
+
   it("refuses unmatched, duplicate and malformed adjudications", async () => {
     for (const entries of [
       [{ window: 3, reask: "no", correction: "no", repeatedEffectCandidate: "no", confirmed: "no" }],
@@ -288,6 +318,20 @@ describe("read-only continuity observation", () => {
     finally { db.close(); }
   });
 
+  it("keeps SQLite extension loading disabled at connection creation", () => {
+    const f = fixture(temp()), db = openSnapshot(f.web, "web");
+    try { expect(() => db.enableLoadExtension(true)).toThrow(/disabled|not allowed/i); }
+    finally { db.close(); }
+    const source = fs.readFileSync(join(ROOT, "scripts/lib/continuity-observation-input.mjs"), "utf8");
+    expect(source).toContain("allowExtension: false"); expect(source).not.toContain("enableExtensions:");
+  });
+
+  it.each(["deleted", "renamed"])("maps a %s stamped source to SNAPSHOT_CHANGED", kind => {
+    const f = fixture(temp()), before = sourceStamps([f.web]);
+    if (kind === "deleted") fs.unlinkSync(f.web); else fs.renameSync(f.web, f.web + ".moved");
+    expect(() => assertUnchanged(before)).toThrowError(expect.objectContaining({ code: "SNAPSHOT_CHANGED", message: "SNAPSHOT_CHANGED" }));
+  });
+
   it("refuses worklists inside this repository, via symlinks, or within the export set", async () => {
     const f = fixture(temp()), inside = join(ROOT, "scripts", "must-not-exist-private-review.jsonl");
     await expect(run(f, { privateWorklist: inside })).rejects.toThrow("PRIVATE_WORKLIST_PATH_REFUSED"); expect(fs.existsSync(inside)).toBe(false);
@@ -316,19 +360,47 @@ describe("read-only continuity observation", () => {
 
   it("makes no network calls or child processes, including the CLI path", async () => {
     const forbidden = [];
-    for (const [module, methods] of [[childProcess, ["spawn", "spawnSync", "exec", "execSync", "execFile", "execFileSync", "fork"]], [http, ["request", "get"]], [https, ["request", "get"]], [net, ["connect", "createConnection"]], [tls, ["connect"]], [dgram, ["createSocket"]]]) {
+    for (const [module, methods] of [[childProcess, ["spawn", "spawnSync", "exec", "execSync", "execFile", "execFileSync", "fork"]], [http, ["request", "get"]], [https, ["request", "get"]], [net, ["connect", "createConnection"]], [tls, ["connect"]], [dgram, ["createSocket"]], [workerThreads, ["Worker"]]]) {
       for (const method of methods) forbidden.push(vi.spyOn(module, method).mockImplementation(() => { throw new Error("NETWORK_OR_PROCESS_FORBIDDEN"); }));
     }
     forbidden.push(vi.spyOn(globalThis, "fetch").mockImplementation(() => { throw new Error("FETCH_FORBIDDEN"); }));
+    syncBuiltinESMExports();
+    expect(namedHttpRequest).toBe(http.request); // Named built-in bindings see the installed spy.
     vi.spyOn(process.stdout, "write").mockImplementation(() => true);
     const f = fixture(temp(), { sidecar: true, journal: true });
     expect(await main(["--manifest", f.manifest, "--output", join(temp(), "exports")])).toBe(0);
     for (const spy of forbidden) expect(spy).not.toHaveBeenCalled();
-    const toolFiles = ["continuity-observe.mjs", ...["input", "events", "aggregate", "report", "retrieval"].map(n => `lib/continuity-observation-${n}.mjs`)];
-    for (const file of toolFiles) {
-      const source = fs.readFileSync(resolve(ROOT, "scripts", file), "utf8");
-      for (const match of source.matchAll(/from\s+["']([^"']+)/g)) expect(match[1]).toMatch(/^(node:(fs|path|url|crypto|sqlite)|\.\/.*continuity-observation-.*\.mjs)$/);
+    const toolFiles = ["continuity-observe.mjs", ...fs.readdirSync(join(ROOT, "scripts/lib")).filter(n => /^continuity-observation-.*\.mjs$/.test(n)).map(n => `lib/${n}`)];
+    expect(toolFiles.length).toBeGreaterThan(1);
+    for (const file of toolFiles) assertObserverSourceSafe(fs.readFileSync(resolve(ROOT, "scripts", file), "utf8"));
+  });
+
+  it("statically rejects forbidden capabilities, including side-effect/re-export and dynamic imports", () => {
+    for (const module of ["net", "http", "https", "child_process", "worker_threads", "dgram", "tls"]) {
+      for (const specifier of [module, `node:${module}`]) for (const code of [
+        `import anything from "${specifier}";`, `import "${specifier}";`, `export * from "${specifier}";`, `import("${specifier}");`,
+      ]) expect(() => assertObserverSourceSafe(code)).toThrow(/FORBIDDEN_OBSERVER/);
     }
+    for (const code of ['import("node:" + name)', 'import("./continuity-observation-input.mjs")', 'fetch(url)', 'globalThis.fetch(url)', 'globalThis["fetch"](url)', 'require("node:net")', 'process.getBuiltinModule("net")', 'new Function("return 1")']) expect(() => assertObserverSourceSafe(code)).toThrow(/FORBIDDEN_OBSERVER/);
+    expect(() => assertObserverSourceSafe('import { readFileSync } from "node:fs"; // fetch and import("node:net") are comments')).not.toThrow();
+  });
+
+  it("runs the real CLI entrypoint through a symlink", () => {
+    const alias = join(temp(), "observe-link.mjs"); fs.symlinkSync(join(ROOT, "scripts/continuity-observe.mjs"), alias);
+    // The test harness invokes the CLI; the observer itself never spawns.
+    const text = childProcess.execFileSync(process.execPath, [alias, "--help"], { cwd: ROOT, encoding: "utf8", timeout: 5000 });
+    expect(text).toContain("Usage: node scripts/continuity-observe.mjs");
+  });
+
+  it("refuses inherited Object.prototype members in CLI flag positions", async () => {
+    const f = fixture(temp()), stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    for (const flag of Object.getOwnPropertyNames(Object.prototype)) {
+      const output = join(temp(), "exports");
+      expect(await main(["--manifest", f.manifest, "--output", output, flag, "ignored"])).toBe(1);
+      expect(fs.existsSync(output)).toBe(false);
+    }
+    expect(stderr.mock.calls.every(([text]) => text.startsWith("Usage:"))).toBe(true); expect(stdout).not.toHaveBeenCalled();
   });
 
   it("sanitizes CLI failures rather than echoing paths or free-form SQLite errors", async () => {
@@ -367,6 +439,12 @@ describe("read-only continuity observation", () => {
     }
   });
 
+  it("classifies NULL parts as invalid but not oversized", async () => {
+    const f = fixture(temp()); editDb(f, db => db.prepare("UPDATE messages SET parts_json=NULL WHERE id=?").run(`${CANARY}_turn_2_assistant`));
+    const r = await run(f); expect(r.inventory.records.invalidRecords).toBe(1); expect(r.inventory.records.oversizedRecords).toBe(0);
+    expect(r.metrics.strata[0].boundaries.coverage).toBe("partial");
+  });
+
   it("keeps malformed/oversized rows explicit and never hides them as complete coverage", async () => {
     const f = fixture(temp());
     editDb(f, db => {
@@ -378,7 +456,7 @@ describe("read-only continuity observation", () => {
     expect(field(r.metrics.strata[0].followup.statuses, "status", "incomplete")).toBe(2);
   });
 
-  it("reads a snapshot file larger than 1 GiB without whole-file loading (sparse unqueried tail)", async () => {
+  it("reads selected messages from a snapshot with a sparse tail exceeding 1 GiB", async () => {
     const f = fixture(temp()); fs.truncateSync(f.web, 1024 ** 3 + 4096);
     const r = await run(f); expect(fs.statSync(f.web).size).toBeGreaterThan(1024 ** 3); expect(r.inventory.records.messages).toBe(8);
   });

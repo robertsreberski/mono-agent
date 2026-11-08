@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-import { resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { realpathSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { observe } from "./lib/continuity-observation-aggregate.mjs";
 
 export { observe };
@@ -9,7 +9,7 @@ export async function main(argv = process.argv.slice(2)) {
   if (argv.length === 1 && argv[0] === "--help") { process.stdout.write(`${usage}\n`); return 0; }
   const options = {}, names = { "--manifest": "manifest", "--output": "output", "--private-worklist": "privateWorklist" };
   for (let i = 0; i < argv.length; i += 2) {
-    const name = names[argv[i]];
+    const name = Object.hasOwn(names, argv[i]) ? names[argv[i]] : undefined;
     if (!name || options[name] || !argv[i + 1] || argv[i + 1].startsWith("--")) { process.stderr.write(`${usage}\n`); return 1; }
     options[name] = argv[i + 1];
   }
@@ -22,4 +22,4 @@ export async function main(argv = process.argv.slice(2)) {
     process.stderr.write(`Continuity observation refused: ${code}.\n`); return 1;
   }
 }
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) process.exitCode = await main();
+if (process.argv[1] && realpathSync(fileURLToPath(import.meta.url)) === realpathSync(process.argv[1])) process.exitCode = await main();

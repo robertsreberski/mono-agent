@@ -68,7 +68,7 @@ export function openSnapshot(path, role) {
   finally { closeSync(fd); }
   if (header[18] !== 1 || header[19] !== 1 || existsSync(`${path}-wal`) || existsSync(`${path}-shm`) || existsSync(`${path}-journal`)) fail("NON_STANDALONE_SNAPSHOT");
   const uri = pathToFileURL(path); uri.search = "?mode=ro";
-  const db = new DatabaseSync(uri.href, { readOnly: true, enableExtensions: false });
+  const db = new DatabaseSync(uri.href, { readOnly: true, allowExtension: false });
   try {
     const version = db.prepare("PRAGMA user_version").get().user_version;
     const application = db.prepare("PRAGMA application_id").get().application_id;
@@ -133,5 +133,9 @@ export function sourceStamps(paths) {
   });
 }
 export function assertUnchanged(stamps) {
-  for (const [path, stamp] of stamps) if (sourceStamps([path])[0][1] !== stamp) fail("SNAPSHOT_CHANGED");
+  for (const [path, stamp] of stamps) {
+    let current;
+    try { current = sourceStamps([path])[0][1]; } catch { fail("SNAPSHOT_CHANGED"); }
+    if (current !== stamp) fail("SNAPSHOT_CHANGED");
+  }
 }

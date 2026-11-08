@@ -189,7 +189,7 @@ export async function observe({ manifest: manifestPath, output, privateWorklist 
     if (!inventory.sources.journal) for (const k of ["journalRecords", "journalCompactions", "journalToolCalls", "journalToolResults"]) inventory.auxiliary[k] = "unknown";
     const all = [...groups.values()].sort((a, b) => a.inventory.entry - b.inventory.entry || `${a.inventory.closure}/${a.inventory.soul}`.localeCompare(`${b.inventory.closure}/${b.inventory.soul}`));
     for (const g of all) {
-      g.outcomes.coverage = g.outcomes.reviewed ? (g.outcomes.unreviewed ? "partial" : "complete") : "unknown";
+      g.outcomes.coverage = g.outcomes.reviewed ? (g.outcomes.reviewed === g.outcomes.eligible ? "complete" : "partial") : "unknown";
       if (!g.outcomes.reviewed) for (const k of ["reasks", "corrections", "repeatedEffectCandidates", "confirmedCases", "ambiguousCases"]) g.outcomes[k] = "unknown";
       for (const family of ["boundaries", "compactions", "packs", "retrieval"]) {
         const f = g.metrics[family], total = family === "packs" ? f.injected + f.skipped : f.total;
