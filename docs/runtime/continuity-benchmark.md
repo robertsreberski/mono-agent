@@ -1223,7 +1223,8 @@ request, half cached, 300 output tokens) to $41.45, against $18.19 of settled
 catalog-equivalent spend. The first-request bound is the frozen inventory
 `initialTokens` + 900. `initialTokens` is the larger of `ceil(observed initial
 context bytes / 3)` and a trace-shape floor: the cold estimate + 12,000 for pack
-paths, which the pilot measured, and at least 150,000 for native paths. It is
+paths, which the pilot measured, and the larger of 150,000 and the full
+trace-shape estimate for native paths. It is
 deliberately model-independent and conservative rather than a tokenizer
 measurement. It accounts for most of the remaining gap: Sol's measured first
 input averaged about 0.67 of that bound. Only E changed. The `assumed-v1`

@@ -138,7 +138,7 @@ afterAll(async () => {
   }
 }, 120000);
 
-it.each([[200, false, true], [503, false, true], [200, false, false], [200, true, false]])("credentialed configured harness uses the installed SDK once (status=%s, mismatched account=%s, marker in first context=%s)", async (status, mismatch, present) => {
+it.each([[200, false, true], [503, false, true], [200, false, false], [200, true, false], [200, true, true]])("credentialed configured harness uses the installed SDK once (status=%s, mismatched account=%s, marker in first context=%s)", async (status, mismatch, present) => {
   const {digest} = await import("../lib/continuity-dataset.mjs");
   const plan = basePlan;
   const {lookupPilotWork} = await import("../lib/continuity-lookup-pilot-runtime.mjs");

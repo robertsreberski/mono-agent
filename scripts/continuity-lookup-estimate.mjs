@@ -20,7 +20,7 @@ export const ESTIMATE_PROFILES = Object.freeze([
  * Each takes a 1.25 margin, rounded conservatively. The first request keeps the frozen,
  * model-independent inventory bound initialTokens + 900, where initialTokens is the larger
  * of ceil(observed initial context bytes / 3) and a trace-shape floor (pack paths: cold
- * estimate + 12,000; native paths: at least 150,000). Each later request is a flat
+ * estimate + 12,000; native paths: max(150,000, full trace-shape estimate)). Each later request is a flat
  * +laterInputIncrementTokens over the first request, not cumulative.
  */
 export const LOOKUP_EXPECTED_SCENARIO = Object.freeze({
