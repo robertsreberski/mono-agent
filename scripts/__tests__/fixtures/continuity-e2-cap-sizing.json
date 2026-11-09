@@ -1,0 +1,118 @@
+{
+  "roles": [
+    {
+      "role": "summary",
+      "model": "openai-codex:gpt-6.1-sol",
+      "maxInputTokens": 150000,
+      "maxOutputTokens": 4096
+    },
+    {
+      "role": "continuation",
+      "model": "openai-codex:gpt-6.1-sol",
+      "maxInputTokens": 80000,
+      "maxOutputTokens": 1024
+    },
+    {
+      "role": "probe",
+      "model": "openai-codex:gpt-6.1-sol",
+      "maxInputTokens": 12000,
+      "maxOutputTokens": 256
+    },
+    {
+      "role": "summary",
+      "model": "openai-codex:gpt-6-luna",
+      "maxInputTokens": 120000,
+      "maxOutputTokens": 2048
+    }
+  ],
+  "sizing": {
+    "schema": "continuity-e2-proof-sizing-v1",
+    "arm": "pressure",
+    "mode": "faux",
+    "usage": "estimated-not-measured",
+    "semanticQualification": false,
+    "roles": {
+      "setup-scripted": "not-paid",
+      "summary": "paid-later-D",
+      "continuation": "paid-later-D",
+      "probe": "paid-later-D"
+    },
+    "variants": [
+      {
+        "variant": "ceiling",
+        "requests": [
+          {
+            "ordinal": 0,
+            "role": "setup-scripted",
+            "model": "openai-codex:gpt-6-luna",
+            "size": {
+              "method": "intercepted-full-models-context",
+              "serializedBytes": 630000,
+              "serializedBytesOver3": 210000,
+              "engineFullRequest": 209999,
+              "maximum": 210000,
+              "usage": "engine-estimate-not-provider-measurement"
+            },
+            "maxOutputTokens": 128000
+          },
+          {
+            "ordinal": 1,
+            "role": "summary",
+            "model": "openai-codex:gpt-6.1-sol",
+            "size": {
+              "method": "intercepted-full-models-context",
+              "serializedBytes": 225000,
+              "serializedBytesOver3": 75000,
+              "engineFullRequest": 74999,
+              "maximum": 75000,
+              "usage": "engine-estimate-not-provider-measurement"
+            },
+            "maxOutputTokens": 128000
+          },
+          {
+            "ordinal": 2,
+            "role": "continuation",
+            "model": "openai-codex:gpt-6.1-sol",
+            "size": {
+              "method": "intercepted-full-models-context",
+              "serializedBytes": 135000,
+              "serializedBytesOver3": 45000,
+              "engineFullRequest": 44999,
+              "maximum": 45000,
+              "usage": "engine-estimate-not-provider-measurement"
+            },
+            "maxOutputTokens": 128000
+          },
+          {
+            "ordinal": 3,
+            "role": "probe",
+            "model": "openai-codex:gpt-6.1-sol",
+            "size": {
+              "method": "intercepted-full-models-context",
+              "serializedBytes": 12000,
+              "serializedBytesOver3": 4000,
+              "engineFullRequest": 3999,
+              "maximum": 4000,
+              "usage": "engine-estimate-not-provider-measurement"
+            },
+            "maxOutputTokens": 128000
+          },
+          {
+            "ordinal": 4,
+            "role": "summary",
+            "model": "openai-codex:gpt-6-luna",
+            "size": {
+              "method": "intercepted-full-models-context",
+              "serializedBytes": 45000,
+              "serializedBytesOver3": 15000,
+              "engineFullRequest": 14999,
+              "maximum": 15000,
+              "usage": "engine-estimate-not-provider-measurement"
+            },
+            "maxOutputTokens": 128000
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,46 @@
+import { expect, it } from "vitest";
+import { readFile } from "node:fs/promises";
+import { estimateE2Reservations, validateE2Sizing } from "../lib/continuity-e2-estimate.mjs";
+import { loadE2Catalog } from "../lib/continuity-e2-pricing.mjs";
+async function fixture() {
+  const f = JSON.parse(await readFile(new URL("./fixtures/continuity-e2-cap-sizing.json", import.meta.url)));
+  const requests = f.sizing.variants.flatMap((v, checkpoint) => v.requests.map(({ ordinal: _ordinal, ...row }) => ({ checkpoint, ...row })));
+  return { roles: f.roles, requests, catalog: await loadE2Catalog() };
+}
+it("pins the C2-shaped fictional sizing cap, by public checkpoint/role and integer units", async () => {
+  const f = await fixture(), report = estimateE2Reservations(f);
+  expect(report.schema).toBe("continuity-e2-cap-estimate-v1");
+  expect(report.unitsPerUSD).toBe("1000000000"); expect(report.scriptedRequests).toBe(1);
+  expect(report.minimumCapUnits).toBe("550784000");
+  expect(report.totals).toEqual({ requests: 4, maximumUnits: "550784000", centralUnits: "185809000", noCacheUnits: "304284000" });
+  expect(report.assumptions).toEqual({ centralCache: { numerator: 1, denominator: 2 }, output: "registered-per-request-limit", maximum: "registered-input-bound-no-cache", completionGuaranteed: false });
+  expect(report.checkpoints).toHaveLength(4);
+  expect(report.checkpoints.find(row => row.role === "probe")).toMatchObject({ requests: 1, maxReservationUnits: "26560000", maxOutputTokens: 256 });
+});
+it("counts every request while keeping scripted setup outside paid reservations", async () => {
+  const f = await fixture(), paid = f.requests.filter(row => row.role !== "setup-scripted");
+  const report = estimateE2Reservations({ ...f, requests: [...paid, ...paid] });
+  expect(report.totals.requests).toBe(8); expect(report.minimumCapUnits).toBe("1101568000");
+  expect(estimateE2Reservations({ ...f, requests: f.requests.filter(row => row.role !== "setup-scripted") }).totals).toEqual(estimateE2Reservations(f).totals);
+});
+it("refuses an observed context beyond its registered role envelope, before pricing", async () => {
+  const f = await fixture(); f.roles[0].maxInputTokens = 1000;
+  expect(() => estimateE2Reservations(f)).toThrow("E2_ESTIMATE_INVALID");
+});
+it("refuses unknown roles, unregistered models, duplicate roles and content-bearing fields", async () => {
+  for (const mutate of [
+    f => { f.requests[1].role = "unregistered"; },
+    f => { f.roles[0].model = "fictional:unknown"; },
+    f => { f.roles.push(f.roles[0]); },
+    f => { f.requests[1].text = "FICTIONAL-REPORT-CANARY"; },
+  ]) { const f = await fixture(); mutate(f); expect(() => estimateE2Reservations(f)).toThrow("E2_ESTIMATE_INVALID"); }
+});
+it("checks the two independent sizing measurements rather than trusting an input maximum", async () => {
+  const f = await fixture(), size = structuredClone(f.requests[1].size); size.maximum--;
+  expect(() => validateE2Sizing(size)).toThrow("E2_ESTIMATE_INVALID");
+});
+it("emits no input labels, paths, digests, or context text", async () => {
+  const f = await fixture(), report = JSON.stringify(estimateE2Reservations(f));
+  for (const value of ["/Users/example", "FICTIONAL-REPORT-CANARY", "fileSha256", f.catalog[0].fileSha256, "serializedBytes"]) expect(report).not.toContain(value);
+  expect(report).toContain("registered-per-request-limit");
+});
