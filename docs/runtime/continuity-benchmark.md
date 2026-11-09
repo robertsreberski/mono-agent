@@ -2522,3 +2522,14 @@ No prompt, answer, tool arguments, record identifier, digest of private content
 or absolute path is present in sizing. All requests are faux now. Guarded real
 summaries/readers, authorization, billing/admission controls and semantic proof
 remain deferred to the separate paid controller; this CLI cannot enable them.
+
+
+## Guarded controller lease trust
+
+The guarded controller lease uses exclusive file creation, SQLite writer locking,
+and pathname inode checks before and after opening. This prevents accidental
+concurrent controllers. It trusts other processes running as the same host user:
+these checks are **not** race-free against a process deliberately swapping the
+lease path. Node's SQLite API does not expose the opened file descriptor; opening
+through `/dev/fd` does not preserve the current DELETE-journal behavior. No
+stronger same-user isolation is claimed.

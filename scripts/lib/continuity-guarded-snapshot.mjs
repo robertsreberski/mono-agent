@@ -1,6 +1,6 @@
 // Shared guarded-run mechanics. Historical authority identifiers remain visible to the exact source inventory.
 import { constants } from "node:fs";
-import { lstat, open, readdir, realpath, mkdir, unlink, rmdir, writeFile, chmod } from "node:fs/promises";
+import { lstat, open, readdir, opendir, realpath, mkdir, unlink, rmdir, writeFile, chmod } from "node:fs/promises";
 import { join, dirname } from "node:path";
 import { userInfo } from "node:os";
 import { digest } from "./continuity-dataset.mjs";
@@ -9,6 +9,7 @@ import { durable } from "./continuity-holdout-workflow.mjs";
 import { guardedState } from "./continuity-guarded-state.mjs";
 import { guardedLease } from "./continuity-guarded-lease.mjs";
 import { guardedProtocol } from "./continuity-guarded-protocols.mjs";
+export const GUARDED_STATS_LIMITS = Object.freeze({ entries: 65536, depth: 64 });
 const instances = new Map();
 export function guardedSnapshot(protocolId) {
   const protocol = guardedProtocol(protocolId);
@@ -173,13 +174,21 @@ function bind(protocol, protocolId) {
   async function lookupPreparationStats(root) {
     const stats = { fileCount: 0, totalBytes: 0, largestFileBytes: 0, rejectedEntries: [] }, rejected = new Map();
     const reject = kind => rejected.set(kind, (rejected.get(kind) ?? 0) + 1);
-    const walk = async path => {
+    let entries = 0, exhausted = false;
+    const walk = async (path, depth = 0) => {
+      if (exhausted) return;
+      if (++entries > GUARDED_STATS_LIMITS.entries) { exhausted = true; reject("entry_limit"); return; }
+      if (depth > GUARDED_STATS_LIMITS.depth) { reject("depth_limit"); return; }
       try {
         const stat = await lstat(path);
         if (stat.uid !== userInfo().uid) { reject("foreign_owner"); return; }
         if (stat.mode & 0o022) reject("writable_mode");
         if (stat.isSymbolicLink()) { reject("symbolic_link"); return; }
-        if (stat.isDirectory()) { for (const name of await readdir(path)) await walk(join(path, name)); return; }
+        if (stat.isDirectory()) {
+          // Streaming bounds wide directories too; breaking closes the directory handle.
+          for await (const entry of await opendir(path)) { await walk(join(path, entry.name), depth + 1); if (exhausted) break; }
+          return;
+        }
         if (!stat.isFile()) { reject(stat.isFIFO() ? "fifo" : stat.isSocket() ? "socket" : stat.isBlockDevice() || stat.isCharacterDevice() ? "device" : "non_regular"); return; }
         stats.fileCount++; stats.totalBytes += stat.size; stats.largestFileBytes = Math.max(stats.largestFileBytes, stat.size);
         if (stat.nlink !== 1) reject("hard_link");

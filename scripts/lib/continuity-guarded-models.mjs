@@ -95,10 +95,13 @@ function bind(protocol, protocolId) {
       if (resolvedSafety) assertResolvedLookupSafety(resolvedSafety);
       assertRoute(model, options, contract);
       const round = rounds + 1;
+      const payloads = [];
       let admitted, admittedPayloadDigest, earlyStop, sent = false, fetchEntered = false, raw, tier, envelope, payloadSeen = false, terminalSeen = false, preRefusal, integrity;
       active = true;
       const finish = async (message, failure) => {
         try {
+          // A synchronous result() failure must wait for any in-flight admission ACK.
+          if (payloads.length) await Promise.allSettled(payloads);
           if (earlyStop) await earlyStop;
           if (admitted) {
             let code, outcome = "lost", cost;
@@ -128,24 +131,27 @@ function bind(protocol, protocolId) {
         } finally { active = false; }
       };
       const wrapped = { ...options, ...(contract.promptCacheKey === undefined ? {} : { sessionId: contract.promptCacheKey }),
-        onPayload: async (payload, selected) => {
-          try {
-            if (payloadSeen) { if (admitted) integrity = protocol.codes.payload_repeated; refuse(protocol.codes.payload_repeated); } payloadSeen = true;
-            const mutated = await options.onPayload?.(payload, selected) ?? payload;
-            // Snapshot once: accessors/toJSON cannot change between sizing and digesting.
-            const final = JSON.parse(JSON.stringify(mutated));
-            if (resolvedSafety) assertResolvedLookupSafety(resolvedSafety);
-            assertPayload(final, round, contract);
-            envelope = lookupInputEnvelope(final, outputs, assumptions);
-            if (envelope.U > assumptions.inputMax) refuse("not_admitted_input_envelope");
-            const payloadDigest = lookupBodyDigest(Buffer.from(JSON.stringify(final)));
-            const grant = await permit.admit({ requestId: `${contract.runId}:${round}`, slotId: contract.slotId, round, payloadDigest, rmax: assumptions.rmax });
-            if (grant?.refused) refuse(grant.code ?? "not_admitted_cap");
-            if (!grant) refuse(protocol.codes.permit_missing);
-            admitted = grant; admittedPayloadDigest = payloadDigest; rounds++;
-            // Detach from all mutation hooks; fetch verifies these exact serialized bytes.
-            return JSON.parse(JSON.stringify(final));
-          } catch (error) { preRefusal = error; throw error; }
+        onPayload: (payload, selected) => {
+          const pending = (async () => {
+            try {
+              if (payloadSeen) { if (admitted) integrity = protocol.codes.payload_repeated; refuse(protocol.codes.payload_repeated); } payloadSeen = true;
+              const mutated = await options.onPayload?.(payload, selected) ?? payload;
+              // Snapshot once: accessors/toJSON cannot change between sizing and digesting.
+              const final = JSON.parse(JSON.stringify(mutated));
+              if (resolvedSafety) assertResolvedLookupSafety(resolvedSafety);
+              assertPayload(final, round, contract);
+              envelope = lookupInputEnvelope(final, outputs, assumptions);
+              if (envelope.U > assumptions.inputMax) refuse("not_admitted_input_envelope");
+              const payloadDigest = lookupBodyDigest(Buffer.from(JSON.stringify(final)));
+              const grant = await permit.admit({ requestId: `${contract.runId}:${round}`, slotId: contract.slotId, round, payloadDigest, rmax: assumptions.rmax });
+              if (grant?.refused) refuse(grant.code ?? "not_admitted_cap");
+              if (!grant) refuse(protocol.codes.permit_missing);
+              admitted = grant; admittedPayloadDigest = payloadDigest; rounds++;
+              // Detach from all mutation hooks; fetch verifies these exact serialized bytes.
+              return JSON.parse(JSON.stringify(final));
+            } catch (error) { preRefusal = error; throw error; }
+          })();
+          payloads.push(pending); void pending.catch(() => {}); return pending;
         },
         fetch: async (url, init) => {
           if (!admitted) {
@@ -223,7 +229,10 @@ function bind(protocol, protocolId) {
       try { source = models.streamSimple(model, context, wrapped); }
       catch (error) { active = false; throw error; }
       // Start result observation immediately, even when the consumer abandons iteration.
-      const result = Promise.resolve(source.result()).then(m => finish(m), e => finish(undefined, e));
+      let observed;
+      try { observed = Promise.resolve(source.result()); }
+      catch (error) { observed = Promise.reject(error); }
+      const result = observed.then(m => finish(m), e => finish(undefined, e));
       void result.catch(() => {});
       return { result: () => result, async *[Symbol.asyncIterator]() {
         for await (const event of source) {

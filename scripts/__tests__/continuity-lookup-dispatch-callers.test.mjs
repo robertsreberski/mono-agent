@@ -96,6 +96,7 @@ it("inventories every authority reference and separate real/loopback native fetc
 // listed explicitly; no new production constructor may hide behind a callback.
 const INVENTORY = {
   guard: {
+    "scripts/__tests__/continuity-guarded-hardening.test.mjs": 1,
     "scripts/__tests__/continuity-guarded-consumption.test.mjs": 2,
     "scripts/__tests__/continuity-lookup-guard.test.mjs": 8,
     "scripts/__tests__/continuity-lookup-real-capability.test.mjs": 5,

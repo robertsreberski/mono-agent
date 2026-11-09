@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Harden guarded continuity cleanup after synchronous stream-result failures,
+  and bound preparation-stat traversal by entry count and depth.
+
 - Add fictional offline continuity proofs for model switches, cancelled process
   restarts, observed idle eviction and shipping-ceiling compaction. Keep durable
   one-effect checks and content-free request sizing; real-model entry stays
