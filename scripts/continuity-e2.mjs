@@ -9,19 +9,24 @@ import { MAX_SOURCE_BYTES } from "./lib/continuity-recorded-schema.mjs";
 import { diagnosticRecord, errorDiagnostic, knownRefusalCode } from "./lib/continuity-e2-diagnostics.mjs";
 import { proofRefusalCode } from "./lib/continuity-e2-checks.mjs";
 import { scoreE2 } from "./lib/continuity-e2-score.mjs";
-export const USAGE = "Usage: node scripts/continuity-e2.mjs size --source DIR --protocol FILE --output NEW_DIR [--summary faux-short|faux-max] [--diagnostics NEW_FILE]\n       node scripts/continuity-e2.mjs score --answers FILE --keys FILE --output NEW_DIR\n       node scripts/continuity-e2.mjs proofs --output NEW_DIR [--arm switch|cancel|idle|pressure|all] [--diagnostics NEW_FILE]\n       node scripts/continuity-e2.mjs run (unavailable)";
+import { estimateE2SizingSet } from "./lib/continuity-e2-sizing.mjs";
+import { loadE2Catalog } from "./lib/continuity-e2-pricing.mjs";
+export const USAGE = "Usage: node scripts/continuity-e2.mjs size --source DIR --protocol FILE --output NEW_DIR [--summary faux-short|faux-max] [--diagnostics NEW_FILE]\n       node scripts/continuity-e2.mjs score --answers FILE --keys FILE --output NEW_DIR\n       node scripts/continuity-e2.mjs proofs --output NEW_DIR [--arm switch|cancel|idle|pressure|all] [--diagnostics NEW_FILE]\n       node scripts/continuity-e2.mjs --estimate --protocol FILE --limits FILE --sizing FILE [--sizing FILE...] --output NEW_DIR\n       node scripts/continuity-e2.mjs run (unavailable)";
 export function parseE2Args(argv) {
-  const [command, ...rest] = argv;
+  const [selected, ...rest] = argv;
+  const command = selected === "--estimate" ? "estimate" : selected;
   if (command === "run" || command === "proofs" && rest.includes("--real")) fail("E2_PAID_ENTRY_UNAVAILABLE");
-  const required = command === "size" ? ["source", "protocol", "output"] : command === "score" ? ["answers", "keys", "output"] : command === "proofs" ? ["output"] : null;
+  const required = command === "size" ? ["source", "protocol", "output"] : command === "score" ? ["answers", "keys", "output"] : command === "proofs" ? ["output"] : command === "estimate" ? ["protocol", "limits", "sizing", "output"] : null;
   if (!required) fail("E2_ARGUMENTS_INVALID");
   const result = { command }, allowed = [...required, ...(command === "size" ? ["summary", "diagnostics"] : command === "proofs" ? ["arm", "diagnostics"] : [])];
   for (let i = 0; i < rest.length; i += 2) {
     const key = rest[i].slice(2);
-    if (!rest[i].startsWith("--") || !allowed.includes(key) || !rest[i + 1] || rest[i + 1].startsWith("--") || Object.hasOwn(result, key)) fail("E2_ARGUMENTS_INVALID");
-    result[key] = rest[i + 1];
+    if (!rest[i].startsWith("--") || !allowed.includes(key) || !rest[i + 1] || rest[i + 1].startsWith("--") || Object.hasOwn(result, key) && !(command === "estimate" && key === "sizing")) fail("E2_ARGUMENTS_INVALID");
+    if (command === "estimate" && key === "sizing") (result.sizing ??= []).push(rest[i + 1]);
+    else result[key] = rest[i + 1];
   }
   if (required.some(k => !result[k]) || result.summary !== undefined && !["faux-short", "faux-max"].includes(result.summary)) fail("E2_ARGUMENTS_INVALID");
+  if (command === "estimate" && result.sizing.length > 8) fail("E2_ARGUMENTS_INVALID");
   if (result.arm !== undefined && !["switch", "cancel", "idle", "pressure", "all"].includes(result.arm)) fail("E2_ARGUMENTS_INVALID");
   return result;
 }
@@ -35,7 +40,18 @@ export async function main(argv, { stdout = s => process.stdout.write(s), stderr
   let diagnosticPath, diagnostic = diagnosticRecord();
   try {
     const args = parseE2Args(argv);
-    if (args.command === "proofs") {
+    if (args.command === "estimate") {
+      const protocol = inputPath(process.cwd(), args.protocol), limits = inputPath(process.cwd(), args.limits);
+      const sizing = args.sizing.map(path => inputPath(process.cwd(), path));
+      const output = privateOutput(args.output, [protocol, limits, ...sizing]);
+      const registered = readJSON(limits);
+      if (registered?.schema !== "continuity-e2-estimate-limits-v1" || Object.keys(registered).sort().join() !== "probeCounts,roles,schema") fail("E2_ESTIMATE_INVALID");
+      const report = estimateE2SizingSet({ protocol: readJSON(protocol), roles: registered.roles, probeCounts: registered.probeCounts, records: sizing.map(readJSON), catalog: await loadE2Catalog() });
+      mkdirSync(output, { mode: 0o700 });
+      try { writeFileSync(join(output, "estimate.json"), `${JSON.stringify(report)}\n`, { flag: "wx", mode: 0o600 }); }
+      catch (error) { rmSync(output, { recursive: true, force: true }); throw error; }
+      stdout(`${JSON.stringify(report)}\n`);
+    } else if (args.command === "proofs") {
       const output = privateOutput(args.output);
       if (args.diagnostics) {
         diagnosticPath = privateOutput(args.diagnostics);

@@ -339,5 +339,14 @@
     "fileBytes": 67108864,
     "totalBytes": 536870912
   },
-  "USD_UNITS": "1000000000"
+  "USD_UNITS": "1000000000",
+  "E2_ROUTE_CAPABILITIES": {
+    "openai-codex-responses": {
+      "enforcedOutputCap": false
+    }
+  },
+  "E2_MODEL_APIS": {
+    "openai-codex:gpt-6.1-sol": "openai-codex-responses",
+    "openai-codex:gpt-6-luna": "openai-codex-responses"
+  }
 }

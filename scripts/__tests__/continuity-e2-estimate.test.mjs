@@ -12,16 +12,16 @@ it("pins the C2-shaped fictional sizing cap, by public checkpoint/role and integ
   const f = await fixture(), report = estimateE2Reservations(f);
   expect(report.schema).toBe("continuity-e2-cap-estimate-v1");
   expect(report.unitsPerUSD).toBe("1000000000"); expect(report.scriptedRequests).toBe(1);
-  expect(report.minimumCapUnits).toBe("550784000");
-  expect(report.totals).toEqual({ requests: 4, maximumUnits: "550784000", centralUnits: "185809000", noCacheUnits: "304284000" });
-  expect(report.assumptions).toEqual({ centralCache: { numerator: 1, denominator: 2 }, output: "registered-per-request-limit", maximum: "registered-input-bound-no-cache", completionGuaranteed: false });
+  expect(report.minimumCapUnits).toBe("1765809000");
+  expect(report.totals).toEqual({ requests: 4, retainedRequests: 0, maximumUnits: "4400000000", centralUnits: "185809000", noCacheUnits: "304284000" });
+  expect(report.assumptions).toEqual({ centralCache: { numerator: 1, denominator: 2 }, output: "registered-forecast-not-enforced", maximum: "catalog-output-ceiling-and-registered-input-bound", minimumCap: "accumulated-forecast-liability-plus-largest-ceiling-reservation", completionGuaranteed: false });
   expect(report.checkpoints).toHaveLength(4);
-  expect(report.checkpoints.find(row => row.role === "probe")).toMatchObject({ requests: 1, maxReservationUnits: "26560000", maxOutputTokens: 256 });
+  expect(report.checkpoints.find(row => row.role === "probe")).toMatchObject({ requests: 1, maxReservationUnits: "1304000000", maxOutputTokens: 128000, expectedOutputTokens: 256 });
 });
 it("counts every request while keeping scripted setup outside paid reservations", async () => {
   const f = await fixture(), paid = f.requests.filter(row => row.role !== "setup-scripted");
   const report = estimateE2Reservations({ ...f, requests: [...paid, ...paid] });
-  expect(report.totals.requests).toBe(8); expect(report.minimumCapUnits).toBe("1101568000");
+  expect(report.totals.requests).toBe(8); expect(report.minimumCapUnits).toBe("1951618000");
   expect(estimateE2Reservations({ ...f, requests: f.requests.filter(row => row.role !== "setup-scripted") }).totals).toEqual(estimateE2Reservations(f).totals);
 });
 it("refuses an observed context beyond its registered role envelope, before pricing", async () => {
@@ -42,7 +42,7 @@ it("checks the two independent sizing measurements rather than trusting an input
 it("emits no input labels, paths, digests, or context text", async () => {
   const f = await fixture(), report = JSON.stringify(estimateE2Reservations(f));
   for (const value of ["/Users/example", "FICTIONAL-REPORT-CANARY", "fileSha256", f.catalog[0].fileSha256, "serializedBytes"]) expect(report).not.toContain(value);
-  expect(report).toContain("registered-per-request-limit");
+  expect(report).toContain("registered-forecast-not-enforced");
 });
 
 it("prices cancel-forwarded as a continuation without rewriting its legacy setup role", async () => {
@@ -52,7 +52,7 @@ it("prices cancel-forwarded as a continuation without rewriting its legacy setup
   const report = estimateE2Reservations(f);
   expect(forwarded.role).toBe("setup-scripted"); expect(forwarded.paidRole).toBe("continuation");
   expect(report.scriptedRequests).toBe(1); expect(report.totals.requests).toBe(5);
-  expect(report.minimumCapUnits).toBe("721024000");
+  expect(report.minimumCapUnits).toBe("3205809000");
   expect(report.checkpoints.find(r => r.role === "continuation").requests).toBe(2);
 });
 it("refuses every legacy sizing record lacking explicit paidRole, never guessing free setup", async () => {

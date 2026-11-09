@@ -19,7 +19,7 @@ it("prices the actual C2 cancel-forwarded sizing request as paid without changin
     const registered = new Map();
     for (const r of requests.filter(r => r.paidRole !== null)) {
       const key = `${r.paidRole}:${r.model}`, prior = registered.get(key);
-      registered.set(key, { role: r.paidRole, model: r.model, maxInputTokens: Math.max(prior?.maxInputTokens ?? 0, r.size.maximum), maxOutputTokens: 64 });
+      registered.set(key, { role: r.paidRole, model: r.model, maxInputTokens: Math.max(prior?.maxInputTokens ?? 0, r.size.maximum), maxOutputTokens: 128000, expectedOutputTokens: 64 });
     }
     const roles = [...registered.values()], catalog = await loadE2Catalog();
     const withCancellation = estimateE2Reservations({ roles, requests, catalog });

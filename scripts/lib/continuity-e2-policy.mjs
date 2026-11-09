@@ -77,3 +77,5 @@ export const E2_SUMMARY_RECEIPT = "continuity-e2-generated-summary-receipt-v1";
 export const E2_BINDING_FIELDS = Object.freeze(["code", "build", "catalog", "protocol", "source", "probes", "keys", "soul", "schedule", "account", "tools", "deadlines", "capUnits"]);
 export const E2_DEADLINE_LIMITS = Object.freeze({ requestMs: 600000, childWatchdogMs: 660000, runMs: 7200000 });
 export const E2_ARTIFACT_LIMITS = Object.freeze({ requests: 100000, jsonBytes: 4194304, summaryBytes: 1048576 });
+
+export { E2_ROUTE_CAPABILITIES, E2_MODEL_APIS } from "./continuity-e2-routes.mjs";

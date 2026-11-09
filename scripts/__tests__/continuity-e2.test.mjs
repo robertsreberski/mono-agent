@@ -330,7 +330,6 @@ function assertE2Capabilities(path, source) {
     if (ts.isImportDeclaration(node)) {
       const spec = node.moduleSpecifier.text;
       const proofImports = {
-        "scripts/lib/continuity-e2-pricing.mjs": ["../continuity-lookup-estimate.mjs"],
         "scripts/lib/continuity-e2-proofs.mjs": ["node:child_process", "./continuity-lookup.mjs", "./continuity-arms.mjs"],
         "scripts/lib/continuity-e2-checks.mjs": ["./continuity-arms.mjs"],
         "scripts/lib/continuity-e2-tools.mjs": ["node:http", "node:crypto"],

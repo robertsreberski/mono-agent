@@ -2533,3 +2533,65 @@ these checks are **not** race-free against a process deliberately swapping the
 lease path. Node's SQLite API does not expose the opened file descriptor; opening
 through `/dev/fd` does not preserve the current DELETE-journal behavior. No
 stronger same-user isolation is claimed.
+
+
+### Offline E2 cap estimator
+
+The estimator needs neither authorization, credentials, a consumption registry,
+model calls nor runtime startup:
+
+```sh
+node scripts/continuity-e2.mjs --estimate \
+  --protocol /private/e2-protocol.json \
+  --limits /private/estimate-limits.json \
+  --sizing /private/replay-short/sizing.json \
+  --sizing /private/replay-max/sizing.json \
+  --sizing /private/cancel-sizing.json \
+  --output /private/new-estimate
+```
+
+`estimate` is an alias for `--estimate`. Repeat `--sizing` for the supplied C1
+replay and C2 proof artifacts. The output directory must be new, private and
+outside the checkout. `estimate.json` and stdout contain the same content-free
+report, with public numeric checkpoint ordinals and controlled role/model names.
+Input paths, private checkpoint names, source text and source digests are omitted.
+The estimator checks protocol metadata and the C1 sizing/protocol digest binding;
+it is **not** source-evidence validation, a real registration, or approval to run.
+
+The limits file has schema `continuity-e2-estimate-limits-v1`, `roles`, and
+`probeCounts`. Each role specifies `role` (`summary`, `continuation`, `probe`),
+`model`, `maxInputTokens`, `maxOutputTokens` and `expectedOutputTokens`.
+Continuation/probe readers are Sol; Luna is available for summaries. The expected
+output is an explicit custodian-supplied forecast, not a provider-enforced limit
+or measured usage. `probeCounts` contains `{ checkpoint, questions }` numeric
+rows for every C1 checkpoint, in branch/checkpoint order; the total is at most
+48 questions. These counts expand the two sizing continuations per checkpoint
+without multiplying its one summary draw. Proof-only estimates use an empty
+`probeCounts` array.
+
+Every request sizing record must carry explicit `paidRole`. Genuine scripted
+setup has `null`; the deliberately forwarded cancellation is `continuation`
+even though its legacy C2 `role` stays `setup-scripted`. Old records are refused
+with `E2_SIZING_PAID_ROLE_REQUIRED`, never guessed free. Re-run faux sizing to
+refresh them. Cancellation forecasts retain the full ceiling liability.
+Short/max faux-summary records are alternatives, not two planned paid draws;
+separate proof variants are distinct planned runs.
+
+#### Codex output-cap limitation
+
+The installed pi-ai Codex adapter ignores its `maxTokens` option when constructing
+the outgoing request. Its payload has no enforced per-request output cap. The
+source-owned API capability table therefore requires `maxOutputTokens` equal to
+the installed catalog `maxTokens` (currently 128,000) for both Sol and Luna.
+Smaller limits are refused with `E2_OUTPUT_LIMIT_UNENFORCED`. No
+`max_output_tokens` injection or unsupported backend contract is assumed.
+
+Reservations use that output ceiling, registered input bounds and digest-bound
+installed catalog prices. Central estimates instead use the explicit output
+forecast and a declared one-half cached-input assumption; a no-cache sensitivity
+is reported separately. The conservative minimum forecast cap is accumulated
+forecast liability plus the largest single ceiling reservation. The report also
+shows the sum-of-ceilings worst case. An estimate does not guarantee completion:
+unexpected output, extra work, deadline or cap exhaustion can stop a run. An
+exact cap and a separately parent-created bound authorization are still required
+before any real paid execution.
