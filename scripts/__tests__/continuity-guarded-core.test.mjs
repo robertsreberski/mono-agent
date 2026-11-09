@@ -65,6 +65,9 @@ for (const id of ["lookup-pilot", "fictional"]) {
     const binding = await core.assertLease(lease, root, controller);
     expect(binding.outputIdentity).toEqual(expect.objectContaining({ dev: expect.any(Number), ino: expect.any(Number) }));
     await expect(other.assertLease(lease, root, controller)).rejects.toThrow();
+    await expect(core.readLease(root, controller)).resolves.toEqual(binding);
+    await expect(other.readLease(root, controller)).rejects.toThrow(id === "lookup-pilot" ? "fictional_authorization_lease_invalid" : "lookup_authorization_lease_invalid");
+    await expect(core.assertLease(lease, root, controller)).resolves.toEqual(binding);
     await expect(core.assertLease({}, root, controller)).rejects.toThrow();
     await expect(core.acquireLease(root)).rejects.toThrow();
     expect(guardedState(id).statePath(root)).toBe(join(root, id === "lookup-pilot" ? "lookup-pilot-controller.json" : "fictional-controller.json"));
@@ -75,3 +78,27 @@ for (const id of ["lookup-pilot", "fictional"]) {
     await expect(core.assertLease(lease, root, controller)).rejects.toThrow();
   });
 }
+
+it("keeps every fictional descriptor string identity disjoint, except documented generic constants", async () => {
+  const lookup = guardedProtocol("lookup-pilot"), fictional = guardedProtocol("fictional");
+  const leaves = (value, path = "") => typeof value === "string" ? [[path, value]]
+    : value && typeof value === "object" ? Object.entries(value).flatMap(([key, child]) => leaves(child, `${path}.${key}`)) : [];
+  // Shared serializer vocabulary/settings do not confer a protocol/schema identity or native authority.
+  const genericShared = new Set([
+    "utf8_bytes_gte_tokens", "openai-codex", "gpt-6.1-sol", "openai-codex-responses", "https://chatgpt.com/backend-api", "high", "",
+    // Generic accounting outcomes, field/method grammar and terminal classifications.
+    "auth_failure", "none", "capacity_continues_policy_stops", "retained", "continues_slot_terminal", "actual_cost", "continues", "sticky_stop",
+    "requestId", "slotId", "round", "payloadDigest", "rmax", "admit", "consume", "settle", "stop",
+    "refused_pre_send", "own_abort_after_send", "settled", "lost", "integrity_stop", "completed", "unpriced_reservation", "invalid_unit_rate", "budget_admission",
+    "not_admitted_input_envelope", "not_admitted_cap", "wrong", "pilot_empty_final_output", "store_degraded", "boundary_unverified", "pressure_unverified", "unadmitted", "skipped",
+    // Generic private-home layout and lock filename; SQL table identities are NOT shared.
+    ".local", "state", "controller-lock.sqlite",
+  ]);
+  const original = new Set(leaves(lookup).map(([, value]) => value)), shared = new Set();
+  for (const [path, value] of leaves(fictional)) if (original.has(value)) {
+    expect(genericShared.has(value), `${path}: ${value}`).toBe(true); shared.add(value);
+  }
+  expect([...shared].sort()).toEqual([...genericShared].sort()); // No stale or inferred allowlist exceptions.
+  await expect(fictional.hooks.realModules()).rejects.toMatchObject({ code: "fictional_pilot_capability_invalid" });
+  await expect(fictional.hooks.fauxBindings()).rejects.toMatchObject({ code: "fictional_pilot_faux_required" });
+});

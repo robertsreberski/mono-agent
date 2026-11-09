@@ -2,7 +2,7 @@
 import { createHash } from "node:crypto";
 import { zstdDecompressSync } from "node:zlib";
 import { guardedAccounting } from "./continuity-guarded-accounting.mjs";
-import { guardedRealCapability } from "./continuity-guarded-real-capability.mjs";
+import { guardedRealCapability, isAnyGuardedRealSend } from "./continuity-guarded-real-capability.mjs";
 import { guardedProtocol } from "./continuity-guarded-protocols.mjs";
 const instances = new Map();
 export function guardedModels(protocolId) {
@@ -13,7 +13,7 @@ export function guardedModels(protocolId) {
 function bind(protocol, protocolId) {
   const LOOKUP_ASSUMPTIONS = protocol.policy.ASSUMPTIONS, LOOKUP_GUARD_CONTRACT = protocol.policy.GUARD_CONTRACT, LookupGuardError = protocol.Error;
   const { assertResolvedSafety: assertResolvedLookupSafety, cacheKey: lookupCacheKey, bodyBytes: lookupBodyBytes, assertRoute, assertPayload } = protocol.hooks;
-  const { isRealLookupSend, realLookupSendForGuard } = guardedRealCapability(protocolId);
+  const { realLookupSendForGuard } = guardedRealCapability(protocolId);
   const lookupSettledCost = guardedAccounting(protocolId).settledCost;
   const refuse = (code, classification) => { throw new LookupGuardError(code, "refused_pre_send", classification); };
   const lookupBodyDigest = bytes => createHash("sha256").update(bytes).digest("hex");
@@ -66,7 +66,7 @@ function bind(protocol, protocolId) {
     if (pilotSource && !resolvedSafety) refuse(protocol.codes.auxiliary_callers_forbidden);
     if (Object.hasOwn(contract, "promptCacheKey") && !lookupCacheKey(contract.promptCacheKey)) refuse(protocol.codes.prompt_cache_key_forbidden);
     if (resolvedSafety) assertResolvedLookupSafety(resolvedSafety);
-    if (permit?.testOnly !== true || isRealLookupSend(send)) {
+    if (permit?.testOnly !== true || isAnyGuardedRealSend(send)) {
       assertRealLookupPermitSource(permit);
       if (!realLookupSendForGuard(send, permit, contract)) refuse(protocol.codes.pilot_capability_invalid);
     }

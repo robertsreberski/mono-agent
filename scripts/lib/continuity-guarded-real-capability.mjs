@@ -5,6 +5,9 @@ import { zstdDecompressSync } from "node:zlib";
 import { digest } from "./continuity-dataset.mjs";
 import { guardedProtocol } from "./continuity-guarded-protocols.mjs";
 const nativeFetch = globalThis.fetch.bind(globalThis);
+// Recognition crosses protocol boundaries; authority remains in each protocol-local set.
+const realSends = new WeakSet();
+export const isAnyGuardedRealSend = send => realSends.has(send);
 const instances = new Map();
 export function guardedRealCapability(protocolId) {
   const protocol = guardedProtocol(protocolId);
@@ -96,7 +99,7 @@ function bind(protocol, protocolId) {
       Object.defineProperties(send, { matchesContract: { value: contract => contract?.slotId === a.slotId && contract.runId === a.runId && contract.promptCacheKey === a.cacheKey }, permit: { value: permit }, decorator: { value: Object.freeze(decorator) }, observeForwarded: { value: forwarded.register }, binds: { value: profile =>
         profile?.routeKind === "real" && profile.authPath === a.authorization.credentialPath && profile.work === lookupPilotWork(a)
         && digest(profile.plan) === digest(a.plan) && profile.arm?.id === a.roleRequest.binding.arm } });
-      decorators.add(decorator); sends.add(send); return Object.freeze(send);
+      decorators.add(decorator); sends.add(send); realSends.add(send); return Object.freeze(send);
     } catch (error) {
       // No paths, parser messages, credential values or arbitrary causes leave minting.
       if ([protocol.codes.pilot_real_route_unavailable, protocol.codes.preparation_invalid, protocol.codes.pilot_role_not_measured, protocol.codes.pilot_capability_invalid, "paid_mode_refused_in_ci", protocol.codes.debug_forbidden].includes(error?.code)) throw error;

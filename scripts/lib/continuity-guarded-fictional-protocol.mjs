@@ -9,13 +9,18 @@ const codes = Object.fromEntries(Object.entries(lookup.codes).map(([key, code]) 
 const need = ok => { if (!ok) throw Object.assign(Error(codes.pilot_faux_required), { code: codes.pilot_faux_required }); };
 const policy = {
   ...Object.fromEntries(Object.entries(lookup.policy).map(([name, value]) => [name, Array.isArray(value) && value.every(v => typeof v === "string") ? value.map(v => v.replace(/^lookup_/u, "fictional_")) : value])),
-  REAL_CONTROLLER: "fictional-controller-v1", FAUX_CONTROLLER: "fictional-faux-controller-v1",
+  REAL_CONTROLLER: "fictional-controller-v1", FAUX_CONTROLLER: "fictional-faux-controller-v1", PREFLIGHT: "fictional-preflight-controller-v1",
+  ASSUMPTIONS: { ...lookup.policy.ASSUMPTIONS, version: "fictional-assumed-v1" },
+  PERMIT_CONTRACT: { ...lookup.policy.PERMIT_CONTRACT, version: "fictional-permit-v1" },
   AUTHORIZATION_SCHEMA: "fictional-authorization-v1", CONSUMPTION_SCHEMA: "fictional-consumed-v1", FAUX_AUTHORIZATION: "fictional-faux-authorization-v1", PILOT_IPC: "fictional-ipc-v1",
   GUARD_CONTRACT: { ...lookup.policy.GUARD_CONTRACT, version: "fictional-guard-v1" },
-  REGISTRY_LAYOUT: [[".local", false], ["state", false], ["fictional-guarded", true], ["consumed-v1", true]],
+  REGISTRY_LAYOUT: [[".local", false], ["state", false], ["fictional-guarded", true], ["fictional-consumed-v1", true]],
 };
 export const fictionalGuardedProtocol = freeze({
   ...lookup, id: "fictional", realRoute: false, policy, codes,
+  // This journal-only fixture has no spawnable lookup child or preflight entry.
+  children: { preparation: null, probe: null }, preflightPrefix: "fictional-preflight-",
+  leaseSQL: { select: "SELECT pid, start_identity FROM fictional_controller WHERE id = 1", create: "PRAGMA busy_timeout=0; PRAGMA journal_mode=DELETE; CREATE TABLE fictional_controller (id INTEGER PRIMARY KEY, pid INTEGER NOT NULL, start_identity TEXT NOT NULL)", insert: "INSERT INTO fictional_controller VALUES (1, ?, ?)" },
   journal: "fictional-controller.json", permitBrand: "fictional-controller-v1", fauxBrand: "fictional-faux-test-only-v1",
   registryDomain: "fictional/guarded/consumed-v1\0", accountDomain: "fictional/guarded/account-v1\0",
   fauxDomain: "fictional/guarded/faux-consumed-v1\0", fauxRegistry: ".fictional-faux-consumed-v1",
@@ -23,6 +28,8 @@ export const fictionalGuardedProtocol = freeze({
   refusalPattern: /^(fictional_[a-z_]+|paid_mode_refused_in_ci)$/u,
   hooks: {
     ...lookup.hooks, ...lookupGuardedModelPolicy(codes, lookup.Error),
+    realModules: async () => { throw Object.assign(Error(codes.pilot_capability_invalid), { code: codes.pilot_capability_invalid }); },
+    fauxBindings: async () => { throw Object.assign(Error(codes.pilot_faux_required), { code: codes.pilot_faux_required }); },
     async controllerBindings() {
       const [leases, state, environment] = await Promise.all([import("./continuity-guarded-lease.mjs"), import("./continuity-guarded-state.mjs"), import("./continuity-guarded-child-environment.mjs")]);
       const lease = leases.guardedLease("fictional");
