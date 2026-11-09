@@ -114,7 +114,7 @@ export async function runProofPhase({ base, arm, phase = "whole", variant = "cei
       if (["streamSimple", "completeSimple"].includes(method)) return (model, context, options = {}) => {
         requestSignal = options.signal;
         requests.push({ ordinal: requests.length, model: `${model.provider}:${model.id}`, role: method === "completeSimple" ? "summary" : mode === "cancel-forwarded" ? "setup-scripted" : mode,
-          paidRole: e2PaidRole(mode, method), size: sizeContext(context, estimators), maxOutputTokens: options.maxTokens ?? model.maxTokens });
+          paidRole: e2PaidRole(mode, method), phase, size: sizeContext(context, estimators), maxOutputTokens: options.maxTokens ?? model.maxTokens });
         return original[method](model, context, options);
       };
       return original[method];

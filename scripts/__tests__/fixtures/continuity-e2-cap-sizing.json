@@ -58,7 +58,8 @@
               "usage": "engine-estimate-not-provider-measurement"
             },
             "maxOutputTokens": 128000,
-            "paidRole": null
+            "paidRole": null,
+            "phase": "whole"
           },
           {
             "ordinal": 1,
@@ -73,7 +74,8 @@
               "usage": "engine-estimate-not-provider-measurement"
             },
             "maxOutputTokens": 128000,
-            "paidRole": "summary"
+            "paidRole": "summary",
+            "phase": "whole"
           },
           {
             "ordinal": 2,
@@ -88,7 +90,8 @@
               "usage": "engine-estimate-not-provider-measurement"
             },
             "maxOutputTokens": 128000,
-            "paidRole": "continuation"
+            "paidRole": "continuation",
+            "phase": "whole"
           },
           {
             "ordinal": 3,
@@ -103,7 +106,8 @@
               "usage": "engine-estimate-not-provider-measurement"
             },
             "maxOutputTokens": 128000,
-            "paidRole": "probe"
+            "paidRole": "probe",
+            "phase": "whole"
           },
           {
             "ordinal": 4,
@@ -118,7 +122,8 @@
               "usage": "engine-estimate-not-provider-measurement"
             },
             "maxOutputTokens": 128000,
-            "paidRole": "summary"
+            "paidRole": "summary",
+            "phase": "whole"
           }
         ]
       }

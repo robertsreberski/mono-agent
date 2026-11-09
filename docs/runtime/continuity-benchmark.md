@@ -2595,3 +2595,31 @@ shows the sum-of-ceilings worst case. An estimate does not guarantee completion:
 unexpected output, extra work, deadline or cap exhaustion can stop a run. An
 exact cap and a separately parent-created bound authorization are still required
 before any real paid execution.
+
+
+### E2 registration and authorization foundation
+
+The closed guarded selector includes `e2-validation`, with independent schemas,
+lease table, journal, brands and consumption domains. Its registry layout is
+`~/.local/state/mono-agent/lcc-e2/consumed-v1`. The descriptor currently keeps
+paid execution unavailable until the phase adapters and summary-receipt path
+are wired; validating an artifact does not enable an inference route.
+
+The registration binds the clean code revision and source-file inventory,
+existing fresh-build receipt, installed catalog, C1 source/protocol, frozen
+questions/evaluator keys, shipping soul, role limits, explicit phase schedule,
+tool policies, sizing evidence and deadlines. Questions reuse
+`continuity-recorded-questions-v1`; private question/key identities must match and
+resolve to unique protocol checkpoint ordinals. The exact cap is a canonical
+integer USD-unit string, never a floating-point approval. Account authorization
+uses an E2-domain salted commitment. No command creates an approval or refreshes
+credentials.
+
+Schedules are re-derived from bound sizing. C2 sizing includes `phase` (`whole`,
+`seed`, `resume`) as well as `paidRole`; registration refuses missing phase
+evidence with `E2_SIZING_PHASE_REQUIRED`, instead of guessing a restart boundary.
+Cancellation/resume and pressure/restart have separate registered process phases.
+Unknown future summary digests cannot be added to a registration: generated
+summaries require controller-verified runtime receipts before any paid probe.
+The registration validator does not substitute a pre-approved digest for those
+future receipts.

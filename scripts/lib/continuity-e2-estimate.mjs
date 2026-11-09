@@ -30,7 +30,7 @@ export function estimateE2Reservations({ roles, requests, catalog }) {
   const groups = new Map(); let scriptedRequests = 0;
   for (const request of requests) {
     const paidRole = requireE2PaidRole(request);
-    need(fields(request, ["checkpoint", "role", "paidRole", "model", "size"], ["maxOutputTokens"]) && count(request.checkpoint)
+    need(fields(request, ["checkpoint", "role", "paidRole", "model", "size"], ["maxOutputTokens", "phase"]) && count(request.checkpoint)
       && [SOL, LUNA].includes(request.model) && [...E2_PAID_ROLES, "setup-scripted"].includes(request.role));
     const size = validateE2Sizing(request.size);
     if (paidRole === null) { scriptedRequests++; continue; }

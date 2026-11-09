@@ -330,6 +330,8 @@ function assertE2Capabilities(path, source) {
     if (ts.isImportDeclaration(node)) {
       const spec = node.moduleSpecifier.text;
       const proofImports = {
+        "scripts/lib/continuity-e2-registration.mjs": ["./continuity-dataset.mjs", "./continuity-lookup-roles.mjs", "./memory-e2e-build.mjs"],
+        "scripts/lib/continuity-e2-authorization.mjs": ["node:process", "./continuity-dataset.mjs"],
         "scripts/lib/continuity-e2-proofs.mjs": ["node:child_process", "./continuity-lookup.mjs", "./continuity-arms.mjs"],
         "scripts/lib/continuity-e2-checks.mjs": ["./continuity-arms.mjs"],
         "scripts/lib/continuity-e2-tools.mjs": ["node:http", "node:crypto"],
@@ -350,6 +352,7 @@ function assertE2Capabilities(path, source) {
       if (node.expression.kind === ts.SyntaxKind.ImportKeyword) {
         const value = node.arguments[0];
         expect(ts.isStringLiteral(value) && ["@mono-agent/turn/engine", "./lib/continuity-e2-replay.mjs", "./lib/continuity-e2-proofs.mjs"].includes(value.text)
+          || ts.isStringLiteral(value) && ({ "scripts/lib/continuity-e2-authorization.mjs": ["@mono-agent/turn"], "scripts/lib/continuity-e2-guarded-protocol.mjs": ["./continuity-e2-authorization.mjs"] })[path]?.includes(value.text)
           || path === "scripts/lib/continuity-e2-tools.mjs" && ts.isStringLiteral(value) && ["@modelcontextprotocol/sdk/server/index.js", "@modelcontextprotocol/sdk/server/streamableHttp.js", "@modelcontextprotocol/sdk/types.js"].includes(value.text)
           || path === "scripts/lib/continuity-e2-models.mjs" && value.getText(ast) === 'new URL("../../packages/turn/dist/agent/compaction.js", import.meta.url).href').toBe(true);
       }

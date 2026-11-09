@@ -46,7 +46,8 @@ function bind(protocol, protocolId) {
     need(await realpath(path) === path, code);
     return path;
   }
-  async function safeRead(path, code) {
+  async function safeRead(path, code, maxBytes = 4 * 1024 * 1024) {
+    need(Number.isSafeInteger(maxBytes) && maxBytes >= 0 && maxBytes <= 128 * 1024 * 1024, code);
     await safeDirectory(dirname(path), code);
     // Reject aliases BEFORE open: even closing a read-only fd could drop SQLite's POSIX locks.
     const initial = await lstat(path);
@@ -59,7 +60,7 @@ function bind(protocol, protocolId) {
       // Permanently invalidate any affected live lease before allowing any other checks.
       need(!markLeaseCompromised(stat), code);
       need(initial.dev === stat.dev && initial.ino === stat.ino, code);
-      need(stat.isFile() && stat.uid === userInfo().uid && stat.nlink === 1 && (stat.mode & 0o077) === 0 && stat.size <= 4 * 1024 * 1024, code);
+      need(stat.isFile() && stat.uid === userInfo().uid && stat.nlink === 1 && (stat.mode & 0o077) === 0 && stat.size <= maxBytes, code);
       const before = await lstat(path);
       need(before.dev === stat.dev && before.ino === stat.ino && !before.isSymbolicLink(), code);
       return await file.readFile();

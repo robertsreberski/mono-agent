@@ -205,7 +205,8 @@
       "reservationUnits",
       "inputTokens",
       "model",
-      "paidRole"
+      "paidRole",
+      "checkpoint"
     ],
     "methods": [
       "admit",
@@ -348,5 +349,13 @@
   "E2_MODEL_APIS": {
     "openai-codex:gpt-6.1-sol": "openai-codex-responses",
     "openai-codex:gpt-6-luna": "openai-codex-responses"
+  },
+  "E2_PHASE_DOMAIN": "e2-validation-phase-v1",
+  "E2_INPUT_LIMITS": {
+    "artifactBytes": 4194304,
+    "sourceBytes": 134217728,
+    "promptBytes": 65536,
+    "sizingFiles": 8,
+    "phases": 16
   }
 }

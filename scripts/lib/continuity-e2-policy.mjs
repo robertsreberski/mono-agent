@@ -30,7 +30,7 @@ export const E2_GUARD_POLICY_REFUSALS = Object.freeze([
 ]);
 export const E2_PERMIT_CONTRACT = freeze({
   version: "e2-permit-v1",
-  admissionFields: ["requestId", "slotId", "round", "payloadDigest", "reservationUnits", "inputTokens", "model", "paidRole"],
+  admissionFields: ["requestId", "slotId", "round", "payloadDigest", "reservationUnits", "inputTokens", "model", "paidRole", "checkpoint"],
   methods: ["admit", "consume", "settle", "stop"],
   outcomes: Object.keys(E2_OUTCOMES),
 });
@@ -79,3 +79,6 @@ export const E2_DEADLINE_LIMITS = Object.freeze({ requestMs: 600000, childWatchd
 export const E2_ARTIFACT_LIMITS = Object.freeze({ requests: 100000, jsonBytes: 4194304, summaryBytes: 1048576 });
 
 export { E2_ROUTE_CAPABILITIES, E2_MODEL_APIS } from "./continuity-e2-routes.mjs";
+
+export const E2_PHASE_DOMAIN = "e2-validation-phase-v1";
+export const E2_INPUT_LIMITS = Object.freeze({ artifactBytes: 4194304, sourceBytes: 134217728, promptBytes: 65536, sizingFiles: 8, phases: 16 });
