@@ -3,7 +3,7 @@ import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { digest } from "./continuity-dataset.mjs";
 import { ROOT } from "./continuity-observation-input.mjs";
-import { E2_FAUX_AUTHORIZATION, E2_REGISTRATION_SCHEMA, E2_PLAN_SCHEMA, E2_ASSUMPTIONS, E2_FAUX_CONTROLLER, E2_REAL_CONTROLLER, E2_INPUT_LIMITS, E2_ARTIFACT_LIMITS } from "./continuity-e2-policy.mjs";
+import { E2_FAUX_AUTHORIZATION, E2_REGISTRATION_SCHEMA, E2_PLAN_SCHEMA, E2_ASSUMPTIONS, E2_FAUX_CONTROLLER, E2_REAL_CONTROLLER, E2_INPUT_LIMITS, E2_ARTIFACT_LIMITS, E2_AUTHORIZATION_SCHEMA } from "./continuity-e2-policy.mjs";
 const need = (ok, code = "e2_pilot_faux_required") => { if (!ok) throw Object.assign(Error(code), { code }); };
 const same = (a, b) => a !== undefined && b !== undefined && digest(a) === digest(b);
 export const e2CacheKey = key => typeof key === "string" && /^[\x21-\x7e]{1,64}$/u.test(key);
@@ -26,9 +26,20 @@ export function e2PhaseAssignment(a, state) {
     && same(state.schedule[a.index], a.slot) && state.slots[a.index]?.slotId === a.slotId && !state.slots[a.index].preparation, "e2_preparation_invalid");
 }
 export async function prepareE2Controller(options) {
-  // Native phase adapters are not yet installed. Never burn real authority in this slice.
-  if (options.real !== false) throw Object.assign(Error("e2_pilot_real_route_unavailable"), { code: "e2_pilot_real_route_unavailable" });
   const { pilot, authorization, outputRoot } = options;
+  if (options.real !== false) {
+    need(options.real === true && authorization?.schema === E2_AUTHORIZATION_SCHEMA, "e2_authorization_required");
+    need(Object.keys(options).sort().join() === "authorization,outputRoot,pilot,real", "e2_authorization_binding_mismatch");
+    (await import("./continuity-e2-runtime.mjs")).assertE2Entry();
+    need((await import("./continuity-guarded-protocols.mjs")).guardedProtocol("e2-validation").realRoute, "e2_pilot_real_route_unavailable");
+    need(Object.keys(authorization).sort().join() === "authorizationPath,controllerRoot,credentialPath,registrationPath,registrationSha256,schema", "e2_authorization_binding_mismatch");
+    const { guardedAuthorization } = await import("./continuity-guarded-authorization.mjs"), auth = guardedAuthorization("e2-validation");
+    const { schema: _schema, ...args } = authorization, handle = await auth.validate({ ...args, outputRoot });
+    need(auth.bindsRegistration(handle, pilot), "e2_authorization_binding_mismatch");
+    const { externalDirectory } = await import("./continuity-holdout-files.mjs");
+    need(await externalDirectory(outputRoot) === outputRoot, "e2_unsafe_authorization_file");
+    return { pilot, authorization, outputRoot, real: true, authorizationHandle: handle, schedule: pilot.registration.schedule };
+  }
   need(Object.keys(options).sort().join() === "authorization,outputRoot,pilot,real" && pilot?.schema === E2_REGISTRATION_SCHEMA
     && pilot.descriptor.schema === E2_PLAN_SCHEMA && same(pilot.descriptor.assumptions, E2_ASSUMPTIONS) && pilot.registration.code.path === ROOT
     && authorization?.schema === E2_FAUX_AUTHORIZATION && authorization.outputRoot === outputRoot);

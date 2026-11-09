@@ -6,6 +6,7 @@ import dnsPromises from "node:dns/promises";
 import { syncBuiltinESMExports } from "node:module";
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
+import { isGuardedNativeDispatch } from "./continuity-guarded-real-capability.mjs";
 import { fail } from "./continuity-observation-input.mjs";
 
 export const PROOF_ENV_KEYS = Object.freeze(["HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME", "TMPDIR", "TMP", "TEMP"]);
@@ -42,7 +43,8 @@ export function installProofIsolation(env) {
     const input = Array.isArray(args[0]) ? args[0][0] : args[0];
     const host = typeof input === "object" ? input?.host ?? input?.hostname : args[1];
     // Undici carries path: undefined for TCP; assigned path values select Unix sockets.
-    if (typeof input === "string" || input && typeof input === "object" && (input.path !== undefined || input.socketPath !== undefined) || !loopback(host)) fail("E2_PROOF_EGRESS_REFUSED");
+    if (typeof input === "string" || input && typeof input === "object" && (input.path !== undefined || input.socketPath !== undefined)
+      || !loopback(host) && !isGuardedNativeDispatch("e2-validation")) fail("E2_PROOF_EGRESS_REFUSED");
     return connect.apply(this, args);
   };
   globalThis.fetch = (url, init) => {
@@ -56,10 +58,13 @@ export function installProofIsolation(env) {
   for (const [target, promise] of [[dns, false], [dns.Resolver.prototype, false], [dnsPromises, true], [dnsPromises.Resolver.prototype, true]]) {
     for (const name of Object.getOwnPropertyNames(target).filter(name => dnsMethod(name) && typeof target[name] === "function")) {
       resolvers.push([target, name, Object.getOwnPropertyDescriptor(target, name)]);
+      const original = target[name];
       target[name] = promise ? async (...args) => {
+        if (isGuardedNativeDispatch("e2-validation")) return original.apply(target, args);
         const result = localDns(name, args);
         return name === "lookup" && !(typeof args[1] === "object" && args[1]?.all) ? { address: result[0], family: result[1] } : result[0];
       } : (...args) => {
+        if (isGuardedNativeDispatch("e2-validation")) return original.apply(target, args);
         const callback = args.at(-1), input = args.slice(0, -1), result = localDns(name, input);
         if (typeof callback !== "function") fail("E2_PROOF_EGRESS_REFUSED");
         queueMicrotask(() => callback(null, ...result));

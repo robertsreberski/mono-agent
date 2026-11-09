@@ -435,6 +435,7 @@ function bind(protocol, protocolId) {
   async function runPilotSchedule(options) {
     // A registered kernel is not a runnable phase adapter. Refuse before lease or consumption.
     pilotNeed(typeof protocol.children.probe === "string", protocol.codes.pilot_real_route_unavailable);
+    protocol.hooks.beforeSchedule?.(options);
     const journal = await createLookupPilotController(options);
     try {
       const { outputRoot } = journal;

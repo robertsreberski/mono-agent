@@ -1,10 +1,11 @@
-// Closed E2 identity/authorization descriptor. Paid adapters remain explicitly unavailable until wired.
+// Closed E2 identity/authorization descriptor. All dispatch crosses the shared guarded native send.
+import { assertE2Safety } from "./continuity-e2-runtime.mjs";
 import { e2ExecutionPolicy } from "./continuity-e2-execution-policy.mjs";
 import { e2CacheAssignment, e2CacheIssuer, e2Watchdog, e2ValidTimeout, e2Work, e2PhaseAssignment } from "./continuity-e2-controller-policy.mjs";
 import * as e2Policy from "./continuity-e2-policy.mjs";
 const freeze = value => { if (value && typeof value === "object") { Object.values(value).forEach(freeze); Object.freeze(value); } return value; };
 const codes = {
-  summary_not_authorized: "e2_summary_not_authorized", summary_receipt_invalid: "e2_summary_receipt_invalid", compaction_invalid: "e2_compaction_invalid",
+  phase_failed: "e2_phase_failed", summary_not_authorized: "e2_summary_not_authorized", summary_receipt_invalid: "e2_summary_receipt_invalid", compaction_invalid: "e2_compaction_invalid",
   "account_mismatch": "e2_account_mismatch",
   "arrival_persist_failed": "e2_arrival_persist_failed",
   "arrival_receipt_invalid": "e2_arrival_receipt_invalid",
@@ -91,7 +92,7 @@ const codes = {
 };
 const unavailable = () => { throw Object.assign(Error(codes.pilot_real_route_unavailable), { code: codes.pilot_real_route_unavailable }); };
 export const e2GuardedProtocol = freeze({
-  id: "e2-validation", realRoute: false, execution: e2ExecutionPolicy,
+  id: "e2-validation", realRoute: true, execution: e2ExecutionPolicy,
   policy: Object.fromEntries(Object.entries(e2Policy).map(([name, value]) => [name.replace(/^E2_/u, ""), value])), codes,
   registryDomain: "mono-agent/lcc-e2/consumed-v1\0", accountDomain: "mono-agent/lcc-e2/account-v1\0",
   journal: "e2-validation-controller.json", leaseFile: "controller-lock.sqlite",
@@ -101,7 +102,7 @@ export const e2GuardedProtocol = freeze({
   requestLimit: 100000, lossLimit: 2, invalidRateDenominator: 10,
   schemas: { slotReceipt: "e2-validation-slot-receipt-v1", report: "e2-validation-report-v1", fauxConsumption: "e2-validation-faux-consumption-v1", preparation: "e2-validation-preparation-v1", preflightSnapshot: "e2-validation-preflight-snapshot-v1", preparationRecord: "e2-validation-preparation-record-v1", preflightRecord: "e2-validation-preflight-record-v1", preflightReport: "e2-validation-preflight-report-v1" },
   preflightPrefix: "e2-validation-preflight-", fauxDomain: "mono-agent/lcc-e2/faux-consumed-v1\0", fauxRegistry: ".e2-validation-faux-consumed-v1",
-  children: { preparation: null, probe: null },
+  children: { preparation: null, probe: "scripts/lib/continuity-e2-phase-child.mjs" },
   refusalPattern: /^(e2_[a-z_]+|paid_mode_refused_in_ci|E2_OUTPUT_LIMIT_UNENFORCED|E2_SIZING_PAID_ROLE_REQUIRED|E2_SIZING_PHASE_REQUIRED)$/u,
   hooks: {
     validateAuthorization: async (...args) => (await import("./continuity-e2-authorization.mjs")).validateE2GuardedAuthorization(...args),
@@ -110,10 +111,16 @@ export const e2GuardedProtocol = freeze({
     controllerBindings: async () => (await import("./continuity-e2-controller-policy.mjs")).e2ControllerBindings(),
     publicState: () => ({}), cacheAssignment: e2CacheAssignment, cacheIssuer: e2CacheIssuer, watchdog: e2Watchdog, validTimeout: e2ValidTimeout,
     work: e2Work, verifyPhaseAssignment: e2PhaseAssignment,
-    prepareController: async (...args) => (await import("./continuity-e2-controller-policy.mjs")).prepareE2Controller(...args), realModules: async () => unavailable(), verifyRealAssignment: async () => unavailable(),
+    beforeSchedule: options => { if (options.real !== true) unavailable(); },
+    prepareController: async (...args) => (await import("./continuity-e2-controller-policy.mjs")).prepareE2Controller(...args),
+    realModules: async () => (await import("./continuity-e2-runtime.mjs")).e2RealModules(),
+    verifyRealAssignment: async (...args) => (await import("./continuity-e2-runtime.mjs")).verifyE2Assignment(...args),
+    slotRequest: async (...args) => (await import("./continuity-e2-runtime.mjs")).e2SlotRequest(...args),
+    roleRequest: (pilot, binding) => ({ schema: "continuity-e2-role-request-v1", binding, build: pilot.registration.build }),
+    forwardedObserver: () => { const listeners = new Set(); return { register: fn => { listeners.add(fn); return () => listeners.delete(fn); }, notify: (...args) => { for (const fn of listeners) try { fn(...args); } catch {} } }; },
     fauxBindings: async () => { throw Object.assign(Error(codes.pilot_faux_required), { code: codes.pilot_faux_required }); },
     preflightBindings: async () => { throw Object.assign(Error(codes.preparation_forbidden), { code: codes.preparation_forbidden }); },
-    assertResolvedSafety: unavailable,
+    assertResolvedSafety: assertE2Safety,
     assertRoute: (...args) => e2ExecutionPolicy.assertRoute(...args), assertPayload: (...args) => e2ExecutionPolicy.assertPayload(...args),
     bodyBytes: body => { if (typeof body !== "string" && !(body instanceof Uint8Array) && !(body instanceof ArrayBuffer)) throw Object.assign(Error(codes.body_type_forbidden), { code: codes.body_type_forbidden }); return Buffer.from(body instanceof ArrayBuffer ? new Uint8Array(body) : body); },
     cacheKey: key => typeof key === "string" && /^[\x21-\x7e]{1,64}$/u.test(key),

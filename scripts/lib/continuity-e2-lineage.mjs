@@ -8,6 +8,7 @@ const token = s => typeof s === "string" && /^[A-Za-z0-9_-]{1,128}$/u.test(s);
 const split = "\n\n---\n\n**Turn Context (split turn):**\n\n";
 export const E2_SUMMARY_PREFIX = "The conversation history before this point was compacted into the following summary:\n\n<summary>\n";
 export const E2_SUMMARY_SUFFIX = "\n</summary>";
+export const E2_BRANCH_PREFIX = "The following is a summary of a branch that this conversation came back from:\n\n<summary>\n";
 export function e2PhaseBase(root, slot) {
   need(slot && ["proof", "replay"].includes(slot.kind));
   if (slot.kind === "replay") return join(root, "work", "replay");
@@ -85,6 +86,7 @@ export function e2BodySummaryDigests(body) {
     for (const text of parts) {
       if (typeof text !== "string" || !text.isWellFormed()) continue;
       if (text.startsWith(E2_SUMMARY_PREFIX) && text.endsWith(E2_SUMMARY_SUFFIX)) found.push(digest(text.slice(E2_SUMMARY_PREFIX.length, -E2_SUMMARY_SUFFIX.length)));
+      if (text.startsWith(E2_BRANCH_PREFIX) && text.endsWith("</summary>")) found.push(digest(text.slice(E2_BRANCH_PREFIX.length, -"</summary>".length)));
       if (text.startsWith("### Conversation continuity pack (historical evidence)\n")) for (const line of text.split("\n")) {
         const match = /^Generated summary evidence id="chr1_[A-Za-z0-9_-]{43}" sha256="[a-f0-9]{64}": (".*")$/u.exec(line);
         if (match) { let value; try { value = JSON.parse(match[1]); } catch { continue; } if (typeof value === "string" && value.isWellFormed()) found.push(digest(value)); }

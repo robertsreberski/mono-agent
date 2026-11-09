@@ -1,4 +1,4 @@
-// Identity/authorization foundation only: paid adapters remain fail-closed until wired.
+// Closed E2 identity, real adapter wiring and cross-domain authority boundaries.
 import { afterEach, expect, it } from "vitest";
 import { readFile, mkdtemp, realpath, rm, mkdir, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -15,17 +15,22 @@ it("golden-pins the entire closed E2 descriptor, source file inventory and tool 
   const protocol = guardedProtocol("e2-validation");
   const json = JSON.stringify({ protocol, protocolFiles: E2_PROTOCOL_FILES, toolPolicies: E2_TOOL_POLICIES, errorClass: protocol.Error.name }, (_, v) => typeof v === "bigint" ? v.toString() : v instanceof RegExp ? v.toString() : v);
   expect(JSON.parse(json)).toEqual(JSON.parse(await readFile(new URL("./fixtures/continuity-e2-guarded-descriptor.json", import.meta.url))));
-  expect(Object.keys(protocol.hooks).sort()).toEqual(["controllerBindings", "publicState", "cacheAssignment", "cacheIssuer", "watchdog", "validTimeout", "work", "verifyPhaseAssignment", "assertPayload", "assertResolvedSafety", "assertRoute", "authorizationBinds", "bodyBytes", "cacheKey", "checkoutPaths", "fauxBindings", "preflightBindings", "prepareController", "realModules", "validateAuthorization", "verifyRealAssignment"].sort());
-  expect(Object.keys(protocol.execution).sort()).toEqual(["cap", "admission", "contract", "guardRequest", "assertRoute", "assertPayload", "resultReceipt", "verifySettlement", "beforeAdmission", "compaction", "slotReceipt", "aggregateRun", "priceUsage", "assertBody", "verifyNativeBody"].sort());
+  expect(Object.keys(protocol.hooks).sort()).toEqual(["beforeSchedule", "slotRequest", "roleRequest", "forwardedObserver", "controllerBindings", "publicState", "cacheAssignment", "cacheIssuer", "watchdog", "validTimeout", "work", "verifyPhaseAssignment", "assertPayload", "assertResolvedSafety", "assertRoute", "authorizationBinds", "bodyBytes", "cacheKey", "checkoutPaths", "fauxBindings", "preflightBindings", "prepareController", "realModules", "validateAuthorization", "verifyRealAssignment"].sort());
+  expect(Object.keys(protocol.execution).sort()).toEqual(["assertCacheHeaders", "cap", "admission", "contract", "guardRequest", "assertRoute", "assertPayload", "resultReceipt", "verifySettlement", "beforeAdmission", "compaction", "slotReceipt", "aggregateRun", "priceUsage", "assertBody", "verifyNativeBody"].sort());
   expect(Object.isFrozen(protocol.codes)).toBe(true); expect(Object.isFrozen(protocol.policy.MODEL_APIS)).toBe(true);
   expect(() => guardedProtocol({ id: "e2-validation" })).toThrow("guarded_protocol_unknown");
 });
-it("keeps not-yet-wired paid/faux child routes closed without consuming authority", async () => {
-  const protocol = guardedProtocol("e2-validation"); expect(protocol.realRoute).toBe(false);
-  await expect(protocol.hooks.prepareController({})).rejects.toMatchObject({ code: "e2_pilot_real_route_unavailable" });
-  await expect(protocol.hooks.realModules()).rejects.toMatchObject({ code: "e2_pilot_real_route_unavailable" });
-  for (const real of [true, false]) await expect(guardedController("e2-validation").runLookupPilot({ real })).rejects.toMatchObject({ code: "e2_pilot_real_route_unavailable" });
+it("opens only assigned paid adapters, requiring authority and retaining the faux child refusal", async () => {
+  const protocol = guardedProtocol("e2-validation"); expect(protocol.realRoute).toBe(true);
+  expect(protocol.children.probe).toBe("scripts/lib/continuity-e2-phase-child.mjs");
+  await expect(protocol.hooks.prepareController({})).rejects.toMatchObject({ code: "e2_authorization_required" });
+  const modules = await protocol.hooks.realModules();
+  expect(Object.keys(modules).sort()).toEqual(["assertRealPermitSource", "createIPC", "matchesAccount", "wrapModels"]);
+  expect(() => protocol.hooks.assertResolvedSafety({})).toThrow("e2_pilot_capability_invalid");
+  await expect(guardedController("e2-validation").runLookupPilot({ real: true })).rejects.toMatchObject({ code: "e2_pilot_not_ready" });
+  await expect(guardedController("e2-validation").runLookupPilot({ real: false })).rejects.toMatchObject({ code: "e2_pilot_real_route_unavailable" });
 });
+
 for (const id of ["lookup-pilot", "fictional", "e2-validation"]) it(`${id}: every other protocol refuses its live lease identity`, async () => {
   const root = await realpath(await mkdtemp(join(tmpdir(), "e2-descriptor-lease-"))); roots.push(root);
   const lease = await guardedLease(id).acquireLease(root); leases.push(lease);

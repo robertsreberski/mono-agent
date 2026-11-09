@@ -22,6 +22,10 @@ export const E2_PROTOCOL_FILES = Object.freeze([...new Set([...LOOKUP_PILOT_PROT
   "scripts/lib/continuity-e2-routes.mjs", "scripts/lib/continuity-e2-score.mjs", "scripts/lib/continuity-e2-sizing.mjs",
   "scripts/lib/continuity-e2-tools.mjs", "scripts/lib/continuity-e2-registration.mjs", "scripts/lib/continuity-e2-authorization.mjs",
   "scripts/lib/continuity-e2-guarded-protocol.mjs", "scripts/lib/continuity-e2-lineage.mjs",
+  "scripts/lib/continuity-e2-runtime.mjs",
+  "scripts/lib/continuity-e2-paid-models.mjs",
+  "scripts/lib/continuity-e2-phase-child.mjs",
+  "scripts/lib/continuity-e2-paid-entry.mjs",
 ])].sort());
 const need = ok => { if (!ok) throw Object.assign(Error("e2_registration_invalid"), { code: "e2_registration_invalid" }); };
 const fields = (v, names) => v && typeof v === "object" && !Array.isArray(v) && Object.keys(v).sort().join() === [...names].sort().join();
@@ -133,6 +137,16 @@ export async function validateE2Registration(pilot, { safeRead, safeDirectory })
     if (records.some(record => record.schema === "continuity-e2-sizing-v1")) need(questions.questions.length > 0);
     const estimate = estimateE2SizingSet({ protocol, roles: r.roles, records, catalog: r.catalog, probeCounts });
     need(same(r.schedule, e2PhaseSchedule(protocol, records, probeCounts)));
+    const replay = r.schedule.find(p => p.kind === "replay");
+    if (replay) {
+      let offset = 0;
+      for (const branch of protocol.branches) {
+        const budgets = replay.budgets.filter(b => b.checkpoint >= offset && b.checkpoint < offset + branch.checkpoints.length);
+        need(budgets.filter(b => ["probe", "continuation"].includes(b.paidRole)).reduce((n, b) => n + b.maxRequests, 0) <= branch.limits.probeRequests
+          && budgets.filter(b => b.paidRole === "summary").reduce((n, b) => n + b.maxRequests, 0) <= branch.limits.summaryRequests);
+        offset += branch.checkpoints.length;
+      }
+    }
     need(e2CapUnits(d.capUnits) >= BigInt(estimate.forecastMinimumCapUnits));
     return { protocol, questions, source, estimate };
   } catch (error) {

@@ -16,7 +16,7 @@ import { E2_PROOF_PRESSURE_ARMS, armById } from "../lib/continuity-arms.mjs";
 import { installProcessGuard } from "./fixtures/continuity-recorded/process-guard.mjs";
 import { ROOT } from "../lib/continuity-observation-input.mjs";
 import { diagnosticRecord, errorDiagnostic } from "../lib/continuity-e2-diagnostics.mjs";
-import { main, parseE2Args } from "../continuity-e2.mjs";
+import { main, parseE2Args, USAGE } from "../continuity-e2.mjs";
 const cleanups = [];
 afterEach(async () => { for (const fn of cleanups.splice(0).reverse()) await fn(); vi.restoreAllMocks(); syncBuiltinESMExports(); }, 60_000);
 async function scratch() { const dir = await mkdtemp(join(tmpdir(), "continuity-proof-fictional-")); await chmod(dir, 0o700); cleanups.push(() => rm(dir, { recursive: true, force: true })); return dir; }
@@ -116,11 +116,11 @@ it("blocks external sockets/fetch/WebSockets and restores the hermetic environme
   } finally { restore(); }
   expect(process.env.HOME).toBe(before);
 });
-it("refuses paid proof entry before touching any path and parses only the bounded faux CLI", async () => {
+it("requires complete paid proof authority before touching paths and retains the bounded faux CLI", async () => {
   const err = [], out = [], io = { stdout: s => out.push(s), stderr: s => err.push(s) };
   expect(await main(["proofs", "--real", "--output", "fictional-path-canary"], io)).toBe(1);
-  expect(err).toEqual(["E2_PAID_ENTRY_UNAVAILABLE\n"]); expect(out).toEqual([]);
-  await expect(runE2Proofs({ real: true })).rejects.toThrow("E2_PAID_ENTRY_UNAVAILABLE");
+  expect(err).toEqual([USAGE + "\n"]); expect(out).toEqual([]);
+  await expect(runE2Proofs({ real: true })).rejects.toThrow("e2_registration_invalid");
   expect(parseE2Args(["proofs", "--output", "new", "--arm", "idle"])).toEqual({ command: "proofs", output: "new", arm: "idle" });
   for (const args of [["proofs"], ["proofs", "--output", "new", "--arm", "unknown"], ["proofs", "--output", "new", "--threshold", "6400"]]) expect(() => parseE2Args(args)).toThrow("E2_ARGUMENTS_INVALID");
 });

@@ -87,7 +87,8 @@ export const e2ExecutionPolicy = Object.freeze({
     need(model?.provider === contract.provider && model.id === contract.model && model.api === contract.api && model.baseUrl === contract.baseUrl
       && options.transport === "sse" && options.maxRetries === 0 && (options.piMaxRetries === undefined || options.piMaxRetries === 0)
       && options.reasoning === contract.effort, "e2_route_mismatch");
-    need(Object.keys(options).every(k => ["maxTokens", "reasoning", "transport", "maxRetries", "piMaxRetries", "signal", "telemetryContext", "sessionId", "apiKey", "onPayload", "onProviderStreamEvent", "onResponse", "cacheRetention", "thinkingBudgets"].includes(k)), "e2_option_forbidden");
+    need(Object.keys(options).every(k => ["maxTokens", "reasoning", "transport", "maxRetries", "piMaxRetries", "maxRetryDelayMs", "signal", "telemetryContext", "sessionId", "apiKey", "onPayload", "onProviderStreamEvent", "onResponse", "cacheRetention", "thinkingBudgets"].includes(k)), "e2_option_forbidden");
+    need(options.maxRetryDelayMs === undefined || Number.isSafeInteger(options.maxRetryDelayMs) && options.maxRetryDelayMs >= 0, "e2_option_forbidden");
     need(options.thinkingBudgets === undefined && [undefined, "none"].includes(options.cacheRetention), "e2_option_forbidden");
   },
   assertPayload(body, _round, contract) {
@@ -98,7 +99,14 @@ export const e2ExecutionPolicy = Object.freeze({
     this.assertBody(Buffer.from(JSON.stringify(body)), { model: contract.e2.model, tools: allowed });
     need(role && (contract.effort === "off" ? [undefined, "none"].includes(body.reasoning?.effort) : body.reasoning?.effort === contract.effort) && Array.isArray(body.input)
       && Object.keys(body).every(k => ["model", "store", "stream", "instructions", "input", "text", "include", "prompt_cache_key", "tool_choice", "parallel_tool_calls", "temperature", "tools", "reasoning"].includes(k)), "e2_payload_forbidden");
-    need((contract.promptCacheKey === undefined && body.prompt_cache_key === undefined) || body.prompt_cache_key === contract.promptCacheKey, "e2_prompt_cache_key_forbidden");
+    // Shipping compaction deliberately disables body caching. Its authenticated
+    // summary role still uses the controller phase identity in native headers.
+    need((contract.e2.paidRole === "summary" && body.prompt_cache_key === undefined)
+      || (contract.promptCacheKey === undefined && body.prompt_cache_key === undefined) || body.prompt_cache_key === contract.promptCacheKey, "e2_prompt_cache_key_forbidden");
+  },
+  assertCacheHeaders(headers, metadata, key) {
+    const session = headers.get("session-id"), request = headers.get("x-client-request-id");
+    need((session === key && request === key) || (session === null && request === null && (key === undefined || metadata.paidRole === "summary")), "e2_prompt_cache_key_forbidden");
   },
   resultReceipt: writeE2SummaryResult,
   async verifySettlement(root, slotId, hold, evidence, readPrivate) {
@@ -128,7 +136,7 @@ export const e2ExecutionPolicy = Object.freeze({
       try { await verifyE2SummaryResult(root, slotId, hold, { schema: hold.summaryReceipt.schema, sha256: hold.summaryReceipt.sha256 }, readPrivate); }
       catch { fail("e2_summary_receipt_invalid"); }
     }
-    return scope === undefined ? null : { lineageScope: scope, ...(slot.lineages[scope] ? { lineage: structuredClone(slot.lineages[scope]) } : {}) };
+    return scope === undefined ? undefined : { lineageScope: scope, ...(slot.lineages[scope] ? { lineage: structuredClone(slot.lineages[scope]) } : {}) };
   },
   async verifyNativeBody(bytes, hold, state, assignment) {
     const { guardedAuthorization } = await import("./continuity-guarded-authorization.mjs");

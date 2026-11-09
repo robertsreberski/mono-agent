@@ -144,8 +144,9 @@ async function adapter(overrides = {}) {
   const models = route.decorator({ getModel: () => model });
   return { route, models, model, soul };
 }
-it("refuses paid entry, summary markers, lifecycle bypasses and all other request methods", async () => {
-  expect(() => createE2Models({ summary: "real" })).toThrow("E2_PAID_ENTRY_UNAVAILABLE");
+it("requires a branded paid adapter and refuses summary markers, lifecycle bypasses and other request methods", async () => {
+  expect(() => createE2Models({ summary: "real" })).toThrow("e2_pilot_capability_invalid");
+  expect(() => createE2Models({ summary: "real", paidAdapter: { stream() {} } })).toThrow("e2_pilot_capability_invalid");
   const a = await adapter();
   await expect(a.models.completeSimple(a.model, { messages: [{ role: "user", content: "Mono-agent summary focus" }] }, { maxTokens: 1000, transport: "sse", maxRetries: 0 })).rejects.toThrow("E2_SUMMARY_NOT_AUTHORIZED");
   for (const method of ["stream", "complete", "streamDeferred", "getAuth", "fetchDeferred", "cancelDeferred", "setProvider"]) {
@@ -190,7 +191,7 @@ it("requires complete two-repeat coverage and 95% of all planned rate items", ()
 it("prints fixed usage/refusal codes and never echoes private arguments", async () => {
   const stdout = [], stderr = [], io = { stdout: s => stdout.push(s), stderr: s => stderr.push(s) };
   expect(await main(["--help"], io)).toBe(0); expect(stdout.join("")).toBe(`${USAGE}\n`);
-  expect(await main(["run", "--source", "fictional-private-canary"], io)).toBe(1); expect(stderr.pop()).toBe("E2_PAID_ENTRY_UNAVAILABLE\n");
+  expect(await main(["run", "--source", "fictional-private-canary"], io)).toBe(1); expect(stderr.pop()).toBe(USAGE + "\n");
   expect(await main(["size", "--source", "fictional-private-canary"], io)).toBe(1); expect(stderr.pop()).toBe(`${USAGE}\n`);
   expect(() => parseE2Args(["size", "--source", "a", "--protocol", "p", "--output", "b", "--summary", "real"])).toThrow("E2_ARGUMENTS_INVALID");
 });
@@ -330,6 +331,11 @@ function assertE2Capabilities(path, source) {
     if (ts.isImportDeclaration(node)) {
       const spec = node.moduleSpecifier.text;
       const proofImports = {
+        "scripts/continuity-e2.mjs": ["./lib/continuity-guarded-protocols.mjs"],
+        "scripts/lib/continuity-e2-runtime.mjs": ["node:process", "./continuity-dataset.mjs", "./continuity-guarded-state.mjs", "./continuity-guarded-lease.mjs", "./continuity-guarded-models.mjs", "./continuity-guarded-real-capability.mjs", "./continuity-process-identity.mjs", "./continuity-e2-controller-policy.mjs"],
+        "scripts/lib/continuity-e2-paid-models.mjs": ["@mono-agent/turn", "./continuity-guarded-models.mjs", "./continuity-guarded-state.mjs", "./continuity-guarded-authorization.mjs", "./continuity-dataset.mjs"],
+        "scripts/lib/continuity-e2-phase-child.mjs": ["./continuity-guarded-authorization.mjs"],
+        "scripts/lib/continuity-e2-paid-entry.mjs": ["./continuity-guarded-authorization.mjs", "./continuity-guarded-controller.mjs"],
         "scripts/lib/continuity-e2-controller-policy.mjs": ["node:crypto", "./continuity-dataset.mjs"],
         "scripts/lib/continuity-e2-execution-policy.mjs": ["./continuity-dataset.mjs", "./continuity-e2-summary-receipts.mjs"],
         "scripts/lib/continuity-e2-guarded-protocol.mjs": ["./continuity-e2-execution-policy.mjs", "./continuity-e2-controller-policy.mjs"],
@@ -340,7 +346,7 @@ function assertE2Capabilities(path, source) {
         "scripts/lib/continuity-e2-proofs.mjs": ["node:child_process", "./continuity-lookup.mjs", "./continuity-arms.mjs"],
         "scripts/lib/continuity-e2-checks.mjs": ["./continuity-arms.mjs"],
         "scripts/lib/continuity-e2-tools.mjs": ["node:http", "node:crypto"],
-        "scripts/lib/continuity-e2-isolation.mjs": ["node:net", "node:module", "node:dgram", "node:dns", "node:dns/promises"],
+        "scripts/lib/continuity-e2-isolation.mjs": ["./continuity-guarded-real-capability.mjs", "node:net", "node:module", "node:dgram", "node:dns", "node:dns/promises"],
       };
       const ok = builtins.has(spec) || existing.has(spec) || proofImports[path]?.includes(spec) || /^\.\/(?:lib\/)?continuity-e2-[a-z]+\.mjs$/.test(spec)
         || /^\.\/lib\/continuity-(?:recorded-(?:schema|import)|observation-input)\.mjs$/.test(spec) || product && spec === "../tools/mcp/timeouts.js";
@@ -348,6 +354,10 @@ function assertE2Capabilities(path, source) {
       if (spec === "node:child_process") {
         expect(node.importClause.namedBindings.elements.map(e => (e.propertyName ?? e.name).text)).toEqual(["spawn"]);
         expect(node.importClause.namedBindings.elements.map(e => e.name.text)).toEqual(["spawn"]);
+      }
+      if (spec === "@mono-agent/turn") {
+        expect(node.importClause && !node.importClause.name && ts.isNamedImports(node.importClause.namedBindings)).toBe(true);
+        expect(node.importClause.namedBindings.elements.map(e => (e.propertyName ?? e.name).text)).toEqual(["createPiOAuthApiKeyResolver"]);
       }
       if (spec === "node:process") {
         const clause = node.importClause;
@@ -361,8 +371,8 @@ function assertE2Capabilities(path, source) {
     if (ts.isCallExpression(node)) {
       if (node.expression.kind === ts.SyntaxKind.ImportKeyword) {
         const value = node.arguments[0];
-        expect(ts.isStringLiteral(value) && ["@mono-agent/turn/engine", "./lib/continuity-e2-replay.mjs", "./lib/continuity-e2-proofs.mjs"].includes(value.text)
-          || ts.isStringLiteral(value) && ({ "scripts/lib/continuity-e2-controller-policy.mjs": ["./continuity-e2-pricing.mjs", "./continuity-e2-registration.mjs", "./continuity-holdout-files.mjs", "./continuity-guarded-state.mjs", "./continuity-guarded-lease.mjs", "./continuity-guarded-child-environment.mjs", "./continuity-guarded-authorization.mjs"], "scripts/lib/continuity-e2-summary-receipts.mjs": ["./continuity-holdout-workflow.mjs"], "scripts/lib/continuity-e2-execution-policy.mjs": ["./continuity-guarded-authorization.mjs"], "scripts/lib/continuity-e2-authorization.mjs": ["@mono-agent/turn"], "scripts/lib/continuity-e2-guarded-protocol.mjs": ["./continuity-e2-authorization.mjs", "./continuity-e2-controller-policy.mjs"] })[path]?.includes(value.text)
+        expect(ts.isStringLiteral(value) && ["@mono-agent/turn/engine", "./lib/continuity-e2-replay.mjs", "./lib/continuity-e2-proofs.mjs", "./lib/continuity-e2-paid-entry.mjs"].includes(value.text)
+          || ts.isStringLiteral(value) && ({ "scripts/lib/continuity-e2-runtime.mjs": ["./continuity-guarded-ipc.mjs", "./continuity-guarded-authorization.mjs", "./continuity-e2-paid-models.mjs"], "scripts/lib/continuity-e2-paid-models.mjs": ["./continuity-e2-models.mjs"], "scripts/lib/continuity-e2-phase-child.mjs": ["./continuity-e2-replay.mjs", "./continuity-e2-isolation.mjs", "./continuity-e2-proofs.mjs"], "scripts/lib/continuity-e2-proofs.mjs": ["./continuity-e2-paid-entry.mjs"], "scripts/lib/continuity-e2-controller-policy.mjs": ["./continuity-e2-runtime.mjs", "./continuity-guarded-protocols.mjs", "./continuity-e2-pricing.mjs", "./continuity-e2-registration.mjs", "./continuity-holdout-files.mjs", "./continuity-guarded-state.mjs", "./continuity-guarded-lease.mjs", "./continuity-guarded-child-environment.mjs", "./continuity-guarded-authorization.mjs"], "scripts/lib/continuity-e2-summary-receipts.mjs": ["./continuity-holdout-workflow.mjs"], "scripts/lib/continuity-e2-execution-policy.mjs": ["./continuity-guarded-authorization.mjs"], "scripts/lib/continuity-e2-authorization.mjs": ["@mono-agent/turn"], "scripts/lib/continuity-e2-guarded-protocol.mjs": ["./continuity-e2-authorization.mjs", "./continuity-e2-controller-policy.mjs", "./continuity-e2-runtime.mjs"] })[path]?.includes(value.text)
           || path === "scripts/lib/continuity-e2-tools.mjs" && ts.isStringLiteral(value) && ["@modelcontextprotocol/sdk/server/index.js", "@modelcontextprotocol/sdk/server/streamableHttp.js", "@modelcontextprotocol/sdk/types.js"].includes(value.text)
           || path === "scripts/lib/continuity-e2-lineage.mjs" && value.getText(ast) === 'new URL("../../packages/turn/dist/engine/journal-schema.js", import.meta.url).href'
           || path === "scripts/lib/continuity-e2-models.mjs" && value.getText(ast) === 'new URL("../../packages/turn/dist/agent/compaction.js", import.meta.url).href').toBe(true);

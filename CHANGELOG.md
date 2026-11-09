@@ -2,14 +2,15 @@
 
 ## Unreleased
 
-- Add controller-verified committed-summary receipts and exact serialized-body
-  lineage checks for the closed E2 guarded dispatch path.
+- Add exact-cap authorized E2 replay and proof SDK phase adapters through the
+  shared guarded send, with committed-summary/body lineage and one-run-only
+  authorizations. Keep ordinary sizing/proofs offline; stopped runs reconcile
+  without dispatch, and no command creates approval or refreshes credentials.
 
 - Add offline E2 cap estimates from replay/proof sizing, with explicit output
   forecasts and full catalog-context/output reservations (including conservative
   cache/tier liability) for the uncapped Codex route. Add closed registration,
-  authorization validation and accounting/receipt foundations; keep real E2
-  execution unavailable. Distinguish forecast cap floors from ceiling-funded
+  authorization validation and accounting/receipt foundations. Distinguish forecast cap floors from ceiling-funded
   budget completion, reject underfunded registrations and unordered checkpoints.
 
 - Harden guarded continuity cleanup after synchronous stream-result failures,
@@ -20,8 +21,8 @@
 
 - Add fictional offline continuity proofs for model switches, cancelled process
   restarts, observed idle eviction and shipping-ceiling compaction. Keep durable
-  one-effect checks and content-free request sizing; real-model entry stays
-  unavailable. Refuse Unix sockets, UDP and external DNS during these proofs.
+  one-effect checks and content-free request sizing; keep the ordinary proof
+  command faux-only. Refuse Unix sockets, UDP and external DNS during these proofs.
 
 - Tighten offline continuity registration and scoring: reject no-op effort
   changes, incomplete checkpoints, contradictory warm telemetry and blank
