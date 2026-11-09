@@ -2,6 +2,7 @@
   "protocol": {
     "id": "e2-validation",
     "realRoute": false,
+    "execution": {},
     "policy": {
       "ARTIFACT_LIMITS": {
         "requests": 100000,
@@ -9,12 +10,12 @@
         "summaryBytes": 1048576
       },
       "ASSUMPTIONS": {
-        "version": "e2-input-envelope-v1",
+        "version": "e2-input-envelope-v2",
         "literalInput": "max_serialized_bytes_over_3_and_engine_full_request",
         "outputIncludesReasoning": true,
         "outputLimit": "registered-per-request",
         "inputLimit": "registered-per-role",
-        "reservation": "actual-input-envelope-times-catalog-input-plus-output-limit-times-catalog-output",
+        "reservation": "catalog-context-output-ceilings-with-conservative-cache-tier-rates",
         "serviceTier": "default",
         "cacheWrite": "not-requested"
       },
@@ -42,6 +43,17 @@
       },
       "FAUX_AUTHORIZATION": "continuity-e2-faux-authorization-v1",
       "FAUX_CONTROLLER": "continuity-e2-faux-controller-v1",
+      "FUNDING": {
+        "serviceTiers": [
+          "default",
+          "flex",
+          "priority"
+        ],
+        "maximumMultiplier": 2,
+        "defaultMultiplier": 1,
+        "flexDenominator": 2,
+        "inputRate": "maximum-catalog-input-cache-rate"
+      },
       "GUARD_CONTRACT": {
         "version": "e2-guard-v1",
         "provider": "openai-codex",
@@ -67,6 +79,9 @@
         "e2_prompt_cache_key_forbidden",
         "e2_retry_profile_forbidden",
         "e2_auxiliary_callers_forbidden",
+        "e2_summary_not_authorized",
+        "e2_summary_receipt_invalid",
+        "e2_compaction_invalid",
         "e2_method_forbidden",
         "e2_model_switch_forbidden",
         "e2_preparation_forbidden",
@@ -98,6 +113,9 @@
         "e2_prompt_cache_key_forbidden",
         "e2_retry_profile_forbidden",
         "e2_auxiliary_callers_forbidden",
+        "e2_summary_not_authorized",
+        "e2_summary_receipt_invalid",
+        "e2_compaction_invalid",
         "e2_method_forbidden",
         "e2_model_switch_forbidden",
         "e2_preparation_forbidden",
@@ -133,6 +151,13 @@
         "e2_send_mismatch",
         "e2_duplicate_terminal"
       ],
+      "INPUT_LIMITS": {
+        "artifactBytes": 4194304,
+        "sourceBytes": 134217728,
+        "promptBytes": 65536,
+        "sizingFiles": 8,
+        "phases": 16
+      },
       "INTEGRITY_STOPS": [
         "e2_body_type_forbidden",
         "e2_route_mismatch",
@@ -146,6 +171,9 @@
         "e2_prompt_cache_key_forbidden",
         "e2_retry_profile_forbidden",
         "e2_auxiliary_callers_forbidden",
+        "e2_summary_not_authorized",
+        "e2_summary_receipt_invalid",
+        "e2_compaction_invalid",
         "e2_method_forbidden",
         "e2_model_switch_forbidden",
         "e2_preparation_forbidden",
@@ -220,7 +248,8 @@
           "admit",
           "consume",
           "settle",
-          "stop"
+          "stop",
+          "compaction"
         ],
         "outcomes": [
           "refused_pre_send",
@@ -230,6 +259,7 @@
           "integrity_stop"
         ]
       },
+      "PHASE_DOMAIN": "e2-validation-phase-v1",
       "PILOT_IPC": "e2-pilot-ipc-v1",
       "PILOT_STOPS": [
         "e2_body_type_forbidden",
@@ -244,6 +274,9 @@
         "e2_prompt_cache_key_forbidden",
         "e2_retry_profile_forbidden",
         "e2_auxiliary_callers_forbidden",
+        "e2_summary_not_authorized",
+        "e2_summary_receipt_invalid",
+        "e2_compaction_invalid",
         "e2_method_forbidden",
         "e2_model_switch_forbidden",
         "e2_preparation_forbidden",
@@ -349,21 +382,17 @@
         "skipped"
       ],
       "SUMMARY_RECEIPT": "continuity-e2-generated-summary-receipt-v1",
+      "SUMMARY_RESULTS_DIRECTORY": "e2-summary-results",
       "TREE_LIMITS": {
         "fileBytes": 67108864,
         "totalBytes": 536870912
       },
-      "USD_UNITS": "1000000000",
-      "PHASE_DOMAIN": "e2-validation-phase-v1",
-      "INPUT_LIMITS": {
-        "artifactBytes": 4194304,
-        "sourceBytes": 134217728,
-        "promptBytes": 65536,
-        "sizingFiles": 8,
-        "phases": 16
-      }
+      "USD_UNITS": "1000000000"
     },
     "codes": {
+      "summary_not_authorized": "e2_summary_not_authorized",
+      "summary_receipt_invalid": "e2_summary_receipt_invalid",
+      "compaction_invalid": "e2_compaction_invalid",
       "account_mismatch": "e2_account_mismatch",
       "arrival_persist_failed": "e2_arrival_persist_failed",
       "arrival_receipt_invalid": "e2_arrival_receipt_invalid",
@@ -493,8 +522,10 @@
     "scripts/continuity-lookup-estimate.mjs",
     "scripts/lib/continuity-e2-authorization.mjs",
     "scripts/lib/continuity-e2-checks.mjs",
+    "scripts/lib/continuity-e2-controller-policy.mjs",
     "scripts/lib/continuity-e2-diagnostics.mjs",
     "scripts/lib/continuity-e2-estimate.mjs",
+    "scripts/lib/continuity-e2-execution-policy.mjs",
     "scripts/lib/continuity-e2-fixture.mjs",
     "scripts/lib/continuity-e2-guarded-protocol.mjs",
     "scripts/lib/continuity-e2-isolation.mjs",
@@ -509,6 +540,7 @@
     "scripts/lib/continuity-e2-routes.mjs",
     "scripts/lib/continuity-e2-score.mjs",
     "scripts/lib/continuity-e2-sizing.mjs",
+    "scripts/lib/continuity-e2-summary-receipts.mjs",
     "scripts/lib/continuity-e2-tools.mjs",
     "scripts/lib/continuity-guarded-accounting.mjs",
     "scripts/lib/continuity-guarded-authorization.mjs",

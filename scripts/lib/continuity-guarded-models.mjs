@@ -56,7 +56,8 @@ function bind(protocol, protocolId) {
   const count = n => Number.isSafeInteger(n) && n >= 0;
   function guardedLookupModels(models, { contract, permit, send, assumptions = LOOKUP_ASSUMPTIONS, resolvedSafety, onForwarded }) {
     if (JSON.stringify(assumptions) !== JSON.stringify(LOOKUP_ASSUMPTIONS)) refuse(protocol.codes.assumptions_mismatch);
-    for (const key of ["provider", "model", "api", "baseUrl", "effort", "version"])
+    if (protocol.execution) protocol.execution.contract(contract);
+    else for (const key of ["provider", "model", "api", "baseUrl", "effort", "version"])
       if (contract?.[key] !== LOOKUP_GUARD_CONTRACT[key]) refuse(protocol.codes.contract_mismatch);
     if (!contract.slotId || !contract.runId || contract.piMaxRetries !== 0 || contract.maxRetries !== 0) refuse(protocol.codes.contract_mismatch);
     for (const key of ["piRequestRetryBudgetMs", "retryBudgetMs", "retryProfile", "retry"])
@@ -94,7 +95,9 @@ function bind(protocol, protocolId) {
       if (rounds >= protocol.requestLimit) refuse(protocol.codes.request_limit);
       if (resolvedSafety) assertResolvedLookupSafety(resolvedSafety);
       assertRoute(model, options, contract);
-      const round = rounds + 1;
+      const funding = protocol.execution?.guardRequest(contract, context);
+      if (funding && rounds) refuse(protocol.codes.request_limit);
+      const round = funding ? contract.e2.round : rounds + 1;
       const payloads = [];
       let admitted, admittedPayloadDigest, earlyStop, sent = false, fetchEntered = false, raw, tier, envelope, payloadSeen = false, terminalSeen = false, preRefusal, integrity;
       active = true;
@@ -109,14 +112,20 @@ function bind(protocol, protocolId) {
             else if (raw) {
               if (tier != null && !["default", "flex", "priority"].includes(tier)) code = protocol.codes.unknown_tier;
               else if (raw.input_tokens > envelope.U) code = protocol.codes.input_envelope_violated;
-              else if (raw.output_tokens > assumptions.outputMax) code = protocol.codes.output_envelope_violated;
+              else if (raw.output_tokens > (funding?.outputMax ?? assumptions.outputMax)) code = protocol.codes.output_envelope_violated;
               else if ((raw.output_tokens_details?.reasoning_tokens ?? 0) > raw.output_tokens) code = protocol.codes.reasoning_envelope_violated;
+              else if (funding) { cost = protocol.execution.priceUsage(raw, tier, funding); if (BigInt(cost) > BigInt(funding.reservationUnits)) code = protocol.codes.hold_exceeded; }
               else { cost = lookupSettledCost(raw, tier); if (cost > assumptions.rmax) code = protocol.codes.hold_exceeded; }
               outcome = code ? "integrity_stop" : failure ? (sent && options.signal?.aborted ? "own_abort_after_send" : "lost") : "settled";
             } else if (sent && options.signal?.aborted) outcome = "own_abort_after_send";
+            let evidence;
+            if (funding && outcome === "settled") {
+              try { const recorded = await protocol.execution.resultReceipt(contract, message, raw, tier, admittedPayloadDigest); message = recorded.message; evidence = recorded.evidence; }
+              catch { outcome = "integrity_stop"; code = protocol.codes.summary_receipt_invalid; }
+            }
             if (outcome !== "settled") slotTerminal = true;
             try {
-              await permit.settle(admitted, { kind: outcome, ...(code ? { code } : {}), ...(cost !== undefined ? { cost } : {}) }, raw ?? null, ["default", "flex", "priority"].includes(tier) ? tier : null);
+              await permit.settle(admitted, { kind: outcome, ...(code ? { code } : {}), ...(cost !== undefined ? funding ? { costUnits: cost } : { cost } : {}) }, raw ?? null, ["default", "flex", "priority"].includes(tier) ? tier : null, ...(evidence === undefined ? [] : [evidence]));
             } catch (cause) {
               slotTerminal = true;
               await stopWithError(protocol.codes.settlement_failed, cause);
@@ -140,10 +149,10 @@ function bind(protocol, protocolId) {
               const final = JSON.parse(JSON.stringify(mutated));
               if (resolvedSafety) assertResolvedLookupSafety(resolvedSafety);
               assertPayload(final, round, contract);
-              envelope = lookupInputEnvelope(final, outputs, assumptions);
-              if (envelope.U > assumptions.inputMax) refuse("not_admitted_input_envelope");
+              envelope = funding ? { U: funding.inputMax } : lookupInputEnvelope(final, outputs, assumptions);
+              if (envelope.U > (funding?.inputMax ?? assumptions.inputMax)) refuse("not_admitted_input_envelope");
               const payloadDigest = lookupBodyDigest(Buffer.from(JSON.stringify(final)));
-              const grant = await permit.admit({ requestId: `${contract.runId}:${round}`, slotId: contract.slotId, round, payloadDigest, rmax: assumptions.rmax });
+              const grant = await permit.admit(funding ? { ...funding.request, payloadDigest } : { requestId: `${contract.runId}:${round}`, slotId: contract.slotId, round, payloadDigest, rmax: assumptions.rmax });
               if (grant?.refused) refuse(grant.code ?? "not_admitted_cap");
               if (!grant) refuse(protocol.codes.permit_missing);
               admitted = grant; admittedPayloadDigest = payloadDigest; rounds++;

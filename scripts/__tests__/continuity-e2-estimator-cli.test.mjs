@@ -49,7 +49,7 @@ it("exercises --estimate with private exclusive artifacts and only fixed content
   const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(() => { throw Error("network forbidden"); });
   const args = ["--estimate", "--protocol", protocol, "--limits", limits, "--sizing", sizing, "--output", output];
   expect(await main(args, io)).toBe(0); expect(fetch).not.toHaveBeenCalled(); expect(errors).toEqual([]);
-  const report = JSON.parse(calls.join("")); expect(report.minimumCapUnits).toBe("1765809000"); expect(report.worstCaseUnits).toBe("4400000000");
+  const report = JSON.parse(calls.join("")); expect(report.minimumCapUnits).toBe("4105809000"); expect(report.worstCaseUnits).toBe("11956000000");
   expect(await readFile(join(output, "estimate.json"), "utf8")).toBe(calls.join(""));
   expect((await stat(output)).mode & 0o777).toBe(0o700); expect((await stat(join(output, "estimate.json"))).mode & 0o777).toBe(0o600);
   for (const value of [root, "FICTIONAL-ESTIMATE-CANARY", "sourceDigest", "fileSha256", "accountCommitment"]) expect(calls.join("")).not.toContain(value);

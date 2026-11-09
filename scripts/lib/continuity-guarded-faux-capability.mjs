@@ -55,6 +55,7 @@ function bind(protocol, protocolId) {
       const bytes = encoding === "zstd" ? zstdDecompressSync(init.body) : Buffer.from(init.body);
       need(hold?.consumed === true && !hold.revoked && !hold.settlement && !used.has(hold.permitId)
         && hold.payloadDigest === createHash("sha256").update(bytes).digest("hex"));
+      protocol.execution?.assertBody(bytes, hold);
       used.add(hold.permitId);
       // No external fallback, including redirects. No real credentials are resolved.
       return nativeFetch(endpoint, { ...init, redirect: "error" });

@@ -69,6 +69,7 @@ function bind(protocol, protocolId) {
     try { return await verifyPreparation(a, state, restored); } catch { need(false); }
   }
   async function verifyPreparation(a, state, restored) {
+    if (protocol.execution) return protocol.hooks.verifyPhaseAssignment(a, state);
     need([LOOKUP_REAL_CONTROLLER, LOOKUP_FAUX_CONTROLLER].includes(state.schema));
     assertLookupPilotArm(protocol.hooks.armForAssignment(a));
     const record = state.slots[a.index]?.preparation;

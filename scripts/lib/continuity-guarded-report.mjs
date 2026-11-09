@@ -13,6 +13,7 @@ function bind(protocol, id) {
   const { need, accountRun, dollars } = guardedAccounting(id);
   const { runHash, runId, sameRun } = guardedState(id);
   function slotReceipt(state, index) {
+    if (protocol.execution) return protocol.execution.slotReceipt(state, index, accountRun, protocol);
     const slot = state.slots[index], planned = state.schedule[index];
     need(runId(state.runId) && runHash(planned.slotId) && slot.slotId === planned.slotId && [...protocol.policy.SLOT_TERMINALS, null].includes(slot.terminal)
       && [null, 0, 1].includes(slot.score) && (["completed", "wrong"].includes(slot.terminal) || slot.score === null), protocol.codes.receipt_invalid);
@@ -37,6 +38,7 @@ function bind(protocol, id) {
     return { ...row, sha256: digest(row) };
   }
   function aggregateRun(state, receipts) {
+    if (protocol.execution) return protocol.execution.aggregateRun(state, receipts, accountRun, protocol);
     need(Number.isSafeInteger(state.cursor) && state.cursor >= 0 && state.cursor <= state.schedule.length, protocol.codes.receipt_invalid);
     const visited = state.cursor + (state.slots[state.cursor]?.preparation || state.slots[state.cursor]?.worker || state.slots[state.cursor]?.holds?.length ? 1 : 0);
     const seen = new Set();

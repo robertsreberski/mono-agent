@@ -1,9 +1,9 @@
 // E2 policy owns its identities and per-request bounds. No lookup cost/envelope defaults.
 const freeze = value => { for (const child of Object.values(value)) if (child && typeof child === "object") freeze(child); return Object.freeze(value); };
 export const E2_ASSUMPTIONS = freeze({
-  version: "e2-input-envelope-v1", literalInput: "max_serialized_bytes_over_3_and_engine_full_request",
+  version: "e2-input-envelope-v2", literalInput: "max_serialized_bytes_over_3_and_engine_full_request",
   outputIncludesReasoning: true, outputLimit: "registered-per-request", inputLimit: "registered-per-role",
-  reservation: "actual-input-envelope-times-catalog-input-plus-output-limit-times-catalog-output",
+  reservation: "catalog-context-output-ceilings-with-conservative-cache-tier-rates",
   serviceTier: "default", cacheWrite: "not-requested",
 });
 export const E2_GUARD_CONTRACT = freeze({
@@ -23,6 +23,7 @@ export const E2_GUARD_POLICY_REFUSALS = Object.freeze([
   "e2_body_type_forbidden", "e2_route_mismatch", "e2_contract_mismatch", "e2_option_forbidden", "e2_external_fetch_forbidden",
   "e2_headers_forbidden", "e2_env_forbidden", "e2_payload_forbidden", "e2_initial_reasoning_forbidden",
   "e2_prompt_cache_key_forbidden", "e2_retry_profile_forbidden", "e2_auxiliary_callers_forbidden",
+  "e2_summary_not_authorized", "e2_summary_receipt_invalid", "e2_compaction_invalid",
   "e2_method_forbidden", "e2_model_switch_forbidden", "e2_preparation_forbidden", "e2_preparation_invalid", "e2_tools_forbidden",
   "e2_concurrent_request", "e2_permit_missing", "e2_assumptions_mismatch", "e2_single_shot_send_required",
   "e2_faux_permit_forbidden", "e2_settlement_invalid", "e2_cache_assignment_invalid",
@@ -31,7 +32,7 @@ export const E2_GUARD_POLICY_REFUSALS = Object.freeze([
 export const E2_PERMIT_CONTRACT = freeze({
   version: "e2-permit-v1",
   admissionFields: ["requestId", "slotId", "round", "payloadDigest", "reservationUnits", "inputTokens", "model", "paidRole", "checkpoint"],
-  methods: ["admit", "consume", "settle", "stop"],
+  methods: ["admit", "consume", "settle", "stop", "compaction"],
   outcomes: Object.keys(E2_OUTCOMES),
 });
 export const E2_PILOT_STOPS = Object.freeze([...new Set([...E2_GUARD_POLICY_REFUSALS,
@@ -82,3 +83,7 @@ export { E2_ROUTE_CAPABILITIES, E2_MODEL_APIS } from "./continuity-e2-routes.mjs
 
 export const E2_PHASE_DOMAIN = "e2-validation-phase-v1";
 export const E2_INPUT_LIMITS = Object.freeze({ artifactBytes: 4194304, sourceBytes: 134217728, promptBytes: 65536, sizingFiles: 8, phases: 16 });
+
+export const E2_FUNDING = freeze({ serviceTiers: ["default", "flex", "priority"], maximumMultiplier: 2, defaultMultiplier: 1, flexDenominator: 2, inputRate: "maximum-catalog-input-cache-rate" });
+
+export const E2_SUMMARY_RESULTS_DIRECTORY = "e2-summary-results";

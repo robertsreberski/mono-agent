@@ -330,6 +330,10 @@ function assertE2Capabilities(path, source) {
     if (ts.isImportDeclaration(node)) {
       const spec = node.moduleSpecifier.text;
       const proofImports = {
+        "scripts/lib/continuity-e2-controller-policy.mjs": ["node:crypto", "./continuity-dataset.mjs"],
+        "scripts/lib/continuity-e2-execution-policy.mjs": ["./continuity-dataset.mjs", "./continuity-e2-summary-receipts.mjs"],
+        "scripts/lib/continuity-e2-guarded-protocol.mjs": ["./continuity-e2-execution-policy.mjs", "./continuity-e2-controller-policy.mjs"],
+        "scripts/lib/continuity-e2-summary-receipts.mjs": ["./continuity-dataset.mjs"],
         "scripts/lib/continuity-e2-registration.mjs": ["./continuity-dataset.mjs", "./continuity-lookup-roles.mjs", "./memory-e2e-build.mjs"],
         "scripts/lib/continuity-e2-authorization.mjs": ["node:process", "./continuity-dataset.mjs"],
         "scripts/lib/continuity-e2-proofs.mjs": ["node:child_process", "./continuity-lookup.mjs", "./continuity-arms.mjs"],
@@ -352,7 +356,7 @@ function assertE2Capabilities(path, source) {
       if (node.expression.kind === ts.SyntaxKind.ImportKeyword) {
         const value = node.arguments[0];
         expect(ts.isStringLiteral(value) && ["@mono-agent/turn/engine", "./lib/continuity-e2-replay.mjs", "./lib/continuity-e2-proofs.mjs"].includes(value.text)
-          || ts.isStringLiteral(value) && ({ "scripts/lib/continuity-e2-authorization.mjs": ["@mono-agent/turn"], "scripts/lib/continuity-e2-guarded-protocol.mjs": ["./continuity-e2-authorization.mjs"] })[path]?.includes(value.text)
+          || ts.isStringLiteral(value) && ({ "scripts/lib/continuity-e2-controller-policy.mjs": ["./continuity-e2-pricing.mjs", "./continuity-e2-registration.mjs", "./continuity-holdout-files.mjs", "./continuity-guarded-state.mjs", "./continuity-guarded-lease.mjs", "./continuity-guarded-child-environment.mjs", "./continuity-guarded-authorization.mjs"], "scripts/lib/continuity-e2-summary-receipts.mjs": ["./continuity-holdout-workflow.mjs"], "scripts/lib/continuity-e2-authorization.mjs": ["@mono-agent/turn"], "scripts/lib/continuity-e2-guarded-protocol.mjs": ["./continuity-e2-authorization.mjs", "./continuity-e2-controller-policy.mjs"] })[path]?.includes(value.text)
           || path === "scripts/lib/continuity-e2-tools.mjs" && ts.isStringLiteral(value) && ["@modelcontextprotocol/sdk/server/index.js", "@modelcontextprotocol/sdk/server/streamableHttp.js", "@modelcontextprotocol/sdk/types.js"].includes(value.text)
           || path === "scripts/lib/continuity-e2-models.mjs" && value.getText(ast) === 'new URL("../../packages/turn/dist/agent/compaction.js", import.meta.url).href').toBe(true);
       }

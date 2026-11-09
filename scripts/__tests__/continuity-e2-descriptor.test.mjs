@@ -14,7 +14,8 @@ it("golden-pins the entire closed E2 descriptor, source file inventory and tool 
   const protocol = guardedProtocol("e2-validation");
   const json = JSON.stringify({ protocol, protocolFiles: E2_PROTOCOL_FILES, toolPolicies: E2_TOOL_POLICIES, errorClass: protocol.Error.name }, (_, v) => typeof v === "bigint" ? v.toString() : v instanceof RegExp ? v.toString() : v);
   expect(JSON.parse(json)).toEqual(JSON.parse(await readFile(new URL("./fixtures/continuity-e2-guarded-descriptor.json", import.meta.url))));
-  expect(Object.keys(protocol.hooks).sort()).toEqual(["assertPayload", "assertResolvedSafety", "assertRoute", "authorizationBinds", "bodyBytes", "cacheKey", "checkoutPaths", "fauxBindings", "preflightBindings", "prepareController", "realModules", "validateAuthorization", "verifyRealAssignment"].sort());
+  expect(Object.keys(protocol.hooks).sort()).toEqual(["controllerBindings", "publicState", "cacheAssignment", "cacheIssuer", "watchdog", "validTimeout", "work", "verifyPhaseAssignment", "assertPayload", "assertResolvedSafety", "assertRoute", "authorizationBinds", "bodyBytes", "cacheKey", "checkoutPaths", "fauxBindings", "preflightBindings", "prepareController", "realModules", "validateAuthorization", "verifyRealAssignment"].sort());
+  expect(Object.keys(protocol.execution).sort()).toEqual(["cap", "admission", "contract", "guardRequest", "assertRoute", "assertPayload", "resultReceipt", "verifySettlement", "beforeAdmission", "compaction", "slotReceipt", "aggregateRun", "priceUsage", "assertBody"].sort());
   expect(Object.isFrozen(protocol.codes)).toBe(true); expect(Object.isFrozen(protocol.policy.MODEL_APIS)).toBe(true);
   expect(() => guardedProtocol({ id: "e2-validation" })).toThrow("guarded_protocol_unknown");
 });

@@ -19,10 +19,10 @@ it("represents Luna cache reads exactly, rather than truncating to lookup units"
   expect(e2RateUnits(0.01)).toBe(10n); expect(e2RateUnits(2)).toBe(2000n); expect(e2RateUnits(0)).toBe(0n);
   for (const rate of [-1, NaN, Infinity, "2", 0.0000001]) expect(() => e2RateUnits(rate)).toThrow("E2_CATALOG_INVALID");
 });
-it.each([[0, "1480000000", "205000000", "300000000"], [1, "74000000", "10500000", "15000000"]])("derives role output/input reservations and cache sensitivity for catalog %s", (index, reserve, central, noCache) => {
+it.each([[0, "3920000000", "205000000", "300000000"], [1, "196000000", "10500000", "15000000"]])("derives role output/input reservations and cache sensitivity for catalog %s", (index, reserve, central, noCache) => {
   expect(e2RequestPrice(catalogs[index], { inputTokens: 100000, maxOutputTokens: 128000, expectedOutputTokens: 10000, cachedInputTokens: 50000 })).toEqual({ reservationUnits: reserve, estimateUnits: central, noCacheEstimateUnits: noCache });
-  expect(e2RequestPrice(catalogs[index], { inputTokens: 100000, maxOutputTokens: 128000 }).estimateUnits).toBe(reserve);
-  expect(e2RequestPrice(catalogs[index], { inputTokens: 1000, maxOutputTokens: 128000 }).reservationUnits).not.toBe("3920000000");
+  expect(e2RequestPrice(catalogs[index], { inputTokens: 100000, maxOutputTokens: 128000 }).estimateUnits).toBe(noCache === "300000000" ? "1480000000" : "74000000");
+  expect(e2RequestPrice(catalogs[index], { inputTokens: 1000, maxOutputTokens: 128000 }).reservationUnits).toBe(reserve);
 });
 it("reserves every applicable catalog tier and enforces model context/output limits", () => {
   const catalog = { ...catalogs[0], contextWindow: 500000 };
@@ -38,4 +38,16 @@ it("refuses smaller Codex output limits instead of trusting the ignored SDK maxT
     expect(() => e2RequestPrice(catalog, { inputTokens: 1000, maxOutputTokens: 4096 })).toThrow("E2_OUTPUT_LIMIT_UNENFORCED");
     expect(() => e2RequestPrice({ ...catalog, api: "unknown" }, { inputTokens: 1000, maxOutputTokens: 128000 })).toThrow("E2_ROUTE_CAPABILITY_UNKNOWN");
   }
+});
+
+it("funds the whole catalog input window independently of the heuristic measurement", () => {
+  expect(e2RequestPrice(catalogs[0], { inputTokens: 1, maxOutputTokens: 128000 }).reservationUnits).toBe("3920000000");
+  expect(e2RequestPrice(catalogs[0], { inputTokens: 272000, maxOutputTokens: 128000 }).reservationUnits).toBe("3920000000");
+});
+
+it("re-derives the envelope from catalog context/cache/tier ceilings, not a lookup dollar constant", () => {
+  const changedWindow = { ...catalogs[0], contextWindow: 250000 };
+  expect(e2RequestPrice(changedWindow, { inputTokens: 1000, maxOutputTokens: 128000 }).reservationUnits).toBe("3810000000");
+  const doubled = { ...catalogs[0], cost: { ...catalogs[0].cost, input: 4, cacheRead: 0.2, cacheWrite: 5, output: 20 } };
+  expect(e2RequestPrice(doubled, { inputTokens: 1000, maxOutputTokens: 128000 }).reservationUnits).toBe("7840000000");
 });

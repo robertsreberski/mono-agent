@@ -3,7 +3,8 @@
 ## Unreleased
 
 - Add offline E2 cap estimates from replay/proof sizing, with explicit output
-  forecasts and catalog-ceiling reservations for the uncapped Codex route.
+  forecasts and full catalog-context/output reservations (including conservative
+  cache/tier liability) for the uncapped Codex route.
 
 - Harden guarded continuity cleanup after synchronous stream-result failures,
   and bound preparation-stat traversal by entry count and depth.

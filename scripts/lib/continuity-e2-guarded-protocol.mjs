@@ -1,7 +1,10 @@
 // Closed E2 identity/authorization descriptor. Paid adapters remain explicitly unavailable until wired.
+import { e2ExecutionPolicy } from "./continuity-e2-execution-policy.mjs";
+import { e2CacheAssignment, e2CacheIssuer, e2Watchdog, e2ValidTimeout, e2Work, e2PhaseAssignment } from "./continuity-e2-controller-policy.mjs";
 import * as e2Policy from "./continuity-e2-policy.mjs";
 const freeze = value => { if (value && typeof value === "object") { Object.values(value).forEach(freeze); Object.freeze(value); } return value; };
 const codes = {
+  summary_not_authorized: "e2_summary_not_authorized", summary_receipt_invalid: "e2_summary_receipt_invalid", compaction_invalid: "e2_compaction_invalid",
   "account_mismatch": "e2_account_mismatch",
   "arrival_persist_failed": "e2_arrival_persist_failed",
   "arrival_receipt_invalid": "e2_arrival_receipt_invalid",
@@ -88,7 +91,7 @@ const codes = {
 };
 const unavailable = () => { throw Object.assign(Error(codes.pilot_real_route_unavailable), { code: codes.pilot_real_route_unavailable }); };
 export const e2GuardedProtocol = freeze({
-  id: "e2-validation", realRoute: false,
+  id: "e2-validation", realRoute: false, execution: e2ExecutionPolicy,
   policy: Object.fromEntries(Object.entries(e2Policy).map(([name, value]) => [name.replace(/^E2_/u, ""), value])), codes,
   registryDomain: "mono-agent/lcc-e2/consumed-v1\0", accountDomain: "mono-agent/lcc-e2/account-v1\0",
   journal: "e2-validation-controller.json", leaseFile: "controller-lock.sqlite",
@@ -104,11 +107,15 @@ export const e2GuardedProtocol = freeze({
     validateAuthorization: async (...args) => (await import("./continuity-e2-authorization.mjs")).validateE2GuardedAuthorization(...args),
     checkoutPaths: pilot => [pilot.registration.code.path],
     authorizationBinds: (pilot, descriptor, catalog, same) => same(pilot.descriptor, descriptor) && same(pilot.registration.catalog, catalog),
-    // No paid/faux controller is opened until phase adapters, dynamic accounting and receipts are wired together.
-    prepareController: async () => unavailable(), realModules: async () => unavailable(), verifyRealAssignment: async () => unavailable(),
+    controllerBindings: async () => (await import("./continuity-e2-controller-policy.mjs")).e2ControllerBindings(),
+    publicState: () => ({}), cacheAssignment: e2CacheAssignment, cacheIssuer: e2CacheIssuer, watchdog: e2Watchdog, validTimeout: e2ValidTimeout,
+    work: e2Work, verifyPhaseAssignment: e2PhaseAssignment,
+    prepareController: async (...args) => (await import("./continuity-e2-controller-policy.mjs")).prepareE2Controller(...args), realModules: async () => unavailable(), verifyRealAssignment: async () => unavailable(),
     fauxBindings: async () => { throw Object.assign(Error(codes.pilot_faux_required), { code: codes.pilot_faux_required }); },
     preflightBindings: async () => { throw Object.assign(Error(codes.preparation_forbidden), { code: codes.preparation_forbidden }); },
-    assertResolvedSafety: unavailable, assertRoute: unavailable, assertPayload: unavailable, bodyBytes: unavailable,
-    cacheKey: () => false,
+    assertResolvedSafety: unavailable,
+    assertRoute: (...args) => e2ExecutionPolicy.assertRoute(...args), assertPayload: (...args) => e2ExecutionPolicy.assertPayload(...args),
+    bodyBytes: body => { if (typeof body !== "string" && !(body instanceof Uint8Array) && !(body instanceof ArrayBuffer)) throw Object.assign(Error(codes.body_type_forbidden), { code: codes.body_type_forbidden }); return Buffer.from(body instanceof ArrayBuffer ? new Uint8Array(body) : body); },
+    cacheKey: key => typeof key === "string" && /^[\x21-\x7e]{1,64}$/u.test(key),
   },
 });

@@ -40,7 +40,7 @@ export function estimateE2Reservations({ roles, requests, catalog }) {
     const central = e2RequestPrice(role.catalog, { inputTokens: size.maximum, maxOutputTokens: role.maxOutputTokens, expectedOutputTokens: role.expectedOutputTokens, cachedInputTokens: cached });
     const groupKey = `${request.checkpoint}:${costKey}`;
     if (!groups.has(groupKey)) groups.set(groupKey, { checkpoint: request.checkpoint, role: role.role, model: role.model, requests: 0,
-      maxInputTokens: role.maxInputTokens, maxOutputTokens: role.maxOutputTokens, maxReservationUnits: role.maximum.toString(), expectedOutputTokens: role.expectedOutputTokens, retainedRequests: 0, maximumUnits: 0n, centralUnits: 0n, noCacheUnits: 0n });
+      maxInputTokens: role.maxInputTokens, fundedInputTokens: role.catalog.contextWindow, maxOutputTokens: role.maxOutputTokens, maxReservationUnits: role.maximum.toString(), expectedOutputTokens: role.expectedOutputTokens, retainedRequests: 0, maximumUnits: 0n, centralUnits: 0n, noCacheUnits: 0n });
     const row = groups.get(groupKey); row.requests++; row.maximumUnits += role.maximum;
     // The legacy setup + paid continuation combination is the deliberately forwarded cancellation.
     // Its known planned liability is the full ceiling hold, not a successful-output forecast.
@@ -54,6 +54,6 @@ export function estimateE2Reservations({ roles, requests, catalog }) {
   const largest = rows.reduce((max, row) => BigInt(row.maxReservationUnits) > max ? BigInt(row.maxReservationUnits) : max, 0n);
   const serial = row => Object.fromEntries(Object.entries(row).map(([k, v]) => [k, typeof v === "bigint" ? v.toString() : v]));
   return { schema: "continuity-e2-cap-estimate-v1", unitsPerUSD: E2_USD_UNITS.toString(), semanticQualification: false,
-    assumptions: { centralCache: E2_CENTRAL_CACHE, output: "registered-forecast-not-enforced", maximum: "catalog-output-ceiling-and-registered-input-bound", minimumCap: "accumulated-forecast-liability-plus-largest-ceiling-reservation", completionGuaranteed: false },
+    assumptions: { centralCache: E2_CENTRAL_CACHE, output: "registered-forecast-not-enforced", input: "heuristic-admission-and-forecast-only", maximum: "catalog-context-output-and-conservative-cache-tier-ceilings", minimumCap: "accumulated-forecast-liability-plus-largest-ceiling-reservation", completionGuaranteed: false },
     scriptedRequests, checkpoints: rows.map(serial), totals: serial(total), largestReservationUnits: largest.toString(), minimumCapUnits: (total.centralUnits + largest).toString(), minimumNoCacheCapUnits: (total.noCacheUnits + largest).toString() };
 }

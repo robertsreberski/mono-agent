@@ -15,6 +15,6 @@ it("owns the E2 registry and schemas without inheriting a lookup request envelop
   expect(policy.E2_ASSUMPTIONS).not.toHaveProperty("rmax"); expect(policy.E2_ASSUMPTIONS).not.toHaveProperty("inputMax");
   expect(policy.E2_ASSUMPTIONS).not.toHaveProperty("outputMax"); expect(policy.E2_ASSUMPTIONS).not.toHaveProperty("rates");
   expect(policy.E2_ASSUMPTIONS.literalInput).toBe("max_serialized_bytes_over_3_and_engine_full_request");
-  expect(policy.E2_ASSUMPTIONS.reservation).toBe("actual-input-envelope-times-catalog-input-plus-output-limit-times-catalog-output");
+  expect(policy.E2_ASSUMPTIONS.reservation).toBe("catalog-context-output-ceilings-with-conservative-cache-tier-rates");
   expect(policy.E2_BINDING_FIELDS).toEqual(["code", "build", "catalog", "protocol", "source", "probes", "keys", "soul", "schedule", "account", "tools", "deadlines", "capUnits"]);
 });

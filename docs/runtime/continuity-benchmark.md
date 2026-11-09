@@ -2623,3 +2623,33 @@ Unknown future summary digests cannot be added to a registration: generated
 summaries require controller-verified runtime receipts before any paid probe.
 The registration validator does not substitute a pre-approved digest for those
 future receipts.
+
+#### Catalog-window input funding
+
+The C1 full-context maximum (serialized bytes÷3 versus engine estimate) is a
+heuristic. It is used for central forecasts, pre-send admission and schedule
+feasibility, not as a hard provider-token bound. E2 funds each request at the
+digest-bound catalog `contextWindow` for input plus the catalog output ceiling.
+An estimated context above its registered limit/window is refused before send;
+settlement uses actual reported usage. Reports show the heuristic central
+forecast separately from each full-window reservation and the minimum cap
+(accumulated forecast liability plus the largest such reservation).
+
+Funding also preserves the shared guard's conservative cache-write and
+unknown/priority-service-tier liability: use the largest applicable catalog
+input/cache rate and the supported maximum tier multiplier. These are derived
+from E2's bound catalog, not copied from a lookup-dollar constant. Actual default
+service/cache usage settles at its reported rates; central forecasts remain
+separate from this conservative reservation.
+
+
+The shared E2 ledger now derives holds independently by registered phase,
+checkpoint, role and model; child-proposed amounts are equality checks, not
+spending authority. Costs and caps stay in integer USD units. Sub-unit flex
+liability is rounded up, never dropped. Generated summary results are written
+privately after consumption and verified against settled usage and request/body
+identity. A separate durable-compaction acknowledgment is required, and the
+controller re-verifies the result files before admitting a probe. These core
+mechanics have faux ledger coverage; the opaque paid Models/phase adapters and
+new-protocol native-SDK subprocess proofs are still required before enabling
+paid execution.
