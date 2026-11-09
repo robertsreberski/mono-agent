@@ -1,4 +1,7 @@
 // Static lookup descriptor; lazy policy loading carries no caller-supplied callbacks.
+import { lookupGuardedModelPolicy } from "./continuity-lookup-guarded-model-policy.mjs";
+import * as runtime from "./continuity-lookup-pilot-runtime.mjs";
+import { armById } from "./continuity-arms.mjs";
 import * as lookupPolicy from "./continuity-lookup-guarded-policy.mjs";
 const freeze = value => { if (value && typeof value === "object") { Object.values(value).forEach(freeze); Object.freeze(value); } return value; };
 const codes = {
@@ -91,7 +94,40 @@ export const lookupGuardedProtocol = freeze({ id: "lookup-pilot", policy: Object
   journal: "lookup-pilot-controller.json", leaseFile: "controller-lock.sqlite",
   leaseSQL: { select: "SELECT pid, start_identity FROM lookup_controller WHERE id = 1", create: "PRAGMA busy_timeout=0; PRAGMA journal_mode=DELETE; CREATE TABLE lookup_controller (id INTEGER PRIMARY KEY, pid INTEGER NOT NULL, start_identity TEXT NOT NULL)", insert: "INSERT INTO lookup_controller VALUES (1, ?, ?)" },
   pricing: { units: lookupPolicy.USD_UNITS, input: 20n, cacheRead: 1n, cacheWrite: 25n, output: 100n, flex: 1n, normal: 2n, maximum: 4n, floatUnits: 10000000 }, realRoute: true, refusalPattern: /^(lookup_[a-z_]+|paid_mode_refused_in_ci)$/u,
+  Error: lookupPolicy.LookupGuardError, permitBrand: "lookup-controller-v1", fauxBrand: "lookup-faux-test-only-v1",
+  requestLimit: 10, lossLimit: 2, invalidRateDenominator: 10,
+  schemas: { slotReceipt: "lookup-pilot-slot-receipt-v1", report: "lookup-pilot-report-v1", fauxConsumption: "lookup-faux-consumption-v1", preparation: "lookup-preparation-v1", preflightSnapshot: "lookup-preflight-snapshot-v1", preparationRecord: "lookup-preparation-record-v1", preflightRecord: "lookup-preflight-record-v1", preflightReport: "lookup-preflight-report-v1" },
+  preflightPrefix: "lookup-preflight-",
+  fauxDomain: "mono-agent/lookup-pilot/faux-consumed-v1\0", fauxRegistry: ".lookup-faux-consumed-v1",
+  children: { preparation: "scripts/lib/continuity-lookup-preparation-child.mjs", probe: "scripts/lib/continuity-lookup-pilot-child.mjs" },
   hooks: {
+    controllerBindings: async () => (await import("./continuity-lookup-controller.mjs")).lookupControllerBindings(),
+    preflightBindings: async () => (await import("./continuity-lookup-preflight.mjs")).lookupPreflightBindings(),
+    fauxBindings: async () => (await import("./continuity-lookup-faux-capability.mjs")).lookupFauxBindings(),
+    roleRequest: (pilot, binding, code) => ({ schema: "lookup-role-request-v1", binding, common: pilot.registration.common, build: code.build }),
+    restorePreflight: async (...args) => (await import("./continuity-lookup-preparation.mjs")).restoreLookupPreflight(...args),
+    async realModules() {
+      const [guard, auth, ipc] = await Promise.all([import("./continuity-lookup-guard.mjs"), import("./continuity-lookup-authorization.mjs"), import("./continuity-lookup-ipc.mjs")]);
+      return { wrapModels: guard.guardedLookupModels, assertRealPermitSource: guard.assertRealLookupPermitSource, matchesAccount: auth.lookupAuthorizationMatchesAccount, createIPC: ipc.createLookupPilotIPC };
+    },
+    cacheAssignment: runtime.assertLookupCacheAssignment, cacheIssuer: runtime.issueLookupCacheKey, forwardedObserver: runtime.lookupForwardedObserver,
+    verifyRealAssignment: async (...args) => (await import("./continuity-lookup-real-capability.mjs")).verifyLookupRealAssignment(...args),
+    verifyFauxRole: async a => { const { ROOT, verifyRoleRequest } = await import("./continuity-lookup-roles.mjs"); if (ROOT !== a.pilot.registration.codes[a.slot.code].path) throw Object.assign(Error("lookup_pilot_faux_required"), { code: "lookup_pilot_faux_required" }); await verifyRoleRequest(ROOT, a.roleRequest, a.plan); },
+    createFauxDecorator: async (...args) => (await import("./continuity-lookup-guard.mjs")).createFauxLookupDecorator(...args),
+    prepareController: async (...args) => (await import("./continuity-lookup-guarded-controller-policy.mjs")).prepareLookupController(...args),
+    slotRequest: async (...args) => (await import("./continuity-lookup-guarded-controller-policy.mjs")).lookupSlotRequest(...args),
+    publicState: pilot => ({ roleCount: pilot.registration.roles.length, publicSources: Object.fromEntries(pilot.registration.common.corpora.map(c => [c.suite, c.sha256])), publicBindings: Object.fromEntries(Object.entries(pilot.registration.codes).map(([id, c]) => [id, { revision: c.revision, buildSha256: c.build.outputSha256, protocolSha256: pilot.registration.common.protocol.pilotSha256 }])) }),
+    fauxAssignmentMatches: async (a, state) => { const { digest } = await import("./continuity-dataset.mjs"); return digest(a.pilot) === state.binding && a.roleRequest.binding.id === a.slot.roleId && a.roleRequest.binding.registrationSha256 === digest(a.pilot.registration) && digest(a.roleRequest.build) === digest(a.pilot.registration.codes[a.slot.code].build); },
+    ...lookupGuardedModelPolicy(codes, lookupPolicy.LookupGuardError),
+    assertResolvedSafety: runtime.assertResolvedLookupSafety, cacheKey: runtime.lookupCacheKey, bodyBytes: runtime.lookupBodyBytes,
+    work: runtime.lookupPilotWork, watchdog: runtime.lookupPilotWatchdog, validTimeout: runtime.validLookupPilotTimeout,
+    servesArm: arm => ["native-lookup", "continuity-pack-cold", "continuity-pack-boundary"].includes(arm?.id) && arm.fork === "in-place" && !arm.restart && arm.midCheckpoint === null && !arm.ledgerUpkeep,
+    assertArm(arm) { if (!(["native-lookup", "continuity-pack-cold", "continuity-pack-boundary"].includes(arm?.id) && arm.fork === "in-place" && !arm.restart && arm.midCheckpoint === null && !arm.ledgerUpkeep)) throw Object.assign(new Error("lookup_pilot_boundary_required"), { code: "lookup_pilot_boundary_required" }); },
+    assignmentArm: a => a.roleRequest.binding.arm, armForAssignment: a => armById(a.roleRequest.binding.arm),
+    snapshotMatches: (manifest, a) => manifest.traceId === a.slot.traceId, snapshotSource: a => ({ traceId: a.slot.traceId }),
+    validateRegistration: async pilot => (await import("./continuity-lookup-pilot.mjs")).validateLookupPilotRegistration(pilot),
+    verifyCheckouts: async pilot => (await import("./continuity-lookup-roles.mjs")).verifyRegisteredCheckouts(pilot.registration),
+    schedule: async pilot => (await import("./continuity-lookup-pilot-state.mjs")).lookupPilotSchedule(pilot),
     validateAuthorization: async (...args) => (await import("./continuity-lookup-guarded-authorization-policy.mjs")).validateLookupGuardedAuthorization(...args),
     checkoutPaths: pilot => Object.values(pilot.registration.codes).map(code => code.path),
     authorizationBinds: (pilot, descriptor, catalog, same) => same(pilot.descriptor, descriptor) && same(pilot.registration.common.catalog, catalog),

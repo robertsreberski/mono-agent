@@ -67,3 +67,9 @@ export const LOOKUP_FAUX_CONTROLLER = "continuity-lookup-faux-controller-v1";
 export const LOOKUP_PILOT_IPC = "lookup-pilot-ipc-v1";
 export const LOOKUP_PREFLIGHT = "lookup-preflight-controller-v1";
 export const LOOKUP_TREE_LIMITS = Object.freeze({ fileBytes: 64 * 1024 * 1024, totalBytes: 512 * 1024 * 1024 });
+
+export class LookupGuardError extends Error {
+  constructor(code, outcome = "refused_pre_send", classification = code, cause) {
+    super(code, cause === undefined ? undefined : { cause }); this.code = code; this.outcome = outcome; this.classification = classification;
+  }
+}

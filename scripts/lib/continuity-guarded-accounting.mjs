@@ -75,8 +75,8 @@ function bind(protocol, id) {
       admitted, invalid, incomplete, completed, consecutiveProviderLosses: losses };
   }
   function stopReason(spend, capUnits, nextUnits = "0") {
-    if (spend.consecutiveProviderLosses >= 2) return protocol.codes.repeated_loss;
-    if (spend.invalid * 10 > spend.admitted) return "invalid_unit_rate";
+    if (spend.consecutiveProviderLosses >= protocol.lossLimit) return protocol.codes.repeated_loss;
+    if (spend.invalid * protocol.invalidRateDenominator > spend.admitted) return "invalid_unit_rate";
     if (BigInt(spend.totalUnits) + BigInt(nextUnits) > BigInt(capUnits)) return "budget_admission";
     return null;
   }
@@ -84,7 +84,8 @@ function bind(protocol, id) {
     const cached = usage.input_tokens_details?.cached_tokens ?? 0, written = usage.input_tokens_details?.cache_write_tokens ?? 0;
     // Accumulate integer tenths-of-a-microdollar; return floating-point dollars.
     const p = protocol.pricing;
-    const tenths = (usage.input_tokens - cached - written) * Number(p.input) + cached * Number(p.cacheRead) + written * Number(p.cacheWrite) + usage.output_tokens * Number(p.output);
+    const cachedRead = p.cacheRead === 1n ? cached : cached * Number(p.cacheRead);
+    const tenths = (usage.input_tokens - cached - written) * Number(p.input) + cachedRead + written * Number(p.cacheWrite) + usage.output_tokens * Number(p.output);
     return tenths * (tier === "flex" ? 0.5 : tier === "default" ? 1 : 2) / protocol.pricing.floatUnits;
   }
   return Object.freeze({ need, fixedCode, money, dollars, priceUsage, settleHold, accountRun, stopReason, settledCost });

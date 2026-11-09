@@ -88,9 +88,9 @@ it("inventories every authority reference and separate real/loopback native fetc
   const fetches = inventory(sources, "fetch");
   const runtimeFetches = Object.fromEntries(Object.entries(fetches).filter(([path]) => !path.includes("/__tests__/")));
   expect({ guard, real, runtimeFetches }).toEqual(INVENTORY);
-  const native = parse("native", sources.get("scripts/lib/continuity-lookup-real-capability.mjs"));
+  const native = parse("native", sources.get("scripts/lib/continuity-guarded-real-capability.mjs"));
   expect(calls(native, "nativeFetch")).toHaveLength(1);
-  expect(calls(parse("local", sources.get("scripts/lib/continuity-lookup-faux-capability.mjs")), "nativeFetch")).toHaveLength(1);
+  expect(calls(parse("local", sources.get("scripts/lib/continuity-guarded-faux-capability.mjs")), "nativeFetch")).toHaveLength(1);
 }, 120_000);
 // Definition/import/alias references are intentional entries too. Test mocks are
 // listed explicitly; no new production constructor may hide behind a callback.
@@ -100,11 +100,14 @@ const INVENTORY = {
     "scripts/__tests__/continuity-lookup-real-capability.test.mjs": 5,
     "scripts/__tests__/continuity-lookup-turn.test.mjs": 2,
     "scripts/__tests__/fixtures/continuity-lookup-guard-smoke.mjs": 2,
-    "scripts/lib/continuity-lookup-guard.mjs": 2,
+    "scripts/lib/continuity-guarded-models.mjs": 2,
+    "scripts/lib/continuity-lookup-guard.mjs": 3,
+    "scripts/__tests__/continuity-guarded-chronology.test.mjs": 1,
     "scripts/__tests__/fixtures/lookup-pilot-mechanics.mjs": 2,
-    "scripts/lib/continuity-lookup-real-capability.mjs": 1,
+    "scripts/lib/continuity-lookup-guarded-protocol.mjs": 2,
   },
   real: {
+    "scripts/__tests__/continuity-guarded-consumption.test.mjs": 1,
     "scripts/__tests__/continuity-lookup-credentialed-models.test.mjs": 1,
     "scripts/__tests__/continuity-lookup-pilot-child.test.mjs": 1,
     "scripts/__tests__/fixtures/lookup-preparation-preload.mjs": 1,
@@ -112,7 +115,8 @@ const INVENTORY = {
     "scripts/__tests__/continuity-lookup-pilot-probe.test.mjs": 1,
     "scripts/__tests__/continuity-lookup-real-capability.test.mjs": 25,
     "scripts/lib/continuity-lookup-pilot-probe.mjs": 2,
-    "scripts/lib/continuity-lookup-real-capability.mjs": 1,
+    "scripts/lib/continuity-guarded-real-capability.mjs": 2,
+    "scripts/lib/continuity-lookup-real-capability.mjs": 2,
   },
   runtimeFetches: {
     "scripts/check-dependency-vulnerabilities.mjs": 2,
@@ -121,10 +125,10 @@ const INVENTORY = {
     // Existing non-pilot embedding/generation transports are inventoried too.
     "scripts/lib/memory-e2e-private-providers.mjs": 2,
     // An SDK hook definition and its faux invocation are not native network sites.
-    "scripts/lib/continuity-lookup-guard.mjs": 1,
-    "scripts/lib/continuity-lookup-faux-capability.mjs": 3,
+    "scripts/lib/continuity-guarded-models.mjs": 1,
+    "scripts/lib/continuity-guarded-faux-capability.mjs": 3,
     // Capture, local alias declaration and exactly one native invocation.
-    "scripts/lib/continuity-lookup-real-capability.mjs": 3,
+    "scripts/lib/continuity-guarded-real-capability.mjs": 3,
     // Off-lane proof sentinel: capture, owned-loopback delegation and denied probe.
     "scripts/proofs/fixtures/lookup-configured-preload.mjs": 5,
     // E2 faux-proof egress guard: capture, loopback-only wrapper, its delegated
@@ -172,7 +176,7 @@ it("cannot hide an authority alias in a user variable named unknown", () => {
 });
 
 it("keeps preparation entries and helpers free of authority and fetch references", async () => {
-  const paths = ["scripts/lib/continuity-lookup-preparation-child.mjs", "scripts/lib/continuity-lookup-preparation.mjs", "scripts/lib/continuity-lookup-preflight.mjs", "scripts/lib/continuity-lookup-child-environment.mjs"];
+  const paths = ["scripts/lib/continuity-guarded-snapshot.mjs", "scripts/lib/continuity-guarded-preflight.mjs", "scripts/lib/continuity-guarded-child-environment.mjs", "scripts/lib/continuity-lookup-preparation-child.mjs", "scripts/lib/continuity-lookup-preparation.mjs", "scripts/lib/continuity-lookup-preflight.mjs", "scripts/lib/continuity-lookup-child-environment.mjs"];
   const sources = new Map(await Promise.all(paths.map(async path => [path, await readFile(join(ROOT, path), "utf8")])));
   for (const target of ["fetch", "guardedLookupModels", "createLookupRealSend", "verifyLookupRealAssignment", "createLookupPilotIPC", "validateLookupAuthorization", "consumeLookupAuthorization", "verifyLookupConsumption", "verifyLookupPilotParent", "assertRealLookupPermitSource", "createFauxLookupDecorator", "isRealLookupSend", "realLookupSendForGuard", "isRealLookupDecorator", "realLookupSendBinds"]) expect(inventory(sources, target), target).toEqual({});
   for (const text of sources.values()) expect(text).not.toMatch(/from ["'][^"']*(?:real-capability|lookup-ipc)[^"']*["']/u);

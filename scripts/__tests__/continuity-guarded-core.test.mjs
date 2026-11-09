@@ -24,6 +24,10 @@ it("pins every original lookup policy constant and refusal set to the pre-extrac
   expect(() => guardedProtocol({ id: "lookup-pilot" })).toThrow("guarded_protocol_unknown");
   expect(() => guardedProtocol("/fictional/protocol.mjs")).toThrow("guarded_protocol_unknown");
   expect(Object.isFrozen(guardedProtocol("lookup-pilot").policy.ASSUMPTIONS.rates)).toBe(true);
+  const protocol = guardedProtocol("lookup-pilot");
+  expect([protocol.requestLimit, protocol.lossLimit, protocol.invalidRateDenominator]).toEqual([10, 2, 10]);
+  expect(protocol.schemas).toEqual({ slotReceipt: "lookup-pilot-slot-receipt-v1", report: "lookup-pilot-report-v1", fauxConsumption: "lookup-faux-consumption-v1", preparation: "lookup-preparation-v1", preflightSnapshot: "lookup-preflight-snapshot-v1", preparationRecord: "lookup-preparation-record-v1", preflightRecord: "lookup-preflight-record-v1", preflightReport: "lookup-preflight-report-v1" });
+  expect(protocol.children).toEqual({ preparation: "scripts/lib/continuity-lookup-preparation-child.mjs", probe: "scripts/lib/continuity-lookup-pilot-child.mjs" });
 });
 it("pins the original envelope, exact reservation and tier prices through the lookup adapter", () => {
   const payload = { input: [{ type: "message", role: "user", content: "Fictional request." }], instructions: "Fictional instructions.", tools: [{ type: "function", name: "ReadFiction", parameters: { properties: { key: { type: "string" } } } }] };

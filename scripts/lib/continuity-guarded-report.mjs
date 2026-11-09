@@ -25,7 +25,7 @@ function bind(protocol, id) {
       || protocol.policy.SLOT_TERMINALS.includes(terminalCode), protocol.codes.receipt_invalid);
     let input = 0, output = 0;
     for (const h of holds) { input += h.settlement?.rawUsage?.input_tokens ?? 0; output += h.settlement?.rawUsage?.output_tokens ?? 0; }
-    const row = { schema: "lookup-pilot-slot-receipt-v1", runId: state.runId, slotId: planned.slotId, position: index, role: planned.roleId,
+    const row = { schema: protocol.schemas.slotReceipt, runId: state.runId, slotId: planned.slotId, position: index, role: planned.roleId,
       binding: Object.fromEntries(["revision", "buildSha256", "sourceSha256", "protocolSha256"].map(key => [key, bindings[key]])), qualityMeasured: state.schema === protocol.policy.REAL_CONTROLLER && holds.length > 0 && ["completed", "wrong"].includes(slot.terminal) && [0, 1].includes(slot.score), eligible: planned.eligible,
       admitted: holds.length > 0, terminal: slot.terminal, terminalCode, score: slot.score,
       calls: { admitted: holds.length, consumed: holds.filter(h => h.consumed).length, settled: holds.filter(h => h.settlement).length },
@@ -62,7 +62,7 @@ function bind(protocol, id) {
       if (!blocks.has(key)) blocks.set(key, new Set()); blocks.get(key).add(row.role);
     }
     const spend = accountRun(state.slots);
-    return { schema: "lookup-pilot-report-v1", runId: state.runId, executionKind: state.schema === protocol.policy.REAL_CONTROLLER ? "authorized-pilot" : "faux-only", authorizedSpend: state.schema === protocol.policy.REAL_CONTROLLER, qualityMeasured: receipts.some(row => row.qualityMeasured), counts,
+    return { schema: protocol.schemas.report, runId: state.runId, executionKind: state.schema === protocol.policy.REAL_CONTROLLER ? "authorized-pilot" : "faux-only", authorizedSpend: state.schema === protocol.policy.REAL_CONTROLLER, qualityMeasured: receipts.some(row => row.qualityMeasured), counts,
       pairedCoverage: { completeBlocks: [...blocks.values()].filter(v => v.size === state.roleCount).length },
       schedule: { visited, truncated: visited < state.schedule.length, remaining: state.schedule.length - visited },
       stop: state.stop, cost: { capUSD: state.capUSD, reservationUSD: state.rmaxUSD, totalUSD: dollars(spend.totalUnits), knownPartialUSD: dollars(spend.knownPartialUnits) },
