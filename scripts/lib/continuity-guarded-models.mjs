@@ -99,13 +99,14 @@ function bind(protocol, protocolId) {
       if (funding && rounds) refuse(protocol.codes.request_limit);
       const round = funding ? contract.e2.round : rounds + 1;
       const payloads = [];
-      let admitted, admittedPayloadDigest, earlyStop, sent = false, fetchEntered = false, raw, tier, envelope, payloadSeen = false, terminalSeen = false, preRefusal, integrity;
+      let admitted, admittedPayloadDigest, earlyStop, sent = false, fetchEntered = false, raw, tier, envelope, payloadSeen = false, terminalSeen = false, preRefusal, integrity, finishing = false;
       active = true;
       const finish = async (message, failure) => {
+        finishing = true;
         try {
-          // A synchronous result() failure must wait for any in-flight admission ACK.
+          // Every finish (success or failure) drains already-started payload/admission work.
           if (payloads.length) await Promise.allSettled(payloads);
-          if (earlyStop) await earlyStop;
+          if (earlyStop) try { await earlyStop; } catch (error) { failure ??= error; }
           if (admitted) {
             let code, outcome = "lost", cost;
             if (integrity) { outcome = "integrity_stop"; code = integrity; }
@@ -139,12 +140,19 @@ function bind(protocol, protocolId) {
           return message;
         } finally { active = false; }
       };
+      const refuseFinishing = () => {
+        integrity = protocol.codes.permit_invalid;
+        earlyStop ??= stopWithError(integrity); void earlyStop.catch(() => {});
+        return earlyStop;
+      };
       const wrapped = { ...options, ...(contract.promptCacheKey === undefined ? {} : { sessionId: contract.promptCacheKey }),
         onPayload: (payload, selected) => {
           const pending = (async () => {
             try {
+              if (finishing) return await refuseFinishing();
               if (payloadSeen) { if (admitted) integrity = protocol.codes.payload_repeated; refuse(protocol.codes.payload_repeated); } payloadSeen = true;
-              const mutated = await options.onPayload?.(payload, selected) ?? payload;
+              const mutated = options.onPayload ? await options.onPayload(payload, selected) ?? payload : payload;
+              if (finishing) return await refuseFinishing();
               // Snapshot once: accessors/toJSON cannot change between sizing and digesting.
               const final = JSON.parse(JSON.stringify(mutated));
               if (resolvedSafety) assertResolvedLookupSafety(resolvedSafety);
@@ -163,6 +171,7 @@ function bind(protocol, protocolId) {
           payloads.push(pending); void pending.catch(() => {}); return pending;
         },
         fetch: async (url, init) => {
+          if (finishing) return await refuseFinishing();
           if (!admitted) {
             integrity = protocol.codes.permit_invalid;
             earlyStop ??= stopWithError(integrity);
@@ -196,6 +205,7 @@ function bind(protocol, protocolId) {
             }
             await permit.consume(admitted, bodyDigest);
           } catch (error) { integrity ??= error.code === protocol.codes.body_type_forbidden ? error.code : protocol.codes.permit_invalid; throw error; }
+          if (finishing) return await refuseFinishing();
           if (integrity) throw new LookupGuardError(integrity);
           sent = true;
           // Content-free witness of the forwarded context: synchronous, after the
@@ -204,7 +214,11 @@ function bind(protocol, protocolId) {
             const observed = onForwarded?.(context, round);
             if (observed !== null && (typeof observed === "object" || typeof observed === "function") && typeof observed.then === "function") Promise.resolve(observed).catch(() => {});
           } catch { /* Observation only. */ }
-          return send(url, init);
+          try { return await send(url, init); }
+          catch (error) {
+            if (error?.outcome === "integrity_stop" && protocol.policy.INTEGRITY_STOPS.includes(error.code)) integrity = error.code;
+            throw error;
+          }
         },
         onProviderStreamEvent: async (event, selected) => {
           if (event?.type === "response.failed") {

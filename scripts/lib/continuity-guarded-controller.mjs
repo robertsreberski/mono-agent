@@ -219,6 +219,13 @@ function bind(protocol, protocolId) {
             revision: state.revision + 1, ok: true, result };
           slot.lastAck = ack; await save(); return structuredClone(ack);
         } catch (error) {
+          if (protocol.execution && message?.op === "admit" && protocol.policy.ADMISSION_REFUSALS.includes(error.code)) {
+            // Capacity/schedule refusals stop admission without reclassifying prior settled work.
+            slot.admissionRefusal = error.code; stop(error.code); slot.nextMessage++;
+            const ack = { type: "ack", version: LOOKUP_PILOT_IPC, epoch: state.epoch, slotId: slot.slotId, seq: message.seq,
+              revision: state.revision + 1, ok: true, result: { refused: true, code: error.code } };
+            slot.lastAck = ack; await save(); return structuredClone(ack);
+          }
           if (slot.holds.length) slot.terminal = "integrity_stop";
           stop(error.code); await save(); throw Object.assign(new Error(fixedPilotCode(error.code)), { code: fixedPilotCode(error.code) });
         }
@@ -232,6 +239,10 @@ function bind(protocol, protocolId) {
           stop(protocol.codes.ipc_invalid); await save(); pilotNeed(false, protocol.codes.ipc_invalid);
         }
         if (terminal === "refused_pre_send" && refusalCode) slot.guardRefusal = refusalCode;
+        if (terminal === "refused_pre_send" && protocol.execution && protocol.policy.ADMISSION_REFUSALS.includes(refusalCode)) {
+          // A child may reject its estimate before sending an admit message.
+          slot.admissionRefusal ??= refusalCode; stop(refusalCode);
+        }
         if (terminal === "refused_pre_send" && LOOKUP_GUARD_POLICY_REFUSALS.includes(refusalCode)) {
           stop(refusalCode); if (slot.holds.length) terminal = "integrity_stop";
         }

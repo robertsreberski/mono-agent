@@ -26,7 +26,7 @@ it("prices the actual C2 cancel-forwarded sizing request as paid without changin
     const withoutCancellation = estimateE2Reservations({ roles, requests: requests.filter(r => r !== forwarded[0]), catalog });
     const role = roles.find(r => r.role === "continuation" && r.model === forwarded[0].model);
     const reserve = e2RequestPrice(catalog.find(c => c.model === role.model), { inputTokens: role.maxInputTokens, maxOutputTokens: role.maxOutputTokens }).reservationUnits;
-    expect(BigInt(withCancellation.minimumCapUnits) - BigInt(withoutCancellation.minimumCapUnits)).toBe(BigInt(reserve));
+    expect(BigInt(withCancellation.forecastMinimumCapUnits) - BigInt(withoutCancellation.forecastMinimumCapUnits)).toBe(BigInt(reserve));
     expect(withCancellation.checkpoints.find(r => r.role === "continuation").requests).toBe(5);
   } finally { await rm(root, { recursive: true, force: true }); }
 }, 60000);

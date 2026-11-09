@@ -38,6 +38,20 @@ function validateBody(body) {
   }
 }
 const sameFields = (p, names) => p && typeof p === "object" && !Array.isArray(p) && Object.keys(p).sort().join() === [...names].sort().join();
+// Funding is shared; only the controller owns live hold counts and lifecycle admission.
+function requestFunding(pilot, planned, p, operationDigest) {
+  need(sameFields(p, E2_PERMIT_CONTRACT.admissionFields) && E2_PAID_ROLES.includes(p.paidRole) && count(p.checkpoint) && count(p.inputTokens));
+  const role = pilot.registration.roles.find(r => r.role === p.paidRole && r.model === p.model), catalog = pilot.registration.catalog.find(c => c.model === p.model);
+  need(role && catalog && p.inputTokens <= role.maxInputTokens && p.inputTokens <= catalog.contextWindow, "not_admitted_input_envelope");
+  const budget = planned.budgets.find(b => b.paidRole === p.paidRole && b.model === p.model && b.checkpoint === p.checkpoint);
+  need(budget, "e2_request_limit");
+  const reserve = e2RequestPrice(catalog, { inputTokens: p.inputTokens, maxOutputTokens: role.maxOutputTokens }).reservationUnits;
+  need(p.reservationUnits === reserve);
+  return { reserve: BigInt(reserve), metadata: { model: p.model, paidRole: p.paidRole, checkpoint: p.checkpoint, measuredInputTokens: p.inputTokens,
+    ...(p.paidRole === "summary" ? { operationDigest } : {}), inputMax: catalog.contextWindow, outputMax: role.maxOutputTokens, catalog: structuredClone(catalog),
+    tools: [...(p.paidRole === "summary" ? pilot.registration.toolPolicies.summary : planned.kind === "replay" ? pilot.registration.toolPolicies.replay
+    : planned.arm === "cancel" && p.paidRole === "continuation" ? pilot.registration.toolPolicies.cancelContinuation : pilot.registration.toolPolicies.proof)] } };
+}
 export const e2ExecutionPolicy = Object.freeze({
   cap(pilot) {
     const value = pilot?.descriptor?.capUnits;
@@ -46,17 +60,10 @@ export const e2ExecutionPolicy = Object.freeze({
   admission(pilot, planned, slot, p) {
     need(sameFields(p, E2_PERMIT_CONTRACT.admissionFields) && E2_PAID_ROLES.includes(p.paidRole) && count(p.checkpoint) && count(p.inputTokens));
     need(p.checkpoint >= (slot.holds.at(-1)?.checkpoint ?? 0));
-    const role = pilot.registration.roles.find(r => r.role === p.paidRole && r.model === p.model), catalog = pilot.registration.catalog.find(c => c.model === p.model);
-    need(role && catalog && p.inputTokens <= role.maxInputTokens && p.inputTokens <= catalog.contextWindow, "not_admitted_input_envelope");
     if (p.paidRole === "summary") need(slot.compaction && slot.compaction.checkpoint === p.checkpoint, "e2_summary_not_authorized");
     const budget = planned.budgets.find(b => b.paidRole === p.paidRole && b.model === p.model && b.checkpoint === p.checkpoint);
     need(budget && slot.holds.filter(h => h.paidRole === p.paidRole && h.model === p.model && h.checkpoint === p.checkpoint).length < budget.maxRequests, "e2_request_limit");
-    const reserve = e2RequestPrice(catalog, { inputTokens: p.inputTokens, maxOutputTokens: role.maxOutputTokens }).reservationUnits;
-    need(p.reservationUnits === reserve);
-    return { reserve: BigInt(reserve), metadata: { model: p.model, paidRole: p.paidRole, checkpoint: p.checkpoint, measuredInputTokens: p.inputTokens,
-      ...(p.paidRole === "summary" ? { operationDigest: slot.compaction.operationDigest } : {}), inputMax: catalog.contextWindow, outputMax: role.maxOutputTokens, catalog: structuredClone(catalog),
-      tools: [...(p.paidRole === "summary" ? pilot.registration.toolPolicies.summary : planned.kind === "replay" ? pilot.registration.toolPolicies.replay
-        : planned.arm === "cancel" && p.paidRole === "continuation" ? pilot.registration.toolPolicies.cancelContinuation : pilot.registration.toolPolicies.proof)] } };
+    return requestFunding(pilot, planned, p, slot.compaction?.operationDigest);
   },
   contract(contract) {
     need(["provider", "api", "baseUrl", "version"].every(k => contract?.[k] === E2_GUARD_CONTRACT[k]), "e2_contract_mismatch");
@@ -69,7 +76,8 @@ export const e2ExecutionPolicy = Object.freeze({
     need(e2.size.serializedBytes === Buffer.byteLength(JSON.stringify(context)), "e2_contract_mismatch");
     const p = { requestId: `${contract.runId}:${e2.round}`, slotId: contract.slotId, round: e2.round, payloadDigest: "0".repeat(64),
       reservationUnits: e2.reservationUnits, inputTokens: e2.size.maximum, model: e2.model, paidRole: e2.paidRole, checkpoint: e2.checkpoint };
-    const derived = this.admission(e2.pilot, e2.planned, { holds: [], ...(e2.operationDigest ? { compaction: { operationDigest: e2.operationDigest, checkpoint: e2.checkpoint } } : {}) }, p);
+    if (p.paidRole === "summary") need(/^[a-f0-9]{64}$/u.test(e2.operationDigest ?? ""), "e2_summary_not_authorized");
+    const derived = requestFunding(e2.pilot, e2.planned, p, e2.operationDigest);
     return { ...derived.metadata, reservationUnits: derived.reserve.toString(), request: p };
   },
   assertRoute(model, options, contract) {

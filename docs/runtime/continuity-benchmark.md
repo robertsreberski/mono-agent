@@ -2513,15 +2513,17 @@ one or two variants and a row for **every** intercepted request:
   conservative `maximum`, from C1's actual built estimator;
 - estimated-not-measured usage and `semanticQualification: false`.
 
-Roles are `setup-scripted`, `summary`, `continuation` and `probe`. **Exclude
-`setup-scripted` from paid pricing:** source replies stay scripted in a later
-paid run. The pre-boundary forwarded cancellation request is scripted too and is labelled
-`setup-scripted`. Count guarded summaries, the post-boundary continuations and
-probes at their reported output ceilings.
+Legacy roles are `setup-scripted`, `summary`, `continuation` and `probe`.
+Exclude a request from paid pricing **only when `paidRole === null`**. Genuine
+source setup stays scripted. The forwarded cancellation keeps its legacy
+`setup-scripted` label but has `paidRole: "continuation"`: reserve and retain its
+full paid liability. Count paid summaries, continuations and probes at their
+funded catalog ceilings; never infer a free request from the legacy role.
 No prompt, answer, tool arguments, record identifier, digest of private content
 or absolute path is present in sizing. All requests are faux now. Guarded real
-summaries/readers, authorization, billing/admission controls and semantic proof
-remain deferred to the separate paid controller; this CLI cannot enable them.
+summaries/readers and semantic proof remain deferred. The accounting and
+registration/authorization kernels ship as offline foundations; this CLI cannot
+enable paid execution.
 
 
 ## Guarded controller lease trust
@@ -2590,9 +2592,16 @@ Reservations use that output ceiling, the full catalog input context window
 and digest-bound installed prices (including conservative cache/tier liability). Central estimates instead use the explicit output
 forecast and a declared one-half cached-input assumption; a no-cache sensitivity
 is reported separately. The conservative minimum forecast cap is accumulated
-forecast liability plus the largest single ceiling reservation. The report also
-shows the sum-of-ceilings worst case. An estimate does not guarantee completion:
-unexpected output, extra work, deadline or cap exhaustion can stop a run. An
+forecast liability plus the largest single ceiling reservation. Its explicit name
+is `forecastMinimumCapUnits`, with `forecastNoCacheMinimumCapUnits` as sensitivity:
+it is a forecast floor, **not guaranteed budget feasibility**. The separately
+named `worstCaseCapUnits` funds every registered request at its input/output,
+cache and tier ceilings, including the final request's full reservation.
+`largestReservationUnits` is reported separately. At that worst-case cap the
+registered request budget can complete without cap refusal under the bound
+catalog; extra work, invalid usage, deadlines and semantic quality are not
+completion guarantees. Short/max alternatives fund the union of maximum
+per-checkpoint/role budgets (`fundedSchedule`), not two full replay draws. An
 exact cap and a separately parent-created bound authorization are still required
 before any real paid execution.
 
@@ -2613,8 +2622,12 @@ existing fresh-build receipt, installed catalog, C1 source/protocol, frozen
 questions/evaluator keys, shipping soul, role limits, explicit phase schedule,
 tool policies, sizing evidence and deadlines. Questions reuse
 `continuity-recorded-questions-v1`; private question/key identities must match and
-resolve to unique protocol checkpoint ordinals. The exact cap is a canonical
-integer USD-unit string, never a floating-point approval. Account authorization
+resolve to unique protocol checkpoint ordinals. Checkpoint turns must increase
+strictly within each branch; protocol validation and sizing refuse unordered or
+same-turn checkpoints with `E2_CHECKPOINT_ORDER_INVALID`, never silently sort. The exact cap is a canonical
+integer USD-unit string, never a floating-point approval. Registration refuses a
+cap below `forecastMinimumCapUnits` for its bound schedule; sticky admission stops
+remain the safety net above this non-guaranteed forecast floor. Account authorization
 uses an E2-domain salted commitment. No command creates an approval or refreshes
 credentials.
 
@@ -2635,8 +2648,9 @@ feasibility, not as a hard provider-token bound. E2 funds each request at the
 digest-bound catalog `contextWindow` for input plus the catalog output ceiling.
 An estimated context above its registered limit/window is refused before send;
 settlement uses actual reported usage. Reports show the heuristic central
-forecast separately from each full-window reservation and the minimum cap
-(accumulated forecast liability plus the largest such reservation).
+forecast separately from each full-window reservation, the forecast floor
+(accumulated forecast liability plus the largest reservation), and the ceiling-
+funded `worstCaseCapUnits`.
 
 Funding also preserves the shared guard's conservative cache-write and
 unknown/priority-service-tier liability: use the largest applicable catalog
@@ -2657,3 +2671,19 @@ controller re-verifies the result files before admitting a probe. These core
 mechanics have faux ledger coverage; the opaque paid Models/phase adapters and
 new-protocol native-SDK subprocess proofs are still required before enabling
 paid execution.
+
+
+#### Shared guarded-core behavior changes
+
+The fictional protocol is a journal-only fixture, not a runnable child pipeline.
+Like the closed E2 runner, its schedule runner now refuses
+`fictional_pilot_real_route_unavailable` before lease acquisition or authority
+burn; explicit fictional journal/kernel tests remain supported.
+
+Every guarded Models finish, including success and asynchronous failure, now
+waits for all already-started payload/admission promises with `allSettled`, not
+only synchronous result failures. A finishing flag prevents later payload or
+fetch callbacks from starting admission/consumption/send. Such late callbacks
+are integrity refusals. Native/faux body-policy refusals issue a sticky stop
+with the exact integrity code; E2 budget/input-envelope admission refusals remain
+classified pre-send refusals with their original code and stop further admission.

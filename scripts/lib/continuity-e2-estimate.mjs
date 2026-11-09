@@ -54,6 +54,6 @@ export function estimateE2Reservations({ roles, requests, catalog }) {
   const largest = rows.reduce((max, row) => BigInt(row.maxReservationUnits) > max ? BigInt(row.maxReservationUnits) : max, 0n);
   const serial = row => Object.fromEntries(Object.entries(row).map(([k, v]) => [k, typeof v === "bigint" ? v.toString() : v]));
   return { schema: "continuity-e2-cap-estimate-v1", unitsPerUSD: E2_USD_UNITS.toString(), semanticQualification: false,
-    assumptions: { centralCache: E2_CENTRAL_CACHE, output: "registered-forecast-not-enforced", input: "heuristic-admission-and-forecast-only", maximum: "catalog-context-output-and-conservative-cache-tier-ceilings", minimumCap: "accumulated-forecast-liability-plus-largest-ceiling-reservation", completionGuaranteed: false },
-    scriptedRequests, checkpoints: rows.map(serial), totals: serial(total), largestReservationUnits: largest.toString(), minimumCapUnits: (total.centralUnits + largest).toString(), minimumNoCacheCapUnits: (total.noCacheUnits + largest).toString() };
+    assumptions: { centralCache: E2_CENTRAL_CACHE, output: "registered-forecast-not-enforced", input: "heuristic-admission-and-forecast-only", maximum: "catalog-context-output-and-conservative-cache-tier-ceilings", forecastMinimumCap: "accumulated-forecast-liability-plus-largest-ceiling-reservation", worstCaseCap: "sum-of-funded-request-ceilings", forecastCompletionGuaranteed: false, worstCaseBudgetCompletionGuaranteed: true },
+    worstCaseCapUnits: total.maximumUnits.toString(), scriptedRequests, checkpoints: rows.map(serial), totals: serial(total), largestReservationUnits: largest.toString(), forecastMinimumCapUnits: (total.centralUnits + largest).toString(), forecastNoCacheMinimumCapUnits: (total.noCacheUnits + largest).toString() };
 }

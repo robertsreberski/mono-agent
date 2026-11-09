@@ -1,5 +1,5 @@
 // Offline sizing normalization. No authorization/credential/registry imports or access.
-import { PROTOCOL_SCHEMA, protocolDigest, SOL, LUNA } from "./continuity-e2-protocol.mjs";
+import { PROTOCOL_SCHEMA, protocolDigest, assertE2CheckpointOrder, SOL, LUNA } from "./continuity-e2-protocol.mjs";
 import { requireE2PaidRole } from "./continuity-e2-roles.mjs";
 import { validateE2Sizing, estimateE2Reservations } from "./continuity-e2-estimate.mjs";
 const need = ok => { if (!ok) throw Object.assign(Error("E2_ESTIMATE_INVALID"), { code: "E2_ESTIMATE_INVALID" }); };
@@ -14,6 +14,7 @@ export function validateE2EstimateProtocol(protocol) {
       && Array.isArray(branch.models) && branch.models.length > 0 && branch.models.every(m => [SOL, LUNA].includes(m?.model))
       && Array.isArray(branch.checkpoints) && branch.checkpoints.length > 0 && branch.checkpoints.length <= 48);
     for (const c of branch.checkpoints) need(typeof c.name === "string" && c.name.length > 0 && ordinal(c.turn) && ordinal(c.message));
+    assertE2CheckpointOrder(branch.checkpoints);
   }
   return protocol;
 }
@@ -77,10 +78,25 @@ export function estimateE2SizingSet({ protocol, roles, records, catalog, probeCo
   // Short/max faux summaries are alternatives, not two paid summary draws. Proof variants are planned distinct runs.
   const alternatives = replay.length ? replay : [{ scenario: "proof-only", requests: [] }];
   const estimates = alternatives.map(r => ({ scenario: r.scenario, ...estimateE2Reservations({ roles, requests: [...r.requests, ...proofs], catalog }) }));
-  const largest = field => estimates.reduce((n, r) => BigInt(r[field]) > n ? BigInt(r[field]) : n, 0n).toString();
+  // Registration funds the union of per-role/checkpoint maximum budgets, not a sum
+  // of alternative draws. Forecast that bound schedule at the largest observed size.
+  const bound = new Map();
+  for (const alternative of alternatives) {
+    const groups = new Map();
+    for (const row of alternative.requests) if (row.paidRole !== null) {
+      const key = `${row.checkpoint}:${row.paidRole}:${row.model}`;
+      if (!groups.has(key)) groups.set(key, []); groups.get(key).push(row);
+    }
+    for (const [key, rows] of groups) {
+      const previous = bound.get(key), largest = rows.reduce((a, b) => a.size.maximum >= b.size.maximum ? a : b);
+      bound.set(key, { count: Math.max(previous?.count ?? 0, rows.length), row: previous?.row.size.maximum > largest.size.maximum ? previous.row : largest });
+    }
+  }
+  const boundRequests = [...bound.values()].flatMap(({ count, row }) => Array.from({ length: count }, () => row));
+  const fundedSchedule = estimateE2Reservations({ roles, requests: [...boundRequests, ...proofs], catalog });
   return { schema: "continuity-e2-cap-estimate-set-v1", semanticQualification: false, authorization: false,
     protocolValidation: "metadata-and-sizing-binding-only", scope: "provided-sizing-and-explicit-probe-counts-only",
-    plannedReplayQuestions: questionCount, proofArms: arms.size, scenarios: estimates,
-    minimumCapUnits: largest("minimumCapUnits"), minimumNoCacheCapUnits: largest("minimumNoCacheCapUnits"),
-    worstCaseUnits: estimates.reduce((n, r) => BigInt(r.totals.maximumUnits) > n ? BigInt(r.totals.maximumUnits) : n, 0n).toString() };
+    plannedReplayQuestions: questionCount, proofArms: arms.size, scenarios: estimates, fundedSchedule,
+    forecastMinimumCapUnits: fundedSchedule.forecastMinimumCapUnits, forecastNoCacheMinimumCapUnits: fundedSchedule.forecastNoCacheMinimumCapUnits,
+    largestReservationUnits: fundedSchedule.largestReservationUnits, worstCaseCapUnits: fundedSchedule.worstCaseCapUnits };
 }

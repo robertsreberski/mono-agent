@@ -12,6 +12,7 @@ import { E2_TOOL_POLICIES, e2CodeDigest, e2ProbeCounts, e2PhaseSchedule } from "
 import { e2AuthorizationBindings } from "../lib/continuity-e2-authorization.mjs";
 import { loadE2Catalog } from "../lib/continuity-e2-pricing.mjs";
 import { shippingSoul } from "../lib/continuity-e2-models.mjs";
+import { validateProtocol } from "../lib/continuity-e2-protocol.mjs";
 import { registrationTrace } from "./fixtures/continuity-e2-registration.mjs";
 const build = vi.hoisted(() => ({ verify: vi.fn(async () => {}), state: vi.fn(() => ({ head: "b".repeat(40), dirty: false })) }));
 // Only source/build attestation is mocked: no build is authorized in this assignment.
@@ -122,4 +123,20 @@ it("uses the source-only 128 MiB read allowance without enlarging ordinary autho
 it("refuses pre-approved future summary digests instead of treating them as generated receipts", async () => {
   f.pilot.registration.summaryDigests = ["e".repeat(64)]; await f.persist();
   await expect(guardedAuthorization("e2-validation").validate(f.args)).rejects.toMatchObject({ code: "e2_registration_invalid" });
+});
+
+it("rejects caps below the bound forecast floor, admitting equality without consumption", async () => {
+  const minimum = "4105809000";
+  f.pilot.descriptor.capUnits = (BigInt(minimum) - 1n).toString(); await f.persist();
+  await expect(guardedAuthorization("e2-validation").validate(f.args)).rejects.toMatchObject({ code: "e2_registration_invalid" });
+  f.pilot.descriptor.capUnits = minimum; await f.persist();
+  await expect(guardedAuthorization("e2-validation").validate(f.args)).resolves.toBeDefined();
+});
+it("requires strictly increasing checkpoint turns in genuine source protocol validation", () => {
+  for (const duplicate of [false, true]) {
+    const protocol = structuredClone(f.trace.protocol), checkpoints = protocol.branches[0].checkpoints;
+    if (duplicate) checkpoints.splice(1, 0, { ...checkpoints[0], name: "ExtraCheckpoint" });
+    else checkpoints.reverse();
+    expect(() => validateProtocol(protocol, f.trace.source)).toThrow("E2_CHECKPOINT_ORDER_INVALID");
+  }
 });

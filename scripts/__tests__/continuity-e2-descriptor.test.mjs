@@ -1,6 +1,6 @@
 // Identity/authorization foundation only: paid adapters remain fail-closed until wired.
 import { afterEach, expect, it } from "vitest";
-import { readFile, mkdtemp, realpath, rm } from "node:fs/promises";
+import { readFile, mkdtemp, realpath, rm, mkdir, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { guardedProtocol } from "../lib/continuity-guarded-protocols.mjs";
@@ -37,4 +37,11 @@ for (const id of ["lookup-pilot", "fictional", "e2-validation"]) it(`${id}: ever
   }
   await expect(guardedLease(id).assertLease(lease, root, controller)).resolves.toBeDefined();
   expect(guardedState(id).statePath(root)).toBe(join(root, guardedProtocol(id).journal));
+});
+
+it("fictional schedule refusal precedes even lease acquisition and faux authority burn", async () => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "fictional-closed-run-"))); roots.push(root);
+  const outputRoot = join(root, "output"); await mkdir(outputRoot, { mode: 0o700 });
+  await expect(guardedController("fictional").runLookupPilot({ outputRoot })).rejects.toMatchObject({ code: "fictional_pilot_real_route_unavailable" });
+  expect(await readdir(outputRoot)).toEqual([]); expect(await readdir(root)).toEqual(["output"]);
 });

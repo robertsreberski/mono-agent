@@ -12,12 +12,13 @@ export const E2_GUARD_CONTRACT = freeze({
   slotId: "", runId: "", piMaxRetries: 0, maxRetries: 0,
 });
 export const E2_OUTCOMES = freeze({
-  refused_pre_send: { hold: "none", pilot: "capacity_continues_policy_stops" },
+  refused_pre_send: { hold: "none", pilot: "capacity_stops_preserving_classification" },
   own_abort_after_send: { hold: "retained", pilot: "continues_slot_terminal" },
   settled: { hold: "actual_cost", pilot: "continues" },
   lost: { hold: "retained", pilot: "continues_slot_terminal" },
   integrity_stop: { hold: "retained", pilot: "sticky_stop" },
 });
+export const E2_ADMISSION_REFUSALS = Object.freeze(["not_admitted_input_envelope", "e2_request_limit"]);
 export const E2_PRE_SEND_REFUSALS = Object.freeze(["not_admitted_input_envelope", "e2_request_limit", "not_admitted_cap", "e2_stopped", "e2_slot_terminal"]);
 export const E2_GUARD_POLICY_REFUSALS = Object.freeze([
   "e2_body_type_forbidden", "e2_route_mismatch", "e2_contract_mismatch", "e2_option_forbidden", "e2_external_fetch_forbidden",
@@ -35,7 +36,7 @@ export const E2_PERMIT_CONTRACT = freeze({
   methods: ["admit", "consume", "settle", "stop", "compaction"],
   outcomes: Object.keys(E2_OUTCOMES),
 });
-export const E2_PILOT_STOPS = Object.freeze([...new Set([...E2_GUARD_POLICY_REFUSALS,
+export const E2_PILOT_STOPS = Object.freeze([...new Set([...E2_GUARD_POLICY_REFUSALS, ...E2_ADMISSION_REFUSALS,
   "completed", "auth_failure", "e2_auth_failure", "e2_account_mismatch", "e2_quota_exhausted",
   "unpriced_reservation", "invalid_unit_rate", "budget_admission", "e2_run_deadline", "e2_worker_timeout",
   "e2_unreconciled_processes", "e2_repeated_loss", "e2_ipc_invalid", "e2_ipc_disconnected",

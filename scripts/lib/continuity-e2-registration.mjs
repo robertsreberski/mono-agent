@@ -133,6 +133,7 @@ export async function validateE2Registration(pilot, { safeRead, safeDirectory })
     if (records.some(record => record.schema === "continuity-e2-sizing-v1")) need(questions.questions.length > 0);
     const estimate = estimateE2SizingSet({ protocol, roles: r.roles, records, catalog: r.catalog, probeCounts });
     need(same(r.schedule, e2PhaseSchedule(protocol, records, probeCounts)));
+    need(e2CapUnits(d.capUnits) >= BigInt(estimate.forecastMinimumCapUnits));
     return { protocol, questions, source, estimate };
   } catch (error) {
     if (["E2_OUTPUT_LIMIT_UNENFORCED", "E2_SIZING_PAID_ROLE_REQUIRED", "E2_SIZING_PHASE_REQUIRED"].includes(error?.code)) throw error;

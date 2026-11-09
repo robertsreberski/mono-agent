@@ -122,3 +122,12 @@ it("bounds generated private summary results before writing a receipt", async ()
   await expect(writeE2SummaryResult({ runId: "fictional-run", slotId, e2: { paidRole: "summary", model: SOL, round: 1, outputRoot: root } }, message,
     { input_tokens: 100, output_tokens: 128000 }, "default", "a".repeat(64))).rejects.toThrow("e2_summary_receipt_invalid");
 });
+
+it("leaves live hold-count enforcement to the controller, not a fabricated child snapshot", () => {
+  const p = request(), bytes = Buffer.byteLength(JSON.stringify(context)), size = { method: "intercepted-full-models-context", serializedBytes: bytes,
+    serializedBytesOver3: Math.ceil(bytes / 3), engineFullRequest: 100, maximum: 100, usage: "engine-estimate-not-provider-measurement" };
+  const contract = { ...E2_GUARD_CONTRACT, runId: "fictional-run", slotId, model: SOL.split(":")[1], effort: "high",
+    e2: { pilot, planned, size, round: 3, model: SOL, checkpoint: 0, paidRole: "probe", reservationUnits: p.reservationUnits } };
+  expect(policy.guardRequest(contract, context).request.round).toBe(3);
+  expect(() => policy.admission(pilot, planned, { holds: [p, p] }, { ...p, round: 3, requestId: "fictional-run:3" })).toThrow("e2_request_limit");
+});

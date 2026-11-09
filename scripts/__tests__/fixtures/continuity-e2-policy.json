@@ -1,4 +1,8 @@
 {
+  "E2_ADMISSION_REFUSALS": [
+    "not_admitted_input_envelope",
+    "e2_request_limit"
+  ],
   "E2_ARTIFACT_LIMITS": {
     "requests": 100000,
     "jsonBytes": 4194304,
@@ -207,7 +211,7 @@
   "E2_OUTCOMES": {
     "refused_pre_send": {
       "hold": "none",
-      "pilot": "capacity_continues_policy_stops"
+      "pilot": "capacity_stops_preserving_classification"
     },
     "own_abort_after_send": {
       "hold": "retained",
@@ -289,6 +293,8 @@
     "e2_unguarded_dispatch",
     "e2_payload_repeated",
     "e2_pilot_capability_invalid",
+    "not_admitted_input_envelope",
+    "e2_request_limit",
     "completed",
     "auth_failure",
     "e2_auth_failure",

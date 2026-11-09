@@ -100,8 +100,8 @@ it("keeps every protocol pair string-identity disjoint, except documented generi
   }
   expect([...shared].sort()).toEqual([...genericShared].sort()); // No stale or inferred allowlist exceptions.
   const e2 = guardedProtocol("e2-validation");
-  // E2 deliberately has no lookup/fictional literal-input, fixed model/effort, or rmax grammar.
-  const e2Generic = new Set([...genericShared].filter(v => !["utf8_bytes_gte_tokens", "gpt-6.1-sol", "high", "rmax"].includes(v)));
+  // E2 has no fixed lookup envelope/model/rmax, and capacity refusals stop rather than continue.
+  const e2Generic = new Set([...genericShared].filter(v => !["utf8_bytes_gte_tokens", "gpt-6.1-sol", "high", "rmax", "capacity_continues_policy_stops"].includes(v)));
   for (const [left, layout] of [[lookup, ["mono-agent", "consumed-v1"]], [fictional, []]]) {
     const expected = new Set([...e2Generic, ...layout]), original = new Set(leaves(left).map(([, value]) => value)), actual = new Set();
     for (const [path, value] of leaves(e2)) if (original.has(value)) {

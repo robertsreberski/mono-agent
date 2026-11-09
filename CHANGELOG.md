@@ -6,10 +6,13 @@
   forecasts and full catalog-context/output reservations (including conservative
   cache/tier liability) for the uncapped Codex route. Add closed registration,
   authorization validation and accounting/receipt foundations; keep real E2
-  execution unavailable.
+  execution unavailable. Distinguish forecast cap floors from ceiling-funded
+  budget completion, reject underfunded registrations and unordered checkpoints.
 
 - Harden guarded continuity cleanup after synchronous stream-result failures,
-  and bound preparation-stat traversal by entry count and depth.
+  drain pending admissions on every finish and refuse late callbacks. Preserve
+  classified admission/body-policy stop codes, close journal-only schedule
+  runners before authority burn, and bound preparation-stat entry/depth traversal.
 
 - Add fictional offline continuity proofs for model switches, cancelled process
   restarts, observed idle eviction and shipping-ceiling compaction. Keep durable

@@ -36,7 +36,7 @@ it("treats short/max replay sizing as alternative draws and expands explicit pla
   const report = estimateE2SizingSet({ ...f, catalog, records, probeCounts });
   expect(report.scenarios).toHaveLength(2); expect(report.scenarios.map(s => s.totals.requests)).toEqual([10, 10]);
   expect(report.plannedReplayQuestions).toBe(8); expect(report.authorization).toBe(false);
-  expect(report.worstCaseUnits).toBe(report.scenarios[0].totals.maximumUnits); // not the sum of alternative draws
+  expect(report.worstCaseCapUnits).toBe(report.scenarios[0].totals.maximumUnits); // not the sum of alternative draws
   expect(() => estimateE2SizingSet({ ...f, catalog, records })).toThrow("E2_PROBE_COUNTS_REQUIRED");
 });
 it("exercises --estimate with private exclusive artifacts and only fixed content-free output", async () => {
@@ -49,7 +49,7 @@ it("exercises --estimate with private exclusive artifacts and only fixed content
   const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(() => { throw Error("network forbidden"); });
   const args = ["--estimate", "--protocol", protocol, "--limits", limits, "--sizing", sizing, "--output", output];
   expect(await main(args, io)).toBe(0); expect(fetch).not.toHaveBeenCalled(); expect(errors).toEqual([]);
-  const report = JSON.parse(calls.join("")); expect(report.minimumCapUnits).toBe("4105809000"); expect(report.worstCaseUnits).toBe("11956000000");
+  const report = JSON.parse(calls.join("")); expect(report.forecastMinimumCapUnits).toBe("4105809000"); expect(report.worstCaseCapUnits).toBe("11956000000");
   expect(await readFile(join(output, "estimate.json"), "utf8")).toBe(calls.join(""));
   expect((await stat(output)).mode & 0o777).toBe(0o700); expect((await stat(join(output, "estimate.json"))).mode & 0o777).toBe(0o600);
   for (const value of [root, "FICTIONAL-ESTIMATE-CANARY", "sourceDigest", "fileSha256", "accountCommitment"]) expect(calls.join("")).not.toContain(value);
@@ -70,4 +70,34 @@ it("emits the specific legacy-sizing and unenforced-limit refusals before creati
 it("accepts repeated sizing files only on the estimate entry", () => {
   expect(parseE2Args(["--estimate", "--protocol", "p", "--limits", "l", "--sizing", "a", "--sizing", "b", "--output", "o"]).sizing).toEqual(["a", "b"]);
   expect(() => parseE2Args(["size", "--source", "s", "--source", "t", "--protocol", "p", "--output", "o"])).toThrow("E2_ARGUMENTS_INVALID");
+});
+
+it("refuses unordered or same-turn checkpoints before positional sizing association", async () => {
+  for (const equal of [false, true]) {
+    const f = await fixture();
+    if (equal) f.protocol.branches[0].checkpoints[1].turn = f.protocol.branches[0].checkpoints[0].turn;
+    else f.protocol.branches[0].checkpoints.reverse();
+    expect(() => normalizeE2Sizing(f.protocol, f.sizing)).toThrow("E2_CHECKPOINT_ORDER_INVALID");
+  }
+});
+it("funds the registered maximum role budgets across alternatives, not just the largest single scenario", async () => {
+  const f = await fixture(), catalog = await loadE2Catalog(), records = [replay(f), replay(f, "faux-max")];
+  for (const branch of records[1].branches) {
+    const old = branch.requestSizing[0]; branch.requestSizing[0] = { ...f.sizing.variants[0].requests[4], turn: old.turn, message: old.message };
+  }
+  const probeCounts = [0, 1, 2, 3].map(checkpoint => ({ checkpoint, questions: 1 }));
+  const report = estimateE2SizingSet({ ...f, catalog, records, probeCounts });
+  expect(BigInt(report.worstCaseCapUnits)).toBe(BigInt(report.scenarios[0].worstCaseCapUnits) + 2n * 196000000n);
+  expect(report.fundedSchedule.totals.requests).toBe(8);
+  expect(report.forecastMinimumCapUnits).toBe(report.fundedSchedule.forecastMinimumCapUnits);
+});
+
+it("projects the specific checkpoint-order refusal at the CLI without creating output", async () => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "e2-estimator-order-"))); roots.push(root);
+  const f = await fixture(); f.protocol.branches[0].checkpoints.reverse();
+  const protocol = join(root, "protocol.json"), sizing = join(root, "sizing.json"), limits = join(root, "limits.json"), output = join(root, "absent");
+  for (const [path, value] of [[protocol, f.protocol], [sizing, f.sizing], [limits, { schema: "continuity-e2-estimate-limits-v1", roles: f.roles, probeCounts: [] }]]) await writeFile(path, JSON.stringify(value), { mode: 0o600 });
+  const errors = [];
+  expect(await main(["--estimate", "--protocol", protocol, "--sizing", sizing, "--limits", limits, "--output", output], { stdout: () => { throw Error("unexpected_report"); }, stderr: value => errors.push(value) })).toBe(1);
+  expect(errors).toEqual(["E2_CHECKPOINT_ORDER_INVALID\n"]); await expect(stat(output)).rejects.toMatchObject({ code: "ENOENT" });
 });

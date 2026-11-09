@@ -88,3 +88,29 @@ it("requires verified output plus durable-compaction acknowledgment before probe
   expect(report.phases[0].calls.verifiedSummaries).toBe(1);
   for (const secret of [root, "FICTIONAL-PRIVATE-REGISTRATION-CANARY", "FICTIONAL-GENERATED-SUMMARY-CANARY", written.evidence.sha256, authorization.authorizationId]) expect(JSON.stringify(report)).not.toContain(secret);
 });
+
+it.each(["e2_request_limit", "not_admitted_input_envelope"])("preserves classified pre-send refusal %s without mapping to IPC integrity", async code => {
+  await start();
+  if (code === "e2_request_limit") for (let i = 0; i < 2; i++) {
+    const p = admission(), permit = await rpc("admit", p); await rpc("consume", { permit, bodyDigest: p.payloadDigest });
+    await rpc("settle", { permit, outcome: { kind: "settled", costUnits: "300000" }, rawUsage: { input_tokens: 100, output_tokens: 10 }, tier: "default" });
+  }
+  const p = admission(); if (code === "not_admitted_input_envelope") p.inputTokens = 272001;
+  const holds = journal.snapshot().slots[0].holds.length;
+  expect(await rpc("admit", p)).toEqual({ refused: true, code });
+  const state = journal.snapshot(); expect(state.stop).toBe(code); expect(state.slots[0].admissionRefusal).toBe(code);
+  expect(state.slots[0].terminal).toBeNull(); expect(state.slots[0].holds).toHaveLength(holds);
+  await journal.finish(0, "refused_pre_send", null, code);
+  expect(journal.snapshot().slots[0].terminal).toBe(holds ? "refused_pre_send" : "unadmitted");
+});
+
+it("keeps malformed E2 IPC a sticky integrity error rather than a capacity refusal", async () => {
+  await start(); await expect(journal.message(0, worker, null)).rejects.toMatchObject({ code: "e2_ipc_invalid" });
+  expect(journal.snapshot().stop).toBe("e2_ipc_invalid"); expect(journal.snapshot().slots[0].holds).toEqual([]);
+});
+
+it.each(["e2_request_limit", "not_admitted_input_envelope"])("keeps child-local pre-send refusal %s sticky at finish", async code => {
+  await start(); await journal.finish(0, "refused_pre_send", null, code);
+  const state = journal.snapshot(); expect(state.stop).toBe(code); expect(state.slots[0].admissionRefusal).toBe(code);
+  expect(state.slots[0].terminal).toBe("unadmitted"); expect(state.slots[0].holds).toEqual([]);
+});
