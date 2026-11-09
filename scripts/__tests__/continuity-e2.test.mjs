@@ -327,20 +327,41 @@ it("statically confines new scripts and the real estimator closure to registered
     function visit(node) {
       if (ts.isImportDeclaration(node)) {
         const spec = node.moduleSpecifier.text;
-        const ok = builtins.has(spec) || existing.has(spec) || /^\.\/(?:lib\/)?continuity-e2-[a-z]+\.mjs$/.test(spec)
+        const proofImports = {
+          "scripts/lib/continuity-e2-proofs.mjs": ["node:child_process", "./continuity-lookup.mjs", "./continuity-arms.mjs"],
+          "scripts/lib/continuity-e2-checks.mjs": ["./continuity-arms.mjs"],
+          "scripts/lib/continuity-e2-tools.mjs": ["node:http", "node:crypto"],
+          "scripts/lib/continuity-e2-isolation.mjs": ["node:net", "node:module"],
+        };
+        const ok = builtins.has(spec) || existing.has(spec) || proofImports[path]?.includes(spec) || /^\.\/(?:lib\/)?continuity-e2-[a-z]+\.mjs$/.test(spec)
           || /^\.\/lib\/continuity-(?:recorded-(?:schema|import)|observation-input)\.mjs$/.test(spec) || product && spec === "../tools/mcp/timeouts.js";
         expect(ok, `${path}:${spec}`).toBe(true);
+        if (spec === "node:child_process") expect(node.importClause.namedBindings.elements.map(e => e.name.text)).toEqual(["spawn"]);
+        if (spec === "./continuity-lookup.mjs") expect(node.importClause.namedBindings.elements.map(e => e.name.text).sort()).toEqual(["historyBody", "lookupWitness", "resolveSource"]);
+        if (spec === "./continuity-arms.mjs") expect(node.importClause.namedBindings.elements.map(e => e.name.text).sort()).toEqual(path === "scripts/lib/continuity-e2-checks.mjs" ? ["DEFAULT_MAX_INPUT_TOKENS"] : ["DEFAULT_MAX_INPUT_TOKENS", "E2_PROOF_PRESSURE_ARMS"]);
         if (spec === "./continuity-runner.mjs") expect(node.importClause.namedBindings.elements.map(e => e.name.text).sort()).toEqual(["openHarness", "productionModules"]);
       }
       if (ts.isCallExpression(node)) {
         if (node.expression.kind === ts.SyntaxKind.ImportKeyword) {
           const value = node.arguments[0];
-          expect(ts.isStringLiteral(value) && ["@mono-agent/turn/engine", "./lib/continuity-e2-replay.mjs"].includes(value.text)
+          expect(ts.isStringLiteral(value) && ["@mono-agent/turn/engine", "./lib/continuity-e2-replay.mjs", "./lib/continuity-e2-proofs.mjs"].includes(value.text)
+            || path === "scripts/lib/continuity-e2-tools.mjs" && ts.isStringLiteral(value) && ["@modelcontextprotocol/sdk/server/index.js", "@modelcontextprotocol/sdk/server/streamableHttp.js", "@modelcontextprotocol/sdk/types.js"].includes(value.text)
             || path === "scripts/lib/continuity-e2-models.mjs" && value.getText(ast) === 'new URL("../../packages/turn/dist/agent/compaction.js", import.meta.url).href').toBe(true);
         }
         const name = node.expression.getText(ast);
         const regexExec = ts.isPropertyAccessExpression(node.expression) && node.expression.name.text === "exec" && node.expression.expression.kind === ts.SyntaxKind.RegularExpressionLiteral;
-        expect(!regexExec && /\b(fetch|spawn|exec|execFile|fork|eval|Function|require|createRequire|request|connect|createConnection|createSocket|getBuiltinModule|binding|dlopen)\b/.test(name), `${path}:${name}`).toBe(false);
+        const proofCapability = path === "scripts/lib/continuity-e2-tools.mjs" && name === "server.connect"
+          || path === "scripts/lib/continuity-e2-isolation.mjs" && ["connect.apply", "fetch"].includes(name)
+          || path === "scripts/lib/continuity-e2-proofs.mjs" && name === "spawn";
+        if (name === "spawn") {
+          expect(path).toBe("scripts/lib/continuity-e2-proofs.mjs");
+          expect(node.arguments[0].getText(ast)).toBe("process.execPath");
+          expect(node.arguments[1].getText(ast)).toBe("[PROOF_CHILD, phase, base]");
+          expect(node.arguments[2].getText(ast)).toBe('{ cwd: ROOT, env: { ...env, PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C", NODE_NO_WARNINGS: "1" }, stdio: "ignore", shell: false }');
+          expect(source.match(/\bspawn\(/g)).toHaveLength(1);
+          expect(source).toContain('new URL("./continuity-e2-fixture.mjs", import.meta.url)');
+        }
+        expect(!proofCapability && !regexExec && /\b(fetch|spawn|exec|execFile|fork|eval|Function|require|createRequire|request|connect|createConnection|createSocket|getBuiltinModule|binding|dlopen)\b/.test(name), `${path}:${name}`).toBe(false);
       }
       if (ts.isNewExpression(node)) expect(!/\b(?:Worker|WebSocket|Agent|Socket|Function)\b/.test(node.expression.getText(ast)), path).toBe(true);
       ts.forEachChild(node, visit);

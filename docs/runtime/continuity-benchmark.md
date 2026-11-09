@@ -2442,3 +2442,78 @@ proves billing behavior, perfect PID incarnation identity, an OS sandbox or
 power-loss durability. The real route is enabled only behind the single-use
 authorization and cap; a cap request remains a separate operator decision,
 not permission to execute.
+
+## Fictional E2 boundary proofs (faux only)
+
+Run the configured production path with fictional stores, scripted source replies
+and C1's lifecycle-guarded faux summaries. Build the app closure as above first.
+The CLI accepts `--arm switch|cancel|idle|pressure|all` (default `all`):
+
+```bash
+umask 077
+PROOF_PARENT="$(mktemp -d)"
+node scripts/continuity-e2.mjs proofs --output "$PROOF_PARENT/run" --arm all
+```
+
+The output must be new, outside the checkout and below an owned `0700` parent.
+Every arm has its own private HOME, XDG and temporary directories. Its durable
+stores contain fictional evidence only; do not supply personal stores. Directory
+and file modes are `0700`/`0600`. Successful stdout contains counts only. Optional
+`--diagnostics NEW_FILE` uses the same exclusive, content-free refusal format as
+`size`, including a closed proof refusal code. `--real` always refuses with
+`E2_PAID_ENTRY_UNAVAILABLE`, before opening output paths. There is no provider
+execution authority in this command.
+
+| Arm | Boundary and evidence |
+| --- | --- |
+| `switch` | Luna setup, then Sol/high; require `model_change` with reconstructed/handoff context and a continuity pack in the first Sol request |
+| `cancel` | After the one-effect sentinel completes and setup compacts, abort a genuinely forwarded continuation before its response, await cleanup and fixture exit, then reopen the same durable roots in a different process |
+| `idle` | After setup compacts, use a configured 1200 ms warm-session timeout; observe this conversation's `evicted`/`idle_timeout` and at least 1000 ms wall-clock idle time before continuing in the same process |
+| `pressure` | Run continuity-pack ceiling and restart/model-switch variants; require proactive, durably successful compaction at the unchanged shipping 200k trigger |
+
+Idle and restart **retain the native transcript by design** without a prior
+compaction (`packages/conversation/src/harness/index.ts:1417–1420`). Initial
+absence in `idle` and `cancel` therefore comes from a separately counted setup
+compaction, not from eviction/restart deleting history. These arms test retained
+lookup recovery **across idle/restart after compaction**. Large scripted inert
+tool results create pressure; no context is synthetically removed and no trigger
+is lowered. The restart pressure variant also uses the shipping trigger during
+setup, not the legacy recall arm's small post-restart trigger. The original
+recall arm inventory and defaults remain unchanged.
+
+Every arm checks initial absence of the fictional fact, complete digest-verified
+ConversationHistory recovery, the pending next action, no protected-canary or
+foreign-conversation leak, and a single durable sentinel effect. Readers and the
+two follow-up probes have ConversationHistory only. The explicit exception is
+the resumed `cancel` continuation: ConversationHistory **and the sentinel remain
+offered**, so a repeat is detected rather than prevented by removing the tool.
+That continuation checks model-level non-repeat mechanics; the other arms claim
+only harness-level non-reexecution. Every outgoing context uses the shipping
+soul pin and effective-core assertion. These are **faux mechanics checks, not
+semantic qualification**; the reader is scripted too.
+
+Only loopback MCP is permitted (inert fixtures and app-owned ConversationHistory).
+External sockets, fetch and WebSockets refuse. One exact Node fixture entry is
+shared by cancellation and pressure restarts; no arbitrary executable, child
+agent or process tool is exposed. The existing bounded ownership self-probes
+(`ps`/`sysctl` on macOS) remain permitted.
+
+Each arm writes `<arm>.json` (`continuity-e2-proof-v1`) with assertion outcomes,
+content-free lookup/compaction evidence and, where applicable, idle timings or
+new-process evidence. `<arm>-sizing.json` (`continuity-e2-proof-sizing-v1`) contains
+one or two variants and a row for **every** intercepted request:
+
+- `ordinal`, original bound `model`, request `role`, and `maxOutputTokens`;
+- `size.serializedBytes`, `serializedBytesOver3`, `engineFullRequest`, and their
+  conservative `maximum`, from C1's actual built estimator;
+- estimated-not-measured usage and `semanticQualification: false`.
+
+Roles are `setup-scripted`, `summary`, `continuation` and `probe`. **Exclude
+`setup-scripted` from paid pricing:** source replies stay scripted in a later
+paid run. The pre-boundary forwarded cancellation request is scripted too and is labelled
+`setup-scripted`. Count guarded summaries, the post-boundary continuations and
+probes at their reported output ceilings.
+No prompt, answer, tool arguments, record identifier, digest of private content
+or absolute path is present in sizing. All requests are faux now. Guarded real
+summaries/readers, authorization, billing/admission controls and semantic proof
+remain deferred to the separate paid controller; this CLI cannot enable them.
