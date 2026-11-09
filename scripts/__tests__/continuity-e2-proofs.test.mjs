@@ -120,7 +120,11 @@ it("requires complete paid proof authority before touching paths and retains the
   const err = [], out = [], io = { stdout: s => out.push(s), stderr: s => err.push(s) };
   expect(await main(["proofs", "--real", "--output", "fictional-path-canary"], io)).toBe(1);
   expect(err).toEqual([USAGE + "\n"]); expect(out).toEqual([]);
-  await expect(runE2Proofs({ real: true })).rejects.toThrow("e2_registration_invalid");
+  // Hosted CI sets CI, which refuses paid mode first; pin both orders explicitly.
+  vi.stubEnv("CI", "1");
+  try { await expect(runE2Proofs({ real: true })).rejects.toThrow("paid_mode_refused_in_ci"); } finally { vi.unstubAllEnvs(); }
+  vi.stubEnv("CI", undefined); vi.stubEnv("CONTINUITY_DEBUG", undefined);
+  try { await expect(runE2Proofs({ real: true })).rejects.toThrow("e2_registration_invalid"); } finally { vi.unstubAllEnvs(); }
   expect(parseE2Args(["proofs", "--output", "new", "--arm", "idle"])).toEqual({ command: "proofs", output: "new", arm: "idle" });
   for (const args of [["proofs"], ["proofs", "--output", "new", "--arm", "unknown"], ["proofs", "--output", "new", "--threshold", "6400"]]) expect(() => parseE2Args(args)).toThrow("E2_ARGUMENTS_INVALID");
 });
