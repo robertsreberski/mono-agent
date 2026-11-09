@@ -1,42 +1,18 @@
+import { guardedAccounting } from "./continuity-guarded-accounting.mjs";
+import { LOOKUP_ASSUMPTIONS, LOOKUP_GUARD_CONTRACT, LOOKUP_OUTCOMES, LOOKUP_PRE_SEND_REFUSALS, LOOKUP_GUARD_POLICY_REFUSALS, LOOKUP_PERMIT_CONTRACT } from "./continuity-lookup-guarded-policy.mjs";
+export { LOOKUP_ASSUMPTIONS, LOOKUP_GUARD_CONTRACT, LOOKUP_OUTCOMES, LOOKUP_PRE_SEND_REFUSALS, LOOKUP_GUARD_POLICY_REFUSALS, LOOKUP_PERMIT_CONTRACT } from "./continuity-lookup-guarded-policy.mjs";
 import { assertResolvedLookupSafety, lookupCacheKey, lookupBodyBytes } from "./continuity-lookup-pilot-runtime.mjs";
 import { isRealLookupSend, realLookupSendForGuard } from "./continuity-lookup-real-capability.mjs";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { zstdDecompressSync } from "node:zlib";
 
-const freeze = value => { for (const child of Object.values(value)) if (child && typeof child === "object") freeze(child); return Object.freeze(value); };
-export const LOOKUP_ASSUMPTIONS = freeze({
-  version: "assumed-v1",
-  literalInput: "utf8_bytes_gte_tokens",
-  framing: { base: 4096, inputItem: 256, reasoningItem: 1024, tool: 1024, schemaProperty: 256, instructions: 4096 },
-  outputIncludesReasoning: true, restoredReasoningLteSettledOutput: true,
-  inputMax: 272000, outputMax: 128000, tierMultiplierMax: 2,
-  rates: { input: 2, output: 10, cacheRead: 0.1, cacheWrite: 2.5 },
-  rmax: 3.92,
-});
-export const LOOKUP_GUARD_CONTRACT = freeze({
-  version: "lookup-guard-v1", provider: "openai-codex", model: "gpt-6.1-sol",
-  api: "openai-codex-responses", baseUrl: "https://chatgpt.com/backend-api", effort: "high",
-  slotId: "", runId: "", piMaxRetries: 0, maxRetries: 0,
-});
-export const LOOKUP_OUTCOMES = freeze({
-  refused_pre_send: { hold: "none", pilot: "capacity_continues_policy_stops" },
-  own_abort_after_send: { hold: "retained", pilot: "continues_slot_terminal" },
-  settled: { hold: "actual_cost", pilot: "continues" },
-  lost: { hold: "retained", pilot: "continues_slot_terminal" },
-  integrity_stop: { hold: "retained", pilot: "sticky_stop" },
-});
+
+
+
 // Only capacity/terminal refusals may continue a pilot; policy violations are sticky.
-export const LOOKUP_PRE_SEND_REFUSALS = Object.freeze(["not_admitted_input_envelope", "lookup_request_limit", "not_admitted_cap", "lookup_stopped", "lookup_slot_terminal"]);
-export const LOOKUP_GUARD_POLICY_REFUSALS = Object.freeze([
-  "lookup_body_type_forbidden", "lookup_route_mismatch", "lookup_contract_mismatch", "lookup_option_forbidden", "lookup_external_fetch_forbidden",
-  "lookup_headers_forbidden", "lookup_env_forbidden", "lookup_payload_forbidden", "lookup_initial_reasoning_forbidden",
-  "lookup_prompt_cache_key_forbidden", "lookup_retry_profile_forbidden", "lookup_auxiliary_callers_forbidden",
-  "lookup_method_forbidden", "lookup_model_switch_forbidden", "lookup_preparation_forbidden", "lookup_preparation_invalid", "lookup_tools_forbidden",
-  "lookup_concurrent_request", "lookup_permit_missing", "lookup_assumptions_mismatch", "lookup_single_shot_send_required",
-  "lookup_faux_permit_forbidden", "lookup_settlement_invalid", "lookup_cache_assignment_invalid",
-  "lookup_pilot_boundary_required", "lookup_native_identity_forbidden", "lookup_unguarded_dispatch", "lookup_payload_repeated", "lookup_pilot_capability_invalid",
-]);
+
+
 export class LookupGuardError extends Error {
   constructor(code, outcome = "refused_pre_send", classification = code, cause) {
     super(code, cause === undefined ? undefined : { cause }); this.code = code; this.outcome = outcome; this.classification = classification;
@@ -67,12 +43,7 @@ export function assertRealLookupPermitSource(source) {
   if (!source || source.testOnly !== false || source.brand !== "lookup-controller-v1") refuse("lookup_faux_permit_forbidden");
 }
 
-export const LOOKUP_PERMIT_CONTRACT = freeze({
-  version: "lookup-permit-v1",
-  admissionFields: ["requestId", "slotId", "round", "payloadDigest", "rmax"],
-  methods: ["admit", "consume", "settle", "stop"],
-  outcomes: Object.keys(LOOKUP_OUTCOMES),
-});
+
 
 /**
  * @typedef {object} LookupPermitSource
@@ -192,12 +163,7 @@ function assertPayload(payload, round, contract) {
   }
 }
 const count = n => Number.isSafeInteger(n) && n >= 0;
-export function lookupSettledCost(usage, tier) {
-  const cached = usage.input_tokens_details?.cached_tokens ?? 0, written = usage.input_tokens_details?.cache_write_tokens ?? 0;
-  // Accumulate integer tenths-of-a-microdollar; return floating-point dollars.
-  const tenths = (usage.input_tokens - cached - written) * 20 + cached + written * 25 + usage.output_tokens * 100;
-  return tenths * (tier === "flex" ? 0.5 : tier === "default" ? 1 : 2) / 10000000;
-}
+export function lookupSettledCost(usage, tier) { return guardedAccounting("lookup-pilot").settledCost(usage, tier); }
 
 // Only this factory may brand a configured-pilot decorator. No public registration seam.
 const pilotDecorators = new WeakSet();

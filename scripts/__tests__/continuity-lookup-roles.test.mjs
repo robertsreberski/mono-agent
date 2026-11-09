@@ -472,6 +472,18 @@ it("binds all present pilot artifact files, including guard assumptions, in the 
   expect(protocol.pilotSha256).toBe(digest(await Promise.all(LOOKUP_PILOT_PROTOCOL_FILES.map(async path => [path, sha256(await readFile(join(ROOT, path)))]))));
   expect(new Set(LOOKUP_PILOT_PROTOCOL_FILES).size).toBe(LOOKUP_PILOT_PROTOCOL_FILES.length);
   expect(LOOKUP_PILOT_PROTOCOL_FILES).toEqual([
+    "scripts/lib/continuity-guarded-accounting.mjs",
+    "scripts/lib/continuity-guarded-authorization.mjs",
+    "scripts/lib/continuity-guarded-child-environment.mjs",
+    "scripts/lib/continuity-guarded-fictional-protocol.mjs",
+    "scripts/lib/continuity-guarded-lease.mjs",
+    "scripts/lib/continuity-guarded-protocols.mjs",
+    "scripts/lib/continuity-guarded-registry-readiness.mjs",
+    "scripts/lib/continuity-guarded-report.mjs",
+    "scripts/lib/continuity-guarded-state.mjs",
+    "scripts/lib/continuity-lookup-guarded-authorization-policy.mjs",
+    "scripts/lib/continuity-lookup-guarded-policy.mjs",
+    "scripts/lib/continuity-lookup-guarded-protocol.mjs",
     "scripts/lib/continuity-lookup-child-environment.mjs",
     "scripts/lib/continuity-lookup-faux-capability.mjs",
     "scripts/lib/continuity-lookup-preflight.mjs",

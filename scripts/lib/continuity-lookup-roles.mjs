@@ -35,6 +35,18 @@ const json = async path => JSON.parse(await readFile(path, "utf8"));
 const save = (path, value, flag) => writeFile(path, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600, ...(flag ? { flag } : {}) });
 
 export const LOOKUP_PILOT_PROTOCOL_FILES = Object.freeze([
+  "scripts/lib/continuity-guarded-accounting.mjs",
+  "scripts/lib/continuity-guarded-authorization.mjs",
+  "scripts/lib/continuity-guarded-child-environment.mjs",
+  "scripts/lib/continuity-guarded-fictional-protocol.mjs",
+  "scripts/lib/continuity-guarded-lease.mjs",
+  "scripts/lib/continuity-guarded-protocols.mjs",
+  "scripts/lib/continuity-guarded-registry-readiness.mjs",
+  "scripts/lib/continuity-guarded-report.mjs",
+  "scripts/lib/continuity-guarded-state.mjs",
+  "scripts/lib/continuity-lookup-guarded-authorization-policy.mjs",
+  "scripts/lib/continuity-lookup-guarded-policy.mjs",
+  "scripts/lib/continuity-lookup-guarded-protocol.mjs",
   "scripts/lib/continuity-lookup-child-environment.mjs",
   "scripts/lib/continuity-lookup-faux-capability.mjs",
   "scripts/lib/continuity-lookup-preflight.mjs",
