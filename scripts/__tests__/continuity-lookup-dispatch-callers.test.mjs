@@ -127,6 +127,9 @@ const INVENTORY = {
     "scripts/lib/continuity-lookup-real-capability.mjs": 3,
     // Off-lane proof sentinel: capture, owned-loopback delegation and denied probe.
     "scripts/proofs/fixtures/lookup-configured-preload.mjs": 5,
+    // E2 faux-proof egress guard: capture, loopback-only wrapper, its delegated
+    // call (redirects refused) and restore. It never originates a request.
+    "scripts/lib/continuity-e2-isolation.mjs": 6,
   },
 };
 it("finds aliases, call/apply/bind, callbacks, renamed and star re-exports across files", () => {
