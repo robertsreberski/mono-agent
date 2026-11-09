@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Add controller-verified committed-summary receipts and exact serialized-body
+  lineage checks for the closed E2 guarded dispatch path.
+
 - Add offline E2 cap estimates from replay/proof sizing, with explicit output
   forecasts and full catalog-context/output reservations (including conservative
   cache/tier liability) for the uncapped Codex route. Add closed registration,

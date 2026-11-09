@@ -204,5 +204,5 @@ function bind(protocol, protocolId) {
     await pair(ctx, r.entry, claim(ctx, identity, await readLease(ctx.outputRoot, identity?.controller)));
     return true;
   }
-  return Object.freeze({ binds, validate, bindsRegistration, matchesAccountHandle, consumeAuthorization, verifyConsumption });
+  return Object.freeze({ readArtifact: safeRead, binds, validate, bindsRegistration, matchesAccountHandle, consumeAuthorization, verifyConsumption });
 }
