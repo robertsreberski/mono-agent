@@ -55,8 +55,8 @@ export function createE2Models({ pi, estimators, models, limits, summary = "faux
   if (summary === "real") fail("E2_PAID_ENTRY_UNAVAILABLE");
   if (!["faux-short", "faux-max"].includes(summary)) fail("E2_SUMMARY_ROUTE_INVALID");
   const registered = new Set(models.map(m => m.model)), faux = new Map(), lifecycle = new Map();
-  const report = { sourceRequests: 0, probeRequests: 0, summaryRequests: [], compactions: [] };
-  let position = null, sticky = null;
+  const report = { sourceRequests: 0, probeRequests: 0, summaryRequests: [], compactions: [], requestSizing: [] };
+  let position = null, sticky = null, positionRequests = 0;
   const refuse = code => { sticky ??= code; fail(sticky); };
   const check = () => { if (sticky) fail(sticky); };
   const sourceCodes = new Set(["E2_SOURCE_REQUEST_LIMIT", "E2_TOOL_CALL_MISMATCH", "E2_STEER_INVALID", "E2_STEER_REFUSED", "E2_STEER_NOT_DELIVERED"]);
@@ -78,7 +78,7 @@ export function createE2Models({ pi, estimators, models, limits, summary = "faux
     if (!catalog || ["provider", "id", "api", "baseUrl", "contextWindow", "maxTokens", "reasoning"].some(k => model[k] !== catalog[k])) refuse("E2_MODEL_UNREGISTERED");
   }
   return {
-    setPosition(value) { check(); position = { ...value }; },
+    setPosition(value) { check(); position = { ...value }; positionRequests = 0; },
     observe(event) {
       check();
       if (event?.type !== "context_compaction") return;
@@ -108,6 +108,9 @@ export function createE2Models({ pi, estimators, models, limits, summary = "faux
             if (++report.probeRequests > limits.probeRequests) refuse("E2_PROBE_REQUEST_LIMIT");
           } else if (++report.sourceRequests > limits.sourceRequests) refuse("E2_SOURCE_REQUEST_LIMIT");
           try { assertEffectiveSoul(context, soul); sourceContext(context); } catch (error) { refuse(error?.code === "E2_SOUL_MISMATCH" || ["E2_PROBE_REQUEST_LIMIT", "E2_PROBE_TOOLS_REFUSED", "E2_STEER_NOT_DELIVERED"].includes(error?.code) ? error.code : "E2_SOURCE_REPLY_REFUSED"); }
+          const paidRole = position.probe ? (positionRequests++ === 0 ? "probe" : "continuation") : null;
+          report.requestSizing.push({ turn: position.turn, message: position.message, role: paidRole ?? "setup-scripted", paidRole,
+            model: keyOf(model), maxOutputTokens: options?.maxTokens ?? model.maxTokens, size: sizeContext(context, estimators) });
           const bound = backend(model); bound.provider.setResponses([async () => { try { return await sourceReply(context); } catch (error) { refuse(sourceCodes.has(error?.code) ? error.code : "E2_SOURCE_REPLY_REFUSED"); } }]);
           return bound.collection.streamSimple(bound.model, context, options);
         };
@@ -127,7 +130,8 @@ export function createE2Models({ pi, estimators, models, limits, summary = "faux
           if (report.summaryRequests.length >= limits.summaryRequests || receipt.requests >= limits.summaryRequestsPerCompaction) refuse("E2_SUMMARY_REQUEST_LIMIT");
           receipt.requests++;
           const measured = sizeContext(context, estimators);
-          report.summaryRequests.push({ turn: position.turn, message: position.message, model: keyOf(model), maxOutputTokens: options.maxTokens, size: measured });
+          const sizing = { turn: position.turn, message: position.message, role: "summary", paidRole: "summary", model: keyOf(model), maxOutputTokens: options.maxTokens, size: measured };
+          report.summaryRequests.push(sizing); report.requestSizing.push(sizing);
           const bound = backend(model);
           const text = summary === "faux-short" ? "Faux sizing summary; not a factual answer." : "s".repeat(options.maxTokens * 4);
           bound.provider.setResponses([() => estimatedReply(pi, text, context, estimators)]);

@@ -13,6 +13,7 @@ import { lookupWitness, resolveSource, historyBody } from "./continuity-lookup.m
 import { E2_PROOF_PRESSURE_ARMS } from "./continuity-arms.mjs";
 import { proofEnvironment, installProofIsolation } from "./continuity-e2-isolation.mjs";
 import { startProofTools, PROOF_SERVER, SENTINEL, FACT, NEXT_ACTION, CANARY, FOREIGN } from "./continuity-e2-tools.mjs";
+import { e2PaidRole } from "./continuity-e2-roles.mjs";
 import { PROOF_CODES, requireProof, assertProofEvidence, assertSetupCompactions } from "./continuity-e2-checks.mjs";
 
 export const PROOF_ARMS = Object.freeze(["switch", "cancel", "idle", "pressure"]);
@@ -113,7 +114,7 @@ export async function runProofPhase({ base, arm, phase = "whole", variant = "cei
       if (["streamSimple", "completeSimple"].includes(method)) return (model, context, options = {}) => {
         requestSignal = options.signal;
         requests.push({ ordinal: requests.length, model: `${model.provider}:${model.id}`, role: method === "completeSimple" ? "summary" : mode === "cancel-forwarded" ? "setup-scripted" : mode,
-          size: sizeContext(context, estimators), maxOutputTokens: options.maxTokens ?? model.maxTokens });
+          paidRole: e2PaidRole(mode, method), size: sizeContext(context, estimators), maxOutputTokens: options.maxTokens ?? model.maxTokens });
         return original[method](model, context, options);
       };
       return original[method];

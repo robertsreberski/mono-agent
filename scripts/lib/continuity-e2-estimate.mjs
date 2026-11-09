@@ -1,5 +1,6 @@
 // Content-free offline reservation estimate. This is not authorization or a completion promise.
 import { E2_PAID_ROLES, E2_CENTRAL_CACHE, E2_USD_UNITS, e2CatalogRates, e2RequestPrice } from "./continuity-e2-pricing.mjs";
+import { requireE2PaidRole } from "./continuity-e2-roles.mjs";
 import { SOL, LUNA } from "./continuity-e2-protocol.mjs";
 const need = ok => { if (!ok) throw Object.assign(Error("E2_ESTIMATE_INVALID"), { code: "E2_ESTIMATE_INVALID" }); };
 const count = n => Number.isSafeInteger(n) && n >= 0;
@@ -28,14 +29,16 @@ export function estimateE2Reservations({ roles, requests, catalog }) {
   }
   const groups = new Map(); let scriptedRequests = 0;
   for (const request of requests) {
-    need(fields(request, ["checkpoint", "role", "model", "size"], ["maxOutputTokens"]) && count(request.checkpoint)
+    const paidRole = requireE2PaidRole(request);
+    need(fields(request, ["checkpoint", "role", "paidRole", "model", "size"], ["maxOutputTokens"]) && count(request.checkpoint)
       && [SOL, LUNA].includes(request.model) && [...E2_PAID_ROLES, "setup-scripted"].includes(request.role));
     const size = validateE2Sizing(request.size);
-    if (request.role === "setup-scripted") { scriptedRequests++; continue; }
-    const role = registered.get(key(request)); need(role && size.maximum <= role.maxInputTokens);
+    if (paidRole === null) { scriptedRequests++; continue; }
+    const costKey = key({ role: paidRole, model: request.model });
+    const role = registered.get(costKey); need(role && size.maximum <= role.maxInputTokens);
     const cached = Math.floor(size.maximum * E2_CENTRAL_CACHE.numerator / E2_CENTRAL_CACHE.denominator);
     const central = e2RequestPrice(role.catalog, { inputTokens: size.maximum, maxOutputTokens: role.maxOutputTokens, cachedInputTokens: cached });
-    const groupKey = `${request.checkpoint}:${key(request)}`;
+    const groupKey = `${request.checkpoint}:${costKey}`;
     if (!groups.has(groupKey)) groups.set(groupKey, { checkpoint: request.checkpoint, role: role.role, model: role.model, requests: 0,
       maxInputTokens: role.maxInputTokens, maxOutputTokens: role.maxOutputTokens, maxReservationUnits: role.maximum.toString(), maximumUnits: 0n, centralUnits: 0n, noCacheUnits: 0n });
     const row = groups.get(groupKey); row.requests++; row.maximumUnits += role.maximum;

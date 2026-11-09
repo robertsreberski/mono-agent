@@ -2,7 +2,7 @@
 import { offlineCatalog } from "../continuity-lookup-estimate.mjs";
 import { LUNA, SOL } from "./continuity-e2-protocol.mjs";
 export const E2_USD_UNITS = 1000000000n;
-export const E2_PAID_ROLES = Object.freeze(["summary", "continuation", "probe"]);
+export { E2_PAID_ROLES } from "./continuity-e2-roles.mjs";
 export const E2_CENTRAL_CACHE = Object.freeze({ numerator: 1, denominator: 2 });
 const need = (ok, code = "E2_PRICING_INVALID") => { if (!ok) throw Object.assign(Error(code), { code }); };
 const count = n => Number.isSafeInteger(n) && n >= 0;
