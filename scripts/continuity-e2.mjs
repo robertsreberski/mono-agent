@@ -7,20 +7,22 @@ import { fail, inputPath } from "./lib/continuity-observation-input.mjs";
 import { privateOutput } from "./lib/continuity-recorded-import.mjs";
 import { MAX_SOURCE_BYTES } from "./lib/continuity-recorded-schema.mjs";
 import { diagnosticRecord, errorDiagnostic, knownRefusalCode } from "./lib/continuity-e2-diagnostics.mjs";
+import { proofRefusalCode } from "./lib/continuity-e2-checks.mjs";
 import { scoreE2 } from "./lib/continuity-e2-score.mjs";
-export const USAGE = "Usage: node scripts/continuity-e2.mjs size --source DIR --protocol FILE --output NEW_DIR [--summary faux-short|faux-max] [--diagnostics NEW_FILE]\n       node scripts/continuity-e2.mjs score --answers FILE --keys FILE --output NEW_DIR\n       node scripts/continuity-e2.mjs run (unavailable)";
+export const USAGE = "Usage: node scripts/continuity-e2.mjs size --source DIR --protocol FILE --output NEW_DIR [--summary faux-short|faux-max] [--diagnostics NEW_FILE]\n       node scripts/continuity-e2.mjs score --answers FILE --keys FILE --output NEW_DIR\n       node scripts/continuity-e2.mjs proofs --output NEW_DIR [--arm switch|cancel|idle|pressure|all] [--diagnostics NEW_FILE]\n       node scripts/continuity-e2.mjs run (unavailable)";
 export function parseE2Args(argv) {
   const [command, ...rest] = argv;
-  if (command === "run") fail("E2_PAID_ENTRY_UNAVAILABLE");
-  const required = command === "size" ? ["source", "protocol", "output"] : command === "score" ? ["answers", "keys", "output"] : null;
+  if (command === "run" || command === "proofs" && rest.includes("--real")) fail("E2_PAID_ENTRY_UNAVAILABLE");
+  const required = command === "size" ? ["source", "protocol", "output"] : command === "score" ? ["answers", "keys", "output"] : command === "proofs" ? ["output"] : null;
   if (!required) fail("E2_ARGUMENTS_INVALID");
-  const result = { command }, allowed = [...required, ...(command === "size" ? ["summary", "diagnostics"] : [])];
+  const result = { command }, allowed = [...required, ...(command === "size" ? ["summary", "diagnostics"] : command === "proofs" ? ["arm", "diagnostics"] : [])];
   for (let i = 0; i < rest.length; i += 2) {
     const key = rest[i].slice(2);
     if (!rest[i].startsWith("--") || !allowed.includes(key) || !rest[i + 1] || rest[i + 1].startsWith("--") || Object.hasOwn(result, key)) fail("E2_ARGUMENTS_INVALID");
     result[key] = rest[i + 1];
   }
   if (required.some(k => !result[k]) || result.summary !== undefined && !["faux-short", "faux-max"].includes(result.summary)) fail("E2_ARGUMENTS_INVALID");
+  if (result.arm !== undefined && !["switch", "cancel", "idle", "pressure", "all"].includes(result.arm)) fail("E2_ARGUMENTS_INVALID");
   return result;
 }
 function readJSON(path) {
@@ -33,7 +35,16 @@ export async function main(argv, { stdout = s => process.stdout.write(s), stderr
   let diagnosticPath, diagnostic = diagnosticRecord();
   try {
     const args = parseE2Args(argv);
-    if (args.command === "size") {
+    if (args.command === "proofs") {
+      const output = privateOutput(args.output);
+      if (args.diagnostics) {
+        diagnosticPath = privateOutput(args.diagnostics);
+        if (diagnosticPath === output) { diagnosticPath = undefined; fail("E2_DIAGNOSTICS_REFUSED"); }
+      }
+      const { runE2Proofs } = await import("./lib/continuity-e2-proofs.mjs");
+      const records = await runE2Proofs({ output, arm: args.arm });
+      stdout(`${JSON.stringify({ arms: records.length, variants: records.reduce((n, r) => n + r.report.variants.length, 0), requests: records.reduce((n, r) => n + r.sizing.variants.reduce((m, v) => m + v.requests.length, 0), 0) })}\n`);
+    } else if (args.command === "size") {
       const sourceFile = inputPath(process.cwd(), join(args.source, "source.json")), protocolFile = inputPath(process.cwd(), args.protocol);
       const output = privateOutput(args.output, [sourceFile, protocolFile]);
       if (args.diagnostics) {
@@ -55,10 +66,10 @@ export async function main(argv, { stdout = s => process.stdout.write(s), stderr
     return 0;
   } catch (error) {
     if (diagnosticPath) {
-      try { writeFileSync(diagnosticPath, `${JSON.stringify(diagnosticRecord({ ...diagnostic, ...errorDiagnostic(error) }))}\n`, { flag: "wx", mode: 0o600 }); }
+      try { const record = diagnosticRecord({ ...diagnostic, ...errorDiagnostic(error) }); record.errorCode ??= proofRefusalCode(error?.code); writeFileSync(diagnosticPath, `${JSON.stringify(record)}\n`, { flag: "wx", mode: 0o600 }); }
       catch { stderr("E2_DIAGNOSTICS_REFUSED\n"); return 1; }
     }
-    stderr(error?.code === "E2_ARGUMENTS_INVALID" ? `${USAGE}\n` : `${knownRefusalCode(error?.code) ?? "E2_REFUSED"}\n`);
+    stderr(error?.code === "E2_ARGUMENTS_INVALID" ? `${USAGE}\n` : `${knownRefusalCode(error?.code) ?? proofRefusalCode(error?.code) ?? "E2_REFUSED"}\n`);
     return 1;
   }
 }

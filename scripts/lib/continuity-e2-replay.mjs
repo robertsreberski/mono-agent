@@ -26,7 +26,7 @@ export async function treeReceipt(root) {
   await visit(root, "");
   return { digest: digest(JSON.stringify(files)), files: files.length };
 }
-async function privateModes(root) {
+export async function privateModes(root) {
   await chmod(root, 0o700);
   for (const name of await readdir(root)) {
     const path = join(root, name), s = await lstat(path);

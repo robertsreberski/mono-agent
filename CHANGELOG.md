@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Add fictional offline continuity proofs for model switches, cancelled process
+  restarts, observed idle eviction and shipping-ceiling compaction. Keep durable
+  one-effect checks and content-free request sizing; real-model entry stays
+  unavailable. Refuse Unix sockets, UDP and external DNS during these proofs.
+
 - Tighten offline continuity registration and scoring: reject no-op effort
   changes, incomplete checkpoints, contradictory warm telemetry and blank
   evaluator terms; flag unplaceable journal steps and hidden delegation fields,

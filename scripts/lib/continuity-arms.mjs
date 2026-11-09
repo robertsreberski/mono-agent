@@ -317,3 +317,12 @@ export function verifyPressure(arm, family, metrics) {
   }
   return { applicable: true, verified: reasons.length === 0, reasons };
 }
+
+// Separate E2 variants: leave the original recall inventories and defaults unchanged.
+export const E2_PROOF_PRESSURE_ARMS = Object.freeze(["ceiling", "restart-switch-compact"].map(id => Object.freeze({
+  ...armById(id), id: id === "ceiling" ? "continuity-pack-ceiling" : "continuity-pack-restart",
+  sessionConfig: CONTINUITY_PACK_ON, probeConfig: HISTORY_TOOL_ONLY, fork: "in-place",
+  expect: Object.freeze({ probeBoundary: id === "ceiling" ? null : "model_change", setupCompactions: 1, probeCompactions: 0, midCompactions: 0 }),
+  pressure: Object.freeze([{ metric: "compactionTokensBefore", min: DEFAULT_MAX_INPUT_TOKENS }]),
+  description: "E2 shipping 200k setup compaction followed by retained lookup; the restart variant also changes models in a fresh fixture process.",
+})));
