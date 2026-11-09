@@ -1,7 +1,8 @@
 // Closed E2 identity, real adapter wiring and cross-domain authority boundaries.
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { readFile, mkdtemp, realpath, rm, mkdir, readdir } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import os, { tmpdir } from "node:os";
+import { syncBuiltinESMExports } from "node:module";
 import { join } from "node:path";
 import { guardedProtocol } from "../lib/continuity-guarded-protocols.mjs";
 import { guardedLease } from "../lib/continuity-guarded-lease.mjs";
@@ -10,7 +11,7 @@ import { guardedState } from "../lib/continuity-guarded-state.mjs";
 import { lookupProcessStartIdentity } from "../lib/continuity-process-identity.mjs";
 import { E2_PROTOCOL_FILES, E2_TOOL_POLICIES } from "../lib/continuity-e2-registration.mjs";
 const roots = [], leases = [];
-afterEach(async () => { for (const l of leases.splice(0)) l.release(); for (const r of roots.splice(0)) await rm(r, { recursive: true, force: true }); });
+afterEach(async () => { for (const l of leases.splice(0)) l.release(); for (const r of roots.splice(0)) await rm(r, { recursive: true, force: true }); vi.unstubAllEnvs(); });
 it("golden-pins the entire closed E2 descriptor, source file inventory and tool policies", async () => {
   const protocol = guardedProtocol("e2-validation");
   const json = JSON.stringify({ protocol, protocolFiles: E2_PROTOCOL_FILES, toolPolicies: E2_TOOL_POLICIES, errorClass: protocol.Error.name }, (_, v) => typeof v === "bigint" ? v.toString() : v instanceof RegExp ? v.toString() : v);
@@ -49,4 +50,17 @@ it("fictional schedule refusal precedes even lease acquisition and faux authorit
   const outputRoot = join(root, "output"); await mkdir(outputRoot, { mode: 0o700 });
   await expect(guardedController("fictional").runLookupPilot({ outputRoot })).rejects.toMatchObject({ code: "fictional_pilot_real_route_unavailable" });
   expect(await readdir(outputRoot)).toEqual([]); expect(await readdir(root)).toEqual(["output"]);
+});
+
+it("real E2 controller refuses missing authority without creating a lease or registry entry", async () => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "e2-no-authority-"))); roots.push(root);
+  const home = join(root, "home"), outputRoot = join(root, "output");
+  await mkdir(home, { mode: 0o700 }); await mkdir(outputRoot, { mode: 0o700 }); vi.stubEnv("HOME", home);
+  const userInfo = os.userInfo;
+  try {
+    os.userInfo = () => ({ ...userInfo(), homedir: home }); syncBuiltinESMExports();
+    await expect(guardedController("e2-validation").runLookupPilot({ real: true, outputRoot })).rejects.toMatchObject({ code: "e2_pilot_not_ready" });
+    expect(await readdir(outputRoot)).toEqual([]); expect(await readdir(home)).toEqual([]);
+    expect((await readdir(root)).sort()).toEqual(["home", "output"]);
+  } finally { os.userInfo = userInfo; syncBuiltinESMExports(); }
 });

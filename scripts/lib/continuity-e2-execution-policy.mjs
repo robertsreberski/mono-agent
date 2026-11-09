@@ -115,22 +115,22 @@ export const e2ExecutionPolicy = Object.freeze({
     catch { fail("e2_summary_receipt_invalid"); }
   },
   async beforeAdmission(root, slotId, slot, p, readPrivate, state, pilot) {
-    if (p.paidRole === "summary") return;
-    need(!slot.compaction, "e2_compaction_invalid");
     let scope;
     if (state?.schema === E2_REAL_CONTROLLER) {
       const { guardedAuthorization } = await import("./continuity-guarded-authorization.mjs");
       const planned = state.schedule[state.cursor];
       scope = await e2LineageScope({ ...state, pilot }, planned, p.checkpoint, guardedAuthorization("e2-validation").readArtifact);
       slot.lineages ??= {};
-      if (planned.kind === "proof" && planned.phase === "resume" && !slot.lineages.proof) {
+      if (planned.kind === "proof" && planned.phase === "resume") {
         const previous = state.schedule[state.cursor - 1], seed = state.slots[state.cursor - 1];
         need(previous?.kind === "proof" && previous.phase === "seed" && previous.arm === planned.arm && previous.variant === planned.variant
           && ["completed", "own_abort_after_send"].includes(seed.terminal), "e2_compaction_invalid");
-        if (seed.lineages?.proof) slot.lineages.proof = structuredClone(seed.lineages.proof);
+        if (!slot.lineages.proof && seed.lineages?.proof) slot.lineages.proof = structuredClone(seed.lineages.proof);
         need(!seed.holds.some(h => h.paidRole === "summary") || slot.lineages.proof, "e2_summary_receipt_invalid");
       }
     }
+    if (p.paidRole === "summary") return;
+    need(!slot.compaction, "e2_compaction_invalid");
     for (const hold of slot.holds.filter(h => h.paidRole === "summary")) {
       need(hold.summaryReceipt?.verified && hold.summaryReceipt.durable && (state?.schema !== E2_REAL_CONTROLLER || slot.lineages), "e2_summary_receipt_invalid");
       try { await verifyE2SummaryResult(root, slotId, hold, { schema: hold.summaryReceipt.schema, sha256: hold.summaryReceipt.sha256 }, readPrivate); }

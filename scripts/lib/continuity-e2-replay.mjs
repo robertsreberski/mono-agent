@@ -1,3 +1,4 @@
+import { assertE2PhaseAdapter } from "./continuity-e2-runtime.mjs";
 // Offline configured replay, with snapshots restored at the same absolute root.
 import { chmod, copyFile, cp, lstat, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -186,6 +187,7 @@ function exclusions(source, branch) {
 export async function runE2Sizing({ source, protocol, output, summary = "faux-short", modules, onContext = () => {}, onDiagnostic = () => {}, paidAdapter, questions, evaluator }) {
   const real = summary === "real";
   if (real && (modules !== undefined || !paidAdapter || !questions || !evaluator)) fail("E2_MODELS_SEAM_REFUSED");
+  if (real) assertE2PhaseAdapter(paidAdapter);
   protocol = validateProtocol(protocol, source);
   if (real) await paidAdapter.assertReplay({ source, protocol, questions, evaluator, output });
   const estimators = await loadE2Estimators(), soul = await shippingSoul();

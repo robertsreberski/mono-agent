@@ -317,6 +317,198 @@ it("writes scoring artifacts privately and refuses outputs in the checkout", asy
   expect(JSON.parse(await readFile(join(output, "score.json"), "utf8")).gate).toBe(true);
   expect(await main(["score", "--answers", answers, "--keys", keys, "--output", output], io)).toBe(1); expect(err.pop()).toBe("EEXIST\n");
 });
+const E2_IMPORT_SHAPES = {
+  "scripts/continuity-e2.mjs": {
+    "./lib/continuity-guarded-protocols.mjs": "{ guardedProtocol }"
+  },
+  "scripts/lib/continuity-e2-runtime.mjs": {
+    "node:process": "{ env }",
+    "./continuity-dataset.mjs": "{ digest }",
+    "./continuity-guarded-state.mjs": "{ guardedState }",
+    "./continuity-guarded-lease.mjs": "{ guardedLease }",
+    "./continuity-guarded-models.mjs": "{ guardedModels }",
+    "./continuity-guarded-real-capability.mjs": "{ guardedRealCapability }",
+    "./continuity-process-identity.mjs": "{ lookupProcessStartIdentity }",
+    "./continuity-e2-controller-policy.mjs": "{ e2CacheAssignment }"
+  },
+  "scripts/lib/continuity-e2-paid-models.mjs": {
+    "@mono-agent/turn": "{ createPiOAuthApiKeyResolver }",
+    "./continuity-guarded-models.mjs": "{ guardedModels }",
+    "./continuity-guarded-state.mjs": "{ guardedState }",
+    "./continuity-guarded-authorization.mjs": "{ guardedAuthorization }",
+    "./continuity-dataset.mjs": "{ digest as canonicalDigest }"
+  },
+  "scripts/lib/continuity-e2-phase-child.mjs": {
+    "./continuity-guarded-authorization.mjs": "{ guardedAuthorization }"
+  },
+  "scripts/lib/continuity-e2-paid-entry.mjs": {
+    "./continuity-guarded-authorization.mjs": "{ guardedAuthorization }",
+    "./continuity-guarded-controller.mjs": "{ guardedController }"
+  },
+  "scripts/lib/continuity-e2-controller-policy.mjs": {
+    "node:crypto": "{ randomBytes }",
+    "./continuity-dataset.mjs": "{ digest }"
+  },
+  "scripts/lib/continuity-e2-execution-policy.mjs": {
+    "./continuity-dataset.mjs": "{ digest }",
+    "./continuity-e2-summary-receipts.mjs": "{ writeE2SummaryResult, verifyE2SummaryResult }"
+  },
+  "scripts/lib/continuity-e2-guarded-protocol.mjs": {
+    "./continuity-e2-execution-policy.mjs": "{ e2ExecutionPolicy }",
+    "./continuity-e2-controller-policy.mjs": "{ e2CacheAssignment, e2CacheIssuer, e2Watchdog, e2ValidTimeout, e2Work, e2PhaseAssignment }"
+  },
+  "scripts/lib/continuity-e2-summary-receipts.mjs": {
+    "./continuity-dataset.mjs": "{ digest }"
+  },
+  "scripts/lib/continuity-e2-lineage.mjs": {
+    "./continuity-dataset.mjs": "{ digest as canonicalDigest }",
+    "./continuity-e2-summary-receipts.mjs": "{ verifyE2SummaryResult, e2SummaryResultPath }"
+  },
+  "scripts/lib/continuity-e2-registration.mjs": {
+    "./continuity-dataset.mjs": "{ digest }",
+    "./continuity-lookup-roles.mjs": "{ LOOKUP_PILOT_PROTOCOL_FILES }",
+    "./memory-e2e-build.mjs": "{ BUILD_POLICY, sourceState, verifyRealBuild }"
+  },
+  "scripts/lib/continuity-e2-authorization.mjs": {
+    "node:process": "{ env }",
+    "./continuity-dataset.mjs": "{ digest }"
+  },
+  "scripts/lib/continuity-e2-proofs.mjs": {
+    "node:child_process": "{ spawn }",
+    "./continuity-lookup.mjs": "{ lookupWitness, resolveSource, historyBody }",
+    "./continuity-arms.mjs": "{ E2_PROOF_PRESSURE_ARMS }"
+  },
+  "scripts/lib/continuity-e2-checks.mjs": {
+    "./continuity-arms.mjs": "{ DEFAULT_MAX_INPUT_TOKENS }"
+  },
+  "scripts/lib/continuity-e2-tools.mjs": {
+    "node:http": "{ createServer }",
+    "node:crypto": "{ randomBytes }"
+  },
+  "scripts/lib/continuity-e2-isolation.mjs": {
+    "./continuity-guarded-real-capability.mjs": "{ isGuardedNativeDispatch }",
+    "node:net": "net",
+    "node:module": "{ syncBuiltinESMExports }",
+    "node:dgram": "dgram",
+    "node:dns": "dns",
+    "node:dns/promises": "dnsPromises"
+  }
+};
+const E2_DYNAMIC_SHAPES = {
+  "scripts/continuity-e2.mjs": {
+    "./lib/continuity-e2-paid-entry.mjs": [
+      "{runE2Paid}",
+      "{reconcileE2Paid}"
+    ],
+    "./lib/continuity-e2-proofs.mjs": [
+      "{runE2Proofs}"
+    ],
+    "./lib/continuity-e2-replay.mjs": [
+      "{runE2Sizing}"
+    ]
+  },
+  "scripts/lib/continuity-e2-authorization.mjs": {
+    "@mono-agent/turn": [
+      "{createPiOAuthApiKeyResolver}"
+    ]
+  },
+  "scripts/lib/continuity-e2-controller-policy.mjs": {
+    "./continuity-e2-runtime.mjs": [
+      ".assertE2Entry"
+    ],
+    "./continuity-guarded-protocols.mjs": [
+      ".guardedProtocol"
+    ],
+    "./continuity-guarded-authorization.mjs": [
+      "{guardedAuthorization}"
+    ],
+    "./continuity-holdout-files.mjs": [
+      "{externalDirectory}"
+    ],
+    "./continuity-e2-pricing.mjs": [
+      "{loadE2Catalog,e2RequestPrice}"
+    ],
+    "./continuity-e2-registration.mjs": [
+      "{e2CapUnits,validateE2Deadlines}"
+    ],
+    "./continuity-guarded-state.mjs": [
+      "{guardedState}"
+    ],
+    "./continuity-guarded-lease.mjs": [
+      "{guardedLease}"
+    ],
+    "./continuity-guarded-child-environment.mjs": [
+      "{guardedChildEnvironment}"
+    ]
+  },
+  "scripts/lib/continuity-e2-execution-policy.mjs": {
+    "./continuity-guarded-authorization.mjs": [
+      "{guardedAuthorization}"
+    ]
+  },
+  "scripts/lib/continuity-e2-guarded-protocol.mjs": {
+    "./continuity-e2-authorization.mjs": [
+      ".validateE2GuardedAuthorization"
+    ],
+    "./continuity-e2-controller-policy.mjs": [
+      ".e2ControllerBindings",
+      ".prepareE2Controller"
+    ],
+    "./continuity-e2-runtime.mjs": [
+      ".e2RealModules",
+      ".verifyE2Assignment",
+      ".e2SlotRequest"
+    ]
+  },
+  "scripts/lib/continuity-e2-paid-models.mjs": {
+    "./continuity-e2-models.mjs": [
+      "{loadE2Estimators,sizeContext,isE2PaidDecorator}"
+    ]
+  },
+  "scripts/lib/continuity-e2-phase-child.mjs": {
+    "./continuity-e2-replay.mjs": [
+      "{runE2Sizing}"
+    ],
+    "./continuity-e2-isolation.mjs": [
+      "{proofEnvironment,installProofIsolation}"
+    ],
+    "./continuity-e2-proofs.mjs": [
+      "{runProofPhase}"
+    ]
+  },
+  "scripts/lib/continuity-e2-proofs.mjs": {
+    "./continuity-e2-paid-entry.mjs": [
+      ".runE2Paid"
+    ]
+  },
+  "scripts/lib/continuity-e2-runtime.mjs": {
+    "./continuity-guarded-authorization.mjs": [
+      "{guardedAuthorization}"
+    ],
+    "./continuity-e2-paid-models.mjs": [
+      "{createE2PaidModels}"
+    ],
+    "./continuity-guarded-ipc.mjs": [
+      ".guardedIPC"
+    ]
+  },
+  "scripts/lib/continuity-e2-summary-receipts.mjs": {
+    "./continuity-holdout-workflow.mjs": [
+      "{durable}"
+    ]
+  },
+  "scripts/lib/continuity-e2-tools.mjs": {
+    "@modelcontextprotocol/sdk/server/index.js": [
+      "{Server}"
+    ],
+    "@modelcontextprotocol/sdk/server/streamableHttp.js": [
+      "{StreamableHTTPServerTransport}"
+    ],
+    "@modelcontextprotocol/sdk/types.js": [
+      "{ListToolsRequestSchema,CallToolRequestSchema}"
+    ]
+  }
+};
 function assertE2Capabilities(path, source) {
   const builtins = new Set(["node:fs", "node:fs/promises", "node:path", "node:url"]);
   const existing = new Set(["./continuity-observation-input.mjs", "./continuity-recorded-schema.mjs", "./continuity-recorded-import.mjs", "./continuity-recorded-tools.mjs", "./continuity-recorded-reconcile.mjs", "./continuity-runner.mjs"]);
@@ -351,6 +543,11 @@ function assertE2Capabilities(path, source) {
       const ok = builtins.has(spec) || existing.has(spec) || proofImports[path]?.includes(spec) || /^\.\/(?:lib\/)?continuity-e2-[a-z]+\.mjs$/.test(spec)
         || /^\.\/lib\/continuity-(?:recorded-(?:schema|import)|observation-input)\.mjs$/.test(spec) || product && spec === "../tools/mcp/timeouts.js";
       expect(ok, `${path}:${spec}`).toBe(true);
+      if (proofImports[path]?.includes(spec)) {
+        const expected = E2_IMPORT_SHAPES[path]?.[spec];
+        expect(typeof expected, `${path}:${spec}:pinned import`).toBe("string");
+        expect(node.importClause?.getText(ast).replace(/\s/gu, "")).toBe(expected.replace(/\s/gu, ""));
+      }
       if (spec === "node:child_process") {
         expect(node.importClause.namedBindings.elements.map(e => (e.propertyName ?? e.name).text)).toEqual(["spawn"]);
         expect(node.importClause.namedBindings.elements.map(e => e.name.text)).toEqual(["spawn"]);
@@ -371,11 +568,33 @@ function assertE2Capabilities(path, source) {
     if (ts.isCallExpression(node)) {
       if (node.expression.kind === ts.SyntaxKind.ImportKeyword) {
         const value = node.arguments[0];
-        expect(ts.isStringLiteral(value) && ["@mono-agent/turn/engine", "./lib/continuity-e2-replay.mjs", "./lib/continuity-e2-proofs.mjs", "./lib/continuity-e2-paid-entry.mjs"].includes(value.text)
+        expect(ts.isStringLiteral(value) && ({ "scripts/lib/continuity-e2-models.mjs": ["@mono-agent/turn/engine"], "scripts/continuity-e2.mjs": ["./lib/continuity-e2-replay.mjs", "./lib/continuity-e2-proofs.mjs", "./lib/continuity-e2-paid-entry.mjs"] })[path]?.includes(value.text)
           || ts.isStringLiteral(value) && ({ "scripts/lib/continuity-e2-runtime.mjs": ["./continuity-guarded-ipc.mjs", "./continuity-guarded-authorization.mjs", "./continuity-e2-paid-models.mjs"], "scripts/lib/continuity-e2-paid-models.mjs": ["./continuity-e2-models.mjs"], "scripts/lib/continuity-e2-phase-child.mjs": ["./continuity-e2-replay.mjs", "./continuity-e2-isolation.mjs", "./continuity-e2-proofs.mjs"], "scripts/lib/continuity-e2-proofs.mjs": ["./continuity-e2-paid-entry.mjs"], "scripts/lib/continuity-e2-controller-policy.mjs": ["./continuity-e2-runtime.mjs", "./continuity-guarded-protocols.mjs", "./continuity-e2-pricing.mjs", "./continuity-e2-registration.mjs", "./continuity-holdout-files.mjs", "./continuity-guarded-state.mjs", "./continuity-guarded-lease.mjs", "./continuity-guarded-child-environment.mjs", "./continuity-guarded-authorization.mjs"], "scripts/lib/continuity-e2-summary-receipts.mjs": ["./continuity-holdout-workflow.mjs"], "scripts/lib/continuity-e2-execution-policy.mjs": ["./continuity-guarded-authorization.mjs"], "scripts/lib/continuity-e2-authorization.mjs": ["@mono-agent/turn"], "scripts/lib/continuity-e2-guarded-protocol.mjs": ["./continuity-e2-authorization.mjs", "./continuity-e2-controller-policy.mjs", "./continuity-e2-runtime.mjs"] })[path]?.includes(value.text)
           || path === "scripts/lib/continuity-e2-tools.mjs" && ts.isStringLiteral(value) && ["@modelcontextprotocol/sdk/server/index.js", "@modelcontextprotocol/sdk/server/streamableHttp.js", "@modelcontextprotocol/sdk/types.js"].includes(value.text)
           || path === "scripts/lib/continuity-e2-lineage.mjs" && value.getText(ast) === 'new URL("../../packages/turn/dist/engine/journal-schema.js", import.meta.url).href'
           || path === "scripts/lib/continuity-e2-models.mjs" && value.getText(ast) === 'new URL("../../packages/turn/dist/agent/compaction.js", import.meta.url).href').toBe(true);
+        if (ts.isStringLiteral(value) && value.text !== "@mono-agent/turn/engine") {
+          const expected = E2_DYNAMIC_SHAPES[path]?.[value.text];
+          expect(Array.isArray(expected), `${path}:${value.text}:pinned dynamic import`).toBe(true);
+          let shape;
+          if (ts.isAwaitExpression(node.parent) && ts.isParenthesizedExpression(node.parent.parent) && ts.isPropertyAccessExpression(node.parent.parent.parent)) {
+            shape = "." + node.parent.parent.parent.name.text;
+          } else {
+            let binding;
+            if (ts.isArrayLiteralExpression(node.parent)) {
+              const aggregate = node.parent.parent, declaration = aggregate.parent.parent;
+              expect(ts.isCallExpression(aggregate) && aggregate.expression.getText(ast) === "Promise.all" && ts.isAwaitExpression(aggregate.parent) && ts.isVariableDeclaration(declaration) && ts.isArrayBindingPattern(declaration.name)).toBe(true);
+              binding = declaration.name.elements[node.parent.elements.indexOf(node)]?.name;
+            } else {
+              const declaration = node.parent.parent;
+              expect(ts.isAwaitExpression(node.parent) && ts.isVariableDeclaration(declaration)).toBe(true);
+              binding = declaration.name;
+            }
+            expect(ts.isObjectBindingPattern(binding)).toBe(true);
+            shape = binding.getText(ast).replace(/\s/gu, "");
+          }
+          expect(expected).toContain(shape);
+        }
         if (ts.isStringLiteral(value) && value.text === "@mono-agent/turn") {
           const declaration = node.parent.parent;
           expect(ts.isAwaitExpression(node.parent) && ts.isVariableDeclaration(declaration) && ts.isObjectBindingPattern(declaration.name)).toBe(true);
@@ -602,4 +821,41 @@ it("retains conservative replay refusal for an unplaceable journal step with exp
   source.steps[0].turnId = "fictional-outside-web";
   expect(() => recordedTurns(source)).toThrow("E2_ASSISTANT_SOURCE_UNAVAILABLE");
   expect(recordedTurns(source, { excludedSteps: [0] }).excludedOutsideWebTurns).toBe(1);
+});
+
+it("refuses real sizing without a branded adapter before invoking any adapter method", async () => {
+  const calls = [], paidAdapter = new Proxy({}, { get: (_, name) => { calls.push(name); return () => {}; } });
+  await expect(runE2Sizing({ summary: "real", source: {}, protocol: {}, output: "unused", paidAdapter, questions: {}, evaluator: {} })).rejects.toMatchObject({ code: "e2_pilot_capability_invalid" });
+  expect(calls).toEqual([]);
+  await expect(runE2Sizing({ summary: "real" })).rejects.toThrow("E2_MODELS_SEAM_REFUSED");
+});
+
+it("pins every authority exception to its exact import names and shape", () => {
+  for (const [path, imports] of Object.entries(E2_IMPORT_SHAPES)) for (const [spec, clause] of Object.entries(imports)) {
+    expect(() => assertE2Capabilities(path, `import ${clause} from "${spec}";`)).not.toThrow();
+    for (const altered of ["* as authority", "authority", "{ unregisteredAuthority }", "{ ...authority }"]) {
+      expectRuleFailure(() => assertE2Capabilities(path, `import ${altered} from "${spec}";`));
+    }
+  }
+  expectRuleFailure(() => assertE2Capabilities("scripts/lib/continuity-e2-isolation.mjs", 'import * as authority from "./continuity-guarded-real-capability.mjs";'));
+  for (const source of [
+    'const authority = await import("./continuity-guarded-authorization.mjs");',
+    'const { guardedAuthorization, extra } = await import("./continuity-guarded-authorization.mjs");',
+    'const { extra: guardedAuthorization } = await import("./continuity-guarded-authorization.mjs");',
+    'const authority = await import("./continuity-guarded-ipc.mjs");',
+    '(await import("./continuity-guarded-ipc.mjs")).extra;',
+  ]) expectRuleFailure(() => assertE2Capabilities("scripts/lib/continuity-e2-runtime.mjs", source));
+  expect(() => assertE2Capabilities("scripts/continuity-e2.mjs", 'const { runE2Paid } = await import("./lib/continuity-e2-paid-entry.mjs");')).not.toThrow();
+  expectRuleFailure(() => assertE2Capabilities("scripts/lib/continuity-e2-isolation.mjs", 'const { runE2Paid } = await import("./lib/continuity-e2-paid-entry.mjs");'));
+  expectRuleFailure(() => assertE2Capabilities("scripts/continuity-e2.mjs", 'const entry = await import("./lib/continuity-e2-paid-entry.mjs");'));
+});
+
+it("pins paid dynamic factories and refuses whole-module, aliased and extra capabilities", () => {
+  for (const [path, imports] of Object.entries(E2_DYNAMIC_SHAPES)) for (const [spec, shapes] of Object.entries(imports)) {
+    for (const shape of shapes) {
+      const source = shape.startsWith(".") ? `(await import("${spec}"))${shape};` : `const ${shape} = await import("${spec}");`;
+      expect(() => assertE2Capabilities(path, source)).not.toThrow();
+    }
+    for (const source of [`const authority = await import("${spec}");`, `const { unregisteredAuthority } = await import("${spec}");`, `(await import("${spec}")).unregisteredAuthority;`]) expectRuleFailure(() => assertE2Capabilities(path, source));
+  }
 });

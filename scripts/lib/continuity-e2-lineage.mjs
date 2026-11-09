@@ -34,11 +34,11 @@ function fileSuffix(details) {
   return [["read-files", details.readFiles], ["modified-files", details.modifiedFiles]]
     .map(([tag, paths]) => paths.length ? `\n\n<${tag}>\n${paths.join("\n")}\n</${tag}>` : "").join("");
 }
-export async function readE2Checkpoint(root, planned, reference, readArtifact) {
-  try { return await readCheckpoint(root, planned, reference, readArtifact); }
+export async function readE2Checkpoint(root, planned, reference, readArtifact, { historical = false } = {}) {
+  try { return await readCheckpoint(root, planned, reference, readArtifact, historical); }
   catch { need(false); }
 }
-async function readCheckpoint(root, planned, reference, readArtifact) {
+async function readCheckpoint(root, planned, reference, readArtifact, historical) {
   need(reference && token(reference.journalId) && token(reference.checkpointId));
   const work = e2PhaseWork(root, planned, reference.branch);
   const bytes = await readArtifact(join(work, "sessions", "journals", `${reference.journalId}.jsonl`), "e2_summary_receipt_invalid", 128 * 1024 * 1024);
@@ -49,7 +49,7 @@ async function readCheckpoint(root, planned, reference, readArtifact) {
   const validator = new JournalValidator(), records = lines.map(line => JSON.parse(line));
   for (const record of records) validator.apply(record);
   const record = records.find(r => r.id === reference.checkpointId), value = record?.payload?.compaction;
-  need(record?.kind === "compaction" && records.filter(r => r.kind === "compaction").at(-1)?.id === record.id && value?.checkpoint?.summaryMessage?.summary === value.summary && typeof value.summary === "string"
+  need(record?.kind === "compaction" && (historical || records.filter(r => r.kind === "compaction").at(-1)?.id === record.id) && value?.checkpoint?.summaryMessage?.summary === value.summary && typeof value.summary === "string"
     && value.summary.isWellFormed() && Buffer.byteLength(value.summary) <= 4 * 1024 * 1024 && value.summary.trim()
     && records.some(r => r.kind === "operation_end" && r.operationId === record.operationId && r.payload.status === "completed"));
   return { summary: value.summary, details: value.details, model: value.checkpoint.model, seq: record.seq };
@@ -67,7 +67,7 @@ export async function bindE2Checkpoint({ root, state, planned, slot, summaries, 
   const suffix = fileSuffix(checkpoint.details), candidates = texts.length === 2 ? [texts.join(split)] : [texts[0]];
   if (texts.length === 1) {
     const prior = slot.lineages?.[scope];
-    const previous = prior ? await readE2Checkpoint(root, state.schedule[prior.phase], prior, readArtifact) : null;
+    const previous = prior ? await readE2Checkpoint(root, state.schedule[prior.phase], prior, readArtifact, { historical: true }) : null;
     if (previous) need(digest(previous.summary) === prior.textSha256);
     const history = previous?.summary.replace(/(?:\n\n<(read-files|modified-files)>\n[\s\S]*?\n<\/\1>)+$/u, "") ?? "No prior history.";
     candidates.push(history + split + texts[0]);

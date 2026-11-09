@@ -30,8 +30,13 @@ export async function e2NativeFixture(root, { arm = "pressure", capUnits = "1000
     return { ...original, role: row.role, paidRole: row.role, model: row.model, ordinal, phase: row.phase ?? "whole" };
   });
   for (const role of component.roles) role.maxInputTokens = 272000;
+  const sizingHomes = [];
   if (replay) {
-    component.sizing = await runE2Sizing({ source: trace.source, protocol: trace.protocol, output: join(root, "faux-sizing"), summary: "faux-short" });
+    const previousHome = process.env.HOME;
+    try {
+      process.env.HOME = home;
+      component.sizing = await runE2Sizing({ source: trace.source, protocol: trace.protocol, output: join(root, "faux-sizing"), summary: "faux-short", onContext: () => sizingHomes.push(process.env.HOME) });
+    } finally { if (previousHome === undefined) delete process.env.HOME; else process.env.HOME = previousHome; }
   }
   const sizing = [await bind("sizing", component.sizing)], catalog = await loadE2Catalog(), soul = await shippingSoul();
   const probeCounts = trace.protocol.branches.flatMap(b => b.checkpoints).map((_, checkpoint) => ({ checkpoint, questions: replay && checkpoint === 0 ? 1 : 0 }));
@@ -50,7 +55,7 @@ export async function e2NativeFixture(root, { arm = "pressure", capUnits = "1000
   artifact.accountCommitment = hash(`mono-agent/lcc-e2/account-v1\0${artifact.salt}\0${account}`);
   const authorizationPath = join(root, "authorization.json"), registrationPath = join(root, "registration.json");
   const args = { authorizationPath, registrationPath, registrationSha256: "", outputRoot, credentialPath, controllerRoot: ROOT };
-  const result = { root, home, pilot, artifact, args, trace, account };
+  const result = { root, home, pilot, artifact, args, trace, account, sizingHomes };
   result.persist = async () => { const raw = JSON.stringify(pilot); await writeFile(registrationPath, raw, { mode: 0o600 }); args.registrationSha256 = hash(raw);
     artifact.bindings = e2AuthorizationBindings(pilot, args.registrationSha256, { outputRoot, credentialPath, salt: artifact.salt, accountCommitment: artifact.accountCommitment }); await save(authorizationPath, artifact); };
   await result.persist(); return result;

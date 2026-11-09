@@ -467,8 +467,9 @@ node scripts/continuity-e2.mjs size --source "$PR_B_OUTPUT" \
 Use fresh output directories outside this checkout, below an owned `0700`
 parent. Outputs and snapshots are private (`0700` directories, `0600` files).
 Successful stdout contains only counts; failures contain fixed codes, never
-source text, paths or exception messages. `run` always refuses with
-`E2_PAID_ENTRY_UNAVAILABLE`. These commands do not grant provider authority.
+source text, paths or exception messages. `run --summary real` requires a
+complete bound registration and parent-created exact-cap authorization; it runs
+the whole registered schedule. No command creates provider authority.
 
 An optional `--diagnostics NEW_FILE` on `size` writes a refusal record in a new,
 owned `0600` file outside ROOT under an owned `0700` parent. It cannot overwrite
@@ -2461,9 +2462,10 @@ Every arm has its own private HOME, XDG and temporary directories. Its durable
 stores contain fictional evidence only; do not supply personal stores. Directory
 and file modes are `0700`/`0600`. Successful stdout contains counts only. Optional
 `--diagnostics NEW_FILE` uses the same exclusive, content-free refusal format as
-`size`, including a closed proof refusal code. `--real` always refuses with
-`E2_PAID_ENTRY_UNAVAILABLE`, before opening output paths. There is no provider
-execution authority in this command.
+`size`, including a closed proof refusal code. `proofs --real` requires a
+proof-only bound registration and parent-created exact-cap authorization. Mixed
+registrations and subset selection refuse before lease acquisition or authority
+consumption; the command never creates approval.
 
 | Arm | Boundary and evidence |
 | --- | --- |

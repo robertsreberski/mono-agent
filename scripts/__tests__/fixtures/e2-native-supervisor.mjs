@@ -1,5 +1,5 @@
 // Test supervisor uses the genuine E2 kernel; source/build attestation is a declared preload seam.
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, writeFile, mkdir, access } from "node:fs/promises";
 import { fork } from "node:child_process";
 import { once } from "node:events";
 import { join } from "node:path";
@@ -7,6 +7,7 @@ import { guardedController } from "../../lib/continuity-guarded-controller.mjs";
 import { guardedReport } from "../../lib/continuity-guarded-report.mjs";
 import { lookupProcessStartIdentity } from "../../lib/continuity-process-identity.mjs";
 import { e2SlotRequest, e2RoleRequest } from "../../lib/continuity-e2-runtime.mjs";
+import { e2AuthorizationBindings } from "../../lib/continuity-e2-authorization.mjs";
 import { E2_AUTHORIZATION_SCHEMA } from "../../lib/continuity-e2-policy.mjs";
 const profile = JSON.parse(await readFile(process.argv[2], "utf8")), pilot = JSON.parse(await readFile(profile.args.registrationPath, "utf8"));
 const controller = guardedController("e2-validation"), outputRoot = profile.args.outputRoot, authorization = { schema: E2_AUTHORIZATION_SCHEMA, ...profile.args };
@@ -16,7 +17,7 @@ const options = { real: true, pilot, authorization, outputRoot };
 await (await import("../../lib/continuity-guarded-protocols.mjs")).guardedProtocol("e2-validation").hooks.prepareController(options).catch(async error => {
   await writeFile(profile.result, JSON.stringify({ error: error.code ?? error.name, stage: "preparation" }), { mode: 0o600 }); process.exit(1);
 });
-let journal, child, report, caught, reuse = null;
+let journal, child, report, caught, reuse = null, crossOutputReuse = null, crossOutputMarker = null;
 try {
   if (profile.production) report = await controller.runLookupPilot(options);
   else {
@@ -46,8 +47,19 @@ try {
     try { const second = await controller.createLookupPilotController(options); second.release(); reuse = "unexpected_success"; }
     catch (error) { reuse = error.code; }
   }
+  if (profile.crossOutputReuse) {
+    const secondOutput = join(profile.home, "different-output"); await mkdir(secondOutput, { mode: 0o700 });
+    const artifact = JSON.parse(await readFile(profile.args.authorizationPath, "utf8"));
+    artifact.bindings = e2AuthorizationBindings(pilot, profile.args.registrationSha256, { outputRoot: secondOutput, credentialPath: profile.args.credentialPath, salt: artifact.salt, accountCommitment: artifact.accountCommitment });
+    const authorizationPath = join(profile.home, "rebound-fictional-approval.json"); await writeFile(authorizationPath, JSON.stringify(artifact), { mode: 0o600 });
+    try {
+      const second = await controller.createLookupPilotController({ ...options, outputRoot: secondOutput, authorization: { ...authorization, authorizationPath } });
+      second.release(); crossOutputReuse = "unexpected_success";
+    } catch (error) { crossOutputReuse = error.code; }
+    crossOutputMarker = await access(join(secondOutput, "authorization-consumed.json")).then(() => true, () => false);
+  }
   const reconciled = await controller.reconcileLookupPilot(outputRoot);
-  await writeFile(profile.result, JSON.stringify({ report, reuse, reconciled, caught }), { mode: 0o600 });
+  await writeFile(profile.result, JSON.stringify({ report, reuse, crossOutputReuse, crossOutputMarker, reconciled, caught }), { mode: 0o600 });
 } catch (error) {
   await writeFile(profile.result, JSON.stringify({ error: error.code ?? error.name }), { mode: 0o600 }); process.exitCode = 1;
 } finally { journal?.release(); if (child?.connected) child.disconnect(); }

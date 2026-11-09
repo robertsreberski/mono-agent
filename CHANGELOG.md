@@ -6,6 +6,8 @@
   shared guarded send, with committed-summary/body lineage and one-run-only
   authorizations. Keep ordinary sizing/proofs offline; stopped runs reconcile
   without dispatch, and no command creates approval or refreshes credentials.
+  Keep verified history across successive and planned-resume compactions, and
+  gate every resume admission on the expected completed seed.
 
 - Add offline E2 cap estimates from replay/proof sizing, with explicit output
   forecasts and full catalog-context/output reservations (including conservative

@@ -54,9 +54,12 @@ function proofReply(body, count) {
   return toolEvents(name, { action: "search", query: "proof-evidence", limit: 10 }, count);
 }
 
-async function run({ scenario = "probe", requests = 1, rows = [{ role: "probe", model: SOL }], capUnits, reuse = false, production = false, fault, arm = "pressure", replay = false } = {}) {
+async function run({ scenario = "probe", requests = 1, rows = [{ role: "probe", model: SOL }], capUnits, reuse = false, crossOutputReuse = false, production = false, fault, arm = "pressure", replay = false } = {}) {
   const root = await realpath(await mkdtemp(join(tmpdir(), "e2-native-sdk-"))); roots.push(root);
+  const originalHome = process.env.HOME;
   const fixture = await e2NativeFixture(root, { rows, arm, replay, ...(capUnits ? { capUnits } : {}) });
+  expect(process.env.HOME).toBe(originalHome);
+  if (replay) { expect(fixture.sizingHomes.length).toBeGreaterThan(0); expect(new Set(fixture.sizingHomes)).toEqual(new Set([fixture.home])); }
   const received = []; let listenerError;
   const server = http.createServer(async (request, response) => {
     try {
@@ -72,7 +75,7 @@ async function run({ scenario = "probe", requests = 1, rows = [{ role: "probe", 
       } else response.end(events("FICTIONAL-SUMMARY-ANSWER-CANARY", scenario === "cap"));
     } catch (error) { listenerError = error; response.writeHead(500).end(); }
   }); servers.push(server); await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
-  const profile = { root: ROOT, home: fixture.home, args: fixture.args, scenario, requests, reuse, production, fault,
+  const profile = { preload: join(root, "preload.mjs"), crossOutputReuse, root: ROOT, home: fixture.home, args: fixture.args, scenario, requests, reuse, production, fault,
     endpoint: `http://127.0.0.1:${server.address().port}/codex/responses`, result: join(root, "result.json"), descendant: join(root, "descendant.json") };
   const profilePath = join(root, "profile.json"), preload = join(root, "preload.mjs");
   await writeFile(profilePath, JSON.stringify(profile), { mode: 0o600 });
@@ -156,3 +159,10 @@ it("a genuine SDK model failure ends the authorization before any registered res
   expect(result.report.stop).toBe("e2_phase_failed"); expect(result.report.costs.retainedUnits).toBe("3920000000");
   expect(result.reuse).toBe("e2_authorization_lease_invalid");
 }, 30000);
+
+it("refuses independently consumed authority at a different output root through the real registry path", async () => {
+  const result = await run({ crossOutputReuse: true });
+  expect(result.received).toHaveLength(1);
+  expect(result.crossOutputReuse).toBe("e2_authorization_already_consumed");
+  expect(result.crossOutputMarker).toBe(false);
+});

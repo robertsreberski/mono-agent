@@ -1,6 +1,7 @@
 // Test-only Node preload: pin a fictional OS account, mock build attestation only,
 // and replace the sole guarded provider fetch with an owned HTTP loopback.
 import os from "node:os";
+import { installE2NativeTransport } from "./e2-native-transport.mjs";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import { registerHooks, syncBuiltinESMExports } from "node:module";
@@ -10,6 +11,7 @@ import { spawn } from "node:child_process";
 export async function installE2NativeRealm(profile) {
   const user = os.userInfo(), actualHome = user.homedir;
   if (!profile.home || !profile.root || !profile.endpoint?.startsWith("http://127.0.0.1:")) throw Error("test_realm_invalid");
+  installE2NativeTransport(profile);
   os.userInfo = () => ({ ...user, homedir: profile.home });
   const forbid = value => {
     if (value instanceof URL) value = fileURLToPath(value);

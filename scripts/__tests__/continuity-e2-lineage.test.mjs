@@ -25,16 +25,17 @@ async function fixture(texts = ["Fictional committed evidence."], assembled = te
   await session.beginTurn("fictional-turn"); await session.openOperation("fictional-compaction", { model: { provider: "openai-codex", id: "gpt-6.1-sol", api: "openai-codex-responses" } });
   const checkpointId = await session.appendCompaction({ summary: assembled, retainedTail: [], tokensBefore: 100, details });
   await session.closeOperation("fictional-compaction", "completed"); await session.endTurn("fictional-turn", "completed"); await session.sync();
+  const metadata = session.metadata;
   const reference = { journalId: session.metadata.journalId, checkpointId, checkpoint: 0 }, journalPath = session.metadata.path; await session.close(); await repo.close();
   const rawUsage = { input_tokens: 10, output_tokens: 10 };
   for (const [i, text] of texts.entries()) {
     const round = i + 1, payloadDigest = "b".repeat(64), message = { role: "assistant", stopReason: "stop", content: [{ type: "text", text }] };
     const result = await writeE2SummaryResult({ runId: "fictional-run", slotId: slot.slotId, e2: { paidRole: "summary", model: SOL, round, outputRoot: root } }, message, rawUsage, "default", payloadDigest);
-    slot.holds.push({ requestId: `fictional-run:${round}`, round, model: SOL, payloadDigest, summaryReceipt: { ...result.evidence, verified: true, durable: false },
+    slot.holds.push({ requestId: `fictional-run:${round}`, paidRole: "summary", round, model: SOL, payloadDigest, summaryReceipt: { ...result.evidence, verified: true, durable: false },
       settlement: { kind: "settled", rawUsage, tier: "default" } });
   }
   const bind = () => bindE2Checkpoint({ root, state, planned, slot, summaries: slot.holds, reference, readPrivate, readArtifact });
-  return { root, state, planned, slot, reference, journalPath, assembled, bind };
+  return { root, state, planned, slot, reference, journalPath, assembled, bind, metadata };
 }
 const body = text => Buffer.from(JSON.stringify({ input: [{ role: "user", content: [{ type: "input_text", text: E2_SUMMARY_PREFIX + text + E2_SUMMARY_SUFFIX }] }] }));
 it("binds the actual committed checkpoint to generated receipts and exact decompressed body text", async () => {
@@ -115,4 +116,51 @@ it("pins the recognized summary encodings to the shipping source serializers", a
 it("refuses ill-formed Unicode rather than equating it with a replacement-character digest", async () => {
   const f = await fixture(["\ufffd"]), lineage = await f.bind(); f.slot.lineages = { proof: lineage };
   await expect(verifyE2NativeLineage(body("\ud800"), { lineageScope: "proof", lineage }, f.state, { outputRoot: f.root, index: 0 }, readArtifact)).rejects.toMatchObject({ code: "e2_summary_receipt_invalid" });
+});
+
+async function nextCompaction(f, slot = f.slot) {
+  const text = "Fictional subsequent split turn.", assembled = f.assembled + split + text;
+  const work = e2PhaseWork(f.root, f.planned), repo = new JsonlSessionRepo({ sessionsRoot: join(work, "sessions") });
+  const session = await repo.open(f.metadata);
+  await session.beginTurn("fictional-second-turn");
+  await session.openOperation("fictional-second-compaction", { model: { provider: "openai-codex", id: "gpt-6.1-sol", api: "openai-codex-responses" } });
+  const checkpointId = await session.appendCompaction({ summary: assembled, retainedTail: [], tokensBefore: 100, details: { readFiles: [], modifiedFiles: [] } });
+  await session.closeOperation("fictional-second-compaction", "completed"); await session.endTurn("fictional-second-turn", "completed"); await session.sync(); await session.close(); await repo.close();
+  const round = slot.holds.length + 1, payloadDigest = "b".repeat(64), rawUsage = { input_tokens: 10, output_tokens: 10 };
+  const result = await writeE2SummaryResult({ runId: "fictional-run", slotId: slot.slotId, e2: { paidRole: "summary", model: SOL, round, outputRoot: f.root } }, { role: "assistant", stopReason: "stop", content: [{ type: "text", text }] }, rawUsage, "default", payloadDigest);
+  const hold = { requestId: `fictional-run:${round}`, paidRole: "summary", round, model: SOL, payloadDigest, summaryReceipt: { ...result.evidence, verified: true, durable: false }, settlement: { kind: "settled", rawUsage, tier: "default" } };
+  slot.holds.push(hold);
+  return { assembled, hold, reference: { ...f.reference, checkpointId } };
+}
+it("binds two compactions in one journal using verified historical lineage, never a stale native checkpoint", async () => {
+  const f = await fixture(), prior = await f.bind(); f.slot.lineages = { proof: prior };
+  const next = await nextCompaction(f);
+  const bind = () => bindE2Checkpoint({ root: f.root, state: f.state, planned: f.planned, slot: f.slot, summaries: [next.hold], reference: next.reference, readPrivate, readArtifact });
+  const lineage = await bind(); expect(lineage.textSha256).toBe(digest(next.assembled));
+  await expect(readE2Checkpoint(f.root, f.planned, prior, readArtifact)).rejects.toMatchObject({ code: "e2_summary_receipt_invalid" });
+  await expect(verifyE2NativeLineage(body(f.assembled), { lineageScope: "proof", lineage: prior }, f.state, { outputRoot: f.root, index: 0 }, readArtifact)).rejects.toMatchObject({ code: "e2_summary_receipt_invalid" });
+  f.slot.lineages.proof = lineage;
+  await expect(verifyE2NativeLineage(body(next.assembled), { lineageScope: "proof", lineage }, f.state, { outputRoot: f.root, index: 0 }, readArtifact)).resolves.toBeUndefined();
+  f.slot.lineages.proof = prior;
+  await writeFile(f.journalPath, (await readFile(f.journalPath, "utf8")).replaceAll(f.assembled, "Fictional changed history."));
+  await expect(bind()).rejects.toMatchObject({ code: "e2_summary_receipt_invalid" });
+});
+it.each(["probe", "summary"])("binds a resume compaction after the seed when its first paid request is %s", async paidRole => {
+  const f = await fixture(["Fictional seed summary."], undefined, undefined, { arm: "cancel", phase: "seed" });
+  const prior = await f.bind(); f.slot.lineages = { proof: prior }; f.slot.terminal = "own_abort_after_send";
+  for (const h of f.slot.holds) h.summaryReceipt.durable = true;
+  const planned = { ...f.planned, index: 1, phase: "resume" }, slot = { slotId: "c".repeat(64), holds: [] };
+  const state = { ...f.state, schema: E2_REAL_CONTROLLER, cursor: 1, schedule: [f.planned, planned], slots: [f.slot, slot] };
+  await e2ExecutionPolicy.beforeAdmission(f.root, slot.slotId, slot, { paidRole, checkpoint: 0 }, readPrivate, state, {});
+  expect(slot.lineages.proof).toEqual(prior);
+  const next = await nextCompaction(f, slot);
+  const lineage = await bindE2Checkpoint({ root: f.root, state, planned, slot, summaries: [next.hold], reference: next.reference, readPrivate, readArtifact });
+  expect(lineage.phase).toBe(1); expect(lineage.textSha256).toBe(digest(next.assembled)); slot.lineages.proof = lineage;
+  await expect(verifyE2NativeLineage(body(next.assembled), { lineageScope: "proof", lineage }, state, { outputRoot: f.root, index: 1 }, readArtifact)).resolves.toBeUndefined();
+});
+it.each(["summary", "probe", "continuation"].flatMap(role => [false, true].map(lineage => [role, lineage])))("refuses %s after a lost seed without a stop, including preexisting lineage=%s", async (paidRole, existing) => {
+  const seed = { kind: "proof", phase: "seed", arm: "cancel", variant: "restart" }, planned = { ...seed, phase: "resume" };
+  const slot = { holds: [], ...(existing ? { lineages: { proof: { textSha256: "f".repeat(64) } } } : {}) };
+  const state = { schema: E2_REAL_CONTROLLER, cursor: 1, stop: null, schedule: [seed, planned], slots: [{ terminal: "lost", holds: [] }, slot] };
+  await expect(e2ExecutionPolicy.beforeAdmission("unused", "unused", slot, { paidRole, checkpoint: 0 }, readPrivate, state, {})).rejects.toMatchObject({ code: "e2_compaction_invalid" });
 });
