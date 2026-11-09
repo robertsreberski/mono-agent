@@ -1,6 +1,7 @@
 // Test-only Node preload: pin a fictional OS account, mock build attestation only,
 // and replace the sole guarded provider fetch with an owned HTTP loopback.
 import os from "node:os";
+import { isMainThread } from "node:worker_threads";
 import { installE2NativeTransport } from "./e2-native-transport.mjs";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
@@ -53,4 +54,9 @@ export async function installE2NativeRealm(profile) {
   };
   const { isGuardedNativeDispatch } = await import(pathToFileURL(join(profile.root, "scripts/lib/continuity-guarded-real-capability.mjs")).href);
   authorized = () => isGuardedNativeDispatch("e2-validation");
+  // Regression-only cold-start barrier: never delay lease workers or supervisor.
+  if (isMainThread && process.argv[1] === join(profile.root, "scripts/lib/continuity-e2-phase-child.mjs") && profile.phaseStartupDelayMs) {
+    if (!Number.isSafeInteger(profile.phaseStartupDelayMs) || profile.phaseStartupDelayMs < 0 || profile.phaseStartupDelayMs > 15_000) throw Error("test_startup_delay_invalid");
+    await new Promise(resolve => setTimeout(resolve, profile.phaseStartupDelayMs));
+  }
 }

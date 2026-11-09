@@ -11,7 +11,7 @@ import { zstdDecompressSync } from "node:zlib";
 import { ROOT } from "../lib/continuity-observation-input.mjs";
 import { FACT, NEXT_ACTION } from "../lib/continuity-e2-tools.mjs";
 import { SOL } from "../lib/continuity-e2-protocol.mjs";
-import { e2NativeFixture } from "./fixtures/e2-native-registration.mjs";
+import { e2NativeFixture, E2_NATIVE_TEST_TIMEOUT_MS } from "./fixtures/e2-native-registration.mjs";
 const roots = [], servers = [];
 afterEach(async () => { for (const server of servers.splice(0)) { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); } for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
 function events(text, full = false) {
@@ -54,7 +54,7 @@ function proofReply(body, count) {
   return toolEvents(name, { action: "search", query: "proof-evidence", limit: 10 }, count);
 }
 
-async function run({ scenario = "probe", requests = 1, rows = [{ role: "probe", model: SOL }], capUnits, reuse = false, crossOutputReuse = false, production = false, fault, arm = "pressure", replay = false } = {}) {
+async function run({ scenario = "probe", requests = 1, rows = [{ role: "probe", model: SOL }], capUnits, reuse = false, crossOutputReuse = false, production = false, fault, arm = "pressure", replay = false, phaseStartupDelayMs = 0 } = {}) {
   const root = await realpath(await mkdtemp(join(tmpdir(), "e2-native-sdk-"))); roots.push(root);
   const originalHome = process.env.HOME;
   const fixture = await e2NativeFixture(root, { rows, arm, replay, ...(capUnits ? { capUnits } : {}) });
@@ -76,7 +76,7 @@ async function run({ scenario = "probe", requests = 1, rows = [{ role: "probe", 
       } else response.end(events("FICTIONAL-SUMMARY-ANSWER-CANARY", scenario === "cap"));
     } catch (error) { listenerError = error; response.writeHead(500).end(); }
   }); servers.push(server); await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
-  const profile = { preload: join(root, "preload.mjs"), crossOutputReuse, root: ROOT, home: fixture.home, args: fixture.args, scenario, requests, reuse, production, fault,
+  const profile = { phaseStartupDelayMs, preload: join(root, "preload.mjs"), crossOutputReuse, root: ROOT, home: fixture.home, args: fixture.args, scenario, requests, reuse, production, fault,
     endpoint: `http://127.0.0.1:${server.address().port}/codex/responses`, result: join(root, "result.json"), descendant: join(root, "descendant.json") };
   const profilePath = join(root, "profile.json"), preload = join(root, "preload.mjs");
   await writeFile(profilePath, JSON.stringify(profile), { mode: 0o600 });
@@ -123,20 +123,20 @@ it("reconciles a crashed genuine phase child without dispatching another native 
   const result = await run({ production: true, fault: "crash", reuse: true, rows: productionRows });
   expect(result.received, JSON.stringify(result.report)).toHaveLength(1); expect(result.report.stop).not.toBe("completed");
   expect(result.report.costs.retainedUnits).toBe("3920000000"); expect(result.reconciled.reconciliation).toBe(true); expect(result.reuse).toBe("e2_authorization_lease_invalid");
-}, 30000);
+}, E2_NATIVE_TEST_TIMEOUT_MS);
 it("contains a real descendant of the genuine phase child at the watchdog, retaining its hold", async () => {
   const result = await run({ production: true, fault: "containment", rows: productionRows });
   expect(result.received).toHaveLength(1); expect(result.report.stop).toBe("e2_worker_timeout");
   expect(result.report.costs.retainedUnits).toBe("3920000000");
   const descendant = JSON.parse(await readFile(result.profile.descendant, "utf8"));
   expect(() => process.kill(descendant.pid, 0)).toThrow();
-}, 30000);
+}, E2_NATIVE_TEST_TIMEOUT_MS);
 
 it("runs genuine C2 continuation/probe SDK tool rounds through the literal phase child", async () => {
   const result = await run({ production: true, scenario: "proof", arm: "switch", rows: productionRows });
   expect(result.report.stop, JSON.stringify(result.report)).toBe("completed"); expect(result.report.phases[0].score).toBe(1);
   expect(result.received.length).toBeGreaterThanOrEqual(4);
-}, 30000);
+}, E2_NATIVE_TEST_TIMEOUT_MS);
 it("allows only the registered completed cancellation seed-to-resume transition in one controller", async () => {
   const rows = [...Array.from({ length: 8 }, () => ({ role: "summary", model: SOL, phase: "seed" })),
     { role: "continuation", model: SOL, phase: "seed" }, ...Array.from({ length: 8 }, () => ({ role: "continuation", model: SOL, phase: "resume" })),
@@ -144,7 +144,7 @@ it("allows only the registered completed cancellation seed-to-resume transition 
   const result = await run({ production: true, scenario: "proof", arm: "cancel", rows });
   expect(result.report.stop, JSON.stringify(result.report)).toBe("completed"); expect(result.report.phases).toHaveLength(2);
   expect(result.report.phases[1].score).toBe(1); expect(BigInt(result.report.costs.retainedUnits)).toBe(3920000000n);
-}, 30000);
+}, E2_NATIVE_TEST_TIMEOUT_MS);
 
 it("replays genuine C1 snapshots and frozen private questions through both pristine checkpoint copies", async () => {
   const result = await run({ production: true, replay: true });
@@ -153,7 +153,7 @@ it("replays genuine C1 snapshots and frozen private questions through both prist
   const replay = JSON.parse(await readFile(join(result.root, "output/work/replay/replay.json"), "utf8"));
   expect(replay.branches.flatMap(b => b.checkpoints.flatMap(c => c.probes.map(p => p.requests)))).toEqual([1, 1]);
   expect(result.report.phases[0].score).toBe(1);
-}, 30000);
+}, E2_NATIVE_TEST_TIMEOUT_MS);
 
 it("a genuine SDK model failure ends the authorization before any registered resume phase", async () => {
   const rows = [...Array.from({ length: 8 }, () => ({ role: "summary", model: SOL, phase: "seed" })),
@@ -162,7 +162,7 @@ it("a genuine SDK model failure ends the authorization before any registered res
   expect(result.received).toHaveLength(1); expect(result.report.schedule.visited).toBe(1); expect(result.report.schedule.remaining).toBe(1);
   expect(result.report.stop).toBe("e2_phase_failed"); expect(result.report.costs.retainedUnits).toBe("3920000000");
   expect(result.reuse).toBe("e2_authorization_lease_invalid");
-}, 30000);
+}, E2_NATIVE_TEST_TIMEOUT_MS);
 
 it("refuses independently consumed authority at a different output root through the real registry path", async () => {
   const result = await run({ crossOutputReuse: true });
@@ -170,3 +170,12 @@ it("refuses independently consumed authority at a different output root through 
   expect(result.crossOutputReuse).toBe("e2_authorization_already_consumed");
   expect(result.crossOutputMarker).toBe(false);
 });
+
+it("allows a cold phase start beyond ten seconds without bypassing guarded SDK admission", async () => {
+  const started = performance.now();
+  const result = await run({ production: true, scenario: "proof", arm: "switch", rows: productionRows, phaseStartupDelayMs: 11_000 });
+  expect(performance.now() - started).toBeGreaterThanOrEqual(11_000);
+  expect(result.report.stop, JSON.stringify(result.report)).toBe("completed");
+  expect(result.received.length).toBeGreaterThanOrEqual(4);
+  expect(result.report.phases[0].calls.consumed).toBe(result.received.length);
+}, E2_NATIVE_TEST_TIMEOUT_MS);
