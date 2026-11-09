@@ -1,0 +1,79 @@
+// E2 policy owns its identities and per-request bounds. No lookup cost/envelope defaults.
+const freeze = value => { for (const child of Object.values(value)) if (child && typeof child === "object") freeze(child); return Object.freeze(value); };
+export const E2_ASSUMPTIONS = freeze({
+  version: "e2-input-envelope-v1", literalInput: "max_serialized_bytes_over_3_and_engine_full_request",
+  outputIncludesReasoning: true, outputLimit: "registered-per-request", inputLimit: "registered-per-role",
+  reservation: "actual-input-envelope-times-catalog-input-plus-output-limit-times-catalog-output",
+  serviceTier: "default", cacheWrite: "not-requested",
+});
+export const E2_GUARD_CONTRACT = freeze({
+  version: "e2-guard-v1", provider: "openai-codex", model: "",
+  api: "openai-codex-responses", baseUrl: "https://chatgpt.com/backend-api", effort: "",
+  slotId: "", runId: "", piMaxRetries: 0, maxRetries: 0,
+});
+export const E2_OUTCOMES = freeze({
+  refused_pre_send: { hold: "none", pilot: "capacity_continues_policy_stops" },
+  own_abort_after_send: { hold: "retained", pilot: "continues_slot_terminal" },
+  settled: { hold: "actual_cost", pilot: "continues" },
+  lost: { hold: "retained", pilot: "continues_slot_terminal" },
+  integrity_stop: { hold: "retained", pilot: "sticky_stop" },
+});
+export const E2_PRE_SEND_REFUSALS = Object.freeze(["not_admitted_input_envelope", "e2_request_limit", "not_admitted_cap", "e2_stopped", "e2_slot_terminal"]);
+export const E2_GUARD_POLICY_REFUSALS = Object.freeze([
+  "e2_body_type_forbidden", "e2_route_mismatch", "e2_contract_mismatch", "e2_option_forbidden", "e2_external_fetch_forbidden",
+  "e2_headers_forbidden", "e2_env_forbidden", "e2_payload_forbidden", "e2_initial_reasoning_forbidden",
+  "e2_prompt_cache_key_forbidden", "e2_retry_profile_forbidden", "e2_auxiliary_callers_forbidden",
+  "e2_method_forbidden", "e2_model_switch_forbidden", "e2_preparation_forbidden", "e2_preparation_invalid", "e2_tools_forbidden",
+  "e2_concurrent_request", "e2_permit_missing", "e2_assumptions_mismatch", "e2_single_shot_send_required",
+  "e2_faux_permit_forbidden", "e2_settlement_invalid", "e2_cache_assignment_invalid",
+  "e2_pilot_boundary_required", "e2_native_identity_forbidden", "e2_unguarded_dispatch", "e2_payload_repeated", "e2_pilot_capability_invalid",
+]);
+export const E2_PERMIT_CONTRACT = freeze({
+  version: "e2-permit-v1",
+  admissionFields: ["requestId", "slotId", "round", "payloadDigest", "reservationUnits", "inputTokens", "model", "paidRole"],
+  methods: ["admit", "consume", "settle", "stop"],
+  outcomes: Object.keys(E2_OUTCOMES),
+});
+export const E2_PILOT_STOPS = Object.freeze([...new Set([...E2_GUARD_POLICY_REFUSALS,
+  "completed", "auth_failure", "e2_auth_failure", "e2_account_mismatch", "e2_quota_exhausted",
+  "unpriced_reservation", "invalid_unit_rate", "budget_admission", "e2_run_deadline", "e2_worker_timeout",
+  "e2_unreconciled_processes", "e2_repeated_loss", "e2_ipc_invalid", "e2_ipc_disconnected",
+  "e2_pilot_slot_ineligible", "e2_preparation_invalid", "e2_preparation_timeout", "e2_persist_failed", "e2_receipt_invalid", "e2_arrival_persist_failed", "e2_arrival_receipt_invalid", "e2_worker_lost", "e2_recovery_only",
+  "e2_invalid_usage", "e2_unknown_tier", "e2_hold_exceeded", "e2_input_envelope_violated",
+  "e2_output_envelope_violated", "e2_reasoning_envelope_violated", "e2_body_mismatch",
+  "e2_permit_invalid", "e2_settlement_failed", "e2_stop_failed", "e2_payload_repeated",
+  "e2_headers_forbidden", "e2_prompt_cache_key_forbidden", "e2_send_mismatch", "e2_duplicate_terminal",
+])]);
+export const E2_GUARD_STOPS = Object.freeze([...new Set([...E2_GUARD_POLICY_REFUSALS,
+  "auth_failure", "e2_auth_failure", "e2_account_mismatch", "e2_quota_exhausted", "e2_settlement_failed",
+  "e2_invalid_usage", "e2_unknown_tier", "e2_hold_exceeded", "e2_input_envelope_violated",
+  "e2_output_envelope_violated", "e2_reasoning_envelope_violated", "e2_body_mismatch", "e2_permit_invalid",
+  "e2_arrival_persist_failed", "e2_arrival_receipt_invalid", "e2_payload_repeated", "e2_headers_forbidden", "e2_prompt_cache_key_forbidden", "e2_send_mismatch", "e2_duplicate_terminal",
+])]);
+export const E2_INTEGRITY_STOPS = Object.freeze(E2_GUARD_STOPS.filter(code => !["auth_failure", "e2_auth_failure", "e2_account_mismatch", "e2_quota_exhausted"].includes(code)));
+export const E2_SLOT_TERMINALS = Object.freeze(["completed", "wrong", "lost", "own_abort_after_send", "pilot_empty_final_output", "store_degraded", "boundary_unverified", "pressure_unverified", "integrity_stop", "refused_pre_send", "unadmitted", "skipped"]);
+export { E2_USD_UNITS as USD_UNITS } from "./continuity-e2-roles.mjs";
+export const E2_AUTHORIZATION_SCHEMA = "continuity-e2-authorization-v1";
+export const E2_CONSUMPTION_SCHEMA = "continuity-e2-consumed-v1";
+export const E2_REGISTRY_LAYOUT = Object.freeze([
+  [".local", false], ["state", false], ["mono-agent", true], ["lcc-e2", true], ["consumed-v1", true],
+].map(row => Object.freeze(row)));
+export const E2_FAUX_AUTHORIZATION = "continuity-e2-faux-authorization-v1";
+export const E2_REAL_CONTROLLER = "continuity-e2-controller-v1";
+export const E2_FAUX_CONTROLLER = "continuity-e2-faux-controller-v1";
+export const E2_PILOT_IPC = "e2-pilot-ipc-v1";
+export const E2_PREFLIGHT = "e2-preflight-controller-v1";
+export const E2_TREE_LIMITS = Object.freeze({ fileBytes: 64 * 1024 * 1024, totalBytes: 512 * 1024 * 1024 });
+
+export class E2GuardError extends Error {
+  constructor(code, outcome = "refused_pre_send", classification = code, cause) {
+    super(code, cause === undefined ? undefined : { cause }); this.code = code; this.outcome = outcome; this.classification = classification;
+  }
+}
+
+export const E2_REGISTRATION_SCHEMA = "continuity-e2-guarded-registration-v1";
+export const E2_PLAN_SCHEMA = "continuity-e2-guarded-plan-v1";
+export const E2_SUMMARY_RECEIPT = "continuity-e2-generated-summary-receipt-v1";
+export const E2_BINDING_FIELDS = Object.freeze(["code", "build", "catalog", "protocol", "source", "probes", "keys", "soul", "schedule", "account", "tools", "deadlines", "capUnits"]);
+export const E2_DEADLINE_LIMITS = Object.freeze({ requestMs: 600000, childWatchdogMs: 660000, runMs: 7200000 });
+export const E2_ARTIFACT_LIMITS = Object.freeze({ requests: 100000, jsonBytes: 4194304, summaryBytes: 1048576 });

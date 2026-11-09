@@ -1,4 +1,5 @@
 // Pricing classification is independent of the legacy faux replay role/counts.
+export const E2_USD_UNITS = 1000000000n;
 export const E2_PAID_ROLES = Object.freeze(["summary", "continuation", "probe"]);
 export function e2PaidRole(mode, method = "streamSimple") {
   if (!["streamSimple", "completeSimple"].includes(method) || !["setup-scripted", "cancel-forwarded", "continuation", "probe"].includes(mode))
