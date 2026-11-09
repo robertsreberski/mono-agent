@@ -184,7 +184,8 @@ export async function runProofPhase({ base, arm, phase = "whole", variant = "cei
     const pack = firstPack;
     const boundary = boundaries.some(e => e.reason === "model_change" && ["reconstructed", "handoff"].includes(e.context));
     const assertions = assertProofEvidence({ arm, pressureArm, initialAbsent: snapshot.initiallyPresent === false, recovered: snapshot.sourceReturned, correct: answer.includes(FACT) && answer.includes(NEXT_ACTION), safe, sentinel: receipt,
-      boundary, pack, idle, forwarded: seedReceipt?.forwarded, restarted: resumed && seedReceipt.pid !== process.pid, sentinelOffered, compactions: resumed && arm === "pressure" ? seedReceipt.compactions : route.report().compactions });
+      boundary, pack, idle, forwarded: seedReceipt?.forwarded, restarted: resumed && seedReceipt.pid !== process.pid, sentinelOffered, // A restart variant counts both processes, so a post-restart compaction cannot hide.
+      compactions: resumed && arm === "pressure" ? [...seedReceipt.compactions, ...route.report().compactions] : route.report().compactions });
     if (arm === "cancel") requireProof(sentinelOffered && receipt.attempts === 0, "E2_PROOF_SENTINEL_REPEATED");
     return { pid: process.pid, assertions, requests, compactions: route.report().compactions, boundary, pack, ...(idle ? { idle } : {}), sentinelOffered,
       lookup: { initiallyPresent: snapshot.initiallyPresent, sourceReturned: snapshot.sourceReturned, verifiedRecords: snapshot.records.filter(r => r.verified).length } };

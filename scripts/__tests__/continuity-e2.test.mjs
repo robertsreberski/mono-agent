@@ -384,16 +384,23 @@ it("statically confines new scripts and the real estimator closure to registered
   for (const path of paths) assertE2Capabilities(path, readFileSync(join(ROOT, path), "utf8"));
 });
 
+// A negative scan case must fail on a scan assertion, never on an incidental
+// TypeError inside the helper.
+function expectRuleFailure(run) {
+  let error;
+  try { run(); } catch (caught) { error = caught; }
+  expect(error?.name).toBe("AssertionError");
+}
 it("checks imported authority names even when local bindings are aliased", () => {
   const path = "scripts/lib/continuity-e2-proofs.mjs";
   expect(() => assertE2Capabilities(path, 'import { spawn } from "node:child_process";')).not.toThrow();
-  for (const source of ['import { exec as spawn } from "node:child_process";', 'import { spawn as launch } from "node:child_process";', 'import { referenceReader as historyBody, lookupWitness, resolveSource } from "./continuity-lookup.mjs";']) expect(() => assertE2Capabilities(path, source)).toThrow();
+  for (const source of ['import { exec as spawn } from "node:child_process";', 'import { spawn as launch } from "node:child_process";', 'import { referenceReader as historyBody, lookupWitness, resolveSource } from "./continuity-lookup.mjs";']) expectRuleFailure(() => assertE2Capabilities(path, source));
 });
 it("pins isolation delegation arguments and refuses duplicate exempt calls", () => {
   const path = "scripts/lib/continuity-e2-isolation.mjs", source = readFileSync(join(ROOT, path), "utf8");
   for (const call of ['fetch(url, { ...init, redirect: "error" })', 'connect.apply(this, args)']) {
-    expect(() => assertE2Capabilities(path, `${source}\n${call};`)).toThrow();
-    expect(() => assertE2Capabilities(path, source.replace(call, call.replace("url,", '"https://example.com",').replace("this, args", "this, []")))).toThrow();
+    expectRuleFailure(() => assertE2Capabilities(path, `${source}\n${call};`));
+    expectRuleFailure(() => assertE2Capabilities(path, source.replace(call, call.replace("url,", '"https://example.com",').replace("this, args", "this, []"))));
   }
 });
 

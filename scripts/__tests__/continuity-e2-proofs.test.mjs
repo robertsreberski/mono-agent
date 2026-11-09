@@ -179,13 +179,14 @@ it("blocks UDP constructors and callback/promise DNS families, including Resolve
   expect(dnsLookup).toBe(dns.lookup);
 });
 it("lets the MCP transport handle non-POST methods without parsing an empty JSON body", async () => {
-  const dir = await scratch(), restore = installProofIsolation(await proofEnvironment(dir)), tools = await startProofTools(dir);
+  const dir = await scratch(), restore = installProofIsolation(await proofEnvironment(dir)); let tools;
   try {
+    tools = await startProofTools(dir);
     for (const [method, status] of [["GET", 406], ["OPTIONS", 405], ["DELETE", 200]]) {
       const response = await fetch(tools.url, { method, headers: { accept: "application/json" }, signal: AbortSignal.timeout(2000) });
       expect(response.status).toBe(status); await response.body?.cancel();
     }
-  } finally { await tools.close(); restore(); }
+  } finally { try { await tools?.close(); } finally { restore(); } }
 });
 it.each(["E2_PROOF_TOOL_REFUSED", "E2_BOUNDARY_MISMATCH"])("preserves %s in CLI and private diagnostics", async code => {
   const dir = await scratch(), module = await import("../lib/continuity-e2-proofs.mjs"), out = [], err = [], diagnostic = join(dir, "diagnostic.json");
