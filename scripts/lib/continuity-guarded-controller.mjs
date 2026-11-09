@@ -79,7 +79,7 @@ function bind(protocol, protocolId) {
     pilotNeed(typeof controller.startIdentity === "string" && controller.startIdentity.length > 0, protocol.codes.ipc_invalid);
     const lease = await acquireLookupPilotLease(outputRoot), identity = { runId: randomUUID(), controllerEpoch: randomUUID(), controller };
     let state, failed = false, tail = Promise.resolve();
-    const path = pilotStatePath(outputRoot), cap = lookupMoney(pilot.descriptor.capUSD), reserve = lookupMoney(pilot.descriptor.rmaxUSD);
+    const path = pilotStatePath(outputRoot), cap = protocol.execution ? protocol.execution.cap(pilot) : lookupMoney(pilot.descriptor.capUSD), reserve = protocol.execution ? 0n : lookupMoney(pilot.descriptor.rmaxUSD);
     const serial = fn => { const result = tail.then(fn); tail = result.catch(() => {}); return result; };
     const save = async () => {
       pilotNeed(!failed, protocol.codes.persist_failed);
@@ -110,12 +110,13 @@ function bind(protocol, protocolId) {
       if (real) await auth.consumeAuthorization(authorizationHandle, identity, lease);
       else await fauxConsume(authorization, pilot, outputRoot, identity, lease);
       state = { schema: real ? LOOKUP_REAL_CONTROLLER : LOOKUP_FAUX_CONTROLLER, ...(real ? { recovery: false } : {}), ...(!real ? { fauxEndpoint: authorization.fixtureEndpoint ?? null } : {}), binding: digest(pilot), runId: identity.runId, epoch: identity.controllerEpoch,
-        controller: identity.controller, capUSD: pilot.descriptor.capUSD, rmaxUSD: pilot.descriptor.rmaxUSD, revision: 0, deadlineAt: Date.now() + pilot.descriptor.deadlines.runDeadlineMs,
+        controller: identity.controller, ...(protocol.execution ? { capUnits: cap.toString() } : { capUSD: pilot.descriptor.capUSD, rmaxUSD: pilot.descriptor.rmaxUSD }), revision: 0, deadlineAt: Date.now() + pilot.descriptor.deadlines.runDeadlineMs,
         schedule, scheduleSha256: digest(schedule), cursor: 0, stop: null,
         cacheKeysUnique: true, ...protocol.hooks.publicState(pilot),
         slots: schedule.map(slot => ({ slotId: slot.slotId, holds: [], terminal: null, worker: null, cacheKey: issueLookupCacheKey(identity.runId), startedAt: null, nextMessage: 0, lastAck: null, score: null })) };
       assertLookupCacheAssignment(state, { index: 0, cacheKey: state.slots[0].cacheKey });
       await mkdir(join(outputRoot, "slots"), { mode: 0o700 });
+      if (protocol.execution) await mkdir(join(outputRoot, protocol.policy.SUMMARY_RESULTS_DIRECTORY), { mode: 0o700 });
       await save();
     } catch (error) { lease.release(); throw error; }
     const api = {
@@ -158,25 +159,31 @@ function bind(protocol, protocolId) {
         try {
           pilotNeed(index === state.cursor && slot.worker?.pid === worker.pid && lookupProcessStartIdentity(worker.pid) === slot.worker.startIdentity
             && message?.version === LOOKUP_PILOT_IPC && message.epoch === state.epoch && message.slotId === slot.slotId
-            && message.seq === slot.nextMessage && ["admit", "consume", "settle", "stop"].includes(message.op), protocol.codes.ipc_invalid);
+            && message.seq === slot.nextMessage && protocol.policy.PERMIT_CONTRACT.methods.includes(message.op), protocol.codes.ipc_invalid);
           const p = message.payload; let result = {};
           if (message.op === "admit") {
             pilotNeed(state.schedule[index]?.eligible, protocol.codes.pilot_slot_ineligible);
-            pilotNeed(p && Object.keys(p).sort().join() === "payloadDigest,requestId,rmax,round,slotId" && p.slotId === slot.slotId
+            if (protocol.execution) await protocol.execution.beforeAdmission(outputRoot, slot.slotId, slot, p, readPilotPrivate);
+            const specific = protocol.execution?.admission(pilot, state.schedule[index], slot, p);
+            pilotNeed(p && (specific || Object.keys(p).sort().join() === "payloadDigest,requestId,rmax,round,slotId") && p.slotId === slot.slotId
               && typeof p.requestId === "string" && p.requestId === `${state.runId}:${p.round}` && pilotHash(p.payloadDigest)
-              && p.round === slot.holds.length + 1 && p.round <= protocol.requestLimit && p.rmax === pilot.descriptor.rmaxUSD
+              && p.round === slot.holds.length + 1 && p.round <= protocol.requestLimit && (specific || p.rmax === pilot.descriptor.rmaxUSD)
               && !slot.terminal && slot.holds.every(h => h.settlement), protocol.codes.permit_invalid);
+            const nextReserve = specific?.reserve ?? reserve;
             if (Date.now() >= state.deadlineAt) stop(protocol.codes.run_deadline);
             else if (Date.now() >= slot.startedAt + pilot.descriptor.deadlines.deadlineMs) stop(protocol.codes.worker_timeout);
-            const reason = lookupPilotStopReason(accountLookupPilot(state.slots), cap, reserve);
+            const reason = lookupPilotStopReason(accountLookupPilot(state.slots), cap, nextReserve);
             if (reason) stop(reason);
             if (state.stop) { slot.admissionRefusal = state.stop; result = { refused: true, code: state.stop === "budget_admission" ? "not_admitted_cap" : protocol.codes.stopped }; }
             else {
               const permitId = randomUUID();
               slot.holds.push({ permitId, requestId: p.requestId, payloadDigest: p.payloadDigest, round: p.round,
-                reservedUnits: reserve.toString(), consumed: false, revoked: false, settlement: null });
+                ...specific?.metadata, reservedUnits: nextReserve.toString(), consumed: false, revoked: false, settlement: null });
               result = { epoch: state.epoch, permitId };
             }
+          } else if (protocol.execution && message.op === "compaction") {
+            pilotNeed(!state.stop, protocol.codes.stopped);
+            await protocol.execution.compaction(outputRoot, slot.slotId, state.schedule[index], slot, p, readPilotPrivate);
           } else if (message.op === "stop") {
             pilotNeed(p && Object.keys(p).join() === "code" && LOOKUP_GUARD_STOPS.includes(p.code), protocol.codes.ipc_invalid);
             if ((LOOKUP_INTEGRITY_STOPS.includes(p.code) || p.code === protocol.codes.account_mismatch) && slot.holds.length) slot.terminal = "integrity_stop"; stop(p.code);
@@ -192,17 +199,19 @@ function bind(protocol, protocolId) {
               catch (error) {
                 // A bad claim must not discard independently computable partial spend.
                 if (p.rawUsage !== null) try {
-                  const priced = priceLookupUsage(p.rawUsage, p.tier);
+                  const priced = priceLookupUsage(p.rawUsage, p.tier, hold);
                   hold.settlement = { kind: "integrity_stop", code: fixedPilotCode(error.code), rawUsage: priced.rawUsage, tier: priced.tier, knownUnits: priced.units };
                 } catch {}
                 slot.terminal = "integrity_stop"; throw error;
               }
               if (p.outcome.kind === "integrity_stop") { slot.terminal = "integrity_stop"; stop(p.outcome.code); }
               else if (["lost", "own_abort_after_send"].includes(p.outcome.kind) && slot.terminal !== "integrity_stop") slot.terminal = p.outcome.kind;
-              const breach = p.rawUsage?.input_tokens > pilot.descriptor.assumptions.inputMax ? protocol.codes.input_envelope_violated
-                : p.rawUsage?.output_tokens > pilot.descriptor.assumptions.outputMax ? protocol.codes.output_envelope_violated
-                : BigInt(hold.settlement.knownUnits) > reserve ? protocol.codes.hold_exceeded : null;
+              const breach = p.rawUsage?.input_tokens > (protocol.execution ? hold.inputMax : pilot.descriptor.assumptions.inputMax) ? protocol.codes.input_envelope_violated
+                : p.rawUsage?.output_tokens > (protocol.execution ? hold.outputMax : pilot.descriptor.assumptions.outputMax) ? protocol.codes.output_envelope_violated
+                : BigInt(hold.settlement.knownUnits) > BigInt(hold.reservedUnits) ? protocol.codes.hold_exceeded : null;
               if (breach) { slot.terminal = "integrity_stop"; hold.settlement.kind = "integrity_stop"; hold.settlement.code ??= breach; stop(breach); }
+              if (protocol.execution) try { await protocol.execution.verifySettlement(outputRoot, slot.slotId, hold, p.evidence, readPilotPrivate); }
+              catch (error) { hold.settlement.kind = "integrity_stop"; hold.settlement.code = fixedPilotCode(error.code); throw error; }
             }
           }
           slot.nextMessage++;
@@ -210,6 +219,13 @@ function bind(protocol, protocolId) {
             revision: state.revision + 1, ok: true, result };
           slot.lastAck = ack; await save(); return structuredClone(ack);
         } catch (error) {
+          if (protocol.execution && message?.op === "admit" && protocol.policy.ADMISSION_REFUSALS.includes(error.code)) {
+            // Capacity/schedule refusals stop admission without reclassifying prior settled work.
+            slot.admissionRefusal = error.code; stop(error.code); slot.nextMessage++;
+            const ack = { type: "ack", version: LOOKUP_PILOT_IPC, epoch: state.epoch, slotId: slot.slotId, seq: message.seq,
+              revision: state.revision + 1, ok: true, result: { refused: true, code: error.code } };
+            slot.lastAck = ack; await save(); return structuredClone(ack);
+          }
           if (slot.holds.length) slot.terminal = "integrity_stop";
           stop(error.code); await save(); throw Object.assign(new Error(fixedPilotCode(error.code)), { code: fixedPilotCode(error.code) });
         }
@@ -223,6 +239,10 @@ function bind(protocol, protocolId) {
           stop(protocol.codes.ipc_invalid); await save(); pilotNeed(false, protocol.codes.ipc_invalid);
         }
         if (terminal === "refused_pre_send" && refusalCode) slot.guardRefusal = refusalCode;
+        if (terminal === "refused_pre_send" && protocol.execution && protocol.policy.ADMISSION_REFUSALS.includes(refusalCode)) {
+          // A child may reject its estimate before sending an admit message.
+          slot.admissionRefusal ??= refusalCode; stop(refusalCode);
+        }
         if (terminal === "refused_pre_send" && LOOKUP_GUARD_POLICY_REFUSALS.includes(refusalCode)) {
           stop(refusalCode); if (slot.holds.length) terminal = "integrity_stop";
         }
@@ -244,7 +264,7 @@ function bind(protocol, protocolId) {
     return Object.freeze(api);
   }
   function publicFailure(error) {
-    const allowed = [...LOOKUP_PILOT_STOPS, "paid_mode_refused_in_ci", protocol.codes.pilot_real_route_unavailable, protocol.codes.pilot_faux_required, protocol.codes.debug_forbidden, protocol.codes.controller_checkout_mismatch,
+    const allowed = [...LOOKUP_PILOT_STOPS, ...(protocol.execution ? [protocol.codes.registration_invalid] : []), "paid_mode_refused_in_ci", protocol.codes.pilot_real_route_unavailable, protocol.codes.pilot_faux_required, protocol.codes.debug_forbidden, protocol.codes.controller_checkout_mismatch,
       protocol.codes.pilot_no_eligible_slots, protocol.codes.pilot_boundary_required, protocol.codes.authorization_binding_mismatch, protocol.codes.authorization_already_consumed, protocol.codes.authorization_lease_invalid, protocol.codes.pilot_resume_forbidden, protocol.codes.pilot_not_ready];
     pilotNeed(false, allowed.includes(error?.code) ? error.code : protocol.codes.pilot_not_ready);
   }
@@ -271,6 +291,7 @@ function bind(protocol, protocolId) {
     try { return await reconcilePilotState(outputRoot); } catch (error) { publicFailure(error); }
   }
   async function runSlot(journal, pilot, authorization, root, index, preparation = false) {
+    pilotNeed(typeof protocol.children[preparation ? "preparation" : "probe"] === "string", protocol.codes.pilot_real_route_unavailable);
     const state = journal.snapshot(), slot = state.schedule[index];
     // Assignment is persisted after fork; refuse excluded slots before any child setup.
     pilotNeed(slot?.eligible, protocol.codes.pilot_slot_ineligible);
@@ -411,6 +432,8 @@ function bind(protocol, protocolId) {
     }
   }
   async function runPilotSchedule(options) {
+    // A registered kernel is not a runnable phase adapter. Refuse before lease or consumption.
+    pilotNeed(typeof protocol.children.probe === "string", protocol.codes.pilot_real_route_unavailable);
     const journal = await createLookupPilotController(options);
     try {
       const { outputRoot } = journal;
@@ -418,7 +441,7 @@ function bind(protocol, protocolId) {
         const state = journal.snapshot(); if (state.stop) break;
         if (Date.now() >= state.deadlineAt) { await journal.stop(protocol.codes.run_deadline); break; }
         if (!state.schedule[i].eligible) { await journal.skip(i); continue; }
-        if (!await journal.prepare(i)) break;
+        if (protocol.children.preparation !== null && !await journal.prepare(i)) break;
         await journal.probe(i);
       }
       if (!journal.snapshot().stop) await journal.stop("completed");

@@ -6,6 +6,9 @@ export const LUNA = "openai-codex:gpt-6-luna", SOL = "openai-codex:gpt-6.1-sol";
 export const PROTOCOL_SCHEMA = "continuity-e2-protocol-v1";
 const integer = n => Number.isSafeInteger(n) && n >= 0;
 const label = s => typeof s === "string" && /^[A-Za-z][A-Za-z0-9_-]{0,47}$/.test(s);
+export function assertE2CheckpointOrder(checkpoints) {
+  for (let i = 1; i < checkpoints.length; i++) if (checkpoints[i].turn <= checkpoints[i - 1].turn) fail("E2_CHECKPOINT_ORDER_INVALID");
+}
 export function parts(row) {
   try { const v = JSON.parse(row.parts_json); if (Array.isArray(v)) return v; } catch { /* refusal below */ }
   fail("E2_SOURCE_PARTS_INVALID");
@@ -117,6 +120,7 @@ export function validateProtocol(p, source) {
         || c.message !== source.web.messages.findLastIndex(row => row.turn_id === source.web.turns[c.turn].id && row.role === "assistant")) refuse();
       names.add(c.name);
     }
+    assertE2CheckpointOrder(b.checkpoints);
     for (const name of b.id === "main" ? ["B1", "B2", "B4"] : ["B3"]) if (!names.has(name)) refuse();
     if (!keys(b.exclusions, ["steps", "coverage"]) || ![b.exclusions.steps, b.exclusions.coverage].every(Array.isArray)
       || b.exclusions.steps.some(i => !integer(i) || !source.steps[i]) || b.exclusions.coverage.some(i => !integer(i) || !source.coverage[i])

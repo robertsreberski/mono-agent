@@ -55,6 +55,12 @@ function bind(protocol, protocolId) {
       const bytes = encoding === "zstd" ? zstdDecompressSync(init.body) : Buffer.from(init.body);
       need(hold?.consumed === true && !hold.revoked && !hold.settlement && !used.has(hold.permitId)
         && hold.payloadDigest === createHash("sha256").update(bytes).digest("hex"));
+      try { protocol.execution?.assertBody(bytes, hold); }
+      catch (error) {
+        const code = error?.code ?? protocol.codes.body_mismatch;
+        let cause; try { await permit.stop(code); } catch (stopped) { cause = stopped; }
+        throw Object.assign(Error(code), { code, outcome: "integrity_stop", ...(cause ? { stopCode: protocol.codes.stop_failed, cause } : {}) });
+      }
       used.add(hold.permitId);
       // No external fallback, including redirects. No real credentials are resolved.
       return nativeFetch(endpoint, { ...init, redirect: "error" });

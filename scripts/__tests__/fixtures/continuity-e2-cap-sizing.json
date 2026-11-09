@@ -1,0 +1,342 @@
+{
+  "roles": [
+    {
+      "role": "summary",
+      "model": "openai-codex:gpt-6.1-sol",
+      "maxInputTokens": 150000,
+      "maxOutputTokens": 128000,
+      "expectedOutputTokens": 4096
+    },
+    {
+      "role": "continuation",
+      "model": "openai-codex:gpt-6.1-sol",
+      "maxInputTokens": 80000,
+      "maxOutputTokens": 128000,
+      "expectedOutputTokens": 1024
+    },
+    {
+      "role": "probe",
+      "model": "openai-codex:gpt-6.1-sol",
+      "maxInputTokens": 12000,
+      "maxOutputTokens": 128000,
+      "expectedOutputTokens": 256
+    },
+    {
+      "role": "summary",
+      "model": "openai-codex:gpt-6-luna",
+      "maxInputTokens": 120000,
+      "maxOutputTokens": 128000,
+      "expectedOutputTokens": 2048
+    }
+  ],
+  "sizing": {
+    "schema": "continuity-e2-proof-sizing-v1",
+    "arm": "pressure",
+    "mode": "faux",
+    "usage": "estimated-not-measured",
+    "semanticQualification": false,
+    "roles": {
+      "setup-scripted": "not-paid",
+      "summary": "paid-later-D",
+      "continuation": "paid-later-D",
+      "probe": "paid-later-D"
+    },
+    "variants": [
+      {
+        "variant": "ceiling",
+        "requests": [
+          {
+            "ordinal": 0,
+            "role": "setup-scripted",
+            "model": "openai-codex:gpt-6-luna",
+            "size": {
+              "method": "intercepted-full-models-context",
+              "serializedBytes": 630000,
+              "serializedBytesOver3": 210000,
+              "engineFullRequest": 209999,
+              "maximum": 210000,
+              "usage": "engine-estimate-not-provider-measurement"
+            },
+            "maxOutputTokens": 128000,
+            "paidRole": null,
+            "phase": "whole"
+          },
+          {
+            "ordinal": 1,
+            "role": "summary",
+            "model": "openai-codex:gpt-6.1-sol",
+            "size": {
+              "method": "intercepted-full-models-context",
+              "serializedBytes": 225000,
+              "serializedBytesOver3": 75000,
+              "engineFullRequest": 74999,
+              "maximum": 75000,
+              "usage": "engine-estimate-not-provider-measurement"
+            },
+            "maxOutputTokens": 128000,
+            "paidRole": "summary",
+            "phase": "whole"
+          },
+          {
+            "ordinal": 2,
+            "role": "continuation",
+            "model": "openai-codex:gpt-6.1-sol",
+            "size": {
+              "method": "intercepted-full-models-context",
+              "serializedBytes": 135000,
+              "serializedBytesOver3": 45000,
+              "engineFullRequest": 44999,
+              "maximum": 45000,
+              "usage": "engine-estimate-not-provider-measurement"
+            },
+            "maxOutputTokens": 128000,
+            "paidRole": "continuation",
+            "phase": "whole"
+          },
+          {
+            "ordinal": 3,
+            "role": "probe",
+            "model": "openai-codex:gpt-6.1-sol",
+            "size": {
+              "method": "intercepted-full-models-context",
+              "serializedBytes": 12000,
+              "serializedBytesOver3": 4000,
+              "engineFullRequest": 3999,
+              "maximum": 4000,
+              "usage": "engine-estimate-not-provider-measurement"
+            },
+            "maxOutputTokens": 128000,
+            "paidRole": "probe",
+            "phase": "whole"
+          },
+          {
+            "ordinal": 4,
+            "role": "summary",
+            "model": "openai-codex:gpt-6-luna",
+            "size": {
+              "method": "intercepted-full-models-context",
+              "serializedBytes": 45000,
+              "serializedBytesOver3": 15000,
+              "engineFullRequest": 14999,
+              "maximum": 15000,
+              "usage": "engine-estimate-not-provider-measurement"
+            },
+            "maxOutputTokens": 128000,
+            "paidRole": "summary",
+            "phase": "whole"
+          }
+        ]
+      }
+    ]
+  },
+  "protocol": {
+    "schema": "continuity-e2-protocol-v1",
+    "branches": [
+      {
+        "id": "main",
+        "startTurn": 0,
+        "endTurn": 7,
+        "models": [
+          {
+            "model": "openai-codex:gpt-6-luna",
+            "effort": "high"
+          },
+          {
+            "model": "openai-codex:gpt-6.1-sol",
+            "effort": "high"
+          },
+          {
+            "model": "openai-codex:gpt-6-luna",
+            "effort": "high"
+          },
+          {
+            "model": "openai-codex:gpt-6.1-sol",
+            "effort": "high"
+          }
+        ],
+        "transitions": [
+          {
+            "name": "B1",
+            "turn": 1,
+            "kind": "cold_model_switch",
+            "evidence": [
+              {
+                "message": 3,
+                "part": 0
+              }
+            ]
+          },
+          {
+            "name": "B2",
+            "turn": 3,
+            "kind": "warm_cancel_resume",
+            "evidence": [
+              {
+                "message": 7,
+                "part": 0
+              }
+            ]
+          },
+          {
+            "name": "B3a",
+            "turn": 4,
+            "kind": "manual_compaction_skipped",
+            "evidence": [
+              {
+                "message": 9,
+                "part": 0
+              }
+            ]
+          },
+          {
+            "name": "B3",
+            "turn": 5,
+            "kind": "cold_model_switch",
+            "evidence": [
+              {
+                "message": 11,
+                "part": 0
+              }
+            ]
+          },
+          {
+            "name": "effort",
+            "turn": 6,
+            "kind": "effort_only_non_boundary",
+            "evidence": [
+              {
+                "message": 13,
+                "part": 0
+              }
+            ],
+            "effort": "xhigh"
+          },
+          {
+            "name": "B4",
+            "turn": 7,
+            "kind": "cold_model_switch",
+            "evidence": [
+              {
+                "message": 15,
+                "part": 0
+              }
+            ]
+          }
+        ],
+        "checkpoints": [
+          {
+            "name": "B1",
+            "turn": 1,
+            "message": 3
+          },
+          {
+            "name": "B2",
+            "turn": 3,
+            "message": 7
+          },
+          {
+            "name": "B4",
+            "turn": 7,
+            "message": 15
+          }
+        ],
+        "exclusions": {
+          "steps": [],
+          "coverage": []
+        },
+        "limits": {
+          "sourceRequests": 64,
+          "summaryRequests": 8,
+          "summaryRequestsPerCompaction": 2,
+          "probeRequests": 32,
+          "compactions": 4,
+          "timeoutMs": 120000
+        }
+      },
+      {
+        "id": "prefix",
+        "startTurn": 0,
+        "endTurn": 5,
+        "models": [
+          {
+            "model": "openai-codex:gpt-6.1-sol",
+            "effort": "high"
+          },
+          {
+            "model": "openai-codex:gpt-6-luna",
+            "effort": "high"
+          },
+          {
+            "model": "openai-codex:gpt-6.1-sol",
+            "effort": "high"
+          }
+        ],
+        "transitions": [
+          {
+            "name": "B1",
+            "turn": 1,
+            "kind": "cold_model_switch",
+            "evidence": [
+              {
+                "message": 3,
+                "part": 0
+              }
+            ]
+          },
+          {
+            "name": "B2",
+            "turn": 3,
+            "kind": "warm_cancel_resume",
+            "evidence": [
+              {
+                "message": 7,
+                "part": 0
+              }
+            ]
+          },
+          {
+            "name": "B3a",
+            "turn": 4,
+            "kind": "manual_compaction_skipped",
+            "evidence": [
+              {
+                "message": 9,
+                "part": 0
+              }
+            ]
+          },
+          {
+            "name": "B3",
+            "turn": 5,
+            "kind": "cold_model_switch",
+            "evidence": [
+              {
+                "message": 11,
+                "part": 0
+              }
+            ]
+          }
+        ],
+        "checkpoints": [
+          {
+            "name": "B3",
+            "turn": 5,
+            "message": 11
+          }
+        ],
+        "exclusions": {
+          "steps": [],
+          "coverage": []
+        },
+        "limits": {
+          "sourceRequests": 64,
+          "summaryRequests": 8,
+          "summaryRequestsPerCompaction": 2,
+          "probeRequests": 32,
+          "compactions": 4,
+          "timeoutMs": 120000
+        }
+      }
+    ]
+  }
+}

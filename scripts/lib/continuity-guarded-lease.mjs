@@ -6,6 +6,9 @@ import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { userInfo } from "node:os";
 import { lookupProcessStartIdentity } from "./continuity-process-identity.mjs";
 import { guardedProtocol } from "./continuity-guarded-protocols.mjs";
+// Host trust: O_EXCL and pathname inode checks prevent accidental concurrent controllers.
+// node:sqlite exposes no opened fd; these checks are not race-free against a same-user
+// process deliberately swapping paths. Preserve DELETE-journal and POSIX-lock semantics.
 const liveFiles = new Map();
 const instances = new Map();
 export function guardedLease(id) {

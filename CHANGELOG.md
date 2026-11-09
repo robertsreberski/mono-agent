@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- Add offline E2 cap estimates from replay/proof sizing, with explicit output
+  forecasts and full catalog-context/output reservations (including conservative
+  cache/tier liability) for the uncapped Codex route. Add closed registration,
+  authorization validation and accounting/receipt foundations; keep real E2
+  execution unavailable. Distinguish forecast cap floors from ceiling-funded
+  budget completion, reject underfunded registrations and unordered checkpoints.
+
+- Harden guarded continuity cleanup after synchronous stream-result failures,
+  drain pending admissions on every finish and refuse late callbacks. Preserve
+  classified admission/body-policy stop codes, close journal-only schedule
+  runners before authority burn, and bound preparation-stat entry/depth traversal
+  and authorization artifact fd reads, even if an inode grows after inspection.
+
 - Add fictional offline continuity proofs for model switches, cancelled process
   restarts, observed idle eviction and shipping-ceiling compaction. Keep durable
   one-effect checks and content-free request sizing; real-model entry stays

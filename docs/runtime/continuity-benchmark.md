@@ -2513,12 +2513,177 @@ one or two variants and a row for **every** intercepted request:
   conservative `maximum`, from C1's actual built estimator;
 - estimated-not-measured usage and `semanticQualification: false`.
 
-Roles are `setup-scripted`, `summary`, `continuation` and `probe`. **Exclude
-`setup-scripted` from paid pricing:** source replies stay scripted in a later
-paid run. The pre-boundary forwarded cancellation request is scripted too and is labelled
-`setup-scripted`. Count guarded summaries, the post-boundary continuations and
-probes at their reported output ceilings.
+Legacy roles are `setup-scripted`, `summary`, `continuation` and `probe`.
+Exclude a request from paid pricing **only when `paidRole === null`**. Genuine
+source setup stays scripted. The forwarded cancellation keeps its legacy
+`setup-scripted` label but has `paidRole: "continuation"`: reserve and retain its
+full paid liability. Count paid summaries, continuations and probes at their
+funded catalog ceilings; never infer a free request from the legacy role.
 No prompt, answer, tool arguments, record identifier, digest of private content
 or absolute path is present in sizing. All requests are faux now. Guarded real
-summaries/readers, authorization, billing/admission controls and semantic proof
-remain deferred to the separate paid controller; this CLI cannot enable them.
+summaries/readers and semantic proof remain deferred. The accounting and
+registration/authorization kernels ship as offline foundations; this CLI cannot
+enable paid execution.
+
+
+## Guarded controller lease trust
+
+The guarded controller lease uses exclusive file creation, SQLite writer locking,
+and pathname inode checks before and after opening. This prevents accidental
+concurrent controllers. It trusts other processes running as the same host user:
+these checks are **not** race-free against a process deliberately swapping the
+lease path. Node's SQLite API does not expose the opened file descriptor; opening
+through `/dev/fd` does not preserve the current DELETE-journal behavior. No
+stronger same-user isolation is claimed.
+
+
+### Offline E2 cap estimator
+
+The estimator needs neither authorization, credentials, a consumption registry,
+model calls nor runtime startup:
+
+```sh
+node scripts/continuity-e2.mjs --estimate \
+  --protocol /private/e2-protocol.json \
+  --limits /private/estimate-limits.json \
+  --sizing /private/replay-short/sizing.json \
+  --sizing /private/replay-max/sizing.json \
+  --sizing /private/cancel-sizing.json \
+  --output /private/new-estimate
+```
+
+`estimate` is an alias for `--estimate`. Repeat `--sizing` for the supplied C1
+replay and C2 proof artifacts. The output directory must be new, private and
+outside the checkout. `estimate.json` and stdout contain the same content-free
+report, with public numeric checkpoint ordinals and controlled role/model names.
+Input paths, private checkpoint names, source text and source digests are omitted.
+The estimator checks protocol metadata and the C1 sizing/protocol digest binding;
+it is **not** source-evidence validation, a real registration, or approval to run.
+
+The limits file has schema `continuity-e2-estimate-limits-v1`, `roles`, and
+`probeCounts`. Each role specifies `role` (`summary`, `continuation`, `probe`),
+`model`, `maxInputTokens`, `maxOutputTokens` and `expectedOutputTokens`.
+Continuation/probe readers are Sol; Luna is available for summaries. The expected
+output is an explicit custodian-supplied forecast, not a provider-enforced limit
+or measured usage. `probeCounts` contains `{ checkpoint, questions }` numeric
+rows for every C1 checkpoint, in branch/checkpoint order; the total is at most
+48 questions. These counts expand the two sizing continuations per checkpoint
+without multiplying its one summary draw. Proof-only estimates use an empty
+`probeCounts` array.
+
+Every request sizing record must carry explicit `paidRole`. Genuine scripted
+setup has `null`; the deliberately forwarded cancellation is `continuation`
+even though its legacy C2 `role` stays `setup-scripted`. Old records are refused
+with `E2_SIZING_PAID_ROLE_REQUIRED`, never guessed free. Re-run faux sizing to
+refresh them. Cancellation forecasts retain the full ceiling liability.
+Short/max faux-summary records are alternatives, not two planned paid draws;
+separate proof variants are distinct planned runs.
+
+#### Codex output-cap limitation
+
+The installed pi-ai Codex adapter ignores its `maxTokens` option when constructing
+the outgoing request. Its payload has no enforced per-request output cap. The
+source-owned API capability table therefore requires `maxOutputTokens` equal to
+the installed catalog `maxTokens` (currently 128,000) for both Sol and Luna.
+Smaller limits are refused with `E2_OUTPUT_LIMIT_UNENFORCED`. No
+`max_output_tokens` injection or unsupported backend contract is assumed.
+
+Reservations use that output ceiling, the full catalog input context window
+and digest-bound installed prices (including conservative cache/tier liability). Central estimates instead use the explicit output
+forecast and a declared one-half cached-input assumption; a no-cache sensitivity
+is reported separately. The conservative minimum forecast cap is accumulated
+forecast liability plus the largest single ceiling reservation. Its explicit name
+is `forecastMinimumCapUnits`, with `forecastNoCacheMinimumCapUnits` as sensitivity:
+it is a forecast floor, **not guaranteed budget feasibility**. The separately
+named `worstCaseCapUnits` funds every registered request at its input/output,
+cache and tier ceilings, including the final request's full reservation.
+`largestReservationUnits` is reported separately. At that worst-case cap the
+registered request budget can complete without cap refusal under the bound
+catalog; extra work, invalid usage, deadlines and semantic quality are not
+completion guarantees. Short/max alternatives fund the union of maximum
+per-checkpoint/role budgets (`fundedSchedule`), not two full replay draws. An
+exact cap and a separately parent-created bound authorization are still required
+before any real paid execution.
+
+
+### E2 registration and authorization foundation
+
+The closed guarded selector includes `e2-validation`, with independent schemas,
+lease table, journal, brands and consumption domains. Its registry layout is
+`~/.local/state/mono-agent/lcc-e2/consumed-v1`. The descriptor currently keeps
+paid execution unavailable: `run` and `proofs --real` refuse with
+`E2_PAID_ENTRY_UNAVAILABLE`; `size --summary real` remains an invalid option.
+The generic E2 schedule runner also refuses before
+lease acquisition or authority consumption. The phase adapters are not shipped;
+validating an artifact does not enable an inference route.
+
+The registration binds the clean code revision and source-file inventory,
+existing fresh-build receipt, installed catalog, C1 source/protocol, frozen
+questions/evaluator keys, shipping soul, role limits, explicit phase schedule,
+tool policies, sizing evidence and deadlines. Questions reuse
+`continuity-recorded-questions-v1`; private question/key identities must match and
+resolve to unique protocol checkpoint ordinals. Checkpoint turns must increase
+strictly within each branch; protocol validation and sizing refuse unordered or
+same-turn checkpoints with `E2_CHECKPOINT_ORDER_INVALID`, never silently sort. The exact cap is a canonical
+integer USD-unit string, never a floating-point approval. Registration refuses a
+cap below `forecastMinimumCapUnits` for its bound schedule; sticky admission stops
+remain the safety net above this non-guaranteed forecast floor. Account authorization
+uses an E2-domain salted commitment. No command creates an approval or refreshes
+credentials.
+
+Schedules are re-derived from bound sizing. C2 sizing includes `phase` (`whole`,
+`seed`, `resume`) as well as `paidRole`; registration refuses missing phase
+evidence with `E2_SIZING_PHASE_REQUIRED`, instead of guessing a restart boundary.
+Cancellation/resume and pressure/restart have separate registered process phases.
+Unknown future summary digests cannot be added to a registration: generated
+summaries require controller-verified runtime receipts before any paid probe.
+The registration validator does not substitute a pre-approved digest for those
+future receipts.
+
+#### Catalog-window input funding
+
+The C1 full-context maximum (serialized bytes÷3 versus engine estimate) is a
+heuristic. It is used for central forecasts, pre-send admission and schedule
+feasibility, not as a hard provider-token bound. E2 funds each request at the
+digest-bound catalog `contextWindow` for input plus the catalog output ceiling.
+An estimated context above its registered limit/window is refused before send;
+settlement uses actual reported usage. Reports show the heuristic central
+forecast separately from each full-window reservation, the forecast floor
+(accumulated forecast liability plus the largest reservation), and the ceiling-
+funded `worstCaseCapUnits`.
+
+Funding also preserves the shared guard's conservative cache-write and
+unknown/priority-service-tier liability: use the largest applicable catalog
+input/cache rate and the supported maximum tier multiplier. These are derived
+from E2's bound catalog, not copied from a lookup-dollar constant. Actual default
+service/cache usage settles at its reported rates; central forecasts remain
+separate from this conservative reservation.
+
+
+The shipped E2 accounting/receipt kernel, exercised only by faux tests, derives
+holds independently by registered phase,
+checkpoint, role and model; child-proposed amounts are equality checks, not
+spending authority. Costs and caps stay in integer USD units. Sub-unit flex
+liability is rounded up, never dropped. Generated summary results are written
+privately after consumption and verified against settled usage and request/body
+identity. A separate durable-compaction acknowledgment is required, and the
+controller re-verifies the result files before admitting a probe. These core
+mechanics have faux ledger coverage; the opaque paid Models/phase adapters and
+new-protocol native-SDK subprocess proofs are still required before enabling
+paid execution.
+
+
+#### Shared guarded-core behavior changes
+
+The fictional protocol is a journal-only fixture, not a runnable child pipeline.
+Like the closed E2 runner, its schedule runner now refuses
+`fictional_pilot_real_route_unavailable` before lease acquisition or authority
+burn; explicit fictional journal/kernel tests remain supported.
+
+Every guarded Models finish, including success and asynchronous failure, now
+waits for all already-started payload/admission promises with `allSettled`, not
+only synchronous result failures. A finishing flag prevents later payload or
+fetch callbacks from starting admission/consumption/send. Such late callbacks
+are integrity refusals. Native/faux body-policy refusals issue a sticky stop
+with the exact integrity code; E2 budget/input-envelope admission refusals remain
+classified pre-send refusals with their original code and stop further admission.

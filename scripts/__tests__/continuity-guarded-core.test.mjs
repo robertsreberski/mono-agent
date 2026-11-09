@@ -79,7 +79,7 @@ for (const id of ["lookup-pilot", "fictional"]) {
   });
 }
 
-it("keeps every fictional descriptor string identity disjoint, except documented generic constants", async () => {
+it("keeps every protocol pair string-identity disjoint, except documented generic constants", async () => {
   const lookup = guardedProtocol("lookup-pilot"), fictional = guardedProtocol("fictional");
   const leaves = (value, path = "") => typeof value === "string" ? [[path, value]]
     : value && typeof value === "object" ? Object.entries(value).flatMap(([key, child]) => leaves(child, `${path}.${key}`)) : [];
@@ -99,6 +99,16 @@ it("keeps every fictional descriptor string identity disjoint, except documented
     expect(genericShared.has(value), `${path}: ${value}`).toBe(true); shared.add(value);
   }
   expect([...shared].sort()).toEqual([...genericShared].sort()); // No stale or inferred allowlist exceptions.
+  const e2 = guardedProtocol("e2-validation");
+  // E2 has no fixed lookup envelope/model/rmax, and capacity refusals stop rather than continue.
+  const e2Generic = new Set([...genericShared].filter(v => !["utf8_bytes_gte_tokens", "gpt-6.1-sol", "high", "rmax", "capacity_continues_policy_stops"].includes(v)));
+  for (const [left, layout] of [[lookup, ["mono-agent", "consumed-v1"]], [fictional, []]]) {
+    const expected = new Set([...e2Generic, ...layout]), original = new Set(leaves(left).map(([, value]) => value)), actual = new Set();
+    for (const [path, value] of leaves(e2)) if (original.has(value)) {
+      expect(expected.has(value), `${left.id}/e2-validation${path}: ${value}`).toBe(true); actual.add(value);
+    }
+    expect([...actual].sort()).toEqual([...expected].sort());
+  }
   await expect(fictional.hooks.realModules()).rejects.toMatchObject({ code: "fictional_pilot_capability_invalid" });
   await expect(fictional.hooks.fauxBindings()).rejects.toMatchObject({ code: "fictional_pilot_faux_required" });
   await expect(fictional.hooks.preflightBindings()).rejects.toMatchObject({ code: "fictional_preparation_forbidden" });

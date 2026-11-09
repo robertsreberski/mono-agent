@@ -88,7 +88,8 @@ function bind(protocol, protocolId) {
         const permit = Object.freeze({}); grants.set(permit, result); return permit;
       },
       consume: (permit, bodyDigest) => request("consume", { permit: token(permit), bodyDigest }),
-      settle: (permit, outcome, rawUsage, tier) => request("settle", { permit: token(permit), outcome, rawUsage, tier: tier ?? null }),
+      settle: (permit, outcome, rawUsage, tier, evidence) => request("settle", { permit: token(permit), outcome, rawUsage, tier: tier ?? null, ...(evidence === undefined ? {} : { evidence }) }),
+      ...(protocol.execution ? { compaction: value => request("compaction", value) } : {}),
       stop: code => request("stop", { code }),
       close() { failed = true; process.off("message", listener); process.off("disconnect", abort); if (pending) { clearTimeout(pending.timer); abort(); } },
     });

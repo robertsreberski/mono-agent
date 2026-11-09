@@ -35,10 +35,10 @@ function bind(protocol, protocolId) {
       need(!minted.has(mintKey)); minted.add(mintKey);
       const permit = await createIPC(a), used = new Set(), forwarded = lookupForwardedObserver();
       assertRealPermitSource(permit);
-      const stop = async code => {
+      const stop = async (code, integrity = false) => {
         let cause;
         try { await permit.stop(code); } catch (error) { cause = error; }
-        const error = Object.assign(new Error(code), { code });
+        const error = Object.assign(new Error(code), { code, ...(integrity ? { outcome: "integrity_stop" } : {}) });
         if (cause) { error.stopCode = protocol.codes.stop_failed; error.cause = cause; }
         throw error;
       };
@@ -61,6 +61,8 @@ function bind(protocol, protocolId) {
         need(hold?.consumed === true && !hold.revoked && !hold.settlement && !used.has(hold.permitId)
           && hold.payloadDigest === createHash("sha256").update(bytes).digest("hex"));
         if (!matchesAccount(handle, headers.get("chatgpt-account-id"))) await stop(protocol.codes.account_mismatch);
+        try { protocol.execution?.assertBody(bytes, hold); }
+        catch (error) { await stop(error?.code ?? protocol.codes.body_mismatch, true); }
         used.add(hold.permitId); // No retry, including after fetch rejection or abort.
         const response = await nativeFetch(endpoint, { ...init, redirect: "error" });
         const rejectResponse = async code => {

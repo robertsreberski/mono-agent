@@ -22,7 +22,7 @@ function bind(protocol, id) {
   const dollars = units => Number(BigInt(units)) / Number(protocol.policy.USD_UNITS);
   const count = n => Number.isSafeInteger(n) && n >= 0;
   const keys = (value, allowed) => value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).every(k => allowed.includes(k));
-  function priceUsage(raw, tier) {
+  function priceUsage(raw, tier, hold) {
     need(keys(raw, ["input_tokens", "output_tokens", "input_tokens_details", "output_tokens_details"])
       && count(raw.input_tokens) && count(raw.output_tokens), protocol.codes.invalid_usage);
     const input = raw.input_tokens_details ?? {}, output = raw.output_tokens_details ?? {};
@@ -31,21 +31,23 @@ function bind(protocol, id) {
     const cached = BigInt(input.cached_tokens ?? 0), written = BigInt(input.cache_write_tokens ?? 0), tokens = BigInt(raw.input_tokens);
     const invalid = raw.input_tokens < 1 || cached + written > tokens || (output.reasoning_tokens ?? 0) > raw.output_tokens;
     const uncached = tokens > cached + written ? tokens - cached - written : 0n;
-    const units = (uncached * protocol.pricing.input + cached * protocol.pricing.cacheRead + written * protocol.pricing.cacheWrite + BigInt(raw.output_tokens) * protocol.pricing.output)
-      * (tier === "flex" ? protocol.pricing.flex : tier === "default" ? protocol.pricing.normal : protocol.pricing.maximum);
+    const units = protocol.execution ? BigInt(protocol.execution.priceUsage(raw, tier, hold))
+      : (uncached * protocol.pricing.input + cached * protocol.pricing.cacheRead + written * protocol.pricing.cacheWrite + BigInt(raw.output_tokens) * protocol.pricing.output)
+        * (tier === "flex" ? protocol.pricing.flex : tier === "default" ? protocol.pricing.normal : protocol.pricing.maximum);
     return { invalid, units: units.toString(), rawUsage: structuredClone(raw), tier: ["default", "flex", "priority"].includes(tier) ? tier : null,
-      sharedCost: invalid ? dollars(units) : settledCost(raw, tier) };
+      sharedCost: protocol.execution || invalid ? dollars(units) : settledCost(raw, tier) };
   }
   function settleHold(hold, outcome, raw, tier) {
-    need(keys(outcome, ["kind", "code", "cost"]) && Object.hasOwn(protocol.policy.OUTCOMES, outcome.kind), protocol.codes.permit_invalid);
+    need(keys(outcome, protocol.execution ? ["kind", "code", "costUnits"] : ["kind", "code", "cost"]) && Object.hasOwn(protocol.policy.OUTCOMES, outcome.kind), protocol.codes.permit_invalid);
     // A pre-admission refusal has no permit and cannot erase an admitted hold.
     need(outcome.kind !== "refused_pre_send", protocol.codes.permit_invalid);
     need(outcomeCodes[outcome.kind]?.includes(outcome.code ?? null), protocol.codes.ipc_invalid);
     need(outcome.kind !== "own_abort_after_send" || hold.consumed, protocol.codes.permit_invalid);
-    const priced = raw === null ? null : priceUsage(raw, tier);
+    const priced = raw === null ? null : priceUsage(raw, tier, hold);
     need(tier == null || ["default", "flex", "priority"].includes(tier), protocol.codes.unknown_tier);
     need(!priced?.invalid || outcome.kind === "integrity_stop", protocol.codes.invalid_usage);
     need(outcome.cost === undefined || priced && !priced.invalid && outcome.cost === priced.sharedCost, protocol.codes.hold_exceeded);
+    need(outcome.costUnits === undefined || priced && !priced.invalid && outcome.costUnits === priced.units, protocol.codes.hold_exceeded);
     need(outcome.kind !== "settled" || priced && hold.consumed, protocol.codes.permit_invalid);
     return { ...hold, settlement: { kind: outcome.kind, code: outcome.code ?? null, rawUsage: priced?.rawUsage ?? null,
       tier: priced?.tier ?? null, knownUnits: priced?.units ?? "0" } };
