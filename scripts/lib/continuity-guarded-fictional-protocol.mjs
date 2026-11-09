@@ -30,6 +30,8 @@ export const fictionalGuardedProtocol = freeze({
     ...lookup.hooks, ...lookupGuardedModelPolicy(codes, lookup.Error),
     realModules: async () => { throw Object.assign(Error(codes.pilot_capability_invalid), { code: codes.pilot_capability_invalid }); },
     fauxBindings: async () => { throw Object.assign(Error(codes.pilot_faux_required), { code: codes.pilot_faux_required }); },
+    // No preflight entry: refuse before any checkout validation or child spawn.
+    preflightBindings: async () => { throw Object.assign(Error(codes.preparation_forbidden), { code: codes.preparation_forbidden }); },
     async controllerBindings() {
       const [leases, state, environment] = await Promise.all([import("./continuity-guarded-lease.mjs"), import("./continuity-guarded-state.mjs"), import("./continuity-guarded-child-environment.mjs")]);
       const lease = leases.guardedLease("fictional");
@@ -37,9 +39,12 @@ export const fictionalGuardedProtocol = freeze({
     },
     // A private fictional attestation can exercise the generic burn, but never mint a paid capability.
     async validateAuthorization(args, { safeRead, safeDirectory, id }) {
-      const raw = await safeRead(args.authorizationPath, codes.authorization_invalid), artifact = JSON.parse(raw);
-      need(artifact.schema === policy.AUTHORIZATION_SCHEMA && id(artifact.authorizationId)
-        && artifact.outputRoot === args.outputRoot && artifact.sourceRoot === args.sourceRoot);
+      const raw = await safeRead(args.authorizationPath, codes.authorization_invalid);
+      // A malformed attestation is invalid; pilot_faux_required stays reserved for controller preparation.
+      const invalid = () => { throw Object.assign(Error(codes.authorization_invalid), { code: codes.authorization_invalid }); };
+      let artifact; try { artifact = JSON.parse(raw); } catch { invalid(); }
+      if (!(artifact?.schema === policy.AUTHORIZATION_SCHEMA && id(artifact.authorizationId)
+        && artifact.outputRoot === args.outputRoot && artifact.sourceRoot === args.sourceRoot)) invalid();
       await safeDirectory(args.outputRoot, codes.authorization_invalid, true);
       await safeDirectory(args.sourceRoot, codes.authorization_invalid, true);
       return { artifact, rawDigest: createHash("sha256").update(raw).digest("hex"), outputRoot: args.outputRoot,

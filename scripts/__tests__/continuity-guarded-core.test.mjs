@@ -101,4 +101,9 @@ it("keeps every fictional descriptor string identity disjoint, except documented
   expect([...shared].sort()).toEqual([...genericShared].sort()); // No stale or inferred allowlist exceptions.
   await expect(fictional.hooks.realModules()).rejects.toMatchObject({ code: "fictional_pilot_capability_invalid" });
   await expect(fictional.hooks.fauxBindings()).rejects.toMatchObject({ code: "fictional_pilot_faux_required" });
+  await expect(fictional.hooks.preflightBindings()).rejects.toMatchObject({ code: "fictional_preparation_forbidden" });
+  const helpers = { safeRead: async () => "{not json", safeDirectory: async () => {}, id: () => true };
+  await expect(fictional.hooks.validateAuthorization({ authorizationPath: "/Users/example/a.json", outputRoot: "/Users/example/o", sourceRoot: "/Users/example/s" }, helpers)).rejects.toMatchObject({ code: "fictional_authorization_invalid" });
+  helpers.safeRead = async () => JSON.stringify({ schema: "wrong" });
+  await expect(fictional.hooks.validateAuthorization({ authorizationPath: "/Users/example/a.json", outputRoot: "/Users/example/o", sourceRoot: "/Users/example/s" }, helpers)).rejects.toMatchObject({ code: "fictional_authorization_invalid" });
 });
