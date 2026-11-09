@@ -53,10 +53,14 @@ export async function startProofTools(base) {
     });
     try {
       if (![endpoint, `${endpoint}/sentinel`].includes(request.url) || request.headers.origin !== undefined || request.headers.host !== `127.0.0.1:${http.address()?.port}`) { response.writeHead(403).end(); return; }
-      let bytes = 0; const chunks = [];
-      for await (const chunk of request) { bytes += chunk.length; if (bytes > 65536) fail("E2_PROOF_TOOL_REFUSED"); chunks.push(chunk); }
+      let body;
+      if (request.method === "POST") {
+        let bytes = 0; const chunks = [];
+        for await (const chunk of request) { bytes += chunk.length; if (bytes > 65536) fail("E2_PROOF_TOOL_REFUSED"); chunks.push(chunk); }
+        body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      }
       await server.connect(transport);
-      await transport.handleRequest(request, response, JSON.parse(Buffer.concat(chunks).toString("utf8")));
+      await transport.handleRequest(request, response, body);
     } catch { if (!response.headersSent) response.writeHead(400); response.end(); }
   });
   await new Promise((resolve, reject) => { http.once("error", reject); http.listen(0, "127.0.0.1", resolve); });

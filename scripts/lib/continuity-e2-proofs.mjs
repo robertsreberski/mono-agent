@@ -10,10 +10,10 @@ import { createE2Models, loadE2Estimators, shippingSoul, sizeContext, estimatedR
 import { privateModes } from "./continuity-e2-replay.mjs";
 import { LUNA, SOL } from "./continuity-e2-protocol.mjs";
 import { lookupWitness, resolveSource, historyBody } from "./continuity-lookup.mjs";
-import { E2_PROOF_PRESSURE_ARMS, DEFAULT_MAX_INPUT_TOKENS } from "./continuity-arms.mjs";
+import { E2_PROOF_PRESSURE_ARMS } from "./continuity-arms.mjs";
 import { proofEnvironment, installProofIsolation } from "./continuity-e2-isolation.mjs";
 import { startProofTools, PROOF_SERVER, SENTINEL, FACT, NEXT_ACTION, CANARY, FOREIGN } from "./continuity-e2-tools.mjs";
-import { PROOF_CODES, requireProof, assertProofEvidence } from "./continuity-e2-checks.mjs";
+import { PROOF_CODES, requireProof, assertProofEvidence, assertSetupCompactions } from "./continuity-e2-checks.mjs";
 
 export const PROOF_ARMS = Object.freeze(["switch", "cancel", "idle", "pressure"]);
 export const PROOF_CHILD = fileURLToPath(new URL("./continuity-e2-fixture.mjs", import.meta.url));
@@ -48,6 +48,7 @@ export async function runProofPhase({ base, arm, phase = "whole", variant = "cei
   const fixture = arm === "cancel" || arm === "pressure" && variant === "restart";
   requireProof(fixture ? phase !== "whole" : phase === "whole", "E2_ARGUMENTS_INVALID");
   const work = join(base, "work"), resumed = phase === "resume", needsPressure = arm !== "switch";
+  const pressureArm = E2_PROOF_PRESSURE_ARMS.find(row => row.restart === (variant === "restart"));
   const seedReceipt = resumed ? JSON.parse(await readFile(join(base, "seed.json"), "utf8")) : null;
   if (resumed) {
     requireProof(seedReceipt.pid !== process.pid && seedReceipt.sentinel.completed && !seedReceipt.sentinel.repeated, "E2_PROOF_RESTART_MISSING");
@@ -149,7 +150,7 @@ export async function runProofPhase({ base, arm, phase = "whole", variant = "cei
         ...Array.from({ length: 24 }, (_, i) => call("ProofRead", { item: `${needsPressure ? "padding" : "tail"}-${i}` }, `proof-padding-${i}`)), "The fictional sentinel completed. Never repeat it. Await explicit approval."];
       setupCursor = 0; await run("Prepare the fictional evidence and one-effect sentinel; then await explicit approval.");
       requireProof(setupCursor === setup.length, "E2_PROOF_RUN_FAILED");
-      if (needsPressure) requireProof(route.report().compactions.some(c => c.trigger === "proactive" && c.policy.triggerTokens === DEFAULT_MAX_INPUT_TOKENS && c.durable), "E2_PROOF_CEILING_MISSING");
+      if (needsPressure) assertSetupCompactions(route.report().compactions, pressureArm);
       if (arm === "cancel") { mode = "cancel-forwarded"; await run("Continue without repeating the completed fictional sentinel."); }
       if (phase === "seed") return { pid: process.pid, forwarded, sentinel: await tools.receipt(), requests, compactions: route.report().compactions };
     }
@@ -182,7 +183,7 @@ export async function runProofPhase({ base, arm, phase = "whole", variant = "cei
     const receipt = await tools.receipt(), snapshot = witness.snapshot();
     const pack = firstPack;
     const boundary = boundaries.some(e => e.reason === "model_change" && ["reconstructed", "handoff"].includes(e.context));
-    const assertions = assertProofEvidence({ arm, initialAbsent: snapshot.initiallyPresent === false, recovered: snapshot.sourceReturned, correct: answer.includes(FACT) && answer.includes(NEXT_ACTION), safe, sentinel: receipt,
+    const assertions = assertProofEvidence({ arm, pressureArm, initialAbsent: snapshot.initiallyPresent === false, recovered: snapshot.sourceReturned, correct: answer.includes(FACT) && answer.includes(NEXT_ACTION), safe, sentinel: receipt,
       boundary, pack, idle, forwarded: seedReceipt?.forwarded, restarted: resumed && seedReceipt.pid !== process.pid, sentinelOffered, compactions: resumed && arm === "pressure" ? seedReceipt.compactions : route.report().compactions });
     if (arm === "cancel") requireProof(sentinelOffered && receipt.attempts === 0, "E2_PROOF_SENTINEL_REPEATED");
     return { pid: process.pid, assertions, requests, compactions: route.report().compactions, boundary, pack, ...(idle ? { idle } : {}), sentinelOffered,

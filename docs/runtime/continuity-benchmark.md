@@ -2478,7 +2478,9 @@ compaction, not from eviction/restart deleting history. These arms test retained
 lookup recovery **across idle/restart after compaction**. Large scripted inert
 tool results create pressure; no context is synthetically removed and no trigger
 is lowered. The restart pressure variant also uses the shipping trigger during
-setup, not the legacy recall arm's small post-restart trigger. The original
+setup, not the legacy recall arm's small post-restart trigger. Setup checks read
+the registered compaction count and trigger from the variant metadata; metadata
+that disagrees with durable receipts or the shipping ceiling refuses. The original
 recall arm inventory and defaults remain unchanged.
 
 Every arm checks initial absence of the fictional fact, complete digest-verified
@@ -2493,7 +2495,10 @@ soul pin and effective-core assertion. These are **faux mechanics checks, not
 semantic qualification**; the reader is scripted too.
 
 Only loopback MCP is permitted (inert fixtures and app-owned ConversationHistory).
-External sockets, fetch and WebSockets refuse. One exact Node fixture entry is
+External sockets, fetch and WebSockets refuse; Unix sockets and UDP are denied
+too. Callback/promise DNS APIs and resolver instances reject non-literal names.
+Only literal loopback address queries are answered locally; unsupported DNS
+record types refuse without sending a query. One exact Node fixture entry is
 shared by cancellation and pressure restarts; no arbitrary executable, child
 agent or process tool is exposed. The existing bounded ownership self-probes
 (`ps`/`sysctl` on macOS) remain permitted.

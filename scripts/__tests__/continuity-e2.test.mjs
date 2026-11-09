@@ -316,57 +316,84 @@ it("writes scoring artifacts privately and refuses outputs in the checkout", asy
   expect(JSON.parse(await readFile(join(output, "score.json"), "utf8")).gate).toBe(true);
   expect(await main(["score", "--answers", answers, "--keys", keys, "--output", output], io)).toBe(1); expect(err.pop()).toBe("EEXIST\n");
 });
+function assertE2Capabilities(path, source) {
+  const builtins = new Set(["node:fs", "node:fs/promises", "node:path", "node:url"]);
+  const existing = new Set(["./continuity-observation-input.mjs", "./continuity-recorded-schema.mjs", "./continuity-recorded-import.mjs", "./continuity-recorded-tools.mjs", "./continuity-recorded-reconcile.mjs", "./continuity-runner.mjs"]);
+  const ast = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+  const product = path.startsWith("packages/"), counts = new Map();
+  function countCalls(node) {
+    if (ts.isCallExpression(node)) { const name = node.expression.getText(ast); counts.set(name, (counts.get(name) ?? 0) + 1); }
+    ts.forEachChild(node, countCalls);
+  }
+  countCalls(ast);
+  function visit(node) {
+    if (ts.isImportDeclaration(node)) {
+      const spec = node.moduleSpecifier.text;
+      const proofImports = {
+        "scripts/lib/continuity-e2-proofs.mjs": ["node:child_process", "./continuity-lookup.mjs", "./continuity-arms.mjs"],
+        "scripts/lib/continuity-e2-checks.mjs": ["./continuity-arms.mjs"],
+        "scripts/lib/continuity-e2-tools.mjs": ["node:http", "node:crypto"],
+        "scripts/lib/continuity-e2-isolation.mjs": ["node:net", "node:module", "node:dgram", "node:dns", "node:dns/promises"],
+      };
+      const ok = builtins.has(spec) || existing.has(spec) || proofImports[path]?.includes(spec) || /^\.\/(?:lib\/)?continuity-e2-[a-z]+\.mjs$/.test(spec)
+        || /^\.\/lib\/continuity-(?:recorded-(?:schema|import)|observation-input)\.mjs$/.test(spec) || product && spec === "../tools/mcp/timeouts.js";
+      expect(ok, `${path}:${spec}`).toBe(true);
+      if (spec === "node:child_process") {
+        expect(node.importClause.namedBindings.elements.map(e => (e.propertyName ?? e.name).text)).toEqual(["spawn"]);
+        expect(node.importClause.namedBindings.elements.map(e => e.name.text)).toEqual(["spawn"]);
+      }
+      if (spec === "./continuity-lookup.mjs") expect(node.importClause.namedBindings.elements.map(e => (e.propertyName ?? e.name).text).sort()).toEqual(["historyBody", "lookupWitness", "resolveSource"]);
+      if (spec === "./continuity-arms.mjs") expect(node.importClause.namedBindings.elements.map(e => (e.propertyName ?? e.name).text).sort()).toEqual(path === "scripts/lib/continuity-e2-checks.mjs" ? ["DEFAULT_MAX_INPUT_TOKENS"] : ["E2_PROOF_PRESSURE_ARMS"]);
+      if (spec === "./continuity-runner.mjs") expect(node.importClause.namedBindings.elements.map(e => (e.propertyName ?? e.name).text).sort()).toEqual(["openHarness", "productionModules"]);
+    }
+    if (ts.isCallExpression(node)) {
+      if (node.expression.kind === ts.SyntaxKind.ImportKeyword) {
+        const value = node.arguments[0];
+        expect(ts.isStringLiteral(value) && ["@mono-agent/turn/engine", "./lib/continuity-e2-replay.mjs", "./lib/continuity-e2-proofs.mjs"].includes(value.text)
+          || path === "scripts/lib/continuity-e2-tools.mjs" && ts.isStringLiteral(value) && ["@modelcontextprotocol/sdk/server/index.js", "@modelcontextprotocol/sdk/server/streamableHttp.js", "@modelcontextprotocol/sdk/types.js"].includes(value.text)
+          || path === "scripts/lib/continuity-e2-models.mjs" && value.getText(ast) === 'new URL("../../packages/turn/dist/agent/compaction.js", import.meta.url).href').toBe(true);
+      }
+      const name = node.expression.getText(ast);
+      const regexExec = ts.isPropertyAccessExpression(node.expression) && node.expression.name.text === "exec" && node.expression.expression.kind === ts.SyntaxKind.RegularExpressionLiteral;
+      const proofCapability = path === "scripts/lib/continuity-e2-tools.mjs" && name === "server.connect"
+        || path === "scripts/lib/continuity-e2-isolation.mjs" && ["connect.apply", "fetch"].includes(name)
+        || path === "scripts/lib/continuity-e2-proofs.mjs" && name === "spawn";
+      if (path === "scripts/lib/continuity-e2-isolation.mjs" && ["fetch", "connect.apply"].includes(name)) {
+        expect(node.getText(ast)).toBe(name === "fetch" ? 'fetch(url, { ...init, redirect: "error" })' : "connect.apply(this, args)");
+        expect(counts.get(name)).toBe(1);
+      }
+      if (name === "spawn") {
+        expect(path).toBe("scripts/lib/continuity-e2-proofs.mjs");
+        expect(node.arguments[0].getText(ast)).toBe("process.execPath");
+        expect(node.arguments[1].getText(ast)).toBe("[PROOF_CHILD, phase, base]");
+        expect(node.arguments[2].getText(ast)).toBe('{ cwd: ROOT, env: { ...env, PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C", NODE_NO_WARNINGS: "1" }, stdio: "ignore", shell: false }');
+        expect(source.match(/\bspawn\(/g)).toHaveLength(1);
+        expect(source).toContain('new URL("./continuity-e2-fixture.mjs", import.meta.url)');
+      }
+      expect(!proofCapability && !regexExec && /\b(fetch|spawn|exec|execFile|fork|eval|Function|require|createRequire|request|connect|createConnection|createSocket|getBuiltinModule|binding|dlopen)\b/.test(name), `${path}:${name}`).toBe(false);
+    }
+    if (ts.isNewExpression(node)) expect(!/\b(?:Worker|WebSocket|Agent|Socket|Function)\b/.test(node.expression.getText(ast)), path).toBe(true);
+    ts.forEachChild(node, visit);
+  }
+  visit(ast);
+}
+
 it("statically confines new scripts and the real estimator closure to registered capabilities", () => {
   const paths = ["scripts/continuity-e2.mjs", ...readdirSync(join(ROOT, "scripts/lib")).filter(n => /^continuity-e2-.*\.mjs$/.test(n)).map(n => `scripts/lib/${n}`),
     "packages/turn/dist/agent/compaction.js", "packages/turn/dist/tools/mcp/timeouts.js"];
-  const builtins = new Set(["node:fs", "node:fs/promises", "node:path", "node:url"]);
-  const existing = new Set(["./continuity-observation-input.mjs", "./continuity-recorded-schema.mjs", "./continuity-recorded-import.mjs", "./continuity-recorded-tools.mjs", "./continuity-recorded-reconcile.mjs", "./continuity-runner.mjs"]);
-  for (const path of paths) {
-    const source = readFileSync(join(ROOT, path), "utf8"), ast = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
-    const product = path.startsWith("packages/");
-    function visit(node) {
-      if (ts.isImportDeclaration(node)) {
-        const spec = node.moduleSpecifier.text;
-        const proofImports = {
-          "scripts/lib/continuity-e2-proofs.mjs": ["node:child_process", "./continuity-lookup.mjs", "./continuity-arms.mjs"],
-          "scripts/lib/continuity-e2-checks.mjs": ["./continuity-arms.mjs"],
-          "scripts/lib/continuity-e2-tools.mjs": ["node:http", "node:crypto"],
-          "scripts/lib/continuity-e2-isolation.mjs": ["node:net", "node:module"],
-        };
-        const ok = builtins.has(spec) || existing.has(spec) || proofImports[path]?.includes(spec) || /^\.\/(?:lib\/)?continuity-e2-[a-z]+\.mjs$/.test(spec)
-          || /^\.\/lib\/continuity-(?:recorded-(?:schema|import)|observation-input)\.mjs$/.test(spec) || product && spec === "../tools/mcp/timeouts.js";
-        expect(ok, `${path}:${spec}`).toBe(true);
-        if (spec === "node:child_process") expect(node.importClause.namedBindings.elements.map(e => e.name.text)).toEqual(["spawn"]);
-        if (spec === "./continuity-lookup.mjs") expect(node.importClause.namedBindings.elements.map(e => e.name.text).sort()).toEqual(["historyBody", "lookupWitness", "resolveSource"]);
-        if (spec === "./continuity-arms.mjs") expect(node.importClause.namedBindings.elements.map(e => e.name.text).sort()).toEqual(path === "scripts/lib/continuity-e2-checks.mjs" ? ["DEFAULT_MAX_INPUT_TOKENS"] : ["DEFAULT_MAX_INPUT_TOKENS", "E2_PROOF_PRESSURE_ARMS"]);
-        if (spec === "./continuity-runner.mjs") expect(node.importClause.namedBindings.elements.map(e => e.name.text).sort()).toEqual(["openHarness", "productionModules"]);
-      }
-      if (ts.isCallExpression(node)) {
-        if (node.expression.kind === ts.SyntaxKind.ImportKeyword) {
-          const value = node.arguments[0];
-          expect(ts.isStringLiteral(value) && ["@mono-agent/turn/engine", "./lib/continuity-e2-replay.mjs", "./lib/continuity-e2-proofs.mjs"].includes(value.text)
-            || path === "scripts/lib/continuity-e2-tools.mjs" && ts.isStringLiteral(value) && ["@modelcontextprotocol/sdk/server/index.js", "@modelcontextprotocol/sdk/server/streamableHttp.js", "@modelcontextprotocol/sdk/types.js"].includes(value.text)
-            || path === "scripts/lib/continuity-e2-models.mjs" && value.getText(ast) === 'new URL("../../packages/turn/dist/agent/compaction.js", import.meta.url).href').toBe(true);
-        }
-        const name = node.expression.getText(ast);
-        const regexExec = ts.isPropertyAccessExpression(node.expression) && node.expression.name.text === "exec" && node.expression.expression.kind === ts.SyntaxKind.RegularExpressionLiteral;
-        const proofCapability = path === "scripts/lib/continuity-e2-tools.mjs" && name === "server.connect"
-          || path === "scripts/lib/continuity-e2-isolation.mjs" && ["connect.apply", "fetch"].includes(name)
-          || path === "scripts/lib/continuity-e2-proofs.mjs" && name === "spawn";
-        if (name === "spawn") {
-          expect(path).toBe("scripts/lib/continuity-e2-proofs.mjs");
-          expect(node.arguments[0].getText(ast)).toBe("process.execPath");
-          expect(node.arguments[1].getText(ast)).toBe("[PROOF_CHILD, phase, base]");
-          expect(node.arguments[2].getText(ast)).toBe('{ cwd: ROOT, env: { ...env, PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C", NODE_NO_WARNINGS: "1" }, stdio: "ignore", shell: false }');
-          expect(source.match(/\bspawn\(/g)).toHaveLength(1);
-          expect(source).toContain('new URL("./continuity-e2-fixture.mjs", import.meta.url)');
-        }
-        expect(!proofCapability && !regexExec && /\b(fetch|spawn|exec|execFile|fork|eval|Function|require|createRequire|request|connect|createConnection|createSocket|getBuiltinModule|binding|dlopen)\b/.test(name), `${path}:${name}`).toBe(false);
-      }
-      if (ts.isNewExpression(node)) expect(!/\b(?:Worker|WebSocket|Agent|Socket|Function)\b/.test(node.expression.getText(ast)), path).toBe(true);
-      ts.forEachChild(node, visit);
-    }
-    visit(ast);
+  for (const path of paths) assertE2Capabilities(path, readFileSync(join(ROOT, path), "utf8"));
+});
+
+it("checks imported authority names even when local bindings are aliased", () => {
+  const path = "scripts/lib/continuity-e2-proofs.mjs";
+  expect(() => assertE2Capabilities(path, 'import { spawn } from "node:child_process";')).not.toThrow();
+  for (const source of ['import { exec as spawn } from "node:child_process";', 'import { spawn as launch } from "node:child_process";', 'import { referenceReader as historyBody, lookupWitness, resolveSource } from "./continuity-lookup.mjs";']) expect(() => assertE2Capabilities(path, source)).toThrow();
+});
+it("pins isolation delegation arguments and refuses duplicate exempt calls", () => {
+  const path = "scripts/lib/continuity-e2-isolation.mjs", source = readFileSync(join(ROOT, path), "utf8");
+  for (const call of ['fetch(url, { ...init, redirect: "error" })', 'connect.apply(this, args)']) {
+    expect(() => assertE2Capabilities(path, `${source}\n${call};`)).toThrow();
+    expect(() => assertE2Capabilities(path, source.replace(call, call.replace("url,", '"https://example.com",').replace("this, args", "this, []")))).toThrow();
   }
 });
 
