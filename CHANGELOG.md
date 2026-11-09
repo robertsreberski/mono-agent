@@ -4,7 +4,9 @@
 
 - Add offline E2 cap estimates from replay/proof sizing, with explicit output
   forecasts and full catalog-context/output reservations (including conservative
-  cache/tier liability) for the uncapped Codex route.
+  cache/tier liability) for the uncapped Codex route. Add closed registration,
+  authorization validation and accounting/receipt foundations; keep real E2
+  execution unavailable.
 
 - Harden guarded continuity cleanup after synchronous stream-result failures,
   and bound preparation-stat traversal by entry count and depth.

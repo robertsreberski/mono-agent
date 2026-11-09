@@ -2586,8 +2586,8 @@ the installed catalog `maxTokens` (currently 128,000) for both Sol and Luna.
 Smaller limits are refused with `E2_OUTPUT_LIMIT_UNENFORCED`. No
 `max_output_tokens` injection or unsupported backend contract is assumed.
 
-Reservations use that output ceiling, registered input bounds and digest-bound
-installed catalog prices. Central estimates instead use the explicit output
+Reservations use that output ceiling, the full catalog input context window
+and digest-bound installed prices (including conservative cache/tier liability). Central estimates instead use the explicit output
 forecast and a declared one-half cached-input assumption; a no-cache sensitivity
 is reported separately. The conservative minimum forecast cap is accumulated
 forecast liability plus the largest single ceiling reservation. The report also
@@ -2602,8 +2602,11 @@ before any real paid execution.
 The closed guarded selector includes `e2-validation`, with independent schemas,
 lease table, journal, brands and consumption domains. Its registry layout is
 `~/.local/state/mono-agent/lcc-e2/consumed-v1`. The descriptor currently keeps
-paid execution unavailable until the phase adapters and summary-receipt path
-are wired; validating an artifact does not enable an inference route.
+paid execution unavailable: `run` and `proofs --real` refuse with
+`E2_PAID_ENTRY_UNAVAILABLE`; `size --summary real` remains an invalid option.
+The generic E2 schedule runner also refuses before
+lease acquisition or authority consumption. The phase adapters are not shipped;
+validating an artifact does not enable an inference route.
 
 The registration binds the clean code revision and source-file inventory,
 existing fresh-build receipt, installed catalog, C1 source/protocol, frozen
@@ -2643,7 +2646,8 @@ service/cache usage settles at its reported rates; central forecasts remain
 separate from this conservative reservation.
 
 
-The shared E2 ledger now derives holds independently by registered phase,
+The shipped E2 accounting/receipt kernel, exercised only by faux tests, derives
+holds independently by registered phase,
 checkpoint, role and model; child-proposed amounts are equality checks, not
 spending authority. Costs and caps stay in integer USD units. Sub-unit flex
 liability is rounded up, never dropped. Generated summary results are written

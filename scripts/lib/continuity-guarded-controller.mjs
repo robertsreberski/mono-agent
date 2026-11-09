@@ -280,6 +280,7 @@ function bind(protocol, protocolId) {
     try { return await reconcilePilotState(outputRoot); } catch (error) { publicFailure(error); }
   }
   async function runSlot(journal, pilot, authorization, root, index, preparation = false) {
+    pilotNeed(typeof protocol.children[preparation ? "preparation" : "probe"] === "string", protocol.codes.pilot_real_route_unavailable);
     const state = journal.snapshot(), slot = state.schedule[index];
     // Assignment is persisted after fork; refuse excluded slots before any child setup.
     pilotNeed(slot?.eligible, protocol.codes.pilot_slot_ineligible);
@@ -420,6 +421,8 @@ function bind(protocol, protocolId) {
     }
   }
   async function runPilotSchedule(options) {
+    // A registered kernel is not a runnable phase adapter. Refuse before lease or consumption.
+    pilotNeed(typeof protocol.children.probe === "string", protocol.codes.pilot_real_route_unavailable);
     const journal = await createLookupPilotController(options);
     try {
       const { outputRoot } = journal;

@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { guardedProtocol } from "../lib/continuity-guarded-protocols.mjs";
 import { guardedLease } from "../lib/continuity-guarded-lease.mjs";
+import { guardedController } from "../lib/continuity-guarded-controller.mjs";
 import { guardedState } from "../lib/continuity-guarded-state.mjs";
 import { lookupProcessStartIdentity } from "../lib/continuity-process-identity.mjs";
 import { E2_PROTOCOL_FILES, E2_TOOL_POLICIES } from "../lib/continuity-e2-registration.mjs";
@@ -23,6 +24,7 @@ it("keeps not-yet-wired paid/faux child routes closed without consuming authorit
   const protocol = guardedProtocol("e2-validation"); expect(protocol.realRoute).toBe(false);
   await expect(protocol.hooks.prepareController({})).rejects.toMatchObject({ code: "e2_pilot_real_route_unavailable" });
   await expect(protocol.hooks.realModules()).rejects.toMatchObject({ code: "e2_pilot_real_route_unavailable" });
+  for (const real of [true, false]) await expect(guardedController("e2-validation").runLookupPilot({ real })).rejects.toMatchObject({ code: "e2_pilot_real_route_unavailable" });
 });
 for (const id of ["lookup-pilot", "fictional", "e2-validation"]) it(`${id}: every other protocol refuses its live lease identity`, async () => {
   const root = await realpath(await mkdtemp(join(tmpdir(), "e2-descriptor-lease-"))); roots.push(root);
