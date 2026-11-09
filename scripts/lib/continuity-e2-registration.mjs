@@ -136,6 +136,7 @@ export async function validateE2Registration(pilot, { safeRead, safeDirectory })
     for (const record of records) if (record.schema === "continuity-e2-sizing-v1") need(record.sourceDigest === hash(JSON.stringify(source)) && same(record.soul, r.soul));
     if (records.some(record => record.schema === "continuity-e2-sizing-v1")) need(questions.questions.length > 0);
     const estimate = estimateE2SizingSet({ protocol, roles: r.roles, records, catalog: r.catalog, probeCounts });
+    validateE2ReplayLimits(protocol, records);
     need(same(r.schedule, e2PhaseSchedule(protocol, records, probeCounts)));
     const replay = r.schedule.find(p => p.kind === "replay");
     if (replay) {
@@ -152,5 +153,17 @@ export async function validateE2Registration(pilot, { safeRead, safeDirectory })
   } catch (error) {
     if (["E2_OUTPUT_LIMIT_UNENFORCED", "E2_SIZING_PAID_ROLE_REQUIRED", "E2_SIZING_PHASE_REQUIRED"].includes(error?.code)) throw error;
     throw Object.assign(Error("e2_registration_invalid"), { code: "e2_registration_invalid" });
+  }
+}
+
+export function validateE2ReplayLimits(protocol, records) {
+  for (const record of records.filter(r => r.schema === "continuity-e2-sizing-v1")) {
+    for (const [index, branch] of record.branches.entries()) {
+      const limits = protocol.branches[index].limits, rows = branch.requestSizing, compactions = branch.compactions ?? [];
+      need(rows.filter(r => r.paidRole === null).length <= limits.sourceRequests);
+      need(Array.isArray(compactions) && compactions.length <= limits.compactions
+        && compactions.every(c => Number.isSafeInteger(c.requests) && c.requests > 0 && c.requests <= limits.summaryRequestsPerCompaction)
+        && compactions.reduce((n, c) => n + c.requests, 0) === rows.filter(r => r.paidRole === "summary").length);
+    }
   }
 }

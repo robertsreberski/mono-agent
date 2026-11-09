@@ -7,6 +7,7 @@ import { pathToFileURL } from "node:url";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import http from "node:http";
+import { killE2NativeGroup } from "./fixtures/e2-native-process-group.mjs";
 import { ROOT } from "../lib/continuity-observation-input.mjs";
 const roots = [], servers = [];
 afterEach(async () => { for (const server of servers.splice(0)) { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); } for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
@@ -20,10 +21,13 @@ it("denies alternate transports before external I/O and inherits the deny floor 
   // These original-transport fuses are installed BEFORE the guard under test.
   // A missing guard fails with a different error, never an actual SYN/DNS packet.
   await writeFile(preload, `
+    import fs from 'node:fs'; import fsp from 'node:fs/promises'; import os from 'node:os';
     import net from 'node:net'; import tls from 'node:tls'; import http from 'node:http'; import https from 'node:https';
     import dns from 'node:dns'; import dnsPromises from 'node:dns/promises'; import dgram from 'node:dgram';
     import{installE2NativeRealm}from ${JSON.stringify(pathToFileURL(join(ROOT, "scripts/__tests__/fixtures/e2-native-realm.mjs")).href)};
+    globalThis.testActualHome = os.userInfo().homedir;
     const fuse = () => { throw Error('test_probe_original_transport_touched'); };
+    for (const target of [fs,fsp]) for (const name of ['copyFile','link','symlink','readlink','chmod','opendir','truncate','createReadStream','createWriteStream']) for (const suffix of target === fs ? ['', 'Sync'] : ['']) if (typeof target[name+suffix] === 'function') target[name+suffix] = fuse;
     net.connect = net.createConnection = net.Socket.prototype.connect = tls.connect = http.request = http.get = https.request = https.get = fuse;
     for (const target of [dns,dnsPromises,dns.Resolver.prototype,dnsPromises.Resolver.prototype]) for (const name of Object.getOwnPropertyNames(target)) if (/^(resolve|reverse|lookup)/.test(name) && typeof target[name] === 'function') target[name] = fuse;
     dgram.createSocket = fuse; dgram.Socket = class { constructor(){fuse();} }; globalThis.WebSocket = class { constructor(){fuse();} };
@@ -31,7 +35,7 @@ it("denies alternate transports before external I/O and inherits the deny floor 
   `, { mode: 0o600 });
   const descendant = `import assert from 'node:assert/strict'; import net from 'node:net'; assert.throws(()=>net.connect(9,'192.0.2.1'),/test_external_transport_forbidden/); console.log('descendant-denied');`;
   const program = `
-    import assert from 'node:assert/strict';
+    import assert from 'node:assert/strict'; import fs from 'node:fs'; import fsp from 'node:fs/promises';
     import net from 'node:net'; import tls from 'node:tls'; import http from 'node:http'; import https from 'node:https';
     import dns from 'node:dns'; import dnsPromises from 'node:dns/promises'; import dgram from 'node:dgram'; import {spawnSync} from 'node:child_process';
     const probes = [
@@ -43,12 +47,46 @@ it("denies alternate transports before external I/O and inherits the deny floor 
       ()=>new dnsPromises.Resolver().resolve('example.invalid'), ()=>dgram.createSocket('udp4'), ()=>new dgram.Socket('udp4'), ()=>new WebSocket('wss://example.invalid')
     ];
     for (const probe of probes) assert.throws(probe,/test_external_transport_forbidden/);
+    let fsDenied = 0; const forbidden = globalThis.testActualHome + '/.config/fictional-probe';
+    for (const target of [fs,fsp]) for (const name of ['copyFile','link','symlink','readlink','chmod','opendir','truncate']) for (const suffix of target === fs ? ['', 'Sync'] : ['']) {
+      const fn = target[name+suffix]; assert.throws(()=>fn(forbidden,'fictional-destination'),/test_real_store_forbidden/); fsDenied++;
+      if (['copyFile','link','symlink'].includes(name)) { assert.throws(()=>fn('fictional-source',forbidden),/test_real_store_forbidden/); fsDenied++; }
+    }
+    for (const name of ['createReadStream','createWriteStream']) { assert.throws(()=>fs[name](forbidden),/test_real_store_forbidden/); fsDenied++; }
     const child = spawnSync(process.execPath,['--input-type=module','-e',${JSON.stringify(descendant)}],{env:{HOME:${JSON.stringify(home)},PATH:'/usr/bin:/bin'},encoding:'utf8'});
     assert.equal(child.status,0,child.stderr); assert.equal(child.stdout.trim(),'descendant-denied');
-    console.log(JSON.stringify({denied:probes.length,descendant:true}));
+    console.log(JSON.stringify({denied:probes.length,fsDenied,descendant:true}));
   `;
   const child = spawn(process.execPath, ["--import", pathToFileURL(preload).href, "--input-type=module", "-e", program], { cwd: ROOT, env: { HOME: home, PATH: "/usr/bin:/bin", NODE_NO_WARNINGS: "1" }, stdio: ["ignore", "pipe", "pipe"] });
   let stdout = "", stderr = ""; child.stdout.on("data", bytes => { stdout += bytes; }); child.stderr.on("data", bytes => { stderr += bytes; });
   const [code] = await once(child, "close"); expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
-  expect(JSON.parse(stdout)).toEqual({ denied: 19, descendant: true }); expect(received).toBe(0);
+  expect(JSON.parse(stdout)).toEqual({ denied: 19, fsDenied: 32, descendant: true }); expect(received).toBe(0);
+  // Separate control has the real originals: the owned address is reachable.
+  const controlPreload = join(root, "control-preload.mjs"), controlProfile = { ...profile, preload: controlPreload };
+  await writeFile(controlPreload, `import{installE2NativeRealm}from ${JSON.stringify(pathToFileURL(join(ROOT, "scripts/__tests__/fixtures/e2-native-realm.mjs")).href)};await installE2NativeRealm(${JSON.stringify(controlProfile)});`, { mode: 0o600 });
+  const controlProgram = `
+    import assert from 'node:assert/strict'; import {spawn,spawnSync,execFile,execFileSync} from 'node:child_process'; import {once} from 'node:events';
+    const child=spawn(process.execPath,{stdio:'ignore'}); assert.equal((await once(child,'close'))[0],0);
+    await new Promise((resolve,reject)=>{const child=execFile(process.execPath,(error)=>error?reject(error):resolve());child.stdin.end();});
+    assert.equal(spawnSync(process.execPath,{input:'',encoding:'utf8'}).status,0);
+    assert.equal(execFileSync(process.execPath,{input:'',encoding:'utf8'}),'');
+    const response=await fetch(${JSON.stringify(profile.endpoint)}); assert.equal(await response.text(),'owned'); console.log('owned-and-overloads-ok');
+  `;
+  const control = spawn(process.execPath, ["--import", pathToFileURL(controlPreload).href, "--input-type=module", "-e", controlProgram], { cwd: ROOT, env: { HOME: home, PATH: "/usr/bin:/bin", NODE_NO_WARNINGS: "1" }, stdio: ["ignore", "pipe", "pipe"] });
+  let controlOut = "", controlErr = ""; control.stdout.on("data", bytes => { controlOut += bytes; }); control.stderr.on("data", bytes => { controlErr += bytes; });
+  expect((await once(control, "close"))[0], controlErr).toBe(0); expect(controlOut.trim()).toBe("owned-and-overloads-ok"); expect(received).toBe(1);
 }, 30000);
+
+it("kills the complete detached fixture group on supervisor errors, including descendants", async () => {
+  const script = `const{spawn}=require('node:child_process');const child=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'});console.log(child.pid);setInterval(()=>{},1000);`;
+  const leader = spawn(process.execPath, ["-e", script], { detached: true, stdio: ["ignore", "pipe", "ignore"] });
+  let descendant;
+  try {
+    descendant = Number((await once(leader.stdout, "data"))[0].toString().trim()); expect(descendant).toBeGreaterThan(1);
+    killE2NativeGroup(leader); await once(leader, "close");
+    const deadline = Date.now() + 2000;
+    while (Date.now() < deadline) { try { process.kill(descendant, 0); } catch { break; } await new Promise(resolve => setTimeout(resolve, 10)); }
+    expect(() => process.kill(descendant, 0)).toThrow();
+    expect(() => killE2NativeGroup(leader)).not.toThrow();
+  } finally { try { killE2NativeGroup(leader); } catch {} }
+}, 10000);

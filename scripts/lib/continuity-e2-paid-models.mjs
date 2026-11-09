@@ -152,7 +152,9 @@ export async function createE2PaidModels(a, safety) {
         }
         const guarded = guardedModels("e2-validation").guardedLookupModels(readonly(target), { ...native, contract }); counts.requests++;
         need(options.apiKey === undefined, "e2_option_forbidden");
-        return guarded.streamSimple(model, context, { ...sdkOptions, reasoning: effort, apiKey: credential.access, sessionId: a.cacheKey,
+        // Cache-off summaries omit the body cache key, not their assigned wire identity.
+        const nativeModel = { ...model, headers: { ...model.headers, "session-id": a.cacheKey, "x-client-request-id": a.cacheKey } };
+        return guarded.streamSimple(nativeModel, context, { ...sdkOptions, reasoning: effort, apiKey: credential.access, sessionId: a.cacheKey,
           onResponse: async response => { counts.responses++; if (role !== "summary") await pos.onNativeResponse?.(); await options.onResponse?.(response); } });
       })();
       const result = pending.then(stream => stream.result()).then(async message => {

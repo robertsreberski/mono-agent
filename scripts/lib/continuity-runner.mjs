@@ -136,6 +136,7 @@ export function configJson({ work, authPath, model, effort, tools, configPatch }
 }
 
 export async function openHarness({ modules, work, authPath, model, effort, tools, configPatch, route, clock, onHistoryWarning = () => {}, hostOptions = {}, pilot, e2 }) {
+  if (pilot && e2) throw new ContinuityError("lookup_pilot_capability_invalid");
   if (pilot && Object.hasOwn(process.env, "CONTINUITY_DEBUG")) throw new ContinuityError("lookup_debug_forbidden");
   if (pilot?.routeKind === "real") {
     const { realLookupSendBinds } = await import("./continuity-lookup-real-capability.mjs");

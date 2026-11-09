@@ -67,9 +67,9 @@ it("refuses expensive-model body substitution and nondefault-tier/tool bypasses"
   body.model = LUNA.split(":")[1]; body.service_tier = "priority"; expect(() => policy.assertBody(Buffer.from(JSON.stringify(body)), hold)).toThrow("e2_body_mismatch");
   delete body.service_tier; body.tools = [{ type: "function", name: "UnapprovedTool" }]; expect(() => policy.assertBody(Buffer.from(JSON.stringify(body)), hold)).toThrow("e2_tools_forbidden");
 });
-async function summaryResult() {
+async function summaryResult(cacheViolation = false) {
   const p = request("summary"), bytes = Buffer.byteLength(JSON.stringify(context)), maximum = Math.ceil(bytes / 3);
-  const contract = { ...E2_GUARD_CONTRACT, model: SOL.split(":")[1], effort: "high", slotId, runId: "fictional-run", e2: {
+  const contract = { ...E2_GUARD_CONTRACT, model: SOL.split(":")[1], effort: "high", slotId, runId: "fictional-run", ...(cacheViolation ? { promptCacheKey: "fictional-assigned-phase" } : {}), e2: {
     pilot, planned, ...p, outputRoot: root, operationDigest, size: { method: "intercepted-full-models-context", serializedBytes: bytes, serializedBytesOver3: maximum, engineFullRequest: 1, maximum, usage: "engine-estimate-not-provider-measurement" } } };
   const permit = core.createTestOnlyLookupPermitSource(); let evidence, sends = 0;
   const wrappedPermit = { ...permit, settle(...args) { evidence = args[4]; return permit.settle(...args); } };
@@ -77,13 +77,19 @@ async function summaryResult() {
   const target = { streamSimple(model, ctx, options) {
     const promise = (async () => {
       const final = await options.onPayload({ model: model.id, stream: true, store: false, input: [], reasoning: { effort: "high" } }, model);
-      await options.fetch(`${model.baseUrl}/codex/responses`, { method: "POST", body: JSON.stringify(final) });
+      await options.fetch(`${model.baseUrl}/codex/responses`, { method: "POST", ...(cacheViolation ? { headers: { "session-id": "foreign", "x-client-request-id": "foreign" } } : {}), body: JSON.stringify(final) });
       await options.onProviderStreamEvent({ type: "response.completed", response: { usage: raw, service_tier: "default" } }, model); return message;
     })();
     return { result: () => promise, async *[Symbol.asyncIterator]() { yield { type: "done", message: await promise }; } };
   } };
   const models = core.guardedLookupModels(target, { contract, permit: wrappedPermit, send: async () => { sends++; return new Response(); } });
   const model = { provider: contract.provider, id: contract.model, api: contract.api, baseUrl: contract.baseUrl };
+  if (cacheViolation) {
+    await expect(models.streamSimple(model, context, { reasoning: "high", transport: "sse", maxRetries: 0 }).result()).rejects.toMatchObject({ code: "e2_prompt_cache_key_forbidden" });
+    expect(permit.events.find(e => e.type === "settle").outcome).toMatchObject({ kind: "integrity_stop", code: "e2_prompt_cache_key_forbidden" });
+    expect(permit.events.find(e => e.type === "stop")).toMatchObject({ code: "e2_prompt_cache_key_forbidden" }); expect(sends).toBe(0);
+    return;
+  }
   expect(await models.streamSimple(model, context, { reasoning: "high", transport: "sse", maxRetries: 0 }).result()).toEqual(message);
   expect(() => models.streamSimple(model, context, { reasoning: "high", transport: "sse", maxRetries: 0 })).toThrow("e2_request_limit"); expect(sends).toBe(1);
   const admission = permit.events.find(e => e.type === "admit"), event = permit.events.find(e => e.type === "settle");
@@ -131,3 +137,5 @@ it("leaves live hold-count enforcement to the controller, not a fabricated child
   expect(policy.guardRequest(contract, context).request.round).toBe(3);
   expect(() => policy.admission(pilot, planned, { holds: [p, p] }, { ...p, round: 3, requestId: "fictional-run:3" })).toThrow("e2_request_limit");
 });
+
+it("classifies delegated E2 cache-header failures as integrity stops and stops the permit", async () => { await summaryResult(true); });

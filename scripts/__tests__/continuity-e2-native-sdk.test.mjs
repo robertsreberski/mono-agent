@@ -60,9 +60,10 @@ async function run({ scenario = "probe", requests = 1, rows = [{ role: "probe", 
   const fixture = await e2NativeFixture(root, { rows, arm, replay, ...(capUnits ? { capUnits } : {}) });
   expect(process.env.HOME).toBe(originalHome);
   if (replay) { expect(fixture.sizingHomes.length).toBeGreaterThan(0); expect(new Set(fixture.sizingHomes)).toEqual(new Set([fixture.home])); }
-  const received = []; let listenerError;
+  const received = [], wireIdentities = []; let listenerError;
   const server = http.createServer(async (request, response) => {
     try {
+      wireIdentities.push({ session: request.headers["session-id"], request: request.headers["x-client-request-id"] });
       const chunks = []; for await (const chunk of request) chunks.push(chunk); received.push(JSON.parse(request.headers["content-encoding"] === "zstd" ? zstdDecompressSync(Buffer.concat(chunks)) : Buffer.concat(chunks)));
       if (fault === "model-error") { response.writeHead(500, { "content-type": "application/json" }).end(JSON.stringify({ error: { code: "fictional_backend_failure", message: "Fictional backend failure." } })); return; }
       response.writeHead(200, { "content-type": "text/event-stream" });
@@ -87,7 +88,7 @@ async function run({ scenario = "probe", requests = 1, rows = [{ role: "probe", 
   expect(listenerError).toBeUndefined(); expect({ code, error: result.error, stderr }).toEqual({ code: 0, error: undefined, stderr: "" });
   expect(await readFile(fixture.args.credentialPath)).toEqual(before);
   expect(await readdir(join(fixture.home, ".local/state/mono-agent/lcc-e2/consumed-v1"))).toHaveLength(1);
-  return { ...result, received, root, profile };
+  return { ...result, received, wireIdentities, root, profile };
 }
 it("uses the genuine SDK and single guarded send, burns authority once, and publishes no canaries", async () => {
   const result = await run({ reuse: true }); expect(result.received).toHaveLength(1); expect(result.report.stop).toBe("completed");
@@ -110,6 +111,7 @@ it("retains full liability when cancelled after actual response headers", async 
 it("verifies generated output and an actual durable journal before accepting the SDK probe body", async () => {
   const result = await run({ scenario: "summary", rows: [{ role: "summary", model: SOL }, { role: "probe", model: SOL }] });
   expect(result.received).toHaveLength(2); expect(result.report.stop).toBe("completed"); expect(result.report.phases[0].calls.verifiedSummaries).toBe(1);
+  expect(result.wireIdentities.every(h => typeof h.session === "string" && h.session.length > 0 && h.session === h.request)).toBe(true);
 });
 it("stops changed summary text at the real gate without forwarding a probe", async () => {
   const result = await run({ scenario: "lineage-tamper", rows: [{ role: "summary", model: SOL }, { role: "probe", model: SOL }] });
@@ -148,6 +150,8 @@ it("replays genuine C1 snapshots and frozen private questions through both prist
   const result = await run({ production: true, replay: true });
   expect(result.report.stop, JSON.stringify(result.report)).toBe("completed"); expect(result.received).toHaveLength(2);
   for (const body of result.received) expect(JSON.stringify(body)).toContain("PRIVATE-FROZEN-FICTIONAL-QUESTION");
+  const replay = JSON.parse(await readFile(join(result.root, "output/work/replay/replay.json"), "utf8"));
+  expect(replay.branches.flatMap(b => b.checkpoints.flatMap(c => c.probes.map(p => p.requests)))).toEqual([1, 1]);
   expect(result.report.phases[0].score).toBe(1);
 }, 30000);
 

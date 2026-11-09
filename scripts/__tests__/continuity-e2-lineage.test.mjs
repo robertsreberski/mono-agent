@@ -164,3 +164,22 @@ it.each(["summary", "probe", "continuation"].flatMap(role => [false, true].map(l
   const state = { schema: E2_REAL_CONTROLLER, cursor: 1, stop: null, schedule: [seed, planned], slots: [{ terminal: "lost", holds: [] }, slot] };
   await expect(e2ExecutionPolicy.beforeAdmission("unused", "unused", slot, { paidRole, checkpoint: 0 }, readPrivate, state, {})).rejects.toMatchObject({ code: "e2_compaction_invalid" });
 });
+
+it("requires lineage for the current summary scope, not an empty or unrelated map", async () => {
+  const f = await fixture(); await f.bind(); for (const h of f.slot.holds) { h.summaryReceipt.durable = true; h.checkpoint = 0; }
+  f.slot.lineages = {};
+  const state = { ...f.state, schema: E2_REAL_CONTROLLER, cursor: 0 };
+  await expect(e2ExecutionPolicy.beforeAdmission(f.root, f.slot.slotId, f.slot, { paidRole: "probe", checkpoint: 0 }, readPrivate, state, {})).rejects.toMatchObject({ code: "e2_summary_receipt_invalid" });
+  f.slot.lineages = { unrelated: { textSha256: "f".repeat(64) } };
+  await expect(e2ExecutionPolicy.beforeAdmission(f.root, f.slot.slotId, f.slot, { paidRole: "probe", checkpoint: 0 }, readPrivate, state, {})).rejects.toMatchObject({ code: "e2_summary_receipt_invalid" });
+});
+
+it("does not demand main-branch summary lineage for an untouched prefix baseline", async () => {
+  const f = await fixture(), lineage = await f.bind(); for (const h of f.slot.holds) { h.summaryReceipt.durable = true; h.checkpoint = 0; }
+  f.slot.lineages = { 0: lineage };
+  const protocolPath = join(f.root, "scope-protocol.json"), bytes = JSON.stringify({ branches: [{ checkpoints: [{}] }, { checkpoints: [{}] }] });
+  await writeFile(protocolPath, bytes, { mode: 0o600 });
+  const planned = { kind: "replay", index: 0 }, state = { schema: E2_REAL_CONTROLLER, cursor: 0, schedule: [planned], slots: [f.slot] };
+  const pilot = { registration: { protocol: { path: protocolPath, sha256: digest(bytes) } } };
+  await expect(e2ExecutionPolicy.beforeAdmission(f.root, f.slot.slotId, f.slot, { paidRole: "probe", checkpoint: 1 }, readPrivate, state, pilot)).resolves.toEqual({ lineageScope: 1 });
+});

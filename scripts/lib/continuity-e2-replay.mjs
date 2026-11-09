@@ -183,6 +183,24 @@ function exclusions(source, branch) {
   return { steps: [...steps], coverage: [...coverage] };
 }
 
+// Each restored question/repeat owns its own measurements and history witness.
+export function e2ProbeMeasurement() {
+  return {
+    requests: 0, firstContext: null, witness: false,
+    reset() { this.requests = 0; this.firstContext = null; this.witness = false; },
+    observe(context, estimators) {
+      this.requests++;
+      if (!this.firstContext) {
+        const lastUser = context.messages.findLastIndex(m => m.role === "user");
+        this.witness = context.messages.some((m, index) => ["assistant", "toolResult", "compactionSummary"].includes(m.role)
+          || m.role === "user" && index !== lastUser && (typeof m.content === "string" ? m.content : (m.content ?? []).filter(p => p.type === "text").map(p => p.text).join("\n")).startsWith("### Conversation continuity pack (historical evidence)\n"));
+        this.firstContext = sizeContext(context, estimators);
+      }
+      this.witness ||= context.messages.some(m => m.role === "toolResult" && m.toolName === "ConversationHistory" && m.isError !== true);
+    },
+  };
+}
+
 /** No real routes, credential lookup overrides, or resolved-model overrides. */
 export async function runE2Sizing({ source, protocol, output, summary = "faux-short", modules, onContext = () => {}, onDiagnostic = () => {}, paidAdapter, questions, evaluator }) {
   const real = summary === "real";
@@ -205,7 +223,8 @@ export async function runE2Sizing({ source, protocol, output, summary = "faux-sh
       const skipped = [...new Set([...excluded.steps, ...source.steps.map((_, i) => i).filter(i => !active.has(i))])];
       const dispatch = excludedDispatch(source, excluded.steps);
       const server = await startRecordedTools({ source, excludedSteps: skipped, excludedCoverage: excluded.coverage, dispatch: dispatch.dispatch });
-      let opened, currentTurn, turnController, steerWaiter, pendingSteers = [], steerCount = 0, cursor = 0, binding = branch.models[0], position, firstProbeContext, probeWitness = false, probeMode = false, probeRound = 0, probeRequests = 0;
+      let opened, currentTurn, turnController, steerWaiter, pendingSteers = [], steerCount = 0, cursor = 0, binding = branch.models[0], position, probeMode = false, probeRequests = 0;
+      const probe = e2ProbeMeasurement();
       const observed = [], historyExcluded = new Set(), observedTools = new Set(), toolIndices = new Map(source.tools.map((t, i) => [t.id, i]));
       const route = createE2Models({ pi: modules.pi, estimators, models: branch.models, limits: branch.limits, summary, soul, paidAdapter,
         sourceContext(context) {
@@ -224,13 +243,7 @@ export async function runE2Sizing({ source, protocol, output, summary = "faux-sh
           onContext({ branch: branchIndex, probe: probeMode, context });
           if (probeMode) {
             if (++probeRequests > branch.limits.probeRequests) fail("E2_PROBE_REQUEST_LIMIT");
-            if (!firstProbeContext) {
-              const lastUser = context.messages.findLastIndex(m => m.role === "user");
-              probeWitness = context.messages.some((m, index) => ["assistant", "toolResult", "compactionSummary"].includes(m.role)
-                || m.role === "user" && index !== lastUser && (typeof m.content === "string" ? m.content : (m.content ?? []).filter(p => p.type === "text").map(p => p.text).join("\n")).startsWith("### Conversation continuity pack (historical evidence)\n"));
-              firstProbeContext = sizeContext(context, estimators);
-            }
-            probeWitness ||= context.messages.some(m => m.role === "toolResult" && m.toolName === "ConversationHistory" && m.isError !== true);
+            probe.observe(context, estimators);
             const offered = context.tools ?? context.messages.flatMap(m => m.toolsAdded ?? []);
             if (offered.length !== 1 || offered[0].name !== "ConversationHistory") fail("E2_PROBE_TOOLS_REFUSED");
           }
@@ -238,8 +251,8 @@ export async function runE2Sizing({ source, protocol, output, summary = "faux-sh
         async sourceReply(context) {
           if (probeMode) {
             const offered = context.tools ?? context.messages.flatMap(m => m.toolsAdded ?? []);
-            const body = probeRound++ === 0 ? [modules.pi.fauxToolCall(offered[0].name, { action: "search", query: "retained", limit: 1 }, { id: "e2-probe-history" })] : "Faux probe continuation; semantic correctness is not evaluated.";
-            return estimatedReply(modules.pi, body, context, estimators, { stopReason: probeRound === 1 ? "toolUse" : "stop" });
+            const body = probe.requests === 1 ? [modules.pi.fauxToolCall(offered[0].name, { action: "search", query: "retained", limit: 1 }, { id: "e2-probe-history" })] : "Faux probe continuation; semantic correctness is not evaluated.";
+            return estimatedReply(modules.pi, body, context, estimators, { stopReason: probe.requests === 1 ? "toolUse" : "stop" });
           }
           dispatch.assertSettled();
           const reply = currentTurn.replies[cursor++]; if (!reply) fail("E2_SOURCE_REQUEST_LIMIT");
@@ -330,23 +343,23 @@ export async function runE2Sizing({ source, protocol, output, summary = "faux-sh
             if (real) {
               const selected = questions.questions.filter(q => q.checkpoint === checkpoint.name);
               for (const question of selected) for (const repeat of [1, 2]) {
-                await restoreCheckpoint(work, snapshot, receipt); probeMode = true; probeRound = 0; firstProbeContext = null;
+                await restoreCheckpoint(work, snapshot, receipt); probeMode = true; probe.reset();
                 route.setPosition({ ...position, model: binding.model, probe: true }); await open();
                 const response = await opened.harness.run({ conversationId: source.conversationId, userMessage: question.prompt,
                   metadata: { source: "web", web: { model: binding.model, effort: binding.effort } }, onEvent: onHostEvent,
                   abortSignal: AbortSignal.timeout(branch.limits.timeoutMs) });
                 await paidAdapter.flush(); route.assertSettled();
-                if (response.failure || !firstProbeContext) fail("E2_REPLAY_FAILED");
+                if (response.failure || !probe.firstContext) fail("E2_REPLAY_FAILED");
                 const text = response.text ?? response.content;
                 if (typeof text !== "string") fail("E2_REPLAY_FAILED");
-                answers.answers.push({ id: question.id, repeat, text, witness: probeWitness, excludedSteps: measured.excludedStepsInHistory,
+                answers.answers.push({ id: question.id, repeat, text, witness: probe.witness, excludedSteps: measured.excludedStepsInHistory,
                   excludedCoverage: measured.excludedCoverageInHistory });
-                measured.probes.push({ repeat, input: firstProbeContext, requests: route.report().probeRequests });
+                measured.probes.push({ repeat, input: probe.firstContext, requests: probe.requests });
                 await opened.close(); opened = null;
               }
             }
             for (const repeat of real ? [] : [1, 2]) {
-              await restoreCheckpoint(work, snapshot, receipt); probeMode = true; probeRound = 0; firstProbeContext = null;
+              await restoreCheckpoint(work, snapshot, receipt); probeMode = true; probe.reset();
               route.setPosition({ ...position, model: binding.model, probe: true }); await open();
               const probeSignal = AbortSignal.timeout(branch.limits.timeoutMs);
               const response = await opened.harness.run({ conversationId: source.conversationId, userMessage: PROBE_PROMPT,
@@ -354,9 +367,9 @@ export async function runE2Sizing({ source, protocol, output, summary = "faux-sh
               onDiagnostic(diagnosticRecord({ turnOrdinal: turn.ordinal, replyCursor: cursor, replyCount: turn.replies.length,
                 cancelled: false, aborted: probeSignal.aborted, failureKind: response.failure?.kind, routeRefusalCode: route.refusalCode() }));
               route.assertSettled();
-              if (response.failure || !firstProbeContext || probeRound !== 2) fail("E2_PROBE_FAILED");
+              if (response.failure || !probe.firstContext || probe.requests !== 2) fail("E2_PROBE_FAILED");
               await opened.close(); opened = null;
-              measured.probes.push({ repeat, initialContext: firstProbeContext, snapshotDigest: receipt.digest, requests: probeRound });
+              measured.probes.push({ repeat, initialContext: probe.firstContext, snapshotDigest: receipt.digest, requests: probe.requests });
             }
             await restoreCheckpoint(work, snapshot, receipt); probeMode = false;
             branchReport.checkpoints.push(measured); await open();

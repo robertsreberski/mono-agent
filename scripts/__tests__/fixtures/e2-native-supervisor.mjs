@@ -2,6 +2,7 @@
 import { readFile, writeFile, mkdir, access } from "node:fs/promises";
 import { fork } from "node:child_process";
 import { once } from "node:events";
+import { killE2NativeGroup } from "./e2-native-process-group.mjs";
 import { join } from "node:path";
 import { guardedController } from "../../lib/continuity-guarded-controller.mjs";
 import { guardedReport } from "../../lib/continuity-guarded-report.mjs";
@@ -35,7 +36,7 @@ try {
       } else if (message.type === "ready") { await journal.ready(0); child.send({ type: "go", epoch: state.epoch, slotId: slot.slotId }); }
       else if (message.type === "done") { done = message; child.send({ type: "done-ack", epoch: state.epoch, slotId: slot.slotId }); }
       else child.send(await journal.message(0, child, message));
-    }).catch(error => { void journal.stop("e2_worker_lost"); child.kill("SIGKILL"); throw error; }); void chain.catch(() => {}); });
+    }).catch(error => { void journal.stop("e2_worker_lost"); killE2NativeGroup(child); throw error; }); void chain.catch(() => {}); });
     await once(child, "close"); await chain; caught = done?.caught;
     if (!done) await journal.stop("e2_worker_lost");
     await journal.finish(0, done?.terminal ?? "lost", done?.score ?? null, done?.refusalCode ?? null);

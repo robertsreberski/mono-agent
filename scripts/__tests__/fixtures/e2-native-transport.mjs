@@ -67,7 +67,8 @@ export function installE2NativeTransport(profile) {
   const inherit = args => args.includes(preload) ? args : ["--import", preload, ...args];
   for (const name of ["spawn", "spawnSync", "execFile", "execFileSync"]) {
     const original = subprocess[name];
-    subprocess[name] = function (executable, args = [], ...rest) {
+    subprocess[name] = function (executable, args, ...rest) {
+      if (!Array.isArray(args)) { if (args !== undefined) rest.unshift(args); args = []; }
       if (executable === process.execPath) return original.call(this, executable, inherit(args), ...rest);
       // Process-incarnation checks are the only non-Node subprocesses needed here.
       const identity = executable === "/bin/ps" && (args.length === 4 && args[0] === "-p" && /^\d+$/u.test(args[1]) && args[2] === "-o" && args[3] === "lstart=" || JSON.stringify(args) === '["-axo","pid=,pgid=,lstart=,stat="]')
@@ -78,7 +79,9 @@ export function installE2NativeTransport(profile) {
     };
   }
   const fork = subprocess.fork;
-  subprocess.fork = function (modulePath, args = [], options = {}) {
+  subprocess.fork = function (modulePath, args, options) {
+    if (!Array.isArray(args)) { options = args ?? options; args = []; }
+    options ??= {};
     if (options.execPath && options.execPath !== process.execPath) refuse();
     return fork.call(this, modulePath, args, { ...options, execArgv: inherit(options.execArgv ?? process.execArgv) });
   };

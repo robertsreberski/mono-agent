@@ -36,6 +36,7 @@ it("refuses a mixed proof selection before the controller, lease or burn", async
 it("allows a whole proof-only registration without creating or reading approval itself", async () => {
   pilot.registration.schedule = [{ kind: "proof", index: 0 }]; const raw = JSON.stringify(pilot); await writeFile(args.registrationPath, raw, { mode: 0o600 });
   await runE2Paid({ ...args, command: "proofs", registrationSha256: digest(raw) }); expect(calls.run.mock.calls[0][0].pilot).toEqual(pilot);
+  await expect(readFile(args.authorizationPath)).rejects.toMatchObject({ code: "ENOENT" });
 });
 it("rejects direct subset selectors and hash substitutions before controller setup", async () => {
   await expect(runE2Paid({ ...args, arm: "switch" })).rejects.toMatchObject({ code: "e2_registration_invalid" });

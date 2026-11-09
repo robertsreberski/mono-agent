@@ -59,12 +59,12 @@ export function installProofIsolation(env) {
     for (const name of Object.getOwnPropertyNames(target).filter(name => dnsMethod(name) && typeof target[name] === "function")) {
       resolvers.push([target, name, Object.getOwnPropertyDescriptor(target, name)]);
       const original = target[name];
-      target[name] = promise ? async (...args) => {
-        if (isGuardedNativeDispatch("e2-validation")) return original.apply(target, args);
+      target[name] = promise ? async function (...args) {
+        if (isGuardedNativeDispatch("e2-validation")) return original.apply(this, args);
         const result = localDns(name, args);
         return name === "lookup" && !(typeof args[1] === "object" && args[1]?.all) ? { address: result[0], family: result[1] } : result[0];
-      } : (...args) => {
-        if (isGuardedNativeDispatch("e2-validation")) return original.apply(target, args);
+      } : function (...args) {
+        if (isGuardedNativeDispatch("e2-validation")) return original.apply(this, args);
         const callback = args.at(-1), input = args.slice(0, -1), result = localDns(name, input);
         if (typeof callback !== "function") fail("E2_PROOF_EGRESS_REFUSED");
         queueMicrotask(() => callback(null, ...result));

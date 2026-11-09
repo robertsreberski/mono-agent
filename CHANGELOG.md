@@ -2,18 +2,20 @@
 
 ## Unreleased
 
-- Add exact-cap authorized E2 replay and proof SDK phase adapters through the
-  shared guarded send, with committed-summary/body lineage and one-run-only
-  authorizations. Keep ordinary sizing/proofs offline; stopped runs reconcile
-  without dispatch, and no command creates approval or refreshes credentials.
+- Let `run --summary real` and `proofs --real` make paid provider requests
+  through guarded E2 adapters, only with a separate single-use exact-cap
+  authorization and committed-summary/body lineage. Keep ordinary sizing/proofs
+  offline; stopped runs reconcile without dispatch, and no command creates
+  approval or refreshes credentials.
   Keep verified history across successive and planned-resume compactions, and
   gate every resume admission on the expected completed seed.
 
 - Add offline E2 cap estimates from replay/proof sizing, with explicit output
   forecasts and full catalog-context/output reservations (including conservative
   cache/tier liability) for the uncapped Codex route. Add closed registration,
-  authorization validation and accounting/receipt foundations. Distinguish forecast cap floors from ceiling-funded
-  budget completion, reject underfunded registrations and unordered checkpoints.
+  authorization validation and accounting/receipt foundations. Distinguish
+  forecast cap floors from ceiling-funded budget completion, reject underfunded
+  registrations and unordered checkpoints.
 
 - Harden guarded continuity cleanup after synchronous stream-result failures,
   drain pending admissions on every finish and refuse late callbacks. Preserve

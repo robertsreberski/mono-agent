@@ -106,7 +106,7 @@ export const e2ExecutionPolicy = Object.freeze({
   },
   assertCacheHeaders(headers, metadata, key) {
     const session = headers.get("session-id"), request = headers.get("x-client-request-id");
-    need((session === key && request === key) || (session === null && request === null && (key === undefined || metadata.paidRole === "summary")), "e2_prompt_cache_key_forbidden");
+    need((session === key && request === key) || (session === null && request === null && key === undefined), "e2_prompt_cache_key_forbidden");
   },
   resultReceipt: writeE2SummaryResult,
   async verifySettlement(root, slotId, hold, evidence, readPrivate) {
@@ -115,10 +115,11 @@ export const e2ExecutionPolicy = Object.freeze({
     catch { fail("e2_summary_receipt_invalid"); }
   },
   async beforeAdmission(root, slotId, slot, p, readPrivate, state, pilot) {
-    let scope;
+    let scope, readArtifact;
     if (state?.schema === E2_REAL_CONTROLLER) {
       const { guardedAuthorization } = await import("./continuity-guarded-authorization.mjs");
       const planned = state.schedule[state.cursor];
+      readArtifact = guardedAuthorization("e2-validation").readArtifact;
       scope = await e2LineageScope({ ...state, pilot }, planned, p.checkpoint, guardedAuthorization("e2-validation").readArtifact);
       slot.lineages ??= {};
       if (planned.kind === "proof" && planned.phase === "resume") {
@@ -132,7 +133,8 @@ export const e2ExecutionPolicy = Object.freeze({
     if (p.paidRole === "summary") return;
     need(!slot.compaction, "e2_compaction_invalid");
     for (const hold of slot.holds.filter(h => h.paidRole === "summary")) {
-      need(hold.summaryReceipt?.verified && hold.summaryReceipt.durable && (state?.schema !== E2_REAL_CONTROLLER || slot.lineages), "e2_summary_receipt_invalid");
+      const currentScope = state?.schema === E2_REAL_CONTROLLER && scope === await e2LineageScope({ ...state, pilot }, state.schedule[state.cursor], hold.checkpoint, readArtifact);
+      need(hold.summaryReceipt?.verified && hold.summaryReceipt.durable && (!currentScope || slot.lineages?.[scope]), "e2_summary_receipt_invalid");
       try { await verifyE2SummaryResult(root, slotId, hold, { schema: hold.summaryReceipt.schema, sha256: hold.summaryReceipt.sha256 }, readPrivate); }
       catch { fail("e2_summary_receipt_invalid"); }
     }

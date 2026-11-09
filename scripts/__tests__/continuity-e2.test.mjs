@@ -1,3 +1,4 @@
+import { openHarness } from "../lib/continuity-runner.mjs";
 import { afterEach, expect, it, vi } from "vitest";
 import fs from "node:fs";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync, rmSync, existsSync } from "node:fs";
@@ -16,7 +17,7 @@ import { snapshots, CONVERSATION, AT, tool, assistant, result } from "./fixtures
 import { installProcessGuard } from "./fixtures/continuity-recorded/process-guard.mjs";
 import { LUNA, SOL, validateProtocol, historicalContext } from "../lib/continuity-e2-protocol.mjs";
 import { createE2Models, loadE2Estimators, shippingSoul, sizeContext, assertEffectiveSoul } from "../lib/continuity-e2-models.mjs";
-import { excludedDispatch, freezeCheckpoint, restoreCheckpoint, treeReceipt, runE2Sizing, PLACEHOLDER, recordedTurns } from "../lib/continuity-e2-replay.mjs";
+import { excludedDispatch, freezeCheckpoint, restoreCheckpoint, treeReceipt, runE2Sizing, PLACEHOLDER, recordedTurns, e2ProbeMeasurement } from "../lib/continuity-e2-replay.mjs";
 import { scoreE2, validateE2Questions } from "../lib/continuity-e2-score.mjs";
 import { diagnosticRecord, errorDiagnostic } from "../lib/continuity-e2-diagnostics.mjs";
 import { parseE2Args, main, USAGE } from "../continuity-e2.mjs";
@@ -395,6 +396,12 @@ const E2_IMPORT_SHAPES = {
   }
 };
 const E2_DYNAMIC_SHAPES = {
+  "scripts/lib/continuity-e2-models.mjs": {
+    'new URL("../../packages/turn/dist/agent/compaction.js", import.meta.url).href': ["{estimateFixedOverheadTokens,resolveAgentCompactionPolicy}"]
+  },
+  "scripts/lib/continuity-e2-lineage.mjs": {
+    'new URL("../../packages/turn/dist/engine/journal-schema.js", import.meta.url).href': ["{JournalValidator,validateJournalHeader}"]
+  },
   "scripts/continuity-e2.mjs": {
     "./lib/continuity-e2-paid-entry.mjs": [
       "{runE2Paid}",
@@ -573,8 +580,9 @@ function assertE2Capabilities(path, source) {
           || path === "scripts/lib/continuity-e2-tools.mjs" && ts.isStringLiteral(value) && ["@modelcontextprotocol/sdk/server/index.js", "@modelcontextprotocol/sdk/server/streamableHttp.js", "@modelcontextprotocol/sdk/types.js"].includes(value.text)
           || path === "scripts/lib/continuity-e2-lineage.mjs" && value.getText(ast) === 'new URL("../../packages/turn/dist/engine/journal-schema.js", import.meta.url).href'
           || path === "scripts/lib/continuity-e2-models.mjs" && value.getText(ast) === 'new URL("../../packages/turn/dist/agent/compaction.js", import.meta.url).href').toBe(true);
-        if (ts.isStringLiteral(value) && value.text !== "@mono-agent/turn/engine") {
-          const expected = E2_DYNAMIC_SHAPES[path]?.[value.text];
+        if (!ts.isStringLiteral(value) || value.text !== "@mono-agent/turn/engine") {
+          const specifier = ts.isStringLiteral(value) ? value.text : value.getText(ast);
+          const expected = E2_DYNAMIC_SHAPES[path]?.[specifier];
           expect(Array.isArray(expected), `${path}:${value.text}:pinned dynamic import`).toBe(true);
           let shape;
           if (ts.isAwaitExpression(node.parent) && ts.isParenthesizedExpression(node.parent.parent) && ts.isPropertyAccessExpression(node.parent.parent.parent)) {
@@ -602,7 +610,11 @@ function assertE2Capabilities(path, source) {
           expect(declaration.name.elements.map(e => (e.propertyName ?? e.name).text)).toEqual(["createPiOAuthApiKeyResolver"]);
         }
       }
-      const name = node.expression.getText(ast);
+      let callee = node.expression;
+      while (ts.isParenthesizedExpression(callee)) callee = callee.expression;
+      // Inline function bodies are visited recursively; strings/comments inside
+      // them are not a call target (e.g. the x-client-request-id header name).
+      const name = ts.isArrowFunction(callee) || ts.isFunctionExpression(callee) ? "<inline>" : node.expression.getText(ast);
       const regexExec = ts.isPropertyAccessExpression(node.expression) && node.expression.name.text === "exec" && node.expression.expression.kind === ts.SyntaxKind.RegularExpressionLiteral;
       const proofCapability = path === "scripts/lib/continuity-e2-tools.mjs" && name === "server.connect"
         || path === "scripts/lib/continuity-e2-isolation.mjs" && ["connect.apply", "fetch"].includes(name)
@@ -852,10 +864,36 @@ it("pins every authority exception to its exact import names and shape", () => {
 
 it("pins paid dynamic factories and refuses whole-module, aliased and extra capabilities", () => {
   for (const [path, imports] of Object.entries(E2_DYNAMIC_SHAPES)) for (const [spec, shapes] of Object.entries(imports)) {
+    const argument = spec.startsWith("new URL(") ? spec : JSON.stringify(spec);
     for (const shape of shapes) {
-      const source = shape.startsWith(".") ? `(await import("${spec}"))${shape};` : `const ${shape} = await import("${spec}");`;
+      const source = shape.startsWith(".") ? `(await import(${argument}))${shape};` : `const ${shape} = await import(${argument});`;
       expect(() => assertE2Capabilities(path, source)).not.toThrow();
     }
-    for (const source of [`const authority = await import("${spec}");`, `const { unregisteredAuthority } = await import("${spec}");`, `(await import("${spec}")).unregisteredAuthority;`]) expectRuleFailure(() => assertE2Capabilities(path, source));
+    for (const source of [`const authority = await import(${argument});`, `const { unregisteredAuthority } = await import(${argument});`, `(await import(${argument})).unregisteredAuthority;`]) expectRuleFailure(() => assertE2Capabilities(path, source));
   }
+});
+
+it("keeps each probe witness and request count independent across restored repeats", () => {
+  const probe = e2ProbeMeasurement(), estimators = { estimateTokens: () => 1, estimateFixedOverheadTokens: () => 0 };
+  const witnessed = { messages: [{ role: "assistant", content: "Fictional history." }, { role: "user", content: "Fictional question." }] };
+  probe.observe(witnessed, estimators); probe.observe(witnessed, estimators);
+  expect(probe.witness).toBe(true); expect(probe.requests).toBe(2);
+  probe.reset(); expect(probe.witness).toBe(false); expect(probe.firstContext).toBeNull(); expect(probe.requests).toBe(0);
+  probe.observe({ messages: [{ role: "user", content: "Independent fictional question." }] }, estimators);
+  expect(probe.witness).toBe(false); expect(probe.requests).toBe(1);
+});
+it("refuses simultaneous lookup and E2 harness ownership before any module or adapter access", async () => {
+  const calls = [], unavailable = new Proxy({}, { get: (_, key) => { calls.push(key); throw Error("unexpected_access"); } });
+  await expect(openHarness({ pilot: {}, e2: unavailable, modules: unavailable })).rejects.toMatchObject({ code: "lookup_pilot_capability_invalid" });
+  expect(calls).toEqual([]);
+});
+
+it("labels only the first request at an explicit proof probe position as probe", async () => {
+  const a = await adapter();
+  const context = { systemPrompt: `## Core Guardrails\n\n${a.soul.text}`, messages: [{ role: "user", content: "Fictional request." }] };
+  for (let repeat = 0; repeat < 2; repeat++) {
+    a.route.setPosition({ model: LUNA, turn: 0, message: 0, probe: true, paidRole: "probe" });
+    for (let round = 0; round < 3; round++) for await (const _event of a.models.streamSimple(a.model, context)) { /* drain faux response */ }
+  }
+  expect(a.route.report().requestSizing.map(r => r.paidRole)).toEqual(["probe", "continuation", "continuation", "probe", "continuation", "continuation"]);
 });

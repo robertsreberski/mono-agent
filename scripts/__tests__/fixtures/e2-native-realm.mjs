@@ -19,10 +19,10 @@ export async function installE2NativeRealm(profile) {
     const path = resolve(value);
     if ([".local/state", ".config", ".pi"].some(part => path === join(actualHome, part) || path.startsWith(join(actualHome, part) + "/"))) throw Error("test_real_store_forbidden");
   };
-  for (const target of [fs, fsp]) for (const name of ["open", "readFile", "writeFile", "appendFile", "mkdir", "readdir", "lstat", "stat", "realpath", "unlink", "rm", "rename", "access"]) {
+  for (const target of [fs, fsp]) for (const name of ["open", "readFile", "writeFile", "appendFile", "mkdir", "readdir", "lstat", "stat", "realpath", "unlink", "rm", "rename", "access", "copyFile", "link", "symlink", "readlink", "chmod", "opendir", "truncate", "createReadStream", "createWriteStream"]) {
     for (const suffix of target === fs ? ["", "Sync"] : [""]) {
       const key = name + suffix, original = target[key]; if (typeof original !== "function") continue;
-      const wrapped = function (...args) { forbid(args[0]); if (name === "rename") forbid(args[1]); return original.apply(this, args); };
+      const wrapped = function (...args) { forbid(args[0]); if (["rename", "copyFile", "link", "symlink"].includes(name)) forbid(args[1]); return original.apply(this, args); };
       if (original.native) wrapped.native = function (...args) { forbid(args[0]); return original.native.apply(this, args); };
       target[key] = wrapped;
     }
