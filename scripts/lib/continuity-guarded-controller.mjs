@@ -264,7 +264,7 @@ function bind(protocol, protocolId) {
     return Object.freeze(api);
   }
   function publicFailure(error) {
-    const allowed = [...LOOKUP_PILOT_STOPS, "paid_mode_refused_in_ci", protocol.codes.pilot_real_route_unavailable, protocol.codes.pilot_faux_required, protocol.codes.debug_forbidden, protocol.codes.controller_checkout_mismatch,
+    const allowed = [...LOOKUP_PILOT_STOPS, ...(protocol.execution ? [protocol.codes.registration_invalid] : []), "paid_mode_refused_in_ci", protocol.codes.pilot_real_route_unavailable, protocol.codes.pilot_faux_required, protocol.codes.debug_forbidden, protocol.codes.controller_checkout_mismatch,
       protocol.codes.pilot_no_eligible_slots, protocol.codes.pilot_boundary_required, protocol.codes.authorization_binding_mismatch, protocol.codes.authorization_already_consumed, protocol.codes.authorization_lease_invalid, protocol.codes.pilot_resume_forbidden, protocol.codes.pilot_not_ready];
     pilotNeed(false, allowed.includes(error?.code) ? error.code : protocol.codes.pilot_not_ready);
   }

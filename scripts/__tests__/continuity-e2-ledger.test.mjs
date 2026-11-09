@@ -2,7 +2,7 @@
 import { beforeEach, afterEach, expect, it, vi } from "vitest";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { mkdtemp, realpath, mkdir, rm } from "node:fs/promises";
+import { mkdtemp, realpath, mkdir, rm, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
@@ -45,6 +45,13 @@ function admission(paidRole = "probe") {
     reservationUnits: e2RequestPrice(pilot.registration.catalog[0], { inputTokens: 100, maxOutputTokens: 128000 }).reservationUnits };
 }
 const summaryBegin = () => rpc("compaction", { kind: "begin", checkpoint: 0, operationDigest });
+async function settledSummary() {
+  await summaryBegin(); const p = admission("summary"), permit = await rpc("admit", p); await rpc("consume", { permit, bodyDigest: p.payloadDigest });
+  const rawUsage = { input_tokens: 100, output_tokens: 10 }, message = { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "FICTIONAL-GENERATED-SUMMARY-CANARY" }] };
+  const written = await writeE2SummaryResult({ runId: journal.snapshot().runId, slotId: p.slotId, e2: { paidRole: "summary", model: SOL, round: 1, outputRoot } }, message, rawUsage, "default", p.payloadDigest);
+  await rpc("settle", { permit, outcome: { kind: "settled", costUnits: "300000" }, rawUsage, tier: "default", evidence: written.evidence });
+  return { rawUsage, written };
+}
 it("consumes the faux two-marker authority exclusively across fresh output roots", async () => {
   await start(); journal.release(); journal = undefined;
   const next = join(root, "next-output"); await mkdir(next, { mode: 0o700 });
@@ -75,10 +82,7 @@ it("retains a forged/missing summary result and never promotes it to probe autho
   expect(journal.snapshot().stop).toBe("e2_summary_receipt_invalid"); expect(accounting.accountRun(journal.snapshot().slots)).toMatchObject({ retainedUnits: "3920000000", knownPartialUnits: "300000" });
 });
 it("requires verified output plus durable-compaction acknowledgment before probes and publishes no canaries", async () => {
-  await start(); await summaryBegin(); const p = admission("summary"), permit = await rpc("admit", p); await rpc("consume", { permit, bodyDigest: p.payloadDigest });
-  const rawUsage = { input_tokens: 100, output_tokens: 10 }, message = { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "FICTIONAL-GENERATED-SUMMARY-CANARY" }] };
-  const written = await writeE2SummaryResult({ runId: journal.snapshot().runId, slotId: p.slotId, e2: { paidRole: "summary", model: SOL, round: 1, outputRoot } }, message, rawUsage, "default", p.payloadDigest);
-  await rpc("settle", { permit, outcome: { kind: "settled", costUnits: "300000" }, rawUsage, tier: "default", evidence: written.evidence });
+  await start(); const { rawUsage, written } = await settledSummary();
   expect(journal.snapshot().slots[0].holds[0].summaryReceipt).toMatchObject({ verified: true, durable: false });
   await rpc("compaction", { kind: "durable", checkpoint: 0, operationDigest });
   const probe = admission(), probePermit = await rpc("admit", probe); await rpc("consume", { permit: probePermit, bodyDigest: probe.payloadDigest });
@@ -113,4 +117,19 @@ it.each(["e2_request_limit", "not_admitted_input_envelope"])("keeps child-local 
   await start(); await journal.finish(0, "refused_pre_send", null, code);
   const state = journal.snapshot(); expect(state.stop).toBe(code); expect(state.slots[0].admissionRefusal).toBe(code);
   expect(state.slots[0].terminal).toBe("unadmitted"); expect(state.slots[0].holds).toEqual([]);
+});
+
+it("refuses a probe after summary settlement but before the compaction durable ACK", async () => {
+  await start(); await settledSummary();
+  expect(journal.snapshot().slots[0].holds[0].summaryReceipt).toMatchObject({ verified: true, durable: false });
+  await expect(rpc("admit", admission())).rejects.toMatchObject({ code: "e2_compaction_invalid" });
+  expect(journal.snapshot().slots[0].holds).toHaveLength(1); expect(journal.snapshot().stop).toBe("e2_compaction_invalid");
+});
+it.each(["missing", "not-array", "empty", "null-slot", "missing-budgets", "null-budget", "zero-budget", "duplicate"])("classifies malformed schedule %s as registration invalid before lease/burn", async kind => {
+  const slot = structuredClone(pilot.registration.schedule[0]);
+  pilot.registration.schedule = { missing: undefined, "not-array": {}, empty: [], "null-slot": [null],
+    "missing-budgets": [{ ...slot, budgets: undefined }], "null-budget": [{ ...slot, budgets: [null] }],
+    "zero-budget": [{ ...slot, budgets: [{ ...slot.budgets[0], maxRequests: 0 }] }], duplicate: [slot, slot] }[kind];
+  await expect(start()).rejects.toMatchObject({ code: "e2_registration_invalid" });
+  expect(await readdir(outputRoot)).toEqual([]);
 });

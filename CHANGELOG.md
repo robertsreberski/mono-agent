@@ -12,7 +12,8 @@
 - Harden guarded continuity cleanup after synchronous stream-result failures,
   drain pending admissions on every finish and refuse late callbacks. Preserve
   classified admission/body-policy stop codes, close journal-only schedule
-  runners before authority burn, and bound preparation-stat entry/depth traversal.
+  runners before authority burn, and bound preparation-stat entry/depth traversal
+  and authorization artifact fd reads, even if an inode grows after inspection.
 
 - Add fictional offline continuity proofs for model switches, cancelled process
   restarts, observed idle eviction and shipping-ceiling compaction. Keep durable

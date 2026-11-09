@@ -4,7 +4,7 @@ import { mkdtemp, readFile, realpath, rm, writeFile, stat } from "node:fs/promis
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { main, parseE2Args } from "../continuity-e2.mjs";
-import { normalizeE2Sizing, estimateE2SizingSet } from "../lib/continuity-e2-sizing.mjs";
+import { normalizeE2Sizing, estimateE2SizingSet, E2_MAX_SIZING_RECORDS } from "../lib/continuity-e2-sizing.mjs";
 import { protocolDigest } from "../lib/continuity-e2-protocol.mjs";
 import { loadE2Catalog } from "../lib/continuity-e2-pricing.mjs";
 const roots = [];
@@ -100,4 +100,18 @@ it("projects the specific checkpoint-order refusal at the CLI without creating o
   const errors = [];
   expect(await main(["--estimate", "--protocol", protocol, "--sizing", sizing, "--limits", limits, "--output", output], { stdout: () => { throw Error("unexpected_report"); }, stderr: value => errors.push(value) })).toBe(1);
   expect(errors).toEqual(["E2_CHECKPOINT_ORDER_INVALID\n"]); await expect(stat(output)).rejects.toMatchObject({ code: "ENOENT" });
+});
+
+it("shares the sizing-record cap between argument parsing and estimation", async () => {
+  const args = count => ["--estimate", "--protocol", "protocol.json", "--limits", "limits.json", "--output", "output", ...Array.from({ length: count }, (_, i) => ["--sizing", `sizing-${i}.json`]).flat()];
+  expect(parseE2Args(args(E2_MAX_SIZING_RECORDS)).sizing).toHaveLength(E2_MAX_SIZING_RECORDS);
+  expect(() => parseE2Args(args(E2_MAX_SIZING_RECORDS + 1))).toThrow("E2_ARGUMENTS_INVALID");
+  const f = await fixture(), catalog = await loadE2Catalog();
+  expect(() => estimateE2SizingSet({ ...f, records: Array.from({ length: E2_MAX_SIZING_RECORDS + 1 }, () => f.sizing), catalog })).toThrow("E2_ESTIMATE_INVALID");
+});
+it("refuses an over-budget proof aggregate by policy, not the engine argument limit", async () => {
+  const f = await fixture(), catalog = await loadE2Catalog(), row = f.sizing.variants[0].requests[0];
+  f.sizing.variants = ["ceiling", "restart"].map(variant => ({ variant, requests: Array.from({ length: 100000 }, (_, ordinal) => ({ ...row, ordinal })) }));
+  expect(normalizeE2Sizing(f.protocol, f.sizing).requests).toHaveLength(200000);
+  expect(() => estimateE2SizingSet({ ...f, records: [f.sizing], catalog })).toThrow("E2_ESTIMATE_INVALID");
 });

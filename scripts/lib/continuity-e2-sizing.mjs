@@ -1,7 +1,9 @@
 // Offline sizing normalization. No authorization/credential/registry imports or access.
 import { PROTOCOL_SCHEMA, protocolDigest, assertE2CheckpointOrder, SOL, LUNA } from "./continuity-e2-protocol.mjs";
 import { requireE2PaidRole } from "./continuity-e2-roles.mjs";
+import { E2_INPUT_LIMITS } from "./continuity-e2-policy.mjs";
 import { validateE2Sizing, estimateE2Reservations } from "./continuity-e2-estimate.mjs";
+export const E2_MAX_SIZING_RECORDS = E2_INPUT_LIMITS.sizingFiles;
 const need = ok => { if (!ok) throw Object.assign(Error("E2_ESTIMATE_INVALID"), { code: "E2_ESTIMATE_INVALID" }); };
 const ordinal = n => Number.isSafeInteger(n) && n >= 0;
 const hash = s => typeof s === "string" && /^[a-f0-9]{64}$/u.test(s);
@@ -55,7 +57,7 @@ export function normalizeE2Sizing(protocol, sizing, checkpointOffset = 0) {
   return { kind: "proof", arm: sizing.arm, requests, checkpoints: sizing.variants.length };
 }
 export function estimateE2SizingSet({ protocol, roles, records, catalog, probeCounts = [] }) {
-  validateE2EstimateProtocol(protocol); need(Array.isArray(records) && records.length > 0 && records.length <= 8);
+  validateE2EstimateProtocol(protocol); need(Array.isArray(records) && records.length > 0 && records.length <= E2_MAX_SIZING_RECORDS);
   const replay = [], proofs = [], arms = new Set(), scenarios = new Set(); let sourceDigest;
   const replayCheckpoints = protocol.branches.reduce((n, b) => n + b.checkpoints.length, 0);
   const hasReplay = records.some(r => r?.schema === "continuity-e2-sizing-v1");
@@ -73,7 +75,7 @@ export function estimateE2SizingSet({ protocol, roles, records, catalog, probeCo
       normalized.requests = normalized.requests.flatMap(row => ["probe", "continuation"].includes(row.paidRole)
         ? Array.from({ length: counts.get(row.checkpoint) }, () => row) : [row]);
       replay.push(normalized);
-    } else { need(!arms.has(normalized.arm)); arms.add(normalized.arm); proofs.push(...normalized.requests); offset += normalized.checkpoints; }
+    } else { need(!arms.has(normalized.arm)); arms.add(normalized.arm); for (const request of normalized.requests) proofs.push(request); offset += normalized.checkpoints; }
   }
   // Short/max faux summaries are alternatives, not two paid summary draws. Proof variants are planned distinct runs.
   const alternatives = replay.length ? replay : [{ scenario: "proof-only", requests: [] }];

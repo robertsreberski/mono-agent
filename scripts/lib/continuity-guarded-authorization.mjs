@@ -63,7 +63,19 @@ function bind(protocol, protocolId) {
       need(stat.isFile() && stat.uid === userInfo().uid && stat.nlink === 1 && (stat.mode & 0o077) === 0 && stat.size <= maxBytes, code);
       const before = await lstat(path);
       need(before.dev === stat.dev && before.ino === stat.ino && !before.isSymbolicLink(), code);
-      return await file.readFile();
+      // Enforce the bound on bytes read, even if this inode grows after stat.
+      const chunks = []; let total = 0, eof = false;
+      while (total <= maxBytes && !eof) {
+        const buffer = Buffer.alloc(Math.min(64 * 1024, maxBytes + 1 - total)); let used = 0;
+        // Coalesce short reads instead of retaining a full backing buffer per byte.
+        while (used < buffer.length) {
+          const { bytesRead } = await file.read(buffer, used, buffer.length - used, null);
+          if (bytesRead === 0) { eof = true; break; }
+          used += bytesRead; total += bytesRead; need(total <= maxBytes, code);
+        }
+        if (used) chunks.push(buffer.subarray(0, used));
+      }
+      return Buffer.concat(chunks, total);
     } finally { await file.close(); }
   }
   async function safeJson(path, code) {

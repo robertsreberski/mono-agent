@@ -56,8 +56,9 @@ it("prices cancel-forwarded as a continuation without rewriting its legacy setup
   expect(report.checkpoints.find(r => r.role === "continuation").requests).toBe(2);
 });
 it("refuses every legacy sizing record lacking explicit paidRole, never guessing free setup", async () => {
-  for (let i = 0; i < 5; i++) {
-    const f = await fixture(); delete f.requests[i].paidRole;
+  const original = await fixture();
+  for (let i = 0; i < original.requests.length; i++) {
+    const f = structuredClone(original); delete f.requests[i].paidRole;
     expect(() => estimateE2Reservations(f)).toThrow("E2_SIZING_PAID_ROLE_REQUIRED");
   }
 });

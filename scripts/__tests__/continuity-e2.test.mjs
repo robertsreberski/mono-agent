@@ -348,6 +348,11 @@ function assertE2Capabilities(path, source) {
         expect(node.importClause.namedBindings.elements.map(e => (e.propertyName ?? e.name).text)).toEqual(["spawn"]);
         expect(node.importClause.namedBindings.elements.map(e => e.name.text)).toEqual(["spawn"]);
       }
+      if (spec === "node:process") {
+        const clause = node.importClause;
+        expect(Boolean(clause && !clause.name && clause.namedBindings && ts.isNamedImports(clause.namedBindings))).toBe(true);
+        expect(clause.namedBindings.elements.map(e => (e.propertyName ?? e.name).text)).toEqual(["env"]);
+      }
       if (spec === "./continuity-lookup.mjs") expect(node.importClause.namedBindings.elements.map(e => (e.propertyName ?? e.name).text).sort()).toEqual(["historyBody", "lookupWitness", "resolveSource"]);
       if (spec === "./continuity-arms.mjs") expect(node.importClause.namedBindings.elements.map(e => (e.propertyName ?? e.name).text).sort()).toEqual(path === "scripts/lib/continuity-e2-checks.mjs" ? ["DEFAULT_MAX_INPUT_TOKENS"] : ["E2_PROOF_PRESSURE_ARMS"]);
       if (spec === "./continuity-runner.mjs") expect(node.importClause.namedBindings.elements.map(e => (e.propertyName ?? e.name).text).sort()).toEqual(["openHarness", "productionModules"]);
@@ -359,6 +364,12 @@ function assertE2Capabilities(path, source) {
           || ts.isStringLiteral(value) && ({ "scripts/lib/continuity-e2-controller-policy.mjs": ["./continuity-e2-pricing.mjs", "./continuity-e2-registration.mjs", "./continuity-holdout-files.mjs", "./continuity-guarded-state.mjs", "./continuity-guarded-lease.mjs", "./continuity-guarded-child-environment.mjs", "./continuity-guarded-authorization.mjs"], "scripts/lib/continuity-e2-summary-receipts.mjs": ["./continuity-holdout-workflow.mjs"], "scripts/lib/continuity-e2-authorization.mjs": ["@mono-agent/turn"], "scripts/lib/continuity-e2-guarded-protocol.mjs": ["./continuity-e2-authorization.mjs", "./continuity-e2-controller-policy.mjs"] })[path]?.includes(value.text)
           || path === "scripts/lib/continuity-e2-tools.mjs" && ts.isStringLiteral(value) && ["@modelcontextprotocol/sdk/server/index.js", "@modelcontextprotocol/sdk/server/streamableHttp.js", "@modelcontextprotocol/sdk/types.js"].includes(value.text)
           || path === "scripts/lib/continuity-e2-models.mjs" && value.getText(ast) === 'new URL("../../packages/turn/dist/agent/compaction.js", import.meta.url).href').toBe(true);
+        if (ts.isStringLiteral(value) && value.text === "@mono-agent/turn") {
+          const declaration = node.parent.parent;
+          expect(ts.isAwaitExpression(node.parent) && ts.isVariableDeclaration(declaration) && ts.isObjectBindingPattern(declaration.name)).toBe(true);
+          expect(declaration.name.elements.every(e => !e.dotDotDotToken && ts.isIdentifier(e.name))).toBe(true);
+          expect(declaration.name.elements.map(e => (e.propertyName ?? e.name).text)).toEqual(["createPiOAuthApiKeyResolver"]);
+        }
       }
       const name = node.expression.getText(ast);
       const regexExec = ts.isPropertyAccessExpression(node.expression) && node.expression.name.text === "exec" && node.expression.expression.kind === ts.SyntaxKind.RegularExpressionLiteral;
@@ -402,6 +413,17 @@ it("checks imported authority names even when local bindings are aliased", () =>
   const path = "scripts/lib/continuity-e2-proofs.mjs";
   expect(() => assertE2Capabilities(path, 'import { spawn } from "node:child_process";')).not.toThrow();
   for (const source of ['import { exec as spawn } from "node:child_process";', 'import { spawn as launch } from "node:child_process";', 'import { referenceReader as historyBody, lookupWitness, resolveSource } from "./continuity-lookup.mjs";']) expectRuleFailure(() => assertE2Capabilities(path, source));
+});
+it("pins authorization imports to env and the OAuth resolver, never a module namespace", () => {
+  const path = "scripts/lib/continuity-e2-authorization.mjs";
+  for (const source of ['import { env } from "node:process";', 'const { createPiOAuthApiKeyResolver } = await import("@mono-agent/turn");']) expect(() => assertE2Capabilities(path, source)).not.toThrow();
+  for (const source of [
+    'import { env, exit } from "node:process";', 'import * as process from "node:process";', 'import process from "node:process";',
+    'const { createPiOAuthApiKeyResolver, Agent } = await import("@mono-agent/turn");',
+    'const { Agent: createPiOAuthApiKeyResolver } = await import("@mono-agent/turn");',
+    'const { createPiOAuthApiKeyResolver, ...rest } = await import("@mono-agent/turn");',
+    'const namespace = await import("@mono-agent/turn");',
+  ]) expectRuleFailure(() => assertE2Capabilities(path, source));
 });
 it("pins isolation delegation arguments and refuses duplicate exempt calls", () => {
   const path = "scripts/lib/continuity-e2-isolation.mjs", source = readFileSync(join(ROOT, path), "utf8");

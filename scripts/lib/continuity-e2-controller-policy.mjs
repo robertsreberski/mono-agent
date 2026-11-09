@@ -39,8 +39,10 @@ export async function prepareE2Controller(options) {
   need(same(pilot.registration.catalog, await loadE2Catalog()));
   for (const r of pilot.registration.roles) e2RequestPrice(pilot.registration.catalog.find(c => c.model === r.model), { inputTokens: r.maxInputTokens, maxOutputTokens: r.maxOutputTokens });
   const schedule = pilot.registration.schedule;
-  need(Array.isArray(schedule) && schedule.length > 0 && schedule.length <= E2_INPUT_LIMITS.phases && new Set(schedule.map(s => s.slotId)).size === schedule.length
-    && schedule.every(s => /^[a-f0-9]{64}$/u.test(s.slotId) && s.eligible === true && s.budgets.length > 0 && s.budgets.every(b => Number.isSafeInteger(b.maxRequests) && b.maxRequests > 0 && b.maxRequests <= E2_ARTIFACT_LIMITS.requests)));
+  need(Array.isArray(schedule) && schedule.length > 0 && schedule.length <= E2_INPUT_LIMITS.phases
+    && schedule.every(s => /^[a-f0-9]{64}$/u.test(s?.slotId) && s.eligible === true && Array.isArray(s.budgets) && s.budgets.length > 0
+      && s.budgets.every(b => Number.isSafeInteger(b?.maxRequests) && b.maxRequests > 0 && b.maxRequests <= E2_ARTIFACT_LIMITS.requests))
+    && new Set(schedule.map(s => s.slotId)).size === schedule.length, "e2_registration_invalid");
   need(await externalDirectory(outputRoot) === outputRoot);
   return { pilot, authorization, outputRoot, real: false, authorizationHandle: null, schedule };
 }

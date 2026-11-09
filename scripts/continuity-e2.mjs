@@ -9,7 +9,7 @@ import { MAX_SOURCE_BYTES } from "./lib/continuity-recorded-schema.mjs";
 import { diagnosticRecord, errorDiagnostic, knownRefusalCode } from "./lib/continuity-e2-diagnostics.mjs";
 import { proofRefusalCode } from "./lib/continuity-e2-checks.mjs";
 import { scoreE2 } from "./lib/continuity-e2-score.mjs";
-import { estimateE2SizingSet } from "./lib/continuity-e2-sizing.mjs";
+import { estimateE2SizingSet, E2_MAX_SIZING_RECORDS } from "./lib/continuity-e2-sizing.mjs";
 import { loadE2Catalog } from "./lib/continuity-e2-pricing.mjs";
 export const USAGE = "Usage: node scripts/continuity-e2.mjs size --source DIR --protocol FILE --output NEW_DIR [--summary faux-short|faux-max] [--diagnostics NEW_FILE]\n       node scripts/continuity-e2.mjs score --answers FILE --keys FILE --output NEW_DIR\n       node scripts/continuity-e2.mjs proofs --output NEW_DIR [--arm switch|cancel|idle|pressure|all] [--diagnostics NEW_FILE]\n       node scripts/continuity-e2.mjs --estimate --protocol FILE --limits FILE --sizing FILE [--sizing FILE...] --output NEW_DIR\n       node scripts/continuity-e2.mjs run (unavailable)";
 export function parseE2Args(argv) {
@@ -26,7 +26,7 @@ export function parseE2Args(argv) {
     else result[key] = rest[i + 1];
   }
   if (required.some(k => !result[k]) || result.summary !== undefined && !["faux-short", "faux-max"].includes(result.summary)) fail("E2_ARGUMENTS_INVALID");
-  if (command === "estimate" && result.sizing.length > 8) fail("E2_ARGUMENTS_INVALID");
+  if (command === "estimate" && result.sizing.length > E2_MAX_SIZING_RECORDS) fail("E2_ARGUMENTS_INVALID");
   if (result.arm !== undefined && !["switch", "cancel", "idle", "pressure", "all"].includes(result.arm)) fail("E2_ARGUMENTS_INVALID");
   return result;
 }
