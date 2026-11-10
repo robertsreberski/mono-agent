@@ -736,7 +736,7 @@ describe("ConsoleStoreProvider integration", () => {
     expect(api.submit).toHaveBeenCalledWith(created.id, expect.any(String), expect.objectContaining({ text: "A new voice conversation" }));
   });
 
-  it("voice never transcribes or submits to a new conversation resolved after navigation", async () => {
+  it("voice keeps its new destination after navigation without stealing selection", async () => {
     localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, "alpha");
     let resolve!: (value: ThreadSummary) => void;
     vi.mocked(api.createThread).mockImplementation(() => new Promise((done) => { resolve = done; }));
@@ -744,10 +744,10 @@ describe("ConsoleStoreProvider integration", () => {
     await waitFor(() => expect(store.current.selectionLoading).toBe(false));
     const captured = store.current.captureAttachmentSubmission();
     const preparing = captured.prepare();
-    const assertion = expect(preparing).rejects.toThrow("Conversation changed");
     act(() => store.current.selectAgent("beta"));
-    await act(async () => { resolve(thread("late-voice", "alpha")); await assertion; });
-    expect(captured.isCurrent()).toBe(false);
+    await act(async () => { resolve(thread("late-voice", "alpha")); expect(await preparing).toBe("late-voice"); });
+    expect(captured.isCurrent()).toBe(true);
+    expect(store.current.selectedAgentId).toBe("beta");
     expect(api.submit).not.toHaveBeenCalled();
   });
 
@@ -762,7 +762,7 @@ describe("ConsoleStoreProvider integration", () => {
     const captured = store.current.captureAttachmentSubmission();
     const controller = new AbortController();
     const preparing = captured.prepare(controller.signal);
-    const assertion = expect(preparing).rejects.toThrow(outcome === "resolve" ? "Conversation changed" : "Synthetic refusal");
+    const assertion = expect(preparing).rejects.toThrow(outcome === "resolve" ? "aborted" : "Synthetic refusal");
     controller.abort();
     expect(captured.isCurrent()).toBe(false);
     await act(async () => {
@@ -775,7 +775,7 @@ describe("ConsoleStoreProvider integration", () => {
     expect(api.submit).not.toHaveBeenCalled();
   });
 
-  it("voice rejects an operator-selected matching new thread while creation acknowledgement is late", async () => {
+  it("voice retains its created thread without overriding an independent selection", async () => {
     localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, "alpha");
     const created = thread("voice-sse-created", "alpha");
     let resolve!: (value: ThreadSummary) => void;
@@ -785,13 +785,12 @@ describe("ConsoleStoreProvider integration", () => {
     await waitFor(() => expect(store.current.selectionLoading).toBe(false));
     const captured = store.current.captureAttachmentSubmission();
     const preparing = captured.prepare();
-    const assertion = expect(preparing).rejects.toThrow("Conversation changed");
     // The thread may appear through SSE before POST acknowledgement; selecting
     // it is still an independent operator choice, not this voice session's handoff.
     act(() => store.current.selectThread(created.id));
-    expect(captured.isCurrent()).toBe(false);
+    expect(captured.isCurrent()).toBe(true);
     await waitFor(() => expect(store.current.selectedThreadId).toBe(created.id));
-    await act(async () => { resolve(created); await assertion; });
+    await act(async () => { resolve(created); expect(await preparing).toBe(created.id); });
     expect(api.submit).not.toHaveBeenCalled();
   });
 
@@ -2469,20 +2468,21 @@ describe("ConsoleStoreProvider integration", () => {
       expect(order).toEqual(["start:0", "end:0", "startTurn"]);
     });
 
-    it("fences captured voice sessions across A → B → A, including before dispatch after writes", async () => {
+    it("continues captured voice sessions across A → B → A with the frozen destination", async () => {
       seedOneThread();
       const beta = thread("voice-beta", "alpha", { messageCount: 1 });
       vi.mocked(api.thread).mockImplementation(async (id) => detail(id === beta.id ? beta : alphaThread));
       const store = await renderStore();
       await waitFor(() => expect(store.current.selectedThreadId).toBe(alphaThread.id));
       const captured = store.current.captureAttachmentSubmission();
+      vi.mocked(api.submit).mockResolvedValue({ submissionId: captured.submissionId, threadId: alphaThread.id, outcome: "turn" });
       act(() => store.current.selectThread(beta.id));
       await waitFor(() => expect(store.current.selectedThreadId).toBe(beta.id));
       act(() => store.current.selectThread(alphaThread.id));
       await waitFor(() => expect(store.current.selectionLoading).toBe(false));
-      expect(captured.isCurrent()).toBe(false);
-      await expect(captured.submit("Stale recording")).rejects.toThrow("Conversation changed");
-      expect(api.submit).not.toHaveBeenCalled();
+      expect(captured.isCurrent()).toBe(true);
+      await captured.submit("Synthetic recording");
+      expect(api.submit).toHaveBeenCalledWith(alphaThread.id, captured.submissionId, expect.objectContaining({ text: "Synthetic recording" }));
     });
 
     it("recorded attachment attempts retain explicit UUID/settings across interleaved ordinary sends and receipt recovery", async () => {
@@ -2511,15 +2511,15 @@ describe("ConsoleStoreProvider integration", () => {
       expect(sessionStorage.getItem("mono-agent.web.pending-submissions") ?? "").not.toContain("synthetic voice");
     });
 
-    it("a captured voice session becomes stale when the conversation is hidden and shown", async () => {
+    it("a captured voice session survives hiding and showing the conversation", async () => {
       seedOneThread();
       const store = await renderStore();
       await waitFor(() => expect(store.current.selectedThreadId).toBe(alphaThread.id));
       act(() => store.current.setConversationVisible(true));
       const captured = store.current.captureAttachmentSubmission();
       act(() => { store.current.setConversationVisible(false); store.current.setConversationVisible(true); });
-      expect(captured.isCurrent()).toBe(false);
-      await expect(captured.prepare()).rejects.toThrow("Conversation changed");
+      expect(captured.isCurrent()).toBe(true);
+      await expect(captured.prepare()).resolves.toBe(alphaThread.id);
     });
 
     it("reuses one submission UUID after an unknown transport result without persisting authored text", async () => {

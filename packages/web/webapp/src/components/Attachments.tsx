@@ -60,7 +60,6 @@ function AttachmentChip({ removable }: { readonly removable: boolean }) {
       void aui.composer().addAttachment(localFile).catch(() => announce("Upload failed. Retry or remove the file."));
     } : undefined}
     actions={<>
-      {isMessageAttachment && href && <a className="icon-button" href={href} download={name} aria-label={`Download ${name}`}><Icon name="download" size={14} /></a>}
       {removable && <AttachmentPrimitive.Remove className="icon-button" aria-label="Remove file"><Icon name="close" size={14} /></AttachmentPrimitive.Remove>}
     </>} />;
   const chipContent = (

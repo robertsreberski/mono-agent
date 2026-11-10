@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Keep web recorded-message sends running across navigation, with bounded device
+  recovery and idempotent Retry/Remove after interruption or reload. Show one
+  recording box while attaching, retain captured duration, and remove sent audio
+  download controls while keeping playback.
+
 - Fund E2 probes with explicit protocol-owned `probeLookupRounds` (1–4, required
   with no default), withdraw tools on the final funded request, and settle early
   answers without spending unused capacity. Normalize answer formatting and

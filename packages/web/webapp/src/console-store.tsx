@@ -1,6 +1,13 @@
-/** In-memory immutable destination/settings; never persisted with audio. */
+/** Immutable destination/settings for an admitted attachment send, not UI selection. */
+export interface AttachmentSubmissionSnapshot {
+  readonly sourceId: string;
+  readonly threadId: string | null;
+  readonly submissionId: string;
+  readonly settings: Pick<StartTurnInput, "model" | "effort" | "inheritRunSettings" | "context1M">;
+}
 export interface AttachmentSubmissionSession {
   isCurrent(): boolean;
+  snapshot(): AttachmentSubmissionSnapshot;
   prepare(signal?: AbortSignal): Promise<string>;
   readonly submissionId: string;
   assertCanSendAttachments(): void;
@@ -358,7 +365,7 @@ interface ConsoleStoreValue {
   ) => Promise<void>;
   readonly sendLiveInput: (text: string) => Promise<void>;
   readonly selectionGeneration: number;
-  readonly captureAttachmentSubmission: () => AttachmentSubmissionSession;
+  readonly captureAttachmentSubmission: (restored?: AttachmentSubmissionSnapshot) => AttachmentSubmissionSession;
   readonly sendSubmission: (
     input: StartTurnInput,
     onThreadResolved?: (threadId: string) => void,
@@ -5983,7 +5990,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     readonly onSelectionInstalled: (proof: { readonly generation: number; readonly thread: ThreadSummary }) => void;
   }) => {
     if (!selectedAgentId) throw new Error("Select an agent before starting a conversation.");
-    setNavigationScope("chats");
+    if (!owner || owner.isCurrent()) setNavigationScope("chats");
     const unresolved = selectionRequestRef.current;
     const supersedesRestoredRead = unresolved?.kind === "thread"
       && restoredSelectionRef.current === unresolved.threadId;
@@ -5991,12 +5998,12 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     // programmatic escape hatch that lets an explicit create replace it; UI
     // entry points remain disabled by `selectionLoading`, while operator-owned
     // bucket/thread/cron navigation still has to settle first.
-    if (!supersedesRestoredRead) requireResolvedSelection();
+    if (!supersedesRestoredRead && (!owner || owner.isCurrent())) requireResolvedSelection();
     const request: CreateThreadRequest = {
       generation: operatorSelectionRef.current,
       sourceId: selectedAgentId,
     };
-    setCreateThreadRequest(request);
+    if (!owner || owner.isCurrent()) setCreateThreadRequest(request);
     try {
       const issuedAt = removedThreadsRef.current.epoch();
       const draftPreferenceKey = preferenceKeyForThread(selectedAgentId, null);
@@ -7337,60 +7344,52 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     [applySubmissionReceipt, createThread, selectedThread, settleThreadWrites],
   );
 
-  const captureAttachmentSubmission = useCallback((): AttachmentSubmissionSession => {
-    requireResolvedSelection();
-    const sourceId = selectedAgentRef.current;
+  const captureAttachmentSubmission = useCallback((restored?: AttachmentSubmissionSnapshot): AttachmentSubmissionSession => {
+    if (!restored) requireResolvedSelection();
+    const sourceId = restored?.sourceId ?? selectedAgentRef.current;
     if (!sourceId) throw new Error("Select an agent before sending.");
-    let generation = operatorSelectionRef.current;
+    const generation = operatorSelectionRef.current;
     const visibilityGeneration = voiceVisibilityRef.current.generation;
-    let thread = selectedThread;
+    if (restored && !restored.threadId && selectedAgentRef.current !== sourceId) throw new Error("Select the recording’s agent before retrying.");
+    let thread = restored?.threadId
+      ? threadsRef.current.find(item => item.id === restored.threadId && item.sourceId === sourceId) ?? null
+      : restored ? null : selectedThread;
+    if (restored?.threadId && !thread) throw new Error("Load the recording's conversation before retrying.");
     let operationSignal: AbortSignal | undefined;
     let preparePromise: Promise<string> | undefined;
-    const submissionId = crypto.randomUUID();
-    const settings = { model: effectiveModel || undefined, effort: effectiveEffort || undefined, inheritRunSettings: false, ...(context1M === undefined ? {} : { context1M }) };
-    const isCurrent = (): boolean => !operationSignal?.aborted
-      && selectedAgentRef.current === sourceId
-      && voiceVisibilityRef.current.generation === visibilityGeneration
-      && operatorSelectionRef.current === generation
-      && selectedThreadRef.current === (thread?.id ?? null);
+    const submissionId = restored?.submissionId ?? crypto.randomUUID();
+    const settings = restored?.settings ?? { model: effectiveModel || undefined, effort: effectiveEffort || undefined, inheritRunSettings: false, ...(context1M === undefined ? {} : { context1M }) };
+    // Navigation cannot revoke an admitted Send. Selection only controls whether
+    // a newly created thread may install itself into the visible conversation.
+    const isCurrent = (): boolean => !operationSignal?.aborted;
+    const isSelected = () => isCurrent() && selectedAgentRef.current === sourceId
+      && operatorSelectionRef.current === generation && voiceVisibilityRef.current.generation === visibilityGeneration && selectedThreadRef.current === null;
     const assertCanSendAttachments = () => {
       const latest = threadsRef.current.find((item) => item.id === thread?.id) ?? thread;
       if (latest?.runState.status === "running") throw new ApiError("Wait for the running response to finish before sending attachments.", 409, "active_attachments_unsupported");
       if (latest?.archivedAt || latest?.trigger?.kind === "cron" || runningManualCompaction(latest)) throw new ApiError("This conversation cannot accept attachments right now.", 409, "attachments_unavailable");
     };
     const prepare = (signal?: AbortSignal): Promise<string> => {
+      signal?.throwIfAborted();
+      if (signal) operationSignal = signal;
       if (preparePromise) return preparePromise;
       preparePromise = (async () => {
-        if (!isCurrent() || signal?.aborted) throw new Error("Conversation changed. Retry from the selected conversation.");
-        operationSignal = signal;
-        if (!thread) {
-          const created = await createThread(undefined, {
-            isCurrent,
-            onSelectionInstalled: (proof) => {
-              generation = proof.generation;
-              thread = proof.thread;
-            },
-          });
-          // Only the owned installation callback can adopt a destination. A
-          // matching id seen via SSE/operator navigation is not that proof.
-          if (!isCurrent() || selectedThreadRef.current !== created.id) throw new Error("Conversation changed. Retry from the selected conversation.");
-          thread = created;
-        }
-        if (!isCurrent()) throw new Error("Conversation changed. Retry from the selected conversation.");
+        if (!thread) thread = await createThread(undefined, { isCurrent: isSelected, onSelectionInstalled: () => undefined });
+        signal?.throwIfAborted();
         return thread.id;
       })();
       void preparePromise.catch(() => { preparePromise = undefined; });
       return preparePromise;
     };
     return {
-      submissionId,
-      assertCanSendAttachments,
-      isCurrent,
-      prepare,
+      submissionId, assertCanSendAttachments, isCurrent, prepare,
+      snapshot: () => ({ sourceId, threadId: thread?.id ?? null, submissionId, settings }),
       submit: async (text, attachmentIds = [], quote, onDispatch) => {
+        const submissionSignal = operationSignal;
+        const isActive = () => !submissionSignal?.aborted;
         await prepare();
-        if (!thread || !isCurrent()) throw new Error("Conversation changed. Retry from the selected conversation.");
-        await sendSubmission({ text, attachmentIds, quote, ...settings }, undefined, { thread, isCurrent }, submissionId, onDispatch);
+        if (!thread || !isActive()) throw new Error("Audio preparation interrupted. Retry Send.");
+        await sendSubmission({ text, attachmentIds, quote, ...settings }, undefined, { thread, isCurrent: isActive }, submissionId, onDispatch);
       },
     };
   }, [context1M, createThread, effectiveEffort, effectiveModel, requireResolvedSelection, selectedThread, sendSubmission]);

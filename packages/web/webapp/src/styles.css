@@ -2777,3 +2777,7 @@ html.keyboard-viewport .skill-browser-popup {
     bottom: calc(100% - var(--app-viewport-top) - var(--app-viewport-height)) !important;
   }
 }
+
+/* A frozen send remains separate from newer editable work in this conversation. */
+.recorded-recovery { display: grid; gap: 4px; max-height: 220px; overflow-y: auto; min-width: 0; }
+.recorded-recovery-text { margin: 0; padding: 4px 8px; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; }

@@ -136,14 +136,23 @@ model/effort/context settings, ownership and an explicit attempt UUID before
 awaiting thread creation or transcription. It transcribes recordings serially
 within one 150-second preparation deadline and composes filename-associated,
 numbered transcripts with authored text once, then uses the existing synchronous
-submission/receipt path. Successful transcripts are cached only in bounded
-attachment/attempt memory, keyed by immutable upload ID. Preparation failures
-send nothing and restore owned content without overwriting newer drafts. An
-uncertain dispatched attempt stays separate from newer work; Check / retry send
-reuses its exact prepared payload/settings/UUID, without retranscription.
-After navigation loses ownership or reload, recovery reads only saved
-thread/receipt references: it never reconstructs
-or automatically resubmits a request.
+submission/receipt path. Send continues for its frozen conversation when you navigate elsewhere or hide
+the app. Failed or interrupted preparation keeps a separate pending message with
+**Retry** and **Remove**, without overwriting newer drafts. Retry retranscribes
+preparation failures; **Check / retry send** reuses the exact prepared
+payload/settings/UUID for a possibly accepted send, without retranscription.
+
+Before preparation, the browser saves pending text, quote, settings and attachment
+bytes in device IndexedDB. Before dispatch it saves the exact prepared payload and
+submission UUID. Reload restores a manual recovery, never automatically resubmits.
+Storage is bounded to eight pending messages and 80 MiB total; existing recordings
+are never evicted to admit another. Storage unavailable/full stops dispatch and
+keeps the in-memory pending message: free storage or remove another saved message,
+then Retry. Confirmed success or explicit Remove clears device bytes. Pending
+recordings otherwise stay on this device until removed; clearing website data or
+OS eviction of website storage can still erase them. Restored, definitely
+undispatched recordings reserve fresh staged uploads, since server staging expires.
+Possibly accepted attempts keep their original IDs to preserve idempotency.
 
 Voice is disabled unless the console owner configures a server-side local
 OpenAI-compatible transcription service or operator-managed proxy. No browser
@@ -190,7 +199,8 @@ provider limits. Cancel, navigation, hiding the tab or unmount releases active
 capture. Stop creates a correctly typed File and uses ordinary staged upload,
 progress, removal and recovery. Staged files expire under the normal 24-hour
 policy; after Send, audio is retained as a normal committed conversation
-attachment, alongside transcript text. It is not persisted in browser storage.
+attachment, alongside transcript text. Pending sends are also saved on this
+device as described above.
 There are no server-side recording markers, transcript caches or preparation jobs.
 The composer shows a compact recording pill with rolling microphone-amplitude
 history, elapsed time, leading Stop and trailing Discard, aligned in place with
@@ -198,7 +208,8 @@ the finished voice note. Recording status remains available to assistive tech
 without a visible label. Reduced-motion preferences keep the meter
 static. A compact, single-row voice note replaces native audio controls in drafts
 and sent messages: Play / Pause, keyboard- and pointer-seekable waveform, duration,
-and the usual remove, upload retry or download actions. Local files decode eagerly
+and draft remove/upload retry actions. Sent audio keeps playback without a
+download control. Local files decode eagerly
 without a network request. Remote waveforms decode only after a short visible
 dwell, through a consumer-cancellable queue; leaving view cancels pending work
 and Data Saver skips automatic remote previews. Only compact peaks/duration and
@@ -226,7 +237,7 @@ starts directly in the Play gesture; remote audio blocked by gesture policy says
 “Tap to play”. Sent transcripts appear as quiet captions beneath the matching
 audio (long captions expand), while stored and model-facing text stays unchanged.
 Explicit playback uses bounded local/same-origin Blob URLs, never autoplay;
-Download keeps the normal forced-download/no-sniff boundary. The app-shell
+Other file downloads keep the normal forced-download/no-sniff boundary. The app-shell
 CSP allows only same-origin and `blob:` media. Sent players share the message
 bubble's inset, with transcript captions directly below; draft chips retain
 separate attachment styling and touch controls keep their 44px hit areas.

@@ -1,5 +1,6 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { noteRecordingDuration } from "../recording-metadata";
 import { VoiceNote } from "./VoiceNote";
 import { loadAudio, prepareWaveform } from "../audio-waveform";
 vi.mock("../audio-waveform", () => ({ cachedWaveform: () => undefined, loadAudio: vi.fn(), prepareWaveform: vi.fn() }));
@@ -126,4 +127,17 @@ it("keeps long transcripts in a named, initially collapsed disclosure", () => {
   expect(details).not.toBeNull(); expect(details).not.toHaveAttribute("open");
   expect(details?.querySelector("summary")).toHaveTextContent("Transcript");
   expect(details?.querySelector("p")).toHaveTextContent(caption.trim());
+});
+
+it.each([Infinity, NaN])("uses captured duration when decoded/media metadata is %s", async value => {
+  vi.mocked(prepareWaveform).mockResolvedValueOnce({ duration: value, peaks: [] });
+  const file = new File(["synthetic"], "recording.m4a", { type: "audio/mp4" });
+  noteRecordingDuration(file, 83);
+  const view = render(<VoiceNote id="finite-fallback" name={file.name} file={file} recorded contentType={file.type} />);
+  const audio = view.container.querySelector("audio")!;
+  Object.defineProperty(audio, "duration", { configurable: true, value });
+  fireEvent.durationChange(audio);
+  expect(await screen.findByRole("button", { name: "Play voice note, 1:23" })).toBeVisible();
+  expect(screen.getByText("1:23")).toBeVisible();
+  expect(view.container.querySelector("a[download]")).toBeNull();
 });

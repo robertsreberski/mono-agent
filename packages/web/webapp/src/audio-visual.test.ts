@@ -334,7 +334,7 @@ describe("bounded waveform preparation", () => {
     const signal = new AbortController().signal;
     for (let i = 0; i < 34; i++) await loadAudio(`lru-${i}`, blob(), "audio/webm", signal);
     expect(cachedWaveform("lru-0")).toBeUndefined(); expect(cachedWaveform("lru-33")?.duration).toBe(7);
-    await expect(loadAudio("large", { size: 10 * 1024 * 1024 + 1 } as File, "audio/webm", signal)).rejects.toThrow("Download");
+    await expect(loadAudio("large", { size: 10 * 1024 * 1024 + 1 } as File, "audio/webm", signal)).rejects.toThrow("playback size limit");
   });
   it("silently falls back on decode failure, with a closed context", async () => {
     const context = contextFixture(); context.decodeAudioData.mockRejectedValueOnce(Error("codec"));

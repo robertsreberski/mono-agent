@@ -2,7 +2,7 @@ import { act, cleanup, render, screen, waitFor, within } from "@testing-library/
 import { commands, page, userEvent } from "@vitest/browser/context";
 import { useLayoutEffect } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { api, uploadContent } from "./api";
+import { ApiError, api, uploadContent } from "./api";
 import { useAssistantRuntime, type PendingAttachment } from "@assistant-ui/react";
 import { ConsoleStoreProvider, SELECTED_AGENT_STORAGE_KEY, useConsoleStore } from "./console-store";
 import { readComposerDraft, resetComposerDraft, writeComposerDraft } from "./composer-draft";
@@ -11,6 +11,7 @@ import { CaptureStatus } from "./components/VoiceComposer";
 import { VoiceNote } from "./components/VoiceNote";
 import { Chat } from "./components/Chat";
 import { agent, attachment, bootstrap, thread, uploadLimits } from "./test/fixtures";
+import { loadRecordedDrafts, removeRecordedDraft } from "./recorded-draft-store";
 import { useRecordedAudio } from "./recorded-audio-context";
 import { FixtureMediaRecorder, installVoiceFixture } from "./test/voice-fixtures";
 import { createThreadPersistence } from "./thread-persistence";
@@ -122,6 +123,7 @@ function seed(selected?: ThreadSummary) {
 }
 beforeEach(async () => {
   await persistence.clearAll();
+  for (const draft of await loadRecordedDrafts()) await removeRecordedDraft(draft.owner.submissionId);
   vi.resetAllMocks();
   localStorage.clear(); sessionStorage.clear(); resetComposerDraft(); window.history.replaceState(null, "", "/");
   localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, "alpha");
@@ -221,6 +223,47 @@ it.skipIf(import.meta.env.VITE_SERVER_PLAYBACK !== "1" || !navigator.userAgent.i
   },
 );
 
+for (const width of [390, 744]) {
+  it(`synthetic recoverable recording states at ${width}px`, async () => {
+    await page.viewport(width, 900);
+    seed(created); const view = mount(); await record();
+    await new Promise(resolve => setTimeout(resolve, 1100));
+    let reserve!: (value: import("./types").WebAttachment) => void;
+    let transfer!: (value: import("./types").WebAttachment) => void;
+    vi.mocked(api.createUpload).mockImplementationOnce(() => new Promise(done => { reserve = done; }));
+    vi.mocked(uploadContent).mockImplementationOnce(() => new Promise(done => { transfer = done; }));
+    await userEvent.click(screen.getByRole("button", { name: "Stop recording" }));
+    await screen.findByText("Attaching recording…");
+    expect(view.container.querySelectorAll(".capture-pill, .composer-attachments .voice-note")).toHaveLength(1);
+    await shot(`resilience-${width}-attaching`);
+    const upload = attachment("synthetic-durable-upload", { name: "recording.webm", contentType: "audio/webm", sizeBytes: 7 });
+    await act(async () => reserve(upload));
+    await screen.findByRole("progressbar", { name: "Uploading recording.webm" });
+    expect(view.container.querySelectorAll(".capture-pill, .composer-attachments .voice-note")).toHaveLength(1);
+    await act(async () => transfer({ ...upload, uploaded: true }));
+    await waitFor(() => expect(screen.queryByRole("progressbar")).toBeNull());
+    expect(screen.getByRole("button", { name: /Play voice note, 0:0[1-9]/ })).toBeVisible();
+    await shot(`resilience-${width}-attached-duration`);
+    vi.mocked(api.transcribe).mockRejectedValueOnce(new DOMException("Synthetic interrupted preparation", "AbortError"));
+    await send(); await screen.findByRole("button", { name: "Retry" });
+    expect(screen.getByRole("button", { name: "Remove" })).toBeVisible();
+    await shot(`resilience-${width}-recoverable-retry`);
+    view.unmount(); mount();
+    await screen.findByRole("button", { name: "Retry" });
+    expect(screen.getByLabelText("Audio attachment: recording.webm")).toBeVisible();
+    expect(api.submit).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(api.submit).toHaveBeenCalledTimes(1));
+    const sent = { ...message("synthetic-durable-sent", created.id, "user", vi.mocked(api.submit).mock.calls[0]![2].text!),
+      attachments: [attachment(vi.mocked(api.submit).mock.calls[0]![2].attachmentIds![0]!, { name: "recording.webm", contentType: "audio/webm", kind: "document", status: "committed", uploaded: true })] };
+    vi.mocked(api.thread).mockResolvedValue({ thread: created, messages: [sent] });
+    act(() => store.retry());
+    await waitFor(() => expect(document.querySelectorAll(".message-attachments .voice-note")).toHaveLength(1));
+    expect(document.querySelector(".message-attachments a[download]")).toBeNull();
+    await shot(`resilience-${width}-sent-no-download`);
+  });
+}
+
 for (const width of [1280, 390]) {
   it(`compact sent voice variants at ${width}px (synthetic audio and conversation)`, async () => {
     await page.viewport(width, width === 1280 ? 900 : 844);
@@ -239,7 +282,8 @@ for (const width of [1280, 390]) {
     // a supported recorder MIME, matching the existing visual fixture seam.
     vi.spyOn(window, "fetch").mockImplementation(async () => new Response(syntheticAudio(7), { headers: { "Content-Type": "audio/webm" } }));
     const view = mount();
-    await screen.findAllByRole("link", { name: "Download synthetic.webm" });
+    await screen.findAllByLabelText("Audio attachment: synthetic.webm");
+    expect(screen.queryByRole("link", { name: "Download synthetic.webm" })).toBeNull();
     await waitFor(() => {
       expect(view.container.querySelectorAll(".message-user-content")).toHaveLength(5);
       expect(view.container.querySelectorAll(".message-attachments .voice-note")).toHaveLength(4);
@@ -271,18 +315,10 @@ for (const width of [1280, 390]) {
       if (caption && typed?.textContent) {
         const captionBounds = caption.getBoundingClientRect();
         const textBounds = typed.getBoundingClientRect();
-        const download = note.querySelector<SVGGraphicsElement>('.voice-note-actions a[download] svg path')!;
-        const box = download.getBBox();
-        const matrix = download.getScreenCTM()!;
-        const stroke = parseFloat(getComputedStyle(download).strokeWidth) / 2;
-        const downloadRight = (box.x + box.width + stroke) * matrix.a + matrix.e;
-        const leftDelta = face.left - captionBounds.left;
-        const rightDelta = downloadRight - textBounds.right;
-        expect(Math.abs(leftDelta)).toBeLessThanOrEqual(1);
+        expect(note.querySelector("a[download]")).toBeNull();
+        expect(Math.abs(face.left - captionBounds.left)).toBeLessThanOrEqual(1);
         expect(Math.abs(face.left - textBounds.left)).toBeLessThanOrEqual(1);
-        expect(Math.abs(rightDelta)).toBeLessThanOrEqual(1);
         expect(Math.abs(captionBounds.right - textBounds.right)).toBeLessThanOrEqual(1);
-        console.info("sent voice alignment", { width, leftDelta, rightDelta, visibleTopInset: face.top - rect.top, horizontalInset: textBounds.left - rect.left, playerWidth: player.getBoundingClientRect().width, contentWidth: textBounds.width });
       }
       expect(bubble.scrollWidth).toBeLessThanOrEqual(bubble.clientWidth);
       expect(note.getBoundingClientRect().left).toBeGreaterThan(rect.left);
@@ -497,36 +533,38 @@ describe("recorded audio through actual Chat, Composer, ordinary uploads and sub
         vi.mocked(api.transcribe).mockResolvedValueOnce({ text: "Add basil." }).mockRejectedValueOnce(new Error("Synthetic transcription failure. Retry Send."));
         await send();
         await screen.findByText("Synthetic transcription failure. Retry Send.");
-        await waitFor(() => expect(screen.getByRole("combobox", { name: "Message" })).toHaveValue("Include easy-care herbs."));
+        await screen.findByRole("button", { name: "Retry" });
+        expect(screen.getByRole("combobox", { name: "Message" })).toHaveValue("");
         expect(api.submit).not.toHaveBeenCalled(); expect(api.createUpload).toHaveBeenCalledTimes(3);
         checkLayout(); await capture("05-preparation-failure");
         let resolveTranscript!: (value: { text: string }) => void;
-        vi.mocked(api.transcribe).mockImplementationOnce(() => new Promise((resolve) => { resolveTranscript = resolve; }));
+        vi.mocked(api.transcribe).mockResolvedValueOnce({ text: "Add basil." }).mockImplementationOnce(() => new Promise((resolve) => { resolveTranscript = resolve; }));
         vi.mocked(api.submit).mockRejectedValueOnce(new Error("Acknowledgement unavailable"));
         vi.mocked(api.submission).mockRejectedValueOnce(new Error("Receipt unavailable"));
-        await send(); await screen.findByText("Preparing message…");
+        await userEvent.click(screen.getByRole("button", { name: "Retry" })); await screen.findByText("Preparing message…");
         checkLayout(); await capture("06-preparing");
         act(() => store.setModel("provider/model"));
+        await waitFor(() => expect(resolveTranscript).toBeTypeOf("function"));
         await act(async () => resolveTranscript({ text: "Grow mint in its own pot." }));
         await screen.findByRole("button", { name: "Check / retry send" });
         const first = vi.mocked(api.submit).mock.calls[0]!;
         expect(first[2]).toMatchObject({ text: 'Include easy-care herbs.\n\nAudio transcript 1 ("recording.webm"):\nAdd basil.\n\nAudio transcript 2 ("recording.webm"):\nGrow mint in its own pot.',
           attachmentIds: ["audio-upload-1", "audio-upload-2", "audio-upload-3"], model: "provider/other", inheritRunSettings: false, quote: { messageId: "garden-user", text: "small balcony garden" } });
-        expect(api.transcribe).toHaveBeenCalledTimes(3); // Successful first recording was cached.
+        expect(api.transcribe).toHaveBeenCalledTimes(4); // Preparation failure retries transcription; uncertain dispatch does not.
         await userEvent.fill(screen.getByRole("combobox", { name: "Message" }), "A later draft stays separate.");
         checkLayout(); await capture("07-receipt-recovery");
         await userEvent.click(screen.getByRole("button", { name: "Check / retry send" }));
         await waitFor(() => expect(api.submit).toHaveBeenCalledTimes(2));
         await waitFor(() => expect(screen.queryByRole("button", { name: "Check / retry send" })).toBeNull());
         expect(vi.mocked(api.submit).mock.calls[1]).toEqual(first);
-        expect(api.transcribe).toHaveBeenCalledTimes(3); expect(api.createUpload).toHaveBeenCalledTimes(3);
+        expect(api.transcribe).toHaveBeenCalledTimes(4); expect(api.createUpload).toHaveBeenCalledTimes(3);
         expect(screen.getByRole("combobox", { name: "Message" })).toHaveValue("A later draft stays separate.");
         const sent = { ...message("garden-sent", selected.id, "user", first[2].text!), attachments: [...uploads.values()].map((value) => ({ ...value, status: "committed" as const, contentUrl: `/api/v1/uploads/${value.id}/content` })) };
         const reply = message("garden-answer", selected.id, "assistant", "Basil and mint are on the plan.");
         vi.mocked(api.thread).mockResolvedValue({ thread: { ...selected, messageCount: 4, revision: 2 }, messages: [...history, sent, reply] });
         act(() => FixtureEventSource.current.onmessage?.(new MessageEvent("message", { data: JSON.stringify({ version: 1, type: "message.changed", at: reply.createdAt, threadId: selected.id, payload: { messageId: sent.id } }) })));
         await screen.findByText(reply.parts[0]!.type === "text" ? reply.parts[0]!.text : "");
-        expect(screen.getAllByRole("link", { name: "Download recording.webm" })).toHaveLength(2);
+        expect(screen.queryByRole("link", { name: "Download recording.webm" })).toBeNull();
         expect(screen.getByText("Add basil.")).toBeVisible();
         expect(screen.getByText("Grow mint in its own pot.")).toBeVisible();
         expect(view.container.textContent).not.toContain("Audio transcript 1");
@@ -689,7 +727,7 @@ describe("recorded audio through actual Chat, Composer, ordinary uploads and sub
     const capture = vi.spyOn(store, "captureAttachmentSubmission");
     const input = { role: "user" as const, content: [{ type: "text" as const, text: "Original intent" }], attachments, parentId: null };
     await act(async () => { await Promise.all([runtime.thread.append(input), runtime.thread.append(input)]); });
-    expect(capture).toHaveBeenCalledTimes(1); expect(api.transcribe).toHaveBeenCalledTimes(1);
+    expect(capture).toHaveBeenCalledTimes(1); await waitFor(() => expect(api.transcribe).toHaveBeenCalledTimes(1));
     await act(async () => resolve({ text: "One transcript" }));
     await waitFor(() => expect(api.submit).toHaveBeenCalledTimes(1));
   });
@@ -701,7 +739,7 @@ describe("recorded audio through actual Chat, Composer, ordinary uploads and sub
     await userEvent.fill(screen.getByRole("combobox", { name: "Message" }), "Original");
     await act(async () => runtime.thread.composer.send());
     await act(async () => runtime.thread.append({ role: "user", content: [{ type: "text", text: "Newer draft" }], attachments, parentId: null }));
-    expect(api.transcribe).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(api.transcribe).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(screen.getByRole("combobox", { name: "Message" })).toHaveValue("Newer draft"));
     expect(runtime.thread.composer.getState().attachments).toHaveLength(0);
     await act(async () => resolve({ text: "Original transcript" }));
@@ -772,7 +810,7 @@ describe("recorded audio through actual Chat, Composer, ordinary uploads and sub
       uploadSignal = signal; signal!.addEventListener("abort", () => reject(new DOMException("Cancelled", "AbortError")), { once: true });
     }));
     await userEvent.click(screen.getByRole("button", { name: "Stop recording" }));
-    await screen.findByText("Attaching recording…");
+    await screen.findByRole("progressbar", { name: "Uploading recording.webm" });
     if (action === "remove") await userEvent.click(screen.getByRole("button", { name: "Remove file" }));
     else act(() => store.selectThread(other.id));
     await waitFor(() => expect(uploadSignal?.aborted).toBe(true));
@@ -782,20 +820,17 @@ describe("recorded audio through actual Chat, Composer, ordinary uploads and sub
     expect(api.submit).not.toHaveBeenCalled(); expect(api.transcribe).not.toHaveBeenCalled();
     await record(); await userEvent.click(screen.getByRole("button", { name: "Cancel recording" }));
   });
-  it("hiding the tab cancels preparation, restores owned attachments and ignores a late transcript", async () => {
+  it("hiding the tab does not cancel an admitted Send", async () => {
     seed(created); mount(); await record(); await stop();
     let resolve!: (value: { text: string }) => void;
-    vi.mocked(api.transcribe).mockImplementationOnce(() => new Promise((done) => { resolve = done; }));
+    vi.mocked(api.transcribe).mockImplementationOnce(() => new Promise(done => { resolve = done; }));
     await send(); await waitFor(() => expect(api.transcribe).toHaveBeenCalledTimes(1));
     const hidden = vi.spyOn(document, "hidden", "get").mockReturnValue(true);
-    try { act(() => document.dispatchEvent(new Event("visibilitychange"))); }
-    finally { hidden.mockRestore(); }
-    await screen.findByText("Audio preparation cancelled. Your draft and files are kept.");
-    expect(vi.mocked(api.transcribe).mock.calls[0]![2]!.aborted).toBe(true);
-    await act(async () => resolve({ text: "Stale synthetic transcript" }));
-    await send(); await waitFor(() => expect(api.submit).toHaveBeenCalledTimes(1));
-    expect(api.transcribe).toHaveBeenCalledTimes(2); expect(api.createUpload).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(api.submit).mock.calls[0]![2].text).not.toContain("Stale synthetic transcript");
+    try { act(() => document.dispatchEvent(new Event("visibilitychange"))); } finally { hidden.mockRestore(); }
+    expect(vi.mocked(api.transcribe).mock.calls[0]![2]!.aborted).toBe(false);
+    await act(async () => resolve({ text: "Synthetic continuation" }));
+    await waitFor(() => expect(api.submit).toHaveBeenCalledTimes(1));
+    expect(api.submit).toHaveBeenCalledWith(created.id, expect.any(String), expect.objectContaining({ text: expect.stringContaining("Synthetic continuation") }));
   });
   it("pre-dispatch failure restores owned text/files without overwriting a newer draft or quote", async () => {
     seed(created); mount(); await record(); await stop();
@@ -808,12 +843,13 @@ describe("recorded audio through actual Chat, Composer, ordinary uploads and sub
     await act(async () => runtime.thread.composer.addAttachment(new File(["new"], "newer.txt", { type: "text/plain" })));
     await act(async () => reject(new Error("Synthetic preparation refusal")));
     await screen.findByText("Synthetic preparation refusal");
-    expect(screen.getByRole("combobox", { name: "Message" })).toHaveValue("Original authored text.\n\nNewer authored text.");
+    expect(screen.getByRole("combobox", { name: "Message" })).toHaveValue("Newer authored text.");
+    expect(screen.getByRole("button", { name: "Retry" })).toBeVisible();
     expect(runtime.thread.composer.getState().quote?.text).toBe("Newer quote");
     expect(screen.getByText("newer.txt")).toBeVisible(); expect(screen.getByLabelText("Audio attachment: recording.webm")).toBeVisible();
     expect(api.submit).not.toHaveBeenCalled(); expect(api.createUpload).toHaveBeenCalledTimes(2);
   });
-  it("navigation after uncertain dispatch and reload keep receipt references only, never reconstructing or autosending", async () => {
+  it("navigation and reload retain an exact uncertain attempt without autosending", async () => {
     seed(created); const view = mount(); await record(); await stop();
     vi.mocked(api.submit).mockRejectedValueOnce(new Error("Uncertain dispatch"));
     vi.mocked(api.submission).mockRejectedValueOnce(new Error("Receipt unavailable"));
@@ -823,13 +859,31 @@ describe("recorded audio through actual Chat, Composer, ordinary uploads and sub
     act(() => store.selectThread(other.id)); await waitFor(() => expect(store.detail?.thread.id).toBe(other.id));
     await userEvent.fill(screen.getByRole("combobox", { name: "Message" }), "Destination draft.");
     act(() => store.selectThread(created.id)); await waitFor(() => expect(store.detail?.thread.id).toBe(created.id));
-    expect(screen.queryByRole("button", { name: "Check / retry send" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Check / retry send" })).toBeVisible();
     expect(runtime.thread.composer.getState().attachments).toHaveLength(0); expect(api.deleteUpload).not.toHaveBeenCalled();
     vi.mocked(api.submission).mockResolvedValue({ submissionId: attemptId, threadId: created.id, outcome: "turn" });
     view.unmount(); mount();
     await waitFor(() => expect(api.submission).toHaveBeenCalledWith(created.id, attemptId));
     expect(api.submit).toHaveBeenCalledTimes(1); expect(api.transcribe).toHaveBeenCalledTimes(1);
     expect(runtime.thread.composer.getState().attachments).toHaveLength(0);
+    const retry = await screen.findByRole("button", { name: "Check / retry send" });
+    await userEvent.click(retry);
+    await waitFor(() => expect(api.submit).toHaveBeenCalledTimes(2));
+    expect(vi.mocked(api.submit).mock.calls[1]).toEqual(vi.mocked(api.submit).mock.calls[0]);
+    expect(api.transcribe).toHaveBeenCalledTimes(1);
+  });
+  it("retries a definitive submission rejection with durable bytes and a fresh admitted identity", async () => {
+    seed(created); mount(); await record(); await stop();
+    vi.mocked(api.submit).mockRejectedValueOnce(new ApiError("Synthetic expired upload", 404, "upload_not_found"));
+    vi.mocked(api.submission).mockRejectedValueOnce(new ApiError("Synthetic receipt missing", 404, "submission_not_found"));
+    await send(); await screen.findByRole("button", { name: "Retry" });
+    const first = vi.mocked(api.submit).mock.calls[0]!;
+    await userEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(api.submit).toHaveBeenCalledTimes(2));
+    const second = vi.mocked(api.submit).mock.calls[1]!;
+    expect(second[1]).not.toBe(first[1]); expect(second[2].attachmentIds).not.toEqual(first[2].attachmentIds);
+    expect(api.transcribe).toHaveBeenCalledTimes(2);
+    await waitFor(async () => expect(await loadRecordedDrafts()).toHaveLength(0));
   });
   it("only recording Stop is shown during capture, and an audio draft waits for an active response", async () => {
     seed({ ...created, runState: { id: "running-one", status: "running" } }); mount();
@@ -841,7 +895,7 @@ describe("recorded audio through actual Chat, Composer, ordinary uploads and sub
     await userEvent.click(screen.getByRole("button", { name: "Remove file" }));
     expect(runtime.thread.composer.getState().attachments).toHaveLength(0);
   });
-  it.each(["permission", "transcription"] as const)("navigation fences late %s and recovers the destination composer", async (phase) => {
+  it.each(["permission", "transcription"] as const)("navigation cancels capture permission but continues admitted %s", async (phase) => {
     seed(created); mount();
     let resolvePermission!: (stream: MediaStream) => void;
     let resolveTranscript!: (value: { text: string }) => void;
@@ -860,7 +914,9 @@ describe("recorded audio through actual Chat, Composer, ordinary uploads and sub
     expect(screen.getByRole("combobox", { name: "Message" })).toBeEnabled();
     if (phase === "permission") await act(async () => resolvePermission(fixture.stream));
     else await act(async () => resolveTranscript({ text: "Stale recording text" }));
-    expect(api.submit).not.toHaveBeenCalled(); expect(runtime.thread.composer.getState().attachments).toHaveLength(0);
+    if (phase === "permission") expect(api.submit).not.toHaveBeenCalled();
+    else { await waitFor(() => expect(api.submit).toHaveBeenCalledTimes(1)); expect(vi.mocked(api.submit).mock.calls[0]![0]).toBe(created.id); }
+    expect(runtime.thread.composer.getState().attachments).toHaveLength(0);
     expect(fixture.stop).toHaveBeenCalledTimes(2);
     act(() => store.selectThread(created.id));
     await waitFor(() => expect(store.selectionLoading).toBe(false));
@@ -887,7 +943,9 @@ describe("recorded audio through actual Chat, Composer, ordinary uploads and sub
     act(() => { store.setConversationVisible(false); writeComposerDraft("alpha", null, "A newer fictional draft."); store.setModel("provider/other"); });
     await act(async () => { if (outcome === "resolve") resolve(created); else reject(new Error("Synthetic refusal")); });
     expect(readComposerDraft("alpha", null)).toBe("A newer fictional draft.");
-    expect(store.model).toBe("provider/other"); expect(api.submit).not.toHaveBeenCalled(); expect(api.transcribe).not.toHaveBeenCalled();
+    expect(store.model).toBe("provider/other");
+    if (outcome === "resolve") await waitFor(() => expect(api.submit).toHaveBeenCalledTimes(1));
+    else { expect(api.submit).not.toHaveBeenCalled(); expect(api.transcribe).not.toHaveBeenCalled(); }
     act(() => store.setConversationVisible(true));
   });
   it.skipIf(!navigator.userAgent.includes("Chrome")).each(["cancel", "navigation", "unmount"] as const)("real analyser lifecycle during native capture: %s (clock values unverified)", async action => {

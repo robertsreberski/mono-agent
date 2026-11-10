@@ -112,7 +112,7 @@ const checkServerVoicePlayback: BrowserCommand<[object, object, number[]]> = asy
     // Selecting through the real UI also exercises the production message path.
     await tab.getByRole("button", { name: "Open Synthetic voice conversation", exact: true }).click();
     const play = tab.getByRole("button", { name: /^Play voice note/ });
-    for (const control of [play, tab.getByRole("link", { name: "Download synthetic.webm" })]) {
+    for (const control of [play]) {
       const bounds = await control.boundingBox();
       if (!bounds || bounds.width < 44 || bounds.height < 44) throw new Error("Touch target smaller than 44px");
     }
@@ -128,7 +128,7 @@ const checkServerVoicePlayback: BrowserCommand<[object, object, number[]]> = asy
       }
       if (!media.src.startsWith("blob:")) throw new Error("Expected blob playback");
     });
-    if (await tab.getByText("Audio preview unavailable. Use Download.", { exact: true }).count()) throw new Error("Voice note entered its error path");
+    if (await tab.getByText("Audio preview unavailable. Try again.", { exact: true }).count()) throw new Error("Voice note entered its error path");
     if (violations.length) throw new Error(`CSP violations: ${violations.join(", ")}`);
     return { csp, played: true, mediaViolations: violations };
   } finally { await browser.close(); await server?.stop(); await rm(root, { recursive: true, force: true }); }
