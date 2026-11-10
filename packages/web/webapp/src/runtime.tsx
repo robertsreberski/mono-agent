@@ -13,7 +13,7 @@ import {
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { RecordedAudioContext } from "./recorded-audio-context";
 import { loadRecordedDrafts, recordedStorageUnavailable, removeRecordedDraft, saveRecordedDraft, type RecordedDraft } from "./recorded-draft-store";
-import { recordedSubmissionOutcome, withRecordedSendLock } from "./recorded-send-guard";
+import { canRenewRecordedSubmission, recordedSubmissionOutcome, withRecordedSendLock } from "./recorded-send-guard";
 import type { AttachmentSubmissionSession } from "./console-store";
 import { RecordedSubmissionAttempt } from "./recorded-submission";
 import { WebUploadAttachmentAdapter } from "./attachment-adapter";
@@ -549,7 +549,7 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
     [attachmentAdapter],
   );
 
-  type RecordedState = { saved?: boolean; memoryOnly?: boolean; attempt: RecordedSubmissionAttempt; agentId: string | null; busy: boolean; error?: string; uncertain: boolean };
+  type RecordedState = { saved?: boolean; memoryOnly?: boolean; attempt: RecordedSubmissionAttempt; agentId: string | null; busy: boolean; checking?: boolean; error?: string; uncertain: boolean };
   const recordedRef = useRef<RecordedState[]>([]);
   const [recordedStates, setRecordedStates] = useState<RecordedState[]>([]);
   const [recordedLoaded, setRecordedLoaded] = useState(false);
@@ -592,43 +592,61 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
     if (state.saved) await saveRecordedDraft(draft, previous.owner.submissionId);
     state.attempt = attemptFromDraft(draft); state.uncertain = false;
   };
+  const pendingSubmission = "Send is still in progress. Retry waits for the same request; no duplicate will be sent.";
+  const markMemoryOnly = (state: RecordedState) => {
+    state.saved = false; state.memoryOnly = true; setRecordedNotice(memoryNotice);
+  };
+  const adoptLatest = (state: RecordedState, latest: RecordedDraft) => {
+    const local = state.attempt.snapshot();
+    if (latest.dispatched !== local.dispatched || latest.composed !== local.composed || latest.owner.threadId !== local.owner.threadId
+      || latest.attachments.map(item => item.id).join() !== local.attachments.map(item => item.id).join()) {
+      attachmentAdapter.completeSend(state.attempt.attachments);
+      state.attempt = attemptFromDraft(latest); state.uncertain = latest.dispatched;
+    }
+  };
   const runRecorded = async (state: RecordedState): Promise<void> => {
-    let retryWithNewIdentity = false;
-    if (state.busy) return;
+    if (state.attempt.submissionPending) { state.error = pendingSubmission; publishRecorded(); return; }
+    if (state.busy || state.checking) return;
     state.busy = true; delete state.error; publishRecorded();
     try {
       const acquired = await withRecordedSendLock(state.attempt.owner.submissionId, async () => {
+        let receiptChecked = false;
         if (state.saved) {
-          // Another tab may have completed or restaged this recovery since we
-          // loaded it. Never overwrite its newer payload or delete its uploads.
           const latest = (await loadRecordedDrafts()).find(draft => draft.owner.submissionId === state.attempt.owner.submissionId);
-          if (!latest) { state.saved = false; await retireRecorded(state); return; }
-          const local = state.attempt.snapshot();
-          if (latest.dispatched !== local.dispatched || latest.composed !== local.composed || latest.owner.threadId !== local.owner.threadId
-            || latest.attachments.map(item => item.id).join() !== local.attachments.map(item => item.id).join()) {
-            attachmentAdapter.completeSend(state.attempt.attachments);
-            state.attempt = attemptFromDraft(latest); state.uncertain = latest.dispatched;
-          }
+          // Absence may be OS eviction, not successful submission. Keep browser
+          // bytes unless this dispatched identity has an accepted receipt.
+          if (!latest) {
+            if (state.attempt.dispatched) {
+              receiptChecked = true;
+              if (await recordedSubmissionOutcome(state.attempt.threadId, state.attempt.owner.submissionId) === "accepted") {
+                state.saved = false; await retireRecorded(state); return;
+              }
+            }
+            markMemoryOnly(state);
+          } else adoptLatest(state, latest);
         }
-        if (state.attempt.dispatched) {
-          const outcome = await recordedSubmissionOutcome(state.attempt.threadId, state.attempt.owner.submissionId);
-          if (outcome === "accepted") { await retireRecorded(state); return; }
-          if (outcome === "not-accepted") {
-            await replaceUnaccepted(state);
-            retryWithNewIdentity = true;
-            return; // Release the old identity before acquiring the new one.
-          }
+        if (!receiptChecked && state.attempt.dispatched && await recordedSubmissionOutcome(state.attempt.threadId, state.attempt.owner.submissionId) === "accepted") {
+          await retireRecorded(state); return;
         }
         try {
           await state.attempt.send(draft => persistRecorded(state, draft));
           await retireRecorded(state);
         } catch (failure) {
+          let settledFailure = failure;
+          if (state.attempt.submissionPending) {
+            state.uncertain = true; state.busy = false; state.error = pendingSubmission; publishRecorded();
+            // The wrapper deadline cannot release the cross-window lock while
+            // the underlying HTTP submission is still capable of arriving.
+            try { await state.attempt.waitForSubmission(); await retireRecorded(state); return; }
+            catch (underlyingFailure) { settledFailure = underlyingFailure; }
+            state.busy = true; publishRecorded();
+          }
           if (state.attempt.dispatched) {
-            const outcome = await recordedSubmissionOutcome(state.attempt.threadId, state.attempt.owner.submissionId, failure);
-            if (outcome === "accepted") { await retireRecorded(state); return; }
-            if (outcome === "not-accepted") {
+            if (canRenewRecordedSubmission(settledFailure, state.attempt.reposted)) {
               try { await replaceUnaccepted(state); }
               catch { /* Keep the old uncertain identity if atomic replacement fails. */ }
+            } else if (await recordedSubmissionOutcome(state.attempt.threadId, state.attempt.owner.submissionId) === "accepted") {
+              await retireRecorded(state); return;
             }
           }
           if (state.saved && !state.attempt.dispatched) {
@@ -637,58 +655,69 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
           }
           state.uncertain = state.attempt.dispatched;
           state.error = state.uncertain ? "Send not confirmed. Retry checks the same message without sending a duplicate."
-            : failure instanceof DOMException && failure.name === "AbortError" ? "Audio preparation interrupted. Your recording is kept. Retry to transcribe and send."
-            : failure instanceof Error ? failure.message : "Audio preparation interrupted. Retry to transcribe and send again.";
+            : settledFailure instanceof DOMException && settledFailure.name === "AbortError" ? "Audio preparation interrupted. Your recording is kept. Retry to transcribe and send."
+            : settledFailure instanceof Error ? settledFailure.message : "Audio preparation interrupted. Retry to transcribe and send again.";
           attachmentAdapter.retainForRecovery(state.attempt.attachments);
         }
       });
       if (!acquired) state.error = otherWindow;
     } catch (failure) {
-      state.error = failure instanceof Error ? failure.message : "Recording recovery unavailable. Retry or Remove.";
+      state.error = state.saved && recordedStorageUnavailable(failure)
+        ? "Saved recording storage is unavailable. Sending is paused to avoid duplicates. Remove still clears this window's recovery."
+        : failure instanceof Error ? failure.message : "Recording recovery unavailable. Retry or Remove.";
     } finally { state.busy = false; publishRecorded(); }
-    if (retryWithNewIdentity) await runRecorded(state);
   };
   useEffect(() => {
     let active = true;
-    void loadRecordedDrafts().then(async drafts => {
-      for (const original of drafts) {
-        if (!active) return;
-        let draft: RecordedDraft | undefined = original;
-        let acquired = false;
-        let recoveryError: string | undefined;
-        try { acquired = await withRecordedSendLock(original.owner.submissionId, async () => {
-          draft = (await loadRecordedDrafts()).find(item => item.owner.submissionId === original.owner.submissionId);
-          if (!draft?.dispatched) return;
-          const outcome = await recordedSubmissionOutcome(draft.owner.threadId, draft.owner.submissionId);
-          if (outcome === "accepted") { await removeRecordedDraft(draft.owner.submissionId); draft = undefined; }
-          else if (outcome === "not-accepted") {
-            const next = { ...draft, owner: { ...draft.owner, submissionId: crypto.randomUUID() }, dispatched: false, composed: undefined };
-            await saveRecordedDraft(next, draft.owner.submissionId); draft = next;
-          }
-        }); } catch {
-          draft = original;
-          recoveryError = "Could not reconcile the saved message. Retry to check its receipt, or Remove.";
-        }
-        if (!active) return;
-        if (draft) recordedRef.current.push({ saved: true, attempt: attemptFromDraft(draft), agentId: draft.owner.sourceId, busy: false, uncertain: draft.dispatched,
-          error: recoveryError ?? (acquired ? "Recording recovered on this device. Retry to check or send, or Remove." : otherWindow) });
+    void loadRecordedDrafts().then(drafts => {
+      if (!active) return;
+      const states: RecordedState[] = drafts.map(draft => ({ saved: true, attempt: attemptFromDraft(draft), agentId: draft.owner.sourceId,
+        busy: false, checking: draft.dispatched, uncertain: draft.dispatched,
+        error: draft.dispatched ? undefined : "Recording recovered on this device. Retry to send, or Remove." }));
+      recordedRef.current.push(...states);
+      // Reading bytes is the readiness boundary. Slow receipt checks belong only
+      // to their own drafts, never to another conversation's new Send.
+      setRecordedLoaded(true); publishRecorded();
+      for (const state of states.filter(item => item.checking)) void (async () => {
+        try {
+          const acquired = await withRecordedSendLock(state.attempt.owner.submissionId, async () => {
+            const latest = (await loadRecordedDrafts()).find(draft => draft.owner.submissionId === state.attempt.owner.submissionId);
+            if (latest) adoptLatest(state, latest);
+            if (state.attempt.dispatched && await recordedSubmissionOutcome(state.attempt.threadId, state.attempt.owner.submissionId) === "accepted") {
+              if (!latest) state.saved = false;
+              await retireRecorded(state);
+            } else {
+              if (!latest) markMemoryOnly(state);
+              state.error = "Recording recovered on this device. Retry checks the same send, or Remove.";
+            }
+          });
+          if (!acquired) state.error = otherWindow;
+        } catch { state.error = "Could not reconcile the saved message. Retry to check its receipt, or Remove."; }
+        finally { state.checking = false; if (active) publishRecorded(); }
+      })();
+    }).catch(error => {
+      if (active) {
+        setRecordedNotice(recordedStorageUnavailable(error) ? memoryNotice : "Saved recordings could not be read. Try reloading to recover them.");
+        setRecordedLoaded(true);
       }
-      publishRecorded();
-    }).catch(error => { if (active) setRecordedNotice(recordedStorageUnavailable(error) ? memoryNotice : "Saved recordings could not be read. Try reloading to recover them."); })
-      .finally(() => { if (active) setRecordedLoaded(true); });
+    });
     return () => { active = false; };
   }, [attemptFromDraft, publishRecorded]);
   const removeRecorded = async (state: RecordedState) => {
-    if (state.busy) return;
+    if (state.attempt.submissionPending) { state.error = pendingSubmission; publishRecorded(); return; }
+    if (state.busy || state.checking) return;
     state.busy = true; publishRecorded();
     try {
       const acquired = await withRecordedSendLock(state.attempt.owner.submissionId, async () => {
-        // Stored uploads may have changed in another window. Only clear local
-        // recovery here; staged server files expire normally, committed files stay.
-        await retireRecorded(state);
+        recordedRef.current = recordedRef.current.filter(item => item !== state);
+        attachmentAdapter.completeSend(state.attempt.attachments); publishRecorded();
+        if (state.saved) {
+          try { await removeRecordedDraft(state.attempt.owner.submissionId); }
+          catch { setRecordedNotice("Recovery removed from this window. Its saved copy could not be deleted and may return after reload."); }
+        }
       });
       if (!acquired) state.error = otherWindow;
-    } catch { state.error = "Could not remove the saved recording. Retry Remove when device storage is available."; }
+    } catch { state.error = "Could not remove the saved recording. Retry Remove."; }
     finally { state.busy = false; publishRecorded(); }
   };
 
@@ -1026,7 +1055,7 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
             catalogByProvider={routeOwner?.sourceId === store.selectedAgentId ? store.catalogByProvider : undefined}
           >
             <ReplyAccessProvider refreshAttachment={store.refreshReplyAttachmentAccess}>
-              <RecordedAudioContext.Provider value={{ adapter: attachmentAdapter, busy: Boolean(recordedState?.busy),
+              <RecordedAudioContext.Provider value={{ adapter: attachmentAdapter, busy: Boolean(recordedState?.busy), checking: Boolean(recordedState?.checking),
                 error: recordedState?.error, notice: recordedNotice, uncertain: Boolean(recordedState?.uncertain),
                 pending: Boolean(recordedState), text: recordedState?.attempt.text,
                 files: recordedState ? attachmentAdapter.snapshotFiles(recordedState.attempt.attachments) : [],

@@ -157,11 +157,18 @@ recordings otherwise stay on this device until removed; clearing website data or
 OS eviction of website storage can still erase them. Restored, definitely
 undispatched recordings reserve fresh staged uploads, since server staging expires.
 Possibly accepted attempts keep their original IDs to preserve idempotency.
-Only an explicitly missing/rejected receipt permits a new identity; an HTTP
-admission error without receipt evidence stays uncertain. Where supported,
+A missing GET receipt is still uncertain: an earlier POST may arrive later.
+Retry re-POSTs the same prepared payload and UUID. Only a definitive re-POST
+answer after the server's UUID lookup (a rejected receipt or permanently missing
+attachment) permits a new identity. The original submission promise retains its
+cross-window lock until it actually settles, even after the confirmation timeout. Where supported,
 exclusive browser locks keep two windows from retrying/restaging the same saved
 attempt simultaneously. Pending, idle recovery does not block ordinary text/file
-sends or use another conversation's attachment budget.
+sends or use another conversation's attachment budget. Receipt checks run
+independently with a per-draft “Checking saved send…” status; they do not delay
+new recorded Sends in other conversations. If device storage evicts a draft,
+in-memory recording bytes remain recoverable. Remove clears this window even if
+the saved copy cannot be deleted, with a notice that it may return after reload.
 
 Voice is disabled unless the console owner configures a server-side local
 OpenAI-compatible transcription service or operator-managed proxy. No browser

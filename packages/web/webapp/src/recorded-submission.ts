@@ -20,6 +20,10 @@ export class RecordedSubmissionAttempt {
   controller = new AbortController();
   attachments: readonly CompleteAttachment[];
   private needsRestaging = false;
+  private sending?: Promise<void>;
+  private submission?: Promise<void>;
+  submissionPending = false;
+  reposted = false;
   readonly quote?: WebQuote;
   readonly text: string;
   dispatched = false;
@@ -43,7 +47,21 @@ export class RecordedSubmissionAttempt {
       composed: this.composed, dispatched: possiblyDispatched };
   }
   restore(draft: RecordedDraft): void { this.composed = draft.composed; this.dispatched = draft.dispatched; this.needsRestaging = !draft.dispatched; }
-  async send(checkpoint?: (draft: RecordedDraft) => Promise<void>): Promise<void> {
+  waitForSubmission(): Promise<void> | undefined { return this.submission; }
+  send(checkpoint?: (draft: RecordedDraft) => Promise<void>): Promise<void> {
+    // A confirmation deadline does not cancel the HTTP request. Keep and join
+    // that request rather than starting another POST while it is unsettled.
+    if (this.submissionPending) return this.submission!;
+    if (this.sending) return this.sending;
+    const sending = this.performSend(checkpoint);
+    this.sending = sending;
+    const release = () => { if (this.sending === sending) this.sending = undefined; };
+    void sending.then(release, release);
+    return sending;
+  }
+  private async performSend(checkpoint?: (draft: RecordedDraft) => Promise<void>): Promise<void> {
+    const reposting = this.dispatched;
+    this.reposted = false;
     if (this.controller.signal.aborted) this.controller = new AbortController();
     if (!this.dispatched) { this.composed = undefined; this.adapter.clearTranscripts(this.attachments); }
     await checkpoint?.(this.snapshot());
@@ -76,10 +94,14 @@ export class RecordedSubmissionAttempt {
       // retranscribes an uncertain attempt or invents a new UUID.
       if (!this.dispatched) this.owner.assertCanSendAttachments();
       await checkpoint?.(this.snapshot(true));
-      await abortable(this.owner.submit(this.composed, this.attachments.map(({ id }) => id), this.quote, () => {
-        this.dispatched = true; clearTimeout(timeout);
+      this.submission = this.owner.submit(this.composed, this.attachments.map(({ id }) => id), this.quote, () => {
+        this.reposted = reposting; this.dispatched = true; clearTimeout(timeout);
         timeout = setTimeout(() => this.controller.abort(new Error("Send confirmation timed out. Retry checks the same message.")), AUDIO_CONFIRMATION_TIMEOUT_MS);
-      }), this.controller.signal);
+      });
+      this.submissionPending = true;
+      const settle = () => { this.submissionPending = false; };
+      void this.submission.then(settle, settle);
+      await abortable(this.submission, this.controller.signal);
     } finally { clearTimeout(timeout); }
   }
 }

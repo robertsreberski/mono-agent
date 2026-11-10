@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { ApiError } from "./api";
 import type { CompleteAttachment } from "@assistant-ui/react";
 import type { AttachmentSubmissionSession } from "./console-store";
 import type { WebUploadAttachmentAdapter } from "./attachment-adapter";
@@ -98,17 +99,49 @@ it("allows Retry to restart an aborted preparation without losing its files", as
   await attempt.send(); expect(owner.submit).toHaveBeenCalledOnce(); expect(prepare).toHaveBeenCalledTimes(2);
 });
 
-it("makes a hung dispatched send retryable with the same payload after its confirmation deadline", async () => {
+it("joins the underlying POST after the confirmation timeout instead of dispatching another", async () => {
   vi.useFakeTimers();
   try {
     const { owner, adapter, prepare } = setup();
-    vi.mocked(owner.submit).mockImplementationOnce(async (_text, _ids, _quote, dispatch) => { dispatch?.(); await new Promise(() => {}); });
+    let finish!: () => void;
+    vi.mocked(owner.submit).mockImplementationOnce(async (_text, _ids, _quote, dispatch) => {
+      dispatch?.(); await new Promise<void>(resolve => { finish = resolve; });
+    });
     const attempt = new RecordedSubmissionAttempt(owner, adapter, { text: "", attachments: [item], threadId: "owned-thread" });
     const sending = expect(attempt.send()).rejects.toThrow("confirmation timed out");
     await vi.advanceTimersByTimeAsync(AUDIO_CONFIRMATION_TIMEOUT_MS + 1); await sending;
-    expect(attempt.dispatched).toBe(true);
-    await attempt.send();
-    expect(prepare).toHaveBeenCalledOnce(); expect(owner.submit).toHaveBeenCalledTimes(2);
-    expect(vi.mocked(owner.submit).mock.calls[1]!.slice(0, 3)).toEqual(vi.mocked(owner.submit).mock.calls[0]!.slice(0, 3));
+    expect(attempt.dispatched).toBe(true); expect(attempt.submissionPending).toBe(true);
+    const retry = attempt.send();
+    expect(retry).toBe(attempt.waitForSubmission());
+    expect(owner.submit).toHaveBeenCalledOnce(); expect(prepare).toHaveBeenCalledOnce();
+    finish(); await retry;
+    expect(attempt.submissionPending).toBe(false); expect(owner.submit).toHaveBeenCalledOnce();
   } finally { vi.useRealTimers(); }
+});
+it("shares concurrent Send calls through preparation and the original submission", async () => {
+  const { owner, adapter } = setup();
+  let finish!: () => void;
+  vi.mocked(owner.submit).mockImplementationOnce(async (_text, _ids, _quote, dispatch) => {
+    dispatch?.(); await new Promise<void>(resolve => { finish = resolve; });
+  });
+  const attempt = new RecordedSubmissionAttempt(owner, adapter, { text: "", attachments: [item], threadId: "owned-thread" });
+  const first = attempt.send(); const second = attempt.send();
+  expect(second).toBe(first);
+  await vi.waitFor(() => expect(owner.submit).toHaveBeenCalledOnce());
+  finish(); await Promise.all([first, second]);
+  expect(owner.submit).toHaveBeenCalledOnce();
+});
+
+it("marks re-POST proof only at dispatch, never on a preparation or thread-load error", async () => {
+  const { owner, adapter } = setup();
+  const attempt = new RecordedSubmissionAttempt(owner, adapter, { text: "", attachments: [item], threadId: "owned-thread" });
+  attempt.restore({ ...attempt.snapshot(), composed: "Frozen synthetic transcript", dispatched: true });
+  vi.mocked(owner.prepare).mockRejectedValueOnce(new ApiError("Synthetic preparation error", 404, "attachment_not_found"));
+  await expect(attempt.send()).rejects.toThrow("preparation error");
+  expect(attempt.reposted).toBe(false); expect(owner.submit).not.toHaveBeenCalled();
+  vi.mocked(owner.submit).mockImplementationOnce(async (_text, _ids, _quote, dispatch) => {
+    dispatch?.(); throw new ApiError("Synthetic POST error", 404, "attachment_not_found");
+  });
+  await expect(attempt.send()).rejects.toThrow("POST error");
+  expect(attempt.reposted).toBe(true); expect(owner.submit).toHaveBeenCalledOnce();
 });

@@ -1,8 +1,7 @@
 import { api, ApiError } from "./api";
 
-/** Only an authoritative receipt (or its explicit absence) can retire an identity. */
-export async function recordedSubmissionOutcome(threadId: string | null, submissionId: string, failure?: unknown): Promise<"accepted" | "not-accepted" | "unknown"> {
-  if (failure instanceof ApiError && failure.code === "submission_rejected") return "not-accepted";
+/** GET can confirm acceptance, never prove that an in-flight POST will not land. */
+export async function recordedSubmissionOutcome(threadId: string | null, submissionId: string): Promise<"accepted" | "unknown"> {
   if (!threadId) return "unknown";
   let timeout: ReturnType<typeof setTimeout> | undefined;
   try {
@@ -11,9 +10,9 @@ export async function recordedSubmissionOutcome(threadId: string | null, submiss
     })]);
     if (receipt?.threadId !== threadId || receipt.submissionId !== submissionId) return "unknown";
     if (receipt.outcome === "turn" || receipt.outcome === "live-input") return "accepted";
-    return receipt.outcome === "rejected" ? "not-accepted" : "unknown";
-  } catch (error) {
-    return error instanceof ApiError && error.status === 404 && error.code === "submission_not_found" ? "not-accepted" : "unknown";
+    return "unknown";
+  } catch {
+    return "unknown";
   } finally { clearTimeout(timeout); }
 }
 
@@ -24,4 +23,14 @@ export async function withRecordedSendLock(submissionId: string, work: () => Pro
     if (!lock) return false;
     await work(); return true;
   });
+}
+
+/** Only a settled re-POST can replace an uncertain identity. Server submit does
+ * the existing-UUID lookup before beginTurn's permanent attachment_not_found.
+ * Transient pre-lookup/admission errors and missing GET receipts prove nothing. */
+export function canRenewRecordedSubmission(failure: unknown, reposted: boolean): boolean {
+  return reposted && failure instanceof ApiError && (
+    failure.status === 409 && failure.code === "submission_rejected"
+    || failure.status === 404 && failure.code === "attachment_not_found"
+  );
 }

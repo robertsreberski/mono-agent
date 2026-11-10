@@ -3,6 +3,7 @@ import type { WebUploadAttachmentAdapter } from "./attachment-adapter";
 export interface RecordedAudioState {
   readonly adapter: WebUploadAttachmentAdapter;
   readonly busy: boolean;
+  readonly checking?: boolean;
   readonly error?: string;
   readonly notice?: string;
   readonly uncertain: boolean;

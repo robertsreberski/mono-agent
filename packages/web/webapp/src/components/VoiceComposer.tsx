@@ -167,11 +167,12 @@ export function RecordingDraft() {
     {capture.retryAttachment && capture.phase === "idle" && <div className="recording-draft"><span>Recording not attached</span><button type="button" className="attachment-retry" onClick={capture.retryAttachment}>Retry attachment</button><button type="button" className="icon-button" aria-label="Remove recording" onClick={capture.cancel}><Icon name="close" size={14} /></button></div>}
     {(capture.error || recorded?.error) && <p role="alert" className="voice-error">{capture.error ?? recorded?.error}</p>}
     {recorded?.notice && <p className="voice-ready" role="status">{recorded.notice}</p>}
+    {recorded?.checking && <p className="voice-ready" role="status">Checking saved send…</p>}
     {recorded?.busy && <div className="recording-draft voice-preparing" role="status"><span className="voice-spinner" aria-hidden="true" />Preparing message…</div>}
     {recorded?.pending && <div className="recorded-recovery" aria-label="Pending recorded message">
       {recorded.text && <p className="recorded-recovery-text">{recorded.text}</p>}
       {recorded.files?.map(({ id, file, recorded: isRecording }) => !file.type.startsWith("audio/") ? <span key={id} className="attachment-chip">{file.name}</span> : <VoiceNote key={id} id={id} name={file.name} contentType={file.type} file={file} recorded={isRecording} />)}
-      {!recorded.busy && <div className="recording-draft"><button type="button" className="attachment-retry" onClick={recorded.retry}>{recorded.uncertain ? "Check / retry send" : "Retry"}</button><button type="button" className="attachment-retry" onClick={recorded.remove}>Remove</button></div>}
+      {!recorded.busy && !recorded.checking && <div className="recording-draft"><button type="button" className="attachment-retry" onClick={recorded.retry}>{recorded.uncertain ? "Check / retry send" : "Retry"}</button><button type="button" className="attachment-retry" onClick={recorded.remove}>Remove</button></div>}
     </div>}
     {recorded?.uncertain && !recorded.pending && <button type="button" onClick={recorded.retry}>Check / retry send</button>}
   </>;
