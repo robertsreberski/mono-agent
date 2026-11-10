@@ -37,7 +37,7 @@ async function fixture() {
     build: { policy: "fresh-clean-head-agent-app-closure-v1", sourceHead: "b".repeat(40), command: ["pnpm", "--filter", "@mono-agent/app...", "run", "build"], packages: ["packages/app", "packages/turn"], outputRoots: ["packages/app/dist", "packages/turn/dist"], outputSha256: "a".repeat(64), node: process.version },
     catalog, source, protocol, probes, keys, soul: { rawDigest: soul.rawDigest, normalizedDigest: soul.normalizedDigest }, roles: component.roles,
     sizing, probeCounts, schedule: e2PhaseSchedule(trace.protocol, [component.sizing], probeCounts), toolPolicies: E2_TOOL_POLICIES,
-  }, descriptor: { schema: E2_PLAN_SCHEMA, assumptions: E2_ASSUMPTIONS, capUnits: "5000000000", deadlines: { deadlineMs: 120000, childWatchdogMs: 130000, runDeadlineMs: 600000 } } };
+  }, descriptor: { schema: E2_PLAN_SCHEMA, assumptions: E2_ASSUMPTIONS, capUnits: "5000000000", deadlines: { requestDeadlineMs: 120000, phaseDeadlineMs: 130000, childWatchdogMs: 130000, runDeadlineMs: 600000 } } };
   const outputRoot = join(root, "output"); await mkdir(outputRoot, { mode: 0o700 });
   const credentialPath = join(root, "credential.json"), account = "fictional-e2-account";
   const token = `fictional.${Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: account } })).toString("base64url")}.fictional`;
@@ -200,4 +200,21 @@ it("refuses relabelled R=1 replay rows under an R=3 protocol before question exp
   expect(() => validateE2ReplayLimits(protocol, [record])).toThrow("e2_registration_invalid");
   rows.push(...Array.from({ length: 4 }, () => ({ turn: 1, paidRole: "continuation" })));
   expect(() => validateE2ReplayLimits(protocol, [record])).not.toThrow();
+});
+
+it("refuses old E2 plans and missing deadline fields before authority consumption", async () => {
+  f.pilot.descriptor.schema = "continuity-e2-guarded-plan-v1";
+  const rewrite = async () => { const raw = JSON.stringify(f.pilot); await writeFile(f.args.registrationPath, raw); f.args.registrationSha256 = hash(raw); };
+  await rewrite();
+  await expect(guardedAuthorization("e2-validation").validate(f.args)).rejects.toMatchObject({ code: "e2_deadlines_invalid" });
+  f.pilot.descriptor.schema = E2_PLAN_SCHEMA; delete f.pilot.descriptor.deadlines.phaseDeadlineMs; await rewrite();
+  await expect(guardedAuthorization("e2-validation").validate(f.args)).rejects.toMatchObject({ code: "e2_deadlines_invalid" });
+});
+
+it("binds every v2 clock in authorization and rejects an altered request duration", async () => {
+  expect(Object.keys(f.artifact.bindings.deadlines).sort()).toEqual(["requestDeadlineMs", "phaseDeadlineMs", "childWatchdogMs", "runDeadlineMs"].sort());
+  await expect(guardedAuthorization("e2-validation").validate(f.args)).resolves.toBeDefined();
+  f.artifact.bindings.deadlines.requestDeadlineMs += 1;
+  await save(f.args.authorizationPath, f.artifact);
+  await expect(guardedAuthorization("e2-validation").validate(f.args)).rejects.toMatchObject({ code: "e2_authorization_binding_mismatch" });
 });

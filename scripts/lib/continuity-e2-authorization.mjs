@@ -5,9 +5,11 @@ import { isAbsolute } from "node:path";
 import { digest } from "./continuity-dataset.mjs";
 import { digest as sha256 } from "./continuity-recorded-schema.mjs";
 import { ROOT } from "./continuity-observation-input.mjs";
-import { E2_AUTHORIZATION_SCHEMA } from "./continuity-e2-policy.mjs";
-import { validateE2Registration } from "./continuity-e2-registration.mjs";
+import { E2_AUTHORIZATION_SCHEMA, E2_PLAN_SCHEMA } from "./continuity-e2-policy.mjs";
+import { validateE2Registration, validateE2Deadlines } from "./continuity-e2-registration.mjs";
 export function e2AuthorizationBindings(pilot, registrationRawSha256, { outputRoot, credentialPath, salt, accountCommitment }) {
+  if (pilot?.descriptor?.schema !== E2_PLAN_SCHEMA) throw Object.assign(Error("e2_deadlines_invalid"), { code: "e2_deadlines_invalid" });
+  validateE2Deadlines(pilot.descriptor.deadlines);
   const r = pilot.registration;
   return { registrationRawSha256, registrationSha256: digest(pilot), code: r.code, build: r.build, catalog: r.catalog,
     protocol: r.protocol, source: r.source, probes: r.probes, keys: r.keys, soul: r.soul, roles: r.roles, schedule: r.schedule,

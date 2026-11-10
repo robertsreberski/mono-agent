@@ -2712,6 +2712,42 @@ when the SDK disables caching. Missing, partial or foreign assigned identities
 refuse at both the guard and final real gate; lookup behavior is unchanged.
 Reservations never assume a cache hit.
 
+#### E2 request, phase and run clocks
+
+The E2 descriptor uses `continuity-e2-guarded-plan-v2` and requires four explicit
+positive integer millisecond fields in `deadlines` (no inherited defaults):
+
+| Field | Meaning and ceiling |
+| --- | --- |
+| `requestDeadlineMs` | Each paid request, from its durable admission through settlement; at most 600000 (10 minutes) |
+| `phaseDeadlineMs` | One entire phase/slot, including scripted replay and serial paid requests; at most 86400000 (24 hours) |
+| `childWatchdogMs` | Phase-child lifetime from fork; at least the request duration, no greater than the phase duration or 86400000 |
+| `runDeadlineMs` | Entire authorization, never reset between phases; at least the phase duration, at most 86400000 |
+
+The phase duration must be at least the request duration. Old E2 plan-v1 or
+missing/invalid clocks refuse with `e2_deadlines_invalid`; regenerate the
+registration and authorization. All four clocks are bound in the authorization.
+Lookup-pilot keeps its original descriptor and slot-relative `deadlineMs` meaning
+unchanged; these longer E2 clocks do not extend a lookup probe.
+
+The controller timestamps each paid admission separately. Consume and settlement
+after its request deadline refuse; a per-request timer contains the phase child
+even if no further IPC arrives. Consume never resets the request clock. The last
+native-send gate rechecks request, phase and run bounds, including after awaited
+body/lineage verification. A timeout stops the authorization with
+`e2_worker_timeout` (or `e2_run_deadline`) and retains unsettled liability. Phase
+and child clocks still contain work between requests; the run clock is global.
+
+For a large serial schedule, a conservative example is request **600000**, phase
+and child **72000000** (20 hours), run **86400000** (24 hours). At a planning
+assumption of 120 seconds per paid call, a hypothetical 300-call schedule uses
+about 10 hours before replay, tool and startup overhead. This is not a measured provider
+latency or a completion guarantee: sustained 10-minute calls cannot all fit.
+Protocol `limits.timeoutMs` remains a separate, source-bound per-harness-turn
+budget (up to 10 minutes); an R=3 probe needs all four rounds plus tools within
+that turn budget. Cost estimates now explicitly state timing is not estimated.
+The cap, token limits, no-retry rule and single-use authorization are unchanged.
+
 #### Parent-created exact-cap authorization
 
 Authorization is a trusted, private local attestation under the existing

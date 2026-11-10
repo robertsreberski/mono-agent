@@ -98,7 +98,7 @@ export function estimateE2SizingSet({ protocol, roles, records, catalog, probeCo
   const boundRequests = [...bound.values()].flatMap(({ count, row }) => Array.from({ length: count }, () => row));
   const fundedSchedule = estimateE2Reservations({ roles, requests: [...boundRequests, ...proofs], catalog });
   return { schema: "continuity-e2-cap-estimate-set-v1", semanticQualification: false, authorization: false,
-    protocolValidation: "metadata-and-sizing-binding-only", scope: "provided-sizing-and-explicit-probe-counts-only",
+    timing: "not-estimated-use-e2-plan-v2-clocks", protocolValidation: "metadata-and-sizing-binding-only", scope: "provided-sizing-and-explicit-probe-counts-only",
     plannedReplayQuestions: questionCount, proofArms: arms.size, scenarios: estimates, fundedSchedule,
     forecastMinimumCapUnits: fundedSchedule.forecastMinimumCapUnits, forecastNoCacheMinimumCapUnits: fundedSchedule.forecastNoCacheMinimumCapUnits,
     largestReservationUnits: fundedSchedule.largestReservationUnits, worstCaseCapUnits: fundedSchedule.worstCaseCapUnits };

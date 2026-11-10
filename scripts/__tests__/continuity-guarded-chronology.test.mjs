@@ -1,5 +1,5 @@
 // Real durable journals and owned idle fixture processes; all inference is scripted in memory.
-import { expect } from "vitest";
+import { expect, vi } from "vitest";
 import { readFile, mkdir, unlink, readdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -112,3 +112,13 @@ for (const id of ["lookup-pilot", "fictional"]) {
     k.journal.release(); await expect(k.core.createLookupPilotController(k.options)).rejects.toThrow(k.protocol.codes.authorization_lease_invalid);
   });
 }
+
+it("lookup parity: its slot-relative consume cutoff and hold schema are unchanged", async () => {
+  const k = await kernel("lookup-pilot"), permit = await admit(k), state = k.journal.snapshot();
+  expect(state.slots[0].holds[0]).not.toHaveProperty("admittedAt");
+  const clock = vi.spyOn(Date, "now").mockReturnValue(state.slots[0].startedAt + k.options.pilot.descriptor.deadlines.deadlineMs);
+  try {
+    await expect(exchange(k, "consume", { permit, bodyDigest: "a".repeat(64) })).rejects.toMatchObject({ code: "lookup_permit_invalid" });
+    expect(k.journal.snapshot().stop).toBe("lookup_permit_invalid");
+  } finally { clock.mockRestore(); }
+});

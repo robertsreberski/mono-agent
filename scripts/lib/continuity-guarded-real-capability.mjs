@@ -57,7 +57,13 @@ function bind(protocol, protocolId) {
         need(endpoint === `${protocol.policy.GUARD_CONTRACT.baseUrl}/codex/responses` && init?.method === "POST"
           && (init.redirect === undefined || init.redirect === "error") && process.connected);
         const { state } = await verifyLookupRealAssignment(a), hold = state.slots[a.index].holds.at(-1);
-        need(Date.now() < Math.min(state.deadlineAt, state.slots[a.index].startedAt + a.pilot.descriptor.deadlines.deadlineMs));
+        const clock = protocol.execution?.deadlines;
+        const assertDeadline = async () => {
+          if (Date.now() >= state.deadlineAt) await stop(protocol.codes.run_deadline);
+          if (Date.now() >= Math.min(clock.phaseAt(a.pilot.descriptor.deadlines, state.slots[a.index]), clock.requestAt(a.pilot.descriptor.deadlines, hold))) await stop(protocol.codes.worker_timeout);
+        };
+        if (clock) await assertDeadline();
+        else need(Date.now() < Math.min(state.deadlineAt, state.slots[a.index].startedAt + a.pilot.descriptor.deadlines.deadlineMs));
         const headers = new Headers(init.headers), encoding = headers.get("content-encoding");
         need((encoding === null || encoding === "zstd") && (protocol.execution?.assertCacheHeaders || headers.get("session-id") === a.cacheKey && headers.get("x-client-request-id") === a.cacheKey));
         const bytes = encoding === "zstd" ? zstdDecompressSync(init.body) : Buffer.from(init.body);
@@ -66,6 +72,7 @@ function bind(protocol, protocolId) {
         if (!matchesAccount(handle, headers.get("chatgpt-account-id"))) await stop(protocol.codes.account_mismatch);
         try { protocol.execution?.assertCacheHeaders?.(headers, hold, a.cacheKey); protocol.execution?.assertBody(bytes, hold); if (protocol.execution?.verifyNativeBody) await protocol.execution.verifyNativeBody(bytes, hold, state, a); }
         catch (error) { await stop(error?.code ?? protocol.codes.body_mismatch, true); }
+        if (clock) await assertDeadline(); // Native-body verification may have awaited durable history.
         used.add(hold.permitId); // No retry, including after fetch rejection or abort.
         const response = await nativeDispatch.run(protocolId, () => nativeFetch(endpoint, { ...init, redirect: "error" }));
         const rejectResponse = async code => {

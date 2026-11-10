@@ -49,8 +49,11 @@ function bind(protocol, protocolId) {
       need(current.schema === LOOKUP_FAUX_CONTROLLER && current.fauxEndpoint === endpoint && String(url) === `${contract.baseUrl}/codex/responses`);
       await verifyLookupPreparation(a, current, true);
       const slot = current.slots[a.index], hold = slot.holds.at(-1), headers = new Headers(init?.headers), encoding = headers.get("content-encoding");
+      const clock = protocol.execution?.deadlines;
+      const phaseAt = clock ? clock.phaseAt(a.pilot.descriptor.deadlines, slot) : slot.startedAt + a.pilot.descriptor.deadlines.deadlineMs;
+      const requestAt = clock ? clock.requestAt(a.pilot.descriptor.deadlines, hold) : Infinity;
       need(current.stop === null && current.cursor === a.index && slot.terminal === null
-        && Date.now() < current.deadlineAt && Date.now() < slot.startedAt + a.pilot.descriptor.deadlines.deadlineMs
+        && Date.now() < Math.min(current.deadlineAt, phaseAt, requestAt)
         && [null, "zstd"].includes(encoding) && headers.get("session-id") === a.cacheKey && headers.get("x-client-request-id") === a.cacheKey);
       const bytes = encoding === "zstd" ? zstdDecompressSync(init.body) : Buffer.from(init.body);
       need(hold?.consumed === true && !hold.revoked && !hold.settlement && !used.has(hold.permitId)

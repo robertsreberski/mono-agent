@@ -16,8 +16,8 @@ export function e2CacheAssignment(state, a) {
 export function e2Watchdog(authorization, deadlines, deadlineAt, now = Date.now()) {
   const requested = authorization.timeoutMs ?? deadlines.childWatchdogMs;
   const valid = n => Number.isSafeInteger(n) && n > 0 && n <= 2147483647;
-  need([requested, deadlines.childWatchdogMs, deadlines.deadlineMs].every(valid) && requested <= deadlines.childWatchdogMs && Number.isSafeInteger(deadlineAt) && Number.isSafeInteger(now), "e2_ipc_invalid");
-  return Math.min(requested, deadlines.deadlineMs, Math.max(1, deadlineAt - now));
+  need([requested, deadlines.childWatchdogMs, deadlines.phaseDeadlineMs].every(valid) && requested <= deadlines.childWatchdogMs && Number.isSafeInteger(deadlineAt) && Number.isSafeInteger(now), "e2_ipc_invalid");
+  return Math.min(requested, deadlines.phaseDeadlineMs, Math.max(1, deadlineAt - now));
 }
 export const e2ValidTimeout = (n, max) => Number.isSafeInteger(n) && n > 0 && n <= max;
 export const e2Work = a => join(a.outputRoot, "work", "phases", a.slotId);
