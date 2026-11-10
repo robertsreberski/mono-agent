@@ -113,8 +113,13 @@ export function createE2Models({ pi, estimators, models, limits, summary = "faux
             if (positionRequests >= probeLookupRounds + 1) refuse("E2_PROBE_REQUEST_LIMIT");
             // Build the model request, not the harness/tool executor. Prior tool
             // results stay intact, but the final funded request offers no tools.
-            if (positionRequests === probeLookupRounds) context = { ...context, tools: [],
-              messages: context.messages.map(message => message.toolsAdded?.length ? { ...message, toolsAdded: [] } : message) };
+            if (positionRequests === probeLookupRounds) {
+              // Validate what the harness offered before withdrawing it.
+              const offered = (context.tools ?? context.messages.flatMap(m => m.toolsAdded ?? [])).map(tool => tool.name);
+              if (offered.length !== 1 || offered[0] !== "ConversationHistory") refuse("E2_PROBE_TOOLS_REFUSED");
+              context = { ...context, tools: [],
+                messages: context.messages.map(message => message.toolsAdded?.length ? { ...message, toolsAdded: [] } : message) };
+            }
           }
           onRequest(model, context, options, "streamSimple");
           if (lifecycle.size) refuse("E2_SOURCE_REQUEST_LIMIT");

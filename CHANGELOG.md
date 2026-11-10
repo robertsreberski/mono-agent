@@ -6,7 +6,8 @@
   with no default), withdraw tools on the final funded request, and settle early
   answers without spending unused capacity. Normalize answer formatting and
   abstentions under `e2-answer-normalization-v1` without forgiving wrong values
-  or disclosure and effect violations.
+  or disclosure and effect violations. Breaking: existing E2 protocols must add
+  `probeLookupRounds`, then rerun sizing and registration.
 
 - Let `run --summary real` and `proofs --real` make paid provider requests
   through guarded E2 adapters, only with a separate single-use exact-cap

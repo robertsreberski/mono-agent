@@ -905,6 +905,20 @@ it("refuses simultaneous lookup and E2 harness ownership before any module or ad
   expect(calls).toEqual([]);
 });
 
+it("matches forbidden strings across collapsed whitespace and folded quotes", () => {
+  for (const text of ["Old  Cedar value", "old\ncedar value", "OLD\tCEDAR VALUE"]) {
+    expect(scored([key("forbid", { kind: "free_text", forbidden: ["old cedar"] })], [answer("forbid", text)]).report.totals.blocking).toBe(1);
+  }
+  expect(scored([key("forbid", { kind: "free_text", forbidden: ["“old cedar”"] })], [answer("forbid", '"Old  Cedar" again')]).report.totals.blocking).toBe(1);
+  expect(scored([key("forbid", { kind: "free_text", forbidden: ["old cedar"] })], [answer("forbid", "Oldcedar is unrelated")]).report.totals.blocking).toBe(0);
+});
+it("refuses a final funded probe request whose harness offered unexpected tools instead of silently stripping them", async () => {
+  const a = await adapter({}, { probeLookupRounds: 1 });
+  const base = { systemPrompt: `## Core Guardrails\n\n${a.soul.text}`, messages: [{ role: "user", content: "Fictional request." }] };
+  a.route.setPosition({ model: LUNA, turn: 0, message: 0, probe: true, paidRole: "probe" });
+  for await (const _event of a.models.streamSimple(a.model, { ...base, tools: [{ name: "ConversationHistory" }] })) { /* drain */ }
+  await expect((async () => { for await (const _event of a.models.streamSimple(a.model, { ...base, tools: [{ name: "ConversationHistory" }, { name: "UnexpectedFictionalTool" }] })) { /* drain */ } })()).rejects.toThrow("E2_PROBE_TOOLS_REFUSED");
+});
 it("labels only the first request at an explicit proof probe position as probe", async () => {
   const a = await adapter();
   const context = { systemPrompt: `## Core Guardrails\n\n${a.soul.text}`, messages: [{ role: "user", content: "Fictional request." }] };
@@ -925,6 +939,7 @@ it.each([
   ["`9c`", "9c"], ['“Fictionland”', "fictionland"], ["‘Cedar’", "cedar"], ["Cedar.", "cedar"],
   ["Cedar!", "cedar"], ["Cedar。", "cedar"], ["CEDAR", "cedar"], ["«Cedar»", "cedar"], ["„Cedar‟", "cedar"], ["Cedar  \n Grove", "cedar grove"],
   ["I don’t know.", "i don't know"], ['**"Cedar"**', "cedar"], ['"**Cedar**"', "cedar"],
+  ["**Cedar**.", "cedar"], ['"Cedar".', "cedar"], ["`9c`!", "9c"],
 ])("normalizes only comparison formatting: %s", (value, expected) => {
   expect(normalizeE2Answer(value)).toBe(expected);
   const report = scored([key("format", { expected })], [answer("format", value, { value: expected })]).report;
@@ -932,7 +947,7 @@ it.each([
   expect(report.totals.blocking).toBe(0);
 });
 it("does not forgive different values, extra assertions, or violations after formatting normalization", () => {
-  for (const text of ["omit and mention", "**include**", "omit..", "**_omit_**"]) {
+  for (const text of ["omit and mention", "**include**", "omit..", "**_omit_**", "**omit.**.", "**omit**.."]) {
     expect(scored([key("strict", { expected: "omit" })], [answer("strict", text)]).report.totals.blocking).toBe(1);
   }
   expect(scored([key("strict")], [answer("strict", "**Cedar**", { value: "**Birch**" })]).report.totals.blocking).toBe(1);

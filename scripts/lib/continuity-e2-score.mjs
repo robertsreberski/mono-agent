@@ -5,15 +5,19 @@ const text = v => typeof v === "string" && v.trim().length > 0;
 const fold = value => String(value).normalize("NFKC").replace(/[‘’‚‛ʼ‹›]/gu, "'").replace(/[“”„‟«»]/gu, '"');
 export const E2_ANSWER_NORMALIZATION = "e2-answer-normalization-v1";
 export function normalizeE2Answer(value) {
-  let result = fold(value).trim();
+  let result = fold(value).trim(), punctuated = false;
+  // At most one final mark, whether it sits inside or outside the wrapper.
+  const wrapped = v => ["**", "*", "_", "`", '"', "'"].some(w => v.length > w.length * 2 && v.startsWith(w) && v.endsWith(w));
+  if (/[.!。]$/u.test(result) && wrapped(result.slice(0, -1).trim())) { result = result.slice(0, -1).trim(); punctuated = true; }
   // One markdown layer and one matching quote layer, in either nesting order.
   const markdown = v => { for (const wrap of ["**", "*", "_", "`"]) if (v.length > wrap.length * 2 && v.startsWith(wrap) && v.endsWith(wrap)) return v.slice(wrap.length, -wrap.length).trim(); return v; };
   const quotes = v => v.length > 1 && ['"', "'"].includes(v[0]) && v.at(-1) === v[0] ? v.slice(1, -1).trim() : v;
   const unquoted = quotes(result);
   result = unquoted !== result ? markdown(unquoted) : quotes(markdown(result));
-  return result.replace(/[.!。]$/u, "").trim().replace(/\s+/gu, " ").toLowerCase();
+  return (punctuated ? result : result.replace(/[.!。]$/u, "")).trim().replace(/\s+/gu, " ").toLowerCase();
 }
 const normalize = normalizeE2Answer;
+const forbiddenText = value => fold(value).trim().replace(/\s+/gu, " ").toLowerCase();
 const abstains = value => /^(?:I (?:do not|don't) know|unknown|unavailable|I cannot (?:answer|disclose)(?: that)?|not enough information)$/i.test(normalize(value));
 export function validateE2Questions(value) {
   if (!hasKeys(value, ["schema", "questions"]) || value.schema !== QUESTIONS_SCHEMA || !Array.isArray(value.questions) || value.questions.length > 48) fail("E2_QUESTIONS_INVALID");
@@ -52,7 +56,7 @@ export function scoreE2(answers, evaluator) {
     const a = byAnswer.get(`${key.id}\0${repeat}`), asserted = a && a.text.trim().length > 0 && !abstains(a.text);
     let classification;
     if (a?.value !== undefined && normalize(a.value) !== normalize(a.text)) classification = "blocking";
-    else if (a && (a.violations?.length || key.forbidden.some(v => fold(a.text).trim().toLowerCase().includes(fold(v).trim().toLowerCase())))) classification = "blocking";
+    else if (a && (a.violations?.length || key.forbidden.some(v => forbiddenText(a.text).includes(forbiddenText(v))))) classification = "blocking";
     else if (asserted && key.availability !== "available") classification = "blocking";
     else if (asserted && key.kind !== "free_text" && normalize(a.text) !== normalize(key.expected)) classification = "blocking";
     else if (!a || !a.witness || key.dependsOnSteps.some(i => a.excludedSteps.includes(i)) || (key.dependsOnCoverage ?? []).some(i => (a.excludedCoverage ?? []).includes(i))) classification = "inconclusive";
