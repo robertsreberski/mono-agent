@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { fail } from "./continuity-observation-input.mjs";
 import { digest } from "./continuity-recorded-schema.mjs";
+import { assertE2ProbeLookupRounds } from "./continuity-e2-protocol.mjs";
 import { assertE2PhaseAdapter } from "./continuity-e2-runtime.mjs";
 
 const paidDecorators = new WeakSet();
@@ -54,7 +55,8 @@ export function estimatedReply(pi, text, context, estimators, extra = {}) {
 }
 
 /** A lifecycle receipt is established by runtime events, not prompt contents. */
-export function createE2Models({ pi, estimators, models, limits, summary = "faux-short", sourceReply, sourceContext = () => {}, soul, paidAdapter, onRequest = () => {} }) {
+export function createE2Models({ pi, estimators, models, limits, summary = "faux-short", sourceReply, sourceContext = () => {}, soul, paidAdapter, probeLookupRounds, onRequest = () => {} }) {
+  if (probeLookupRounds !== undefined) assertE2ProbeLookupRounds(probeLookupRounds);
   if (summary === "real") assertE2PhaseAdapter(paidAdapter);
   if (!["faux-short", "faux-max", "real"].includes(summary)) fail("E2_SUMMARY_ROUTE_INVALID");
   const registered = new Set(models.map(m => m.model)), faux = new Map(), lifecycle = new Map();
@@ -106,7 +108,15 @@ export function createE2Models({ pi, estimators, models, limits, summary = "faux
           return original.getModel(provider, id);
         };
         if (method === "streamSimple") return (model, context, options) => {
-          check(); validateModel(model, original); onRequest(model, context, options, "streamSimple");
+          check(); validateModel(model, original);
+          if (position.probe && probeLookupRounds !== undefined) {
+            if (positionRequests >= probeLookupRounds + 1) refuse("E2_PROBE_REQUEST_LIMIT");
+            // Build the model request, not the harness/tool executor. Prior tool
+            // results stay intact, but the final funded request offers no tools.
+            if (positionRequests === probeLookupRounds) context = { ...context, tools: [],
+              messages: context.messages.map(message => message.toolsAdded?.length ? { ...message, toolsAdded: [] } : message) };
+          }
+          onRequest(model, context, options, "streamSimple");
           if (lifecycle.size) refuse("E2_SOURCE_REQUEST_LIMIT");
           if (position.probe) {
             if (++report.probeRequests > limits.probeRequests) refuse("E2_PROBE_REQUEST_LIMIT");

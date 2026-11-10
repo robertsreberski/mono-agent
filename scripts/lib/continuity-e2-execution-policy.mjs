@@ -39,8 +39,21 @@ function validateBody(body) {
   }
 }
 const sameFields = (p, names) => p && typeof p === "object" && !Array.isArray(p) && Object.keys(p).sort().join() === [...names].sort().join();
+// The validated registration mirrors protocol-owned R per checkpoint. Admission
+// derives the ordinal independently from durable holds; the actor supplies its
+// own ordinal to the pre-payload guard. Neither changes the IPC request shape.
+function requestTools(pilot, planned, p, probeRequest) {
+  const tools = pilot.registration.toolPolicies;
+  if (p.paidRole === "summary") return tools.summary;
+  if (planned.kind !== "replay") return planned.arm === "cancel" && p.paidRole === "continuation" ? tools.cancelContinuation : tools.proof;
+  const rounds = pilot.registration.probeCounts.find(c => c.checkpoint === p.checkpoint)?.lookupRounds;
+  need(Number.isSafeInteger(rounds) && rounds >= 1 && rounds <= 4, "e2_registration_invalid");
+  need(Number.isSafeInteger(probeRequest) && probeRequest >= 1 && probeRequest <= rounds + 1
+    && p.paidRole === (probeRequest === 1 ? "probe" : "continuation"), "e2_request_limit");
+  return probeRequest === rounds + 1 ? tools.replayFinal : tools.replay;
+}
 // Funding is shared; only the controller owns live hold counts and lifecycle admission.
-function requestFunding(pilot, planned, p, operationDigest) {
+function requestFunding(pilot, planned, p, operationDigest, probeRequest) {
   need(sameFields(p, E2_PERMIT_CONTRACT.admissionFields) && E2_PAID_ROLES.includes(p.paidRole) && count(p.checkpoint) && count(p.inputTokens));
   const role = pilot.registration.roles.find(r => r.role === p.paidRole && r.model === p.model), catalog = pilot.registration.catalog.find(c => c.model === p.model);
   need(role && catalog && p.inputTokens <= role.maxInputTokens && p.inputTokens <= catalog.contextWindow, "not_admitted_input_envelope");
@@ -50,8 +63,8 @@ function requestFunding(pilot, planned, p, operationDigest) {
   need(p.reservationUnits === reserve);
   return { reserve: BigInt(reserve), metadata: { model: p.model, paidRole: p.paidRole, checkpoint: p.checkpoint, measuredInputTokens: p.inputTokens,
     ...(p.paidRole === "summary" ? { operationDigest } : {}), inputMax: catalog.contextWindow, outputMax: role.maxOutputTokens, catalog: structuredClone(catalog),
-    tools: [...(p.paidRole === "summary" ? pilot.registration.toolPolicies.summary : planned.kind === "replay" ? pilot.registration.toolPolicies.replay
-    : planned.arm === "cancel" && p.paidRole === "continuation" ? pilot.registration.toolPolicies.cancelContinuation : pilot.registration.toolPolicies.proof)] } };
+    ...(probeRequest === undefined ? {} : { probeRequest }),
+    tools: [...requestTools(pilot, planned, p, probeRequest)] } };
 }
 export const e2ExecutionPolicy = Object.freeze({
   cap(pilot) {
@@ -64,7 +77,10 @@ export const e2ExecutionPolicy = Object.freeze({
     if (p.paidRole === "summary") need(slot.compaction && slot.compaction.checkpoint === p.checkpoint, "e2_summary_not_authorized");
     const budget = planned.budgets.find(b => b.paidRole === p.paidRole && b.model === p.model && b.checkpoint === p.checkpoint);
     need(budget && slot.holds.filter(h => h.paidRole === p.paidRole && h.model === p.model && h.checkpoint === p.checkpoint).length < budget.maxRequests, "e2_request_limit");
-    return requestFunding(pilot, planned, p, slot.compaction?.operationDigest);
+    const previous = slot.holds.at(-1);
+    const probeRequest = planned.kind === "replay" && p.paidRole !== "summary" ? p.paidRole === "probe" ? 1
+      : previous?.checkpoint === p.checkpoint && Number.isSafeInteger(previous.probeRequest) ? previous.probeRequest + 1 : 0 : undefined;
+    return requestFunding(pilot, planned, p, slot.compaction?.operationDigest, probeRequest);
   },
   contract(contract) {
     need(["provider", "api", "baseUrl", "version"].every(k => contract?.[k] === E2_GUARD_CONTRACT[k]), "e2_contract_mismatch");
@@ -78,7 +94,7 @@ export const e2ExecutionPolicy = Object.freeze({
     const p = { requestId: `${contract.runId}:${e2.round}`, slotId: contract.slotId, round: e2.round, payloadDigest: "0".repeat(64),
       reservationUnits: e2.reservationUnits, inputTokens: e2.size.maximum, model: e2.model, paidRole: e2.paidRole, checkpoint: e2.checkpoint };
     if (p.paidRole === "summary") need(/^[a-f0-9]{64}$/u.test(e2.operationDigest ?? ""), "e2_summary_not_authorized");
-    const derived = requestFunding(e2.pilot, e2.planned, p, e2.operationDigest);
+    const derived = requestFunding(e2.pilot, e2.planned, p, e2.operationDigest, e2.probeRequest);
     return { ...derived.metadata, reservationUnits: derived.reserve.toString(), request: p };
   },
   assertRoute(model, options, contract) {
@@ -93,10 +109,8 @@ export const e2ExecutionPolicy = Object.freeze({
   },
   assertPayload(body, _round, contract) {
     const role = contract.e2.pilot.registration.roles.find(r => r.role === contract.e2.paidRole && r.model === contract.e2.model);
-    const tools = contract.e2.pilot.registration.toolPolicies;
-    const allowed = contract.e2.paidRole === "summary" ? tools.summary : contract.e2.planned.kind === "replay" ? tools.replay
-      : contract.e2.planned.arm === "cancel" && contract.e2.paidRole === "continuation" ? tools.cancelContinuation : tools.proof;
-    this.assertBody(Buffer.from(JSON.stringify(body)), { model: contract.e2.model, tools: allowed });
+    const allowed = requestTools(contract.e2.pilot, contract.e2.planned, contract.e2, contract.e2.probeRequest);
+    this.assertBody(Buffer.from(JSON.stringify(body)), { model: contract.e2.model, tools: allowed, ...(contract.e2.probeRequest === undefined ? {} : { probeRequest: contract.e2.probeRequest }) });
     need(role && (contract.effort === "off" ? [undefined, "none"].includes(body.reasoning?.effort) : body.reasoning?.effort === contract.effort) && Array.isArray(body.input)
       && Object.keys(body).every(k => ["model", "store", "stream", "instructions", "input", "text", "include", "prompt_cache_key", "tool_choice", "parallel_tool_calls", "temperature", "tools", "reasoning"].includes(k)), "e2_payload_forbidden");
     // Shipping compaction deliberately disables body caching. Its authenticated
@@ -200,6 +214,7 @@ export const e2ExecutionPolicy = Object.freeze({
     let body; try { body = JSON.parse(bytes); } catch { fail("e2_body_mismatch"); }
     need(`${E2_GUARD_CONTRACT.provider}:${body.model}` === hold?.model && body.stream === true && body.store === false && body.service_tier === undefined, "e2_body_mismatch");
     need(Array.isArray(body.tools ?? []) && (body.tools ?? []).every(t => t.type === "function" && hold.tools.includes(t.name)), "e2_tools_forbidden");
+    if (hold.probeRequest !== undefined) need((body.tools ?? []).length === hold.tools.length, "e2_tools_forbidden");
     validateBody(body);
   },
 });

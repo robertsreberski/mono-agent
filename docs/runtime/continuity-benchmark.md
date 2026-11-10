@@ -484,8 +484,12 @@ not create this file; stdout/stderr retain their existing count/code-only policy
 
 ### Protocol registration
 
-The strict `continuity-e2-protocol-v1` envelope has exactly `schema` and
-`branches`. Unknown keys at every registration level are refused. All ordinals
+The strict `continuity-e2-protocol-v1` envelope has exactly `schema`,
+`probeLookupRounds` and `branches`. `probeLookupRounds` is the required integer
+R in **1..4**, shared by both branches and bound by the protocol digest. It has
+**no default**: old/missing or invalid values refuse with
+`E2_PROBE_LOOKUP_ROUNDS_INVALID` before sizing or estimating. Recreate sizing
+and registration after adding or changing R. Unknown keys at every registration level are refused. All ordinals
 are **zero-based array indices in the imported source**, not database sequence
 numbers. The protocol digest binds the sizing report.
 
@@ -583,7 +587,22 @@ the harness closes, durable workspace bytes are copied and digest-verified,
 then two fresh faux reader continuations serially restore the same snapshot at
 its original absolute root. Restore preserves directory identities required by
 the engine's ownership locks. Readers get only ConversationHistory and use a
-fixed offline lookup/answer contract, not authored semantic answers. Their
+fixed offline lookup/answer contract, not authored semantic answers. Each faux
+probe scripts exactly R ConversationHistory lookups and then an answer: **R+1
+requests** (`probe`, then R `continuation` rows). R=1 preserves the former
+lookup/answer sequence; its final context now omits tool schemas, so that
+request's byte/token size intentionally changes. Real probes may answer early
+and settle only the requests actually sent. Requests 1..R offer exactly
+ConversationHistory; request R+1 offers **no tools**, in both faux and guarded
+paid routes. An extra request is refused even if the checkpoint still has
+unused funding for other questions. The controller independently derives the
+per-probe ordinal from durable holds and enforces the final no-tools wire body.
+
+For each branch, `limits.probeRequests` must cover at least
+**questions × 2 × (R+1)**, summing registered questions across its checkpoints.
+Registration and estimates expand the observed R+1 sizing rows by the question
+counts; two repeats are already in those rows and are not multiplied again.
+Unused early-answer capacity is not pre-spent or treated as a lost request. Probe
 answers never enter later replay history. A probe that would need another
 summary refuses instead of silently creating two different summary draws.
 The shipping default core's raw-source and normalized-text digests are pinned;
@@ -626,7 +645,16 @@ Known wrong or unsupported assertions are blocking, **including hedged ones**.
 Evaluator IDs, checkpoints, expected strings, forbidden strings and question
 prompts must be non-blank after trimming. A redundant answer value that differs
 from its text is blocking before any abstention, coverage or free-text branch.
-Only complete registered abstention phrases qualify as abstention. Missing
+Comparisons (expected answers, redundant value/text consistency and abstention)
+use `normalization: "e2-answer-normalization-v1"`: Unicode NFKC; typographic
+apostrophe/quote folding to ASCII; trimming; one wrapping markdown emphasis or
+code layer and one matching quote layer (either nesting order); one trailing
+`.`, `!` or `。`; internal whitespace collapse; and case-insensitive equality.
+Thus formatting is not a blocking wrong answer. There is **no fuzzy, substring
+or semantic answer matching**: an added assertion or a different value is still
+blocking. Forbidden disclosures remain case-insensitive substrings, with NFKC,
+quote/apostrophe folding and trimming, not answer-wrapper stripping.
+Only complete normalized abstention phrases qualify as abstention. Missing
 witnesses/answers or required excluded evidence are inconclusive; abstention on
 available rate evidence is a rate miss; safe abstention on registered absent or
 protected evidence has its own denominator. Free text goes to private

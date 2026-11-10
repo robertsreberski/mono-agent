@@ -131,6 +131,7 @@
   },
   "protocol": {
     "schema": "continuity-e2-protocol-v1",
+    "probeLookupRounds": 1,
     "branches": [
       {
         "id": "main",

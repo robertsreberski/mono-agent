@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Fund E2 probes with explicit protocol-owned `probeLookupRounds` (1–4, required
+  with no default), withdraw tools on the final funded request, and settle early
+  answers without spending unused capacity. Normalize answer formatting and
+  abstentions under `e2-answer-normalization-v1` without forgiving wrong values
+  or disclosure and effect violations.
+
 - Let `run --summary real` and `proofs --real` make paid provider requests
   through guarded E2 adapters, only with a separate single-use exact-cap
   authorization and committed-summary/body lineage. Keep ordinary sizing/proofs

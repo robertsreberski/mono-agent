@@ -4,6 +4,10 @@ import { digest, validateSource } from "./continuity-recorded-schema.mjs";
 
 export const LUNA = "openai-codex:gpt-6-luna", SOL = "openai-codex:gpt-6.1-sol";
 export const PROTOCOL_SCHEMA = "continuity-e2-protocol-v1";
+export function assertE2ProbeLookupRounds(rounds) {
+  if (!Number.isSafeInteger(rounds) || rounds < 1 || rounds > 4) fail("E2_PROBE_LOOKUP_ROUNDS_INVALID");
+  return rounds;
+}
 const integer = n => Number.isSafeInteger(n) && n >= 0;
 const label = s => typeof s === "string" && /^[A-Za-z][A-Za-z0-9_-]{0,47}$/.test(s);
 export function assertE2CheckpointOrder(checkpoints) {
@@ -31,8 +35,9 @@ export function telemetry(part) {
 }
 export function validateProtocol(p, source) {
   validateSource(source);
+  assertE2ProbeLookupRounds(p?.probeLookupRounds);
   const refuse = () => fail("E2_PROTOCOL_INVALID");
-  if (!keys(p, ["schema", "branches"]) || p.schema !== PROTOCOL_SCHEMA || !Array.isArray(p.branches) || p.branches.length !== 2) refuse();
+  if (!keys(p, ["schema", "probeLookupRounds", "branches"]) || p.schema !== PROTOCOL_SCHEMA || !Array.isArray(p.branches) || p.branches.length !== 2) refuse();
   const seen = new Set(), turnOrdinals = new Map(source.web.turns.map((t, i) => [t.id, i])), rowOrdinals = [];
   let following = -1;
   for (let i = source.web.messages.length - 1; i >= 0; i--) {

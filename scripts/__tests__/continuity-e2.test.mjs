@@ -18,7 +18,7 @@ import { installProcessGuard } from "./fixtures/continuity-recorded/process-guar
 import { LUNA, SOL, validateProtocol, historicalContext } from "../lib/continuity-e2-protocol.mjs";
 import { createE2Models, loadE2Estimators, shippingSoul, sizeContext, assertEffectiveSoul } from "../lib/continuity-e2-models.mjs";
 import { excludedDispatch, freezeCheckpoint, restoreCheckpoint, treeReceipt, runE2Sizing, PLACEHOLDER, recordedTurns, e2ProbeMeasurement } from "../lib/continuity-e2-replay.mjs";
-import { scoreE2, validateE2Questions } from "../lib/continuity-e2-score.mjs";
+import { scoreE2, validateE2Questions, normalizeE2Answer } from "../lib/continuity-e2-score.mjs";
 import { diagnosticRecord, errorDiagnostic } from "../lib/continuity-e2-diagnostics.mjs";
 import { parseE2Args, main, USAGE } from "../continuity-e2.mjs";
 const cleanup = [];
@@ -90,7 +90,7 @@ async function trace({ padding = false, steer = false, retry = false } = {}) {
     { name: "B4", turn: 7, kind: "cold_model_switch", evidence: [ref(7)] },
   ];
 
-  const protocol = { schema: "continuity-e2-protocol-v1", branches: [
+  const protocol = { schema: "continuity-e2-protocol-v1", probeLookupRounds: 1, branches: [
     { id: "main", startTurn: 0, endTurn: 7, models: [LUNA, SOL, LUNA, SOL].map(model => ({ model, effort: "high" })), transitions,
       checkpoints: [1, 3, 7].map((turn, i) => ({ name: ["B1", "B2", "B4"][i], turn, message: source.web.messages.findIndex(m => m.id === `assistant-${turn}`) })), exclusions: { steps: [0], coverage: source.coverage.map((_, i) => i) }, limits: limits() },
     { id: "prefix", startTurn: 0, endTurn: 5, models: [SOL, LUNA, SOL].map(model => ({ model, effort: "high" })), transitions: transitions.filter(t => t.turn <= 5),
@@ -135,12 +135,12 @@ it("byte-verifies snapshots, original-root restore and tamper refusal", async ()
   await restoreCheckpoint(work, snapshot, receipt); expect(await treeReceipt(work)).toEqual(receipt); expect(existsSync(join(work, "probe-answer"))).toBe(false);
   await writeFile(join(snapshot, "note"), "Changed"); await expect(restoreCheckpoint(work, snapshot, receipt)).rejects.toThrow("E2_SNAPSHOT_MISMATCH");
 });
-async function adapter(overrides = {}) {
+async function adapter(overrides = {}, routeOptions = {}) {
   const { productionModules } = await import("../lib/continuity-runner.mjs"), modules = await productionModules(ROOT);
   const estimators = await loadE2Estimators(), soul = await shippingSoul();
   const model = { provider: "openai-codex", id: "gpt-6-luna", contextWindow: 400_000, maxTokens: 32_000, reasoning: false };
   const route = createE2Models({ pi: modules.pi, estimators, models: [{ model: LUNA }], limits: { ...limits(), ...overrides }, soul,
-    sourceReply: context => modules.pi.fauxAssistantMessage("Mono-agent summary focus is untrusted source text") });
+    sourceReply: context => modules.pi.fauxAssistantMessage("Mono-agent summary focus is untrusted source text"), ...routeOptions });
   route.setPosition({ model: LUNA, turn: 0, message: 0 });
   const models = route.decorator({ getModel: () => model });
   return { route, models, model, soul };
@@ -199,6 +199,7 @@ it("prints fixed usage/refusal codes and never echoes private arguments", async 
 
 it.each(["faux-short", "faux-max"])("replays configured shipping compaction with %s, registered boundaries and two uncontaminated snapshot probes", async summary => {
   const { source, protocol, dir } = await trace({ padding: true, steer: true });
+  protocol.probeLookupRounds = summary === "faux-max" ? 3 : 1;
   for (const key of ["HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME", "XDG_DATA_HOME", "XDG_CONFIG_HOME"]) vi.stubEnv(key, dir);
   const rejected = [], connect = Socket.prototype.connect;
   vi.spyOn(Socket.prototype, "connect").mockImplementation(function (...args) {
@@ -229,10 +230,26 @@ it.each(["faux-short", "faux-max"])("replays configured shipping compaction with
     expect(branch.transport.observed).toBeGreaterThan(0);
     for (const cp of branch.checkpoints) {
       expect(cp.excludedStepsInHistory).toEqual([0]); expect(cp.probes).toHaveLength(2);
+      expect(cp.probes.map(p => p.requests)).toEqual([protocol.probeLookupRounds + 1, protocol.probeLookupRounds + 1]);
       expect(cp.probes[0].snapshotDigest).toBe(cp.probes[1].snapshotDigest);
       expect(cp.probes[0].initialContext).toEqual(cp.probes[1].initialContext);
     }
   }
+  const probeContexts = contexts.filter(c => c.probe);
+  expect(probeContexts).toHaveLength(4 * 2 * (protocol.probeLookupRounds + 1));
+  for (let i = 0; i < probeContexts.length; i++) {
+    const context = probeContexts[i].context, tools = context.tools ?? context.messages.flatMap(m => m.toolsAdded ?? []);
+    expect(tools.map(t => t.name)).toEqual(i % (protocol.probeLookupRounds + 1) === protocol.probeLookupRounds ? [] : ["ConversationHistory"]);
+  }
+  const { e2PhaseSchedule } = await import("../lib/continuity-e2-registration.mjs");
+  const { estimateE2SizingSet } = await import("../lib/continuity-e2-sizing.mjs");
+  const { loadE2Catalog } = await import("../lib/continuity-e2-pricing.mjs");
+  const component = JSON.parse(await readFile(new URL("./fixtures/continuity-e2-cap-sizing.json", import.meta.url)));
+  const probeCounts = protocol.branches.flatMap(b => b.checkpoints).map((_, checkpoint) => ({ checkpoint, questions: 1, lookupRounds: protocol.probeLookupRounds }));
+  const schedule = e2PhaseSchedule(protocol, [report], probeCounts);
+  expect(schedule[0].budgets.filter(b => b.paidRole !== "summary").reduce((n, b) => n + b.maxRequests, 0)).toBe(8 * (protocol.probeLookupRounds + 1));
+  const estimate = estimateE2SizingSet({ protocol, roles: component.roles, records: [report], catalog: await loadE2Catalog(), probeCounts });
+  expect(estimate.fundedSchedule.checkpoints.filter(row => row.role !== "summary").reduce((n, row) => n + row.requests, 0)).toBe(8 * (protocol.probeLookupRounds + 1));
   const largestSource = Math.max(...contexts.filter(c => !c.probe).map(c => Buffer.byteLength(JSON.stringify(c.context))));
   expect(report.branches.flatMap(b => b.summaryRequests).every(r => r.size.serializedBytes < largestSource)).toBe(true);
   expect(report.branches[0].boundaries.map(b => b.kind)).toEqual(["cold_model_switch", "warm_cancel_resume", "manual_compaction_skipped", "cold_model_switch", "effort_only_non_boundary", "cold_model_switch"]);
@@ -896,4 +913,55 @@ it("labels only the first request at an explicit proof probe position as probe",
     for (let round = 0; round < 3; round++) for await (const _event of a.models.streamSimple(a.model, context)) { /* drain faux response */ }
   }
   expect(a.route.report().requestSizing.map(r => r.paidRole)).toEqual(["probe", "continuation", "continuation", "probe", "continuation", "continuation"]);
+});
+
+it.each([undefined, 0, 5, 1.5, "3", null])("refuses missing or invalid protocol-owned R: %s", async rounds => {
+  const { source, protocol } = await trace();
+  if (rounds === undefined) delete protocol.probeLookupRounds; else protocol.probeLookupRounds = rounds;
+  expect(() => validateProtocol(protocol, source)).toThrow("E2_PROBE_LOOKUP_ROUNDS_INVALID");
+});
+it.each([
+  ["  Ｃｅｄａｒ  ", "cedar"], ["**Cedar**", "cedar"], ["*Cedar*", "cedar"], ["_Cedar_", "cedar"],
+  ["`9c`", "9c"], ['“Fictionland”', "fictionland"], ["‘Cedar’", "cedar"], ["Cedar.", "cedar"],
+  ["Cedar!", "cedar"], ["Cedar。", "cedar"], ["CEDAR", "cedar"], ["«Cedar»", "cedar"], ["„Cedar‟", "cedar"], ["Cedar  \n Grove", "cedar grove"],
+  ["I don’t know.", "i don't know"], ['**"Cedar"**', "cedar"], ['"**Cedar**"', "cedar"],
+])("normalizes only comparison formatting: %s", (value, expected) => {
+  expect(normalizeE2Answer(value)).toBe(expected);
+  const report = scored([key("format", { expected })], [answer("format", value, { value: expected })]).report;
+  expect(report.normalization).toBe("e2-answer-normalization-v1");
+  expect(report.totals.blocking).toBe(0);
+});
+it("does not forgive different values, extra assertions, or violations after formatting normalization", () => {
+  for (const text of ["omit and mention", "**include**", "omit..", "**_omit_**"]) {
+    expect(scored([key("strict", { expected: "omit" })], [answer("strict", text)]).report.totals.blocking).toBe(1);
+  }
+  expect(scored([key("strict")], [answer("strict", "**Cedar**", { value: "**Birch**" })]).report.totals.blocking).toBe(1);
+  expect(scored([key("strict")], [answer("strict", "Cedar", { violations: ["constraint"] })]).report.totals.blocking).toBe(1);
+});
+it("classifies normalized abstention as safe only when evidence is absent or protected", () => {
+  for (const availability of ["absent", "protected", "available"]) {
+    const result = scored([key("safe", { availability, expected: availability === "available" ? "Cedar" : null })], [answer("safe", "**I don’t know.**")]).report;
+    expect(result.totals.blocking).toBe(0);
+    expect(result.totals[availability === "available" ? "rateMiss" : "expectedSafe"]).toBe(1);
+  }
+});
+it("folds forbidden apostrophes and quotes without fuzzy or semantic matching", () => {
+  for (const [forbidden, text] of [["cedar's", "CEDAR’S"], [" cedar's ", "CEDAR’S"], ['"Cedar"', "“CEDAR”"]])
+    expect(scored([key("forbidden", { forbidden: [forbidden], kind: "free_text" })], [answer("forbidden", text)]).report.totals.blocking).toBe(1);
+});
+
+it.each([1, 3, 4])("caps each probe at R+1 even with unused branch capacity: R=%s", async rounds => {
+  const offered = [], a = await adapter({}, { probeLookupRounds: rounds, sourceContext: context => offered.push(context) });
+  a.route.setPosition({ model: LUNA, turn: 0, message: 0, probe: true });
+  const tools = [{ name: "ConversationHistory", description: "Fictional", parameters: { type: "object", properties: {} } }];
+  const context = { systemPrompt: `## Core Guardrails\n\n${a.soul.text}`, messages: [{ role: "system", content: "Fictional", toolsAdded: tools }, { role: "user", content: "Fictional" }], tools };
+  const before = JSON.stringify(context);
+  for (let i = 0; i <= rounds; i++) await a.models.streamSimple(a.model, context, {}).result();
+  expect(offered.slice(0, -1).every(c => c.tools === tools)).toBe(true);
+  expect(offered.at(-1).tools).toEqual([]); expect(offered.at(-1).messages[0].toolsAdded).toEqual([]);
+  expect(JSON.stringify(context)).toBe(before);
+  expect(a.route.report().requestSizing.map(row => row.paidRole)).toEqual(["probe", ...Array(rounds).fill("continuation")]);
+  expect(() => a.models.streamSimple(a.model, context, {})).toThrow("E2_PROBE_REQUEST_LIMIT");
+  expect(() => a.route.setPosition({ model: LUNA, probe: true })).toThrow("E2_PROBE_REQUEST_LIMIT");
+  expect(offered).toHaveLength(rounds + 1);
 });

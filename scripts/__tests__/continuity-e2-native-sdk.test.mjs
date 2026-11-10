@@ -54,10 +54,10 @@ function proofReply(body, count) {
   return toolEvents(name, { action: "search", query: "proof-evidence", limit: 10 }, count);
 }
 
-async function run({ scenario = "probe", requests = 1, rows = [{ role: "probe", model: SOL }], capUnits, reuse = false, crossOutputReuse = false, production = false, fault, arm = "pressure", replay = false, phaseStartupDelayMs = 0 } = {}) {
+async function run({ scenario = "probe", requests = 1, rows = [{ role: "probe", model: SOL }], capUnits, reuse = false, crossOutputReuse = false, production = false, fault, arm = "pressure", replay = false, probeLookupRounds = 1, probeLookups = false, phaseStartupDelayMs = 0 } = {}) {
   const root = await realpath(await mkdtemp(join(tmpdir(), "e2-native-sdk-"))); roots.push(root);
   const originalHome = process.env.HOME;
-  const fixture = await e2NativeFixture(root, { rows, arm, replay, ...(capUnits ? { capUnits } : {}) });
+  const fixture = await e2NativeFixture(root, { rows, arm, replay, probeLookupRounds, ...(capUnits ? { capUnits } : {}) });
   expect(process.env.HOME).toBe(originalHome);
   if (replay) { expect(fixture.sizingHomes.length).toBeGreaterThan(0); expect(new Set(fixture.sizingHomes)).toEqual(new Set([fixture.home])); }
   const received = [], wireIdentities = []; let listenerError;
@@ -68,7 +68,10 @@ async function run({ scenario = "probe", requests = 1, rows = [{ role: "probe", 
       if (fault === "model-error") { response.writeHead(500, { "content-type": "application/json" }).end(JSON.stringify({ error: { code: "fictional_backend_failure", message: "Fictional backend failure." } })); return; }
       response.writeHead(200, { "content-type": "text/event-stream" });
       if (scenario === "cancel" || fault) { response.flushHeaders(); return; }
-      if (replay) response.end(events("Fictional response"));
+      if (replay) {
+        const tool = received.at(-1).tools?.find(t => t.name === "ConversationHistory");
+        response.end(probeLookups && tool ? toolEvents(tool.name, { action: "search", query: "Fictional response", limit: 1 }, received.length) : events("Fictional response"));
+      }
       else if (scenario === "proof") {
         const body = received.at(-1), current = body.input.filter(i => i.role === "user").at(-1)?.content;
         if (arm === "cancel" && JSON.stringify(current).includes("Continue without repeating the completed fictional sentinel")) { response.flushHeaders(); return; }
@@ -88,7 +91,7 @@ async function run({ scenario = "probe", requests = 1, rows = [{ role: "probe", 
   expect(listenerError).toBeUndefined(); expect({ code, error: result.error, stderr }).toEqual({ code: 0, error: undefined, stderr: "" });
   expect(await readFile(fixture.args.credentialPath)).toEqual(before);
   expect(await readdir(join(fixture.home, ".local/state/mono-agent/lcc-e2/consumed-v1"))).toHaveLength(1);
-  return { ...result, received, wireIdentities, root, profile };
+  return { ...result, received, wireIdentities, root, profile, funded: fixture.pilot.registration.schedule[0].budgets };
 }
 it("uses the genuine SDK and single guarded send, burns authority once, and publishes no canaries", async () => {
   const result = await run({ reuse: true }); expect(result.received).toHaveLength(1); expect(result.report.stop).toBe("completed");
@@ -178,4 +181,26 @@ it("allows a cold phase start beyond ten seconds without bypassing guarded SDK a
   expect(result.report.stop, JSON.stringify(result.report)).toBe("completed");
   expect(result.received.length).toBeGreaterThanOrEqual(4);
   expect(result.report.phases[0].calls.consumed).toBe(result.received.length);
+}, E2_NATIVE_TEST_TIMEOUT_MS);
+
+it("funds R=3 and withdraws native tools on each fourth C1 probe request", async () => {
+  const result = await run({ replay: true, production: true, probeLookupRounds: 3, probeLookups: true });
+  expect(result.report.stop, JSON.stringify(result.report)).toBe("completed");
+  const probes = result.received.filter(body => JSON.stringify(body.input).includes("PRIVATE-FROZEN-FICTIONAL-QUESTION"));
+  expect(probes).toHaveLength(8);
+  expect(probes.map(body => (body.tools ?? []).map(t => t.name))).toEqual([
+    ["ConversationHistory"], ["ConversationHistory"], ["ConversationHistory"], [],
+    ["ConversationHistory"], ["ConversationHistory"], ["ConversationHistory"], [],
+  ]);
+  expect(result.funded.filter(b => b.paidRole !== "summary").reduce((n, b) => n + b.maxRequests, 0)).toBe(8);
+  expect(result.report.phases[0].calls.settled).toBe(result.received.length);
+}, E2_NATIVE_TEST_TIMEOUT_MS);
+it("settles an early native answer without spending unused R=3 continuation funding", async () => {
+  const result = await run({ replay: true, production: true, probeLookupRounds: 3 });
+  expect(result.report.stop, JSON.stringify(result.report)).toBe("completed");
+  const probes = result.received.filter(body => JSON.stringify(body.input).includes("PRIVATE-FROZEN-FICTIONAL-QUESTION"));
+  expect(probes).toHaveLength(2);
+  expect(result.funded.filter(b => b.paidRole !== "summary").reduce((n, b) => n + b.maxRequests, 0)).toBe(8);
+  expect(result.report.phases[0].calls.settled).toBe(result.received.length);
+  expect(result.report.costs).toMatchObject({ retainedUnits: "0", activeUnits: "0" });
 }, E2_NATIVE_TEST_TIMEOUT_MS);

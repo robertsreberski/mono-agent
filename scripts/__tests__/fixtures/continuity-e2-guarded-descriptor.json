@@ -622,7 +622,8 @@
     "cancelContinuation": [
       "ConversationHistory",
       "ProofSentinel"
-    ]
+    ],
+    "replayFinal": []
   },
   "errorClass": "E2GuardError"
 }

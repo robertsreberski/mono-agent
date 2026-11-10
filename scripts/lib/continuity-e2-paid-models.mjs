@@ -20,7 +20,7 @@ export async function createE2PaidModels(a, safety) {
   const protocolBytes = await artifacts().readArtifact(a.pilot.registration.protocol.path, "e2_registration_invalid");
   need(digest(protocolBytes) === a.pilot.registration.protocol.sha256, "e2_registration_invalid");
   const protocol = JSON.parse(protocolBytes);
-  let send, native, config, position, active = false, stopped = null, lifecycle = null, barrier = Promise.resolve();
+  let send, native, config, position, active = false, probeRequests = 0, stopped = null, lifecycle = null, barrier = Promise.resolve();
   const counts = { requests: 0, responses: 0, durable: 0 };
   function fail(code) { stopped ??= code; throw Object.assign(Error(stopped), { code: stopped }); }
   async function stop(code) {
@@ -107,7 +107,7 @@ export async function createE2PaidModels(a, safety) {
       need(!native && bindings.resolvedSafety === safety); native = bindings;
       return Object.freeze({}); // Bootstrap only; no unclassified dispatcher escapes.
     },
-    setPosition(value) { if (stopped) fail(stopped); position = { ...value }; },
+    setPosition(value) { if (stopped) fail(stopped); position = { ...value }; probeRequests = 0; },
     observe(event) {
       if (event?.type !== "context_compaction") return;
       if (event.status === "running") {
@@ -121,9 +121,10 @@ export async function createE2PaidModels(a, safety) {
     },
     stream(target, model, context, options, role) {
       if (stopped) fail(stopped); need(!active, "e2_concurrent_request"); need(position && ["summary", "probe", "continuation"].includes(role), "e2_method_forbidden");
-      active = true; const pos = { ...position }, receipt = role === "summary" ? lifecycle : null;
+      active = true; const pos = { ...position }, probeRequest = a.slot.kind === "replay" && pos.probe ? ++probeRequests : undefined, receipt = role === "summary" ? lifecycle : null;
       const pending = (async () => {
         await barrier; if (stopped) fail(stopped);
+        if (probeRequest !== undefined) need(probeRequest <= protocol.probeLookupRounds + 1 && role === (probeRequest === 1 ? "probe" : "continuation"), "e2_request_limit");
         if (!native) { need(send); send.decorator(target); }
         if (role === "summary") {
           need(receipt && receipt === lifecycle, "e2_summary_not_authorized");
@@ -136,7 +137,7 @@ export async function createE2PaidModels(a, safety) {
         const effort = options.reasoning ?? "off";
         const contract = { ...E2_GUARD_CONTRACT, provider: model.provider, model: model.id, api: model.api, baseUrl: model.baseUrl, effort,
           runId: a.runId, slotId: a.slotId, promptCacheKey: a.cacheKey, e2: { pilot: a.pilot, planned: a.slot, outputRoot: a.outputRoot,
-            round, model: modelName, paidRole: role, checkpoint: receipt?.checkpoint ?? checkpoint(pos), size, reservationUnits,
+            round, model: modelName, paidRole: role, ...(probeRequest === undefined ? {} : { probeRequest }), checkpoint: receipt?.checkpoint ?? checkpoint(pos), size, reservationUnits,
             ...(receipt ? { operationDigest: receipt.operationDigest } : {}) } };
         // AgentLoop carries host orchestration metadata through streamSimple.
         // Validate and remove it at this SDK boundary; never execute or forward
