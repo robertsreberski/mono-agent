@@ -28,6 +28,15 @@ function Preview({ image, name, imageKey, onError }: {
   </div>;
 }
 
+/** Cluster call arrays are rebuilt by streaming updates even when results are unchanged. */
+function useStableResults(values: readonly unknown[]): readonly unknown[] {
+  const held = useRef(values);
+  if (held.current.length !== values.length || values.some((value, index) => !Object.is(value, held.current[index]))) {
+    held.current = values;
+  }
+  return held.current;
+}
+
 /** Shared by ordinary tool rows, clusters, subagents, and job progress payloads. */
 export function ToolImageOutput({ result, imageResults, args, truncated, characters, onLoadFull }: {
   readonly result: unknown;
@@ -39,11 +48,12 @@ export function ToolImageOutput({ result, imageResults, args, truncated, charact
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const [seen, setSeen] = useState(false);
-  const [failedResult, setFailedResult] = useState<unknown>();
+  const [failedResults, setFailedResults] = useState<readonly unknown[]>();
   const [repairState, setRepairState] = useState<"idle" | "loading" | "failed">("idle");
-  const attempted = useRef<unknown>(undefined);
+  const attempted = useRef(false);
   const id = useId();
-  const results = useMemo(() => imageResults ?? [result], [imageResults, result]);
+  const results = useStableResults(imageResults ?? [result]);
+  const failed = failedResults === results;
   const hint = useMemo(() => results.some(mayHaveToolImage), [results]);
   useEffect(() => {
     const element = ref.current;
@@ -67,29 +77,32 @@ export function ToolImageOutput({ result, imageResults, args, truncated, charact
   }, [hint, seen]);
   useEffect(() => {
     if (!seen || !hint || !truncated || !onLoadFull || characters === undefined
-      || characters > MAX_TOOL_IMAGE_RESULT_CHARS || attempted.current === result) return;
-    attempted.current = result;
+      || characters > MAX_TOOL_IMAGE_RESULT_CHARS || attempted.current) return;
+    // One automatic attempt per mount. A cluster's sequential repair publishes
+    // intermediate results; those updates must not start overlapping loops.
+    // The independent manual Load full output control remains available.
+    attempted.current = true;
     setRepairState("loading");
     void onLoadFull().then(
       (repaired) => setRepairState(repaired ? "idle" : "failed"),
       () => setRepairState("failed"),
     );
-  }, [seen, hint, truncated, characters, onLoadFull, result]);
-  const preview = useMemo(() => seen && !truncated && failedResult !== result
-    ? toolResultImageGroup(results) : undefined, [seen, truncated, failedResult, result, results]);
+  }, [seen, hint, truncated, characters, onLoadFull]);
+  const preview = useMemo(() => seen && !truncated && !failed
+    ? toolResultImageGroup(results) : undefined, [seen, truncated, failed, results]);
   const name = toolImageName(args);
   return <div ref={ref} className="tool-image-output">
     {repairState === "loading" && truncated && <p role="status">Loading image output…</p>}
     {repairState === "failed" && truncated && <p role="alert">Could not load image output. The text preview is shown below.</p>}
-    {failedResult === result && <p role="status">Image preview unavailable. The original output is shown below.</p>}
-    {seen && hint && !truncated && !preview && failedResult !== result && (
+    {failed && <p role="status">Image preview unavailable. The original output is shown below.</p>}
+    {seen && hint && !truncated && !preview && !failed && (
       <p role="status">Image is too large, incomplete, or unsupported for preview. The raw output is shown below.</p>
     )}
     {preview ? <>
       <EnsureMessageGallery>
         {preview.images.map((image, index) => <Preview key={`${id}-${index}`} image={image}
           imageKey={`${id}-${index}`} name={preview.images.length === 1 ? name : `${name} (${index + 1})`}
-          onError={() => setFailedResult(() => result)} />)}
+          onError={() => setFailedResults(results)} />)}
       </EnsureMessageGallery>
       {preview.remainder !== undefined && <pre>{safeJson(preview.remainder)}</pre>}
     </> : <pre>{safeJson(result)}</pre>}

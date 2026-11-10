@@ -91,13 +91,18 @@ it("renders a JPEG returned inline by any tool", async () => {
 });
 
 it("keeps text and retry controls when lazy repair fails", async () => {
-  vi.stubGlobal("fetch", vi.fn(async () => new Response("unavailable", { status: 503 })));
+  const fetcher = vi.fn(async () => new Response("unavailable", { status: 503 }));
+  vi.stubGlobal("fetch", fetcher);
   render(<Example truncated result={whole.slice(0, 4_096)} />);
   await page.getByText("Read", { exact: true }).click();
   expect(await screen.findByRole("alert")).toHaveTextContent("Could not load image output");
   expect(screen.queryByRole("img")).toBeNull();
   expect(screen.getByRole("button", { name: "Load full output" })).toBeVisible();
   expect(screen.getByText((_, element) => element?.tagName === "PRE" && element.textContent?.includes("mimeType") === true)).toBeVisible();
+  expect(fetcher).toHaveBeenCalledTimes(1);
+  await page.getByRole("button", { name: "Load full output" }).click();
+  expect(await screen.findByText("Could not load the full output.")).toBeVisible();
+  expect(fetcher).toHaveBeenCalledTimes(2);
 });
 
 it("falls back to original text for a raster that fails browser decoding", async () => {
@@ -205,4 +210,43 @@ it("pages from a tool preview to an attachment in the enclosing message gallery"
   await page.getByRole("button", { name: "Next image" }).click();
   expect(document.querySelector(".lightbox-image")).toHaveAttribute("alt", "message-attachment.png");
   await page.getByRole("button", { name: "Close image" }).click();
+});
+
+it("automatically repairs each truncated cluster member once despite intermediate results", async () => {
+  await page.viewport(1440, 1000);
+  let finishFirst: () => void = () => undefined;
+  let finishSecond: () => void = () => undefined;
+  const first = new Promise<void>((resolve) => { finishFirst = resolve; });
+  const second = new Promise<void>((resolve) => { finishSecond = resolve; });
+  const repair = vi.fn((id: string) => id === "image-1" ? first : second);
+  function Cluster() {
+    const [repaired, setRepaired] = useState<ReadonlySet<string>>(new Set());
+    return <ToolCallRepairProvider repair={async (id) => {
+      await repair(id);
+      setRepaired((held) => new Set([...held, id]));
+      return true;
+    }}>
+      <SubagentPart type="data" name="subagent" status={{ type: "complete" }} data={{
+        type: "subagent", name: "Synthetic repair helper", status: "complete",
+        calls: ["image-1", "image-2"].map((id) => ({
+          toolCallId: id, toolName: "Read", args: { path: `${id}.png` }, status: "complete",
+          result: repaired.has(id) ? whole : whole.slice(0, 100),
+          resultTruncated: !repaired.has(id), resultBytes: whole.length,
+        })),
+      }} />
+    </ToolCallRepairProvider>;
+  }
+  render(<Cluster />);
+  await page.getByText("Synthetic repair helper", { exact: true }).click();
+  await page.getByText("Read ×2", { exact: true }).click();
+  await waitFor(() => expect(repair.mock.calls).toEqual([["image-1"]]));
+  finishFirst();
+  await waitFor(() => expect(repair).toHaveBeenCalledWith("image-2"));
+  // Allow the first repair's new transcript and fresh callbacks to publish while
+  // the second request is still pending; that must not launch a second loop.
+  await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  expect(repair.mock.calls).toEqual([["image-1"], ["image-2"]]);
+  finishSecond();
+  await waitFor(() => expect(screen.getAllByRole("img")).toHaveLength(2));
+  expect(repair.mock.calls).toEqual([["image-1"], ["image-2"]]);
 });
