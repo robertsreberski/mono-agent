@@ -172,7 +172,7 @@ export async function openHarness({ modules, work, authPath, model, effort, tool
     // Tool-history/continuity outages are fail-open in production (warnings only);
     // the benchmark counts them so a degraded store invalidates the sample.
     harness = await modules.app.createConfiguredConversationHarness({ config, cwd: work, runtime, now: () => clock.value, ...hostOptions,
-      onToolHistoryWarning: () => onHistoryWarning() });
+      onToolHistoryWarning: message => onHistoryWarning(message) });
     return { harness, config, close };
   } catch (error) {
     await close();
