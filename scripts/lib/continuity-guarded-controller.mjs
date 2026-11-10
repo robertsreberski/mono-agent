@@ -28,6 +28,9 @@ export function guardedController(protocolId) {
 }
 function bind(protocol, protocolId) {
   const { statePath: pilotStatePath, sameRun: samePilot, runHash: pilotHash, runId: pilotId, requireFaux: requireFauxPilot } = guardedState(protocolId);
+  const deadlinePolicy = protocol.execution?.deadlines;
+  const phaseDeadlineAt = (pilot, slot) => deadlinePolicy ? deadlinePolicy.phaseAt(pilot.descriptor.deadlines, slot) : slot.startedAt + pilot.descriptor.deadlines.deadlineMs;
+  const requestDeadlineAt = (pilot, hold) => deadlinePolicy ? deadlinePolicy.requestAt(pilot.descriptor.deadlines, hold) : Infinity;
   const LOOKUP_REAL_CONTROLLER = protocol.policy.REAL_CONTROLLER, LOOKUP_FAUX_CONTROLLER = protocol.policy.FAUX_CONTROLLER, LOOKUP_PILOT_IPC = protocol.policy.PILOT_IPC;
   const LOOKUP_PREFLIGHT = protocol.policy.PREFLIGHT, LOOKUP_PRE_SEND_REFUSALS = protocol.policy.PRE_SEND_REFUSALS, LOOKUP_GUARD_POLICY_REFUSALS = protocol.policy.GUARD_POLICY_REFUSALS, LOOKUP_SLOT_TERMINALS = protocol.policy.SLOT_TERMINALS, LOOKUP_PILOT_STOPS = protocol.policy.PILOT_STOPS, LOOKUP_GUARD_STOPS = protocol.policy.GUARD_STOPS, LOOKUP_INTEGRITY_STOPS = protocol.policy.INTEGRITY_STOPS;
   const readPilotPrivate = async (...args) => (await protocol.hooks.controllerBindings()).readPrivate(...args);
@@ -100,6 +103,12 @@ function bind(protocol, protocolId) {
         pilotNeed(samePilot(await readPilotPrivate(path), state), protocol.codes.persist_failed);
       } catch { failed = true; pilotNeed(false, protocol.codes.persist_failed); }
     };
+    const expired = (slot, now = Date.now()) => {
+      if (now >= state.deadlineAt) return protocol.codes.run_deadline;
+      if (now >= phaseDeadlineAt(pilot, slot)) return protocol.codes.worker_timeout;
+      const hold = slot.holds.at(-1);
+      return hold && !hold.settlement && now >= requestDeadlineAt(pilot, hold) ? protocol.codes.worker_timeout : null;
+    };
     const stop = code => {
       // Unreconciled containment is an absorbing safety escalation, never a reopening.
       if (code === protocol.codes.unreconciled_processes) { state.stop = code; if (state.slots[state.cursor]) state.slots[state.cursor].unreconciled = true; }
@@ -155,11 +164,12 @@ function bind(protocol, protocolId) {
       }); },
       async message(index, worker, message) { return serial(async () => {
         await check();
-        const slot = state.slots[index];
+        const slot = state.slots[index]; let deadlineFailure = null;
         try {
           pilotNeed(index === state.cursor && slot.worker?.pid === worker.pid && lookupProcessStartIdentity(worker.pid) === slot.worker.startIdentity
             && message?.version === LOOKUP_PILOT_IPC && message.epoch === state.epoch && message.slotId === slot.slotId
             && message.seq === slot.nextMessage && protocol.policy.PERMIT_CONTRACT.methods.includes(message.op), protocol.codes.ipc_invalid);
+          if (deadlinePolicy) { deadlineFailure = expired(slot); pilotNeed(!deadlineFailure, deadlineFailure); }
           const p = message.payload; let result = {};
           if (message.op === "admit") {
             pilotNeed(state.schedule[index]?.eligible, protocol.codes.pilot_slot_ineligible);
@@ -172,14 +182,14 @@ function bind(protocol, protocolId) {
               && !slot.terminal && slot.holds.every(h => h.settlement), protocol.codes.permit_invalid);
             const nextReserve = specific?.reserve ?? reserve;
             if (Date.now() >= state.deadlineAt) stop(protocol.codes.run_deadline);
-            else if (Date.now() >= slot.startedAt + pilot.descriptor.deadlines.deadlineMs) stop(protocol.codes.worker_timeout);
+            else if (Date.now() >= phaseDeadlineAt(pilot, slot)) stop(protocol.codes.worker_timeout);
             const reason = lookupPilotStopReason(accountLookupPilot(state.slots), cap, nextReserve);
             if (reason) stop(reason);
             if (state.stop) { slot.admissionRefusal = state.stop; result = { refused: true, code: state.stop === "budget_admission" ? "not_admitted_cap" : protocol.codes.stopped }; }
             else {
               const permitId = randomUUID();
               slot.holds.push({ permitId, requestId: p.requestId, payloadDigest: p.payloadDigest, round: p.round,
-                ...specific?.metadata, reservedUnits: nextReserve.toString(), consumed: false, revoked: false, settlement: null });
+                ...specific?.metadata, ...(deadlinePolicy ? { admittedAt: Date.now() } : {}), reservedUnits: nextReserve.toString(), consumed: false, revoked: false, settlement: null });
               result = { epoch: state.epoch, permitId };
             }
           } else if (protocol.execution && message.op === "compaction") {
@@ -193,7 +203,7 @@ function bind(protocol, protocolId) {
             const hold = slot.holds.find(h => h.permitId === p?.permit?.permitId);
             pilotNeed(hold && p.permit.epoch === state.epoch && !hold.settlement, protocol.codes.permit_invalid);
             if (message.op === "consume") {
-              pilotNeed(!state.stop && !hold.revoked && !hold.consumed && p.bodyDigest === hold.payloadDigest && Date.now() < Math.min(state.deadlineAt, slot.startedAt + pilot.descriptor.deadlines.deadlineMs), protocol.codes.permit_invalid);
+              pilotNeed(!state.stop && !hold.revoked && !hold.consumed && p.bodyDigest === hold.payloadDigest && Date.now() < Math.min(state.deadlineAt, phaseDeadlineAt(pilot, slot), requestDeadlineAt(pilot, hold)), protocol.codes.permit_invalid);
               hold.consumed = true;
             } else {
               try { Object.assign(hold, settleLookupHold(hold, p.outcome, p.rawUsage, p.tier)); }
@@ -220,6 +230,12 @@ function bind(protocol, protocolId) {
             revision: state.revision + 1, ok: true, result };
           slot.lastAck = ack; await save(); return structuredClone(ack);
         } catch (error) {
+          if (deadlineFailure) {
+            // Expiry is not malformed IPC. Keep every unsettled reservation and
+            // refuse late consume/settle without upgrading it to an integrity stop.
+            stop(deadlineFailure); slot.terminal = slotTerminal(slot, "lost"); await save();
+            throw Object.assign(new Error(deadlineFailure), { code: deadlineFailure });
+          }
           if (protocol.execution && message?.op === "admit" && protocol.policy.ADMISSION_REFUSALS.includes(error.code)) {
             // Capacity/schedule refusals stop admission without reclassifying prior settled work.
             slot.admissionRefusal = error.code; stop(error.code); slot.nextMessage++;
@@ -234,6 +250,9 @@ function bind(protocol, protocolId) {
       async finish(index, terminal, score = null, refusalCode = null) { return serial(async () => {
         await check(); pilotNeed(state.schedule[index]?.eligible, protocol.codes.pilot_slot_ineligible);
         const slot = state.slots[index];
+        if (deadlinePolicy && slot) {
+          const code = expired(slot); if (code) { stop(code); terminal = "lost"; score = null; }
+        }
         if (!slot || state.cursor !== index || !LOOKUP_SLOT_TERMINALS.includes(terminal) || terminal === "unadmitted" || terminal === "skipped"
           || terminal === "refused_pre_send" && !slot?.admissionRefusal && ![...LOOKUP_PRE_SEND_REFUSALS, ...LOOKUP_GUARD_POLICY_REFUSALS].includes(refusalCode) || ![null, 0, 1].includes(score) || refusalCode !== null && ![...LOOKUP_PRE_SEND_REFUSALS, ...LOOKUP_GUARD_POLICY_REFUSALS].includes(refusalCode)) {
           if (slot?.holds.length) slot.terminal = "integrity_stop";
@@ -265,7 +284,7 @@ function bind(protocol, protocolId) {
     return Object.freeze(api);
   }
   function publicFailure(error) {
-    const allowed = [...LOOKUP_PILOT_STOPS, ...(protocol.execution ? [protocol.codes.registration_invalid] : []), "paid_mode_refused_in_ci", protocol.codes.pilot_real_route_unavailable, protocol.codes.pilot_faux_required, protocol.codes.debug_forbidden, protocol.codes.controller_checkout_mismatch,
+    const allowed = [...LOOKUP_PILOT_STOPS, ...(protocol.execution ? [protocol.codes.registration_invalid, protocol.codes.deadlines_invalid] : []), "paid_mode_refused_in_ci", protocol.codes.pilot_real_route_unavailable, protocol.codes.pilot_faux_required, protocol.codes.debug_forbidden, protocol.codes.controller_checkout_mismatch,
       protocol.codes.pilot_no_eligible_slots, protocol.codes.pilot_boundary_required, protocol.codes.authorization_binding_mismatch, protocol.codes.authorization_already_consumed, protocol.codes.authorization_lease_invalid, protocol.codes.pilot_resume_forbidden, protocol.codes.pilot_not_ready];
     pilotNeed(false, allowed.includes(error?.code) ? error.code : protocol.codes.pilot_not_ready);
   }
@@ -308,7 +327,7 @@ function bind(protocol, protocolId) {
     // Persist even a preparation process that hangs before its loaded handshake.
     const preparationAssigned = preparation ? journal.assignPreparation(index, owned) : null;
     void preparationAssigned?.catch(() => {});
-    let closed = false, reconciled = false, done = null, busy = false, failure = null, stage = "loaded", chain = Promise.resolve(), settleTimer, termination, containmentFailed = false, rejectContainment;
+    let closed = false, reconciled = false, done = null, busy = false, failure = null, stage = "loaded", chain = Promise.resolve(), settleTimer, requestTimer, termination, containmentFailed = false, rejectContainment;
     const observedMembers = new Map();
     const stopFailure = () => journal.stop(preparation ? [protocol.codes.worker_timeout, protocol.codes.preparation_timeout].includes(failure) ? protocol.codes.preparation_timeout : protocol.codes.preparation_invalid : failure);
     const containmentFailure = new Promise((_, reject) => { rejectContainment = reject; }); void containmentFailure.catch(() => {});
@@ -353,7 +372,20 @@ function bind(protocol, protocolId) {
       }
     })();
     const exited = new Promise(resolve => child.once("close", () => { closed = true; resolve(); }));
-    const timer = setTimeout(() => { failure ??= protocol.codes.worker_timeout; void stopFailure().catch(() => {}).then(terminateOwned).catch(() => {}); }, timeoutMs);
+    const armRequestTimer = () => {
+      if (!deadlinePolicy || preparation) return;
+      clearTimeout(requestTimer);
+      const current = journal.snapshot(), active = current.slots[index].holds.at(-1);
+      if (current.stop || !active || active.settlement) return;
+      const at = requestDeadlineAt(pilot, active);
+      requestTimer = setTimeout(() => {
+        const fresh = journal.snapshot(), hold = fresh.slots[index].holds.at(-1);
+        if (fresh.stop || !hold || hold.permitId !== active.permitId || hold.settlement) return;
+        failure ??= Date.now() >= fresh.deadlineAt ? protocol.codes.run_deadline : protocol.codes.worker_timeout;
+        void stopFailure().catch(() => {}).then(terminateOwned).catch(() => {});
+      }, Math.max(1, at - Date.now()));
+    };
+    const timer = setTimeout(() => { failure ??= deadlinePolicy && Date.now() >= state.deadlineAt ? protocol.codes.run_deadline : protocol.codes.worker_timeout; void stopFailure().catch(() => {}).then(terminateOwned).catch(() => {}); }, timeoutMs);
     child.on("error", () => { failure ??= protocol.codes.worker_lost; });
     child.on("disconnect", () => { if (!done) { failure ??= protocol.codes.ipc_disconnected; void stopFailure().catch(() => {}).then(terminateOwned).catch(() => {}); } });
     child.on("message", message => {
@@ -395,7 +427,7 @@ function bind(protocol, protocolId) {
           }
         } else {
           pilotNeed(!preparation && stage === "running", protocol.codes.ipc_invalid);
-          const ack = await journal.message(index, child, message); if (child.connected) child.send(ack);
+          const ack = await journal.message(index, child, message); armRequestTimer(); if (child.connected) child.send(ack);
           // Settle-then-contain: permit known usage to arrive, but never leave a stopped group alive until the watchdog.
           if (message.op === "stop" && !settleTimer) settleTimer = setTimeout(() => { void chain.then(() => terminateOwned()).catch(() => {}); }, 250);
         }
@@ -409,7 +441,7 @@ function bind(protocol, protocolId) {
         failure = protocol.codes.preparation_invalid; await stopFailure(); await terminateOwned(); await exited;
         await journal.finish(index, "lost"); return false;
       }
-      await Promise.race([exited, containmentFailure]); clearTimeout(timer); clearTimeout(settleTimer); await chain; if (termination) await termination;
+      await Promise.race([exited, containmentFailure]); clearTimeout(timer); clearTimeout(settleTimer); clearTimeout(requestTimer); await chain; if (termination) await termination;
       if (groupAlive(child.pid)) { failure ??= protocol.codes.worker_lost; try { await stopFailure(); } finally { await terminateOwned(); } }
       if (groupAlive(child.pid)) { await journal.stop(protocol.codes.unreconciled_processes); pilotNeed(false, protocol.codes.unreconciled_processes); } reconciled = true;
       if (preparation) {
@@ -427,7 +459,7 @@ function bind(protocol, protocolId) {
       const consumed = journal.snapshot().slots[index].holds.at(-1)?.consumed;
       await journal.finish(index, done?.terminal ?? (failure === protocol.codes.worker_timeout && consumed ? "own_abort_after_send" : "lost"), done?.score ?? null, done?.refusalCode ?? null);
     } finally {
-      clearTimeout(timer); clearTimeout(settleTimer);
+      clearTimeout(timer); clearTimeout(settleTimer); clearTimeout(requestTimer);
       try { if (!reconciled && (!closed || groupAlive(child.pid))) await terminateOwned(); }
       finally { if (child.connected) child.disconnect(); if (containmentFailed) { child.stderr.destroy(); child.unref(); } else await exited; }
     }

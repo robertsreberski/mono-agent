@@ -54,10 +54,10 @@ function proofReply(body, count) {
   return toolEvents(name, { action: "search", query: "proof-evidence", limit: 10 }, count);
 }
 
-async function run({ scenario = "probe", requests = 1, rows = [{ role: "probe", model: SOL }], capUnits, reuse = false, crossOutputReuse = false, production = false, fault, arm = "pressure", replay = false, probeLookupRounds = 1, probeLookups = false, phaseStartupDelayMs = 0 } = {}) {
+async function run({ scenario = "probe", requests = 1, rows = [{ role: "probe", model: SOL }], capUnits, reuse = false, crossOutputReuse = false, production = false, fault, arm = "pressure", replay = false, probeLookupRounds = 1, probeLookups = false, phaseStartupDelayMs = 0, deadlines } = {}) {
   const root = await realpath(await mkdtemp(join(tmpdir(), "e2-native-sdk-"))); roots.push(root);
   const originalHome = process.env.HOME;
-  const fixture = await e2NativeFixture(root, { rows, arm, replay, probeLookupRounds, ...(capUnits ? { capUnits } : {}) });
+  const fixture = await e2NativeFixture(root, { rows, arm, replay, probeLookupRounds, ...(deadlines ? { deadlines } : {}), ...(capUnits ? { capUnits } : {}) });
   expect(process.env.HOME).toBe(originalHome);
   if (replay) { expect(fixture.sizingHomes.length).toBeGreaterThan(0); expect(new Set(fixture.sizingHomes)).toEqual(new Set([fixture.home])); }
   const received = [], wireIdentities = []; let listenerError;
@@ -203,4 +203,13 @@ it("settles an early native answer without spending unused R=3 continuation fund
   expect(result.funded.filter(b => b.paidRole !== "summary").reduce((n, b) => n + b.maxRequests, 0)).toBe(8);
   expect(result.report.phases[0].calls.settled).toBe(result.received.length);
   expect(result.report.costs).toMatchObject({ retainedUnits: "0", activeUnits: "0" });
+}, E2_NATIVE_TEST_TIMEOUT_MS);
+
+it("kills a stalled genuine paid request on its own clock, not the longer phase watchdog", async () => {
+  const started = performance.now();
+  const result = await run({ production: true, fault: "request-timeout", rows: productionRows,
+    deadlines: { requestDeadlineMs: 1000, phaseDeadlineMs: 60000, childWatchdogMs: 60000, runDeadlineMs: 120000 } });
+  expect(result.received).toHaveLength(1); expect(result.report.stop).toBe("e2_worker_timeout");
+  expect(result.report.costs).toMatchObject({ retainedUnits: "3920000000", activeUnits: "0" });
+  expect(performance.now() - started).toBeLessThan(60000);
 }, E2_NATIVE_TEST_TIMEOUT_MS);

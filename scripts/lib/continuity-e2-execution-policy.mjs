@@ -67,6 +67,14 @@ function requestFunding(pilot, planned, p, operationDigest, probeRequest) {
     tools: [...requestTools(pilot, planned, p, probeRequest)] } };
 }
 export const e2ExecutionPolicy = Object.freeze({
+  // E2-owned clocks; protocols without this seam retain their historical slot clock.
+  deadlines: Object.freeze({
+    phaseAt(deadlines, slot) { return slot.startedAt + deadlines.phaseDeadlineMs; },
+    requestAt(deadlines, hold) {
+      need(Number.isSafeInteger(hold?.admittedAt), "e2_permit_invalid");
+      return hold.admittedAt + deadlines.requestDeadlineMs;
+    },
+  }),
   cap(pilot) {
     const value = pilot?.descriptor?.capUnits;
     need(typeof value === "string" && /^(0|[1-9][0-9]{0,29})$/u.test(value), "e2_registration_invalid"); return BigInt(value);

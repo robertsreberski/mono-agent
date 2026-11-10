@@ -133,7 +133,7 @@ export function pilotSuite({ scoped = false, fixtureOptions = {} } = {}) {
   };
   const serialTest = withScope(test);
   return { test: serialTest, cleanup: fn => { const scope = active.getStore(); if (!scope) throw Error("fixture_scope_missing"); scope.resources.push(fn); }, get fixture() { return f; },
-    async spawn(input, extraEnv = {}, {deferReplyUntilExit = false} = {}) {
+    async spawn(input, extraEnv = {}, {deferReplyUntilExit = false, replyTimeoutMs = 20000} = {}) {
       const witnesses = join(f.base, "witnesses"); await fs.mkdir(witnesses, { recursive: true, mode: 0o700 });
       const preload = fileURLToPath(new URL("./lookup-pilot-preload.mjs", import.meta.url));
       const child = fork(fileURLToPath(new URL("./lookup-pilot-driver.mjs", import.meta.url)), [], { cwd: f.repo, execArgv: ["--import", preload],
@@ -151,7 +151,7 @@ export function pilotSuite({ scoped = false, fixtureOptions = {} } = {}) {
       }
       child.stderr.resume();
       const exit = new Promise(resolve => child.once("close", (code, signal) => resolve({ code, signal })));
-      const reply = fixtureDriverReply(child, {...input, repo: f.repo});
+      const reply = fixtureDriverReply(child, {...input, repo: f.repo}, replyTimeoutMs);
       reply.catch(() => {}); // Handle early rejection; callers still receive the ORIGINAL promise.
       const record = { child, exit, reply, outputRoot: input.options?.outputRoot }; children().push(record); return record;
     },

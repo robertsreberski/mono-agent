@@ -10,16 +10,18 @@ import { lookupProcessGroupSnapshot } from "../lib/continuity-process-identity.m
 import { digest } from "../lib/continuity-dataset.mjs";
 const suite = pilotSuite({scoped: true});
 const it = suite.test;
-async function run(scenarios, timeoutMs, capUSD, extraEnv = {}) {
+async function run(scenarios, timeoutMs, capUSD, extraEnv = {}, spawnOptions = {}) {
   const options = await runOptions(suite.fixture, scenarios, timeoutMs);
   if (capUSD !== undefined) { options.pilot = structuredClone(options.pilot); options.pilot.descriptor.capUSD = capUSD; options.authorization.pilotSha256 = digest(options.pilot); }
-  const p = await suite.spawn({ options }, extraEnv);
+  const p = await suite.spawn({ options }, extraEnv, spawnOptions);
   const result = await p.reply; await p.exit; await suite.witnesses(); return { options, result };
 }
 // Sequential cases: parallelism is supplied by Vitest files, never by a queue.
 
 it("runs the real forked probe and guard over IPC with persisted arrival witnesses and inherited CI", async () => {
-  const { options, result } = await run(["two_rounds", "lost"], undefined, 3.93, { CI: "1" });
+  // This positive native-process path includes cold Node imports; do not use
+  // the short timeout fixtures' 5s child bound under shared-runner contention.
+  const { options, result } = await run(["two_rounds", "lost"], 30000, 3.93, { CI: "1" }, { replyTimeoutMs: 90000 });
   expect(result.failed).toBeUndefined(); expect(result.result.executionKind).toBe("faux-only");
   expect(result.result.receipts[0].calls).toEqual({ admitted: 2, consumed: 2, settled: 2 });
   expect(result.result.counts.incomplete).toBe(1); expect(result.result.stop).toBe("budget_admission");
@@ -28,7 +30,7 @@ it("runs the real forked probe and guard over IPC with persisted arrival witness
   for (const pid of [state.controller.pid, state.slots[0].worker.pid]) expect(JSON.parse(await fs.readFile(join(suite.fixture.base, "witnesses", `${pid}.json`))).ci).toBe("1");
   expect(new Set(state.slots.filter(s => s.worker).map(s => s.worker.pid)).size).toBe(state.slots.filter(s => s.worker).length);
   expect(state.schedule.every(s => !Object.hasOwn(s, "cacheKey"))).toBe(true);
-});
+}, 120000);
 
 it.each(["auth", "quota", "integrity_stop", "empty"])("persists the sticky %s outcome and partial receipt independently of exit", async scenario => {
   const { result } = await run([scenario]); expect(result.failed).toBeUndefined();

@@ -25,13 +25,13 @@ beforeEach(async () => {
     roles: ["summary", "probe", "continuation"].map(role => ({ role, model: SOL, maxInputTokens: 272000, maxOutputTokens: 128000, expectedOutputTokens: 512 })),
     toolPolicies: { summary: [], proof: ["ConversationHistory"], replay: ["ConversationHistory"], cancelContinuation: ["ConversationHistory", "ProofSentinel"] },
     schedule: [{ slotId: "b".repeat(64), eligible: true, kind: "proof", arm: "switch", budgets: ["summary", "probe", "continuation"].map(paidRole => ({ checkpoint: 0, paidRole, model: SOL, maxRequests: 2 })) }] },
-    descriptor: { schema: E2_PLAN_SCHEMA, assumptions: E2_ASSUMPTIONS, capUnits: "10000000000", deadlines: { deadlineMs: 30000, childWatchdogMs: 30000, runDeadlineMs: 60000 } },
+    descriptor: { schema: E2_PLAN_SCHEMA, assumptions: E2_ASSUMPTIONS, capUnits: "10000000000", deadlines: { requestDeadlineMs: 30000, phaseDeadlineMs: 30000, childWatchdogMs: 30000, runDeadlineMs: 60000 } },
     privateFixtureCanary: "FICTIONAL-PRIVATE-REGISTRATION-CANARY" };
   authorization = { schema: E2_FAUX_AUTHORIZATION, authorizationId: `fictional-${randomUUID()}`, outputRoot, pilotSha256: digest(pilot), scenarios: ["settled"], timeoutMs: 30000 };
 });
 afterEach(async () => {
   if (worker && worker.exitCode === null && worker.signalCode === null) { const exited = once(worker, "exit"); worker.kill("SIGKILL"); await exited; }
-  journal?.release(); if (root) await rm(root, { recursive: true, force: true }); vi.unstubAllEnvs();
+  journal?.release(); if (root) await rm(root, { recursive: true, force: true }); vi.unstubAllEnvs(); vi.restoreAllMocks();
 });
 async function start() {
   authorization.pilotSha256 = digest(pilot); journal = await controller.createLookupPilotController({ real: false, pilot, authorization, outputRoot });
@@ -72,7 +72,7 @@ it("refuses a summary outside an actual declared lifecycle, without admitting a 
   expect(journal.snapshot().slots[0].holds).toEqual([]);
 });
 it("keeps full own-cancellation liability instead of releasing the reserve", async () => {
-  await start(); const p = admission(), permit = await rpc("admit", p); await rpc("consume", { permit, bodyDigest: p.payloadDigest });
+  authorization.timeoutMs = 2000; await start(); const p = admission(), permit = await rpc("admit", p); await rpc("consume", { permit, bodyDigest: p.payloadDigest });
   await rpc("settle", { permit, outcome: { kind: "own_abort_after_send" }, rawUsage: null, tier: null }); await journal.finish(0, "own_abort_after_send");
   expect(accounting.accountRun(journal.snapshot().slots)).toMatchObject({ retainedUnits: "3920000000", consecutiveProviderLosses: 0 });
 });
@@ -132,4 +132,52 @@ it.each(["missing", "not-array", "empty", "null-slot", "missing-budgets", "null-
     "zero-budget": [{ ...slot, budgets: [{ ...slot.budgets[0], maxRequests: 0 }] }], duplicate: [slot, slot] }[kind];
   await expect(start()).rejects.toMatchObject({ code: "e2_registration_invalid" });
   expect(await readdir(outputRoot)).toEqual([]);
+});
+
+it("runs many fast paid requests after more than 600 seconds of phase time", async () => {
+  const base = Date.now(), clock = vi.spyOn(Date, "now").mockReturnValue(base);
+  pilot.descriptor.deadlines = { requestDeadlineMs: 10000, phaseDeadlineMs: 1800000, childWatchdogMs: 1800000, runDeadlineMs: 3600000 };
+  pilot.registration.schedule[0].budgets.forEach(b => b.maxRequests = 20);
+  await start();
+  for (let i = 0; i < 12; i++) {
+    clock.mockReturnValue(base + i * 70000);
+    const p = admission(), permit = await rpc("admit", p);
+    expect(journal.snapshot().slots[0].holds.at(-1).admittedAt).toBe(base + i * 70000);
+    clock.mockReturnValue(base + i * 70000 + 1); await rpc("consume", { permit, bodyDigest: p.payloadDigest });
+    clock.mockReturnValue(base + i * 70000 + 2);
+    await rpc("settle", { permit, outcome: { kind: "settled", costUnits: "300000" }, rawUsage: { input_tokens: 100, output_tokens: 10 }, tier: "default" });
+  }
+  await journal.finish(0, "completed", 1);
+  expect(journal.snapshot().stop).toBeNull(); expect(journal.snapshot().slots[0].terminal).toBe("completed");
+  expect(accounting.accountRun(journal.snapshot().slots)).toMatchObject({ completeUnits: "3600000", retainedUnits: "0" });
+});
+it.each(["consume", "settle"])("refuses late %s at the admission-anchored request deadline and retains liability", async op => {
+  const base = Date.now(), clock = vi.spyOn(Date, "now").mockReturnValue(base);
+  pilot.descriptor.deadlines.requestDeadlineMs = 1000; await start();
+  const p = admission(), permit = await rpc("admit", p);
+  if (op === "settle") { clock.mockReturnValue(base + 500); await rpc("consume", { permit, bodyDigest: p.payloadDigest }); }
+  clock.mockReturnValue(base + 1000);
+  await expect(rpc(op, op === "consume" ? { permit, bodyDigest: p.payloadDigest }
+    : { permit, outcome: { kind: "settled", costUnits: "300000" }, rawUsage: { input_tokens: 100, output_tokens: 10 }, tier: "default" })).rejects.toMatchObject({ code: "e2_worker_timeout" });
+  expect(journal.snapshot().stop).toBe("e2_worker_timeout"); expect(journal.snapshot().slots[0].terminal).toBe("lost");
+  expect(accounting.accountRun(journal.snapshot().slots)).toMatchObject({ retainedUnits: "3920000000", activeUnits: "0" });
+});
+it("stops admission at the phase deadline even between requests", async () => {
+  const base = Date.now(), clock = vi.spyOn(Date, "now").mockReturnValue(base);
+  pilot.descriptor.deadlines = { requestDeadlineMs: 1000, phaseDeadlineMs: 2000, childWatchdogMs: 2000, runDeadlineMs: 5000 }; authorization.timeoutMs = 2000; await start();
+  clock.mockReturnValue(base + 2000);
+  await expect(rpc("admit", admission())).rejects.toMatchObject({ code: "e2_worker_timeout" });
+  expect(journal.snapshot().slots[0].holds).toEqual([]); expect(journal.snapshot().stop).toBe("e2_worker_timeout");
+});
+it("keeps the run clock global when a fresh later phase still has time", async () => {
+  const base = Date.now(), clock = vi.spyOn(Date, "now").mockReturnValue(base);
+  pilot.descriptor.deadlines = { requestDeadlineMs: 1000, phaseDeadlineMs: 2000, childWatchdogMs: 2000, runDeadlineMs: 3000 };
+  pilot.registration.schedule.push({ ...structuredClone(pilot.registration.schedule[0]), slotId: "c".repeat(64) });
+  authorization.timeoutMs = 2000; await start(); const p = admission(), permit = await rpc("admit", p); await rpc("consume", { permit, bodyDigest: p.payloadDigest });
+  await rpc("settle", { permit, outcome: { kind: "settled", costUnits: "300000" }, rawUsage: { input_tokens: 100, output_tokens: 10 }, tier: "default" });
+  await journal.finish(0, "completed", 1); clock.mockReturnValue(base + 1900);
+  await journal.assign(1, { pid: worker.pid, startIdentity: lookupProcessStartIdentity(worker.pid) });
+  clock.mockReturnValue(base + 3000); const s = journal.snapshot();
+  await expect(journal.message(1, worker, { version: E2_PILOT_IPC, epoch: s.epoch, slotId: s.slots[1].slotId, seq: 0, op: "admit", payload: {} })).rejects.toMatchObject({ code: "e2_run_deadline" });
+  expect(journal.snapshot().stop).toBe("e2_run_deadline"); expect(journal.snapshot().slots[1].holds).toEqual([]);
 });
