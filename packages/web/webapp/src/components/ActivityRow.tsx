@@ -1,6 +1,7 @@
 import { useState, type ReactNode } from "react";
 import { Icon } from "./Icon";
 import { safeJson } from "./json";
+import { ToolImageOutput } from "./ToolImageOutput";
 
 export { formatToolDuration } from "./duration";
 
@@ -268,7 +269,9 @@ export function ActivityPayload({
       {result !== undefined && (
         <>
           <span>{resultIsError ? "Error" : "Output"}</span>
-          <pre>{safeJson(result)}</pre>
+          <ToolImageOutput result={result} args={args} truncated={resultTruncated}
+            {...(resultBytes === undefined ? {} : { characters: resultBytes })}
+            {...(onLoadFull === undefined ? {} : { onLoadFull })} />
         </>
       )}
       {resultTruncated && (
