@@ -76,7 +76,7 @@ async function run({ scenario = "probe", requests = 1, rows = [{ role: "probe", 
         const body = received.at(-1), current = body.input.filter(i => i.role === "user").at(-1)?.content;
         if (arm === "cancel" && JSON.stringify(current).includes("Continue without repeating the completed fictional sentinel")) { response.flushHeaders(); return; }
         response.end(proofReply(body, received.length));
-      } else response.end(events("FICTIONAL-SUMMARY-ANSWER-CANARY", scenario === "cap"));
+      } else response.end(events(scenario.startsWith("lineage-pack") ? "Fictional evidence at /home/example/private/file.txt" : "FICTIONAL-SUMMARY-ANSWER-CANARY", scenario === "cap"));
     } catch (error) { listenerError = error; response.writeHead(500).end(); }
   }); servers.push(server); await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
   const profile = { phaseStartupDelayMs, preload: join(root, "preload.mjs"), crossOutputReuse, root: ROOT, home: fixture.home, args: fixture.args, scenario, requests, reuse, production, fault,
@@ -212,4 +212,19 @@ it("kills a stalled genuine paid request on its own clock, not the longer phase 
   expect(result.received).toHaveLength(1); expect(result.report.stop).toBe("e2_worker_timeout");
   expect(result.report.costs).toMatchObject({ retainedUnits: "3920000000", activeUnits: "0" });
   expect(performance.now() - started).toBeLessThan(60000);
+}, E2_NATIVE_TEST_TIMEOUT_MS);
+
+it("refuses a smuggled summary in a no-lineage SDK baseline with zero fetches", async () => {
+  const result = await run({ scenario: "baseline-smuggle", rows: [{ role: "probe", model: SOL }] });
+  expect(result.received).toHaveLength(0); expect(result.report.stop).toBe("e2_summary_receipt_invalid");
+}, E2_NATIVE_TEST_TIMEOUT_MS);
+it.each(["lineage-extra-native", "lineage-extra-pack", "lineage-pack-text", "lineage-pack-sha", "archive-tamper"])("refuses %s at the genuine SDK gate with zero probe fetches", async scenario => {
+  const result = await run({ scenario, rows: [{ role: "summary", model: SOL }, { role: "probe", model: SOL }] });
+  expect(result.received).toHaveLength(1); expect(result.report.stop).toBe("e2_summary_receipt_invalid");
+  expect(result.report.phases[0].summaryPresence).toMatchObject({ checked: 1, unobserved: 1 });
+}, E2_NATIVE_TEST_TIMEOUT_MS);
+it.each([["lineage-branch", "branch"], ["lineage-pack", "pack"], ["archive-absent", "none"], ["lineage-absent", "none"]])("accepts and durably reports %s without changing the SDK input", async (scenario, kind) => {
+  const result = await run({ scenario, rows: [{ role: "summary", model: SOL }, { role: "probe", model: SOL }] });
+  expect(result.received).toHaveLength(2); expect(result.report.stop).toBe("completed");
+  expect(result.report.phases[0].summaryPresence).toMatchObject({ checked: 2, unobserved: 0, [kind]: kind === "none" ? 2 : 1 });
 }, E2_NATIVE_TEST_TIMEOUT_MS);

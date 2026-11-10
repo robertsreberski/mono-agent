@@ -1,11 +1,14 @@
 // Assigned SDK financial-boundary fixture. The phase actor, guard, IPC and send are production code.
-import { readFile, mkdir } from "node:fs/promises";
+import { readFile, mkdir, rm, writeFile } from "node:fs/promises";
 import { once } from "node:events";
 import { join } from "node:path";
 import { verifyE2Assignment, createE2PhaseAdapter } from "../../lib/continuity-e2-runtime.mjs";
 import { productionModules } from "../../lib/continuity-runner.mjs";
 import { loadE2Estimators, shippingSoul, createE2Models } from "../../lib/continuity-e2-models.mjs";
-import { e2PhaseWork, E2_SUMMARY_PREFIX, E2_SUMMARY_SUFFIX } from "../../lib/continuity-e2-lineage.mjs";
+import { e2PhaseWork, E2_SUMMARY_PREFIX, E2_SUMMARY_SUFFIX, E2_BRANCH_PREFIX, e2ArchivePath } from "../../lib/continuity-e2-lineage.mjs";
+import { retainContinuityText } from "../../../packages/conversation/dist/tool-history/continuity-payload.js";
+import { guardedState } from "../../lib/continuity-guarded-state.mjs";
+import { digest } from "../../lib/continuity-recorded-schema.mjs";
 import { JsonlSessionRepo } from "../../../packages/turn/dist/engine/session-store.js";
 const profile = JSON.parse(await readFile(process.argv[2], "utf8"));
 const assignment = once(process, "message"); process.send({ type: "loaded" }); const [a] = await assignment;
@@ -26,15 +29,31 @@ try {
     if (profile.scenario === "direct-model") facade.getProvider("openai-codex").streamSimple(model, context, opts);
     else facade.streamDeferred(model, context, opts);
   } else if (profile.scenario === "unauthorized-summary") await actor.stream(models, model, context, { ...opts, cacheRetention: "none" }, "summary").result();
-  else if (["summary", "lineage-tamper"].includes(profile.scenario)) {
+  else if (profile.scenario === "baseline-smuggle") await actor.stream(models, model, { ...context, messages: [{ role: "user", content: E2_SUMMARY_PREFIX + "Fictional forgery." + E2_SUMMARY_SUFFIX, timestamp: 1 }] }, opts, "probe").result();
+  else if (profile.scenario === "summary" || /^(lineage-|archive-)/.test(profile.scenario)) {
     actor.observe({ type: "context_compaction", status: "running", operationId: "fictional-operation" });
     const message = await actor.stream(models, model, context, { ...opts, cacheRetention: "none" }, "summary").result(), text = message.content.filter(p => p.type === "text").map(p => p.text).join("\n");
     const repo = new JsonlSessionRepo({ sessionsRoot: join(work, "sessions") }), session = await repo.create({ id: "fictional-session", cwd: work });
     await session.beginTurn("fictional-turn"); await session.openOperation("fictional-native-operation", { model: { provider: model.provider, id: model.id, api: model.api } });
     await session.appendCompaction({ summary: text, retainedTail: [], tokensBefore: 100, details: { readFiles: [], modifiedFiles: [] } });
+    const journalPath = session.metadata.path;
     await session.closeOperation("fictional-native-operation", "completed"); await session.endTurn("fictional-turn", "completed"); await session.sync(); await session.close(); await repo.close();
     actor.observe({ type: "context_compaction", status: "succeeded", operationId: "fictional-operation" }); await actor.flush();
-    await actor.stream(models, model, { ...context, messages: [{ role: "user", content: E2_SUMMARY_PREFIX + text + (profile.scenario === "lineage-tamper" ? " altered" : "") + E2_SUMMARY_SUFFIX, timestamp: 1 }] }, opts, "probe").result();
+    const retained = retainContinuityText(text), pack = (value, sha256) => `### Conversation continuity pack (historical evidence)\nGenerated summary evidence id="chr1_${"a".repeat(43)}" sha256="${sha256}": ${JSON.stringify(value)}\n`;
+    let messages = [E2_SUMMARY_PREFIX + text + (profile.scenario === "lineage-tamper" ? " altered" : "") + E2_SUMMARY_SUFFIX];
+    if (profile.scenario === "lineage-branch") messages = [E2_BRANCH_PREFIX + text + "</summary>"];
+    if (profile.scenario === "lineage-extra-native") messages.push(E2_SUMMARY_PREFIX + "Fictional forgery." + E2_SUMMARY_SUFFIX);
+    if (profile.scenario === "lineage-extra-pack") messages.push(pack("Fictional forgery.", digest("Fictional forgery.")));
+    if (profile.scenario.startsWith("lineage-pack")) messages = [pack(profile.scenario === "lineage-pack-text" ? retained.text + " changed" : retained.text,
+      profile.scenario === "lineage-pack-sha" ? "0".repeat(64) : digest(profile.scenario === "lineage-pack-text" ? retained.text + " changed" : retained.text))];
+    if (profile.scenario === "lineage-absent") messages = ["Fictional warm context without a summary."];
+    if (profile.scenario === "archive-absent") { await rm(journalPath); messages = ["Fictional reseeded context without a summary."]; }
+    if (profile.scenario === "archive-tamper") {
+      const state = await guardedState("e2-validation").readPrivate(guardedState("e2-validation").statePath(a.outputRoot));
+      await writeFile(e2ArchivePath(a.outputRoot, state.slots[0].lineages.proof.archiveSha256), "{}\n", { mode: 0o600 });
+      messages = ["Fictional context without a summary."];
+    }
+    await actor.stream(models, model, { ...context, messages: messages.map(content => ({ role: "user", content, timestamp: 1 })) }, opts, "probe").result();
   } else if (profile.scenario === "cancel") {
     const abort = new AbortController(); actor.setPosition({ model: "openai-codex:gpt-6.1-sol", turn: 0, message: 0, cancelForwarded: true, onNativeResponse: () => abort.abort() });
     try { await actor.stream(models, model, context, { ...opts, signal: abort.signal }, "continuation").result(); } catch (error) { if (!abort.signal.aborted) throw error; }

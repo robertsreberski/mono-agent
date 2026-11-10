@@ -205,6 +205,10 @@ function bind(protocol, protocolId) {
             if (message.op === "consume") {
               pilotNeed(!state.stop && !hold.revoked && !hold.consumed && p.bodyDigest === hold.payloadDigest && Date.now() < Math.min(state.deadlineAt, phaseDeadlineAt(pilot, slot), requestDeadlineAt(pilot, hold)), protocol.codes.permit_invalid);
               hold.consumed = true;
+            } else if (protocol.execution?.verifyBody && message.op === "verifyBody") {
+              pilotNeed(!state.stop && !hold.revoked && hold.consumed && slot.holds.at(-1) === hold && !hold.summaryPresence, protocol.codes.permit_invalid);
+              try { await protocol.execution.verifyBody(outputRoot, hold, state, index, p); }
+              catch (error) { slot.terminal = "integrity_stop"; stop(error.code); result = { refused: true, code: fixedPilotCode(error.code) }; }
             } else {
               try { Object.assign(hold, settleLookupHold(hold, p.outcome, p.rawUsage, p.tier)); }
               catch (error) {

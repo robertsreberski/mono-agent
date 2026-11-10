@@ -2822,20 +2822,45 @@ new bound artifacts, not an automated retry.
 
 #### Exact committed-summary lineage
 
-A claimed receipt hash is insufficient. The controller reads and validates the
-actual private runtime JSONL checkpoint, verifies completed compaction and cwd/
-journal identity, and binds its **assembled committed text** to the generated
-settled results. This includes split history/prefix assembly, reused previous
-summary and the shipping file-operation suffix. The durable ACK is withheld
-until that verification succeeds; checkpoint reuse refuses.
+A claimed receipt hash is insufficient. At binding, the controller validates the
+**newest** private runtime JSONL checkpoint, completed operation and cwd/journal
+identity, and matches its **assembled committed text** to generated settled
+results, including split history/prefix assembly and the shipping file-operation
+suffix. Before acknowledging, it exclusively writes and syncs a bounded private
+`continuity-e2-committed-checkpoint-v1` artifact. Lineage **version 2** binds its raw
+file digest, native checkpoint/operation/model identity, scope, phase and generated
+receipt references. Old or incomplete lineage fails closed. Use fresh build,
+registration and authorization artifacts; this is not permission to resume an old
+single-use run.
 
-Before native fetch, the gate re-reads the checkpoint and requires the exact
-committed text digest in a recognized serialized compaction/branch summary or
-shipping continuity-pack record in the **decompressed actual request body**.
-It does not accept an arbitrary substring, claimed envelope digest or truncated,
-missing or changed summary. A shipping representation that cannot carry the
-complete verified text refuses rather than injecting replacement context.
-Snapshot probes remain isolated at the original absolute roots.
+Later body verification and predecessor assembly read only those digest-bound
+archives, not native journals that shipping cold model switches legitimately
+retire. Scope cannot cross replay branches. Proof resume may inherit only its
+registered successful immediately preceding seed, never a stale predecessor or
+recovery after loss.
+
+Before native fetch, the controller independently checks the **decompressed
+actual request bytes**, bound to the consumed permit's payload digest, and
+persists a content-free observation before its body-verification ACK. Every
+recognized native or branch wrapper must exactly match a current or registered
+predecessor archive in that scope. Every generated-summary pack line must match
+both the exact text and recorded SHA256 produced by the shipping
+`retainContinuityText` function applied directly to an archived checkpoint. No
+sidecar hash allowlist, caller redaction flag, fuzzy matching or arbitrary
+substring confers authority. A valid summary does not excuse an additional forged
+one; a no-lineage baseline cannot introduce any summary representation.
+
+**Absence is observable, not refusable.** A reseeded or bounded context may contain
+no summary; it is sent unchanged and recorded as `none`. The same rule applies to
+warm contexts: dropping a summary is visible but does not create authority. Slot
+receipts expose `summaryPresence`: `checked` and `unobserved` request counts, plus
+verified request counts for `native`, `branch`, `pack` and `none` (kinds may overlap).
+An unobserved request was not successfully body-verified and is not counted as
+`none`. These counters do not claim semantic quality or a successful send.
+
+This is guard-only: no context injection, prompt changes, token sizing or cost
+construction changes. Snapshot probes remain isolated at their original absolute
+roots; B4, END, prefix B3 and repeated probes use the same scope-specific archives.
 
 Native-SDK subprocess tests use fictional private inputs and temporary HOMEs,
 with only the provider fetch replaced by owned loopback. They exercise the real

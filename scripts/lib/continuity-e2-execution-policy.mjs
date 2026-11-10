@@ -1,5 +1,6 @@
 // Closed E2 accounting policy. Durable admission/consume/settle remain in the shared core.
 import { digest } from "./continuity-dataset.mjs";
+import { digest as rawDigest } from "./continuity-recorded-schema.mjs";
 import { e2RequestPrice, e2UsageUnits } from "./continuity-e2-pricing.mjs";
 import { E2_PERMIT_CONTRACT, E2_GUARD_CONTRACT, E2_REAL_CONTROLLER } from "./continuity-e2-policy.mjs";
 import { validateE2Sizing } from "./continuity-e2-estimate.mjs";
@@ -152,7 +153,7 @@ export const e2ExecutionPolicy = Object.freeze({
         need(!seed.holds.some(h => h.paidRole === "summary") || slot.lineages.proof, "e2_summary_receipt_invalid");
       }
     }
-    if (p.paidRole === "summary") return;
+    if (p.paidRole === "summary") return scope === undefined ? undefined : { lineageScope: scope, ...(slot.lineages[scope] ? { lineage: structuredClone(slot.lineages[scope]) } : {}) };
     need(!slot.compaction, "e2_compaction_invalid");
     for (const hold of slot.holds.filter(h => h.paidRole === "summary")) {
       const currentScope = state?.schema === E2_REAL_CONTROLLER && scope === await e2LineageScope({ ...state, pilot }, state.schedule[state.cursor], hold.checkpoint, readArtifact);
@@ -162,9 +163,20 @@ export const e2ExecutionPolicy = Object.freeze({
     }
     return scope === undefined ? undefined : { lineageScope: scope, ...(slot.lineages[scope] ? { lineage: structuredClone(slot.lineages[scope]) } : {}) };
   },
-  async verifyNativeBody(bytes, hold, state, assignment) {
+  async verifyNativeBody(bytes, hold, _state, _assignment, permit) {
+    // The controller independently validates the final bytes and durably records
+    // content-free presence before this gate can enter nativeFetch.
+    need(permit?.verifyBody && bytes.length <= 12 * 1024 * 1024, "e2_summary_receipt_invalid");
+    const result = await permit.verifyBody(hold.permitId, bytes.toString("base64"));
+    need(!result?.refused, result?.code ?? "e2_summary_receipt_invalid");
+  },
+  async verifyBody(root, hold, state, index, p) {
+    need(sameFields(p, ["permit", "body"]) && sameFields(p.permit, ["epoch", "permitId"]) && typeof p.body === "string" && p.body.length <= 16 * 1024 * 1024, "e2_summary_receipt_invalid");
+    const bytes = Buffer.from(p.body, "base64");
+    need(bytes.toString("base64") === p.body && rawDigest(bytes) === hold.payloadDigest, "e2_summary_receipt_invalid");
+    this.assertBody(bytes, hold);
     const { guardedAuthorization } = await import("./continuity-guarded-authorization.mjs");
-    if (hold.paidRole !== "summary") await verifyE2NativeLineage(bytes, hold, state, assignment, guardedAuthorization("e2-validation").readArtifact);
+    hold.summaryPresence = await verifyE2NativeLineage(bytes, hold, state, { outputRoot: root, index }, guardedAuthorization("e2-validation").readArtifact);
   },
   async compaction(root, slotId, planned, slot, p, readPrivate, state, pilot) {
     const real = state?.schema === E2_REAL_CONTROLLER;
@@ -201,6 +213,9 @@ export const e2ExecutionPolicy = Object.freeze({
       qualityMeasured: state.schema === protocol.policy.REAL_CONTROLLER && slot.holds.length > 0 && ["completed", "wrong"].includes(slot.terminal) && slot.score !== null,
       calls: { admitted: slot.holds.length, consumed: slot.holds.filter(h => h.consumed).length, settled: slot.holds.filter(h => h.settlement).length,
         verifiedSummaries: slot.holds.filter(h => h.summaryReceipt?.verified && h.summaryReceipt.durable).length },
+      summaryPresence: { checked: slot.holds.filter(h => h.summaryPresence).length, unobserved: slot.holds.filter(h => !h.summaryPresence).length,
+        native: slot.holds.filter(h => h.summaryPresence?.native > 0).length, branch: slot.holds.filter(h => h.summaryPresence?.branch > 0).length,
+        pack: slot.holds.filter(h => h.summaryPresence?.pack > 0).length, none: slot.holds.filter(h => h.summaryPresence?.none).length },
       usage: { inputTokens: slot.holds.reduce((n, h) => n + (h.settlement?.rawUsage?.input_tokens ?? 0), 0), outputTokens: slot.holds.reduce((n, h) => n + (h.settlement?.rawUsage?.output_tokens ?? 0), 0) },
       costs: { completeUnits: spend.completeUnits, retainedUnits: spend.retainedUnits, activeUnits: spend.activeUnits, totalUnits: spend.totalUnits, knownPartialUnits: spend.knownPartialUnits } };
     return { ...row, sha256: digest(row) };

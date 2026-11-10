@@ -14,6 +14,13 @@
   on the same identity until the original request settles, and preserve browser
   recovery when device storage loses a saved draft.
 
+- Keep verified E2 summary lineage after native journals retire on model changes.
+  Reject every unverified summary wrapper or retained pack line; allow missing
+  summaries and report their presence per paid request without changing context.
+  Breaking: E2 lineage v2 requires private committed-checkpoint archives and a
+  controller body-verification ACK. Old run state cannot resume; create fresh
+  build, registration and single-use authorization artifacts.
+
 - Separate E2 paid-request deadlines from long phase, child and run clocks in
   plan v2. Keep each request bounded to ten minutes, allow phase/run ceilings up
   to 24 hours, and retain liability on timeout. Refuse old E2 plans; keep

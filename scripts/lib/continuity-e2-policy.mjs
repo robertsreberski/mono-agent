@@ -33,7 +33,7 @@ export const E2_GUARD_POLICY_REFUSALS = Object.freeze([
 export const E2_PERMIT_CONTRACT = freeze({
   version: "e2-permit-v1",
   admissionFields: ["requestId", "slotId", "round", "payloadDigest", "reservationUnits", "inputTokens", "model", "paidRole", "checkpoint"],
-  methods: ["admit", "consume", "settle", "stop", "compaction"],
+  methods: ["admit", "consume", "settle", "stop", "compaction", "verifyBody"],
   outcomes: Object.keys(E2_OUTCOMES),
 });
 export const E2_PILOT_STOPS = Object.freeze([...new Set([...E2_GUARD_POLICY_REFUSALS, ...E2_ADMISSION_REFUSALS,
