@@ -30,3 +30,14 @@ it.each(["real", "faux"].flatMap(route => ["e2_body_mismatch", "e2_tools_forbidd
   await expect(send(`${protocol.policy.GUARD_CONTRACT.baseUrl}/codex/responses`, { method: "POST", body, headers: { "session-id": a.cacheKey, "x-client-request-id": a.cacheKey, "chatgpt-account-id": "fictional-account" } })).rejects.toMatchObject({ code, outcome: "integrity_stop" });
   expect(permit.stop).toHaveBeenCalledExactlyOnceWith(code); expect(dispatched).not.toHaveBeenCalled();
 });
+
+it("requires the assigned phase identity even for cache-off summaries", async () => {
+  const { e2ExecutionPolicy: policy } = await import("../lib/continuity-e2-execution-policy.mjs"), key = "fictional-phase-cache";
+  expect(() => policy.assertCacheHeaders(new Headers(), { paidRole: "summary" }, key)).toThrow("e2_prompt_cache_key_forbidden");
+  expect(() => policy.assertCacheHeaders(new Headers(), { paidRole: "summary" }, undefined)).not.toThrow();
+  expect(() => policy.assertCacheHeaders(new Headers({ "session-id": key, "x-client-request-id": key }), { paidRole: "summary" }, key)).not.toThrow();
+  expect(() => policy.assertCacheHeaders(new Headers(), { paidRole: "probe" }, key)).toThrow("e2_prompt_cache_key_forbidden");
+  for (const headers of [new Headers({ "session-id": key }), new Headers({ "session-id": "foreign", "x-client-request-id": "foreign" })])
+    expect(() => policy.assertCacheHeaders(headers, { paidRole: "summary" }, key)).toThrow("e2_prompt_cache_key_forbidden");
+  expect(() => policy.assertCacheHeaders(new Headers({ "session-id": key, "x-client-request-id": key }), { paidRole: "probe" }, key)).not.toThrow();
+});

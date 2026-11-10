@@ -1,10 +1,11 @@
 // Closed E2 accounting policy. Durable admission/consume/settle remain in the shared core.
 import { digest } from "./continuity-dataset.mjs";
 import { e2RequestPrice, e2UsageUnits } from "./continuity-e2-pricing.mjs";
-import { E2_PERMIT_CONTRACT, E2_GUARD_CONTRACT } from "./continuity-e2-policy.mjs";
+import { E2_PERMIT_CONTRACT, E2_GUARD_CONTRACT, E2_REAL_CONTROLLER } from "./continuity-e2-policy.mjs";
 import { validateE2Sizing } from "./continuity-e2-estimate.mjs";
 import { E2_PAID_ROLES } from "./continuity-e2-roles.mjs";
 import { writeE2SummaryResult, verifyE2SummaryResult } from "./continuity-e2-summary-receipts.mjs";
+import { bindE2Checkpoint, verifyE2NativeLineage, e2LineageScope } from "./continuity-e2-lineage.mjs";
 const fail = (code = "e2_permit_invalid") => { throw Object.assign(Error(code), { code }); };
 const need = (ok, code) => { if (!ok) fail(code); };
 const count = n => Number.isSafeInteger(n) && n >= 0;
@@ -86,7 +87,8 @@ export const e2ExecutionPolicy = Object.freeze({
     need(model?.provider === contract.provider && model.id === contract.model && model.api === contract.api && model.baseUrl === contract.baseUrl
       && options.transport === "sse" && options.maxRetries === 0 && (options.piMaxRetries === undefined || options.piMaxRetries === 0)
       && options.reasoning === contract.effort, "e2_route_mismatch");
-    need(Object.keys(options).every(k => ["maxTokens", "reasoning", "transport", "maxRetries", "piMaxRetries", "signal", "telemetryContext", "sessionId", "apiKey", "onPayload", "onProviderStreamEvent", "onResponse", "cacheRetention", "thinkingBudgets"].includes(k)), "e2_option_forbidden");
+    need(Object.keys(options).every(k => ["maxTokens", "reasoning", "transport", "maxRetries", "piMaxRetries", "maxRetryDelayMs", "signal", "telemetryContext", "sessionId", "apiKey", "onPayload", "onProviderStreamEvent", "onResponse", "cacheRetention", "thinkingBudgets"].includes(k)), "e2_option_forbidden");
+    need(options.maxRetryDelayMs === undefined || Number.isSafeInteger(options.maxRetryDelayMs) && options.maxRetryDelayMs >= 0, "e2_option_forbidden");
     need(options.thinkingBudgets === undefined && [undefined, "none"].includes(options.cacheRetention), "e2_option_forbidden");
   },
   assertPayload(body, _round, contract) {
@@ -97,7 +99,14 @@ export const e2ExecutionPolicy = Object.freeze({
     this.assertBody(Buffer.from(JSON.stringify(body)), { model: contract.e2.model, tools: allowed });
     need(role && (contract.effort === "off" ? [undefined, "none"].includes(body.reasoning?.effort) : body.reasoning?.effort === contract.effort) && Array.isArray(body.input)
       && Object.keys(body).every(k => ["model", "store", "stream", "instructions", "input", "text", "include", "prompt_cache_key", "tool_choice", "parallel_tool_calls", "temperature", "tools", "reasoning"].includes(k)), "e2_payload_forbidden");
-    need((contract.promptCacheKey === undefined && body.prompt_cache_key === undefined) || body.prompt_cache_key === contract.promptCacheKey, "e2_prompt_cache_key_forbidden");
+    // Shipping compaction deliberately disables body caching. Its authenticated
+    // summary role still uses the controller phase identity in native headers.
+    need((contract.e2.paidRole === "summary" && body.prompt_cache_key === undefined)
+      || (contract.promptCacheKey === undefined && body.prompt_cache_key === undefined) || body.prompt_cache_key === contract.promptCacheKey, "e2_prompt_cache_key_forbidden");
+  },
+  assertCacheHeaders(headers, metadata, key) {
+    const session = headers.get("session-id"), request = headers.get("x-client-request-id");
+    need((session === key && request === key) || (session === null && request === null && key === undefined), "e2_prompt_cache_key_forbidden");
   },
   resultReceipt: writeE2SummaryResult,
   async verifySettlement(root, slotId, hold, evidence, readPrivate) {
@@ -105,17 +114,39 @@ export const e2ExecutionPolicy = Object.freeze({
     try { hold.summaryReceipt = await verifyE2SummaryResult(root, slotId, hold, evidence, readPrivate); }
     catch { fail("e2_summary_receipt_invalid"); }
   },
-  async beforeAdmission(root, slotId, slot, p, readPrivate) {
+  async beforeAdmission(root, slotId, slot, p, readPrivate, state, pilot) {
+    let scope, readArtifact;
+    if (state?.schema === E2_REAL_CONTROLLER) {
+      const { guardedAuthorization } = await import("./continuity-guarded-authorization.mjs");
+      const planned = state.schedule[state.cursor];
+      readArtifact = guardedAuthorization("e2-validation").readArtifact;
+      scope = await e2LineageScope({ ...state, pilot }, planned, p.checkpoint, guardedAuthorization("e2-validation").readArtifact);
+      slot.lineages ??= {};
+      if (planned.kind === "proof" && planned.phase === "resume") {
+        const previous = state.schedule[state.cursor - 1], seed = state.slots[state.cursor - 1];
+        need(previous?.kind === "proof" && previous.phase === "seed" && previous.arm === planned.arm && previous.variant === planned.variant
+          && ["completed", "own_abort_after_send"].includes(seed.terminal), "e2_compaction_invalid");
+        if (!slot.lineages.proof && seed.lineages?.proof) slot.lineages.proof = structuredClone(seed.lineages.proof);
+        need(!seed.holds.some(h => h.paidRole === "summary") || slot.lineages.proof, "e2_summary_receipt_invalid");
+      }
+    }
     if (p.paidRole === "summary") return;
     need(!slot.compaction, "e2_compaction_invalid");
     for (const hold of slot.holds.filter(h => h.paidRole === "summary")) {
-      need(hold.summaryReceipt?.verified && hold.summaryReceipt.durable, "e2_summary_receipt_invalid");
+      const currentScope = state?.schema === E2_REAL_CONTROLLER && scope === await e2LineageScope({ ...state, pilot }, state.schedule[state.cursor], hold.checkpoint, readArtifact);
+      need(hold.summaryReceipt?.verified && hold.summaryReceipt.durable && (!currentScope || slot.lineages?.[scope]), "e2_summary_receipt_invalid");
       try { await verifyE2SummaryResult(root, slotId, hold, { schema: hold.summaryReceipt.schema, sha256: hold.summaryReceipt.sha256 }, readPrivate); }
       catch { fail("e2_summary_receipt_invalid"); }
     }
+    return scope === undefined ? undefined : { lineageScope: scope, ...(slot.lineages[scope] ? { lineage: structuredClone(slot.lineages[scope]) } : {}) };
   },
-  async compaction(root, slotId, planned, slot, p, readPrivate) {
-    need(sameFields(p, ["kind", "operationDigest", "checkpoint"]) && /^[a-f0-9]{64}$/u.test(p.operationDigest ?? "")
+  async verifyNativeBody(bytes, hold, state, assignment) {
+    const { guardedAuthorization } = await import("./continuity-guarded-authorization.mjs");
+    if (hold.paidRole !== "summary") await verifyE2NativeLineage(bytes, hold, state, assignment, guardedAuthorization("e2-validation").readArtifact);
+  },
+  async compaction(root, slotId, planned, slot, p, readPrivate, state, pilot) {
+    const real = state?.schema === E2_REAL_CONTROLLER;
+    need(sameFields(p, real && p?.kind === "durable" ? ["kind", "operationDigest", "checkpoint", "journalId", "checkpointId"] : ["kind", "operationDigest", "checkpoint"]) && /^[a-f0-9]{64}$/u.test(p.operationDigest ?? "")
       && count(p.checkpoint) && slot.holds.every(h => h.settlement) && !slot.terminal, "e2_compaction_invalid");
     if (p.kind === "begin") {
       need(!slot.compaction && !slot.holds.some(h => h.operationDigest === p.operationDigest) && planned.budgets.some(b => b.paidRole === "summary" && b.checkpoint === p.checkpoint), "e2_compaction_invalid");
@@ -127,6 +158,13 @@ export const e2ExecutionPolicy = Object.freeze({
       for (const h of summaries) {
         try { await verifyE2SummaryResult(root, slotId, h, { schema: h.summaryReceipt.schema, sha256: h.summaryReceipt.sha256 }, readPrivate); }
         catch { fail("e2_summary_receipt_invalid"); }
+      }
+      if (real) {
+        const { guardedAuthorization } = await import("./continuity-guarded-authorization.mjs");
+        const lineage = await bindE2Checkpoint({ root, state: { ...state, pilot }, planned, slot, summaries, reference: p, readPrivate,
+          readArtifact: guardedAuthorization("e2-validation").readArtifact });
+        slot.lineages ??= {}; slot.lineages[lineage.scope] = lineage;
+        slot.checkpoints ??= []; slot.checkpoints.push({ journalId: lineage.journalId, checkpointId: lineage.checkpointId });
       }
       summaries.forEach(h => { h.summaryReceipt.durable = true; }); slot.compaction = null;
     }

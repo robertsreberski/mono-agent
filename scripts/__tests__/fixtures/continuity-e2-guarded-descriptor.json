@@ -1,7 +1,7 @@
 {
   "protocol": {
     "id": "e2-validation",
-    "realRoute": false,
+    "realRoute": true,
     "execution": {},
     "policy": {
       "ADMISSION_REFUSALS": [
@@ -137,6 +137,9 @@
         "e2_unguarded_dispatch",
         "e2_payload_repeated",
         "e2_pilot_capability_invalid",
+        "not_admitted_input_envelope",
+        "e2_request_limit",
+        "e2_phase_failed",
         "auth_failure",
         "e2_auth_failure",
         "e2_account_mismatch",
@@ -314,6 +317,7 @@
         "e2_repeated_loss",
         "e2_ipc_invalid",
         "e2_ipc_disconnected",
+        "e2_phase_failed",
         "e2_pilot_slot_ineligible",
         "e2_preparation_timeout",
         "e2_persist_failed",
@@ -396,6 +400,7 @@
       "USD_UNITS": "1000000000"
     },
     "codes": {
+      "phase_failed": "e2_phase_failed",
       "summary_not_authorized": "e2_summary_not_authorized",
       "summary_receipt_invalid": "e2_summary_receipt_invalid",
       "compaction_invalid": "e2_compaction_invalid",
@@ -513,7 +518,7 @@
     "fauxRegistry": ".e2-validation-faux-consumed-v1",
     "children": {
       "preparation": null,
-      "probe": null
+      "probe": "scripts/lib/continuity-e2-phase-child.mjs"
     },
     "refusalPattern": "/^(e2_[a-z_]+|paid_mode_refused_in_ci|E2_OUTPUT_LIMIT_UNENFORCED|E2_SIZING_PAID_ROLE_REQUIRED|E2_SIZING_PHASE_REQUIRED)$/u",
     "hooks": {}
@@ -535,7 +540,11 @@
     "scripts/lib/continuity-e2-fixture.mjs",
     "scripts/lib/continuity-e2-guarded-protocol.mjs",
     "scripts/lib/continuity-e2-isolation.mjs",
+    "scripts/lib/continuity-e2-lineage.mjs",
     "scripts/lib/continuity-e2-models.mjs",
+    "scripts/lib/continuity-e2-paid-entry.mjs",
+    "scripts/lib/continuity-e2-paid-models.mjs",
+    "scripts/lib/continuity-e2-phase-child.mjs",
     "scripts/lib/continuity-e2-policy.mjs",
     "scripts/lib/continuity-e2-pricing.mjs",
     "scripts/lib/continuity-e2-proofs.mjs",
@@ -544,6 +553,7 @@
     "scripts/lib/continuity-e2-replay.mjs",
     "scripts/lib/continuity-e2-roles.mjs",
     "scripts/lib/continuity-e2-routes.mjs",
+    "scripts/lib/continuity-e2-runtime.mjs",
     "scripts/lib/continuity-e2-score.mjs",
     "scripts/lib/continuity-e2-sizing.mjs",
     "scripts/lib/continuity-e2-summary-receipts.mjs",

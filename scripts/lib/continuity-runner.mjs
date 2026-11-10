@@ -135,7 +135,8 @@ export function configJson({ work, authPath, model, effort, tools, configPatch }
   }, configPatch ?? {});
 }
 
-export async function openHarness({ modules, work, authPath, model, effort, tools, configPatch, route, clock, onHistoryWarning = () => {}, hostOptions = {}, pilot }) {
+export async function openHarness({ modules, work, authPath, model, effort, tools, configPatch, route, clock, onHistoryWarning = () => {}, hostOptions = {}, pilot, e2 }) {
+  if (pilot && e2) throw new ContinuityError("lookup_pilot_capability_invalid");
   if (pilot && Object.hasOwn(process.env, "CONTINUITY_DEBUG")) throw new ContinuityError("lookup_debug_forbidden");
   if (pilot?.routeKind === "real") {
     const { realLookupSendBinds } = await import("./continuity-lookup-real-capability.mjs");
@@ -147,6 +148,7 @@ export async function openHarness({ modules, work, authPath, model, effort, tool
   if (pilot && pilot.routeKind !== "real") json.providers.piAuthPath = lookupOfflineBoundary({ ...pilot, work }).authPath;
   if (pilot?.routeKind === "real") json.providers.piAuthPath = authPath;
   const config = modules.config.resolveJsonMonoAgentConfig({ json, cwd: work });
+  if (e2) { (await import("./continuity-e2-runtime.mjs")).assertE2PhaseAdapter(e2); e2.assertConfig(config); }
   const check = pilot ? (options, forwarded = false) => assertResolvedLookupSafety({ ...pilot, config, options, forwarded }) : null;
   if (check) { check(); if (Object.keys(hostOptions).length) throw new ContinuityError("lookup_auxiliary_callers_forbidden"); }
   // Existing reentrant ownership seam: establish the isolated physical lease
@@ -165,7 +167,8 @@ export async function openHarness({ modules, work, authPath, model, effort, tool
     }
   })();
   try {
-    runtime = controlledRuntime(modules.app.createConfiguredAgentRuntime({ config, cwd: work, model: config.runtime.model }), route, check, pilot?.routeKind);
+    const base = modules.app.createConfiguredAgentRuntime({ config, cwd: work, model: config.runtime.model });
+    runtime = e2 ? e2.runtime(base, route, config) : controlledRuntime(base, route, check, pilot?.routeKind);
     // Tool-history/continuity outages are fail-open in production (warnings only);
     // the benchmark counts them so a degraded store invalidates the sample.
     harness = await modules.app.createConfiguredConversationHarness({ config, cwd: work, runtime, now: () => clock.value, ...hostOptions,

@@ -1,4 +1,5 @@
-// Faux-only live-path proofs. Production owns context, sessions, packs and compaction.
+// Live-path proofs: faux by default, or bound paid phase actor under one controller.
+// Production owns context, sessions, packs, compaction and effect containment.
 import { mkdir, writeFile, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -13,6 +14,7 @@ import { lookupWitness, resolveSource, historyBody } from "./continuity-lookup.m
 import { E2_PROOF_PRESSURE_ARMS } from "./continuity-arms.mjs";
 import { proofEnvironment, installProofIsolation } from "./continuity-e2-isolation.mjs";
 import { startProofTools, PROOF_SERVER, SENTINEL, FACT, NEXT_ACTION, CANARY, FOREIGN } from "./continuity-e2-tools.mjs";
+import { assertE2PhaseAdapter } from "./continuity-e2-runtime.mjs";
 import { e2PaidRole } from "./continuity-e2-roles.mjs";
 import { PROOF_CODES, requireProof, assertProofEvidence, assertSetupCompactions } from "./continuity-e2-checks.mjs";
 
@@ -43,7 +45,8 @@ async function fixtureChild(base, phase) {
 }
 
 /** Internal fixture phases use only existing, owner-only roots created by runE2Proofs. */
-export async function runProofPhase({ base, arm, phase = "whole", variant = "ceiling", fault, onContext = () => {} }) {
+export async function runProofPhase({ base, arm, phase = "whole", variant = "ceiling", fault, onContext = () => {}, paidAdapter }) {
+  if (paidAdapter) { assertE2PhaseAdapter(paidAdapter); paidAdapter.assertProof({ base, arm, phase, variant }); if (fault !== undefined) fail("E2_ARGUMENTS_INVALID"); }
   if (fault !== undefined && !FAULTS.includes(fault)) fail("E2_ARGUMENTS_INVALID");
   if (!PROOF_ARMS.includes(arm) || !["whole", "seed", "resume"].includes(phase) || !["ceiling", "restart"].includes(variant)) fail("E2_ARGUMENTS_INVALID");
   const fixture = arm === "cancel" || arm === "pressure" && variant === "restart";
@@ -63,7 +66,12 @@ export async function runProofPhase({ base, arm, phase = "whole", variant = "cei
   if (resumed && arm === "pressure") binding = { model: SOL, effort: "high" };
   let setup = [], setupCursor = 0, requestSignal, controller, forwarded = false, witness, firstRequestSeen = false, firstPack = false, safe = true, readerRound = 0, readText = "", answer = "", sentinelOffered = false;
   const seen = new Set();
-  const route = createE2Models({ pi: modules.pi, estimators, soul, models: [LUNA, SOL].map(model => ({ model })), limits: LIMITS,
+  const route = createE2Models({ pi: modules.pi, estimators, soul, paidAdapter, ...(paidAdapter ? { summary: "real" } : {}), models: [LUNA, SOL].map(model => ({ model })), limits: LIMITS,
+    ...(paidAdapter ? { onRequest(model, context, options = {}, method) {
+      requestSignal = options.signal;
+      requests.push({ ordinal: requests.length, model: `${model.provider}:${model.id}`, role: method === "completeSimple" ? "summary" : mode === "cancel-forwarded" ? "setup-scripted" : mode,
+        paidRole: e2PaidRole(mode, method), phase, size: sizeContext(context, estimators), maxOutputTokens: options.maxTokens ?? model.maxTokens });
+    } } : {}),
     sourceContext(context) {
       onContext({ arm, phase, role: mode, context });
       if (["continuation", "probe", "cancel-forwarded"].includes(mode)) {
@@ -121,17 +129,18 @@ export async function runProofPhase({ base, arm, phase = "whole", variant = "cei
     } });
   };
   const event = e => { route.observe(e); if (e.type === "session_boundary") boundaries.push({ reason: e.reason ?? null, context: e.context ?? null }); };
-  const position = () => route.setPosition({ model: binding.model, turn: requests.length, message: requests.length, probe: mode === "probe" });
+  const position = () => route.setPosition({ model: binding.model, turn: requests.length, message: requests.length, probe: mode === "probe", paidRole: e2PaidRole(mode),
+    cancelForwarded: mode === "cancel-forwarded", onNativeResponse: () => { if (mode === "cancel-forwarded") { forwarded = true; controller.abort(); } } });
   const run = async (message, conversationId = CONVERSATION) => {
     position(); controller = new AbortController();
     const response = await opened.harness.run({ conversationId, userMessage: message, onEvent: e => { if (e.type === "session_boundary") boundaries.push({ reason: e.reason ?? null, context: e.context ?? null }); }, metadata: { source: "web", web: { model: binding.model, effort: binding.effort } }, abortSignal: AbortSignal.any([controller.signal, AbortSignal.timeout(LIMITS.timeoutMs)]) });
-    route.assertSettled(); tools.check(); requireProof(!historyDegraded, "E2_HISTORY_DEGRADED");
+    await paidAdapter?.flush(); route.assertSettled(); tools.check(); requireProof(!historyDegraded, "E2_HISTORY_DEGRADED");
     requireProof(mode === "cancel-forwarded" ? forwarded && controller.signal.aborted && response.failure?.kind === "cancelled" : !response.failure, "E2_PROOF_RUN_FAILED");
     return response;
   };
   try {
-    opened = await openHarness({ modules, work, authPath: join(base, "absent-auth.json"), model: binding.model, effort: binding.effort, tools: false,
-      clock: { get value() { return new Date(); } },
+    opened = await openHarness({ modules, work, authPath: paidAdapter ? paidAdapter.credentialPath() : join(base, "absent-auth.json"), model: binding.model, effort: binding.effort, tools: false,
+      clock: { get value() { return new Date(); } }, e2: paidAdapter,
       configPatch: { tools: { allowedTools: ["ConversationHistory"] }, runtime: { retry: { primaryAttempts: 1 }, fallbacks: [], compaction: { enabled: true }, session: { rollover: "none", idleTimeoutMs: arm === "idle" ? 1200 : 3_600_000,
         continuity: { enabled: true, packEnabled: fault !== "pack", ledgerEnabled: false, upkeep: { enabled: false } } } }, providers: { piNative: { transport: "sse", piMaxRetries: 0 } } },
       onHistoryWarning: () => { historyDegraded = true; },
@@ -139,7 +148,7 @@ export async function runProofPhase({ base, arm, phase = "whole", variant = "cei
       route: async options => {
         if (options.piResolvedModel || options.piResolvedModels) fail("E2_MODELS_SEAM_REFUSED");
         const reading = ["continuation", "probe", "cancel-forwarded"].includes(mode), cancelTool = arm === "cancel" && mode === "continuation";
-        return { piModelsDecorator: decorator, observers: [...(options.observers ?? []), { name: "e2.proof.lifecycle", recordEvent: event }], skills: [],
+        return { piModelsDecorator: paidAdapter ? route.decorator : decorator, observers: [...(options.observers ?? []), { name: "e2.proof.lifecycle", recordEvent: event }], skills: [],
           allowedTools: reading ? ["ConversationHistory", ...(cancelTool ? [SENTINEL] : [])] : ["ProofRead", SENTINEL],
           mcpServers: reading ? { [HISTORY]: options.mcpServers?.[HISTORY], ...(cancelTool ? { [PROOF_SERVER]: { type: "http", url: tools.sentinelUrl } } : {}) } : { [PROOF_SERVER]: { type: "http", url: tools.url } } };
       } });
@@ -193,8 +202,11 @@ export async function runProofPhase({ base, arm, phase = "whole", variant = "cei
   } finally { try { await opened?.close(); } finally { await tools.close(); } }
 }
 
-export async function runE2Proofs({ output, arm = "all", real = false, onContext, fault }) {
-  if (real) fail("E2_PAID_ENTRY_UNAVAILABLE");
+export async function runE2Proofs({ output, arm = "all", real = false, onContext, fault, registrationPath, registrationSha256, authorizationPath, credentialPath }) {
+  if (real) {
+    if (arm !== "all" || onContext !== undefined || fault !== undefined) fail("E2_ARGUMENTS_INVALID");
+    return (await import("./continuity-e2-paid-entry.mjs")).runE2Paid({ command: "proofs", registrationPath, registrationSha256, authorizationPath, credentialPath, outputRoot: output });
+  }
   if (fault !== undefined && !FAULTS.includes(fault)) fail("E2_ARGUMENTS_INVALID");
   if (arm !== "all" && !PROOF_ARMS.includes(arm)) fail("E2_ARGUMENTS_INVALID");
   output = privateOutput(output); await mkdir(output, { mode: 0o700 });

@@ -3,7 +3,10 @@ import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { fail } from "./continuity-observation-input.mjs";
 import { digest } from "./continuity-recorded-schema.mjs";
+import { assertE2PhaseAdapter } from "./continuity-e2-runtime.mjs";
 
+const paidDecorators = new WeakSet();
+export const isE2PaidDecorator = value => paidDecorators.has(value);
 export async function loadE2Estimators() {
   if (!existsSync(new URL("../../packages/turn/dist/agent/compaction.js", import.meta.url))) fail("E2_ESTIMATOR_BUILD_REQUIRED");
   try {
@@ -51,9 +54,9 @@ export function estimatedReply(pi, text, context, estimators, extra = {}) {
 }
 
 /** A lifecycle receipt is established by runtime events, not prompt contents. */
-export function createE2Models({ pi, estimators, models, limits, summary = "faux-short", sourceReply, sourceContext = () => {}, soul }) {
-  if (summary === "real") fail("E2_PAID_ENTRY_UNAVAILABLE");
-  if (!["faux-short", "faux-max"].includes(summary)) fail("E2_SUMMARY_ROUTE_INVALID");
+export function createE2Models({ pi, estimators, models, limits, summary = "faux-short", sourceReply, sourceContext = () => {}, soul, paidAdapter, onRequest = () => {} }) {
+  if (summary === "real") assertE2PhaseAdapter(paidAdapter);
+  if (!["faux-short", "faux-max", "real"].includes(summary)) fail("E2_SUMMARY_ROUTE_INVALID");
   const registered = new Set(models.map(m => m.model)), faux = new Map(), lifecycle = new Map();
   const report = { sourceRequests: 0, probeRequests: 0, summaryRequests: [], compactions: [], requestSizing: [] };
   let position = null, sticky = null, positionRequests = 0;
@@ -77,11 +80,12 @@ export function createE2Models({ pi, estimators, models, limits, summary = "faux
     const catalog = target.getModel(model.provider, model.id);
     if (!catalog || ["provider", "id", "api", "baseUrl", "contextWindow", "maxTokens", "reasoning"].some(k => model[k] !== catalog[k])) refuse("E2_MODEL_UNREGISTERED");
   }
-  return {
-    setPosition(value) { check(); position = { ...value }; positionRequests = 0; },
+  const route = {
+    setPosition(value) { check(); position = { ...value }; positionRequests = 0; paidAdapter?.setPosition(value); },
     observe(event) {
       check();
       if (event?.type !== "context_compaction") return;
+      paidAdapter?.observe(event);
       if (event.status === "running") {
         if (!event.operationId || lifecycle.size || report.compactions.length >= limits.compactions) refuse("E2_COMPACTION_LIMIT");
         lifecycle.set(event.operationId, { ...position, trigger: event.trigger, requests: 0 });
@@ -102,20 +106,21 @@ export function createE2Models({ pi, estimators, models, limits, summary = "faux
           return original.getModel(provider, id);
         };
         if (method === "streamSimple") return (model, context, options) => {
-          check(); validateModel(model, original);
+          check(); validateModel(model, original); onRequest(model, context, options, "streamSimple");
           if (lifecycle.size) refuse("E2_SOURCE_REQUEST_LIMIT");
           if (position.probe) {
             if (++report.probeRequests > limits.probeRequests) refuse("E2_PROBE_REQUEST_LIMIT");
           } else if (++report.sourceRequests > limits.sourceRequests) refuse("E2_SOURCE_REQUEST_LIMIT");
           try { assertEffectiveSoul(context, soul); sourceContext(context); } catch (error) { refuse(error?.code === "E2_SOUL_MISMATCH" || ["E2_PROBE_REQUEST_LIMIT", "E2_PROBE_TOOLS_REFUSED", "E2_STEER_NOT_DELIVERED"].includes(error?.code) ? error.code : "E2_SOURCE_REPLY_REFUSED"); }
-          const paidRole = position.probe ? (positionRequests++ === 0 ? "probe" : "continuation") : null;
+          const paidRole = position.probe ? (positionRequests++ === 0 ? "probe" : "continuation") : position.paidRole ?? null;
           report.requestSizing.push({ turn: position.turn, message: position.message, role: paidRole ?? "setup-scripted", paidRole,
             model: keyOf(model), maxOutputTokens: options?.maxTokens ?? model.maxTokens, size: sizeContext(context, estimators) });
+          if (summary === "real" && paidRole !== null) return paidAdapter.stream(original, model, context, options, paidRole);
           const bound = backend(model); bound.provider.setResponses([async () => { try { return await sourceReply(context); } catch (error) { refuse(sourceCodes.has(error?.code) ? error.code : "E2_SOURCE_REPLY_REFUSED"); } }]);
           return bound.collection.streamSimple(bound.model, context, options);
         };
         if (method === "completeSimple") return async (model, context, options = {}) => {
-          check(); validateModel(model, original);
+          check(); validateModel(model, original); onRequest(model, context, options, "completeSimple");
           const receipt = [...lifecycle.values()][0];
           if (!receipt || lifecycle.size !== 1 || (context.tools?.length ?? 0) !== 0 || context.messages?.some(m => m.toolsAdded?.length)) refuse("E2_SUMMARY_NOT_AUTHORIZED");
           const outputCeiling = Math.min(model.maxTokens, estimators.resolveAgentCompactionPolicy({}, model).summaryMaxTokens + 8192);
@@ -132,6 +137,7 @@ export function createE2Models({ pi, estimators, models, limits, summary = "faux
           const measured = sizeContext(context, estimators);
           const sizing = { turn: position.turn, message: position.message, role: "summary", paidRole: "summary", model: keyOf(model), maxOutputTokens: options.maxTokens, size: measured };
           report.summaryRequests.push(sizing); report.requestSizing.push(sizing);
+          if (summary === "real") return paidAdapter.stream(original, model, context, options, "summary").result();
           const bound = backend(model);
           const text = summary === "faux-short" ? "Faux sizing summary; not a factual answer." : "s".repeat(options.maxTokens * 4);
           bound.provider.setResponses([() => estimatedReply(pi, text, context, estimators)]);
@@ -145,4 +151,6 @@ export function createE2Models({ pi, estimators, models, limits, summary = "faux
     assertSettled() { check(); if (lifecycle.size) refuse("E2_COMPACTION_NOT_DURABLE"); },
     report() { check(); return structuredClone(report); },
   };
+  if (summary === "real") paidDecorators.add(route.decorator);
+  return route;
 }

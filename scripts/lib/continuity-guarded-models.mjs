@@ -187,7 +187,11 @@ function bind(protocol, protocolId) {
           if ([...headers.keys()].some(name => !allowedHeaders.has(name))) {
             integrity = protocol.codes.headers_forbidden; throw new LookupGuardError(integrity);
           }
-          for (const key of ["session-id", "x-client-request-id"]) {
+          if (protocol.execution?.assertCacheHeaders) {
+            try { protocol.execution.assertCacheHeaders(headers, contract.e2, contract.promptCacheKey); }
+            catch (cause) { integrity = protocol.codes.prompt_cache_key_forbidden; throw new LookupGuardError(integrity, undefined, undefined, cause); }
+          }
+          else for (const key of ["session-id", "x-client-request-id"]) {
             if ((contract.promptCacheKey !== undefined || headers.has(key)) && headers.get(key) !== contract.promptCacheKey) {
               integrity = protocol.codes.prompt_cache_key_forbidden; throw new LookupGuardError(integrity);
             }

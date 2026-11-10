@@ -40,19 +40,19 @@ export const E2_PILOT_STOPS = Object.freeze([...new Set([...E2_GUARD_POLICY_REFU
   "completed", "auth_failure", "e2_auth_failure", "e2_account_mismatch", "e2_quota_exhausted",
   "unpriced_reservation", "invalid_unit_rate", "budget_admission", "e2_run_deadline", "e2_worker_timeout",
   "e2_unreconciled_processes", "e2_repeated_loss", "e2_ipc_invalid", "e2_ipc_disconnected",
-  "e2_pilot_slot_ineligible", "e2_preparation_invalid", "e2_preparation_timeout", "e2_persist_failed", "e2_receipt_invalid", "e2_arrival_persist_failed", "e2_arrival_receipt_invalid", "e2_worker_lost", "e2_recovery_only",
+  "e2_phase_failed", "e2_pilot_slot_ineligible", "e2_preparation_invalid", "e2_preparation_timeout", "e2_persist_failed", "e2_receipt_invalid", "e2_arrival_persist_failed", "e2_arrival_receipt_invalid", "e2_worker_lost", "e2_recovery_only",
   "e2_invalid_usage", "e2_unknown_tier", "e2_hold_exceeded", "e2_input_envelope_violated",
   "e2_output_envelope_violated", "e2_reasoning_envelope_violated", "e2_body_mismatch",
   "e2_permit_invalid", "e2_settlement_failed", "e2_stop_failed", "e2_payload_repeated",
   "e2_headers_forbidden", "e2_prompt_cache_key_forbidden", "e2_send_mismatch", "e2_duplicate_terminal",
 ])]);
-export const E2_GUARD_STOPS = Object.freeze([...new Set([...E2_GUARD_POLICY_REFUSALS,
+export const E2_GUARD_STOPS = Object.freeze([...new Set([...E2_GUARD_POLICY_REFUSALS, ...E2_ADMISSION_REFUSALS, "e2_phase_failed",
   "auth_failure", "e2_auth_failure", "e2_account_mismatch", "e2_quota_exhausted", "e2_settlement_failed",
   "e2_invalid_usage", "e2_unknown_tier", "e2_hold_exceeded", "e2_input_envelope_violated",
   "e2_output_envelope_violated", "e2_reasoning_envelope_violated", "e2_body_mismatch", "e2_permit_invalid",
   "e2_arrival_persist_failed", "e2_arrival_receipt_invalid", "e2_payload_repeated", "e2_headers_forbidden", "e2_prompt_cache_key_forbidden", "e2_send_mismatch", "e2_duplicate_terminal",
 ])]);
-export const E2_INTEGRITY_STOPS = Object.freeze(E2_GUARD_STOPS.filter(code => !["auth_failure", "e2_auth_failure", "e2_account_mismatch", "e2_quota_exhausted"].includes(code)));
+export const E2_INTEGRITY_STOPS = Object.freeze(E2_GUARD_STOPS.filter(code => ![...E2_ADMISSION_REFUSALS, "e2_phase_failed", "auth_failure", "e2_auth_failure", "e2_account_mismatch", "e2_quota_exhausted"].includes(code)));
 export const E2_SLOT_TERMINALS = Object.freeze(["completed", "wrong", "lost", "own_abort_after_send", "pilot_empty_final_output", "store_degraded", "boundary_unverified", "pressure_unverified", "integrity_stop", "refused_pre_send", "unadmitted", "skipped"]);
 export { E2_USD_UNITS as USD_UNITS } from "./continuity-e2-roles.mjs";
 export const E2_AUTHORIZATION_SCHEMA = "continuity-e2-authorization-v1";

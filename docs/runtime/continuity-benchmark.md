@@ -467,8 +467,9 @@ node scripts/continuity-e2.mjs size --source "$PR_B_OUTPUT" \
 Use fresh output directories outside this checkout, below an owned `0700`
 parent. Outputs and snapshots are private (`0700` directories, `0600` files).
 Successful stdout contains only counts; failures contain fixed codes, never
-source text, paths or exception messages. `run` always refuses with
-`E2_PAID_ENTRY_UNAVAILABLE`. These commands do not grant provider authority.
+source text, paths or exception messages. `run --summary real` requires a
+complete bound registration and parent-created exact-cap authorization; it runs
+the whole registered schedule. No command creates provider authority.
 
 An optional `--diagnostics NEW_FILE` on `size` writes a refusal record in a new,
 owned `0600` file outside ROOT under an owned `0700` parent. It cannot overwrite
@@ -564,7 +565,8 @@ It uses runtime `observers.recordEvent`, **not** client `onEvent`: tool-history
 persistence can delay the latter until after dispatch. Source text containing a
 summary marker grants nothing. Other Models request/auth/mutation methods are
 refused. `faux-short` emits a labelled short summary; `faux-max` fills the actual
-prepared request's output budget. `real` is unavailable. A generated summary is
+prepared request's output budget. `size --summary real` remains invalid; the
+separately authorized paid entry is described below. A generated summary is
 not a boundary: only durable successful compaction completion is counted.
 Shipping compaction remains enabled with its unchanged ceiling and policy.
 
@@ -2460,9 +2462,10 @@ Every arm has its own private HOME, XDG and temporary directories. Its durable
 stores contain fictional evidence only; do not supply personal stores. Directory
 and file modes are `0700`/`0600`. Successful stdout contains counts only. Optional
 `--diagnostics NEW_FILE` uses the same exclusive, content-free refusal format as
-`size`, including a closed proof refusal code. `--real` always refuses with
-`E2_PAID_ENTRY_UNAVAILABLE`, before opening output paths. There is no provider
-execution authority in this command.
+`size`, including a closed proof refusal code. `proofs --real` requires a
+proof-only bound registration and parent-created exact-cap authorization. Mixed
+registrations and subset selection refuse before lease acquisition or authority
+consumption; the command never creates approval.
 
 | Arm | Boundary and evidence |
 | --- | --- |
@@ -2520,10 +2523,10 @@ source setup stays scripted. The forwarded cancellation keeps its legacy
 full paid liability. Count paid summaries, continuations and probes at their
 funded catalog ceilings; never infer a free request from the legacy role.
 No prompt, answer, tool arguments, record identifier, digest of private content
-or absolute path is present in sizing. All requests are faux now. Guarded real
-summaries/readers and semantic proof remain deferred. The accounting and
-registration/authorization kernels ship as offline foundations; this CLI cannot
-enable paid execution.
+or absolute path is present in sizing. The ordinary `proofs` command remains
+faux-only. The separately authorized `proofs --real` entry uses the guarded SDK
+phase pipeline below; faux or owned-loopback results do not establish provider
+quality or spending approval.
 
 
 ## Guarded controller lease trust
@@ -2606,16 +2609,16 @@ exact cap and a separately parent-created bound authorization are still required
 before any real paid execution.
 
 
-### E2 registration and authorization foundation
+### E2 registration, authorization and paid execution
 
 The closed guarded selector includes `e2-validation`, with independent schemas,
-lease table, journal, brands and consumption domains. Its registry layout is
-`~/.local/state/mono-agent/lcc-e2/consumed-v1`. The descriptor currently keeps
-paid execution unavailable: `run` and `proofs --real` refuse with
-`E2_PAID_ENTRY_UNAVAILABLE`; `size --summary real` remains an invalid option.
-The generic E2 schedule runner also refuses before
-lease acquisition or authority consumption. The phase adapters are not shipped;
-validating an artifact does not enable an inference route.
+lease table, journal, brands and consumption domains. Its consumption domain is
+`mono-agent/lcc-e2/consumed-v1`, separate from lookup authority. Paid adapters and
+the literal assigned phase child are enabled in code. A real run still requires
+a separately parent-created authorization binding the operator's exact approved
+cap; these commands never issue approval. `size --summary real` remains invalid.
+Faux journal/kernel APIs remain available, but the guarded faux child schedule
+still refuses before lease acquisition or consumption.
 
 The registration binds the clean code revision and source-file inventory,
 existing fresh-build receipt, installed catalog, C1 source/protocol, frozen
@@ -2660,23 +2663,128 @@ service/cache usage settles at its reported rates; central forecasts remain
 separate from this conservative reservation.
 
 
-The shipped E2 accounting/receipt kernel, exercised only by faux tests, derives
+The shipped E2 accounting/receipt kernel derives
 holds independently by registered phase,
 checkpoint, role and model; child-proposed amounts are equality checks, not
 spending authority. Costs and caps stay in integer USD units. Sub-unit flex
 liability is rounded up, never dropped. Generated summary results are written
 privately after consumption and verified against settled usage and request/body
 identity. A separate durable-compaction acknowledgment is required, and the
-controller re-verifies the result files before admitting a probe. These core
-mechanics have faux ledger coverage; the opaque paid Models/phase adapters and
-new-protocol native-SDK subprocess proofs are still required before enabling
-paid execution.
+controller re-verifies the result files before admitting a probe. Opaque phase
+adapters route every paid summary, continuation and probe through the shared
+guard, IPC admission/consume/settle and the **single native real-send site**.
+Source setup remains scripted/faux. There is one active paid request, no retry,
+fallback, alternate stream, direct provider dispatch or credential refresh.
+The existing OAuth credential is read without mutation.
+
+Shipping compaction disables SDK body caching. When a request is assigned a
+cache key, only the authenticated summary role may omit it from the body; that
+request still carries both headers with the assigned phase identity. The source-owned adapter supplies those headers even
+when the SDK disables caching. Missing, partial or foreign assigned identities
+refuse at both the guard and final real gate; lookup behavior is unchanged.
+Reservations never assume a cache hit.
+
+#### Parent-created exact-cap authorization
+
+Authorization is a trusted, private local attestation under the existing
+same-user host model, not a cryptographic approval service. Preparation alone
+is not permission to spend. The approving parent must:
+
+1. Freeze a complete registration with current clean code/source inventory,
+   an already fresh build receipt, catalog, private source/protocol, frozen
+   question/key files, sizing-derived schedule and role budgets. Bind all
+   artifacts by their exact raw-file SHA256. No future summary digest is an
+   input. Replay budgets must fit the branch's registered request limits.
+2. Obtain explicit approval for the **exact cap** and freeze
+   `descriptor.capUnits` as a canonical integer USD-unit string
+   (`1 USD = 1000000000 units`). Convert approved decimal amounts exactly, never
+   through floating-point arithmetic or rounding. A forecast floor is not a
+   completion guarantee; a larger cap is never inferred from a refusal.
+3. Choose an empty private canonical output directory outside the checkout and
+   inputs, and the existing private credential file. Create a new opaque
+   `authorizationId`, a random 32-byte hexadecimal `salt`, UTC `timestamp`,
+   `approver` and `numericApprovalReference`. The artifact schema is
+   `continuity-e2-authorization-v1`. Derive `accountCommitment` as SHA256 of the
+   E2 account domain, NUL, salt, NUL and the existing credential's account id;
+   the domain is `mono-agent/lcc-e2/account-v1`. Never put raw account identifiers
+   or tokens into public outputs.
+4. Set `bindings` using the source-owned `e2AuthorizationBindings` helper from
+   `scripts/lib/continuity-e2-authorization.mjs`, supplying the registration,
+   exact raw registration SHA256 and `{ outputRoot, credentialPath, salt,
+   accountCommitment }`. It binds the exact cap, code/build/catalog and every
+   input/schedule/policy artifact. Exclusively create and sync the private
+   authorization file with mode `0600`; do not overwrite an earlier approval.
+   Use the non-consuming `guardedAuthorization("e2-validation").validate`
+   helper to check the complete binding. Never delete or repair a consumption
+   claim to make an authorization reusable.
+
+The following paths are illustrative placeholders, not live resources or
+spending permission:
+
+```sh
+node scripts/continuity-e2.mjs run --summary real \
+  --registration /private/e2-registration.json --sha256 REGISTRATION_SHA256 \
+  --authorization /private/e2-authorization.json \
+  --credentials /private/e2-credentials.json --output /private/empty-e2-output
+
+node scripts/continuity-e2.mjs proofs --real \
+  --registration /private/proof-registration.json --sha256 REGISTRATION_SHA256 \
+  --authorization /private/proof-authorization.json \
+  --credentials /private/e2-credentials.json --output /private/empty-proof-output
+
+node scripts/continuity-e2.mjs reconcile --output /private/stopped-e2-output
+```
+
+`run --summary real` executes the **entire bound schedule**, including registered
+proof phases. `proofs --real` accepts proof-only registrations; mixed schedules
+and subset selectors (including `--arm`) refuse before a lease or burn. CI and
+debug modes refuse paid entry. Reports contain closed codes, numeric positions,
+usage and costs, not prompts, answers, private digests or paths. Private C1
+`answers.json`, `score.json` and `replay.json` use the actual frozen questions
+and custodian keys, never a model judge or the faux sizing prompt. Correctness
+is reported separately from successful execution; wrong answers are not hidden
+as provider success.
+
+Exactly **one paid run per authorization** is allowed. A registered seed→resume
+transition may follow expected seed completion, including its intentional
+forwarded cancellation, only inside the same uninterrupted controller. An
+unexpected model/runtime failure, child/controller crash, cap or sticky stop
+ends the run; no later phase or recovery dispatches. `e2_phase_failed` is a
+non-integrity runtime/model failure, not a fabricated success. Reconciliation
+only accounts for existing work and retains unknown/cancelled/lost liability;
+it never restarts inference. Reuse of a stopped output also refuses at its
+existing lease claim. A new paid attempt needs separate explicit approval and
+new bound artifacts, not an automated retry.
+
+#### Exact committed-summary lineage
+
+A claimed receipt hash is insufficient. The controller reads and validates the
+actual private runtime JSONL checkpoint, verifies completed compaction and cwd/
+journal identity, and binds its **assembled committed text** to the generated
+settled results. This includes split history/prefix assembly, reused previous
+summary and the shipping file-operation suffix. The durable ACK is withheld
+until that verification succeeds; checkpoint reuse refuses.
+
+Before native fetch, the gate re-reads the checkpoint and requires the exact
+committed text digest in a recognized serialized compaction/branch summary or
+shipping continuity-pack record in the **decompressed actual request body**.
+It does not accept an arbitrary substring, claimed envelope digest or truncated,
+missing or changed summary. A shipping representation that cannot carry the
+complete verified text refuses rather than injecting replacement context.
+Snapshot probes remain isolated at the original absolute roots.
+
+Native-SDK subprocess tests use fictional private inputs and temporary HOMEs,
+with only the provider fetch replaced by owned loopback. They exercise the real
+phase actor, ledger, leases, IPC, sole send, actual journals, C1 snapshot probes,
+C2 tool rounds and planned cancellation transition. Crash/containment use the
+literal production phase child. Source/build attestation is a declared test
+seam, not evidence of build freshness or a paid quality result.
 
 
 #### Shared guarded-core behavior changes
 
 The fictional protocol is a journal-only fixture, not a runnable child pipeline.
-Like the closed E2 runner, its schedule runner now refuses
+Its schedule runner refuses
 `fictional_pilot_real_route_unavailable` before lease acquisition or authority
 burn; explicit fictional journal/kernel tests remain supported.
 

@@ -2,12 +2,20 @@
 
 ## Unreleased
 
+- Let `run --summary real` and `proofs --real` make paid provider requests
+  through guarded E2 adapters, only with a separate single-use exact-cap
+  authorization and committed-summary/body lineage. Keep ordinary sizing/proofs
+  offline; stopped runs reconcile without dispatch, and no command creates
+  approval or refreshes credentials.
+  Keep verified history across successive and planned-resume compactions, and
+  gate every resume admission on the expected completed seed.
+
 - Add offline E2 cap estimates from replay/proof sizing, with explicit output
   forecasts and full catalog-context/output reservations (including conservative
   cache/tier liability) for the uncapped Codex route. Add closed registration,
-  authorization validation and accounting/receipt foundations; keep real E2
-  execution unavailable. Distinguish forecast cap floors from ceiling-funded
-  budget completion, reject underfunded registrations and unordered checkpoints.
+  authorization validation and accounting/receipt foundations. Distinguish
+  forecast cap floors from ceiling-funded budget completion, reject underfunded
+  registrations and unordered checkpoints.
 
 - Harden guarded continuity cleanup after synchronous stream-result failures,
   drain pending admissions on every finish and refuse late callbacks. Preserve
@@ -17,8 +25,8 @@
 
 - Add fictional offline continuity proofs for model switches, cancelled process
   restarts, observed idle eviction and shipping-ceiling compaction. Keep durable
-  one-effect checks and content-free request sizing; real-model entry stays
-  unavailable. Refuse Unix sockets, UDP and external DNS during these proofs.
+  one-effect checks and content-free request sizing; keep the ordinary proof
+  command faux-only. Refuse Unix sockets, UDP and external DNS during these proofs.
 
 - Tighten offline continuity registration and scoring: reject no-op effort
   changes, incomplete checkpoints, contradictory warm telemetry and blank

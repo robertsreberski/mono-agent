@@ -21,7 +21,11 @@ export const E2_PROTOCOL_FILES = Object.freeze([...new Set([...LOOKUP_PILOT_PROT
   "scripts/lib/continuity-e2-protocol.mjs", "scripts/lib/continuity-e2-replay.mjs", "scripts/lib/continuity-e2-roles.mjs",
   "scripts/lib/continuity-e2-routes.mjs", "scripts/lib/continuity-e2-score.mjs", "scripts/lib/continuity-e2-sizing.mjs",
   "scripts/lib/continuity-e2-tools.mjs", "scripts/lib/continuity-e2-registration.mjs", "scripts/lib/continuity-e2-authorization.mjs",
-  "scripts/lib/continuity-e2-guarded-protocol.mjs",
+  "scripts/lib/continuity-e2-guarded-protocol.mjs", "scripts/lib/continuity-e2-lineage.mjs",
+  "scripts/lib/continuity-e2-runtime.mjs",
+  "scripts/lib/continuity-e2-paid-models.mjs",
+  "scripts/lib/continuity-e2-phase-child.mjs",
+  "scripts/lib/continuity-e2-paid-entry.mjs",
 ])].sort());
 const need = ok => { if (!ok) throw Object.assign(Error("e2_registration_invalid"), { code: "e2_registration_invalid" }); };
 const fields = (v, names) => v && typeof v === "object" && !Array.isArray(v) && Object.keys(v).sort().join() === [...names].sort().join();
@@ -132,11 +136,34 @@ export async function validateE2Registration(pilot, { safeRead, safeDirectory })
     for (const record of records) if (record.schema === "continuity-e2-sizing-v1") need(record.sourceDigest === hash(JSON.stringify(source)) && same(record.soul, r.soul));
     if (records.some(record => record.schema === "continuity-e2-sizing-v1")) need(questions.questions.length > 0);
     const estimate = estimateE2SizingSet({ protocol, roles: r.roles, records, catalog: r.catalog, probeCounts });
+    validateE2ReplayLimits(protocol, records);
     need(same(r.schedule, e2PhaseSchedule(protocol, records, probeCounts)));
+    const replay = r.schedule.find(p => p.kind === "replay");
+    if (replay) {
+      let offset = 0;
+      for (const branch of protocol.branches) {
+        const budgets = replay.budgets.filter(b => b.checkpoint >= offset && b.checkpoint < offset + branch.checkpoints.length);
+        need(budgets.filter(b => ["probe", "continuation"].includes(b.paidRole)).reduce((n, b) => n + b.maxRequests, 0) <= branch.limits.probeRequests
+          && budgets.filter(b => b.paidRole === "summary").reduce((n, b) => n + b.maxRequests, 0) <= branch.limits.summaryRequests);
+        offset += branch.checkpoints.length;
+      }
+    }
     need(e2CapUnits(d.capUnits) >= BigInt(estimate.forecastMinimumCapUnits));
     return { protocol, questions, source, estimate };
   } catch (error) {
     if (["E2_OUTPUT_LIMIT_UNENFORCED", "E2_SIZING_PAID_ROLE_REQUIRED", "E2_SIZING_PHASE_REQUIRED"].includes(error?.code)) throw error;
     throw Object.assign(Error("e2_registration_invalid"), { code: "e2_registration_invalid" });
+  }
+}
+
+export function validateE2ReplayLimits(protocol, records) {
+  for (const record of records.filter(r => r.schema === "continuity-e2-sizing-v1")) {
+    for (const [index, branch] of record.branches.entries()) {
+      const limits = protocol.branches[index].limits, rows = branch.requestSizing, compactions = branch.compactions ?? [];
+      need(rows.filter(r => r.paidRole === null).length <= limits.sourceRequests);
+      need(Array.isArray(compactions) && compactions.length <= limits.compactions
+        && compactions.every(c => Number.isSafeInteger(c.requests) && c.requests > 0 && c.requests <= limits.summaryRequestsPerCompaction)
+        && compactions.reduce((n, c) => n + c.requests, 0) === rows.filter(r => r.paidRole === "summary").length);
+    }
   }
 }

@@ -1,9 +1,12 @@
 // Shared guarded-run mechanics; historical authority names remain visible to the exact inventory.
 import process from "node:process";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
 import { zstdDecompressSync } from "node:zlib";
 import { digest } from "./continuity-dataset.mjs";
 import { guardedProtocol } from "./continuity-guarded-protocols.mjs";
+const nativeDispatch = new AsyncLocalStorage();
+export const isGuardedNativeDispatch = id => nativeDispatch.getStore() === id;
 const nativeFetch = globalThis.fetch.bind(globalThis);
 // Recognition crosses protocol boundaries; authority remains in each protocol-local set.
 const realSends = new WeakSet();
@@ -56,15 +59,15 @@ function bind(protocol, protocolId) {
         const { state } = await verifyLookupRealAssignment(a), hold = state.slots[a.index].holds.at(-1);
         need(Date.now() < Math.min(state.deadlineAt, state.slots[a.index].startedAt + a.pilot.descriptor.deadlines.deadlineMs));
         const headers = new Headers(init.headers), encoding = headers.get("content-encoding");
-        need((encoding === null || encoding === "zstd") && headers.get("session-id") === a.cacheKey && headers.get("x-client-request-id") === a.cacheKey);
+        need((encoding === null || encoding === "zstd") && (protocol.execution?.assertCacheHeaders || headers.get("session-id") === a.cacheKey && headers.get("x-client-request-id") === a.cacheKey));
         const bytes = encoding === "zstd" ? zstdDecompressSync(init.body) : Buffer.from(init.body);
         need(hold?.consumed === true && !hold.revoked && !hold.settlement && !used.has(hold.permitId)
           && hold.payloadDigest === createHash("sha256").update(bytes).digest("hex"));
         if (!matchesAccount(handle, headers.get("chatgpt-account-id"))) await stop(protocol.codes.account_mismatch);
-        try { protocol.execution?.assertBody(bytes, hold); }
+        try { protocol.execution?.assertCacheHeaders?.(headers, hold, a.cacheKey); protocol.execution?.assertBody(bytes, hold); if (protocol.execution?.verifyNativeBody) await protocol.execution.verifyNativeBody(bytes, hold, state, a); }
         catch (error) { await stop(error?.code ?? protocol.codes.body_mismatch, true); }
         used.add(hold.permitId); // No retry, including after fetch rejection or abort.
-        const response = await nativeFetch(endpoint, { ...init, redirect: "error" });
+        const response = await nativeDispatch.run(protocolId, () => nativeFetch(endpoint, { ...init, redirect: "error" }));
         const rejectResponse = async code => {
           try { void response.body?.cancel().catch(() => {}); } catch {}
           await stop(code);

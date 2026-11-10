@@ -10,26 +10,32 @@ import { diagnosticRecord, errorDiagnostic, knownRefusalCode } from "./lib/conti
 import { proofRefusalCode } from "./lib/continuity-e2-checks.mjs";
 import { scoreE2 } from "./lib/continuity-e2-score.mjs";
 import { estimateE2SizingSet, E2_MAX_SIZING_RECORDS } from "./lib/continuity-e2-sizing.mjs";
+import { guardedProtocol } from "./lib/continuity-guarded-protocols.mjs";
 import { loadE2Catalog } from "./lib/continuity-e2-pricing.mjs";
-export const USAGE = "Usage: node scripts/continuity-e2.mjs size --source DIR --protocol FILE --output NEW_DIR [--summary faux-short|faux-max] [--diagnostics NEW_FILE]\n       node scripts/continuity-e2.mjs score --answers FILE --keys FILE --output NEW_DIR\n       node scripts/continuity-e2.mjs proofs --output NEW_DIR [--arm switch|cancel|idle|pressure|all] [--diagnostics NEW_FILE]\n       node scripts/continuity-e2.mjs --estimate --protocol FILE --limits FILE --sizing FILE [--sizing FILE...] --output NEW_DIR\n       node scripts/continuity-e2.mjs run (unavailable)";
+export const USAGE = "Usage: node scripts/continuity-e2.mjs size --source DIR --protocol FILE --output NEW_DIR [--summary faux-short|faux-max] [--diagnostics NEW_FILE]\n       node scripts/continuity-e2.mjs score --answers FILE --keys FILE --output NEW_DIR\n       node scripts/continuity-e2.mjs proofs --output NEW_DIR [--arm switch|cancel|idle|pressure|all] [--diagnostics NEW_FILE]\n       node scripts/continuity-e2.mjs --estimate --protocol FILE --limits FILE --sizing FILE [--sizing FILE...] --output NEW_DIR\n       node scripts/continuity-e2.mjs run --summary real --registration FILE --sha256 HASH --authorization FILE --credentials FILE --output EMPTY_DIR\n       node scripts/continuity-e2.mjs proofs --real --registration FILE --sha256 HASH --authorization FILE --credentials FILE --output EMPTY_DIR\n       node scripts/continuity-e2.mjs reconcile --output DIR";
 export function parseE2Args(argv) {
-  const [selected, ...rest] = argv;
-  const command = selected === "--estimate" ? "estimate" : selected;
-  if (command === "run" || command === "proofs" && rest.includes("--real")) fail("E2_PAID_ENTRY_UNAVAILABLE");
-  const required = command === "size" ? ["source", "protocol", "output"] : command === "score" ? ["answers", "keys", "output"] : command === "proofs" ? ["output"] : command === "estimate" ? ["protocol", "limits", "sizing", "output"] : null;
+  const [selected, ...tail] = argv, command = selected === "--estimate" ? "estimate" : selected;
+  const real = command === "run" || command === "proofs" && tail.includes("--real");
+  if (command === "proofs" && real && tail.filter(value => value === "--real").length !== 1) fail("E2_ARGUMENTS_INVALID");
+  const rest = command === "proofs" && real ? tail.filter(value => value !== "--real") : tail;
+  const paid = ["registration", "sha256", "authorization", "credentials", "output"];
+  const required = real ? [...paid, ...(command === "run" ? ["summary"] : [])] : command === "reconcile" ? ["output"]
+    : command === "size" ? ["source", "protocol", "output"] : command === "score" ? ["answers", "keys", "output"]
+    : command === "proofs" ? ["output"] : command === "estimate" ? ["protocol", "limits", "sizing", "output"] : null;
   if (!required) fail("E2_ARGUMENTS_INVALID");
-  const result = { command }, allowed = [...required, ...(command === "size" ? ["summary", "diagnostics"] : command === "proofs" ? ["arm", "diagnostics"] : [])];
+  const result = { command, ...(real ? { real: true } : {}) }, allowed = [...required, ...(!real && command === "size" ? ["summary", "diagnostics"] : !real && command === "proofs" ? ["arm", "diagnostics"] : [])];
   for (let i = 0; i < rest.length; i += 2) {
     const key = rest[i].slice(2);
     if (!rest[i].startsWith("--") || !allowed.includes(key) || !rest[i + 1] || rest[i + 1].startsWith("--") || Object.hasOwn(result, key) && !(command === "estimate" && key === "sizing")) fail("E2_ARGUMENTS_INVALID");
-    if (command === "estimate" && key === "sizing") (result.sizing ??= []).push(rest[i + 1]);
-    else result[key] = rest[i + 1];
+    if (command === "estimate" && key === "sizing") (result.sizing ??= []).push(rest[i + 1]); else result[key] = rest[i + 1];
   }
-  if (required.some(k => !result[k]) || result.summary !== undefined && !["faux-short", "faux-max"].includes(result.summary)) fail("E2_ARGUMENTS_INVALID");
+  if (required.some(k => !result[k]) || command === "run" && result.summary !== "real"
+    || command === "size" && result.summary !== undefined && !["faux-short", "faux-max"].includes(result.summary)) fail("E2_ARGUMENTS_INVALID");
   if (command === "estimate" && result.sizing.length > E2_MAX_SIZING_RECORDS) fail("E2_ARGUMENTS_INVALID");
   if (result.arm !== undefined && !["switch", "cancel", "idle", "pressure", "all"].includes(result.arm)) fail("E2_ARGUMENTS_INVALID");
   return result;
 }
+
 function readJSON(path) {
   if (statSync(path).size > MAX_SOURCE_BYTES) fail("E2_INPUT_TOO_LARGE");
   try { return JSON.parse(readFileSync(path, "utf8")); } catch { fail("E2_INPUT_INVALID"); }
@@ -40,7 +46,15 @@ export async function main(argv, { stdout = s => process.stdout.write(s), stderr
   let diagnosticPath, diagnostic = diagnosticRecord();
   try {
     const args = parseE2Args(argv);
-    if (args.command === "estimate") {
+    if (args.real) {
+      const { runE2Paid } = await import("./lib/continuity-e2-paid-entry.mjs");
+      const report = await runE2Paid({ command: args.command, registrationPath: resolve(args.registration), registrationSha256: args.sha256,
+        authorizationPath: resolve(args.authorization), credentialPath: resolve(args.credentials), outputRoot: resolve(args.output) });
+      stdout(`${JSON.stringify(report)}\n`); return report.stop === "completed" ? 0 : 1;
+    } else if (args.command === "reconcile") {
+      const { reconcileE2Paid } = await import("./lib/continuity-e2-paid-entry.mjs");
+      stdout(`${JSON.stringify(await reconcileE2Paid(resolve(args.output)))}\n`);
+    } else if (args.command === "estimate") {
       const protocol = inputPath(process.cwd(), args.protocol), limits = inputPath(process.cwd(), args.limits);
       const sizing = args.sizing.map(path => inputPath(process.cwd(), path));
       const output = privateOutput(args.output, [protocol, limits, ...sizing]);
@@ -85,7 +99,8 @@ export async function main(argv, { stdout = s => process.stdout.write(s), stderr
       try { const record = diagnosticRecord({ ...diagnostic, ...errorDiagnostic(error) }); record.errorCode ??= proofRefusalCode(error?.code); writeFileSync(diagnosticPath, `${JSON.stringify(record)}\n`, { flag: "wx", mode: 0o600 }); }
       catch { stderr("E2_DIAGNOSTICS_REFUSED\n"); return 1; }
     }
-    stderr(error?.code === "E2_ARGUMENTS_INVALID" ? `${USAGE}\n` : `${knownRefusalCode(error?.code) ?? proofRefusalCode(error?.code) ?? "E2_REFUSED"}\n`);
+    const protocol = guardedProtocol("e2-validation"), paidCode = [...Object.values(protocol.codes), ...protocol.policy.PILOT_STOPS, "paid_mode_refused_in_ci"].includes(error?.code) ? error.code : null;
+    stderr(error?.code === "E2_ARGUMENTS_INVALID" ? `${USAGE}\n` : `${paidCode ?? knownRefusalCode(error?.code) ?? proofRefusalCode(error?.code) ?? "E2_REFUSED"}\n`);
     return 1;
   }
 }

@@ -163,8 +163,9 @@ function bind(protocol, protocolId) {
           const p = message.payload; let result = {};
           if (message.op === "admit") {
             pilotNeed(state.schedule[index]?.eligible, protocol.codes.pilot_slot_ineligible);
-            if (protocol.execution) await protocol.execution.beforeAdmission(outputRoot, slot.slotId, slot, p, readPilotPrivate);
             const specific = protocol.execution?.admission(pilot, state.schedule[index], slot, p);
+            const lineage = protocol.execution ? await protocol.execution.beforeAdmission(outputRoot, slot.slotId, slot, p, readPilotPrivate, state, pilot) : null;
+            if (specific && lineage) Object.assign(specific.metadata, lineage);
             pilotNeed(p && (specific || Object.keys(p).sort().join() === "payloadDigest,requestId,rmax,round,slotId") && p.slotId === slot.slotId
               && typeof p.requestId === "string" && p.requestId === `${state.runId}:${p.round}` && pilotHash(p.payloadDigest)
               && p.round === slot.holds.length + 1 && p.round <= protocol.requestLimit && (specific || p.rmax === pilot.descriptor.rmaxUSD)
@@ -183,7 +184,7 @@ function bind(protocol, protocolId) {
             }
           } else if (protocol.execution && message.op === "compaction") {
             pilotNeed(!state.stop, protocol.codes.stopped);
-            await protocol.execution.compaction(outputRoot, slot.slotId, state.schedule[index], slot, p, readPilotPrivate);
+            await protocol.execution.compaction(outputRoot, slot.slotId, state.schedule[index], slot, p, readPilotPrivate, state, pilot);
           } else if (message.op === "stop") {
             pilotNeed(p && Object.keys(p).join() === "code" && LOOKUP_GUARD_STOPS.includes(p.code), protocol.codes.ipc_invalid);
             if ((LOOKUP_INTEGRITY_STOPS.includes(p.code) || p.code === protocol.codes.account_mismatch) && slot.holds.length) slot.terminal = "integrity_stop"; stop(p.code);
@@ -434,6 +435,7 @@ function bind(protocol, protocolId) {
   async function runPilotSchedule(options) {
     // A registered kernel is not a runnable phase adapter. Refuse before lease or consumption.
     pilotNeed(typeof protocol.children.probe === "string", protocol.codes.pilot_real_route_unavailable);
+    protocol.hooks.beforeSchedule?.(options);
     const journal = await createLookupPilotController(options);
     try {
       const { outputRoot } = journal;

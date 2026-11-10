@@ -1,3 +1,4 @@
+import { e2NativeFixture } from "./fixtures/e2-native-registration.mjs";
 // All artifacts/accounts are fictional, in a temporary HOME. No real registry is opened.
 import { beforeEach, afterEach, expect, it, vi } from "vitest";
 import { mkdtemp, mkdir, readFile, writeFile, realpath, rm, readdir, chmod } from "node:fs/promises";
@@ -8,11 +9,11 @@ import { digest } from "../lib/continuity-dataset.mjs";
 import { digest as hash } from "../lib/continuity-recorded-schema.mjs";
 import { ROOT } from "../lib/continuity-observation-input.mjs";
 import { E2_REGISTRATION_SCHEMA, E2_PLAN_SCHEMA, E2_ASSUMPTIONS, E2_AUTHORIZATION_SCHEMA } from "../lib/continuity-e2-policy.mjs";
-import { E2_TOOL_POLICIES, e2CodeDigest, e2ProbeCounts, e2PhaseSchedule } from "../lib/continuity-e2-registration.mjs";
+import { E2_TOOL_POLICIES, e2CodeDigest, e2ProbeCounts, e2PhaseSchedule, validateE2ReplayLimits } from "../lib/continuity-e2-registration.mjs";
 import { e2AuthorizationBindings } from "../lib/continuity-e2-authorization.mjs";
 import { loadE2Catalog } from "../lib/continuity-e2-pricing.mjs";
 import { shippingSoul } from "../lib/continuity-e2-models.mjs";
-import { validateProtocol } from "../lib/continuity-e2-protocol.mjs";
+import { validateProtocol, protocolDigest } from "../lib/continuity-e2-protocol.mjs";
 import { registrationTrace } from "./fixtures/continuity-e2-registration.mjs";
 const build = vi.hoisted(() => ({ verify: vi.fn(async () => {}), state: vi.fn(() => ({ head: "b".repeat(40), dirty: false })) }));
 // Only source/build attestation is mocked: no build is authorized in this assignment.
@@ -140,3 +141,49 @@ it("requires strictly increasing checkpoint turns in genuine source protocol val
     expect(() => validateProtocol(protocol, f.trace.source)).toThrow("E2_CHECKPOINT_ORDER_INVALID");
   }
 });
+
+it("counts scripted source rows and per-compaction draws before replay authorization", () => {
+  const limits = { sourceRequests: 2, summaryRequestsPerCompaction: 1, compactions: 2 }, protocol = { branches: [{ limits }] };
+  const branch = { requestSizing: [{ paidRole: null }, { paidRole: null }, { paidRole: "summary" }], compactions: [{ requests: 1 }] };
+  const records = [{ schema: "continuity-e2-sizing-v1", branches: [branch] }];
+  expect(() => validateE2ReplayLimits(protocol, records)).not.toThrow();
+  branch.sourceRequests = 0; branch.requestSizing.unshift({ paidRole: null });
+  expect(() => validateE2ReplayLimits(protocol, records)).toThrow("e2_registration_invalid"); branch.requestSizing.shift();
+  branch.requestSizing.push({ paidRole: "summary" }); branch.compactions[0].requests = 2;
+  expect(() => validateE2ReplayLimits(protocol, records)).toThrow("e2_registration_invalid");
+  branch.compactions[0].requests = 1; expect(() => validateE2ReplayLimits(protocol, records)).toThrow("e2_registration_invalid");
+});
+
+it.each(["e2-validation", "lookup-pilot"])("%s artifact reads expose only the caller's refusal code", async id => {
+  const code = id === "e2-validation" ? "e2_registration_invalid" : "lookup_authorization_invalid";
+  for (const path of [join(f.root, "fictional-missing.json"), join(f.root, "fictional-missing-parent", "artifact.json"), f.args.outputRoot]) {
+    let failure; try { await guardedAuthorization(id).readArtifact(path, code); } catch (error) { failure = error; }
+    expect(failure?.code).toBe(code); expect(failure?.message).toBe(code); expect(failure?.message).not.toContain(f.root);
+    expect(failure?.cause).toBeUndefined();
+  }
+});
+
+it("rejects replay source and per-compaction overflow through real registration validation", async () => {
+  const root = join(f.root, "replay-preflight"); await mkdir(root, { mode: 0o700 });
+  const g = await e2NativeFixture(root, { replay: true });
+  const originalProtocol = JSON.parse(await readFile(g.pilot.registration.protocol.path, "utf8"));
+  const originalSizing = JSON.parse(await readFile(g.pilot.registration.sizing[0].path, "utf8"));
+  await expect(guardedAuthorization("e2-validation").validate(g.args)).resolves.toBeDefined();
+  for (const violation of ["source", "summary"]) {
+    const protocol = structuredClone(originalProtocol), sizing = structuredClone(originalSizing), branch = sizing.branches[0];
+    if (violation === "source") {
+      const count = branch.requestSizing.filter(r => r.paidRole === null).length; expect(count).toBeGreaterThan(1);
+      protocol.branches[0].limits.sourceRequests = count - 1;
+    } else {
+      protocol.branches[0].limits.summaryRequestsPerCompaction = 1;
+      const row = { ...branch.requestSizing[0], role: "summary", paidRole: "summary", model: "openai-codex:gpt-6.1-sol" };
+      branch.requestSizing.push(row, structuredClone(row)); branch.compactions = [{ requests: 2 }];
+    }
+    const rawProtocol = JSON.stringify(protocol); await writeFile(g.pilot.registration.protocol.path, rawProtocol); g.pilot.registration.protocol.sha256 = hash(rawProtocol);
+    sizing.protocolDigest = protocolDigest(protocol);
+    const rawSizing = JSON.stringify(sizing); await writeFile(g.pilot.registration.sizing[0].path, rawSizing); g.pilot.registration.sizing[0].sha256 = hash(rawSizing);
+    g.pilot.registration.schedule = e2PhaseSchedule(protocol, [sizing], g.pilot.registration.probeCounts); await g.persist();
+    await expect(guardedAuthorization("e2-validation").validate(g.args)).rejects.toMatchObject({ code: "e2_registration_invalid" });
+    expect(await readdir(g.home)).toEqual([]); expect(await readdir(g.args.outputRoot)).toEqual([]);
+  }
+}, 30000);
