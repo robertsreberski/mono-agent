@@ -2857,6 +2857,20 @@ receipts expose `summaryPresence`: `checked` and `unobserved` request counts, pl
 verified request counts for `native`, `branch`, `pack` and `none` (kinds may overlap).
 An unobserved request was not successfully body-verified and is not counted as
 `none`. These counters do not claim semantic quality or a successful send.
+Real consumed holds cannot claim `settled` or `own_abort_after_send` without the
+persisted body witness. A lost request (including abortion before sending) may
+remain unobserved and retains the normal liability treatment.
+
+The scan covers complete recognized encodings in message text, instructions,
+`function_call_output.output`, reasoning text/summary parts and refusal parts.
+Tool outputs and reasoning signatures can be supplied by a child transcript;
+their shape alone is not proof of a durable ConversationHistory read, so they
+are not exempt from claim validation. Unexpected-role summary wrappers refuse;
+refusal parts also remain forbidden by the payload contract. Ordinary retrieval
+JSON and arbitrary substrings are not promoted to summary authority or fuzzy
+matched. The shipping Responses converter preserves separate user messages and
+text parts; it does not merge adjacent wrappers into one `input_text`.
+
 
 This is guard-only: no context injection, prompt changes, token sizing or cost
 construction changes. Snapshot probes remain isolated at their original absolute

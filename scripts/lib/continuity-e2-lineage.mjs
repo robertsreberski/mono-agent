@@ -140,7 +140,12 @@ export async function readE2Archive(root, state, index, scope, reference, readAr
 export function e2BodySummaryRepresentations(body) {
   const found = [];
   for (const item of [...(body.input ?? []), ...(typeof body.instructions === "string" ? [{ role: "instructions", content: body.instructions }] : [])]) {
-    const parts = typeof item.content === "string" ? [item.content] : (item.content ?? []).filter(p => ["input_text", "output_text"].includes(p.type)).map(p => p.text);
+    const parts = typeof item.content === "string" ? [item.content] : (item.content ?? [])
+      .filter(p => ["input_text", "output_text", "reasoning_text", "refusal"].includes(p.type)).map(p => p.type === "refusal" ? p.refusal : p.text);
+    // These fields can be supplied by a child/SDK transcript, not solely by a
+    // durable ConversationHistory read. Apply the same complete-claim checks.
+    if (item.type === "function_call_output" && typeof item.output === "string") parts.push(item.output);
+    if (item.type === "reasoning") parts.push(...(item.summary ?? []).filter(p => p.type === "summary_text").map(p => p.text));
     for (const text of parts) {
       if (typeof text !== "string") continue;
       for (const [kind, prefix, suffix] of [["native", E2_SUMMARY_PREFIX, E2_SUMMARY_SUFFIX], ["branch", E2_BRANCH_PREFIX, "</summary>"]]) {
@@ -151,7 +156,7 @@ export function e2BodySummaryRepresentations(body) {
       if (text.startsWith("### Conversation continuity pack (historical evidence)\n")) for (const line of text.split("\n")) {
         if (!line.startsWith("Generated summary evidence ")) continue;
         need(item.role === "user" && line.isWellFormed());
-        const match = /^Generated summary evidence id="chr1_[A-Za-z0-9_-]{43}" sha256="([a-f0-9]{64})": (".*")$/u.exec(line);
+        const match = /^Generated summary evidence id="chr1_[A-Za-z0-9_-]{43}" sha256="([a-f0-9]{64})": (".*")$/su.exec(line);
         need(match);
         let value; try { value = JSON.parse(match[2]); } catch { need(false); }
         need(typeof value === "string" && value.isWellFormed() && digest(value) === match[1]);

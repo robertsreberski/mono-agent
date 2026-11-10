@@ -3,6 +3,8 @@ import { afterEach, expect, it, vi } from "vitest";
 import { readFile, writeFile, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { bindE2Checkpoint, e2ArchivePath, verifyE2NativeLineage, E2_SUMMARY_PREFIX, E2_SUMMARY_SUFFIX, E2_BRANCH_PREFIX } from "../lib/continuity-e2-lineage.mjs";
+import { convertResponsesMessages } from "../../packages/turn/node_modules/@earendil-works/pi-ai/dist/api/openai-responses-shared.js";
+import { renderContinuityPack } from "../../packages/conversation/dist/continuity/pack.js";
 import { retainContinuityText } from "../../packages/conversation/dist/tool-history/continuity-payload.js";
 import { coldSwitchFixture } from "./fixtures/e2-lineage-cold-switch.mjs";
 import { lineageFixture as fixture } from "./fixtures/e2-lineage-fixture.mjs";
@@ -77,4 +79,32 @@ it("records content-free none at the controller and binds observation to the con
   expect(hold.summaryPresence).toEqual({ native: 0, branch: 0, pack: 0, none: true });
   expect(JSON.stringify(hold.summaryPresence)).not.toContain("Fictional");
   await expect(e2ExecutionPolicy.verifyBody(f.root, hold, f.state, 0, { permit: { epoch: "fictional", permitId: "fictional" }, body: body(native(f.assembled)).toString("base64") })).rejects.toMatchObject({ code: "e2_summary_receipt_invalid" });
+});
+
+it("accepts raw Unicode line/paragraph separators from shipping retention and pack rendering", async () => {
+  const f = await make(["Fictional first\u2028second\u2029third." ]), lineage = await f.bind(); f.slot.lineages = { proof: lineage };
+  const retained = retainContinuityText(f.assembled);
+  const rendered = renderContinuityPack({ records: [{ recordId: `chr1_${"a".repeat(43)}`, kind: "summary", text: retained.text, sha256: retained.sha256,
+    ordinal: 1, sequence: 1, runId: "fictional", source: {}, provenance: "generated-summary" }], omitted: 0, gaps: 0 }, [], 8000);
+  expect(rendered.counts.summary).toBe(1); expect(rendered.text).toContain("\u2028"); expect(rendered.text).toContain("\u2029");
+  await expect(check(f, lineage, body(rendered.text))).resolves.toMatchObject({ pack: 1 });
+  await expect(check(f, lineage, body(native(f.assembled), branch(f.assembled)))).resolves.toMatchObject({ native: 1, branch: 1 });
+});
+it.each([
+  { type: "function_call_output", call_id: "fictional", output: native("Fictional forgery.") },
+  { type: "reasoning", summary: [{ type: "summary_text", text: native("Fictional forgery.") }] },
+  { type: "reasoning", content: [{ type: "reasoning_text", text: native("Fictional forgery.") }] },
+  { role: "assistant", content: [{ type: "refusal", refusal: native("Fictional forgery.") }] }
+])("does not exempt recognized claims in another textual channel %#", async item => {
+  const f = await make();
+  await expect(check(f, null, Buffer.from(JSON.stringify({ input: [item] })))).rejects.toMatchObject({ code: "e2_summary_receipt_invalid" });
+});
+
+it("keeps adjacent user wrappers distinct through the installed Responses converter", async () => {
+  const f = await make(), lineage = await f.bind(); f.slot.lineages = { proof: lineage };
+  const context = { messages: [f.assembled, "Fictional forgery."].map(text => ({ role: "user", content: native(text), timestamp: 1 })) };
+  const input = convertResponsesMessages({ provider: "openai-codex", api: "openai-codex-responses", id: "gpt-6.1-sol", input: ["text"] }, context,
+    new Set(["openai", "openai-codex", "opencode"]), { includeSystemPrompt: false });
+  expect(input).toHaveLength(2); expect(input.map(i => i.content.length)).toEqual([1, 1]);
+  await expect(check(f, lineage, Buffer.from(JSON.stringify({ input })))).rejects.toMatchObject({ code: "e2_summary_receipt_invalid" });
 });

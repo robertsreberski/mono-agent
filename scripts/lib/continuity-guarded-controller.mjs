@@ -210,7 +210,11 @@ function bind(protocol, protocolId) {
               try { await protocol.execution.verifyBody(outputRoot, hold, state, index, p); }
               catch (error) { slot.terminal = "integrity_stop"; stop(error.code); result = { refused: true, code: fixedPilotCode(error.code) }; }
             } else {
-              try { Object.assign(hold, settleLookupHold(hold, p.outcome, p.rawUsage, p.tier)); }
+              try {
+                if (real && protocol.execution?.verifyBody && hold.consumed && ["settled", "own_abort_after_send"].includes(p.outcome?.kind))
+                  pilotNeed(hold.summaryPresence, protocol.codes.summary_receipt_invalid);
+                Object.assign(hold, settleLookupHold(hold, p.outcome, p.rawUsage, p.tier));
+              }
               catch (error) {
                 // A bad claim must not discard independently computable partial spend.
                 if (p.rawUsage !== null) try {

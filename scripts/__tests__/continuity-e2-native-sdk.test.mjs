@@ -54,7 +54,7 @@ function proofReply(body, count) {
   return toolEvents(name, { action: "search", query: "proof-evidence", limit: 10 }, count);
 }
 
-async function run({ scenario = "probe", requests = 1, rows = [{ role: "probe", model: SOL }], capUnits, reuse = false, crossOutputReuse = false, production = false, fault, arm = "pressure", replay = false, probeLookupRounds = 1, probeLookups = false, phaseStartupDelayMs = 0, deadlines } = {}) {
+async function run({ scenario = "probe", requests = 1, rows = [{ role: "probe", model: SOL }], capUnits, reuse = false, crossOutputReuse = false, production = false, fault, arm = "pressure", replay = false, probeLookupRounds = 1, probeLookups = false, phaseStartupDelayMs = 0, deadlines, expectedControllerError } = {}) {
   const root = await realpath(await mkdtemp(join(tmpdir(), "e2-native-sdk-"))); roots.push(root);
   const originalHome = process.env.HOME;
   const fixture = await e2NativeFixture(root, { rows, arm, replay, probeLookupRounds, ...(deadlines ? { deadlines } : {}), ...(capUnits ? { capUnits } : {}) });
@@ -88,6 +88,10 @@ async function run({ scenario = "probe", requests = 1, rows = [{ role: "probe", 
     cwd: ROOT, env: { HOME: fixture.home, PATH: "/usr/bin:/bin", LANG: "C", NODE_NO_WARNINGS: "1" }, stdio: ["ignore", "ignore", "pipe"] });
   let stderr = ""; child.stderr.on("data", bytes => { stderr += bytes; }); const [code] = await once(child, "close");
   const result = JSON.parse(await readFile(profile.result, "utf8"));
+  if (expectedControllerError) {
+    expect(listenerError).toBeUndefined(); expect({ code, error: result.error, stderr }).toEqual({ code: 1, error: expectedControllerError, stderr: "" });
+    return { ...result, received, state: JSON.parse(await readFile(join(fixture.args.outputRoot, "e2-validation-controller.json"))) };
+  }
   expect(listenerError).toBeUndefined(); expect({ code, error: result.error, stderr }).toEqual({ code: 0, error: undefined, stderr: "" });
   expect(await readFile(fixture.args.credentialPath)).toEqual(before);
   expect(await readdir(join(fixture.home, ".local/state/mono-agent/lcc-e2/consumed-v1"))).toHaveLength(1);
@@ -227,4 +231,19 @@ it.each([["lineage-branch", "branch"], ["lineage-pack", "pack"], ["archive-absen
   const result = await run({ scenario, rows: [{ role: "summary", model: SOL }, { role: "probe", model: SOL }] });
   expect(result.received).toHaveLength(2); expect(result.report.stop).toBe("completed");
   expect(result.report.phases[0].summaryPresence).toMatchObject({ checked: 2, unobserved: 0, [kind]: kind === "none" ? 2 : 1 });
+}, E2_NATIVE_TEST_TIMEOUT_MS);
+
+it.each(["unwitnessed-settled", "unwitnessed-own-abort"])("refuses %s in the real controller before any fetch", async scenario => {
+  const result = await run({ scenario, expectedControllerError: "e2_summary_receipt_invalid" });
+  expect(result.received).toHaveLength(0); expect(result.state.slots[0].terminal).toBe("integrity_stop");
+  expect(result.state.slots[0].holds[0].summaryPresence).toBeUndefined();
+  expect(result.state.stop).toBe("e2_summary_receipt_invalid");
+}, E2_NATIVE_TEST_TIMEOUT_MS);
+it.each(["unwitnessed-lost", "unwitnessed-before-send"])("allows %s without inventing a body witness", async scenario => {
+  const result = await run({ scenario }); expect(result.received).toHaveLength(0);
+  expect(result.report.phases[0].summaryPresence).toMatchObject({ checked: 0, unobserved: 1, none: 0 });
+}, E2_NATIVE_TEST_TIMEOUT_MS);
+it.each(["baseline-function-output", "baseline-reasoning-summary"])("denies %s with zero native fetches", async scenario => {
+  const result = await run({ scenario }); expect(result.received).toHaveLength(0);
+  expect(result.report.stop).toBe("e2_summary_receipt_invalid");
 }, E2_NATIVE_TEST_TIMEOUT_MS);
