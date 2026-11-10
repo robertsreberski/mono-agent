@@ -874,7 +874,7 @@ it("pins paid dynamic factories and refuses whole-module, aliased and extra capa
 });
 
 it("keeps each probe witness and request count independent across restored repeats", () => {
-  const probe = e2ProbeMeasurement(), estimators = { estimateTokens: () => 1, estimateFixedOverheadTokens: () => 0 };
+  const probe = e2ProbeMeasurement(), estimators = { estimateTokens: () => 1, estimateFixedOverheadTokens: () => ({ fixedOverheadTokens: 0 }) };
   const witnessed = { messages: [{ role: "assistant", content: "Fictional history." }, { role: "user", content: "Fictional question." }] };
   probe.observe(witnessed, estimators); probe.observe(witnessed, estimators);
   expect(probe.witness).toBe(true); expect(probe.requests).toBe(2);

@@ -94,29 +94,29 @@ it("uses the genuine SDK and single guarded send, burns authority once, and publ
   const result = await run({ reuse: true }); expect(result.received).toHaveLength(1); expect(result.report.stop).toBe("completed");
   expect(result.reuse).toBe("e2_authorization_lease_invalid"); expect(result.reconciled.reconciliation).toBe(true);
   for (const canary of [result.root, "FICTIONAL-CONTEXT-CANARY", "FICTIONAL-SUMMARY-ANSWER-CANARY"]) expect(JSON.stringify(result.report)).not.toContain(canary);
-});
+}, E2_NATIVE_TEST_TIMEOUT_MS);
 it("refuses the next ceiling reservation above the exact cap before a third send", async () => {
   const result = await run({ scenario: "cap", requests: 3, reuse: true, capUnits: "8000000000", rows: Array.from({ length: 3 }, () => ({ role: "probe", model: SOL })) });
   expect(result.received).toHaveLength(2); expect(result.report.stop).toBe("budget_admission"); expect(result.caught).toBe("not_admitted_cap"); expect(result.reuse).toBe("e2_authorization_lease_invalid");
   expect(result.report.costs.totalUnits).toBe("7840000000");
-});
+}, E2_NATIVE_TEST_TIMEOUT_MS);
 it.each(["unauthorized-summary", "direct-model", "alternate-stream"])("refuses %s before native dispatch", async scenario => {
   const result = await run({ scenario, rows: [{ role: "summary", model: SOL }, { role: "probe", model: SOL }] });
   expect(result.received).toHaveLength(0); expect(result.report.stop).toBe(scenario === "unauthorized-summary" ? "e2_summary_not_authorized" : "e2_method_forbidden");
-});
+}, E2_NATIVE_TEST_TIMEOUT_MS);
 it("retains full liability when cancelled after actual response headers", async () => {
   const result = await run({ scenario: "cancel", rows: [{ role: "continuation", model: SOL }] });
   expect(result.received).toHaveLength(1); expect(result.report.costs.retainedUnits).toBe("3920000000");
-});
+}, E2_NATIVE_TEST_TIMEOUT_MS);
 it("verifies generated output and an actual durable journal before accepting the SDK probe body", async () => {
   const result = await run({ scenario: "summary", rows: [{ role: "summary", model: SOL }, { role: "probe", model: SOL }] });
   expect(result.received).toHaveLength(2); expect(result.report.stop).toBe("completed"); expect(result.report.phases[0].calls.verifiedSummaries).toBe(1);
   expect(result.wireIdentities.every(h => typeof h.session === "string" && h.session.length > 0 && h.session === h.request)).toBe(true);
-});
+}, E2_NATIVE_TEST_TIMEOUT_MS);
 it("stops changed summary text at the real gate without forwarding a probe", async () => {
   const result = await run({ scenario: "lineage-tamper", rows: [{ role: "summary", model: SOL }, { role: "probe", model: SOL }] });
   expect(result.received).toHaveLength(1); expect(result.report.stop).toBe("e2_summary_receipt_invalid");
-});
+}, E2_NATIVE_TEST_TIMEOUT_MS);
 
 const productionRows = ["summary", "continuation", "probe"].flatMap(role => Array.from({ length: 8 }, () => ({ role, model: SOL })));
 it("reconciles a crashed genuine phase child without dispatching another native request", async () => {
@@ -169,7 +169,7 @@ it("refuses independently consumed authority at a different output root through 
   expect(result.received).toHaveLength(1);
   expect(result.crossOutputReuse).toBe("e2_authorization_already_consumed");
   expect(result.crossOutputMarker).toBe(false);
-});
+}, E2_NATIVE_TEST_TIMEOUT_MS);
 
 it("allows a cold phase start beyond ten seconds without bypassing guarded SDK admission", async () => {
   const started = performance.now();

@@ -2677,11 +2677,11 @@ Source setup remains scripted/faux. There is one active paid request, no retry,
 fallback, alternate stream, direct provider dispatch or credential refresh.
 The existing OAuth credential is read without mutation.
 
-Shipping compaction disables SDK body caching: summary requests may omit the
-body cache key, but still carry both headers with the assigned phase identity.
-The source-owned adapter supplies those headers even when the SDK disables
-caching. Missing, partial or foreign assigned identities refuse at both the
-guard and final real gate; lookup behavior is unchanged.
+Shipping compaction disables SDK body caching. When a request is assigned a
+cache key, only the authenticated summary role may omit it from the body; that
+request still carries both headers with the assigned phase identity. The source-owned adapter supplies those headers even
+when the SDK disables caching. Missing, partial or foreign assigned identities
+refuse at both the guard and final real gate; lookup behavior is unchanged.
 Reservations never assume a cache hit.
 
 #### Parent-created exact-cap authorization
