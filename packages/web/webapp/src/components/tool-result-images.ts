@@ -29,8 +29,14 @@ export function mayHaveToolImage(result: unknown): boolean {
   const object = record(result);
   if (object?.type === "image" || object?.kind === "image") return true;
   const parts = Array.isArray(result) ? result : object?.content;
-  return Array.isArray(parts) && parts.some((part) => record(part)?.type === "image");
+  return Array.isArray(parts) && parts.some((part) => {
+    const image = record(part);
+    return image?.type === "image" || image?.kind === "image";
+  });
 }
+
+const base64Bytes = (data: string): number =>
+  data.length / 4 * 3 - (data.endsWith("==") ? 2 : data.endsWith("=") ? 1 : 0);
 
 /** Strict, canonical standard base64; no whitespace, URL alphabet, or data URLs. */
 export function validToolImage(value: unknown): value is ToolResultImage {
@@ -39,7 +45,7 @@ export function validToolImage(value: unknown): value is ToolResultImage {
   const { data } = image;
   if (data.length === 0 || data.length > Math.ceil(MAX_TOOL_IMAGE_BYTES / 3) * 4 || data.length % 4 !== 0
     || !/^[A-Za-z0-9+/]*={0,2}$/u.test(data)) return false;
-  const bytes = data.length / 4 * 3 - (data.endsWith("==") ? 2 : data.endsWith("=") ? 1 : 0);
+  const bytes = base64Bytes(data);
   if (bytes > MAX_TOOL_IMAGE_BYTES) return false;
   try {
     const decoded = atob(data);
@@ -55,17 +61,26 @@ export function validToolImage(value: unknown): value is ToolResultImage {
  * original text fallback rather than silently hiding any output.
  */
 export function toolResultImages(result: unknown): ToolResultImages | undefined {
-  if (!mayHaveToolImage(result)) return undefined;
-  if (typeof result === "string" && result.length > MAX_TOOL_IMAGE_RESULT_CHARS) return undefined;
+  return toolResultImageGroup([result]);
+}
+
+/** Cluster members retain their original result shapes and share one budget. */
+export function toolResultImageGroup(results: readonly unknown[]): ToolResultImages | undefined {
+  if (!results.some(mayHaveToolImage)) return undefined;
+  const characters = results.reduce<number>((sum, result) => sum + (typeof result === "string" ? result.length : 0), 0);
+  if (characters > MAX_TOOL_IMAGE_RESULT_CHARS) return undefined;
   const images: ToolResultImage[] = [];
   let invalid = false;
   let total = 0;
   const part = (value: unknown): unknown => {
     const object = record(value);
     if (object?.type !== "image" && object?.kind !== "image") return value;
+    // Reject exhausted budgets before allocating decoded candidate bytes, and
+    // stop decoding further parts once the group is already known to fail.
+    if (invalid || images.length >= MAX_IMAGES || typeof object.data !== "string"
+      || total + base64Bytes(object.data) > MAX_TOOL_IMAGE_TOTAL_BYTES) { invalid = true; return value; }
     if (!validToolImage(object)) { invalid = true; return value; }
-    total += object.data.length / 4 * 3;
-    if (images.length >= MAX_IMAGES || total > MAX_TOOL_IMAGE_TOTAL_BYTES) { invalid = true; return value; }
+    total += base64Bytes(object.data);
     images.push({ mimeType: object.mimeType, data: object.data });
     return undefined;
   };
@@ -75,24 +90,26 @@ export function toolResultImages(result: unknown): ToolResultImages | undefined 
     if (Array.isArray(object?.content)) return { ...object, content: content(object.content) };
     return part(value);
   };
-  let remainder: unknown;
-  if (typeof result === "string") {
-    try {
-      remainder = content(JSON.parse(result));
-    } catch {
-      remainder = result.split("\n").map((line) => {
-        try {
-          const parsed: unknown = JSON.parse(line);
-          return part(parsed) === undefined ? undefined : line;
-        } catch { return line; }
-      }).filter((line) => line !== undefined).join("\n");
+  const remainders = results.map((result) => {
+    let remainder: unknown;
+    if (typeof result === "string") {
+      try {
+        remainder = content(JSON.parse(result));
+      } catch {
+        remainder = result.split("\n").map((line) => {
+          try {
+            const parsed: unknown = JSON.parse(line);
+            return part(parsed) === undefined ? undefined : line;
+          } catch { return line; }
+        }).filter((line) => line !== undefined).join("\n");
+      }
+    } else {
+      remainder = content(result);
     }
-  } else {
-    remainder = content(result);
-  }
+    return remainder === "" || (Array.isArray(remainder) && remainder.length === 0) ? undefined : remainder;
+  }).filter((remainder) => remainder !== undefined);
   if (invalid || images.length === 0) return undefined;
-  if (remainder === "" || (Array.isArray(remainder) && remainder.length === 0)) remainder = undefined;
-  return { images, remainder };
+  return { images, remainder: remainders.length <= 1 ? remainders[0] : remainders };
 }
 
 export function toolImageName(args: unknown): string {

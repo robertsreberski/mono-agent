@@ -1,11 +1,17 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { TOOL_IMAGE } from "../test/tool-image-fixture";
-import { MAX_TOOL_IMAGE_BYTES, MAX_TOOL_IMAGE_RESULT_CHARS, mayHaveToolImage, toolImageName, toolResultImages, validToolImage } from "./tool-result-images";
+import { MAX_TOOL_IMAGE_BYTES, MAX_TOOL_IMAGE_TOTAL_BYTES, MAX_TOOL_IMAGE_RESULT_CHARS, mayHaveToolImage, toolImageName, toolResultImages, toolResultImageGroup, validToolImage } from "./tool-result-images";
 import { safeToolImageDimensions } from "./tool-image-dimensions";
+
+const rawImage = { kind: "image", data: TOOL_IMAGE.data, mimeType: TOOL_IMAGE.mimeType };
+const paddedImage = (bytes: number) => {
+  const png = atob(TOOL_IMAGE.data);
+  return { ...TOOL_IMAGE, data: btoa(png + "\0".repeat(bytes - png.length)) };
+};
 
 describe("tool image output", () => {
   it("reads inline JSON, JSON lines, content arrays, and Read's raw shape", () => {
-    for (const result of [TOOL_IMAGE, JSON.stringify(TOOL_IMAGE), [TOOL_IMAGE], { content: [TOOL_IMAGE] }, { ...TOOL_IMAGE, kind: "image" }]) {
+    for (const result of [TOOL_IMAGE, JSON.stringify(TOOL_IMAGE), [TOOL_IMAGE], { content: [TOOL_IMAGE] }, rawImage, [rawImage], { content: [rawImage] }]) {
       expect(toolResultImages(result)?.images).toEqual([{ data: TOOL_IMAGE.data, mimeType: "image/png" }]);
     }
     expect(toolResultImages(`caption\n${JSON.stringify(TOOL_IMAGE)}\nmore`)?.remainder).toBe("caption\nmore");
@@ -24,7 +30,10 @@ describe("tool image output", () => {
     expect(validToolImage({ ...TOOL_IMAGE, data })).toBe(false);
   });
   it("bounds bytes, count, aggregate bytes, parsing and pixel dimensions", () => {
-    expect(validToolImage({ ...TOOL_IMAGE, data: "A".repeat(Math.ceil(MAX_TOOL_IMAGE_BYTES / 3) * 4 + 4) })).toBe(false);
+    const overLimit = paddedImage(MAX_TOOL_IMAGE_BYTES + 1);
+    expect(safeToolImageDimensions(atob(overLimit.data), overLimit.mimeType)).toBe(true);
+    expect(validToolImage(paddedImage(MAX_TOOL_IMAGE_BYTES))).toBe(true);
+    expect(validToolImage(overLimit)).toBe(false);
     expect(toolResultImages(Array.from({ length: 5 }, () => TOOL_IMAGE))).toBeUndefined();
     const padded = { ...TOOL_IMAGE, data: btoa(atob(TOOL_IMAGE.data) + "\0".repeat(3 * 1024 * 1024)) };
     expect(toolResultImages([padded, padded, padded])).toBeUndefined();
@@ -33,6 +42,29 @@ describe("tool image output", () => {
     const huge = bytes.slice(0, 16) + "\x00\x01\x00\x00\x00\x01\x00\x00" + bytes.slice(24);
     expect(validToolImage({ ...TOOL_IMAGE, data: btoa(huge) })).toBe(false);
     expect(toolResultImages([TOOL_IMAGE, { ...TOOL_IMAGE, data: "invalid" }])).toBeUndefined();
+  });
+  it("counts padded images exactly at the aggregate byte boundary", () => {
+    const half = paddedImage(MAX_TOOL_IMAGE_TOTAL_BYTES / 2);
+    expect(half.data.endsWith("==")).toBe(true);
+    expect(toolResultImages([half, half])?.images).toHaveLength(2);
+    expect(toolResultImages([half, paddedImage(MAX_TOOL_IMAGE_TOTAL_BYTES / 2 - 1)])?.images).toHaveLength(2);
+  });
+  it("rejects exhausted count and byte budgets before decoding more candidates", () => {
+    const half = paddedImage(MAX_TOOL_IMAGE_TOTAL_BYTES / 2);
+    const overHalf = paddedImage(MAX_TOOL_IMAGE_TOTAL_BYTES / 2 + 1);
+    const decode = vi.spyOn(globalThis, "atob");
+    try {
+      expect(toolResultImages(Array.from({ length: 6 }, () => TOOL_IMAGE))).toBeUndefined();
+      expect(decode).toHaveBeenCalledTimes(4);
+      decode.mockClear();
+      expect(toolResultImages([half, overHalf, TOOL_IMAGE])).toBeUndefined();
+      expect(decode).toHaveBeenCalledTimes(1);
+    } finally { decode.mockRestore(); }
+  });
+  it("parses original cluster results without joined pretty-JSON serialization", () => {
+    expect(toolResultImageGroup([JSON.stringify(TOOL_IMAGE), TOOL_IMAGE, `caption\n${JSON.stringify(TOOL_IMAGE)}`]))
+      .toEqual({ images: Array.from({ length: 3 }, () => ({ data: TOOL_IMAGE.data, mimeType: TOOL_IMAGE.mimeType })), remainder: "caption" });
+    expect(toolResultImageGroup(Array.from({ length: 5 }, () => JSON.stringify(TOOL_IMAGE)))).toBeUndefined();
   });
   it("validates GIF, JPEG and all WebP dimension headers without decoding", () => {
     const gif = "GIF89a\x04\0\x04\0";

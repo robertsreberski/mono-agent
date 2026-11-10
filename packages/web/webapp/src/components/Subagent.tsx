@@ -1,6 +1,6 @@
 import { costAmount, knownCostAmount } from "../../../src/cost-wire.js";
 import type { DataMessagePartProps } from "@assistant-ui/react";
-import type { ReactNode } from "react";
+import { useMemo, type ReactNode } from "react";
 import type { RunAttribution as RunAttributionValue } from "../types";
 
 import { formatUsd } from "../usage";
@@ -299,7 +299,7 @@ const clusterTruncation = (
 
 function SubagentClusterStep({ cluster }: { readonly cluster: SubagentCallCluster }) {
   const repairToolCall = useToolCallRepair();
-  const results = cluster.calls.flatMap((call) => call.result === undefined ? [] : [call.result]);
+  const results = useMemo(() => cluster.calls.flatMap((call) => call.result === undefined ? [] : [call.result]), [cluster.calls]);
   const failures = cluster.calls.flatMap((call) => {
     const failure = toolHistoryFailure(call.history);
     return failure === undefined ? [] : [failure];
@@ -321,6 +321,7 @@ function SubagentClusterStep({ cluster }: { readonly cluster: SubagentCallCluste
       <ActivityPayload
         args={joinPayloads(cluster.calls.map((call) => call.args))}
         result={results.length === 0 ? undefined : joinPayloads(results)}
+        imageResults={results}
         resultIsError={cluster.failedCount > 0}
         error={failures.length === 0 ? undefined : [...new Set(failures)].join("\n")}
         {...clusterTruncation(cluster.calls, repairToolCall)}

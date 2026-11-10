@@ -1,11 +1,11 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
-import { MessageGallery, useGalleryImage } from "./ImageGallery";
+import { EnsureMessageGallery, useGalleryImage } from "./ImageGallery";
 import { safeJson } from "./json";
 import {
   MAX_TOOL_IMAGE_RESULT_CHARS,
   mayHaveToolImage,
   toolImageName,
-  toolResultImages,
+  toolResultImageGroup,
   type ToolResultImage,
 } from "./tool-result-images";
 
@@ -29,8 +29,9 @@ function Preview({ image, name, imageKey, onError }: {
 }
 
 /** Shared by ordinary tool rows, clusters, subagents, and job progress payloads. */
-export function ToolImageOutput({ result, args, truncated, characters, onLoadFull }: {
+export function ToolImageOutput({ result, imageResults, args, truncated, characters, onLoadFull }: {
   readonly result: unknown;
+  readonly imageResults?: readonly unknown[];
   readonly args: unknown;
   readonly truncated: boolean;
   readonly characters?: number;
@@ -42,10 +43,15 @@ export function ToolImageOutput({ result, args, truncated, characters, onLoadFul
   const [repairState, setRepairState] = useState<"idle" | "loading" | "failed">("idle");
   const attempted = useRef<unknown>(undefined);
   const id = useId();
-  const hint = useMemo(() => mayHaveToolImage(result), [result]);
+  const results = useMemo(() => imageResults ?? [result], [imageResults, result]);
+  const hint = useMemo(() => results.some(mayHaveToolImage), [results]);
   useEffect(() => {
     const element = ref.current;
     if (!element || !hint || seen) return;
+    if (typeof IntersectionObserver !== "function") {
+      setSeen(true);
+      return;
+    }
     // Native details hide their descendants; intersection therefore gates both
     // collapsed disclosures (including nested clusters) and never-seen rows.
     // Latch the first intersection so scrolling cannot replace a preview with
@@ -70,7 +76,7 @@ export function ToolImageOutput({ result, args, truncated, characters, onLoadFul
     );
   }, [seen, hint, truncated, characters, onLoadFull, result]);
   const preview = useMemo(() => seen && !truncated && failedResult !== result
-    ? toolResultImages(result) : undefined, [seen, truncated, failedResult, result]);
+    ? toolResultImageGroup(results) : undefined, [seen, truncated, failedResult, result, results]);
   const name = toolImageName(args);
   return <div ref={ref} className="tool-image-output">
     {repairState === "loading" && truncated && <p role="status">Loading image output…</p>}
@@ -80,11 +86,11 @@ export function ToolImageOutput({ result, args, truncated, characters, onLoadFul
       <p role="status">Image is too large, incomplete, or unsupported for preview. The raw output is shown below.</p>
     )}
     {preview ? <>
-      <MessageGallery>
+      <EnsureMessageGallery>
         {preview.images.map((image, index) => <Preview key={`${id}-${index}`} image={image}
           imageKey={`${id}-${index}`} name={preview.images.length === 1 ? name : `${name} (${index + 1})`}
           onError={() => setFailedResult(() => result)} />)}
-      </MessageGallery>
+      </EnsureMessageGallery>
       {preview.remainder !== undefined && <pre>{safeJson(preview.remainder)}</pre>}
     </> : <pre>{safeJson(result)}</pre>}
   </div>;

@@ -228,6 +228,7 @@ export function truncationProps(
 export function ActivityPayload({
   args,
   result,
+  imageResults,
   resultIsError = false,
   error,
   indented = false,
@@ -239,6 +240,8 @@ export function ActivityPayload({
 }: {
   readonly args?: unknown;
   readonly result?: unknown;
+  /** Original cluster members for image parsing; `result` remains the text fallback. */
+  readonly imageResults?: readonly unknown[];
   /** A failed call returns its error as the result; it is still worth reading as JSON. */
   readonly resultIsError?: boolean;
   /** Prose failures — a history-writer error, an aborted fetch — read better tinted. */
@@ -270,6 +273,7 @@ export function ActivityPayload({
         <>
           <span>{resultIsError ? "Error" : "Output"}</span>
           <ToolImageOutput result={result} args={args} truncated={resultTruncated}
+            {...(imageResults === undefined ? {} : { imageResults })}
             {...(resultBytes === undefined ? {} : { characters: resultBytes })}
             {...(onLoadFull === undefined ? {} : { onLoadFull })} />
         </>

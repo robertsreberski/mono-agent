@@ -6,6 +6,8 @@ import { api } from "../api";
 import { TOOL_IMAGE } from "../test/tool-image-fixture";
 import { ToolFallback } from "./Messages";
 import { ActivityPayload, ActivityStep } from "./ActivityRow";
+import { ImageTile, MessageGallery } from "./ImageGallery";
+import { SubagentPart } from "./Subagent";
 import { ToolCallRepairProvider } from "./tool-call-repair";
 import { MAX_TOOL_IMAGE_RESULT_CHARS } from "./tool-result-images";
 import "../styles.css";
@@ -172,4 +174,35 @@ it("explains an image line cut before web persistence and keeps its raw output",
   expect(document.querySelector(".tool-image-output pre")?.textContent).toBe(JSON.stringify(cutImage));
   const shots = import.meta.env.VITE_TOOL_IMAGE_OVERSIZE_SHOTS;
   if (typeof shots === "string") await page.screenshot({ path: `${shots}/tool-image-unavailable-1440x1000.png` });
+});
+
+it("previews multiple original results inside a subagent cluster", async () => {
+  await page.viewport(1440, 1000);
+  render(<SubagentPart type="data" name="subagent" status={{ type: "complete" }} data={{
+    type: "subagent", name: "Synthetic helper", status: "complete", calls: [
+      { toolCallId: "image-1", toolName: "Read", args: { path: "first.png" }, result: JSON.stringify(TOOL_IMAGE), status: "complete" },
+      { toolCallId: "image-2", toolName: "Read", args: { path: "second.png" }, result: TOOL_IMAGE, status: "complete" },
+    ],
+  }} />);
+  await page.getByText("Synthetic helper", { exact: true }).click();
+  await page.getByText("Read ×2", { exact: true }).click();
+  await waitFor(() => expect(screen.getAllByRole("img")).toHaveLength(2));
+  for (const image of screen.getAllByRole("img")) {
+    await waitFor(() => expect((image as HTMLImageElement).naturalWidth).toBe(320));
+  }
+  expect(document.querySelector(".tool-image-output pre")).toBeNull();
+});
+
+it("pages from a tool preview to an attachment in the enclosing message gallery", async () => {
+  render(<MessageGallery>
+    <ImageTile image={{ key: "synthetic-attachment", name: "message-attachment.png", src: `data:image/png;base64,${TOOL_IMAGE.data}` }} />
+    <Example result={JSON.stringify(TOOL_IMAGE)} />
+  </MessageGallery>);
+  await page.getByText("Read", { exact: true }).click();
+  await waitFor(() => expect(screen.getByRole("button", { name: "View synthetic.png" })).toBeEnabled());
+  await page.getByRole("button", { name: "View synthetic.png" }).click();
+  expect(await screen.findByRole("dialog")).toHaveAttribute("aria-label", expect.stringMatching(/Image [12] of 2/u));
+  await page.getByRole("button", { name: "Next image" }).click();
+  expect(document.querySelector(".lightbox-image")).toHaveAttribute("alt", "message-attachment.png");
+  await page.getByRole("button", { name: "Close image" }).click();
 });
