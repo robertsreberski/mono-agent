@@ -139,3 +139,26 @@ it("leaves live hold-count enforcement to the controller, not a fabricated child
 });
 
 it("classifies delegated E2 cache-header failures as integrity stops and stops the permit", async () => { await summaryResult(true); });
+
+it.each([1, 3, 4])("derives per-probe admission ordinal and final wire tool policy from durable holds: R=%s", rounds => {
+  planned.kind = "replay"; planned.budgets.forEach(b => b.maxRequests = 20);
+  pilot.registration.probeCounts = [{ checkpoint: 0, questions: 2, lookupRounds: rounds }];
+  pilot.registration.toolPolicies.replayFinal = [];
+  const slot = { holds: [] };
+  for (let i = 1; i <= rounds + 1; i++) {
+    const p = request(i === 1 ? "probe" : "continuation");
+    const admitted = policy.admission(pilot, planned, slot, p);
+    expect(admitted.metadata.probeRequest).toBe(i);
+    expect(admitted.metadata.tools).toEqual(i === rounds + 1 ? [] : ["ConversationHistory"]);
+    const body = { model: SOL.split(":")[1], store: false, stream: true, input: [], tools: i === rounds + 1 ? [] : [{ type: "function", name: "ConversationHistory" }] };
+    expect(() => policy.assertBody(Buffer.from(JSON.stringify(body)), admitted.metadata)).not.toThrow();
+    body.tools = i === rounds + 1 ? [{ type: "function", name: "ConversationHistory" }] : [];
+    expect(() => policy.assertBody(Buffer.from(JSON.stringify(body)), admitted.metadata)).toThrow("e2_tools_forbidden");
+    slot.holds.push({ ...admitted.metadata, settlement: { kind: "settled" } });
+  }
+  // Checkpoint-level funds remain, but this probe's R+1 cannot be exceeded.
+  expect(() => policy.admission(pilot, planned, slot, request("continuation"))).toThrow("e2_request_limit");
+  // An early answer ends its probe; the next question/repeat starts at one.
+  slot.holds = slot.holds.slice(0, 1);
+  expect(policy.admission(pilot, planned, slot, request("probe")).metadata.probeRequest).toBe(1);
+});

@@ -18,10 +18,11 @@ const save = (path, value) => writeFile(path, JSON.stringify(value), { mode: 0o6
 // budget also covers C1's pre-controller sizing (62s end-to-end when throttled).
 export const E2_NATIVE_TEST_TIMEOUT_MS = 90_000;
 export const E2_NATIVE_DEADLINES = Object.freeze({ deadlineMs: 30_000, childWatchdogMs: 30_000, runDeadlineMs: 60_000 });
-export async function e2NativeFixture(root, { arm = "pressure", capUnits = "1000000000000", rows = null, replay = false, deadlines = E2_NATIVE_DEADLINES } = {}) {
+export async function e2NativeFixture(root, { arm = "pressure", capUnits = "1000000000000", rows = null, replay = false, probeLookupRounds = 1, deadlines = E2_NATIVE_DEADLINES } = {}) {
   const home = join(root, "home"); await mkdir(home, { mode: 0o700 });
   const snapshots = join(root, "snapshots"); await mkdir(snapshots, { mode: 0o700 });
   const trace = await registrationTrace(snapshots);
+  trace.protocol.probeLookupRounds = probeLookupRounds;
   if (replay) for (const branch of trace.protocol.branches) branch.exclusions.coverage = trace.source.coverage.flatMap((gap, index) => gap.tier === "replay" ? [index] : []);
   const component = JSON.parse(await readFile(new URL("./continuity-e2-cap-sizing.json", import.meta.url)));
   const bind = async (name, value) => { const path = join(root, `${name}.json`), raw = JSON.stringify(value); await writeFile(path, raw, { mode: 0o600 }); return { path, sha256: hash(raw) }; };
@@ -44,7 +45,7 @@ export async function e2NativeFixture(root, { arm = "pressure", capUnits = "1000
     } finally { if (previousHome === undefined) delete process.env.HOME; else process.env.HOME = previousHome; }
   }
   const sizing = [await bind("sizing", component.sizing)], catalog = await loadE2Catalog(), soul = await shippingSoul();
-  const probeCounts = trace.protocol.branches.flatMap(b => b.checkpoints).map((_, checkpoint) => ({ checkpoint, questions: replay && checkpoint === 0 ? 1 : 0 }));
+  const probeCounts = trace.protocol.branches.flatMap(b => b.checkpoints).map((_, checkpoint) => ({ checkpoint, questions: replay && checkpoint === 0 ? 1 : 0, lookupRounds: trace.protocol.probeLookupRounds }));
   estimateE2SizingSet({ protocol: trace.protocol, roles: component.roles, records: [component.sizing], catalog, probeCounts });
   const pilot = { schema: E2_REGISTRATION_SCHEMA, registration: {
     code: { path: ROOT, revision: "b".repeat(40), sha256: await e2CodeDigest() },

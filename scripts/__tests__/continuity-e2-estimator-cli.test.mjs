@@ -115,3 +115,19 @@ it("refuses an over-budget proof aggregate by policy, not the engine argument li
   expect(normalizeE2Sizing(f.protocol, f.sizing).requests).toHaveLength(200000);
   expect(() => estimateE2SizingSet({ ...f, records: [f.sizing], catalog })).toThrow("E2_ESTIMATE_INVALID");
 });
+
+it.each([undefined, 0, 5, 1.5, "3"])("refuses legacy or invalid R before estimator output: %s", async rounds => {
+  const f = await fixture(), catalog = await loadE2Catalog();
+  if (rounds === undefined) delete f.protocol.probeLookupRounds; else f.protocol.probeLookupRounds = rounds;
+  expect(() => estimateE2SizingSet({ ...f, catalog, records: [f.sizing] })).toThrow("E2_PROBE_LOOKUP_ROUNDS_INVALID");
+});
+it("prints the stable missing-R refusal without creating an estimate", async () => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "e2-estimator-rounds-"))); roots.push(root);
+  const f = await fixture(); delete f.protocol.probeLookupRounds;
+  const paths = ["protocol", "sizing", "limits"].map(name => join(root, name + ".json"));
+  for (const [index, value] of [f.protocol, f.sizing, { schema: "continuity-e2-estimate-limits-v1", roles: f.roles, probeCounts: [] }].entries()) await writeFile(paths[index], JSON.stringify(value));
+  const output = join(root, "absent"), errors = [];
+  expect(await main(["--estimate", "--protocol", paths[0], "--sizing", paths[1], "--limits", paths[2], "--output", output], { stdout: () => { throw Error("unexpected output"); }, stderr: value => errors.push(value) })).toBe(1);
+  expect(errors).toEqual(["E2_PROBE_LOOKUP_ROUNDS_INVALID\n"]);
+  await expect(stat(output)).rejects.toMatchObject({ code: "ENOENT" });
+});

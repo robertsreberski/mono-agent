@@ -25,7 +25,7 @@ export async function registrationTrace(root) {
     ["B3", 5, "cold_model_switch"], ["effort", 6, "effort_only_non_boundary"], ["B4", 7, "cold_model_switch"],
   ].map(([name, turn, kind]) => ({ name, turn, kind, evidence: [{ message: message(turn), part: 0 }], ...(name === "effort" ? { effort: "xhigh" } : {}) }));
   const limits = { sourceRequests: 64, summaryRequests: 8, summaryRequestsPerCompaction: 2, probeRequests: 32, compactions: 4, timeoutMs: 120000 };
-  const protocol = { schema: "continuity-e2-protocol-v1", branches: [
+  const protocol = { schema: "continuity-e2-protocol-v1", probeLookupRounds: 1, branches: [
     { id: "main", startTurn: 0, endTurn: 7, models: [LUNA, SOL, LUNA, SOL].map(model => ({ model, effort: "high" })), transitions,
       checkpoints: [["B1", 1], ["B2", 3], ["B4", 7]].map(([name, turn]) => ({ name, turn, message: message(turn) })), exclusions: { steps: [], coverage: [] }, limits },
     { id: "prefix", startTurn: 0, endTurn: 5, models: [SOL, LUNA, SOL].map(model => ({ model, effort: "high" })), transitions: transitions.filter(t => t.turn <= 5),

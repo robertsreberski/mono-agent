@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { digest as hash, validateSource } from "./continuity-recorded-schema.mjs";
 import { digest } from "./continuity-dataset.mjs";
 import { ROOT } from "./continuity-observation-input.mjs";
-import { validateProtocol } from "./continuity-e2-protocol.mjs";
+import { validateProtocol, assertE2ProbeLookupRounds } from "./continuity-e2-protocol.mjs";
 import { validateE2Questions, scoreE2 } from "./continuity-e2-score.mjs";
 import { SHIPPING_SOUL_RAW, SHIPPING_SOUL_NORMALIZED, shippingSoul } from "./continuity-e2-models.mjs";
 import { loadE2Catalog } from "./continuity-e2-pricing.mjs";
@@ -54,10 +54,11 @@ export async function verifyE2Code(code, build) {
   const after = sourceState(ROOT); need(!after.dirty && after.head === before.head);
 }
 export function e2ProbeCounts(protocol, questions, evaluator, source) {
+  assertE2ProbeLookupRounds(protocol?.probeLookupRounds);
   validateE2Questions(questions);
   need(fields(evaluator, ["schema", "keys"]) && evaluator.schema === "continuity-recorded-evaluator-keys-v1" && Array.isArray(evaluator.keys) && evaluator.keys.length === questions.questions.length);
   if (evaluator.keys.length) scoreE2({ schema: "continuity-e2-answers-v1", answers: [] }, evaluator);
-  const checkpoints = protocol.branches.flatMap(b => b.checkpoints), counts = checkpoints.map((_, checkpoint) => ({ checkpoint, questions: 0 }));
+  const checkpoints = protocol.branches.flatMap(b => b.checkpoints), counts = checkpoints.map((_, checkpoint) => ({ checkpoint, questions: 0, lookupRounds: protocol.probeLookupRounds }));
   const ids = new Set();
   for (const q of questions.questions) {
     need(Buffer.byteLength(q.prompt) <= E2_INPUT_LIMITS.promptBytes);
@@ -111,7 +112,7 @@ export function e2PhaseSchedule(protocol, records, probeCounts) {
   return phases.map((p, index) => ({ ...p, index, slotId: digest([E2_PHASE_DOMAIN, index, p]), eligible: true,
     roleId: "e2-validation-phase", code: "E2", suite: "e2-validation", traceId: String(index), probeId: String(index) }));
 }
-export const E2_TOOL_POLICIES = Object.freeze({ summary: Object.freeze([]), replay: Object.freeze(["ConversationHistory"]), proof: Object.freeze(["ConversationHistory"]), cancelContinuation: Object.freeze(["ConversationHistory", "ProofSentinel"]) });
+export const E2_TOOL_POLICIES = Object.freeze({ summary: Object.freeze([]), replay: Object.freeze(["ConversationHistory"]), replayFinal: Object.freeze([]), proof: Object.freeze(["ConversationHistory"]), cancelContinuation: Object.freeze(["ConversationHistory", "ProofSentinel"]) });
 export async function validateE2Registration(pilot, { safeRead, safeDirectory }) {
   try {
     need(fields(pilot, ["schema", "registration", "descriptor"]) && pilot.schema === E2_REGISTRATION_SCHEMA);
@@ -161,6 +162,17 @@ export function validateE2ReplayLimits(protocol, records) {
     for (const [index, branch] of record.branches.entries()) {
       const limits = protocol.branches[index].limits, rows = branch.requestSizing, compactions = branch.compactions ?? [];
       need(rows.filter(r => r.paidRole === null).length <= limits.sourceRequests);
+      // A replay record sizes two complete probes per checkpoint, regardless of
+      // how many real questions will be expanded later. Do not accept an R=1
+      // row set relabelled with an R=3 protocol digest.
+      const registered = protocol.branches[index];
+      need(rows.filter(row => ["probe", "continuation"].includes(row.paidRole)).length === registered.checkpoints.length * 2 * (protocol.probeLookupRounds + 1));
+      for (const [checkpoint] of registered.checkpoints.entries()) {
+        const probes = rows.filter(row => ["probe", "continuation"].includes(row.paidRole)
+          && registered.checkpoints.findIndex(c => c.turn >= row.turn) === checkpoint);
+        need(probes.filter(row => row.paidRole === "probe").length === 2
+          && probes.filter(row => row.paidRole === "continuation").length === 2 * protocol.probeLookupRounds);
+      }
       need(Array.isArray(compactions) && compactions.length <= limits.compactions
         && compactions.every(c => Number.isSafeInteger(c.requests) && c.requests > 0 && c.requests <= limits.summaryRequestsPerCompaction)
         && compactions.reduce((n, c) => n + c.requests, 0) === rows.filter(r => r.paidRole === "summary").length);

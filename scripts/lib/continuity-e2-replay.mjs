@@ -226,7 +226,7 @@ export async function runE2Sizing({ source, protocol, output, summary = "faux-sh
       let opened, currentTurn, turnController, steerWaiter, pendingSteers = [], steerCount = 0, cursor = 0, binding = branch.models[0], position, probeMode = false, probeRequests = 0;
       const probe = e2ProbeMeasurement();
       const observed = [], historyExcluded = new Set(), observedTools = new Set(), toolIndices = new Map(source.tools.map((t, i) => [t.id, i]));
-      const route = createE2Models({ pi: modules.pi, estimators, models: branch.models, limits: branch.limits, summary, soul, paidAdapter,
+      const route = createE2Models({ pi: modules.pi, estimators, models: branch.models, limits: branch.limits, summary, soul, paidAdapter, probeLookupRounds: protocol.probeLookupRounds,
         sourceContext(context) {
           if (!probeMode && pendingSteers.length) {
             const users = context.messages.filter(m => m.role === "user").slice(-pendingSteers.length).map(m => typeof m.content === "string" ? m.content : m.content.filter(p => p.type === "text").map(p => p.text).join("\n")).join("\n");
@@ -245,14 +245,17 @@ export async function runE2Sizing({ source, protocol, output, summary = "faux-sh
             if (++probeRequests > branch.limits.probeRequests) fail("E2_PROBE_REQUEST_LIMIT");
             probe.observe(context, estimators);
             const offered = context.tools ?? context.messages.flatMap(m => m.toolsAdded ?? []);
-            if (offered.length !== 1 || offered[0].name !== "ConversationHistory") fail("E2_PROBE_TOOLS_REFUSED");
+            const final = probe.requests === protocol.probeLookupRounds + 1;
+            if (probe.requests > protocol.probeLookupRounds + 1) fail("E2_PROBE_REQUEST_LIMIT");
+            if (final ? offered.length !== 0 : offered.length !== 1 || offered[0].name !== "ConversationHistory") fail("E2_PROBE_TOOLS_REFUSED");
           }
         },
         async sourceReply(context) {
           if (probeMode) {
             const offered = context.tools ?? context.messages.flatMap(m => m.toolsAdded ?? []);
-            const body = probe.requests === 1 ? [modules.pi.fauxToolCall(offered[0].name, { action: "search", query: "retained", limit: 1 }, { id: "e2-probe-history" })] : "Faux probe continuation; semantic correctness is not evaluated.";
-            return estimatedReply(modules.pi, body, context, estimators, { stopReason: probe.requests === 1 ? "toolUse" : "stop" });
+            const lookup = probe.requests <= protocol.probeLookupRounds;
+            const body = lookup ? [modules.pi.fauxToolCall(offered[0].name, { action: "search", query: "retained", limit: 1 }, { id: probe.requests === 1 ? "e2-probe-history" : `e2-probe-history-${probe.requests}` })] : "Faux probe continuation; semantic correctness is not evaluated.";
+            return estimatedReply(modules.pi, body, context, estimators, { stopReason: lookup ? "toolUse" : "stop" });
           }
           dispatch.assertSettled();
           const reply = currentTurn.replies[cursor++]; if (!reply) fail("E2_SOURCE_REQUEST_LIMIT");
@@ -367,7 +370,7 @@ export async function runE2Sizing({ source, protocol, output, summary = "faux-sh
               onDiagnostic(diagnosticRecord({ turnOrdinal: turn.ordinal, replyCursor: cursor, replyCount: turn.replies.length,
                 cancelled: false, aborted: probeSignal.aborted, failureKind: response.failure?.kind, routeRefusalCode: route.refusalCode() }));
               route.assertSettled();
-              if (response.failure || !probe.firstContext || probe.requests !== 2) fail("E2_PROBE_FAILED");
+              if (response.failure || !probe.firstContext || probe.requests !== protocol.probeLookupRounds + 1) fail("E2_PROBE_FAILED");
               await opened.close(); opened = null;
               measured.probes.push({ repeat, initialContext: probe.firstContext, snapshotDigest: receipt.digest, requests: probe.requests });
             }

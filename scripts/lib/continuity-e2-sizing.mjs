@@ -1,5 +1,5 @@
 // Offline sizing normalization. No authorization/credential/registry imports or access.
-import { PROTOCOL_SCHEMA, protocolDigest, assertE2CheckpointOrder, SOL, LUNA } from "./continuity-e2-protocol.mjs";
+import { PROTOCOL_SCHEMA, protocolDigest, assertE2CheckpointOrder, assertE2ProbeLookupRounds, SOL, LUNA } from "./continuity-e2-protocol.mjs";
 import { requireE2PaidRole } from "./continuity-e2-roles.mjs";
 import { E2_INPUT_LIMITS } from "./continuity-e2-policy.mjs";
 import { validateE2Sizing, estimateE2Reservations } from "./continuity-e2-estimate.mjs";
@@ -9,6 +9,7 @@ const ordinal = n => Number.isSafeInteger(n) && n >= 0;
 const hash = s => typeof s === "string" && /^[a-f0-9]{64}$/u.test(s);
 // This is a metadata-only estimator check, not source/evidence validation or spending authority.
 export function validateE2EstimateProtocol(protocol) {
+  assertE2ProbeLookupRounds(protocol?.probeLookupRounds);
   need(protocol?.schema === PROTOCOL_SCHEMA && Array.isArray(protocol.branches) && protocol.branches.length === 2
     && protocol.branches[0]?.id === "main" && protocol.branches[1]?.id === "prefix");
   for (const branch of protocol.branches) {
