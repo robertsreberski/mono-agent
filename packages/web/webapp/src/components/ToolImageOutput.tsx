@@ -37,23 +37,30 @@ export function ToolImageOutput({ result, args, truncated, characters, onLoadFul
   readonly onLoadFull?: () => Promise<boolean>;
 }) {
   const ref = useRef<HTMLDivElement>(null);
-  const [visible, setVisible] = useState(false);
+  const [seen, setSeen] = useState(false);
   const [failedResult, setFailedResult] = useState<unknown>();
   const [repairState, setRepairState] = useState<"idle" | "loading" | "failed">("idle");
   const attempted = useRef<unknown>(undefined);
   const id = useId();
-  const hint = mayHaveToolImage(result);
+  const hint = useMemo(() => mayHaveToolImage(result), [result]);
   useEffect(() => {
     const element = ref.current;
-    if (!element || !hint) return;
+    if (!element || !hint || seen) return;
     // Native details hide their descendants; intersection therefore gates both
-    // collapsed disclosures (including nested clusters) and offscreen rows.
-    const observer = new IntersectionObserver(([entry]) => setVisible(entry?.isIntersecting === true));
+    // collapsed disclosures (including nested clusters) and never-seen rows.
+    // Latch the first intersection so scrolling cannot replace a preview with
+    // raw base64, shift the layout, or repeat validation of the same result.
+    const observer = new IntersectionObserver(([entry]) => {
+      if (entry?.isIntersecting) {
+        setSeen(true);
+        observer.disconnect();
+      }
+    });
     observer.observe(element);
     return () => observer.disconnect();
-  }, [hint]);
+  }, [hint, seen]);
   useEffect(() => {
-    if (!visible || !hint || !truncated || !onLoadFull || characters === undefined
+    if (!seen || !hint || !truncated || !onLoadFull || characters === undefined
       || characters > MAX_TOOL_IMAGE_RESULT_CHARS || attempted.current === result) return;
     attempted.current = result;
     setRepairState("loading");
@@ -61,14 +68,17 @@ export function ToolImageOutput({ result, args, truncated, characters, onLoadFul
       (repaired) => setRepairState(repaired ? "idle" : "failed"),
       () => setRepairState("failed"),
     );
-  }, [visible, hint, truncated, characters, onLoadFull, result]);
-  const preview = useMemo(() => visible && !truncated && failedResult !== result
-    ? toolResultImages(result) : undefined, [visible, truncated, failedResult, result]);
+  }, [seen, hint, truncated, characters, onLoadFull, result]);
+  const preview = useMemo(() => seen && !truncated && failedResult !== result
+    ? toolResultImages(result) : undefined, [seen, truncated, failedResult, result]);
   const name = toolImageName(args);
   return <div ref={ref} className="tool-image-output">
     {repairState === "loading" && truncated && <p role="status">Loading image output…</p>}
     {repairState === "failed" && truncated && <p role="alert">Could not load image output. The text preview is shown below.</p>}
     {failedResult === result && <p role="status">Image preview unavailable. The original output is shown below.</p>}
+    {seen && hint && !truncated && !preview && failedResult !== result && (
+      <p role="status">Image is too large, incomplete, or unsupported for preview. The raw output is shown below.</p>
+    )}
     {preview ? <>
       <MessageGallery>
         {preview.images.map((image, index) => <Preview key={`${id}-${index}`} image={image}

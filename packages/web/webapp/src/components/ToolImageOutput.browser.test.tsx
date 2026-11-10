@@ -119,6 +119,7 @@ it("does not automatically fetch oversized results or change non-image output", 
   await page.getByText("Read", { exact: true }).click();
   expect(screen.getByText('"Ordinary output"')).toBeVisible();
   expect(screen.queryByRole("img")).toBeNull();
+  expect(screen.queryByRole("status")).toBeNull();
 });
 
 it("waits for nested disclosures and viewport visibility before repairing", async () => {
@@ -138,4 +139,37 @@ it("waits for nested disclosures and viewport visibility before repairing", asyn
   expect(repair).not.toHaveBeenCalled();
   summary.scrollIntoView();
   await waitFor(() => expect(repair).toHaveBeenCalledTimes(1));
+});
+
+it("keeps a seen preview mounted while scrolling out of view and back", async () => {
+  await page.viewport(390, 844);
+  render(<>
+    <Example result={JSON.stringify(TOOL_IMAGE)} />
+    <div style={{ height: 1600 }} />
+  </>);
+  await page.getByText("Read", { exact: true }).click();
+  const image = await screen.findByRole("img", { name: "synthetic.png" });
+  await waitFor(() => expect((image as HTMLImageElement).naturalWidth).toBe(320));
+  window.scrollTo(0, 1200);
+  await waitFor(() => expect(image.getBoundingClientRect().bottom).toBeLessThan(0));
+  await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  expect(document.querySelector(".tool-image-preview img")).toBe(image);
+  expect(document.querySelector(".tool-image-output pre")).toBeNull();
+  window.scrollTo(0, 0);
+  await waitFor(() => expect(image.getBoundingClientRect().top).toBeGreaterThan(0));
+  expect(screen.getByRole("img", { name: "synthetic.png" })).toBe(image);
+  expect(document.querySelector(".tool-image-output pre")).toBeNull();
+});
+
+it("explains an image line cut before web persistence and keeps its raw output", async () => {
+  await page.viewport(1440, 1000);
+  // The operator frame cap can cut image JSON without web resultTruncated metadata.
+  const cutImage = JSON.stringify(TOOL_IMAGE).slice(0, 120) + "\n[truncated]";
+  render(<Example result={cutImage} />);
+  await page.getByText("Read", { exact: true }).click();
+  expect(await screen.findByRole("status")).toHaveTextContent("Image is too large, incomplete, or unsupported for preview");
+  expect(screen.queryByRole("img")).toBeNull();
+  expect(document.querySelector(".tool-image-output pre")?.textContent).toBe(JSON.stringify(cutImage));
+  const shots = import.meta.env.VITE_TOOL_IMAGE_OVERSIZE_SHOTS;
+  if (typeof shots === "string") await page.screenshot({ path: `${shots}/tool-image-unavailable-1440x1000.png` });
 });
