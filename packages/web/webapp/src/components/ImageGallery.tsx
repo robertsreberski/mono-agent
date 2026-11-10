@@ -67,6 +67,12 @@ export function MessageGallery({ children }: { readonly children: React.ReactNod
   );
 }
 
+/** Reuse the message's registry; standalone payloads still get a working viewer. */
+export function EnsureMessageGallery({ children }: { readonly children: React.ReactNode }) {
+  const registry = useContext(GalleryContext);
+  return registry === undefined ? <MessageGallery>{children}</MessageGallery> : <>{children}</>;
+}
+
 /**
  * Registers one image with the surrounding message and returns how to open it.
  * Outside a `MessageGallery` the tile still renders; it simply cannot page.

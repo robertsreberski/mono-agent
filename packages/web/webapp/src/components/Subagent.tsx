@@ -321,6 +321,7 @@ function SubagentClusterStep({ cluster }: { readonly cluster: SubagentCallCluste
       <ActivityPayload
         args={joinPayloads(cluster.calls.map((call) => call.args))}
         result={results.length === 0 ? undefined : joinPayloads(results)}
+        imageResults={results}
         resultIsError={cluster.failedCount > 0}
         error={failures.length === 0 ? undefined : [...new Set(failures)].join("\n")}
         {...clusterTruncation(cluster.calls, repairToolCall)}

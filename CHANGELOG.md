@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Show bounded raster image previews in expanded web tool-call output, with a
+  larger image viewer and lazy loading for truncated results. Keep unsupported,
+  malformed, oversized, or unavailable images in the existing text view.
+
 - Keep web recorded-message sends running across navigation, with bounded device
   recovery and idempotent Retry/Remove after interruption or reload. Show one
   recording box while attaching, retain captured duration, and remove sent audio
