@@ -227,7 +227,7 @@ it.each(["lineage-extra-native", "lineage-extra-pack", "lineage-pack-text", "lin
   expect(result.received).toHaveLength(1); expect(result.report.stop).toBe("e2_summary_receipt_invalid");
   expect(result.report.phases[0].summaryPresence).toMatchObject({ checked: 1, unobserved: 1 });
 }, E2_NATIVE_TEST_TIMEOUT_MS);
-it.each([["lineage-branch", "branch"], ["lineage-pack", "pack"], ["archive-absent", "none"], ["lineage-absent", "none"]])("accepts and durably reports %s without changing the SDK input", async (scenario, kind) => {
+it.each([["lineage-branch", "branch"], ["lineage-pack", "pack"], ["archive-absent", "none"], ["lineage-absent", "none"]])("accepts and durably reports %s at the genuine SDK boundary", async (scenario, kind) => {
   const result = await run({ scenario, rows: [{ role: "summary", model: SOL }, { role: "probe", model: SOL }] });
   expect(result.received).toHaveLength(2); expect(result.report.stop).toBe("completed");
   expect(result.report.phases[0].summaryPresence).toMatchObject({ checked: 2, unobserved: 0, [kind]: kind === "none" ? 2 : 1 });

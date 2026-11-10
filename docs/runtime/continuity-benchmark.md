@@ -2822,9 +2822,10 @@ new bound artifacts, not an automated retry.
 
 #### Exact committed-summary lineage
 
-A claimed receipt hash is insufficient. At binding, the controller validates the
-**newest** private runtime JSONL checkpoint, completed operation and cwd/journal
-identity, and matches its **assembled committed text** to generated settled
+A claimed receipt hash is insufficient. At binding, the controller identifies the
+**uniquely validated latest compaction in its private runtime JSONL journal**,
+checks its completed operation and cwd/journal identity, and matches its
+**assembled committed text** to generated settled
 results, including split history/prefix assembly and the shipping file-operation
 suffix. Before acknowledging, it exclusively writes and syncs a bounded private
 `continuity-e2-committed-checkpoint-v1` artifact. Lineage **version 2** binds its raw

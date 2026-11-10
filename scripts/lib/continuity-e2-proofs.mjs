@@ -47,7 +47,7 @@ async function fixtureChild(base, phase) {
 // Match only fixed product warning classes; never retain arbitrary warning text.
 export function proofHistoryWarningClass(message) {
   if (typeof message !== "string") return "unknown";
-  for (const reason of ["capture_bounds", "capture_quota", "sidecar_unavailable"]) {
+  for (const reason of ["canonical_advanced_past_preparation", "capture_bounds", "capture_quota", "sidecar_unavailable"]) {
     if (message.startsWith(`Continuity is degraded (${reason});`)) return `continuity_${reason}`;
   }
   for (const [prefix, kind] of [
@@ -269,6 +269,13 @@ export async function runE2Proofs({ output, arm = "all", real = false, onContext
       results.push({ report, sizing });
     }
     await privateModes(output); return results;
-  } catch (error) { await rm(output, { recursive: true, force: true }); throw error; }
+  } catch (error) {
+    if (error?.code === "E2_HISTORY_DEGRADED") {
+      // Preserve fixed-class diagnostics (including fixture-child phases) and
+      // their private evidence root. A fresh attempt must choose a new output.
+      try { await privateModes(output); } catch { /* Do not replace the refusal. */ }
+    } else await rm(output, { recursive: true, force: true });
+    throw error;
+  }
   finally { restore(); }
 }

@@ -6,9 +6,6 @@
   larger image viewer and lazy loading for truncated results. Keep unsupported,
   malformed, oversized, or unavailable images in the existing text view.
 
-- Add content-free history warning classes to private E2 proof diagnostics while
-  retaining the degraded-history refusal.
-
 - Fix E2 verification of Unicode separators in retained summary packs and scan
   summary claims in tool outputs and reasoning text as well as user messages.
   Refuse real sent-request settlements without a controller body witness while
