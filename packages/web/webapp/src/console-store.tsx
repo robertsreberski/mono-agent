@@ -7354,7 +7354,6 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     let thread = restored?.threadId
       ? threadsRef.current.find(item => item.id === restored.threadId && item.sourceId === sourceId) ?? null
       : restored ? null : selectedThread;
-    if (restored?.threadId && !thread) throw new Error("Load the recording's conversation before retrying.");
     let operationSignal: AbortSignal | undefined;
     let preparePromise: Promise<string> | undefined;
     const submissionId = restored?.submissionId ?? crypto.randomUUID();
@@ -7374,6 +7373,11 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       if (signal) operationSignal = signal;
       if (preparePromise) return preparePromise;
       preparePromise = (async () => {
+        if (!thread && restored?.threadId) {
+          const detail = await api.thread(restored.threadId);
+          if (detail.thread.sourceId !== sourceId) throw new Error("This recording's conversation is unavailable. Remove its recovery instead.");
+          thread = detail.thread;
+        }
         if (!thread) thread = await createThread(undefined, { isCurrent: isSelected, onSelectionInstalled: () => undefined });
         signal?.throwIfAborted();
         return thread.id;
@@ -7383,7 +7387,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     };
     return {
       submissionId, assertCanSendAttachments, isCurrent, prepare,
-      snapshot: () => ({ sourceId, threadId: thread?.id ?? null, submissionId, settings }),
+      snapshot: () => ({ sourceId, threadId: thread?.id ?? restored?.threadId ?? null, submissionId, settings }),
       submit: async (text, attachmentIds = [], quote, onDispatch) => {
         const submissionSignal = operationSignal;
         const isActive = () => !submissionSignal?.aborted;

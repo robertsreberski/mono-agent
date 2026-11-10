@@ -2468,6 +2468,22 @@ describe("ConsoleStoreProvider integration", () => {
       expect(order).toEqual(["start:0", "end:0", "startTurn"]);
     });
 
+    it("loads an unlisted restored voice destination on demand without stealing selection", async () => {
+      seedOneThread();
+      const unlisted = thread("synthetic-unlisted", "alpha", { messageCount: 1 });
+      vi.mocked(api.thread).mockImplementation(async id => detail(id === unlisted.id ? unlisted : alphaThread));
+      const store = await renderStore();
+      await waitFor(() => expect(store.current.selectedThreadId).toBe(alphaThread.id));
+      const captured = store.current.captureAttachmentSubmission({ sourceId: "alpha", threadId: unlisted.id,
+        submissionId: "synthetic-restored", settings: { inheritRunSettings: false } });
+      expect(await captured.prepare()).toBe(unlisted.id);
+      expect(api.thread).toHaveBeenCalledWith(unlisted.id);
+      expect(store.current.selectedThreadId).toBe(alphaThread.id);
+      vi.mocked(api.submit).mockResolvedValue({ threadId: unlisted.id, submissionId: "synthetic-restored", outcome: "turn" });
+      await captured.submit("Synthetic restored request");
+      expect(api.submit).toHaveBeenCalledWith(unlisted.id, "synthetic-restored", expect.objectContaining({ text: "Synthetic restored request" }));
+    });
+
     it("continues captured voice sessions across A → B → A with the frozen destination", async () => {
       seedOneThread();
       const beta = thread("voice-beta", "alpha", { messageCount: 1 });

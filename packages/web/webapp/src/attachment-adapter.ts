@@ -118,7 +118,7 @@ export class WebUploadAttachmentAdapter implements AttachmentAdapter {
   recordingBudget(attachments: readonly { id: string; file?: File }[] = []): number {
     // Failed chips still own browser bytes, even after their staged reservation
     // is released. Include them so repeated failed recordings remain bounded.
-    const extra = attachments.filter(({ id }) => !this.activeSizes.has(id));
+    const extra = attachments.filter(({ id }) => !this.activeSizes.has(id) && !this.sending.has(id) && !this.recovering.has(id));
     if (this.activeSizes.size + extra.length >= this.limits.maxFilesPerTurn) return 0;
     const used = [...this.activeSizes.values()].reduce((sum, size) => sum + size, 0)
       + extra.reduce((sum, item) => sum + (item.file?.size ?? 0), 0);
@@ -156,7 +156,7 @@ export class WebUploadAttachmentAdapter implements AttachmentAdapter {
   restoreFiles(files: readonly { id: string; file: File; recorded: boolean; duration?: number }[]): void {
     for (const entry of files) {
       this.files.set(entry.id, entry.file);
-      this.activeSizes.set(entry.id, entry.file.size);
+
       if (entry.recorded) {
         this.recorded.add(entry.file);
         this.recordings.set(entry.id, { file: entry.file });
@@ -180,7 +180,7 @@ export class WebUploadAttachmentAdapter implements AttachmentAdapter {
         const upload = await uploadContent(reservation, entry.file, () => undefined, signal);
         signal.throwIfAborted();
         this.uploads.set(upload.id, upload);
-        this.files.set(upload.id, entry.file); this.activeSizes.set(upload.id, entry.file.size);
+        this.files.set(upload.id, entry.file);
         if (entry.recorded) this.recordings.set(upload.id, { file: entry.file });
         this.sending.add(upload.id);
         const url = upload.contentUrl ?? `/api/v1/uploads/${encodeURIComponent(upload.id)}/content`;
@@ -222,6 +222,7 @@ export class WebUploadAttachmentAdapter implements AttachmentAdapter {
       this.recoveryFiles.delete(file);
       const upload = this.uploads.get(recoveryId);
       if (upload?.uploaded) {
+        this.activeSizes.set(recoveryId, file.size);
         yield {
           id: recoveryId,
           type: attachmentType(upload.contentType),
@@ -395,6 +396,7 @@ export class WebUploadAttachmentAdapter implements AttachmentAdapter {
     const ids = attachments.map(({ id }) => {
       this.recovering.delete(id);
       this.sending.add(id);
+      this.activeSizes.delete(id);
       return this.uploads.get(id)?.id ?? id;
     });
     return ids;

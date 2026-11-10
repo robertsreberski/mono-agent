@@ -283,7 +283,7 @@ for (const width of [1280, 390]) {
     vi.spyOn(window, "fetch").mockImplementation(async () => new Response(syntheticAudio(7), { headers: { "Content-Type": "audio/webm" } }));
     const view = mount();
     await screen.findAllByLabelText("Audio attachment: synthetic.webm");
-    expect(screen.queryByRole("link", { name: "Download synthetic.webm" })).toBeNull();
+    expect(screen.getAllByRole("link", { name: "Download synthetic.webm" })).toHaveLength(2);
     await waitFor(() => {
       expect(view.container.querySelectorAll(".message-user-content")).toHaveLength(5);
       expect(view.container.querySelectorAll(".message-attachments .voice-note")).toHaveLength(4);
@@ -849,7 +849,7 @@ describe("recorded audio through actual Chat, Composer, ordinary uploads and sub
     expect(screen.getByText("newer.txt")).toBeVisible(); expect(screen.getByLabelText("Audio attachment: recording.webm")).toBeVisible();
     expect(api.submit).not.toHaveBeenCalled(); expect(api.createUpload).toHaveBeenCalledTimes(2);
   });
-  it("navigation and reload retain an exact uncertain attempt without autosending", async () => {
+  it.each(["turn", "live-input"] as const)("reload silently reconciles an accepted %s without resending", async outcome => {
     seed(created); const view = mount(); await record(); await stop();
     vi.mocked(api.submit).mockRejectedValueOnce(new Error("Uncertain dispatch"));
     vi.mocked(api.submission).mockRejectedValueOnce(new Error("Receipt unavailable"));
@@ -861,21 +861,19 @@ describe("recorded audio through actual Chat, Composer, ordinary uploads and sub
     act(() => store.selectThread(created.id)); await waitFor(() => expect(store.detail?.thread.id).toBe(created.id));
     expect(screen.getByRole("button", { name: "Check / retry send" })).toBeVisible();
     expect(runtime.thread.composer.getState().attachments).toHaveLength(0); expect(api.deleteUpload).not.toHaveBeenCalled();
-    vi.mocked(api.submission).mockResolvedValue({ submissionId: attemptId, threadId: created.id, outcome: "turn" });
+    vi.mocked(api.submission).mockResolvedValue({ submissionId: attemptId, threadId: created.id, outcome });
     view.unmount(); mount();
     await waitFor(() => expect(api.submission).toHaveBeenCalledWith(created.id, attemptId));
     expect(api.submit).toHaveBeenCalledTimes(1); expect(api.transcribe).toHaveBeenCalledTimes(1);
     expect(runtime.thread.composer.getState().attachments).toHaveLength(0);
-    const retry = await screen.findByRole("button", { name: "Check / retry send" });
-    await userEvent.click(retry);
-    await waitFor(() => expect(api.submit).toHaveBeenCalledTimes(2));
-    expect(vi.mocked(api.submit).mock.calls[1]).toEqual(vi.mocked(api.submit).mock.calls[0]);
-    expect(api.transcribe).toHaveBeenCalledTimes(1);
+    await waitFor(async () => expect(await loadRecordedDrafts()).toHaveLength(0));
+    expect(screen.queryByRole("button", { name: "Check / retry send" })).toBeNull();
+    expect(api.submit).toHaveBeenCalledTimes(1);
   });
   it("retries a definitive submission rejection with durable bytes and a fresh admitted identity", async () => {
     seed(created); mount(); await record(); await stop();
     vi.mocked(api.submit).mockRejectedValueOnce(new ApiError("Synthetic expired upload", 404, "upload_not_found"));
-    vi.mocked(api.submission).mockRejectedValueOnce(new ApiError("Synthetic receipt missing", 404, "submission_not_found"));
+    vi.mocked(api.submission).mockRejectedValue(new ApiError("Synthetic receipt missing", 404, "submission_not_found"));
     await send(); await screen.findByRole("button", { name: "Retry" });
     const first = vi.mocked(api.submit).mock.calls[0]!;
     await userEvent.click(screen.getByRole("button", { name: "Retry" }));
@@ -884,6 +882,100 @@ describe("recorded audio through actual Chat, Composer, ordinary uploads and sub
     expect(second[1]).not.toBe(first[1]); expect(second[2].attachmentIds).not.toEqual(first[2].attachmentIds);
     expect(api.transcribe).toHaveBeenCalledTimes(2);
     await waitFor(async () => expect(await loadRecordedDrafts()).toHaveLength(0));
+  });
+  it.each([401, 409])("keeps the possibly accepted UUID after HTTP %s and failed receipt lookup", async status => {
+    seed(created); mount(); await record(); await stop();
+    vi.mocked(api.submit).mockRejectedValueOnce(new Error("Synthetic lost acknowledgement"))
+      .mockRejectedValueOnce(new ApiError("Synthetic pre-lookup failure", status, status === 401 ? "unauthorized" : "compaction_busy"));
+    vi.mocked(api.submission).mockRejectedValue(new Error("Synthetic receipt unavailable"));
+    await send(); await screen.findByRole("button", { name: "Check / retry send" });
+    const first = vi.mocked(api.submit).mock.calls[0]!;
+    await userEvent.click(screen.getByRole("button", { name: "Check / retry send" }));
+    await waitFor(() => expect(api.submit).toHaveBeenCalledTimes(2));
+    await screen.findByRole("button", { name: "Check / retry send" });
+    expect((await loadRecordedDrafts())[0]).toMatchObject({ owner: { submissionId: first[1] }, dispatched: true });
+    await userEvent.click(screen.getByRole("button", { name: "Check / retry send" }));
+    await waitFor(() => expect(api.submit).toHaveBeenCalledTimes(3));
+    expect(vi.mocked(api.submit).mock.calls[1]).toEqual(first); expect(vi.mocked(api.submit).mock.calls[2]).toEqual(first);
+    expect(api.transcribe).toHaveBeenCalledTimes(1); expect(api.createUpload).toHaveBeenCalledTimes(1);
+  });
+  it("restored missing receipts become retryable unsent recordings without automatic submission", async () => {
+    seed(created); const view = mount(); await record(); await stop();
+    vi.mocked(api.submit).mockRejectedValueOnce(new Error("Synthetic lost acknowledgement"));
+    vi.mocked(api.submission).mockRejectedValue(new Error("Synthetic receipt unavailable"));
+    await send(); await screen.findByRole("button", { name: "Check / retry send" });
+    const oldId = vi.mocked(api.submit).mock.calls[0]![1];
+    vi.mocked(api.submission).mockRejectedValue(new ApiError("Synthetic receipt missing", 404, "submission_not_found"));
+    view.unmount(); mount(); await screen.findByRole("button", { name: "Retry" });
+    expect(api.submit).toHaveBeenCalledTimes(1);
+    expect((await loadRecordedDrafts())[0]!.owner.submissionId).not.toBe(oldId);
+    await userEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(api.submit).toHaveBeenCalledTimes(2));
+    expect(api.transcribe).toHaveBeenCalledTimes(2);
+  });
+  it("skips Retry and restaging while another window holds the stored draft lock", async () => {
+    seed(created); mount(); await record(); await stop();
+    vi.mocked(api.transcribe).mockRejectedValueOnce(new Error("Synthetic transcription failure"));
+    await send(); await screen.findByRole("button", { name: "Retry" });
+    const request = vi.spyOn(navigator.locks, "request").mockImplementation(async (_name, optionsOrCallback, callback) => {
+      const invoke = callback ?? optionsOrCallback as LockGrantedCallback<unknown>;
+      return invoke(null);
+    });
+    await userEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await screen.findByText(/in progress in another window/);
+    expect(api.transcribe).toHaveBeenCalledTimes(1); expect(api.createUpload).toHaveBeenCalledTimes(1); expect(api.submit).not.toHaveBeenCalled();
+    request.mockRestore();
+    await userEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(api.submit).toHaveBeenCalledTimes(1));
+  });
+  it("does not resurrect a stored draft completed in another window before Retry", async () => {
+    seed(created); mount(); await record(); await stop();
+    vi.mocked(api.transcribe).mockRejectedValueOnce(new Error("Synthetic transcription failure"));
+    await send(); await screen.findByRole("button", { name: "Retry" });
+    const draft = (await loadRecordedDrafts())[0]!;
+    await removeRecordedDraft(draft.owner.submissionId);
+    await userEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Retry" })).toBeNull());
+    expect(api.submit).not.toHaveBeenCalled(); expect(api.transcribe).toHaveBeenCalledTimes(1); expect(api.deleteUpload).not.toHaveBeenCalled();
+  });
+  it("sends memory-only across navigation with a notice when IndexedDB is unavailable", async () => {
+    await page.viewport(390, 900);
+    vi.spyOn(indexedDB, "open").mockImplementation(() => { throw new DOMException("Synthetic unavailable storage", "SecurityError"); });
+    let resolve!: (value: { text: string }) => void;
+    vi.mocked(api.transcribe).mockImplementationOnce(() => new Promise(done => { resolve = done; }));
+    seed(created); mount(); await record(); await stop(); await send();
+    await waitFor(() => expect(api.transcribe).toHaveBeenCalledTimes(1));
+    act(() => store.selectThread(other.id));
+    await waitFor(() => expect(store.selectedThreadId).toBe(other.id));
+    await act(async () => resolve({ text: "Synthetic memory-only message" }));
+    await waitFor(() => expect(api.submit).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(api.submit).mock.calls[0]![0]).toBe(created.id);
+    expect(screen.getByText(/cannot be kept across reloads/)).toBeVisible();
+    await shot("resilience-390-memory-only-notice");
+  });
+  it("does not treat full recording storage as unavailable or silently send without durability", async () => {
+    const put = IDBObjectStore.prototype.put;
+    vi.spyOn(IDBObjectStore.prototype, "put").mockImplementation(function(this: IDBObjectStore, value, key) {
+      if (this.name === "drafts") throw new DOMException("Synthetic recording quota full", "QuotaExceededError");
+      return put.call(this, value, key);
+    });
+    seed(created); mount(); await record(); await stop(); await send();
+    await screen.findByRole("button", { name: "Retry" });
+    expect(screen.getByText("Synthetic recording quota full")).toBeVisible();
+    expect(screen.queryByText(/cannot be kept across reloads/)).toBeNull();
+    expect(api.submit).not.toHaveBeenCalled(); expect(api.transcribe).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole("button", { name: "Remove" }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Retry" })).toBeNull());
+  });
+  it("keeps failed recording recovery separate while ordinary text and files send", async () => {
+    seed(created); mount(); await record(); await stop();
+    vi.mocked(api.transcribe).mockRejectedValueOnce(new Error("Synthetic transcription failure"));
+    await send(); await screen.findByRole("button", { name: "Retry" });
+    await userEvent.fill(screen.getByRole("combobox", { name: "Message" }), "A newer ordinary request");
+    await act(async () => runtime.thread.composer.addAttachment(new File(["Synthetic notes"], "notes.txt", { type: "text/plain" })));
+    await send(); await waitFor(() => expect(api.submit).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(api.submit).mock.calls[0]![2]).toMatchObject({ text: "A newer ordinary request", attachmentIds: ["audio-upload-2"] });
+    expect(screen.getByRole("button", { name: "Retry" })).toBeVisible(); expect(await loadRecordedDrafts()).toHaveLength(1);
   });
   it("only recording Stop is shown during capture, and an audio draft waits for an active response", async () => {
     seed({ ...created, runState: { id: "running-one", status: "running" } }); mount();

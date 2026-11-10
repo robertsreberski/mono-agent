@@ -1,7 +1,7 @@
 import "fake-indexeddb/auto";
 import { Blob as NativeBlob } from "node:buffer";
-import { beforeEach, expect, it } from "vitest";
-import { loadRecordedDrafts, removeRecordedDraft, saveRecordedDraft, type RecordedDraft } from "./recorded-draft-store";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { loadRecordedDrafts, recordedStorageUnavailable, removeRecordedDraft, saveRecordedDraft, type RecordedDraft } from "./recorded-draft-store";
 const draft = (id: string): RecordedDraft => ({
   owner: { sourceId: "synthetic-agent", threadId: "synthetic-thread", submissionId: id, settings: { model: "synthetic-model", inheritRunSettings: false } },
   text: "A synthetic request", attachments: [], dispatched: false,
@@ -37,4 +37,18 @@ it("atomically replaces a definitively rejected identity without retaining a sta
   const values = await loadRecordedDrafts();
   expect(values.map(value => value.owner.submissionId)).toEqual(["new-unsent"]);
   expect(values[0]!.dispatched).toBe(false);
+});
+
+afterEach(() => vi.unstubAllGlobals());
+it("distinguishes unavailable or blocked storage from a full device", async () => {
+  vi.stubGlobal("indexedDB", undefined);
+  const unavailable = await loadRecordedDrafts().catch(error => error);
+  expect(recordedStorageUnavailable(unavailable)).toBe(true);
+  expect(recordedStorageUnavailable(new DOMException("Synthetic quota full", "QuotaExceededError"))).toBe(false);
+  const request = {} as IDBOpenDBRequest;
+  vi.stubGlobal("indexedDB", { open: () => {
+    queueMicrotask(() => request.onblocked?.(new Event("blocked") as IDBVersionChangeEvent));
+    return request;
+  } });
+  expect(recordedStorageUnavailable(await loadRecordedDrafts().catch(error => error))).toBe(true);
 });

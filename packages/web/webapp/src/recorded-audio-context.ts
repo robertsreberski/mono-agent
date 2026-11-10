@@ -4,6 +4,7 @@ export interface RecordedAudioState {
   readonly adapter: WebUploadAttachmentAdapter;
   readonly busy: boolean;
   readonly error?: string;
+  readonly notice?: string;
   readonly uncertain: boolean;
   readonly pending?: boolean;
   readonly text?: string;

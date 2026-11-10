@@ -136,23 +136,32 @@ model/effort/context settings, ownership and an explicit attempt UUID before
 awaiting thread creation or transcription. It transcribes recordings serially
 within one 150-second preparation deadline and composes filename-associated,
 numbered transcripts with authored text once, then uses the existing synchronous
-submission/receipt path. Send continues for its frozen conversation when you navigate elsewhere or hide
-the app. Failed or interrupted preparation keeps a separate pending message with
+submission/receipt path. Send continues for its frozen conversation when you
+navigate elsewhere or hide the app. Failed or interrupted preparation keeps a separate pending message with
 **Retry** and **Remove**, without overwriting newer drafts. Retry retranscribes
 preparation failures; **Check / retry send** reuses the exact prepared
 payload/settings/UUID for a possibly accepted send, without retranscription.
 
 Before preparation, the browser saves pending text, quote, settings and attachment
 bytes in device IndexedDB. Before dispatch it saves the exact prepared payload and
-submission UUID. Reload restores a manual recovery, never automatically resubmits.
+submission UUID. Reload checks saved submission receipts, silently clears
+accepted sends, and restores manual recovery for the rest; it never automatically resubmits.
 Storage is bounded to eight pending messages and 80 MiB total; existing recordings
-are never evicted to admit another. Storage unavailable/full stops dispatch and
-keeps the in-memory pending message: free storage or remove another saved message,
-then Retry. Confirmed success or explicit Remove clears device bytes. Pending
+are never evicted to admit another. Unavailable/blocked storage before the first
+save uses memory-only sending with a non-blocking notice that recovery cannot survive reload. Full storage stops
+dispatch without evicting other recordings: remove another saved message, then
+Retry. If an already saved attempt cannot update its durable payload, dispatch
+waits rather than leave a stale unsent copy that could duplicate it after reload.
+Confirmed success or explicit Remove clears device bytes. Pending
 recordings otherwise stay on this device until removed; clearing website data or
 OS eviction of website storage can still erase them. Restored, definitely
 undispatched recordings reserve fresh staged uploads, since server staging expires.
 Possibly accepted attempts keep their original IDs to preserve idempotency.
+Only an explicitly missing/rejected receipt permits a new identity; an HTTP
+admission error without receipt evidence stays uncertain. Where supported,
+exclusive browser locks keep two windows from retrying/restaging the same saved
+attempt simultaneously. Pending, idle recovery does not block ordinary text/file
+sends or use another conversation's attachment budget.
 
 Voice is disabled unless the console owner configures a server-side local
 OpenAI-compatible transcription service or operator-managed proxy. No browser
@@ -208,8 +217,9 @@ the finished voice note. Recording status remains available to assistive tech
 without a visible label. Reduced-motion preferences keep the meter
 static. A compact, single-row voice note replaces native audio controls in drafts
 and sent messages: Play / Pause, keyboard- and pointer-seekable waveform, duration,
-and draft remove/upload retry actions. Sent audio keeps playback without a
-download control. Local files decode eagerly
+and draft remove/upload retry actions. Healthy recorded/captioned voice notes keep playback without a
+download control; ordinary uploaded audio and unavailable-playback fallbacks keep
+their file download. Local files decode eagerly
 without a network request. Remote waveforms decode only after a short visible
 dwell, through a consumer-cancellable queue; leaving view cancels pending work
 and Data Saver skips automatic remote previews. Only compact peaks/duration and

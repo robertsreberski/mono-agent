@@ -141,3 +141,20 @@ it.each([Infinity, NaN])("uses captured duration when decoded/media metadata is 
   expect(screen.getByText("1:23")).toBeVisible();
   expect(view.container.querySelector("a[download]")).toBeNull();
 });
+
+it("keeps ordinary uploaded audio downloadable but hides a healthy recorded voice-note download", () => {
+  const view = render(<VoiceNote id="ordinary" name="music.ogg" contentType="audio/ogg" downloadHref="/api/v1/uploads/ordinary/content" />);
+  expect(screen.getByRole("link", { name: "Download music.ogg" })).toHaveAttribute("download", "music.ogg");
+  view.rerender(<VoiceNote id="voice" name="recording.webm" contentType="audio/webm" caption="Synthetic transcript" downloadHref="/api/v1/uploads/voice/content" />);
+  expect(screen.queryByRole("link")).toBeNull();
+});
+it("offers a download fallback when recorded playback is unavailable or oversized", async () => {
+  const oversized = { size: 10 * 1024 * 1024 + 1 } as File;
+  const view = render(<VoiceNote id="large-voice" name="recording.webm" file={oversized} contentType="audio/webm" recorded downloadHref="/api/v1/uploads/large/content" />);
+  expect(screen.queryByRole("link")).toBeNull();
+  fireEvent.click(screen.getByRole("button"));
+  expect(screen.getByRole("link", { name: "Download recording.webm" })).toBeVisible();
+  view.rerender(<VoiceNote id="bad-voice" name="recording.webm" contentType="audio/webm" recorded downloadHref="/api/v1/uploads/bad/content" />);
+  fireEvent.error(view.container.querySelector("audio")!);
+  expect(screen.getByRole("link", { name: "Download recording.webm" })).toBeVisible();
+});

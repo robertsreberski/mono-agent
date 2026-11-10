@@ -16,9 +16,10 @@ export interface VoiceNoteProps {
   readonly onRetry?: (() => void) | undefined;
   readonly actions?: ReactNode;
   readonly caption?: string | undefined;
+  readonly downloadHref?: string | undefined;
 }
 /** A normal attachment with a custom, keyboard-accessible media surface. */
-export function VoiceNote({ id, name, contentType, file, recorded, uploading, failed, onRetry, actions, caption }: VoiceNoteProps) {
+export function VoiceNote({ id, name, contentType, file, recorded, uploading, failed, onRetry, actions, caption, downloadHref }: VoiceNoteProps) {
   const root = useRef<HTMLDivElement>(null);
   const audio = useRef<HTMLAudioElement>(null);
   const [waveform, setWaveform] = useState<Waveform | undefined>(() => cachedWaveform(id));
@@ -133,7 +134,7 @@ export function VoiceNote({ id, name, contentType, file, recorded, uploading, fa
         </div>}
       </div>
       {!failed && <span className="voice-note-time">{uploading !== undefined ? `${Math.round(uploading)}%` : <>{playing || time > 0 ? `${audioTime(time)} / ` : ""}{duration ? audioTime(duration) : "—:—"}</>}</span>}
-      <div className="voice-note-actions">{actions}</div>
+      <div className="voice-note-actions">{downloadHref && ((!recorded && !caption) || error) && <a className="icon-button" href={downloadHref} download={name} aria-label={`Download ${name}`}><Icon name="download" size={14} /></a>}{actions}</div>
     </div>
     {uploading !== undefined && <div className="voice-upload"><span className="sr-only" role="status">Uploading {name}</span><progress value={uploading} max={100} aria-label={`Uploading ${name}`} /></div>}
 
