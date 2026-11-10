@@ -1,4 +1,4 @@
-import { e2NativeFixture } from "./fixtures/e2-native-registration.mjs";
+import { e2NativeFixture, E2_NATIVE_TEST_TIMEOUT_MS } from "./fixtures/e2-native-registration.mjs";
 // All artifacts/accounts are fictional, in a temporary HOME. No real registry is opened.
 import { beforeEach, afterEach, expect, it, vi } from "vitest";
 import { mkdtemp, mkdir, readFile, writeFile, realpath, rm, readdir, chmod } from "node:fs/promises";
@@ -186,7 +186,7 @@ it("rejects replay source and per-compaction overflow through real registration 
     await expect(guardedAuthorization("e2-validation").validate(g.args)).rejects.toMatchObject({ code: "e2_registration_invalid" });
     expect(await readdir(g.home)).toEqual([]); expect(await readdir(g.args.outputRoot)).toEqual([]);
   }
-}, 30000);
+}, E2_NATIVE_TEST_TIMEOUT_MS);
 
 it("binds the checkpoint R mirror to the protocol instead of accepting substituted funding policy", async () => {
   f.pilot.registration.probeCounts[0].lookupRounds = 3; await f.persist();
