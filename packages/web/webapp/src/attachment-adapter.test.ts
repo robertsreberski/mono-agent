@@ -265,6 +265,22 @@ describe("WebUploadAttachmentAdapter", () => {
     expect(api.transcribe).toHaveBeenCalledTimes(4);
   });
 
+  it("pending and restored recordings do not consume another message's attachment budget", async () => {
+    const adapter = new WebUploadAttachmentAdapter({ ...uploadLimits, maxFilesPerTurn: 1, maxTurnBytes: 4 });
+    const first = await stageRecorded(adapter);
+    expect(adapter.recordingBudget()).toBe(0);
+    const files = adapter.snapshotFiles([first]);
+    adapter.beginSend([first]);
+    expect(adapter.recordingBudget()).toBe(4);
+    adapter.restoreFiles(files);
+    expect(adapter.recordingBudget()).toBe(4);
+    await adapter.restage([first], new AbortController().signal);
+    expect(adapter.recordingBudget()).toBe(4);
+    const second = await stageRecorded(adapter, "other-conversation.webm");
+    expect(second.id).not.toBe(first.id);
+    expect(adapter.recordingBudget()).toBe(0);
+  });
+
   it("counts failed composer files against the remaining capture byte/count budget", () => {
     const adapter = new WebUploadAttachmentAdapter({ ...uploadLimits, maxTurnBytes: 32 });
     expect(adapter.recordingBudget([{ id: "failed-one", file: createFile("one.webm", 14) }, { id: "failed-two", file: createFile("two.webm", 14) }])).toBe(4);

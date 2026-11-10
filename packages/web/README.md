@@ -136,14 +136,41 @@ model/effort/context settings, ownership and an explicit attempt UUID before
 awaiting thread creation or transcription. It transcribes recordings serially
 within one 150-second preparation deadline and composes filename-associated,
 numbered transcripts with authored text once, then uses the existing synchronous
-submission/receipt path. Successful transcripts are cached only in bounded
-attachment/attempt memory, keyed by immutable upload ID. Preparation failures
-send nothing and restore owned content without overwriting newer drafts. An
-uncertain dispatched attempt stays separate from newer work; Check / retry send
-reuses its exact prepared payload/settings/UUID, without retranscription.
-After navigation loses ownership or reload, recovery reads only saved
-thread/receipt references: it never reconstructs
-or automatically resubmits a request.
+submission/receipt path. Send continues for its frozen conversation when you
+navigate elsewhere or hide the app. Failed or interrupted preparation keeps a separate pending message with
+**Retry** and **Remove**, without overwriting newer drafts. Retry retranscribes
+preparation failures; **Check / retry send** reuses the exact prepared
+payload/settings/UUID for a possibly accepted send, without retranscription.
+
+Before preparation, the browser saves pending text, quote, settings and attachment
+bytes in device IndexedDB. Before dispatch it saves the exact prepared payload and
+submission UUID. Reload checks saved submission receipts, silently clears
+accepted sends, and restores manual recovery for the rest; it never automatically resubmits.
+Storage is bounded to eight pending messages and 80 MiB total; existing recordings
+are never evicted to admit another. Unavailable/blocked storage before the first
+save uses memory-only sending with a non-blocking notice that recovery cannot survive reload. Full storage stops
+dispatch without evicting other recordings: remove another saved message, then
+Retry. If an already saved attempt cannot update its durable payload, dispatch
+waits rather than leave a stale unsent copy that could duplicate it after reload.
+Confirmed success or explicit Remove clears device bytes. Pending
+recordings otherwise stay on this device until removed; clearing website data or
+OS eviction of website storage can still erase them. Restored, definitely
+undispatched recordings reserve fresh staged uploads, since server staging expires.
+Possibly accepted attempts keep their original IDs to preserve idempotency.
+A missing GET receipt is still uncertain: an earlier POST may arrive later.
+Retry re-POSTs the same prepared payload and UUID. Only a definitive re-POST
+answer after the server's UUID lookup (a rejected receipt or permanently missing
+attachment) permits a new identity. The original submission promise retains its
+cross-window lock until it actually settles, even after the confirmation timeout. Where supported,
+exclusive browser locks keep two windows from retrying/restaging the same saved
+attempt simultaneously. Pending, idle recovery does not block ordinary text/file
+sends or use another conversation's attachment budget. Receipt checks run
+independently with a per-draft “Checking saved send…” status; they do not delay
+new recorded Sends in other conversations. If device storage evicts a draft,
+in-memory recording bytes remain recoverable. Remove clears this window even if
+the saved copy cannot be deleted, with a notice that it may return after reload.
+Removing local recovery does not cancel an unsettled send: its original request
+retains its lock until settlement and may still arrive.
 
 Voice is disabled unless the console owner configures a server-side local
 OpenAI-compatible transcription service or operator-managed proxy. No browser
@@ -190,7 +217,8 @@ provider limits. Cancel, navigation, hiding the tab or unmount releases active
 capture. Stop creates a correctly typed File and uses ordinary staged upload,
 progress, removal and recovery. Staged files expire under the normal 24-hour
 policy; after Send, audio is retained as a normal committed conversation
-attachment, alongside transcript text. It is not persisted in browser storage.
+attachment, alongside transcript text. Pending sends are also saved on this
+device as described above.
 There are no server-side recording markers, transcript caches or preparation jobs.
 The composer shows a compact recording pill with rolling microphone-amplitude
 history, elapsed time, leading Stop and trailing Discard, aligned in place with
@@ -198,7 +226,9 @@ the finished voice note. Recording status remains available to assistive tech
 without a visible label. Reduced-motion preferences keep the meter
 static. A compact, single-row voice note replaces native audio controls in drafts
 and sent messages: Play / Pause, keyboard- and pointer-seekable waveform, duration,
-and the usual remove, upload retry or download actions. Local files decode eagerly
+and draft remove/upload retry actions. Healthy recorded/captioned voice notes keep playback without a
+download control; ordinary uploaded audio and unavailable-playback fallbacks keep
+their file download. Local files decode eagerly
 without a network request. Remote waveforms decode only after a short visible
 dwell, through a consumer-cancellable queue; leaving view cancels pending work
 and Data Saver skips automatic remote previews. Only compact peaks/duration and
@@ -226,7 +256,7 @@ starts directly in the Play gesture; remote audio blocked by gesture policy says
 “Tap to play”. Sent transcripts appear as quiet captions beneath the matching
 audio (long captions expand), while stored and model-facing text stays unchanged.
 Explicit playback uses bounded local/same-origin Blob URLs, never autoplay;
-Download keeps the normal forced-download/no-sniff boundary. The app-shell
+Other file downloads keep the normal forced-download/no-sniff boundary. The app-shell
 CSP allows only same-origin and `blob:` media. Sent players share the message
 bubble's inset, with transcript captions directly below; draft chips retain
 separate attachment styling and touch controls keep their 44px hit areas.

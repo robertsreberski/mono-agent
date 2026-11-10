@@ -5,6 +5,7 @@ import type {
   CreateAttachment,
   PendingAttachment,
 } from "@assistant-ui/react";
+import { noteRecordingDuration, recordingDuration } from "./recording-metadata";
 import { VOICE_MAX_BYTES } from "./voice-recorder";
 import { api, uploadContent } from "./api";
 import type { UploadLimits, WebAttachment } from "./types";
@@ -89,8 +90,8 @@ const attachmentType = (contentType: string) =>
   contentType.startsWith("image/") ? ("image" as const) : ("document" as const);
 
 export class WebUploadAttachmentAdapter implements AttachmentAdapter {
-  readonly accept: string;
-  private readonly limits: UploadLimits;
+  accept = "";
+  private limits: UploadLimits;
   private readonly uploads = new Map<string, WebAttachment>();
   private readonly activeSizes = new Map<string, number>();
   private readonly transfers = new Map<
@@ -117,7 +118,7 @@ export class WebUploadAttachmentAdapter implements AttachmentAdapter {
   recordingBudget(attachments: readonly { id: string; file?: File }[] = []): number {
     // Failed chips still own browser bytes, even after their staged reservation
     // is released. Include them so repeated failed recordings remain bounded.
-    const extra = attachments.filter(({ id }) => !this.activeSizes.has(id));
+    const extra = attachments.filter(({ id }) => !this.activeSizes.has(id) && !this.sending.has(id) && !this.recovering.has(id));
     if (this.activeSizes.size + extra.length >= this.limits.maxFilesPerTurn) return 0;
     const used = [...this.activeSizes.values()].reduce((sum, size) => sum + size, 0)
       + extra.reduce((sum, item) => sum + (item.file?.size ?? 0), 0);
@@ -145,10 +146,68 @@ export class WebUploadAttachmentAdapter implements AttachmentAdapter {
     if (composed.length > 200_000) throw new Error("The message and audio transcripts exceed the 200,000-character message limit.");
     return composed;
   }
+  snapshotFiles(attachments: readonly { id: string }[]) {
+    return attachments.map(({ id }) => {
+      const file = this.files.get(id);
+      if (!file) throw new Error("The attachment is no longer available on this device.");
+      return { id, file, recorded: this.recordings.has(id), duration: recordingDuration(file) };
+    });
+  }
+  restoreFiles(files: readonly { id: string; file: File; recorded: boolean; duration?: number }[]): void {
+    for (const entry of files) {
+      this.files.set(entry.id, entry.file);
+
+      if (entry.recorded) {
+        this.recorded.add(entry.file);
+        this.recordings.set(entry.id, { file: entry.file });
+        noteRecordingDuration(entry.file, entry.duration ?? 0);
+      }
+      this.recovering.add(entry.id);
+    }
+  }
+  async restage(attachments: readonly CompleteAttachment[], signal: AbortSignal): Promise<readonly CompleteAttachment[]> {
+    const files = this.snapshotFiles(attachments);
+    if (files.length > this.limits.maxFilesPerTurn || files.some(({ file }) => file.size > this.limits.maxFileBytes)
+      || files.reduce((sum, { file }) => sum + file.size, 0) > this.limits.maxTurnBytes) throw new Error("The saved files exceed the current attachment limits.");
+    const created: string[] = [];
+    const next: CompleteAttachment[] = [];
+    try {
+      for (const [index, entry] of files.entries()) {
+        signal.throwIfAborted();
+        const reservation = await api.createUpload(entry.file);
+        created.push(reservation.id);
+        signal.throwIfAborted();
+        const upload = await uploadContent(reservation, entry.file, () => undefined, signal);
+        signal.throwIfAborted();
+        this.uploads.set(upload.id, upload);
+        this.files.set(upload.id, entry.file);
+        if (entry.recorded) this.recordings.set(upload.id, { file: entry.file });
+        this.sending.add(upload.id);
+        const url = upload.contentUrl ?? `/api/v1/uploads/${encodeURIComponent(upload.id)}/content`;
+        next.push({ ...attachments[index]!, id: upload.id, content: attachments[index]!.type === "image"
+          ? [{ type: "image", image: url, filename: upload.name }]
+          : [{ type: "file", data: url, mimeType: upload.contentType, filename: upload.name }] });
+      }
+      this.completeSend(attachments);
+      void Promise.all(attachments.map(({ id }) => api.deleteUpload(id).catch(() => undefined)));
+      return next;
+    } catch (error) { await this.failSend(created.map(id => ({ id }))); throw error; }
+  }
+  clearTranscripts(attachments: readonly { id: string }[]): void {
+    for (const { id } of attachments) {
+      const recording = this.recordings.get(id);
+      if (recording) delete recording.text;
+    }
+  }
   private reservationTail: Promise<void> = Promise.resolve();
   private generation = 0;
 
   constructor(limits: UploadLimits) {
+    this.limits = limits;
+    this.updateLimits(limits);
+  }
+
+  updateLimits(limits: UploadLimits): void {
     this.limits = limits;
     const allowed = new Set(limits.accept.map((mime) => mime.toLowerCase()));
     const extensions = Object.entries(MIME_BY_EXTENSION)
@@ -163,6 +222,7 @@ export class WebUploadAttachmentAdapter implements AttachmentAdapter {
       this.recoveryFiles.delete(file);
       const upload = this.uploads.get(recoveryId);
       if (upload?.uploaded) {
+        this.activeSizes.set(recoveryId, file.size);
         yield {
           id: recoveryId,
           type: attachmentType(upload.contentType),
@@ -194,6 +254,7 @@ export class WebUploadAttachmentAdapter implements AttachmentAdapter {
     this.files.set(reservation.id, normalizedFile);
     if (this.recorded.has(file)) {
       this.recorded.add(normalizedFile);
+      noteRecordingDuration(normalizedFile, recordingDuration(file) ?? 0);
       if (recordingSignal) this.recordingSignals.set(normalizedFile, recordingSignal);
       this.recordings.set(reservation.id, { file: normalizedFile });
     }
@@ -307,6 +368,9 @@ export class WebUploadAttachmentAdapter implements AttachmentAdapter {
   }
 
   async remove(attachment: Attachment): Promise<void> {
+    // A stale editable chip cannot revoke bytes owned by a frozen Send. Only
+    // the pending message’s explicit Remove may release that recovery.
+    if (this.sending.has(attachment.id) || this.recovering.has(attachment.id)) return;
     this.removing.add(attachment.id);
     this.sending.delete(attachment.id);
     this.recovering.delete(attachment.id);
@@ -332,6 +396,7 @@ export class WebUploadAttachmentAdapter implements AttachmentAdapter {
     const ids = attachments.map(({ id }) => {
       this.recovering.delete(id);
       this.sending.add(id);
+      this.activeSizes.delete(id);
       return this.uploads.get(id)?.id ?? id;
     });
     return ids;

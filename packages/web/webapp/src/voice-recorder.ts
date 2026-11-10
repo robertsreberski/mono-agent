@@ -21,7 +21,7 @@ interface RecorderCallbacks {
   readonly recording: () => void;
   readonly levels?: (levels: readonly number[]) => void;
   readonly elapsed: (seconds: number) => void;
-  readonly ready: (audio: Blob) => void;
+  readonly ready: (audio: Blob, seconds: number) => void;
   readonly error: (message: string) => void;
 }
 
@@ -34,6 +34,8 @@ export class VoiceRecorder {
   private timer?: ReturnType<typeof setInterval>;
   private chunks: Blob[] = [];
   private bytes = 0;
+  private started = 0;
+  private duration = 0;
   private readonly callbacks: RecorderCallbacks;
   private readonly maxBytes: number;
   constructor(callbacks: RecorderCallbacks, maxBytes = VOICE_MAX_BYTES) { this.callbacks = callbacks; this.maxBytes = maxBytes; }
@@ -63,8 +65,9 @@ export class VoiceRecorder {
         const audio = new Blob(this.chunks, { type });
         this.chunks = [];
         if (!audio.size) { this.fail("The recording is empty. Record again."); return; }
-        this.callbacks.ready(audio);
+        this.callbacks.ready(audio, this.duration || Math.max(0.001, (performance.now() - this.started) / 1000));
       };
+      this.started = performance.now();
       recorder.start(250);
       if (this.callbacks.levels) this.meter = new AudioMeter(stream, this.callbacks.levels);
       this.callbacks.recording();
@@ -84,6 +87,7 @@ export class VoiceRecorder {
   resumeVisualization(): void { this.meter?.resume(); }
 
   stop(): void {
+    if (this.recorder?.state === "recording") this.duration = Math.max(0.001, (performance.now() - this.started) / 1000);
     if (this.timer) clearInterval(this.timer);
     this.timer = undefined;
     if (this.recorder?.state !== "inactive") this.recorder?.stop();

@@ -12,8 +12,10 @@ import {
 } from "@assistant-ui/react";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { RecordedAudioContext } from "./recorded-audio-context";
+import { loadRecordedDrafts, recordedStorageUnavailable, removeRecordedDraft, saveRecordedDraft, type RecordedDraft } from "./recorded-draft-store";
+import { canRenewRecordedSubmission, recordedSubmissionOutcome, withRecordedSendLock } from "./recorded-send-guard";
+import type { AttachmentSubmissionSession } from "./console-store";
 import { RecordedSubmissionAttempt } from "./recorded-submission";
-import { ApiError } from "./api";
 import { WebUploadAttachmentAdapter } from "./attachment-adapter";
 import { ReplyAccessProvider } from "./components/reply-access";
 import { shouldShowMessageRunAttribution } from "./components/RunAttribution";
@@ -499,13 +501,10 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
     agentId: store.selectedAgentId,
     threadId: store.selectedThreadId,
   };
-  const limitKey = `${limits.maxFileBytes}:${limits.maxFilesPerTurn}:${limits.maxTurnBytes}:${limits.accept.join("|")}`;
-  const attachmentAdapter = useMemo(
-    () => new WebUploadAttachmentAdapter(limits),
-    // The serialized key keeps in-flight adapter state across SSE bootstrap refreshes.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [limitKey],
-  );
+  // An outbox can span bootstrap/limit refreshes. Replacing this adapter would
+  // strand attempts holding its files and could delete their staged uploads.
+  const [attachmentAdapter] = useState(() => new WebUploadAttachmentAdapter(limits));
+  attachmentAdapter.updateLimits(limits);
   const attachmentContext = `${store.selectedAgentId ?? "none"}:${store.selectedThreadId ?? "new"}`;
   const previousAttachmentContext = useRef<string | null>(null);
   useEffect(() => {
@@ -520,7 +519,9 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
   }, [attachmentAdapter, attachmentContext]);
   useEffect(
     () => () => {
-      attachmentAdapter.disposeUnsent({ includeRecovering: true });
+      // Frozen recorded recoveries also have durable device bytes. Do not
+      // delete their staged server IDs during a provider unmount/reload.
+      attachmentAdapter.disposeUnsent();
       noteComposerAttachments(false);
     },
     [attachmentAdapter],
@@ -548,56 +549,190 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
     [attachmentAdapter],
   );
 
-  const [recordedState, setRecordedState] = useState<{ attempt: RecordedSubmissionAttempt; agentId: string | null; busy: boolean; error?: string; uncertain: boolean }>();
-  const recordedRef = useRef<typeof recordedState>(undefined);
-  const runRecorded = useCallback(async (state: NonNullable<typeof recordedState>) => {
-    if (state.busy) return;
-    state.busy = true;
-    setRecordedState({ ...state, error: undefined });
-    try {
-      await state.attempt.send();
-      attachmentAdapter.completeSend(state.attempt.attachments);
-      if (recordedRef.current === state) { recordedRef.current = undefined; setRecordedState(undefined); }
-    } catch (failure) {
-      const knownUnsent = !state.attempt.dispatched || failure instanceof ApiError && failure.status >= 400 && failure.status < 500 && failure.status !== 408 && failure.code !== "submission_conflict";
-      const context = { agentId: state.agentId, threadId: state.attempt.threadId };
-      if (knownUnsent) {
-        attachmentAdapter.recoverSend(state.attempt.attachments);
-        queueRecovery(state.attempt.text, state.attempt.attachments, state.attempt.quote, context);
-        if (recordedRef.current === state) {
-          recordedRef.current = undefined;
-          setRecordedState({ ...state, busy: false, uncertain: false, error: failure instanceof DOMException && failure.name === "AbortError" ? "Audio preparation cancelled. Your draft and files are kept." : failure instanceof Error ? failure.message : "Audio preparation failed. Retry Send." });
-        }
-      } else if (recordedRef.current === state) {
-        // Never merge an uncertain, possibly accepted message into an editable
-        // newer draft. Retry this exact prepared attempt, settings and UUID.
-        state.uncertain = true;
-        state.busy = false;
-        state.error = "Send not confirmed. Check or retry the same message; it will not be transcribed again.";
-        setRecordedState({ ...state });
-      }
-    } finally { state.busy = false; }
-  }, [attachmentAdapter, queueRecovery]);
-  useEffect(() => {
-    const state = recordedRef.current;
-    if (state && !state.attempt.owner.isCurrent()) {
-      if (state.attempt.dispatched) {
-        // Lost ownership is reference-only recovery, just like reload. Do not
-        // lend a stale retry session to A → B → A or merge it into newer work.
-        // Release browser bytes/cache without deleting possibly committed audio.
-        attachmentAdapter.completeSend(state.attempt.attachments);
-        recordedRef.current = undefined; setRecordedState(undefined);
-      } else state.attempt.cancelPreparation();
+  type RecordedState = { saved?: boolean; memoryOnly?: boolean; attempt: RecordedSubmissionAttempt; agentId: string | null; busy: boolean; checking?: boolean; removed?: boolean; error?: string; uncertain: boolean };
+  const recordedRef = useRef<RecordedState[]>([]);
+  const [recordedStates, setRecordedStates] = useState<RecordedState[]>([]);
+  const [recordedLoaded, setRecordedLoaded] = useState(false);
+  const [recordedNotice, setRecordedNotice] = useState<string>();
+  const memoryNotice = "Recording storage unavailable. Recordings stay in this window, but cannot be kept across reloads.";
+  const otherWindow = "This recorded message is in progress in another window. Retry here after it finishes.";
+  const publishRecorded = useCallback(() => setRecordedStates([...recordedRef.current]), []);
+  const recordedState = recordedStates.find(state => state.agentId === store.selectedAgentId
+    && state.attempt.threadId === store.selectedThreadId);
+  const attemptFromDraft = useCallback((draft: RecordedDraft) => {
+    attachmentAdapter.restoreFiles(draft.files.map(entry => ({ ...entry, file: new File([entry.file], entry.name, { type: entry.file.type }) })));
+    let session: AttachmentSubmissionSession | undefined;
+    const get = () => session ??= storeRef.current.captureAttachmentSubmission(draft.owner);
+    const owner: AttachmentSubmissionSession = {
+      submissionId: draft.owner.submissionId, snapshot: () => session?.snapshot() ?? draft.owner,
+      isCurrent: () => true, prepare: signal => get().prepare(signal),
+      assertCanSendAttachments: () => get().assertCanSendAttachments(), submit: (...args) => get().submit(...args),
+    };
+    const attempt = new RecordedSubmissionAttempt(owner, attachmentAdapter, { ...draft, threadId: draft.owner.threadId });
+    attempt.restore(draft); return attempt;
+  }, [attachmentAdapter]);
+  const persistRecorded = async (state: RecordedState, draft: RecordedDraft) => {
+    if (state.memoryOnly) return;
+    try { await saveRecordedDraft(draft); state.saved = true; }
+    catch (error) {
+      // Never leave an older durable copy marked unsent while dispatching a
+      // different in-memory payload. Fallback is safe only before any save.
+      if (recordedStorageUnavailable(error) && !state.saved) { state.memoryOnly = true; setRecordedNotice(memoryNotice); }
+      else throw error;
     }
-  }, [attachmentAdapter, store.selectionGeneration, store.conversationVisible]);
+  };
+  const retireRecorded = async (state: RecordedState) => {
+    if (state.saved) await removeRecordedDraft(state.attempt.owner.submissionId);
+    recordedRef.current = recordedRef.current.filter(item => item !== state);
+    attachmentAdapter.completeSend(state.attempt.attachments);
+  };
+  const replaceUnaccepted = async (state: RecordedState) => {
+    const previous = state.attempt.snapshot();
+    const draft = { ...previous, owner: { ...previous.owner, submissionId: crypto.randomUUID() }, dispatched: false, composed: undefined };
+    if (state.saved) await saveRecordedDraft(draft, previous.owner.submissionId);
+    state.attempt = attemptFromDraft(draft); state.uncertain = false;
+  };
+  const pendingSubmission = "Send is still in progress. Retry waits for the same request; no duplicate will be sent.";
+  const markMemoryOnly = (state: RecordedState) => {
+    state.saved = false; state.memoryOnly = true; setRecordedNotice(memoryNotice);
+  };
+  const adoptLatest = (state: RecordedState, latest: RecordedDraft) => {
+    const local = state.attempt.snapshot();
+    if (latest.dispatched !== local.dispatched || latest.composed !== local.composed || latest.owner.threadId !== local.owner.threadId
+      || latest.attachments.map(item => item.id).join() !== local.attachments.map(item => item.id).join()) {
+      attachmentAdapter.completeSend(state.attempt.attachments);
+      state.attempt = attemptFromDraft(latest); state.uncertain = latest.dispatched;
+    }
+  };
+  const runRecorded = async (state: RecordedState): Promise<void> => {
+    if (state.attempt.submissionPending) { state.error = pendingSubmission; publishRecorded(); return; }
+    if (state.busy || state.checking) return;
+    state.busy = true; delete state.error; publishRecorded();
+    try {
+      const acquired = await withRecordedSendLock(state.attempt.owner.submissionId, async () => {
+        let receiptChecked = false;
+        if (state.saved) {
+          const latest = (await loadRecordedDrafts()).find(draft => draft.owner.submissionId === state.attempt.owner.submissionId);
+          // Absence may be OS eviction, not successful submission. Keep browser
+          // bytes unless this dispatched identity has an accepted receipt.
+          if (!latest) {
+            if (state.attempt.dispatched) {
+              receiptChecked = true;
+              if (await recordedSubmissionOutcome(state.attempt.threadId, state.attempt.owner.submissionId) === "accepted") {
+                state.saved = false; await retireRecorded(state); return;
+              }
+            }
+            markMemoryOnly(state);
+          } else adoptLatest(state, latest);
+        }
+        if (!receiptChecked && state.attempt.dispatched && await recordedSubmissionOutcome(state.attempt.threadId, state.attempt.owner.submissionId) === "accepted") {
+          await retireRecorded(state); return;
+        }
+        try {
+          await state.attempt.send(draft => persistRecorded(state, draft));
+          await retireRecorded(state);
+        } catch (failure) {
+          let settledFailure = failure;
+          if (state.attempt.submissionPending) {
+            state.uncertain = true; state.busy = false; state.error = pendingSubmission; publishRecorded();
+            // The wrapper deadline cannot release the cross-window lock while
+            // the underlying HTTP submission is still capable of arriving.
+            try {
+              await state.attempt.waitForSubmission();
+              if (!state.removed) await retireRecorded(state);
+              return;
+            } catch (underlyingFailure) {
+              if (state.removed) return;
+              settledFailure = underlyingFailure;
+            }
+            state.busy = true; publishRecorded();
+          }
+          if (state.attempt.dispatched) {
+            if (canRenewRecordedSubmission(settledFailure, state.attempt.reposted)) {
+              try { await replaceUnaccepted(state); }
+              catch { /* Keep the old uncertain identity if atomic replacement fails. */ }
+            } else if (await recordedSubmissionOutcome(state.attempt.threadId, state.attempt.owner.submissionId) === "accepted") {
+              await retireRecorded(state); return;
+            }
+          }
+          if (state.saved && !state.attempt.dispatched) {
+            try { await saveRecordedDraft(state.attempt.snapshot()); }
+            catch { /* The previous durable copy stays conservative and recoverable. */ }
+          }
+          state.uncertain = state.attempt.dispatched;
+          state.error = state.uncertain ? "Send not confirmed. Retry checks the same message without sending a duplicate."
+            : settledFailure instanceof DOMException && settledFailure.name === "AbortError" ? "Audio preparation interrupted. Your recording is kept. Retry to transcribe and send."
+            : settledFailure instanceof Error ? settledFailure.message : "Audio preparation interrupted. Retry to transcribe and send again.";
+          attachmentAdapter.retainForRecovery(state.attempt.attachments);
+        }
+      });
+      if (!acquired) state.error = otherWindow;
+    } catch (failure) {
+      state.error = state.saved && recordedStorageUnavailable(failure)
+        ? "Saved recording storage is unavailable. Sending is paused to avoid duplicates. Remove still clears this window's recovery."
+        : failure instanceof Error ? failure.message : "Recording recovery unavailable. Retry or Remove.";
+    } finally { state.busy = false; publishRecorded(); }
+  };
   useEffect(() => {
-    const leave = () => recordedRef.current?.attempt.cancelPreparation();
-    const hidden = () => { if (document.hidden) leave(); };
-    window.addEventListener("pagehide", leave); document.addEventListener("visibilitychange", hidden);
-    return () => { leave(); window.removeEventListener("pagehide", leave); document.removeEventListener("visibilitychange", hidden); };
-  }, []);
-  const recordedVisible = recordedState && recordedState.agentId === store.selectedAgentId
-    && (recordedState.attempt.threadId === store.selectedThreadId || recordedState.attempt.threadId === null && store.creatingThread);
+    let active = true;
+    void loadRecordedDrafts().then(drafts => {
+      if (!active) return;
+      const states: RecordedState[] = drafts.map(draft => ({ saved: true, attempt: attemptFromDraft(draft), agentId: draft.owner.sourceId,
+        busy: false, checking: draft.dispatched, uncertain: draft.dispatched,
+        error: draft.dispatched ? undefined : "Recording recovered on this device. Retry to send, or Remove." }));
+      recordedRef.current.push(...states);
+      // Reading bytes is the readiness boundary. Slow receipt checks belong only
+      // to their own drafts, never to another conversation's new Send.
+      setRecordedLoaded(true); publishRecorded();
+      for (const state of states.filter(item => item.checking)) void (async () => {
+        try {
+          const acquired = await withRecordedSendLock(state.attempt.owner.submissionId, async () => {
+            const latest = (await loadRecordedDrafts()).find(draft => draft.owner.submissionId === state.attempt.owner.submissionId);
+            if (latest) adoptLatest(state, latest);
+            if (state.attempt.dispatched && await recordedSubmissionOutcome(state.attempt.threadId, state.attempt.owner.submissionId) === "accepted") {
+              if (!latest) state.saved = false;
+              await retireRecorded(state);
+            } else {
+              if (!latest) markMemoryOnly(state);
+              state.error = "Recording recovered on this device. Retry checks the same send, or Remove.";
+            }
+          });
+          if (!acquired) state.error = otherWindow;
+        } catch { state.error = "Could not reconcile the saved message. Retry to check its receipt, or Remove."; }
+        finally { state.checking = false; if (active) publishRecorded(); }
+      })();
+    }).catch(error => {
+      if (active) {
+        setRecordedNotice(recordedStorageUnavailable(error) ? memoryNotice : "Saved recordings could not be read. Try reloading to recover them.");
+        setRecordedLoaded(true);
+      }
+    });
+    return () => { active = false; };
+  }, [attemptFromDraft, publishRecorded]);
+  const forgetRecorded = async (state: RecordedState, pending = false) => {
+    state.removed = true;
+    recordedRef.current = recordedRef.current.filter(item => item !== state);
+    attachmentAdapter.completeSend(state.attempt.attachments); publishRecorded();
+    if (pending) setRecordedNotice("Recovery removed from this window. The original send may still arrive.");
+    if (state.saved) {
+      try { await removeRecordedDraft(state.attempt.owner.submissionId); }
+      catch { setRecordedNotice(`Recovery removed from this window. ${pending ? "The original send may still arrive. " : ""}Its saved copy could not be deleted and may return after reload.`); }
+    }
+  };
+  const removeRecorded = async (state: RecordedState) => {
+    if (state.attempt.submissionPending) {
+      // This window already owns the send's lock. Forget local recovery without
+      // releasing that lease or pretending to cancel the underlying request.
+      await forgetRecorded(state, true); return;
+    }
+    if (state.busy || state.checking) return;
+    state.busy = true; publishRecorded();
+    try {
+      const acquired = await withRecordedSendLock(state.attempt.owner.submissionId, () => forgetRecorded(state));
+      if (!acquired) state.error = otherWindow;
+    } catch { state.error = "Could not remove the saved recording. Retry Remove."; }
+    finally { state.busy = false; publishRecorded(); }
+  };
 
   const onNew = useCallback(
     async (message: AppendMessage, _options?: SubmissionOptions) => {
@@ -620,11 +755,15 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
         queueRecovery(text, attachments, quote, submissionContext);
         return;
       }
-      const activeRecorded = recordedRef.current;
-      if (activeRecorded?.attempt.owner.isCurrent() && (activeRecorded.busy || activeRecorded.uncertain)) {
+      const activeRecorded = recordedRef.current.find(state => state.agentId === submissionContext.agentId && state.attempt.threadId === submissionContext.threadId);
+      if (activeRecorded && (activeRecorded.busy || attachments.some(item => activeRecorded.attempt.attachments.some(original => original.id === item.id)) || attachmentAdapter.hasRecordings(attachments))) {
         const original = activeRecorded.attempt;
         const duplicate = text === original.text && quote?.messageId === original.quote?.messageId && quote?.text === original.quote?.text
           && attachments.length === original.attachments.length && attachments.every((item, index) => item.id === original.attachments[index]?.id);
+        if (!activeRecorded.busy && attachmentAdapter.hasRecordings(attachments)) {
+          activeRecorded.error = "Retry or remove the pending recording before sending another recorded message.";
+          publishRecorded();
+        }
         if (!duplicate) {
           // A newer queued draft is recoverable, but never lend it files already
           // owned by the admitted attempt or merge an uncertain attempt into it.
@@ -638,16 +777,12 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
         return;
       }
       if (attachmentAdapter.hasRecordings(attachments)) {
-        if (store.selectedThread?.runState.status === "running") {
-          queueRecovery(text, attachments, quote, submissionContext);
-          setRecordedState({ attempt: new RecordedSubmissionAttempt(store.captureAttachmentSubmission(), attachmentAdapter, { text, attachments, quote, threadId: store.selectedThreadId }), agentId: store.selectedAgentId, busy: false, uncertain: false, error: "Wait for the running response to finish before sending attachments." });
-          return;
-        }
+        if (!recordedLoaded) { queueRecovery(text, attachments, quote, submissionContext); return; }
         const attempt = new RecordedSubmissionAttempt(store.captureAttachmentSubmission(), attachmentAdapter,
           { text, attachments, quote, threadId: store.selectedThreadId });
         attachmentAdapter.beginSend(attachments);
         const state = { attempt, agentId: store.selectedAgentId, busy: false, uncertain: false };
-        recordedRef.current = state;
+        recordedRef.current.push(state);
         void runRecorded(state);
         return;
       }
@@ -699,7 +834,7 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
         }
       })();
     },
-    [attachmentAdapter, queueRecovery, runRecorded, store],
+    [attachmentAdapter, publishRecorded, queueRecovery, recordedLoaded, runRecorded, store],
   );
 
   /**
@@ -835,7 +970,7 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
     convertMessage,
     isLoading: store.selectionLoading || store.detailLoading,
     isRunning,
-    isSendDisabled: !selectedCanSend || turnStarting || Boolean(recordedVisible && (recordedState.busy || recordedState.uncertain)) || runningManualCompaction(store.selectedThread),
+    isSendDisabled: !selectedCanSend || turnStarting || Boolean(recordedState?.busy) || runningManualCompaction(store.selectedThread),
     onNew,
     onCancel: () => store.cancelTurn("api"),
     queue: submissionQueue,
@@ -933,9 +1068,12 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
             catalogByProvider={routeOwner?.sourceId === store.selectedAgentId ? store.catalogByProvider : undefined}
           >
             <ReplyAccessProvider refreshAttachment={store.refreshReplyAttachmentAccess}>
-              <RecordedAudioContext.Provider value={{ adapter: attachmentAdapter, busy: Boolean(recordedVisible && recordedState.busy),
-                error: recordedVisible ? recordedState.error : undefined, uncertain: Boolean(recordedVisible && recordedState.uncertain),
-                retry: () => { const state = recordedRef.current; if (state && state.attempt.owner.isCurrent()) void runRecorded(state); } }}>
+              <RecordedAudioContext.Provider value={{ adapter: attachmentAdapter, busy: Boolean(recordedState?.busy), checking: Boolean(recordedState?.checking),
+                error: recordedState?.error, notice: recordedNotice, uncertain: Boolean(recordedState?.uncertain),
+                pending: Boolean(recordedState), text: recordedState?.attempt.text,
+                files: recordedState ? attachmentAdapter.snapshotFiles(recordedState.attempt.attachments) : [],
+                retry: () => { if (recordedState) void runRecorded(recordedState); },
+                remove: () => { if (recordedState) void removeRecorded(recordedState); } }}>
                 {children}
               </RecordedAudioContext.Provider>
             </ReplyAccessProvider>

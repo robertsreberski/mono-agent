@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { cachedWaveform, loadAudio, prepareWaveform, type Waveform } from "../audio-waveform";
 import { VOICE_MAX_BYTES } from "../voice-recorder";
+import { recordingDuration } from "../recording-metadata";
 import { Icon } from "./Icon";
 
 export const audioTime = (value: number) => `${Math.floor(Math.max(0, value) / 60)}:${String(Math.floor(Math.max(0, value)) % 60).padStart(2, "0")}`;
@@ -15,9 +16,10 @@ export interface VoiceNoteProps {
   readonly onRetry?: (() => void) | undefined;
   readonly actions?: ReactNode;
   readonly caption?: string | undefined;
+  readonly downloadHref?: string | undefined;
 }
 /** A normal attachment with a custom, keyboard-accessible media surface. */
-export function VoiceNote({ id, name, contentType, file, recorded, uploading, failed, onRetry, actions, caption }: VoiceNoteProps) {
+export function VoiceNote({ id, name, contentType, file, recorded, uploading, failed, onRetry, actions, caption, downloadHref }: VoiceNoteProps) {
   const root = useRef<HTMLDivElement>(null);
   const audio = useRef<HTMLAudioElement>(null);
   const [waveform, setWaveform] = useState<Waveform | undefined>(() => cachedWaveform(id));
@@ -59,7 +61,7 @@ export function VoiceNote({ id, name, contentType, file, recorded, uploading, fa
     observer.observe(root.current);
     return () => { cancel(); observer.disconnect(); };
   }, [id, file, contentType]);
-  const duration = waveform?.duration ?? mediaDuration;
+  const duration = [waveform?.duration, mediaDuration, recordingDuration(file)].find(value => value !== undefined && Number.isFinite(value) && value > 0) ?? 0;
   const label = recorded || caption ? "Voice note" : name;
   const accessibleLabel = label === "Voice note" ? "voice note" : label;
   const play = () => {
@@ -71,7 +73,7 @@ export function VoiceNote({ id, name, contentType, file, recorded, uploading, fa
       // Called synchronously in the click handler for local files / loaded URLs.
       void media.play().catch(() => {
         if (signal.aborted) return;
-        if (media.error) setError("Audio preview unavailable. Use Download.");
+        if (media.error) setError("Audio preview unavailable. Try again.");
         else setReady(true);
       });
     };
@@ -84,7 +86,7 @@ export function VoiceNote({ id, name, contentType, file, recorded, uploading, fa
       attemptPlay(task.controller.signal);
     };
     if (file) {
-      if (file.size > VOICE_MAX_BYTES) { setError("Download this file to play it."); return; }
+      if (file.size > VOICE_MAX_BYTES) { setError("This audio exceeds the playback size limit."); return; }
       attach(file); // No await: preserve the iOS user gesture.
       if (!waveform) void prepareWaveform(id, file, contentType, task.controller.signal).then(value => {
         if (!task.controller.signal.aborted && value) setWaveform(value);
@@ -97,7 +99,7 @@ export function VoiceNote({ id, name, contentType, file, recorded, uploading, fa
       if (result.waveform) setWaveform(result.waveform);
       attach(result.blob);
     }).catch(failure => {
-      if (!task.controller.signal.aborted) setError(failure instanceof Error ? failure.message : "Audio preview unavailable. Try again or download.");
+      if (!task.controller.signal.aborted) setError(failure instanceof Error ? failure.message : "Audio preview unavailable. Try again.");
     }).finally(() => { if (!task.controller.signal.aborted) setLoading(false); });
   };
   const seek = (value: number) => {
@@ -132,13 +134,13 @@ export function VoiceNote({ id, name, contentType, file, recorded, uploading, fa
         </div>}
       </div>
       {!failed && <span className="voice-note-time">{uploading !== undefined ? `${Math.round(uploading)}%` : <>{playing || time > 0 ? `${audioTime(time)} / ` : ""}{duration ? audioTime(duration) : "—:—"}</>}</span>}
-      <div className="voice-note-actions">{actions}</div>
+      <div className="voice-note-actions">{downloadHref && ((!recorded && !caption) || error) && <a className="icon-button" href={downloadHref} download={name} aria-label={`Download ${name}`}><Icon name="download" size={14} /></a>}{actions}</div>
     </div>
     {uploading !== undefined && <div className="voice-upload"><span className="sr-only" role="status">Uploading {name}</span><progress value={uploading} max={100} aria-label={`Uploading ${name}`} /></div>}
 
     {ready && <p className="voice-ready" role="status">Tap to play</p>}
     {error && <p className="voice-error" role="status">{error}</p>}
     {caption && (caption.length > 240 ? <details className="voice-caption"><summary>Transcript</summary><p>{caption}</p></details> : <p className="voice-caption"><span className="sr-only">Transcript: </span>{caption}</p>)}
-    <audio ref={audio} hidden preload="none" aria-label={`Audio ${name}`} onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} onEnded={() => setPlaying(false)} onTimeUpdate={() => setTime(audio.current?.currentTime ?? 0)} onDurationChange={() => { const value = audio.current?.duration; if (value && Number.isFinite(value)) setMediaDuration(value); }} onError={() => { setReady(false); setPlaying(false); setError("Audio preview unavailable. Use Download."); }} />
+    <audio ref={audio} hidden preload="none" aria-label={`Audio ${name}`} onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} onEnded={() => setPlaying(false)} onTimeUpdate={() => setTime(audio.current?.currentTime ?? 0)} onDurationChange={() => { const value = audio.current?.duration; if (value && Number.isFinite(value)) setMediaDuration(value); }} onError={() => { setReady(false); setPlaying(false); setError("Audio preview unavailable. Try again."); }} />
   </div>;
 }

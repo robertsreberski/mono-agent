@@ -176,11 +176,11 @@ async function audioBlob(id: string, file: File | undefined, contentType: string
     const limit = byteLimit();
     if (!(size > limit)) return;
     if (limit === WAVEFORM_MAX_BYTES) throw new PreviewTooLarge();
-    throw new Error("Download this file to play it.");
+    throw new Error("This audio exceeds the playback size limit.");
   };
   if (file) { checkSize(file.size); return file; }
   const response = await fetch(`/api/v1/uploads/${encodeURIComponent(id)}/content`, { signal });
-  if (!response.ok || !response.body) throw new Error("Audio preview unavailable. Use Download.");
+  if (!response.ok || !response.body) throw new Error("Audio preview unavailable. Try again.");
   try { checkSize(Number(response.headers.get("Content-Length"))); }
   catch (error) { await response.body.cancel().catch(() => undefined); throw error; }
   const reader = response.body.getReader(); const chunks: Uint8Array<ArrayBuffer>[] = []; let size = 0;

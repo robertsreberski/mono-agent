@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Keep web recorded-message sends running across navigation, with bounded device
+  recovery and idempotent Retry/Remove after interruption or reload. Show one
+  recording box while attaching, retain captured duration, and remove sent audio
+  download controls while keeping playback and ordinary audio downloads. Let
+  newer text/file drafts send beside pending voice recovery. Keep uncertain sends
+  on the same identity until the original request settles, and preserve browser
+  recovery when device storage loses a saved draft.
+
 - Separate E2 paid-request deadlines from long phase, child and run clocks in
   plan v2. Keep each request bounded to ten minutes, allow phase/run ceilings up
   to 24 hours, and retain liability on timeout. Refuse old E2 plans; keep

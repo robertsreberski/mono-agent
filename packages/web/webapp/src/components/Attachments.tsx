@@ -54,13 +54,12 @@ function AttachmentChip({ removable }: { readonly removable: boolean }) {
   if (isMessageAttachment && type === "image") return null;
   if (audio && contentType) return <VoiceNote key={id} id={id} name={name} contentType={contentType} file={localFile}
     recorded={Boolean(recorded?.adapter.hasRecordings([{ id }]) || recorded?.adapter.hasIncompleteRecording([{ file: localFile, status }]))}
-    caption={captions?.get(id)} uploading={isUploading ? progress : undefined} failed={isError}
+    caption={captions?.get(id)} downloadHref={isMessageAttachment ? href : undefined} uploading={isUploading ? progress : undefined} failed={isError}
     onRetry={isError && localFile ? () => {
       aui.attachment().remove();
       void aui.composer().addAttachment(localFile).catch(() => announce("Upload failed. Retry or remove the file."));
     } : undefined}
     actions={<>
-      {isMessageAttachment && href && <a className="icon-button" href={href} download={name} aria-label={`Download ${name}`}><Icon name="download" size={14} /></a>}
       {removable && <AttachmentPrimitive.Remove className="icon-button" aria-label="Remove file"><Icon name="close" size={14} /></AttachmentPrimitive.Remove>}
     </>} />;
   const chipContent = (

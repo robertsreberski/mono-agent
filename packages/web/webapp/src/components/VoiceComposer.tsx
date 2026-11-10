@@ -5,6 +5,8 @@ import { createAudioLevelStore } from "../audio-level-store";
 import { useConsoleStore } from "../console-store";
 import { useRecordedAudio } from "../recorded-audio-context";
 import { recordingFile, VoiceRecorder, voiceUnavailableReason } from "../voice-recorder";
+import { noteRecordingDuration } from "../recording-metadata";
+import { VoiceNote } from "./VoiceNote";
 import { Icon } from "./Icon";
 
 type CapturePhase = "idle" | "permission" | "recording" | "attaching";
@@ -36,6 +38,7 @@ export function VoiceComposerScope({ children, unavailableReason }: { readonly c
   const [finished, setFinished] = useState<{ file: File; generation: number; sourceId: string | null; threadId: string | null }>();
   const capture = useRef<VoiceRecorder | undefined>(undefined);
   const epoch = useRef(0);
+  const attachingFile = useRef<File | undefined>(undefined);
   const attaching = useRef<{ controller: AbortController; remove: () => void } | undefined>(undefined);
   const target = useRef<(() => boolean) | undefined>(undefined);
   const current = useRef(store);
@@ -48,6 +51,7 @@ export function VoiceComposerScope({ children, unavailableReason }: { readonly c
   };
   const attach = (file: File) => {
     const controller = new AbortController();
+    attachingFile.current = file;
     recorded!.adapter.registerRecording(file, controller.signal);
     const composer = runtime.thread.composer;
     attaching.current = { controller, remove: () => {
@@ -107,15 +111,16 @@ export function VoiceComposerScope({ children, unavailableReason }: { readonly c
     const recorder = new VoiceRecorder({
       recording: () => { if (owns()) setPhase("recording"); },
       levels: (values) => { if (owns()) levelStore.publish(values); },
-      elapsed: (value) => { if (owns()) setSeconds(value); },
+      elapsed: (value) => { if (owns()) { setSeconds(value); } },
       error: (message) => { if (owns()) { cleanup(); setError(message); setPhase("idle"); } },
-      ready: (blob) => {
+      ready: (blob, duration) => {
         if (!owns()) return;
         setPhase("attaching");
         void (async () => {
           let file: File | undefined;
           try {
             file = recordingFile(blob);
+            noteRecordingDuration(file, duration);
             await attach(file);
             if (owns()) { cleanup(false); setPhase("idle"); }
           } catch (failure) {
@@ -132,7 +137,7 @@ export function VoiceComposerScope({ children, unavailableReason }: { readonly c
     capture.current = recorder;
     void recorder.start();
   };
-  return <LevelContext.Provider value={levelStore}><CaptureContext.Provider value={{ phase, seconds, resumeVisualization: () => capture.current?.resumeVisualization(), error, blocked, retryAttachment: finished ? () => void retryAttachment() : undefined, start, stop: () => capture.current?.stop(), cancel }}>{children}</CaptureContext.Provider></LevelContext.Provider>;
+  return <LevelContext.Provider value={levelStore}><CaptureContext.Provider value={{ phase: phase === "attaching" && attachments.some(item => item.file === attachingFile.current) ? "idle" : phase, seconds, resumeVisualization: () => capture.current?.resumeVisualization(), error, blocked, retryAttachment: finished ? () => void retryAttachment() : undefined, start, stop: () => capture.current?.stop(), cancel }}>{children}</CaptureContext.Provider></LevelContext.Provider>;
 }
 export const useVoiceBusy = () => { const phase = useContext(CaptureContext)?.phase; return phase !== undefined && phase !== "idle"; };
 
@@ -161,8 +166,15 @@ export function RecordingDraft() {
   return <>
     {capture.retryAttachment && capture.phase === "idle" && <div className="recording-draft"><span>Recording not attached</span><button type="button" className="attachment-retry" onClick={capture.retryAttachment}>Retry attachment</button><button type="button" className="icon-button" aria-label="Remove recording" onClick={capture.cancel}><Icon name="close" size={14} /></button></div>}
     {(capture.error || recorded?.error) && <p role="alert" className="voice-error">{capture.error ?? recorded?.error}</p>}
+    {recorded?.notice && <p className="voice-ready" role="status">{recorded.notice}</p>}
+    {recorded?.checking && <p className="voice-ready" role="status">Checking saved send…</p>}
     {recorded?.busy && <div className="recording-draft voice-preparing" role="status"><span className="voice-spinner" aria-hidden="true" />Preparing message…</div>}
-    {recorded?.uncertain && <div className="recording-draft"><Icon name="refresh" size={16} /><button type="button" className="attachment-retry" onClick={recorded.retry}>Check / retry send</button></div>}
+    {recorded?.pending && <div className="recorded-recovery" aria-label="Pending recorded message">
+      {recorded.text && <p className="recorded-recovery-text">{recorded.text}</p>}
+      {recorded.files?.map(({ id, file, recorded: isRecording }) => !file.type.startsWith("audio/") ? <span key={id} className="attachment-chip">{file.name}</span> : <VoiceNote key={id} id={id} name={file.name} contentType={file.type} file={file} recorded={isRecording} />)}
+      {!recorded.busy && !recorded.checking && <div className="recording-draft"><button type="button" className="attachment-retry" onClick={recorded.retry}>{recorded.uncertain ? "Check / retry send" : "Retry"}</button><button type="button" className="attachment-retry" onClick={recorded.remove}>Remove</button></div>}
+    </div>}
+    {recorded?.uncertain && !recorded.pending && <button type="button" onClick={recorded.retry}>Check / retry send</button>}
   </>;
 }
 

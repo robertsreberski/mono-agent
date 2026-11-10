@@ -3,8 +3,14 @@ import type { WebUploadAttachmentAdapter } from "./attachment-adapter";
 export interface RecordedAudioState {
   readonly adapter: WebUploadAttachmentAdapter;
   readonly busy: boolean;
+  readonly checking?: boolean;
   readonly error?: string;
+  readonly notice?: string;
   readonly uncertain: boolean;
+  readonly pending?: boolean;
+  readonly text?: string;
+  readonly files?: readonly { id: string; file: File; recorded: boolean }[];
+  readonly remove?: () => void;
   readonly retry: () => void;
 }
 export const RecordedAudioContext = createContext<RecordedAudioState | null>(null);
