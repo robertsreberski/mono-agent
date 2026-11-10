@@ -8,7 +8,7 @@ import dns, { lookup as dnsLookup } from "node:dns";
 import dnsPromises from "node:dns/promises";
 import subprocess from "node:child_process";
 import { syncBuiltinESMExports } from "node:module";
-import { runE2Proofs, PROOF_CHILD, PROOF_ARMS } from "../lib/continuity-e2-proofs.mjs";
+import { runE2Proofs, PROOF_CHILD, PROOF_ARMS, proofHistoryWarningClass } from "../lib/continuity-e2-proofs.mjs";
 import { assertProofEvidence, proofRefusalCode } from "../lib/continuity-e2-checks.mjs";
 import { proofEnvironment, installProofIsolation } from "../lib/continuity-e2-isolation.mjs";
 import { startProofTools, CANARY, FOREIGN, FACT, NEXT_ACTION } from "../lib/continuity-e2-tools.mjs";
@@ -200,4 +200,50 @@ it.each(["E2_PROOF_TOOL_REFUSED", "E2_BOUNDARY_MISMATCH"])("preserves %s in CLI 
   expect(await main(["proofs", "--output", join(dir, "output"), "--diagnostics", diagnostic], { stdout: s => out.push(s), stderr: s => err.push(s) })).toBe(1);
   expect(out).toEqual([]); expect(err).toEqual([`${code}\n`]);
   const raw = await readFile(diagnostic, "utf8"); expect(JSON.parse(raw).errorCode).toBe(code); expect(raw).not.toContain(CANARY);
+});
+
+it("classifies history warnings without retaining their variable or private text", () => {
+  const privateTail = "Fictional private data /home/example/private-state";
+  for (const [message, expected] of [
+    ["ConversationHistory endpoint could not start; " + privateTail, "endpoint_unavailable"],
+    ["Tool lifecycle persistence failed (history_persistence_timeout); " + privateTail, "lifecycle_timeout"],
+    ["Tool lifecycle persistence failed (fictional_secret); " + privateTail, "lifecycle_failed"],
+    ["Tool history writer acquisition failed (history_persistence_timeout); " + privateTail, "writer_acquisition_timeout"],
+    ["Continuity is degraded (sidecar_unavailable); " + privateTail, "continuity_sidecar_unavailable"],
+    ["Continuity is degraded (capture_bounds); " + privateTail, "continuity_capture_bounds"],
+    ["Continuity is degraded (capture_quota); " + privateTail, "continuity_capture_quota"],
+    ["Continuity coverage gap: " + privateTail, "preparation_abandoned"],
+    ["Upkeep accounting degraded: " + privateTail, "accounting_degraded"],
+    [privateTail, "unknown"], [undefined, "unknown"],
+  ]) expect(proofHistoryWarningClass(message)).toBe(expected);
+});
+
+it("preserves private fixed-class diagnostics through the runE2Proofs refusal", async () => {
+  const dir = await scratch(), base = join(dir, "warning"), runner = await import("../lib/continuity-runner.mjs");
+  const original = runner.productionModules, privateText = "Fictional private text /home/example/private-state";
+  vi.spyOn(runner, "productionModules").mockImplementation(async (...args) => {
+    const modules = await original(...args);
+    return { ...modules, app: { ...modules.app, createConfiguredConversationHarness: async options => {
+      options.onToolHistoryWarning("ConversationHistory endpoint could not start; " + privateText);
+      return modules.app.createConfiguredConversationHarness(options);
+    } } };
+  });
+  const restore = installProofIsolation(await proofEnvironment(dir));
+  try {
+    await expect(runE2Proofs({ output: base, arm: "switch" })).rejects.toMatchObject({ code: "E2_HISTORY_DEGRADED",
+      historyWarnings: { arm: "switch", variant: "ceiling", phase: "whole", warnings: [{ mode: "setup-scripted", kind: "endpoint_unavailable" }] } });
+    const file = join(base, "switch-ceiling", "whole-history-warnings.json"), raw = await readFile(file, "utf8");
+    expect(JSON.parse(raw).warnings).toEqual([{ mode: "setup-scripted", kind: "endpoint_unavailable" }]);
+    expect(raw).not.toContain(privateText); expect(raw).not.toContain(dir); expect((await lstat(file)).mode & 0o777).toBe(0o600);
+    await modes(base); // The wrapper must not delete the private diagnostic root.
+  } finally { restore(); }
+}, 60_000);
+
+it("classifies every fixed product ContinuityGapReason", async () => {
+  const source = await readFile(join(ROOT, "packages/conversation/src/tool-history/continuity-contracts.ts"), "utf8");
+  const declaration = /export type ContinuityGapReason = ([^;]+);/u.exec(source);
+  expect(declaration).not.toBeNull();
+  const reasons = [...declaration[1].matchAll(/["']([a-z_]+)["']/gu)].map(match => match[1]);
+  expect(reasons.length).toBeGreaterThan(0);
+  for (const reason of reasons) expect(proofHistoryWarningClass(`Continuity is degraded (${reason}); coverage is incomplete. Canonical history remains available.`)).toBe(`continuity_${reason}`);
 });

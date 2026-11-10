@@ -254,7 +254,8 @@
       "consume",
       "settle",
       "stop",
-      "compaction"
+      "compaction",
+      "verifyBody"
     ],
     "outcomes": [
       "refused_pre_send",

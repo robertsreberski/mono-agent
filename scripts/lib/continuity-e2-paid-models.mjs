@@ -10,7 +10,7 @@ import { E2_GUARD_CONTRACT, E2_GUARD_STOPS } from "./continuity-e2-policy.mjs";
 import { e2RequestPrice } from "./continuity-e2-pricing.mjs";
 import { digest } from "./continuity-recorded-schema.mjs";
 import { digest as canonicalDigest } from "./continuity-dataset.mjs";
-import { e2PhaseWork, e2PhaseBase, bindE2Checkpoint } from "./continuity-e2-lineage.mjs";
+import { e2PhaseWork, e2PhaseBase, validateE2Checkpoint } from "./continuity-e2-lineage.mjs";
 const need = (ok, code = "e2_permit_invalid") => { if (!ok) throw Object.assign(Error(code), { code }); };
 const core = () => guardedState("e2-validation"), artifacts = () => guardedAuthorization("e2-validation");
 export async function createE2PaidModels(a, safety) {
@@ -55,7 +55,7 @@ export async function createE2PaidModels(a, safety) {
       if (!record) continue;
       const reference = { journalId: name.slice(0, -6), checkpointId: record.id, checkpoint: receipt.checkpoint };
       try {
-        await bindE2Checkpoint({ root: a.outputRoot, state: { ...state, pilot: a.pilot }, planned: a.slot, slot, summaries, reference,
+        await validateE2Checkpoint({ root: a.outputRoot, state: { ...state, pilot: a.pilot }, planned: a.slot, slot, summaries, reference,
           readPrivate: core().readPrivate, readArtifact: artifacts().readArtifact }); candidates.push(reference);
       } catch { /* Only the unique fully verified new checkpoint may receive an ACK. */ }
     }

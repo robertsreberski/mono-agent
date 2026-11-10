@@ -54,7 +54,7 @@ function proofReply(body, count) {
   return toolEvents(name, { action: "search", query: "proof-evidence", limit: 10 }, count);
 }
 
-async function run({ scenario = "probe", requests = 1, rows = [{ role: "probe", model: SOL }], capUnits, reuse = false, crossOutputReuse = false, production = false, fault, arm = "pressure", replay = false, probeLookupRounds = 1, probeLookups = false, phaseStartupDelayMs = 0, deadlines } = {}) {
+async function run({ scenario = "probe", requests = 1, rows = [{ role: "probe", model: SOL }], capUnits, reuse = false, crossOutputReuse = false, production = false, fault, arm = "pressure", replay = false, probeLookupRounds = 1, probeLookups = false, phaseStartupDelayMs = 0, deadlines, expectedControllerError } = {}) {
   const root = await realpath(await mkdtemp(join(tmpdir(), "e2-native-sdk-"))); roots.push(root);
   const originalHome = process.env.HOME;
   const fixture = await e2NativeFixture(root, { rows, arm, replay, probeLookupRounds, ...(deadlines ? { deadlines } : {}), ...(capUnits ? { capUnits } : {}) });
@@ -76,7 +76,7 @@ async function run({ scenario = "probe", requests = 1, rows = [{ role: "probe", 
         const body = received.at(-1), current = body.input.filter(i => i.role === "user").at(-1)?.content;
         if (arm === "cancel" && JSON.stringify(current).includes("Continue without repeating the completed fictional sentinel")) { response.flushHeaders(); return; }
         response.end(proofReply(body, received.length));
-      } else response.end(events("FICTIONAL-SUMMARY-ANSWER-CANARY", scenario === "cap"));
+      } else response.end(events(scenario.startsWith("lineage-pack") ? "Fictional evidence at /home/example/private/file.txt" : "FICTIONAL-SUMMARY-ANSWER-CANARY", scenario === "cap"));
     } catch (error) { listenerError = error; response.writeHead(500).end(); }
   }); servers.push(server); await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
   const profile = { phaseStartupDelayMs, preload: join(root, "preload.mjs"), crossOutputReuse, root: ROOT, home: fixture.home, args: fixture.args, scenario, requests, reuse, production, fault,
@@ -88,6 +88,10 @@ async function run({ scenario = "probe", requests = 1, rows = [{ role: "probe", 
     cwd: ROOT, env: { HOME: fixture.home, PATH: "/usr/bin:/bin", LANG: "C", NODE_NO_WARNINGS: "1" }, stdio: ["ignore", "ignore", "pipe"] });
   let stderr = ""; child.stderr.on("data", bytes => { stderr += bytes; }); const [code] = await once(child, "close");
   const result = JSON.parse(await readFile(profile.result, "utf8"));
+  if (expectedControllerError) {
+    expect(listenerError).toBeUndefined(); expect({ code, error: result.error, stderr }).toEqual({ code: 1, error: expectedControllerError, stderr: "" });
+    return { ...result, received, state: JSON.parse(await readFile(join(fixture.args.outputRoot, "e2-validation-controller.json"))) };
+  }
   expect(listenerError).toBeUndefined(); expect({ code, error: result.error, stderr }).toEqual({ code: 0, error: undefined, stderr: "" });
   expect(await readFile(fixture.args.credentialPath)).toEqual(before);
   expect(await readdir(join(fixture.home, ".local/state/mono-agent/lcc-e2/consumed-v1"))).toHaveLength(1);
@@ -212,4 +216,34 @@ it("kills a stalled genuine paid request on its own clock, not the longer phase 
   expect(result.received).toHaveLength(1); expect(result.report.stop).toBe("e2_worker_timeout");
   expect(result.report.costs).toMatchObject({ retainedUnits: "3920000000", activeUnits: "0" });
   expect(performance.now() - started).toBeLessThan(60000);
+}, E2_NATIVE_TEST_TIMEOUT_MS);
+
+it("refuses a smuggled summary in a no-lineage SDK baseline with zero fetches", async () => {
+  const result = await run({ scenario: "baseline-smuggle", rows: [{ role: "probe", model: SOL }] });
+  expect(result.received).toHaveLength(0); expect(result.report.stop).toBe("e2_summary_receipt_invalid");
+}, E2_NATIVE_TEST_TIMEOUT_MS);
+it.each(["lineage-extra-native", "lineage-extra-pack", "lineage-pack-text", "lineage-pack-sha", "archive-tamper"])("refuses %s at the genuine SDK gate with zero probe fetches", async scenario => {
+  const result = await run({ scenario, rows: [{ role: "summary", model: SOL }, { role: "probe", model: SOL }] });
+  expect(result.received).toHaveLength(1); expect(result.report.stop).toBe("e2_summary_receipt_invalid");
+  expect(result.report.phases[0].summaryPresence).toMatchObject({ checked: 1, unobserved: 1 });
+}, E2_NATIVE_TEST_TIMEOUT_MS);
+it.each([["lineage-branch", "branch"], ["lineage-pack", "pack"], ["archive-absent", "none"], ["lineage-absent", "none"]])("accepts and durably reports %s at the genuine SDK boundary", async (scenario, kind) => {
+  const result = await run({ scenario, rows: [{ role: "summary", model: SOL }, { role: "probe", model: SOL }] });
+  expect(result.received).toHaveLength(2); expect(result.report.stop).toBe("completed");
+  expect(result.report.phases[0].summaryPresence).toMatchObject({ checked: 2, unobserved: 0, [kind]: kind === "none" ? 2 : 1 });
+}, E2_NATIVE_TEST_TIMEOUT_MS);
+
+it.each(["unwitnessed-settled", "unwitnessed-own-abort"])("refuses %s in the real controller before any fetch", async scenario => {
+  const result = await run({ scenario, expectedControllerError: "e2_summary_receipt_invalid" });
+  expect(result.received).toHaveLength(0); expect(result.state.slots[0].terminal).toBe("integrity_stop");
+  expect(result.state.slots[0].holds[0].summaryPresence).toBeUndefined();
+  expect(result.state.stop).toBe("e2_summary_receipt_invalid");
+}, E2_NATIVE_TEST_TIMEOUT_MS);
+it.each(["unwitnessed-lost", "unwitnessed-before-send"])("allows %s without inventing a body witness", async scenario => {
+  const result = await run({ scenario }); expect(result.received).toHaveLength(0);
+  expect(result.report.phases[0].summaryPresence).toMatchObject({ checked: 0, unobserved: 1, none: 0 });
+}, E2_NATIVE_TEST_TIMEOUT_MS);
+it.each(["baseline-function-output", "baseline-reasoning-summary"])("denies %s with zero native fetches", async scenario => {
+  const result = await run({ scenario }); expect(result.received).toHaveLength(0);
+  expect(result.report.stop).toBe("e2_summary_receipt_invalid");
 }, E2_NATIVE_TEST_TIMEOUT_MS);

@@ -44,6 +44,27 @@ async function fixtureChild(base, phase) {
   return JSON.parse(await readFile(join(base, `${phase}.json`), "utf8"));
 }
 
+// Match only fixed product warning classes; never retain arbitrary warning text.
+export function proofHistoryWarningClass(message) {
+  if (typeof message !== "string") return "unknown";
+  for (const reason of ["canonical_advanced_past_preparation", "capture_bounds", "capture_quota", "sidecar_unavailable"]) {
+    if (message.startsWith(`Continuity is degraded (${reason});`)) return `continuity_${reason}`;
+  }
+  for (const [prefix, kind] of [
+    ["ConversationHistory endpoint could not start;", "endpoint_unavailable"],
+    ["Tool lifecycle persistence failed (history_persistence_timeout)", "lifecycle_timeout"],
+    ["Tool lifecycle persistence failed (", "lifecycle_failed"],
+    ["Tool history writer acquisition failed (history_persistence_timeout)", "writer_acquisition_timeout"],
+    ["Tool history writer acquisition failed (", "writer_acquisition_failed"],
+    ["Tool history writer acquisition recovered;", "writer_acquisition_recovered"],
+    ["Tool history run finalization failed:", "run_finalization_failed"],
+    ["Upkeep accounting degraded:", "accounting_degraded"],
+    ["Continuity is degraded: retention protection is unavailable;", "retention_unavailable"],
+    ["Continuity coverage gap:", "preparation_abandoned"],
+  ]) if (message.startsWith(prefix)) return kind;
+  return "unknown";
+}
+
 /** Internal fixture phases use only existing, owner-only roots created by runE2Proofs. */
 export async function runProofPhase({ base, arm, phase = "whole", variant = "ceiling", fault, onContext = () => {}, paidAdapter }) {
   if (paidAdapter) { assertE2PhaseAdapter(paidAdapter); paidAdapter.assertProof({ base, arm, phase, variant }); if (fault !== undefined) fail("E2_ARGUMENTS_INVALID"); }
@@ -62,6 +83,7 @@ export async function runProofPhase({ base, arm, phase = "whole", variant = "cei
   await writeFile(join(work, "IDENTITY.md"), "Fictional isolated continuity proof. Never disclose protected canaries or another conversation. Never repeat a completed sentinel.\n", { mode: 0o600 });
   const modules = await productionModules(ROOT), estimators = await loadE2Estimators(), soul = await shippingSoul();
   const tools = await startProofTools(base), requests = [], boundaries = [], sessions = [];
+  const historyWarnings = [];
   let opened, historyDegraded = false, mode = "setup-scripted", binding = { model: arm === "switch" || arm === "pressure" && variant === "restart" ? LUNA : SOL, effort: "high" };
   if (resumed && arm === "pressure") binding = { model: SOL, effort: "high" };
   let setup = [], setupCursor = 0, requestSignal, controller, forwarded = false, witness, firstRequestSeen = false, firstPack = false, safe = true, readerRound = 0, readText = "", answer = "", sentinelOffered = false;
@@ -134,7 +156,13 @@ export async function runProofPhase({ base, arm, phase = "whole", variant = "cei
   const run = async (message, conversationId = CONVERSATION) => {
     position(); controller = new AbortController();
     const response = await opened.harness.run({ conversationId, userMessage: message, onEvent: e => { if (e.type === "session_boundary") boundaries.push({ reason: e.reason ?? null, context: e.context ?? null }); }, metadata: { source: "web", web: { model: binding.model, effort: binding.effort } }, abortSignal: AbortSignal.any([controller.signal, AbortSignal.timeout(LIMITS.timeoutMs)]) });
-    await paidAdapter?.flush(); route.assertSettled(); tools.check(); requireProof(!historyDegraded, "E2_HISTORY_DEGRADED");
+    await paidAdapter?.flush(); route.assertSettled(); tools.check();
+    if (historyDegraded) {
+      const diagnostic = { arm, variant, phase, warnings: historyWarnings };
+      try { await writeFile(join(base, `${phase}-history-warnings.json`), JSON.stringify(diagnostic) + "\n", { flag: "wx", mode: 0o600 }); }
+      catch { /* A diagnostic failure must not replace the history refusal. */ }
+      throw Object.assign(new Error("E2_HISTORY_DEGRADED"), { code: "E2_HISTORY_DEGRADED", historyWarnings: diagnostic });
+    }
     requireProof(mode === "cancel-forwarded" ? forwarded && controller.signal.aborted && response.failure?.kind === "cancelled" : !response.failure, "E2_PROOF_RUN_FAILED");
     return response;
   };
@@ -143,7 +171,7 @@ export async function runProofPhase({ base, arm, phase = "whole", variant = "cei
       clock: { get value() { return new Date(); } }, e2: paidAdapter,
       configPatch: { tools: { allowedTools: ["ConversationHistory"] }, runtime: { retry: { primaryAttempts: 1 }, fallbacks: [], compaction: { enabled: true }, session: { rollover: "none", idleTimeoutMs: arm === "idle" ? 1200 : 3_600_000,
         continuity: { enabled: true, packEnabled: fault !== "pack", ledgerEnabled: false, upkeep: { enabled: false } } } }, providers: { piNative: { transport: "sse", piMaxRetries: 0 } } },
-      onHistoryWarning: () => { historyDegraded = true; },
+      onHistoryWarning: message => { historyDegraded = true; if (historyWarnings.length < 32) historyWarnings.push({ mode, kind: proofHistoryWarningClass(message) }); },
       hostOptions: { onSessionEvent: e => { sessions.push({ conversationId: e.conversationId, kind: e.kind, reason: e.reason ?? null, at: performance.now() }); }, runtimeOptionsForRequest: () => ({ runtimeOptions: { model: modules.host.parseMonoRuntimeModelReference(binding.model), effort: binding.effort } }) },
       route: async options => {
         if (options.piResolvedModel || options.piResolvedModels) fail("E2_MODELS_SEAM_REFUSED");
@@ -241,6 +269,13 @@ export async function runE2Proofs({ output, arm = "all", real = false, onContext
       results.push({ report, sizing });
     }
     await privateModes(output); return results;
-  } catch (error) { await rm(output, { recursive: true, force: true }); throw error; }
+  } catch (error) {
+    if (error?.code === "E2_HISTORY_DEGRADED") {
+      // Preserve fixed-class diagnostics (including fixture-child phases) and
+      // their private evidence root. A fresh attempt must choose a new output.
+      try { await privateModes(output); } catch { /* Do not replace the refusal. */ }
+    } else await rm(output, { recursive: true, force: true });
+    throw error;
+  }
   finally { restore(); }
 }

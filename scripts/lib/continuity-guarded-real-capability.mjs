@@ -71,7 +71,7 @@ function bind(protocol, protocolId) {
         need(hold?.consumed === true && !hold.revoked && !hold.settlement && !used.has(hold.permitId)
           && hold.payloadDigest === createHash("sha256").update(bytes).digest("hex"));
         if (!matchesAccount(handle, headers.get("chatgpt-account-id"))) await stop(protocol.codes.account_mismatch);
-        try { protocol.execution?.assertCacheHeaders?.(headers, hold, a.cacheKey); protocol.execution?.assertBody(bytes, hold); if (protocol.execution?.verifyNativeBody) await protocol.execution.verifyNativeBody(bytes, hold, state, a); }
+        try { protocol.execution?.assertCacheHeaders?.(headers, hold, a.cacheKey); protocol.execution?.assertBody(bytes, hold); if (protocol.execution?.verifyNativeBody) await protocol.execution.verifyNativeBody(bytes, hold, state, a, permit); }
         catch (error) { await stop(error?.code ?? protocol.codes.body_mismatch, true); }
         if (clock) await assertDeadline(); // Native-body verification may have awaited durable history.
         used.add(hold.permitId); // No retry, including after fetch rejection or abort.

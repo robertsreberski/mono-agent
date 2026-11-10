@@ -6,6 +6,11 @@
   larger image viewer and lazy loading for truncated results. Keep unsupported,
   malformed, oversized, or unavailable images in the existing text view.
 
+- Fix E2 verification of Unicode separators in retained summary packs and scan
+  summary claims in tool outputs and reasoning text as well as user messages.
+  Refuse real sent-request settlements without a controller body witness while
+  preserving lost and aborted-before-send liability handling.
+
 - Keep web recorded-message sends running across navigation, with bounded device
   recovery and idempotent Retry/Remove after interruption or reload. Show one
   recording box while attaching, retain captured duration, and remove sent audio
@@ -13,6 +18,13 @@
   newer text/file drafts send beside pending voice recovery. Keep uncertain sends
   on the same identity until the original request settles, and preserve browser
   recovery when device storage loses a saved draft.
+
+- Keep verified E2 summary lineage after native journals retire on model changes.
+  Reject every unverified summary wrapper or retained pack line; allow missing
+  summaries and report their presence per paid request without changing context.
+  Breaking: E2 lineage v2 requires private committed-checkpoint archives and a
+  controller body-verification ACK. Old run state cannot resume; create fresh
+  build, registration and single-use authorization artifacts.
 
 - Separate E2 paid-request deadlines from long phase, child and run clocks in
   plan v2. Keep each request bounded to ten minutes, allow phase/run ceilings up
