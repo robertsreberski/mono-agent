@@ -549,7 +549,7 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
     [attachmentAdapter],
   );
 
-  type RecordedState = { saved?: boolean; memoryOnly?: boolean; attempt: RecordedSubmissionAttempt; agentId: string | null; busy: boolean; checking?: boolean; error?: string; uncertain: boolean };
+  type RecordedState = { saved?: boolean; memoryOnly?: boolean; attempt: RecordedSubmissionAttempt; agentId: string | null; busy: boolean; checking?: boolean; removed?: boolean; error?: string; uncertain: boolean };
   const recordedRef = useRef<RecordedState[]>([]);
   const [recordedStates, setRecordedStates] = useState<RecordedState[]>([]);
   const [recordedLoaded, setRecordedLoaded] = useState(false);
@@ -637,8 +637,14 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
             state.uncertain = true; state.busy = false; state.error = pendingSubmission; publishRecorded();
             // The wrapper deadline cannot release the cross-window lock while
             // the underlying HTTP submission is still capable of arriving.
-            try { await state.attempt.waitForSubmission(); await retireRecorded(state); return; }
-            catch (underlyingFailure) { settledFailure = underlyingFailure; }
+            try {
+              await state.attempt.waitForSubmission();
+              if (!state.removed) await retireRecorded(state);
+              return;
+            } catch (underlyingFailure) {
+              if (state.removed) return;
+              settledFailure = underlyingFailure;
+            }
             state.busy = true; publishRecorded();
           }
           if (state.attempt.dispatched) {
@@ -703,19 +709,26 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
     });
     return () => { active = false; };
   }, [attemptFromDraft, publishRecorded]);
+  const forgetRecorded = async (state: RecordedState, pending = false) => {
+    state.removed = true;
+    recordedRef.current = recordedRef.current.filter(item => item !== state);
+    attachmentAdapter.completeSend(state.attempt.attachments); publishRecorded();
+    if (pending) setRecordedNotice("Recovery removed from this window. The original send may still arrive.");
+    if (state.saved) {
+      try { await removeRecordedDraft(state.attempt.owner.submissionId); }
+      catch { setRecordedNotice(`Recovery removed from this window. ${pending ? "The original send may still arrive. " : ""}Its saved copy could not be deleted and may return after reload.`); }
+    }
+  };
   const removeRecorded = async (state: RecordedState) => {
-    if (state.attempt.submissionPending) { state.error = pendingSubmission; publishRecorded(); return; }
+    if (state.attempt.submissionPending) {
+      // This window already owns the send's lock. Forget local recovery without
+      // releasing that lease or pretending to cancel the underlying request.
+      await forgetRecorded(state, true); return;
+    }
     if (state.busy || state.checking) return;
     state.busy = true; publishRecorded();
     try {
-      const acquired = await withRecordedSendLock(state.attempt.owner.submissionId, async () => {
-        recordedRef.current = recordedRef.current.filter(item => item !== state);
-        attachmentAdapter.completeSend(state.attempt.attachments); publishRecorded();
-        if (state.saved) {
-          try { await removeRecordedDraft(state.attempt.owner.submissionId); }
-          catch { setRecordedNotice("Recovery removed from this window. Its saved copy could not be deleted and may return after reload."); }
-        }
-      });
+      const acquired = await withRecordedSendLock(state.attempt.owner.submissionId, () => forgetRecorded(state));
       if (!acquired) state.error = otherWindow;
     } catch { state.error = "Could not remove the saved recording. Retry Remove."; }
     finally { state.busy = false; publishRecorded(); }

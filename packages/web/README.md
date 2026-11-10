@@ -169,6 +169,8 @@ independently with a per-draft “Checking saved send…” status; they do not 
 new recorded Sends in other conversations. If device storage evicts a draft,
 in-memory recording bytes remain recoverable. Remove clears this window even if
 the saved copy cannot be deleted, with a notice that it may return after reload.
+Removing local recovery does not cancel an unsettled send: its original request
+retains its lock until settlement and may still arrive.
 
 Voice is disabled unless the console owner configures a server-side local
 OpenAI-compatible transcription service or operator-managed proxy. No browser

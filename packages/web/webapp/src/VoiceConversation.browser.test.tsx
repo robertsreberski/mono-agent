@@ -962,6 +962,29 @@ describe("recorded audio through actual Chat, Composer, ordinary uploads and sub
       expect(accepted.size).toBe(1); expect(api.submit).toHaveBeenCalledTimes(1); expect(api.transcribe).toHaveBeenCalledTimes(1);
     } finally { finish?.(); }
   });
+  it("Remove forgets a timed-out send locally without releasing its still-pending POST lock", async () => {
+    const realTimeout = window.setTimeout.bind(window);
+    vi.spyOn(window, "setTimeout").mockImplementation(((handler: TimerHandler, delay?: number, ...args: unknown[]) =>
+      realTimeout(handler, delay === AUDIO_CONFIRMATION_TIMEOUT_MS ? 30 : delay, ...args)) as typeof window.setTimeout);
+    let finish: (() => void) | undefined;
+    vi.mocked(api.submit).mockImplementationOnce((threadId, submissionId) => new Promise(resolve => {
+      finish = () => resolve({ threadId, submissionId, outcome: "turn" });
+    }));
+    seed(created); mount();
+    try {
+      await record(); await stop(); await send();
+      await screen.findByRole("button", { name: "Check / retry send" });
+      const id = vi.mocked(api.submit).mock.calls[0]![1];
+      vi.spyOn(indexedDB, "open").mockImplementation(() => { throw new DOMException("Synthetic unavailable storage", "SecurityError"); });
+      await userEvent.click(screen.getByRole("button", { name: "Remove" }));
+      await waitFor(() => expect(screen.queryByLabelText("Audio attachment: recording.webm")).toBeNull());
+      expect(await screen.findByText(/original send may still arrive.*saved copy could not be deleted/)).toBeVisible();
+      expect(await navigator.locks.request(`mono-recorded:${id}`, { ifAvailable: true }, lock => Boolean(lock))).toBe(false);
+      finish!();
+      await waitFor(async () => expect(await navigator.locks.request(`mono-recorded:${id}`, { ifAvailable: true }, lock => Boolean(lock))).toBe(true));
+      expect(api.submit).toHaveBeenCalledTimes(1);
+    } finally { finish?.(); }
+  });
   it("checks restored drafts independently while another conversation records and sends", async () => {
     await page.viewport(390, 900);
     await saveRecordedDraft(savedAttempt("synthetic-check-one", created.id));
