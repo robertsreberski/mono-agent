@@ -25,7 +25,8 @@ it("owns the E2 registry and schemas without inheriting a lookup request envelop
 it("validates four explicit E2 clocks and refuses legacy, overflowing or inverted bounds", () => {
   const valid = { requestDeadlineMs: 600000, phaseDeadlineMs: 72000000, childWatchdogMs: 72000000, runDeadlineMs: 86400000 };
   expect(() => validateE2Deadlines(valid)).not.toThrow();
-  for (const change of [d => delete d.requestDeadlineMs, d => delete d.phaseDeadlineMs, d => d.deadlineMs = 600000,
+  for (const change of [d => delete d.requestDeadlineMs, d => delete d.phaseDeadlineMs,
+    d => delete d.childWatchdogMs, d => delete d.runDeadlineMs, d => d.deadlineMs = 600000,
     d => d.requestDeadlineMs = 600001, d => d.phaseDeadlineMs = 86400001, d => d.runDeadlineMs = 86400001,
     d => d.childWatchdogMs = d.phaseDeadlineMs + 1, d => d.phaseDeadlineMs = 599999,
     d => d.childWatchdogMs = 599999, d => d.runDeadlineMs = d.phaseDeadlineMs - 1, d => d.requestDeadlineMs = 1.5]) {

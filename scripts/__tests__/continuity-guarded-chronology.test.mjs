@@ -8,9 +8,13 @@ import { pilotSuite, runOptions } from "./fixtures/lookup-pilot-process.mjs";
 import { digest } from "../lib/continuity-dataset.mjs";
 const suite = pilotSuite({ scoped: true }), it = suite.test;
 const load = (f, name) => import(/* @vite-ignore */ pathToFileURL(join(f.repo, "scripts/lib", `continuity-guarded-${name}.mjs`)).href);
-async function kernel(id, capUSD = 3.92) {
+async function kernel(id, capUSD = 3.92, { runPastSlot = false } = {}) {
   const f = suite.fixture, options = await runOptions(f);
   options.pilot = structuredClone(options.pilot); options.pilot.descriptor.capUSD = capUSD;
+  if (runPastSlot) {
+    const d = options.pilot.descriptor.deadlines;
+    d.runDeadlineMs = d.deadlineMs + d.childWatchdogMs;
+  }
   if (id === "fictional") {
     const sha = "a".repeat(64);
     options.pilot = { descriptor: options.pilot.descriptor, schedule: [0, 1].map(n => ({ slotId: digest(["fictional", n]), roleId: "fictional-reader", code: "fiction", suite: "fictional", traceId: "source", probeId: String(n), eligible: true })), publicState: { roleCount: 1, publicSources: { fictional: sha }, publicBindings: { fiction: { revision: "b".repeat(40), buildSha256: sha, protocolSha256: sha } } } };
@@ -114,9 +118,12 @@ for (const id of ["lookup-pilot", "fictional"]) {
 }
 
 it("lookup parity: its slot-relative consume cutoff and hold schema are unchanged", async () => {
-  const k = await kernel("lookup-pilot"), permit = await admit(k), state = k.journal.snapshot();
+  const k = await kernel("lookup-pilot", 3.92, { runPastSlot: true }), permit = await admit(k), state = k.journal.snapshot();
   expect(state.slots[0].holds[0]).not.toHaveProperty("admittedAt");
-  const clock = vi.spyOn(Date, "now").mockReturnValue(state.slots[0].startedAt + k.options.pilot.descriptor.deadlines.deadlineMs);
+  const cutoff = state.slots[0].startedAt + k.options.pilot.descriptor.deadlines.deadlineMs;
+  expect(cutoff).toBeLessThan(state.deadlineAt); // Only the slot, not the run, has expired.
+  expect(state.slots[0].holds[0].consumed).toBe(false);
+  const clock = vi.spyOn(Date, "now").mockReturnValue(cutoff);
   try {
     await expect(exchange(k, "consume", { permit, bodyDigest: "a".repeat(64) })).rejects.toMatchObject({ code: "lookup_permit_invalid" });
     expect(k.journal.snapshot().stop).toBe("lookup_permit_invalid");

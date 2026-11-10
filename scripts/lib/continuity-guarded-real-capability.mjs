@@ -59,8 +59,9 @@ function bind(protocol, protocolId) {
         const { state } = await verifyLookupRealAssignment(a), hold = state.slots[a.index].holds.at(-1);
         const clock = protocol.execution?.deadlines;
         const assertDeadline = async () => {
-          if (Date.now() >= state.deadlineAt) await stop(protocol.codes.run_deadline);
-          if (Date.now() >= Math.min(clock.phaseAt(a.pilot.descriptor.deadlines, state.slots[a.index]), clock.requestAt(a.pilot.descriptor.deadlines, hold))) await stop(protocol.codes.worker_timeout);
+          const now = Date.now();
+          if (now >= state.deadlineAt) await stop(protocol.codes.run_deadline);
+          if (now >= Math.min(clock.phaseAt(a.pilot.descriptor.deadlines, state.slots[a.index]), clock.requestAt(a.pilot.descriptor.deadlines, hold))) await stop(protocol.codes.worker_timeout);
         };
         if (clock) await assertDeadline();
         else need(Date.now() < Math.min(state.deadlineAt, state.slots[a.index].startedAt + a.pilot.descriptor.deadlines.deadlineMs));

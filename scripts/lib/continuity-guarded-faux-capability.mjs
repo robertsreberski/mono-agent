@@ -52,8 +52,15 @@ function bind(protocol, protocolId) {
       const clock = protocol.execution?.deadlines;
       const phaseAt = clock ? clock.phaseAt(a.pilot.descriptor.deadlines, slot) : slot.startedAt + a.pilot.descriptor.deadlines.deadlineMs;
       const requestAt = clock ? clock.requestAt(a.pilot.descriptor.deadlines, hold) : Infinity;
+      const now = Date.now();
+      if (clock) {
+        const code = now >= current.deadlineAt ? protocol.codes.run_deadline : now >= Math.min(phaseAt, requestAt) ? protocol.codes.worker_timeout : null;
+        if (code) {
+          let cause; try { await permit.stop(code); } catch (error) { cause = error; }
+          throw Object.assign(Error(code), { code, ...(cause ? { stopCode: protocol.codes.stop_failed, cause } : {}) });
+        }
+      } else need(now < Math.min(current.deadlineAt, phaseAt, requestAt));
       need(current.stop === null && current.cursor === a.index && slot.terminal === null
-        && Date.now() < Math.min(current.deadlineAt, phaseAt, requestAt)
         && [null, "zstd"].includes(encoding) && headers.get("session-id") === a.cacheKey && headers.get("x-client-request-id") === a.cacheKey);
       const bytes = encoding === "zstd" ? zstdDecompressSync(init.body) : Buffer.from(init.body);
       need(hold?.consumed === true && !hold.revoked && !hold.settlement && !used.has(hold.permitId)
