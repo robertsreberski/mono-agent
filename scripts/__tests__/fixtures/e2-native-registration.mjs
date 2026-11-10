@@ -17,7 +17,7 @@ const save = (path, value) => writeFile(path, JSON.stringify(value), { mode: 0o6
 // 22s for a completed phase. Keep a finite 30s phase watchdog; the 90s test
 // budget also covers C1's pre-controller sizing (62s end-to-end when throttled).
 export const E2_NATIVE_TEST_TIMEOUT_MS = 90_000;
-export const E2_NATIVE_DEADLINES = Object.freeze({ deadlineMs: 30_000, childWatchdogMs: 30_000, runDeadlineMs: 60_000 });
+export const E2_NATIVE_DEADLINES = Object.freeze({ requestDeadlineMs: 30_000, phaseDeadlineMs: 30_000, childWatchdogMs: 30_000, runDeadlineMs: 60_000 });
 export async function e2NativeFixture(root, { arm = "pressure", capUnits = "1000000000000", rows = null, replay = false, probeLookupRounds = 1, deadlines = E2_NATIVE_DEADLINES } = {}) {
   const home = join(root, "home"); await mkdir(home, { mode: 0o700 });
   const snapshots = join(root, "snapshots"); await mkdir(snapshots, { mode: 0o700 });

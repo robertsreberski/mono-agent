@@ -46,13 +46,13 @@ export const E2_PILOT_STOPS = Object.freeze([...new Set([...E2_GUARD_POLICY_REFU
   "e2_permit_invalid", "e2_settlement_failed", "e2_stop_failed", "e2_payload_repeated",
   "e2_headers_forbidden", "e2_prompt_cache_key_forbidden", "e2_send_mismatch", "e2_duplicate_terminal",
 ])]);
-export const E2_GUARD_STOPS = Object.freeze([...new Set([...E2_GUARD_POLICY_REFUSALS, ...E2_ADMISSION_REFUSALS, "e2_phase_failed",
+export const E2_GUARD_STOPS = Object.freeze([...new Set([...E2_GUARD_POLICY_REFUSALS, ...E2_ADMISSION_REFUSALS, "e2_phase_failed", "e2_worker_timeout", "e2_run_deadline",
   "auth_failure", "e2_auth_failure", "e2_account_mismatch", "e2_quota_exhausted", "e2_settlement_failed",
   "e2_invalid_usage", "e2_unknown_tier", "e2_hold_exceeded", "e2_input_envelope_violated",
   "e2_output_envelope_violated", "e2_reasoning_envelope_violated", "e2_body_mismatch", "e2_permit_invalid",
   "e2_arrival_persist_failed", "e2_arrival_receipt_invalid", "e2_payload_repeated", "e2_headers_forbidden", "e2_prompt_cache_key_forbidden", "e2_send_mismatch", "e2_duplicate_terminal",
 ])]);
-export const E2_INTEGRITY_STOPS = Object.freeze(E2_GUARD_STOPS.filter(code => ![...E2_ADMISSION_REFUSALS, "e2_phase_failed", "auth_failure", "e2_auth_failure", "e2_account_mismatch", "e2_quota_exhausted"].includes(code)));
+export const E2_INTEGRITY_STOPS = Object.freeze(E2_GUARD_STOPS.filter(code => ![...E2_ADMISSION_REFUSALS, "e2_phase_failed", "e2_worker_timeout", "e2_run_deadline", "auth_failure", "e2_auth_failure", "e2_account_mismatch", "e2_quota_exhausted"].includes(code)));
 export const E2_SLOT_TERMINALS = Object.freeze(["completed", "wrong", "lost", "own_abort_after_send", "pilot_empty_final_output", "store_degraded", "boundary_unverified", "pressure_unverified", "integrity_stop", "refused_pre_send", "unadmitted", "skipped"]);
 export { E2_USD_UNITS as USD_UNITS } from "./continuity-e2-roles.mjs";
 export const E2_AUTHORIZATION_SCHEMA = "continuity-e2-authorization-v1";
@@ -74,10 +74,10 @@ export class E2GuardError extends Error {
 }
 
 export const E2_REGISTRATION_SCHEMA = "continuity-e2-guarded-registration-v1";
-export const E2_PLAN_SCHEMA = "continuity-e2-guarded-plan-v1";
+export const E2_PLAN_SCHEMA = "continuity-e2-guarded-plan-v2";
 export const E2_SUMMARY_RECEIPT = "continuity-e2-generated-summary-receipt-v1";
 export const E2_BINDING_FIELDS = Object.freeze(["code", "build", "catalog", "protocol", "source", "probes", "keys", "soul", "schedule", "account", "tools", "deadlines", "capUnits"]);
-export const E2_DEADLINE_LIMITS = Object.freeze({ requestMs: 600000, childWatchdogMs: 660000, runMs: 7200000 });
+export const E2_DEADLINE_LIMITS = Object.freeze({ requestMs: 600000, phaseMs: 86400000, childWatchdogMs: 86400000, runMs: 86400000 });
 export const E2_ARTIFACT_LIMITS = Object.freeze({ requests: 100000, jsonBytes: 4194304, summaryBytes: 1048576 });
 
 export { E2_ROUTE_CAPABILITIES, E2_MODEL_APIS } from "./continuity-e2-routes.mjs";

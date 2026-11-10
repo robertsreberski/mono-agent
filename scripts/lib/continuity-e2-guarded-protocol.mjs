@@ -5,7 +5,7 @@ import { e2CacheAssignment, e2CacheIssuer, e2Watchdog, e2ValidTimeout, e2Work, e
 import * as e2Policy from "./continuity-e2-policy.mjs";
 const freeze = value => { if (value && typeof value === "object") { Object.values(value).forEach(freeze); Object.freeze(value); } return value; };
 const codes = {
-  phase_failed: "e2_phase_failed", summary_not_authorized: "e2_summary_not_authorized", summary_receipt_invalid: "e2_summary_receipt_invalid", compaction_invalid: "e2_compaction_invalid",
+  deadlines_invalid: "e2_deadlines_invalid", phase_failed: "e2_phase_failed", summary_not_authorized: "e2_summary_not_authorized", summary_receipt_invalid: "e2_summary_receipt_invalid", compaction_invalid: "e2_compaction_invalid",
   "account_mismatch": "e2_account_mismatch",
   "arrival_persist_failed": "e2_arrival_persist_failed",
   "arrival_receipt_invalid": "e2_arrival_receipt_invalid",

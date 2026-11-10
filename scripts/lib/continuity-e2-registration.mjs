@@ -34,9 +34,11 @@ const sha = s => typeof s === "string" && /^[a-f0-9]{64}$/u.test(s);
 const same = (a, b) => a !== undefined && b !== undefined && digest(a) === digest(b);
 export const e2CapUnits = value => { need(typeof value === "string" && /^(0|[1-9][0-9]{0,29})$/u.test(value)); return BigInt(value); };
 export function validateE2Deadlines(d) {
-  need(fields(d, ["deadlineMs", "childWatchdogMs", "runDeadlineMs"]) && Object.values(d).every(n => integer(n) && n > 0)
-    && d.deadlineMs <= E2_DEADLINE_LIMITS.requestMs && d.childWatchdogMs >= d.deadlineMs
-    && d.childWatchdogMs <= E2_DEADLINE_LIMITS.childWatchdogMs && d.runDeadlineMs >= d.childWatchdogMs && d.runDeadlineMs <= E2_DEADLINE_LIMITS.runMs);
+  if (!(fields(d, ["requestDeadlineMs", "phaseDeadlineMs", "childWatchdogMs", "runDeadlineMs"]) && Object.values(d).every(n => integer(n) && n > 0)
+    && d.requestDeadlineMs <= E2_DEADLINE_LIMITS.requestMs && d.phaseDeadlineMs >= d.requestDeadlineMs && d.phaseDeadlineMs <= E2_DEADLINE_LIMITS.phaseMs
+    && d.childWatchdogMs >= d.requestDeadlineMs && d.childWatchdogMs <= d.phaseDeadlineMs && d.childWatchdogMs <= E2_DEADLINE_LIMITS.childWatchdogMs
+    && d.runDeadlineMs >= d.phaseDeadlineMs && d.runDeadlineMs <= E2_DEADLINE_LIMITS.runMs))
+    throw Object.assign(Error("e2_deadlines_invalid"), { code: "e2_deadlines_invalid" });
 }
 export async function e2CodeDigest(root = ROOT) {
   need(root === ROOT && await realpath(root) === root);
@@ -117,6 +119,8 @@ export async function validateE2Registration(pilot, { safeRead, safeDirectory })
   try {
     need(fields(pilot, ["schema", "registration", "descriptor"]) && pilot.schema === E2_REGISTRATION_SCHEMA);
     const r = pilot.registration, d = pilot.descriptor;
+    if (d?.schema !== E2_PLAN_SCHEMA) throw Object.assign(Error("e2_deadlines_invalid"), { code: "e2_deadlines_invalid" });
+    validateE2Deadlines(d.deadlines);
     need(fields(r, ["code", "build", "catalog", "protocol", "source", "probes", "keys", "soul", "roles", "schedule", "toolPolicies", "sizing", "probeCounts"])
       && fields(d, ["schema", "assumptions", "capUnits", "deadlines"]) && d.schema === E2_PLAN_SCHEMA && same(d.assumptions, E2_ASSUMPTIONS));
     e2CapUnits(d.capUnits); validateE2Deadlines(d.deadlines);
@@ -152,7 +156,7 @@ export async function validateE2Registration(pilot, { safeRead, safeDirectory })
     need(e2CapUnits(d.capUnits) >= BigInt(estimate.forecastMinimumCapUnits));
     return { protocol, questions, source, estimate };
   } catch (error) {
-    if (["E2_OUTPUT_LIMIT_UNENFORCED", "E2_SIZING_PAID_ROLE_REQUIRED", "E2_SIZING_PHASE_REQUIRED"].includes(error?.code)) throw error;
+    if (["e2_deadlines_invalid", "E2_OUTPUT_LIMIT_UNENFORCED", "E2_SIZING_PAID_ROLE_REQUIRED", "E2_SIZING_PHASE_REQUIRED"].includes(error?.code)) throw error;
     throw Object.assign(Error("e2_registration_invalid"), { code: "e2_registration_invalid" });
   }
 }

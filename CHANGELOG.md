@@ -10,6 +10,13 @@
   on the same identity until the original request settles, and preserve browser
   recovery when device storage loses a saved draft.
 
+- Separate E2 paid-request deadlines from long phase, child and run clocks in
+  plan v2. Keep each request bounded to ten minutes, allow phase/run ceilings up
+  to 24 hours, and retain liability on timeout. Refuse old E2 plans; keep
+  lookup-pilot deadlines and descriptor semantics unchanged. Breaking: move
+  existing E2 plans to `continuity-e2-guarded-plan-v2` with `requestDeadlineMs`,
+  `phaseDeadlineMs`, `childWatchdogMs` and `runDeadlineMs`, then rerun registration.
+
 - Fund E2 probes with explicit protocol-owned `probeLookupRounds` (1–4, required
   with no default), withdraw tools on the final funded request, and settle early
   answers without spending unused capacity. Normalize answer formatting and
