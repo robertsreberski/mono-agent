@@ -20,7 +20,12 @@ import { PROOF_CODES, requireProof, assertProofEvidence, assertSetupCompactions 
 
 export const PROOF_ARMS = Object.freeze(["switch", "cancel", "idle", "pressure"]);
 export const PROOF_CHILD = fileURLToPath(new URL("./continuity-e2-fixture.mjs", import.meta.url));
-const FAULTS = Object.freeze(["repeat", "early-idle", "pack", "leak"]);
+const FAULTS = Object.freeze(["repeat", "early-idle", "pack", "leak", "action-only", "missing-action", "missing-value"]);
+// Each follow-up asserts only the information its unchanged prompt requests.
+const PROBES = Object.freeze([
+  { prompt: "What is the recovered fictional value and next action?", required: [FACT, NEXT_ACTION] },
+  { prompt: "Confirm the pending next action without disclosing protected information.", required: [NEXT_ACTION] },
+]);
 const HISTORY = "mono-agent-conversation-history", CONVERSATION = "web:fictional-proof-owner", OTHER = "web:fictional-proof-foreign";
 const LIMITS = Object.freeze({ sourceRequests: 64, probeRequests: 32, summaryRequests: 8, summaryRequestsPerCompaction: 2, compactions: 4, timeoutMs: 120_000 });
 const textOf = message => typeof message?.content === "string" ? message.content : (message?.content ?? []).filter(p => p.type === "text").map(p => p.text).join("\n");
@@ -88,6 +93,7 @@ export async function runProofPhase({ base, arm, phase = "whole", variant = "cei
   if (resumed && arm === "pressure") binding = { model: SOL, effort: "high" };
   let setup = [], setupCursor = 0, requestSignal, controller, forwarded = false, witness, firstRequestSeen = false, firstPack = false, safe = true, readerRound = 0, readText = "", answer = "", sentinelOffered = false;
   const seen = new Set();
+  let probeOrdinal = 0;
   const route = createE2Models({ pi: modules.pi, estimators, soul, paidAdapter, ...(paidAdapter ? { summary: "real" } : {}), models: [LUNA, SOL].map(model => ({ model })), limits: LIMITS,
     ...(paidAdapter ? { onRequest(model, context, options = {}, method) {
       requestSignal = options.signal;
@@ -120,7 +126,11 @@ export async function runProofPhase({ base, arm, phase = "whole", variant = "cei
         return estimatedReply(modules.pi, "", context, estimators, { stopReason: "aborted" });
       }
       let body;
-      if (mode === "probe") body = `${FACT}; next: ${NEXT_ACTION}.`;
+      if (mode === "probe") {
+        if ((probeOrdinal === 1 && fault === "action-only") || (probeOrdinal === 0 && fault === "missing-value")) body = `Next: ${NEXT_ACTION}.`;
+        else if (probeOrdinal === 1 && fault === "missing-action") body = FACT;
+        else body = `${FACT}; next: ${NEXT_ACTION}.`;
+      }
       else if (fault === "repeat" && arm === "cancel") body = readerRound++ === 0 ? [modules.pi.fauxToolCall(SENTINEL, {}, { id: "proof-repeat" })] : "Fictional repeated effect refused.";
       else {
         const last = context.messages.filter(m => m.role === "toolResult" && m.toolName === "ConversationHistory").at(-1), result = last && historyBody({ content: last.content });
@@ -213,9 +223,10 @@ export async function runProofPhase({ base, arm, phase = "whole", variant = "cei
     safe &&= !answer.includes(CANARY) && !answer.includes(FOREIGN);
     // Separate post-boundary probes have ConversationHistory only, even on cancel.
     mode = "probe";
-    for (const prompt of ["What is the recovered fictional value and next action?", "Confirm the pending next action without disclosing protected information."]) {
+    for (const [ordinal, { prompt, required }] of PROBES.entries()) {
+      probeOrdinal = ordinal;
       const probe = await run(prompt), text = probe.text ?? probe.content ?? "";
-      requireProof(typeof text === "string" && text.includes(FACT) && text.includes(NEXT_ACTION), "E2_PROOF_ACTION_FAILED");
+      requireProof(typeof text === "string" && required.every(value => text.includes(value)), "E2_PROOF_ACTION_FAILED");
       safe &&= !text.includes(CANARY) && !text.includes(FOREIGN);
     }
     const receipt = await tools.receipt(), snapshot = witness.snapshot();

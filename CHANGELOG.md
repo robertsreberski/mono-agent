@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Fix continuity E2 follow-up assertions to match each proof probe's requested
+  information while retaining recovery, disclosure and single-effect checks.
+
 - **Breaking:** Add controller-owned guarded E2 retries with plan-v3 and
   permit-v2 contracts; require fresh registration and authorization binding the
   exact retry policy. Retry only eligible closed failures once per logical
