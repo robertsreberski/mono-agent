@@ -476,6 +476,22 @@ retained coverage, and only exact durable proof can later promote a summary.
 Explicit reset can supersede a pending cut: its durable purge intent removes
 the preparation with the other physical evidence, without promoting it.
 
+Cold continuity snapshots shortlist the eligible pinned summary before owners and
+tools, within the existing 512-record / 4-MiB bounds. The pack admits that complete
+generated quotation after the unchanged ledger/header prefix and before tool
+reservation or owner filling. Its JSON-quoted text and retained digest are never
+clipped or rewritten. It must fit the remaining headroom of the existing
+`min(8000, actual headroom)` estimated-token ceiling, including prefix and marker
+costs; otherwise it is omitted entirely, counted, and disclosed without content
+with size/headroom estimates. No older summary is substituted. Ineligible pins
+(prepared, purged, other physical buckets, current run or beyond a continuation
+boundary) remain excluded. With no eligible summary the fallback is unchanged.
+Per-message mode can pay this summary cost on every replayed turn; true warm
+resumes add no second pack, but seeded text remains in request/cache accounting.
+Daily rollover does not carry an earlier physical bucket's summary. Assistant
+commitments have no dedicated lane; they still depend on summaries or retrieval.
+
+
 Successful non-isolated plain-text lifecycle results can be retained independently
 of the smaller legacy JSON projection. The configured harness borrows
 `withContinuityOwner` on the owned exclusive/provider/reconciliation turn, so

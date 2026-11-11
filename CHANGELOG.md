@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Keep eligible pinned continuity summaries ahead of owner and tool evidence on
+  cold reseeds, carrying the whole generated quotation within existing pack
+  headroom or explicitly disclosing its omission without clipping. Per-message
+  replay can pay the summary cost each turn; daily rollover and assistant
+  commitments gain no new evidence lane.
+
 - Keep continuity proof recovery independent of faithful compaction summaries
   with post-summary evidence and explicit cold-projection boundaries.
 

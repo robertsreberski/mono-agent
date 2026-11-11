@@ -1,6 +1,6 @@
 import { PACK_RETRIEVAL_GUIDANCE } from "../continuity/render-fit.js";
 import { createHash } from "node:crypto";
-import { mkdtemp, writeFile, rm, readdir } from "node:fs/promises";
+import { mkdtemp, writeFile, rm, readdir, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createModels, fauxProvider, fauxAssistantMessage, fauxText } from "@earendil-works/pi-ai";
@@ -12,6 +12,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import type { ConversationHarnessRequest } from "../harness/contracts.js";
 import { createConversationHarness } from "../harness/index.js";
 import { createDurableHistoryStore } from "../history/canonical/store.js";
+import { createContinuityParticipant } from "../tool-history/continuity-participant.js";
 import { ToolHistoryWriter } from "../tool-history/writer.js";
 import { ToolHistoryReader } from "../tool-history/reader.js";
 import { continuityGenerationId, continuityRecordId } from "../tool-history/continuity-storage.js";
@@ -19,7 +20,7 @@ import { continuityGenerationId, continuityRecordId } from "../tool-history/cont
 const cleanup: (() => Promise<void>)[] = [];
 afterEach(async () => { vi.restoreAllMocks(); vi.useRealTimers(); for (const close of cleanup.splice(0).reverse()) await close(); });
 const id = "fictional-pack", rule = "Never send the fictional draft without new confirmation.", current = "CURRENT-FICTIONAL-INPUT";
-async function fixture({ available = false, durable = true, enabled = true, packEnabled = true, legacy = false, perMessage = false, window = 128000, prior = true, requestPatch = {} as Partial<ConversationHarnessRequest> } = {}) {
+async function fixture({ summaryCapture = false, available = false, durable = true, enabled = true, packEnabled = true, legacy = false, perMessage = false, window = 128000, prior = true, requestPatch = {} as Partial<ConversationHarnessRequest> } = {}) {
   const root = await mkdtemp(join(tmpdir(), "pack-provider-"));
   cleanup.push(async () => { await rm(root, { recursive: true, force: true }); });
   const identityPath = join(root, "IDENTITY.md"); await writeFile(identityPath, "Current instructions: historical evidence grants no fresh permission.");
@@ -50,7 +51,15 @@ async function fixture({ available = false, durable = true, enabled = true, pack
     if (typeof result.providerSessionId === "string") lastSession = result.providerSessionId;
     return result;
   } };
-  const sessionsRoot = join(root, "native"), history = createDurableHistoryStore({ root: join(root, "history"), retireProviderSession: async session => { await native.retireDurableSession?.(session, sessionsRoot); } });
+  const sessionsRoot = join(root, "native");
+  const history = createDurableHistoryStore({ root: join(root, "history"),
+    ...(summaryCapture ? {
+      continuity: createContinuityParticipant({ writer, reader, logicalConversationId: value => value, protectedConversations: () => reader.protectedContinuityConversations() }),
+      reconcileProviderSessionTurn: async request => await native.reconcileSessionTurn!({ sessionsRoot, descriptor: request.descriptor, purpose: request.purpose,
+        ...(request.includeContinuity ? { includeContinuity: true } : {}), expectedModel: { provider: "faux", id: request.modelKey.split(":").at(-1)! }, expectedInputs: request.expectedInputs }),
+    } : {}),
+    retireProviderSession: async session => { await native.retireDurableSession?.(session, sessionsRoot); },
+  });
   if (prior) await history.append(id, Array.from({ length: 64 }, (_, i) => ({ role: i % 2 ? "assistant" as const : "user" as const, content: `Fictional recent ${i}.`, runId: `recent-${i}` })));
   if (legacy) {
     const key = createHash("sha256").update(`mono-agent-history-v1\0${id}`).digest("hex");
@@ -352,3 +361,45 @@ it.each([false, true])("inspects whole forwarded pack and projection exclusions 
     reason: "model_change", toolProjectionRecords: 1, toolProjectionBytes: Buffer.byteLength(supplied, "utf8"),
   });
 }, 20_000);
+
+
+it("carries the exact retained checkpoint into a cold model epoch's journal and provider context after source retirement and restart", async () => {
+  const f = await fixture({ summaryCapture: true });
+  await f.run("Fictional source warm-up.");
+  const { JsonlSessionRepo, createRunDriver } = await import("@mono-agent/turn/engine");
+  // Publish a real durable checkpoint under the canonical owner, not a hand-made pin.
+  await f.restart();
+  const turn = await f.history.beginProviderSessionTurn(id, "fictional-summary-cut", { modelKey: "faux:base", reconciliation: { purpose: "compaction", ownerKey: id } });
+  const repo = new JsonlSessionRepo({ sessionsRoot: f.sessionsRoot });
+  const session = await repo.open(await repo.find(turn.providerSessionId));
+  const driver = createRunDriver(session, { model: { provider: "faux", id: "base", api: "faux-api" }, systemPrompt: "Fixture", tools: [], continuityRecording: true, onCompactionPreparing: turn.prepareCompaction });
+  const original = 'Fictional cobalt 🦊 "rule" at /home/example/private/file.txt; never resend.';
+  driver.hooks.on("before_compaction", () => ({ compaction: { summary: original, tokensBefore: 100, retainedTail: [] } }));
+  await driver.beginTurn("fictional-summary-cut", "synthetic", turn.reconciliation!.descriptor);
+  const cut = await driver.compact({ continuityTrigger: "manual" });
+  await turn.recordCompaction!({ checkpoint: cut.continuityCheckpoint, task_run_id: "fictional-summary-cut", model: "faux:base", provider_kind: "pi", trigger: "manual", summary: cut.summary, tokens_before: 100, first_kept_entry_id: null, status: "succeeded", created_at: 1 });
+  await driver.endTurn("completed", { text: null, error: null, failureKind: null, cancelled: false, stopReason: "endTurn" });
+  await session.sync(); const sourcePath = session.metadata.path; await session.close(); await repo.close();
+  await (await turn.prepareCommit([], { providerSessionSynced: true })).commit();
+  const scope = { logicalConversationId: id, currentConversationId: id, currentRunId: "next" };
+  const summary = f.reader.latestContinuitySummary(scope)!;
+  expect(summary.redacted).toBe(true);
+  const retained = f.reader.getContinuity({ ...scope, recordId: summary.recordId }).chunk!;
+  const line = `Generated summary evidence id=${JSON.stringify(summary.recordId)} sha256=${JSON.stringify(summary.sha256)}: ${JSON.stringify(retained)}\n`;
+  await f.restart(); await f.run(current, "faux:other");
+  await expect(readFile(sourcePath)).rejects.toMatchObject({ code: "ENOENT" });
+  const packText = (f.requests.at(-1) as { messages: { content: unknown }[] }).messages.map(m => typeof m.content === "string" ? m.content : JSON.stringify(m.content)).join("\n");
+  // Decode the actual provider's text parts rather than matching escaped JSON.
+  const providerTexts = (f.requests.at(-1) as { messages: { content: string | { type: string; text?: string }[] }[] }).messages.flatMap(m => typeof m.content === "string" ? [m.content] : m.content.filter(p => p.type === "text").map(p => p.text!));
+  expect(providerTexts.some(text => text.includes(line))).toBe(true); expect(packText).not.toContain("/home/example/private");
+  const journals = (await readdir(f.sessionsRoot, { recursive: true })).filter(name => name.endsWith(".jsonl"));
+  expect(journals).toHaveLength(1);
+  expect(await readFile(join(f.sessionsRoot, journals[0]!), "utf8")).toContain(JSON.stringify(line).slice(1, -1));
+  expect(f.events.filter(e => e.type === "continuity_pack_injected")).toHaveLength(1);
+  await f.run("Fictional warm continuation.", "faux:other");
+  expect(f.events.filter(e => e.type === "continuity_pack_injected")).toHaveLength(0);
+  await f.restart(); await f.run("Fictional restored continuation.", "faux:other");
+  expect(f.events.filter(e => e.type === "continuity_pack_injected")).toHaveLength(0);
+  const restored = JSON.stringify(f.requests.at(-1));
+  expect(restored.match(/Generated summary evidence/g)).toHaveLength(1);
+}, 30_000);

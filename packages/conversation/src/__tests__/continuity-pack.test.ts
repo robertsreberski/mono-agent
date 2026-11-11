@@ -1,4 +1,4 @@
-import { PACK_RETRIEVAL_GUIDANCE, packTokens } from "../continuity/render-fit.js";
+import { PACK_HEADER, PACK_RETRIEVAL_GUIDANCE, packTokens } from "../continuity/render-fit.js";
 import { createDurableHistoryStore } from "../history/canonical/store.js";
 import { bindContinuityQuotation, continuityQuotation } from "../tool-history/continuity-input.js";
 import { createHash } from "node:crypto";
@@ -330,4 +330,90 @@ it("never directs retrieval while a purge is pending, even with ConversationHist
   const text = String(supply([], 8000, "detached_context", () => {}, undefined, true)[0]!.content);
   expect(text).toContain("coverage gap"); expect(text).not.toContain("ConversationHistory");
   expect(text).not.toContain("Fictional retained evidence.");
+});
+
+
+it.each(["Plain fictional summary.", 'Quote "\\" and newline\nwith 🦊 Ω.'.repeat(50)])("admits a whole summary at the exact reserved-marker boundary, never a fragment: %s", text => {
+  const summary = { ...record(900, text, "summary"), provenance: "generated" as const, sha256: createHash("sha256").update(text).digest("hex") };
+  const line = `Generated summary evidence id=${JSON.stringify(summary.recordId)} sha256=${JSON.stringify(summary.sha256)}: ${JSON.stringify(text)}\n`;
+  const boundary = packTokens(PACK_HEADER + line) + 220;
+  const source = { records: [record(1, "Small owner rule."), summary], omitted: 0, gaps: 0 };
+  const exact = renderContinuityPack(source, [], boundary);
+  expect(exact.counts.summary).toBe(1); expect(exact.text).toContain(line);
+  expect(exact.text!.indexOf(line)).toBe(PACK_HEADER.length);
+  const overflow = renderContinuityPack(source, [], boundary - 1);
+  expect(overflow.counts.summary).toBe(0); expect(overflow.text).not.toContain("Generated summary evidence");
+  expect(overflow.text).not.toContain(JSON.stringify(text));
+  expect(overflow.text).toContain("Generated summary omitted: entry_tokens=");
+  expect(overflow.text).toContain("content_headroom_tokens=");
+  expect(overflow.degradedReason).toBe("summary_headroom"); expect(overflow.omitted).toBeGreaterThanOrEqual(1);
+  expect(overflow.tokens).toBeLessThanOrEqual(boundary - 1);
+});
+
+it("retains a redacted summary exactly, including its retained digest and JSON quoting expansion", async () => {
+  const { retainContinuityText } = await import("../tool-history/continuity-payload.js");
+  const retained = retainContinuityText('Fictional note at /home/example/private/file.txt; keep "cobalt" 🦊.');
+  expect(retained.redacted).toBe(true);
+  const summary = { ...record(1, retained.text, "summary"), ...retained, provenance: "generated" as const };
+  const pack = renderContinuityPack({ records: [summary], omitted: 0, gaps: 0 }, []);
+  expect(pack.text).toContain(`sha256=${JSON.stringify(retained.sha256)}: ${JSON.stringify(retained.text)}\n`);
+  expect(pack.text).not.toContain("/home/example/private");
+  const expanded = { ...summary, text: '"\\\n'.repeat(6000) };
+  const overflow = renderContinuityPack({ records: [expanded], omitted: 0, gaps: 0 }, []);
+  expect(Buffer.byteLength(expanded.text)).toBeLessThan(24000);
+  expect(overflow.counts.summary).toBe(0); expect(overflow.omitted).toBe(1);
+  expect(overflow.text).toContain("whole entry required");
+});
+
+it("carries the pinned summary through a >512-tool shortlist and crowded pack, without changing either bound", async () => {
+  const f = await fixture();
+  const binding = { conversationId: "fictional", logicalConversationId: "fictional", runId: "old-tools", isolated: false, continuityEnabled: true as const, finalizedContinuity: true as const };
+  for (let i = 0; i < 520; i++) {
+    const toolCallId = `pressure-${i}`;
+    await f.writer.persist(binding, { phase: "invocation", toolCallId, toolName: "mail_read", arguments: { id: i } });
+    await f.writer.persist(binding, { phase: "result", toolCallId, toolName: "mail_read", state: "success", content: "Fictional lookup detail. ".repeat(80) });
+  }
+  await f.writer.finishRun(binding, "completed");
+  for (let i = 0; i < 30; i++) await publish(f.writer, "Owner rule. ".repeat(100), `owner-${i}`);
+  await publish(f.writer, "Complete fictional summary 🦊: keep cobalt. ".repeat(150), "summary");
+  const { DatabaseSync } = await import("node:sqlite"); const db = new DatabaseSync(f.reader.databasePath);
+  db.exec("UPDATE continuity_records SET kind='summary',provenance='generated' WHERE run_id='summary'; INSERT INTO continuity_pins SELECT record_id,'summary','fictional',0 FROM continuity_records WHERE run_id='summary'"); db.close();
+  const snapshot = f.reader.snapshotContinuity(scope);
+  expect(snapshot.records).toHaveLength(512); expect(snapshot.records[0]!.kind).toBe("summary");
+  expect(snapshot.omitted).toBe(39); expect(snapshot.degradedReason).toBe("snapshot_bounds");
+  const pack = renderContinuityPack(snapshot, []);
+  expect(pack.counts.summary).toBe(1); expect(pack.counts.owner).toBeGreaterThan(0); expect(pack.counts.tool).toBeGreaterThan(0);
+  expect(pack.text).toContain(JSON.stringify(snapshot.records[0]!.text));
+  expect(pack.text!.indexOf("Generated summary evidence")).toBeLessThan(pack.text!.indexOf("Historical owner request"));
+  expect(pack.tokens).toBeLessThanOrEqual(8000); expect(pack.omitted).toBeGreaterThan(snapshot.omitted);
+}, 30_000);
+
+it.each(["unpinned", "prepared", "purged", "cross-bucket", "current-run", "future"])("never substitutes an older summary for an ineligible %s pin", async mode => {
+  const f = await fixture();
+  await publish(f.writer, "Older unpinned summary.", "older");
+  await publish(f.writer, "Boundary owner.", "boundary");
+  await publish(f.writer, "Ineligible summary.", mode === "current-run" ? "current" : "target", "user", mode === "cross-bucket" ? "fictional:day" : "fictional");
+  const { DatabaseSync } = await import("node:sqlite"); const db = new DatabaseSync(f.reader.databasePath);
+  db.exec("UPDATE continuity_records SET kind='summary',provenance='generated' WHERE run_id IN ('older','target','current')");
+  if (mode !== "unpinned") db.exec("INSERT INTO continuity_pins SELECT record_id,'summary','fictional',0 FROM continuity_records WHERE run_id IN ('target','current')");
+  if (mode === "prepared") db.exec("UPDATE continuity_generations SET state='prepared' WHERE generation_id IN (SELECT generation_id FROM continuity_records WHERE run_id='target'); UPDATE continuity_records SET finalized=0 WHERE run_id='target'");
+  if (mode === "purged") db.exec("UPDATE continuity_records SET retained_text=NULL WHERE run_id='target'");
+  db.close();
+  const snapshot = f.reader.snapshotContinuity({ ...scope, ...(mode === "future" ? { historyBoundary: "boundary" } : {}) });
+  expect(snapshot.records.filter(record => record.kind === "summary")).toEqual([]);
+  expect(renderContinuityPack(snapshot, []).text).not.toContain("summary evidence");
+});
+
+
+it("keeps summary-first materialization within the existing 4-MiB snapshot byte bound", async () => {
+  const f = await fixture();
+  for (let i = 0; i < 6; i++) await publish(f.writer, "Fictional large owner note. ".repeat(33000), `large-${i}`);
+  await publish(f.writer, "Whole fitting summary under byte pressure.", "summary");
+  const { DatabaseSync } = await import("node:sqlite"); const db = new DatabaseSync(f.reader.databasePath);
+  db.exec("UPDATE continuity_records SET kind='summary',provenance='generated' WHERE run_id='summary'; INSERT INTO continuity_pins SELECT record_id,'summary','fictional',0 FROM continuity_records WHERE run_id='summary'"); db.close();
+  const source = f.reader.snapshotContinuity(scope);
+  expect(source.records[0]!.kind).toBe("summary"); expect(source.degradedReason).toBe("snapshot_bounds");
+  expect(source.records.reduce((n, record) => n + Buffer.byteLength(record.text), 0)).toBeLessThanOrEqual(4 * 1024 * 1024);
+  expect(source.omitted).toBeGreaterThan(0);
+  expect(renderContinuityPack(source, []).counts.summary).toBe(1);
 });

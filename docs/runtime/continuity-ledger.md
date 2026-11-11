@@ -276,15 +276,26 @@ covers retained records, not derived entries.
 
 A shown ledger must not push out the newest owner evidence the no-ledger pack
 would carry, within the same 8,000-token pack and unchanged prefix rule. The renderer first
-runs the unchanged no-ledger selection over the same snapshot and history. The
+runs the no-ledger selection over the same snapshot and history, including any
+eligible whole pinned summary before tools and owners. The
 owners it admits form the backbone, sorted by host ordinal then record id.
 With the ledger shown, selection (not layout) admits non-demoted backbone owners
 from both ends: oldest, newest, second oldest, second newest, and so on. Other
 owners follow oldest-first, and demoted owners stay last. The ledger's cost
 therefore falls on middle history; early rules and late corrections are kept.
-Tool reservation, effect-first ranking, `contentFreeRead`, demotion, section
-layout, rendered text formats and all bounds are unchanged. Packs without a
-shown ledger are byte-identical to the previous renderer.
+Ledger-prefix admission and its priority are unchanged. The complete eligible
+pinned summary takes first claim only on the headroom left after that prefix;
+it is laid out first, then owners and tools follow their existing layout. A
+summary that fits alone can therefore be omitted beside an admitted ledger.
+Whole-summary carriage includes JSON quotation expansion and prefix/marker costs
+within `min(8000, actual headroom)` estimated tokens. An overflow is counted and
+disclosed with content-free size/headroom estimates, never clipped or replaced
+with an older summary. Tool reservation uses 40% of the residual usable space;
+effect-first ranking, `contentFreeRead`, demotion and all bounds remain unchanged.
+Without an eligible summary, packs retain the previous fallback behavior.
+Per-message mode can pay the summary cost on each replayed turn; warm resumes
+add no second pack. Physical-bucket scoping still excludes yesterday's summary
+on daily rollover. Assistant commitments receive no dedicated evidence lane.
 
 This is a structural trade-off, not a guarantee: a middle owner instruction
 (for example a withdrawal pending confirmation) that the no-ledger pack shows can
