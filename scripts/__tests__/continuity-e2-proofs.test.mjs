@@ -52,7 +52,10 @@ it.each(["faux-short", "faux-max", "faux-faithful"])("runs every configured proo
       expect(v.lookup.verifiedRecords).toBeGreaterThan(0);
       expect(v.preparation).toMatchObject({ evidenceAfterCompaction: true, coldProjection: report.arm === "switch" ? "probe-model-change" : "scripted-round-trip", absenceBeforeArmBoundary: report.arm === "switch" ? null : true });
       if (report.arm === "cancel") expect(v).toMatchObject({ newProcess: true, forwarded: true, sentinelOffered: true });
-      if (report.arm === "idle") expect(v.idle).toMatchObject({ observed: true, reason: "idle_timeout", timeoutMs: 1200 });
+      if (report.arm === "idle") {
+        expect(v.idle).toMatchObject({ observed: true, reason: "idle_timeout", timeoutMs: 1200 });
+        expect(v.preparation.order.slice(-4)).toEqual(["observed-idle-eviction", "same-model-reopen", "history-recovery", "follow-up-probes"]);
+      }
       if (report.arm === "pressure") {
         expect(v.compactions).toHaveLength(1);
         expect(v.assertions.durableShippingCeilingCompaction).toBe(true);
@@ -94,12 +97,20 @@ it.each(["cancel", "pressure"])("rejects the old pre-compaction evidence fixture
 it("shows why post-compaction placement matters: early evidence only passes with the lossy summary", async () => {
   const dir = await scratch(); processGuard();
   const result = await runE2Proofs({ output: join(dir, "run"), arm: "pressure", summary: "faux-short", fault: "early-evidence" });
-  for (const v of result[0].report.variants) expect(v.lookup).toMatchObject({ initiallyPresent: false, sourceReturned: true });
+  for (const v of result[0].report.variants) {
+    expect(v.lookup).toMatchObject({ initiallyPresent: false, sourceReturned: true });
+    expect(v.preparation).toMatchObject({ evidenceAfterCompaction: false, coldProjection: "scripted-round-trip" });
+    expect(v.preparation.order.slice(0, 3)).toEqual(["record-evidence", "shipping-ceiling-compaction", "scripted-round-trip"]);
+  }
 }, 180_000);
 it("rejects evidence placed before compaction even with the new cold-projection boundary", async () => {
   const dir = await scratch(); processGuard();
   await expect(runE2Proofs({ output: join(dir, "run"), arm: "pressure", summary: "faux-faithful", fault: "early-evidence" })).rejects.toThrow("E2_PROOF_INITIAL_PRESENT");
 }, 180_000);
+it("rejects an unknown offline summary selector before running any fixture", async () => {
+  const dir = await scratch();
+  await expect(runE2Proofs({ output: join(dir, "run"), arm: "switch", summary: "faux-unknown" })).rejects.toThrow("E2_ARGUMENTS_INVALID");
+});
 it("rejects faux-summary or fault injection on the paid proof entry before authority access", async () => {
   for (const injection of [{ summary: "faux-faithful" }, { summary: "faux-short" }, { fault: "legacy-evidence" }, { fault: "early-evidence" }]) {
     await expect(runE2Proofs({ real: true, ...injection })).rejects.toThrow("E2_ARGUMENTS_INVALID");

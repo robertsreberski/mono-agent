@@ -20,6 +20,7 @@ import { PROOF_CODES, requireProof, assertProofEvidence, assertSetupCompactions 
 
 export const PROOF_ARMS = Object.freeze(["switch", "cancel", "idle", "pressure"]);
 export const PROOF_CHILD = fileURLToPath(new URL("./continuity-e2-fixture.mjs", import.meta.url));
+const OFFLINE_SUMMARIES = Object.freeze(["faux-short", "faux-max", "faux-faithful"]);
 const FAULTS = Object.freeze(["repeat", "early-idle", "pack", "leak", "action-only", "missing-action", "missing-value", "legacy-evidence", "early-evidence"]);
 // Each follow-up asserts only the information its unchanged prompt requests.
 const PROBES = Object.freeze([
@@ -74,6 +75,8 @@ export function proofHistoryWarningClass(message) {
 export async function runProofPhase({ base, arm, phase = "whole", variant = "ceiling", fault, summary, onContext = () => {}, paidAdapter }) {
   if (paidAdapter) { assertE2PhaseAdapter(paidAdapter); paidAdapter.assertProof({ base, arm, phase, variant }); if (fault !== undefined || summary !== undefined) fail("E2_ARGUMENTS_INVALID"); }
   if (fault !== undefined && !FAULTS.includes(fault)) fail("E2_ARGUMENTS_INVALID");
+  if (summary !== undefined && !OFFLINE_SUMMARIES.includes(summary)) fail("E2_ARGUMENTS_INVALID");
+  const earlyEvidence = ["legacy-evidence", "early-evidence"].includes(fault);
   if (!PROOF_ARMS.includes(arm) || !["whole", "seed", "resume"].includes(phase) || !["ceiling", "restart"].includes(variant)) fail("E2_ARGUMENTS_INVALID");
   const fixture = arm === "cancel" || arm === "pressure" && variant === "restart";
   requireProof(fixture ? phase !== "whole" : phase === "whole", "E2_ARGUMENTS_INVALID");
@@ -268,9 +271,11 @@ export async function runProofPhase({ base, arm, phase = "whole", variant = "cei
       compactions: resumed && arm === "pressure" ? [...seedReceipt.compactions, ...route.report().compactions] : route.report().compactions });
     if (arm === "cancel") requireProof(sentinelOffered && receipt.attempts === 0, "E2_PROOF_SENTINEL_REPEATED");
     return { pid: process.pid, assertions, requests, compactions: route.report().compactions, boundary, pack, ...(idle ? { idle } : {}), sentinelOffered,
-      preparation: { evidenceAfterCompaction: !["legacy-evidence", "early-evidence"].includes(fault), coldProjection: arm === "switch" ? "probe-model-change" : "scripted-round-trip", absenceBeforeArmBoundary: arm === "switch" ? null : resumed ? seedReceipt.absenceEstablished : absenceEstablished,
-        order: [...(needsPressure ? ["shipping-ceiling-compaction"] : []), "record-evidence", ...(arm === "switch" ? ["probe-model-change"] : ["scripted-round-trip"]),
-          ...(arm === "cancel" ? ["forwarded-cancel", "process-restart"] : arm === "idle" ? ["observed-idle-eviction"] : arm === "pressure" && variant === "restart" ? ["process-restart", "probe-model-change"] : []), "history-recovery", "follow-up-probes"] },
+      preparation: { evidenceAfterCompaction: !earlyEvidence, coldProjection: arm === "switch" ? "probe-model-change" : fault === "legacy-evidence" ? "none" : "scripted-round-trip", absenceBeforeArmBoundary: arm === "switch" ? null : resumed ? seedReceipt.absenceEstablished : absenceEstablished,
+        // Derived from what actually ran, including the offline regression faults.
+        order: [...(earlyEvidence ? ["record-evidence"] : []), ...(needsPressure ? ["shipping-ceiling-compaction"] : []), ...(earlyEvidence ? [] : ["record-evidence"]),
+          ...(arm === "switch" ? ["probe-model-change"] : fault === "legacy-evidence" ? [] : ["scripted-round-trip"]),
+          ...(arm === "cancel" ? ["forwarded-cancel", "process-restart"] : arm === "idle" ? ["observed-idle-eviction", "same-model-reopen"] : arm === "pressure" && variant === "restart" ? ["process-restart", "probe-model-change"] : []), "history-recovery", "follow-up-probes"] },
       lookup: { initiallyPresent: snapshot.initiallyPresent, sourceReturned: snapshot.sourceReturned, verifiedRecords: snapshot.records.filter(r => r.verified).length } };
   } finally { try { await opened?.close(); } finally { await tools.close(); } }
 }
@@ -281,6 +286,7 @@ export async function runE2Proofs({ output, arm = "all", real = false, onContext
     return (await import("./continuity-e2-paid-entry.mjs")).runE2Paid({ command: "proofs", registrationPath, registrationSha256, authorizationPath, credentialPath, outputRoot: output });
   }
   if (fault !== undefined && !FAULTS.includes(fault)) fail("E2_ARGUMENTS_INVALID");
+  if (summary !== undefined && !OFFLINE_SUMMARIES.includes(summary)) fail("E2_ARGUMENTS_INVALID");
   if (arm !== "all" && !PROOF_ARMS.includes(arm)) fail("E2_ARGUMENTS_INVALID");
   output = privateOutput(output); await mkdir(output, { mode: 0o700 });
   const restore = installProofIsolation(await proofEnvironment(join(output, "hermetic")));
