@@ -148,8 +148,11 @@ messages retain their attachment names.
 
 Markdown headings, lists, emphasis, code, tables and safe links are supported.
 HTML, interactive apps, diagrams and math are not rendered. PNG/JPEG attachments
-are embedded where available, with referenced inline images placed in the
-message's attachment section. Only already-owned uploads or message-bound agent
+use natural size (downscaled to fit), with a small muted filename caption. Owned
+Markdown images render at their authored position, without a duplicate at the
+message's end; remaining attachments follow the text. Image-bearing tables flow
+in row/column order with column labels. Remote, unowned and data-URL images remain
+short placeholders and are never fetched. Only already-owned uploads or message-bound agent
 artifacts can be read; remote image URLs and local paths are never fetched.
 Unsupported, expired, offline, corrupt or over-budget files get named placeholders.
 

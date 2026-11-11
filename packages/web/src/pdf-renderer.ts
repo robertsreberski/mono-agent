@@ -19,7 +19,7 @@ interface MdNode {
   readonly checked?: boolean | null | undefined;
   readonly children?: readonly MdNode[] | undefined;
 }
-interface Run { text: string; bold?: boolean; italic?: boolean; mono?: boolean; strike?: boolean; link?: string | undefined }
+interface Run { text: string; bold?: boolean; italic?: boolean; mono?: boolean; strike?: boolean; link?: string | undefined; attachment?: PdfAttachment }
 const parser = unified().use(remarkParse).use(remarkGfm);
 const font = (name: string): string => fileURLToPath(new URL(`../assets/pdf-fonts/${name}.ttf`, import.meta.url));
 const safeLink = (url: string | undefined): string | undefined => {
@@ -42,7 +42,6 @@ export function boundedPng(data: Buffer): void {
   }
   inflateSync(Buffer.concat(compressed), { maxOutputLength: width * height * 8 + height * 8 + 1024 });
 }
-const plain = (node: MdNode): string => node.value ?? node.children?.map(plain).join("") ?? node.alt ?? "";
 
 /** Pure document input, with no filesystem paths or network access from Markdown. */
 export async function renderPdf(input: PdfConversation, images: readonly PdfImage[] = []): Promise<Buffer> {
@@ -71,15 +70,24 @@ export async function renderPdf(input: PdfConversation, images: readonly PdfImag
   const proseColor = (): string => quoteDepth > 0 ? "#687078" : "#20252b";
   const body = (): void => { doc.font("body").fontSize(10).fillColor(proseColor()); };
   const gap = (): void => { doc.moveDown(0.6); doc.x = 48; };
-  const rich = (runs: readonly Run[], indent = 0): void => {
-    if (runs.length === 0) return;
-    doc.x = 48 + indent;
-    runs.forEach((run, i) => {
-      doc.font(run.mono ? "mono" : run.bold ? "bold" : "body").fillColor(run.link ? "#24527a" : proseColor())
-        .text(run.text, { width: width - indent, continued: i < runs.length - 1,
-          oblique: run.italic ?? false, strike: run.strike ?? false, underline: Boolean(run.link), link: run.link ?? null });
-    });
-    doc.x = 48;
+  const inlineAttachments = new Set<string>();
+  const rich = (runs: readonly Run[], indent = 0, size = 10): void => {
+    let prose: Run[] = [];
+    const flush = (): void => {
+      if (prose.length === 0) return;
+      doc.x = 48 + indent;
+      prose.forEach((run, i) => {
+        doc.font(run.mono ? "mono" : run.bold ? "bold" : "body").fontSize(size).fillColor(run.link ? "#24527a" : proseColor())
+          .text(run.text, { width: width - indent, continued: i < prose.length - 1,
+            oblique: run.italic ?? false, strike: run.strike ?? false, underline: Boolean(run.link), link: run.link ?? null });
+      });
+      prose = []; doc.x = 48;
+    };
+    for (const run of runs) {
+      if (run.attachment) { flush(); inlineAttachments.add(run.attachment.key); image(run.attachment, indent); }
+      else prose.push(run);
+    }
+    flush();
   };
   const code = (value: string, indent: number): void => {
     const padding = 8;
@@ -117,20 +125,36 @@ export async function renderPdf(input: PdfConversation, images: readonly PdfImag
   };
   const image = (a: PdfAttachment, indent = 0): void => {
     const data = imageMap.get(a.key);
-    if (data) {
+    const supported = a.mediaType === "image/png" || a.mediaType === "image/jpeg";
+    if (data && supported) {
       try {
         boundedPng(data);
-        const height = 260;
-        if (doc.y + height > doc.page.height - 48) doc.addPage();
-        doc.image(data, 48 + indent, doc.y, { fit: [width - indent, height] });
-        doc.y += height + 5;
-        body(); doc.text(a.name, 48 + indent, doc.y, { width: width - indent }); gap(); return;
+        // PDFKit's metadata API is absent from @types/pdfkit. Only owned bytes,
+        // never a filename/URL, reach it; respect its JPEG EXIF orientation.
+        const metadata = (doc as typeof doc & { openImage(bytes: Buffer): { width: number; height: number; orientation?: number } }).openImage(data);
+        let { width: intrinsicWidth, height: intrinsicHeight } = metadata;
+        if ((metadata.orientation ?? 0) > 4) [intrinsicWidth, intrinsicHeight] = [intrinsicHeight, intrinsicWidth];
+        if (!Number.isFinite(intrinsicWidth) || !Number.isFinite(intrinsicHeight) || intrinsicWidth <= 0 || intrinsicHeight <= 0) throw new Error("Invalid image dimensions");
+        // One pixel is one point; downscale only, preserving the aspect ratio.
+        const scale = Math.min(1, (width - indent) / intrinsicWidth, 280 / intrinsicHeight);
+        const imageWidth = intrinsicWidth * scale; const imageHeight = intrinsicHeight * scale;
+        const caption = { width: width - indent };
+        doc.font("body").fontSize(9).fillColor("#59616a");
+        const captionHeight = doc.heightOfString(a.name, caption);
+        if (doc.y + imageHeight + 5 + captionHeight > doc.page.height - 48) doc.addPage();
+        const y = doc.y;
+        doc.image(data, 48 + indent, y, { width: imageWidth, height: imageHeight });
+        doc.y = y + imageHeight + 5;
+        doc.font("body").fontSize(9).fillColor("#59616a");
+        doc.text(a.name, 48 + indent, doc.y, caption); gap(); return;
       } catch (error) {
         if (error instanceof WebConsoleError) throw error;
-        // Corrupt/unsupported image remains a named attachment.
+        // Corrupt/unavailable supported images retain their names.
       }
     }
-    body(); doc.text(`[Attachment: ${a.name} — image unavailable or unsupported]`, 48 + indent, doc.y, { width: width - indent }); gap();
+    const placeholder = supported ? `[Image unavailable: ${a.name}]`
+      : a.mediaType.startsWith("image/") ? `[Attachment: ${a.name} — not embedded]` : `[Attachment: ${a.name}]`;
+    body(); doc.text(placeholder, 48 + indent, doc.y, { width: width - indent }); gap();
   };
   try {
     doc.font("bold").fontSize(22).text(input.title || "Conversation");
@@ -138,11 +162,12 @@ export async function renderPdf(input: PdfConversation, images: readonly PdfImag
     if (input.replyInProgress) { body(); doc.text("An in-progress reply is not included."); gap(); }
     if (input.messages.length === 0) { body(); doc.text("No messages to export."); }
     for (const message of input.messages) {
+      inlineAttachments.clear();
       body();
       if (doc.y > doc.page.height - 110) doc.addPage();
       doc.save().lineWidth(0.5).strokeColor("#d0d5da").moveTo(48, doc.y).lineTo(48 + width, doc.y).stroke().restore();
       doc.y += 9;
-      doc.font("bold").fontSize(13).fillColor("#59616a").text(message.role === "user" ? "User" : "Assistant", 48, doc.y);
+      doc.font("body").fontSize(9).fillColor("#59616a").text(message.role === "user" ? "USER" : "ASSISTANT", 48, doc.y);
       if (message.status) doc.font("body").fontSize(9).text(message.status);
       gap(); body();
       if (message.quote) { quoteDepth++; rich([{ text: message.quote, italic: true }], 16); quoteDepth--; gap(); }
@@ -169,7 +194,7 @@ export async function renderPdf(input: PdfConversation, images: readonly PdfImag
             && decodeURIComponent(match[2]!) === a.messageId && decodeURIComponent(match[3]!) === a.id; } catch { return false; }
         });
       };
-      const inline = (node: MdNode, style: Omit<Run, "text"> = {}): Run[] => {
+      const inline = (node: MdNode, style: Omit<Run, "text" | "attachment"> = {}): Run[] => {
         switch (node.type) {
           case "text": return [{ text: node.value ?? "", ...style }];
           case "inlineCode": return [{ text: node.value ?? "", ...style, mono: true }];
@@ -181,8 +206,8 @@ export async function renderPdf(input: PdfConversation, images: readonly PdfImag
             { ...style, link: safeLink(node.url ?? definitions.get(node.identifier?.toLowerCase() ?? "")) }));
           case "image": case "imageReference": {
             const a = ownedImage(node.url ?? definitions.get(node.identifier?.toLowerCase() ?? ""));
-            // Images render below the paragraph in a clean document flow.
-            return [{ text: `[Image: ${node.alt || a?.name || "unavailable"}]`, ...style }];
+            return a ? [{ text: "", attachment: a }]
+              : [{ text: `[Image not included: ${node.alt || "image"}]`, ...style }];
           }
           case "html": return []; // Never export active HTML or hidden markup.
           default: return (node.children ?? []).flatMap((n) => inline(n, style));
@@ -193,8 +218,8 @@ export async function renderPdf(input: PdfConversation, images: readonly PdfImag
         switch (node.type) {
           case "root": node.children?.forEach((n) => block(n, indent)); break;
           case "paragraph": rich((node.children ?? []).flatMap((n) => inline(n)), indent); gap(); break;
-          case "heading": doc.fontSize(Math.max(10, 13 - Math.min(node.depth ?? 1, 6)));
-            rich((node.children ?? []).flatMap((n) => inline(n, { bold: true })), indent); gap(); break;
+          case "heading": rich((node.children ?? []).flatMap((n) => inline(n, { bold: true })), indent,
+            Math.max(10, 13 - Math.min(node.depth ?? 1, 6))); gap(); break;
           case "code": code(node.value ?? "", indent); break;
           case "blockquote": quoteDepth++;
             try { node.children?.forEach((n) => block(n, indent + 16)); } finally { quoteDepth--; }
@@ -206,11 +231,23 @@ export async function renderPdf(input: PdfConversation, images: readonly PdfImag
             doc.moveUp(); n.children?.forEach((child) => block(child, indent + 20));
           }); break;
           case "table": {
-            const rows = node.children ?? [];
+            const rows = (node.children ?? []).map((row) => (row.children ?? []).map((cell) => inline(cell)));
+            if (rows.some((row) => row.some((cell) => cell.some((run) => run.attachment)))) {
+              // Image-bearing tables flow cell by cell, preserving authored order
+              // and column labels instead of moving media past later prose.
+              const labels = rows[0]?.map((cell) => cell.map((run) => run.text).join("")) ?? [];
+              rows.forEach((row, i) => {
+                row.forEach((cell, column) => {
+                  if (i > 0 && labels[column]) rich([{ text: `${labels[column]}:`, bold: true }], indent, 9);
+                  rich(i === 0 ? cell.map((run) => ({ ...run, bold: true })) : cell, indent, 9); gap();
+                });
+              });
+              break;
+            }
             doc.font("body").fontSize(9);
             doc.table({ position: { x: 48 + indent, y: doc.y }, maxWidth: width - indent,
               defaultStyle: { border: 0.5, borderColor: "#d0d5da", padding: 5 },
-              data: rows.map((row, i) => (row.children ?? []).map((cell) => ({ text: plain(cell),
+              data: rows.map((row, i) => row.map((cell) => ({ text: cell.map((run) => run.text).join(""),
                 font: { family: i === 0 ? "bold" : "body", size: 9 }, backgroundColor: i === 0 ? "#eef1f4" : "#ffffff" }))) });
             gap(); break;
           }
@@ -221,7 +258,7 @@ export async function renderPdf(input: PdfConversation, images: readonly PdfImag
       };
       block(tree);
       // Attachment names are always retained, including attachments-only replies.
-      for (const a of message.attachments) image(a);
+      for (const a of message.attachments) if (!inlineAttachments.has(a.key)) image(a);
       gap();
     }
     doc.end();

@@ -1,5 +1,5 @@
 import { deflateSync } from "node:zlib";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { getDocument, OPS } from "pdfjs-dist/legacy/build/pdf.mjs";
 import { createRequire } from "node:module";
 import { mkdir, writeFile } from "node:fs/promises";
@@ -111,7 +111,7 @@ describe("messages-only PDF export", () => {
     expect(pdfImagePixels(jpeg, "image/jpeg")).toBe(320 * 130);
     const model = pdfConversation("A fictional garden plan", at, [
       message([text("Morgan asks for a **small garden** plan.")], { role: "user", quote: { text: "Keep a sunny corner", messageId: "prior" } }),
-      message([text("# A welcoming garden\n\nPolish: ąęłńóśźż ĄĘŁŃÓŚŹŻ. German: Grüße, schön, Straße.\n\n**Bold** and *emphasis*, ~~removed~~, `inline code`.\n\n- Herbs\n- Flowers\n\n1. Prepare soil\n2. Plant seeds\n\n> A useful quote\n\n```js\nconst garden = 'green';\nconsole.log(garden);\n```\n\n| Plant | Season |\n| --- | --- |\n| Basil | Summer |\n| Mint | Spring |\n\n[Plant guide](https://example.com/guide)\n\n![Remote image](https://example.invalid/private.png)"),
+      message([text("# A welcoming garden\n\nPolish: ąęłńóśźż ĄĘŁŃÓŚŹŻ. German: Grüße, schön, Straße.\n\n![Garden illustration](/api/v1/threads/thread/messages/message/reply-attachments/png/content)\n\n**Bold** and *emphasis*, ~~removed~~, `inline code`.\n\n- Herbs\n- Flowers\n\n1. Prepare soil\n2. Plant seeds\n\n> A useful quote\n\n```js\nconst garden = 'green';\nconsole.log(garden);\n```\n\n| Plant | Season |\n| --- | --- |\n| Basil | Summer |\n| Mint | Spring |\n\n[Plant guide](https://example.com/guide)\n\n![Remote image](https://example.invalid/private.png)"),
         { type: "attachment", id: "png", artifactId: "png", name: "garden.png", mediaType: "image/png", sizeBytes: gardenPng.length, integrityId: "test" },
         { type: "attachment", id: "jpeg", artifactId: "jpeg", name: "flowers.jpg", mediaType: "image/jpeg", sizeBytes: jpeg.length, integrityId: "test" },
         { type: "attachment", id: "doc", artifactId: "doc", name: "notes.txt", mediaType: "text/plain", sizeBytes: 5, integrityId: "test" }]),
@@ -131,8 +131,8 @@ describe("messages-only PDF export", () => {
       return item && "height" in item ? item.height : 0;
     };
     expect(fontSize("A fictional garden plan")).toBe(22);
-    expect(fontSize("Assistant")).toBe(13);
-    expect(fontSize("User")).toBe(13);
+    expect(fontSize("ASSISTANT")).toBe(9);
+    expect(fontSize("USER")).toBe(9);
     expect(fontSize("A welcoming garden")).toBe(12);
     const colors: unknown[] = [];
     let imageCount = 0;
@@ -144,6 +144,14 @@ describe("messages-only PDF export", () => {
     expect(imageCount).toBe(2);
     expect(colors).toEqual(expect.arrayContaining(["#687078", "#59616a", "#d0d5da", "#f3f4f5"]));
     expect(extracted).not.toContain(at);
+    expect(extracted).toContain("[Attachment: notes.txt]");
+    expect(extracted).toContain("[Image not included: Remote image]");
+    expect(extracted.split("garden.png")).toHaveLength(2);
+    expect(extracted.indexOf("garden.png")).toBeLessThan(extracted.indexOf("Basil"));
+    const userLabel = firstContent.items.find((item) => "str" in item && item.str === "USER");
+    const titleLabel = firstContent.items.find((item) => "str" in item && item.str === "A fictional garden plan");
+    expect(userLabel && "fontName" in userLabel ? userLabel.fontName : undefined)
+      .not.toBe(titleLabel && "fontName" in titleLabel ? titleLabel.fontName : undefined);
     const artifacts = process.env.PDF_EXPORT_ARTIFACTS;
     if (artifacts) {
       await mkdir(artifacts, { recursive: true }); await writeFile(join(artifacts, "sample.pdf"), bytes);
@@ -156,6 +164,95 @@ describe("messages-only PDF export", () => {
       }
     }
     await task.destroy();
+  });
+
+  it("sizes images without upscaling and keeps small muted captions next to their actual bottom edge", async () => {
+    const sizes = [{ id: "small", width: 100, height: 40 }, { id: "tall", width: 1200, height: 900 }, { id: "wide", width: 1400, height: 100 }];
+    const attachments = sizes.map(({ id, width, height }) => {
+      const bytes = canvasModule.createCanvas(width, height).toBuffer("image/png");
+      return { id, width, height, bytes };
+    });
+    const model = pdfConversation("Image sizing", at, [message([text("Filler line\n".repeat(36)),
+      ...attachments.map(({ id, bytes }) => ({ type: "attachment" as const, id, artifactId: id, name: `${id}.png`, mediaType: "image/png", sizeBytes: bytes.length, integrityId: "test" }))])]);
+    const bytes = await renderPdf(model, attachments.map(({ id, bytes }) => ({ key: `message:reply:${id}`, bytes })));
+    const task = getDocument({ data: Uint8Array.from(bytes) });
+    const document = await task.promise;
+    let count = 0;
+    try {
+      expect(document.numPages).toBeGreaterThanOrEqual(2);
+      for (let number = 1; number <= document.numPages; number++) {
+        const page = await document.getPage(number); const operators = await page.getOperatorList();
+        const content = await page.getTextContent(); const viewport = page.getViewport({ scale: 1 });
+        let pageImages = 0;
+        for (let index = 0; index < operators.fnArray.length; index++) if (operators.fnArray[index] === OPS.paintImageXObject) {
+          pageImages++;
+          const size = sizes[count++]!;
+          const matrix = operators.argsArray[operators.fnArray.slice(0, index).lastIndexOf(OPS.transform)] as number[];
+          const w = Math.abs(matrix[0]!); const h = Math.abs(matrix[3]!);
+          const scale = Math.min(1, (viewport.width - 96) / size.width, 280 / size.height);
+          expect(w).toBeCloseTo(size.width * scale); expect(h).toBeCloseTo(size.height * scale);
+          expect(matrix[4]).toBeGreaterThanOrEqual(48);
+          expect(matrix[5]! - h).toBeGreaterThanOrEqual(48);
+          expect(matrix[5]).toBeLessThanOrEqual(viewport.height - 48);
+          const caption = content.items.find((item) => "str" in item && item.str === `${size.id}.png`);
+          expect(caption).toBeDefined();
+          if (caption && "transform" in caption) {
+            expect(caption.height).toBe(9);
+            const baselineGap = viewport.height - caption.transform[5] - matrix[5]!;
+            expect(baselineGap).toBeGreaterThanOrEqual(5); expect(baselineGap).toBeLessThan(18);
+          }
+        }
+        if (pageImages > 0) expect(operators.fnArray.some((op: number, i: number) => op === OPS.setFillRGBColor && operators.argsArray[i]?.[0] === "#59616a")).toBe(true);
+      }
+      expect(count).toBe(3);
+    } finally { await task.destroy(); }
+  });
+
+  it("distinguishes ordinary attachments, unavailable PNG/JPEG, and unsupported image formats", async () => {
+    const media = [["notes.txt", "text/plain"], ["recording.wav", "audio/wav"], ["missing.png", "image/png"],
+      ["broken.jpg", "image/jpeg"], ["animation.gif", "image/gif"], ["drawing.webp", "image/webp"]];
+    const model = pdfConversation("Attachments", at, [message(media.map(([name, mediaType]) => ({
+      type: "attachment" as const, id: name!, artifactId: name!, name: name!, mediaType: mediaType!, sizeBytes: 1, integrityId: "test",
+    })))]);
+    const extracted = await pdfText(await renderPdf(model, [{ key: "message:reply:broken.jpg", bytes: Buffer.from("corrupt") }]));
+    for (const name of ["notes.txt", "recording.wav"]) expect(extracted).toContain(`[Attachment: ${name}]`);
+    for (const name of ["missing.png", "broken.jpg"]) expect(extracted).toContain(`[Image unavailable: ${name}]`);
+    for (const name of ["animation.gif", "drawing.webp"]) expect(extracted).toContain(`[Attachment: ${name} — not embedded]`);
+    expect(extracted).not.toContain("image unavailable or unsupported");
+  });
+
+  it("places owned inline images in authored order, once, including references, uploads and table cells", async () => {
+    const path = "/api/v1/threads/thread/messages/message/reply-attachments/png/content";
+    for (const markdown of [`Before ![plant](${path}) After`, `Before ![plant][photo] After\n\n[photo]: ${path}`,
+      "Before ![plant](/api/v1/uploads/png/content?download=1) After", `> Before ![plant](${path}) After`,
+      `- Before ![plant](${path}) After`, `| Plot |\n| --- |\n| Before ![plant](${path}) After |`]) {
+      const base = pdfConversation("Inline images", at, [message([text(markdown),
+        { type: "attachment", id: "png", artifactId: "png", name: "inline.png", mediaType: "image/png", sizeBytes: png.length, integrityId: "test" },
+        { type: "attachment", id: "tail", artifactId: "tail", name: "tail.txt", mediaType: "text/plain", sizeBytes: 1, integrityId: "test" }])]);
+      const upload = markdown.includes("/uploads/");
+      const model = upload ? { ...base, messages: base.messages.map((m) => ({ ...m, attachments: m.attachments.map((a) => a.id === "png" ? { ...a, origin: "upload" as const, key: "message:upload:png" } : a) })) } : base;
+      const bytes = await renderPdf(model, [{ key: upload ? "message:upload:png" : "message:reply:png", bytes: png }]);
+      const extracted = await pdfText(bytes);
+      expect(extracted.split("inline.png")).toHaveLength(2);
+      expect(extracted.indexOf("Before")).toBeLessThan(extracted.indexOf("inline.png"));
+      expect(extracted.indexOf("inline.png")).toBeLessThan(extracted.indexOf("After"));
+      expect(extracted.indexOf("After")).toBeLessThan(extracted.indexOf("tail.txt"));
+      const task = getDocument({ data: Uint8Array.from(bytes) }); const document = await task.promise;
+      try {
+        let images = 0;
+        for (let page = 1; page <= document.numPages; page++) images += (await (await document.getPage(page)).getOperatorList()).fnArray.filter((op: number) => op === OPS.paintImageXObject).length;
+        expect(images).toBe(1);
+      } finally { await task.destroy(); }
+    }
+  });
+
+  it("never fetches remote, data or foreign inline images", async () => {
+    const model = pdfConversation("Unowned images", at, [message([text("![Remote](https://example.invalid/plant.png)\n\n![Foreign](/api/v1/threads/foreign/messages/message/reply-attachments/png/content)\n\n![Upload](/api/v1/uploads/foreign/content)\n\n![Data](data:image/png;base64,AAAA)")])]);
+    const fetch = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("Must not fetch"));
+    let bytes: Buffer;
+    try { bytes = await renderPdf(model); expect(fetch).not.toHaveBeenCalled(); } finally { fetch.mockRestore(); }
+    const extracted = await pdfText(bytes);
+    for (const alt of ["Remote", "Foreign", "Upload", "Data"]) expect(extracted).toContain(`[Image not included: ${alt}]`);
   });
 
   it("wraps unbroken code and paginates its background without dropping lines", async () => {
