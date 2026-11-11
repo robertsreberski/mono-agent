@@ -2701,8 +2701,9 @@ identity. A separate durable-compaction acknowledgment is required, and the
 controller re-verifies the result files before admitting a probe. Opaque phase
 adapters route every paid summary, continuation and probe through the shared
 guard, IPC admission/consume/settle and the **single native real-send site**.
-Source setup remains scripted/faux. There is one active paid request, no retry,
-fallback, alternate stream, direct provider dispatch or credential refresh.
+Source setup remains scripted/faux. There is one active paid request, with only
+the controller-authorized bounded retry below; no fallback, alternate stream,
+direct provider dispatch or credential refresh.
 The existing OAuth credential is read without mutation.
 
 Shipping compaction disables SDK body caching. When a request is assigned a
@@ -2714,7 +2715,7 @@ Reservations never assume a cache hit.
 
 #### E2 request, phase and run clocks
 
-The E2 descriptor uses `continuity-e2-guarded-plan-v2` and requires four explicit
+The E2 descriptor uses `continuity-e2-guarded-plan-v3` and requires four explicit
 positive integer millisecond fields in `deadlines` (no inherited defaults):
 
 | Field | Meaning and ceiling |
@@ -2724,7 +2725,7 @@ positive integer millisecond fields in `deadlines` (no inherited defaults):
 | `childWatchdogMs` | Phase-child lifetime from fork; at least the request duration, no greater than the phase duration or 86400000 |
 | `runDeadlineMs` | Entire authorization, never reset between phases; at least the phase duration, at most 86400000 |
 
-The phase duration must be at least the request duration. Old E2 plan-v1 or
+The phase duration must be at least the request duration. Old E2 plan-v1/v2 or
 missing/invalid clocks refuse with `e2_deadlines_invalid`; regenerate the
 registration and authorization. All four clocks are bound in the authorization.
 Lookup-pilot keeps its original descriptor and slot-relative `deadlineMs` meaning
@@ -2746,7 +2747,8 @@ latency or a completion guarantee: sustained 10-minute calls cannot all fit.
 Protocol `limits.timeoutMs` remains a separate, source-bound per-harness-turn
 budget (up to 10 minutes); an R=3 probe needs all four rounds plus tools within
 that turn budget. Cost estimates now explicitly state timing is not estimated.
-The cap, token limits, no-retry rule and single-use authorization are unchanged.
+The cap, token limits and single-use authorization are unchanged. Retries do not
+reset phase, child, run or per-harness-turn clocks.
 
 #### Parent-created exact-cap authorization
 
@@ -2812,13 +2814,71 @@ as provider success.
 Exactly **one paid run per authorization** is allowed. A registered seed→resume
 transition may follow expected seed completion, including its intentional
 forwarded cancellation, only inside the same uninterrupted controller. An
-unexpected model/runtime failure, child/controller crash, cap or sticky stop
-ends the run; no later phase or recovery dispatches. `e2_phase_failed` is a
+unexpected model/runtime failure that is not recovered by the bounded retry,
+child/controller crash, cap or sticky stop ends the run; no later phase or recovery dispatches. `e2_phase_failed` is a
 non-integrity runtime/model failure, not a fabricated success. Reconciliation
 only accounts for existing work and retains unknown/cancelled/lost liability;
 it never restarts inference. Reuse of a stopped output also refuses at its
 existing lease claim. A new paid attempt needs separate explicit approval and
-new bound artifacts, not an automated retry.
+new bound artifacts, never an automatic restart.
+
+#### Controller-owned bounded retry
+
+Plan-v3 requires the exact source-owned `E2_RETRY_POLICY` in `descriptor.retryPolicy`:
+
+```json
+{
+  "schema": "continuity-e2-retry-policy-v1",
+  "maxPerRequest": 1,
+  "maxPerRun": 8,
+  "eligibleCauseClasses": [
+    "stream", "http_5xx", "http_429", "empty_final_text", "unowned_aborted_result"
+  ]
+}
+```
+
+The permit is `e2-permit-v2`. Old plans fail closed, not as implicit no-retry
+contracts; refresh registration and authorization. The outer registration and
+`continuity-e2-authorization-v1` schemas stay unchanged. Use
+`e2AuthorizationBindings` again: its entire descriptor and exact raw registration
+bindings include this policy, alongside unchanged cap, clocks, code/build/catalog,
+inputs, schedule, tools, roles and account/output identity. Preparation grants no
+paid authority.
+
+Only the controller grants a retry, from the failed hold's durably settled,
+validated closed cause record, never exception text or child-proposed eligibility.
+A dispatch/stream break, HTTP 500–599 or 429, empty final SDK text, or an unowned
+SDK abortion is eligible. Guard/policy/gate and body-verification refusals,
+integrity stops, any deadline, context/auth/quota, other HTTP 4xx, length and
+unknown results, or an owner cancel are never retried. A server/rate code inside
+HTTP 200 alone is not an eligible HTTP failure; only a classified stream break
+qualifies independently. SDK/provider/outage retries remain disabled.
+
+Each logical request gets at most one retry; all phases together get at most
+eight. A second failure or exhausted allowance ends the run as before. The
+original logical schedule and every `maxRequests`, continuation/probe ordinal,
+R and funded tool round stay frozen. For a 320-original registration (284 replay,
+36 proof), the maximum physical count is 328. A retry freezes the first actual
+projected payload bytes, digest, model, role and checkpoint: no re-projection,
+prompt changes, new tool rounds or alternate models. Failed stream events are
+withheld from the logical turn; only the accepted attempt's events are delivered.
+
+Every retry obtains a new reservation and permit, consume, actual-body verification
+and request clock under the same cap. Lost liability stays fully retained and
+known usage stays charged; nothing is released or netted against the retry. If
+the remaining cap cannot cover its reservation, there is no retry fetch. The cap
+is never increased, and completion remains best effort. A controller/child crash
+or restart during a grant or retry is reconciled conservatively with no automatic
+resend; single-use authority remains consumed.
+
+The estimate keeps original-only counts and costs unchanged and adds
+`retryCeiling.maximumAdditionalRequests` (8) and `maximumAdditionalUnits`
+(eight times the largest reservation), with the bound policy. At a $3.92 largest
+reservation this is a separate $31.36 exposure ceiling, not approval or a new cap.
+Slot receipts and run reports add content-free `retries` counts: `attempted`
+(new retry holds admitted), `succeeded` (settled without a failure cause), and
+`causeClasses` for admitted retries. A granted but cap-refused retry is not an
+attempted physical request.
 
 #### Exact committed-summary lineage
 
@@ -2911,10 +2971,12 @@ checkpoint, payload digest, source stage, SDK reason, text-present flag, observe
 response/terminal-usage flags, numeric HTTP status when exposed, and fixed cause
 classes: `sdk_error_result`, `sdk_aborted_result`, `sdk_length_result`,
 `empty_final_text`, `sdk_promise_rejected`, `guard_refused`, or `unknown`. Provider
-classes are `context`, `auth`, `quota`, `rate`, `server`, `stream`, or `unknown`.
+classes are `context`, `auth`, `quota`, `rate`, `server`, `stream`, `deadline`,
+or `unknown`.
 Unknown provider codes remain `unknown`. Raw errors, headers, bodies and
 exception text are never saved. The private phase refusal's `nativeCause` and
-slot diagnostics expose this record without changing stop or liability rules.
+slot diagnostics expose this record, including a boolean `ownerCanceled`,
+without changing settlement liability rules.
 A pre-dispatch failure can have a null payload digest. These observations are not
 physical-send or billing receipts. The guarded native response boundary preserves
 fixed HTTP/JSON/SSE classes before existing auth/quota refusals, including when

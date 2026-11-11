@@ -8,8 +8,9 @@ import { validateE2Sizing } from "./continuity-e2-estimate.mjs";
 import { E2_PAID_ROLES } from "./continuity-e2-roles.mjs";
 import { writeE2SummaryResult, verifyE2SummaryResult } from "./continuity-e2-summary-receipts.mjs";
 import { bindE2Checkpoint, verifyE2NativeLineage, e2LineageScope, e2PhaseBase } from "./continuity-e2-lineage.mjs";
-import { validE2FailureCause, observeE2NativeCause } from "./continuity-e2-cause.mjs";
+import { validE2FailureCause, observeE2NativeCause, captureE2NativeCause, e2ProviderCause } from "./continuity-e2-cause.mjs";
 import { readE2Progress, writeE2PartialScore } from "./continuity-e2-progress.mjs";
+import { E2_RETRY_POLICY, authorizeE2Retry, effectiveE2Summaries, e2RetryCounts } from "./continuity-e2-retry.mjs";
 const fail = (code = "e2_permit_invalid") => { throw Object.assign(Error(code), { code }); };
 const need = (ok, code) => { if (!ok) fail(code); };
 const count = n => Number.isSafeInteger(n) && n >= 0;
@@ -87,13 +88,31 @@ export const e2ExecutionPolicy = Object.freeze({
     need(sameFields(p, E2_PERMIT_CONTRACT.admissionFields) && E2_PAID_ROLES.includes(p.paidRole) && count(p.checkpoint) && count(p.inputTokens));
     need(p.checkpoint >= (slot.holds.at(-1)?.checkpoint ?? 0));
     if (p.paidRole === "summary") need(slot.compaction && slot.compaction.checkpoint === p.checkpoint, "e2_summary_not_authorized");
+    const pending = slot.retryPending && slot.holds.find(h => h.round === slot.retryPending);
+    if (pending) {
+      need(pending === slot.holds.at(-1) && pending.retryAuthorized && !pending.retryOf
+        && p.payloadDigest === pending.payloadDigest && p.model === pending.model && p.paidRole === pending.paidRole
+        && p.checkpoint === pending.checkpoint && p.inputTokens === pending.measuredInputTokens && p.reservationUnits === pending.reservedUnits, "e2_request_limit");
+      const funded = requestFunding(pilot, planned, p, pending.operationDigest, pending.probeRequest);
+      funded.metadata.retryOf = pending.round; return funded;
+    }
     const budget = planned.budgets.find(b => b.paidRole === p.paidRole && b.model === p.model && b.checkpoint === p.checkpoint);
-    need(budget && slot.holds.filter(h => h.paidRole === p.paidRole && h.model === p.model && h.checkpoint === p.checkpoint).length < budget.maxRequests, "e2_request_limit");
+    need(budget && slot.holds.filter(h => !h.retryOf && h.paidRole === p.paidRole && h.model === p.model && h.checkpoint === p.checkpoint).length < budget.maxRequests, "e2_request_limit");
     const previous = slot.holds.at(-1);
     const probeRequest = planned.kind === "replay" && p.paidRole !== "summary" ? p.paidRole === "probe" ? 1
       : previous?.checkpoint === p.checkpoint && Number.isSafeInteger(previous.probeRequest) ? previous.probeRequest + 1 : 0 : undefined;
     return requestFunding(pilot, planned, p, slot.compaction?.operationDigest, probeRequest);
   },
+  retry(pilot, state, index, p) {
+    need(pilot.descriptor.retryPolicy && digest(pilot.descriptor.retryPolicy) === digest(E2_RETRY_POLICY), "e2_registration_invalid");
+    return authorizeE2Retry(state, index, p);
+  },
+  failureEvidence(contract, message, error) { return captureE2NativeCause(contract.e2.safety, message, error); },
+  deferNativeFailure(pilot, status, code) {
+    return pilot.descriptor.retryPolicy && digest(pilot.descriptor.retryPolicy) === digest(E2_RETRY_POLICY)
+      && ["rate", "server", "stream"].includes(e2ProviderCause(code, status));
+  },
+
   contract(contract) {
     need(["provider", "api", "baseUrl", "version"].every(k => contract?.[k] === E2_GUARD_CONTRACT[k]), "e2_contract_mismatch");
     const e2 = contract.e2;
@@ -136,6 +155,10 @@ export const e2ExecutionPolicy = Object.freeze({
   },
   resultReceipt: writeE2SummaryResult,
   async verifySettlement(root, slotId, hold, evidence, readPrivate) {
+    if (evidence?.schema === "continuity-e2-attempt-evidence-v1") {
+      need(sameFields(evidence, ["schema", "nativeCause"]) && validE2FailureCause(evidence.nativeCause, { holds: [hold] }), "e2_receipt_invalid");
+      hold.nativeCause = structuredClone(evidence.nativeCause); return;
+    }
     if (hold.paidRole !== "summary" || hold.settlement.kind !== "settled") return;
     try { hold.summaryReceipt = await verifyE2SummaryResult(root, slotId, hold, evidence, readPrivate); }
     catch { fail("e2_summary_receipt_invalid"); }
@@ -158,7 +181,7 @@ export const e2ExecutionPolicy = Object.freeze({
     }
     if (p.paidRole === "summary") return scope === undefined ? undefined : { lineageScope: scope, ...(slot.lineages[scope] ? { lineage: structuredClone(slot.lineages[scope]) } : {}) };
     need(!slot.compaction, "e2_compaction_invalid");
-    for (const hold of slot.holds.filter(h => h.paidRole === "summary")) {
+    for (const hold of effectiveE2Summaries(slot.holds)) {
       const currentScope = state?.schema === E2_REAL_CONTROLLER && scope === await e2LineageScope({ ...state, pilot }, state.schedule[state.cursor], hold.checkpoint, readArtifact);
       need(hold.summaryReceipt?.verified && hold.summaryReceipt.durable && (!currentScope || slot.lineages?.[scope]), "e2_summary_receipt_invalid");
       try { await verifyE2SummaryResult(root, slotId, hold, { schema: hold.summaryReceipt.schema, sha256: hold.summaryReceipt.sha256 }, readPrivate); }
@@ -233,7 +256,7 @@ export const e2ExecutionPolicy = Object.freeze({
       slot.compaction = { operationDigest: p.operationDigest, checkpoint: p.checkpoint };
     } else {
       need(p.kind === "durable" && slot.compaction?.operationDigest === p.operationDigest && slot.compaction.checkpoint === p.checkpoint, "e2_compaction_invalid");
-      const summaries = slot.holds.filter(h => h.operationDigest === p.operationDigest);
+      const summaries = effectiveE2Summaries(slot.holds).filter(h => h.operationDigest === p.operationDigest);
       need(summaries.length > 0 && summaries.every(h => h.consumed && h.settlement.kind === "settled" && h.summaryReceipt?.verified && !h.summaryReceipt.durable), "e2_summary_receipt_invalid");
       for (const h of summaries) {
         try { await verifyE2SummaryResult(root, slotId, h, { schema: h.summaryReceipt.schema, sha256: h.summaryReceipt.sha256 }, readPrivate); }
@@ -254,7 +277,7 @@ export const e2ExecutionPolicy = Object.freeze({
     need(slot && planned && slot.slotId === planned.slotId && [...protocol.policy.SLOT_TERMINALS, null].includes(slot.terminal)
       && [null, 0, 1].includes(slot.score), "e2_receipt_invalid");
     const spend = accountRun([slot]);
-    const row = { ...(slot.diagnostics && Object.keys(slot.diagnostics).length ? { diagnostics: slot.diagnostics } : {}), schema: protocol.schemas.slotReceipt, slotId: planned.slotId, position: index, terminal: slot.terminal,
+    const row = { retries: e2RetryCounts([slot]), ...(slot.diagnostics && Object.keys(slot.diagnostics).length ? { diagnostics: slot.diagnostics } : {}), schema: protocol.schemas.slotReceipt, slotId: planned.slotId, position: index, terminal: slot.terminal,
       score: ["completed", "wrong"].includes(slot.terminal) ? slot.score : null,
       qualityMeasured: state.schema === protocol.policy.REAL_CONTROLLER && slot.holds.length > 0 && ["completed", "wrong"].includes(slot.terminal) && slot.score !== null,
       calls: { admitted: slot.holds.length, consumed: slot.holds.filter(h => h.consumed).length, settled: slot.holds.filter(h => h.settlement).length,
@@ -273,7 +296,7 @@ export const e2ExecutionPolicy = Object.freeze({
       need(count(r.position) && r.position < visited && !seen.has(r.position) && digest(r) === digest(this.slotReceipt(state, r.position, accountRun, protocol)), "e2_receipt_invalid"); seen.add(r.position);
     }
     const spend = accountRun(state.slots);
-    return { schema: protocol.schemas.report, authorization: state.schema === protocol.policy.REAL_CONTROLLER, executionKind: state.schema === protocol.policy.REAL_CONTROLLER ? "authorized-validation" : "faux-only",
+    return { retries: e2RetryCounts(state.slots), schema: protocol.schemas.report, authorization: state.schema === protocol.policy.REAL_CONTROLLER, executionKind: state.schema === protocol.policy.REAL_CONTROLLER ? "authorized-validation" : "faux-only",
       qualityMeasured: receipts.some(r => r.qualityMeasured), schedule: { planned: state.schedule.length, visited, missing: visited - seen.size, remaining: state.schedule.length - visited }, stop: state.stop,
       costs: { unitsPerUSD: protocol.policy.USD_UNITS.toString(), capUnits: state.capUnits, ...Object.fromEntries(Object.entries(spend).filter(([key]) => key.endsWith("Units"))) },
       phases: [...receipts].sort((a, b) => a.position - b.position).map(({ slotId: _slotId, sha256: _sha256, ...r }) => r) };

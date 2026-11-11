@@ -54,31 +54,34 @@ function proofReply(body, count) {
   return toolEvents(name, { action: "search", query: "proof-evidence", limit: 10 }, count);
 }
 
-async function run({ scenario = "probe", requests = 1, rows = [{ role: "probe", model: SOL }], capUnits, reuse = false, crossOutputReuse = false, production = false, fault, arm = "pressure", replay = false, probeLookupRounds = 1, probeLookups = false, phaseStartupDelayMs = 0, deadlines, expectedControllerError, failAfter = 0 } = {}) {
+async function run({ scenario = "probe", requests = 1, rows = [{ role: "probe", model: SOL }], capUnits, reuse = false, crossOutputReuse = false, production = false, fault, arm = "pressure", replay = false, probeLookupRounds = 1, probeLookups = false, phaseStartupDelayMs = 0, deadlines, expectedControllerError, retryOnce = false, failOdd = false, failAfter = 0 } = {}) {
   const root = await realpath(await mkdtemp(join(tmpdir(), "e2-native-sdk-"))); roots.push(root);
   const originalHome = process.env.HOME;
   const fixture = await e2NativeFixture(root, { rows, arm, replay, probeLookupRounds, ...(deadlines ? { deadlines } : {}), ...(capUnits ? { capUnits } : {}) });
   expect(process.env.HOME).toBe(originalHome);
   if (replay) { expect(fixture.sizingHomes.length).toBeGreaterThan(0); expect(new Set(fixture.sizingHomes)).toEqual(new Set([fixture.home])); }
-  const received = [], wireIdentities = []; let listenerError;
+  const received = [], wireIdentities = [], receivedBytes = []; let listenerError;
   const server = http.createServer(async (request, response) => {
     try {
       wireIdentities.push({ session: request.headers["session-id"], request: request.headers["x-client-request-id"] });
-      const chunks = []; for await (const chunk of request) chunks.push(chunk); received.push(JSON.parse(request.headers["content-encoding"] === "zstd" ? zstdDecompressSync(Buffer.concat(chunks)) : Buffer.concat(chunks)));
-      if (["model-error", "fixture-diagnostic-write"].includes(fault) || failAfter && received.length > failAfter) { response.writeHead(500, { "content-type": "application/json" }).end(JSON.stringify({ error: { code: "fictional_backend_failure", message: "Fictional backend failure." } })); return; }
-      if (fault === "http-context") { response.writeHead(400, { "content-type": "application/json" }).end(JSON.stringify({ error: { code: "context_length_exceeded", message: "PRIVATE-CAUSE-CANARY" } })); return; }
-      if (["http-auth", "http-rate"].includes(fault)) { response.writeHead(fault === "http-auth" ? 401 : 429).end(); return; }
+      const chunks = []; for await (const chunk of request) chunks.push(chunk); const bytes = request.headers["content-encoding"] === "zstd" ? zstdDecompressSync(Buffer.concat(chunks)) : Buffer.concat(chunks); receivedBytes.push(bytes); received.push(JSON.parse(bytes));
+      const responseFault = (retryOnce && received.length > 1 || failOdd && received.length % 2 === 0) ? undefined : fault;
+      if (responseFault === "dispatch-break") { request.socket.destroy(); return; }
+      if (responseFault === "crash-retry" && received.length === 1 || ["model-error", "fixture-diagnostic-write"].includes(responseFault) || failAfter && received.length > failAfter) { response.writeHead(500, { "content-type": "application/json" }).end(JSON.stringify({ error: { code: "fictional_backend_failure", message: "Fictional backend failure." } })); return; }
+      if (["http-quota", "http-other"].includes(responseFault)) { response.writeHead(400, { "content-type": "application/json" }).end(JSON.stringify({ error: { code: responseFault === "http-quota" ? "insufficient_quota" : "invalid_request_error" } })); return; }
+      if (responseFault === "http-context") { response.writeHead(400, { "content-type": "application/json" }).end(JSON.stringify({ error: { code: "context_length_exceeded", message: "PRIVATE-CAUSE-CANARY" } })); return; }
+      if (["http-auth", "http-rate"].includes(responseFault)) { response.writeHead(responseFault === "http-auth" ? 401 : 429).end(); return; }
       response.writeHead(200, { "content-type": "text/event-stream" });
-      if (fault?.startsWith("sse-")) {
-        const code = { "sse-context": "context_length_exceeded", "sse-server": "server_error", "sse-stream": "stream_error", "sse-rate": "rate_limit_exceeded" }[fault];
+      if (responseFault?.startsWith("sse-")) {
+        const code = { "sse-context": "context_length_exceeded", "sse-server": "server_error", "sse-stream": "stream_error", "sse-rate": "rate_limit_exceeded" }[responseFault];
         response.end(`data: ${JSON.stringify({ type: "response.failed", response: { error: { code, message: "PRIVATE-CAUSE-CANARY" } } })}\n\n`); return;
       }
-      if (["empty", "length"].includes(fault)) {
-        const data = events(fault === "empty" ? "" : "Fictional response").split("\n\n").filter(Boolean).map(line => JSON.parse(line.slice(6)));
-        if (fault === "length") { const last = data.at(-1); last.type = "response.incomplete"; last.response.status = "incomplete"; last.response.incomplete_details = { reason: "max_output_tokens" }; }
+      if (["empty", "length"].includes(responseFault)) {
+        const data = events(responseFault === "empty" ? "" : "Fictional response").split("\n\n").filter(Boolean).map(line => JSON.parse(line.slice(6)));
+        if (responseFault === "length") { const last = data.at(-1); last.type = "response.incomplete"; last.response.status = "incomplete"; last.response.incomplete_details = { reason: "max_output_tokens" }; }
         response.end(data.map(e => `data: ${JSON.stringify(e)}\n\n`).join("")); return;
       }
-      if (scenario === "cancel" || ["crash", "containment", "request-timeout"].includes(fault)) { response.flushHeaders(); return; }
+      if (scenario === "cancel" || ["crash", "containment", "request-timeout"].includes(responseFault)) { response.flushHeaders(); return; }
       if (replay) {
         const tool = received.at(-1).tools?.find(t => t.name === "ConversationHistory");
         response.end(probeLookups && tool ? toolEvents(tool.name, { action: "search", query: "Fictional response", limit: 1 }, received.length) : events("Fictional response"));
@@ -90,7 +93,7 @@ async function run({ scenario = "probe", requests = 1, rows = [{ role: "probe", 
       } else response.end(events(scenario.startsWith("lineage-pack") ? "Fictional evidence at /home/example/private/file.txt" : "FICTIONAL-SUMMARY-ANSWER-CANARY", scenario === "cap"));
     } catch (error) { listenerError = error; response.writeHead(500).end(); }
   }); servers.push(server); await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
-  const profile = { phaseStartupDelayMs, preload: join(root, "preload.mjs"), crossOutputReuse, root: ROOT, home: fixture.home, args: fixture.args, scenario, requests, reuse, production, fault,
+  const profile = { phaseStartupDelayMs, preload: join(root, "preload.mjs"), crossOutputReuse, root: ROOT, home: fixture.home, args: fixture.args, scenario, requests, reuse, production, fault, retryOnce,
     endpoint: `http://127.0.0.1:${server.address().port}/codex/responses`, result: join(root, "result.json"), descendant: join(root, "descendant.json") };
   const profilePath = join(root, "profile.json"), preload = join(root, "preload.mjs");
   await writeFile(profilePath, JSON.stringify(profile), { mode: 0o600 });
@@ -106,7 +109,7 @@ async function run({ scenario = "probe", requests = 1, rows = [{ role: "probe", 
   expect(listenerError).toBeUndefined(); expect({ code, error: result.error, stderr }).toEqual({ code: 0, error: undefined, stderr: "" });
   expect(await readFile(fixture.args.credentialPath)).toEqual(before);
   expect(await readdir(join(fixture.home, ".local/state/mono-agent/lcc-e2/consumed-v1"))).toHaveLength(1);
-  return { ...result, received, wireIdentities, root, profile, funded: fixture.pilot.registration.schedule[0].budgets };
+  return { ...result, received, receivedBytes, wireIdentities, root, profile, funded: fixture.pilot.registration.schedule[0].budgets };
 }
 it("uses the genuine SDK and single guarded send, burns authority once, and publishes no canaries", async () => {
   const result = await run({ reuse: true }); expect(result.received).toHaveLength(1); expect(result.report.stop).toBe("completed");
@@ -124,7 +127,7 @@ it.each(["unauthorized-summary", "direct-model", "alternate-stream"])("refuses %
 }, E2_NATIVE_TEST_TIMEOUT_MS);
 it("retains full liability when cancelled after actual response headers", async () => {
   const result = await run({ scenario: "cancel", rows: [{ role: "continuation", model: SOL }] });
-  expect(result.received).toHaveLength(1); expect(result.report.costs.retainedUnits).toBe("3920000000");
+  expect(result.received).toHaveLength(1); expect(result.report.retries.attempted).toBe(0); expect(result.report.costs.retainedUnits).toBe("3920000000");
 }, E2_NATIVE_TEST_TIMEOUT_MS);
 it("verifies generated output and an actual durable journal before accepting the SDK probe body", async () => {
   const result = await run({ scenario: "summary", rows: [{ role: "summary", model: SOL }, { role: "probe", model: SOL }] });
@@ -144,7 +147,7 @@ it("reconciles a crashed genuine phase child without dispatching another native 
 }, E2_NATIVE_TEST_TIMEOUT_MS);
 it("contains a real descendant of the genuine phase child at the watchdog, retaining its hold", async () => {
   const result = await run({ production: true, fault: "containment", rows: productionRows });
-  expect(result.received).toHaveLength(1); expect(result.report.stop).toBe("e2_worker_timeout");
+  expect(result.received).toHaveLength(1); expect(result.report.retries.attempted).toBe(0); expect(result.report.stop).toBe("e2_worker_timeout");
   expect(result.report.costs.retainedUnits).toBe("3920000000");
   const descendant = JSON.parse(await readFile(result.profile.descendant, "utf8"));
   expect(() => process.kill(descendant.pid, 0)).toThrow();
@@ -177,8 +180,8 @@ it("a genuine SDK model failure ends the authorization before any registered res
   const rows = [...Array.from({ length: 8 }, () => ({ role: "summary", model: SOL, phase: "seed" })),
     { role: "continuation", model: SOL, phase: "seed" }, { role: "continuation", model: SOL, phase: "resume" }, { role: "probe", model: SOL, phase: "resume" }];
   const result = await run({ production: true, arm: "cancel", rows, fault: "model-error", reuse: true });
-  expect(result.received).toHaveLength(1); expect(result.report.schedule.visited).toBe(1); expect(result.report.schedule.remaining).toBe(1);
-  expect(result.report.stop).toBe("e2_phase_failed"); expect(result.report.costs.retainedUnits).toBe("3920000000");
+  expect(result.received).toHaveLength(2); expect(result.report.schedule.visited).toBe(1); expect(result.report.schedule.remaining).toBe(1);
+  expect(result.report.stop).toBe("e2_phase_failed"); expect(result.report.costs.retainedUnits).toBe("7840000000");
   expect(result.reuse).toBe("e2_authorization_lease_invalid");
 }, E2_NATIVE_TEST_TIMEOUT_MS);
 
@@ -224,7 +227,7 @@ it("kills a stalled genuine paid request on its own clock, not the longer phase 
   const started = performance.now();
   const result = await run({ production: true, fault: "request-timeout", rows: productionRows,
     deadlines: { requestDeadlineMs: 1000, phaseDeadlineMs: 60000, childWatchdogMs: 60000, runDeadlineMs: 120000 } });
-  expect(result.received).toHaveLength(1); expect(result.report.stop).toBe("e2_worker_timeout");
+  expect(result.received).toHaveLength(1); expect(result.report.retries.attempted).toBe(0); expect(result.report.stop).toBe("e2_worker_timeout");
   expect(result.report.costs).toMatchObject({ retainedUnits: "3920000000", activeUnits: "0" });
   expect(performance.now() - started).toBeLessThan(60000);
 }, E2_NATIVE_TEST_TIMEOUT_MS);
@@ -274,10 +277,11 @@ it.each([
 ])("records closed %s diagnostics through the owned SDK route", async (fault, causeClass, providerClass, httpStatus, terminalUsageObserved) => {
   const result = await run({ fault });
   const cause = result.report.phases[0].diagnostics?.nativeCause;
-  expect(cause, JSON.stringify(result.report)).toMatchObject({ round: 1, role: "probe", checkpoint: 0, causeClass, providerClass, httpStatus, terminalUsageObserved });
+  const retried = ["model-error", "sse-stream", "http-rate", "empty"].includes(fault);
+  expect(cause, JSON.stringify(result.report)).toMatchObject({ round: retried ? 2 : 1, role: "probe", checkpoint: 0, causeClass, providerClass, httpStatus, terminalUsageObserved });
   expect(cause.payloadDigest).toMatch(/^[a-f0-9]{64}$/u);
   expect(cause.responseHeadersObserved).toBe(httpStatus !== null);
-  expect(result.received).toHaveLength(1);
+  expect(result.received).toHaveLength(retried ? 2 : 1);
   for (const value of [result.root, "PRIVATE-CAUSE-CANARY", "Fictional backend failure"]) expect(JSON.stringify(result.report)).not.toContain(value);
 }, E2_NATIVE_TEST_TIMEOUT_MS);
 
@@ -297,7 +301,7 @@ it("keeps accepted C1 answers outside restored roots and emits only informationa
   expect(partial).toMatchObject({ schema: "continuity-e2-informational-partial-score-v1", informational: true, qualityMeasured: false, completedAnswers: 1, plannedAnswers: 2 });
   expect(partial).not.toHaveProperty("gate"); expect(result.report.phases[0].diagnostics.partialQuality).toEqual(partial);
   await expect(readFile(join(base, "whole-refusal.json"))).rejects.toMatchObject({ code: "ENOENT" });
-  expect(result.report.phases[0].diagnostics.nativeCause).toMatchObject({ round: 2, causeClass: "sdk_error_result", httpStatus: 500 });
+  expect(result.report.phases[0].diagnostics.nativeCause).toMatchObject({ round: 3, causeClass: "sdk_error_result", httpStatus: 500 });
   await expect(readFile(join(base, "answers.json"))).rejects.toMatchObject({ code: "ENOENT" });
 }, E2_NATIVE_TEST_TIMEOUT_MS);
 
@@ -332,7 +336,7 @@ it.each(["progress-write"])("keeps the paid replay successful after a %s recover
 }, E2_NATIVE_TEST_TIMEOUT_MS);
 it("reports missing answer recovery evidence in controller-only partial quality without failing its accepted paid answer", async () => {
   const result = await run({ production: true, replay: true, fault: "progress-write", failAfter: 1 });
-  expect(result.received).toHaveLength(2); expect(result.report.stop).toBe("e2_phase_failed");
+  expect(result.received).toHaveLength(3); expect(result.report.stop).toBe("e2_phase_failed");
   expect(result.report.phases[0].diagnostics).toMatchObject({ progressGap: 1, partialQuality: { progressGap: 1, completedAnswers: 0, plannedAnswers: 2, qualityMeasured: false } });
 }, E2_NATIVE_TEST_TIMEOUT_MS);
 it("labels a synchronous pre-send guarded SDK refusal without misclassifying it as an SDK promise failure", async () => {
@@ -363,5 +367,62 @@ it("keeps the admitted digest on a refusal before consume", async () => {
 }, E2_NATIVE_TEST_TIMEOUT_MS);
 it("still sends done when the fixture refusal artifact cannot be written", async () => {
   const result = await run({ fault: "fixture-diagnostic-write" });
-  expect(result.caught).toBe("e2_phase_failed"); expect(result.report.stop).toBe("e2_phase_failed"); expect(result.received).toHaveLength(1);
+  expect(result.caught).toBe("e2_phase_failed"); expect(result.report.stop).toBe("e2_phase_failed"); expect(result.received).toHaveLength(2);
+}, E2_NATIVE_TEST_TIMEOUT_MS);
+
+it.each([
+  ["dispatch-break", "stream"], ["sse-stream", "stream"], ["model-error", "http_5xx"],
+  ["http-rate", "http_429"], ["empty", "empty_final_text"], ["sdk-aborted", "unowned_aborted_result"],
+])("retries eligible %s once with identical bytes and a fresh independently verified hold", async (fault, cause) => {
+  const result = await run({ fault, retryOnce: true });
+  expect(result.report.stop, JSON.stringify(result.report)).toBe("completed"); expect(result.received).toHaveLength(2);
+  expect(result.receivedBytes[1]).toEqual(result.receivedBytes[0]);
+  expect(result.report.retries).toEqual({ attempted: 1, succeeded: 1, causeClasses: { [cause]: 1 } });
+  expect(result.report.phases[0].retries).toEqual(result.report.retries);
+  const state = JSON.parse(await readFile(join(result.root, "output/e2-validation-controller.json"))), holds = state.slots[0].holds;
+  expect(holds.map(h => h.payloadDigest)).toEqual([holds[0].payloadDigest, holds[0].payloadDigest]);
+  expect(holds[1]).toMatchObject({ retryOf: 1, consumed: true, paidRole: holds[0].paidRole, model: holds[0].model, checkpoint: holds[0].checkpoint, reservedUnits: holds[0].reservedUnits });
+  expect(holds[1].permitId).not.toBe(holds[0].permitId); expect(holds.every(h => h.summaryPresence)).toBe(true);
+  if (["empty", "sdk-aborted"].includes(fault)) expect(result.report.costs.completeUnits).toBe("140000");
+  else expect(result.report.costs.retainedUnits).toBe("3920000000");
+}, E2_NATIVE_TEST_TIMEOUT_MS);
+
+it.each(["http-auth", "http-context", "http-quota", "http-other", "sse-context", "sse-rate", "sse-server", "length", "sdk-unknown", "sdk-deadline"])("never retries ineligible %s despite a recoverable next response", async fault => {
+  const result = await run({ fault, retryOnce: true });
+  expect(result.received).toHaveLength(1); expect(result.report.retries.attempted).toBe(0); expect(result.report.stop).not.toBe("completed");
+}, E2_NATIVE_TEST_TIMEOUT_MS);
+
+it("stops after the sole retry fails, retaining both lost liabilities", async () => {
+  const result = await run({ fault: "model-error", reuse: true });
+  expect(result.received).toHaveLength(2); expect(result.report.retries).toEqual({ attempted: 1, succeeded: 0, causeClasses: { http_5xx: 1 } });
+  expect(result.report.costs.retainedUnits).toBe("7840000000"); expect(result.reuse).toBe("e2_authorization_lease_invalid");
+}, E2_NATIVE_TEST_TIMEOUT_MS);
+it("does not fetch a retry when the failed hold leaves insufficient cap", async () => {
+  const result = await run({ fault: "model-error", retryOnce: true, capUnits: "5000000000" });
+  expect(result.received).toHaveLength(1); expect(result.report.stop).toBe("budget_admission");
+  expect(result.report.costs.retainedUnits).toBe("3920000000"); expect(result.report.retries.attempted).toBe(0);
+}, E2_NATIVE_TEST_TIMEOUT_MS);
+it("stops the ninth eligible failure without consuming another logical slot or retry", async () => {
+  const result = await run({ fault: "model-error", failOdd: true, requests: 9, rows: Array.from({ length: 9 }, () => ({ role: "probe", model: SOL })) });
+  expect(result.received).toHaveLength(17); expect(result.report.stop).toBe("e2_phase_failed");
+  expect(result.report.retries).toEqual({ attempted: 8, succeeded: 8, causeClasses: { http_5xx: 8 } });
+  expect(result.funded.reduce((n, b) => n + b.maxRequests, 0)).toBe(9);
+}, E2_NATIVE_TEST_TIMEOUT_MS);
+it("reconciles abrupt child loss during a retry without any automatic resend", async () => {
+  const result = await run({ fault: "crash-retry", reuse: true });
+  expect(result.received).toHaveLength(2); expect(result.report.stop).not.toBe("completed");
+  expect(result.report.costs.retainedUnits).toBe("7840000000"); expect(result.reconciled.reconciliation).toBe(true);
+  expect(result.reuse).toBe("e2_authorization_lease_invalid"); expect(result.report.retries.succeeded).toBe(0);
+}, E2_NATIVE_TEST_TIMEOUT_MS);
+it("retries a generated summary without accepting its failed predecessor as durable lineage", async () => {
+  const result = await run({ fault: "empty", retryOnce: true, scenario: "summary", rows: [{ role: "summary", model: SOL }, { role: "probe", model: SOL }] });
+  expect(result.report.stop, JSON.stringify(result.report)).toBe("completed"); expect(result.received).toHaveLength(3);
+  expect(result.receivedBytes[1]).toEqual(result.receivedBytes[0]); expect(result.report.phases[0].calls.verifiedSummaries).toBe(1);
+}, E2_NATIVE_TEST_TIMEOUT_MS);
+it("keeps R=3 logical tool ordinals unchanged after retrying the first probe", async () => {
+  const result = await run({ production: true, replay: true, probeLookupRounds: 3, probeLookups: true, fault: "model-error", retryOnce: true });
+  expect(result.report.stop, JSON.stringify(result.report)).toBe("completed"); expect(result.received).toHaveLength(9);
+  expect(result.receivedBytes[1]).toEqual(result.receivedBytes[0]);
+  expect(result.received.map(b => (b.tools ?? []).length)).toEqual([1, 1, 1, 1, 0, 1, 1, 1, 0]);
+  expect(result.funded.filter(b => b.paidRole !== "summary").reduce((n,b) => n + b.maxRequests,0)).toBe(8);
 }, E2_NATIVE_TEST_TIMEOUT_MS);

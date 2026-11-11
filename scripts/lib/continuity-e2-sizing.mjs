@@ -1,6 +1,7 @@
 // Offline sizing normalization. No authorization/credential/registry imports or access.
 import { PROTOCOL_SCHEMA, protocolDigest, assertE2CheckpointOrder, assertE2ProbeLookupRounds, SOL, LUNA } from "./continuity-e2-protocol.mjs";
 import { requireE2PaidRole } from "./continuity-e2-roles.mjs";
+import { E2_RETRY_POLICY } from "./continuity-e2-retry.mjs";
 import { E2_INPUT_LIMITS } from "./continuity-e2-policy.mjs";
 import { validateE2Sizing, estimateE2Reservations } from "./continuity-e2-estimate.mjs";
 export const E2_MAX_SIZING_RECORDS = E2_INPUT_LIMITS.sizingFiles;
@@ -98,8 +99,9 @@ export function estimateE2SizingSet({ protocol, roles, records, catalog, probeCo
   const boundRequests = [...bound.values()].flatMap(({ count, row }) => Array.from({ length: count }, () => row));
   const fundedSchedule = estimateE2Reservations({ roles, requests: [...boundRequests, ...proofs], catalog });
   return { schema: "continuity-e2-cap-estimate-set-v1", semanticQualification: false, authorization: false,
-    timing: "not-estimated-use-e2-plan-v2-clocks", protocolValidation: "metadata-and-sizing-binding-only", scope: "provided-sizing-and-explicit-probe-counts-only",
+    timing: "not-estimated-use-e2-plan-v3-clocks", protocolValidation: "metadata-and-sizing-binding-only", scope: "provided-sizing-and-explicit-probe-counts-only",
     plannedReplayQuestions: questionCount, proofArms: arms.size, scenarios: estimates, fundedSchedule,
     forecastMinimumCapUnits: fundedSchedule.forecastMinimumCapUnits, forecastNoCacheMinimumCapUnits: fundedSchedule.forecastNoCacheMinimumCapUnits,
-    largestReservationUnits: fundedSchedule.largestReservationUnits, worstCaseCapUnits: fundedSchedule.worstCaseCapUnits };
+    largestReservationUnits: fundedSchedule.largestReservationUnits, worstCaseCapUnits: fundedSchedule.worstCaseCapUnits, retryCeiling: { policy: E2_RETRY_POLICY,
+      maximumAdditionalRequests: E2_RETRY_POLICY.maxPerRun, maximumAdditionalUnits: (BigInt(fundedSchedule.largestReservationUnits) * BigInt(E2_RETRY_POLICY.maxPerRun)).toString() } };
 }

@@ -244,7 +244,7 @@
         }
       },
       "PERMIT_CONTRACT": {
-        "version": "e2-permit-v1",
+        "version": "e2-permit-v2",
         "admissionFields": [
           "requestId",
           "slotId",
@@ -262,7 +262,8 @@
           "settle",
           "stop",
           "compaction",
-          "verifyBody"
+          "verifyBody",
+          "retry"
         ],
         "outcomes": [
           "refused_pre_send",
@@ -345,7 +346,7 @@
         "e2_send_mismatch",
         "e2_duplicate_terminal"
       ],
-      "PLAN_SCHEMA": "continuity-e2-guarded-plan-v2",
+      "PLAN_SCHEMA": "continuity-e2-guarded-plan-v3",
       "PREFLIGHT": "e2-preflight-controller-v1",
       "PRE_SEND_REFUSALS": [
         "not_admitted_input_envelope",
@@ -560,6 +561,7 @@
     "scripts/lib/continuity-e2-protocol.mjs",
     "scripts/lib/continuity-e2-registration.mjs",
     "scripts/lib/continuity-e2-replay.mjs",
+    "scripts/lib/continuity-e2-retry.mjs",
     "scripts/lib/continuity-e2-roles.mjs",
     "scripts/lib/continuity-e2-routes.mjs",
     "scripts/lib/continuity-e2-runtime.mjs",

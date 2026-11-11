@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Breaking:** Add controller-owned guarded E2 retries with plan-v3 and
+  permit-v2 contracts; require fresh registration and authorization binding the
+  exact retry policy. Retry only eligible closed failures once per logical
+  request, at most eight times per run, under the unchanged cap and conservative
+  liability. Keep original request slots, prompt bytes and tool rounds unchanged;
+  report retry counts and separate ceiling exposure. Old plans fail closed.
+
 - Fix continuity E2 authentication of incremental summary prompts and retain
   private partial-answer evidence when a replay is interrupted. Keep recovery
   journal failures non-fatal and expose evidence gaps. Report informational

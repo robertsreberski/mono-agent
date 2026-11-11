@@ -35,7 +35,9 @@ it("treats short/max replay sizing as alternative draws and expands explicit pla
   const probeCounts = [0, 1, 2, 3].map(checkpoint => ({ checkpoint, questions: 2 }));
   const report = estimateE2SizingSet({ ...f, catalog, records, probeCounts });
   expect(report.scenarios).toHaveLength(2); expect(report.scenarios.map(s => s.totals.requests)).toEqual([10, 10]);
-  expect(report.timing).toBe("not-estimated-use-e2-plan-v2-clocks"); expect(report.plannedReplayQuestions).toBe(8); expect(report.authorization).toBe(false);
+  expect(report.timing).toBe("not-estimated-use-e2-plan-v3-clocks");
+  expect(report.retryCeiling).toMatchObject({ maximumAdditionalRequests: 8, policy: { maxPerRequest: 1, maxPerRun: 8 } });
+  expect(BigInt(report.retryCeiling.maximumAdditionalUnits)).toBe(BigInt(report.largestReservationUnits) * 8n); expect(report.plannedReplayQuestions).toBe(8); expect(report.authorization).toBe(false);
   expect(report.worstCaseCapUnits).toBe(report.scenarios[0].totals.maximumUnits); // not the sum of alternative draws
   expect(() => estimateE2SizingSet({ ...f, catalog, records })).toThrow("E2_PROBE_COUNTS_REQUIRED");
 });

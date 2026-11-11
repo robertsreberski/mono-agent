@@ -57,10 +57,17 @@ export async function installE2NativeRealm(profile) {
       if (!source.includes(marker)) throw Error("test_observation_injection_missing");
       return { ...loaded, source: source.replace(marker, replacement) };
     }
+    if (["sdk-aborted", "sdk-deadline", "sdk-unknown"].includes(profile.fault) && url === pathToFileURL(join(profile.root, "scripts/lib/continuity-guarded-models.mjs")).href) {
+      const source = String(loaded.source), marker = "finishing = true;";
+      if (!source.includes(marker)) throw Error("test_sdk_finish_missing");
+      const reason = profile.fault === "sdk-aborted" ? "aborted" : "error";
+      const observation = profile.fault === "sdk-deadline" ? 'protocol.execution?.observeNative?.(resolvedSafety, "dispatch", null, "ETIMEDOUT");' : "";
+      return { ...loaded, source: source.replace(marker, marker + ` if (!globalThis.__e2InjectedResult || !${profile.retryOnce === true}) { globalThis.__e2InjectedResult = true; ${observation} message = { ...message, stopReason: "${reason}", content: [] }; }`) };
+    }
     if (profile.fault === "rejected" && url === pathToFileURL(join(profile.root, "scripts/lib/continuity-e2-paid-models.mjs")).href) {
-      const source = String(loaded.source), marker = "pending.then(stream => stream.result())";
+      const source = String(loaded.source), marker = "message = await physical.result();";
       if (!source.includes(marker)) throw Error("test_result_injection_missing");
-      return { ...loaded, source: source.replace(marker, 'pending.then(async stream => { await stream.result(); throw Object.assign(Error("PRIVATE-CAUSE-CANARY"), { code: "ECONNRESET" }); })') };
+      return { ...loaded, source: source.replace(marker, 'message = await physical.result(); throw Object.assign(Error("PRIVATE-CAUSE-CANARY"), { code: "ECONNRESET" });') };
     }
     return loaded;
   } });
@@ -75,7 +82,7 @@ export async function installE2NativeRealm(profile) {
         await fsp.writeFile(profile.descendant, JSON.stringify({ pid: child.pid, parent: process.pid }), { mode: 0o600 });
       }
       const response = await originalFetch(profile.endpoint, init);
-      if (profile.fault === "crash" || profile.fault === "crash-after-one" && ++nativeResponses > 1) process.kill(process.pid, "SIGKILL");
+      if (profile.fault === "crash-retry" && ++nativeResponses === 2 || profile.fault === "crash" || profile.fault === "crash-after-one" && ++nativeResponses > 1) process.kill(process.pid, "SIGKILL");
       return response;
     }
     const parsed = new URL(endpoint);

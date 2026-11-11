@@ -188,10 +188,13 @@ function bind(protocol, protocolId) {
             if (state.stop) { slot.admissionRefusal = state.stop; result = { refused: true, code: state.stop === "budget_admission" ? "not_admitted_cap" : protocol.codes.stopped }; }
             else {
               const permitId = randomUUID();
+              if (specific?.metadata.retryOf) delete slot.retryPending;
               slot.holds.push({ permitId, requestId: p.requestId, payloadDigest: p.payloadDigest, round: p.round,
                 ...specific?.metadata, ...(deadlinePolicy ? { admittedAt: Date.now() } : {}), reservedUnits: nextReserve.toString(), consumed: false, revoked: false, settlement: null });
               result = { epoch: state.epoch, permitId };
             }
+          } else if (protocol.execution?.retry && message.op === "retry") {
+            result = protocol.execution.retry(pilot, state, index, p);
           } else if (protocol.execution && message.op === "compaction") {
             pilotNeed(!state.stop, protocol.codes.stopped);
             await protocol.execution.compaction(outputRoot, slot.slotId, state.schedule[index], slot, p, readPilotPrivate, state, pilot);

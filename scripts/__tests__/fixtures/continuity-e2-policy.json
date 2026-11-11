@@ -237,7 +237,7 @@
     }
   },
   "E2_PERMIT_CONTRACT": {
-    "version": "e2-permit-v1",
+    "version": "e2-permit-v2",
     "admissionFields": [
       "requestId",
       "slotId",
@@ -255,7 +255,8 @@
       "settle",
       "stop",
       "compaction",
-      "verifyBody"
+      "verifyBody",
+      "retry"
     ],
     "outcomes": [
       "refused_pre_send",
@@ -338,7 +339,7 @@
     "e2_send_mismatch",
     "e2_duplicate_terminal"
   ],
-  "E2_PLAN_SCHEMA": "continuity-e2-guarded-plan-v2",
+  "E2_PLAN_SCHEMA": "continuity-e2-guarded-plan-v3",
   "E2_PREFLIGHT": "e2-preflight-controller-v1",
   "E2_PRE_SEND_REFUSALS": [
     "not_admitted_input_envelope",

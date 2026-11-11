@@ -1,3 +1,4 @@
+import { E2_RETRY_POLICY } from "../../lib/continuity-e2-retry.mjs";
 // Fictional source/build/account artifacts, exclusively beneath the caller's temporary root.
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -52,7 +53,7 @@ export async function e2NativeFixture(root, { arm = "pressure", capUnits = "1000
     build: { policy: "fresh-clean-head-agent-app-closure-v1", sourceHead: "b".repeat(40), command: ["pnpm", "--filter", "@mono-agent/app...", "run", "build"], packages: ["packages/app", "packages/turn"], outputRoots: ["packages/app/dist", "packages/turn/dist"], outputSha256: "a".repeat(64), node: process.version },
     catalog, source, protocol, probes, keys, soul: { rawDigest: soul.rawDigest, normalizedDigest: soul.normalizedDigest }, roles: component.roles,
     sizing, probeCounts, schedule: e2PhaseSchedule(trace.protocol, [component.sizing], probeCounts), toolPolicies: E2_TOOL_POLICIES,
-  }, descriptor: { schema: E2_PLAN_SCHEMA, assumptions: E2_ASSUMPTIONS, capUnits, deadlines } };
+  }, descriptor: { schema: E2_PLAN_SCHEMA, retryPolicy: E2_RETRY_POLICY, assumptions: E2_ASSUMPTIONS, capUnits, deadlines } };
   const outputRoot = join(root, "output"); await mkdir(outputRoot, { mode: 0o700 });
   const credentialPath = join(root, "credential.json"), account = "fictional-e2-account";
   const token = `fictional.${Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: account } })).toString("base64url")}.fictional`;

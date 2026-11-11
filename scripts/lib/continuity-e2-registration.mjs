@@ -11,6 +11,7 @@ import { loadE2Catalog } from "./continuity-e2-pricing.mjs";
 import { estimateE2SizingSet, normalizeE2Sizing } from "./continuity-e2-sizing.mjs";
 import { requireE2PaidRole } from "./continuity-e2-roles.mjs";
 import { E2_REGISTRATION_SCHEMA, E2_PLAN_SCHEMA, E2_ASSUMPTIONS, E2_DEADLINE_LIMITS, E2_PHASE_DOMAIN, E2_INPUT_LIMITS } from "./continuity-e2-policy.mjs";
+import { E2_RETRY_POLICY } from "./continuity-e2-retry.mjs";
 import { LOOKUP_PILOT_PROTOCOL_FILES } from "./continuity-lookup-roles.mjs";
 import { BUILD_POLICY, sourceState, verifyRealBuild } from "./memory-e2e-build.mjs";
 export const E2_PROTOCOL_FILES = Object.freeze([...new Set([...LOOKUP_PILOT_PROTOCOL_FILES,
@@ -24,7 +25,7 @@ export const E2_PROTOCOL_FILES = Object.freeze([...new Set([...LOOKUP_PILOT_PROT
   "scripts/lib/continuity-e2-guarded-protocol.mjs", "scripts/lib/continuity-e2-lineage.mjs",
   "scripts/lib/continuity-e2-runtime.mjs",
   "scripts/lib/continuity-e2-paid-models.mjs",
-  "scripts/lib/continuity-e2-cause.mjs", "scripts/lib/continuity-e2-progress.mjs",
+  "scripts/lib/continuity-e2-cause.mjs", "scripts/lib/continuity-e2-retry.mjs", "scripts/lib/continuity-e2-progress.mjs",
   "scripts/lib/continuity-e2-phase-child.mjs",
   "scripts/lib/continuity-e2-paid-entry.mjs",
 ])].sort());
@@ -123,7 +124,7 @@ export async function validateE2Registration(pilot, { safeRead, safeDirectory })
     if (d?.schema !== E2_PLAN_SCHEMA) throw Object.assign(Error("e2_deadlines_invalid"), { code: "e2_deadlines_invalid" });
     validateE2Deadlines(d.deadlines);
     need(fields(r, ["code", "build", "catalog", "protocol", "source", "probes", "keys", "soul", "roles", "schedule", "toolPolicies", "sizing", "probeCounts"])
-      && fields(d, ["schema", "assumptions", "capUnits", "deadlines"]) && d.schema === E2_PLAN_SCHEMA && same(d.assumptions, E2_ASSUMPTIONS));
+      && fields(d, ["schema", "assumptions", "capUnits", "deadlines", "retryPolicy"]) && d.schema === E2_PLAN_SCHEMA && same(d.assumptions, E2_ASSUMPTIONS) && same(d.retryPolicy, E2_RETRY_POLICY));
     e2CapUnits(d.capUnits); validateE2Deadlines(d.deadlines);
     await safeDirectory(ROOT, "e2_registration_invalid"); await verifyE2Code(r.code, r.build);
     need(same(r.catalog, await loadE2Catalog()) && same(r.soul, { rawDigest: SHIPPING_SOUL_RAW, normalizedDigest: SHIPPING_SOUL_NORMALIZED }));

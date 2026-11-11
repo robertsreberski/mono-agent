@@ -1,3 +1,4 @@
+import { E2_RETRY_POLICY } from "../lib/continuity-e2-retry.mjs";
 import { e2NativeFixture, E2_NATIVE_TEST_TIMEOUT_MS } from "./fixtures/e2-native-registration.mjs";
 // All artifacts/accounts are fictional, in a temporary HOME. No real registry is opened.
 import { beforeEach, afterEach, expect, it, vi } from "vitest";
@@ -37,7 +38,7 @@ async function fixture() {
     build: { policy: "fresh-clean-head-agent-app-closure-v1", sourceHead: "b".repeat(40), command: ["pnpm", "--filter", "@mono-agent/app...", "run", "build"], packages: ["packages/app", "packages/turn"], outputRoots: ["packages/app/dist", "packages/turn/dist"], outputSha256: "a".repeat(64), node: process.version },
     catalog, source, protocol, probes, keys, soul: { rawDigest: soul.rawDigest, normalizedDigest: soul.normalizedDigest }, roles: component.roles,
     sizing, probeCounts, schedule: e2PhaseSchedule(trace.protocol, [component.sizing], probeCounts), toolPolicies: E2_TOOL_POLICIES,
-  }, descriptor: { schema: E2_PLAN_SCHEMA, assumptions: E2_ASSUMPTIONS, capUnits: "5000000000", deadlines: { requestDeadlineMs: 120000, phaseDeadlineMs: 130000, childWatchdogMs: 130000, runDeadlineMs: 600000 } } };
+  }, descriptor: { schema: E2_PLAN_SCHEMA, retryPolicy: E2_RETRY_POLICY, assumptions: E2_ASSUMPTIONS, capUnits: "5000000000", deadlines: { requestDeadlineMs: 120000, phaseDeadlineMs: 130000, childWatchdogMs: 130000, runDeadlineMs: 600000 } } };
   const outputRoot = join(root, "output"); await mkdir(outputRoot, { mode: 0o700 });
   const credentialPath = join(root, "credential.json"), account = "fictional-e2-account";
   const token = `fictional.${Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: account } })).toString("base64url")}.fictional`;
@@ -215,6 +216,32 @@ it("binds every v2 clock in authorization and rejects an altered request duratio
   expect(Object.keys(f.artifact.bindings.deadlines).sort()).toEqual(["requestDeadlineMs", "phaseDeadlineMs", "childWatchdogMs", "runDeadlineMs"].sort());
   await expect(guardedAuthorization("e2-validation").validate(f.args)).resolves.toBeDefined();
   f.artifact.bindings.deadlines.requestDeadlineMs += 1;
+  await save(f.args.authorizationPath, f.artifact);
+  await expect(guardedAuthorization("e2-validation").validate(f.args)).rejects.toMatchObject({ code: "e2_authorization_binding_mismatch" });
+});
+
+it.each(["continuity-e2-guarded-plan-v1", "continuity-e2-guarded-plan-v2"])("fails closed on %s rather than silently enabling retry", async schema => {
+  f.pilot.descriptor.schema = schema;
+  await expect(f.persist()).rejects.toMatchObject({ code: "e2_deadlines_invalid" });
+  await expect(guardedAuthorization("e2-validation").validate(f.args)).rejects.toMatchObject({ code: "e2_deadlines_invalid" });
+});
+it.each(["missing", "version", "per-request", "per-run", "eligibility", "extra"])("refuses altered retry policy: %s", async change => {
+  const policy = f.pilot.descriptor.retryPolicy = structuredClone(E2_RETRY_POLICY);
+  if (change === "missing") delete f.pilot.descriptor.retryPolicy;
+  if (change === "version") policy.schema = "continuity-e2-retry-policy-v0";
+  if (change === "per-request") policy.maxPerRequest = 2;
+  if (change === "per-run") policy.maxPerRun = 9;
+  if (change === "eligibility") policy.eligibleCauseClasses.push("unknown");
+  if (change === "extra") policy.extra = true;
+  await f.persist();
+  await expect(guardedAuthorization("e2-validation").validate(f.args)).rejects.toMatchObject({ code: "e2_registration_invalid" });
+});
+it("binds the full new descriptor including retry policy without changing the outer authorization schema", async () => {
+  expect(f.artifact.schema).toBe("continuity-e2-authorization-v1");
+  expect(f.artifact.bindings.descriptor).toEqual(f.pilot.descriptor);
+  expect(f.artifact.bindings.descriptor.retryPolicy).toEqual(E2_RETRY_POLICY);
+  await expect(guardedAuthorization("e2-validation").validate(f.args)).resolves.toBeDefined();
+  f.artifact.bindings.descriptor.retryPolicy = { ...E2_RETRY_POLICY, maxPerRun: 7 };
   await save(f.args.authorizationPath, f.artifact);
   await expect(guardedAuthorization("e2-validation").validate(f.args)).rejects.toMatchObject({ code: "e2_authorization_binding_mismatch" });
 });

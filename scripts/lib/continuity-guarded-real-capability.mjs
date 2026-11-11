@@ -78,7 +78,7 @@ function bind(protocol, protocolId) {
         try { protocol.execution?.assertCacheHeaders?.(headers, hold, a.cacheKey); protocol.execution?.assertBody(bytes, hold); if (protocol.execution?.verifyNativeBody) await protocol.execution.verifyNativeBody(bytes, hold, state, a, permit); }
         catch (error) { await stop(error?.code ?? protocol.codes.body_mismatch, true); }
         if (clock) await assertDeadline(); // Native-body verification may have awaited durable history.
-        used.add(hold.permitId); // No retry, including after fetch rejection or abort.
+        used.add(hold.permitId); // Single send per permit, including after rejection/abort. E2 retries need a fresh permit.
         let response;
         try { response = await nativeDispatch.run(protocolId, () => nativeFetch(endpoint, { ...init, redirect: "error" })); }
         catch (error) { observeNative("dispatch", null, error?.code ?? error?.cause?.code); throw error; }
@@ -88,12 +88,12 @@ function bind(protocol, protocolId) {
           await stop(code);
         };
         if ([401, 403].includes(response.status)) await rejectResponse(protocol.codes.auth_failure);
-        if (response.status === 429) await rejectResponse(protocol.codes.quota_exhausted);
+        if (response.status === 429 && !protocol.execution?.deferNativeFailure?.(a.pilot, response.status)) await rejectResponse(protocol.codes.quota_exhausted);
         const type = response.headers.get("content-type") ?? "";
         if (type.includes("application/json")) {
           const body = await response.clone().json().catch(() => null);
           observeNative("response_headers", response.status, body?.error?.code ?? body?.error?.type);
-          if (quota(body?.error)) await rejectResponse(protocol.codes.quota_exhausted);
+          if (quota(body?.error) && !protocol.execution?.deferNativeFailure?.(a.pilot, response.status, body?.error?.code ?? body?.error?.type)) await rejectResponse(protocol.codes.quota_exhausted);
         }
         if (!response.body || !type.includes("text/event-stream")) return response;
         let buffer = ""; const decoder = new TextDecoder();
@@ -107,7 +107,7 @@ function bind(protocol, protocolId) {
               let event; try { event = JSON.parse(data); } catch { continue; }
               if (["response.completed", "response.incomplete", "response.failed", "error"].includes(event?.type) || event?.error || event?.response?.error)
                 observeNative("provider_terminal", null, event?.error?.code ?? event?.response?.error?.code);
-              if (quota(event?.error) || quota(event?.response?.error)) await stop(protocol.codes.quota_exhausted);
+              if ((quota(event?.error) || quota(event?.response?.error)) && !protocol.execution?.deferNativeFailure?.(a.pilot, null, event?.error?.code ?? event?.response?.error?.code)) await stop(protocol.codes.quota_exhausted);
             }
             controller.enqueue(chunk);
           },
