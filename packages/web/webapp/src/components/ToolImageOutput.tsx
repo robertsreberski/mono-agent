@@ -66,8 +66,8 @@ export function ToolImageOutput({ result, imageResults, args, truncated, charact
     // collapsed disclosures (including nested clusters) and never-seen rows.
     // Latch the first intersection so scrolling cannot replace a preview with
     // raw base64, shift the layout, or repeat validation of the same result.
-    const observer = new IntersectionObserver(([entry]) => {
-      if (entry?.isIntersecting) {
+    const observer = new IntersectionObserver((entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) {
         setSeen(true);
         observer.disconnect();
       }
