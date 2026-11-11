@@ -55,18 +55,19 @@ export function renderContinuityPack(snapshot: ContinuitySnapshot, history: read
   const guidance = conversationHistoryAvailable ? PACK_RETRIEVAL_GUIDANCE : "";
   const disclosure = derived !== "" && !shown ? `Continuity ledger omitted: ${ledger!.generation.entries.length} derived entries exceed the ledger space; omission is not supersession.\n` : "";
   const demoted = new Set(shown ? quotedOwnerRecords(ledger!.generation, ledger!.records) : []);
-  const rank: Record<Section, number> = { owner: 0, tool: 1, summary: 2, evidence: 3 };
+  const rank: Record<Section, number> = { summary: 0, owner: 1, tool: 2, evidence: 3 };
   const toolRank = (record: ContinuitySnapshotRecord) => effectPriority(record.tool?.name ?? "") ? 0 : 1;
   const layout = (quoted: ReadonlySet<string>) => (a: ContinuitySnapshotRecord, b: ContinuitySnapshotRecord) => (quoted.has(a.recordId) ? 4 : rank[section(a)]) - (quoted.has(b.recordId) ? 4 : rank[section(b)])
     || (section(a) === "tool" ? toolRank(a) - toolRank(b) : 0) || a.ordinal - b.ordinal || (a.recordId < b.recordId ? -1 : a.recordId > b.recordId ? 1 : 0);
-  // Reserve the marker, then 40% of the remaining content space for tools.
+  // Reserve the marker and admit the whole summary before reserving 40%
+  // of residual content space for tools. Ledger prefix admission is unchanged.
   // Effect-like names get first claim; reads/unknown names use the remainder.
   // Unused reservation returns to owners. Remaining tools may backfill after
   // owners, but neither phase can insert text outside the actual target limit.
   const choose = (start: string, ordered: readonly ContinuitySnapshotRecord[]) => {
     const selected = new Map<ContinuitySnapshotRecord, string>();
     let bytes = Buffer.byteLength(start), toolTokens = 0, toolReserved = 0;
-    const toolBudget = Math.floor(Math.max(0, limit - packTokensOfBytes(bytes) - 220) * 0.4);
+    let toolBudget = 0, summaryOmission = "";
     const select = (record: ContinuitySnapshotRecord, reserved = false) => {
       if (selected.has(record) || contentFreeRead(record)) return;
       const entry = renderEntry(record, section(record)), next = bytes + Buffer.byteLength(entry);
@@ -75,11 +76,21 @@ export function renderContinuityPack(snapshot: ContinuitySnapshot, history: read
       selected.set(record, entry); bytes = next;
       if (reserved) { toolTokens += cost; toolReserved++; }
     };
+    for (const record of ordered) if (section(record) === "summary") {
+      select(record);
+      if (!selected.has(record)) {
+        const cost = packTokensOfBytes(bytes + Buffer.byteLength(renderEntry(record, "summary"))) - packTokensOfBytes(bytes);
+        const headroom = Math.max(0, limit - packTokensOfBytes(bytes) - 220);
+        summaryOmission += `Generated summary omitted: entry_tokens=${cost}; content_headroom_tokens=${headroom}; whole entry required, omission is not supersession.\n`;
+      }
+    }
+    bytes += Buffer.byteLength(summaryOmission);
+    toolBudget = Math.floor(Math.max(0, limit - packTokensOfBytes(bytes) - 220) * 0.4);
     // Entries are sorted effect-first, then oldest-first, so reads spend the
     // reservation left by compact effect heads in ordinal order.
     for (const record of ordered) if (section(record) === "tool") select(record, true);
-    for (const record of ordered) select(record);
-    return { selected, toolReserved };
+    for (const record of ordered) if (section(record) !== "summary") select(record);
+    return { selected, toolReserved, summaryOmission };
   };
   entries.sort(layout(demoted));
   let ordered: readonly ContinuitySnapshotRecord[] = entries;
@@ -97,14 +108,14 @@ export function renderContinuityPack(snapshot: ContinuitySnapshot, history: read
     const owner = (record: ContinuitySnapshotRecord) => section(record) === "owner" && !demoted.has(record.recordId);
     ordered = [...entries].sort((a, b) => owner(a) && owner(b) ? (priority.get(a) ?? priority.size) - (priority.get(b) ?? priority.size) || layout(demoted)(a, b) : layout(demoted)(a, b));
   }
-  const { selected, toolReserved } = choose(prefix + guidance + disclosure, ordered);
+  const { selected, toolReserved, summaryOmission } = choose(prefix + guidance + disclosure, ordered);
   const renderedToolIds = new Set<string>();
   const ledgerEntries = shown ? ledger!.generation.entries.length : 0;
   let unknownOverlap = 0;
-  let degradedReason: string | undefined = snapshot.degradedReason ?? (snapshot.gaps > 0 ? "coverage_gap" : upkeepGap ? "upkeep_gap" : undefined);
-  // Selection priority does not change section layout: owner requests first,
-  // tools effect-first, then summary/neutral evidence; ordinal within groups.
-  let body = prefix + guidance + disclosure;
+  let degradedReason: string | undefined = snapshot.degradedReason ?? (snapshot.gaps > 0 ? "coverage_gap" : upkeepGap ? "upkeep_gap" : summaryOmission ? "summary_headroom" : undefined);
+  // Layout: summary first, then owners, effect-first tools and neutral evidence;
+  // ordinal within groups. Generated provenance and quotation stay unchanged.
+  let body = prefix + guidance + disclosure + summaryOmission;
   for (const record of entries) {
     const entry = selected.get(record); if (entry === undefined) continue;
     body += entry; counts[section(record)]++;

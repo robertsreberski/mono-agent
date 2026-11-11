@@ -55,3 +55,15 @@ it.each([4000, 8000])("freezes available=true retrieval pack (headroom=%s)", max
   expect(pack.counts.owner).toBe(20); expect(pack.counts.tool).toBe(20);
   expect(renderContinuityPack(snapshot, [], maxTokens, undefined, false, false)).toEqual(renderContinuityPack(snapshot, [], maxTokens));
 });
+
+
+it("gives the whole generated summary first claim ahead of both pressure groups, with no recent-dialogue lane", () => {
+  const text = "Complete generated summary 🦊. ".repeat(200);
+  const summary = { ...records[0]!, kind: "summary" as const, provenance: "generated" as const, text, sha256: ledgerHash(text), ordinal: 900 };
+  const source = { records: [...records, summary], omitted: 0, gaps: 0 };
+  const pack = renderContinuityPack(source, [], 4000);
+  expect(pack.counts.summary).toBe(1); expect(pack.text).toContain(JSON.stringify(text));
+  expect(pack.text!.indexOf("Generated summary evidence")).toBeLessThan(pack.text!.indexOf("Historical owner request"));
+  expect(pack.tokens).toBeLessThanOrEqual(4000);
+  expect(renderContinuityPack({ records, omitted: 0, gaps: 0 }, [], 4000).counts.summary).toBe(0);
+});

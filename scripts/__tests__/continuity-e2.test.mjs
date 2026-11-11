@@ -1,3 +1,4 @@
+import { retentionLineage } from "./fixtures/e2-retention-lineage.mjs";
 import { openHarness } from "../lib/continuity-runner.mjs";
 import { afterEach, expect, it, vi } from "vitest";
 import fs from "node:fs";
@@ -220,7 +221,12 @@ it.each(["faux-short", "faux-max"])("replays configured shipping compaction with
     w.on("error", e => workerErrors.push(e.message)); return w;
   }); syncBuiltinESMExports();
   const contexts = [];
-  const report = await runE2Sizing({ source, protocol, output: join(dir, "output"), summary, onContext: c => contexts.push(c) });
+  const lineage = await retentionLineage(dir, protocol);
+  const report = await runE2Sizing({ source, protocol, output: join(dir, "work", "replay"), summary, modules: lineage.modules, onContext: c => contexts.push(structuredClone(c)) });
+  expect(lineage.checkpoints.length).toBeGreaterThanOrEqual(2);
+  for (const { branch, reference } of lineage.checkpoints) expect(existsSync(join(dir, "work", "replay", `branch-${branch}`, "work", "sessions", "journals", `${reference.journalId}.jsonl`))).toBe(false);
+  const verified = await lineage.verify(contexts);
+  if (summary === "faux-short") { expect(verified.pack).toBeGreaterThan(0); expect(verified.serializerRoundTrips).toBeGreaterThan(0); }
   expect(report.branches).toHaveLength(2);
   for (const branch of report.branches) {
     expect(branch.compactions.length).toBeGreaterThan(0); expect(branch.summaryRequests.length).toBeGreaterThan(0);
@@ -240,6 +246,30 @@ it.each(["faux-short", "faux-max"])("replays configured shipping compaction with
   for (let i = 0; i < probeContexts.length; i++) {
     const context = probeContexts[i].context, tools = context.tools ?? context.messages.flatMap(m => m.toolsAdded ?? []);
     expect(tools.map(t => t.name)).toEqual(i % (protocol.probeLookupRounds + 1) === protocol.probeLookupRounds ? [] : ["ConversationHistory"]);
+  }
+  // Main B4 and prefix B3 are genuine cold model boundaries. Restored
+  // probes must retain the same complete summary line, not an excerpt.
+  for (const branch of [0, 1]) {
+    const candidates = contexts.filter(c => c.branch === branch && c.probe);
+    const last = candidates.slice(-2 * (protocol.probeLookupRounds + 1));
+    const retained = (await import("../../packages/conversation/dist/tool-history/continuity-payload.js")).retainContinuityText(lineage.checkpoints.filter(c => c.branch === branch).at(-1).summary);
+    for (const { context } of last) {
+      const texts = context.messages.flatMap(m => typeof m.content === "string" ? [m.content] : (m.content ?? []).filter(p => p.type === "text").map(p => p.text));
+      const pack = texts.find(text => text.startsWith("### Conversation continuity pack"));
+      expect(pack).toBeDefined();
+      if (summary === "faux-short") {
+        expect(pack).toContain(`sha256=${JSON.stringify(retained.sha256)}: ${JSON.stringify(retained.text)}\n`);
+      } else {
+        expect(pack).not.toContain("Generated summary evidence");
+        expect(pack).toContain("Generated summary omitted: entry_tokens=");
+        expect(pack).not.toContain(retained.text.slice(0, 100));
+      }
+    }
+    const sourcePacks = contexts.filter(c => c.branch === branch && !c.probe).flatMap(c => c.context.messages)
+      .flatMap(m => typeof m.content === "string" ? [m.content] : (m.content ?? []).filter(p => p.type === "text").map(p => p.text))
+      .filter(text => text.startsWith("### Conversation continuity pack"));
+    if (summary === "faux-short") expect(sourcePacks.at(-1)).toContain(`sha256=${JSON.stringify(retained.sha256)}: ${JSON.stringify(retained.text)}\n`);
+    else expect(sourcePacks.at(-1)).toContain("Generated summary omitted");
   }
   const { e2PhaseSchedule } = await import("../lib/continuity-e2-registration.mjs");
   const { estimateE2SizingSet } = await import("../lib/continuity-e2-sizing.mjs");

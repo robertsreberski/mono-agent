@@ -138,3 +138,19 @@ it.each([false, true])("does not emit an empty pack or change ledger admission (
   const huge = ledger(records, 60, 80);
   expect(renderContinuityPack(empty, [], 8000, huge, false, available).text).toBeUndefined();
 });
+
+
+it("keeps ledger-prefix priority when a summary fits alone but not after the admitted ledger", () => {
+  const { records } = displacementFixture();
+  const text = "Whole fictional generated summary. ".repeat(500);
+  const summary = { ...owner(900, text, "summary"), kind: "summary" as const, provenance: "generated" as const };
+  const snapshot = { records: [...records, summary], omitted: 0, gaps: 0 }, active = ledger(records, 14, 70);
+  const alone = renderContinuityPack(snapshot, []);
+  expect(alone.counts.summary).toBe(1);
+  const pack = renderContinuityPack(snapshot, [], 8000, active);
+  expect(pack.ledgerEntries).toBe(14); expect(pack.counts.summary).toBe(0);
+  expect(pack.text).toContain("Generated summary omitted: entry_tokens=");
+  expect(pack.degradedReason).toBe("summary_headroom");
+  expect(pack.text).not.toContain(text); expect(pack.text).toContain("### Continuity ledger");
+  expect(pack.tokens).toBeLessThanOrEqual(8000);
+});

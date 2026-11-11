@@ -2974,6 +2974,24 @@ sidecar hash allowlist, caller redaction flag, fuzzy matching or arbitrary
 substring confers authority. A valid summary does not excuse an additional forged
 one; a no-lineage baseline cannot introduce any summary representation.
 
+Summary-first retention evidence must distinguish eligibility, complete fit and
+verified presence. Faux pressure replays cover main B4 and prefix B3, including
+both pristine restored repeats: fitting summaries must appear as complete
+shipping-generated pack lines. Every admitted summary must resolve through its
+own slot's current/predecessor lineage via the shipping Responses converter and
+`verifyE2NativeLineage`. A synthetic shipping-serializer round-trip separately
+checks compaction-style pack encoding; it does not demonstrate a later real
+compaction request carrying the pack. Captured actual summary requests are
+lineage-checked independently.
+Faux-max exercises all-or-nothing omission and content-free size/headroom
+reporting. Record pack estimated-token deltas as cost evidence, not a quality
+score. The complete JSON-quoted summary must fit after the unchanged admitted
+ledger/header prefix and reserved marker, within `min(8000, actual headroom)`;
+no clipping or older substitution is allowed. Per-message replay can pay this
+cost every turn; warm resumes add no second pack. Daily-rollover cross-bucket
+carry and dedicated assistant-commitment lanes are not provided. These retention
+checks do not change the scoring gate, safety checks or authorization protocol.
+
 **Absence is observable, not refusable.** A reseeded or bounded context may contain
 no summary; it is sent unchanged and recorded as `none`. The same rule applies to
 warm contexts: dropping a summary is visible but does not create authority. Slot

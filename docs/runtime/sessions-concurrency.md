@@ -123,9 +123,10 @@ skips Codex; default Codex stream abort cannot bound hidden reasoning or quota.
 
 `runtime.session.continuity.packEnabled` defaults to `true`. At a cold canonical
 history rebuild, a conversation-owned local supplier reads committed, finalized
-v3 evidence without a model call. It carries whole historical host-owner
-quotations (oldest first), finalized tool names/states/compact arguments and
-bounded result heads, the latest proof-promoted pinned portable summary, and coverage/omission counts.
+v3 evidence without a model call. It shortlists the eligible latest proof-promoted
+pinned portable summary first, ahead of whole historical host-owner quotations
+(oldest first), finalized tool names/states/compact arguments and bounded result
+heads, and neutral evidence, with coverage/omission counts.
 Other speakers/imports are neutral evidence; tools and summaries are not owner
 instructions. Past owner requests remain subordinate to current instructions and
 never renew approval to repeat an effect. B1 retains successful finalized tool
@@ -154,9 +155,24 @@ post-pack projection exclusions, not the pre-resolution configured header.
 Reconstruction boundary events can follow `run_config`, `turn_context` and provider
 events while exclusions resolve; consumers match event type/reason, not order.
 
-The renderer reserves 40% of usable content space for tool records before owner
-selection; unused reservation returns to owners. When a derived continuity
-ledger is shown, owners from the no-ledger selection are admitted from both ends
+The complete generated summary is admitted and laid out immediately after the
+unchanged admitted prefix (including any admitted ledger), before tool reservation
+and owner selection. It must fit in the remaining `min(8000, actual headroom)`
+estimated-token budget including JSON quotation expansion, prefix and reserved
+coverage-marker costs. Otherwise the summary is omitted entirely, counted, and
+disclosed with content-free entry-size/headroom estimates; it is never clipped,
+rewritten or replaced with an older summary. Snapshot bounds stay 512 records and
+4 MiB; prepared, purged, unpinned, cross-bucket, current-run and later-than-boundary
+summaries remain excluded. With no eligible summary selection is unchanged.
+
+The renderer reserves 40% of residual usable content space for tool records before
+owner selection; unused reservation returns to owners. Per-message mode can now
+pay the summary cost on every replayed turn. True warm resumes add no second pack,
+but previously seeded text remains in request/cache accounting. Daily rollover
+still does not carry a summary from the previous physical bucket. Assistant
+commitments receive no dedicated lane and depend on summaries or retrieval.
+
+When a derived continuity ledger is shown, owners from the no-ledger selection are admitted from both ends
 of host order. Ledger space is charged to middle history rather than the newest
 owner corrections; layout and rendered text are unchanged (see
 [continuity ledger](./continuity-ledger.md)). Snapshots carry no MCP

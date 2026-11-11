@@ -128,8 +128,9 @@ function validateScope(scope: ContinuityScope): void {
 }
 function isContinuation(byte: number | undefined): boolean { return byte !== undefined && (byte & 0xc0) === 0x80; }
 
-/** Oldest evidence wins. Both materialization and total bytes are bounded; counts
- * disclose everything not selected. The caller holds a SQLite read transaction. */
+/** Pinned summary first, then oldest evidence by existing priority. Materialization
+ * and total bytes are bounded; counts disclose everything not selected.
+ * The caller holds a SQLite read transaction. */
 export function snapshotContinuity(database: DatabaseSync, input: ContinuitySnapshotInput): ContinuitySnapshot {
   validateScope(input);
   if (!hasContinuitySchema(database)) return { records: [], omitted: 0, gaps: 0, degradedReason: "unavailable" };
@@ -161,7 +162,7 @@ export function snapshotContinuity(database: DatabaseSync, input: ContinuitySnap
   const candidates = database.prepare(`SELECT r.record_id,length(CAST(r.retained_text AS BLOB)) snapshot_bytes,r.kind,r.ordinal FROM continuity_records r
     JOIN continuity_generations g USING(generation_id) WHERE ${where} AND r.retained_text IS NOT NULL
     AND (r.kind IN ('owner','user','other-user','imported','tool') OR r.record_id=?)
-    ORDER BY ${progress ? "r.ordinal" : "CASE WHEN r.kind='owner' AND r.provenance='host-owner' THEN 0 WHEN r.kind='tool' THEN 1 WHEN r.kind='summary' THEN 2 ELSE 3 END"}, r.ordinal ASC LIMIT 513`).all(...values, pinnedSummaryId ?? '') as Row[];
+    ORDER BY ${progress ? "r.ordinal" : "CASE WHEN r.kind='summary' THEN 0 WHEN r.kind='owner' AND r.provenance='host-owner' THEN 1 WHEN r.kind='tool' THEN 2 ELSE 3 END"}, r.ordinal ASC LIMIT 513`).all(...values, pinnedSummaryId ?? '') as Row[];
   const records: ContinuitySnapshotRecord[] = [];
   let bytes = 0, bounded = candidates.length > 512, unavailable = false;
   for (const candidate of candidates.slice(0, 512)) {

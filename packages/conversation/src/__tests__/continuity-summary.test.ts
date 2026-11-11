@@ -16,7 +16,7 @@ import { ToolHistoryWriter } from "../tool-history/writer.js";
 const roots: string[] = [], writers = new Set<ToolHistoryWriter>(), cleanup: Array<() => Promise<void>> = [];
 const id = "web:fiction", scope = { logicalConversationId: id, currentConversationId: id, currentRunId: "reading-run" };
 afterEach(async () => { for (const close of cleanup.splice(0)) await close(); for (const writer of writers) await writer.close(); writers.clear(); await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
-async function fixture(maxBytes?: number, summary = "Morgan chose the cobalt design.", outageCode?: string) {
+async function fixture(maxBytes?: number, summary = "Morgan chose the cobalt design.", outageCode?: string, hooks?: { beforeReconcile?: () => Promise<void>; retire?: () => Promise<void> }) {
   const root = await mkdtemp(join(tmpdir(), "continuity-summary-")); roots.push(root);
   const historyRoot = join(root, "history"), sessionsRoot = join(root, "native");
   const writer = await ToolHistoryWriter.open({ root: historyRoot, continuityEnabled: true, ...(maxBytes === undefined ? {} : { retention: { maxBytes } }) }); writers.add(writer);
@@ -26,12 +26,12 @@ async function fixture(maxBytes?: number, summary = "Morgan chose the cobalt des
   const continuity = createContinuityParticipant({ writer: {
     prepareContinuity: async input => { available(); return await writer.prepareContinuity(input); },
     commitContinuity: async input => { available(); await writer.commitContinuity(input); },
-    reconcileContinuity: async input => { available(); return await writer.reconcileContinuity(input); },
+    reconcileContinuity: async input => { available(); await hooks?.beforeReconcile?.(); return await writer.reconcileContinuity(input); },
     recordContinuityGap: async input => { available(); await writer.recordContinuityGap(input); },
     resetConversation: async input => { available(); await writer.resetConversation(input); },
   }, reader: { getContinuity: input => { available(); return reader.getContinuity(input); } },
     logicalConversationId: (id) => id, protectedConversations: () => reader.protectedContinuityConversations(), onWarning: warning => warnings.push(warning) });
-  const store = createDurableHistoryStore({ root: historyRoot, continuity, retireProviderSession: async () => {},
+  const store = createDurableHistoryStore({ root: historyRoot, continuity, retireProviderSession: async () => { await hooks?.retire?.(); },
     reconcileProviderSessionTurn: async (request) => await runtime.reconcileSessionTurn!({ sessionsRoot, descriptor: request.descriptor, purpose: request.purpose,
       ...(request.includeContinuity ? { includeContinuity: true } : {}), expectedModel: { provider: "faux", id: "m", api: "faux-api" }, expectedInputs: request.expectedInputs }) });
   const turn = await store.beginProviderSessionTurn(id, "fiction-summary-run", { modelKey: "faux:m", reconciliation: { purpose: "compaction", ownerKey: id } });
@@ -90,6 +90,27 @@ describe("owned portable summary publication", () => {
       expect(reader.snapshotContinuity(scope).records.filter(record => record.kind === "summary")).toMatchObject([{ recordId: latest.recordId, text: hostRecords[0] }]);
       expect((await writer.stats()).continuity).toMatchObject({ prepared: 0, pins: 1 });
     } finally { await harness.dispose?.(); await runtime.disposeAllSessions?.(); }
+  });
+
+  it("awaits recovered summary publication before next-turn model-change retirement", async () => {
+    let release!: () => void, entered!: () => void, retired = false, armed = false;
+    const barrier = new Promise<void>(resolve => { release = resolve; });
+    const publishing = new Promise<void>(resolve => { entered = resolve; });
+    const f = await fixture(undefined, "Complete recovered fictional summary.", undefined, {
+      beforeReconcile: async () => { if (armed) { entered(); await barrier; } },
+      retire: async () => { expect(f.reader.latestContinuitySummary(scope)).toBeDefined(); retired = true; },
+    });
+    await f.driver.compact({ continuityTrigger: "manual" });
+    await f.closeNative(); await f.turn.abort(); // acknowledgement gap, native checkpoint remains durable
+    armed = true;
+    const next = f.store.beginProviderSessionTurn(id, "next-run", { modelKey: "faux:other" });
+    await publishing;
+    const beforeRetirement = retired, beforePublication = f.reader.latestContinuitySummary(scope);
+    release();
+    const admitted = await next;
+    expect(beforeRetirement).toBe(false); expect(beforePublication).toBeUndefined();
+    expect(retired).toBe(true); expect(f.reader.latestContinuitySummary(scope)).toBeDefined();
+    await admitted.abort();
   });
 
   it("prepares before the native cut, records after its durability barrier, survives restart and is purged by reset", async () => {
