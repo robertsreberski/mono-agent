@@ -27,6 +27,7 @@
   },
   "files": [
     "dist",
+    "assets/pdf-fonts",
     "schema",
     "webapp/dist",
     "README.md"
@@ -36,7 +37,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.contract.json && pnpm --dir webapp run typecheck:storybook",
     "test": "pnpm run check:api-contract && vitest run src/__tests__ && pnpm --dir webapp run test",
     "generate:api-contract": "node scripts/generate-api-contract.mjs",
-    "check:api-contract": "node scripts/generate-api-contract.mjs --check"
+    "check:api-contract": "node scripts/generate-api-contract.mjs --check",
+    "smoke:pdf": "node scripts/smoke-pdf-export.mjs"
   },
   "dependencies": {
     "@mono-agent/channel-operator": "workspace:0.26.0",
@@ -46,6 +48,10 @@
     "compression": "1.8.2",
     "cron-parser": "5.5.0",
     "express": "^5.1.0",
+    "pdfkit": "0.20.2",
+    "remark-gfm": "4.0.1",
+    "remark-parse": "11.0.0",
+    "unified": "11.0.5",
     "web-push": "3.6.7"
   },
   "devDependencies": {
@@ -53,8 +59,10 @@
     "@mono-agent/turn": "workspace:0.26.0",
     "@types/compression": "^1.8.1",
     "@types/express": "^5.0.2",
+    "@types/pdfkit": "0.17.7",
     "@types/web-push": "3.6.4",
     "ajv": "^8.20.0",
+    "pdfjs-dist": "6.5.438",
     "ts-json-schema-generator": "^2.9.0",
     "undici": "8.12.2"
   },

@@ -37,6 +37,19 @@ overrides:
   source-map-js: 1.2.2
   ws: 8.21.1
 
+# Legacy remark declarations import unified without declaring the dependency.
+# Keep their types on v9 when another workspace package uses modern unified.
+packageExtensions:
+  'remark-parse@9.0.0':
+    dependencies:
+      unified: 9.2.2
+  'remark-gfm@1.0.0':
+    dependencies:
+      unified: 9.2.2
+  'remark-stringify@9.0.1':
+    dependencies:
+      unified: 9.2.2
+
 onlyBuiltDependencies:
   - better-sqlite3
   - sqlite-vec

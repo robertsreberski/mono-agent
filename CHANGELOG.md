@@ -14,6 +14,10 @@
 - Fix continuity E2 follow-up assertions to match each proof probe's requested
   information while retaining recovery, disclosure and single-effect checks.
 
+- Add direct conversation PDF downloads to the web console, with messages-only
+  transcripts, formatted Markdown, embedded Latin/Greek/Cyrillic fonts and
+  bounded images.
+
 - **Breaking:** Add controller-owned guarded E2 retries with plan-v3 and
   permit-v2 contracts; require fresh registration and authorization binding the
   exact retry policy. Retry only eligible closed failures once per logical

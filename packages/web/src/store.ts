@@ -1,3 +1,4 @@
+import { PDF_LIMITS, pdfTooLarge } from "./pdf-model.js";
 import { browserCostWire, normalizeBrowserCosts, costAmount, knownCostAmount } from "./cost-wire.js";
 import type { ProcessJobWakeRecovery } from "./process-job-wake-recovery.js";
 import type { WebCancelOrigin } from "./contracts.js";
@@ -3333,6 +3334,29 @@ export class WebStore {
           }
         : {}),
     };
+  }
+
+  /** Whole durable transcript, bounded before any raw JSON reaches JavaScript. */
+  pdfMessages(id: string): { thread: WebThread; messages: WebMessage[] } {
+    return this.transaction(() => {
+      const thread = this.getThread(id);
+      if (thread === undefined) throw new WebConsoleError("thread_not_found", "Conversation not found.", 404);
+      const budget = this.database.prepare(`SELECT COUNT(*) AS count,
+        COALESCE(SUM(bytes), 0) AS bytes FROM (
+          SELECT length(CAST(parts_json AS BLOB)) AS bytes FROM messages m
+          WHERE m.thread_id = ? AND ${visibleMessageSql("m")} LIMIT ?)` )
+        .get(thread.id, PDF_LIMITS.rows + 1) as { count: number; bytes: number };
+      if (budget.count > PDF_LIMITS.rows || budget.bytes > PDF_LIMITS.sourceBytes) throw pdfTooLarge();
+      const rows = this.database.prepare(`WITH ordered AS MATERIALIZED (
+        SELECT m.rowid AS storage_rowid, COALESCE(t.started_at, m.created_at) AS ordered_at,
+          ${messageRoleRankSql("m")} AS role_rank, m.created_at
+        FROM messages m LEFT JOIN turns t ON t.id = m.turn_id
+        WHERE m.thread_id = ? AND ${visibleMessageSql("m")}
+      ) SELECT m.* FROM ordered JOIN messages m ON m.rowid = ordered.storage_rowid
+        ORDER BY ordered.ordered_at, ordered.role_rank, ordered.created_at, ordered.storage_rowid`)
+        .all(thread.id) as unknown as MessageRow[];
+      return { thread, messages: this.mapMessages(rows) };
+    });
   }
 
   currentThreadId(): string | undefined {

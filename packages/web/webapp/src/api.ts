@@ -429,6 +429,44 @@ export function parseThreadUsage(value: unknown): WebThreadUsage {
 }
 
 export const api = {
+  async exportPdf(threadId: string, signal?: AbortSignal): Promise<{ blob: Blob; filename: string }> {
+    const response = await fetch(`/api/v1/threads/${encodeURIComponent(threadId)}/export/pdf`, {
+      method: "POST", credentials: "same-origin", ...(signal ? { signal } : {}),
+    });
+    if (!response.ok) throw await readError(response);
+    if (response.headers.get("content-type")?.split(";", 1)[0] !== "application/pdf") {
+      await response.body?.cancel().catch(() => undefined);
+      throw new Error("The server did not return a PDF. Try again.");
+    }
+    const limit = 32 * 1024 * 1024;
+    if (Number(response.headers.get("content-length")) > limit || !response.body) {
+      await response.body?.cancel().catch(() => undefined); throw new Error("The PDF download is too large or unavailable.");
+    }
+    const reader = response.body.getReader(); const chunks: Uint8Array<ArrayBuffer>[] = []; let size = 0;
+    try {
+      while (true) {
+        const next = await reader.read(); if (next.done) break;
+        size += next.value.length;
+        if (size > limit) throw new Error("The PDF download is too large.");
+        chunks.push(Uint8Array.from(next.value));
+      }
+    } finally { await reader.cancel().catch(() => undefined); reader.releaseLock(); }
+    recordTransferredBody(size);
+    const blob = new Blob(chunks, { type: "application/pdf" });
+    const header = new Uint8Array(5); let copied = 0;
+    for (const chunk of chunks) {
+      const part = chunk.subarray(0, 5 - copied); header.set(part, copied); copied += part.length;
+      if (copied === 5) break;
+    }
+    if (new TextDecoder().decode(header) !== "%PDF-") throw new Error("The PDF download is invalid. Try again.");
+    const disposition = response.headers.get("content-disposition") ?? "";
+    let filename = /filename="([^"]+)"/u.exec(disposition)?.[1] ?? "conversation.pdf";
+    const encoded = /filename\*=UTF-8''([^;]+)/iu.exec(disposition)?.[1];
+    if (encoded) { try { filename = decodeURIComponent(encoded); } catch { /* ASCII fallback */ } }
+    filename = filename.replace(/[\x00-\x1f\x7f/\\]/gu, "_").slice(0, 150);
+    if (!filename.endsWith(".pdf")) filename = "conversation.pdf";
+    return { blob, filename };
+  },
   transcribe: (threadId: string, audio: Blob, signal: AbortSignal) => request<{ readonly text: string }>(`/api/v1/threads/${encodeURIComponent(threadId)}/transcriptions`, { method: "POST", body: audio, signal, cache: "no-store", headers: { "Content-Type": audio.type } }),
   threadUsage: async (threadId: string, signal?: AbortSignal): Promise<WebThreadUsage> => {
     const response = await request<{ usage: unknown }>(`/api/v1/threads/${encodeURIComponent(threadId)}/usage`, { signal });

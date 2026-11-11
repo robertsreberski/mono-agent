@@ -121,6 +121,63 @@ User Stop also marks a running `AskUser` question as interrupted; answer in a ne
   remain stack-only.
 ## Install / Usage
 
+### Conversation PDF export
+
+Open **Conversation actions → Export as PDF** on desktop or mobile, including
+archived conversations. Rendering is server-side, with no print dialog or
+client-side PDF renderer. The PDF downloads directly. While it generates, the
+action is disabled
+and a status remains visible after the menu closes. Failures give a clear error;
+open the menu again to retry. The ready **Download PDF** link remains available
+until dismissed or you leave the conversation. On an installed iOS PWA, tap this
+link if the automatic download is not offered; iOS may show its PDF preview and
+Save to Files handoff. A physical installed-iOS download is not automated proof.
+
+The document contains the title, UTC export date and the whole retained durable
+transcript, not just the loaded screen: authored user messages, quotes, final
+assistant reply text and attachment names. Earlier tool-time narration, thinking,
+tool inputs/results, jobs, subagents, telemetry, errors, system/compaction notes
+and imported context wrappers are excluded. Check the document before sharing:
+ordinary message text and files can still contain personal information.
+
+Applied steers appear once as user messages; pending/queued/uncertain inputs carry
+a status, while cancelled unconsumed inputs are omitted. Running assistant drafts
+are omitted with a notice. Settled partial replies are labeled incomplete. Actual
+visible final replies from scheduled or notification turns remain messages; host
+prompts, synthetic silence and activity-only cards do not. Attachments-only
+messages retain their attachment names.
+
+Markdown headings, lists, emphasis, code, tables and safe links are supported.
+Grid table cells are plain text; inline formatting and clickable links are not
+preserved there.
+HTML, interactive apps, diagrams and math are not rendered. PNG/JPEG attachments
+use natural size (downscaled to fit), with a small muted filename caption. Owned
+Markdown images render at their authored position, without a duplicate at the
+message's end; remaining attachments follow the text. Image-bearing tables flow
+in row/column order with column labels. Remote, unowned and data-URL images remain
+short placeholders and are never fetched. Only already-owned uploads or message-bound agent
+artifacts can be read; remote image URLs and local paths are never fetched.
+Unsupported, expired, offline, corrupt or over-budget files get named placeholders.
+
+Exports are bounded: 2,000 stored rows / 32 MiB source JSON, 2 MiB message text /
+200,000 characters each for a message's text and its quote (separate limits),
+100,000 Markdown nodes / 32 nesting levels,
+20 table columns / 1,000 rows, 500 PDF pages / 32 MiB output, and a 30-second
+deadline. Only one export runs at a time (retry if busy). Images are limited to
+20 attempts, 5 MiB each / 20 MiB total, 4 megapixels each / 16 megapixels total.
+Oversized conversations fail explicitly rather than exporting a truncated tail.
+No export is stored on the service; the generated download remains in browser
+memory until dismissed or navigation. No configuration is needed. The existing
+trusted-network/Host/exact-origin boundary applies: there is no application login.
+
+PDFKit and unified/remark (MIT) generate the file in a bounded Node worker.
+Bundled Noto Sans regular/bold and Noto Sans Mono TTFs are SIL OFL 1.1 licensed;
+see [font provenance and license](./assets/pdf-fonts/README.md). Latin (including
+Polish and German), Greek and Cyrillic have embedded fonts. CJK and color emoji
+have no fallback and unsupported glyphs may appear missing. This is not an
+all-script Unicode font collection. PDF.js is test-only, not a runtime dependency
+or browser bundle input.
+
 ### Voice messages (opt-in)
 
 Use **paperclip → Record audio → Stop recording** (the round square-icon button)
@@ -1081,6 +1138,16 @@ normal run accounting already includes summary spend.
 
 Agent settings uses the compact project/tag sheet layout and shows core subscription meters beneath matching Claude, Codex, OpenCode Go and GitHub Copilot auth rows. Only providers activated by this agent’s effective model references appear; credentials alone do not activate providers. When Provider authentication is supported, unmatched usage rows are not rendered, even while auth status is loading. Operators advertising usage without authentication render their scoped snapshot as meter-only cards, without auth badges or controls. Paid Copilot shows Credits; free shows Chat/Completions. Pin/close controls match the dashboard’s 36×36px/10px-radius geometry on desktop and coarse touch; provider text actions remain 10px/28px. The live-only `supportsProviderUsage` capability enables an independent no-store `/api/v1/agents/:id/provider-usage` proxy, with connection-generation fencing. The web host never reads the Pi store; the agent shares its five-minute cache with the read-only `ProviderUsage` tool. An additive live `supportsProviderUsageRefresh` capability exposes the compact **Refresh usage** text button next to **Check access**. Its exact-origin, no-store `POST /api/v1/agents/:id/provider-usage/refresh` awaits fresh account-usage data, bypassing successful cache freshness but not backoff. Pending/failure feedback retains usable meters and actual fetch timestamps; late responses are fenced to the sheet owner. Refresh usage supplies passive **Credential OK** evidence only for agent-owned Pi credentials, never inference proof; Copilot local fallback tokens add no auth evidence. Check access probes configured authentication providers. Older agents retain cached reads without the manual control.
 
+### Conversation PDF source map
+
+`store.ts#pdfMessages` reads a bounded complete durable transcript;
+`pdf-model.ts` is the messages-only allowlist and resource policy;
+`service.ts#exportPdf` owns media admission and attachment membership;
+`pdf-worker-client.ts` / `pdf-render-worker.ts` isolate deadline-limited layout;
+`pdf-renderer.ts` maps Markdown to PDFKit. The HTTP route and headers stay in
+`server.ts`. Browser binary download lives in `webapp/src/api.ts`, with the shared
+menu in `Chat.tsx` and persistent feedback in `PdfExport.tsx`.
+
 ### Silent cron history
 
 Successful empty answers and answers suppressed by `NOTHING_TO_REPORT` add no
@@ -1534,7 +1601,8 @@ race.
 
 The server depends only on the `core` `@mono-agent/contracts` and
 `@mono-agent/config` packages, the `observability` trace-source registry, and
-Express. Its Node-side clients use `@mono-agent/channel-operator/client` for
+Express, plus PDFKit and unified/remark for server-side conversation PDF exports.
+Its Node-side clients use `@mono-agent/channel-operator/client` for
 bounded NDJSON decoding and long-lived turn and host-wake fetch mechanics;
 authentication, loopback policy, and lifecycle ownership remain in web.
 Its compiled browser bundle additionally contains the production graph
@@ -1564,6 +1632,23 @@ import another operator surface or start the operator adapter server.
 - [Reply files and MCP Apps](https://docs.mono-agent.dev/tools/rich-replies/)
 
 ## Verification
+
+After the dependency-closure build, prove PDF download against an isolated built
+service/worker with fictional durable history (no provider calls or owner state):
+
+```bash
+pnpm --filter @mono-agent/web... run build
+pnpm --filter @mono-agent/web run smoke:pdf
+```
+
+The smoke checks a real PDF response, download headers, 110 durable messages and
+independently extracted Polish/German text. PDF renderer/filter and route tests
+live in `src/__tests__/pdf-export.test.ts` and `pdf-route.test.ts`; Chat's unit and
+browser suites cover the menu, progress, errors and the iOS fresh-gesture fallback.
+Set `PDF_EXPORT_ARTIFACTS=<ignored absolute directory>` for the backend PDF tests
+and `VITE_PDF_EXPORT_SHOTS=<ignored absolute directory>` for Chat browser tests to
+save fictional PDFs/page renders and desktop/mobile feedback screenshots.
+
 
 After building the web package, opt into the production-CSP playback regression:
 

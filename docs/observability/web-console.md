@@ -51,6 +51,63 @@ mono-agent web run         # foreground service, including non-macOS hosts
 
 `--loopback` (the fresh default) binds `127.0.0.1`, `--host <addr>` binds wider, and the bind narrows the HTTP listener only — not every way the console can be reached. A managed macOS `start`/`restart` re-verifies an existing mono-agent-owned Tailscale Serve HTTPS route and publishes one only when asked with `--share-tailnet`; the foreground `run` command never configures Serve, `stop` removes only the exact route mono-agent owns, and no mode removes an unowned Serve handler, reverse proxy, or tunnel that already points at the port. The lifecycle status records the effective bind, theme, console name, and any owned Tailscale route so later commands operate on the same service rather than guessing; `mono-agent web` prints the effective URLs, `mono-agent web status --json` prints the listener and the owned route as separate fields, and `tailscale serve status` shows the Serve route. An installed service is never re-bound to the fresh default: a stopped install's bind/port/theme/name are recovered from its LaunchAgent definition, and an unreadable definition fails closed before anything changes.
 
+## Export a conversation as PDF
+
+Open **Conversation actions → Export as PDF** on desktop or mobile, including
+archived conversations. Rendering is server-side, with no print dialog or
+client-side PDF renderer. The PDF downloads directly. While it generates, the
+action is disabled
+and a status remains visible after the menu closes. Failures give a clear error;
+open the menu again to retry. The ready **Download PDF** link remains available
+until dismissed or you leave the conversation. On an installed iOS PWA, tap this
+link if the automatic download is not offered; iOS may show its PDF preview and
+Save to Files handoff. A physical installed-iOS download is not automated proof.
+
+The document contains the title, UTC export date and the whole retained durable
+transcript, not just the loaded screen: authored user messages, quotes, final
+assistant reply text and attachment names. Earlier tool-time narration, thinking,
+tool inputs/results, jobs, subagents, telemetry, errors, system/compaction notes
+and imported context wrappers are excluded. Check the document before sharing:
+ordinary message text and files can still contain personal information.
+
+Applied steers appear once as user messages; pending/queued/uncertain inputs carry
+a status, while cancelled unconsumed inputs are omitted. Running assistant drafts
+are omitted with a notice. Settled partial replies are labeled incomplete. Actual
+visible final replies from scheduled or notification turns remain messages; host
+prompts, synthetic silence and activity-only cards do not. Attachments-only
+messages retain their attachment names.
+
+Markdown headings, lists, emphasis, code, tables and safe links are supported.
+Grid table cells are plain text; inline formatting and clickable links are not
+preserved there.
+HTML, interactive apps, diagrams and math are not rendered. PNG/JPEG attachments
+use natural size (downscaled to fit), with a small muted filename caption. Owned
+Markdown images render at their authored position, without a duplicate at the
+message's end; remaining attachments follow the text. Image-bearing tables flow
+in row/column order with column labels. Remote, unowned and data-URL images remain
+short placeholders and are never fetched. Only already-owned uploads or message-bound agent
+artifacts can be read; remote image URLs and local paths are never fetched.
+Unsupported, expired, offline, corrupt or over-budget files get named placeholders.
+
+Exports are bounded: 2,000 stored rows / 32 MiB source JSON, 2 MiB message text /
+200,000 characters each for a message's text and its quote (separate limits),
+100,000 Markdown nodes / 32 nesting levels,
+20 table columns / 1,000 rows, 500 PDF pages / 32 MiB output, and a 30-second
+deadline. Only one export runs at a time (retry if busy). Images are limited to
+20 attempts, 5 MiB each / 20 MiB total, 4 megapixels each / 16 megapixels total.
+Oversized conversations fail explicitly rather than exporting a truncated tail.
+No export is stored on the service; the generated download remains in browser
+memory until dismissed or navigation. No configuration is needed. The existing
+trusted-network/Host/exact-origin boundary applies: there is no application login.
+
+PDFKit and unified/remark (MIT) generate the file in a bounded Node worker.
+Bundled Noto Sans regular/bold and Noto Sans Mono TTFs are SIL OFL 1.1 licensed;
+see [font provenance and license](https://github.com/robertsreberski/mono-agent/tree/main/packages/web/assets/pdf-fonts). Latin (including
+Polish and German), Greek and Cyrillic have embedded fonts. CJK and color emoji
+have no fallback and unsupported glyphs may appear missing. This is not an
+all-script Unicode font collection. PDF.js is test-only, not a runtime dependency
+or browser bundle input.
+
 ## Voice messages (opt-in)
 
 Use **paperclip → Record audio → Stop recording** to add a normal removable
