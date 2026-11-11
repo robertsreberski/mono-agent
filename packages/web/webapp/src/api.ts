@@ -434,10 +434,13 @@ export const api = {
       method: "POST", credentials: "same-origin", ...(signal ? { signal } : {}),
     });
     if (!response.ok) throw await readError(response);
-    if (response.headers.get("content-type")?.split(";", 1)[0] !== "application/pdf") throw new Error("The server did not return a PDF. Try again.");
+    if (response.headers.get("content-type")?.split(";", 1)[0] !== "application/pdf") {
+      await response.body?.cancel().catch(() => undefined);
+      throw new Error("The server did not return a PDF. Try again.");
+    }
     const limit = 32 * 1024 * 1024;
     if (Number(response.headers.get("content-length")) > limit || !response.body) {
-      await response.body?.cancel(); throw new Error("The PDF download is too large or unavailable.");
+      await response.body?.cancel().catch(() => undefined); throw new Error("The PDF download is too large or unavailable.");
     }
     const reader = response.body.getReader(); const chunks: Uint8Array<ArrayBuffer>[] = []; let size = 0;
     try {

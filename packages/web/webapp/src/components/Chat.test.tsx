@@ -561,13 +561,22 @@ describe("Chat conversation actions", () => {
     fireEvent.click(screen.getByRole("button", { name: "Conversation actions" }));
     fireEvent.click(await screen.findByRole("menuitem", { name: "Export as PDF" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("PDF unavailable. Try again.");
+    expect(screen.getByRole("alert")).toHaveAttribute("aria-live", "assertive");
     fireEvent.click(screen.getByRole("button", { name: "Conversation actions" }));
     fireEvent.click(await screen.findByRole("menuitem", { name: "Export as PDF" }));
     expect(await screen.findByText("Exporting PDF…")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Conversation actions" }));
     expect(await screen.findByRole("menuitem", { name: "Exporting PDF…" })).toHaveAttribute("aria-disabled", "true");
     await act(async () => resolve({ blob: new Blob(["%PDF-sample"]), filename: "garden.pdf" }));
-    expect(await screen.findByRole("link", { name: "Download PDF" })).toHaveAttribute("download", "garden.pdf");
+    const fallback = await screen.findByRole("link", { name: "Download PDF" });
+    expect(fallback).toHaveAttribute("download", "garden.pdf");
+    expect(fallback).toHaveAttribute("href", "blob:fictional-pdf");
+    // Exercise the rendered fresh-gesture link; only suppress jsdom navigation.
+    const activate = vi.fn((event: Event) => event.preventDefault());
+    fallback.addEventListener("click", activate);
+    fireEvent.click(fallback);
+    expect(activate).toHaveBeenCalledOnce();
+    expect(revoke).not.toHaveBeenCalled();
     expect(request).toHaveBeenCalledWith("pdf-thread", expect.any(AbortSignal)); expect(click).toHaveBeenCalledOnce();
     view.unmount(); expect(revoke).toHaveBeenCalledWith("blob:fictional-pdf");
     delete (URL as { createObjectURL?: unknown }).createObjectURL; delete (URL as { revokeObjectURL?: unknown }).revokeObjectURL; click.mockRestore(); request.mockRestore();

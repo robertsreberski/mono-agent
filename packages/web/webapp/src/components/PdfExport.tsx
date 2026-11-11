@@ -39,7 +39,7 @@ export function usePdfExport(threadId: string | null) {
 
 export function PdfExportNotice({ state, onDismiss }: { readonly state: PdfExportState; readonly onDismiss: () => void }) {
   if (state.kind === "idle") return null;
-  return <div className="pdf-export-notice" role={state.kind === "error" ? "alert" : "status"} aria-live="polite" aria-busy={state.kind === "pending"}>
+  return <div className="pdf-export-notice" role={state.kind === "error" ? "alert" : "status"} aria-live={state.kind === "error" ? "assertive" : "polite"} aria-busy={state.kind === "pending"}>
     <div>{state.kind === "pending" ? "Exporting PDF…" : state.kind === "error" ? state.message
       : <>PDF ready. <a href={state.url} download={state.filename} rel="noopener noreferrer">Download PDF</a></>}</div>
     <button type="button" className="icon-button" aria-label="Dismiss PDF export" onClick={onDismiss}><Icon name="close" size={16} /></button>

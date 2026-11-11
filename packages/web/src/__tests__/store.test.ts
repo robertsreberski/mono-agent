@@ -138,6 +138,41 @@ function transcriptMarkers(store: WebStore, threadId: string, kind: "model" | "p
 }
 
 describe("WebStore", () => {
+  it("holds the PDF budget and hydration in one transaction against external writers", async () => {
+    const root = await temporaryRoot(); cleanup.push(root);
+    const store = await WebStore.open({ stateDir: join(root, "state") });
+    store.replaceAgents([agent()]); const thread = store.createThread("agent-one");
+    const turn = store.beginTurn({ threadId: thread.id, text: "Budgeted request", attachmentIds: [] });
+    store.completeTurn(turn.turnId, "Budgeted reply");
+    const other = new DatabaseSync(store.paths.database); other.exec("PRAGMA busy_timeout=1");
+    const holder = store as unknown as { database: DatabaseSync }; const real = holder.database;
+    const change = () => other.prepare("UPDATE messages SET parts_json = ? WHERE id = ?").run(JSON.stringify([{ type: "text", text: "Concurrent replacement" }]), turn.assistantMessageId);
+    let attempted = false;
+    holder.database = new Proxy(real, {
+      get(target, property) {
+        const value = Reflect.get(target, property) as unknown;
+        if (typeof value !== "function") return value;
+        if (property !== "prepare") return value.bind(target);
+        return (sql: string) => {
+          if (sql.includes("WITH ordered AS MATERIALIZED")) {
+            attempted = true;
+            expect(change).toThrow(/locked|busy/iu);
+          }
+          return (value as (sql: string) => object).call(target, sql);
+        };
+      },
+    }) as DatabaseSync;
+    try {
+      const snapshot = store.pdfMessages(thread.id);
+      expect(attempted).toBe(true);
+      expect(JSON.stringify(snapshot.messages)).toContain("Budgeted reply");
+      expect(JSON.stringify(snapshot.messages)).not.toContain("Concurrent replacement");
+      holder.database = real;
+      expect(change).not.toThrow(); // Commit released the lock.
+      expect(JSON.stringify(store.pdfMessages(thread.id).messages)).toContain("Concurrent replacement");
+    } finally { holder.database = real; other.close(); store.close(); }
+  });
+
   it("drops retired monitor activity on read without rewriting historical message bytes", async () => {
     const root = await temporaryRoot();
     cleanup.push(root);

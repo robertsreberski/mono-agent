@@ -2,21 +2,24 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { request } from "node:http";
-import { getDocument, OPS } from "pdfjs-dist/legacy/build/pdf.mjs";
+import { request, createServer } from "node:http";
+import { fileURLToPath } from "node:url";
+import { getDocument } from "pdfjs-dist/legacy/build/pdf.mjs";
 import { startWebServer, type WebServerHandle } from "../server.js";
 import { WebService } from "../service.js";
 import * as worker from "../pdf-worker-client.js";
 import { PDF_LIMITS } from "../pdf-model.js";
 import { fakeDiscoveredAgent, operatorFetch } from "./helpers.js";
+import { isPdfImageOperator } from "./pdf-test-helpers.js";
 
 const handles: WebServerHandle[] = []; const roots: string[] = [];
 afterEach(async () => { vi.restoreAllMocks(); await Promise.all(handles.splice(0).map((s) => s.stop())); await Promise.all(roots.splice(0).map((r) => rm(r, { recursive: true, force: true }))); });
 async function setup() {
   const cache = new URL("../../../../node_modules/.cache/", import.meta.url);
-  await mkdir(cache, { recursive: true }); const root = await mkdtemp(new URL("pdf-test-", cache).pathname); roots.push(root);
+  await mkdir(cache, { recursive: true }); const root = await mkdtemp(fileURLToPath(new URL("pdf-test-", cache))); roots.push(root);
+  const fetchImpl = vi.fn(operatorFetch());
   const handle = await startWebServer({ port: 0, stateDir: join(root, "state"), discoveryIntervalMs: 0, purgeIntervalMs: 0,
-    discoverImpl: async () => [fakeDiscoveredAgent()], fetchImpl: operatorFetch() }); handles.push(handle);
+    discoverImpl: async () => [fakeDiscoveredAgent()], fetchImpl }); handles.push(handle);
   const base = `http://127.0.0.1:${handle.port}`;
   const created = await fetch(`${base}/api/v1/threads`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sourceId: "agent-one", title: "Żółć / garden" }) });
   const id = ((await created.json()) as { thread: { id: string } }).thread.id;
@@ -27,7 +30,7 @@ async function setup() {
       .run(key, id, role, JSON.stringify(parts), "2025-04-12T10:00:00Z", "2025-04-12T10:00:00Z", suppressed);
   };
   const post = (threadId = id, headers: Record<string, string> = { origin: base }) => fetch(`${base}/api/v1/threads/${threadId}/export/pdf`, { method: "POST", headers });
-  return { handle, base, id, database, insert, post };
+  return { handle, base, id, database, insert, post, fetchImpl };
 }
 
 describe("PDF HTTP public boundary", () => {
@@ -79,14 +82,22 @@ describe("PDF HTTP public boundary", () => {
 
   it("serves named media placeholders without fetching arbitrary Markdown URLs", async () => {
     const s = await setup();
+    const requests: string[] = [];
+    const canary = createServer((req, res) => { requests.push(req.url ?? ""); res.end("Must not be requested"); });
+    await new Promise<void>((resolve) => canary.listen(0, "127.0.0.1", resolve));
+    const address = canary.address(); if (address === null || typeof address === "string") throw new Error("Missing canary port");
+    const remote = `http://127.0.0.1:${address.port}/private/markdown.png`;
     try {
-      s.insert("image", "assistant", [{ type: "text", text: "![private](http://169.254.169.254/private)" },
+      s.insert("image", "assistant", [{ type: "text", text: `![private](${remote})` },
         { type: "attachment", id: "missing", artifactId: "missing", name: "offline.png", mediaType: "image/png", sizeBytes: 100, integrityId: `sha256:${"0".repeat(64)}`, expiresAt: "2020-01-01T00:00:00Z" }]);
       const response = await s.post(); expect(response.status).toBe(200);
       const task = getDocument({ data: new Uint8Array(await response.arrayBuffer()) }); const pdf = await task.promise;
       const text = (await (await pdf.getPage(1)).getTextContent()).items.map((item) => "str" in item ? item.str : "").join(" ");
-      expect(text).toContain("offline.png"); expect(text).toContain("unavailable"); await task.destroy();
-    } finally { s.database.close(); }
+      expect(text).toContain("[Image unavailable: offline.png]"); await task.destroy();
+      expect(s.fetchImpl).toHaveBeenCalled(); // Positive control: actual operator discovery used the spy.
+      expect(s.fetchImpl.mock.calls.some(([url]) => String(url) === remote)).toBe(false);
+      expect(requests).toEqual([]); // Real wire canary also covers a fetch inside the render worker.
+    } finally { s.database.close(); await new Promise<void>((resolve, reject) => canary.close((error) => error ? reject(error) : resolve())); }
   });
 
   it("embeds owned stored PNGs but refuses cross-thread files", async () => {
@@ -101,7 +112,7 @@ describe("PDF HTTP public boundary", () => {
         const response = await s.post(); expect(response.status).toBe(200);
         const task = getDocument({ data: new Uint8Array(await response.arrayBuffer()) }); const pdf = await task.promise;
         let count = 0;
-        for (let i = 1; i <= pdf.numPages; i++) count += (await (await pdf.getPage(i)).getOperatorList()).fnArray.filter((op: number) => op === OPS.paintImageXObject).length;
+        for (let i = 1; i <= pdf.numPages; i++) count += (await (await pdf.getPage(i)).getOperatorList()).fnArray.filter(isPdfImageOperator).length;
         await task.destroy(); return count;
       };
       expect(await countImages()).toBe(1);
@@ -114,7 +125,7 @@ describe("PDF HTTP public boundary", () => {
 
   it("bounds concurrent work and cancels the real worker without retaining the admission lock", async () => {
     const cache = new URL("../../../../node_modules/.cache/", import.meta.url); await mkdir(cache, { recursive: true });
-    const root = await mkdtemp(new URL("pdf-service-", cache).pathname); roots.push(root);
+    const root = await mkdtemp(fileURLToPath(new URL("pdf-service-", cache))); roots.push(root);
     const service = await WebService.create({ stateDir: join(root, "state"), discoveryIntervalMs: 0, discoverImpl: async () => [fakeDiscoveredAgent()], fetchImpl: operatorFetch() });
     try {
       const thread = service.createThread("agent-one");

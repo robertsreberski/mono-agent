@@ -9,6 +9,7 @@ import { boundedPng, renderPdf } from "../pdf-renderer.js";
 import { renderPdfWorker } from "../pdf-worker-client.js";
 import type { WebMessage, WebMessagePart } from "../contracts.js";
 import { fakeProcessJob } from "./helpers.js";
+import { isPdfImageOperator, pdfRgbColor } from "./pdf-test-helpers.js";
 
 const at = "2025-04-12T10:00:00.000Z";
 const message = (parts: readonly WebMessagePart[], extra: Partial<WebMessage> = {}): WebMessage => ({
@@ -35,6 +36,12 @@ async function pdfText(bytes: Uint8Array): Promise<string> {
 }
 
 describe("messages-only PDF export", () => {
+  it("normalizes actual PDF.js colour operands and rejects empty assertions", () => {
+    expect(pdfRgbColor(["#687078"])).toEqual([104, 112, 120]);
+    expect(pdfRgbColor([104, 112, 120])).toEqual([104, 112, 120]);
+    expect(pdfRgbColor([new Uint8Array([104, 112, 120])])).toEqual([104, 112, 120]);
+    expect(() => pdfRgbColor([])).toThrow("Unexpected");
+  });
   it("strictly selects final replies, never tool/reasoning/job/subagent/system/imported content", async () => {
     const parts: WebMessagePart[] = [text("FORBIDDEN_EARLY_NARRATION"),
       { type: "reasoning", text: "FORBIDDEN_REASONING" },
@@ -134,15 +141,15 @@ describe("messages-only PDF export", () => {
     expect(fontSize("ASSISTANT")).toBe(9);
     expect(fontSize("USER")).toBe(9);
     expect(fontSize("A welcoming garden")).toBe(12);
-    const colors: unknown[] = [];
+    const colors: number[][] = [];
     let imageCount = 0;
     for (let i = 1; i <= parsed.numPages; i++) {
       const list = await (await parsed.getPage(i)).getOperatorList();
-      imageCount += list.fnArray.filter((op: number) => op === OPS.paintImageXObject).length;
-      list.fnArray.forEach((op: number, i: number) => { if (op === OPS.setFillRGBColor || op === OPS.setStrokeRGBColor) colors.push(list.argsArray[i]?.[0]); });
+      imageCount += list.fnArray.filter(isPdfImageOperator).length;
+      list.fnArray.forEach((op: number, i: number) => { if (op === OPS.setFillRGBColor || op === OPS.setStrokeRGBColor) colors.push(pdfRgbColor(list.argsArray[i])); });
     }
     expect(imageCount).toBe(2);
-    expect(colors).toEqual(expect.arrayContaining(["#687078", "#59616a", "#d0d5da", "#f3f4f5"]));
+    expect(colors).toEqual(expect.arrayContaining([[104, 112, 120], [89, 97, 106], [208, 213, 218], [243, 244, 245]]));
     expect(extracted).not.toContain(at);
     expect(extracted).toContain("[Attachment: notes.txt]");
     expect(extracted).toContain("[Image not included: Remote image]");
@@ -184,7 +191,7 @@ describe("messages-only PDF export", () => {
         const page = await document.getPage(number); const operators = await page.getOperatorList();
         const content = await page.getTextContent(); const viewport = page.getViewport({ scale: 1 });
         let pageImages = 0;
-        for (let index = 0; index < operators.fnArray.length; index++) if (operators.fnArray[index] === OPS.paintImageXObject) {
+        for (let index = 0; index < operators.fnArray.length; index++) if (isPdfImageOperator(operators.fnArray[index]!)) {
           pageImages++;
           const size = sizes[count++]!;
           const matrix = operators.argsArray[operators.fnArray.slice(0, index).lastIndexOf(OPS.transform)] as number[];
@@ -202,7 +209,7 @@ describe("messages-only PDF export", () => {
             expect(baselineGap).toBeGreaterThanOrEqual(5); expect(baselineGap).toBeLessThan(18);
           }
         }
-        if (pageImages > 0) expect(operators.fnArray.some((op: number, i: number) => op === OPS.setFillRGBColor && operators.argsArray[i]?.[0] === "#59616a")).toBe(true);
+        if (pageImages > 0) expect(operators.fnArray.flatMap((op: number, i: number) => op === OPS.setFillRGBColor ? [pdfRgbColor(operators.argsArray[i])] : [])).toContainEqual([89, 97, 106]);
       }
       expect(count).toBe(3);
     } finally { await task.destroy(); }
@@ -240,7 +247,7 @@ describe("messages-only PDF export", () => {
       const task = getDocument({ data: Uint8Array.from(bytes) }); const document = await task.promise;
       try {
         let images = 0;
-        for (let page = 1; page <= document.numPages; page++) images += (await (await document.getPage(page)).getOperatorList()).fnArray.filter((op: number) => op === OPS.paintImageXObject).length;
+        for (let page = 1; page <= document.numPages; page++) images += (await (await document.getPage(page)).getOperatorList()).fnArray.filter(isPdfImageOperator).length;
         expect(images).toBe(1);
       } finally { await task.destroy(); }
     }
@@ -268,7 +275,7 @@ describe("messages-only PDF export", () => {
       for (let page = 1; page <= document.numPages; page++) {
         const content = await document.getPage(page);
         const operators = await content.getOperatorList();
-        expect(operators.fnArray.some((op: number, i: number) => op === OPS.setFillRGBColor && operators.argsArray[i]?.[0] === "#f3f4f5")).toBe(true);
+        expect(operators.fnArray.flatMap((op: number, i: number) => op === OPS.setFillRGBColor ? [pdfRgbColor(operators.argsArray[i])] : [])).toContainEqual([243, 244, 245]);
         for (const item of (await content.getTextContent()).items) if ("str" in item && (item.str.startsWith("line_") || item.str.startsWith("BEGIN_"))) {
           expect(item.transform[4]).toBeGreaterThanOrEqual(56);
           expect(item.transform[4] + item.width).toBeLessThanOrEqual(content.getViewport({ scale: 1 }).width - 48);

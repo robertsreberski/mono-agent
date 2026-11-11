@@ -4,12 +4,13 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { DatabaseSync } from "node:sqlite";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { getDocument } from "pdfjs-dist/legacy/build/pdf.mjs";
 import { startWebServer } from "../dist/server.js";
 
 const cache = new URL("../../../node_modules/.cache/", import.meta.url);
 await mkdir(cache, { recursive: true });
-const root = await mkdtemp(new URL("pdf-smoke-", cache).pathname);
+const root = await mkdtemp(fileURLToPath(new URL("pdf-smoke-", cache)));
 let server;
 try {
   const at = "2025-04-12T10:00:00Z";

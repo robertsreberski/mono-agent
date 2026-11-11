@@ -124,8 +124,9 @@ User Stop also marks a running `AskUser` question as interrupted; answer in a ne
 ### Conversation PDF export
 
 Open **Conversation actions → Export as PDF** on desktop or mobile, including
-archived conversations. The service downloads a PDF directly; no browser print
-dialog or runtime browser is involved. While it generates, the action is disabled
+archived conversations. Rendering is server-side, with no print dialog or
+client-side PDF renderer. The PDF downloads directly. While it generates, the
+action is disabled
 and a status remains visible after the menu closes. Failures give a clear error;
 open the menu again to retry. The ready **Download PDF** link remains available
 until dismissed or you leave the conversation. On an installed iOS PWA, tap this
@@ -147,6 +148,8 @@ prompts, synthetic silence and activity-only cards do not. Attachments-only
 messages retain their attachment names.
 
 Markdown headings, lists, emphasis, code, tables and safe links are supported.
+Grid table cells are plain text; inline formatting and clickable links are not
+preserved there.
 HTML, interactive apps, diagrams and math are not rendered. PNG/JPEG attachments
 use natural size (downscaled to fit), with a small muted filename caption. Owned
 Markdown images render at their authored position, without a duplicate at the
@@ -157,7 +160,8 @@ artifacts can be read; remote image URLs and local paths are never fetched.
 Unsupported, expired, offline, corrupt or over-budget files get named placeholders.
 
 Exports are bounded: 2,000 stored rows / 32 MiB source JSON, 2 MiB message text /
-200,000 characters per message, 100,000 Markdown nodes / 32 nesting levels,
+200,000 characters each for a message's text and its quote (separate limits),
+100,000 Markdown nodes / 32 nesting levels,
 20 table columns / 1,000 rows, 500 PDF pages / 32 MiB output, and a 30-second
 deadline. Only one export runs at a time (retry if busy). Images are limited to
 20 attempts, 5 MiB each / 20 MiB total, 4 megapixels each / 16 megapixels total.

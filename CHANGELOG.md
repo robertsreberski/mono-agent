@@ -6,7 +6,8 @@
   information while retaining recovery, disclosure and single-effect checks.
 
 - Add direct conversation PDF downloads to the web console, with messages-only
-  transcripts, formatted Markdown, embedded Unicode fonts and bounded images.
+  transcripts, formatted Markdown, embedded Latin/Greek/Cyrillic fonts and
+  bounded images.
 
 - **Breaking:** Add controller-owned guarded E2 retries with plan-v3 and
   permit-v2 contracts; require fresh registration and authorization binding the
