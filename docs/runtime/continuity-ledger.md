@@ -289,8 +289,9 @@ it is laid out first, then owners and tools follow their existing layout. A
 summary that fits alone can therefore be omitted beside an admitted ledger.
 Whole-summary carriage includes JSON quotation expansion and prefix/marker costs
 within `min(8000, actual headroom)` estimated tokens. An overflow is counted and
-disclosed with content-free size/headroom estimates, never clipped or replaced
-with an older summary. Tool reservation uses 40% of the residual usable space;
+disclosed with content-free size/headroom estimates (degraded reason
+`summary_headroom` unless a snapshot, coverage or upkeep reason applies), never
+clipped or replaced with an older summary. Tool reservation uses 40% of the residual usable space;
 effect-first ranking, `contentFreeRead`, demotion and all bounds remain unchanged.
 Without an eligible summary, packs retain the previous fallback behavior.
 Per-message mode can pay the summary cost on each replayed turn; warm resumes

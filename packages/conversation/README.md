@@ -483,7 +483,9 @@ reservation or owner filling. Its JSON-quoted text and retained digest are never
 clipped or rewritten. It must fit the remaining headroom of the existing
 `min(8000, actual headroom)` estimated-token ceiling, including prefix and marker
 costs; otherwise it is omitted entirely, counted, and disclosed without content
-with size/headroom estimates. No older summary is substituted. Ineligible pins
+with size/headroom estimates; the pack reports `degradedReason: summary_headroom`
+unless a snapshot, coverage or upkeep reason takes precedence. No older summary
+is substituted. Ineligible pins
 (prepared, purged, other physical buckets, current run or beyond a continuation
 boundary) remain excluded. With no eligible summary the fallback is unchanged.
 Per-message mode can pay this summary cost on every replayed turn; true warm

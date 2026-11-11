@@ -150,6 +150,7 @@ it("keeps ledger-prefix priority when a summary fits alone but not after the adm
   const pack = renderContinuityPack(snapshot, [], 8000, active);
   expect(pack.ledgerEntries).toBe(14); expect(pack.counts.summary).toBe(0);
   expect(pack.text).toContain("Generated summary omitted: entry_tokens=");
+  expect(pack.degradedReason).toBe("summary_headroom");
   expect(pack.text).not.toContain(text); expect(pack.text).toContain("### Continuity ledger");
   expect(pack.tokens).toBeLessThanOrEqual(8000);
 });
