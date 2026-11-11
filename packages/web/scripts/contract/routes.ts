@@ -72,6 +72,7 @@ export const ROUTES: readonly ContractRoute[] = [
   route("GET", "/threads/:threadId/messages/:messageId/tool-calls/:toolCallId", "NoBody", "ApiToolCall"),
   route("POST", "/threads/:threadId/messages/:messageId/parts/:partId/restart", "ApiEmpty", "ApiRestart", [200], "exact"),
   route("GET", "/threads/:threadId/messages/:messageId", "NoBody", "ApiMessage", [200], "host", { queryType: "ApiFullQuery" }),
+  route("POST", "/threads/:id/export/pdf", "NoBody", "Binary", [200], "exact", { responseContentType: "application/pdf" }),
   route("GET", "/threads/:id/usage", "NoBody", "ApiThreadUsage"),
   route("GET", "/threads/:id", "NoBody", "ApiThreadDetail", [200], "host", { queryType: "ApiFullQuery" }),
   route("GET", "/threads/:id/messages", "NoBody", "ApiMessagePage", [200], "host", { queryType: "ApiMessagesQuery" }),

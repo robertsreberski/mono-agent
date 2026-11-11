@@ -88,6 +88,7 @@ const chatStore = (
     visibleThreads: [selectedThread],
     selectedAgent,
     projectsByAgent: {},
+    loadProjects: vi.fn().mockResolvedValue(undefined),
     openProjectById: vi.fn(),
     selectedThread,
     detail,
@@ -727,5 +728,36 @@ describe("wake-up schedule from the conversation actions menu", () => {
     rerender(chatTree());
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(read).not.toHaveBeenCalledWith(second.id);
+  });
+});
+
+
+describe("Conversation PDF export", () => {
+  it.each([false, true])("downloads from the menu with persistent feedback (phone: %s)", async (phone) => {
+    await page.viewport(phone ? 390 : 1200, phone ? 844 : 800);
+    const selected = thread("pdf-fixture", "agent", { title: "A fictional garden plan" });
+    storeMock.current = chatStore(selected, chatDetail(selected, ["A planting calendar for Morgan."]));
+    let resolve!: (value: { blob: Blob; filename: string }) => void;
+    const exportPdf = vi.spyOn(api, "exportPdf").mockImplementationOnce(() => new Promise((done) => { resolve = done; }))
+      .mockRejectedValueOnce(new Error("PDF export unavailable. Try again."));
+    const view = render(<div id="root"><div className="app-shell"><div className="chat-region is-open">
+      <WebRuntimeProvider><Chat onBack={() => undefined} /></WebRuntimeProvider>
+    </div></div></div>);
+    const shell = view.container.querySelector(".app-shell")!;
+    const shot = async (state: string) => {
+      const directory = import.meta.env.VITE_PDF_EXPORT_SHOTS as string | undefined;
+      if (directory) await page.elementLocator(shell).screenshot({ path: `${directory}/${server.browser}-${phone ? "mobile" : "desktop"}-${state}.png` });
+    };
+    await userEvent.click(screen.getByRole("button", { name: "Conversation actions" }));
+    await screen.findByRole("menuitem", { name: "Export as PDF" }); await shot("menu");
+    await userEvent.click(screen.getByRole("menuitem", { name: "Export as PDF" }));
+    await screen.findByText("Exporting PDF…"); await shot("pending");
+    await act(async () => resolve({ blob: new Blob(["%PDF-fixture"], { type: "application/pdf" }), filename: "garden.pdf" }));
+    expect(await screen.findByRole("link", { name: "Download PDF" })).toHaveAttribute("download", "garden.pdf");
+    expect(exportPdf).toHaveBeenCalledWith(selected.id, expect.any(AbortSignal)); await shot("ready");
+    await userEvent.click(screen.getByRole("button", { name: "Conversation actions" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: "Export as PDF" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("PDF export unavailable. Try again."); await shot("error");
+    view.unmount();
   });
 });

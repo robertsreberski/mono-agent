@@ -508,6 +508,18 @@
       "queryType": "ApiFullQuery"
     },
     {
+      "method": "POST",
+      "path": "/api/v1/threads/:id/export/pdf",
+      "requestType": "NoBody",
+      "responseType": "Binary",
+      "successStatus": [
+        200
+      ],
+      "requiresClaimedOrigin": true,
+      "originPolicy": "exact",
+      "responseContentType": "application/pdf"
+    },
+    {
       "method": "GET",
       "path": "/api/v1/threads/:id/usage",
       "requestType": "NoBody",

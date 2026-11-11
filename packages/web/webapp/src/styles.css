@@ -2787,3 +2787,24 @@ html.keyboard-viewport .skill-browser-popup {
 /* A frozen send remains separate from newer editable work in this conversation. */
 .recorded-recovery { display: grid; gap: 4px; max-height: 220px; overflow-y: auto; min-width: 0; }
 .recorded-recovery-text { margin: 0; padding: 4px 8px; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; }
+
+/* Feedback outlives the menu; the ready link retains a real iOS user gesture. */
+.pdf-export-notice {
+  position: fixed;
+  top: calc(env(safe-area-inset-top, 0px) + 76px);
+  right: 16px;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  max-width: min(440px, calc(100vw - 32px));
+  padding: 12px 16px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: 0 8px 30px #0002;
+  font-size: 13px;
+}
+.pdf-export-notice a { display: inline-flex; align-items: center; min-height: 44px; color: inherit; text-decoration: underline; }
+.pdf-export-notice .icon-button { flex-shrink: 0; min-width: 44px; min-height: 44px; }

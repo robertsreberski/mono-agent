@@ -1,3 +1,4 @@
+import { PdfExportNotice, usePdfExport } from "./PdfExport";
 import { ConsoleVoiceScope } from "./ConsoleVoiceScope";
 import { ConversationTags } from "./tag/ConversationTags";
 import { ProjectBadge } from "./project/ProjectIdentity";
@@ -371,6 +372,7 @@ function ConversationActions() {
     setThreadProject,
   } = useConsoleStore();
   const selectedThreadId = selectedThread?.id ?? null;
+  const pdfExport = usePdfExport(selectedThreadId);
   useEffect(() => {
     if (scheduleThreadId !== null && scheduleThreadId !== selectedThreadId) setScheduleThreadId(null);
   }, [scheduleThreadId, selectedThreadId]);
@@ -460,6 +462,11 @@ function ConversationActions() {
                 <WakeScheduleStatus thread={selectedThread} />
               </span>
             </Menu.Item>}
+            <Menu.Item className="conversation-menu-item" disabled={pdfExport.state.kind === "pending"}
+              onClick={() => { void pdfExport.start(); }}>
+              <Icon name="download" size={16} />
+              <span>{pdfExport.state.kind === "pending" ? "Exporting PDF…" : "Export as PDF"}</span>
+            </Menu.Item>
             <Menu.Item
               className="conversation-menu-item"
               onClick={() => {
@@ -492,6 +499,7 @@ function ConversationActions() {
         </Menu.Positioner>
       </Menu.Portal>
     </Menu.Root>
+    <PdfExportNotice state={pdfExport.state} onDismiss={pdfExport.dismiss} />
     {scheduleThreadId === selectedThread.id && <WakeScheduleEditor key={selectedThread.id} thread={selectedThread}
       supportsManualCompaction={selectedAgent?.supportsManualCompaction === true} returnFocusRef={actionsTriggerRef} onClose={() => setScheduleThreadId(null)} />}
     </>

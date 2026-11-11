@@ -1,3 +1,4 @@
+import { api } from "../api";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { StrictMode, type ReactNode } from "react";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -546,6 +547,32 @@ describe("Chat conversation viewport", () => {
 });
 
 describe("Chat conversation actions", () => {
+  it("exports an archived chat with progress, error retry and an iOS download fallback", async () => {
+    const selected = thread("pdf-thread", "agent", { archivedAt: "2025-04-12T10:00:00Z" });
+    storeMock.current = chatStore(selected, chatDetail(selected, 0));
+    Object.defineProperty(URL, "createObjectURL", { value: vi.fn().mockReturnValue("blob:fictional-pdf"), configurable: true });
+    Object.defineProperty(URL, "revokeObjectURL", { value: vi.fn(), configurable: true });
+    const revoke = vi.mocked(URL.revokeObjectURL);
+    const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => { throw new Error("Automatic download blocked"); });
+    let resolve!: (value: { blob: Blob; filename: string }) => void;
+    const request = vi.spyOn(api, "exportPdf").mockRejectedValueOnce(new Error("PDF unavailable. Try again."))
+      .mockImplementationOnce(() => new Promise((done) => { resolve = done; }));
+    const view = render(chatTree());
+    fireEvent.click(screen.getByRole("button", { name: "Conversation actions" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Export as PDF" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("PDF unavailable. Try again.");
+    fireEvent.click(screen.getByRole("button", { name: "Conversation actions" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Export as PDF" }));
+    expect(await screen.findByText("Exporting PDF…")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Conversation actions" }));
+    expect(await screen.findByRole("menuitem", { name: "Exporting PDF…" })).toHaveAttribute("aria-disabled", "true");
+    await act(async () => resolve({ blob: new Blob(["%PDF-sample"]), filename: "garden.pdf" }));
+    expect(await screen.findByRole("link", { name: "Download PDF" })).toHaveAttribute("download", "garden.pdf");
+    expect(request).toHaveBeenCalledWith("pdf-thread", expect.any(AbortSignal)); expect(click).toHaveBeenCalledOnce();
+    view.unmount(); expect(revoke).toHaveBeenCalledWith("blob:fictional-pdf");
+    delete (URL as { createObjectURL?: unknown }).createObjectURL; delete (URL as { revokeObjectURL?: unknown }).revokeObjectURL; click.mockRestore(); request.mockRestore();
+  });
+
   it("keeps archive in the actions menu and confirms its empty-conversation behavior", async () => {
     const selected = thread("thread-a", "agent");
     const store = chatStore(selected, chatDetail(selected, 0));

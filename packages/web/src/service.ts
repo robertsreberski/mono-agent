@@ -1,3 +1,7 @@
+import { constants as pdfFsConstants } from "node:fs";
+import { open as openPdfAttachment } from "node:fs/promises";
+import { PDF_LIMITS, pdfConversation, pdfFilename, pdfImagePixels, type PdfImage, type PdfAttachment } from "./pdf-model.js";
+import { renderPdfWorker } from "./pdf-worker-client.js";
 import { loadVoiceConfig, type WebVoiceConfig } from "./voice-config.js";
 import { WebTranscriptions, WEB_VOICE_LIMITS, type VoiceOperation } from "./transcription.js";
 import { dataLayers, isUpkeepTelemetry, upkeepTelemetryData } from "./message-cost.js";
@@ -1159,6 +1163,98 @@ export class WebService {
   searchThreads(input: SearchWebThreadsInput): WebThreadSearchPage {
     const page = this.store.searchThreads(input);
     return { ...page, hits: page.hits.map((hit) => ({ ...hit, thread: this.projectThread(hit.thread) })) };
+  }
+
+  private pdfExportController: AbortController | undefined;
+
+  async exportPdf(id: string, signal?: AbortSignal): Promise<{ bytes: Buffer; filename: string }> {
+    if (this.stopped) throw new WebConsoleError("service_stopping", "The web service is stopping.", 503);
+    if (this.pdfExportController !== undefined) throw new WebConsoleError("pdf_busy", "Another PDF is being generated. Try again shortly.", 429);
+    const controller = new AbortController();
+    this.pdfExportController = controller;
+    const timeout = setTimeout(() => controller.abort(new WebConsoleError("pdf_timeout", "PDF export took too long. Try a shorter conversation.", 504)), PDF_LIMITS.timeoutMs);
+    const abort = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
+    try {
+      abort.throwIfAborted();
+      const { thread, messages } = this.store.pdfMessages(id);
+      const conversation = pdfConversation(thread.title, this.currentDate().toISOString(), messages);
+      const images: PdfImage[] = [];
+      let bytes = 0; let pixels = 0; let attempts = 0;
+      for (const message of conversation.messages) for (const attachment of message.attachments) {
+        abort.throwIfAborted();
+        if (!["image/png", "image/jpeg"].includes(attachment.mediaType)
+          || attachment.sizeBytes > PDF_LIMITS.imageBytes || attachment.sizeBytes <= 0
+          || attempts >= PDF_LIMITS.images || bytes + attachment.sizeBytes > PDF_LIMITS.totalImageBytes) continue;
+        attempts++;
+        // Reserve the declared size even when an unavailable source fails, so
+        // adversarial metadata cannot cause unlimited best-effort transfers.
+        bytes += attachment.sizeBytes;
+        try {
+          const data = await this.pdfAttachmentBytes(thread.id, attachment, abort);
+          const count = pdfImagePixels(data, attachment.mediaType);
+          if (count === undefined || pixels + count > PDF_LIMITS.totalImagePixels) continue;
+          pixels += count;
+          images.push({ key: attachment.key, bytes: data });
+        } catch { abort.throwIfAborted(); /* Named placeholder; do not expose internal diagnostics. */ }
+      }
+      return { bytes: await renderPdfWorker(conversation, images, abort), filename: pdfFilename(thread.title) };
+    } finally { clearTimeout(timeout); this.pdfExportController = undefined; }
+  }
+
+  private async pdfAttachmentBytes(threadId: string, attachment: PdfAttachment, signal: AbortSignal): Promise<Buffer> {
+    // Authoritative message/attachment membership, not a Markdown-supplied path.
+    const message = this.store.getMessage(attachment.messageId);
+    if (message?.threadId !== threadId) throw new Error("PDF attachment unavailable.");
+    const stored = attachment.origin === "upload" ? this.store.getStoredAttachment(attachment.id)
+      : this.store.storedReplyAttachment(message.id, attachment.id);
+    if (stored !== undefined) {
+      if (stored.threadId !== threadId || stored.messageId !== message.id || stored.status !== "committed"
+        || !stored.uploaded || stored.sizeBytes !== attachment.sizeBytes) throw new Error("PDF attachment unavailable.");
+      const handle = await openPdfAttachment(this.store.attachmentPath(stored), pdfFsConstants.O_RDONLY | pdfFsConstants.O_NOFOLLOW);
+      try {
+        const info = await handle.stat();
+        if (!info.isFile() || info.size !== attachment.sizeBytes || info.size > PDF_LIMITS.imageBytes) throw new Error("PDF attachment unavailable.");
+        signal.throwIfAborted();
+        const data = Buffer.alloc(attachment.sizeBytes);
+        let offset = 0;
+        while (offset < data.length) {
+          signal.throwIfAborted();
+          const { bytesRead } = await handle.read(data, offset, data.length - offset, offset);
+          if (bytesRead === 0) throw new Error("PDF attachment unavailable.");
+          offset += bytesRead;
+        }
+        const extra = await handle.read(Buffer.alloc(1), 0, 1, offset);
+        if (extra.bytesRead !== 0) throw new Error("PDF attachment unavailable.");
+        return data;
+      } finally { await handle.close(); }
+    }
+    if (attachment.origin !== "reply") throw new Error("PDF attachment unavailable.");
+    const part = this.replyPartAccess(threadId, message.id, attachment.id, "attachment");
+    if (part.type !== "attachment" || part.contentUrl === undefined) throw new Error("PDF attachment unavailable.");
+    const access = new URL(part.contentUrl, "http://localhost").searchParams;
+    const { response } = await this.replyAttachment(threadId, message.id, attachment.id,
+      access.get("expires")!, access.get("token")!, signal);
+    if (!response.ok || response.body === null) throw new Error("PDF attachment unavailable.");
+    const declared = response.headers.get("content-length");
+    if (declared !== null && Number(declared) !== attachment.sizeBytes) { await response.body.cancel(); throw new Error("PDF attachment unavailable."); }
+    const chunks: Buffer[] = []; let length = 0;
+    const reader = response.body.getReader();
+    const cancelRead = (): void => { void reader.cancel().catch(() => undefined); };
+    signal.addEventListener("abort", cancelRead, { once: true });
+    try {
+      while (true) {
+        signal.throwIfAborted();
+        const next = await reader.read();
+        if (next.done) break;
+        length += next.value.length;
+        if (length > attachment.sizeBytes || length > PDF_LIMITS.imageBytes) throw new Error("PDF attachment too large.");
+        chunks.push(Buffer.from(next.value));
+      }
+    } finally { signal.removeEventListener("abort", cancelRead); await reader.cancel().catch(() => undefined); reader.releaseLock(); }
+    signal.throwIfAborted();
+    const data = Buffer.concat(chunks);
+    if (data.length !== attachment.sizeBytes || `sha256:${createHash("sha256").update(data).digest("hex")}` !== part.integrityId.toLowerCase()) throw new Error("PDF attachment unavailable.");
+    return data;
   }
 
   messagePage(
@@ -2645,6 +2741,7 @@ export class WebService {
     if (this.stopped) return;
     this.stopped = true;
     this.transcriptions.stop();
+    this.pdfExportController?.abort(new WebConsoleError("service_stopping", "The web service is stopping.", 503));
     if (this.discoveryTimer !== undefined) clearInterval(this.discoveryTimer);
     if (this.purgeTimer !== undefined) clearInterval(this.purgeTimer);
     if (this.wakeTimer !== undefined) clearInterval(this.wakeTimer);

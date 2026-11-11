@@ -791,6 +791,24 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
     }
   });
 
+  app.post("/api/v1/threads/:id/export/pdf", (req, res, next) => {
+    try {
+      exactRequestOrigin(req);
+      res.setHeader("Cache-Control", "private, no-store, max-age=0, no-transform");
+      const controller = new AbortController();
+      res.once("close", () => { if (!res.writableEnded) controller.abort(new Error("PDF download disconnected.")); });
+      void trackOperation(service.exportPdf(pathParam(req.params.id), controller.signal).then(({ bytes, filename }) => {
+        if (controller.signal.aborted) return;
+        res.setHeader("Content-Type", "application/pdf");
+        res.setHeader("Content-Disposition", contentDisposition(filename, "attachment"));
+        res.setHeader("Content-Length", String(bytes.length));
+        res.setHeader("Content-Security-Policy", "sandbox; default-src 'none'; base-uri 'none'; form-action 'none'");
+        res.setHeader("Cross-Origin-Resource-Policy", "same-origin");
+        res.status(200).end(bytes);
+      }), activeOperations).catch(next);
+    } catch (error) { next(error); }
+  });
+
   app.get("/api/v1/threads/:id/usage", (req, res, next) => {
     void service.threadUsage(pathParam(req.params.id))
       .then((usage) => res.status(200).json({ usage })).catch(next);
