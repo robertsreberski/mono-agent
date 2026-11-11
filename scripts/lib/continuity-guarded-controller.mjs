@@ -179,7 +179,7 @@ function bind(protocol, protocolId) {
             pilotNeed(p && (specific || Object.keys(p).sort().join() === "payloadDigest,requestId,rmax,round,slotId") && p.slotId === slot.slotId
               && typeof p.requestId === "string" && p.requestId === `${state.runId}:${p.round}` && pilotHash(p.payloadDigest)
               && p.round === slot.holds.length + 1 && p.round <= protocol.requestLimit && (specific || p.rmax === pilot.descriptor.rmaxUSD)
-              && !slot.terminal && slot.holds.every(h => h.settlement), protocol.codes.permit_invalid);
+              && (!slot.terminal || slot.terminal === "lost" && slot.retryPending && specific?.metadata.retryOf === slot.retryPending) && slot.holds.every(h => h.settlement), protocol.codes.permit_invalid);
             const nextReserve = specific?.reserve ?? reserve;
             if (Date.now() >= state.deadlineAt) stop(protocol.codes.run_deadline);
             else if (Date.now() >= phaseDeadlineAt(pilot, slot)) stop(protocol.codes.worker_timeout);
@@ -188,9 +188,9 @@ function bind(protocol, protocolId) {
             if (state.stop) { slot.admissionRefusal = state.stop; result = { refused: true, code: state.stop === "budget_admission" ? "not_admitted_cap" : protocol.codes.stopped }; }
             else {
               const permitId = randomUUID();
-              if (specific?.metadata.retryOf) delete slot.retryPending;
               slot.holds.push({ permitId, requestId: p.requestId, payloadDigest: p.payloadDigest, round: p.round,
                 ...specific?.metadata, ...(deadlinePolicy ? { admittedAt: Date.now() } : {}), reservedUnits: nextReserve.toString(), consumed: false, revoked: false, settlement: null });
+              if (specific?.metadata.retryOf) { delete slot.retryPending; slot.terminal = null; }
               result = { epoch: state.epoch, permitId };
             }
           } else if (protocol.execution?.retry && message.op === "retry") {

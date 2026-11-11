@@ -90,11 +90,11 @@ export const e2ExecutionPolicy = Object.freeze({
     if (p.paidRole === "summary") need(slot.compaction && slot.compaction.checkpoint === p.checkpoint, "e2_summary_not_authorized");
     const pending = slot.retryPending && slot.holds.find(h => h.round === slot.retryPending);
     if (pending) {
-      need(pending === slot.holds.at(-1) && pending.retryAuthorized && !pending.retryOf
+      need(pending === slot.holds.at(-1) && pending.retryAuthorized
         && p.payloadDigest === pending.payloadDigest && p.model === pending.model && p.paidRole === pending.paidRole
         && p.checkpoint === pending.checkpoint && p.inputTokens === pending.measuredInputTokens && p.reservationUnits === pending.reservedUnits, "e2_request_limit");
       const funded = requestFunding(pilot, planned, p, pending.operationDigest, pending.probeRequest);
-      funded.metadata.retryOf = pending.round; return funded;
+      funded.metadata.retryOf = pending.retryOf ?? pending.round; return funded;
     }
     const budget = planned.budgets.find(b => b.paidRole === p.paidRole && b.model === p.model && b.checkpoint === p.checkpoint);
     need(budget && slot.holds.filter(h => !h.retryOf && h.paidRole === p.paidRole && h.model === p.model && h.checkpoint === p.checkpoint).length < budget.maxRequests, "e2_request_limit");

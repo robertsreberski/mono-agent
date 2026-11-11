@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Fix guarded E2 retry classification for response-body breaks and fixed transient
+  SSE errors after HTTP 200. Preserve sent-request losses when retry admission is
+  refused, and stop before retry admission if the owner cancels during its grant.
+  Keep fixed `ECONNREFUSED`, `ENETUNREACH` and `EPIPE` dispatch failures eligible
+  for the same bounded retry.
+
 - **Breaking:** Add controller-owned guarded E2 retries with plan-v3 and
   permit-v2 contracts; require fresh registration and authorization binding the
   exact retry policy. Retry only eligible closed failures once per logical

@@ -8,6 +8,8 @@ import { spawn } from "node:child_process";
 import { once } from "node:events";
 import http from "node:http";
 import { zstdDecompressSync } from "node:zlib";
+import { e2PhaseWork } from "../lib/continuity-e2-lineage.mjs";
+import { guardedAccounting } from "../lib/continuity-guarded-accounting.mjs";
 import { ROOT } from "../lib/continuity-observation-input.mjs";
 import { FACT, NEXT_ACTION } from "../lib/continuity-e2-tools.mjs";
 import { SOL } from "../lib/continuity-e2-protocol.mjs";
@@ -67,21 +69,30 @@ async function run({ scenario = "probe", requests = 1, rows = [{ role: "probe", 
       const chunks = []; for await (const chunk of request) chunks.push(chunk); const bytes = request.headers["content-encoding"] === "zstd" ? zstdDecompressSync(Buffer.concat(chunks)) : Buffer.concat(chunks); receivedBytes.push(bytes); received.push(JSON.parse(bytes));
       const responseFault = (retryOnce && received.length > 1 || failOdd && received.length % 2 === 0) ? undefined : fault;
       if (responseFault === "dispatch-break") { request.socket.destroy(); return; }
-      if (responseFault === "crash-retry" && received.length === 1 || ["model-error", "fixture-diagnostic-write"].includes(responseFault) || failAfter && received.length > failAfter) { response.writeHead(500, { "content-type": "application/json" }).end(JSON.stringify({ error: { code: "fictional_backend_failure", message: "Fictional backend failure." } })); return; }
+      if (responseFault === "crash-retry" && received.length === 1 || ["model-error", "fixture-diagnostic-write", "cancel-retry"].includes(responseFault) || failAfter && received.length > failAfter) { response.writeHead(500, { "content-type": "application/json" }).end(JSON.stringify({ error: { code: "fictional_backend_failure", message: "Fictional backend failure." } })); return; }
       if (["http-quota", "http-other"].includes(responseFault)) { response.writeHead(400, { "content-type": "application/json" }).end(JSON.stringify({ error: { code: responseFault === "http-quota" ? "insufficient_quota" : "invalid_request_error" } })); return; }
       if (responseFault === "http-context") { response.writeHead(400, { "content-type": "application/json" }).end(JSON.stringify({ error: { code: "context_length_exceeded", message: "PRIVATE-CAUSE-CANARY" } })); return; }
       if (["http-auth", "http-rate"].includes(responseFault)) { response.writeHead(responseFault === "http-auth" ? 401 : 429).end(); return; }
       response.writeHead(200, { "content-type": "text/event-stream" });
+      if (responseFault === "midstream-reset") {
+        response.write('data: {"type":"response.created","response":{"id":"fictional-partial","status":"in_progress"}}\n\n');
+        setTimeout(() => response.destroy(), 25); return;
+      }
       if (responseFault?.startsWith("sse-")) {
-        const code = { "sse-context": "context_length_exceeded", "sse-server": "server_error", "sse-stream": "stream_error", "sse-rate": "rate_limit_exceeded" }[responseFault];
-        response.end(`data: ${JSON.stringify({ type: "response.failed", response: { error: { code, message: "PRIVATE-CAUSE-CANARY" } } })}\n\n`); return;
+        const code = { "sse-context": "context_length_exceeded", "sse-server": "server_error", "sse-stream": "stream_error", "sse-rate": "rate_limit_exceeded", "sse-overload": "overloaded_error", "sse-transient": "transient_error", "sse-auth": "authentication_error", "sse-quota": "insufficient_quota", "sse-invalid": "invalid_request_error", "sse-policy": "content_policy_violation", "sse-type": "server_error", "sse-incomplete": "service_unavailable", "sse-error": "internal_server_error", "sse-context-reset": "context_length_exceeded" }[responseFault];
+        const error = { ...(responseFault === "sse-type" ? { type: code } : { code }), message: "PRIVATE-CAUSE-CANARY" };
+        const event = responseFault === "sse-error" ? { type: "error", error } : { type: responseFault === "sse-incomplete" ? "response.incomplete" : "response.failed", response: { error } };
+        const frame = `data: ${JSON.stringify(event)}\n\n`;
+        if (responseFault === "sse-context-reset") { response.write(frame); setTimeout(() => response.destroy(), 25); }
+        else response.end(frame);
+        return;
       }
       if (["empty", "length"].includes(responseFault)) {
         const data = events(responseFault === "empty" ? "" : "Fictional response").split("\n\n").filter(Boolean).map(line => JSON.parse(line.slice(6)));
         if (responseFault === "length") { const last = data.at(-1); last.type = "response.incomplete"; last.response.status = "incomplete"; last.response.incomplete_details = { reason: "max_output_tokens" }; }
         response.end(data.map(e => `data: ${JSON.stringify(e)}\n\n`).join("")); return;
       }
-      if (scenario === "cancel" || ["crash", "containment", "request-timeout"].includes(responseFault)) { response.flushHeaders(); return; }
+      if (["cancel", "cancel-then-refuse"].includes(scenario) || ["crash", "containment", "request-timeout"].includes(responseFault)) { response.flushHeaders(); return; }
       if (replay) {
         const tool = received.at(-1).tools?.find(t => t.name === "ConversationHistory");
         response.end(probeLookups && tool ? toolEvents(tool.name, { action: "search", query: "Fictional response", limit: 1 }, received.length) : events("Fictional response"));
@@ -265,19 +276,19 @@ it.each(["baseline-function-output", "baseline-reasoning-summary"])("denies %s w
 it.each([
   ["model-error", "sdk_error_result", "server", 500, false],
   ["sse-context", "sdk_error_result", "context", 200, false],
-  ["sse-server", "sdk_error_result", "server", 200, false],
+  ["sse-server", "sdk_error_result", "stream", 200, false],
   ["sse-stream", "sdk_error_result", "stream", 200, false],
   ["http-auth", "sdk_error_result", "auth", 401, false],
   ["http-rate", "sdk_error_result", "rate", 429, false],
   ["http-context", "sdk_error_result", "context", 400, false],
   ["sse-rate", "sdk_error_result", "rate", 200, false],
   ["empty", "empty_final_text", "unknown", 200, true],
-  ["length", "sdk_length_result", "unknown", 200, true],
+  ["length", "sdk_length_result", "length", 200, true],
   ["rejected", "sdk_promise_rejected", "stream", 200, true],
 ])("records closed %s diagnostics through the owned SDK route", async (fault, causeClass, providerClass, httpStatus, terminalUsageObserved) => {
   const result = await run({ fault });
   const cause = result.report.phases[0].diagnostics?.nativeCause;
-  const retried = ["model-error", "sse-stream", "http-rate", "empty"].includes(fault);
+  const retried = ["model-error", "sse-stream", "sse-server", "http-rate", "empty"].includes(fault);
   expect(cause, JSON.stringify(result.report)).toMatchObject({ round: retried ? 2 : 1, role: "probe", checkpoint: 0, causeClass, providerClass, httpStatus, terminalUsageObserved });
   expect(cause.payloadDigest).toMatch(/^[a-f0-9]{64}$/u);
   expect(cause.responseHeadersObserved).toBe(httpStatus !== null);
@@ -371,7 +382,8 @@ it("still sends done when the fixture refusal artifact cannot be written", async
 }, E2_NATIVE_TEST_TIMEOUT_MS);
 
 it.each([
-  ["dispatch-break", "stream"], ["sse-stream", "stream"], ["model-error", "http_5xx"],
+  ["dispatch-break", "stream"], ["dispatch-refused", "stream"], ["dispatch-unreachable", "stream"], ["dispatch-pipe", "stream"], ["midstream-reset", "stream"], ["body-aborted", "stream"], ["body-reset", "stream"], ["body-premature", "stream"], ["body-socket", "stream"], ["sse-stream", "stream"], ["sse-server", "stream"],
+  ["sse-overload", "stream"], ["sse-transient", "stream"], ["sse-type", "stream"], ["sse-incomplete", "stream"], ["sse-error", "stream"], ["model-error", "http_5xx"],
   ["http-rate", "http_429"], ["empty", "empty_final_text"], ["sdk-aborted", "unowned_aborted_result"],
 ])("retries eligible %s once with identical bytes and a fresh independently verified hold", async (fault, cause) => {
   const result = await run({ fault, retryOnce: true });
@@ -387,7 +399,7 @@ it.each([
   else expect(result.report.costs.retainedUnits).toBe("3920000000");
 }, E2_NATIVE_TEST_TIMEOUT_MS);
 
-it.each(["http-auth", "http-context", "http-quota", "http-other", "sse-context", "sse-rate", "sse-server", "length", "sdk-unknown", "sdk-deadline"])("never retries ineligible %s despite a recoverable next response", async fault => {
+it.each(["http-auth", "http-context", "http-quota", "http-other", "sse-context", "sse-rate", "sse-auth", "sse-quota", "sse-invalid", "sse-policy", "sse-context-reset", "length", "sdk-unknown", "sdk-deadline", "body-deadline"])("never retries ineligible %s despite a recoverable next response", async fault => {
   const result = await run({ fault, retryOnce: true });
   expect(result.received).toHaveLength(1); expect(result.report.retries.attempted).toBe(0); expect(result.report.stop).not.toBe("completed");
 }, E2_NATIVE_TEST_TIMEOUT_MS);
@@ -401,6 +413,9 @@ it("does not fetch a retry when the failed hold leaves insufficient cap", async 
   const result = await run({ fault: "model-error", retryOnce: true, capUnits: "5000000000" });
   expect(result.received).toHaveLength(1); expect(result.report.stop).toBe("budget_admission");
   expect(result.report.costs.retainedUnits).toBe("3920000000"); expect(result.report.retries.attempted).toBe(0);
+  const state = JSON.parse(await readFile(join(result.root, "output/e2-validation-controller.json")));
+  expect(result.report.phases[0].terminal).toBe("lost"); expect(state.slots[0].terminal).toBe("lost");
+  expect(guardedAccounting("e2-validation").accountRun(state.slots).consecutiveProviderLosses).toBe(1);
 }, E2_NATIVE_TEST_TIMEOUT_MS);
 it("stops the ninth eligible failure without consuming another logical slot or retry", async () => {
   const result = await run({ fault: "model-error", failOdd: true, requests: 9, rows: Array.from({ length: 9 }, () => ({ role: "probe", model: SOL })) });
@@ -425,4 +440,21 @@ it("keeps R=3 logical tool ordinals unchanged after retrying the first probe", a
   expect(result.receivedBytes[1]).toEqual(result.receivedBytes[0]);
   expect(result.received.map(b => (b.tools ?? []).length)).toEqual([1, 1, 1, 1, 0, 1, 1, 1, 0]);
   expect(result.funded.filter(b => b.paidRole !== "summary").reduce((n,b) => n + b.maxRequests,0)).toBe(8);
+}, E2_NATIVE_TEST_TIMEOUT_MS);
+
+it("does not admit a retry after owner abort during retry IPC and releases the pending grant", async () => {
+  const result = await run({ fault: "cancel-retry", retryOnce: true });
+  expect(result.received).toHaveLength(1); expect(result.report.retries.attempted).toBe(0);
+  const state = JSON.parse(await readFile(join(result.root, "output/e2-validation-controller.json")));
+  expect(state.slots[0].holds).toHaveLength(1); expect(state.slots[0].holds[0].retryCanceled).toBe(true);
+  expect(state.slots[0].retryPending).toBeUndefined(); expect(state.slots[0].terminal).toBe("lost");
+}, E2_NATIVE_TEST_TIMEOUT_MS);
+
+it("does not retain deliberate cancellation as a cause or mask a later genuine guard failure", async () => {
+  const result = await run({ scenario: "cancel-then-refuse", fault: "cancel-rejected", rows: [{ role: "continuation", model: SOL }, { role: "probe", model: SOL }] });
+  expect(result.received).toHaveLength(1);
+  const state = JSON.parse(await readFile(join(result.root, "output/e2-validation-controller.json")));
+  expect(JSON.parse(await readFile(join(e2PhaseWork(join(result.root, "output"), state.schedule[0]), "cancel-cause.json")))).toBeNull();
+  expect(state.slots[0].holds[0].nativeCause).toBeUndefined();
+  expect(result.report.phases[0].diagnostics.nativeCause).toMatchObject({ round: 2, causeClass: "guard_refused", ownerCanceled: false });
 }, E2_NATIVE_TEST_TIMEOUT_MS);

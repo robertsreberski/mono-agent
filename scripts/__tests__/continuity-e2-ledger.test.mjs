@@ -182,3 +182,10 @@ it("keeps the run clock global when a fresh later phase still has time", async (
   await expect(journal.message(1, worker, { version: E2_PILOT_IPC, epoch: s.epoch, slotId: s.slots[1].slotId, seq: 0, op: "admit", payload: {} })).rejects.toMatchObject({ code: "e2_run_deadline" });
   expect(journal.snapshot().stop).toBe("e2_run_deadline"); expect(journal.snapshot().slots[1].holds).toEqual([]);
 });
+
+it.each(["missing", "mismatched"])("classifies %s faux retry policy as registration-invalid before creating any lease", async change => {
+  if (change === "missing") delete pilot.descriptor.retryPolicy;
+  else pilot.descriptor.retryPolicy = { ...E2_RETRY_POLICY, maxPerRun: 9 };
+  await expect(controller.createLookupPilotController({ pilot, authorization, outputRoot, real: false })).rejects.toMatchObject({ code: "e2_registration_invalid" });
+  expect(await readdir(outputRoot)).toEqual([]);
+});

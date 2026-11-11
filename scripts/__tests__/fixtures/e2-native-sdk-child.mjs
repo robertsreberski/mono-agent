@@ -19,7 +19,8 @@ actor?.assertConfig({ runtime: { workspace: work, model: { provider: "openai-cod
   session: { continuity: { ledgerEnabled: false, upkeep: { enabled: false } } } }, providers: { piAuthPath: a.authorization.credentialPath, piNative: { transport: "sse", piMaxRetries: 0 } }, tools: { allowedTools: ["ConversationHistory"] } });
 const modules = await productionModules(profile.root), models = modules.pi.builtinModels(), model = models.getModel("openai-codex", "gpt-6.1-sol");
 const context = { systemPrompt: "Fictional SDK boundary.", messages: [{ role: "user", content: "FICTIONAL-CONTEXT-CANARY", timestamp: 1 }] };
-const opts = { transport: "sse", maxRetries: 0, reasoning: "high", maxTokens: 128000 };
+if (profile.fault === "cancel-retry") globalThis.__e2OwnerAbort = new AbortController();
+const opts = { ...(globalThis.__e2OwnerAbort ? { signal: globalThis.__e2OwnerAbort.signal } : {}), transport: "sse", maxRetries: 0, reasoning: "high", maxTokens: 128000 };
 actor?.setPosition({ model: "openai-codex:gpt-6.1-sol", turn: 0, message: 0 });
 let outcome = { terminal: "completed", score: 1, refusalCode: null }, caught = null;
 try {
@@ -87,9 +88,14 @@ try {
   } else if (profile.scenario === "unexpected-abort") {
     const abort = new AbortController(); actor.setPosition({ model: "openai-codex:gpt-6.1-sol", turn: 0, message: 0, onNativeResponse: () => abort.abort() });
     await actor.stream(models, model, context, { ...opts, signal: abort.signal }, "probe").result();
-  } else if (profile.scenario === "cancel") {
+  } else if (["cancel", "cancel-then-refuse"].includes(profile.scenario)) {
     const abort = new AbortController(); actor.setPosition({ model: "openai-codex:gpt-6.1-sol", turn: 0, message: 0, cancelForwarded: true, onNativeResponse: () => abort.abort() });
     try { await actor.stream(models, model, context, { ...opts, signal: abort.signal }, "continuation").result(); } catch (error) { if (!abort.signal.aborted) throw error; }
+    if (profile.scenario === "cancel-then-refuse") {
+      await writeFile(join(work, "cancel-cause.json"), JSON.stringify(actor.failureCause()), { mode: 0o600 });
+      actor.setPosition({ model: "openai-codex:gpt-6.1-sol", turn: 0, message: 0 });
+      await actor.stream(models, model, context, { ...opts, reasoning: "fictional-invalid-effort" }, "probe").result();
+    }
     outcome = { terminal: "own_abort_after_send", score: null, refusalCode: null };
   } else for (let i = 0; i < (profile.requests ?? 1); i++) await actor.stream(models, model, context, opts, "probe").result();
 } catch (error) {

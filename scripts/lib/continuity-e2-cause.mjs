@@ -4,7 +4,7 @@ export function registerE2CauseObserver(safety, observe, capture) { observers.se
 export function captureE2NativeCause(safety, message, error) { return captures.get(safety)?.(message, !!error, error) ?? null; }
 export function observeE2NativeCause(safety, stage, status, code, binding) {
   const httpStatus = Number.isInteger(status) && status >= 100 && status <= 599 ? status : null;
-  const providerClass = e2ProviderCause(code, httpStatus);
+  const providerClass = stage === "provider_terminal" ? e2StreamCause(code) : e2ProviderCause(code, httpStatus);
   observers.get(safety)?.({ sourceStage: stages.includes(stage) ? stage : "unknown",
     ...(binding && Number.isSafeInteger(binding.round) && binding.round > 0 && Number.isSafeInteger(binding.checkpoint) && binding.checkpoint >= 0
       && ["probe", "continuation", "summary"].includes(binding.role) && /^[a-f0-9]{64}$/u.test(binding.payloadDigest ?? "")
@@ -15,17 +15,26 @@ export function observeE2NativeCause(safety, stage, status, code, binding) {
 const stages = ["guard_refused", "request_setup", "dispatch", "response_headers", "provider_terminal", "sdk_result", "sdk_promise", "unknown"];
 const reasons = ["stop", "error", "length", "aborted", "toolUse", "unknown"];
 const classes = ["guard_refused", "sdk_error_result", "sdk_aborted_result", "sdk_length_result", "empty_final_text", "sdk_promise_rejected", "unknown"];
-const providers = ["context", "auth", "quota", "rate", "server", "stream", "deadline", "unknown"];
+const providers = ["context", "auth", "quota", "rate", "server", "stream", "deadline", "request", "policy", "length", "unknown"];
 export function e2ProviderCause(code, status) {
   if (["context_length_exceeded", "context_window_exceeded"].includes(code)) return "context";
   if (["invalid_api_key", "authentication_error", "permission_denied", "e2_auth_failure"].includes(code) || [401, 403].includes(status)) return "auth";
   if (["insufficient_quota", "quota_exceeded", "e2_quota_exhausted", "usage_limit_reached", "usage_limit_exceeded"].includes(code)) return "quota";
+  if (["invalid_request_error", "invalid_request", "invalid_argument"].includes(code)) return "request";
+  if (["content_policy_violation", "content_filter", "content_policy_error", "safety_violation"].includes(code)) return "policy";
+  if (code === "max_output_tokens") return "length";
   if (code === "rate_limit_exceeded" || status === 429) return "rate";
   if (["server_error", "internal_server_error"].includes(code) || status >= 500 && status <= 599) return "server";
   if (["ETIMEDOUT", "UND_ERR_BODY_TIMEOUT", "UND_ERR_HEADERS_TIMEOUT", "UND_ERR_CONNECT_TIMEOUT", "e2_worker_timeout", "e2_run_deadline"].includes(code)) return "deadline";
   if (["stream_error", "ECONNRESET", "ECONNREFUSED", "ENETUNREACH", "EPIPE", "UND_ERR_SOCKET", "ERR_STREAM_PREMATURE_CLOSE"].includes(code)) return "stream";
   return "unknown";
 }
+// Only fixed provider stream signals; never classify exception/provider messages.
+export function e2StreamCause(code) {
+  if (["server_error", "internal_server_error", "internal_error", "overloaded_error", "overloaded", "server_overloaded", "service_unavailable", "temporarily_unavailable", "transient_error"].includes(code)) return "stream";
+  return e2ProviderCause(code);
+}
+export const E2_NONRETRY_PROVIDER_CLASSES = Object.freeze(["context", "auth", "quota", "deadline", "request", "policy", "length"]);
 export function e2FailureCause(binding, observed, message, rejected = false) {
   const stopReason = reasons.includes(message?.stopReason) ? message.stopReason : "unknown";
   const textPresent = (message?.content ?? []).some(p => p.type === "text" && typeof p.text === "string" && p.text.trim().length > 0);

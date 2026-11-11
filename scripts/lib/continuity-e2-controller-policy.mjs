@@ -42,8 +42,9 @@ export async function prepareE2Controller(options) {
     return { pilot, authorization, outputRoot, real: true, authorizationHandle: handle, schedule: pilot.registration.schedule };
   }
   need(Object.keys(options).sort().join() === "authorization,outputRoot,pilot,real" && pilot?.schema === E2_REGISTRATION_SCHEMA
-    && pilot.descriptor.schema === E2_PLAN_SCHEMA && same(pilot.descriptor.retryPolicy, E2_RETRY_POLICY) && same(pilot.descriptor.assumptions, E2_ASSUMPTIONS) && pilot.registration.code.path === ROOT
+    && pilot.descriptor.schema === E2_PLAN_SCHEMA && same(pilot.descriptor.assumptions, E2_ASSUMPTIONS) && pilot.registration.code.path === ROOT
     && authorization?.schema === E2_FAUX_AUTHORIZATION && authorization.outputRoot === outputRoot);
+  need(same(pilot.descriptor.retryPolicy, E2_RETRY_POLICY), "e2_registration_invalid");
   const [{ loadE2Catalog, e2RequestPrice }, { e2CapUnits, validateE2Deadlines }, { externalDirectory }] = await Promise.all([
     import("./continuity-e2-pricing.mjs"), import("./continuity-e2-registration.mjs"), import("./continuity-holdout-files.mjs"),
   ]);

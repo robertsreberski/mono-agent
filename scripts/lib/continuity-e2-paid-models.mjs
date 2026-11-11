@@ -11,8 +11,8 @@ import { e2RequestPrice } from "./continuity-e2-pricing.mjs";
 import { digest } from "./continuity-recorded-schema.mjs";
 import { digest as canonicalDigest } from "./continuity-dataset.mjs";
 import { e2PhaseWork, e2PhaseBase, validateE2Checkpoint } from "./continuity-e2-lineage.mjs";
-import { e2FailureCause, e2ProviderCause, registerE2CauseObserver } from "./continuity-e2-cause.mjs";
-import { effectiveE2Summaries } from "./continuity-e2-retry.mjs";
+import { e2FailureCause, e2ProviderCause, e2StreamCause, E2_NONRETRY_PROVIDER_CLASSES, registerE2CauseObserver } from "./continuity-e2-cause.mjs";
+import { effectiveE2Summaries, E2_RETRY_POLICY } from "./continuity-e2-retry.mjs";
 const need = (ok, code = "e2_permit_invalid") => { if (!ok) throw Object.assign(Error(code), { code }); };
 const core = () => guardedState("e2-validation"), artifacts = () => guardedAuthorization("e2-validation");
 export async function createE2PaidModels(a, safety) {
@@ -31,13 +31,16 @@ export async function createE2PaidModels(a, safety) {
       if (binding.round !== currentCall.round || binding.role !== currentCall.role || binding.checkpoint !== currentCall.checkpoint) return;
       currentCall.payloadDigest = binding.payloadDigest;
     }
-    Object.assign(currentCall, observed);
+    const { providerClass, ...rest } = observed; Object.assign(currentCall, rest);
+    if (providerClass && !E2_NONRETRY_PROVIDER_CLASSES.includes(currentCall.providerClass)) currentCall.providerClass = providerClass;
   }, capture);
   function capture(message, rejected = false, error) {
     if (!currentCall || currentCall.completed) return null;
     if (!rejected && !["error", "length", "aborted"].includes(message?.stopReason)
       && !(message?.stopReason === "stop" && !(message.content ?? []).some(p => p.type === "text" && p.text?.trim()))) return null;
-    const c = currentCall; c.ownerCanceled = c.ownerSignal?.aborted === true || c.cancelForwarded === true;
+    const c = currentCall;
+    if (c.cancelForwarded && c.ownerSignal?.aborted) { failureCause = null; return null; }
+    c.ownerCanceled = c.ownerSignal?.aborted === true || c.cancelForwarded === true;
     if (rejected && (error instanceof E2GuardError && error.outcome === "refused_pre_send" || [...E2_GUARD_POLICY_REFUSALS, ...E2_PRE_SEND_REFUSALS].includes(error?.code)) && !c.responseHeadersObserved) c.sourceStage = "guard_refused";
     if (rejected && c.providerClass === "unknown") c.providerClass = e2ProviderCause(error?.code);
     // The native boundary already verified the consumed hold and exact bytes.
@@ -195,8 +198,10 @@ export async function createE2PaidModels(a, safety) {
             if (["response.completed", "response.incomplete", "response.failed", "error"].includes(event?.type)) {
               observed.sourceStage = "provider_terminal";
               observed.terminalUsageObserved ||= Number.isSafeInteger(event.response?.usage?.input_tokens) && Number.isSafeInteger(event.response?.usage?.output_tokens);
-              const classified = e2ProviderCause(event.response?.error?.code ?? event.error?.code ?? event.code);
-              if (classified !== "unknown") observed.providerClass = classified;
+              for (const code of [event.response?.error?.code, event.response?.error?.type, event.error?.code, event.error?.type, event.code, event.type, event.response?.incomplete_details?.reason]) {
+                const classified = e2StreamCause(code);
+                if (classified !== "unknown" && !E2_NONRETRY_PROVIDER_CLASSES.includes(observed.providerClass)) observed.providerClass = classified;
+              }
             }
             await options.onProviderStreamEvent?.(event, selected);
           },
@@ -204,7 +209,7 @@ export async function createE2PaidModels(a, safety) {
             const classified = e2ProviderCause(undefined, response.status); if (classified !== "unknown") observed.providerClass = classified; counts.responses++; if (role !== "summary") await pos.onNativeResponse?.(); await options.onResponse?.(response); } });
       };
       const result = (async () => {
-        for (let number = 0; number <= 1; number++) {
+        for (let number = 0; number <= E2_RETRY_POLICY.maxPerRequest; number++) {
           let physical, message, error; const events = [];
           try {
             physical = await attempt(number > 0);
@@ -218,9 +223,12 @@ export async function createE2PaidModels(a, safety) {
             || message?.stopReason === "stop" && !(message.content ?? []).some(p => p.type === "text" && p.text?.trim());
           if (!failed) { currentCall.completed = true; failureCause = null; buffered.push(...events); return message; }
           capture(message, !!error, error);
-          if (number === 0 && currentCall && !options.signal?.aborted && !pos.cancelForwarded) {
+          if (number < E2_RETRY_POLICY.maxPerRequest && currentCall && !options.signal?.aborted && !pos.cancelForwarded) {
             const decision = await native.permit.retry(currentCall.round, false);
-            if (decision.allowed) continue;
+            if (options.signal?.aborted || pos.cancelForwarded) {
+              if (decision.allowed) await native.permit.retry(currentCall.round, true);
+              capture(message, !!error, error);
+            } else if (decision.allowed) continue;
           }
           const code = ["rate", "quota"].includes(currentCall?.providerClass) ? "e2_quota_exhausted" : error?.code ?? "e2_phase_failed";
           if (!pos.cancelForwarded || !options.signal?.aborted) await stop(code);

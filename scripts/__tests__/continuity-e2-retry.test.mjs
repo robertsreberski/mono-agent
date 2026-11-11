@@ -18,7 +18,7 @@ it.each(["guard_refused", "sdk_length_result", "unknown"])("cannot force control
   expect(authorizeE2Retry(state, 0, request)).toEqual({ allowed: false });
   expect(authorizeE2Retry(state, 0, { ...request, causeClass: "stream" })).toEqual({ allowed: false });
 });
-it.each(["context", "auth", "quota", "deadline"])("refuses closed %s even with otherwise eligible HTTP status", providerClass => {
+it.each(["context", "auth", "quota", "deadline", "request", "policy", "length"])("refuses closed %s even with otherwise eligible HTTP status", providerClass => {
   expect(retryCause(fixture({ providerClass, httpStatus: 503 }).hold.nativeCause)).toBeNull();
 });
 it.each([400, 401, 403, 404, 408, 409, 422])("refuses HTTP %s even with stream classification", httpStatus => {
@@ -39,12 +39,12 @@ it("requires durable bound failure evidence and an already witnessed/settled con
 it("persists one grant without altering the failed settlement and cannot grant twice", () => {
   const { state, hold, slot, request } = fixture(), settlement = structuredClone(hold.settlement);
   expect(authorizeE2Retry(state, 0, request)).toEqual({ allowed: true });
-  expect(hold.settlement).toEqual(settlement); expect(slot.retryPending).toBe(1);
+  expect(hold.settlement).toEqual(settlement); expect(slot.retryPending).toBe(1); expect(slot.terminal).toBe("lost");
   expect(authorizeE2Retry(state, 0, request)).toEqual({ allowed: false });
 });
 it("counts retries in every prior slot against the run-wide ceiling", () => {
-  const { state, request } = fixture(); state.slots.push({ holds: Array.from({ length: 8 }, () => ({ retryOf: 1 })) });
-  expect(authorizeE2Retry(state, 0, request)).toEqual({ allowed: false });
+  const { state, request } = fixture(); state.slots.unshift({ holds: Array.from({ length: E2_RETRY_POLICY.maxPerRun }, () => ({ retryOf: 1 })) });
+  expect(authorizeE2Retry(state, 1, request)).toEqual({ allowed: false });
 });
 
 it("accepts canonically equal policy keys in a different serialization order", () => {
@@ -52,4 +52,19 @@ it("accepts canonically equal policy keys in a different serialization order", (
   const pilot = { descriptor: { retryPolicy: Object.fromEntries(Object.entries(E2_RETRY_POLICY).reverse()) } };
   expect(e2ExecutionPolicy.retry(pilot, state, 0, request)).toEqual({ allowed: true });
   expect(e2ExecutionPolicy.deferNativeFailure(pilot, 429)).toBe(true);
+});
+
+it("releases an owner-cancelled pending grant without spending any run-wide retry", () => {
+  const { state, slot, request, hold } = fixture();
+  expect(authorizeE2Retry(state, 0, request).allowed).toBe(true);
+  expect(authorizeE2Retry(state, 0, { ...request, ownerCanceled: true }).allowed).toBe(false);
+  expect(slot.retryPending).toBeUndefined(); expect(slot.terminal).toBe("lost"); expect(hold.retryCanceled).toBe(true);
+  expect(authorizeE2Retry(state, 0, request).allowed).toBe(false);
+});
+
+it("uses the policy's per-logical-request retry count even for a consumed failed retry", () => {
+  const { state, slot, hold, request } = fixture();
+  hold.round = 2; hold.retryOf = 1; hold.nativeCause.round = 2;
+  slot.holds.unshift({ round: 1 }); request.round = 2;
+  expect(authorizeE2Retry(state, 0, request)).toEqual({ allowed: false });
 });

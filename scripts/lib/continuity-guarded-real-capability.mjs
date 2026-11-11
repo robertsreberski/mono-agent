@@ -73,7 +73,8 @@ function bind(protocol, protocolId) {
         const bytes = encoding === "zstd" ? zstdDecompressSync(init.body) : Buffer.from(init.body);
         need(hold?.consumed === true && !hold.revoked && !hold.settlement && !used.has(hold.permitId)
           && hold.payloadDigest === createHash("sha256").update(bytes).digest("hex"));
-        observeNative("request_setup", null, undefined, { round: hold.round, role: hold.paidRole, checkpoint: hold.checkpoint, payloadDigest: hold.payloadDigest });
+        const binding = { round: hold.round, role: hold.paidRole, checkpoint: hold.checkpoint, payloadDigest: hold.payloadDigest };
+        observeNative("request_setup", null, undefined, binding);
         if (!matchesAccount(handle, headers.get("chatgpt-account-id"))) await stop(protocol.codes.account_mismatch);
         try { protocol.execution?.assertCacheHeaders?.(headers, hold, a.cacheKey); protocol.execution?.assertBody(bytes, hold); if (protocol.execution?.verifyNativeBody) await protocol.execution.verifyNativeBody(bytes, hold, state, a, permit); }
         catch (error) { await stop(error?.code ?? protocol.codes.body_mismatch, true); }
@@ -96,8 +97,23 @@ function bind(protocol, protocolId) {
           if (quota(body?.error) && !protocol.execution?.deferNativeFailure?.(a.pilot, response.status, body?.error?.code ?? body?.error?.type)) await rejectResponse(protocol.codes.quota_exhausted);
         }
         if (!response.body || !type.includes("text/event-stream")) return response;
+        let body = response.body;
+        if (protocol.execution?.observeNative) {
+          const reader = body.getReader();
+          body = new ReadableStream({
+            async pull(controller) {
+              try { const next = await reader.read(); if (next.done) controller.close(); else controller.enqueue(next.value); }
+              catch (error) {
+                let code = typeof error?.code === "string" ? error.code : error?.cause?.code;
+                if ((!code || code === "ABORT_ERR") && error?.name === "AbortError" && !init.signal?.aborted) code = "ERR_STREAM_PREMATURE_CLOSE";
+                observeNative("provider_terminal", null, code, binding); controller.error(error);
+              }
+            },
+            cancel(reason) { return reader.cancel(reason); },
+          });
+        }
         let buffer = ""; const decoder = new TextDecoder();
-        return new Response(response.body.pipeThrough(new TransformStream({
+        return new Response(body.pipeThrough(new TransformStream({
           async transform(chunk, controller) {
             buffer += decoder.decode(chunk, { stream: true });
             if (buffer.length > 4 * 1024 * 1024) await stop(protocol.codes.payload_forbidden);
@@ -106,7 +122,8 @@ function bind(protocol, protocolId) {
               const data = frame.split(/\r?\n/u).filter(line => line.startsWith("data:")).map(line => line.slice(5).trimStart()).join("\n");
               let event; try { event = JSON.parse(data); } catch { continue; }
               if (["response.completed", "response.incomplete", "response.failed", "error"].includes(event?.type) || event?.error || event?.response?.error)
-                observeNative("provider_terminal", null, event?.error?.code ?? event?.response?.error?.code);
+                for (const code of [event?.error?.code, event?.error?.type, event?.response?.error?.code, event?.response?.error?.type, event?.code, event?.type, event?.response?.incomplete_details?.reason])
+                  observeNative("provider_terminal", null, code, binding);
               if ((quota(event?.error) || quota(event?.response?.error)) && !protocol.execution?.deferNativeFailure?.(a.pilot, null, event?.error?.code ?? event?.response?.error?.code)) await stop(protocol.codes.quota_exhausted);
             }
             controller.enqueue(chunk);

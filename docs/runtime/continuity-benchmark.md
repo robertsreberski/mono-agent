@@ -2847,15 +2847,30 @@ paid authority.
 
 Only the controller grants a retry, from the failed hold's durably settled,
 validated closed cause record, never exception text or child-proposed eligibility.
-A dispatch/stream break, HTTP 500–599 or 429, empty final SDK text, or an unowned
+Cause evidence comes from the child: the controller verifies its closed shape and
+hold binding, not provider truth. This same-user trust boundary is bounded by
+one retry per logical request, eight per run, and the unchanged financial cap.
+Fixed dispatch failures `ECONNREFUSED`, `ENETUNREACH` and `EPIPE` map to `stream`
+and may be retried once under the same policy. A dispatch/stream break, HTTP 500–599 or 429, empty final SDK text, or an unowned
 SDK abortion is eligible. Guard/policy/gate and body-verification refusals,
 integrity stops, any deadline, context/auth/quota, other HTTP 4xx, length and
-unknown results, or an owner cancel are never retried. A server/rate code inside
-HTTP 200 alone is not an eligible HTTP failure; only a classified stream break
-qualifies independently. SDK/provider/outage retries remain disabled.
+unknown results, or an owner cancel are never retried. Response-body failures
+are observed where consumed: fixed transport codes (`ECONNRESET`,
+`ERR_STREAM_PREMATURE_CLOSE`, `UND_ERR_SOCKET`) and an unowned aborted body count
+as stream breaks. Fixed server/overload/transient codes or error types in SSE
+`error`, `response.failed` or `response.incomplete` events also count as stream
+breaks after HTTP 200. Context/auth/quota, invalid-request, content-policy and
+`max_output_tokens` incomplete results remain ineligible, even if the body then
+breaks. No exception/provider message text is classified or recorded.
+A non-JSON HTTP 429 is retried once as `http_429` under the same limits.
+Only SDK/provider-internal and outage-profile retries remain disabled; the
+controller-owned bounded retry described here is enabled by the new contract.
 
 Each logical request gets at most one retry; all phases together get at most
-eight. A second failure or exhausted allowance ends the run as before. The
+eight. A second failure or exhausted allowance ends the run as before. A refused
+retry admission preserves the original lost terminal and loss count. Owner cancel
+is rechecked after the retry grant ACK; a cancelled pending grant is released
+without admitting a retry hold or consuming the run-wide allowance. The
 original logical schedule and every `maxRequests`, continuation/probe ordinal,
 R and funded tool round stay frozen. For a 320-original registration (284 replay,
 36 proof), the maximum physical count is 328. A retry freezes the first actual
@@ -2972,7 +2987,7 @@ response/terminal-usage flags, numeric HTTP status when exposed, and fixed cause
 classes: `sdk_error_result`, `sdk_aborted_result`, `sdk_length_result`,
 `empty_final_text`, `sdk_promise_rejected`, `guard_refused`, or `unknown`. Provider
 classes are `context`, `auth`, `quota`, `rate`, `server`, `stream`, `deadline`,
-or `unknown`.
+`request`, `policy`, `length`, or `unknown`.
 Unknown provider codes remain `unknown`. Raw errors, headers, bodies and
 exception text are never saved. The private phase refusal's `nativeCause` and
 slot diagnostics expose this record, including a boolean `ownerCanceled`,
@@ -2982,9 +2997,10 @@ physical-send or billing receipts. The guarded native response boundary preserve
 fixed HTTP/JSON/SSE classes before existing auth/quota refusals, including when
 the SDK never receives that response. Payload binding is retained at the consumed,
 exact-byte-verified native boundary, without a later mutable-journal reread. Admission also emits the binding for
-pre-consume refusals. The actor publishes a bounded private cause before asking
-for stop; that cause survives the controller's forced-containment window even
-if later runtime unwinding cannot finish a refusal artifact.
+pre-consume refusals. The actor attempts to publish a bounded private cause before asking
+for stop; when that best-effort diagnostic write succeeds, the cause survives
+the controller's forced-containment window even if later runtime unwinding
+cannot finish a refusal artifact.
 Synchronous pre-send policy failures use the distinct `guard_refused` label.
 
 Replay attempts to sync each accepted question/repeat to an exclusive 0600 file under the
