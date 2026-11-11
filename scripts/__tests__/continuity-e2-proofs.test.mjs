@@ -76,6 +76,24 @@ it("runs every configured faux proof, actual restart fixtures, observed idle evi
   await modes(join(dir, "run"));
 }, 240_000);
 
+it.each(PROOF_ARMS)("accepts a compliant action-only second probe in the %s arm", async arm => {
+  const dir = await scratch(); processGuard();
+  const result = await runE2Proofs({ output: join(dir, "run"), arm, fault: "action-only" });
+  for (const variant of result[0].report.variants) {
+    expect(Object.values(variant.assertions).every(value => value === true)).toBe(true);
+    expect(variant.lookup).toMatchObject({ initiallyPresent: false, sourceReturned: true });
+    expect(variant.lookup.verifiedRecords).toBeGreaterThan(0);
+  }
+}, 180_000);
+it.each(PROOF_ARMS)("refuses a second probe missing the action in the %s arm", async arm => {
+  const dir = await scratch(); processGuard();
+  await expect(runE2Proofs({ output: join(dir, "run"), arm, fault: "missing-action" })).rejects.toThrow("E2_PROOF_ACTION_FAILED");
+}, 90_000);
+it("still requires the recovered value on the first probe", async () => {
+  const dir = await scratch(); processGuard();
+  await expect(runE2Proofs({ output: join(dir, "run"), arm: "switch", fault: "missing-value" })).rejects.toThrow("E2_PROOF_ACTION_FAILED");
+}, 90_000);
+
 it("refuses a genuinely repeated sentinel after a new-process resume", async () => {
   const dir = await scratch(); processGuard();
   await expect(runE2Proofs({ output: join(dir, "run"), arm: "cancel", fault: "repeat" })).rejects.toThrow("E2_PROOF_SENTINEL_REPEATED");
