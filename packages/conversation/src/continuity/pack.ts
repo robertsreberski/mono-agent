@@ -112,7 +112,7 @@ export function renderContinuityPack(snapshot: ContinuitySnapshot, history: read
   const renderedToolIds = new Set<string>();
   const ledgerEntries = shown ? ledger!.generation.entries.length : 0;
   let unknownOverlap = 0;
-  let degradedReason: string | undefined = summaryOmission ? "summary_headroom" : snapshot.degradedReason ?? (snapshot.gaps > 0 ? "coverage_gap" : upkeepGap ? "upkeep_gap" : undefined);
+  let degradedReason: string | undefined = snapshot.degradedReason ?? (snapshot.gaps > 0 ? "coverage_gap" : upkeepGap ? "upkeep_gap" : summaryOmission ? "summary_headroom" : undefined);
   // Layout: summary first, then owners, effect-first tools and neutral evidence;
   // ordinal within groups. Generated provenance and quotation stay unchanged.
   let body = prefix + guidance + disclosure + summaryOmission;

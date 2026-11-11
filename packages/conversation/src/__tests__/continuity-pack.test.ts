@@ -350,6 +350,15 @@ it.each(["Plain fictional summary.", 'Quote "\\" and newline\nwith 🦊 Ω.'.rep
   expect(overflow.tokens).toBeLessThanOrEqual(boundary - 1);
 });
 
+it("preserves coverage-gap degradation while disclosing whole-summary omission", () => {
+  const summary = { ...record(900, "Oversized fictional summary. ".repeat(1000), "summary"), provenance: "generated" as const };
+  const pack = renderContinuityPack({ records: [summary], omitted: 0, gaps: 1 }, []);
+  expect(pack.degradedReason).toBe("coverage_gap");
+  expect(pack.text).toContain("degraded=coverage_gap");
+  expect(pack.text).toContain("Generated summary omitted: entry_tokens=");
+  expect(pack.counts.summary).toBe(0); expect(pack.omitted).toBe(1);
+});
+
 it("retains a redacted summary exactly, including its retained digest and JSON quoting expansion", async () => {
   const { retainContinuityText } = await import("../tool-history/continuity-payload.js");
   const retained = retainContinuityText('Fictional note at /home/example/private/file.txt; keep "cobalt" 🦊.');
