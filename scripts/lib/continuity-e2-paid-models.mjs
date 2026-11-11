@@ -6,7 +6,7 @@ import { createPiOAuthApiKeyResolver } from "@mono-agent/turn";
 import { guardedModels } from "./continuity-guarded-models.mjs";
 import { guardedState } from "./continuity-guarded-state.mjs";
 import { guardedAuthorization } from "./continuity-guarded-authorization.mjs";
-import { E2_GUARD_CONTRACT, E2_GUARD_STOPS } from "./continuity-e2-policy.mjs";
+import { E2_GUARD_CONTRACT, E2_GUARD_STOPS, E2GuardError, E2_GUARD_POLICY_REFUSALS, E2_PRE_SEND_REFUSALS } from "./continuity-e2-policy.mjs";
 import { e2RequestPrice } from "./continuity-e2-pricing.mjs";
 import { digest } from "./continuity-recorded-schema.mjs";
 import { digest as canonicalDigest } from "./continuity-dataset.mjs";
@@ -23,18 +23,26 @@ export async function createE2PaidModels(a, safety) {
   const protocol = JSON.parse(protocolBytes);
   let send, native, config, position, active = false, probeRequests = 0, stopped = null, lifecycle = null, barrier = Promise.resolve();
   let failureCause = null, currentCall = null;
-  registerE2CauseObserver(safety, value => { if (currentCall && !currentCall.completed) Object.assign(currentCall, value); });
+  registerE2CauseObserver(safety, value => {
+    if (!currentCall || currentCall.completed) return;
+    const { binding, ...observed } = value;
+    if (binding) {
+      if (binding.round !== currentCall.round || binding.role !== currentCall.role || binding.checkpoint !== currentCall.checkpoint) return;
+      currentCall.payloadDigest = binding.payloadDigest;
+    }
+    Object.assign(currentCall, observed);
+  });
   async function capture(message, rejected = false, error) {
     if (failureCause || !currentCall || currentCall.completed) return;
     const c = currentCall;
+    if (rejected && (error instanceof E2GuardError && error.outcome === "refused_pre_send" || [...E2_GUARD_POLICY_REFUSALS, ...E2_PRE_SEND_REFUSALS].includes(error?.code)) && !c.responseHeadersObserved) c.sourceStage = "guard_refused";
     if (rejected && c.providerClass === "unknown") c.providerClass = e2ProviderCause(error?.code);
-    try {
-      const state = await core().readPrivate(core().statePath(a.outputRoot)), h = state.slots[a.index].holds.find(h => h.round === c.round);
-      if (c.providerClass === "unknown") c.providerClass = e2ProviderCause(state.stop);
-      failureCause = e2FailureCause({ round: c.round, role: c.role, checkpoint: c.checkpoint, payloadDigest: h?.payloadDigest ?? null }, c, message, rejected);
-    } catch { /* Diagnostics must never replace the original refusal or settlement. */ }
+    // The native boundary already verified the consumed hold and exact bytes.
+    // Re-reading the atomically replaced controller journal here can refuse a
+    // legitimate concurrent save and silently discard the original SDK cause.
+    failureCause = e2FailureCause({ round: c.round, role: c.role, checkpoint: c.checkpoint, payloadDigest: c.payloadDigest ?? null }, c, message, rejected);
   }
-  const counts = { requests: 0, responses: 0, durable: 0 };
+  const counts = { requests: 0, responses: 0, durable: 0, progressGap: 0 };
   function fail(code) { stopped ??= code; throw Object.assign(Error(stopped), { code: stopped }); }
   async function stop(code) {
     stopped ??= E2_GUARD_STOPS.includes(code) ? code : "e2_phase_failed";
@@ -206,9 +214,10 @@ export async function createE2PaidModels(a, safety) {
       need(a.slot.kind === "proof" && base === e2PhaseBase(a.outputRoot, a.slot) && arm === a.slot.arm && phase === a.slot.phase && variant === a.slot.variant, "e2_preparation_invalid");
     },
     failureCause: () => failureCause && structuredClone(failureCause),
+    noteProgressGap() { counts.progressGap++; },
     async answerBinding() {
       const state = await core().readPrivate(core().statePath(a.outputRoot)), h = state.slots[a.index].holds.at(-1);
-      need(h?.consumed && h.settlement?.kind === "settled" && ["probe", "continuation"].includes(h.paidRole));
+      need(h?.consumed && h.settlement?.kind === "settled" && ["probe", "continuation"].includes(h.paidRole), "e2_progress_binding_invalid");
       return { registrationSha256: canonicalDigest(a.pilot), slotId: a.slotId, checkpoint: h.checkpoint, round: h.round, payloadDigest: h.payloadDigest };
     },
     credentialPath: () => a.authorization.credentialPath,

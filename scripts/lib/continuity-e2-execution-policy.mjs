@@ -173,22 +173,36 @@ export const e2ExecutionPolicy = Object.freeze({
     const result = await permit.verifyBody(hold.permitId, bytes.toString("base64"));
     need(!result?.refused, result?.code ?? "e2_summary_receipt_invalid");
   },
-  observeNative(safety, stage, status, code) { observeE2NativeCause(safety, stage, status, code); },
+  observeNative(safety, stage, status, code, binding) { observeE2NativeCause(safety, stage, status, code, binding); },
   async diagnostics(root, state, index, pilot) {
     const { guardedAuthorization } = await import("./continuity-guarded-authorization.mjs");
     const read = guardedAuthorization("e2-validation").readArtifact, planned = state.schedule[index], base = e2PhaseBase(root, planned), result = {};
+    let progressGap = 0;
+    const gap = value => { if (Number.isSafeInteger(value) && value > 0 && value <= 4096) progressGap = Math.max(progressGap, value); };
     try {
       const refusal = JSON.parse(await read(join(base, `${planned.phase}-refusal.json`), "e2_receipt_invalid", 16384));
       if (validE2FailureCause(refusal.nativeCause, state.slots[index])) result.nativeCause = refusal.nativeCause;
+      gap(refusal.progressGap);
     } catch { /* Diagnostic absence never changes stop/settlement/liability. */ }
-    if (planned.kind === "replay" && !["completed", "wrong"].includes(state.slots[index].terminal)) try {
-      const answers = await readE2Progress(base, state, index, read);
-      if (answers) {
-        const binding = pilot.registration.keys, bytes = await read(binding.path, "e2_receipt_invalid", 4 * 1024 * 1024);
-        need(rawDigest(bytes) === binding.sha256, "e2_receipt_invalid");
-        result.partialQuality = await writeE2PartialScore(base, answers, JSON.parse(bytes));
-      }
-    } catch { /* Only independently bound progress can contribute informational counts. */ }
+    if (planned.kind === "replay") {
+      for (const name of ["progress-gap.json", "replay.json"]) try { gap(JSON.parse(await read(join(base, name), "e2_receipt_invalid", 4 * 1024 * 1024)).progressGap); } catch { /* Bounded optional diagnostics only. */ }
+      if (!["completed", "wrong"].includes(state.slots[index].terminal)) try {
+        const registered = {};
+        for (const [key, binding] of [["protocol", pilot.registration.protocol], ["questions", pilot.registration.probes]]) {
+          const bytes = await read(binding.path, "e2_receipt_invalid", 4 * 1024 * 1024);
+          need(rawDigest(bytes) === binding.sha256, "e2_receipt_invalid"); registered[key] = JSON.parse(bytes);
+        }
+        let answers;
+        try { answers = await readE2Progress(base, state, index, read, registered); }
+        catch { gap(1); } // Unreadable/invalid recovery evidence is an explicit gap, never a gate failure.
+        if (answers || progressGap) {
+          const binding = pilot.registration.keys, bytes = await read(binding.path, "e2_receipt_invalid", 4 * 1024 * 1024);
+          need(rawDigest(bytes) === binding.sha256, "e2_receipt_invalid");
+          result.partialQuality = await writeE2PartialScore(base, answers ?? { schema: "continuity-e2-answers-v1", answers: [] }, JSON.parse(bytes), read, progressGap);
+        }
+      } catch { /* Only independently bound progress can contribute informational counts. */ }
+      if (progressGap) result.progressGap = progressGap;
+    }
     return result;
   },
   async verifyBody(root, hold, state, index, p) {

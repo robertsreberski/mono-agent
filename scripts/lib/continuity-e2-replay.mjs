@@ -3,7 +3,7 @@ import { assertE2PhaseAdapter } from "./continuity-e2-runtime.mjs";
 import { chmod, copyFile, cp, lstat, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fail, object, ROOT } from "./continuity-observation-input.mjs";
-import { writeE2Progress, writeE2PartialScore } from "./continuity-e2-progress.mjs";
+import { writeE2Progress } from "./continuity-e2-progress.mjs";
 import { scoreE2 } from "./continuity-e2-score.mjs";
 import { diagnosticRecord } from "./continuity-e2-diagnostics.mjs";
 import { webGroups } from "./continuity-recorded-reconcile.mjs";
@@ -358,7 +358,13 @@ export async function runE2Sizing({ source, protocol, output, summary = "faux-sh
                 if (typeof text !== "string") fail("E2_REPLAY_FAILED");
                 const answer = { id: question.id, repeat, text, witness: probe.witness, excludedSteps: measured.excludedStepsInHistory,
                   excludedCoverage: measured.excludedCoverageInHistory };
-                await writeE2Progress(output, answers.answers.length + 1, await paidAdapter.answerBinding(), answer);
+                try { await writeE2Progress(output, answers.answers.length + 1, await paidAdapter.answerBinding(), answer); }
+                catch {
+                  paidAdapter.noteProgressGap();
+                  // Recovery evidence is optional: neither binding nor journal I/O
+                  // may turn an accepted paid answer into a permit/run failure.
+                  try { await writeFile(join(output, "progress-gap.json"), JSON.stringify({ progressGap: 1 }), { flag: "wx", mode: 0o600 }); } catch { /* Best effort; final/refusal reports also carry the count. */ }
+                }
                 answers.answers.push(answer);
                 measured.probes.push({ repeat, input: probe.firstContext, requests: probe.requests });
                 await opened.close(); opened = null;
@@ -390,6 +396,7 @@ export async function runE2Sizing({ source, protocol, output, summary = "faux-sh
     }
     await privateModes(output);
     if (real) {
+      report.progressGap = paidAdapter.report().progressGap;
       const scored = scoreE2(answers, evaluator);
       await writeFile(join(output, "answers.json"), `${JSON.stringify(answers)}\n`, { flag: "wx", mode: 0o600 });
       await writeFile(join(output, "score.json"), `${JSON.stringify(scored)}\n`, { flag: "wx", mode: 0o600 });
@@ -399,7 +406,6 @@ export async function runE2Sizing({ source, protocol, output, summary = "faux-sh
     return report;
   } catch (error) {
     if (!real) await rm(output, { recursive: true, force: true });
-    else try { await writeE2PartialScore(output, answers, evaluator); } catch { /* Never replace the phase failure with diagnostic I/O. */ }
     throw error;
   }
 }

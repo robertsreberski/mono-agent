@@ -2915,19 +2915,27 @@ slot diagnostics expose this record without changing stop or liability rules.
 A pre-dispatch failure can have a null payload digest. These observations are not
 physical-send or billing receipts. The guarded native response boundary preserves
 fixed HTTP/JSON/SSE classes before existing auth/quota refusals, including when
-the SDK never receives that response.
+the SDK never receives that response. Payload binding is retained at the consumed,
+exact-byte-verified native boundary, without a later mutable-journal reread.
+Synchronous pre-send policy failures use the distinct `guard_refused` label.
 
-Each accepted question/repeat is synced to an exclusive 0600 file under the
+Replay attempts to sync each accepted question/repeat to an exclusive 0600 file under the
 private replay output's `answer-progress/`, outside restored branch work roots.
 Entries bind registration, slot, checkpoint, question/repeat and the final paid
 payload digest and contain the private answer needed for scoring. Publication is
 atomic; incomplete unpublished temporary entries are ignored on recovery.
 
-On failure, the shipping scorer produces a distinct
+Journal/binding I/O is recovery-only and never stops a paid replay. A content-free
+`progressGap` count/flag in slot diagnostics and informational partial quality
+makes missing or unreadable recovery entries visible; it is not a gate.
+
+On failure, controller finalization alone runs the shipping scorer to produce a
+distinct
 `continuity-e2-informational-partial-score-v1` artifact (`partial-score.json`),
 with counts only, `informational: true`, `qualityMeasured: false`, and no gate
-field. Controller finalization can reconstruct it from bound durable entries
-after abrupt child loss. It does not qualify a partial replay. Successful final
+field. It validates question/checkpoint membership and unique id/repeat pairs in
+bound durable entries, never trusting a child-written partial score. It can
+reconstruct it after abrupt child loss. It does not qualify a partial replay. Successful final
 `answers.json` and `score.json` keep their existing shape and scoring behavior.
 
 

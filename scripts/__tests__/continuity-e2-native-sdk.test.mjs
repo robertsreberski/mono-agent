@@ -288,7 +288,7 @@ it("records an unexpected SDK abortion without changing lost/abort liability", a
 }, E2_NATIVE_TEST_TIMEOUT_MS);
 
 it("keeps accepted C1 answers outside restored roots and emits only informational partial quality on failure", async () => {
-  const result = await run({ production: true, replay: true, failAfter: 1 });
+  const result = await run({ production: true, replay: true, failAfter: 1, fault: "cause-snapshot-race" });
   expect(result.report.stop).toBe("e2_phase_failed"); expect(result.report.qualityMeasured).toBe(false);
   const base = join(result.root, "output/work/replay"), entry = JSON.parse(await readFile(join(base, "answer-progress/000001.json")));
   expect(entry).toMatchObject({ schema: "continuity-e2-answer-progress-v1", round: 1, checkpoint: 0, answer: { repeat: 1, text: "Fictional response" } });
@@ -318,4 +318,24 @@ it("reconstructs informational partial quality from durable progress after abrup
   const partial = JSON.parse(await readFile(join(result.root, "output/work/replay/partial-score.json")));
   expect(partial).toMatchObject({ informational: true, qualityMeasured: false, completedAnswers: 1 });
   expect(result.report.phases[0].diagnostics.partialQuality).toEqual(partial);
+}, E2_NATIVE_TEST_TIMEOUT_MS);
+
+it.each(["progress-write", "answer-binding"])("keeps the paid replay successful after a %s recovery-evidence failure and reports its gap", async fault => {
+  const result = await run({ production: true, replay: true, fault });
+  expect(result.received).toHaveLength(2); expect(result.report.stop).toBe("completed");
+  expect(result.report.phases[0].diagnostics).toMatchObject({ progressGap: fault === "answer-binding" ? 2 : 1 });
+  expect(result.report.stop).not.toBe("e2_permit_invalid");
+  const base = join(result.root, "output/work/replay"), answers = JSON.parse(await readFile(join(base, "answers.json"))), score = JSON.parse(await readFile(join(base, "score.json")));
+  expect(answers.answers).toHaveLength(2); expect(score.report).toMatchObject({ complete: true, gate: true });
+  await expect(readFile(join(base, "partial-score.json"))).rejects.toMatchObject({ code: "ENOENT" });
+}, E2_NATIVE_TEST_TIMEOUT_MS);
+it("reports missing answer recovery evidence in controller-only partial quality without failing its accepted paid answer", async () => {
+  const result = await run({ production: true, replay: true, fault: "progress-write", failAfter: 1 });
+  expect(result.received).toHaveLength(2); expect(result.report.stop).toBe("e2_phase_failed");
+  expect(result.report.phases[0].diagnostics).toMatchObject({ progressGap: 1, partialQuality: { progressGap: 1, completedAnswers: 0, plannedAnswers: 2, qualityMeasured: false } });
+}, E2_NATIVE_TEST_TIMEOUT_MS);
+it("labels a synchronous pre-send guarded SDK refusal without misclassifying it as an SDK promise failure", async () => {
+  const result = await run({ production: true, replay: true, fault: "guard-refused" });
+  expect(result.received).toHaveLength(0);
+  expect(result.report.phases[0].diagnostics.nativeCause).toMatchObject({ sourceStage: "guard_refused", causeClass: "guard_refused", payloadDigest: null, responseHeadersObserved: false });
 }, E2_NATIVE_TEST_TIMEOUT_MS);

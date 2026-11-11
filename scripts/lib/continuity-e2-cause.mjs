@@ -1,16 +1,19 @@
 // Closed, content-free native failure diagnostics. Never serialize SDK errors.
 const observers = new WeakMap();
 export function registerE2CauseObserver(safety, observe) { observers.set(safety, observe); }
-export function observeE2NativeCause(safety, stage, status, code) {
+export function observeE2NativeCause(safety, stage, status, code, binding) {
   const httpStatus = Number.isInteger(status) && status >= 100 && status <= 599 ? status : null;
   const providerClass = e2ProviderCause(code, httpStatus);
   observers.get(safety)?.({ sourceStage: stages.includes(stage) ? stage : "unknown",
+    ...(binding && Number.isSafeInteger(binding.round) && binding.round > 0 && Number.isSafeInteger(binding.checkpoint) && binding.checkpoint >= 0
+      && ["probe", "continuation", "summary"].includes(binding.role) && /^[a-f0-9]{64}$/u.test(binding.payloadDigest ?? "")
+      ? { binding: { round: binding.round, checkpoint: binding.checkpoint, role: binding.role, payloadDigest: binding.payloadDigest } } : {}),
     ...(httpStatus === null ? {} : { httpStatus, responseHeadersObserved: true }),
     ...(providerClass === "unknown" ? {} : { providerClass }) });
 }
-const stages = ["request_setup", "dispatch", "response_headers", "provider_terminal", "sdk_result", "sdk_promise", "unknown"];
+const stages = ["guard_refused", "request_setup", "dispatch", "response_headers", "provider_terminal", "sdk_result", "sdk_promise", "unknown"];
 const reasons = ["stop", "error", "length", "aborted", "toolUse", "unknown"];
-const classes = ["sdk_error_result", "sdk_aborted_result", "sdk_length_result", "empty_final_text", "sdk_promise_rejected", "unknown"];
+const classes = ["guard_refused", "sdk_error_result", "sdk_aborted_result", "sdk_length_result", "empty_final_text", "sdk_promise_rejected", "unknown"];
 const providers = ["context", "auth", "quota", "rate", "server", "stream", "unknown"];
 export function e2ProviderCause(code, status) {
   if (["context_length_exceeded", "context_window_exceeded"].includes(code)) return "context";
@@ -28,7 +31,7 @@ export function e2FailureCause(binding, observed, message, rejected = false) {
     sourceStage: rejected ? stages.includes(observed.sourceStage) ? observed.sourceStage : "unknown" : "sdk_result", sdkStopReason: stopReason, textPresent,
     responseHeadersObserved: observed.responseHeadersObserved === true, terminalUsageObserved: observed.terminalUsageObserved === true,
     httpStatus: Number.isInteger(observed.httpStatus) && observed.httpStatus >= 100 && observed.httpStatus <= 599 ? observed.httpStatus : null,
-    causeClass: rejected ? "sdk_promise_rejected" : ({ error: "sdk_error_result", aborted: "sdk_aborted_result", length: "sdk_length_result", stop: "empty_final_text" }[stopReason] ?? "unknown"),
+    causeClass: observed.sourceStage === "guard_refused" ? "guard_refused" : rejected ? "sdk_promise_rejected" : ({ error: "sdk_error_result", aborted: "sdk_aborted_result", length: "sdk_length_result", stop: "empty_final_text" }[stopReason] ?? "unknown"),
     providerClass: providers.includes(observed.providerClass) ? observed.providerClass : "unknown" };
 }
 export function validE2FailureCause(value, slot) {

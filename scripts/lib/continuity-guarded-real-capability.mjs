@@ -47,8 +47,8 @@ function bind(protocol, protocolId) {
       };
       const quota = error => ["usage_limit_reached", "usage_limit_exceeded", "insufficient_quota", "quota_exceeded", "rate_limit_exceeded"].includes(error?.code)
         || ["usage_limit_reached", "usage_limit_exceeded", "insufficient_quota"].includes(error?.type);
-      const observeNative = (stage, status, code) => {
-        try { protocol.execution?.observeNative?.(resolvedSafety, stage, status, code); } catch { /* Observation cannot change send or refusal. */ }
+      const observeNative = (stage, status, code, binding) => {
+        try { protocol.execution?.observeNative?.(resolvedSafety, stage, status, code, binding); } catch { /* Observation cannot change send or refusal. */ }
       };
       const send = async (url, init) => {
         assertResolvedLookupSafety(resolvedSafety);
@@ -73,6 +73,7 @@ function bind(protocol, protocolId) {
         const bytes = encoding === "zstd" ? zstdDecompressSync(init.body) : Buffer.from(init.body);
         need(hold?.consumed === true && !hold.revoked && !hold.settlement && !used.has(hold.permitId)
           && hold.payloadDigest === createHash("sha256").update(bytes).digest("hex"));
+        observeNative("request_setup", null, undefined, { round: hold.round, role: hold.paidRole, checkpoint: hold.checkpoint, payloadDigest: hold.payloadDigest });
         if (!matchesAccount(handle, headers.get("chatgpt-account-id"))) await stop(protocol.codes.account_mismatch);
         try { protocol.execution?.assertCacheHeaders?.(headers, hold, a.cacheKey); protocol.execution?.assertBody(bytes, hold); if (protocol.execution?.verifyNativeBody) await protocol.execution.verifyNativeBody(bytes, hold, state, a, permit); }
         catch (error) { await stop(error?.code ?? protocol.codes.body_mismatch, true); }

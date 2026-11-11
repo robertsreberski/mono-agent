@@ -3,7 +3,9 @@
 ## Unreleased
 
 - Fix continuity E2 authentication of incremental summary prompts and retain
-  private partial-answer evidence when a replay is interrupted.
+  private partial-answer evidence when a replay is interrupted. Keep recovery
+  journal failures non-fatal and expose evidence gaps without qualifying a partial
+  replay.
 
 - Show bounded raster image previews in expanded web tool-call output, with a
   larger image viewer and lazy loading for truncated results. Keep unsupported,

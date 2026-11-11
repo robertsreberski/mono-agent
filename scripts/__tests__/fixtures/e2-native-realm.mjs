@@ -10,7 +10,8 @@ import { pathToFileURL, fileURLToPath } from "node:url";
 import { join, resolve } from "node:path";
 import { spawn } from "node:child_process";
 export async function installE2NativeRealm(profile) {
-  const user = os.userInfo(), actualHome = user.homedir;
+  const user = os.userInfo(), actualHome = user.homedir; let progressWriteFailed = false, snapshotReplaced = false;
+  const snapshotFS = { readFile: fsp.readFile, writeFile: fsp.writeFile, rename: fsp.rename };
   if (!profile.home || !profile.root || !profile.endpoint?.startsWith("http://127.0.0.1:")) throw Error("test_realm_invalid");
   installE2NativeTransport(profile);
   os.userInfo = () => ({ ...user, homedir: profile.home });
@@ -23,7 +24,12 @@ export async function installE2NativeRealm(profile) {
   for (const target of [fs, fsp]) for (const name of ["open", "readFile", "writeFile", "appendFile", "mkdir", "readdir", "lstat", "stat", "realpath", "unlink", "rm", "rename", "access", "copyFile", "link", "symlink", "readlink", "chmod", "opendir", "truncate", "createReadStream", "createWriteStream"]) {
     for (const suffix of target === fs ? ["", "Sync"] : [""]) {
       const key = name + suffix, original = target[key]; if (typeof original !== "function") continue;
-      const wrapped = function (...args) { forbid(args[0]); if (["rename", "copyFile", "link", "symlink"].includes(name)) forbid(args[1]); return original.apply(this, args); };
+      const wrapped = function (...args) { forbid(args[0]);
+        if (target === fsp && name === "open" && profile.fault === "cause-snapshot-race" && globalThis.__e2CaptureSnapshot && !snapshotReplaced && args[0] === join(profile.args.outputRoot, "e2-validation-controller.json")) {
+          snapshotReplaced = true;
+          return (async () => { const bytes = await snapshotFS.readFile(args[0]), next = args[0] + ".fictional-snapshot";
+            await snapshotFS.writeFile(next, bytes, { flag: "wx", mode: 0o600 }); await snapshotFS.rename(next, args[0]); return original.apply(this, args); })();
+        } if (profile.fault === "progress-write" && name === "mkdir" && String(args[0]).endsWith("/answer-progress") && !progressWriteFailed) { progressWriteFailed = true; throw Object.assign(Error("Fictional journal I/O failure"), { code: "EIO" }); } if (["rename", "copyFile", "link", "symlink"].includes(name)) forbid(args[1]); return original.apply(this, args); };
       if (original.native) wrapped.native = function (...args) { forbid(args[0]); return original.native.apply(this, args); };
       target[key] = wrapped;
     }
@@ -33,6 +39,20 @@ export async function installE2NativeRealm(profile) {
   registerHooks({ load(url, context, next) {
     if (url === buildURL) return { format: "module", shortCircuit: true, source: 'export const BUILD_POLICY="fresh-clean-head-agent-app-closure-v1";export const sourceState=()=>({head:"' + "b".repeat(40) + '",dirty:false});export async function verifyRealBuild(){};export async function prepareRealBuild(){throw Error("test_rebuild_forbidden")}' };
     const loaded = next(url, context);
+    if (profile.fault === "cause-snapshot-race" && url === pathToFileURL(join(profile.root, "scripts/lib/continuity-e2-paid-models.mjs")).href) {
+      const source = String(loaded.source), marker = "async function capture(message, rejected = false, error) {";
+      if (!source.includes(marker)) throw Error("test_capture_race_injection_missing");
+      const end = "\n  }\n  const counts";
+      if (!source.includes(end)) throw Error("test_capture_race_scope_missing");
+      return { ...loaded, source: source.replace(marker, marker + " globalThis.__e2CaptureSnapshot = true; try {").replace(end, "\n    } finally { globalThis.__e2CaptureSnapshot = false; }" + end) };
+    }
+    if (["answer-binding", "guard-refused"].includes(profile.fault) && url === pathToFileURL(join(profile.root, "scripts/lib/continuity-e2-paid-models.mjs")).href) {
+      const source = String(loaded.source), [marker, replacement] = profile.fault === "answer-binding"
+        ? ['need(h?.consumed && h.settlement?.kind', 'need(false && h?.consumed && h.settlement?.kind']
+        : ['reasoning: effort, apiKey:', 'reasoning: "fictional-invalid-effort", apiKey:'];
+      if (!source.includes(marker)) throw Error("test_observation_injection_missing");
+      return { ...loaded, source: source.replace(marker, replacement) };
+    }
     if (profile.fault === "rejected" && url === pathToFileURL(join(profile.root, "scripts/lib/continuity-e2-paid-models.mjs")).href) {
       const source = String(loaded.source), marker = "pending.then(stream => stream.result())";
       if (!source.includes(marker)) throw Error("test_result_injection_missing");
