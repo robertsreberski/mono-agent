@@ -51,7 +51,7 @@ export async function runE2AssignedPhase(a) {
     const mapped = { E2_SUMMARY_NOT_AUTHORIZED: "e2_summary_not_authorized", E2_MODELS_METHOD_REFUSED: "e2_method_forbidden", E2_MODEL_UNREGISTERED: "e2_route_mismatch", E2_SUMMARY_OPTIONS_INVALID: "e2_option_forbidden" }[error?.code];
     const code = mapped ?? (E2_GUARD_STOPS.includes(error?.code) ? error.code : "e2_phase_failed");
     await adapter.stop(code);
-    try { await mkdir(base, { recursive: true, mode: 0o700 }); await writeFile(join(base, `${a.slot.phase}-refusal.json`), JSON.stringify({ schema: "continuity-e2-phase-refusal-v1", code, causeCode: knownRefusalCode(error?.code) ?? proofRefusalCode(error?.code) }), { flag: "wx", mode: 0o600 }); } catch { /* Stop remains durable even if private diagnostics cannot be written. */ }
+    try { await mkdir(base, { recursive: true, mode: 0o700 }); await writeFile(join(base, `${a.slot.phase}-refusal.json`), JSON.stringify({ schema: "continuity-e2-phase-refusal-v1", code, causeCode: knownRefusalCode(error?.code) ?? proofRefusalCode(error?.code), nativeCause: adapter.failureCause() }), { flag: "wx", mode: 0o600 }); } catch { /* Stop remains durable even if private diagnostics cannot be written. */ }
     outcome = E2_GUARD_POLICY_REFUSALS.includes(code) || E2_PRE_SEND_REFUSALS.includes(code)
       ? { terminal: "refused_pre_send", score: null, refusalCode: code } : { terminal: "lost", score: null, refusalCode: null };
   } finally { try { restore?.(); } finally { adapter.close(); } }

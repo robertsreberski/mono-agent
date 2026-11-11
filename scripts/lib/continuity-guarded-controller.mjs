@@ -279,6 +279,10 @@ function bind(protocol, protocolId) {
         if (state.stop === protocol.codes.account_mismatch && slot.holds.length) slot.terminal = "integrity_stop";
         slot.terminal = slotTerminal(slot, terminal);
         slot.score = ["completed", "wrong"].includes(slot.terminal) ? score : null;
+        if (protocol.execution?.diagnostics) {
+          try { slot.diagnostics = await protocol.execution.diagnostics(outputRoot, state, index, pilot); }
+          catch { /* Optional closed diagnostics never change the terminal outcome. */ }
+        }
         state.cursor++; const reason = lookupPilotStopReason(accountLookupPilot(state.slots), cap);
         if (reason) stop(reason);
         await save();

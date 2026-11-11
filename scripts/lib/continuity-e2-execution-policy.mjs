@@ -1,4 +1,5 @@
 // Closed E2 accounting policy. Durable admission/consume/settle remain in the shared core.
+import { join } from "node:path";
 import { digest } from "./continuity-dataset.mjs";
 import { digest as rawDigest } from "./continuity-recorded-schema.mjs";
 import { e2RequestPrice, e2UsageUnits } from "./continuity-e2-pricing.mjs";
@@ -6,7 +7,9 @@ import { E2_PERMIT_CONTRACT, E2_GUARD_CONTRACT, E2_REAL_CONTROLLER } from "./con
 import { validateE2Sizing } from "./continuity-e2-estimate.mjs";
 import { E2_PAID_ROLES } from "./continuity-e2-roles.mjs";
 import { writeE2SummaryResult, verifyE2SummaryResult } from "./continuity-e2-summary-receipts.mjs";
-import { bindE2Checkpoint, verifyE2NativeLineage, e2LineageScope } from "./continuity-e2-lineage.mjs";
+import { bindE2Checkpoint, verifyE2NativeLineage, e2LineageScope, e2PhaseBase } from "./continuity-e2-lineage.mjs";
+import { validE2FailureCause, observeE2NativeCause } from "./continuity-e2-cause.mjs";
+import { readE2Progress, writeE2PartialScore } from "./continuity-e2-progress.mjs";
 const fail = (code = "e2_permit_invalid") => { throw Object.assign(Error(code), { code }); };
 const need = (ok, code) => { if (!ok) fail(code); };
 const count = n => Number.isSafeInteger(n) && n >= 0;
@@ -170,6 +173,24 @@ export const e2ExecutionPolicy = Object.freeze({
     const result = await permit.verifyBody(hold.permitId, bytes.toString("base64"));
     need(!result?.refused, result?.code ?? "e2_summary_receipt_invalid");
   },
+  observeNative(safety, stage, status, code) { observeE2NativeCause(safety, stage, status, code); },
+  async diagnostics(root, state, index, pilot) {
+    const { guardedAuthorization } = await import("./continuity-guarded-authorization.mjs");
+    const read = guardedAuthorization("e2-validation").readArtifact, planned = state.schedule[index], base = e2PhaseBase(root, planned), result = {};
+    try {
+      const refusal = JSON.parse(await read(join(base, `${planned.phase}-refusal.json`), "e2_receipt_invalid", 16384));
+      if (validE2FailureCause(refusal.nativeCause, state.slots[index])) result.nativeCause = refusal.nativeCause;
+    } catch { /* Diagnostic absence never changes stop/settlement/liability. */ }
+    if (planned.kind === "replay" && !["completed", "wrong"].includes(state.slots[index].terminal)) try {
+      const answers = await readE2Progress(base, state, index, read);
+      if (answers) {
+        const binding = pilot.registration.keys, bytes = await read(binding.path, "e2_receipt_invalid", 4 * 1024 * 1024);
+        need(rawDigest(bytes) === binding.sha256, "e2_receipt_invalid");
+        result.partialQuality = await writeE2PartialScore(base, answers, JSON.parse(bytes));
+      }
+    } catch { /* Only independently bound progress can contribute informational counts. */ }
+    return result;
+  },
   async verifyBody(root, hold, state, index, p) {
     need(sameFields(p, ["permit", "body"]) && sameFields(p.permit, ["epoch", "permitId"]) && typeof p.body === "string" && p.body.length <= 16 * 1024 * 1024, "e2_summary_receipt_invalid");
     const bytes = Buffer.from(p.body, "base64");
@@ -208,7 +229,7 @@ export const e2ExecutionPolicy = Object.freeze({
     need(slot && planned && slot.slotId === planned.slotId && [...protocol.policy.SLOT_TERMINALS, null].includes(slot.terminal)
       && [null, 0, 1].includes(slot.score), "e2_receipt_invalid");
     const spend = accountRun([slot]);
-    const row = { schema: protocol.schemas.slotReceipt, slotId: planned.slotId, position: index, terminal: slot.terminal,
+    const row = { ...(slot.diagnostics && Object.keys(slot.diagnostics).length ? { diagnostics: slot.diagnostics } : {}), schema: protocol.schemas.slotReceipt, slotId: planned.slotId, position: index, terminal: slot.terminal,
       score: ["completed", "wrong"].includes(slot.terminal) ? slot.score : null,
       qualityMeasured: state.schema === protocol.policy.REAL_CONTROLLER && slot.holds.length > 0 && ["completed", "wrong"].includes(slot.terminal) && slot.score !== null,
       calls: { admitted: slot.holds.length, consumed: slot.holds.filter(h => h.consumed).length, settled: slot.holds.filter(h => h.settlement).length,

@@ -24,6 +24,7 @@ export const E2_PROTOCOL_FILES = Object.freeze([...new Set([...LOOKUP_PILOT_PROT
   "scripts/lib/continuity-e2-guarded-protocol.mjs", "scripts/lib/continuity-e2-lineage.mjs",
   "scripts/lib/continuity-e2-runtime.mjs",
   "scripts/lib/continuity-e2-paid-models.mjs",
+  "scripts/lib/continuity-e2-cause.mjs", "scripts/lib/continuity-e2-progress.mjs",
   "scripts/lib/continuity-e2-phase-child.mjs",
   "scripts/lib/continuity-e2-paid-entry.mjs",
 ])].sort());

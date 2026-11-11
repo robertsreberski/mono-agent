@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Fix continuity E2 authentication of incremental summary prompts and retain
+  private partial-answer evidence when a replay is interrupted.
+
 - Show bounded raster image previews in expanded web tool-call output, with a
   larger image viewer and lazy loading for truncated results. Keep unsupported,
   malformed, oversized, or unavailable images in the existing text view.

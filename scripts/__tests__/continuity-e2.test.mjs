@@ -336,6 +336,7 @@ it("writes scoring artifacts privately and refuses outputs in the checkout", asy
   expect(await main(["score", "--answers", answers, "--keys", keys, "--output", output], io)).toBe(1); expect(err.pop()).toBe("EEXIST\n");
 });
 const E2_IMPORT_SHAPES = {
+  "scripts/lib/continuity-e2-progress.mjs": { "node:crypto": "{ randomUUID }", "node:os": "{ userInfo }" },
   "scripts/continuity-e2.mjs": {
     "./lib/continuity-guarded-protocols.mjs": "{ guardedProtocol }"
   },
@@ -549,6 +550,7 @@ function assertE2Capabilities(path, source) {
     if (ts.isImportDeclaration(node)) {
       const spec = node.moduleSpecifier.text;
       const proofImports = {
+        "scripts/lib/continuity-e2-progress.mjs": ["node:crypto", "node:os"],
         "scripts/continuity-e2.mjs": ["./lib/continuity-guarded-protocols.mjs"],
         "scripts/lib/continuity-e2-runtime.mjs": ["node:process", "./continuity-dataset.mjs", "./continuity-guarded-state.mjs", "./continuity-guarded-lease.mjs", "./continuity-guarded-models.mjs", "./continuity-guarded-real-capability.mjs", "./continuity-process-identity.mjs", "./continuity-e2-controller-policy.mjs"],
         "scripts/lib/continuity-e2-paid-models.mjs": ["@mono-agent/turn", "./continuity-guarded-models.mjs", "./continuity-guarded-state.mjs", "./continuity-guarded-authorization.mjs", "./continuity-dataset.mjs"],

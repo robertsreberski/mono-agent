@@ -32,9 +32,15 @@ export async function installE2NativeRealm(profile) {
   const buildURL = pathToFileURL(join(profile.root, "scripts/lib/memory-e2e-build.mjs")).href;
   registerHooks({ load(url, context, next) {
     if (url === buildURL) return { format: "module", shortCircuit: true, source: 'export const BUILD_POLICY="fresh-clean-head-agent-app-closure-v1";export const sourceState=()=>({head:"' + "b".repeat(40) + '",dirty:false});export async function verifyRealBuild(){};export async function prepareRealBuild(){throw Error("test_rebuild_forbidden")}' };
-    return next(url, context);
+    const loaded = next(url, context);
+    if (profile.fault === "rejected" && url === pathToFileURL(join(profile.root, "scripts/lib/continuity-e2-paid-models.mjs")).href) {
+      const source = String(loaded.source), marker = "pending.then(stream => stream.result())";
+      if (!source.includes(marker)) throw Error("test_result_injection_missing");
+      return { ...loaded, source: source.replace(marker, 'pending.then(async stream => { await stream.result(); throw Object.assign(Error("PRIVATE-CAUSE-CANARY"), { code: "ECONNRESET" }); })') };
+    }
+    return loaded;
   } });
-  const originalFetch = globalThis.fetch.bind(globalThis); let authorized = () => false, spawned = false;
+  const originalFetch = globalThis.fetch.bind(globalThis); let authorized = () => false, spawned = false, nativeResponses = 0;
   globalThis.fetch = async (url, init) => {
     const endpoint = String(url);
     if (endpoint === "https://chatgpt.com/backend-api/codex/responses") {
@@ -45,7 +51,7 @@ export async function installE2NativeRealm(profile) {
         await fsp.writeFile(profile.descendant, JSON.stringify({ pid: child.pid, parent: process.pid }), { mode: 0o600 });
       }
       const response = await originalFetch(profile.endpoint, init);
-      if (profile.fault === "crash") process.kill(process.pid, "SIGKILL");
+      if (profile.fault === "crash" || profile.fault === "crash-after-one" && ++nativeResponses > 1) process.kill(process.pid, "SIGKILL");
       return response;
     }
     const parsed = new URL(endpoint);

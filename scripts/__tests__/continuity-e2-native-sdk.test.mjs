@@ -54,7 +54,7 @@ function proofReply(body, count) {
   return toolEvents(name, { action: "search", query: "proof-evidence", limit: 10 }, count);
 }
 
-async function run({ scenario = "probe", requests = 1, rows = [{ role: "probe", model: SOL }], capUnits, reuse = false, crossOutputReuse = false, production = false, fault, arm = "pressure", replay = false, probeLookupRounds = 1, probeLookups = false, phaseStartupDelayMs = 0, deadlines, expectedControllerError } = {}) {
+async function run({ scenario = "probe", requests = 1, rows = [{ role: "probe", model: SOL }], capUnits, reuse = false, crossOutputReuse = false, production = false, fault, arm = "pressure", replay = false, probeLookupRounds = 1, probeLookups = false, phaseStartupDelayMs = 0, deadlines, expectedControllerError, failAfter = 0 } = {}) {
   const root = await realpath(await mkdtemp(join(tmpdir(), "e2-native-sdk-"))); roots.push(root);
   const originalHome = process.env.HOME;
   const fixture = await e2NativeFixture(root, { rows, arm, replay, probeLookupRounds, ...(deadlines ? { deadlines } : {}), ...(capUnits ? { capUnits } : {}) });
@@ -65,9 +65,20 @@ async function run({ scenario = "probe", requests = 1, rows = [{ role: "probe", 
     try {
       wireIdentities.push({ session: request.headers["session-id"], request: request.headers["x-client-request-id"] });
       const chunks = []; for await (const chunk of request) chunks.push(chunk); received.push(JSON.parse(request.headers["content-encoding"] === "zstd" ? zstdDecompressSync(Buffer.concat(chunks)) : Buffer.concat(chunks)));
-      if (fault === "model-error") { response.writeHead(500, { "content-type": "application/json" }).end(JSON.stringify({ error: { code: "fictional_backend_failure", message: "Fictional backend failure." } })); return; }
+      if (fault === "model-error" || failAfter && received.length > failAfter) { response.writeHead(500, { "content-type": "application/json" }).end(JSON.stringify({ error: { code: "fictional_backend_failure", message: "Fictional backend failure." } })); return; }
+      if (fault === "http-context") { response.writeHead(400, { "content-type": "application/json" }).end(JSON.stringify({ error: { code: "context_length_exceeded", message: "PRIVATE-CAUSE-CANARY" } })); return; }
+      if (["http-auth", "http-rate"].includes(fault)) { response.writeHead(fault === "http-auth" ? 401 : 429).end(); return; }
       response.writeHead(200, { "content-type": "text/event-stream" });
-      if (scenario === "cancel" || fault) { response.flushHeaders(); return; }
+      if (fault?.startsWith("sse-")) {
+        const code = { "sse-context": "context_length_exceeded", "sse-server": "server_error", "sse-stream": "stream_error", "sse-rate": "rate_limit_exceeded" }[fault];
+        response.end(`data: ${JSON.stringify({ type: "response.failed", response: { error: { code, message: "PRIVATE-CAUSE-CANARY" } } })}\n\n`); return;
+      }
+      if (["empty", "length"].includes(fault)) {
+        const data = events(fault === "empty" ? "" : "Fictional response").split("\n\n").filter(Boolean).map(line => JSON.parse(line.slice(6)));
+        if (fault === "length") { const last = data.at(-1); last.type = "response.incomplete"; last.response.status = "incomplete"; last.response.incomplete_details = { reason: "max_output_tokens" }; }
+        response.end(data.map(e => `data: ${JSON.stringify(e)}\n\n`).join("")); return;
+      }
+      if (scenario === "cancel" || ["crash", "containment", "request-timeout"].includes(fault)) { response.flushHeaders(); return; }
       if (replay) {
         const tool = received.at(-1).tools?.find(t => t.name === "ConversationHistory");
         response.end(probeLookups && tool ? toolEvents(tool.name, { action: "search", query: "Fictional response", limit: 1 }, received.length) : events("Fictional response"));
@@ -246,4 +257,65 @@ it.each(["unwitnessed-lost", "unwitnessed-before-send"])("allows %s without inve
 it.each(["baseline-function-output", "baseline-reasoning-summary"])("denies %s with zero native fetches", async scenario => {
   const result = await run({ scenario }); expect(result.received).toHaveLength(0);
   expect(result.report.stop).toBe("e2_summary_receipt_invalid");
+}, E2_NATIVE_TEST_TIMEOUT_MS);
+
+it.each([
+  ["model-error", "sdk_error_result", "server", 500, false],
+  ["sse-context", "sdk_error_result", "context", 200, false],
+  ["sse-server", "sdk_error_result", "server", 200, false],
+  ["sse-stream", "sdk_error_result", "stream", 200, false],
+  ["http-auth", "sdk_error_result", "auth", 401, false],
+  ["http-rate", "sdk_error_result", "rate", 429, false],
+  ["http-context", "sdk_error_result", "context", 400, false],
+  ["sse-rate", "sdk_error_result", "rate", 200, false],
+  ["empty", "empty_final_text", "unknown", 200, true],
+  ["length", "sdk_length_result", "unknown", 200, true],
+  ["rejected", "sdk_promise_rejected", "stream", 200, true],
+])("records closed %s diagnostics through the owned SDK route", async (fault, causeClass, providerClass, httpStatus, terminalUsageObserved) => {
+  const result = await run({ fault });
+  const cause = result.report.phases[0].diagnostics?.nativeCause;
+  expect(cause, JSON.stringify(result.report)).toMatchObject({ round: 1, role: "probe", checkpoint: 0, causeClass, providerClass, httpStatus, terminalUsageObserved });
+  expect(cause.payloadDigest).toMatch(/^[a-f0-9]{64}$/u);
+  expect(cause.responseHeadersObserved).toBe(httpStatus !== null);
+  expect(result.received).toHaveLength(1);
+  for (const value of [result.root, "PRIVATE-CAUSE-CANARY", "Fictional backend failure"]) expect(JSON.stringify(result.report)).not.toContain(value);
+}, E2_NATIVE_TEST_TIMEOUT_MS);
+
+it("records an unexpected SDK abortion without changing lost/abort liability", async () => {
+  const result = await run({ scenario: "unexpected-abort" });
+  expect(result.report.phases[0].diagnostics?.nativeCause).toMatchObject({ causeClass: "sdk_aborted_result", responseHeadersObserved: true, terminalUsageObserved: false });
+  expect(result.report.costs.retainedUnits).toBe("3920000000");
+}, E2_NATIVE_TEST_TIMEOUT_MS);
+
+it("keeps accepted C1 answers outside restored roots and emits only informational partial quality on failure", async () => {
+  const result = await run({ production: true, replay: true, failAfter: 1 });
+  expect(result.report.stop).toBe("e2_phase_failed"); expect(result.report.qualityMeasured).toBe(false);
+  const base = join(result.root, "output/work/replay"), entry = JSON.parse(await readFile(join(base, "answer-progress/000001.json")));
+  expect(entry).toMatchObject({ schema: "continuity-e2-answer-progress-v1", round: 1, checkpoint: 0, answer: { repeat: 1, text: "Fictional response" } });
+  expect(entry.registrationSha256).toMatch(/^[a-f0-9]{64}$/u); expect(entry.payloadDigest).toMatch(/^[a-f0-9]{64}$/u);
+  const partial = JSON.parse(await readFile(join(base, "partial-score.json")));
+  expect(partial).toMatchObject({ schema: "continuity-e2-informational-partial-score-v1", informational: true, qualityMeasured: false, completedAnswers: 1, plannedAnswers: 2 });
+  expect(partial).not.toHaveProperty("gate"); expect(result.report.phases[0].diagnostics.partialQuality).toEqual(partial);
+  expect(result.report.phases[0].diagnostics.nativeCause).toMatchObject({ round: 2, causeClass: "sdk_error_result", httpStatus: 500 });
+  await expect(readFile(join(base, "answers.json"))).rejects.toMatchObject({ code: "ENOENT" });
+}, E2_NATIVE_TEST_TIMEOUT_MS);
+
+it.each(["baseline-previous", "lineage-previous-forged"])("refuses %s before any corresponding SDK fetch", async scenario => {
+  const hasLineage = scenario.startsWith("lineage");
+  const result = await run({ scenario, rows: hasLineage ? [{ role: "summary", model: SOL }, { role: "probe", model: SOL }] : [{ role: "probe", model: SOL }] });
+  expect(result.report.stop).toBe("e2_summary_receipt_invalid"); expect(result.received).toHaveLength(hasLineage ? 1 : 0);
+}, E2_NATIVE_TEST_TIMEOUT_MS);
+
+it("accepts the genuine incremental summary formatter at the SDK gate", async () => {
+  const result = await run({ scenario: "lineage-previous", rows: [{ role: "summary", model: SOL }, { role: "probe", model: SOL }] });
+  expect(result.report.stop).toBe("completed"); expect(result.received).toHaveLength(2);
+  expect(result.report.phases[0].summaryPresence.native).toBe(1);
+}, E2_NATIVE_TEST_TIMEOUT_MS);
+
+it("reconstructs informational partial quality from durable progress after abrupt genuine C1 child loss", async () => {
+  const result = await run({ production: true, replay: true, fault: "crash-after-one" });
+  expect(result.received).toHaveLength(2); expect(result.report.stop).not.toBe("completed"); expect(result.report.qualityMeasured).toBe(false);
+  const partial = JSON.parse(await readFile(join(result.root, "output/work/replay/partial-score.json")));
+  expect(partial).toMatchObject({ informational: true, qualityMeasured: false, completedAnswers: 1 });
+  expect(result.report.phases[0].diagnostics.partialQuality).toEqual(partial);
 }, E2_NATIVE_TEST_TIMEOUT_MS);

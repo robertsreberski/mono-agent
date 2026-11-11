@@ -2873,6 +2873,24 @@ matched. The shipping Responses converter preserves separate user messages and
 text parts; it does not merge adjacent wrappers into one `input_text`.
 
 
+Summary requests also serialize history into a single user prompt. The gate checks
+shipping `<previous-summary>` fields against exact archived checkpoint text
+(counted as `native`), including full file-operation suffixes. It also checks native
+and branch wrappers and generated pack lines inside serialized `[User]` messages.
+An exact verified value remains opaque: quoted nested tags do not create extra
+claims. Duplicate verified values remain allowed. Serialized assistant/thinking or
+tool-result wrappers cannot acquire user-summary authority.
+
+The audited shipping boundary is `generateSummaryWithRequest` and
+`compactWithRequest`: an incremental history request carries the full previous
+summary; split-turn prefix requests serialize their own messages without a
+separate previous-summary field. Native/branch messages become user wrappers via
+`convertToLlm` before `serializeConversation`. File-list stripping when reusing
+history occurs in output assembly, not in the previous-summary request field;
+existing checkpoint assembly validation still checks that variant. This does not
+promote arbitrary retrieval JSON or unframed prose to framework summary authority.
+
+
 This is guard-only: no context injection, prompt changes, token sizing or cost
 construction changes. Snapshot probes remain isolated at their original absolute
 roots; B4, END, prefix B3 and repeated probes use the same scope-specific archives.
@@ -2883,6 +2901,34 @@ phase actor, ledger, leases, IPC, sole send, actual journals, C1 snapshot probes
 C2 tool rounds and planned cancellation transition. Crash/containment use the
 literal production phase child. Source/build attestation is a declared test
 seam, not evidence of build freshness or a paid quality result.
+
+
+#### Private failure and partial-answer evidence
+
+Before replacing a failed native SDK result with `e2_phase_failed`, the phase
+actor retains a closed `continuity-e2-native-cause-v1` record: round, role,
+checkpoint, payload digest, source stage, SDK reason, text-present flag, observed
+response/terminal-usage flags, numeric HTTP status when exposed, and fixed cause
+classes. Unknown provider codes remain `unknown`. Raw errors, headers, bodies and
+exception text are never saved. The private phase refusal's `nativeCause` and
+slot diagnostics expose this record without changing stop or liability rules.
+A pre-dispatch failure can have a null payload digest. These observations are not
+physical-send or billing receipts. The guarded native response boundary preserves
+fixed HTTP/JSON/SSE classes before existing auth/quota refusals, including when
+the SDK never receives that response.
+
+Each accepted question/repeat is synced to an exclusive 0600 file under the
+private replay output's `answer-progress/`, outside restored branch work roots.
+Entries bind registration, slot, checkpoint, question/repeat and the final paid
+payload digest and contain the private answer needed for scoring. Publication is
+atomic; incomplete unpublished temporary entries are ignored on recovery.
+
+On failure, the shipping scorer produces a distinct
+`continuity-e2-informational-partial-score-v1` artifact (`partial-score.json`),
+with counts only, `informational: true`, `qualityMeasured: false`, and no gate
+field. Controller finalization can reconstruct it from bound durable entries
+after abrupt child loss. It does not qualify a partial replay. Successful final
+`answers.json` and `score.json` keep their existing shape and scoring behavior.
 
 
 #### Shared guarded-core behavior changes

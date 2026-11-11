@@ -153,6 +153,44 @@ export function e2BodySummaryRepresentations(body) {
         need(item.role === "user" && text.isWellFormed() && text.endsWith(suffix));
         found.push({ kind, text: text.slice(prefix.length, -suffix.length) });
       }
+      // Compaction serializes role messages into one user prompt. Authenticate
+      // embedded framework claims too; verified spans remain opaque (nested tags
+      // inside an exact archived value are not additional authority claims).
+      if (![E2_SUMMARY_PREFIX, E2_BRANCH_PREFIX, "### Conversation continuity pack (historical evidence)\n"].some(p => text.startsWith(p))) {
+        if (text.startsWith("<conversation>\n")) for (const role of ["Assistant", "Assistant thinking", "Tool result"]) {
+          for (const [kind, prefix] of [["native", E2_SUMMARY_PREFIX], ["branch", E2_BRANCH_PREFIX], ["pack", "### Conversation continuity pack (historical evidence)\n"]]) {
+            let offset = text.indexOf(`[${role}]: ${prefix}`);
+            while (offset >= 0) { found.push({ kind, text: "", source: text, offset, forbidden: true }); offset = text.indexOf(`[${role}]: ${prefix}`, offset + 1); }
+          }
+        }
+        const frames = [["native", "<previous-summary", "<previous-summary>\n", "\n</previous-summary>"],
+          ...text.startsWith("<conversation>\n") ? [["native", `[User]: ${E2_SUMMARY_PREFIX}`, `[User]: ${E2_SUMMARY_PREFIX}`, E2_SUMMARY_SUFFIX],
+            ["branch", `[User]: ${E2_BRANCH_PREFIX}`, `[User]: ${E2_BRANCH_PREFIX}`, "</summary>"]] : []];
+        for (const [kind, marker, prefix, suffix] of frames) {
+          let offset = text.indexOf(marker);
+          while (offset >= 0) {
+            if (marker === "<previous-summary" && !text.startsWith(prefix, offset) && offset > 0 && text[offset - 1] !== "\n") {
+              offset = text.indexOf(marker, offset + marker.length); continue; // shipping instruction prose mentions the tag
+            }
+            need(item.role === "user" && text.isWellFormed());
+            const end = text.indexOf(suffix, offset + prefix.length);
+            found.push({ kind, text: end < 0 ? "" : text.slice(offset + prefix.length, end), source: text, offset, prefix, suffix });
+            offset = text.indexOf(marker, offset + marker.length);
+          }
+        }
+        const pack = "[User]: ### Conversation continuity pack (historical evidence)\n";
+        if (text.startsWith("<conversation>\n")) {
+          let start = text.indexOf(pack);
+          while (start >= 0) {
+            need(item.role === "user");
+            const after = start + "[User]: ".length, rest = text.slice(after), boundary = /\n(?:<\/conversation>\n\n|\n\[(?:User|Assistant|Assistant thinking|Assistant tool calls|Tool result)\]: )/u.exec(rest);
+            const packet = boundary ? rest.slice(0, boundary.index) : rest;
+            if (packet.split("\n").some(line => line.startsWith("Generated summary evidence ")))
+              found.push({ kind: "pack", text: packet, source: text, offset: start, serialized: true });
+            start = text.indexOf(pack, start + pack.length);
+          }
+        }
+      }
       if (text.startsWith("### Conversation continuity pack (historical evidence)\n")) for (const line of text.split("\n")) {
         if (!line.startsWith("Generated summary evidence ")) continue;
         need(item.role === "user" && line.isWellFormed());
@@ -171,7 +209,7 @@ export async function verifyE2NativeLineage(bytes, hold, state, assignment, read
   try {
     const scope = hold.lineageScope;
     need(["proof", 0, 1].includes(scope) && canonicalDigest(hold.lineage ?? null) === canonicalDigest(state.slots[assignment.index].lineages?.[scope] ?? null));
-    const found = e2BodySummaryRepresentations(JSON.parse(bytes)), verified = new Set(), seen = new Set();
+    const found = e2BodySummaryRepresentations(JSON.parse(bytes)), verified = new Set(), seen = new Set(), spans = [], packs = [];
     let reference = hold.lineage;
     assertRegisteredPredecessor(state, assignment.index, reference);
     while (reference) {
@@ -180,17 +218,31 @@ export async function verifyE2NativeLineage(bytes, hold, state, assignment, read
       // This is the shipping retention/redaction function, not an approximation
       // or an allowlist of hashes supplied by the child/continuity sidecar.
       const { retainContinuityText } = await import(new URL("../../packages/conversation/dist/tool-history/continuity-payload.js", import.meta.url).href);
-      const retained = retainContinuityText(artifact.summary);
-      for (const [i, representation] of found.entries()) if (representation.kind === "pack"
+      const retained = retainContinuityText(artifact.summary); packs.push(retained);
+      for (const [i, representation] of found.entries()) if (!representation.serialized && !representation.forbidden && (representation.kind === "pack"
         ? !retained.truncated && representation.text === retained.text && representation.sha256 === retained.sha256
-        : representation.text === artifact.summary) verified.add(i);
+        : representation.source ? representation.source.startsWith(representation.prefix + artifact.summary + representation.suffix, representation.offset)
+          : representation.text === artifact.summary)) {
+          verified.add(i);
+          if (representation.source && representation.prefix) spans.push({ source: representation.source, start: representation.offset,
+            end: representation.offset + representation.prefix.length + artifact.summary.length + representation.suffix.length });
+        }
       const previous = artifact.previous;
       need(previous === null || previous.phase <= reference.phase);
       if (previous && previous.phase !== reference.phase) assertRegisteredPredecessor(state, assignment.index, previous);
       reference = previous;
     }
+    const opaque = new Set();
+    for (const [i, r] of found.entries()) if (r.source && spans.some(s => s.source === r.source && s.start < r.offset && r.offset < s.end)) { verified.add(i); opaque.add(i); }
+    const expanded = new Map();
+    for (const [i, r] of found.entries()) if (r.serialized && !opaque.has(i)) {
+      const decoded = e2BodySummaryRepresentations({ input: [{ role: "user", content: r.text }] });
+      need(decoded.length > 0 && decoded.every(d => d.kind === "pack" && packs.some(p => !p.truncated && d.text === p.text && d.sha256 === p.sha256)));
+      verified.add(i); expanded.set(i, decoded);
+    }
     need(verified.size === found.length); // no-lineage baseline cannot smuggle a summary
-    return { native: found.filter(r => r.kind === "native").length, branch: found.filter(r => r.kind === "branch").length,
-      pack: found.filter(r => r.kind === "pack").length, none: found.length === 0 };
+    const claims = found.flatMap((r, i) => opaque.has(i) ? [] : expanded.get(i) ?? [r]);
+    return { native: claims.filter(r => r.kind === "native").length, branch: claims.filter(r => r.kind === "branch").length,
+      pack: claims.filter(r => r.kind === "pack").length, none: claims.length === 0 };
   } catch { need(false); }
 }
