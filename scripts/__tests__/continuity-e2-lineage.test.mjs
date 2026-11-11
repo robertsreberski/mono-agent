@@ -202,3 +202,62 @@ it.each(["registered-older", "cold-empty"])("binds a new split checkpoint after 
   f.slot.lineages.proof = lineage;
   await expect(verifyE2NativeLineage(body(restored.assembled), { lineageScope: "proof", lineage }, f.state, { outputRoot: f.root, index: 0 }, readArtifact)).resolves.toMatchObject({ native: 1 });
 });
+
+it("authenticates shipping incremental/split prompts, serialized branches and full file suffixes without changing prompt bytes", async () => {
+  const { convertResponsesMessages } = await import("../../packages/turn/node_modules/@earendil-works/pi-ai/dist/api/openai-responses-shared.js");
+  const { compactWithRequest } = await import("../../packages/turn/dist/engine/compaction-kit/compaction.js");
+  const text = "Fictional history." + split + "Fictional prefix.\n\n<read-files>\nfictional.txt\n</read-files>";
+  const f = await fixture(["Fictional history.", "Fictional prefix."], text, { readFiles: ["fictional.txt"], modifiedFiles: [] });
+  const lineage = await f.bind(); f.slot.lineages = { proof: lineage };
+  const contexts = [], usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+  const result = await compactWithRequest({ messagesToSummarize: [{ role: "user", content: "Fictional current turn", timestamp: 1 }],
+    turnPrefixMessages: [{ role: "branchSummary", summary: text, timestamp: 1 }], retainedTail: [], isSplitTurn: true, tokensBefore: 100,
+    previousSummary: text, fileOps: { read: new Set(["fictional.txt"]), edited: new Set(), written: new Set() }, settings: { reserveTokens: 27500 } },
+    { model: { maxTokens: 22000 } }, async ctx => { contexts.push(ctx); return { stopReason: "stop", content: [{ type: "text", text: "Fictional new summary" }], usage }; }, {});
+  expect(result.ok).toBe(true); expect(contexts).toHaveLength(2);
+  for (const [i, ctx] of contexts.entries()) {
+    const serialize = () => Buffer.from(JSON.stringify({ instructions: ctx.systemPrompt, input: convertResponsesMessages({ provider: "openai-codex", id: "gpt-6.1-sol", api: "openai-codex-responses", input: ["text"] }, ctx, new Set(["openai-codex"]), { includeSystemPrompt: false }) })), bytes = serialize(), before = Buffer.from(bytes);
+    await expect(verifyE2NativeLineage(bytes, { lineageScope: "proof", lineage }, f.state, { outputRoot: f.root, index: 0 }, readArtifact)).resolves.toMatchObject(i ? { branch: 1, none: false } : { native: 1, none: false });
+    expect(bytes.equals(before)).toBe(true); expect(serialize().equals(before)).toBe(true);
+    await expect(verifyE2NativeLineage(Buffer.from(bytes.toString().replace("Fictional history.", "Fictional forged history.")), { lineageScope: "proof", lineage }, f.state, { outputRoot: f.root, index: 0 }, readArtifact)).rejects.toMatchObject({ code: "e2_summary_receipt_invalid" });
+  }
+});
+it("keeps exact verified nested tags opaque and allows duplicate previous-summary fields", async () => {
+  const text = "Fictional quoted\n<previous-summary>\ninner text\n</previous-summary> example.";
+  const f = await fixture([text]), lineage = await f.bind(); f.slot.lineages = { proof: lineage };
+  const prompt = `<previous-summary>\n${text}\n</previous-summary>\n<previous-summary>\n${text}\n</previous-summary>`;
+  const bytes = Buffer.from(JSON.stringify({ input: [{ role: "user", content: prompt }] }));
+  await expect(verifyE2NativeLineage(bytes, { lineageScope: "proof", lineage }, f.state, { outputRoot: f.root, index: 0 }, readArtifact)).resolves.toMatchObject({ native: 2, none: false });
+});
+it("rejects unlinked stale and cross-scope previous-summary claims", async () => {
+  const a = await fixture(["Fictional current main summary."], undefined, undefined, { kind: "replay", branch: 0 });
+  const b = await fixture(["Fictional other-scope summary."], undefined, undefined, { kind: "replay", branch: 1 });
+  const stale = await fixture(["Fictional stale unlinked summary."]);
+  const main = await a.bind(), other = await b.bind(); a.slot.lineages = { 0: main, 1: other };
+  await writeFile(e2ArchivePath(a.root, other.archiveSha256), await readFile(e2ArchivePath(b.root, other.archiveSha256)), { mode: 0o600 });
+  const encode = text => Buffer.from(JSON.stringify({ input: [{ role: "user", content: `<previous-summary>\n${text}\n</previous-summary>` }] }));
+  for (const text of [b.assembled, stale.assembled]) {
+    await expect(verifyE2NativeLineage(encode(text), { lineageScope: 0, lineage: main }, a.state, { outputRoot: a.root, index: 0 }, readArtifact)).rejects.toMatchObject({ code: "e2_summary_receipt_invalid" });
+  }
+  await expect(verifyE2NativeLineage(encode(b.assembled), { lineageScope: 1, lineage: other }, a.state, { outputRoot: a.root, index: 0 }, readArtifact)).resolves.toMatchObject({ native: 1 });
+});
+
+it("checks serialized generated packs while keeping nested quoted pack/role frames inside an exact prior value opaque", async () => {
+  const { retainContinuityText } = await import("../../packages/conversation/dist/tool-history/continuity-payload.js");
+  const header = "### Conversation continuity pack (historical evidence)\n";
+  const nested = `[User]: ${header}Generated summary evidence malformed quoted example\n[Assistant]: ${E2_SUMMARY_PREFIX}Fictional quoted example${E2_SUMMARY_SUFFIX}`;
+  const f = await fixture([nested]), lineage = await f.bind(); f.slot.lineages = { proof: lineage };
+  const retained = retainContinuityText(nested), pack = `${header}Generated summary evidence id="chr1_${"a".repeat(43)}" sha256="${retained.sha256}": ${JSON.stringify(retained.text)}\n`;
+  const encode = prompt => Buffer.from(JSON.stringify({ input: [{ role: "user", content: prompt }] }));
+  const prompt = `<conversation>\n[User]: ${pack}\n</conversation>\n\n<previous-summary>\n${nested}\n</previous-summary>`;
+  await expect(verifyE2NativeLineage(encode(prompt), { lineageScope: "proof", lineage }, f.state, { outputRoot: f.root, index: 0 }, readArtifact)).resolves.toMatchObject({ native: 1, pack: 1, none: false });
+  const forged = prompt.replace(JSON.stringify(retained.text), JSON.stringify(retained.text + " forged"));
+  await expect(verifyE2NativeLineage(encode(forged), { lineageScope: "proof", lineage }, f.state, { outputRoot: f.root, index: 0 }, readArtifact)).rejects.toMatchObject({ code: "e2_summary_receipt_invalid" });
+});
+it("refuses serialized non-user summary claims even when their text is otherwise verified", async () => {
+  const f = await fixture(), lineage = await f.bind(); f.slot.lineages = { proof: lineage };
+  for (const role of ["Assistant", "Assistant thinking", "Tool result"]) {
+    const bytes = Buffer.from(JSON.stringify({ input: [{ role: "user", content: `<conversation>\n[${role}]: ${E2_SUMMARY_PREFIX}${f.assembled}${E2_SUMMARY_SUFFIX}\n</conversation>` }] }));
+    await expect(verifyE2NativeLineage(bytes, { lineageScope: "proof", lineage }, f.state, { outputRoot: f.root, index: 0 }, readArtifact)).rejects.toMatchObject({ code: "e2_summary_receipt_invalid" });
+  }
+});

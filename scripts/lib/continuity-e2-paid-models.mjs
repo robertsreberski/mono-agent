@@ -1,16 +1,18 @@
 // One phase actor: real paid requests use the shared guard and its sole send.
 // Scripted setup is handled separately by createE2Models and never reaches here.
-import { readdir } from "node:fs/promises";
+import { readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createPiOAuthApiKeyResolver } from "@mono-agent/turn";
 import { guardedModels } from "./continuity-guarded-models.mjs";
 import { guardedState } from "./continuity-guarded-state.mjs";
 import { guardedAuthorization } from "./continuity-guarded-authorization.mjs";
-import { E2_GUARD_CONTRACT, E2_GUARD_STOPS } from "./continuity-e2-policy.mjs";
+import { E2_GUARD_CONTRACT, E2_GUARD_STOPS, E2GuardError, E2_GUARD_POLICY_REFUSALS, E2_PRE_SEND_REFUSALS } from "./continuity-e2-policy.mjs";
 import { e2RequestPrice } from "./continuity-e2-pricing.mjs";
 import { digest } from "./continuity-recorded-schema.mjs";
 import { digest as canonicalDigest } from "./continuity-dataset.mjs";
 import { e2PhaseWork, e2PhaseBase, validateE2Checkpoint } from "./continuity-e2-lineage.mjs";
+import { e2FailureCause, e2ProviderCause, e2CandidateCause, E2_NONRETRY_PROVIDER_CLASSES, registerE2CauseObserver } from "./continuity-e2-cause.mjs";
+import { effectiveE2Summaries, E2_RETRY_POLICY } from "./continuity-e2-retry.mjs";
 const need = (ok, code = "e2_permit_invalid") => { if (!ok) throw Object.assign(Error(code), { code }); };
 const core = () => guardedState("e2-validation"), artifacts = () => guardedAuthorization("e2-validation");
 export async function createE2PaidModels(a, safety) {
@@ -21,11 +23,39 @@ export async function createE2PaidModels(a, safety) {
   need(digest(protocolBytes) === a.pilot.registration.protocol.sha256, "e2_registration_invalid");
   const protocol = JSON.parse(protocolBytes);
   let send, native, config, position, active = false, probeRequests = 0, stopped = null, lifecycle = null, barrier = Promise.resolve();
-  const counts = { requests: 0, responses: 0, durable: 0 };
+  let failureCause = null, currentCall = null;
+  registerE2CauseObserver(safety, value => {
+    if (!currentCall || currentCall.completed) return;
+    const { binding, ...observed } = value;
+    if (binding) {
+      if (binding.round !== currentCall.round || binding.role !== currentCall.role || binding.checkpoint !== currentCall.checkpoint) return;
+      currentCall.payloadDigest = binding.payloadDigest;
+    }
+    const { providerClass, ...rest } = observed; Object.assign(currentCall, rest);
+    if (providerClass && !E2_NONRETRY_PROVIDER_CLASSES.includes(currentCall.providerClass)) currentCall.providerClass = providerClass;
+  }, capture);
+  function capture(message, rejected = false, error) {
+    if (!currentCall || currentCall.completed) return null;
+    if (!rejected && !["error", "length", "aborted"].includes(message?.stopReason)
+      && !(message?.stopReason === "stop" && !(message.content ?? []).some(p => p.type === "text" && p.text?.trim()))) return null;
+    const c = currentCall;
+    if (c.cancelForwarded && c.ownerSignal?.aborted) { failureCause = null; return null; }
+    c.ownerCanceled = c.ownerSignal?.aborted === true || c.cancelForwarded === true;
+    if (rejected && (error instanceof E2GuardError && error.outcome === "refused_pre_send" || [...E2_GUARD_POLICY_REFUSALS, ...E2_PRE_SEND_REFUSALS].includes(error?.code)) && !c.responseHeadersObserved) c.sourceStage = "guard_refused";
+    if (rejected && c.providerClass === "unknown") c.providerClass = e2ProviderCause(error?.code);
+    // The native boundary already verified the consumed hold and exact bytes.
+    // Re-reading the atomically replaced controller journal here can refuse a
+    // legitimate concurrent save and silently discard the original SDK cause.
+    return failureCause = e2FailureCause({ round: c.round, role: c.role, checkpoint: c.checkpoint, payloadDigest: c.payloadDigest ?? null }, c, message, rejected);
+  }
+  const counts = { requests: 0, responses: 0, durable: 0, progressGap: 0 };
   function fail(code) { stopped ??= code; throw Object.assign(Error(stopped), { code: stopped }); }
   async function stop(code) {
     stopped ??= E2_GUARD_STOPS.includes(code) ? code : "e2_phase_failed";
     const permit = native?.permit ?? send?.permit; need(permit, "e2_stop_failed");
+    // Persist before stop starts the controller's bounded settle/contain window.
+    // Failure unwinding and its later refusal file may exceed that window under load.
+    if (failureCause) try { await writeFile(join(e2PhaseBase(a.outputRoot, a.slot), "native-cause.json"), JSON.stringify(failureCause), { flag: "wx", mode: 0o600 }); } catch { /* Diagnostic I/O never replaces the stop. */ }
     try { await permit.stop(stopped); }
     catch (cause) { throw Object.assign(Error("e2_stop_failed"), { code: "e2_stop_failed", cause }); }
   }
@@ -48,7 +78,7 @@ export async function createE2PaidModels(a, safety) {
     const state = await core().readPrivate(core().statePath(a.outputRoot)), slot = state.slots[a.index];
     const branch = a.slot.kind === "replay" ? receipt.position.branch : undefined, work = e2PhaseWork(a.outputRoot, a.slot, branch);
     const names = await readdir(join(work, "sessions", "journals")); need(names.length <= 8192, "e2_summary_receipt_invalid");
-    const summaries = slot.holds.filter(h => h.operationDigest === receipt.operationDigest), candidates = [];
+    const summaries = effectiveE2Summaries(slot.holds).filter(h => h.operationDigest === receipt.operationDigest), candidates = [];
     for (const name of names.filter(n => /^[A-Za-z0-9_-]+\.jsonl$/u.test(n))) {
       const bytes = await artifacts().readArtifact(join(work, "sessions", "journals", name), "e2_summary_receipt_invalid", 128 * 1024 * 1024);
       const rows = bytes.toString("utf8").trimEnd().split("\n").map(line => JSON.parse(line)), record = rows.filter(r => r.kind === "compaction").at(-1);
@@ -121,8 +151,9 @@ export async function createE2PaidModels(a, safety) {
     },
     stream(target, model, context, options, role) {
       if (stopped) fail(stopped); need(!active, "e2_concurrent_request"); need(position && ["summary", "probe", "continuation"].includes(role), "e2_method_forbidden");
-      active = true; const pos = { ...position }, probeRequest = a.slot.kind === "replay" && pos.probe ? ++probeRequests : undefined, receipt = role === "summary" ? lifecycle : null;
-      const pending = (async () => {
+      currentCall = null; active = true; const pos = { ...position }, probeRequest = a.slot.kind === "replay" && pos.probe ? ++probeRequests : undefined, receipt = role === "summary" ? lifecycle : null;
+      let frozenPayload, measuredSize; const buffered = [];
+      const attempt = async retrying => {
         await barrier; if (stopped) fail(stopped);
         if (probeRequest !== undefined) need(probeRequest <= protocol.probeLookupRounds + 1 && role === (probeRequest === 1 ? "probe" : "continuation"), "e2_request_limit");
         if (!native) { need(send); send.decorator(target); }
@@ -131,12 +162,14 @@ export async function createE2PaidModels(a, safety) {
           if (!receipt.begun) { await native.permit.compaction({ kind: "begin", checkpoint: receipt.checkpoint, operationDigest: receipt.operationDigest }); receipt.begun = true; }
         } else need(!lifecycle, "e2_compaction_invalid");
         const state = await core().readPrivate(core().statePath(a.outputRoot)), round = state.slots[a.index].holds.length + 1;
+        currentCall = { round, role, checkpoint: receipt?.checkpoint ?? checkpoint(pos), sourceStage: "request_setup", providerClass: "unknown", ownerSignal: options.signal, cancelForwarded: pos.cancelForwarded };
+        const observed = currentCall;
         const modelName = `${model.provider}:${model.id}`, registered = a.pilot.registration.roles.find(r => r.role === role && r.model === modelName);
-        need(registered, "e2_request_limit"); const size = sizeContext(context, estimators), catalog = a.pilot.registration.catalog.find(c => c.model === modelName);
+        need(registered, "e2_request_limit"); const size = measuredSize ??= sizeContext(context, estimators), catalog = a.pilot.registration.catalog.find(c => c.model === modelName);
         const reservationUnits = e2RequestPrice(catalog, { inputTokens: size.maximum, maxOutputTokens: registered.maxOutputTokens }).reservationUnits;
         const effort = options.reasoning ?? "off";
         const contract = { ...E2_GUARD_CONTRACT, provider: model.provider, model: model.id, api: model.api, baseUrl: model.baseUrl, effort,
-          runId: a.runId, slotId: a.slotId, promptCacheKey: a.cacheKey, e2: { pilot: a.pilot, planned: a.slot, outputRoot: a.outputRoot,
+          runId: a.runId, slotId: a.slotId, promptCacheKey: a.cacheKey, e2: { safety, pilot: a.pilot, planned: a.slot, outputRoot: a.outputRoot,
             round, model: modelName, paidRole: role, ...(probeRequest === undefined ? {} : { probeRequest }), checkpoint: receipt?.checkpoint ?? checkpoint(pos), size, reservationUnits,
             ...(receipt ? { operationDigest: receipt.operationDigest } : {}) } };
         // AgentLoop carries host orchestration metadata through streamSimple.
@@ -151,22 +184,59 @@ export async function createE2PaidModels(a, safety) {
           else need(value === undefined || typeof value === "function", "e2_option_forbidden");
           delete sdkOptions[name];
         }
-        const guarded = guardedModels("e2-validation").guardedLookupModels(readonly(target), { ...native, contract }); counts.requests++;
+        const guarded = guardedModels("e2-validation").guardedLookupModels(readonly(target), { ...native, contract, onForwarded(context, round) { observed.sourceStage = "dispatch"; if (!retrying) return native.onForwarded?.(context, round); } }); counts.requests++;
         need(options.apiKey === undefined, "e2_option_forbidden");
         // Cache-off summaries omit the body cache key, not their assigned wire identity.
         const nativeModel = { ...model, headers: { ...model.headers, "session-id": a.cacheKey, "x-client-request-id": a.cacheKey } };
         return guarded.streamSimple(nativeModel, context, { ...sdkOptions, reasoning: effort, apiKey: credential.access, sessionId: a.cacheKey,
-          onResponse: async response => { counts.responses++; if (role !== "summary") await pos.onNativeResponse?.(); await options.onResponse?.(response); } });
-      })();
-      const result = pending.then(stream => stream.result()).then(async message => {
-        if (["error", "length"].includes(message?.stopReason) || message?.stopReason === "aborted" && !pos.cancelForwarded
-          || message?.stopReason === "stop" && !(message.content ?? []).some(p => p.type === "text" && p.text?.trim())) {
-          await stop("e2_phase_failed"); fail("e2_phase_failed");
+          onPayload: async (payload, selected) => {
+            if (retrying) { need(frozenPayload, "e2_body_mismatch"); return JSON.parse(frozenPayload); }
+            const projected = options.onPayload ? await options.onPayload(payload, selected) ?? payload : payload;
+            frozenPayload = JSON.stringify(projected); return JSON.parse(frozenPayload);
+          },
+          onProviderStreamEvent: async (event, selected) => {
+            if (["response.completed", "response.incomplete", "response.failed", "error"].includes(event?.type)) {
+              observed.sourceStage = "provider_terminal";
+              observed.terminalUsageObserved ||= Number.isSafeInteger(event.response?.usage?.input_tokens) && Number.isSafeInteger(event.response?.usage?.output_tokens);
+              const classified = e2CandidateCause([event.error?.code, event.error?.type, event.response?.error?.code, event.response?.error?.type, event.code, event.type, event.response?.incomplete_details?.reason], true);
+              if (classified !== "unknown" && !E2_NONRETRY_PROVIDER_CLASSES.includes(observed.providerClass)) observed.providerClass = classified;
+            }
+            await options.onProviderStreamEvent?.(event, selected);
+          },
+          onResponse: async response => { observed.sourceStage = "response_headers"; observed.responseHeadersObserved = true; observed.httpStatus = response.status;
+            const classified = e2ProviderCause(undefined, response.status); if (classified !== "unknown" && !E2_NONRETRY_PROVIDER_CLASSES.includes(observed.providerClass)) observed.providerClass = classified; counts.responses++; if (role !== "summary") await pos.onNativeResponse?.(); await options.onResponse?.(response); } });
+      };
+      const result = (async () => {
+        for (let number = 0; number <= E2_RETRY_POLICY.maxPerRequest; number++) {
+          let physical, message, error; const events = [];
+          try {
+            physical = await attempt(number > 0);
+            for await (const event of physical) events.push(event);
+            message = await physical.result();
+          } catch (caught) {
+            error = caught;
+            if (physical) try { message = await physical.result(); } catch (caughtResult) { error = caughtResult; }
+          }
+          const failed = error || ["error", "length"].includes(message?.stopReason) || message?.stopReason === "aborted" && !pos.cancelForwarded
+            || message?.stopReason === "stop" && !(message.content ?? []).some(p => p.type === "text" && p.text?.trim());
+          if (!failed) { currentCall.completed = true; failureCause = null; buffered.push(...events); return message; }
+          capture(message, !!error, error);
+          if (number < E2_RETRY_POLICY.maxPerRequest && currentCall && !options.signal?.aborted && !pos.cancelForwarded) {
+            const decision = await native.permit.retry(currentCall.round, false);
+            if (options.signal?.aborted || pos.cancelForwarded) {
+              if (decision.allowed) await native.permit.retry(currentCall.round, true);
+              capture(message, !!error, error);
+            } else if (decision.allowed) continue;
+          }
+          const code = ["rate", "quota"].includes(currentCall?.providerClass) ? "e2_quota_exhausted" : error?.code ?? "e2_phase_failed";
+          if (!pos.cancelForwarded || !options.signal?.aborted) await stop(code);
+          if (error) throw error; fail(code);
         }
-        return message;
-      }, async error => { if (!pos.cancelForwarded || !options.signal?.aborted) await stop(error.code); throw error; }).finally(() => { active = false; });
+      })().finally(() => { active = false; });
       void result.catch(() => {});
-      return { result: () => result, async *[Symbol.asyncIterator]() { const stream = await pending; for await (const event of stream) yield event; await result; } };
+      // Failed attempts cannot leak a terminal error or partial tool call into
+      // the logical turn before the controller makes its single retry decision.
+      return { result: () => result, async *[Symbol.asyncIterator]() { await result; for (const event of buffered) yield event; } };
     },
     async flush() { await barrier; need(!active && !lifecycle, "e2_compaction_invalid"); if (stopped) fail(stopped); },
     async stop(code) { await stop(code); },
@@ -179,6 +249,13 @@ export async function createE2PaidModels(a, safety) {
     },
     assertProof({ base, arm, phase, variant }) {
       need(a.slot.kind === "proof" && base === e2PhaseBase(a.outputRoot, a.slot) && arm === a.slot.arm && phase === a.slot.phase && variant === a.slot.variant, "e2_preparation_invalid");
+    },
+    failureCause: () => failureCause && structuredClone(failureCause),
+    noteProgressGap() { counts.progressGap++; },
+    async answerBinding() {
+      const state = await core().readPrivate(core().statePath(a.outputRoot)), h = state.slots[a.index].holds.at(-1);
+      need(h?.consumed && h.settlement?.kind === "settled" && ["probe", "continuation"].includes(h.paidRole), "e2_progress_binding_invalid");
+      return { registrationSha256: canonicalDigest(a.pilot), slotId: a.slotId, checkpoint: h.checkpoint, round: h.round, payloadDigest: h.payloadDigest };
     },
     credentialPath: () => a.authorization.credentialPath,
     report: () => ({ ...counts }),

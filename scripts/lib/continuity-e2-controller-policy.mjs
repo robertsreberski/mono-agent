@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { digest } from "./continuity-dataset.mjs";
 import { ROOT } from "./continuity-observation-input.mjs";
 import { E2_FAUX_AUTHORIZATION, E2_REGISTRATION_SCHEMA, E2_PLAN_SCHEMA, E2_ASSUMPTIONS, E2_FAUX_CONTROLLER, E2_REAL_CONTROLLER, E2_INPUT_LIMITS, E2_ARTIFACT_LIMITS, E2_AUTHORIZATION_SCHEMA } from "./continuity-e2-policy.mjs";
+import { E2_RETRY_POLICY } from "./continuity-e2-retry.mjs";
 const need = (ok, code = "e2_pilot_faux_required") => { if (!ok) throw Object.assign(Error(code), { code }); };
 const same = (a, b) => a !== undefined && b !== undefined && digest(a) === digest(b);
 export const e2CacheKey = key => typeof key === "string" && /^[\x21-\x7e]{1,64}$/u.test(key);
@@ -43,6 +44,7 @@ export async function prepareE2Controller(options) {
   need(Object.keys(options).sort().join() === "authorization,outputRoot,pilot,real" && pilot?.schema === E2_REGISTRATION_SCHEMA
     && pilot.descriptor.schema === E2_PLAN_SCHEMA && same(pilot.descriptor.assumptions, E2_ASSUMPTIONS) && pilot.registration.code.path === ROOT
     && authorization?.schema === E2_FAUX_AUTHORIZATION && authorization.outputRoot === outputRoot);
+  need(same(pilot.descriptor.retryPolicy, E2_RETRY_POLICY), "e2_registration_invalid");
   const [{ loadE2Catalog, e2RequestPrice }, { e2CapUnits, validateE2Deadlines }, { externalDirectory }] = await Promise.all([
     import("./continuity-e2-pricing.mjs"), import("./continuity-e2-registration.mjs"), import("./continuity-holdout-files.mjs"),
   ]);

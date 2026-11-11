@@ -179,7 +179,7 @@ function bind(protocol, protocolId) {
             pilotNeed(p && (specific || Object.keys(p).sort().join() === "payloadDigest,requestId,rmax,round,slotId") && p.slotId === slot.slotId
               && typeof p.requestId === "string" && p.requestId === `${state.runId}:${p.round}` && pilotHash(p.payloadDigest)
               && p.round === slot.holds.length + 1 && p.round <= protocol.requestLimit && (specific || p.rmax === pilot.descriptor.rmaxUSD)
-              && !slot.terminal && slot.holds.every(h => h.settlement), protocol.codes.permit_invalid);
+              && (!slot.terminal || slot.terminal === "lost" && slot.retryPending && specific?.metadata.retryOf === slot.retryPending) && slot.holds.every(h => h.settlement), protocol.codes.permit_invalid);
             const nextReserve = specific?.reserve ?? reserve;
             if (Date.now() >= state.deadlineAt) stop(protocol.codes.run_deadline);
             else if (Date.now() >= phaseDeadlineAt(pilot, slot)) stop(protocol.codes.worker_timeout);
@@ -190,8 +190,11 @@ function bind(protocol, protocolId) {
               const permitId = randomUUID();
               slot.holds.push({ permitId, requestId: p.requestId, payloadDigest: p.payloadDigest, round: p.round,
                 ...specific?.metadata, ...(deadlinePolicy ? { admittedAt: Date.now() } : {}), reservedUnits: nextReserve.toString(), consumed: false, revoked: false, settlement: null });
+              if (specific?.metadata.retryOf) { delete slot.retryPending; slot.terminal = null; }
               result = { epoch: state.epoch, permitId };
             }
+          } else if (protocol.execution?.retry && message.op === "retry") {
+            result = protocol.execution.retry(pilot, state, index, p);
           } else if (protocol.execution && message.op === "compaction") {
             pilotNeed(!state.stop, protocol.codes.stopped);
             await protocol.execution.compaction(outputRoot, slot.slotId, state.schedule[index], slot, p, readPilotPrivate, state, pilot);
@@ -279,6 +282,10 @@ function bind(protocol, protocolId) {
         if (state.stop === protocol.codes.account_mismatch && slot.holds.length) slot.terminal = "integrity_stop";
         slot.terminal = slotTerminal(slot, terminal);
         slot.score = ["completed", "wrong"].includes(slot.terminal) ? score : null;
+        if (protocol.execution?.diagnostics) {
+          try { slot.diagnostics = await protocol.execution.diagnostics(outputRoot, state, index, pilot); }
+          catch { /* Optional closed diagnostics never change the terminal outcome. */ }
+        }
         state.cursor++; const reason = lookupPilotStopReason(accountLookupPilot(state.slots), cap);
         if (reason) stop(reason);
         await save();

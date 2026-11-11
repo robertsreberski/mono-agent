@@ -31,9 +31,9 @@ export const E2_GUARD_POLICY_REFUSALS = Object.freeze([
   "e2_pilot_boundary_required", "e2_native_identity_forbidden", "e2_unguarded_dispatch", "e2_payload_repeated", "e2_pilot_capability_invalid",
 ]);
 export const E2_PERMIT_CONTRACT = freeze({
-  version: "e2-permit-v1",
+  version: "e2-permit-v2",
   admissionFields: ["requestId", "slotId", "round", "payloadDigest", "reservationUnits", "inputTokens", "model", "paidRole", "checkpoint"],
-  methods: ["admit", "consume", "settle", "stop", "compaction", "verifyBody"],
+  methods: ["admit", "consume", "settle", "stop", "compaction", "verifyBody", "retry"],
   outcomes: Object.keys(E2_OUTCOMES),
 });
 export const E2_PILOT_STOPS = Object.freeze([...new Set([...E2_GUARD_POLICY_REFUSALS, ...E2_ADMISSION_REFUSALS,
@@ -74,7 +74,7 @@ export class E2GuardError extends Error {
 }
 
 export const E2_REGISTRATION_SCHEMA = "continuity-e2-guarded-registration-v1";
-export const E2_PLAN_SCHEMA = "continuity-e2-guarded-plan-v2";
+export const E2_PLAN_SCHEMA = "continuity-e2-guarded-plan-v3";
 export const E2_SUMMARY_RECEIPT = "continuity-e2-generated-summary-receipt-v1";
 export const E2_BINDING_FIELDS = Object.freeze(["code", "build", "catalog", "protocol", "source", "probes", "keys", "soul", "schedule", "account", "tools", "deadlines", "capUnits"]);
 export const E2_DEADLINE_LIMITS = Object.freeze({ requestMs: 600000, phaseMs: 86400000, childWatchdogMs: 86400000, runMs: 86400000 });

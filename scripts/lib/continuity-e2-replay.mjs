@@ -3,6 +3,7 @@ import { assertE2PhaseAdapter } from "./continuity-e2-runtime.mjs";
 import { chmod, copyFile, cp, lstat, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fail, object, ROOT } from "./continuity-observation-input.mjs";
+import { writeE2Progress, writeE2ProgressGap } from "./continuity-e2-progress.mjs";
 import { scoreE2 } from "./continuity-e2-score.mjs";
 import { diagnosticRecord } from "./continuity-e2-diagnostics.mjs";
 import { webGroups } from "./continuity-recorded-reconcile.mjs";
@@ -355,8 +356,17 @@ export async function runE2Sizing({ source, protocol, output, summary = "faux-sh
                 if (response.failure || !probe.firstContext) fail("E2_REPLAY_FAILED");
                 const text = response.text ?? response.content;
                 if (typeof text !== "string") fail("E2_REPLAY_FAILED");
-                answers.answers.push({ id: question.id, repeat, text, witness: probe.witness, excludedSteps: measured.excludedStepsInHistory,
-                  excludedCoverage: measured.excludedCoverageInHistory });
+                const answer = { id: question.id, repeat, text, witness: probe.witness, excludedSteps: measured.excludedStepsInHistory,
+                  excludedCoverage: measured.excludedCoverageInHistory };
+                const answerBinding = await paidAdapter.answerBinding();
+                try { await writeE2Progress(output, answers.answers.length + 1, answerBinding, answer); }
+                catch {
+                  paidAdapter.noteProgressGap();
+                  // Recovery writes are optional; the binding/settlement check above
+                  // is mandatory before accepting an answer.
+                  try { await writeE2ProgressGap(output, paidAdapter.report().progressGap); } catch { /* Best effort; final/refusal reports also carry the count. */ }
+                }
+                answers.answers.push(answer);
                 measured.probes.push({ repeat, input: probe.firstContext, requests: probe.requests });
                 await opened.close(); opened = null;
               }
@@ -387,6 +397,7 @@ export async function runE2Sizing({ source, protocol, output, summary = "faux-sh
     }
     await privateModes(output);
     if (real) {
+      report.progressGap = paidAdapter.report().progressGap;
       const scored = scoreE2(answers, evaluator);
       await writeFile(join(output, "answers.json"), `${JSON.stringify(answers)}\n`, { flag: "wx", mode: 0o600 });
       await writeFile(join(output, "score.json"), `${JSON.stringify(scored)}\n`, { flag: "wx", mode: 0o600 });
@@ -394,5 +405,8 @@ export async function runE2Sizing({ source, protocol, output, summary = "faux-sh
     }
     await writeFile(join(output, real ? "replay.json" : "sizing.json"), `${JSON.stringify(report)}\n`, { flag: "wx", mode: 0o600 });
     return report;
-  } catch (error) { if (!real) await rm(output, { recursive: true, force: true }); throw error; }
+  } catch (error) {
+    if (!real) await rm(output, { recursive: true, force: true });
+    throw error;
+  }
 }

@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- **Breaking:** Add controller-owned guarded E2 retries with plan-v3 and
+  permit-v2 contracts; require fresh registration and authorization binding the
+  exact retry policy. Retry only eligible closed failures once per logical
+  request, at most eight times per run, under the unchanged cap and conservative
+  liability. Keep original request slots, prompt bytes and tool rounds unchanged;
+  report retry counts and separate ceiling exposure. Old plans fail closed. Preserve
+  sent-request losses on retry refusal and stop before admission if the owner
+  cancels during its grant. Retry response-body breaks and fixed transient SSE
+  errors after HTTP 200, including fixed `ECONNREFUSED`, `ENETUNREACH` and `EPIPE`
+  dispatch failures; non-retryable fields win over mixed error signals.
+
+- Fix continuity E2 authentication of incremental summary prompts and retain
+  private partial-answer evidence when a replay is interrupted. Keep recovery
+  journal failures non-fatal and expose evidence gaps. Report informational
+  partial scores on failure with `qualityMeasured:false` and no gate; refuse
+  forged or mismatched `<previous-summary>` claims before fetch.
+
 - Show bounded raster image previews in expanded web tool-call output, with a
   larger image viewer and lazy loading for truncated results. Keep unsupported,
   malformed, oversized, or unavailable images in the existing text view.

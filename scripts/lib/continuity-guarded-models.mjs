@@ -120,10 +120,12 @@ function bind(protocol, protocolId) {
               outcome = code ? "integrity_stop" : failure ? (sent && options.signal?.aborted ? "own_abort_after_send" : "lost") : "settled";
             } else if (sent && options.signal?.aborted) outcome = "own_abort_after_send";
             let evidence;
-            if (funding && outcome === "settled") {
+            const cause = protocol.execution?.failureEvidence?.(contract, message, failure);
+            if (funding && outcome === "settled" && !cause) {
               try { const recorded = await protocol.execution.resultReceipt(contract, message, raw, tier, admittedPayloadDigest); message = recorded.message; evidence = recorded.evidence; }
               catch { outcome = "integrity_stop"; code = protocol.codes.summary_receipt_invalid; }
             }
+            if (cause) evidence = { schema: "continuity-e2-attempt-evidence-v1", nativeCause: cause };
             if (outcome !== "settled") slotTerminal = true;
             try {
               await permit.settle(admitted, { kind: outcome, ...(code ? { code } : {}), ...(cost !== undefined ? funding ? { costUnits: cost } : { cost } : {}) }, raw ?? null, ["default", "flex", "priority"].includes(tier) ? tier : null, ...(evidence === undefined ? [] : [evidence]));
@@ -164,6 +166,7 @@ function bind(protocol, protocolId) {
               if (grant?.refused) refuse(grant.code ?? "not_admitted_cap");
               if (!grant) refuse(protocol.codes.permit_missing);
               admitted = grant; admittedPayloadDigest = payloadDigest; rounds++;
+              protocol.execution?.observeAdmission?.(contract, payloadDigest);
               // Detach from all mutation hooks; fetch verifies these exact serialized bytes.
               return JSON.parse(JSON.stringify(final));
             } catch (error) { preRefusal = error; throw error; }

@@ -1,0 +1,83 @@
+import { afterEach, expect, it } from "vitest";
+import { mkdtemp, mkdir, readFile, writeFile, rm, stat, realpath, symlink, unlink, truncate, link } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { writeE2Progress, writeE2ProgressGap, readE2Progress, writeE2PartialScore } from "../lib/continuity-e2-progress.mjs";
+import { freezeCheckpoint, restoreCheckpoint } from "../lib/continuity-e2-replay.mjs";
+import { e2FailureCause, e2ProviderCause, validE2FailureCause } from "../lib/continuity-e2-cause.mjs";
+import { guardedAuthorization } from "../lib/continuity-guarded-authorization.mjs";
+import { execFileSync } from "node:child_process";
+const readArtifact = (...args) => guardedAuthorization("e2-validation").readArtifact(...args);
+const roots = []; afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
+it("recovers completed checkpoints after restore and a torn unpublished next answer, without a gate score", async () => {
+  const output = await realpath(await mkdtemp(join(tmpdir(), "e2-progress-"))); roots.push(output);
+  const work = join(output, "branch-0/work"), snapshot = join(output, "snapshot");
+  await mkdir(work, { recursive: true, mode: 0o700 }); await writeFile(join(work, "seed"), "Fictional baseline");
+  const receipt = await freezeCheckpoint(work, snapshot), binding = "a".repeat(64), slotId = "b".repeat(64);
+  const state = { binding, slots: [{ slotId, holds: [] }] };
+  const registered = { protocol: { branches: [{ checkpoints: ["A", "B", "B4", "END"].map(name => ({ name })) }] }, questions: { questions: ["B4", "END"].map(id => ({ id, checkpoint: id })) } };
+  const evaluator = { schema: "continuity-recorded-evaluator-keys-v1", keys: ["B4", "END"].map(checkpoint => ({ id: checkpoint, checkpoint, kind: "exact", expected: "Fictional answer", availability: "available", rate: true, dependsOnSteps: [], forbidden: [] })) };
+  for (let i = 1; i <= 3; i++) {
+    const checkpoint = i <= 2 ? 2 : 3, payloadDigest = String(i).repeat(64);
+    state.slots[0].holds.push({ round: i, checkpoint, payloadDigest, paidRole: "probe", consumed: true, settlement: { kind: "settled" } });
+    await writeE2Progress(output, i, { registrationSha256: binding, slotId, checkpoint, round: i, payloadDigest },
+      { id: i <= 2 ? "B4" : "END", repeat: i === 2 ? 2 : 1, text: "Fictional answer", witness: true, excludedSteps: [] });
+    await writeFile(join(work, "probe-only"), "Fictional transient answer"); await restoreCheckpoint(work, snapshot, receipt);
+    await expect(readFile(join(work, "probe-only"))).rejects.toMatchObject({ code: "ENOENT" });
+    expect((await stat(join(output, "answer-progress", `${String(i).padStart(6, "0")}.json`))).mode & 0o077).toBe(0);
+  }
+  await writeFile(join(output, "answer-progress/.pending-00000000-0000-0000-0000-000000000000"), '{"torn":', { mode: 0o600 });
+  const answers = await readE2Progress(output, state, 0, readArtifact, registered), score = await writeE2PartialScore(output, answers, evaluator, readArtifact);
+  expect(answers.answers).toHaveLength(3); expect(score).toMatchObject({ informational: true, qualityMeasured: false, completedAnswers: 3, plannedAnswers: 4, totals: { ratePass: 3, inconclusive: 1 } });
+  expect(score).not.toHaveProperty("gate"); expect(score.byCheckpointAndRepeat[0].counts.ratePass).toBe(1);
+  expect(await writeE2PartialScore(output, answers, evaluator, readArtifact)).toEqual(score);
+  await expect(writeE2Progress(output, 1, {}, {})).rejects.toMatchObject({ code: "EEXIST" });
+  state.binding = "c".repeat(64); await expect(readE2Progress(output, state, 0, readArtifact, registered)).rejects.toMatchObject({ code: "E2_ANSWER_PROGRESS_INVALID" });
+});
+it("accepts only a closed, hold-bound cause record, never exception text or unknown code strings", () => {
+  const h = { round: 4, paidRole: "probe", checkpoint: 2, payloadDigest: "a".repeat(64) }, slot = { holds: [h] };
+  const binding = { round: 4, role: "probe", checkpoint: 2, payloadDigest: h.payloadDigest };
+  const cause = e2FailureCause(binding, { sourceStage: "dispatch", providerClass: "PRIVATE-CANARY", httpStatus: "PRIVATE-CANARY" }, { stopReason: "PRIVATE-CANARY", errorMessage: "PRIVATE-CANARY" }, true);
+  expect(JSON.stringify(cause)).not.toContain("PRIVATE-CANARY"); expect(cause).toMatchObject({ providerClass: "unknown", sdkStopReason: "unknown", httpStatus: null });
+  expect(validE2FailureCause(cause, slot)).toBe(true);
+  for (const bad of [{ ...cause, round: 5 }, { ...cause, checkpoint: 3 }, { ...cause, payloadDigest: "b".repeat(64) }, { ...cause, message: "PRIVATE-CANARY" }]) expect(validE2FailureCause(bad, slot)).toBe(false);
+  expect(e2ProviderCause("PRIVATE-CANARY")).toBe("unknown");
+  expect(e2ProviderCause("ERR_STREAM_PREMATURE_CLOSE")).toBe("stream");
+});
+
+async function partialFixture() {
+  const output = await realpath(await mkdtemp(join(tmpdir(), "e2-partial-"))); roots.push(output);
+  const answers = { schema: "continuity-e2-answers-v1", answers: [] }, evaluator = { schema: "continuity-recorded-evaluator-keys-v1", keys: [{ id: "fictional", checkpoint: "A", kind: "exact", expected: "Fictional", availability: "available", rate: true, dependsOnSteps: [], forbidden: [] }] };
+  return { output, write: () => writeE2PartialScore(output, answers, evaluator, readArtifact) };
+}
+it.each(["fifo", "zero", "hardlink", "large", "orphan", "claim-only"])("reconstructs controller partial quality safely over a child-left %s", async kind => {
+  const f = await partialFixture(), target = join(f.output, "partial-score.json");
+  await mkdir(join(f.output, ".claim-partial-score.json"), { mode: 0o700 });
+  if (kind === "fifo") { const fifo = join(f.output, "pipe"); execFileSync("mkfifo", [fifo]); await symlink(fifo, target); }
+  if (kind === "zero") await symlink("/dev/zero", target);
+  if (["hardlink", "large", "orphan"].includes(kind)) {
+    await writeFile(target, JSON.stringify({ orphan: true }), { mode: 0o600 });
+    if (kind === "hardlink") await link(target, join(f.output, "alias"));
+    if (kind === "large") await truncate(target, 4 * 1024 * 1024 + 1);
+  }
+  const partial = await f.write();
+  expect(partial).toMatchObject({ informational: true, qualityMeasured: false, completedAnswers: 0, progressGap: 0 });
+  expect(JSON.parse(await readArtifact(target, "e2_receipt_invalid"))).toEqual(partial);
+  expect((await stat(target)).nlink).toBe(1); expect((await stat(target)).mode & 0o077).toBe(0);
+}, 5000);
+it("rejects wrong-checkpoint question ids and duplicate id/repeat pairs before scoring recovery evidence", async () => {
+  const { output } = await partialFixture(), binding = "a".repeat(64), slotId = "b".repeat(64);
+  const registered = { protocol: { branches: [{ checkpoints: [{ name: "A" }, { name: "B" }] }] }, questions: { questions: [{ id: "a", checkpoint: "A" }, { id: "b", checkpoint: "B" }] } };
+  const holds = [1, 2].map(round => ({ round, checkpoint: 0, payloadDigest: String(round).repeat(64), paidRole: "probe", consumed: true, settlement: { kind: "settled" } })), state = { binding, slots: [{ slotId, holds }] };
+  const answer = { id: "a", repeat: 1, text: "Fictional", witness: true, excludedSteps: [] };
+  for (const h of holds) await writeE2Progress(output, h.round, { registrationSha256: binding, slotId, checkpoint: h.checkpoint, round: h.round, payloadDigest: h.payloadDigest }, answer);
+  await expect(readE2Progress(output, state, 0, readArtifact, registered)).rejects.toMatchObject({ code: "E2_ANSWER_PROGRESS_INVALID" });
+  await unlink(join(output, "answer-progress/000002.json"));
+  const path = join(output, "answer-progress/000001.json"), entry = JSON.parse(await readFile(path)); entry.answer.id = "b"; await writeFile(path, JSON.stringify(entry));
+  await expect(readE2Progress(output, state, 0, readArtifact, registered)).rejects.toMatchObject({ code: "E2_ANSWER_PROGRESS_INVALID" });
+});
+
+it("atomically updates the recovery-gap marker with the running count", async () => {
+  const { output } = await partialFixture();
+  for (const count of [1, 2, 3]) { await writeE2ProgressGap(output, count); expect(JSON.parse(await readArtifact(join(output, "progress-gap.json"), "e2_receipt_invalid"))).toEqual({ progressGap: count }); }
+});

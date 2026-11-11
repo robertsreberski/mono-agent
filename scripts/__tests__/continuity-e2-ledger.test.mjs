@@ -1,3 +1,4 @@
+import { E2_RETRY_POLICY } from "../lib/continuity-e2-retry.mjs";
 // Faux controller/ledger integration with an inert child identity, not native-SDK subprocess proofs.
 import { beforeEach, afterEach, expect, it, vi } from "vitest";
 import { spawn } from "node:child_process";
@@ -25,7 +26,7 @@ beforeEach(async () => {
     roles: ["summary", "probe", "continuation"].map(role => ({ role, model: SOL, maxInputTokens: 272000, maxOutputTokens: 128000, expectedOutputTokens: 512 })),
     toolPolicies: { summary: [], proof: ["ConversationHistory"], replay: ["ConversationHistory"], cancelContinuation: ["ConversationHistory", "ProofSentinel"] },
     schedule: [{ slotId: "b".repeat(64), eligible: true, kind: "proof", arm: "switch", budgets: ["summary", "probe", "continuation"].map(paidRole => ({ checkpoint: 0, paidRole, model: SOL, maxRequests: 2 })) }] },
-    descriptor: { schema: E2_PLAN_SCHEMA, assumptions: E2_ASSUMPTIONS, capUnits: "10000000000", deadlines: { requestDeadlineMs: 30000, phaseDeadlineMs: 30000, childWatchdogMs: 30000, runDeadlineMs: 60000 } },
+    descriptor: { schema: E2_PLAN_SCHEMA, retryPolicy: E2_RETRY_POLICY, assumptions: E2_ASSUMPTIONS, capUnits: "10000000000", deadlines: { requestDeadlineMs: 30000, phaseDeadlineMs: 30000, childWatchdogMs: 30000, runDeadlineMs: 60000 } },
     privateFixtureCanary: "FICTIONAL-PRIVATE-REGISTRATION-CANARY" };
   authorization = { schema: E2_FAUX_AUTHORIZATION, authorizationId: `fictional-${randomUUID()}`, outputRoot, pilotSha256: digest(pilot), scenarios: ["settled"], timeoutMs: 30000 };
 });
@@ -180,4 +181,11 @@ it("keeps the run clock global when a fresh later phase still has time", async (
   clock.mockReturnValue(base + 3000); const s = journal.snapshot();
   await expect(journal.message(1, worker, { version: E2_PILOT_IPC, epoch: s.epoch, slotId: s.slots[1].slotId, seq: 0, op: "admit", payload: {} })).rejects.toMatchObject({ code: "e2_run_deadline" });
   expect(journal.snapshot().stop).toBe("e2_run_deadline"); expect(journal.snapshot().slots[1].holds).toEqual([]);
+});
+
+it.each(["missing", "mismatched"])("classifies %s faux retry policy as registration-invalid before creating any lease", async change => {
+  if (change === "missing") delete pilot.descriptor.retryPolicy;
+  else pilot.descriptor.retryPolicy = { ...E2_RETRY_POLICY, maxPerRun: 9 };
+  await expect(controller.createLookupPilotController({ pilot, authorization, outputRoot, real: false })).rejects.toMatchObject({ code: "e2_registration_invalid" });
+  expect(await readdir(outputRoot)).toEqual([]);
 });

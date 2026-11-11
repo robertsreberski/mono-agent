@@ -69,3 +69,46 @@ it.each([...["request", "phase", "run", "post-body"].map(kind => ["real", kind])
   expect(clock).toHaveBeenCalledTimes(kind === "post-body" ? 2 : 1);
   expect(permit.stop).toHaveBeenCalledExactlyOnceWith(code); expect(dispatched).not.toHaveBeenCalled();
 });
+
+async function responseGate(body) {
+  vi.resetModules(); Object.defineProperty(process, "connected", { configurable: true, value: true });
+  vi.stubGlobal("fetch", vi.fn(async () => new Response(body, { headers: { "content-type": "text/event-stream" } })));
+  const requestBody = JSON.stringify({ model: "gpt-6-luna", stream: true, store: false, input: [], tools: [] });
+  const hold = { round: 1, paidRole: "probe", checkpoint: 0, admittedAt: Date.now(), model: "openai-codex:gpt-6-luna", tools: [],
+    consumed: true, revoked: false, settlement: null, permitId: "fictional-permit", payloadDigest: createHash("sha256").update(requestBody).digest("hex") };
+  const state = { stop: null, cursor: 0, deadlineAt: Date.now() + 30000, slots: [{ terminal: null, startedAt: Date.now(), holds: [hold] }] };
+  const a = { outputRoot: "/fictional/output", epoch: "fictional-epoch", runId: "fictional-run", slotId: "fictional-slot", index: 0, cacheKey: "fixture", plan: {},
+    roleRequest: { binding: { arm: "fictional-arm" } }, pilot: { descriptor: { deadlines: { requestDeadlineMs: 30000, phaseDeadlineMs: 30000 } } } };
+  const permit = { stop: vi.fn(async () => {}) }, observed = vi.fn();
+  const hooks = { ...protocol.hooks, assertResolvedSafety() {}, forwardedObserver: () => ({ notify() {}, register() {} }),
+    verifyRealAssignment: async () => ({ handle: {}, state }), realModules: async () => ({ wrapModels() {}, assertRealPermitSource() {}, matchesAccount: () => true, createIPC: async () => permit }) };
+  const execution = { ...protocol.execution, verifyNativeBody: async () => {}, observeNative: observed };
+  vi.doMock("../lib/continuity-guarded-protocols.mjs", () => ({ guardedProtocol: () => ({ ...protocol, hooks, execution }) }));
+  const cap = (await import("../lib/continuity-guarded-real-capability.mjs")).guardedRealCapability("e2-validation");
+  const send = await cap.createLookupRealSend(a, { plan: a.plan, arm: { id: "fictional-arm" } });
+  const response = await send(`${protocol.policy.GUARD_CONTRACT.baseUrl}/codex/responses`, { method: "POST", body: requestBody,
+    headers: { "session-id": a.cacheKey, "x-client-request-id": a.cacheKey, "chatgpt-account-id": "fictional-account" } });
+  return { response, observed, hold, permit };
+}
+
+it("emits exactly one bound terminal observation for mixed provider candidate fields", async () => {
+  const { response, observed, hold, permit } = await responseGate('data: {"type":"response.failed","response":{"error":{"code":"server_error","type":"insufficient_quota"}}}\n\n');
+  await expect(response.text()).rejects.toMatchObject({ code: "e2_quota_exhausted" });
+  expect(permit.stop).toHaveBeenCalledExactlyOnceWith("e2_quota_exhausted");
+  const calls = observed.mock.calls.filter(([, stage]) => stage === "provider_terminal");
+  expect(calls).toHaveLength(1);
+  expect(calls[0].slice(1)).toEqual(["provider_terminal", null, [undefined, undefined, "server_error", "insufficient_quota", undefined, "response.failed", undefined],
+    { round: 1, role: "probe", checkpoint: 0, payloadDigest: hold.payloadDigest }]);
+});
+
+it("does not observe a synthetic provider failure when downstream cancellation resolves a pending body read", async () => {
+  let readStarted, canceled;
+  const started = new Promise(resolve => { readStarted = resolve; }), stopped = new Promise(resolve => { canceled = resolve; });
+  const body = new ReadableStream({ pull() { readStarted(); }, cancel() { canceled(); } });
+  const { response, observed, permit } = await responseGate(body), reader = response.body.getReader();
+  const pending = reader.read(); await started;
+  await reader.cancel(); await stopped; await pending;
+  await new Promise(resolve => setImmediate(resolve));
+  expect(observed.mock.calls.map(([, stage]) => stage)).toEqual(["request_setup", "response_headers"]);
+  expect(permit.stop).not.toHaveBeenCalled();
+});

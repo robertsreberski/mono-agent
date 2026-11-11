@@ -16,6 +16,9 @@ import { ROOT } from "../../lib/continuity-lookup-roles.mjs";
 import { digest } from "../../lib/continuity-dataset.mjs";
 import { sha256 } from "../../lib/continuity-lookup.mjs";
 
+// Recursive synthetic-checkout cleanup plus dependency witnessing can exceed
+// Vitest's implicit 10 seconds under concurrent suite I/O; remain finitely bounded.
+export const LOOKUP_FIXTURE_CLEANUP_TIMEOUT_MS = 120000;
 export const loadPilot = (f, name) => import(/* @vite-ignore */ pathToFileURL(join(f.repo, "scripts/lib", `continuity-lookup-${name}.mjs`)).href);
 const metadata = async path => { try { const s = await fs.lstat(path); return [s.ino, s.mtimeMs]; } catch (e) { if (e.code === "ENOENT") return null; throw e; } };
 const registry = join(userInfo().homedir, ".local/state/mono-agent/lookup-pilot/consumed-v1");
@@ -101,7 +104,7 @@ export function pilotSuite({ scoped = false, fixtureOptions = {} } = {}) {
     }
   }
   if (!scoped) afterEach(() => finish(serialChildren, testReal));
-  afterAll(async () => { try { if (f) await fs.rm(f.base, { recursive: true, force: true }); } finally { expect(await metadata(registry)).toEqual(real); expect(await dependencySnapshot(ROOT)).toEqual(deps); } });
+  afterAll(async () => { try { if (f) await fs.rm(f.base, { recursive: true, force: true }); } finally { expect(await metadata(registry)).toEqual(real); expect(await dependencySnapshot(ROOT)).toEqual(deps); } }, LOOKUP_FIXTURE_CLEANUP_TIMEOUT_MS);
   async function witnesses(owned = children()) {
     for (const c of owned) {
       const read = async pid => { const value = JSON.parse(await fs.readFile(join(f.base, "witnesses", `${pid}.json`))); expect(value).toMatchObject({ canaries: 3, unexpected: 0, git: ["/dev/null", "1"] }); expect(value.xdg).toEqual([value.home, value.home, value.home, value.home]); expect(value.home.startsWith(f.base)).toBe(true); return value; };

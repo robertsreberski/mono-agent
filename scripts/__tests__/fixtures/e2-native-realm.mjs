@@ -10,7 +10,7 @@ import { pathToFileURL, fileURLToPath } from "node:url";
 import { join, resolve } from "node:path";
 import { spawn } from "node:child_process";
 export async function installE2NativeRealm(profile) {
-  const user = os.userInfo(), actualHome = user.homedir;
+  const user = os.userInfo(), actualHome = user.homedir; let progressWriteFailed = false;
   if (!profile.home || !profile.root || !profile.endpoint?.startsWith("http://127.0.0.1:")) throw Error("test_realm_invalid");
   installE2NativeTransport(profile);
   os.userInfo = () => ({ ...user, homedir: profile.home });
@@ -23,7 +23,9 @@ export async function installE2NativeRealm(profile) {
   for (const target of [fs, fsp]) for (const name of ["open", "readFile", "writeFile", "appendFile", "mkdir", "readdir", "lstat", "stat", "realpath", "unlink", "rm", "rename", "access", "copyFile", "link", "symlink", "readlink", "chmod", "opendir", "truncate", "createReadStream", "createWriteStream"]) {
     for (const suffix of target === fs ? ["", "Sync"] : [""]) {
       const key = name + suffix, original = target[key]; if (typeof original !== "function") continue;
-      const wrapped = function (...args) { forbid(args[0]); if (["rename", "copyFile", "link", "symlink"].includes(name)) forbid(args[1]); return original.apply(this, args); };
+      const wrapped = function (...args) { forbid(args[0]);
+ if (profile.fault === "fixture-diagnostic-write" && name === "writeFile" && String(args[0]).endsWith("/whole-refusal.json")) throw Object.assign(Error("Fictional diagnostic I/O failure"), { code: "EIO" });
+        if (profile.fault === "progress-write" && name === "mkdir" && String(args[0]).endsWith("/answer-progress") && !progressWriteFailed) { progressWriteFailed = true; throw Object.assign(Error("Fictional journal I/O failure"), { code: "EIO" }); } if (["rename", "copyFile", "link", "symlink"].includes(name)) forbid(args[1]); return original.apply(this, args); };
       if (original.native) wrapped.native = function (...args) { forbid(args[0]); return original.native.apply(this, args); };
       target[key] = wrapped;
     }
@@ -32,9 +34,49 @@ export async function installE2NativeRealm(profile) {
   const buildURL = pathToFileURL(join(profile.root, "scripts/lib/memory-e2e-build.mjs")).href;
   registerHooks({ load(url, context, next) {
     if (url === buildURL) return { format: "module", shortCircuit: true, source: 'export const BUILD_POLICY="fresh-clean-head-agent-app-closure-v1";export const sourceState=()=>({head:"' + "b".repeat(40) + '",dirty:false});export async function verifyRealBuild(){};export async function prepareRealBuild(){throw Error("test_rebuild_forbidden")}' };
-    return next(url, context);
+    const loaded = next(url, context);
+    if (profile.fault === "slow-refusal" && url === pathToFileURL(join(profile.root, "scripts/lib/continuity-e2-phase-child.mjs")).href) {
+      const source = String(loaded.source), marker = "    try { await mkdir(base,";
+      if (!source.includes(marker)) throw Error("test_refusal_barrier_missing");
+      return { ...loaded, source: source.replace(marker, "    await new Promise(resolve => setTimeout(resolve, 1000));\n" + marker) };
+    }
+    if (profile.fault === "progress-malformed" && url === pathToFileURL(join(profile.root, "scripts/lib/continuity-e2-progress.mjs")).href) {
+      const source = String(loaded.source), marker = "...binding, answer });";
+      if (!source.includes(marker)) throw Error("test_malformed_entry_missing");
+      return { ...loaded, source: source.replace(marker, "...binding, answer: { ...answer, text: 42 } });") };
+    }
+    if (profile.fault === "after-admit" && url === pathToFileURL(join(profile.root, "scripts/lib/continuity-e2-paid-models.mjs")).href) {
+      const source = String(loaded.source), marker = '"session-id": a.cacheKey, "x-client-request-id": a.cacheKey';
+      if (!source.includes(marker)) throw Error("test_after_admit_missing");
+      return { ...loaded, source: source.replace(marker, marker + ', "fictional-unapproved": "denied"') };
+    }
+    if (["answer-binding", "guard-refused"].includes(profile.fault) && url === pathToFileURL(join(profile.root, "scripts/lib/continuity-e2-paid-models.mjs")).href) {
+      const source = String(loaded.source), [marker, replacement] = profile.fault === "answer-binding"
+        ? ['need(h?.consumed && h.settlement?.kind', 'need(false && h?.consumed && h.settlement?.kind']
+        : ['reasoning: effort, apiKey:', 'reasoning: "fictional-invalid-effort", apiKey:'];
+      if (!source.includes(marker)) throw Error("test_observation_injection_missing");
+      return { ...loaded, source: source.replace(marker, replacement) };
+    }
+    if (["sdk-aborted", "sdk-deadline", "sdk-unknown"].includes(profile.fault) && url === pathToFileURL(join(profile.root, "scripts/lib/continuity-guarded-models.mjs")).href) {
+      const source = String(loaded.source), marker = "finishing = true;";
+      if (!source.includes(marker)) throw Error("test_sdk_finish_missing");
+      const reason = profile.fault === "sdk-aborted" ? "aborted" : "error";
+      const observation = profile.fault === "sdk-deadline" ? 'protocol.execution?.observeNative?.(resolvedSafety, "dispatch", null, "ETIMEDOUT");' : "";
+      return { ...loaded, source: source.replace(marker, marker + ` if (!globalThis.__e2InjectedResult || !${profile.retryOnce === true}) { globalThis.__e2InjectedResult = true; ${observation} message = { ...message, stopReason: "${reason}", content: [] }; }`) };
+    }
+    if (profile.fault === "cancel-retry" && url === pathToFileURL(join(profile.root, "scripts/lib/continuity-e2-paid-models.mjs")).href) {
+      const source = String(loaded.source), marker = "await native.permit.retry(currentCall.round, false)";
+      if (!source.includes(marker)) throw Error("test_retry_cancel_missing");
+      return { ...loaded, source: source.replace(marker, "await (async () => { const pending = native.permit.retry(currentCall.round, false); globalThis.__e2OwnerAbort.abort(); return pending; })()") };
+    }
+    if (["rejected", "cancel-rejected"].includes(profile.fault) && url === pathToFileURL(join(profile.root, "scripts/lib/continuity-e2-paid-models.mjs")).href) {
+      const source = String(loaded.source), marker = "message = await physical.result();";
+      if (!source.includes(marker)) throw Error("test_result_injection_missing");
+      return { ...loaded, source: source.replace(marker, 'message = await physical.result(); if (' + (profile.fault === "cancel-rejected" ? 'currentCall?.cancelForwarded' : 'true') + ') throw Object.assign(Error("PRIVATE-CAUSE-CANARY"), { code: "ECONNRESET" });') };
+    }
+    return loaded;
   } });
-  const originalFetch = globalThis.fetch.bind(globalThis); let authorized = () => false, spawned = false;
+  const originalFetch = globalThis.fetch.bind(globalThis); let authorized = () => false, spawned = false, nativeResponses = 0;
   globalThis.fetch = async (url, init) => {
     const endpoint = String(url);
     if (endpoint === "https://chatgpt.com/backend-api/codex/responses") {
@@ -45,7 +87,17 @@ export async function installE2NativeRealm(profile) {
         await fsp.writeFile(profile.descendant, JSON.stringify({ pid: child.pid, parent: process.pid }), { mode: 0o600 });
       }
       const response = await originalFetch(profile.endpoint, init);
-      if (profile.fault === "crash") process.kill(process.pid, "SIGKILL");
+      if (["dispatch-refused", "dispatch-unreachable", "dispatch-pipe"].includes(profile.fault) && (!profile.retryOnce || ++nativeResponses === 1)) {
+        await response.body.cancel();
+        throw Object.assign(Error("PRIVATE-CAUSE-CANARY"), { code: { "dispatch-refused": "ECONNREFUSED", "dispatch-unreachable": "ENETUNREACH", "dispatch-pipe": "EPIPE" }[profile.fault] });
+      }
+      if (["body-aborted", "body-reset", "body-premature", "body-socket", "body-deadline"].includes(profile.fault) && (!profile.retryOnce || ++nativeResponses === 1)) {
+        const error = profile.fault === "body-aborted" ? new DOMException("PRIVATE-CAUSE-CANARY", "AbortError")
+          : Object.assign(Error("PRIVATE-CAUSE-CANARY"), { code: { "body-reset": "ECONNRESET", "body-premature": "ERR_STREAM_PREMATURE_CLOSE", "body-socket": "UND_ERR_SOCKET", "body-deadline": "ETIMEDOUT" }[profile.fault] });
+        await response.body.cancel();
+        return new Response(new ReadableStream({ start(controller) { controller.error(error); } }), { status: response.status, headers: response.headers });
+      }
+      if (profile.fault === "crash-retry" && ++nativeResponses === 2 || profile.fault === "crash" || profile.fault === "crash-after-one" && ++nativeResponses > 1) process.kill(process.pid, "SIGKILL");
       return response;
     }
     const parsed = new URL(endpoint);

@@ -47,6 +47,9 @@ function bind(protocol, protocolId) {
       };
       const quota = error => ["usage_limit_reached", "usage_limit_exceeded", "insufficient_quota", "quota_exceeded", "rate_limit_exceeded"].includes(error?.code)
         || ["usage_limit_reached", "usage_limit_exceeded", "insufficient_quota"].includes(error?.type);
+      const observeNative = (stage, status, code, binding) => {
+        try { protocol.execution?.observeNative?.(resolvedSafety, stage, status, code, binding); } catch { /* Observation cannot change send or refusal. */ }
+      };
       const send = async (url, init) => {
         assertResolvedLookupSafety(resolvedSafety);
         need(digest(resolvedSafety.plan) === digest(a.plan) && resolvedSafety.arm.id === a.roleRequest.binding.arm);
@@ -70,26 +73,48 @@ function bind(protocol, protocolId) {
         const bytes = encoding === "zstd" ? zstdDecompressSync(init.body) : Buffer.from(init.body);
         need(hold?.consumed === true && !hold.revoked && !hold.settlement && !used.has(hold.permitId)
           && hold.payloadDigest === createHash("sha256").update(bytes).digest("hex"));
+        const binding = { round: hold.round, role: hold.paidRole, checkpoint: hold.checkpoint, payloadDigest: hold.payloadDigest };
+        observeNative("request_setup", null, undefined, binding);
         if (!matchesAccount(handle, headers.get("chatgpt-account-id"))) await stop(protocol.codes.account_mismatch);
         try { protocol.execution?.assertCacheHeaders?.(headers, hold, a.cacheKey); protocol.execution?.assertBody(bytes, hold); if (protocol.execution?.verifyNativeBody) await protocol.execution.verifyNativeBody(bytes, hold, state, a, permit); }
         catch (error) { await stop(error?.code ?? protocol.codes.body_mismatch, true); }
         if (clock) await assertDeadline(); // Native-body verification may have awaited durable history.
-        used.add(hold.permitId); // No retry, including after fetch rejection or abort.
-        const response = await nativeDispatch.run(protocolId, () => nativeFetch(endpoint, { ...init, redirect: "error" }));
+        used.add(hold.permitId); // Single send per permit, including after rejection/abort. E2 retries need a fresh permit.
+        let response;
+        try { response = await nativeDispatch.run(protocolId, () => nativeFetch(endpoint, { ...init, redirect: "error" })); }
+        catch (error) { observeNative("dispatch", null, error?.code ?? error?.cause?.code); throw error; }
+        observeNative("response_headers", response.status);
         const rejectResponse = async code => {
           try { void response.body?.cancel().catch(() => {}); } catch {}
           await stop(code);
         };
         if ([401, 403].includes(response.status)) await rejectResponse(protocol.codes.auth_failure);
-        if (response.status === 429) await rejectResponse(protocol.codes.quota_exhausted);
+        if (response.status === 429 && !protocol.execution?.deferNativeFailure?.(a.pilot, response.status)) await rejectResponse(protocol.codes.quota_exhausted);
         const type = response.headers.get("content-type") ?? "";
         if (type.includes("application/json")) {
           const body = await response.clone().json().catch(() => null);
-          if (quota(body?.error)) await rejectResponse(protocol.codes.quota_exhausted);
+          observeNative("response_headers", response.status, [body?.error?.code, body?.error?.type], binding);
+          if (quota(body?.error) && !protocol.execution?.deferNativeFailure?.(a.pilot, response.status, [body?.error?.code, body?.error?.type])) await rejectResponse(protocol.codes.quota_exhausted);
         }
         if (!response.body || !type.includes("text/event-stream")) return response;
+        let body = response.body;
+        if (protocol.execution?.observeNative) {
+          const reader = body.getReader(); let canceled = false;
+          body = new ReadableStream({
+            async pull(controller) {
+              try { const next = await reader.read(); if (canceled) return; if (next.done) controller.close(); else controller.enqueue(next.value); }
+              catch (error) {
+                if (canceled) return;
+                let code = typeof error?.code === "string" ? error.code : error?.cause?.code;
+                if ((!code || code === "ABORT_ERR") && error?.name === "AbortError" && !init.signal?.aborted) code = "ERR_STREAM_PREMATURE_CLOSE";
+                observeNative("provider_terminal", null, code, binding); controller.error(error);
+              }
+            },
+            cancel(reason) { canceled = true; return reader.cancel(reason); },
+          });
+        }
         let buffer = ""; const decoder = new TextDecoder();
-        return new Response(response.body.pipeThrough(new TransformStream({
+        return new Response(body.pipeThrough(new TransformStream({
           async transform(chunk, controller) {
             buffer += decoder.decode(chunk, { stream: true });
             if (buffer.length > 4 * 1024 * 1024) await stop(protocol.codes.payload_forbidden);
@@ -97,7 +122,9 @@ function bind(protocol, protocolId) {
             for (const frame of frames) {
               const data = frame.split(/\r?\n/u).filter(line => line.startsWith("data:")).map(line => line.slice(5).trimStart()).join("\n");
               let event; try { event = JSON.parse(data); } catch { continue; }
-              if (quota(event?.error) || quota(event?.response?.error)) await stop(protocol.codes.quota_exhausted);
+              if (["response.completed", "response.incomplete", "response.failed", "error"].includes(event?.type) || event?.error || event?.response?.error)
+                observeNative("provider_terminal", null, [event?.error?.code, event?.error?.type, event?.response?.error?.code, event?.response?.error?.type, event?.code, event?.type, event?.response?.incomplete_details?.reason], binding);
+              if ((quota(event?.error) || quota(event?.response?.error)) && !protocol.execution?.deferNativeFailure?.(a.pilot, null, [event?.error?.code, event?.error?.type, event?.response?.error?.code, event?.response?.error?.type, event?.code, event?.type, event?.response?.incomplete_details?.reason])) await stop(protocol.codes.quota_exhausted);
             }
             controller.enqueue(chunk);
           },

@@ -244,7 +244,7 @@
         }
       },
       "PERMIT_CONTRACT": {
-        "version": "e2-permit-v1",
+        "version": "e2-permit-v2",
         "admissionFields": [
           "requestId",
           "slotId",
@@ -262,7 +262,8 @@
           "settle",
           "stop",
           "compaction",
-          "verifyBody"
+          "verifyBody",
+          "retry"
         ],
         "outcomes": [
           "refused_pre_send",
@@ -345,7 +346,7 @@
         "e2_send_mismatch",
         "e2_duplicate_terminal"
       ],
-      "PLAN_SCHEMA": "continuity-e2-guarded-plan-v2",
+      "PLAN_SCHEMA": "continuity-e2-guarded-plan-v3",
       "PREFLIGHT": "e2-preflight-controller-v1",
       "PRE_SEND_REFUSALS": [
         "not_admitted_input_envelope",
@@ -406,6 +407,7 @@
       "USD_UNITS": "1000000000"
     },
     "codes": {
+      "deadlines_invalid": "e2_deadlines_invalid",
       "phase_failed": "e2_phase_failed",
       "summary_not_authorized": "e2_summary_not_authorized",
       "summary_receipt_invalid": "e2_summary_receipt_invalid",
@@ -492,8 +494,7 @@
       "unreconciled_processes": "e2_unreconciled_processes",
       "unsafe_authorization_file": "e2_unsafe_authorization_file",
       "worker_lost": "e2_worker_lost",
-      "worker_timeout": "e2_worker_timeout",
-      "deadlines_invalid": "e2_deadlines_invalid"
+      "worker_timeout": "e2_worker_timeout"
     },
     "registryDomain": "mono-agent/lcc-e2/consumed-v1\u0000",
     "accountDomain": "mono-agent/lcc-e2/account-v1\u0000",
@@ -539,6 +540,7 @@
     "scripts/continuity-lookup-compare.mjs",
     "scripts/continuity-lookup-estimate.mjs",
     "scripts/lib/continuity-e2-authorization.mjs",
+    "scripts/lib/continuity-e2-cause.mjs",
     "scripts/lib/continuity-e2-checks.mjs",
     "scripts/lib/continuity-e2-controller-policy.mjs",
     "scripts/lib/continuity-e2-diagnostics.mjs",
@@ -554,10 +556,12 @@
     "scripts/lib/continuity-e2-phase-child.mjs",
     "scripts/lib/continuity-e2-policy.mjs",
     "scripts/lib/continuity-e2-pricing.mjs",
+    "scripts/lib/continuity-e2-progress.mjs",
     "scripts/lib/continuity-e2-proofs.mjs",
     "scripts/lib/continuity-e2-protocol.mjs",
     "scripts/lib/continuity-e2-registration.mjs",
     "scripts/lib/continuity-e2-replay.mjs",
+    "scripts/lib/continuity-e2-retry.mjs",
     "scripts/lib/continuity-e2-roles.mjs",
     "scripts/lib/continuity-e2-routes.mjs",
     "scripts/lib/continuity-e2-runtime.mjs",
@@ -623,14 +627,14 @@
     "replay": [
       "ConversationHistory"
     ],
+    "replayFinal": [],
     "proof": [
       "ConversationHistory"
     ],
     "cancelContinuation": [
       "ConversationHistory",
       "ProofSentinel"
-    ],
-    "replayFinal": []
+    ]
   },
   "errorClass": "E2GuardError"
 }
