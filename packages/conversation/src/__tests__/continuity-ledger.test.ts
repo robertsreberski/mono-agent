@@ -219,13 +219,20 @@ it("rejects a corrupted ledger payload before any paid extraction while preservi
 it("does not demote an uncited owner under summary overflow, regardless of claimed coverage", async () => {
   const f = await fixture(); await owner(f, "First rule."); await owner(f, "Never send the protected document without fresh confirmation.");
   const source = f.reader.snapshotContinuity(scope), selection = selectLedgerSources(source);
-  const generation = validateLedgerOutput(JSON.stringify({ entries: [{ kind: "constraint", value: "First rule.", status: "active", sources: [selection.spans[0]!.id] }], covered: selection.spans.map(s => s.id) }), selection, scope);
+  const cited = selection.spans.find(span => span.recordId === source.records[0]!.recordId)!;
+  const generation = validateLedgerOutput(JSON.stringify({ entries: [{ kind: "constraint", value: "First rule.", status: "active", sources: [cited.id] }], covered: selection.spans.map(s => s.id) }), selection, scope);
   const { inputId: _input, ...summaryBase } = source.records[0]!;
   // A shipping snapshot has at most one eligible pinned summary. Force its
   // whole-entry omission; many synthetic unpinned summaries are not candidates.
   const fillers = [{ ...summaryBase, recordId: "summary", source: {}, kind: "summary" as const, text: "Untrusted generated filler. ".repeat(300) }];
-  const pack = renderContinuityPack({ ...source, records: [...source.records, ...fillers] }, [], 1300, { generation: { ...generation, coveredOwners: source.records.map(r => r.recordId) }, records: source.records });
-  expect(pack.text).toContain("Historical owner request"); expect(pack.text).toContain("Never send the protected document without fresh confirmation."); expect(pack.omitted).toBeGreaterThan(0);
+  // Neutral entries fill residual space before any demoted owner. If claimed
+  // coverage incorrectly demotes the uncited owner, these displace its quotation.
+  const competitors = Array.from({ length: 40 }, (_, i) => ({ ...summaryBase, recordId: `neutral-${i}`, source: {}, kind: "user" as const,
+    provenance: "unknown" as const, ordinal: 100 + i, text: "Neutral pressure." }));
+  const pack = renderContinuityPack({ ...source, records: [...source.records, ...fillers, ...competitors] }, [], 1300, { generation: { ...generation, coveredOwners: source.records.map(r => r.recordId) }, records: source.records });
+  expect(pack.text).toContain(`Historical owner request id=${JSON.stringify(source.records[1]!.recordId)}`);
+  expect(pack.text).toContain("Never send the protected document without fresh confirmation."); expect(pack.omitted).toBeGreaterThan(1);
+  expect(pack.counts.evidence).toBeGreaterThan(0); expect(pack.ledgerEntries).toBe(1);
   expect(pack.counts.summary).toBe(0); expect(pack.text).toContain("Generated summary omitted");
 });
 it("escapes derived values/owner quotations and labels tool-only rules with provenance", async () => {

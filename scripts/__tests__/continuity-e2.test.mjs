@@ -226,7 +226,7 @@ it.each(["faux-short", "faux-max"])("replays configured shipping compaction with
   expect(lineage.checkpoints.length).toBeGreaterThanOrEqual(2);
   for (const { branch, reference } of lineage.checkpoints) expect(existsSync(join(dir, "work", "replay", `branch-${branch}`, "work", "sessions", "journals", `${reference.journalId}.jsonl`))).toBe(false);
   const verified = await lineage.verify(contexts);
-  if (summary === "faux-short") { expect(verified.pack).toBeGreaterThan(0); expect(verified.serializedPrompts).toBeGreaterThan(0); }
+  if (summary === "faux-short") { expect(verified.pack).toBeGreaterThan(0); expect(verified.serializerRoundTrips).toBeGreaterThan(0); }
   expect(report.branches).toHaveLength(2);
   for (const branch of report.branches) {
     expect(branch.compactions.length).toBeGreaterThan(0); expect(branch.summaryRequests.length).toBeGreaterThan(0);

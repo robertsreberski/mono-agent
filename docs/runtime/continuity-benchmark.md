@@ -2979,7 +2979,10 @@ verified presence. Faux pressure replays cover main B4 and prefix B3, including
 both pristine restored repeats: fitting summaries must appear as complete
 shipping-generated pack lines. Every admitted summary must resolve through its
 own slot's current/predecessor lineage via the shipping Responses converter and
-`verifyE2NativeLineage`, including serialized claims in later compaction prompts.
+`verifyE2NativeLineage`. A synthetic shipping-serializer round-trip separately
+checks compaction-style pack encoding; it does not demonstrate a later real
+compaction request carrying the pack. Captured actual summary requests are
+lineage-checked independently.
 Faux-max exercises all-or-nothing omission and content-free size/headroom
 reporting. Record pack estimated-token deltas as cost evidence, not a quality
 score. The complete JSON-quoted summary must fit after the unchanged admitted

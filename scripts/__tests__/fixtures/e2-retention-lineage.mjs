@@ -63,23 +63,23 @@ export async function retentionLineage(root, protocol) {
     new Set(["openai", "openai-codex", "opencode"]), { includeSystemPrompt: false }) }));
   return { modules: { ...modules, app }, checkpoints, prompts,
     async verify(contexts) {
-      const counts = { pack: 0, serializedPrompts: 0 };
+      const counts = { pack: 0, serializerRoundTrips: 0, capturedCompactionPackPrompts: 0 };
       for (const observation of [...contexts, ...prompts]) {
         const { branch, context, model } = observation, body = serialized(context, model);
         const found = e2BodySummaryRepresentations(JSON.parse(body));
         const presence = await verifyE2NativeLineage(body, { lineageScope: branch, lineage: slot.lineages[branch] }, state, { outputRoot: root, index: 0 }, readArtifact);
         if (contexts.includes(observation)) {
           counts.pack += presence.pack;
-          // Exercise the shipping subsequent-compaction serialization even when
-          // this short faux schedule does not trigger a second native reduction.
+          // Synthetic shipping-serializer round-trip only: this short schedule
+          // does not prove a later real compaction request carries the pack.
           if (presence.pack) {
             const prompt = `<conversation>\n${serializeConversation(context.messages)}\n</conversation>\n\n`;
             const serializedBody = serialized({ messages: [{ role: "user", content: prompt, timestamp: 1 }] }, model);
             const serializedPresence = await verifyE2NativeLineage(serializedBody, { lineageScope: branch, lineage: slot.lineages[branch] }, state, { outputRoot: root, index: 0 }, readArtifact);
-            expect(serializedPresence.pack).toBe(presence.pack); counts.serializedPrompts++;
+            expect(serializedPresence.pack).toBe(presence.pack); counts.serializerRoundTrips++;
           }
         }
-        else if (found.some(r => r.kind === "pack")) counts.serializedPrompts++;
+        else if (found.some(r => r.kind === "pack")) counts.capturedCompactionPackPrompts++;
       }
       return counts;
     },
