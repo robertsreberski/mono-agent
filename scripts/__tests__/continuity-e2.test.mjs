@@ -242,7 +242,10 @@ it.each(["faux-short", "faux-max"])("replays configured shipping compaction with
     }
   }
   const retrievalDirectory = join(dir, "work", "replay", "probe-receipts");
-  const retrievalRows = readdirSync(retrievalDirectory).filter(n => /^\d+\.json$/u.test(n)).sort().map(n => JSON.parse(readFileSync(join(retrievalDirectory, n))));
+  expect(fs.statSync(retrievalDirectory).mode & 0o777).toBe(0o700);
+  const receiptFiles = readdirSync(retrievalDirectory).filter(n => /^\d+\.json$/u.test(n)).sort();
+  for (const name of receiptFiles) expect(fs.statSync(join(retrievalDirectory, name)).mode & 0o777).toBe(0o600);
+  const retrievalRows = receiptFiles.map(n => JSON.parse(readFileSync(join(retrievalDirectory, n))));
   expect(retrievalRows.filter(r => r.phase === "call")).toHaveLength(8 * protocol.probeLookupRounds);
   expect(retrievalRows.filter(r => r.phase === "response")).toHaveLength(8 * protocol.probeLookupRounds);
   expect(new Set(retrievalRows.map(r => r.checkpoint))).toEqual(new Set([0, 1, 2, 3]));
@@ -251,7 +254,6 @@ it.each(["faux-short", "faux-max"])("replays configured shipping compaction with
     expect([1, 2]).toContain(row.repeat); expect(row.requestOrdinal).toBeGreaterThan(0);
     expect(JSON.parse(row.arguments.text)).toEqual({ action: "search", query: "retained", limit: 1 });
     if (row.phase === "response") expect(row.response.text).toContain('"action":"search"');
-    expect(fs.statSync(retrievalDirectory).mode & 0o777).toBe(0o700);
   }
   expect(JSON.stringify(report)).not.toContain("probe-receipt");
   const probeContexts = contexts.filter(c => c.probe);

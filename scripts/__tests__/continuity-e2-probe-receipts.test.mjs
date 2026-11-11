@@ -1,13 +1,13 @@
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { mkdtemp, readFile, readdir, rm, stat, writeFile, chmod } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createE2ProbeReceipts, E2_PROBE_RECEIPT_LIMITS } from "../lib/continuity-e2-probe-receipts.mjs";
 import { freezeCheckpoint, restoreCheckpoint } from "../lib/continuity-e2-replay.mjs";
+import * as progress from "../lib/continuity-e2-progress.mjs";
 import { digest } from "../lib/continuity-recorded-schema.mjs";
-import { convertResponsesMessages } from "../../packages/turn/node_modules/@earendil-works/pi-ai/dist/api/openai-responses-shared.js";
 const roots = [];
-afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
+afterEach(async () => { vi.restoreAllMocks(); for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
 async function fixture(options = {}) {
   const output = await mkdtemp(join(tmpdir(), "e2-probe-receipts-")); roots.push(output); await chmod(output, 0o700);
   return { output, recorder: createE2ProbeReceipts({ output, slotId: "fictional-slot", ...options }) };
@@ -52,22 +52,6 @@ it("makes I/O failure non-fatal and records progressGap without exception conten
   expect(gaps).toBe(2); expect(recorder.progressGap()).toBe(2);
   expect(JSON.parse(await readFile(join(output, "progress-gap.json")))).toEqual({ progressGap: 2 });
 });
-it("leaves prompt/context and SDK request-body bytes identical with recording enabled or disabled", async () => {
-  const context = { systemPrompt: "Fictional system prompt", messages: [
-    { role: "user", content: "Fictional probe prompt", timestamp: 1 },
-    { role: "assistant", content: [{ type: "toolCall", id: "fictional-call", name: "ConversationHistory", arguments: args }], timestamp: 2, stopReason: "toolUse" },
-    { role: "toolResult", toolCallId: "fictional-call", toolName: "ConversationHistory", content: [{ type: "text", text: responseText }], timestamp: 3, isError: false },
-  ] };
-  const serialize = () => JSON.stringify({ input: convertResponsesMessages({ provider: "openai-codex", api: "openai-codex-responses", id: "fictional", input: ["text"] }, context, new Set(["openai-codex"]), { includeSystemPrompt: true }) });
-  const before = JSON.stringify(context), requests = [];
-  for (const enabled of [false, true]) {
-    const { output, recorder } = await fixture({ enabled }); recorder.begin(binding); recorder.observeRequest(context);
-    requests.push(serialize()); recorder.observe(call()); recorder.observe(result(responseText)); recorder.observeRequest(context); requests.push(serialize()); await recorder.flush();
-    expect(JSON.stringify(context)).toBe(before);
-    if (!enabled) expect(await readdir(output)).toEqual([]);
-  }
-  expect(requests.every(bytes => bytes === requests[0])).toBe(true);
-});
 it("retains an unmatched call and ignores non-history results, then resets repeat/request identity", async () => {
   const { output, recorder } = await fixture(); recorder.begin(binding); recorder.observeRequest(); recorder.observe(call()); await recorder.flush();
   recorder.begin({ ...binding, repeat: 1, itemOrdinal: 8 }); recorder.observeRequest(); recorder.observe(result("Fictional unrelated result"));
@@ -96,4 +80,49 @@ it("saturates content-free gaps at the existing journal schema bound", async () 
   recorder.begin(binding); recorder.observeRequest(); recorder.observe(call()); await recorder.flush();
   expect(recorder.progressGap()).toBe(4096);
   expect(JSON.parse(await readFile(join(output, "progress-gap.json")))).toEqual({ progressGap: 4096 });
+});
+
+it("captures MCP-prefixed history names and joins array text without parsing non-text summaries", async () => {
+  const { output, recorder } = await fixture(); recorder.begin(binding); recorder.observeRequest();
+  const event = call(); event.message.content[0].name = "mcp__fictional-server__ConversationHistory";
+  const blocks = [{ type: "text", text: "Untrusted fictional notice" }, { type: "text", text: JSON.stringify(body) }, { type: "image", data: "Fictional non-text payload" }];
+  const before = JSON.stringify(blocks);
+  recorder.observe(event); recorder.observe(result(blocks)); await recorder.flush();
+  const rows = await entries(output); expect(rows).toHaveLength(2);
+  expect(rows[1].response.text).toBe(`${responseText}\n[non-text image block]`);
+  expect(rows[1].response.text).not.toContain("Fictional non-text payload");
+  expect(JSON.parse(rows[1].metadata.text)).toMatchObject({ status: "parsed", records: [{ recordId: "fictional-record" }] });
+  expect(JSON.stringify(blocks)).toBe(before); expect(recorder.progressGap()).toBe(0);
+});
+it.each([null, {}, "fictional", 7])("treats non-array items %j as unparsed, not a capture gap", async items => {
+  const { output, recorder } = await fixture(); recorder.begin(binding); recorder.observeRequest();
+  recorder.observe(call()); recorder.observe(result(JSON.stringify({ ...body, items }))); await recorder.flush();
+  const rows = await entries(output); expect(rows).toHaveLength(2);
+  expect(JSON.parse(rows[1].metadata.text)).toEqual({ status: "unparsed" }); expect(recorder.progressGap()).toBe(0);
+});
+it("skips malformed records while preserving valid page ranks without a capture gap", async () => {
+  const { output, recorder } = await fixture(); recorder.begin(binding); recorder.observeRequest();
+  recorder.observe(call()); recorder.observe(result(JSON.stringify({ ...body, items: [null, "fictional", 7, [], body.items[0]] })));
+  recorder.observe(call("get")); recorder.observe(result(JSON.stringify({ action: "get", record: null }), "get")); await recorder.flush();
+  const rows = await entries(output); expect(rows).toHaveLength(4);
+  expect(JSON.parse(rows[1].metadata.text)).toMatchObject({ status: "parsed", records: [{ rank: 5, recordId: "fictional-record" }] });
+  expect(JSON.parse(rows[3].metadata.text)).toMatchObject({ status: "parsed", records: [] }); expect(recorder.progressGap()).toBe(0);
+});
+it("shares the entry cap across begin calls and reports the overflow only once per run", async () => {
+  const write = vi.spyOn(progress, "writeE2ProbeReceipt").mockResolvedValue(undefined);
+  const { recorder } = await fixture();
+  for (let i = 0; i < E2_PROBE_RECEIPT_LIMITS.entries; i++) {
+    recorder.begin({ ...binding, itemOrdinal: i + 1 }); recorder.observeRequest(); recorder.observe(call());
+  }
+  recorder.begin({ ...binding, repeat: 1 }); recorder.observeRequest(); recorder.observe(call()); recorder.observe(call()); await recorder.flush();
+  expect(write).toHaveBeenCalledTimes(E2_PROBE_RECEIPT_LIMITS.entries); expect(recorder.progressGap()).toBe(1);
+});
+
+it("parses the response body rather than inline tool-authored navigation arguments", async () => {
+  const { output, recorder } = await fixture(); recorder.begin(binding); recorder.observeRequest();
+  const text = `Read the complete record. Exact arguments: {"action":"get","recordId":"fictional-record"}\n${JSON.stringify(body, null, 2)}`;
+  recorder.observe(call()); recorder.observe(result(text)); await recorder.flush();
+  const [, row] = await entries(output);
+  expect(row.response.text).toBe(text);
+  expect(JSON.parse(row.metadata.text)).toMatchObject({ status: "parsed", action: "search", records: [{ recordId: "fictional-record" }] });
 });

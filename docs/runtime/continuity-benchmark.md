@@ -3090,11 +3090,14 @@ UTF-8 sizes, SHA-256 digests, captured sizes and explicit truncation markers.
 Parsed response metadata preserves returned record order as page-relative rank,
 record ids, sizes, digests, cursors and available truncation flags.
 
-Limits are 4096 entries per replay, 8 KiB argument excerpts, 64 KiB response
+Limits are 4096 entries per run (shared across all probes), 8 KiB argument excerpts, 64 KiB response
 excerpts and 32 KiB metadata excerpts; metadata parsing stops above 1 MiB.
-Bounded text is retained whole. Entries publish atomically with fsync and are
-drained before restore, including failed probes; a call without a response can
-survive interruption. I/O/capture failures or reaching the entry cap add only a
+Capture keeps complete UTF-8 characters within each byte bound and appends an
+explicit truncation marker outside that bound when needed. Array responses join
+text blocks with newlines and summarize non-text blocks. Entries publish
+atomically with fsync and are drained before restore, including failed probes;
+a published call without a response can survive interruption. The newest queued
+writes may be lost if the process is killed before flush. I/O/capture failures or reaching the entry cap add only a
 content-free `progressGap` (saturating at 4096), never a gate requirement.
 Receipts do not change
 prompts, model-visible bytes, request order, sizing or cost. Their content is

@@ -216,6 +216,7 @@ export async function runE2Sizing({ source, protocol, output, summary = "faux-sh
   const report = { schema: real ? "continuity-e2-replay-v1" : "continuity-e2-sizing-v1", sourceDigest: digest(JSON.stringify(source)), protocolDigest: protocolDigest(protocol), summary,
     soul: { rawDigest: soul.rawDigest, normalizedDigest: soul.normalizedDigest }, usage: "estimated-not-measured", semanticQualification: false, branches: [] };
   await mkdir(output, { mode: 0o700 });
+  // One recorder and entry cap per run, not per checkpoint/probe.
   const retrieval = createE2ProbeReceipts({ output, enabled: probeReceipts,
     ...(paidAdapter?.probeReceiptBinding?.() ?? { slotId: "offline-sizing" }), noteProgressGap: () => paidAdapter?.noteProgressGap() });
   try {
