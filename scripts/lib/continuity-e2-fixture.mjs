@@ -14,7 +14,7 @@ try {
   const stat = await lstat(base);
   if (!stat.isDirectory() || stat.uid !== process.getuid() || (stat.mode & 0o7777) !== 0o700) fail("E2_ARGUMENTS_INVALID");
   const config = JSON.parse(await readFile(join(base, "fixture.json"), "utf8"));
-  if (!["cancel", "pressure"].includes(config.arm) || !["ceiling", "restart"].includes(config.variant) || Object.keys(config).some(k => !["arm", "variant", "fault"].includes(k))) fail("E2_ARGUMENTS_INVALID");
+  if (!["cancel", "pressure"].includes(config.arm) || !["ceiling", "restart"].includes(config.variant) || Object.keys(config).some(k => !["arm", "variant", "fault", "summary"].includes(k))) fail("E2_ARGUMENTS_INVALID");
   restore = installProofIsolation(await proofEnvironment(join(base, "hermetic")));
   const result = await runProofPhase({ ...config, phase, base });
   await privateModes(base);

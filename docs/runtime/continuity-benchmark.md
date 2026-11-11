@@ -2502,17 +2502,48 @@ consumption; the command never creates approval.
 | `idle` | After setup compacts, use a configured 1200 ms warm-session timeout; observe this conversation's `evicted`/`idle_timeout` and at least 1000 ms wall-clock idle time before continuing in the same process |
 | `pressure` | Run continuity-pack ceiling and restart/model-switch variants; require proactive, durably successful compaction at the unchanged shipping 200k trigger |
 
-Idle and restart **retain the native transcript by design** without a prior
-compaction (`packages/conversation/src/harness/index.ts:1417–1420`). Initial
-absence in `idle` and `cancel` therefore comes from a separately counted setup
-compaction, not from eviction/restart deleting history. These arms test retained
-lookup recovery **across idle/restart after compaction**. Large scripted inert
-tool results create pressure; no context is synthetically removed and no trigger
-is lowered. The restart pressure variant also uses the shipping trigger during
-setup, not the legacy recall arm's small post-restart trigger. Setup checks read
-the registered compaction count and trigger from the variant metadata; metadata
-that disagrees with durable receipts or the shipping ceiling refuses. The original
-recall arm inventory and defaults remain unchanged.
+Same-model idle and restart **retain the native transcript**, including tool
+results, on a true durable resume; a cold reopen alone does not remove facts
+(`packages/conversation/src/harness/index.ts:1417–1420`). Model change instead
+uses the production handoff/reconstruction projection. The proof fixtures use
+that explicit boundary, never journal editing, synthetic context deletion or
+summary omission, to make the target unavailable natively.
+
+Pressure setup first completes exactly one proactive, durably successful
+compaction at the unchanged shipping 200k trigger. Only **after** that summary
+commits does a separate scripted tool turn introduce `proof-evidence` and the
+protected record, followed by inert tails that move them outside pack previews.
+A faithful summary therefore cannot already contain the target. The fact remains
+in ConversationHistory, but a normal model-change projection carries fact-free
+canonical final replies and bounded continuity packs instead of native tools.
+The explicit ordering is:
+
+| Arm | Preparation, boundary, recovery order |
+| --- | --- |
+| `switch` | Record evidence on Luna → Luna-to-Sol boundary establishes absence → history recovery → two probes |
+| `cancel` | Ceiling compaction → record evidence → scripted Sol–Luna–Sol round trip establishes absence → forwarded cancellation → different-process same-model resume → history recovery → two probes |
+| `idle` | Ceiling compaction → record evidence → scripted Sol–Luna–Sol round trip establishes absence → observed idle eviction → same-model reopen → history recovery → two probes |
+| `pressure/ceiling` | Ceiling compaction (asserted) → record evidence → scripted Sol–Luna–Sol round trip establishes absence → history recovery → two probes |
+| `pressure/restart` | Ceiling compaction on Luna → record evidence → scripted Luna–Sol–Luna round trip establishes absence → different-process restart and Luna-to-Sol boundary → history recovery → two probes |
+
+Pressure/ceiling is a **composite boundary**: lookup after a shipping-ceiling
+compaction plus cold projection. Ceiling compaction no longer gates the fact's
+absence by itself. Cancel, idle and restart cross their named boundary after
+absence is independently checked in the scripted projection. The first recovery
+request still checks actual native absence in every arm. All added evidence and
+round-trip source replies are scripted/free; paid summary, cancellation and probe
+roles retain their original model bindings. Setup checks still require the exact
+registered compaction count and shipping trigger; the original recall arm
+inventory and defaults remain unchanged. Per-arm reports expose this ordering in
+`preparation.order` rather than attributing absence to eviction or cancellation.
+
+Offline regressions include `faux-faithful` summaries that preserve FACT and
+NEXT_ACTION whenever either occurs in the actual summarized input. The old
+pre-compaction fixture fails initial absence in cancel and pressure; even the
+new projection boundary fails if a faithful summary has already retained the
+fact. New fixtures pass every arm/variant with faithful, short and maximum faux
+summaries. Faithful mode and fault fixtures are programmatic offline test seams,
+not paid execution options. Paid entry rejects either injection.
 
 Every arm checks initial absence of the fictional fact, complete digest-verified
 ConversationHistory recovery, the pending next action, no protected-canary or
@@ -2555,6 +2586,19 @@ or absolute path is present in sizing. The ordinary `proofs` command remains
 faux-only. The separately authorized `proofs --real` entry uses the guarded SDK
 phase pipeline below; faux or owned-loopback results do not establish provider
 quality or spending approval.
+
+For refreshed proof sizing, invoke `runE2Proofs({ output, summary })` from a Node
+`.mjs` file (not `--input-type`, which is inherited by store workers), once each
+with `faux-short` and `faux-max`, using fresh private temporary outputs. Retain
+only the four content-free `<arm>-sizing.json` records from each draw. Require
+identical arm/variant, request count/order, phase, model, role, paidRole and output
+ceiling between draws; then freeze one four-arm envelope, selecting each row's
+actual `size` from the draw with the larger `size.maximum` (short wins ties).
+Hash-pin all eight draws and four envelope files in the private builder and
+reproduce the envelope there before registration. Feed **only the four envelope
+records** to `e2PhaseSchedule` / `estimateE2SizingSet`; duplicate proof arms are
+not alternative paid runs. Do not regenerate replay, questions, keys or limits.
+Sizing is estimated, not a completion guarantee or spending permission.
 
 
 ## Guarded controller lease trust
