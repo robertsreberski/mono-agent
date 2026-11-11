@@ -1,10 +1,11 @@
 import { EventEmitter } from "node:events";
 import { fixtureDriverReply, stopFixtureDrivers } from "./fixtures/lookup-pilot-reply.mjs";
 import { afterEach, expect, it, vi } from "vitest";
-import { mkdtemp, mkdir, writeFile, symlink, unlink, rm, utimes } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, symlink, unlink, rm, utimes, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { dependencyLeafSnapshot } from "./fixtures/lookup-leaf-witness.mjs";
+import ts from "typescript";
 const roots = [];
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, {recursive: true, force: true}); });
 async function fixture() { const root = await mkdtemp(join(tmpdir(), "lookup-leaf-fictional-")); roots.push(root); return root; }
@@ -61,4 +62,17 @@ it("stops the driver and awaits its close before taking the final probe witness"
   expect(child.kill).toHaveBeenCalledWith("SIGKILL"); await Promise.resolve(); expect(read).toBe(false);
   probes.push({pid: 123, startIdentity: "fictional-late-probe"}); child.signalCode = "SIGKILL"; close();
   expect(await witness).toEqual([{pid: 123, startIdentity: "fictional-late-probe"}]);
+});
+
+it("gives full-fixture cleanup and dependency witnessing an explicit finite hook budget", async () => {
+  const source = await readFile(new URL("./fixtures/lookup-pilot-process.mjs", import.meta.url), "utf8"), ast = ts.createSourceFile("fixture.mjs", source, ts.ScriptTarget.Latest, true);
+  const hooks = []; let budget;
+  function visit(node) {
+    if (ts.isCallExpression(node) && node.expression.getText(ast) === "afterAll") hooks.push(node);
+    if (ts.isVariableDeclaration(node) && node.name.getText(ast) === "LOOKUP_FIXTURE_CLEANUP_TIMEOUT_MS") budget = Number(node.initializer.getText(ast));
+    ts.forEachChild(node, visit);
+  }
+  visit(ast); expect(hooks).toHaveLength(1); expect(hooks[0].arguments).toHaveLength(2);
+  expect(hooks[0].arguments[1].getText(ast)).toBe("LOOKUP_FIXTURE_CLEANUP_TIMEOUT_MS");
+  expect(budget).toBeGreaterThanOrEqual(60000); expect(budget).toBeLessThanOrEqual(120000);
 });
