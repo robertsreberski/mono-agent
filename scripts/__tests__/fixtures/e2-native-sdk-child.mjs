@@ -71,6 +71,13 @@ try {
     }
     if (profile.scenario === "lineage-absent") messages = ["Fictional warm context without a summary."];
     if (profile.scenario === "archive-absent") { await rm(journalPath); messages = ["Fictional reseeded context without a summary."]; }
+    if (["lineage-previous-stale", "lineage-previous-cross-scope"].includes(profile.scenario)) {
+      const { lineageFixture } = await import("./e2-lineage-fixture.mjs"), other = await lineageFixture(["Fictional unrelated archived value."], undefined, undefined,
+        profile.scenario.endsWith("cross-scope") ? { kind: "replay", branch: 1 } : {});
+      try { const archived = await other.bind(); await writeFile(e2ArchivePath(a.outputRoot, archived.archiveSha256), await readFile(e2ArchivePath(other.root, archived.archiveSha256)), { mode: 0o600 });
+        messages = [`<previous-summary>\n${other.assembled}\n</previous-summary>`]; }
+      finally { await rm(other.root, { recursive: true, force: true }); }
+    }
     if (profile.scenario === "archive-tamper") {
       const state = await guardedState("e2-validation").readPrivate(guardedState("e2-validation").statePath(a.outputRoot));
       await writeFile(e2ArchivePath(a.outputRoot, state.slots[0].lineages.proof.archiveSha256), "{}\n", { mode: 0o600 });
@@ -88,7 +95,7 @@ try {
 } catch (error) {
   caught = error.code;
   const code = error.code === "E2_MODELS_METHOD_REFUSED" ? "e2_method_forbidden" : error.code;
-  if (actor) { await actor.stop(code); await writeFile(join(work, "..", `${a.slot.phase}-refusal.json`), JSON.stringify({ nativeCause: actor.failureCause() }), { mode: 0o600 }); } outcome = ["e2_method_forbidden", "e2_summary_not_authorized", "not_admitted_cap", "not_admitted_input_envelope", "e2_request_limit"].includes(code)
+  if (actor) { await actor.stop(code); try { await writeFile(join(work, "..", `${a.slot.phase}-refusal.json`), JSON.stringify({ nativeCause: actor.failureCause() }), { flag: "wx", mode: 0o600 }); } catch { /* Diagnostic failure cannot prevent done. */ } } outcome = ["e2_method_forbidden", "e2_summary_not_authorized", "not_admitted_cap", "not_admitted_input_envelope", "e2_request_limit"].includes(code)
     ? { terminal: "refused_pre_send", score: null, refusalCode: code } : { terminal: "lost", score: null, refusalCode: null };
 } finally { actor?.close(); }
 const ack = once(process, "message"); process.send({ type: "done", epoch: a.epoch, slotId: a.slotId, ...outcome, caught }); await ack; process.disconnect();

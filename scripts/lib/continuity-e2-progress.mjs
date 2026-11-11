@@ -24,6 +24,10 @@ async function exclusiveJSON(directory, name, value) {
   if (existing) throw Object.assign(Error("EEXIST"), { code: "EEXIST" });
   await atomicJSON(directory, name, value);
 }
+export async function writeE2ProgressGap(output, progressGap) {
+  need(Number.isSafeInteger(progressGap) && progressGap > 0 && progressGap <= 4096);
+  await atomicJSON(output, "progress-gap.json", { progressGap });
+}
 export async function writeE2Progress(output, ordinal, binding, answer) {
   need(Number.isSafeInteger(ordinal) && ordinal > 0 && ordinal <= 4096);
   const directory = join(output, "answer-progress"); await mkdir(directory, { recursive: true, mode: 0o700 });

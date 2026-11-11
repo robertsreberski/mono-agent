@@ -2909,14 +2909,20 @@ Before replacing a failed native SDK result with `e2_phase_failed`, the phase
 actor retains a closed `continuity-e2-native-cause-v1` record: round, role,
 checkpoint, payload digest, source stage, SDK reason, text-present flag, observed
 response/terminal-usage flags, numeric HTTP status when exposed, and fixed cause
-classes. Unknown provider codes remain `unknown`. Raw errors, headers, bodies and
+classes: `sdk_error_result`, `sdk_aborted_result`, `sdk_length_result`,
+`empty_final_text`, `sdk_promise_rejected`, `guard_refused`, or `unknown`. Provider
+classes are `context`, `auth`, `quota`, `rate`, `server`, `stream`, or `unknown`.
+Unknown provider codes remain `unknown`. Raw errors, headers, bodies and
 exception text are never saved. The private phase refusal's `nativeCause` and
 slot diagnostics expose this record without changing stop or liability rules.
 A pre-dispatch failure can have a null payload digest. These observations are not
 physical-send or billing receipts. The guarded native response boundary preserves
 fixed HTTP/JSON/SSE classes before existing auth/quota refusals, including when
 the SDK never receives that response. Payload binding is retained at the consumed,
-exact-byte-verified native boundary, without a later mutable-journal reread.
+exact-byte-verified native boundary, without a later mutable-journal reread. Admission also emits the binding for
+pre-consume refusals. The actor publishes a bounded private cause before asking
+for stop; that cause survives the controller's forced-containment window even
+if later runtime unwinding cannot finish a refusal artifact.
 Synchronous pre-send policy failures use the distinct `guard_refused` label.
 
 Replay attempts to sync each accepted question/repeat to an exclusive 0600 file under the
@@ -2925,7 +2931,8 @@ Entries bind registration, slot, checkpoint, question/repeat and the final paid
 payload digest and contain the private answer needed for scoring. Publication is
 atomic; incomplete unpublished temporary entries are ignored on recovery.
 
-Journal/binding I/O is recovery-only and never stops a paid replay. A content-free
+Binding and settlement validation remain mandatory: an unsettled answer stops
+the replay. Journal write I/O alone is recovery-only and never stops a paid replay. A content-free
 `progressGap` count/flag in slot diagnostics and informational partial quality
 makes missing or unreadable recovery entries visible; it is not a gate.
 

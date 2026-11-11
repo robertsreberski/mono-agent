@@ -65,7 +65,7 @@ async function run({ scenario = "probe", requests = 1, rows = [{ role: "probe", 
     try {
       wireIdentities.push({ session: request.headers["session-id"], request: request.headers["x-client-request-id"] });
       const chunks = []; for await (const chunk of request) chunks.push(chunk); received.push(JSON.parse(request.headers["content-encoding"] === "zstd" ? zstdDecompressSync(Buffer.concat(chunks)) : Buffer.concat(chunks)));
-      if (fault === "model-error" || failAfter && received.length > failAfter) { response.writeHead(500, { "content-type": "application/json" }).end(JSON.stringify({ error: { code: "fictional_backend_failure", message: "Fictional backend failure." } })); return; }
+      if (["model-error", "fixture-diagnostic-write"].includes(fault) || failAfter && received.length > failAfter) { response.writeHead(500, { "content-type": "application/json" }).end(JSON.stringify({ error: { code: "fictional_backend_failure", message: "Fictional backend failure." } })); return; }
       if (fault === "http-context") { response.writeHead(400, { "content-type": "application/json" }).end(JSON.stringify({ error: { code: "context_length_exceeded", message: "PRIVATE-CAUSE-CANARY" } })); return; }
       if (["http-auth", "http-rate"].includes(fault)) { response.writeHead(fault === "http-auth" ? 401 : 429).end(); return; }
       response.writeHead(200, { "content-type": "text/event-stream" });
@@ -288,7 +288,7 @@ it("records an unexpected SDK abortion without changing lost/abort liability", a
 }, E2_NATIVE_TEST_TIMEOUT_MS);
 
 it("keeps accepted C1 answers outside restored roots and emits only informational partial quality on failure", async () => {
-  const result = await run({ production: true, replay: true, failAfter: 1, fault: "cause-snapshot-race" });
+  const result = await run({ production: true, replay: true, failAfter: 1, fault: "slow-refusal" });
   expect(result.report.stop).toBe("e2_phase_failed"); expect(result.report.qualityMeasured).toBe(false);
   const base = join(result.root, "output/work/replay"), entry = JSON.parse(await readFile(join(base, "answer-progress/000001.json")));
   expect(entry).toMatchObject({ schema: "continuity-e2-answer-progress-v1", round: 1, checkpoint: 0, answer: { repeat: 1, text: "Fictional response" } });
@@ -296,6 +296,7 @@ it("keeps accepted C1 answers outside restored roots and emits only informationa
   const partial = JSON.parse(await readFile(join(base, "partial-score.json")));
   expect(partial).toMatchObject({ schema: "continuity-e2-informational-partial-score-v1", informational: true, qualityMeasured: false, completedAnswers: 1, plannedAnswers: 2 });
   expect(partial).not.toHaveProperty("gate"); expect(result.report.phases[0].diagnostics.partialQuality).toEqual(partial);
+  await expect(readFile(join(base, "whole-refusal.json"))).rejects.toMatchObject({ code: "ENOENT" });
   expect(result.report.phases[0].diagnostics.nativeCause).toMatchObject({ round: 2, causeClass: "sdk_error_result", httpStatus: 500 });
   await expect(readFile(join(base, "answers.json"))).rejects.toMatchObject({ code: "ENOENT" });
 }, E2_NATIVE_TEST_TIMEOUT_MS);
@@ -320,7 +321,7 @@ it("reconstructs informational partial quality from durable progress after abrup
   expect(result.report.phases[0].diagnostics.partialQuality).toEqual(partial);
 }, E2_NATIVE_TEST_TIMEOUT_MS);
 
-it.each(["progress-write", "answer-binding"])("keeps the paid replay successful after a %s recovery-evidence failure and reports its gap", async fault => {
+it.each(["progress-write"])("keeps the paid replay successful after a %s recovery-evidence failure and reports its gap", async fault => {
   const result = await run({ production: true, replay: true, fault });
   expect(result.received).toHaveLength(2); expect(result.report.stop).toBe("completed");
   expect(result.report.phases[0].diagnostics).toMatchObject({ progressGap: fault === "answer-binding" ? 2 : 1 });
@@ -338,4 +339,29 @@ it("labels a synchronous pre-send guarded SDK refusal without misclassifying it 
   const result = await run({ production: true, replay: true, fault: "guard-refused" });
   expect(result.received).toHaveLength(0);
   expect(result.report.phases[0].diagnostics.nativeCause).toMatchObject({ sourceStage: "guard_refused", causeClass: "guard_refused", payloadDigest: null, responseHeadersObserved: false });
+}, E2_NATIVE_TEST_TIMEOUT_MS);
+
+it("stops on an unsettled answer binding instead of treating it as optional journal I/O", async () => {
+  const result = await run({ production: true, replay: true, fault: "answer-binding" });
+  expect(result.report.stop).toBe("e2_phase_failed"); expect(result.report.qualityMeasured).toBe(false); expect(result.received).toHaveLength(1);
+  await expect(readFile(join(result.root, "output/work/replay/answers.json"))).rejects.toMatchObject({ code: "ENOENT" });
+}, E2_NATIVE_TEST_TIMEOUT_MS);
+it.each(["lineage-previous-stale", "lineage-previous-cross-scope"])("refuses %s at the controller SDK boundary with no corresponding fetch", async scenario => {
+  const result = await run({ scenario, rows: [{ role: "summary", model: SOL }, { role: "probe", model: SOL }] });
+  expect(result.received).toHaveLength(1); expect(result.report.stop).toBe("e2_summary_receipt_invalid");
+  expect(result.report.phases[0].calls.consumed).toBe(2);
+}, E2_NATIVE_TEST_TIMEOUT_MS);
+
+it("keeps malformed but registered recovery entries explicitly inconclusive with a visible gap", async () => {
+  const result = await run({ production: true, replay: true, fault: "progress-malformed", failAfter: 1 });
+  expect(result.report.phases[0].diagnostics).toMatchObject({ progressGap: 1, partialQuality: { progressGap: 1, completedAnswers: 0, plannedAnswers: 2, qualityMeasured: false } });
+}, E2_NATIVE_TEST_TIMEOUT_MS);
+it("keeps the admitted digest on a refusal before consume", async () => {
+  const result = await run({ fault: "after-admit" }), state = JSON.parse(await readFile(join(result.root, "output/e2-validation-controller.json")));
+  expect(result.received).toHaveLength(0); expect(state.slots[0].holds[0].consumed).toBe(false);
+  expect(result.report.phases[0].diagnostics.nativeCause.payloadDigest).toBe(state.slots[0].holds[0].payloadDigest);
+}, E2_NATIVE_TEST_TIMEOUT_MS);
+it("still sends done when the fixture refusal artifact cannot be written", async () => {
+  const result = await run({ fault: "fixture-diagnostic-write" });
+  expect(result.caught).toBe("e2_phase_failed"); expect(result.report.stop).toBe("e2_phase_failed"); expect(result.received).toHaveLength(1);
 }, E2_NATIVE_TEST_TIMEOUT_MS);

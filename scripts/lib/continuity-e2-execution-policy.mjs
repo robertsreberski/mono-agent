@@ -173,12 +173,19 @@ export const e2ExecutionPolicy = Object.freeze({
     const result = await permit.verifyBody(hold.permitId, bytes.toString("base64"));
     need(!result?.refused, result?.code ?? "e2_summary_receipt_invalid");
   },
+  observeAdmission(contract, payloadDigest) {
+    const e = contract.e2; observeE2NativeCause(e.safety, "request_setup", null, undefined, { round: e.round, role: e.paidRole, checkpoint: e.checkpoint, payloadDigest });
+  },
   observeNative(safety, stage, status, code, binding) { observeE2NativeCause(safety, stage, status, code, binding); },
   async diagnostics(root, state, index, pilot) {
     const { guardedAuthorization } = await import("./continuity-guarded-authorization.mjs");
     const read = guardedAuthorization("e2-validation").readArtifact, planned = state.schedule[index], base = e2PhaseBase(root, planned), result = {};
     let progressGap = 0;
     const gap = value => { if (Number.isSafeInteger(value) && value > 0 && value <= 4096) progressGap = Math.max(progressGap, value); };
+    try {
+      const cause = JSON.parse(await read(join(base, "native-cause.json"), "e2_receipt_invalid", 16384));
+      if (validE2FailureCause(cause, state.slots[index])) result.nativeCause = cause;
+    } catch { /* A bounded pre-stop cause survives forced child containment. */ }
     try {
       const refusal = JSON.parse(await read(join(base, `${planned.phase}-refusal.json`), "e2_receipt_invalid", 16384));
       if (validE2FailureCause(refusal.nativeCause, state.slots[index])) result.nativeCause = refusal.nativeCause;
@@ -198,7 +205,11 @@ export const e2ExecutionPolicy = Object.freeze({
         if (answers || progressGap) {
           const binding = pilot.registration.keys, bytes = await read(binding.path, "e2_receipt_invalid", 4 * 1024 * 1024);
           need(rawDigest(bytes) === binding.sha256, "e2_receipt_invalid");
-          result.partialQuality = await writeE2PartialScore(base, answers ?? { schema: "continuity-e2-answers-v1", answers: [] }, JSON.parse(bytes), read, progressGap);
+          try { result.partialQuality = await writeE2PartialScore(base, answers ?? { schema: "continuity-e2-answers-v1", answers: [] }, JSON.parse(bytes), read, progressGap); }
+          catch (error) {
+            if (error.code !== "E2_SCORING_INVALID") throw error;
+            gap(1); result.partialQuality = await writeE2PartialScore(base, { schema: "continuity-e2-answers-v1", answers: [] }, JSON.parse(bytes), read, progressGap);
+          }
         }
       } catch { /* Only independently bound progress can contribute informational counts. */ }
       if (progressGap) result.progressGap = progressGap;

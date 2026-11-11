@@ -164,6 +164,7 @@ function bind(protocol, protocolId) {
               if (grant?.refused) refuse(grant.code ?? "not_admitted_cap");
               if (!grant) refuse(protocol.codes.permit_missing);
               admitted = grant; admittedPayloadDigest = payloadDigest; rounds++;
+              protocol.execution?.observeAdmission?.(contract, payloadDigest);
               // Detach from all mutation hooks; fetch verifies these exact serialized bytes.
               return JSON.parse(JSON.stringify(final));
             } catch (error) { preRefusal = error; throw error; }

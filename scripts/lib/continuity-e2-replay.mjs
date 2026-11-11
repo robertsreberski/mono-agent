@@ -3,7 +3,7 @@ import { assertE2PhaseAdapter } from "./continuity-e2-runtime.mjs";
 import { chmod, copyFile, cp, lstat, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fail, object, ROOT } from "./continuity-observation-input.mjs";
-import { writeE2Progress } from "./continuity-e2-progress.mjs";
+import { writeE2Progress, writeE2ProgressGap } from "./continuity-e2-progress.mjs";
 import { scoreE2 } from "./continuity-e2-score.mjs";
 import { diagnosticRecord } from "./continuity-e2-diagnostics.mjs";
 import { webGroups } from "./continuity-recorded-reconcile.mjs";
@@ -358,12 +358,13 @@ export async function runE2Sizing({ source, protocol, output, summary = "faux-sh
                 if (typeof text !== "string") fail("E2_REPLAY_FAILED");
                 const answer = { id: question.id, repeat, text, witness: probe.witness, excludedSteps: measured.excludedStepsInHistory,
                   excludedCoverage: measured.excludedCoverageInHistory };
-                try { await writeE2Progress(output, answers.answers.length + 1, await paidAdapter.answerBinding(), answer); }
+                const answerBinding = await paidAdapter.answerBinding();
+                try { await writeE2Progress(output, answers.answers.length + 1, answerBinding, answer); }
                 catch {
                   paidAdapter.noteProgressGap();
-                  // Recovery evidence is optional: neither binding nor journal I/O
-                  // may turn an accepted paid answer into a permit/run failure.
-                  try { await writeFile(join(output, "progress-gap.json"), JSON.stringify({ progressGap: 1 }), { flag: "wx", mode: 0o600 }); } catch { /* Best effort; final/refusal reports also carry the count. */ }
+                  // Recovery writes are optional; the binding/settlement check above
+                  // is mandatory before accepting an answer.
+                  try { await writeE2ProgressGap(output, paidAdapter.report().progressGap); } catch { /* Best effort; final/refusal reports also carry the count. */ }
                 }
                 answers.answers.push(answer);
                 measured.probes.push({ repeat, input: probe.firstContext, requests: probe.requests });

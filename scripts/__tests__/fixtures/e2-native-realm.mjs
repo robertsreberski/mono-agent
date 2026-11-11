@@ -10,8 +10,7 @@ import { pathToFileURL, fileURLToPath } from "node:url";
 import { join, resolve } from "node:path";
 import { spawn } from "node:child_process";
 export async function installE2NativeRealm(profile) {
-  const user = os.userInfo(), actualHome = user.homedir; let progressWriteFailed = false, snapshotReplaced = false;
-  const snapshotFS = { readFile: fsp.readFile, writeFile: fsp.writeFile, rename: fsp.rename };
+  const user = os.userInfo(), actualHome = user.homedir; let progressWriteFailed = false;
   if (!profile.home || !profile.root || !profile.endpoint?.startsWith("http://127.0.0.1:")) throw Error("test_realm_invalid");
   installE2NativeTransport(profile);
   os.userInfo = () => ({ ...user, homedir: profile.home });
@@ -25,11 +24,8 @@ export async function installE2NativeRealm(profile) {
     for (const suffix of target === fs ? ["", "Sync"] : [""]) {
       const key = name + suffix, original = target[key]; if (typeof original !== "function") continue;
       const wrapped = function (...args) { forbid(args[0]);
-        if (target === fsp && name === "open" && profile.fault === "cause-snapshot-race" && globalThis.__e2CaptureSnapshot && !snapshotReplaced && args[0] === join(profile.args.outputRoot, "e2-validation-controller.json")) {
-          snapshotReplaced = true;
-          return (async () => { const bytes = await snapshotFS.readFile(args[0]), next = args[0] + ".fictional-snapshot";
-            await snapshotFS.writeFile(next, bytes, { flag: "wx", mode: 0o600 }); await snapshotFS.rename(next, args[0]); return original.apply(this, args); })();
-        } if (profile.fault === "progress-write" && name === "mkdir" && String(args[0]).endsWith("/answer-progress") && !progressWriteFailed) { progressWriteFailed = true; throw Object.assign(Error("Fictional journal I/O failure"), { code: "EIO" }); } if (["rename", "copyFile", "link", "symlink"].includes(name)) forbid(args[1]); return original.apply(this, args); };
+ if (profile.fault === "fixture-diagnostic-write" && name === "writeFile" && String(args[0]).endsWith("/whole-refusal.json")) throw Object.assign(Error("Fictional diagnostic I/O failure"), { code: "EIO" });
+        if (profile.fault === "progress-write" && name === "mkdir" && String(args[0]).endsWith("/answer-progress") && !progressWriteFailed) { progressWriteFailed = true; throw Object.assign(Error("Fictional journal I/O failure"), { code: "EIO" }); } if (["rename", "copyFile", "link", "symlink"].includes(name)) forbid(args[1]); return original.apply(this, args); };
       if (original.native) wrapped.native = function (...args) { forbid(args[0]); return original.native.apply(this, args); };
       target[key] = wrapped;
     }
@@ -39,12 +35,20 @@ export async function installE2NativeRealm(profile) {
   registerHooks({ load(url, context, next) {
     if (url === buildURL) return { format: "module", shortCircuit: true, source: 'export const BUILD_POLICY="fresh-clean-head-agent-app-closure-v1";export const sourceState=()=>({head:"' + "b".repeat(40) + '",dirty:false});export async function verifyRealBuild(){};export async function prepareRealBuild(){throw Error("test_rebuild_forbidden")}' };
     const loaded = next(url, context);
-    if (profile.fault === "cause-snapshot-race" && url === pathToFileURL(join(profile.root, "scripts/lib/continuity-e2-paid-models.mjs")).href) {
-      const source = String(loaded.source), marker = "async function capture(message, rejected = false, error) {";
-      if (!source.includes(marker)) throw Error("test_capture_race_injection_missing");
-      const end = "\n  }\n  const counts";
-      if (!source.includes(end)) throw Error("test_capture_race_scope_missing");
-      return { ...loaded, source: source.replace(marker, marker + " globalThis.__e2CaptureSnapshot = true; try {").replace(end, "\n    } finally { globalThis.__e2CaptureSnapshot = false; }" + end) };
+    if (profile.fault === "slow-refusal" && url === pathToFileURL(join(profile.root, "scripts/lib/continuity-e2-phase-child.mjs")).href) {
+      const source = String(loaded.source), marker = "    try { await mkdir(base,";
+      if (!source.includes(marker)) throw Error("test_refusal_barrier_missing");
+      return { ...loaded, source: source.replace(marker, "    await new Promise(resolve => setTimeout(resolve, 1000));\n" + marker) };
+    }
+    if (profile.fault === "progress-malformed" && url === pathToFileURL(join(profile.root, "scripts/lib/continuity-e2-progress.mjs")).href) {
+      const source = String(loaded.source), marker = "...binding, answer });";
+      if (!source.includes(marker)) throw Error("test_malformed_entry_missing");
+      return { ...loaded, source: source.replace(marker, "...binding, answer: { ...answer, text: 42 } });") };
+    }
+    if (profile.fault === "after-admit" && url === pathToFileURL(join(profile.root, "scripts/lib/continuity-e2-paid-models.mjs")).href) {
+      const source = String(loaded.source), marker = '"session-id": a.cacheKey, "x-client-request-id": a.cacheKey';
+      if (!source.includes(marker)) throw Error("test_after_admit_missing");
+      return { ...loaded, source: source.replace(marker, marker + ', "fictional-unapproved": "denied"') };
     }
     if (["answer-binding", "guard-refused"].includes(profile.fault) && url === pathToFileURL(join(profile.root, "scripts/lib/continuity-e2-paid-models.mjs")).href) {
       const source = String(loaded.source), [marker, replacement] = profile.fault === "answer-binding"

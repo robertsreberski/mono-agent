@@ -2,7 +2,7 @@ import { afterEach, expect, it } from "vitest";
 import { mkdtemp, mkdir, readFile, writeFile, rm, stat, realpath, symlink, unlink, truncate, link } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { writeE2Progress, readE2Progress, writeE2PartialScore } from "../lib/continuity-e2-progress.mjs";
+import { writeE2Progress, writeE2ProgressGap, readE2Progress, writeE2PartialScore } from "../lib/continuity-e2-progress.mjs";
 import { freezeCheckpoint, restoreCheckpoint } from "../lib/continuity-e2-replay.mjs";
 import { e2FailureCause, e2ProviderCause, validE2FailureCause } from "../lib/continuity-e2-cause.mjs";
 import { guardedAuthorization } from "../lib/continuity-guarded-authorization.mjs";
@@ -75,4 +75,9 @@ it("rejects wrong-checkpoint question ids and duplicate id/repeat pairs before s
   await unlink(join(output, "answer-progress/000002.json"));
   const path = join(output, "answer-progress/000001.json"), entry = JSON.parse(await readFile(path)); entry.answer.id = "b"; await writeFile(path, JSON.stringify(entry));
   await expect(readE2Progress(output, state, 0, readArtifact, registered)).rejects.toMatchObject({ code: "E2_ANSWER_PROGRESS_INVALID" });
+});
+
+it("atomically updates the recovery-gap marker with the running count", async () => {
+  const { output } = await partialFixture();
+  for (const count of [1, 2, 3]) { await writeE2ProgressGap(output, count); expect(JSON.parse(await readArtifact(join(output, "progress-gap.json"), "e2_receipt_invalid"))).toEqual({ progressGap: count }); }
 });

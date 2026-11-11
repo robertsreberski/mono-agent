@@ -1,6 +1,6 @@
 // One phase actor: real paid requests use the shared guard and its sole send.
 // Scripted setup is handled separately by createE2Models and never reaches here.
-import { readdir } from "node:fs/promises";
+import { readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createPiOAuthApiKeyResolver } from "@mono-agent/turn";
 import { guardedModels } from "./continuity-guarded-models.mjs";
@@ -47,6 +47,9 @@ export async function createE2PaidModels(a, safety) {
   async function stop(code) {
     stopped ??= E2_GUARD_STOPS.includes(code) ? code : "e2_phase_failed";
     const permit = native?.permit ?? send?.permit; need(permit, "e2_stop_failed");
+    // Persist before stop starts the controller's bounded settle/contain window.
+    // Failure unwinding and its later refusal file may exceed that window under load.
+    if (failureCause) try { await writeFile(join(e2PhaseBase(a.outputRoot, a.slot), "native-cause.json"), JSON.stringify(failureCause), { flag: "wx", mode: 0o600 }); } catch { /* Diagnostic I/O never replaces the stop. */ }
     try { await permit.stop(stopped); }
     catch (cause) { throw Object.assign(Error("e2_stop_failed"), { code: "e2_stop_failed", cause }); }
   }
@@ -159,7 +162,7 @@ export async function createE2PaidModels(a, safety) {
         const reservationUnits = e2RequestPrice(catalog, { inputTokens: size.maximum, maxOutputTokens: registered.maxOutputTokens }).reservationUnits;
         const effort = options.reasoning ?? "off";
         const contract = { ...E2_GUARD_CONTRACT, provider: model.provider, model: model.id, api: model.api, baseUrl: model.baseUrl, effort,
-          runId: a.runId, slotId: a.slotId, promptCacheKey: a.cacheKey, e2: { pilot: a.pilot, planned: a.slot, outputRoot: a.outputRoot,
+          runId: a.runId, slotId: a.slotId, promptCacheKey: a.cacheKey, e2: { safety, pilot: a.pilot, planned: a.slot, outputRoot: a.outputRoot,
             round, model: modelName, paidRole: role, ...(probeRequest === undefined ? {} : { probeRequest }), checkpoint: receipt?.checkpoint ?? checkpoint(pos), size, reservationUnits,
             ...(receipt ? { operationDigest: receipt.operationDigest } : {}) } };
         // AgentLoop carries host orchestration metadata through streamSimple.
