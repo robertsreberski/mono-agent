@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { unified } from "unified";
 import remarkParse from "remark-parse";
 import remarkGfm from "remark-gfm";
-import { PDF_LIMITS, pdfTooLarge, type PdfConversation, type PdfImage, type PdfAttachment } from "./pdf-model.js";
+import { PDF_LIMITS, pdfTooLarge, pdfExportDate, type PdfConversation, type PdfImage, type PdfAttachment } from "./pdf-model.js";
 
 interface MdNode {
   readonly type: string;
@@ -67,17 +67,53 @@ export async function renderPdf(input: PdfConversation, images: readonly PdfImag
   doc.on("pageAdded", () => { if (++pageCount > PDF_LIMITS.pages) throw pdfTooLarge(); });
   const width = doc.page.width - 96;
   const imageMap = new Map(images.map((i) => [i.key, Buffer.from(i.bytes)]));
-  const body = (): void => { doc.font("body").fontSize(10).fillColor("#20252b"); };
+  let quoteDepth = 0;
+  const proseColor = (): string => quoteDepth > 0 ? "#687078" : "#20252b";
+  const body = (): void => { doc.font("body").fontSize(10).fillColor(proseColor()); };
   const gap = (): void => { doc.moveDown(0.6); doc.x = 48; };
   const rich = (runs: readonly Run[], indent = 0): void => {
     if (runs.length === 0) return;
     doc.x = 48 + indent;
     runs.forEach((run, i) => {
-      doc.font(run.mono ? "mono" : run.bold ? "bold" : "body").fillColor(run.link ? "#24527a" : "#20252b")
+      doc.font(run.mono ? "mono" : run.bold ? "bold" : "body").fillColor(run.link ? "#24527a" : proseColor())
         .text(run.text, { width: width - indent, continued: i < runs.length - 1,
           oblique: run.italic ?? false, strike: run.strike ?? false, underline: Boolean(run.link), link: run.link ?? null });
     });
     doc.x = 48;
+  };
+  const code = (value: string, indent: number): void => {
+    const padding = 8;
+    const boxWidth = width - indent;
+    const textWidth = Math.max(1, boxWidth - padding * 2);
+    doc.font("mono").fontSize(9);
+    const lineHeight = doc.currentLineHeight(true) + 2;
+    // Wrap even unbroken identifiers, retaining whitespace and Unicode code points.
+    // Explicit physical lines let each page receive its background before text.
+    const lines: string[] = [];
+    const advances = new Map<string, number>();
+    for (const source of value.replace(/\r\n?/gu, "\n").replace(/\t/gu, "    ").split("\n")) {
+      let line = ""; let advance = 0;
+      for (const char of source) {
+        let charWidth = advances.get(char);
+        if (charWidth === undefined) { charWidth = doc.widthOfString(char); advances.set(char, charWidth); }
+        if (line && advance + charWidth > textWidth) { lines.push(line); line = ""; advance = 0; }
+        line += char; advance += charWidth;
+      }
+      lines.push(line);
+    }
+    for (let offset = 0; offset < lines.length;) {
+      let available = Math.floor((doc.page.height - 48 - doc.y - padding * 2) / lineHeight);
+      if (available < 1) { doc.addPage(); available = Math.floor((doc.page.height - 96 - padding * 2) / lineHeight); }
+      const count = Math.min(available, lines.length - offset);
+      const y = doc.y; const height = count * lineHeight + padding * 2;
+      doc.save().rect(48 + indent, y, boxWidth, height).fill("#f3f4f5").restore();
+      doc.font("mono").fontSize(9).fillColor(proseColor());
+      for (let i = 0; i < count; i++) doc.text(lines[offset + i]!, 48 + indent + padding, y + padding + i * lineHeight,
+        { width: textWidth, lineBreak: false });
+      doc.y = y + height; doc.x = 48; offset += count;
+      if (offset < lines.length) doc.addPage();
+    }
+    gap();
   };
   const image = (a: PdfAttachment, indent = 0): void => {
     const data = imageMap.get(a.key);
@@ -98,16 +134,18 @@ export async function renderPdf(input: PdfConversation, images: readonly PdfImag
   };
   try {
     doc.font("bold").fontSize(22).text(input.title || "Conversation");
-    doc.font("body").fontSize(9).fillColor("#59616a").text(`Exported ${input.exportedAt} (UTC)`); gap();
+    doc.font("body").fontSize(9).fillColor("#59616a").text(`Exported ${pdfExportDate(input.exportedAt)}`); gap();
     if (input.replyInProgress) { body(); doc.text("An in-progress reply is not included."); gap(); }
     if (input.messages.length === 0) { body(); doc.text("No messages to export."); }
     for (const message of input.messages) {
       body();
       if (doc.y > doc.page.height - 110) doc.addPage();
-      doc.font("bold").fontSize(12).text(message.role === "user" ? "User" : "Assistant");
+      doc.save().lineWidth(0.5).strokeColor("#d0d5da").moveTo(48, doc.y).lineTo(48 + width, doc.y).stroke().restore();
+      doc.y += 9;
+      doc.font("bold").fontSize(13).fillColor("#59616a").text(message.role === "user" ? "User" : "Assistant", 48, doc.y);
       if (message.status) doc.font("body").fontSize(9).text(message.status);
       gap(); body();
-      if (message.quote) { rich([{ text: message.quote, italic: true }], 16); gap(); }
+      if (message.quote) { quoteDepth++; rich([{ text: message.quote, italic: true }], 16); quoteDepth--; gap(); }
       const tree: MdNode = parser.parse(message.text);
       const definitions = new Map<string, string>();
       const validate = (node: MdNode, depth: number): void => {
@@ -155,11 +193,12 @@ export async function renderPdf(input: PdfConversation, images: readonly PdfImag
         switch (node.type) {
           case "root": node.children?.forEach((n) => block(n, indent)); break;
           case "paragraph": rich((node.children ?? []).flatMap((n) => inline(n)), indent); gap(); break;
-          case "heading": doc.fontSize(19 - Math.min(node.depth ?? 1, 6));
+          case "heading": doc.fontSize(Math.max(10, 13 - Math.min(node.depth ?? 1, 6)));
             rich((node.children ?? []).flatMap((n) => inline(n, { bold: true })), indent); gap(); break;
-          case "code": doc.font("mono").fontSize(9).text(node.value ?? "", 48 + indent, doc.y,
-            { width: width - indent, lineGap: 2 }); gap(); break;
-          case "blockquote": node.children?.forEach((n) => block(n, indent + 16)); break;
+          case "code": code(node.value ?? "", indent); break;
+          case "blockquote": quoteDepth++;
+            try { node.children?.forEach((n) => block(n, indent + 16)); } finally { quoteDepth--; }
+            break;
           case "list": node.children?.forEach((n, i) => {
             const mark = n.checked !== undefined && n.checked !== null ? n.checked ? "[x]" : "[ ]"
               : node.ordered ? `${(node.start ?? 1) + i}.` : "•";

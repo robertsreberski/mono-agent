@@ -80,6 +80,15 @@ export function pdfConversation(title: string, exportedAt: string, messages: rea
   return { title, exportedAt, messages: result, replyInProgress };
 }
 
+/** Stable English/UTC presentation, independent of the server's locale or zone. */
+export function pdfExportDate(value: string): string {
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return "date unavailable";
+  const months = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+  const two = (n: number): string => String(n).padStart(2, "0");
+  return `${date.getUTCDate()} ${months[date.getUTCMonth()]} ${date.getUTCFullYear()}, ${two(date.getUTCHours())}:${two(date.getUTCMinutes())} UTC`;
+}
+
 export function pdfFilename(title: string): string {
   const safe = Array.from(title, (c) => c.length === 1 && /[\ud800-\udfff]/u.test(c) ? "_" : c).join("").replace(/[\x00-\x1f\x7f/\\<>:"|?*]/gu, "_").replace(/^\.+|[. ]+$/gu, "");
   return `${Array.from(safe).slice(0, 100).join("") || "conversation"}.pdf`;
