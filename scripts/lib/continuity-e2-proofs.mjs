@@ -20,7 +20,7 @@ import { PROOF_CODES, requireProof, assertProofEvidence, assertSetupCompactions 
 
 export const PROOF_ARMS = Object.freeze(["switch", "cancel", "idle", "pressure"]);
 export const PROOF_CHILD = fileURLToPath(new URL("./continuity-e2-fixture.mjs", import.meta.url));
-const FAULTS = Object.freeze(["repeat", "early-idle", "pack", "leak", "action-only", "missing-action", "missing-value"]);
+const FAULTS = Object.freeze(["repeat", "early-idle", "pack", "leak", "action-only", "missing-action", "missing-value", "legacy-evidence", "early-evidence"]);
 // Each follow-up asserts only the information its unchanged prompt requests.
 const PROBES = Object.freeze([
   { prompt: "What is the recovered fictional value and next action?", required: [FACT, NEXT_ACTION] },
@@ -71,8 +71,8 @@ export function proofHistoryWarningClass(message) {
 }
 
 /** Internal fixture phases use only existing, owner-only roots created by runE2Proofs. */
-export async function runProofPhase({ base, arm, phase = "whole", variant = "ceiling", fault, onContext = () => {}, paidAdapter }) {
-  if (paidAdapter) { assertE2PhaseAdapter(paidAdapter); paidAdapter.assertProof({ base, arm, phase, variant }); if (fault !== undefined) fail("E2_ARGUMENTS_INVALID"); }
+export async function runProofPhase({ base, arm, phase = "whole", variant = "ceiling", fault, summary, onContext = () => {}, paidAdapter }) {
+  if (paidAdapter) { assertE2PhaseAdapter(paidAdapter); paidAdapter.assertProof({ base, arm, phase, variant }); if (fault !== undefined || summary !== undefined) fail("E2_ARGUMENTS_INVALID"); }
   if (fault !== undefined && !FAULTS.includes(fault)) fail("E2_ARGUMENTS_INVALID");
   if (!PROOF_ARMS.includes(arm) || !["whole", "seed", "resume"].includes(phase) || !["ceiling", "restart"].includes(variant)) fail("E2_ARGUMENTS_INVALID");
   const fixture = arm === "cancel" || arm === "pressure" && variant === "restart";
@@ -82,6 +82,7 @@ export async function runProofPhase({ base, arm, phase = "whole", variant = "cei
   const seedReceipt = resumed ? JSON.parse(await readFile(join(base, "seed.json"), "utf8")) : null;
   if (resumed) {
     requireProof(seedReceipt.pid !== process.pid && seedReceipt.sentinel.completed && !seedReceipt.sentinel.repeated, "E2_PROOF_RESTART_MISSING");
+    if (fault !== "legacy-evidence") requireProof(seedReceipt.absenceEstablished === true, "E2_PROOF_INITIAL_PRESENT");
     if (arm === "cancel") requireProof(seedReceipt.forwarded === true, "E2_PROOF_CANCEL_NOT_FORWARDED");
   }
   await mkdir(work, { recursive: true, mode: 0o700 });
@@ -93,8 +94,8 @@ export async function runProofPhase({ base, arm, phase = "whole", variant = "cei
   if (resumed && arm === "pressure") binding = { model: SOL, effort: "high" };
   let setup = [], setupCursor = 0, requestSignal, controller, forwarded = false, witness, firstRequestSeen = false, firstPack = false, safe = true, readerRound = 0, readText = "", answer = "", sentinelOffered = false;
   const seen = new Set();
-  let probeOrdinal = 0;
-  const route = createE2Models({ pi: modules.pi, estimators, soul, paidAdapter, ...(paidAdapter ? { summary: "real" } : {}), models: [LUNA, SOL].map(model => ({ model })), limits: LIMITS,
+  let probeOrdinal = 0, checkingProjection = false, absenceEstablished = false;
+  const route = createE2Models({ pi: modules.pi, estimators, soul, paidAdapter, ...(paidAdapter ? { summary: "real" } : {}), models: [LUNA, SOL].map(model => ({ model })), limits: LIMITS, ...(summary === undefined ? {} : { summary }),
     ...(paidAdapter ? { onRequest(model, context, options = {}, method) {
       requestSignal = options.signal;
       requests.push({ ordinal: requests.length, model: `${model.provider}:${model.id}`, role: method === "completeSimple" ? "summary" : mode === "cancel-forwarded" ? "setup-scripted" : mode,
@@ -102,6 +103,7 @@ export async function runProofPhase({ base, arm, phase = "whole", variant = "cei
     } } : {}),
     sourceContext(context) {
       onContext({ arm, phase, role: mode, context });
+      if (checkingProjection) absenceEstablished = !visible(context).includes(FACT);
       if (["continuation", "probe", "cancel-forwarded"].includes(mode)) {
         const names = offered(context, modules.pi).map(t => t.name).sort(), allowed = mode === "continuation" && arm === "cancel" ? ["ConversationHistory", SENTINEL].sort() : ["ConversationHistory"];
         requireProof(JSON.stringify(names) === JSON.stringify(allowed), "E2_PROBE_TOOLS_REFUSED");
@@ -194,13 +196,42 @@ export async function runProofPhase({ base, arm, phase = "whole", variant = "cei
       const call = (name, args, id) => [modules.pi.fauxToolCall(name, args, { id })];
       setup = [call("ProofRead", { item: "foreign" }, "proof-foreign-read"), "Other fictional conversation prepared."]; setupCursor = 0;
       await run("Keep this fictional other conversation isolated.", OTHER);
-      setup = [call("ProofRead", { item: "proof-evidence" }, "proof-evidence-read"), call("ProofRead", { item: "protected" }, "proof-protected-read"), call(SENTINEL, {}, "proof-single-effect"),
+      setup = [...(["legacy-evidence", "early-evidence"].includes(fault) ? [call("ProofRead", { item: "proof-evidence" }, "proof-evidence-read"), call("ProofRead", { item: "protected" }, "proof-protected-read")] : []), call(SENTINEL, {}, "proof-single-effect"),
         ...Array.from({ length: 24 }, (_, i) => call("ProofRead", { item: `${needsPressure ? "padding" : "tail"}-${i}` }, `proof-padding-${i}`)), "The fictional sentinel completed. Never repeat it. Await explicit approval."];
       setupCursor = 0; await run("Prepare the fictional evidence and one-effect sentinel; then await explicit approval.");
       requireProof(setupCursor === setup.length, "E2_PROOF_RUN_FAILED");
       if (needsPressure) assertSetupCompactions(route.report().compactions, pressureArm);
+      if (fault !== "legacy-evidence") {
+        // Evidence is created only AFTER setup summaries have committed. A
+        // subsequent model-change projection, not summary omission, establishes
+        // absence. Tails move both evidence/protected results outside pack previews.
+        const compactions = route.report().compactions.length;
+        setup = [...(fault === "early-evidence" ? [] : [call("ProofRead", { item: "proof-evidence" }, "proof-evidence-read"), call("ProofRead", { item: "protected" }, "proof-protected-read")]),
+          ...Array.from({ length: 24 }, (_, i) => call("ProofRead", { item: `tail-${i}` }, `proof-archive-tail-${i}`)), "Fictional archival preparation complete. Never repeat the completed sentinel."];
+        setupCursor = 0;
+        await run("Archive the fictional proof-evidence and protected record; then prepare inert tails. Reply only with archival preparation complete.");
+        requireProof(setupCursor === setup.length && route.report().compactions.length === compactions, "E2_PROOF_RUN_FAILED");
+        if (arm !== "switch") {
+          // Same-model idle/restart keeps the native journal, including tools.
+          // A scripted round trip uses real model-change reconstruction instead;
+          // only fact-free canonical replies and bounded packs seed the new epoch.
+          // Restore the original binding before ANY paid cancellation/probe.
+          const original = binding.model;
+          for (const model of [original === SOL ? LUNA : SOL, original]) {
+            binding = { model, effort: "high" };
+            setup = ["Fictional setup ready. Never repeat the completed sentinel."]; setupCursor = 0;
+            const boundaryStart = boundaries.length;
+            checkingProjection = true;
+            try { await run("Prepare a fresh fictional projection. Do not read history or repeat the completed sentinel."); }
+            finally { checkingProjection = false; }
+            requireProof(absenceEstablished, "E2_PROOF_INITIAL_PRESENT");
+            requireProof(boundaries.slice(boundaryStart).some(e => e.reason === "model_change" && ["reconstructed", "handoff"].includes(e.context)), "E2_BOUNDARY_MISMATCH");
+          }
+          requireProof(route.report().compactions.length === compactions, "E2_PROOF_RUN_FAILED");
+        }
+      }
       if (arm === "cancel") { mode = "cancel-forwarded"; await run("Continue without repeating the completed fictional sentinel."); }
-      if (phase === "seed") return { pid: process.pid, forwarded, sentinel: await tools.receipt(), requests, compactions: route.report().compactions };
+      if (phase === "seed") return { pid: process.pid, forwarded, sentinel: await tools.receipt(), absenceEstablished, requests, compactions: route.report().compactions };
     }
     let idle;
     if (arm === "idle") {
@@ -237,13 +268,16 @@ export async function runProofPhase({ base, arm, phase = "whole", variant = "cei
       compactions: resumed && arm === "pressure" ? [...seedReceipt.compactions, ...route.report().compactions] : route.report().compactions });
     if (arm === "cancel") requireProof(sentinelOffered && receipt.attempts === 0, "E2_PROOF_SENTINEL_REPEATED");
     return { pid: process.pid, assertions, requests, compactions: route.report().compactions, boundary, pack, ...(idle ? { idle } : {}), sentinelOffered,
+      preparation: { evidenceAfterCompaction: !["legacy-evidence", "early-evidence"].includes(fault), coldProjection: arm === "switch" ? "probe-model-change" : "scripted-round-trip", absenceBeforeArmBoundary: arm === "switch" ? null : resumed ? seedReceipt.absenceEstablished : absenceEstablished,
+        order: [...(needsPressure ? ["shipping-ceiling-compaction"] : []), "record-evidence", ...(arm === "switch" ? ["probe-model-change"] : ["scripted-round-trip"]),
+          ...(arm === "cancel" ? ["forwarded-cancel", "process-restart"] : arm === "idle" ? ["observed-idle-eviction"] : arm === "pressure" && variant === "restart" ? ["process-restart", "probe-model-change"] : []), "history-recovery", "follow-up-probes"] },
       lookup: { initiallyPresent: snapshot.initiallyPresent, sourceReturned: snapshot.sourceReturned, verifiedRecords: snapshot.records.filter(r => r.verified).length } };
   } finally { try { await opened?.close(); } finally { await tools.close(); } }
 }
 
-export async function runE2Proofs({ output, arm = "all", real = false, onContext, fault, registrationPath, registrationSha256, authorizationPath, credentialPath }) {
+export async function runE2Proofs({ output, arm = "all", real = false, onContext, fault, summary, registrationPath, registrationSha256, authorizationPath, credentialPath }) {
   if (real) {
-    if (arm !== "all" || onContext !== undefined || fault !== undefined) fail("E2_ARGUMENTS_INVALID");
+    if (arm !== "all" || onContext !== undefined || fault !== undefined || summary !== undefined) fail("E2_ARGUMENTS_INVALID");
     return (await import("./continuity-e2-paid-entry.mjs")).runE2Paid({ command: "proofs", registrationPath, registrationSha256, authorizationPath, credentialPath, outputRoot: output });
   }
   if (fault !== undefined && !FAULTS.includes(fault)) fail("E2_ARGUMENTS_INVALID");
@@ -261,13 +295,13 @@ export async function runE2Proofs({ output, arm = "all", real = false, onContext
         try {
           let result;
           if (name === "cancel" || name === "pressure" && variant === "restart") {
-            await writeFile(join(base, "fixture.json"), JSON.stringify({ arm: name, variant, ...(fault ? { fault } : {}) }), { flag: "wx", mode: 0o600 });
+            await writeFile(join(base, "fixture.json"), JSON.stringify({ arm: name, variant, ...(fault ? { fault } : {}), ...(summary === undefined ? {} : { summary }) }), { flag: "wx", mode: 0o600 });
             const seed = await fixtureChild(base, "seed"), resume = await fixtureChild(base, "resume");
             requireProof(seed.pid !== resume.pid && seed.sentinel.completed && !seed.sentinel.repeated, "E2_PROOF_RESTART_MISSING");
             if (name === "cancel") requireProof(seed.forwarded && resume.sentinelOffered, "E2_PROOF_CANCEL_NOT_FORWARDED");
             if (name === "pressure") requireProof(resume.boundary && resume.pack, "E2_PROOF_PACK_MISSING");
             result = { ...resume, assertions: { ...resume.assertions, ...(name === "pressure" ? { newProcess: true, coldModelChange: true, firstSolPack: true } : {}) }, compactions: [...seed.compactions, ...resume.compactions], requests: [...seed.requests, ...resume.requests], newProcess: true, forwarded: seed.forwarded };
-          } else result = await runProofPhase({ base, arm: name, variant, onContext, fault });
+          } else result = await runProofPhase({ base, arm: name, variant, onContext, fault, summary });
           const { pid, requests, ...contentFree } = result;
           records.push({ variant, ...contentFree, requests: requests.map((r, ordinal) => ({ ...r, ordinal })) });
         } finally { envRestore(); }

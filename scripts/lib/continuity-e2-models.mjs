@@ -6,6 +6,8 @@ import { digest } from "./continuity-recorded-schema.mjs";
 import { assertE2ProbeLookupRounds } from "./continuity-e2-protocol.mjs";
 import { assertE2PhaseAdapter } from "./continuity-e2-runtime.mjs";
 
+import { FACT, NEXT_ACTION } from "./continuity-e2-tools.mjs";
+
 const paidDecorators = new WeakSet();
 export const isE2PaidDecorator = value => paidDecorators.has(value);
 export async function loadE2Estimators() {
@@ -58,7 +60,8 @@ export function estimatedReply(pi, text, context, estimators, extra = {}) {
 export function createE2Models({ pi, estimators, models, limits, summary = "faux-short", sourceReply, sourceContext = () => {}, soul, paidAdapter, probeLookupRounds, onRequest = () => {} }) {
   if (probeLookupRounds !== undefined) assertE2ProbeLookupRounds(probeLookupRounds);
   if (summary === "real") assertE2PhaseAdapter(paidAdapter);
-  if (!["faux-short", "faux-max", "real"].includes(summary)) fail("E2_SUMMARY_ROUTE_INVALID");
+  else if (paidAdapter !== undefined) fail("E2_SUMMARY_ROUTE_INVALID");
+  if (!["faux-short", "faux-max", "faux-faithful", "real"].includes(summary)) fail("E2_SUMMARY_ROUTE_INVALID");
   const registered = new Set(models.map(m => m.model)), faux = new Map(), lifecycle = new Map();
   const report = { sourceRequests: 0, probeRequests: 0, summaryRequests: [], compactions: [], requestSizing: [] };
   let position = null, sticky = null, positionRequests = 0;
@@ -154,7 +157,9 @@ export function createE2Models({ pi, estimators, models, limits, summary = "faux
           report.summaryRequests.push(sizing); report.requestSizing.push(sizing);
           if (summary === "real") return paidAdapter.stream(original, model, context, options, "summary").result();
           const bound = backend(model);
-          const text = summary === "faux-short" ? "Faux sizing summary; not a factual answer." : "s".repeat(options.maxTokens * 4);
+          // Deliberately adversarial to initial-absence proofs: faithfully preserve
+          // both target literals whenever the actual summary input contains them.
+          const text = summary === "faux-faithful" ? ["Faithful fictional summary.", ...[FACT, NEXT_ACTION].filter(value => JSON.stringify(context).includes(value))].join("\n") : summary === "faux-short" ? "Faux sizing summary; not a factual answer." : "s".repeat(options.maxTokens * 4);
           bound.provider.setResponses([() => estimatedReply(pi, text, context, estimators)]);
           return bound.collection.completeSimple(bound.model, context, options);
         };

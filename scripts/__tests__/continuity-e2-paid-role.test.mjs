@@ -6,16 +6,16 @@ import { join } from "node:path";
 import { runE2Proofs } from "../lib/continuity-e2-proofs.mjs";
 import { estimateE2Reservations } from "../lib/continuity-e2-estimate.mjs";
 import { loadE2Catalog, e2RequestPrice } from "../lib/continuity-e2-pricing.mjs";
-it("prices the actual C2 cancel-forwarded sizing request as paid without changing legacy 31/4 counts", async () => {
+it("prices the actual C2 cancel-forwarded sizing request as paid while keeping added cold-projection setup free", async () => {
   const root = await realpath(await mkdtemp(join(tmpdir(), "e2-paid-role-")));
   try {
     const [{ sizing }] = await runE2Proofs({ output: join(root, "run"), arm: "cancel" });
     const requests = sizing.variants.flatMap((v, checkpoint) => v.requests.map(({ ordinal: _ordinal, ...row }) => ({ checkpoint, ...row })));
-    expect(requests.filter(r => r.role === "setup-scripted")).toHaveLength(31);
+    expect(requests.filter(r => r.role === "setup-scripted")).toHaveLength(58);
     expect(requests.filter(r => r.role === "continuation")).toHaveLength(4);
     expect(requests.every(r => Object.hasOwn(r, "paidRole"))).toBe(true);
     const forwarded = requests.filter(r => r.role === "setup-scripted" && r.paidRole === "continuation");
-    expect(forwarded).toHaveLength(1); expect(requests.filter(r => r.paidRole === null)).toHaveLength(30);
+    expect(forwarded).toHaveLength(1); expect(requests.filter(r => r.paidRole === null)).toHaveLength(57);
     const registered = new Map();
     for (const r of requests.filter(r => r.paidRole !== null)) {
       const key = `${r.paidRole}:${r.model}`, prior = registered.get(key);

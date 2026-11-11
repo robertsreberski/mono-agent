@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Keep continuity proof recovery independent of faithful compaction summaries
+  with post-summary evidence and explicit cold-projection boundaries.
+
 - Fix continuity E2 follow-up assertions to match each proof probe's requested
   information while retaining recovery, disclosure and single-effect checks.
 

@@ -12,6 +12,7 @@ import { runE2Proofs, PROOF_CHILD, PROOF_ARMS, proofHistoryWarningClass } from "
 import { assertProofEvidence, proofRefusalCode } from "../lib/continuity-e2-checks.mjs";
 import { proofEnvironment, installProofIsolation } from "../lib/continuity-e2-isolation.mjs";
 import { startProofTools, CANARY, FOREIGN, FACT, NEXT_ACTION } from "../lib/continuity-e2-tools.mjs";
+import { SOL } from "../lib/continuity-e2-protocol.mjs";
 import { E2_PROOF_PRESSURE_ARMS, armById } from "../lib/continuity-arms.mjs";
 import { installProcessGuard } from "./fixtures/continuity-recorded/process-guard.mjs";
 import { ROOT } from "../lib/continuity-observation-input.mjs";
@@ -38,9 +39,9 @@ function processGuard() {
 }
 async function modes(path) { const s = await lstat(path); expect(s.mode & 0o777).toBe(s.isDirectory() ? 0o700 : 0o600); if (s.isDirectory()) for (const n of await readdir(path)) await modes(join(path, n)); }
 
-it("runs every configured faux proof, actual restart fixtures, observed idle eviction and shipping-ceiling compactions", async () => {
+it.each(["faux-short", "faux-max", "faux-faithful"])("runs every configured proof, restart, idle eviction and shipping-ceiling compaction with %s", async summary => {
   const dir = await scratch(), guard = processGuard(), contexts = [];
-  const result = await runE2Proofs({ output: join(dir, "run"), onContext: c => contexts.push(c) });
+  const result = await runE2Proofs({ output: join(dir, "run"), onContext: c => contexts.push(c), summary });
   expect(result.map(r => r.report.arm)).toEqual(PROOF_ARMS);
   expect(result.find(r => r.report.arm === "pressure").report.variants.map(v => v.variant)).toEqual(["ceiling", "restart"]);
   for (const { report, sizing } of result) {
@@ -49,9 +50,15 @@ it("runs every configured faux proof, actual restart fixtures, observed idle evi
       expect(Object.values(v.assertions).every(x => x === true)).toBe(true);
       expect(v.lookup).toMatchObject({ initiallyPresent: false, sourceReturned: true });
       expect(v.lookup.verifiedRecords).toBeGreaterThan(0);
+      expect(v.preparation).toMatchObject({ evidenceAfterCompaction: true, coldProjection: report.arm === "switch" ? "probe-model-change" : "scripted-round-trip", absenceBeforeArmBoundary: report.arm === "switch" ? null : true });
       if (report.arm === "cancel") expect(v).toMatchObject({ newProcess: true, forwarded: true, sentinelOffered: true });
       if (report.arm === "idle") expect(v.idle).toMatchObject({ observed: true, reason: "idle_timeout", timeoutMs: 1200 });
-      if (report.arm === "pressure") expect(v.compactions.some(c => c.trigger === "proactive" && c.durable && c.policy.triggerTokens === 200_000)).toBe(true);
+      if (report.arm === "pressure") {
+        expect(v.compactions).toHaveLength(1);
+        expect(v.assertions.durableShippingCeilingCompaction).toBe(true);
+        expect(v.compactions.some(c => c.trigger === "proactive" && c.durable && c.policy.triggerTokens === 200_000)).toBe(true);
+        expect(v.preparation.order.slice(0, 3)).toEqual(["shipping-ceiling-compaction", "record-evidence", "scripted-round-trip"]);
+      }
     }
     for (const v of sizing.variants) {
       expect(v.requests.length).toBeGreaterThan(28);
@@ -62,8 +69,12 @@ it("runs every configured faux proof, actual restart fixtures, observed idle evi
         expect(row.model).toMatch(/^openai-codex:gpt-6/u);
       }
       expect(v.requests.filter(r => r.role === "probe")).toHaveLength(2);
+      expect(v.requests.filter(r => r.paidRole === "summary")).toHaveLength(report.arm === "switch" ? 0 : 1);
+      const setupPaid = v.requests.filter(r => r.role === "setup-scripted" && r.paidRole !== null);
+      expect(setupPaid).toHaveLength(report.arm === "cancel" ? 1 : 0);
+      expect(setupPaid.every(r => r.paidRole === "continuation" && r.model === SOL)).toBe(true);
       if (report.arm === "cancel") {
-        expect(v.requests.filter(r => r.role === "setup-scripted")).toHaveLength(31);
+        expect(v.requests.filter(r => r.role === "setup-scripted")).toHaveLength(58);
         expect(v.requests.filter(r => r.role === "continuation")).toHaveLength(4);
       }
     }
@@ -75,6 +86,25 @@ it("runs every configured faux proof, actual restart fixtures, observed idle evi
   expect(guard.hits.filter(s => s === "proof-fixture")).toHaveLength(4); expect(guard.refusals).toEqual([]);
   await modes(join(dir, "run"));
 }, 240_000);
+
+it.each(["cancel", "pressure"])("rejects the old pre-compaction evidence fixture under faithful summaries in %s", async arm => {
+  const dir = await scratch(); processGuard();
+  await expect(runE2Proofs({ output: join(dir, "run"), arm, summary: "faux-faithful", fault: "legacy-evidence" })).rejects.toThrow("E2_PROOF_INITIAL_PRESENT");
+}, 180_000);
+it("shows why post-compaction placement matters: early evidence only passes with the lossy summary", async () => {
+  const dir = await scratch(); processGuard();
+  const result = await runE2Proofs({ output: join(dir, "run"), arm: "pressure", summary: "faux-short", fault: "early-evidence" });
+  for (const v of result[0].report.variants) expect(v.lookup).toMatchObject({ initiallyPresent: false, sourceReturned: true });
+}, 180_000);
+it("rejects evidence placed before compaction even with the new cold-projection boundary", async () => {
+  const dir = await scratch(); processGuard();
+  await expect(runE2Proofs({ output: join(dir, "run"), arm: "pressure", summary: "faux-faithful", fault: "early-evidence" })).rejects.toThrow("E2_PROOF_INITIAL_PRESENT");
+}, 180_000);
+it("rejects faux-summary or fault injection on the paid proof entry before authority access", async () => {
+  for (const injection of [{ summary: "faux-faithful" }, { summary: "faux-short" }, { fault: "legacy-evidence" }, { fault: "early-evidence" }]) {
+    await expect(runE2Proofs({ real: true, ...injection })).rejects.toThrow("E2_ARGUMENTS_INVALID");
+  }
+});
 
 it.each(PROOF_ARMS)("accepts a compliant action-only second probe in the %s arm", async arm => {
   const dir = await scratch(); processGuard();
