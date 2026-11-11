@@ -222,6 +222,21 @@ it("allows a cold phase start beyond ten seconds without bypassing guarded SDK a
 
 it("funds R=3 and withdraws native tools on each fourth C1 probe request", async () => {
   const result = await run({ replay: true, production: true, probeLookupRounds: 3, probeLookups: true });
+  const receiptDirectory = join(result.root, "output/work/replay/probe-receipts");
+  const receiptRows = await Promise.all((await readdir(receiptDirectory)).filter(n => /^\d+\.json$/u.test(n)).map(async n => JSON.parse(await readFile(join(receiptDirectory, n)))));
+  expect(receiptRows.filter(r => r.phase === "call")).toHaveLength(6);
+  expect(receiptRows.filter(r => r.phase === "response")).toHaveLength(6);
+  expect(new Set(receiptRows.map(r => r.requestOrdinal))).toEqual(new Set([1, 2, 3]));
+  for (const row of receiptRows) {
+    expect(row.slotId).toMatch(/^[a-f0-9]{64}$/u); expect(row.registrationSha256).toMatch(/^[a-f0-9]{64}$/u);
+    expect(row.itemOrdinal).toBe(1); expect(row.checkpoint).toBe(0);
+    expect(JSON.parse(row.arguments.text).query).toBe("Fictional response");
+  }
+  const publicBytes = JSON.stringify(result.report);
+  for (const canary of ["Fictional response", "probe-receipt", "fictional-call"]) expect(publicBytes).not.toContain(canary);
+  const slotFiles = await readdir(join(result.root, "output", "slots"));
+  for (const name of slotFiles) expect(await readFile(join(result.root, "output", "slots", name), "utf8")).not.toContain("Fictional response");
+
   expect(result.report.stop, JSON.stringify(result.report)).toBe("completed");
   const probes = result.received.filter(body => JSON.stringify(body.input).includes("PRIVATE-FROZEN-FICTIONAL-QUESTION"));
   expect(probes).toHaveLength(8);

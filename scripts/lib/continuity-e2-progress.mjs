@@ -34,6 +34,14 @@ export async function writeE2Progress(output, ordinal, binding, answer) {
   await exclusiveJSON(directory, `${String(ordinal).padStart(6, "0")}.json`, { schema: "continuity-e2-answer-progress-v1", ...binding, answer });
   await syncDirectory(output);
 }
+// Shared private journal discipline; callers own their non-fatal diagnostic policy.
+export async function writeE2ProbeReceipt(output, ordinal, receipt) {
+  need(Number.isSafeInteger(ordinal) && ordinal > 0 && ordinal <= 4096);
+  await privateDirectory(output);
+  const directory = join(output, "probe-receipts"); await mkdir(directory, { recursive: true, mode: 0o700 });
+  await exclusiveJSON(directory, `${String(ordinal).padStart(6, "0")}.json`, receipt);
+  await syncDirectory(output);
+}
 export async function readE2Progress(output, state, index, readArtifact, registered) {
   let names; try { names = await readdir(join(output, "answer-progress")); } catch (e) { if (e.code === "ENOENT") return null; throw e; }
   await privateDirectory(join(output, "answer-progress"));

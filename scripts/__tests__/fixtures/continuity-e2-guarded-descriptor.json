@@ -556,6 +556,7 @@
     "scripts/lib/continuity-e2-phase-child.mjs",
     "scripts/lib/continuity-e2-policy.mjs",
     "scripts/lib/continuity-e2-pricing.mjs",
+    "scripts/lib/continuity-e2-probe-receipts.mjs",
     "scripts/lib/continuity-e2-progress.mjs",
     "scripts/lib/continuity-e2-proofs.mjs",
     "scripts/lib/continuity-e2-protocol.mjs",
