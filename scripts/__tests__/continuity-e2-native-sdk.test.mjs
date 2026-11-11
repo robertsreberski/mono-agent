@@ -70,6 +70,12 @@ async function run({ scenario = "probe", requests = 1, rows = [{ role: "probe", 
       const responseFault = (retryOnce && received.length > 1 || failOdd && received.length % 2 === 0) ? undefined : fault;
       if (responseFault === "dispatch-break") { request.socket.destroy(); return; }
       if (responseFault === "crash-retry" && received.length === 1 || ["model-error", "fixture-diagnostic-write", "cancel-retry"].includes(responseFault) || failAfter && received.length > failAfter) { response.writeHead(500, { "content-type": "application/json" }).end(JSON.stringify({ error: { code: "fictional_backend_failure", message: "Fictional backend failure." } })); return; }
+      if (responseFault?.startsWith("http-rate-json")) {
+        const error = responseFault === "http-rate-json-quota" ? { code: "insufficient_quota" }
+          : responseFault === "http-rate-json-mixed" ? { code: "server_error", type: "insufficient_quota" }
+          : responseFault === "http-rate-json-unknown" ? { code: "fictional_unknown" } : { code: "rate_limit_exceeded" };
+        response.writeHead(429, { "content-type": "application/json" }).end(JSON.stringify({ error })); return;
+      }
       if (["http-quota", "http-other"].includes(responseFault)) { response.writeHead(400, { "content-type": "application/json" }).end(JSON.stringify({ error: { code: responseFault === "http-quota" ? "insufficient_quota" : "invalid_request_error" } })); return; }
       if (responseFault === "http-context") { response.writeHead(400, { "content-type": "application/json" }).end(JSON.stringify({ error: { code: "context_length_exceeded", message: "PRIVATE-CAUSE-CANARY" } })); return; }
       if (["http-auth", "http-rate"].includes(responseFault)) { response.writeHead(responseFault === "http-auth" ? 401 : 429).end(); return; }
@@ -80,7 +86,9 @@ async function run({ scenario = "probe", requests = 1, rows = [{ role: "probe", 
       }
       if (responseFault?.startsWith("sse-")) {
         const code = { "sse-context": "context_length_exceeded", "sse-server": "server_error", "sse-stream": "stream_error", "sse-rate": "rate_limit_exceeded", "sse-overload": "overloaded_error", "sse-transient": "transient_error", "sse-auth": "authentication_error", "sse-quota": "insufficient_quota", "sse-invalid": "invalid_request_error", "sse-policy": "content_policy_violation", "sse-type": "server_error", "sse-incomplete": "service_unavailable", "sse-error": "internal_server_error", "sse-context-reset": "context_length_exceeded" }[responseFault];
-        const error = { ...(responseFault === "sse-type" ? { type: code } : { code }), message: "PRIVATE-CAUSE-CANARY" };
+        const error = responseFault === "sse-mixed-quota" ? { code: "server_error", type: "insufficient_quota" }
+          : responseFault === "sse-mixed-context" ? { code: "server_error", type: "context_length_exceeded" }
+          : { ...(responseFault === "sse-type" ? { type: code } : { code }), message: "PRIVATE-CAUSE-CANARY" };
         const event = responseFault === "sse-error" ? { type: "error", error } : { type: responseFault === "sse-incomplete" ? "response.incomplete" : "response.failed", response: { error } };
         const frame = `data: ${JSON.stringify(event)}\n\n`;
         if (responseFault === "sse-context-reset") { response.write(frame); setTimeout(() => response.destroy(), 25); }
@@ -384,7 +392,7 @@ it("still sends done when the fixture refusal artifact cannot be written", async
 it.each([
   ["dispatch-break", "stream"], ["dispatch-refused", "stream"], ["dispatch-unreachable", "stream"], ["dispatch-pipe", "stream"], ["midstream-reset", "stream"], ["body-aborted", "stream"], ["body-reset", "stream"], ["body-premature", "stream"], ["body-socket", "stream"], ["sse-stream", "stream"], ["sse-server", "stream"],
   ["sse-overload", "stream"], ["sse-transient", "stream"], ["sse-type", "stream"], ["sse-incomplete", "stream"], ["sse-error", "stream"], ["model-error", "http_5xx"],
-  ["http-rate", "http_429"], ["empty", "empty_final_text"], ["sdk-aborted", "unowned_aborted_result"],
+  ["http-rate", "http_429"], ["http-rate-json", "http_429"], ["http-rate-json-unknown", "http_429"], ["empty", "empty_final_text"], ["sdk-aborted", "unowned_aborted_result"],
 ])("retries eligible %s once with identical bytes and a fresh independently verified hold", async (fault, cause) => {
   const result = await run({ fault, retryOnce: true });
   expect(result.report.stop, JSON.stringify(result.report)).toBe("completed"); expect(result.received).toHaveLength(2);
@@ -399,7 +407,7 @@ it.each([
   else expect(result.report.costs.retainedUnits).toBe("3920000000");
 }, E2_NATIVE_TEST_TIMEOUT_MS);
 
-it.each(["http-auth", "http-context", "http-quota", "http-other", "sse-context", "sse-rate", "sse-auth", "sse-quota", "sse-invalid", "sse-policy", "sse-context-reset", "length", "sdk-unknown", "sdk-deadline", "body-deadline"])("never retries ineligible %s despite a recoverable next response", async fault => {
+it.each(["http-auth", "http-context", "http-quota", "http-other", "http-rate-json-quota", "http-rate-json-mixed", "sse-mixed-quota", "sse-mixed-context", "sse-context", "sse-rate", "sse-auth", "sse-quota", "sse-invalid", "sse-policy", "sse-context-reset", "length", "sdk-unknown", "sdk-deadline", "body-deadline"])("never retries ineligible %s despite a recoverable next response", async fault => {
   const result = await run({ fault, retryOnce: true });
   expect(result.received).toHaveLength(1); expect(result.report.retries.attempted).toBe(0); expect(result.report.stop).not.toBe("completed");
 }, E2_NATIVE_TEST_TIMEOUT_MS);

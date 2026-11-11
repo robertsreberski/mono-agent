@@ -11,7 +11,7 @@ import { e2RequestPrice } from "./continuity-e2-pricing.mjs";
 import { digest } from "./continuity-recorded-schema.mjs";
 import { digest as canonicalDigest } from "./continuity-dataset.mjs";
 import { e2PhaseWork, e2PhaseBase, validateE2Checkpoint } from "./continuity-e2-lineage.mjs";
-import { e2FailureCause, e2ProviderCause, e2StreamCause, E2_NONRETRY_PROVIDER_CLASSES, registerE2CauseObserver } from "./continuity-e2-cause.mjs";
+import { e2FailureCause, e2ProviderCause, e2CandidateCause, E2_NONRETRY_PROVIDER_CLASSES, registerE2CauseObserver } from "./continuity-e2-cause.mjs";
 import { effectiveE2Summaries, E2_RETRY_POLICY } from "./continuity-e2-retry.mjs";
 const need = (ok, code = "e2_permit_invalid") => { if (!ok) throw Object.assign(Error(code), { code }); };
 const core = () => guardedState("e2-validation"), artifacts = () => guardedAuthorization("e2-validation");
@@ -198,15 +198,13 @@ export async function createE2PaidModels(a, safety) {
             if (["response.completed", "response.incomplete", "response.failed", "error"].includes(event?.type)) {
               observed.sourceStage = "provider_terminal";
               observed.terminalUsageObserved ||= Number.isSafeInteger(event.response?.usage?.input_tokens) && Number.isSafeInteger(event.response?.usage?.output_tokens);
-              for (const code of [event.response?.error?.code, event.response?.error?.type, event.error?.code, event.error?.type, event.code, event.type, event.response?.incomplete_details?.reason]) {
-                const classified = e2StreamCause(code);
-                if (classified !== "unknown" && !E2_NONRETRY_PROVIDER_CLASSES.includes(observed.providerClass)) observed.providerClass = classified;
-              }
+              const classified = e2CandidateCause([event.error?.code, event.error?.type, event.response?.error?.code, event.response?.error?.type, event.code, event.type, event.response?.incomplete_details?.reason], true);
+              if (classified !== "unknown" && !E2_NONRETRY_PROVIDER_CLASSES.includes(observed.providerClass)) observed.providerClass = classified;
             }
             await options.onProviderStreamEvent?.(event, selected);
           },
           onResponse: async response => { observed.sourceStage = "response_headers"; observed.responseHeadersObserved = true; observed.httpStatus = response.status;
-            const classified = e2ProviderCause(undefined, response.status); if (classified !== "unknown") observed.providerClass = classified; counts.responses++; if (role !== "summary") await pos.onNativeResponse?.(); await options.onResponse?.(response); } });
+            const classified = e2ProviderCause(undefined, response.status); if (classified !== "unknown" && !E2_NONRETRY_PROVIDER_CLASSES.includes(observed.providerClass)) observed.providerClass = classified; counts.responses++; if (role !== "summary") await pos.onNativeResponse?.(); await options.onResponse?.(response); } });
       };
       const result = (async () => {
         for (let number = 0; number <= E2_RETRY_POLICY.maxPerRequest; number++) {

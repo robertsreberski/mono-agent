@@ -111,7 +111,7 @@ const INVENTORY = {
     "scripts/lib/continuity-lookup-guarded-protocol.mjs": 2,
   },
   real: {
-    "scripts/__tests__/continuity-e2-send-gates.test.mjs": 2,
+    "scripts/__tests__/continuity-e2-send-gates.test.mjs": 3,
     "scripts/__tests__/continuity-guarded-consumption.test.mjs": 2,
     "scripts/__tests__/continuity-lookup-credentialed-models.test.mjs": 1,
     "scripts/__tests__/continuity-lookup-pilot-child.test.mjs": 1,

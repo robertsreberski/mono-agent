@@ -4,13 +4,15 @@ export function registerE2CauseObserver(safety, observe, capture) { observers.se
 export function captureE2NativeCause(safety, message, error) { return captures.get(safety)?.(message, !!error, error) ?? null; }
 export function observeE2NativeCause(safety, stage, status, code, binding) {
   const httpStatus = Number.isInteger(status) && status >= 100 && status <= 599 ? status : null;
-  const providerClass = stage === "provider_terminal" ? e2StreamCause(code) : e2ProviderCause(code, httpStatus);
+  const providerClass = Array.isArray(code) ? e2CandidateCause(code, stage === "provider_terminal")
+    : stage === "provider_terminal" ? e2StreamCause(code) : e2ProviderCause(code, httpStatus);
+  const classified = providerClass === "unknown" ? e2ProviderCause(undefined, httpStatus) : providerClass;
   observers.get(safety)?.({ sourceStage: stages.includes(stage) ? stage : "unknown",
     ...(binding && Number.isSafeInteger(binding.round) && binding.round > 0 && Number.isSafeInteger(binding.checkpoint) && binding.checkpoint >= 0
       && ["probe", "continuation", "summary"].includes(binding.role) && /^[a-f0-9]{64}$/u.test(binding.payloadDigest ?? "")
       ? { binding: { round: binding.round, checkpoint: binding.checkpoint, role: binding.role, payloadDigest: binding.payloadDigest } } : {}),
     ...(httpStatus === null ? {} : { httpStatus, responseHeadersObserved: true }),
-    ...(providerClass === "unknown" ? {} : { providerClass }) });
+    ...(classified === "unknown" ? {} : { providerClass: classified }) });
 }
 const stages = ["guard_refused", "request_setup", "dispatch", "response_headers", "provider_terminal", "sdk_result", "sdk_promise", "unknown"];
 const reasons = ["stop", "error", "length", "aborted", "toolUse", "unknown"];
@@ -35,6 +37,14 @@ export function e2StreamCause(code) {
   return e2ProviderCause(code);
 }
 export const E2_NONRETRY_PROVIDER_CLASSES = Object.freeze(["context", "auth", "quota", "deadline", "request", "policy", "length"]);
+// One deterministic classification for the whole event. A fixed refusal wins
+// over every retryable field; otherwise keep the first matching retryable class.
+export function e2CandidateCause(codes, stream = false) {
+  const classes = codes.map(code => stream ? e2StreamCause(code) : e2ProviderCause(code));
+  return classes.find(value => E2_NONRETRY_PROVIDER_CLASSES.includes(value))
+    ?? classes.find(value => value === "stream" || !stream && ["rate", "server"].includes(value))
+    ?? classes.find(value => value !== "unknown") ?? "unknown";
+}
 export function e2FailureCause(binding, observed, message, rejected = false) {
   const stopReason = reasons.includes(message?.stopReason) ? message.stopReason : "unknown";
   const textPresent = (message?.content ?? []).some(p => p.type === "text" && typeof p.text === "string" && p.text.trim().length > 0);

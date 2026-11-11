@@ -8,7 +8,7 @@ import { validateE2Sizing } from "./continuity-e2-estimate.mjs";
 import { E2_PAID_ROLES } from "./continuity-e2-roles.mjs";
 import { writeE2SummaryResult, verifyE2SummaryResult } from "./continuity-e2-summary-receipts.mjs";
 import { bindE2Checkpoint, verifyE2NativeLineage, e2LineageScope, e2PhaseBase } from "./continuity-e2-lineage.mjs";
-import { validE2FailureCause, observeE2NativeCause, captureE2NativeCause, e2ProviderCause } from "./continuity-e2-cause.mjs";
+import { validE2FailureCause, observeE2NativeCause, captureE2NativeCause, e2ProviderCause, e2CandidateCause } from "./continuity-e2-cause.mjs";
 import { readE2Progress, writeE2PartialScore } from "./continuity-e2-progress.mjs";
 import { E2_RETRY_POLICY, authorizeE2Retry, effectiveE2Summaries, e2RetryCounts } from "./continuity-e2-retry.mjs";
 const fail = (code = "e2_permit_invalid") => { throw Object.assign(Error(code), { code }); };
@@ -109,8 +109,10 @@ export const e2ExecutionPolicy = Object.freeze({
   },
   failureEvidence(contract, message, error) { return captureE2NativeCause(contract.e2.safety, message, error); },
   deferNativeFailure(pilot, status, code) {
+    const classified = Array.isArray(code) ? e2CandidateCause(code) : e2ProviderCause(code, status);
+    const providerClass = classified === "unknown" ? e2ProviderCause(undefined, status) : classified;
     return pilot.descriptor.retryPolicy && digest(pilot.descriptor.retryPolicy) === digest(E2_RETRY_POLICY)
-      && ["rate", "server", "stream"].includes(e2ProviderCause(code, status));
+      && ["rate", "server", "stream"].includes(providerClass);
   },
 
   contract(contract) {

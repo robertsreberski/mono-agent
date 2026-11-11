@@ -1,7 +1,7 @@
 import { expect, it } from "vitest";
 import { E2_RETRY_POLICY, authorizeE2Retry, retryCause } from "../lib/continuity-e2-retry.mjs";
 import { e2ExecutionPolicy } from "../lib/continuity-e2-execution-policy.mjs";
-import { e2FailureCause } from "../lib/continuity-e2-cause.mjs";
+import { e2FailureCause, e2CandidateCause, observeE2NativeCause, registerE2CauseObserver } from "../lib/continuity-e2-cause.mjs";
 function fixture(overrides = {}) {
   const hold = { round: 1, paidRole: "probe", checkpoint: 0, payloadDigest: "a".repeat(64), consumed: true,
     summaryPresence: { none: true }, settlement: { kind: "lost", retainedUnits: "3920000000" } };
@@ -59,6 +59,7 @@ it("releases an owner-cancelled pending grant without spending any run-wide retr
   expect(authorizeE2Retry(state, 0, request).allowed).toBe(true);
   expect(authorizeE2Retry(state, 0, { ...request, ownerCanceled: true }).allowed).toBe(false);
   expect(slot.retryPending).toBeUndefined(); expect(slot.terminal).toBe("lost"); expect(hold.retryCanceled).toBe(true);
+  expect(state.slots.reduce((n, s) => n + s.holds.filter(h => h.retryOf).length, 0)).toBe(0);
   expect(authorizeE2Retry(state, 0, request).allowed).toBe(false);
 });
 
@@ -67,4 +68,26 @@ it("uses the policy's per-logical-request retry count even for a consumed failed
   hold.round = 2; hold.retryOf = 1; hold.nativeCause.round = 2;
   slot.holds.unshift({ round: 1 }); request.round = 2;
   expect(authorizeE2Retry(state, 0, request)).toEqual({ allowed: false });
+});
+
+it.each([
+  ["context_length_exceeded", "context"], ["authentication_error", "auth"], ["insufficient_quota", "quota"],
+  ["invalid_request_error", "request"], ["content_policy_violation", "policy"], ["max_output_tokens", "length"], ["ETIMEDOUT", "deadline"],
+])("gives a fixed %s candidate precedence over every retryable event field", (code, providerClass) => {
+  expect(e2CandidateCause(["server_error", code], true)).toBe(providerClass);
+  expect(e2CandidateCause([code, "server_error"], true)).toBe(providerClass);
+  const safety = {}, observations = [];
+  registerE2CauseObserver(safety, value => observations.push(value));
+  observeE2NativeCause(safety, "provider_terminal", null, ["server_error", code]);
+  expect(observations).toHaveLength(1); expect(observations[0].providerClass).toBe(providerClass);
+});
+it("uses the first matching retryable class when no candidate forbids retry", () => {
+  expect(e2CandidateCause(["server_error", "rate_limit_exceeded"])).toBe("server");
+  expect(e2CandidateCause(["rate_limit_exceeded", "server_error"])).toBe("rate");
+  expect(e2CandidateCause(["rate_limit_exceeded", "server_error"], true)).toBe("stream");
+});
+it("never defers a fixed JSON quota class merely because the HTTP status is 429", () => {
+  const pilot = { descriptor: { retryPolicy: E2_RETRY_POLICY } };
+  expect(e2ExecutionPolicy.deferNativeFailure(pilot, 429, ["server_error", "insufficient_quota"])).toBe(false);
+  expect(e2ExecutionPolicy.deferNativeFailure(pilot, 429, ["rate_limit_exceeded"])).toBe(true);
 });

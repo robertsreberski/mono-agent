@@ -93,23 +93,24 @@ function bind(protocol, protocolId) {
         const type = response.headers.get("content-type") ?? "";
         if (type.includes("application/json")) {
           const body = await response.clone().json().catch(() => null);
-          observeNative("response_headers", response.status, body?.error?.code ?? body?.error?.type);
-          if (quota(body?.error) && !protocol.execution?.deferNativeFailure?.(a.pilot, response.status, body?.error?.code ?? body?.error?.type)) await rejectResponse(protocol.codes.quota_exhausted);
+          observeNative("response_headers", response.status, [body?.error?.code, body?.error?.type], binding);
+          if (quota(body?.error) && !protocol.execution?.deferNativeFailure?.(a.pilot, response.status, [body?.error?.code, body?.error?.type])) await rejectResponse(protocol.codes.quota_exhausted);
         }
         if (!response.body || !type.includes("text/event-stream")) return response;
         let body = response.body;
         if (protocol.execution?.observeNative) {
-          const reader = body.getReader();
+          const reader = body.getReader(); let canceled = false;
           body = new ReadableStream({
             async pull(controller) {
-              try { const next = await reader.read(); if (next.done) controller.close(); else controller.enqueue(next.value); }
+              try { const next = await reader.read(); if (canceled) return; if (next.done) controller.close(); else controller.enqueue(next.value); }
               catch (error) {
+                if (canceled) return;
                 let code = typeof error?.code === "string" ? error.code : error?.cause?.code;
                 if ((!code || code === "ABORT_ERR") && error?.name === "AbortError" && !init.signal?.aborted) code = "ERR_STREAM_PREMATURE_CLOSE";
                 observeNative("provider_terminal", null, code, binding); controller.error(error);
               }
             },
-            cancel(reason) { return reader.cancel(reason); },
+            cancel(reason) { canceled = true; return reader.cancel(reason); },
           });
         }
         let buffer = ""; const decoder = new TextDecoder();
@@ -122,9 +123,8 @@ function bind(protocol, protocolId) {
               const data = frame.split(/\r?\n/u).filter(line => line.startsWith("data:")).map(line => line.slice(5).trimStart()).join("\n");
               let event; try { event = JSON.parse(data); } catch { continue; }
               if (["response.completed", "response.incomplete", "response.failed", "error"].includes(event?.type) || event?.error || event?.response?.error)
-                for (const code of [event?.error?.code, event?.error?.type, event?.response?.error?.code, event?.response?.error?.type, event?.code, event?.type, event?.response?.incomplete_details?.reason])
-                  observeNative("provider_terminal", null, code, binding);
-              if ((quota(event?.error) || quota(event?.response?.error)) && !protocol.execution?.deferNativeFailure?.(a.pilot, null, event?.error?.code ?? event?.response?.error?.code)) await stop(protocol.codes.quota_exhausted);
+                observeNative("provider_terminal", null, [event?.error?.code, event?.error?.type, event?.response?.error?.code, event?.response?.error?.type, event?.code, event?.type, event?.response?.incomplete_details?.reason], binding);
+              if ((quota(event?.error) || quota(event?.response?.error)) && !protocol.execution?.deferNativeFailure?.(a.pilot, null, [event?.error?.code, event?.error?.type, event?.response?.error?.code, event?.response?.error?.type, event?.code, event?.type, event?.response?.incomplete_details?.reason])) await stop(protocol.codes.quota_exhausted);
             }
             controller.enqueue(chunk);
           },

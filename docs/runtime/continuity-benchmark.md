@@ -2862,7 +2862,11 @@ as stream breaks. Fixed server/overload/transient codes or error types in SSE
 breaks after HTTP 200. Context/auth/quota, invalid-request, content-policy and
 `max_output_tokens` incomplete results remain ineligible, even if the body then
 breaks. No exception/provider message text is classified or recorded.
-A non-JSON HTTP 429 is retried once as `http_429` under the same limits.
+Any HTTP 429, regardless of body format, is eligible once as `http_429` under
+these limits unless a fixed quota code/type was observed; that quota failure is
+ineligible. Other fixed non-retryable classes above likewise retain precedence.
+Each terminal event produces one deterministic observation: any non-retryable
+candidate field wins; otherwise the first matching retryable class is used.
 Only SDK/provider-internal and outage-profile retries remain disabled; the
 controller-owned bounded retry described here is enabled by the new contract.
 
