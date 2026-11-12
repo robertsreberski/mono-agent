@@ -73,14 +73,37 @@ export function relevanceMatch(text: string, query: ReturnType<typeof relevanceQ
   return { score: matches.length * 1_000_000 + (phrase ? 100_000 : 0) + Math.max(0, 65_535 - span), position: originalPosition(selected.index), end: originalPosition(selected.index + selected[0].length) };
 }
 
-/** Byte ranges refer to digest-verified sanitized retained text, not raw text. */
-export function matchedPreview(text: string, position: number, matchEnd = position): { preview: string; previewRange: ContinuityPreviewRange } {
-  const bytes = Buffer.from(text), matchByte = Buffer.byteLength(text.slice(0, position)), endByte = Buffer.byteLength(text.slice(0, matchEnd));
+/** Byte ranges refer to digest-verified sanitized retained text, not raw text.
+ * Keep the legacy primary excerpt; a complementary distinct-term excerpt has its
+ * own range, never a synthetic range spanning omitted bytes. Ranking is unchanged. */
+export function matchedPreview(text: string, position: number, matchEnd = position, query?: ReturnType<typeof relevanceQuery>): {
+  preview: string; previewRange: ContinuityPreviewRange; additionalPreviews?: readonly { preview: string; previewRange: ContinuityPreviewRange }[];
+} {
+  const bytes = Buffer.from(text);
+  const primary = previewWindow(text, bytes, position, matchEnd, 512);
+  if (!query || query.mode === "literal" || primary.previewRange.matchClipped) return primary;
+  // Distinct query terms outside the primary window provide complementary
+  // referent context, not inferred answers or a semantic qualification claim.
+  const complementary = query.patterns.map(pattern => pattern.exec(text)).find(match => {
+    if (!match) return false;
+    const start = Buffer.byteLength(text.slice(0, match.index)), end = start + Buffer.byteLength(match[0]);
+    return end <= primary.previewRange.start || start >= primary.previewRange.end;
+  });
+  if (!complementary) return primary;
+  const first = previewWindow(text, bytes, position, matchEnd, 256);
+  // Do not sacrifice a long primary phrase merely to add another window.
+  if (first.previewRange.matchClipped) return primary;
+  const second = previewWindow(text, bytes, complementary.index, complementary.index + complementary[0].length, 256);
+  if (second.previewRange.start < first.previewRange.end && second.previewRange.end > first.previewRange.start) return primary;
+  return { ...first, additionalPreviews: [second] };
+}
+function previewWindow(text: string, bytes: Buffer, position: number, matchEnd: number, budget: number): { preview: string; previewRange: ContinuityPreviewRange } {
+  const matchByte = Buffer.byteLength(text.slice(0, position)), endByte = Buffer.byteLength(text.slice(0, matchEnd));
   // Spend the prefix budget on the full match first. Overlong case-folded spans
-  // still obey the 512-byte cap and explicitly disclose match clipping.
-  let start = Math.max(0, matchByte - Math.min(160, Math.max(0, 512 - (endByte - matchByte))));
+  // still obey the byte cap and explicitly disclose match clipping.
+  let start = Math.max(0, matchByte - Math.min(160, Math.max(0, budget - (endByte - matchByte))));
   while (start < matchByte && continuation(bytes[start])) start++;
-  let end = Math.min(bytes.length, start + 512);
+  let end = Math.min(bytes.length, start + budget);
   while (end > start && continuation(bytes[end])) end--;
   // Prefer a nearby line/sentence boundary, retaining negation before the hit.
   const lead = bytes.subarray(start, matchByte).toString("utf8");

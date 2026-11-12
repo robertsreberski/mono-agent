@@ -131,6 +131,8 @@ export interface ContinuityPreviewRange {
   readonly clippedAfter: boolean;
   /** Present when the matched span itself exceeds the UTF-8 preview window. */
   readonly matchClipped?: true;
+  /** The transport response cap shortened this window, possibly removing the hit. */
+  readonly responseClipped?: true;
   /** A preview never witnesses completed recovery, even for a short record. */
   readonly complete: false;
 }
@@ -152,12 +154,18 @@ export interface ContinuitySearchScan {
   readonly metadataPages: number;
   readonly textBatches: number;
 }
+export interface ContinuityPreview {
+  readonly preview: string;
+  readonly previewRange: ContinuityPreviewRange;
+}
 export interface ContinuitySearchPage {
   readonly available: boolean;
-  readonly items: readonly (ContinuityRecordMetadata & { readonly preview: string; readonly previewRange?: ContinuityPreviewRange })[];
+  readonly items: readonly (ContinuityRecordMetadata & { readonly preview: string; readonly previewRange?: ContinuityPreviewRange; readonly additionalPreviews?: readonly ContinuityPreview[] })[];
   readonly next?: number;
   readonly mode?: "chronological" | "relevance" | "literal";
   readonly continuation?: ContinuityRelevanceContinuation;
+  /** Internal boundaries for a transport-limited prefix, including the final page. */
+  readonly resumeAfter?: readonly ContinuityRelevanceContinuation[];
   readonly degradedReason?: "scan_capacity" | "source_changed" | "invalid_cursor" | "purge_pending";
   readonly scan?: ContinuitySearchScan;
 }

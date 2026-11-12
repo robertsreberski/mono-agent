@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Fix `ConversationHistory` retrieval follow-through, clamp safe integer
+  search limits to 1–10, and show complementary previews with separate byte ranges.
+  Cap model-visible search content at 65,536 UTF-8 bytes with lossless prefix
+  paging; keep get chunks and the two-record recovery envelope unchanged.
+
 - Fix baseline E2 replay to retain recorded source tools while keeping probes
   tool-free, and distinguish injected continuity packs from ordinary mentions.
 

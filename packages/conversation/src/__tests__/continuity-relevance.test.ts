@@ -88,6 +88,31 @@ describe("bounded relevance discovery", () => {
       const unicode = matchedPreview("İ".repeat(300) + "cobalt", 300); expect(unicode.preview).toContain("cobalt");
     } finally { f.db.close(); }
   });
+  it("selects two complementary windows with separate exact ranges, preserving negation and hypothetical context", () => {
+    const f = fixture(); try {
+      const text = "Morgan's observatory report: the referent is the fictional delivery. " + "Background 🔷. ".repeat(100) + "\nNot approved: cobalt day 18 remains hypothetical, not a decision.";
+      const useful = f.add(text); f.add("observatory cobalt unrelated current echo");
+      const page = f.search("observatory cobalt"), item = page.items[1]!;
+      expect(item.recordId).toBe(useful.id);
+      const windows = [item, ...item.additionalPreviews!];
+      expect(windows).toHaveLength(2);
+      expect(windows[0]!.preview).toContain("referent");
+      expect(windows[1]!.preview).toContain("Not approved"); expect(windows[1]!.preview).toContain("hypothetical");
+      expect(windows.reduce((total, window) => total + Buffer.byteLength(window.preview), 0)).toBeLessThanOrEqual(512);
+      for (const window of windows) {
+        expect(window.previewRange!.complete).toBe(false); expect(window.preview).not.toContain("�");
+        expect(Buffer.from(text).subarray(window.previewRange!.start, window.previewRange!.end).toString()).toBe(window.preview);
+      }
+      expect(windows[0]!.previewRange!.end).toBeLessThan(windows[1]!.previewRange!.start);
+      expect(page.resumeAfter![1]!.anchor.recordId).toBe(useful.id);
+      expect(page.continuation).toBeUndefined();
+      const rest = searchContinuity(f.db, { ...scope, query: "observatory cobalt", mode: "relevance", limit: 5, continuation: page.resumeAfter![0]! });
+      expect(rest.items.map(row => row.recordId)).toEqual([useful.id]);
+    } finally { f.db.close(); }
+  });
+  it.each([0, 11, Number.MAX_SAFE_INTEGER, 1.5, NaN, Infinity])("keeps lower-level search limits strict (%s)", limit => {
+    const f = fixture(); try { expect(() => f.search("cobalt", limit)).toThrow("limit"); } finally { f.db.close(); }
+  });
   it.each(["cobalt" + " ".repeat(410) + "observatory", "a" + " ".repeat(510) + "b", '"'.repeat(500)])("covers the entire long matched span within 512 bytes (%j)", phrase => {
     const f = fixture(); try {
       const text = "🔷 background. ".repeat(100) + "Not approved: " + phrase + " remains hypothetical.";

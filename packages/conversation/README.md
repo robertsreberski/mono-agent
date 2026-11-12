@@ -527,16 +527,26 @@ Owner provenance identifies a historical quotation, **not renewed approval**.
 
 `searchContinuity` keeps legacy chronological/AND matching and `before`/`next`
 by default. Explicit `mode: "relevance"` adds Unicode-aware partial coverage,
-phrase/proximity ranking, matched-context previews (512 bytes with byte ranges),
+phrase/proximity ranking, up to two complementary matched-context previews
+(512 total UTF-8 bytes with separate exact retained-byte ranges),
 and typed v2 continuations. Term edges respect Unicode scripts (unspaced scripts
 allow letter-run substrings); short Latin/numeric terms do not match inside
-unrelated words/numbers. Previews cover full matches when they fit, otherwise
+unrelated words/numbers. `preview`/`previewRange` describe the primary window;
+optional `additionalPreviews` contains one separate `preview`/`previewRange`.
+Discontiguous excerpts never share a range, and every range stays `complete: false`.
+Previews preserve nearby qualifications where possible, not semantic authority.
+Previews cover full matches when they fit, otherwise
 `previewRange.matchClipped: true` discloses clipping of the match itself. Punctuation-only queries use literal chronological
 matching. Complete scans are bounded to 100k records / 256 MiB, 256-row metadata
 pages and 32-record / 2-MiB text batches, with a cooperative five-second deadline.
 `scan_capacity` returns no complete ranked subset; browse chronologically or get a
 known ID. Initial/examined/final membership hashes and final purge checks prevent
-mixed-snapshot disclosure. No migration or ledger enablement is needed. See the
+mixed-snapshot disclosure. Internal `resumeAfter` boundaries let transport-limited
+prefixes continue after the last emitted item, even on the reader's final page.
+The lower-level reader remains strict at 1–10 results; only MCP ingress clamps
+safe integer limits. The app's separate 65,536-byte search-content cap does not
+change retained record or get-chunk bounds; `previewRange.responseClipped: true`
+discloses transport-shortened windows (which may omit the hit). No migration or ledger enablement is needed. See the
 [retrieval envelope and measured resource limits](../../docs/runtime/sessions-concurrency.md#bounded-relevance-discovery-and-recovery),
 including the explicitly unmet original 64-MiB heap target at extreme capacity.
 

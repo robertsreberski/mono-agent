@@ -118,7 +118,7 @@ export function searchRelevantContinuity(db: DatabaseSync, input: ContinuitySear
           }
           if (top.length === limit + 1 && compare(rank, key(top.at(-1)!)) >= 0) continue;
           if (top.length === limit + 1) top.pop();
-          top.push({ descriptor: d, score, ...matchedPreview(text, match.position, match.end) });
+          top.push({ descriptor: d, score, ...matchedPreview(text, match.position, match.end, query) });
           top.sort((a, b) => compare(key(a), key(b)));
         }
         stats.maxBatchMs = Math.max(stats.maxBatchMs, now() - batchStarted);
@@ -137,15 +137,16 @@ export function searchRelevantContinuity(db: DatabaseSync, input: ContinuitySear
           FROM continuity_records r CROSS JOIN continuity_generations g USING(generation_id) WHERE g.logical_id=? AND g.state='committed' AND r.finalized=1 AND ${NOT_PURGING} AND r.record_id=?`).get(MAX_RECORD_BYTES, input.logicalConversationId, d.record_id) as Row | undefined;
         if (!row || identity(row as Descriptor) !== identity(d)) throw new Error("source_changed");
         reader.text(row); // Revalidate selected digest/visibility at disclosure.
-        return { ...reader.metadata(row), preview: candidate.preview, previewRange: candidate.previewRange };
+        return { ...reader.metadata(row), preview: candidate.preview, previewRange: candidate.previewRange,
+          ...(candidate.additionalPreviews ? { additionalPreviews: candidate.additionalPreviews } : {}) };
       });
     });
     check(); stats.complete = true; stats.elapsedMs = now() - started;
-    const last = top[limit - 1];
-    const continuation: ContinuityRelevanceContinuation | undefined = top.length > limit && last ? {
-      version: 2, rankingVersion: 1, query: input.query!.trim(), limit, watermark, manifest: initial, anchor: key(last),
-    } : undefined;
-    return { available: true, items, mode: query.mode, scan: stats, ...(continuation ? { continuation } : {}) };
+    const resumeAfter: ContinuityRelevanceContinuation[] = top.slice(0, limit).map(candidate => ({
+      version: 2, rankingVersion: 1, query: input.query!.trim(), limit, watermark, manifest: initial, anchor: key(candidate),
+    }));
+    const continuation = top.length > limit ? resumeAfter.at(-1) : undefined;
+    return { available: true, items, mode: query.mode, scan: stats, resumeAfter, ...(continuation ? { continuation } : {}) };
   } catch (error) {
     const reason = error instanceof Error ? error.message : "";
     if (reason !== "scan_capacity" && reason !== "source_changed" && reason !== "invalid_cursor") throw error;

@@ -120,9 +120,116 @@ describe("ConversationHistory scoped evidence", () => {
     }
     expect(body(handleConversationHistoryRequest({ ...f.binding, runId: "new-run" }, { query: "cobalt", limit: 2, cursor: first.nextCursor })).error.code).toBe("invalid_cursor");
     expect(body(handleConversationHistoryRequest(f.binding, { action: "search", conversationId: "web:foreign" } as never)).error.code).toBe("invalid_request");
-    for (const input of [{ query: "x".repeat(513) }, { limit: 11 }, { action: "get", recordId: "guess" }, { action: "get", recordId: first.items[0].recordId, chunkBytes: 3 }]) {
+    for (const input of [{ query: "x".repeat(513) }, { limit: 1.5 }, { action: "get", recordId: "guess" }, { action: "get", recordId: first.items[0].recordId, chunkBytes: 3 }]) {
       expect(body(handleConversationHistoryRequest(f.binding, input as never)).error).toBeDefined();
     }
+  });
+
+  it.each([[-99, 1], [0, 1], [11, 10], [Number.MAX_SAFE_INTEGER, 10]])("clamps safe integer limits (%s to %s), discloses both in model text and binds the effective limit", async (requested, effective) => {
+    const f = await fixture(); await publish(f.writer, preparation(Array.from({ length: 12 }, (_, n) => `cobalt item ${n}`)));
+    const result = handleConversationHistoryRequest(f.binding, { query: "cobalt", limit: requested });
+    expect(body(result)).toMatchObject({ requestedLimit: requested, effectiveLimit: effective, count: effective });
+    expect(result.content.map(block => block.text).join("\n")).toContain(`"requestedLimit":${requested},"effectiveLimit":${effective}`);
+    const next = body(result).navigation.nextPage;
+    expect(next.limit).toBe(effective);
+    expect(body(handleConversationHistoryRequest(f.binding, { ...next, limit: requested })).error).toBeUndefined();
+    expect(body(handleConversationHistoryRequest(f.binding, { ...next, limit: effective === 1 ? 2 : 9 })).error.code).toBe("invalid_cursor");
+  });
+
+  it.each([1.5, NaN, Infinity, -Infinity, Number.MAX_SAFE_INTEGER + 1, "10", null, true, {}, []])("rejects invalid search limit %j", async limit => {
+    const f = await fixture();
+    const result = handleConversationHistoryRequest(f.binding, { limit } as never);
+    expect(result).toMatchObject({ isError: true });
+    expect(result.content.map(block => block.text).join("\n")).toMatch(/invalid_request|invalid_limit/u);
+  });
+
+  it.each(["chronological", "relevance"] as const)("caps Unicode/escaped model-visible search content and pages a fitting prefix without loss (%s)", async mode => {
+    const f = await fixture();
+    const input = preparation(Array.from({ length: 12 }, (_, n) => `cobalt ${n} "\\\n🔷`.repeat(70)));
+    // Large but valid metadata forces prefix fitting even with empty previews.
+    const records = input.records.map(record => ({ ...record, runId: '"\\🔷'.repeat(600), inputId: '"\\🔷'.repeat(600) }));
+    await publish(f.writer, { ...input, records });
+    const args = { action: "search" as const, query: "cobalt", mode, limit: 10 };
+    const expected = f.reader.searchContinuity({ logicalConversationId: logicalId, currentConversationId: conversationId, currentRunId: runId, mode, query: "cobalt", limit: 10 });
+    const seen: string[] = [];
+    let next: any = args;
+    for (let pages = 0; next && pages < 20; pages++) {
+      const result = handleConversationHistoryRequest(f.binding, next), data = body(result);
+      expect(data.error).toBeUndefined(); expect(data.count).toBeGreaterThan(0); expect(data.count).toBeLessThan(10);
+      expect(Buffer.byteLength(JSON.stringify(result.content), "utf8")).toBeLessThanOrEqual(65_536);
+      expect(result.content.every(block => block.text.length <= 10000)).toBe(true);
+      const visible = result.content.map(block => block.text).join("\n");
+      expect(visible).toContain("Read promising hits before reformulating");
+      expect(visible).toContain("Batch useful get calls"); expect(visible).toContain("finish every get cursor");
+      if (data.hasMore) {
+        expect(visible.indexOf("Next search page:")).toBeLessThan(visible.indexOf("Read this complete retained record"));
+        const decoded = decodeRequestScopedCursor(data.nextCursor)!;
+        expect(mode === "relevance" ? (decoded.anchor as any).recordId : decoded.recordId).toBe(data.items.at(-1).recordId);
+        expect(body(handleConversationHistoryRequest(f.binding, { ...data.navigation.nextPage, cursor: alter(data.nextCursor, { digest: "wrong" }) })).error.code).toBe("invalid_cursor");
+      }
+      seen.push(...data.items.map((item: any) => item.recordId));
+      next = data.hasMore ? data.navigation.nextPage : undefined;
+    }
+    expect(next).toBeUndefined(); expect(new Set(seen).size).toBe(12); expect(seen).toHaveLength(12);
+    expect(seen.slice(0, 10)).toEqual(expected.items.map(item => item.recordId));
+  });
+
+  it("shortens previews before dropping records, measuring JSON escaping rather than raw characters", async () => {
+    const f = await fixture(); await publish(f.writer, preparation(Array.from({ length: 10 }, () => "cobalt " + "\u0000".repeat(505))));
+    const original = f.reader.searchContinuity.bind(f.reader);
+    // Keep the actual ranked boundaries while testing a Unicode/escaping-heavy
+    // metadata envelope near the transport cap.
+    const binding = { ...f.binding, reader: { searchContinuity: (input: Parameters<typeof original>[0]) => {
+      const page = original(input);
+      return { ...page, items: page.items.map(item => ({ ...item, source: { operationId: '"🔷'.repeat(470) } })) };
+    }, getContinuity: f.reader.getContinuity.bind(f.reader), continuityGaps: f.reader.continuityGaps.bind(f.reader), latestContinuitySummary: f.reader.latestContinuitySummary.bind(f.reader) } };
+    const result = handleConversationHistoryRequest(binding, { query: "cobalt", limit: 10 });
+    expect(body(result).count).toBe(10);
+    expect(body(result).items.some((item: any) => Buffer.byteLength(item.preview) < 512)).toBe(true);
+    expect(Buffer.byteLength(JSON.stringify(result.content))).toBeLessThanOrEqual(65_536);
+    expect(result.content.map(block => block.text).join("\n")).toContain('"effectiveLimit"');
+  });
+
+  it("includes a response at exactly 65,536 serialized UTF-8 bytes and shrinks at one byte over", async () => {
+    const f = await fixture(); await publish(f.writer, preparation(["cobalt " + '"\\🔷'.repeat(100)]));
+    const page = f.reader.searchContinuity({ logicalConversationId: logicalId, currentConversationId: conversationId, currentRunId: runId, query: "cobalt", mode: "relevance", limit: 1 });
+    let padding = "";
+    const reader = { searchContinuity: () => ({ ...page, items: page.items.map(item => ({ ...item,
+      source: { operationId: '"\\🔷'.repeat(100) + padding } })) }),
+      getContinuity: f.reader.getContinuity.bind(f.reader), continuityGaps: f.reader.continuityGaps.bind(f.reader), latestContinuitySummary: f.reader.latestContinuitySummary.bind(f.reader) };
+    const call = () => handleConversationHistoryRequest({ ...f.binding, reader }, { query: "cobalt", limit: 1 });
+    const baseline = call();
+    padding = "x".repeat(65_536 - Buffer.byteLength(JSON.stringify(baseline.content)) - 1024);
+    const near = call(); // Account for the additional text-block framing too.
+    padding += "x".repeat(65_536 - Buffer.byteLength(JSON.stringify(near.content)));
+    const exact = call();
+    expect(Buffer.byteLength(JSON.stringify(exact.content))).toBe(65_536);
+    expect(body(exact).items[0].preview).toBe(page.items[0]!.preview);
+    padding += "x";
+    const over = call();
+    expect(body(over).count).toBe(1); expect(body(over).items[0].preview.length).toBeLessThan(page.items[0]!.preview.length);
+    expect(Buffer.byteLength(JSON.stringify(over.content))).toBeLessThanOrEqual(65_536);
+    const clipped = body(over).items[0];
+    expect(clipped.previewRange).toMatchObject({ complete: false, responseClipped: true });
+    expect(clipped.preview).not.toContain("�");
+    expect(Buffer.from(page.items[0]!.preview).subarray(0, clipped.previewRange.end - clipped.previewRange.start).toString()).toBe(clipped.preview);
+  });
+
+  it("returns explicit capacity without skipping an unrepresentable first record", async () => {
+    const f = await fixture(), input = preparation(["cobalt"]);
+    await publish(f.writer, input);
+    const original = f.reader.searchContinuity.bind(f.reader);
+    // A future/oversized metadata shape must fail explicitly, not silently skip.
+    const reader = { searchContinuity: (args: Parameters<typeof original>[0]) => {
+      const page = original(args);
+      return { ...page, items: page.items.map(item => ({ ...item, source: { operationId: "🔷".repeat(18000) } })) };
+    }, getContinuity: f.reader.getContinuity.bind(f.reader), continuityGaps: f.reader.continuityGaps.bind(f.reader), latestContinuitySummary: f.reader.latestContinuitySummary.bind(f.reader) };
+    const result = handleConversationHistoryRequest({ ...f.binding, reader }, { query: "cobalt" });
+    expect(result).toMatchObject({ isError: true });
+    expect(body(result)).toMatchObject({ status: "capacity", count: 0, hasMore: false, error: { code: "response_capacity" } });
+    expect(body(result).nextCursor).toBeUndefined();
+    expect(result.content[0]!.text).toContain("no rows were skipped");
+    expect(Buffer.byteLength(JSON.stringify(result.content))).toBeLessThanOrEqual(65_536);
   });
 
   it.each([["\u000b", 400], ["\u000b", 495], ["\u0000", 495], ['"', 495], ["\\", 495]] as const)("follows its own bounded relevance cursor for escape-heavy queries (%j × %s)", async (escape, count) => {
@@ -242,8 +349,15 @@ describe("ConversationHistory scoped evidence", () => {
     const spec = (extension.runtimeOptions?.mcpServers as Record<string, { url: string }>)[CONVERSATION_HISTORY_MCP_SERVER_NAME]!;
     const client = new Client({ name: "fictional-history-client", version: "1.0.0" }); await client.connect(new StreamableHTTPClientTransport(new URL(spec.url)) as never);
     clients.push(async () => { await client.close(); await extension.cleanup?.(); });
-    expect((await client.listTools()).tools.map(({ name }) => name)).toEqual([CONVERSATION_HISTORY_TOOL_NAME]);
-    const found = body(await client.callTool({ name: CONVERSATION_HISTORY_TOOL_NAME, arguments: {} }));
+    const tools = (await client.listTools()).tools;
+    expect(tools.map(({ name }) => name)).toEqual([CONVERSATION_HISTORY_TOOL_NAME]);
+    expect(tools[0]!.description).toContain("Read promising hits before reformulating");
+    expect(tools[0]!.description).toContain("safe integers clamp to 1–10");
+    const searched = await client.callTool({ name: CONVERSATION_HISTORY_TOOL_NAME, arguments: { limit: 99 } });
+    expect(body(searched)).toMatchObject({ requestedLimit: 99, effectiveLimit: 10 });
+    expect(JSON.stringify(searched.content)).toContain('requestedLimit\\\":99');
+    expect((await client.callTool({ name: CONVERSATION_HISTORY_TOOL_NAME, arguments: { limit: "10" } })).isError).toBe(true);
+    const found = body(searched);
     const result = await client.callTool({ name: CONVERSATION_HISTORY_TOOL_NAME, arguments: found.navigation.nextActions[0].arguments });
     expect(body(result)).toMatchObject({ status: "available", chunk: "Morgan chose a cobalt rectangle." });
     expect(JSON.stringify((result as any).content)).toContain("nextActions");
