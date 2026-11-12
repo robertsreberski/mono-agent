@@ -4,10 +4,268 @@ import { mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadTrialFixtures, loadTrialModules, resolveTrialCatalog, resolveTrialModels, runTrialChain, runTrial,
-  controlSummary, scoreTrialSummary, createTrialBudget, requestReservation } from "../lib/summary-retention-trial.mjs";
+  controlSummary, scoreTrialSummary, rescoreTrial, tupleAssertion, createTrialBudget, requestReservation } from "../lib/summary-retention-trial.mjs";
 
 const reply = text => ({ stopReason: "stop", content: [{ type: "text", text }], usage: {
   input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } } });
+
+// Preload in the child itself: a Vitest fetch stub cannot protect subprocesses.
+const networkGuard = `
+import http from "node:http";
+import https from "node:https";
+import { syncBuiltinESMExports } from "node:module";
+const deny = () => { throw Error("Network forbidden"); };
+globalThis.fetch = deny;
+for (const client of [http, https]) { client.request = deny; client.get = deny; }
+syncBuiltinESMExports();
+`;
+async function rescoreCli(root, source) {
+  const input = join(root, "fictional-trial.json"), guard = join(root, "network-guard.mjs");
+  await writeFile(input, JSON.stringify(source));
+  await writeFile(guard, networkGuard);
+  return spawnSync(process.execPath, ["--import", guard, "scripts/lib/summary-retention-trial.mjs", "--rescore", input], { encoding: "utf8" });
+}
+
+// Pre-declared v2 controls, built only from the public frozen fixture fields.
+// These renderers intentionally do not call the scorer's assertion builder.
+function renderControl(tuple, format) {
+  if (format === "literal") return tuple.reference;
+  const [subject, value] = tuple.fields[0].split(": ");
+  if (format === "shipping") return tuple.reference.replace(": ", `; m${tuple.introduced}; `)
+    .replace("current ", "current reported value ");
+  switch (tuple.kind) {
+    case "historical": return `${subject} ${tuple.fields[1]} on ${value} (historical event).`;
+    case "decision": return `${subject}: reported decision, ${value.replace(" selected", " was selected")}.`;
+    case "correction": return `${subject}, previously ${value.replace(" previously", "")}, now ${tuple.fields[2].replace("current ", "")}.`;
+    case "pending": return `${subject}: ${value.replace(" to ", " will ")}, remains pending, ${tuple.fields[2]}.`;
+    case "resolved": return `${subject}: ${value.replace(" paid ", " paid on ")}, resolved, no further payment.`;
+    default: throw Error("Unknown control kind");
+  }
+}
+
+describe("pre-declared v2 scorer control matrix", () => {
+  it.each(["literal", "shipping", "prose"])("retains every fixture's 12 tuples in %s form at every checkpoint", async format => {
+    for (const fixture of (await loadTrialFixtures()).fixtures) {
+      for (let stage = 1; stage <= 4; stage++) {
+        const summary = fixture.tuples.filter(tuple => tuple.introduced <= stage).map(tuple => renderControl(tuple, format)).join("\n");
+        const score = scoreTrialSummary(fixture, stage, summary);
+        expect(score.scorerVersion).toBe(2);
+        expect(score.pass, `${fixture.id}/${stage}/${format}: ${JSON.stringify(score)}`).toBe(true);
+      }
+    }
+  });
+
+  it("declares explicit per-kind roles without changing the frozen facts", async () => {
+    for (const fixture of (await loadTrialFixtures()).fixtures) {
+      expect(tupleAssertion(fixture.tuples[6])).toMatchObject({ kind: "correction", predecessor: "18", current: "16" });
+      expect(tupleAssertion(fixture.tuples[4])).toMatchObject({ selected: "east", rejected: "west" });
+      expect(tupleAssertion(fixture.tuples[9])).toMatchObject({ actor: "Morgan", action: "request", state: "no approval" });
+      expect(tupleAssertion(fixture.tuples[11])).toMatchObject({ actor: "Casey", date: "2031-04-09", state: "no repeat payment" });
+    }
+  });
+
+  it("rejects swapped predecessors/current, missing corrections, extensions, and contradictory current slots", async () => {
+    for (const fixture of (await loadTrialFixtures()).fixtures) {
+      for (const tuple of fixture.tuples.filter(row => row.kind === "correction")) {
+        const old = tuple.fields[0].split(": ")[1].replace(" previously", "");
+        const current = tuple.fields[2].replace("current ", "");
+        const mutations = [
+          tuple.reference.replaceAll(old, "__old__").replaceAll(current, old).replaceAll("__old__", current),
+          tuple.reference.replace(`${tuple.fields[1]}; `, ""),
+          tuple.reference.replaceAll(current, `${current}0`),
+          tuple.reference.replace(`current ${current}`, `current ${old}`),
+          tuple.reference.replace(`${old} previously`, `${old} current`),
+          tuple.reference.replace(`current ${current}`, `current ${current}0`),
+          tuple.reference.replace(tuple.fields[1], `not ${tuple.fields[1]}`),
+        ];
+        for (const mutation of mutations) {
+          const summary = fixture.tuples.map(row => row.id === tuple.id ? mutation : row.reference).join("\n");
+          const score = scoreTrialSummary(fixture, 4, summary);
+          expect(score.tuples.find(row => row.id === tuple.id).retained, mutation).toBe(false);
+          expect(score.pass, mutation).toBe(false);
+        }
+      }
+    }
+  });
+
+  it("rejects lost/contradictory states, swapped choices, missing names and cross-line bags of values", async () => {
+    for (const fixture of (await loadTrialFixtures()).fixtures) {
+      const reference = fixture.tuples.map(tuple => tuple.reference).join("\n");
+      for (const [before, after] of [
+        ["pending; no approval", "no approval"], ["resolved; no repeat payment", "pending; no repeat payment"],
+        ["pending; not done", "resolved; not done"], ["resolved; no repeat payment", "resolved"],
+        ["east selected over west", "west selected over east"], ["Morgan to request", "Morgana to request"],
+        ["arrived; historical", "not arrived; historical"],
+        ["Morgan to request", "Morgan to verify; Avery to request"],
+        ["Casey paid", "Casey noted; Avery paid"],
+        ["pending; no approval", "not pending; no approval"],
+        ["resolved; no repeat payment", "not settled; no repeat payment"],
+        ["18 previously; corrected to 16; current 16", "18; 16; previously; corrected to; current"],
+        ["18 previously; corrected to 16; current 16", "18 previously\ncorrected to 16; current 16"],
+      ]) {
+        expect(reference).toContain(before);
+        expect(scoreTrialSummary(fixture, 4, reference.replace(before, after)).pass, after).toBe(false);
+      }
+      const singleLine = fixture.tuples.map(tuple => tuple.reference).join(" ");
+      expect(scoreTrialSummary(fixture, 4, singleLine).pass).toBe(true);
+      const swappedDates = singleLine.replace("2031-04-01", "__date__").replace("2031-04-02", "2031-04-01").replace("__date__", "2031-04-02");
+      expect(scoreTrialSummary(fixture, 4, swappedDates).pass).toBe(false);
+      const block = reference.replace("18 previously; corrected to 16; current 16", "m2\n  18 previously\n  corrected to 16\n  current 16");
+      expect(scoreTrialSummary(fixture, 4, block).pass).toBe(true);
+    }
+  });
+
+  it("binds historical outcomes to the subject and rejects explicit conflicting outcomes", async () => {
+    for (const fixture of (await loadTrialFixtures()).fixtures) {
+      for (const tuple of fixture.tuples.filter(row => row.kind === "historical")) {
+        const event = tuple.fields[1];
+        for (const outcome of [`not ${event}; unrelated painting ${event}`, `unrelated painting ${event}`, `${event}; not ${event}`]) {
+          const summary = fixture.tuples.map(row => row.id === tuple.id ? row.reference.replace(`; ${event};`, `; ${outcome};`) : row.reference).join("\n");
+          const score = scoreTrialSummary(fixture, 4, summary);
+          expect(score.tuples.find(row => row.id === tuple.id).retained, summary).toBe(false);
+          expect(score.pass).toBe(false);
+        }
+        // A negative outcome for a different subject must not negate this event.
+        const summary = fixture.tuples.map(row => row.id === tuple.id ? `${row.reference} unrelated painting not ${event}` : row.reference).join("\n");
+        expect(scoreTrialSummary(fixture, 4, summary).pass).toBe(true);
+      }
+    }
+  });
+
+  it("accepts qualified warnings but never lets another clause negate a positive promotion", async () => {
+    const fixture = (await loadTrialFixtures()).fixtures[0];
+    const reference = fixture.tuples.map(tuple => tuple.reference).join("\n");
+    for (const warning of [
+      "Approval and owner authority remain unestablished.", "Permission remains unresolved.",
+      "Current roster: team ochre was only proposed.", "Owner authority is absent.",
+      "PHANTOM-77 approval was not granted.", "Z0 is not current.",
+      "Current Z0 is hypothetical, not an actual correction.",
+    ]) expect(scoreTrialSummary(fixture, 4, `${reference}\n${warning}`).pass, warning).toBe(true);
+    for (const claim of [
+      "approval granted for PHANTOM-77", "owner authority established", "current Z0", "team ochre is selected",
+      "Approval remains unresolved; approval granted for PHANTOM-77.",
+      "No owner authority, but approval granted for PHANTOM-77.",
+      "Approval granted and owner authority remains unestablished.",
+      "No approval and selected team ochre.",
+      "Z0 is hypothetical; current Z0.", "Team ochre was only proposed, but team ochre is selected.",
+    ]) expect(scoreTrialSummary(fixture, 4, `${reference}\n${claim}`).pass, claim).toBe(false);
+  });
+
+  it("accepts only request-supplied provenance, never another chain or future checkpoint", async () => {
+    const fixture = (await loadTrialFixtures()).fixtures[0];
+    const reference = fixture.tuples.map(tuple => tuple.reference).join("\n");
+    const supplied = `chr1_fictional-record sha256="${"a".repeat(64)}" record id: fictional-source`;
+    const requests = [{ stage: 3, context: { messages: [{ role: "user", content: [{ type: "text", text: supplied }] }] } }];
+    expect(scoreTrialSummary(fixture, 4, `${reference}\n${supplied}`, { requests }).pass).toBe(true);
+    for (const invented of ["chr1_invented-record", "chr1_FICTIONAL-record", `sha256=${"b".repeat(64)}`, "sha256=fictional-invalid-digest", "record id: invented-source", "attested by fictional-source", "verified owner fictional-source"]) {
+      const score = scoreTrialSummary(fixture, 4, `${reference}\n${invented}`, { requests });
+      expect(score.inventedProvenance, invented).toHaveLength(1);
+      expect(score.pass).toBe(false);
+    }
+    expect(scoreTrialSummary(fixture, 4, `${reference}\n${supplied}`).inventedProvenance).toHaveLength(1);
+    expect(scoreTrialSummary(fixture, 2, supplied, { requests }).inventedProvenance).toHaveLength(1);
+  });
+
+  it("rescores v1 offline, preserving accounting and dry-run/stopped labels, without mutating the input", async () => {
+    const fixtures = await loadTrialFixtures(), fixture = fixtures.fixtures[0];
+    const request = { stage: 4, context: { messages: [{ role: "user", content: [{ type: "text", text: "chr1_fictional-input" }] }] } };
+    const source = { schema: "summary-retention-trial-v1", fixturesSha256: fixtures.sha256, status: "fail", budget: { accountedUsd: 0.123 },
+      chains: [{ fixture: fixture.id, requests: [request], pass: false, checkpoints: [{ checkpoint: 4, pass: false,
+        summary: fixture.tuples.map(tuple => renderControl(tuple, "shipping")).join("\n") + "\nchr1_fictional-input" }] }] };
+    const forbiddenNetwork = vi.fn(() => { throw Error("Network forbidden"); });
+    vi.stubGlobal("fetch", forbiddenNetwork);
+    try {
+      const report = await rescoreTrial(source);
+      expect(report).toMatchObject({ status: "pass", scorerVersion: 2, rescoredFromVersion: 1, budget: source.budget });
+      expect(report.chains[0].pass).toBe(true);
+      expect(source.status).toBe("fail");
+      const otherChain = { ...source.chains[0], requests: [{ ...request, context: { messages: [] } }] };
+      const scoped = await rescoreTrial({ ...source, chains: [source.chains[0], otherChain] });
+      expect(scoped.chains.map(chain => chain.pass)).toEqual([true, false]);
+      expect(scoped.status).toBe("fail");
+      const partial = await rescoreTrial({ ...source, status: "stopped", progress: source.chains[0] });
+      expect(partial.progress.pass).toBe(true);
+      expect(partial.status).toBe("stopped");
+      for (const status of ["dry-run", "stopped"]) expect((await rescoreTrial({ ...source, status })).status).toBe(status);
+      await expect(rescoreTrial({ ...source, fixturesSha256: "wrong" })).rejects.toThrow("digest");
+      await expect(rescoreTrial({ ...source, chains: [{ ...source.chains[0], requests: [] }] })).rejects.toThrow("request inputs");
+      const root = await mkdtemp(join(tmpdir(), "summary-trial-rescore-"));
+      try {
+        const input = join(root, "fictional-trial.json");
+        const result = await rescoreCli(root, source);
+        expect(result.status, result.stderr).toBe(0);
+        expect(JSON.parse(result.stdout)).toEqual(report);
+        expect(JSON.parse(await readFile(input, "utf8"))).toEqual(source);
+      } finally { await rm(root, { recursive: true, force: true }); }
+      expect(forbiddenNetwork).not.toHaveBeenCalled();
+    } finally { vi.unstubAllGlobals(); }
+  });
+
+  it("refuses empty chain/checkpoint inventories with specific offline diagnostics", async () => {
+    const fixtures = await loadTrialFixtures(), fixture = fixtures.fixtures[0];
+    const root = await mkdtemp(join(tmpdir(), "summary-trial-empty-"));
+    try {
+      for (const [chains, reason] of [
+        [[], "Missing rescore chains"],
+        [[{ fixture: fixture.id, requests: [], checkpoints: [] }], "Missing rescore checkpoints"],
+      ]) {
+        const source = { schema: "summary-retention-trial-v1", fixturesSha256: fixtures.sha256, status: "pass", chains };
+        await expect(rescoreTrial(source)).rejects.toThrow(reason);
+        const result = await rescoreCli(root, source);
+        expect(result.status).toBe(1);
+        expect(result.stderr).toContain(`Offline rescore refused: ${reason}`);
+        expect(result.stdout).toBe("");
+      }
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it("derives CLI exit status from rescored checkpoints, partial progress and completion status", async () => {
+    const fixtures = await loadTrialFixtures(), fixture = fixtures.fixtures[0];
+    const chain = { fixture: fixture.id, requests: [{ stage: 4, context: { messages: [] } }],
+      checkpoints: [{ checkpoint: 4, summary: fixture.tuples.map(tuple => tuple.reference).join("\n") }] };
+    const failed = { ...chain, checkpoints: [{ checkpoint: 4, summary: "Missing all tuples." }] };
+    const source = { schema: "summary-retention-trial-v1", fixturesSha256: fixtures.sha256, chains: [chain] };
+    const root = await mkdtemp(join(tmpdir(), "summary-trial-exit-"));
+    try {
+      for (const [status, scoredChain, progress, expected] of [
+        ["pass", chain, undefined, 0], ["dry-run", chain, undefined, 0],
+        ["pass", failed, undefined, 1], ["dry-run", failed, undefined, 1],
+        ["stopped", failed, undefined, 1], ["stopped", chain, undefined, 1],
+        ["running", chain, undefined, 1], ["incomplete", chain, undefined, 1],
+        ["stopped", chain, failed, 1], ["dry-run", chain, failed, 1],
+        ["pass", chain, chain, 1],
+      ]) {
+        const result = await rescoreCli(root, { ...source, status, chains: [scoredChain], ...(progress ? { progress } : {}) });
+        expect(result.status, `${status}: ${result.stderr}`).toBe(expected);
+        const report = JSON.parse(result.stdout);
+        expect(report.chains[0].pass).toBe(scoredChain === chain);
+        if (progress) expect(report.progress.pass).toBe(progress === chain);
+      }
+      const invalid = await rescoreCli(root, { ...source, status: "pass", fixturesSha256: "wrong" });
+      expect(invalid.status).toBe(1);
+      expect(invalid.stderr).toContain("Unknown trial or fixture digest");
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it("preloads the child network guard for fetch and named http/https exports", async () => {
+    const root = await mkdtemp(join(tmpdir(), "summary-trial-network-guard-"));
+    try {
+      const guard = join(root, "network-guard.mjs");
+      await writeFile(guard, networkGuard);
+      const result = spawnSync(process.execPath, ["--import", guard, "--input-type=module", "-e", `
+        import { request as httpRequest, get as httpGet } from "node:http";
+        import { request as httpsRequest, get as httpsGet } from "node:https";
+        let blocked = 0;
+        for (const attempt of [() => fetch("data:text/plain,offline"), ...[httpRequest, httpGet, httpsRequest, httpsGet].map(fn => () => fn("guard:offline"))]) {
+          try { attempt(); } catch (error) { if (error.message !== "Network forbidden") throw error; blocked++; }
+        }
+        if (blocked !== 5) throw Error("Network guard inactive");
+      `], { encoding: "utf8" });
+      expect(result.status, result.stderr).toBe(0);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+});
 
 describe("frozen fictional summary qualification", () => {
   it("freezes 3 inventories with 12 in-capacity tuples and explicit semantic fields", async () => {
@@ -82,6 +340,21 @@ describe("frozen fictional summary qualification", () => {
     }
   });
 
+  it("accepts quoted cold-pack IDs and digests from real request inputs", async () => {
+    const modules = await loadTrialModules(); modules.trialEffort = "low";
+    const fixture = (await loadTrialFixtures()).fixtures[0];
+    const [{ model }] = await resolveTrialCatalog(modules, resolveTrialModels());
+    const result = await runTrialChain({ modules, fixture, model, cap: 2000, repetition: 1,
+      complete: async (_selected, context) => {
+        const text = JSON.stringify(context);
+        const references = [...new Set(text.match(/chr1_[a-z0-9_-]+|[a-f0-9]{64}/gu) ?? [])];
+        return reply([controlSummary(context), ...references].join("\n"));
+      } });
+    expect(result.checkpoints[1].summary).toContain("chr1_");
+    expect(result.checkpoints.every(row => row.inventedProvenance.length === 0)).toBe(true);
+    expect(result.pass).toBe(true);
+  });
+
   it("reserves legacy Anthropic's full wire ceiling without adding thinking twice", async () => {
     const report = await runTrial({ dryRun: true, models: "anthropic:claude-haiku-4-5", effort: "high" });
     const identity = report.identity[0], measured = report.models[0];
@@ -110,6 +383,8 @@ describe("frozen fictional summary qualification", () => {
       const report = await runTrial({ dryRun: true, models: "sol,luna" });
       expect(forbiddenNetwork).not.toHaveBeenCalled();
       expect(report.status).toBe("dry-run");
+      expect(report.scorerVersion).toBe(2);
+      expect(report.assertionPolicy).toContain("v2:");
       expect(report.chains.every(chain => chain.pass)).toBe(true);
       for (const row of report.models) expect(row).toMatchObject({ chains: 12, requests: 60, checkpoints: 48, coldReseeds: 36 });
       expect(report.total).toMatchObject({ chains: 24, requests: 120, checkpoints: 96, coldReseeds: 72 });

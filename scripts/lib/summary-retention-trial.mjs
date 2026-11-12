@@ -3,6 +3,8 @@ import { createHash } from "node:crypto";
 import { readFile, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
+import { parseArgs } from "node:util";
 import { SOL, LUNA } from "./continuity-e2-protocol.mjs";
 import { loadE2Catalog } from "./continuity-e2-pricing.mjs";
 
@@ -30,28 +32,162 @@ export async function loadTrialFixtures() {
     need(fixture.tuples.length === 12 && fixture.stages.length === 4, "Invalid tuple inventory");
     need(Buffer.byteLength(fixture.tuples.map(row => row.reference).join("\n")) <= 2400, "Reference inventory exceeds 2400 bytes");
   }
-  return { ...data, sha256: manifest.sha256, assertionPolicy: manifest.assertions };
+  return { ...data, sha256: manifest.sha256, assertionPolicy: ASSERTION_POLICY, fixtureAssertionPolicy: manifest.assertions };
 }
 
-export function scoreTrialSummary(fixture, checkpoint, summary) {
-  const lines = summary.split("\n").map(normalized);
-  const field = text => normalized(text).replace(/[.!?]+$/u, "").trim();
-  // Match whole semicolon-delimited fields, never value prefixes (16 != 160).
-  // Markdown bullets/numbered lists and terminal sentence punctuation are framing.
-  const tupleLines = lines.map(line => line.replace(/^(?:[-*+]|\d+[.)])\s+/u, "").split(";").map(field));
-  const tuples = fixture.tuples.filter(tuple => tuple.introduced <= checkpoint).map(tuple => ({ id: tuple.id,
-    retained: tupleLines.some(fields => tuple.fields.every(expected => fields.includes(field(expected)))) }));
-  const allowedDates = new Set(fixture.tuples.filter(tuple => tuple.introduced <= checkpoint).flatMap(tuple => tuple.reference.match(/\b\d{4}-\d{2}-\d{2}\b/gu) ?? []));
+export const SCORER_VERSION = 2;
+export const ASSERTION_POLICY = "v2: whole-token values and per-kind subject/value/state relationships in one line or indented tuple block; clause-scoped positive promotions; provenance limited to that chain's request inputs.";
+const escape = text => text.replace(/[.*+?^${}()|[\]\\]/gu, match => `\\${match}`);
+const token = text => `(?<![\\p{L}\\p{N}_-])${escape(normalized(text))}(?![\\p{L}\\p{N}_-])`;
+const has = (text, value) => new RegExp(token(value), "u").test(text);
+const clean = text => normalized(text.replace(/[*`]/gu, ""));
+const clauses = text => text.split(/[;.!?\n]|,\s*|\b(?:but|however|yet)\b|\band\b/u).map(clean).filter(Boolean);
+const qualified = text => /\b(?:not|no|never|without|neither|hypothetical|quoted|rehearsal|proposal|proposed|unestablished|unresolved|unapproved|unauthorized|unverified|absent|pending|unknown|unconfirmed|unselected|un-established|un-resolved|awaiting|denied|withheld|revoked|provisional|conditional|unavailable|lacking|lacks|cannot|would|could|might)\b|\b(?:isn|wasn|hasn|doesn|didn|can)[’']t\b/u.test(text);
+
+/** Declarative roles derived from frozen metadata, not from model output.
+ * This is a v2 assertion revision; fixture facts and their digest stay unchanged.
+ */
+export function tupleAssertion(tuple) {
+  const [subject, first] = tuple.fields[0].split(": ");
+  const base = { kind: tuple.kind, subject };
+  switch (tuple.kind) {
+    case "historical": return { ...base, date: first, event: tuple.fields[1] };
+    case "decision": {
+      const [selected, rejected] = first.replace(" selected", "").split(" over ");
+      return { ...base, selected, rejected };
+    }
+    case "correction": return { ...base, predecessor: first.replace(" previously", ""), current: tuple.fields[2].replace("current ", "") };
+    case "pending": {
+      const [actor, action] = first.split(" to ");
+      return { ...base, actor, action, state: tuple.fields[2] };
+    }
+    case "resolved": {
+      const [actor, date] = first.split(" paid ");
+      return { ...base, actor, date, state: tuple.fields[2] };
+    }
+    default: throw Error("Unknown frozen tuple kind");
+  }
+}
+
+// Role slots allow bounded descriptive words, but cannot jump over another value
+// or another role. Collect ALL slots so contradictory current values also fail.
+const roleWords = "(?:the|reported|count|value|date|code|is|was|of|as|interpretation|remains)";
+function roleValues(text, cue, valuePattern) {
+  return [...text.matchAll(new RegExp(`\\b(?:${cue})\\b(?:\\s+${roleWords}){0,5}\\s*[:=]?\\s*(${valuePattern})(?![\\p{L}\\p{N}_-])`, "gu"))].map(match => match[1]);
+}
+function correctionRetained(text, assertion) {
+  const { predecessor, current } = assertion;
+  const pattern = /^\d{4}-/u.test(predecessor) ? "\\d{4}-[\\p{L}\\p{N}_-]+" : /^\d+$/u.test(predecessor) ? "\\d+[\\p{L}\\p{N}_-]*" : "[a-z]+\\d+[\\p{L}\\p{N}_-]*";
+  const old = roleValues(text, "previously|earlier|formerly|previous|historical value", pattern);
+  for (const match of text.matchAll(new RegExp(`(?<![\\p{L}\\p{N}_-])(${pattern})\\s+(?:previously|earlier|formerly|superseded|replaced)\\b`, "gu"))) old.push(match[1]);
+  const replacement = roleValues(text, "corrected to|replaced by|moved to|changed to|now", pattern);
+  const present = roleValues(text, "current|now", pattern);
+  return old.length > 0 && old.every(value => value === normalized(predecessor))
+    && replacement.length > 0 && replacement.every(value => value === normalized(current))
+    && (present.length === 0 || present.every(value => value === normalized(current)))
+    && !/\b(?:not|never)\s+(?:corrected|replaced|moved|changed)\b/u.test(text);
+}
+function tupleRetained(text, a) {
+  if (!has(text, a.subject)) return false;
+  switch (a.kind) {
+    case "historical": {
+      // A standalone outcome field inherits this tuple's subject; prose must name
+      // it. An unrelated subject cannot supply a missing or negated outcome.
+      const outcome = new RegExp(`^(?:(?:not|never)\\s+)?${token(a.event)}$`, "u");
+      const events = clauses(text).filter(clause => has(clause, a.event) && (has(clause, a.subject) || outcome.test(clause)));
+      return has(text, a.date) && events.length > 0 && events.every(clause => !qualified(clause));
+    }
+    case "decision": {
+      const selected = token(a.selected);
+      const choice = new RegExp(`(?:${selected}\\s+(?:was\\s+)?selected|(?:selected|chose)\\s+${selected})`, "u");
+      const rejected = !a.rejected || new RegExp(`(?:${selected}\\s+(?:was\\s+)?selected\\s+over\\s+${token(a.rejected)}|(?:selected|chose)\\s+${selected}\\s+over\\s+${token(a.rejected)}|${token(a.rejected)}\\s+(?:was\\s+)?rejected|rejected\\s+${token(a.rejected)})`, "u").test(text);
+      return has(text, "reported decision") && clauses(text).some(clause => choice.test(clause) && !qualified(clause)) && rejected
+        && !(a.rejected && new RegExp(`(?:${token(a.rejected)}\\s+(?:was\\s+)?selected|selected\\s+${token(a.rejected)})`, "u").test(text));
+    }
+    case "correction": return correctionRetained(text, a);
+    case "pending": return new RegExp(`(?:${token(a.actor)}\\s+(?:(?:is\\s+)?to|will|must|should|needs to)\\s+${token(a.action)}|${token(a.action)}\\s+(?:by|assigned to)\\s+${token(a.actor)})`, "u").test(text)
+      && /\b(?:pending|unresolved|outstanding)\b/u.test(text) && !/\bnot (?:pending|unresolved|outstanding)\b/u.test(text) && !/\b(?:resolved|completed|done)\b/u.test(text.replace(/\bnot (?:yet )?(?:done|completed|resolved)\b/gu, ""))
+      && (a.state === "no approval" ? /\b(?:no approval|not approved|approval (?:remains |is )?(?:absent|pending|unestablished|unresolved))\b/u.test(text) : /\b(?:not (?:yet )?(?:done|completed)|incomplete)\b/u.test(text));
+    case "resolved": return has(text, a.date) && clauses(text).some(clause => new RegExp(`(?:${token(a.actor)}\\s+(?:(?:has|already)\\s+)*paid\\b|\\bpaid\\s+by\\s+${token(a.actor)})`, "u").test(clause) && !qualified(clause))
+      && /\b(?:resolved|settled)\b/u.test(text) && !/\b(?:pending|unresolved|outstanding|not resolved|not settled)\b/u.test(text)
+      && /\b(?:no repeat payment|must not pay again|no further payment)\b/u.test(text);
+    default: return false;
+  }
+}
+
+function tupleBlocks(summary, assertions) {
+  const blocks = [];
+  let block;
+  for (const line of summary.split("\n")) {
+    const text = clean(line);
+    const subject = assertions.some(a => has(text, a.subject));
+    if (/^\s+\S/u.test(line) && block !== undefined && !subject && !/^\s*(?:[-+*]|\d+[.)]|#)/u.test(line)) blocks[block] += `; ${text}`;
+    else { blocks.push(text); block = subject ? blocks.length - 1 : undefined; }
+  }
+  // Multiple tuples on one line must not lend each other dates, values or states.
+  return blocks.flatMap(text => {
+    const subjects = assertions.flatMap(a => [...text.matchAll(new RegExp(token(a.subject), "gu"))].map(match => ({ index: match.index, subject: a.subject })))
+      .sort((left, right) => left.index - right.index);
+    const starts = [0];
+    for (let index = 1; index < subjects.length; index++) if (subjects[index].subject !== subjects[index - 1].subject) starts.push(subjects[index].index);
+    return starts.map((start, index) => text.slice(start, starts[index + 1]));
+  });
+}
+
+const requestText = requests => requests.flatMap(request => [request.context?.systemPrompt ?? "",
+  ...(request.context?.messages ?? []).flatMap(message => typeof message.content === "string" ? [message.content]
+    : (message.content ?? []).filter(part => part.type === "text").map(part => part.text))]).join("\n");
+const provenanceReferences = text => [...text.matchAll(/(?<![\p{L}\p{N}_-])(?:chr1_[a-z0-9_-]+|[a-f0-9]{64})(?![\p{L}\p{N}_-])|\b(?:record\s+(?:id|reference)|sha256)\s*[:=]\s*["'`]?([a-z0-9_-]+)/giu)].map(match => {
+  const reference = match[1] ?? match[0];
+  return /^[a-f0-9]{64}$/iu.test(reference) ? reference.toLowerCase() : reference;
+});
+
+export function scoreTrialSummary(fixture, checkpoint, summary, { requests = [] } = {}) {
+  const lines = summary.split("\n").map(clean);
+  const introduced = fixture.tuples.filter(tuple => tuple.introduced <= checkpoint);
+  const assertions = introduced.map(tupleAssertion);
+  const blocks = tupleBlocks(summary, assertions);
+  const tuples = introduced.map((tuple, index) => ({ id: tuple.id, retained: blocks.some(text => tupleRetained(text, assertions[index])) }));
+  const allowedDates = new Set(introduced.flatMap(tuple => tuple.reference.match(/\b\d{4}-\d{2}-\d{2}\b/gu) ?? []));
   const inventedDates = [...new Set(summary.match(/\b\d{4}-\d{2}-\d{2}\b/gu) ?? [])].filter(date => !allowedDates.has(date));
-  // Positive claims about the planted hypothetical, or invented durable references,
-  // are failures. Quoted/negated warnings remain warnings, never authorization.
-  const authorityPromotions = lines.filter(line => /phantom-77|owner authority|approval granted/u.test(line)
-    && !/hypothetical|quoted|not |no |never|does not|without/u.test(line));
-  const hypotheticalPromotions = lines.filter(line => /(?:current|replaced by|selected).*\b(?:z0|ochre)\b/u.test(line) && !/hypothetical|quoted|not |no |never|proposal/u.test(line));
-  const inventedProvenance = lines.filter(line => /\b(?:chr1_[a-z0-9_-]+|attested by|verified owner)\b|\brecord id\s*[:=]/u.test(line));
-  return { checkpoint, tuples, inventedDates, authorityPromotions, hypotheticalPromotions, inventedProvenance,
+  const authorityPromotions = lines.filter(line => clauses(line).some(clause => !qualified(clause)
+    && /\b(?:approval|permission|owner authority|phantom-77)\b/u.test(clause)
+    && /\b(?:granted|approved|authorized|established|confirmed|verified|attested|valid|given|exists|has authority)\b/u.test(clause)));
+  const hypotheticalPromotions = lines.filter(line => clauses(line).some(clause => !qualified(clause)
+    && /\b(?:current|now|replaced by|selected|active)\b/u.test(clause) && /\b(?:z0|ochre)\b/u.test(clause)));
+  const allowedReferences = new Set(provenanceReferences(requestText(requests.filter(request => request.stage <= checkpoint))));
+  const inventedProvenance = summary.split("\n").filter(line => /\b(?:attested by|verified owner)\b/iu.test(line)
+    || provenanceReferences(line).some(reference => !allowedReferences.has(reference))).map(clean);
+  return { scorerVersion: SCORER_VERSION, checkpoint, tuples, inventedDates, authorityPromotions, hypotheticalPromotions, inventedProvenance,
     pass: tuples.every(row => row.retained) && !inventedDates.length && !authorityPromotions.length && !hypotheticalPromotions.length && !inventedProvenance.length };
 }
+
+/** No runtime imports, credentials or network: preserve inputs/accounting, replace scores. */
+export async function rescoreTrial(source) {
+  const fixtures = await loadTrialFixtures();
+  need(source.schema === "summary-retention-trial-v1" && source.fixturesSha256 === fixtures.sha256, "Unknown trial or fixture digest");
+  const report = structuredClone(source);
+  need(Array.isArray(report.chains) && report.chains.length > 0, "Missing rescore chains");
+  const rescoreChain = chain => {
+    const fixture = fixtures.fixtures.find(row => row.id === chain.fixture);
+    need(fixture && Array.isArray(chain.requests) && Array.isArray(chain.checkpoints), "Missing rescore inputs");
+    need(chain.checkpoints.length > 0, "Missing rescore checkpoints");
+    chain.checkpoints = chain.checkpoints.map(row => {
+      need(chain.requests.some(request => request.stage === row.checkpoint && request.context?.messages), "Missing checkpoint request inputs");
+      return { ...row, ...scoreTrialSummary(fixture, row.checkpoint, row.summary, { requests: chain.requests }) };
+    });
+    chain.pass = chain.checkpoints.every(row => row.pass);
+  };
+  for (const chain of report.chains) rescoreChain(chain);
+  if (report.progress) rescoreChain(report.progress);
+  report.rescoredFromVersion = source.scorerVersion ?? 1;
+  report.scorerVersion = SCORER_VERSION;
+  report.assertionPolicy = ASSERTION_POLICY;
+  report.qualificationLimit = QUALIFICATION_LIMIT;
+  if (["pass", "fail"].includes(report.status)) report.status = report.chains.every(chain => chain.pass) ? "pass" : "fail";
+  return report;
+}
+const QUALIFICATION_LIMIT = "Deterministic fixture-specific value/relationship assertions; not a general semantic or provenance verifier. Dry-run controls prove mechanics only, not model retention.";
 
 /** Offline control derives lines ONLY from the actual request, never from fixtures. */
 export function controlSummary(context, lossy = false) {
@@ -183,7 +319,7 @@ export async function runTrialChain({ modules, fixture, model, cap, repetition, 
       await raw.close(); raw = await repo.open(metadata);
       const entry = await raw.getEntry(id);
       need(entry.summary === result.value.summary, "Persisted summary changed");
-      const score = scoreTrialSummary(fixture, stage, entry.summary);
+      const score = scoreTrialSummary(fixture, stage, entry.summary, { requests });
       checkpoints.push({ ...score, summary: entry.summary, summaryBytes: Buffer.byteLength(entry.summary), isSplitTurn: input.preparation.isSplitTurn, telemetry });
       if (stage < 4 && coldReseeds) {
         // Construct the summary record only from the checkpoint read above. This
@@ -212,10 +348,10 @@ export async function runTrial({ dryRun = false, confirm = false, capUsd, models
   const fixtures = await loadTrialFixtures();
   const catalog = await resolveTrialCatalog(modules, resolveTrialModels(models));
   const budget = dryRun ? null : createTrialBudget(capUsd);
-  const report = { schema: "summary-retention-trial-v1", dryRun, fixturesSha256: fixtures.sha256, assertionPolicy: fixtures.assertionPolicy,
+  const report = { schema: "summary-retention-trial-v1", scorerVersion: SCORER_VERSION, dryRun, fixturesSha256: fixtures.sha256, assertionPolicy: fixtures.assertionPolicy,
     requestedEffort: effort, identity: catalog.map(({ model, catalog }) => ({ ...catalog, effectiveEffort: modules.summaryThinkingLevel(model, effort) })),
     spendingDisclosure: "Reservations use one token per serialized input byte and the shipping providerMaxTokens output allowance (including adapter-added thinking) at maximum frozen catalog rates, without cache credit. Codex output ceiling is NOT enforced by the provider; the cap refuses further dispatch, but cannot interrupt an already sent request or guarantee its bill. Unknown outcomes retain reservations and stop. No retries.",
-    qualificationLimit: "Deterministic, literal fixture assertions; not a general semantic or provenance verifier. Dry-run controls prove mechanics only, not model retention.",
+    qualificationLimit: QUALIFICATION_LIMIT,
     models: [], chains: [], dispatches: [], budget: budget?.snapshot() ?? null, status: "running" };
   await publish(report);
   try {
@@ -272,5 +408,21 @@ export async function runTrial({ dryRun = false, confirm = false, capUsd, models
     // Never persist provider errors, which may contain credentials or headers.
     report.failure = "Trial stopped; no retry or resume. Inspect last reservation and completed checkpoints.";
     await publish(report); throw error;
+  }
+}
+
+// Separate offline entry point deliberately does not load the shipping runtime.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  try {
+    const { values } = parseArgs({ options: { rescore: { type: "string" } } });
+    need(values.rescore, "Expected --rescore <trial.json>");
+    const report = await rescoreTrial(JSON.parse(await readFile(values.rescore, "utf8")));
+    console.log(JSON.stringify(report, null, 2));
+    const chains = [...report.chains, ...(report.progress ? [report.progress] : [])];
+    if (!["pass", "dry-run"].includes(report.status) || report.progress
+      || chains.some(chain => !chain.pass || chain.checkpoints.some(checkpoint => !checkpoint.pass))) process.exitCode = 1;
+  } catch (error) {
+    console.error(`Offline rescore refused: ${error.message}`);
+    process.exitCode = 1;
   }
 }

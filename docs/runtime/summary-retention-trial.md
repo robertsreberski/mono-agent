@@ -5,8 +5,11 @@ description: "Separate offline compaction carriage checks from an explicitly fun
 
 The trial in `scripts/summary-retention-trial.mjs` tests summary-specific retention,
 not retrieval quality. It never loads E2 questions, answer keys, registrations or
-private conversations, and does not change the E2 protocol. Fixtures and assertions
-are frozen together by `scripts/fixtures/summary-retention/manifest.json`.
+private conversations, and does not change the E2 protocol. The SHA-256 digest in
+`scripts/fixtures/summary-retention/manifest.json` freezes only the bytes of
+`conversations.json` in that directory. The manifest's v1 assertion text is
+descriptive, not covered by that digest; the v2 assertion policy lives in
+`scripts/lib/summary-retention-trial.mjs`. V2 leaves the fixture bytes unchanged.
 
 ## Offline preparation
 
@@ -86,17 +89,76 @@ rules.
 
 ## Scoring and limits
 
-Each checkpoint reports every introduced tuple separately. All semicolon-separated
-reference fields must appear together on one summary line as complete
-semicolon-delimited fields, with case/whitespace normalization. Leading Markdown
-bullets/numbered-list markers and terminal sentence punctuation are ignored, but
-value extensions such as `current 160` versus `current 16` do not match. This
-matcher hardening leaves the frozen fixture inventory and expected tuples unchanged.
-The trial asks the model to retain these compact tuple lines for objective,
-conservative scoring. Wrong predecessor/current values, missing pending states and
-missing tuples fail. Fixture-specific checks reject introduced dates,
-invented record/owner-attestation claims and promotion of the planted hypothetical
-correction/approval. Quoted or negated warnings are not permission.
+Reports and checkpoints carry `scorerVersion: 2`. This assertion revision was
+written from the frozen public fixtures and the shipping historical-summary
+contract before any rerun, without inspecting private trial outputs. V1 required
+whole semicolon-delimited fields, rejecting the shipping contract's equivalent
+`subject; mN; value; correction; current interpretation; state` format. It also
+mistook qualified warnings and supplied cold-pack references for inventions.
+V2 changes the assertions, not the fixture facts, request focus, product prompts,
+token caps or spending policy. The original manifest digest remains unchanged;
+`assertionPolicy` in new/rescored reports describes v2 rather than the manifest's
+historical v1 policy.
+
+Each checkpoint reports every introduced tuple separately. Values match as whole
+tokens (`16` is not `160`, `C9` is not `C90`), with case/whitespace and inline
+Markdown normalization. A subject and its values/relationships must occur on one
+line or in its immediately indented continuation block, never in an unrelated bag
+of lines. `tupleAssertion` derives declarative roles from the frozen `kind` and
+`fields` metadata:
+
+| Kind | Required roles and relationships |
+| --- | --- |
+| Historical | Subject, supplied date and positive event outcome |
+| Decision | Subject, reported decision, selected option and rejected alternative when supplied |
+| Correction | Subject, predecessor marked previous/earlier, and a correction/replacement to the current value; explicit current slots must agree |
+| Pending | Subject, named actor assigned the action, pending/unresolved state, and no approval or not-done constraint |
+| Resolved | Subject, named payer, supplied date, resolved state and no-repeat-payment constraint |
+
+Literal fixture lines, shipping tuples with `mN` positions and prose such as
+`crate count, previously 18, now 16` are equivalent. A missing correction, swapped
+predecessor/current, contradictory current value or missing/contradictory state
+still fails. The grammar is bounded and fixture-specific, not unrestricted
+natural-language equivalence.
+
+Promotion checks consider positive claims clause by clause. Negations and
+qualifications such as unestablished, unresolved, absent, only proposed, quoted
+and hypothetical do not confer authority. A warning in a different clause cannot
+hide `approval granted for PHANTOM-77` or a claim that `Z0` is current.
+`chr1_` IDs, SHA-256 digests and explicit `record id:`/`record reference:` values
+are accepted only if supplied in that chain's actual request contexts up through
+that checkpoint, including cold-pack text. References from another chain or a
+future checkpoint do not count. Record IDs retain case-sensitive identity; hex
+digests are case-insensitive. `attested by` and `verified owner` claims remain
+failures even when a referenced identifier was supplied. This is an input-membership
+check, not cryptographic attestation of model statements.
+
+The pre-declared test controls cover all three fixtures in literal, shipping and
+prose forms at every checkpoint. Negative controls cover swapped values, missing
+corrections, value extensions, predecessor-as-current, dropped pending states,
+resolved-as-pending, selected/rejected reversal, invented provenance and positive
+authority/hypothetical promotions. Supplied-provenance controls exercise both
+isolated scoring and the real cold-pack request path.
+
+## Offline rescore
+
+Rescore an existing report without loading models, built runtime modules,
+credentials or network:
+
+```sh
+node scripts/lib/summary-retention-trial.mjs --rescore trial.json > NEW-rescored.json
+```
+
+The source file is not modified. The command validates the frozen fixture digest
+and requires each checkpoint's saved request inputs. It writes the updated report
+to stdout, preserving summaries, requests and spending/accounting, and records
+`rescoredFromVersion` (v1 when absent). Completed `pass`/`fail` statuses are
+recomputed; `dry-run` and `stopped` labels remain unchanged, including partial
+progress. Any failed chain or checkpoint exits nonzero after writing the report,
+including failures under a `dry-run` label. Stopped or incomplete statuses and
+partial progress also exit nonzero, even when completed checkpoints pass. Empty
+chain/checkpoint lists and malformed or missing inputs are refused with an offline
+diagnostic reason. Rescoring never dispatches or resumes a trial.
 
 **Pass:** all 48 checkpoints per model retain every introduced tuple and all
 fixture-specific authority/provenance checks pass. A pack or retrieval match never
@@ -104,11 +166,9 @@ substitutes for a summary assertion. Nonzero exit status means failure or a stop
 trial; partial checkpoints remain in the output. An offline dry run is labelled
 `dry-run`, never a semantic pass.
 
-These deterministic literal checks are intentionally stricter than paraphrase and
-are not a general natural-language semantic/provenance verifier: passing qualifies
-only this frozen fictional inventory and policy, not arbitrary models or histories.
-The offline tests include retaining and lossy controls through initial, update,
-split, persistence and cold-pack paths. Once a controlled summary and retained tail
-omit a fact, the next request is checked to lack it; no fixture oracle repairs loss.
-Ledger defaults, privacy/redaction, token ceilings and archive-lineage verification
-remain unchanged.
+These deterministic checks qualify only this frozen fictional inventory and
+policy, not arbitrary models or histories. The offline tests include retaining
+and lossy controls through initial, update, split, persistence and cold-pack paths.
+Once a controlled summary and retained tail omit a fact, the next request is
+checked to lack it; no fixture oracle repairs loss. Ledger defaults,
+privacy/redaction, token ceilings and archive-lineage verification remain unchanged.
