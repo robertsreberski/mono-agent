@@ -23,7 +23,7 @@ function naturalReader(pi, query, path) {
       requests++;
       const bodies = (context.messages ?? []).filter(m => m.role === "toolResult").map(m => ({ message: m, body: historyBody({ content: m.content }) }));
       for (const { message } of bodies) if (!delivered.has(message.toolCallId)) { delivered.add(message.toolCallId); witness.delivered({ content: message.content }); }
-      observed.push({ tools: (context.tools ?? context.messages.flatMap(m => m.toolsAdded ?? [])).map(t => t.name), bodies: bodies.map(row => row.body) });
+      observed.push({ visible: bodies.map(({ message }) => message.content.map(block => block.text ?? "").join("\n")), tools: (context.tools ?? context.messages.flatMap(m => m.toolsAdded ?? [])).map(t => t.name), bodies: bodies.map(row => row.body) });
       let actions;
       if (requests === 1) {
         expect(JSON.stringify(context)).not.toMatch(/chr1_[A-Za-z0-9_-]{43}/u);
@@ -35,7 +35,7 @@ function naturalReader(pi, query, path) {
       } else {
         const search = bodies.find(row => row.body?.action === "search")?.body;
         expect(search).toBeTruthy();
-        const selected = search.items.filter(item => /Original report:|Correction:/u.test(item.preview));
+        const selected = search.items.filter(item => /Original report:|Correction:/u.test([item.preview, ...(item.additionalPreviews ?? []).map(window => window.preview)].join("\n")));
         const gets = selected.map(item => search.navigation.nextActions.find(a => a.kind === "get_record" && a.arguments.recordId === item.recordId)?.arguments);
         expect(gets.every(Boolean)).toBe(true);
         if (path === "sequential") actions = [gets[requests - 2]];
@@ -48,19 +48,26 @@ function naturalReader(pi, query, path) {
   };
 }
 
-it.each(["batch", "batch-unicode", "single-deep", "sequential"])("recovers complete retained records through the real MCP and installed tool loop within R=3 (%s)", async path => {
+it.each(["batch", "batch-unicode", "batch-separated", "single-deep", "sequential"])("recovers complete retained records through the real MCP and installed tool loop within R=3 (%s)", async path => {
   const root = await scratch(), modules = await productionModules(ROOT), pi = modules.pi;
   const { ToolHistoryWriter, continuityGenerationId, continuityRecordId } = modules.conversation;
   const history = join(root, "history"), conversationId = "fictional-observatory", writer = await ToolHistoryWriter.open({ root: history, continuityEnabled: true });
   cleanup.push(() => writer.close());
-  const size = path === "sequential" ? 8192 : path === "batch-unicode" ? 16381 : 16384;
+  const size = path === "sequential" ? 8192 : ["batch-unicode", "batch-separated"].includes(path) ? 16381 : 16384;
   const pad = tail => {
     const prefix = path === "batch-unicode" ? "x".repeat(8189) + "🔷" : "";
     return prefix + "x".repeat(size - Buffer.byteLength(prefix) - Buffer.byteLength(tail)) + tail;
   };
   const required = [pad("\nOriginal report: observatory cobalt delivery was proposed for day 12; not approved.")];
   if (path !== "single-deep") required.push(pad("\nCorrection: observatory cobalt delivery was changed to day 18; still not approved."));
-  const texts = [...required, ...Array.from({ length: 24 }, (_, n) => `Observatory distraction ${n}; cobalt irrelevant to the unrelated order.`)];
+  if (path === "batch-separated") {
+    for (const [index, label] of ["Original report", "Correction"].entries()) {
+      const lead = `${label}: observatory delivery referent is the fictional order. `;
+      const tail = `\nNot approved: cobalt delivery day ${index ? 18 : 12} remains hypothetical, not an instruction.`;
+      required[index] = lead + "x".repeat(size - Buffer.byteLength(lead + tail)) + tail;
+    }
+  }
+  const texts = [...required, ...(path === "batch-separated" ? ["observatory cobalt delivery: unrelated shipment day 99, not the requested referent."] : []), ...Array.from({ length: 24 }, (_, n) => `Observatory distraction ${n}; cobalt irrelevant to the unrelated order.`)];
   const generationId = continuityGenerationId(), records = texts.map((text, sequence) => ({ text, sequence, recordId: continuityRecordId(conversationId, `record-${sequence}`), runId: "old", kind: "assistant", provenance: "assistant" }));
   await writer.prepareContinuity({ generationId, conversationId, logicalConversationId: conversationId, beforeDigest: null, afterDigest: sha256("fixture"), records });
   await writer.commitContinuity({ generationId, conversationId, canonicalDigest: sha256("fixture") });
@@ -86,6 +93,15 @@ it.each(["batch", "batch-unicode", "single-deep", "sequential"])("recovers compl
   expect(actor.observed.map(row => row.tools)).toEqual([["ConversationHistory"], ["ConversationHistory"], ["ConversationHistory"], []]);
   const search = actor.observed[1].bodies.find(body => body?.action === "search");
   expect(search.items.slice(0, 5).filter(item => records.slice(0, required.length).some(record => record.recordId === item.recordId))).toHaveLength(required.length);
+  if (path === "batch-separated") {
+    expect(search.items[0].preview).toContain("unrelated shipment");
+    expect(records.slice(0, 2).map(record => record.recordId)).toContain(search.items[1].recordId);
+    expect(search.items[1].additionalPreviews[0].preview).toContain("Not approved");
+    expect(search.items[1].additionalPreviews[0].preview).toContain("hypothetical");
+    expect(actor.observed[1].visible.join("\n")).toContain("Batch useful get calls");
+    expect(actor.observed[1].visible.join("\n")).toContain('"complete":false');
+    expect(actor.observed[2].visible.join("\n")).toContain("Follow the exact cursor action until no cursor remains");
+  }
   const witnessed = actor.witness.snapshot().records;
   expect(witnessed).toHaveLength(required.length);
   expect(witnessed.map(row => row.sha256).sort()).toEqual(required.map(sha256).sort());

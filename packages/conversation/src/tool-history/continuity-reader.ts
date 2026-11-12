@@ -51,7 +51,11 @@ export function searchContinuity(database: DatabaseSync, input: ContinuitySearch
   const selected = rows.slice(0, limit);
   return {
     available: true,
-    items: selected.map((row) => ({ ...metadata(row), preview: utf8Prefix(text(row), 512) })),
+    items: selected.map((row) => {
+      const retained = text(row), preview = utf8Prefix(retained, 512), end = Buffer.byteLength(preview);
+      return { ...metadata(row), preview, previewRange: { start: 0, end, clippedBefore: false,
+        clippedAfter: end < Buffer.byteLength(retained), complete: false as const } };
+    }),
     ...(rows.length > limit ? { next: Number(selected.at(-1)!.ordinal) } : {}),
   };
 }

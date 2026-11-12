@@ -99,7 +99,18 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
   historical evidence on cold rebuilds without a paid call; false keeps recording
   and retrieval. True native resumes do not append another pack.
   `ConversationHistory` retrieves sanitized text and portable summaries within
-  the current logical conversation. Stop older writers and back up before the
+  the current logical conversation. Search defaults to 5 results and clamps safe
+  integer limits to 1–10 at MCP ingress (invalid types, fractions and non-finite
+  values are rejected), returning `requestedLimit` and `effectiveLimit`; cursors
+  bind the effective limit. Read promising hits before reformulating, batch useful
+  gets, finish get cursors and page before declaring evidence insufficient.
+  `navigation.nextPage` leads the exhaustive actions in model-visible text.
+  Search caps UTF-8 `JSON.stringify(result.content)` at 65,536 bytes, including
+  navigation and escaping, excluding unused `structuredContent`. Previews shrink
+  first; a fitting prefix resumes after its last emitted record without skipping.
+  An unrepresentable first record or metadata envelope returns explicit
+  `response_capacity`, not exhausted evidence. Get chunks and the two-record
+  three-round recovery envelope are unchanged. Stop older writers and back up before the
   in-place v3 sidecar migration; older binaries refuse it, so rollback needs a
   pre-upgrade backup. Disabling capture does not downgrade it.
 - Expose the sibling request-scoped read-only `SessionHistory` tool over the

@@ -54,15 +54,8 @@ export function relevanceQuery(query: string) {
   return { folded, terms, patterns: terms.map(term => expression(term, true)), phrase: expression(folded, terms.length > 0), mode: terms.length ? "relevance" as const : "literal" as const };
 }
 export function relevanceMatch(text: string, query: ReturnType<typeof relevanceQuery>): { score: number; position: number; end: number } | undefined {
-  // Regex Unicode case folding avoids allocating a second full body. İ is the
-  // Unicode lowercase expansion; retain lower()-style matching on that rare path.
-  const expanded = text.includes("İ"), searchable = expanded ? text.toLowerCase() : text;
-  const originalPosition = (position: number) => {
-    if (!expanded) return position;
-    let original = 0, folded = 0;
-    for (const character of text) { if (folded >= position) break; original += character.length; folded += character.toLowerCase().length; }
-    return original;
-  };
+  const { expanded, searchable } = matchingText(text);
+  const originalPosition = (position: number) => retainedPosition(text, position, expanded);
   const phrase = query.phrase.exec(searchable);
   if (query.mode === "literal") return !phrase ? undefined : { score: 1, position: originalPosition(phrase.index), end: originalPosition(phrase.index + phrase[0].length) };
   // One position per distinct term: repeating a term cannot buy more coverage.
@@ -73,14 +66,48 @@ export function relevanceMatch(text: string, query: ReturnType<typeof relevanceQ
   return { score: matches.length * 1_000_000 + (phrase ? 100_000 : 0) + Math.max(0, 65_535 - span), position: originalPosition(selected.index), end: originalPosition(selected.index + selected[0].length) };
 }
 
-/** Byte ranges refer to digest-verified sanitized retained text, not raw text. */
-export function matchedPreview(text: string, position: number, matchEnd = position): { preview: string; previewRange: ContinuityPreviewRange } {
-  const bytes = Buffer.from(text), matchByte = Buffer.byteLength(text.slice(0, position)), endByte = Buffer.byteLength(text.slice(0, matchEnd));
+/** Byte ranges refer to digest-verified sanitized retained text, not raw text.
+ * A single excerpt gets up to 512 bytes. Adding a complementary excerpt splits
+ * that budget into two windows of up to 256 bytes each, with separate ranges,
+ * never a synthetic range spanning omitted bytes. Ranking is unchanged. */
+export function matchedPreview(text: string, position: number, matchEnd = position, query?: ReturnType<typeof relevanceQuery>): {
+  preview: string; previewRange: ContinuityPreviewRange; additionalPreviews?: readonly { preview: string; previewRange: ContinuityPreviewRange }[];
+} {
+  const bytes = Buffer.from(text);
+  const primary = previewWindow(text, bytes, position, matchEnd, 512);
+  if (!query || query.mode === "literal" || primary.previewRange.matchClipped) return primary;
+  // Distinct query terms outside the primary window provide complementary
+  // referent context, not inferred answers or a semantic qualification claim.
+  const { expanded, searchable } = matchingText(text);
+  let complementary: { position: number; end: number } | undefined;
+  // Only emitted reader items reach here. Query parsing caps the lookup at 16
+  // terms; stop at the first complementary match rather than eagerly scanning
+  // every term over the full retained body.
+  for (const pattern of query.patterns) {
+    const match = pattern.exec(searchable);
+    if (!match) continue;
+    const position = retainedPosition(text, match.index, expanded);
+    const matchEnd = retainedPosition(text, match.index + match[0].length, expanded);
+    const start = Buffer.byteLength(text.slice(0, position)), end = Buffer.byteLength(text.slice(0, matchEnd));
+    if (end <= primary.previewRange.start || start >= primary.previewRange.end) {
+      complementary = { position, end: matchEnd }; break;
+    }
+  }
+  if (!complementary) return primary;
+  const first = previewWindow(text, bytes, position, matchEnd, 256);
+  // Do not sacrifice a long primary phrase merely to add another window.
+  if (first.previewRange.matchClipped) return primary;
+  const second = previewWindow(text, bytes, complementary.position, complementary.end, 256);
+  if (second.previewRange.start < first.previewRange.end && second.previewRange.end > first.previewRange.start) return primary;
+  return { ...first, additionalPreviews: [second] };
+}
+function previewWindow(text: string, bytes: Buffer, position: number, matchEnd: number, budget: number): { preview: string; previewRange: ContinuityPreviewRange } {
+  const matchByte = Buffer.byteLength(text.slice(0, position)), endByte = Buffer.byteLength(text.slice(0, matchEnd));
   // Spend the prefix budget on the full match first. Overlong case-folded spans
-  // still obey the 512-byte cap and explicitly disclose match clipping.
-  let start = Math.max(0, matchByte - Math.min(160, Math.max(0, 512 - (endByte - matchByte))));
+  // still obey the byte cap and explicitly disclose match clipping.
+  let start = Math.max(0, matchByte - Math.min(160, Math.max(0, budget - (endByte - matchByte))));
   while (start < matchByte && continuation(bytes[start])) start++;
-  let end = Math.min(bytes.length, start + 512);
+  let end = Math.min(bytes.length, start + budget);
   while (end > start && continuation(bytes[end])) end--;
   // Prefer a nearby line/sentence boundary, retaining negation before the hit.
   const lead = bytes.subarray(start, matchByte).toString("utf8");
@@ -90,5 +117,18 @@ export function matchedPreview(text: string, position: number, matchEnd = positi
     start, end, clippedBefore: start > 0, clippedAfter: end < bytes.length, complete: false,
     ...(endByte > end ? { matchClipped: true as const } : {}),
   } };
+}
+// Regex Unicode case folding avoids allocating a second full body. İ is the
+// lowercase expansion; both ranking and preview lookup share its retained UTF-16
+// offset mapping, then preview windows convert those offsets to retained bytes.
+function matchingText(text: string) {
+  const expanded = text.includes("İ");
+  return { expanded, searchable: expanded ? text.toLowerCase() : text };
+}
+function retainedPosition(text: string, position: number, expanded: boolean): number {
+  if (!expanded) return position;
+  let original = 0, folded = 0;
+  for (const character of text) { if (folded >= position) break; original += character.length; folded += character.toLowerCase().length; }
+  return original;
 }
 function continuation(byte: number | undefined): boolean { return byte !== undefined && (byte & 0xc0) === 0x80; }

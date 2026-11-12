@@ -4,6 +4,8 @@ import { describe, expect, it, vi } from "vitest";
 import { createContinuitySchema, continuityRecordId } from "../tool-history/continuity-storage.js";
 import { getContinuity, searchContinuity } from "../tool-history/continuity-reader.js";
 import { searchRelevantContinuity } from "../tool-history/relevance-scan.js";
+import type { ContinuityPreview } from "../index.js";
+import * as relevance from "../tool-history/relevance.js";
 import { matchedPreview, relevanceMatch, relevanceQuery } from "../tool-history/relevance.js";
 const scope = { logicalConversationId: "fiction", currentConversationId: "fiction#today", currentRunId: "reader" };
 const sha = (s: string) => createHash("sha256").update(s).digest("hex");
@@ -87,6 +89,31 @@ describe("bounded relevance discovery", () => {
       expect(Buffer.from(text).subarray(item.previewRange!.start, item.previewRange!.end).toString()).toBe(item.preview);
       const unicode = matchedPreview("İ".repeat(300) + "cobalt", 300); expect(unicode.preview).toContain("cobalt");
     } finally { f.db.close(); }
+  });
+  it("selects two complementary windows with separate exact ranges, preserving negation and hypothetical context", () => {
+    const f = fixture(); try {
+      const text = "Morgan's observatory report: the referent is the fictional delivery. " + "Background 🔷. ".repeat(100) + "\nNot approved: cobalt day 18 remains hypothetical, not a decision.";
+      const useful = f.add(text); f.add("observatory cobalt unrelated current echo");
+      const page = f.search("observatory cobalt"), item = page.items[1]!;
+      expect(item.recordId).toBe(useful.id);
+      const windows = [item, ...item.additionalPreviews!];
+      expect(windows).toHaveLength(2);
+      expect(windows[0]!.preview).toContain("referent");
+      expect(windows[1]!.preview).toContain("Not approved"); expect(windows[1]!.preview).toContain("hypothetical");
+      expect(windows.reduce((total, window) => total + Buffer.byteLength(window.preview), 0)).toBeLessThanOrEqual(512);
+      for (const window of windows) {
+        expect(window.previewRange!.complete).toBe(false); expect(window.preview).not.toContain("�");
+        expect(Buffer.from(text).subarray(window.previewRange!.start, window.previewRange!.end).toString()).toBe(window.preview);
+      }
+      expect(windows[0]!.previewRange!.end).toBeLessThan(windows[1]!.previewRange!.start);
+      expect(page.resumeAfter![1]!.anchor.recordId).toBe(useful.id);
+      expect(page.continuation).toBeUndefined();
+      const rest = searchContinuity(f.db, { ...scope, query: "observatory cobalt", mode: "relevance", limit: 5, continuation: page.resumeAfter![0]! });
+      expect(rest.items.map(row => row.recordId)).toEqual([useful.id]);
+    } finally { f.db.close(); }
+  });
+  it.each([0, 11, Number.MAX_SAFE_INTEGER, 1.5, NaN, Infinity])("keeps lower-level search limits strict (%s)", limit => {
+    const f = fixture(); try { expect(() => f.search("cobalt", limit)).toThrow("limit"); } finally { f.db.close(); }
   });
   it.each(["cobalt" + " ".repeat(410) + "observatory", "a" + " ".repeat(510) + "b", '"'.repeat(500)])("covers the entire long matched span within 512 bytes (%j)", phrase => {
     const f = fixture(); try {
@@ -227,5 +254,49 @@ describe("bounded relevance discovery", () => {
         if (sql.includes("NOT EXISTS")) expect(plan).toContain("continuity_prepared_owner_idx");
       }
     } finally { spy.mockRestore(); f.db.close(); }
+  });
+});
+
+
+describe("lazy complementary previews", () => {
+  it("does not run later term patterns after finding a complementary window", () => {
+    const query = relevanceQuery("cobalt target unused"), text = "cobalt referent. " + "background 🔷. ".repeat(100) + "target value.";
+    const unused = vi.spyOn(query.patterns[2]!, "exec");
+    try {
+      const result = matchedPreview(text, 0, 6, query);
+      expect(result.additionalPreviews![0]!.preview).toContain("target value");
+      expect(unused).not.toHaveBeenCalled();
+    } finally { unused.mockRestore(); }
+  });
+  it("builds previews only for emitted items, not evicted candidates or lookahead", () => {
+    const f = fixture(), spy = vi.spyOn(relevance, "matchedPreview");
+    try {
+      // Ascending scan repeatedly replaces older equal-ranked candidates.
+      for (let n = 0; n < 100; n++) f.add(`cobalt target entry ${n}`);
+      const page = f.search("cobalt target", 3);
+      expect(page.items).toHaveLength(3); expect(page.continuation).toBeDefined();
+      expect(spy).toHaveBeenCalledTimes(3);
+      expect(page.resumeAfter).toHaveLength(page.items.length);
+      expect(page.resumeAfter!.map(boundary => boundary.anchor.recordId)).toEqual(page.items.map(item => item.recordId));
+      expect(page.continuation).toEqual(page.resumeAfter!.at(-1));
+    } finally { spy.mockRestore(); f.db.close(); }
+  });
+  it.each(["İ", "zİ"])("folds complementary %j consistently and maps back to exact retained bytes", term => {
+    const f = fixture(); try {
+      const filler = term === "zİ" ? "İ 🔷 background. " : "🔷 background. ";
+      const text = "cobalt referent. " + filler.repeat(100) + `\nRetained value: ${term} is the complementary term.`;
+      f.add(text);
+      const page = f.search(`cobalt ${term}`), item = page.items[0]!;
+      const windows: readonly ContinuityPreview[] = [{ preview: item.preview, previewRange: item.previewRange! }, ...item.additionalPreviews!];
+      expect(windows).toHaveLength(2); expect(windows[1]!.preview).toContain(`Retained value: ${term}`);
+      expect(windows.reduce((bytes, window) => bytes + Buffer.byteLength(window.preview), 0)).toBeLessThanOrEqual(512);
+      for (const window of windows) {
+        expect(window.previewRange.complete).toBe(false); expect(window.preview).not.toContain("�");
+        expect(Buffer.from(text).subarray(window.previewRange.start, window.previewRange.end).toString()).toBe(window.preview);
+      }
+      expect(windows[0]!.previewRange.end).toBeLessThan(windows[1]!.previewRange.start);
+      expect(page.resumeAfter).toHaveLength(1); expect(page.continuation).toBeUndefined();
+      expect(page.resumeAfter![0]!.anchor.recordId).toBe(item.recordId);
+    } finally { f.db.close(); }
   });
 });
