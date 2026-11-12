@@ -49,6 +49,14 @@ describe("PDF worker diagnostics", () => {
     expect(logger.error).not.toHaveBeenCalled();
   });
 
+  it("still rejects and terminates when the injected logger throws", async () => {
+    const logger = { error: vi.fn(() => { throw new Error("logger unavailable"); }) };
+    const result = renderPdfWorker(conversation, [], signal(), logger);
+    workers[0]!.emit("error", new Error("worker import failed"));
+    await expect(result).rejects.toMatchObject({ code: "pdf_render_failed", message: "PDF export failed. Try again." });
+    expect(workers[0]!.terminate).toHaveBeenCalledOnce();
+  });
+
   it("keeps real size failures as 413 without logging transcript data", async () => {
     const logger = { error: vi.fn() };
     const result = renderPdfWorker(conversation, [], signal(), logger);

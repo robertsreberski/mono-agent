@@ -21,6 +21,10 @@ export async function renderPdfWorker(
   }
   const worker = new Worker(url, { workerData: { conversation, images },
     resourceLimits: { maxOldGenerationSizeMb: 192, stackSizeMb: 4 }, execArgv: [] });
+  // Diagnostics must never prevent settlement or worker termination.
+  const log = (message: string, metadata: Readonly<Record<string, unknown>>): void => {
+    try { logger?.error?.(message, metadata); } catch { /* ignore logger failures */ }
+  };
   try {
     return await new Promise<Buffer>((resolve, reject) => {
       let settled = false;
@@ -36,19 +40,19 @@ export async function renderPdfWorker(
         if (!cleanup()) return;
         if (message.error === "pdf_too_large") reject(pdfTooLarge());
         else if (!(message.bytes instanceof Uint8Array) || message.bytes.length > PDF_LIMITS.outputBytes) {
-          logger?.error?.("PDF worker failed.", { code: message.error ?? "invalid_worker_response" });
+          log("PDF worker failed.", { code: message.error ?? "invalid_worker_response" });
           reject(new WebConsoleError("pdf_render_failed", "PDF export failed. Try again.", 500));
         } else resolve(Buffer.from(message.bytes));
       });
       worker.once("error", (error: NodeJS.ErrnoException) => {
         if (!cleanup()) return;
         // Server-only diagnostics: never log workerData, images or transcript.
-        logger?.error?.("PDF worker failed.", { error: error.message, code: error.code });
+        log("PDF worker failed.", { error: error.message, code: error.code });
         reject(new WebConsoleError("pdf_render_failed", "PDF export failed. Try again.", 500));
       });
       worker.once("exit", (code) => {
         if (!cleanup()) return;
-        logger?.error?.("PDF worker exited before producing a result.", { code });
+        log("PDF worker exited before producing a result.", { code });
         reject(new WebConsoleError("pdf_render_failed", "PDF export failed. Try again.", 500));
       });
     });
