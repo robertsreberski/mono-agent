@@ -1197,7 +1197,7 @@ export class WebService {
           images.push({ key: attachment.key, bytes: data });
         } catch { abort.throwIfAborted(); /* Named placeholder; do not expose internal diagnostics. */ }
       }
-      return { bytes: await renderPdfWorker(conversation, images, abort), filename: pdfFilename(thread.title) };
+      return { bytes: await renderPdfWorker(conversation, images, abort, this.options.logger), filename: pdfFilename(thread.title) };
     } finally { clearTimeout(timeout); this.pdfExportController = undefined; }
   }
 
