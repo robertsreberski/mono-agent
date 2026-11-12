@@ -2681,6 +2681,41 @@ exact cap and a separately parent-created bound authorization are still required
 before any real paid execution.
 
 
+### E2 features-off replay control
+
+Select `--replay-arm baseline` on `size`, `--estimate`, and `run` to measure the
+same frozen source, protocol, questions, keys, normalization and `scoreE2` with
+long-conversation features off. The default remains `continuity`; existing
+continuity registrations and sizing records need no new field.
+
+The baseline sets `runtime.session.continuity.enabled=false`: no continuity
+capture, cold packs or packed summaries. Both tool policy and the routed MCP
+endpoint exclude `ConversationHistory`. Each probe repeat makes exactly one
+tool-free model request, with no lookup rounds or probe retries. The shared
+protocol's `probeLookupRounds` (including a frozen R=3 protocol) is unchanged;
+baseline checkpoint counts instead bind `requestsPerProbe: 1`. Offline sizing
+still samples two repeats at each checkpoint, then registration expands those
+rows by the unchanged question counts. Ordinary shipping compaction remains on,
+including its separate summary requests and bounded summary retries. **Compaction
+uses today's summary instructions**: there is no switch for those instructions,
+and this control adds none. It is not a historical pre-compaction model baseline.
+
+For offline sizing, use `size --summary faux-short` and
+`size --summary faux-max`, both with `--replay-arm baseline`; pass only these
+baseline replay records to `--estimate --replay-arm baseline`. A baseline
+registration has `replayArm: "baseline"`, arm-specific tool policies and exactly
+one replay phase, with no proof phases. Its arm, sizing and one-request schedule
+are bound into the registration and authorization. Paid entry must explicitly
+select the same arm; existing cap, lineage and single-use checks still apply.
+Expected summary absence is recorded as `none`, not rejected; any unverified
+summary claim still refuses. Native compaction summaries remain lineage-checked.
+
+Baseline sizing, replay, slot and run reports identify `replayArm: "baseline"`
+and `qualification: false`. Scoring and witness semantics do not change: a
+correct answer without a witness is still inconclusive. **This is a control
+measurement, never a release-gate qualification**, even if its numerical score
+meets the scorer's threshold.
+
 ### E2 registration, authorization and paid execution
 
 The closed guarded selector includes `e2-validation`, with independent schemas,

@@ -11,6 +11,7 @@ import { bindE2Checkpoint, verifyE2NativeLineage, e2LineageScope, e2PhaseBase } 
 import { validE2FailureCause, observeE2NativeCause, captureE2NativeCause, e2ProviderCause, e2CandidateCause } from "./continuity-e2-cause.mjs";
 import { readE2Progress, writeE2PartialScore } from "./continuity-e2-progress.mjs";
 import { E2_RETRY_POLICY, authorizeE2Retry, effectiveE2Summaries, e2RetryCounts } from "./continuity-e2-retry.mjs";
+import { e2ReplayArm, assertE2BaselineContext } from "./continuity-e2-protocol.mjs";
 const fail = (code = "e2_permit_invalid") => { throw Object.assign(Error(code), { code }); };
 const need = (ok, code) => { if (!ok) fail(code); };
 const count = n => Number.isSafeInteger(n) && n >= 0;
@@ -51,6 +52,10 @@ function requestTools(pilot, planned, p, probeRequest) {
   const tools = pilot.registration.toolPolicies;
   if (p.paidRole === "summary") return tools.summary;
   if (planned.kind !== "replay") return planned.arm === "cancel" && p.paidRole === "continuation" ? tools.cancelContinuation : tools.proof;
+  if (e2ReplayArm(pilot.registration.replayArm) === "baseline") {
+    need(planned.arm === "baseline" && probeRequest === 1 && p.paidRole === "probe", "e2_request_limit");
+    return tools.replayFinal;
+  }
   const rounds = pilot.registration.probeCounts.find(c => c.checkpoint === p.checkpoint)?.lookupRounds;
   need(Number.isSafeInteger(rounds) && rounds >= 1 && rounds <= 4, "e2_registration_invalid");
   need(Number.isSafeInteger(probeRequest) && probeRequest >= 1 && probeRequest <= rounds + 1
@@ -66,7 +71,7 @@ function requestFunding(pilot, planned, p, operationDigest, probeRequest) {
   need(budget, "e2_request_limit");
   const reserve = e2RequestPrice(catalog, { inputTokens: p.inputTokens, maxOutputTokens: role.maxOutputTokens }).reservationUnits;
   need(p.reservationUnits === reserve);
-  return { reserve: BigInt(reserve), metadata: { model: p.model, paidRole: p.paidRole, checkpoint: p.checkpoint, measuredInputTokens: p.inputTokens,
+  return { reserve: BigInt(reserve), metadata: { ...(pilot.registration.replayArm === "baseline" ? { replayArm: "baseline" } : {}), model: p.model, paidRole: p.paidRole, checkpoint: p.checkpoint, measuredInputTokens: p.inputTokens,
     ...(p.paidRole === "summary" ? { operationDigest } : {}), inputMax: catalog.contextWindow, outputMax: role.maxOutputTokens, catalog: structuredClone(catalog),
     ...(probeRequest === undefined ? {} : { probeRequest }),
     tools: [...requestTools(pilot, planned, p, probeRequest)] } };
@@ -105,6 +110,9 @@ export const e2ExecutionPolicy = Object.freeze({
   },
   retry(pilot, state, index, p) {
     need(pilot.descriptor.retryPolicy && digest(pilot.descriptor.retryPolicy) === digest(E2_RETRY_POLICY), "e2_registration_invalid");
+    // The control admits exactly one physical model request per probe.
+    // Shipping summary retries remain governed by the existing policy.
+    if (pilot.registration?.replayArm === "baseline" && state.slots[index].holds.at(-1)?.paidRole !== "summary") return { allowed: false };
     return authorizeE2Retry(state, index, p);
   },
   failureEvidence(contract, message, error) { return captureE2NativeCause(contract.e2.safety, message, error); },
@@ -279,7 +287,7 @@ export const e2ExecutionPolicy = Object.freeze({
     need(slot && planned && slot.slotId === planned.slotId && [...protocol.policy.SLOT_TERMINALS, null].includes(slot.terminal)
       && [null, 0, 1].includes(slot.score), "e2_receipt_invalid");
     const spend = accountRun([slot]);
-    const row = { retries: e2RetryCounts([slot]), ...(slot.diagnostics && Object.keys(slot.diagnostics).length ? { diagnostics: slot.diagnostics } : {}), schema: protocol.schemas.slotReceipt, slotId: planned.slotId, position: index, terminal: slot.terminal,
+    const row = { ...(planned.arm === "baseline" ? { replayArm: "baseline", qualification: false } : {}), retries: e2RetryCounts([slot]), ...(slot.diagnostics && Object.keys(slot.diagnostics).length ? { diagnostics: slot.diagnostics } : {}), schema: protocol.schemas.slotReceipt, slotId: planned.slotId, position: index, terminal: slot.terminal,
       score: ["completed", "wrong"].includes(slot.terminal) ? slot.score : null,
       qualityMeasured: state.schema === protocol.policy.REAL_CONTROLLER && slot.holds.length > 0 && ["completed", "wrong"].includes(slot.terminal) && slot.score !== null,
       calls: { admitted: slot.holds.length, consumed: slot.holds.filter(h => h.consumed).length, settled: slot.holds.filter(h => h.settlement).length,
@@ -298,7 +306,7 @@ export const e2ExecutionPolicy = Object.freeze({
       need(count(r.position) && r.position < visited && !seen.has(r.position) && digest(r) === digest(this.slotReceipt(state, r.position, accountRun, protocol)), "e2_receipt_invalid"); seen.add(r.position);
     }
     const spend = accountRun(state.slots);
-    return { retries: e2RetryCounts(state.slots), schema: protocol.schemas.report, authorization: state.schema === protocol.policy.REAL_CONTROLLER, executionKind: state.schema === protocol.policy.REAL_CONTROLLER ? "authorized-validation" : "faux-only",
+    return { ...(state.schedule.some(p => p.arm === "baseline") ? { replayArm: "baseline", qualification: false } : {}), retries: e2RetryCounts(state.slots), schema: protocol.schemas.report, authorization: state.schema === protocol.policy.REAL_CONTROLLER, executionKind: state.schema === protocol.policy.REAL_CONTROLLER ? "authorized-validation" : "faux-only",
       qualityMeasured: receipts.some(r => r.qualityMeasured), schedule: { planned: state.schedule.length, visited, missing: visited - seen.size, remaining: state.schedule.length - visited }, stop: state.stop,
       costs: { unitsPerUSD: protocol.policy.USD_UNITS.toString(), capUnits: state.capUnits, ...Object.fromEntries(Object.entries(spend).filter(([key]) => key.endsWith("Units"))) },
       phases: [...receipts].sort((a, b) => a.position - b.position).map(({ slotId: _slotId, sha256: _sha256, ...r }) => r) };
@@ -309,6 +317,7 @@ export const e2ExecutionPolicy = Object.freeze({
     need(`${E2_GUARD_CONTRACT.provider}:${body.model}` === hold?.model && body.stream === true && body.store === false && body.service_tier === undefined, "e2_body_mismatch");
     need(Array.isArray(body.tools ?? []) && (body.tools ?? []).every(t => t.type === "function" && hold.tools.includes(t.name)), "e2_tools_forbidden");
     if (hold.probeRequest !== undefined) need((body.tools ?? []).length === hold.tools.length, "e2_tools_forbidden");
+    if (hold.replayArm === "baseline") assertE2BaselineContext(body);
     validateBody(body);
   },
 });
