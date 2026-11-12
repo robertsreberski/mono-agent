@@ -21,10 +21,30 @@ export function assertE2ReplayBinding(registration, report) {
   if (e2ReplayArm(registration.replayArm) !== e2ReplayArm(report.replayArm)
     || report.replayArm === "baseline" && report.qualification !== false) fail("e2_authorization_binding_mismatch");
 }
-export function assertE2BaselineContext(context) {
-  const tools = [...(context.tools ?? []), ...(context.messages ?? []).flatMap(m => m.toolsAdded ?? [])];
-  if (tools.length) fail("E2_PROBE_TOOLS_REFUSED");
-  if (JSON.stringify(context).includes("### Conversation continuity pack (historical evidence)")) fail("e2_payload_forbidden");
+// Shipping packs are injected as historical user messages, not arbitrary prose.
+// Share the replay witness's role/position detector with baseline validation.
+const messageText = message => typeof message.content === "string" ? message.content : (message.content ?? [])
+    .filter(p => ["text", "input_text", "output_text"].includes(p.type)).map(p => p.text).join("\n");
+export function e2ContinuityPackMessage(message, index, lastUser) {
+  const text = messageText(message);
+  return message.role === "user" && index !== lastUser
+    && text.startsWith("### Conversation continuity pack (historical evidence)\n");
+}
+export function assertE2BaselineContext(context, { kind = "probe", sourceTools } = {}) {
+  const messages = context.messages ?? context.input ?? [];
+  const tools = [...(context.tools ?? []), ...messages.flatMap(m => m.toolsAdded ?? [])];
+  if (kind !== "source" && tools.length) fail("E2_PROBE_TOOLS_REFUSED");
+  const history = name => ["ConversationHistory", "mono-agent-conversation-history"].includes(name);
+  if (tools.some(t => history(t.name) || history(t.serverName))
+    || Object.hasOwn(context.mcpServers ?? {}, "mono-agent-conversation-history")
+    || messages.some(m => history(m.toolName) || m.type === "function_call" && history(m.name)
+      || Array.isArray(m.content) && m.content.some(p => p.type === "toolCall" && history(p.name)))) fail("E2_PROBE_TOOLS_REFUSED");
+  if (kind === "source" && sourceTools) {
+    const offered = new Set(tools.map(t => t.name)), expected = new Set(sourceTools);
+    if (offered.size !== expected.size || [...offered].some(name => !expected.has(name))) fail("E2_PROBE_TOOLS_REFUSED");
+  }
+  const lastUser = messages.findLastIndex(m => m.role === "user");
+  if (messages.some((m, i) => e2ContinuityPackMessage(m, i, lastUser))) fail("e2_payload_forbidden");
 }
 const integer = n => Number.isSafeInteger(n) && n >= 0;
 const label = s => typeof s === "string" && /^[A-Za-z][A-Za-z0-9_-]{0,47}$/.test(s);

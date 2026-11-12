@@ -1,3 +1,4 @@
+import { assertE2BaselineRequest } from "./continuity-e2-lineage.mjs";
 import { assertE2PhaseAdapter } from "./continuity-e2-runtime.mjs";
 // Offline configured replay, with snapshots restored at the same absolute root.
 import { chmod, copyFile, cp, lstat, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
@@ -12,7 +13,7 @@ import { callKey, digest, validateSource, attachmentReferences } from "./continu
 import { startRecordedTools, RECORDED_SERVER_NAME } from "./continuity-recorded-tools.mjs";
 import { openHarness, productionModules } from "./continuity-runner.mjs";
 import { createE2Models, estimatedReply, loadE2Estimators, shippingSoul, sizeContext } from "./continuity-e2-models.mjs";
-import { SOL, parts, protocolDigest, validateProtocol, e2ReplayArm, e2ProbeRequestCount, assertE2BaselineContext } from "./continuity-e2-protocol.mjs";
+import { SOL, parts, protocolDigest, validateProtocol, e2ReplayArm, e2ProbeRequestCount, e2ContinuityPackMessage } from "./continuity-e2-protocol.mjs";
 
 export const PLACEHOLDER = "[recorded result unavailable for replay]";
 const HISTORY = "mono-agent-conversation-history";
@@ -195,7 +196,7 @@ export function e2ProbeMeasurement() {
       if (!this.firstContext) {
         const lastUser = context.messages.findLastIndex(m => m.role === "user");
         this.witness = context.messages.some((m, index) => ["assistant", "toolResult", "compactionSummary"].includes(m.role)
-          || m.role === "user" && index !== lastUser && (typeof m.content === "string" ? m.content : (m.content ?? []).filter(p => p.type === "text").map(p => p.text).join("\n")).startsWith("### Conversation continuity pack (historical evidence)\n"));
+          || e2ContinuityPackMessage(m, index, lastUser));
         this.firstContext = sizeContext(context, estimators);
       }
       this.witness ||= context.messages.some(m => m.role === "toolResult" && m.toolName === "ConversationHistory" && m.isError !== true);
@@ -232,7 +233,7 @@ export async function runE2Sizing({ source, protocol, output, summary = "faux-sh
       let opened, currentTurn, turnController, steerWaiter, pendingSteers = [], steerCount = 0, cursor = 0, binding = branch.models[0], position, probeMode = false, probeRequests = 0;
       const probe = e2ProbeMeasurement();
       const observed = [], historyExcluded = new Set(), observedTools = new Set(), toolIndices = new Map(source.tools.map((t, i) => [t.id, i]));
-      const route = createE2Models({ pi: modules.pi, estimators, models: branch.models, limits: branch.limits, summary, soul, paidAdapter, probeLookupRounds: protocol.probeLookupRounds, replayArm,
+      const route = createE2Models({ pi: modules.pi, estimators, models: branch.models, limits: branch.limits, summary, soul, paidAdapter, probeLookupRounds: protocol.probeLookupRounds, replayArm, sourceTools: source.tools.map(t => t.name),
         sourceContext(context) {
           if (!probeMode && pendingSteers.length) {
             const users = context.messages.filter(m => m.role === "user").slice(-pendingSteers.length).map(m => typeof m.content === "string" ? m.content : m.content.filter(p => p.type === "text").map(p => p.text).join("\n")).join("\n");
@@ -246,7 +247,7 @@ export async function runE2Sizing({ source, protocol, output, summary = "faux-sh
               server.queue.observe(index, message.content); observedTools.add(index);
             }
           }
-          if (baseline) assertE2BaselineContext(context);
+          if (baseline) assertE2BaselineRequest(context, { kind: probeMode ? "probe" : "source", sourceTools: source.tools.map(t => t.name) });
           onContext({ branch: branchIndex, probe: probeMode, context });
           if (probeMode) {
             retrieval.observeRequest(context);

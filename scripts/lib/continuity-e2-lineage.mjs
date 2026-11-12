@@ -1,4 +1,6 @@
 // Controller-owned committed-summary lineage. Never trust a child-supplied text hash.
+import { fail } from "./continuity-observation-input.mjs";
+import { assertE2BaselineContext } from "./continuity-e2-protocol.mjs";
 import { join } from "node:path";
 import { mkdir } from "node:fs/promises";
 import { digest } from "./continuity-recorded-schema.mjs";
@@ -203,6 +205,16 @@ export function e2BodySummaryRepresentations(body) {
     }
   }
   return found;
+}
+export function assertE2BaselineRequest(context, options) {
+  assertE2BaselineContext(context, options);
+  // Compaction flattens injected messages into role-framed conversation text.
+  // Reuse the native lineage detector rather than searching serialized history.
+  const serialized = (context.messages ?? context.input ?? []).map(m => ({ role: m.role,
+    content: typeof m.content === "string" ? m.content : (m.content ?? [])
+      .filter(p => ["text", "input_text", "output_text"].includes(p.type)).map(p => p.text).join("\n") }))
+    .filter(m => m.content.startsWith("<conversation>\n"));
+  if (e2BodySummaryRepresentations({ input: serialized }).some(r => r.kind === "pack")) fail("e2_payload_forbidden");
 }
 export function e2BodySummaryDigests(body) { return e2BodySummaryRepresentations(body).map(r => digest(r.text)); }
 export async function verifyE2NativeLineage(bytes, hold, state, assignment, readArtifact) {
