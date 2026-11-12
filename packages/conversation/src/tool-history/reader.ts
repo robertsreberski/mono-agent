@@ -106,10 +106,13 @@ export class ToolHistoryReader {
   }
 
   searchContinuity(input: ContinuitySearchInput): ContinuitySearchPage {
-    if (this.continuityPurgePending(input)) return { available: false, items: [] };
+    if (this.continuityPurgePending(input)) return { available: false, items: [], degradedReason: "purge_pending" };
     const database = this.openReadOnly();
     if (database === undefined) return { available: false, items: [] };
-    try { return searchContinuity(database, input); } finally { database.close(); }
+    try {
+      const result = searchContinuity(database, input);
+      return this.continuityPurgePending(input) ? { available: false, items: [], degradedReason: "purge_pending" } : result;
+    } finally { database.close(); }
   }
 
   getContinuity(input: ContinuityGetInput): ContinuityGetResult {

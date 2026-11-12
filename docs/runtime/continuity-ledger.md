@@ -6,6 +6,13 @@ description: "Opt-in bounded boundary upkeep, derived evidence, source validatio
 The first ledger slice is **off by default**. Deterministic cold packs and retained
 `ConversationHistory` remain the normal path, with no extraction call.
 
+Retained-history relevance discovery works with upkeep **on or off**; it does not
+purchase an extraction, infer correction authority, or replace summary retention.
+Its matched previews, consistent cursors, honest `scan_capacity` exhaustion and
+three-round two-record size/path envelope are documented in
+[bounded relevance discovery and recovery](/runtime/sessions-concurrency/#bounded-relevance-discovery-and-recovery).
+The ledger remains opt-in, with its existing source validation and budgets.
+
 ```json
 {
   "runtime": {

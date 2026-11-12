@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { pathToFileURL } from "node:url";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { acknowledgeContinuityPurge, claimContinuityPurge, pendingContinuityPurges, persistContinuityPurge } from "../tool-history/continuity-purge.js";
 import { ToolHistoryReader } from "../tool-history/reader.js";
 import { ToolHistoryWriter } from "../tool-history/writer.js";
@@ -199,4 +199,27 @@ it("does no purge-marker I/O in disabled runtime mode, with a positive enabled p
   const run = (enabled: boolean) => spawnSync(process.execPath, ["--import", pathToFileURL(preload).href, child, String(enabled)], { encoding: "utf8", timeout: 15000 });
   const off = run(false); expect(off.status, off.stderr).toBe(0); expect(existsSync(probe)).toBe(false);
   const on = run(true); expect(on.status, on.stderr).toBe(0); expect(existsSync(probe)).toBe(true);
+});
+
+it.each(["relevance", "chronological"] as const)("rechecks pending purge at the %s search disclosure boundary", async mode => {
+  const dir = await root(), writer = await open(dir); await result(writer); await writer.close();
+  const reader = new ToolHistoryReader(dir);
+  const internal = reader as unknown as { continuityPurgePending(value: typeof scope): boolean };
+  const input = { ...scope, mode, query: "Fictional" };
+  const visible = reader.searchContinuity(input);
+  expect(visible.available).toBe(true); expect(visible.items).toHaveLength(1);
+  expect(visible.items[0]!.preview).toContain("Fictional");
+  const check = internal.continuityPurgePending.bind(reader);
+  const spy = vi.spyOn(internal, "continuityPurgePending").mockImplementation(value => {
+    const pending = check(value);
+    // Race the already-completed negative check, without coupling to call count.
+    if (!pending) persistContinuityPurge(dir, { scope: "logical", conversationId: id });
+    return pending;
+  });
+  try {
+    expect(reader.searchContinuity(input)).toMatchObject({ available: false, items: [], degradedReason: "purge_pending" });
+    expect(pendingContinuityPurges(dir)).toHaveLength(1);
+    // A pre-existing intent must disclose exactly the same unavailable reason.
+    expect(reader.searchContinuity(input)).toMatchObject({ available: false, items: [], degradedReason: "purge_pending" });
+  } finally { spy.mockRestore(); }
 });

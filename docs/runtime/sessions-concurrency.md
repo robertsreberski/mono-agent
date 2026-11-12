@@ -119,6 +119,83 @@ completion before eligible primary cold seeds. It is off by default; it can add
 up to 60 seconds under the exclusive conversation hold. Strict request-cap mode
 skips Codex; default Codex stream abort cannot bound hidden reasoning or quota.
 
+### Bounded relevance discovery and recovery
+
+Lexical `ConversationHistory` searches select deterministic Unicode-aware partial
+term coverage, phrase and proximity ranking. Terms and phrases respect same-script
+letter boundaries; different-script transitions are boundaries. Digits, combining
+marks and underscores join identifiers, preserving `ACT-77` and `gpt-6.1` as terms;
+digits at identifier edges inherit the nearest letter's script. Numeric-only terms
+must not occur inside words or larger numbers in any script. Han, Hiragana,
+Katakana, Bopomofo, Thai, Lao, Khmer, Myanmar, Khitan Small Script, Nushu, Tangut and
+Yi permit letter-run substrings because spacing is unreliable; this is not dictionary
+segmentation. Other scripts use Unicode 16 script boundaries. Thus `a` does not
+cover `metadata`, while `東京` can find `東京都`. Repeating a term does not buy more
+coverage; ordinal and opaque record ID break ties. Ranking infers neither truth,
+authority nor supersession. Punctuation-only queries (including a lone quotation
+mark) use literal substring matching, explicitly labelled `literal`, newest first;
+whitespace-only queries are invalid. Queryless browsing and explicit
+`mode: "chronological"` keep chronological ordering. Direct `searchContinuity`
+callers retain the legacy default, AND queries and `before`/`next` pagination;
+select `mode: "relevance"` explicitly. Already issued MCP v1 cursors keep their
+legacy semantics; new ranked traversals use v2 cursors bound to the query, limit,
+ranking version, original watermark, ordered membership digest, anchor and request
+scope. MCP cursors carry fixed-size query digests rather than escaped query text;
+the exact returned continuation action resupplies the query. Restart with the same
+scope can continue; a different run expires the cursor.
+
+Search previews are digest-verified sanitized **matched context**, at most 512
+UTF-8 bytes, with retained-byte ranges and clipping flags. Nearby qualification
+and negation are preserved where possible. The full selected phrase/term is shown
+when it fits; if Unicode case folding expands the retained matched span beyond the
+window, `previewRange.matchClipped: true` explicitly discloses that clipping.
+Previews are always incomplete evidence,
+not completed record recovery. Get starts at byte zero; there is no matched-offset
+get. Within **three tool rounds**, the supported path is search → **batch get of
+two records** → **batch continuation of both records**, for two retained records
+each nominally at most **16,384 bytes**, when each fits two UTF-8-safe 8,192-byte
+chunks. The universal bound is **16,381 bytes**: backing off a split four-byte
+codepoint can shorten the first chunk by three bytes. At the nominal 16-KiB
+boundary, some Unicode records need a third chunk and therefore another round.
+A single deep record fitting two chunks also fits; sequential search/get-original/get-correction fits when each record is at
+most 8,192 bytes. Rounds are not call counts. Larger or boundary-split records that do not fit
+two safe chunks need more rounds.
+Only concatenated complete retained records with verified digests witness recovery.
+This is a mechanical path envelope, not a guarantee a model chooses useful queries.
+
+Relevance scans cap eligible coverage at **100,000 records / 256 MiB** of retained
+text, metadata pages at 256 rows, and text batches at 32 records / 2 MiB (each
+record at most 1 MiB). Only the top `limit+1` descriptors/previews and incremental
+hashes survive processing. Initial, examined and final membership manifests must
+agree; selected identities, digests and visibility are rechecked at disclosure,
+including pending purge intents. Late publication below the watermark or retention
+changes invalidate traversal; later records above it are excluded. No schema or
+existing summary/journal migration is required.
+
+The **five-second deadline is cooperative**, checked between bounded queries and
+records, not a hard SQLite interrupt. The synchronous call still blocks its caller
+for the scan. `scan_capacity` returns no allegedly complete ranked subset: coverage
+is incomplete and examined record/byte counts are disclosed. Follow the offered
+explicit chronological browse, or get a known ID. Do not infer absence from an
+exhausted scan; `source_changed` likewise requires a fresh traversal.
+
+For reproducible fictional sizing, build conversation and run
+`node --expose-gc scripts/continuity-relevance-scan.mjs`. On Node 24.18.0,
+Apple M3 Max / arm64 / 48 GiB RAM, dense, absent and long-Unicode cases measured
+0.264–0.351 seconds at 10k / 32 MiB and 2.212–3.012 seconds at 100k / 256 MiB,
+including continuations. Maximum measured transaction/text-batch blocking was
+204 ms. Cold means a reopened SQLite connection, **not flushed OS filesystem
+cache**. Sampled additional peaks were 25/96 MiB JS heap and 22/89 MiB RSS,
+respectively (rounded up). The original **64 MiB heap target was not met** in the
+extreme 64 × 1-MiB Unicode-record case: transient V8 GC sawtooth, not accumulating
+record collections. After initial repeated-scan leak checks, the maintainer
+accepted the measured **100 MiB additional JS heap** envelope (RSS target remains
+128 MiB). Five current worst-case scans in one process with GC after each measured
+post-GC heaps of 6.388, 6.387, 6.385, 6.408 and 6.392 MiB: no accumulating growth.
+A 1-MiB batch/early-release mitigation did not lower the worst peak and was not
+kept. Measurements are hardware/runtime observations, not universal latency or
+memory guarantees; exhausted scans remain explicitly incomplete.
+
 ### Deterministic cold continuity packs
 
 `runtime.session.continuity.packEnabled` defaults to `true`. At a cold canonical

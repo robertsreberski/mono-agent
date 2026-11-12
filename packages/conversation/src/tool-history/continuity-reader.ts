@@ -1,3 +1,4 @@
+import { searchRelevantContinuity } from "./relevance-scan.js";
 import { readProgress, offeredKeys } from "../continuity/progress.js";
 import { createHash } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
@@ -23,6 +24,12 @@ export function searchContinuity(database: DatabaseSync, input: ContinuitySearch
   if (!hasContinuitySchema(database)) return { available: false, items: [] };
   const limit = input.limit ?? 5;
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > 10) throw new TypeError("Continuity search limit must be 1 through 10.");
+  if (input.mode !== undefined && input.mode !== "relevance" && input.mode !== "chronological") throw new TypeError("Invalid search mode.");
+  if (input.mode === "relevance") {
+    if (input.query === undefined || input.query.trim().length === 0 || Buffer.byteLength(input.query) > 512 || input.before !== undefined) throw new TypeError("Relevance requires a bounded query, not before.");
+    return searchRelevantContinuity(database, input, { metadata, text });
+  }
+  if (input.continuation !== undefined) throw new TypeError("Relevance continuation requires relevance mode.");
   const clauses = [VISIBLE, "r.retained_text IS NOT NULL"];
   const values: (string | number)[] = [input.logicalConversationId];
   if (input.query !== undefined) {

@@ -11,6 +11,7 @@ import { zstdDecompressSync } from "node:zlib";
 import { e2PhaseWork } from "../lib/continuity-e2-lineage.mjs";
 import { guardedAccounting } from "../lib/continuity-guarded-accounting.mjs";
 import { ROOT } from "../lib/continuity-observation-input.mjs";
+import { parseConversationHistoryText, HISTORY_HEADER, HISTORY_NOTICE } from "../lib/continuity-observation-retrieval.mjs";
 import { FACT, NEXT_ACTION } from "../lib/continuity-e2-tools.mjs";
 import { SOL } from "../lib/continuity-e2-protocol.mjs";
 import { e2NativeFixture, E2_NATIVE_TEST_TIMEOUT_MS } from "./fixtures/e2-native-registration.mjs";
@@ -39,14 +40,9 @@ function proofReply(body, count) {
   const name = body.tools?.find(t => t.name?.endsWith("ConversationHistory"))?.name;
   if (!name) return events("Fictional compacted context; retrieve archival evidence before answering.");
   const output = body.input.filter(i => i.type === "function_call_output").at(-1)?.output;
-  let history;
-  if (typeof output === "string") {
-    // SDK flattens MCP blocks with newlines; rejoin the actual continued body.
-    const normalized = output.replace(/\n?\[continued section \d+ of \d+\]\n/gu, "");
-    const matches = [...normalized.matchAll(/\{"action":"(?:search|get)","status":/gu)];
-    const offset = matches.at(-1)?.index;
-    if (offset !== undefined) { try { history = JSON.parse(normalized.slice(offset)); } catch {} }
-  }
+  // Parse the actual notice-framed response, independent of JSON key order.
+  // Search can now include mode/scan before status; those are not new rounds.
+  const history = parseConversationHistoryText(output);
   if (history?.action === "search") {
     const row = history.items?.find(i => i.kind === "tool" && i.toolName === "ProofRead") ?? history.items?.find(i => i.kind === "tool");
     if (!row?.recordId) throw Error("fictional_backend_missing_history_record");
@@ -55,6 +51,20 @@ function proofReply(body, count) {
   if (history?.action === "get") return history.nextCursor ? toolEvents(name, { action: "get", cursor: history.nextCursor }, count) : events(`${FACT}; next: ${NEXT_ACTION}.`);
   return toolEvents(name, { action: "search", query: "proof-evidence", limit: 10 }, count);
 }
+
+it.each([false, true])("fictional backend reads search navigation without assuming adjacent action/status keys (ranked=%s)", ranked => {
+  const recordId = `chr1_${"a".repeat(43)}`;
+  const action = { kind: "get_record", description: "Read the complete retained record.", arguments: { action: "get", recordId, chunkBytes: 8192 } };
+  const navigation = { guidance: "Previews are incomplete.", nextActions: [action] };
+  const history = { action: "search", ...(ranked ? { mode: "relevance", scan: { complete: true } } : {}), status: "available",
+    items: [{ kind: "tool", recordId }], navigation, untrusted: true, notice: HISTORY_NOTICE };
+  const output = [HISTORY_HEADER, HISTORY_NOTICE, navigation.guidance,
+    `${action.description} Exact arguments: ${JSON.stringify(action.arguments)}`, HISTORY_NOTICE, JSON.stringify(history)].join("\n");
+  const wire = proofReply({ tools: [{ name: "ConversationHistory" }], input: [{ type: "function_call_output", output }] }, 1);
+  const events = wire.trim().split("\n\n").map(frame => JSON.parse(frame.slice(6)));
+  const call = events.find(event => event.type === "response.output_item.done").item;
+  expect(JSON.parse(call.arguments)).toEqual(action.arguments);
+});
 
 async function run({ scenario = "probe", requests = 1, rows = [{ role: "probe", model: SOL }], capUnits, reuse = false, crossOutputReuse = false, production = false, fault, arm = "pressure", replay = false, probeLookupRounds = 1, probeLookups = false, phaseStartupDelayMs = 0, deadlines, expectedControllerError, retryOnce = false, failOdd = false, failAfter = 0 } = {}) {
   const root = await realpath(await mkdtemp(join(tmpdir(), "e2-native-sdk-"))); roots.push(root);

@@ -8,6 +8,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { ToolHistoryReader, ToolHistoryWriter, continuityGenerationId, continuityRecordId, type ContinuityPreparation } from "@mono-agent/conversation";
 import { afterEach, describe, expect, it } from "vitest";
 import { createConversationHistoryRuntimeExtension, handleConversationHistoryRequest, isConversationHistoryToolAllowed, CONVERSATION_HISTORY_MCP_SERVER_NAME, CONVERSATION_HISTORY_TOOL_NAME } from "../request-tools/conversation-history.js";
+import { decodeRequestScopedCursor } from "../mcp/request-scoped-mcp.js";
 import { handleSessionHistoryRequest } from "../request-tools/session-history.js";
 
 const roots: string[] = [], writers = new Set<ToolHistoryWriter>(), clients: Array<() => Promise<void>> = [];
@@ -81,6 +82,32 @@ describe("ConversationHistory scoped evidence", () => {
     expect(result.record).toMatchObject({ retainedBytes: Buffer.byteLength(text), redacted: false, truncated: false });
   });
 
+  it.each([16381, 16384])("discloses UTF-8 chunk boundary limits in a three-round two-record traversal (%s bytes)", async size => {
+    const f = await fixture();
+    // Byte 8192 lies inside a four-byte character: first safe end is 8189.
+    const text = "a".repeat(8189) + "🔷" + "b".repeat(size - 8193);
+    await publish(f.writer, preparation([text, text]));
+    const searched = body(handleConversationHistoryRequest(f.binding, { query: "🔷", limit: 5 }));
+    const actions = searched.navigation.nextActions.filter((a: any) => a.kind === "get_record"); expect(actions).toHaveLength(2);
+    const recovered = actions.map((action: any) => {
+      const first = body(handleConversationHistoryRequest(f.binding, action.arguments));
+      expect(Buffer.byteLength(first.chunk)).toBe(8189);
+      const second = body(handleConversationHistoryRequest(f.binding, first.navigation.nextActions[0].arguments));
+      expect(first.chunk + second.chunk).not.toContain("�");
+      if (size === 16381) {
+        expect(second.nextCursor).toBeUndefined(); expect(sha(first.chunk + second.chunk)).toBe(second.record.sha256);
+        return first.chunk + second.chunk;
+      }
+      // R=3 ends here, with honest remaining cursors, not completed recovery.
+      expect(second.nextCursor).toBeDefined(); expect(sha(first.chunk + second.chunk)).not.toBe(second.record.sha256);
+      const third = body(handleConversationHistoryRequest(f.binding, second.navigation.nextActions[0].arguments));
+      expect(third.nextCursor).toBeUndefined(); expect(Buffer.byteLength(third.chunk)).toBe(3);
+      expect(sha(first.chunk + second.chunk + third.chunk)).toBe(third.record.sha256);
+      return first.chunk + second.chunk + third.chunk;
+    });
+    expect(recovered).toEqual([text, text]);
+  });
+
   it("paginates search with validated anchors and rejects changed filters, run scope and arbitrary input fields", async () => {
     const f = await fixture(), input = preparation(Array.from({ length: 5 }, (_, i) => `Fictional cobalt entry ${i}.`)); await publish(f.writer, input);
     const first = body(handleConversationHistoryRequest(f.binding, { query: "cobalt", limit: 2 }));
@@ -96,6 +123,54 @@ describe("ConversationHistory scoped evidence", () => {
     for (const input of [{ query: "x".repeat(513) }, { limit: 11 }, { action: "get", recordId: "guess" }, { action: "get", recordId: first.items[0].recordId, chunkBytes: 3 }]) {
       expect(body(handleConversationHistoryRequest(f.binding, input as never)).error).toBeDefined();
     }
+  });
+
+  it.each([["\u000b", 400], ["\u000b", 495], ["\u0000", 495], ['"', 495], ["\\", 495]] as const)("follows its own bounded relevance cursor for escape-heavy queries (%j × %s)", async (escape, count) => {
+    const f = await fixture(); await publish(f.writer, preparation(["cobalt observatory first", "cobalt observatory second"]));
+    const query = "cobalt" + escape.repeat(count) + "observatory";
+    expect(Buffer.byteLength(query)).toBeLessThanOrEqual(512);
+    const first = body(handleConversationHistoryRequest(f.binding, { query, limit: 1 }));
+    expect(first.items).toHaveLength(1); expect(first.hasMore).toBe(true);
+    expect(Buffer.byteLength(first.nextCursor)).toBeLessThan(1024);
+    const decoded = decodeRequestScopedCursor(first.nextCursor);
+    expect(decoded).toMatchObject({ version: 2, kind: "search" }); expect(decoded!.query).toBeUndefined();
+    const next = first.navigation.nextActions.find((action: any) => action.kind === "next_search_page").arguments;
+    expect(next.query).toBe(query);
+    const second = body(handleConversationHistoryRequest(f.binding, next));
+    expect(second.items).toHaveLength(1); expect(second.items[0].recordId).not.toBe(first.items[0].recordId);
+    expect(second.hasMore).toBe(false); expect(second.error).toBeUndefined();
+    expect(body(handleConversationHistoryRequest(f.binding, { ...next, query: "different" })).error.code).toBe("invalid_cursor");
+  });
+
+  it("keeps issued v1 lexical cursors chronological while new queries use v2 relevance/literal discovery", async () => {
+    const f = await fixture(); await publish(f.writer, preparation(["Cobalt observatory old.", "cobalt", "Cobalt observatory new.", 'A literal " quote.']));
+    const legacy = body(handleConversationHistoryRequest(f.binding, { query: "cobalt", mode: "chronological", limit: 1 }));
+    expect(JSON.parse(Buffer.from(legacy.nextCursor, "base64url").toString()).version).toBe(1);
+    expect(body(handleConversationHistoryRequest(f.binding, { query: "cobalt", limit: 1, cursor: legacy.nextCursor })).items[0].preview).toBe("cobalt");
+    const ranked = body(handleConversationHistoryRequest(f.binding, { query: "cobalt observatory", limit: 1 }));
+    expect(ranked).toMatchObject({ mode: "relevance", scan: { complete: true, records: 4 } });
+    expect(JSON.parse(Buffer.from(ranked.nextCursor, "base64url").toString()).version).toBe(2);
+    for (const patch of [{ rankingVersion: 2 }, { watermark: 0 }, { manifest: sha("wrong") }, { anchor: { recordId: ranked.items[0].recordId, score: 0, ordinal: 1 } }]) {
+      expect(body(handleConversationHistoryRequest(f.binding, { query: "cobalt observatory", limit: 1, cursor: alter(ranked.nextCursor, patch) })).error.code).toBe("invalid_cursor");
+    }
+    const literal = body(handleConversationHistoryRequest(f.binding, { query: '"' }));
+    expect(literal.mode).toBe("literal"); expect(literal.items).toHaveLength(1);
+    await f.writer.close(); writers.delete(f.writer);
+    const restarted = { ...f.binding, reader: new ToolHistoryReader(f.root) };
+    expect(body(handleConversationHistoryRequest(restarted, { query: "cobalt observatory", limit: 1, cursor: ranked.nextCursor })).items).toHaveLength(1);
+    expect(body(handleConversationHistoryRequest(restarted, { action: "search", mode: "relevance" })).error.code).toBe("invalid_query");
+  });
+
+  it("discloses scan exhaustion and offers explicit browsing, never a purported no-match ranked page", async () => {
+    const f = await fixture();
+    const reader = { ...f.reader,
+      searchContinuity: () => ({ available: true, items: [], mode: "relevance" as const, degradedReason: "scan_capacity" as const,
+        scan: { complete: false, records: 31, bytes: 8192, elapsedMs: 5001, maxBatchMs: 20, metadataPages: 1, textBatches: 1 } }),
+      getContinuity: f.reader.getContinuity.bind(f.reader), continuityGaps: f.reader.continuityGaps.bind(f.reader), latestContinuitySummary: f.reader.latestContinuitySummary.bind(f.reader) };
+    const result = handleConversationHistoryRequest({ ...f.binding, reader }, { query: "cobalt" });
+    expect(body(result)).toMatchObject({ items: [], degradedReason: "scan_capacity", scan: { complete: false, records: 31 } });
+    expect(result.content[0]!.text).toContain("no complete ranked page");
+    expect(body(result).navigation.nextActions[0].arguments).toEqual({ action: "search", mode: "chronological", limit: 5 });
   });
 
   it("searches Unicode case-insensitively and leads escaped multi-block evidence with exact model-visible navigation", async () => {
@@ -153,7 +228,7 @@ describe("ConversationHistory scoped evidence", () => {
     const database = new DatabaseSync(f.reader.databasePath);
     try { database.prepare("UPDATE continuity_records SET retained_text=? WHERE record_id=?").run("Unverified fictional injection.", input.records[0]!.recordId); }
     finally { database.close(); }
-    for (const args of [{ action: "get", recordId: input.records[0]!.recordId }, { action: "search" }]) {
+    for (const args of [{ action: "get", recordId: input.records[0]!.recordId }, { action: "search" }, { action: "search", query: "fictional" }]) {
       const result = handleConversationHistoryRequest(f.binding, args as never);
       expect(body(result).error.code).toBe("history_unavailable"); expect(JSON.stringify(result)).not.toContain("Unverified fictional injection");
     }

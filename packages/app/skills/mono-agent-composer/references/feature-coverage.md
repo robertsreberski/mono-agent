@@ -328,3 +328,15 @@ text, not just ephemeral transcription bytes.
 Bootstrap no longer emits deprecated `voice.maxSeconds` (optional on reads for
 older-server compatibility). See
 [web voice configuration](../../../../../docs/observability/web-console.md#voice-messages-opt-in).
+
+### Retained-history relevance discovery
+
+When continuity capture and tool policy offer `ConversationHistory`, lexical
+queries use bounded relevance discovery, punctuation-only queries use literal
+matching, and queryless browsing remains chronological. Matched previews are
+incomplete. On `scan_capacity`, use `action: "search"` with `mode: "chronological"` or
+get a known ID; absence is not established. Three rounds support search then
+batch get then batch continuation for two retained records nominally at most
+16 KiB each when each fits two UTF-8-safe 8-KiB chunks; the universal bound is
+16,381 bytes. Larger or boundary-split records can need more rounds. Ledger upkeep stays opt-in and
+retrieval adds no extraction purchase.
