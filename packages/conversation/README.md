@@ -528,7 +528,10 @@ Owner provenance identifies a historical quotation, **not renewed approval**.
 `searchContinuity` keeps legacy chronological/AND matching and `before`/`next`
 by default. Explicit `mode: "relevance"` adds Unicode-aware partial coverage,
 phrase/proximity ranking, matched-context previews (512 bytes with byte ranges),
-and typed v2 continuations. Punctuation-only queries use literal chronological
+and typed v2 continuations. Term edges respect Unicode scripts (unspaced scripts
+allow letter-run substrings); short Latin/numeric terms do not match inside
+unrelated words/numbers. Previews cover full matches when they fit, otherwise
+`previewRange.matchClipped: true` discloses clipping of the match itself. Punctuation-only queries use literal chronological
 matching. Complete scans are bounded to 100k records / 256 MiB, 256-row metadata
 pages and 32-record / 2-MiB text batches, with a cooperative five-second deadline.
 `scan_capacity` returns no complete ranked subset; browse chronologically or get a

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Offline sizing only. External artifacts contain sizes, hashes, IDs and classifications, not text.
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { armById } from "./lib/continuity-arms.mjs";
@@ -59,13 +59,16 @@ export async function measureSizingRegressions({ modules, root, handleConversati
   const texts = ["Cobalt 🔷 rectangle. ".repeat(1200), '\"\n'.repeat(5000)];
   const inventory = { corpus: { regressions: digest(texts) }, paths: [], retained: [] };
   const conversationId = "web:lookup-sizing-fiction";
-  const writer = await ToolHistoryWriter.open({ root, continuityEnabled: true });
+  await mkdir(root, { recursive: true });
+  const fixtureRoot = await mkdtemp(join(root, "sizing-regression-"));
+  let writer;
   try {
+    writer = await ToolHistoryWriter.open({ root: fixtureRoot, continuityEnabled: true });
     const generationId = continuityGenerationId();
     const records = texts.map((text, sequence) => ({ text, sequence, recordId: continuityRecordId(conversationId, `regression-${sequence}`), runId: "lookup-sizing-regression", kind: "assistant", provenance: "assistant" }));
     await writer.prepareContinuity({ generationId, conversationId, logicalConversationId: conversationId, beforeDigest: null, afterDigest: sha256("regressions"), records });
     await writer.commitContinuity({ generationId, conversationId, canonicalDigest: sha256("regressions") });
-    const binding = { reader: new ToolHistoryReader(root), conversationId, logicalConversationId: conversationId, runId: "lookup-sizing-regression" };
+    const binding = { reader: new ToolHistoryReader(fixtureRoot), conversationId, logicalConversationId: conversationId, runId: "lookup-sizing-regression" };
     for (const [index, record] of records.entries()) {
       for (const arm of LOOKUP_DEFAULT_ARMS) {
         const path = { traceId: `regression-${index}`, probeId: "p01", arm, sourceSha256: sha256(record.text), retainedSha256: sha256(record.text),
@@ -92,7 +95,9 @@ export async function measureSizingRegressions({ modules, root, handleConversati
       }
       inventory.retained.push({ traceId: `regression-${index}`, recordId: record.recordId, sha256: sha256(record.text), retainedBytes: Buffer.byteLength(record.text), originalBytes: Buffer.byteLength(record.text) });
     }
-  } finally { await writer.close(); await rm(root, { recursive: true, force: true }); }
+  } finally {
+    try { await writer?.close(); } finally { await rm(fixtureRoot, { recursive: true, force: true }); }
+  }
   return inventory;
 }
 

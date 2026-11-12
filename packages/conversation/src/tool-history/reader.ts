@@ -106,7 +106,7 @@ export class ToolHistoryReader {
   }
 
   searchContinuity(input: ContinuitySearchInput): ContinuitySearchPage {
-    if (this.continuityPurgePending(input)) return { available: false, items: [] };
+    if (this.continuityPurgePending(input)) return { available: false, items: [], degradedReason: "purge_pending" };
     const database = this.openReadOnly();
     if (database === undefined) return { available: false, items: [] };
     try {

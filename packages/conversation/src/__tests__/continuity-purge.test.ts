@@ -201,17 +201,25 @@ it("does no purge-marker I/O in disabled runtime mode, with a positive enabled p
   const on = run(true); expect(on.status, on.stderr).toBe(0); expect(existsSync(probe)).toBe(true);
 });
 
-it("rechecks pending purge at the ranked-search final disclosure boundary", async () => {
+it.each(["relevance", "chronological"] as const)("rechecks pending purge at the %s search disclosure boundary", async mode => {
   const dir = await root(), writer = await open(dir); await result(writer); await writer.close();
   const reader = new ToolHistoryReader(dir);
   const internal = reader as unknown as { continuityPurgePending(value: typeof scope): boolean };
-  const check = internal.continuityPurgePending.bind(reader); let checks = 0;
+  const input = { ...scope, mode, query: "Fictional" };
+  const visible = reader.searchContinuity(input);
+  expect(visible.available).toBe(true); expect(visible.items).toHaveLength(1);
+  expect(visible.items[0]!.preview).toContain("Fictional");
+  const check = internal.continuityPurgePending.bind(reader);
   const spy = vi.spyOn(internal, "continuityPurgePending").mockImplementation(value => {
-    if (++checks === 2) persistContinuityPurge(dir, { scope: "logical", conversationId: id });
-    return check(value);
+    const pending = check(value);
+    // Race the already-completed negative check, without coupling to call count.
+    if (!pending) persistContinuityPurge(dir, { scope: "logical", conversationId: id });
+    return pending;
   });
   try {
-    expect(reader.searchContinuity({ ...scope, mode: "relevance", query: "Fictional" })).toMatchObject({ available: false, items: [], degradedReason: "purge_pending" });
-    expect(checks).toBe(2); expect(pendingContinuityPurges(dir)).toHaveLength(1);
+    expect(reader.searchContinuity(input)).toMatchObject({ available: false, items: [], degradedReason: "purge_pending" });
+    expect(pendingContinuityPurges(dir)).toHaveLength(1);
+    // A pre-existing intent must disclose exactly the same unavailable reason.
+    expect(reader.searchContinuity(input)).toMatchObject({ available: false, items: [], degradedReason: "purge_pending" });
   } finally { spy.mockRestore(); }
 });

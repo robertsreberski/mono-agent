@@ -17,7 +17,7 @@ function fixture() {
     return { id, gen };
   };
   const reader = {
-    text: (row: Record<string, unknown>) => { const text = row.retained_text as string; if (sha(text) !== row.text_sha256) throw new TypeError("digest mismatch"); return text; },
+    text: (row: Record<string, unknown>) => { const text = row.retained_text; if (typeof text !== "string" || sha(text) !== row.text_sha256) throw new TypeError("digest mismatch"); return text; },
     metadata: (row: Record<string, unknown>) => getContinuity(db, { ...scope, recordId: row.record_id as string }).record!,
   };
   const search = (query: string, limit = 5) => searchContinuity(db, { ...scope, query, limit, mode: "relevance" });
@@ -40,6 +40,34 @@ describe("bounded relevance discovery", () => {
       const identifier = f.add("obj:survey-17 revision"); expect(f.search("obj:survey-17").items[0]!.recordId).toBe(identifier.id);
     } finally { f.db.close(); }
   });
+  it("does not award short-token coverage inside unrelated words or larger numbers", () => {
+    const f = fixture(); try {
+      const exact = f.add("a reference: 80 cobalt");
+      const partial = f.add("metadata 1800 cobalt");
+      expect(f.search("a 80 cobalt").items.map(item => item.recordId)).toEqual([exact.id, partial.id]);
+      expect(relevanceMatch("metadata 1800", relevanceQuery("a 80"))).toBeUndefined();
+      const text = "metadata contains a";
+      expect(relevanceMatch(text, relevanceQuery("a"))!.position).toBe(text.lastIndexOf("a"));
+    } finally { f.db.close(); }
+  });
+  it.each([
+    ["ACT-77 gpt-6.1", "ACT-77 gpt-6.1", true],
+    ["ACT-770 gpt-6.10", "ACT-77 gpt-6.1", false],
+    ["pact-77", "ACT-77", false],
+    ["観測台ACT-77東京都gpt-6.1観測台", "ACT-77 gpt-6.1", true],
+    ["東京都の観測台", "東京 観測", true],
+    ["หอดูดาว", "ดาว", true],
+    ["ดู", "ด", false],
+    ["التجربة الحالية", "التجربة", true],
+    ["حالتجربةالحالية", "تجربة", false],
+    ["αλφα", "α", false],
+    ["жa漢", "a", true],
+    ["a\u0301", "a", false],
+    ["1800", "80", false],
+    ["س80س", "80", false],
+  ] as const)("uses script-aware token edges for %j / %j", (text, query, matches) => {
+    expect(relevanceMatch(text, relevanceQuery(query)) !== undefined).toBe(matches);
+  });
   it("uses explicitly literal chronological punctuation matching, never match-all", () => {
     const f = fixture();
     try {
@@ -58,6 +86,33 @@ describe("bounded relevance discovery", () => {
       expect(item.previewRange).toMatchObject({ clippedBefore: true, clippedAfter: false, complete: false });
       expect(Buffer.from(text).subarray(item.previewRange!.start, item.previewRange!.end).toString()).toBe(item.preview);
       const unicode = matchedPreview("İ".repeat(300) + "cobalt", 300); expect(unicode.preview).toContain("cobalt");
+    } finally { f.db.close(); }
+  });
+  it.each(["cobalt" + " ".repeat(410) + "observatory", "a" + " ".repeat(510) + "b", '"'.repeat(500)])("covers the entire long matched span within 512 bytes (%j)", phrase => {
+    const f = fixture(); try {
+      const text = "🔷 background. ".repeat(100) + "Not approved: " + phrase + " remains hypothetical.";
+      f.add(text); const item = f.search(phrase).items[0]!;
+      expect(item.preview).toContain(phrase); expect(Buffer.byteLength(item.preview)).toBeLessThanOrEqual(512);
+      expect(item.previewRange!.matchClipped).toBeUndefined(); expect(item.preview).not.toContain("�");
+      expect(Buffer.from(text).subarray(item.previewRange!.start, item.previewRange!.end).toString()).toBe(item.preview);
+    } finally { f.db.close(); }
+  });
+  it("discloses clipping when Unicode case folding makes the matched span exceed 512 bytes", () => {
+    const f = fixture(); try {
+      const query = "k ".repeat(199) + "k", phrase = "K ".repeat(199) + "K";
+      expect(Buffer.byteLength(query)).toBeLessThanOrEqual(512); expect(Buffer.byteLength(phrase)).toBeGreaterThan(512);
+      f.add("background. " + phrase + " still hypothetical"); const item = f.search(query).items[0]!;
+      expect(Buffer.byteLength(item.preview)).toBeLessThanOrEqual(512); expect(item.preview).not.toContain("�");
+      expect(item.previewRange).toMatchObject({ matchClipped: true, clippedAfter: true, complete: false });
+    } finally { f.db.close(); }
+  });
+  it.each([undefined, null, 42, {}, [], true].map(recordId => ({ recordId })))("rejects non-string cursor anchor IDs (%j)", ({ recordId }) => {
+    const f = fixture(); try {
+      f.add("cobalt first"); f.add("cobalt second");
+      const cursor = f.search("cobalt", 1).continuation!;
+      const page = searchContinuity(f.db, { ...scope, query: "cobalt", mode: "relevance", limit: 1,
+        continuation: { ...cursor, anchor: { ...cursor.anchor, recordId: recordId as unknown as string } } });
+      expect(page).toMatchObject({ items: [], degradedReason: "invalid_cursor", scan: { complete: false, records: 0 } });
     } finally { f.db.close(); }
   });
   it("paginates ranked ties without duplicates and excludes later insertions above the watermark", () => {
@@ -144,7 +199,9 @@ describe("bounded relevance discovery", () => {
   it("never decodes an oversized/underreported body into a nominally bounded text batch", () => {
     const f = fixture(); try {
       f.add("cobalt"); f.db.prepare("UPDATE continuity_records SET retained_text=?,text_sha256=?").run("x".repeat(1024 * 1024), sha("x".repeat(1024 * 1024)));
-      expect(() => f.search("cobalt")).toThrow();
+      const text = vi.fn(f.reader.text);
+      expect(() => searchRelevantContinuity(f.db, { ...scope, query: "cobalt" }, { ...f.reader, text })).toThrow(new TypeError("digest mismatch"));
+      expect(text).toHaveBeenCalledWith(expect.objectContaining({ retained_bytes: 6, retained_text: null }));
     } finally { f.db.close(); }
   });
   it("rechecks selected text after a final-boundary tamper without changing its claimed digest", () => {
@@ -163,8 +220,10 @@ describe("bounded relevance discovery", () => {
       const scannerSql = [...sqls].filter(sql => sql.includes("INDEXED BY") || sql.includes("CROSS JOIN"));
       expect(scannerSql.length).toBeGreaterThanOrEqual(5);
       for (const sql of scannerSql) {
-        const plan = JSON.stringify(original(`EXPLAIN QUERY PLAN ${sql}`).all(...Array.from({ length: (sql.match(/\?/gu) ?? []).length }, () => "fiction")));
-        expect(plan).toContain("SEARCH"); expect(plan).not.toContain("TEMP B-TREE"); expect(plan).not.toMatch(/SCAN [rgp](?:\s|$)/u);
+        const details = original(`EXPLAIN QUERY PLAN ${sql}`).all(...Array.from({ length: (sql.match(/\?/gu) ?? []).length }, () => "fiction")).map(row => String(row.detail));
+        const plan = details.join("\n");
+        expect(plan).toContain("SEARCH"); expect(plan).not.toContain("TEMP B-TREE");
+        expect(details.filter(detail => /\bSCAN\b/u.test(detail) && !/\bSEARCH\b/u.test(detail))).toEqual([]);
         if (sql.includes("NOT EXISTS")) expect(plan).toContain("continuity_prepared_owner_idx");
       }
     } finally { spy.mockRestore(); f.db.close(); }

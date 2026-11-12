@@ -79,7 +79,7 @@ export function searchRelevantContinuity(db: DatabaseSync, input: ContinuitySear
   try {
     if (cursor && (cursor.version !== 2 || cursor.rankingVersion !== 1 || cursor.query !== input.query!.trim() || cursor.limit !== limit
       || !Number.isSafeInteger(watermark) || watermark < 0 || !/^[a-f0-9]{64}$/u.test(cursor.manifest)
-      || !cursor.anchor || !Number.isSafeInteger(cursor.anchor.score) || !Number.isSafeInteger(cursor.anchor.ordinal))) throw new Error("invalid_cursor");
+      || !cursor.anchor || typeof cursor.anchor.recordId !== "string" || !Number.isSafeInteger(cursor.anchor.score) || !Number.isSafeInteger(cursor.anchor.ordinal))) throw new Error("invalid_cursor");
     const initial = tx(manifest);
     // Compute the initial watermark from bounded metadata pages in the same
     // snapshot, rather than an uninterruptible all-scoped-record max() query.
@@ -118,7 +118,7 @@ export function searchRelevantContinuity(db: DatabaseSync, input: ContinuitySear
           }
           if (top.length === limit + 1 && compare(rank, key(top.at(-1)!)) >= 0) continue;
           if (top.length === limit + 1) top.pop();
-          top.push({ descriptor: d, score, ...matchedPreview(text, match.position) });
+          top.push({ descriptor: d, score, ...matchedPreview(text, match.position, match.end) });
           top.sort((a, b) => compare(key(a), key(b)));
         }
         stats.maxBatchMs = Math.max(stats.maxBatchMs, now() - batchStarted);

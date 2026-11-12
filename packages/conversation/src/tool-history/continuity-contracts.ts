@@ -129,6 +129,8 @@ export interface ContinuityPreviewRange {
   readonly end: number;
   readonly clippedBefore: boolean;
   readonly clippedAfter: boolean;
+  /** Present when the matched span itself exceeds the UTF-8 preview window. */
+  readonly matchClipped?: true;
   /** A preview never witnesses completed recovery, even for a short record. */
   readonly complete: false;
 }

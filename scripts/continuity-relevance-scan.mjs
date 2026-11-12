@@ -1,16 +1,19 @@
 #!/usr/bin/env node
 // Fictional, provider-free local capacity measurement. Build conversation first.
 import { createHash } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { cpus, totalmem } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { createContinuitySchema, continuityRecordId } from "../packages/conversation/dist/tool-history/continuity-storage.js";
 import { getContinuity } from "../packages/conversation/dist/tool-history/continuity-reader.js";
 import { searchRelevantContinuity } from "../packages/conversation/dist/tool-history/relevance-scan.js";
+if (typeof global.gc !== "function") throw new Error("Run this measurement with node --expose-gc.");
 const sha = text => createHash("sha256").update(text).digest("hex");
 const scope = { logicalConversationId: "fictional-scan", currentConversationId: "fictional-scan", currentRunId: "reader" };
-const root = await mkdtemp(join(process.cwd(), ".mono-agent/relevance-measure-"));
+const parent = join(process.cwd(), ".mono-agent");
+await mkdir(parent, { recursive: true });
+const root = await mkdtemp(join(parent, "relevance-measure-"));
 try {
   const results = [];
   for (const [count, capacity, longCount] of [[10_000, 32 * 1024 * 1024, 8], [100_000, 256 * 1024 * 1024, 64]]) {
@@ -31,7 +34,7 @@ try {
       let continuation;
       for (const phase of ["cold-connection", "warm", "continuation"]) {
         if (phase === "continuation" && !continuation) continue;
-        global.gc?.();
+        global.gc();
         const connection = new DatabaseSync(path, { readOnly: true });
         const baseline = process.memoryUsage(); let heap = baseline.heapUsed, rss = baseline.rss;
         const sample = () => { const m = process.memoryUsage(); heap = Math.max(heap, m.heapUsed); rss = Math.max(rss, m.rss); };
@@ -60,13 +63,13 @@ try {
         return [page.scan.complete, page.scan.elapsedMs];
       };
       runWorstCase(); // Warm JIT/SQLite before checking persistent accumulation.
-      await new Promise(resolve => setImmediate(resolve)); global.gc?.();
+      await new Promise(resolve => setImmediate(resolve)); global.gc();
       const before = process.memoryUsage().heapUsed / 1024 ** 2, samples = new Float64Array(15);
       for (let run = 0; run < 5; run++) {
         const [complete, elapsed] = runWorstCase();
         // Flush instrumentation I/O before GC. Printing inside this loop itself
         // retains queued stdout strings and creates spurious monotonic growth.
-        await new Promise(resolve => setImmediate(resolve)); global.gc?.();
+        await new Promise(resolve => setImmediate(resolve)); global.gc();
         samples[run * 3] = process.memoryUsage().heapUsed / 1024 ** 2;
         samples[run * 3 + 1] = Number(complete); samples[run * 3 + 2] = elapsed;
       }

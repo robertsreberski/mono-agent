@@ -1,5 +1,5 @@
 import { afterEach, expect, it } from "vitest";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { productionModules } from "../lib/continuity-runner.mjs";
@@ -95,14 +95,19 @@ it.each(["batch", "batch-unicode", "single-deep", "sequential"])("recovers compl
 
 it("runs fictional Unicode/escaping sizing independently and fails before get on a real discovery miss", async () => {
   const modules = await productionModules(ROOT), root = await scratch();
-  const result = await measureSizingRegressions({ modules, root: join(root, "success"), handleConversationHistoryRequest });
+  const sentinel = join(root, "caller-owned.txt"); await writeFile(sentinel, "Keep fictional caller data.");
+  const result = await measureSizingRegressions({ modules, root, handleConversationHistoryRequest });
+  expect(await readdir(root)).toEqual(["caller-owned.txt"]);
+  expect(await readFile(sentinel, "utf8")).toBe("Keep fictional caller data.");
   expect(result.paths).toHaveLength(4); expect(result.paths.every(path => path.discovered && path.verified && path.searchPages === 1)).toBe(true);
   let gets = 0;
-  await expect(measureSizingRegressions({ modules, root: join(root, "miss"), handleConversationHistoryRequest(binding, args) {
+  await expect(measureSizingRegressions({ modules, root, handleConversationHistoryRequest(binding, args) {
     if (args.action === "get") gets++;
     return handleConversationHistoryRequest(binding, args.action === "search" ? { ...args, query: "fictional-nonexistent-term" } : args);
   } })).rejects.toThrow("regression_source_not_discovered");
   expect(gets).toBe(0);
+  expect(await readdir(root)).toEqual(["caller-owned.txt"]);
+  expect(await readFile(sentinel, "utf8")).toBe("Keep fictional caller data.");
 });
 
 it("keeps first-result and reference consumers on actual returned relevance IDs/actions", () => {

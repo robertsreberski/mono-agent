@@ -1001,8 +1001,10 @@ untrusted.
 `ConversationHistory` lexical queries now select bounded relevance discovery;
 queryless or explicit `mode: "chronological"` browsing keeps ordinal pagination,
 and existing v1 cursors retain their legacy semantics. Ranked/literal v2 cursors
-bind a stable membership manifest. Matched previews stay incomplete, at most 512
-UTF-8 bytes; `scan_capacity` discloses incomplete coverage rather than no match.
+bind a stable membership manifest. Term boundaries are script-aware, permitting
+letter-run substrings in unspaced scripts. Matched previews stay incomplete, at
+most 512 UTF-8 bytes, with `previewRange.matchClipped: true` if the match itself
+cannot fit. `scan_capacity` discloses incomplete coverage rather than no match.
 Three rounds support search → batch get → batch continuation for two complete
 retained records nominally at most 16 KiB each when they fit two UTF-8-safe
 8-KiB chunks (universal bound: 16,381 bytes), with digest verification. Boundary

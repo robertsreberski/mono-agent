@@ -334,7 +334,7 @@ older-server compatibility). See
 When continuity capture and tool policy offer `ConversationHistory`, lexical
 queries use bounded relevance discovery, punctuation-only queries use literal
 matching, and queryless browsing remains chronological. Matched previews are
-incomplete. On `scan_capacity`, use the explicit chronological browse action or
+incomplete. On `scan_capacity`, use `action: "search"` with `mode: "chronological"` or
 get a known ID; absence is not established. Three rounds support search then
 batch get then batch continuation for two retained records nominally at most
 16 KiB each when each fits two UTF-8-safe 8-KiB chunks; the universal bound is

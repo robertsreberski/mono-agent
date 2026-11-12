@@ -2,12 +2,15 @@
 
 ## Unreleased
 
-- Add bounded relevance discovery and matched-context previews to lexical
-  `ConversationHistory` searches, with consistent v2 continuations, literal
-  punctuation matching and explicit scan exhaustion, keeping escaped-query
-  cursors bounded. Keep chronological reader defaults and the nominal three-round
-  two-record recovery envelope at 16 KiB
-  per record when UTF-8-safe chunking fits; ledger upkeep remains opt-in.
+- **Breaking:** Add bounded relevance discovery to lexical `ConversationHistory`
+  searches. Search responses add `mode`/`scan` fields requiring parser updates;
+  scans exceeding 100,000 records, 256 MiB or a cooperative five-second deadline
+  return an empty, incomplete `scan_capacity` page, not proof of absence. Use
+  script-aware term boundaries, full-match previews within 512 UTF-8 bytes and
+  explicit `matchClipped` disclosure for longer spans. Keep consistent bounded
+  v2 cursors, literal punctuation matching, chronological reader defaults and
+  the nominal three-round two-record recovery envelope at 16 KiB per record
+  when UTF-8-safe chunking fits; ledger upkeep remains opt-in.
 
 - Add bounded private E2 probe retrieval receipts that survive checkpoint
   snapshot restores, retaining lookup arguments and responses within a per-run

@@ -114,10 +114,23 @@ never silently expire: exhausted pinned capacity reports degraded continuity
 rather than invalidating references. Conversation reset and
 `restart --clear-sessions` remove this evidence with the existing sidecar.
 
+Optional [gated ledger upkeep](/runtime/continuity-ledger/) adds one bounded
+completion before eligible primary cold seeds. It is off by default; it can add
+up to 60 seconds under the exclusive conversation hold. Strict request-cap mode
+skips Codex; default Codex stream abort cannot bound hidden reasoning or quota.
+
 ### Bounded relevance discovery and recovery
 
 Lexical `ConversationHistory` searches select deterministic Unicode-aware partial
-term coverage, phrase and proximity ranking. Repeating a term does not buy more
+term coverage, phrase and proximity ranking. Terms and phrases respect same-script
+letter boundaries; different-script transitions are boundaries. Digits, combining
+marks and underscores join identifiers, preserving `ACT-77` and `gpt-6.1` as terms;
+digits at identifier edges inherit the nearest letter's script. Numeric-only terms
+must not occur inside words or larger numbers in any script. Han, Hiragana,
+Katakana, Bopomofo, Thai, Lao, Khmer, Myanmar, Khitan Small Script, Nushu, Tangut and
+Yi permit letter-run substrings because spacing is unreliable; this is not dictionary
+segmentation. Other scripts use Unicode 16 script boundaries. Thus `a` does not
+cover `metadata`, while `東京` can find `東京都`. Repeating a term does not buy more
 coverage; ordinal and opaque record ID break ties. Ranking infers neither truth,
 authority nor supersession. Punctuation-only queries (including a lone quotation
 mark) use literal substring matching, explicitly labelled `literal`, newest first;
@@ -133,7 +146,10 @@ scope can continue; a different run expires the cursor.
 
 Search previews are digest-verified sanitized **matched context**, at most 512
 UTF-8 bytes, with retained-byte ranges and clipping flags. Nearby qualification
-and negation are preserved where possible. Previews are always incomplete evidence,
+and negation are preserved where possible. The full selected phrase/term is shown
+when it fits; if Unicode case folding expands the retained matched span beyond the
+window, `previewRange.matchClipped: true` explicitly discloses that clipping.
+Previews are always incomplete evidence,
 not completed record recovery. Get starts at byte zero; there is no matched-offset
 get. Within **three tool rounds**, the supported path is search → **batch get of
 two records** → **batch continuation of both records**, for two retained records
@@ -166,24 +182,19 @@ exhausted scan; `source_changed` likewise requires a fresh traversal.
 For reproducible fictional sizing, build conversation and run
 `node --expose-gc scripts/continuity-relevance-scan.mjs`. On Node 24.18.0,
 Apple M3 Max / arm64 / 48 GiB RAM, dense, absent and long-Unicode cases measured
-0.259–0.348 seconds at 10k / 32 MiB and 2.204–2.867 seconds at 100k / 256 MiB,
+0.264–0.351 seconds at 10k / 32 MiB and 2.212–3.012 seconds at 100k / 256 MiB,
 including continuations. Maximum measured transaction/text-batch blocking was
-201 ms. Cold means a reopened SQLite connection, **not flushed OS filesystem
-cache**. Sampled additional peaks were 25/96 MiB JS heap and 20/97 MiB RSS,
+204 ms. Cold means a reopened SQLite connection, **not flushed OS filesystem
+cache**. Sampled additional peaks were 25/96 MiB JS heap and 22/89 MiB RSS,
 respectively (rounded up). The original **64 MiB heap target was not met** in the
 extreme 64 × 1-MiB Unicode-record case: transient V8 GC sawtooth, not accumulating
-record collections. The accepted measured envelope is **100 MiB additional JS
-heap** on this hardware (RSS target remains 128 MiB). Five worst-case scans in
-one process with GC after each measured post-GC heaps of 6.905, 5.949, 5.941,
-5.942 and 5.938 MiB: no accumulating growth (sub-KiB plateau variation).
+record collections. After initial repeated-scan leak checks, the maintainer
+accepted the measured **100 MiB additional JS heap** envelope (RSS target remains
+128 MiB). Five current worst-case scans in one process with GC after each measured
+post-GC heaps of 6.388, 6.387, 6.385, 6.408 and 6.392 MiB: no accumulating growth.
 A 1-MiB batch/early-release mitigation did not lower the worst peak and was not
 kept. Measurements are hardware/runtime observations, not universal latency or
 memory guarantees; exhausted scans remain explicitly incomplete.
-
-Optional [gated ledger upkeep](/runtime/continuity-ledger/) adds one bounded
-completion before eligible primary cold seeds. It is off by default; it can add
-up to 60 seconds under the exclusive conversation hold. Strict request-cap mode
-skips Codex; default Codex stream abort cannot bound hidden reasoning or quota.
 
 ### Deterministic cold continuity packs
 
