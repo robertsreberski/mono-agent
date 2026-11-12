@@ -4,6 +4,8 @@ import { describe, expect, it, vi } from "vitest";
 import { createContinuitySchema, continuityRecordId } from "../tool-history/continuity-storage.js";
 import { getContinuity, searchContinuity } from "../tool-history/continuity-reader.js";
 import { searchRelevantContinuity } from "../tool-history/relevance-scan.js";
+import type { ContinuityPreview } from "../index.js";
+import * as relevance from "../tool-history/relevance.js";
 import { matchedPreview, relevanceMatch, relevanceQuery } from "../tool-history/relevance.js";
 const scope = { logicalConversationId: "fiction", currentConversationId: "fiction#today", currentRunId: "reader" };
 const sha = (s: string) => createHash("sha256").update(s).digest("hex");
@@ -252,5 +254,49 @@ describe("bounded relevance discovery", () => {
         if (sql.includes("NOT EXISTS")) expect(plan).toContain("continuity_prepared_owner_idx");
       }
     } finally { spy.mockRestore(); f.db.close(); }
+  });
+});
+
+
+describe("lazy complementary previews", () => {
+  it("does not run later term patterns after finding a complementary window", () => {
+    const query = relevanceQuery("cobalt target unused"), text = "cobalt referent. " + "background 🔷. ".repeat(100) + "target value.";
+    const unused = vi.spyOn(query.patterns[2]!, "exec");
+    try {
+      const result = matchedPreview(text, 0, 6, query);
+      expect(result.additionalPreviews![0]!.preview).toContain("target value");
+      expect(unused).not.toHaveBeenCalled();
+    } finally { unused.mockRestore(); }
+  });
+  it("builds previews only for emitted items, not evicted candidates or lookahead", () => {
+    const f = fixture(), spy = vi.spyOn(relevance, "matchedPreview");
+    try {
+      // Ascending scan repeatedly replaces older equal-ranked candidates.
+      for (let n = 0; n < 100; n++) f.add(`cobalt target entry ${n}`);
+      const page = f.search("cobalt target", 3);
+      expect(page.items).toHaveLength(3); expect(page.continuation).toBeDefined();
+      expect(spy).toHaveBeenCalledTimes(3);
+      expect(page.resumeAfter).toHaveLength(page.items.length);
+      expect(page.resumeAfter!.map(boundary => boundary.anchor.recordId)).toEqual(page.items.map(item => item.recordId));
+      expect(page.continuation).toEqual(page.resumeAfter!.at(-1));
+    } finally { spy.mockRestore(); f.db.close(); }
+  });
+  it.each(["İ", "zİ"])("folds complementary %j consistently and maps back to exact retained bytes", term => {
+    const f = fixture(); try {
+      const filler = term === "zİ" ? "İ 🔷 background. " : "🔷 background. ";
+      const text = "cobalt referent. " + filler.repeat(100) + `\nRetained value: ${term} is the complementary term.`;
+      f.add(text);
+      const page = f.search(`cobalt ${term}`), item = page.items[0]!;
+      const windows: readonly ContinuityPreview[] = [{ preview: item.preview, previewRange: item.previewRange! }, ...item.additionalPreviews!];
+      expect(windows).toHaveLength(2); expect(windows[1]!.preview).toContain(`Retained value: ${term}`);
+      expect(windows.reduce((bytes, window) => bytes + Buffer.byteLength(window.preview), 0)).toBeLessThanOrEqual(512);
+      for (const window of windows) {
+        expect(window.previewRange.complete).toBe(false); expect(window.preview).not.toContain("�");
+        expect(Buffer.from(text).subarray(window.previewRange.start, window.previewRange.end).toString()).toBe(window.preview);
+      }
+      expect(windows[0]!.previewRange.end).toBeLessThan(windows[1]!.previewRange.start);
+      expect(page.resumeAfter).toHaveLength(1); expect(page.continuation).toBeUndefined();
+      expect(page.resumeAfter![0]!.anchor.recordId).toBe(item.recordId);
+    } finally { f.db.close(); }
   });
 });

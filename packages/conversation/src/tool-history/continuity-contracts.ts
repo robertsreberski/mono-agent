@@ -164,7 +164,9 @@ export interface ContinuitySearchPage {
   readonly next?: number;
   readonly mode?: "chronological" | "relevance" | "literal";
   readonly continuation?: ContinuityRelevanceContinuation;
-  /** Internal boundaries for a transport-limited prefix, including the final page. */
+  /** One boundary per emitted item, index-aligned with items on every relevance
+   * page (including the final page). When more results exist, continuation equals
+   * the last boundary. A transport-limited prefix can resume at its last item. */
   readonly resumeAfter?: readonly ContinuityRelevanceContinuation[];
   readonly degradedReason?: "scan_capacity" | "source_changed" | "invalid_cursor" | "purge_pending";
   readonly scan?: ContinuitySearchScan;

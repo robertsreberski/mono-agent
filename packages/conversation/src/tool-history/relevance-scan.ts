@@ -5,7 +5,7 @@ import { matchedPreview, relevanceMatch, relevanceQuery } from "./relevance.js";
 
 type Row = Record<string, unknown>;
 type Descriptor = { record_id: string; generation_id: string; ordinal: number; text_sha256: string; retained_bytes: number };
-type Candidate = { descriptor: Descriptor; score: number } & ReturnType<typeof matchedPreview>;
+type Candidate = { descriptor: Descriptor; score: number; position: number; end: number };
 const MAX_RECORDS = 100_000, MAX_BYTES = 256 * 1024 * 1024, MAX_RECORD_BYTES = 1024 * 1024;
 const NOT_PURGING = `NOT EXISTS (SELECT 1 FROM continuity_generations p WHERE p.conversation_id=g.conversation_id AND p.state='prepared' AND p.action<>'checkpoint' AND p.action IN ('reset','delete'))`;
 const compare = (a: { score: number; ordinal: number; recordId: string }, b: { score: number; ordinal: number; recordId: string }) =>
@@ -118,7 +118,7 @@ export function searchRelevantContinuity(db: DatabaseSync, input: ContinuitySear
           }
           if (top.length === limit + 1 && compare(rank, key(top.at(-1)!)) >= 0) continue;
           if (top.length === limit + 1) top.pop();
-          top.push({ descriptor: d, score, ...matchedPreview(text, match.position, match.end, query) });
+          top.push({ descriptor: d, score, position: match.position, end: match.end });
           top.sort((a, b) => compare(key(a), key(b)));
         }
         stats.maxBatchMs = Math.max(stats.maxBatchMs, now() - batchStarted);
@@ -136,9 +136,12 @@ export function searchRelevantContinuity(db: DatabaseSync, input: ContinuitySear
           CASE WHEN r.retained_bytes<=? AND length(CAST(r.retained_text AS BLOB))=r.retained_bytes THEN r.retained_text ELSE NULL END retained_text
           FROM continuity_records r CROSS JOIN continuity_generations g USING(generation_id) WHERE g.logical_id=? AND g.state='committed' AND r.finalized=1 AND ${NOT_PURGING} AND r.record_id=?`).get(MAX_RECORD_BYTES, input.logicalConversationId, d.record_id) as Row | undefined;
         if (!row || identity(row as Descriptor) !== identity(d)) throw new Error("source_changed");
-        reader.text(row); // Revalidate selected digest/visibility at disclosure.
-        return { ...reader.metadata(row), preview: candidate.preview, previewRange: candidate.previewRange,
-          ...(candidate.additionalPreviews ? { additionalPreviews: candidate.additionalPreviews } : {}) };
+        const text = reader.text(row); // Revalidate selected digest/visibility at disclosure.
+        // Materialize previews only for emitted items, not candidates later
+        // evicted from top. Bodies are bounded to 1 MiB and at most 10 are emitted.
+        const preview = matchedPreview(text, candidate.position, candidate.end, query);
+        check();
+        return { ...reader.metadata(row), ...preview };
       });
     });
     check(); stats.complete = true; stats.elapsedMs = now() - started;
