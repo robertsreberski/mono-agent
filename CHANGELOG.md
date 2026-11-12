@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Fix baseline E2 replay to retain recorded source tools while keeping probes
+  tool-free, and distinguish injected continuity packs from ordinary mentions.
+
 - Add an E2 `--replay-arm baseline` control without continuity or history tools,
   using one request per probe and ordinary shipping compaction. Bind the arm to
   replay-only authorization and non-qualifying reports; keep the default replay

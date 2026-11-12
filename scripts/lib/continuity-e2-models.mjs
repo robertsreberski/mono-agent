@@ -1,9 +1,10 @@
+import { assertE2BaselineRequest } from "./continuity-e2-lineage.mjs";
 // The only inference boundary in C1 is Pi's in-process faux provider.
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { fail } from "./continuity-observation-input.mjs";
 import { digest } from "./continuity-recorded-schema.mjs";
-import { assertE2ProbeLookupRounds, e2ReplayArm, assertE2BaselineContext } from "./continuity-e2-protocol.mjs";
+import { assertE2ProbeLookupRounds, e2ReplayArm } from "./continuity-e2-protocol.mjs";
 import { assertE2PhaseAdapter } from "./continuity-e2-runtime.mjs";
 
 import { FACT, NEXT_ACTION } from "./continuity-e2-tools.mjs";
@@ -57,7 +58,7 @@ export function estimatedReply(pi, text, context, estimators, extra = {}) {
 }
 
 /** A lifecycle receipt is established by runtime events, not prompt contents. */
-export function createE2Models({ pi, estimators, models, limits, summary = "faux-short", sourceReply, sourceContext = () => {}, soul, paidAdapter, probeLookupRounds, replayArm, onRequest = () => {} }) {
+export function createE2Models({ pi, estimators, models, limits, summary = "faux-short", sourceReply, sourceContext = () => {}, soul, paidAdapter, probeLookupRounds, replayArm, sourceTools, onRequest = () => {} }) {
   if (probeLookupRounds !== undefined) assertE2ProbeLookupRounds(probeLookupRounds);
   if (summary === "real") assertE2PhaseAdapter(paidAdapter);
   else if (paidAdapter !== undefined) fail("E2_SUMMARY_ROUTE_INVALID");
@@ -114,7 +115,7 @@ export function createE2Models({ pi, estimators, models, limits, summary = "faux
         if (method === "streamSimple") return (model, context, options) => {
           check(); validateModel(model, original);
           if (baseline) {
-            try { assertE2BaselineContext({ ...context, tools: context.tools ?? [] }); } catch (error) { refuse(error.code); }
+            try { assertE2BaselineRequest(context, { kind: position.probe ? "probe" : "source", sourceTools }); } catch (error) { refuse(error.code); }
             if (position.probe && positionRequests >= 1) refuse("E2_PROBE_REQUEST_LIMIT");
           }
           if (!baseline && position.probe && probeLookupRounds !== undefined) {
@@ -144,7 +145,7 @@ export function createE2Models({ pi, estimators, models, limits, summary = "faux
         };
         if (method === "completeSimple") return async (model, context, options = {}) => {
           check(); validateModel(model, original);
-          if (baseline) { try { assertE2BaselineContext(context); } catch (error) { refuse(error.code); } }
+          if (baseline) { try { assertE2BaselineRequest(context, { kind: "summary" }); } catch (error) { refuse(error.code); } }
           onRequest(model, context, options, "completeSimple");
           const receipt = [...lifecycle.values()][0];
           if (!receipt || lifecycle.size !== 1 || (context.tools?.length ?? 0) !== 0 || context.messages?.some(m => m.toolsAdded?.length)) refuse("E2_SUMMARY_NOT_AUTHORIZED");

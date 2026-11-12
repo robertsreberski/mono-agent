@@ -14,7 +14,7 @@ import { digest } from "../lib/continuity-dataset.mjs";
 import { productionModules } from "../lib/continuity-runner.mjs";
 import { runE2Sizing } from "../lib/continuity-e2-replay.mjs";
 import { e2ProbeCounts, e2PhaseSchedule, e2ToolPolicies, validateE2ReplayLimits } from "../lib/continuity-e2-registration.mjs";
-import { e2ReplayArm, e2ProbeRequestCount, assertE2ReplayBinding, assertE2BaselineContext, SOL } from "../lib/continuity-e2-protocol.mjs";
+import { e2ReplayArm, e2ProbeRequestCount, assertE2ReplayBinding, SOL } from "../lib/continuity-e2-protocol.mjs";
 import { normalizeE2Sizing, estimateE2SizingSet } from "../lib/continuity-e2-sizing.mjs";
 import { e2ExecutionPolicy } from "../lib/continuity-e2-execution-policy.mjs";
 import { e2RequestPrice } from "../lib/continuity-e2-pricing.mjs";
@@ -22,6 +22,8 @@ import { guardedAuthorization } from "../lib/continuity-guarded-authorization.mj
 import { e2AuthorizationBindings } from "../lib/continuity-e2-authorization.mjs";
 import { verifyE2NativeLineage } from "../lib/continuity-e2-lineage.mjs";
 import { parseE2Args, main } from "../continuity-e2.mjs";
+import { assertE2BaselineRequest as assertE2BaselineContext } from "../lib/continuity-e2-lineage.mjs";
+import { baselineToolSource } from "./fixtures/e2-baseline-tools.mjs";
 import { e2NativeFixture, E2_NATIVE_TEST_TIMEOUT_MS } from "./fixtures/e2-native-registration.mjs";
 const build = vi.hoisted(() => ({ state: vi.fn(() => ({ head: "b".repeat(40), dirty: false })), verify: vi.fn(async () => {}) }));
 vi.mock("../lib/memory-e2e-build.mjs", () => ({ BUILD_POLICY: "fresh-clean-head-agent-app-closure-v1", sourceState: build.state, verifyRealBuild: build.verify }));
@@ -31,9 +33,10 @@ afterEach(async () => {
   for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
   vi.restoreAllMocks(); vi.unstubAllEnvs(); vi.unstubAllGlobals();
 });
-async function fixture(summary = "faux-short", observe = false) {
+async function fixture(summary = "faux-short", observe = false, recordedTools = false) {
   const root = await realpath(await mkdtemp(join(tmpdir(), "e2-baseline-"))); roots.push(root);
   const f = await e2NativeFixture(root), r = f.pilot.registration;
+  if (recordedTools) f.trace.source = await baselineToolSource(root);
   for (const key of ["HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME", "XDG_DATA_HOME", "XDG_CONFIG_HOME"]) vi.stubEnv(key, f.home);
   f.trace.protocol.probeLookupRounds = 3;
   for (const branch of f.trace.protocol.branches) branch.exclusions.coverage = f.trace.source.coverage.flatMap((gap, i) => gap.tier === "replay" ? [i] : []);
@@ -54,7 +57,7 @@ async function fixture(summary = "faux-short", observe = false) {
   const bind = async (binding, value) => { const raw = JSON.stringify(value); await writeFile(binding.path, raw, { mode: 0o600 }); binding.sha256 = hash(raw); };
   const questions = { schema: "continuity-recorded-questions-v1", questions: [{ id: "fictional-baseline-item", checkpoint: "B1", prompt: "State the fictional recorded response." }] };
   const keys = { schema: "continuity-recorded-evaluator-keys-v1", keys: [{ id: "fictional-baseline-item", checkpoint: "B1", kind: "exact", expected: "Fictional response", availability: "available", rate: true, dependsOnSteps: [], forbidden: [] }] };
-  await bind(r.protocol, f.trace.protocol); await bind(r.probes, questions); await bind(r.keys, keys); await bind(r.sizing[0], record);
+  await bind(r.source, f.trace.source); await bind(r.protocol, f.trace.protocol); await bind(r.probes, questions); await bind(r.keys, keys); await bind(r.sizing[0], record);
   r.replayArm = "baseline";
   r.probeCounts = e2ProbeCounts(f.trace.protocol, questions, keys, f.trace.source, "baseline");
   r.toolPolicies = e2ToolPolicies("baseline");
@@ -110,7 +113,7 @@ it("keeps closed arm defaults and refuses tools/packs and a second admitted prob
   expect(() => parseE2Args([...args, "--replay-arm", "other"])).toThrow("E2_ARGUMENTS_INVALID");
   expect(() => assertE2BaselineContext({ tools: [{ name: "ConversationHistory" }] })).toThrow("E2_PROBE_TOOLS_REFUSED");
   expect(() => assertE2BaselineContext({ messages: [{ toolsAdded: [{ name: "ConversationHistory" }] }] })).toThrow("E2_PROBE_TOOLS_REFUSED");
-  expect(() => assertE2BaselineContext({ messages: [{ role: "user", content: "### Conversation continuity pack (historical evidence)\nFictional" }] })).toThrow("e2_payload_forbidden");
+  expect(() => assertE2BaselineContext({ messages: [{ role: "user", content: "### Conversation continuity pack (historical evidence)\nFictional" }, { role: "user", content: "Fictional current prompt" }] })).toThrow("e2_payload_forbidden");
   const f = await fixture(), r = f.pilot.registration, planned = r.schedule[0], model = SOL, catalog = r.catalog.find(c => c.model === model), role = r.roles.find(c => c.role === "probe" && c.model === model);
   const p = { requestId: "fictional-request", slotId: planned.slotId, round: 1, payloadDigest: "a".repeat(64), reservationUnits: e2RequestPrice(catalog, { inputTokens: 10, maxOutputTokens: role.maxOutputTokens }).reservationUnits, inputTokens: 10, model, paidRole: "probe", checkpoint: 0 };
   const admitted = e2ExecutionPolicy.admission(f.pilot, planned, { holds: [] }, p);
@@ -118,9 +121,9 @@ it("keeps closed arm defaults and refuses tools/packs and a second admitted prob
   expect(e2ExecutionPolicy.retry(f.pilot, { slots: [{ holds: [{ paidRole: "probe" }] }] }, 0, {})).toEqual({ allowed: false });
   expect(() => e2ExecutionPolicy.admission(f.pilot, planned, { holds: [{ checkpoint: 0, probeRequest: 1 }] }, { ...p, paidRole: "continuation" })).toThrow("e2_request_limit");
   const body = { model: "gpt-6.1-sol", stream: true, store: false, input: [], tools: [] };
-  expect(() => e2ExecutionPolicy.assertBody(Buffer.from(JSON.stringify({ ...body, instructions: "### Conversation continuity pack (historical evidence)\nFictional" })), admitted.metadata)).toThrow("e2_payload_forbidden");
+  expect(() => e2ExecutionPolicy.assertBody(Buffer.from(JSON.stringify({ ...body, instructions: "Explain the heading ### Conversation continuity pack (historical evidence)" })), admitted.metadata)).not.toThrow();
   expect(() => e2ExecutionPolicy.assertBody(Buffer.from(JSON.stringify({ ...body, tools: [{ type: "function", name: "ConversationHistory" }] })), { ...admitted.metadata })).toThrow("e2_tools_forbidden");
-  expect(() => e2ExecutionPolicy.assertBody(Buffer.from(JSON.stringify({ ...body, input: [{ role: "user", content: "### Conversation continuity pack (historical evidence)\nFictional" }] })), admitted.metadata)).toThrow("e2_payload_forbidden");
+  expect(() => e2ExecutionPolicy.assertBody(Buffer.from(JSON.stringify({ ...body, input: [{ role: "user", content: "### Conversation continuity pack (historical evidence)\nFictional" }, { role: "user", content: "Fictional current prompt" }] })), admitted.metadata)).toThrow("e2_payload_forbidden");
 }, E2_NATIVE_TEST_TIMEOUT_MS);
 it("binds registration, authorization and report arms and rejects relabelling", async () => {
   const f = await fixture(); vi.stubEnv("CI", undefined);
@@ -177,3 +180,67 @@ it("executes a faux end-to-end baseline through the shipping SDK/controller/scor
   const replay = JSON.parse(await readFile(join(f.args.outputRoot, "work/replay/replay.json")));
   expect(replay).toMatchObject({ replayArm: "baseline", qualification: false });
 }, E2_NATIVE_TEST_TIMEOUT_MS);
+
+it.each(["faux-short", "faux-max"])("sizes recorded source tools in the baseline with %s, unchanged from continuity", async summary => {
+  const f = await fixture(summary, true, true), continuity = [];
+  expect(f.trace.source.tools.map(t => t.name)).toEqual(["Read"]);
+  expect(f.contexts.filter(c => c.probe).every(c => [...(c.context.tools ?? []), ...c.context.messages.flatMap(m => m.toolsAdded ?? [])].length === 0)).toBe(true);
+  const baselineSource = f.contexts.filter(c => !c.probe).map(c => c.context);
+  expect(baselineSource.length).toBeGreaterThan(0);
+  for (const context of baselineSource) {
+    expect(() => assertE2BaselineContext(context, { kind: "source", sourceTools: ["Read"] })).not.toThrow();
+    expect((context.tools ?? context.messages.flatMap(m => m.toolsAdded ?? [])).map(t => t.name)).toEqual(["Read"]);
+  }
+  expect(f.contexts.some(c => c.context.messages.some(m => m.role === "toolResult" && m.toolName === "Read"))).toBe(true);
+  await runE2Sizing({ ...f.trace, output: join(f.root, "continuity-tool-sizing"), summary,
+    onContext: c => { if (!c.probe) continuity.push(c.context); } });
+  expect(baselineSource.map(c => c.tools)).toEqual(continuity.map(c => c.tools));
+  expect(baselineSource.map(c => c.messages.flatMap(m => m.toolsAdded ?? [])))
+    .toEqual(continuity.map(c => c.messages.flatMap(m => m.toolsAdded ?? [])));
+  for (const options of f.routes) {
+    expect(options.mcpServers).not.toHaveProperty("mono-agent-conversation-history");
+    expect(Object.keys(options.mcpServers)).toEqual(Object.keys(options.mcpServers).length ? ["continuity-recorded"] : []);
+  }
+}, E2_NATIVE_TEST_TIMEOUT_MS);
+it("scopes tool absence to probes/summaries and detects packs by injected role and position", () => {
+  const heading = "### Conversation continuity pack (historical evidence)\nFictional historical evidence";
+  const current = { role: "user", content: "Fictional current prompt" };
+  for (const kind of ["probe", "source", "summary"]) {
+    expect(() => assertE2BaselineContext({ messages: [{ role: "user", content: `Discuss ${heading}` }, current] }, { kind })).not.toThrow();
+    expect(() => assertE2BaselineContext({ messages: [{ role: "assistant", content: heading }, current] }, { kind })).not.toThrow();
+    expect(() => assertE2BaselineContext({ messages: [{ role: "user", content: heading }] }, { kind })).not.toThrow();
+    const serialized = `<conversation>\n[User]: ${heading}\n\n[Assistant]: Fictional response\n</conversation>\n\n`;
+    expect(() => assertE2BaselineContext({ messages: [{ role: "user", content: serialized }] }, { kind })).not.toThrow();
+    const pack = `${heading}\nGenerated summary evidence id="chr1_${"a".repeat(43)}" sha256="${"b".repeat(64)}": "Fictional summary"`;
+    expect(() => assertE2BaselineContext({ messages: [{ role: "user", content: serialized.replace(heading, pack) }] }, { kind })).toThrow("e2_payload_forbidden");
+    expect(() => assertE2BaselineContext({ messages: [{ role: "user", content: [{ type: "text", text: heading }] }, current] }, { kind })).toThrow("e2_payload_forbidden");
+    expect(() => assertE2BaselineContext({ tools: [{ name: "ConversationHistory" }] }, { kind })).toThrow("E2_PROBE_TOOLS_REFUSED");
+    expect(() => assertE2BaselineContext({ messages: [{ toolsAdded: [{ name: "ConversationHistory" }] }] }, { kind })).toThrow("E2_PROBE_TOOLS_REFUSED");
+    expect(() => assertE2BaselineContext({ messages: [{ role: "toolResult", toolName: "ConversationHistory" }] }, { kind })).toThrow("E2_PROBE_TOOLS_REFUSED");
+    expect(() => assertE2BaselineContext({ mcpServers: { "mono-agent-conversation-history": {} } }, { kind })).toThrow("E2_PROBE_TOOLS_REFUSED");
+  }
+  for (const kind of ["probe", "summary"]) {
+    expect(() => assertE2BaselineContext({ tools: [{ name: "Read" }] }, { kind })).toThrow("E2_PROBE_TOOLS_REFUSED");
+    expect(() => assertE2BaselineContext({ messages: [{ toolsAdded: [{ name: "Read" }] }] }, { kind })).toThrow("E2_PROBE_TOOLS_REFUSED");
+  }
+  expect(() => assertE2BaselineContext({ tools: [{ name: "Read" }] }, { kind: "source", sourceTools: ["Read"] })).not.toThrow();
+  for (const tools of [[], [{ name: "UnexpectedFictionalTool" }]])
+    expect(() => assertE2BaselineContext({ tools }, { kind: "source", sourceTools: ["Read"] })).toThrow("E2_PROBE_TOOLS_REFUSED");
+});
+it("applies the baseline native-body boundary to source, summary and probe requests", () => {
+  const body = { model: "gpt-6.1-sol", stream: true, store: false, input: [], tools: [{ type: "function", name: "Read" }] };
+  const hold = { model: SOL, replayArm: "baseline", paidRole: "source", tools: ["Read"] };
+  const check = (value, metadata = hold) => e2ExecutionPolicy.assertBody(Buffer.from(JSON.stringify(value)), metadata);
+  expect(() => check(body)).not.toThrow();
+  for (const metadata of [{ ...hold, paidRole: "probe", probeRequest: 1 }, { ...hold, paidRole: "summary" }])
+    expect(() => check(body, metadata)).toThrow("E2_PROBE_TOOLS_REFUSED");
+  expect(() => check({ ...body, tools: [{ type: "function", name: "ConversationHistory" }] }, { ...hold, tools: ["ConversationHistory"] })).toThrow("E2_PROBE_TOOLS_REFUSED");
+  expect(() => check({ ...body, input: [{ type: "function_call", name: "ConversationHistory", arguments: "{}" }] })).toThrow("E2_PROBE_TOOLS_REFUSED");
+  const heading = "### Conversation continuity pack (historical evidence)\nFictional historical evidence";
+  const current = { role: "user", content: "Fictional current prompt" };
+  for (const paidRole of ["source", "probe", "summary"]) {
+    const metadata = { ...hold, paidRole, tools: [], ...(paidRole === "probe" ? { probeRequest: 1 } : {}) };
+    expect(() => check({ ...body, tools: [], input: [{ role: "user", content: `Discuss ${heading}` }, current] }, metadata)).not.toThrow();
+    expect(() => check({ ...body, tools: [], input: [{ role: "user", content: [{ type: "input_text", text: heading }] }, current] }, metadata)).toThrow("e2_payload_forbidden");
+  }
+});

@@ -7,11 +7,11 @@ import { E2_PERMIT_CONTRACT, E2_GUARD_CONTRACT, E2_REAL_CONTROLLER } from "./con
 import { validateE2Sizing } from "./continuity-e2-estimate.mjs";
 import { E2_PAID_ROLES } from "./continuity-e2-roles.mjs";
 import { writeE2SummaryResult, verifyE2SummaryResult } from "./continuity-e2-summary-receipts.mjs";
-import { bindE2Checkpoint, verifyE2NativeLineage, e2LineageScope, e2PhaseBase } from "./continuity-e2-lineage.mjs";
+import { assertE2BaselineRequest, bindE2Checkpoint, verifyE2NativeLineage, e2LineageScope, e2PhaseBase } from "./continuity-e2-lineage.mjs";
 import { validE2FailureCause, observeE2NativeCause, captureE2NativeCause, e2ProviderCause, e2CandidateCause } from "./continuity-e2-cause.mjs";
 import { readE2Progress, writeE2PartialScore } from "./continuity-e2-progress.mjs";
 import { E2_RETRY_POLICY, authorizeE2Retry, effectiveE2Summaries, e2RetryCounts } from "./continuity-e2-retry.mjs";
-import { e2ReplayArm, assertE2BaselineContext } from "./continuity-e2-protocol.mjs";
+import { e2ReplayArm } from "./continuity-e2-protocol.mjs";
 const fail = (code = "e2_permit_invalid") => { throw Object.assign(Error(code), { code }); };
 const need = (ok, code) => { if (!ok) fail(code); };
 const count = n => Number.isSafeInteger(n) && n >= 0;
@@ -317,7 +317,11 @@ export const e2ExecutionPolicy = Object.freeze({
     need(`${E2_GUARD_CONTRACT.provider}:${body.model}` === hold?.model && body.stream === true && body.store === false && body.service_tier === undefined, "e2_body_mismatch");
     need(Array.isArray(body.tools ?? []) && (body.tools ?? []).every(t => t.type === "function" && hold.tools.includes(t.name)), "e2_tools_forbidden");
     if (hold.probeRequest !== undefined) need((body.tools ?? []).length === hold.tools.length, "e2_tools_forbidden");
-    if (hold.replayArm === "baseline") assertE2BaselineContext(body);
+    if (hold.replayArm === "baseline") {
+      const kind = hold.paidRole === "summary" ? "summary"
+        : hold.probeRequest !== undefined || hold.paidRole === "probe" ? "probe" : "source";
+      assertE2BaselineRequest(body, { kind, sourceTools: hold.tools });
+    }
     validateBody(body);
   },
 });
