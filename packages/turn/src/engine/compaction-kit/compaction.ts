@@ -5,7 +5,7 @@ import { createBranchSummaryMessage, createCompactionSummaryMessage } from "./me
 import { buildContextEntries, sessionEntryToContextMessages } from "./context.js";
 import { CompactionError, err, ok } from "./result.js";
 import { historicalTuples, missingHistoricalTuples, planSummaryBudget, protectedHistoricalInput, type PreservationDiagnostics } from "./historical-preservation.js";
-import { addUsage } from "./usage.js";
+import { addUsage, sumKnownSummaryUsage } from "./usage.js";
 import { createFileOps, extractFileOpsFromMessage, serializeSummaryConversation, } from "./utils.js";
 function safeJsonStringify(value: any) {
     try {
@@ -382,6 +382,19 @@ Keep each section concise. Preserve exact file paths, function names, and error 
 
 ${HISTORICAL_SUMMARY_CONTRACT}`;
 
+// The runtime facade tags only protecting truncation; expose it as the same
+// Result error as a raw one-request boundary, never as a new public throw.
+async function requestSummary(request: () => Promise<any>, protecting: boolean) {
+    const truncated = (usage: unknown) => err(Object.assign(new CompactionError("output_truncated", "Protected summary truncated"), { usage }));
+    try {
+        const response = await request();
+        return protecting && response.stopReason === "length" ? truncated(response.usage) : ok(response);
+    } catch (error: any) {
+        if (protecting && error?.code === "protected_summary_truncated") return truncated(error.usage);
+        throw error; // Ordinary provider failures retain their existing contract.
+    }
+}
+
 /** Generate one summary through a caller-owned one-request boundary. */
 export async function generateSummaryWithRequest(currentMessages: any, options: any, request: any, context: any) {
     const { model, reserveTokens, customInstructions, previousSummary, thinkingLevel } = options;
@@ -395,7 +408,8 @@ export async function generateSummaryWithRequest(currentMessages: any, options: 
     if (previousSummary) {
         promptText += `<previous-summary>\n${previousSummary}\n</previous-summary>\n\n`;
     }
-    promptText += (options.protectHistory === false ? "" : protectedHistoricalInput(historicalTuples(previousSummary))) + metadata + basePrompt;
+    const tuples = options.protectHistory === false ? [] : historicalTuples(previousSummary);
+    promptText += protectedHistoricalInput(tuples) + metadata + basePrompt;
     const summarizationMessages = [
         {
             role: "user",
@@ -406,15 +420,14 @@ export async function generateSummaryWithRequest(currentMessages: any, options: 
     const completionOptions = model.reasoning && thinkingLevel && thinkingLevel !== "off"
         ? { maxTokens, reasoning: thinkingLevel }
         : { maxTokens };
-    const response = await request({ systemPrompt: SUMMARIZATION_SYSTEM_PROMPT, messages: summarizationMessages }, createSummaryRequestOptions(completionOptions, context), context);
+    const requested = await requestSummary(() => request({ systemPrompt: SUMMARIZATION_SYSTEM_PROMPT, messages: summarizationMessages }, createSummaryRequestOptions(completionOptions, context), context), tuples.length > 0);
+    if (!requested.ok) return requested;
+    const response = requested.value;
     if (response.stopReason === "aborted") {
         return err(new CompactionError("aborted", response.errorMessage || "Summarization aborted"));
     }
     if (response.stopReason === "error") {
         return err(new CompactionError("summarization_failed", `Summarization failed: ${response.errorMessage || "Unknown error"}`));
-    }
-    if (response.stopReason === "length" && options.protectHistory !== false && historicalTuples(previousSummary).length > 0) {
-      throw Object.assign(new Error("Protected summary truncated"), { code: "protected_summary_truncated", usage: response.usage });
     }
     const textContent = contentText(response.content);
     return ok({ text: textContent, usage: response.usage });
@@ -598,25 +611,18 @@ export async function compactWithRequest(preparation: any, options: any, request
     // sufficient when immutable history nearly fills a model's output ceiling.
     if (protecting && preparation.preservationFallback && generateHistory
       && Math.ceil(protectedText.length / 4) > Math.floor(Math.min(targets.history, modelLimit) * 0.5)) bypass("protected_template_unfits");
-    let truncatedUsageUnknown = false;
+    let recoveredTruncation = false;
     const generate = async (protectedCall: () => ReturnType<typeof generateSummaryWithRequest>, legacyCall: () => ReturnType<typeof generateSummaryWithRequest>) => {
-      try { return await protectedCall(); }
-      catch (error: any) {
-        if (error?.code !== "protected_summary_truncated") throw error;
-        if (!preparation.preservationFallback) return refuse("output_truncated");
-        bypass("output_truncated");
-        // Retry only the truncated part, at most once across this cut. Bypass
-        // marks later requests unprotected, so legacy truncation cannot loop.
-        const legacy = await legacyCall();
-        if (legacy.ok) {
-          const usages = [error.usage, legacy.value.usage];
-          const complete = usages.every(usage => ["input", "output", "cacheRead", "cacheWrite", "totalTokens"].every(key => Number.isFinite(usage?.[key]))
-            && ["input", "output", "cacheRead", "cacheWrite", "total"].every(key => Number.isFinite(usage?.cost?.[key])));
-          if (complete) legacy.value.usage = addUsage(error.usage, legacy.value.usage);
-          else { truncatedUsageUnknown = true; legacy.value.usage = undefined; }
-        }
-        return legacy;
-      }
+      const result = await protectedCall();
+      if (result.ok || result.error.code !== "output_truncated") return result;
+      if (!preparation.preservationFallback) return refuse("output_truncated");
+      bypass("output_truncated");
+      recoveredTruncation = true;
+      // Retry only the truncated part, at most once across this cut. Bypass
+      // marks later requests unprotected, so legacy truncation cannot loop.
+      const legacy = await legacyCall();
+      if (legacy.ok) legacy.value.usage = sumKnownSummaryUsage("usage" in result.error ? result.error.usage : undefined, legacy.value.usage);
+      return legacy;
     };
     let summaryUsage;
     if (generateHistory) {
@@ -641,7 +647,8 @@ export async function compactWithRequest(preparation: any, options: any, request
         () => generateTurnPrefixSummary(turnPrefixMessages, model, settings.reserveTokens, thinkingLevel, request, context, targets.prefix, false));
       if (!turnPrefixResult.ok) return err(turnPrefixResult.error);
       summary = `${historyText}${separator}${turnPrefixResult.value.text}`;
-      summaryUsage = truncatedUsageUnknown ? undefined : summaryUsage ? addUsage(summaryUsage, turnPrefixResult.value.usage) : turnPrefixResult.value.usage;
+      summaryUsage = recoveredTruncation && generateHistory ? sumKnownSummaryUsage(summaryUsage, turnPrefixResult.value.usage)
+        : summaryUsage ? addUsage(summaryUsage, turnPrefixResult.value.usage) : turnPrefixResult.value.usage;
     }
     summary += metadata;
     const reason = validate(summary, true);
@@ -649,7 +656,7 @@ export async function compactWithRequest(preparation: any, options: any, request
       if (!preparation.preservationFallback) return refuse(reason);
       bypass(reason); // Legacy composition accepts the same provider output.
     }
-    return ok({ summary, tokensBefore, usage: truncatedUsageUnknown ? undefined : summaryUsage, retainedTail, details: { readFiles, modifiedFiles } });
+    return ok({ summary, tokensBefore, usage: summaryUsage, retainedTail, details: { readFiles, modifiedFiles } });
 }
 
 async function generateTurnPrefixSummary(messages: any, model: any, reserveTokens: any, thinkingLevel: any, request: any, context: any, textTargetTokens?: number, protecting = false) {
@@ -666,15 +673,14 @@ async function generateTurnPrefixSummary(messages: any, model: any, reserveToken
     const completionOptions = model.reasoning && thinkingLevel && thinkingLevel !== "off"
         ? { maxTokens, reasoning: thinkingLevel }
         : { maxTokens };
-    const response = await request({ systemPrompt: SUMMARIZATION_SYSTEM_PROMPT, messages: summarizationMessages }, createSummaryRequestOptions(completionOptions, context), context);
+    const requested = await requestSummary(() => request({ systemPrompt: SUMMARIZATION_SYSTEM_PROMPT, messages: summarizationMessages }, createSummaryRequestOptions(completionOptions, context), context), protecting);
+    if (!requested.ok) return requested;
+    const response = requested.value;
     if (response.stopReason === "aborted") {
         return err(new CompactionError("aborted", response.errorMessage || "Turn prefix summarization aborted"));
     }
     if (response.stopReason === "error") {
         return err(new CompactionError("summarization_failed", `Turn prefix summarization failed: ${response.errorMessage || "Unknown error"}`));
-    }
-    if (response.stopReason === "length" && protecting) {
-        throw Object.assign(new Error("Protected summary truncated"), { code: "protected_summary_truncated", usage: response.usage });
     }
     return ok({
         text: contentText(response.content),

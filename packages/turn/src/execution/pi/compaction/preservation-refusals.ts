@@ -16,8 +16,8 @@ export function clearProactivePreservationRefusal(scope: unknown, harness: objec
 export function proactivePreservationGuard(scope: unknown, harness: object, identity: string, tokens: number) {
   const key = scopeKey(scope);
   const previous = key === undefined ? harnesses.get(harness) : scopes.get(key);
-  // Match the existing idle failure guard's meaningful-growth threshold, without
-  // its timeout or its ability to suppress reactive overflow recovery.
+  // Share the idle failure guard's growth scale across both proactive paths,
+  // measured in transcript tokens, without suppressing reactive recovery.
   const growth = previous ? Math.max(8192, Math.ceil(previous.tokens * 0.1)) : 0;
   return {
     suppressed: previous?.identity === identity && tokens - previous.tokens < growth,

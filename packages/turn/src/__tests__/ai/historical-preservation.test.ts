@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { summaryModels } from "../../execution/pi/compaction/compaction-summary.js";
 import { createGuardedCompactionHook, createCompactionAccounting, reportGuardedCompactionOutcome } from "../../execution/pi/compaction/compaction-driver.js";
-import { compactWithRequest, estimateTokens } from "../../engine/compaction-kit/compaction.js";
+import { compactWithRequest, estimateTokens, generateSummaryWithRequest } from "../../engine/compaction-kit/compaction.js";
 import { createSummaryBudget, historicalTuples, missingHistoricalTuples, protectedHistoricalInput, parseHistoricalTuples, SPLIT_SUMMARY_SEPARATOR } from "../../engine/compaction-kit/historical-preservation.js";
 
 const tuple = "- Parcel count; m2; previously 18; corrected to 16; current 16; resolved.";
@@ -254,12 +254,12 @@ it("a truncated protected prefix retries that part, not a completed split histor
   expect(request).toHaveBeenCalledTimes(3);
   expect(p.preservation.bypassReason).toBe("output_truncated");
 });
-it.each([false, true])("truncation recovery keeps incomplete usage unknown without blocking a split=%s cut", async split => {
+it.each([false, true])("truncation recovery retains defined known usage and marks it partial in a split=%s cut", async split => {
   const p = prep({ previousSummary: history, preservationFallback: true, ...(split ? { isSplitTurn: true, turnPrefixMessages: [{ role: "user", content: "prefix" }] } : {}) });
   const request = vi.fn(async () => request.mock.calls.length === 1 ? { ...response(history), usage: undefined, stopReason: "length" } : response(history));
   const result = await run(p, request);
   expect(result.ok).toBe(true);
-  if (result.ok) expect(result.value.usage).toBeUndefined();
+  if (result.ok) expect(result.value.usage).toMatchObject({ input: split ? 2 : 1, output: split ? 4 : 2, totalTokens: split ? 6 : 3, partial: true, cost: { total: 0 } });
   expect(request).toHaveBeenCalledTimes(split ? 3 : 2);
 });
 it.each(["**Pending items**", "Pending items", "**Unfamiliar section**"])("a bold-opened section ends at %s", heading => {
@@ -267,4 +267,31 @@ it.each(["**Pending items**", "Pending items", "**Unfamiliar section**"])("a bol
 });
 it("does not mistake an indented tuple value for a known template heading", () => {
   expect(historicalTuples(`## Historical events and corrections\n${tuple}\n  Progress\n## Pending items\n- None`)).toEqual([`${tuple}\n  Progress`]);
+});
+
+it.each([false, true])("the exported generator returns an output_truncated Result instead of throwing, facade=%s", async facade => {
+  const selected = { ...model, provider: "faux", id: "fictional-summary", api: "faux", contextWindow: 100000 };
+  const complete = vi.fn(async () => ({ ...response(history), stopReason: "length" }));
+  const models = summaryModels({ completeSimple: complete }, { operationId: "fictional-truncation", focus: "", requests: [],
+    minimumAnswerTokens: 1000, unprotected: { preservation: { protectionActive: true, protectedTupleCount: 1 }, targets: [1600, 1000], minimumAnswerTokens: 1000 } });
+  const request = facade ? (context: any, options: any) => models.completeSimple(selected, context, options) : complete;
+  await expect(generateSummaryWithRequest(prep().messagesToSummarize, { model: selected, reserveTokens: 2000, previousSummary: history }, request, {}))
+    .resolves.toMatchObject({ ok: false, error: { name: "CompactionError", code: "output_truncated" } });
+  expect(complete).toHaveBeenCalledTimes(1);
+});
+it("a truncated split prefix preserves known history and retry usage when the partial request has none", async () => {
+  const p = prep({ previousSummary: history, preservationFallback: true, isSplitTurn: true, turnPrefixMessages: [{ role: "user", content: "prefix" }] });
+  const request = vi.fn(async () => request.mock.calls.length === 2 ? { ...response(history), usage: undefined, stopReason: "length" } : response(history));
+  const result = await run(p, request);
+  expect(result.ok).toBe(true);
+  if (result.ok) expect(result.value.usage).toMatchObject({ input: 2, output: 4, totalTokens: 6, partial: true });
+  expect(request).toHaveBeenCalledTimes(3);
+});
+it("split history reuse does not invent an unknown history request in complete retry usage", async () => {
+  const p = prep({ previousSummary: history, preservationFallback: true, messagesToSummarize: [], isSplitTurn: true, turnPrefixMessages: [{ role: "user", content: "prefix" }] });
+  const request = vi.fn(async () => request.mock.calls.length === 1 ? { ...response(history), stopReason: "length" } : response(history));
+  const result = await run(p, request);
+  expect(result.ok).toBe(true);
+  if (result.ok) { expect(result.value.usage.input).toBe(2); expect(result.value.usage).not.toHaveProperty("partial"); }
+  expect(request).toHaveBeenCalledTimes(2);
 });

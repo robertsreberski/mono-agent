@@ -376,12 +376,15 @@ export function createGuardedCompactionHook({
       // threshold hook (also labelled proactive), not just manual/overflow.
       // A ready managed-switch admission must not acquire a preservation veto.
       input.preparation.preservationFallback = trigger === "manual" || trigger === "reactive_overflow" || event.nonRetainablePrefixLength > 0;
-      if (trigger === "proactive" && typeof beforeAttempt !== "function" && !input.preparation.preservationFallback && summaryBudget.tuples.length) {
+      // Idle and threshold hooks share one paid-refusal baseline, including
+      // across controllers/turns. Stable transcript counts avoid counting the
+      // idle-only pending user turn as growth when mid-run is armed.
+      if (trigger === "proactive" && !input.preparation.preservationFallback && summaryBudget.tuples.length) {
         const model = harness.getModel();
         const identity = createHash("sha256").update(JSON.stringify([summaryBudget.tuples, input.preparation.turnPrefixMessages,
           model.provider, model.id, model.api, model.maxTokens, model.contextWindow, effectivePolicy.summaryMaxTokens, effectivePolicy.keepRecentTokens, effectivePolicy.effort, effectivePolicy.compactionMinSavingsTokens])).digest("hex");
         preservationGuard = proactivePreservationGuard(harness.compactionFailureKey, harness, identity,
-          accounting.fullRequestBefore ?? accounting.transcriptBefore ?? prepared.value.tokensBefore);
+          accounting.transcriptBefore ?? prepared.value.tokensBefore);
         if (preservationGuard.suppressed) {
           decision = { kind: "preservation_waiting", reason: "preservation_growth_required", growthRequiredTokens: preservationGuard.growthRequiredTokens };
           return { cancel: true };

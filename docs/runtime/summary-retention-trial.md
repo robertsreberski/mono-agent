@@ -58,17 +58,22 @@ is rechecked (`protected_input_unfits`).
 Missing tuples, oversized protected output and protected `stopReason: "length"`
 make proactive/mid-run threshold cuts return `summary_refused`, retaining history
 without a provider-failure cooldown. Refusal is not permission to pay repeatedly:
-threshold cuts keep their existing fresh-assistant and meaningful-growth vetoes;
-idle proactive retries wait for `max(8192, ceil(previousTokens * 0.1))` growth, or
-changed protected blocks/split prefix/policy. This bounded, process-local cache
-holds at most 2,048 session digests and clears on restart; it never gates manual
-or reactive recovery. An unchanged three-checkpoint run pays only once per path.
+threshold cuts keep their existing fresh-assistant and meaningful-growth vetoes.
+Idle and mid-run proactive cuts also share one paid-refusal baseline: retries wait
+for `max(8192, ceil(previousTokens * 0.1))` transcript growth, or changed protected
+blocks/split prefix/policy. Fixed request overhead is not transcript growth. This
+bounded, process-local cache holds at most 2,048 session digests and clears on
+restart; it never gates manual or reactive recovery. An idle refusal followed by
+threshold checkpoints, including a fresh controller on the next turn, pays only
+once across both paths until that shared baseline permits another attempt.
 
 Manual, reactive-overflow and inherited-prefix recovery reuse missing/oversized
 generated output through legacy composition without another call. Protected
 truncation instead retries only the truncated part once with legacy caps and no
 protected frame: at most one extra call per cut, never a new whole-cut retry.
-Later parts are unprotected, and legacy truncation/failure still fails normally.
+Later parts are unprotected. Legacy-cap truncation (zero tuples or the retry
+after bypass) still fails and is cached by provider failureGuard, exactly as
+before this guard; only protecting truncation is a non-cached refusal.
 Thus ordinary/split-generated/split-reused cuts use 1/2/1 calls normally, at most
 2/3/2 after protected truncation; automatic first-history refusal uses one call,
 or two if only the split prefix fails. Actual inherited-prefix compaction runs
@@ -83,7 +88,12 @@ appears only for protected or unavailable history and records sizes/counts,
 missing counts, active protection, refusal/bypass reason and complete final-summary bytes/estimate
 (null before a complete candidate). No host repair, tuple eviction or new carrier is added. Provider request
 usage/cost and `generatedSummaryTokens` include a truncated request and its bounded
-legacy retry; incomplete aggregate usage stays unknown rather than undercounted. Accepted text and existing E2 lineage/archive schemas are
+legacy retry. A recovered cut keeps a defined native `usage` object, summing
+known numeric parts with `usage.partial: true` when any part is missing. These
+numbers are known subtotals, not a complete bill. Per-request accounting keeps
+missing fields null and reports `cost_partial`/known cost separately; journal
+reload preserves the flag, while provider projection does not expose native
+compaction usage as assistant usage. Accepted text and existing E2 lineage/archive schemas are
 unchanged. Frozen projection accounting without historical tuples gains no new
 key; reviewed immutable-event prompt text is pinned separately.
 

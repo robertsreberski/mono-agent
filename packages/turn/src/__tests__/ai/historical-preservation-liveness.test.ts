@@ -7,6 +7,8 @@ import { JsonlSessionRepo } from "../../engine/session-store.js";
 import { createRunDriver } from "../../engine/run-driver.js";
 import { checkNativeInheritedPrefix } from "../../execution/pi/handoff-producer.js";
 import { projectContext, projectInheritedContext } from "../../engine/request-projection.js";
+import { createMidRunCompaction } from "../../execution/pi/compaction/mid-run-compaction.js";
+import { createCompactionUsage, manualCompactionAccounting } from "../../telemetry/compaction-usage.js";
 import { tryCompact, runReactiveCompaction } from "../../execution/pi/compaction/compaction-driver.js";
 
 const tuple = "- Permit; m1; pending; no approval.";
@@ -23,17 +25,18 @@ async function fixture(summary = history, inherited = false) {
   const models = createModels(); models.setProvider(faux.provider);
   faux.setResponses([fauxAssistantMessage([fauxText("Fictional run continued.")])]);
   const model = faux.getModel();
-  const completeSimple = vi.fn(async (..._args: any[]) => answer("Legacy lossy summary."));
+  const completeSimple = vi.fn(async (..._args: any[]): Promise<any> => answer("Legacy lossy summary."));
   const driver = createRunDriver(raw, { model, models, systemPrompt: "Fictional rules.", tools: [], ...(inherited ? { inheritedProjection } : {}) });
   const session = { getEntries: () => raw.getEntries(), buildContext: async () => inherited ? projectInheritedContext(await raw.getEntries(), inheritedProjection) : projectContext(await raw.getEntries()) };
   const harness = { models: { completeSimple }, compactionFailureKey: root, getModel: () => model, waitForIdle: () => driver.waitForIdle(),
     setCompactionSettings: (settings: any) => driver.setCompactionSettings(settings),
+    setMidRunCompactionArmed: (armed: boolean) => driver.setMidRunCompactionArmed(armed), subscribe: (listener: any) => driver.subscribe(listener),
     on: (_type: string, handler: any) => driver.hooks.on("before_compaction", handler), compact: () => driver.compact(), prompt: vi.fn((text: string) => driver.prompt(text)) };
   const events: any[] = [], warnings: any[] = [];
   const policy = { enabled: true, summaryMaxTokens: 1000, keepRecentTokens: 1000, compactionMinSavingsTokens: 0, effort: "none", failureCooldownMs: 900000 };
   const compact = (trigger: string) => tryCompact(harness, { trigger, onEvent: (event: any) => events.push(event), runtimeWarnings: warnings, session, policy });
   const grow = async () => { for (let i = 0; i < 2; i++) await raw.appendMessage({ role: "user", content: "Fictional context. ".repeat(2000), timestamp: 2 }); };
-  return { raw, session, harness, driver, completeSimple, events, warnings, policy, compact, grow,
+  return { root, raw, session, harness, driver, faux, completeSimple, events, warnings, policy, compact, grow,
     close: async () => { await driver.close(); await raw.close(); await repo.close(); await rm(root, { recursive: true, force: true }); } };
 }
 
@@ -210,5 +213,77 @@ it("legacy truncation after the single extra retry fails normally without loopin
     expect(f.completeSimple.mock.calls[1]![2].maxTokens).toBe(1000);
     expect(JSON.stringify(f.completeSimple.mock.calls[1]![1])).not.toContain("<protected-historical-tuples>");
     expect(f.events.at(-1).status).toBe("failed");
+    expect((await f.compact("reactive_overflow")).applied).toBe(false);
+    expect(f.completeSimple).toHaveBeenCalledTimes(2);
+    expect(f.events.at(-1).reason).toBe("recent_identical_failure");
+  } finally { await f.close(); }
+});
+
+it("shares a single paid refusal across idle, threshold checkpoints and new run controllers until real transcript growth", async () => {
+  const f = await fixture();
+  const runState = { session: f.session, sessionBaselineCount: 0, compaction: { policy: { ...f.policy, contextWindow: 100000, triggerTokens: 10000 },
+    diagnostics: { context_fixed_overhead_tokens: 10000, context_user_message_tokens: 0 }, applied: false, compactedThisRun: false, reactiveAttempted: false } };
+  const arm = () => createMidRunCompaction(runState, { harness: f.harness, options: {}, reference: "faux:liveness", onEvent: (event: any) => f.events.push(event), runtimeWarnings: f.warnings });
+  let controller = arm();
+  try {
+    f.faux.setResponses(Array.from({ length: 4 }, () => fauxAssistantMessage([fauxText("Fictional continuation.")])));
+    await f.grow();
+    expect((await f.compact("proactive")).applied).toBe(false);
+    expect(f.completeSimple).toHaveBeenCalledTimes(1);
+    expect(await controller.arm()).toBe(true);
+    const unchanged = await f.driver.prompt("Continue fictional work.");
+    expect(unchanged.status).toBe("completed");
+    expect(f.events.at(-1)).toMatchObject({ reason: "preservation_growth_required", accounting: { midRun: true } });
+    expect(f.completeSimple).toHaveBeenCalledTimes(1); // fixed overhead is not new transcript growth
+    await controller.disarm();
+    controller = arm(); // a fresh turn/controller cannot repay the idle refusal
+    expect(await controller.arm()).toBe(true);
+    await f.driver.prompt("Continue unchanged fictional work.");
+    expect(f.completeSimple).toHaveBeenCalledTimes(1);
+    await f.raw.appendMessage({ role: "user", content: "Fictional growth. ".repeat(4000), timestamp: 4 });
+    await f.driver.prompt("Continue after meaningful growth.");
+    expect(f.completeSimple).toHaveBeenCalledTimes(2);
+    expect(f.events.at(-1)).toMatchObject({ reason: "protected_tuples_missing", accounting: { midRun: true, splitTurn: false } });
+    await controller.disarm();
+    await f.compact("proactive"); // threshold refusal also suppresses the next idle check
+    expect(f.completeSimple).toHaveBeenCalledTimes(2);
+    expect(f.events.at(-1).reason).toBe("preservation_growth_required");
+    expect((await f.raw.getEntries()).filter((entry: any) => entry.type === "compaction")).toHaveLength(1);
+  } finally { await controller.disarm(); await f.close(); }
+});
+it("zero-tuple legacy truncation remains a cached provider failure", async () => {
+  const f = await fixture("## Goal\nFictional continuation without historical tuples.");
+  try {
+    await f.grow();
+    f.completeSimple.mockResolvedValue({ ...answer("Legacy partial output"), stopReason: "length" });
+    expect((await f.compact("proactive")).applied).toBe(false);
+    expect(f.events.at(-1)).toMatchObject({ status: "failed", accounting: { requests: [expect.objectContaining({ reason: "output_truncated" })] } });
+    expect((await f.compact("reactive_overflow")).applied).toBe(false);
+    expect(f.completeSimple).toHaveBeenCalledTimes(1);
+    expect(f.events.at(-1).reason).toBe("recent_identical_failure");
+  } finally { await f.close(); }
+});
+it("keeps partial native usage defined across durable reload without inventing a complete bill", async () => {
+  const f = await fixture();
+  try {
+    await f.grow();
+    f.completeSimple.mockResolvedValueOnce({ ...answer(history), stopReason: "length", usage: undefined }).mockResolvedValue(answer(history));
+    expect((await f.compact("manual")).applied).toBe(true);
+    const native = (await f.raw.getEntries()).filter((entry: any) => entry.type === "compaction").at(-1);
+    expect(native.usage).toMatchObject({ input: 1, output: 1, totalTokens: 2, partial: true, cost: { total: 0 } });
+    const collector = createCompactionUsage(); collector.observe(f.events.at(-1));
+    expect(collector.slice()).toMatchObject({ input_tokens: 1, output_tokens: 1, cost_usd: null, cost_partial: true, known_cost_usd: 0 });
+    expect(manualCompactionAccounting(collector.slice())).toMatchObject({ usageIncluded: false, requests: [{ costUsd: null }, { costUsd: 0 }] });
+    await f.raw.sync();
+    const metadata = f.raw.metadata;
+    await f.driver.close(); await f.raw.close();
+    const reopenedRepo = new JsonlSessionRepo({ sessionsRoot: f.root }), reopened = await reopenedRepo.open(metadata);
+    try {
+      const entries = await reopened.getEntries();
+      expect(entries.filter((entry: any) => entry.type === "compaction").at(-1).usage).toEqual(native.usage);
+      const projected = projectContext(entries).messages!;
+      expect(JSON.stringify(projected)).toContain("Permit; m1; pending; no approval.");
+      expect(projected.filter((message: any) => message.role === "compactionSummary").every((message: any) => message.usage === undefined)).toBe(true);
+    } finally { await reopened.close(); await reopenedRepo.close(); }
   } finally { await f.close(); }
 });

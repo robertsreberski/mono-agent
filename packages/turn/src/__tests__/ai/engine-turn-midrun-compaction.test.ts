@@ -536,10 +536,7 @@ describe("mid-run compaction guards", () => {
     fixture.append(assistantMessage("Small progress."));
     await fixture.checkpoint();
     expect(fixture.summaryRequests()).toBe(1);
-    fixture.append(assistantMessage("x".repeat(8000)));
-    await fixture.checkpoint();
-    expect(fixture.summaryRequests()).toBe(1);
-    fixture.append(assistantMessage("x".repeat(8000)));
+    fixture.append(assistantMessage("x".repeat(40000)));
     await fixture.checkpoint();
     expect(fixture.summaryRequests()).toBe(2);
     await fixture.controller.disarm();

@@ -49,12 +49,17 @@ caps, output acceptance and the savings preview are unchanged. The public
 `compact`/`compactWithRequest` helpers can return `CompactionError.code` equal to
 `summary_refused` for a lossy/oversized/truncated protected candidate. Native
 proactive/threshold cuts refuse without changing history or poisoning the provider
-failure cooldown. Threshold retries retain assistant-progress/growth vetoes; idle
-proactive retries require normal growth or changed protected blocks/split prefix.
+failure cooldown. Threshold retries retain assistant-progress/growth vetoes.
+Idle and mid-run proactive share a paid-refusal baseline, requiring transcript
+growth or changed
+protected blocks/split prefix; changing controller or fixed overhead cannot repay
+an unchanged refusal.
 Native manual/overflow and inherited-prefix recovery instead bypass protection,
 issuing `historical_preservation_bypassed`: missing/oversized output is reused;
 protected truncation retries only that part once with legacy caps (at most one
-extra request). Unfitting protection bypasses before dispatch on every trigger;
+extra request). Zero-tuple and post-bypass legacy-cap truncation still fails and
+is cached by provider failureGuard, unchanged; only protecting truncation is a
+non-cached refusal. Unfitting protection bypasses before dispatch on every trigger;
 emergency/inherited history requests also reserve at least half the cap for the
 other template sections. Protected-input headroom failures drop only the named
 frame before dispatch and use legacy caps. Inherited cuts reach idle proactive or
@@ -65,10 +70,15 @@ manual compaction can recover from automatic refusal.
 Content-free `accounting.preservation` diagnostics (present only for protected or
 unavailable history) record sizes/counts, missing tuples, refusal/bypass reason and
 final-summary size separately from provider usage, cost and
-`generatedSummaryTokens`, which account for the bounded truncation retry. No new
-durable carrier or archive transform is added. Shipping `SUMMARY_FOCUS` v3 names
-the immutable-event instruction policy. `generateSummaryWithRequest` adds the named protected frame when supplied
-admissible history; `protectHistory:false` is the unprotected request seam. Cold
+`generatedSummaryTokens`, which account for the bounded truncation retry. Recovered
+cuts keep native `usage` defined: known parts are summed, with `usage.partial: true`
+when any part is missing. Numeric subtotals are not complete billing; request rows
+retain null unknowns and mark unknown billing partial. No new durable carrier or
+archive transform is added. Shipping `SUMMARY_FOCUS` v3 names the immutable-event
+instruction policy. `generateSummaryWithRequest` adds the named protected frame
+when supplied admissible history and returns an error Result with
+`CompactionError.code === "output_truncated"` for protected truncation, rather than
+throwing for that outcome. `protectHistory:false` is the unprotected request seam. Cold
 reseeds supply sanitized retained user text, not native `previousSummary`: first
 cold re-extraction and separately generated handoffs are not protected.
 Initial, incremental and split-prefix requests include a whole-entry-bounded
