@@ -18,7 +18,7 @@ const legacyRequest = (request: any) => ({ ...request, context: { ...request.con
   }) })),
 } });
 const promptDigest = (request: any) => createHash("sha256").update(JSON.stringify({ systemPrompt: request.context.systemPrompt ?? request.context.messages.find((m: any) => m.role === "system")?.content,
-  text: request.context.messages.flatMap((m: any) => Array.isArray(m.content) ? m.content : []).find((p: any) => p.text?.startsWith("<conversation>\n")).text.split("\n</conversation>\n\n")[1].replace(/"recordedTimestamp":(?:[0-9]+|null)/gu, '"recordedTimestamp":0'),
+  text: request.context.messages.flatMap((m: any) => Array.isArray(m.content) ? m.content : []).find((p: any) => p.text?.startsWith("<conversation>\n")).text.split("\n</conversation>\n\n")[1],
 })).digest("hex");
 
 // Captured before the pin bump using the published 0.99.2 helpers, not generated
@@ -38,6 +38,13 @@ describe("owned compaction kit vs 0.99.2 baseline", () => {
       { id: "fixture-model", provider: "faux", maxTokens: 4096, reasoning: false },
       "Keep queue details.", "off", undefined, undefined, ENGINE_CONTEXT);
     expect(requests.map(legacyRequest)).toEqual(baseline.requests.map(legacyRequest));
+    const sources = [prepared.value!.messagesToSummarize, prepared.value!.turnPrefixMessages];
+    for (const [index, request] of requests.entries()) {
+      const text = request.context.messages[0].content[0].text;
+      const metadata = text.split("<request-local-positions>\n")[1].split("</request-local-positions>")[0];
+      const rows = metadata.split("\n").filter((line: string) => line.startsWith("{")).map((line: string) => JSON.parse(line));
+      expect(rows.map((row: any) => row.recordedTimestamp)).toEqual(sources[index].map((message: any) => message.timestamp ?? null));
+    }
     expect(requests.map(promptDigest)).toMatchSnapshot("history-preserving request contract");
     expect(result).toEqual(baseline.result);
   });

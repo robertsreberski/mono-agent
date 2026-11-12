@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { spawnSync } from "node:child_process";
+import { mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { loadTrialFixtures, loadTrialModules, resolveTrialCatalog, resolveTrialModels, runTrialChain, runTrial,
   controlSummary, scoreTrialSummary, createTrialBudget, requestReservation } from "../lib/summary-retention-trial.mjs";
 
@@ -19,6 +22,11 @@ describe("frozen fictional summary qualification", () => {
       expect(scoreTrialSummary(fixture, 4, reference.replace("current 16", "current 18")).pass).toBe(false);
       for (const invented of ["PHANTOM-77 approval granted", "verified owner says yes", "Date 2032-12-30", "attested by the director", "current Z0", "selected team ochre"]) {
         expect(scoreTrialSummary(fixture, 4, reference + "\n" + invented).pass).toBe(false);
+      }
+      for (const invented of ["record id: fictional-source", "record id= fictional-source", "record id : fictional-source"]) {
+        const scored = scoreTrialSummary(fixture, 4, reference + "\n" + invented);
+        expect(scored.pass).toBe(false);
+        expect(scored.inventedProvenance).toEqual([invented]);
       }
       expect(scoreTrialSummary(fixture, 4, reference + '\nQuoted hypothetical "approval granted for PHANTOM-77" is not permission.').pass).toBe(true);
     }
@@ -158,6 +166,42 @@ describe("spend admission and one-shot failures", () => {
     expect(last.budget.reservedUsd).toBeGreaterThan(0);
     expect(publications.some(report => report.status === "running" && report.dispatches[0]?.status === "unknown_outcome")).toBe(true);
     expect(publications.some(report => report.dispatches.some(row => row.status === "accounted"))).toBe(false);
+  });
+  it("CLI leaves its output path unclaimed after credential or catalog preflight failure", async () => {
+    const root = await mkdtemp(join(tmpdir(), "summary-trial-preflight-"));
+    try {
+      const output = join(root, "report.json");
+      for (const args of [
+        ["--confirm", "--spend-cap-usd", "12", "--credential-file", join(root, "missing-auth.json")],
+        ["--dry-run", "--model", "fictional:missing-model"],
+      ]) {
+        const result = spawnSync(process.execPath, ["scripts/summary-retention-trial.mjs", ...args, "--output", output], { encoding: "utf8" });
+        expect(result.status).toBe(1);
+        expect(result.stderr).toContain("Trial refused or stopped");
+        expect(await readdir(root)).toEqual([]);
+      }
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+  it("CLI publishes exclusively without following a preplanted temporary symlink", async () => {
+    const root = await mkdtemp(join(tmpdir(), "summary-trial-output-"));
+    try {
+      const output = join(root, "report.json"), victim = join(root, "victim.txt");
+      const original = "Fictional retained file.\n";
+      await writeFile(victim, original);
+      await symlink(victim, `${output}.tmp`);
+      const args = ["scripts/summary-retention-trial.mjs", "--dry-run", "--output", output];
+      const result = spawnSync(process.execPath, args, { encoding: "utf8", timeout: 20000 });
+      expect(result.status, result.stderr).toBe(0);
+      const report = await readFile(output, "utf8");
+      expect(JSON.parse(report).status).toBe("dry-run");
+      expect(await readFile(victim, "utf8")).toBe(original);
+      expect(await readFile(`${output}.tmp`, "utf8")).toBe(original);
+      expect((await stat(output)).mode & 0o777).toBe(0o600);
+      expect((await readdir(root)).sort()).toEqual(["report.json", "report.json.tmp", "victim.txt"]);
+      const refused = spawnSync(process.execPath, args, { encoding: "utf8" });
+      expect(refused.status).toBe(1);
+      expect(await readFile(output, "utf8")).toBe(report);
+    } finally { await rm(root, { recursive: true, force: true }); }
   });
   it("CLI refuses an unconfirmed run before credentials, output or network", () => {
     const result = spawnSync(process.execPath, ["scripts/summary-retention-trial.mjs", "--spend-cap-usd", "12", "--credential-file", "/fictional/missing.json"], { encoding: "utf8" });

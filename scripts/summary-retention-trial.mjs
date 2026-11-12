@@ -2,7 +2,8 @@
 // No network or credential reads in --dry-run. Paid mode is explicit, one shot.
 import { parseArgs } from "node:util";
 import { dirname } from "node:path";
-import { open, rename, writeFile } from "node:fs/promises";
+import { open, rename, rm } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { runTrial, resolveTrialModels } from "./lib/summary-retention-trial.mjs";
 
 const { values } = parseArgs({ options: {
@@ -14,7 +15,7 @@ const { values } = parseArgs({ options: {
 if (values.help) {
   console.log("Usage: node scripts/summary-retention-trial.mjs --dry-run [--models sol,luna] [--effort low] [--output new-report.json]\nPaid: --confirm --spend-cap-usd 12 --output NEW-report.json [--credential-file AUTH.json]. No retries/resume. Codex does NOT enforce the requested output ceiling.");
 } else {
-  let handle;
+  let handle, reservedOutput = false, reportPublished = false;
   try {
     if (values.model && values.models) throw Error("Choose --model or --models");
     const models = values.models ?? values.model ?? "sol";
@@ -22,14 +23,29 @@ if (values.help) {
     const capUsd = Number(values["spend-cap-usd"]);
     if (!values["dry-run"] && (!values.confirm || !Number.isFinite(capUsd) || capUsd <= 0 || !values.output)) throw Error("Paid mode requires --confirm, positive --spend-cap-usd and a NEW --output");
     if (values["dry-run"] && values["credential-file"]) throw Error("Dry run does not accept credentials");
-    if (values.output) { handle = await open(values.output, "wx", 0o600); await handle.close(); handle = null; }
     const publish = async report => {
       if (!values.output) return;
-      const path = `${values.output}.tmp`;
-      await writeFile(path, JSON.stringify(report, null, 2) + "\n", { mode: 0o600 });
-      const pending = await open(path, "r"); try { await pending.sync(); } finally { await pending.close(); }
-      await rename(path, values.output);
-      const directory = await open(dirname(values.output), "r"); try { await directory.sync(); } finally { await directory.close(); }
+      // runTrial's first publication follows build/catalog/fixture preflight;
+      // CLI credential preflight also finishes before runTrial is called.
+      if (!reservedOutput) {
+        handle = await open(values.output, "wx", 0o600);
+        reservedOutput = true;
+        await handle.close(); handle = null;
+      }
+      const path = `${values.output}.${randomUUID()}.tmp`;
+      let pending, ownTemp = false;
+      try {
+        pending = await open(path, "wx", 0o600);
+        ownTemp = true;
+        await pending.writeFile(JSON.stringify(report, null, 2) + "\n");
+        await pending.sync(); await pending.close(); pending = null;
+        await rename(path, values.output);
+        reportPublished = true;
+        const directory = await open(dirname(values.output), "r"); try { await directory.sync(); } finally { await directory.close(); }
+      } finally {
+        await pending?.close();
+        if (ownTemp) await rm(path, { force: true });
+      }
     };
     let complete;
     if (!values["dry-run"]) {
@@ -59,5 +75,8 @@ if (values.help) {
     // Provider exceptions may contain credentials; never echo them.
     console.error("Trial refused or stopped. Check arguments, builds and the output's last reservation/checkpoint. No retry was attempted.");
     process.exitCode = 1;
-  } finally { await handle?.close(); }
+  } finally {
+    await handle?.close();
+    if (reservedOutput && !reportPublished) await rm(values.output, { force: true });
+  }
 }
