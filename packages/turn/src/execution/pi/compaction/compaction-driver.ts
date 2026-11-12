@@ -10,7 +10,8 @@ import { planSummaryBudget } from "../../../engine/compaction-kit/historical-pre
 import { prepareSummaryInput, summaryModels } from "./compaction-summary.js";
 import { compactionFailureGuard } from "./compaction-failures.js";
 import { summaryThinkingLevel } from "./summary-policy.js";
-import { randomUUID } from "node:crypto";
+import { clearProactivePreservationRefusal, proactivePreservationGuard } from "./preservation-refusals.js";
+import { randomUUID, createHash } from "node:crypto";
 import { MIN_ANSWER_TOKENS } from "@earendil-works/pi-ai/api/simple-options";
 import {
   estimateFixedOverheadTokens,
@@ -305,6 +306,7 @@ export function createGuardedCompactionHook({
   const handler = async (event: any) => {
     decision = null;
     let failureGuard = null;
+    let preservationGuard: ReturnType<typeof proactivePreservationGuard> | null = null;
     try {
       if (typeof beforeAttempt === "function") {
         const veto = await beforeAttempt(event);
@@ -370,7 +372,21 @@ export function createGuardedCompactionHook({
       const summaryBudget = planSummaryBudget(input.preparation, estimateTokens);
       input.preparation.preservation = {};
       if (summaryBudget.tuples.length || summaryBudget.parsed.protectionUnavailable) accounting.preservation = input.preparation.preservation;
-      input.preparation.preservationFallback = trigger === "manual" || trigger === "reactive_overflow";
+      // Inherited-prefix cuts are first reached through idle proactive or the
+      // threshold hook (also labelled proactive), not just manual/overflow.
+      // A ready managed-switch admission must not acquire a preservation veto.
+      input.preparation.preservationFallback = trigger === "manual" || trigger === "reactive_overflow" || event.nonRetainablePrefixLength > 0;
+      if (trigger === "proactive" && typeof beforeAttempt !== "function" && !input.preparation.preservationFallback && summaryBudget.tuples.length) {
+        const model = harness.getModel();
+        const identity = createHash("sha256").update(JSON.stringify([summaryBudget.tuples, input.preparation.turnPrefixMessages,
+          model.provider, model.id, model.api, model.maxTokens, model.contextWindow, effectivePolicy.summaryMaxTokens, effectivePolicy.keepRecentTokens, effectivePolicy.effort, effectivePolicy.compactionMinSavingsTokens])).digest("hex");
+        preservationGuard = proactivePreservationGuard(harness.compactionFailureKey, harness, identity,
+          accounting.fullRequestBefore ?? accounting.transcriptBefore ?? prepared.value.tokensBefore);
+        if (preservationGuard.suppressed) {
+          decision = { kind: "preservation_waiting", reason: "preservation_growth_required", growthRequiredTokens: preservationGuard.growthRequiredTokens };
+          return { cancel: true };
+        }
+      }
       const compacted = await compactPreparedContext(
         input.preparation,
         summaryModels(harness.models, { operationId, focus: input.focus, evidence: input.evidence, requests: accounting.requests, effort: effectivePolicy.effort,
@@ -433,6 +449,8 @@ export function createGuardedCompactionHook({
         message: "Historical preservation bypassed to keep compaction available. Raise summaryMaxTokens or start a new session to restore protection." });
       if (preservation?.protectionUnavailable) runtimeWarnings?.push({ warning_kind: "historical_preservation_unavailable", source: "pi", trigger, reason: preservation.protectionUnavailableReason,
         message: "Historical protection unavailable for this summary format. Compact manually or start a new session; review the summary format before relying on preservation." });
+      if (decision?.kind === "accepted") clearProactivePreservationRefusal(harness.compactionFailureKey, harness);
+      else if (decision?.kind === "summary_refused") preservationGuard?.refused(accounting.requests.some((row: any) => row.providerInvoked));
       failureGuard?.settle(decision?.kind, accounting.requests.length > 0, accounting.requests.at(-1)?.reason);
     }
   };
@@ -462,6 +480,10 @@ export function reportGuardedCompactionOutcome({
     reduced: boolean | null;
     nothingToCompact: boolean;
 } {
+  if (decision?.kind === "preservation_waiting") {
+    emit(onEvent, { operationId, status: "skipped", trigger, model, reason: "preservation_growth_required" });
+    return { applied: false, tokensBefore: null, tokensAfter: null, reduced: null, nothingToCompact: false };
+  }
   if (decision?.kind === "summary_refused") {
     runtimeWarnings?.push({ warning_kind: "context_compaction_refused", source: "pi", trigger, reason: decision.reason,
       message: "Compaction refused; history unchanged. Raise summaryMaxTokens, compact manually, or start a new session." });

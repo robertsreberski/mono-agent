@@ -15,6 +15,9 @@
   recovery. Preserve legacy compaction with no protected tuples, add content-free
   format diagnostics, and record resolutions as new events. Raise
   `summaryMaxTokens` or start a new session to restore protection after bypass.
+  Keep recovery available after protected output truncation with at most one
+  legacy retry, bound unchanged automatic refusals, and treat empty history as
+  healthy. Keep pending/next-step sections outside all-bold historical headings.
   Cold first extraction and separately generated handoffs remain unprotected.
 
 - Fix baseline E2 replay to retain recorded source tools while keeping probes

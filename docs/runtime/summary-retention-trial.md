@@ -19,9 +19,12 @@ case-insensitive, with optional bold/colon formatting. Comparison trims trailing
 whitespace per line, but performs no fuzzy semantic matching. Ordinary horizontal
 rules are content; only the existing split separator ends a section at a rule.
 File metadata and headings inside fenced code do not introduce sections.
-Placeholders such as `- (none)` are not protected. Unclosed fences and headings
-with no admissible tuples produce `protectionUnavailable` plus a content-free
-reason, then use ordinary unprotected compaction.
+A bold-opened historical section ends at the next bold-only heading; known template
+headings also end it, so Pending items and Next Steps are not made immutable.
+Empty and placeholder-only sections (`(none)`, `- (none)`, `None`) mean zero tuples,
+without warnings or preservation accounting. Unclosed fences or non-placeholder
+historical content that parses to nothing produce `protectionUnavailable` plus a
+content-free reason, then use ordinary unprotected compaction.
 
 Prior tuple bytes are JSON-escaped in `<protected-historical-tuples>`, after the
 previous-summary frame and before task instructions. Protected tuples are immutable;
@@ -43,24 +46,44 @@ tuples, legacy caps/output acceptance and savings guards remain unchanged.
 Liveness takes precedence over preservation. If protected history plus
 `min(256, floor(B/4))` cannot fit, compaction bypasses protection before dispatch
 on every trigger; the request contains no protected frame and uses legacy caps.
-If that frame alone exhausts input headroom, it is removed before any provider
-call and legacy policy is rechecked (`protected_input_unfits`). For missing tuples
-or an oversized protected result after dispatch, proactive/mid-run threshold cuts
-return `summary_refused` and keep history unchanged; the next trigger may retry
-without a failure cooldown. Manual and reactive-overflow recovery bypass the guard
-and reuse the generated output through legacy composition. No replacement summary
-is purchased: ordinary compaction still uses one request, split compaction at most
-two; refusal after the first split output uses only one. A bypass does not override
-legacy provider failures, truncation or savings checks.
+Manual, reactive-overflow and inherited-prefix cuts additionally require the
+immutable historical output to occupy at most 50% of the actual history-request
+cap (including the model ceiling). The other half leaves meaningful space for
+Goal, Progress and the rest of the template; a fixed 256-unit floor alone would
+allow verbatim history to crowd them out. Otherwise these cuts bypass before
+any request (`protected_template_unfits`). If the protected input frame alone
+exhausts input headroom, it is removed before any provider call and legacy policy
+is rechecked (`protected_input_unfits`).
+
+Missing tuples, oversized protected output and protected `stopReason: "length"`
+make proactive/mid-run threshold cuts return `summary_refused`, retaining history
+without a provider-failure cooldown. Refusal is not permission to pay repeatedly:
+threshold cuts keep their existing fresh-assistant and meaningful-growth vetoes;
+idle proactive retries wait for `max(8192, ceil(previousTokens * 0.1))` growth, or
+changed protected blocks/split prefix/policy. This bounded, process-local cache
+holds at most 2,048 session digests and clears on restart; it never gates manual
+or reactive recovery. An unchanged three-checkpoint run pays only once per path.
+
+Manual, reactive-overflow and inherited-prefix recovery reuse missing/oversized
+generated output through legacy composition without another call. Protected
+truncation instead retries only the truncated part once with legacy caps and no
+protected frame: at most one extra call per cut, never a new whole-cut retry.
+Later parts are unprotected, and legacy truncation/failure still fails normally.
+Thus ordinary/split-generated/split-reused cuts use 1/2/1 calls normally, at most
+2/3/2 after protected truncation; automatic first-history refusal uses one call,
+or two if only the split prefix fails. Actual inherited-prefix compaction runs
+through idle proactive or in-run threshold (reported as `proactive`), not only
+manual/overflow: `nonRetainablePrefixLength > 0` enables the same legacy bypass
+so a ready managed-switch admission cannot acquire a preservation veto.
 
 `historical_preservation_bypassed` is a content-free warning with reason and
 remediation: raise `summaryMaxTokens` or start a new session to restore protection.
 Manual compaction can recover a refused automatic cut. `accounting.preservation`
 appears only for protected or unavailable history and records sizes/counts,
-missing counts, refusal/bypass reason and complete final-summary bytes/estimate
-(null before a complete candidate). No host repair, eviction, carrier or extra
-completion is added. Provider usage/cost and `generatedSummaryTokens` retain their
-existing meanings. Accepted text and existing E2 lineage/archive schemas are
+missing counts, active protection, refusal/bypass reason and complete final-summary bytes/estimate
+(null before a complete candidate). No host repair, tuple eviction or new carrier is added. Provider request
+usage/cost and `generatedSummaryTokens` include a truncated request and its bounded
+legacy retry; incomplete aggregate usage stays unknown rather than undercounted. Accepted text and existing E2 lineage/archive schemas are
 unchanged. Frozen projection accounting without historical tuples gains no new
 key; reviewed immutable-event prompt text is pinned separately.
 
@@ -85,7 +108,9 @@ The default is the E2 Sol checkpoint model (`openai-codex:gpt-6.1-sol`) and the
 shipping real-summary policy at low effort. `--model provider:id` or
 `--models sol,luna` overrides the selection; `--effort` overrides summary effort.
 Resolved catalog identity, identity digest, rates (including tiers) and effective
-effort are frozen in the output. Each model gets the complete independent matrix;
+effort are frozen in the output. `summaryFocus` records shipping `SUMMARY_FOCUS` v3
+and its SHA-256 digest in each new report and chain; this prompt provenance is
+separate from scorer v2 and the unchanged fixture digest. Each model gets the complete independent matrix;
 a list shares one spend cap, not one budget per model.
 
 The observatory, theatre and coastal-survey conversations each have 12 required

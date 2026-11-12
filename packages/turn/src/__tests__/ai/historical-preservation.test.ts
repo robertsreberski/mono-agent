@@ -147,8 +147,8 @@ it("keeps ordinary horizontal rules as content, but recognizes only existing spl
   expect(historicalTuples(withRule)).toEqual([`${tuple}\n\n---`, "- Another event; m3; pending."]);
   expect(historicalTuples(`${history}${SPLIT_SUMMARY_SEPARATOR}${history}`)).toEqual([tuple, tuple]);
 });
-it.each(["- (none)", "- None", "- None."])("does not protect placeholder %s and reports the empty section", line => {
-  expect(parseHistoricalTuples(`## Historical events and corrections\n${line}`)).toMatchObject({ tuples: [], protectionUnavailable: true, protectionUnavailableReason: "empty_historical_section" });
+it.each(["- (none)", "- None", "- None."])("does not protect placeholder %s without a false availability alarm", line => {
+  expect(parseHistoricalTuples(`## Historical events and corrections\n${line}`)).toMatchObject({ tuples: [], protectionUnavailable: false, protectionUnavailableReason: null });
 });
 it("reports unclosed fences instead of silently disabling protection", async () => {
   const previousSummary = `## Progress\n\x60\x60\x60md\n${history}`;
@@ -210,4 +210,61 @@ it.each(["missing-history", "oversized-history", "oversized-prefix"])("emergency
   expect((await run(p, request)).ok).toBe(true);
   expect(request).toHaveBeenCalledTimes(2);
   expect(p.preservation.bypassReason).toBe(failure === "missing-history" ? "protected_tuples_missing" : "summary_budget_exceeded");
+});
+
+it("all-bold template headings stop protection before pending items and next steps", async () => {
+  const before = `**Goal**\nFictional task.\n**Historical events and corrections**\n${tuple}\n**Pending items**\n- Finish work.\n**Next Steps**\n1. Check output.\n**Critical Context**\nA note.`;
+  expect(historicalTuples(before)).toEqual([tuple]);
+  const changed = before.replace("Finish work.", "Work finished.").replace("Check output.", "Record result.");
+  expect((await run(prep({ previousSummary: before }), async () => response(changed))).ok).toBe(true);
+});
+it("keeps availability diagnostics for unparsed non-placeholder historical content", () => {
+  expect(parseHistoricalTuples("## Historical events and corrections\n---")).toMatchObject({ tuples: [], protectionUnavailable: true, protectionUnavailableReason: "unparsed_historical_content" });
+});
+it("emergency requests bypass before dispatch when immutable history exceeds 50% of the cap", async () => {
+  const largeHistory = history.replace(tuple, `${tuple} ${"fictional detail ".repeat(180)}`);
+  const p = prep({ previousSummary: largeHistory, preservationFallback: true });
+  const request = vi.fn(async (context: any, options: any) => {
+    expect(JSON.stringify(context)).not.toContain("<protected-historical-tuples>");
+    expect(options.maxTokens).toBe(1600);
+    return response("Legacy compacted history.");
+  });
+  expect((await run(p, request)).ok).toBe(true);
+  expect(request).toHaveBeenCalledTimes(1);
+  expect(p.preservation.bypassReason).toBe("protected_template_unfits");
+});
+it.each([false, true])("protected length output refuses or retries only once in a split=%s cut", async split => {
+  for (const fallback of [false, true]) {
+    const p = prep({ previousSummary: history, preservationFallback: fallback, ...(split ? { isSplitTurn: true, turnPrefixMessages: [{ role: "user", content: "prefix" }] } : {}) });
+    const request = vi.fn(async () => request.mock.calls.length === 1 ? { ...response(history), stopReason: "length" } : response(history));
+    const result = await run(p, request);
+    expect(result.ok).toBe(fallback);
+    if (result.ok) expect(result.value.usage.input).toBe(split ? 3 : 2);
+    expect(request).toHaveBeenCalledTimes(fallback ? split ? 3 : 2 : 1);
+    expect(p.preservation[fallback ? "bypassReason" : "refusalReason"]).toBe("output_truncated");
+  }
+});
+it("a truncated protected prefix retries that part, not a completed split history", async () => {
+  const p = prep({ previousSummary: history, preservationFallback: true, isSplitTurn: true, turnPrefixMessages: [{ role: "user", content: "prefix" }] });
+  const request = vi.fn(async (context: any) => {
+    if (request.mock.calls.length > 1) expect(JSON.stringify(context)).not.toContain("<previous-summary>");
+    return request.mock.calls.length === 2 ? { ...response("Partial prefix"), stopReason: "length" } : response(history);
+  });
+  expect((await run(p, request)).ok).toBe(true);
+  expect(request).toHaveBeenCalledTimes(3);
+  expect(p.preservation.bypassReason).toBe("output_truncated");
+});
+it.each([false, true])("truncation recovery keeps incomplete usage unknown without blocking a split=%s cut", async split => {
+  const p = prep({ previousSummary: history, preservationFallback: true, ...(split ? { isSplitTurn: true, turnPrefixMessages: [{ role: "user", content: "prefix" }] } : {}) });
+  const request = vi.fn(async () => request.mock.calls.length === 1 ? { ...response(history), usage: undefined, stopReason: "length" } : response(history));
+  const result = await run(p, request);
+  expect(result.ok).toBe(true);
+  if (result.ok) expect(result.value.usage).toBeUndefined();
+  expect(request).toHaveBeenCalledTimes(split ? 3 : 2);
+});
+it.each(["**Pending items**", "Pending items", "**Unfamiliar section**"])("a bold-opened section ends at %s", heading => {
+  expect(historicalTuples(`**Historical events and corrections**\n${tuple}\n${heading}\n- Mutable continuation.`)).toEqual([tuple]);
+});
+it("does not mistake an indented tuple value for a known template heading", () => {
+  expect(historicalTuples(`## Historical events and corrections\n${tuple}\n  Progress\n## Pending items\n- None`)).toEqual([`${tuple}\n  Progress`]);
 });

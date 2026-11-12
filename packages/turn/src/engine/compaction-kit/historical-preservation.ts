@@ -21,8 +21,10 @@ export function summaryProse(text: string): string {
   return text;
 }
 
-const historicalHeading = (line: string) => line.trim().replace(/^#{1,6}\s+/u, "").replace(/\s+#+$/u, "")
-  .replace(/:$/u, "").replace(/^\*\*(.*?)\*\*$/u, "$1").replace(/:$/u, "").trim().toLowerCase() === "historical events and corrections";
+const headingName = (line: string) => line.trim().replace(/^#{1,6}\s+/u, "").replace(/\s+#+$/u, "")
+  .replace(/:$/u, "").replace(/^\*\*(.*?)\*\*$/u, "$1").replace(/:$/u, "").trim().toLowerCase();
+const historicalHeading = (line: string) => headingName(line) === "historical events and corrections";
+const templateSections = new Set(["goal", "constraints & preferences", "progress", "done", "in progress", "blocked", "key decisions", "pending items", "next steps", "critical context", "original request", "early progress", "context for suffix"]);
 const tupleKey = (text: string) => text.split("\n").map(line => line.trimEnd()).join("\n");
 const placeholder = (text: string) => /^\(?none\)?[.!]?$/iu.test(text.trim().replace(/^(?:[-+*]|\d+[.)])\s+/u, ""));
 
@@ -32,7 +34,7 @@ const placeholder = (text: string) => /^\(?none\)?[.!]?$/iu.test(text.trim().rep
 export function parseHistoricalTuples(summary: string = "") {
   const blocks: string[] = [];
   let active = false, level = 0, fence: string | undefined;
-  let block = "", headingSeen = false;
+  let block = "", openedBold = false, nonPlaceholderContent = false;
   const flush = () => {
     const text = block.replace(/(?:\r?\n[ \t]*)+$/u, "");
     if (text.trim() && !placeholder(text) && !/^[-*_]{3,}$/u.test(text.trim())) blocks.push(text);
@@ -43,7 +45,6 @@ export function parseHistoricalTuples(summary: string = "") {
     const line = lines[index]!;
     const bare = line.replace(/\r?\n$/u, "");
     const historical = historicalHeading(bare);
-    headingSeen ||= historical;
     const marker = /^ {0,3}(`{3,}|~{3,})/.exec(bare)?.[1];
     if (fence) {
       if (active) block += line;
@@ -52,18 +53,22 @@ export function parseHistoricalTuples(summary: string = "") {
     }
     if (marker) { fence = marker; if (active) block += line; continue; }
     const heading = /^(#{1,6})[ \t]+/u.exec(bare);
-    if (historical || heading && active && heading[1]!.length <= level) {
-      flush(); active = historical; level = heading?.[1]?.length ?? 2; continue;
+    const boldOnly = /^\s*\*\*[^*]+\*\*:?\s*$/u.test(bare);
+    const sectionEnd = active && ((heading && heading[1]!.length <= level)
+      || (openedBold && (boldOnly || (!/^\s/u.test(bare) && templateSections.has(headingName(bare))))));
+    if (historical || sectionEnd) {
+      flush(); active = historical; level = heading?.[1]?.length ?? 2; openedBold = historical && boldOnly; continue;
     }
     const splitRule = bare === "---" && /^\s*\*\*Turn Context \(split turn\):\*\*/u.test(lines.slice(index + 1, index + 4).join(""));
     if (active && (splitRule || /^\*\*Turn Context \(split turn\):\*\*\s*$/u.test(bare))) { flush(); active = false; continue; }
     if (!active) continue;
     if (placeholder(bare)) { flush(); continue; }
+    if (bare.trim()) nonPlaceholderContent = true;
     if (bare.trim() && !/^\s/u.test(bare) && !/^[-*_]{3,}\s*$/u.test(bare)) flush();
     block += line;
   }
   flush();
-  const reason = fence ? "unclosed_fence" : headingSeen && blocks.length === 0 ? "empty_historical_section" : null;
+  const reason = fence ? "unclosed_fence" : nonPlaceholderContent && blocks.length === 0 ? "unparsed_historical_content" : null;
   return { tuples: fence ? [] : blocks, protectionUnavailable: reason !== null, protectionUnavailableReason: reason };
 }
 
@@ -84,6 +89,7 @@ export interface PreservationDiagnostics {
   bypassReason: string | null;
   protectionUnavailable: boolean;
   protectionUnavailableReason: string | null;
+  protectionActive: boolean;
   finalSummaryBytes: number | null;
   finalSummaryEstimateTokens: number | null;
   hostCarriedBytes: number;

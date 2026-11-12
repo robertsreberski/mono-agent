@@ -4,7 +4,7 @@ exports[`owned compaction kit vs 0.99.2 baseline > matches baseline-main manual 
 
 exports[`owned compaction kit vs 0.99.2 baseline > matches baseline-main manual split-turn compaction through the complete runtime > history-preserving runtime request contract 1`] = `
 [
-  "d955ad90cd1f8b0fc4dd7cce557952d2cf446d60e0d265c74bc4497250b75ee9",
-  "858260bf64315b0f526420b18ae6034fd04189c2d9549a48706ef155d3582e12",
+  "28a1995724f60c74121c8315eaec42e4e2347bc30fc3ab8f068688291cdbc062",
+  "e70d76261ece76d04385a3ced61192d94db2a9e0af6056ec8fe3b7981dbe6eb8",
 ]
 `;

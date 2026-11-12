@@ -38,28 +38,36 @@ JSON-escaped untrusted input precedes task instructions; protected tuples are
 immutable, with resolutions recorded as NEW top-level events. Comparison trims
 only per-line trailing whitespace. Heading case/bold/colon variants are accepted;
 ordinary horizontal rules remain content, while existing split framing ends a
-section. Placeholders are excluded. Unclosed fences or empty historical sections
-produce content-free `protectionUnavailable` diagnostics rather than silent loss.
+section. Bold-opened sections also stop at the next bold-only heading or known
+template heading. Empty/placeholder-only sections mean zero tuples without a
+warning; unclosed fences or unparsed non-placeholder history produce content-free
+`protectionUnavailable` diagnostics.
 
 With protected tuples, complete-result estimates share `summaryMaxTokens` and the
 1-MiB record bound; provider text caps use an 85% margin. With zero tuples, legacy
 caps, output acceptance and the savings preview are unchanged. The public
 `compact`/`compactWithRequest` helpers can return `CompactionError.code` equal to
-`summary_refused` for a lossy/oversized protected candidate. Native proactive and
-mid-run threshold cuts refuse without changing history, but retry on the next
-trigger without poisoning the failure cooldown. Native manual/overflow recovery
-instead accepts the existing provider output through legacy composition, issuing
-`historical_preservation_bypassed`; it never buys a replacement summary. An
-unfitting protected block bypasses before dispatch on every trigger, with no
-protected input. Protected-input headroom failures also drop only the named frame
-before dispatch and use legacy caps. Raise `summaryMaxTokens` or start a new
-session to restore protection; manual compaction can recover from refusal.
+`summary_refused` for a lossy/oversized/truncated protected candidate. Native
+proactive/threshold cuts refuse without changing history or poisoning the provider
+failure cooldown. Threshold retries retain assistant-progress/growth vetoes; idle
+proactive retries require normal growth or changed protected blocks/split prefix.
+Native manual/overflow and inherited-prefix recovery instead bypass protection,
+issuing `historical_preservation_bypassed`: missing/oversized output is reused;
+protected truncation retries only that part once with legacy caps (at most one
+extra request). Unfitting protection bypasses before dispatch on every trigger;
+emergency/inherited history requests also reserve at least half the cap for the
+other template sections. Protected-input headroom failures drop only the named
+frame before dispatch and use legacy caps. Inherited cuts reach idle proactive or
+threshold, both reported as `proactive`; ready admission cannot add a protection
+veto. Raise `summaryMaxTokens` or start a new session to restore protection;
+manual compaction can recover from automatic refusal.
 
 Content-free `accounting.preservation` diagnostics (present only for protected or
 unavailable history) record sizes/counts, missing tuples, refusal/bypass reason and
 final-summary size separately from provider usage, cost and
-`generatedSummaryTokens`. No retry, new durable carrier or archive transform is
-added. `generateSummaryWithRequest` adds the named protected frame when supplied
+`generatedSummaryTokens`, which account for the bounded truncation retry. No new
+durable carrier or archive transform is added. Shipping `SUMMARY_FOCUS` v3 names
+the immutable-event instruction policy. `generateSummaryWithRequest` adds the named protected frame when supplied
 admissible history; `protectHistory:false` is the unprotected request seam. Cold
 reseeds supply sanitized retained user text, not native `previousSummary`: first
 cold re-extraction and separately generated handoffs are not protected.

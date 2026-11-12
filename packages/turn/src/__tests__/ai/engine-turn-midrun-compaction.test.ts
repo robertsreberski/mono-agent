@@ -279,7 +279,7 @@ function entriesFor(messages: FixtureMessage[]) {
   }));
 }
 
-function controllerFixture({ policy: policyOverrides = {}, summary = "## Goal\nshort summary", previousSummary = undefined as string | undefined, recordingBarrier = undefined as (() => Promise<void>) | undefined } = {}) {
+function controllerFixture({ policy: policyOverrides = {}, summary = "## Goal\nshort summary", stopReason = "stop", previousSummary = undefined as string | undefined, recordingBarrier = undefined as (() => Promise<void>) | undefined } = {}) {
   const policy = {
     enabled: true,
     contextWindow: 100_000,
@@ -294,7 +294,7 @@ function controllerFixture({ policy: policyOverrides = {}, summary = "## Goal\ns
   const completeSimple = vi.fn(async () => ({
     role: "assistant",
     content: [{ type: "text", text: summary }],
-    stopReason: "stop",
+    stopReason,
     usage: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, totalTokens: 15, cost: { total: 0 } },
   }));
   const subscribers: Array<(event: { type: string; lane: string; reason: string; status: string; entryId: string }) => void> = [];
@@ -521,18 +521,27 @@ describe("mid-run compaction guards", () => {
     await Promise.resolve(); expect(settled).toBe(false); release(); await disarming; expect(settled).toBe(true);
   });
 
-  it("retries repeated preservation refusals at the next mid-run threshold without a growth cooldown", async () => {
+  it("pays at most one preservation refusal without assistant progress and meaningful growth", async () => {
     const previousSummary = "## Historical events and corrections\n- Permit; m1; pending; no approval.\n## Pending items\n- None";
     const fixture = controllerFixture({ previousSummary, summary: "Lossy fictional summary." });
     await fixture.controller.arm();
     fixture.setTranscript(growingTranscript(2));
     for (let attempt = 1; attempt <= 3; attempt++) {
       expect(await fixture.checkpoint()).toEqual({ cancel: true });
-      expect(fixture.summaryRequests()).toBe(attempt);
+      expect(fixture.summaryRequests()).toBe(1);
       expect(fixture.events.at(-1)).toMatchObject({ status: "skipped", reason: "protected_tuples_missing" });
       expect(fixture.runState.compaction.applied).toBe(false);
     }
     expect(fixture.recorded).toHaveLength(0);
+    fixture.append(assistantMessage("Small progress."));
+    await fixture.checkpoint();
+    expect(fixture.summaryRequests()).toBe(1);
+    fixture.append(assistantMessage("x".repeat(8000)));
+    await fixture.checkpoint();
+    expect(fixture.summaryRequests()).toBe(1);
+    fixture.append(assistantMessage("x".repeat(8000)));
+    await fixture.checkpoint();
+    expect(fixture.summaryRequests()).toBe(2);
     await fixture.controller.disarm();
   });
 
@@ -682,4 +691,18 @@ describe("mid-run transcript accounting", () => {
       { type: "compaction", id: "c1", parentId: null, timestamp: 1, summary: "s", retainedTail: contextBefore, checkpoint: { summaryMessage: { role: "compactionSummary", summary: "s", timestamp: 1 } } },
     ], { includeFailed: true }).slice(adjustment.baselineAfter)).toEqual(contextBefore.slice(1));
   });
+});
+
+it.each([false, true])("threshold protected truncation refuses without failure caching or repeated payment, split=%s", async split => {
+  const history = "## Historical events and corrections\n- Permit; m1; pending; no approval.";
+  const fixture = controllerFixture({ previousSummary: history, summary: history, stopReason: "length" });
+  await fixture.controller.arm();
+  fixture.setTranscript([...growingTranscript(6), ...(!split ? [userMessage("x".repeat(40000))] : [])]);
+  for (let checkpoint = 0; checkpoint < 3; checkpoint++) expect(await fixture.checkpoint()).toEqual({ cancel: true });
+  expect(fixture.summaryRequests()).toBe(1);
+  expect(fixture.events.at(-1)).toMatchObject({ status: "skipped", reason: "output_truncated", accounting: { splitTurn: split } });
+  expect(fixture.runtimeWarnings).toContainEqual(expect.objectContaining({ warning_kind: "context_compaction_refused" }));
+  expect(fixture.runtimeWarnings.some(warning => warning.warning_kind === "context_compaction_failed")).toBe(false);
+  expect(fixture.recorded).toHaveLength(0);
+  await fixture.controller.disarm();
 });

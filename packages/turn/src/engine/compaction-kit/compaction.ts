@@ -413,6 +413,9 @@ export async function generateSummaryWithRequest(currentMessages: any, options: 
     if (response.stopReason === "error") {
         return err(new CompactionError("summarization_failed", `Summarization failed: ${response.errorMessage || "Unknown error"}`));
     }
+    if (response.stopReason === "length" && options.protectHistory !== false && historicalTuples(previousSummary).length > 0) {
+      throw Object.assign(new Error("Protected summary truncated"), { code: "protected_summary_truncated", usage: response.usage });
+    }
     const textContent = contentText(response.content);
     return ok({ text: textContent, usage: response.usage });
 }
@@ -564,12 +567,13 @@ export async function compactWithRequest(preparation: any, options: any, request
     let targets = plan.targets;
     const diagnostics: PreservationDiagnostics = preparation.preservation ?? {};
     Object.assign(diagnostics, { protectedBytes: Buffer.byteLength(tuples.join("\n")), protectedEstimateTokens: tuples.length ? budget.estimate(protectedText) : 0,
-      protectedTupleCount: tuples.length, missingTupleCount: 0, refusalReason: null, bypassReason: null,
+      protectedTupleCount: tuples.length, protectionActive: protecting, missingTupleCount: 0, refusalReason: null, bypassReason: null,
       protectionUnavailable: plan.parsed.protectionUnavailable, protectionUnavailableReason: plan.parsed.protectionUnavailableReason,
       finalSummaryBytes: null, finalSummaryEstimateTokens: null, hostCarriedBytes: 0, omittedProtectedTupleCount: 0 });
     const bypass = (reason: string) => {
       diagnostics.bypassReason = reason;
       protecting = false;
+      diagnostics.protectionActive = false;
       targets = { history: generateHistory ? plan.originalHistory : 0, prefix: plan.originalPrefix };
     };
     const refuse = (reason: string) => {
@@ -589,9 +593,35 @@ export async function compactWithRequest(preparation: any, options: any, request
     let historyText = reusedHistory;
     const modelLimit = model.maxTokens > 0 ? model.maxTokens : Infinity;
     if (tuples.length > 0 && (!plan.protectedFits || (generateHistory && Math.min(targets.history, modelLimit) < Math.ceil(protectedText.length / 4)))) bypass("protected_history_unfits");
+    // Emergency/inherited cuts reserve at least half the actual history request
+    // cap for the other template sections; the ordinary 256-unit floor is not
+    // sufficient when immutable history nearly fills a model's output ceiling.
+    if (protecting && preparation.preservationFallback && generateHistory
+      && Math.ceil(protectedText.length / 4) > Math.floor(Math.min(targets.history, modelLimit) * 0.5)) bypass("protected_template_unfits");
+    let truncatedUsageUnknown = false;
+    const generate = async (protectedCall: () => ReturnType<typeof generateSummaryWithRequest>, legacyCall: () => ReturnType<typeof generateSummaryWithRequest>) => {
+      try { return await protectedCall(); }
+      catch (error: any) {
+        if (error?.code !== "protected_summary_truncated") throw error;
+        if (!preparation.preservationFallback) return refuse("output_truncated");
+        bypass("output_truncated");
+        // Retry only the truncated part, at most once across this cut. Bypass
+        // marks later requests unprotected, so legacy truncation cannot loop.
+        const legacy = await legacyCall();
+        if (legacy.ok) {
+          const usages = [error.usage, legacy.value.usage];
+          const complete = usages.every(usage => ["input", "output", "cacheRead", "cacheWrite", "totalTokens"].every(key => Number.isFinite(usage?.[key]))
+            && ["input", "output", "cacheRead", "cacheWrite", "total"].every(key => Number.isFinite(usage?.cost?.[key])));
+          if (complete) legacy.value.usage = addUsage(error.usage, legacy.value.usage);
+          else { truncatedUsageUnknown = true; legacy.value.usage = undefined; }
+        }
+        return legacy;
+      }
+    };
     let summaryUsage;
     if (generateHistory) {
-      const historyResult = await generateSummaryWithRequest(messagesToSummarize, { model, reserveTokens: settings.reserveTokens, textTargetTokens: targets.history, protectHistory: protecting, customInstructions, previousSummary, thinkingLevel }, request, context);
+      const history = () => generateSummaryWithRequest(messagesToSummarize, { model, reserveTokens: settings.reserveTokens, textTargetTokens: targets.history, protectHistory: protecting, customInstructions, previousSummary, thinkingLevel }, request, context);
+      const historyResult = await generate(history, history);
       if (!historyResult.ok) return err(historyResult.error);
       historyText = historyResult.value.text;
       summaryUsage = historyResult.value.usage;
@@ -606,10 +636,12 @@ export async function compactWithRequest(preparation: any, options: any, request
         bypass(splitReason); // Reuse the already generated history; never buy a replacement.
       }
       const prefixTarget = protecting ? Math.min(targets.prefix, budget.limit - budget.estimate(`${historyText}${separator}${metadata}`)) : targets.prefix;
-      const turnPrefixResult = await generateTurnPrefixSummary(turnPrefixMessages, model, settings.reserveTokens, thinkingLevel, request, context, prefixTarget);
+      const turnPrefixResult = await generate(
+        () => generateTurnPrefixSummary(turnPrefixMessages, model, settings.reserveTokens, thinkingLevel, request, context, prefixTarget, protecting),
+        () => generateTurnPrefixSummary(turnPrefixMessages, model, settings.reserveTokens, thinkingLevel, request, context, targets.prefix, false));
       if (!turnPrefixResult.ok) return err(turnPrefixResult.error);
       summary = `${historyText}${separator}${turnPrefixResult.value.text}`;
-      summaryUsage = summaryUsage ? addUsage(summaryUsage, turnPrefixResult.value.usage) : turnPrefixResult.value.usage;
+      summaryUsage = truncatedUsageUnknown ? undefined : summaryUsage ? addUsage(summaryUsage, turnPrefixResult.value.usage) : turnPrefixResult.value.usage;
     }
     summary += metadata;
     const reason = validate(summary, true);
@@ -617,10 +649,10 @@ export async function compactWithRequest(preparation: any, options: any, request
       if (!preparation.preservationFallback) return refuse(reason);
       bypass(reason); // Legacy composition accepts the same provider output.
     }
-    return ok({ summary, tokensBefore, usage: summaryUsage, retainedTail, details: { readFiles, modifiedFiles } });
+    return ok({ summary, tokensBefore, usage: truncatedUsageUnknown ? undefined : summaryUsage, retainedTail, details: { readFiles, modifiedFiles } });
 }
 
-async function generateTurnPrefixSummary(messages: any, model: any, reserveTokens: any, thinkingLevel: any, request: any, context: any, textTargetTokens?: number) {
+async function generateTurnPrefixSummary(messages: any, model: any, reserveTokens: any, thinkingLevel: any, request: any, context: any, textTargetTokens?: number, protecting = false) {
     const maxTokens = Math.min(textTargetTokens ?? Math.floor(0.5 * reserveTokens), model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY);
     const { text: conversationText, metadata } = serializeSummaryConversation(messages);
     const promptText = `<conversation>\n${conversationText}\n</conversation>\n\n${metadata}${TURN_PREFIX_SUMMARIZATION_PROMPT}`;
@@ -640,6 +672,9 @@ async function generateTurnPrefixSummary(messages: any, model: any, reserveToken
     }
     if (response.stopReason === "error") {
         return err(new CompactionError("summarization_failed", `Turn prefix summarization failed: ${response.errorMessage || "Unknown error"}`));
+    }
+    if (response.stopReason === "length" && protecting) {
+        throw Object.assign(new Error("Protected summary truncated"), { code: "protected_summary_truncated", usage: response.usage });
     }
     return ok({
         text: contentText(response.content),
