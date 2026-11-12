@@ -34,7 +34,7 @@ export async function runE2AssignedPhase(a) {
     if (a.slot.kind === "replay") {
       const r = a.pilot.registration, { runE2Sizing } = await import("./continuity-e2-replay.mjs");
       const result = await runE2Sizing({ source: await boundJSON(r.source, true), protocol: await boundJSON(r.protocol), questions: await boundJSON(r.probes),
-        evaluator: await boundJSON(r.keys), output: base, summary: "real", paidAdapter: adapter });
+        evaluator: await boundJSON(r.keys), output: base, summary: "real", replayArm: r.replayArm, paidAdapter: adapter });
       outcome = { terminal: result.score === 0 ? "wrong" : "completed", score: result.score, refusalCode: null };
     } else {
       await mkdir(base, { recursive: true, mode: 0o700 });

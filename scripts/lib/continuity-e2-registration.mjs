@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { digest as hash, validateSource } from "./continuity-recorded-schema.mjs";
 import { digest } from "./continuity-dataset.mjs";
 import { ROOT } from "./continuity-observation-input.mjs";
-import { validateProtocol, assertE2ProbeLookupRounds } from "./continuity-e2-protocol.mjs";
+import { validateProtocol, assertE2ProbeLookupRounds, e2ReplayArm, e2ProbeRequestCount } from "./continuity-e2-protocol.mjs";
 import { validateE2Questions, scoreE2 } from "./continuity-e2-score.mjs";
 import { SHIPPING_SOUL_RAW, SHIPPING_SOUL_NORMALIZED, shippingSoul } from "./continuity-e2-models.mjs";
 import { loadE2Catalog } from "./continuity-e2-pricing.mjs";
@@ -57,12 +57,12 @@ export async function verifyE2Code(code, build) {
   await verifyRealBuild(ROOT, build); need(await e2CodeDigest(ROOT) === code.sha256);
   const after = sourceState(ROOT); need(!after.dirty && after.head === before.head);
 }
-export function e2ProbeCounts(protocol, questions, evaluator, source) {
+export function e2ProbeCounts(protocol, questions, evaluator, source, replayArm) {
   assertE2ProbeLookupRounds(protocol?.probeLookupRounds);
   validateE2Questions(questions);
   need(fields(evaluator, ["schema", "keys"]) && evaluator.schema === "continuity-recorded-evaluator-keys-v1" && Array.isArray(evaluator.keys) && evaluator.keys.length === questions.questions.length);
   if (evaluator.keys.length) scoreE2({ schema: "continuity-e2-answers-v1", answers: [] }, evaluator);
-  const checkpoints = protocol.branches.flatMap(b => b.checkpoints), counts = checkpoints.map((_, checkpoint) => ({ checkpoint, questions: 0, lookupRounds: protocol.probeLookupRounds }));
+  const checkpoints = protocol.branches.flatMap(b => b.checkpoints), counts = checkpoints.map((_, checkpoint) => ({ checkpoint, questions: 0, lookupRounds: protocol.probeLookupRounds, ...(e2ReplayArm(replayArm) === "baseline" ? { requestsPerProbe: 1 } : {}) }));
   const ids = new Set();
   for (const q of questions.questions) {
     need(Buffer.byteLength(q.prompt) <= E2_INPUT_LIMITS.promptBytes);
@@ -73,11 +73,13 @@ export function e2ProbeCounts(protocol, questions, evaluator, source) {
   }
   return counts;
 }
-export function e2PhaseSchedule(protocol, records, probeCounts) {
+export function e2PhaseSchedule(protocol, records, probeCounts, replayArm) {
+  const baseline = e2ReplayArm(replayArm) === "baseline";
+  need(!baseline || records.every(r => r.schema === "continuity-e2-sizing-v1"));
   const phases = [], replays = [], proofs = [], seen = new Set();
   let offset = records.some(r => r.schema === "continuity-e2-sizing-v1") ? protocol.branches.reduce((n, b) => n + b.checkpoints.length, 0) : 0;
   for (const record of records) {
-    const n = normalizeE2Sizing(protocol, record, record.schema === "continuity-e2-sizing-v1" ? 0 : offset);
+    const n = normalizeE2Sizing(protocol, record, record.schema === "continuity-e2-sizing-v1" ? 0 : offset, replayArm);
     if (n.kind === "replay") { need(!seen.has(n.scenario)); seen.add(n.scenario); replays.push(n.requests); }
     else { need(!seen.has(n.arm)); seen.add(n.arm); proofs.push({ record, normalized: n }); offset += n.checkpoints; }
   }
@@ -97,7 +99,7 @@ export function e2PhaseSchedule(protocol, records, probeCounts) {
       const count = ["probe", "continuation"].includes(b.paidRole) ? b.maxRequests * probeCounts[b.checkpoint].questions : b.maxRequests;
       const id = digest([b.checkpoint, b.paidRole, b.model]); max.set(id, { ...b, maxRequests: Math.max(max.get(id)?.maxRequests ?? 0, count) });
     }
-    phases.push({ kind: "replay", arm: "replay", variant: "registered", phase: "whole", budgets: [...max.values()].filter(b => b.maxRequests) });
+    phases.push({ kind: "replay", arm: baseline ? "baseline" : "replay", variant: "registered", phase: "whole", budgets: [...max.values()].filter(b => b.maxRequests) });
   }
   for (const { record, normalized } of proofs.sort((a, b) => ["switch", "cancel", "idle", "pressure"].indexOf(a.record.arm) - ["switch", "cancel", "idle", "pressure"].indexOf(b.record.arm))) {
     let cursor = 0;
@@ -117,14 +119,16 @@ export function e2PhaseSchedule(protocol, records, probeCounts) {
     roleId: "e2-validation-phase", code: "E2", suite: "e2-validation", traceId: String(index), probeId: String(index) }));
 }
 export const E2_TOOL_POLICIES = Object.freeze({ summary: Object.freeze([]), replay: Object.freeze(["ConversationHistory"]), replayFinal: Object.freeze([]), proof: Object.freeze(["ConversationHistory"]), cancelContinuation: Object.freeze(["ConversationHistory", "ProofSentinel"]) });
+export const e2ToolPolicies = arm => e2ReplayArm(arm) === "baseline" ? { ...E2_TOOL_POLICIES, replay: [] } : E2_TOOL_POLICIES;
 export async function validateE2Registration(pilot, { safeRead, safeDirectory }) {
   try {
     need(fields(pilot, ["schema", "registration", "descriptor"]) && pilot.schema === E2_REGISTRATION_SCHEMA);
     const r = pilot.registration, d = pilot.descriptor;
     if (d?.schema !== E2_PLAN_SCHEMA) throw Object.assign(Error("e2_deadlines_invalid"), { code: "e2_deadlines_invalid" });
     validateE2Deadlines(d.deadlines);
-    need(fields(r, ["code", "build", "catalog", "protocol", "source", "probes", "keys", "soul", "roles", "schedule", "toolPolicies", "sizing", "probeCounts"])
+    need(fields(r, ["code", "build", "catalog", "protocol", "source", "probes", "keys", "soul", "roles", "schedule", "toolPolicies", "sizing", "probeCounts", ...(Object.hasOwn(r, "replayArm") ? ["replayArm"] : [])])
       && fields(d, ["schema", "assumptions", "capUnits", "deadlines", "retryPolicy"]) && d.schema === E2_PLAN_SCHEMA && same(d.assumptions, E2_ASSUMPTIONS) && same(d.retryPolicy, E2_RETRY_POLICY));
+    const replayArm = e2ReplayArm(r.replayArm);
     e2CapUnits(d.capUnits); validateE2Deadlines(d.deadlines);
     await safeDirectory(ROOT, "e2_registration_invalid"); await verifyE2Code(r.code, r.build);
     need(same(r.catalog, await loadE2Catalog()) && same(r.soul, { rawDigest: SHIPPING_SOUL_RAW, normalizedDigest: SHIPPING_SOUL_NORMALIZED }));
@@ -137,14 +141,14 @@ export async function validateE2Registration(pilot, { safeRead, safeDirectory })
     };
     const source = await json(r.source, E2_INPUT_LIMITS.sourceBytes); validateSource(source);
     const protocol = validateProtocol(await json(r.protocol), source), questions = await json(r.probes), evaluator = await json(r.keys);
-    const probeCounts = e2ProbeCounts(protocol, questions, evaluator, source); need(same(r.probeCounts, probeCounts) && same(r.toolPolicies, E2_TOOL_POLICIES));
+    const probeCounts = e2ProbeCounts(protocol, questions, evaluator, source, replayArm); need(same(r.probeCounts, probeCounts) && same(r.toolPolicies, e2ToolPolicies(replayArm)));
     need(Array.isArray(r.sizing) && r.sizing.length > 0 && r.sizing.length <= E2_INPUT_LIMITS.sizingFiles);
     const records = []; for (const binding of r.sizing) records.push(await json(binding));
     for (const record of records) if (record.schema === "continuity-e2-sizing-v1") need(record.sourceDigest === hash(JSON.stringify(source)) && same(record.soul, r.soul));
     if (records.some(record => record.schema === "continuity-e2-sizing-v1")) need(questions.questions.length > 0);
-    const estimate = estimateE2SizingSet({ protocol, roles: r.roles, records, catalog: r.catalog, probeCounts });
-    validateE2ReplayLimits(protocol, records);
-    need(same(r.schedule, e2PhaseSchedule(protocol, records, probeCounts)));
+    const estimate = estimateE2SizingSet({ protocol, roles: r.roles, records, catalog: r.catalog, probeCounts, replayArm });
+    validateE2ReplayLimits(protocol, records, replayArm);
+    need(same(r.schedule, e2PhaseSchedule(protocol, records, probeCounts, replayArm)));
     const replay = r.schedule.find(p => p.kind === "replay");
     if (replay) {
       let offset = 0;
@@ -163,21 +167,23 @@ export async function validateE2Registration(pilot, { safeRead, safeDirectory })
   }
 }
 
-export function validateE2ReplayLimits(protocol, records) {
+export function validateE2ReplayLimits(protocol, records, replayArm) {
+  const requests = e2ProbeRequestCount(protocol, replayArm);
   for (const record of records.filter(r => r.schema === "continuity-e2-sizing-v1")) {
     for (const [index, branch] of record.branches.entries()) {
       const limits = protocol.branches[index].limits, rows = branch.requestSizing, compactions = branch.compactions ?? [];
       need(rows.filter(r => r.paidRole === null).length <= limits.sourceRequests);
       // A replay record sizes two complete probes per checkpoint, regardless of
       // how many real questions will be expanded later. Do not accept an R=1
-      // row set relabelled with an R=3 protocol digest.
+      // row set relabelled with an R=3 protocol digest. The explicit baseline
+      // instead binds one request per probe without changing protocol-owned R.
       const registered = protocol.branches[index];
-      need(rows.filter(row => ["probe", "continuation"].includes(row.paidRole)).length === registered.checkpoints.length * 2 * (protocol.probeLookupRounds + 1));
+      need(rows.filter(row => ["probe", "continuation"].includes(row.paidRole)).length === registered.checkpoints.length * 2 * requests);
       for (const [checkpoint] of registered.checkpoints.entries()) {
         const probes = rows.filter(row => ["probe", "continuation"].includes(row.paidRole)
           && registered.checkpoints.findIndex(c => c.turn >= row.turn) === checkpoint);
         need(probes.filter(row => row.paidRole === "probe").length === 2
-          && probes.filter(row => row.paidRole === "continuation").length === 2 * protocol.probeLookupRounds);
+          && probes.filter(row => row.paidRole === "continuation").length === 2 * (requests - 1));
       }
       need(Array.isArray(compactions) && compactions.length <= limits.compactions
         && compactions.every(c => Number.isSafeInteger(c.requests) && c.requests > 0 && c.requests <= limits.summaryRequestsPerCompaction)

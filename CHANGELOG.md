@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Add an E2 `--replay-arm baseline` control without continuity or history tools,
+  using one request per probe and ordinary shipping compaction. Bind the arm to
+  replay-only authorization and non-qualifying reports; keep the default replay
+  and frozen protocol unchanged.
+
 - Fix fictional summary-trial scoring to accept equivalent tuple formats while
   preserving value relationships, scoped negations and input-supplied provenance;
   add versioned offline rescoring without model calls.

@@ -13,6 +13,7 @@ import { digest as canonicalDigest } from "./continuity-dataset.mjs";
 import { e2PhaseWork, e2PhaseBase, validateE2Checkpoint } from "./continuity-e2-lineage.mjs";
 import { e2FailureCause, e2ProviderCause, e2CandidateCause, E2_NONRETRY_PROVIDER_CLASSES, registerE2CauseObserver } from "./continuity-e2-cause.mjs";
 import { effectiveE2Summaries, E2_RETRY_POLICY } from "./continuity-e2-retry.mjs";
+import { e2ReplayArm, e2ProbeRequestCount, assertE2ReplayBinding } from "./continuity-e2-protocol.mjs";
 const need = (ok, code = "e2_permit_invalid") => { if (!ok) throw Object.assign(Error(code), { code }); };
 const core = () => guardedState("e2-validation"), artifacts = () => guardedAuthorization("e2-validation");
 export async function createE2PaidModels(a, safety) {
@@ -21,7 +22,7 @@ export async function createE2PaidModels(a, safety) {
   need(credential?.type === "oauth" && typeof credential.access === "string", "e2_account_mismatch");
   const protocolBytes = await artifacts().readArtifact(a.pilot.registration.protocol.path, "e2_registration_invalid");
   need(digest(protocolBytes) === a.pilot.registration.protocol.sha256, "e2_registration_invalid");
-  const protocol = JSON.parse(protocolBytes);
+  const protocol = JSON.parse(protocolBytes), baseline = e2ReplayArm(a.pilot.registration.replayArm) === "baseline";
   let send, native, config, position, active = false, probeRequests = 0, stopped = null, lifecycle = null, barrier = Promise.resolve();
   let failureCause = null, currentCall = null;
   registerE2CauseObserver(safety, value => {
@@ -108,6 +109,8 @@ export async function createE2PaidModels(a, safety) {
         && !Object.keys(value.providers.local ?? {}).length, "e2_route_mismatch");
       for (const part of [value.runtime, value.runtime.retry ?? {}, value.providers.piNative]) for (const key of ["piRequestRetryBudgetMs", "retryBudgetMs", "retryProfile", "outageRetryProfile"])
         need(!Object.hasOwn(part, key), "e2_retry_profile_forbidden");
+      if (baseline) need(a.slot.kind === "replay" && a.slot.arm === "baseline" && value.runtime.session.continuity.enabled === false
+        && value.runtime.compaction?.enabled === true && (value.tools?.allowedTools ?? []).length === 0, "e2_preparation_invalid");
       config = value;
     },
     assertCurrentConfig() { if (send) { need(config, "e2_auxiliary_callers_forbidden"); actor.assertConfig(config); } },
@@ -126,6 +129,7 @@ export async function createE2PaidModels(a, safety) {
             "e2_native_identity_forbidden");
           need(change && Object.keys(change).every(name => ["piModelsDecorator", "mcpServers", "observers", "allowedTools", "skills"].includes(name))
             && isE2PaidDecorator(change.piModelsDecorator) && change.skills?.length === 0, "e2_unguarded_dispatch");
+          if (baseline) need(change.allowedTools?.length === 0 && !Object.hasOwn(change.mcpServers ?? {}, "mono-agent-conversation-history"), "e2_preparation_invalid");
           return target.run(prompt, { ...options, ...change });
         };
         if (typeof key === "symbol" || ["then", "toJSON"].includes(key)) return undefined;
@@ -155,7 +159,7 @@ export async function createE2PaidModels(a, safety) {
       let frozenPayload, measuredSize; const buffered = [];
       const attempt = async retrying => {
         await barrier; if (stopped) fail(stopped);
-        if (probeRequest !== undefined) need(probeRequest <= protocol.probeLookupRounds + 1 && role === (probeRequest === 1 ? "probe" : "continuation"), "e2_request_limit");
+        if (probeRequest !== undefined) need(probeRequest <= e2ProbeRequestCount(protocol, a.pilot.registration.replayArm) && role === (probeRequest === 1 ? "probe" : "continuation"), "e2_request_limit");
         if (!native) { need(send); send.decorator(target); }
         if (role === "summary") {
           need(receipt && receipt === lifecycle, "e2_summary_not_authorized");
@@ -241,6 +245,8 @@ export async function createE2PaidModels(a, safety) {
     async flush() { await barrier; need(!active && !lifecycle, "e2_compaction_invalid"); if (stopped) fail(stopped); },
     async stop(code) { await stop(code); },
     async assertReplay(values) {
+      assertE2ReplayBinding(a.pilot.registration, { replayArm: values.replayArm, qualification: baseline ? false : undefined });
+      if (values.report) assertE2ReplayBinding(a.pilot.registration, values.report);
       need(a.slot.kind === "replay" && values.output === e2PhaseBase(a.outputRoot, a.slot), "e2_preparation_invalid");
       for (const [key, binding] of [["source", a.pilot.registration.source], ["protocol", a.pilot.registration.protocol], ["questions", a.pilot.registration.probes], ["evaluator", a.pilot.registration.keys]]) {
         const bytes = await artifacts().readArtifact(binding.path, "e2_registration_invalid", key === "source" ? 128 * 1024 * 1024 : 4 * 1024 * 1024);

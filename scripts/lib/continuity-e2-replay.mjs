@@ -12,7 +12,7 @@ import { callKey, digest, validateSource, attachmentReferences } from "./continu
 import { startRecordedTools, RECORDED_SERVER_NAME } from "./continuity-recorded-tools.mjs";
 import { openHarness, productionModules } from "./continuity-runner.mjs";
 import { createE2Models, estimatedReply, loadE2Estimators, shippingSoul, sizeContext } from "./continuity-e2-models.mjs";
-import { SOL, parts, protocolDigest, validateProtocol } from "./continuity-e2-protocol.mjs";
+import { SOL, parts, protocolDigest, validateProtocol, e2ReplayArm, e2ProbeRequestCount, assertE2BaselineContext } from "./continuity-e2-protocol.mjs";
 
 export const PLACEHOLDER = "[recorded result unavailable for replay]";
 const HISTORY = "mono-agent-conversation-history";
@@ -204,16 +204,17 @@ export function e2ProbeMeasurement() {
 }
 
 /** No real routes, credential lookup overrides, or resolved-model overrides. */
-export async function runE2Sizing({ source, protocol, output, summary = "faux-short", modules, onContext = () => {}, onDiagnostic = () => {}, paidAdapter, questions, evaluator, probeReceipts = true }) {
-  const real = summary === "real";
+export async function runE2Sizing({ source, protocol, output, summary = "faux-short", replayArm, modules, onContext = () => {}, onDiagnostic = () => {}, paidAdapter, questions, evaluator, probeReceipts = true }) {
+  const real = summary === "real", baseline = e2ReplayArm(replayArm) === "baseline";
   if (real && (modules !== undefined || !paidAdapter || !questions || !evaluator)) fail("E2_MODELS_SEAM_REFUSED");
   if (real) assertE2PhaseAdapter(paidAdapter);
   protocol = validateProtocol(protocol, source);
-  if (real) await paidAdapter.assertReplay({ source, protocol, questions, evaluator, output });
+  const requestCount = e2ProbeRequestCount(protocol, replayArm);
+  if (real) await paidAdapter.assertReplay({ source, protocol, questions, evaluator, output, replayArm });
   const estimators = await loadE2Estimators(), soul = await shippingSoul();
   modules ??= await productionModules(ROOT);
   const answers = { schema: "continuity-e2-answers-v1", answers: [] };
-  const report = { schema: real ? "continuity-e2-replay-v1" : "continuity-e2-sizing-v1", sourceDigest: digest(JSON.stringify(source)), protocolDigest: protocolDigest(protocol), summary,
+  const report = { schema: real ? "continuity-e2-replay-v1" : "continuity-e2-sizing-v1", ...(baseline ? { replayArm: "baseline", qualification: false } : {}), sourceDigest: digest(JSON.stringify(source)), protocolDigest: protocolDigest(protocol), summary,
     soul: { rawDigest: soul.rawDigest, normalizedDigest: soul.normalizedDigest }, usage: "estimated-not-measured", semanticQualification: false, branches: [] };
   await mkdir(output, { mode: 0o700 });
   // One recorder and entry cap per run, not per checkpoint/probe.
@@ -231,7 +232,7 @@ export async function runE2Sizing({ source, protocol, output, summary = "faux-sh
       let opened, currentTurn, turnController, steerWaiter, pendingSteers = [], steerCount = 0, cursor = 0, binding = branch.models[0], position, probeMode = false, probeRequests = 0;
       const probe = e2ProbeMeasurement();
       const observed = [], historyExcluded = new Set(), observedTools = new Set(), toolIndices = new Map(source.tools.map((t, i) => [t.id, i]));
-      const route = createE2Models({ pi: modules.pi, estimators, models: branch.models, limits: branch.limits, summary, soul, paidAdapter, probeLookupRounds: protocol.probeLookupRounds,
+      const route = createE2Models({ pi: modules.pi, estimators, models: branch.models, limits: branch.limits, summary, soul, paidAdapter, probeLookupRounds: protocol.probeLookupRounds, replayArm,
         sourceContext(context) {
           if (!probeMode && pendingSteers.length) {
             const users = context.messages.filter(m => m.role === "user").slice(-pendingSteers.length).map(m => typeof m.content === "string" ? m.content : m.content.filter(p => p.type === "text").map(p => p.text).join("\n")).join("\n");
@@ -245,21 +246,22 @@ export async function runE2Sizing({ source, protocol, output, summary = "faux-sh
               server.queue.observe(index, message.content); observedTools.add(index);
             }
           }
+          if (baseline) assertE2BaselineContext(context);
           onContext({ branch: branchIndex, probe: probeMode, context });
           if (probeMode) {
             retrieval.observeRequest(context);
             if (++probeRequests > branch.limits.probeRequests) fail("E2_PROBE_REQUEST_LIMIT");
             probe.observe(context, estimators);
             const offered = context.tools ?? context.messages.flatMap(m => m.toolsAdded ?? []);
-            const final = probe.requests === protocol.probeLookupRounds + 1;
-            if (probe.requests > protocol.probeLookupRounds + 1) fail("E2_PROBE_REQUEST_LIMIT");
+            const final = probe.requests === requestCount;
+            if (probe.requests > requestCount) fail("E2_PROBE_REQUEST_LIMIT");
             if (final ? offered.length !== 0 : offered.length !== 1 || offered[0].name !== "ConversationHistory") fail("E2_PROBE_TOOLS_REFUSED");
           }
         },
         async sourceReply(context) {
           if (probeMode) {
             const offered = context.tools ?? context.messages.flatMap(m => m.toolsAdded ?? []);
-            const lookup = probe.requests <= protocol.probeLookupRounds;
+            const lookup = !baseline && probe.requests <= protocol.probeLookupRounds;
             const body = lookup ? [modules.pi.fauxToolCall(offered[0].name, { action: "search", query: "retained", limit: 1 }, { id: probe.requests === 1 ? "e2-probe-history" : `e2-probe-history-${probe.requests}` })] : "Faux probe continuation; semantic correctness is not evaluated.";
             return estimatedReply(modules.pi, body, context, estimators, { stopReason: lookup ? "toolUse" : "stop" });
           }
@@ -289,15 +291,15 @@ export async function runE2Sizing({ source, protocol, output, summary = "faux-sh
       const open = async () => {
         opened = await openHarness({ modules, work, authPath: real ? paidAdapter.credentialPath() : join(base, "absent-auth.json"), model: branch.models[0].model, effort: branch.models[0].effort,
           clock: { value: new Date("2042-03-01T09:00:00Z") }, tools: false, e2: paidAdapter,
-          configPatch: { runtime: { retry: { primaryAttempts: 1 }, fallbacks: [], compaction: { enabled: true }, session: { continuity: { enabled: true, ledgerEnabled: false, upkeep: { enabled: false } } } },
-            tools: { allowedTools: probeMode ? ["ConversationHistory"] : [] }, providers: { piNative: { transport: "sse", piMaxRetries: 0 } } },
+          configPatch: { runtime: { retry: { primaryAttempts: 1 }, fallbacks: [], compaction: { enabled: true }, session: { continuity: { enabled: !baseline, ledgerEnabled: false, upkeep: { enabled: false } } } },
+            tools: { allowedTools: probeMode && !baseline ? ["ConversationHistory"] : [] }, providers: { piNative: { transport: "sse", piMaxRetries: 0 } } },
           onHistoryWarning: () => fail("E2_HISTORY_DEGRADED"),
           hostOptions: { runtimeOptionsForRequest: () => ({ runtimeOptions: { model: modules.host.parseMonoRuntimeModelReference(binding.model), effort: binding.effort } }) },
           route: async options => {
             if (options.piResolvedModel || options.piResolvedModels) fail("E2_MODELS_SEAM_REFUSED");
             return { piModelsDecorator: route.decorator, observers: [...(options.observers ?? []), { name: "e2.lifecycle", recordEvent: onEvent }],
-              allowedTools: probeMode ? ["ConversationHistory"] : [], skills: [],
-              mcpServers: probeMode ? { [HISTORY]: options.mcpServers?.[HISTORY] } : { [RECORDED_SERVER_NAME]: { type: "http", url: server.url } } };
+              allowedTools: probeMode && !baseline ? ["ConversationHistory"] : [], skills: [],
+              mcpServers: probeMode ? baseline ? {} : { [HISTORY]: options.mcpServers?.[HISTORY] } : { [RECORDED_SERVER_NAME]: { type: "http", url: server.url } } };
           } });
       };
       // Even a failed probe must drain evidence before close/restore or unwinding.
@@ -364,7 +366,7 @@ export async function runE2Sizing({ source, protocol, output, summary = "faux-sh
                   metadata: { source: "web", web: { model: binding.model, effort: binding.effort } }, onEvent: onHostEvent,
                   abortSignal: AbortSignal.timeout(branch.limits.timeoutMs) });
                 await paidAdapter.flush(); route.assertSettled();
-                if (response.failure || !probe.firstContext) fail("E2_REPLAY_FAILED");
+                if (response.failure || !probe.firstContext || baseline && probe.requests !== requestCount) fail("E2_REPLAY_FAILED");
                 const text = response.text ?? response.content;
                 if (typeof text !== "string") fail("E2_REPLAY_FAILED");
                 const answer = { id: question.id, repeat, text, witness: probe.witness, excludedSteps: measured.excludedStepsInHistory,
@@ -392,7 +394,7 @@ export async function runE2Sizing({ source, protocol, output, summary = "faux-sh
               onDiagnostic(diagnosticRecord({ turnOrdinal: turn.ordinal, replyCursor: cursor, replyCount: turn.replies.length,
                 cancelled: false, aborted: probeSignal.aborted, failureKind: response.failure?.kind, routeRefusalCode: route.refusalCode() }));
               route.assertSettled();
-              if (response.failure || !probe.firstContext || probe.requests !== protocol.probeLookupRounds + 1) fail("E2_PROBE_FAILED");
+              if (response.failure || !probe.firstContext || probe.requests !== requestCount) fail("E2_PROBE_FAILED");
               await opened.close(); opened = null;
               measured.probes.push({ repeat, initialContext: probe.firstContext, snapshotDigest: receipt.digest, requests: probe.requests });
             }
@@ -415,6 +417,7 @@ export async function runE2Sizing({ source, protocol, output, summary = "faux-sh
       await writeFile(join(output, "answers.json"), `${JSON.stringify(answers)}\n`, { flag: "wx", mode: 0o600 });
       await writeFile(join(output, "score.json"), `${JSON.stringify(scored)}\n`, { flag: "wx", mode: 0o600 });
       report.score = scored.report.complete ? Number(scored.report.gate) : null;
+      if (baseline) await paidAdapter.assertReplay({ source, protocol, questions, evaluator, output, replayArm, report });
     }
     await writeFile(join(output, real ? "replay.json" : "sizing.json"), `${JSON.stringify(report)}\n`, { flag: "wx", mode: 0o600 });
     return report;

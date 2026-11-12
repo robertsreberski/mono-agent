@@ -8,6 +8,24 @@ export function assertE2ProbeLookupRounds(rounds) {
   if (!Number.isSafeInteger(rounds) || rounds < 1 || rounds > 4) fail("E2_PROBE_LOOKUP_ROUNDS_INVALID");
   return rounds;
 }
+// Omitted metadata is the legacy continuity arm; never encode baseline as R=0.
+export function e2ReplayArm(arm = "continuity") {
+  if (!["continuity", "baseline"].includes(arm)) fail("E2_ARGUMENTS_INVALID");
+  return arm;
+}
+export function e2ProbeRequestCount(protocol, arm) {
+  assertE2ProbeLookupRounds(protocol?.probeLookupRounds);
+  return e2ReplayArm(arm) === "baseline" ? 1 : protocol.probeLookupRounds + 1;
+}
+export function assertE2ReplayBinding(registration, report) {
+  if (e2ReplayArm(registration.replayArm) !== e2ReplayArm(report.replayArm)
+    || report.replayArm === "baseline" && report.qualification !== false) fail("e2_authorization_binding_mismatch");
+}
+export function assertE2BaselineContext(context) {
+  const tools = [...(context.tools ?? []), ...(context.messages ?? []).flatMap(m => m.toolsAdded ?? [])];
+  if (tools.length) fail("E2_PROBE_TOOLS_REFUSED");
+  if (JSON.stringify(context).includes("### Conversation continuity pack (historical evidence)")) fail("e2_payload_forbidden");
+}
 const integer = n => Number.isSafeInteger(n) && n >= 0;
 const label = s => typeof s === "string" && /^[A-Za-z][A-Za-z0-9_-]{0,47}$/.test(s);
 export function assertE2CheckpointOrder(checkpoints) {

@@ -1,5 +1,5 @@
 // Offline sizing normalization. No authorization/credential/registry imports or access.
-import { PROTOCOL_SCHEMA, protocolDigest, assertE2CheckpointOrder, assertE2ProbeLookupRounds, SOL, LUNA } from "./continuity-e2-protocol.mjs";
+import { PROTOCOL_SCHEMA, protocolDigest, assertE2CheckpointOrder, assertE2ProbeLookupRounds, SOL, LUNA, e2ReplayArm } from "./continuity-e2-protocol.mjs";
 import { requireE2PaidRole } from "./continuity-e2-roles.mjs";
 import { E2_RETRY_POLICY } from "./continuity-e2-retry.mjs";
 import { E2_INPUT_LIMITS } from "./continuity-e2-policy.mjs";
@@ -27,7 +27,9 @@ function sizingRow(row, checkpoint) {
   need([SOL, LUNA].includes(row.model) && ordinal(row.maxOutputTokens) && row.maxOutputTokens > 0);
   return { checkpoint, role: row.role, paidRole: row.paidRole, model: row.model, maxOutputTokens: row.maxOutputTokens, size: row.size };
 }
-export function normalizeE2Sizing(protocol, sizing, checkpointOffset = 0) {
+export function normalizeE2Sizing(protocol, sizing, checkpointOffset = 0, replayArm) {
+  const baseline = e2ReplayArm(replayArm) === "baseline";
+  need(e2ReplayArm(sizing?.replayArm) === e2ReplayArm(replayArm) && (!baseline || sizing?.schema === "continuity-e2-sizing-v1" && sizing.qualification === false));
   validateE2EstimateProtocol(protocol); need(ordinal(checkpointOffset) && sizing?.semanticQualification === false && sizing.usage === "estimated-not-measured");
   const requests = [];
   if (sizing.schema === "continuity-e2-sizing-v1") {
@@ -42,8 +44,11 @@ export function normalizeE2Sizing(protocol, sizing, checkpointOffset = 0) {
       for (const row of branch.requestSizing) {
         need(ordinal(row.turn) && row.turn >= registered.startTurn && row.turn <= registered.endTurn && ordinal(row.message));
         let c = registered.checkpoints.findIndex(c => c.turn >= row.turn); if (c < 0) c = registered.checkpoints.length - 1;
+        need(!baseline || row.paidRole !== "continuation");
         requests.push(sizingRow(row, checkpoint + c));
       }
+      if (baseline) for (let c = 0; c < registered.checkpoints.length; c++)
+        need(requests.filter(row => row.checkpoint === checkpoint + c && row.paidRole === "probe").length === 2);
       checkpoint += registered.checkpoints.length;
     }
     return { kind: "replay", scenario: sizing.summary, requests, checkpoints: checkpoint - checkpointOffset };
@@ -58,7 +63,7 @@ export function normalizeE2Sizing(protocol, sizing, checkpointOffset = 0) {
   }
   return { kind: "proof", arm: sizing.arm, requests, checkpoints: sizing.variants.length };
 }
-export function estimateE2SizingSet({ protocol, roles, records, catalog, probeCounts = [] }) {
+export function estimateE2SizingSet({ protocol, roles, records, catalog, probeCounts = [], replayArm }) {
   validateE2EstimateProtocol(protocol); need(Array.isArray(records) && records.length > 0 && records.length <= E2_MAX_SIZING_RECORDS);
   const replay = [], proofs = [], arms = new Set(), scenarios = new Set(); let sourceDigest;
   const replayCheckpoints = protocol.branches.reduce((n, b) => n + b.checkpoints.length, 0);
@@ -70,7 +75,7 @@ export function estimateE2SizingSet({ protocol, roles, records, catalog, probeCo
   const questionCount = [...counts.values()].reduce((n, q) => n + q, 0); need(questionCount <= 48);
   let offset = hasReplay ? replayCheckpoints : 0;
   for (const record of records) {
-    const normalized = normalizeE2Sizing(protocol, record, record.schema === "continuity-e2-sizing-v1" ? 0 : offset);
+    const normalized = normalizeE2Sizing(protocol, record, record.schema === "continuity-e2-sizing-v1" ? 0 : offset, replayArm);
     if (normalized.kind === "replay") {
       need(!scenarios.has(normalized.scenario) && (sourceDigest === undefined || sourceDigest === record.sourceDigest));
       sourceDigest = record.sourceDigest; scenarios.add(normalized.scenario);
@@ -98,7 +103,7 @@ export function estimateE2SizingSet({ protocol, roles, records, catalog, probeCo
   }
   const boundRequests = [...bound.values()].flatMap(({ count, row }) => Array.from({ length: count }, () => row));
   const fundedSchedule = estimateE2Reservations({ roles, requests: [...boundRequests, ...proofs], catalog });
-  return { schema: "continuity-e2-cap-estimate-set-v1", semanticQualification: false, authorization: false,
+  return { schema: "continuity-e2-cap-estimate-set-v1", ...(e2ReplayArm(replayArm) === "baseline" ? { replayArm: "baseline", qualification: false } : {}), semanticQualification: false, authorization: false,
     timing: "not-estimated-use-e2-plan-v3-clocks", protocolValidation: "metadata-and-sizing-binding-only", scope: "provided-sizing-and-explicit-probe-counts-only",
     plannedReplayQuestions: questionCount, proofArms: arms.size, scenarios: estimates, fundedSchedule,
     forecastMinimumCapUnits: fundedSchedule.forecastMinimumCapUnits, forecastNoCacheMinimumCapUnits: fundedSchedule.forecastNoCacheMinimumCapUnits,
