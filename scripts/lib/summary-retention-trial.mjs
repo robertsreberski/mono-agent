@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
+import { runTrialHostReseed } from "./summary-retention-host.mjs";
 import { SOL, LUNA } from "./continuity-e2-protocol.mjs";
 import { loadE2Catalog } from "./continuity-e2-pricing.mjs";
 
@@ -293,6 +294,7 @@ export async function runTrialChain({ modules, fixture, model, cap, repetition, 
       const prepared = modules.prepareCompaction(await raw.getEntries(), { reserveTokens: Math.ceil(cap / 0.8), keepRecentTokens: 128 });
       need(prepared.ok && prepared.value && prepared.value.isSplitTurn === (stage === 3), "Unexpected shipping cut shape");
       prepared.value.settings.reserveTokens = modules.piSummaryReserveTokens(cap, prepared.value.isSplitTurn);
+      prepared.value.settings.summaryMaxTokens = cap;
       const input = modules.prepareSummaryInput(prepared.value);
       const telemetry = [];
       // The runtime's shipping facade adds focus, evidence and summary effort policy.
@@ -321,7 +323,13 @@ export async function runTrialChain({ modules, fixture, model, cap, repetition, 
       need(entry.summary === result.value.summary, "Persisted summary changed");
       const score = scoreTrialSummary(fixture, stage, entry.summary, { requests });
       checkpoints.push({ ...score, summary: entry.summary, summaryBytes: Buffer.byteLength(entry.summary), isSplitTurn: input.preparation.isSplitTurn, telemetry });
-      if (stage < 4 && coldReseeds) {
+      if (stage < 4 && coldReseeds === "host") {
+        const seeded = await runTrialHostReseed(entry.summary);
+        reseeds.push({ stage, lane: "host", nativeSha256: seeded.nativeSha256, retainedSha256: seeded.retainedSha256,
+          redacted: seeded.redacted, truncated: seeded.truncated, runtimeCalls: seeded.runtimeCalls });
+        await raw.close(); raw = await repo.create({ cwd: "/fictional/summary-retention" });
+        for (const message of seeded.seedMessages) await raw.appendMessage(message);
+      } else if (stage < 4 && coldReseeds) {
         // Construct the summary record only from the checkpoint read above. This
         // isolates summary carriage: original facts are intentionally not reseeded.
         const summaryRecord = { recordId: `chr1_${hash(journalId + id).slice(0, 43)}`, generationId: `fictional-${stage}`,

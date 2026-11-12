@@ -17,7 +17,7 @@ type FixtureMessage = UserMessage | ReturnType<typeof assistantMessage>;
 type FixtureEntry = { type: string; id: string; parentId: string | null; timestamp: number; message: FixtureMessage };
 type FixtureCompaction = { summary: string; tokensBefore: number; retainedTail: FixtureMessage[] };
 type FixtureHook = (event: { reason: string; branchEntries: FixtureEntry[]; signal: AbortSignal }) => Promise<{ cancel?: boolean; compaction?: FixtureCompaction } | undefined>;
-type CompactionEvent = { type: string; status: string; trigger: string; tokensAfter: number; tokensBefore: number; accounting: { midRun: boolean } };
+type CompactionEvent = { type: string; status: string; trigger: string; reason?: string; tokensAfter: number; tokensBefore: number; accounting: { midRun: boolean } };
 type Warning = { warning_kind: string };
 type CompactionSettings = { enabled: boolean; reserveTokens: number; keepRecentTokens: number };
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -518,8 +518,8 @@ describe("mid-run compaction guards", () => {
   });
 
   it("requires additional growth after a skipped attempt instead of re-paying each round", async () => {
-    // A summary as large as the history it replaces: the projection allows the
-    // attempt, but the rebuilt-context preview proves it saves nothing.
+    // A provider response beyond the complete-summary cap is refused before
+    // checkpoint preparation; further rounds still require additional growth.
     const fixture = controllerFixture({ summary: "s".repeat(200_000) });
     await fixture.controller.arm();
     fixture.setTranscript(growingTranscript(2));
@@ -529,7 +529,8 @@ describe("mid-run compaction guards", () => {
     expect(afterFirst).toBeGreaterThan(0);
     expect(fixture.runState.compaction.applied).toBe(false);
     expect(fixture.runtimeWarnings.map((warning: Warning) => warning.warning_kind))
-      .toEqual(["context_compaction_not_reducible"]);
+      .toEqual(["context_compaction_refused"]);
+    expect(fixture.events.at(-1)?.reason).toBe("summary_budget_exceeded");
     expect(fixture.events.map((event) => event.status)).toEqual(["running", "skipped"]);
 
     fixture.append(assistantMessage("nothing much"));

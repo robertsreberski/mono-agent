@@ -4,8 +4,9 @@ import { contentText, retryAssistantCall, uuidv7, } from "@earendil-works/pi-ai"
 import { createBranchSummaryMessage, createCompactionSummaryMessage } from "./messages.js";
 import { buildContextEntries, sessionEntryToContextMessages } from "./context.js";
 import { CompactionError, err, ok } from "./result.js";
+import { historicalTuples, missingHistoricalTuples, planSummaryBudget, protectedHistoricalInput, type PreservationDiagnostics } from "./historical-preservation.js";
 import { addUsage } from "./usage.js";
-import { computeFileLists, createFileOps, extractFileOpsFromMessage, formatFileOperations, serializeSummaryConversation, } from "./utils.js";
+import { createFileOps, extractFileOpsFromMessage, serializeSummaryConversation, } from "./utils.js";
 function safeJsonStringify(value: any) {
     try {
         return JSON.stringify(value) ?? "undefined";
@@ -383,7 +384,7 @@ ${HISTORICAL_SUMMARY_CONTRACT}`;
 /** Generate one summary through a caller-owned one-request boundary. */
 export async function generateSummaryWithRequest(currentMessages: any, options: any, request: any, context: any) {
     const { model, reserveTokens, customInstructions, previousSummary, thinkingLevel } = options;
-    const maxTokens = Math.min(Math.floor(0.8 * reserveTokens), model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY);
+    const maxTokens = Math.min(options.textTargetTokens ?? Math.floor(0.8 * reserveTokens), model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY);
     let basePrompt = previousSummary ? UPDATE_SUMMARIZATION_PROMPT : SUMMARIZATION_PROMPT;
     if (customInstructions) {
         basePrompt = `${basePrompt}\n\nAdditional focus: ${customInstructions}`;
@@ -393,7 +394,7 @@ export async function generateSummaryWithRequest(currentMessages: any, options: 
     if (previousSummary) {
         promptText += `<previous-summary>\n${previousSummary}\n</previous-summary>\n\n`;
     }
-    promptText += metadata + basePrompt;
+    promptText += metadata + basePrompt + protectedHistoricalInput(historicalTuples(previousSummary));
     const summarizationMessages = [
         {
             role: "user",
@@ -554,40 +555,56 @@ export async function compactWithRequest(preparation: any, options: any, request
   error?: never;
 }> {
     const { model, customInstructions, thinkingLevel } = options;
-    const { messagesToSummarize, turnPrefixMessages, retainedTail, isSplitTurn, tokensBefore, previousSummary, fileOps, settings, } = preparation;
-    let summary;
+    const { messagesToSummarize, turnPrefixMessages, retainedTail, tokensBefore, previousSummary, settings } = preparation;
+    const { budget, split, generateHistory, tuples, protectedText, readFiles, modifiedFiles, metadata, separator, targets,
+      historyText: reusedHistory } = planSummaryBudget(preparation, estimateTokens);
+    const diagnostics: PreservationDiagnostics = preparation.preservation ?? {};
+    Object.assign(diagnostics, { protectedBytes: Buffer.byteLength(tuples.join("\n")), protectedEstimateTokens: tuples.length ? budget.estimate(protectedText) : 0,
+      protectedTupleCount: tuples.length, missingTupleCount: 0, refusalReason: null, finalSummaryBytes: null, finalSummaryEstimateTokens: null,
+      hostCarriedBytes: 0, omittedProtectedTupleCount: 0 });
+    const refuse = (reason: string) => {
+      diagnostics.refusalReason = reason;
+      return err(new CompactionError("summary_refused", `Compaction refused: ${reason}`));
+    };
+    const validate = (text: string, complete = false) => {
+      if (complete) {
+        diagnostics.finalSummaryBytes = Buffer.byteLength(text);
+        diagnostics.finalSummaryEstimateTokens = budget.estimate(text);
+      }
+      diagnostics.missingTupleCount = missingHistoricalTuples(tuples, text);
+      return diagnostics.missingTupleCount ? "protected_tuples_missing" : !budget.fits(text) ? "summary_budget_exceeded" : null;
+    };
+    let historyText = reusedHistory;
+    if (!budget.fits(`${generateHistory ? protectedText : historyText}${separator}${metadata}`, budget.minimum)) return refuse("protected_history_unfits");
+    const historyTarget = Math.min(targets.history, model.maxTokens > 0 ? model.maxTokens : Infinity);
+    if ((generateHistory && (historyTarget < 1 || (tuples.length > 0 && historyTarget < Math.ceil(protectedText.length / 4)))) || (split && targets.prefix < 1)) return refuse("summary_targets_unfit");
     let summaryUsage;
-    if (isSplitTurn && turnPrefixMessages.length > 0) {
-        // Reuse prose only; the accumulated file metadata is appended once below.
-        let historyText = previousSummary?.replace(/(?:\n\n<(read-files|modified-files)>\n[\s\S]*?\n<\/\1>)+$/, "") ?? "No prior history.";
-        let historyUsage;
-        if (messagesToSummarize.length > 0) {
-            const historyResult = await generateSummaryWithRequest(messagesToSummarize, { model, reserveTokens: settings.reserveTokens, customInstructions, previousSummary, thinkingLevel }, request, context);
-            if (!historyResult.ok)
-                return err(historyResult.error);
-            historyText = historyResult.value.text;
-            historyUsage = historyResult.value.usage;
-        }
-        const turnPrefixResult = await generateTurnPrefixSummary(turnPrefixMessages, model, settings.reserveTokens, thinkingLevel, request, context);
-        if (!turnPrefixResult.ok)
-            return err(turnPrefixResult.error);
-        summary = `${historyText}\n\n---\n\n**Turn Context (split turn):**\n\n${turnPrefixResult.value.text}`;
-        summaryUsage = historyUsage ? addUsage(historyUsage, turnPrefixResult.value.usage) : turnPrefixResult.value.usage;
+    if (generateHistory) {
+      const historyResult = await generateSummaryWithRequest(messagesToSummarize, { model, reserveTokens: settings.reserveTokens, textTargetTokens: targets.history, customInstructions, previousSummary, thinkingLevel }, request, context);
+      if (!historyResult.ok) return err(historyResult.error);
+      historyText = historyResult.value.text;
+      summaryUsage = historyResult.value.usage;
     }
-    else {
-        const summaryResult = await generateSummaryWithRequest(messagesToSummarize, { model, reserveTokens: settings.reserveTokens, customInstructions, previousSummary, thinkingLevel }, request, context);
-        if (!summaryResult.ok)
-            return err(summaryResult.error);
-        summary = summaryResult.value.text;
-        summaryUsage = summaryResult.value.usage;
+    let summary = historyText;
+    if (split) {
+      // Validate history before buying a second request. No repair or retry.
+      const reason = validate(`${historyText}${separator}${metadata}`);
+      if (reason) return refuse(reason);
+      if (!budget.fits(`${historyText}${separator}${metadata}`, budget.minimum)) return refuse("split_remainder_unfits");
+      const prefixTarget = Math.min(targets.prefix, budget.limit - budget.estimate(`${historyText}${separator}${metadata}`));
+      const turnPrefixResult = await generateTurnPrefixSummary(turnPrefixMessages, model, settings.reserveTokens, thinkingLevel, request, context, prefixTarget);
+      if (!turnPrefixResult.ok) return err(turnPrefixResult.error);
+      summary = `${historyText}${separator}${turnPrefixResult.value.text}`;
+      summaryUsage = summaryUsage ? addUsage(summaryUsage, turnPrefixResult.value.usage) : turnPrefixResult.value.usage;
     }
-    const { readFiles, modifiedFiles } = computeFileLists(fileOps);
-    summary += formatFileOperations(readFiles, modifiedFiles);
-    const details = { readFiles, modifiedFiles };
-    return ok({ summary, tokensBefore, usage: summaryUsage, retainedTail, details });
+    summary += metadata;
+    const reason = validate(summary, true);
+    if (reason) return refuse(reason);
+    return ok({ summary, tokensBefore, usage: summaryUsage, retainedTail, details: { readFiles, modifiedFiles } });
 }
-async function generateTurnPrefixSummary(messages: any, model: any, reserveTokens: any, thinkingLevel: any, request: any, context: any) {
-    const maxTokens = Math.min(Math.floor(0.5 * reserveTokens), model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY);
+
+async function generateTurnPrefixSummary(messages: any, model: any, reserveTokens: any, thinkingLevel: any, request: any, context: any, textTargetTokens?: number) {
+    const maxTokens = Math.min(textTargetTokens ?? Math.floor(0.5 * reserveTokens), model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY);
     const { text: conversationText, metadata } = serializeSummaryConversation(messages);
     const promptText = `<conversation>\n${conversationText}\n</conversation>\n\n${metadata}${TURN_PREFIX_SUMMARIZATION_PROMPT}`;
     const summarizationMessages = [

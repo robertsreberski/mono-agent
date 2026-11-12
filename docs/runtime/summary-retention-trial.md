@@ -11,6 +11,43 @@ private conversations, and does not change the E2 protocol. The SHA-256 digest i
 descriptive, not covered by that digest; the v2 assertion policy lives in
 `scripts/lib/summary-retention-trial.mjs`. V2 leaves the fixture bytes unchanged.
 
+## Native historical preservation boundary
+
+Native incremental compaction parses complete line tuples (with indented and
+fenced continuations) from `Historical events and corrections`, including split
+sections. Headings/split boundaries inside fenced code and trailing file metadata
+are not section boundaries. There is no fuzzy matching or inferred provenance.
+Prior tuple bytes are JSON-escaped as untrusted input outside the existing frames;
+accepted model output must contain each whole block verbatim in a historical
+section. Later changes append separate events. Missing blocks refuse the cut,
+without repair, another completion or archive backfill. This preserves admitted
+mistakes too and can prevent compaction progress.
+
+One shared budget uses `B = effectivePolicy.summaryMaxTokens` and the shipping
+`estimateTokens` over the provider-projected summary message, including its
+wrapper. The complete generated/reused history, split separator and file metadata
+must fit B and 1 MiB. Known reused prose, framing and metadata are reserved before
+dispatch; remaining targets use the existing history:prefix ratio and never exceed
+the original per-call targets. Protected history plus `min(256, floor(B/4))`
+estimate units must fit before dispatch. The first split output is checked before
+the second call, and the complete result is checked before checkpoint preparation.
+Allowance shrink never clips or evicts protected history: an unfitting cut refuses
+and leaves the transcript intact. Inherited-prefix admission uses the same
+projected-budget helper. Provider reasoning/headroom policy stays separate.
+
+`accounting.preservation` contains only protected byte/estimate sizes, tuple and
+missing counts, refusal reason, and complete final-summary bytes/estimate (null
+before a complete candidate exists). Host-carried bytes and omitted protected
+counts stay zero: accepted text is unmodified provider output plus the existing
+split/file composition. Provider usage/cost and `generatedSummaryTokens` still
+measure provider generation, not protected or reused host text. Existing E2
+lineage reconstruction and archive schemas are unchanged.
+
+This guard cannot protect initial extraction, the first cold re-extraction
+(without native `previousSummary`), sanitization omissions or a separately generated
+handoff. A retained record's digest may differ from the native summary digest.
+Cold input contains only sanitized retained text and cannot restore removed values.
+
 ## Offline preparation
 
 Build the shipping implementation, then size it without credentials or network:
@@ -43,6 +80,18 @@ from durable native checkpoints. A shipping continuity-pack renderer carries onl
 that checkpoint's summary into the next cold journal; it never backfills original
 facts. This isolates summary carriage, not full sidecar publication/recovery.
 No source/answer completions are purchased.
+
+The focused offline integration lane (`runTrialChain` with `coldReseeds: "host"`)
+additionally takes each generated checkpoint through real owned native checkpoint
+preparation/publication, the durable history store and continuity participant,
+the harness pack supplier and `runtime-execution.ts` cold hook, a faux-provider
+runtime seed, and host/runtime restart. It inspects persisted native seed messages
+and separate raw/retained identities, including fictional redaction. Its publication
+fixture injects the already generated summary at the engine's compaction hook;
+it does not purchase another summary. Direct rendered-pack text reseeds and
+no-cold native chains remain isolation/negative controls, not host-path proof.
+The default sizing/paid matrix remains the text-only lane above; frozen facts,
+scorer assertions, tuple inventories and spending policy are unchanged.
 
 The dry run uses retaining controls derived only from each actual request. It
 reports per-model/combined request counts, measured serialized-context bytes,

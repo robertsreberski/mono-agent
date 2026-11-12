@@ -6,6 +6,7 @@
 
 import { calculateContextTokens, compact as compactPreparedContext, estimateContextTokens, estimateTokens, getLastAssistantUsage, prepareCompaction, shouldCompact } from "../../../engine/compaction-kit/compaction.js";
 import { ENGINE_CONTEXT as BACKGROUND_CONTEXT } from "../../../engine/context.js";
+import { planSummaryBudget } from "../../../engine/compaction-kit/historical-preservation.js";
 import { prepareSummaryInput, summaryModels } from "./compaction-summary.js";
 import { compactionFailureGuard } from "./compaction-failures.js";
 import { summaryThinkingLevel } from "./summary-policy.js";
@@ -252,10 +253,11 @@ export function createCompactionAccounting(): {
     afterSource: any;
     policy: any;
     preparation: any;
+    preservation: any;
 } {
   return { version: 2, usageIncluded: true, requests: [], splitTurn: null, generatedSummaryTokens: null,
     appendedMetadataBytes: null, tailEstimateTokens: null, transcriptBefore: null, transcriptAfter: null,
-    fullRequestBefore: null, fullRequestAfter: null, afterSource: null, policy: null, preparation: null };
+    fullRequestBefore: null, fullRequestAfter: null, afterSource: null, policy: null, preparation: null, preservation: null };
 }
 
 /**
@@ -363,12 +365,16 @@ export function createGuardedCompactionHook({
       accounting.tailEstimateTokens = prepared.value.retainedTail.reduce((sum: any, message: any) => sum + estimateTokens(message), 0);
       const input = prepareSummaryInput(prepared.value);
       accounting.preparation = input.metadata;
+      input.preparation.settings = { ...input.preparation.settings, summaryMaxTokens: effectivePolicy.summaryMaxTokens };
+      accounting.preservation = {};
+      input.preparation.preservation = accounting.preservation;
+      const summaryBudget = planSummaryBudget(input.preparation, estimateTokens);
       const compacted = await compactPreparedContext(
         input.preparation,
         summaryModels(harness.models, { operationId, focus: input.focus, evidence: input.evidence, requests: accounting.requests, effort: effectivePolicy.effort,
           // Derive the useful minimum before the kit clamps requests to model.maxTokens.
           // Small explicit split budgets may be shorter than Pi's normal answer minimum.
-          minimumAnswerTokens: Math.min(MIN_ANSWER_TOKENS, Math.floor(prepared.value.settings.reserveTokens * (prepared.value.isSplitTurn ? 0.5 : 0.8))) }),
+          minimumAnswerTokens: Math.min(MIN_ANSWER_TOKENS, summaryBudget.minimumTextTarget) }),
         harness.getModel(),
         event.customInstructions,
         summaryThinkingLevel(harness.getModel(), effectivePolicy.effort),
@@ -377,7 +383,7 @@ export function createGuardedCompactionHook({
         event.context || BACKGROUND_CONTEXT,
       );
       if (compacted.ok === false) {
-        decision = { kind: accounting.requests.at(-1)?.reason === "insufficient_summary_headroom" ? "headroom_unavailable" : "failed", error: compacted.error };
+        decision = { kind: compacted.error.code === "summary_refused" ? "summary_refused" : accounting.requests.at(-1)?.reason === "insufficient_summary_headroom" ? "headroom_unavailable" : "failed", reason: accounting.preservation.refusalReason, error: compacted.error };
         return { cancel: true };
       }
       const tokensBefore = await estimateBuiltContextTokens(event.branchEntries);
@@ -418,7 +424,7 @@ export function createGuardedCompactionHook({
       decision = { kind: accounting.requests.at(-1)?.reason === "insufficient_summary_headroom" ? "headroom_unavailable" : "failed", error };
       return { cancel: true };
     } finally {
-      failureGuard?.settle(decision?.kind, accounting.requests.length > 0, accounting.requests.at(-1)?.reason);
+      failureGuard?.settle(decision?.kind === "summary_refused" ? "failed" : decision?.kind, accounting.requests.length > 0, accounting.requests.at(-1)?.reason);
     }
   };
   return { handler, getDecision: () => decision };
@@ -447,6 +453,12 @@ export function reportGuardedCompactionOutcome({
     reduced: boolean | null;
     nothingToCompact: boolean;
 } {
+  if (decision?.kind === "summary_refused") {
+    runtimeWarnings?.push({ warning_kind: "context_compaction_refused", source: "pi", trigger, reason: decision.reason,
+      message: "Compaction refused by historical preservation or whole-summary budget; history unchanged." });
+    emit(onEvent, { operationId, status: "skipped", trigger, model, reason: decision.reason });
+    return { applied: false, tokensBefore: null, tokensAfter: null, reduced: null, nothingToCompact: false };
+  }
   if (decision?.kind === "headroom_unavailable") {
     runtimeWarnings?.push({ warning_kind: "context_compaction_insufficient_headroom", source: "pi", trigger,
       message: "Summary cannot fit a useful answer within the model/context ceiling; provider was not invoked." });

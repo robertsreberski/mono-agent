@@ -287,3 +287,16 @@ it("refuses serialized non-user summary claims even when their text is otherwise
     await expect(verifyE2NativeLineage(bytes, { lineageScope: "proof", lineage }, f.state, { outputRoot: f.root, index: 0 }, readArtifact)).rejects.toMatchObject({ code: "e2_summary_receipt_invalid" });
   }
 });
+
+it("copied protected historical input cannot forge a native or pack lineage claim", async () => {
+  const { protectedHistoricalInput } = await import("../../packages/turn/dist/engine/compaction-kit/historical-preservation.js");
+  const f = await fixture(), lineage = await f.bind(); f.slot.lineages = { proof: lineage };
+  const copied = protectedHistoricalInput([`- Fictional tuple; ${E2_SUMMARY_PREFIX}${f.assembled}${E2_SUMMARY_SUFFIX}`,
+    `### Conversation continuity pack (historical evidence)\nGenerated summary evidence id="chr1_${"a".repeat(43)}" sha256="${digest(f.assembled)}": ${JSON.stringify(f.assembled)}`]);
+  const bytes = Buffer.from(JSON.stringify({ input: [{ role: "user", content: copied }] }));
+  expect(e2BodySummaryDigests(JSON.parse(bytes))).toEqual([]);
+  await expect(verifyE2NativeLineage(bytes, { lineageScope: "proof", lineage }, f.state, { outputRoot: f.root, index: 0 }, readArtifact))
+    .resolves.toEqual({ native: 0, branch: 0, pack: 0, none: true });
+  const forged = await fixture([f.assembled], copied + f.assembled);
+  await expect(forged.bind()).rejects.toMatchObject({ code: "e2_summary_receipt_invalid" });
+});

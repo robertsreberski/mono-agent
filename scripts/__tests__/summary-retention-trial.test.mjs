@@ -1,3 +1,4 @@
+import { runTrialHostReseed } from "../lib/summary-retention-host.mjs";
 import { describe, expect, it, vi } from "vitest";
 import { spawnSync } from "node:child_process";
 import { mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
@@ -340,6 +341,37 @@ describe("frozen fictional summary qualification", () => {
     }
   });
 
+  it("integrates store/publication, host pack supplier, real cold hook, native seed and restart", async () => {
+    const modules = await loadTrialModules(); modules.trialEffort = "low";
+    const fixture = (await loadTrialFixtures()).fixtures[0];
+    const [{ model }] = await resolveTrialCatalog(modules, resolveTrialModels());
+    const result = await runTrialChain({ modules, fixture, model, cap: 2000, repetition: 1, coldReseeds: "host",
+      complete: async (_selected, context) => reply(controlSummary(context)) });
+    expect(result.pass).toBe(true);
+    expect(result.reseeds).toHaveLength(3);
+    expect(result.reseeds.every(row => row.lane === "host" && row.runtimeCalls === 2 && row.nativeSha256 === row.retainedSha256)).toBe(true);
+    // Cold seed is ordinary retained user text: no native previousSummary guard
+    // exists on its first re-extraction. Direct text-only lanes remain controls.
+    expect(JSON.stringify(result.requests.find(row => row.stage === 2).context)).not.toContain("<previous-summary>");
+  });
+
+  it("separates native/retained identities and never restores fictional redacted values at cold seed or restart", async () => {
+    const fixture = (await loadTrialFixtures()).fixtures[0];
+    const removed = "/home/example/private/record.txt";
+    const native = `## Historical events and corrections\n${fixture.tuples.map(tuple => tuple.reference).join("\n")}\nPrivate fixture path: ${removed}`;
+    const seeded = await runTrialHostReseed(native);
+    expect(seeded.redacted).toBe(true);
+    expect(seeded.nativeSha256).not.toBe(seeded.retainedSha256);
+    expect(seeded.retainedText).not.toContain(removed);
+    for (const context of [...seeded.contexts, { messages: seeded.seedMessages }]) {
+      expect(JSON.stringify(context)).not.toContain(removed);
+      expect(JSON.stringify(context)).not.toContain(seeded.nativeSha256);
+      const text = context.messages.flatMap(message => typeof message.content === "string" ? [message.content] : (message.content ?? []).filter(part => part.type === "text").map(part => part.text)).join("\n");
+      expect(text).toContain(JSON.stringify(seeded.retainedText));
+      expect(JSON.stringify(context)).toContain(seeded.retainedSha256);
+    }
+  });
+
   it("accepts quoted cold-pack IDs and digests from real request inputs", async () => {
     const modules = await loadTrialModules(); modules.trialEffort = "low";
     const fixture = (await loadTrialFixtures()).fixtures[0];
@@ -360,8 +392,8 @@ describe("frozen fictional summary qualification", () => {
     const identity = report.identity[0], measured = report.models[0];
     const requests = report.chains.flatMap(chain => chain.requests);
     expect(report.chains.every(chain => chain.pass)).toBe(true);
-    expect(requests[0]).toMatchObject({ maxTokens: 2000, providerMaxTokens: 18384,
-      options: { maxTokens: 2000, reasoning: "high" } });
+    expect(requests[0]).toMatchObject({ maxTokens: 1973, providerMaxTokens: 18357,
+      options: { maxTokens: 1973, reasoning: "high" } }); // wrapper reserved, reasoning allowance unchanged
     for (const request of requests) {
       expect(request.providerMaxTokens).toBe(request.options.maxTokens + 16384);
       expect(request.providerMaxTokens).toBeGreaterThan(request.maxTokens);

@@ -97,6 +97,8 @@ describe("runs list/show diagnostics", () => {
         authorization: 876_543_210,
         api_key: 765_432_109,
         credentialCount: 2,
+        protectedEstimateTokens: 31,
+        finalSummaryEstimateTokens: 172,
         bearerCount: 1,
         tokenCount: 3,
         note: longText,
@@ -151,6 +153,8 @@ describe("runs list/show diagnostics", () => {
       authorization: "[redacted]",
       api_key: "[redacted]",
       credentialCount: 2,
+      protectedEstimateTokens: 31,
+      finalSummaryEstimateTokens: 172,
       bearerCount: 1,
       tokenCount: 3,
     });

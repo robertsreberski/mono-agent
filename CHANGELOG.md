@@ -10,6 +10,11 @@
   when the first result cannot fit. Keep get chunks, existing valid cursors and
   the two-record recovery envelope unchanged.
 
+- Keep admitted native historical tuples verbatim across incremental compaction,
+  refusing lossy or oversized cuts without changing history; share the complete
+  summary budget across generated/reused prose, framing and metadata. Cold first
+  extraction and separately generated handoffs remain outside this guard.
+
 - Fix baseline E2 replay to retain recorded source tools while keeping probes
   tool-free, and distinguish injected continuity packs from ordinary mentions.
 

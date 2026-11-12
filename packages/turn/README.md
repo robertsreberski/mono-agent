@@ -32,7 +32,20 @@ See [ledger bounds](../../docs/runtime/continuity-ledger.md).
 
 Compaction asks for historical events/corrections and pending items as compact
 predecessor/current-state tuples, alongside continuation context. This is
-prompt-mediated retention, not verbatim preservation or renewed permission.
+prompt-mediated first extraction, never renewed permission. Native incremental
+cuts additionally protect complete historical tuple blocks from `previousSummary`:
+escaped untrusted input asks for verbatim retention, and an exact-output guard
+refuses missing tuples rather than repairing model text. Whole-summary projected
+estimates (including wrapper, split framing, reused history and file metadata)
+share `summaryMaxTokens` and the 1-MiB record bound. Unfitting protected history
+refuses before dispatch, including after an allowance shrink; a lossy first split
+output refuses before the second call. Refusal leaves native history intact.
+Content-free `accounting.preservation` diagnostics describe protected bytes,
+estimates/counts, missing tuples, refusal reason and final summary size separately
+from provider usage, cost and `generatedSummaryTokens`. No retry, new durable
+carrier or archive transform is added. Cold reseeds supply sanitized retained user
+text, not native `previousSummary`: their first re-extraction and separately
+generated handoffs are not protected.
 Initial, incremental and split-prefix requests include a whole-entry-bounded
 4-KiB chronology table: request-local message positions, original roles, recorded
 message times when available and exact serialized UTF-8 frame ranges. It adds

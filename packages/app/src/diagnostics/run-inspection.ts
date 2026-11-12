@@ -70,6 +70,8 @@ const SAFE_SENSITIVE_NUMERIC_KEYS = new Set([
   "reasoning_tokens",
   "reasoningTokens",
   "generatedSummaryTokens",
+  "protectedEstimateTokens",
+  "finalSummaryEstimateTokens",
   "tailEstimateTokens",
   "credentialCount",
   "credential_count",
