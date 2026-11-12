@@ -5,9 +5,11 @@ description: "Separate offline compaction carriage checks from an explicitly fun
 
 The trial in `scripts/summary-retention-trial.mjs` tests summary-specific retention,
 not retrieval quality. It never loads E2 questions, answer keys, registrations or
-private conversations, and does not change the E2 protocol. Fixture facts and the
-original v1 assertions are frozen by `scripts/fixtures/summary-retention/manifest.json`; the v2 assertion
-revision below leaves those fixture bytes unchanged.
+private conversations, and does not change the E2 protocol. The SHA-256 digest in
+`scripts/fixtures/summary-retention/manifest.json` freezes only the bytes of
+`conversations.json` in that directory. The manifest's v1 assertion text is
+descriptive, not covered by that digest; the v2 assertion policy lives in
+`scripts/lib/summary-retention-trial.mjs`. V2 leaves the fixture bytes unchanged.
 
 ## Offline preparation
 
@@ -152,8 +154,11 @@ and requires each checkpoint's saved request inputs. It writes the updated repor
 to stdout, preserving summaries, requests and spending/accounting, and records
 `rescoredFromVersion` (v1 when absent). Completed `pass`/`fail` statuses are
 recomputed; `dry-run` and `stopped` labels remain unchanged, including partial
-progress. A failed score exits nonzero after writing the report; malformed or
-missing inputs are refused. Rescoring never dispatches or resumes a trial.
+progress. Any failed chain or checkpoint exits nonzero after writing the report,
+including failures under a `dry-run` label. Stopped or incomplete statuses and
+partial progress also exit nonzero, even when completed checkpoints pass. Empty
+chain/checkpoint lists and malformed or missing inputs are refused with an offline
+diagnostic reason. Rescoring never dispatches or resumes a trial.
 
 **Pass:** all 48 checkpoints per model retain every introduced tuple and all
 fixture-specific authority/provenance checks pass. A pack or retrieval match never

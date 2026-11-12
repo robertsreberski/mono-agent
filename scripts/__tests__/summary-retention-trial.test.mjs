@@ -9,6 +9,23 @@ import { loadTrialFixtures, loadTrialModules, resolveTrialCatalog, resolveTrialM
 const reply = text => ({ stopReason: "stop", content: [{ type: "text", text }], usage: {
   input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } } });
 
+// Preload in the child itself: a Vitest fetch stub cannot protect subprocesses.
+const networkGuard = `
+import http from "node:http";
+import https from "node:https";
+import { syncBuiltinESMExports } from "node:module";
+const deny = () => { throw Error("Network forbidden"); };
+globalThis.fetch = deny;
+for (const client of [http, https]) { client.request = deny; client.get = deny; }
+syncBuiltinESMExports();
+`;
+async function rescoreCli(root, source) {
+  const input = join(root, "fictional-trial.json"), guard = join(root, "network-guard.mjs");
+  await writeFile(input, JSON.stringify(source));
+  await writeFile(guard, networkGuard);
+  return spawnSync(process.execPath, ["--import", guard, "scripts/lib/summary-retention-trial.mjs", "--rescore", input], { encoding: "utf8" });
+}
+
 // Pre-declared v2 controls, built only from the public frozen fixture fields.
 // These renderers intentionally do not call the scorer's assertion builder.
 function renderControl(tuple, format) {
@@ -98,6 +115,23 @@ describe("pre-declared v2 scorer control matrix", () => {
     }
   });
 
+  it("binds historical outcomes to the subject and rejects explicit conflicting outcomes", async () => {
+    for (const fixture of (await loadTrialFixtures()).fixtures) {
+      for (const tuple of fixture.tuples.filter(row => row.kind === "historical")) {
+        const event = tuple.fields[1];
+        for (const outcome of [`not ${event}; unrelated painting ${event}`, `unrelated painting ${event}`, `${event}; not ${event}`]) {
+          const summary = fixture.tuples.map(row => row.id === tuple.id ? row.reference.replace(`; ${event};`, `; ${outcome};`) : row.reference).join("\n");
+          const score = scoreTrialSummary(fixture, 4, summary);
+          expect(score.tuples.find(row => row.id === tuple.id).retained, summary).toBe(false);
+          expect(score.pass).toBe(false);
+        }
+        // A negative outcome for a different subject must not negate this event.
+        const summary = fixture.tuples.map(row => row.id === tuple.id ? `${row.reference} unrelated painting not ${event}` : row.reference).join("\n");
+        expect(scoreTrialSummary(fixture, 4, summary).pass).toBe(true);
+      }
+    }
+  });
+
   it("accepts qualified warnings but never lets another clause negate a positive promotion", async () => {
     const fixture = (await loadTrialFixtures()).fixtures[0];
     const reference = fixture.tuples.map(tuple => tuple.reference).join("\n");
@@ -158,8 +192,7 @@ describe("pre-declared v2 scorer control matrix", () => {
       const root = await mkdtemp(join(tmpdir(), "summary-trial-rescore-"));
       try {
         const input = join(root, "fictional-trial.json");
-        await writeFile(input, JSON.stringify(source));
-        const result = spawnSync(process.execPath, ["scripts/lib/summary-retention-trial.mjs", "--rescore", input], { encoding: "utf8" });
+        const result = await rescoreCli(root, source);
         expect(result.status, result.stderr).toBe(0);
         expect(JSON.parse(result.stdout)).toEqual(report);
         expect(JSON.parse(await readFile(input, "utf8"))).toEqual(source);
@@ -167,6 +200,71 @@ describe("pre-declared v2 scorer control matrix", () => {
       expect(forbiddenNetwork).not.toHaveBeenCalled();
     } finally { vi.unstubAllGlobals(); }
   });
+
+  it("refuses empty chain/checkpoint inventories with specific offline diagnostics", async () => {
+    const fixtures = await loadTrialFixtures(), fixture = fixtures.fixtures[0];
+    const root = await mkdtemp(join(tmpdir(), "summary-trial-empty-"));
+    try {
+      for (const [chains, reason] of [
+        [[], "Missing rescore chains"],
+        [[{ fixture: fixture.id, requests: [], checkpoints: [] }], "Missing rescore checkpoints"],
+      ]) {
+        const source = { schema: "summary-retention-trial-v1", fixturesSha256: fixtures.sha256, status: "pass", chains };
+        await expect(rescoreTrial(source)).rejects.toThrow(reason);
+        const result = await rescoreCli(root, source);
+        expect(result.status).toBe(1);
+        expect(result.stderr).toContain(`Offline rescore refused: ${reason}`);
+        expect(result.stdout).toBe("");
+      }
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it("derives CLI exit status from rescored checkpoints, partial progress and completion status", async () => {
+    const fixtures = await loadTrialFixtures(), fixture = fixtures.fixtures[0];
+    const chain = { fixture: fixture.id, requests: [{ stage: 4, context: { messages: [] } }],
+      checkpoints: [{ checkpoint: 4, summary: fixture.tuples.map(tuple => tuple.reference).join("\n") }] };
+    const failed = { ...chain, checkpoints: [{ checkpoint: 4, summary: "Missing all tuples." }] };
+    const source = { schema: "summary-retention-trial-v1", fixturesSha256: fixtures.sha256, chains: [chain] };
+    const root = await mkdtemp(join(tmpdir(), "summary-trial-exit-"));
+    try {
+      for (const [status, scoredChain, progress, expected] of [
+        ["pass", chain, undefined, 0], ["dry-run", chain, undefined, 0],
+        ["pass", failed, undefined, 1], ["dry-run", failed, undefined, 1],
+        ["stopped", failed, undefined, 1], ["stopped", chain, undefined, 1],
+        ["running", chain, undefined, 1], ["incomplete", chain, undefined, 1],
+        ["stopped", chain, failed, 1], ["dry-run", chain, failed, 1],
+        ["pass", chain, chain, 1],
+      ]) {
+        const result = await rescoreCli(root, { ...source, status, chains: [scoredChain], ...(progress ? { progress } : {}) });
+        expect(result.status, `${status}: ${result.stderr}`).toBe(expected);
+        const report = JSON.parse(result.stdout);
+        expect(report.chains[0].pass).toBe(scoredChain === chain);
+        if (progress) expect(report.progress.pass).toBe(progress === chain);
+      }
+      const invalid = await rescoreCli(root, { ...source, status: "pass", fixturesSha256: "wrong" });
+      expect(invalid.status).toBe(1);
+      expect(invalid.stderr).toContain("Unknown trial or fixture digest");
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it("preloads the child network guard for fetch and named http/https exports", async () => {
+    const root = await mkdtemp(join(tmpdir(), "summary-trial-network-guard-"));
+    try {
+      const guard = join(root, "network-guard.mjs");
+      await writeFile(guard, networkGuard);
+      const result = spawnSync(process.execPath, ["--import", guard, "--input-type=module", "-e", `
+        import { request as httpRequest, get as httpGet } from "node:http";
+        import { request as httpsRequest, get as httpsGet } from "node:https";
+        let blocked = 0;
+        for (const attempt of [() => fetch("data:text/plain,offline"), ...[httpRequest, httpGet, httpsRequest, httpsGet].map(fn => () => fn("guard:offline"))]) {
+          try { attempt(); } catch (error) { if (error.message !== "Network forbidden") throw error; blocked++; }
+        }
+        if (blocked !== 5) throw Error("Network guard inactive");
+      `], { encoding: "utf8" });
+      expect(result.status, result.stderr).toBe(0);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
 });
 
 describe("frozen fictional summary qualification", () => {

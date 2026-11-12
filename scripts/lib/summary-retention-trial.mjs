@@ -90,7 +90,13 @@ function correctionRetained(text, assertion) {
 function tupleRetained(text, a) {
   if (!has(text, a.subject)) return false;
   switch (a.kind) {
-    case "historical": return has(text, a.date) && clauses(text).some(clause => has(clause, a.event) && !qualified(clause));
+    case "historical": {
+      // A standalone outcome field inherits this tuple's subject; prose must name
+      // it. An unrelated subject cannot supply a missing or negated outcome.
+      const outcome = new RegExp(`^(?:(?:not|never)\\s+)?${token(a.event)}$`, "u");
+      const events = clauses(text).filter(clause => has(clause, a.event) && (has(clause, a.subject) || outcome.test(clause)));
+      return has(text, a.date) && events.length > 0 && events.every(clause => !qualified(clause));
+    }
     case "decision": {
       const selected = token(a.selected);
       const choice = new RegExp(`(?:${selected}\\s+(?:was\\s+)?selected|(?:selected|chose)\\s+${selected})`, "u");
@@ -161,9 +167,11 @@ export async function rescoreTrial(source) {
   const fixtures = await loadTrialFixtures();
   need(source.schema === "summary-retention-trial-v1" && source.fixturesSha256 === fixtures.sha256, "Unknown trial or fixture digest");
   const report = structuredClone(source);
+  need(Array.isArray(report.chains) && report.chains.length > 0, "Missing rescore chains");
   const rescoreChain = chain => {
     const fixture = fixtures.fixtures.find(row => row.id === chain.fixture);
     need(fixture && Array.isArray(chain.requests) && Array.isArray(chain.checkpoints), "Missing rescore inputs");
+    need(chain.checkpoints.length > 0, "Missing rescore checkpoints");
     chain.checkpoints = chain.checkpoints.map(row => {
       need(chain.requests.some(request => request.stage === row.checkpoint && request.context?.messages), "Missing checkpoint request inputs");
       return { ...row, ...scoreTrialSummary(fixture, row.checkpoint, row.summary, { requests: chain.requests }) };
@@ -410,9 +418,11 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     need(values.rescore, "Expected --rescore <trial.json>");
     const report = await rescoreTrial(JSON.parse(await readFile(values.rescore, "utf8")));
     console.log(JSON.stringify(report, null, 2));
-    if (report.status === "fail") process.exitCode = 1;
-  } catch {
-    console.error("Offline rescore refused: supply --rescore with a matching trial and its request inputs.");
+    const chains = [...report.chains, ...(report.progress ? [report.progress] : [])];
+    if (!["pass", "dry-run"].includes(report.status) || report.progress
+      || chains.some(chain => !chain.pass || chain.checkpoints.some(checkpoint => !checkpoint.pass))) process.exitCode = 1;
+  } catch (error) {
+    console.error(`Offline rescore refused: ${error.message}`);
     process.exitCode = 1;
   }
 }
