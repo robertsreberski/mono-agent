@@ -525,6 +525,18 @@ promoted during recovery. User evidence becomes visible only after canonical
 durability; this does not introduce a new pre-admission/consumption callback.
 Owner provenance identifies a historical quotation, **not renewed approval**.
 
+`searchContinuity` keeps legacy chronological/AND matching and `before`/`next`
+by default. Explicit `mode: "relevance"` adds Unicode-aware partial coverage,
+phrase/proximity ranking, matched-context previews (512 bytes with byte ranges),
+and typed v2 continuations. Punctuation-only queries use literal chronological
+matching. Complete scans are bounded to 100k records / 256 MiB, 256-row metadata
+pages and 32-record / 2-MiB text batches, with a cooperative five-second deadline.
+`scan_capacity` returns no complete ranked subset; browse chronologically or get a
+known ID. Initial/examined/final membership hashes and final purge checks prevent
+mixed-snapshot disclosure. No migration or ledger enablement is needed. See the
+[retrieval envelope and measured resource limits](../../docs/runtime/sessions-concurrency.md#bounded-relevance-discovery-and-recovery),
+including the explicitly unmet original 64-MiB heap target at extreme capacity.
+
 `searchContinuity` / `getContinuity` return scoped evidence, not instructions or
 new approval. Chunks contain at most 8192 UTF-8 bytes with retained-text digests
 and explicit redaction/truncation/tombstone status. Retained text uses the same
@@ -990,6 +1002,7 @@ ContinuityGetInput
 ContinuityGetResult
 ContinuityPin
 ContinuityPreparation
+ContinuityPreviewRange
 ContinuityPublication
 ContinuityPublicationWriter
 ContinuityReceipt
@@ -997,9 +1010,11 @@ ContinuityReconciliation
 ContinuityReconciliationResult
 ContinuityRecordInput
 ContinuityRecordMetadata
+ContinuityRelevanceContinuation
 ContinuityScope
 ContinuitySearchInput
 ContinuitySearchPage
+ContinuitySearchScan
 ContinuitySnapshot
 ContinuitySnapshotInput
 ContinuitySnapshotRecord

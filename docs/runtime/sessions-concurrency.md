@@ -114,6 +114,66 @@ never silently expire: exhausted pinned capacity reports degraded continuity
 rather than invalidating references. Conversation reset and
 `restart --clear-sessions` remove this evidence with the existing sidecar.
 
+### Bounded relevance discovery and recovery
+
+Lexical `ConversationHistory` searches select deterministic Unicode-aware partial
+term coverage, phrase and proximity ranking. Repeating a term does not buy more
+coverage; ordinal and opaque record ID break ties. Ranking infers neither truth,
+authority nor supersession. Punctuation-only queries (including a lone quotation
+mark) use literal substring matching, explicitly labelled `literal`, newest first;
+whitespace-only queries are invalid. Queryless browsing and explicit
+`mode: "chronological"` keep chronological ordering. Direct `searchContinuity`
+callers retain the legacy default, AND queries and `before`/`next` pagination;
+select `mode: "relevance"` explicitly. Already issued MCP v1 cursors keep their
+legacy semantics; new ranked traversals use v2 cursors bound to the query, limit,
+ranking version, original watermark, ordered membership digest, anchor and request
+scope. Restart with the same scope can continue; a different run expires the cursor.
+
+Search previews are digest-verified sanitized **matched context**, at most 512
+UTF-8 bytes, with retained-byte ranges and clipping flags. Nearby qualification
+and negation are preserved where possible. Previews are always incomplete evidence,
+not completed record recovery. Get starts at byte zero; there is no matched-offset
+get. Within **three tool rounds**, the supported path is search → **batch get of
+two records** → **batch continuation of both records**, for two retained records
+each at most **16,384 bytes**, using 8,192-byte chunks. A single deep record also
+fits; sequential search/get-original/get-correction fits when each record is at
+most 8,192 bytes. Rounds are not call counts. Larger records can need more rounds.
+Only concatenated complete retained records with verified digests witness recovery.
+This is a mechanical path envelope, not a guarantee a model chooses useful queries.
+
+Relevance scans cap eligible coverage at **100,000 records / 256 MiB** of retained
+text, metadata pages at 256 rows, and text batches at 32 records / 2 MiB (each
+record at most 1 MiB). Only the top `limit+1` descriptors/previews and incremental
+hashes survive processing. Initial, examined and final membership manifests must
+agree; selected identities, digests and visibility are rechecked at disclosure,
+including pending purge intents. Late publication below the watermark or retention
+changes invalidate traversal; later records above it are excluded. No schema or
+existing summary/journal migration is required.
+
+The **five-second deadline is cooperative**, checked between bounded queries and
+records, not a hard SQLite interrupt. The synchronous call still blocks its caller
+for the scan. `scan_capacity` returns no allegedly complete ranked subset: coverage
+is incomplete and examined record/byte counts are disclosed. Follow the offered
+explicit chronological browse, or get a known ID. Do not infer absence from an
+exhausted scan; `source_changed` likewise requires a fresh traversal.
+
+For reproducible fictional sizing, build conversation and run
+`node --expose-gc scripts/continuity-relevance-scan.mjs`. On Node 24.18.0,
+Apple M3 Max / arm64 / 48 GiB RAM, dense, absent and long-Unicode cases measured
+0.259–0.348 seconds at 10k / 32 MiB and 2.204–2.867 seconds at 100k / 256 MiB,
+including continuations. Maximum measured transaction/text-batch blocking was
+201 ms. Cold means a reopened SQLite connection, **not flushed OS filesystem
+cache**. Sampled additional peaks were 25/96 MiB JS heap and 20/97 MiB RSS,
+respectively (rounded up). The original **64 MiB heap target was not met** in the
+extreme 64 × 1-MiB Unicode-record case: transient V8 GC sawtooth, not accumulating
+record collections. The accepted measured envelope is **100 MiB additional JS
+heap** on this hardware (RSS target remains 128 MiB). Five worst-case scans in
+one process with GC after each measured post-GC heaps of 6.905, 5.949, 5.941,
+5.942 and 5.938 MiB: no accumulating growth (sub-KiB plateau variation).
+A 1-MiB batch/early-release mitigation did not lower the worst peak and was not
+kept. Measurements are hardware/runtime observations, not universal latency or
+memory guarantees; exhausted scans remain explicitly incomplete.
+
 Optional [gated ledger upkeep](/runtime/continuity-ledger/) adds one bounded
 completion before eligible primary cold seeds. It is off by default; it can add
 up to 60 seconds under the exclusive conversation hold. Strict request-cap mode

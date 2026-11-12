@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Add bounded relevance discovery and matched-context previews to lexical
+  `ConversationHistory` searches, with consistent v2 continuations, literal
+  punctuation matching and explicit scan exhaustion. Keep chronological reader
+  defaults and the three-round two-record recovery envelope at 16 KiB per record;
+  ledger upkeep remains opt-in.
+
 - Add bounded private E2 probe retrieval receipts that survive checkpoint
   snapshot restores, retaining lookup arguments and responses within a per-run
   cap without changing model requests or gating on diagnostic I/O.

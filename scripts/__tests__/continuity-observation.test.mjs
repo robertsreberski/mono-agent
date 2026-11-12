@@ -183,7 +183,11 @@ describe("read-only continuity observation", () => {
   it("pins the reason allowlist to source-defined pack and snapshot reasons", () => {
     const contracts = fs.readFileSync(join(ROOT, "packages/conversation/src/tool-history/continuity-contracts.ts"), "utf8");
     const packSource = fs.readFileSync(join(ROOT, "packages/conversation/src/continuity/pack.ts"), "utf8");
-    const snapshotReasons = [...contracts.match(/readonly degradedReason\?: (.*);/)[1].matchAll(/"([^"]+)"/g)].map(m => m[1]);
+    // Search pages also have degradedReason, but are not pack observations.
+    // Pin the actual snapshot union, not the first similarly named field.
+    const snapshotContract = contracts.match(/export interface ContinuitySnapshot \{([\s\S]*?)^\}/m)?.[1];
+    expect(snapshotContract).toBeDefined();
+    const snapshotReasons = [...snapshotContract.match(/readonly degradedReason\?: (.*);/)[1].matchAll(/"([^"]+)"/g)].map(m => m[1]);
     const packReasons = [...packSource.matchAll(/degradedReason: "([^"]+)"/g)].map(m => m[1]);
     const implicit = ["none", "empty", "overflow", "coverage_gap", "upkeep_gap"];
     for (const reason of implicit) expect(packSource).toContain(`"${reason}"`);

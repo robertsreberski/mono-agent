@@ -998,6 +998,17 @@ untrusted.
 
 ### Retained conversation evidence
 
+`ConversationHistory` lexical queries now select bounded relevance discovery;
+queryless or explicit `mode: "chronological"` browsing keeps ordinal pagination,
+and existing v1 cursors retain their legacy semantics. Ranked/literal v2 cursors
+bind a stable membership manifest. Matched previews stay incomplete, at most 512
+UTF-8 bytes; `scan_capacity` discloses incomplete coverage rather than no match.
+Three rounds support search → batch get → batch continuation for two complete
+retained records each at most 16 KiB, with 8-KiB chunks and digest verification;
+there is no offset-get shortcut. See [bounded retrieval and measured resource
+limits](../../docs/runtime/sessions-concurrency.md#bounded-relevance-discovery-and-recovery).
+This does not enable the opt-in ledger or add a provider call.
+
 Configured harnesses and channel controllers expose `ConversationHistory` by
 normal tool policy when `runtime.session.continuity.enabled` is not false
 (default true). `"*"` allows it; an explicit deny wins; a restrictive list must

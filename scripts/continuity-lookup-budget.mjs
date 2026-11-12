@@ -51,6 +51,51 @@ function retainedInventory(modules, checkpoint) {
   return rows;
 }
 
+/** Fictional-only sizing regression, independent of any corpus-loading loops. */
+export async function measureSizingRegressions({ modules, root, handleConversationHistoryRequest }) {
+  // Regression records use the real writer, handler and wire response splitter too.
+  const { ToolHistoryWriter, ToolHistoryReader, continuityRecordId, continuityGenerationId } = modules.conversation;
+
+  const texts = ["Cobalt 🔷 rectangle. ".repeat(1200), '\"\n'.repeat(5000)];
+  const inventory = { corpus: { regressions: digest(texts) }, paths: [], retained: [] };
+  const conversationId = "web:lookup-sizing-fiction";
+  const writer = await ToolHistoryWriter.open({ root, continuityEnabled: true });
+  try {
+    const generationId = continuityGenerationId();
+    const records = texts.map((text, sequence) => ({ text, sequence, recordId: continuityRecordId(conversationId, `regression-${sequence}`), runId: "lookup-sizing-regression", kind: "assistant", provenance: "assistant" }));
+    await writer.prepareContinuity({ generationId, conversationId, logicalConversationId: conversationId, beforeDigest: null, afterDigest: sha256("regressions"), records });
+    await writer.commitContinuity({ generationId, conversationId, canonicalDigest: sha256("regressions") });
+    const binding = { reader: new ToolHistoryReader(root), conversationId, logicalConversationId: conversationId, runId: "lookup-sizing-regression" };
+    for (const [index, record] of records.entries()) {
+      for (const arm of LOOKUP_DEFAULT_ARMS) {
+        const path = { traceId: `regression-${index}`, probeId: "p01", arm, sourceSha256: sha256(record.text), retainedSha256: sha256(record.text),
+          recordId: record.recordId, retainedBytes: Buffer.byteLength(record.text), initialContextBytes: null, initialTokens: arm === "native-lookup" ? 150000 : 12000, admissionCap: 6000000,
+          calls: 0, bytes: 0, cumulativeBytes: 0, responseBytes: [], responseSha256: [], searchPages: 0, getChunks: 0, discovered: false };
+        // No packed id in these regression fixtures: one query-first search then get.
+        let result = handleConversationHistoryRequest(binding, { action: "search", query: index === 0 ? "Cobalt" : '\"', limit: 10 });
+        const measure = result => { const serialized = JSON.stringify(result.content), bytes = Buffer.byteLength(serialized); path.calls++; path.bytes += bytes; path.cumulativeBytes += path.bytes; path.responseBytes.push(bytes); path.responseSha256.push(sha256(serialized)); };
+        measure(result); path.searchPages++;
+        const found = result.structuredContent.items?.find(item => item.sha256 === path.retainedSha256);
+        path.discovered = found !== undefined;
+        if (!path.discovered) throw new Error("regression_source_not_discovered");
+        // Get only an ID that discovery actually returned, never the planted ID.
+        path.recordId = found.recordId;
+        let args = { action: "get", recordId: found.recordId, chunkBytes: 8192 }, recovered = "";
+        do {
+          result = handleConversationHistoryRequest(binding, args); measure(result); path.getChunks++;
+          recovered += result.structuredContent.chunk;
+          args = result.structuredContent.navigation.nextActions[0]?.arguments;
+        } while (args);
+        path.verified = sha256(recovered) === path.retainedSha256;
+        if (!path.verified) throw new Error("regression_digest_mismatch");
+        inventory.paths.push(path);
+      }
+      inventory.retained.push({ traceId: `regression-${index}`, recordId: record.recordId, sha256: sha256(record.text), retainedBytes: Buffer.byteLength(record.text), originalBytes: Buffer.byteLength(record.text) });
+    }
+  } finally { await writer.close(); await rm(root, { recursive: true, force: true }); }
+  return inventory;
+}
+
 export async function measureBudget({ output, onProgress = () => {} }) {
   await mkdir(output, { recursive: true, mode: 0o700 });
   const modules = await productionModules(ROOT);
@@ -99,41 +144,10 @@ export async function measureBudget({ output, onProgress = () => {} }) {
       }
     }
   }
-  // Regression records use the real writer, handler and wire response splitter too.
-  const { ToolHistoryWriter, ToolHistoryReader, continuityRecordId, continuityGenerationId } = modules.conversation;
   const { handleConversationHistoryRequest } = await import(pathToFileURL(join(ROOT, "packages/app/dist/request-tools/conversation-history.js")).href);
-  const texts = ["Cobalt 🔷 rectangle. ".repeat(1200), '\"\n'.repeat(5000)];
-  inventory.corpus.regressions = digest(texts);
-  const root = join(output, "scratch", "regressions"), conversationId = "web:lookup-sizing-fiction";
-  const writer = await ToolHistoryWriter.open({ root, continuityEnabled: true });
-  try {
-    const generationId = continuityGenerationId();
-    const records = texts.map((text, sequence) => ({ text, sequence, recordId: continuityRecordId(conversationId, `regression-${sequence}`), runId: "lookup-sizing-regression", kind: "assistant", provenance: "assistant" }));
-    await writer.prepareContinuity({ generationId, conversationId, logicalConversationId: conversationId, beforeDigest: null, afterDigest: sha256("regressions"), records });
-    await writer.commitContinuity({ generationId, conversationId, canonicalDigest: sha256("regressions") });
-    const binding = { reader: new ToolHistoryReader(root), conversationId, logicalConversationId: conversationId, runId: "lookup-sizing-regression" };
-    for (const [index, record] of records.entries()) {
-      for (const arm of LOOKUP_DEFAULT_ARMS) {
-        const path = { traceId: `regression-${index}`, probeId: "p01", arm, sourceSha256: sha256(record.text), retainedSha256: sha256(record.text),
-          recordId: record.recordId, retainedBytes: Buffer.byteLength(record.text), initialContextBytes: null, initialTokens: arm === "native-lookup" ? 150000 : 12000, admissionCap: 6000000,
-          calls: 0, bytes: 0, cumulativeBytes: 0, responseBytes: [], responseSha256: [], searchPages: 0, getChunks: 0, discovered: true };
-        // No packed id in these regression fixtures: one query-first search then get.
-        let result = handleConversationHistoryRequest(binding, { action: "search", query: index === 0 ? "Cobalt" : '\"', limit: 10 });
-        const measure = result => { const serialized = JSON.stringify(result.content), bytes = Buffer.byteLength(serialized); path.calls++; path.bytes += bytes; path.cumulativeBytes += path.bytes; path.responseBytes.push(bytes); path.responseSha256.push(sha256(serialized)); };
-        measure(result); path.searchPages++;
-        let args = { action: "get", recordId: record.recordId, chunkBytes: 8192 }, recovered = "";
-        do {
-          result = handleConversationHistoryRequest(binding, args); measure(result); path.getChunks++;
-          recovered += result.structuredContent.chunk;
-          args = result.structuredContent.navigation.nextActions[0]?.arguments;
-        } while (args);
-        path.verified = sha256(recovered) === path.retainedSha256;
-        if (!path.verified) throw new Error("regression_digest_mismatch");
-        inventory.paths.push(path);
-      }
-      inventory.retained.push({ traceId: `regression-${index}`, recordId: record.recordId, sha256: sha256(record.text), retainedBytes: Buffer.byteLength(record.text), originalBytes: Buffer.byteLength(record.text) });
-    }
-  } finally { await writer.close(); await rm(root, { recursive: true, force: true }); }
+  const regressions = await measureSizingRegressions({ modules, root: join(output, "scratch", "regressions"), handleConversationHistoryRequest });
+  inventory.corpus.regressions = regressions.corpus.regressions;
+  inventory.paths.push(...regressions.paths); inventory.retained.push(...regressions.retained);
   const budget = freezeBudget(inventory);
   await writeFile(join(output, "inventory.json"), `${JSON.stringify(inventory, null, 2)}\n`, { mode: 0o600 });
   await writeFile(join(output, "budget.json"), `${JSON.stringify(budget, null, 2)}\n`, { mode: 0o600 });

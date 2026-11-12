@@ -97,6 +97,9 @@ export interface ContinuityScope {
 export interface ContinuitySearchInput extends ContinuityScope {
   readonly query?: string;
   readonly limit?: number;
+  /** Legacy chronological search remains the default, including AND queries. */
+  readonly mode?: "chronological" | "relevance";
+  readonly continuation?: ContinuityRelevanceContinuation;
   /** Stable descending sequence across physical rollover buckets. */
   readonly before?: number;
 }
@@ -121,10 +124,40 @@ export interface ContinuityRecordMetadata {
   readonly untrusted: true;
 }
 
+export interface ContinuityPreviewRange {
+  readonly start: number;
+  readonly end: number;
+  readonly clippedBefore: boolean;
+  readonly clippedAfter: boolean;
+  /** A preview never witnesses completed recovery, even for a short record. */
+  readonly complete: false;
+}
+export interface ContinuityRelevanceContinuation {
+  readonly version: 2;
+  readonly rankingVersion: 1;
+  readonly query: string;
+  readonly limit: number;
+  readonly watermark: number;
+  readonly manifest: string;
+  readonly anchor: { readonly recordId: string; readonly ordinal: number; readonly score: number };
+}
+export interface ContinuitySearchScan {
+  readonly complete: boolean;
+  readonly records: number;
+  readonly bytes: number;
+  readonly elapsedMs: number;
+  readonly maxBatchMs: number;
+  readonly metadataPages: number;
+  readonly textBatches: number;
+}
 export interface ContinuitySearchPage {
   readonly available: boolean;
-  readonly items: readonly (ContinuityRecordMetadata & { readonly preview: string })[];
+  readonly items: readonly (ContinuityRecordMetadata & { readonly preview: string; readonly previewRange?: ContinuityPreviewRange })[];
   readonly next?: number;
+  readonly mode?: "chronological" | "relevance" | "literal";
+  readonly continuation?: ContinuityRelevanceContinuation;
+  readonly degradedReason?: "scan_capacity" | "source_changed" | "invalid_cursor" | "purge_pending";
+  readonly scan?: ContinuitySearchScan;
 }
 
 export interface ContinuityGetInput extends ContinuityScope {

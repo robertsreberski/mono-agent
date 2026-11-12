@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { pathToFileURL } from "node:url";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { acknowledgeContinuityPurge, claimContinuityPurge, pendingContinuityPurges, persistContinuityPurge } from "../tool-history/continuity-purge.js";
 import { ToolHistoryReader } from "../tool-history/reader.js";
 import { ToolHistoryWriter } from "../tool-history/writer.js";
@@ -199,4 +199,19 @@ it("does no purge-marker I/O in disabled runtime mode, with a positive enabled p
   const run = (enabled: boolean) => spawnSync(process.execPath, ["--import", pathToFileURL(preload).href, child, String(enabled)], { encoding: "utf8", timeout: 15000 });
   const off = run(false); expect(off.status, off.stderr).toBe(0); expect(existsSync(probe)).toBe(false);
   const on = run(true); expect(on.status, on.stderr).toBe(0); expect(existsSync(probe)).toBe(true);
+});
+
+it("rechecks pending purge at the ranked-search final disclosure boundary", async () => {
+  const dir = await root(), writer = await open(dir); await result(writer); await writer.close();
+  const reader = new ToolHistoryReader(dir);
+  const internal = reader as unknown as { continuityPurgePending(value: typeof scope): boolean };
+  const check = internal.continuityPurgePending.bind(reader); let checks = 0;
+  const spy = vi.spyOn(internal, "continuityPurgePending").mockImplementation(value => {
+    if (++checks === 2) persistContinuityPurge(dir, { scope: "logical", conversationId: id });
+    return check(value);
+  });
+  try {
+    expect(reader.searchContinuity({ ...scope, mode: "relevance", query: "Fictional" })).toMatchObject({ available: false, items: [], degradedReason: "purge_pending" });
+    expect(checks).toBe(2); expect(pendingContinuityPurges(dir)).toHaveLength(1);
+  } finally { spy.mockRestore(); }
 });

@@ -98,6 +98,37 @@ describe("ConversationHistory scoped evidence", () => {
     }
   });
 
+  it("keeps issued v1 lexical cursors chronological while new queries use v2 relevance/literal discovery", async () => {
+    const f = await fixture(); await publish(f.writer, preparation(["Cobalt observatory old.", "cobalt", "Cobalt observatory new.", 'A literal " quote.']));
+    const legacy = body(handleConversationHistoryRequest(f.binding, { query: "cobalt", mode: "chronological", limit: 1 }));
+    expect(JSON.parse(Buffer.from(legacy.nextCursor, "base64url").toString()).version).toBe(1);
+    expect(body(handleConversationHistoryRequest(f.binding, { query: "cobalt", limit: 1, cursor: legacy.nextCursor })).items[0].preview).toBe("cobalt");
+    const ranked = body(handleConversationHistoryRequest(f.binding, { query: "cobalt observatory", limit: 1 }));
+    expect(ranked).toMatchObject({ mode: "relevance", scan: { complete: true, records: 4 } });
+    expect(JSON.parse(Buffer.from(ranked.nextCursor, "base64url").toString()).version).toBe(2);
+    for (const patch of [{ rankingVersion: 2 }, { watermark: 0 }, { manifest: sha("wrong") }, { anchor: { recordId: ranked.items[0].recordId, score: 0, ordinal: 1 } }]) {
+      expect(body(handleConversationHistoryRequest(f.binding, { query: "cobalt observatory", limit: 1, cursor: alter(ranked.nextCursor, patch) })).error.code).toBe("invalid_cursor");
+    }
+    const literal = body(handleConversationHistoryRequest(f.binding, { query: '"' }));
+    expect(literal.mode).toBe("literal"); expect(literal.items).toHaveLength(1);
+    await f.writer.close(); writers.delete(f.writer);
+    const restarted = { ...f.binding, reader: new ToolHistoryReader(f.root) };
+    expect(body(handleConversationHistoryRequest(restarted, { query: "cobalt observatory", limit: 1, cursor: ranked.nextCursor })).items).toHaveLength(1);
+    expect(body(handleConversationHistoryRequest(restarted, { action: "search", mode: "relevance" })).error.code).toBe("invalid_query");
+  });
+
+  it("discloses scan exhaustion and offers explicit browsing, never a purported no-match ranked page", async () => {
+    const f = await fixture();
+    const reader = { ...f.reader,
+      searchContinuity: () => ({ available: true, items: [], mode: "relevance" as const, degradedReason: "scan_capacity" as const,
+        scan: { complete: false, records: 31, bytes: 8192, elapsedMs: 5001, maxBatchMs: 20, metadataPages: 1, textBatches: 1 } }),
+      getContinuity: f.reader.getContinuity.bind(f.reader), continuityGaps: f.reader.continuityGaps.bind(f.reader), latestContinuitySummary: f.reader.latestContinuitySummary.bind(f.reader) };
+    const result = handleConversationHistoryRequest({ ...f.binding, reader }, { query: "cobalt" });
+    expect(body(result)).toMatchObject({ items: [], degradedReason: "scan_capacity", scan: { complete: false, records: 31 } });
+    expect(result.content[0]!.text).toContain("no complete ranked page");
+    expect(body(result).navigation.nextActions[0].arguments).toEqual({ action: "search", mode: "chronological", limit: 5 });
+  });
+
   it("searches Unicode case-insensitively and leads escaped multi-block evidence with exact model-visible navigation", async () => {
     const f = await fixture(), input = preparation(["ŻÓŁTY prostokąt.", '\"\n'.repeat(5000)]); await publish(f.writer, input);
     const found = body(handleConversationHistoryRequest(f.binding, { query: "żółty" }));
@@ -153,7 +184,7 @@ describe("ConversationHistory scoped evidence", () => {
     const database = new DatabaseSync(f.reader.databasePath);
     try { database.prepare("UPDATE continuity_records SET retained_text=? WHERE record_id=?").run("Unverified fictional injection.", input.records[0]!.recordId); }
     finally { database.close(); }
-    for (const args of [{ action: "get", recordId: input.records[0]!.recordId }, { action: "search" }]) {
+    for (const args of [{ action: "get", recordId: input.records[0]!.recordId }, { action: "search" }, { action: "search", query: "fictional" }]) {
       const result = handleConversationHistoryRequest(f.binding, args as never);
       expect(body(result).error.code).toBe("history_unavailable"); expect(JSON.stringify(result)).not.toContain("Unverified fictional injection");
     }
