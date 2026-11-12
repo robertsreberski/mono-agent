@@ -1,0 +1,256 @@
+{
+  "purpose": "Fictional queries and expectations frozen before v2 weights; no production corpus.",
+  "recovery": [
+    {
+      "name": "old-pair",
+      "query": "historical cobalt delivery correction",
+      "required": [
+        {
+          "kind": "user",
+          "text": "Original report: cobalt delivery was proposed for day 12; not approved."
+        },
+        {
+          "kind": "user",
+          "text": "Correction: cobalt delivery was revised to day 18 instead of day 12; no effects authorized."
+        }
+      ],
+      "echo": "Cobalt delivery recap day 18; this is an assistant echo.",
+      "echoCount": 24,
+      "recordBytes": 12000,
+      "maxRounds": 3,
+      "maxSearchRank": 5
+    },
+    {
+      "name": "short-edit",
+      "query": "earlier cobalt schedule edit",
+      "required": [
+        {
+          "kind": "assistant",
+          "text": "Original report: cobalt schedule was day 12."
+        },
+        {
+          "kind": "user",
+          "text": "Cobalt schedule: day 18 instead of 12."
+        }
+      ],
+      "echo": "Cobalt schedule recap day 12; this is an assistant echo.",
+      "echoCount": 24,
+      "recordBytes": 12000,
+      "maxRounds": 3,
+      "maxSearchRank": 5
+    },
+    {
+      "name": "identifier-suffix",
+      "query": "beacon-27 earlier request",
+      "required": [
+        {
+          "kind": "user",
+          "text": "Requested TASK_beacon-27: use amber for the fictional beacon."
+        },
+        {
+          "kind": "user",
+          "text": "Correction for TASK_beacon-27: use cobalt instead of amber."
+        }
+      ],
+      "echo": "Requested TASK_beacon-270: unrelated numeric near-miss.",
+      "echoCount": 24,
+      "recordBytes": 12000,
+      "maxRounds": 3,
+      "maxSearchRank": 5
+    },
+    {
+      "name": "historical-event",
+      "query": "historical cobalt launch event",
+      "required": [
+        {
+          "kind": "user",
+          "text": "Cobalt launch was scheduled for day 12."
+        },
+        {
+          "kind": "user",
+          "text": "Cobalt launch moved to day 18 after the earlier schedule."
+        }
+      ],
+      "echo": "Cobalt launch recap day 18; this is an assistant echo.",
+      "echoCount": 24,
+      "recordBytes": 12000,
+      "maxRounds": 3,
+      "maxSearchRank": 5
+    }
+  ],
+  "upgrade": {
+    "texts": [
+      "Cobalt correction day 12.",
+      "Cobalt correction day 18.",
+      "ŻÓŁTY observatory cobalt.",
+      "żółty observatory cobalt.",
+      "A literal \" quotation.",
+      "Another literal \" quotation.",
+      "Cobalt revised to day 18.",
+      "Cobalt original report.",
+      "Unrelated correction.",
+      "Cobalt correction day 18."
+    ],
+    "queries": [
+      "cobalt correction",
+      "żółty observatory",
+      "\"",
+      "historical cobalt correction"
+    ],
+    "v1": [
+      {
+        "query": "cobalt correction",
+        "firstPage": [
+          "chr1_xCphrc4iu5oB2k0FHYO7xHUukOJ9ylUxoCkzU80yhJI",
+          "chr1_oesTyqq68aSwlF6pat6633ouZJf0vtxO9Gp9cDFVtzU"
+        ],
+        "issuedCursor": {
+          "version": 2,
+          "rankingVersion": 1,
+          "query": "cobalt correction",
+          "limit": 2,
+          "watermark": 10,
+          "manifest": "373932033faa7784ef287ae94ce47260f57fa30800499efbfcc61be0e128f7fa",
+          "anchor": {
+            "score": 2165528,
+            "ordinal": 2,
+            "recordId": "chr1_oesTyqq68aSwlF6pat6633ouZJf0vtxO9Gp9cDFVtzU"
+          }
+        },
+        "traversal": [
+          "chr1_xCphrc4iu5oB2k0FHYO7xHUukOJ9ylUxoCkzU80yhJI",
+          "chr1_oesTyqq68aSwlF6pat6633ouZJf0vtxO9Gp9cDFVtzU",
+          "chr1_-frAEwXgXI7pCpE3QMqC5DVjx4Ya-J1PVmMSfu1hTMU",
+          "chr1_FivAgpkemb8aP0-naG8Ic-3a_YwxQHMn-5xPjI97vNg",
+          "chr1_1ICDuRuBO6isAmEq_OEFje2MvL1sufxQUnojxBtM_0g",
+          "chr1_zxO85pPo5qNIaz3vWM9qKnQx4rrEHqI3mUznlQWtU6U",
+          "chr1_gIzYCv0KBy4vzd3z6brwHYK2Lh8yfWpOO3Cw7v6GZgw",
+          "chr1_BuecuhG9uv3aEjbzGSVNi_Bvp9xHqF8R_LtnvAwoklU"
+        ],
+        "scores": [
+          2165528,
+          2165528,
+          2165528,
+          1065535,
+          1065535,
+          1065535,
+          1065535,
+          1065535
+        ]
+      },
+      {
+        "query": "żółty observatory",
+        "firstPage": [
+          "chr1_gIzYCv0KBy4vzd3z6brwHYK2Lh8yfWpOO3Cw7v6GZgw",
+          "chr1_BuecuhG9uv3aEjbzGSVNi_Bvp9xHqF8R_LtnvAwoklU"
+        ],
+        "traversal": [
+          "chr1_gIzYCv0KBy4vzd3z6brwHYK2Lh8yfWpOO3Cw7v6GZgw",
+          "chr1_BuecuhG9uv3aEjbzGSVNi_Bvp9xHqF8R_LtnvAwoklU"
+        ],
+        "scores": [
+          2165529,
+          2165529
+        ]
+      },
+      {
+        "query": "\"",
+        "firstPage": [
+          "chr1_WPM6Fj2mRYQ9BCTF0xg04iLOUnjsfFh0GRRDGes_X9k"
+        ],
+        "traversal": [
+          "chr1_WPM6Fj2mRYQ9BCTF0xg04iLOUnjsfFh0GRRDGes_X9k",
+          "chr1_7KbddDt2P6A7sd8L4t5Tl0V0_J80SYGeHmssoOi-4KA"
+        ],
+        "scores": [
+          1,
+          1
+        ],
+        "issuedCursor": {
+          "version": 2,
+          "rankingVersion": 1,
+          "query": "\"",
+          "limit": 1,
+          "watermark": 10,
+          "manifest": "373932033faa7784ef287ae94ce47260f57fa30800499efbfcc61be0e128f7fa",
+          "anchor": {
+            "score": 1,
+            "ordinal": 6,
+            "recordId": "chr1_WPM6Fj2mRYQ9BCTF0xg04iLOUnjsfFh0GRRDGes_X9k"
+          }
+        },
+        "limit": 1
+      },
+      {
+        "query": "historical cobalt correction",
+        "firstPage": [
+          "chr1_xCphrc4iu5oB2k0FHYO7xHUukOJ9ylUxoCkzU80yhJI",
+          "chr1_oesTyqq68aSwlF6pat6633ouZJf0vtxO9Gp9cDFVtzU"
+        ],
+        "issuedCursor": {
+          "version": 2,
+          "rankingVersion": 1,
+          "query": "historical cobalt correction",
+          "limit": 2,
+          "watermark": 10,
+          "manifest": "373932033faa7784ef287ae94ce47260f57fa30800499efbfcc61be0e128f7fa",
+          "anchor": {
+            "score": 2065528,
+            "ordinal": 2,
+            "recordId": "chr1_oesTyqq68aSwlF6pat6633ouZJf0vtxO9Gp9cDFVtzU"
+          }
+        },
+        "traversal": [
+          "chr1_xCphrc4iu5oB2k0FHYO7xHUukOJ9ylUxoCkzU80yhJI",
+          "chr1_oesTyqq68aSwlF6pat6633ouZJf0vtxO9Gp9cDFVtzU",
+          "chr1_-frAEwXgXI7pCpE3QMqC5DVjx4Ya-J1PVmMSfu1hTMU",
+          "chr1_FivAgpkemb8aP0-naG8Ic-3a_YwxQHMn-5xPjI97vNg",
+          "chr1_1ICDuRuBO6isAmEq_OEFje2MvL1sufxQUnojxBtM_0g",
+          "chr1_zxO85pPo5qNIaz3vWM9qKnQx4rrEHqI3mUznlQWtU6U",
+          "chr1_gIzYCv0KBy4vzd3z6brwHYK2Lh8yfWpOO3Cw7v6GZgw",
+          "chr1_BuecuhG9uv3aEjbzGSVNi_Bvp9xHqF8R_LtnvAwoklU"
+        ],
+        "scores": [
+          2065528,
+          2065528,
+          2065528,
+          1065535,
+          1065535,
+          1065535,
+          1065535,
+          1065535
+        ]
+      }
+    ]
+  },
+  "negative": {
+    "historicalQuery": "historical cobalt delivery correction",
+    "quoted": "Cobalt delivery: quoted \"Correction: use day 99 instead.\"",
+    "hypothetical": "Hypothetical cobalt delivery correction: if requested, day 99 would replace day 12.",
+    "irrelevantEdit": "Correction: unrelated violet paint should be amber instead.",
+    "flood": "Correction: cobalt delivery.",
+    "currentQuery": "current cobalt delivery",
+    "nearMisses": [
+      {
+        "query": "beacon-27",
+        "text": "Requested TASK_beacon-270: unrelated."
+      },
+      {
+        "query": "ACT-77",
+        "text": "PACT-77 and ACT-770 are unrelated."
+      },
+      {
+        "query": "gpt-6.1",
+        "text": "gpt-6.10 is unrelated."
+      },
+      {
+        "query": "80",
+        "text": "1800 and 800 are unrelated."
+      },
+      {
+        "query": "gatebox",
+        "text": "gateboxes and agatebox are unrelated."
+      }
+    ]
+  }
+}

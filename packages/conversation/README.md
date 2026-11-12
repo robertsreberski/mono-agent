@@ -529,7 +529,25 @@ Owner provenance identifies a historical quotation, **not renewed approval**.
 by default. Explicit `mode: "relevance"` adds Unicode-aware partial coverage,
 phrase/proximity ranking, up to two complementary matched-context previews
 (512 total UTF-8 bytes with separate exact retained-byte ranges),
-and typed v2 continuations. Term edges respect Unicode scripts (unspaced scripts
+and typed v2 cursor envelopes. New searches use ranking v2; an issued
+`rankingVersion: 1` cursor retains the complete v1 parser, eligibility, score,
+tie/anchor comparator and traversal, including literal matching. Cursor-envelope
+version and ranking version are separate. Searches disclose `rankingVersion`.
+
+Ranking v2 keeps original content terms, full phrases and exact identifiers
+stronger than expansions. Bounded generic event/correction vocabulary adds
+query-relevant bonuses, not eligibility by itself. Delimiter-separated identifier
+components are lower-weight discovery paths; numeric identifiers keep their full
+spelling (no `ACT-77` → `ACT-770` or arbitrary substring matching). Short relevant
+user edits can receive a bounded bonus, not adjacent-turn interpretation.
+Quoted/hypothetical correction markers do not earn evidence bonuses. Explicitly
+historical queries downweight assistant echoes and repetition, and use older
+capture order for score ties; current-state and literal queries keep newest-first
+ties. Capture order is not event date, source kind is not truth, and ranking
+confers neither authority nor supersession. These heuristics use bounded local
+context rather than collecting whole-corpus duplicate groups.
+
+Term edges respect Unicode scripts (unspaced scripts
 allow letter-run substrings); short Latin/numeric terms do not match inside
 unrelated words/numbers. `preview`/`previewRange` describe the primary window;
 optional `additionalPreviews` contains one separate `preview`/`previewRange`,

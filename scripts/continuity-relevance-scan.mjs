@@ -30,7 +30,7 @@ try {
       record.run(continuityRecordId(scope.logicalConversationId, `record-${index}`), gen, index % 128, text, sha(text), size, size);
     }
     db.exec("COMMIT; PRAGMA wal_checkpoint(TRUNCATE)"); db.close();
-    for (const query of (process.argv.includes("--leak-only") ? [] : ["cobalt observatory", "absent-unmatched", "żółty"])) {
+    for (const query of (process.argv.includes("--leak-only") ? [] : ["cobalt observatory", "absent-unmatched", "żółty", "historical cobalt observatory correction"])) {
       let continuation;
       for (const phase of ["cold-connection", "warm", "continuation"]) {
         if (phase === "continuation" && !continuation) continue;
@@ -45,7 +45,7 @@ try {
         const page = searchRelevantContinuity(connection, { ...scope, query, mode: "relevance", limit: 5, ...(phase === "continuation" ? { continuation } : {}) }, reader, { afterBatch: sample, afterMetadataPage: sample });
         sample(); connection.close();
         if (phase === "warm") continuation = page.continuation;
-        const result = { count, retainedMiB: capacity / 1024 ** 2, longRecords: longCount, query, phase, ...page.scan,
+        const result = { rankingVersion: page.rankingVersion, count, retainedMiB: capacity / 1024 ** 2, longRecords: longCount, query, phase, ...page.scan,
           degradedReason: page.degradedReason ?? null, heapDeltaMiB: (heap - baseline.heapUsed) / 1024 ** 2, rssDeltaMiB: (rss - baseline.rss) / 1024 ** 2 };
         result.targetMet = result.complete && result.elapsedMs <= 5000 && result.heapDeltaMiB <= 64 && result.rssDeltaMiB <= 128;
         result.acceptedEnvelopeMet = result.complete && result.elapsedMs <= 5000 && result.heapDeltaMiB <= 100 && result.rssDeltaMiB <= 128;

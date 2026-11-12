@@ -6,16 +6,20 @@ import { getContinuity, searchContinuity } from "../tool-history/continuity-read
 import { searchRelevantContinuity } from "../tool-history/relevance-scan.js";
 import type { ContinuityPreview } from "../index.js";
 import * as relevance from "../tool-history/relevance.js";
+import rankingFixture from "./fixtures/continuity-ranking.json" with { type: "json" };
+import { relevancePipeline } from "../tool-history/relevance-pipeline.js";
+import type { ContinuityRelevanceContinuation } from "../tool-history/continuity-contracts.js";
 import { matchedPreview, relevanceMatch, relevanceQuery } from "../tool-history/relevance.js";
 const scope = { logicalConversationId: "fiction", currentConversationId: "fiction#today", currentRunId: "reader" };
 const sha = (s: string) => createHash("sha256").update(s).digest("hex");
 function fixture() {
   const db = new DatabaseSync(":memory:"); createContinuitySchema(db);
   let n = 0;
-  const add = (text: string, state = "committed", logical = scope.logicalConversationId) => {
+  const add = (text: string, state = "committed", logical = scope.logicalConversationId, kind = "assistant") => {
     const gen = `gen-${++n}`, id = continuityRecordId(logical, gen);
     db.prepare("INSERT INTO continuity_generations(generation_id,conversation_id,logical_id,action,preparation_digest,state,created_at_ms) VALUES(?,?,?,'publish','fixture',?,0)").run(gen, `${logical}#today`, logical, state);
     db.prepare("INSERT INTO continuity_records(record_id,generation_id,run_id,kind,seq,finalized,retained_text,text_sha256,original_bytes,retained_bytes,redacted,truncated,provenance,source_json,created_at_ms) VALUES(?,?,'old','assistant',0,?,?,?,?,?,0,0,'assistant','{}',0)").run(id, gen, state === "committed" ? 1 : 0, text, sha(text), Buffer.byteLength(text), Buffer.byteLength(text));
+    db.prepare("UPDATE continuity_records SET kind=?,provenance=? WHERE record_id=?").run(kind, kind === "user" ? "unknown" : "assistant", id);
     return { id, gen };
   };
   const reader = {
@@ -299,4 +303,112 @@ describe("lazy complementary previews", () => {
       expect(page.resumeAfter![0]!.anchor.recordId).toBe(item.recordId);
     } finally { f.db.close(); }
   });
+});
+describe("versioned evidence-sensitive ranking (queries frozen before weights)", () => {
+  it.each(rankingFixture.upgrade.v1)("preserves complete pre-upgrade v1 traversal for $query", frozen => {
+    const f = fixture(); try {
+      rankingFixture.upgrade.texts.forEach(text => f.add(text));
+      const seen = [...frozen.firstPage], scores = frozen.scores.slice(0, frozen.firstPage.length);
+      let cursor: ContinuityRelevanceContinuation | undefined = frozen.issuedCursor as ContinuityRelevanceContinuation;
+      while (cursor) {
+        const page = searchContinuity(f.db, { ...scope, query: frozen.query, limit: frozen.limit ?? 2, mode: "relevance", continuation: cursor });
+        expect(page.degradedReason).toBeUndefined(); expect(page.rankingVersion).toBe(1);
+        seen.push(...page.items.map(item => item.recordId)); scores.push(...page.resumeAfter!.map(boundary => boundary.anchor.score));
+        cursor = page.continuation;
+      }
+      expect(seen).toEqual(frozen.traversal); expect(scores).toEqual(frozen.scores);
+      // Independently re-evaluate the complete frozen parser/eligibility/score
+      // and tie comparator, including the page emitted before the upgrade.
+      const pipeline = relevancePipeline(1, frozen.query);
+      const all = rankingFixture.upgrade.texts.flatMap((text, index) => {
+        const match = pipeline.match(text, "assistant");
+        return match ? [{ recordId: continuityRecordId("fiction", `gen-${index + 1}`), ordinal: index + 1, score: match.score }] : [];
+      }).sort(pipeline.compare);
+      expect(all.map(row => row.recordId)).toEqual(frozen.traversal);
+      expect(all.map(row => row.score)).toEqual(frozen.scores);
+    } finally { f.db.close(); }
+  });
+
+  it.each(rankingFixture.recovery)("discovers and completely recovers $name sources in R=3", scenario => {
+    const f = fixture(); try {
+      const retained = scenario.required.map(source => scenario.name === "short-edit" ? source.text : source.text + "\n" + "x".repeat(scenario.recordBytes - Buffer.byteLength(source.text) - 1));
+      const required = retained.map((text, index) => f.add(text, "committed", scope.logicalConversationId, scenario.required[index]!.kind));
+      for (let i = 0; i < scenario.echoCount; i++) f.add(scenario.echo);
+      const page = f.search(scenario.query);
+      expect(page.rankingVersion).toBe(2); expect(page.scan!.complete).toBe(true);
+      for (const source of required) expect(page.items.slice(0, scenario.maxSearchRank).map(item => item.recordId)).toContain(source.id);
+      // One search + batched first reads + batched continuations, not preview
+      // credit or an arbitrary offset. Short edits fit one chunk; other sources
+      // are 12,000 bytes and need both reads.
+      const first = required.map(source => getContinuity(f.db, { ...scope, recordId: source.id, chunkBytes: 8192 }));
+      const second = first.map(part => part.nextOffset === undefined ? part : getContinuity(f.db, { ...scope, recordId: part.record!.recordId, chunkBytes: 8192, chunkOffset: part.nextOffset }));
+      second.forEach((part, index) => {
+        expect(part.nextOffset).toBeUndefined();
+        const recovered = first[index]!.nextOffset === undefined ? part.chunk! : first[index]!.chunk! + part.chunk!;
+        expect(recovered).toBe(retained[index]); expect(sha(recovered)).toBe(part.record!.sha256);
+      });
+    } finally { f.db.close(); }
+  });
+
+  it("does not promote quotations, hypothetical corrections, irrelevant edits or repetition floods", () => {
+    const f = fixture(); try {
+      const negative = rankingFixture.negative, scenario = rankingFixture.recovery[0]!;
+      const required = scenario.required.map(source => f.add(source.text, "committed", scope.logicalConversationId, source.kind));
+      const irrelevant = f.add(negative.irrelevantEdit, "committed", scope.logicalConversationId, "user");
+      for (let n = 0; n < 24; n++) { f.add(negative.quoted); f.add(negative.hypothetical); f.add(negative.flood.repeat(20)); f.add(negative.flood.repeat(20), "committed", scope.logicalConversationId, "user"); }
+      const page = f.search(negative.historicalQuery);
+      expect(page.items.slice(0, 2).map(item => item.recordId).sort()).toEqual(required.map(source => source.id).sort());
+      expect(page.items.map(item => item.recordId)).not.toContain(irrelevant.id);
+      const pipeline = relevancePipeline(2, negative.historicalQuery);
+      expect(pipeline.match(negative.irrelevantEdit, "user")).toBeUndefined();
+    } finally { f.db.close(); }
+  });
+
+  it.each(rankingFixture.negative.nearMisses)("rejects numeric/identifier substring near-miss $query", ({ query, text }) => {
+    expect(relevancePipeline(2, query).match(text, "user")).toBeUndefined();
+  });
+  it("keeps exact identifiers stronger than bounded components and original coverage stronger than vocabulary", () => {
+    const identifier = relevancePipeline(2, "beacon-27");
+    expect(identifier.match("beacon-27", "user")!.score).toBeGreaterThan(identifier.match("TASK_beacon-27", "user")!.score);
+    expect(relevancePipeline(2, "gatebox").match("release_gatebox", "user")).toBeDefined();
+    expect(relevancePipeline(2, "i\u0307gatebox").match("release_İgatebox", "user")).toBeDefined();
+    expect(relevancePipeline(2, "release_gatebox").match("gatebox", "user")).toBeDefined();
+    const pipeline = relevancePipeline(2, rankingFixture.negative.historicalQuery);
+    expect(pipeline.match("Cobalt delivery.", "assistant")!.score).toBeGreaterThan(pipeline.match("Cobalt correction revised changed instead scheduled requested.", "user")!.score);
+  });
+  it("keeps current-state ordering and literal newest-first behavior, without inferring event dates from captures", () => {
+    const f = fixture(); try {
+      f.add("Cobalt delivery was corrected to day 18."); const latest = f.add("Cobalt delivery is day 18.");
+      expect(f.search(rankingFixture.negative.currentQuery).items[0]!.recordId).toBe(latest.id);
+      const historical = relevancePipeline(2, "historical cobalt"), current = relevancePipeline(2, "current cobalt");
+      const old = { recordId: "a", ordinal: 1, score: 1 }, recent = { recordId: "b", ordinal: 2, score: 1 };
+      expect(historical.compare(old, recent)).toBeLessThan(0); expect(current.compare(old, recent)).toBeGreaterThan(0);
+      expect(relevancePipeline(2, '"').compare(old, recent)).toBeGreaterThan(0);
+    } finally { f.db.close(); }
+  });
+});
+
+
+it("pages historical v2 ties losslessly with versioned anchors and no event-date inference", () => {
+  const f = fixture(); try {
+    const expected = Array.from({ length: 12 }, () => f.add("cobalt launch recap"));
+    let page = f.search("historical cobalt launch", 3);
+    const seen: string[] = [];
+    for (;;) {
+      seen.push(...page.items.map(item => item.recordId));
+      if (!page.continuation) break;
+      expect(page.continuation.rankingVersion).toBe(2);
+      page = searchContinuity(f.db, { ...scope, query: "historical cobalt launch", limit: 3, mode: "relevance", continuation: page.continuation });
+      expect(page.degradedReason).toBeUndefined();
+    }
+    expect(seen).toEqual(expected.map(source => source.id));
+  } finally { f.db.close(); }
+});
+
+
+it("applies the short-edit bonus only to a short, query-relevant user record", () => {
+  const scenario = rankingFixture.recovery.find(row => row.name === "short-edit")!;
+  const pipeline = relevancePipeline(2, scenario.query), text = scenario.required[1]!.text;
+  expect(pipeline.match(text, "user")!.score).toBeGreaterThan(pipeline.match(text + "\n" + "x".repeat(300), "user")!.score);
+  expect(pipeline.match(rankingFixture.negative.irrelevantEdit, "user")).toBeUndefined();
 });

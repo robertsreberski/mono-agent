@@ -1,15 +1,14 @@
 import { createHash } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import type { ContinuityRecordMetadata, ContinuitySearchInput, ContinuitySearchPage, ContinuityRelevanceContinuation } from "./continuity-contracts.js";
-import { matchedPreview, relevanceMatch, relevanceQuery } from "./relevance.js";
+import { matchedPreview } from "./relevance.js";
+import { relevancePipeline } from "./relevance-pipeline.js";
 
 type Row = Record<string, unknown>;
 type Descriptor = { record_id: string; generation_id: string; ordinal: number; text_sha256: string; retained_bytes: number };
 type Candidate = { descriptor: Descriptor; score: number; position: number; end: number };
 const MAX_RECORDS = 100_000, MAX_BYTES = 256 * 1024 * 1024, MAX_RECORD_BYTES = 1024 * 1024;
 const NOT_PURGING = `NOT EXISTS (SELECT 1 FROM continuity_generations p WHERE p.conversation_id=g.conversation_id AND p.state='prepared' AND p.action<>'checkpoint' AND p.action IN ('reset','delete'))`;
-const compare = (a: { score: number; ordinal: number; recordId: string }, b: { score: number; ordinal: number; recordId: string }) =>
-  b.score - a.score || b.ordinal - a.ordinal || (a.recordId < b.recordId ? -1 : a.recordId > b.recordId ? 1 : 0);
 const key = (c: Candidate) => ({ score: c.score, ordinal: c.descriptor.ordinal, recordId: c.descriptor.record_id });
 const identity = (d: Descriptor) => JSON.stringify([d.generation_id, d.ordinal, d.record_id, d.text_sha256, d.retained_bytes]) + "\n";
 interface Reader { metadata(row: Row): ContinuityRecordMetadata; text(row: Row): string }
@@ -22,7 +21,11 @@ interface ScanHooks { now?: () => number; afterManifest?: () => void; afterBatch
  * Five seconds is a cooperative deadline, not a SQLite interrupt guarantee. */
 export function searchRelevantContinuity(db: DatabaseSync, input: ContinuitySearchInput, reader: Reader, hooks: ScanHooks = {}): ContinuitySearchPage {
   const now = hooks.now ?? (() => performance.now()), started = now(), deadline = started + 5000;
-  const query = relevanceQuery(input.query!.trim()), limit = input.limit ?? 5, cursor = input.continuation;
+  const limit = input.limit ?? 5, cursor = input.continuation, rankingVersion = cursor?.rankingVersion ?? 2;
+  // Dispatch the whole pipeline, including parsing and anchor ordering, once.
+  // Unsupported versions fail below, never silently fall through to another ranker.
+  const pipeline = relevancePipeline(rankingVersion === 1 ? 1 : 2, input.query!.trim());
+  const { query, compare } = pipeline;
   const stats = { complete: false, records: 0, bytes: 0, elapsedMs: 0, maxBatchMs: 0, metadataPages: 0, textBatches: 0 };
   const top: Candidate[] = [];
   let watermark = cursor?.watermark ?? Number.MAX_SAFE_INTEGER, observedWatermark = 0, anchorSeen = cursor === undefined;
@@ -77,7 +80,7 @@ export function searchRelevantContinuity(db: DatabaseSync, input: ContinuitySear
     return hash.digest("hex");
   };
   try {
-    if (cursor && (cursor.version !== 2 || cursor.rankingVersion !== 1 || cursor.query !== input.query!.trim() || cursor.limit !== limit
+    if (cursor && (cursor.version !== 2 || (cursor.rankingVersion !== 1 && cursor.rankingVersion !== 2) || cursor.query !== input.query!.trim() || cursor.limit !== limit
       || !Number.isSafeInteger(watermark) || watermark < 0 || !/^[a-f0-9]{64}$/u.test(cursor.manifest)
       || !cursor.anchor || typeof cursor.anchor.recordId !== "string" || !Number.isSafeInteger(cursor.anchor.score) || !Number.isSafeInteger(cursor.anchor.ordinal))) throw new Error("invalid_cursor");
     const initial = tx(manifest);
@@ -97,7 +100,7 @@ export function searchRelevantContinuity(db: DatabaseSync, input: ContinuitySear
         }
         if (stats.records + batch.length > MAX_RECORDS || stats.bytes + bytes > MAX_BYTES || batch.some(d => d.retained_bytes > MAX_RECORD_BYTES)) throw new Error("scan_capacity");
         const batchStarted = now();
-        const rows = tx(() => db.prepare(`SELECT r.record_id,r.generation_id,r.ordinal,r.text_sha256,r.retained_bytes,
+        const rows = tx(() => db.prepare(`SELECT r.record_id,r.generation_id,r.ordinal,r.text_sha256,r.retained_bytes,r.kind,
           CASE WHEN r.retained_bytes<=? AND length(CAST(r.retained_text AS BLOB))=r.retained_bytes THEN r.retained_text ELSE NULL END retained_text
           FROM continuity_records r CROSS JOIN continuity_generations g USING(generation_id) WHERE g.logical_id=? AND g.state='committed' AND r.finalized=1 AND ${NOT_PURGING} AND r.record_id IN (${batch.map(() => "?").join(",")})`)
           .all(MAX_RECORD_BYTES, input.logicalConversationId, ...batch.map(d => d.record_id))) as Row[];
@@ -108,7 +111,7 @@ export function searchRelevantContinuity(db: DatabaseSync, input: ContinuitySear
           const text = reader.text(row);
           if (Buffer.byteLength(text) !== d.retained_bytes) throw new Error("source_changed");
           examined.update(identity(d)); stats.records++; stats.bytes += d.retained_bytes;
-          const match = relevanceMatch(text, query);
+          const match = pipeline.match(text, row.kind as ContinuityRecordMetadata["kind"]);
           if (!match) continue;
           const score = query.mode === "literal" ? 1 : match.score;
           const rank = { score, ordinal: d.ordinal, recordId: d.record_id };
@@ -146,14 +149,14 @@ export function searchRelevantContinuity(db: DatabaseSync, input: ContinuitySear
     });
     check(); stats.complete = true; stats.elapsedMs = now() - started;
     const resumeAfter: ContinuityRelevanceContinuation[] = top.slice(0, limit).map(candidate => ({
-      version: 2, rankingVersion: 1, query: input.query!.trim(), limit, watermark, manifest: initial, anchor: key(candidate),
+      version: 2, rankingVersion, query: input.query!.trim(), limit, watermark, manifest: initial, anchor: key(candidate),
     }));
     const continuation = top.length > limit ? resumeAfter.at(-1) : undefined;
-    return { available: true, items, mode: query.mode, scan: stats, resumeAfter, ...(continuation ? { continuation } : {}) };
+    return { available: true, items, mode: query.mode, rankingVersion, scan: stats, resumeAfter, ...(continuation ? { continuation } : {}) };
   } catch (error) {
     const reason = error instanceof Error ? error.message : "";
     if (reason !== "scan_capacity" && reason !== "source_changed" && reason !== "invalid_cursor") throw error;
     stats.elapsedMs = now() - started;
-    return { available: true, items: [], mode: query.mode, scan: stats, degradedReason: reason };
+    return { available: true, items: [], mode: query.mode, rankingVersion, scan: stats, degradedReason: reason };
   }
 }

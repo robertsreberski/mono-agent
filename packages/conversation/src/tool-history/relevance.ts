@@ -39,10 +39,12 @@ function edge(character: string | undefined, letter: string | undefined, before:
   // and underscores join identifiers across scripts; letters join their script.
   return script ? `[[\\p{L}&&\\p{scx=${script}}]\\p{N}\\p{M}_]` : "[\\p{L}\\p{N}\\p{M}_]";
 }
-function expression(value: string, bounded = false): RegExp {
+export function expression(value: string, bounded = false, component = false): RegExp {
   const characters = [...value];
-  const before = bounded ? edge(characters[0], characters.find(character => /\p{L}/u.test(character)), true) : undefined;
-  const after = bounded ? edge(characters.at(-1), characters.slice().reverse().find(character => /\p{L}/u.test(character)), false) : undefined;
+  const beforeEdge = bounded ? edge(characters[0], characters.find(character => /\p{L}/u.test(character)), true) : undefined;
+  const afterEdge = bounded ? edge(characters.at(-1), characters.slice().reverse().find(character => /\p{L}/u.test(character)), false) : undefined;
+  const before = component ? beforeEdge?.replaceAll("_]", "]") : beforeEdge;
+  const after = component ? afterEdge?.replaceAll("_]", "]") : afterEdge;
   const literal = value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
   return new RegExp(`${before ? `(?<!${before})` : ""}${literal}${after ? `(?!${after})` : ""}`, "iv");
 }

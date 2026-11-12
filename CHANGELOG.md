@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Add versioned evidence-sensitive conversation ranking with bounded event and
+  correction expansion, short-edit bonuses and identifier-component discovery.
+  Reduce historical assistant echoes while preserving issued ranking-v1 cursors
+  and keeping ranking distinct from truth, event dates or authority.
+
 - Fix `ConversationHistory` retrieval follow-through, clamp safe integer
   search limits to 1–10, and show complementary previews with separate byte ranges.
   Add `requestedLimit` and `effectiveLimit` to search responses and bind cursors
