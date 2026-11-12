@@ -82,9 +82,9 @@ export function matchedPreview(text: string, position: number, matchEnd = positi
   // referent context, not inferred answers or a semantic qualification claim.
   const { expanded, searchable } = matchingText(text);
   let complementary: { position: number; end: number } | undefined;
-  // Only emitted reader items reach here. Query parsing caps the lookup at 16
-  // terms; stop at the first complementary match rather than eagerly scanning
-  // every term over the full retained body.
+  // Only emitted reader items reach here. Parsing caps v1 at 16 term patterns;
+  // v2 adds at most four component patterns per term (80 total). Stop at the
+  // first complementary match instead of eagerly scanning every pattern.
   for (const pattern of query.patterns) {
     const match = pattern.exec(searchable);
     if (!match) continue;
@@ -123,11 +123,11 @@ function previewWindow(text: string, bytes: Buffer, position: number, matchEnd: 
 // Regex Unicode case folding avoids allocating a second full body. İ is the
 // lowercase expansion; both ranking and preview lookup share its retained UTF-16
 // offset mapping, then preview windows convert those offsets to retained bytes.
-function matchingText(text: string) {
+export function matchingText(text: string) {
   const expanded = text.includes("İ");
   return { expanded, searchable: expanded ? text.toLowerCase() : text };
 }
-function retainedPosition(text: string, position: number, expanded: boolean): number {
+export function retainedPosition(text: string, position: number, expanded: boolean): number {
   if (!expanded) return position;
   let original = 0, folded = 0;
   for (const character of text) { if (folded >= position) break; original += character.length; folded += character.toLowerCase().length; }

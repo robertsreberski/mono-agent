@@ -6,6 +6,8 @@ import { getContinuity, searchContinuity } from "../tool-history/continuity-read
 import { searchRelevantContinuity } from "../tool-history/relevance-scan.js";
 import type { ContinuityPreview } from "../index.js";
 import * as relevance from "../tool-history/relevance.js";
+import rankingHeldout from "./fixtures/continuity-ranking-heldout.json" with { type: "json" };
+import { evidenceQuery, evidenceMatch } from "../tool-history/relevance-v2.js";
 import rankingFixture from "./fixtures/continuity-ranking.json" with { type: "json" };
 import { relevancePipeline } from "../tool-history/relevance-pipeline.js";
 import type { ContinuityRelevanceContinuation } from "../tool-history/continuity-contracts.js";
@@ -411,4 +413,93 @@ it("applies the short-edit bonus only to a short, query-relevant user record", (
   const pipeline = relevancePipeline(2, scenario.query), text = scenario.required[1]!.text;
   expect(pipeline.match(text, "user")!.score).toBeGreaterThan(pipeline.match(text + "\n" + "x".repeat(300), "user")!.score);
   expect(pipeline.match(rankingFixture.negative.irrelevantEdit, "user")).toBeUndefined();
+});
+
+
+describe("ranking review regressions", () => {
+  it("requires and scores content anchors for non-intent questions, preserving v1 separately", () => {
+    const query = "what is the cobalt order", stopOnly = "What is the plan? It is the weekend.", content = "cobalt order day 18";
+    const modern = relevancePipeline(2, query), legacy = relevancePipeline(1, query);
+    expect(modern.match(stopOnly, "assistant")).toBeUndefined();
+    expect(modern.match(content, "user")).toBeDefined();
+    expect(legacy.match(stopOnly, "assistant")!.score).toBeGreaterThan(legacy.match(content, "user")!.score);
+    expect(relevancePipeline(2, "what is the").match(stopOnly, "user")).toBeUndefined();
+  });
+  it.each(["when is the juniper delivery", "first item in the list", "before release"])("keeps the newest value for current-state query %j", query => {
+    const f = fixture(); try {
+      f.add(`${query}: amber`, "committed", scope.logicalConversationId, "user");
+      const newest = f.add(`${query}: violet`, "committed", scope.logicalConversationId, "user");
+      expect(evidenceQuery(query).historical).toBe(false);
+      expect(f.search(query).items[0]!.recordId).toBe(newest.id);
+    } finally { f.db.close(); }
+  });
+  it("uses only explicit historical markers", () => {
+    for (const marker of ["historical", "history", "original", "originally", "previous", "previously", "earlier", "prior", "initial", "initially", "predecessor", "before-correction", "used to"]) expect(evidenceQuery(`${marker} juniper`).historical).toBe(true);
+    for (const marker of ["when", "first", "before", "old", "past"]) expect(evidenceQuery(`${marker} juniper`).historical).toBe(false);
+  });
+  it("qualifies generic clauses without vetoing polite factual corrections", () => {
+    const q = evidenceQuery("earlier juniper shipment edit");
+    const score = (text: string) => evidenceMatch(text, q, "user")!.score;
+    expect(score("Juniper shipment: actually, it would be day 18.")).toBeGreaterThan(score("Juniper shipment is day 18."));
+    expect(score("Juniper shipment was not changed to day 18.")).toBeLessThan(score("Juniper shipment was changed to day 18."));
+    expect(score("If juniper shipment changed, it would be day 18.")).toBeLessThan(score("Juniper shipment changed to day 18."));
+    expect(score("Juniper shipment changed to day 18; no additional work is authorized.")).toBeGreaterThan(score("Juniper shipment is day 18."));
+    expect(score("Juniper shipment example label was changed to day 18.")).toBeGreaterThan(score("Juniper shipment is day 18."));
+    expect(score('Juniper shipment: quoted "changed to day 99".')).toBeLessThan(score("Juniper shipment changed to day 18."));
+  });
+  it("treats generated summaries as assistant echoes for historical bonuses", () => {
+    const q = evidenceQuery("earlier juniper shipment edit"), text = "Juniper shipment actually changed to day 18.";
+    expect(evidenceMatch(text, q, "summary")!.score).toBe(evidenceMatch(text, q, "assistant")!.score);
+    expect(evidenceMatch(text, q, "summary")!.score).toBeLessThan(evidenceMatch(text, q, "user")!.score);
+  });
+  it("reuses precomputed globals without constructing regexes per record", () => {
+    const q = evidenceQuery("earlier juniper_box shipment edit");
+    expect(q.content.every(entry => entry.global.global)).toBe(true);
+    expect(q.components.flat().every(entry => entry.global.global)).toBe(true);
+    const spy = vi.spyOn(globalThis, "RegExp");
+    try {
+      for (let n = 0; n < 10; n++) {
+        evidenceMatch("Juniper_box shipment actually changed to day 18.", q, "user");
+        evidenceMatch("Juniper_box shipment ".repeat(20), q, "assistant");
+        evidenceMatch("unrelated material", q, "user");
+      }
+      expect(spy).not.toHaveBeenCalled();
+      expect(q.content.every(entry => entry.global.lastIndex === 0)).toBe(true);
+    } finally { spy.mockRestore(); }
+  });
+});
+
+describe("held-out ranking evaluation (frozen before review-fix code; weights unchanged)", () => {
+  it.each(rankingHeldout.cases)("evaluates $name", scenario => {
+    const f = fixture(); try {
+      const ids = scenario.records.map(row => f.add(row.text, "committed", scope.logicalConversationId, row.kind).id);
+      const pipeline = relevancePipeline(2, scenario.query), page = f.search(scenario.query);
+      const scores = scenario.records.map(row => pipeline.match(row.text, row.kind as "user" | "assistant" | "summary")?.score ?? null);
+      console.info("heldout", JSON.stringify({ name: scenario.name, scores, expectedFirst: scenario.expectedFirst, actualFirst: ids.indexOf(page.items[0]?.recordId ?? "") }));
+      expect(page.items[0]!.recordId).toBe(ids[scenario.expectedFirst]);
+    } finally { f.db.close(); }
+  });
+});
+
+
+describe("shared v2 retained offset mapping", () => {
+  it.each([
+    { query: "zİ", term: "zİ" },
+    { query: "historical zİ", term: "zİ" },
+    { query: "atlas.zİrecord", term: "zİrecord" },
+  ])("maps $query after earlier lowercase expansions", ({ query, term }) => {
+    const f = fixture(), fold = vi.spyOn(relevance, "matchingText"), offset = vi.spyOn(relevance, "retainedPosition");
+    try {
+      const text = "İ 🔷 background. ".repeat(100) + `\nRetained value: ${term}.`;
+      const match = evidenceMatch(text, evidenceQuery(query), "user")!;
+      expect(fold).toHaveBeenCalledWith(text); expect(offset).toHaveBeenCalledTimes(2);
+      expect(match.position).toBe(text.indexOf(term)); expect(match.end).toBe(match.position + term.length);
+      f.add(text);
+      const item = f.search(query).items[0]!;
+      expect(item.preview).toContain(`Retained value: ${term}`);
+      expect(item.previewRange!.complete).toBe(false);
+      expect(Buffer.from(text).subarray(item.previewRange!.start, item.previewRange!.end).toString()).toBe(item.preview);
+      expect(item.preview).not.toContain("�");
+    } finally { fold.mockRestore(); offset.mockRestore(); f.db.close(); }
+  });
 });

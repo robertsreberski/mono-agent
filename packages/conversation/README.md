@@ -540,8 +540,12 @@ query-relevant bonuses, not eligibility by itself. Delimiter-separated identifie
 components are lower-weight discovery paths; numeric identifiers keep their full
 spelling (no `ACT-77` → `ACT-770` or arbitrary substring matching). Short relevant
 user edits can receive a bounded bonus, not adjacent-turn interpretation.
-Quoted/hypothetical correction markers do not earn evidence bonuses. Explicitly
-historical queries downweight assistant echoes and repetition, and use older
+Non-intent lexical questions also require and score content anchors; stop words
+alone cannot make a record eligible. Generic clause-local negation and clear
+hypothetical/quoted framing suppress bonuses, not a bare `would` or `example`.
+Only explicit historical markers select historical ordering; `when`, `first` and
+`before` do not. Historical queries downweight assistant and generated-summary
+echoes (neither earns correction/event bonuses) and repetition, and use older
 capture order for score ties; current-state and literal queries keep newest-first
 ties. Capture order is not event date, source kind is not truth, and ranking
 confers neither authority nor supersession. These heuristics use bounded local
