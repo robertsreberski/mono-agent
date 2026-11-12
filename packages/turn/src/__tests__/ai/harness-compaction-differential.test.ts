@@ -1,6 +1,23 @@
 import type { Context, FauxResponseFactory } from "@earendil-works/pi-ai";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+
+
+// The upstream fixture continues to pin conversation bytes, cuts, caps and usage.
+// Only the deliberately changed instructions/metadata have a separate digest pin.
+const legacyRequest = (request: any) => ({ ...request, context: { ...request.context,
+  systemPrompt: request.context.systemPrompt?.split("\n\nMono-agent summary focus")[0],
+  messages: request.context.messages.map((message: any) => ({ ...message, content: typeof message.content === "string" ? message.content.split("\n\nMono-agent summary focus")[0] : message.content.map((part: any) => {
+    if (part.type !== "text" || !part.text.startsWith("<conversation>\n")) return part;
+    const end = part.text.indexOf("\n</conversation>\n\n") + "\n</conversation>\n\n".length;
+    const prior = /<previous-summary>\n[\s\S]*?\n<\/previous-summary>\n\n/u.exec(part.text.slice(end))?.[0] ?? "";
+    return { ...part, text: part.text.slice(0, end) + prior };
+  }) })),
+} });
+const promptDigest = (request: any) => createHash("sha256").update(JSON.stringify({ systemPrompt: request.context.systemPrompt ?? request.context.messages.find((m: any) => m.role === "system")?.content,
+  text: request.context.messages.flatMap((m: any) => Array.isArray(m.content) ? m.content : []).find((p: any) => p.text?.startsWith("<conversation>\n")).text.split("\n</conversation>\n\n")[1].replace(/"recordedTimestamp":(?:[0-9]+|null)/gu, '"recordedTimestamp":0'),
+})).digest("hex");
 
 // Captured before the pin bump using the published 0.99.2 helpers, not generated
 // from the implementation under test. The deterministic provider is synthetic.
@@ -41,8 +58,12 @@ describe("owned compaction kit vs 0.99.2 baseline", () => {
     expect(result.manualCompaction?.status).toBe("succeeded");
     const repo = new JsonlSessionRepo({ sessionsRoot: root }); raw = await repo.open((await repo.list())[0]!);
     const entry = (await raw.getEntries()).find((e: { type: string }) => e.type === "compaction");
-    expect(clean({ requests, compaction: { summary: entry!.summary, retainedTail: entry!.retainedTail, tokensBefore: entry!.tokensBefore, usage: entry!.usage },
-      status: result.manualCompaction.status, error: result.error })).toEqual((({ source, ...rest }) => rest)(baseline));
+    // Faux usage estimates the actual larger request; it is not provider billing.
+    expect(entry!.usage.input - baseline.compaction.usage.input).toMatchSnapshot("added summary request input tokens");
+    expect(entry!.usage.totalTokens).toBe(entry!.usage.input + entry!.usage.output + entry!.usage.cacheRead + entry!.usage.cacheWrite);
+    expect(requests.map(promptDigest)).toMatchSnapshot("history-preserving runtime request contract");
+    expect(clean({ requests: requests.map(legacyRequest), compaction: { summary: entry!.summary, retainedTail: entry!.retainedTail, tokensBefore: entry!.tokensBefore, usage: { ...entry!.usage, input: baseline.compaction.usage.input, totalTokens: baseline.compaction.usage.totalTokens } },
+      status: result.manualCompaction.status, error: result.error })).toEqual(clean((({ source, requests, ...rest }) => ({ ...rest, requests: requests.map(legacyRequest) }))(baseline)));
   } finally {
     await raw?.close();
     if (result?.providerSessionId) await disposeProviderSession(result.providerSessionId);

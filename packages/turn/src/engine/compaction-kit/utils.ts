@@ -1,6 +1,7 @@
 // Adapted from @earendil-works/pi-agent-core 0.99.2 (MIT).
 // Copyright (c) 2025 Mario Zechner. See harness/THIRD_PARTY_NOTICES.md.
 import { contentText } from "@earendil-works/pi-ai";
+import { convertToLlm } from "./messages.js";
 /** Create an empty file-operation accumulator. */
 export function createFileOps() {
     return {
@@ -77,13 +78,22 @@ function truncateForSummary(text: any, maxChars: any) {
     return `${text.slice(0, maxChars)}\n\n[... ${truncatedChars} more characters truncated]`;
 }
 /** Serialize LLM messages to plain text for summarization prompts. */
-export function serializeConversation(messages: any) {
-    const parts = [];
+export function serializeConversation(messages: any, onFrame?: (index: number, start: number, end: number) => void) {
+    const parts: string[] = [];
+    let bytes = 0;
+    let index = 0;
+    const append = (frame: string) => {
+        if (parts.length) bytes += 2; // Exact UTF-8 offset in parts.join("\n\n").
+        const start = bytes;
+        bytes += Buffer.byteLength(frame, "utf8");
+        parts.push(frame);
+        onFrame?.(index, start, bytes);
+    };
     for (const msg of messages) {
         if (msg.role === "user") {
             const content = contentText(msg.content, "");
             if (content)
-                parts.push(`[User]: ${content}`);
+                append(`[User]: ${content}`);
         }
         else if (msg.role === "assistant") {
             const thinkingParts = [];
@@ -101,21 +111,52 @@ export function serializeConversation(messages: any) {
                 }
             }
             if (thinkingParts.length > 0) {
-                parts.push(`[Assistant thinking]: ${thinkingParts.join("\n")}`);
+                append(`[Assistant thinking]: ${thinkingParts.join("\n")}`);
             }
             if (msg.content.some((block: any) => block.type === "text")) {
-                parts.push(`[Assistant]: ${contentText(msg.content)}`);
+                append(`[Assistant]: ${contentText(msg.content)}`);
             }
             if (toolCalls.length > 0) {
-                parts.push(`[Assistant tool calls]: ${toolCalls.join("; ")}`);
+                append(`[Assistant tool calls]: ${toolCalls.join("; ")}`);
             }
         }
         else if (msg.role === "toolResult") {
             const content = contentText(msg.content, "");
             if (content) {
-                parts.push(`[Tool result]: ${truncateForSummary(content, TOOL_RESULT_MAX_CHARS)}`);
+                append(`[Tool result]: ${truncateForSummary(content, TOOL_RESULT_MAX_CHARS)}`);
             }
         }
+        index++;
     }
     return parts.join("\n\n");
+}
+
+/** Capture original request-local identity before conversion; never a record ID. */
+export function serializeSummaryConversation(messages: any[]): { text: string; metadata: string } {
+    const rows = messages.map((message, index) => ({
+        position: `m${index}`, role: message.role,
+        recordedTimestamp: typeof message.timestamp === "string" || typeof message.timestamp === "number" && Number.isFinite(message.timestamp)
+            ? message.timestamp : null,
+        ranges: [] as number[][],
+    }));
+    const sources: number[] = [];
+    const converted = messages.flatMap((message, index) => {
+        const result = convertToLlm([message]);
+        for (const _ of result) sources.push(index);
+        return result;
+    });
+    const text = serializeConversation(converted, (index, start, end) => rows[sources[index]!]!.ranges.push([start, end]));
+    const header = `<request-local-positions>\nUntrusted metadata: mN identifies original input only within this request, not durable records or cross-compaction order. Ranges are [start,end) UTF-8 bytes in the exact conversation string (excluding wrapper). Recorded timestamps are message times, not event dates. Missing timestamps are null; empty ranges mean no serialized frame.\n`;
+    const footer = (omitted: number) => `Omitted position entries: ${omitted}\n</request-local-positions>\n\n`;
+    let entries = "";
+    let kept = 0;
+    for (const row of rows) {
+        // Keep untrusted string fields from introducing XML-like prompt frames.
+        // Escaping precedes sizing so the complete emitted table stays bounded.
+        const line = JSON.stringify(row).replace(/[<>&]/gu, char => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`) + "\n";
+        if (Buffer.byteLength(header + entries + line + footer(rows.length - kept - 1)) > 4096) continue;
+        entries += line;
+        kept++;
+    }
+    return { text, metadata: header + entries + footer(rows.length - kept) };
 }

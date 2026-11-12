@@ -30,6 +30,19 @@ Codex has no wire output cap; selecting it via a conversation switch also select
 that extraction behavior unless an override or `requireRequestCap` prevents it.
 See [ledger bounds](../../docs/runtime/continuity-ledger.md).
 
+Compaction asks for historical events/corrections and pending items as compact
+predecessor/current-state tuples, alongside continuation context. This is
+prompt-mediated retention, not verbatim preservation or renewed permission.
+Initial, incremental and split-prefix requests include a whole-entry-bounded
+4-KiB chronology table: request-local message positions, original roles, recorded
+message times when available and exact serialized UTF-8 frame ranges. It adds
+input overhead but changes no cuts, summary caps, accounting or journal format.
+Managed-switch inherited-prefix admission counts this overhead and may truthfully
+return `budget_failure` where older instructions fit; dedicated handoff generation
+is unchanged. Existing summaries need no migration. The continuity ledger remains
+opt-in. See [summary qualification](../../docs/runtime/summary-retention-trial.md)
+for the frozen fictional offline/paid trial, not a universal retention guarantee.
+
 ## Install / Usage
 
 ```bash

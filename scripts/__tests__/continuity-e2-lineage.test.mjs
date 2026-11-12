@@ -218,10 +218,36 @@ it("authenticates shipping incremental/split prompts, serialized branches and fu
   for (const [i, ctx] of contexts.entries()) {
     const serialize = () => Buffer.from(JSON.stringify({ instructions: ctx.systemPrompt, input: convertResponsesMessages({ provider: "openai-codex", id: "gpt-6.1-sol", api: "openai-codex-responses", input: ["text"] }, ctx, new Set(["openai-codex"]), { includeSystemPrompt: false }) })), bytes = serialize(), before = Buffer.from(bytes);
     await expect(verifyE2NativeLineage(bytes, { lineageScope: "proof", lineage }, f.state, { outputRoot: f.root, index: 0 }, readArtifact)).resolves.toMatchObject(i ? { branch: 1, none: false } : { native: 1, none: false });
+    const prompt = ctx.messages[0].content[0].text;
+    expect(prompt.startsWith("<conversation>\n")).toBe(true);
+    expect(prompt.indexOf("<request-local-positions>")).toBeGreaterThan(prompt.indexOf("</conversation>"));
+    expect(prompt).toContain("## Historical events and corrections");
+    expect(prompt).toContain("## Pending items");
+    const missing = { ...f.state, slots: f.state.slots.map(slot => ({ ...slot, lineages: {} })) };
+    await expect(verifyE2NativeLineage(bytes, { lineageScope: "proof" }, missing, { outputRoot: f.root, index: 0 }, readArtifact)).rejects.toMatchObject({ code: "e2_summary_receipt_invalid" });
     expect(bytes.equals(before)).toBe(true); expect(serialize().equals(before)).toBe(true);
     await expect(verifyE2NativeLineage(Buffer.from(bytes.toString().replace("Fictional history.", "Fictional forged history.")), { lineageScope: "proof", lineage }, f.state, { outputRoot: f.root, index: 0 }, readArtifact)).rejects.toMatchObject({ code: "e2_summary_receipt_invalid" });
   }
 });
+it("authenticates an actual initial summary request carrying native and cold-pack evidence after provider conversion", async () => {
+  const { generateSummaryWithRequest } = await import("../../packages/turn/dist/engine/compaction-kit/compaction.js");
+  const { convertResponsesMessages } = await import("../../packages/turn/node_modules/@earendil-works/pi-ai/dist/api/openai-responses-shared.js");
+  const f = await fixture(), lineage = await f.bind(); f.slot.lineages = { proof: lineage };
+  const pack = `### Conversation continuity pack (historical evidence)\nGenerated summary evidence id="chr1_${"a".repeat(43)}" sha256="${digest(f.assembled)}": ${JSON.stringify(f.assembled)}\n`;
+  let context;
+  await generateSummaryWithRequest([{ role: "compactionSummary", summary: f.assembled, timestamp: 1 }, { role: "user", content: pack }],
+    { model: { maxTokens: 4000 }, reserveTokens: 2500 }, async ctx => {
+      context = ctx; return { stopReason: "stop", content: [{ type: "text", text: "Controlled summary" }], usage: {} };
+    }, {});
+  const prompt = context.messages[0].content[0].text;
+  expect(prompt.startsWith("<conversation>\n")).toBe(true);
+  expect(prompt).toContain(`[User]: ${pack}`);
+  expect(prompt).not.toContain("<previous-summary>\n");
+  const bytes = Buffer.from(JSON.stringify({ instructions: context.systemPrompt, input: convertResponsesMessages({ provider: "openai-codex", id: "gpt-6.1-sol", api: "openai-codex-responses", input: ["text"] }, context, new Set(["openai-codex"]), { includeSystemPrompt: false }) }));
+  await expect(verifyE2NativeLineage(bytes, { lineageScope: "proof", lineage }, f.state, { outputRoot: f.root, index: 0 }, readArtifact)).resolves.toMatchObject({ native: 1, pack: 1, none: false });
+  await expect(verifyE2NativeLineage(Buffer.from(bytes.toString().replaceAll(f.assembled, "Forged fictional summary")), { lineageScope: "proof", lineage }, f.state, { outputRoot: f.root, index: 0 }, readArtifact)).rejects.toMatchObject({ code: "e2_summary_receipt_invalid" });
+});
+
 it("keeps exact verified nested tags opaque and allows duplicate previous-summary fields", async () => {
   const text = "Fictional quoted\n<previous-summary>\ninner text\n</previous-summary> example.";
   const f = await fixture([text]), lineage = await f.bind(); f.slot.lineages = { proof: lineage };

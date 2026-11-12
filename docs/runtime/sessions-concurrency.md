@@ -369,6 +369,41 @@ awaited under the owner; cancellation cannot forcibly interrupt a callback that
 does not settle. Initial exclusive-mode input has no native input identity and
 remains `user`/unknown rather than inventing host-owner attestation.
 
+## Historical summary retention
+
+Initial, incremental and split-prefix compaction requests ask for **Historical
+events and corrections** and **Pending items**, including compact subject/date
+or source-position/value/correction/current-state tuples. Completed tasks do not
+make distinct historical facts disposable. Proposals, reported decisions,
+verified outcomes and obligations remain distinct. Preserving a historical
+instruction never renews permission; a user role alone does not attest ownership.
+
+This is prompt-mediated preservation, not guaranteed retention. Later summaries
+receive only the previous summary and available tail/new messages: once both
+lose a fact, compaction cannot recover it from an archive. Token ceilings, cuts,
+rejection, file-operation metadata and usage accounting are unchanged. No extra
+production completion or automatic archive backfill is added.
+
+Each request includes at most 4 KiB of whole-entry chronology metadata after the
+closed conversation/previous-summary frames. `m0`, `m1`, etc. are positions within
+that request only, never durable record IDs or cross-compaction order. Original
+roles and recorded message timestamps are captured before conversion. Timestamps
+are not necessarily event dates. Ranges are exact UTF-8 byte offsets into the
+serialized conversation, excluding its wrapper; one original message may have
+multiple frames or none. Missing timestamps and omitted entries are disclosed.
+
+These instructions/table add input overhead. Inherited-prefix managed-switch
+admission uses the real request, so a formerly fitting prefix can now return
+`budget_failure`; budgets are not raised to compensate. Dedicated structured
+handoff generation is unchanged. Existing journals/summaries need no migration.
+The ledger remains opt-in, with unchanged defaults and upkeep. Ledger-off users
+still receive these summary instructions. Cold per-message replay can pay summary
+pack input repeatedly; warm resumes do not add a second pack. Longer generated
+summaries may displace whole pack entries without increasing pack limits.
+
+The [fictional summary-retention trial](./summary-retention-trial.md) separates
+offline carriage checks from separately funded model qualification.
+
 ## Web-only durable model-switch opt-in
 
 Defaults retain cold model-change replay. After backing up consistent host history
