@@ -3,6 +3,7 @@ import { readFile, mkdir, rm, writeFile } from "node:fs/promises";
 import { once } from "node:events";
 import { join } from "node:path";
 import { verifyE2Assignment, createE2PhaseAdapter } from "../../lib/continuity-e2-runtime.mjs";
+import { createE2ProbeReceipts } from "../../lib/continuity-e2-probe-receipts.mjs";
 import { productionModules } from "../../lib/continuity-runner.mjs";
 import { loadE2Estimators, shippingSoul, createE2Models } from "../../lib/continuity-e2-models.mjs";
 import { e2PhaseWork, E2_SUMMARY_PREFIX, E2_SUMMARY_SUFFIX, E2_BRANCH_PREFIX, e2ArchivePath } from "../../lib/continuity-e2-lineage.mjs";
@@ -36,6 +37,24 @@ try {
     const kind = profile.scenario === "unwitnessed-settled" ? "settled" : profile.scenario === "unwitnessed-own-abort" ? "own_abort_after_send" : "lost";
     await source.settle(permit, { kind }, kind === "settled" ? { input_tokens: 10, output_tokens: 10 } : null, kind === "settled" ? "default" : null);
     source.close(); outcome = { terminal: "lost", score: null, refusalCode: null };
+  } else if (profile.scenario === "probe-receipt-bytes") {
+    const input = { action: "search", query: "Fictional lookup", limit: 1 }, id = "fictional-history-call";
+    const text = JSON.stringify({ action: "search", status: "available", items: [{ recordId: "fictional-record", preview: "Fictional evidence" }] });
+    const assistant = { ...modules.pi.fauxAssistantMessage([modules.pi.fauxToolCall("ConversationHistory", input, { id })]), provider: model.provider, api: model.api, model: model.id };
+    const toolResult = { role: "toolResult", toolCallId: id, toolName: "ConversationHistory", content: [{ type: "text", text }], isError: false, timestamp: 1 };
+    const continuation = { ...context, messages: [...context.messages, assistant, toolResult] };
+    for (const enabled of [false, true]) {
+      const output = join(work, enabled ? "receipts-on" : "receipts-off"); await mkdir(output, { mode: 0o700 });
+      const recorder = createE2ProbeReceipts({ output, slotId: a.slotId, enabled });
+      recorder.begin({ branch: 0, checkpoint: 0, repeat: 1, itemOrdinal: 1 });
+      recorder.observeRequest(context);
+      await actor.stream(models, model, context, opts, "probe").result();
+      recorder.observe({ type: "assistant", message: { content: [{ type: "tool_use", id, name: "ConversationHistory", input }] } });
+      recorder.observe({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: id, content: toolResult.content }] } });
+      recorder.observeRequest(continuation);
+      await actor.stream(models, model, continuation, opts, "probe").result();
+      await recorder.flush();
+    }
   } else if (["direct-model", "alternate-stream"].includes(profile.scenario)) {
     const route = createE2Models({ pi: modules.pi, estimators: await loadE2Estimators(), soul: await shippingSoul(), models: [{ model: "openai-codex:gpt-6.1-sol" }],
       limits: { sourceRequests: 8, probeRequests: 8, summaryRequests: 8, summaryRequestsPerCompaction: 2, compactions: 8 }, summary: "real", paidAdapter: actor });

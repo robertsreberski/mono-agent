@@ -3080,6 +3080,30 @@ the replay. Journal write I/O alone is recovery-only and never stops a paid repl
 `progressGap` count/flag in slot diagnostics and informational partial quality
 makes missing or unreadable recovery entries visible; it is not a gate.
 
+Replay also retains private `continuity-e2-probe-receipt-v1` call/response
+entries in `probe-receipts/` (0700 directories, 0600 files), outside restored
+snapshots. Each entry binds the slot, flattened checkpoint, branch, repeat,
+one-based probe item and originating model-request ordinal. Paid entries also
+bind the registration. Arguments (including query, cursor and any filters) are
+JSON text; responses retain the observed tool-result text. Both carry original
+UTF-8 sizes, SHA-256 digests, captured sizes and explicit truncation markers.
+Parsed response metadata preserves returned record order as page-relative rank,
+record ids, sizes, digests, cursors and available truncation flags.
+
+Limits are 4096 entries per run (shared across all probes), 8 KiB argument excerpts, 64 KiB response
+excerpts and 32 KiB metadata excerpts; metadata parsing stops above 1 MiB.
+Capture keeps complete UTF-8 characters within each byte bound and appends an
+explicit truncation marker outside that bound when needed. Array responses join
+text blocks with newlines and summarize non-text blocks. Entries publish
+atomically with fsync and are drained before restore, including failed probes;
+a published call without a response can survive interruption. The newest queued
+writes may be lost if the process is killed before flush. I/O/capture failures or reaching the entry cap add only a
+content-free `progressGap` (saturating at 4096), never a gate requirement.
+Receipts do not change
+prompts, model-visible bytes, request order, sizing or cost. Their content is
+never copied into `report.json`, slot receipts or public/content-free reports.
+Keep these evidence files private alongside the answer journal.
+
 On failure, controller finalization alone runs the shipping scorer to produce a
 distinct
 `continuity-e2-informational-partial-score-v1` artifact (`partial-score.json`),

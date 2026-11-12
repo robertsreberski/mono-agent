@@ -251,7 +251,8 @@ export async function createE2PaidModels(a, safety) {
       need(a.slot.kind === "proof" && base === e2PhaseBase(a.outputRoot, a.slot) && arm === a.slot.arm && phase === a.slot.phase && variant === a.slot.variant, "e2_preparation_invalid");
     },
     failureCause: () => failureCause && structuredClone(failureCause),
-    noteProgressGap() { counts.progressGap++; },
+    noteProgressGap() { return counts.progressGap = Math.min(4096, counts.progressGap + 1); },
+    probeReceiptBinding: () => ({ registrationSha256: canonicalDigest(a.pilot), slotId: a.slotId }),
     async answerBinding() {
       const state = await core().readPrivate(core().statePath(a.outputRoot)), h = state.slots[a.index].holds.at(-1);
       need(h?.consumed && h.settlement?.kind === "settled" && ["probe", "continuation"].includes(h.paidRole), "e2_progress_binding_invalid");

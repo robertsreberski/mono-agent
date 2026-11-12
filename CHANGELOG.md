@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add bounded private E2 probe retrieval receipts that survive checkpoint
+  snapshot restores, retaining lookup arguments and responses within a per-run
+  cap without changing model requests or gating on diagnostic I/O.
+
 - Keep eligible pinned continuity summaries ahead of owner and tool evidence on
   cold reseeds, carrying the whole generated quotation within existing pack
   headroom or explicitly disclosing its omission without clipping. Per-message

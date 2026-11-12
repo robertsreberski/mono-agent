@@ -135,6 +135,16 @@ it("uses the genuine SDK and single guarded send, burns authority once, and publ
   expect(result.reuse).toBe("e2_authorization_lease_invalid"); expect(result.reconciled.reconciliation).toBe(true);
   for (const canary of [result.root, "FICTIONAL-CONTEXT-CANARY", "FICTIONAL-SUMMARY-ANSWER-CANARY"]) expect(JSON.stringify(result.report)).not.toContain(canary);
 }, E2_NATIVE_TEST_TIMEOUT_MS);
+it("sends identical genuine SDK payload bytes with receipt capture disabled and enabled", async () => {
+  const result = await run({ scenario: "probe-receipt-bytes", rows: Array.from({ length: 4 }, () => ({ role: "probe", model: SOL })) });
+  expect(result.report.stop, JSON.stringify(result.report)).toBe("completed"); expect(result.receivedBytes).toHaveLength(4);
+  expect(result.receivedBytes[2]).toEqual(result.receivedBytes[0]); expect(result.receivedBytes[3]).toEqual(result.receivedBytes[1]);
+  expect(result.received[1].input.some(item => item.type === "function_call_output" && item.output.includes("Fictional evidence"))).toBe(true);
+  expect(await readdir(join(result.root, "output/work/pressure-ceiling/work/receipts-off"))).toEqual([]);
+  const directory = join(result.root, "output/work/pressure-ceiling/work/receipts-on/probe-receipts");
+  const rows = await Promise.all((await readdir(directory)).filter(n => /^\d+\.json$/u.test(n)).map(async n => JSON.parse(await readFile(join(directory, n)))));
+  expect(rows.map(row => row.phase).sort()).toEqual(["call", "response"]);
+}, E2_NATIVE_TEST_TIMEOUT_MS);
 it("refuses the next ceiling reservation above the exact cap before a third send", async () => {
   const result = await run({ scenario: "cap", requests: 3, reuse: true, capUnits: "8000000000", rows: Array.from({ length: 3 }, () => ({ role: "probe", model: SOL })) });
   expect(result.received).toHaveLength(2); expect(result.report.stop).toBe("budget_admission"); expect(result.caught).toBe("not_admitted_cap"); expect(result.reuse).toBe("e2_authorization_lease_invalid");
@@ -222,6 +232,26 @@ it("allows a cold phase start beyond ten seconds without bypassing guarded SDK a
 
 it("funds R=3 and withdraws native tools on each fourth C1 probe request", async () => {
   const result = await run({ replay: true, production: true, probeLookupRounds: 3, probeLookups: true });
+  const receiptDirectory = join(result.root, "output/work/replay/probe-receipts");
+  const receiptRows = await Promise.all((await readdir(receiptDirectory)).filter(n => /^\d+\.json$/u.test(n)).map(async n => JSON.parse(await readFile(join(receiptDirectory, n)))));
+  expect(receiptRows.filter(r => r.phase === "call")).toHaveLength(6);
+  expect(receiptRows.filter(r => r.phase === "response")).toHaveLength(6);
+  expect(new Set(receiptRows.map(r => r.requestOrdinal))).toEqual(new Set([1, 2, 3]));
+  for (const row of receiptRows) {
+    expect(row.slotId).toMatch(/^[a-f0-9]{64}$/u); expect(row.registrationSha256).toMatch(/^[a-f0-9]{64}$/u);
+    expect(row.itemOrdinal).toBe(1); expect(row.checkpoint).toBe(0);
+    expect(JSON.parse(row.arguments.text).query).toBe("Fictional response");
+    if (row.phase === "response") {
+      const metadata = JSON.parse(row.metadata.text);
+      expect(metadata.status, row.response.text).toBe("parsed"); expect(metadata.records).toHaveLength(1);
+      expect(metadata.records[0].recordId).toMatch(/^chr1_/u);
+    }
+  }
+  const publicBytes = JSON.stringify(result.report);
+  for (const canary of ["Fictional response", "probe-receipt", "fictional-call"]) expect(publicBytes).not.toContain(canary);
+  const slotFiles = await readdir(join(result.root, "output", "slots"));
+  for (const name of slotFiles) expect(await readFile(join(result.root, "output", "slots", name), "utf8")).not.toContain("Fictional response");
+
   expect(result.report.stop, JSON.stringify(result.report)).toBe("completed");
   const probes = result.received.filter(body => JSON.stringify(body.input).includes("PRIVATE-FROZEN-FICTIONAL-QUESTION"));
   expect(probes).toHaveLength(8);

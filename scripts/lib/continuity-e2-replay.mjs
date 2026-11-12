@@ -4,6 +4,7 @@ import { chmod, copyFile, cp, lstat, mkdir, readFile, readdir, rm, writeFile } f
 import { join } from "node:path";
 import { fail, object, ROOT } from "./continuity-observation-input.mjs";
 import { writeE2Progress, writeE2ProgressGap } from "./continuity-e2-progress.mjs";
+import { createE2ProbeReceipts } from "./continuity-e2-probe-receipts.mjs";
 import { scoreE2 } from "./continuity-e2-score.mjs";
 import { diagnosticRecord } from "./continuity-e2-diagnostics.mjs";
 import { webGroups } from "./continuity-recorded-reconcile.mjs";
@@ -203,7 +204,7 @@ export function e2ProbeMeasurement() {
 }
 
 /** No real routes, credential lookup overrides, or resolved-model overrides. */
-export async function runE2Sizing({ source, protocol, output, summary = "faux-short", modules, onContext = () => {}, onDiagnostic = () => {}, paidAdapter, questions, evaluator }) {
+export async function runE2Sizing({ source, protocol, output, summary = "faux-short", modules, onContext = () => {}, onDiagnostic = () => {}, paidAdapter, questions, evaluator, probeReceipts = true }) {
   const real = summary === "real";
   if (real && (modules !== undefined || !paidAdapter || !questions || !evaluator)) fail("E2_MODELS_SEAM_REFUSED");
   if (real) assertE2PhaseAdapter(paidAdapter);
@@ -215,6 +216,9 @@ export async function runE2Sizing({ source, protocol, output, summary = "faux-sh
   const report = { schema: real ? "continuity-e2-replay-v1" : "continuity-e2-sizing-v1", sourceDigest: digest(JSON.stringify(source)), protocolDigest: protocolDigest(protocol), summary,
     soul: { rawDigest: soul.rawDigest, normalizedDigest: soul.normalizedDigest }, usage: "estimated-not-measured", semanticQualification: false, branches: [] };
   await mkdir(output, { mode: 0o700 });
+  // One recorder and entry cap per run, not per checkpoint/probe.
+  const retrieval = createE2ProbeReceipts({ output, enabled: probeReceipts,
+    ...(paidAdapter?.probeReceiptBinding?.() ?? { slotId: "offline-sizing" }), noteProgressGap: () => paidAdapter?.noteProgressGap() });
   try {
     for (const [branchIndex, branch] of protocol.branches.entries()) {
       const base = join(output, `branch-${branchIndex}`), work = join(base, "work"), snapshots = join(base, "snapshots");
@@ -243,6 +247,7 @@ export async function runE2Sizing({ source, protocol, output, summary = "faux-sh
           }
           onContext({ branch: branchIndex, probe: probeMode, context });
           if (probeMode) {
+            retrieval.observeRequest(context);
             if (++probeRequests > branch.limits.probeRequests) fail("E2_PROBE_REQUEST_LIMIT");
             probe.observe(context, estimators);
             const offered = context.tools ?? context.messages.flatMap(m => m.toolsAdded ?? []);
@@ -280,7 +285,7 @@ export async function runE2Sizing({ source, protocol, output, summary = "faux-sh
         if (probeMode && event.type === "context_compaction" && event.status === "running") fail("E2_PROBE_SUMMARY_FORBIDDEN");
         route.observe(event);
         };
-      const onHostEvent = event => { if (event.type === "live_input_native_accepted") steerWaiter?.(); if (event.type === "session_boundary") observed.push({ turn: position.turn, reason: event.reason, context: event.context }); };
+      const onHostEvent = event => { if (probeMode) retrieval.observe(event); if (event.type === "live_input_native_accepted") steerWaiter?.(); if (event.type === "session_boundary") observed.push({ turn: position.turn, reason: event.reason, context: event.context }); };
       const open = async () => {
         opened = await openHarness({ modules, work, authPath: real ? paidAdapter.credentialPath() : join(base, "absent-auth.json"), model: branch.models[0].model, effort: branch.models[0].effort,
           clock: { value: new Date("2042-03-01T09:00:00Z") }, tools: false, e2: paidAdapter,
@@ -295,6 +300,11 @@ export async function runE2Sizing({ source, protocol, output, summary = "faux-sh
               mcpServers: probeMode ? { [HISTORY]: options.mcpServers?.[HISTORY] } : { [RECORDED_SERVER_NAME]: { type: "http", url: server.url } } };
           } });
       };
+      // Even a failed probe must drain evidence before close/restore or unwinding.
+      const runProbe = async options => { try { return await opened.harness.run(options); } finally { await retrieval.flush(); } };
+      const beginProbe = (repeat, itemOrdinal) => retrieval.begin({ branch: branchIndex,
+        checkpoint: protocol.branches.slice(0, branchIndex).reduce((n, b) => n + b.checkpoints.length, 0) + branchReport.checkpoints.length,
+        repeat, itemOrdinal });
       const branchReport = { branch: branchIndex, excludedOutsideWebTurns, retriedAttemptsDropped: turns.slice(branch.startTurn, branch.endTurn + 1).reduce((n, t) => n + t.retriedAttempts, 0), attachments: { labelled: turns.slice(branch.startTurn, branch.endTurn + 1).reduce((n, t) => n + t.attachments.labelled, 0), images: turns.slice(branch.startTurn, branch.endTurn + 1).reduce((n, t) => n + t.attachments.images, 0), imageTokensRepresented: false }, models: branch.models, limits: branch.limits, boundaries: [], checkpoints: [], excludedSteps: excluded.steps.length, excludedCoverage: excluded.coverage.length };
       try {
         await open(); let modelIndex = 0;
@@ -348,8 +358,9 @@ export async function runE2Sizing({ source, protocol, output, summary = "faux-sh
               const selected = questions.questions.filter(q => q.checkpoint === checkpoint.name);
               for (const question of selected) for (const repeat of [1, 2]) {
                 await restoreCheckpoint(work, snapshot, receipt); probeMode = true; probe.reset();
+                beginProbe(repeat, questions.questions.indexOf(question) + 1);
                 route.setPosition({ ...position, model: binding.model, probe: true }); await open();
-                const response = await opened.harness.run({ conversationId: source.conversationId, userMessage: question.prompt,
+                const response = await runProbe({ conversationId: source.conversationId, userMessage: question.prompt,
                   metadata: { source: "web", web: { model: binding.model, effort: binding.effort } }, onEvent: onHostEvent,
                   abortSignal: AbortSignal.timeout(branch.limits.timeoutMs) });
                 await paidAdapter.flush(); route.assertSettled();
@@ -373,9 +384,10 @@ export async function runE2Sizing({ source, protocol, output, summary = "faux-sh
             }
             for (const repeat of real ? [] : [1, 2]) {
               await restoreCheckpoint(work, snapshot, receipt); probeMode = true; probe.reset();
+              beginProbe(repeat, 1);
               route.setPosition({ ...position, model: binding.model, probe: true }); await open();
               const probeSignal = AbortSignal.timeout(branch.limits.timeoutMs);
-              const response = await opened.harness.run({ conversationId: source.conversationId, userMessage: PROBE_PROMPT,
+              const response = await runProbe({ conversationId: source.conversationId, userMessage: PROBE_PROMPT,
                 metadata: { source: "web", web: { model: binding.model, effort: binding.effort } }, onEvent: onHostEvent, abortSignal: probeSignal });
               onDiagnostic(diagnosticRecord({ turnOrdinal: turn.ordinal, replyCursor: cursor, replyCount: turn.replies.length,
                 cancelled: false, aborted: probeSignal.aborted, failureKind: response.failure?.kind, routeRefusalCode: route.refusalCode() }));
@@ -396,6 +408,7 @@ export async function runE2Sizing({ source, protocol, output, summary = "faux-sh
       } finally { try { await opened?.close(); } finally { await server.close(); } }
     }
     await privateModes(output);
+    if (!real && retrieval.progressGap()) report.progressGap = retrieval.progressGap();
     if (real) {
       report.progressGap = paidAdapter.report().progressGap;
       const scored = scoreE2(answers, evaluator);

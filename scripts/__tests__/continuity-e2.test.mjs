@@ -241,6 +241,21 @@ it.each(["faux-short", "faux-max"])("replays configured shipping compaction with
       expect(cp.probes[0].initialContext).toEqual(cp.probes[1].initialContext);
     }
   }
+  const retrievalDirectory = join(dir, "work", "replay", "probe-receipts");
+  expect(fs.statSync(retrievalDirectory).mode & 0o777).toBe(0o700);
+  const receiptFiles = readdirSync(retrievalDirectory).filter(n => /^\d+\.json$/u.test(n)).sort();
+  for (const name of receiptFiles) expect(fs.statSync(join(retrievalDirectory, name)).mode & 0o777).toBe(0o600);
+  const retrievalRows = receiptFiles.map(n => JSON.parse(readFileSync(join(retrievalDirectory, n))));
+  expect(retrievalRows.filter(r => r.phase === "call")).toHaveLength(8 * protocol.probeLookupRounds);
+  expect(retrievalRows.filter(r => r.phase === "response")).toHaveLength(8 * protocol.probeLookupRounds);
+  expect(new Set(retrievalRows.map(r => r.checkpoint))).toEqual(new Set([0, 1, 2, 3]));
+  for (const row of retrievalRows) {
+    expect(row.slotId).toBe("offline-sizing"); expect(row.itemOrdinal).toBe(1);
+    expect([1, 2]).toContain(row.repeat); expect(row.requestOrdinal).toBeGreaterThan(0);
+    expect(JSON.parse(row.arguments.text)).toEqual({ action: "search", query: "retained", limit: 1 });
+    if (row.phase === "response") expect(row.response.text).toContain('"action":"search"');
+  }
+  expect(JSON.stringify(report)).not.toContain("probe-receipt");
   const probeContexts = contexts.filter(c => c.probe);
   expect(probeContexts).toHaveLength(4 * 2 * (protocol.probeLookupRounds + 1));
   for (let i = 0; i < probeContexts.length; i++) {
@@ -314,6 +329,17 @@ it.each(["faux-short", "faux-max"])("replays configured shipping compaction with
   expect(rejected).toEqual([]); expect(refusals).toEqual([]); expect(hits.every(c => ["ps", "sysctl"].includes(c))).toBe(true);
 }, 180_000);
 
+it("keeps faux replay successful when probe receipt I/O fails and publishes only a progress gap", async () => {
+  const { source, protocol, dir } = await trace(), output = join(dir, "receipt-io-failure"); let obstructed = false;
+  const report = await runE2Sizing({ source, protocol, output, onContext({ probe }) {
+    if (probe && !obstructed) { obstructed = true; writeFileSync(join(output, "probe-receipts"), "Fictional obstruction", { mode: 0o600 }); }
+  } });
+  expect(report.branches.flatMap(b => b.checkpoints)).toHaveLength(4);
+  expect(report.progressGap).toBe(16);
+  expect(JSON.parse(readFileSync(join(output, "progress-gap.json")))).toEqual({ progressGap: 16 });
+  for (const canary of ["Fictional obstruction", "Fictional request", "probe-receipt"]) expect(JSON.stringify(report)).not.toContain(canary);
+}, 60_000);
+
 it("refuses missing built estimator even when an earlier import was cached", async () => {
   await loadE2Estimators();
   const real = fs.existsSync;
@@ -379,6 +405,9 @@ const E2_IMPORT_SHAPES = {
     "./continuity-guarded-real-capability.mjs": "{ guardedRealCapability }",
     "./continuity-process-identity.mjs": "{ lookupProcessStartIdentity }",
     "./continuity-e2-controller-policy.mjs": "{ e2CacheAssignment }"
+  },
+  "scripts/lib/continuity-e2-replay.mjs": {
+    "./continuity-e2-probe-receipts.mjs": "{ createE2ProbeReceipts }"
   },
   "scripts/lib/continuity-e2-paid-models.mjs": {
     "@mono-agent/turn": "{ createPiOAuthApiKeyResolver }",
@@ -580,6 +609,7 @@ function assertE2Capabilities(path, source) {
     if (ts.isImportDeclaration(node)) {
       const spec = node.moduleSpecifier.text;
       const proofImports = {
+        "scripts/lib/continuity-e2-replay.mjs": ["./continuity-e2-probe-receipts.mjs"],
         "scripts/lib/continuity-e2-progress.mjs": ["node:crypto", "node:os"],
         "scripts/continuity-e2.mjs": ["./lib/continuity-guarded-protocols.mjs"],
         "scripts/lib/continuity-e2-runtime.mjs": ["node:process", "./continuity-dataset.mjs", "./continuity-guarded-state.mjs", "./continuity-guarded-lease.mjs", "./continuity-guarded-models.mjs", "./continuity-guarded-real-capability.mjs", "./continuity-process-identity.mjs", "./continuity-e2-controller-policy.mjs"],
