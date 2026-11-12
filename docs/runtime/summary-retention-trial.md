@@ -67,11 +67,15 @@ and accounting. Keep trial outputs out of source control.
 
 Before each dispatch, the script durably writes a conservative reservation at the
 maximum frozen catalog rates: one input token per serialized UTF-8 byte, no cache
-credit, plus the shipping policy's bounded requested output allowance (including
-reasoning). A dispatch is refused if reservations plus accounted spend would
-exceed the shared cap. Completed usage is accounted conservatively afterwards;
-unknown outcomes retain their reservation and stop. There are no retries, resume,
-fallback routes or attempts to rerun failures to green.
+credit, plus the shipping policy's full `providerMaxTokens` output allowance
+(including legacy-adapter thinking added at dispatch). Reported output allowances
+and matrix bounds use this provider ceiling; dispatch options stay unchanged so
+thinking is not added twice. A dispatch is refused if reservations plus accounted
+spend would exceed the shared cap. Completed usage is accounted conservatively afterwards;
+unknown outcomes retain their reservation and stop. Returned error/abort responses
+with zero-filled or absent usage are published as `unknown_outcome`, never settled
+as free requests. There are no retries, resume, fallback routes or attempts to
+rerun failures to green.
 
 **Codex does not enforce the requested output ceiling.** This is explicitly
 recorded in the output. The cap stops further dispatches; it cannot interrupt an
@@ -83,10 +87,14 @@ rules.
 ## Scoring and limits
 
 Each checkpoint reports every introduced tuple separately. All semicolon-separated
-reference fields must appear together on one summary line, with case/whitespace
-normalization. The trial asks the model to retain these compact tuple lines for
-objective, conservative scoring. Wrong predecessor/current values, missing pending
-states and missing tuples fail. Fixture-specific checks reject introduced dates,
+reference fields must appear together on one summary line as complete
+semicolon-delimited fields, with case/whitespace normalization. Leading Markdown
+bullets/numbered-list markers and terminal sentence punctuation are ignored, but
+value extensions such as `current 160` versus `current 16` do not match. This
+matcher hardening leaves the frozen fixture inventory and expected tuples unchanged.
+The trial asks the model to retain these compact tuple lines for objective,
+conservative scoring. Wrong predecessor/current values, missing pending states and
+missing tuples fail. Fixture-specific checks reject introduced dates,
 invented record/owner-attestation claims and promotion of the planted hypothetical
 correction/approval. Quoted or negated warnings are not permission.
 

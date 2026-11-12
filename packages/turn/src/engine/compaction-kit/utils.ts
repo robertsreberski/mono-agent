@@ -151,7 +151,9 @@ export function serializeSummaryConversation(messages: any[]): { text: string; m
     let entries = "";
     let kept = 0;
     for (const row of rows) {
-        const line = JSON.stringify(row) + "\n";
+        // Keep untrusted string fields from introducing XML-like prompt frames.
+        // Escaping precedes sizing so the complete emitted table stays bounded.
+        const line = JSON.stringify(row).replace(/[<>&]/gu, char => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`) + "\n";
         if (Buffer.byteLength(header + entries + line + footer(rows.length - kept - 1)) > 4096) continue;
         entries += line;
         kept++;

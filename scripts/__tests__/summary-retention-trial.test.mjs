@@ -24,6 +24,26 @@ describe("frozen fictional summary qualification", () => {
     }
   });
 
+  it("matches complete tuple fields without accepting numeric, code or word extensions", async () => {
+    const { fixtures } = await loadTrialFixtures();
+    for (const fixture of fixtures) {
+      const reference = fixture.tuples.map(tuple => tuple.reference).join("\n");
+      for (const [before, after] of [["current 16", "current 160"], ["current C9", "current C90"],
+        ["corrected to 16", "corrected to 160"], ["replaced by C9", "replaced by C90"],
+        ["current 2031-05-12", "current 2031-05-120"], ["pending; no approval", "pendingly; no approval"],
+        ["no approval.", "no approvalGranted."], ["reported decision.", "reported decisions."]]) {
+        expect(reference).toContain(before);
+        const scored = scoreTrialSummary(fixture, 4, reference.replace(before, after));
+        expect(scored.pass, after).toBe(false);
+        expect(scored.tuples.some(tuple => !tuple.retained), after).toBe(true);
+      }
+      for (const bullet of ["", "- ", "* ", "+ ", "1. ", "2) "]) {
+        const formatted = fixture.tuples.map(tuple => `${bullet}${tuple.reference.toUpperCase().replaceAll("; ", " ;  ").replace(/\.$/u, "!")}`).join("\n");
+        expect(scoreTrialSummary(fixture, 4, formatted).pass, bullet).toBe(true);
+      }
+    }
+  });
+
   it.each([false, true])("chains real preparation/durable checkpoints and %s cold reseeds with retaining/lossy controls", async coldReseeds => {
     const modules = await loadTrialModules(); modules.trialEffort = "low";
     const fixture = (await loadTrialFixtures()).fixtures[0];
@@ -52,6 +72,27 @@ describe("frozen fictional summary qualification", () => {
       expect(split.reduce((sum, r) => sum + r.maxTokens, 0)).toBeLessThanOrEqual(2000 + 4096); // shared text cap plus two reasoning allowances
       if (!lossy) expect(result.checkpoints.at(-1).summary).toContain("18 previously; corrected to 16; current 16");
     }
+  });
+
+  it("reserves legacy Anthropic's full wire ceiling without adding thinking twice", async () => {
+    const report = await runTrial({ dryRun: true, models: "anthropic:claude-haiku-4-5", effort: "high" });
+    const identity = report.identity[0], measured = report.models[0];
+    const requests = report.chains.flatMap(chain => chain.requests);
+    expect(report.chains.every(chain => chain.pass)).toBe(true);
+    expect(requests[0]).toMatchObject({ maxTokens: 2000, providerMaxTokens: 18384,
+      options: { maxTokens: 2000, reasoning: "high" } });
+    for (const request of requests) {
+      expect(request.providerMaxTokens).toBe(request.options.maxTokens + 16384);
+      expect(request.providerMaxTokens).toBeGreaterThan(request.maxTokens);
+    }
+    expect(measured.outputAllowance).toBe(requests.reduce((sum, request) => sum + request.providerMaxTokens, 0));
+    expect(measured.estimatedUsd).toBeCloseTo(requests.reduce((sum, request) => sum + requestReservation(identity, request.bytes, request.providerMaxTokens), 0), 10);
+    expect(report.maximumMatrixUsd).toBeCloseTo(requests.reduce((sum, request) => sum + requestReservation(identity, 65536, request.providerMaxTokens), 0), 10);
+    // A cap sufficient for the old text-only hold must now refuse before send.
+    const completion = vi.fn(() => { throw Error("Must not dispatch"); });
+    await expect(runTrial({ confirm: true, models: identity.reference, effort: "high",
+      capUsd: requestReservation(identity, requests[0].bytes, requests[0].maxTokens), complete: completion })).rejects.toThrow("request_failed");
+    expect(completion).not.toHaveBeenCalled();
   });
 
   it("runs all 12 offline chains, reports 60 requests/48 checkpoints/36 cold reseeds per model", async () => {
@@ -101,6 +142,22 @@ describe("spend admission and one-shot failures", () => {
     expect(publications.at(-1).status).toBe("stopped");
     await expect(runTrial({ confirm: true, capUsd: 12, complete: completion })).rejects.toThrow();
     expect(completion).toHaveBeenCalledOnce();
+  });
+  it.each(["error", "aborted"])("retains and publishes unknown liability for a returned %s with zero-filled usage", async stopReason => {
+    const completion = vi.fn(async () => ({ stopReason, content: [], usage: {
+      input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } } }));
+    const publications = [];
+    await expect(runTrial({ confirm: true, capUsd: 12, complete: completion,
+      publish: async report => publications.push(structuredClone(report)) })).rejects.toThrow("request_failed");
+    expect(completion).toHaveBeenCalledOnce();
+    const last = publications.at(-1), dispatch = last.dispatches[0];
+    expect(last.status).toBe("stopped");
+    expect(dispatch.status).toBe("unknown_outcome");
+    expect(dispatch.usage).toEqual({ input: null, output: null, cacheRead: null, cacheWrite: null });
+    expect(last.budget).toMatchObject({ accountedUsd: 0, reservedUsd: dispatch.reservationUsd, dispatched: 1 });
+    expect(last.budget.reservedUsd).toBeGreaterThan(0);
+    expect(publications.some(report => report.status === "running" && report.dispatches[0]?.status === "unknown_outcome")).toBe(true);
+    expect(publications.some(report => report.dispatches.some(row => row.status === "accounted"))).toBe(false);
   });
   it("CLI refuses an unconfirmed run before credentials, output or network", () => {
     const result = spawnSync(process.execPath, ["scripts/summary-retention-trial.mjs", "--spend-cap-usd", "12", "--credential-file", "/fictional/missing.json"], { encoding: "utf8" });

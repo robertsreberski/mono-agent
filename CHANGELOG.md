@@ -3,8 +3,8 @@
 ## Unreleased
 
 - Keep historical facts, correction predecessors and pending obligations in
-  compaction summary instructions, with bounded request-local chronology and
-  unchanged token limits. Retention remains prompt-mediated, not guaranteed;
+  compaction summary instructions, with bounded, escaped request-local chronology
+  and unchanged token limits. Retention remains prompt-mediated, not guaranteed;
   the optional continuity ledger stays opt-in.
 
 - **Breaking:** Add bounded relevance discovery to lexical `ConversationHistory`

@@ -35,8 +35,12 @@ export async function loadTrialFixtures() {
 
 export function scoreTrialSummary(fixture, checkpoint, summary) {
   const lines = summary.split("\n").map(normalized);
+  const field = text => normalized(text).replace(/[.!?]+$/u, "").trim();
+  // Match whole semicolon-delimited fields, never value prefixes (16 != 160).
+  // Markdown bullets/numbered lists and terminal sentence punctuation are framing.
+  const tupleLines = lines.map(line => line.replace(/^(?:[-*+]|\d+[.)])\s+/u, "").split(";").map(field));
   const tuples = fixture.tuples.filter(tuple => tuple.introduced <= checkpoint).map(tuple => ({ id: tuple.id,
-    retained: lines.some(line => tuple.fields.every(field => line.includes(normalized(field)))) }));
+    retained: tupleLines.some(fields => tuple.fields.every(expected => fields.includes(field(expected)))) }));
   const allowedDates = new Set(fixture.tuples.filter(tuple => tuple.introduced <= checkpoint).flatMap(tuple => tuple.reference.match(/\b\d{4}-\d{2}-\d{2}\b/gu) ?? []));
   const inventedDates = [...new Set(summary.match(/\b\d{4}-\d{2}-\d{2}\b/gu) ?? [])].filter(date => !allowedDates.has(date));
   // Positive claims about the planted hypothetical, or invented durable references,
@@ -159,9 +163,14 @@ export async function runTrialChain({ modules, fixture, model, cap, repetition, 
       const facade = modules.summaryModels({ completeSimple: async (selected, context, options) => {
         const bytes = Buffer.byteLength(JSON.stringify(context));
         need(bytes <= MAX_REQUEST_BYTES, "Summary request exceeds 64 KiB");
-        const request = { stage, bytes, maxTokens: options.maxTokens, context, options: { maxTokens: options.maxTokens, reasoning: options.reasoning, transport: options.transport, maxRetries: options.maxRetries } };
+        // The facade has already applied shipping policy and recorded its wire
+        // ceiling. Legacy adapters add thinking later: do not reapply policy or
+        // change maxTokens, but reserve the full providerMaxTokens liability.
+        const providerMaxTokens = telemetry.at(-1)?.providerMaxTokens;
+        need(Number.isSafeInteger(providerMaxTokens) && providerMaxTokens > 0, "Summary provider ceiling unavailable");
+        const request = { stage, bytes, maxTokens: options.maxTokens, providerMaxTokens, context, options: { maxTokens: options.maxTokens, reasoning: options.reasoning, transport: options.transport, maxRetries: options.maxRetries } };
         requests.push(request); onRequest(request);
-        return complete(selected, context, options, { fixture: fixture.id, cap, repetition, stage, bytes });
+        return complete(selected, context, options, { fixture: fixture.id, cap, repetition, stage, bytes, providerMaxTokens });
       } }, { operationId: `fictional-${stage}`, focus: `${input.focus}\n\n${trialFocus}`, evidence: input.evidence, requests: telemetry, effort: modules.trialEffort });
       const result = await modules.compactWithRequest(input.preparation, { model, thinkingLevel: modules.summaryThinkingLevel(model, modules.trialEffort) },
         (context, options) => facade.completeSimple(model, context, options), {});
@@ -205,7 +214,7 @@ export async function runTrial({ dryRun = false, confirm = false, capUsd, models
   const budget = dryRun ? null : createTrialBudget(capUsd);
   const report = { schema: "summary-retention-trial-v1", dryRun, fixturesSha256: fixtures.sha256, assertionPolicy: fixtures.assertionPolicy,
     requestedEffort: effort, identity: catalog.map(({ model, catalog }) => ({ ...catalog, effectiveEffort: modules.summaryThinkingLevel(model, effort) })),
-    spendingDisclosure: "Reservations use one token per serialized input byte and the requested output allowance at maximum frozen catalog rates, without cache credit. Codex output ceiling is NOT enforced by the provider; the cap refuses further dispatch, but cannot interrupt an already sent request or guarantee its bill. Unknown outcomes retain reservations and stop. No retries.",
+    spendingDisclosure: "Reservations use one token per serialized input byte and the shipping providerMaxTokens output allowance (including adapter-added thinking) at maximum frozen catalog rates, without cache credit. Codex output ceiling is NOT enforced by the provider; the cap refuses further dispatch, but cannot interrupt an already sent request or guarantee its bill. Unknown outcomes retain reservations and stop. No retries.",
     qualificationLimit: "Deterministic, literal fixture assertions; not a general semantic or provenance verifier. Dry-run controls prove mechanics only, not model retention.",
     models: [], chains: [], dispatches: [], budget: budget?.snapshot() ?? null, status: "running" };
   await publish(report);
@@ -216,16 +225,25 @@ export async function runTrial({ dryRun = false, confirm = false, capUsd, models
       for (const fixture of fixtures.fixtures) for (const cap of CAPS) for (let repetition = 1; repetition <= 2; repetition++) {
         const chain = await runTrialChain({ modules, fixture, model, cap, repetition,
           complete: async (selected, context, options, meta) => {
-            const reservation = requestReservation(identity, meta.bytes, options.maxTokens);
-            measured.requests++; measured.inputBytes += meta.bytes; measured.outputAllowance += options.maxTokens; measured.estimatedUsd += reservation; measured.maximumInputUsd += requestReservation(identity, MAX_REQUEST_BYTES, options.maxTokens);
+            const reservation = requestReservation(identity, meta.bytes, meta.providerMaxTokens);
+            measured.requests++; measured.inputBytes += meta.bytes; measured.outputAllowance += meta.providerMaxTokens; measured.estimatedUsd += reservation; measured.maximumInputUsd += requestReservation(identity, MAX_REQUEST_BYTES, meta.providerMaxTokens);
             if (dryRun) return { stopReason: "stop", content: [{ type: "text", text: controlSummary(context) }], usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } } };
             need(typeof complete === "function", "Paid completion boundary unavailable");
             const reserved = budget.reserve(reservation);
-            const dispatch = { model: identity.reference, ...meta, outputAllowance: options.maxTokens, reservationUsd: reserved, status: "reserved", usage: null };
+            const dispatch = { model: identity.reference, ...meta, outputAllowance: meta.providerMaxTokens, reservationUsd: reserved, status: "reserved", usage: null };
             report.dispatches.push(dispatch);
             report.budget = budget.snapshot(); await publish(report); // durable reservation before send
             const answer = await complete(selected, context, { ...options, maxRetries: 0, transport: "sse", cacheRetention: "none" });
             dispatch.usage = Object.fromEntries(["input", "output", "cacheRead", "cacheWrite"].map(key => [key, answer?.usage?.[key] ?? null]));
+            // Adapters can return error/abort responses with initialized zero
+            // usage. Like the shipping facade, treat that as unknown, not free.
+            if (["error", "aborted"].includes(answer?.stopReason)
+              && ![...Object.values(dispatch.usage), answer?.usage?.cost?.total].some(value => Number.isFinite(value) && value > 0)) {
+              dispatch.status = "unknown_outcome";
+              dispatch.usage = Object.fromEntries(Object.keys(dispatch.usage).map(key => [key, null]));
+              report.budget = budget.snapshot(); await publish(report);
+              throw new Error("Unknown provider outcome; reservation retained");
+            }
             budget.settle(reserved, answer?.usage, identity);
             dispatch.status = "accounted";
             report.budget = budget.snapshot(); await publish(report);
