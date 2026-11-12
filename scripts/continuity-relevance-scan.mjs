@@ -9,6 +9,7 @@ import { createContinuitySchema, continuityRecordId } from "../packages/conversa
 import { getContinuity } from "../packages/conversation/dist/tool-history/continuity-reader.js";
 import { searchRelevantContinuity } from "../packages/conversation/dist/tool-history/relevance-scan.js";
 if (typeof global.gc !== "function") throw new Error("Run this measurement with node --expose-gc.");
+const manyAbsentTerms = Array.from({ length: 16 }, (_, index) => `${String.fromCharCode(97 + index)}quartz-velvet-prairie`).join(" ");
 const sha = text => createHash("sha256").update(text).digest("hex");
 const scope = { logicalConversationId: "fictional-scan", currentConversationId: "fictional-scan", currentRunId: "reader" };
 const parent = join(process.cwd(), ".mono-agent");
@@ -35,7 +36,7 @@ try {
         record.run(continuityRecordId(scope.logicalConversationId, `record-${index}`), gen, kind, index % 128, text, sha(text), size, size, kind === "user" ? "unknown" : kind === "summary" ? "generated" : "assistant");
       }
       db.exec("COMMIT; PRAGMA wal_checkpoint(TRUNCATE)"); db.close();
-      for (const query of (process.argv.includes("--leak-only") ? [] : ["cobalt observatory", "absent-unmatched", "żółty", "historical cobalt observatory correction", "historical absent-unmatched missing-component correction"])) {
+      for (const query of (process.argv.includes("--leak-only") ? [] : ["cobalt observatory", "absent-unmatched", "żółty", "historical cobalt observatory correction", "historical absent-unmatched missing-component correction", manyAbsentTerms])) {
         let continuation;
         for (const phase of ["cold-connection", "warm", "continuation"]) {
           if (phase === "continuation" && !continuation) continue;

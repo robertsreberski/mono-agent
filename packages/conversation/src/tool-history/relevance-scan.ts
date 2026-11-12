@@ -6,10 +6,10 @@ import { relevancePipeline } from "./relevance-pipeline.js";
 
 type Row = Record<string, unknown>;
 type Descriptor = { record_id: string; generation_id: string; ordinal: number; text_sha256: string; retained_bytes: number };
-type Candidate = { descriptor: Descriptor; score: number; position: number; end: number };
+type Candidate = { descriptor: Descriptor; anchor: ContinuityRelevanceContinuation["anchor"]; position: number; end: number };
 const MAX_RECORDS = 100_000, MAX_BYTES = 256 * 1024 * 1024, MAX_RECORD_BYTES = 1024 * 1024;
 const NOT_PURGING = `NOT EXISTS (SELECT 1 FROM continuity_generations p WHERE p.conversation_id=g.conversation_id AND p.state='prepared' AND p.action<>'checkpoint' AND p.action IN ('reset','delete'))`;
-const key = (c: Candidate) => ({ score: c.score, ordinal: c.descriptor.ordinal, recordId: c.descriptor.record_id });
+const key = (c: Candidate) => c.anchor;
 const identity = (d: Descriptor) => JSON.stringify([d.generation_id, d.ordinal, d.record_id, d.text_sha256, d.retained_bytes]) + "\n";
 interface Reader { metadata(row: Row): ContinuityRecordMetadata; text(row: Row): string }
 /** Internal deterministic barriers/clock for race and capacity tests, never tool input. */
@@ -131,7 +131,7 @@ export function searchRelevantContinuity(db: DatabaseSync, input: ContinuitySear
           }
           if (top.length === limit + 1 && compare(rank, key(top.at(-1)!)) >= 0) continue;
           if (top.length === limit + 1) top.pop();
-          top.push({ descriptor: d, score, position: match.position, end: match.end });
+          top.push({ descriptor: d, anchor: rank, position: match.position, end: match.end });
           top.sort((a, b) => compare(key(a), key(b)));
         }
         stats.maxBatchMs = Math.max(stats.maxBatchMs, now() - batchStarted);

@@ -1,3 +1,4 @@
+import { englishStopWords } from "./relevance-stopwords.js";
 import type { ContinuityKind } from "./continuity-contracts.js";
 import { expression, matchingText, retainedPosition, relevanceMatch, relevanceQuery } from "./relevance.js";
 
@@ -7,8 +8,13 @@ const eventWords = ["event", "happened", "occurred", "scheduled", "moved", "canc
 const historicalWords = new Set(["historical", "history", "original", "originally", "previous", "previously", "earlier", "prior", "initial", "initially", "predecessor", "before-correction"]);
 const currentWords = new Set(["current", "currently", "latest", "now", "today"]);
 const intentWords = new Set([...correctionWords, ...eventWords, ...historicalWords, ...currentWords,
-  "change", "revision", "request", "decision", "corrections", "events", "what", "which", "when", "how", "was", "were", "the", "a", "an", "of", "for", "to", "and", "or", "is", "it", "did", "in", "on", "at", "used"]);
-const correction = /\b(?:correction|corrected|changed|revised|amended|instead|actually|edit(?:ed)?|updat(?:e|ed))\b/giu;
+  "change", "revision", "request", "decision", "corrections", "events", "used"]);
+// One general morphology definition drives record signals and query intent;
+// lexical content matching itself is not stemmed or broadened.
+const correctionVocabulary = "corrections?|correct(?:s|ed|ing)?|chang(?:e[sd]?|ing)|revis(?:e[sd]?|ing)|amend(?:s|ed|ing)?|fix(?:es|ed|ing)?|reschedul(?:e[sd]?|ing)|mov(?:e[sd]?|ing)|instead|actually|edit(?:s|ed|ing)?|updat(?:e[sd]?|ing)";
+const correction = new RegExp(`\\b(?:${correctionVocabulary})\\b`, "giu");
+const correctionTerm = new RegExp(`^(?:${correctionVocabulary})$`, "iu");
+const isIntent = (term: string) => intentWords.has(term) || correctionTerm.test(term);
 const event = /\b(?:scheduled|moved|cancelled|canceled|postponed|decided|requested|reported|original|occurred|happened)\b/giu;
 const hypothetical = /\b(?:hypothetical(?:ly)?|suppos(?:e|ing)|imagine|counterfactual|what\s+if|for\s+example)\b|\bif\b[^;.!?\n]*\b(?:would|could|might)\b/iu;
 const quoted = /\bquot(?:e|ed|ation)\b|```|^\s*>|["“`][^"”`\n]*\b(?:correction|corrected|changed|revised|amended|instead|actually|updated|scheduled|moved|original|requested)\b/iu;
@@ -21,29 +27,38 @@ const globalPattern = (pattern: RegExp) => new RegExp(pattern.source, pattern.fl
 
 export function evidenceQuery(text: string) {
   const base = relevanceQuery(text);
+  // A bounded auxiliary ... used-to frame is the purpose/passive sense, not
+  // habitual history. No verb dictionary or corpus-specific phrases are needed.
+  const purpose = /\b(?:am|is|are|was|were|be|been|being)\s+(?:[\p{L}\p{N}_'’]+\s+){0,8}used\s+to\s+\p{L}/iu.test(text);
   const historical = !base.terms.some(term => currentWords.has(term))
-    && (base.terms.some(term => historicalWords.has(term)) || /\bused\s+to\b/iu.test(text));
-  const wantsCorrection = base.terms.some(term => correctionWords.includes(term) || ["change", "revision", "corrections"].includes(term));
+    && (base.terms.some(term => historicalWords.has(term)) || (!purpose && /\bused\s+to\b/iu.test(text)));
+  const wantsCorrection = base.terms.some(term => correctionTerm.test(term) || term === "revision");
   const wantsEvent = historical || base.terms.some(term => eventWords.includes(term) || ["request", "decision", "events"].includes(term));
-  const content = base.terms.map((term, index) => ({ term, pattern: base.patterns[index]! })).filter(({ term }) => !intentWords.has(term))
-    .map(entry => ({ ...entry, global: globalPattern(entry.pattern) }));
+  const nonStop = base.terms.map((term, index) => ({ term, pattern: base.patterns[index]! })).filter(({ term }) => !englishStopWords.has(term));
+  const regular = nonStop.filter(({ term }) => !isIntent(term));
+  // Intent-only queries still have literal anchors. With no non-stop terms at
+  // all, preserve v1 eligibility rather than silently manufacturing no matches.
+  const content = (regular.length ? regular : nonStop).map(entry => ({ ...entry, global: globalPattern(entry.pattern) }));
+  const fallbackV1 = content.length === 0;
   // Components must be whole delimiter-separated units, never arbitrary
   // substrings. Numeric identifiers retain their entire spelling: expanding
   // ACT-77 to ACT would admit ACT-770. Pure numeric components are never added.
   const components = content.map(({ term }) => {
-    if (!/\p{L}/u.test(term) || term.length < 3) return [];
+    if (!/\p{L}/u.test(term) || term.length < 3) return undefined;
     const values = [term, ...(/\p{N}/u.test(term) ? [] : term.split(/[-_.:/]/u).filter(part => part.length >= 4))];
-    return [...new Set(values)].slice(0, 4).map(value => {
-      const pattern = expression(value, true, true);
-      return { pattern, global: globalPattern(pattern) };
-    });
+    const patterns = [...new Set(values)].slice(0, 4).map(value => expression(value, true, true));
+    // One body scan per term's component group, not up to four scans (including
+    // a duplicate of the full term). All construction stays on the query path.
+    const pattern = new RegExp(patterns.map(part => `(?:${part.source})`).join("|"), "iv");
+    return { pattern, global: globalPattern(pattern) };
   });
   const expansions = [...new Set([...(wantsCorrection ? correctionWords : []), ...(wantsEvent ? eventWords : [])])].slice(0, 24).map(word => expression(word, true));
-  const intentPatterns = base.patterns.filter((_pattern, index) => intentWords.has(base.terms[index]!));
-  return { ...base, base, content, components, historical, wantsCorrection, wantsEvent, expansions, intentPatterns,
+  const intentPatterns = base.patterns.filter((_pattern, index) => isIntent(base.terms[index]!));
+  return { ...base, base, content, components, fallbackV1, historical, wantsCorrection, wantsEvent, expansions, intentPatterns,
     intent: historical || wantsCorrection || wantsEvent,
-    // Complementary preview selection may also find the lower-weight component.
-    patterns: [...base.patterns, ...components.flat().map(entry => entry.pattern)] };
+    // Complementary windows prioritize true content, then its component groups;
+    // never spend a second window on a stop word or an intent-only fallback.
+    patterns: [...regular.map(entry => entry.pattern), ...components.flatMap((entry, index) => entry && !isIntent(content[index]!.term) ? [entry.pattern] : [])] };
 }
 
 function repeated(pattern: RegExp, context: string): boolean {
@@ -73,10 +88,7 @@ function signals(context: string) {
 }
 
 export function evidenceMatch(text: string, query: ReturnType<typeof evidenceQuery>, kind: ContinuityKind) {
-  if (query.mode === "literal") return relevanceMatch(text, query.base);
-  // All lexical v2 paths, including ordinary questions, need a content anchor.
-  // A stop-word/intent-only query cannot confer relevance. V1 is unchanged.
-  if (query.content.length === 0) return undefined;
+  if (query.mode === "literal" || query.fallbackV1) return relevanceMatch(text, query.base);
   const { expanded, searchable } = matchingText(text);
   let full = 0, component = 0, first = Number.MAX_SAFE_INTEGER, last = 0, firstEnd = 0;
   let firstGlobal: RegExp | undefined;
@@ -85,9 +97,10 @@ export function evidenceMatch(text: string, query: ReturnType<typeof evidenceQue
     let match = entry.pattern.exec(searchable), global = entry.global;
     if (match) full++;
     else {
-      for (const candidate of query.components[index]!) {
+      const candidate = query.components[index];
+      if (candidate) {
         match = candidate.pattern.exec(searchable);
-        if (match) { global = candidate.global; component++; break; }
+        if (match) { global = candidate.global; component++; }
       }
     }
     if (!match) continue;

@@ -6,6 +6,8 @@ import { getContinuity, searchContinuity } from "../tool-history/continuity-read
 import { searchRelevantContinuity } from "../tool-history/relevance-scan.js";
 import type { ContinuityPreview } from "../index.js";
 import * as relevance from "../tool-history/relevance.js";
+import independentHeldout from "./fixtures/continuity-ranking-heldout-independent.json" with { type: "json" };
+import { englishStopWords } from "../tool-history/relevance-stopwords.js";
 import rankingHeldout from "./fixtures/continuity-ranking-heldout.json" with { type: "json" };
 import { evidenceQuery, evidenceMatch } from "../tool-history/relevance-v2.js";
 import rankingFixture from "./fixtures/continuity-ranking.json" with { type: "json" };
@@ -423,7 +425,7 @@ describe("ranking review regressions", () => {
     expect(modern.match(stopOnly, "assistant")).toBeUndefined();
     expect(modern.match(content, "user")).toBeDefined();
     expect(legacy.match(stopOnly, "assistant")!.score).toBeGreaterThan(legacy.match(content, "user")!.score);
-    expect(relevancePipeline(2, "what is the").match(stopOnly, "user")).toBeUndefined();
+    expect(relevancePipeline(2, "what is the").match(stopOnly, "user")).toEqual(relevancePipeline(1, "what is the").match(stopOnly, "user"));
   });
   it.each(["when is the juniper delivery", "first item in the list", "before release"])("keeps the newest value for current-state query %j", query => {
     const f = fixture(); try {
@@ -455,7 +457,7 @@ describe("ranking review regressions", () => {
   it("reuses precomputed globals without constructing regexes per record", () => {
     const q = evidenceQuery("earlier juniper_box shipment edit");
     expect(q.content.every(entry => entry.global.global)).toBe(true);
-    expect(q.components.flat().every(entry => entry.global.global)).toBe(true);
+    expect(q.components.every(entry => !entry || entry.global.global)).toBe(true);
     const spy = vi.spyOn(globalThis, "RegExp");
     try {
       for (let n = 0; n < 10; n++) {
@@ -502,4 +504,85 @@ describe("shared v2 retained offset mapping", () => {
       expect(item.preview).not.toContain("�");
     } finally { fold.mockRestore(); offset.mockRestore(); f.db.close(); }
   });
+});
+
+
+describe("general lexical review fixes", () => {
+  it("separates a general English stop list from content and intent", () => {
+    expect(englishStopWords.size).toBeGreaterThanOrEqual(120); expect(englishStopWords.size).toBeLessThanOrEqual(180);
+    for (const query of ["what do you know about these copper samples", "can we have those copper samples from your store with us"]) {
+      const f = fixture(); try {
+        f.add("We know about what you have with us from your store.");
+        const source = f.add("Copper samples are sealed.");
+        expect(f.search(query).items[0]!.recordId).toBe(source.id);
+        expect(evidenceQuery(query).content.some(entry => englishStopWords.has(entry.term))).toBe(false);
+      } finally { f.db.close(); }
+    }
+  });
+  it.each(["what changed", "any corrections?", "postponed"])("retains literal intent anchors for %j", query => {
+    const text = "Corrections: the parcel changed and was postponed.";
+    const f = fixture(); try {
+      const source = f.add(text);
+      expect(relevancePipeline(1, query).match(text, "assistant")).toBeDefined();
+      expect(f.search(query).items[0]!.recordId).toBe(source.id);
+      expect(evidenceQuery(query).patterns).toHaveLength(0);
+    } finally { f.db.close(); }
+  });
+  it("combines at most four components into one query-time pattern per term", () => {
+    const query = evidenceQuery("north-bronze-parcel-route");
+    expect(query.components).toHaveLength(1);
+    expect(query.components[0]!.pattern.test("old_bronze_side")).toBe(true);
+    const spy = vi.spyOn(query.components[0]!.pattern, "exec");
+    evidenceMatch("unrelated body", query, "user"); expect(spy).toHaveBeenCalledTimes(1);
+  });
+  it("spends complementary windows on content, never stop/intent vocabulary", () => {
+    const f = fixture(); try {
+      f.add("copper referent. " + "background ".repeat(70) + "is earlier what the. " + "padding ".repeat(70) + "parcel was moved.");
+      const item = f.search("what is the earlier copper parcel").items[0]!;
+      expect(item.additionalPreviews![0]!.preview).toContain("parcel was moved");
+      expect(item.additionalPreviews![0]!.preview).not.toContain("is earlier what the");
+    } finally { f.db.close(); }
+  });
+  it.each(["change", "changes", "changing", "correct", "corrects", "fix", "fixed", "reschedule", "rescheduled", "move", "moved"])("recognizes general correction morphology %j", word => {
+    const pipeline = relevancePipeline(2, "copper parcel correction");
+    expect(pipeline.match(`Copper parcel: ${word} the date.`, "user")!.score).toBeGreaterThan(pipeline.match("Copper parcel: retain the date.", "user")!.score);
+  });
+  it.each(["is", "are", "was", "were", "has been"])("does not treat auxiliary %j ... used to as habitual history", auxiliary => {
+    expect(evidenceQuery(`what ${auxiliary} copper equipment used to carry`).historical).toBe(false);
+  });
+  it("preserves habitual and explicit historical used-to queries", () => {
+    expect(evidenceQuery("what copper equipment used to carry").historical).toBe(true);
+    expect(evidenceQuery("historical use of what copper equipment is used to carry").historical).toBe(true);
+  });
+});
+
+it("evaluates the frozen independent set with per-case top-1 and aggregate MRR nonregression", () => {
+  let v1Reciprocal = 0, v2Reciprocal = 0;
+  for (const scenario of independentHeldout.cases) {
+    const f = fixture(); try {
+      const ids = scenario.records.map(record => f.add(record.text, "committed", scope.logicalConversationId, record.kind).id);
+      const indexed = f.db.prepare("SELECT record_id,kind FROM continuity_records ORDER BY ordinal").all();
+      expect(indexed.map(row => row.record_id)).toEqual(ids);
+      expect(indexed.map(row => row.kind)).toEqual(scenario.records.map(record => record.kind));
+      const results = [1, 2].map(version => {
+        const pipeline = relevancePipeline(version as 1 | 2, scenario.query);
+        const ranked = scenario.records.flatMap((record, index) => {
+          const match = pipeline.match(record.text, record.kind as "user" | "assistant" | "summary");
+          return match ? [{ index, recordId: ids[index]!, ordinal: index + 1, score: match.score }] : [];
+        }).sort(pipeline.compare);
+        const position = ranked.findIndex(record => record.index === scenario.expectedFirst);
+        return { first: ranked[0]?.index ?? null, rank: position === -1 ? null : position + 1, order: ranked.map(record => record.index) };
+      });
+      const [v1, v2] = results;
+      const page = f.search(scenario.query, 10);
+      expect(page.scan!.complete).toBe(true); expect(page.scan!.records).toBe(scenario.records.length);
+      expect(page.items.map(item => ids.indexOf(item.recordId))).toEqual(v2!.order);
+      console.log("independent", JSON.stringify({ name: scenario.name, expectedFirst: scenario.expectedFirst, v1, v2 }));
+      if (v1!.rank === 1) expect(v2!.rank, scenario.name).toBe(1);
+      v1Reciprocal += v1!.rank === null ? 0 : 1 / v1!.rank;
+      v2Reciprocal += v2!.rank === null ? 0 : 1 / v2!.rank;
+    } finally { f.db.close(); }
+  }
+  console.log("independent-mrr", JSON.stringify({ v1: v1Reciprocal / independentHeldout.cases.length, v2: v2Reciprocal / independentHeldout.cases.length }));
+  expect(v2Reciprocal).toBeGreaterThanOrEqual(v1Reciprocal);
 });

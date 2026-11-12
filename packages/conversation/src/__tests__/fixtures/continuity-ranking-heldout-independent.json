@@ -1,0 +1,195 @@
+{
+  "purpose": "Independent fictional held-out set written without access to the ranking implementation. Must not be edited or tuned to.",
+  "author": "independent writer (no implementation access)",
+  "cases": [
+    {
+      "name": "lantern-port-scratch-that-current",
+      "query": "what port does Lantern listen on",
+      "records": [
+        { "kind": "user", "text": "Lantern's staging gateway should listen on port 7410 for now, we can revisit later." },
+        { "kind": "assistant", "text": "Got it — Lantern staging gateway on 7410. Want me to add it to the runbook?" },
+        { "kind": "user", "text": "yes pls. also what port is the metrics sidecar on? I think it's also 74-something" },
+        { "kind": "assistant", "text": "The metrics sidecar listens on 7410 as well, so the two will collide on the shared staging host." },
+        { "kind": "user", "text": "ugh. what port does the Copperline proxy use? maybe we can borrow that pattern" },
+        { "kind": "user", "text": "scratch that, make lantern listen on 7425 instead. sidecar keeps 7410." },
+        { "kind": "assistant", "text": "Do you want me to also update the firewall rule for the staging host while I'm in there?" }
+      ],
+      "expectedFirst": 5,
+      "rationale": "The question asks for the current value, and the user's later 'scratch that' correction to 7425 supersedes the original 7410 and the restatement of it."
+    },
+    {
+      "name": "bramblecart-originally-picked-week",
+      "query": "what launch week did I originally pick for Bramblecart",
+      "records": [
+        { "kind": "user", "text": "ok so for Bramblecart I'm thinking we launch in week 9, assuming Pellow signs off on the copy. also keep the beta list small pls." },
+        { "kind": "assistant", "text": "Noted — Bramblecart is targeting week 9 pending Pellow's sign-off, and the beta list stays small." },
+        { "kind": "user", "text": "bramblecart vendor slipped, push it to week 12" },
+        { "kind": "assistant", "text": "Done — the Bramblecart launch is now week 12." },
+        { "kind": "summary", "text": "Recap: Bramblecart launch was originally planned for week 9 and was pushed to week 12 after a vendor slip; Pellow owns copy sign-off." }
+      ],
+      "expectedFirst": 0,
+      "rationale": "An explicit 'originally' question should surface the user's own original statement over the assistant and summary restatements, even though the summary literally contains 'originally'."
+    },
+    {
+      "name": "hopper-used-to-carry-purpose",
+      "query": "what is the hopper used to carry",
+      "records": [
+        { "kind": "user", "text": "The hopper on the Mossline rig is used to carry wet gravel from the screening deck to the crusher." },
+        { "kind": "user", "text": "fun fact, the hopper used to be painted orange before the refit. kind of miss it tbh" },
+        { "kind": "assistant", "text": "Per the spec sheet you shared, the Mossline hopper holds about 3 tonnes per load." },
+        { "kind": "summary", "text": "Recap: the Mossline hopper carries wet gravel between the screening deck and the crusher; capacity is about 3 tonnes; its old paint colour came up." },
+        { "kind": "user", "text": "change it to dry sand — the mossline hopper carries dry sand now, wet gravel moved over to the new conveyor." }
+      ],
+      "expectedFirst": 4,
+      "rationale": "'Used to carry' is a purpose question, not a history question, so the newest statement of what the hopper carries (dry sand) should win."
+    },
+    {
+      "name": "kestrel-thing-stopword-heavy",
+      "query": "what did you tell me about the kestrel thing",
+      "records": [
+        { "kind": "user", "text": "what did you tell me about the thing with the invoices again? I forgot." },
+        { "kind": "assistant", "text": "About the invoices: Tamsin is batching them on Fridays now, so expect one email a week." },
+        { "kind": "user", "text": "Can you look into the Kestrel thing? The nightly export keeps timing out somewhere around 2am." },
+        { "kind": "assistant", "text": "On Kestrel: the nightly export times out because the archive query scans the whole ledger table. I suggested adding an index on posted_at and splitting the job into two smaller batches." },
+        { "kind": "user", "text": "did you tell me anything about the weekend rota? can't find it" }
+      ],
+      "expectedFirst": 3,
+      "rationale": "The only content word is 'kestrel', and 'what did you tell me' points at the assistant's Kestrel explanation rather than the stop-word-similar invoice and rota exchanges."
+    },
+    {
+      "name": "bare-what-changed",
+      "query": "what changed?",
+      "records": [
+        { "kind": "user", "text": "morning! hope the weekend was good. what do you think about the new office plants?" },
+        { "kind": "assistant", "text": "They look great — the fern by the window is my favourite." },
+        { "kind": "user", "text": "correction— the Glimmerfold demo is with the Ostrander team, not the Vale team. sorry, I mixed them up." },
+        { "kind": "assistant", "text": "What's changed on your side since yesterday? Anything I should know before the demo prep?" },
+        { "kind": "user", "text": "nothing new really, just catching up on email." }
+      ],
+      "expectedFirst": 2,
+      "rationale": "A query made only of change/question words should still find the one real correction, not the assistant's question that merely contains 'changed'."
+    },
+    {
+      "name": "thornbury-negated-and-hypothetical-move",
+      "query": "did we move the Thornbury database to the new region?",
+      "records": [
+        { "kind": "user", "text": "Plan for Thornbury: keep the primary database in north-2 for now." },
+        { "kind": "assistant", "text": "If we had moved Thornbury's database to the new region, replication lag would roughly double, so staying in north-2 makes sense." },
+        { "kind": "user", "text": "just to be clear, we did not move the thornbury database, it's still in north-2." },
+        { "kind": "user", "text": "ok update: we migrated the Thornbury database to south-4 last night, cutover went fine." },
+        { "kind": "assistant", "text": "Thanks — I'll note that the Thornbury primary now lives in south-4." }
+      ],
+      "expectedFirst": 3,
+      "rationale": "The hypothetical and negated mentions are not real moves; the user's actual migration message is the change and outranks the assistant's restatement."
+    },
+    {
+      "name": "quillon-seats-sorry-wrong-number",
+      "query": "how many seats are reserved for the Quillon offsite",
+      "records": [
+        { "kind": "user", "text": "Please reserve 18 seats for the Quillon offsite dinner." },
+        { "kind": "assistant", "text": "Request noted: 18 seats reserved for the Quillon offsite." },
+        { "kind": "user", "text": "sorry, wrong number — it's 22 seats for quillon, I forgot the contractors." },
+        { "kind": "user", "text": "Separately, how many seats does the Harbor room hold? Just curious for the next all-hands." },
+        { "kind": "summary", "text": "Recap: talked about office plants, the Harbor room's capacity of 40, and moving the Thursday standup." }
+      ],
+      "expectedFirst": 2,
+      "rationale": "The current reservation is the corrected 22 seats; the Harbor room question shares 'how many seats' but not the content."
+    },
+    {
+      "name": "sablewing-previous-retry-limit",
+      "query": "what was the previous retry limit on the Sablewing importer",
+      "records": [
+        { "kind": "assistant", "text": "For the Sablewing importer I'd suggest starting with a retry limit of 3 and exponential backoff." },
+        { "kind": "user", "text": "Let's go with 5 retries on the sablewing importer, 3 felt too aggressive given how flaky the upstream is." },
+        { "kind": "assistant", "text": "Set — the Sablewing importer retry limit is 5." },
+        { "kind": "user", "text": "fix: drop the sablewing retries to 2, the upstream is stable now and 5 was masking real errors." },
+        { "kind": "summary", "text": "Recap: the Sablewing importer retry limit went from 5 to 2; backoff remains exponential." }
+      ],
+      "expectedFirst": 1,
+      "rationale": "The previous value is the user's own choice of 5, which should beat the assistant's unadopted suggestion, the assistant restatement and the summary."
+    },
+    {
+      "name": "pemberly-wifi-rotated-current",
+      "query": "what's the wifi password for the Pemberly loft",
+      "records": [
+        { "kind": "user", "text": "Wifi at the Darrow studio is a mess, the password there changes weekly and nobody tells me." },
+        { "kind": "user", "text": "the pemberly loft wifi password is copper-heron-41, dont shre it outside the team pls" },
+        { "kind": "assistant", "text": "Understood — I won't repeat the Pemberly loft password in shared channels." },
+        { "kind": "user", "text": "also can u check whether the loft has a spare monitor? mine's flickering" },
+        { "kind": "user", "text": "ok they rotated the password — pemberly loft wifi is now amber-finch-07. same rules as before" },
+        { "kind": "assistant", "text": "Want me to update the vault note for the loft too?" }
+      ],
+      "expectedFirst": 4,
+      "rationale": "This is a current-value question, so the rotated password supersedes the original one, and the Darrow studio record is a wifi/password distractor."
+    },
+    {
+      "name": "larkspur-venue-i-meant-correction",
+      "query": "did I correct the venue for the Larkspur workshop?",
+      "records": [
+        { "kind": "user", "text": "Book the Larkspur workshop at Copperfield pavilion, it has the projector we need." },
+        { "kind": "assistant", "text": "Booked Copperfield pavilion for the Larkspur workshop." },
+        { "kind": "user", "text": "wait, I meant the Wrenmoor annex, not Copperfield — Copperfield is the one with the broken heating. Larkspur goes to Wrenmoor." },
+        { "kind": "assistant", "text": "Switched the Larkspur workshop over to the Wrenmoor annex." },
+        { "kind": "summary", "text": "Recap: Larkspur workshop venue corrected from Copperfield pavilion to the Wrenmoor annex; catering still to be decided." },
+        { "kind": "user", "text": "did I correct the catering order too, or is that still pending?" }
+      ],
+      "expectedFirst": 2,
+      "rationale": "For a correction question, the user's own 'I meant' message should outrank the assistant and summary restatements and the catering question that shares 'did I correct'."
+    },
+    {
+      "name": "tidewater-presenter-its-actually",
+      "query": "who is presenting at the Tidewater review on Thursday",
+      "records": [
+        { "kind": "user", "text": "Rescheduled the Tidewater review to Thursday 10:00 in room 4B; Kai Renner will present." },
+        { "kind": "user", "text": "who is going to be at the thing on thursday? i lost track" },
+        { "kind": "assistant", "text": "On Thursday you've got the dentist at 3 and the team lunch; nothing else is on the calendar." },
+        { "kind": "user", "text": "who is presenting at the Galloway sync? I need to send them slides" },
+        { "kind": "assistant", "text": "For the Galloway sync, Bex Harrow is presenting the hiring plan." },
+        { "kind": "user", "text": "for tidewater it's actually Odessa Brill presenting the cost model, not Kai — Kai only joins for Q&A." }
+      ],
+      "expectedFirst": 5,
+      "rationale": "The newest Tidewater presenter statement (Odessa) is the current answer; the Thursday and Galloway records share many query words but not the content."
+    },
+    {
+      "name": "nimbusfold-earlier-rollout-plan",
+      "query": "what was the earlier plan for the Nimbusfold rollout",
+      "records": [
+        { "kind": "user", "text": "the coffee machine on floor 3 is broken again, can you log a facilities ticket?" },
+        { "kind": "user", "text": "Ha, that meeting ran long. Anyway, here's what I'm thinking for Nimbusfold: roll it out region by region, starting with the coastal stores, two weeks per wave. Kenji thinks that's too slow but let's start there and see." },
+        { "kind": "assistant", "text": "Sounds good — a region-by-region rollout in two-week waves, coastal stores first." },
+        { "kind": "user", "text": "update: not region-by-region but a single big-bang day for Nimbusfold — leadership wants every store live together." },
+        { "kind": "summary", "text": "Recap: the Nimbusfold rollout plan was originally region-by-region in two-week waves starting with coastal stores; it changed to a single-day big-bang launch at leadership's request." }
+      ],
+      "expectedFirst": 1,
+      "rationale": "'Earlier plan' is a history question, so the user's original chatty statement of the wave plan beats the restatement, the summary and the later update."
+    },
+    {
+      "name": "halcyon-budget-buried-codename",
+      "query": "what is the budget cap for Halcyon this quarter",
+      "records": [
+        { "kind": "user", "text": "what's the budget for the offsite catering? want to make sure we don't overspend" },
+        { "kind": "assistant", "text": "The catering budget is 6k according to the last sheet you shared." },
+        { "kind": "user", "text": "budget for the quarter is tight in general, lets not commit to anything new until finance signs off" },
+        { "kind": "assistant", "text": "Understood, I'll flag any new spend before it goes out." },
+        { "kind": "user", "text": "what's the cap on the travel budget again?" },
+        { "kind": "assistant", "text": "Travel is capped at 12k for the quarter." },
+        { "kind": "user", "text": "Quick brain dump before I log off: the design review went fine, Mira wants the icons slightly rounder, the onboarding copy needs another pass, and oh — Halcyon is capped at 48k for the quarter, finance confirmed. Also remind me to water the plants tomorrow." }
+      ],
+      "expectedFirst": 6,
+      "rationale": "Only the brain-dump message mentions Halcyon, once, deep inside a long message; the travel and catering budget records are distractors that share the generic words."
+    },
+    {
+      "name": "orrin-initial-assignee-swap",
+      "query": "what was the initial assignee for the Orrin billing bug",
+      "records": [
+        { "kind": "user", "text": "Assign the Orrin billing bug to Priya Vantongeren, she knows the ledger code best." },
+        { "kind": "assistant", "text": "Assigned the Orrin billing bug to Priya." },
+        { "kind": "user", "text": "swap — give the orrin bug to Desmond instead, Priya's out next week" },
+        { "kind": "summary", "text": "Recap: the Orrin billing bug assignee changed from Priya to Desmond; repro steps are in the ticket." },
+        { "kind": "user", "text": "who is the assignee for the Fenwick login bug? nobody seems to own it" }
+      ],
+      "expectedFirst": 0,
+      "rationale": "'Initial' asks for the original state, so the user's first assignment to Priya beats the restatement, the swap, the summary and the Fenwick assignee distractor."
+    }
+  ]
+}

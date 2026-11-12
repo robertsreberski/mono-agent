@@ -129,12 +129,16 @@ effective limit, ranking version, watermark, membership digest, anchor and scope
 Legacy chronological envelope-v1 cursors retain their original semantics.
 
 Both rankers preserve Unicode-aware partial term, phrase and identifier matching.
-**V2 non-intent queries also require a content anchor and score content patterns**:
-stop words cannot make a record eligible. Intent/stop-word matches add only small,
-bounded contributions after eligibility; a stop-word-only lexical query has no
-eligible records. V2 adds lower-weight delimiter-separated identifier components
-and bounded query-relevant event, correction and short-user-edit bonuses. Numeric
-identifiers keep their full spelling; vocabulary alone cannot establish relevance.
+**All v2 lexical queries filter content anchors through a separate 155-word
+English function-word list**, distinct from event/change intent. Stop words do
+not compete with content. If only intent/change terms remain, those terms become
+literal content anchors; if no non-stop terms remain, eligibility falls back to
+v1 rather than silently returning no matches. Intent matches add only small,
+bounded credit after eligibility. V2 adds lower-weight delimiter-separated
+identifier components and bounded query-relevant event, correction and short-user
+edit bonuses. Numeric identifiers keep their full spelling. Record-side correction
+signals include base, plural and common inflections such as change/changes/changing,
+correct/corrects, fix/fixed, reschedule/rescheduled and move/moved.
 Clause-scoped negation, quotation and clearly hypothetical framing suppress
 bonuses, not lexical eligibility. A bare `if`, `would` or `example` is not a veto:
 polite factual corrections can still receive bonuses. These are bounded English
@@ -143,7 +147,8 @@ heuristics, not a semantic, authority or supersession model.
 Historical tie ordering is selected only by explicit markers: `historical`,
 `history`, `original`, `originally`, `previous`, `previously`, `earlier`, `prior`,
 `initial`, `initially`, `predecessor`, `before-correction`, or `used to`; an explicit
-current-state marker overrides that selection. `when`, `first`, `before`, `old`
+current-state marker overrides that selection. An auxiliary “is/are/was … used
+to” frame denotes purpose, not habitual history. `when`, `first`, `before`, `old`
 and `past` do not select historical ordering. V2 historical queries downweight
 assistant **and generated-summary** echoes; neither kind receives correction/event
 bonuses on that path. Score ties prefer older captures, then opaque record ID.
@@ -172,6 +177,8 @@ UTF-8 bytes, with retained-byte ranges and clipping flags. Nearby qualification
 and negation are preserved where possible. The full selected phrase/term is shown
 when it fits; if Unicode case folding expands the retained matched span beyond the
 window, `previewRange.matchClipped: true` explicitly discloses that clipping.
+V2 complementary lookup tries content patterns first, then their combined
+component patterns; stop and intent words never consume a complementary window.
 Previews are always incomplete evidence,
 not completed record recovery. Get starts at byte zero; there is no matched-offset
 get. Within **three tool rounds**, the supported path is search → **batch get of
@@ -188,8 +195,9 @@ This is a mechanical path envelope, not a guarantee a model chooses useful queri
 
 Relevance scans cap eligible coverage at **100,000 records / 256 MiB** of retained
 text, metadata pages at 256 rows, and text batches at 32 records / 2 MiB (each
-record at most 1 MiB). Only the top `limit+1` descriptors/previews and incremental
-hashes survive processing. Initial, examined and final membership manifests must
+record at most 1 MiB). Only the top `limit+1` descriptors, cached comparator anchors and match offsets,
+plus incremental hashes, survive processing. Previews are constructed only for
+emitted items after final validation, not for evicted candidates. Initial, examined and final membership manifests must
 agree; selected identities, digests and visibility are rechecked at disclosure,
 including pending purge intents. Late publication below the watermark or retention
 changes invalidate traversal; later records above it are excluded. No schema or
@@ -208,27 +216,38 @@ the 10k / 32-MiB and 100k / 256-MiB corpora (8/64 one-MiB records), cold/warm an
 continuation controls. It measures both qualified text and a mixed user/assistant/
 summary workload with factual event/correction signals and 64 short records; it
 asserts selection of short user records on the historical bonus path. Both
-workloads include an intent query with absent multi-part terms, in addition to
-dense, absent, Unicode and historical matching queries. An absent result has no
+workloads include an intent query with absent multi-part terms and a 16-term
+hyphenated absent query, in addition to dense, absent, Unicode and historical
+matching queries. An absent result has no
 continuation to measure.
 
-A local review-fix run on Node 24.18.0, Apple M3 Max / arm64 / 48 GiB RAM measured:
+A final-source **pre-commit** run on Node 24.18.0, Apple M3 Max / arm64 /
+48 GiB RAM measured the table below. Production sources and benchmark were final;
+only documentation/commit bookkeeping followed this run. These are explicitly
+pre-commit observations, not measurements claimed for a later commit hash.
 
 | Corpus and workload | Scan time range | Peak extra JS heap | Peak extra RSS |
 | --- | --- | --- | --- |
-| 10k / 32 MiB, qualified | 0.177–0.321 s | 25.040 MiB | 25.329 MiB |
-| 10k / 32 MiB, factual evidence | 0.181–0.306 s | 25.928 MiB | 9.813 MiB |
-| 100k / 256 MiB, qualified | 1.649–2.654 s | 95.312 MiB | 105.657 MiB |
-| 100k / 256 MiB, factual evidence | 1.677–2.697 s | 95.283 MiB | 73.125 MiB |
+| 10k / 32 MiB, qualified | 0.176–0.347 s | 25.809 MiB | 22.141 MiB |
+| 10k / 32 MiB, factual evidence | 0.181–0.307 s | 26.014 MiB | 10.204 MiB |
+| 100k / 256 MiB, qualified | 1.638–2.192 s | 99.413 MiB | 93.391 MiB |
+| 100k / 256 MiB, factual evidence | 1.646–2.161 s | 96.343 MiB | 63.235 MiB |
 
-All 52 measurements completed within the unchanged accepted envelope: **5 seconds,
-100 MiB additional JS heap, 128 MiB additional RSS**. The original **64-MiB heap
-target remains unmet**. Maximum measured transaction/text-batch time was 244.096 ms.
-Cold means reopened SQLite, **not flushed OS cache**. Five repeated scans with GC
-after each measured post-GC heaps of 6.762, 6.776, 6.760, 6.739 and 6.762 MiB: no
-accumulating growth. V2 bulk reads keep UTF-8 bodies as external byte buffers until
+All **60** measurements completed within the unchanged accepted envelope:
+**5 seconds, 100 MiB additional JS heap, 128 MiB additional RSS**. Observed maximum
+heap was 99.41240692138672 MiB: only **0.58759307861328 MiB** of headroom, not a
+robust memory guarantee. Anchor caching removes comparator-object churn, but
+collection timing still affects sampled peaks; no reliable peak reduction is
+claimed. The original **64-MiB heap target remains unmet**. The 16-term stress
+query completed within 2.192 seconds. Maximum measured transaction/text-batch time
+was 272.346 ms. Cold means reopened SQLite, **not flushed OS cache**. Five repeated
+scans with GC after each measured post-GC heaps of 6.805, 6.789, 6.803, 6.787 and
+6.788 MiB: no accumulating growth observed.
+V2 bulk reads keep UTF-8 bodies as external byte buffers until
 each record is decoded, verified and matched; no candidate retains a decoded body.
-Global content/component patterns are compiled once per query. V1 traversal is
+Global content/component patterns are compiled once per query; up to four
+identifier components share one alternation, limiting absent lexical matching to
+at most two body scans per content term (32 across 16 terms). V1 traversal is
 unchanged. Measurements are hardware/runtime observations, not universal latency
 or memory guarantees; exhausted scans remain explicitly incomplete.
 

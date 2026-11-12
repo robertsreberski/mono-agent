@@ -2,15 +2,11 @@
 
 ## Unreleased
 
-- Fix conversation ranking for ordinary questions and current-state queries;
-  require content anchors, keep historical markers explicit, and treat generated
-  summaries as echoes. Use clause-local qualification and bounded UTF-8 scan
-  materialization without changing issued ranking-v1 traversal.
-
-- Add versioned evidence-sensitive conversation ranking with bounded event and
-  correction expansion, short-edit bonuses and identifier-component discovery.
-  Reduce historical assistant echoes while preserving issued ranking-v1 cursors
-  and keeping ranking distinct from truth, event dates or authority.
+- Add versioned evidence-sensitive conversation ranking with general English
+  stop-word filtering, intent-only fallback, bounded correction/event morphology
+  and identifier-component discovery. Prefer content in complementary previews,
+  qualify local signals and historical echoes, and bound scan allocation while
+  preserving issued ranking-v1 traversal. Ranking grants no truth or authority.
 
 - Fix `ConversationHistory` retrieval follow-through, clamp safe integer
   search limits to 1–10, and show complementary previews with separate byte ranges.

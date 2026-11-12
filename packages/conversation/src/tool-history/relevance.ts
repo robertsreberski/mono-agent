@@ -83,7 +83,7 @@ export function matchedPreview(text: string, position: number, matchEnd = positi
   const { expanded, searchable } = matchingText(text);
   let complementary: { position: number; end: number } | undefined;
   // Only emitted reader items reach here. Parsing caps v1 at 16 term patterns;
-  // v2 adds at most four component patterns per term (80 total). Stop at the
+  // v2 adds at most one combined component pattern per term (32 total). Stop at the
   // first complementary match instead of eagerly scanning every pattern.
   for (const pattern of query.patterns) {
     const match = pattern.exec(searchable);
