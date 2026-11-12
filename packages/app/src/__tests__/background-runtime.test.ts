@@ -1,7 +1,8 @@
 import { chmod, cp, link, lstat, mkdtemp, readFile, readdir, readlink, realpath, rename, rm, symlink, writeFile, mkdir } from "node:fs/promises";
 import { createHash } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
-import { basename, dirname, join, relative } from "node:path";
+import { basename, dirname, join, relative, sep } from "node:path";
 import process from "node:process";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -281,6 +282,75 @@ async function homeFixture(): Promise<string> {
 }
 
 describe("ensureManagedBackgroundRuntime", () => {
+  it.each(["fixture-self", "@fixture/self"])("resolves %s from an unnamed nested package scope in the installed closure", async (name) => {
+    const source = await fixturePackage();
+    const dependencyRoot = join(source.root, "node_modules", ...name.split("/"));
+    await mkdir(join(dependencyRoot, "esm"), { recursive: true });
+    await writeFile(join(source.root, "package.json"), JSON.stringify({
+      name: "@mono-agent/app", version: "9.8.7", type: "module", dependencies: { [name]: "1.0.0" },
+    }));
+    await writeFile(join(dependencyRoot, "package.json"), JSON.stringify({
+      name, version: "1.0.0", type: "module", exports: { ".": "./esm/index.js", "./value": "./value.js" },
+    }));
+    // Like dual CJS/ESM packages, the nested scope has no name: Node cannot use
+    // package self-resolution and must find the package via node_modules lookup.
+    await writeFile(join(dependencyRoot, "esm", "package.json"), '{"type":"module"}');
+    await writeFile(join(dependencyRoot, "esm", "index.js"), `export { value } from '${name}/value';\n`);
+    await writeFile(join(dependencyRoot, "value.js"), "export const value = 'self-reference-resolved';\n");
+    await writeFile(source.cliPath, `import { value } from '${name}'; console.log(value);\n`);
+    const homeDir = await homeFixture();
+    const input = { currentCliPath: source.cliPath, nodePath: process.execPath, homeDir };
+    const runtime = await ensureManagedBackgroundRuntime(input);
+    expect(execFileSync(process.execPath, [runtime.cliPath], { encoding: "utf8" }).trim())
+      .toBe("self-reference-resolved");
+
+    const installedApp = await realpath(dirname(dirname(runtime.cliPath)));
+    const installedDependency = await realpath(join(installedApp, "node_modules", ...name.split("/")));
+    const selfLink = join(installedDependency, "node_modules", ...name.split("/"));
+    expect(await realpath(selfLink)).toBe(installedDependency);
+    expect(await realpath(join(installedApp, "node_modules", "@mono-agent", "app"))).toBe(installedApp);
+    const manifest = JSON.parse(await readFile(join(runtime.installRoot, ".mono-agent-closure.json"), "utf8"));
+    expect(manifest.entries).toContainEqual(expect.objectContaining({
+      path: relative(await realpath(runtime.installRoot), selfLink).split(sep).join("/"),
+      type: "symlink", target: name.startsWith("@") ? "../.." : "..",
+    }));
+    // Full attestation and warm reuse both terminate despite the directory cycle.
+    await expect(attestManagedBackgroundRuntime({ currentCliPath: source.cliPath,
+      runtimeCliPath: runtime.cliPath, homeDir })).resolves.toBeDefined();
+    expect((await ensureManagedBackgroundRuntime(input)).verificationMode).toBe("fast-reuse");
+    // A missing expected self-link is not accepted by either verification path.
+    await rm(selfLink);
+    await expect(attestManagedBackgroundRuntime({ currentCliPath: source.cliPath,
+      runtimeCliPath: runtime.cliPath, homeDir })).rejects.toThrow();
+    const repaired = await ensureManagedBackgroundRuntime(input);
+    expect(repaired.verificationMode).toBe("repaired");
+    expect(execFileSync(process.execPath, [repaired.cliPath], { encoding: "utf8" }).trim())
+      .toBe("self-reference-resolved");
+  });
+
+  it("preserves an explicit same-name dependency instead of overwriting it with a self-link", async () => {
+    const source = await fixturePackage();
+    const current = join(source.root, "node_modules", "fixture-self");
+    const older = join(current, "node_modules", "fixture-self");
+    await mkdir(older, { recursive: true });
+    await writeFile(join(source.root, "package.json"), JSON.stringify({
+      name: "@mono-agent/app", version: "9.8.7", type: "module", dependencies: { "fixture-self": "2.0.0" },
+    }));
+    await writeFile(join(current, "package.json"), JSON.stringify({
+      name: "fixture-self", version: "2.0.0", type: "module", main: "index.js",
+      dependencies: { "fixture-self": "1.0.0" },
+    }));
+    await writeFile(join(current, "index.js"), "export { value } from 'fixture-self';\n");
+    await writeFile(join(older, "package.json"), JSON.stringify({
+      name: "fixture-self", version: "1.0.0", type: "module", main: "index.js",
+    }));
+    await writeFile(join(older, "index.js"), "export const value = 'older-dependency';\n");
+    await writeFile(source.cliPath, "import { value } from 'fixture-self'; console.log(value);\n");
+    const runtime = await ensureManagedBackgroundRuntime({ currentCliPath: source.cliPath,
+      nodePath: process.execPath, homeDir: await homeFixture() });
+    expect(execFileSync(process.execPath, [runtime.cliPath], { encoding: "utf8" }).trim()).toBe("older-dependency");
+  });
+
   it("validates renamed package paths and leaves an older version directory untouched", async () => {
     const source = await fixturePackage("9.8.7");
     const homeDir = await homeFixture();

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Fix conversation PDF export from installed managed runtimes and report worker
+  failures without suggesting the conversation is too long.
+
 - Keep historical facts, correction predecessors and pending obligations in
   compaction summary instructions, with bounded, escaped request-local chronology
   and unchanged token limits. Retention remains prompt-mediated, not guaranteed;

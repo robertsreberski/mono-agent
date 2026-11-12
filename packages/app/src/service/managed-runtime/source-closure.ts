@@ -107,7 +107,15 @@ export async function materializeExactExecutionClosure(
 
   for (const node of closure) {
     const destination = requiredMapValue(destinations, node.id, "package destination");
-    for (const [dependencyName, dependencyId] of [...node.dependencies].sort(([left], [right]) =>
+    // Nested package scopes without a name cannot use Node's package self-
+    // resolution. Give ancestor node_modules lookup the same self entry npm/pnpm
+    // provide. Preserve an explicit same-name dependency (e.g. an older version).
+    // These links are generated layout, not source-package contents: source
+    // capture/copy excludes node_modules; installed manifests record, never walk,
+    // symlinks, including this directory cycle.
+    const links = new Map(node.dependencies);
+    if (!links.has(node.metadata.name)) links.set(node.metadata.name, node.id);
+    for (const [dependencyName, dependencyId] of [...links].sort(([left], [right]) =>
       compareCodeUnits(left, right))) {
       const dependencyDestination = requiredMapValue(destinations, dependencyId, "dependency destination");
       const linkPath = join(destination, "node_modules", ...packageNameSegments(dependencyName));

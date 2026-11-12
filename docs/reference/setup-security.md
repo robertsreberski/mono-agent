@@ -51,6 +51,11 @@ Guided macOS setup materializes the exact already-resolved CLI dependency closur
 
 A complete source digest plus a relative path/type/mode/content-hash manifest is bound to the runtime marker and rechecked before reuse. Dependency or selected-plugin drift therefore prevents a stale managed closure from being treated as current.
 
+Each copied package has a relative self-link in its `node_modules` unless an
+explicit same-name dependency occupies that slot. This preserves bare-name
+imports from unnamed nested package scopes. Integrity manifests record these
+links without following directory cycles; source capture excludes `node_modules`.
+
 ### Publication barrier and active SRT closure
 
 The controller keeps the current healthy LaunchAgent loaded while a replacement
