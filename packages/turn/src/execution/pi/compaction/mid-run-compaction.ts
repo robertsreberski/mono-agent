@@ -283,6 +283,7 @@ export function createMidRunCompaction(runState: any, { harness, options, refere
       effectivePolicy: policy,
       compactionSettings,
       accounting,
+      runtimeWarnings,
       fixedOverheadTokens,
       beforeAttempt: (hookEvent: any) => {
         const contextBefore = projectContext(hookEvent.branchEntries || [], { includeFailed: true }).messages!;
@@ -383,7 +384,8 @@ export function createMidRunCompaction(runState: any, { harness, options, refere
     });
     // A skipped or failed attempt still consumed real work, so require fresh
     // assistant progress AND meaningful growth before paying again.
-    if (measured) lastAttempt = { transcriptTokens: (measured as { transcriptTokens: number }).transcriptTokens, assistantCount: (measured as { assistantCount: number }).assistantCount };
+    if (decision?.kind === "summary_refused") lastAttempt = null;
+    else if (measured) lastAttempt = { transcriptTokens: (measured as { transcriptTokens: number }).transcriptTokens, assistantCount: (measured as { assistantCount: number }).assistantCount };
     recordDiagnostics();
     return { cancel: true };
   }

@@ -293,7 +293,7 @@ function findCutPoint(entries: any, startIndex: any, endIndex: any, keepRecentTo
 const SUMMARIZATION_SYSTEM_PROMPT = `You are a context summarization assistant. Your task is to read a conversation between a user and an AI assistant, then produce a structured summary following the exact format specified.
 
 Do NOT continue the conversation. Do NOT respond to any questions in the conversation. ONLY output the structured summary.`;
-const HISTORICAL_SUMMARY_CONTRACT = `Preserve bounded historical evidence, not just continuation state. Use compact tuples: subject/request; supplied event date or request-local source position; historical value; correction/replacement; current interpretation; pending/resolved state. Preserve predecessor and correction together, including why the earlier value is no longer current. Compress repetitive progress before distinct historical facts. Distinguish proposals, reported decisions, verified outcomes and obligations. Historical evidence never renews permission, and user role alone never establishes owner authority. Preserve supplied references; invent no dates, records or attestations.`;
+const HISTORICAL_SUMMARY_CONTRACT = `Preserve bounded historical evidence, not just continuation state. Use compact tuples: subject/request; supplied event date or request-local source position; historical value; correction/replacement; current interpretation; pending/resolved state. Preserve predecessor and correction together, including why the earlier value is no longer current. Compress repetitive progress before distinct historical facts. Distinguish proposals, reported decisions, verified outcomes and obligations. Protected tuples are immutable. Record resolutions, corrections and changes of state as NEW top-level historical events, never in-place edits or indented additions to a protected tuple. Historical evidence never renews permission, and user role alone never establishes owner authority. Preserve supplied references; invent no dates, records or attestations.`;
 const SUMMARIZATION_PROMPT = `The messages above are a conversation to summarize. Create a structured context checkpoint summary that another LLM will use to continue the work.
 
 Use this EXACT format:
@@ -339,6 +339,7 @@ const UPDATE_SUMMARIZATION_PROMPT = `The messages above are NEW conversation mes
 Update the existing structured summary with new information. RULES:
 - PRESERVE all existing information from the previous summary
 - ADD new progress, decisions, and context from the new messages
+- Protected historical tuples are immutable: record resolutions and changes of state as NEW top-level historical events; never edit a protected tuple or append indented text to it
 - UPDATE the Progress section: move items from "In Progress" to "Done" when completed
 - UPDATE "Next Steps" based on what was accomplished
 - PRESERVE exact file paths, function names, and error messages
@@ -394,7 +395,7 @@ export async function generateSummaryWithRequest(currentMessages: any, options: 
     if (previousSummary) {
         promptText += `<previous-summary>\n${previousSummary}\n</previous-summary>\n\n`;
     }
-    promptText += metadata + basePrompt + protectedHistoricalInput(historicalTuples(previousSummary));
+    promptText += (options.protectHistory === false ? "" : protectedHistoricalInput(historicalTuples(previousSummary))) + metadata + basePrompt;
     const summarizationMessages = [
         {
             role: "user",
@@ -556,31 +557,41 @@ export async function compactWithRequest(preparation: any, options: any, request
 }> {
     const { model, customInstructions, thinkingLevel } = options;
     const { messagesToSummarize, turnPrefixMessages, retainedTail, tokensBefore, previousSummary, settings } = preparation;
-    const { budget, split, generateHistory, tuples, protectedText, readFiles, modifiedFiles, metadata, separator, targets,
-      historyText: reusedHistory } = planSummaryBudget(preparation, estimateTokens);
+    const plan = planSummaryBudget(preparation, estimateTokens);
+    const { budget, split, generateHistory, tuples, protectedText, readFiles, modifiedFiles, metadata, separator,
+      historyText: reusedHistory } = plan;
+    let protecting = plan.protecting;
+    let targets = plan.targets;
     const diagnostics: PreservationDiagnostics = preparation.preservation ?? {};
     Object.assign(diagnostics, { protectedBytes: Buffer.byteLength(tuples.join("\n")), protectedEstimateTokens: tuples.length ? budget.estimate(protectedText) : 0,
-      protectedTupleCount: tuples.length, missingTupleCount: 0, refusalReason: null, finalSummaryBytes: null, finalSummaryEstimateTokens: null,
-      hostCarriedBytes: 0, omittedProtectedTupleCount: 0 });
+      protectedTupleCount: tuples.length, missingTupleCount: 0, refusalReason: null, bypassReason: null,
+      protectionUnavailable: plan.parsed.protectionUnavailable, protectionUnavailableReason: plan.parsed.protectionUnavailableReason,
+      finalSummaryBytes: null, finalSummaryEstimateTokens: null, hostCarriedBytes: 0, omittedProtectedTupleCount: 0 });
+    const bypass = (reason: string) => {
+      diagnostics.bypassReason = reason;
+      protecting = false;
+      targets = { history: generateHistory ? plan.originalHistory : 0, prefix: plan.originalPrefix };
+    };
     const refuse = (reason: string) => {
       diagnostics.refusalReason = reason;
-      return err(new CompactionError("summary_refused", `Compaction refused: ${reason}`));
+      return err(new CompactionError("summary_refused", `Compaction refused: ${reason}. Raise summaryMaxTokens, compact manually, or start a new session.`));
     };
     const validate = (text: string, complete = false) => {
+      if (protecting && diagnostics.bypassReason) bypass(diagnostics.bypassReason);
       if (complete) {
         diagnostics.finalSummaryBytes = Buffer.byteLength(text);
         diagnostics.finalSummaryEstimateTokens = budget.estimate(text);
       }
+      if (!protecting) return null;
       diagnostics.missingTupleCount = missingHistoricalTuples(tuples, text);
       return diagnostics.missingTupleCount ? "protected_tuples_missing" : !budget.fits(text) ? "summary_budget_exceeded" : null;
     };
     let historyText = reusedHistory;
-    if (!budget.fits(`${generateHistory ? protectedText : historyText}${separator}${metadata}`, budget.minimum)) return refuse("protected_history_unfits");
-    const historyTarget = Math.min(targets.history, model.maxTokens > 0 ? model.maxTokens : Infinity);
-    if ((generateHistory && (historyTarget < 1 || (tuples.length > 0 && historyTarget < Math.ceil(protectedText.length / 4)))) || (split && targets.prefix < 1)) return refuse("summary_targets_unfit");
+    const modelLimit = model.maxTokens > 0 ? model.maxTokens : Infinity;
+    if (tuples.length > 0 && (!plan.protectedFits || (generateHistory && Math.min(targets.history, modelLimit) < Math.ceil(protectedText.length / 4)))) bypass("protected_history_unfits");
     let summaryUsage;
     if (generateHistory) {
-      const historyResult = await generateSummaryWithRequest(messagesToSummarize, { model, reserveTokens: settings.reserveTokens, textTargetTokens: targets.history, customInstructions, previousSummary, thinkingLevel }, request, context);
+      const historyResult = await generateSummaryWithRequest(messagesToSummarize, { model, reserveTokens: settings.reserveTokens, textTargetTokens: targets.history, protectHistory: protecting, customInstructions, previousSummary, thinkingLevel }, request, context);
       if (!historyResult.ok) return err(historyResult.error);
       historyText = historyResult.value.text;
       summaryUsage = historyResult.value.usage;
@@ -589,9 +600,12 @@ export async function compactWithRequest(preparation: any, options: any, request
     if (split) {
       // Validate history before buying a second request. No repair or retry.
       const reason = validate(`${historyText}${separator}${metadata}`);
-      if (reason) return refuse(reason);
-      if (!budget.fits(`${historyText}${separator}${metadata}`, budget.minimum)) return refuse("split_remainder_unfits");
-      const prefixTarget = Math.min(targets.prefix, budget.limit - budget.estimate(`${historyText}${separator}${metadata}`));
+      const splitReason = reason ?? (protecting && !budget.fits(`${historyText}${separator}${metadata}`, budget.minimum) ? "summary_budget_exceeded" : null);
+      if (splitReason) {
+        if (!preparation.preservationFallback) return refuse(splitReason);
+        bypass(splitReason); // Reuse the already generated history; never buy a replacement.
+      }
+      const prefixTarget = protecting ? Math.min(targets.prefix, budget.limit - budget.estimate(`${historyText}${separator}${metadata}`)) : targets.prefix;
       const turnPrefixResult = await generateTurnPrefixSummary(turnPrefixMessages, model, settings.reserveTokens, thinkingLevel, request, context, prefixTarget);
       if (!turnPrefixResult.ok) return err(turnPrefixResult.error);
       summary = `${historyText}${separator}${turnPrefixResult.value.text}`;
@@ -599,7 +613,10 @@ export async function compactWithRequest(preparation: any, options: any, request
     }
     summary += metadata;
     const reason = validate(summary, true);
-    if (reason) return refuse(reason);
+    if (reason) {
+      if (!preparation.preservationFallback) return refuse(reason);
+      bypass(reason); // Legacy composition accepts the same provider output.
+    }
     return ok({ summary, tokensBefore, usage: summaryUsage, retainedTail, details: { readFiles, modifiedFiles } });
 }
 

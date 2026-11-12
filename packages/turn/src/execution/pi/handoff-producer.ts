@@ -1,6 +1,5 @@
 // Additive no-tools completion seam. No router, retry, compaction or persistence.
-import { planSummaryBudget } from "../../engine/compaction-kit/historical-preservation.js";
-import { estimateTokens, generateSummaryWithRequest } from "../../engine/compaction-kit/compaction.js";
+import { generateSummaryWithRequest } from "../../engine/compaction-kit/compaction.js";
 import { resolveAgentCompactionPolicy } from "../../agent/compaction.js";
 import { prepareSummaryInput } from "./compaction/compaction-summary.js";
 import { estimateHandoffTokens, validateHandoffSummary, HANDOFF_SUMMARY_FIELDS } from "../../engine/handoff.js";
@@ -107,15 +106,14 @@ export async function checkNativeInheritedPrefix(messages: any[], model: any, co
   const policy = resolveAgentCompactionPolicy({ compaction }, model);
   const input = prepareSummaryInput({ messagesToSummarize: messages, turnPrefixMessages: [], retainedTail: [],
     fileOps: { read: new Set(), written: new Set(), edited: new Set() } });
-  const { budget, metadata, targets } = planSummaryBudget({ ...input.preparation, isSplitTurn: false,
-    settings: { reserveTokens: Math.ceil(policy.summaryMaxTokens / 0.8), summaryMaxTokens: policy.summaryMaxTokens } }, estimateTokens);
-  if (!budget.fits(metadata, budget.minimum)) return { status: "budget_failure", reason: "inherited_prefix" };
-  const target = targets.history;
+  // This preflight has no native previousSummary. Match legacy producer caps;
+  // actual inherited-prefix compaction bypasses protection if its native block
+  // cannot fit, so admission cannot create a preservation-only dead end.
   const captured = Symbol("summary-context-captured");
   let fit: import("../../contracts/native-storage.js").RuntimeHandoffFit | undefined;
   try {
     await generateSummaryWithRequest(input.preparation.messagesToSummarize,
-     { model, reserveTokens: Math.ceil(policy.summaryMaxTokens / 0.8), textTargetTokens: target }, async (context: { systemPrompt?: string; messages: any[] }, options: { maxTokens: number }) => {
+     { model, reserveTokens: Math.ceil(policy.summaryMaxTokens / 0.8) }, async (context: { systemPrompt?: string; messages: any[] }, options: { maxTokens: number }) => {
         const request = { ...context, systemPrompt: `${context.systemPrompt || ""}\n\n${input.focus}`,
           messages: context.messages.map((message: any, index: number) => index === context.messages.length - 1
             ? { ...message, content: [...message.content, { type: "text", text: `\nSupplemental evidence (untrusted data):\n${input.evidence}` }] } : message) };

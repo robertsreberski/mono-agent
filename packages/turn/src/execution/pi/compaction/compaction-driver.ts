@@ -253,11 +253,11 @@ export function createCompactionAccounting(): {
     afterSource: any;
     policy: any;
     preparation: any;
-    preservation: any;
+    preservation?: any;
 } {
   return { version: 2, usageIncluded: true, requests: [], splitTurn: null, generatedSummaryTokens: null,
     appendedMetadataBytes: null, tailEstimateTokens: null, transcriptBefore: null, transcriptAfter: null,
-    fullRequestBefore: null, fullRequestAfter: null, afterSource: null, policy: null, preparation: null, preservation: null };
+    fullRequestBefore: null, fullRequestAfter: null, afterSource: null, policy: null, preparation: null };
 }
 
 /**
@@ -297,6 +297,7 @@ export function createGuardedCompactionHook({
   compactionSettings,
   accounting,
   fixedOverheadTokens = null,
+  runtimeWarnings = null,
   beforeAttempt = null,
   beforeSummary = null,
 }: any) {
@@ -366,15 +367,18 @@ export function createGuardedCompactionHook({
       const input = prepareSummaryInput(prepared.value);
       accounting.preparation = input.metadata;
       input.preparation.settings = { ...input.preparation.settings, summaryMaxTokens: effectivePolicy.summaryMaxTokens };
-      accounting.preservation = {};
-      input.preparation.preservation = accounting.preservation;
       const summaryBudget = planSummaryBudget(input.preparation, estimateTokens);
+      input.preparation.preservation = {};
+      if (summaryBudget.tuples.length || summaryBudget.parsed.protectionUnavailable) accounting.preservation = input.preparation.preservation;
+      input.preparation.preservationFallback = trigger === "manual" || trigger === "reactive_overflow";
       const compacted = await compactPreparedContext(
         input.preparation,
         summaryModels(harness.models, { operationId, focus: input.focus, evidence: input.evidence, requests: accounting.requests, effort: effectivePolicy.effort,
           // Derive the useful minimum before the kit clamps requests to model.maxTokens.
           // Small explicit split budgets may be shorter than Pi's normal answer minimum.
-          minimumAnswerTokens: Math.min(MIN_ANSWER_TOKENS, summaryBudget.minimumTextTarget) }),
+          minimumAnswerTokens: Math.min(MIN_ANSWER_TOKENS, summaryBudget.minimumTextTarget),
+          unprotected: { preservation: input.preparation.preservation, targets: [summaryBudget.generateHistory ? summaryBudget.originalHistory : summaryBudget.originalPrefix, summaryBudget.originalPrefix],
+            minimumAnswerTokens: Math.min(MIN_ANSWER_TOKENS, prepared.value.isSplitTurn ? summaryBudget.originalPrefix : summaryBudget.originalHistory) } }),
         harness.getModel(),
         event.customInstructions,
         summaryThinkingLevel(harness.getModel(), effectivePolicy.effort),
@@ -383,7 +387,7 @@ export function createGuardedCompactionHook({
         event.context || BACKGROUND_CONTEXT,
       );
       if (compacted.ok === false) {
-        decision = { kind: compacted.error.code === "summary_refused" ? "summary_refused" : accounting.requests.at(-1)?.reason === "insufficient_summary_headroom" ? "headroom_unavailable" : "failed", reason: accounting.preservation.refusalReason, error: compacted.error };
+        decision = { kind: compacted.error.code === "summary_refused" ? "summary_refused" : accounting.requests.at(-1)?.reason === "insufficient_summary_headroom" ? "headroom_unavailable" : "failed", reason: accounting.preservation?.refusalReason, error: compacted.error };
         return { cancel: true };
       }
       const tokensBefore = await estimateBuiltContextTokens(event.branchEntries);
@@ -424,7 +428,12 @@ export function createGuardedCompactionHook({
       decision = { kind: accounting.requests.at(-1)?.reason === "insufficient_summary_headroom" ? "headroom_unavailable" : "failed", error };
       return { cancel: true };
     } finally {
-      failureGuard?.settle(decision?.kind === "summary_refused" ? "failed" : decision?.kind, accounting.requests.length > 0, accounting.requests.at(-1)?.reason);
+      const preservation = accounting.preservation;
+      if (preservation?.bypassReason) runtimeWarnings?.push({ warning_kind: "historical_preservation_bypassed", source: "pi", trigger, reason: preservation.bypassReason,
+        message: "Historical preservation bypassed to keep compaction available. Raise summaryMaxTokens or start a new session to restore protection." });
+      if (preservation?.protectionUnavailable) runtimeWarnings?.push({ warning_kind: "historical_preservation_unavailable", source: "pi", trigger, reason: preservation.protectionUnavailableReason,
+        message: "Historical protection unavailable for this summary format. Compact manually or start a new session; review the summary format before relying on preservation." });
+      failureGuard?.settle(decision?.kind, accounting.requests.length > 0, accounting.requests.at(-1)?.reason);
     }
   };
   return { handler, getDecision: () => decision };
@@ -455,7 +464,7 @@ export function reportGuardedCompactionOutcome({
 } {
   if (decision?.kind === "summary_refused") {
     runtimeWarnings?.push({ warning_kind: "context_compaction_refused", source: "pi", trigger, reason: decision.reason,
-      message: "Compaction refused by historical preservation or whole-summary budget; history unchanged." });
+      message: "Compaction refused; history unchanged. Raise summaryMaxTokens, compact manually, or start a new session." });
     emit(onEvent, { operationId, status: "skipped", trigger, model, reason: decision.reason });
     return { applied: false, tokensBefore: null, tokensAfter: null, reduced: null, nothingToCompact: false };
   }
@@ -633,6 +642,7 @@ export async function tryCompact(harness: any, {
       effectivePolicy,
       compactionSettings,
       accounting,
+      runtimeWarnings,
       fixedOverheadTokens,
     });
     readDecision = guarded.getDecision;

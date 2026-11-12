@@ -33,19 +33,36 @@ See [ledger bounds](../../docs/runtime/continuity-ledger.md).
 Compaction asks for historical events/corrections and pending items as compact
 predecessor/current-state tuples, alongside continuation context. This is
 prompt-mediated first extraction, never renewed permission. Native incremental
-cuts additionally protect complete historical tuple blocks from `previousSummary`:
-escaped untrusted input asks for verbatim retention, and an exact-output guard
-refuses missing tuples rather than repairing model text. Whole-summary projected
-estimates (including wrapper, split framing, reused history and file metadata)
-share `summaryMaxTokens` and the 1-MiB record bound. Unfitting protected history
-refuses before dispatch, including after an allowance shrink; a lossy first split
-output refuses before the second call. Refusal leaves native history intact.
-Content-free `accounting.preservation` diagnostics describe protected bytes,
-estimates/counts, missing tuples, refusal reason and final summary size separately
-from provider usage, cost and `generatedSummaryTokens`. No retry, new durable
-carrier or archive transform is added. Cold reseeds supply sanitized retained user
-text, not native `previousSummary`: their first re-extraction and separately
-generated handoffs are not protected.
+cuts additionally protect historical tuple blocks from `previousSummary`. Named,
+JSON-escaped untrusted input precedes task instructions; protected tuples are
+immutable, with resolutions recorded as NEW top-level events. Comparison trims
+only per-line trailing whitespace. Heading case/bold/colon variants are accepted;
+ordinary horizontal rules remain content, while existing split framing ends a
+section. Placeholders are excluded. Unclosed fences or empty historical sections
+produce content-free `protectionUnavailable` diagnostics rather than silent loss.
+
+With protected tuples, complete-result estimates share `summaryMaxTokens` and the
+1-MiB record bound; provider text caps use an 85% margin. With zero tuples, legacy
+caps, output acceptance and the savings preview are unchanged. The public
+`compact`/`compactWithRequest` helpers can return `CompactionError.code` equal to
+`summary_refused` for a lossy/oversized protected candidate. Native proactive and
+mid-run threshold cuts refuse without changing history, but retry on the next
+trigger without poisoning the failure cooldown. Native manual/overflow recovery
+instead accepts the existing provider output through legacy composition, issuing
+`historical_preservation_bypassed`; it never buys a replacement summary. An
+unfitting protected block bypasses before dispatch on every trigger, with no
+protected input. Protected-input headroom failures also drop only the named frame
+before dispatch and use legacy caps. Raise `summaryMaxTokens` or start a new
+session to restore protection; manual compaction can recover from refusal.
+
+Content-free `accounting.preservation` diagnostics (present only for protected or
+unavailable history) record sizes/counts, missing tuples, refusal/bypass reason and
+final-summary size separately from provider usage, cost and
+`generatedSummaryTokens`. No retry, new durable carrier or archive transform is
+added. `generateSummaryWithRequest` adds the named protected frame when supplied
+admissible history; `protectHistory:false` is the unprotected request seam. Cold
+reseeds supply sanitized retained user text, not native `previousSummary`: first
+cold re-extraction and separately generated handoffs are not protected.
 Initial, incremental and split-prefix requests include a whole-entry-bounded
 4-KiB chronology table: request-local message positions, original roles, recorded
 message times when available and exact serialized UTF-8 frame ranges. It adds

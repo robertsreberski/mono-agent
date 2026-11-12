@@ -13,40 +13,63 @@ descriptive, not covered by that digest; the v2 assertion policy lives in
 
 ## Native historical preservation boundary
 
-Native incremental compaction parses complete line tuples (with indented and
-fenced continuations) from `Historical events and corrections`, including split
-sections. Headings/split boundaries inside fenced code and trailing file metadata
-are not section boundaries. There is no fuzzy matching or inferred provenance.
-Prior tuple bytes are JSON-escaped as untrusted input outside the existing frames;
-accepted model output must contain each whole block verbatim in a historical
-section. Later changes append separate events. Missing blocks refuse the cut,
-without repair, another completion or archive backfill. This preserves admitted
-mistakes too and can prevent compaction progress.
+Native incremental compaction parses historical tuple line blocks, including
+indented/fenced continuations and split sections. Heading matching is
+case-insensitive, with optional bold/colon formatting. Comparison trims trailing
+whitespace per line, but performs no fuzzy semantic matching. Ordinary horizontal
+rules are content; only the existing split separator ends a section at a rule.
+File metadata and headings inside fenced code do not introduce sections.
+Placeholders such as `- (none)` are not protected. Unclosed fences and headings
+with no admissible tuples produce `protectionUnavailable` plus a content-free
+reason, then use ordinary unprotected compaction.
 
-One shared budget uses `B = effectivePolicy.summaryMaxTokens` and the shipping
-`estimateTokens` over the provider-projected summary message, including its
-wrapper. The complete generated/reused history, split separator and file metadata
-must fit B and 1 MiB. Known reused prose, framing and metadata are reserved before
-dispatch; remaining targets use the existing history:prefix ratio and never exceed
-the original per-call targets. Protected history plus `min(256, floor(B/4))`
-estimate units must fit before dispatch. The first split output is checked before
-the second call, and the complete result is checked before checkpoint preparation.
-Allowance shrink never clips or evicts protected history: an unfitting cut refuses
-and leaves the transcript intact. Inherited-prefix admission uses the same
-projected-budget helper. Provider reasoning/headroom policy stays separate.
+Prior tuple bytes are JSON-escaped in `<protected-historical-tuples>`, after the
+previous-summary frame and before task instructions. Protected tuples are immutable;
+resolutions and state changes must be NEW top-level historical events, not edits
+or indented additions to old tuples. **Sticky injection risk:** preserving an
+admitted mistake or malicious instruction also re-exposes it on later requests,
+including raw previous-summary prose. Named framing and escaping do not establish
+trust or remove this risk. Historical evidence never grants authority.
 
-`accounting.preservation` contains only protected byte/estimate sizes, tuple and
-missing counts, refusal reason, and complete final-summary bytes/estimate (null
-before a complete candidate exists). Host-carried bytes and omitted protected
-counts stay zero: accepted text is unmodified provider output plus the existing
-split/file composition. Provider usage/cost and `generatedSummaryTokens` still
-measure provider generation, not protected or reused host text. Existing E2
-lineage reconstruction and archive schemas are unchanged.
+When protected tuples exist, `B = effectivePolicy.summaryMaxTokens` bounds the
+shipping `estimateTokens` of the provider-projected complete summary (wrapper,
+reused history, split separator and file metadata included), plus the 1-MiB text
+bound. Known composition is reserved before allocating the history:prefix targets;
+provider caps use `floor(target * 0.85)` to leave estimate margin. Provider
+reasoning/headroom policy stays separate. The first split output is checked before
+the second call, then the complete candidate is checked. With zero protected
+tuples, legacy caps/output acceptance and savings guards remain unchanged.
 
-This guard cannot protect initial extraction, the first cold re-extraction
-(without native `previousSummary`), sanitization omissions or a separately generated
-handoff. A retained record's digest may differ from the native summary digest.
-Cold input contains only sanitized retained text and cannot restore removed values.
+Liveness takes precedence over preservation. If protected history plus
+`min(256, floor(B/4))` cannot fit, compaction bypasses protection before dispatch
+on every trigger; the request contains no protected frame and uses legacy caps.
+If that frame alone exhausts input headroom, it is removed before any provider
+call and legacy policy is rechecked (`protected_input_unfits`). For missing tuples
+or an oversized protected result after dispatch, proactive/mid-run threshold cuts
+return `summary_refused` and keep history unchanged; the next trigger may retry
+without a failure cooldown. Manual and reactive-overflow recovery bypass the guard
+and reuse the generated output through legacy composition. No replacement summary
+is purchased: ordinary compaction still uses one request, split compaction at most
+two; refusal after the first split output uses only one. A bypass does not override
+legacy provider failures, truncation or savings checks.
+
+`historical_preservation_bypassed` is a content-free warning with reason and
+remediation: raise `summaryMaxTokens` or start a new session to restore protection.
+Manual compaction can recover a refused automatic cut. `accounting.preservation`
+appears only for protected or unavailable history and records sizes/counts,
+missing counts, refusal/bypass reason and complete final-summary bytes/estimate
+(null before a complete candidate). No host repair, eviction, carrier or extra
+completion is added. Provider usage/cost and `generatedSummaryTokens` retain their
+existing meanings. Accepted text and existing E2 lineage/archive schemas are
+unchanged. Frozen projection accounting without historical tuples gains no new
+key; reviewed immutable-event prompt text is pinned separately.
+
+This guard cannot protect initial extraction, first cold re-extraction without
+native `previousSummary`, sanitization omissions or a separately generated handoff.
+Inherited-prefix admission follows legacy producer viability: any infeasible
+native protection at the actual cut bypasses rather than creating a dead end.
+Retained digests may differ from native digests; cold input contains only sanitized
+retained text and cannot restore removed values.
 
 ## Offline preparation
 

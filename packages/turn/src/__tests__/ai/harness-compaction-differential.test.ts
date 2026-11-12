@@ -4,10 +4,9 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 
-// The upstream fixture pins conversation bytes, cuts and usage. Whole-summary
-// framing now reduces text targets; pin those separately below.
+// With no protected tuples, preserve upstream conversation bytes, caps, cuts and usage.
 // Only the deliberately changed instructions/metadata have a separate digest pin.
-const legacyRequest = (request: any) => ({ ...request, options: { ...request.options, maxTokens: undefined }, context: { ...request.context,
+const legacyRequest = (request: any) => ({ ...request, context: { ...request.context,
   systemPrompt: request.context.systemPrompt?.split("\n\nMono-agent summary focus")[0],
   messages: request.context.messages.map((message: any) => ({ ...message, content: typeof message.content === "string" ? message.content.split("\n\nMono-agent summary focus")[0] : message.content.map((part: any) => {
     if (part.type !== "text" || !part.text.startsWith("<conversation>\n")) return part;
@@ -62,7 +61,7 @@ describe("owned compaction kit vs 0.99.2 baseline", () => {
     // Faux usage estimates the actual larger request; it is not provider billing.
     expect(entry!.usage.input - baseline.compaction.usage.input).toMatchSnapshot("added summary request input tokens");
     expect(entry!.usage.totalTokens).toBe(entry!.usage.input + entry!.usage.output + entry!.usage.cacheRead + entry!.usage.cacheWrite);
-    expect(requests.map(request => request.options.maxTokens)).toEqual([1208, 755]);
+    expect(requests.map(request => request.options.maxTokens)).toEqual([1231, 769]);
     requests.forEach((request, index) => expect(request.options.maxTokens).toBeLessThanOrEqual(baseline.requests[index].options.maxTokens));
     expect(requests.map(promptDigest)).toMatchSnapshot("history-preserving runtime request contract");
     expect(clean({ requests: requests.map(legacyRequest), compaction: { summary: entry!.summary, retainedTail: entry!.retainedTail, tokensBefore: entry!.tokensBefore, usage: { ...entry!.usage, input: baseline.compaction.usage.input, totalTokens: baseline.compaction.usage.totalTokens } },

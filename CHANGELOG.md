@@ -9,11 +9,13 @@
   with lossless prefix paging; return `response_capacity` without advancing rows
   when the first result cannot fit. Keep get chunks, existing valid cursors and
   the two-record recovery envelope unchanged.
-
-- Keep admitted native historical tuples verbatim across incremental compaction,
-  refusing lossy or oversized cuts without changing history; share the complete
-  summary budget across generated/reused prose, framing and metadata. Cold first
-  extraction and separately generated handoffs remain outside this guard.
+- Keep admitted native historical tuples across incremental compaction, with
+  `summary_refused` for lossy protected proactive cuts and
+  `historical_preservation_bypassed` for unfitting history or manual/overflow
+  recovery. Preserve legacy compaction with no protected tuples, add content-free
+  format diagnostics, and record resolutions as new events. Raise
+  `summaryMaxTokens` or start a new session to restore protection after bypass.
+  Cold first extraction and separately generated handoffs remain unprotected.
 
 - Fix baseline E2 replay to retain recorded source tools while keeping probes
   tool-free, and distinguish injected continuity packs from ordinary mentions.

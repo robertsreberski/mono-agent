@@ -1,8 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { serializeConversation, serializeSummaryConversation } from "../../engine/compaction-kit/utils.js";
 import { convertToLlm } from "../../engine/compaction-kit/messages.js";
-import { createSummaryBudget } from "../../engine/compaction-kit/historical-preservation.js";
-import { estimateTokens, compactWithRequest, generateSummaryWithRequest } from "../../engine/compaction-kit/compaction.js";
+import { compactWithRequest, generateSummaryWithRequest } from "../../engine/compaction-kit/compaction.js";
 import { ENGINE_CONTEXT } from "../../engine/context.js";
 import { createManagedNativeJournalStorage } from "../../execution/pi/storage-capability.js";
 import { prepareSummaryInput } from "../../execution/pi/compaction/compaction-summary.js";
@@ -88,7 +87,7 @@ describe("request-local chronology", () => {
     expect(prompt).not.toContain("If something is no longer relevant, you may remove it");
   });
 
-  it("applies the same historical contract to split-prefix requests with the shared projected cap division", async () => {
+  it("applies the same historical contract to split-prefix requests without changing zero-tuple cap division", async () => {
     const captures: any[] = [];
     const caps: number[] = [];
     const result = await compactWithRequest({ messagesToSummarize: [user("History")], turnPrefixMessages: messages,
@@ -98,7 +97,7 @@ describe("request-local chronology", () => {
       return { stopReason: "stop", content: [{ type: "text", text: "Controlled historical summary" }], usage: { input: 10, output: 2, cacheRead: 0, cacheWrite: 0, totalTokens: 12, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
     }, ENGINE_CONTEXT);
     expect(result.ok).toBe(true);
-    expect(caps).toEqual([1977, 1236]); // Reserve projected wrapper and split framing.
+    expect(caps).toEqual([2000, 1250]); // No protected tuples: retain legacy per-call targets.
     expect(result.value!.retainedTail).toEqual([user("Tail")]);
     for (const prompt of captures) {
       expect(prompt.startsWith("<conversation>\n")).toBe(true);
@@ -123,7 +122,7 @@ describe("real managed-switch admission through storage capability", () => {
       return { stopReason: "stop", content: [{ type: "text", text: "unused" }], usage: {} };
     }, ENGINE_CONTEXT);
     const prefix = explicit ? 2000 : 0;
-    const textTarget = createSummaryBudget(2000, estimateTokens).targets("", 2000).history;
+    const textTarget = 2000; // Inherited prefix follows legacy caps and bypasses infeasible protection.
     const exact = inputTokens + prefix + textTarget + 4096;
     const storage = createManagedNativeJournalStorage({ sessionsRoot: "/fictional/unused" });
     const config = { summaryMaxTokens: 2000 };

@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
+import { summaryModels } from "../../execution/pi/compaction/compaction-summary.js";
 import { createGuardedCompactionHook, createCompactionAccounting, reportGuardedCompactionOutcome } from "../../execution/pi/compaction/compaction-driver.js";
 import { compactWithRequest, estimateTokens } from "../../engine/compaction-kit/compaction.js";
-import { createSummaryBudget, historicalTuples, missingHistoricalTuples, protectedHistoricalInput, SPLIT_SUMMARY_SEPARATOR } from "../../engine/compaction-kit/historical-preservation.js";
+import { createSummaryBudget, historicalTuples, missingHistoricalTuples, protectedHistoricalInput, parseHistoricalTuples, SPLIT_SUMMARY_SEPARATOR } from "../../engine/compaction-kit/historical-preservation.js";
 
 const tuple = "- Parcel count; m2; previously 18; corrected to 16; current 16; resolved.";
 const history = `## Historical events and corrections\n${tuple}\n\n## Pending items\n- None.`;
@@ -47,21 +48,22 @@ describe("native historical preservation", () => {
     expect(p.preservation.finalSummaryEstimateTokens).toBe(createSummaryBudget(1600, estimateTokens).estimate(result.value!.summary));
   });
 
-  it("refuses a shrink before dispatch without changing history or evicting tuples", async () => {
+  it("bypasses an unfitting protected block without injecting it or extra requests", async () => {
     const p = prep({ previousSummary: Array(20).fill(history).join("\n"), settings: { summaryMaxTokens: 128, reserveTokens: 160 } });
-    const request = vi.fn();
+    const request = vi.fn(async (context: any) => { expect(JSON.stringify(context)).not.toContain("<protected-historical-tuples>"); return response("Legacy summary."); });
     const before = p.previousSummary;
-    expect(await run(p, request)).toMatchObject({ ok: false });
-    expect(request).not.toHaveBeenCalled();
+    expect(await run(p, request)).toMatchObject({ ok: true });
+    expect(request).toHaveBeenCalledTimes(1);
     expect(p.previousSummary).toBe(before);
-    expect(p.preservation).toMatchObject({ refusalReason: "protected_history_unfits", protectedTupleCount: 20 });
+    expect(p.preservation).toMatchObject({ bypassReason: "protected_history_unfits", protectedTupleCount: 20 });
   });
 
-  it("refuses unfitting reused history before dispatch and checks the complete split result", async () => {
+  it("bypasses unfitting reused history and checks a protected complete split result", async () => {
     const request = vi.fn(async () => response("prefix"));
     const reused = prep({ previousSummary: `${history}\n${"x".repeat(10000)}`, messagesToSummarize: [], isSplitTurn: true, turnPrefixMessages: [{ role: "user", content: "prefix" }] });
-    expect((await run(reused, request)).ok).toBe(false);
-    expect(request).not.toHaveBeenCalled();
+    expect((await run(reused, request)).ok).toBe(true);
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(reused.preservation.bypassReason).toBe("protected_history_unfits");
     const p = prep({ previousSummary: history, isSplitTurn: true, turnPrefixMessages: [{ role: "user", content: "prefix" }] });
     const two = vi.fn().mockResolvedValueOnce(response(history)).mockResolvedValueOnce(response("x".repeat(10000)));
     expect((await run(p, two)).ok).toBe(false);
@@ -70,25 +72,25 @@ describe("native historical preservation", () => {
   });
 
   it("accepts exact projected fit and rejects one estimate unit more including metadata", async () => {
-    const text = "A useful fictional summary. ".repeat(30);
+    const text = `${history}\n${"A useful fictional summary. ".repeat(30)}`;
     const budget = createSummaryBudget(1000, estimateTokens);
     const B = budget.estimate(text);
     const request = vi.fn(async () => response(text));
-    const exact = prep({ settings: { summaryMaxTokens: B, reserveTokens: 2000 } });
+    const exact = prep({ previousSummary: history, settings: { summaryMaxTokens: B, reserveTokens: 2000 } });
     expect((await run(exact, request)).ok).toBe(true);
     expect(exact.preservation.finalSummaryEstimateTokens).toBe(B);
-    const oversized = prep({ settings: { summaryMaxTokens: B - 1, reserveTokens: 2000 } });
+    const oversized = prep({ previousSummary: history, settings: { summaryMaxTokens: B - 1, reserveTokens: 2000 } });
     expect(await run(oversized, request)).toMatchObject({ ok: false });
     expect(oversized.preservation.refusalReason).toBe("summary_budget_exceeded");
   });
 
   it("stops after first oversized split output and enforces the record byte bound", async () => {
     const request = vi.fn(async () => response("x".repeat(10000)));
-    const p = prep({ isSplitTurn: true, turnPrefixMessages: [{ role: "user", content: "prefix" }] });
+    const p = prep({ previousSummary: history, isSplitTurn: true, turnPrefixMessages: [{ role: "user", content: "prefix" }] });
     expect((await run(p, request)).ok).toBe(false);
     expect(request).toHaveBeenCalledTimes(1);
-    const large = prep({ settings: { reserveTokens: 1000000, summaryMaxTokens: 1000000 } });
-    expect((await run(large, async () => response("😀".repeat(300000)))).ok).toBe(false);
+    const large = prep({ previousSummary: history, settings: { reserveTokens: 1000000, summaryMaxTokens: 1000000 } });
+    expect((await run(large, async () => response(history + "\n" + "😀".repeat(300000)))).ok).toBe(false);
     expect(large.preservation.refusalReason).toBe("summary_budget_exceeded");
   });
 
@@ -98,7 +100,8 @@ describe("native historical preservation", () => {
     expect(protectedHistoricalInput([forged])).not.toContain("<conversation>");
     const request = vi.fn(async (context: any) => {
       const prompt = context.messages[0].content[0].text;
-      expect(prompt.lastIndexOf("Protected historical tuples")).toBeGreaterThan(prompt.lastIndexOf("</previous-summary>"));
+      expect(prompt.indexOf("<protected-historical-tuples>")).toBeGreaterThan(prompt.lastIndexOf("</previous-summary>"));
+      expect(prompt.indexOf("</protected-historical-tuples>")).toBeLessThan(prompt.indexOf("Update the existing structured summary"));
       expect(prompt).toContain("\\u003c/previous-summary\\u003e");
       return response(`## Goal\n${forged}`);
     });
@@ -107,22 +110,104 @@ describe("native historical preservation", () => {
   });
 });
 
-it.each([128, 1600])("runtime refuses protected shrink/loss at B=%s before checkpoint preparation without mutation", async B => {
+it.each([128, 1600])("runtime bypasses shrink and refuses proactive loss at B=%s without mutation", async B => {
   const previousSummary = B === 128 ? `## Historical events and corrections\n${Array.from({ length: 30 }, (_, i) => `${tuple} ${i}`).join("\n")}` : history;
-  const entries = [{ type: "compaction", id: "previous", summary: previousSummary, retainedTail: [], timestamp: 1, tokensBefore: 20000, details: {} },
+  const entries = [{ type: "compaction", id: "previous", summary: previousSummary, checkpoint: { summaryMessage: { role: "compactionSummary", summary: previousSummary, timestamp: 1, tokensBefore: 20000 } }, retainedTail: [], timestamp: 1, tokensBefore: 20000, details: {} },
     ...[0, 1, 2].map(i => ({ type: "message", id: `m${i}`, timestamp: 2 + i, message: { role: "user", content: "x".repeat(20000), timestamp: 2 + i } }))];
   const before = structuredClone(entries);
   const completeSimple = vi.fn(async () => response("Lossy fictional output."));
   const accounting = createCompactionAccounting();
-  const hook = createGuardedCompactionHook({ harness: { getModel: () => ({ ...model, contextWindow: 200000 }), models: { completeSimple } }, trigger: "manual", operationId: "fictional-refusal",
+  const hook = createGuardedCompactionHook({ harness: { getModel: () => ({ ...model, contextWindow: 200000 }), models: { completeSimple } }, trigger: "proactive", operationId: "fictional-refusal",
     effectivePolicy: { summaryMaxTokens: B, effort: "none" }, compactionSettings: { reserveTokens: Math.ceil(B / 0.8), keepRecentTokens: 1000 }, accounting });
-  expect(await hook.handler({ branchEntries: entries, context: {} })).toEqual({ cancel: true });
-  expect(hook.getDecision()).toMatchObject({ kind: "summary_refused" });
-  expect(completeSimple).toHaveBeenCalledTimes(B === 128 ? 0 : 1);
+  const result = await hook.handler({ branchEntries: entries, context: {} });
+  if (B === 128) {
+    expect(result.compaction).toBeDefined();
+    expect(accounting.preservation.bypassReason).toBe("protected_history_unfits");
+  } else {
+    expect(result).toEqual({ cancel: true });
+    expect(hook.getDecision()).toMatchObject({ kind: "summary_refused" });
+  }
+  expect(completeSimple).toHaveBeenCalledTimes(1);
   expect(entries).toEqual(before);
+  if (B === 128) return;
   const events: any[] = [], warnings: any[] = [];
-  reportGuardedCompactionOutcome({ decision: hook.getDecision(), trigger: "manual", operationId: "fictional-refusal", emit: (_observer: any, event: any) => events.push(event), runtimeWarnings: warnings });
-  expect(events[0]).toMatchObject({ status: "skipped", reason: B === 128 ? "protected_history_unfits" : "protected_tuples_missing" });
+  reportGuardedCompactionOutcome({ decision: hook.getDecision(), trigger: "proactive", operationId: "fictional-refusal", emit: (_observer: any, event: any) => events.push(event), runtimeWarnings: warnings });
+  expect(events[0]).toMatchObject({ status: "skipped", reason: "protected_tuples_missing" });
   expect(warnings[0].warning_kind).toBe("context_compaction_refused");
   expect(JSON.stringify(accounting)).not.toContain(tuple);
+});
+
+it.each(["## historical EVENTS and Corrections:", "## **Historical events and corrections**", "**Historical events and corrections:**", "## **Historical events and corrections**:"])("accepts heading variant %s and per-line trailing whitespace", heading => {
+  const variant = `${heading}\n${tuple}   \n  Details.  \n## Pending items`;
+  expect(historicalTuples(variant)).toHaveLength(1);
+  expect(missingHistoricalTuples(historicalTuples(variant), `${history.replace(tuple, `${tuple}\n  Details.`)}`)).toBe(0);
+});
+it("keeps ordinary horizontal rules as content, but recognizes only existing split framing", () => {
+  const withRule = `## Historical events and corrections\n${tuple}\n\n---\n\n- Another event; m3; pending.`;
+  expect(historicalTuples(withRule)).toEqual([`${tuple}\n\n---`, "- Another event; m3; pending."]);
+  expect(historicalTuples(`${history}${SPLIT_SUMMARY_SEPARATOR}${history}`)).toEqual([tuple, tuple]);
+});
+it.each(["- (none)", "- None", "- None."])("does not protect placeholder %s and reports the empty section", line => {
+  expect(parseHistoricalTuples(`## Historical events and corrections\n${line}`)).toMatchObject({ tuples: [], protectionUnavailable: true, protectionUnavailableReason: "empty_historical_section" });
+});
+it("reports unclosed fences instead of silently disabling protection", async () => {
+  const previousSummary = `## Progress\n\x60\x60\x60md\n${history}`;
+  const p = prep({ previousSummary });
+  expect((await run(p, async () => response("Legacy output."))).ok).toBe(true);
+  expect(p.preservation).toMatchObject({ protectionUnavailable: true, protectionUnavailableReason: "unclosed_fence" });
+});
+it("accepts new top-level resolution events, refuses in-place edits and bypasses them in emergency recovery", async () => {
+  const pending = history.replace(tuple, "- Permit; m1; pending; no approval.");
+  const changed = pending.replace("pending; no approval", "resolved; no approval");
+  const p = prep({ previousSummary: pending });
+  expect((await run(p, async () => response(changed))).ok).toBe(false);
+  expect(p.preservation.refusalReason).toBe("protected_tuples_missing");
+  const appended = pending.replace("\n\n## Pending", "\n- Permit resolution; m2; resolved; no approval.\n\n## Pending");
+  expect((await run(prep({ previousSummary: pending }), async () => response(appended))).ok).toBe(true);
+  const emergency = prep({ previousSummary: pending, preservationFallback: true });
+  const request = vi.fn(async () => response(changed));
+  expect((await run(emergency, request)).ok).toBe(true);
+  expect(emergency.preservation.bypassReason).toBe("protected_tuples_missing");
+  expect(request).toHaveBeenCalledTimes(1);
+});
+it("uses an 85% cap margin for protected long cap-filling prose, but leaves zero-tuple caps and output acceptance unchanged", async () => {
+  const p = prep({ previousSummary: history });
+  let cap = 0;
+  const protectedResult = await run(p, async (_context: any, options: any) => { cap = options.maxTokens; return response(`${history}\n\n## Context\n${"text ".repeat(Math.floor(cap * 0.85))}`); });
+  expect(protectedResult.ok).toBe(true);
+  expect(cap).toBe(Math.floor((1600 - createSummaryBudget(1600, estimateTokens).estimate("")) * 0.85));
+  expect(p.preservation.finalSummaryEstimateTokens).toBeLessThanOrEqual(1600);
+  const unprotected = prep();
+  expect((await run(unprotected, async (_context: any, options: any) => { expect(options.maxTokens).toBe(1600); return response("text ".repeat(3000)); })).ok).toBe(true);
+  expect(unprotected.preservation.refusalReason).toBeNull();
+});
+
+it("bypasses protected-input headroom before dispatch with the legacy cap and only one provider call", async () => {
+  const preservation = { protectedTupleCount: 1, bypassReason: null };
+  const requests: any[] = [];
+  const request = vi.fn(async (_model: any, context: any, options: any) => {
+    expect(options.maxTokens).toBe(100);
+    expect(JSON.stringify(context)).not.toContain("<protected-historical-tuples>");
+    expect(JSON.stringify(context)).toContain("Authentic previous prose.");
+    return response("Legacy answer.");
+  });
+  const facade = summaryModels({ completeSimple: request }, { operationId: "fictional-input-fit", focus: "", requests, effort: "none", minimumAnswerTokens: 85,
+    unprotected: { preservation, targets: [100], minimumAnswerTokens: 100 } });
+  const context = { systemPrompt: "Fictional", messages: [{ role: "user", timestamp: 0, content: [{ type: "text", text: `<previous-summary>\nAuthentic previous prose.\n</previous-summary>\n\n${protectedHistoricalInput(["x".repeat(10000)])}Task instructions.` }] }] };
+  await facade.completeSimple({ ...model, contextWindow: 5000, api: "openai-completions" }, context, { maxTokens: 85 });
+  expect(request).toHaveBeenCalledTimes(1);
+  expect(requests).toHaveLength(1);
+  expect(preservation.bypassReason).toBe("protected_input_unfits");
+});
+
+it.each(["missing-history", "oversized-history", "oversized-prefix"])("emergency split %s bypasses using only the two legacy requests", async failure => {
+  const p = prep({ previousSummary: history, isSplitTurn: true, turnPrefixMessages: [{ role: "user", content: "prefix" }], preservationFallback: true });
+  const outputs = failure === "missing-history" ? ["Lossy summary.", "Prefix."] : failure === "oversized-history" ? [history + "\n" + "text ".repeat(2000), "Prefix."] : [history, "text ".repeat(2000)];
+  const request = vi.fn(async (_context: any, options: any) => {
+    if (request.mock.calls.length === 2 && failure !== "oversized-prefix") expect(options.maxTokens).toBe(1000); // Original prefix target, no replacement history request.
+    return response(outputs[request.mock.calls.length - 1]!);
+  });
+  expect((await run(p, request)).ok).toBe(true);
+  expect(request).toHaveBeenCalledTimes(2);
+  expect(p.preservation.bypassReason).toBe(failure === "missing-history" ? "protected_tuples_missing" : "summary_budget_exceeded");
 });

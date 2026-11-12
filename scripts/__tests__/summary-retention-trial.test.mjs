@@ -392,8 +392,8 @@ describe("frozen fictional summary qualification", () => {
     const identity = report.identity[0], measured = report.models[0];
     const requests = report.chains.flatMap(chain => chain.requests);
     expect(report.chains.every(chain => chain.pass)).toBe(true);
-    expect(requests[0]).toMatchObject({ maxTokens: 1973, providerMaxTokens: 18357,
-      options: { maxTokens: 1973, reasoning: "high" } }); // wrapper reserved, reasoning allowance unchanged
+    expect(requests[0]).toMatchObject({ maxTokens: 2000, providerMaxTokens: 18384,
+      options: { maxTokens: 2000, reasoning: "high" } }); // no prior tuples: legacy cap and reasoning allowance unchanged
     for (const request of requests) {
       expect(request.providerMaxTokens).toBe(request.options.maxTokens + 16384);
       expect(request.providerMaxTokens).toBeGreaterThan(request.maxTokens);
