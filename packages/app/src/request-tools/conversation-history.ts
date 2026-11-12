@@ -84,7 +84,7 @@ function search(binding: Binding, input: Input) {
     if (cursor.version === 2) {
       const { digest, ...fields } = cursor;
       if (mode !== "relevance" || digest !== bindingDigest(binding, ["search-v2", JSON.stringify(fields)])
-        || cursor.query !== query || cursor.limit !== limit || cursor.rankingVersion !== 1
+        || cursor.queryDigest !== queryDigest(query!) || cursor.limit !== limit || cursor.rankingVersion !== 1
         || !Number.isSafeInteger(cursor.watermark) || !validDigest(cursor.manifest)
         || typeof cursor.anchor !== "object" || cursor.anchor === null) return invalidCursor();
       const anchor = cursor.anchor as Record<string, unknown>;
@@ -110,7 +110,11 @@ function search(binding: Binding, input: Input) {
   const last = page.items.at(-1), nextActions: NextAction[] = page.items.map(({ recordId }) => recordAction(recordId));
   let nextCursor: string | undefined;
   if (page.continuation !== undefined) {
-    const fields = { ...page.continuation, kind: "search" };
+    // A 512-byte query can JSON-escape to 3072 bytes. Keep it in the returned
+    // action, not the bounded cursor. Fixed-width hashes/ID and safe integers
+    // keep the encoded v2 cursor below 1 KiB, within the existing 2048-byte cap.
+    const { query: boundQuery, ...traversal } = page.continuation;
+    const fields = { ...traversal, queryDigest: queryDigest(boundQuery), kind: "search" };
     nextCursor = encodeRequestScopedCursor({ ...fields, digest: bindingDigest(binding, ["search-v2", JSON.stringify(fields)]) });
     nextActions.push({ kind: "next_search_page", description: "Read the next relevance page with the same query and scope.", arguments: { action: "search", query, limit, cursor: nextCursor } });
   }
@@ -159,6 +163,7 @@ function get(binding: Binding, input: Input) {
       nextCursor === undefined ? "No more retained chunks. The digest describes sanitized retained UTF-8 bytes, never secret/raw original text. Reading evidence is not approval for fresh effects." : "This is one bounded chunk. Follow the exact cursor action until no cursor remains, then verify the concatenated retained bytes against the record's sha256.") });
 }
 
+function queryDigest(query: string): string { return requestScopedCursorDigest(["conversation-history-query-v2", query]); }
 function bindingDigest(binding: Binding, parts: readonly (string | number | boolean | undefined)[]): string {
   return requestScopedCursorDigest(["conversation-history-v1", binding.logicalConversationId, binding.conversationId, binding.runId, ...parts]);
 }

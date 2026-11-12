@@ -127,7 +127,9 @@ callers retain the legacy default, AND queries and `before`/`next` pagination;
 select `mode: "relevance"` explicitly. Already issued MCP v1 cursors keep their
 legacy semantics; new ranked traversals use v2 cursors bound to the query, limit,
 ranking version, original watermark, ordered membership digest, anchor and request
-scope. Restart with the same scope can continue; a different run expires the cursor.
+scope. MCP cursors carry fixed-size query digests rather than escaped query text;
+the exact returned continuation action resupplies the query. Restart with the same
+scope can continue; a different run expires the cursor.
 
 Search previews are digest-verified sanitized **matched context**, at most 512
 UTF-8 bytes, with retained-byte ranges and clipping flags. Nearby qualification

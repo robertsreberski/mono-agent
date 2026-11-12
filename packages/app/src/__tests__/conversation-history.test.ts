@@ -8,6 +8,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { ToolHistoryReader, ToolHistoryWriter, continuityGenerationId, continuityRecordId, type ContinuityPreparation } from "@mono-agent/conversation";
 import { afterEach, describe, expect, it } from "vitest";
 import { createConversationHistoryRuntimeExtension, handleConversationHistoryRequest, isConversationHistoryToolAllowed, CONVERSATION_HISTORY_MCP_SERVER_NAME, CONVERSATION_HISTORY_TOOL_NAME } from "../request-tools/conversation-history.js";
+import { decodeRequestScopedCursor } from "../mcp/request-scoped-mcp.js";
 import { handleSessionHistoryRequest } from "../request-tools/session-history.js";
 
 const roots: string[] = [], writers = new Set<ToolHistoryWriter>(), clients: Array<() => Promise<void>> = [];
@@ -122,6 +123,23 @@ describe("ConversationHistory scoped evidence", () => {
     for (const input of [{ query: "x".repeat(513) }, { limit: 11 }, { action: "get", recordId: "guess" }, { action: "get", recordId: first.items[0].recordId, chunkBytes: 3 }]) {
       expect(body(handleConversationHistoryRequest(f.binding, input as never)).error).toBeDefined();
     }
+  });
+
+  it.each([["\u000b", 400], ["\u000b", 495], ["\u0000", 495], ['"', 495], ["\\", 495]] as const)("follows its own bounded relevance cursor for escape-heavy queries (%j × %s)", async (escape, count) => {
+    const f = await fixture(); await publish(f.writer, preparation(["cobalt observatory first", "cobalt observatory second"]));
+    const query = "cobalt" + escape.repeat(count) + "observatory";
+    expect(Buffer.byteLength(query)).toBeLessThanOrEqual(512);
+    const first = body(handleConversationHistoryRequest(f.binding, { query, limit: 1 }));
+    expect(first.items).toHaveLength(1); expect(first.hasMore).toBe(true);
+    expect(Buffer.byteLength(first.nextCursor)).toBeLessThan(1024);
+    const decoded = decodeRequestScopedCursor(first.nextCursor);
+    expect(decoded).toMatchObject({ version: 2, kind: "search" }); expect(decoded!.query).toBeUndefined();
+    const next = first.navigation.nextActions.find((action: any) => action.kind === "next_search_page").arguments;
+    expect(next.query).toBe(query);
+    const second = body(handleConversationHistoryRequest(f.binding, next));
+    expect(second.items).toHaveLength(1); expect(second.items[0].recordId).not.toBe(first.items[0].recordId);
+    expect(second.hasMore).toBe(false); expect(second.error).toBeUndefined();
+    expect(body(handleConversationHistoryRequest(f.binding, { ...next, query: "different" })).error.code).toBe("invalid_cursor");
   });
 
   it("keeps issued v1 lexical cursors chronological while new queries use v2 relevance/literal discovery", async () => {
