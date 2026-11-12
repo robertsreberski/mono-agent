@@ -1,0 +1,8 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`owned compaction kit vs 0.99.2 baseline > preserves summary input, retained tail, tokensBefore and billed usage > history-preserving request contract 1`] = `
+[
+  "14d88f2f4297f67eca311079a8dd52f2d38ccfad1b7eb20dad5c569817bf3abb",
+  "5ffd51941e579cf8d9fed6c059cefb41d622b06d2d71e34e7fcfc44ed49ebcb4",
+]
+`;

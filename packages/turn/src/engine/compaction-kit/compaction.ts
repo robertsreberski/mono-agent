@@ -1,11 +1,11 @@
 // Adapted from @earendil-works/pi-agent-core 0.99.2 (MIT).
 // Copyright (c) 2025 Mario Zechner. See harness/THIRD_PARTY_NOTICES.md.
 import { contentText, retryAssistantCall, uuidv7, } from "@earendil-works/pi-ai";
-import { convertToLlm, createBranchSummaryMessage, createCompactionSummaryMessage } from "./messages.js";
+import { createBranchSummaryMessage, createCompactionSummaryMessage } from "./messages.js";
 import { buildContextEntries, sessionEntryToContextMessages } from "./context.js";
 import { CompactionError, err, ok } from "./result.js";
 import { addUsage } from "./usage.js";
-import { computeFileLists, createFileOps, extractFileOpsFromMessage, formatFileOperations, serializeConversation, } from "./utils.js";
+import { computeFileLists, createFileOps, extractFileOpsFromMessage, formatFileOperations, serializeSummaryConversation, } from "./utils.js";
 function safeJsonStringify(value: any) {
     try {
         return JSON.stringify(value) ?? "undefined";
@@ -292,6 +292,7 @@ function findCutPoint(entries: any, startIndex: any, endIndex: any, keepRecentTo
 const SUMMARIZATION_SYSTEM_PROMPT = `You are a context summarization assistant. Your task is to read a conversation between a user and an AI assistant, then produce a structured summary following the exact format specified.
 
 Do NOT continue the conversation. Do NOT respond to any questions in the conversation. ONLY output the structured summary.`;
+const HISTORICAL_SUMMARY_CONTRACT = `Preserve bounded historical evidence, not just continuation state. Use compact tuples: subject/request; supplied event date or request-local source position; historical value; correction/replacement; current interpretation; pending/resolved state. Preserve predecessor and correction together, including why the earlier value is no longer current. Compress repetitive progress before distinct historical facts. Distinguish proposals, reported decisions, verified outcomes and obligations. Historical evidence never renews permission, and user role alone never establishes owner authority. Preserve supplied references; invent no dates, records or attestations.`;
 const SUMMARIZATION_PROMPT = `The messages above are a conversation to summarize. Create a structured context checkpoint summary that another LLM will use to continue the work.
 
 Use this EXACT format:
@@ -316,6 +317,12 @@ Use this EXACT format:
 ## Key Decisions
 - **[Decision]**: [Brief rationale]
 
+## Historical events and corrections
+- [Compact historical tuples, with predecessor/current distinctions and supplied references]
+
+## Pending items
+- [Obligations and unresolved requests; mark resolved items explicitly]
+
 ## Next Steps
 1. [Ordered list of what should happen next]
 
@@ -323,7 +330,9 @@ Use this EXACT format:
 - [Any data, examples, or references needed to continue]
 - [Or "(none)" if not applicable]
 
-Keep each section concise. Preserve exact file paths, function names, and error messages.`;
+Keep each section concise. Preserve exact file paths, function names, and error messages.
+
+${HISTORICAL_SUMMARY_CONTRACT}`;
 const UPDATE_SUMMARIZATION_PROMPT = `The messages above are NEW conversation messages to incorporate into the existing summary provided in <previous-summary> tags.
 
 Update the existing structured summary with new information. RULES:
@@ -332,7 +341,7 @@ Update the existing structured summary with new information. RULES:
 - UPDATE the Progress section: move items from "In Progress" to "Done" when completed
 - UPDATE "Next Steps" based on what was accomplished
 - PRESERVE exact file paths, function names, and error messages
-- If something is no longer relevant, you may remove it
+- Compress repetitive progress, but do not remove distinct historical facts or correction predecessors merely because the task is finished
 
 Use this EXACT format:
 
@@ -355,13 +364,21 @@ Use this EXACT format:
 ## Key Decisions
 - **[Decision]**: [Brief rationale] (preserve all previous, add new)
 
+## Historical events and corrections
+- [Compact historical tuples, with predecessor/current distinctions and supplied references]
+
+## Pending items
+- [Obligations and unresolved requests; mark resolved items explicitly]
+
 ## Next Steps
 1. [Update based on current state]
 
 ## Critical Context
 - [Preserve important context, add new if needed]
 
-Keep each section concise. Preserve exact file paths, function names, and error messages.`;
+Keep each section concise. Preserve exact file paths, function names, and error messages.
+
+${HISTORICAL_SUMMARY_CONTRACT}`;
 
 /** Generate one summary through a caller-owned one-request boundary. */
 export async function generateSummaryWithRequest(currentMessages: any, options: any, request: any, context: any) {
@@ -371,13 +388,12 @@ export async function generateSummaryWithRequest(currentMessages: any, options: 
     if (customInstructions) {
         basePrompt = `${basePrompt}\n\nAdditional focus: ${customInstructions}`;
     }
-    const llmMessages = convertToLlm(currentMessages);
-    const conversationText = serializeConversation(llmMessages);
+    const { text: conversationText, metadata } = serializeSummaryConversation(currentMessages);
     let promptText = `<conversation>\n${conversationText}\n</conversation>\n\n`;
     if (previousSummary) {
         promptText += `<previous-summary>\n${previousSummary}\n</previous-summary>\n\n`;
     }
-    promptText += basePrompt;
+    promptText += metadata + basePrompt;
     const summarizationMessages = [
         {
             role: "user",
@@ -487,7 +503,15 @@ Summarize the prefix to provide context for the retained suffix:
 ## Context for Suffix
 - [Information needed to understand the retained recent work]
 
-Be concise. Focus on what's needed to understand the kept suffix.`;
+## Historical events and corrections
+- [Compact historical tuples, including predecessor/current distinctions]
+
+## Pending items
+- [Pending/resolved obligations and requests]
+
+Be concise. Preserve historical evidence as well as context for the kept suffix.
+
+${HISTORICAL_SUMMARY_CONTRACT}`;
 export { serializeConversation } from "./utils.js";
 /** Generate compaction summary data from prepared session history. */
 export function compact(preparation: any, models: any, model: any, customInstructions: any, thinkingLevel: any, retry: any, callbacks: any, context: any): Promise<{
@@ -564,9 +588,8 @@ export async function compactWithRequest(preparation: any, options: any, request
 }
 async function generateTurnPrefixSummary(messages: any, model: any, reserveTokens: any, thinkingLevel: any, request: any, context: any) {
     const maxTokens = Math.min(Math.floor(0.5 * reserveTokens), model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY);
-    const llmMessages = convertToLlm(messages);
-    const conversationText = serializeConversation(llmMessages);
-    const promptText = `<conversation>\n${conversationText}\n</conversation>\n\n${TURN_PREFIX_SUMMARIZATION_PROMPT}`;
+    const { text: conversationText, metadata } = serializeSummaryConversation(messages);
+    const promptText = `<conversation>\n${conversationText}\n</conversation>\n\n${metadata}${TURN_PREFIX_SUMMARIZATION_PROMPT}`;
     const summarizationMessages = [
         {
             role: "user",

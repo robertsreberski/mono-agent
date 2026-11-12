@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Keep historical facts, correction predecessors and pending obligations in
+  compaction summary instructions, with bounded request-local chronology and
+  unchanged token limits. Retention remains prompt-mediated, not guaranteed;
+  the optional continuity ledger stays opt-in.
+
 - **Breaking:** Add bounded relevance discovery to lexical `ConversationHistory`
   searches. Search responses add `mode`/`scan` fields requiring parser updates;
   scans exceeding 100,000 records, 256 MiB or a cooperative five-second deadline

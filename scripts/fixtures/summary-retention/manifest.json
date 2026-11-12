@@ -1,0 +1,5 @@
+{
+  "schema": "summary-retention-freeze-v1",
+  "sha256": "deee0d1457985218c98232a25c7952a3b83a23dbe9e5213c757c38cc79529155",
+  "assertions": "All semicolon-separated reference fields must occur together on one summary line (case/whitespace normalized); literal, intentionally conservative. Provenance and authority checks are fixture-specific, not a general semantic verifier."
+}

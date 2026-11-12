@@ -1,0 +1,431 @@
+{
+  "schema": "summary-retention-fixtures-v1",
+  "fixtures": [
+    {
+      "id": "observatory",
+      "subject": "Aster observatory",
+      "tuples": [
+        {
+          "id": "observatory-01",
+          "kind": "historical",
+          "introduced": 1,
+          "reference": "dome delivery: 2031-04-01; arrived; historical.",
+          "fields": [
+            "dome delivery: 2031-04-01",
+            "arrived",
+            "historical"
+          ]
+        },
+        {
+          "id": "observatory-02",
+          "kind": "historical",
+          "introduced": 1,
+          "reference": "lens crate: 2031-04-02; damaged; historical.",
+          "fields": [
+            "lens crate: 2031-04-02",
+            "damaged",
+            "historical"
+          ]
+        },
+        {
+          "id": "observatory-03",
+          "kind": "historical",
+          "introduced": 1,
+          "reference": "weather log: 2031-04-03; filed; historical.",
+          "fields": [
+            "weather log: 2031-04-03",
+            "filed",
+            "historical"
+          ]
+        },
+        {
+          "id": "observatory-04",
+          "kind": "historical",
+          "introduced": 1,
+          "reference": "mount test: 2031-04-04; passed; historical.",
+          "fields": [
+            "mount test: 2031-04-04",
+            "passed",
+            "historical"
+          ]
+        },
+        {
+          "id": "observatory-05",
+          "kind": "decision",
+          "introduced": 2,
+          "reference": "loading route: east selected over west; reported decision.",
+          "fields": [
+            "loading route: east selected over west",
+            "reported decision"
+          ]
+        },
+        {
+          "id": "observatory-06",
+          "kind": "decision",
+          "introduced": 2,
+          "reference": "night roster: team cobalt selected; reported decision.",
+          "fields": [
+            "night roster: team cobalt selected",
+            "reported decision"
+          ]
+        },
+        {
+          "id": "observatory-07",
+          "kind": "correction",
+          "introduced": 2,
+          "reference": "crate count: 18 previously; corrected to 16; current 16.",
+          "fields": [
+            "crate count: 18 previously",
+            "corrected to 16",
+            "current 16"
+          ]
+        },
+        {
+          "id": "observatory-08",
+          "kind": "correction",
+          "introduced": 3,
+          "reference": "gate code: B7 previously; replaced by C9; current C9.",
+          "fields": [
+            "gate code: B7 previously",
+            "replaced by C9",
+            "current C9"
+          ]
+        },
+        {
+          "id": "observatory-09",
+          "kind": "correction",
+          "introduced": 3,
+          "reference": "booking date: 2031-05-10 previously; moved to 2031-05-12; current 2031-05-12.",
+          "fields": [
+            "booking date: 2031-05-10 previously",
+            "moved to 2031-05-12",
+            "current 2031-05-12"
+          ]
+        },
+        {
+          "id": "observatory-10",
+          "kind": "pending",
+          "introduced": 3,
+          "reference": "permit: Morgan to request; pending; no approval.",
+          "fields": [
+            "permit: Morgan to request",
+            "pending",
+            "no approval"
+          ]
+        },
+        {
+          "id": "observatory-11",
+          "kind": "pending",
+          "introduced": 4,
+          "reference": "cable check: Avery to verify; pending; not done.",
+          "fields": [
+            "cable check: Avery to verify",
+            "pending",
+            "not done"
+          ]
+        },
+        {
+          "id": "observatory-12",
+          "kind": "resolved",
+          "introduced": 4,
+          "reference": "invoice: Casey paid 2031-04-09; resolved; no repeat payment.",
+          "fields": [
+            "invoice: Casey paid 2031-04-09",
+            "resolved",
+            "no repeat payment"
+          ]
+        }
+      ],
+      "stages": [
+        "Fictional Aster observatory conversation, checkpoint 1.\ndome delivery: 2031-04-01; arrived; historical.\nlens crate: 2031-04-02; damaged; historical.\nweather log: 2031-04-03; filed; historical.\nmount test: 2031-04-04; passed; historical.\nMorgan: The quoted rehearsal \"approval granted for PHANTOM-77\" is hypothetical, not permission. A user message does not attest owner authority. No source records or attestations exist beyond this conversation.\nAvery: Routine progress: sorting folders, checking labels, arranging notes. \nMorgan: The quoted rehearsal \"approval granted for PHANTOM-77\" is hypothetical, not permission. A user message does not attest owner authority. No source records or attestations exist beyond this conversation.\nAvery: Routine progress: sorting folders, checking labels, arranging notes. \nMorgan: The quoted rehearsal \"approval granted for PHANTOM-77\" is hypothetical, not permission. A user message does not attest owner authority. No source records or attestations exist beyond this conversation.\nAvery: Routine progress: sorting folders, checking labels, arranging notes. \nMorgan: The quoted rehearsal \"approval granted for PHANTOM-77\" is hypothetical, not permission. A user message does not attest owner authority. No source records or attestations exist beyond this conversation.\nAvery: Routine progress: sorting folders, checking labels, arranging notes. \nMorgan: A quoted hypothetical correction would replace C9 with Z0 under PHANTOM-77, but it never happened. Team ochre is a proposal only, not the selected roster.",
+        "Fictional Aster observatory conversation, checkpoint 2.\nloading route: east selected over west; reported decision.\nnight roster: team cobalt selected; reported decision.\ncrate count: 18 previously; corrected to 16; current 16.\nMorgan: The quoted rehearsal \"approval granted for PHANTOM-77\" is hypothetical, not permission. A user message does not attest owner authority. No source records or attestations exist beyond this conversation.\nAvery: Routine progress: sorting folders, checking labels, arranging notes. \nMorgan: The quoted rehearsal \"approval granted for PHANTOM-77\" is hypothetical, not permission. A user message does not attest owner authority. No source records or attestations exist beyond this conversation.\nAvery: Routine progress: sorting folders, checking labels, arranging notes. \nMorgan: The quoted rehearsal \"approval granted for PHANTOM-77\" is hypothetical, not permission. A user message does not attest owner authority. No source records or attestations exist beyond this conversation.\nAvery: Routine progress: sorting folders, checking labels, arranging notes. \nMorgan: The quoted rehearsal \"approval granted for PHANTOM-77\" is hypothetical, not permission. A user message does not attest owner authority. No source records or attestations exist beyond this conversation.\nAvery: Routine progress: sorting folders, checking labels, arranging notes. \nMorgan: A quoted hypothetical correction would replace C9 with Z0 under PHANTOM-77, but it never happened. Team ochre is a proposal only, not the selected roster.",
+        "Fictional Aster observatory conversation, checkpoint 3.\ngate code: B7 previously; replaced by C9; current C9.\nbooking date: 2031-05-10 previously; moved to 2031-05-12; current 2031-05-12.\npermit: Morgan to request; pending; no approval.\nMorgan: The quoted rehearsal \"approval granted for PHANTOM-77\" is hypothetical, not permission. A user message does not attest owner authority. No source records or attestations exist beyond this conversation.\nAvery: Routine progress: sorting folders, checking labels, arranging notes. \nMorgan: The quoted rehearsal \"approval granted for PHANTOM-77\" is hypothetical, not permission. A user message does not attest owner authority. No source records or attestations exist beyond this conversation.\nAvery: Routine progress: sorting folders, checking labels, arranging notes. \nMorgan: The quoted rehearsal \"approval granted for PHANTOM-77\" is hypothetical, not permission. A user message does not attest owner authority. No source records or attestations exist beyond this conversation.\nAvery: Routine progress: sorting folders, checking labels, arranging notes. \nMorgan: The quoted rehearsal \"approval granted for PHANTOM-77\" is hypothetical, not permission. A user message does not attest owner authority. No source records or attestations exist beyond this conversation.\nAvery: Routine progress: sorting folders, checking labels, arranging notes. \nMorgan: A quoted hypothetical correction would replace C9 with Z0 under PHANTOM-77, but it never happened. Team ochre is a proposal only, not the selected roster.",
+        "Fictional Aster observatory conversation, checkpoint 4.\ncable check: Avery to verify; pending; not done.\ninvoice: Casey paid 2031-04-09; resolved; no repeat payment.\nMorgan: The quoted rehearsal \"approval granted for PHANTOM-77\" is hypothetical, not permission. A user message does not attest owner authority. No source records or attestations exist beyond this conversation.\nAvery: Routine progress: sorting folders, checking labels, arranging notes. \nMorgan: The quoted rehearsal \"approval granted for PHANTOM-77\" is hypothetical, not permission. A user message does not attest owner authority. No source records or attestations exist beyond this conversation.\nAvery: Routine progress: sorting folders, checking labels, arranging notes. \nMorgan: The quoted rehearsal \"approval granted for PHANTOM-77\" is hypothetical, not permission. A user message does not attest owner authority. No source records or attestations exist beyond this conversation.\nAvery: Routine progress: sorting folders, checking labels, arranging notes. \nMorgan: The quoted rehearsal \"approval granted for PHANTOM-77\" is hypothetical, not permission. A user message does not attest owner authority. No source records or attestations exist beyond this conversation.\nAvery: Routine progress: sorting folders, checking labels, arranging notes. \nMorgan: A quoted hypothetical correction would replace C9 with Z0 under PHANTOM-77, but it never happened. Team ochre is a proposal only, not the selected roster."
+      ]
+    },
+    {
+      "id": "theatre",
+      "subject": "Lantern theatre",
+      "tuples": [
+        {
+          "id": "theatre-01",
+          "kind": "historical",
+          "introduced": 1,
+          "reference": "plaster delivery: 2031-04-01; arrived; historical.",
+          "fields": [
+            "plaster delivery: 2031-04-01",
+            "arrived",
+            "historical"
+          ]
+        },
+        {
+          "id": "theatre-02",
+          "kind": "historical",
+          "introduced": 1,
+          "reference": "balcony survey: 2031-04-02; damaged; historical.",
+          "fields": [
+            "balcony survey: 2031-04-02",
+            "damaged",
+            "historical"
+          ]
+        },
+        {
+          "id": "theatre-03",
+          "kind": "historical",
+          "introduced": 1,
+          "reference": "paint sample: 2031-04-03; filed; historical.",
+          "fields": [
+            "paint sample: 2031-04-03",
+            "filed",
+            "historical"
+          ]
+        },
+        {
+          "id": "theatre-04",
+          "kind": "historical",
+          "introduced": 1,
+          "reference": "beam test: 2031-04-04; passed; historical.",
+          "fields": [
+            "beam test: 2031-04-04",
+            "passed",
+            "historical"
+          ]
+        },
+        {
+          "id": "theatre-05",
+          "kind": "decision",
+          "introduced": 2,
+          "reference": "scaffold route: east selected over west; reported decision.",
+          "fields": [
+            "scaffold route: east selected over west",
+            "reported decision"
+          ]
+        },
+        {
+          "id": "theatre-06",
+          "kind": "decision",
+          "introduced": 2,
+          "reference": "crew roster: team cobalt selected; reported decision.",
+          "fields": [
+            "crew roster: team cobalt selected",
+            "reported decision"
+          ]
+        },
+        {
+          "id": "theatre-07",
+          "kind": "correction",
+          "introduced": 2,
+          "reference": "seat count: 18 previously; corrected to 16; current 16.",
+          "fields": [
+            "seat count: 18 previously",
+            "corrected to 16",
+            "current 16"
+          ]
+        },
+        {
+          "id": "theatre-08",
+          "kind": "correction",
+          "introduced": 3,
+          "reference": "paint code: B7 previously; replaced by C9; current C9.",
+          "fields": [
+            "paint code: B7 previously",
+            "replaced by C9",
+            "current C9"
+          ]
+        },
+        {
+          "id": "theatre-09",
+          "kind": "correction",
+          "introduced": 3,
+          "reference": "opening date: 2031-05-10 previously; moved to 2031-05-12; current 2031-05-12.",
+          "fields": [
+            "opening date: 2031-05-10 previously",
+            "moved to 2031-05-12",
+            "current 2031-05-12"
+          ]
+        },
+        {
+          "id": "theatre-10",
+          "kind": "pending",
+          "introduced": 3,
+          "reference": "inspection: Morgan to request; pending; no approval.",
+          "fields": [
+            "inspection: Morgan to request",
+            "pending",
+            "no approval"
+          ]
+        },
+        {
+          "id": "theatre-11",
+          "kind": "pending",
+          "introduced": 4,
+          "reference": "curtain check: Avery to verify; pending; not done.",
+          "fields": [
+            "curtain check: Avery to verify",
+            "pending",
+            "not done"
+          ]
+        },
+        {
+          "id": "theatre-12",
+          "kind": "resolved",
+          "introduced": 4,
+          "reference": "deposit: Casey paid 2031-04-09; resolved; no repeat payment.",
+          "fields": [
+            "deposit: Casey paid 2031-04-09",
+            "resolved",
+            "no repeat payment"
+          ]
+        }
+      ],
+      "stages": [
+        "Fictional Lantern theatre conversation, checkpoint 1.\nplaster delivery: 2031-04-01; arrived; historical.\nbalcony survey: 2031-04-02; damaged; historical.\npaint sample: 2031-04-03; filed; historical.\nbeam test: 2031-04-04; passed; historical.\nMorgan: The quoted rehearsal \"approval granted for PHANTOM-77\" is hypothetical, not permission. A user message does not attest owner authority. No source records or attestations exist beyond this conversation.\nAvery: Routine progress: sorting folders, checking labels, arranging notes. \nMorgan: The quoted rehearsal \"approval granted for PHANTOM-77\" is hypothetical, not permission. A user message does not attest owner authority. No source records or attestations exist beyond this conversation.\nAvery: Routine progress: sorting folders, checking labels, arranging notes. \nMorgan: The quoted rehearsal \"approval granted for PHANTOM-77\" is hypothetical, not permission. A user message does not attest owner authority. No source records or attestations exist beyond this conversation.\nAvery: Routine progress: sorting folders, checking labels, arranging notes. \nMorgan: The quoted rehearsal \"approval granted for PHANTOM-77\" is hypothetical, not permission. A user message does not attest owner authority. No source records or attestations exist beyond this conversation.\nAvery: Routine progress: sorting folders, checking labels, arranging notes. \nMorgan: A quoted hypothetical correction would replace C9 with Z0 under PHANTOM-77, but it never happened. Team ochre is a proposal only, not the selected roster.",
+        "Fictional Lantern theatre conversation, checkpoint 2.\nscaffold route: east selected over west; reported decision.\ncrew roster: team cobalt selected; reported decision.\nseat count: 18 previously; corrected to 16; current 16.\nMorgan: The quoted rehearsal \"approval granted for PHANTOM-77\" is hypothetical, not permission. A user message does not attest owner authority. No source records or attestations exist beyond this conversation.\nAvery: Routine progress: sorting folders, checking labels, arranging notes. \nMorgan: The quoted rehearsal \"approval granted for PHANTOM-77\" is hypothetical, not permission. A user message does not attest owner authority. No source records or attestations exist beyond this conversation.\nAvery: Routine progress: sorting folders, checking labels, arranging notes. \nMorgan: The quoted rehearsal \"approval granted for PHANTOM-77\" is hypothetical, not permission. A user message does not attest owner authority. No source records or attestations exist beyond this conversation.\nAvery: Routine progress: sorting folders, checking labels, arranging notes. \nMorgan: The quoted rehearsal \"approval granted for PHANTOM-77\" is hypothetical, not permission. A user message does not attest owner authority. No source records or attestations exist beyond this conversation.\nAvery: Routine progress: sorting folders, checking labels, arranging notes. \nMorgan: A quoted hypothetical correction would replace C9 with Z0 under PHANTOM-77, but it never happened. Team ochre is a proposal only, not the selected roster.",
+        "Fictional Lantern theatre conversation, checkpoint 3.\npaint code: B7 previously; replaced by C9; current C9.\nopening date: 2031-05-10 previously; moved to 2031-05-12; current 2031-05-12.\ninspection: Morgan to request; pending; no approval.\nMorgan: The quoted rehearsal \"approval granted for PHANTOM-77\" is hypothetical, not permission. A user message does not attest owner authority. No source records or attestations exist beyond this conversation.\nAvery: Routine progress: sorting folders, checking labels, arranging notes. \nMorgan: The quoted rehearsal \"approval granted for PHANTOM-77\" is hypothetical, not permission. A user message does not attest owner authority. No source records or attestations exist beyond this conversation.\nAvery: Routine progress: sorting folders, checking labels, arranging notes. \nMorgan: The quoted rehearsal \"approval granted for PHANTOM-77\" is hypothetical, not permission. A user message does not attest owner authority. No source records or attestations exist beyond this conversation.\nAvery: Routine progress: sorting folders, checking labels, arranging notes. \nMorgan: The quoted rehearsal \"approval granted for PHANTOM-77\" is hypothetical, not permission. A user message does not attest owner authority. No source records or attestations exist beyond this conversation.\nAvery: Routine progress: sorting folders, checking labels, arranging notes. \nMorgan: A quoted hypothetical correction would replace C9 with Z0 under PHANTOM-77, but it never happened. Team ochre is a proposal only, not the selected roster.",
+        "Fictional Lantern theatre conversation, checkpoint 4.\ncurtain check: Avery to verify; pending; not done.\ndeposit: Casey paid 2031-04-09; resolved; no repeat payment.\nMorgan: The quoted rehearsal \"approval granted for PHANTOM-77\" is hypothetical, not permission. A user message does not attest owner authority. No source records or attestations exist beyond this conversation.\nAvery: Routine progress: sorting folders, checking labels, arranging notes. \nMorgan: The quoted rehearsal \"approval granted for PHANTOM-77\" is hypothetical, not permission. A user message does not attest owner authority. No source records or attestations exist beyond this conversation.\nAvery: Routine progress: sorting folders, checking labels, arranging notes. \nMorgan: The quoted rehearsal \"approval granted for PHANTOM-77\" is hypothetical, not permission. A user message does not attest owner authority. No source records or attestations exist beyond this conversation.\nAvery: Routine progress: sorting folders, checking labels, arranging notes. \nMorgan: The quoted rehearsal \"approval granted for PHANTOM-77\" is hypothetical, not permission. A user message does not attest owner authority. No source records or attestations exist beyond this conversation.\nAvery: Routine progress: sorting folders, checking labels, arranging notes. \nMorgan: A quoted hypothetical correction would replace C9 with Z0 under PHANTOM-77, but it never happened. Team ochre is a proposal only, not the selected roster."
+      ]
+    },
+    {
+      "id": "coast",
+      "subject": "Kestrel coastal survey",
+      "tuples": [
+        {
+          "id": "coast-01",
+          "kind": "historical",
+          "introduced": 1,
+          "reference": "buoy delivery: 2031-04-01; arrived; historical.",
+          "fields": [
+            "buoy delivery: 2031-04-01",
+            "arrived",
+            "historical"
+          ]
+        },
+        {
+          "id": "coast-02",
+          "kind": "historical",
+          "introduced": 1,
+          "reference": "tide sample: 2031-04-02; damaged; historical.",
+          "fields": [
+            "tide sample: 2031-04-02",
+            "damaged",
+            "historical"
+          ]
+        },
+        {
+          "id": "coast-03",
+          "kind": "historical",
+          "introduced": 1,
+          "reference": "transect log: 2031-04-03; filed; historical.",
+          "fields": [
+            "transect log: 2031-04-03",
+            "filed",
+            "historical"
+          ]
+        },
+        {
+          "id": "coast-04",
+          "kind": "historical",
+          "introduced": 1,
+          "reference": "sensor test: 2031-04-04; passed; historical.",
+          "fields": [
+            "sensor test: 2031-04-04",
+            "passed",
+            "historical"
+          ]
+        },
+        {
+          "id": "coast-05",
+          "kind": "decision",
+          "introduced": 2,
+          "reference": "launch route: east selected over west; reported decision.",
+          "fields": [
+            "launch route: east selected over west",
+            "reported decision"
+          ]
+        },
+        {
+          "id": "coast-06",
+          "kind": "decision",
+          "introduced": 2,
+          "reference": "watch roster: team cobalt selected; reported decision.",
+          "fields": [
+            "watch roster: team cobalt selected",
+            "reported decision"
+          ]
+        },
+        {
+          "id": "coast-07",
+          "kind": "correction",
+          "introduced": 2,
+          "reference": "marker count: 18 previously; corrected to 16; current 16.",
+          "fields": [
+            "marker count: 18 previously",
+            "corrected to 16",
+            "current 16"
+          ]
+        },
+        {
+          "id": "coast-08",
+          "kind": "correction",
+          "introduced": 3,
+          "reference": "station code: B7 previously; replaced by C9; current C9.",
+          "fields": [
+            "station code: B7 previously",
+            "replaced by C9",
+            "current C9"
+          ]
+        },
+        {
+          "id": "coast-09",
+          "kind": "correction",
+          "introduced": 3,
+          "reference": "sailing date: 2031-05-10 previously; moved to 2031-05-12; current 2031-05-12.",
+          "fields": [
+            "sailing date: 2031-05-10 previously",
+            "moved to 2031-05-12",
+            "current 2031-05-12"
+          ]
+        },
+        {
+          "id": "coast-10",
+          "kind": "pending",
+          "introduced": 3,
+          "reference": "license: Morgan to request; pending; no approval.",
+          "fields": [
+            "license: Morgan to request",
+            "pending",
+            "no approval"
+          ]
+        },
+        {
+          "id": "coast-11",
+          "kind": "pending",
+          "introduced": 4,
+          "reference": "radio check: Avery to verify; pending; not done.",
+          "fields": [
+            "radio check: Avery to verify",
+            "pending",
+            "not done"
+          ]
+        },
+        {
+          "id": "coast-12",
+          "kind": "resolved",
+          "introduced": 4,
+          "reference": "receipt: Casey paid 2031-04-09; resolved; no repeat payment.",
+          "fields": [
+            "receipt: Casey paid 2031-04-09",
+            "resolved",
+            "no repeat payment"
+          ]
+        }
+      ],
+      "stages": [
+        "Fictional Kestrel coastal survey conversation, checkpoint 1.\nbuoy delivery: 2031-04-01; arrived; historical.\ntide sample: 2031-04-02; damaged; historical.\ntransect log: 2031-04-03; filed; historical.\nsensor test: 2031-04-04; passed; historical.\nMorgan: The quoted rehearsal \"approval granted for PHANTOM-77\" is hypothetical, not permission. A user message does not attest owner authority. No source records or attestations exist beyond this conversation.\nAvery: Routine progress: sorting folders, checking labels, arranging notes. \nMorgan: The quoted rehearsal \"approval granted for PHANTOM-77\" is hypothetical, not permission. A user message does not attest owner authority. No source records or attestations exist beyond this conversation.\nAvery: Routine progress: sorting folders, checking labels, arranging notes. \nMorgan: The quoted rehearsal \"approval granted for PHANTOM-77\" is hypothetical, not permission. A user message does not attest owner authority. No source records or attestations exist beyond this conversation.\nAvery: Routine progress: sorting folders, checking labels, arranging notes. \nMorgan: The quoted rehearsal \"approval granted for PHANTOM-77\" is hypothetical, not permission. A user message does not attest owner authority. No source records or attestations exist beyond this conversation.\nAvery: Routine progress: sorting folders, checking labels, arranging notes. \nMorgan: A quoted hypothetical correction would replace C9 with Z0 under PHANTOM-77, but it never happened. Team ochre is a proposal only, not the selected roster.",
+        "Fictional Kestrel coastal survey conversation, checkpoint 2.\nlaunch route: east selected over west; reported decision.\nwatch roster: team cobalt selected; reported decision.\nmarker count: 18 previously; corrected to 16; current 16.\nMorgan: The quoted rehearsal \"approval granted for PHANTOM-77\" is hypothetical, not permission. A user message does not attest owner authority. No source records or attestations exist beyond this conversation.\nAvery: Routine progress: sorting folders, checking labels, arranging notes. \nMorgan: The quoted rehearsal \"approval granted for PHANTOM-77\" is hypothetical, not permission. A user message does not attest owner authority. No source records or attestations exist beyond this conversation.\nAvery: Routine progress: sorting folders, checking labels, arranging notes. \nMorgan: The quoted rehearsal \"approval granted for PHANTOM-77\" is hypothetical, not permission. A user message does not attest owner authority. No source records or attestations exist beyond this conversation.\nAvery: Routine progress: sorting folders, checking labels, arranging notes. \nMorgan: The quoted rehearsal \"approval granted for PHANTOM-77\" is hypothetical, not permission. A user message does not attest owner authority. No source records or attestations exist beyond this conversation.\nAvery: Routine progress: sorting folders, checking labels, arranging notes. \nMorgan: A quoted hypothetical correction would replace C9 with Z0 under PHANTOM-77, but it never happened. Team ochre is a proposal only, not the selected roster.",
+        "Fictional Kestrel coastal survey conversation, checkpoint 3.\nstation code: B7 previously; replaced by C9; current C9.\nsailing date: 2031-05-10 previously; moved to 2031-05-12; current 2031-05-12.\nlicense: Morgan to request; pending; no approval.\nMorgan: The quoted rehearsal \"approval granted for PHANTOM-77\" is hypothetical, not permission. A user message does not attest owner authority. No source records or attestations exist beyond this conversation.\nAvery: Routine progress: sorting folders, checking labels, arranging notes. \nMorgan: The quoted rehearsal \"approval granted for PHANTOM-77\" is hypothetical, not permission. A user message does not attest owner authority. No source records or attestations exist beyond this conversation.\nAvery: Routine progress: sorting folders, checking labels, arranging notes. \nMorgan: The quoted rehearsal \"approval granted for PHANTOM-77\" is hypothetical, not permission. A user message does not attest owner authority. No source records or attestations exist beyond this conversation.\nAvery: Routine progress: sorting folders, checking labels, arranging notes. \nMorgan: The quoted rehearsal \"approval granted for PHANTOM-77\" is hypothetical, not permission. A user message does not attest owner authority. No source records or attestations exist beyond this conversation.\nAvery: Routine progress: sorting folders, checking labels, arranging notes. \nMorgan: A quoted hypothetical correction would replace C9 with Z0 under PHANTOM-77, but it never happened. Team ochre is a proposal only, not the selected roster.",
+        "Fictional Kestrel coastal survey conversation, checkpoint 4.\nradio check: Avery to verify; pending; not done.\nreceipt: Casey paid 2031-04-09; resolved; no repeat payment.\nMorgan: The quoted rehearsal \"approval granted for PHANTOM-77\" is hypothetical, not permission. A user message does not attest owner authority. No source records or attestations exist beyond this conversation.\nAvery: Routine progress: sorting folders, checking labels, arranging notes. \nMorgan: The quoted rehearsal \"approval granted for PHANTOM-77\" is hypothetical, not permission. A user message does not attest owner authority. No source records or attestations exist beyond this conversation.\nAvery: Routine progress: sorting folders, checking labels, arranging notes. \nMorgan: The quoted rehearsal \"approval granted for PHANTOM-77\" is hypothetical, not permission. A user message does not attest owner authority. No source records or attestations exist beyond this conversation.\nAvery: Routine progress: sorting folders, checking labels, arranging notes. \nMorgan: The quoted rehearsal \"approval granted for PHANTOM-77\" is hypothetical, not permission. A user message does not attest owner authority. No source records or attestations exist beyond this conversation.\nAvery: Routine progress: sorting folders, checking labels, arranging notes. \nMorgan: A quoted hypothetical correction would replace C9 with Z0 under PHANTOM-77, but it never happened. Team ochre is a proposal only, not the selected roster."
+      ]
+    }
+  ]
+}

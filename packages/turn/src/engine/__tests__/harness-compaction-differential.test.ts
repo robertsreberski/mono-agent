@@ -1,8 +1,25 @@
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { compact, compactWithRequest, prepareCompaction } from "../compaction-kit/compaction.js";
 import { ENGINE_CONTEXT } from "../context.js";
 import { formatFileOperations } from "../compaction-kit/utils.js";
+
+
+// The upstream fixture continues to pin conversation bytes, cuts, caps and usage.
+// Only the deliberately changed instructions/metadata have a separate digest pin.
+const legacyRequest = (request: any) => ({ ...request, context: { ...request.context,
+  systemPrompt: request.context.systemPrompt?.split("\n\nMono-agent summary focus")[0],
+  messages: request.context.messages.map((message: any) => ({ ...message, content: typeof message.content === "string" ? message.content.split("\n\nMono-agent summary focus")[0] : message.content.map((part: any) => {
+    if (part.type !== "text" || !part.text.startsWith("<conversation>\n")) return part;
+    const end = part.text.indexOf("\n</conversation>\n\n") + "\n</conversation>\n\n".length;
+    const prior = /<previous-summary>\n[\s\S]*?\n<\/previous-summary>\n\n/u.exec(part.text.slice(end))?.[0] ?? "";
+    return { ...part, text: part.text.slice(0, end) + prior };
+  }) })),
+} });
+const promptDigest = (request: any) => createHash("sha256").update(JSON.stringify({ systemPrompt: request.context.systemPrompt ?? request.context.messages.find((m: any) => m.role === "system")?.content,
+  text: request.context.messages.flatMap((m: any) => Array.isArray(m.content) ? m.content : []).find((p: any) => p.text?.startsWith("<conversation>\n")).text.split("\n</conversation>\n\n")[1].replace(/"recordedTimestamp":(?:[0-9]+|null)/gu, '"recordedTimestamp":0'),
+})).digest("hex");
 
 // Captured before the pin bump using the published 0.99.2 helpers, not generated
 // from the implementation under test. The deterministic provider is synthetic.
@@ -20,7 +37,8 @@ describe("owned compaction kit vs 0.99.2 baseline", () => {
     const result = await compact(prepared.value!, models,
       { id: "fixture-model", provider: "faux", maxTokens: 4096, reasoning: false },
       "Keep queue details.", "off", undefined, undefined, ENGINE_CONTEXT);
-    expect(requests).toEqual(baseline.requests);
+    expect(requests.map(legacyRequest)).toEqual(baseline.requests.map(legacyRequest));
+    expect(requests.map(promptDigest)).toMatchSnapshot("history-preserving request contract");
     expect(result).toEqual(baseline.result);
   });
 });
