@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Fix fictional summary-trial scoring to accept equivalent tuple formats while
+  preserving value relationships, scoped negations and input-supplied provenance;
+  add versioned offline rescoring without model calls.
+
 - Fix conversation PDF export from installed managed runtimes and report worker
   failures without suggesting the conversation is too long.
 
