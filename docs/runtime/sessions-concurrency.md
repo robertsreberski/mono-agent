@@ -135,9 +135,13 @@ and negation are preserved where possible. Previews are always incomplete eviden
 not completed record recovery. Get starts at byte zero; there is no matched-offset
 get. Within **three tool rounds**, the supported path is search → **batch get of
 two records** → **batch continuation of both records**, for two retained records
-each at most **16,384 bytes**, using 8,192-byte chunks. A single deep record also
-fits; sequential search/get-original/get-correction fits when each record is at
-most 8,192 bytes. Rounds are not call counts. Larger records can need more rounds.
+each nominally at most **16,384 bytes**, when each fits two UTF-8-safe 8,192-byte
+chunks. The universal bound is **16,381 bytes**: backing off a split four-byte
+codepoint can shorten the first chunk by three bytes. At the nominal 16-KiB
+boundary, some Unicode records need a third chunk and therefore another round.
+A single deep record fitting two chunks also fits; sequential search/get-original/get-correction fits when each record is at
+most 8,192 bytes. Rounds are not call counts. Larger or boundary-split records that do not fit
+two safe chunks need more rounds.
 Only concatenated complete retained records with verified digests witness recovery.
 This is a mechanical path envelope, not a guarantee a model chooses useful queries.
 

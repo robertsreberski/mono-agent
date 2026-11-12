@@ -81,6 +81,32 @@ describe("ConversationHistory scoped evidence", () => {
     expect(result.record).toMatchObject({ retainedBytes: Buffer.byteLength(text), redacted: false, truncated: false });
   });
 
+  it.each([16381, 16384])("discloses UTF-8 chunk boundary limits in a three-round two-record traversal (%s bytes)", async size => {
+    const f = await fixture();
+    // Byte 8192 lies inside a four-byte character: first safe end is 8189.
+    const text = "a".repeat(8189) + "🔷" + "b".repeat(size - 8193);
+    await publish(f.writer, preparation([text, text]));
+    const searched = body(handleConversationHistoryRequest(f.binding, { query: "🔷", limit: 5 }));
+    const actions = searched.navigation.nextActions.filter((a: any) => a.kind === "get_record"); expect(actions).toHaveLength(2);
+    const recovered = actions.map((action: any) => {
+      const first = body(handleConversationHistoryRequest(f.binding, action.arguments));
+      expect(Buffer.byteLength(first.chunk)).toBe(8189);
+      const second = body(handleConversationHistoryRequest(f.binding, first.navigation.nextActions[0].arguments));
+      expect(first.chunk + second.chunk).not.toContain("�");
+      if (size === 16381) {
+        expect(second.nextCursor).toBeUndefined(); expect(sha(first.chunk + second.chunk)).toBe(second.record.sha256);
+        return first.chunk + second.chunk;
+      }
+      // R=3 ends here, with honest remaining cursors, not completed recovery.
+      expect(second.nextCursor).toBeDefined(); expect(sha(first.chunk + second.chunk)).not.toBe(second.record.sha256);
+      const third = body(handleConversationHistoryRequest(f.binding, second.navigation.nextActions[0].arguments));
+      expect(third.nextCursor).toBeUndefined(); expect(Buffer.byteLength(third.chunk)).toBe(3);
+      expect(sha(first.chunk + second.chunk + third.chunk)).toBe(third.record.sha256);
+      return first.chunk + second.chunk + third.chunk;
+    });
+    expect(recovered).toEqual([text, text]);
+  });
+
   it("paginates search with validated anchors and rejects changed filters, run scope and arbitrary input fields", async () => {
     const f = await fixture(), input = preparation(Array.from({ length: 5 }, (_, i) => `Fictional cobalt entry ${i}.`)); await publish(f.writer, input);
     const first = body(handleConversationHistoryRequest(f.binding, { query: "cobalt", limit: 2 }));

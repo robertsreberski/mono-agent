@@ -48,13 +48,16 @@ function naturalReader(pi, query, path) {
   };
 }
 
-it.each(["batch", "single-deep", "sequential"])("recovers complete retained records through the real MCP and installed tool loop within R=3 (%s)", async path => {
+it.each(["batch", "batch-unicode", "single-deep", "sequential"])("recovers complete retained records through the real MCP and installed tool loop within R=3 (%s)", async path => {
   const root = await scratch(), modules = await productionModules(ROOT), pi = modules.pi;
   const { ToolHistoryWriter, continuityGenerationId, continuityRecordId } = modules.conversation;
   const history = join(root, "history"), conversationId = "fictional-observatory", writer = await ToolHistoryWriter.open({ root: history, continuityEnabled: true });
   cleanup.push(() => writer.close());
-  const size = path === "sequential" ? 8192 : 16384;
-  const pad = tail => "x".repeat(size - Buffer.byteLength(tail)) + tail;
+  const size = path === "sequential" ? 8192 : path === "batch-unicode" ? 16381 : 16384;
+  const pad = tail => {
+    const prefix = path === "batch-unicode" ? "x".repeat(8189) + "🔷" : "";
+    return prefix + "x".repeat(size - Buffer.byteLength(prefix) - Buffer.byteLength(tail)) + tail;
+  };
   const required = [pad("\nOriginal report: observatory cobalt delivery was proposed for day 12; not approved.")];
   if (path !== "single-deep") required.push(pad("\nCorrection: observatory cobalt delivery was changed to day 18; still not approved."));
   const texts = [...required, ...Array.from({ length: 24 }, (_, n) => `Observatory distraction ${n}; cobalt irrelevant to the unrelated order.`)];
