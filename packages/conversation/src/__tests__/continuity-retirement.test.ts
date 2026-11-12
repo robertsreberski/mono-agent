@@ -7,6 +7,7 @@ import { DatabaseSync } from "node:sqlite";
 import { afterEach, expect, it, vi } from "vitest";
 import { ToolHistoryWriter } from "../tool-history/writer.js";
 import { ToolHistoryReader } from "../tool-history/reader.js";
+import { runWithinToolHistoryBusyDeadline } from "../tool-history/busy-wait.js";
 import { continuityGenerationId, continuityRecordId } from "../tool-history/continuity-storage.js";
 import { createProgressSchema, dispatchProgress, readProgress, reclaimUpkeepQuota, upkeepBytes } from "../continuity/progress.js";
 import { readRetired, writeRetired } from "../continuity/retirement.js";
@@ -27,6 +28,8 @@ async function fixture(text = "Neutral source.", count = 4) {
   const root = await mkdtemp(join(tmpdir(), "sparse-ledger-"));
   const f = { root, writer: await ToolHistoryWriter.open({ root, continuityEnabled: true, persistenceCeilingMs: 5000 }) }; resources.push(f);
   const reader = new ToolHistoryReader(root);
+  // Post-ack accounting exports can hold the commit lock; match upkeep.ts's 10 s read ceiling.
+  const read = <T>(operation: () => T) => runWithinToolHistoryBusyDeadline(operation, 10_000);
   let serial = 0;
   const capture = async (physical = "fictional") => {
     const generationId = continuityGenerationId(), digest = ledgerHash(generationId);
@@ -37,15 +40,15 @@ async function fixture(text = "Neutral source.", count = 4) {
   const generation = await capture();
   const db = <T>(fn: (d: DatabaseSync) => T) => { const d = new DatabaseSync(reader.databasePath); d.exec("PRAGMA busy_timeout=5000;PRAGMA foreign_keys=ON;BEGIN IMMEDIATE"); try { const result = fn(d); d.exec("COMMIT"); return result; } catch (e) { d.exec("ROLLBACK"); throw e; } finally { d.close(); } };
   const choose = (ordinals?: number[], physical = "fictional") => {
-    const snapshot = reader.snapshotContinuity({ ...scope, currentConversationId: physical, selection: "upkeep" });
+    const snapshot = read(() => reader.snapshotContinuity({ ...scope, currentConversationId: physical, selection: "upkeep" }));
     // Explicit sparse request isolates accounting from the ranked caller policy.
-    return selectLedgerSources({ ...snapshot, records: ordinals ? snapshot.records.filter(r => ordinals.includes(r.ordinal)) : snapshot.records }, reader.ledger({ ...scope, currentConversationId: physical })?.generation, 128000);
+    return selectLedgerSources({ ...snapshot, records: ordinals ? snapshot.records.filter(r => ordinals.includes(r.ordinal)) : snapshot.records }, read(() => reader.ledger({ ...scope, currentConversationId: physical }))?.generation, 128000);
   };
   const reserve = async (selection = choose(), physical = "fictional") => {
     const expected = (await f.writer.mutateUpkeep({ kind: "inspect", scope: { logicalId: "fictional", conversationId: physical } }))!;
     const fence = expected.ownerToken ? expected : (await f.writer.mutateUpkeep({ kind: "claim", expected, ownerToken: "owner" }))!;
     const reservation: UpkeepReservation = { ...fence, operationId: randomUUID(), runId: "next", recorderNamespace: resolve("/fictional"), model: "fictional:model", manifest: selection.manifest,
-      parent: reader.ledger({ ...scope, currentConversationId: physical })?.generation.id ?? null, budget: fence.bootstrap ? "bootstrap" : "incremental", progress: selection.progress! };
+      parent: read(() => reader.ledger({ ...scope, currentConversationId: physical }))?.generation.id ?? null, budget: fence.bootstrap ? "bootstrap" : "incremental", progress: selection.progress! };
     await f.writer.mutateUpkeep({ kind: "reserve", reservation }); return reservation;
   };
   const dispatch = (reservation: UpkeepReservation) => f.writer.mutateUpkeep({ kind: "dispatch", reservation });
