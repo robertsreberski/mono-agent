@@ -261,7 +261,9 @@ export interface RetainedSummaryProof {
   readonly text: string;
 }
 
-/** Untrusted renderer location, never publication or admission authority. UTF-8
+/** Untrusted renderer location: last renderer output, not injected, not admitted.
+ * Never publication or admission authority. The supplier's lastRenderedSummary()
+ * is shared mutable state, not bound to any attempt's injected messages. UTF-8
  * offsets delimit the complete rendered entry (including its trailing newline). */
 export interface RetainedSummarySelection {
   readonly recordId: string;

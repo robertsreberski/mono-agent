@@ -1464,11 +1464,18 @@ canonical bucket and continuation boundary. Unknown record/window overlap stays
 visible rather than being deduplicated by text. Default operation performs no paid upkeep.
 Internal retained-summary contracts are dormant: owner-held lookups distinguish
 current pinned eligibility from exact historical binding resolution using
-committed checkpoint publication, retained digests and source scope. Missing
-legacy provenance grants no new authority and does not change pack rendering.
-Final-layout summary metadata locates the quoted entry in unchanged pack bytes;
-it is not native admission proof. No admission receipt is written and compaction,
-native journal formats, retention pins and runtime messages remain unchanged.
+committed checkpoint publication, retained digests and source scope. Publication
+trust comes from the continuity participant deriving proof from native evidence;
+storage only matches supplied proof to a prepared row, not to the native journal.
+Missing legacy provenance grants no new authority and does not change pack rendering.
+Final-layout summary metadata locates the quoted entry in unchanged pack bytes.
+The supplier's `lastRenderedSummary()` means last renderer output, not injected,
+not admitted. It is shared mutable state across resume/detached attempts, not an
+attempt-bound receipt; a later caller failure can prevent injection. Future
+admission must bind selection to the exact messages an attempt injects using a
+per-call token, never read it from shared supplier state. No admission receipt is
+written and compaction, native journal formats, retention pins and runtime
+messages remain unchanged.
 
 When `ConversationHistory` is available for the effective request, a nonempty
 pack adds retrieval guidance: use the pack's `Tool evidence id` (`chr1_…`) as

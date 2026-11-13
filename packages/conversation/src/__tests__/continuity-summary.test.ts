@@ -103,7 +103,7 @@ describe("owned portable summary publication", () => {
       const supplier = createContinuityPackSupplier({ toolHistory: { reader, continuityEnabled: true, logicalConversationId: () => id } } as unknown as ConversationHarnessOptions,
         { conversationId: id, userMessage: "Current fictional request.", abortSignal: new AbortController().signal }, scope.currentRunId)!;
       const messages = supplier([], 8000, "cold", () => {});
-      expect(supplier.selectedSummary()).toMatchObject({ recordId: proof.binding.recordId, sha256: proof.binding.sha256 });
+      expect(supplier.lastRenderedSummary()).toMatchObject({ recordId: proof.binding.recordId, sha256: proof.binding.sha256 });
       expect(messages[0]!.content).toContain(quote(proof.text));
       expect(Object.keys(messages[0]!)).toEqual(["role", "content", "timestamp"]);
       expect(await Promise.all(journals.map(path => readFile(join(sessionsRoot, path))))).toEqual(before);

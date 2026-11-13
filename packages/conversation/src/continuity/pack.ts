@@ -264,5 +264,8 @@ export function createContinuityPackSupplier(options: ConversationHarnessOptions
       : "Continuity coverage gap: retained evidence unavailable or omitted; use permitted canonical history. No historical evidence supplied. ";
     return pack.degradedReason && pack.degradedReason !== "trigger_headroom" && maxTokens >= estimate(gap) ? [{ role: "user", content: gap, timestamp: "1970-01-01T00:00:00.000Z" }] : [];
   };
-  return Object.assign(supply, { prepare: upkeep.prepare, selectedSummary: () => summarySelection });
+  return Object.assign(supply, { prepare: upkeep.prepare,
+    /** Last renderer output, not injected, not admitted. Shared across attempts;
+     * never use this accessor as an attempt-bound injection/admission receipt. */
+    lastRenderedSummary: (): RetainedSummarySelection | undefined => summarySelection });
 }

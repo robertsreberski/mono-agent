@@ -112,9 +112,10 @@ export function eligibleRetainedSummary(database: DatabaseSync, input: Continuit
 }
 
 /** Restart resolves the exact binding, independently of the current summary pin.
- * Committed checkpoint action is the durable anchor: commitContinuity requires
- * matching native publication evidence before that state can be reached. Ordinary
- * committed publish rows with summary labels are NOT that evidence. */
+ * Committed checkpoint state relies on the trusted continuity participant, which
+ * derives publication proof from native evidence. Storage only matches the supplied
+ * proof to the prepared row; it does not verify the native journal. Ordinary
+ * committed publish rows with summary labels do not qualify. */
 export function resolveRetainedSummary(database: DatabaseSync, input: ContinuitySnapshotInput, binding: RetainedSummaryBinding): RetainedSummaryProof | undefined {
   validateScope(input);
   if (!hasContinuitySchema(database) || !binding || binding.version !== 1) return undefined;

@@ -86,7 +86,18 @@ it("does not promote forged generated-summary labels and pins from ordinary comm
   expect(f.reader.eligibleRetainedSummary(scope)).toBeUndefined();
 });
 
+it("rejects an otherwise genuine published checkpoint changed only to ordinary publish action", async () => {
+  const f = await fixture(); await publish(f);
+  const binding = f.reader.eligibleRetainedSummary(scope)!.binding;
+  alter(f, "UPDATE continuity_generations SET action='publish'");
+  expect(f.reader.latestContinuitySummary(scope)).toBeDefined();
+  expect(f.reader.eligibleRetainedSummary(scope)).toBeUndefined();
+  expect(f.reader.resolveRetainedSummary(scope, binding)).toBeUndefined();
+});
+
 it.each([
+  "UPDATE continuity_generations SET action='publish'",
+  "UPDATE continuity_generations SET before_digest='different'",
   "UPDATE continuity_generations SET state='prepared'",
   "UPDATE continuity_generations SET committed_at_ms=NULL",
   "UPDATE continuity_records SET finalized=0",
@@ -190,24 +201,43 @@ it("exposes only the final successful renderer entry with exact UTF-8 location a
   expect(rejected.degradedReason).toBe("headroom"); expect(rejected.summarySelection).toBeUndefined();
 });
 
-it.each(["omission", "headroom", "purge", "source_changed", "unavailable"])("clears supplier selection after %s, outside all projected messages", async reason => {
+it.each(["omission", "trigger_headroom", "purge", "source_changed", "unavailable"])("clears supplier selection after %s, outside all projected messages", async reason => {
   const f = await fixture(); await publish(f, preparation("supplier", "Whole fictional summary. ".repeat(120)));
   const options = { toolHistory: { ...f, logicalConversationId: () => scope.logicalConversationId, continuityEnabled: true } } as unknown as ConversationHarnessOptions;
   const request = { conversationId: scope.currentConversationId, userMessage: "Current fictional request.", abortSignal: new AbortController().signal };
   const supplier = createContinuityPackSupplier(options, request, scope.currentRunId)!;
   const first = supplier([], 8000, "cold", () => {});
-  expect(supplier.selectedSummary()).toBeDefined();
+  expect(supplier.lastRenderedSummary()).toBeDefined();
   expect(Object.keys(first[0]!)).toEqual(["role", "content", "timestamp"]);
   let maxTokens = 8000;
   if (reason === "omission") maxTokens = 500;
-  if (reason === "headroom") maxTokens = 0;
+  if (reason === "trigger_headroom") maxTokens = 0;
   if (reason === "purge") persistContinuityPurge(f.root, { scope: "logical", conversationId: scope.logicalConversationId });
   if (reason === "source_changed") vi.spyOn(f.reader, "continuitySnapshotVisible").mockReturnValue(false);
   if (reason === "unavailable") {
     vi.spyOn(f.reader, "continuitySnapshotVisible").mockImplementation(() => { throw new Error("Fictional source unavailable"); });
   }
   supplier([], maxTokens, "retry", () => {});
-  expect(supplier.selectedSummary()).toBeUndefined();
+  expect(supplier.lastRenderedSummary()).toBeUndefined();
+});
+
+it("clears the supplier's last renderer selection after final renderer headroom failure", async () => {
+  const f = await fixture(); await publish(f);
+  const snapshot = f.reader.snapshotContinuity(scope), record = snapshot.records[0]!;
+  // Keep the same immutable source across calls. At 700 tokens the whole-summary
+  // omission disclosures exhaust final headroom after tentative selection.
+  vi.spyOn(f.reader, "snapshotContinuity").mockReturnValue({ ...snapshot, records: [record,
+    ...Array.from({ length: 15 }, (_, i) => ({ ...record, recordId: `oversized-${i}`, text: "Whole summary. ".repeat(1000) }))] });
+  vi.spyOn(f.reader, "continuitySnapshotVisible").mockReturnValue(true);
+  const supplier = createContinuityPackSupplier({ toolHistory: { ...f, logicalConversationId: () => scope.logicalConversationId, continuityEnabled: true } } as unknown as ConversationHarnessOptions,
+    { conversationId: scope.currentConversationId, userMessage: "Current fictional request.", abortSignal: new AbortController().signal }, scope.currentRunId)!;
+  supplier([], 8000, "cold", () => {});
+  expect(supplier.lastRenderedSummary()).toBeDefined();
+  const emit = vi.fn();
+  supplier([], 700, "retry", emit);
+  expect(emit).toHaveBeenCalledWith(expect.objectContaining({ type: "runtime_warning", error_code: "headroom" }));
+  expect(emit).toHaveBeenCalledWith(expect.objectContaining({ type: "continuity_pack_skipped", degradedReason: "headroom", summaryEntries: 0 }));
+  expect(supplier.lastRenderedSummary()).toBeUndefined();
 });
 
 it("does not leak a fallback layout's summary selection when the final ledger layout omits it", async () => {
@@ -235,5 +265,5 @@ it.each(["unavailable", "boundary_unavailable"] as const)("supplies no selection
   const supplier = createContinuityPackSupplier({ toolHistory: { ...f, logicalConversationId: () => scope.logicalConversationId, continuityEnabled: true } } as unknown as ConversationHarnessOptions,
     { conversationId: scope.currentConversationId, userMessage: "Current.", abortSignal: new AbortController().signal }, scope.currentRunId)!;
   expect(supplier([], 8000, "cold", () => {})[0]!.content).toContain("coverage gap");
-  expect(supplier.selectedSummary()).toBeUndefined();
+  expect(supplier.lastRenderedSummary()).toBeUndefined();
 });
