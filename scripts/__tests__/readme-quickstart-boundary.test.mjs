@@ -213,7 +213,10 @@ describe("root README Quickstart boundary", () => {
     const releaseStatus = readRepoFile("docs/reference/release-status.md");
     expect(releaseStatus).toContain("registry rechecked 2026-10-20");
     expect(releaseStatus).toContain("All 20 packages in the current release catalog");
-    expect(releaseStatus).toContain("no package-behavior delta after `v0.26.0`");
+    const sourceDelta = "Current `main` carries unreleased package behavior after `v0.26.0`: an early Node-version guard and `mono-agent preflight`, shipping in the next package release.";
+    expect(releaseStatus).toContain(sourceDelta);
+    expect(releaseStatus).not.toContain("no package-behavior delta");
+    expect(releaseStatus).toContain("The shell installer is served from the site, not npm, and installs the published CLI");
     expect(releaseStatus).toContain("no compatibility aliases");
     expect(releaseStatus).toContain("No published tarballs were inspected for this update.");
     expect(releaseStatus).not.toContain("Published 0.22.0");
@@ -224,7 +227,8 @@ describe("root README Quickstart boundary", () => {
       const page = readRepoFile(path);
       expect(page, path).toContain("0.26.0");
       expect(page, path).toContain("registry checked 2026-10-20");
-      expect(page, path).toContain("no package-behavior delta");
+      expect(page, path).toContain(sourceDelta);
+      expect(page, path).not.toContain("no package-behavior delta");
     }
     for (const path of [
       "docs/reference/deprecations.md",

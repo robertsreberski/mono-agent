@@ -10,7 +10,7 @@ This documentation follows the current `main` source. Published packages can lag
 | | Version |
 | --- | --- |
 | Latest published npm release (registry rechecked 2026-10-20) | `create-mono-agent@0.26.0` and all 19 current `@mono-agent/*` catalog packages, published 2026-10-20 |
-| Documented source revision | `main` (comparison audited at [`4f9b7650`](https://github.com/robertsreberski/mono-agent/commit/4f9b765048fc0c0f6b837bd28fd918f905f773ed)) |
+| Published-baseline source audit | [`4f9b7650`](https://github.com/robertsreberski/mono-agent/commit/4f9b765048fc0c0f6b837bd28fd918f905f773ed) (historical; current `main` includes the unreleased changes below) |
 | Minimum Node.js for both | `>=24.15.0` |
 
 ## Published baseline
@@ -32,7 +32,11 @@ Neither the 0.26.0 console nor the current source console has application login.
 
 ## Source-only delta
 
-There is no package-behavior delta after `v0.26.0`. Post-release source changes only add release tooling to deprecate 32 retired npm names and stabilize a test. The registry now marks those names deprecated with migration pointers; their published versions remain installable. Deprecation does not update installed agents or migrate consumer configuration.
+Current `main` carries unreleased package behavior after `v0.26.0`: an early Node-version guard and `mono-agent preflight`, shipping in the next package release. The Node requirement itself remains `>=24.15.0`; the guard improves early diagnostics. These package changes are not in published 0.26.0.
+
+The shell installer is served from the site, not npm, and installs the published CLI; its deployment does not mean the source-only package behavior has shipped. See [Install & prerequisites](/getting-started/install/) for the private runtime and legacy-preflight warning.
+
+Post-release tooling also deprecated 32 retired npm names. The registry now marks those names deprecated with migration pointers; their published versions remain installable. Deprecation does not update installed agents or migrate consumer configuration.
 
 ## Upgrade boundary: 0.25.x → 0.26.0
 
@@ -44,7 +48,7 @@ For consumers skipping earlier releases, read [Framework simplification migratio
 
 ## Run a source build
 
-A source build is an evaluation path for later unreleased work, not a requirement for the capabilities above. The [unreleased-build instructions](/getting-started/install/#run-an-unreleased-build) cover the build, the exact `packages/app/dist/cli.js` entry point, and the caveats. A source build is not the published, versioned artifact that other agents pin.
+The published-baseline capabilities above do not require a source build. To evaluate the unreleased Node-version guard and host preflight before the next package release, use a source build. The [unreleased-build instructions](/getting-started/install/#run-an-unreleased-build) cover the build, the exact `packages/app/dist/cli.js` entry point, and the caveats. A source build is not the published, versioned artifact that other agents pin.
 
 ## How this page is kept honest
 

@@ -14,7 +14,7 @@ The bare `mono-agent` npm name isn't ours — npm rejects it as too similar to a
 :::
 
 :::note[Published release: 0.26.0]
-All 20 current catalog packages have npm `latest` set to `0.26.0` (registry checked 2026-10-20). These docs follow `main`; the host `preflight` command described below is unreleased and ships with the next release. [Release status](/reference/release-status/) covers the package renames, deprecated-but-installable old npm names, and the upgrade boundary. Use a [source build](#run-an-unreleased-build) only when evaluating later unreleased changes.
+All 20 current catalog packages have npm `latest` set to `0.26.0` (registry checked 2026-10-20). Current `main` carries unreleased package behavior after `v0.26.0`: an early Node-version guard and `mono-agent preflight`, shipping in the next package release. [Release status](/reference/release-status/) covers the package renames, deprecated-but-installable old npm names, and the upgrade boundary. Use a [source build](#run-an-unreleased-build) only when evaluating later unreleased changes.
 :::
 
 ## Prerequisites
