@@ -3,7 +3,10 @@
 ## Unreleased
 
 - Keep continuity validation running on the prior verified summary after an
-  accounted protection refusal, retaining rejected-candidate costs separately.
+  accounted protection refusal (`protected_tuples_missing` or
+  `summary_budget_exceeded`) instead of stopping with `e2_compaction_invalid`;
+  rejected-candidate costs are reported separately. The validation code digest
+  changes, so paid runs need a fresh registration.
 
 - Remove operator API-key requirements for console, ACP and peer access,
   supervised restart, provider management and opted-in cron actions. Ignore

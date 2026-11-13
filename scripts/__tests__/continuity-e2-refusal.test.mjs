@@ -1,6 +1,8 @@
-// Fictional native journals + real shared/paid observers/accounting. Only the
+// Fictional native journals + real shared/paid observers/accounting. The
 // credential reader, assignment brand, controller transport and native SDK are
-// replaced; no credentials, registry, provider or network is accessed.
+// replaced, and the runtime phase-adapter/safety assertions are stubbed (they
+// are exercised by the runtime suites, not here). No credentials, registry,
+// provider or network is accessed.
 import { afterEach, expect, it, vi } from "vitest";
 import { readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
