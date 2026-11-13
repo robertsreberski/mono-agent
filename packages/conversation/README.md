@@ -529,12 +529,13 @@ Owner provenance identifies a historical quotation, **not renewed approval**.
 by default. Explicit `mode: "relevance"` adds Unicode-aware partial coverage,
 phrase/proximity ranking, up to two complementary matched-context previews
 (512 total UTF-8 bytes with separate exact retained-byte ranges),
-and typed v2 cursor envelopes. New searches use ranking v2; an issued
-`rankingVersion: 1` cursor retains the complete v1 parser, eligibility, score,
-tie/anchor comparator and traversal, including literal matching. Cursor-envelope
+and typed v2 cursor envelopes. New searches use content-first ranking v3; issued
+`rankingVersion: 1` and `rankingVersion: 2` cursors retain their complete frozen
+parser, eligibility, score, tie/anchor comparator and traversal, including literal
+matching. Cursor-envelope
 version and ranking version are separate. Searches disclose `rankingVersion`.
 
-Ranking v2 keeps original content terms, full phrases and exact identifiers
+Ranking v3 keeps original content terms, full phrases and exact identifiers
 stronger than expansions. Bounded generic event/correction vocabulary adds
 query-relevant bonuses, not eligibility by itself. Delimiter-separated identifier
 components are lower-weight discovery paths; numeric identifiers keep their full
@@ -559,6 +560,24 @@ capture order for score ties; current-state and literal queries keep newest-firs
 ties. Capture order is not event date, source kind is not truth, and ranking
 confers neither authority nor supersession. These heuristics use bounded local
 context rather than collecting whole-corpus duplicate groups.
+
+V3 awards 2,000,000 per distinct full content term. Literal non-stop intent
+matches earn at most 250,000 total, never once per word and never again when
+intent-only queries use those terms as content fallback. Historical assistant/
+summary echoes and records whose local signals are suppressed by repetition
+receive no literal-intent credit: intent cannot undo those disadvantages.
+More full content still wins, including for summaries that state more of the
+answer. All secondary contributions together range from -220,000 to 1,395,535,
+a spread below one full content match. Qualified literal intent matches across
+the whole retained record body. Only local correction/event signals and
+repetition checks use the fixed, clipped [hit start − 192, hit end + 384] character
+window. Patterns compile on the query path, not per record; candidates retain no
+full bodies. V3 adds no new per-record collections beyond v2's bounded clause
+split: local signal qualification still allocates a clause array per evaluated
+record, included in the capacity measurements.
+`node scripts/continuity-ranking-compare.mjs` compares the production v1/v2/v3
+pipelines on fictional cases with per-source ranks, MRR, top-1/3/5/10 and
+required-source discovery. These heuristics do not establish truth or authority.
 
 Term edges respect Unicode scripts (unspaced scripts
 allow letter-run substrings); short Latin/numeric terms do not match inside

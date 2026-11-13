@@ -6,6 +6,9 @@ import { getContinuity, searchContinuity } from "../tool-history/continuity-read
 import { searchRelevantContinuity } from "../tool-history/relevance-scan.js";
 import type { ContinuityPreview } from "../index.js";
 import * as relevance from "../tool-history/relevance.js";
+import legacyTraversals from "./fixtures/continuity-ranking-v1-v2-traversals.json" with { type: "json" };
+import retention4 from "./fixtures/continuity-ranking-retention4.json" with { type: "json" };
+import { contentFirstQuery, contentFirstMatch, CONTENT_MATCH_SCORE, INTENT_MATCH_CAP, SECONDARY_MIN, SECONDARY_MAX } from "../tool-history/relevance-v3.js";
 import independentHeldout from "./fixtures/continuity-ranking-heldout-independent.json" with { type: "json" };
 import { englishStopWords } from "../tool-history/relevance-stopwords.js";
 import rankingHeldout from "./fixtures/continuity-ranking-heldout.json" with { type: "json" };
@@ -340,7 +343,7 @@ describe("versioned evidence-sensitive ranking (queries frozen before weights)",
       const required = retained.map((text, index) => f.add(text, "committed", scope.logicalConversationId, scenario.required[index]!.kind));
       for (let i = 0; i < scenario.echoCount; i++) f.add(scenario.echo);
       const page = f.search(scenario.query);
-      expect(page.rankingVersion).toBe(2); expect(page.scan!.complete).toBe(true);
+      expect(page.rankingVersion).toBe(3); expect(page.scan!.complete).toBe(true);
       for (const source of required) expect(page.items.slice(0, scenario.maxSearchRank).map(item => item.recordId)).toContain(source.id);
       // One search + batched first reads + batched continuations, not preview
       // credit or an arbitrary offset. Short edits fit one chunk; other sources
@@ -398,7 +401,7 @@ describe("versioned evidence-sensitive ranking (queries frozen before weights)",
 });
 
 
-it("pages historical v2 ties losslessly with versioned anchors and no event-date inference", () => {
+it("pages fresh historical v3 ties losslessly with versioned anchors and no event-date inference", () => {
   const f = fixture(); try {
     const expected = Array.from({ length: 12 }, () => f.add("cobalt launch recap"));
     let page = f.search("historical cobalt launch", 3);
@@ -406,11 +409,11 @@ it("pages historical v2 ties losslessly with versioned anchors and no event-date
     for (let pages = 0; pages < expected.length + 1; pages++) {
       seen.push(...page.items.map(item => item.recordId));
       if (!page.continuation) break;
-      expect(page.continuation.rankingVersion).toBe(2);
+      expect(page.continuation.rankingVersion).toBe(3);
       page = searchContinuity(f.db, { ...scope, query: "historical cobalt launch", limit: 3, mode: "relevance", continuation: page.continuation });
       expect(page.degradedReason).toBeUndefined();
     }
-    expect(page.continuation, "v2 paging must terminate within the record bound").toBeUndefined();
+    expect(page.continuation, "v3 paging must terminate within the record bound").toBeUndefined();
     expect(seen).toEqual(expected.map(source => source.id));
   } finally { f.db.close(); }
 });
@@ -561,15 +564,16 @@ describe("general lexical review fixes", () => {
 });
 
 it("evaluates the frozen independently authored development set with top-1 and MRR nonregression", () => {
-  let v1Reciprocal = 0, v2Reciprocal = 0;
+  let v1Reciprocal = 0, v2Reciprocal = 0, v3Reciprocal = 0;
+  const topK = [1, 5, 10].map(k => ({ k, v2: 0, v3: 0 }));
   for (const scenario of independentHeldout.cases) {
     const f = fixture(); try {
       const ids = scenario.records.map(record => f.add(record.text, "committed", scope.logicalConversationId, record.kind).id);
       const indexed = f.db.prepare("SELECT record_id,kind FROM continuity_records ORDER BY ordinal").all();
       expect(indexed.map(row => row.record_id)).toEqual(ids);
       expect(indexed.map(row => row.kind)).toEqual(scenario.records.map(record => record.kind));
-      const results = [1, 2].map(version => {
-        const pipeline = relevancePipeline(version as 1 | 2, scenario.query);
+      const results = [1, 2, 3].map(version => {
+        const pipeline = relevancePipeline(version as 1 | 2 | 3, scenario.query);
         const ranked = scenario.records.flatMap((record, index) => {
           const match = pipeline.match(record.text, record.kind as "user" | "assistant" | "summary");
           return match ? [{ index, recordId: ids[index]!, ordinal: index + 1, score: match.score }] : [];
@@ -577,16 +581,24 @@ it("evaluates the frozen independently authored development set with top-1 and M
         const position = ranked.findIndex(record => record.index === scenario.expectedFirst);
         return { first: ranked[0]?.index ?? null, rank: position === -1 ? null : position + 1, order: ranked.map(record => record.index) };
       });
-      const [v1, v2] = results;
+      const [v1, v2, v3] = results;
       const page = f.search(scenario.query, 10);
       expect(page.scan!.complete).toBe(true); expect(page.scan!.records).toBe(scenario.records.length);
-      expect(page.items.map(item => ids.indexOf(item.recordId))).toEqual(v2!.order);
+      expect(page.items.map(item => ids.indexOf(item.recordId))).toEqual(v3!.order);
       if (v1!.rank === 1) expect(v2!.rank, scenario.name).toBe(1);
+      if (v2!.rank === 1) expect(v3!.rank, scenario.name).toBe(1);
+      for (const row of topK) {
+        row.v2 += Number(v2!.rank !== null && v2!.rank <= row.k);
+        row.v3 += Number(v3!.rank !== null && v3!.rank <= row.k);
+      }
+      v3Reciprocal += v3!.rank === null ? 0 : 1 / v3!.rank;
       v1Reciprocal += v1!.rank === null ? 0 : 1 / v1!.rank;
       v2Reciprocal += v2!.rank === null ? 0 : 1 / v2!.rank;
     } finally { f.db.close(); }
   }
   expect(v2Reciprocal).toBeGreaterThanOrEqual(v1Reciprocal);
+  expect(v3Reciprocal).toBeGreaterThanOrEqual(v2Reciprocal);
+  for (const row of topK) expect(row.v3, `top-${row.k}`).toBeGreaterThanOrEqual(row.v2);
 });
 
 
@@ -635,5 +647,137 @@ describe("general framing review fixes", () => {
   it("discards tokenized needn't and ain't fragments as stop words", () => {
     expect(evidenceQuery("we needn’t update the copper route and it ain’t new").content.map(entry => entry.term)).toEqual(["copper", "route", "new"]);
     expect(englishStopWords.has("needn")).toBe(true); expect(englishStopWords.has("ain")).toBe(true);
+  });
+});
+
+
+describe("content-first v3 and frozen issued traversals", () => {
+  it.each(legacyTraversals.traversals)("preserves full v$version traversal for $query", frozen => {
+    const f = fixture(); try {
+      legacyTraversals.texts.forEach((text, index) => f.add(text, "committed", scope.logicalConversationId, legacyTraversals.kinds[index]!));
+      const pipeline = relevancePipeline(frozen.version as 1 | 2, frozen.query);
+      const all = legacyTraversals.texts.flatMap((text, index) => {
+        const match = pipeline.match(text, legacyTraversals.kinds[index] as "user" | "assistant" | "summary");
+        return match ? [{ recordId: continuityRecordId("fiction", `gen-${index + 1}`), ordinal: index + 1,
+          score: pipeline.query.mode === "literal" ? 1 : match.score }] : [];
+      }).sort(pipeline.compare);
+      expect(all).toEqual(frozen.pages.flat());
+      const pages = [frozen.pages[0]!];
+      let cursor: ContinuityRelevanceContinuation | undefined = frozen.issuedCursor as ContinuityRelevanceContinuation;
+      for (let count = 0; cursor && count <= legacyTraversals.texts.length; count++) {
+        const page = searchContinuity(f.db, { ...scope, query: frozen.query, limit: frozen.limit, mode: "relevance", continuation: cursor });
+        expect(page.degradedReason).toBeUndefined(); expect(page.rankingVersion).toBe(frozen.version);
+        expect(page.items.map(row => row.recordId)).toEqual(page.resumeAfter!.map(row => row.anchor.recordId));
+        pages.push(page.resumeAfter!.map(row => row.anchor)); cursor = page.continuation;
+      }
+      expect(cursor).toBeUndefined(); expect(pages).toEqual(frozen.pages);
+    } finally { f.db.close(); }
+  });
+
+  it.each(retention4.cases)("ranks and fully recovers frozen $name sources", scenario => {
+    const f = fixture(); try {
+      const ids = scenario.records.map(row => f.add(row.text, "committed", scope.logicalConversationId, row.kind).id);
+      const page = f.search(scenario.query, 10);
+      expect(page.scan!.complete).toBe(true); expect(page.rankingVersion).toBe(3);
+      expect(page.items[0]!.recordId, scenario.name).toBe(ids[scenario.expectedFirst]);
+      for (const index of scenario.required) {
+        expect(page.items.slice(0, 5).map(row => row.recordId)).toContain(ids[index]);
+        const source = getContinuity(f.db, { ...scope, recordId: ids[index]!, chunkBytes: 8192 });
+        expect(source.nextOffset).toBeUndefined(); expect(source.chunk).toBe(scenario.records[index]!.text);
+        expect(sha(source.chunk!)).toBe(source.record!.sha256);
+      }
+    } finally { f.db.close(); }
+  });
+
+  it("bounds the whole secondary range below one full content term", () => {
+    expect(CONTENT_MATCH_SCORE).toBe(2_000_000); expect(INTENT_MATCH_CAP).toBe(250_000);
+    expect(SECONDARY_MIN).toBe(-220_000); expect(SECONDARY_MAX).toBe(1_395_535);
+    expect(SECONDARY_MAX - SECONDARY_MIN).toBeLessThan(CONTENT_MATCH_SCORE);
+    const pipeline = relevancePipeline(3, "earlier copper parcel route correction");
+    const more = pipeline.match("Copper parcel route ".repeat(8), "summary")!;
+    const less = pipeline.match("Copper parcel correction actually changed moved requested.", "user")!;
+    expect(more.score).toBeGreaterThan(less.score);
+  });
+
+  it("caps literal intent once and avoids stop-word and intent-only double counting", () => {
+    const query = contentFirstQuery("earlier copper history originally initially");
+    const score = (text: string) => contentFirstMatch(text, query, "user")!.score;
+    expect(score("Copper earlier history originally initially.")).toBe(score("Copper earlier."));
+    expect(score("Copper earlier.") - score("Copper reference.")).toBe(INTENT_MATCH_CAP);
+    expect(contentFirstQuery("what changed moved correction").intentPatterns).toHaveLength(0);
+    const stops = contentFirstQuery("what is copper now");
+    expect(stops.intentPatterns).toHaveLength(0);
+  });
+
+  it("does not add per-record pattern compilation or retain regex offsets", () => {
+    const query = contentFirstQuery("historical copper_box parcel correction");
+    const spy = vi.spyOn(globalThis, "RegExp");
+    try {
+      for (let count = 0; count < 10; count++) {
+        contentFirstMatch("Copper_box parcel actually changed.", query, "user");
+        contentFirstMatch("Copper_box parcel ".repeat(20), query, "summary");
+        contentFirstMatch("unrelated", query, "assistant");
+      }
+      expect(spy).not.toHaveBeenCalled();
+      expect(query.content.every(entry => entry.global.lastIndex === 0)).toBe(true);
+    } finally { spy.mockRestore(); }
+  });
+
+  it("rejects unsupported dispatch rather than implicitly falling through to v2", () => {
+    expect(() => relevancePipeline(4 as 3, "copper")).toThrow("Unsupported ranking version");
+  });
+});
+
+
+describe("historical echo intent neutrality", () => {
+  it.each(["assistant", "summary"] as const)("withholds intent credit from historical %s records, not just repeated words", kind => {
+    for (const marker of ["earlier", "history", "originally", "initially"]) {
+      const pipeline = relevancePipeline(3, `${marker} copper parcel`);
+      const source = pipeline.match("Copper parcel reference.", "user")!;
+      const neutral = pipeline.match("Copper parcel reference.", kind)!;
+      const echo = pipeline.match(`Copper parcel ${marker}.`, kind)!;
+      expect(echo.score).toBe(neutral.score);
+      expect(source.score).toBeGreaterThan(echo.score);
+      expect(pipeline.match(`Copper parcel ${marker}.`, "user")!.score - source.score).toBe(INTENT_MATCH_CAP);
+    }
+  });
+
+  it.each(["assistant", "summary"] as const)("lets a historical %s win on greater content rather than intent", kind => {
+    const pipeline = relevancePipeline(3, "earlier copper parcel route");
+    expect(pipeline.match("Copper parcel route reference.", kind)!.score)
+      .toBeGreaterThan(pipeline.match("Copper parcel earlier actually changed.", "user")!.score);
+  });
+
+  it.each(["assistant", "summary"] as const)("keeps literal intent for nonhistorical %s records", kind => {
+    const pipeline = relevancePipeline(3, "copper parcel correction");
+    // Quotation framing avoids a local signal bonus, isolating literal intent.
+    expect(pipeline.match('Copper parcel: quoted "correction".', kind)!.score
+      - pipeline.match("Copper parcel reference.", kind)!.score).toBe(INTENT_MATCH_CAP);
+  });
+
+  it("does not let literal intent rescue a repetition flood whose local signals are disabled", () => {
+    const pipeline = relevancePipeline(3, "earlier copper parcel correction");
+    const repeated = "Copper parcel reference. ".repeat(8);
+    expect(pipeline.match(repeated + "Correction.", "user")!.score)
+      .toBe(pipeline.match(repeated, "user")!.score);
+    expect(pipeline.match("Copper parcel reference.", "user")!.score)
+      .toBeGreaterThan(pipeline.match(repeated + "Correction.", "user")!.score);
+  });
+
+  it("keeps correction signals outside the fixed window score-neutral", () => {
+    const scenario = retention4.cases.find(row => row.name === "correction-outside-fixed-window")!;
+    const pipeline = relevancePipeline(3, scenario.query);
+    expect(pipeline.match(scenario.records[0]!.text, "user")!.score)
+      .toBe(pipeline.match(scenario.records[1]!.text, "user")!.score);
+  });
+
+  it("rejects lower-level unsupported cursor versions with no scan or implicit ranker", () => {
+    const f = fixture(); try {
+      f.add("Copper first"); f.add("Copper second");
+      const cursor = f.search("copper", 1).continuation!;
+      const page = searchContinuity(f.db, { ...scope, query: "copper", limit: 1, mode: "relevance",
+        continuation: { ...cursor, rankingVersion: 4 as 3 } });
+      expect(page).toMatchObject({ items: [], degradedReason: "invalid_cursor", scan: { complete: false, records: 0 } });
+    } finally { f.db.close(); }
   });
 });

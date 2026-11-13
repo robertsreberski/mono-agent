@@ -138,7 +138,7 @@ export interface ContinuityPreviewRange {
 }
 export interface ContinuityRelevanceContinuation {
   readonly version: 2;
-  readonly rankingVersion: 1 | 2;
+  readonly rankingVersion: 1 | 2 | 3;
   readonly query: string;
   readonly limit: number;
   readonly watermark: number;
@@ -163,7 +163,7 @@ export interface ContinuitySearchPage {
   readonly items: readonly (ContinuityRecordMetadata & { readonly preview: string; readonly previewRange?: ContinuityPreviewRange; readonly additionalPreviews?: readonly ContinuityPreview[] })[];
   readonly next?: number;
   readonly mode?: "chronological" | "relevance" | "literal";
-  readonly rankingVersion?: 1 | 2;
+  readonly rankingVersion?: 1 | 2 | 3;
   readonly continuation?: ContinuityRelevanceContinuation;
   /** One boundary per emitted item, index-aligned with items on every relevance
    * page (including the final page). When more results exist, continuation equals

@@ -1,0 +1,460 @@
+{
+  "sourceRevision": "eba97a90cfd74399f1376ce97c2e5968c367a069",
+  "texts": [
+    "Copper parcel actually changed to day 18.",
+    "Copper parcel correction: day 19.",
+    "Copper parcel recap.",
+    "Copper parcel recap.",
+    "ŻÓŁTY 東京 ACT-77: earlier correction.",
+    "İ background. ŻÓŁTY 東京 ACT-77.",
+    "Quote: \"copper parcel changed\".",
+    "copper parcel copper parcel copper parcel copper parcel copper parcel copper parcel copper parcel copper parcel ",
+    "literal \" punctuation.",
+    "What is the plan?",
+    "What is the plan?"
+  ],
+  "kinds": [
+    "user",
+    "assistant",
+    "summary",
+    "user",
+    "assistant",
+    "summary",
+    "user",
+    "assistant",
+    "summary",
+    "user",
+    "assistant"
+  ],
+  "traversals": [
+    {
+      "version": 1,
+      "query": "earlier copper parcel correction",
+      "limit": 2,
+      "issuedCursor": {
+        "version": 2,
+        "rankingVersion": 1,
+        "query": "earlier copper parcel correction",
+        "limit": 2,
+        "watermark": 11,
+        "manifest": "275f6f225dd13f660449c1c69e8e36f3dcee540d419f13926ca3449637232403",
+        "anchor": {
+          "recordId": "chr1_1ICDuRuBO6isAmEq_OEFje2MvL1sufxQUnojxBtM_0g",
+          "ordinal": 8,
+          "score": 2065528
+        }
+      },
+      "pages": [
+        [
+          {
+            "recordId": "chr1_oesTyqq68aSwlF6pat6633ouZJf0vtxO9Gp9cDFVtzU",
+            "ordinal": 2,
+            "score": 3065521
+          },
+          {
+            "recordId": "chr1_1ICDuRuBO6isAmEq_OEFje2MvL1sufxQUnojxBtM_0g",
+            "ordinal": 8,
+            "score": 2065528
+          }
+        ],
+        [
+          {
+            "score": 2065528,
+            "ordinal": 7,
+            "recordId": "chr1_zxO85pPo5qNIaz3vWM9qKnQx4rrEHqI3mUznlQWtU6U"
+          },
+          {
+            "score": 2065528,
+            "ordinal": 4,
+            "recordId": "chr1_gIzYCv0KBy4vzd3z6brwHYK2Lh8yfWpOO3Cw7v6GZgw"
+          }
+        ],
+        [
+          {
+            "score": 2065528,
+            "ordinal": 3,
+            "recordId": "chr1_BuecuhG9uv3aEjbzGSVNi_Bvp9xHqF8R_LtnvAwoklU"
+          },
+          {
+            "score": 2065528,
+            "ordinal": 1,
+            "recordId": "chr1_-frAEwXgXI7pCpE3QMqC5DVjx4Ya-J1PVmMSfu1hTMU"
+          }
+        ],
+        [
+          {
+            "score": 2065527,
+            "ordinal": 5,
+            "recordId": "chr1_7KbddDt2P6A7sd8L4t5Tl0V0_J80SYGeHmssoOi-4KA"
+          }
+        ]
+      ]
+    },
+    {
+      "version": 1,
+      "query": "copper parcel",
+      "limit": 2,
+      "issuedCursor": {
+        "version": 2,
+        "rankingVersion": 1,
+        "query": "copper parcel",
+        "limit": 2,
+        "watermark": 11,
+        "manifest": "275f6f225dd13f660449c1c69e8e36f3dcee540d419f13926ca3449637232403",
+        "anchor": {
+          "recordId": "chr1_zxO85pPo5qNIaz3vWM9qKnQx4rrEHqI3mUznlQWtU6U",
+          "ordinal": 7,
+          "score": 2165528
+        }
+      },
+      "pages": [
+        [
+          {
+            "recordId": "chr1_1ICDuRuBO6isAmEq_OEFje2MvL1sufxQUnojxBtM_0g",
+            "ordinal": 8,
+            "score": 2165528
+          },
+          {
+            "recordId": "chr1_zxO85pPo5qNIaz3vWM9qKnQx4rrEHqI3mUznlQWtU6U",
+            "ordinal": 7,
+            "score": 2165528
+          }
+        ],
+        [
+          {
+            "score": 2165528,
+            "ordinal": 4,
+            "recordId": "chr1_gIzYCv0KBy4vzd3z6brwHYK2Lh8yfWpOO3Cw7v6GZgw"
+          },
+          {
+            "score": 2165528,
+            "ordinal": 3,
+            "recordId": "chr1_BuecuhG9uv3aEjbzGSVNi_Bvp9xHqF8R_LtnvAwoklU"
+          }
+        ],
+        [
+          {
+            "score": 2165528,
+            "ordinal": 2,
+            "recordId": "chr1_oesTyqq68aSwlF6pat6633ouZJf0vtxO9Gp9cDFVtzU"
+          },
+          {
+            "score": 2165528,
+            "ordinal": 1,
+            "recordId": "chr1_-frAEwXgXI7pCpE3QMqC5DVjx4Ya-J1PVmMSfu1hTMU"
+          }
+        ]
+      ]
+    },
+    {
+      "version": 1,
+      "query": "żółty 東京 ACT-77",
+      "limit": 2,
+      "issuedCursor": {
+        "version": 2,
+        "rankingVersion": 1,
+        "query": "żółty 東京 ACT-77",
+        "limit": 2,
+        "watermark": 11,
+        "manifest": "275f6f225dd13f660449c1c69e8e36f3dcee540d419f13926ca3449637232403",
+        "anchor": {
+          "recordId": "chr1_7KbddDt2P6A7sd8L4t5Tl0V0_J80SYGeHmssoOi-4KA",
+          "ordinal": 5,
+          "score": 3165526
+        }
+      },
+      "pages": [
+        [
+          {
+            "recordId": "chr1_WPM6Fj2mRYQ9BCTF0xg04iLOUnjsfFh0GRRDGes_X9k",
+            "ordinal": 6,
+            "score": 3165526
+          },
+          {
+            "recordId": "chr1_7KbddDt2P6A7sd8L4t5Tl0V0_J80SYGeHmssoOi-4KA",
+            "ordinal": 5,
+            "score": 3165526
+          }
+        ],
+        []
+      ]
+    },
+    {
+      "version": 1,
+      "query": "\"",
+      "limit": 2,
+      "issuedCursor": {
+        "version": 2,
+        "rankingVersion": 1,
+        "query": "\"",
+        "limit": 2,
+        "watermark": 11,
+        "manifest": "275f6f225dd13f660449c1c69e8e36f3dcee540d419f13926ca3449637232403",
+        "anchor": {
+          "recordId": "chr1_zxO85pPo5qNIaz3vWM9qKnQx4rrEHqI3mUznlQWtU6U",
+          "ordinal": 7,
+          "score": 1
+        }
+      },
+      "pages": [
+        [
+          {
+            "recordId": "chr1_FivAgpkemb8aP0-naG8Ic-3a_YwxQHMn-5xPjI97vNg",
+            "ordinal": 9,
+            "score": 1
+          },
+          {
+            "recordId": "chr1_zxO85pPo5qNIaz3vWM9qKnQx4rrEHqI3mUznlQWtU6U",
+            "ordinal": 7,
+            "score": 1
+          }
+        ],
+        []
+      ]
+    },
+    {
+      "version": 1,
+      "query": "what is the",
+      "limit": 2,
+      "issuedCursor": {
+        "version": 2,
+        "rankingVersion": 1,
+        "query": "what is the",
+        "limit": 2,
+        "watermark": 11,
+        "manifest": "275f6f225dd13f660449c1c69e8e36f3dcee540d419f13926ca3449637232403",
+        "anchor": {
+          "recordId": "chr1_xCphrc4iu5oB2k0FHYO7xHUukOJ9ylUxoCkzU80yhJI",
+          "ordinal": 10,
+          "score": 3165527
+        }
+      },
+      "pages": [
+        [
+          {
+            "recordId": "chr1_yZcugUyda0OK35kzOKhHhr8amyhODDerJ5qlum5VbCM",
+            "ordinal": 11,
+            "score": 3165527
+          },
+          {
+            "recordId": "chr1_xCphrc4iu5oB2k0FHYO7xHUukOJ9ylUxoCkzU80yhJI",
+            "ordinal": 10,
+            "score": 3165527
+          }
+        ],
+        []
+      ]
+    },
+    {
+      "version": 2,
+      "query": "earlier copper parcel correction",
+      "limit": 2,
+      "issuedCursor": {
+        "version": 2,
+        "rankingVersion": 2,
+        "query": "earlier copper parcel correction",
+        "limit": 2,
+        "watermark": 11,
+        "manifest": "275f6f225dd13f660449c1c69e8e36f3dcee540d419f13926ca3449637232403",
+        "anchor": {
+          "recordId": "chr1_gIzYCv0KBy4vzd3z6brwHYK2Lh8yfWpOO3Cw7v6GZgw",
+          "ordinal": 4,
+          "score": 2065528
+        }
+      },
+      "pages": [
+        [
+          {
+            "recordId": "chr1_-frAEwXgXI7pCpE3QMqC5DVjx4Ya-J1PVmMSfu1hTMU",
+            "ordinal": 1,
+            "score": 2325528
+          },
+          {
+            "recordId": "chr1_gIzYCv0KBy4vzd3z6brwHYK2Lh8yfWpOO3Cw7v6GZgw",
+            "ordinal": 4,
+            "score": 2065528
+          }
+        ],
+        [
+          {
+            "score": 2065528,
+            "ordinal": 7,
+            "recordId": "chr1_zxO85pPo5qNIaz3vWM9qKnQx4rrEHqI3mUznlQWtU6U"
+          },
+          {
+            "score": 1925528,
+            "ordinal": 2,
+            "recordId": "chr1_oesTyqq68aSwlF6pat6633ouZJf0vtxO9Gp9cDFVtzU"
+          }
+        ],
+        [
+          {
+            "score": 1905528,
+            "ordinal": 3,
+            "recordId": "chr1_BuecuhG9uv3aEjbzGSVNi_Bvp9xHqF8R_LtnvAwoklU"
+          },
+          {
+            "score": 1845528,
+            "ordinal": 8,
+            "recordId": "chr1_1ICDuRuBO6isAmEq_OEFje2MvL1sufxQUnojxBtM_0g"
+          }
+        ]
+      ]
+    },
+    {
+      "version": 2,
+      "query": "copper parcel",
+      "limit": 2,
+      "issuedCursor": {
+        "version": 2,
+        "rankingVersion": 2,
+        "query": "copper parcel",
+        "limit": 2,
+        "watermark": 11,
+        "manifest": "275f6f225dd13f660449c1c69e8e36f3dcee540d419f13926ca3449637232403",
+        "anchor": {
+          "recordId": "chr1_zxO85pPo5qNIaz3vWM9qKnQx4rrEHqI3mUznlQWtU6U",
+          "ordinal": 7,
+          "score": 2165528
+        }
+      },
+      "pages": [
+        [
+          {
+            "recordId": "chr1_1ICDuRuBO6isAmEq_OEFje2MvL1sufxQUnojxBtM_0g",
+            "ordinal": 8,
+            "score": 2165528
+          },
+          {
+            "recordId": "chr1_zxO85pPo5qNIaz3vWM9qKnQx4rrEHqI3mUznlQWtU6U",
+            "ordinal": 7,
+            "score": 2165528
+          }
+        ],
+        [
+          {
+            "score": 2165528,
+            "ordinal": 4,
+            "recordId": "chr1_gIzYCv0KBy4vzd3z6brwHYK2Lh8yfWpOO3Cw7v6GZgw"
+          },
+          {
+            "score": 2165528,
+            "ordinal": 3,
+            "recordId": "chr1_BuecuhG9uv3aEjbzGSVNi_Bvp9xHqF8R_LtnvAwoklU"
+          }
+        ],
+        [
+          {
+            "score": 2165528,
+            "ordinal": 2,
+            "recordId": "chr1_oesTyqq68aSwlF6pat6633ouZJf0vtxO9Gp9cDFVtzU"
+          },
+          {
+            "score": 2165528,
+            "ordinal": 1,
+            "recordId": "chr1_-frAEwXgXI7pCpE3QMqC5DVjx4Ya-J1PVmMSfu1hTMU"
+          }
+        ]
+      ]
+    },
+    {
+      "version": 2,
+      "query": "żółty 東京 ACT-77",
+      "limit": 2,
+      "issuedCursor": {
+        "version": 2,
+        "rankingVersion": 2,
+        "query": "żółty 東京 ACT-77",
+        "limit": 2,
+        "watermark": 11,
+        "manifest": "275f6f225dd13f660449c1c69e8e36f3dcee540d419f13926ca3449637232403",
+        "anchor": {
+          "recordId": "chr1_7KbddDt2P6A7sd8L4t5Tl0V0_J80SYGeHmssoOi-4KA",
+          "ordinal": 5,
+          "score": 3165526
+        }
+      },
+      "pages": [
+        [
+          {
+            "recordId": "chr1_WPM6Fj2mRYQ9BCTF0xg04iLOUnjsfFh0GRRDGes_X9k",
+            "ordinal": 6,
+            "score": 3165526
+          },
+          {
+            "recordId": "chr1_7KbddDt2P6A7sd8L4t5Tl0V0_J80SYGeHmssoOi-4KA",
+            "ordinal": 5,
+            "score": 3165526
+          }
+        ],
+        []
+      ]
+    },
+    {
+      "version": 2,
+      "query": "\"",
+      "limit": 2,
+      "issuedCursor": {
+        "version": 2,
+        "rankingVersion": 2,
+        "query": "\"",
+        "limit": 2,
+        "watermark": 11,
+        "manifest": "275f6f225dd13f660449c1c69e8e36f3dcee540d419f13926ca3449637232403",
+        "anchor": {
+          "recordId": "chr1_zxO85pPo5qNIaz3vWM9qKnQx4rrEHqI3mUznlQWtU6U",
+          "ordinal": 7,
+          "score": 1
+        }
+      },
+      "pages": [
+        [
+          {
+            "recordId": "chr1_FivAgpkemb8aP0-naG8Ic-3a_YwxQHMn-5xPjI97vNg",
+            "ordinal": 9,
+            "score": 1
+          },
+          {
+            "recordId": "chr1_zxO85pPo5qNIaz3vWM9qKnQx4rrEHqI3mUznlQWtU6U",
+            "ordinal": 7,
+            "score": 1
+          }
+        ],
+        []
+      ]
+    },
+    {
+      "version": 2,
+      "query": "what is the",
+      "limit": 2,
+      "issuedCursor": {
+        "version": 2,
+        "rankingVersion": 2,
+        "query": "what is the",
+        "limit": 2,
+        "watermark": 11,
+        "manifest": "275f6f225dd13f660449c1c69e8e36f3dcee540d419f13926ca3449637232403",
+        "anchor": {
+          "recordId": "chr1_xCphrc4iu5oB2k0FHYO7xHUukOJ9ylUxoCkzU80yhJI",
+          "ordinal": 10,
+          "score": 3165527
+        }
+      },
+      "pages": [
+        [
+          {
+            "recordId": "chr1_yZcugUyda0OK35kzOKhHhr8amyhODDerJ5qlum5VbCM",
+            "ordinal": 11,
+            "score": 3165527
+          },
+          {
+            "recordId": "chr1_xCphrc4iu5oB2k0FHYO7xHUukOJ9ylUxoCkzU80yhJI",
+            "ordinal": 10,
+            "score": 3165527
+          }
+        ],
+        []
+      ]
+    }
+  ]
+}

@@ -1,0 +1,274 @@
+{
+  "description": "Fictional cases frozen before v3 implementation; no private qualification material.",
+  "cases": [
+    {
+      "name": "literal-intent-versus-local-correction",
+      "query": "copper parcel correction",
+      "records": [
+        {
+          "kind": "user",
+          "text": "Copper parcel correction: day 18."
+        },
+        {
+          "kind": "user",
+          "text": "Copper parcel was actually changed to day 19."
+        }
+      ],
+      "expectedFirst": 0,
+      "required": [
+        0
+      ]
+    },
+    {
+      "name": "more-content-versus-many-intents",
+      "query": "historical copper parcel route correction previous original changed moved",
+      "records": [
+        {
+          "kind": "assistant",
+          "text": "Copper parcel route reference."
+        },
+        {
+          "kind": "user",
+          "text": "Historical copper parcel correction previous original changed moved instead actually revised update event scheduled requested."
+        }
+      ],
+      "expectedFirst": 0,
+      "required": [
+        0
+      ]
+    },
+    {
+      "name": "correction-outside-fixed-window",
+      "query": "copper parcel correction",
+      "records": [
+        {
+          "kind": "user",
+          "text": "Copper parcel reference. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. "
+        },
+        {
+          "kind": "user",
+          "text": "Copper parcel reference. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Actually changed the timetable."
+        }
+      ],
+      "expectedFirst": 1,
+      "required": [
+        0
+      ]
+    },
+    {
+      "name": "short-edit-versus-long-echo-no-literal-intent",
+      "query": "earlier copper parcel",
+      "records": [
+        {
+          "kind": "user",
+          "text": "Copper parcel actually changed to day 18."
+        },
+        {
+          "kind": "assistant",
+          "text": "Copper parcel earlier original previous revised update current now. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. "
+        },
+        {
+          "kind": "summary",
+          "text": "Copper parcel earlier changed updated moved history. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. "
+        }
+      ],
+      "expectedFirst": 0,
+      "required": [
+        0
+      ]
+    },
+    {
+      "name": "short-edit-versus-long-echo-literal-intent",
+      "query": "earlier copper parcel edit",
+      "records": [
+        {
+          "kind": "user",
+          "text": "Copper parcel edit actually changed to day 18."
+        },
+        {
+          "kind": "assistant",
+          "text": "Copper parcel earlier edit original previous revised update current now. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. "
+        },
+        {
+          "kind": "summary",
+          "text": "Copper parcel earlier edit changed updated moved history. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. Neutral background. "
+        }
+      ],
+      "expectedFirst": 0,
+      "required": [
+        0
+      ]
+    },
+    {
+      "name": "current-control",
+      "query": "current copper parcel",
+      "records": [
+        {
+          "kind": "assistant",
+          "text": "Copper parcel day 18."
+        },
+        {
+          "kind": "assistant",
+          "text": "Copper parcel day 19."
+        }
+      ],
+      "expectedFirst": 1,
+      "required": [
+        1
+      ]
+    },
+    {
+      "name": "historical-control",
+      "query": "earlier copper parcel",
+      "records": [
+        {
+          "kind": "user",
+          "text": "Copper parcel day 18."
+        },
+        {
+          "kind": "user",
+          "text": "Copper parcel day 19."
+        }
+      ],
+      "expectedFirst": 0,
+      "required": [
+        0
+      ]
+    },
+    {
+      "name": "intent-only-control",
+      "query": "changed moved correction",
+      "records": [
+        {
+          "kind": "user",
+          "text": "Changed moved correction."
+        },
+        {
+          "kind": "user",
+          "text": "Changed."
+        }
+      ],
+      "expectedFirst": 0,
+      "required": [
+        0
+      ]
+    },
+    {
+      "name": "repetition-control",
+      "query": "earlier copper parcel edit",
+      "records": [
+        {
+          "kind": "user",
+          "text": "Copper parcel actually changed to day 18."
+        },
+        {
+          "kind": "assistant",
+          "text": "Copper parcel earlier edit. Copper parcel earlier edit. Copper parcel earlier edit. Copper parcel earlier edit. Copper parcel earlier edit. Copper parcel earlier edit. Copper parcel earlier edit. Copper parcel earlier edit. Copper parcel earlier edit. Copper parcel earlier edit. Copper parcel earlier edit. Copper parcel earlier edit. Copper parcel earlier edit. Copper parcel earlier edit. Copper parcel earlier edit. Copper parcel earlier edit. Copper parcel earlier edit. Copper parcel earlier edit. Copper parcel earlier edit. Copper parcel earlier edit. Copper parcel earlier edit. Copper parcel earlier edit. Copper parcel earlier edit. Copper parcel earlier edit. Copper parcel earlier edit. "
+        }
+      ],
+      "expectedFirst": 0,
+      "required": [
+        0
+      ]
+    },
+    {
+      "name": "identifier-control",
+      "query": "historical ACT-77 correction",
+      "records": [
+        {
+          "kind": "user",
+          "text": "ACT-77 correction: day 18."
+        },
+        {
+          "kind": "user",
+          "text": "ACT-770 correction: day 19."
+        },
+        {
+          "kind": "user",
+          "text": "PACT-77 changed."
+        }
+      ],
+      "expectedFirst": 0,
+      "required": [
+        0
+      ]
+    },
+    {
+      "name": "quote-control",
+      "query": "earlier copper parcel correction",
+      "records": [
+        {
+          "kind": "user",
+          "text": "Copper parcel actually changed to day 18."
+        },
+        {
+          "kind": "user",
+          "text": "Copper parcel: quoted \"changed\" to day 99."
+        }
+      ],
+      "expectedFirst": 0,
+      "required": [
+        0
+      ]
+    },
+    {
+      "name": "negation-control",
+      "query": "earlier copper parcel correction",
+      "records": [
+        {
+          "kind": "user",
+          "text": "Copper parcel actually changed to day 18."
+        },
+        {
+          "kind": "user",
+          "text": "Copper parcel was not changed to day 99."
+        }
+      ],
+      "expectedFirst": 0,
+      "required": [
+        0
+      ]
+    },
+    {
+      "name": "hypothetical-control",
+      "query": "earlier copper parcel correction",
+      "records": [
+        {
+          "kind": "user",
+          "text": "Copper parcel actually changed to day 18."
+        },
+        {
+          "kind": "user",
+          "text": "If copper parcel changed, it would be day 99."
+        }
+      ],
+      "expectedFirst": 0,
+      "required": [
+        0
+      ]
+    },
+    {
+      "name": "all-required-source-recovery",
+      "query": "earlier copper parcel correction",
+      "records": [
+        {
+          "kind": "user",
+          "text": "Copper parcel correction: day 18."
+        },
+        {
+          "kind": "user",
+          "text": "Copper parcel actually changed to day 19."
+        },
+        {
+          "kind": "summary",
+          "text": "Copper parcel current recap."
+        }
+      ],
+      "expectedFirst": 0,
+      "required": [
+        0,
+        1
+      ]
+    }
+  ]
+}

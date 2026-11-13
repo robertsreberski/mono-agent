@@ -239,7 +239,31 @@ hyphenated absent query, in addition to dense, absent, Unicode and historical
 matching queries. An absent result has no
 continuation to measure.
 
-A final-source **pre-commit** run on Node 24.18.0, Apple M3 Max / arm64 /
+A ranking-v3 **pre-commit** run on Node 24.18.0, Apple M3 Max / arm64 /
+48 GiB RAM completed all **60** predetermined measurements within the accepted
+**5 seconds / 100 MiB additional JS heap / 128 MiB additional RSS** envelope.
+Scoring sources were frozen before evaluation; only docs and comparison-test
+bookkeeping followed this run. The original **64-MiB heap target remains unmet**.
+
+| V3 corpus and workload | Scan time range | Peak extra JS heap | Peak extra RSS |
+| --- | --- | --- | --- |
+| 10k / 32 MiB, qualified | 0.187–0.335 s | 25.770 MiB | 22.063 MiB |
+| 10k / 32 MiB, factual evidence | 0.187–0.320 s | 26.110 MiB | 8.688 MiB |
+| 100k / 256 MiB, qualified | 1.633–2.083 s | 97.905 MiB | 93.406 MiB |
+| 100k / 256 MiB, factual evidence | 1.634–2.073 s | 96.345 MiB | 63.234 MiB |
+
+The maximum observed v3 heap was 97.90464782714844 MiB, leaving only
+**2.0953521728515625 MiB** of headroom. This remains a thin, GC-sensitive margin,
+not a robust reduction or a guarantee. Maximum transaction/text-batch time was
+257.457 ms. All ten repeated 100k scans completed; qualified post-GC heaps ranged
+from 7.003 to 7.032 MiB (baseline 7.014 MiB), evidence from 7.024 to 7.056 MiB
+(baseline 7.061 MiB). Neither series showed accumulating growth. GC ran before
+each measured scan and after repeated scans. Cold means reopened SQLite, not a
+flushed OS filesystem cache; warm is an immediate repeat. These observations do
+not authorize higher concurrency or exempt peak limits.
+
+For comparison, the earlier ranking-v2 final-source **pre-commit** run on Node 24.18.0,
+Apple M3 Max / arm64 /
 48 GiB RAM measured the table below. Production sources and benchmark were final;
 only documentation/commit bookkeeping followed this run. These are explicitly
 pre-commit observations, not measurements claimed for a later commit hash.
@@ -254,7 +278,9 @@ pre-commit observations, not measurements claimed for a later commit hash.
 The original requested target was **5 seconds / 64 MiB extra JS heap / 128 MiB
 extra RSS**. The largest declared corpus missed that heap target; the accepted
 **100-MiB heap envelope is a relaxation**, not achievement of the original target.
-That accepted envelope is unchanged for these measurements.
+That accepted envelope is unchanged for these measurements and for ranking v3.
+This second table is historical v2 evidence, not a measurement of the v3 default;
+the v3 results above use the same unmodified workloads and accepted envelope.
 
 All **60** measurements completed within that accepted envelope:
 **5 seconds, 100 MiB additional JS heap, 128 MiB additional RSS**. Observed maximum
@@ -268,13 +294,28 @@ was 258.666 ms. Cold means reopened SQLite, **not flushed OS cache**. Both 100k 
 qualified post-GC heaps ranged from 6.963 to 6.991 MiB (baseline 6.969 MiB), and
 evidence heaps from 6.983 to 7.011 MiB (baseline 7.016 MiB). No accumulating
 growth was observed in either workload; post-GC results do not exempt peak limits.
-V2 bulk reads keep UTF-8 bodies as external byte buffers until
+V2 and v3 bulk reads keep UTF-8 bodies as external byte buffers until
 each record is decoded, verified and matched; no candidate retains a decoded body.
+V3 adds no new per-record collections beyond v2's bounded clause split in local
+signal qualification. That split still allocates a clause array per evaluated
+record; the capacity measurements above include it.
 Global content/component patterns are compiled once per query; up to four
 identifier components share one alternation, limiting absent lexical matching to
 at most two body scans per content term (32 across 16 terms). V1 traversal is
 unchanged. Measurements are hardware/runtime observations, not universal latency
 or memory guarantees; exhausted scans remain explicitly incomplete.
+
+Fresh ranked searches use content-first v3; issued v1/v2 cursors keep their
+original pipelines. V3 uses 2,000,000 per distinct full content term and a single
+250,000 maximum literal-intent credit, with none for historical echoes or
+repetition-suppressed local signals, and no double counting on intent-only
+fallback. The entire secondary-score spread is below one full content match.
+Qualified literal intent is matched across the whole retained record body, not
+just the signal window. Local correction/event signals and repetition checks use
+the clipped [hit start − 192, hit end + 384] character window. Common historical
+words cannot compensate for missing content.
+`node scripts/continuity-ranking-compare.mjs` reports fictional production-pipeline
+ranks and aggregate discovery metrics; it is not a paid-model qualification run.
 
 ### Deterministic cold continuity packs
 
