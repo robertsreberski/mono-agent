@@ -21,10 +21,10 @@ interface ScanHooks { now?: () => number; afterManifest?: () => void; afterBatch
  * Five seconds is a cooperative deadline, not a SQLite interrupt guarantee. */
 export function searchRelevantContinuity(db: DatabaseSync, input: ContinuitySearchInput, reader: Reader, hooks: ScanHooks = {}): ContinuitySearchPage {
   const now = hooks.now ?? (() => performance.now()), started = now(), deadline = started + 5000;
-  const limit = input.limit ?? 5, cursor = input.continuation, rankingVersion = cursor?.rankingVersion ?? 2;
+  const limit = input.limit ?? 5, cursor = input.continuation, rankingVersion = cursor?.rankingVersion ?? 3;
   // Dispatch the whole pipeline, including parsing and anchor ordering, once.
   // Unsupported versions fail below, never silently fall through to another ranker.
-  const pipeline = relevancePipeline(rankingVersion === 1 ? 1 : 2, input.query!.trim());
+  const pipeline = relevancePipeline(rankingVersion, input.query!.trim());
   const { query, compare } = pipeline;
   const stats = { complete: false, records: 0, bytes: 0, elapsedMs: 0, maxBatchMs: 0, metadataPages: 0, textBatches: 0 };
   const top: Candidate[] = [];
@@ -80,7 +80,7 @@ export function searchRelevantContinuity(db: DatabaseSync, input: ContinuitySear
     return hash.digest("hex");
   };
   try {
-    if (cursor && (cursor.version !== 2 || (cursor.rankingVersion !== 1 && cursor.rankingVersion !== 2) || cursor.query !== input.query!.trim() || cursor.limit !== limit
+    if (cursor && (cursor.version !== 2 || (cursor.rankingVersion !== 1 && cursor.rankingVersion !== 2 && cursor.rankingVersion !== 3) || cursor.query !== input.query!.trim() || cursor.limit !== limit
       || !Number.isSafeInteger(watermark) || watermark < 0 || !/^[a-f0-9]{64}$/u.test(cursor.manifest)
       || !cursor.anchor || typeof cursor.anchor.recordId !== "string" || !Number.isSafeInteger(cursor.anchor.score) || !Number.isSafeInteger(cursor.anchor.ordinal))) throw new Error("invalid_cursor");
     const initial = tx(manifest);
@@ -108,10 +108,10 @@ export function searchRelevantContinuity(db: DatabaseSync, input: ContinuitySear
         for (const d of batch) {
           check(); const row = byId.get(d.record_id);
           if (!row || identity(row as Descriptor) !== identity(d)) throw new Error("source_changed");
-          // V2 batches keep UTF-8 bodies outside the JS string heap until each
+          // V2/V3 batches keep UTF-8 bodies outside the JS string heap until each
           // record is visited. Decode one body at a time, without a Buffer copy;
           // digest validation and disclosure still use the exact retained text.
-          if (rankingVersion === 2 && row.retained_text instanceof Uint8Array) {
+          if ((rankingVersion === 2 || rankingVersion === 3) && row.retained_text instanceof Uint8Array) {
             const bytes = row.retained_text;
             row.retained_text = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("utf8");
           }
@@ -121,7 +121,7 @@ export function searchRelevantContinuity(db: DatabaseSync, input: ContinuitySear
           const match = pipeline.match(text, row.kind as ContinuityRecordMetadata["kind"]);
           // No candidate retains a row or its full body. Release the batch's
           // decoded reference before the next body, even on a non-match.
-          if (rankingVersion === 2) row.retained_text = undefined;
+          if ((rankingVersion === 2 || rankingVersion === 3)) row.retained_text = undefined;
           if (!match) continue;
           const score = query.mode === "literal" ? 1 : match.score;
           const rank = { score, ordinal: d.ordinal, recordId: d.record_id };
