@@ -468,6 +468,13 @@ export function monoAgentConfigWithSchema(config: MonoAgentConfigJson): MonoAgen
 
 export function allConfigReferenceFields(): readonly ConfigReferenceField[] {
   return [...CORE_FIELDS, ...APP_FIELDS, ...CHANNEL_FIELDS, {
+    jsonPath: "tui.apiKey",
+    env: "--",
+    type: "string",
+    defaultLabel: "ignored",
+    example: "",
+    description: "Deprecated and ignored, including MONO_AGENT_TUI_API_KEY. Operator routes are keyless; remove this obsolete setting when convenient.",
+  }, {
     jsonPath: "monitors",
     env: "--",
     type: "object",
@@ -765,6 +772,10 @@ function slackActionSchema(idKey: "callbackId" | "actionId", requireLabel: boole
 }
 
 function setRemovedConfigSchemas(root: Record<string, JsonSchema>): void {
+  setSchemaPath(root, ["tui", "apiKey"], {
+    deprecated: true,
+    description: "Deprecated and ignored. Operator endpoints no longer use an API key.",
+  });
   root.observability = {
     type: "object",
     deprecated: true,

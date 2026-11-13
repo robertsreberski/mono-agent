@@ -109,7 +109,6 @@ export interface ResponderControllerPort {
   readonly seenNotifyDestinations: SeenNotifyDestinationCache;
   readonly providerAuthObservations?: ProviderAuthObservationTracker;
   readonly restartAuthority?: TuiRestartAuthority | undefined;
-  readonly restartToolKeyed?: boolean;
   providerUsageFor?(config: MonoAgentConfig): ProviderUsageOperator;
   sandboxEngineFor(coreConfig: MonoAgentConfig): SandboxEngine | undefined;
   memoryStore(coreConfig: MonoAgentConfig): Promise<ConfiguredMemory>;
@@ -224,7 +223,6 @@ export async function buildResponder(
   const restartProposals = isProposeRestartToolAllowed(coreConfig.tools)
     ? createRestartProposalService({
         authority: controller.restartAuthority,
-        isKeyed: () => controller.restartToolKeyed === true,
         budget: replyPartBudget,
       })
     : undefined;

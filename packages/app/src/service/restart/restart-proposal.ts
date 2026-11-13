@@ -42,7 +42,6 @@ interface RestartProposalService {
 /** Display-only MCP capability; only the web service can actually request a restart. */
 export function createRestartProposalService(input: {
   readonly authority: Pick<TuiRestartAuthority, "verify"> | undefined;
-  readonly isKeyed: () => boolean;
   readonly budget: ReplyPartBudget;
 }): RestartProposalService {
   const proposals = new Map<string, AgentReplyRestartProposalPart>();
@@ -63,11 +62,11 @@ export function createRestartProposalService(input: {
     }),
   });
   const extension: RuntimeOptionsExtension = async (requestInput) => {
-    if (input.authority === undefined || !input.isKeyed() || !isInteractiveWebTurn(requestInput.request)) {
+    if (input.authority === undefined || !isInteractiveWebTurn(requestInput.request)) {
       return { runtimeOptions: {} };
     }
     try {
-      if ((await input.authority.verify()).supported !== true || !input.isKeyed()) return { runtimeOptions: {} };
+      if ((await input.authority.verify()).supported !== true) return { runtimeOptions: {} };
     } catch {
       return { runtimeOptions: {} };
     }

@@ -153,7 +153,7 @@ export function CronChannelHeader() {
             : cronOverview?.actionsEnabled !== true
               ? "Cron operator actions are disabled by agent configuration."
               : selectedAgent?.cron?.actions !== true
-                ? "Cron operator actions require an operator API key, which is not configured."
+                ? "Cron operator actions are disabled or unavailable on this agent."
                 : undefined);
   const configUnavailableReason = sourceId === undefined
     ? "Cron configuration is unavailable because no agent is selected."

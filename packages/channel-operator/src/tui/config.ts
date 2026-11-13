@@ -7,7 +7,6 @@ import {
   readJsonSection,
   readSettingsJson,
   readString,
-  normalizeOptionalString,
   redactedSecret,
 } from "@mono-agent/contracts";
 import type { JsonEnvFieldSpec, RedactedSecretValue, SettingsJson } from "@mono-agent/contracts";
@@ -21,6 +20,7 @@ export interface TuiAdapterConfig {
   readonly port: number;
   readonly basePath: string;
   readonly allowNonLoopback: boolean;
+  /** @deprecated Ignored. Operator endpoints no longer authenticate with a key. */
   readonly apiKey?: string;
   readonly requestToolEnvironment?: RequestToolEnvironmentConfig;
 }
@@ -30,7 +30,9 @@ export interface RequestToolEnvironmentConfig {
   readonly allowPathPrepend: boolean;
 }
 
+/** @deprecated Compatibility projection; the obsolete key is always absent. */
 export interface RedactedTuiAdapterConfig extends Omit<TuiAdapterConfig, "apiKey"> {
+  /** @deprecated Always reports present: false, regardless of the ignored input. */
   readonly apiKey: RedactedSecretValue;
 }
 
@@ -57,7 +59,6 @@ export async function loadTuiAdapterConfig(
 ): Promise<TuiAdapterConfig> {
   const json = input.json ?? (input.jsonPath === undefined ? {} : (await readSettingsJson(input.jsonPath)).json);
   const env = layerTuiJsonOntoEnv(json, input.env);
-  const apiKey = normalizeOptionalString(env.MONO_AGENT_TUI_API_KEY);
   const requestToolEnvironment = readRequestToolEnvironmentConfig(env);
   return {
     enabled: readBoolean(env.MONO_AGENT_TUI_ENABLED, "MONO_AGENT_TUI_ENABLED", DEFAULT_ENABLED, invalidConfig),
@@ -65,11 +66,11 @@ export async function loadTuiAdapterConfig(
     port: readInteger(env.MONO_AGENT_TUI_PORT, "MONO_AGENT_TUI_PORT", DEFAULT_PORT, invalidConfig, { min: 0, max: 65535 }),
     basePath: readBasePath(env.MONO_AGENT_TUI_BASE_PATH),
     allowNonLoopback: readBoolean(env.MONO_AGENT_TUI_ALLOW_NON_LOOPBACK, "MONO_AGENT_TUI_ALLOW_NON_LOOPBACK", false, invalidConfig),
-    ...(apiKey === undefined ? {} : { apiKey }),
     ...(requestToolEnvironment === undefined ? {} : { requestToolEnvironment }),
   };
 }
 
+/** @deprecated Compatibility helper; ignores the obsolete apiKey. */
 export function redactTuiAdapterConfig(config: TuiAdapterConfig): RedactedTuiAdapterConfig {
   return {
     enabled: config.enabled,
@@ -77,7 +78,7 @@ export function redactTuiAdapterConfig(config: TuiAdapterConfig): RedactedTuiAda
     port: config.port,
     basePath: config.basePath,
     allowNonLoopback: config.allowNonLoopback,
-    apiKey: redactedSecret(config.apiKey),
+    apiKey: redactedSecret(undefined),
     ...(config.requestToolEnvironment === undefined
       ? {}
       : { requestToolEnvironment: config.requestToolEnvironment }),
@@ -87,9 +88,6 @@ export function redactTuiAdapterConfig(config: TuiAdapterConfig): RedactedTuiAda
 /**
  * The `tui` section's field registry: the single source of truth both the
  * JSON→env layering below and the app's config provenance view derive from.
- * The `tui.apiKey` id doubles as a cross-package contract: operator clients
- * resolve a running agent's key by reading this field from the agent's config
- * file (the trace-source registry never carries secrets).
  */
 export const TUI_CONFIG_FIELDS: readonly JsonEnvFieldSpec[] = [
   { id: "tui.enabled", env: "MONO_AGENT_TUI_ENABLED", kind: "boolean", fromJson: (s) => s.enabled },
@@ -97,7 +95,6 @@ export const TUI_CONFIG_FIELDS: readonly JsonEnvFieldSpec[] = [
   { id: "tui.port", env: "MONO_AGENT_TUI_PORT", kind: "integer", fromJson: (s) => s.port },
   { id: "tui.basePath", env: "MONO_AGENT_TUI_BASE_PATH", fromJson: (s) => s.basePath },
   { id: "tui.allowNonLoopback", env: "MONO_AGENT_TUI_ALLOW_NON_LOOPBACK", kind: "boolean", fromJson: (s) => s.allowNonLoopback },
-  { id: "tui.apiKey", env: "MONO_AGENT_TUI_API_KEY", secret: true, fromJson: (s) => s.apiKey },
   {
     id: "tui.requestToolEnvironment.allowedKeys",
     env: "MONO_AGENT_TUI_REQUEST_TOOL_ENVIRONMENT_ALLOWED_KEYS",

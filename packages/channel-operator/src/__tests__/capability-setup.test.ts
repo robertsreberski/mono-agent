@@ -21,13 +21,14 @@ function reportOfSize(bytes: number): CapabilitySetupSnapshot {
   return result;
 }
 describe("operator capability discovery", () => {
-  it("advertises only read authority, authorizes and disables caching", async () => {
+  it("advertises only read authority, ignores obsolete keys/headers and disables caching", async () => {
     const read = vi.fn(async () => snapshot);
     const adapter = await startTuiAdapter({ port: 0, apiKey: "fictional-test-key", responder: { respond: async () => ({ text: "unused" }) }, capabilitySetup: { read } });
     try {
       const url = `${adapter.baseUrl}/v1/capabilities`;
-      expect((await fetch(url)).status).toBe(401);
-      expect(read).not.toHaveBeenCalled();
+      expect((await fetch(url)).status).toBe(200);
+      expect((await fetch(url, { headers: { authorization: "Bearer wrong-legacy-key" } })).status).toBe(200);
+      expect(read).toHaveBeenCalledTimes(2);
       const headers = { Authorization: "Bearer fictional-test-key" };
       const info = await (await fetch(adapter.infoUrl, { headers })).json() as { capabilities: Record<string, unknown> };
       expect(info.capabilities.capabilitySetup).toEqual({ version: 1, read: true, propose: false, apply: false });

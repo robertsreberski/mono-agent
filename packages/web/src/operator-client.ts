@@ -132,6 +132,7 @@ type OperatorSkillRegistry =
 
 export interface OperatorConnection {
   readonly baseUrl: string;
+  /** @deprecated One-release forwarding to older keyed agents only; ignored by current agents. */
   readonly apiKey?: string;
   /** Independent owner-only bearer for process-job routes. */
   readonly processJobsBearer?: string;
@@ -287,11 +288,9 @@ export class OperatorClient {
     return {
       schema: body.schema,
       ...(Number.isSafeInteger(body.pid) && (body.pid as number) > 0 ? { pid: body.pid as number } : {}),
-      restart: this.apiKey === undefined
-        ? { supported: false, reason: "Agent restart requires a configured operator API key." }
-        : !Number.isSafeInteger(body.pid) || (body.pid as number) <= 0
-          ? { supported: false, reason: "Agent restart needs a verified process identity." }
-          : parseRestartSupport(capabilities?.restart),
+      restart: !Number.isSafeInteger(body.pid) || (body.pid as number) <= 0
+        ? { supported: false, reason: "Agent restart needs a verified process identity." }
+        : parseRestartSupport(capabilities?.restart),
       ...(typeof body.label === "string" ? { label: body.label } : {}),
       ...(typeof body.model === "string" ? { model: body.model } : {}),
       ...(typeof body.effort === "string" ? { effort: body.effort } : {}),
@@ -1003,6 +1002,7 @@ export class OperatorClient {
   private headers(json: boolean): Record<string, string> {
     return {
       ...(json ? { "content-type": "application/json" } : {}),
+      // Remove legacy key forwarding after one published release.
       ...(this.apiKey === undefined ? {} : { authorization: `Bearer ${this.apiKey}` }),
     };
   }

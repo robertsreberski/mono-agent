@@ -71,6 +71,23 @@ describe("channel config view", () => {
     expect(JSON.stringify(section)).not.toContain("secret-token");
   });
 
+  it.each([
+    [{}, { tui: { apiKey: "fictional-inline" } }],
+    [{ MONO_AGENT_TUI_API_KEY: "fictional-env" }, {}],
+    [{ MONO_AGENT_TUI_API_KEY: "fictional-env" }, { tui: { apiKey: { ignored: true } } }],
+  ])("omits obsolete keys from resolved TUI views without rewriting source (%j)", async (env, json) => {
+    const configPath = await writeConfig(json);
+    const original = readFileSync(configPath, "utf8");
+    const driver = defaultChannelDrivers().find((item) => item.id === "tui")!;
+    const section = await driver.configView!({ env, cwd: dir, configPath });
+    expect(section.fields.map((field) => field.id)).toEqual([
+      "tui.enabled", "tui.host", "tui.port", "tui.basePath", "tui.allowNonLoopback",
+      "tui.requestToolEnvironment.allowedKeys", "tui.requestToolEnvironment.allowPathPrepend",
+    ]);
+    expect(JSON.stringify(section)).not.toMatch(/apiKey|API_KEY|fictional-/u);
+    expect(readFileSync(configPath, "utf8")).toBe(original);
+  });
+
   it("redacts the webhook API key in the channel config view", async () => {
     const configPath = await writeConfig({
       webhook: { enabled: true, apiKey: "fixture-webhook-secret" },

@@ -329,7 +329,7 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
     "host": "127.0.0.1",
     "port": 0,
     "basePath": "/gui",
-    "allowNonLoopback": false              // set MONO_AGENT_TUI_API_KEY in .env when needed
+    "allowNonLoopback": false              // non-loopback binding requires explicit opt-in
   },
 
   "webhook": {

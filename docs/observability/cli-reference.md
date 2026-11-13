@@ -32,12 +32,11 @@ The read/status commands accept `--json` for scripting: `preflight`, `validate`,
 
 The browser's selected-agent Restart action and an agent's web-only
 `ProposeRestart` card are **not** `mono-agent restart` and do not run a shell
-command. They request one supervised worker through its keyed operator HTTP
+command. They request one supervised worker through its operator HTTP
 endpoint; the proposal tool only suggests, and a human confirms the web
 request. `GET {basePath}/v1/info` advertises `capabilities.restart` with a
 supported flag and short refusal reason; an older/malformed capability is
-unsupported. `POST {basePath}/v1/restart` requires a configured operator API
-key and matching bearer even though other operator routes can be keyless.
+unsupported. `POST {basePath}/v1/restart` is keyless and requires a verified supervised worker.
 The adapter returns `202` only after the supervised CLI host synchronously
 commits a single operation id and its nonzero exit disposition; overlapping
 requests return `409` with that same id. A `202` is acceptance, not proof that

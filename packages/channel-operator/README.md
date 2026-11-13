@@ -54,15 +54,16 @@ const tui = await startTuiAdapter({
 await tui.stop();
 ```
 
-Keep bearer values out of source config when possible. Set
-`MONO_AGENT_TUI_API_KEY` in the agent's `.env`.
+Operator routes are keyless. Obsolete `tui.apiKey`, `MONO_AGENT_TUI_API_KEY`
+and incoming Authorization headers on ordinary operator routes are ignored;
+existing files are not rewritten. ProcessJobs retains its independent bearer;
+continuation, interaction and notification scoped secrets are unchanged.
 
 ### Read-only capability discovery
 
 An optional host-injected `CapabilitySetupService` advertises
 `capabilities.capabilitySetup: { version: 1, read: true, propose: false, apply: false }`
-in `GET /v1/info`. `GET {basePath}/v1/capabilities` uses the normal operator bearer
-boundary (keyless hosts remain readable), strict bounded responses and
+in `GET /v1/info`. `GET {basePath}/v1/capabilities` is keyless, with strict bounded responses and
 `Cache-Control: private, no-store, max-age=0`. Older/custom hosts without the
 service omit the capability and return 501. Service failures return sanitized
 503 responses; no config, environment or filesystem paths are resolved here.
@@ -80,7 +81,7 @@ same strict decoder from `@mono-agent/channel-operator/client`.
   `capabilities.askUser`, `capabilities.askById`, and `capabilities.cron` are
   advertised additively when their routes are supported. `capabilities.cron`
   reports `status: "ready" | "degraded"` and separates read support from
-  authenticated/agent-enabled actions. `jobs: true` is advertised only when a
+  confirmed/agent-enabled actions. `jobs: true` is advertised only when a
   process-job operator and its independent owner bearer are both present. The wire
   schema remains `1`; clients must feature-detect rather than reject an older
   agent. The response also
@@ -90,11 +91,9 @@ same strict decoder from `@mono-agent/channel-operator/client`.
   inlined/on-demand/unavailable status. `info` may be a function so local-model
   choices and skills can refresh without restarting the endpoint.
   `capabilities.restart` is always `{ supported, reason? }` on new agents:
-  only a keyed, supervised, verified worker advertises `supported: true`.
+  only a supervised, verified worker advertises `supported: true`.
   Older or malformed capability records are unsupported to clients.
-- `POST {basePath}/v1/restart` accepts exactly `{}` and a **configured,
-  matching** operator bearer. Generic keyless operator authorization does not
-  apply: keyless returns `403` and a missing/wrong bearer `401`. The CLI host
+- `POST {basePath}/v1/restart` accepts exactly `{}` without an operator key. The CLI host
   rechecks supervisor ownership, this PID, loaded worker identity and on-failure
   relaunch policy; unverifiable workers refuse with `409` and a short reason.
   `202 { operation: { id }, process: { pid, startedAt } }` follows synchronous
@@ -114,8 +113,7 @@ same strict decoder from `@mono-agent/channel-operator/client`.
   `{ "model": "<provider:model>" }` (the model selection a turn on that
   conversation would declare) and requests guarded, promptless compaction of
   the exact idle conversation. It is present
-  only with `capabilities.manualCompaction: { version: 1 }`, uses the normal
-  operator bearer, and returns bounded manual status/counts without summary
+  only with `capabilities.manualCompaction: { version: 1 }`, is keyless and returns bounded manual status/counts without summary
   text. Busy conversations return 409 `compaction_busy`, unsupported hosts 501
   `compaction_unsupported`, and failures a bounded 500 `compaction_failed`. Clients
   must feature-detect this additive capability; the wire schema remains 1.
@@ -136,8 +134,7 @@ same strict decoder from `@mono-agent/channel-operator/client`.
 - `GET {basePath}/v1/provider-auth` plus the paired session create, poll,
   input, and delete routes expose a host-injected `ProviderAuthOperator`.
   `capabilities.providerAuth = { version: 1 }` and every route are available
-  whenever that service is present. Routes are keyless when the operator
-  endpoint has no API key and otherwise require its normal bearer. Strict
+  whenever that service is present. Routes are keyless. Strict
   responses are secret-free and set `Cache-Control: private, no-store,
   max-age=0`. The adapter never resolves an auth-store path or persists
   session/input data. Repeating a semantically valid session POST replaces the
@@ -177,11 +174,11 @@ same strict decoder from `@mono-agent/channel-operator/client`.
   `applied`, `requeue`, `discarded`, or `uncertain`; inactive/unsupported offers
   return `unavailable`. A rejected accepted-settlement promise serializes as
   `uncertain` rather than an untyped error or retry signal.
-- `POST {basePath}/v1/conversations/:id/verbatim` - authenticated
+- `POST {basePath}/v1/conversations/:id/verbatim` - keyless
   `{ text, idempotencyKey }` durable-history append with no model turn (200; 501
   when the responder has no `deliverVerbatim`).
 - `GET {basePath}/v1/conversations/:id/reply-artifacts/:artifactId` -
-  bearer-protected, conversation-owned, integrity-checked reply download when
+  keyless, conversation-owned, integrity-checked reply download when
   `capabilities.replyAttachments` is advertised. Responses explicitly disable
   byte ranges.
 - `GET {basePath}/v1/conversations/:id/mcp-apps/:invocationId` and the paired
@@ -194,15 +191,12 @@ same strict decoder from `@mono-agent/channel-operator/client`.
 - `GET {basePath}/v1/cron/config-view` - the host's redacted cron config view;
   clients must not read the config file themselves.
 - `POST {basePath}/v1/cron/jobs/:jobId/run` and
-  `POST {basePath}/v1/cron/jobs/:jobId/effective-enabled` - API-key-protected,
+  `POST {basePath}/v1/cron/jobs/:jobId/effective-enabled` - explicitly opted-in,
   idempotent actions with an agent-issued confirmation challenge. The host owns
   persistence, audit, overlap, and watchdog semantics.
 
-Cron reads follow the operator endpoint's existing compatibility posture: when
-no operator API key is configured they remain keyless, and when a key is
-configured they require the same bearer as every other operator route. Cron
-mutations are stricter: they are unavailable without a configured operator API
-key, explicit host opt-in, and an agent-issued confirmation. The config-view
+Cron reads are keyless. Cron mutations require explicit host opt-in, a healthy
+registry, idempotency and an agent-issued confirmation. The config-view
 route exposes only the host's existing source-annotated cron field registry,
 including the already-visible job prompt; it does not expose arbitrary config
 keys, credentials, or the console host's copy of the config file. If the cron
@@ -238,7 +232,7 @@ for up to two summary requests, including known settled failed outcomes.
 Lost/unsettled requests remain errors; accounting never changes session fences.
 
 
-An app-owned `ProviderUsageOperator` enables bearer-protected `GET ${basePath}/v1/provider-usage` (optional exact `anthropic`, `openai-codex`, `opencode-go` or `github-copilot` provider filter) and `capabilities.providerUsage: {version: 1}`. This no-store read is separate from auth status and validates the secret-free v1 projection. An optional `ProviderUsageOperator.refresh()` additionally advertises `refresh: true` and enables bearer-protected `POST ${basePath}/v1/provider-usage/refresh` (empty JSON object, same strict optional provider query). It awaits a refresh respecting backoff; snapshot-only hosts return an explicit unavailable response, never cached fallback.
+An app-owned `ProviderUsageOperator` enables keyless `GET ${basePath}/v1/provider-usage` (optional exact `anthropic`, `openai-codex`, `opencode-go` or `github-copilot` provider filter) and `capabilities.providerUsage: {version: 1}`. This no-store read is separate from auth status and validates the secret-free v1 projection. An optional `ProviderUsageOperator.refresh()` additionally advertises `refresh: true` and enables keyless `POST ${basePath}/v1/provider-usage/refresh` (empty JSON object, same strict optional provider query). It awaits a refresh respecting backoff; snapshot-only hosts return an explicit unavailable response, never cached fallback.
 
 ### Data flow
 
@@ -263,7 +257,7 @@ and their compatibility frame ceilings (1 MiB in legacy clients, 8 MiB in web).
 
 | Source module | Responsibility |
 | --- | --- |
-| [`tui/server.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/channel-operator/src/tui/server.ts) | Conversational info, turn, live-input, cancel, pending/submitted `AskUser`, history-append, conditionally bearer-protected provider-auth and owner-authenticated process-job projection/cancel, attachment, and NDJSON framing routes. |
+| [`tui/server.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/channel-operator/src/tui/server.ts) | Conversational info, turn, live-input, cancel, pending/submitted `AskUser`, history-append, keyless provider-auth and owner-authenticated process-job projection/cancel, attachment, and NDJSON framing routes. |
 | [`tui/config.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/channel-operator/src/tui/config.ts) | `tui.*` JSON/env layering, validation, and secret redaction. |
 | [`index.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/channel-operator/src/index.ts) | Supported public package surface for the operator endpoint. |
 

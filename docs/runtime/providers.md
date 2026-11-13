@@ -146,8 +146,7 @@ up to two seconds for that safe drain and otherwise fails with
 `replacement_timeout` without starting a competing write. Provider checks are
 not cancelled implicitly.
 
-The agent routes are keyless when its operator endpoint has no API key and
-otherwise retain the endpoint's normal bearer requirement. No additional auth
+The agent routes are keyless. No additional auth
 configuration is required to make the surface available.
 
 The explicit **Run check** action uses this agent's effective `piAuthPath`,

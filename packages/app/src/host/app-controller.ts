@@ -312,7 +312,6 @@ export class MonoAgentAppController implements MonoAgentApp {
   readonly activityTracker: WorkerActivityTracker;
   readonly restartAuthority: TuiRestartAuthority | undefined;
   /** Live keyed app-owned TUI state, never inferred from a config file alone. */
-  restartToolKeyed = false;
   readonly trustedRuntimeReadRoots: readonly string[];
   readonly agentRootOwnership: AgentRootOwnership;
   private agentRootOwnershipReleased = false;

@@ -117,7 +117,7 @@ transports leave answer text unchanged and expose a sanitized
 ## Web-only restart proposals
 
 `ProposeRestart` is an app-owned, request-scoped MCP tool only on an
-interactive web-console turn whose keyed, supervised agent advertises verified
+interactive web-console turn whose supervised agent advertises verified
 restart support; ordinary tool allow/deny policy still applies. A call with
 `{ "reason": "short explanation" }` records at most one additive
 `restart_proposal` part on that assistant reply. The part contains only

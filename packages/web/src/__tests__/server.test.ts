@@ -219,7 +219,7 @@ describe("web HTTP server", () => {
     let restarts = 0;
     const fallback = operatorFetch();
     const { baseUrl } = await start({
-      discoverImpl: async () => [fakeDiscoveredAgent({ apiKey: "owner" })],
+      discoverImpl: async () => [fakeDiscoveredAgent()],
       fetchImpl: (async (input, init) => {
         const url = String(input);
         if (url.endsWith("/v1/info")) return Response.json({ schema: 1, pid: 123, capabilities: { restart: { supported: true } } });
@@ -264,16 +264,16 @@ describe("web HTTP server", () => {
     expect((message.message as { parts: readonly unknown[] }).parts).toContainEqual({ type: "restart_proposal", id: "proposal-1", reason: "Quick refresh", restartable: { state: "used", reason: "This proposal has already been used.", operationId: firstDto.id } });
   });
 
-  it("requires exact origin and a discovered keyed source for restart, then serves a small source-bound status", async () => {
+  it("requires exact origin and a discovered source for keyless restart, then serves a small source-bound status", async () => {
     let posts = 0;
     const fallback = operatorFetch();
     const { baseUrl } = await start({
-      discoverImpl: async () => [fakeDiscoveredAgent({ apiKey: "owner" })],
+      discoverImpl: async () => [fakeDiscoveredAgent()],
       fetchImpl: (async (input, init) => {
         if (String(input).endsWith("/v1/info")) return Response.json({ schema: 1, pid: 123, capabilities: { restart: { supported: true } } });
         if (String(input).endsWith("/v1/restart")) {
           posts++;
-          expect((init?.headers as Record<string, string>).authorization).toBe("Bearer owner");
+          expect((init?.headers as Record<string, string>).authorization).toBeUndefined();
           return Response.json({ operation: { id: "agent-op" }, process: { pid: 123, startedAt: "2026-09-23T10:00:00.000Z" } }, { status: 202 });
         }
         return fallback(input, init);

@@ -254,12 +254,13 @@ The console intentionally has no application authentication or multi-user accoun
 
 Neither the bind nor the absence of a mono-agent-owned route proves local-only access: other proxies, tunnels, or routes are not inspected. Inspect `tailscale serve status` and your own proxy configuration before relying on loopback for local-only access — this matters most for a machine that ran a managed console before. A managed `--share-tailnet` failure is reported with a nonzero exit and the healthy local console stays running; it never claims the route was published.
 
-The server rejects unexpected Host/Origin combinations and does not enable cross-origin API access, but those checks are browser request-integrity controls, not authentication. Cron mutations additionally require the addressed agent's operator API key, an explicit agent-side opt-in, a source-qualified job route, and an agent-issued confirmation; those gates do not turn the web console into a multi-user authenticated application. Plain LAN HTTP is not encrypted. Tailscale transport protects direct tailnet traffic, while Tailscale Serve provides browser-trusted HTTPS when available.
+Accepted risk: anyone who can reach the console or the operator listener can operate the agent, including local users and processes and model tools with localhost/all networking or sandbox off; authentication is deferred.
 
-Cron read routes preserve the operator endpoint's compatibility posture: they are keyless only when that endpoint has no API key, and otherwise require its bearer. The retained cron config-view proxy reuses the agent's source-annotated field view; it can return the already-visible job prompt, but never reads the console-discovered config path or exposes arbitrary keys and credentials. A stopped or failed cron registry degrades only the advertised cron capability—agent liveness still returns from `/v1/info`.
+The server rejects unexpected Host/Origin combinations and does not enable cross-origin API access, but those checks are browser request-integrity controls, not authentication. Cron mutations additionally require an explicit agent-side opt-in, a source-qualified job route, and an agent-issued confirmation; those gates do not turn the web console into a multi-user authenticated application. Plain LAN HTTP is not encrypted. Tailscale transport protects direct tailnet traffic, while Tailscale Serve provides browser-trusted HTTPS when available.
 
-Provider-auth routes use the same compatibility posture: they are keyless when
-the addressed operator endpoint has no API key and otherwise require its bearer.
+Cron read routes are keyless. The retained cron config-view proxy reuses the agent's source-annotated field view; it can return the already-visible job prompt, but never reads the console-discovered config path or exposes arbitrary keys and credentials. A stopped or failed cron registry degrades only the advertised cron capability—agent liveness still returns from `/v1/info`.
+
+Provider-auth routes are keyless.
 This does not add a separate authentication boundary; the trusted LAN/tailnet
 and operating-system admission controls remain the boundary.
 
@@ -341,9 +342,9 @@ recovery; an interrupted turn does not resume itself. A second externally sent
 signal's default action: the console cannot turn an external forced stop into
 a confirmed successful restart.
 
-Only a supervised launchd/systemd worker with a configured operator API key and
+Only a supervised launchd/systemd worker with
 a verifiably loaded relaunch policy advertises `capabilities.restart.supported`.
-Plain foreground/embedded, keyless, stopped, or unverifiable agents refuse.
+Plain foreground/embedded, stopped, or unverifiable agents refuse.
 When discovery confirms that an agent process generation changed, a dispatched
 web parent turn left running or failed by a lost connection gets one durable
 conversation notice. The original turn is never replayed. The conversation then waits for the user, with no automatic agent turn or
@@ -357,13 +358,12 @@ supervised restarts briefly drain running background jobs before cancellation,
 under a single shutdown-wide ten-second forced-exit bound; unresolved work is
 reconciled by the next process generation.
 
-The agent's `POST {basePath}/v1/restart` requires its bearer; the web console
+The agent's `POST {basePath}/v1/restart` is keyless; the web console
 proxies `POST /api/v1/agents/:id/restart` or a persisted reply-part click to the
 selected source, and browsers poll the web-owned operation. `ProposeRestart`
 carries **no restart authority** or target. This adds **no human login**:
 restart uses the same trusted console network/OS boundary and exact-origin
-checks as existing console mutations plus the existing operator bearer from
-web to agent. It is not an authenticated-human-only feature. Keep untrusted
+checks as existing console mutations. It is not an authenticated-human-only feature. Keep untrusted
 proxies and browsers off the console listener.
 
 ## Provider authentication
@@ -546,9 +546,7 @@ store. Checks run at most two providers concurrently, time out, can be cancelled
 and observe a one-minute cooldown.
 
 Every browser proxy route requires the exact console origin. The addressed
-agent's provider-auth routes are keyless when its operator endpoint has no API
-key; when it has one, the web server sends the discovered bearer over the
-loopback operator connection and the agent enforces it. These are request
+agent's provider-auth routes are keyless. These are request
 integrity and compatibility controls inside the trusted-network, single-user
 posture above; they are not per-human owner/admin login.
 

@@ -157,7 +157,7 @@ describe("peer ACP client over a real spawned bridge", () => {
     const f = await fixture("ok", false, false, false, undefined, true);
     const error = await f.turn().catch((cause: unknown) => cause);
     expect(error).toBeInstanceOf(Error);
-    expect((error as Error).message).toMatch(/operator API key was rejected for source "peer-test" \(agent_unauthorized\); no prompt was replayed/u);
+    expect((error as Error).message).toMatch(/operator endpoint rejected the connection for source "peer-test" \(agent_unauthorized\); no prompt was replayed/u);
     expect((error as Error).message).not.toContain("private-response-detail-must-not-surface");
     expect(f.turns).toHaveLength(0);
   }, 30_000);

@@ -523,7 +523,6 @@ export function createTuiChannelDriver(
         port: input.config.port,
         basePath: input.config.basePath,
         allowNonLoopback: input.config.allowNonLoopback,
-        ...(input.config.apiKey === undefined ? {} : { apiKey: input.config.apiKey }),
         ...(input.config.requestToolEnvironment === undefined
           ? {}
           : { requestToolEnvironment: input.config.requestToolEnvironment }),
@@ -535,7 +534,7 @@ export function createTuiChannelDriver(
         ...(providerAuth === undefined ? {} : { providerAuth }),
         ...(capabilitySetup === undefined ? {} : { capabilitySetup }),
         ...(providerUsage === undefined ? {} : { providerUsage }),
-        ...(restart === undefined || input.config.apiKey === undefined ? {} : { restart }),
+        ...(restart === undefined ? {} : { restart }),
         ...(input.interaction === undefined ? {} : { interaction: input.interaction }),
         ...(cronOperator?.configured === true ? { cron: cronOperator } : {}),
         info: buildInfo,
