@@ -23,7 +23,7 @@ for (const directory of ['/usr/bin', '/bin', '/usr/sbin', '/sbin']) {
     if (!existsSync(path.join(tools, name))) symlinkSync(path.join(directory, name), path.join(tools, name));
   }
 }
-const env = { ...process.env, HOME: home, PATH: tools, SHELL: '/bin/bash' };
+const env = { ...process.env, HOME: home, XDG_CONFIG_HOME: path.join(home, '.config'), PATH: tools, SHELL: '/bin/bash' };
 delete env.NODE_OPTIONS; delete env.NODE_PATH;
 const run = (command, args, expected = 0) => {
   const result = spawnSync(command, args, { env, encoding: 'utf8', timeout: 900000, maxBuffer: 8 * 1024 * 1024 });
@@ -63,14 +63,30 @@ turn('sharp')({create:{width:1,height:1,channels:3,background:'#abcdef'}}).resiz
   const second = readlinkSync(path.join(prefix, 'current'));
   assert.notEqual(first, second); assert.ok(existsSync(path.join(prefix, first)));
   run(node, [probe, prefix]);
+  run('/bin/sh', [script, '--non-interactive', '--version', '0.26.0']);
+  const third = readlinkSync(path.join(prefix, 'current'));
+  assert.notEqual(second, third); assert.ok(!existsSync(path.join(prefix, first)));
+  assert.ok(existsSync(path.join(prefix, second)));
+  assert.equal(readdirSync(path.join(prefix, 'releases')).length, 2);
+  console.log('PRUNING PROOF PASSED: current + previous only.');
   run('/bin/sh', [script, '--non-interactive', '--version', '9999.0.0'], 1);
-  assert.equal(readlinkSync(path.join(prefix, 'current')), second);
+  assert.equal(readlinkSync(path.join(prefix, 'current')), third);
   run(shim, ['--version']);
   writeFileSync(path.join(home, '.mono-agent/preserve-proof'), 'fictional credentials');
+  const serviceDir = path.join(home, 'Library/LaunchAgents');
+  mkdirSync(serviceDir, { recursive: true });
+  const plist = path.join(serviceDir, 'dev.mono-agent.fixture.plist');
+  const definition = `<plist><string>${path.join(prefix, third, 'runtime/bin/node')}</string></plist>`;
+  writeFileSync(plist, definition);
+  const refused = run('/bin/sh', [script, '--uninstall', '--yes', '--non-interactive'], 1);
+  assert.match(refused.stderr, /mono-agent stop.*mono-agent web stop/);
+  assert.ok(existsSync(prefix)); assert.equal(readFileSync(plist, 'utf8'), definition);
+  console.log('SERVICE REFUSAL PROOF PASSED: fake plist preserved; no services stopped.');
+  rmSync(plist);
   run('/bin/sh', [script, '--uninstall', '--yes', '--non-interactive']);
   assert.ok(!existsSync(prefix));
   assert.equal(readFileSync(path.join(home, '.mono-agent/preserve-proof'), 'utf8'), 'fictional credentials');
-  console.log('LIVE PROOF PASSED: private ABI/native deps, masked + incompatible host Node, upgrade, failed-upgrade preservation, scoped uninstall.');
+  console.log('LIVE PROOF PASSED: private ABI/native deps, masked + incompatible host Node, upgrade, pruning, failed-upgrade preservation, service refusal, scoped uninstall.');
 } finally {
   rmSync(scratch, { recursive: true, force: true });
 }

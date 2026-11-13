@@ -14,6 +14,8 @@
 - Add a macOS/glibc Linux shell installer with checksum-verified private Node,
   atomic CLI upgrades, opt-in PATH editing, and scoped uninstall. Hand off to
   host preflight when supported; warn honestly for older published versions.
+  Retain current, previous and service-referenced generations; refuse uninstall
+  when detected service definitions rely on the private runtime.
 
 - Add versioned evidence-sensitive conversation ranking with general English
   stop-word filtering, intent-only fallback, bounded correction/event morphology

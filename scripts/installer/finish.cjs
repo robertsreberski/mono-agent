@@ -1,8 +1,6 @@
 const { spawnSync } = require('node:child_process');
 const [root, staged, nodeVersion, platform, arch, archiveSha256, addPath, shell] = process.argv.slice(2);
 try {
-  // Check opt-in rc safety before publishing; no generation is switched on error.
-  if (addPath === '1') editRc(root, shell);
   const pkg = JSON.parse(fs.readFileSync(path.join(staged, 'npm/lib/node_modules/create-mono-agent/package.json'), 'utf8'));
   const generation = `gen-${Date.now()}-${process.pid}`;
   const release = path.join(root, 'releases', generation);
@@ -14,14 +12,12 @@ try {
   fs.renameSync(staged, release);
   const shim = `#!/bin/sh
 set -eu
-root=$(CDPATH='' cd -P "$(dirname "$0")/.." && pwd -P)
-generation=$(readlink "$root/current")
+root=${quote(root)}
+if ! generation=$(readlink "$root/current"); then echo 'No mono-agent generation found' >&2; exit 1; fi
 case $generation in releases/gen-*) ;; *) echo 'Invalid mono-agent generation' >&2; exit 1 ;; esac
 case $generation in *..*|releases/*/*) echo 'Unsafe mono-agent generation' >&2; exit 1 ;; esac
 runtime=$root/$generation/runtime
 unset NODE_OPTIONS NODE_PATH NODE_REPL_EXTERNAL_MODULE
-PATH="$runtime/bin:$PATH"
-export PATH
 exec "$runtime/bin/node" "$root/$generation/npm/bin/mono-agent" "$@"
 `;
   const shimTemp = path.join(root, 'bin', `.mono-agent-${process.pid}`);
@@ -29,11 +25,32 @@ exec "$runtime/bin/node" "$root/$generation/npm/bin/mono-agent" "$@"
   fs.renameSync(shimTemp, path.join(root, 'bin', 'mono-agent'));
   const link = path.join(root, `.current-${process.pid}`);
   fs.symlinkSync(`releases/${generation}`, link);
-  fs.renameSync(link, path.join(root, 'current'));
+  const current = path.join(root, 'current');
+  const previous = fs.existsSync(current) ? fs.readlinkSync(current) : undefined;
+  fs.renameSync(link, current);
+  // Do not leave an activation block pointing at an unpublished first install.
+  if (addPath === '1') editRc(root, shell, platform);
+  // Only successful publications prune. A failed scan preserves everything;
+  // references and current are rechecked before each deletion.
+  try {
+    const files = fs.readFileSync(path.join(root, '.install-lock/service-references'), 'utf8').split('\n').filter(Boolean);
+    for (const entry of fs.readdirSync(path.join(root, 'releases'), { withFileTypes: true })) {
+      if (!entry.isDirectory() || !/^gen-\d+-\d+$/.test(entry.name)) continue;
+      const relative = `releases/${entry.name}`;
+      const absolute = path.join(root, relative);
+      if (relative === previous || relative === fs.readlinkSync(current)
+        || files.some(file => fs.readFileSync(file, 'utf8').includes(absolute))) continue;
+      // Do not follow symlinks, including a replaced generation directory.
+      if (fs.lstatSync(absolute).isSymbolicLink() || relative === fs.readlinkSync(current)) continue;
+      fs.rmSync(absolute, { recursive: true });
+    }
+  } catch (error) {
+    console.warn(`Old generation pruning skipped/incomplete: ${error.message}`);
+  }
   console.log(`Installed mono-agent ${pkg.version} with private Node ${nodeVersion} (ABI ${process.versions.modules}).`);
   console.log(`CLI: ${quote(path.join(root, 'bin/mono-agent'))}`);
   console.log(`Activate in this shell: export PATH=${quote(path.join(root, 'bin'))}:"$PATH"`);
-  console.log('Existing shells are unchanged. Re-run this installer to upgrade; old generations are retained.');
+  console.log('Existing shells are unchanged. Re-run this installer to upgrade; current + previous generations are retained, plus service-referenced generations.');
   const lookup = spawnSync('/bin/sh', ['-c', 'command -v mono-agent'], { encoding: 'utf8', timeout: 3000 });
   const expected = path.join(root, 'bin/mono-agent');
   if (lookup.stdout?.trim() !== expected) {

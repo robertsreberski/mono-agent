@@ -89,15 +89,18 @@ Installation is private and generation-based under `~/.mono-agent/cli`:
 `create-mono-agent`, and `install.json` records versions, ABI and the archive
 checksum. `current` switches atomically only after CLI version/help checks.
 `bin/mono-agent` resolves one generation and always executes its matching Node,
-regardless of host Node. Old generations remain for running processes; the
-installer does not stop, restart or update existing services/managed runtimes.
+regardless of host Node. After successful publication, only current and previous generations remain,
+plus generations referenced by detected service definitions. Older unreferenced
+generations are pruned; finish long-running foreground CLI commands before
+upgrading repeatedly. The installer does not stop, restart or update services
+or external managed runtimes.
 The prefix is fixed, not configurable.
 
 **Activate PATH:** the installer prints an absolute CLI path and a safely quoted
 `export PATH=…` command for your current shell. Run that printed command, then
 `mono-agent init`. A piped child shell cannot change its parent's environment.
 By default no shell startup file is edited. `--add-to-path` explicitly opts in
-to one marked block in Bash `~/.bashrc` or Zsh `~/.zshrc`; other shells get
+to one marked block in macOS Bash `~/.bash_profile`, Linux Bash `~/.bashrc`, or Zsh `~/.zshrc`; other shells get
 instructions only. Existing shells still need the printed export or a restart.
 A warning identifies an older `mono-agent` that takes precedence on PATH.
 
@@ -106,21 +109,27 @@ A warning identifies an older `mono-agent` that takes precedence on PATH.
 | `--version latest` or `--version 0.26.0` | Choose latest (default) or an exact published CLI version. Node remains pinned by the installer. |
 | `--non-interactive` | Never prompt; installs are already unattended. |
 | `--add-to-path` | Opt in to the marked Bash/Zsh PATH block. |
-| `--uninstall --yes` | Remove only the installer-owned CLI subtree and unchanged marked PATH blocks. |
+| `--uninstall --yes` | Remove the CLI subtree and unchanged marked PATH blocks; refuse if detected service definitions reference it. |
+| `--force-uninstall` | With `--uninstall`, override service-reference/inspection refusal; those services may break. |
 | `--help` | Show options without mutation. |
 
 Environment equivalents: `MONO_AGENT_VERSION`, `MONO_AGENT_NONINTERACTIVE=0|1`,
-`MONO_AGENT_ADD_TO_PATH=0|1`. Corresponding flags override environment values.
+`MONO_AGENT_ADD_TO_PATH=0|1`. Corresponding flags override environment values. Uninstall ignores the version
+and PATH environment preferences; explicit `--version`/`--add-to-path` flags
+remain incompatible with uninstall.
 Pass options to a piped install with `sh -s -- --non-interactive`, or use the
 inspected local script. Re-run to upgrade; a failed staged install preserves
 `current`. An interrupted installer may leave `.install-lock`; inspect for an
 active installer before manually removing that lock and re-running.
 
 npm runs with isolated HOME/configuration, an explicit public registry, and
-private prefix/cache; project/user `.npmrc`, inherited npm settings and Node
+private prefix/cache; project/user `.npmrc`, curl startup config, inherited npm settings and Node
 preloads do not override the target runtime. Standard `HTTPS_PROXY`,
 `HTTP_PROXY`, `ALL_PROXY`, `NO_PROXY` (or lowercase equivalents), `SSL_CERT_FILE`
-and `NODE_EXTRA_CA_CERTS` are supported for proxy/custom-CA environments. No
+and `NODE_EXTRA_CA_CERTS` are supported for proxy/custom-CA environments. For
+npm, `SSL_CERT_FILE` supplies `NODE_EXTRA_CA_CERTS` only when the latter is unset.
+Downloads stop after 60 seconds below 1 KiB/s rather than imposing a five-minute
+limit on a healthy slow transfer. No
 registry/mirror override or checksum bypass is offered.
 
 After publication the installer invokes `mono-agent preflight --json`, with a
@@ -128,6 +137,8 @@ bounded timeout. Recognized host errors return nonzero **but leave the CLI
 installed** and show remediation. Published versions without this command warn
 “host preflight unavailable in this version”; that is not a readiness pass. No
 provider calls, project creation or services are started by installation.
+The shim does not prepend private Node/npm to child PATH: user project commands
+keep their own toolchain. Optional docs-MCP pairing expects `npx` on the host PATH.
 
 Uninstall with the downloaded script:
 
@@ -136,9 +147,22 @@ sh install.sh --uninstall --yes --non-interactive
 ```
 
 Without `--yes`, uninstall requires an interactive confirmation. It preserves
-projects, credentials, `~/.mono-agent/runtimes`, services and separately
-npm-installed CLIs. Modified PATH blocks are preserved with a warning; unsafe
-paths or unrecognized ownership markers are refused.
+projects, credentials, `~/.mono-agent/runtimes` and separately npm-installed CLIs.
+Before removal it scans `~/Library/LaunchAgents` and
+`${XDG_CONFIG_HOME:-~/.config}/systemd/user` for definitions referencing the CLI
+prefix. If found, run `mono-agent stop` from each agent config folder and
+`mono-agent web stop`, then retry. No services are stopped automatically.
+`--force-uninstall` explicitly overrides this safeguard and may leave services
+unable to start; definitions are not deleted. This is a definition scan, not a
+universal live-process detector.
+
+Modified, unsafe or symlinked shell files are preserved with a warning rather
+than blocking CLI removal. If the private Node cannot run, PATH cleanup is
+skipped and the CLI subtree is still removed; remove its PATH block manually.
+An installer-created shell file is removed only if empty after cleanup. Existing
+file bytes and modes are preserved, but atomic replacement does not retain
+hard-link identity, ACLs or extended attributes. Unsafe CLI paths or unrecognized
+ownership markers are refused.
 
 ### Manage Node yourself (including Windows)
 

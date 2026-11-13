@@ -12,7 +12,7 @@ if (!/^\d+\.\d+\.\d+$/.test(pin) || pin !== MINIMUM_NODE_VERSION || pkg.engines.
 }
 const common = await read('scripts/installer/path-block.cjs');
 const finish = common + '\n' + await read('scripts/installer/finish.cjs');
-const uninstall = common + `\nconst [root] = process.argv.slice(2);\nfor (const shell of ['bash', 'zsh']) editRc(root, shell, true);\n`;
+const uninstall = common + `\nconst [root] = process.argv.slice(2);\nfor (const name of ['.bashrc', '.bash_profile', '.zshrc']) { try { editRcFile(root, name, true); } catch (error) { console.warn('PATH cleanup preserved ' + name + ': ' + error.message); } }\n`;
 const script = (await read('scripts/installer/install.sh.in'))
   .replace('@@NODE_VERSION@@', pin)
   .replace('@@FINISH_JS@@', () => finish.trimEnd())

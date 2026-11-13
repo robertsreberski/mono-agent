@@ -285,3 +285,25 @@ After the authorized merge/deployment, separately verify the custom-domain URL,
 redirect chain, content type and checksum against the reviewed artifact. A local
 build does not prove production DNS or the deployed revision. The script checksum
 shares the script's host trust boundary and is not an independent signature.
+
+Installer maintenance notes: curl uses `-q` first (no curlrc trust overrides) and
+slow-transfer limits. `SSL_CERT_FILE` is mapped to npm's `NODE_EXTRA_CA_CERTS`
+when not explicitly set. The shim pins only its own Node executable; child PATH
+is unchanged. Opt-in Bash edits select `.bash_profile` on macOS, `.bashrc` on
+Linux; Zsh uses `.zshrc`. PATH cleanup preserves unsafe/modified files, restores
+existing modes, and removes empty files created by the installer. No runnable
+private Node is required to remove the CLI prefix (PATH cleanup may be skipped).
+
+Upgrades prune to current + previous plus service-referenced generations.
+Uninstall scans LaunchAgents and XDG systemd user definitions and refuses when
+they reference this prefix, with `mono-agent stop` / `mono-agent web stop`
+instructions. It never stops services itself. `--force-uninstall` explicitly
+bypasses this protection and can break those services. Live smoke covers pruning
+and refusal using only a fake plist in its throwaway HOME.
+
+CI checks ShellCheck on Ubuntu and fixtures on both runner OSes without matrix
+fail-fast. To reproduce historical runner diagnostics, from the repository root:
+
+```sh
+docker run --rm -v "$PWD:/repo:ro" koalaman/shellcheck:v0.9.0 -s sh /repo/marketing/public/install.sh
+```

@@ -1,6 +1,7 @@
-import test from 'node:test';
+import nodeTest from 'node:test';
+const test = (name, fn) => nodeTest(name, { skip: process.getuid?.() === 0 && name !== 'generated artifact and checksum are fresh' ? 'installer integration fixtures require an unprivileged user' : false }, fn);
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, symlinkSync, existsSync, readdirSync, rmSync, readlinkSync, realpathSync, chmodSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, symlinkSync, existsSync, readdirSync, rmSync, readlinkSync, realpathSync, chmodSync, statSync } from 'node:fs';
 import { spawnSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
@@ -16,7 +17,7 @@ function fixture(t, options = {}) {
   const bin = path.join(dir, 'bin');
   mkdirSync(home, { mode: 0o700 }); mkdirSync(bin);
   const executable = (name, text) => writeFileSync(path.join(bin, name), text, { mode: 0o755 });
-  for (const name of ['ls', 'awk', 'grep', 'sed', 'mkdir', 'rmdir', 'rm', 'mv', 'cat', 'chmod', 'dirname', 'readlink', 'env', 'tar', 'gzip', 'mktemp', options.shasum ? 'shasum' : 'sha256sum']) {
+  for (const name of ['ls', 'awk', 'grep', 'sed', 'mkdir', 'rmdir', 'rm', 'mv', 'cat', 'chmod', 'dirname', 'readlink', 'env', 'find', 'sh', 'tar', 'gzip', 'mktemp', options.shasum ? 'shasum' : 'sha256sum']) {
     const found = spawnSync('/bin/sh', ['-c', `command -v ${name}`], { encoding: 'utf8' }).stdout.trim();
     // macOS lacks sha256sum: use a fixture adapter to the real shasum.
     if (!found && name === 'sha256sum') executable(name, '#!/bin/sh\nexec /usr/bin/shasum -a 256 "$@"\n');
@@ -24,13 +25,14 @@ function fixture(t, options = {}) {
   }
   executable('id', `#!/bin/sh\necho ${options.root ? 0 : process.getuid()}\n`);
   executable('uname', `#!/bin/sh\ncase $1 in -s) echo ${options.os ?? 'Darwin'};; -m) echo ${options.arch ?? 'arm64'};; esac\n`);
+  executable('sysctl', `#!/bin/sh\necho ${options.rosetta ? 1 : 0}\n`);
   executable('getconf', `#!/bin/sh\n${options.musl ? 'exit 1' : "echo 'glibc 2.36'"}\n`);
   const config = path.join(dir, 'config.json');
   writeFileSync(config, JSON.stringify(options));
   const runtime = path.join(dir, 'runtime');
   mkdirSync(path.join(runtime, 'bin'), { recursive: true });
   mkdirSync(path.join(runtime, 'lib/node_modules/npm/bin'), { recursive: true });
-  writeFileSync(path.join(runtime, 'bin/node'), `#!/bin/sh\n${options.runtimeFail ? 'exit 1' : `if [ "$1" = --version ]; then echo v24.15.0; else exec ${quote(process.execPath)} "$@"; fi`}\n`, { mode: 0o755 });
+  writeFileSync(path.join(runtime, 'bin/node'), `#!/bin/sh\nprintf '%s\\n' "$0" >> ${quote(path.join(dir, 'runtime-invocations'))}\n${options.runtimeFail ? 'exit 1' : `if [ "$1" = --version ]; then echo v24.15.0; else exec ${quote(process.execPath)} "$@"; fi`}\n`, { mode: 0o755 });
   const cli = `const fs=require('node:fs'); const options=JSON.parse(fs.readFileSync(${JSON.stringify(config)},'utf8'));\n` + `
 if(process.argv[2]==='--version') console.log('mono-agent 0.26.0');
 else if(process.argv[2]==='--help') {if(options.helpFail) process.exit(1); console.log('mono-agent help');}
@@ -70,6 +72,7 @@ fs.writeFileSync(path.join(prefix,'bin/mono-agent'),${JSON.stringify(cli)});
 const fs=require('node:fs'); const {createHash}=require('node:crypto');
 const options=JSON.parse(fs.readFileSync(${JSON.stringify(config)},'utf8'));
 const args=process.argv.slice(2), url=args.find(x=>x.startsWith('https://'));
+if(args[0]!=='-q' || !args.includes('--speed-limit') || !args.includes('--speed-time') || args.includes('--max-time')) {console.error('Unsafe curl configuration');process.exit(98);}
 const output=args[args.indexOf('-o')+1];
 const archives=${JSON.stringify(tarballs)};
 if(options.downloadFail) process.exit(22);
@@ -104,7 +107,7 @@ for (const options of [{}, { os: 'Linux', arch: 'x86_64' }, { os: 'Linux', arch:
     const output = spawnSync(shim, ['inspect', 'two words', "a'b"], { env: { ...f.env, NODE_OPTIONS: '--invalid-option' }, encoding: 'utf8' });
     passed(output); const data = JSON.parse(output.stdout);
     assert.deepEqual(data.args, ['inspect', 'two words', "a'b"]);
-    assert.ok(data.path.startsWith(path.join(f.cliRoot, old, 'runtime/bin')));
+    assert.equal(data.path, f.env.PATH);
     assert.equal(data.nodeOptions, undefined);
     passed(f.run());
     assert.notEqual(readlinkSync(path.join(f.cliRoot, 'current')), old);
@@ -148,14 +151,14 @@ test('flags override env and npm configuration is isolated', t => {
   assert.ok(env.HOME.includes('.stage.')); assert.ok(env.PATH.startsWith(path.join(f.cliRoot, '.stage.')));
 });
 test('PATH opt-in is idempotent and uninstall preserves unrelated bytes', t => {
-  const f = fixture(t); const rc = path.join(f.home, '.bashrc'); writeFileSync(rc, Buffer.from([35, 32, 255, 32, 120]));
+  const f = fixture(t); const rc = path.join(f.home, '.bash_profile'); writeFileSync(rc, Buffer.from([35, 32, 255, 32, 120]));
   passed(f.run()); assert.deepEqual(readFileSync(rc), Buffer.from([35, 32, 255, 32, 120]));
   passed(f.run(['--add-to-path'])); const once = readFileSync(rc, 'utf8');
   passed(f.run(['--add-to-path'])); assert.equal(readFileSync(rc, 'utf8'), once);
   passed(f.run(['--uninstall', '--yes'])); assert.deepEqual(readFileSync(rc), Buffer.from([35, 32, 255, 32, 120]));
 });
 test('modified PATH block is refused on install, preserved on uninstall', t => {
-  const f = fixture(t); passed(f.run(['--add-to-path'])); const rc = path.join(f.home, '.bashrc');
+  const f = fixture(t); passed(f.run(['--add-to-path'])); const rc = path.join(f.home, '.bash_profile');
   writeFileSync(rc, readFileSync(rc, 'utf8').replace('export PATH=', 'export PATH=modified'));
   failed(f.run(['--add-to-path']), /Conflicting or modified/);
   const changed = readFileSync(rc, 'utf8'); passed(f.run(['--uninstall', '--yes'])); assert.equal(readFileSync(rc, 'utf8'), changed);
@@ -166,7 +169,7 @@ test('unsafe paths and ownership conflicts are never followed', t => {
   failed(f.run(), /unrecognized installation ownership/);
 });
 test('rc symlinks are refused', t => {
-  const f = fixture(t); const other = path.join(f.dir, 'other'); writeFileSync(other, 'preserve'); symlinkSync(other, path.join(f.home, '.bashrc'));
+  const f = fixture(t); const other = path.join(f.dir, 'other'); writeFileSync(other, 'preserve'); symlinkSync(other, path.join(f.home, '.bash_profile'));
   failed(f.run(['--add-to-path']), /Unsafe shell rc target/); assert.equal(readFileSync(other, 'utf8'), 'preserve');
 });
 for (const mode of ['ok', 'error', 'unexpected', 'malformed']) test(`preflight ${mode}`, t => {
@@ -199,7 +202,8 @@ test('shim binds runtime and CLI to one generation even when current changes dur
   writeFileSync(path.join(f.bin, 'readlink'), `#!/bin/sh\nvalue=$(${quote(actual)} "$@")\n/bin/ln -sfn ${quote(first)} ${quote(path.join(f.cliRoot, 'current'))}\nprintf '%s\\n' "$value"\n`, { mode: 0o755 });
   const result = spawnSync(path.join(f.cliRoot, 'bin/mono-agent'), ['inspect'], { env: f.env, encoding: 'utf8' });
   passed(result); const data = JSON.parse(result.stdout);
-  assert.ok(data.path.startsWith(path.join(f.cliRoot, second, 'runtime/bin')));
+  assert.equal(data.path, f.env.PATH);
+  assert.equal(readFileSync(path.join(f.dir, 'runtime-invocations'), 'utf8').trim().split('\n').at(-1), path.join(f.cliRoot, second, 'runtime/bin/node'));
   assert.ok(data.file.startsWith(path.join(f.cliRoot, second, 'npm/')));
   assert.equal(readlinkSync(path.join(f.cliRoot, 'current')), first);
 });
@@ -223,5 +227,98 @@ test('Zsh opt-in and PATH precedence warning are explicit', t => {
   const f = fixture(t); writeFileSync(path.join(f.bin, 'mono-agent'), '#!/bin/sh\nexit 99\n', { mode: 0o755 });
   const result = f.run(['--add-to-path'], { SHELL: '/bin/zsh' }); passed(result);
   assert.match(result.stderr, /Another mono-agent takes precedence/); assert.ok(existsSync(path.join(f.home, '.zshrc')));
-  passed(f.run(['--uninstall', '--yes'])); assert.equal(readFileSync(path.join(f.home, '.zshrc'), 'utf8'), '');
+  passed(f.run(['--uninstall', '--yes'])); assert.ok(!existsSync(path.join(f.home, '.zshrc')));
+});
+
+test('uninstall preserves unsafe and symlinked rc files without blocking removal', t => {
+  const f = fixture(t); passed(f.run());
+  const external = path.join(f.dir, 'dotfile'); writeFileSync(external, 'preserve');
+  symlinkSync(external, path.join(f.home, '.zshrc'));
+  writeFileSync(path.join(f.home, '.bashrc'), 'unsafe'); chmodSync(path.join(f.home, '.bashrc'), 0o666);
+  const result = f.run(['--uninstall', '--yes']); passed(result);
+  assert.match(result.stderr, /Preserved unsafe\/unreadable/);
+  assert.ok(!existsSync(f.cliRoot)); assert.equal(readFileSync(external, 'utf8'), 'preserve');
+  assert.equal(readFileSync(path.join(f.home, '.bashrc'), 'utf8'), 'unsafe');
+});
+test('uninstall still removes CLI when private Node is unrunnable', t => {
+  const f = fixture(t); passed(f.run(['--add-to-path']));
+  const rc = path.join(f.home, '.bash_profile'); const before = readFileSync(rc);
+  writeFileSync(path.join(f.cliRoot, 'current/runtime/bin/node'), '#!/bin/sh\nexit 126\n', { mode: 0o700 });
+  const result = f.run(['--uninstall', '--yes']); passed(result);
+  assert.match(result.stderr, /private Node could not clean PATH blocks/);
+  assert.ok(!existsSync(f.cliRoot)); assert.deepEqual(readFileSync(rc), before);
+});
+test('shim can be symlinked without altering child PATH', t => {
+  const f = fixture(t); passed(f.run());
+  const link = path.join(f.dir, 'linked-cli'); symlinkSync(path.join(f.cliRoot, 'bin/mono-agent'), link);
+  const result = spawnSync(link, ['inspect'], { env: f.env, encoding: 'utf8' }); passed(result);
+  assert.equal(JSON.parse(result.stdout).path, f.env.PATH);
+  assert.ok(JSON.parse(result.stdout).file.includes('/releases/gen-'));
+});
+for (const kind of ['launchd', 'systemd']) test(`service-referenced uninstall refusal and explicit override: ${kind}`, t => {
+  const f = fixture(t); passed(f.run());
+  const directory = kind === 'launchd' ? path.join(f.home, 'Library/LaunchAgents') : path.join(f.dir, 'xdg/systemd/user');
+  mkdirSync(directory, { recursive: true });
+  const file = path.join(directory, kind === 'launchd' ? 'dev.mono-agent.fixture.plist' : 'mono-agent-fixture.service');
+  const contents = `ExecStart=${f.cliRoot}/current/runtime/bin/node\n`; writeFileSync(file, contents);
+  const extra = { XDG_CONFIG_HOME: path.join(f.dir, 'xdg') };
+  failed(f.run(['--uninstall', '--yes'], extra), /mono-agent stop.*mono-agent web stop/);
+  assert.ok(existsSync(f.cliRoot)); assert.equal(readFileSync(file, 'utf8'), contents);
+  const result = f.run(['--uninstall', '--yes', '--force-uninstall'], extra); passed(result);
+  assert.match(result.stderr, /may no longer start/); assert.ok(!existsSync(f.cliRoot));
+  assert.equal(readFileSync(file, 'utf8'), contents);
+});
+test('pruning keeps current, previous and service-referenced generations only', t => {
+  const f = fixture(t); passed(f.run()); const first = readlinkSync(path.join(f.cliRoot, 'current'));
+  const directory = path.join(f.home, 'Library/LaunchAgents'); mkdirSync(directory, { recursive: true });
+  const file = path.join(directory, 'fixture.plist'); writeFileSync(file, path.join(f.cliRoot, first, 'runtime/bin/node'));
+  passed(f.run()); const second = readlinkSync(path.join(f.cliRoot, 'current'));
+  passed(f.run()); const third = readlinkSync(path.join(f.cliRoot, 'current'));
+  assert.ok(existsSync(path.join(f.cliRoot, first))); assert.ok(existsSync(path.join(f.cliRoot, second)));
+  assert.equal(readdirSync(path.join(f.cliRoot, 'releases')).length, 3);
+  rmSync(file); passed(f.run());
+  assert.ok(!existsSync(path.join(f.cliRoot, first))); assert.ok(!existsSync(path.join(f.cliRoot, second)));
+  assert.ok(existsSync(path.join(f.cliRoot, third))); assert.equal(readdirSync(path.join(f.cliRoot, 'releases')).length, 2);
+});
+test('truncated final invocation cannot drop uninstall arguments and install instead', t => {
+  const f = fixture(t); const text = readFileSync(script, 'utf8');
+  const cut = text.lastIndexOf('{ mono_agent_install') + '{ mono_agent_install'.length;
+  const result = spawnSync('/bin/sh', ['-s', '--', '--uninstall', '--yes'], { input: text.slice(0, cut), env: f.env, encoding: 'utf8' });
+  assert.notEqual(result.status, 0); assert.ok(!existsSync(path.join(f.home, '.mono-agent')));
+});
+test('Rosetta shells select native Apple Silicon archive', t => {
+  const f = fixture(t, { os: 'Darwin', arch: 'x86_64', rosetta: true }); passed(f.run());
+  const manifest = JSON.parse(readFileSync(path.join(f.cliRoot, 'current/install.json')));
+  assert.equal(manifest.arch, 'arm64');
+});
+test('persistent version and PATH environment preferences do not block uninstall', t => {
+  const f = fixture(t); passed(f.run());
+  passed(f.run(['--uninstall', '--yes'], { MONO_AGENT_VERSION: 'persistent-invalid-value', MONO_AGENT_ADD_TO_PATH: '1' }));
+  assert.ok(!existsSync(f.cliRoot));
+});
+test('rc mode survives private umask and installer-created empty files are removed', t => {
+  const f = fixture(t); const file = path.join(f.home, '.bash_profile'); writeFileSync(file, '# preserved\n'); chmodSync(file, 0o644);
+  passed(f.run(['--add-to-path'])); assert.equal(statSync(file).mode & 0o777, 0o644);
+  passed(f.run(['--uninstall', '--yes'])); assert.equal(statSync(file).mode & 0o777, 0o644);
+  assert.equal(readFileSync(file, 'utf8'), '# preserved\n');
+  rmSync(file); passed(f.run(['--add-to-path'])); passed(f.run(['--uninstall', '--yes'])); assert.ok(!existsSync(file));
+});
+test('Linux Bash uses bashrc rather than macOS login profile', t => {
+  const f = fixture(t, { os: 'Linux' }); passed(f.run(['--add-to-path']));
+  assert.ok(existsSync(path.join(f.home, '.bashrc'))); assert.ok(!existsSync(path.join(f.home, '.bash_profile')));
+});
+test('SSL_CERT_FILE supplies npm extra CA unless explicitly overridden', t => {
+  const f = fixture(t); const ca = path.join(f.dir, 'ca.pem'); writeFileSync(ca, '');
+  passed(f.run([], { SSL_CERT_FILE: ca }));
+  assert.equal(JSON.parse(readFileSync(path.join(f.dir, 'npm-env.json'))).NODE_EXTRA_CA_CERTS, ca);
+  passed(f.run([], { SSL_CERT_FILE: ca, NODE_EXTRA_CA_CERTS: '' }));
+  assert.equal(JSON.parse(readFileSync(path.join(f.dir, 'npm-env.json'))).NODE_EXTRA_CA_CERTS, '');
+});
+test('legacy preflight pattern is pinned to app unknown-command wording', () => {
+  const args = readFileSync(path.join(root, 'packages/app/src/cli/cli-args.ts'), 'utf8');
+  const message = args.match(/throw new Error\(`(Unknown command[^\n]+)`\);/)[1]
+    .replaceAll('\\`', '`').replace('${command}', 'preflight').replace('${PUBLIC_COMMANDS.join(", ")}', 'init');
+  const finish = readFileSync(path.join(root, 'scripts/installer/finish.cjs'), 'utf8');
+  const expression = finish.match(/(\/Unknown command[^\n]+\/i)\.test/)[1];
+  assert.ok(new RegExp(expression.slice(1, -2), 'i').test(message));
 });
