@@ -27,10 +27,6 @@
   Retain current, previous and service-referenced generations; refuse uninstall
   when detected service definitions rely on the private runtime.
 
-- Add read-only Capabilities in agent settings with agent-side validation,
-  memory tier guidance, prerequisites, usage/cost and exact manual setup steps;
-  keep older agents unsupported and built-in tracing already enabled.
-
 - Add read-only Capabilities in agent settings with local configuration checks,
   a compact overview and expandable memory tiers, prerequisites, usage/cost and
   exact manual setup steps. Never trigger provider/network/subprocess liveness
