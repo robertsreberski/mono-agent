@@ -22,7 +22,7 @@ export const E2_PROTOCOL_FILES = Object.freeze([...new Set([...LOOKUP_PILOT_PROT
   "scripts/lib/continuity-e2-protocol.mjs", "scripts/lib/continuity-e2-replay.mjs", "scripts/lib/continuity-e2-roles.mjs",
   "scripts/lib/continuity-e2-routes.mjs", "scripts/lib/continuity-e2-score.mjs", "scripts/lib/continuity-e2-sizing.mjs",
   "scripts/lib/continuity-e2-tools.mjs", "scripts/lib/continuity-e2-registration.mjs", "scripts/lib/continuity-e2-authorization.mjs",
-  "scripts/lib/continuity-e2-guarded-protocol.mjs", "scripts/lib/continuity-e2-lineage.mjs",
+  "scripts/lib/continuity-e2-guarded-protocol.mjs", "scripts/lib/continuity-e2-lineage.mjs", "scripts/lib/continuity-e2-compaction.mjs",
   "scripts/lib/continuity-e2-runtime.mjs",
   "scripts/lib/continuity-e2-paid-models.mjs",
   "scripts/lib/continuity-e2-cause.mjs", "scripts/lib/continuity-e2-retry.mjs", "scripts/lib/continuity-e2-progress.mjs", "scripts/lib/continuity-e2-probe-receipts.mjs",

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Keep continuity validation running on the prior verified summary after an
+  accounted protection refusal, retaining rejected-candidate costs separately.
+
 - Remove operator API-key requirements for console, ACP and peer access,
   supervised restart, provider management and opted-in cron actions. Ignore
   obsolete operator keys and headers; retain scoped secrets and forward the

@@ -542,6 +542,7 @@
     "scripts/lib/continuity-e2-authorization.mjs",
     "scripts/lib/continuity-e2-cause.mjs",
     "scripts/lib/continuity-e2-checks.mjs",
+    "scripts/lib/continuity-e2-compaction.mjs",
     "scripts/lib/continuity-e2-controller-policy.mjs",
     "scripts/lib/continuity-e2-diagnostics.mjs",
     "scripts/lib/continuity-e2-estimate.mjs",

@@ -1,5 +1,6 @@
 // Controller-owned bounded attempts. Original logical budgets are never expanded.
 import { validE2FailureCause, E2_NONRETRY_PROVIDER_CLASSES } from "./continuity-e2-cause.mjs";
+import { rejectedE2Summary } from "./continuity-e2-compaction.mjs";
 export const E2_RETRY_POLICY = Object.freeze({ schema: "continuity-e2-retry-policy-v1", maxPerRequest: 1, maxPerRun: 8,
   eligibleCauseClasses: Object.freeze(["stream", "http_5xx", "http_429", "empty_final_text", "unowned_aborted_result"]) });
 export function retryCause(cause) {
@@ -29,7 +30,7 @@ export function authorizeE2Retry(state, index, payload) {
   return { allowed: true };
 }
 export function effectiveE2Summaries(holds) {
-  return holds.filter(h => h.paidRole === "summary" && !holds.some(r => r.round > h.round && (r.retryOf ?? r.round) === (h.retryOf ?? h.round) && r.settlement?.kind === "settled" && r.summaryReceipt?.verified));
+  return holds.filter(h => h.paidRole === "summary" && !rejectedE2Summary(h) && !holds.some(r => r.round > h.round && (r.retryOf ?? r.round) === (h.retryOf ?? h.round) && r.settlement?.kind === "settled" && r.summaryReceipt?.verified));
 }
 export function e2RetryCounts(slots) {
   const result = { attempted: 0, succeeded: 0, causeClasses: {} };
