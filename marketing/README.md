@@ -252,3 +252,36 @@ sitemap entries. It ships empty and builds, tests, and reads intentionally
 with zero posts. The authoring contract an automated daily process follows is
 [`BLOG.md`](./BLOG.md): front-matter limits, image and honesty rules, and the
 exact local validation commands.
+
+## Public shell installer
+
+`public/install.sh` and `public/install.sh.sha256` are committed generated assets,
+served at `https://mono-agent.dev/install.sh` and its `.sha256` sibling. Vercel's
+Git integration deploys the marketing project on a main merge; do not run a
+manual deploy as part of artifact maintenance. Extension-bearing static files
+are not subject to the site's page trailing-slash routing. Exact response
+headers in `vercel.json` select plain text, nosniff, and mandatory revalidation.
+
+Author sources live in `scripts/installer/` at the repository root. After a
+`.nvmrc` change (also keep root engines and the support floor in agreement), run:
+
+```sh
+node scripts/installer/generate.mjs
+node scripts/installer/generate.mjs --check
+node --test scripts/installer/test/*.test.mjs
+sh -n marketing/public/install.sh
+shellcheck -s sh marketing/public/install.sh
+```
+
+Run those commands from the repository root, not this standalone app. A standalone
+marketing build needs no files outside this directory: it copies the committed
+assets byte-for-byte. Unit contracts check built bytes, checksum and route/header
+configuration. Fixture tests are offline; `node scripts/installer/live-proof.mjs`
+is an explicit network-using, throwaway-HOME smoke for official Node plus published
+CLI/native dependencies. It must run as a non-root user and touches no real shell
+startup files, agents or services.
+
+After the authorized merge/deployment, separately verify the custom-domain URL,
+redirect chain, content type and checksum against the reviewed artifact. A local
+build does not prove production DNS or the deployed revision. The script checksum
+shares the script's host trust boundary and is not an independent signature.

@@ -30,7 +30,7 @@ The published baseline checked on 2026-10-20 is **`create-mono-agent@0.26.0`**; 
 
 ## Quickstart: An Agent Folder From One Config File
 
-Any folder — empty or already holding knowledge (`AGENTS.md`, `CLAUDE.md`, docs) — can become a running agent from one `mono-agent.config.json`. You need Node.js 24.15.0 or newer and credentials for the model you choose; a local provider such as Ollama works too.
+Any folder — empty or already holding knowledge (`AGENTS.md`, `CLAUDE.md`, docs) — can become a running agent from one `mono-agent.config.json`. The runtime needs Node.js 24.15.0 or newer (the shell installer below supplies it) and credentials for the model you choose; a local provider such as Ollama works too.
 
 Guided setup is authentic and not instant: it signs you in to the provider you choose and makes one real model request for every selected route to prove the route answers. That can take several minutes and counts as usage on your account. Running with flags, `--yes`, or without a TTY skips all of it and writes the scaffold only; add `--auth` if you want provider setup on that automated path too. [Setup details](#setup-details) list the exact deadlines, flags, and files.
 
@@ -39,10 +39,10 @@ Guided setup is authentic and not instant: it signs you in to the provider you c
 ### 1. Install the CLI
 
 ```bash
-npm i -g create-mono-agent
+curl -fsSL https://mono-agent.dev/install.sh | sh
 ```
 
-`create-mono-agent` puts the natural `mono-agent` command on your `PATH`. It needs Node.js 24.15.0 or newer and no pnpm. Prefer a one-shot scaffold or a pinned install? [Install & prerequisites](./docs/getting-started/install.md) covers `npm create`, `npm exec`, the scoped package, and building from source.
+On macOS and glibc Linux, the script installs private Node and `create-mono-agent` under `~/.mono-agent/cli`; activate the printed PATH before using `mono-agent`. It edits no shell files by default. Prefer inspecting the script first, managing your own Node with `npm i -g create-mono-agent`, Windows, or a pinned install? [Install & prerequisites](./docs/getting-started/install.md) covers `npm create`, `npm exec`, the scoped package, and building from source.
 
 ### 2. Create the agent folder
 

@@ -19,6 +19,9 @@ All 20 current catalog packages have npm `latest` set to `0.26.0` (registry chec
 
 ## Prerequisites
 
+The shell installer below supplies its own Node on supported macOS/Linux hosts.
+The Node requirement in this table applies when managing your own npm install.
+
 | Requirement | Version | Why |
 | --- | --- | --- |
 | Node.js | `>=24.15.0` | Runtime for the CLI, host, and consoles. This matches the minimum required by the bundled Pi runtime. |
@@ -49,7 +52,98 @@ agents and reinstall/rebuild with that same Node before restarting them.
 
 ## Install the CLI
 
-Install the `create-mono-agent` installer globally to get the `mono-agent` command on your `PATH`:
+### Private Node installer (macOS and Linux)
+
+```sh
+curl -fsSL https://mono-agent.dev/install.sh | sh
+```
+
+Supports macOS and **glibc Linux (glibc >=2.28)** on x64/arm64, subject to the
+[official Node platform requirements](https://github.com/nodejs/node/blob/v24.15.0/BUILDING.md#platform-list).
+Refuses root, Windows-like shells, musl/Alpine, and unknown architectures. Requires
+curl, tar/gzip, standard POSIX tools and `sha256sum` or `shasum`. No existing Node,
+npm or pnpm is needed. Native dependencies may still require a compiler and
+system libraries if prebuilds are unavailable; the installer never uses sudo or
+installs system prerequisites.
+
+**Inspect first (recommended):** download the script and its checksum before
+executing it. Both files share the same hosting trust boundary: this checksum
+detects corruption, **not an independent signature**. The script verifies the
+exact official Node archive against `nodejs.org`'s HTTPS checksum manifest before
+extracting or executing it. npm package integrity follows npm's registry trust
+model; dependency lifecycle scripts are enabled for native builds.
+
+```sh
+curl -fsSLO https://mono-agent.dev/install.sh
+curl -fsSLO https://mono-agent.dev/install.sh.sha256
+# Linux:
+sha256sum -c install.sh.sha256
+# macOS alternative:
+shasum -a 256 -c install.sh.sha256
+less install.sh
+sh install.sh --non-interactive
+```
+
+Installation is private and generation-based under `~/.mono-agent/cli`:
+`releases/<generation>/runtime` holds official Node, `npm` holds the published
+`create-mono-agent`, and `install.json` records versions, ABI and the archive
+checksum. `current` switches atomically only after CLI version/help checks.
+`bin/mono-agent` resolves one generation and always executes its matching Node,
+regardless of host Node. Old generations remain for running processes; the
+installer does not stop, restart or update existing services/managed runtimes.
+The prefix is fixed, not configurable.
+
+**Activate PATH:** the installer prints an absolute CLI path and a safely quoted
+`export PATH=…` command for your current shell. Run that printed command, then
+`mono-agent init`. A piped child shell cannot change its parent's environment.
+By default no shell startup file is edited. `--add-to-path` explicitly opts in
+to one marked block in Bash `~/.bashrc` or Zsh `~/.zshrc`; other shells get
+instructions only. Existing shells still need the printed export or a restart.
+A warning identifies an older `mono-agent` that takes precedence on PATH.
+
+| Option | Behavior |
+| --- | --- |
+| `--version latest` or `--version 0.26.0` | Choose latest (default) or an exact published CLI version. Node remains pinned by the installer. |
+| `--non-interactive` | Never prompt; installs are already unattended. |
+| `--add-to-path` | Opt in to the marked Bash/Zsh PATH block. |
+| `--uninstall --yes` | Remove only the installer-owned CLI subtree and unchanged marked PATH blocks. |
+| `--help` | Show options without mutation. |
+
+Environment equivalents: `MONO_AGENT_VERSION`, `MONO_AGENT_NONINTERACTIVE=0|1`,
+`MONO_AGENT_ADD_TO_PATH=0|1`. Corresponding flags override environment values.
+Pass options to a piped install with `sh -s -- --non-interactive`, or use the
+inspected local script. Re-run to upgrade; a failed staged install preserves
+`current`. An interrupted installer may leave `.install-lock`; inspect for an
+active installer before manually removing that lock and re-running.
+
+npm runs with isolated HOME/configuration, an explicit public registry, and
+private prefix/cache; project/user `.npmrc`, inherited npm settings and Node
+preloads do not override the target runtime. Standard `HTTPS_PROXY`,
+`HTTP_PROXY`, `ALL_PROXY`, `NO_PROXY` (or lowercase equivalents), `SSL_CERT_FILE`
+and `NODE_EXTRA_CA_CERTS` are supported for proxy/custom-CA environments. No
+registry/mirror override or checksum bypass is offered.
+
+After publication the installer invokes `mono-agent preflight --json`, with a
+bounded timeout. Recognized host errors return nonzero **but leave the CLI
+installed** and show remediation. Published versions without this command warn
+“host preflight unavailable in this version”; that is not a readiness pass. No
+provider calls, project creation or services are started by installation.
+
+Uninstall with the downloaded script:
+
+```sh
+sh install.sh --uninstall --yes --non-interactive
+```
+
+Without `--yes`, uninstall requires an interactive confirmation. It preserves
+projects, credentials, `~/.mono-agent/runtimes`, services and separately
+npm-installed CLIs. Modified PATH blocks are preserved with a warning; unsafe
+paths or unrecognized ownership markers are refused.
+
+### Manage Node yourself (including Windows)
+
+With Node.js >=24.15.0 already installed, install the `create-mono-agent` package
+globally to get the `mono-agent` command on your `PATH`:
 
 ```bash
 npm i -g create-mono-agent
@@ -194,7 +288,9 @@ and earlier do not acquire the permanent OS-level guard introduced in 0.9, so
 old and new setup or repair must never overlap.
 :::
 
-Update global installs with npm:
+For the private installer, re-run the one-liner (or the freshly downloaded,
+inspected script) to upgrade. Existing services keep their own runtime and are
+not restarted. For npm-managed global installs, update with npm:
 
 ```bash
 npm update -g create-mono-agent     # (or @mono-agent/app)

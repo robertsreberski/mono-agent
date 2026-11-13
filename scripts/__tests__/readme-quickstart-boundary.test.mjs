@@ -28,7 +28,7 @@ describe("root README Quickstart boundary", () => {
 
   it("keeps the complete web-first runnable command flow in order", () => {
     const commands = [
-      "npm i -g create-mono-agent",
+      "curl -fsSL https://mono-agent.dev/install.sh | sh",
       "mkdir my-agent",
       "cd my-agent",
       "mono-agent init",
@@ -53,7 +53,10 @@ describe("root README Quickstart boundary", () => {
   it("keeps the first browser conversation the documented path", () => {
     // The beginner path must not require a terminal-only smoke channel or the
     // terminal console: the browser console is the documented first surface.
-    expect(quickstart).not.toMatch(/\bcurl\b/u);
+    // curl bootstraps the CLI only; conversations must still use the browser.
+    const installer = "curl -fsSL https://mono-agent.dev/install.sh | sh";
+    expect(quickstart.split(installer)).toHaveLength(2);
+    expect(quickstart.replace(installer, "")).not.toMatch(/\bcurl\b/u);
     expect(quickstart).not.toMatch(/mono-agent tui\b/u);
     expect(quickstart).not.toMatch(/mono-agent-tui\b/u);
     expect(readme).toContain("./docs/reference/release-status.md");

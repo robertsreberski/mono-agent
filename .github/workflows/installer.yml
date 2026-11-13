@@ -30,4 +30,3 @@ jobs:
       - run: sh -n marketing/public/install.sh
       - if: runner.os == 'Linux'
         run: shellcheck -s sh marketing/public/install.sh
-
