@@ -1043,6 +1043,20 @@
       }
     },
     {
+      "name": "capabilities",
+      "type": "ApiCapabilities",
+      "value": {
+        "version": 1,
+        "observation": "durable-inputs",
+        "observedAt": "2026-08-01T10:00:00Z",
+        "process": {
+          "pid": 42,
+          "startedAt": "2026-08-01T09:00:00Z"
+        },
+        "cards": []
+      }
+    },
+    {
       "name": "provider-usage",
       "type": "ApiProviderUsage",
       "value": {

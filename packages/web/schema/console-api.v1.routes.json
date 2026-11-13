@@ -96,6 +96,17 @@
     },
     {
       "method": "GET",
+      "path": "/api/v1/agents/:id/capabilities",
+      "requestType": "NoBody",
+      "responseType": "ApiCapabilities",
+      "successStatus": [
+        200
+      ],
+      "requiresClaimedOrigin": true,
+      "originPolicy": "exact"
+    },
+    {
+      "method": "GET",
       "path": "/api/v1/agents/:id/provider-usage",
       "requestType": "NoBody",
       "responseType": "ApiProviderUsage",

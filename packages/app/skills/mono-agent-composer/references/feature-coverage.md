@@ -340,3 +340,12 @@ batch get then batch continuation for two retained records nominally at most
 16 KiB each when each fits two UTF-8-safe 8-KiB chunks; the universal bound is
 16,381 bytes. Larger or boundary-split records can need more rounds. Ledger upkeep stays opt-in and
 retrieval adds no extraction purchase.
+
+### Read-only optional-feature discovery
+
+The browser's Agent settings → Capabilities shows readiness from agent-side
+validation and manual CLI/config steps for memory tiers, built-in channels,
+sandbox, MCP/tools and already-enabled tracing. It does not write configuration
+or collect secrets. Successful guided init offers a consent-first console handoff
+(default Not now); flag/non-TTY scaffolding remains unchanged. Agent-qualified
+handoff links wait for exact discovery instead of selecting another agent.
