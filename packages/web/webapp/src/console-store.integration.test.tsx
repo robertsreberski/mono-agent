@@ -17,7 +17,7 @@ import {
   THREAD_PAGE_LIMIT,
 } from "./api";
 import { writeDataModeSetting } from "./data-mode";
-import { mobileHistoryEntry, ownedSettingsEntry, pushMobileHistoryEntry } from "./mobile-history";
+import { mobileHistoryEntry, ownedSettingsEntry, pushMobileHistoryEntry, replaceMobileHistoryEntry } from "./mobile-history";
 import { closeSettingsHistory } from "./settings-navigation";
 import {
   readComposerDraft,
@@ -410,6 +410,51 @@ describe("ConsoleStoreProvider integration", () => {
       await waitFor(() => expect(store.current.detail?.messages[0]?.parts)
         .toEqual([{ type: "text", text: "Current case answer" }]));
     });
+  });
+
+  it("keeps an init handoff source pending until discovery finds it, without falling back", async () => {
+    window.history.replaceState({ fictionalMarker: true }, "", "/?agent=garden&settings=capabilities&keep=1#example");
+    const store = await renderStore();
+    expect(store.current.selectedAgentId).toBe("garden");
+    expect(store.current.selectedAgent).toBeNull();
+    expect(new URL(window.location.href).searchParams.get("agent")).toBe("garden");
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap([agent("alpha"), agent("garden")], []));
+    act(() => FakeEventSource.latest?.emit("agents.changed", {
+      id: "garden-discovered", version: 1, type: "agents.changed", at: "2026-08-01T10:00:00Z",
+    }));
+    await waitFor(() => expect(store.current.selectedAgent?.sourceId).toBe("garden"));
+    expect(store.current.selectedAgentId).toBe("garden");
+    expect(new URL(window.location.href).searchParams.has("agent")).toBe(false);
+    expect(new URL(window.location.href).searchParams.get("settings")).toBe("capabilities");
+    expect(new URL(window.location.href).searchParams.get("keep")).toBe("1");
+    expect(window.location.hash).toBe("#example");
+    expect(window.history.state).toMatchObject({ fictionalMarker: true });
+    await act(async () => { await store.current.selectAgent("alpha"); });
+    expect(store.current.selectedAgentId).toBe("alpha");
+    expect(new URL(window.location.href).searchParams.has("agent")).toBe(false);
+  });
+
+  it("keeps the consumed handoff settings entry owned so one mobile Back returns to Dashboard", async () => {
+    window.history.replaceState({ fictionalMarker: true }, "", "/?agent=garden");
+    replaceMobileHistoryEntry({ version: 1, surface: "dashboard" });
+    pushMobileHistoryEntry({ version: 1, surface: "settings", section: "capabilities", depth: 1 });
+    const length = window.history.length;
+    const store = await renderStore();
+    expect(store.current.selectedAgentId).toBe("garden");
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap([agent("alpha"), agent("garden")], []));
+    act(() => FakeEventSource.latest?.emit("agents.changed", {
+      id: "garden-mobile-discovered", version: 1, type: "agents.changed", at: "2026-08-01T10:00:00Z",
+    }));
+    await waitFor(() => expect(store.current.selectedAgent?.sourceId).toBe("garden"));
+    expect(new URL(window.location.href).searchParams.has("agent")).toBe(false);
+    expect(ownedSettingsEntry()).toMatchObject({ section: "capabilities", href: window.location.href });
+    expect(window.history.state).toMatchObject({ fictionalMarker: true });
+    expect(window.history.length).toBe(length);
+    // This is the real mobile Back implementation; a stale embedded href makes
+    // it a no-op and would also defeat App's conversation-entry de-duplication.
+    closeSettingsHistory();
+    await waitFor(() => expect(mobileHistoryEntry(window.history.state)?.surface).toBe("dashboard"));
+    expect(ownedSettingsEntry()).toBeNull();
   });
 
   it("keeps the server's clock from the stamp on every event", async () => {

@@ -683,7 +683,7 @@ export function App() {
     };
     const onAgentSettings = (event: Event) => {
       const requested = (event as CustomEvent<{ section?: SettingsSection }>).detail?.section;
-      const section = requested === "providers" || requested === "agent" || requested === "new-conversations" ? requested : null;
+      const section = requested === "capabilities" || requested === "providers" || requested === "agent" || requested === "new-conversations" ? requested : null;
       if (settings === null && document.activeElement instanceof HTMLElement) settingsInvokerRef.current = document.activeElement;
       setPalette(false);
       if (!isMobileViewport() && settings !== null && requested === undefined) {

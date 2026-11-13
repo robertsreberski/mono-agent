@@ -57,6 +57,21 @@ await tui.stop();
 Keep bearer values out of source config when possible. Set
 `MONO_AGENT_TUI_API_KEY` in the agent's `.env`.
 
+### Read-only capability discovery
+
+An optional host-injected `CapabilitySetupService` advertises
+`capabilities.capabilitySetup: { version: 1, read: true, propose: false, apply: false }`
+in `GET /v1/info`. `GET {basePath}/v1/capabilities` uses the normal operator bearer
+boundary (keyless hosts remain readable), strict bounded responses and
+`Cache-Control: private, no-store, max-age=0`. Older/custom hosts without the
+service omit the capability and return 501. Service failures return sanitized
+503 responses; no config, environment or filesystem paths are resolved here.
+The report identifies its process, observation time and loaded-snapshot/durable-input scope;
+it carries four-state section evidence, static guidance and optional
+schema-version-1 `host-preflight` evidence. Missing preflight is not success.
+There are no proposal, apply or config-write routes. Client helpers export the
+same strict decoder from `@mono-agent/channel-operator/client`.
+
 ### Conversational endpoints
 
 - `GET {basePath}/v1/info` returns the wire `schema`, process id, and attachment
@@ -290,6 +305,12 @@ Every symbol exported by each public code entrypoint is listed below.
 **`@mono-agent/channel-operator`**
 
 ```text
+CapabilityCard
+CapabilityChoice
+CapabilityEvidence
+CapabilitySetupService
+CapabilitySetupSnapshot
+CapabilityStatus
 CronOperatorActionInput
 CronOperatorConfirmation
 CronOperatorError
@@ -311,6 +332,7 @@ DEFAULT_TUI_BASE_PATH
 DEFAULT_TUI_HOST
 DEFAULT_TUI_PORT
 LoadTuiAdapterConfigInput
+MAX_CAPABILITY_SETUP_BYTES
 MAX_CRON_OPERATOR_RESPONSE_BYTES
 MAX_CRON_OPERATOR_RUN_PAGE
 MAX_CRON_OPERATOR_SUMMARY_REPLY_PART_OUTCOMES
@@ -341,6 +363,7 @@ TuiSkillInfo
 TuiSkillRegistry
 TuiSkillUnavailableReason
 loadTuiAdapterConfig
+parseCapabilitySetupSnapshot
 redactTuiAdapterConfig
 startTuiAdapter
 ```
@@ -348,10 +371,18 @@ startTuiAdapter
 **`@mono-agent/channel-operator/client`**
 
 ```text
+CapabilityCard
+CapabilityChoice
+CapabilityEvidence
+CapabilitySetupService
+CapabilitySetupSnapshot
+CapabilityStatus
+MAX_CAPABILITY_SETUP_BYTES
 OperatorStreamFrameTooLargeError
 fetchLongLivedHostWake
 fetchLongLivedTurn
 operatorResponseFromFinishFrame
+parseCapabilitySetupSnapshot
 readOperatorStreamFrames
 ```
 

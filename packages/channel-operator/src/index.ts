@@ -60,3 +60,6 @@ export {
   MAX_FRAME_BYTES,
   TUI_WIRE_SCHEMA,
 } from "./tui/constants.js";
+
+export { parseCapabilitySetupSnapshot, MAX_CAPABILITY_SETUP_BYTES } from "./capability-setup.js";
+export type { CapabilityStatus, CapabilityEvidence, CapabilityChoice, CapabilityCard, CapabilitySetupSnapshot, CapabilitySetupService } from "./capability-setup.js";

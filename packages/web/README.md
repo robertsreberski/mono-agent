@@ -121,6 +121,26 @@ User Stop also marks a running `AskUser` question as interrupted; answer in a ne
   remain stack-only.
 ## Install / Usage
 
+### Capabilities in agent settings
+
+**Capabilities** is read-only discovery for optional features. The console
+feature-detects the selected live agent's `capabilitySetup.version: 1` read claim
+and proxies `GET /api/v1/agents/:id/capabilities` to its operator endpoint. Reads
+require exact origin (native clients can use the existing claimed-origin
+header), are non-cacheable, validate the bounded operator response and reject a
+result if its selected process generation changed while reading. Web never
+loads agent config paths or imports app setup code. Older agents show “This
+agent version doesn't report capabilities”; offline/transport errors are not
+converted into validation statuses.
+
+Cards show purpose, requirements, qualitative usage/cost, validation section
+statuses, and exact manual CLI/config steps. Memory tier choices inspect recipes
+only; there is no apply button, credential input, proposal store or config write.
+Built-in tracing is already enabled; removed exporters are unsupported. Optional
+host-preflight evidence appears only when explicitly supplied by the agent.
+`?agent=<source-id>&settings=capabilities` is an init handoff link: discovery keeps
+that target pending instead of silently selecting another agent.
+
 ### Conversation PDF export
 
 Open **Conversation actions → Export as PDF** on desktop or mobile, including
@@ -1416,6 +1436,7 @@ WebAgentsChangedPayload
 WebAttachment
 WebBootstrap
 WebBootstrapScope
+WebCapabilitySetupSnapshot
 WebConsoleError
 WebConsoleIdentity
 WebConsoleToolScope

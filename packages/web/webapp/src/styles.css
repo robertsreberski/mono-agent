@@ -2808,3 +2808,33 @@ html.keyboard-viewport .skill-browser-popup {
 }
 .pdf-export-notice a { display: inline-flex; align-items: center; min-height: 44px; color: inherit; text-decoration: underline; }
 .pdf-export-notice .icon-button { flex-shrink: 0; min-width: 44px; min-height: 44px; }
+
+/* Read-only capability discovery uses the existing settings pane and scroller. */
+.settings-screen[data-section="capabilities"] .settings-pane { max-width: 1040px; }
+.capability-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 290px), 1fr)); gap: 12px; align-items: start; }
+.capability-card { padding: 16px; margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.capability-card:has(> .capability-details[open]) { grid-column: 1 / -1; }
+.capability-card .capability-purpose { margin: 10px 0; color: var(--text-muted); display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
+.capability-scope { display: block; }
+.capability-card .capability-next { margin: 0; font-size: .8rem; }
+.capability-details { border-top: 1px solid var(--line); padding-top: 10px; }
+.capability-details[open] > summary { margin-bottom: 14px; }
+.capability-details > summary { min-height: 32px; align-content: center; }
+.capability-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.capability-heading h3 { margin: 0; font-size: 1rem; }
+.capability-card h4 { margin: 14px 0 4px; font-size: .85rem; }
+.capability-card p, .capability-card li { font-size: .875rem; line-height: 1.5; }
+.capability-card ul { padding-inline-start: 20px; margin-block: 6px; }
+.capability-card details { margin-top: 12px; }
+.capability-card summary { cursor: pointer; font-size: .875rem; }
+.capability-choice { display: grid; gap: 6px; font-size: .875rem; }
+.capability-choice select { width: 100%; min-width: 0; color: inherit; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 8px; }
+.capability-status { font-size: .75rem; font-weight: 600; white-space: nowrap; }
+.capability-status.is-error { color: var(--danger); }
+.capability-status.is-waiting { color: var(--warning); }
+.capability-status.is-ok { color: var(--accent); }
+.capability-steps { padding-inline-start: 20px; }
+.capability-steps > li { margin-block: 12px; }
+.capability-step-prose { white-space: pre-wrap; }
+.capability-steps pre { margin: 10px 0; padding: 12px; background: var(--surface-subtle); border: 1px solid var(--line); border-radius: 8px; font-family: var(--font-mono); font-size: .8rem; line-height: 1.55; white-space: pre; overflow-wrap: normal; overflow-x: auto; max-width: 100%; }
+.capability-steps pre code { font: inherit; }

@@ -1,3 +1,4 @@
+import { parseCapabilitySetupSnapshot, type CapabilitySetupService } from "../capability-setup.js";
 import { isAgentCompactionAccounting } from "@mono-agent/contracts";
 import { isProviderUsageId, parseProviderUsageSnapshot, type ProviderUsageOperator } from "@mono-agent/contracts";
 import { randomUUID } from "node:crypto";
@@ -296,6 +297,7 @@ export interface TuiAdapterOptions {
   readonly interaction?: ChannelInteractionHub;
   /** Agent-owned cron truth and controls. Absent on older/non-cron hosts. */
   readonly cron?: CronOperatorService;
+  readonly capabilitySetup?: CapabilitySetupService;
   /** Private app-owned v1 fence; deliberately not an AgentResponder contract. */
   readonly processJobWakeAdmission?: {
     claim(deliveryKey: string, token: string, boundary: string): Promise<boolean>;
@@ -491,6 +493,9 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
                     },
                   }),
             restart: restartSupport,
+            ...(options.capabilitySetup === undefined ? {} : {
+              capabilitySetup: { version: 1, read: true, propose: false, apply: false },
+            }),
             ...(options.processJobs === undefined || processJobsBearer === undefined ? {} : { jobs: true }),
             ...(options.requestToolEnvironment === undefined ? {} : { toolEnvironment: true }),
             ...(options.modelCatalog === undefined
@@ -520,6 +525,22 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
       .catch((error: unknown) => {
         options.logger?.error?.("TUI info provider failed.", { error: errorToMessage(error) });
         sendJsonError(res, 500, error);
+      });
+  });
+
+  app.get(`${basePath}/v1/capabilities`, (req, res) => {
+    res.setHeader("Cache-Control", "private, no-store, max-age=0");
+    if (!authorize(req, res, apiKey)) return;
+    if (options.capabilitySetup === undefined) {
+      res.status(501).json({ error: { code: "capabilities_unsupported", message: "This agent version does not report capabilities." } });
+      return;
+    }
+    void options.capabilitySetup.read()
+      .then((snapshot) => res.json(parseCapabilitySetupSnapshot(snapshot)))
+      .catch(() => {
+        // Deliberately do not log arbitrary service/decoder diagnostics or config.
+        options.logger?.error?.("TUI capability validation failed.", { error: "capabilities_unavailable" });
+        res.status(503).json({ error: { code: "capabilities_unavailable", message: "Capability validation is unavailable. Run mono-agent validate in the agent folder." } });
       });
   });
 

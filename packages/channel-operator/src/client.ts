@@ -81,3 +81,6 @@ function decodeSegments(segments: readonly Uint8Array[], tail: Uint8Array | unde
   if (tail !== undefined && tail.byteLength > 0) buffers.push(Buffer.from(tail));
   return Buffer.concat(buffers, total).toString("utf8");
 }
+
+export { parseCapabilitySetupSnapshot, MAX_CAPABILITY_SETUP_BYTES } from "./capability-setup.js";
+export type { CapabilityStatus, CapabilityEvidence, CapabilityChoice, CapabilityCard, CapabilitySetupSnapshot, CapabilitySetupService } from "./capability-setup.js";

@@ -4901,6 +4901,19 @@ describe("validateMonoAgentFolder — tools guardrails & channel cross-checks", 
     expect(report.ok).toBe(true);
   });
 
+  it("reports each external MCP diagnostic once without unconditional tools prose", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Fictional Agent\n");
+    const configPath = await writeConfig({ runtime: { model: "openai-codex:gpt-5.5" }, context: { identityPath: "./IDENTITY.md" }, tools: { allowedTools: ["Read"], mcpConfigPath: "./missing-mcp.json" } });
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false, allowFilesystemWrites: false });
+    expect(sectionById(report, "mcp").status).toBe("error");
+    expect(sectionById(report, "tools").status).toBe("error");
+    expect(report.sections.flatMap((section) => section.details).filter((line) => line.includes("MCP config file is missing"))).toHaveLength(1);
+    expect(sectionById(report, "tools").details).toContain("See MCP servers for external server configuration findings.");
+    const plainPath = await writeConfig({ runtime: { model: "openai-codex:gpt-5.5" }, context: { identityPath: "./IDENTITY.md" }, tools: { allowedTools: ["Read"] } });
+    const plain = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath: plainPath, liveness: false });
+    expect(sectionById(plain, "mcp")).toMatchObject({ status: "disabled", details: [] });
+    expect(sectionById(plain, "tools").details.join("\n")).not.toMatch(/External MCP tools|See MCP servers/);
+  });
   it("validates request-context MCP names and requires stdio transports", async () => {
     await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
     const mcpConfigPath = join(dir, "mcp.json");
@@ -4920,8 +4933,8 @@ describe("validateMonoAgentFolder — tools guardrails & channel cross-checks", 
     const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
     const tools = sectionById(report, "tools");
     expect(tools.status).toBe("error");
-    expect(tools.details.join("\n")).toContain('names unknown MCP server "missing"');
-    expect(tools.details.join("\n")).toContain('entry "remote" must reference a stdio MCP server');
+    expect(sectionById(report, "mcp").details.join("\n")).toContain('names unknown MCP server "missing"');
+    expect(sectionById(report, "mcp").details.join("\n")).toContain('entry "remote" must reference a stdio MCP server');
   });
 
   it("rejects unknown and unsupported continuation MCP servers", async () => {
@@ -4947,9 +4960,9 @@ describe("validateMonoAgentFolder — tools guardrails & channel cross-checks", 
     const tools = sectionById(report, "tools");
     expect(report.ok).toBe(false);
     expect(tools.status).toBe("error");
-    expect(tools.details.join("\n")).toContain('names unknown MCP server "missing"');
-    expect(tools.details.join("\n")).toContain('entry "remote" must reference a stdio or loopback HTTP MCP server');
-    expect(tools.details.join("\n")).toContain('entry "events" must reference a stdio or loopback HTTP MCP server');
+    expect(sectionById(report, "mcp").details.join("\n")).toContain('names unknown MCP server "missing"');
+    expect(sectionById(report, "mcp").details.join("\n")).toContain('entry "remote" must reference a stdio or loopback HTTP MCP server');
+    expect(sectionById(report, "mcp").details.join("\n")).toContain('entry "events" must reference a stdio or loopback HTTP MCP server');
   });
 
   it("accepts stdio and loopback HTTP continuation MCP servers", async () => {
@@ -5013,7 +5026,7 @@ describe("validateMonoAgentFolder — tools guardrails & channel cross-checks", 
     });
 
     const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
-    const details = sectionById(report, "tools").details.join("\n");
+    const details = sectionById(report, "mcp").details.join("\n");
     expect(report.ok).toBe(false);
     expect(details.match(/must reference a stdio or loopback HTTP MCP server/gu)).toHaveLength(4);
     expect(details).toContain('entry "bad name" is not a runtime-valid MCP server name');

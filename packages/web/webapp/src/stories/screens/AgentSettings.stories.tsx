@@ -12,3 +12,8 @@ export const Unsaved: Story = { args: { variant: "unsaved", section: null, layou
 export const PhoneUnsaved: Story = { args: { variant: "unsaved", section: null, layout: "stacked" } };
 export const PhoneOffline: Story = { args: { variant: "offline", section: null, layout: "stacked" } };
 export const RestartFailure: Story = { args: { variant: "failure", section: "agent", layout: "split" } };
+
+export const CapabilitiesDesktop: Story = { args: { variant: "capabilities", section: "capabilities", layout: "split" } };
+export const CapabilitiesPhone: Story = { args: { variant: "capabilities", section: "capabilities", layout: "stacked" }, globals: { viewport: { value: "phone" } } };
+export const CapabilitiesOlderAgent: Story = { args: { variant: "base", section: "capabilities", layout: "split" } };
+export const CapabilitiesOffline: Story = { args: { variant: "offline", section: "capabilities", layout: "stacked" } };

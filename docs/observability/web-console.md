@@ -265,6 +265,47 @@ and operating-system admission controls remain the boundary.
 
 At startup, mono-agent inspects the existing Tailscale Serve configuration. It prefers HTTPS `:443` only when free; otherwise it chooses the first free port in `8443`–`8499`. It never resets or replaces another Serve handler. Ownership is recorded locally, and `web stop` removes only the route this console created. If the first route cannot be created, the local/LAN service stays healthy and status prints the direct URLs plus remediation. If a restart cannot migrate an existing owned route to a changed app port, mono-agent restores the prior worker and exact route and exits nonzero.
 
+## Discover optional capabilities
+
+Open **Agent settings → Capabilities** to see memory (Lite, Journal or BuJo),
+webhook, Telegram, Slack, OpenAI-compatible API, cron, sandbox, MCP/tools and
+built-in tracing. A compact responsive grid shows purpose, status (text and icon)
+and the primary next step; expand a card for requirements, qualitative usage/cost,
+`ok`/`waiting`/`disabled`/`error` evidence and exact manual setup steps. Inspecting a memory tier does not select it for the agent. There is
+no apply action or credential form. Tracing is already enabled; removed external
+exporters cannot be enabled here.
+
+Status comes from the agent's read-only `validateMonoAgentFolder` checks with
+`allowFilesystemWrites: false`, `liveness: false` and `subprocessProbes: false`,
+not browser-side guesses.
+The console never initiates provider/network/subprocess liveness probes. Ready
+means local configuration checks passed, not live readiness: embedding/model,
+browser/provider connectivity, computer-use executables and native sandbox
+availability/enforcement are explicitly not probed here. Run
+`mono-agent validate` in the owner terminal for live checks. Successful and
+sanitized failed reads are cached for five seconds; concurrent requests coalesce. It labels loaded managed startup snapshots separately
+from durable input paths, with the process's current environment, not a live
+reload. A loaded-snapshot report does not observe later durable edits. Durable edits may require restart and
+`.env` edits require a new process. Missing checks never mean ready. Readiness
+is not proof that a channel delivered a message; external MCP servers are not
+connected by validation. Optional host-preflight evidence is shown only if the
+agent supplies it. Older agents show an unsupported-version explanation; offline
+or failed reads do not masquerade as a disabled feature.
+
+Successful guided init can offer this console handoff, default **Not now**,
+only after its existing route/config checks. The no-login/network warning
+precedes consent. macOS follows managed-agent readiness; Linux still needs
+manual agent start and offers managed console only with a user manager; other
+platforms use foreground. An existing verified console is reused for either launch choice; none is restarted
+or rebound. Reuse explicitly warns about listeners bound beyond loopback or
+recorded Tailscale routes, naming the listener/route; SSH forwarding hints are
+shown for loopback and wildcard binds, targeting loopback. Enter, Ctrl-D and EOF
+at the consent prompt all mean
+Not now. Browser
+opening waits for console health; SSH/headless/open failures print a URL and
+private forwarding instructions. Identity-qualified links wait for that agent's
+discovery rather than selecting another. Flag/non-TTY scaffolding is unchanged.
+
 ## Restart one agent
 
 The selected agent's settings include **Restart agent** when the agent supports

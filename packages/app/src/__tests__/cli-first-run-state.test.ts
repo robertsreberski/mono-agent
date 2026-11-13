@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   beforeCommit: undefined as (() => Promise<void>) | undefined,
   defaultBackgroundDeps: vi.fn(),
+  offerConsoleHandoff: vi.fn(),
   ensureBackgroundReady: vi.fn(),
   confirmAnswers: [] as unknown[],
   detectProviderCredentialStatesOverride: undefined as undefined | ((...args: unknown[]) => unknown),
@@ -55,6 +56,8 @@ function nextSelectAnswer(prompt: Record<string, unknown>): unknown {
   }
   return answer;
 }
+
+vi.mock("../setup/console-handoff.js", () => ({ offerConsoleHandoff: mocks.offerConsoleHandoff }));
 
 vi.mock("@clack/prompts", () => ({
   cancel: vi.fn(),
@@ -205,6 +208,7 @@ function readyReport() {
 }
 
 beforeEach(async () => {
+  mocks.offerConsoleHandoff.mockReset();
   mocks.detectProviderCredentialStatesOverride = undefined;
   delete process.env.MONO_AGENT_TELEGRAM_BOT_TOKEN;
   delete process.env.OPENAI_API_KEY;
@@ -355,6 +359,7 @@ describe("guided init state transitions", () => {
     expect(mocks.resolveInstanceTarget.mock.calls[0]?.[0]?.args).not.toHaveProperty("envFile");
     const output = vi.mocked(process.stdout.write).mock.calls.map(([chunk]) => String(chunk)).join("");
     expect(output).toContain("Agent ready");
+    expect(mocks.offerConsoleHandoff).toHaveBeenCalledWith(expect.objectContaining({ agentReady: true, sourceId: expect.any(String) }));
     expect(output).toContain("Chat in the browser");
     expect(output).toContain("mono-agent status --config");
     expect(output).toContain("mono-agent web run --loopback");
@@ -427,6 +432,7 @@ describe("guided init state transitions", () => {
     const diagnostic = vi.mocked(process.stderr.write).mock.calls.map(([chunk]) => String(chunk)).join("");
     expect(diagnostic).toContain("files were preserved");
     expect(diagnostic).toContain("background agent is not ready");
+    expect(mocks.offerConsoleHandoff).not.toHaveBeenCalled();
   });
 
   it("prints exact recovery commands when background target resolution throws unexpectedly", async () => {

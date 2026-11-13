@@ -263,6 +263,7 @@ interface AppOwnedTuiChannelDriver extends ChannelDriver<TuiAdapterConfig> {
     providerAuth: ProviderAuthOperator | undefined,
     providerUsage?: ProviderUsageOperator,
     restart?: TuiRestartAuthority,
+    capabilitySetup?: TuiAdapterOptions["capabilitySetup"],
   ): Promise<RunningChannel>;
 }
 
@@ -280,6 +281,7 @@ export function startAppOwnedTuiChannel(
   providerAuth: ProviderAuthOperator | undefined,
   providerUsage?: ProviderUsageOperator,
   restart?: TuiRestartAuthority,
+  capabilitySetup?: TuiAdapterOptions["capabilitySetup"],
 ): Promise<RunningChannel> | undefined {
   if (!appOwnedTuiDrivers.has(driver)) return undefined;
   return (driver as AppOwnedTuiChannelDriver)[APP_OWNED_TUI_START](
@@ -288,6 +290,7 @@ export function startAppOwnedTuiChannel(
     providerAuth,
     providerUsage,
     restart,
+    capabilitySetup,
   );
 }
 
@@ -321,7 +324,7 @@ export function createTuiChannelDriver(
     async start(input) {
       return await this[APP_OWNED_TUI_START](input, undefined, undefined, undefined);
     },
-    async [APP_OWNED_TUI_START](input, processJobs, providerAuth, providerUsage, restart) {
+    async [APP_OWNED_TUI_START](input, processJobs, providerAuth, providerUsage, restart, capabilitySetup) {
       const adapterModule = await loadTuiModule();
       const adapterFactory = overrides.adapterFactory ?? adapterModule.startTuiAdapter;
       const deliverNotification = overrides.deliverNotification ?? deliverWebNotification;
@@ -530,6 +533,7 @@ export function createTuiChannelDriver(
           : { processJobs, processJobsBearer: processJobs.operatorToken,
               ...(processJobs.wakeAdmission === undefined ? {} : { processJobWakeAdmission: processJobs.wakeAdmission }) }),
         ...(providerAuth === undefined ? {} : { providerAuth }),
+        ...(capabilitySetup === undefined ? {} : { capabilitySetup }),
         ...(providerUsage === undefined ? {} : { providerUsage }),
         ...(restart === undefined || input.config.apiKey === undefined ? {} : { restart }),
         ...(input.interaction === undefined ? {} : { interaction: input.interaction }),

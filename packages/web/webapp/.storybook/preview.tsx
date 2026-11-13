@@ -1,3 +1,4 @@
+import { capabilitySnapshot } from "../src/test/capability-fixtures";
 import type { Preview } from "@storybook/react-vite";
 import { useEffect } from "react";
 import { AssistantRuntimeProvider, useLocalRuntime } from "@assistant-ui/react";
@@ -28,6 +29,7 @@ const originalFetch = window.fetch.bind(window);
 window.fetch = (input, init) => {
   const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
   const pathname = new URL(url, location.href).pathname;
+  if (pathname === "/api/v1/agents/atlas-story-settings-capabilities/capabilities" && (init?.method ?? (input instanceof Request ? input.method : "GET")).toUpperCase() === "GET") return Promise.resolve(Response.json(capabilitySnapshot));
   if (pathname === "/api/v1/agents/atlas/cron/jobs/garden-daily/run" && init?.method === "POST") {
     return Promise.resolve(Response.json({ kind: "confirmation_required", confirmation: { token: "fictional-confirmation", expiresAt: new Date(Date.now() + 5 * 60_000).toISOString(), message: "Run the fictional garden schedule now?" } }, { status: 428 }));
   }

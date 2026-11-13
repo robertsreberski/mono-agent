@@ -1,3 +1,5 @@
+import { offerConsoleHandoff } from "./console-handoff.js";
+import { resolveAppTraceSourceId } from "../composition/app-config.js";
 import { createHash } from "node:crypto";
 import { basename, resolve } from "node:path";
 import process from "node:process";
@@ -545,6 +547,10 @@ export async function runGuidedInit(args: ParsedCliArgs, environment: RunInitEnv
         }
         if (process.platform !== "darwin") {
           printUnsupportedGuidedInitHandoff(result.configPath, backgroundEnvFile);
+          await offerConsoleHandoff({
+            sourceId: await resolveAppTraceSourceId({ cwd, configPath: result.configPath, env: postWriteEnv }),
+            agentReady: false, env: postWriteEnv,
+          });
           return 0;
         }
         process.stdout.write(ui.hint("Starting the managed background agent…"));
@@ -581,6 +587,10 @@ export async function runGuidedInit(args: ParsedCliArgs, environment: RunInitEnv
           "Agent ready — the background process reported startup complete.\n",
         ));
         printReadyAgentHandoff(result.configPath, backgroundEnvFile);
+        await offerConsoleHandoff({
+          sourceId: await resolveAppTraceSourceId({ cwd, configPath: result.configPath, env: postWriteEnv }),
+          agentReady: true, env: postWriteEnv,
+        });
         return 0;
       }
       configurationRecoveryStep = focusedConfigurationRepairStep(stagedGate.failedSectionIds);

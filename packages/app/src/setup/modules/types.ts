@@ -69,6 +69,13 @@ export interface CapabilityModule {
   /** One-line wizard hint. */
   readonly summary: string;
   readonly riskLevel: "low" | "medium" | "high";
+  /** Read-only console guidance. All examples come from this module's existing recipe. */
+  readonly discovery?: {
+    readonly requirements: readonly string[];
+    readonly usage: string;
+    readonly ownedConfigPaths: readonly string[];
+    readonly preparation?: readonly string[];
+  };
   /** False for optional plugin capabilities that are not installed by the app. */
   readonly wizardSelectable?: boolean;
   /** The `docs/playbooks/<file>` this module mirrors, parity-checked to exist. */

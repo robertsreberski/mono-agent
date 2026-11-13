@@ -1,3 +1,5 @@
+import type { CapabilitySetupSnapshot } from "@mono-agent/channel-operator/client";
+export type WebCapabilitySetupSnapshot = CapabilitySetupSnapshot;
 import {
   AGENT_LIVE_INPUT_MAX_MESSAGES,
   type AgentReplyMcpAppPart,
@@ -205,6 +207,7 @@ export interface WebAgentSummary {
   readonly restart?: WebAgentRestartSupport;
   readonly supportsProviderAuth?: true;
   readonly supportsManualCompaction?: true;
+  readonly supportsCapabilitySetup?: true;
   readonly supportsProviderUsage?: true;
   readonly supportsProviderUsageRefresh?: true;
   /** Additive explicit live-check action; passive status remains traffic-free. */

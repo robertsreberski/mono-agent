@@ -1,3 +1,4 @@
+import { parseCapabilitySetupSnapshot, MAX_CAPABILITY_SETUP_BYTES, type CapabilitySetupSnapshot } from "@mono-agent/channel-operator/client";
 import { isAgentCompactionAccounting, parseProviderUsageSnapshot, type ProviderUsageId, type ProviderUsageSnapshot } from "@mono-agent/contracts";
 import {
   AGENT_CONTEXT_IMPORT_MAX_TEXT_BYTES,
@@ -77,6 +78,9 @@ const PRESERVED_MCP_APP_OPERATOR_ERRORS = new Map<string, number>([
   ["app_audit_incomplete", 409],
   ["app_audit_failed", 507],
 ]);
+const PRESERVED_CAPABILITY_ERRORS = new Map<string, number>([
+  ["capabilities_unavailable", 503], ["capabilities_unsupported", 501],
+]);
 const PRESERVED_PROVIDER_AUTH_ERRORS = new Map<string, number>([
   ["provider_auth_invalid_request", 400],
   ["provider_auth_not_found", 404],
@@ -146,6 +150,7 @@ export type OperatorRestartResponse =
 export interface OperatorInfo {
   /** Always fail closed on older or malformed producers. */
   readonly restart: OperatorRestartSupport;
+  readonly supportsCapabilitySetup?: true;
   readonly schema: number;
   readonly pid?: number;
   readonly label?: string;
@@ -308,6 +313,8 @@ export class OperatorClient {
       ...(mcpApps === undefined ? {} : { mcpApps }),
       ...(cron?.read === true ? { cron: { read: true, actions: cron.actions === true } } : {}),
       ...(capabilities?.jobs === true ? { supportsJobs: true } : {}),
+      ...(record(capabilities?.capabilitySetup)?.version === 1
+        && record(capabilities?.capabilitySetup)?.read === true ? { supportsCapabilitySetup: true as const } : {}),
       ...(record(capabilities?.providerUsage)?.version === 1 ? {
         supportsProviderUsage: true,
         ...(record(capabilities?.providerUsage)?.refresh === true ? { supportsProviderUsageRefresh: true } : {}),
@@ -358,6 +365,19 @@ export class OperatorClient {
       return { kind: "refused", reason: boundedRestartReason(error?.message) };
     }
     throw new WebConsoleError("restart_unconfirmed", "The restart response could not be confirmed.", 502);
+  }
+
+  async capabilitySetup(signal?: AbortSignal): Promise<CapabilitySetupSnapshot> {
+    const response = await this.request(`${this.baseUrl}/v1/capabilities`, {
+      headers: this.headers(false), ...(signal === undefined ? {} : { signal }),
+    }, PRESERVED_CAPABILITY_ERRORS);
+    try {
+      return parseCapabilitySetupSnapshot(JSON.parse(await readBoundedBody(response, MAX_CAPABILITY_SETUP_BYTES, "operator_capabilities_too_large")));
+    } catch (error) {
+      if (error instanceof WebConsoleError || signal?.aborted
+        || (error instanceof Error && ["AbortError", "TimeoutError"].includes(error.name))) throw error;
+      throw new WebConsoleError("operator_capabilities_invalid", "The agent returned an invalid capability report.", 502);
+    }
   }
 
   async providerUsage(provider?: ProviderUsageId, signal?: AbortSignal): Promise<ProviderUsageSnapshot> {

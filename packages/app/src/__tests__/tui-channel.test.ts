@@ -125,7 +125,7 @@ const FABLE_MODEL_OPTIONS = {
   providerLabel: "Anthropic",
 };
 
-async function startCapturingTui(options: StartOptions = {}): Promise<TuiAdapterOptions> {
+async function startCapturingTui(options: StartOptions = {}, capabilitySetup?: TuiAdapterOptions["capabilitySetup"]): Promise<TuiAdapterOptions> {
   let captured: TuiAdapterOptions | undefined;
   const driver = createTuiChannelDriver({
     adapterFactory: (adapterOptions): Promise<TuiAdapterStartResult> => {
@@ -145,7 +145,8 @@ async function startCapturingTui(options: StartOptions = {}): Promise<TuiAdapter
     ...(options.discoverProviders === undefined ? {} : { discoverProviders: options.discoverProviders }),
   });
 
-  await driver.start(baseInput(options));
+  if (capabilitySetup === undefined) await driver.start(baseInput(options));
+  else await startAppOwnedTuiChannel(driver, baseInput(options), undefined, undefined, undefined, undefined, capabilitySetup);
   if (captured === undefined) {
     throw new Error("TUI adapter was not started.");
   }
@@ -1155,6 +1156,13 @@ describe("tui channel driver — process jobs", () => {
 
     expect(startAppOwnedTuiChannel(impostor, baseInput(), processJobs, undefined, undefined)).toBeUndefined();
     expect(start).not.toHaveBeenCalled();
+  });
+
+  it("forwards capabilitySetup through the app-owned TUI start into adapter options", async () => {
+    const capabilitySetup = { read: vi.fn(async () => { throw new Error("unused"); }) };
+    const captured = await startCapturingTui({}, capabilitySetup);
+    expect(captured.capabilitySetup).toBe(capabilitySetup);
+    expect(capabilitySetup.read).not.toHaveBeenCalled();
   });
 
   it("passes the owner bearer and wakes one existing web thread through a normal history turn", async () => {

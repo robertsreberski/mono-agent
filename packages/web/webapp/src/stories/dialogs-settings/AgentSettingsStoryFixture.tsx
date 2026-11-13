@@ -5,7 +5,7 @@ import { setSettingsDraft, discardSettingsDraft } from "../../settings-drafts";
 import { atlas } from "../fixtures";
 import { storyStore } from "../store";
 
-export type Variant = "base" | "dense" | "stress" | "offline" | "unsaved" | "confirm" | "progress" | "success" | "override" | "draft-use" | "saving" | "save-error" | "loading" | "read-error" | "failure" | "not-confirmed" | "unsupported" | "unpinned" | "usage-only" | "no-usage" | "needs-action" | "usage-stale" | "provider-unsupported" | "provider-loading" | "checks-running" | "checks-complete" | "device-code" | "prompt" | "pin-pending" | "pin-failed" | "no-recent" | "restart-loading" | "confirm-no-running" | "idle";
+export type Variant = "capabilities" | "base" | "dense" | "stress" | "offline" | "unsaved" | "confirm" | "progress" | "success" | "override" | "draft-use" | "saving" | "save-error" | "loading" | "read-error" | "failure" | "not-confirmed" | "unsupported" | "unpinned" | "usage-only" | "no-usage" | "needs-action" | "usage-stale" | "provider-unsupported" | "provider-loading" | "checks-running" | "checks-complete" | "device-code" | "prompt" | "pin-pending" | "pin-failed" | "no-recent" | "restart-loading" | "confirm-no-running" | "idle";
 const defaultSave = storyStore.setAgentRunDefaults;
 const defaultPin = storyStore.setAgentPinned;
 const select = (variant: Variant, onPinFailure: () => void) => {
@@ -13,7 +13,7 @@ const select = (variant: Variant, onPinFailure: () => void) => {
     setAgentPinned: variant === "pin-pending" ? () => new Promise<void>(() => undefined) : variant === "pin-failed" ? async () => { onPinFailure(); throw new Error("Example pin unavailable"); } : defaultPin,
     catalogByProvider: variant === "loading" ? { atlas: { status: "loading", models: [] } } : {} });
   const sourceId = `atlas-story-settings-${variant}`;
-  Object.assign(storyStore, { selectedAgent: { ...atlas, sourceId, status: variant === "offline" ? "offline" : "online", pinned: variant !== "unpinned",
+  Object.assign(storyStore, { selectedAgent: { ...atlas, sourceId, status: variant === "offline" ? "offline" : "online", supportsCapabilitySetup: variant === "capabilities" ? true : undefined, pinned: variant !== "unpinned",
     supportsProviderUsageRefresh: variant !== "no-usage" ? true : undefined, supportsProviderAuthChecks: variant !== "usage-only" ? true : undefined,
     restart: variant === "unsupported" ? { supported: false, reason: "Restart is unavailable for this example agent." } : { supported: true },
     supportsProviderAuth: !["usage-only", "provider-unsupported"].includes(variant) ? true : undefined, supportsProviderUsage: !["no-usage", "provider-unsupported"].includes(variant) ? true : undefined, providers: [{ id: "atlas", label: "Atlas Cloud", configured: true }, { id: "grove", label: "Grove Research Cloud", configured: true }],
@@ -25,7 +25,7 @@ const select = (variant: Variant, onPinFailure: () => void) => {
   if (["unsaved", "saving", "save-error"].includes(variant)) setSettingsDraft(sourceId, { model: "grove/fast", effort: "low" });
   if (variant === "draft-use") setSettingsDraft(sourceId, { model: "", effort: "" });
 };
-export function Preview({ variant, section, layout }: { readonly variant: Variant; readonly section: "new-conversations" | "providers" | "agent" | null; readonly layout: "split" | "stacked" }) {
+export function Preview({ variant, section, layout }: { readonly variant: Variant; readonly section: "new-conversations" | "providers" | "capabilities" | "agent" | null; readonly layout: "split" | "stacked" }) {
   const [pinError, setPinError] = useState(false);
   select(variant, () => setPinError(true));
   useEffect(() => () => { discardSettingsDraft(`atlas-story-settings-${variant}`); Object.assign(storyStore, { selectedAgent: atlas, selectedAgentId: atlas.sourceId, setAgentRunDefaults: defaultSave, setAgentPinned: defaultPin, catalogByProvider: {} }); }, [variant]);

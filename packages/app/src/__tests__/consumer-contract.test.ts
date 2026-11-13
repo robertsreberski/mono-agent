@@ -59,6 +59,14 @@ describe("golden consumer config contracts", () => {
           "status": "ok",
         },
         {
+          "id": "mcp",
+          "status": "ok",
+        },
+        {
+          "id": "observability",
+          "status": "ok",
+        },
+        {
           "id": "computer-use",
           "status": "disabled",
         },
@@ -152,6 +160,14 @@ describe("golden consumer config contracts", () => {
         },
         {
           "id": "tools",
+          "status": "ok",
+        },
+        {
+          "id": "mcp",
+          "status": "ok",
+        },
+        {
+          "id": "observability",
           "status": "ok",
         },
         {

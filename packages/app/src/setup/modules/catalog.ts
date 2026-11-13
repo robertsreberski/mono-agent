@@ -56,6 +56,15 @@ const channelWebhook: CapabilityModule = {
   title: "Webhook",
   summary: "HTTP loopback endpoint — the zero-credential smoke channel.",
   riskLevel: "low",
+  discovery: {
+    "requirements": [
+      "A local HTTP caller; keep the listener on loopback."
+    ],
+    "usage": "Each invocation can use model tokens and tools.",
+    "ownedConfigPaths": [
+      "webhook"
+    ]
+  },
   inputs: [],
   configFragment: () => ({ webhook: { enabled: true } }),
   validateExpectations: [{ sectionId: "channel:webhook", mustBe: "ok" }],
@@ -67,6 +76,15 @@ const channelTelegram: CapabilityModule = {
   title: "Telegram",
   summary: "Chat with your agent via a Telegram bot.",
   riskLevel: "medium",
+  discovery: {
+    "requirements": [
+      "A BotFather bot token in .env and an explicit allowedChatIds list."
+    ],
+    "usage": "Messages use your configured model; the Bot API itself has no per-message model charge.",
+    "ownedConfigPaths": [
+      "telegram"
+    ]
+  },
   inputs: [
     {
       id: "allowedChatIds",
@@ -104,6 +122,15 @@ const channelSlack: CapabilityModule = {
   title: "Slack",
   summary: "Socket-Mode Slack bot scoped to a channel allowlist.",
   riskLevel: "medium",
+  discovery: {
+    "requirements": [
+      "A Slack app with Socket Mode, bot/app tokens in .env, and an explicit allowedChannelIds list."
+    ],
+    "usage": "Messages use model tokens; Slack workspace limits and billing are separate.",
+    "ownedConfigPaths": [
+      "slack"
+    ]
+  },
   inputs: [
     {
       id: "allowedChannelIds",
@@ -157,6 +184,15 @@ const channelOpenaiApi: CapabilityModule = {
   title: "OpenAI-compatible API",
   summary: "Expose the runtime as an OpenAI-compatible loopback endpoint.",
   riskLevel: "medium",
+  discovery: {
+    "requirements": [
+      "A local OpenAI-compatible client; configure a client bearer before sharing access."
+    ],
+    "usage": "Client requests use the agent model and tools, not a new OpenAI subscription.",
+    "ownedConfigPaths": [
+      "openaiApi"
+    ]
+  },
   inputs: [
     {
       id: "apiKey",
@@ -178,6 +214,15 @@ const channelCron: CapabilityModule = {
   title: "Scheduled jobs (cron)",
   summary: "Run the agent on a schedule; scaffolds cron/digest.md.",
   riskLevel: "low",
+  discovery: {
+    "requirements": [
+      "At least one enabled job markdown file in cron/. Review its schedule before starting."
+    ],
+    "usage": "Every scheduled run may consume model tokens, tools and notification usage.",
+    "ownedConfigPaths": [
+      "cron"
+    ]
+  },
   inputs: [
     {
       id: "cronExpression",
@@ -343,6 +388,15 @@ const memoryLite: CapabilityModule = {
   title: "Lite (full-text search)",
   summary: "SQLite full-text recall, zero external dependencies.",
   riskLevel: "low",
+  discovery: {
+    "requirements": [
+      "A writable fresh memory root and the built-in SQLite native module."
+    ],
+    "usage": "Local full-text search and disk storage; no embedding calls.",
+    "ownedConfigPaths": [
+      "memory"
+    ]
+  },
   inputs: [],
   configFragment: () => ({
     memory: { ...memoryBlock("lite"), recallTool: { enabled: true }, rememberTool: { enabled: true } },
@@ -356,6 +410,21 @@ const memoryJournal: CapabilityModule = {
   title: "Journal (semantic recall)",
   summary: "Semantic recall via local Ollama or LM Studio embeddings.",
   riskLevel: "low",
+  discovery: {
+    "requirements": [
+      "A fresh memory root, SQLite, and a running Ollama or LM Studio embedding model with matching dimension."
+    ],
+    "usage": "Local embedding compute and disk usage; rebuild embeds stored content.",
+    "ownedConfigPaths": [
+      "memory"
+    ],
+    "preparation": [
+      "Use this recipe only for a fresh root. Stop the agent before preparing memory: mono-agent stop",
+      "Set the actual embedding model, endpoint and dimension; for BuJo set the extraction model too.",
+      "Initialize generation metadata from the agent folder: mono-agent memory rebuild",
+      "Do not change an existing root tier or rebuild/migrate existing data from these instructions; use the memory administration guide."
+    ]
+  },
   inputs: managedMemoryEmbeddingInputs,
   configFragment: (values) => ({
     memory: {
@@ -382,6 +451,21 @@ const memoryBujo: CapabilityModule = {
   title: "BuJo (capture + recall)",
   summary: "Daily-log capture plus semantic recall via Ollama or LM Studio.",
   riskLevel: "medium",
+  discovery: {
+    "requirements": [
+      "Journal prerequisites plus a configured extraction model."
+    ],
+    "usage": "Embedding compute, disk storage and additional model calls for capture/extraction.",
+    "ownedConfigPaths": [
+      "memory"
+    ],
+    "preparation": [
+      "Use this recipe only for a fresh root. Stop the agent before preparing memory: mono-agent stop",
+      "Set the actual embedding model, endpoint and dimension; for BuJo set the extraction model too.",
+      "Initialize generation metadata from the agent folder: mono-agent memory rebuild",
+      "Do not change an existing root tier or rebuild/migrate existing data from these instructions; use the memory administration guide."
+    ]
+  },
   inputs: managedMemoryEmbeddingInputs,
   configFragment: (values) => ({
     memory: {
@@ -416,6 +500,19 @@ const sandbox: CapabilityModule = {
   title: "Sandbox (native srt)",
   summary: "Native srt sandbox: workspace-only FS, localhost network, fails closed.",
   riskLevel: "medium",
+  discovery: {
+    "requirements": [
+      "A supported OS and the pinned native SRT runtime."
+    ],
+    "usage": "Local process overhead; no separate model charge. Network policy may block tools.",
+    "ownedConfigPaths": [
+      "sandbox"
+    ],
+    "preparation": [
+      "mono-agent sandbox setup",
+      "mono-agent sandbox check"
+    ]
+  },
   inputs: [],
   configFragment: () => ({
     sandbox: {

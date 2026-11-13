@@ -35,6 +35,12 @@ describe("threadBucketKey", () => {
 });
 
 describe("resolveBootstrapSelection", () => {
+  it("retains an undiscovered init handoff target instead of selecting another agent", () => {
+    const pending = bootstrap([agent("other")], [thread("other-thread", "other")]);
+    expect(resolveBootstrapSelection(pending, "other", "other-thread", {}, "garden")).toEqual({ agentId: "garden", threadId: null });
+    const found = bootstrap([agent("other"), agent("garden")], []);
+    expect(resolveBootstrapSelection(found, "other", null, {}, "garden").agentId).toBe("garden");
+  });
   it("restores the origin-local thread for the selected agent instead of backend global state", () => {
     const payload = bootstrap(
       [agent("a"), agent("b")],

@@ -1,3 +1,4 @@
+import type { WebCapabilitySetupSnapshot } from "./types.js";
 import { normalizeBrowserCosts } from "../../src/cost-wire.js";
 import { parseProviderUsageSnapshot } from "@mono-agent/contracts/provider-usage";
 import type { WebThreadUsage, WebUsageSlice } from "../../src/contracts.js";
@@ -863,6 +864,10 @@ export const api = {
     return result.agent;
   },
 
+  capabilitySetup: (sourceId: string, signal?: AbortSignal) => request<WebCapabilitySetupSnapshot>(
+    `/api/v1/agents/${encodeURIComponent(sourceId)}/capabilities`,
+    { headers: { "X-Mono-Agent-Web-Origin": window.location.origin }, ...(signal === undefined ? {} : { signal }) },
+  ),
   providerUsage: (sourceId: string, signal?: AbortSignal) => request<unknown>(
     `/api/v1/agents/${encodeURIComponent(sourceId)}/provider-usage`,
     { headers: { "X-Mono-Agent-Web-Origin": window.location.origin }, ...(signal === undefined ? {} : { signal }) },

@@ -326,6 +326,18 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
     } catch (error) { next(error); }
   });
 
+  app.get("/api/v1/agents/:id/capabilities", (req, res, next) => {
+    res.setHeader("Cache-Control", "private, no-store, max-age=0");
+    try {
+      exactRequestOrigin(req);
+      if (Object.keys(req.query).length !== 0) {
+        res.status(400).json({ error: "invalid_capabilities_query" }); return;
+      }
+      void trackOperation(service.capabilitySetup(pathParam(req.params.id)), activeOperations)
+        .then((snapshot) => res.json(snapshot)).catch(next);
+    } catch (error) { next(error); }
+  });
+
   app.get("/api/v1/agents/:id/provider-usage", (req, res, next) => {
     res.setHeader("Cache-Control", "private, no-store, max-age=0");
     try {

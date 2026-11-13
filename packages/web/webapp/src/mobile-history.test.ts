@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { mobileHistoryEntry, ownedSettingsEntry, pushMobileHistoryEntry, routeWriteState } from "./mobile-history";
-import { closeSettingsHistory, parseSettingsParam, pushSettingsEntries, stripSettingsParam } from "./settings-navigation";
+import { consoleHandoffTarget, closeSettingsHistory, parseSettingsParam, pushSettingsEntries, stripSettingsParam } from "./settings-navigation";
 
 describe("settings history ownership", () => {
   afterEach(() => { window.history.replaceState(null, "", "/"); });
@@ -32,6 +32,9 @@ describe("settings history ownership", () => {
   });
   it("closes only owned entries, and parses the legacy restart link", () => {
     expect(parseSettingsParam("http://localhost/?settings=restart")).toBe("agent");
+    expect(parseSettingsParam("http://localhost/?settings=capabilities")).toBe("capabilities");
+    expect(consoleHandoffTarget("http://localhost/?agent=garden&settings=capabilities")).toBe("garden");
+    expect(consoleHandoffTarget("http://localhost/?agent=%00bad")).toBeNull();
     expect(stripSettingsParam("http://localhost/?thread=fictional&settings=providers")).toBe("http://localhost/?thread=fictional");
     window.history.replaceState(null, "", "/");
     pushSettingsEntries("agent");

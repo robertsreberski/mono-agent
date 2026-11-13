@@ -96,6 +96,7 @@ export const FIXTURES = [
   fixture("wake-schedule", "ApiWakeSchedule", { schedule: { scheduleId: "schedule-example", threadId: thread.id, sourceId: thread.sourceId,
     definition: { kind: "weekly", timezone: "UTC", days: [1, 3], times: ["09:00"], message: "Review the example.", compactFirst: false }, state: "active", revision: 1, nextFireAt: "2030-01-07T09:00:00.000Z", lastOutcome: null, createdAt: at } }),
   fixture("project", "ApiProject", { project }), fixture("tag", "ApiTag", { tag }),
+  fixture("capabilities", "ApiCapabilities", { version: 1, observation: "durable-inputs", observedAt: "2026-08-01T10:00:00Z", process: { pid: 42, startedAt: "2026-08-01T09:00:00Z" }, cards: [] }),
   fixture("provider-usage", "ApiProviderUsage", { schema: "mono-agent.provider-usage.v1", providers: [{ providerId: "anthropic", label: "Claude", fetchedAt: at, stale: false,
     windows: [{ kind: "session", label: "Session", usedPercent: 25, periodMs: 18000000, resetsAt: "2030-01-02T15:00:00.000Z" }] }] }),
   fixture("cron-overview", "ApiCronOverview", { generatedAt: at, actionsEnabled: true, jobs: [{ jobId: "cron-example", conversationId: "cron-conversation-example", threadId: "cron-thread-example",

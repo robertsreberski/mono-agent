@@ -7,6 +7,12 @@ import type { ValidateMonoAgentFolderOptions } from "./options.js";
 export async function sandboxSection(config: MonoAgentConfig, input: ValidateMonoAgentFolderOptions): Promise<ValidationSection> {
   try {
     const boundary = await inspectEffectiveSandboxBoundary(config, input);
+    if (input.subprocessProbes === false && !boundary.blocked && boundary.policy?.mode === "native") {
+      return { id: "sandbox", label: "Sandbox", status: "waiting", details: [
+        "Native sandbox availability/enforcement is not probed here. Run mono-agent validate in the owner terminal.",
+        ...(boundary.processJobsRequired ? ["ProcessJobs requires native protection; its effectiveness is not assumed by this inspection."] : []),
+      ] };
+    }
     const { state, detail } = await effectiveSandboxReport(config, boundary, input.sandboxEngine);
     const warning = sandboxEffectiveStateWarning(state);
     return { id: "sandbox", label: "Sandbox",
