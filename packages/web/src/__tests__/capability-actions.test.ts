@@ -2,6 +2,7 @@ import { rm } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import { WebService } from "../service.js";
+import { startWebServer } from "../server.js";
 import { OperatorClient } from "../operator-client.js";
 import { fakeDiscoveredAgent, temporaryRoot } from "./helpers.js";
 const roots: string[] = [];
@@ -39,4 +40,49 @@ it("never forwards diagnostic prose from upstream action failures or transport e
   }
   const client = new OperatorClient({ baseUrl: "http://127.0.0.1:1234/gui", fetchImpl: async () => { throw new Error("fictional-private-diagnostic"); } });
   await expect(client.capabilityActions("read")).rejects.toMatchObject({ status: 502, message: expect.not.stringContaining("fictional-private-diagnostic") });
+});
+
+it("preserves fixed action failures without forwarding upstream prose or details to bodies or diagnostics", async () => {
+  const root = await temporaryRoot(); roots.push(root);
+  const discovered = fakeDiscoveredAgent();
+  const diagnostic = "fictional-upstream-prose";
+  const secret = "sk-fictional-capability-test-123456789";
+  let failure: { code: string; status: number } | undefined;
+  const log = vi.fn();
+  const web = await startWebServer({ port: 0, voice: false, stateDir: join(root, "state"), discoveryIntervalMs: 0, purgeIntervalMs: 0,
+    logger: { info: log, warn: log, error: log, debug: log },
+    discoverImpl: async () => [{ ...discovered, source: { ...discovered.source, pid: process.pid } }],
+    fetchImpl: (async (url) => {
+      if (String(url).endsWith("/info")) return Response.json({ schema: 1, pid: process.pid, capabilities: { capabilityActions: { version: 1, preview: true, save: true } } });
+      if (failure === undefined) throw new Error(`${diagnostic} ${secret}`);
+      return Response.json({ error: { code: failure.code, message: `${diagnostic} ${secret}`, reason: secret, details: { reason: secret, raw: diagnostic } } }, { status: failure.status });
+    }) as typeof fetch });
+  const base = `${web.url}api/v1/agents/agent-one/capability-actions`;
+  const headers = { Origin: new URL(web.url).origin, "Content-Type": "application/json" };
+  try {
+    for (const [code, status] of [["capability_action_conflict", 409], ["capability_action_unavailable", 409], ["capability_action_failed", 503], ["capability_actions_unsupported", 501], ["unknown", 500]] as const) {
+      failure = { code, status };
+      for (const operation of ["read", "preview", "save"] as const) {
+        const body = { action: preview.action, process: identity, ...(operation === "save" ? { expectedVersion: preview.expectedVersion, confirmed: true } : {}) };
+        const response = await fetch(`${base}${operation === "read" ? "" : `/${operation}`}`, { headers, ...(operation === "read" ? {} : { method: "POST", body: JSON.stringify(body) }) });
+        expect(response.status).toBe(code === "unknown" ? 502 : status);
+        const value = await response.json() as { error: { code: string; message: string; details?: unknown } };
+        expect(value.error.code).toBe(code === "unknown" ? "capability_action_failed" : code);
+        expect(value.error.details).toBeUndefined();
+        expect(JSON.stringify(value)).not.toContain(diagnostic);
+        expect(JSON.stringify(value)).not.toContain(secret);
+      }
+    }
+    failure = undefined;
+    const transport = await fetch(base, { headers });
+    expect(transport.status).toBe(502);
+    expect(await transport.json()).toEqual({ error: { code: "capability_action_failed", message: "Capability action outcome could not be confirmed; refresh and inspect settings before retrying." } });
+    for (const operation of ["preview", "save"]) {
+      const malformed = await fetch(`${base}/${operation}`, { method: "POST", headers, body: `{"credential":"${secret}"` });
+      expect(malformed.status).toBe(400);
+      expect(await malformed.json()).toEqual({ error: { code: "invalid_json", message: "The request body is not valid JSON." } });
+    }
+    expect(JSON.stringify(log.mock.calls)).not.toContain(diagnostic);
+    expect(JSON.stringify(log.mock.calls)).not.toContain(secret);
+  } finally { await web.stop(); }
 });

@@ -60,6 +60,8 @@ for (const width of [390, 1440]) describe(`Capabilities in console settings at $
     await settleAndReveal(width);
     expect(screen.getAllByRole("article")).toHaveLength(9);
     const cards = screen.getAllByRole("article");
+    const activeMemory = screen.getByRole("article", { name: "Memory" });
+    expect(within(activeMemory).getAllByText(/Loaded at this start/)).toHaveLength(1);
     await waitFor(() => expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width));
     for (const card of cards) expect(card.getBoundingClientRect().right).toBeLessThanOrEqual(width);
     const first = cards[0]!.getBoundingClientRect(); const second = cards[1]!.getBoundingClientRect();

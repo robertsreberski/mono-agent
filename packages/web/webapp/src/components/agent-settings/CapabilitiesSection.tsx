@@ -131,7 +131,7 @@ export function CapabilitiesSection({ agent, restart = null }: { readonly agent:
     {actionsError && <p className="settings-notice">Enable availability could not be verified. Refresh capability status; no write is assumed.</p>}
     <div className="capability-grid">{snapshot.cards.map((card) => {
       const action = actionSnapshot?.actions.find((item) => item.id === (card.id === "memory" ? "memory-lite" : card.id === "channel:cron" ? "cron-controls" : ""));
-      const actionNext = action?.active ? "Loaded at this start. Inspect readiness evidence below."
+      const actionNext = action?.active ? "Inspect readiness evidence below."
         : action?.reason === "already-configured" || (action && saved[action.id] && !saved[action.id]?.uncertain) ? "Check saved settings and activation below; saving does not restart the agent."
         : action?.available ? "Review and Save below, or use manual setup. Saving does not activate the feature." : undefined;
       return <CapabilityCard key={card.id} card={card} actionNext={actionNext}>{action && actionSnapshot && <CapabilityActionControls agent={agent} action={action} process={actionSnapshot.process} restart={restart} refresh={() => setRevision((value) => value + 1)} saved={saved[action.id] ?? null} setSaved={(value) => setSaved((prior) => ({ ...prior, [action.id]: value }))} />}</CapabilityCard>;

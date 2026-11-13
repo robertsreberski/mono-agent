@@ -57,6 +57,8 @@ it("round-trips browser proxy → real agent → durable guarded write, rejects 
     const nativeSave = await fetch(`${url}/save`, { method: "POST", headers: claimedOnly, body: JSON.stringify({ ...body, expectedVersion: nativeInput.expectedVersion, confirmed: true }) });
     expect(nativeSave.status).toBe(200); expect(await nativeSave.json()).toMatchObject({ changed: false });
     const unsupported = await fetch(`${web.url}api/v1/agents/older/capability-actions`, { headers });
-    expect(unsupported.status).toBe(409); expect(await unsupported.text()).toContain("capability_actions_unsupported");
+    expect(unsupported.status).toBe(409);
+    expect(await unsupported.json()).toEqual({ error: { code: "capability_actions_unsupported", message: "Update the agent to enable features from the console." } });
+    await expect(browserApi.saveCapabilityAction("fictional", save)).rejects.toMatchObject({ status: 409, code: "capability_action_conflict" });
   } finally { resetDataUsage(); vi.unstubAllGlobals(); await web.stop(); await older.stop(); await adapter.stop(); await rm(root, { recursive: true, force: true }); }
 }, 90_000);

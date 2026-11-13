@@ -131,3 +131,13 @@ it("uses Enable-aware next steps without changing validation status", async () =
   expect(card.querySelector(".capability-next")!.textContent).not.toContain("Add the cron block");
   expect(within(card).getByText("Disabled")).toBeVisible();
 });
+
+it("shows loaded-at-start evidence once on an active Memory card", async () => {
+  vi.spyOn(api, "capabilitySetup").mockResolvedValue(capabilitySnapshot);
+  vi.spyOn(api, "capabilityActions").mockResolvedValue(capabilityActions);
+  render(<CapabilitiesSection agent={agent("garden", { supportsCapabilitySetup: true, supportsCapabilityActions: true })} />);
+  await screen.findByText("Active");
+  const memory = screen.getByRole("article", { name: "Memory" });
+  expect(within(memory).getAllByText(/Loaded at this start/)).toHaveLength(1);
+  expect(memory.querySelector(".capability-next")!.textContent).toBe("Next: Inspect readiness evidence below.");
+});

@@ -18,7 +18,8 @@
   with only safe details and `Retry-After`.
 
 - Recover interrupted configuration writers with owner-aware locks and bounded
-  waits, and distinguish unconfirmed saves and inactive starts in Enable controls.
+  waits. In Enable controls, distinguish unconfirmed saves from inactive starts
+  and show activation evidence once.
 
 - Add previewed, confirmed console Enable actions for safe Memory Lite setup
   and controls for valid existing cron jobs, with private guarded config backups.
