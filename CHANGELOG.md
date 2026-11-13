@@ -38,7 +38,8 @@
   agents unsupported and built-in tracing already enabled.
 - Add an opt-in browser console handoff after successful guided init, defaulting
   to Not now, with no-login consent, health-gated opening and exact-agent discovery.
-  Keep scaffold/non-TTY paths and existing console listeners unchanged.
+  Keep scaffold/non-TTY paths and existing console listeners unchanged; warn
+  explicitly when reusing a non-loopback listener or recorded sharing route.
 
 - Add versioned evidence-sensitive conversation ranking with general English
   stop-word filtering, intent-only fallback, bounded correction/event morphology

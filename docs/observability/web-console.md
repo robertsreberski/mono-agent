@@ -276,10 +276,12 @@ no apply action or credential form. Tracing is already enabled; removed external
 exporters cannot be enabled here.
 
 Status comes from the agent's read-only `validateMonoAgentFolder` checks with
-`allowFilesystemWrites: false` and `liveness: false`, not browser-side guesses.
+`allowFilesystemWrites: false`, `liveness: false` and `subprocessProbes: false`,
+not browser-side guesses.
 The console never initiates provider/network/subprocess liveness probes. Ready
 means local configuration checks passed, not live readiness: embedding/model,
-browser and provider connectivity are explicitly not probed here. Run
+browser/provider connectivity, computer-use executables and native sandbox
+availability/enforcement are explicitly not probed here. Run
 `mono-agent validate` in the owner terminal for live checks. Successful and
 sanitized failed reads are cached for five seconds; concurrent requests coalesce. It labels loaded managed startup snapshots separately
 from durable input paths, with the process's current environment, not a live
@@ -295,7 +297,10 @@ only after its existing route/config checks. The no-login/network warning
 precedes consent. macOS follows managed-agent readiness; Linux still needs
 manual agent start and offers managed console only with a user manager; other
 platforms use foreground. An existing verified console is reused for either launch choice; none is restarted
-or rebound. Enter, Ctrl-D and EOF at the consent prompt all mean Not now. Browser
+or rebound. Reuse explicitly warns about listeners bound beyond loopback or
+recorded Tailscale routes, naming the listener/route; SSH forwarding hints are
+only shown for loopback. Enter, Ctrl-D and EOF at the consent prompt all mean
+Not now. Browser
 opening waits for console health; SSH/headless/open failures print a URL and
 private forwarding instructions. Identity-qualified links wait for that agent's
 discovery rather than selecting another. Flag/non-TTY scaffolding is unchanged.

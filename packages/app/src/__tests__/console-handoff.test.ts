@@ -44,8 +44,30 @@ describe("guided init console handoff", () => {
     expect(managed).not.toHaveBeenCalled(); expect(foreground).not.toHaveBeenCalled();
     expect(open).toHaveBeenCalledWith("http://127.0.0.1:6060/?agent=fictional-agent&settings=capabilities");
   });
-  it.each([["Enter", "\r"], ["Ctrl-D", "\x04"], ["EOF", "end"]])("real Clack prompt maps %s to Not now", async (_label, key) => {
-    const input = new PassThrough();
+  it.each([
+    ["127.0.0.1", "exact", "https://garden-console.example.test/", true],
+    ["0.0.0.0", "none", undefined, false],
+    ["192.0.2.20", "none", undefined, false],
+  ] as const)("warns on reused listener %s / route %s and forwards only loopback", async (host, state, routeUrl, forwards) => {
+    const write = vi.fn(); const foreground = vi.fn(); const managed = vi.fn();
+    const url = `http://${host}:6060/`;
+    await offerConsoleHandoff({ ...options, env: { SSH_CONNECTION: "fictional" } }, {
+      platform: "darwin", choose: async () => "foreground", write, foreground, managed,
+      existing: () => existingConsoleHandoff({}, async (_args, deps) => {
+        deps?.stdout?.write(JSON.stringify({ listener: { provenRunning: true, url, host }, ownedTailscaleRoute: { state, url: routeUrl } }));
+        return 0;
+      }), health: async () => true, open: vi.fn(),
+    });
+    const output = write.mock.calls.flat().join("");
+    expect(output).toContain("This existing console is reachable beyond this computer");
+    expect(output).toContain(host);
+    if (routeUrl) { expect(output).toContain(routeUrl); expect(output).toContain("state exact"); }
+    expect(output.includes("ssh -N -L")).toBe(forwards);
+    expect(foreground).not.toHaveBeenCalled(); expect(managed).not.toHaveBeenCalled();
+  });
+  it.each([["Enter", "\r", false], ["Ctrl-D", "\x04", false], ["EOF", "end", false], ["Ctrl-D on TTY", "\x04", true], ["EOF on TTY", "end", true]] as const)("real Clack prompt maps %s to Not now", async (_label, key, tty) => {
+    const setRawMode = vi.fn();
+    const input = Object.assign(new PassThrough(), { isTTY: tty, setRawMode });
     let outputText = ""; let sent = false;
     const output = new Writable({ write(chunk, _encoding, callback) {
       outputText += String(chunk);
@@ -60,6 +82,11 @@ describe("guided init console handoff", () => {
       expect(outputText).toContain("Not now");
       expect(existing).not.toHaveBeenCalled(); expect(managed).not.toHaveBeenCalled();
       expect(foreground).not.toHaveBeenCalled(); expect(open).not.toHaveBeenCalled();
+      if (tty) {
+        // @clack/core 1.4.3 Prompt.close/cancel restore raw mode on abort.
+        expect(setRawMode).toHaveBeenCalledWith(true);
+        expect(setRawMode).toHaveBeenLastCalledWith(false);
+      }
     } finally { input.destroy(); output.destroy(); }
   });
   it("opens only after health and deep-links by identity", async () => {
@@ -97,7 +124,7 @@ describe("guided init console handoff", () => {
         return running ? 0 : 1;
       });
       expect(actions).toEqual(["status"]);
-      expect(result).toBe(running ? "http://127.0.0.1:6060/" : undefined);
+      expect(result).toEqual(running ? { url: "http://127.0.0.1:6060/", host: "127.0.0.1" } : undefined);
     }
   });
   it("does not repair or recreate a recorded sharing route during fresh managed handoff", async () => {
@@ -118,7 +145,7 @@ describe("guided init console handoff", () => {
       return 0;
     });
     expect(actions).toEqual(["status", "start", "status"]);
-    expect(result).toBe("http://127.0.0.1:5050/");
+    expect(result).toEqual({ url: "http://127.0.0.1:5050/", host: "127.0.0.1", routeState: "none" });
   });
   it("preserves readiness on launch failure and rejects an unavailable managed choice", async () => {
     const write = vi.fn(); const managed = vi.fn(async (): Promise<string> => { throw new Error("private detail"); });

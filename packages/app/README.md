@@ -355,7 +355,8 @@ Agent settings in the browser console includes **Capabilities**: memory tiers
 sandbox, MCP/tools and already-enabled built-in tracing. The app injects a
 read-only status service into its operator driver. It calls the same
 `validateMonoAgentFolder` used by `mono-agent validate`, with
-`allowFilesystemWrites: false` and `liveness: false`: console reads never trigger
+`allowFilesystemWrites: false`, `liveness: false` and `subprocessProbes: false`:
+console reads never trigger
 provider/network/subprocess probes. Ready means local configuration checks passed;
 run `mono-agent validate` in the owner terminal for live readiness. Concurrent
 reads coalesce, successful and sanitized failed results are cached for five
@@ -381,7 +382,9 @@ agent start and offers a managed console only with a usable user manager. Other
 platforms offer foreground only. Existing console definitions are preserved:
 a verified running console is reused for either launch choice, but a stopped existing definition needs
 an explicit terminal action. A new managed/foreground listener is loopback-only.
-Browser opening follows console health confirmation. SSH/headless/open failures
+Reuse warns about non-loopback listeners and existing Tailscale routes; SSH
+forwarding instructions are shown only for loopback listeners. Browser opening
+follows console health confirmation. SSH/headless/open failures
 print the identity-qualified URL and private forwarding instructions. Discovery
 waits for that exact agent instead of selecting another. No extra model turn is
 made; Enter, Ctrl-D and EOF at the handoff prompt mean Not now. Flags, non-TTY

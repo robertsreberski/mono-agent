@@ -1,19 +1,26 @@
 import * as p from "@clack/prompts";
 import { execFile } from "node:child_process";
+import { isIP } from "node:net";
 import { promisify } from "node:util";
 import { runWebCommand } from "../cli/commands/web-command.js";
 import { webHealthcheck } from "../service/web/health.js";
 import { inspectSystemd, SYSTEMD_WEB_IDENTITY } from "../service/systemd/systemd.js";
 
 export type ConsoleHandoffChoice = "later" | "managed" | "foreground";
+export interface ConsoleHandoffTarget {
+  readonly url: string;
+  readonly host: string;
+  readonly routeState?: string;
+  readonly routeUrl?: string;
+}
 export interface ConsoleHandoffDependencies {
   readonly platform?: NodeJS.Platform;
   readonly hasUserManager?: () => Promise<boolean>;
   readonly choose?: (choices: readonly ConsoleHandoffChoice[]) => Promise<ConsoleHandoffChoice>;
   readonly write?: (text: string) => void;
   readonly promptIO?: Pick<p.CommonOptions, "input" | "output">;
-  readonly existing?: () => Promise<string | undefined>;
-  readonly managed?: () => Promise<string | undefined>;
+  readonly existing?: () => Promise<ConsoleHandoffTarget | undefined>;
+  readonly managed?: () => Promise<string | ConsoleHandoffTarget | undefined>;
   readonly foreground?: (ready: (url: string) => Promise<void>) => Promise<void>;
   readonly health?: (url: string) => Promise<boolean>;
   readonly open?: (url: string) => Promise<void>;
@@ -57,7 +64,15 @@ export async function offerConsoleHandoff(
   });
   const choice = await choose(choices);
   if (choice === "later" || !choices.includes(choice)) return;
-  const present = async (base: string) => {
+  const present = async (value: string | ConsoleHandoffTarget) => {
+    const target: ConsoleHandoffTarget = typeof value === "string" ? { url: value, host: new URL(value).hostname } : value;
+    const base = target.url;
+    const loopback = loopbackHost(target.host);
+    const recordedRoute = target.routeState !== undefined && !["none", "not-managed"].includes(target.routeState);
+    if (!loopback || recordedRoute) {
+      const exposure = !loopback || target.routeState === "exact" ? "is reachable" : "may be reachable";
+      write(`Warning: This existing console ${exposure} beyond this computer: listener ${JSON.stringify(target.host)}${recordedRoute ? `; Tailscale route ${JSON.stringify(target.routeUrl ?? target.routeState)} (state ${target.routeState})` : ""}. There is no login; sharing was not changed.\n`);
+    }
     const url = consoleHandoffUrl(base, options.sourceId);
     write(`Console for this agent (waits for discovery): ${url}\n`);
     const health = new URL("/healthz", base).href;
@@ -71,8 +86,13 @@ export async function offerConsoleHandoff(
       try { await (dependencies.open ?? ((url) => openBrowser(url, platform)))(url); return; }
       catch { write("Could not open a browser automatically.\n"); }
     }
-    const port = new URL(base).port || "80";
-    write(`Open the URL manually. For a remote host, forward the console's loopback port from your own computer: ssh -N -L ${port}:127.0.0.1:${port} <user>@<host>\nKeep the forwarding private; no login is added by forwarding.\n`);
+    write("Open the URL manually.\n");
+    if (loopback) {
+      const port = new URL(base).port || "80";
+      const host = target.host.replace(/^\[|\]$/g, "");
+      const forwardHost = isIP(host) === 6 ? `[${host}]` : host;
+      write(`For a remote host, forward the console's loopback port from your own computer: ssh -N -L ${port}:${forwardHost}:${port} <user>@<host>\nKeep the forwarding private; no login is added by forwarding.\n`);
+    }
   };
   try {
     const existing = await (dependencies.existing ?? (() => existingConsoleHandoff(options.env)))();
@@ -108,29 +128,44 @@ async function inspectConsoleHandoff(env: Record<string, string | undefined>, ru
   let json = "";
   await run({ positionals: ["status"], env, json: true }, { stdout: { write: (text) => { json += text; } } });
   return JSON.parse(json) as {
-    listener?: { url?: unknown; source?: unknown; provenRunning?: unknown };
-    ownedTailscaleRoute?: { state?: unknown };
+    listener?: { url?: unknown; host?: unknown; source?: unknown; provenRunning?: unknown };
+    ownedTailscaleRoute?: { state?: unknown; url?: unknown };
   };
 }
 
 /** Status proves the existing listener identity, not merely a bound port. */
-export async function existingConsoleHandoff(env: Record<string, string | undefined>, run: typeof runWebCommand = runWebCommand): Promise<string | undefined> {
-  const status = await inspectConsoleHandoff(env, run);
-  return status.listener?.provenRunning === true && typeof status.listener.url === "string" ? status.listener.url : undefined;
+export async function existingConsoleHandoff(env: Record<string, string | undefined>, run: typeof runWebCommand = runWebCommand): Promise<ConsoleHandoffTarget | undefined> {
+  return verifiedTarget(await inspectConsoleHandoff(env, run));
 }
 
 /** Preserve every existing listener/definition. Only a fresh install may be started here. */
 export async function startManagedConsoleHandoff(
   env: Record<string, string | undefined>,
   run: typeof runWebCommand = runWebCommand,
-): Promise<string | undefined> {
+): Promise<ConsoleHandoffTarget | undefined> {
   const before = await inspectConsoleHandoff(env, run);
-  if (before.listener?.provenRunning === true && typeof before.listener.url === "string") return before.listener.url;
+  const existing = verifiedTarget(before);
+  if (existing !== undefined) return existing;
   if (before.listener?.source !== "fresh default"
     || !["none", "not-managed"].includes(String(before.ownedTailscaleRoute?.state))) return undefined;
   if (await run({ positionals: ["start"], env, loopback: true }) !== 0) return undefined;
   const after = await inspectConsoleHandoff(env, run);
-  return after.listener?.provenRunning === true && typeof after.listener.url === "string" ? after.listener.url : undefined;
+  return verifiedTarget(after);
+}
+
+function verifiedTarget(status: Awaited<ReturnType<typeof inspectConsoleHandoff>>): ConsoleHandoffTarget | undefined {
+  if (status.listener?.provenRunning !== true || typeof status.listener.url !== "string") return undefined;
+  return {
+    url: status.listener.url,
+    host: typeof status.listener.host === "string" ? status.listener.host : new URL(status.listener.url).hostname,
+    ...(typeof status.ownedTailscaleRoute?.state === "string" ? { routeState: status.ownedTailscaleRoute.state } : {}),
+    ...(typeof status.ownedTailscaleRoute?.url === "string" ? { routeUrl: status.ownedTailscaleRoute.url } : {}),
+  };
+}
+
+function loopbackHost(value: string): boolean {
+  const host = value.replace(/^\[|\]$/g, "").toLowerCase();
+  return host === "localhost" || host === "::1" || (isIP(host) === 4 && host.split(".")[0] === "127");
 }
 
 async function openBrowser(url: string, platform: NodeJS.Platform): Promise<void> {
