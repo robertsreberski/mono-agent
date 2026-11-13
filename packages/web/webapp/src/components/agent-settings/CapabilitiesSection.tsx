@@ -12,8 +12,46 @@ function nextStep(card: Card): string {
   if (card.id === "tracing" && card.status === "ok") return "Inspect local run evidence with mono-agent runs.";
   if (card.status === "error") return "Run mono-agent validate to diagnose configuration before restarting.";
   if (card.status === "waiting") return "Complete the prerequisites below, then run mono-agent validate.";
-  if (card.status === "disabled") return "Review this feature’s requirements and manual enable steps below.";
+  if (card.status === "disabled") {
+    const field = card.ownedConfigPaths[0];
+    if (field !== undefined) {
+      const hasEnv = card.steps.some((step) => /^[A-Z_][A-Z0-9_]*=/m.test(step));
+      return `${hasEnv ? "Set the .env tokens and add" : "Add"} the ${field} block, then validate and restart.`;
+    }
+    return card.steps[0] ?? card.requirements[0] ?? "Run mono-agent validate.";
+  }
   return "Configuration checks passed. Run mono-agent validate to check live readiness.";
+}
+
+interface InstructionStep {
+  readonly prose: string;
+  readonly blocks: { readonly kind: "json" | "env"; readonly text: string }[];
+}
+
+/** Older agents send strings: group examples for display without changing the wire. */
+function instructionSteps(steps: readonly string[]): InstructionStep[] {
+  const result: InstructionStep[] = [];
+  const envLine = /^(?:export\s+)?[A-Z_][A-Z0-9_]*=/;
+  const addBlock = (kind: "json" | "env", text: string) => {
+    if (result.length === 0) result.push({ prose: "Review this example in the owner terminal.", blocks: [] });
+    result[result.length - 1]!.blocks.push({ kind, text });
+  };
+  for (let index = 0; index < steps.length; index++) {
+    const step = steps[index]!;
+    if (step.trimStart().startsWith("{")) {
+      try { JSON.parse(step); addBlock("json", step); continue; } catch { /* Not JSON: retain the prose. */ }
+    }
+    const lines: string[] = [];
+    let cursor = index;
+    while (cursor < steps.length && steps[cursor]!.split("\n").every((line) => line.trim() === "" || line.trimStart().startsWith("#") || envLine.test(line))) {
+      lines.push(steps[cursor++]!);
+    }
+    if (lines.some((line) => line.split("\n").some((item) => envLine.test(item)))) {
+      addBlock("env", lines.join("\n")); index = cursor - 1; continue;
+    }
+    result.push({ prose: step, blocks: [] });
+  }
+  return result;
 }
 
 export function CapabilityCard({ card }: { readonly card: Card }) {
@@ -38,7 +76,10 @@ export function CapabilityCard({ card }: { readonly card: Card }) {
       <h4>Validation evidence</h4><ul>{card.evidence.map((item) => <li key={item.id}><code>{item.id}</code>: {item.status}</li>)}</ul>
       <h4>How to enable / next steps</h4>
       {choice.ownedConfigPaths.length > 0 && <p>Config fields: <code>{choice.ownedConfigPaths.join(", ")}</code></p>}
-      <ol className="capability-steps">{choice.steps.map((step, index) => <li key={index}><pre>{step}</pre></li>)}</ol>
+      <ol className="capability-steps">{instructionSteps(choice.steps).map((step, index) => <li key={index}>
+        <p className="capability-step-prose">{step.prose}</p>
+        {step.blocks.map((block, blockIndex) => <pre key={blockIndex} aria-label={block.kind === "json" ? "JSON configuration example" : ".env placeholders"}><code>{block.text}</code></pre>)}
+      </li>)}</ol>
     </details>
   </article>;
 }
@@ -62,9 +103,9 @@ export function CapabilitiesSection({ agent }: { readonly agent: AgentSummary })
   if (error) return <div className="settings-notice">Capability validation is unavailable. Run <code>mono-agent validate</code> in the agent folder. <button className="settings-button" type="button" onClick={() => setRevision((value) => value + 1)}>Retry capability status</button></div>;
   if (snapshot === null) return <p>Reading capability status…</p>;
   return <>
-    <p className="settings-section-summary">Read-only configuration checks of {snapshot.observation === "loaded-snapshot" ? "the loaded startup snapshot (not later durable edits)" : "durable configuration inputs (which may differ from the loaded runtime)"} using the agent process's environment. Durable edits may need restart; .env edits need a new process.</p>
+    <p className="settings-section-summary">Explore optional features and manual setup steps without changing your agent.</p>
     <p className="settings-notice capability-scope">Provider, embedding, browser and server liveness is not probed here. Ready means local configuration checks passed, not live readiness or message delivery. Run <code>mono-agent validate</code> in the owner terminal for live checks.</p>
-    <p className="settings-section-summary">Observed <time dateTime={snapshot.observedAt}>{new Date(snapshot.observedAt).toLocaleTimeString()}</time>. <button type="button" className="settings-button" onClick={() => setRevision((value) => value + 1)}>Refresh capability status</button></p>
+    <p className="settings-section-summary">Checked <time dateTime={snapshot.observedAt}>{new Date(snapshot.observedAt).toLocaleTimeString()}</time>. {snapshot.observation === "loaded-snapshot" ? "Uses settings from the agent’s last start, not later edits." : "Uses saved settings."} Restart the agent after editing settings or .env. <button type="button" className="settings-button" onClick={() => setRevision((value) => value + 1)}>Refresh capability status</button></p>
     <div className="capability-grid">{snapshot.cards.map((card) => <CapabilityCard key={card.id} card={card} />)}</div>
     {snapshot.hostPreflight && <details><summary>Host preflight (optional)</summary><ul>{snapshot.hostPreflight.checks.map((check) => <li key={check.id}>{check.id}: {check.status}</li>)}</ul></details>}
   </>;

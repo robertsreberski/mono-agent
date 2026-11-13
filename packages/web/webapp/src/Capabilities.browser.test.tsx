@@ -61,6 +61,7 @@ for (const width of [390, 1440]) describe(`Capabilities in console settings at $
     if (width === 1440) expect(second.left).toBeGreaterThan(first.left);
     else expect(second.left).toBe(first.left);
     expect(cards.every((card) => !card.querySelector("details")!.open)).toBe(true);
+    expect(getComputedStyle(cards[0]!.querySelector(".capability-purpose")!).webkitLineClamp).toBe("2");
     if (shots) await page.screenshot({ path: `${shots}/capabilities-synthetic-${width}-mixed.png` });
 
     const telegram = screen.getByRole("article", { name: "Telegram" });
@@ -69,6 +70,11 @@ for (const width of [390, 1440]) describe(`Capabilities in console settings at $
     expect(within(telegram).getByRole("heading", { name: "How to enable / next steps" })).toBeVisible();
     expect(within(telegram).getByText(capabilitySnapshot.cards.find((card) => card.id === "channel:telegram")!.requirements[0]!)).toBeVisible();
     expect(within(telegram).getByText(/MONO_AGENT_TELEGRAM_BOT_TOKEN=/)).toBeVisible();
+    const json = within(telegram).getByLabelText("JSON configuration example");
+    const env = within(telegram).getByLabelText(".env placeholders");
+    expect(getComputedStyle(json).fontFamily).toContain("mono");
+    expect(env.querySelector("code")!.textContent).toContain("# Telegram bot token from @BotFather\nMONO_AGENT_TELEGRAM_BOT_TOKEN=");
+    expect(telegram.querySelectorAll(".capability-steps > li")).toHaveLength(3);
     if (shots) {
       await page.viewport(width, width === 390 ? 1900 : 1600);
       await page.screenshot({ path: `${shots}/capabilities-synthetic-${width}-expanded.png` });

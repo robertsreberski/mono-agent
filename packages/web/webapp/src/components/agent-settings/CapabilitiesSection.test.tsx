@@ -1,9 +1,9 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { api } from "../../api";
 import { capabilitySnapshot } from "../../test/capability-fixtures";
 import { agent } from "../../test/fixtures";
-import { CapabilitiesSection } from "./CapabilitiesSection";
+import { CapabilityCard, CapabilitiesSection } from "./CapabilitiesSection";
 
 afterEach(() => vi.restoreAllMocks());
 describe("Capabilities section", () => {
@@ -18,6 +18,34 @@ describe("Capabilities section", () => {
     expect(screen.getByText(capabilitySnapshot.cards[0]!.variants![1]!.purpose)).toBeTruthy();
     expect(screen.queryByRole("button", { name: /apply|enable|save/i })).toBeNull();
     expect(api.capabilitySetup).toHaveBeenCalledTimes(1);
+  });
+  it("keeps prose numbered and groups JSON and .env examples into code blocks", () => {
+    const card = capabilitySnapshot.cards.find((item) => item.id === "channel:telegram")!;
+    render(<CapabilityCard card={card} />);
+    fireEvent.click(screen.getByText("Details & manual setup"));
+    const json = screen.getByLabelText("JSON configuration example");
+    const env = screen.getByLabelText(".env placeholders");
+    expect(json.tagName).toBe("PRE"); expect(json.querySelector("code")).not.toBeNull();
+    expect(JSON.parse(json.textContent!)).toHaveProperty("telegram.enabled", true);
+    expect(env.querySelector("code")!.textContent).toBe("# Telegram bot token from @BotFather\nMONO_AGENT_TELEGRAM_BOT_TOKEN=");
+    expect(document.querySelectorAll(".capability-steps > li")).toHaveLength(3);
+    expect(env.closest("li")!.querySelector("p")!.textContent).toContain("owner-only .env");
+  });
+  it("derives a different concrete disabled next step from each catalog-owned block", async () => {
+    vi.spyOn(api, "capabilitySetup").mockResolvedValue(capabilitySnapshot);
+    render(<CapabilitiesSection agent={agent("garden", { supportsCapabilitySetup: true })} />);
+    await screen.findByRole("heading", { name: "Memory" });
+    const next: string[] = [];
+    for (const card of capabilitySnapshot.cards.filter((item) => item.status === "disabled")) {
+      const article = screen.getByRole("article", { name: card.title });
+      const text = article.querySelector(".capability-next")!.textContent!;
+      expect(text).toContain(`the ${card.ownedConfigPaths[0]} block`);
+      next.push(text);
+    }
+    expect(new Set(next).size).toBe(next.length);
+    expect(within(screen.getByRole("article", { name: "Slack" })).getByText(/Set the .env tokens and add the slack block/)).toBeTruthy();
+    expect(screen.getByText("Explore optional features and manual setup steps without changing your agent.")).toBeTruthy();
+    expect(screen.queryByText(/durable configuration inputs|loaded runtime/)).toBeNull();
   });
   it("does not request status from offline or older agents", () => {
     const read = vi.spyOn(api, "capabilitySetup");

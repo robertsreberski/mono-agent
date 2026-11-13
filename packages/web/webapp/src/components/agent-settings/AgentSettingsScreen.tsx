@@ -200,7 +200,7 @@ function SettingsContent({ agent, section, intent, layout, provider, restart, on
         <section className="settings-page-section" data-settings-target="agent" tabIndex={-1} aria-labelledby="settings-restart-title"><div className="settings-section-head"><h2 id="settings-restart-title" className="settings-section-title">Restart</h2><p className="settings-section-summary">Restart this agent and review its latest operation.</p></div>
           {restart === null ? <div className="settings-row">Checking restart status…</div> : <AgentSection agent={agent} restart={restart} runningCount={runningCount} />}
         </section>
-        <section className="settings-page-section" data-settings-target="capabilities" tabIndex={-1} aria-labelledby="settings-capabilities-title"><div className="settings-section-head"><h2 id="settings-capabilities-title" className="settings-section-title">Capabilities</h2><p className="settings-section-summary">Optional features, current readiness, and exact manual setup steps. No changes are applied here.</p></div>
+        <section className="settings-page-section" data-settings-target="capabilities" tabIndex={-1} aria-labelledby="settings-capabilities-title"><div className="settings-section-head"><h2 id="settings-capabilities-title" className="settings-section-title">Capabilities</h2></div>
           <CapabilitiesSection key={`${agent.sourceId}:${agent.generation ?? "unknown"}`} agent={agent} />
         </section>
         <section className="settings-page-section" aria-labelledby="settings-about-title"><div className="settings-section-head"><h2 id="settings-about-title" className="settings-section-title">About</h2></div><AgentAbout agent={agent} /></section>
