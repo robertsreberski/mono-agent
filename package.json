@@ -35,7 +35,7 @@
     "generate:package-docs": "node scripts/generate-package-docs.mjs",
     "generate:config-reference": "pnpm --filter @mono-agent/app run build && node scripts/generate-config-reference.mjs",
     "typecheck": "pnpm -r --sort run typecheck",
-    "test": "pnpm run release:test && pnpm run scripts:test && pnpm -r --sort run test",
+    "test": "pnpm run test:installer && pnpm run release:test && pnpm run scripts:test && pnpm -r --sort run test",
     "benchmark:continuity": "pnpm --filter '@mono-agent/app...' run build && node scripts/continuity-benchmark.mjs",
     "benchmark:continuity:dry-run": "node scripts/continuity-benchmark.mjs --dry-run",
     "benchmark:memory:e2e": "pnpm --filter '@mono-agent/app...' run build && node scripts/memory-e2e-benchmark.mjs",
@@ -51,7 +51,9 @@
     "release:test": "vitest run scripts/release/__tests__/release.test.mjs scripts/release/__tests__/package-count-drift.test.mjs scripts/release/__tests__/packed-consumer.test.mjs scripts/release/__tests__/changelog-release.test.mjs scripts/release/__tests__/deprecate-retired.test.mjs",
     "scan:dead-code": "node scripts/core-scans/run.mjs dead-code",
     "scan:cycles": "node scripts/core-scans/run.mjs cycles",
-    "scan:core": "node scripts/core-scans/run.mjs all"
+    "scan:core": "node scripts/core-scans/run.mjs all",
+    "test:installer": "node --test scripts/installer/test/*.test.mjs",
+    "generate:installer": "node scripts/installer/generate.mjs"
   },
   "devDependencies": {
     "@modelcontextprotocol/sdk": "^1.32.1",
