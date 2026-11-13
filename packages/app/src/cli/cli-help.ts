@@ -53,6 +53,8 @@ export const HELP_COMMANDS: readonly HelpEntry[] = [
       "it makes no provider call and never claims readiness. Bare init on a TTY runs",
       "a real no-tool model call per selected route before committing the scaffold,",
       `with timeouts of ${readinessProbeTimeoutDescription()}.`,
+      "After successful guided readiness, optionally open the no-login browser console",
+      "(default: Not now). Its Capabilities settings are read-only manual setup guidance.",
       "--preset seeds a blueprint; --with adds channels.",
       `Effort levels: ${EFFORT_LEVELS.join(", ")}; an omitted fallback effort uses that provider's default.`,
       "Pi forwards the configured effort to the selected provider. Message text never changes effort.",
