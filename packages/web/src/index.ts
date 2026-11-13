@@ -185,3 +185,5 @@ export { WebConsoleError } from "./errors.js";
 export type { ConsoleToolScope, ConsoleToolOperation, ConsoleToolName, ExternalConsoleToolScope, WebConsoleToolScope } from "./console-tools.js";
 
 export type { WebVoiceConfig } from "./voice-config.js";
+
+export type { WebCapabilitySetupSnapshot } from "./contracts.js";

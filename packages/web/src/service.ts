@@ -1,3 +1,4 @@
+import type { CapabilitySetupSnapshot } from "@mono-agent/channel-operator/client";
 import { constants as pdfFsConstants } from "node:fs";
 import { open as openPdfAttachment } from "node:fs/promises";
 import { PDF_LIMITS, pdfConversation, pdfFilename, pdfImagePixels, type PdfImage, type PdfAttachment } from "./pdf-model.js";
@@ -915,6 +916,7 @@ export class WebService {
     const connection = this.connections.get(agent.sourceId);
     const providerAuth = connection?.info.supportsProviderAuth === true;
     const providerAuthChecks = connection?.info.supportsProviderAuthChecks === true;
+    const capabilitySetup = connection?.info.supportsCapabilitySetup === true;
     const providerUsage = connection?.info.supportsProviderUsage === true;
     const restart = connection === undefined || agent.status === "offline"
       ? { supported: false, reason: "Agent is offline." } as const
@@ -926,6 +928,7 @@ export class WebService {
       restart,
       ...(providerAuth ? { supportsProviderAuth: true as const } : {}),
       ...(connection?.info.supportsManualCompaction === true ? { supportsManualCompaction: true as const } : {}),
+      ...(capabilitySetup ? { supportsCapabilitySetup: true as const } : {}),
       ...(providerUsage ? { supportsProviderUsage: true as const } : {}),
       ...(providerUsage && connection?.info.supportsProviderUsageRefresh === true ? { supportsProviderUsageRefresh: true as const } : {}),
       ...(providerAuthChecks ? { supportsProviderAuthChecks: true as const } : {}),
@@ -940,6 +943,7 @@ export class WebService {
     const projected = this.decorateProjectedCapabilities(agent);
     return [
       JSON.stringify(projected.restart),
+      projected.supportsCapabilitySetup === true ? "capabilitySetup" : "",
       projected.supportsProviderUsage === true ? "providerUsage" : "",
       projected.supportsProviderUsageRefresh === true ? "providerUsageRefresh" : "",
       projected.supportsProviderAuth === true ? "providerAuth" : "",
@@ -2123,6 +2127,19 @@ export class WebService {
     // unconditionally. Generation 1's ladder then judged generation 2's turns.
     this.admitModelPage(sourceId, generation, page);
     return page;
+  }
+
+  async capabilitySetup(sourceId: string): Promise<CapabilitySetupSnapshot> {
+    if (this.store.getAgent(sourceId) === undefined) throw new WebConsoleError("agent_not_found", "Agent not found.", 404);
+    const connection = this.connections.get(sourceId);
+    if (connection === undefined) throw new WebConsoleError("agent_offline", "This agent is offline.", 409);
+    if (connection.info.supportsCapabilitySetup !== true) throw new WebConsoleError("capabilities_unsupported", "This agent version doesn't report capabilities.", 409);
+    const snapshot = await connection.client.capabilitySetup(AbortSignal.timeout(35_000));
+    if (connection.info.pid !== undefined && snapshot.process.pid !== connection.info.pid) {
+      throw new WebConsoleError("agent_generation_changed", "The capability report belongs to another process; reopen settings.", 409);
+    }
+    if (this.connections.get(sourceId)?.generation !== connection.generation) throw new WebConsoleError("agent_generation_changed", "The agent restarted; reopen settings.", 409);
+    return snapshot;
   }
 
   async providerUsage(sourceId: string, provider?: ProviderUsageId, refresh = false): Promise<ProviderUsageSnapshot> {
