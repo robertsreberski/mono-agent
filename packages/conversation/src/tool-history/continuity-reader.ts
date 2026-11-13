@@ -3,12 +3,13 @@ import { readProgress, offeredKeys } from "../continuity/progress.js";
 import { createHash } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import {
-  CONTINUITY_CHUNK_MAX_BYTES,
+  CONTINUITY_CHUNK_MAX_BYTES, CONTINUITY_RECORD_MAX_BYTES,
+  type RetainedSummaryBinding, type RetainedSummaryProof,
   type ContinuityGetInput, type ContinuityGetResult, type ContinuityRecordMetadata,
   type ContinuityScope, type ContinuitySearchInput, type ContinuitySearchPage,
   type ContinuitySnapshotInput, type ContinuitySnapshot, type ContinuitySnapshotRecord,
 } from "./continuity-contracts.js";
-import { hasContinuitySchema } from "./continuity-storage.js";
+import { continuityRecordId, hasContinuitySchema } from "./continuity-storage.js";
 import { normalizeId } from "./paths.js";
 import { utf8Prefix } from "./payload.js";
 
@@ -99,6 +100,68 @@ function latestSummaryRow(database: DatabaseSync, scope: ContinuityScope, column
     WHERE ${VISIBLE} AND r.kind='summary' AND r.retained_text IS NOT NULL
       AND p.owner_kind='summary' AND p.owner_id=? ORDER BY r.ordinal DESC LIMIT 1`)
     .get(scope.logicalConversationId, scope.logicalConversationId) as Row | undefined;
+}
+
+/** Admission eligibility follows the current summary pin. It deliberately does
+ * not fall back to an older summary when the pinned publication lacks proof. */
+export function eligibleRetainedSummary(database: DatabaseSync, input: ContinuitySnapshotInput): RetainedSummaryProof | undefined {
+  validateScope(input);
+  if (!hasContinuitySchema(database)) return undefined;
+  const row = latestSummaryRow(database, input, "r.record_id");
+  return row ? retainedSummary(database, input, row.record_id as string) : undefined;
+}
+
+/** Restart resolves the exact binding, independently of the current summary pin.
+ * Committed checkpoint state relies on the trusted continuity participant, which
+ * derives publication proof from native evidence. Storage only matches the supplied
+ * proof to the prepared row; it does not verify the native journal. Ordinary
+ * committed publish rows with summary labels do not qualify. */
+export function resolveRetainedSummary(database: DatabaseSync, input: ContinuitySnapshotInput, binding: RetainedSummaryBinding): RetainedSummaryProof | undefined {
+  validateScope(input);
+  if (!hasContinuitySchema(database) || !binding || binding.version !== 1) return undefined;
+  const proof = retainedSummary(database, input, binding.recordId);
+  if (!proof) return undefined;
+  const actual = proof.binding;
+  return actual.logicalConversationId === binding.logicalConversationId && actual.conversationId === binding.conversationId
+    && actual.generationId === binding.generationId && actual.recordId === binding.recordId
+    && actual.sha256 === binding.sha256 && actual.retainedBytes === binding.retainedBytes
+    && actual.sourceEpoch === binding.sourceEpoch && actual.sourceRevision === binding.sourceRevision
+    && actual.publication.journalId === binding.publication?.journalId && actual.publication.operationId === binding.publication?.operationId
+    && actual.publication.sourceDigest === binding.publication?.sourceDigest && actual.publication.summaryDigest === binding.publication?.summaryDigest
+    ? proof : undefined;
+}
+
+function retainedSummary(database: DatabaseSync, input: ContinuitySnapshotInput, recordId: string): RetainedSummaryProof | undefined {
+  if (typeof recordId !== "string" || !/^chr1_[A-Za-z0-9_-]{43}$/u.test(recordId)) return undefined;
+  const row = database.prepare(`SELECT r.*,g.conversation_id FROM continuity_records r
+    JOIN continuity_generations g USING(generation_id) WHERE ${VISIBLE} AND g.conversation_id=? AND r.run_id<>?
+    AND g.action='checkpoint' AND g.committed_at_ms IS NOT NULL AND g.before_digest IS g.after_digest
+    AND g.latest_summary_record_id=r.record_id
+    AND r.kind='summary' AND r.provenance='generated' AND r.truncated=0 AND r.record_id=?
+    AND r.retained_text IS NOT NULL AND length(CAST(r.retained_text AS BLOB))<=?`)
+    .get(input.logicalConversationId, input.currentConversationId, input.currentRunId, recordId, CONTINUITY_RECORD_MAX_BYTES) as Row | undefined;
+  if (!row) return undefined;
+  if (input.historyBoundary !== undefined) {
+    const boundary = database.prepare(`SELECT max(r.ordinal) ordinal FROM continuity_records r
+      JOIN continuity_generations g USING(generation_id) WHERE ${VISIBLE} AND g.conversation_id=?
+      AND r.run_id=? AND r.kind IN ('owner','user','other-user','imported','assistant')`)
+      .get(input.logicalConversationId, input.currentConversationId, input.historyBoundary) as Row;
+    if (boundary.ordinal === null || Number(row.ordinal) > Number(boundary.ordinal)) return undefined;
+  }
+  try {
+    const record = metadata(row), retained = text(row), source = record.source, summary = record.summary;
+    // Legacy summaries without source identity remain ordinary pack evidence.
+    if (!source || typeof source.epoch !== "string" || !source.epoch || !Number.isSafeInteger(source.revision) || source.revision! < 0
+      || typeof source.journalId !== "string" || !source.journalId || typeof source.operationId !== "string" || !source.operationId
+      || !summary || summary.operationId !== source.operationId || !/^[a-f0-9]{64}$/u.test(summary.coverage?.sourceDigest)
+      || record.recordId !== continuityRecordId(record.conversationId, `summary:${source.journalId}:${source.operationId}`)
+      || Buffer.byteLength(retained) !== record.retainedBytes) return undefined;
+    return { text: retained, binding: { version: 1, logicalConversationId: input.logicalConversationId,
+      conversationId: record.conversationId, generationId: record.generationId, recordId: record.recordId,
+      sha256: record.sha256, retainedBytes: record.retainedBytes, sourceEpoch: source.epoch, sourceRevision: source.revision!,
+      publication: { journalId: source.journalId, operationId: source.operationId,
+        sourceDigest: summary.coverage.sourceDigest, summaryDigest: record.sha256 } } };
+  } catch { return undefined; } // Damaged/missing provenance cannot confer authority.
 }
 
 /** One bounded visibility query; immutable record identities/digests must all survive. */

@@ -1,5 +1,8 @@
+import { createContinuityPackSupplier } from "../continuity/pack.js";
+import { quote } from "../continuity/ledger.js";
+import type { ConversationHarnessOptions } from "../harness/contracts.js";
 import { spawnSync } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -89,6 +92,22 @@ describe("owned portable summary publication", () => {
       expect(reader.getContinuity({ ...scope, recordId: latest.recordId })).toMatchObject({ status: "available", chunk: hostRecords[0] });
       expect(reader.snapshotContinuity(scope).records.filter(record => record.kind === "summary")).toMatchObject([{ recordId: latest.recordId, text: hostRecords[0] }]);
       expect((await writer.stats()).continuity).toMatchObject({ prepared: 0, pins: 1 });
+      // Dormant contracts inspect real committed publication without writing a
+      // native admission record or changing any persisted seed/checkpoint bytes.
+      const journals = (await readdir(sessionsRoot, { recursive: true })).filter(path => path.endsWith(".jsonl"));
+      expect(journals.length).toBeGreaterThan(0);
+      const before = await Promise.all(journals.map(path => readFile(join(sessionsRoot, path))));
+      const proof = reader.eligibleRetainedSummary(scope)!;
+      expect(proof.text).toBe(hostRecords[0]);
+      expect(new ToolHistoryReader(historyRoot).resolveRetainedSummary(scope, proof.binding)).toEqual(proof);
+      const supplier = createContinuityPackSupplier({ toolHistory: { reader, continuityEnabled: true, logicalConversationId: () => id } } as unknown as ConversationHarnessOptions,
+        { conversationId: id, userMessage: "Current fictional request.", abortSignal: new AbortController().signal }, scope.currentRunId)!;
+      const messages = supplier([], 8000, "cold", () => {});
+      expect(supplier.lastRenderedSummary()).toMatchObject({ recordId: proof.binding.recordId, sha256: proof.binding.sha256 });
+      expect(messages[0]!.content).toContain(quote(proof.text));
+      expect(Object.keys(messages[0]!)).toEqual(["role", "content", "timestamp"]);
+      expect(await Promise.all(journals.map(path => readFile(join(sessionsRoot, path))))).toEqual(before);
+      expect((await readdir(sessionsRoot, { recursive: true })).filter(path => path.endsWith(".jsonl"))).toEqual(journals);
     } finally { await harness.dispose?.(); await runtime.disposeAllSessions?.(); }
   });
 

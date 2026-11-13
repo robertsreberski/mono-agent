@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Add dormant retained-summary publication lookup and final-layout selection
+  contracts without changing continuity packs, journals or compaction behavior.
+
 - Add bounded evidence discipline to every `ConversationHistory` response: find
   the distinguishing historical record or say it remains unfound, rather than
   choosing or denying an alternative from nearby work. Keep sufficient evidence

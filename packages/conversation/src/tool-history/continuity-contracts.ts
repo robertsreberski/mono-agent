@@ -234,6 +234,46 @@ export interface ContinuitySnapshotInput extends ContinuityScope {
   readonly scanBudget?: Partial<{ rows: number; bytes: number; windows: number; ms: number }>;
   readonly historyBoundary?: string;
 }
+/** Host publication identity, not native-session admission authority. Serialized
+ * bindings must always be resolved again under the current owner's scope. */
+export interface RetainedSummaryBinding {
+  readonly version: 1;
+  readonly logicalConversationId: string;
+  readonly conversationId: string;
+  readonly generationId: string;
+  readonly recordId: string;
+  readonly sha256: string;
+  readonly retainedBytes: number;
+  readonly sourceEpoch: string;
+  readonly sourceRevision: number;
+  readonly publication: {
+    readonly journalId: string;
+    readonly operationId: string;
+    readonly sourceDigest: string;
+    readonly summaryDigest: string;
+  };
+}
+
+/** Only an owner-held lookup of committed checkpoint state supplies this proof.
+ * It contains retained bytes only; it grants no native admission or protection. */
+export interface RetainedSummaryProof {
+  readonly binding: RetainedSummaryBinding;
+  readonly text: string;
+}
+
+/** Untrusted renderer location: last renderer output, not injected, not admitted.
+ * Never publication or admission authority. The supplier's lastRenderedSummary()
+ * is shared mutable state, not bound to any attempt's injected messages. UTF-8
+ * offsets delimit the complete rendered entry (including its trailing newline). */
+export interface RetainedSummarySelection {
+  readonly recordId: string;
+  readonly generationId: string;
+  readonly sha256: string;
+  readonly retainedBytes: number;
+  readonly packSha256: string;
+  readonly entry: { readonly startByte: number; readonly endByte: number; readonly sha256: string };
+}
+
 export interface ContinuitySnapshotRecord extends ContinuityRecordMetadata {
   readonly text: string;
   readonly tool?: { readonly name: string; readonly state: string; readonly arguments: string; readonly invocationId: string; readonly resultId?: string };
