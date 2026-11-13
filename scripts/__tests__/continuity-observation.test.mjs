@@ -155,6 +155,18 @@ describe("read-only continuity observation", () => {
     const split = pureFunction("packages/app/src/mcp/request-scoped-mcp.ts", "splitRequestScopedModelText", { REQUEST_SCOPED_MCP_MODEL_TEXT_MAX_CHARS: sectionLimit });
     const format = pureFunction("packages/app/src/request-tools/conversation-history.ts", "response", { NOTICE: HISTORY_NOTICE, splitRequestScopedModelText: split });
     const joinText = pureFunction("packages/turn/src/providers/pi/messages.ts", "toolResultContent");
+    // Both navigation and evidence can acquire a new continued-section block.
+    // Bound the total serialized growth, not just three raw notice copies.
+    const oldNotice = HISTORY_NOTICE.slice(0, HISTORY_NOTICE.indexOf(" Historical alternatives"));
+    const oldFormat = pureFunction("packages/app/src/request-tools/conversation-history.ts", "response", { NOTICE: oldNotice, splitRequestScopedModelText: split });
+    const emptyNavigation = [HISTORY_HEADER, oldNotice, "", "No follow-up ConversationHistory call is available."].join("\n");
+    const boundary = historyBody({ navigation: { guidance: "x".repeat(sectionLimit - emptyNavigation.length), nextActions: [] }, padding: "" });
+    const oldSection = `${oldNotice}\n${JSON.stringify({ ...boundary, untrusted: true, notice: oldNotice })}`;
+    boundary.padding = "x".repeat(19800 - oldSection.length);
+    const before = oldFormat(boundary), after = format(boundary);
+    expect(before.content).toHaveLength(3); expect(after.content).toHaveLength(5);
+    expect(Buffer.byteLength(JSON.stringify(after.content)) - Buffer.byteLength(JSON.stringify(before.content))).toBeLessThanOrEqual(640);
+
     for (const body of [historyBody(), historyBody({ items: [{ text: CANARY.repeat(900) }] }), historyBody({ status: "unavailable", error: { code: "history_unavailable" }, navigation: { guidance: "Unavailable.", nextActions: [] } })]) {
       expect(historyResponse(body)).toEqual(format(body)); expect(historyText(body)).toBe(joinText(format(body)));
       expect(parseConversationHistoryText(historyText(body))).toEqual(format(body).structuredContent);

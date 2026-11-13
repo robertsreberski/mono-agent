@@ -588,8 +588,12 @@ discloses transport-shortened windows (which may omit the hit). No migration or 
 including the explicitly unmet original 64-MiB heap target at extreme capacity.
 
 `searchContinuity` / `getContinuity` return scoped evidence, not instructions or
-new approval. Chunks contain at most 8192 UTF-8 bytes with retained-text digests
-and explicit redaction/truncation/tombstone status. Retained text uses the same
+new approval. The app-owned `ConversationHistory` NOTICE also requires specific
+distinguishing evidence for historical alternatives: nearby work is insufficient;
+if unfound, say so rather than choose or deny an alternative. Answer when evidence
+is sufficient. This bounded returned guidance survives tool withdrawal without
+changing pack guidance or admission. Chunks contain at most 8192 UTF-8 bytes with
+retained-text digests and explicit redaction/truncation/tombstone status. Retained text uses the same
 credential/private-path sanitation as lifecycle persistence, independently of
 its smaller JSON projection. Oversized text is explicitly omitted rather than
 risking retention of a clipped credential. Lifecycle and continuity text share

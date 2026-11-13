@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Add bounded evidence discipline to every `ConversationHistory` response: find
+  the distinguishing historical record or say it remains unfound, rather than
+  choosing or denying an alternative from nearby work. Keep sufficient evidence
+  answerable and retain the search-response cap and cursor boundaries.
+
 - Keep native compaction checkpoints when interruption accounts no longer apply
   to the active slice, preserving incremental historical-tuple protection. Live
   interruption notices and observed outcomes keep their existing projection.
