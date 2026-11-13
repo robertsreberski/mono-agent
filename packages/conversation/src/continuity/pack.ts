@@ -1,9 +1,10 @@
+import { createHash } from "node:crypto";
 import { createLedgerSupplier } from "./upkeep.js";
 import { renderLedger, quotedOwnerRecords, quote, type LedgerGeneration } from "./ledger.js";
 import type { RuntimeMessage } from "@mono-agent/turn/host/types";
 import type { RuntimeEventLike } from "@mono-agent/observability";
 import type { HistoryMessage } from "../context/types.js";
-import type { ContinuitySnapshotInput, ContinuitySnapshot, ContinuitySnapshotRecord } from "../tool-history/continuity-contracts.js";
+import type { RetainedSummarySelection, ContinuitySnapshotInput, ContinuitySnapshot, ContinuitySnapshotRecord } from "../tool-history/continuity-contracts.js";
 import { continuityQuotation } from "../tool-history/continuity-input.js";
 import { CONTINUITY_REDACTION_OMISSION } from "../tool-history/continuity-payload.js";
 import { representedContinuityToolRecordIds } from "../harness/turn-continuity.js";
@@ -13,6 +14,8 @@ import { PACK_HEADER as HEADER, packTokens as estimate, packTokensOfBytes, fitsL
 type Section = "owner" | "tool" | "summary" | "evidence";
 export interface ContinuityPack {
   readonly text?: string;
+  /** Final layout only; not proof of publication or native admission. */
+  readonly summarySelection?: RetainedSummarySelection;
   readonly toolRecordIds?: ReadonlySet<string>;
   readonly tokens: number;
   readonly counts: Record<Section, number>;
@@ -116,8 +119,14 @@ export function renderContinuityPack(snapshot: ContinuitySnapshot, history: read
   // Layout: summary first, then owners, effect-first tools and neutral evidence;
   // ordinal within groups. Generated provenance and quotation stay unchanged.
   let body = prefix + guidance + disclosure + summaryOmission;
+  let selection: Omit<RetainedSummarySelection, "packSha256"> | undefined;
   for (const record of entries) {
     const entry = selected.get(record); if (entry === undefined) continue;
+    if (section(record) === "summary" && selection === undefined) {
+      const startByte = Buffer.byteLength(body);
+      selection = { recordId: record.recordId, generationId: record.generationId, sha256: record.sha256, retainedBytes: record.retainedBytes,
+        entry: { startByte, endByte: startByte + Buffer.byteLength(entry), sha256: createHash("sha256").update(entry).digest("hex") } };
+    }
     body += entry; counts[section(record)]++;
     if (record.tool) { renderedToolIds.add(record.tool.invocationId); if (record.tool.resultId) renderedToolIds.add(record.tool.resultId); }
     if (unidentifiedHistory || runs.has(record.runId)) unknownOverlap++;
@@ -128,7 +137,7 @@ export function renderContinuityPack(snapshot: ContinuitySnapshot, history: read
   const marker = `${upkeepGap ? "Upkeep coverage gap: deterministic evidence below remains independently verified.\n" : ""}Coverage: physical-bucket canonical replay scope; retained finalized v3 evidence only; gaps=${snapshot.gaps}; omitted=${omitted}; unknown_overlap=${unknownOverlap}; degraded=${degradedReason ?? "none"}. Omission is not proof that an old request or effect no longer applies.\n`;
   const text = body + marker;
   if (estimate(text) > limit) return { tokens: 0, counts: { owner: 0, tool: 0, summary: 0, evidence: 0 }, omitted: snapshot.omitted + entries.length, unknownOverlap: 0, ownerDeduped, toolReserved: 0, ledgerEntries: 0, degradedReason: "headroom" };
-  return { text, toolRecordIds: renderedToolIds, tokens: estimate(text), counts, omitted, unknownOverlap, ownerDeduped, toolReserved, ledgerEntries, ...(degradedReason ? { degradedReason } : {}) };
+  return { text, ...(selection ? { summarySelection: { ...selection, packSha256: createHash("sha256").update(text).digest("hex") } } : {}), toolRecordIds: renderedToolIds, tokens: estimate(text), counts, omitted, unknownOverlap, ownerDeduped, toolReserved, ledgerEntries, ...(degradedReason ? { degradedReason } : {}) };
 }
 
 /** Equality proves full replay only with a complete source and all-user owner
@@ -211,7 +220,9 @@ export function createContinuityPackSupplier(options: ConversationHarnessOptions
   const upkeep = createLedgerSupplier(options, request, runId);
   let scope: ContinuitySnapshotInput | undefined;
   let snapshot: ContinuitySnapshot | undefined;
+  let summarySelection: RetainedSummarySelection | undefined;
   const supply = (history: readonly HistoryMessage[], maxTokens: number, reason: string, emit: (event: RuntimeEventLike) => void, onRenderedTools?: (ids: ReadonlySet<string>) => void, conversationHistoryAvailable = false): readonly RuntimeMessage[] => {
+    summarySelection = undefined; // Never retain metadata from an earlier attempt/layout.
     if (toolHistory?.continuityEnabled !== true || toolHistory.packEnabled === false) return [];
     let pack: ContinuityPack;
     if (maxTokens < 500) {
@@ -243,6 +254,7 @@ export function createContinuityPackSupplier(options: ConversationHarnessOptions
         summaryEntries: pack.counts.summary, evidenceEntries: pack.counts.evidence, omittedCount: pack.omitted,
         unknownOverlap: pack.unknownOverlap, ownerDeduped: pack.ownerDeduped, toolReserved: pack.toolReserved, ledgerEntries: pack.ledgerEntries, tokens: pack.tokens, degradedReason: pack.degradedReason ?? (pack.text ? "none" : "empty") });
     } catch { /* diagnostics are content-free and best effort */ }
+    summarySelection = pack.summarySelection;
     onRenderedTools?.(pack.toolRecordIds ?? new Set());
     if (pack.text) return [{ role: "user", content: pack.text, timestamp: "1970-01-01T00:00:00.000Z" }];
     const retrievalMaySucceed = conversationHistoryAvailable
@@ -252,5 +264,5 @@ export function createContinuityPackSupplier(options: ConversationHarnessOptions
       : "Continuity coverage gap: retained evidence unavailable or omitted; use permitted canonical history. No historical evidence supplied. ";
     return pack.degradedReason && pack.degradedReason !== "trigger_headroom" && maxTokens >= estimate(gap) ? [{ role: "user", content: gap, timestamp: "1970-01-01T00:00:00.000Z" }] : [];
   };
-  return Object.assign(supply, { prepare: upkeep.prepare });
+  return Object.assign(supply, { prepare: upkeep.prepare, selectedSummary: () => summarySelection });
 }

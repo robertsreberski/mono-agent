@@ -13,8 +13,8 @@ import { ToolHistoryWriterError } from "./errors.js";
 import { assertSecureReadableDirectory, assertSecureReadableFile, normalizeId } from "./paths.js";
 import { reasonOf } from "./writer.js";
 
-import { CONTINUITY_USER_VERSION, type ContinuitySnapshotInput, type ContinuitySnapshot, type ContinuityCoverageGap, type ContinuityGapReason, type ContinuityGetInput, type ContinuityGetResult, type ContinuityRecordMetadata, type ContinuityScope, type ContinuitySearchInput, type ContinuitySearchPage } from "./continuity-contracts.js";
-import { snapshotContinuity, continuitySnapshotVisible, getContinuity, latestContinuitySummary, searchContinuity } from "./continuity-reader.js";
+import { CONTINUITY_USER_VERSION, type RetainedSummaryBinding, type RetainedSummaryProof, type ContinuitySnapshotInput, type ContinuitySnapshot, type ContinuityCoverageGap, type ContinuityGapReason, type ContinuityGetInput, type ContinuityGetResult, type ContinuityRecordMetadata, type ContinuityScope, type ContinuitySearchInput, type ContinuitySearchPage } from "./continuity-contracts.js";
+import { eligibleRetainedSummary, resolveRetainedSummary, snapshotContinuity, continuitySnapshotVisible, getContinuity, latestContinuitySummary, searchContinuity } from "./continuity-reader.js";
 import { assertContinuitySchema, hasContinuitySchema, readContinuityStats } from "./continuity-storage.js";
 
 /** Read-only bounded query surface used by projection, SessionHistory, purge, and doctor. */
@@ -127,6 +127,28 @@ export class ToolHistoryReader {
     const database = this.openReadOnly();
     if (database === undefined) return undefined;
     try { return latestContinuitySummary(database, scope); } finally { database.close(); }
+  }
+
+  /** Dormant host-only publication lookup; does not admit context or write state. */
+  eligibleRetainedSummary(input: ContinuitySnapshotInput): RetainedSummaryProof | undefined {
+    return this.readRetainedSummary(input, database => eligibleRetainedSummary(database, input));
+  }
+
+  /** Bound-record restart validation must not depend on today's summary pin. */
+  resolveRetainedSummary(input: ContinuitySnapshotInput, binding: RetainedSummaryBinding): RetainedSummaryProof | undefined {
+    return this.readRetainedSummary(input, database => resolveRetainedSummary(database, input, binding));
+  }
+
+  private readRetainedSummary(input: ContinuitySnapshotInput, read: (database: DatabaseSync) => RetainedSummaryProof | undefined): RetainedSummaryProof | undefined {
+    if (this.continuityPurgePending(input)) return undefined;
+    const database = this.openReadOnly();
+    if (!database) return undefined;
+    try {
+      database.exec("BEGIN");
+      const proof = read(database);
+      database.exec("COMMIT");
+      return this.continuityPurgePending(input) ? undefined : proof;
+    } finally { database.close(); }
   }
 
   private continuityPurgePending(scope: ContinuityScope): boolean {
