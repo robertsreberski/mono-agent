@@ -269,14 +269,19 @@ At startup, mono-agent inspects the existing Tailscale Serve configuration. It p
 
 Open **Agent settings → Capabilities** to see memory (Lite, Journal or BuJo),
 webhook, Telegram, Slack, OpenAI-compatible API, cron, sandbox, MCP/tools and
-built-in tracing. Each card explains its purpose, requirements, qualitative
-usage/cost, current `ok`/`waiting`/`disabled`/`error` evidence and exact manual
-setup steps. Inspecting a memory tier does not select it for the agent. There is
+built-in tracing. A compact responsive grid shows purpose, status (text and icon)
+and the primary next step; expand a card for requirements, qualitative usage/cost,
+`ok`/`waiting`/`disabled`/`error` evidence and exact manual setup steps. Inspecting a memory tier does not select it for the agent. There is
 no apply action or credential form. Tracing is already enabled; removed external
 exporters cannot be enabled here.
 
-Status comes from the agent's read-only `validateMonoAgentFolder` checks, not
-browser-side guesses. It labels loaded managed startup snapshots separately
+Status comes from the agent's read-only `validateMonoAgentFolder` checks with
+`allowFilesystemWrites: false` and `liveness: false`, not browser-side guesses.
+The console never initiates provider/network/subprocess liveness probes. Ready
+means local configuration checks passed, not live readiness: embedding/model,
+browser and provider connectivity are explicitly not probed here. Run
+`mono-agent validate` in the owner terminal for live checks. Successful and
+sanitized failed reads are cached for five seconds; concurrent requests coalesce. It labels loaded managed startup snapshots separately
 from durable input paths, with the process's current environment, not a live
 reload. A loaded-snapshot report does not observe later durable edits. Durable edits may require restart and
 `.env` edits require a new process. Missing checks never mean ready. Readiness
@@ -289,7 +294,8 @@ Successful guided init can offer this console handoff, default **Not now**,
 only after its existing route/config checks. The no-login/network warning
 precedes consent. macOS follows managed-agent readiness; Linux still needs
 manual agent start and offers managed console only with a user manager; other
-platforms use foreground. No existing console is restarted or rebound. Browser
+platforms use foreground. An existing verified console is reused for either launch choice; none is restarted
+or rebound. Enter, Ctrl-D and EOF at the consent prompt all mean Not now. Browser
 opening waits for console health; SSH/headless/open failures print a URL and
 private forwarding instructions. Identity-qualified links wait for that agent's
 discovery rather than selecting another. Flag/non-TTY scaffolding is unchanged.

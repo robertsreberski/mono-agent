@@ -13,8 +13,9 @@ describe("Capabilities section", () => {
     await screen.findByRole("heading", { name: "Memory" });
     expect(screen.getAllByRole("article")).toHaveLength(9);
     for (const state of ["Ready", "Waiting", "Disabled", "Needs attention"]) expect(screen.getAllByText(state).length).toBeGreaterThan(0);
+    fireEvent.click(screen.getAllByText("Details & manual setup")[0]!);
     fireEvent.change(screen.getByRole("combobox", { name: "Inspect memory tier (read-only)" }), { target: { value: "memory:journal" } });
-    expect(screen.getByText("Synthetic journal memory guidance.")).toBeTruthy();
+    expect(screen.getByText(capabilitySnapshot.cards[0]!.variants![1]!.purpose)).toBeTruthy();
     expect(screen.queryByRole("button", { name: /apply|enable|save/i })).toBeNull();
     expect(api.capabilitySetup).toHaveBeenCalledTimes(1);
   });

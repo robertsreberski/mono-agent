@@ -2810,7 +2810,16 @@ html.keyboard-viewport .skill-browser-popup {
 .pdf-export-notice .icon-button { flex-shrink: 0; min-width: 44px; min-height: 44px; }
 
 /* Read-only capability discovery uses the existing settings pane and scroller. */
-.capability-card { padding: 18px; margin-block: 14px; overflow-wrap: anywhere; }
+.settings-screen[data-section="capabilities"] .settings-pane { max-width: 1040px; }
+.capability-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 290px), 1fr)); gap: 12px; align-items: start; }
+.capability-card { padding: 16px; margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.capability-card:has(> .capability-details[open]) { grid-column: 1 / -1; }
+.capability-card .capability-purpose { margin: 10px 0; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.capability-scope { display: block; }
+.capability-card .capability-next { margin: 0; font-size: .8rem; }
+.capability-details { border-top: 1px solid var(--line); padding-top: 10px; }
+.capability-details[open] > summary { margin-bottom: 14px; }
+.capability-details > summary { min-height: 32px; align-content: center; }
 .capability-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .capability-heading h3 { margin: 0; font-size: 1rem; }
 .capability-card h4 { margin: 14px 0 4px; font-size: .85rem; }
