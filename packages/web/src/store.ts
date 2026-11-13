@@ -97,6 +97,7 @@ import { isConversationMarker } from "./conversation-markers.js";
 import { parseTagColor, parseTagName } from "./tag-color.js";
 import { parseProjectColor } from "./project-color.js";
 import { WebConsoleError } from "./errors.js";
+import { redactWebError } from "./log-redaction.js";
 import { hasUpkeepTelemetry, upkeepSummaryParts, upkeepTelemetryData, latestMessageCostUsd, messageUsageRollup, type MessageUsageRollup } from "./message-cost.js";
 import { sumThreadUsage } from "./thread-usage.js";
 import { isAskUserToolName, runActivityFromParts, sameRunActivity } from "./run-activity.js";
@@ -6439,7 +6440,11 @@ export class WebStore {
       this.validateStorage();
     } catch (error) {
       if (error instanceof WebConsoleError) throw error;
-      throw new WebConsoleError("storage_corrupt", `Unable to initialize web state: ${error instanceof Error ? error.message : String(error)}`, 500);
+      // Fixed browser body, but keep the redacted original as the local cause
+      // so a startup storage failure remains diagnosable by the operator.
+      throw new WebConsoleError("storage_corrupt", "Unable to initialize web state.", 500, undefined, {
+        cause: redactWebError(error),
+      });
     }
   }
 

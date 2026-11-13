@@ -127,6 +127,7 @@ import {
   type EffortAdvertisement,
 } from "./effort-ladder.js";
 import { errorCode, errorMessage, WebConsoleError } from "./errors.js";
+import { collectKnownWebSecrets, createSecretSafeWebLogger, redactWebSecretText } from "./log-redaction.js";
 import { OperatorClient, OperatorTurnFrameError, type OperatorInfo } from "./operator-client.js";
 import { isAskUserToolName } from "./run-activity.js";
 import {
@@ -516,7 +517,8 @@ export interface CreateWebServiceOptions extends WebStatePathOptions, DiscoverOp
   /** Server-only voice configuration; false disables the optional owner-private voice.json. */
   readonly voice?: WebVoiceConfig | false;
   readonly transcriptionFetchImpl?: typeof fetch;
-  readonly logger?: WebServiceLogger;
+  /** A rejected (e.g. Proxy) logger is dropped, never restored unwrapped. */
+  readonly logger?: WebServiceLogger | undefined;
   readonly clock?: () => Date;
   readonly discoveryIntervalMs?: number;
   /**
@@ -655,6 +657,8 @@ export class WebService {
   readonly store: WebStore;
   private readonly options: CreateWebServiceOptions;
   private readonly lease: WebStateLease;
+  /** Snapshot of the effective env's credential values for message redaction. */
+  private readonly knownSecrets: readonly string[];
   private readonly transcriptions: WebTranscriptions;
   private readonly subscribers = new Set<(event: WebEvent) => boolean | void>();
   private readonly activeTurns = new Map<string, ActiveTurn>();
@@ -751,12 +755,14 @@ export class WebService {
     pushSubject: string,
     replyAccessKey: Buffer,
     voice: WebVoiceConfig | undefined,
+    knownSecrets: readonly string[] = [],
   ) {
     this.transcriptions = new WebTranscriptions(voice, options.transcriptionFetchImpl);
     this.store = store;
     store.onConversationMarker = ({ threadId, messageId, updatedAt }) => this.emit("message.changed", threadId, { messageId, updatedAt });
     this.lease = lease;
     this.options = options;
+    this.knownSecrets = knownSecrets;
     this.pushIdentity = pushIdentity;
     this.replyAccessKey = replyAccessKey;
     this.attachmentTurnBudget = new WeightedTurnBudget(
@@ -775,8 +781,17 @@ export class WebService {
   }
 
   static async create(options: CreateWebServiceOptions = {}): Promise<WebService> {
-    const paths = await prepareWebStatePaths(options);
-    const voice = await loadVoiceConfig(paths.root, options.voice);
+    // Route every service diagnostic sink through the redacting logger, including
+    // direct `WebService.create` embedding and forwarded logger options. Known
+    // environment credential values are supplied where available. Web never
+    // imports from app; the redactor is the public contracts helper.
+    const knownSecrets = collectKnownWebSecrets(options.env ?? process.env);
+    const safeLogger = createSecretSafeWebLogger(options.logger, knownSecrets);
+    const safeOptions: CreateWebServiceOptions = options.logger === undefined
+      ? options
+      : { ...options, logger: safeLogger };
+    const paths = await prepareWebStatePaths(safeOptions);
+    const voice = await loadVoiceConfig(paths.root, safeOptions.voice);
     let lease: WebStateLease;
     try {
       lease = await acquireWebStateLease(paths);
@@ -785,7 +800,7 @@ export class WebService {
     try {
       // Recovery mutates active rows, so it must happen only after singleton
       // ownership is established. A losing second process never opens the DB.
-      store = await WebStore.openPrepared(paths, options);
+      store = await WebStore.openPrepared(paths, safeOptions);
     } catch (error) {
       await lease.release();
       throw error;
@@ -797,8 +812,8 @@ export class WebService {
         store.ensureReplyAccessKey(() => randomBytes(32).toString("base64url")),
         "base64url",
       );
-      const pushSubject = resolveWebPushSubject(options.env?.MONO_AGENT_WEB_PUSH_SUBJECT);
-      service = new WebService(store, lease, options, pushIdentity, pushSubject, replyAccessKey, voice);
+      const pushSubject = resolveWebPushSubject(safeOptions.env?.MONO_AGENT_WEB_PUSH_SUBJECT);
+      service = new WebService(store, lease, safeOptions, pushIdentity, pushSubject, replyAccessKey, voice, knownSecrets);
       await store.purgePartialUploadFiles();
       await service.purgeOrphans();
       await service.refreshAgents();
@@ -2968,7 +2983,7 @@ export class WebService {
       const detail = restartSevered
         ? this.store.interruptTurnForRestart(started.turnId)
         : this.store.failTurn(started.turnId, {
-            message: cancelled ? "Turn cancelled." : errorMessage(failure),
+            message: cancelled ? "Turn cancelled." : this.safeTurnFailureMessage(failure),
             ...(connectionLost ? { code: "agent_connection_lost" } : code === undefined ? {} : { code }),
             cancelled,
           });
@@ -2984,6 +2999,20 @@ export class WebService {
       releaseAttachmentBudget?.();
       coalescer.close();
     }
+  }
+
+  /**
+   * Keep turn failures informative without leaking credentials. Reviewed
+   * web-originated `WebConsoleError` text is preserved; an
+   * `OperatorTurnFrameError` carries agent-frame text and is untrusted input,
+   * so it runs through the same known-secret redactor as the diagnostic logs,
+   * bounded for storage — as does anything else.
+   */
+  private safeTurnFailureMessage(failure: unknown): string {
+    if (failure instanceof WebConsoleError && !(failure instanceof OperatorTurnFrameError)) {
+      return failure.message;
+    }
+    return redactWebSecretText(errorMessage(failure), this.knownSecrets).slice(0, 1_000);
   }
 
   private launchTurn(

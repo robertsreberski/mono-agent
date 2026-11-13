@@ -29,7 +29,8 @@ import {
 import express, { type NextFunction, type Request, type Response } from "express";
 
 import { WEB_MAX_TURN_TEXT_CHARACTERS, type WebThreadNotificationTriggerKind } from "./contracts.js";
-import { errorMessage, WebConsoleError } from "./errors.js";
+import { resolveWebErrorResponse, WebConsoleError } from "./errors.js";
+import { collectKnownWebSecrets, createSecretSafeWebLogger, redactWebErrorMessage } from "./log-redaction.js";
 import type { WebService, WebServiceLogger } from "./service.js";
 
 const INGRESS_SCHEMA = 1;
@@ -57,7 +58,10 @@ export interface WebNotificationIngressHandle {
 export async function startWebNotificationIngress(
   service: WebService,
   logger?: WebServiceLogger,
+  env?: NodeJS.ProcessEnv | Readonly<Record<string, string | undefined>>,
 ): Promise<WebNotificationIngressHandle> {
+  const knownSecrets = collectKnownWebSecrets(env ?? process.env);
+  const safeLogger = createSecretSafeWebLogger(logger, knownSecrets);
   const token = randomBytes(32).toString("base64url");
   const instanceId = randomUUID();
   const app = express();
@@ -259,22 +263,31 @@ export async function startWebNotificationIngress(
     } catch (error) { next(error); }
   });
 
-  app.use((error: unknown, _req: Request, res: Response, next: NextFunction) => {
+  app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
     if (res.headersSent) {
-      next(error);
+      try {
+        if (!res.writableEnded) res.end();
+      } catch {
+        // Never fall through to Express's default raw-error logging.
+      }
       return;
     }
-    const known = error instanceof WebConsoleError;
-    const syntax = error instanceof SyntaxError && (error as { status?: unknown }).status === 400;
-    const tooLarge = typeof error === "object" && error !== null
-      && ((error as { status?: unknown }).status === 413 || (error as { type?: unknown }).type === "entity.too.large");
-    const status = known ? error.status : tooLarge ? 413 : syntax ? 400 : 500;
-    const code = known ? error.code : tooLarge ? "request_too_large" : syntax ? "invalid_json" : "internal_error";
-    if (status >= 500) logger?.error?.("Web notification ingress failed.", { error: errorMessage(error) });
-    res.status(status).json({
+    const resolved = resolveWebErrorResponse(error);
+    if (resolved.status === 429 && resolved.retryAfterSeconds !== undefined) {
+      res.setHeader("Retry-After", String(resolved.retryAfterSeconds));
+    }
+    if (resolved.status >= 500) {
+      safeLogger?.error?.("Web notification ingress failed.", {
+        error: redactWebErrorMessage(error, knownSecrets),
+        errorCode: resolved.code,
+        status: resolved.status,
+      });
+    }
+    res.status(resolved.status).json({
       error: {
-        code,
-        message: known || syntax ? errorMessage(error) : "Internal server error.",
+        code: resolved.code,
+        message: resolved.message,
+        ...(resolved.details === undefined ? {} : { details: resolved.details }),
       },
     });
   });

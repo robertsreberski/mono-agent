@@ -5,7 +5,7 @@ import { lstat, open } from "node:fs/promises";
 import type { AgentReplyPart, ProcessJobProjection } from "@mono-agent/contracts";
 
 import type { WebThreadNotificationTriggerKind } from "./contracts.js";
-import { errorMessage, WebConsoleError } from "./errors.js";
+import { WebConsoleError } from "./errors.js";
 import { fetchLongLivedHostWake } from "@mono-agent/channel-operator/client";
 import { resolveWebStatePaths, type WebStatePathOptions } from "./state-paths.js";
 
@@ -97,13 +97,13 @@ export async function deliverWebNotification(
     if (isAbortError(error)) {
       throw new WebConsoleError(
         "notification_ingress_timeout",
-        `The web notification ingress did not answer in time (${errorMessage(error)}).`,
+        "The web notification ingress did not answer in time.",
         504,
       );
     }
     throw new WebConsoleError(
       "notification_ingress_unavailable",
-      `The web notification ingress is unavailable (${errorMessage(error)}).`,
+      "The web notification ingress is unavailable.",
       503,
     );
   }
@@ -118,7 +118,7 @@ export async function deliverWebNotification(
       && asRecord(asRecord(rejection)?.error)?.code === "invalid_notification";
     throw new WebConsoleError(
       rejectedBeforeAcceptance ? "notification_rejected" : "notification_delivery_failed",
-      `The web notification ingress responded ${String(response.status)}${bodyText.length === 0 ? "." : `: ${bodyText.slice(0, 300)}`}`,
+      `The web notification ingress responded ${String(response.status)}.`,
       502,
     );
   }
