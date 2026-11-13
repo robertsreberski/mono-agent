@@ -131,6 +131,17 @@ export function resolveRetainedSummary(database: DatabaseSync, input: Continuity
     ? proof : undefined;
 }
 
+/** One physical-bucket ordinal boundary for rendering and admission. Undefined
+ * means unrestricted; null means the requested canonical boundary is absent. */
+function historyBoundaryOrdinal(database: DatabaseSync, input: ContinuitySnapshotInput): number | null | undefined {
+  if (input.historyBoundary === undefined) return undefined;
+  const boundary = database.prepare(`SELECT max(r.ordinal) ordinal FROM continuity_records r
+    JOIN continuity_generations g USING(generation_id) WHERE ${VISIBLE} AND g.conversation_id=?
+    AND r.run_id=? AND r.kind IN ('owner','user','other-user','imported','assistant')`)
+    .get(input.logicalConversationId, input.currentConversationId, input.historyBoundary) as Row;
+  return boundary.ordinal === null ? null : Number(boundary.ordinal);
+}
+
 function retainedSummary(database: DatabaseSync, input: ContinuitySnapshotInput, recordId: string): RetainedSummaryProof | undefined {
   if (typeof recordId !== "string" || !/^chr1_[A-Za-z0-9_-]{43}$/u.test(recordId)) return undefined;
   const row = database.prepare(`SELECT r.*,g.conversation_id FROM continuity_records r
@@ -141,13 +152,8 @@ function retainedSummary(database: DatabaseSync, input: ContinuitySnapshotInput,
     AND r.retained_text IS NOT NULL AND length(CAST(r.retained_text AS BLOB))<=?`)
     .get(input.logicalConversationId, input.currentConversationId, input.currentRunId, recordId, CONTINUITY_RECORD_MAX_BYTES) as Row | undefined;
   if (!row) return undefined;
-  if (input.historyBoundary !== undefined) {
-    const boundary = database.prepare(`SELECT max(r.ordinal) ordinal FROM continuity_records r
-      JOIN continuity_generations g USING(generation_id) WHERE ${VISIBLE} AND g.conversation_id=?
-      AND r.run_id=? AND r.kind IN ('owner','user','other-user','imported','assistant')`)
-      .get(input.logicalConversationId, input.currentConversationId, input.historyBoundary) as Row;
-    if (boundary.ordinal === null || Number(row.ordinal) > Number(boundary.ordinal)) return undefined;
-  }
+  const boundary = historyBoundaryOrdinal(database, input);
+  if (boundary === null || boundary !== undefined && Number(row.ordinal) > boundary) return undefined;
   try {
     const record = metadata(row), retained = text(row), source = record.source, summary = record.summary;
     // Legacy summaries without source identity remain ordinary pack evidence.
@@ -212,13 +218,10 @@ export function snapshotContinuity(database: DatabaseSync, input: ContinuitySnap
   const values: (string | number)[] = [input.logicalConversationId, input.currentConversationId, input.currentRunId];
   // Rollover deliberately does not inherit yesterday's pack: canonical replay
   // is physical-bucket scoped, even though explicit retrieval is logical scoped.
-  if (input.historyBoundary !== undefined) {
-    const boundary = database.prepare(`SELECT max(r.ordinal) ordinal FROM continuity_records r
-      JOIN continuity_generations g USING(generation_id) WHERE ${VISIBLE} AND g.conversation_id=?
-      AND r.run_id=? AND r.kind IN ('owner','user','other-user','imported','assistant')`)
-      .get(input.logicalConversationId, input.currentConversationId, input.historyBoundary) as Row;
-    if (boundary.ordinal === null) return { records: [], omitted: 0, gaps: 1, degradedReason: "boundary_unavailable" };
-    clauses.push("r.ordinal<=?"); values.push(Number(boundary.ordinal));
+  const boundary = historyBoundaryOrdinal(database, input);
+  if (boundary !== undefined) {
+    if (boundary === null) return { records: [], omitted: 0, gaps: 1, degradedReason: "boundary_unavailable" };
+    clauses.push("r.ordinal<=?"); values.push(boundary);
   }
   const watermark = input.selection === "upkeep" ? Number((database.prepare(`SELECT coalesce(max(r.ordinal),0) n FROM continuity_records r JOIN continuity_generations g USING(generation_id) WHERE ${clauses.join(" AND ")}`).get(...values) as Row).n) : 0;
   const progress = input.selection === "upkeep" ? readProgress(database, input.logicalConversationId, input.currentConversationId, watermark) : undefined;

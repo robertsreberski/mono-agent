@@ -30,13 +30,15 @@ it.each([
   ["summary", [summary, ...owners, ...tools], "c0783055e1b264ba0d53ab4ca2330ba16f6cb8c00b1ae98bbfbfc112e1f07166"],
   ["empty", [], "0049612bfb60a721956604bf4751c0dab27f083f2ad17c9f9679729e8f8916bd"],
 ] as const)("keeps baseline pack bytes and all selection/budget accounting: %s", (_name, records, expected) => {
-  const results = [];
+  const results = [], layouts = [];
   for (const budget of [0, 499, 500, 700, 1200, 1600, 8000, 9000]) {
     for (const guidance of [false, true]) for (const withLedger of [false, true]) {
       const snapshot = { records, omitted: 0, gaps: 0 };
       const pack = renderContinuityPack(snapshot, [], budget, withLedger ? { generation: ledger, records } : undefined, false, guidance);
       results.push(legacy(pack));
+      layouts.push({ budget, guidance, withLedger, pack: legacy(pack) });
     }
   }
-  expect(hash(JSON.stringify(results))).toBe(expected);
+  expect(hash(JSON.stringify(results))).toBe(expected); // Keep the original baseline commitment.
+  expect(layouts).toMatchSnapshot(); // Byte-exact, with the differing layout/field visible.
 });
