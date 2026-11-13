@@ -10,8 +10,14 @@ export class WebConsoleError extends Error {
   readonly status: number;
   readonly details?: Readonly<WebConsoleErrorDetails>;
 
-  constructor(code: string, message: string, status = 400, details?: WebConsoleErrorDetails) {
-    super(message);
+  constructor(
+    code: string,
+    message: string,
+    status = 400,
+    details?: WebConsoleErrorDetails,
+    init?: { cause?: unknown },
+  ) {
+    super(message, init === undefined ? undefined : { cause: init.cause });
     this.name = "WebConsoleError";
     this.code = code;
     this.status = status;
@@ -23,10 +29,10 @@ export class WebConsoleError extends Error {
 
 /**
  * Keep only explicitly typed, safe details for browser error bodies.
- * `retryAfterSeconds` drives `Retry-After`; `reason` is a bounded
- * human-readable string (no control characters or newlines) allowlisted by
- * the operator-client contract; `operationId` stays a machine string and
- * `pendingSince` a valid date string.
+ * `retryAfterSeconds` drives `Retry-After`; `reason` is a permitted
+ * human-readable field bounded to 128 chars with no control characters or
+ * newlines (also enforced where the operator-client contract forwards it);
+ * `operationId` stays a machine string and `pendingSince` a valid date string.
  */
 export function sanitizeWebConsoleDetails(
   details: Readonly<WebConsoleErrorDetails> | undefined,
@@ -87,6 +93,16 @@ const REQUEST_TOO_LARGE_MESSAGE = "The request body exceeds the size limit.";
 const UNSUPPORTED_ENCODING_MESSAGE = "The request body uses an unsupported content encoding.";
 const INTERNAL_ERROR_MESSAGE = "Internal server error.";
 
+/** Express body-parser error types that map to fixed request-body responses. */
+const BODY_PARSER_ERROR_TYPES = new Set([
+  "entity.parse.failed",
+  "entity.parse.invalid",
+  "entity.verify.failed",
+  "entity.too.large",
+  "charset.unsupported",
+  "encoding.unsupported",
+]);
+
 /**
  * Map any thrown value to a fixed, secret-free browser error body.
  * Parser, size and encoding failures get fixed messages with their established
@@ -101,16 +117,20 @@ export function resolveWebErrorResponse(error: unknown): WebErrorResponse {
   const bodyParserStatus = typeof error === "object" && error !== null
     ? (error as { status?: unknown }).status
     : undefined;
-  const isBodyParserError = error instanceof SyntaxError
-    || typeof bodyParserType === "string"
-    || bodyParserStatus === 400
-    || bodyParserStatus === 413
-    || bodyParserStatus === 415;
-  const tooLarge = bodyParserStatus === 413 || bodyParserType === "entity.too.large";
+  // Only genuine body-parser failures count: a known parser `type`, or a
+  // SyntaxError carrying the parsed `body` the parser attaches. Any other
+  // SyntaxError or typed/statused error is an internal failure, not malformed
+  // request JSON.
+  const typeText = typeof bodyParserType === "string" ? bodyParserType : undefined;
+  const hasParserBody = typeof error === "object" && error !== null
+    && typeof (error as { body?: unknown }).body === "string";
+  const isBodyParserError = (typeText !== undefined && BODY_PARSER_ERROR_TYPES.has(typeText))
+    || (error instanceof SyntaxError && hasParserBody);
+  const tooLarge = bodyParserStatus === 413 || typeText === "entity.too.large";
   const unsupportedEncoding = !tooLarge
     && (bodyParserStatus === 415
-      || bodyParserType === "charset.unsupported"
-      || bodyParserType === "encoding.unsupported");
+      || typeText === "charset.unsupported"
+      || typeText === "encoding.unsupported");
   const malformed = isBodyParserError && !tooLarge && !unsupportedEncoding;
   if (known) {
     const details = sanitizeWebConsoleDetails(error.details);

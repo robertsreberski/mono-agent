@@ -15,7 +15,7 @@ const webRedactor = createLogRedactor({
   truncatedMarker: "[WEB_LOG_DETAILS_TRUNCATED]",
   binaryMarker: "[WEB_LOG_BINARY_DATA_OMITTED]",
   tokenPatterns: [
-    { pattern: /\b(sk-[A-Za-z0-9_-]{8,}|gh[opur]_[A-Za-z0-9]{8,}|xox[baprs]-[A-Za-z0-9-]{8,})\b/giu },
+    { pattern: /\b(sk-[A-Za-z0-9_-]{8,}|gh[pousr]_[A-Za-z0-9]{8,}|xox[baprs]-[A-Za-z0-9-]{8,})\b/giu },
   ],
 });
 
@@ -29,17 +29,25 @@ export const redactWebErrorMessage = (
   knownSecrets: readonly string[] = [],
 ): string => webRedactor.redactErrorMessage(error, knownSecrets);
 
-const SENSITIVE_ENV_KEY = /(?:token|secret|password|passwd|pwd|api[_-]?key|client[_-]?secret|access[_-]?key|auth|credential|private[_-]?key|bearer|cookie|session)/iu;
+/** Render an error safe for local diagnostics (never for browser bodies). */
+export const redactWebError = (
+  error: unknown,
+  knownSecrets: readonly string[] = [],
+): Error => webRedactor.redactError(error, knownSecrets);
 
-const ORIGIN_LIST_TOKEN = /^https?:\/\/[^/\s,;]+(\/\S*)?$/iu;
+/** Hostname allowlist keys hold non-secret routing config, never credentials. */
+const NON_SECRET_ENV_KEYS = new Set([
+  "MONO_AGENT_WEB_ALLOWED_HOSTS",
+]);
 
-/** Plain origin/URL lists (e.g. authorized-origins) are allowlists, not secrets. */
-function looksLikeOriginList(value: string): boolean {
-  if (!value.includes("://")) return false;
-  const tokens = value.split(/[\s,;]+/u).filter((token) => token.length > 0);
-  if (tokens.length === 0) return false;
-  return tokens.every((token) => ORIGIN_LIST_TOKEN.test(token));
-}
+const SENSITIVE_ENV_KEY = /(?:token|secret|password|passwd|api[_-]?key|client[_-]?secret|access[_-]?key|credential|private[_-]?key|bearer|cookie|session|auth[_-]?(?:token|secret|key))/iu;
+
+/**
+ * Keys that name an explicit credential: any non-empty value is collected,
+ * since discovery accepts short keys (e.g. a short `MONO_AGENT_TUI_API_KEY` is
+ * still forwarded as a bearer credential).
+ */
+const EXPLICIT_CREDENTIAL_KEY = /(?:api[_-]?key|client[_-]?secret|access[_-]?key|token|secret|password|passwd|credential|private[_-]?key)/iu;
 
 /** Collect bounded credential values from the environment for log redaction. */
 export function collectKnownWebSecrets(
@@ -50,10 +58,13 @@ export function collectKnownWebSecrets(
   const seen = new Set<string>();
   for (const [key, value] of Object.entries(env)) {
     if (typeof value !== "string") continue;
+    if (NON_SECRET_ENV_KEYS.has(key)) continue;
     const trimmed = value.trim();
-    if (trimmed.length < 8 || trimmed.length > 1024) continue;
+    if (trimmed.length === 0 || trimmed.length > 1024) continue;
     if (!SENSITIVE_ENV_KEY.test(key)) continue;
-    if (looksLikeOriginList(trimmed)) continue;
+    // Short values mangle diagnostics when redacted, so only explicitly
+    // credential-named keys are collected below eight characters.
+    if (trimmed.length < 8 && !EXPLICIT_CREDENTIAL_KEY.test(key)) continue;
     if (seen.has(trimmed)) continue;
     seen.add(trimmed);
     collected.push(trimmed);

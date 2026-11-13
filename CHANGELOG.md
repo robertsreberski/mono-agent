@@ -14,6 +14,11 @@
   safe details and `Retry-After`. Redact server, ingress and service logs with
   the shared contracts redactor and known environment credentials.
 
+- Fix web console error responses and diagnostic logs leaking request content,
+  error text or secrets. Malformed, oversized and wrongly encoded request
+  bodies now get fixed messages; known errors keep their reviewed messages
+  with only safe details and `Retry-After`.
+
 - Remove operator API-key requirements for console, ACP and peer access,
   supervised restart, provider management and opted-in cron actions. Ignore
   obsolete operator keys and headers; retain scoped secrets and forward the

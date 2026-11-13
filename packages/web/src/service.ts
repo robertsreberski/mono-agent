@@ -517,7 +517,8 @@ export interface CreateWebServiceOptions extends WebStatePathOptions, DiscoverOp
   /** Server-only voice configuration; false disables the optional owner-private voice.json. */
   readonly voice?: WebVoiceConfig | false;
   readonly transcriptionFetchImpl?: typeof fetch;
-  readonly logger?: WebServiceLogger;
+  /** A rejected (e.g. Proxy) logger is dropped, never restored unwrapped. */
+  readonly logger?: WebServiceLogger | undefined;
   readonly clock?: () => Date;
   readonly discoveryIntervalMs?: number;
   /**
@@ -786,7 +787,7 @@ export class WebService {
     // imports from app; the redactor is the public contracts helper.
     const knownSecrets = collectKnownWebSecrets(options.env ?? process.env);
     const safeLogger = createSecretSafeWebLogger(options.logger, knownSecrets);
-    const safeOptions: CreateWebServiceOptions = safeLogger === undefined
+    const safeOptions: CreateWebServiceOptions = options.logger === undefined
       ? options
       : { ...options, logger: safeLogger };
     const paths = await prepareWebStatePaths(safeOptions);
@@ -3002,11 +3003,15 @@ export class WebService {
 
   /**
    * Keep turn failures informative without leaking credentials. Reviewed
-   * `WebConsoleError` text is preserved; anything else runs through the same
-   * known-secret redactor as the diagnostic logs, bounded for storage.
+   * web-originated `WebConsoleError` text is preserved; an
+   * `OperatorTurnFrameError` carries agent-frame text and is untrusted input,
+   * so it runs through the same known-secret redactor as the diagnostic logs,
+   * bounded for storage — as does anything else.
    */
   private safeTurnFailureMessage(failure: unknown): string {
-    if (failure instanceof WebConsoleError) return failure.message;
+    if (failure instanceof WebConsoleError && !(failure instanceof OperatorTurnFrameError)) {
+      return failure.message;
+    }
     return redactWebSecretText(errorMessage(failure), this.knownSecrets).slice(0, 1_000);
   }
 

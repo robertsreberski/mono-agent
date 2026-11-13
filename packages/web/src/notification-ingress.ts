@@ -273,6 +273,9 @@ export async function startWebNotificationIngress(
       return;
     }
     const resolved = resolveWebErrorResponse(error);
+    if (resolved.status === 429 && resolved.retryAfterSeconds !== undefined) {
+      res.setHeader("Retry-After", String(resolved.retryAfterSeconds));
+    }
     if (resolved.status >= 500) {
       safeLogger?.error?.("Web notification ingress failed.", {
         error: redactWebErrorMessage(error, knownSecrets),

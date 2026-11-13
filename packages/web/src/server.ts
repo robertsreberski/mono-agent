@@ -149,10 +149,25 @@ export interface WebServerHandle {
 }
 
 /**
+ * Log an SSE failure through the redacted logger. Shared by both stream
+ * failure callbacks so the failure path is covered by one testable unit.
+ */
+export function logSseFailure(
+  logger: WebServiceLogger | undefined,
+  knownSecrets: readonly string[],
+  error: unknown,
+): void {
+  logger?.error?.("Web console event stream failed.", {
+    error: redactWebErrorMessage(error, knownSecrets),
+    errorCode: errorCode(error) ?? "unknown",
+  });
+}
+
+/**
  * Shared Express error middleware: fixed secret-free bodies, `Retry-After`
- * from sanitized details only, redacted 5xx diagnostics, and a clean close
- * when headers are already sent (never Express's default raw-error logging).
- * Exported for direct headers-sent coverage.
+ * from sanitized details only, redacted 5xx diagnostics, and a destroyed
+ * connection when headers are already sent (never Express's default
+ * raw-error logging). Exported for direct headers-sent coverage.
  */
 export function createWebErrorMiddleware(
   logger: WebServiceLogger | undefined,
@@ -160,11 +175,20 @@ export function createWebErrorMiddleware(
 ) {
   return (error: unknown, _req: Request, res: Response, _next: NextFunction): void => {
     // Headers already sent (for example an SSE stream that failed mid-write):
-    // there is no JSON body left to send. Close without falling through to
-    // Express's default raw-error logging.
+    // there is no JSON body left to send. Destroy the connection, matching the
+    // reply-attachment route and Express's default handler, and log the
+    // redacted failure for operators.
     if (res.headersSent) {
+      const resolved = resolveWebErrorResponse(error);
+      if (resolved.status >= 500) {
+        logger?.error?.("Web console response failed after headers were sent.", {
+          error: redactWebErrorMessage(error, knownSecrets),
+          errorCode: resolved.code,
+          status: resolved.status,
+        });
+      }
       try {
-        if (!res.writableEnded) res.end();
+        res.destroy();
       } catch {
         // Logging is diagnostic and must never break teardown.
       }
@@ -211,7 +235,7 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
   // Validate all synchronous startup inputs before acquiring the persistent
   // service lease so an embedding typo cannot strand SQLite ownership.
   const allowedHosts = resolveAllowedHosts(options.allowedHosts, options.env ?? process.env);
-  const service = await WebService.create({ ...options, ...(logger === undefined ? {} : { logger }) });
+  const service = await WebService.create({ ...options, ...(options.logger === undefined ? {} : { logger }) });
   const app = express();
   app.use((_req, res, next) => {
     const json = res.json.bind(res);
@@ -1322,10 +1346,7 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
       target: res,
       onTerminal: closeStream,
       onFailure: (error) => {
-        logger?.error?.("Web console event stream failed.", {
-          error: redactWebErrorMessage(error, knownSecrets),
-          errorCode: errorCode(error) ?? "unknown",
-        });
+        logSseFailure(logger, knownSecrets, error);
       },
     });
     const send = createWebEventDispatch({
@@ -1333,10 +1354,7 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
       write: (event) => writer!.write(formatSse(event)),
       close: closeStream,
       onFailure: (error) => {
-        logger?.error?.("Web console event stream failed.", {
-          error: redactWebErrorMessage(error, knownSecrets),
-          errorCode: errorCode(error) ?? "unknown",
-        });
+        logSseFailure(logger, knownSecrets, error);
       },
     });
     const unsubscribe = service.subscribe(send);
