@@ -1,3 +1,5 @@
+import { Buffer } from "node:buffer";
+
 /** Operator-specific read-only discovery. No config, credentials, or write authority. */
 export type CapabilityStatus = "ok" | "waiting" | "disabled" | "error";
 export interface CapabilityEvidence {
@@ -96,8 +98,7 @@ export function parseCapabilitySetupSnapshot(value: unknown): CapabilitySetupSna
     version: 1, observedAt: date(r.observedAt), process: { pid: Number(process.pid), startedAt: date(process.startedAt) },
     observation: r.observation, cards, ...(hostPreflight === undefined ? {} : { hostPreflight }),
   };
-  if (JSON.stringify(result).length > MAX_CAPABILITY_SETUP_BYTES / 3) {
-    // UTF-8 is at most three bytes per UTF-16 code unit; conservative portable bound.
+  if (Buffer.byteLength(JSON.stringify(result), "utf8") > MAX_CAPABILITY_SETUP_BYTES) {
     throw new Error("Capability report is too large.");
   }
   return result;

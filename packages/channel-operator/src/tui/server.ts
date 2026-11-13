@@ -537,7 +537,11 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
     }
     void options.capabilitySetup.read()
       .then((snapshot) => res.json(parseCapabilitySetupSnapshot(snapshot)))
-      .catch(() => res.status(503).json({ error: { code: "capabilities_unavailable", message: "Capability validation is unavailable. Run mono-agent validate in the agent folder." } }));
+      .catch(() => {
+        // Deliberately do not log arbitrary service/decoder diagnostics or config.
+        options.logger?.error?.("TUI capability validation failed.", { error: "capabilities_unavailable" });
+        res.status(503).json({ error: { code: "capabilities_unavailable", message: "Capability validation is unavailable. Run mono-agent validate in the agent folder." } });
+      });
   });
 
   // The operator key is mandatory here; generic authorize() permits keyless callers.

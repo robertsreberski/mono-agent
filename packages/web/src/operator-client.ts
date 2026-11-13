@@ -78,6 +78,9 @@ const PRESERVED_MCP_APP_OPERATOR_ERRORS = new Map<string, number>([
   ["app_audit_incomplete", 409],
   ["app_audit_failed", 507],
 ]);
+const PRESERVED_CAPABILITY_ERRORS = new Map<string, number>([
+  ["capabilities_unavailable", 503], ["capabilities_unsupported", 501],
+]);
 const PRESERVED_PROVIDER_AUTH_ERRORS = new Map<string, number>([
   ["provider_auth_invalid_request", 400],
   ["provider_auth_not_found", 404],
@@ -367,10 +370,12 @@ export class OperatorClient {
   async capabilitySetup(signal?: AbortSignal): Promise<CapabilitySetupSnapshot> {
     const response = await this.request(`${this.baseUrl}/v1/capabilities`, {
       headers: this.headers(false), ...(signal === undefined ? {} : { signal }),
-    });
+    }, PRESERVED_CAPABILITY_ERRORS);
     try {
       return parseCapabilitySetupSnapshot(JSON.parse(await readBoundedBody(response, MAX_CAPABILITY_SETUP_BYTES, "operator_capabilities_too_large")));
-    } catch {
+    } catch (error) {
+      if (error instanceof WebConsoleError || signal?.aborted
+        || (error instanceof Error && ["AbortError", "TimeoutError"].includes(error.name))) throw error;
       throw new WebConsoleError("operator_capabilities_invalid", "The agent returned an invalid capability report.", 502);
     }
   }

@@ -1,13 +1,17 @@
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { startTuiAdapter, type CapabilitySetupSnapshot } from "@mono-agent/channel-operator";
+import { startTuiAdapter, MAX_CAPABILITY_SETUP_BYTES, type CapabilitySetupSnapshot } from "@mono-agent/channel-operator";
 import { OperatorClient } from "../operator-client.js";
 import { startWebServer } from "../server.js";
 import { WebService } from "../service.js";
 import { fakeDiscoveredAgent, temporaryRoot } from "./helpers.js";
 
 const snapshot: CapabilitySetupSnapshot = { version: 1, observation: "durable-inputs", observedAt: "2026-08-01T10:00:00Z", process: { pid: process.pid, startedAt: "2026-08-01T09:00:00Z" }, cards: [] };
+function capabilityAgent(overrides: Parameters<typeof fakeDiscoveredAgent>[0] = {}) {
+  const discovered = fakeDiscoveredAgent(overrides);
+  return { ...discovered, source: { ...discovered.source, pid: process.pid } };
+}
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
 
@@ -20,11 +24,44 @@ describe("web capability proxy", () => {
     const invalid = new OperatorClient({ baseUrl: "http://127.0.0.1:1234/gui", fetchImpl: async () => Response.json({ ...snapshot, rawConfig: "synthetic" }) });
     await expect(invalid.capabilitySetup()).rejects.toMatchObject({ code: "operator_capabilities_invalid" });
   });
+  it.each([[501, "capabilities_unsupported"], [503, "capabilities_unavailable"]] as const)("preserves the operator's %i capability error", async (status, code) => {
+    const client = new OperatorClient({ baseUrl: "http://127.0.0.1:1234/gui", fetchImpl: async () => Response.json({ error: { code, message: "Capability unavailable." } }, { status }) });
+    await expect(client.capabilitySetup()).rejects.toMatchObject({ code, status });
+  });
+  it("keeps oversized and aborted/timed-out body reads distinct from invalid JSON", async () => {
+    const oversized = new OperatorClient({ baseUrl: "http://127.0.0.1:1234/gui", fetchImpl: async () => new Response("x".repeat(MAX_CAPABILITY_SETUP_BYTES + 1)) });
+    await expect(oversized.capabilitySetup()).rejects.toMatchObject({ code: "operator_capabilities_too_large" });
+    for (const name of ["AbortError", "TimeoutError"]) {
+      const failure = new DOMException("Synthetic body read stopped", name);
+      const client = new OperatorClient({ baseUrl: "http://127.0.0.1:1234/gui", fetchImpl: async () => new Response(new ReadableStream({ start(controller) { controller.error(failure); } })) });
+      await expect(client.capabilitySetup()).rejects.toBe(failure);
+    }
+  });
+  it.each([
+    [process.pid, undefined, process.pid, false],
+    [undefined, process.pid, process.pid, false],
+    [process.pid, process.pid + 1, process.pid, false],
+    [process.pid, process.pid, process.pid + 1, true],
+  ] as const)("requires discovered/info/report identity agreement (%s/%s/%s)", async (discoveredPid, infoPid, reportPid, forwarded) => {
+    const root = await temporaryRoot(); roots.push(root);
+    const source = { ...capabilityAgent().source };
+    // Deliberately malformed discovery input exercises the defensive missing-PID guard.
+    if (discoveredPid === undefined) Reflect.deleteProperty(source, "pid"); else source.pid = discoveredPid;
+    const read = vi.fn(async () => Response.json({ ...snapshot, process: { ...snapshot.process, pid: reportPid } }));
+    const service = await WebService.create({ stateDir: join(root, "identity"), discoveryIntervalMs: 0, purgeIntervalMs: 0,
+      discoverImpl: async () => [{ ...capabilityAgent(), source }],
+      fetchImpl: (async (url) => String(url).endsWith("/info") ? Response.json({ schema: 1, pid: infoPid, capabilities: { capabilitySetup: { version: 1, read: true } } }) : read()) as typeof fetch,
+    });
+    try {
+      await expect(service.capabilitySetup("agent-one")).rejects.toMatchObject({ code: "agent_generation_changed" });
+      expect(read).toHaveBeenCalledTimes(forwarded ? 1 : 0);
+    } finally { await service.stop(); }
+  });
   it("proxies the selected real operator over HTTP with no-store and no write route", async () => {
     const root = await temporaryRoot(); roots.push(root);
     const adapter = await startTuiAdapter({ port: 0, apiKey: "fictional-test-key", responder: { respond: async () => ({ text: "unused" }) }, capabilitySetup: { read: async () => snapshot } });
     const server = await startWebServer({ port: 0, stateDir: join(root, "web"), voice: false, discoveryIntervalMs: 0, purgeIntervalMs: 0,
-      discoverImpl: async () => [fakeDiscoveredAgent({ baseUrl: adapter.baseUrl, apiKey: "fictional-test-key" })] });
+      discoverImpl: async () => [capabilityAgent({ baseUrl: adapter.baseUrl, apiKey: "fictional-test-key" })] });
     try {
       const response = await fetch(`${server.url}api/v1/agents/agent-one/capabilities`, { headers: { Origin: new URL(server.url).origin } });
       expect(response.status).toBe(200);
@@ -45,7 +82,7 @@ describe("web capability proxy", () => {
     const root = await temporaryRoot(); roots.push(root);
     const adapter = await startTuiAdapter({ port: 0, responder: { respond: async () => ({ text: "unused" }) }, capabilitySetup: { read: async () => snapshot } });
     const server = await startWebServer({ port: 0, stateDir: join(root, "client-web"), voice: false, discoveryIntervalMs: 0, purgeIntervalMs: 0,
-      discoverImpl: async () => [fakeDiscoveredAgent({ baseUrl: adapter.baseUrl })] });
+      discoverImpl: async () => [capabilityAgent({ baseUrl: adapter.baseUrl })] });
     const nativeFetch = globalThis.fetch;
     const origin = new URL(server.url).origin;
     try {
@@ -62,12 +99,12 @@ describe("web capability proxy", () => {
   });
   it("rejects stale generation results and unsupported/offline sources", async () => {
     const root = await temporaryRoot(); roots.push(root);
-    let discovered = fakeDiscoveredAgent();
+    let discovered = capabilityAgent();
     let support = true;
     let release!: (response: Response) => void;
     const service = await WebService.create({ stateDir: join(root, "state"), discoveryIntervalMs: 0, purgeIntervalMs: 0,
       discoverImpl: async () => [discovered], fetchImpl: (async (url) => String(url).endsWith("/info")
-        ? Response.json({ schema: 1, capabilities: support ? { capabilitySetup: { version: 1, read: true } } : {} })
+        ? Response.json({ schema: 1, pid: process.pid, capabilities: support ? { capabilitySetup: { version: 1, read: true } } : {} })
         : new Promise<Response>((resolve) => { release = resolve; })) as typeof fetch });
     try {
       const read = service.capabilitySetup("agent-one");

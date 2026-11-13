@@ -2134,11 +2134,15 @@ export class WebService {
     const connection = this.connections.get(sourceId);
     if (connection === undefined) throw new WebConsoleError("agent_offline", "This agent is offline.", 409);
     if (connection.info.supportsCapabilitySetup !== true) throw new WebConsoleError("capabilities_unsupported", "This agent version doesn't report capabilities.", 409);
+    if (connection.pid === undefined || connection.info.pid !== connection.pid) {
+      throw new WebConsoleError("agent_generation_changed", "Agent process identity could not be verified; reopen settings.", 409);
+    }
     const snapshot = await connection.client.capabilitySetup(AbortSignal.timeout(35_000));
-    if (connection.info.pid !== undefined && snapshot.process.pid !== connection.info.pid) {
+    if (snapshot.process.pid !== connection.pid) {
       throw new WebConsoleError("agent_generation_changed", "The capability report belongs to another process; reopen settings.", 409);
     }
-    if (this.connections.get(sourceId)?.generation !== connection.generation) throw new WebConsoleError("agent_generation_changed", "The agent restarted; reopen settings.", 409);
+    if (this.connections.get(sourceId) !== connection
+      || this.store.getAgent(sourceId)?.generation !== connection.processGeneration) throw new WebConsoleError("agent_generation_changed", "The agent restarted; reopen settings.", 409);
     return snapshot;
   }
 
@@ -2149,7 +2153,8 @@ export class WebService {
     if (connection.info.supportsProviderUsage !== true) throw new WebConsoleError("provider_usage_unavailable", "This agent does not expose provider usage.", 409);
     if (refresh && connection.info.supportsProviderUsageRefresh !== true) throw new WebConsoleError("provider_usage_refresh_unavailable", "This agent does not support manual usage refresh.", 409);
     const snapshot = await (refresh ? connection.client.refreshProviderUsage(provider, AbortSignal.timeout(15_000)) : connection.client.providerUsage(provider, AbortSignal.timeout(15_000)));
-    if (this.connections.get(sourceId)?.generation !== connection.generation) throw new WebConsoleError("agent_generation_changed", "The agent restarted; reopen settings.", 409);
+    if (this.connections.get(sourceId) !== connection
+      || this.store.getAgent(sourceId)?.generation !== connection.processGeneration) throw new WebConsoleError("agent_generation_changed", "The agent restarted; reopen settings.", 409);
     return snapshot;
   }
 
