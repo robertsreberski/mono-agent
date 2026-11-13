@@ -145,6 +145,8 @@ interface SrtSettings {
 }
 
 interface SrtSandboxEngineOptions extends ResolveSrtLaunchOptions {
+  /** Host diagnostic cancellation; abort the availability proof's subprocess. */
+  readonly signal?: AbortSignal;
   /**
    * Host-owned runtime roots that must remain readable after request-policy
    * intersection. These roots are always denied for writes and are not widened
@@ -372,7 +374,7 @@ export function createSrtSandboxEngine(options: SrtSandboxEngineOptions = {}): S
       }
       activeProbe ??= resolveSrtLaunch(options)
         .then(async (launch) => {
-          await proveSrtEnforcement(launch);
+          await proveSrtEnforcement(launch, options.signal);
           const revalidated = await resolveSrtLaunch(options);
           if (!sameSrtLaunch(launch, revalidated) || (pinnedLaunch !== undefined && !sameSrtLaunch(pinnedLaunch, revalidated))) {
             throw new Error("SRT executable identity or content changed during its functional proof");
@@ -1373,7 +1375,7 @@ async function proveSrtEmbedEnforcement(
   }
 }
 
-async function proveSrtEnforcement(launch: SrtLaunch): Promise<void> {
+async function proveSrtEnforcement(launch: SrtLaunch, signal?: AbortSignal): Promise<void> {
   const stagedBase = await mkdtemp(resolve(tmpdir(), "mono-agent-srt-proof-"));
   const base = await realpath(stagedBase);
   const workspace = resolve(base, "workspace");
@@ -1423,7 +1425,7 @@ async function proveSrtEnforcement(launch: SrtLaunch): Promise<void> {
         deniedEnv,
         settings.path,
       ],
-      { cwd: workspace, timeout: 15_000, maxBuffer: 1_000_000 },
+      { cwd: workspace, timeout: 15_000, maxBuffer: 1_000_000, ...(signal === undefined ? {} : { signal }) },
     );
     const [output, envContent] = await Promise.all([
       readFile(allowedOutput, "utf8"),

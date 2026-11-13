@@ -208,7 +208,7 @@ export async function sandboxRuntimeStatus(options: SandboxManagerOptions = {}):
 
   const externalCommand = options.externalCommand === undefined ? "srt" : options.externalCommand;
   if (externalCommand !== false) {
-    const available = await createSrtSandboxEngine({ command: externalCommand }).isAvailable();
+    const available = await createSrtSandboxEngine({ command: externalCommand, ...(options.signal === undefined ? {} : { signal: options.signal }) }).isAvailable();
     if (available) {
       return {
         state: "ready",

@@ -1075,6 +1075,13 @@ describe("managed SRT setup", () => {
       .resolves.toMatchObject({ state: "unsupported", source: "none" });
   });
 
+  it("forwards host diagnostic cancellation to the external availability proof", async () => {
+    const signal = new AbortController().signal;
+    sandboxMocks.createSrtSandboxEngine.mockReturnValueOnce({ id: "srt", isAvailable: async () => false, prepareCommand: async () => { throw new Error("not used"); } });
+    await sandboxRuntimeStatus({ cacheRoot: await tempDir(), platform: "linux", externalCommand: "srt", signal });
+    expect(sandboxMocks.createSrtSandboxEngine).toHaveBeenCalledWith({ command: "srt", signal });
+  });
+
   it("keeps the resource lock identity stable", async () => {
     const lock = await readFile(resolve(resourceRoot, "package-lock.json"));
     expect(createHash("sha256").update(lock).digest("hex")).toBe(MANAGED_SRT_LOCK_SHA256);
