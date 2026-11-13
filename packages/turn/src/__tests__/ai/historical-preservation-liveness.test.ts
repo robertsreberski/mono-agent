@@ -2,9 +2,10 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it, vi } from "vitest";
-import { createModels, fauxProvider, fauxAssistantMessage, fauxText } from "@earendil-works/pi-ai";
+import { createModels, fauxProvider, fauxAssistantMessage, fauxText, fauxToolCall } from "@earendil-works/pi-ai";
 import { JsonlSessionRepo } from "../../engine/session-store.js";
 import { createRunDriver } from "../../engine/run-driver.js";
+import { estimateTokens, prepareCompaction } from "../../engine/compaction-kit/compaction.js";
 import { checkNativeInheritedPrefix } from "../../execution/pi/handoff-producer.js";
 import { projectContext, projectInheritedContext } from "../../engine/request-projection.js";
 import { createMidRunCompaction } from "../../execution/pi/compaction/mid-run-compaction.js";
@@ -164,16 +165,17 @@ it.each([false, true])("ready inherited-prefix admission bypasses its actual pro
     expect(checkpoint.checkpoint.inheritedCoverage.sources[0].journalId).toBe("frozen");
   } finally { await f.close(); }
 });
-it("a changed split prefix permits an idle retry below the normal growth threshold", async () => {
+it("a changed split prefix cannot repay an idle refusal below the shared growth threshold", async () => {
   const f = await fixture();
   try {
     await f.grow();
     expect((await f.compact("proactive")).applied).toBe(false);
     await f.raw.appendMessage({ role: "assistant", content: [{ type: "text", text: "x".repeat(5000) }], timestamp: 3 });
     expect((await f.compact("proactive")).applied).toBe(false);
-    expect(f.completeSimple).toHaveBeenCalledTimes(2);
+    expect(f.completeSimple).toHaveBeenCalledTimes(1);
+    expect(f.events.at(-1).reason).toBe("preservation_growth_required");
     await f.compact("proactive");
-    expect(f.completeSimple).toHaveBeenCalledTimes(2);
+    expect(f.completeSimple).toHaveBeenCalledTimes(1);
   } finally { await f.close(); }
 });
 it("successful manual recovery clears the idle refusal baseline even with unchanged protected tuples", async () => {
@@ -250,6 +252,68 @@ it("shares a single paid refusal across idle, threshold checkpoints and new run 
     expect(f.events.at(-1).reason).toBe("preservation_growth_required");
     expect((await f.raw.getEntries()).filter((entry: any) => entry.type === "compaction")).toHaveLength(1);
   } finally { await controller.disarm(); await f.close(); }
+});
+it("bounds split-cut refusals across idle and advancing mid-run tool steps by shared transcript growth", async () => {
+  const f = await fixture();
+  const runState = { session: f.session, sessionBaselineCount: 0, compaction: { policy: { ...f.policy, contextWindow: 100000, triggerTokens: 10000 },
+    diagnostics: { context_fixed_overhead_tokens: 0, context_user_message_tokens: 0 }, applied: false, compactedThisRun: false, reactiveAttempted: false } };
+  const cuts: { tokens: number; prefix: string; firstKeptId: string; splitTurn: boolean }[] = [];
+  // Observe the real driver's cuts before the controller, without replacing its
+  // preparation/dispatch path. A moving cut must not reset the paid baseline.
+  const unobserve = f.driver.hooks.on("before_compaction", (event: any) => {
+    const prepared = prepareCompaction(event.branchEntries, { keepRecentTokens: f.policy.keepRecentTokens }).value;
+    const context = projectContext(event.branchEntries).messages!;
+    cuts.push({ tokens: context.reduce((sum: number, message: any) => sum + estimateTokens(message), 0),
+      prefix: JSON.stringify(prepared.turnPrefixMessages), splitTurn: prepared.isSplitTurn,
+      firstKeptId: event.branchEntries.find((entry: any) => entry.type === "message" && entry.message === prepared.retainedTail[0])?.id });
+  });
+  const controller = createMidRunCompaction(runState, { harness: f.harness, options: {}, reference: "faux:liveness",
+    onEvent: (event: any) => f.events.push(event), runtimeWarnings: f.warnings });
+  const observed: { calls: number; tokens: number }[] = [];
+  const step = vi.fn(async () => ({ content: [{ type: "text", text: "Fictional step completed." }] }));
+  f.driver.setTools([{ name: "FictionalStep", description: "Fictional bounded step", parameters: { type: "object", properties: {} }, execute: step }]);
+  try {
+    await f.grow();
+    await f.raw.appendMessage({ role: "assistant", content: [{ type: "text", text: "a".repeat(6000) }], timestamp: 3 });
+    await f.raw.appendMessage({ role: "assistant", content: [{ type: "text", text: "b".repeat(2400) }], timestamp: 4 });
+    expect((await f.compact("proactive")).applied).toBe(false);
+    expect(f.events.at(-1)).toMatchObject({ reason: "protected_tuples_missing", accounting: { splitTurn: true } });
+    expect(f.completeSimple).toHaveBeenCalledTimes(1);
+    const baseline = cuts[0]!.tokens, growth = Math.max(8192, Math.ceil(baseline * 0.1));
+    expect(growth).toBe(8192);
+    f.faux.setResponses(Array.from({ length: 8 }, (_, index) => () => {
+      observed.push({ calls: f.completeSimple.mock.calls.length, tokens: cuts.at(-1)!.tokens });
+      return index === 7 ? fauxAssistantMessage([fauxText("Fictional run completed.")])
+        : fauxAssistantMessage([fauxText("c".repeat(5600)), fauxToolCall("FictionalStep", {}, { id: `fictional-step-${index}` })]);
+    }));
+    expect(await controller.arm()).toBe(true);
+    // This pending prompt shifts the idle cut to the next assistant while both
+    // remain split. Subsequent tool rounds each move it further by >1,000 tokens.
+    expect((await f.driver.prompt("p".repeat(2000))).status).toBe("completed");
+    expect(step).toHaveBeenCalledTimes(7);
+    expect(observed).toHaveLength(8);
+    expect(cuts).toHaveLength(9); // idle + initial request + seven tool-round checkpoints
+    expect(cuts.every(cut => cut.splitTurn)).toBe(true);
+    expect(new Set(cuts.map(cut => cut.firstKeptId)).size).toBe(cuts.length);
+    expect(cuts.every(cut => typeof cut.firstKeptId === "string")).toBe(true);
+    expect(new Set(cuts.map(cut => cut.prefix)).size).toBe(cuts.length);
+    expect(observed.map(row => row.calls)).toEqual([1, 1, 1, 1, 1, 1, 2, 2]);
+    for (const row of observed.slice(0, 6)) expect(row.tokens - baseline).toBeLessThan(growth);
+    for (let index = 1; index < observed.length; index++) {
+      const added = observed[index]!.tokens - observed[index - 1]!.tokens;
+      expect(added).toBeGreaterThan(1000);
+      expect(added).toBeLessThan(growth);
+    }
+    expect(observed[6]!.tokens - baseline).toBeGreaterThanOrEqual(growth);
+    expect(observed[7]!.tokens - observed[6]!.tokens).toBeLessThan(Math.max(8192, Math.ceil(observed[6]!.tokens * 0.1)));
+    expect(f.events.filter(event => event.reason === "protected_tuples_missing")).toHaveLength(2);
+    expect(f.events.filter(event => event.accounting?.midRun && event.status === "skipped").every(event => event.accounting.splitTurn)).toBe(true);
+    await controller.disarm();
+    await f.compact("proactive"); // growth-paid threshold refusal also gates idle, despite a changed prefix
+    expect(f.completeSimple).toHaveBeenCalledTimes(2);
+    expect(f.events.at(-1).reason).toBe("preservation_growth_required");
+    expect((await f.raw.getEntries()).filter((entry: any) => entry.type === "compaction")).toHaveLength(1);
+  } finally { await controller.disarm(); unobserve(); await f.close(); }
 });
 it("zero-tuple legacy truncation remains a cached provider failure", async () => {
   const f = await fixture("## Goal\nFictional continuation without historical tuples.");

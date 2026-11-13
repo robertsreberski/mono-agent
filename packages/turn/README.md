@@ -50,10 +50,10 @@ caps, output acceptance and the savings preview are unchanged. The public
 `summary_refused` for a lossy/oversized/truncated protected candidate. Native
 proactive/threshold cuts refuse without changing history or poisoning the provider
 failure cooldown. Threshold retries retain assistant-progress/growth vetoes.
-Idle and mid-run proactive share a paid-refusal baseline, requiring transcript
-growth or changed
-protected blocks/split prefix; changing controller or fixed overhead cannot repay
-an unchanged refusal.
+Idle and mid-run proactive share a paid-refusal baseline, requiring
+`max(8192, ceil(previousTokens * 0.1))` transcript growth or changed protected
+blocks/model/policy. Advancing a split cut, changing controller or fixed overhead
+cannot repay an unchanged refusal.
 Native manual/overflow and inherited-prefix recovery instead bypass protection,
 issuing `historical_preservation_bypassed`: missing/oversized output is reused;
 protected truncation retries only that part once with legacy caps (at most one

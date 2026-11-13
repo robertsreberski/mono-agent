@@ -18,8 +18,9 @@
   Keep recovery available after protected output truncation with at most one
   legacy retry, bound unchanged automatic refusals, and treat empty history as
   healthy. Keep pending/next-step sections outside all-bold historical headings.
-  Share refusal bounds across idle and mid-run checks, return protected generator
-  truncation as an error result, and retain defined partial usage after recovery.
+  Share refusal bounds across idle and mid-run checks, including advancing split
+  cuts, return protected generator truncation as an error result, and retain
+  defined partial usage after recovery.
   Cold first extraction and separately generated handoffs remain unprotected.
 
 - Fix baseline E2 replay to retain recorded source tools while keeping probes

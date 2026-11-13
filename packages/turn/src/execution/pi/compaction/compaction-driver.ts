@@ -378,10 +378,11 @@ export function createGuardedCompactionHook({
       input.preparation.preservationFallback = trigger === "manual" || trigger === "reactive_overflow" || event.nonRetainablePrefixLength > 0;
       // Idle and threshold hooks share one paid-refusal baseline, including
       // across controllers/turns. Stable transcript counts avoid counting the
-      // idle-only pending user turn as growth when mid-run is armed.
+      // idle-only pending user turn as growth when mid-run is armed. A moving
+      // split cut is not new protected evidence and cannot reset this baseline.
       if (trigger === "proactive" && !input.preparation.preservationFallback && summaryBudget.tuples.length) {
         const model = harness.getModel();
-        const identity = createHash("sha256").update(JSON.stringify([summaryBudget.tuples, input.preparation.turnPrefixMessages,
+        const identity = createHash("sha256").update(JSON.stringify([summaryBudget.tuples,
           model.provider, model.id, model.api, model.maxTokens, model.contextWindow, effectivePolicy.summaryMaxTokens, effectivePolicy.keepRecentTokens, effectivePolicy.effort, effectivePolicy.compactionMinSavingsTokens])).digest("hex");
         preservationGuard = proactivePreservationGuard(harness.compactionFailureKey, harness, identity,
           accounting.transcriptBefore ?? prepared.value.tokensBefore);

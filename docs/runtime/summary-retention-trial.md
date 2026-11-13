@@ -61,11 +61,17 @@ without a provider-failure cooldown. Refusal is not permission to pay repeatedly
 threshold cuts keep their existing fresh-assistant and meaningful-growth vetoes.
 Idle and mid-run proactive cuts also share one paid-refusal baseline: retries wait
 for `max(8192, ceil(previousTokens * 0.1))` transcript growth, or changed protected
-blocks/split prefix/policy. Fixed request overhead is not transcript growth. This
+blocks/model/policy. A changing split prefix does not reset the baseline, and
+fixed request overhead is not transcript growth. This
 bounded, process-local cache holds at most 2,048 session digests and clears on
 restart; it never gates manual or reactive recovery. An idle refusal followed by
 threshold checkpoints, including a fresh controller on the next turn, pays only
 once across both paths until that shared baseline permits another attempt.
+
+| Automatic protected-refusal case | Summary calls (ordinary / generated split / reused split) |
+| --- | --- |
+| First eligible attempt in a shared growth step | 1 / 1–2 / 1 |
+| Further idle and mid-run checks combined, same protected tuples/model/policy and less than the shared transcript growth | **0 additional**, even as split cuts/prefixes advance or controllers change |
 
 Manual, reactive-overflow and inherited-prefix recovery reuse missing/oversized
 generated output through legacy composition without another call. Protected
