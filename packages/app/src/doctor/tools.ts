@@ -158,7 +158,7 @@ export async function toolsSection(config: MonoAgentConfig, input: ValidateMonoA
   }
   const mcp = await inspectMcpConfiguration(config);
   const configuredMcpServerNames = mcp.serverNames;
-  details.push(...mcp.section.details);
+  if (mcp.section.details.length > 0) details.push("See MCP servers for external server configuration findings.");
   if (mcp.section.status === "error") status = "error";
   const adapterSendTools = await resolveAdapterSendToolsSettings(input, {
     allowedTools: config.tools.allowedTools,
@@ -472,6 +472,5 @@ async function inspectMcpConfiguration(config: MonoAgentConfig): Promise<{
       );
     }
   }
-  details.push("External MCP tools bypass built-in allow/deny policy. Server connectivity is not probed by validation.");
   return { section: { id: "mcp", label: "MCP servers", status, details }, serverNames: configuredMcpServerNames };
 }

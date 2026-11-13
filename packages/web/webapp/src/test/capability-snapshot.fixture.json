@@ -1,0 +1,309 @@
+{
+  "version": 1,
+  "observation": "durable-inputs",
+  "observedAt": "2026-08-01T10:00:00Z",
+  "process": {
+    "pid": 42,
+    "startedAt": "2026-08-01T09:00:00Z"
+  },
+  "cards": [
+    {
+      "id": "memory",
+      "title": "Memory",
+      "purpose": "Keep useful information across conversations. Choose a tier to inspect its setup instructions, not to change the agent.",
+      "requirements": [
+        "A writable memory root; Journal and BuJo also need local embeddings."
+      ],
+      "usage": "Lite stays local. Journal adds embeddings. BuJo also uses extraction-model tokens.",
+      "ownedConfigPaths": [
+        "memory"
+      ],
+      "steps": [
+        "In the agent folder, back up mono-agent.config.json. Merge only the shown fields; preserve unrelated settings, existing allowlists and deny rules. Replace every example placeholder before use. This console never applies changes.",
+        "{\n  \"memory\": {\n    \"mode\": \"lite\",\n    \"path\": \"./.mono-agent/memory\",\n    \"writeMode\": \"append-host-summary\",\n    \"recallTool\": {\n      \"enabled\": true\n    },\n    \"rememberTool\": {\n      \"enabled\": true\n    }\n  }\n}",
+        "Run mono-agent validate. Resolve waiting/error findings before starting. Restart a managed agent with mono-agent restart; for foreground use stop/start in its terminal. Validation is readiness evidence, not proof of message delivery."
+      ],
+      "status": "ok",
+      "evidence": [
+        {
+          "id": "memory",
+          "status": "ok"
+        }
+      ],
+      "selectedVariant": "memory:lite",
+      "variants": [
+        {
+          "id": "memory:lite",
+          "title": "Lite (full-text search)",
+          "purpose": "SQLite full-text recall, zero external dependencies.",
+          "requirements": [
+            "A writable fresh memory root and the built-in SQLite native module."
+          ],
+          "usage": "Local full-text search and disk storage; no embedding calls.",
+          "ownedConfigPaths": [
+            "memory"
+          ],
+          "status": "ok",
+          "steps": [
+            "In the agent folder, back up mono-agent.config.json. Merge only the shown fields; preserve unrelated settings, existing allowlists and deny rules. Replace every example placeholder before use. This console never applies changes.",
+            "{\n  \"memory\": {\n    \"mode\": \"lite\",\n    \"path\": \"./.mono-agent/memory\",\n    \"writeMode\": \"append-host-summary\",\n    \"recallTool\": {\n      \"enabled\": true\n    },\n    \"rememberTool\": {\n      \"enabled\": true\n    }\n  }\n}",
+            "Run mono-agent validate. Resolve waiting/error findings before starting. Restart a managed agent with mono-agent restart; for foreground use stop/start in its terminal. Validation is readiness evidence, not proof of message delivery."
+          ]
+        },
+        {
+          "id": "memory:journal",
+          "title": "Journal (semantic recall)",
+          "purpose": "Semantic recall via local Ollama or LM Studio embeddings.",
+          "requirements": [
+            "A fresh memory root, SQLite, and a running Ollama or LM Studio embedding model with matching dimension."
+          ],
+          "usage": "Local embedding compute and disk usage; rebuild embeds stored content. Embedding/model liveness is not probed here; run mono-agent validate in the owner terminal.",
+          "ownedConfigPaths": [
+            "memory"
+          ],
+          "status": "disabled",
+          "steps": [
+            "In the agent folder, back up mono-agent.config.json. Merge only the shown fields; preserve unrelated settings, existing allowlists and deny rules. Replace every example placeholder before use. This console never applies changes.",
+            "{\n  \"memory\": {\n    \"mode\": \"journal\",\n    \"path\": \"./.mono-agent/memory\",\n    \"writeMode\": \"append-host-summary\",\n    \"embeddings\": {\n      \"provider\": \"ollama\",\n      \"endpoint\": \"http://localhost:11434\",\n      \"model\": \"nomic-embed-text:v1.5\",\n      \"dim\": 768\n    },\n    \"recallTool\": {\n      \"enabled\": true\n    },\n    \"rememberTool\": {\n      \"enabled\": true\n    }\n  }\n}",
+            "Use this recipe only for a fresh root. Stop the agent before preparing memory: mono-agent stop",
+            "Set the actual embedding model, endpoint and dimension; for BuJo set the extraction model too.",
+            "Initialize generation metadata from the agent folder: mono-agent memory rebuild",
+            "Do not change an existing root tier or rebuild/migrate existing data from these instructions; use the memory administration guide.",
+            "Run mono-agent validate. Resolve waiting/error findings before starting. Restart a managed agent with mono-agent restart; for foreground use stop/start in its terminal. Validation is readiness evidence, not proof of message delivery."
+          ]
+        },
+        {
+          "id": "memory:bujo",
+          "title": "BuJo (capture + recall)",
+          "purpose": "Daily-log capture plus semantic recall via Ollama or LM Studio.",
+          "requirements": [
+            "Journal prerequisites plus a configured extraction model."
+          ],
+          "usage": "Embedding compute, disk storage and additional model calls for capture/extraction. Embedding/model liveness is not probed here; run mono-agent validate in the owner terminal.",
+          "ownedConfigPaths": [
+            "memory"
+          ],
+          "status": "disabled",
+          "steps": [
+            "In the agent folder, back up mono-agent.config.json. Merge only the shown fields; preserve unrelated settings, existing allowlists and deny rules. Replace every example placeholder before use. This console never applies changes.",
+            "{\n  \"memory\": {\n    \"mode\": \"bujo\",\n    \"path\": \"./.mono-agent/memory\",\n    \"writeMode\": \"capture\",\n    \"embeddings\": {\n      \"provider\": \"ollama\",\n      \"endpoint\": \"http://localhost:11434\",\n      \"model\": \"nomic-embed-text:v1.5\",\n      \"dim\": 768\n    },\n    \"llm\": {\n      \"provider\": \"agent-host\",\n      \"model\": \"openai-codex:gpt-5.6-terra\"\n    },\n    \"recallTool\": {\n      \"enabled\": true\n    },\n    \"rememberTool\": {\n      \"enabled\": true\n    }\n  }\n}",
+            "Use this recipe only for a fresh root. Stop the agent before preparing memory: mono-agent stop",
+            "Set the actual embedding model, endpoint and dimension; for BuJo set the extraction model too.",
+            "Initialize generation metadata from the agent folder: mono-agent memory rebuild",
+            "Do not change an existing root tier or rebuild/migrate existing data from these instructions; use the memory administration guide.",
+            "Run mono-agent validate. Resolve waiting/error findings before starting. Restart a managed agent with mono-agent restart; for foreground use stop/start in its terminal. Validation is readiness evidence, not proof of message delivery."
+          ]
+        }
+      ]
+    },
+    {
+      "id": "channel:webhook",
+      "title": "Webhook",
+      "purpose": "HTTP loopback endpoint — the zero-credential smoke channel.",
+      "requirements": [
+        "A local HTTP caller; keep the listener on loopback."
+      ],
+      "usage": "Each invocation can use model tokens and tools.",
+      "ownedConfigPaths": [
+        "webhook"
+      ],
+      "status": "disabled",
+      "steps": [
+        "In the agent folder, back up mono-agent.config.json. Merge only the shown fields; preserve unrelated settings, existing allowlists and deny rules. Replace every example placeholder before use. This console never applies changes.",
+        "{\n  \"webhook\": {\n    \"enabled\": true\n  }\n}",
+        "Run mono-agent validate. Resolve waiting/error findings before starting. Restart a managed agent with mono-agent restart; for foreground use stop/start in its terminal. Validation is readiness evidence, not proof of message delivery."
+      ],
+      "evidence": [
+        {
+          "id": "channel:webhook",
+          "status": "disabled"
+        }
+      ]
+    },
+    {
+      "id": "channel:telegram",
+      "title": "Telegram",
+      "purpose": "Chat with your agent via a Telegram bot.",
+      "requirements": [
+        "A BotFather bot token in .env and an explicit allowedChatIds list."
+      ],
+      "usage": "Messages use your configured model; the Bot API itself has no per-message model charge.",
+      "ownedConfigPaths": [
+        "telegram"
+      ],
+      "status": "waiting",
+      "steps": [
+        "In the agent folder, back up mono-agent.config.json. Merge only the shown fields; preserve unrelated settings, existing allowlists and deny rules. Replace every example placeholder before use. This console never applies changes.",
+        "{\n  \"telegram\": {\n    \"enabled\": true,\n    \"allowedChatIds\": [\n      \"<TELEGRAM_CHAT_ID>\"\n    ]\n  }\n}",
+        "In the owner terminal, set the following placeholders in the owner-only .env. Never paste credentials into this console.",
+        "# Telegram bot token from @BotFather",
+        "MONO_AGENT_TELEGRAM_BOT_TOKEN=",
+        "Run mono-agent validate. Resolve waiting/error findings before starting. Restart a managed agent with mono-agent restart; for foreground use stop/start in its terminal. Validation is readiness evidence, not proof of message delivery."
+      ],
+      "evidence": [
+        {
+          "id": "channel:telegram",
+          "status": "waiting"
+        }
+      ]
+    },
+    {
+      "id": "channel:slack",
+      "title": "Slack",
+      "purpose": "Socket-Mode Slack bot scoped to a channel allowlist.",
+      "requirements": [
+        "A Slack app with Socket Mode, bot/app tokens in .env, and an explicit allowedChannelIds list."
+      ],
+      "usage": "Messages use model tokens; Slack workspace limits and billing are separate.",
+      "ownedConfigPaths": [
+        "slack"
+      ],
+      "status": "disabled",
+      "steps": [
+        "In the agent folder, back up mono-agent.config.json. Merge only the shown fields; preserve unrelated settings, existing allowlists and deny rules. Replace every example placeholder before use. This console never applies changes.",
+        "{\n  \"slack\": {\n    \"enabled\": true,\n    \"allowedChannelIds\": [\n      \"<SLACK_CHANNEL_ID>\"\n    ]\n  }\n}",
+        "In the owner terminal, set the following placeholders in the owner-only .env. Never paste credentials into this console.",
+        "# Slack Socket Mode tokens",
+        "MONO_AGENT_SLACK_BOT_TOKEN=",
+        "MONO_AGENT_SLACK_APP_TOKEN=",
+        "Run mono-agent validate. Resolve waiting/error findings before starting. Restart a managed agent with mono-agent restart; for foreground use stop/start in its terminal. Validation is readiness evidence, not proof of message delivery."
+      ],
+      "evidence": [
+        {
+          "id": "channel:slack",
+          "status": "disabled"
+        }
+      ]
+    },
+    {
+      "id": "channel:openai-api",
+      "title": "OpenAI-compatible API",
+      "purpose": "Expose the runtime as an OpenAI-compatible loopback endpoint.",
+      "requirements": [
+        "A local OpenAI-compatible client; configure a client bearer before sharing access."
+      ],
+      "usage": "Client requests use the agent model and tools, not a new OpenAI subscription.",
+      "ownedConfigPaths": [
+        "openaiApi"
+      ],
+      "status": "disabled",
+      "steps": [
+        "In the agent folder, back up mono-agent.config.json. Merge only the shown fields; preserve unrelated settings, existing allowlists and deny rules. Replace every example placeholder before use. This console never applies changes.",
+        "{\n  \"openaiApi\": {\n    \"enabled\": true\n  }\n}",
+        "In the owner terminal, set the following placeholders in the owner-only .env. Never paste credentials into this console.",
+        "# Optional bearer required from OpenAI-API clients",
+        "MONO_AGENT_OPENAI_API_KEY=",
+        "Run mono-agent validate. Resolve waiting/error findings before starting. Restart a managed agent with mono-agent restart; for foreground use stop/start in its terminal. Validation is readiness evidence, not proof of message delivery."
+      ],
+      "evidence": [
+        {
+          "id": "channel:openai-api",
+          "status": "disabled"
+        }
+      ]
+    },
+    {
+      "id": "channel:cron",
+      "title": "Scheduled jobs (cron)",
+      "purpose": "Run the agent on a schedule; scaffolds cron/digest.md.",
+      "requirements": [
+        "At least one enabled job markdown file in cron/. Review its schedule before starting."
+      ],
+      "usage": "Every scheduled run may consume model tokens, tools and notification usage.",
+      "ownedConfigPaths": [
+        "cron"
+      ],
+      "status": "disabled",
+      "steps": [
+        "In the agent folder, back up mono-agent.config.json. Merge only the shown fields; preserve unrelated settings, existing allowlists and deny rules. Replace every example placeholder before use. This console never applies changes.",
+        "{\n  \"cron\": {\n    \"dir\": \"cron\"\n  }\n}",
+        "Create cron/digest.md with the following contents:",
+        "---\nexpression: \"0 8 * * *\"\nconversationId: cron-digest\nnotify: true\n---\n\nProduce a concise digest of anything noteworthy since the last run.\nYour final reply is delivered to the user verbatim as the notification — write it as the finished message, with no preface. If nothing is noteworthy, call FinishSilently({}) alone without narration. If that tool is unavailable, reply with exactly NOTHING_TO_REPORT.\n",
+        "Run mono-agent validate. Resolve waiting/error findings before starting. Restart a managed agent with mono-agent restart; for foreground use stop/start in its terminal. Validation is readiness evidence, not proof of message delivery."
+      ],
+      "evidence": [
+        {
+          "id": "channel:cron",
+          "status": "disabled"
+        }
+      ]
+    },
+    {
+      "id": "sandbox",
+      "title": "Sandbox (native srt)",
+      "purpose": "Native srt sandbox: workspace-only FS, localhost network, fails closed.",
+      "requirements": [
+        "A supported OS and the pinned native SRT runtime."
+      ],
+      "usage": "Local process overhead; no separate model charge. Network policy may block tools.",
+      "ownedConfigPaths": [
+        "sandbox"
+      ],
+      "status": "waiting",
+      "steps": [
+        "In the agent folder, back up mono-agent.config.json. Merge only the shown fields; preserve unrelated settings, existing allowlists and deny rules. Replace every example placeholder before use. This console never applies changes.",
+        "{\n  \"sandbox\": {\n    \"mode\": \"native\",\n    \"network\": {\n      \"mode\": \"localhost\"\n    },\n    \"readableRoots\": [\n      \".\"\n    ],\n    \"writableRoots\": [\n      \".\"\n    ],\n    \"fallback\": \"fail-closed\"\n  }\n}",
+        "mono-agent sandbox setup",
+        "mono-agent sandbox check",
+        "Run mono-agent validate. Resolve waiting/error findings before starting. Restart a managed agent with mono-agent restart; for foreground use stop/start in its terminal. Validation is readiness evidence, not proof of message delivery."
+      ],
+      "evidence": [
+        {
+          "id": "sandbox",
+          "status": "waiting"
+        }
+      ]
+    },
+    {
+      "id": "tools",
+      "title": "MCP / tools",
+      "purpose": "Let the agent use local tools and owner-prepared MCP servers.",
+      "requirements": [
+        "An explicit built-in tool policy and, for external MCP, an existing validated MCP JSON file. External MCP tools bypass built-in allow/deny rules."
+      ],
+      "usage": "Tool use can add model turns, subprocesses and third-party service costs. Provider, browser and server connectivity is not probed here; run mono-agent validate in the owner terminal.",
+      "ownedConfigPaths": [
+        "tools.allowedTools",
+        "tools.disallowedTools",
+        "tools.mcpConfigPath"
+      ],
+      "steps": [
+        "Back up mono-agent.config.json; preserve existing deny rules. Merge only the tool names you intend to allow.",
+        "{ \"tools\": { \"allowedTools\": [\"Read\", \"Glob\", \"Grep\"], \"mcpConfigPath\": \"./mcp.json\" } }",
+        "Prepare and review mcp.json in the owner terminal before referencing it. Do not run untrusted server commands. Omit mcpConfigPath if you only want built-in tools.",
+        "Run mono-agent validate, then mono-agent restart for a managed agent or stop/start in the foreground terminal."
+      ],
+      "status": "error",
+      "evidence": [
+        {
+          "id": "tools",
+          "status": "ok"
+        },
+        {
+          "id": "mcp",
+          "status": "error"
+        }
+      ]
+    },
+    {
+      "id": "tracing",
+      "title": "Built-in tracing",
+      "purpose": "Already enabled: the app records local run evidence for diagnostics and discovery.",
+      "requirements": [
+        "No extra exporter or service is required."
+      ],
+      "usage": "Local disk usage; no separate model calls. External trace exporters are not supported.",
+      "ownedConfigPaths": [],
+      "steps": [
+        "No enable step is needed. Use mono-agent runs to inspect local run evidence. Phoenix/OTLP exporters were removed and cannot be enabled."
+      ],
+      "status": "ok",
+      "evidence": [
+        {
+          "id": "observability",
+          "status": "ok"
+        }
+      ]
+    }
+  ]
+}

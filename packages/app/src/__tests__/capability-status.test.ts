@@ -35,20 +35,36 @@ describe("read-only capabilities", () => {
     expect(cards.find((card) => card.id === "tracing")?.status).toBe("waiting");
     expect(JSON.stringify(cards)).not.toMatch(/private diagnostic|synthetic-secret/);
   });
+  it("keeps browser/story fixtures identical to the real catalog-derived guidance", async () => {
+    const display = JSON.parse(await readFile(new URL("../../../web/webapp/src/test/capability-snapshot.fixture.json", import.meta.url), "utf8")) as Awaited<ReturnType<ReturnType<typeof createCapabilityStatusService>["read"]>>;
+    const sections = new Map(display.cards.flatMap((card) => card.evidence.map((item) => [item.id, { ...item, label: item.id, details: [] }] as const)));
+    expect(display.cards).toEqual(capabilityCards({ sections: [...sections.values()], ok: false, structurallyValid: false, operationallyReady: false }, "lite"));
+  });
   it("coalesces checks, caches briefly, and always overrides write permission", async () => {
     const input = await fixture();
     const validate = vi.fn(async () => report);
     let now = Date.now();
-    const service = createCapabilityStatusService({ ...input, allowFilesystemWrites: true }, { validate, now: () => now });
+    const service = createCapabilityStatusService({ ...input, allowFilesystemWrites: true, liveness: true }, { validate, now: () => now });
     const [one, two] = await Promise.all([service.read(), service.read()]);
     expect(one).toBe(two);
     expect(validate).toHaveBeenCalledTimes(1);
-    expect(validate).toHaveBeenCalledWith(expect.objectContaining({ allowFilesystemWrites: false, liveness: true }));
+    expect(validate).toHaveBeenCalledWith(expect.objectContaining({ allowFilesystemWrites: false, liveness: false }));
     expect(one.hostPreflight).toBeUndefined();
     await service.read();
     expect(validate).toHaveBeenCalledTimes(1);
     now += 5001;
     await service.read();
+    expect(validate).toHaveBeenCalledTimes(2);
+  });
+  it("negatively caches sanitized failures for five seconds, then recovers", async () => {
+    const input = await fixture();
+    let now = Date.now();
+    const validate = vi.fn().mockRejectedValueOnce(new Error("synthetic-private-path-and-key")).mockResolvedValue(report);
+    const service = createCapabilityStatusService(input, { validate, now: () => now });
+    for (let i = 0; i < 3; i++) await expect(service.read()).rejects.toThrow("Capability validation unavailable. Run mono-agent validate.");
+    expect(validate).toHaveBeenCalledTimes(1);
+    now += 5001;
+    await expect(service.read()).resolves.toMatchObject({ version: 1 });
     expect(validate).toHaveBeenCalledTimes(2);
   });
   it("bounds callers without starting replacement work when a validator hangs", async () => {
@@ -63,7 +79,7 @@ describe("read-only capabilities", () => {
     const service = createCapabilityStatusService(input, { validate: async () => {
       await writeFile(input.configPath, "{}"); return report;
     } });
-    await expect(service.read()).rejects.toThrow("changed");
+    await expect(service.read()).rejects.toThrow("Capability validation unavailable");
     const projected = await createCapabilityStatusService(await fixture(), {
       validate: async () => report,
       hostPreflight: () => ({ schemaVersion: 1, operation: "host-preflight", checks: [{ id: "runtime.node", status: "ok" }] }),
@@ -76,7 +92,7 @@ describe("read-only capabilities", () => {
   it("matches real doctor evidence for every card and keeps configured files unchanged", async () => {
     const input = await fixture();
     const before = await readFile(input.configPath);
-    const doctor = await validateMonoAgentFolder({ ...input, allowFilesystemWrites: false });
+    const doctor = await validateMonoAgentFolder({ ...input, allowFilesystemWrites: false, liveness: false });
     const snapshot = await createCapabilityStatusService(input).read();
     for (const card of snapshot.cards) {
       for (const evidence of card.evidence) {
