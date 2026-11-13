@@ -83,7 +83,11 @@ HELP
       target=$(readlink "$root/current")
       case $target in releases/gen-*) ;; *) die 'unsafe current target' ;; esac
       case $target in *..*|releases/*/*) die 'unsafe current target' ;; esac
-      safe_dir "$root/$target"
+      if [ "$uninstall" = 1 ] && [ ! -e "$root/$target" ] && [ ! -L "$root/$target" ]; then
+        printf 'Warning: current generation is missing; PATH cleanup will be skipped.\n' >&2
+      else
+        safe_dir "$root/$target"
+      fi
     fi
   elif [ "$uninstall" = 1 ]; then
     printf 'No installer-owned CLI found. Nothing removed.\n'; exit 0
@@ -115,52 +119,62 @@ HELP
     fi
   fi
   mkdir -p "$parent"
+  # Parent-scoped lock survives removal of the entire CLI subtree.
+  lock=$parent/.cli-install-lock
+  mkdir "$lock" 2>/dev/null || die 'another installer is active (or a stale ~/.mono-agent/.cli-install-lock needs manual inspection)'
+  stage=''
+  # Invoked by the exit trap.
+  # shellcheck disable=SC2329,SC2317
+  cleanup() { [ -z "$stage" ] || rm -rf "$stage"; rm -f "$lock/service-references" "$lock/runtime-patterns"; rmdir "$lock"; }
+  trap cleanup EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM HUP
   if [ ! -e "$root" ]; then
     mkdir "$root"
     printf '%s\n' "$marker" > "$root/.installer-owned"
     mkdir "$root/bin" "$root/releases" "$root/cache"
   fi
-  lock=$root/.install-lock
-  mkdir "$lock" 2>/dev/null || die 'another installer is active (or a stale .install-lock needs manual inspection)'
-  stage=''
-  # Invoked by the exit trap.
-  # shellcheck disable=SC2329,SC2317
-  cleanup() { [ -z "$stage" ] || rm -rf "$stage"; rm -f "$lock/service-references"; rmdir "$lock"; }
-  trap cleanup EXIT
-  trap 'exit 130' INT
-  trap 'exit 143' TERM HUP
   unset NODE_OPTIONS NODE_PATH NODE_REPL_EXTERNAL_MODULE
   scan_services() {
     : > "$lock/service-references"
+    # Match executable/runtime references, not an inherited PATH entry. Paths
+    # are stored escaped by launchd and systemd; include each emitted form.
+    xml_root=$(printf '%s' "$root" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g' -e 's/"/\&quot;/g' -e "s/'/\\&apos;/g")
+    systemd_root=$(printf '%s' "$root" | sed -e 's/\\/\\\\/g' -e 's/%/%%/g' -e 's/\$/$$/g' -e 's/"/\\"/g')
+    systemd_env_root=$(printf '%s' "$root" | sed -e 's/\\/\\\\/g' -e 's/%/%%/g' -e 's/"/\\"/g')
+    for prefix in "$root" "$xml_root" "$systemd_root" "$systemd_env_root"; do
+      printf '%s/releases/\n%s/current/\n%s/bin/mono-agent\n' "$prefix" "$prefix" "$prefix"
+    done > "$lock/runtime-patterns"
     config_home=${XDG_CONFIG_HOME:-$home/.config}
     case $config_home in /*) ;; *) return 1 ;; esac
     for service_dir in "$home/Library/LaunchAgents" "$config_home/systemd/user"; do
       [ -d "$service_dir" ] || continue
       find -L "$service_dir" -type f -exec sh -c '
-        root=$1; output=$2; shift 2
+        patterns=$1; output=$2; shift 2
         for file do
-          if grep -F "$root" "$file" >/dev/null; then
+          if grep -F -f "$patterns" "$file" >/dev/null; then
             printf "%s\n" "$file" >> "$output"
           else
             status=$?
             if [ "$status" != 1 ]; then exit 1; fi
           fi
         done
-      ' sh "$root" "$lock/service-references" {} + || return 1
+      ' sh "$lock/runtime-patterns" "$lock/service-references" {} + || return 1
     done
   }
   if [ "$uninstall" = 1 ]; then
     if ! scan_services; then
       if [ "$force_uninstall" != 1 ]; then die 'could not inspect service definitions; inspect manually or use --force-uninstall (may break services)'; fi
+      printf 'Warning: --force-uninstall overrides failed service inspection; dependent services may break.\n' >&2
     fi
     if [ -s "$lock/service-references" ]; then
       cat "$lock/service-references" >&2
       if [ "$force_uninstall" != 1 ]; then
         die 'services reference this CLI. Run mono-agent stop (for each agent config) and mono-agent web stop, then retry; --force-uninstall overrides and may break services.'
       fi
-      printf 'Warning: removing referenced runtimes; service definitions are unchanged and may no longer start.\n' >&2
+      printf 'Warning: --force-uninstall overrides detected service references; removing referenced runtimes; service definitions are unchanged and may no longer start.\n' >&2
     fi
-    if [ -L "$root/current" ]; then
+    if [ -L "$root/current" ] && [ -d "$root/$(readlink "$root/current")" ]; then
       target=$(readlink "$root/current")
       if ! "$root/$target/runtime/bin/node" --input-type=commonjs - "$root" <<'UNINSTALL'
 @@UNINSTALL_JS@@
@@ -171,9 +185,6 @@ UNINSTALL
     else
       printf 'No published generation; any shell PATH blocks are preserved for manual inspection.\n'
     fi
-    rm -f "$lock/service-references"
-    rmdir "$lock"
-    trap - EXIT
     # rm does not follow directory symlinks; validated root is fixed under HOME.
     rm -rf "$root"
     printf 'Removed installer-owned CLI only. Projects, credentials and external runtimes were preserved. No services were stopped; installer runtimes were removed.\n'
@@ -187,7 +198,7 @@ UNINSTALL
   fetch "$base/SHASUMS256.txt" "$stage/SHASUMS256.txt" || die 'Node checksums download failed'
   fetch "$base/$archive" "$stage/$archive" || die 'Node download failed'
   digest=$(awk -v file="$archive" '$2==file {n++; hash=$1} END {if(n!=1 || length(hash)!=64 || hash ~ /[^0-9a-f]/) exit 1; print hash}' "$stage/SHASUMS256.txt") || die 'missing, duplicate or malformed Node checksum'
-  if [ "$checksum" = sha256sum ]; then actual=$(sha256sum "$stage/$archive"); else actual=$(shasum -a 256 "$stage/$archive"); fi
+  if [ "$checksum" = sha256sum ]; then actual=$(sha256sum < "$stage/$archive"); else actual=$(shasum -a 256 < "$stage/$archive"); fi
   actual=${actual%% *}
   [ "$actual" = "$digest" ] || die 'Node archive checksum mismatch'
   top=node-v$node_version-$platform-$arch
@@ -223,7 +234,7 @@ UNINSTALL
     printf 'Warning: service inspection incomplete; old generations will not be pruned.\n' >&2
     rm -f "$lock/service-references"
   fi
-  "$runtime/bin/node" --input-type=commonjs - "$root" "$stage/release" "$node_version" "$platform" "$arch" "$digest" "$add_path" "${SHELL-}" <<'FINISH'
+  "$runtime/bin/node" --input-type=commonjs - "$root" "$stage/release" "$node_version" "$platform" "$arch" "$digest" "$add_path" "${SHELL-}" "$lock" <<'FINISH'
 @@FINISH_JS@@
 FINISH
 )

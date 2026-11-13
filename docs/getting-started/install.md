@@ -14,7 +14,7 @@ The bare `mono-agent` npm name isn't ours — npm rejects it as too similar to a
 :::
 
 :::note[Published release: 0.26.0]
-All 20 current catalog packages have npm `latest` set to `0.26.0` (registry checked 2026-10-20). These docs follow `main`; there is no package-behavior delta at the audited revision. [Release status](/reference/release-status/) covers the package renames, deprecated-but-installable old npm names, and the upgrade boundary. Use a [source build](#run-an-unreleased-build) only when evaluating later unreleased changes.
+All 20 current catalog packages have npm `latest` set to `0.26.0` (registry checked 2026-10-20). These docs follow `main`; the host `preflight` command described below is unreleased and ships with the next release. [Release status](/reference/release-status/) covers the package renames, deprecated-but-installable old npm names, and the upgrade boundary. Use a [source build](#run-an-unreleased-build) only when evaluating later unreleased changes.
 :::
 
 ## Prerequisites
@@ -119,7 +119,7 @@ and PATH environment preferences; explicit `--version`/`--add-to-path` flags
 remain incompatible with uninstall.
 Pass options to a piped install with `sh -s -- --non-interactive`, or use the
 inspected local script. Re-run to upgrade; a failed staged install preserves
-`current`. An interrupted installer may leave `.install-lock`; inspect for an
+`current`. An interrupted installer may leave `~/.mono-agent/.cli-install-lock`; inspect for an
 active installer before manually removing that lock and re-running.
 
 npm runs with isolated HOME/configuration, an explicit public registry, and
@@ -132,8 +132,9 @@ Downloads stop after 60 seconds below 1 KiB/s rather than imposing a five-minute
 limit on a healthy slow transfer. No
 registry/mirror override or checksum bypass is offered.
 
-After publication the installer invokes `mono-agent preflight --json`, with a
-bounded timeout. Recognized host errors return nonzero **but leave the CLI
+The installer invokes `mono-agent preflight --json` with a bounded timeout.
+Host preflight is on `main` and ships with the next package release; published
+0.26.0 does not provide it. Recognized host errors return nonzero **but leave the CLI
 installed** and show remediation. Published versions without this command warn
 “host preflight unavailable in this version”; that is not a readiness pass. No
 provider calls, project creation or services are started by installation.
@@ -149,15 +150,16 @@ sh install.sh --uninstall --yes --non-interactive
 Without `--yes`, uninstall requires an interactive confirmation. It preserves
 projects, credentials, `~/.mono-agent/runtimes` and separately npm-installed CLIs.
 Before removal it scans `~/Library/LaunchAgents` and
-`${XDG_CONFIG_HOME:-~/.config}/systemd/user` for definitions referencing the CLI
-prefix. If found, run `mono-agent stop` from each agent config folder and
+`${XDG_CONFIG_HOME:-~/.config}/systemd/user` for runtime references to the CLI
+prefix (`releases/`, `current/`, or `bin/mono-agent`), including XML/systemd
+escaping. A PATH entry alone does not block removal. If found, run `mono-agent stop` from each agent config folder and
 `mono-agent web stop`, then retry. No services are stopped automatically.
 `--force-uninstall` explicitly overrides this safeguard and may leave services
 unable to start; definitions are not deleted. This is a definition scan, not a
 universal live-process detector.
 
 Modified, unsafe or symlinked shell files are preserved with a warning rather
-than blocking CLI removal. If the private Node cannot run, PATH cleanup is
+than blocking CLI removal. If the private Node cannot run or its generation directory is missing, PATH cleanup is
 skipped and the CLI subtree is still removed; remove its PATH block manually.
 An installer-created shell file is removed only if empty after cleanup. Existing
 file bytes and modes are preserved, but atomic replacement does not retain
@@ -228,7 +230,9 @@ Where no usable service manager exists, the foreground command above is the supp
 
 ## Verify the install
 
-Confirm the CLI resolves, then check this host from any folder (even an empty one):
+Confirm the CLI resolves with `mono-agent --help`. The following host checks
+are available from a source build now and ship with the next published release
+(not 0.26.0). Run them from any folder, even an empty one:
 
 ```bash
 mono-agent --help

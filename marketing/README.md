@@ -296,7 +296,8 @@ private Node is required to remove the CLI prefix (PATH cleanup may be skipped).
 
 Upgrades prune to current + previous plus service-referenced generations.
 Uninstall scans LaunchAgents and XDG systemd user definitions and refuses when
-they reference this prefix, with `mono-agent stop` / `mono-agent web stop`
+they reference this prefix’s runtime or CLI executable (raw, XML-escaped, or
+systemd-escaped paths; not a PATH entry alone), with `mono-agent stop` / `mono-agent web stop`
 instructions. It never stops services itself. `--force-uninstall` explicitly
 bypasses this protection and can break those services. Live smoke covers pruning
 and refusal using only a fake plist in its throwaway HOME.
@@ -307,3 +308,10 @@ fail-fast. To reproduce historical runner diagnostics, from the repository root:
 ```sh
 docker run --rm -v "$PWD:/repo:ro" koalaman/shellcheck:v0.9.0 -s sh /repo/marketing/public/install.sh
 ```
+
+The parent-scoped `~/.mono-agent/.cli-install-lock` remains held throughout CLI
+subtree deletion, preventing a concurrent installer from being deleted mid-stage.
+A missing current generation skips PATH cleanup but does not block removal;
+`--force-uninstall` warns explicitly for both failed and positive service scans.
+Host preflight is on main and ships in the next package release; published
+0.26.0 still gets the explicit legacy warning.

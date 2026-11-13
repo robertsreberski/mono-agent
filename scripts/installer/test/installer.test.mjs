@@ -13,7 +13,7 @@ const quote = value => `'${value.replaceAll("'", "'\\''")}'`;
 function fixture(t, options = {}) {
   const dir = realpathSync(mkdtempSync(path.join(tmpdir(), 'mono-installer-test-')));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const home = path.join(dir, "Morgan's home");
+  const home = path.join(dir, options.homeName ?? "Morgan's home");
   const bin = path.join(dir, 'bin');
   mkdirSync(home, { mode: 0o700 }); mkdirSync(bin);
   const executable = (name, text) => writeFileSync(path.join(bin, name), text, { mode: 0o755 });
@@ -116,6 +116,7 @@ for (const options of [{}, { os: 'Linux', arch: 'x86_64' }, { os: 'Linux', arch:
     const working = readlinkSync(path.join(f.cliRoot, 'current'));
     failed(f.run(), /npm installation failed/);
     assert.equal(readlinkSync(path.join(f.cliRoot, 'current')), working);
+    assert.ok(!existsSync(path.join(f.home, '.mono-agent/.cli-install-lock')));
     assert.ok(!readdirSync(f.cliRoot).some(name => name.startsWith('.stage') || name === '.install-lock'));
     const preserved = path.join(f.home, '.mono-agent/credentials'); writeFileSync(preserved, 'fictional');
     failed(f.run(['--uninstall', '--non-interactive']), /needs --yes/);
@@ -189,7 +190,7 @@ test('exclusive lock rejects concurrent installs and first completes', async t =
   const child = spawn('/bin/sh', [script], { env: f.env, stdio: ['ignore', 'pipe', 'pipe'] });
   let output = ''; child.stdout.on('data', chunk => { output += chunk; }); child.stderr.on('data', chunk => { output += chunk; });
   const completion = new Promise(resolve => child.on('exit', resolve));
-  for (let i = 0; i < 200 && !existsSync(path.join(f.cliRoot, '.install-lock')); i++) await new Promise(resolve => setTimeout(resolve, 10));
+  for (let i = 0; i < 200 && !existsSync(path.join(f.home, '.mono-agent/.cli-install-lock')); i++) await new Promise(resolve => setTimeout(resolve, 10));
   failed(f.run(), /another installer is active/);
   assert.equal(await completion, 0, output);
 });
@@ -321,4 +322,78 @@ test('legacy preflight pattern is pinned to app unknown-command wording', () => 
   const finish = readFileSync(path.join(root, 'scripts/installer/finish.cjs'), 'utf8');
   const expression = finish.match(/(\/Unknown command[^\n]+\/i)\.test/)[1];
   assert.ok(new RegExp(expression.slice(1, -2), 'i').test(message));
+});
+
+const xmlEscape = value => value.replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' })[char]);
+const systemdEscape = value => value.replaceAll('\\', '\\\\').replaceAll('"', '\\"').replaceAll('%', '%%').replace(/\$/g, char => char + char);
+for (const [kind, homeName] of [
+  ['launchd', "Morgan's home"],
+  ['launchd', String.raw`Morgan's & < > "50% $cache \ home`],
+  ['systemd', String.raw`Morgan's & < > "50% $cache \ home`],
+]) test(`escaped ${kind} definitions protect runtime deletion and pruning (${homeName})`, t => {
+  const f = fixture(t, { homeName }); passed(f.run());
+  const first = readlinkSync(path.join(f.cliRoot, 'current'));
+  const directory = kind === 'launchd' ? path.join(f.home, 'Library/LaunchAgents') : path.join(f.home, '.config/systemd/user');
+  mkdirSync(directory, { recursive: true });
+  const file = path.join(directory, `fixture.${kind === 'launchd' ? 'plist' : 'service'}`);
+  const node = path.join(f.cliRoot, first, 'runtime/bin/node');
+  const text = kind === 'launchd' ? `<string>${xmlEscape(node)}</string>` : `ExecStart="${systemdEscape(node)}"\n`;
+  writeFileSync(file, text);
+  passed(f.run()); passed(f.run());
+  assert.ok(existsSync(path.join(f.cliRoot, first))); assert.equal(readdirSync(path.join(f.cliRoot, 'releases')).length, 3);
+  failed(f.run(['--uninstall', '--yes']), /services reference this CLI/);
+  assert.equal(readFileSync(file, 'utf8'), text);
+  const result = f.run(['--uninstall', '--yes', '--force-uninstall']); passed(result);
+  assert.match(result.stderr, /--force-uninstall overrides detected service references/);
+  assert.ok(!existsSync(f.cliRoot)); assert.equal(readFileSync(file, 'utf8'), text);
+});
+for (const kind of ['launchd', 'systemd']) test(`PATH-only and sibling-prefix ${kind} definitions do not refuse uninstall or pin generations`, t => {
+  const f = fixture(t); passed(f.run()); const first = readlinkSync(path.join(f.cliRoot, 'current'));
+  const directory = kind === 'launchd' ? path.join(f.home, 'Library/LaunchAgents') : path.join(f.home, '.config/systemd/user');
+  mkdirSync(directory, { recursive: true });
+  const file = path.join(directory, `other.${kind === 'launchd' ? 'plist' : 'service'}`);
+  const raw = `PATH=${f.cliRoot}/bin:/usr/bin\nother=${f.cliRoot}-other/current/runtime/bin/node\n`;
+  const text = kind === 'launchd' ? xmlEscape(raw) : systemdEscape(raw); writeFileSync(file, text);
+  passed(f.run()); passed(f.run());
+  assert.ok(!existsSync(path.join(f.cliRoot, first))); assert.equal(readdirSync(path.join(f.cliRoot, 'releases')).length, 2);
+  passed(f.run(['--uninstall', '--yes'])); assert.ok(!existsSync(f.cliRoot)); assert.equal(readFileSync(file, 'utf8'), text);
+});
+test('dangling current generation is removable without deleting or following a symlink target', t => {
+  const f = fixture(t); passed(f.run(['--add-to-path']));
+  const target = path.join(f.cliRoot, readlinkSync(path.join(f.cliRoot, 'current')));
+  rmSync(target, { recursive: true });
+  const rc = readFileSync(path.join(f.home, '.bash_profile'));
+  const result = f.run(['--uninstall', '--yes']); passed(result);
+  assert.match(result.stderr, /current generation is missing/); assert.ok(!existsSync(f.cliRoot));
+  assert.deepEqual(readFileSync(path.join(f.home, '.bash_profile')), rc);
+  assert.ok(!existsSync(path.join(f.home, '.mono-agent/.cli-install-lock')));
+});
+test('dangling generation symlinks remain unsafe rather than qualifying as a missing runtime', t => {
+  const f = fixture(t); passed(f.run());
+  const target = path.join(f.cliRoot, readlinkSync(path.join(f.cliRoot, 'current')));
+  rmSync(target, { recursive: true }); symlinkSync(path.join(f.dir, 'missing-external'), target);
+  failed(f.run(['--uninstall', '--yes']), /unsafe directory/); assert.ok(existsSync(f.cliRoot));
+});
+test('forced uninstall warns when service inspection fails', t => {
+  const f = fixture(t); passed(f.run());
+  const extra = { XDG_CONFIG_HOME: 'invalid-relative-path' };
+  failed(f.run(['--uninstall', '--yes'], extra), /could not inspect service definitions/);
+  const result = f.run(['--uninstall', '--yes', '--force-uninstall'], extra); passed(result);
+  assert.match(result.stderr, /--force-uninstall overrides failed service inspection/); assert.ok(!existsSync(f.cliRoot));
+});
+test('parent-scoped lock remains held through CLI subtree removal', t => {
+  const f = fixture(t); passed(f.run());
+  const nested = path.join(f.dir, 'concurrent-install.log');
+  const lock = path.join(f.home, '.mono-agent/.cli-install-lock');
+  rmSync(path.join(f.bin, 'rm'));
+  writeFileSync(path.join(f.bin, 'rm'), `#!/bin/sh
+if [ "$1" = -rf ] && [ "$2" = ${quote(f.cliRoot)} ]; then
+  [ -d ${quote(lock)} ] || exit 97
+  if /bin/sh ${quote(script)} --non-interactive > ${quote(nested)} 2>&1; then exit 96; fi
+fi
+exec /bin/rm "$@"
+`, { mode: 0o755 });
+  passed(f.run(['--uninstall', '--yes']));
+  assert.match(readFileSync(nested, 'utf8'), /another installer is active/);
+  assert.ok(!existsSync(f.cliRoot)); assert.ok(!existsSync(lock));
 });

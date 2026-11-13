@@ -11,6 +11,7 @@
   Add `mono-agent preflight [--json] [--port <n>]` for config-independent host
   checks, isolated native-load diagnostics, and explicit repair alternatives.
   Keep `doctor` as the unchanged alias of `validate`.
+
 - Add a macOS/glibc Linux shell installer with checksum-verified private Node,
   atomic CLI upgrades, opt-in PATH editing, and scoped uninstall. Hand off to
   host preflight when supported; warn honestly for older published versions.

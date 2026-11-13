@@ -1,5 +1,5 @@
 const { spawnSync } = require('node:child_process');
-const [root, staged, nodeVersion, platform, arch, archiveSha256, addPath, shell] = process.argv.slice(2);
+const [root, staged, nodeVersion, platform, arch, archiveSha256, addPath, shell, lock] = process.argv.slice(2);
 try {
   const pkg = JSON.parse(fs.readFileSync(path.join(staged, 'npm/lib/node_modules/create-mono-agent/package.json'), 'utf8'));
   const generation = `gen-${Date.now()}-${process.pid}`;
@@ -33,13 +33,16 @@ exec "$runtime/bin/node" "$root/$generation/npm/bin/mono-agent" "$@"
   // Only successful publications prune. A failed scan preserves everything;
   // references and current are rechecked before each deletion.
   try {
-    const files = fs.readFileSync(path.join(root, '.install-lock/service-references'), 'utf8').split('\n').filter(Boolean);
+    const files = fs.readFileSync(path.join(lock, 'service-references'), 'utf8').split('\n').filter(Boolean);
+    const xmlEscape = value => value.replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' })[char]);
+    const systemdEscape = (value, exec = true) => value.replaceAll('\\', '\\\\').replaceAll('"', '\\"').replaceAll('%', '%%').replace(/\$/g, char => exec ? char + char : char);
     for (const entry of fs.readdirSync(path.join(root, 'releases'), { withFileTypes: true })) {
       if (!entry.isDirectory() || !/^gen-\d+-\d+$/.test(entry.name)) continue;
       const relative = `releases/${entry.name}`;
       const absolute = path.join(root, relative);
+      const references = [absolute, xmlEscape(absolute), systemdEscape(absolute), systemdEscape(absolute, false)].map(value => value + '/');
       if (relative === previous || relative === fs.readlinkSync(current)
-        || files.some(file => fs.readFileSync(file, 'utf8').includes(absolute))) continue;
+        || files.some(file => { const text = fs.readFileSync(file, 'utf8'); return references.some(value => text.includes(value)); })) continue;
       // Do not follow symlinks, including a replaced generation directory.
       if (fs.lstatSync(absolute).isSymbolicLink() || relative === fs.readlinkSync(current)) continue;
       fs.rmSync(absolute, { recursive: true });
