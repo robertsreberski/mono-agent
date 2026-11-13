@@ -1,7 +1,7 @@
 import type { ContinuityUpkeepReceipt } from "@mono-agent/turn/host";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, expect, it, vi } from "vitest";
@@ -27,6 +27,7 @@ async function fixture(text = "Neutral source.", count = 4) {
   const root = await mkdtemp(join(tmpdir(), "sparse-ledger-"));
   const f = { root, writer: await ToolHistoryWriter.open({ root, continuityEnabled: true, persistenceCeilingMs: 5000 }) }; resources.push(f);
   const reader = new ToolHistoryReader(root);
+  const recorderNamespaces = new Map<string, string>();
   let serial = 0;
   const capture = async (physical = "fictional") => {
     const generationId = continuityGenerationId(), digest = ledgerHash(generationId);
@@ -36,15 +37,30 @@ async function fixture(text = "Neutral source.", count = 4) {
   };
   const generation = await capture();
   const db = <T>(fn: (d: DatabaseSync) => T) => { const d = new DatabaseSync(reader.databasePath); d.exec("PRAGMA busy_timeout=5000;PRAGMA foreign_keys=ON;BEGIN IMMEDIATE"); try { const result = fn(d); d.exec("COMMIT"); return result; } catch (e) { d.exec("ROLLBACK"); throw e; } finally { d.close(); } };
+  // Mutation acknowledgement is not export completion. Real terminal origins
+  // plus a drained, empty outbox prevent a later retry racing raw fixture reads.
+  const settleAccounting = async () => {
+    await f.writer.replayUpkeepAccounting();
+    const pending = db(d => d.prepare("SELECT 1 FROM sqlite_master WHERE name='continuity_upkeep_accounting'").get()
+      ? d.prepare("SELECT count(*) n FROM continuity_upkeep_accounting WHERE exported IS NULL").get() : { n: 0 });
+    expect(pending).toEqual({ n: 0 });
+  };
   const choose = (ordinals?: number[], physical = "fictional") => {
     const snapshot = reader.snapshotContinuity({ ...scope, currentConversationId: physical, selection: "upkeep" });
     // Explicit sparse request isolates accounting from the ranked caller policy.
     return selectLedgerSources({ ...snapshot, records: ordinals ? snapshot.records.filter(r => ordinals.includes(r.ordinal)) : snapshot.records }, reader.ledger({ ...scope, currentConversationId: physical })?.generation, 128000);
   };
   const reserve = async (selection = choose(), physical = "fictional") => {
+    let recorderNamespace = recorderNamespaces.get(physical);
+    if (!recorderNamespace) {
+      recorderNamespace = join(root, "recorder", physical);
+      await mkdir(recorderNamespace, { recursive: true, mode: 0o700 });
+      await writeFile(join(recorderNamespace, "next.summary.json"), JSON.stringify({ runId: "next", conversationId: physical }), { mode: 0o600 });
+      recorderNamespaces.set(physical, recorderNamespace);
+    }
     const expected = (await f.writer.mutateUpkeep({ kind: "inspect", scope: { logicalId: "fictional", conversationId: physical } }))!;
     const fence = expected.ownerToken ? expected : (await f.writer.mutateUpkeep({ kind: "claim", expected, ownerToken: "owner" }))!;
-    const reservation: UpkeepReservation = { ...fence, operationId: randomUUID(), runId: "next", recorderNamespace: resolve("/fictional"), model: "fictional:model", manifest: selection.manifest,
+    const reservation: UpkeepReservation = { ...fence, operationId: randomUUID(), runId: "next", recorderNamespace, model: "fictional:model", manifest: selection.manifest,
       parent: reader.ledger({ ...scope, currentConversationId: physical })?.generation.id ?? null, budget: fence.bootstrap ? "bootstrap" : "incremental", progress: selection.progress! };
     await f.writer.mutateUpkeep({ kind: "reserve", reservation }); return reservation;
   };
@@ -52,6 +68,7 @@ async function fixture(text = "Neutral source.", count = 4) {
   const finish = async (reservation: UpkeepReservation, saturated = false) => {
     await f.writer.mutateUpkeep({ kind: "outcome", reservation, receipt: receipt(reservation) });
     await f.writer.mutateUpkeep({ kind: "settle", reservation, saturated, analysisOnly: true });
+    await settleAccounting();
   };
   const compact = () => db(d => reclaimUpkeepQuota(d, () => false));
   const counts = () => db(d => [...(d.prepare("SELECT ordinal,start,end,offer_count count,state FROM continuity_upkeep_offers ORDER BY ordinal,start").all() as any[]), ...readRetired(d, "fictional", "fictional")]);
