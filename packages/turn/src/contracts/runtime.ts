@@ -1,3 +1,4 @@
+import type { RuntimeRetainedSummaryAccess, RuntimeRetainedSummaryCandidate } from "./retained-summary.js";
 import type { RuntimeDurableCompactionCheckpoint } from "./session.js";
 // Shared turn contracts, authored as JSDoc; no runtime implementation imports.
 
@@ -83,8 +84,8 @@ export type RuntimeRunOptions = {
    * primaryAttempt=false forbids buying upkeep. Explicit upkeep may hold the
    * exclusive conversation up to 60s; default is local-only. The target headroom
    * excludes the returned prefix; returned evidence must fit maxTokens. */
-  retainedSummaryAccess?: import("./retained-summary.js").RuntimeRetainedSummaryAccess | undefined;
-  coldContext?: ((budget: { maxTokens: number; reason: string; primaryAttempt: boolean }) => Promise<{ messages: ReadonlyArray<any>; replayMessages?: ReadonlyArray<any>; retainedSummary?: import("./retained-summary.js").RuntimeRetainedSummaryCandidate }>) | undefined;
+  retainedSummaryAccess?: RuntimeRetainedSummaryAccess | undefined;
+  coldContext?: ((budget: { maxTokens: number; reason: string; primaryAttempt: boolean }) => Promise<{ messages: ReadonlyArray<any>; replayMessages?: ReadonlyArray<any>; retainedSummary?: RuntimeRetainedSummaryCandidate }>) | undefined;
   /**
    * Protected awaited host claim before stateless replay.
    */

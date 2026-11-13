@@ -1,3 +1,4 @@
+import type { RetainedSummaryAccess } from "./retained-summary-types.js";
 import { resolveRetainedSummaryAdmission } from "./retained-summary.js";
 import { compactionEvidence } from "./compaction-evidence.js";
 import { assertNativeSessionAccess, assertNativeSessionHeader, assertNativeProjectionBinding } from "./session-authority.js";
@@ -206,7 +207,7 @@ export async function resolveSession(runState: NativeSessionState, {
   waitSignal,
   keepAlive,
   requireExisting,
-}: { requestedSessionId: string | null; providerSessionId: string; durableRepo: any; sessionTtlMs?: number; cwd?: string; access?: any; projection?: any; retainedSummaryAccess?: import("../contracts/retained-summary.js").RuntimeRetainedSummaryAccess; onRetainedSummaryFallback?: () => void; waitSignal?: AbortSignal; keepAlive?: boolean; requireExisting?: boolean; }): Promise<{
+}: { requestedSessionId: string | null; providerSessionId: string; durableRepo: any; sessionTtlMs?: number; cwd?: string; access?: any; projection?: any; retainedSummaryAccess?: RetainedSummaryAccess; onRetainedSummaryFallback?: () => void; waitSignal?: AbortSignal; keepAlive?: boolean; requireExisting?: boolean; }): Promise<{
     status: "ready";
 } | {
     status: "unavailable";

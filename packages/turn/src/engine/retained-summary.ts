@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { evidenceDigest } from "./journal-digest.js";
-import type { RuntimeRetainedSummaryAccess, RuntimeRetainedSummaryReceipt } from "../contracts/retained-summary.js";
+import type { RetainedSummaryAccess, RetainedSummaryReceipt } from "./retained-summary-types.js";
 
 const object = (x: any) => x !== null && typeof x === "object" && !Array.isArray(x);
 const keys = (x: any, names: string[]) => object(x) && Object.keys(x).length === names.length && Object.keys(x).every(key => names.includes(key));
@@ -13,7 +13,7 @@ export const retainedSummaryFallbackWarning = { type: "warning", code: "retained
   message: "Retained summary protection unavailable; continuing with legacy context." } as const;
 
 /** Closed, bounded metadata only; no retained-text copy. */
-export function validRetainedSummaryReceipt(p: any): p is RuntimeRetainedSummaryReceipt {
+export function validRetainedSummaryReceipt(p: any): p is RetainedSummaryReceipt {
   if (!keys(p, ["version", "binding", "selection", "destination", "seed"]) || p.version !== 1 || Buffer.byteLength(JSON.stringify(p)) > 8192) return false;
   const b = p.binding, s = p.selection, d = p.destination;
   return keys(b, ["version", "logicalConversationId", "conversationId", "generationId", "recordId", "sha256", "retainedBytes", "sourceEpoch", "sourceRevision", "publication"])
@@ -37,7 +37,7 @@ function seedText(message: any): string {
     || message.content[0]?.type !== "text" || typeof message.content[0].text !== "string") throw failure();
   return message.content[0].text;
 }
-export function assertRetainedSummarySeed(receipt: RuntimeRetainedSummaryReceipt, message: any, text?: string): void {
+export function assertRetainedSummarySeed(receipt: RetainedSummaryReceipt, message: any, text?: string): void {
   if (!validRetainedSummaryReceipt(receipt) || evidenceDigest(message) !== receipt.seed.messageDigest) throw failure();
   const pack = Buffer.from(seedText(message)), { startByte, endByte, sha256 } = receipt.selection.entry;
   if (hash(pack) !== receipt.selection.packSha256 || endByte > pack.length || hash(pack.subarray(startByte, endByte)) !== sha256) throw failure();
@@ -52,10 +52,10 @@ export function assertRetainedSummarySeed(receipt: RuntimeRetainedSummaryReceipt
 /** Raw branch state wins over repaired projection. Covered admissions no longer
  * depend on the source; rewind makes them active again, with legacy fallback if
  * that source has since been removed. No bytes are recovered from source journals. */
-export async function resolveRetainedSummaryAdmission(raw: any, access?: RuntimeRetainedSummaryAccess, onFallback?: () => void): Promise<{ admissionId: string; text: string } | undefined> {
+export async function resolveRetainedSummaryAdmission(raw: any, access?: RetainedSummaryAccess, onFallback?: () => void): Promise<{ admissionId: string; text: string } | undefined> {
   const admission = raw.validator.retainedSummaryAdmission;
   if (!admission) return undefined;
-  const p: RuntimeRetainedSummaryReceipt = admission.payload;
+  const p: RetainedSummaryReceipt = admission.payload;
   // Structural integrity is independent of the optional continuity capability.
   if (!validRetainedSummaryReceipt(p) || p.destination.handleId !== raw.metadata.id || p.destination.journalId !== raw.metadata.journalId
     || raw.validator.owner.kind !== "host" || raw.validator.owner.ownerKey !== p.destination.logicalConversationId
