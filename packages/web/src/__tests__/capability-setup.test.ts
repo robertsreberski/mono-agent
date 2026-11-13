@@ -1,6 +1,6 @@
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { startTuiAdapter, type CapabilitySetupSnapshot } from "@mono-agent/channel-operator";
 import { OperatorClient } from "../operator-client.js";
 import { startWebServer } from "../server.js";
@@ -34,6 +34,31 @@ describe("web capability proxy", () => {
       expect((await fetch(`${server.url}api/v1/agents/agent-one/capabilities`, { headers: { Origin: "https://foreign.example" } })).status).toBe(403);
       expect((await fetch(`${server.url}api/v1/agents/agent-one/capabilities`, { method: "POST", headers: { "content-type": "application/json", Origin: new URL(server.url).origin }, body: "{}" })).status).toBe(404);
     } finally { await server.stop(); await adapter.stop(); }
+  });
+  it("serves the actual webapp API client over real HTTP, requiring its exact-origin header", async () => {
+    // Dynamic module URLs keep the browser TS project (DOM/bundler resolution)
+    // separate from the Node server project. This is the unmocked client source.
+    const apiUrl = new URL("../../webapp/src/api.ts", import.meta.url).href;
+    const meterUrl = new URL("../../webapp/src/data-usage.ts", import.meta.url).href;
+    const { api: browserApi } = await import(apiUrl) as { api: { capabilitySetup: (sourceId: string, signal?: AbortSignal) => Promise<unknown> } };
+    const { resetDataUsage } = await import(meterUrl) as { resetDataUsage: () => void };
+    const root = await temporaryRoot(); roots.push(root);
+    const adapter = await startTuiAdapter({ port: 0, responder: { respond: async () => ({ text: "unused" }) }, capabilitySetup: { read: async () => snapshot } });
+    const server = await startWebServer({ port: 0, stateDir: join(root, "client-web"), voice: false, discoveryIntervalMs: 0, purgeIntervalMs: 0,
+      discoverImpl: async () => [fakeDiscoveredAgent({ baseUrl: adapter.baseUrl })] });
+    const nativeFetch = globalThis.fetch;
+    const origin = new URL(server.url).origin;
+    try {
+      // Only resolve relative browser URLs. Do not synthesize Origin headers or
+      // replace api.capabilitySetup, middleware or the server response.
+      vi.stubGlobal("window", { location: { origin }, setTimeout, clearTimeout });
+      vi.stubGlobal("fetch", (url: string | URL, init?: RequestInit) => nativeFetch(new URL(String(url), server.url), init));
+      const controller = new AbortController();
+      await expect(browserApi.capabilitySetup("agent-one", controller.signal)).resolves.toEqual(snapshot);
+      expect((await nativeFetch(`${server.url}api/v1/agents/agent-one/capabilities`)).status).toBe(403);
+      controller.abort();
+      await expect(browserApi.capabilitySetup("agent-one", controller.signal)).rejects.toMatchObject({ name: "AbortError" });
+    } finally { resetDataUsage(); vi.unstubAllGlobals(); await server.stop(); await adapter.stop(); }
   });
   it("rejects stale generation results and unsupported/offline sources", async () => {
     const root = await temporaryRoot(); roots.push(root);

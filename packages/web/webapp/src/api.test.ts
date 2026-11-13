@@ -1114,3 +1114,17 @@ it("validates and rehydrates the upkeep slice without treating unknown spend as 
   expect(parseThreadUsage(usage).upkeep).toMatchObject({ costUsd: null, knownCostUsd: 0, operations: 1 });
   for (const invalid of [{ operations: -1 }, { operations: 1.2 }, { operations: 1, costUsd: -0.01 }, { operations: 1, tokensPartial: false }]) expect(() => parseThreadUsage({ ...usage, upkeep: invalid })).toThrow();
 });
+
+
+describe("capability setup reads", () => {
+  afterEach(() => vi.unstubAllGlobals());
+  it("sends exact origin and preserves the caller abort signal", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(Response.json({ cards: [] }));
+    vi.stubGlobal("fetch", fetchMock);
+    const controller = new AbortController();
+    await api.capabilitySetup("garden agent", controller.signal);
+    expect(fetchMock).toHaveBeenCalledWith("/api/v1/agents/garden%20agent/capabilities", expect.objectContaining({
+      signal: controller.signal, headers: expect.objectContaining({ "X-Mono-Agent-Web-Origin": window.location.origin }),
+    }));
+  });
+});

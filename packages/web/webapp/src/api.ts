@@ -866,7 +866,7 @@ export const api = {
 
   capabilitySetup: (sourceId: string, signal?: AbortSignal) => request<WebCapabilitySetupSnapshot>(
     `/api/v1/agents/${encodeURIComponent(sourceId)}/capabilities`,
-    signal === undefined ? {} : { signal },
+    { headers: { "X-Mono-Agent-Web-Origin": window.location.origin }, ...(signal === undefined ? {} : { signal }) },
   ),
   providerUsage: (sourceId: string, signal?: AbortSignal) => request<unknown>(
     `/api/v1/agents/${encodeURIComponent(sourceId)}/provider-usage`,
