@@ -11,6 +11,35 @@ Agent Core supplies `runAgentLoop`; the engine does not fork those dependencies.
 The `sessions.js` contract owns storage outcomes, not runtime result objects,
 warnings or run-option policy. Process-wide provider fan-out stays in runtime.
 
+## Retained cold-summary admission
+
+`retained_summary_admitted` is a closed, version-1 metadata payload inside the
+schema-2 journal. It binds source publication/retained bytes, renderer UTF-8 entry
+and pack hashes, destination canonical epoch/owner/physical bucket/handle/journal,
+and the actual persisted seed-entry ID/message digest. Exactly one is allowed;
+it must follow synthetic seed appends and host beginTurn/owner binding, precede
+operations, and sync before compaction or provider dispatch. No text copy or pin
+is stored. Orphan seeds and interrupted host-turn starts confer no protection.
+
+Host selection travels with that call's exact messages, not mutable supplier
+state. The host-only resolver is protected from request/private-route overrides
+and stripped from detached attempts. It derives the destination epoch only from
+canonical owned state; absence keeps legacy behavior with no receipt. Publication
+trust comes from the continuity participant's native evidence, not from storage
+matching labels. Reopen validates before repair/dispatch, including seed hashes
+and exact bound retained source. Active revocation produces an explicit unavailable
+outcome for reconstruction. A covering native checkpoint ends source resolution;
+coverage propagates on its active branch. Rewind reactivates it, with legacy
+fallback (not an availability error) if that covered source was subsequently purged.
+
+The authenticated predecessor enters ordinary and split preparation before
+summary-input/budget planning. Native checkpoint predecessors take precedence over
+cold sources, including repaired projections. Existing refusal identities, paid
+ceilings, manual/reactive and inherited-prefix bypasses and capacity bounds stay
+unchanged. No-admission journal bytes/projections remain unchanged. Legacy journals
+are forward-readable; old readers reject the new closed kind. Binary downgrade
+against carrier-bearing journals requires a separately approved reconstruction/reset.
+
 ## Install / Usage
 
 ```bash

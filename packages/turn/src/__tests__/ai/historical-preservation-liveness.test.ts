@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -16,18 +17,34 @@ const tuple = "- Permit; m1; pending; no approval.";
 const history = `## Historical events and corrections\n${tuple}\n## Pending items\n- None`;
 const answer = (text: string) => ({ role: "assistant", stopReason: "stop", content: [{ type: "text", text }], usage: { input: 1, output: 1, totalTokens: 2, cacheRead: 0, cacheWrite: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } });
 
-async function fixture(summary = history, inherited = false) {
+async function fixture(summary = history, inherited = false, admitted = false) {
   const inheritedProjection = { messages: [{ role: "user", content: "Fictional inherited prefix.", timestamp: 1 }], coverage: { version: 1, sources: [{ journalId: "frozen", sourceTipId: "tip", sourceSeq: 7, sourceDigest: "3".repeat(64) }] } };
   const root = await mkdtemp(join(tmpdir(), "historical-liveness-"));
   const repo = new JsonlSessionRepo({ sessionsRoot: root });
   const raw = await repo.create({ cwd: "/fictional", ...(inherited ? { hostAuthority: { version: 1, rootId: "1".repeat(64), authorityId: "2".repeat(64), ownerKey: "fictional-owner", historyBucket: "fictional-bucket" }, assertOwned: async () => {} } : {}) });
-  await raw.appendCompaction({ summary, tokensBefore: 10000, retainedTail: [], details: { readFiles: [], modifiedFiles: [] } });
+  let candidate: any, access: any, seed: string | undefined;
+  if (admitted) {
+    const hash = (text: string) => createHash("sha256").update(text).digest("hex");
+    const binding = { version: 1, logicalConversationId: "fictional-owner", conversationId: "fictional-bucket", recordId: "record", generationId: "generation",
+      sha256: hash(summary), retainedBytes: Buffer.byteLength(summary), sourceEpoch: "source", sourceRevision: 1,
+      publication: { journalId: "source-journal", operationId: "source-cut", sourceDigest: hash("coverage"), summaryDigest: hash(summary) } };
+    const entry = `Generated summary evidence id="record" sha256="${hash(summary)}": ${JSON.stringify(summary)}\n`;
+    seed = await raw.appendMessage({ role: "user", content: entry, timestamp: 1 });
+    candidate = { binding, selection: { recordId: binding.recordId, generationId: binding.generationId, sha256: binding.sha256,
+      retainedBytes: binding.retainedBytes, packSha256: hash(entry), entry: { startByte: 0, endByte: Buffer.byteLength(entry), sha256: hash(entry) } } };
+    access = { destination: { logicalConversationId: "fictional-owner", conversationId: "fictional-bucket", epoch: "destination", handleId: raw.metadata.id },
+      assertCurrent: async () => {}, resolve: async () => ({ text: summary }) };
+  } else await raw.appendCompaction({ summary, tokensBefore: 10000, retainedTail: [], details: { readFiles: [], modifiedFiles: [] } });
   const faux = fauxProvider({ models: [{ id: "liveness", contextWindow: 100000, maxTokens: 10000 }], tokensPerSecond: 1000000 });
   const models = createModels(); models.setProvider(faux.provider);
   faux.setResponses([fauxAssistantMessage([fauxText("Fictional run continued.")])]);
   const model = faux.getModel();
   const completeSimple = vi.fn(async (..._args: any[]): Promise<any> => answer("Legacy lossy summary."));
-  const driver = createRunDriver(raw, { model, models, systemPrompt: "Fictional rules.", tools: [], ...(inherited ? { inheritedProjection } : {}) });
+  const driver = createRunDriver(raw, { model, models, systemPrompt: "Fictional rules.", tools: [], ...(access ? { retainedSummaryAccess: access } : {}), ...(inherited ? { inheritedProjection } : {}) });
+  if (admitted) {
+    await driver.beginTurn("fictional-admission", "host", { kind: "host", ownerKey: "fictional-owner", historyBucket: "fictional-bucket", handleId: raw.metadata.id, turnId: "fictional-admission", baseRevision: 0 });
+    await driver.admitRetainedSummary(candidate, seed!); await driver.endTurn("completed");
+  }
   const session = { getEntries: () => raw.getEntries(), buildContext: async () => inherited ? projectInheritedContext(await raw.getEntries(), inheritedProjection) : projectContext(await raw.getEntries()) };
   const harness = { models: { completeSimple }, compactionFailureKey: root, getModel: () => model, waitForIdle: () => driver.waitForIdle(),
     setCompactionSettings: (settings: any) => driver.setCompactionSettings(settings),
@@ -350,4 +367,44 @@ it("keeps partial native usage defined across durable reload without inventing a
       expect(projected.filter((message: any) => message.role === "compactionSummary").every((message: any) => message.usage === undefined)).toBe(true);
     } finally { await reopened.close(); await reopenedRepo.close(); }
   } finally { await f.close(); }
+});
+
+it.each([false, true])("authenticated cold predecessor reaches ordinary/split protection before budgeting (split=%s)", async split => {
+  const f = await fixture(history, false, true);
+  try {
+    await f.grow();
+    if (split) await f.raw.appendMessage({ role: "assistant", content: [{ type: "text", text: "Fictional suffix. ".repeat(2000) }], timestamp: 3 });
+    expect((await f.compact("proactive")).applied).toBe(false);
+    expect(f.events.at(-1)).toMatchObject({ reason: "protected_tuples_missing", accounting: { splitTurn: split, preservation: { protectedTupleCount: 1 } } });
+    expect(JSON.stringify(f.completeSimple.mock.calls[0]![1])).toContain("<previous-summary>");
+    expect(JSON.stringify(f.completeSimple.mock.calls[0]![1])).toContain("<protected-historical-tuples>");
+    expect((await f.raw.getEntries()).filter((entry: any) => entry.type === "compaction")).toHaveLength(0);
+    await f.grow(); f.completeSimple.mockResolvedValue(answer(history));
+    expect((await f.compact("proactive")).applied).toBe(true);
+    const cut = (await f.raw.getEntries()).filter((entry: any) => entry.type === "compaction").at(-1);
+    expect(cut.checkpoint.retainedSummaryCoverage.admissionId).toBe(f.raw.validator.retainedSummaryAdmission.id);
+  } finally { await f.close(); }
+});
+it.each(["manual", "reactive_overflow"])("authenticated cold predecessor preserves %s liveness bypass", async trigger => {
+  const f = await fixture(history, false, true);
+  try {
+    await f.grow();
+    expect((await f.compact(trigger)).applied).toBe(true);
+    expect(f.completeSimple).toHaveBeenCalledTimes(1);
+    expect(f.warnings).toContainEqual(expect.objectContaining({ warning_kind: "historical_preservation_bypassed", reason: "protected_tuples_missing" }));
+  } finally { await f.close(); }
+});
+it("shares active admission's paid refusal across the real idle and threshold hooks", async () => {
+  const f = await fixture(history, false, true);
+  const state = { session: f.session, sessionBaselineCount: 0, compaction: { policy: { ...f.policy, contextWindow: 100000, triggerTokens: 10000 },
+    diagnostics: { context_fixed_overhead_tokens: 10000, context_user_message_tokens: 0 }, applied: false, compactedThisRun: false, reactiveAttempted: false } };
+  const controller = createMidRunCompaction(state, { harness: f.harness, options: {}, reference: "faux:liveness", onEvent: (event: any) => f.events.push(event), runtimeWarnings: f.warnings });
+  try {
+    await f.grow(); expect((await f.compact("proactive")).applied).toBe(false); expect(f.completeSimple).toHaveBeenCalledTimes(1);
+    expect(await controller.arm()).toBe(true);
+    expect((await f.driver.prompt("Continue fictional work.")).status).toBe("completed");
+    expect(f.completeSimple).toHaveBeenCalledTimes(1);
+    expect(f.events.at(-1)).toMatchObject({ reason: "preservation_growth_required", accounting: { midRun: true } });
+    expect((await f.raw.getEntries()).some((entry: any) => entry.type === "compaction")).toBe(false);
+  } finally { await controller.disarm(); await f.close(); }
 });

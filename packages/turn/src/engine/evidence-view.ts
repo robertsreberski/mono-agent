@@ -2,7 +2,8 @@
 import { createHash } from "node:crypto";
 import { JournalValidator, validateJournalHeader } from "./journal-schema.js";
 
-export const evidenceDigest = (value: any) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
+import { evidenceDigest } from "./journal-digest.js";
+export { evidenceDigest } from "./journal-digest.js";
 const fail = (reason: string) => { throw new TypeError(`Invalid native evidence view: ${reason}`); };
 const views = new WeakSet(), scanned = new WeakSet();
 const freeze = (value: any) => { if (value && typeof value === "object") { Object.values(value).forEach(freeze); Object.freeze(value); } return value; };

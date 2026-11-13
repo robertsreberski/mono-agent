@@ -305,6 +305,10 @@ export async function resolveSession(runState: NativeSessionState, {
         runState.sessionEntry = null;
         // Journal damage found by the validating open (the presence probe reads
         // only the header) is the same typed, evidence-preserving refusal.
+        if (["ERR_RETAINED_SUMMARY_AUTHORITY", "ERR_RETAINED_SUMMARY_UNAVAILABLE"].includes((error as { code?: string }).code ?? "")) {
+          return unavailable(requestedSessionId, "Retained summary admission unavailable; native evidence preserved for reconstruction",
+            "native_retained_summary_unavailable", "pi_retained_summary_unavailable");
+        }
         if (claimed.entry.durable && isJournalCorruption(error)) return unreadable();
         throw error;
       }

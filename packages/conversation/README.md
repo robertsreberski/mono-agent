@@ -1480,7 +1480,7 @@ Restart rechecks destination ownership/epoch/handle, persisted seed commitment a
 the exact source publication. Missing authority or an active revoked source fails
 closed for reconstruction, without recovering original bytes. A durable successor
 checkpoint's branch-local coverage ends the source dependency. Rewind before that
-successor revalidates the source; with a purged source it instead records legacy
+successor revalidates the source; with a purged source it instead uses legacy
 behavior without an availability failure. No retention pins or copies are added.
 Old readers reject carrier-bearing journals; do not downgrade binaries against
 active admission journals without an explicitly approved reconstruction/reset.

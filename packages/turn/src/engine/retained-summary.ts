@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { evidenceDigest } from "./evidence-view.js";
+import { evidenceDigest } from "./journal-digest.js";
 import type { RuntimeRetainedSummaryAccess, RuntimeRetainedSummaryReceipt } from "../contracts/retained-summary.js";
 
 const object = (x: any) => x !== null && typeof x === "object" && !Array.isArray(x);
@@ -30,7 +30,9 @@ export function validRetainedSummaryReceipt(p: any): p is RuntimeRetainedSummary
 }
 
 function seedText(message: any): string {
-  if (message?.role !== "user" || !Array.isArray(message.content) || message.content.length !== 1
+  if (message?.role !== "user") throw failure();
+  if (typeof message.content === "string") return message.content;
+  if (!Array.isArray(message.content) || message.content.length !== 1
     || message.content[0]?.type !== "text" || typeof message.content[0].text !== "string") throw failure();
   return message.content[0].text;
 }

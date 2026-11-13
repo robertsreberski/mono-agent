@@ -1,3 +1,4 @@
+import { evidenceDigest } from "../journal-digest.js";
 import assert from "node:assert/strict";
 import { describe, expect, it } from "vitest";
 import { JournalValidator, validateJournalHeader } from "../journal-schema.js";
@@ -51,6 +52,24 @@ function allKindsFixture() {
     return { validator, records, message, native, result };
 }
 
+async function admissionKindRecord() {
+  const repo = new MemorySessionRepo(), raw = await repo.create({ id: "admitted-handle" });
+  const message = { role: "user", content: "Fictional pack.", timestamp: 1 };
+  const seed = await raw.appendMessage(message);
+  await raw.beginTurn("admission-turn", {}, "host");
+  await raw.write("owner_binding", { kind: "host", ownerKey: "fiction", historyBucket: "fiction:bucket" });
+  await raw.write("handle_binding", { handleId: raw.metadata.id, authoritative: true, baseRevision: 0, model: null });
+  const sha = "a".repeat(64);
+  const record = await raw.write("retained_summary_admitted", { version: 1,
+    binding: { version: 1, logicalConversationId: "fiction", conversationId: "fiction:bucket", generationId: "gen", recordId: "record",
+      sha256: sha, retainedBytes: 10, sourceEpoch: "source", sourceRevision: 1,
+      publication: { journalId: "source-journal", operationId: "source-op", sourceDigest: sha, summaryDigest: sha } },
+    selection: { recordId: "record", generationId: "gen", sha256: sha, retainedBytes: 10, packSha256: sha, entry: { startByte: 0, endByte: 1, sha256: sha } },
+    destination: { logicalConversationId: "fiction", conversationId: "fiction:bucket", epoch: "destination", handleId: raw.metadata.id, journalId: raw.metadata.journalId },
+    seed: { entryId: seed, messageDigest: evidenceDigest(message) } });
+  await raw.endTurn("admission-turn", "completed"); await raw.close(); return record;
+}
+
 describe("mono-agent harness journal v2", () => {
   it("validates the stable identity header and rejects other versions or guessed ownership", () => {
     expect(() => validateJournalHeader(header)).not.toThrow();
@@ -59,9 +78,9 @@ describe("mono-agent harness journal v2", () => {
       expect(() => validateJournalHeader({ ...header, ...change })).toThrow("Invalid");
     }
   });
-  it("defines and validates every kind without stripping opaque native metadata", () => {
+  it("defines and validates every kind without stripping opaque native metadata", async () => {
     const { validator, records, message, native, result } = allKindsFixture();
-    expect([...new Set(records.map((r) => r.kind))].sort()).toEqual([...JOURNAL_KINDS].sort());
+    expect([...new Set([...records, await admissionKindRecord()].map((r) => r.kind))].sort()).toEqual([...JOURNAL_KINDS].sort());
     expect(message.payload.message).toEqual(native);
     expect(validator.tip).toBe(result.id);
     expect(records.at(-1)!.parentId).not.toBe(result.id); // evidence order is not context ancestry

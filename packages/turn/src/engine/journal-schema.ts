@@ -1,5 +1,5 @@
 import { validRetainedSummaryReceipt } from "./retained-summary.js";
-import { evidenceDigest } from "./evidence-view.js";
+import { evidenceDigest } from "./journal-digest.js";
 import type { JournalEntry, JournalHeader, Provenance } from "./journal-types.js";
 // @ts-check
 import { createHash } from "node:crypto";
