@@ -63,7 +63,7 @@ afterEach(async () => {
 });
 
 describe("sandbox policy", () => {
-  it("aborts an external availability proof before spawning when cancelled", async () => {
+  it("reports an external availability proof unavailable when cancelled", async () => {
     const abort = new AbortController();
     abort.abort();
     const engine = createSrtSandboxEngine({ command: await fakeSrtExecutable(), signal: abort.signal });

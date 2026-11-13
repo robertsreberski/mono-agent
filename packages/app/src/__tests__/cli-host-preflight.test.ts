@@ -44,6 +44,22 @@ registerHooks({resolve(s,c,n){if(s.includes('cli-commands')||s==='@mono-agent/co
       expect(await readFile(join(cwd, ".env"), "utf8")).toBe("NODE_OPTIONS=--invalid\n");
     } finally { await rm(cwd, { recursive: true, force: true }); }
   }, 120000);
+  it("retains every host result when sandbox temp setup fails", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "preflight-temp-failure-"));
+    try {
+      const missing = join(cwd, "unavailable-temp-root");
+      const { stdout, stderr } = await exec(process.execPath, [cli, "preflight", "--json"], {
+        cwd, timeout: 40000, env: { ...process.env, TMPDIR: missing, TMP: missing, TEMP: missing },
+      });
+      const report = JSON.parse(stdout);
+      expect(stderr).toBe("");
+      expect(report.ok).toBe(true);
+      expect(report.failure).toBeUndefined();
+      expect(report.checks.map((c: { id: string }) => c.id)).toEqual(ids);
+      expect(report.checks.find((c: { id: string }) => c.id === "sandbox.runtime")).toMatchObject({ status: "warning", code: "probe_setup_failed" });
+      expect(await readdir(cwd)).toEqual([]);
+    } finally { await rm(cwd, { recursive: true, force: true }); }
+  }, 60000);
   it("reports a simulated broken native module without loading the ordinary CLI graph", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "preflight-install-"));
     try {
@@ -85,6 +101,14 @@ registerHooks({resolve(s,c,n){if(s.includes('cli-commands')||s==='@mono-agent/co
       const healthy = JSON.parse(restored.stdout);
       expect(healthy.ok).toBe(true);
       expect(healthy.checks.find((c: { id: string }) => c.id === "native.memory").status).toBe("ok");
+      // A damaged optional resource must not discard healthy native/runtime checks.
+      await writeFile(join(app, "resources/srt/package.json"), "invalid resource json");
+      const damaged = await exec(process.execPath, [join(app, "dist/cli.js"), "preflight", "--json"], { cwd, timeout: 40000 });
+      const partial = JSON.parse(damaged.stdout);
+      expect(partial.ok).toBe(true);
+      expect(partial.failure).toBeUndefined();
+      expect(partial.checks.map((c: { id: string }) => c.id)).toEqual(ids);
+      expect(partial.checks.find((c: { id: string }) => c.id === "sandbox.runtime")).toMatchObject({ status: "warning", code: "sandbox_resource_failed" });
     } finally { await rm(cwd, { recursive: true, force: true }); }
   }, 60000);
   it("retains JSON envelope and exit 2 on usage failure", async () => {

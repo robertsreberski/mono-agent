@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { constants } from "node:fs";
 import { access, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -17,6 +17,26 @@ export async function toolAvailable(command: string): Promise<boolean> {
   return false;
 }
 export interface ProcessProbe { readonly ok: boolean; readonly stdout: string; readonly code: string }
+/** Reachability needs exit status only, never a service-manager domain dump. */
+export function boundedProcessStatus(command: string, args: readonly string[], timeout = PROBE_TIMEOUT_MS): Promise<ProcessProbe> {
+  return new Promise((resolve) => {
+    const env = { ...process.env };
+    delete env.NODE_OPTIONS;
+    delete env.NODE_PATH;
+    const child = spawn(command, [...args], { stdio: "ignore", env });
+    let timedOut = false;
+    const deadline = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGKILL");
+    }, timeout);
+    const finish = (ok: boolean): void => {
+      clearTimeout(deadline);
+      resolve({ ok, stdout: "", code: timedOut ? "probe_timeout" : ok ? "ok" : "probe_failed" });
+    };
+    child.once("error", () => finish(false));
+    child.once("close", (code) => finish(!timedOut && code === 0));
+  });
+}
 interface ProcessProbeOptions {
   readonly graceful?: boolean;
   readonly tempRoot?: string;
@@ -48,28 +68,56 @@ export function boundedProcess(command: string, args: readonly string[], timeout
     }, timeout);
   });
 }
-export async function isolatedProbe(kind: "memory" | "sharp" | "sandbox"): Promise<{ ok: boolean; observed: Readonly<Record<string, unknown>>; error: string; code: string }> {
+interface IsolatedProbeResult {
+  readonly ok: boolean;
+  readonly observed: Readonly<Record<string, unknown>>;
+  readonly error: string;
+  readonly code: string;
+}
+interface IsolatedProbeDependencies {
+  readonly createTempRoot?: () => Promise<string>;
+  readonly removeTempRoot?: (root: string) => Promise<void>;
+  readonly run?: typeof boundedProcess;
+}
+function failedProbe(code: string): IsolatedProbeResult {
+  return { ok: false, observed: {}, error: "", code };
+}
+function decodeProbe(result: ProcessProbe): IsolatedProbeResult {
+  if (result.code === "probe_timeout" || result.code === "probe_output_limit") return failedProbe(result.code);
+  try {
+    const data: unknown = JSON.parse(result.stdout);
+    if (typeof data === "object" && data !== null && "ok" in data) {
+      const value = data as { ok: boolean; observed?: Record<string, unknown>; error?: string };
+      return { ok: result.ok && value.ok === true, observed: value.observed ?? {}, error: String(value.error ?? ""), code: result.code };
+    }
+  } catch { /* crashes and non-protocol stdout are failures, not success */ }
+  return failedProbe(result.code === "ok" ? "probe_protocol_failed" : result.code);
+}
+export async function isolatedProbe(kind: "memory" | "sharp" | "sandbox", deps: IsolatedProbeDependencies = {}): Promise<IsolatedProbeResult> {
   const sandbox = kind === "sandbox";
   // Parent-owned temporary root also removes functional-proof leftovers after a
   // worker crash/hard timeout. Never stage anything in the consumer folder.
-  const tempRoot = sandbox ? await mkdtemp(join(tmpdir(), "mono-agent-host-probe-")) : undefined;
-  try {
-    const result = await boundedProcess(process.execPath, [fileURLToPath(new URL("./host-native-worker.js", import.meta.url)), kind], sandbox ? 20000 : 10000,
-      tempRoot === undefined ? {} : { graceful: true, tempRoot });
-    if (result.code === "probe_timeout" || result.code === "probe_output_limit") {
-      return { ok: false, observed: {}, error: "", code: result.code };
-    }
-    try {
-      const data: unknown = JSON.parse(result.stdout);
-      if (typeof data === "object" && data !== null && "ok" in data) {
-        const value = data as { ok: boolean; observed?: Record<string, unknown>; error?: string };
-        return { ok: result.ok && value.ok === true, observed: value.observed ?? {}, error: String(value.error ?? ""), code: result.code };
-      }
-    } catch { /* crashes and non-protocol stdout are failures, not success */ }
-    return { ok: false, observed: {}, error: "", code: result.code === "ok" ? "probe_protocol_failed" : result.code };
-  } finally {
-    if (tempRoot !== undefined) await rm(tempRoot, { recursive: true, force: true });
+  let tempRoot: string | undefined;
+  if (sandbox) {
+    try { tempRoot = await (deps.createTempRoot ?? (() => mkdtemp(join(tmpdir(), "mono-agent-host-probe-"))))(); }
+    catch { return failedProbe("probe_setup_failed"); }
   }
+  let result: IsolatedProbeResult;
+  let cleanupFailed = false;
+  try {
+    result = decodeProbe(await (deps.run ?? boundedProcess)(process.execPath,
+      [fileURLToPath(new URL("./host-native-worker.js", import.meta.url)), kind], sandbox ? 20000 : 10000,
+      tempRoot === undefined ? {} : { graceful: true, tempRoot }));
+  } catch { result = failedProbe("probe_failed"); }
+  finally {
+    if (tempRoot !== undefined) {
+      try { await (deps.removeTempRoot ?? ((root) => rm(root, { recursive: true, force: true })))(tempRoot); }
+      catch { cleanupFailed = true; }
+    }
+  }
+  // A temporary-directory cleanup problem is local to this optional probe and
+  // must never discard the other host checks or reject the collector.
+  return cleanupFailed ? { ...result, ok: false, code: "probe_cleanup_failed" } : result;
 }
 
 /** Literal IPv4 loopback, direct HTTP (no proxy env), no redirects, hard wall/byte limits. */

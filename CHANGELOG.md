@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Fix host preflight service-manager reachability with large domain dumps, and
+  keep optional sandbox setup, cleanup, and resource failures non-fatal without
+  discarding other host results.
+
 - Add an early Node-version guard to both CLI entry points with actionable
   version-manager commands, before loading configuration or native dependencies.
   Add `mono-agent preflight [--json] [--port <n>]` for config-independent host

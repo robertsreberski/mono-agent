@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { minimumNode, requiredNode, supportedNode } from "../node-version-guard.js";
 import { DEFAULT_WEB_PORT } from "../service/web/web-service-definition.js";
-import { bindLoopback, boundedProcess, isolatedProbe, loopbackProbe, toolAvailable } from "./host-preflight-probes.js";
+import { bindLoopback, boundedProcessStatus, isolatedProbe, loopbackProbe, toolAvailable } from "./host-preflight-probes.js";
 import { nativeRemediations } from "./host-remediation.js";
 import { classifyNativeFailure } from "./native-failures.js";
 import type { HostCheck, HostCheckId, HostPreflightReport, HostRemediation } from "./host-preflight-types.js";
@@ -21,7 +21,7 @@ export async function nativeCheck(kind: "memory" | "sharp", probe = isolatedProb
   return check(`native.${kind}`, "error", classification.code, `Isolated ${kind} probe failed; select supported Node and rebuild/reinstall this installation.`,
     { runningAbi: process.versions.modules, ...classification }, nativeRemediations());
 }
-export async function serviceCheck(platform = process.platform, run = boundedProcess): Promise<HostCheck> {
+export async function serviceCheck(platform = process.platform, run = boundedProcessStatus): Promise<HostCheck> {
   const result = platform === "darwin"
     ? await run("/bin/launchctl", ["print", `gui/${process.getuid?.() ?? -1}`])
     : platform === "linux" ? await run("systemctl", ["--user", "show", "--property=Version", "--value"]) : undefined;
@@ -43,25 +43,50 @@ export async function modelsCheck(kind: "ollama" | "lmstudio", request = loopbac
       { command: ollama ? "ollama serve" : "lms server start --port 1234", explanation: `Optional: start ${kind} if installed. No model download or inference is requested.`, prerequisite: cliAvailable ? "Run only if this local model server is wanted." : `Install the CLI first: ${ollama ? "https://ollama.com/download" : "https://lmstudio.ai/download"} (choose your platform).` },
     ]);
 }
-export async function sandboxCheck(platform = process.platform, probe = isolatedProbe, available = toolAvailable): Promise<HostCheck> {
-  const result = await probe("sandbox");
-  const ready = result.ok && result.observed.state === "ready";
-  // The shipped integrity-locked input is authoritative even if status crashes.
-  const resource = JSON.parse(readFileSync(new URL("../../resources/srt/package.json", import.meta.url), "utf8")) as { dependencies: Record<string, string> };
-  const version = resource.dependencies["@anthropic-ai/sandbox-runtime"]!;
-  const remedies: HostRemediation[] = [];
-  const tools: Record<string, boolean> = {};
-  if (!ready) {
-    if (platform === "darwin") remedies.push({ command: "mono-agent sandbox setup", explanation: "Optional: install/repair the pinned user-cache sandbox; no global installation." });
-    else if (platform === "linux") {
-      const results = await Promise.all(["bwrap", "socat"].map(available));
-      tools.bwrap = results[0]!;
-      tools.socat = results[1]!;
-      remedies.push({ command: `npm install --global @anthropic-ai/sandbox-runtime@${version}`, explanation: "Optional: install the repository-pinned external SRT, then rerun mono-agent preflight.", prerequisite: "Requires bubblewrap (bwrap), socat, and enabled unprivileged user namespaces. Install missing prerequisites using your distribution's package manager; global npm may require an administrator-owned prefix." });
-    } else remedies.push({ command: "mono-agent preflight", explanation: "Run on a supported macOS host, or Linux/WSL with external SRT and its platform prerequisites installed.", prerequisite: "This command checks only; it cannot repair an unsupported host or a crashed sandbox probe." });
+function readSandboxVersion(): string {
+  const resource = JSON.parse(readFileSync(new URL("../../resources/srt/package.json", import.meta.url), "utf8")) as { dependencies?: Record<string, unknown> };
+  const version = resource.dependencies?.["@anthropic-ai/sandbox-runtime"];
+  if (typeof version !== "string" || !/^\d+\.\d+\.\d+$/.test(version)) throw new Error("Invalid pinned sandbox version");
+  return version;
+}
+export async function sandboxCheck(platform = process.platform, probe = isolatedProbe, available = toolAvailable, readVersion = readSandboxVersion): Promise<HostCheck> {
+  let stage: "probe" | "resource" | "prerequisites" = "probe";
+  try {
+    const result = await probe("sandbox");
+    if (!result.ok && (result.code === "probe_setup_failed" || result.code === "probe_cleanup_failed")) {
+      return check("sandbox.runtime", "warning", result.code,
+        "Sandbox temporary storage could not be prepared or cleaned up; other host checks are unaffected.", result.observed, [{
+          command: platform === "darwin" || platform === "linux" ? "env -u TMPDIR -u TMP -u TEMP mono-agent preflight" : "mono-agent preflight",
+          explanation: "Retry using the platform's default temporary directory rather than shell overrides; this does not remove leftover files.",
+          prerequisite: "The OS temporary directory must be writable. For cleanup failures, restore this user's ability to remove its temporary files before retrying.",
+        }]);
+    }
+    const ready = result.ok && result.observed.state === "ready";
+    // The shipped integrity-locked input is authoritative even if status crashes.
+    stage = "resource";
+    const version = readVersion();
+    const remedies: HostRemediation[] = [];
+    const tools: Record<string, boolean> = {};
+    if (!ready) {
+      if (platform === "darwin") remedies.push({ command: "mono-agent sandbox setup", explanation: "Optional: install/repair the pinned user-cache sandbox; no global installation." });
+      else if (platform === "linux") {
+        stage = "prerequisites";
+        const results = await Promise.all(["bwrap", "socat"].map(available));
+        tools.bwrap = results[0]!;
+        tools.socat = results[1]!;
+        remedies.push({ command: `npm install --global @anthropic-ai/sandbox-runtime@${version}`, explanation: "Optional: install the repository-pinned external SRT, then rerun mono-agent preflight.", prerequisite: "Requires bubblewrap (bwrap), socat, and enabled unprivileged user namespaces. Install missing prerequisites using your distribution's package manager; global npm may require an administrator-owned prefix." });
+      } else remedies.push({ command: "mono-agent preflight", explanation: "Run on a supported macOS host, or Linux/WSL with external SRT and its platform prerequisites installed.", prerequisite: "This command checks only; it cannot repair an unsupported host or a crashed sandbox probe." });
+    }
+    return check("sandbox.runtime", ready ? "ok" : "warning", ready ? "sandbox_ready" : result.ok ? `sandbox_${String(result.observed.state)}` : result.code,
+      ready ? "Sandbox runtime passed the existing status checks." : "Sandbox is unavailable or could not be verified; sandboxed execution is optional.", { ...result.observed, prerequisites: tools }, remedies);
+  } catch {
+    return check("sandbox.runtime", "warning", stage === "resource" ? "sandbox_resource_failed" : "probe_setup_failed",
+      "The optional sandbox check could not be prepared; other host results are unaffected.", { stage }, [{
+        command: "mono-agent preflight",
+        explanation: "Restore access to the OS temporary directory and installed sandbox resources, then retry this optional check.",
+        prerequisite: "If packaged resources are missing or damaged, rebuild/reinstall this CLI under supported Node first. No repair runs automatically.",
+      }]);
   }
-  return check("sandbox.runtime", ready ? "ok" : "warning", ready ? "sandbox_ready" : result.ok ? `sandbox_${String(result.observed.state)}` : result.code,
-    ready ? "Sandbox runtime passed the existing status checks." : "Sandbox is unavailable or could not be verified; sandboxed execution is optional.", { ...result.observed, prerequisites: tools }, remedies);
 }
 export async function consolePortCheck(port: number): Promise<HostCheck> {
   const result = await bindLoopback(port);
