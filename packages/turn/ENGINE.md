@@ -117,7 +117,13 @@ rebuilt by the host, not historical prose.
 Compaction persists the exact summary envelope, ordered preserved message IDs,
 explicit derived messages, count/model/coverage/version metadata and syncs before
 completion/use. Process reopen replays that checkpoint with no summary call or
-new summary timestamp.
+new summary timestamp. Compaction flattens entries into repaired messages only
+when an interruption account is eligible in the active slice, using the same
+selector as prompt context. Stale or unknown accounts keep native checkpoints
+and ordinary native failed-draft handling (including `includeFailed:true` for
+mid-run estimates); live accounts retain the existing flattened projection.
+Eligibility includes a null anchor when the slice starts at index zero, even
+when that entry itself is a checkpoint.
 
 Protected host descriptors can explicitly opt in with `reconciliation: { version:
 1, purpose: "execution" | "compaction", fenceDigest, initialInputId }`. Execution

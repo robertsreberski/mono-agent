@@ -1,5 +1,5 @@
 // @ts-check
-import { buildHarnessSessionContext } from "./session-context.js";
+import { buildHarnessSessionContext, selectActiveRepairs } from "./session-context.js";
 
 /**
  * The sole request-context seam. Arrays preserve the v2 contract byte for byte.
@@ -21,8 +21,9 @@ export function projectContext(source: any[], options: any = {}): {
   if (!Array.isArray(source)) throw new TypeError("projectContext requires native journal entries");
   if (options.mode === "evidence") return { entries: source };
   if (options.mode === "compaction") {
+    const effectiveRepairs = selectActiveRepairs(source, options.repairs).repairs;
     const messages = buildHarnessSessionContext(source, options);
-    return { entries: options.repairs?.length ? messages.map((message, index) => ({ type: "message", message,
+    return { entries: effectiveRepairs.length ? messages.map((message, index) => ({ type: "message", message,
       id: source.find((entry) => entry.type === "message" && entry.message === message)?.id ?? `derived:repair:${index}`,
       parentId: null, timestamp: message.timestamp, seq: index })) : source };
   }
