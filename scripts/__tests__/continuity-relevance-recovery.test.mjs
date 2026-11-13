@@ -13,6 +13,8 @@ const cleanup = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
 async function scratch() { const base = join(ROOT, ".worklab-tmp"); await mkdir(base, { recursive: true }); const root = await mkdtemp(join(base, "relevance-recovery-")); cleanup.push(() => rm(root, { recursive: true, force: true })); return root; }
 
+const EVIDENCE_RULE = "Historical alternatives need a specific distinguishing record/edit, not nearby work. If unfound, say so; don't pick or deny either. Answer if evidence suffices.";
+
 /** A deterministic model-visible actor: no planted IDs, fixture corpus or answer
  * key. It can only use the natural query, public previews and returned actions. */
 function naturalReader(pi, query, path, maxSearchRank = 5) {
@@ -31,6 +33,9 @@ function naturalReader(pi, query, path, maxSearchRank = 5) {
         actions = [{ action: "search", query, limit: maxSearchRank }];
       } else if (requests === 4) {
         expect(context.tools).toEqual([]);
+        expect(context.messages.every(message => !message.toolsAdded?.length)).toBe(true);
+        expect(bodies.length).toBeGreaterThan(0);
+        for (const { message } of bodies) expect(message.content.map(block => block.text ?? "").join("\n")).toContain(EVIDENCE_RULE);
         expect(witness.snapshot().records.every(r => r.verified)).toBe(true);
         return pi.fauxAssistantMessage([pi.fauxText("Retained original and correction recovered; neither renews approval.")]);
       } else {
@@ -179,3 +184,94 @@ it.each(rankingFixture.recovery)("recovers frozen v2 $name sources through insta
   }
   if (requests === 4) expect(actor.observed[3].tools).toEqual([]);
 }, 30000);
+
+// Scripted actors prove delivery and supported-answer mechanics, not model
+// adherence, abstention rates or qualification results. Pair each evidence case
+// with reversed alternative order so this wiring proof cannot depend on order.
+const disciplineCases = [
+  { name: "found-edit", kind: "user", texts: ["Observatory edit: the selected tile changed from cobalt to amber."], answer: "amber" },
+  { name: "sufficient-summary", kind: "summary", texts: ["Observatory summary: the selected tile was amber, replacing cobalt."], answer: "amber" },
+  { name: "surrounding-work-only", kind: "assistant", texts: ["Observatory work: cobalt and amber tiles were inspected; no selection is recorded."], answer: null },
+  { name: "conflicting", kind: "user", texts: ["Observatory edit: the selected tile changed from cobalt to amber.", "Observatory edit: the selected tile changed from amber to cobalt."], answer: null },
+  { name: "missing-edit", kind: "assistant", texts: ["Observatory note: a tile edit was mentioned, but its contents were not retained."], answer: null },
+];
+it.each(disciplineCases.flatMap(scenario => [false, true].map(reverse => ({ ...scenario, reverse }))))(
+  "delivers evidence discipline after tool withdrawal: $name (reversed=$reverse)", async scenario => {
+    const root = await scratch(), modules = await productionModules(ROOT), pi = modules.pi;
+    const history = join(root, "history"), conversationId = "fictional-evidence-discipline";
+    const writer = await modules.conversation.ToolHistoryWriter.open({ root: history, continuityEnabled: true });
+    cleanup.push(() => writer.close());
+    const generationId = modules.conversation.continuityGenerationId();
+    const records = scenario.texts.map((text, sequence) => ({ text: text + "\n" + "x".repeat(160 - Buffer.byteLength(text)), sequence,
+      recordId: modules.conversation.continuityRecordId(conversationId, `evidence-${sequence}`), runId: "prior", kind: scenario.kind,
+      provenance: scenario.kind === "summary" ? "generated" : scenario.kind === "user" ? "unknown" : "assistant",
+      ...(scenario.kind === "summary" ? { summary: { model: "faux:fixture", operationId: "fictional-summary", trigger: "manual", coverage: { sourceDigest: sha256("fictional summary source") } } } : {}) }));
+    await writer.prepareContinuity({ generationId, conversationId, logicalConversationId: conversationId, beforeDigest: null, afterDigest: sha256("fixture"), records });
+    await writer.commitContinuity({ generationId, conversationId, canonicalDigest: sha256("fixture") }); await writer.close();
+    const extension = await createConversationHistoryRuntimeExtension({ historyRoot: history })({ runId: "lookup", request: {
+      conversationId, userMessage: "Retrieve historical tile evidence.", abortSignal: new AbortController().signal }, context: {} });
+    cleanup.push(() => extension.cleanup?.());
+    const estimators = await loadE2Estimators(), soul = await shippingSoul();
+    const faux = pi.fauxProvider({ provider: "faux", models: [{ id: "fictional-discipline", contextWindow: 272000, maxTokens: 8192 }] });
+    const collection = pi.createModels(); collection.setProvider(faux.provider);
+    let requests = 0, finalVisible;
+    const witness = lookupWitness(), delivered = new Set();
+    const route = createE2Models({ pi, estimators, models: [{ model: "faux:fictional-discipline" }],
+      limits: { compactions: 0, probeRequests: 4, sourceRequests: 0 }, probeLookupRounds: 3, soul, sourceReply(context) {
+        requests++;
+        const messages = context.messages.filter(message => message.role === "toolResult");
+        const bodies = messages.map(message => historyBody({ content: message.content }));
+        for (const message of messages) {
+          expect(message.content.map(block => block.text ?? "").join("\n")).toContain(EVIDENCE_RULE);
+          if (!delivered.has(message.toolCallId)) { delivered.add(message.toolCallId); witness.delivered({ content: message.content }); }
+        }
+        let actions;
+        if (requests === 1) {
+          expect(JSON.stringify(context)).not.toMatch(/chr1_[A-Za-z0-9_-]{43}/u);
+          expect(JSON.stringify(context)).not.toContain(EVIDENCE_RULE);
+          actions = [{ action: "search", query: "observatory", limit: 5 }];
+        } else if (requests === 2) {
+          const search = bodies.find(body => body?.action === "search");
+          expect(search.items).toHaveLength(records.length);
+          actions = search.navigation.nextActions.filter(action => action.kind === "get_record").map(action => ({ ...action.arguments, chunkBytes: 128 }));
+        } else if (requests === 3) {
+          actions = bodies.filter(body => body?.action === "get").flatMap(body => body.navigation.nextActions.filter(action => action.kind === "next_get_chunk").map(action => action.arguments));
+          expect(actions).toHaveLength(records.length);
+        } else {
+          expect(context.tools).toEqual([]);
+          expect(context.messages.every(message => !message.toolsAdded?.length)).toBe(true);
+          finalVisible = messages.map(message => message.content.map(block => block.text ?? "").join("\n")).join("\n");
+          expect(finalVisible).toContain(EVIDENCE_RULE);
+          const recovered = witness.snapshot().records;
+          expect(recovered).toHaveLength(records.length);
+          expect(recovered.every(record => record.verified && record.chunks === 2)).toBe(true);
+          expect(recovered.map(record => record.sha256).sort()).toEqual(records.map(record => sha256(record.text)).sort());
+          // Deliberately scripted interpretation of complete returned chunks.
+          // No model-behavior claim follows from this synthetic answer.
+          const chunks = bodies.filter(body => body?.action === "get").sort((a, b) => a.chunkOffset - b.chunkOffset);
+          const texts = new Map();
+          for (const body of chunks) texts.set(body.record.recordId, (texts.get(body.record.recordId) ?? "") + body.chunk);
+          const choices = [...texts.values()].flatMap(text => [...text.matchAll(/selected tile (?:changed from \w+ to|was) (cobalt|amber)/gu)].map(match => match[1]));
+          const choice = choices.length > 0 && new Set(choices).size === 1 ? choices[0] : null;
+          expect(choice).toBe(scenario.answer);
+          const supportedRecord = chunks.find(body => /selected tile/u.test(body.chunk))?.record;
+          return pi.fauxAssistantMessage([pi.fauxText(choice ? `${supportedRecord.kind === "summary" ? "Generated summary" : "Retained edit"} ${supportedRecord.recordId} supports ${choice}; not an owner quotation or renewed approval.` : "I have not found sufficient distinguishing evidence; I cannot choose or deny either alternative.")]);
+        }
+        expect(actions.length).toBeGreaterThan(0);
+        return pi.fauxAssistantMessage(actions.map((args, index) => pi.fauxToolCall("ConversationHistory", args, { id: `discipline-${requests}-${index}` })), { stopReason: "toolUse" });
+      } });
+    route.setPosition({ probe: true, model: "faux:fictional-discipline", turn: 0, message: 0 });
+    const alternatives = scenario.reverse ? "amber or cobalt" : "cobalt or amber";
+    const result = await modules.host.createMonoRuntime({ workspace: root }).run(`## Core Guardrails\n\n${soul.text}`, {
+      model: { provider: "faux", model: "fictional-discipline", reference: "faux:fictional-discipline" }, cwd: root,
+      messages: [{ role: "user", content: `Historically, was the selected observatory tile ${alternatives}? Retrieve distinguishing evidence without effects.` }],
+      allowedTools: ["ConversationHistory"], ...extension.runtimeOptions, piResolvedModel: faux.getModel(), piResolvedModels: route.decorator(collection),
+      maxTurns: 4, compaction: { enabled: false }, piMaxRetries: 0 });
+    expect(result.error).toBeNull(); expect(requests).toBe(4); expect(route.report().probeRequests).toBe(4);
+    expect(finalVisible).toContain(EVIDENCE_RULE);
+    if (scenario.answer) {
+      expect(result.text).toContain(`${records[0].recordId} supports amber`);
+      expect(result.text).toContain(scenario.kind === "summary" ? "Generated summary" : "Retained edit");
+      expect(result.text).toContain("not an owner quotation or renewed approval");
+    } else expect(result.text).toBe("I have not found sufficient distinguishing evidence; I cannot choose or deny either alternative.");
+  }, 30000);

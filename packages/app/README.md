@@ -110,6 +110,13 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
   Read promising hits before reformulating, batch useful
   gets, finish get cursors and page before declaring evidence insufficient.
   `navigation.nextPage` leads the exhaustive actions in model-visible text.
+  Every returned NOTICE (including empty, degraded and error responses) asks for
+  the specific record/edit distinguishing historical alternatives, not nearby
+  work; if unfound, say so rather than choose or deny an alternative. Sufficient
+  evidence remains answerable. This guidance stays in returned content after tool
+  declarations are withdrawn; the addition is bounded to 240 UTF-8 bytes and
+  640 serialized model-visible bytes, including repeated framing. Pack guidance
+  and admission budgets are unchanged.
   Search caps UTF-8 `JSON.stringify(result.content)` at 65,536 bytes, including
   navigation and escaping, excluding unused `structuredContent`. Previews shrink
   first; a fitting prefix resumes after its last emitted record without skipping.

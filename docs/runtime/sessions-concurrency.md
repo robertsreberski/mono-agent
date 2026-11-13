@@ -114,6 +114,19 @@ never silently expire: exhausted pinned capacity reports degraded continuity
 rather than invalidating references. Conversation reset and
 `restart --clear-sessions` remove this evidence with the existing sidecar.
 
+Every returned `ConversationHistory` NOTICE includes this bounded rule, even on
+empty searches, unavailable gets, degraded scans and errors:
+
+> Historical alternatives need a specific distinguishing record/edit, not nearby work. If unfound, say so; don't pick or deny either. Answer if evidence suffices.
+
+The addition, including its separator, is at most 240 UTF-8 bytes; repeated
+model-visible framing and JSON serialization add at most 640 bytes. It remains
+in earlier tool-result content when the final request withdraws all tools.
+The 65,536-byte search cap, cursor boundaries, pack header and pack retrieval
+guidance are unchanged. Paired fictional scripted recovery tests establish
+returned-guidance delivery and supported-answer mechanics, **not model adherence
+or measured abstention rates**.
+
 Optional [gated ledger upkeep](/runtime/continuity-ledger/) adds one bounded
 completion before eligible primary cold seeds. It is off by default; it can add
 up to 60 seconds under the exclusive conversation hold. Strict request-cap mode
