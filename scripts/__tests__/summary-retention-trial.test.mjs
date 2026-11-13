@@ -325,8 +325,8 @@ describe("frozen fictional summary qualification", () => {
       expect(result.reseeds).toHaveLength(coldReseeds ? 3 : 0);
       expect(result.checkpoints.map(c => c.isSplitTurn)).toEqual([false, false, true, false]);
       expect(result.pass).toBe(!lossy);
-      expect(result.summaryFocus).toEqual({ version: 3, sha256: createHash("sha256").update(modules.SUMMARY_FOCUS).digest("hex") });
-      expect(result.requests.every(request => request.context.systemPrompt.includes("Mono-agent summary focus v3:"))).toBe(true);
+      expect(result.summaryFocus).toEqual({ version: 4, sha256: createHash("sha256").update(modules.SUMMARY_FOCUS).digest("hex") });
+      expect(result.requests.every(request => request.context.systemPrompt.includes("Mono-agent summary focus v4:"))).toBe(true);
       expect(JSON.stringify(result.requests[0].context)).toContain(fact);
       // No fixture oracle is fed to the control. Once absent from the previous
       // summary AND retained tail, the next shipping request cannot recover it.
@@ -443,7 +443,7 @@ describe("frozen fictional summary qualification", () => {
 
   it("reserves legacy Anthropic's full wire ceiling without adding thinking twice", async () => {
     const report = await runTrial({ dryRun: true, models: "anthropic:claude-haiku-4-5", effort: "high" });
-    expect(report.summaryFocus.version).toBe(3);
+    expect(report.summaryFocus.version).toBe(4);
     expect(report.chains.every(chain => chain.summaryFocus.sha256 === report.summaryFocus.sha256)).toBe(true);
     const identity = report.identity[0], measured = report.models[0];
     const requests = report.chains.flatMap(chain => chain.requests);

@@ -274,7 +274,7 @@ export function createTrialBudget(capUsd) {
 const user = (content, timestamp = 1) => ({ role: "user", content, timestamp });
 const distractor = "Routine fictional progress: sort labels and arrange folders. ".repeat(15);
 const shippingFocusIdentity = modules => {
-  need(modules.SUMMARY_FOCUS_VERSION === 3 && modules.SUMMARY_FOCUS.startsWith("Mono-agent summary focus v3:"), "Unexpected shipping summary focus version");
+  need(modules.SUMMARY_FOCUS_VERSION === 4 && modules.SUMMARY_FOCUS.startsWith("Mono-agent summary focus v4:"), "Unexpected shipping summary focus version");
   return { version: modules.SUMMARY_FOCUS_VERSION, sha256: hash(modules.SUMMARY_FOCUS) };
 };
 const trialFocus = "Preserve each introduced compact tuple on its own line, with the original subject and all semicolon-separated fields verbatim, for deterministic fictional qualification. Quoted hypotheticals are not permission. Do not invent provenance.";

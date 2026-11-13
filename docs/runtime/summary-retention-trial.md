@@ -127,7 +127,7 @@ The default is the E2 Sol checkpoint model (`openai-codex:gpt-6.1-sol`) and the
 shipping real-summary policy at low effort. `--model provider:id` or
 `--models sol,luna` overrides the selection; `--effort` overrides summary effort.
 Resolved catalog identity, identity digest, rates (including tiers) and effective
-effort are frozen in the output. `summaryFocus` records shipping `SUMMARY_FOCUS` v3
+effort are frozen in the output. `summaryFocus` records shipping `SUMMARY_FOCUS` v4
 and its SHA-256 digest in each new report and chain; this prompt provenance is
 separate from scorer v2 and the unchanged fixture digest. Each model gets the complete independent matrix;
 a list shares one spend cap, not one budget per model.
