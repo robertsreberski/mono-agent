@@ -229,7 +229,7 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
   overrides, idempotency receipts, and audit. An absent store is initialized;
   a present corrupt, insecure, or lease-conflicted store arms no cron jobs and
   surfaces a degraded lifecycle/discovery reason plus an error log. Operator
-  actions are config-opt-in, API-key-protected, and explicitly confirmed; they
+  actions are config-opt-in and explicitly confirmed; they
   never rewrite config, environment, or Markdown job sources.
 - Register the host as a traceability source. Config edits are made directly in
   `mono-agent.config.json` or `IDENTITY.md` and take effect after validation and

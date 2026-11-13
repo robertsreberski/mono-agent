@@ -112,7 +112,7 @@ Restrictive `tools.allowedTools` must name `SuggestReplies`; deny wins.
 
 `ProposeRestart` is another app-owned request-scoped
 tool, installed only on interactive web turns when the supervised agent's
-keyed restart support verifies successfully and tool policy allows it.
+supervised restart support verifies successfully and tool policy allows it.
 Restrictive `tools.allowedTools` must name `ProposeRestart`; its reply part is
 only a proposal and requires the operator to confirm in the web console.
 
