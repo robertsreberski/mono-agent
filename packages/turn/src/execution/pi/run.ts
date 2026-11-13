@@ -726,6 +726,7 @@ async function executeTrackedPiNativeResponse(systemPrompt: string, options: PiO
     // this fast-fail. The explicit prepared path has already resolved its tools.
     try {
       const resolvedSession = await resolveSession(runState, {
+        onEvent,
         requestedSessionId,
         providerSessionId,
         durableRepo,
@@ -768,6 +769,11 @@ async function executeTrackedPiNativeResponse(systemPrompt: string, options: PiO
       maxRetries,
       maxRetryDelayMs,
       steeringMode: toolSteeringMode,
+      onRetainedSummaryWarning: (event: any) => {
+        if (runtimeWarnings.some(warning => warning.warning_kind === event.code)) return;
+        const warning = { warning_kind: event.code, message: event.message };
+        runtimeWarnings.push(warning); onEvent({ type: "runtime_warning", ...warning });
+      },
       options: { ...options, onEffectiveEffort: (effectiveEffort: string | undefined) => onEvent({ type: "provider_execution_config", sdk: "pi", model: reference,
         ...(options.effort ? { effort: options.effort } : {}), ...(effectiveEffort ? { effectiveEffort } : {}), timestamp: Date.now() }) },
     });
@@ -781,6 +787,7 @@ async function executeTrackedPiNativeResponse(systemPrompt: string, options: PiO
     // transcript, so prior messages are skipped; a fresh run AND a create-on-miss
     // (requestedSessionId set but the durable session was just created empty)
     // both seed, since their on-disk transcript is empty.
+    let retainedSeed: { candidate: import("../../contracts/retained-summary.js").RuntimeRetainedSummaryCandidate; message: any; entryId?: string } | undefined;
     let { priorMessages, promptText, promptImages } = options.manualCompaction === true
       ? { priorMessages: toAgentMessages(options.messages || [], runtime.model), promptText: "", promptImages: [] }
       : splitPromptMessages(options.messages, runtime.model);
@@ -815,17 +822,23 @@ async function executeTrackedPiNativeResponse(systemPrompt: string, options: PiO
           if (evidence.reduce((sum, message) => sum + Number(estimateTokens(message)), 0) > maxTokens) {
             evidence = [];
             onEvent({ type: "runtime_warning", warning_kind: "continuity_pack_degraded", error_code: "headroom", message: "Continuity evidence omitted: target headroom." });
-          } else if (cold.replayMessages && priorMessages.length > 0) {
+          } else {
+            if (cold.retainedSummary && options.retainedSummaryAccess && evidence.length === 1) {
+              retainedSeed = { candidate: structuredClone(cold.retainedSummary), message: evidence[0] };
+            }
+            if (cold.replayMessages && priorMessages.length > 0) {
             // Only replace replay already included in the input budget. Warm
             // clean-break and empty-baseline seeds must not acquire history here.
             priorMessages = cold.replayMessages.length > 0 ? toAgentMessages(cold.replayMessages, runtime.model) : [];
+            }
           }
         } catch {
           onEvent({ type: "runtime_warning", warning_kind: "continuity_pack_degraded", error_code: "unavailable", message: "Continuity evidence unavailable; canonical replay continues." });
         }
       }
       for (const message of [...evidence, ...priorMessages]) {
-        await harness.appendMessage(message);
+        const entryId = await harness.appendMessage(message);
+        if (retainedSeed && retainedSeed.message === message) retainedSeed.entryId = entryId;
         runState.sessionBaselineCount += 1;
       }
     }
@@ -848,6 +861,9 @@ async function executeTrackedPiNativeResponse(systemPrompt: string, options: PiO
     const descriptor = options.sessionTurn;
     await harness.beginTurn(descriptor?.turnId ?? (options.manualCompaction ? undefined : hasHostIdentity ? recoveryIdentity.runId : undefined),
       options.manualCompaction ? "synthetic" : descriptor?.kind ?? (hasHostIdentity ? "host" : "synthetic"), descriptor);
+    if (retainedSeed?.entryId && descriptor?.kind === "host") {
+      await harness.admitRetainedSummary(retainedSeed.candidate, retainedSeed.entryId);
+    }
 
     if (options.manualCompaction === true) {
       // The same resolve/reopen/seed path as a turn, but without a user prompt,

@@ -1,3 +1,4 @@
+import { assertRetainedSummarySeed, resolveRetainedSummaryAdmission, retainedSummaryFallbackWarning } from "./retained-summary.js";
 // Own admission/queues/persistence, but depend on Pi's loop and all providers.
 import type { BeforeToolCallContext } from "@earendil-works/pi-agent-core";
 import type { Message, Model, Api, TranscriptContext, SimpleStreamOptions } from "@earendil-works/pi-ai";
@@ -20,6 +21,7 @@ export function createRunDriver(store: any, options: any): {
     hooks: {
         on: (type: any, handler: any) => () => any;
     };
+    admitRetainedSummary(candidate: any, seedEntryId: string): Promise<void>;
     beginTurn: (id?: string, source?: string, descriptor?: any) => Promise<void>;
     endTurn: (status: any, result?: any) => Promise<void>;
     emit: (event: any) => Promise<void>;
@@ -96,6 +98,37 @@ export function createRunDriver(store: any, options: any): {
         await store.sync();
       }
     } finally { turnBeginning = false; }
+  }
+  const retainedWarnings = new Set<string>();
+  const warnRetained = (warning = retainedSummaryFallbackWarning) => {
+    if (!retainedWarnings.has(warning.code)) { retainedWarnings.add(warning.code); publish(warning); }
+  };
+  const resolveRetained = () => resolveRetainedSummaryAdmission(store, options.retainedSummaryAccess, () => warnRetained());
+  async function admitRetainedSummary(candidate: any, seedEntryId: string): Promise<void> {
+    const access = options.retainedSummaryAccess;
+    let receipt;
+    // Until the write is admitted there is no authority to preserve. Optional
+    // evidence validation must not turn an otherwise valid cold turn into failure.
+    try {
+      if (!access || !turnId || store.validator.owner.kind !== "host") throw new Error("Missing owned host turn");
+      await access.assertCurrent();
+      const seed = await store.getEntry(seedEntryId);
+      receipt = { version: 1, ...structuredClone(candidate), destination: { ...access.destination, journalId: store.metadata.journalId },
+        seed: { entryId: seedEntryId, messageDigest: evidenceDigest(seed?.message) } };
+      assertRetainedSummarySeed(receipt, seed?.message);
+      const proof = await access.resolve(receipt.binding);
+      await access.assertCurrent();
+      if (!proof) throw new Error("Retained source unavailable");
+      assertRetainedSummarySeed(receipt, seed?.message, proof.text);
+      store.validateRecord({ schemaVersion: 2, id: randomUUID(), parentId: store.validator.parentId, seq: store.seq + 1,
+        timestamp: Date.now(), turnId, kind: "retained_summary_admitted", payload: receipt });
+    } catch {
+      publish({ type: "warning", code: "retained_summary_admission_skipped", message: "Optional retained summary admission skipped; continuing with legacy context." });
+      return;
+    }
+    // Storage failures and the durability barrier are not optional fallbacks.
+    await store.write("retained_summary_admitted", receipt);
+    await barrier();
   }
   async function endTurn(status: any, result?: any): Promise<void> {
     if (!turnId) return;
@@ -275,6 +308,7 @@ export function createRunDriver(store: any, options: any): {
       const cause = options.continuityRecording ? `continuity:${continuityTrigger ?? (reason === "threshold" ? "mid-run" : "manual")}` : reason;
       await store.openOperation(operationId, modelConfig(), "compaction", cause); operationOpened = true;
       let decision: any;
+      const retainedPredecessor = await resolveRetained();
       const nativeEntries = await store.getEntries();
       const source = { sourceTipId: store.tip, sourceSeq: store.seq };
       const repairs = await store.getRepairEntries();
@@ -282,7 +316,7 @@ export function createRunDriver(store: any, options: any): {
       const branchEntries = projection.entries;
       const nonRetainablePrefixLength = "nonRetainablePrefixLength" in projection ? projection.nonRetainablePrefixLength : 0;
       for (const handler of registrations.get("before_compaction") || []) {
-        decision = await handler({ reason, branchEntries, nonRetainablePrefixLength, signal: context.abortSignal, context }, context);
+        decision = await handler({ reason, branchEntries, ...(retainedPredecessor ? { retainedPredecessor } : {}), nonRetainablePrefixLength, signal: context.abortSignal, context }, context);
         if (decision !== undefined) break;
       }
       if (!decision || decision.decline || !decision.compaction) {
@@ -312,7 +346,14 @@ export function createRunDriver(store: any, options: any): {
         if (context.abortSignal.aborted) throw new Error("Pi compaction aborted during evidence preparation.");
         if (store.tip !== source.sourceTipId) throw new Error("Compaction source advanced during evidence preparation.");
       }
-      const id = await store.appendCompaction(decision.compaction, inheritedCoverage, inheritedCoverage ? source : undefined);
+      let retainedSummaryCoverage = retainedPredecessor ? { version: 1, admissionId: retainedPredecessor.admissionId }
+        : nativeEntries.filter((prior: any) => prior.type === "compaction" && prior.checkpoint?.retainedSummaryCoverage).at(-1)?.checkpoint.retainedSummaryCoverage;
+      // Recheck source/ownership after the awaited summary call, before a cut.
+      if (retainedPredecessor) {
+        const current = await resolveRetained();
+        if (current?.admissionId !== retainedPredecessor.admissionId || current.text !== retainedPredecessor.text) retainedSummaryCoverage = undefined;
+      }
+      const id = await store.appendCompaction(decision.compaction, inheritedCoverage, inheritedCoverage || retainedSummaryCoverage ? source : undefined, retainedSummaryCoverage);
       await barrier();
       entry = await store.getEntry(id);
       // Publish completion only after the exact checkpoint and terminal
@@ -335,6 +376,7 @@ export function createRunDriver(store: any, options: any): {
   }
   async function requestContext(): Promise<{ messages: Message[]; tools: any; }> {
     if (options.assertSessionCurrent) await options.assertSessionCurrent();
+    await resolveRetained();
     const messages = project(await store.getEntries(), { repairs: await store.getRepairEntries() }).messages;
     // The host supplies the current prompt/loadout on every reopen. Rebuild that
     // leading declaration after compaction too, without duplicating old prompts.
@@ -453,7 +495,7 @@ export function createRunDriver(store: any, options: any): {
   }
   return {
     hooks: { on },
-    beginTurn, endTurn,
+    beginTurn, endTurn, admitRetainedSummary,
     emit,
     prompt: drive,
     subscribe(listener: any): () => boolean { listeners.add(listener); return () => listeners.delete(listener); },
@@ -491,7 +533,7 @@ export function createRunDriver(store: any, options: any): {
     setTools(value: any): void { tools = wrapTools(value); },
     setMidRunCompactionArmed(value: any): void { compactionArmed = value === true; },
     setCompactionSettings(value: any): void { settings = { ...settings, ...value }; },
-    async repairOpenOperations(): Promise<void> { await repairInterruptedSession(store); queue.clear(); turnId = null; turnBinding = undefined; ownsTurn = false; },
+    async repairOpenOperations(): Promise<void> { await resolveRetained(); await repairInterruptedSession(store); queue.clear(); turnId = null; turnBinding = undefined; ownsTurn = false; },
     async abortOpenOperations(): Promise<void> {
       const open = await store.getOpenOperations();
       for (const turn of await store.getOpenTurns()) await recordInterruption(store, turn.turnId, "user_interrupted", open.filter((op: any) => op.turnId === turn.turnId).map((op: any) => op.operationId));

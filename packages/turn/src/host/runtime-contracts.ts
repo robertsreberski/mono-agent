@@ -288,7 +288,8 @@ export type RuntimeRunOptions = Readonly<Pick<RuntimeContracts.RuntimeRunOptions
    * primaryAttempt=false forbids buying upkeep. Explicit upkeep may hold the
    * exclusive conversation up to 60s; default is local-only. The target headroom
    * excludes the returned prefix; returned evidence must fit maxTokens. */
-  readonly coldContext?: (budget: { readonly maxTokens: number; readonly reason: string; readonly primaryAttempt: boolean }) => Promise<{ readonly messages: readonly RuntimeMessage[]; readonly replayMessages?: readonly RuntimeMessage[] }>;
+  readonly retainedSummaryAccess?: RuntimeContracts.RuntimeRunOptions["retainedSummaryAccess"];
+  readonly coldContext?: RuntimeContracts.RuntimeRunOptions["coldContext"];
   readonly onSessionTurnDetached?: (attempt: RuntimeSessionTurnDetachedAttempt) => Promise<void>;
   readonly messages: readonly RuntimeMessage[];
   readonly abortSignal: AbortSignal;
@@ -417,7 +418,7 @@ export interface RuntimeNativeDispatchSnapshot {
 /** Only session binding is supplied after preparation. Instructions, input,
  * root, model, policy and resolved tools cannot be replaced at run time. */
 export type RuntimeNativeDispatchBinding = Partial<Pick<RuntimeRunOptions, "sessionId" | "providerSessionId" | "providerAttributionSessionId"
-  | "sessionKeepAlive" | "sessionIdleTimeoutMs" | "sessionTurn" | "sessionRecovery" | "nativeSessionAuthority" | "nativeSessionProjection">>;
+  | "sessionKeepAlive" | "sessionIdleTimeoutMs" | "sessionTurn" | "sessionRecovery" | "nativeSessionAuthority" | "nativeSessionProjection" | "retainedSummaryAccess">>;
 
 export interface RuntimeNativePreparedDispatch {
   readonly snapshot: RuntimeNativeDispatchSnapshot;

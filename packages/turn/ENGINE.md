@@ -11,6 +11,44 @@ Agent Core supplies `runAgentLoop`; the engine does not fork those dependencies.
 The `sessions.js` contract owns storage outcomes, not runtime result objects,
 warnings or run-option policy. Process-wide provider fan-out stays in runtime.
 
+## Retained cold-summary admission
+
+`retained_summary_admitted` is a closed, version-1 metadata payload inside the
+schema-2 journal. It binds source publication/retained bytes, renderer UTF-8 entry
+and pack hashes, destination canonical epoch/owner/physical bucket/handle/journal,
+and the actual persisted seed-entry ID/message digest. Exactly one is allowed;
+it must follow synthetic seed appends and host beginTurn/owner binding, precede
+operations, and sync before compaction or provider dispatch. IDs allow up to
+4,096 UTF-8 bytes within the overall 8-KiB metadata bound. Invalid/unavailable
+candidates before the write emit `retained_summary_admission_skipped` and keep
+legacy execution; write/fsync failures remain storage failures. No text copy or pin
+is stored. Orphan seeds and interrupted host-turn starts confer no protection.
+
+Host selection travels with that call's exact messages, not mutable supplier
+state. The host-only resolver is protected from request/private-route overrides
+and stripped from detached attempts. It derives the destination epoch only from
+canonical owned state; absence keeps legacy behavior with no receipt. Publication
+trust comes from the continuity participant's native evidence, not from storage
+matching labels. Reopen validates before repair/dispatch, including seed hashes
+and, when active, the exact bound retained source. Missing optional access/owner,
+disabled continuity, purge/revocation or an excluding continuation boundary emits
+`retained_summary_legacy_fallback` and runs legacy context without a protected cold
+predecessor. Diagnostic failure cannot block this fallback. Only structural receipt
+integrity failures against the actual owner/epoch/bucket/handle/journal/seed remain
+unavailable for reconstruction. A covering native checkpoint ends source resolution
+before any access check; coverage propagates on its active branch. Rewind reactivates
+resolution with the same legacy fallback for an absent source. Retained-only cuts
+guard context ancestry (tip), allowing queued steering metadata during generation;
+composed inherited-prefix cuts retain their existing sequence guard.
+
+The authenticated predecessor enters ordinary and split preparation before
+summary-input/budget planning. Native checkpoint predecessors take precedence over
+cold sources, including repaired projections. Existing refusal identities, paid
+ceilings, manual/reactive and inherited-prefix bypasses and capacity bounds stay
+unchanged. No-admission journal bytes/projections remain unchanged. Legacy journals
+are forward-readable; old readers reject the new closed kind. Binary downgrade
+against carrier-bearing journals requires a separately approved reconstruction/reset.
+
 ## Install / Usage
 
 ```bash

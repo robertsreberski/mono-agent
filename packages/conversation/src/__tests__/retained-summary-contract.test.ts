@@ -144,6 +144,9 @@ it("requires physical/logical/run and continuation scope without comparing sourc
   // An earlier canonical boundary cannot admit a later summary.
   alter(f, "UPDATE continuity_records SET kind='user',summary_json=NULL,provenance='unknown',run_id='boundary'");
   await publish(f, preparation("cut-later"));
+  const later = f.reader.eligibleRetainedSummary(scope);
+  expect(later?.binding.publication.operationId).toBe("cut-later");
+  expect(f.reader.resolveRetainedSummary(scope, later!.binding)).toEqual(later);
   expect(f.reader.eligibleRetainedSummary({ ...scope, historyBoundary: "boundary" })).toBeUndefined();
 });
 

@@ -1481,20 +1481,39 @@ runtime seeding, never on true native resume; one source snapshot is shared by
 resume retries and detached router attempts. Evidence stays within the physical
 canonical bucket and continuation boundary. Unknown record/window overlap stays
 visible rather than being deduplicated by text. Default operation performs no paid upkeep.
-Internal retained-summary contracts are dormant: owner-held lookups distinguish
-current pinned eligibility from exact historical binding resolution using
-committed checkpoint publication, retained digests and source scope. Publication
-trust comes from the continuity participant deriving proof from native evidence;
-storage only matches supplied proof to a prepared row, not to the native journal.
-Missing legacy provenance grants no new authority and does not change pack rendering.
-Final-layout summary metadata locates the quoted entry in unchanged pack bytes.
-The supplier's `lastRenderedSummary()` means last renderer output, not injected,
-not admitted. It is shared mutable state across resume/detached attempts, not an
-attempt-bound receipt; a later caller failure can prevent injection. Future
-admission must bind selection to the exact messages an attempt injects using a
-per-call token, never read it from shared supplier state. No admission receipt is
-written and compaction, native journal formats, retention pins and runtime
-messages remain unchanged.
+Retained-summary admission is host-authenticated, never inferred from pack labels.
+The durable canonical store supplies optional `providerSessionEpoch` on
+`ConversationHistoryProviderSessionTurn` from its real epoch state. Custom/older
+stores without it write no receipt and keep legacy behavior; epochs are never
+parsed from handles. The continuity participant derives publication proof from
+native evidence; storage only matches supplied proof to the prepared row.
+The host passes renderer selection together with the exact per-call messages.
+After runtime conversion/headroom checks, seed persistence and host owner binding,
+a bounded `retained_summary_admitted` record is synced before dispatch/compaction.
+Invalid or revoked candidates before that write skip admission, emit the
+content-free `retained_summary_admission_skipped` warning, and keep legacy execution.
+Receipt IDs share the 4,096-UTF-8-byte identity limit; the complete metadata is
+still bounded to 8 KiB.
+Only the exact retained, sanitized bytes can become a protected predecessor;
+missing legacy provenance, foreign physical buckets and copied text confer none.
+The diagnostic `lastRenderedSummary()` remains last renderer output, not injected
+or admitted, and is never read as admission authority. Pack bytes are unchanged.
+
+Restart rechecks destination ownership/epoch/handle, persisted seed commitment and
+the exact source publication when protection is active. Losing optional source
+resolution (purge/revocation, disabled continuity, missing owner/resolver, or an
+excluding continuation boundary) emits the content-free
+`retained_summary_legacy_fallback` warning and continues with no protected cold
+predecessor. It never makes the turn unavailable or recovers original bytes.
+Structural receipt corruption against the actual store (owner, epoch, bucket,
+handle/journal or seed mismatch) remains an integrity refusal for reconstruction.
+Prepared current-journal dispatch forwards the same owned resolver. A durable
+successor checkpoint's branch-local coverage ends source resolution **before any
+access check**, including when continuity is later disabled. Rewind before that
+successor revalidates the source, with the same legacy fallback if it is absent.
+No retention pins or copies are added.
+Old readers reject carrier-bearing journals; do not downgrade binaries against
+active admission journals without an explicitly approved reconstruction/reset.
 
 When `ConversationHistory` is available for the effective request, a nonempty
 pack adds retrieval guidance: use the pack's `Tool evidence id` (`chr1_…`) as

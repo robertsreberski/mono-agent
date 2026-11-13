@@ -50,6 +50,8 @@ async function authorizeGuardedDeletion(header: any, options: any): Promise<void
   await options.assertOwned();
 }
 function checkRecordAuthority(session: any, record: any): void {
+  if (record?.kind === "retained_summary_admitted" && (record.payload?.destination?.handleId !== session.metadata.id
+    || record.payload?.destination?.journalId !== session.metadata.journalId)) corruptBinding();
   const authority = sessionAuthorities.get(session);
   if (!authority) {
     if (record?.payload?.projectionBinding !== undefined
@@ -205,7 +207,7 @@ export class SessionStore {
       return record.id;
     }, "seed");
   }
-  async appendCompaction(data: any, inheritedCoverage: any | undefined = undefined, source: any | undefined = undefined): Promise<any> {
+  async appendCompaction(data: any, inheritedCoverage: any | undefined = undefined, source: any | undefined = undefined, retainedSummaryCoverage: any | undefined = undefined): Promise<any> {
     // Prepare outside the admitted write queue; getEntries itself drains it.
     const branch = await this.getEntries(); const preservedMessageIds: any[] = [], derivedMessages: any[] = [];
     let cursor = 0;
@@ -218,11 +220,11 @@ export class SessionStore {
     const checkpoint = { version: 1, summaryMessage: createCompactionSummaryMessage(data.summary, data.tokensBefore, timestamp),
       preservedMessageIds, derivedMessages, tokensBefore: data.tokensBefore ?? null, tokensAfter: data.tokensAfter ?? null,
       model: this.validator.operations.get(this.activeOperationId())?.start.payload.config?.model ?? null,
-      coverage: { version: 1, sourceTipId: this.tip, sourceEntryCount: branch.length }, projectionVersion: 1, ...(inheritedCoverage ? { inheritedCoverage: clone(inheritedCoverage) } : {}) };
+      coverage: { version: 1, sourceTipId: this.tip, sourceEntryCount: branch.length }, projectionVersion: 1, ...(retainedSummaryCoverage ? { retainedSummaryCoverage: clone(retainedSummaryCoverage) } : {}), ...(inheritedCoverage ? { inheritedCoverage: clone(inheritedCoverage) } : {}) };
     return this.scopedWrite(async () => (await this.writeRecord("compaction", () => ({
       compaction: { ...clone(data), checkpoint }, contextParentId: this.tip, preservedMessageIds,
-      derivedMessages, coverageVersion: 1 }), { operationId: this.activeOperationId() })).id, "compaction", inheritedCoverage ? () => {
-      if (!source || source.sourceTipId !== this.tip || source.sourceSeq !== this.seq) throw new TypeError("Composed checkpoint source changed");
+      derivedMessages, coverageVersion: 1 }), { operationId: this.activeOperationId() })).id, "compaction", inheritedCoverage || retainedSummaryCoverage ? () => {
+      if (!source || source.sourceTipId !== this.tip || inheritedCoverage && source.sourceSeq !== this.seq) throw new TypeError("Composed checkpoint source changed");
     } : undefined);
   }
   async moveTo(tipId: any): Promise<any> { await this.scopedWrite(() => this.writeRecord("rewind", { tipId }), "rollback"); return tipId; }
@@ -354,7 +356,7 @@ export class MemorySessionRepo {
     return session;
   }
   async find(id: any, context: any | undefined = undefined): Promise<any> { const header = this.#headers.get(id); return header ? this.#publicMetadata(header) : undefined; }
-  async open(metadata: any, { repair = true }: { repair?: boolean; } = {}): Promise<SessionStore> {
+  async open(metadata: any, { repair = true, validateSession }: { repair?: boolean; validateSession?: (raw: any) => Promise<void>; } = {}): Promise<SessionStore> {
     const id = metadata.id;
     if (this.openSessions.has(id)) throw new Error("Harness session is already open");
     const data = this.sessions.get(id);
@@ -365,7 +367,7 @@ export class MemorySessionRepo {
       data.records = clone(store.records); this.openSessions.delete(id);
     });
     this.openSessions.set(id, session);
-    try { if (repair) await repairInterruptedSession(session); return session; }
+    try { await validateSession?.(session); if (repair) await repairInterruptedSession(session); return session; }
     catch (error) { await session.close().catch(() => {}); throw error; }
   }
   #publicMetadata(header: any): any {
@@ -573,7 +575,7 @@ export class JsonlSessionRepo {
     return undefined;
   }
   /** `signal` cancels only the writer wait, never a started open/repair. */
-  async open(metadata: any, { repair = true, wait = repair, validateHeader = undefined, signal = undefined }: { repair?: boolean; wait?: any; validateHeader?: any; signal?: any; } = {}): Promise<SessionStore> {
+  async open(metadata: any, { repair = true, wait = repair, validateHeader = undefined, validateSession = undefined, signal = undefined }: { repair?: boolean; wait?: any; validateHeader?: any; validateSession?: any; signal?: any; } = {}): Promise<SessionStore> {
     if (metadata.legacy) {
       if (!repair) throw new Error("Legacy sources cannot be inspected as bound native turns");
       return this.importLegacy(metadata, signal);
@@ -588,7 +590,7 @@ export class JsonlSessionRepo {
     try {
       if (this.openSessions.has(metadata.id)) throw Object.assign(new Error("Harness session is already open"), { code: "ERR_HARNESS_WRITER_BUSY" });
       session = await this.openLocked(metadata, writer, { repair, validateHeader });
-      try { if (repair) { await this.reconcileImport(session); await repairInterruptedSession(session); } return session; }
+      try { await validateSession?.(session); if (repair) { await this.reconcileImport(session); await repairInterruptedSession(session); } return session; }
       catch (error) { await session.close().catch(() => {}); throw error; }
     } catch (error) {
       try { if (!session?.closed) await locks.releaseWriter(writer, () => this.journalDataGone(metadata)); } finally { writer.release(); }

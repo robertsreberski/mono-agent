@@ -1546,7 +1546,7 @@ it("awaits detachment when an eligible injected primary itself returns capabilit
   expect((await running).text).toBe("Fictional backup answer"); expect(primaryRun).toHaveBeenCalledOnce(); expect(backupRun.mock.calls[0]![1]!.sessionTurn).toBeUndefined(); expect(backupRun.mock.calls[0]![1]!.onSessionTurnDetached).toBeUndefined();
 });
 
-it.each(["nativeSessionAuthority", "nativeSessionProjection"])("protects %s against private route resolution", async (key) => {
+it.each(["nativeSessionAuthority", "nativeSessionProjection", "retainedSummaryAccess"])("protects %s against private route resolution", async (key) => {
   const primary = modelRef("openai-codex", "primary");
   const supplied = { fixture: "host-owned" };
   const router = createRouterRuntime({ chain: [primary], resolveAttempt: async () => ({ options: { [key]: { fixture: "foreign" } } }) });
@@ -1561,10 +1561,13 @@ it.each(["primary retry", "backup", "skipped primary"])("strips inherited projec
   const router = createRouterRuntime({ chain: [{ model: primary, attempts: variant === "primary retry" ? 2 : 1,
     ...(variant === "skipped primary" ? { requires: { supports_native_subagents: true } } : {}) }, backup], retry: { backoffMs: 0, maxBackoffMs: 0 } });
   const nativeSessionAuthority = { fixture: "host-owned-authority" }, nativeSessionProjection = { fixture: "host-owned-projection" };
-  await router.run("Rules", { model: primary, messages: [], sessionId: "primary-session", sessionKeepAlive: true, nativeSessionAuthority, nativeSessionProjection });
-  if (variant !== "skipped primary") expect(executeMock.mock.calls[0]![1]!).toMatchObject({ nativeSessionAuthority, nativeSessionProjection });
+  const retainedSummaryAccess = { destination: { logicalConversationId: "owner", conversationId: "bucket", epoch: "epoch", handleId: "primary-session" },
+    assertCurrent: async () => {}, resolve: async () => undefined };
+  await router.run("Rules", { model: primary, messages: [], sessionId: "primary-session", sessionKeepAlive: true, nativeSessionAuthority, nativeSessionProjection, retainedSummaryAccess });
+  if (variant !== "skipped primary") expect(executeMock.mock.calls[0]![1]!).toMatchObject({ nativeSessionAuthority, nativeSessionProjection, retainedSummaryAccess });
   const detached = executeMock.mock.calls.at(-1)![1]!;
   expect(detached).not.toHaveProperty("nativeSessionAuthority"); expect(detached).not.toHaveProperty("nativeSessionProjection");
+  expect(detached).not.toHaveProperty("retainedSummaryAccess");
 });
 
 it("protects sessionsRoot when native current-handle authority is supplied", async () => {
@@ -1593,6 +1596,7 @@ it.each(["backup", "retry", "unsupported primary"])("permits a detached %s resol
   expect(result.error).toBeFalsy(); expect(result.text).toBe("detached root selected");
   const detached = executeMock.mock.calls.at(-1)![1]!; expect(detached.sessionsRoot).toBe("/fictional/detached-native");
   expect(detached).not.toHaveProperty("nativeSessionAuthority"); expect(detached).not.toHaveProperty("nativeSessionProjection");
+  expect(detached).not.toHaveProperty("retainedSummaryAccess");
   expect(detached).not.toHaveProperty("sessionTurn"); expect(detached).not.toHaveProperty("providerSessionId");
 });
 

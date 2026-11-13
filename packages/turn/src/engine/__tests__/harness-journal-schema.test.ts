@@ -1,3 +1,4 @@
+import { evidenceDigest } from "../journal-digest.js";
 import assert from "node:assert/strict";
 import { describe, expect, it } from "vitest";
 import { JournalValidator, validateJournalHeader } from "../journal-schema.js";
@@ -7,26 +8,32 @@ import { MemorySessionRepo } from "../session-store.js";
 const header = { format: "mono-harness", version: 2, journalId: "journal-fictional",
   ownershipSchemaVersion: 1, ownership: { kind: "unbound" }, initialHandle: { id: "epoch-one" },
   id: "epoch-one", createdAt: 1, cwd: "/fictional" };
-function fixture() {
+function fixture(config = {}) {
   const validator = new JournalValidator();
   const records: import("../journal-types.js").JournalEntry[] = [];
-  function append(kind: any, payload: any, operationId?: any) {
+  let currentTurnId = "turn-fictional";
+  function append(kind: any, payload: any, operationId?: any, turnId = currentTurnId) {
     const record: import("../journal-types.js").JournalEntry = { schemaVersion: 2, id: `record-${records.length}`, parentId: validator.parentId,
-      seq: validator.seq + 1, timestamp: 1, turnId: "turn-fictional", kind, payload,
+      seq: validator.seq + 1, timestamp: 1, turnId, kind, payload,
       ...(operationId ? { operationId } : {}) };
-    validator.apply(record); records.push(record); return record;
+    validator.apply(record); records.push(record); currentTurnId = turnId; return record;
   }
-  append("turn_start", { config: {}, identitySource: "synthetic", baselineTipId: null });
+  append("turn_start", { config, identitySource: "synthetic", baselineTipId: null });
   return { validator, records, append };
 }
 
 function allKindsFixture() {
-    const { validator, records, append } = fixture();
-    append("owner_binding", { kind: "unbound" });
-    append("handle_binding", { handleId: "epoch-one", baseRevision: null, model: null });
+    const { validator, records, append } = fixture({ cause: "seed" });
+    const seedMessage = { role: "user", content: "Fictional pack.", timestamp: 1 };
+    const seed = append("message", { message: seedMessage, contextParentId: null, provenance: { provider: "faux", api: "faux", model: "fictional" }, input: { id: null, complete: true } });
+    append("turn_end", { status: "completed", tipId: seed.id, finalOperationId: null, consumedInputIds: [] });
+    append("turn_start", { config: {}, identitySource: "host", baselineTipId: seed.id }, undefined, "host-fictional");
+    append("owner_binding", { kind: "host", ownerKey: "fiction", historyBucket: "fiction:bucket" });
+    append("handle_binding", { handleId: "epoch-one", authoritative: true, baseRevision: null, model: null });
+    append("retained_summary_admitted", admissionPayload(seed.id, seedMessage));
     append("input_queued", { inputId: "input-one", state: "queued", placement: "next" });
-    append("operation_start", { type: "prompt", cause: "prompt", config: {}, baselineTipId: null }, "operation-one");
-    const input = append("message", { message: { role: "user", content: "Fictional input." }, contextParentId: null,
+    append("operation_start", { type: "prompt", cause: "prompt", config: {}, baselineTipId: seed.id }, "operation-one");
+    const input = append("message", { message: { role: "user", content: "Fictional input." }, contextParentId: seed.id,
       provenance: { provider: "faux", api: "faux", model: "fictional" }, input: { id: "input-one", complete: true } }, "operation-one");
     append("input_consumed", { inputId: "input-one", messageId: input.id }, "operation-one");
     const native = { role: "assistant", content: [{ type: "thinking", thinking: "Fictional.", thinkingSignature: "opaque" },
@@ -51,6 +58,17 @@ function allKindsFixture() {
     return { validator, records, message, native, result };
 }
 
+function admissionPayload(seed: string, message: any) {
+  const sha = "a".repeat(64);
+  return { version: 1,
+    binding: { version: 1, logicalConversationId: "fiction", conversationId: "fiction:bucket", generationId: "gen", recordId: "record",
+      sha256: sha, retainedBytes: 10, sourceEpoch: "source", sourceRevision: 1,
+      publication: { journalId: "source-journal", operationId: "source-op", sourceDigest: sha, summaryDigest: sha } },
+    selection: { recordId: "record", generationId: "gen", sha256: sha, retainedBytes: 10, packSha256: sha, entry: { startByte: 0, endByte: 1, sha256: sha } },
+    destination: { logicalConversationId: "fiction", conversationId: "fiction:bucket", epoch: "destination", handleId: "epoch-one", journalId: "journal-fictional" },
+    seed: { entryId: seed, messageDigest: evidenceDigest(message) } };
+}
+
 describe("mono-agent harness journal v2", () => {
   it("validates the stable identity header and rejects other versions or guessed ownership", () => {
     expect(() => validateJournalHeader(header)).not.toThrow();
@@ -59,7 +77,7 @@ describe("mono-agent harness journal v2", () => {
       expect(() => validateJournalHeader({ ...header, ...change })).toThrow("Invalid");
     }
   });
-  it("defines and validates every kind without stripping opaque native metadata", () => {
+  it("defines and validates every kind without stripping opaque native metadata", async () => {
     const { validator, records, message, native, result } = allKindsFixture();
     expect([...new Set(records.map((r) => r.kind))].sort()).toEqual([...JOURNAL_KINDS].sort());
     expect(message.payload.message).toEqual(native);
@@ -114,6 +132,7 @@ it("rejects malformed payloads for every declared kind", () => {
   const { records } = allKindsFixture();
   for (const kind of JOURNAL_KINDS) {
     const index = records.findIndex((record) => record.kind === kind);
+    expect(index, kind).toBeGreaterThanOrEqual(0);
     const validator = new JournalValidator();
     for (const record of records.slice(0, index)) validator.apply(record);
     expect(() => validator.apply({ ...records[index]!, payload: {} }), kind).toThrow("Invalid");
@@ -179,4 +198,27 @@ it("rejects current-format compactions without a checkpoint without advancing th
   expect(() => append("compaction", { compaction: { summary: "Fictional summary", tokensBefore: 100, retainedTail: [] },
     contextParentId: null, preservedMessageIds: [], derivedMessages: [], coverageVersion: 1 })).toThrow("Invalid");
   expect(validator.seq).toBe(seq); expect(validator.tip).toBe(tip);
+});
+
+it.each(["owner", "bucket", "handle", "non-seed", "late-seed", "open-operation", "operation-id", "synthetic", "oversize", "unknown", "duplicate", "seed-digest"])("rejects admission clause %s without advancing state", damage => {
+  const { records } = allKindsFixture(), index = records.findIndex(record => record.kind === "retained_summary_admitted");
+  const prefix = structuredClone(records.slice(0, index));
+  if (damage === "owner" || damage === "bucket") prefix.find(record => record.kind === "owner_binding")!.payload[damage === "owner" ? "ownerKey" : "historyBucket"] = "foreign";
+  if (damage === "handle") prefix.find(record => record.kind === "handle_binding")!.payload.authoritative = false;
+  if (damage === "non-seed") prefix[0]!.payload.config.cause = "prompt";
+  if (damage === "synthetic") prefix.find(record => record.kind === "turn_start" && record.turnId === "host-fictional")!.payload.identitySource = "synthetic";
+  const validator = new JournalValidator(); for (const record of prefix) validator.apply(record);
+  const receipt = structuredClone(records[index]!);
+  if (damage === "late-seed") validator.contextInfo.get(receipt.payload.seed.entryId).seq = validator.turns.get(receipt.turnId).start.seq;
+  if (damage === "seed-digest") receipt.payload.seed.messageDigest = "b".repeat(64);
+  if (damage === "oversize") { receipt.payload.binding.sourceEpoch = "x".repeat(4096); receipt.payload.binding.publication.operationId = "x".repeat(4096); }
+  if (damage === "unknown") receipt.payload.extra = true;
+  if (damage === "open-operation" || damage === "operation-id") {
+    validator.apply({ ...receipt, id: "open", kind: "operation_start", operationId: "open", payload: { type: "prompt", cause: "prompt", config: {}, baselineTipId: validator.tip } });
+    if (damage === "operation-id") receipt.operationId = "open";
+  }
+  if (damage === "duplicate") validator.apply(receipt);
+  receipt.id = "invalid-receipt"; receipt.parentId = validator.parentId; receipt.seq = validator.seq + 1;
+  const seq = validator.seq;
+  expect(() => validator.apply(receipt), damage).toThrow("Invalid"); expect(validator.seq).toBe(seq);
 });

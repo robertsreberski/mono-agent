@@ -50,6 +50,7 @@ export interface MonoRuntimeAttemptResolution {
     /** Host conversation replay cannot be supplied by a private route resolver. */
     readonly detachedContext?: never;
     readonly coldContext?: never;
+    readonly retainedSummaryAccess?: never;
   };
   /** Provider-specific projection of the logical tool policy for this attempt. */
   readonly policyOptions?: Readonly<Pick<

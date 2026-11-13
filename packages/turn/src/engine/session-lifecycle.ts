@@ -1,3 +1,5 @@
+import type { RetainedSummaryAccess } from "./retained-summary-types.js";
+import { resolveRetainedSummaryAdmission } from "./retained-summary.js";
 import { compactionEvidence } from "./compaction-evidence.js";
 import { assertNativeSessionAccess, assertNativeSessionHeader, assertNativeProjectionBinding } from "./session-authority.js";
 import { inspectCurrentEvidence, inspectCurrentLifecycle, projectContext } from "./request-projection.js";
@@ -200,10 +202,12 @@ export async function resolveSession(runState: NativeSessionState, {
   cwd,
   access,
   projection,
+  retainedSummaryAccess,
+  onRetainedSummaryFallback,
   waitSignal,
   keepAlive,
   requireExisting,
-}: { requestedSessionId: string | null; providerSessionId: string; durableRepo: any; sessionTtlMs?: number; cwd?: string; access?: any; projection?: any; waitSignal?: AbortSignal; keepAlive?: boolean; requireExisting?: boolean; }): Promise<{
+}: { requestedSessionId: string | null; providerSessionId: string; durableRepo: any; sessionTtlMs?: number; cwd?: string; access?: any; projection?: any; retainedSummaryAccess?: RetainedSummaryAccess; onRetainedSummaryFallback?: () => void; waitSignal?: AbortSignal; keepAlive?: boolean; requireExisting?: boolean; }): Promise<{
     status: "ready";
 } | {
     status: "unavailable";
@@ -287,6 +291,7 @@ export async function resolveSession(runState: NativeSessionState, {
         const raw = await claimed.entry.repo.open(claimed.entry.metadata, {
           ...(access ? { repair: false, wait: false } : {}), signal: waitSignal,
           validateHeader: (header: any) => assertNativeSessionHeader(access, header),
+          validateSession: async (raw: any) => { await resolveRetainedSummaryAdmission(raw, retainedSummaryAccess, onRetainedSummaryFallback); },
         });
         try {
           assertNativeSessionHeader(access, raw.metadata);
@@ -302,6 +307,10 @@ export async function resolveSession(runState: NativeSessionState, {
         runState.sessionEntry = null;
         // Journal damage found by the validating open (the presence probe reads
         // only the header) is the same typed, evidence-preserving refusal.
+        if ((error as { code?: string }).code === "ERR_RETAINED_SUMMARY_AUTHORITY") {
+          return unavailable(requestedSessionId, "Retained summary admission unavailable; native evidence preserved for reconstruction",
+            "native_retained_summary_unavailable", "pi_retained_summary_unavailable");
+        }
         if (claimed.entry.durable && isJournalCorruption(error)) return unreadable();
         throw error;
       }

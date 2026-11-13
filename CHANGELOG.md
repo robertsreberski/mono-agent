@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Protect authenticated retained summaries actually admitted by a cold native seed
+  through restart and subsequent compaction, with branch-local successor coverage.
+  Add optional `providerSessionEpoch` to the owned history-store turn contract;
+  stores without the canonical epoch retain legacy behavior. Optional source or
+  resolver loss warns and falls back without blocking the turn; invalid cold
+  candidates skip admission. Match publication and exact final-layout selection
+  without changing pack bytes; refuse corrupt receipt commitments even when the
+  source remains available. Carrier-bearing journals require a compatible
+  reader; do not downgrade active native journals.
 - Add content-first conversation-history ranking v3 for fresh searches, with
   bounded intent credit that cannot rescue historical echoes or repetition floods.
   Match qualified intent across the retained body while keeping correction/event
@@ -63,7 +72,8 @@
   cuts, return protected generator truncation as an error result, and retain
   defined partial usage after recovery.
   Preserve absent final-summary token estimates as null in run inspection.
-  Cold first extraction and separately generated handoffs remain unprotected.
+  Unadmitted cold first extraction and separately generated handoffs remain
+  unprotected.
 
 - Fix baseline E2 replay to retain recorded source tools while keeping probes
   tool-free, and distinguish injected continuity packs from ordinary mentions.

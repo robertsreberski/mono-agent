@@ -6,10 +6,10 @@ export const JOURNAL_FORMAT = "mono-harness";
 export const JOURNAL_KINDS = Object.freeze([
   "turn_start", "turn_end", "operation_start", "operation_end", "message",
   "tool_call", "tool_result", "compaction", "interruption", "rewind", "model_change",
-  "input_queued", "input_consumed", "owner_binding", "handle_binding", "handle_retired",
+  "input_queued", "input_consumed", "retained_summary_admitted", "owner_binding", "handle_binding", "handle_retired",
 ]);
 
-export type JournalKind = "turn_start" | "turn_end" | "operation_start" | "operation_end" | "message" | "tool_call" | "tool_result" | "compaction" | "interruption" | "rewind" | "model_change" | "input_queued" | "input_consumed" | "owner_binding" | "handle_binding" | "handle_retired";
+export type JournalKind = "turn_start" | "turn_end" | "operation_start" | "operation_end" | "message" | "tool_call" | "tool_result" | "compaction" | "interruption" | "rewind" | "model_change" | "input_queued" | "input_consumed" | "owner_binding" | "handle_binding" | "handle_retired" | "retained_summary_admitted";
 
 export type Provenance = {
     provider: string;

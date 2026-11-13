@@ -128,7 +128,7 @@ export async function prepareConfiguredModelSwitch(input: {
             if (!outgoingRuntime.prepareNativeDispatch) return undefined;
             const outgoingOptions: RuntimeRunOptions = { ...options.runtimeOptions, model: parseMonoRuntimeModelReference(from), messages: [],
               abortSignal: host.request.abortSignal, allowedTools: [], disallowedTools: [], mcpServers: {}, skills: [], sessionsRoot: host.durableSessionsRoot };
-            for (const key of ["outputSchema", "piResolvedModel", "sessionId", "providerSessionId", "providerAttributionSessionId", "sessionTurn", "sessionRecovery", "nativeSessionAuthority", "nativeSessionProjection", "liveInput", "detachedContext"]) delete (outgoingOptions as Record<string, unknown>)[key];
+            for (const key of ["outputSchema", "piResolvedModel", "sessionId", "providerSessionId", "providerAttributionSessionId", "sessionTurn", "sessionRecovery", "nativeSessionAuthority", "nativeSessionProjection", "retainedSummaryAccess", "liveInput", "detachedContext"]) delete (outgoingOptions as Record<string, unknown>)[key];
             const lease = await outgoingRuntime.prepareNativeDispatch("Produce only the requested structured conversation handoff.", outgoingOptions);
             if (!lease.checkHandoffSummary || !lease.produceHandoffSummary) { await lease.close(); return undefined; }
             outgoing = { snapshot: lease.snapshot, checkHandoffSummary: (request) => {
@@ -220,7 +220,7 @@ export async function prepareConfiguredModelSwitch(input: {
           await refresh(turn);
           if (!turn.reconciliation) throw new Error("Prepared host requires owned native execution reconciliation");
           const id = turn.providerSessionId;
-          return { reconciliation: turn.reconciliation, assertOwned: () => turn.assertOwned(), turnRevision: turn.providerSessionRevision,
+          return { reconciliation: turn.reconciliation, assertOwned: () => turn.assertOwned(), turnRevision: turn.providerSessionRevision, providerSessionEpoch: turn.providerSessionEpoch,
             sessionId: id, providerSessionId: id, providerAttributionSessionId: id, sessionKeepAlive: true, sessionTurn: turn.reconciliation.descriptor,
             ...(turn.native ? { nativeSessionAuthority: { version: 1 as const, currentHandleId: id, sessionsRoot: host.durableSessionsRoot, hostAuthority: turn.native.authority,
               assertCurrent: async (request: { handleId: string; sessionsRoot: string }) => { await turn.assertOwned(); if (request.handleId !== id || resolve(request.sessionsRoot) !== resolve(host.durableSessionsRoot)) throw new Error("Prepared native current authority changed"); } } } : {}) };

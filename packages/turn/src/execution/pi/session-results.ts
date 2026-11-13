@@ -1,4 +1,4 @@
-type SessionParams = { options: import("./types.js").PiOptions; requestedSessionId: string | null; providerSessionId: string; durableRepo: any; sessionTtlMs?: number; cwd?: string; resolved: any; events: any[]; runtimeWarnings: import("./types.js").PiWarning[]; start: number; piTransport: string };
+type SessionParams = { onEvent?: import("./types.js").PiEventSink; options: import("./types.js").PiOptions; requestedSessionId: string | null; providerSessionId: string; durableRepo: any; sessionTtlMs?: number; cwd?: string; resolved: any; events: any[]; runtimeWarnings: import("./types.js").PiWarning[]; start: number; piTransport: string };
 // @ts-check
 import * as storage from "../../engine/sessions.js";
 import { validateNativeSessionAuthority } from "./session-options.js";
@@ -48,7 +48,13 @@ export async function resolveSession(state: import("./types.js").PiRunState, par
   const { options, requestedSessionId, providerSessionId, durableRepo, sessionTtlMs, cwd } = params;
   validateNativeSessionAuthority(options, providerSessionId, requestedSessionId);
   const outcome = await storage.resolveSession(state as Parameters<typeof storage.resolveSession>[0], { requestedSessionId, providerSessionId, durableRepo, sessionTtlMs, cwd,
-    access: options.nativeSessionAuthority, projection: options.nativeSessionProjection,
+    onRetainedSummaryFallback: () => {
+      const warning = { warning_kind: "retained_summary_legacy_fallback", message: "Retained summary protection unavailable; continuing with legacy context." };
+      params.runtimeWarnings.push(warning);
+      const event = { type: "runtime_warning", ...warning };
+      if (params.onEvent) params.onEvent(event); else params.events.push(event);
+    },
+    access: options.nativeSessionAuthority, projection: options.nativeSessionProjection, retainedSummaryAccess: options.retainedSummaryAccess,
     waitSignal: options.abortSignal instanceof AbortSignal ? options.abortSignal : undefined,
     keepAlive: options.sessionKeepAlive, requireExisting: !!options.sessionTurn?.reconciliation && options.sessionTurn.baseRevision! > 0 } as Parameters<typeof storage.resolveSession>[1]);
   if (outcome.status === "ready") return { done: false };

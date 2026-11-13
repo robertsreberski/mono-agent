@@ -41,6 +41,7 @@ interface HarnessRuntimeRouting {
   readonly runtimeForSession: SessionRuntimeResolver;
   readonly recoveryRevision?: number | undefined;
   readonly turnRevision?: number | undefined;
+  readonly providerSessionEpoch?: string | undefined;
   readonly reconciliation?: ConversationHistoryTurnReconciliation | undefined;
   readonly withContinuityOwner?: ConversationHistoryTurnReconciliation["withContinuityOwner"] | undefined;
   readonly prepareCompaction?: ConversationHistoryTurnReconciliation["prepareCompaction"] | undefined;
@@ -56,6 +57,7 @@ type PreparedContext = Awaited<ReturnType<typeof prepareHarnessContext>>;
 export interface HarnessPreparedBinding extends RuntimeNativeDispatchBinding {
   readonly reconciliation: ConversationHistoryTurnReconciliation;
   readonly turnRevision: number;
+  readonly providerSessionEpoch?: string | undefined;
   readonly recoveryRevision?: number;
   readonly assertOwned: () => Promise<void>;
 }
@@ -125,7 +127,7 @@ export function prepareHarnessRuntime(input: HarnessRuntimePreparationInput): Pr
       state = "prepared";
       const start = (value: HarnessPreparedBinding): Promise<RuntimeResult> => {
         if (state !== "prepared" || producing || admitting) return Promise.reject(new Error("Host preparation is no longer available"));
-        if (!value || ![Object.prototype, null].includes(Object.getPrototypeOf(value)) || Reflect.ownKeys(value).some((key) => !["reconciliation", "turnRevision", "recoveryRevision", "assertOwned", "sessionId", "providerSessionId", "providerAttributionSessionId", "sessionKeepAlive", "sessionIdleTimeoutMs", "sessionTurn", "sessionRecovery", "nativeSessionAuthority", "nativeSessionProjection"].includes(key as string))
+        if (!value || ![Object.prototype, null].includes(Object.getPrototypeOf(value)) || Reflect.ownKeys(value).some((key) => !["reconciliation", "turnRevision", "providerSessionEpoch", "recoveryRevision", "assertOwned", "sessionId", "providerSessionId", "providerAttributionSessionId", "sessionKeepAlive", "sessionIdleTimeoutMs", "sessionTurn", "sessionRecovery", "nativeSessionAuthority", "nativeSessionProjection"].includes(key as string))
           || typeof value.assertOwned !== "function" || value.reconciliation?.descriptor.reconciliation?.purpose !== "execution"
           || value.turnRevision !== value.reconciliation.descriptor.baseRevision) return Promise.reject(new TypeError("Host preparation accepts only owned P2/session binding"));
         let captured; try { assertStart(); captured = copyPreparationData(value); } catch (error) { return Promise.reject(error); }
@@ -541,6 +543,17 @@ async function executeHarnessRuntime(preparation: PreparationControl | undefined
         try { continuityHistory = routing.detachedHistoryOverride ?? await loadHarnessHistory(options, request.conversationId, request.continuation); }
         catch { continuityHistoryAvailable = false; /* Optional continuity cannot block the turn or buy extraction. */ }
       }
+      const retainedScope = { logicalConversationId: options.toolHistory?.logicalConversationId(request.conversationId) ?? request.conversationId,
+        currentConversationId: request.conversationId, currentRunId: runId,
+        ...(request.continuation?.historyBoundary === undefined ? {} : { historyBoundary: request.continuation.historyBoundary }) };
+      const retainedAccess = (epoch: string | undefined, handleId: string | undefined, owner: HarnessRuntimeRouting["withContinuityOwner"]): RuntimeRunOptions["retainedSummaryAccess"] =>
+        epoch && handleId && owner && options.toolHistory?.continuityEnabled === true && !sessionIsolated ? {
+          destination: { logicalConversationId: retainedScope.logicalConversationId, conversationId: request.conversationId, epoch, handleId },
+          assertCurrent: async () => { await owner(async () => { request.abortSignal.throwIfAborted(); }); },
+          resolve: async binding => await owner(async () => options.toolHistory!.reader.resolveRetainedSummary(retainedScope, binding)),
+        } : undefined;
+      const primaryRetainedAccess = retainedAccess(routing.providerSessionEpoch, resumeSessionId ?? providerAttributionSessionId,
+        routing.withContinuityOwner ?? reconciliation?.withContinuityOwner);
       const coldContext = !preparation && routing.continuityPack
         && (continuityHistory.length > 0 || routing.boundaryReason !== undefined || options.toolHistory?.upkeep?.enabled || options.toolHistory?.ledgerEnabled) ? async (budget: { maxTokens: number; reason: string; primaryAttempt: boolean }) => {
         try {
@@ -556,21 +569,31 @@ async function executeHarnessRuntime(preparation: PreparationControl | undefined
           // history. Deduplicate against what this attempt actually replays.
           const hasCanonicalReplay = !historyOmitted || budget.reason === "detached_context";
           const replayedHistory = hasCanonicalReplay ? continuityHistory : [];
-          const messages = routing.continuityPack!(replayedHistory, budget.maxTokens,
+          const rendered = routing.continuityPack!.render(replayedHistory, budget.maxTokens,
             budget.reason === "detached_context" ? budget.reason : routing.boundaryReason ?? budget.reason, emitRuntimeEvent,
             ids => { toolIds = ids; }, availability.conversationHistory);
-          if (toolIds.size === 0 || !hasCanonicalReplay) return { messages };
+          const messages = rendered.messages;
+          // Per-call metadata stays with these exact messages, never read from
+          // the supplier's shared last-rendered accessor across attempts.
+          const proof = budget.primaryAttempt && primaryRetainedAccess && rendered.summarySelection
+            ? await (routing.withContinuityOwner ?? reconciliation!.withContinuityOwner)!(async () => options.toolHistory!.reader.eligibleRetainedSummary(retainedScope)) : undefined;
+          const selected = rendered.summarySelection;
+          const retainedSummary = proof && selected && ["recordId", "generationId", "sha256", "retainedBytes"].every(key =>
+            (selected as unknown as Record<string, unknown>)[key] === (proof.binding as unknown as Record<string, unknown>)[key])
+            ? { binding: proof.binding, selection: selected } : undefined;
+          const result = { messages, ...(retainedSummary ? { retainedSummary } : {}) };
+          if (toolIds.size === 0 || !hasCanonicalReplay) return result;
           let projectionUnavailable = false;
           const projection = renderToolHistoryProjection(!historyOmitted ? toolProjection
             : loadToolHistoryProjection(options, request.conversationId, runId, replayedHistory, emitRuntimeEvent,
               () => { projectionUnavailable = true; }), availability, toolIds);
           // Undefined can also mean successful exclusion of every projected
           // call. Only a failed read preserves the original prepared replay.
-          if (projectionUnavailable) return { messages };
+          if (projectionUnavailable) return result;
           resolvedReplay = { history: replayedHistory, toolHistoryProjection: projection?.text,
             toolProjectionRecords: projection?.recordCount ?? 0 };
           if (detachedReplayFacts) detachedReplayFacts = resolvedReplay;
-          return { messages, replayMessages: coldReplayMessages(continuityHistory, projection?.text) };
+          return { ...result, replayMessages: coldReplayMessages(continuityHistory, projection?.text) };
         } catch {
           try { emitRuntimeEvent({ type: "continuity_pack_skipped", reason: "unavailable", degradedReason: "unavailable", tokens: 0 }); }
           catch { /* fail open */ }
@@ -593,7 +616,8 @@ async function executeHarnessRuntime(preparation: PreparationControl | undefined
           ? { runId, revision: routing.recoveryRevision } : undefined,
         model: effectiveModel,
         ...(!preparation ? { detachedContext } : {}),
-        ...(coldContext ? { coldContext } : {}),
+        coldContext,
+        retainedSummaryAccess: primaryRetainedAccess,
         // Recalled memory is appended to the user message (NOT the system prompt) so
         // it reaches the model on every turn, including resumed turns. See
         // prepareContext for why.
@@ -710,8 +734,9 @@ async function executeHarnessRuntime(preparation: PreparationControl | undefined
         const bound = await preparation.ready(nativeLease, preparedContext!);
         await bound.assertOwned(); reconciliation = bound.reconciliation;
         await admitInitial();
-        const { assertOwned: _owned, reconciliation: _reconciliation, turnRevision: _revision, recoveryRevision, ...keys } = bound;
+        const { assertOwned: _owned, reconciliation: _reconciliation, turnRevision: _revision, providerSessionEpoch, recoveryRevision, ...keys } = bound;
         runtimeOptions = { ...runtimeOptions, ...keys, sessionTurn: reconciliation.descriptor,
+          retainedSummaryAccess: retainedAccess(providerSessionEpoch, reconciliation.descriptor.handleId, reconciliation.withContinuityOwner),
           ...(recoveryRevision === undefined ? {} : { sessionRecovery: { runId, revision: recoveryRevision } }) };
       }
       // The provider call is starting: this run has left the admission-pending
@@ -762,6 +787,7 @@ async function executeHarnessRuntime(preparation: PreparationControl | undefined
         nativeLease?.assertReady?.();
         const result = nativeLease ? await nativeLease.run({ sessionId: runtimeOptions.sessionId, providerSessionId: runtimeOptions.providerSessionId,
           ...(runtimeOptions.providerAttributionSessionId === undefined ? {} : { providerAttributionSessionId: runtimeOptions.providerAttributionSessionId }), sessionKeepAlive: runtimeOptions.sessionKeepAlive,
+          retainedSummaryAccess: runtimeOptions.retainedSummaryAccess,
           sessionIdleTimeoutMs: runtimeOptions.sessionIdleTimeoutMs, sessionTurn: runtimeOptions.sessionTurn, sessionRecovery: runtimeOptions.sessionRecovery,
           ...(runtimeOptions.nativeSessionAuthority ? { nativeSessionAuthority: runtimeOptions.nativeSessionAuthority } : {}),
           ...(runtimeOptions.nativeSessionProjection ? { nativeSessionProjection: runtimeOptions.nativeSessionProjection } : {}) })

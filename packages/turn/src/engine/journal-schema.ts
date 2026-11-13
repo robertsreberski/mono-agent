@@ -1,3 +1,5 @@
+import { validRetainedSummaryReceipt } from "./retained-summary.js";
+import { evidenceDigest } from "./journal-digest.js";
 import type { JournalEntry, JournalHeader, Provenance } from "./journal-types.js";
 // @ts-check
 import { createHash } from "node:crypto";
@@ -80,6 +82,7 @@ function validateTurnSeal(seal: any, terminalStatus: "completed" | "failed" | "a
 
 /** Incremental reference/lifecycle validator. Never transforms native payloads. */
 export class JournalValidator {
+  declare retainedSummaryAdmission: any;
   declare seq: number;
   /** Immutable accepted artifact/coverage identity, not a second content copy. */
   declare projectionBinding: any;
@@ -98,6 +101,7 @@ export class JournalValidator {
   declare handleBindings: Map<any, any>;
   declare owner: any;
   constructor() {
+    this.retainedSummaryAdmission = null;
     this.seq = 0;
     this.projectionBinding = null;
  this.parentId = null;
@@ -202,6 +206,12 @@ export class JournalValidator {
               && (index === 0 || this.contextInfo.get(p.preservedMessageIds[index - 1]).seq < this.contextInfo.get(i).seq))
             && Array.isArray(p.derivedMessages) && Number.isSafeInteger(p.coverageVersion) && p.coverageVersion > 0);
           const checkpoint = p.compaction.checkpoint;
+          if (checkpoint?.retainedSummaryCoverage !== undefined) {
+            const coverage = checkpoint.retainedSummaryCoverage;
+            requireValue(keys(coverage, ["version", "admissionId"]) && coverage.version === 1
+              && coverage.admissionId === this.retainedSummaryAdmission?.id
+              && this.retainedSummaryAncestor(this.retainedSummaryAdmission.payload.seed.entryId, coverage.admissionId));
+          }
           if (checkpoint?.inheritedCoverage !== undefined) {
             const inherited = checkpoint.inheritedCoverage;
             requireValue(inherited?.version === 1 && Array.isArray(inherited.sources)
@@ -265,6 +275,14 @@ export class JournalValidator {
           && message.inputId === p.inputId && this.inputs.get(p.inputId)?.state !== "cancelled");
         if (turn.start.payload.binding && this.inputs.has(p.inputId)) requireValue(this.inputs.get(p.inputId).turnId === record.turnId
           && this.inputs.get(p.inputId).requestDigest === message.requestDigest && this.inputs.get(p.inputId).placement === message.placement);
+      } else if (record.kind === "retained_summary_admitted") {
+        requireValue(validRetainedSummaryReceipt(p) && this.retainedSummaryAdmission === null && record.operationId === undefined
+          && this.openOperations.size === 0 && turn.start.payload.identitySource === "host" && this.owner.kind === "host"
+          && this.owner.ownerKey === p.destination.logicalConversationId && this.owner.historyBucket === p.destination.conversationId
+          && this.handles.has(p.destination.handleId) && this.handleBindings.get(p.destination.handleId)?.authoritative === true
+          && this.contextInfo.get(p.seed.entryId)?.seedDigest === p.seed.messageDigest
+          && this.contextInfo.get(p.seed.entryId)?.seq < turn.start.seq
+          && this.retainedSummaryAncestor(p.seed.entryId));
       } else if (record.kind === "owner_binding") {
         requireValue((p.kind === "unbound" && this.owner.kind === "unbound") || (["host", "instance"].includes(p.kind)
           && id(p.ownerKey) && (p.kind === "host" ? id(p.historyBucket) : p.historyBucket === null)
@@ -280,6 +298,15 @@ export class JournalValidator {
         requireValue(this.handles.has(p.handleId) && typeof p.cause === "string");
       }
     }
+  }
+  private retainedSummaryAncestor(seedId: string, admissionId?: string): boolean {
+    for (let cursor = this.tip; cursor !== null;) {
+      const info = this.contextInfo.get(cursor);
+      if (cursor === seedId || admissionId && info?.retainedSummaryCoverage?.admissionId === admissionId) return true;
+      if (!info) return false;
+      cursor = info.parentId;
+    }
+    return false;
   }
   apply(record: JournalEntry) {
     this.validate(record);
@@ -312,10 +339,13 @@ export class JournalValidator {
       this.turns.get(record.turnId).contextIds.push(record.id);
       if (message?.role === "assistant" && message.stopReason === "deferred" && record.operationId) this.operations.get(record.operationId).suspended = true;
       this.contextInfo.set(record.id, { kind: record.kind, seq: record.seq, parentId: p.contextParentId,
+        ...(record.kind === "message" && this.turns.get(record.turnId).start.payload.config?.cause === "seed" && this.turns.get(record.turnId).start.payload.identitySource === "synthetic" ? { seedDigest: evidenceDigest(message) } : {}),
+        ...(p.compaction?.checkpoint?.retainedSummaryCoverage ? { retainedSummaryCoverage: structuredClone(p.compaction.checkpoint.retainedSummaryCoverage) } : {}),
         operationId: record.operationId, role: message?.role, stopReason: message?.stopReason, inputId: p.input?.id,
         requestDigest: p.input?.requestDigest, placement: p.input?.placement, inputComplete: p.input?.complete, callId: message?.toolCallId, name: message?.toolName, isError: message?.isError,
         calls: new Map((Array.isArray(message?.content) ? message.content : []).filter((part: any) => part?.type === "toolCall").map((call: any) => [call.id, call.name])) });
     }
+    if (record.kind === "retained_summary_admitted") this.retainedSummaryAdmission = structuredClone(record);
     if (record.kind === "rewind") this.tip = p.tipId;
     const callKey = `${record.operationId ?? record.turnId}\0${p.callId}`;
     if (record.kind === "tool_call") this.calls.set(callKey, { ...(this.calls.get(callKey) ?? {}), name: p.name,
