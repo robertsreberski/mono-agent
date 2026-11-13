@@ -261,7 +261,7 @@
       "requirements": [
         "An explicit built-in tool policy and, for external MCP, an existing validated MCP JSON file. External MCP tools bypass built-in allow/deny rules."
       ],
-      "usage": "Tool use can add model turns, subprocesses and third-party service costs. Provider, browser and server connectivity is not probed here; run mono-agent validate in the owner terminal.",
+      "usage": "Tool use can add model turns, subprocesses and third-party service costs. External MCP server connectivity is never probed by validation. Provider/browser liveness is not probed here; run mono-agent validate in the owner terminal.",
       "ownedConfigPaths": [
         "tools.allowedTools",
         "tools.disallowedTools",

@@ -355,8 +355,11 @@ Agent settings in the browser console includes **Capabilities**: memory tiers
 sandbox, MCP/tools and already-enabled built-in tracing. The app injects a
 read-only status service into its operator driver. It calls the same
 `validateMonoAgentFolder` used by `mono-agent validate`, with
-`allowFilesystemWrites: false`. Concurrent reads coalesce, successful results
-are cached for five seconds, and callers have a bounded deadline. A timed-out
+`allowFilesystemWrites: false` and `liveness: false`: console reads never trigger
+provider/network/subprocess probes. Ready means local configuration checks passed;
+run `mono-agent validate` in the owner terminal for live readiness. Concurrent
+reads coalesce, successful and sanitized failed results are cached for five
+seconds, and callers have a bounded deadline. A timed-out
 validation remains the sole in-flight check rather than spawning replacements.
 
 Reports label whether they concern the loaded managed startup snapshot or
@@ -376,12 +379,13 @@ handoff, defaulting to **Not now**, after explaining its no-login/network
 boundary. On macOS this follows managed-agent readiness; Linux keeps manual
 agent start and offers a managed console only with a usable user manager. Other
 platforms offer foreground only. Existing console definitions are preserved:
-a running managed console may be reused, but a stopped existing definition needs
+a verified running console is reused for either launch choice, but a stopped existing definition needs
 an explicit terminal action. A new managed/foreground listener is loopback-only.
 Browser opening follows console health confirmation. SSH/headless/open failures
 print the identity-qualified URL and private forwarding instructions. Discovery
 waits for that exact agent instead of selecting another. No extra model turn is
-made; flags, non-TTY and scaffold-only paths do not offer this handoff.
+made; Enter, Ctrl-D and EOF at the handoff prompt mean Not now. Flags, non-TTY
+and scaffold-only paths do not offer this handoff.
 
 Process-job chains keep the default depth budget of 4 and allow a configured
 ceiling of 64. Request diagnostics remain visible when the budget is exhausted.

@@ -67,7 +67,7 @@ export function capabilityCards(report: ValidationReport, memoryMode?: string): 
   cards.push({
     id: "tools", title: "MCP / tools", purpose: "Let the agent use local tools and owner-prepared MCP servers.",
     requirements: ["An explicit built-in tool policy and, for external MCP, an existing validated MCP JSON file. External MCP tools bypass built-in allow/deny rules."],
-    usage: "Tool use can add model turns, subprocesses and third-party service costs. Provider, browser and server connectivity is not probed here; run mono-agent validate in the owner terminal.",
+    usage: "Tool use can add model turns, subprocesses and third-party service costs. External MCP server connectivity is never probed by validation. Provider/browser liveness is not probed here; run mono-agent validate in the owner terminal.",
     ownedConfigPaths: ["tools.allowedTools", "tools.disallowedTools", "tools.mcpConfigPath"],
     steps: ["Back up mono-agent.config.json; preserve existing deny rules. Merge only the tool names you intend to allow.",
       '{ "tools": { "allowedTools": ["Read", "Glob", "Grep"], "mcpConfigPath": "./mcp.json" } }',
