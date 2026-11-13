@@ -47,3 +47,7 @@ it("keeps physical-bucket isolation at rollover: no admission, no protection, le
 it.each(["omitResolverOnRestart", "purgeBeforeRestart"])("does not silently downgrade active durable admission after %s", async control => {
   expect(await runTrialHostAdmission(summary, { [control]: true })).toEqual({ unavailableWithoutDispatch: true, runtimeCalls: 1 });
 }, 60000);
+
+it("engages admitted protection through the actual restarted runtime's automatic pre-turn hook", async () => {
+  expect(await runTrialHostAdmission(summary, { automaticRefusal: true })).toEqual({ realPreTurnProtectedRefused: true, runtimeCalls: 3 });
+}, 60000);

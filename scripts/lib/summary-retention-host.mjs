@@ -12,7 +12,7 @@ const need = (condition, message) => { if (!condition) throw Error(message); };
  * durable runtime. Reopen it through another host/runtime to prove restart. The
  * summary is caller-generated text; the lane never consults a fixture oracle.
  */
-export async function runTrialHostReseed(summary, { authenticated = false, omitDestinationEpoch = false, rollover = false, omitResolverOnRestart = false, purgeBeforeRestart = false } = {}) {
+export async function runTrialHostReseed(summary, { authenticated = false, omitDestinationEpoch = false, rollover = false, omitResolverOnRestart = false, purgeBeforeRestart = false, automaticRefusal = false } = {}) {
   const [conversation, engine, host, ai] = await Promise.all([
     built("conversation/dist/index.js"), import("@mono-agent/turn/engine"), import("@mono-agent/turn/host"),
     built("turn/node_modules/@earendil-works/pi-ai/dist/index.js"),
@@ -63,7 +63,7 @@ export async function runTrialHostReseed(summary, { authenticated = false, omitD
     const models = ai.createModels(); models.setProvider(faux.provider);
     const contexts = [], events = [];
     faux.setResponses([context => { contexts.push(structuredClone(context)); return ai.fauxAssistantMessage([ai.fauxText("Fictional resumed answer.")]); },
-      context => { contexts.push(structuredClone(context)); return ai.fauxAssistantMessage([ai.fauxText("Fictional restarted answer.")]); },
+      context => { contexts.push(structuredClone(context)); return ai.fauxAssistantMessage([ai.fauxText(automaticRefusal ? "Lossy fictional automatic summary." : "Fictional restarted answer.")]); },
       context => { contexts.push(structuredClone(context)); return ai.fauxAssistantMessage([ai.fauxText("Fictional covered restart answer.")]); }]);
     let withholdEpoch = omitDestinationEpoch;
     const harnessStore = omitDestinationEpoch || omitResolverOnRestart ? new Proxy(store, { get(target, key) {
@@ -73,12 +73,13 @@ export async function runTrialHostReseed(summary, { authenticated = false, omitD
       };
       const value = Reflect.get(target, key); return typeof value === "function" ? value.bind(target) : value;
     } }) : store;
+    let automaticCompaction = false;
     const makeHarness = () => conversation.createConversationHarness({ identityPath, cwd: root, historyStore: harnessStore, runtime, sessionsRoot,
       model: { provider: "faux", model: "cold", reference: "faux:cold" }, session: { mode: "continuous", idleTimeoutMs: 60000, supportsResume: true },
       toolHistory: { writer, reader, continuityEnabled: true, logicalConversationId: value => value === coldId ? id : value },
-      runtimeOptions: { piResolvedModel: faux.getModel(), piResolvedModels: models, effort: "none", compaction: { enabled: false } } });
+      runtimeOptions: { piResolvedModel: faux.getModel(), piResolvedModels: models, effort: "none", compaction: automaticCompaction ? { enabled: true, maxInputTokens: 2000, summaryMaxTokens: 3000, keepRecentTokens: 1000, minSavingsTokens: 0 } : { enabled: false } } });
     harness = makeHarness();
-    const result = await harness.run({ conversationId: coldId, userMessage: "Resume fictional work.", abortSignal: new AbortController().signal, onEvent: event => events.push(event) });
+    const result = await harness.run({ conversationId: coldId, userMessage: automaticRefusal ? "Fictional progress. ".repeat(3000) : "Resume fictional work.", abortSignal: new AbortController().signal, onEvent: event => events.push(event) });
     need(!result.failure, `Host cold seed failed: ${JSON.stringify(result.failure)}`);
     await harness.dispose(); harness = undefined; await runtime.disposeAllSessions();
     // Inspect only the journal created by this cold run. Summary text is
@@ -96,6 +97,7 @@ export async function runTrialHostReseed(summary, { authenticated = false, omitD
     need(seedMessages?.length && (rollover ? !JSON.stringify(seedMessages).includes(retained.sha256) : JSON.stringify(seedMessages).includes(retained.sha256)),
       rollover ? "Rollover crossed physical summary scope" : "Runtime did not persist the retained cold pack seed");
     await repo.close(); repo = undefined;
+    automaticCompaction = automaticRefusal;
     if (omitResolverOnRestart) withholdEpoch = true;
     if (purgeBeforeRestart) await writer.resetConversation(id);
     runtime = host.createMonoRuntime({ workspace: root }); harness = makeHarness();
@@ -104,6 +106,16 @@ export async function runTrialHostReseed(summary, { authenticated = false, omitD
       need(restarted.failure?.kind === "native_retained_summary_unavailable" && contexts.length === 1,
         `Bound restart silently downgraded or dispatched: ${JSON.stringify(restarted.failure)}`);
       return { unavailableWithoutDispatch: true, runtimeCalls: contexts.length };
+    }
+    if (automaticRefusal) {
+      need(!restarted.failure && contexts.length === 3, "Automatic cold predecessor path failed or repaid a refusal");
+      need(JSON.stringify(contexts[1]).includes("<previous-summary>") && JSON.stringify(contexts[1]).includes("<protected-historical-tuples>"), "Real pre-turn summary omitted admitted protection");
+      need(events.some(event => event.type === "context_compaction" && event.status === "skipped" && event.reason === "protected_tuples_missing"), "Real pre-turn hook did not refuse a lossy summary");
+      await harness.dispose(); harness = undefined; await runtime.disposeAllSessions();
+      repo = new engine.JsonlSessionRepo({ sessionsRoot }); raw = await repo.open(coldJournals[0], { repair: false });
+      need(!(await raw.getEntries()).some(entry => entry.type === "compaction"), "Real pre-turn refusal committed a cut");
+      need(raw.validator.retainedSummaryAdmission, "Real pre-turn refusal consumed admission");
+      return { realPreTurnProtectedRefused: true, runtimeCalls: contexts.length };
     }
     need(!restarted.failure && contexts.length === 2, "Host restart failed or made extra calls");
     let admissionProof;
