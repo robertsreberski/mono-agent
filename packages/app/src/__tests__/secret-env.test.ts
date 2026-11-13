@@ -1043,11 +1043,14 @@ describe("mergeSecretEnvFile", () => {
     expect(await readFile(victimPath, "utf8")).toBe("do-not-touch\n");
   });
 
-  it("refuses control characters and backslashes in custom basenames", async () => {
+  it("refuses control characters, backslashes and trailing whitespace in custom basenames", async () => {
     await expect(mergeSecretEnvFile(join(dir, ".env\n!x"), { TOKEN: "secret-value" })).rejects.toMatchObject({
       code: "unsafe-env-path",
     });
     await expect(mergeSecretEnvFile(join(dir, ".env\\x"), { TOKEN: "secret-value" })).rejects.toMatchObject({
+      code: "unsafe-env-path",
+    });
+    await expect(mergeSecretEnvFile(join(dir, ".env "), { TOKEN: "secret-value" })).rejects.toMatchObject({
       code: "unsafe-env-path",
     });
     expect(await readdir(dir)).toEqual([]);

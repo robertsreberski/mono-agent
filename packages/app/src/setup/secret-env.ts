@@ -1160,9 +1160,11 @@ function escapeGitignoreBasename(value: string): string {
 function hasUnsafeGitignoreBasenameChar(value: string): boolean {
   for (const character of value) {
     const code = character.codePointAt(0) ?? 0;
-    if (code <= 0x1f || code === 92) return true;
+    if (code <= 0x1f || code === 0x7f || code === 92) return true;
   }
-  return false;
+  // Git strips unescaped trailing spaces from ignore patterns, so a basename
+  // ending in whitespace would silently escape the guard.
+  return /\s$/u.test(value);
 }
 
 /**
