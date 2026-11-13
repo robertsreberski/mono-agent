@@ -152,8 +152,8 @@ it("keeps the useful-answer floor when the kit already clamped a request to mode
   expect(requests[0]).toMatchObject({ textTargetTokens: 512, minimumAnswerTokens: 1024, providerInvoked: false, costUsd: 0 });
 });
 
-it("pins immutable-event instructions as summary focus v3", () => {
-  expect(SUMMARY_FOCUS_VERSION).toBe(3);
-  expect(SUMMARY_FOCUS).toMatch(/^Mono-agent summary focus v3:/u);
+it("pins literal-copy policy identity as summary focus v4", () => {
+  expect(SUMMARY_FOCUS_VERSION).toBe(4);
+  expect(SUMMARY_FOCUS).toMatch(/^Mono-agent summary focus v4:/u);
   expect(SUMMARY_FOCUS).toContain("NEW top-level historical events");
 });

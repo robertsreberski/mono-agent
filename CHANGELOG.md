@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Keep protected historical blocks literal in compaction summary instructions:
+  require unchanged copies before new events, not rewritten or merged history.
+  Retain exact preservation checks; live-model compliance is not guaranteed.
+
 - Keep continuity validation running on the prior verified summary after an
   accounted protection refusal (`protected_tuples_missing` or
   `summary_budget_exceeded`) instead of stopping with `e2_compaction_invalid`;

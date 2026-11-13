@@ -63,6 +63,12 @@ The guarded refresh confirms no accounting change: zero-tuple compaction
 does not add `preservation`. No journal, projection, import, result, estimator,
 usage or recovery fields were refreshed.
 
+The literal-copy clarification refreshes only the kit instruction text in those
+same four request strings: copy decoded protected strings verbatim in order,
+before new events. It also bumps the pinned runtime `SUMMARY_FOCUS` identity from
+v3 to v4 for this policy revision; its instruction body is unchanged. The guarded
+refresh again confirms every other captured field is unchanged.
+
 There is no `UPDATE_*` environment switch. The historical archive generator above
 recreates old behavior and is not a current-prompt updater. For a reviewed summary
 instruction change, use this narrower procedure from the repository root. It

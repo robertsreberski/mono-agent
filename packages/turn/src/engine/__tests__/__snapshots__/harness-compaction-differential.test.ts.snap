@@ -2,7 +2,7 @@
 
 exports[`owned compaction kit vs 0.99.2 baseline > preserves summary input, retained tail, tokensBefore and billed usage > history-preserving request contract 1`] = `
 [
-  "b921882907d8632a5b7ea6984e7059f6fb281ccf97816a6f005d6a1642e5b1da",
-  "01a5ea54a0ba7a21b34a644762c4708a2104e043e270990376b6c48dd1e603f9",
+  "55b99028bdd8274f9eea5e2a8eba93de03dc8e4d244c890d0f22753058da25fa",
+  "7c25eb625fc654e4b72748d2370b66df07a4afd542e8bc8346ddcfcf8594bce1",
 ]
 `;

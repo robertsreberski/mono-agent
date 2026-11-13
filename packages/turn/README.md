@@ -101,7 +101,7 @@ when any part is missing. Numeric subtotals are not complete billing:
 `accounting.requests` rows retain nullable cost/usage fields such as `costUsd`.
 Aggregate runtime `usage.compaction` and folded `usage` instead mark unknown
 billing with `cost_partial: true` and `cost_usd: null`, exposing `known_cost_usd`
-when a known subtotal exists. No new durable carrier or archive transform is added. Shipping `SUMMARY_FOCUS` v3 names the immutable-event
+when a known subtotal exists. No new durable carrier or archive transform is added. Shipping `SUMMARY_FOCUS` v4 names the literal-copy/immutable-event
 instruction policy. `generateSummaryWithRequest` adds the named protected frame
 when supplied admissible history and returns an error Result with
 `CompactionError.code === "output_truncated"` for protected truncation, rather than
