@@ -120,7 +120,7 @@ export function createRunDriver(store: any, options: any): {
       await access.assertCurrent();
       if (!proof) throw new Error("Retained source unavailable");
       assertRetainedSummarySeed(receipt, seed?.message, proof.text);
-      store.validator.validate({ schemaVersion: 2, id: randomUUID(), parentId: store.validator.parentId, seq: store.seq + 1,
+      store.validateRecord({ schemaVersion: 2, id: randomUUID(), parentId: store.validator.parentId, seq: store.seq + 1,
         timestamp: Date.now(), turnId, kind: "retained_summary_admitted", payload: receipt });
     } catch {
       publish({ type: "warning", code: "retained_summary_admission_skipped", message: "Optional retained summary admission skipped; continuing with legacy context." });

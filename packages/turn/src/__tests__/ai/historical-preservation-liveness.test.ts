@@ -8,6 +8,7 @@ import { expect, it, vi } from "vitest";
 import { createModels, fauxProvider, fauxAssistantMessage, fauxText, fauxToolCall } from "@earendil-works/pi-ai";
 import { JsonlSessionRepo } from "../../engine/session-store.js";
 import { createRunDriver } from "../../engine/run-driver.js";
+import { resolveRetainedSummaryAdmission } from "../../engine/retained-summary.js";
 import { estimateTokens, prepareCompaction } from "../../engine/compaction-kit/compaction.js";
 import { checkNativeInheritedPrefix } from "../../execution/pi/handoff-producer.js";
 import { projectContext, projectInheritedContext } from "../../engine/request-projection.js";
@@ -56,7 +57,7 @@ async function fixture(summary = history, inherited = false, admitted = false) {
   const policy = { enabled: true, summaryMaxTokens: 1000, keepRecentTokens: 1000, compactionMinSavingsTokens: 0, effort: "none", failureCooldownMs: 900000 };
   const compact = (trigger: string) => tryCompact(harness, { trigger, onEvent: (event: any) => events.push(event), runtimeWarnings: warnings, session, policy });
   const grow = async () => { for (let i = 0; i < 2; i++) await raw.appendMessage({ role: "user", content: "Fictional context. ".repeat(2000), timestamp: 2 }); };
-  return { root, raw, session, harness, driver, faux, completeSimple, events, warnings, policy, compact, grow,
+  return { root, raw, session, harness, driver, faux, completeSimple, events, warnings, policy, compact, grow, access,
     close: async () => { await driver.close(); await raw.close(); await repo.close(); await rm(root, { recursive: true, force: true }); } };
 }
 
@@ -456,5 +457,30 @@ it.each([false, true])("counts the seed quotation, previous summary and protecte
       expect(estimateProviderContext(reduced).tokens).toBeLessThan(input);
       expect(policy(reduced).canDispatch).toBe(true);
     }
+  } finally { await f.close(); }
+});
+
+it("applies a cut without retained coverage when source disappears after the summary, warning only once", async () => {
+  const f = await fixture(history, false, true);
+  try {
+    await f.grow();
+    const warnings: any[] = [], append = vi.spyOn(f.raw, "appendCompaction");
+    f.driver.subscribe((event: any) => { if (event.code === "retained_summary_legacy_fallback") warnings.push(event); });
+    const resolve = vi.fn(async (): Promise<{ text: string } | undefined> => ({ text: history }));
+    f.access.resolve = resolve;
+    f.completeSimple.mockImplementation(async () => {
+      const result = answer(history); // Generation completed while the source was available.
+      resolve.mockResolvedValue(undefined); // Purge before the driver's post-summary recheck/append.
+      return result;
+    });
+    expect((await f.compact("manual")).applied).toBe(true);
+    expect(f.completeSimple).toHaveBeenCalledOnce(); expect(resolve).toHaveBeenCalledTimes(2);
+    expect(append).toHaveBeenCalledOnce(); expect(append.mock.calls[0]![3]).toBeUndefined();
+    const cuts = (await f.raw.getEntries()).filter((entry: any) => entry.type === "compaction");
+    expect(cuts).toHaveLength(1); expect(cuts[0].checkpoint.retainedSummaryCoverage).toBeUndefined();
+    expect(warnings).toHaveLength(1); expect(JSON.stringify(warnings)).not.toContain(history);
+    const warn = vi.fn();
+    expect(await resolveRetainedSummaryAdmission(f.raw, f.access, warn)).toBeUndefined();
+    expect(resolve).toHaveBeenCalledTimes(2); expect(warn).not.toHaveBeenCalled(); expect(warnings).toHaveLength(1);
   } finally { await f.close(); }
 });

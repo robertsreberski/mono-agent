@@ -43,7 +43,7 @@ async function fixture() {
 const producer = { prepared: { status: "prepared", checkpoints: [], recent: [], older: [], ledger: [], prior: null, coverage: [] } as RuntimePreparedHandoff, outputReserve: 256 };
 const summary = JSON.stringify({ intent: ["Fictional goal"], constraints: [], decisions: [], completedWork: [], failures: [], openWork: [], nextActions: [], references: [] });
 
-it("prepares context/extensions once under the permit and claim, without incoming P2; then transfers and runs the frozen input once", async () => {
+it.each([false, true])("prepares context/extensions once under the permit and claim, produces then transfers the frozen input (epoch=%s)", async withEpoch => {
   const f = await fixture(), native = vi.spyOn(f.runtime, "run");
   f.context.mockImplementationOnce(async (request) => { expect(f.limiter.inUse()).toBe(1); await f.owner.assertOwned();
     return { context: buildAgentContext({ identity: "Fictional stable rules", userMessage: request.userMessage }), memory: "Fictional memory",
@@ -61,7 +61,9 @@ it("prepares context/extensions once under the permit and claim, without incomin
   const turn = await f.owner.admit({ modelKey: "faux:fixture", reconciliation: { purpose: "execution", ownerKey: "fictional",
     initial: { persistText: "Original fictional input", timestamp: new Date().toISOString() } } });
   const result = await lease.run({ reconciliation: turn.reconciliation!, assertOwned: () => turn.assertOwned(), turnRevision: turn.providerSessionRevision,
-    sessionId: turn.providerSessionId, providerSessionId: turn.providerSessionId, sessionKeepAlive: true });
+    sessionId: turn.providerSessionId, providerSessionId: turn.providerSessionId, sessionKeepAlive: true,
+    ...(withEpoch ? { providerSessionEpoch: turn.providerSessionEpoch } : {}) });
+  expect(turn.providerSessionEpoch).toEqual(expect.any(String));
   expect(result.text).toBe("Incoming result"); expect(native).not.toHaveBeenCalled();
   await (await turn.prepareCommit([], { providerSessionSynced: true })).commit();
   await lease.close(); expect(f.limiter.inUse()).toBe(0); expect(f.extensionClose).toHaveBeenCalledOnce(); expect(f.settleClose).toHaveBeenCalledOnce();

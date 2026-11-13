@@ -8,7 +8,8 @@
   stores without the canonical epoch retain legacy behavior. Optional source or
   resolver loss warns and falls back without blocking the turn; invalid cold
   candidates skip admission. Match publication and exact final-layout selection
-  without changing pack bytes. Carrier-bearing journals require a compatible
+  without changing pack bytes; refuse corrupt receipt commitments even when the
+  source remains available. Carrier-bearing journals require a compatible
   reader; do not downgrade active native journals.
 
 - Add bounded evidence discipline to every `ConversationHistory` response: find

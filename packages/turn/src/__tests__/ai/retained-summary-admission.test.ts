@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -22,8 +22,8 @@ const candidate: RuntimeRetainedSummaryCandidate = { binding, selection: { recor
   sha256: binding.sha256, retainedBytes: binding.retainedBytes, packSha256: hash(pack),
   entry: { startByte: Buffer.byteLength("Fictional pack\n"), endByte: Buffer.byteLength(`Fictional pack\n${entry}`), sha256: hash(entry) } } };
 const model = { provider: "faux", id: "fixture", api: "faux", contextWindow: 65536, maxTokens: 8192 };
-async function fixture(stringSeed = false) {
-  const repo = new MemorySessionRepo(), raw = await repo.create({ id: "fiction-handle" });
+async function fixture(stringSeed = false, repo: MemorySessionRepo | JsonlSessionRepo = new MemorySessionRepo()) {
+  const raw = await repo.create({ id: "fiction-handle" });
   const seed = await raw.appendMessage({ role: "user", content: stringSeed ? pack : [{ type: "text", text: pack }], timestamp: 0 });
   const resolve = vi.fn(async () => ({ text } as { text: string } | undefined));
   const access: RuntimeRetainedSummaryAccess = { destination: { logicalConversationId: "fiction", conversationId: "fiction:bucket", epoch: "destination-epoch", handleId: "fiction-handle" },
@@ -187,4 +187,91 @@ it("awaits the receipt sync barrier before compaction or dispatch can proceed", 
   release(); await admitted;
   expect(order).toEqual(["sync-start", "synced", "compaction", "dispatch-eligible"]);
   await f.driver.endTurn("completed"); await f.raw.close();
+});
+
+it("refuses a persisted selection slice that matches its pack commitment but not the rendered source entry", async () => {
+  const f = await fixture();
+  await f.driver.beginTurn("host-turn", "host", f.descriptor);
+  await f.driver.admitRetainedSummary(candidate, f.seed); await f.driver.endTurn("completed");
+  const persisted = f.raw.records!.find((record: any) => record.kind === "retained_summary_admitted")!;
+  const selected = persisted.payload.selection.entry;
+  selected.startByte++;
+  selected.sha256 = hash(Buffer.from(pack).subarray(selected.startByte, selected.endByte).toString());
+  expect(persisted.payload.selection.packSha256).toBe(hash(pack));
+  expect(validRetainedSummaryReceipt(persisted.payload)).toBe(true);
+  await f.raw.close();
+  f.resolve.mockClear(); const warn = vi.fn();
+  await expect(f.repo.open(f.raw.metadata, { validateSession: async (raw: any) => {
+    await resolveRetainedSummaryAdmission(raw, f.access, warn);
+  } })).rejects.toMatchObject({ code: "ERR_RETAINED_SUMMARY_AUTHORITY" });
+  expect(f.resolve).toHaveBeenCalledOnce(); expect(warn).not.toHaveBeenCalled();
+  await f.repo.close();
+});
+
+it.each(["hash", "bytes"])("source-side %s mismatch still warns and uses legacy context", async damage => {
+  const f = await fixture();
+  await f.driver.beginTurn("host-turn", "host", f.descriptor); await f.driver.admitRetainedSummary(candidate, f.seed);
+  if (damage === "hash") f.resolve.mockResolvedValue({ text: text.replace("cobalt", "violet") }); // Equal byte length, wrong hash.
+  else {
+    // Keep the source hash correct while corrupting its source-side byte claim.
+    // Selection/binding metadata remains internally consistent, so the byte check is reached.
+    const p = f.raw.validator.retainedSummaryAdmission.payload;
+    p.binding.retainedBytes++; p.selection.retainedBytes++;
+  }
+  const warn = vi.fn();
+  expect(await resolveRetainedSummaryAdmission(f.raw, f.access, warn)).toBeUndefined();
+  expect(warn).toHaveBeenCalledOnce();
+  await f.driver.endTurn("completed"); await f.raw.close();
+});
+
+it("preflights actual store authority without writing or advancing validator state", async () => {
+  const f = await fixture(); await f.driver.beginTurn("host-turn", "host", f.descriptor);
+  const originalJournal = f.raw.metadata.journalId, before = f.raw.snapshot(), warnings: any[] = [];
+  f.driver.subscribe((event: any) => warnings.push(event));
+  const validate = vi.spyOn(f.raw, "validateRecord"), write = vi.spyOn(f.raw, "write");
+  f.resolve.mockImplementation(async () => { f.raw.metadata.journalId = "other-journal"; return { text }; });
+  try { await f.driver.admitRetainedSummary(candidate, f.seed); }
+  finally { f.raw.metadata.journalId = originalJournal; }
+  expect(validate).toHaveBeenCalledOnce(); expect(write).not.toHaveBeenCalled();
+  expect(f.raw.snapshot()).toEqual(before); expect(f.raw.failure).toBeNull();
+  expect(warnings.filter(event => event.code === "retained_summary_admission_skipped")).toHaveLength(1);
+  await f.driver.endTurn("completed"); await f.raw.close();
+});
+
+it.each(["write", "barrier"] as const)("propagates a real journal %s failure instead of skipping admission", async stage => {
+  const root = await mkdtemp(join(tmpdir(), "retained-admission-io-"));
+  const repo = new JsonlSessionRepo({ sessionsRoot: root });
+  const f = await fixture(false, repo);
+  try {
+    await f.driver.beginTurn("host-turn", "host", f.descriptor);
+    const warnings: any[] = []; f.driver.subscribe((event: any) => warnings.push(event));
+    const fault = Object.assign(new Error("Fictional journal I/O failure"), { code: "EIO" });
+    vi.spyOn(f.raw.io, stage === "write" ? "append" : "sync").mockRejectedValueOnce(fault);
+    await expect(f.driver.admitRetainedSummary(candidate, f.seed)).rejects.toMatchObject({ name: "JournalStorageError", code: "EIO", cause: fault });
+    expect(f.raw.failure).toMatchObject({ cause: fault });
+    expect(Boolean(f.raw.validator.retainedSummaryAdmission)).toBe(stage === "barrier");
+    expect(warnings.filter(event => event.code === "retained_summary_admission_skipped")).toHaveLength(0);
+  } finally {
+    await f.raw.close().catch(() => {}); await repo.close(); await rm(root, { recursive: true, force: true });
+  }
+});
+
+it("refuses an on-disk receipt journalId mismatch on reopen before source resolution", async () => {
+  const root = await mkdtemp(join(tmpdir(), "retained-admission-journal-"));
+  const repo = new JsonlSessionRepo({ sessionsRoot: root });
+  const f = await fixture(false, repo);
+  try {
+    await f.driver.beginTurn("host-turn", "host", f.descriptor);
+    await f.driver.admitRetainedSummary(candidate, f.seed); await f.driver.endTurn("completed"); await f.raw.close();
+    const records = (await readFile(f.raw.metadata.path, "utf8")).trimEnd().split("\n").map(line => JSON.parse(line));
+    const receipt = records.find(record => record.kind === "retained_summary_admitted");
+    receipt.payload.destination.journalId = "mismatched-journal";
+    expect(validRetainedSummaryReceipt(receipt.payload)).toBe(true);
+    await writeFile(f.raw.metadata.path, records.map(record => JSON.stringify(record)).join("\n") + "\n");
+    f.resolve.mockClear();
+    await expect(repo.open(f.raw.metadata, { validateSession: async (raw: any) => {
+      await resolveRetainedSummaryAdmission(raw, f.access);
+    } })).rejects.toMatchObject({ code: "ERR_HARNESS_JOURNAL_CORRUPT" });
+    expect(f.resolve).not.toHaveBeenCalled();
+  } finally { await repo.close(); await rm(root, { recursive: true, force: true }); }
 });

@@ -73,8 +73,9 @@ export async function resolveRetainedSummaryAdmission(raw: any, access?: Runtime
   let proof;
   try { await access.assertCurrent(); proof = await access.resolve(p.binding); await access.assertCurrent(); }
   catch { return legacy(); } // Optional source/owner capability loss must not strand the native session.
-  if (!proof) return legacy(); // Purge, revocation, disabled continuity, or an excluding history boundary.
-  try { assertRetainedSummarySeed(p, seed.message, proof.text); }
-  catch { return legacy(); } // The source no longer authorizes the admitted retained bytes.
+  if (!proof || typeof proof.text !== "string" || hash(proof.text) !== p.binding.sha256
+    || Buffer.byteLength(proof.text) !== p.binding.retainedBytes) return legacy(); // Source loss or mismatch.
+  // Matching source bytes cannot excuse a receipt-side quotation commitment mismatch.
+  assertRetainedSummarySeed(p, seed.message, proof.text);
   return { admissionId: admission.id, text: proof.text };
 }
