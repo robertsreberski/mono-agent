@@ -59,12 +59,12 @@ export function createCapabilityActionsService(
     if (action === "memory-lite") {
       const memory = json.memory as { mode?: unknown } | undefined;
       if (memory?.mode === "lite") return "already-configured";
-      if (memory !== undefined) return "memory-configured";
+      if (memory !== undefined && (memory === null || typeof memory !== "object" || Array.isArray(memory) || Object.keys(memory).length > 0)) return "memory-configured";
       // Core env variables are ignored today; still refuse shadow-looking settings rather than silently supersede them.
       if (Object.entries(input.env).some(([key, value]) => key.startsWith("MONO_AGENT_MEMORY_") && value?.trim())) return "env-shadowed";
       return await safeLiteRoot(resolve(input.cwd)) ? "eligible" : "memory-root-unsafe";
     }
-    if (input.env.MONO_AGENT_CRON_OPERATOR_ACTIONS_ENABLED?.trim()) return "env-shadowed";
+    if (Object.entries(input.env).some(([key, value]) => key.startsWith("MONO_AGENT_CRON_") && value?.trim())) return "env-shadowed";
     try {
       const cron = await loadCronAdapterConfig({ env: input.env, json, cwd: input.cwd });
       if (cron.jobs.length === 0 || cron.jobs.some((job) => !validateCronExpression(job.expression, { timezone: job.timezone, hashSeed: job.id }).ok)) return "no-valid-jobs";

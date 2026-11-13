@@ -17,6 +17,9 @@
   bodies now get fixed messages; known errors keep their reviewed messages
   with only safe details and `Retry-After`.
 
+- Recover interrupted configuration writers with owner-aware locks and bounded
+  waits, and distinguish unconfirmed saves and inactive starts in Enable controls.
+
 - Add previewed, confirmed console Enable actions for safe Memory Lite setup
   and controls for valid existing cron jobs, with private guarded config backups.
   Keep saved settings pending until a fresh start; reuse managed Restart and

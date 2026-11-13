@@ -283,12 +283,22 @@ and **Confirm Save** (or Cancel). JSON formatting normalizes to two-space
 indentation. The agent reconstructs and validates the candidate, rejects duplicate
 keys, environment shadowing and stale process/config versions, preserves unrelated
 fields, and saves its durable config—not a managed worker's frozen startup copy.
-It keeps one owner-only, gitignored `<config>.bak` containing exact prior bytes
+It keeps one owner-only `<config>.bak` backup slot containing exact prior bytes
 (base64) and the intended result hash. This backup can contain existing inline
-secrets: do not share or commit it. Unsafe/tracked backup destinations are refused.
+secrets: do not share or commit it. Unsafe backup destinations are refused.
 Safety ignore rules can remain after a refused Save; no config is published
-until validation passes. Official writes are serialized; an abandoned `.write-lock` requires owner-terminal
-inspection after confirming no writer is running. There is no operation journal,
+until validation passes. Each new Save replaces that single slot; it is not a
+multi-version history. When Git is available in a repository, tracked backups
+are refused and effective ignore rules are checked. Without Git or outside a
+repository, the Git check is skipped; files remain owner-only (0600), with local
+ignore rules. Verify backup tracking before later committing the agent folder.
+
+Official writes queue within one process. Across processes they use an atomic
+try-lock, recover provably dead owners (PID plus start identity), and wait up to
+1.5 seconds for a live holder before reporting a conflict. A live lock is
+published with complete owner metadata; abandoned empty locks can be removed
+safely. Unverifiable or malformed ownership is never guessed away and may need
+owner-terminal inspection. There is no operation journal,
 Undo button, arbitrary patch/path/command input or terminal Enable command.
 
 Memory Lite is offered only when memory is unconfigured and the standard root is
@@ -302,12 +312,15 @@ and durable tracking; activation needs a fresh startup's loaded-state evidence.
 Foreground/embedded agents show **Saved; applies on next start** and require an
 owner-controlled stop/start. Restart failure leaves saved settings intact; there
 is no automatic rollback. On conflict, refresh and review a new preview. An
-uncertain transport outcome requires inspection before retrying.
+uncertain transport outcome means a save may have completed and requires
+inspection before retrying. A preview failure means nothing was saved. After an
+observed new start without activation, the card says saved but not active; it
+does not keep promising the next start.
 
 Status comes from the agent's read-only `validateMonoAgentFolder` checks with
 `allowFilesystemWrites: false`, `liveness: false` and `subprocessProbes: false`,
 not browser-side guesses.
-The console never initiates provider/network/subprocess liveness probes. Ready
+Read-only capability status never initiates provider/network/subprocess liveness probes. Ready
 means local configuration checks passed, not live readiness: embedding/model,
 browser/provider connectivity, computer-use executables and native sandbox
 availability/enforcement are explicitly not probed here. Run

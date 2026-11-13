@@ -37,6 +37,9 @@ it("round-trips browser proxy → real agent → durable guarded write, rejects 
     expect(metadata.actions[0]).toMatchObject({ id: "memory-lite", available: true, active: false });
     const body = { action: "memory-lite" as const, process: metadata.process };
     expect((await fetch(`${url}/save`, { method: "POST", headers: { ...headers, Origin: "https://foreign.invalid" }, body: JSON.stringify({ ...body, expectedVersion: "0".repeat(64), confirmed: true }) })).status).toBe(403);
+    for (const operation of ["preview", "save"]) {
+      expect((await fetch(`${url}/${operation}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...body, ...(operation === "save" ? { expectedVersion: "0".repeat(64), confirmed: true } : {}) }) })).status).toBe(403);
+    }
     const preview = await browserApi.previewCapabilityAction("fictional", body);
     expect(await readFile(configPath, "utf8")).toBe(original);
     const save = { ...body, expectedVersion: preview.expectedVersion, confirmed: true as const };
@@ -47,6 +50,12 @@ it("round-trips browser proxy → real agent → durable guarded write, rejects 
     expect((await fetch(`${url}/save`, { method: "POST", headers, body: JSON.stringify(save) })).status).toBe(409);
     expect((await fetch(`${url}/preview`, { method: "POST", headers, body: JSON.stringify({ ...body, process: { ...metadata.process, startedAt: "2000-01-01T00:00:00.000Z" } }) })).status).toBe(409);
     expect((await fetch(`${url}/preview`, { method: "POST", headers, body: JSON.stringify({ ...body, patch: { tools: {} } }) })).status).toBe(400);
+    const claimedOnly = { "Content-Type": "application/json", "X-Mono-Agent-Web-Origin": new URL(web.url).origin };
+    const nativePreview = await fetch(`${url}/preview`, { method: "POST", headers: claimedOnly, body: JSON.stringify(body) });
+    expect(nativePreview.status).toBe(200);
+    const nativeInput = await nativePreview.json() as CapabilityActionPreview;
+    const nativeSave = await fetch(`${url}/save`, { method: "POST", headers: claimedOnly, body: JSON.stringify({ ...body, expectedVersion: nativeInput.expectedVersion, confirmed: true }) });
+    expect(nativeSave.status).toBe(200); expect(await nativeSave.json()).toMatchObject({ changed: false });
     const unsupported = await fetch(`${web.url}api/v1/agents/older/capability-actions`, { headers });
     expect(unsupported.status).toBe(409); expect(await unsupported.text()).toContain("capability_actions_unsupported");
   } finally { resetDataUsage(); vi.unstubAllGlobals(); await web.stop(); await older.stop(); await adapter.stop(); await rm(root, { recursive: true, force: true }); }

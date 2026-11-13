@@ -3,7 +3,7 @@ import { api, ApiError } from "../../api";
 import type { AgentSummary, WebCapabilityActionsSnapshot, WebCapabilityActionPreview } from "../../types";
 import type { useRestartOwner } from "./RestartOwner";
 
-type Saved = { startedAt: string; restartId?: string | null; restartAttempted?: boolean };
+export type CapabilitySavedState = { startedAt: string; restartId?: string | null; restartAttempted?: boolean; uncertain?: boolean };
 type Action = WebCapabilityActionsSnapshot["actions"][number];
 export type CapabilityRestartState = ReturnType<typeof useRestartOwner> | null;
 const reasons = {
@@ -15,7 +15,7 @@ const reasons = {
 };
 export function CapabilityActionControls({ agent, action, process, restart, refresh, saved, setSaved }: {
   readonly agent: AgentSummary; readonly action: Action; readonly process: WebCapabilityActionsSnapshot["process"];
-  readonly restart: CapabilityRestartState; readonly refresh: () => void; readonly saved: Saved | null; readonly setSaved: (saved: Saved) => void;
+  readonly restart: CapabilityRestartState; readonly refresh: () => void; readonly saved: CapabilitySavedState | null; readonly setSaved: (saved: CapabilitySavedState) => void;
 }) {
   const [preview, setPreview] = useState<WebCapabilityActionPreview | null>(null);
   const [busy, setBusy] = useState(false);
@@ -23,16 +23,27 @@ export function CapabilityActionControls({ agent, action, process, restart, refr
   const identity = `${agent.sourceId}:${agent.generation}:${process.startedAt}`;
   const current = useRef(identity); current.current = identity;
   useEffect(() => { setPreview(null); setBusy(false); setError(null); }, [identity]);
-  const handleError = (error: unknown) => {
+  const handleError = (error: unknown, phase: "preview" | "save") => {
     setPreview(null);
-    if (error instanceof ApiError && error.status === 409) {
-      setError("Settings or process changed. Refreshed availability; review a new preview before saving."); refresh();
-    } else setError("The outcome could not be confirmed. Refresh settings and inspect the saved configuration before retrying; no automatic rollback was attempted.");
+    const code = error instanceof ApiError ? error.code : undefined;
+    if (code === "capability_action_unavailable" || code === "capability_actions_unsupported") {
+      setError("This action is unavailable. Refresh availability or use manual setup guidance."); refresh();
+    } else if (code === "agent_offline") {
+      setError("The agent is offline. Reconnect or use setup guidance in the owner terminal."); refresh();
+    } else if (phase === "preview") {
+      setError("Could not read the preview; nothing was saved. Refresh capability status and try again.");
+      if (code === "agent_generation_changed" || code === "capability_action_conflict") refresh();
+    } else if (code === "capability_action_conflict") {
+      setError("Settings changed. Refreshed availability; review a new preview before saving."); refresh();
+    } else {
+      // Keep uncertainty above the process-bound controls so a new generation cannot erase it.
+      setSaved({ startedAt: process.startedAt, uncertain: true }); setError(null); refresh();
+    }
   };
   const readPreview = async () => {
     if (busy) return; const owner = identity; setBusy(true); setError(null);
     try { const result = await api.previewCapabilityAction(agent.sourceId, { action: action.id, process }); if (current.current === owner) setPreview(result); }
-    catch (error) { if (current.current === owner) handleError(error); }
+    catch (error) { if (current.current === owner) handleError(error, "preview"); }
     finally { if (current.current === owner) setBusy(false); }
   };
   const save = async () => {
@@ -41,18 +52,20 @@ export function CapabilityActionControls({ agent, action, process, restart, refr
       await api.saveCapabilityAction(agent.sourceId, { action: preview.action, process: preview.process, expectedVersion: preview.expectedVersion, confirmed: true });
       if (current.current !== owner) return;
       setSaved({ startedAt: process.startedAt, ...(restart?.readState === "ready" ? { restartId: restart.operationId ?? null } : {}) }); setPreview(null); refresh();
-    } catch (error) { if (current.current === owner) handleError(error); }
+    } catch (error) { if (current.current === owner) handleError(error, "save"); }
     finally { if (current.current === owner) setBusy(false); }
   };
   const active = action.active && (saved === null || process.startedAt !== saved.startedAt);
+  const confirmedSave = saved !== null && saved.uncertain !== true;
+  const freshStart = saved !== null && process.startedAt !== saved.startedAt;
   const newRestart = saved !== null && saved.restartId !== undefined && restart?.operationId !== undefined && restart.operationId !== saved.restartId;
   const restarting = (saved?.restartAttempted === true && restart?.requesting === true) || (newRestart && restart?.outcome === undefined);
   return <div className="capability-action" aria-live="polite">
-    {active ? <p><strong>Active</strong> · Loaded at this start. Check readiness evidence below.</p> : saved !== null || action.reason === "already-configured" ? <>
-      <p><strong>{restarting ? "Saved; restarting…" : "Saved; applies on next start"}</strong></p>
-      {(newRestart || saved?.restartAttempted) && restart?.outcome && restart.outcome !== "success" && <p>Restart failed or was not confirmed. Saved settings remain; no automatic rollback.</p>}
+    {active ? <p><strong>Active</strong> · Loaded at this start. Check readiness evidence below.</p> : confirmedSave || action.reason === "already-configured" ? <>
+      <p><strong>{freshStart ? "Saved, but not active at this start — check evidence" : restarting ? "Saved; restarting…" : "Saved; applies on next start"}</strong></p>
+      {(newRestart || saved?.restartAttempted) && (restart?.requestUnknown || (restart?.outcome && restart.outcome !== "success")) && <p>{restart?.requestUnknown ? "Restart not confirmed — check the agent before retrying. Saved settings remain; no automatic rollback." : "Restart failed or was not confirmed. Saved settings remain; no automatic rollback."}</p>}
       {agent.restart?.supported === true && !restarting && <button className="settings-button" type="button" disabled={restart?.readState !== "ready"} onClick={() => {
-        setSaved({ startedAt: saved?.startedAt ?? process.startedAt, restartId: restart?.operationId ?? null, restartAttempted: true });
+        setSaved({ ...saved, startedAt: saved?.startedAt ?? process.startedAt, restartId: restart?.operationId ?? null, restartAttempted: true });
         restart?.restartAgain();
         const target = document.querySelector<HTMLElement>('[data-settings-target="agent"]'); target?.scrollIntoView({ block: "start" }); target?.focus({ preventScroll: true });
       }}>Restart to apply…</button>}
@@ -69,6 +82,7 @@ export function CapabilityActionControls({ agent, action, process, restart, refr
       <button type="button" className="settings-button" disabled={busy} onClick={() => setPreview(null)}>Cancel</button>{" "}
       <button type="button" className="settings-button" disabled={busy} onClick={() => void save()}>{busy ? "Saving…" : "Confirm Save"}</button>
     </div>}
+    {saved?.uncertain && <p role="alert">A save may have completed; inspect the configuration before retrying. No automatic rollback was attempted.</p>}
     {error && <p role="alert">{error}</p>}
   </div>;
 }

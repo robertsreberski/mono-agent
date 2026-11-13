@@ -47,8 +47,13 @@ last-value-wins result. App's validate/doctor treats these as errors.
 optional `guarded` mode requires an expected sha256 version and a whole-candidate
 validator, uses unique same-directory private temps and a guarded rename, and
 keeps one private ignored `.bak` envelope (exact prior bytes plus intended hash).
-It refuses unsafe/tracked backup destinations and duplicate keys. Official writes
-share a per-config cooperative lock; stale locks require manual inspection.
+The slot is replaced, not accumulated as history. Unsafe destinations and
+duplicate keys are refused; tracked backups and effective ignore rules are
+checked when Git is available in a repository. Missing Git skips only that check,
+not owner-only file permissions. Official writes queue locally and use an atomic
+try-lock across processes: complete PID/start metadata permits dead-owner
+recovery, with up to 1.5 seconds of bounded waiting for live holders. Unknown
+ownership fails closed rather than being reclaimed by age.
 App owns action eligibility, environment-shadow checks and full validators.
 
 Continuity upkeep and ledger reading remain opt-in. The extraction model view

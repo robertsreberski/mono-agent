@@ -1,4 +1,5 @@
-import type { WebCapabilitySetupSnapshot } from "../types";
+import type { WebCapabilitySetupSnapshot, WebCapabilityActionsSnapshot } from "../types";
+import actionsFixture from "./capability-actions.fixture.json";
 import displayFixture from "./capability-snapshot.fixture.json";
 
 /** Synthetic statuses; exact production recipe copy, not a parallel catalog.
@@ -7,10 +8,14 @@ import displayFixture from "./capability-snapshot.fixture.json";
  */
 export const capabilitySnapshot = displayFixture as WebCapabilitySetupSnapshot;
 
-export const capabilityActions = {
-  version: 1 as const, process: capabilitySnapshot.process,
-  actions: [
-    { id: "memory-lite" as const, available: true, active: true, reason: "already-configured" as const },
-    { id: "cron-controls" as const, available: true, active: false, reason: "eligible" as const },
-  ],
+export const capabilityActions = actionsFixture as WebCapabilityActionsSnapshot;
+
+/** Separate flow: an existing valid enabled job, but operator controls are not saved yet. */
+export const eligibleCronSnapshot: WebCapabilitySetupSnapshot = {
+  ...capabilitySnapshot,
+  cards: capabilitySnapshot.cards.map((card) => card.id === "channel:cron" ? { ...card, status: "ok", evidence: card.evidence.map((item) => ({ ...item, status: "ok" })) } : card),
+};
+export const eligibleCronActions: WebCapabilityActionsSnapshot = {
+  ...capabilityActions,
+  actions: capabilityActions.actions.map((action) => action.id === "cron-controls" ? { ...action, available: true, reason: "eligible" } : action),
 };

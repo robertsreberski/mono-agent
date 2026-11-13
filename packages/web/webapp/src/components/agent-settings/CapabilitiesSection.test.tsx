@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { api } from "../../api";
 import type { CapabilityRestartState } from "./CapabilityActionControls";
-import { capabilitySnapshot, capabilityActions } from "../../test/capability-fixtures";
+import { capabilitySnapshot, capabilityActions, eligibleCronSnapshot, eligibleCronActions } from "../../test/capability-fixtures";
 import { agent } from "../../test/fixtures";
 import { CapabilityCard, CapabilitiesSection } from "./CapabilitiesSection";
 
@@ -99,17 +99,35 @@ describe("Capabilities section", () => {
 });
 
 it("does not mistake a delayed pre-save restart baseline for a new restart", async () => {
-  vi.spyOn(api, "capabilitySetup").mockResolvedValue(capabilitySnapshot);
-  vi.spyOn(api, "capabilityActions").mockResolvedValue({ ...capabilityActions, actions: capabilityActions.actions.map((item) => ({ ...item, active: false, reason: "eligible" as const })) });
-  vi.spyOn(api, "previewCapabilityAction").mockResolvedValue({ action: "memory-lite", process: capabilityActions.process, expectedVersion: "a".repeat(64), changes: [], normalizesFormatting: true, noOp: false });
-  vi.spyOn(api, "saveCapabilityAction").mockResolvedValue({ action: "memory-lite", process: capabilityActions.process, version: "b".repeat(64), changed: true });
+  vi.spyOn(api, "capabilitySetup").mockResolvedValue(eligibleCronSnapshot);
+  vi.spyOn(api, "capabilityActions").mockResolvedValue(eligibleCronActions);
+  vi.spyOn(api, "previewCapabilityAction").mockResolvedValue({ action: "cron-controls", process: capabilityActions.process, expectedVersion: "a".repeat(64), changes: [], normalizesFormatting: true, noOp: false });
+  vi.spyOn(api, "saveCapabilityAction").mockResolvedValue({ action: "cron-controls", process: capabilityActions.process, version: "b".repeat(64), changed: true });
   const selected = agent("garden", { supportsCapabilitySetup: true, supportsCapabilityActions: true, restart: { supported: true } });
   const view = render(<CapabilitiesSection agent={selected} restart={{ readState: "loading" } as CapabilityRestartState} />);
-  fireEvent.click(await screen.findByRole("button", { name: "Enable Memory Lite…" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Enable cron controls…" }));
   fireEvent.click(await screen.findByRole("button", { name: "Confirm Save" }));
   await screen.findByText("Saved; applies on next start");
   expect(screen.getByRole("button", { name: "Restart to apply…" })).toBeDisabled();
   view.rerender(<CapabilitiesSection agent={selected} restart={{ readState: "ready", operationId: "older-operation", outcome: "success" } as CapabilityRestartState} />);
   expect(screen.queryByText(/Back online\. Refresh capability status/)).toBeNull();
   expect(screen.getByText("Saved; applies on next start")).toBeVisible();
+});
+
+it("keeps the generated default actions consistent with the paired snapshot cards", () => {
+  expect(capabilityActions.process).toEqual(capabilitySnapshot.process);
+  expect(capabilitySnapshot.cards.find((card) => card.id === "memory")).toMatchObject({ status: "ok", selectedVariant: "memory:lite" });
+  expect(capabilityActions.actions.find((action) => action.id === "memory-lite")).toMatchObject({ active: true, reason: "already-configured" });
+  expect(capabilitySnapshot.cards.find((card) => card.id === "channel:cron")).toMatchObject({ status: "disabled" });
+  expect(capabilityActions.actions.find((action) => action.id === "cron-controls")).toMatchObject({ active: false, available: false, reason: "no-valid-jobs" });
+});
+it("uses Enable-aware next steps without changing validation status", async () => {
+  vi.spyOn(api, "capabilitySetup").mockResolvedValue({ ...eligibleCronSnapshot, cards: eligibleCronSnapshot.cards.map((card) => card.id === "channel:cron" ? { ...card, status: "disabled" } : card) });
+  vi.spyOn(api, "capabilityActions").mockResolvedValue(eligibleCronActions);
+  render(<CapabilitiesSection agent={agent("garden", { supportsCapabilitySetup: true, supportsCapabilityActions: true })} />);
+  const button = await screen.findByRole("button", { name: "Enable cron controls…" });
+  const card = button.closest("article")!;
+  expect(card.querySelector(".capability-next")!.textContent).toContain("Review and Save below");
+  expect(card.querySelector(".capability-next")!.textContent).not.toContain("Add the cron block");
+  expect(within(card).getByText("Disabled")).toBeVisible();
 });

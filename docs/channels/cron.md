@@ -18,7 +18,8 @@ On supporting agents, **Agent settings → Capabilities → Enable cron controls
 previews and saves only `cron.operatorActions.enabled: true`. Valid existing
 inline or Markdown jobs are required, even if every job is disabled. It does not
 create jobs, enable schedules, edit prompts or change runtime enable overrides.
-Environment overrides must be resolved in the owner terminal. Save remains pending
+Any non-empty `MONO_AGENT_CRON_*` environment override must be resolved in the
+owner terminal. Save remains pending
 until a fresh start; managed agents reuse confirmed Restart and foreground hosts
 require stop/start. Older agents retain manual config guidance. The later **Run
 now** and **Enable/Disable** job actions still require their own confirmation.

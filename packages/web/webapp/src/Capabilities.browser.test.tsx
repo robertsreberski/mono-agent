@@ -6,7 +6,7 @@ import { api, ApiError } from "./api";
 import { AgentSettingsScreen } from "./components/agent-settings/AgentSettingsScreen";
 import { Dashboard } from "./components/dashboard/Dashboard";
 import { NotificationsProvider } from "./notifications";
-import { capabilitySnapshot, capabilityActions } from "./test/capability-fixtures";
+import { capabilitySnapshot, capabilityActions, eligibleCronSnapshot, eligibleCronActions } from "./test/capability-fixtures";
 import { agent } from "./test/fixtures";
 import { capabilityConsoleStore as storyStore } from "./test/capability-console-store";
 import "./styles.css";
@@ -117,6 +117,8 @@ for (const width of [390, 1440]) describe(`Capabilities in console settings at $
 
 for (const managed of [false, true]) it(`confirms/cancels typed saves and shows ${managed ? "managed restart" : "foreground pending"} truth`, async () => {
   await page.viewport(1440, 1100);
+  vi.mocked(api.capabilitySetup).mockResolvedValue(eligibleCronSnapshot);
+  vi.mocked(api.capabilityActions).mockResolvedValue(eligibleCronActions);
   const preview = { action: "cron-controls" as const, process: capabilityActions.process, expectedVersion: "a".repeat(64), changes: [{ field: "cron.operatorActions.enabled" as const, value: "true" }], normalizesFormatting: true as const, noOp: false };
   vi.spyOn(api, "previewCapabilityAction").mockResolvedValue(preview);
   const save = vi.spyOn(api, "saveCapabilityAction").mockResolvedValue({ action: preview.action, process: preview.process, version: "b".repeat(64), changed: true });
@@ -141,7 +143,7 @@ for (const managed of [false, true]) it(`confirms/cancels typed saves and shows 
     vi.mocked(api.restartStatus).mockResolvedValue({ ...operation, stage: "back_online", outcome: "success" });
     await screen.findByText(/Back online\. Refresh capability status/, {}, { timeout: 5000 });
     // A fresh generation plus agent-owned loaded-state evidence, not a saved DTO, proves activation.
-    vi.mocked(api.capabilityActions).mockResolvedValue({ ...capabilityActions, process: { ...preview.process, startedAt: "2026-08-01T10:01:00Z" }, actions: capabilityActions.actions.map((action) => ({ ...action, active: true })) });
+    vi.mocked(api.capabilityActions).mockResolvedValue({ ...capabilityActions, process: { ...preview.process, startedAt: "2026-08-01T10:01:00Z" }, actions: eligibleCronActions.actions.map((action) => action.id === "cron-controls" ? { ...action, active: true, reason: "already-configured" as const } : action) });
     await userEvent.click(screen.getByRole("button", { name: "Refresh capability status" }));
     await waitFor(() => expect(screen.queryByText("Saved; restarting…")).toBeNull());
     const cron = screen.getByRole("article", { name: "Scheduled jobs (cron)" });
@@ -150,6 +152,8 @@ for (const managed of [false, true]) it(`confirms/cancels typed saves and shows 
 });
 it("refreshes on conflicts and requires another explicit preview instead of retrying a save", async () => {
   await page.viewport(390, 1000);
+  vi.mocked(api.capabilitySetup).mockResolvedValue(eligibleCronSnapshot);
+  vi.mocked(api.capabilityActions).mockResolvedValue(eligibleCronActions);
   vi.spyOn(api, "previewCapabilityAction").mockResolvedValue({ action: "cron-controls", process: capabilityActions.process, expectedVersion: "a".repeat(64), changes: [], normalizesFormatting: true, noOp: false });
   const save = vi.spyOn(api, "saveCapabilityAction").mockRejectedValue(new ApiError("conflict", 409, "capability_action_conflict"));
   render(<Preview width={390} />);
@@ -162,6 +166,8 @@ it("refreshes on conflicts and requires another explicit preview instead of retr
 
 it("leaves confirmed settings pending after a managed restart refusal, with no automatic rollback", async () => {
   await page.viewport(1440, 1100);
+  vi.mocked(api.capabilitySetup).mockResolvedValue(eligibleCronSnapshot);
+  vi.mocked(api.capabilityActions).mockResolvedValue(eligibleCronActions);
   const preview = { action: "cron-controls" as const, process: capabilityActions.process, expectedVersion: "a".repeat(64), changes: [], normalizesFormatting: true as const, noOp: false };
   vi.spyOn(api, "previewCapabilityAction").mockResolvedValue(preview);
   const save = vi.spyOn(api, "saveCapabilityAction").mockResolvedValue({ action: preview.action, process: preview.process, version: "b".repeat(64), changed: true });

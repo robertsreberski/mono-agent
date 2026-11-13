@@ -1,9 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { constants } from "node:fs";
-import { lstat, mkdir, open, realpath, rename, rmdir, unlink } from "node:fs/promises";
+import { lstat, open, realpath, rename, unlink } from "node:fs/promises";
 import { basename, dirname, resolve } from "node:path";
 import { promisify } from "node:util";
+import { withSettingsJsonLock } from "./settings-json-lock.js";
+export { withSettingsJsonLock } from "./settings-json-lock.js";
 import type { SettingsJson } from "./types.js";
 import { findDuplicateJsonKeyPaths, readSettingsJson, SettingsJsonError } from "./json-read.js";
 
@@ -23,7 +25,10 @@ async function snapshot(path: string): Promise<{ bytes: Buffer; identity: string
   let stat;
   try { stat = await lstat(path); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw error; }
   if (!stat.isFile() || stat.nlink !== 1 || (process.getuid !== undefined && stat.uid !== process.getuid())) refuse();
-  const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ELOOP" || error.code === "EMLINK") refuse();
+    throw error;
+  });
   try {
     const opened = await handle.stat();
     if (opened.dev !== stat.dev || opened.ino !== stat.ino) refuse();
@@ -49,9 +54,13 @@ async function hasRepository(path: string): Promise<boolean> {
     const parent = dirname(directory); if (parent === directory) return false; directory = parent;
   }
 }
+function gitUnavailable(error: unknown): boolean {
+  return ["ENOENT", "ENOTDIR", "127"].includes(String((error as { code?: unknown }).code));
+}
 async function tracked(path: string): Promise<boolean> {
   try { await run("git", ["-C", dirname(path), "ls-files", "--error-unmatch", "--", basename(path)], { maxBuffer: 4096 }); return true; }
-  catch (error) { if (Number((error as { code?: unknown }).code) === 1) return false;
+  catch (error) { if (gitUnavailable(error)) return false;
+    if (Number((error as { code?: unknown }).code) === 1) return false;
     if (Number((error as { code?: unknown }).code) === 128 && !await hasRepository(path)) return false;
     return refuse(); }
 }
@@ -77,30 +86,9 @@ async function protectBackup(path: string): Promise<void> {
   }
   // Verify effective ignore rules in repositories (including ancestor negations).
   try { await run("git", ["-C", dirname(path), "rev-parse", "--show-toplevel"], { maxBuffer: 4096 }); }
-  catch (error) { if (Number((error as { code?: unknown }).code) === 128 && !await hasRepository(path)) return; refuse(); }
+  catch (error) { if (gitUnavailable(error) || (Number((error as { code?: unknown }).code) === 128 && !await hasRepository(path))) return; refuse(); }
   try { await run("git", ["-C", dirname(path), "check-ignore", "--no-index", "--quiet", "--", basename(backup)]); }
-  catch { refuse(); }
-}
-
-const writers = new Map<string, Promise<void>>();
-
-/** Cooperative per-config process lock. No stale lock is removed automatically. */
-export async function withSettingsJsonLock<T>(path: string, work: () => Promise<T>): Promise<T> {
-  path = resolve(path);
-  const previous = writers.get(path) ?? Promise.resolve();
-  let release!: () => void;
-  const tail = new Promise<void>((resolve) => { release = resolve; });
-  writers.set(path, tail);
-  await previous;
-  const lock = `${path}.write-lock`;
-  let acquired = false;
-  try {
-    try { await mkdir(lock, { mode: 0o700 }); acquired = true; }
-    catch (error) { if ((error as NodeJS.ErrnoException).code === "EEXIST") conflict(); throw error; }
-    return await work();
-  } finally {
-    try { if (acquired) await rmdir(lock); } finally { release(); if (writers.get(path) === tail) writers.delete(path); }
-  }
+  catch (error) { if (gitUnavailable(error)) return; refuse(); }
 }
 
 /** Opt-in optimistic, private-backup publication. Legacy patch semantics stay unchanged. */

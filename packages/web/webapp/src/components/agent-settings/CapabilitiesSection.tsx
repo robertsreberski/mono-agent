@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { CapabilityActionControls, type CapabilityRestartState } from "./CapabilityActionControls";
+import { CapabilityActionControls, type CapabilityRestartState, type CapabilitySavedState } from "./CapabilityActionControls";
 import { useEffect, useRef, useState } from "react";
 import { api } from "../../api";
 import type { AgentSummary, WebCapabilitySetupSnapshot, WebCapabilityActionsSnapshot } from "../../types";
@@ -56,13 +56,13 @@ function instructionSteps(steps: readonly string[]): InstructionStep[] {
   return result;
 }
 
-export function CapabilityCard({ card, children }: { readonly card: Card; readonly children?: ReactNode }) {
+export function CapabilityCard({ card, children, actionNext }: { readonly card: Card; readonly children?: ReactNode; readonly actionNext?: string | undefined }) {
   const [variant, setVariant] = useState(card.selectedVariant ?? card.variants?.[0]?.id);
   const choice = card.variants?.find((item) => item.id === variant) ?? card;
   return <article className="settings-group capability-card" aria-labelledby={`capability-${card.id}`}>
     <div className="capability-heading"><h3 id={`capability-${card.id}`}>{card.title}</h3><Status status={card.status} /></div>
     <p className="capability-purpose" title={card.purpose}>{card.purpose}</p>
-    <p className="capability-next"><strong>Next:</strong> {nextStep(card)}</p>
+    <p className="capability-next"><strong>Next:</strong> {actionNext ?? nextStep(card)}</p>
     {children}
     <details className="capability-details"><summary>Details &amp; manual setup</summary>
       {card.variants && <>
@@ -94,7 +94,7 @@ export function CapabilitiesSection({ agent, restart = null }: { readonly agent:
   const snapshot = report?.identity === identity ? report.snapshot : null;
   const [actions, setActions] = useState<{ identity: string; snapshot: WebCapabilityActionsSnapshot } | null>(null);
   const [actionsError, setActionsError] = useState(false);
-  const [saved, setSaved] = useState<Record<string, { startedAt: string; restartId?: string | null; restartAttempted?: boolean }>>({});
+  const [saved, setSaved] = useState<Record<string, CapabilitySavedState>>({});
   const [error, setError] = useState(false);
   const [revision, setRevision] = useState(0);
   useEffect(() => {
@@ -131,7 +131,10 @@ export function CapabilitiesSection({ agent, restart = null }: { readonly agent:
     {actionsError && <p className="settings-notice">Enable availability could not be verified. Refresh capability status; no write is assumed.</p>}
     <div className="capability-grid">{snapshot.cards.map((card) => {
       const action = actionSnapshot?.actions.find((item) => item.id === (card.id === "memory" ? "memory-lite" : card.id === "channel:cron" ? "cron-controls" : ""));
-      return <CapabilityCard key={card.id} card={card}>{action && actionSnapshot && <CapabilityActionControls agent={agent} action={action} process={actionSnapshot.process} restart={restart} refresh={() => setRevision((value) => value + 1)} saved={saved[action.id] ?? null} setSaved={(value) => setSaved((prior) => ({ ...prior, [action.id]: value }))} />}</CapabilityCard>;
+      const actionNext = action?.active ? "Loaded at this start. Inspect readiness evidence below."
+        : action?.reason === "already-configured" || (action && saved[action.id] && !saved[action.id]?.uncertain) ? "Check saved settings and activation below; saving does not restart the agent."
+        : action?.available ? "Review and Save below, or use manual setup. Saving does not activate the feature." : undefined;
+      return <CapabilityCard key={card.id} card={card} actionNext={actionNext}>{action && actionSnapshot && <CapabilityActionControls agent={agent} action={action} process={actionSnapshot.process} restart={restart} refresh={() => setRevision((value) => value + 1)} saved={saved[action.id] ?? null} setSaved={(value) => setSaved((prior) => ({ ...prior, [action.id]: value }))} />}</CapabilityCard>;
     })}</div>
     {snapshot.hostPreflight && <details><summary>Host preflight (optional)</summary><ul>{snapshot.hostPreflight.checks.map((check) => <li key={check.id}>{check.id}: {check.status}</li>)}</ul></details>}
   </>;

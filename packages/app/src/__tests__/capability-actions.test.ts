@@ -95,3 +95,20 @@ it("uses only host-owned loaded-state evidence and never loads candidate setting
   const restarted = createCapabilityActionsService({ cwd: f.cwd, configPath: f.configPath, env: {} }, { loadedState: () => ({ memory: true, cron: false }) });
   expect((await restarted.read()).actions[0]?.active).toBe(true);
 });
+
+it("treats an empty memory object as unconfigured and cron controls already enabled as a no-op", async () => {
+  const f = await fixture({ memory: {}, cron: { jobs: [{ id: "synthetic", expression: "0 9 * * *", prompt: "Synthetic", enabled: false }], operatorActions: { enabled: true } } });
+  expect((await f.service.read()).actions).toMatchObject([{ id: "memory-lite", available: true, reason: "eligible" }, { id: "cron-controls", available: true, reason: "already-configured" }]);
+  expect(await f.service.preview({ action: "memory-lite", process: f.process })).toMatchObject({ noOp: false });
+  const before = await readFile(f.configPath);
+  const p = await f.service.preview({ action: "cron-controls", process: f.process });
+  expect(p).toMatchObject({ noOp: true, changes: [] });
+  expect(await f.service.save({ action: p.action, process: p.process, expectedVersion: p.expectedVersion, confirmed: true })).toMatchObject({ changed: false });
+  expect(await readFile(f.configPath)).toEqual(before);
+  await expect(readFile(`${f.configPath}.bak`)).rejects.toMatchObject({ code: "ENOENT" });
+});
+it.each(["MONO_AGENT_CRON_JOBS_JSON", "MONO_AGENT_CRON_DIR", "MONO_AGENT_CRON_ENABLED", "MONO_AGENT_CRON_EXPRESSION", "MONO_AGENT_CRON_OPERATOR_ACTIONS_ENABLED"])("refuses cron controls shadowed by %s", async (key) => {
+  const f = await fixture({ cron: { jobs: [{ id: "synthetic", expression: "0 9 * * *", prompt: "Synthetic" }] } }, { [key]: "synthetic-override" });
+  expect((await f.service.read()).actions[1]).toMatchObject({ available: false, reason: "env-shadowed" });
+  await expect(f.service.preview({ action: "cron-controls", process: f.process })).rejects.toMatchObject({ code: "capability_action_unavailable" });
+});
