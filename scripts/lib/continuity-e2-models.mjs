@@ -93,7 +93,8 @@ export function createE2Models({ pi, estimators, models, limits, summary = "faux
     observe(event) {
       check();
       if (event?.type !== "context_compaction") return;
-      paidAdapter?.observe(event);
+      try { paidAdapter?.observe(event); }
+      catch { refuse("E2_COMPACTION_LIFECYCLE_INVALID"); }
       if (event.status === "running") {
         if (!event.operationId || lifecycle.size || report.compactions.length + (report.compactionRefusals?.length ?? 0) >= limits.compactions) refuse("E2_COMPACTION_LIMIT");
         lifecycle.set(event.operationId, { ...position, trigger: event.trigger, requests: 0 });

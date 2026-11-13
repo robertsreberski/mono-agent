@@ -145,19 +145,24 @@ export async function createE2PaidModels(a, safety) {
     setPosition(value) { if (stopped) fail(stopped); position = { ...value }; probeRequests = 0; },
     observe(event) {
       if (event?.type !== "context_compaction") return;
-      if (event.status === "running") {
-        need(!lifecycle && typeof event.operationId === "string" && position, "e2_compaction_invalid");
-        lifecycle = { position: { ...position }, checkpoint: checkpoint(position), operationDigest: digest(event.operationId), begun: false };
-      } else {
-        const receipt = lifecycle; need(receipt && receipt.operationDigest === digest(event.operationId) && !active, "e2_compaction_invalid"); lifecycle = null;
-        if (!receipt.begun && event.status === "skipped") return;
-        enqueue(async () => {
-          need(receipt.begun, "e2_compaction_invalid");
-          if (isE2ProtectionRefusal(event)) {
-            await native.permit.compaction({ kind: "rejected", operationDigest: receipt.operationDigest, checkpoint: receipt.checkpoint, reason: event.reason });
-          } else { need(event.status === "succeeded", "e2_compaction_invalid"); await committed(receipt); }
-        });
-      }
+      // Runtime observer fan-out swallows exceptions. Persist failure before
+      // throwing so neither a corrected event nor flush can erase it.
+      try {
+        if (stopped) fail(stopped);
+        if (event.status === "running") {
+          need(!lifecycle && typeof event.operationId === "string" && position, "e2_compaction_invalid");
+          lifecycle = { position: { ...position }, checkpoint: checkpoint(position), operationDigest: digest(event.operationId), begun: false };
+        } else {
+          const receipt = lifecycle; need(receipt && receipt.operationDigest === digest(event.operationId) && !active, "e2_compaction_invalid"); lifecycle = null;
+          if (!receipt.begun && event.status === "skipped") return;
+          enqueue(async () => {
+            need(receipt.begun, "e2_compaction_invalid");
+            if (isE2ProtectionRefusal(event)) {
+              await native.permit.compaction({ kind: "rejected", operationDigest: receipt.operationDigest, checkpoint: receipt.checkpoint, reason: event.reason });
+            } else { need(event.status === "succeeded", "e2_compaction_invalid"); await committed(receipt); }
+          });
+        }
+      } catch { fail("e2_compaction_invalid"); }
     },
     stream(target, model, context, options, role) {
       if (stopped) fail(stopped); need(!active, "e2_concurrent_request"); need(position && ["summary", "probe", "continuation"].includes(role), "e2_method_forbidden");

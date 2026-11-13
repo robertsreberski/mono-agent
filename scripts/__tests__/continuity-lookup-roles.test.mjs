@@ -483,7 +483,7 @@ it("binds all present pilot artifact files, including guard assumptions, in the 
     "scripts/lib/continuity-e2-guarded-protocol.mjs",
     "scripts/lib/continuity-e2-isolation.mjs",
     "scripts/lib/continuity-e2-models.mjs",
-    "scripts/lib/continuity-e2-lineage.mjs",
+    "scripts/lib/continuity-e2-lineage.mjs", "scripts/lib/continuity-e2-compaction.mjs",
     "scripts/lib/continuity-e2-runtime.mjs",
     "scripts/lib/continuity-e2-paid-models.mjs",
     "scripts/lib/continuity-e2-cause.mjs",

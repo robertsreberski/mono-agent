@@ -26,6 +26,9 @@ import { guardedState } from "../lib/continuity-guarded-state.mjs";
 import { guardedProtocol } from "../lib/continuity-guarded-protocols.mjs";
 import { loadE2Catalog } from "../lib/continuity-e2-pricing.mjs";
 import { digest } from "../lib/continuity-recorded-schema.mjs";
+import { bindE2Checkpoint, e2PhaseWork, verifyE2NativeLineage, E2_SUMMARY_PREFIX, E2_SUMMARY_SUFFIX } from "../lib/continuity-e2-lineage.mjs";
+import { writeE2SummaryResult } from "../lib/continuity-e2-summary-receipts.mjs";
+import { createObserverHub } from "../../packages/turn/dist/telemetry/observer.js";
 import { JsonlSessionRepo } from "../../packages/turn/dist/engine/session-store.js";
 import { compactWithRequest } from "../../packages/turn/dist/engine/compaction-kit/compaction.js";
 import { reportGuardedCompactionOutcome } from "../../packages/turn/dist/execution/pi/compaction/compaction-driver.js";
@@ -33,20 +36,22 @@ const accounting = guardedAccounting("e2-validation"), readPrivate = (...args) =
 const history = "## Historical events and corrections\n" + Array.from({ length: 12 }, (_, i) => `- Fictional parcel ${i}; m${i}; previously 18; corrected to 16; current 16; resolved.`).join("\n") + "\n\n## Pending items\n- None.";
 const roots = [];
 afterEach(async () => { live.root = live.state = null; for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); vi.unstubAllGlobals(); });
-async function setup() {
+async function setup({ retryFirst = false, length = false, replay = false, compactionLimit = 10 } = {}) {
   vi.stubGlobal("fetch", vi.fn(() => { throw Error("network_forbidden"); }));
-  const f = await lineageFixture([history]); roots.push(f.root); live.root = f.root;
-  const prior = await f.bind(); f.slot.lineages = { proof: prior }; f.planned.slotId = f.slot.slotId;
-  f.slot.holds.forEach(h => { h.consumed = true; h.checkpoint = 0; h.summaryReceipt.durable = true; h.reservedUnits = "1"; h.settlement.knownUnits = "1"; });
-  f.planned.budgets = ["summary", "probe", "continuation"].map(paidRole => ({ paidRole, model: "openai-codex:gpt-6.1-sol", checkpoint: 0, maxRequests: 10 }));
+  const f = await lineageFixture([history], undefined, undefined, replay ? { kind: "replay", branch: 0 } : {}); roots.push(f.root); live.root = f.root;
+  const prior = await f.bind(); f.slot.lineages = { [replay ? 0 : "proof"]: prior }; f.planned.slotId = f.slot.slotId;
+  f.slot.holds.forEach(h => { h.consumed = true; h.checkpoint = replay ? 3 : 0; h.summaryReceipt.durable = true; h.reservedUnits = "1"; h.settlement.knownUnits = "1"; });
+  f.planned.budgets = (replay ? [0, 1, 2, 3, 4] : [0]).flatMap(checkpoint => ["summary", "probe", "continuation"].map(paidRole => ({ paidRole, model: "openai-codex:gpt-6.1-sol", checkpoint, maxRequests: 10 })));
   const model = { ...E2_GUARD_CONTRACT, id: "gpt-6.1-sol", contextWindow: 272000, maxTokens: 128000, reasoning: false };
+  const protocol = replay ? { probeLookupRounds: 3, branches: [{ checkpoints: [5, 15, 25, 35].map(turn => ({ turn })) }, { checkpoints: [{ turn: 35 }] }] } : {};
+  const protocolText = JSON.stringify(protocol);
   const pilot = { descriptor: { retryPolicy: E2_RETRY_POLICY }, registration: {
-    protocol: { path: join(f.root, "fictional-protocol.json"), sha256: digest("{}") },
+    protocol: { path: join(f.root, "fictional-protocol.json"), sha256: digest(protocolText) },
     roles: ["summary", "probe", "continuation"].map(role => ({ role, model: `openai-codex:${model.id}`, maxInputTokens: 272000, maxOutputTokens: 128000 })),
-    catalog: await loadE2Catalog(), toolPolicies: { summary: [], proof: [] },
+    catalog: await loadE2Catalog(), toolPolicies: { summary: [], proof: [], replay: [], replayFinal: [] }, ...(replay ? { probeCounts: [0, 1, 2, 3, 4].map(checkpoint => ({ checkpoint, lookupRounds: 3 })) } : {}),
   } };
   // Actor's registration read uses the real private artifact reader.
-  const { writeFile } = await import("node:fs/promises"); await writeFile(pilot.registration.protocol.path, "{}", { mode: 0o600 });
+  const { writeFile } = await import("node:fs/promises"); await writeFile(pilot.registration.protocol.path, protocolText, { mode: 0o600 });
   const state = live.state = { ...f.state, schema: E2_REAL_CONTROLLER, cursor: 0, stop: null, capUnits: "999999999999", pilot };
   const safety = {}, actor = await createE2PaidModels({ slot: f.planned, index: 0, slotId: f.slot.slotId, outputRoot: f.root, runId: "fictional-run", cacheKey: "fictional-cache", pilot, authorization: { credentialPath: "/fictional/unused" } }, safety);
   const dispositions = [];
@@ -56,29 +61,30 @@ async function setup() {
       const lineage = await policy.beforeAdmission(f.root, f.slot.slotId, f.slot, p, readPrivate, state, pilot);
       const funded = policy.admission(pilot, f.planned, f.slot, p);
       const hold = { ...p, ...funded.metadata, ...lineage, reservedUnits: p.reservationUnits };
-      f.slot.holds.push(hold); return hold;
+      f.slot.holds.push(hold); if (hold.retryOf) { delete f.slot.retryPending; f.slot.terminal = null; } return hold;
     },
-    async consume(h) { h.consumed = true; },
+    async consume(h) { h.consumed = true; h.summaryPresence = { native: 0, branch: 0, pack: 0, none: true }; },
     async settle(h, outcome, raw, tier, evidence) { Object.assign(h, accounting.settleHold(h, outcome, raw, tier)); await policy.verifySettlement(f.root, f.slot.slotId, h, evidence, readPrivate); },
-    retry: async () => ({ allowed: false }), stop: vi.fn(async () => {}),
+    retry: vi.fn(async (round, ownerCanceled) => policy.retry(pilot, state, 0, { round, ownerCanceled })), stop: vi.fn(async () => {}),
   };
   actor.bind(null, { resolvedSafety: safety, permit, send: async () => new Response() });
   const estimators = await loadE2Estimators(), soul = await shippingSoul();
-  const route = createE2Models({ pi: {}, estimators, models: [{ model: `openai-codex:${model.id}` }], limits: { compactions: 10, summaryRequests: 10, summaryRequestsPerCompaction: 2, sourceRequests: 10, probeRequests: 10 }, summary: "real", soul, paidAdapter: actor });
-  let responseText = "Fictional lossy candidate.";
+  const route = createE2Models({ pi: {}, estimators, models: [{ model: `openai-codex:${model.id}` }], ...(replay ? { probeLookupRounds: 3 } : {}), limits: { compactions: compactionLimit, summaryRequests: 10, summaryRequestsPerCompaction: 2, sourceRequests: 10, probeRequests: 10 }, summary: "real", soul, paidAdapter: actor });
+  let responseText = "Fictional lossy candidate.", calls = 0;
   const raw = { input_tokens: 10, output_tokens: 10 };
   const target = { getModel: () => model, streamSimple(selected, context, options) {
     const result = (async () => {
       const payload = await options.onPayload({ model: selected.id, stream: true, store: false, ...(options.cacheRetention === "none" ? {} : { prompt_cache_key: "fictional-cache" }), input: [{ role: "user", content: "Fictional native SDK body." }] }, selected);
       await options.fetch(`${selected.baseUrl}/codex/responses`, { method: "POST", headers: { "session-id": "fictional-cache", "x-client-request-id": "fictional-cache" }, body: JSON.stringify(payload) });
+      if (retryFirst && ++calls === 1) throw Object.assign(Error("Fictional stream interruption."), { code: "ECONNRESET" });
       await options.onProviderStreamEvent({ type: "response.completed", response: { usage: raw, service_tier: "default" } }, selected);
-      return { role: "assistant", stopReason: "stop", content: [{ type: "text", text: responseText }] };
+      return { role: "assistant", stopReason: length ? "length" : "stop", content: [{ type: "text", text: responseText }] };
     })();
     return { result: () => result, async *[Symbol.asyncIterator]() { yield { type: "done", message: await result }; } };
   } };
   const models = route.decorator(target), options = { maxTokens: 128000, transport: "sse", maxRetries: 0, reasoning: "off" };
   const event = (status, operationId = "fictional-refusal", reason = "protected_tuples_missing") => ({ type: "context_compaction", status, operationId, reason, trigger: "proactive" });
-  route.setPosition({ model: `openai-codex:${model.id}`, turn: 34, message: 87 });
+  route.setPosition({ model: `openai-codex:${model.id}`, turn: 34, message: 87, ...(replay ? { branch: 0 } : {}) });
   const request = () => models.completeSimple(model, { messages: [{ role: "user", content: "Fictional summary input." }] }, { ...options, maxTokens: 2000, cacheRetention: "none" });
   async function append(summary, changedTip = false) {
     const repo = new JsonlSessionRepo({ sessionsRoot: join(f.work, "sessions") }), session = await repo.open(f.metadata);
@@ -90,8 +96,8 @@ async function setup() {
     await session.sync(); await session.close(); await repo.close();
   }
   return { ...f, prior, state, pilot, actor, route, models, model, options, event, request, append, permit, dispositions, setText: text => { responseText = text; },
-    async next(probe = true) {
-      route.setPosition({ model: `openai-codex:${model.id}`, turn: 35, message: 88, probe, ...(!probe ? { paidRole: "continuation" } : {}) });
+    async next(probe = true, branch = 0) {
+      route.setPosition({ model: `openai-codex:${model.id}`, turn: 35, message: 88, probe, ...(replay ? { branch } : {}), ...(!probe ? { paidRole: "continuation" } : {}) });
       const context = { systemPrompt: `## Core Guardrails\n\n${soul.text}`, messages: [{ role: "user", content: "Fictional probe." }], tools: [] };
       return models.streamSimple(model, context, options).result();
     } };
@@ -143,7 +149,7 @@ it.each(["unknown_reason", "failed", "mismatched_digest", "active", "non_summary
     const started = new Promise(resolve => { entered = resolve; }), wait = new Promise(resolve => { release = resolve; });
     const admit = f.permit.admit; f.permit.admit = async p => { entered(); await wait; return admit(p); };
     const pending = f.request(); await started;
-    expect(() => f.route.observe(f.event("skipped"))).toThrow("e2_compaction_invalid"); release(); await pending; await expect(f.actor.flush()).rejects.toThrow("e2_compaction_invalid"); return;
+    expect(() => f.route.observe(f.event("skipped"))).toThrow("E2_COMPACTION_LIFECYCLE_INVALID"); release(); await pending; await expect(f.actor.flush()).rejects.toThrow("e2_compaction_invalid"); return;
   }
   await f.request();
   const terminal = f.event(variant === "failed" ? "failed" : "skipped", variant === "mismatched_digest" ? "other-operation" : "fictional-refusal", variant === "unknown_reason" ? "unknown" : "protected_tuples_missing");
@@ -198,9 +204,111 @@ it("never accepts a refusal without a native pre-request baseline", async () => 
   f.route.observe(f.event("skipped")); await expect(f.actor.flush()).rejects.toThrow("e2_compaction_invalid");
   expect(f.slot.holds.at(-1).summaryReceipt.rejected).toBeUndefined();
 });
+it.each(["duplicate", "mismatched", "active"])("keeps %s terminal failures sticky through the shipping observer hub", async variant => {
+  const f = await setup(), hub = createObserverHub({ onEvent: event => f.route.observe(event) });
+  hub.emit(f.event("running"));
+  if (variant === "active") {
+    let entered, release;
+    const started = new Promise(resolve => { entered = resolve; }), wait = new Promise(resolve => { release = resolve; });
+    const admit = f.permit.admit; f.permit.admit = async p => { entered(); await wait; return admit(p); };
+    const pending = f.request(); await started;
+    expect(() => hub.emit(f.event("skipped"))).not.toThrow(); release(); await pending;
+  } else {
+    await f.request();
+    hub.emit(f.event("skipped", variant === "mismatched" ? "fictional-wrong-operation" : "fictional-refusal"));
+  }
+  // A duplicate or corrected terminal cannot erase the swallowed first error.
+  expect(() => hub.emit(f.event("skipped"))).not.toThrow(); await hub.flush();
+  await expect(f.actor.flush()).rejects.toThrow("e2_compaction_invalid");
+  expect(() => f.route.assertSettled()).toThrow("E2_COMPACTION_LIFECYCLE_INVALID");
+  const count = f.slot.holds.length;
+  expect(() => f.actor.stream({}, f.model, { messages: [] }, f.options, "probe")).toThrow("e2_compaction_invalid");
+  await expect(f.next()).rejects.toThrow("E2_COMPACTION_LIFECYCLE_INVALID");
+  expect(f.slot.holds).toHaveLength(count);
+});
+it("accepts an authenticated retry-v1 success followed by refusal, preserving both physical liabilities", async () => {
+  const f = await setup({ retryFirst: true }); f.route.observe(f.event("running")); await f.request();
+  const [failed, success] = f.slot.holds.slice(1), failedSnapshot = structuredClone(failed);
+  expect(f.permit.retry).toHaveBeenCalledExactlyOnceWith(failed.round, false);
+  expect(failed).toMatchObject({ retryAuthorized: true, settlement: { kind: "lost" } });
+  expect(failed.summaryReceipt).toBeUndefined(); expect(success.retryOf).toBe(failed.round);
+  expect(effectiveE2Summaries(f.slot.holds)).not.toContain(failed);
+  f.route.observe(f.event("skipped")); await f.actor.flush(); f.route.assertSettled();
+  expect(success.summaryReceipt).toMatchObject({ verified: true, durable: false, rejected: true });
+  expect(failed).toEqual(failedSnapshot);
+  expect(effectiveE2Summaries(f.slot.holds)).toEqual([f.slot.holds[0]]);
+  await f.next(); await f.next(false);
+  expect(f.slot.lineages.proof).toEqual(f.prior);
+  const protocol = guardedProtocol("e2-validation"); f.slot.terminal = "completed"; f.slot.score = 1;
+  const receipt = policy.slotReceipt(f.state, 0, accounting.accountRun, protocol);
+  expect(receipt.compactionRefusals).toMatchObject({ count: 1, rejectedRequests: 2,
+    rejectedUnits: (BigInt(failed.reservedUnits) + BigInt(success.settlement.knownUnits)).toString() });
+  expect(receipt.costs.retainedUnits).toBe(failed.reservedUnits);
+  expect(receipt.retries).toMatchObject({ attempted: 1, succeeded: 1 });
+});
+it.each(["grant", "cause", "retry_binding", "receipt"])("cannot exclude a failed attempt with unauthenticated retry %s", async variant => {
+  const f = await setup({ retryFirst: true }); f.route.observe(f.event("running")); await f.request();
+  const [failed, success] = f.slot.holds.slice(1);
+  if (variant === "grant") delete failed.retryAuthorized;
+  if (variant === "cause") failed.nativeCause.payloadDigest = "e".repeat(64);
+  if (variant === "retry_binding") success.retryOf = failed.round - 1;
+  if (variant === "receipt") success.summaryReceipt.sha256 = "e".repeat(64);
+  await expect(f.permit.compaction({ kind: "rejected", operationDigest: digest("fictional-refusal"), checkpoint: 0, reason: "protected_tuples_missing" })).rejects.toThrow("e2_summary_receipt_invalid");
+  expect(success.summaryReceipt.rejected).toBeUndefined(); expect(f.slot.compaction).not.toBeNull();
+});
+it("keeps SDK length results on the existing nonretryable failure path, never a refusal disposition", async () => {
+  const f = await setup({ length: true }); f.route.observe(f.event("running"));
+  await expect(f.request()).rejects.toThrow("e2_phase_failed");
+  const hold = f.slot.holds.at(-1);
+  expect(hold.nativeCause).toMatchObject({ causeClass: "sdk_length_result" });
+  expect(hold.summaryReceipt).toBeUndefined();
+  expect(f.slot.holds).toHaveLength(2); // Initial checkpoint + one failed summary; no retry.
+  await expect(f.permit.retry.mock.results[0].value).resolves.toEqual({ allowed: false });
+  expect(f.permit.stop).toHaveBeenCalledWith("e2_phase_failed");
+  const hub = createObserverHub({ onEvent: event => f.route.observe(event) });
+  hub.emit(f.event("skipped", "fictional-refusal", "output_truncated"));
+  await expect(f.actor.flush()).rejects.toThrow(); expect(() => f.route.assertSettled()).toThrow();
+  expect(f.dispositions.map(p => p.kind)).toEqual(["begin"]);
+});
+it("counts refused candidates toward the unchanged compaction-attempt ceiling", async () => {
+  const f = await setup({ compactionLimit: 1 }); f.route.observe(f.event("running")); await f.request();
+  f.route.observe(f.event("skipped")); await f.actor.flush();
+  expect(f.route.report().compactions).toHaveLength(0); expect(f.route.report().compactionRefusals).toHaveLength(1);
+  expect(() => f.route.observe(f.event("running", "fictional-extra-compaction"))).toThrow("E2_COMPACTION_LIMIT");
+  expect(f.slot.holds).toHaveLength(2);
+});
+it("keeps a prefix refusal scoped to its own checkpoint and leaves the main branch lineage untouched", async () => {
+  const f = await setup({ replay: true }), main = structuredClone(f.slot.lineages[0]);
+  const before = await readFile(f.journalPath);
+  const work = e2PhaseWork(f.root, f.planned, 1), repo = new JsonlSessionRepo({ sessionsRoot: join(work, "sessions") });
+  const session = await repo.create({ id: "fictional-prefix-session", cwd: work });
+  await session.beginTurn("fictional-prefix-turn"); await session.openOperation("fictional-prefix-compaction", { model: f.model });
+  const checkpointId = await session.appendCompaction({ summary: history, retainedTail: [], tokensBefore: 100, details: { readFiles: [], modifiedFiles: [] } });
+  await session.closeOperation("fictional-prefix-compaction", "completed"); await session.endTurn("fictional-prefix-turn", "completed"); await session.sync();
+  const journalId = session.metadata.journalId; await session.close(); await repo.close();
+  const round = f.slot.holds.length + 1, rawUsage = { input_tokens: 10, output_tokens: 10 }, payloadDigest = "c".repeat(64);
+  const result = await writeE2SummaryResult({ runId: "fictional-run", slotId: f.slot.slotId, e2: { paidRole: "summary", model: "openai-codex:gpt-6.1-sol", round, outputRoot: f.root } },
+    { role: "assistant", stopReason: "stop", content: [{ type: "text", text: history }] }, rawUsage, "default", payloadDigest);
+  const hold = { requestId: `fictional-run:${round}`, round, paidRole: "summary", model: "openai-codex:gpt-6.1-sol", checkpoint: 4, payloadDigest, consumed: true, reservedUnits: "1",
+    summaryReceipt: { ...result.evidence, verified: true, durable: false }, settlement: { kind: "settled", rawUsage, tier: "default", knownUnits: "1" } };
+  f.slot.holds.push(hold);
+  f.slot.lineages[1] = await bindE2Checkpoint({ root: f.root, planned: f.planned, slot: f.slot, readPrivate, readArtifact: f.readArtifact, state: f.state, summaries: [hold], reference: { journalId, checkpointId, checkpoint: 4 } }); hold.summaryReceipt.durable = true;
+  const prefix = structuredClone(f.slot.lineages[1]);
+  f.route.setPosition({ model: "openai-codex:gpt-6.1-sol", branch: 1, turn: 34, message: 87 });
+  f.route.observe(f.event("running")); await f.request(); f.route.observe(f.event("skipped")); await f.actor.flush();
+  expect(f.slot.compactionRefusals[0].checkpoint).toBe(4);
+  expect(f.slot.lineages).toEqual({ 0: main, 1: prefix });
+  await f.next(true, 1); expect(f.slot.holds.at(-1).lineage).toEqual(prefix);
+  const metadata = await policy.beforeAdmission(f.root, f.slot.slotId, f.slot, { paidRole: "probe", checkpoint: 3 }, readPrivate, f.state, f.pilot);
+  expect(metadata).toEqual({ lineageScope: 0, lineage: main });
+  const bytes = Buffer.from(JSON.stringify({ input: [{ role: "user", content: E2_SUMMARY_PREFIX + history + E2_SUMMARY_SUFFIX }] }));
+  await expect(verifyE2NativeLineage(bytes, metadata, f.state, { outputRoot: f.root, index: 0 }, f.readArtifact)).resolves.toMatchObject({ native: 1 });
+  expect(await readFile(f.journalPath)).toEqual(before);
+});
 it("pins the closed refusal reasons to the shipping summary_refused paths", async () => {
   const source = await readFile(new URL("../../packages/turn/src/engine/compaction-kit/compaction.ts", import.meta.url), "utf8");
   const reasons = [...source.matchAll(/refuse\("([a-z_]+)"\)/gu)].map(m => m[1]);
   reasons.push(...[...source.slice(source.indexOf("const validate ="), source.indexOf("let historyText =")).matchAll(/"([a-z_]+)"/gu)].map(m => m[1]));
-  expect([...new Set(reasons)].sort()).toEqual([...E2_PROTECTION_REFUSALS].sort());
+  expect([...new Set(reasons)].sort()).toEqual([...E2_PROTECTION_REFUSALS, "output_truncated"].sort());
+  expect(E2_PROTECTION_REFUSALS).not.toContain("output_truncated");
 });

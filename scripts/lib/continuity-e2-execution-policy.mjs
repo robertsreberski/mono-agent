@@ -10,7 +10,7 @@ import { writeE2SummaryResult, verifyE2SummaryResult } from "./continuity-e2-sum
 import { assertE2BaselineRequest, bindE2Checkpoint, verifyE2NativeLineage, e2LineageScope, e2PhaseBase } from "./continuity-e2-lineage.mjs";
 import { validE2FailureCause, observeE2NativeCause, captureE2NativeCause, e2ProviderCause, e2CandidateCause } from "./continuity-e2-cause.mjs";
 import { readE2Progress, writeE2PartialScore } from "./continuity-e2-progress.mjs";
-import { E2_RETRY_POLICY, authorizeE2Retry, effectiveE2Summaries, e2RetryCounts } from "./continuity-e2-retry.mjs";
+import { E2_RETRY_POLICY, authorizeE2Retry, effectiveE2Summaries, supersedingE2Summary, e2RetryCounts } from "./continuity-e2-retry.mjs";
 import { e2ReplayArm } from "./continuity-e2-protocol.mjs";
 import { E2_PROTECTION_REFUSALS, e2NativeCompactionSnapshot, e2RefusalCounts } from "./continuity-e2-compaction.mjs";
 const fail = (code = "e2_permit_invalid") => { throw Object.assign(Error(code), { code }); };
@@ -282,9 +282,12 @@ export const e2ExecutionPolicy = Object.freeze({
       need(real && pending?.operationDigest === p.operationDigest && pending.checkpoint === p.checkpoint
         && E2_PROTECTION_REFUSALS.includes(p.reason) && !slot.retryPending && pending.nativeSnapshot, "e2_compaction_invalid");
       const candidates = slot.holds.slice(pending.firstRound - 1);
-      need(candidates.length > 0 && candidates.every(h => h.paidRole === "summary" && h.operationDigest === p.operationDigest && h.checkpoint === p.checkpoint
-        && h.consumed && h.settlement?.kind === "settled" && h.summaryReceipt?.verified && h.summaryReceipt.durable === false && !h.summaryReceipt.rejected), "e2_summary_receipt_invalid");
-      for (const h of candidates) {
+      const summaries = effectiveE2Summaries(candidates);
+      need(summaries.length > 0 && candidates.every(h => h.paidRole === "summary" && h.operationDigest === p.operationDigest && h.checkpoint === p.checkpoint
+        && h.consumed && !h.summaryReceipt?.durable && !h.summaryReceipt?.rejected
+        && (summaries.includes(h) || supersedingE2Summary(candidates, h)))
+        && summaries.every(h => h.settlement?.kind === "settled" && h.summaryReceipt?.verified && h.summaryReceipt.durable === false), "e2_summary_receipt_invalid");
+      for (const h of summaries) {
         try { await verifyE2SummaryResult(root, slotId, h, { schema: h.summaryReceipt.schema, sha256: h.summaryReceipt.sha256 }, readPrivate); }
         catch { fail("e2_summary_receipt_invalid"); }
       }
@@ -292,7 +295,7 @@ export const e2ExecutionPolicy = Object.freeze({
       await e2NativeCompactionSnapshot(root, { ...state, pilot }, planned, p.checkpoint, guardedAuthorization("e2-validation").readArtifact, pending.nativeSnapshot);
       slot.compactionRefusals ??= [];
       slot.compactionRefusals.push({ operationDigest: p.operationDigest, checkpoint: p.checkpoint, reason: p.reason, rounds: candidates.map(h => h.round) });
-      candidates.forEach(h => { h.summaryReceipt.rejected = true; h.summaryReceipt.reason = p.reason; });
+      summaries.forEach(h => { h.summaryReceipt.rejected = true; h.summaryReceipt.reason = p.reason; });
       slot.compaction = null;
     } else {
       need(p.kind === "durable" && slot.compaction?.operationDigest === p.operationDigest && slot.compaction.checkpoint === p.checkpoint, "e2_compaction_invalid");

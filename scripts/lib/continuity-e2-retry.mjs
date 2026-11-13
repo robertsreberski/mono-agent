@@ -29,8 +29,17 @@ export function authorizeE2Retry(state, index, payload) {
   h.retryAuthorized = true; slot.retryPending = h.round;
   return { allowed: true };
 }
+// This is recognition of an already authorized retry-v1 chain, not a retry
+// grant. No failed attempt disappears solely because a later receipt exists.
+export function supersedingE2Summary(holds, h) {
+  if (h.paidRole !== "summary" || h.retryOf || h.retryAuthorized !== true || h.retryCanceled || !h.consumed || !h.summaryPresence
+    || !["lost", "settled"].includes(h.settlement?.kind) || !validE2FailureCause(h.nativeCause, { holds }) || !retryCause(h.nativeCause)) return undefined;
+  return holds.find(r => r.round === h.round + 1 && r.retryOf === h.round && r.paidRole === "summary" && r.consumed
+    && r.settlement?.kind === "settled" && r.summaryReceipt?.verified === true && !r.nativeCause
+    && ["payloadDigest", "model", "checkpoint", "operationDigest", "measuredInputTokens", "reservedUnits"].every(k => r[k] === h[k]));
+}
 export function effectiveE2Summaries(holds) {
-  return holds.filter(h => h.paidRole === "summary" && !rejectedE2Summary(h) && !holds.some(r => r.round > h.round && (r.retryOf ?? r.round) === (h.retryOf ?? h.round) && r.settlement?.kind === "settled" && r.summaryReceipt?.verified));
+  return holds.filter(h => h.paidRole === "summary" && !rejectedE2Summary(h) && !supersedingE2Summary(holds, h));
 }
 export function e2RetryCounts(slots) {
   const result = { attempted: 0, succeeded: 0, causeClasses: {} };

@@ -3,8 +3,10 @@ import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { digest } from "./continuity-recorded-schema.mjs";
 import { e2LineageScope, e2PhaseWork } from "./continuity-e2-lineage.mjs";
-// compactWithRequest's summary_refused reasons; provider/SDK failures are not refusals.
-export const E2_PROTECTION_REFUSALS = Object.freeze(["protected_tuples_missing", "summary_budget_exceeded", "output_truncated"]);
+// Completed-candidate protection refusals only. Product output_truncated is
+// unreachable here: the paid SDK length-failure path stops before a verified
+// generated receipt exists. Do not turn that failure into a continuation.
+export const E2_PROTECTION_REFUSALS = Object.freeze(["protected_tuples_missing", "summary_budget_exceeded"]);
 export const isE2ProtectionRefusal = event => event?.status === "skipped" && E2_PROTECTION_REFUSALS.includes(event.reason);
 export function rejectedE2Summary(h) {
   const r = h.summaryReceipt;
@@ -18,7 +20,14 @@ export function e2RefusalCounts(slots) {
     for (const refusal of slot.compactionRefusals ?? []) {
       result.count++; result.byReason[refusal.reason] = (result.byReason[refusal.reason] ?? 0) + 1;
     }
-    for (const h of slot.holds.filter(rejectedE2Summary)) { result.rejectedRequests++; units += BigInt(h.settlement.knownUnits); }
+    const rounds = new Set((slot.compactionRefusals ?? []).flatMap(r => r.rounds));
+    for (const h of slot.holds.filter(h => rounds.has(h.round))) {
+      result.rejectedRequests++;
+      const known = BigInt(h.settlement.knownUnits), reserve = BigInt(h.reservedUnits);
+      // Match financial accounting: a superseded lost attempt retains its full
+      // reservation (or higher known cost), even though its retry was rejected.
+      units += h.settlement.kind === "settled" ? known : reserve > known ? reserve : known;
+    }
   }
   result.rejectedUnits = units.toString(); return result;
 }
