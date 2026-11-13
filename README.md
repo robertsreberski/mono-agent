@@ -42,7 +42,7 @@ Guided setup is authentic and not instant: it signs you in to the provider you c
 curl -fsSL https://mono-agent.dev/install.sh | sh
 ```
 
-On macOS and glibc Linux, the script installs private Node and `create-mono-agent` under `~/.mono-agent/cli`; activate the printed PATH before using `mono-agent`. It edits no shell files by default. Prefer inspecting the script first, managing your own Node with `npm i -g create-mono-agent`, Windows, or a pinned install? [Install & prerequisites](./docs/getting-started/install.md) covers `npm create`, `npm exec`, the scoped package, and building from source.
+On macOS and glibc Linux, the script installs private Node and `create-mono-agent` under `~/.mono-agent/cli`; activate the printed PATH before using `mono-agent`. It edits no shell files by default. For inspect-first use, download the script, read it, then run it. Prefer managing your own Node with `npm i -g create-mono-agent`, Windows, or a pinned install? [Install & prerequisites](./docs/getting-started/install.md) covers `npm create`, `npm exec`, the scoped package, and building from source.
 
 ### 2. Create the agent folder
 

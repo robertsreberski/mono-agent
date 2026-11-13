@@ -266,7 +266,7 @@ UNINSTALL
   stage=$(mktemp -d "$root/.stage.XXXXXXXX")
   archive=node-v$node_version-$platform-$arch.tar.gz
   base=https://nodejs.org/dist/v$node_version
-  fetch() { curl -q --proto '=https' --proto-redir '=https' --tlsv1.2 -fSL --retry 2 --connect-timeout 20 --speed-limit 1024 --speed-time 60 "$1" -o "$2"; }
+  fetch() { curl -q --proto '=https' --proto-redir '=https' --tlsv1.2 -fSL --retry 2 --connect-timeout 20 --max-time 900 --speed-limit 1024 --speed-time 60 "$1" -o "$2"; }
   printf 'Downloading official Node %s (%s/%s)...\n' "$node_version" "$platform" "$arch"
   fetch "$base/SHASUMS256.txt" "$stage/SHASUMS256.txt" || die 'Node checksums download failed'
   fetch "$base/$archive" "$stage/$archive" || die 'Node download failed'

@@ -153,21 +153,15 @@ confirm metadata, card dimensions, and internal links still hold.
 
 ## Hosting
 
-Use a **separate** `mono-agent-marketing` Vercel project; do not change `mono-agent-docs`.
+The separate **`mono-agent-marketing`** Vercel project is connected to this
+repository's Git integration with `marketing/` as its root directory. Vercel
+checks run on pull requests, and merges to `main` trigger production deployment.
+Keep `mono-agent-docs` separate; no manual CLI deploy is part of this workflow.
 
 - `vercel.json` pins `framework: astro`, `buildCommand: pnpm run build`, and `outputDirectory: dist`.
-- For CLI deployment from this isolated app, link and deploy from `marketing/`. The uploaded project root is this directory, not the repository root.
-- If Git-based deployment is connected later, set its repository root directory to `marketing/`. Do not connect production to a branch without this app. GitHub merge and DNS changes are separate operations.
-- The intended custom domain remains `mono-agent.dev`. Domain ownership/DNS must be verified before declaring it live; a working Vercel URL does not prove the custom domain works.
+- The production custom-domain target is `mono-agent.dev`. Verify its deployed bytes and headers separately; a successful Vercel check alone does not prove the custom domain serves the intended revision.
 - The static site works without any environment variables. Vercel Analytics requires project-side enablement and explicit visitor consent; no ingestion token or reporting key is required.
-- `.vercel/` and `.env*` are local-only and ignored. The Vercel CLI may create an OIDC `.env.local` while linking; it is not needed for this static app and must never be uploaded or committed.
-
-```bash
-# After authenticating Vercel; from marketing/
-vercel link --project mono-agent-marketing
-vercel deploy                 # preview
-vercel deploy --prod          # only with production deployment approval
-```
+- `.vercel/` and `.env*` are local-only and ignored; local credentials must never be uploaded or committed.
 
 ## CI
 

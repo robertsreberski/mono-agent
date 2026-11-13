@@ -25,9 +25,11 @@ for (const directory of ['/usr/bin', '/bin', '/usr/sbin', '/sbin']) {
 }
 const env = { ...process.env, HOME: home, XDG_CONFIG_HOME: path.join(home, '.config'), PATH: tools, SHELL: '/bin/bash' };
 delete env.NODE_OPTIONS; delete env.NODE_PATH;
+const incompatibleNodeSentinel = 'incompatible host Node invoked';
 const run = (command, args, expected = 0) => {
   const result = spawnSync(command, args, { env, encoding: 'utf8', timeout: 900000, maxBuffer: 8 * 1024 * 1024 });
   process.stdout.write(result.stdout ?? ''); process.stderr.write(result.stderr ?? '');
+  assert.ok(!`${result.stdout ?? ''}\n${result.stderr ?? ''}`.includes(incompatibleNodeSentinel), 'incompatible host Node sentinel must be absent, even if a caller ignores its exit status');
   assert.equal(result.status, expected, `exit: ${result.status}; ${result.error?.message ?? ''}`);
   return result;
 };
@@ -58,7 +60,7 @@ turn('sharp')({create:{width:1,height:1,channels:3,background:'#abcdef'}}).resiz
   run(node, [probe, prefix]);
   const first = readlinkSync(path.join(prefix, 'current'));
   // An incompatible host Node must never be executed, including during npm builds.
-  writeFileSync(path.join(tools, 'node'), '#!/bin/sh\necho "incompatible host Node invoked" >&2\nexit 99\n', { mode: 0o700 });
+  writeFileSync(path.join(tools, 'node'), `#!/bin/sh\necho "${incompatibleNodeSentinel}" >&2\nexit 99\n`, { mode: 0o700 });
   run('/bin/sh', [script, '--non-interactive', '--version', '0.26.0']);
   const second = readlinkSync(path.join(prefix, 'current'));
   assert.notEqual(first, second); assert.ok(existsSync(path.join(prefix, first)));

@@ -25,3 +25,9 @@ test('extension routes keep exact plain-text security/cache headers without redi
   assert.deepEqual(config.redirects ?? [], []);
   assert.deepEqual(config.rewrites ?? [], []);
 });
+
+test('landing install command has explicit inspect-first guidance', () => {
+  const html = read('../dist/index.html').toString();
+  assert.match(html, /Download, read, then run\./);
+  assert.match(html, /id="install-command">curl -fsSL https:\/\/mono-agent\.dev\/install\.sh \| sh/);
+});

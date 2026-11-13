@@ -72,7 +72,7 @@ fs.writeFileSync(path.join(prefix,'bin/mono-agent'),${JSON.stringify(cli)});
 const fs=require('node:fs'); const {createHash}=require('node:crypto');
 const options=JSON.parse(fs.readFileSync(${JSON.stringify(config)},'utf8'));
 const args=process.argv.slice(2), url=args.find(x=>x.startsWith('https://'));
-if(args[0]!=='-q' || !args.includes('--speed-limit') || !args.includes('--speed-time') || args.includes('--max-time')) {console.error('Unsafe curl configuration');process.exit(98);}
+if(args[0]!=='-q' || !args.includes('--speed-limit') || !args.includes('--speed-time') || args[args.indexOf('--max-time')+1]!=='900') {console.error('Unsafe curl configuration');process.exit(98);}
 const output=args[args.indexOf('-o')+1];
 const archives=${JSON.stringify(tarballs)};
 if(options.downloadFail) process.exit(22);
@@ -181,7 +181,9 @@ for (const mode of ['ok', 'error', 'unexpected', 'malformed']) test(`preflight $
 });
 test('truncated function body has no side effects', t => {
   const f = fixture(t); const partial = path.join(f.dir, 'partial.sh');
-  const text = readFileSync(script, 'utf8'); writeFileSync(partial, text.slice(0, text.indexOf('  stage=$(mktemp')));
+  const text = readFileSync(script, 'utf8'); const cut = text.indexOf('  stage=$(mktemp');
+  assert.notEqual(cut, -1, 'expected staging marker before truncating');
+  writeFileSync(partial, text.slice(0, cut));
   const result = spawnSync('/bin/sh', [partial], { env: f.env }); assert.notEqual(result.status, 0);
   assert.ok(!existsSync(path.join(f.home, '.mono-agent')));
 });
@@ -283,7 +285,9 @@ test('pruning keeps current, previous and service-referenced generations only', 
 });
 test('truncated final invocation cannot drop uninstall arguments and install instead', t => {
   const f = fixture(t); const text = readFileSync(script, 'utf8');
-  const cut = text.lastIndexOf('{ mono_agent_install') + '{ mono_agent_install'.length;
+  const invocation = text.lastIndexOf('{ mono_agent_install');
+  assert.notEqual(invocation, -1, 'expected guarded invocation before truncating');
+  const cut = invocation + '{ mono_agent_install'.length;
   const result = spawnSync('/bin/sh', ['-s', '--', '--uninstall', '--yes'], { input: text.slice(0, cut), env: f.env, encoding: 'utf8' });
   assert.notEqual(result.status, 0); assert.ok(!existsSync(path.join(f.home, '.mono-agent')));
 });

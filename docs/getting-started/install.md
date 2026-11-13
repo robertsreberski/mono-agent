@@ -60,6 +60,11 @@ curl -fsSL https://mono-agent.dev/install.sh | sh
 
 Supports macOS and **glibc Linux (glibc >=2.28)** on x64/arm64, subject to the
 [official Node platform requirements](https://github.com/nodejs/node/blob/v24.15.0/BUILDING.md#platform-list).
+Real official-Node/published-CLI/native-dependency smoke has been run on
+**macOS arm64** and **glibc Linux arm64 (Docker)**. macOS/Linux **x64 mappings
+are fixture-tested only**, not live-proven installations. The macOS/Ubuntu
+installer CI jobs run offline fixtures with mocked platform commands and Node
+archives; they do not prove a real bootstrap on either runner's architecture.
 Refuses root, Windows-like shells, musl/Alpine, and unknown architectures. Requires
 curl, tar/gzip, standard POSIX tools and `sha256sum` or `shasum`. No existing Node,
 npm or pnpm is needed. Native dependencies may still require a compiler and
@@ -128,8 +133,8 @@ preloads do not override the target runtime. Standard `HTTPS_PROXY`,
 `HTTP_PROXY`, `ALL_PROXY`, `NO_PROXY` (or lowercase equivalents), `SSL_CERT_FILE`
 and `NODE_EXTRA_CA_CERTS` are supported for proxy/custom-CA environments. For
 npm, `SSL_CERT_FILE` supplies `NODE_EXTRA_CA_CERTS` only when the latter is unset.
-Downloads stop after 60 seconds below 1 KiB/s rather than imposing a five-minute
-limit on a healthy slow transfer. No
+Downloads stop after 60 seconds below 1 KiB/s, with a generous 900-second total
+cap per attempt for healthy slow transfers. No
 registry/mirror override or checksum bypass is offered.
 
 The installer invokes `mono-agent preflight --json` with a bounded timeout.
