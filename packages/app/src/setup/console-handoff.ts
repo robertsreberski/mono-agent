@@ -11,6 +11,8 @@ export interface ConsoleHandoffDependencies {
   readonly hasUserManager?: () => Promise<boolean>;
   readonly choose?: (choices: readonly ConsoleHandoffChoice[]) => Promise<ConsoleHandoffChoice>;
   readonly write?: (text: string) => void;
+  readonly promptIO?: Pick<p.CommonOptions, "input" | "output">;
+  readonly existing?: () => Promise<string | undefined>;
   readonly managed?: () => Promise<string | undefined>;
   readonly foreground?: (ready: (url: string) => Promise<void>) => Promise<void>;
   readonly health?: (url: string) => Promise<boolean>;
@@ -36,11 +38,22 @@ export async function offerConsoleHandoff(
   if (!options.agentReady) write(`The agent still needs starting in a separate terminal: mono-agent start${platform !== "darwin" && !hasManager ? " --foreground" : ""}. Use the exact config/env flags printed above.\n`);
   const choices: readonly ConsoleHandoffChoice[] = hasManager ? ["later", "managed", "foreground"] : ["later", "foreground"];
   const choose = dependencies.choose ?? (async (choices) => {
-    const answer = await p.select<ConsoleHandoffChoice>({
+    const input = dependencies.promptIO?.input ?? process.stdin;
+    if (input.readableEnded || input.destroyed) return "later";
+    const cancel = new AbortController();
+    const onEnd = () => cancel.abort();
+    const onKey = (_text: string, key: { ctrl?: boolean; name?: string }) => {
+      if (key?.ctrl && key.name === "d") cancel.abort();
+    };
+    input.once("end", onEnd); input.on("keypress", onKey);
+    try {
+      const answer = await p.select<ConsoleHandoffChoice>({
+      ...dependencies.promptIO, signal: cancel.signal,
       message: "Open the browser console?", initialValue: "later",
       options: choices.map((value) => ({ value, label: value === "later" ? "Not now" : value === "managed" ? "Start / reuse managed console" : "Run foreground console in this terminal (Ctrl-C to stop)" })),
     });
-    return p.isCancel(answer) ? "later" : answer;
+      return p.isCancel(answer) ? "later" : answer;
+    } finally { input.off("end", onEnd); input.off("keypress", onKey); }
   });
   const choice = await choose(choices);
   if (choice === "later" || !choices.includes(choice)) return;
@@ -62,6 +75,8 @@ export async function offerConsoleHandoff(
     write(`Open the URL manually. For a remote host, forward the console's loopback port from your own computer: ssh -N -L ${port}:127.0.0.1:${port} <user>@<host>\nKeep the forwarding private; no login is added by forwarding.\n`);
   };
   try {
+    const existing = await (dependencies.existing ?? (() => existingConsoleHandoff(options.env)))();
+    if (existing !== undefined) { await present(existing); return; }
     if (choice === "managed") {
       const base = await (dependencies.managed ?? (() => startManagedConsoleHandoff(options.env)))();
       if (base === undefined) write("Console handoff did not start a healthy console. Inspect mono-agent web status; agent readiness is unchanged.\n");
@@ -89,25 +104,32 @@ async function userManagerAvailable(): Promise<boolean> {
   catch { return false; }
 }
 
+async function inspectConsoleHandoff(env: Record<string, string | undefined>, run: typeof runWebCommand) {
+  let json = "";
+  await run({ positionals: ["status"], env, json: true }, { stdout: { write: (text) => { json += text; } } });
+  return JSON.parse(json) as {
+    listener?: { url?: unknown; source?: unknown; provenRunning?: unknown };
+    ownedTailscaleRoute?: { state?: unknown };
+  };
+}
+
+/** Status proves the existing listener identity, not merely a bound port. */
+export async function existingConsoleHandoff(env: Record<string, string | undefined>, run: typeof runWebCommand = runWebCommand): Promise<string | undefined> {
+  const status = await inspectConsoleHandoff(env, run);
+  return status.listener?.provenRunning === true && typeof status.listener.url === "string" ? status.listener.url : undefined;
+}
+
 /** Preserve every existing listener/definition. Only a fresh install may be started here. */
 export async function startManagedConsoleHandoff(
   env: Record<string, string | undefined>,
   run: typeof runWebCommand = runWebCommand,
 ): Promise<string | undefined> {
-  const inspect = async () => {
-    let json = "";
-    await run({ positionals: ["status"], env, json: true }, { stdout: { write: (text) => { json += text; } } });
-    return JSON.parse(json) as {
-      listener?: { url?: unknown; source?: unknown; provenRunning?: unknown };
-      ownedTailscaleRoute?: { state?: unknown };
-    };
-  };
-  const before = await inspect();
+  const before = await inspectConsoleHandoff(env, run);
   if (before.listener?.provenRunning === true && typeof before.listener.url === "string") return before.listener.url;
   if (before.listener?.source !== "fresh default"
     || !["none", "not-managed"].includes(String(before.ownedTailscaleRoute?.state))) return undefined;
   if (await run({ positionals: ["start"], env, loopback: true }) !== 0) return undefined;
-  const after = await inspect();
+  const after = await inspectConsoleHandoff(env, run);
   return after.listener?.provenRunning === true && typeof after.listener.url === "string" ? after.listener.url : undefined;
 }
 
