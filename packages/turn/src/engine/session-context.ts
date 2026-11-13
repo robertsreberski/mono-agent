@@ -4,11 +4,18 @@ import { createBranchSummaryMessage } from "./compaction-kit/messages.js";
 const isContextMessage = (message: any) => message?.role !== "assistant"
   || !["error", "aborted", "deferred"].includes(message.stopReason);
 
-export function buildHarnessSessionContext(pathEntries: any, { includeFailed = false, repairs = [] }: { includeFailed?: boolean; repairs?: any[] } = {}) {
+/** Shared eligibility only; visible-message anchor remapping stays prompt-local. */
+export function selectActiveRepairs(pathEntries: any[], repairs: any[] = []) {
   let start = 0;
   for (let index = pathEntries.length - 1; index >= 0; index -= 1) {
     if (pathEntries[index]?.type === "compaction") { start = index; break; }
   }
+  const anchors = new Set(pathEntries.slice(start).map((entry: any) => entry.id));
+  return { start, repairs: repairs.filter((repair: any) => anchors.has(repair.tipId) || (repair.tipId === null && start === 0)) };
+}
+
+export function buildHarnessSessionContext(pathEntries: any, { includeFailed = false, repairs = [] }: { includeFailed?: boolean; repairs?: any[] } = {}) {
+  const { start, repairs: activeRepairs } = selectActiveRepairs(pathEntries, repairs);
   const messages = []; const messageIds = new WeakMap();
   for (const entry of pathEntries.slice(start)) {
     if (entry?.type === "message") {
@@ -25,9 +32,6 @@ export function buildHarnessSessionContext(pathEntries: any, { includeFailed = f
     if (entry.type === "message" && visible.has(entry.message)) previousVisibleId = entry.id;
     anchors.set(entry.id, previousVisibleId);
   }
-  const projectedRepairs = repairs.flatMap((repair: any) => {
-    const anchor = anchors.get(repair.tipId);
-    return anchors.has(repair.tipId) || (repair.tipId === null && start === 0) ? [{ ...repair, tipId: anchor ?? null }] : [];
-  });
+  const projectedRepairs = activeRepairs.map((repair: any) => ({ ...repair, tipId: anchors.get(repair.tipId) ?? null }));
   return projectInterruptions(messages, projectedRepairs, messageIds);
 }

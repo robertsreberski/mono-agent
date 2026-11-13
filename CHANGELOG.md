@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Keep native compaction checkpoints when interruption accounts no longer apply
+  to the active slice, preserving incremental historical-tuple protection. Live
+  interruption notices and observed outcomes keep their existing projection.
+
 - Fix host preflight service-manager reachability with large domain dumps, and
   keep optional sandbox setup, cleanup, and resource failures non-fatal without
   discarding other host results.
