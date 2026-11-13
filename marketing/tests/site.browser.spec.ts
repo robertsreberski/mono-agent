@@ -156,6 +156,16 @@ test("comparison content and native FAQ work without JavaScript", async ({ brows
 });
 
 
+test("installer extension routes serve static shell bytes without a trailing-slash redirect", async ({ request }) => {
+  const response = await request.get('/install.sh', { maxRedirects: 0 });
+  expect(response.status()).toBe(200);
+  expect(response.headers().location).toBeUndefined();
+  expect(await response.text()).toMatch(/^#!\/bin\/sh\n/);
+  const checksum = await request.get('/install.sh.sha256', { maxRedirects: 0 });
+  expect(checksum.status()).toBe(200);
+  expect(await checksum.text()).toMatch(/^[a-f0-9]{64}  install\.sh\n$/);
+});
+
 test("copy command reports success only after clipboard resolves", async ({ page }) => {
   await page.addInitScript(() => Object.defineProperty(navigator, "clipboard", {
     value: { writeText: async (text: string) => { (window as any).copied = text; } },
@@ -163,7 +173,7 @@ test("copy command reports success only after clipboard resolves", async ({ page
   await page.goto("/");
   await page.getByRole("button", { name: /Copy command/ }).click();
   await expect(page.getByRole("status")).toHaveText("Install command copied.");
-  expect(await page.evaluate(() => (window as any).copied)).toBe("npm i -g create-mono-agent");
+  expect(await page.evaluate(() => (window as any).copied)).toBe("curl -fsSL https://mono-agent.dev/install.sh | sh");
 });
 
 test("clipboard refusal leaves honest manual instructions", async ({ page }) => {

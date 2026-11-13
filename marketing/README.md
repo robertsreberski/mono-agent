@@ -153,21 +153,15 @@ confirm metadata, card dimensions, and internal links still hold.
 
 ## Hosting
 
-Use a **separate** `mono-agent-marketing` Vercel project; do not change `mono-agent-docs`.
+The separate **`mono-agent-marketing`** Vercel project is connected to this
+repository's Git integration with `marketing/` as its root directory. Vercel
+checks run on pull requests, and merges to `main` trigger production deployment.
+Keep `mono-agent-docs` separate; no manual CLI deploy is part of this workflow.
 
 - `vercel.json` pins `framework: astro`, `buildCommand: pnpm run build`, and `outputDirectory: dist`.
-- For CLI deployment from this isolated app, link and deploy from `marketing/`. The uploaded project root is this directory, not the repository root.
-- If Git-based deployment is connected later, set its repository root directory to `marketing/`. Do not connect production to a branch without this app. GitHub merge and DNS changes are separate operations.
-- The intended custom domain remains `mono-agent.dev`. Domain ownership/DNS must be verified before declaring it live; a working Vercel URL does not prove the custom domain works.
+- The production custom-domain target is `mono-agent.dev`. Verify its deployed bytes and headers separately; a successful Vercel check alone does not prove the custom domain serves the intended revision.
 - The static site works without any environment variables. Vercel Analytics requires project-side enablement and explicit visitor consent; no ingestion token or reporting key is required.
-- `.vercel/` and `.env*` are local-only and ignored. The Vercel CLI may create an OIDC `.env.local` while linking; it is not needed for this static app and must never be uploaded or committed.
-
-```bash
-# After authenticating Vercel; from marketing/
-vercel link --project mono-agent-marketing
-vercel deploy                 # preview
-vercel deploy --prod          # only with production deployment approval
-```
+- `.vercel/` and `.env*` are local-only and ignored; local credentials must never be uploaded or committed.
 
 ## CI
 
@@ -252,3 +246,66 @@ sitemap entries. It ships empty and builds, tests, and reads intentionally
 with zero posts. The authoring contract an automated daily process follows is
 [`BLOG.md`](./BLOG.md): front-matter limits, image and honesty rules, and the
 exact local validation commands.
+
+## Public shell installer
+
+`public/install.sh` and `public/install.sh.sha256` are committed generated assets,
+served at `https://mono-agent.dev/install.sh` and its `.sha256` sibling. Vercel's
+Git integration deploys the marketing project on a main merge; do not run a
+manual deploy as part of artifact maintenance. Extension-bearing static files
+are not subject to the site's page trailing-slash routing. Exact response
+headers in `vercel.json` select plain text, nosniff, and mandatory revalidation.
+
+Author sources live in `scripts/installer/` at the repository root. After a
+`.nvmrc` change (also keep root engines and the support floor in agreement), run:
+
+```sh
+node scripts/installer/generate.mjs
+node scripts/installer/generate.mjs --check
+node --test scripts/installer/test/*.test.mjs
+sh -n marketing/public/install.sh
+shellcheck -s sh marketing/public/install.sh
+```
+
+Run those commands from the repository root, not this standalone app. A standalone
+marketing build needs no files outside this directory: it copies the committed
+assets byte-for-byte. Unit contracts check built bytes, checksum and route/header
+configuration. Fixture tests are offline; `node scripts/installer/live-proof.mjs`
+is an explicit network-using, throwaway-HOME smoke for official Node plus published
+CLI/native dependencies. It must run as a non-root user and touches no real shell
+startup files, agents or services.
+
+After the authorized merge/deployment, separately verify the custom-domain URL,
+redirect chain, content type and checksum against the reviewed artifact. A local
+build does not prove production DNS or the deployed revision. The script checksum
+shares the script's host trust boundary and is not an independent signature.
+
+Installer maintenance notes: curl uses `-q` first (no curlrc trust overrides) and
+slow-transfer limits. `SSL_CERT_FILE` is mapped to npm's `NODE_EXTRA_CA_CERTS`
+when not explicitly set. The shim pins only its own Node executable; child PATH
+is unchanged. Opt-in Bash edits select `.bash_profile` on macOS, `.bashrc` on
+Linux; Zsh uses `.zshrc`. PATH cleanup preserves unsafe/modified files, restores
+existing modes, and removes empty files created by the installer. No runnable
+private Node is required to remove the CLI prefix (PATH cleanup may be skipped).
+
+Upgrades prune to current + previous plus service-referenced generations.
+Uninstall scans LaunchAgents and XDG systemd user definitions and refuses when
+they reference this prefix’s runtime or CLI executable (raw, XML-escaped, or
+systemd-escaped paths; not a PATH entry alone), with `mono-agent stop` / `mono-agent web stop`
+instructions. It never stops services itself. `--force-uninstall` explicitly
+bypasses this protection and can break those services. Live smoke covers pruning
+and refusal using only a fake plist in its throwaway HOME.
+
+CI checks ShellCheck on Ubuntu and fixtures on both runner OSes without matrix
+fail-fast. To reproduce historical runner diagnostics, from the repository root:
+
+```sh
+docker run --rm -v "$PWD:/repo:ro" koalaman/shellcheck:v0.9.0 -s sh /repo/marketing/public/install.sh
+```
+
+The parent-scoped `~/.mono-agent/.cli-install-lock` remains held throughout CLI
+subtree deletion, preventing a concurrent installer from being deleted mid-stage.
+A missing current generation skips PATH cleanup but does not block removal;
+`--force-uninstall` warns explicitly for both failed and positive service scans.
+Host preflight is on main and ships in the next package release; published
+0.26.0 still gets the explicit legacy warning.

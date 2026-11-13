@@ -1,0 +1,33 @@
+name: installer
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: installer-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  installer:
+    name: Installer fixtures (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      - run: node scripts/installer/generate.mjs --check
+      - run: node --test scripts/installer/test/*.test.mjs
+      - run: sh -n marketing/public/install.sh
+      - if: runner.os == 'Linux'
+        run: shellcheck -s sh marketing/public/install.sh

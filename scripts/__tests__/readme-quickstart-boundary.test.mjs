@@ -28,7 +28,7 @@ describe("root README Quickstart boundary", () => {
 
   it("keeps the complete web-first runnable command flow in order", () => {
     const commands = [
-      "npm i -g create-mono-agent",
+      "curl -fsSL https://mono-agent.dev/install.sh | sh",
       "mkdir my-agent",
       "cd my-agent",
       "mono-agent init",
@@ -53,7 +53,10 @@ describe("root README Quickstart boundary", () => {
   it("keeps the first browser conversation the documented path", () => {
     // The beginner path must not require a terminal-only smoke channel or the
     // terminal console: the browser console is the documented first surface.
-    expect(quickstart).not.toMatch(/\bcurl\b/u);
+    // curl bootstraps the CLI only; conversations must still use the browser.
+    const installer = "curl -fsSL https://mono-agent.dev/install.sh | sh";
+    expect(quickstart.split(installer)).toHaveLength(2);
+    expect(quickstart.replace(installer, "")).not.toMatch(/\bcurl\b/u);
     expect(quickstart).not.toMatch(/mono-agent tui\b/u);
     expect(quickstart).not.toMatch(/mono-agent-tui\b/u);
     expect(readme).toContain("./docs/reference/release-status.md");
@@ -210,7 +213,10 @@ describe("root README Quickstart boundary", () => {
     const releaseStatus = readRepoFile("docs/reference/release-status.md");
     expect(releaseStatus).toContain("registry rechecked 2026-10-20");
     expect(releaseStatus).toContain("All 20 packages in the current release catalog");
-    expect(releaseStatus).toContain("no package-behavior delta after `v0.26.0`");
+    const sourceDelta = "Current `main` carries unreleased package behavior after `v0.26.0`: an early Node-version guard and `mono-agent preflight`, shipping in the next package release.";
+    expect(releaseStatus).toContain(sourceDelta);
+    expect(releaseStatus).not.toContain("no package-behavior delta");
+    expect(releaseStatus).toContain("The shell installer is served from the site, not npm, and installs the published CLI");
     expect(releaseStatus).toContain("no compatibility aliases");
     expect(releaseStatus).toContain("No published tarballs were inspected for this update.");
     expect(releaseStatus).not.toContain("Published 0.22.0");
@@ -221,7 +227,8 @@ describe("root README Quickstart boundary", () => {
       const page = readRepoFile(path);
       expect(page, path).toContain("0.26.0");
       expect(page, path).toContain("registry checked 2026-10-20");
-      expect(page, path).toContain("no package-behavior delta");
+      expect(page, path).toContain(sourceDelta);
+      expect(page, path).not.toContain("no package-behavior delta");
     }
     for (const path of [
       "docs/reference/deprecations.md",

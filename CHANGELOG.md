@@ -21,6 +21,12 @@
   checks, isolated native-load diagnostics, and explicit repair alternatives.
   Keep `doctor` as the unchanged alias of `validate`.
 
+- Add a macOS/glibc Linux shell installer with checksum-verified private Node,
+  atomic CLI upgrades, opt-in `--add-to-path`, and scoped uninstall. Hand off to
+  `mono-agent preflight` when supported; warn for published versions without it.
+  Retain current, previous and service-referenced generations; refuse uninstall
+  when detected service definitions rely on the private runtime.
+
 - Add versioned evidence-sensitive conversation ranking with general English
   stop-word filtering, intent-only fallback, bounded correction/event morphology
   and identifier-component discovery. Prefer content in complementary previews,
