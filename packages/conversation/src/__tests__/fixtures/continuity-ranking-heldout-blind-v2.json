@@ -1,0 +1,244 @@
+{
+  "purpose": "Independent fictional held-out set v2, written blind without access to the ranking implementation or earlier cases. Must not be edited or tuned to.",
+  "author": "independent blind writer (no implementation access)",
+  "cases": [
+    {
+      "name": "quillmoor-original-launch-date",
+      "query": "what launch date did i first give for quillmoor, before we pushed it back?",
+      "records": [
+        {"kind": "assistant", "text": "Welcome back! Last time we wrapped up the Quillmoor pricing table. What's next on the list?"},
+        {"kind": "user", "text": "next is the launch itself. lets say march 14 for the quillmoor landing page go-live, copy's mostly done, design still WIP"},
+        {"kind": "assistant", "text": "March 14 for go-live gives you roughly three weeks. I'd suggest a design freeze around March 7 so there's a full week for QA, copy tweaks and the analytics setup. If design slips past the freeze, the launch date should move with it rather than squeezing QA."},
+        {"kind": "user", "text": "design's slipping, Ines is out sick. push launch to march 28"},
+        {"kind": "assistant", "text": "Done. The Quillmoor launch moves from the original March 14 date to March 28, and the design freeze shifts to March 21."},
+        {"kind": "summary", "text": "Summary: Planned the Quillmoor landing page launch. Launch was first set for an early-March date, then pushed back two weeks to March 28 because of design delays (Ines out sick); design freeze moved to March 21."}
+      ],
+      "expectedFirst": 1,
+      "rationale": "The user's own message at index 1 is where the original March 14 date was first set. The assistant's later restatement and the vaguer summary are only derived from it."
+    },
+    {
+      "name": "ferncastle-current-rate-limit",
+      "query": "whats the ferncastle per-key rate limit set to now?",
+      "records": [
+        {"kind": "user", "text": "for the ferncastle public api lets cap it at 200 requests/min per key"},
+        {"kind": "assistant", "text": "A 200 req/min per-key cap is reasonable for a public API. I'd implement it as a token bucket keyed on the API key: capacity 200, refill 200 per 60s. Return 429 with a Retry-After header when the bucket is empty, and expose X-RateLimit-Remaining so clients can back off before they hit the wall. If internal services share the same keys you may want an allowlist."},
+        {"kind": "user", "text": "hmm partners are already complaining. make that 500"},
+        {"kind": "assistant", "text": "Sure, 500/min per key. Do you want to allow short bursts above that, e.g. 2x for 10 seconds?"},
+        {"kind": "user", "text": "no bursts. and actually scratch 500, ops pushed back hard. go with 350 as the compromise"},
+        {"kind": "assistant", "text": "Understood. Separately, for the Ferncastle status dashboard, should the rate-limit chart show per-minute or per-hour buckets? Per-minute is noisier but matches how the limit is enforced."},
+        {"kind": "user", "text": "per hour is fine, nobody looks at it anyway lol"}
+      ],
+      "expectedFirst": 4,
+      "rationale": "The user's correction to 350 replaces both 200 and 500. Later records talk about the rate-limit chart, not the value."
+    },
+    {
+      "name": "brindlewick-database-choice-summary",
+      "query": "which db did we settle on for brindlewick in the end",
+      "records": [
+        {"kind": "summary", "text": "Summary: Discussed storage for the Brindlewick inventory service. Compared Postgres, SQLite and a managed key-value store; user leaned toward the key-value store at first for cost, then decided on Postgres because the warehouse team needs relational reporting. SQLite kept only for local unit tests."},
+        {"kind": "user", "text": "ok next, brindlewick CI keeps failing on the migrations step, maybe 1 in 4 runs"},
+        {"kind": "assistant", "text": "Intermittent migration failures usually mean the database container isn't accepting connections yet when the migrate job starts. Add a readiness check (poll in a loop with a timeout) before running migrations, and make sure the job doesn't share a database with parallel test shards."},
+        {"kind": "user", "text": "yeah prob the db container racing. ok what about caching the sku lookups"},
+        {"kind": "assistant", "text": "For SKU lookups, an in-process LRU with a short TTL (say 60s) is probably enough for the read pattern you described. If you scale past a few instances, move to a shared cache so invalidations on price changes propagate."}
+      ],
+      "expectedFirst": 0,
+      "rationale": "Only the summary records the final database decision (Postgres). The later records mention the database container and caching but never the choice."
+    },
+    {
+      "name": "tallowmere-retry-count-short-edit",
+      "query": "how many retries does the tallowmere uploader do now",
+      "records": [
+        {"kind": "user", "text": "write me a retry wrapper for the tallowmere uploader. 5 retries, exponential backoff, python"},
+        {"kind": "assistant", "text": "Here's a small wrapper:\n\n```python\nMAX_RETRIES = 5\nBASE_DELAY = 1.0\n\ndef with_retries(fn, *args, **kwargs):\n    for attempt in range(MAX_RETRIES + 1):\n        try:\n            return fn(*args, **kwargs)\n        except TransientUploadError:\n            if attempt == MAX_RETRIES:\n                raise\n            time.sleep(BASE_DELAY * 2 ** attempt)\n```\n\nWith 5 retries and a 1s base, the worst-case wait is about 31 seconds before the final failure is raised. You may want jitter if many uploaders restart at once."},
+        {"kind": "user", "text": "nice. can u add logging for each attempt + jitter"},
+        {"kind": "assistant", "text": "Updated version: MAX_RETRIES stays at 5, and each failed attempt now logs 'upload retry {n}/5 after {delay:.1f}s' at WARNING level, with the exception type included. Jitter is full jitter: delay = random.uniform(0, BASE_DELAY * 2 ** attempt), which spreads retries out when lots of Tallowmere uploaders fail together. The final failure logs at ERROR with the total elapsed time before re-raising, so you can tell retry exhaustion apart from a single hard failure in the logs."},
+        {"kind": "user", "text": "make it 9 instead"},
+        {"kind": "assistant", "text": "Will do. One thing to check: are Tallowmere uploads idempotent on the server side? With more retry attempts, a timeout that actually succeeded could create duplicate objects."}
+      ],
+      "expectedFirst": 4,
+      "rationale": "The short edit 'make it 9 instead' changes the retry count. The long assistant replies that repeat 'retries' all still describe the old value of 5."
+    },
+    {
+      "name": "owlbridge-staging-port-vs-production",
+      "query": "what did we change the owlbridge staging port to",
+      "records": [
+        {"kind": "user", "text": "owlbridge staging is on port 8081 for now, prod on 443"},
+        {"kind": "user", "text": "update: we changed the owlbridge production port from 443 to 8443 behind the new load balancer, decided in yesterday's infra call"},
+        {"kind": "assistant", "text": "Got it. Owlbridge production port changed from 443 to 8443 behind the new load balancer; I'll treat that as the decided value. Does staging change too, or does it stay as is?"},
+        {"kind": "user", "text": "staging's separate. it moves to 9090 starting next sprint so it stops colliding with the metrics agent"},
+        {"kind": "assistant", "text": "Makes sense. For the production change, remember to update the health check target and any firewall rules that still reference 443, otherwise the LB will mark instances unhealthy after the cutover."},
+        {"kind": "user", "text": "yep Joaquim's on the firewall rules"}
+      ],
+      "expectedFirst": 3,
+      "rationale": "Index 3 is the only record that gives the new staging port (9090). Records 1, 2 and 4 repeat 'changed', 'port' and 'decided' but are about the production port."
+    },
+    {
+      "name": "marrowfield-onboarding-email-owner-paraphrase",
+      "query": "who owns the onboarding emails for marrowfield",
+      "records": [
+        {"kind": "user", "text": "marrowfield comms split: Tomas does the monthly newsletter, I do release notes"},
+        {"kind": "assistant", "text": "Noted: Tomas owns the Marrowfield monthly newsletter and you own release notes."},
+        {"kind": "user", "text": "oh and the welcome drip for new signups is Dessa's thing, she writes + schedules all of it"},
+        {"kind": "assistant", "text": "Great. For the onboarding emails, do you want a 3-step or 5-step sequence? Five steps lets you introduce integrations separately, but three tends to get better completion rates for small products."},
+        {"kind": "user", "text": "5 step, we have a lot to explain"},
+        {"kind": "assistant", "text": "Five it is. Suggested outline: 1) welcome + first project, 2) inviting teammates, 3) integrations, 4) templates, 5) a check-in asking for feedback."}
+      ],
+      "expectedFirst": 2,
+      "rationale": "'Welcome drip for new signups' means the onboarding emails, and index 2 names Dessa as the owner. The records that actually say 'onboarding emails' never name an owner, and index 1 is about other owners."
+    },
+    {
+      "name": "pebblereach-original-palette",
+      "query": "what colors did I originally pick for pebblereach",
+      "records": [
+        {"kind": "user", "text": "starting brand work for pebblereach (the bakery ordering app)"},
+        {"kind": "assistant", "text": "Fun! Do you have colors in mind already, or should I propose a few palettes?"},
+        {"kind": "user", "text": "yeah teal + coral i think, warm but fresh. maybe a cream bg"},
+        {"kind": "assistant", "text": "Teal and coral on cream is a nice combo: teal reads trustworthy, coral feels appetizing. I'd keep coral for CTAs only so it doesn't overwhelm the menu screens."},
+        {"kind": "user", "text": "update: my cofounder hates coral lol. go navy and mustard"},
+        {"kind": "summary", "text": "Summary: Pebblereach brand palette discussed. At first the user wanted a warm-but-fresh look; palette later changed to navy and mustard after cofounder feedback. Cream background retained."},
+        {"kind": "user", "text": "wait what did i originally say for colors before the navy thing"},
+        {"kind": "assistant", "text": "I think you originally went with teal and a coral-ish pink on cream, before switching to navy and mustard."}
+      ],
+      "expectedFirst": 2,
+      "rationale": "Index 2 is the user's own original choice of teal + coral. The summary leaves out the original colors, index 6 is just the question again, and index 7 is a hedged paraphrase."
+    },
+    {
+      "name": "gristhollow-venue-by-elimination-summary",
+      "query": "which venue did we end up booking for the gristhollow offsite",
+      "records": [
+        {"kind": "user", "text": "gristhollow offsite: ~40 people, october, need a venue within 2h of the city"},
+        {"kind": "assistant", "text": "Three options that fit: Lakeside Lodge (2h15, gorgeous but a stretch on travel), Copperleaf Pavilion (central, but capacity is 30 seated), and Ashgrove Barn (1h40, sleeps 45, has a kitchen). Want me to compare prices?"},
+        {"kind": "user", "text": "lakeside is too far honestly, people will riot"},
+        {"kind": "summary", "text": "Summary: Continued Gristhollow offsite venue discussion. Lakeside Lodge ruled out (travel time), Copperleaf Pavilion ruled out (too small for 40). By elimination the group went with Ashgrove Barn for the October offsite; deposit to be paid by Friday. Catering still open."},
+        {"kind": "user", "text": "ok catering now. needs to be veggie friendly, a couple vegans too"},
+        {"kind": "assistant", "text": "Since the venue has its own kitchen, you could bring in a caterer who cooks on site. Fennel & Fig and Brass Spoon both do fully vegan menus; Fennel & Fig is cheaper for groups over 35."},
+        {"kind": "user", "text": "fennel & fig. book em"}
+      ],
+      "expectedFirst": 3,
+      "rationale": "No user message ever explicitly picks Ashgrove Barn; the choice came by elimination, and only the summary states it. Index 1 lists every venue name but decides nothing, and index 6 books the caterer."
+    },
+    {
+      "name": "hazelport-standup-time-current",
+      "query": "what time is hazelport standup right now",
+      "records": [
+        {"kind": "user", "text": "setting up rituals for the hazelport team, 6 ppl incl 2 in lisbon"},
+        {"kind": "assistant", "text": "Happy to help. A typical set is a daily standup, weekly planning, and a biweekly retro. Want to start with standup timing?"},
+        {"kind": "user", "text": "standup daily at 9:30"},
+        {"kind": "assistant", "text": "9:30 daily for the Hazelport standup, noted."},
+        {"kind": "user", "text": "ugh 9:30 clashes w Mirela's school run. 10:15?"},
+        {"kind": "user", "text": "wait no 10:15 hits the client sync on tuesdays. just do 9:45 every day, final"},
+        {"kind": "assistant", "text": "Before you lock it in: the Lisbon folks are an hour behind, so 9:30 would have been 8:30 for them and 10:15 would be 9:15. Some teams rotate the standup time weekly to share the pain, or alternate between an early and a late slot."},
+        {"kind": "user", "text": "they'll cope lol. also rename the invite to Hazelport daily"},
+        {"kind": "assistant", "text": "Renamed the invite to 'Hazelport daily'."}
+      ],
+      "expectedFirst": 5,
+      "rationale": "The user's 'just do 9:45 every day, final' replaces 9:30 and 10:15. The long assistant reply after it only mentions the old times."
+    },
+    {
+      "name": "saltmarsh-overseas-payment-term-edit",
+      "query": "what payment term did we land on for the overseas saltmarsh invoices",
+      "records": [
+        {"kind": "user", "text": "draft the payment terms para for saltmarsh ledger invoices. net 30"},
+        {"kind": "assistant", "text": "Here's a draft: 'Payment is due within thirty (30) days of the invoice date. Kindly remit payment by bank transfer to the account listed below. Invoices unpaid after the due date accrue a late fee of 1.5% per month on the outstanding balance. Please reference the invoice number on all payments.'"},
+        {"kind": "user", "text": "good. also need an overseas version, they pay wire fees"},
+        {"kind": "assistant", "text": "Overseas version: 'Payment is due within thirty (30) days of the invoice date. All international wire transfer fees and intermediary bank charges are the responsibility of the client; the amount received must equal the invoiced total. Kindly remit in the invoice currency. Late payments accrue 1.5% per month.'"},
+        {"kind": "user", "text": "Hal from finance read both, he's fine w the domestic one as is. oh and kill 'kindly' everywhere, sounds stiff"},
+        {"kind": "user", "text": "for the overseas one make it 45 days tho, wires are slow"},
+        {"kind": "assistant", "text": "Removed 'kindly'. Domestic now reads: 'Payment is due within thirty (30) days of the invoice date. Please remit payment by bank transfer to the account listed below. Invoices unpaid after the due date accrue a late fee of 1.5% per month on the outstanding balance. Please reference the invoice number on all payments.' I'll paste the updated overseas wording in the next message."}
+      ],
+      "expectedFirst": 5,
+      "rationale": "The short user edit at index 5 sets the overseas term to 45 days. The long assistant drafts that mention payment terms all say thirty days, either for the old overseas draft or for the domestic version."
+    },
+    {
+      "name": "thistledown-original-logo-font",
+      "query": "which typeface did I originally want for the thistledown logo",
+      "records": [
+        {"kind": "user", "text": "thistledown is the tea subscription thing, starting branding today"},
+        {"kind": "assistant", "text": "Great. Want to start with typography or color?"},
+        {"kind": "user", "text": "type. body text Inter, headings Inter bold"},
+        {"kind": "user", "text": "and for the logo wordmark I want Recoleta, chunky + friendly"},
+        {"kind": "assistant", "text": "Recoleta for the wordmark pairs well with Inter; the contrast between the soft serif and the neutral sans will make the logo stand out on packaging."},
+        {"kind": "user", "text": "hmm we originally decided Inter for body but it reads too techy for tea. switch body to Source Serif"},
+        {"kind": "summary", "text": "Summary: Thistledown typography: body font originally decided as Inter, later changed to Source Serif for a warmer feel. Headings remain Inter bold."}
+      ],
+      "expectedFirst": 3,
+      "rationale": "Index 3 is where the user first asks for Recoleta for the logo. Records 5 and 6 repeat 'originally decided' and 'font' but are about the body font."
+    },
+    {
+      "name": "juniperwake-illustrator-fee-synonyms",
+      "query": "how much are we paying the freelance illustrator for juniperwake",
+      "records": [
+        {"kind": "user", "text": "juniperwake picture book status: manuscript locked at 14 spreads!!"},
+        {"kind": "assistant", "text": "Nice milestone. Next up is usually locking in the art and getting print quotes. Have you got either yet?"},
+        {"kind": "user", "text": "printer quote came in: 3,100 for 500 hardcovers, we pay half upfront"},
+        {"kind": "user", "text": "and Kofi (the artist doing the drawings) agreed to 2,400 flat for all 14 spreads, i said yes"},
+        {"kind": "assistant", "text": "Do you want a contract template for the illustrator? It would usually cover the payment schedule, usage rights, number of revision rounds and delivery format."},
+        {"kind": "user", "text": "yes pls, keep it short"},
+        {"kind": "assistant", "text": "Short illustrator agreement:\n1. Scope: Illustrator will deliver [N] finished spreads for the Juniperwake picture book.\n2. Payment: Illustrator shall be paid the Fee of [FEE] in two installments, 50% on signing and 50% on delivery of final files.\n3. Rights: Exclusive print and ebook rights for the publisher; Illustrator may show work in a portfolio.\n4. Revisions: Up to two rounds per spread.\n5. Delivery: 300dpi layered files by [DATE]."}
+      ],
+      "expectedFirst": 3,
+      "rationale": "'Artist doing the drawings' and 'agreed to 2,400 flat' mean the illustrator's fee, and index 3 states it. The printer quote is a different payee, and the contract template only has a [FEE] placeholder."
+    },
+    {
+      "name": "rookhaven-dark-mode-cut-reason-summary",
+      "query": "why did we cut dark mode from the rookhaven v1?",
+      "records": [
+        {"kind": "summary", "text": "Summary: Set up the Rookhaven project board, agreed on two-week sprints, and listed candidate v1 features: offline sync, CSV export, onboarding tour, dark mode, and widgets."},
+        {"kind": "user", "text": "ok so widgets are def out, too much platform work"},
+        {"kind": "assistant", "text": "Agreed. Widgets move to the later backlog, which keeps v1 to four candidate features."},
+        {"kind": "user", "text": "lets keep going on scope tmrw"},
+        {"kind": "summary", "text": "Summary: Finalised Rookhaven v1 scope. Dark mode dropped from v1 because the theming tokens aren't in place yet and QA only has capacity for one visual regression pass; revisit for v1.2. v1 = offline sync, CSV export, onboarding tour."},
+        {"kind": "user", "text": "beta testers keep asking about dark mode in the discord lol"},
+        {"kind": "assistant", "text": "Want me to draft a short reply for the beta channel? Something like: dark mode isn't in v1 but it's on the roadmap, and we'll share timing once it's scheduled."},
+        {"kind": "user", "text": "sure, keep it friendly"}
+      ],
+      "expectedFirst": 4,
+      "rationale": "Only the second summary gives the reason dark mode was dropped (theming tokens not ready, limited QA). Later records mention dark mode and v1 but give no reason, and index 1 explains why widgets were cut."
+    },
+    {
+      "name": "ninefold-creek-initial-rollout-percent",
+      "query": "what % did i first roll the ninefold new checkout out to, before all the back and forth",
+      "records": [
+        {"kind": "user", "text": "flip the ninefold creek new-checkout flag to 15% of traffic, let's see how it does"},
+        {"kind": "assistant", "text": "Set new-checkout to 15%. I'd watch payment error rate and p95 latency for the first hour."},
+        {"kind": "user", "text": "metrics look fine after a day. bump to 40"},
+        {"kind": "assistant", "text": "Bumped new-checkout from 15% to 40%."},
+        {"kind": "user", "text": "errors spiking on the card step, roll back to 5"},
+        {"kind": "assistant", "text": "Rolled back to 5%. Before we changed it from 40, the card-step error rate was 0.4%; it's now 2.1% on the new flow, so something in that step is definitely regressing."},
+        {"kind": "summary", "text": "Summary: Ninefold Creek new-checkout flag rollout: initial percentage set early on, raised to 40% after a day, then cut to 5% due to card-step errors."}
+      ],
+      "expectedFirst": 0,
+      "rationale": "The user's first instruction set the rollout to 15%. The assistant only echoes it, index 5 uses 'before we changed it' about error rates, and the summary leaves the initial number out."
+    },
+    {
+      "name": "ambergate-search-replicas-current",
+      "query": "how many replicas is the ambergate search thing running right now",
+      "records": [
+        {"kind": "user", "text": "ambergate search service: 3 replicas to start"},
+        {"kind": "assistant", "text": "3 replicas for search, enough for redundancy across the three zones."},
+        {"kind": "user", "text": "sale weekend coming, bump search to 5"},
+        {"kind": "assistant", "text": "Search scaled to 5 replicas for the sale."},
+        {"kind": "user", "text": "also the indexer should go to 6 replicas, we changed the batch size so it needs more headroom"},
+        {"kind": "assistant", "text": "Indexer set to 6 replicas. With the larger batch size, memory per pod goes up too, so I bumped the request to 2Gi. Current replica counts: indexer 6, search 5, ingest gateway 2. Let me know when the sale's over and we can revisit."},
+        {"kind": "user", "text": "sale's done. drop search to 4, not back to 3, baseline traffic has grown"},
+        {"kind": "assistant", "text": "Do you want the indexer scaled back as well, or keep it at 6?"}
+      ],
+      "expectedFirst": 6,
+      "rationale": "Index 6 is the latest user correction and sets search to 4. Index 5 lists 'current replica counts' but is out of date, and index 4 is about the indexer."
+    },
+    {
+      "name": "lanternfell-thumbnail-cache-command",
+      "query": "what was the command to rebuild the lanternfell image preview cache",
+      "records": [
+        {"kind": "user", "text": "lanternfell's thumbnail cache is stale again, how do i nuke and regenerate it"},
+        {"kind": "assistant", "text": "Run `lf-cli cache purge --scope thumbs` and then `lf-cli cache warm --scope thumbs --concurrency 4`. Purge drops the stale entries; warm regenerates them from the originals so the first page loads aren't slow."},
+        {"kind": "user", "text": "worked, thx. separately how do i clear the session store, ppl getting logged out weirdly"},
+        {"kind": "assistant", "text": "`lf-cli sessions flush --all` clears every session; add `--older-than 7d` if you only want to drop old ones. If logouts look random, check that all nodes share the same signing secret."},
+        {"kind": "user", "text": "the secret thing was it lol. Rafaela had rotated it on one node"},
+        {"kind": "assistant", "text": "Classic. Worth adding a startup check that refuses to boot if a node's secret hash differs from the rest of the cluster."}
+      ],
+      "expectedFirst": 1,
+      "rationale": "The query says 'image preview cache' and 'rebuild', meaning the thumbnail cache. The assistant reply at index 1 holds the actual purge/warm commands; index 3 is a command for a different store."
+    }
+  ]
+}
