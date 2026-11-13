@@ -239,7 +239,30 @@ hyphenated absent query, in addition to dense, absent, Unicode and historical
 matching queries. An absent result has no
 continuation to measure.
 
-The earlier ranking-v2 final-source **pre-commit** run on Node 24.18.0,
+A ranking-v3 **pre-commit** run on Node 24.18.0, Apple M3 Max / arm64 /
+48 GiB RAM completed all **60** predetermined measurements within the accepted
+**5 seconds / 100 MiB additional JS heap / 128 MiB additional RSS** envelope.
+Scoring sources were frozen before evaluation; only docs and comparison-test
+bookkeeping followed this run. The original **64-MiB heap target remains unmet**.
+
+| V3 corpus and workload | Scan time range | Peak extra JS heap | Peak extra RSS |
+| --- | --- | --- | --- |
+| 10k / 32 MiB, qualified | 0.187–0.335 s | 25.770 MiB | 22.063 MiB |
+| 10k / 32 MiB, factual evidence | 0.187–0.320 s | 26.110 MiB | 8.688 MiB |
+| 100k / 256 MiB, qualified | 1.633–2.083 s | 97.905 MiB | 93.406 MiB |
+| 100k / 256 MiB, factual evidence | 1.634–2.073 s | 96.345 MiB | 63.234 MiB |
+
+The maximum observed v3 heap was 97.90464782714844 MiB, leaving only
+**2.0953521728515625 MiB** of headroom. This remains a thin, GC-sensitive margin,
+not a robust reduction or a guarantee. Maximum transaction/text-batch time was
+257.457 ms. All ten repeated 100k scans completed; qualified post-GC heaps ranged
+from 7.003 to 7.032 MiB (baseline 7.014 MiB), evidence from 7.024 to 7.056 MiB
+(baseline 7.061 MiB). Neither series showed accumulating growth. GC ran before
+each measured scan and after repeated scans. Cold means reopened SQLite, not a
+flushed OS filesystem cache; warm is an immediate repeat. These observations do
+not authorize higher concurrency or exempt peak limits.
+
+For comparison, the earlier ranking-v2 final-source **pre-commit** run on Node 24.18.0,
 Apple M3 Max / arm64 /
 48 GiB RAM measured the table below. Production sources and benchmark were final;
 only documentation/commit bookkeeping followed this run. These are explicitly
@@ -256,8 +279,8 @@ The original requested target was **5 seconds / 64 MiB extra JS heap / 128 MiB
 extra RSS**. The largest declared corpus missed that heap target; the accepted
 **100-MiB heap envelope is a relaxation**, not achievement of the original target.
 That accepted envelope is unchanged for these measurements and for ranking v3.
-The table is historical v2 evidence, not a measurement of the v3 default. V3
-requires its own run of the same unmodified workloads against that envelope.
+This second table is historical v2 evidence, not a measurement of the v3 default;
+the v3 results above use the same unmodified workloads and accepted envelope.
 
 All **60** measurements completed within that accepted envelope:
 **5 seconds, 100 MiB additional JS heap, 128 MiB additional RSS**. Observed maximum

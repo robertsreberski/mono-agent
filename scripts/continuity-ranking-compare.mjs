@@ -40,7 +40,7 @@ export function loadRankingFixture(name) {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  for (const name of ["continuity-ranking-retention4", "continuity-ranking-heldout-independent"]) {
+  for (const name of ["continuity-ranking-retention4", "continuity-ranking-heldout-independent", "continuity-ranking-heldout-blind-v2"]) {
     console.log(JSON.stringify({ fixture: name, ...compareRankings(loadRankingFixture(name)) }, null, 2));
   }
 }
