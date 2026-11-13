@@ -314,12 +314,13 @@ describe("versioned evidence-sensitive ranking (queries frozen before weights)",
       rankingFixture.upgrade.texts.forEach(text => f.add(text));
       const seen = [...frozen.firstPage], scores = frozen.scores.slice(0, frozen.firstPage.length);
       let cursor: ContinuityRelevanceContinuation | undefined = frozen.issuedCursor as ContinuityRelevanceContinuation;
-      while (cursor) {
+      for (let pages = 0; cursor && pages < frozen.traversal.length + 1; pages++) {
         const page = searchContinuity(f.db, { ...scope, query: frozen.query, limit: frozen.limit ?? 2, mode: "relevance", continuation: cursor });
         expect(page.degradedReason).toBeUndefined(); expect(page.rankingVersion).toBe(1);
         seen.push(...page.items.map(item => item.recordId)); scores.push(...page.resumeAfter!.map(boundary => boundary.anchor.score));
         cursor = page.continuation;
       }
+      expect(cursor, "v1 paging must terminate within the traversal bound").toBeUndefined();
       expect(seen).toEqual(frozen.traversal); expect(scores).toEqual(frozen.scores);
       // Independently re-evaluate the complete frozen parser/eligibility/score
       // and tie comparator, including the page emitted before the upgrade.
@@ -344,8 +345,12 @@ describe("versioned evidence-sensitive ranking (queries frozen before weights)",
       // One search + batched first reads + batched continuations, not preview
       // credit or an arbitrary offset. Short edits fit one chunk; other sources
       // are 12,000 bytes and need both reads.
+      let recoveryRounds = 1; // Search is one tool round; each batched read adds one.
       const first = required.map(source => getContinuity(f.db, { ...scope, recordId: source.id, chunkBytes: 8192 }));
+      recoveryRounds++;
       const second = first.map(part => part.nextOffset === undefined ? part : getContinuity(f.db, { ...scope, recordId: part.record!.recordId, chunkBytes: 8192, chunkOffset: part.nextOffset }));
+      if (first.some(part => part.nextOffset !== undefined)) recoveryRounds++;
+      expect(recoveryRounds).toBeLessThanOrEqual(scenario.maxRounds);
       second.forEach((part, index) => {
         expect(part.nextOffset).toBeUndefined();
         const recovered = first[index]!.nextOffset === undefined ? part.chunk! : first[index]!.chunk! + part.chunk!;
@@ -398,13 +403,14 @@ it("pages historical v2 ties losslessly with versioned anchors and no event-date
     const expected = Array.from({ length: 12 }, () => f.add("cobalt launch recap"));
     let page = f.search("historical cobalt launch", 3);
     const seen: string[] = [];
-    for (;;) {
+    for (let pages = 0; pages < expected.length + 1; pages++) {
       seen.push(...page.items.map(item => item.recordId));
       if (!page.continuation) break;
       expect(page.continuation.rankingVersion).toBe(2);
       page = searchContinuity(f.db, { ...scope, query: "historical cobalt launch", limit: 3, mode: "relevance", continuation: page.continuation });
       expect(page.degradedReason).toBeUndefined();
     }
+    expect(page.continuation, "v2 paging must terminate within the record bound").toBeUndefined();
     expect(seen).toEqual(expected.map(source => source.id));
   } finally { f.db.close(); }
 });
@@ -471,13 +477,11 @@ describe("ranking review regressions", () => {
   });
 });
 
-describe("held-out ranking evaluation (frozen before review-fix code; weights unchanged)", () => {
+describe("frozen ranking specification cases (weights unchanged)", () => {
   it.each(rankingHeldout.cases)("evaluates $name", scenario => {
     const f = fixture(); try {
       const ids = scenario.records.map(row => f.add(row.text, "committed", scope.logicalConversationId, row.kind).id);
-      const pipeline = relevancePipeline(2, scenario.query), page = f.search(scenario.query);
-      const scores = scenario.records.map(row => pipeline.match(row.text, row.kind as "user" | "assistant" | "summary")?.score ?? null);
-      console.info("heldout", JSON.stringify({ name: scenario.name, scores, expectedFirst: scenario.expectedFirst, actualFirst: ids.indexOf(page.items[0]?.recordId ?? "") }));
+      const page = f.search(scenario.query);
       expect(page.items[0]!.recordId).toBe(ids[scenario.expectedFirst]);
     } finally { f.db.close(); }
   });
@@ -556,7 +560,7 @@ describe("general lexical review fixes", () => {
   });
 });
 
-it("evaluates the frozen independent set with per-case top-1 and aggregate MRR nonregression", () => {
+it("evaluates the frozen independently authored development set with top-1 and MRR nonregression", () => {
   let v1Reciprocal = 0, v2Reciprocal = 0;
   for (const scenario of independentHeldout.cases) {
     const f = fixture(); try {
@@ -577,12 +581,59 @@ it("evaluates the frozen independent set with per-case top-1 and aggregate MRR n
       const page = f.search(scenario.query, 10);
       expect(page.scan!.complete).toBe(true); expect(page.scan!.records).toBe(scenario.records.length);
       expect(page.items.map(item => ids.indexOf(item.recordId))).toEqual(v2!.order);
-      console.log("independent", JSON.stringify({ name: scenario.name, expectedFirst: scenario.expectedFirst, v1, v2 }));
       if (v1!.rank === 1) expect(v2!.rank, scenario.name).toBe(1);
       v1Reciprocal += v1!.rank === null ? 0 : 1 / v1!.rank;
       v2Reciprocal += v2!.rank === null ? 0 : 1 / v2!.rank;
     } finally { f.db.close(); }
   }
-  console.log("independent-mrr", JSON.stringify({ v1: v1Reciprocal / independentHeldout.cases.length, v2: v2Reciprocal / independentHeldout.cases.length }));
   expect(v2Reciprocal).toBeGreaterThanOrEqual(v1Reciprocal);
+});
+
+
+describe("general framing review fixes", () => {
+  const pipeline = () => relevancePipeline(2, "earlier copper route correction");
+  const neutral = () => pipeline().match("Copper route reference.", "user")!.score;
+  it.each([["'", "'"], ['"', '"'], ["“", "”"], ["‘", "’"], ["`", "`"]])("distinguishes opening %s and closing %s delimiters", (open, close) => {
+    for (const word of ["cancelled", "canceled", "corrects", "fixing", "rescheduled", "changing", "amends", "postponed", "reported"]) {
+      expect(pipeline().match(`Copper route: ${open}${word}${close} is sample wording.`, "user")!.score).toBe(neutral());
+      expect(pipeline().match(`Copper route ${open}warehouse${close} ${word} the timetable.`, "user")!.score).toBeGreaterThan(neutral());
+      expect(pipeline().match(`Copper route: (${open}${word}${close}) is sample wording.`, "user")!.score).toBe(neutral());
+    }
+  });
+  it.each([
+    "If copper route had already been cancelled, the depot needed a substitute.",
+    "Had copper route been rescheduled, the depot needed a substitute.",
+    "Notes. Had copper route been rescheduled, the depot needed a substitute.",
+    "Were it cancelled, copper route needed a substitute.",
+    "If copper route were moved, the depot needed a substitute.",
+  ])("does not reward conditional framing: %j", text => {
+    expect(pipeline().match(text, "user")!.score).toBe(neutral());
+  });
+  it("does reward a factual past-perfect statement without conditional framing", () => {
+    expect(pipeline().match("Copper route had been moved yesterday.", "user")!.score).toBeGreaterThan(neutral());
+  });
+  it.each(["didn't", "didn’t", "wasn't", "wasn’t", "hasn't", "hasn’t", "can't", "can’t"])("supports negation contraction %j", word => {
+    expect(pipeline().match(`Copper route ${word} actually change the timetable.`, "user")!.score).toBe(neutral());
+  });
+  it.each([
+    "the time was the one that we used to follow",
+    "what was the protocol that we used to follow",
+    "we used to follow copper routing",
+  ])("keeps habitual used-to historical: %j", text => {
+    expect(evidenceQuery(text).historical).toBe(true);
+  });
+  it.each([
+    "the lift is used to transport cargo",
+    "the lifts are being used to transport cargo",
+    "the lift was used to transport cargo",
+    "the lifts were being used to transport cargo",
+    "what is the lift used to transport",
+    "which lift was used to transport cargo",
+  ])("recognizes a narrow purpose/passive frame: %j", text => {
+    expect(evidenceQuery(text).historical).toBe(false);
+  });
+  it("discards tokenized needn't and ain't fragments as stop words", () => {
+    expect(evidenceQuery("we needn’t update the copper route and it ain’t new").content.map(entry => entry.term)).toEqual(["copper", "route", "new"]);
+    expect(englishStopWords.has("needn")).toBe(true); expect(englishStopWords.has("ain")).toBe(true);
+  });
 });

@@ -5,8 +5,9 @@
 - Add versioned evidence-sensitive conversation ranking with general English
   stop-word filtering, intent-only fallback, bounded correction/event morphology
   and identifier-component discovery. Prefer content in complementary previews,
-  qualify local signals and historical echoes, and bound scan allocation while
-  preserving issued ranking-v1 traversal. Ranking grants no truth or authority.
+  qualify local signals with scoped quotes, negation and conditionals, reduce
+  historical echoes, and bound scan allocation while preserving issued ranking-v1
+  traversal. Ranking grants no truth or authority.
 
 - Fix `ConversationHistory` retrieval follow-through, clamp safe integer
   search limits to 1–10, and show complementary previews with separate byte ranges.

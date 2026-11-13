@@ -15,7 +15,7 @@ async function scratch() { const base = join(ROOT, ".worklab-tmp"); await mkdir(
 
 /** A deterministic model-visible actor: no planted IDs, fixture corpus or answer
  * key. It can only use the natural query, public previews and returned actions. */
-function naturalReader(pi, query, path) {
+function naturalReader(pi, query, path, maxSearchRank = 5) {
   let requests = 0;
   const observed = [], witness = lookupWitness(), delivered = new Set();
   return {
@@ -28,7 +28,7 @@ function naturalReader(pi, query, path) {
       let actions;
       if (requests === 1) {
         expect(JSON.stringify(context)).not.toMatch(/chr1_[A-Za-z0-9_-]{43}/u);
-        actions = [{ action: "search", query, limit: 5 }];
+        actions = [{ action: "search", query, limit: maxSearchRank }];
       } else if (requests === 4) {
         expect(context.tools).toEqual([]);
         expect(witness.snapshot().records.every(r => r.verified)).toBe(true);
@@ -36,7 +36,7 @@ function naturalReader(pi, query, path) {
       } else {
         const search = bodies.find(row => row.body?.action === "search")?.body;
         expect(search).toBeTruthy();
-        const selected = path === "ranked" ? search.items.slice(0, 5) : search.items.filter(item => /Original report:|Correction:/u.test([item.preview, ...(item.additionalPreviews ?? []).map(window => window.preview)].join("\n")));
+        const selected = path === "ranked" ? search.items.slice(0, maxSearchRank) : search.items.filter(item => /Original report:|Correction:/u.test([item.preview, ...(item.additionalPreviews ?? []).map(window => window.preview)].join("\n")));
         const gets = selected.map(item => search.navigation.nextActions.find(a => a.kind === "get_record" && a.arguments.recordId === item.recordId)?.arguments);
         expect(gets.every(Boolean)).toBe(true);
         if (path === "sequential") actions = [gets[requests - 2]];
@@ -160,7 +160,7 @@ it.each(rankingFixture.recovery)("recovers frozen v2 $name sources through insta
   const estimators = await loadE2Estimators(), soul = await shippingSoul();
   const faux = pi.fauxProvider({ provider: "faux", models: [{ id: "fictional-ranking", contextWindow: 272000, maxTokens: 8192 }] });
   const collection = pi.createModels(); collection.setProvider(faux.provider);
-  const actor = naturalReader(pi, scenario.query, "ranked");
+  const actor = naturalReader(pi, scenario.query, "ranked", scenario.maxSearchRank);
   const route = createE2Models({ pi, estimators, models: [{ model: "faux:fictional-ranking" }], limits: { compactions: 0, probeRequests: 4, sourceRequests: 0 },
     probeLookupRounds: 3, soul, sourceReply: context => actor.reply(context) });
   route.setPosition({ probe: true, model: "faux:fictional-ranking", turn: 0, message: 0 });
@@ -169,11 +169,12 @@ it.each(rankingFixture.recovery)("recovers frozen v2 $name sources through insta
     messages: [{ role: "user", content: scenario.query }], allowedTools: ["ConversationHistory"], ...extension.runtimeOptions,
     piResolvedModel: faux.getModel(), piResolvedModels: route.decorator(collection), maxTurns: 4, compaction: { enabled: false }, piMaxRetries: 0 });
   const requests = scenario.name === "short-edit" ? 3 : 4;
+  expect(requests - 1).toBeLessThanOrEqual(scenario.maxRounds);
   expect(result.error).toBeNull(); expect(actor.observed).toHaveLength(requests); expect(route.report().probeRequests).toBe(requests);
   const search = actor.observed[1].bodies.find(body => body?.action === "search");
   expect(search.rankingVersion).toBe(2); expect(actor.observed[1].visible.join("\n")).toContain('"rankingVersion":2');
   for (const record of records.slice(0, 2)) {
-    expect(search.items.slice(0, 5).map(item => item.recordId)).toContain(record.recordId);
+    expect(search.items.slice(0, scenario.maxSearchRank).map(item => item.recordId)).toContain(record.recordId);
     expect(actor.witness.snapshot().records.find(row => row.recordId === record.recordId)).toMatchObject({ verified: true, chunks: scenario.name === "short-edit" ? 1 : 2, sha256: sha256(record.text) });
   }
   if (requests === 4) expect(actor.observed[3].tools).toEqual([]);

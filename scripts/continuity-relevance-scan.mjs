@@ -60,7 +60,7 @@ try {
           results.push(result); console.log(JSON.stringify(result));
         }
       }
-      if (count === 100_000 && workload === "evidence") {
+      if (count === 100_000) {
         const connection = new DatabaseSync(path, { readOnly: true });
         const reader = {
           text(row) { if (sha(row.retained_text) !== row.text_sha256) throw Error("digest_mismatch"); return row.retained_text; },
@@ -81,8 +81,8 @@ try {
           samples[run * 3] = process.memoryUsage().heapUsed / 1024 ** 2;
           samples[run * 3 + 1] = Number(complete); samples[run * 3 + 2] = elapsed;
         }
-        console.log(JSON.stringify({ leakCheck: "before", heapMiB: before }));
-        for (let run = 0; run < 5; run++) console.log(JSON.stringify({ leakCheck: run + 1, heapMiB: samples[run * 3], complete: Boolean(samples[run * 3 + 1]), elapsedMs: samples[run * 3 + 2] }));
+        console.log(JSON.stringify({ workload, leakCheck: "before", heapMiB: before }));
+        for (let run = 0; run < 5; run++) console.log(JSON.stringify({ workload, leakCheck: run + 1, heapMiB: samples[run * 3], complete: Boolean(samples[run * 3 + 1]), elapsedMs: samples[run * 3 + 2] }));
         connection.close();
       }
     }

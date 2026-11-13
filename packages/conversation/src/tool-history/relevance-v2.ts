@@ -15,21 +15,30 @@ const correctionVocabulary = "corrections?|correct(?:s|ed|ing)?|chang(?:e[sd]?|i
 const correction = new RegExp(`\\b(?:${correctionVocabulary})\\b`, "giu");
 const correctionTerm = new RegExp(`^(?:${correctionVocabulary})$`, "iu");
 const isIntent = (term: string) => intentWords.has(term) || correctionTerm.test(term);
-const event = /\b(?:scheduled|moved|cancelled|canceled|postponed|decided|requested|reported|original|occurred|happened)\b/giu;
-const hypothetical = /\b(?:hypothetical(?:ly)?|suppos(?:e|ing)|imagine|counterfactual|what\s+if|for\s+example)\b|\bif\b[^;.!?\n]*\b(?:would|could|might)\b/iu;
-const quoted = /\bquot(?:e|ed|ation)\b|```|^\s*>|["“`][^"”`\n]*\b(?:correction|corrected|changed|revised|amended|instead|actually|updated|scheduled|moved|original|requested)\b/iu;
+const eventVocabulary = "scheduled|moved|cancelled|canceled|postponed|decided|requested|reported|original|occurred|happened";
+const event = new RegExp(`\\b(?:${eventVocabulary})\\b`, "giu");
+const hypothetical = /\b(?:hypothetical(?:ly)?|suppos(?:e|ing)|imagine|counterfactual|what\s+if|for\s+example)\b|\bif\b[^;.!?\n]*\b(?:would|could|might|had|were)\b|(?:^|,)\s*(?:had\s+(?:[\p{L}\p{N}'’-]+\s+){1,8}been\b|were\s+\p{L})/iu;
+// An opener begins a token, never the closing delimiter in a quoted name or
+// an apostrophe inside a contraction. Both signal vocabularies are shared with
+// record qualification, including their inflections and both cancel spellings.
+const quoted = new RegExp(`\\bquot(?:e|ed|ation)\\b|\x60\x60\x60|^\\s*>|(?:^|[\\s\\p{Ps}\\p{Pi}])["'“‘\x60][^"'”’\x60\\n]*\\b(?:${correctionVocabulary}|${eventVocabulary})\\b`, "iu");
 // Negation must precede the signal in the same clause, within three words.
 // It does not veto a separate factual clause (or a later permission disclaimer).
-const negated = /\b(?:not|never|no|without|cannot|can't|isn't|wasn't|didn't|hasn't|haven't|won't|don't|doesn't)(?:\s+[\p{L}\p{N}'’-]+){0,3}\s*$/iu;
+const negated = /\b(?:not|never|no|without|cannot|can['’]t|isn['’]t|wasn['’]t|didn['’]t|hasn['’]t|haven['’]t|won['’]t|don['’]t|doesn['’]t)(?:\s+[\p{L}\p{N}'’-]+){0,3}\s*$/iu;
 const userKinds = new Set<ContinuityKind>(["user", "owner", "other-user"]);
 const echoKinds = new Set<ContinuityKind>(["assistant", "summary"]);
 const globalPattern = (pattern: RegExp) => new RegExp(pattern.source, pattern.flags + "g");
 
 export function evidenceQuery(text: string) {
   const base = relevanceQuery(text);
-  // A bounded auxiliary ... used-to frame is the purpose/passive sense, not
-  // habitual history. No verb dictionary or corpus-specific phrases are needed.
-  const purpose = /\b(?:am|is|are|was|were|be|been|being)\s+(?:[\p{L}\p{N}_'’]+\s+){0,8}used\s+to\s+\p{L}/iu.test(text);
+  // Purpose has a passive frame with an immediate infinitive head. Inverted
+  // questions may place a short noun phrase after the auxiliary, but not an
+  // embedded relative clause or a new personal subject ("that we used to ...").
+  // The frame supplies the grammatical verb slot; no corpus-specific verb list.
+  const directPurpose = /\b(?:am|is|are|was|were|be|been|being)\s+(?:being\s+)?used\s+to\s+([\p{L}]+)/iu.exec(text);
+  const questionPurpose = /\b(?:what|which|how|why)(?:\s+[\p{L}]+){0,4}\s+(?:am|is|are|was|were|be|been|being)\s+(?:(?!(?:that|which|who|whom|whose|where|when|if|because|while|although|whether|and|or|but|we|i|you|he|she)\b)[\p{L}\p{N}_'’-]+\s+){1,6}used\s+to\s+([\p{L}]+)/iu.exec(text);
+  const head = (directPurpose ?? questionPurpose)?.[1]?.toLowerCase();
+  const purpose = head !== undefined && (!englishStopWords.has(head) || ["be", "do", "have"].includes(head));
   const historical = !base.terms.some(term => currentWords.has(term))
     && (base.terms.some(term => historicalWords.has(term)) || (!purpose && /\bused\s+to\b/iu.test(text)));
   const wantsCorrection = base.terms.some(term => correctionTerm.test(term) || term === "revision");

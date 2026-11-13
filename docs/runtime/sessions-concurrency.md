@@ -129,7 +129,7 @@ effective limit, ranking version, watermark, membership digest, anchor and scope
 Legacy chronological envelope-v1 cursors retain their original semantics.
 
 Both rankers preserve Unicode-aware partial term, phrase and identifier matching.
-**All v2 lexical queries filter content anchors through a separate 155-word
+**All v2 lexical queries filter content anchors through a separate 157-word
 English function-word list**, distinct from event/change intent. Stop words do
 not compete with content. If only intent/change terms remain, those terms become
 literal content anchors; if no non-stop terms remain, eligibility falls back to
@@ -139,16 +139,21 @@ identifier components and bounded query-relevant event, correction and short-use
 edit bonuses. Numeric identifiers keep their full spelling. Record-side correction
 signals include base, plural and common inflections such as change/changes/changing,
 correct/corrects, fix/fixed, reschedule/rescheduled and move/moved.
-Clause-scoped negation, quotation and clearly hypothetical framing suppress
+Clause-scoped negation (including curly-apostrophe contractions), token-opening
+quotation delimiters and clearly hypothetical framing suppress
 bonuses, not lexical eligibility. A bare `if`, `would` or `example` is not a veto:
-polite factual corrections can still receive bonuses. These are bounded English
+polite factual corrections can still receive bonuses. Past-perfect and subjunctive
+conditionals, including inverted “had … been” and “were it …” clauses, suppress
+signal bonuses. Quoted signal detection shares the full correction/event
+vocabularies; a closing quote after a name is not an opening delimiter. These are bounded English
 heuristics, not a semantic, authority or supersession model.
 
 Historical tie ordering is selected only by explicit markers: `historical`,
 `history`, `original`, `originally`, `previous`, `previously`, `earlier`, `prior`,
 `initial`, `initially`, `predecessor`, `before-correction`, or `used to`; an explicit
-current-state marker overrides that selection. An auxiliary “is/are/was … used
-to” frame denotes purpose, not habitual history. `when`, `first`, `before`, `old`
+current-state marker overrides that selection. A passive “is/are/was/were (being) used to” frame denotes purpose. Short inverted
+purpose questions may insert a noun phrase after the auxiliary, but an embedded
+relative clause such as “that we used to follow” remains habitual history. `when`, `first`, `before`, `old`
 and `past` do not select historical ordering. V2 historical queries downweight
 assistant **and generated-summary** echoes; neither kind receives correction/event
 bonuses on that path. Score ties prefer older captures, then opaque record ID.
@@ -228,21 +233,28 @@ pre-commit observations, not measurements claimed for a later commit hash.
 
 | Corpus and workload | Scan time range | Peak extra JS heap | Peak extra RSS |
 | --- | --- | --- | --- |
-| 10k / 32 MiB, qualified | 0.176–0.347 s | 25.809 MiB | 22.141 MiB |
-| 10k / 32 MiB, factual evidence | 0.181–0.307 s | 26.014 MiB | 10.204 MiB |
-| 100k / 256 MiB, qualified | 1.638–2.192 s | 99.413 MiB | 93.391 MiB |
-| 100k / 256 MiB, factual evidence | 1.646–2.161 s | 96.343 MiB | 63.235 MiB |
+| 10k / 32 MiB, qualified | 0.178–0.312 s | 25.798 MiB | 22.266 MiB |
+| 10k / 32 MiB, factual evidence | 0.184–0.340 s | 26.211 MiB | 17.250 MiB |
+| 100k / 256 MiB, qualified | 1.624–2.078 s | 98.789 MiB | 93.407 MiB |
+| 100k / 256 MiB, factual evidence | 1.621–2.082 s | 96.380 MiB | 63.313 MiB |
 
-All **60** measurements completed within the unchanged accepted envelope:
+The original requested target was **5 seconds / 64 MiB extra JS heap / 128 MiB
+extra RSS**. The largest declared corpus missed that heap target; the accepted
+**100-MiB heap envelope is a relaxation**, not achievement of the original target.
+That accepted envelope is unchanged for these measurements.
+
+All **60** measurements completed within that accepted envelope:
 **5 seconds, 100 MiB additional JS heap, 128 MiB additional RSS**. Observed maximum
-heap was 99.41240692138672 MiB: only **0.58759307861328 MiB** of headroom, not a
-robust memory guarantee. Anchor caching removes comparator-object churn, but
+heap was 98.78843688964844 MiB: only **1.21156311035156 MiB** of headroom.
+An earlier exact-commit run peaked at 99.4131851196289 MiB, leaving just
+0.58681488037109 MiB; both observed margins are thin, not robust guarantees. Anchor caching removes comparator-object churn, but
 collection timing still affects sampled peaks; no reliable peak reduction is
 claimed. The original **64-MiB heap target remains unmet**. The 16-term stress
-query completed within 2.192 seconds. Maximum measured transaction/text-batch time
-was 272.346 ms. Cold means reopened SQLite, **not flushed OS cache**. Five repeated
-scans with GC after each measured post-GC heaps of 6.805, 6.789, 6.803, 6.787 and
-6.788 MiB: no accumulating growth observed.
+query completed within 2.082 seconds. Maximum measured transaction/text-batch time
+was 258.666 ms. Cold means reopened SQLite, **not flushed OS cache**. Both 100k workloads run five repeated scans with GC after each:
+qualified post-GC heaps ranged from 6.963 to 6.991 MiB (baseline 6.969 MiB), and
+evidence heaps from 6.983 to 7.011 MiB (baseline 7.016 MiB). No accumulating
+growth was observed in either workload; post-GC results do not exempt peak limits.
 V2 bulk reads keep UTF-8 bodies as external byte buffers until
 each record is decoded, verified and matched; no candidate retains a decoded body.
 Global content/component patterns are compiled once per query; up to four
