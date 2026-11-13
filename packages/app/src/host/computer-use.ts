@@ -93,11 +93,13 @@ const probe: Probe = async (command, args) => {
 /** No screenshot/input tools, grants, installation, or raw CLI output in doctor. */
 export async function computerUseSection(config: ComputerUseConfig | undefined, options: {
   readonly platform?: NodeJS.Platform;
+  readonly subprocessProbes?: boolean;
   readonly resolveCommand?: (command?: string) => string | undefined;
   readonly probe?: Probe;
 } = {}): Promise<ValidationSection> {
   const section = (status: ValidationSection["status"], details: readonly string[]): ValidationSection => ({ id: "computer-use", label: "Computer use", status, details });
   if (config === undefined) return section("disabled", ["tools.computerUse is not configured."]);
+  if (options.subprocessProbes === false) return section("waiting", ["Computer-use readiness is not probed here. Run mono-agent validate in the owner terminal."]);
   const command = (options.resolveCommand ?? resolveCuaDriverCommand)(config.command);
   if (command === undefined) return section("waiting", ["cua-driver is not installed or not executable. Install from https://cua.ai/docs/cua-driver or set tools.computerUse.command to its absolute path."]);
   const details = [`Executable: ${command}.`, "Standard invocation; mono-agent does not configure or verify daemon permission mode."];

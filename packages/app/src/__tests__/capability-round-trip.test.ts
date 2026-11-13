@@ -23,7 +23,7 @@ it("round-trips a throwaway agent's real doctor status through operator and web,
     const shown = await response.json() as CapabilitySetupSnapshot;
     // The same validator as CLI validate, explicitly without network/subprocess
     // liveness probes. The ordinary CLI command intentionally probes more.
-    const validated = await validateMonoAgentFolder({ cwd: root, configPath, env: process.env, allowFilesystemWrites: false, liveness: false });
+    const validated = await validateMonoAgentFolder({ cwd: root, configPath, env: process.env, allowFilesystemWrites: false, liveness: false, subprocessProbes: false });
     expect(shown.cards).toHaveLength(9);
     for (const card of shown.cards) for (const evidence of card.evidence) {
       expect(evidence.status, `${card.id} / ${evidence.id}`).toBe(validated.sections.find((section) => section.id === evidence.id)?.status);

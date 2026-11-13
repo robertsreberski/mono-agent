@@ -1,3 +1,6 @@
+import { execFile } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -44,11 +47,11 @@ describe("read-only capabilities", () => {
     const input = await fixture();
     const validate = vi.fn(async () => report);
     let now = Date.now();
-    const service = createCapabilityStatusService({ ...input, allowFilesystemWrites: true, liveness: true }, { validate, now: () => now });
+    const service = createCapabilityStatusService({ ...input, allowFilesystemWrites: true, liveness: true, subprocessProbes: true }, { validate, now: () => now });
     const [one, two] = await Promise.all([service.read(), service.read()]);
     expect(one).toBe(two);
     expect(validate).toHaveBeenCalledTimes(1);
-    expect(validate).toHaveBeenCalledWith(expect.objectContaining({ allowFilesystemWrites: false, liveness: false }));
+    expect(validate).toHaveBeenCalledWith(expect.objectContaining({ allowFilesystemWrites: false, liveness: false, subprocessProbes: false }));
     expect(one.hostPreflight).toBeUndefined();
     await service.read();
     expect(validate).toHaveBeenCalledTimes(1);
@@ -89,10 +92,61 @@ describe("read-only capabilities", () => {
     expect(loaded.observation).toBe("loaded-snapshot");
     expect(projected.observation).toBe("durable-inputs");
   });
+  it("built capability reads make zero network calls or child_process calls, including computer use and native sandbox", async () => {
+    const input = await fixture();
+    await writeFile(input.configPath, JSON.stringify({
+      runtime: { model: "openai-codex:gpt-5.5" }, context: { identityPath: "IDENTITY.md" },
+      tools: { allowedTools: ["Read"], computerUse: { backend: "cua-driver", command: process.execPath },
+        web: { search: { backend: "searxng", searxng: { endpoint: "http://127.0.0.1:9/search" } } } },
+      sandbox: { mode: "native", fallback: "fail-closed" },
+    }));
+    // Fresh Node import is intentional: promisified execFile and cross-package
+    // SRT bindings must capture the spies, not pre-imported uninstrumented builtins.
+    const program = `
+      import { createRequire, syncBuiltinESMExports } from 'node:module';
+      const cp = createRequire(import.meta.url)('node:child_process');
+      const calls = {};
+      for (const name of ['exec', 'execSync', 'execFile', 'execFileSync', 'spawn', 'spawnSync', 'fork']) {
+        calls[name] = 0;
+        cp[name] = () => { calls[name]++; throw new Error('Unexpected child_process call'); };
+      }
+      syncBuiltinESMExports();
+      let networkCalls = 0;
+      globalThis.fetch = async () => { networkCalls++; throw new Error('Unexpected network probe'); };
+      const [moduleUrl, configPath, cwd] = process.argv.slice(1);
+      process.env.HOME = cwd; process.env.XDG_CONFIG_HOME = cwd;
+      const { createCapabilityStatusService } = await import(moduleUrl);
+      const { validateMonoAgentFolder } = await import(new URL('../doctor/doctor.js', moduleUrl));
+      const input = { configPath, cwd, env: { PATH: process.env.PATH, HOME: cwd }, allowFilesystemWrites: false, liveness: false, subprocessProbes: false };
+      const doctor = await validateMonoAgentFolder(input);
+      const service = createCapabilityStatusService({ ...input, subprocessProbes: true });
+      const snapshot = await service.read(); await service.read();
+      console.log(JSON.stringify({ calls, networkCalls,
+        core: doctor.sections.find(s => s.id === 'core').status,
+        computer: doctor.sections.find(s => s.id === 'computer-use'),
+        sandbox: doctor.sections.find(s => s.id === 'sandbox'),
+        tools: snapshot.cards.find(c => c.id === 'tools') }));
+    `;
+    const moduleUrl = new URL("../../dist/setup/capability-status.js", import.meta.url).href;
+    const result = await promisify(execFile)(process.execPath, ["--input-type=module", "-e", program, moduleUrl, input.configPath, root], {
+      cwd: fileURLToPath(new URL("../../", import.meta.url)), timeout: 30_000,
+    });
+    const proof = JSON.parse(result.stdout);
+    expect(proof.core).toBe("ok"); // Not a false zero caused by rejected config.
+    expect(proof.networkCalls).toBe(0);
+    expect(Object.values(proof.calls)).toEqual([0, 0, 0, 0, 0, 0, 0]);
+    for (const section of [proof.computer, proof.sandbox]) {
+      expect(section.status).toBe("waiting");
+      expect(section.details.join(" ")).toContain("not probed here");
+      expect(section.details.join(" ")).toContain("mono-agent validate");
+    }
+    expect(proof.tools.evidence).toContainEqual({ id: "computer-use", status: "waiting" });
+    expect(proof.tools.status).toBe("waiting");
+  });
   it("matches real doctor evidence for every card and keeps configured files unchanged", async () => {
     const input = await fixture();
     const before = await readFile(input.configPath);
-    const doctor = await validateMonoAgentFolder({ ...input, allowFilesystemWrites: false, liveness: false });
+    const doctor = await validateMonoAgentFolder({ ...input, allowFilesystemWrites: false, liveness: false, subprocessProbes: false });
     const snapshot = await createCapabilityStatusService(input).read();
     for (const card of snapshot.cards) {
       for (const evidence of card.evidence) {

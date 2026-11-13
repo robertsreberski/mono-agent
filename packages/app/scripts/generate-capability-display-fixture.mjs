@@ -4,7 +4,7 @@ import { writeFile } from "node:fs/promises";
 import { capabilityCards } from "../dist/setup/capability-status.js";
 
 const statuses = {
-  memory: "ok", tools: "ok", mcp: "error", observability: "ok", sandbox: "waiting",
+  memory: "ok", tools: "ok", mcp: "error", "computer-use": "disabled", observability: "ok", sandbox: "waiting",
   "channel:telegram": "waiting", "channel:slack": "disabled", "channel:webhook": "disabled",
   "channel:openai-api": "disabled", "channel:cron": "disabled",
 };

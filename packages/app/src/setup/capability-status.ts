@@ -24,7 +24,7 @@ function moduleChoice(module: CapabilityModule, status: CapabilityStatus): Capab
   });
   return {
     id: module.id, title: module.title, purpose: module.summary,
-    requirements: discovery.requirements, usage: discovery.usage + (module.kind === "memory" && module.id !== "memory:lite" ? " Embedding/model liveness is not probed here; run mono-agent validate in the owner terminal." : ""),
+    requirements: discovery.requirements, usage: discovery.usage + (module.id === "sandbox" ? " Native sandbox availability/enforcement is not probed here; run mono-agent validate in the owner terminal." : "") + (module.kind === "memory" && module.id !== "memory:lite" ? " Embedding/model liveness is not probed here; run mono-agent validate in the owner terminal." : ""),
     ownedConfigPaths: discovery.ownedConfigPaths, status,
     steps: [
       "In the agent folder, back up mono-agent.config.json. Merge only the shown fields; preserve unrelated settings, existing allowlists and deny rules. Replace every example placeholder before use. This console never applies changes.",
@@ -63,11 +63,11 @@ export function capabilityCards(report: ValidationReport, memoryMode?: string): 
     const findings = evidence(module.validateExpectations.map((expectation) => expectation.sectionId));
     cards.push({ ...moduleChoice(module, aggregateCapabilityStatus(findings)), evidence: findings });
   }
-  const toolsEvidence = evidence(["tools", "mcp"]);
+  const toolsEvidence = evidence(["tools", "mcp", "computer-use"]);
   cards.push({
     id: "tools", title: "MCP / tools", purpose: "Let the agent use local tools and owner-prepared MCP servers.",
     requirements: ["An explicit built-in tool policy and, for external MCP, an existing validated MCP JSON file. External MCP tools bypass built-in allow/deny rules."],
-    usage: "Tool use can add model turns, subprocesses and third-party service costs. External MCP server connectivity is never probed by validation. Provider/browser liveness is not probed here; run mono-agent validate in the owner terminal.",
+    usage: "Tool use can add model turns, subprocesses and third-party service costs. External MCP server connectivity is never probed by validation. Computer-use and provider/browser liveness are not probed here; run mono-agent validate in the owner terminal.",
     ownedConfigPaths: ["tools.allowedTools", "tools.disallowedTools", "tools.mcpConfigPath"],
     steps: ["Back up mono-agent.config.json; preserve existing deny rules. Merge only the tool names you intend to allow.",
       '{ "tools": { "allowedTools": ["Read", "Glob", "Grep"], "mcpConfigPath": "./mcp.json" } }',
@@ -104,7 +104,7 @@ export function createCapabilityStatusService(
   const validate = dependencies.validate ?? validateMonoAgentFolder;
   const read = async (): Promise<CapabilitySetupSnapshot> => {
     const before = await readFile(input.configPath);
-    const report = await validate({ ...input, allowFilesystemWrites: false, liveness: false });
+    const report = await validate({ ...input, allowFilesystemWrites: false, liveness: false, subprocessProbes: false });
     const config = await loadAppCoreConfig(input, { warnOnDeprecatedConfig: false, warnOnDuplicateConfig: false }).catch(() => undefined);
     const after = await readFile(input.configPath);
     if (!before.equals(after)) throw new Error("Configuration changed during validation.");

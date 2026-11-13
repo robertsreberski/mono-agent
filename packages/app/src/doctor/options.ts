@@ -43,6 +43,8 @@ export interface ValidateMonoAgentFolderOptions extends MonoAgentAppConfigInput 
    * (`ok`) unchanged — the start preflight relies on this. Defaults to true.
    */
   readonly liveness?: boolean;
+  /** Browser reads forbid local executable/enforcement probes too; CLI defaults to true. */
+  readonly subprocessProbes?: boolean;
   /** Start preflight remains permissive for duplicates; validate/doctor defaults to error. */
   readonly ignoreDuplicateKeys?: boolean;
   /** Model refs whose credentials were proven by a successful live turn. */

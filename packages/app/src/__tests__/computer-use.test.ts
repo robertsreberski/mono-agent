@@ -114,6 +114,13 @@ describe("computer-use doctor", () => {
     expect(ready.details.join(" ")).toContain(command);
     expect(ready.details.join(" ")).toContain("0.31.0");
   });
+  it("does not resolve or run the executable when subprocess probes are forbidden", async () => {
+    const resolveCommand = vi.fn(); const probe = vi.fn();
+    const section = await computerUseSection(config.tools.computerUse, { subprocessProbes: false, resolveCommand, probe });
+    expect(section.status).toBe("waiting");
+    expect(section.details.join(" ")).toContain("not probed here");
+    expect(resolveCommand).not.toHaveBeenCalled(); expect(probe).not.toHaveBeenCalled();
+  });
   it.each([{ status: "unknown", daemon_running: true }, { status: "pending" }, { accessibility: false, screen_recording: true }, { accessibility: true, screen_recording: false }, { accessibility: true, screen_recording: true, daemon_running: false }, { accessibility: true, screen_recording: true, screen_recording_capturable: false }])("waits for unconfirmed macOS permissions %j", async (permissions) => {
     const section = await computerUseSection(config.tools.computerUse, { platform: "darwin", probe: async (_command, args) => args[0] === "--version" ? "cua-driver 0.31.0" : JSON.stringify(args[0] === "doctor" ? { ok: true } : permissions) });
     expect(section.status).toBe("waiting");
@@ -139,7 +146,7 @@ describe("computer-use doctor wiring", () => {
     const report = await validateMonoAgentFolder({ cwd: dir, configPath: jsonPath, env: {} });
     expect(report.sections.find((section) => section.id === "computer-use")).toBeDefined();
     expect(report.sections.find((section) => section.id === "tools")?.status).toBe("error");
-    expect(report.sections.find((section) => section.id === "tools")?.details.join(" ")).toContain('name "computer-use" is reserved');
+    expect(report.sections.find((section) => section.id === "mcp")?.details.join(" ")).toContain('name "computer-use" is reserved');
     await writeFile(jsonPath, JSON.stringify({ runtime: { model: "openai:gpt-5.5" }, context: { identityPath: "IDENTITY.md" } }));
     expect((await validateMonoAgentFolder({ cwd: dir, configPath: jsonPath, env: {} })).sections.find((section) => section.id === "computer-use")?.status).toBe("disabled");
   });
