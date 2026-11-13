@@ -46,7 +46,7 @@ it("preserves fixed action failures without forwarding upstream prose or details
   const root = await temporaryRoot(); roots.push(root);
   const discovered = fakeDiscoveredAgent();
   const diagnostic = "fictional-upstream-prose";
-  const secret = "sk-fictional-capability-test-123456789";
+  const plantedValue = "sk-fictional-capability-test-123456789";
   let failure: { code: string; status: number } | undefined;
   const log = vi.fn();
   const web = await startWebServer({ port: 0, voice: false, stateDir: join(root, "state"), discoveryIntervalMs: 0, purgeIntervalMs: 0,
@@ -54,8 +54,8 @@ it("preserves fixed action failures without forwarding upstream prose or details
     discoverImpl: async () => [{ ...discovered, source: { ...discovered.source, pid: process.pid } }],
     fetchImpl: (async (url) => {
       if (String(url).endsWith("/info")) return Response.json({ schema: 1, pid: process.pid, capabilities: { capabilityActions: { version: 1, preview: true, save: true } } });
-      if (failure === undefined) throw new Error(`${diagnostic} ${secret}`);
-      return Response.json({ error: { code: failure.code, message: `${diagnostic} ${secret}`, reason: secret, details: { reason: secret, raw: diagnostic } } }, { status: failure.status });
+      if (failure === undefined) throw new Error(`${diagnostic} ${plantedValue}`);
+      return Response.json({ error: { code: failure.code, message: `${diagnostic} ${plantedValue}`, reason: plantedValue, details: { reason: plantedValue, raw: diagnostic } } }, { status: failure.status });
     }) as typeof fetch });
   const base = `${web.url}api/v1/agents/agent-one/capability-actions`;
   const headers = { Origin: new URL(web.url).origin, "Content-Type": "application/json" };
@@ -70,7 +70,7 @@ it("preserves fixed action failures without forwarding upstream prose or details
         expect(value.error.code).toBe(code === "unknown" ? "capability_action_failed" : code);
         expect(value.error.details).toBeUndefined();
         expect(JSON.stringify(value)).not.toContain(diagnostic);
-        expect(JSON.stringify(value)).not.toContain(secret);
+        expect(JSON.stringify(value)).not.toContain(plantedValue);
       }
     }
     failure = undefined;
@@ -78,11 +78,11 @@ it("preserves fixed action failures without forwarding upstream prose or details
     expect(transport.status).toBe(502);
     expect(await transport.json()).toEqual({ error: { code: "capability_action_failed", message: "Capability action outcome could not be confirmed; refresh and inspect settings before retrying." } });
     for (const operation of ["preview", "save"]) {
-      const malformed = await fetch(`${base}/${operation}`, { method: "POST", headers, body: `{"credential":"${secret}"` });
+      const malformed = await fetch(`${base}/${operation}`, { method: "POST", headers, body: `{"credential":"${plantedValue}"` });
       expect(malformed.status).toBe(400);
       expect(await malformed.json()).toEqual({ error: { code: "invalid_json", message: "The request body is not valid JSON." } });
     }
     expect(JSON.stringify(log.mock.calls)).not.toContain(diagnostic);
-    expect(JSON.stringify(log.mock.calls)).not.toContain(secret);
+    expect(JSON.stringify(log.mock.calls)).not.toContain(plantedValue);
   } finally { await web.stop(); }
 });
