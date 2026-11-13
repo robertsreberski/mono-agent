@@ -11,6 +11,13 @@ import { defineConfig } from "vitest/config";
 
 type EmulatedColorScheme = "light" | "dark" | null;
 
+// Only the capability suite calls this, and only its opt-in captures need a
+// tall runner to avoid scaling the 1900px iframe below its requested CSS width.
+const prepareCapabilityScreenshots: BrowserCommand<[]> = async (context) => {
+  if (context.provider.name !== "playwright") throw new Error("Playwright required");
+  if (process.env.VITE_CAPABILITY_SHOTS) await context.page.setViewportSize({ width: 1440, height: 2000 });
+};
+
 const dragVoiceNote: BrowserCommand<[]> = async (context) => {
   if (context.provider.name !== "playwright") throw new Error("Playwright required");
   const bounds = await context.iframe.getByRole("slider", { name: "Seek voice note" }).boundingBox();
@@ -38,9 +45,9 @@ const emulateColorScheme: BrowserCommand<[EmulatedColorScheme]> = async (context
 
 /**
  * Screenshot evidence is opt-in per suite through `VITE_<SUITE>_SHOTS=<absolute
- * dir>`. Vite only lets the browser runner write inside the project, so each
- * opted-in directory is allowed explicitly; without the variables nothing is
- * allowed beyond the default and nothing is written.
+ * dir>`. Add those directories to Vite's file-serving allowlist for artifact
+ * retrieval. This controls reads, not screenshot write authority; individual
+ * suites decide whether/where to capture evidence.
  */
 const screenshotDirectories = Object.entries(process.env)
   .filter(([name, value]) => /^VITE_[A-Z0-9_]+_SHOTS$/u.test(name) && value !== undefined && value.length > 0)
@@ -153,9 +160,7 @@ export default defineConfig({
           name: "chromium",
           launch: { args: ["--use-fake-device-for-media-stream", "--use-fake-ui-for-media-stream"] },
           provide: { providerUsageTouch: false },
-          // Tall capability evidence must retain its requested CSS pixel width,
-          // rather than Vitest scaling a 1900px iframe into a 1000px runner.
-          context: { viewport: { width: 1440, height: process.env.VITE_CAPABILITY_SHOTS ? 2000 : 1000 }, hasTouch: false },
+          context: { viewport: { width: 1440, height: 1000 }, hasTouch: false },
         },
         // Tablet layout must exercise real coarse-pointer / no-hover CSS,
         // not just a desktop browser resized to an iPad viewport.
@@ -188,7 +193,7 @@ export default defineConfig({
           context: { viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true },
         },
       ],
-      commands: { checkServerVoicePlayback, dragVoiceNote, emulateColorScheme, emulateReducedMotion, saveVoiceFixture },
+      commands: { prepareCapabilityScreenshots, checkServerVoicePlayback, dragVoiceNote, emulateColorScheme, emulateReducedMotion, saveVoiceFixture },
     },
   },
 });

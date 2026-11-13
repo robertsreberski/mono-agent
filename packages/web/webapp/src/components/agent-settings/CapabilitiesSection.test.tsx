@@ -55,6 +55,34 @@ describe("Capabilities section", () => {
     expect(screen.getByText(/no readiness is assumed/)).toBeTruthy();
     expect(read).not.toHaveBeenCalled();
   });
+  it("shows a connection-specific degraded notice instead of claiming an update is needed", () => {
+    const read = vi.spyOn(api, "capabilitySetup");
+    render(<CapabilitiesSection agent={agent("garden", { status: "degraded" })} />);
+    expect(screen.getByText(/connection is degraded/)).toBeTruthy();
+    expect(screen.queryByText(/Update the agent/)).toBeNull();
+    expect(read).not.toHaveBeenCalled();
+  });
+  it("retains the current report and expanded instructions during refresh and refresh failure", async () => {
+    let reject!: (reason: Error) => void;
+    vi.spyOn(api, "capabilitySetup").mockResolvedValueOnce(capabilitySnapshot)
+      .mockImplementationOnce(() => new Promise((_resolve, fail) => { reject = fail; }))
+      .mockImplementationOnce(() => new Promise(() => {}));
+    const view = render(<CapabilitiesSection agent={agent("garden", { supportsCapabilitySetup: true, generation: "one" })} />);
+    await screen.findByRole("heading", { name: "Memory" });
+    const article = screen.getByRole("article", { name: "Memory" });
+    const details = article.querySelector("details")!;
+    fireEvent.click(within(article).getByText("Details & manual setup"));
+    expect(details.open).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Refresh capability status" }));
+    expect(screen.getAllByRole("article")).toHaveLength(9);
+    expect(screen.getByRole("article", { name: "Memory" })).toBe(article);
+    expect(details.open).toBe(true);
+    await act(async () => reject(new Error("Synthetic failure")));
+    expect(screen.getByText(/Showing the last report below, not a fresh check/)).toBeTruthy();
+    expect(screen.getAllByRole("article")).toHaveLength(9);
+    view.rerender(<CapabilitiesSection agent={agent("garden", { supportsCapabilitySetup: true, generation: "two" })} />);
+    expect(screen.queryByRole("article")).toBeNull();
+  });
   it("discards old source and generation reads and exposes transport failures separately", async () => {
     let release!: (value: typeof capabilitySnapshot) => void;
     vi.spyOn(api, "capabilitySetup").mockImplementationOnce(() => new Promise((resolve) => { release = resolve; })).mockRejectedValue(new Error("private detail"));

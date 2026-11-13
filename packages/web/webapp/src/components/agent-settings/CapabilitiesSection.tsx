@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "../../api";
 import type { AgentSummary, WebCapabilitySetupSnapshot } from "../../types";
 
@@ -85,24 +85,30 @@ export function CapabilityCard({ card }: { readonly card: Card }) {
 }
 
 export function CapabilitiesSection({ agent }: { readonly agent: AgentSummary }) {
-  const [snapshot, setSnapshot] = useState<WebCapabilitySetupSnapshot | null>(null);
+  const identity = JSON.stringify([agent.sourceId, agent.generation]);
+  const identityRef = useRef(identity);
+  const [report, setReport] = useState<{ identity: string; snapshot: WebCapabilitySetupSnapshot } | null>(null);
+  const snapshot = report?.identity === identity ? report.snapshot : null;
   const [error, setError] = useState(false);
   const [revision, setRevision] = useState(0);
   useEffect(() => {
     const controller = new AbortController();
-    setSnapshot(null); setError(false);
-    if (agent.status !== "offline" && agent.supportsCapabilitySetup === true) {
+    if (identityRef.current !== identity) { setReport(null); identityRef.current = identity; }
+    setError(false);
+    if (agent.status === "online" && agent.supportsCapabilitySetup === true) {
       void api.capabilitySetup(agent.sourceId, controller.signal).then((result) => {
-        if (!controller.signal.aborted) setSnapshot(result);
+        if (!controller.signal.aborted) setReport({ identity, snapshot: result });
       }).catch(() => { if (!controller.signal.aborted) setError(true); });
     }
     return () => controller.abort();
-  }, [agent.sourceId, agent.generation, agent.status, agent.supportsCapabilitySetup, revision]);
+  }, [identity, agent.sourceId, agent.status, agent.supportsCapabilitySetup, revision]);
   if (agent.status === "offline") return <div className="settings-notice">This agent is offline. Capability status is unavailable; no readiness is assumed.</div>;
+  if (agent.status === "degraded") return <div className="settings-notice">This agent’s connection is degraded. Capability status cannot be confirmed; check the connection and try again. No readiness is assumed.</div>;
   if (agent.supportsCapabilitySetup !== true) return <div className="settings-notice">This agent version doesn't report capabilities. Update the agent to view readiness and manual setup steps.</div>;
-  if (error) return <div className="settings-notice">Capability validation is unavailable. Run <code>mono-agent validate</code> in the agent folder. <button className="settings-button" type="button" onClick={() => setRevision((value) => value + 1)}>Retry capability status</button></div>;
-  if (snapshot === null) return <p>Reading capability status…</p>;
+  const errorNotice = <div className="settings-notice">Capability validation is unavailable. {snapshot !== null && "Showing the last report below, not a fresh check. "}Run <code>mono-agent validate</code> in the agent folder. <button className="settings-button" type="button" onClick={() => setRevision((value) => value + 1)}>Retry capability status</button></div>;
+  if (snapshot === null) return error ? errorNotice : <p>Reading capability status…</p>;
   return <>
+    {error && errorNotice}
     <p className="settings-section-summary">Explore optional features and manual setup steps without changing your agent.</p>
     <p className="settings-notice capability-scope">Provider, embedding, browser and server liveness is not probed here. Ready means local configuration checks passed, not live readiness or message delivery. Run <code>mono-agent validate</code> in the owner terminal for live checks.</p>
     <p className="settings-section-summary">Checked <time dateTime={snapshot.observedAt}>{new Date(snapshot.observedAt).toLocaleTimeString()}</time>. {snapshot.observation === "loaded-snapshot" ? "Uses settings from the agent’s last start, not later edits." : "Uses saved settings."} Restart the agent after editing settings or .env. <button type="button" className="settings-button" onClick={() => setRevision((value) => value + 1)}>Refresh capability status</button></p>

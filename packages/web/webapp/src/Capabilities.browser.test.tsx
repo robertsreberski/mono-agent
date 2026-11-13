@@ -12,17 +12,21 @@ import { capabilityConsoleStore as storyStore } from "./test/capability-console-
 import "./styles.css";
 
 vi.mock("./console-store", async () => import("./test/capability-console-store"));
+declare module "@vitest/browser/context" {
+  interface BrowserCommands { prepareCapabilityScreenshots(): Promise<void>; }
+}
 const shots = import.meta.env.VITE_CAPABILITY_SHOTS as string | undefined;
 const initialStore = { ...storyStore };
 beforeEach(async () => {
+  await commands.prepareCapabilityScreenshots();
   await commands.emulateColorScheme("light");
   vi.spyOn(api, "capabilitySetup").mockResolvedValue(capabilitySnapshot);
   vi.spyOn(api, "latestAgentRestart").mockResolvedValue(null);
 });
 afterEach(async () => { cleanup(); Object.assign(storyStore, initialStore); vi.restoreAllMocks(); await commands.emulateColorScheme(null); });
-function Preview({ width, older = false }: { readonly width: number; readonly older?: boolean }) {
+function Preview({ width, older = false, degraded = false }: { readonly width: number; readonly older?: boolean; readonly degraded?: boolean }) {
   const runtime = useLocalRuntime({ async *run() { yield { content: [{ type: "text", text: "Synthetic preview only" }] }; } });
-  const selected = agent("garden", { label: "Garden Agent · synthetic", ...(older ? {} : { supportsCapabilitySetup: true }) });
+  const selected = agent("garden", { label: "Garden Agent · synthetic", status: degraded ? "degraded" : "online", ...(older || degraded ? {} : { supportsCapabilitySetup: true }) });
   Object.assign(storyStore, { selectedAgent: selected, selectedAgentId: selected.sourceId, agents: [selected], visibleAgents: [selected], selectedThread: null, selectedThreadId: null });
   // Same shell, actual Dashboard navigation, header, scrollport and settings
   // screen as the console. Only store/API display data are synthetic.
@@ -90,12 +94,21 @@ for (const width of [390, 1440]) describe(`Capabilities in console settings at $
     expect(within(memory).getByText(/Embedding\/model liveness is not probed here/)).toBeVisible();
     expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width);
   });
+  it("distinguishes a degraded connection from a known older agent", async () => {
+    await page.viewport(width, 600);
+    render(<Preview width={width} degraded />);
+    await settleAndReveal(width);
+    expect(screen.getByText(/connection is degraded/)).toBeVisible();
+    expect(screen.queryByText(/Update the agent/)).toBeNull();
+    expect(api.capabilitySetup).not.toHaveBeenCalled();
+  });
   it("shows the older-agent unsupported state inside the console layout", async () => {
     await page.viewport(width, 600);
     render(<Preview width={width} older />);
     await settleAndReveal(width);
     expect(screen.getByText(/doesn't report capabilities/)).toBeVisible();
     expect(screen.queryByRole("article")).toBeNull();
+    expect(api.capabilitySetup).not.toHaveBeenCalled();
     for (const heading of screen.getAllByRole("heading", { name: "Garden Agent · synthetic", level: 1 })) expect(heading).toBeVisible();
     if (shots) await page.screenshot({ path: `${shots}/capabilities-synthetic-${width}-older-agent.png` });
   });

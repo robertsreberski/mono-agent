@@ -35,7 +35,8 @@
   a compact overview and expandable memory tiers, prerequisites, usage/cost and
   exact manual setup steps. Never trigger provider/network/subprocess liveness
   probes from this view; direct live checks to `mono-agent validate`. Keep older
-  agents unsupported and built-in tracing already enabled.
+  agents showing as not reporting capabilities; list built-in tracing as already
+  enabled.
 - Add an opt-in browser console handoff after successful guided init, defaulting
   to Not now, with no-login consent, health-gated opening and exact-agent discovery.
   Keep scaffold/non-TTY paths and existing console listeners unchanged; warn

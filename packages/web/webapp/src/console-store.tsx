@@ -1758,6 +1758,14 @@ export const validateRunPreference = (
   };
 };
 
+function consumeConsoleHandoff(target: string | null): void {
+  if (target === null) return;
+  const url = new URL(window.location.href);
+  if (url.searchParams.get("agent") !== target) return;
+  url.searchParams.delete("agent");
+  window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
+}
+
 export function ConsoleStoreProvider({ children }: { readonly children: ReactNode }) {
   const pendingHandoffRef = useRef<string | null>(consoleHandoffTarget(window.location.href));
   const [bootstrap, setBootstrap] = useState<Bootstrap | null>(null);
@@ -2218,6 +2226,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
 
   /** Invalidate every older navigation before publishing the new one. */
   const beginOperatorSelection = useCallback(() => {
+    consumeConsoleHandoff(pendingHandoffRef.current);
     pendingHandoffRef.current = null;
     const generation = operatorSelectionRef.current + 1;
     operatorSelectionRef.current = generation;
@@ -3020,7 +3029,10 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       ),
       pendingHandoffRef.current,
     );
-    if (next.agents.some((agent) => agent.sourceId === pendingHandoffRef.current)) pendingHandoffRef.current = null;
+    if (pendingHandoffRef.current !== null && next.agents.some((agent) => agent.sourceId === pendingHandoffRef.current)) {
+      consumeConsoleHandoff(pendingHandoffRef.current);
+      pendingHandoffRef.current = null;
+    }
     const route = cronRouteSelection();
     const routeThread = route === undefined
       ? undefined
