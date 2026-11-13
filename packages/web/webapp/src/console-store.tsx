@@ -1,3 +1,4 @@
+import { consoleHandoffTarget } from "./settings-navigation";
 /** Immutable destination/settings for an admitted attachment send, not UI selection. */
 export interface AttachmentSubmissionSnapshot {
   readonly sourceId: string;
@@ -774,8 +775,12 @@ export const resolveBootstrapSelection = (
   selectedAgentId: string | null,
   selectedThreadId: string | null,
   persistedThreadIds: Readonly<Record<string, string>> = {},
+  pendingHandoff: string | null = null,
 ): { readonly agentId: string | null; readonly threadId: string | null } => {
-  const currentAgent = next.agents.find((agent) => agent.sourceId === selectedAgentId);
+  if (pendingHandoff !== null && !next.agents.some((agent) => agent.sourceId === pendingHandoff)) {
+    return { agentId: pendingHandoff, threadId: null };
+  }
+  const currentAgent = next.agents.find((agent) => agent.sourceId === (pendingHandoff ?? selectedAgentId));
   const agentId =
     currentAgent?.sourceId ??
     // The bucket the SERVER opened on when this tab named none: it resolves the
@@ -1754,9 +1759,10 @@ export const validateRunPreference = (
 };
 
 export function ConsoleStoreProvider({ children }: { readonly children: ReactNode }) {
+  const pendingHandoffRef = useRef<string | null>(consoleHandoffTarget(window.location.href));
   const [bootstrap, setBootstrap] = useState<Bootstrap | null>(null);
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(() =>
-    cronRouteSelection()?.sourceId ?? localStorage.getItem(SELECTED_AGENT_STORAGE_KEY),
+    cronRouteSelection()?.sourceId ?? pendingHandoffRef.current ?? localStorage.getItem(SELECTED_AGENT_STORAGE_KEY),
   );
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
   const [navigationDestination, setNavigationDestinationState] =
@@ -2212,6 +2218,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
 
   /** Invalidate every older navigation before publishing the new one. */
   const beginOperatorSelection = useCallback(() => {
+    pendingHandoffRef.current = null;
     const generation = operatorSelectionRef.current + 1;
     operatorSelectionRef.current = generation;
     setOperatorSelectionGeneration(generation);
@@ -3011,7 +3018,9 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       Object.fromEntries(
         Object.entries(readPersistedThreadIds()).filter(([, threadId]) => live(threadId) !== null),
       ),
+      pendingHandoffRef.current,
     );
+    if (next.agents.some((agent) => agent.sourceId === pendingHandoffRef.current)) pendingHandoffRef.current = null;
     const route = cronRouteSelection();
     const routeThread = route === undefined
       ? undefined

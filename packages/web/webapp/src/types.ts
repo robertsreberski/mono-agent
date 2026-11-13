@@ -165,3 +165,5 @@ export const DEFAULT_UPLOAD_LIMITS: UploadLimits = {
 
 // Provider usage meters read the producer's own subpath (types only; no runtime import).
 export type { ProviderUsage, ProviderUsageSnapshot, ProviderUsageId } from "@mono-agent/contracts/provider-usage";
+
+export type { WebCapabilitySetupSnapshot } from "../../src/contracts.js";

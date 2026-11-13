@@ -32,7 +32,7 @@ describe("agent settings screen", () => {
     expect(screen.getAllByRole("main")).toHaveLength(1);
     expect(screen.getAllByRole("status")).toHaveLength(1);
     expect(screen.queryByRole("navigation", { name: "Agent settings sections" })).toBeNull();
-    expect([...document.querySelectorAll(".settings-page-section h2")].map((node) => node.textContent)).toEqual(["New conversations", "Providers", "Restart", "About"]);
+    expect([...document.querySelectorAll(".settings-page-section h2")].map((node) => node.textContent)).toEqual(["New conversations", "Providers", "Restart", "Capabilities", "About"]);
     expect(screen.getByRole("switch", { name: "Pin Atlas first" })).toBeVisible();
     await waitFor(() => expect(mockApi.providerAuthStatus).toHaveBeenCalledTimes(1));
   });

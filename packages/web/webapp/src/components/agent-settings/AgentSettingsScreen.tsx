@@ -1,3 +1,5 @@
+import { consoleHandoffTarget } from "../../settings-navigation";
+import { CapabilitiesSection } from "./CapabilitiesSection";
 import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { AgentSummary } from "../../types";
 import { useConsoleStore } from "../../console-store";
@@ -52,7 +54,7 @@ export function AgentSettingsScreen({ section, intent = 0, layout, onClose, onNo
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [onClose]);
-  if (agent === null) return <div className="settings-screen" data-modal-surface="settings"><p>This agent is no longer available.</p><button type="button" onClick={onClose}>Close</button></div>;
+  if (agent === null) return <div className="settings-screen" data-modal-surface="settings"><p>{consoleHandoffTarget(window.location.href) ? "Waiting for the requested agent to be discovered. No other agent has been selected." : "This agent is no longer available."}</p><button type="button" onClick={onClose}>Close</button></div>;
   const providerKey = `${agent.sourceId}:${agent.generation ?? "unknown"}`;
   return <>
     <RestartOwnerBridge key={agent.sourceId} agent={agent} onChange={onRestartChange} />
@@ -79,10 +81,10 @@ function SettingsContent({ agent, section, intent, layout, provider, restart, on
   const settleObserverRef = useRef<ResizeObserver | null>(null);
   const stopSettling = () => { settlingRef.current = false; settleObserverRef.current?.disconnect(); settleObserverRef.current = null; };
   const markUserMoved = () => { userMovedRef.current = true; stopSettling(); };
-  const revealRestart = () => {
+  const revealTarget = () => {
     if (!settlingRef.current || userMovedRef.current || !scrollRef.current) return;
     const scroller = scrollRef.current;
-    const target = scroller.querySelector<HTMLElement>('[data-settings-target="agent"]');
+    const target = scroller.querySelector<HTMLElement>(`[data-settings-target="${targetRef.current?.section ?? "agent"}"]`);
     if (!target) return;
     const viewport = scroller.getBoundingClientRect();
     const heading = target.getBoundingClientRect();
@@ -133,10 +135,10 @@ function SettingsContent({ agent, section, intent, layout, provider, restart, on
     if (section !== null && target && scroller) scroller.scrollTop += target.getBoundingClientRect().top - scroller.getBoundingClientRect().top - 12;
     else if (section === null && scroller) scroller.scrollTop = 0;
     requestAnimationFrame(() => { programmedScrollRef.current = false; });
-    settlingRef.current = section === "agent";
+    settlingRef.current = section === "agent" || section === "capabilities";
   }, [agent.sourceId, section, intent]);
   // Only the first targeted layout can settle. Observe size changes above the
-  // Restart heading, including usage arriving AFTER auth's initial status=null.
+  // Restart or Capabilities heading, including usage arriving AFTER auth's initial status=null.
   // Stop on user input, source/generation changes, completed reads or timeout.
   useLayoutEffect(() => {
     const generation = `${agent.sourceId}:${agent.generation ?? "unknown"}`;
@@ -144,30 +146,35 @@ function SettingsContent({ agent, section, intent, layout, provider, restart, on
     generationRef.current = generation;
   }, [agent.sourceId, agent.generation]);
   useLayoutEffect(() => {
-    if (!settlingRef.current || section !== "agent" || typeof ResizeObserver === "undefined") return;
+    if (!settlingRef.current || (section !== "agent" && section !== "capabilities") || typeof ResizeObserver === "undefined") return;
     const scroller = scrollRef.current;
     const above = scroller?.querySelector<HTMLElement>('[data-settings-target="providers"]');
     if (!above) return;
-    const observer = new ResizeObserver(() => revealRestart());
+    const observer = new ResizeObserver(() => revealTarget());
     observer.observe(above);
+    if (section === "capabilities") {
+      const restartSection = scroller?.querySelector<HTMLElement>('[data-settings-target="agent"]');
+      if (restartSection) observer.observe(restartSection);
+    }
     settleObserverRef.current = observer;
     const timeout = window.setTimeout(stopSettling, 12_000);
     return () => { window.clearTimeout(timeout); observer.disconnect(); if (settleObserverRef.current === observer) settleObserverRef.current = null; };
   }, [agent.sourceId, agent.generation, section, intent]);
   useLayoutEffect(() => {
-    if (!settlingRef.current || section !== "agent") return;
-    revealRestart();
+    if (!settlingRef.current || (section !== "agent" && section !== "capabilities")) return;
+    revealTarget();
     const authDone = agent.status === "offline" || agent.supportsProviderAuth !== true || provider?.status != null || provider?.authError != null;
     const usageDone = agent.status === "offline" || agent.supportsProviderUsage !== true || provider?.usageLoading === false;
-    if (authDone && usageDone) {
+    const restartDone = section !== "capabilities" || restart?.readState === "ready" || restart?.readState === "error";
+    if (authDone && usageDone && restartDone) {
       // One final frame lets the meters finish laying out before disconnecting.
-      const frame = requestAnimationFrame(() => { revealRestart(); stopSettling(); });
+      const frame = requestAnimationFrame(() => { revealTarget(); stopSettling(); });
       return () => cancelAnimationFrame(frame);
     }
-  }, [agent.sourceId, agent.generation, section, intent, provider?.status, provider?.authError, provider?.usageLoading, provider?.usage]);
+  }, [agent.sourceId, agent.generation, section, intent, provider?.status, provider?.authError, provider?.usageLoading, provider?.usage, restart?.readState]);
   useEffect(() => {
     const onFocus = (event: FocusEvent) => {
-      if (settlingRef.current && event.target !== scrollRef.current?.querySelector('[data-settings-target="agent"]')) markUserMoved();
+      if (settlingRef.current && event.target !== scrollRef.current?.querySelector(`[data-settings-target="${targetRef.current?.section ?? "agent"}"]`)) markUserMoved();
     };
     document.addEventListener("focusin", onFocus);
     return () => document.removeEventListener("focusin", onFocus);
@@ -192,6 +199,9 @@ function SettingsContent({ agent, section, intent, layout, provider, restart, on
         </section>
         <section className="settings-page-section" data-settings-target="agent" tabIndex={-1} aria-labelledby="settings-restart-title"><div className="settings-section-head"><h2 id="settings-restart-title" className="settings-section-title">Restart</h2><p className="settings-section-summary">Restart this agent and review its latest operation.</p></div>
           {restart === null ? <div className="settings-row">Checking restart status…</div> : <AgentSection agent={agent} restart={restart} runningCount={runningCount} />}
+        </section>
+        <section className="settings-page-section" data-settings-target="capabilities" tabIndex={-1} aria-labelledby="settings-capabilities-title"><div className="settings-section-head"><h2 id="settings-capabilities-title" className="settings-section-title">Capabilities</h2><p className="settings-section-summary">Optional features, current readiness, and exact manual setup steps. No changes are applied here.</p></div>
+          <CapabilitiesSection key={`${agent.sourceId}:${agent.generation ?? "unknown"}`} agent={agent} />
         </section>
         <section className="settings-page-section" aria-labelledby="settings-about-title"><div className="settings-section-head"><h2 id="settings-about-title" className="settings-section-title">About</h2></div><AgentAbout agent={agent} /></section>
       </div>

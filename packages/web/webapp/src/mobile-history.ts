@@ -1,4 +1,4 @@
-export type SettingsSection = "new-conversations" | "providers" | "agent";
+export type SettingsSection = "new-conversations" | "providers" | "capabilities" | "agent";
 
 export type MobileScreen = "dashboard" | "conversation";
 export type MobileHistorySurface =
@@ -31,7 +31,7 @@ export const mobileHistoryEntry = (state: unknown): MobileHistoryEntry | null =>
   if (entry.surface === "project" && typeof entry.projectId === "string" && entry.projectId.length > 0) {
     return { version: 1, surface: "project", projectId: entry.projectId, ...(href === undefined ? {} : { href }) };
   }
-  if (entry.surface === "settings" && (entry.section === null || entry.section === "new-conversations" || entry.section === "providers" || entry.section === "agent")
+  if (entry.surface === "settings" && (entry.section === null || entry.section === "new-conversations" || entry.section === "providers" || entry.section === "capabilities" || entry.section === "agent")
     && (entry.depth === 1 || entry.depth === 2) && href === window.location.href
     && (entry.depth === 1 || entry.section !== null)) {
     return { version: 1, surface: "settings", section: entry.section, depth: entry.depth, href };
@@ -53,7 +53,7 @@ export const routeWriteState = (state: unknown, nextUrl: string | URL, mode: "pu
   const marker = typeof raw === "object" && raw !== null ? raw as Record<string, unknown> : null;
   const current = marker?.version === 1 && marker.surface === "settings"
     && (marker.depth === 1 || marker.depth === 2)
-    && (marker.section === null || marker.section === "new-conversations" || marker.section === "providers" || marker.section === "agent")
+    && (marker.section === null || marker.section === "new-conversations" || marker.section === "providers" || marker.section === "capabilities" || marker.section === "agent")
     && (marker.depth === 1 || marker.section !== null)
     ? marker : null;
   // Only the entry at the current URL is ours to rewrite. In particular, a

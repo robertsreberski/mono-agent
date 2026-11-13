@@ -2808,3 +2808,21 @@ html.keyboard-viewport .skill-browser-popup {
 }
 .pdf-export-notice a { display: inline-flex; align-items: center; min-height: 44px; color: inherit; text-decoration: underline; }
 .pdf-export-notice .icon-button { flex-shrink: 0; min-width: 44px; min-height: 44px; }
+
+/* Read-only capability discovery uses the existing settings pane and scroller. */
+.capability-card { padding: 18px; margin-block: 14px; overflow-wrap: anywhere; }
+.capability-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.capability-heading h3 { margin: 0; font-size: 1rem; }
+.capability-card h4 { margin: 14px 0 4px; font-size: .85rem; }
+.capability-card p, .capability-card li { font-size: .875rem; line-height: 1.5; }
+.capability-card ul { padding-inline-start: 20px; margin-block: 6px; }
+.capability-card details { margin-top: 12px; }
+.capability-card summary { cursor: pointer; font-size: .875rem; }
+.capability-choice { display: grid; gap: 6px; font-size: .875rem; }
+.capability-choice select { width: 100%; min-width: 0; color: inherit; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 8px; }
+.capability-status { font-size: .75rem; font-weight: 600; white-space: nowrap; }
+.capability-status.is-error { color: var(--danger); }
+.capability-status.is-waiting { color: var(--warning); }
+.capability-status.is-ok { color: var(--accent); }
+.capability-steps { padding-inline-start: 20px; }
+.capability-steps pre { font: inherit; white-space: pre-wrap; overflow-wrap: anywhere; max-width: 100%; }

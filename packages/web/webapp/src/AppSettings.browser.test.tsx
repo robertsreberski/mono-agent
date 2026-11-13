@@ -1,3 +1,5 @@
+import { api } from "./api";
+import { capabilitySnapshot } from "./test/capability-fixtures";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { page } from "@vitest/browser/context";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -331,6 +333,35 @@ describe("settings screen navigation", () => {
     await waitFor(() => expect(document.querySelector(".settings-screen")).toBeNull());
     window.history.forward();
     await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("region", { name: "Providers" })));
+  });
+  it("does not shift the targeted Restart section when capability cards arrive late", async () => {
+    await page.viewport(390, 844);
+    let release!: (snapshot: typeof capabilitySnapshot) => void;
+    const read = vi.spyOn(api, "capabilitySetup").mockImplementation(() => new Promise((resolve) => { release = resolve; }));
+    storeMock.selectedAgent = agent("atlas", { label: "Atlas", restart: { supported: true }, supportsCapabilitySetup: true }) as never;
+    window.history.replaceState(null, "", "/?settings=agent");
+    try {
+      render(<App />);
+      await waitFor(() => expect(screen.getByRole("button", { name: "Restart Atlas" })).toBeVisible());
+      const restart = screen.getByRole("region", { name: "Restart" });
+      const top = restart.getBoundingClientRect().top;
+      const focus = document.activeElement;
+      release(capabilitySnapshot);
+      await screen.findByRole("heading", { name: "MCP / tools" });
+      expect(Math.abs(restart.getBoundingClientRect().top - top)).toBeLessThan(2);
+      expect(document.activeElement).toBe(focus);
+    } finally { read.mockRestore(); }
+  });
+  it("opens the Capabilities cold link with owned mobile history and keyboard focus", async () => {
+    await page.viewport(390, 844);
+    window.history.replaceState(null, "", "/?settings=capabilities");
+    const start = position();
+    render(<App />);
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("region", { name: "Capabilities" })));
+    expect(position()).toBe(start + 1);
+    expect(screen.getByText(/doesn't report capabilities/)).toBeVisible();
+    window.history.back();
+    await waitFor(() => expect(document.querySelector(".settings-screen")).toBeNull());
   });
   it("opens a desktop cold link without pushing and removes its URL parameter (N15)", async () => {
     await page.viewport(1200, 800);

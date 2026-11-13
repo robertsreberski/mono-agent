@@ -153,7 +153,9 @@ export default defineConfig({
           name: "chromium",
           launch: { args: ["--use-fake-device-for-media-stream", "--use-fake-ui-for-media-stream"] },
           provide: { providerUsageTouch: false },
-          context: { viewport: { width: 1440, height: 1000 }, hasTouch: false },
+          // Tall capability evidence must retain its requested CSS pixel width,
+          // rather than Vitest scaling a 1900px iframe into a 1000px runner.
+          context: { viewport: { width: 1440, height: process.env.VITE_CAPABILITY_SHOTS ? 2000 : 1000 }, hasTouch: false },
         },
         // Tablet layout must exercise real coarse-pointer / no-hover CSS,
         // not just a desktop browser resized to an iPad viewport.

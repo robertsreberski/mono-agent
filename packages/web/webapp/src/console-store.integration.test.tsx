@@ -412,6 +412,19 @@ describe("ConsoleStoreProvider integration", () => {
     });
   });
 
+  it("keeps an init handoff source pending until discovery finds it, without falling back", async () => {
+    window.history.replaceState(null, "", "/?agent=garden&settings=capabilities");
+    const store = await renderStore();
+    expect(store.current.selectedAgentId).toBe("garden");
+    expect(store.current.selectedAgent).toBeNull();
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap([agent("alpha"), agent("garden")], []));
+    act(() => FakeEventSource.latest?.emit("agents.changed", {
+      id: "garden-discovered", version: 1, type: "agents.changed", at: "2026-08-01T10:00:00Z",
+    }));
+    await waitFor(() => expect(store.current.selectedAgent?.sourceId).toBe("garden"));
+    expect(store.current.selectedAgentId).toBe("garden");
+  });
+
   it("keeps the server's clock from the stamp on every event", async () => {
     await renderStore();
     const before = Date.now();
