@@ -222,3 +222,11 @@ it.each(["owner", "bucket", "handle", "non-seed", "late-seed", "open-operation",
   const seq = validator.seq;
   expect(() => validator.apply(receipt), damage).toThrow("Invalid"); expect(validator.seq).toBe(seq);
 });
+
+it.each([{ name: "missing ID", fields: {} }, { name: "undefined ID", fields: { admissionId: undefined } }])("rejects retained coverage without an admission as corruption, not TypeError ($name)", ({ fields }) => {
+  const { validator, append } = fixture();
+  expect(() => append("compaction", { contextParentId: null, preservedMessageIds: [], derivedMessages: [], coverageVersion: 1,
+    compaction: { summary: "Fictional summary.", checkpoint: { retainedSummaryCoverage: { version: 1, ...fields } } },
+  })).toThrowError(expect.objectContaining({ code: "ERR_HARNESS_JOURNAL_CORRUPT" }));
+  expect(validator.seq).toBe(1); expect(validator.retainedSummaryAdmission).toBeNull();
+});

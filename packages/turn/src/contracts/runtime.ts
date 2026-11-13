@@ -80,11 +80,13 @@ export type RuntimeRunOptions = {
    * Protected lazy host replay prefix; never returned or included in telemetry.
    */
   detachedContext?: () => Promise<ReadonlyArray<any>>;
+  /** Positive host-owned retained-summary capability; never request/plugin supplied. */
+  retainedSummaryAccess?: RuntimeRetainedSummaryAccess | undefined;
   /** Host-owned asynchronous fail-open cold-seed hook, never a true native resume.
    * primaryAttempt=false forbids buying upkeep. Explicit upkeep may hold the
    * exclusive conversation up to 60s; default is local-only. The target headroom
-   * excludes the returned prefix; returned evidence must fit maxTokens. */
-  retainedSummaryAccess?: RuntimeRetainedSummaryAccess | undefined;
+   * excludes the returned prefix; returned evidence must fit maxTokens.
+   * Returned retainedSummary metadata is used only with retainedSummaryAccess. */
   coldContext?: ((budget: { maxTokens: number; reason: string; primaryAttempt: boolean }) => Promise<{ messages: ReadonlyArray<any>; replayMessages?: ReadonlyArray<any>; retainedSummary?: RuntimeRetainedSummaryCandidate }>) | undefined;
   /**
    * Protected awaited host claim before stateless replay.

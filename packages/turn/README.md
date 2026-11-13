@@ -3,18 +3,6 @@
 Use this package when you need direct, capability-aware access to mono-agent's
 Pi runtime and the ~39 providers it reaches.
 
-Host-authenticated cold seeds can carry one bounded `retained_summary_admitted`
-metadata receipt. Conversion, headroom acceptance and seed append precede owned
-host-turn admission and sync; text, roles and digest-shaped labels alone confer
-no protection. Invalid pre-write candidates skip admission and run legacy context.
-Uncovered source/resolver/owner loss warns with `retained_summary_legacy_fallback`
-and runs without a protected predecessor; only structural receipt corruption can
-make the session unavailable. Covered branches need no optional access or source
-resolution. Rewind reactivates resolution with legacy fallback if it is unavailable. No new pins,
-text copies, retry budgets or context limits are introduced. Legacy journals stay
-readable and byte-identical without admission. Older binaries reject the new kind;
-do not downgrade against active carrier journals without approved reconstruction.
-
 ## Category
 
 <!-- package-metadata:start -->
@@ -29,6 +17,29 @@ Catalog responsibility: Owns the Pi model-run loop, native journals/storage and 
 ## Responsibility
 
 Implements the Pi runtime and its typed host integration. The `./host` entrypoint constructs a protected runtime behind host contracts. Pi-owned stdio children enforce optional mono-agent sandbox policy through an injectable `RuntimeSandbox` seam (a fail-closed passthrough by default; `@mono-agent/turn/host` injects the real implementation). Every route in a fallback chain is Pi-native and shares one contract; no route silently drops required capabilities.
+
+A cold seed is the host's initial replay into a fresh native session. It can
+carry one `retained_summary_admitted` receipt after conversion/headroom checks,
+seed persistence and admission under the host's exclusive canonical turn claim.
+The receipt is synced before dispatch; copied text or digest-shaped labels alone
+confer no protection. Invalid pre-write candidates keep legacy context.
+
+Until a native checkpoint on the active branch covers that receipt, source,
+resolver or optional owner loss emits `retained_summary_legacy_fallback` and runs
+without the protected cold predecessor. A covering checkpoint is the durable
+successor summary that records the admission ID; it ends source resolution on
+that branch. Rewind before it reactivates source resolution, with the same legacy
+fallback if unavailable. Native checkpoints take precedence over cold evidence.
+
+Integrity failures detected during retained-summary resolution refuse with
+`native_retained_summary_unavailable`. Journal validation errors, including
+malformed receipts and mismatched native journal IDs, refuse earlier with
+`native_journal_unreadable`. Both preserve evidence for inspection and
+explicitly approved reconstruction; neither automatically retries a cold turn.
+No new pins, text copies, retry budgets or context limits are introduced.
+Journals without admission stay readable and byte-identical. Older readers reject
+journals containing the new record kind: do not downgrade them without approved
+reconstruction. See [the native engine contract](./ENGINE.md) for record details.
 
 Continuity upkeep can preflight model identity and credential presence without a
 completion, then bind a sessionless no-fallback call. Configured hosts use the

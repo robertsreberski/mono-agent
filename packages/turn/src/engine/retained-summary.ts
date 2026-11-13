@@ -60,14 +60,18 @@ export async function resolveRetainedSummaryAdmission(raw: any, access?: Retaine
   if (!validRetainedSummaryReceipt(p) || p.destination.handleId !== raw.metadata.id || p.destination.journalId !== raw.metadata.journalId
     || raw.validator.owner.kind !== "host" || raw.validator.owner.ownerKey !== p.destination.logicalConversationId
     || raw.validator.owner.historyBucket !== p.destination.conversationId) throw failure();
+  const legacy = () => { try { onFallback?.(); } catch { /* Diagnostics cannot block legacy execution. */ } return undefined; };
   const entries = await raw.getEntries();
   if (entries.some((entry: any) => entry.checkpoint?.retainedSummaryCoverage?.admissionId === admission.id)) return undefined;
-  if (!entries.some((entry: any) => entry.id === p.seed.entryId)) return undefined;
+  if (!entries.some((entry: any) => entry.id === p.seed.entryId)) {
+    // A native successor wins even without retained coverage (for example after
+    // source loss during its cut). Otherwise an excluding branch is a fallback.
+    return entries.some((entry: any) => entry.type === "compaction") ? undefined : legacy();
+  }
   const seed = await raw.getEntry(p.seed.entryId);
   assertRetainedSummarySeed(p, seed?.message);
   // A raw native checkpoint wins, including after projection repair.
   if (entries.some((entry: any) => entry.type === "compaction")) return undefined;
-  const legacy = () => { try { onFallback?.(); } catch { /* Diagnostics cannot block legacy execution. */ } return undefined; };
   if (!access) return legacy();
   if (["logicalConversationId", "conversationId", "epoch", "handleId"].some(key => (p.destination as any)[key] !== (access.destination as any)[key])) throw failure();
   let proof;

@@ -118,6 +118,12 @@ export const KNOWN_RUN_FAILURE_KINDS = [
     nextStep: "Wait for the in-flight turn to finish, then retry or use a separate session.",
   },
   {
+    kind: "native_retained_summary_unavailable",
+    label: "Retained-summary integrity",
+    explanation: "The native session's retained-summary receipt failed integrity validation; saved native evidence was preserved.",
+    nextStep: "Inspect the preserved journal and integrity diagnostic, then use explicitly approved reconstruction or start a new conversation. Do not downgrade its reader or edit receipt metadata.",
+  },
+  {
     kind: "exception",
     label: "Unclassified exception",
     explanation: "The runtime surfaced an exception without a more specific failure kind.",
