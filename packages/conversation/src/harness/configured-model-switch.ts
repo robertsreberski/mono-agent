@@ -128,7 +128,7 @@ export async function prepareConfiguredModelSwitch(input: {
             if (!outgoingRuntime.prepareNativeDispatch) return undefined;
             const outgoingOptions: RuntimeRunOptions = { ...options.runtimeOptions, model: parseMonoRuntimeModelReference(from), messages: [],
               abortSignal: host.request.abortSignal, allowedTools: [], disallowedTools: [], mcpServers: {}, skills: [], sessionsRoot: host.durableSessionsRoot };
-            for (const key of ["outputSchema", "piResolvedModel", "sessionId", "providerSessionId", "providerAttributionSessionId", "sessionTurn", "sessionRecovery", "nativeSessionAuthority", "nativeSessionProjection", "liveInput", "detachedContext"]) delete (outgoingOptions as Record<string, unknown>)[key];
+            for (const key of ["outputSchema", "piResolvedModel", "sessionId", "providerSessionId", "providerAttributionSessionId", "sessionTurn", "sessionRecovery", "nativeSessionAuthority", "nativeSessionProjection", "retainedSummaryAccess", "liveInput", "detachedContext"]) delete (outgoingOptions as Record<string, unknown>)[key];
             const lease = await outgoingRuntime.prepareNativeDispatch("Produce only the requested structured conversation handoff.", outgoingOptions);
             if (!lease.checkHandoffSummary || !lease.produceHandoffSummary) { await lease.close(); return undefined; }
             outgoing = { snapshot: lease.snapshot, checkHandoffSummary: (request) => {

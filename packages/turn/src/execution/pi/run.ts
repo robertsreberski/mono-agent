@@ -726,6 +726,7 @@ async function executeTrackedPiNativeResponse(systemPrompt: string, options: PiO
     // this fast-fail. The explicit prepared path has already resolved its tools.
     try {
       const resolvedSession = await resolveSession(runState, {
+        onEvent,
         requestedSessionId,
         providerSessionId,
         durableRepo,
@@ -768,6 +769,11 @@ async function executeTrackedPiNativeResponse(systemPrompt: string, options: PiO
       maxRetries,
       maxRetryDelayMs,
       steeringMode: toolSteeringMode,
+      onRetainedSummaryWarning: (event: any) => {
+        if (runtimeWarnings.some(warning => warning.warning_kind === event.code)) return;
+        const warning = { warning_kind: event.code, message: event.message };
+        runtimeWarnings.push(warning); onEvent({ type: "runtime_warning", ...warning });
+      },
       options: { ...options, onEffectiveEffort: (effectiveEffort: string | undefined) => onEvent({ type: "provider_execution_config", sdk: "pi", model: reference,
         ...(options.effort ? { effort: options.effort } : {}), ...(effectiveEffort ? { effectiveEffort } : {}), timestamp: Date.now() }) },
     });

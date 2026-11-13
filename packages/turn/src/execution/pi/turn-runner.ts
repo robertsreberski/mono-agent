@@ -284,7 +284,7 @@ export function toolResultErrorOverride(details: any): {
   return failed ? { isError: true } : undefined;
 }
 
-export function buildTurnHarness(runState: any, { session, piModels, model, thinkingLevel, systemPrompt, outputSchema, tools, toolExecutionMode, transport, maxRetries, maxRetryDelayMs, steeringMode, options, }: {
+export function buildTurnHarness(runState: any, { session, piModels, model, thinkingLevel, systemPrompt, outputSchema, tools, toolExecutionMode, transport, maxRetries, maxRetryDelayMs, steeringMode, options, onRetainedSummaryWarning, }: {
     session: any;
     piModels: any;
     model: any;
@@ -298,6 +298,7 @@ export function buildTurnHarness(runState: any, { session, piModels, model, thin
     maxRetryDelayMs: any;
     steeringMode: any;
     options: any;
+    onRetainedSummaryWarning?: (event: any) => void;
 }): Promise<{
     models: any;
     getPromptCacheRequest: () => any;
@@ -347,7 +348,8 @@ export async function buildTurnHarness(runState: PiRunState, {
   maxRetryDelayMs,
   steeringMode,
   options,
-}: { session: PiSession; piModels: Models; model: PiModel; thinkingLevel: string; systemPrompt: string; outputSchema: any; tools: PiTool[]; toolExecutionMode: string; transport: string; maxRetries: number; maxRetryDelayMs: number; steeringMode: string; options: PiOptions }) {
+  onRetainedSummaryWarning,
+}: { onRetainedSummaryWarning?: (event: any) => void; session: PiSession; piModels: Models; model: PiModel; thinkingLevel: string; systemPrompt: string; outputSchema: any; tools: PiTool[]; toolExecutionMode: string; transport: string; maxRetries: number; maxRetryDelayMs: number; steeringMode: string; options: PiOptions }) {
   const providerCheckMaxTokens = options.providerCheckMaxTokens;
   const providerCheck = typeof providerCheckMaxTokens === "number" && Number.isSafeInteger(providerCheckMaxTokens) && providerCheckMaxTokens > 0;
   // Only adapters proven to honor request-local fetch and zero internal retries
@@ -398,6 +400,11 @@ export async function buildTurnHarness(runState: PiRunState, {
   // every resolved execute(), so without this the model would be told a failed,
   // timed-out, or empty delegation succeeded.
   harness.on("tool_result", (event: any) => toolResultErrorOverride(event?.details));
+  // Optional retention diagnostics are visible even during repair/admission,
+  // before ordinary message subscription, and on the manual compaction path.
+  harness.subscribe((event: any) => {
+    if (event.type === "warning" && ["retained_summary_legacy_fallback", "retained_summary_admission_skipped"].includes(event.code)) onRetainedSummaryWarning?.(event);
+  });
   // Reconcile native evidence without executing a provider/tool or claiming a
   // successful receipt. Do this before subscription: repair is old evidence,
   // not output or spend from the next user turn. Deferred suspension is

@@ -1471,17 +1471,28 @@ native evidence; storage only matches supplied proof to the prepared row.
 The host passes renderer selection together with the exact per-call messages.
 After runtime conversion/headroom checks, seed persistence and host owner binding,
 a bounded `retained_summary_admitted` record is synced before dispatch/compaction.
+Invalid or revoked candidates before that write skip admission, emit the
+content-free `retained_summary_admission_skipped` warning, and keep legacy execution.
+Receipt IDs share the 4,096-UTF-8-byte identity limit; the complete metadata is
+still bounded to 8 KiB.
 Only the exact retained, sanitized bytes can become a protected predecessor;
 missing legacy provenance, foreign physical buckets and copied text confer none.
 The diagnostic `lastRenderedSummary()` remains last renderer output, not injected
 or admitted, and is never read as admission authority. Pack bytes are unchanged.
 
 Restart rechecks destination ownership/epoch/handle, persisted seed commitment and
-the exact source publication. Missing authority or an active revoked source fails
-closed for reconstruction, without recovering original bytes. A durable successor
-checkpoint's branch-local coverage ends the source dependency. Rewind before that
-successor revalidates the source; with a purged source it instead uses legacy
-behavior without an availability failure. No retention pins or copies are added.
+the exact source publication when protection is active. Losing optional source
+resolution (purge/revocation, disabled continuity, missing owner/resolver, or an
+excluding continuation boundary) emits the content-free
+`retained_summary_legacy_fallback` warning and continues with no protected cold
+predecessor. It never makes the turn unavailable or recovers original bytes.
+Structural receipt corruption against the actual store (owner, epoch, bucket,
+handle/journal or seed mismatch) remains an integrity refusal for reconstruction.
+Prepared current-journal dispatch forwards the same owned resolver. A durable
+successor checkpoint's branch-local coverage ends source resolution **before any
+access check**, including when continuity is later disabled. Rewind before that
+successor revalidates the source, with the same legacy fallback if it is absent.
+No retention pins or copies are added.
 Old readers reject carrier-bearing journals; do not downgrade binaries against
 active admission journals without an explicitly approved reconstruction/reset.
 

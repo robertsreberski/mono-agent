@@ -12,7 +12,7 @@ const need = (condition, message) => { if (!condition) throw Error(message); };
  * durable runtime. Reopen it through another host/runtime to prove restart. The
  * summary is caller-generated text; the lane never consults a fixture oracle.
  */
-export async function runTrialHostReseed(summary, { authenticated = false, omitDestinationEpoch = false, rollover = false, omitResolverOnRestart = false, purgeBeforeRestart = false, automaticRefusal = false } = {}) {
+export async function runTrialHostReseed(summary, { authenticated = false, omitDestinationEpoch = false, rollover = false, omitResolverOnRestart = false, purgeBeforeRestart = false, automaticRefusal = false, preparedWake = false, excludeOnRestart = false, purgeBeforeAdmit = false, oversizedCandidate = false } = {}) {
   const [conversation, engine, host, ai] = await Promise.all([
     built("conversation/dist/index.js"), import("@mono-agent/turn/engine"), import("@mono-agent/turn/host"),
     built("turn/node_modules/@earendil-works/pi-ai/dist/index.js"),
@@ -29,7 +29,8 @@ export async function runTrialHostReseed(summary, { authenticated = false, omitD
     runtime = host.createMonoRuntime({ workspace: root });
     const continuity = conversation.createContinuityParticipant({ writer, reader, logicalConversationId: value => value === coldId ? id : value,
       protectedConversations: () => reader.protectedContinuityConversations() });
-    const store = conversation.createDurableHistoryStore({ root: historyRoot, continuity, retireProviderSession: async () => {},
+    const native = preparedWake ? (await import("@mono-agent/turn/ai")).createManagedNativeJournalStorage({ sessionsRoot }) : undefined;
+    const store = conversation.createDurableHistoryStore({ root: historyRoot, continuity, ...(native ? { nativeJournalStorage: native } : {}), retireProviderSession: async () => {},
       reconcileProviderSessionTurn: async request => runtime.reconcileSessionTurn({ sessionsRoot, descriptor: request.descriptor,
         purpose: request.purpose, ...(request.includeContinuity ? { includeContinuity: true } : {}), expectedModel: { provider: "faux", id: request.modelKey.split(":").at(-1) }, expectedInputs: request.expectedInputs }) });
     if (authenticated) {
@@ -73,12 +74,43 @@ export async function runTrialHostReseed(summary, { authenticated = false, omitD
       };
       const value = Reflect.get(target, key); return typeof value === "function" ? value.bind(target) : value;
     } }) : store;
-    let automaticCompaction = false;
-    const makeHarness = () => conversation.createConversationHarness({ identityPath, cwd: root, historyStore: harnessStore, runtime, sessionsRoot,
-      model: { provider: "faux", model: "cold", reference: "faux:cold" }, session: { mode: "continuous", idleTimeoutMs: 60000, supportsResume: true },
-      toolHistory: { writer, reader, continuityEnabled: true, logicalConversationId: value => value === coldId ? id : value },
-      runtimeOptions: { piResolvedModel: faux.getModel(), piResolvedModels: models, effort: "none", compaction: automaticCompaction ? { enabled: true, maxInputTokens: 2000, summaryMaxTokens: 3000, keepRecentTokens: 1000, minSavingsTokens: 0 } : { enabled: false } } });
-    harness = makeHarness();
+    let automaticCompaction = false, usePrepared = false, preparedRuns = 0, excludeSource = false;
+    // Scope the real reader at the capability seam; ordinary continuation harness
+    // requests are intentionally detached and do not reopen this native journal.
+    const scopedReader = excludeOnRestart ? new Proxy(reader, { get(target, key) {
+      if (key === "resolveRetainedSummary") return (scope, binding) => target.resolveRetainedSummary({ ...scope,
+        ...(excludeSource ? { historyBoundary: "excluded-fictional-source" } : {}) }, binding);
+      const value = Reflect.get(target, key); return typeof value === "function" ? value.bind(target) : value;
+    } }) : reader;
+    const makeHarness = async () => {
+      if (purgeBeforeAdmit || oversizedCandidate) {
+        const run = runtime.run.bind(runtime);
+        runtime.run = (prompt, options) => run(prompt, { ...options, coldContext: options.coldContext && (async budget => {
+          const selected = await options.coldContext(budget);
+          if (selected.retainedSummary) {
+            if (purgeBeforeAdmit) await writer.resetConversation(id);
+            if (oversizedCandidate) selected.retainedSummary.binding.sourceEpoch = "x".repeat(4097);
+          }
+          return selected;
+        }) });
+      }
+      if (usePrepared) {
+        const prepare = runtime.prepareNativeDispatch.bind(runtime);
+        runtime.prepareNativeDispatch = async (...args) => {
+          const lease = await prepare(...args), run = lease.run.bind(lease);
+          lease.run = patch => { need(patch.retainedSummaryAccess, "Prepared current-journal wake dropped retained access"); preparedRuns++; return run(patch); };
+          return lease;
+        };
+      }
+      const options = { identityPath, cwd: root, historyStore: harnessStore, runtime, sessionsRoot,
+        model: { provider: "faux", model: "cold", reference: "faux:cold" }, session: { mode: "continuous", idleTimeoutMs: 60000, supportsResume: true },
+        toolHistory: { writer, reader: scopedReader, continuityEnabled: true, logicalConversationId: value => value === coldId ? id : value },
+        runtimeOptions: { piResolvedModel: faux.getModel(), piResolvedModels: models, effort: "none", compaction: automaticCompaction ? { enabled: true, maxInputTokens: 2000, summaryMaxTokens: 3000, keepRecentTokens: 1000, minSavingsTokens: 0 } : { enabled: false } } };
+      if (!usePrepared) return conversation.createConversationHarness(options);
+      const { ConversationHarnessImpl } = await built("conversation/dist/harness/index.js");
+      return new ConversationHarnessImpl(options, { nativeModelSwitch: { native, sessionsRoot, deliveryId: () => "fictional-prepared-wake" } });
+    };
+    harness = await makeHarness();
     const result = await harness.run({ conversationId: coldId, userMessage: automaticRefusal ? "Fictional progress. ".repeat(3000) : "Resume fictional work.", abortSignal: new AbortController().signal, onEvent: event => events.push(event) });
     need(!result.failure, `Host cold seed failed: ${JSON.stringify(result.failure)}`);
     await harness.dispose(); harness = undefined; await runtime.disposeAllSessions();
@@ -98,14 +130,15 @@ export async function runTrialHostReseed(summary, { authenticated = false, omitD
       rollover ? "Rollover crossed physical summary scope" : "Runtime did not persist the retained cold pack seed");
     await repo.close(); repo = undefined;
     automaticCompaction = automaticRefusal;
+    usePrepared = preparedWake; excludeSource = excludeOnRestart;
     if (omitResolverOnRestart) withholdEpoch = true;
     if (purgeBeforeRestart) await writer.resetConversation(id);
-    runtime = host.createMonoRuntime({ workspace: root }); harness = makeHarness();
+    runtime = host.createMonoRuntime({ workspace: root }); harness = await makeHarness();
     const restarted = await harness.run({ conversationId: coldId, userMessage: "Verify fictional restart.", abortSignal: new AbortController().signal, onEvent: event => events.push(event) });
-    if (omitResolverOnRestart || purgeBeforeRestart) {
-      need(restarted.failure?.kind === "native_retained_summary_unavailable" && contexts.length === 1,
-        `Bound restart silently downgraded or dispatched: ${JSON.stringify(restarted.failure)}`);
-      return { unavailableWithoutDispatch: true, runtimeCalls: contexts.length };
+    if (omitResolverOnRestart || purgeBeforeRestart || excludeOnRestart) {
+      need(!restarted.failure && contexts.length === 2, `Optional source loss stranded restart: ${JSON.stringify(restarted.failure)}`);
+      need(events.some(event => event.type === "runtime_warning" && event.warning_kind === "retained_summary_legacy_fallback"), "Source loss omitted content-free warning");
+      return { legacyFallbackWithWarning: true, runtimeCalls: contexts.length };
     }
     if (automaticRefusal) {
       need(!restarted.failure && contexts.length === 3, "Automatic cold predecessor path failed or repaid a refusal");
@@ -115,9 +148,14 @@ export async function runTrialHostReseed(summary, { authenticated = false, omitD
       repo = new engine.JsonlSessionRepo({ sessionsRoot }); raw = await repo.open(coldJournals[0], { repair: false });
       need(!(await raw.getEntries()).some(entry => entry.type === "compaction"), "Real pre-turn refusal committed a cut");
       need(raw.validator.retainedSummaryAdmission, "Real pre-turn refusal consumed admission");
-      return { realPreTurnProtectedRefused: true, runtimeCalls: contexts.length };
+      if (preparedWake) need(preparedRuns === 1, "Expected exactly one prepared current-journal dispatch");
+      return { realPreTurnProtectedRefused: true, runtimeCalls: contexts.length, ...(preparedWake ? { preparedCurrentJournalProtected: true } : {}) };
     }
     need(!restarted.failure && contexts.length === 2, "Host restart failed or made extra calls");
+    if (purgeBeforeAdmit || oversizedCandidate) {
+      need(!coldAdmission && events.some(event => event.type === "runtime_warning" && event.warning_kind === "retained_summary_admission_skipped"), "Invalid pre-write candidate acquired admission or omitted warning");
+      return { skippedAdmissionLegacy: true, runtimeCalls: contexts.length };
+    }
     let admissionProof;
     if (authenticated && !omitDestinationEpoch && !rollover) {
       await harness.dispose(); harness = undefined; await runtime.disposeAllSessions();
@@ -176,7 +214,7 @@ export async function runTrialHostReseed(summary, { authenticated = false, omitD
       await guardedDriver.endTurn("completed", { text: null, error: null, failureKind: null, cancelled: false, stopReason: "compaction" });
       await raw.sync(); await raw.close(); raw = undefined; await repo.close(); repo = undefined;
       await (await turn.prepareCommit([], { providerSessionSynced: true })).commit(); turn = undefined;
-      runtime = host.createMonoRuntime({ workspace: root }); harness = makeHarness();
+      runtime = host.createMonoRuntime({ workspace: root }); harness = await makeHarness();
       const coveredRestart = await harness.run({ conversationId: id, userMessage: "Continue covered fictional session.", abortSignal: new AbortController().signal });
       need(!coveredRestart.failure && contexts.length === 3, "Covered restart after source purge unavailable");
       admissionProof = { receiptBytes: Buffer.byteLength(JSON.stringify(admission.payload)), admissionId: admission.id, seedDigest: admission.payload.seed.messageDigest,

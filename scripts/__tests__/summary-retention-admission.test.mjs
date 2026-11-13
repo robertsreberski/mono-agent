@@ -44,10 +44,17 @@ it("keeps physical-bucket isolation at rollover: no admission, no protection, le
   expect(result.runtimeCalls).toBe(2);
 }, 60000);
 
-it.each(["omitResolverOnRestart", "purgeBeforeRestart"])("does not silently downgrade active durable admission after %s", async control => {
-  expect(await runTrialHostAdmission(summary, { [control]: true })).toEqual({ unavailableWithoutDispatch: true, runtimeCalls: 1 });
+it.each(["omitResolverOnRestart", "purgeBeforeRestart", "excludeOnRestart"])("keeps uncovered admission live with a legacy warning after %s", async control => {
+  expect(await runTrialHostAdmission(summary, { [control]: true })).toEqual({ legacyFallbackWithWarning: true, runtimeCalls: 2 });
 }, 60000);
 
 it("engages admitted protection through the actual restarted runtime's automatic pre-turn hook", async () => {
   expect(await runTrialHostAdmission(summary, { automaticRefusal: true })).toEqual({ realPreTurnProtectedRefused: true, runtimeCalls: 3 });
+}, 60000);
+
+it.each(["oversizedCandidate", "purgeBeforeAdmit"])("keeps cold admission optional through %s", async control => {
+  expect(await runTrialHostAdmission(summary, { [control]: true })).toEqual({ skippedAdmissionLegacy: true, runtimeCalls: 2 });
+}, 60000);
+it("keeps a cold-admitted current journal protected through prepared configured wake", async () => {
+  expect(await runTrialHostAdmission(summary, { automaticRefusal: true, preparedWake: true })).toEqual({ realPreTurnProtectedRefused: true, runtimeCalls: 3, preparedCurrentJournalProtected: true });
 }, 60000);

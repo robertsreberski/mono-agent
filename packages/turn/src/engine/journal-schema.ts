@@ -83,7 +83,6 @@ function validateTurnSeal(seal: any, terminalStatus: "completed" | "failed" | "a
 /** Incremental reference/lifecycle validator. Never transforms native payloads. */
 export class JournalValidator {
   declare retainedSummaryAdmission: any;
-  declare retainedSummaryCovered: boolean;
   declare seq: number;
   /** Immutable accepted artifact/coverage identity, not a second content copy. */
   declare projectionBinding: any;
@@ -102,7 +101,7 @@ export class JournalValidator {
   declare handleBindings: Map<any, any>;
   declare owner: any;
   constructor() {
-    this.retainedSummaryAdmission = null; this.retainedSummaryCovered = false;
+    this.retainedSummaryAdmission = null;
     this.seq = 0;
     this.projectionBinding = null;
  this.parentId = null;
@@ -340,14 +339,13 @@ export class JournalValidator {
       this.turns.get(record.turnId).contextIds.push(record.id);
       if (message?.role === "assistant" && message.stopReason === "deferred" && record.operationId) this.operations.get(record.operationId).suspended = true;
       this.contextInfo.set(record.id, { kind: record.kind, seq: record.seq, parentId: p.contextParentId,
-        ...(record.kind === "message" && this.turns.get(record.turnId).start.payload.config?.cause === "seed" ? { seedDigest: evidenceDigest(message) } : {}),
+        ...(record.kind === "message" && this.turns.get(record.turnId).start.payload.config?.cause === "seed" && this.turns.get(record.turnId).start.payload.identitySource === "synthetic" ? { seedDigest: evidenceDigest(message) } : {}),
         ...(p.compaction?.checkpoint?.retainedSummaryCoverage ? { retainedSummaryCoverage: structuredClone(p.compaction.checkpoint.retainedSummaryCoverage) } : {}),
         operationId: record.operationId, role: message?.role, stopReason: message?.stopReason, inputId: p.input?.id,
         requestDigest: p.input?.requestDigest, placement: p.input?.placement, inputComplete: p.input?.complete, callId: message?.toolCallId, name: message?.toolName, isError: message?.isError,
         calls: new Map((Array.isArray(message?.content) ? message.content : []).filter((part: any) => part?.type === "toolCall").map((call: any) => [call.id, call.name])) });
     }
     if (record.kind === "retained_summary_admitted") this.retainedSummaryAdmission = structuredClone(record);
-    if (record.kind === "compaction" && p.compaction.checkpoint?.retainedSummaryCoverage) this.retainedSummaryCovered = true;
     if (record.kind === "rewind") this.tip = p.tipId;
     const callKey = `${record.operationId ?? record.turnId}\0${p.callId}`;
     if (record.kind === "tool_call") this.calls.set(callKey, { ...(this.calls.get(callKey) ?? {}), name: p.name,

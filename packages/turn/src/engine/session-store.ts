@@ -224,7 +224,7 @@ export class SessionStore {
     return this.scopedWrite(async () => (await this.writeRecord("compaction", () => ({
       compaction: { ...clone(data), checkpoint }, contextParentId: this.tip, preservedMessageIds,
       derivedMessages, coverageVersion: 1 }), { operationId: this.activeOperationId() })).id, "compaction", inheritedCoverage || retainedSummaryCoverage ? () => {
-      if (!source || source.sourceTipId !== this.tip || source.sourceSeq !== this.seq) throw new TypeError("Composed checkpoint source changed");
+      if (!source || source.sourceTipId !== this.tip || inheritedCoverage && source.sourceSeq !== this.seq) throw new TypeError("Composed checkpoint source changed");
     } : undefined);
   }
   async moveTo(tipId: any): Promise<any> { await this.scopedWrite(() => this.writeRecord("rewind", { tipId }), "rollback"); return tipId; }

@@ -1,3 +1,5 @@
+import { estimateContextTokens as estimateProviderContext } from "@earendil-works/pi-ai/utils/estimate";
+import { summaryRequestOptions } from "../../execution/pi/compaction/summary-policy.js";
 import { createHash } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -407,4 +409,52 @@ it("shares active admission's paid refusal across the real idle and threshold ho
     expect(f.events.at(-1)).toMatchObject({ reason: "preservation_growth_required", accounting: { midRun: true } });
     expect((await f.raw.getEntries()).some((entry: any) => entry.type === "compaction")).toBe(false);
   } finally { await controller.disarm(); await f.close(); }
+});
+
+it("commits the paid retained-only cut when steering queues input during generation, before and after coverage", async () => {
+  const f = await fixture(history, false, true);
+  try {
+    await f.grow();
+    await f.driver.beginTurn("fictional-steered", "synthetic", { kind: "host", ownerKey: "fictional-owner", historyBucket: "fictional-bucket", handleId: f.raw.metadata.id, turnId: "fictional-steered", baseRevision: 1,
+      reconciliation: { version: 1, purpose: "compaction", fenceDigest: "a".repeat(64), initialInputId: null } });
+    f.completeSimple.mockImplementation(async () => {
+      const before = { tip: f.raw.tip, seq: f.raw.seq };
+      await f.driver.steer("Fictional queued input.", { inputId: `steer-${f.completeSimple.mock.calls.length}` });
+      expect(f.raw.tip).toBe(before.tip); expect(f.raw.seq).toBeGreaterThan(before.seq);
+      return answer(history);
+    });
+    for (let index = 0; index < 2; index++) {
+      const attempt = await f.compact("proactive");
+      expect(attempt.applied, JSON.stringify({ index, attempt, events: f.events, warnings: f.warnings })).toBe(true);
+      expect((await f.raw.getEntries()).at(-1).checkpoint.retainedSummaryCoverage.admissionId).toBe(f.raw.validator.retainedSummaryAdmission.id);
+      if (index === 0) await f.grow();
+    }
+    expect(f.completeSimple).toHaveBeenCalledTimes(2);
+    expect([...f.raw.validator.inputs.values()].filter((input: any) => input.state === "queued")).toHaveLength(2);
+    await f.driver.endTurn("completed", { text: null, error: null, failureKind: null, cancelled: false, stopReason: "compaction" });
+  } finally { await f.close(); }
+});
+
+it.each([false, true])("counts the seed quotation, previous summary and protected frames in provider headroom (split=%s)", async split => {
+  const f = await fixture(history, false, true);
+  try {
+    await f.grow();
+    if (split) await f.raw.appendMessage({ role: "assistant", content: [{ type: "text", text: "Fictional suffix. ".repeat(2000) }], timestamp: 3 });
+    await f.compact("proactive");
+    const context = f.completeSimple.mock.calls[0]![1], prompt = context.messages[0].content[0].text;
+    expect(prompt).toContain(JSON.stringify(history)); // Quoted copy in the actual seed pack.
+    expect(prompt).toContain(`<previous-summary>\n${history}\n</previous-summary>`);
+    expect(prompt).toContain("<protected-historical-tuples>");
+    const input = estimateProviderContext(context).tokens;
+    const recorded = f.events.at(-1).accounting.requests[0], minimum = recorded.minimumAnswerTokens;
+    const model = { ...f.harness.getModel(), contextWindow: input + 4096 + minimum - 1, maxTokens: 10000 };
+    const policy = (value: any) => summaryRequestOptions(model, value, { maxTokens: recorded.textTargetTokens }, "none", minimum);
+    const full = policy(context);
+    expect(full.metadata.availableProviderTokens).toBe(minimum - 1); expect(full.canDispatch).toBe(false);
+    for (const remove of [JSON.stringify(history), `<previous-summary>\n${history}\n</previous-summary>\n\n`, /<protected-historical-tuples>[\s\S]*?<\/protected-historical-tuples>\s*/u]) {
+      const reduced = structuredClone(context); reduced.messages[0].content[0].text = prompt.replace(remove, "");
+      expect(estimateProviderContext(reduced).tokens).toBeLessThan(input);
+      expect(policy(reduced).canDispatch).toBe(true);
+    }
+  } finally { await f.close(); }
 });

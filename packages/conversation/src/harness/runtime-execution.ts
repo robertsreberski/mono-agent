@@ -787,6 +787,7 @@ async function executeHarnessRuntime(preparation: PreparationControl | undefined
         nativeLease?.assertReady?.();
         const result = nativeLease ? await nativeLease.run({ sessionId: runtimeOptions.sessionId, providerSessionId: runtimeOptions.providerSessionId,
           ...(runtimeOptions.providerAttributionSessionId === undefined ? {} : { providerAttributionSessionId: runtimeOptions.providerAttributionSessionId }), sessionKeepAlive: runtimeOptions.sessionKeepAlive,
+          retainedSummaryAccess: runtimeOptions.retainedSummaryAccess,
           sessionIdleTimeoutMs: runtimeOptions.sessionIdleTimeoutMs, sessionTurn: runtimeOptions.sessionTurn, sessionRecovery: runtimeOptions.sessionRecovery,
           ...(runtimeOptions.nativeSessionAuthority ? { nativeSessionAuthority: runtimeOptions.nativeSessionAuthority } : {}),
           ...(runtimeOptions.nativeSessionProjection ? { nativeSessionProjection: runtimeOptions.nativeSessionProjection } : {}) })

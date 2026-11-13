@@ -4,12 +4,13 @@ import type { RuntimeRetainedSummaryAccess, RuntimeRetainedSummaryReceipt } from
 
 const object = (x: any) => x !== null && typeof x === "object" && !Array.isArray(x);
 const keys = (x: any, names: string[]) => object(x) && Object.keys(x).length === names.length && Object.keys(x).every(key => names.includes(key));
-const id = (x: any) => typeof x === "string" && x.length > 0 && Buffer.byteLength(x) <= 512;
+const id = (x: any) => typeof x === "string" && x.length > 0 && Buffer.byteLength(x) <= 4096;
 const digest = (x: any) => typeof x === "string" && /^[a-f0-9]{64}$/u.test(x);
 const integer = (x: any) => Number.isSafeInteger(x) && x >= 0;
 const hash = (x: string | Buffer) => createHash("sha256").update(x).digest("hex");
-const failure = (unavailable = false) => Object.assign(new Error(unavailable ? "Retained summary source unavailable; reconstruct the native session" : "Invalid retained summary admission authority"),
-  { code: unavailable ? "ERR_RETAINED_SUMMARY_UNAVAILABLE" : "ERR_RETAINED_SUMMARY_AUTHORITY" });
+const failure = () => Object.assign(new Error("Invalid retained summary admission authority"), { code: "ERR_RETAINED_SUMMARY_AUTHORITY" });
+export const retainedSummaryFallbackWarning = { type: "warning", code: "retained_summary_legacy_fallback",
+  message: "Retained summary protection unavailable; continuing with legacy context." } as const;
 
 /** Closed, bounded metadata only; no retained-text copy. */
 export function validRetainedSummaryReceipt(p: any): p is RuntimeRetainedSummaryReceipt {
@@ -51,28 +52,29 @@ export function assertRetainedSummarySeed(receipt: RuntimeRetainedSummaryReceipt
 /** Raw branch state wins over repaired projection. Covered admissions no longer
  * depend on the source; rewind makes them active again, with legacy fallback if
  * that source has since been removed. No bytes are recovered from source journals. */
-export async function resolveRetainedSummaryAdmission(raw: any, access?: RuntimeRetainedSummaryAccess): Promise<{ admissionId: string; text: string } | undefined> {
+export async function resolveRetainedSummaryAdmission(raw: any, access?: RuntimeRetainedSummaryAccess, onFallback?: () => void): Promise<{ admissionId: string; text: string } | undefined> {
   const admission = raw.validator.retainedSummaryAdmission;
   if (!admission) return undefined;
-  const entries = await raw.getEntries(), p: RuntimeRetainedSummaryReceipt = admission.payload;
-  const covered = entries.some((entry: any) => entry.checkpoint?.retainedSummaryCoverage?.admissionId === admission.id);
-  const seeded = entries.some((entry: any) => entry.id === p.seed.entryId);
-  if (!seeded && !covered) return undefined;
-  if (!access || !validRetainedSummaryReceipt(p)
-    || ["logicalConversationId", "conversationId", "epoch", "handleId"].some(key => (p.destination as any)[key] !== (access.destination as any)[key])
-    || p.destination.handleId !== raw.metadata.id || p.destination.journalId !== raw.metadata.journalId) throw failure();
-  await access.assertCurrent();
-  if (covered) return undefined;
+  const p: RuntimeRetainedSummaryReceipt = admission.payload;
+  // Structural integrity is independent of the optional continuity capability.
+  if (!validRetainedSummaryReceipt(p) || p.destination.handleId !== raw.metadata.id || p.destination.journalId !== raw.metadata.journalId
+    || raw.validator.owner.kind !== "host" || raw.validator.owner.ownerKey !== p.destination.logicalConversationId
+    || raw.validator.owner.historyBucket !== p.destination.conversationId) throw failure();
+  const entries = await raw.getEntries();
+  if (entries.some((entry: any) => entry.checkpoint?.retainedSummaryCoverage?.admissionId === admission.id)) return undefined;
+  if (!entries.some((entry: any) => entry.id === p.seed.entryId)) return undefined;
   const seed = await raw.getEntry(p.seed.entryId);
   assertRetainedSummarySeed(p, seed?.message);
-  const proof = await access.resolve(p.binding);
-  await access.assertCurrent();
-  if (!proof) {
-    if (raw.validator.retainedSummaryCovered) return undefined; // Rewind after source purge: documented legacy behavior.
-    throw failure(true);
-  }
-  assertRetainedSummarySeed(p, seed.message, proof.text);
-  // A raw native checkpoint always takes precedence over the cold predecessor.
+  // A raw native checkpoint wins, including after projection repair.
   if (entries.some((entry: any) => entry.type === "compaction")) return undefined;
+  const legacy = () => { try { onFallback?.(); } catch { /* Diagnostics cannot block legacy execution. */ } return undefined; };
+  if (!access) return legacy();
+  if (["logicalConversationId", "conversationId", "epoch", "handleId"].some(key => (p.destination as any)[key] !== (access.destination as any)[key])) throw failure();
+  let proof;
+  try { await access.assertCurrent(); proof = await access.resolve(p.binding); await access.assertCurrent(); }
+  catch { return legacy(); } // Optional source/owner capability loss must not strand the native session.
+  if (!proof) return legacy(); // Purge, revocation, disabled continuity, or an excluding history boundary.
+  try { assertRetainedSummarySeed(p, seed.message, proof.text); }
+  catch { return legacy(); } // The source no longer authorizes the admitted retained bytes.
   return { admissionId: admission.id, text: proof.text };
 }

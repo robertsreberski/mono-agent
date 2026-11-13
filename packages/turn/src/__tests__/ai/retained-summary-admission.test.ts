@@ -34,7 +34,8 @@ async function fixture(stringSeed = false) {
 }
 it.each([false, true])("persists only inside the owned turn, binds the exact seed and resolves after reopen (string=%s)", async stringSeed => {
   const f = await fixture(stringSeed);
-  await expect(f.driver.admitRetainedSummary(candidate, f.seed)).rejects.toThrow("owned host turn");
+  await f.driver.admitRetainedSummary(candidate, f.seed);
+  expect(f.raw.validator.retainedSummaryAdmission).toBeNull();
   await f.driver.beginTurn("host-turn", "host", f.descriptor);
   await f.driver.admitRetainedSummary(candidate, f.seed);
   const receipt = f.raw.validator.retainedSummaryAdmission;
@@ -55,19 +56,17 @@ it.each(["digest", "selection", "seed", "scope"] as const)("rejects altered %s b
   if (damage === "selection") (forged.selection.entry as any).endByte--;
   if (damage === "scope") (forged.binding as any).conversationId = "other-bucket";
   const seed = damage === "seed" ? await f.raw.appendMessage({ role: "user", content: [{ type: "text", text: "Copied fingerprint without quotation" }], timestamp: 0 }) : f.seed;
-  await expect(f.driver.admitRetainedSummary(forged, seed)).rejects.toThrow();
+  await f.driver.admitRetainedSummary(forged, seed);
   expect(f.raw.validator.retainedSummaryAdmission).toBeNull();
   await f.driver.endTurn("failed"); await f.raw.close();
 });
-it.each(["resolver", "epoch", "handle", "logical", "bucket", "purge"] as const)("fails closed for missing/wrong %s on active restart", async damage => {
+it.each(["epoch", "handle", "logical", "bucket"] as const)("fails closed for missing/wrong %s on active restart", async damage => {
   const f = await fixture(); await f.driver.beginTurn("host-turn", "host", f.descriptor); await f.driver.admitRetainedSummary(candidate, f.seed);
   let access: RuntimeRetainedSummaryAccess | undefined = f.access;
-  if (damage === "resolver") access = undefined;
   if (damage === "epoch") (f.access.destination as any).epoch = "wrong";
   if (damage === "handle") (f.access.destination as any).handleId = "wrong";
   if (damage === "logical") (f.access.destination as any).logicalConversationId = "wrong";
   if (damage === "bucket") (f.access.destination as any).conversationId = "wrong";
-  if (damage === "purge") f.resolve.mockResolvedValue(undefined);
   await expect(resolveRetainedSummaryAdmission(f.raw, access)).rejects.toThrow();
   await f.driver.endTurn("failed"); await f.raw.close();
 });
@@ -77,7 +76,8 @@ it("does not promote an orphan seed and rejects duplicate/unknown receipt metada
   await f.driver.beginTurn("host-turn", "host", f.descriptor); await f.driver.admitRetainedSummary(candidate, f.seed);
   const receipt = f.raw.validator.retainedSummaryAdmission.payload;
   expect(validRetainedSummaryReceipt({ ...receipt, text })).toBe(false);
-  await expect(f.driver.admitRetainedSummary(candidate, f.seed)).rejects.toThrow();
+  await f.driver.admitRetainedSummary(candidate, f.seed);
+  expect(f.raw.records!.filter((record: any) => record.kind === "retained_summary_admitted")).toHaveLength(1);
   await f.driver.endTurn("completed"); await f.raw.close();
 });
 it("uses branch-local successor coverage, stops source resolution, and reactivates on rewind", async () => {
@@ -93,6 +93,8 @@ it("uses branch-local successor coverage, stops source resolution, and reactivat
   }
   expect(f.raw.records!.filter((record: any) => record.kind === "retained_summary_admitted")).toHaveLength(1);
   f.resolve.mockClear(); f.resolve.mockResolvedValue(undefined);
+  expect(await resolveRetainedSummaryAdmission(f.raw, undefined)).toBeUndefined();
+  expect(await resolveRetainedSummaryAdmission(f.raw, { ...f.access, resolve: undefined } as any)).toBeUndefined();
   expect(await resolveRetainedSummaryAdmission(f.raw, f.access)).toBeUndefined(); expect(f.resolve).not.toHaveBeenCalled();
   await f.driver.endTurn("completed"); await f.raw.close();
   const raw = await f.repo.open(f.raw.metadata, { validateSession: async (raw: any) => { await resolveRetainedSummaryAdmission(raw, f.access); } });
@@ -140,3 +142,49 @@ it.each(["seed", "turn_start", "receipt_write"] as const)("SIGKILL at admission 
     await raw.close();
   } finally { await repo.close(); await rm(root, { recursive: true, force: true }); }
 }, 20000);
+
+it.each(["resolver", "purge", "owner", "boundary"])("losing optional %s on an uncovered admission warns and falls back", async damage => {
+  const f = await fixture(); await f.driver.beginTurn("host-turn", "host", f.descriptor); await f.driver.admitRetainedSummary(candidate, f.seed);
+  const warn = vi.fn(); let access: RuntimeRetainedSummaryAccess | undefined = f.access;
+  if (damage === "resolver") access = undefined;
+  if (damage === "purge" || damage === "boundary") f.resolve.mockResolvedValue(undefined);
+  if (damage === "owner") vi.mocked(f.access.assertCurrent).mockRejectedValue(new Error("Fictional owner unavailable"));
+  expect(await resolveRetainedSummaryAdmission(f.raw, access, warn)).toBeUndefined(); expect(warn).toHaveBeenCalledOnce();
+  await f.driver.endTurn("completed"); await f.raw.close();
+});
+it.each(["oversize", "purge"])("skips %s before writing any receipt and continues the owned turn", async damage => {
+  const f = await fixture(); const warnings: any[] = []; f.driver.subscribe((event: any) => warnings.push(event));
+  await f.driver.beginTurn("host-turn", "host", f.descriptor);
+  const value = structuredClone(candidate);
+  if (damage === "oversize") (value.binding as any).sourceEpoch = "x".repeat(4097);
+  else f.resolve.mockResolvedValue(undefined);
+  await f.driver.admitRetainedSummary(value, f.seed);
+  expect(f.raw.validator.retainedSummaryAdmission).toBeNull();
+  expect(warnings).toContainEqual(expect.objectContaining({ type: "warning", code: "retained_summary_admission_skipped", message: expect.any(String) }));
+  expect(JSON.stringify(warnings)).not.toContain(text);
+  await f.driver.endTurn("completed"); await f.raw.close();
+});
+it("accepts source IDs through the shared 4096-byte identity limit", async () => {
+  const f = await fixture(); await f.driver.beginTurn("host-turn", "host", f.descriptor);
+  const value = structuredClone(candidate); (value.binding as any).sourceEpoch = "x".repeat(4096);
+  await f.driver.admitRetainedSummary(value, f.seed);
+  expect(f.raw.validator.retainedSummaryAdmission.payload.binding.sourceEpoch).toHaveLength(4096);
+  await f.driver.endTurn("completed"); await f.raw.close();
+});
+it("awaits the receipt sync barrier before compaction or dispatch can proceed", async () => {
+  const f = await fixture(); await f.driver.beginTurn("host-turn", "host", f.descriptor);
+  const order: string[] = []; let release!: () => void;
+  const blocked = new Promise<void>(resolve => { release = resolve; });
+  const sync = f.raw.sync.bind(f.raw);
+  vi.spyOn(f.raw, "sync").mockImplementation(async () => { order.push("sync-start"); await blocked; await sync(); order.push("synced"); });
+  f.driver.hooks.on("before_compaction", () => { order.push("compaction"); return undefined; });
+  const admitted = f.driver.admitRetainedSummary(candidate, f.seed).then(async () => {
+    await expect(f.driver.compact()).rejects.toThrow("compaction cancelled");
+    order.push("dispatch-eligible");
+  });
+  await vi.waitFor(() => expect(order).toContain("sync-start"));
+  expect(f.raw.validator.retainedSummaryAdmission).toBeTruthy(); expect(order).toEqual(["sync-start"]);
+  release(); await admitted;
+  expect(order).toEqual(["sync-start", "synced", "compaction", "dispatch-eligible"]);
+  await f.driver.endTurn("completed"); await f.raw.close();
+});
