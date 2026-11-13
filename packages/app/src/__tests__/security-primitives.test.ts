@@ -298,7 +298,7 @@ describe("shared security primitives", () => {
     await writeFile(path, "TOKEN=original\n", { mode: 0o600 });
     await writeFile(
       join(dir, ".gitignore"),
-      "/.env\n/..env.mono-agent-*.tmp\n/.env.mono-agent-*.backup\n",
+      "/.env\n/.env.mono-agent-*.tmp\n/.env.mono-agent-*.backup\n/..env.mono-agent-*.tmp\n",
     );
 
     const replacement = mergeSecretEnvFile(path, { SECOND: "managed" }, {
@@ -354,7 +354,7 @@ describe("shared security primitives", () => {
     await writeFile(path, "TOKEN=original\n", { mode: 0o600 });
     await writeFile(
       join(dir, ".gitignore"),
-      "/.env\n/..env.mono-agent-*.tmp\n/.env.mono-agent-*.backup\n",
+      "/.env\n/.env.mono-agent-*.tmp\n/.env.mono-agent-*.backup\n/..env.mono-agent-*.tmp\n",
     );
 
     let failure: unknown;
@@ -381,7 +381,7 @@ describe("shared security primitives", () => {
     await writeFile(path, "TOKEN=original\n", { mode: 0o600 });
     await writeFile(
       join(dir, ".gitignore"),
-      "/.env\n/..env.mono-agent-*.tmp\n/.env.mono-agent-*.backup\n",
+      "/.env\n/.env.mono-agent-*.tmp\n/.env.mono-agent-*.backup\n/..env.mono-agent-*.tmp\n",
     );
 
     let failure: unknown;
@@ -412,7 +412,7 @@ describe("shared security primitives", () => {
     await writeFile(path, "TOKEN=original\n", { mode: 0o600 });
     await writeFile(
       join(dir, ".gitignore"),
-      "/.env\n/..env.mono-agent-*.tmp\n/.env.mono-agent-*.backup\n",
+      "/.env\n/.env.mono-agent-*.tmp\n/.env.mono-agent-*.backup\n/..env.mono-agent-*.tmp\n",
     );
     let retained: FileHandle | undefined;
 
@@ -440,7 +440,7 @@ describe("shared security primitives", () => {
     await writeFile(path, "TOKEN=original\n", { mode: 0o600 });
     await writeFile(
       join(dir, ".gitignore"),
-      "/.env\n/..env.mono-agent-*.tmp\n/.env.mono-agent-*.backup\n",
+      "/.env\n/.env.mono-agent-*.tmp\n/.env.mono-agent-*.backup\n/..env.mono-agent-*.tmp\n",
     );
     let failure: unknown;
     try {

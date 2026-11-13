@@ -29,7 +29,7 @@ import {
 import { initMonoAgentFolder } from "../setup/init.js";
 
 let dir: string;
-const SECRET_IGNORE_BLOCK = "/.env\n/..env.mono-agent-*.tmp\n/.env.mono-agent-*.backup\n";
+const SECRET_IGNORE_BLOCK = "/.env\n/.env.mono-agent-*.tmp\n/.env.mono-agent-*.backup\n/..env.mono-agent-*.tmp\n";
 
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), "agent-app-secret-env-"));
@@ -706,6 +706,209 @@ describe("mergeSecretEnvFile", () => {
       { path: envPath, kind: "planned-create", sensitive: true },
     ]);
     expect(await readdir(dir)).toEqual([]);
+  });
+
+  it("keeps skipping non-empty values by default and fills only empty placeholders", async () => {
+    const envPath = join(dir, ".env");
+    await writeFile(envPath, "KEEP=operator-value\nEMPTY=\n");
+
+    const result = await mergeSecretEnvFile(envPath, {
+      KEEP: "must-not-win",
+      EMPTY: "now-set",
+    });
+
+    expect(parseEnv(await readFile(envPath, "utf8"))).toMatchObject({
+      KEEP: "operator-value",
+      EMPTY: "now-set",
+    });
+    expect(result.valuesChanged).toBe(1);
+    expect(JSON.stringify(result)).not.toContain("must-not-win");
+  });
+
+  it("replaces only targeted non-empty values when opted in", async () => {
+    const envPath = join(dir, ".env");
+    await writeFile(envPath, "# keep this header\nKEEP='operator-value' # keep inline\nOTHER=untouched\n", { mode: 0o600 });
+
+    const result = await mergeSecretEnvFile(envPath, { KEEP: "new-secret-value" }, { allowReplace: true });
+    const contents = await readFile(envPath, "utf8");
+
+    expect(parseEnv(contents)).toMatchObject({ KEEP: "new-secret-value", OTHER: "untouched" });
+    expect(contents).toContain("# keep this header");
+    expect(contents).toContain("# keep inline");
+    expect(contents).toContain("OTHER=untouched");
+    expect(result.valuesChanged).toBe(1);
+    expect((await stat(envPath)).mode & 0o777).toBe(0o600);
+    expect(JSON.stringify(result)).not.toContain("new-secret-value");
+  });
+
+  it("preserves CRLF endings and comments when replacing", async () => {
+    const envPath = join(dir, ".env");
+    await writeFile(envPath, "# header\r\nKEEP=old-value # note\r\nOTHER=stay\r\n", { mode: 0o600 });
+
+    await mergeSecretEnvFile(envPath, { KEEP: "rotated-value" }, { allowReplace: true });
+    const contents = await readFile(envPath, "utf8");
+
+    expect(contents).toBe("# header\r\nKEEP='rotated-value' # note\r\nOTHER=stay\r\n");
+    expect(parseEnv(contents)).toMatchObject({ KEEP: "rotated-value", OTHER: "stay" });
+  });
+
+  it("accepts a matching expected revision and rejects a stale one without writing", async () => {
+    const envPath = join(dir, ".env");
+    const original = "KEEP=operator-value\n";
+    await writeFile(envPath, original, { mode: 0o600 });
+
+    const matched = await mergeSecretEnvFile(envPath, { KEEP: "replacement-value" }, {
+      allowReplace: true,
+      expectedEnvRevision: { exists: true, contents: original },
+    });
+    expect(parseEnv(await readFile(envPath, "utf8"))).toMatchObject({ KEEP: "replacement-value" });
+    expect(matched.valuesChanged).toBe(1);
+
+    const stale = await readFile(envPath, "utf8");
+    await writeFile(envPath, "KEEP=concurrent-edit\n");
+    await expect(mergeSecretEnvFile(envPath, { KEEP: "late-value" }, {
+      allowReplace: true,
+      expectedEnvRevision: { exists: true, contents: stale },
+    })).rejects.toBeInstanceOf(SecretEnvConcurrentModificationError);
+    expect(await readFile(envPath, "utf8")).toBe("KEEP=concurrent-edit\n");
+
+    await expect(mergeSecretEnvFile(envPath, { KEEP: "late-value" }, {
+      allowReplace: true,
+      expectedEnvRevision: { exists: false },
+    })).rejects.toBeInstanceOf(SecretEnvConcurrentModificationError);
+    expect(await readFile(envPath, "utf8")).toBe("KEEP=concurrent-edit\n");
+  });
+
+  it("rechecks an expected-missing revision for a new file", async () => {
+    const envPath = join(dir, ".env");
+
+    const created = await mergeSecretEnvFile(envPath, { TOKEN: "fresh-value" }, {
+      expectedEnvRevision: { exists: false },
+    });
+    expect(created.valuesChanged).toBe(1);
+    expect(parseEnv(await readFile(envPath, "utf8"))).toMatchObject({ TOKEN: "fresh-value" });
+
+    await expect(mergeSecretEnvFile(envPath, { OTHER: "other-value" }, {
+      expectedEnvRevision: { exists: false },
+    })).rejects.toBeInstanceOf(SecretEnvConcurrentModificationError);
+    expect(parseEnv(await readFile(envPath, "utf8"))).not.toHaveProperty("OTHER");
+  });
+
+  it("refuses to replace a duplicated assignment without touching the file", async () => {
+    const envPath = join(dir, ".env");
+    const original = "KEEP=first\nKEEP=second\nOTHER=stay\n";
+    await writeFile(envPath, original, { mode: 0o600 });
+
+    let failure: unknown;
+    try {
+      await mergeSecretEnvFile(envPath, { KEEP: "replacement-value" }, { allowReplace: true });
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toMatchObject({ code: "malformed-env", message: expect.stringContaining("KEEP") });
+    expect((failure as Error).message).not.toContain("replacement-value");
+    expect(await readFile(envPath, "utf8")).toBe(original);
+  });
+
+  it("refuses to replace a multiline assignment without touching the file", async () => {
+    const envPath = join(dir, ".env");
+    const original = 'MULTI="first\nsecond"\nOTHER=stay\n';
+    await writeFile(envPath, original, { mode: 0o600 });
+
+    let failure: unknown;
+    try {
+      await mergeSecretEnvFile(envPath, { MULTI: "replacement-value" }, { allowReplace: true });
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toMatchObject({ code: "malformed-env", message: expect.stringContaining("MULTI") });
+    expect((failure as Error).message).not.toContain("replacement-value");
+    expect(await readFile(envPath, "utf8")).toBe(original);
+  });
+
+  it("appends a targeted key alongside a lookalike inside a multiline value", async () => {
+    const envPath = join(dir, ".env");
+    await writeFile(envPath, "OTHER='first\nKEEP=shadowed\nlast'\n", { mode: 0o600 });
+
+    const result = await mergeSecretEnvFile(envPath, { KEEP: "replacement-value" }, { allowReplace: true });
+
+    expect(parseEnv(await readFile(envPath, "utf8"))).toMatchObject({
+      OTHER: "first\nKEEP=shadowed\nlast",
+      KEEP: "replacement-value",
+    });
+    expect(result.valuesChanged).toBe(1);
+  });
+
+  it("preserves export prefixes and spacing when replacing", async () => {
+    const envPath = join(dir, ".env");
+    await writeFile(envPath, "export KEEP =  old-value\n", { mode: 0o600 });
+
+    await mergeSecretEnvFile(envPath, { KEEP: "new-value" }, { allowReplace: true });
+
+    expect(await readFile(envPath, "utf8")).toBe("export KEEP =  'new-value'\n");
+    expect(parseEnv(await readFile(envPath, "utf8"))).toMatchObject({ KEEP: "new-value" });
+  });
+
+  it("writes basename-scoped ignore rules and guards for a custom dotenv name", async () => {
+    const envPath = join(dir, ".env.production");
+    await run("git", ["init", "-q"], dir);
+
+    await mergeSecretEnvFile(envPath, { TOKEN: "secret-value" });
+
+    expect(await readFile(join(dir, ".gitignore"), "utf8")).toBe(
+      "/.env.production\n" +
+      "/.env.production.mono-agent-*.tmp\n" +
+      "/.env.production.mono-agent-*.backup\n" +
+      "/..env.production.mono-agent-*.tmp\n",
+    );
+    expect(parseEnv(await readFile(envPath, "utf8"))).toMatchObject({ TOKEN: "secret-value" });
+    expect(await verifySecretEnvPersistenceGuard(envPath)).toBe(true);
+    await expect(run("git", ["check-ignore", "--quiet", "--no-index", ".env.production"], dir)).resolves.toBeUndefined();
+    await expect(run("git", ["check-ignore", "--quiet", "--no-index", "..env.production.mono-agent-test.tmp"], dir)).resolves.toBeUndefined();
+  });
+
+  it("escapes gitignore metacharacters in custom dotenv names", async () => {
+    const envPath = join(dir, ".env[prod]");
+
+    await mergeSecretEnvFile(envPath, { TOKEN: "secret-value" }, { allowReplace: true });
+
+    expect(await readFile(join(dir, ".gitignore"), "utf8")).toBe(
+      "/.env\\[prod\\]\n" +
+      "/.env\\[prod\\].mono-agent-*.tmp\n" +
+      "/.env\\[prod\\].mono-agent-*.backup\n" +
+      "/..env\\[prod\\].mono-agent-*.tmp\n",
+    );
+    expect(parseEnv(await readFile(envPath, "utf8"))).toMatchObject({ TOKEN: "secret-value" });
+    expect(await verifySecretEnvPersistenceGuard(envPath)).toBe(true);
+  });
+
+  it("still refuses a symlink for a custom dotenv name without touching its target", async () => {
+    const victimPath = join(dir, "victim.txt");
+    const envPath = join(dir, ".env.production");
+    await writeFile(victimPath, "do-not-touch\n");
+    await symlink(victimPath, envPath);
+
+    await expect(mergeSecretEnvFile(envPath, { TOKEN: "secret-value" })).rejects.toMatchObject({
+      code: "unsafe-env-path",
+    });
+    expect(await readFile(victimPath, "utf8")).toBe("do-not-touch\n");
+  });
+
+  it("leaves the original intact when a replacement write fails", async () => {
+    const envPath = join(dir, ".env");
+    const original = "KEEP=operator-value\nOTHER=stay\n";
+    await writeFile(envPath, original, { mode: 0o600 });
+    await writeFile(join(dir, ".gitignore"), SECRET_IGNORE_BLOCK);
+
+    await expect(mergeSecretEnvFile(envPath, { KEEP: "replacement-value" }, {
+      allowReplace: true,
+      beforeCommit(targetPath) {
+        if (targetPath === envPath) throw new Error("injected write failure");
+      },
+    })).rejects.toThrow("injected write failure");
+
+    expect(await readFile(envPath, "utf8")).toBe(original);
+    expect((await readdir(dir)).filter((name) => name.includes("mono-agent-") && name.endsWith(".tmp"))).toEqual([]);
   });
 });
 

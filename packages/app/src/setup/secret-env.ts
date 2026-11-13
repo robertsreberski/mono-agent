@@ -60,6 +60,11 @@ export function secretEnvConcurrentModificationCause(
   return undefined;
 }
 
+/** Exact `.env` bytes an operator previously reviewed, used as an optimistic-concurrency guard. */
+export type ExpectedSecretEnvRevision =
+  | { readonly exists: false }
+  | { readonly exists: true; readonly contents: string | Buffer };
+
 interface SecretEnvPersistenceOptions {
   /** Preview the exact safety checks and changes without writing. */
   readonly dryRun?: boolean;
@@ -77,6 +82,18 @@ interface SecretEnvPersistenceOptions {
   readonly beforeInstallLink?: (targetPath: string, temporaryPath: string) => void | Promise<void>;
   /** Test seam after exclusive replacement link and before claimed-inode cleanup. */
   readonly afterInstallLink?: (targetPath: string, temporaryPath: string) => void | Promise<void>;
+  /**
+   * Replace non-empty values for the supplied keys instead of skipping them.
+   * Defaults to false, which preserves existing operator values. Replacement
+   * only touches the supplied keys and refuses duplicate or multiline
+   * assignments for a targeted key.
+   */
+  readonly allowReplace?: boolean;
+  /**
+   * Reject the merge when the current `.env` bytes differ from a previously
+   * observed revision. Rechecked inside the writer lock before committing.
+   */
+  readonly expectedEnvRevision?: ExpectedSecretEnvRevision;
 }
 
 interface SecretEnvMergeResult {
@@ -90,6 +107,13 @@ interface SecretEnvMergeResult {
  * operator values. The destination and its git-ignore guard are preflighted,
  * then each changed file is committed through an exclusive same-directory
  * temporary file. The `.env` commit is always mode 0600 on supported systems.
+ *
+ * Pass `allowReplace: true` to opt into replacing non-empty values, but only
+ * for the supplied keys. Unrelated keys, comments, and line endings are
+ * preserved; ambiguous duplicate or multiline assignments for a targeted key
+ * refuse safely instead of corrupting the file. Combine with
+ * `expectedEnvRevision` to reject the merge when the file changed since an
+ * operator reviewed it.
  */
 export async function mergeSecretEnvFile(
   path: string,
@@ -158,8 +182,12 @@ async function mergeSecretEnvFileLocked(
     );
   }
 
+  if (options.expectedEnvRevision !== undefined) {
+    assertExpectedEnvRevision(envSnapshot, options.expectedEnvRevision, reportedPath);
+  }
+
   const existingEnv = snapshotText(envSnapshot);
-  const merged = mergeDotenvContents(existingEnv, renderedValues);
+  const merged = mergeDotenvContents(existingEnv, renderedValues, options.allowReplace === true);
   const envContents = Buffer.from(merged.contents, "utf8");
   const envNeedsWrite = !envSnapshot.exists || !envSnapshot.contents.equals(envContents) || fileMode(envSnapshot) !== 0o600;
 
@@ -173,7 +201,7 @@ async function mergeSecretEnvFileLocked(
     [1],
     reportedGitIgnorePath,
   );
-  const gitIgnoreContents = Buffer.from(ensureExactEnvIgnore(snapshotText(gitIgnoreSnapshot)), "utf8");
+  const gitIgnoreContents = Buffer.from(ensureExactEnvIgnore(snapshotText(gitIgnoreSnapshot), basename(path)), "utf8");
   const gitIgnoreMode = gitIgnoreSnapshot.exists
     ? (fileMode(gitIgnoreSnapshot) || 0o644) & ~0o022
     : 0o644;
@@ -766,6 +794,7 @@ function renderDotenvValue(name: string, value: string): string {
 function mergeDotenvContents(
   existing: string,
   renderedValues: ReadonlyMap<string, string>,
+  allowReplace: boolean,
 ): { readonly contents: string; readonly valuesChanged: number } {
   let parsed: Record<string, string | undefined>;
   try {
@@ -782,7 +811,12 @@ function mergeDotenvContents(
   let valuesChanged = 0;
 
   for (const [name, renderedValue] of renderedValues) {
-    if ((parsed[name] ?? "").length > 0) continue;
+    if ((parsed[name] ?? "").length > 0) {
+      if (allowReplace !== true) continue;
+      replaceDotenvValue(lines, name, renderedValue);
+      valuesChanged += 1;
+      continue;
+    }
     const matcher = new RegExp(`^(\\s*(?:export\\s+)?${escapeRegExp(name)}\\s*=)(.*)$`, "u");
     let index = -1;
     for (let candidate = lines.length - 1; candidate >= 0; candidate -= 1) {
@@ -832,7 +866,156 @@ function mergeDotenvContents(
     valuesChanged += 1;
   }
 
-  return { contents: joinPreservedLines(lines), valuesChanged };
+  const contents = joinPreservedLines(lines);
+  if (allowReplace === true) {
+    assertReplacementMergeValid(contents, parsed, renderedValues);
+  }
+  return { contents, valuesChanged };
+}
+
+/**
+ * Replace the single-line assignment for a targeted key in place, preserving
+ * the `export`/assignment prefix, the original gap after `=`, the longest
+ * trailing span that still parses as a comment, and the line ending (only the
+ * line body is edited). Refuses when the key has more than one assignment
+ * line, or when the matched line does not genuinely and solely control the
+ * key in the full-file context (for example a lookalike inside a quoted
+ * multiline value, or a value that itself spans several lines). The marker
+ * substitution proves control without ever printing the secret value.
+ */
+function replaceDotenvValue(
+  lines: PreservedLine[],
+  name: string,
+  renderedValue: string,
+): void {
+  const matcher = new RegExp(
+    "^(\\s*(?:export\\s+)?" + escapeRegExp(name) + "\\s*=)(.*)$",
+    "u",
+  );
+  const matches: number[] = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    if (matcher.test(lines[index]?.body ?? "")) matches.push(index);
+  }
+  if (matches.length > 1) {
+    throw new SecretEnvPersistenceRefusedError(
+      "malformed-env",
+      `Automatic secret persistence refused to replace ${name} because it has more than one assignment.`,
+    );
+  }
+  const index = matches[0];
+  const current = index === undefined ? undefined : lines[index];
+  const assignment = current === undefined ? null : matcher.exec(current.body);
+  if (index === undefined || current === undefined || assignment === null) {
+    throw new SecretEnvPersistenceRefusedError(
+      "malformed-env",
+      `Automatic secret persistence refused to replace ${name} because its current assignment is not a single line.`,
+    );
+  }
+  let currentParsed: Record<string, string | undefined>;
+  try {
+    currentParsed = parseEnv(joinPreservedLines(lines));
+  } catch {
+    throw new SecretEnvPersistenceRefusedError(
+      "malformed-env",
+      `Automatic secret persistence refused to replace ${name} because its current assignment is not a single line.`,
+    );
+  }
+  const prefix = assignment[1] ?? "";
+  const rest = assignment[2] ?? "";
+  const loneMessage = `Automatic secret persistence refused to replace ${name} because its current assignment is not a single line.`;
+  let loneParsed: Record<string, string | undefined>;
+  try {
+    loneParsed = parseEnv(`${current.body}\n`);
+  } catch {
+    throw new SecretEnvPersistenceRefusedError("malformed-env", loneMessage);
+  }
+  if (loneParsed[name] !== currentParsed[name]) {
+    throw new SecretEnvPersistenceRefusedError("malformed-env", loneMessage);
+  }
+  const gap = /^\s*/u.exec(rest)?.[0] ?? "";
+  const marker = `__MONO_AGENT_REPLACE_${name}__`;
+  for (let split = gap.length; split <= rest.length; split += 1) {
+    const tail = rest.slice(split);
+    if (tail !== "" && !/^\s*(#.*)?$/u.test(tail)) continue;
+    const markedLines = lines.map((line, lineIndex) => lineIndex === index
+      ? { ...line, body: `${prefix}${gap}'${marker}'${tail}` }
+      : line);
+    let marked: Record<string, string | undefined>;
+    try {
+      marked = parseEnv(joinPreservedLines(markedLines));
+    } catch {
+      continue;
+    }
+    if (marked[name] !== marker || !sameKeysExcept(marked, currentParsed, name)) continue;
+    current.body = `${prefix}${gap}${renderedValue}${tail}`;
+    return;
+  }
+  throw new SecretEnvPersistenceRefusedError(
+    "malformed-env",
+    `Automatic secret persistence refused to replace ${name} because its current assignment is not a single line.`,
+  );
+}
+
+function sameKeysExcept(
+  left: Record<string, string | undefined>,
+  right: Record<string, string | undefined>,
+  except: string,
+): boolean {
+  for (const key of Object.keys(left)) {
+    if (key !== except && left[key] !== right[key]) return false;
+  }
+  for (const key of Object.keys(right)) {
+    if (key !== except && !Object.hasOwn(left, key)) return false;
+  }
+  return true;
+}
+
+/**
+ * Reparse a replacement merge and prove every supplied key now holds its
+ * intended value while every other key — and the overall key set — is
+ * unchanged. Error messages name keys only, never secret values.
+ */
+function assertReplacementMergeValid(
+  contents: string,
+  original: Record<string, string | undefined>,
+  renderedValues: ReadonlyMap<string, string>,
+): void {
+  let merged: Record<string, string | undefined>;
+  try {
+    merged = parseEnv(contents);
+  } catch {
+    throw new SecretEnvPersistenceRefusedError(
+      "malformed-env",
+      "Automatic secret persistence could not safely verify the replaced .env file.",
+    );
+  }
+  for (const [name, renderedValue] of renderedValues) {
+    // renderDotenvValue already proved this single-line form round-trips.
+    const expected = parseEnv(`${name}=${renderedValue}\n`)[name];
+    if (merged[name] !== expected) {
+      throw new SecretEnvPersistenceRefusedError(
+        "malformed-env",
+        `Automatic secret persistence could not safely verify the replacement for ${name}.`,
+      );
+    }
+  }
+  for (const key of Object.keys(original)) {
+    if (renderedValues.has(key)) continue;
+    if (merged[key] !== original[key]) {
+      throw new SecretEnvPersistenceRefusedError(
+        "malformed-env",
+        `Automatic secret persistence refused to replace secrets because it could not preserve ${key}.`,
+      );
+    }
+  }
+  for (const key of Object.keys(merged)) {
+    if (!renderedValues.has(key) && !Object.hasOwn(original, key)) {
+      throw new SecretEnvPersistenceRefusedError(
+        "malformed-env",
+        `Automatic secret persistence refused to replace secrets because it could not preserve ${key}.`,
+      );
+    }
+  }
 }
 
 interface PreservedLine {
@@ -858,13 +1041,39 @@ function joinPreservedLines(lines: readonly PreservedLine[]): string {
   return lines.map((line) => `${line.body}${line.ending}`).join("");
 }
 
-const SECRET_ENV_IGNORE_RULES = [
-  "/.env",
-  "/..env.mono-agent-*.tmp",
-  "/.env.mono-agent-*.backup",
-] as const;
+/**
+ * Escape a dotenv basename for use inside a `.gitignore` pattern so custom
+ * names keep matching literally. Gitignore treats `*`, `?`, `[`, `]`, and
+ * `\` as metacharacters, `!`/`#` as special in the first position, and strips
+ * trailing unescaped spaces.
+ */
+function escapeGitignoreBasename(value: string): string {
+  let escaped = value.replace(/\\/gu, "\\\\").replace(/[*?[\]]/gu, (character) => `\\${character}`);
+  if (escaped.startsWith("!") || escaped.startsWith("#")) escaped = `\\${escaped}`;
+  if (escaped.endsWith(" ") && !escaped.endsWith("\\ ")) escaped = `${escaped.slice(0, -1)}\\ `;
+  return escaped;
+}
 
-function ensureExactEnvIgnore(existing: string): string {
+/**
+ * Root-anchored ignore rules for the secret file and its same-directory
+ * transaction artifacts. The dot-prefixed temporary rule matches the actual
+ * `.${basename}.mono-agent-*.tmp` staging name created by atomicReplaceFile;
+ * the remaining rules conservatively cover the final name and non-dot
+ * variants. Basename metacharacters are escaped so custom dotenv names keep
+ * matching literally.
+ */
+function secretEnvIgnoreRulesFor(envBasename: string): readonly string[] {
+  const escaped = escapeGitignoreBasename(envBasename);
+  return [
+    `/${escaped}`,
+    `/${escaped}.mono-agent-*.tmp`,
+    `/${escaped}.mono-agent-*.backup`,
+    `/.${escaped}.mono-agent-*.tmp`,
+  ];
+}
+
+function ensureExactEnvIgnore(existing: string, envBasename: string): string {
+  const rules = secretEnvIgnoreRulesFor(envBasename);
   const lines = existing.length === 0 ? [] : existing.split(/\r?\n/u);
   // Keep the whole secret-file transaction block as the final effective rules.
   // An earlier rule can be cancelled by a later negation, while the temporary
@@ -876,14 +1085,14 @@ function ensureExactEnvIgnore(existing: string): string {
     meaningful.push(trimmed);
   }
   if (
-    meaningful.length >= SECRET_ENV_IGNORE_RULES.length &&
-    SECRET_ENV_IGNORE_RULES.every(
-      (rule, index) => meaningful[meaningful.length - SECRET_ENV_IGNORE_RULES.length + index] === rule,
+    meaningful.length >= rules.length &&
+    rules.every(
+      (rule, ruleIndex) => meaningful[meaningful.length - rules.length + ruleIndex] === rule,
     )
   ) return existing;
   const newline = existing.includes("\r\n") ? "\r\n" : "\n";
   return `${existing}${existing.length > 0 && !existing.endsWith("\n") ? newline : ""}` +
-    `${SECRET_ENV_IGNORE_RULES.join(newline)}${newline}`;
+    `${rules.join(newline)}${newline}`;
 }
 
 async function atomicReplaceFile(options: AtomicReplaceOptions): Promise<void> {
@@ -978,6 +1187,29 @@ async function tightenFileOwnerOnlyBestEffort(path: string): Promise<void> {
   }
 }
 
+/**
+ * Reject when the `.env` snapshot taken inside the writer lock differs from a
+ * previously observed revision, so an operator confirmation cannot apply to a
+ * file that changed underneath it. Names the path only, never secret values.
+ */
+function assertExpectedEnvRevision(
+  snapshot: SafeFileSnapshot,
+  expected: ExpectedSecretEnvRevision,
+  reportedPath: string,
+): void {
+  if (expected.exists !== snapshot.exists) {
+    throw new SecretEnvConcurrentModificationError(reportedPath);
+  }
+  if (expected.exists && snapshot.exists) {
+    const expectedContents = Buffer.isBuffer(expected.contents)
+      ? expected.contents
+      : Buffer.from(expected.contents, "utf8");
+    if (!snapshot.contents.equals(expectedContents)) {
+      throw new SecretEnvConcurrentModificationError(reportedPath);
+    }
+  }
+}
+
 async function assertSnapshotUnchanged(
   path: string,
   reportedPath: string,
@@ -1050,7 +1282,7 @@ export async function verifySecretEnvPersistenceGuard(path: string): Promise<boo
     "malformed-gitignore",
     target.ownerUid,
   );
-  return gitIgnoreSnapshot.exists && ensureExactEnvIgnore(snapshotText(gitIgnoreSnapshot)) === snapshotText(gitIgnoreSnapshot);
+  return gitIgnoreSnapshot.exists && ensureExactEnvIgnore(snapshotText(gitIgnoreSnapshot), basename(target.path)) === snapshotText(gitIgnoreSnapshot);
 }
 
 interface GitResult {
