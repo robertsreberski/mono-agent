@@ -363,7 +363,7 @@ it.each([false, true])("inspects whole forwarded pack and projection exclusions 
 }, 20_000);
 
 
-it("carries the exact retained checkpoint into a cold model epoch's journal and provider context after source retirement and restart", async () => {
+it.each([false, true])("keeps the exact retained pack through source retirement/restart even when eligibility fails (%s)", async eligibilityFails => {
   const f = await fixture({ summaryCapture: true });
   await f.run("Fictional source warm-up.");
   const { JsonlSessionRepo, createRunDriver } = await import("@mono-agent/turn/engine");
@@ -386,7 +386,12 @@ it("carries the exact retained checkpoint into a cold model epoch's journal and 
   expect(summary.redacted).toBe(true);
   const retained = f.reader.getContinuity({ ...scope, recordId: summary.recordId }).chunk!;
   const line = `Generated summary evidence id=${JSON.stringify(summary.recordId)} sha256=${JSON.stringify(summary.sha256)}: ${JSON.stringify(retained)}\n`;
+  const eligibility = vi.spyOn(f.reader, "eligibleRetainedSummary");
+  if (eligibilityFails) eligibility.mockImplementation(() => { throw new Error("Fictional lookup details must stay private."); });
   await f.restart(); await f.run(current, "faux:other");
+  expect(eligibility).toHaveBeenCalledOnce();
+  expect(f.events.filter(event => event.warning_kind === "retained_summary_admission_skipped")).toHaveLength(eligibilityFails ? 1 : 0);
+  expect(JSON.stringify(f.events)).not.toContain("lookup details");
   await expect(readFile(sourcePath)).rejects.toMatchObject({ code: "ENOENT" });
   const packText = (f.requests.at(-1) as { messages: { content: unknown }[] }).messages.map(m => typeof m.content === "string" ? m.content : JSON.stringify(m.content)).join("\n");
   // Decode the actual provider's text parts rather than matching escaped JSON.
@@ -394,7 +399,9 @@ it("carries the exact retained checkpoint into a cold model epoch's journal and 
   expect(providerTexts.some(text => text.includes(line))).toBe(true); expect(packText).not.toContain("/home/example/private");
   const journals = (await readdir(f.sessionsRoot, { recursive: true })).filter(name => name.endsWith(".jsonl"));
   expect(journals).toHaveLength(1);
-  expect(await readFile(join(f.sessionsRoot, journals[0]!), "utf8")).toContain(JSON.stringify(line).slice(1, -1));
+  const journal = await readFile(join(f.sessionsRoot, journals[0]!), "utf8");
+  expect(journal).toContain(JSON.stringify(line).slice(1, -1));
+  expect(journal.trimEnd().split("\n").map(line => JSON.parse(line)).filter(record => record.kind === "retained_summary_admitted")).toHaveLength(eligibilityFails ? 0 : 1);
   expect(f.events.filter(e => e.type === "continuity_pack_injected")).toHaveLength(1);
   await f.run("Fictional warm continuation.", "faux:other");
   expect(f.events.filter(e => e.type === "continuity_pack_injected")).toHaveLength(0);

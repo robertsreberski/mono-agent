@@ -134,14 +134,16 @@ skips Codex; default Codex stream abort cannot bound hidden reasoning or quota.
 
 ### Bounded relevance discovery and recovery
 
-New lexical `ConversationHistory` searches use **ranking version 2**. An issued
-`rankingVersion: 1` continuation retains the complete v1 parser, eligibility,
-scoring, tie/anchor comparison and traversal. Ranking version is distinct from
+New lexical `ConversationHistory` searches default to **ranking version 3**.
+Issued v1/v2 continuations retain their original parser, eligibility, scoring,
+tie/anchor comparison and traversal. The v2 behavior described below is retained
+for issued v2 cursors; the content-first v3 scoring differences are described after the
+capacity observations. Ranking version is distinct from
 cursor-envelope version: ranked searches still use envelope v2, bound to query,
 effective limit, ranking version, watermark, membership digest, anchor and scope.
 Legacy chronological envelope-v1 cursors retain their original semantics.
 
-Both rankers preserve Unicode-aware partial term, phrase and identifier matching.
+All three rankers preserve Unicode-aware partial term, phrase and identifier matching.
 **All v2 lexical queries filter content anchors through a separate 157-word
 English function-word list**, distinct from event/change intent. Stop words do
 not compete with content. If only intent/change terms remain, those terms become

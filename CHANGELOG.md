@@ -2,23 +2,23 @@
 
 ## Unreleased
 
-- Protect authenticated retained summaries actually admitted by a cold native seed
-  through restart and subsequent compaction, with branch-local successor coverage.
+- **Breaking:** Protect authenticated retained summaries admitted by a cold native
+  seed through restart and subsequent compaction, with branch-local successor coverage.
   Add optional `providerSessionEpoch` to the owned history-store turn contract;
   stores without the canonical epoch retain legacy behavior. Optional source or
   resolver loss warns and falls back without blocking the turn; invalid cold
-  candidates skip admission. Match publication and exact final-layout selection
-  without changing pack bytes; refuse corrupt receipt commitments even when the
-  source remains available. Carrier-bearing journals require a compatible
-  reader; do not downgrade active native journals.
-- Add content-first conversation-history ranking v3 for fresh searches, with
-  bounded intent credit that cannot rescue historical echoes or repetition floods.
-  Match qualified intent across the retained body while keeping correction/event
+  candidates skip admission. Preserve the rendered continuity pack if optional
+  admission lookup fails, and warn when a branch excludes its cold seed. Match
+  publication and exact final-layout selection without changing pack bytes.
+  Refuse corrupt receipt commitments even when the source remains available.
+  Older readers reject journals containing the new
+  `retained_summary_admitted` record kind; do not downgrade those journals.
+
+- Make content-first conversation-history ranking v3 the default for fresh
+  searches, replacing v2. Bound intent credit so it cannot rescue historical
+  echoes or repetition floods. Match qualified intent across the retained body while keeping correction/event
   signals local. Keep issued ranking-v1/v2 cursors on their original pipelines and
   retain v2's bounded clause-split allocation, included in capacity measurements.
-
-- Add dormant retained-summary publication lookup and final-layout selection
-  contracts without changing continuity packs, journals or compaction behavior.
 
 - Add bounded evidence discipline to every `ConversationHistory` response: find
   the distinguishing historical record or say it remains unfound, rather than

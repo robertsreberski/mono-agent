@@ -575,12 +575,21 @@ async function executeHarnessRuntime(preparation: PreparationControl | undefined
           const messages = rendered.messages;
           // Per-call metadata stays with these exact messages, never read from
           // the supplier's shared last-rendered accessor across attempts.
-          const proof = budget.primaryAttempt && primaryRetainedAccess && rendered.summarySelection
-            ? await (routing.withContinuityOwner ?? reconciliation!.withContinuityOwner)!(async () => options.toolHistory!.reader.eligibleRetainedSummary(retainedScope)) : undefined;
-          const selected = rendered.summarySelection;
-          const retainedSummary = proof && selected && ["recordId", "generationId", "sha256", "retainedBytes"].every(key =>
-            (selected as unknown as Record<string, unknown>)[key] === (proof.binding as unknown as Record<string, unknown>)[key])
-            ? { binding: proof.binding, selection: selected } : undefined;
+          let proof: ReturnType<NonNullable<typeof options.toolHistory>["reader"]["eligibleRetainedSummary"]>;
+          if (budget.primaryAttempt && primaryRetainedAccess && rendered.summarySelection) {
+            try {
+              proof = await (routing.withContinuityOwner ?? reconciliation!.withContinuityOwner)!(async () => options.toolHistory!.reader.eligibleRetainedSummary(retainedScope));
+            } catch {
+              // Admission is optional; its lookup must not discard the rendered pack.
+              try { emitRuntimeEvent({ type: "runtime_warning", warning_kind: "retained_summary_admission_skipped",
+                message: "Optional retained summary admission skipped; continuity pack preserved." }); }
+              catch { /* Diagnostics cannot discard continuity either. */ }
+            }
+          }
+          const selected = rendered.summarySelection, binding = proof?.binding;
+          const retainedSummary = binding && selected && ["recordId", "generationId", "sha256", "retainedBytes"].every(key =>
+            (selected as unknown as Record<string, unknown>)[key] === (binding as unknown as Record<string, unknown>)[key])
+            ? { binding, selection: selected } : undefined;
           const result = { messages, ...(retainedSummary ? { retainedSummary } : {}) };
           if (toolIds.size === 0 || !hasCanonicalReplay) return result;
           let projectionUnavailable = false;

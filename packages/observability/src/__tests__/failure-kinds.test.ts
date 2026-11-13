@@ -106,3 +106,9 @@ it("treats explicitly undefined runtime failure kinds like omitted ones", () => 
   expect(describeRunFailureKind(result)).toEqual(describeRunFailureKind({}));
   expect(describeRunFailureKind({ failureKind: undefined })).toEqual(describeRunFailureKind({}));
 });
+
+it("explains retained-summary integrity refusal with an explicit recovery step", () => {
+  const result = describeRunFailureKind({ failureKind: "native_retained_summary_unavailable" });
+  expect(result).toMatchObject({ known: true, label: "Retained-summary integrity" });
+  expect(result.explanation).toContain("preserved"); expect(result.nextStep).toContain("approved reconstruction");
+});

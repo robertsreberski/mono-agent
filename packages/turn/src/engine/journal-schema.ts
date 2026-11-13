@@ -208,8 +208,8 @@ export class JournalValidator {
           const checkpoint = p.compaction.checkpoint;
           if (checkpoint?.retainedSummaryCoverage !== undefined) {
             const coverage = checkpoint.retainedSummaryCoverage;
-            requireValue(keys(coverage, ["version", "admissionId"]) && coverage.version === 1
-              && coverage.admissionId === this.retainedSummaryAdmission?.id
+            requireValue(this.retainedSummaryAdmission !== null && keys(coverage, ["version", "admissionId"]) && coverage.version === 1
+              && coverage.admissionId === this.retainedSummaryAdmission.id
               && this.retainedSummaryAncestor(this.retainedSummaryAdmission.payload.seed.entryId, coverage.admissionId));
           }
           if (checkpoint?.inheritedCoverage !== undefined) {

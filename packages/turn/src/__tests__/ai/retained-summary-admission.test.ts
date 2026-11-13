@@ -5,6 +5,9 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { JsonlSessionRepo } from "../../engine/session-store.js";
 import { createHash } from "node:crypto";
+import { createModels, fauxProvider } from "@earendil-works/pi-ai";
+import { generateEngineTurnResponse } from "../../execution/pi/run.js";
+import { nativeSessionRegistry } from "../../engine/session-lifecycle.js";
 import { expect, it, vi } from "vitest";
 import { MemorySessionRepo } from "../../engine/session-store.js";
 import { createRunDriver } from "../../engine/run-driver.js";
@@ -60,14 +63,14 @@ it.each(["digest", "selection", "seed", "scope"] as const)("rejects altered %s b
   expect(f.raw.validator.retainedSummaryAdmission).toBeNull();
   await f.driver.endTurn("failed"); await f.raw.close();
 });
-it.each(["epoch", "handle", "logical", "bucket"] as const)("fails closed for missing/wrong %s on active restart", async damage => {
+it.each(["epoch", "handle", "logical", "bucket"] as const)("refuses a wrong %s on active restart", async damage => {
   const f = await fixture(); await f.driver.beginTurn("host-turn", "host", f.descriptor); await f.driver.admitRetainedSummary(candidate, f.seed);
-  let access: RuntimeRetainedSummaryAccess | undefined = f.access;
+  const access = f.access;
   if (damage === "epoch") (f.access.destination as any).epoch = "wrong";
   if (damage === "handle") (f.access.destination as any).handleId = "wrong";
   if (damage === "logical") (f.access.destination as any).logicalConversationId = "wrong";
   if (damage === "bucket") (f.access.destination as any).conversationId = "wrong";
-  await expect(resolveRetainedSummaryAdmission(f.raw, access)).rejects.toThrow();
+  await expect(resolveRetainedSummaryAdmission(f.raw, access)).rejects.toMatchObject({ code: "ERR_RETAINED_SUMMARY_AUTHORITY" });
   await f.driver.endTurn("failed"); await f.raw.close();
 });
 it("does not promote an orphan seed and rejects duplicate/unknown receipt metadata", async () => {
@@ -256,7 +259,7 @@ it.each(["write", "barrier"] as const)("propagates a real journal %s failure ins
   }
 });
 
-it("refuses an on-disk receipt journalId mismatch on reopen before source resolution", async () => {
+it.each(["journalId", "malformed"])("refuses on-disk receipt %s damage before source resolution and preserves the public refusal", async damage => {
   const root = await mkdtemp(join(tmpdir(), "retained-admission-journal-"));
   const repo = new JsonlSessionRepo({ sessionsRoot: root });
   const f = await fixture(false, repo);
@@ -265,13 +268,37 @@ it("refuses an on-disk receipt journalId mismatch on reopen before source resolu
     await f.driver.admitRetainedSummary(candidate, f.seed); await f.driver.endTurn("completed"); await f.raw.close();
     const records = (await readFile(f.raw.metadata.path, "utf8")).trimEnd().split("\n").map(line => JSON.parse(line));
     const receipt = records.find(record => record.kind === "retained_summary_admitted");
-    receipt.payload.destination.journalId = "mismatched-journal";
-    expect(validRetainedSummaryReceipt(receipt.payload)).toBe(true);
-    await writeFile(f.raw.metadata.path, records.map(record => JSON.stringify(record)).join("\n") + "\n");
+    if (damage === "journalId") receipt.payload.destination.journalId = "mismatched-journal";
+    else receipt.payload.extra = "unknown-field";
+    expect(validRetainedSummaryReceipt(receipt.payload)).toBe(damage === "journalId");
+    const damaged = records.map(record => JSON.stringify(record)).join("\n") + "\n";
+    await writeFile(f.raw.metadata.path, damaged);
     f.resolve.mockClear();
     await expect(repo.open(f.raw.metadata, { validateSession: async (raw: any) => {
       await resolveRetainedSummaryAdmission(raw, f.access);
     } })).rejects.toMatchObject({ code: "ERR_HARNESS_JOURNAL_CORRUPT" });
     expect(f.resolve).not.toHaveBeenCalled();
-  } finally { await repo.close(); await rm(root, { recursive: true, force: true }); }
+    const faux = fauxProvider({ models: [{ id: "fixture" }] }), models = createModels(); models.setProvider(faux.provider);
+    const result = await generateEngineTurnResponse("Fictional rules", {
+      model: { provider: "faux", model: "fixture", reference: "faux:fixture" }, piResolvedModel: faux.getModel(), piResolvedModels: models,
+      effort: "none", allowedTools: [], sessionId: f.raw.metadata.id, sessionsRoot: root, sessionKeepAlive: true,
+      messages: [{ role: "user", content: "Fictional resume input." }], retainedSummaryAccess: f.access,
+    });
+    expect(result).toMatchObject({ text: null, failureKind: "native_journal_unreadable", diagnostics: { pi_error_code: "pi_session_unreadable" } });
+    expect(faux.state.callCount).toBe(0); expect(f.resolve).not.toHaveBeenCalled();
+    expect(await readFile(f.raw.metadata.path, "utf8")).toBe(damaged);
+  } finally {
+    nativeSessionRegistry.delete(f.raw.metadata.id);
+    await repo.close(); await rm(root, { recursive: true, force: true });
+  }
+});
+
+it("warns when an uncovered seed is excluded by the active branch, without consulting optional access", async () => {
+  const f = await fixture(); await f.driver.beginTurn("host-turn", "host", f.descriptor);
+  await f.driver.admitRetainedSummary(candidate, f.seed); await f.raw.moveTo(null);
+  const warn = vi.fn(); f.resolve.mockClear(); vi.mocked(f.access.assertCurrent).mockClear();
+  expect(await resolveRetainedSummaryAdmission(f.raw, f.access, warn)).toBeUndefined();
+  expect(warn).toHaveBeenCalledOnce(); expect(f.resolve).not.toHaveBeenCalled(); expect(f.access.assertCurrent).not.toHaveBeenCalled();
+  expect(await resolveRetainedSummaryAdmission(f.raw, undefined, () => { throw new Error("Fictional diagnostic failure"); })).toBeUndefined();
+  await f.driver.endTurn("completed"); await f.raw.close();
 });
