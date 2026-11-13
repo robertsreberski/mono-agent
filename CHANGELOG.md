@@ -8,12 +8,6 @@
   rejected-candidate costs are reported separately. The validation code digest
   changes, so paid runs need a fresh registration.
 
-- Harden web console error and diagnostic paths against secret leaks. Return
-  fixed messages for malformed JSON, oversized bodies, encoding failures and
-  unexpected errors; keep reviewed `WebConsoleError` messages with only typed
-  safe details and `Retry-After`. Redact server, ingress and service logs with
-  the shared contracts redactor and known environment credentials.
-
 - Fix web console error responses and diagnostic logs leaking request content,
   error text or secrets. Malformed, oversized and wrongly encoded request
   bodies now get fixed messages; known errors keep their reviewed messages
