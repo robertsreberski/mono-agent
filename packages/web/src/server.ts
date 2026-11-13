@@ -58,7 +58,12 @@ import {
   type WebTheme,
   type WebThreadListScope,
 } from "./contracts.js";
-import { errorMessage, WebConsoleError } from "./errors.js";
+import { errorCode, resolveWebErrorResponse, WebConsoleError } from "./errors.js";
+import {
+  collectKnownWebSecrets,
+  createSecretSafeWebLogger,
+  redactWebErrorMessage,
+} from "./log-redaction.js";
 import { parseWakeDefinition } from "./wake-schedule.js";
 import {
   WEB_MESSAGE_PAGE_DEFAULT,
@@ -155,11 +160,15 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
     theme,
   };
   const webManifest = await loadWebManifest(staticDir, consoleIdentity);
-  const logger = options.logger;
+  // Wrap every diagnostic sink through the redacting logger. Known environment
+  // credential values are supplied where available; request, header and body
+  // objects are never logged.
+  const knownSecrets = collectKnownWebSecrets(options.env ?? process.env);
+  const logger = createSecretSafeWebLogger(options.logger, knownSecrets);
   // Validate all synchronous startup inputs before acquiring the persistent
   // service lease so an embedding typo cannot strand SQLite ownership.
   const allowedHosts = resolveAllowedHosts(options.allowedHosts, options.env ?? process.env);
-  const service = await WebService.create(options);
+  const service = await WebService.create({ ...options, ...(logger === undefined ? {} : { logger }) });
   const app = express();
   app.use((_req, res, next) => {
     const json = res.json.bind(res);
@@ -1270,7 +1279,10 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
       target: res,
       onTerminal: closeStream,
       onFailure: (error) => {
-        logger?.error?.("Web console event stream failed.", { error: errorMessage(error) });
+        logger?.error?.("Web console event stream failed.", {
+          error: redactWebErrorMessage(error, knownSecrets),
+          errorCode: errorCode(error) ?? "unknown",
+        });
       },
     });
     const send = createWebEventDispatch({
@@ -1278,7 +1290,10 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
       write: (event) => writer!.write(formatSse(event)),
       close: closeStream,
       onFailure: (error) => {
-        logger?.error?.("Web console event stream failed.", { error: errorMessage(error) });
+        logger?.error?.("Web console event stream failed.", {
+          error: redactWebErrorMessage(error, knownSecrets),
+          errorCode: errorCode(error) ?? "unknown",
+        });
       },
     });
     const unsubscribe = service.subscribe(send);
@@ -1321,29 +1336,34 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
     });
   });
 
-  app.use((error: unknown, _req: Request, res: Response, next: NextFunction) => {
+  app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
+    // Headers already sent (for example an SSE stream that failed mid-write):
+    // there is no JSON body left to send. Close without falling through to
+    // Express's default raw-error logging.
     if (res.headersSent) {
-      next(error);
+      try {
+        if (!res.writableEnded) res.end();
+      } catch {
+        // Logging is diagnostic and must never break teardown.
+      }
       return;
     }
-    const known = error instanceof WebConsoleError;
-    const syntax = error instanceof SyntaxError && (error as { status?: unknown }).status === 400;
-    const tooLarge = typeof error === "object" && error !== null
-      && ((error as { status?: unknown }).status === 413 || (error as { type?: unknown }).type === "entity.too.large");
-    const status = known ? error.status : tooLarge ? 413 : syntax ? 400 : 500;
-    const code = known ? error.code : tooLarge ? "request_too_large" : syntax ? "invalid_json" : "internal_error";
-    const retryAfterSeconds = known && typeof error.details?.retryAfterSeconds === "number"
-      ? error.details.retryAfterSeconds
-      : undefined;
-    if (status === 429 && Number.isSafeInteger(retryAfterSeconds) && (retryAfterSeconds as number) > 0) {
-      res.setHeader("Retry-After", String(retryAfterSeconds));
+    const resolved = resolveWebErrorResponse(error);
+    if (resolved.status === 429 && resolved.retryAfterSeconds !== undefined) {
+      res.setHeader("Retry-After", String(resolved.retryAfterSeconds));
     }
-    if (status >= 500) logger?.error?.("Web console request failed.", { error: errorMessage(error) });
-    res.status(status).json({
+    if (resolved.status >= 500) {
+      logger?.error?.("Web console request failed.", {
+        error: redactWebErrorMessage(error, knownSecrets),
+        errorCode: resolved.code,
+        status: resolved.status,
+      });
+    }
+    res.status(resolved.status).json({
       error: {
-        code,
-        message: known || syntax ? errorMessage(error) : "Internal server error.",
-        ...(known && error.details !== undefined ? { details: error.details } : {}),
+        code: resolved.code,
+        message: resolved.message,
+        ...(resolved.details === undefined ? {} : { details: resolved.details }),
       },
     });
   });
@@ -1547,8 +1567,8 @@ async function handleDownloadContent(id: string, res: Response, service: WebServ
   let handle;
   try {
     handle = await open(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
-  } catch (error) {
-    throw new WebConsoleError("attachment_integrity", `Attachment content is unavailable (${errorMessage(error)}).`, 409);
+  } catch {
+    throw new WebConsoleError("attachment_integrity", "Attachment content is unavailable.", 409);
   }
   const info = await handle.stat();
   if (!info.isFile() || info.size !== attachment.sizeBytes) {

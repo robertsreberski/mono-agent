@@ -6439,7 +6439,7 @@ export class WebStore {
       this.validateStorage();
     } catch (error) {
       if (error instanceof WebConsoleError) throw error;
-      throw new WebConsoleError("storage_corrupt", `Unable to initialize web state: ${error instanceof Error ? error.message : String(error)}`, 500);
+      throw new WebConsoleError("storage_corrupt", "Unable to initialize web state.", 500);
     }
   }
 

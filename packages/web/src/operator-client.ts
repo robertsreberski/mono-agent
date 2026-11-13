@@ -54,7 +54,7 @@ import type {
   WebSkillInfo,
   WebSkillRegistry,
 } from "./contracts.js";
-import { errorMessage, WebConsoleError } from "./errors.js";
+import { WebConsoleError } from "./errors.js";
 import { isTrustedOperatorBaseUrl } from "./discovery.js";
 import {
   fetchLongLivedHostWake,
@@ -1023,13 +1023,13 @@ export class OperatorClient {
       });
     } catch (error) {
       if (signal?.aborted === true) throw error;
-      throw new WebConsoleError("agent_unreachable", `Agent is unreachable (${errorMessage(error)}).`, 502);
+      throw new WebConsoleError("agent_unreachable", "Agent is unreachable.", 502);
     }
     if (response.status !== 200 && response.status !== 428) {
-      const detail = await readBodyPrefix(response, MAX_ERROR_BODY_BYTES).catch(() => "");
+      await readBodyPrefix(response, MAX_ERROR_BODY_BYTES).catch(() => "");
       throw new WebConsoleError(
         response.status === 401 ? "agent_unauthorized" : "agent_http_error",
-        `Agent responded ${response.status}${detail.length === 0 ? "." : `: ${detail.slice(0, 300)}`}`,
+        `Agent responded ${response.status}.`,
         502,
       );
     }
@@ -1059,7 +1059,7 @@ export class OperatorClient {
       response = await fetchImpl(url, { ...init, redirect: "error" });
     } catch (error) {
       if (init.signal?.aborted === true) throw error;
-      throw new WebConsoleError("agent_unreachable", `Agent is unreachable (${errorMessage(error)}).`, 502);
+      throw new WebConsoleError("agent_unreachable", "Agent is unreachable.", 502);
     }
     if (!response.ok && !response.headers.get("content-type")?.includes("application/x-ndjson")) {
       const detail = await readBodyPrefix(response, MAX_ERROR_BODY_BYTES).catch(() => "");
@@ -1083,7 +1083,7 @@ export class OperatorClient {
       }
       throw new WebConsoleError(
         response.status === 401 ? "agent_unauthorized" : "agent_http_error",
-        `Agent responded ${response.status}${detail.length === 0 ? "." : `: ${detail.slice(0, 300)}`}`,
+        `Agent responded ${response.status}.`,
         502,
       );
     }

@@ -8,6 +8,12 @@
   rejected-candidate costs are reported separately. The validation code digest
   changes, so paid runs need a fresh registration.
 
+- Harden web console error and diagnostic paths against secret leaks. Return
+  fixed messages for malformed JSON, oversized bodies, encoding failures and
+  unexpected errors; keep reviewed `WebConsoleError` messages with only typed
+  safe details and `Retry-After`. Redact server, ingress and service logs with
+  the shared contracts redactor and known environment credentials.
+
 - Remove operator API-key requirements for console, ACP and peer access,
   supervised restart, provider management and opted-in cron actions. Ignore
   obsolete operator keys and headers; retain scoped secrets and forward the

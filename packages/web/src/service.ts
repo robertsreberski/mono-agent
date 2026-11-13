@@ -127,6 +127,7 @@ import {
   type EffortAdvertisement,
 } from "./effort-ladder.js";
 import { errorCode, errorMessage, WebConsoleError } from "./errors.js";
+import { collectKnownWebSecrets, createSecretSafeWebLogger } from "./log-redaction.js";
 import { OperatorClient, OperatorTurnFrameError, type OperatorInfo } from "./operator-client.js";
 import { isAskUserToolName } from "./run-activity.js";
 import {
@@ -775,8 +776,17 @@ export class WebService {
   }
 
   static async create(options: CreateWebServiceOptions = {}): Promise<WebService> {
-    const paths = await prepareWebStatePaths(options);
-    const voice = await loadVoiceConfig(paths.root, options.voice);
+    // Route every service diagnostic sink through the redacting logger, including
+    // direct `WebService.create` embedding and forwarded logger options. Known
+    // environment credential values are supplied where available. Web never
+    // imports from app; the redactor is the public contracts helper.
+    const knownSecrets = collectKnownWebSecrets(options.env ?? process.env);
+    const safeLogger = createSecretSafeWebLogger(options.logger, knownSecrets);
+    const safeOptions: CreateWebServiceOptions = safeLogger === undefined
+      ? options
+      : { ...options, logger: safeLogger };
+    const paths = await prepareWebStatePaths(safeOptions);
+    const voice = await loadVoiceConfig(paths.root, safeOptions.voice);
     let lease: WebStateLease;
     try {
       lease = await acquireWebStateLease(paths);
@@ -785,7 +795,7 @@ export class WebService {
     try {
       // Recovery mutates active rows, so it must happen only after singleton
       // ownership is established. A losing second process never opens the DB.
-      store = await WebStore.openPrepared(paths, options);
+      store = await WebStore.openPrepared(paths, safeOptions);
     } catch (error) {
       await lease.release();
       throw error;
@@ -797,8 +807,8 @@ export class WebService {
         store.ensureReplyAccessKey(() => randomBytes(32).toString("base64url")),
         "base64url",
       );
-      const pushSubject = resolveWebPushSubject(options.env?.MONO_AGENT_WEB_PUSH_SUBJECT);
-      service = new WebService(store, lease, options, pushIdentity, pushSubject, replyAccessKey, voice);
+      const pushSubject = resolveWebPushSubject(safeOptions.env?.MONO_AGENT_WEB_PUSH_SUBJECT);
+      service = new WebService(store, lease, safeOptions, pushIdentity, pushSubject, replyAccessKey, voice);
       await store.purgePartialUploadFiles();
       await service.purgeOrphans();
       await service.refreshAgents();
