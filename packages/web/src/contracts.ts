@@ -198,7 +198,8 @@ export interface WebAgentSummary {
   readonly supportsAttachments: boolean;
   /**
    * Agent operator exposes Pi provider authentication v1. The operator client
-   * adds a bearer only when that discovered endpoint has an API key.
+   * serves current agents keylessly, forwarding a legacy bearer to older agents
+   * for one release only.
    *
    * Usability is projected from the live connection's `/v1/info`; a stored bit
    * is presentation state, never authorization to call the agent.

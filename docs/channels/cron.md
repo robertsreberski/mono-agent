@@ -89,7 +89,7 @@ When you select **Scheduled jobs (cron)** in the guided `mono-agent init` wizard
 | Key | Type | Required | Default | Notes |
 | --- | --- | --- | --- | --- |
 | `cron.dir` | string | no | `cron` | Folder of per-job `*.md` files (frontmatter metadata + prompt body). |
-| `cron.operatorActions.enabled` | boolean | no | `false` | Permit authenticated, confirmed run-now and runtime enable/disable actions through an agent operator endpoint that has `tui.apiKey`. |
+| `cron.operatorActions.enabled` | boolean | no | `false` | Permit explicitly confirmed run-now and runtime enable/disable actions through an agent operator endpoint. |
 | `cron.jobs[]` | array | no | `[]` | Inline job definitions. Merges with `*.md` files in `cron.dir`; the merged set is limited to 64 jobs. |
 | `jobs[].id` | string | yes | — | Unique job id, at most 256 UTF-8 bytes. Duplicate ids (across config and folder) are an error. |
 | `jobs[].enabled` | boolean | no | `true` | Set `false` to keep a job defined but unscheduled. |
@@ -123,7 +123,7 @@ A pinned model uses a warm session in the job's conversation when continuous ses
 | Variable | Maps to | Notes |
 | --- | --- | --- |
 | `MONO_AGENT_CRON_ENABLED` | `cron.enabled` | Enables the legacy single-job form; default `false`. |
-| `MONO_AGENT_CRON_OPERATOR_ACTIONS_ENABLED` | `cron.operatorActions.enabled` | Opts into authenticated, confirmed runtime controls; default `false`. |
+| `MONO_AGENT_CRON_OPERATOR_ACTIONS_ENABLED` | `cron.operatorActions.enabled` | Opts into explicitly confirmed runtime controls; default `false`. |
 | `MONO_AGENT_CRON_DIR` | `cron.dir` | Folder of per-job `*.md` files; default `cron/`. |
 | `MONO_AGENT_CRON_JOBS_JSON` | `cron.jobs[]` | Full JSON array of jobs. |
 | `MONO_AGENT_CRON_EXPRESSION` | `cron.expression` | Single-job five-field expression. |
@@ -224,7 +224,7 @@ session storage is unavailable, and a temporary offline/unsupported preflight
 on its retry does not replace it with a new operation. Status, time, and Reply
 stay visible while secondary run diagnostics remain available under **Details**.
 
-Operator control APIs require all three gates: `cron.operatorActions.enabled`, an operator API key, and explicit confirmation returned by the agent. Run-now reuses the scheduler's fixed skip-overlap guard and watchdog. Consequently, a scheduled tick arriving while a manual run is active is recorded as `skipped_overlap`, attributed to that manual run, and does not make the job unhealthy. Enable/disable is a durable **runtime override**; it does not rewrite any of the layered config, environment, or Markdown sources.
+Operator control APIs require `cron.operatorActions.enabled`, registry health, idempotency, and explicit confirmation returned by the agent. Run-now reuses the scheduler's fixed skip-overlap guard and watchdog. Consequently, a scheduled tick arriving while a manual run is active is recorded as `skipped_overlap`, attributed to that manual run, and does not make the job unhealthy. Enable/disable is a durable **runtime override**; it does not rewrite any of the layered config, environment, or Markdown sources.
 
 The agent stores overrides, run ordering, idempotency receipts, and audit records in owner-private `.mono-agent/cron-control-v1/`. An absent directory is normal first-run state and is created before jobs arm. A present but corrupt, insecure, or already-leased store is fail-closed: no cron jobs arm, lifecycle/discovery reports the cron channel as degraded, an error is logged, and `mono-agent doctor` reports the state for recovery. Removing this directory is not a routine enable/reset operation because it discards runtime overrides, ordering, idempotency, audit, and bounded run history.
 

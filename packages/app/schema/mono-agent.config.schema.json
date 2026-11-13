@@ -3904,13 +3904,6 @@
           "type": "boolean",
           "default": false
         },
-        "apiKey": {
-          "description": "Secret value for tui.apiKey; prefer the env override.",
-          "examples": [
-            "example"
-          ],
-          "type": "string"
-        },
         "requestToolEnvironment": {
           "type": "object",
           "additionalProperties": false,
@@ -3938,6 +3931,10 @@
               "default": false
             }
           }
+        },
+        "apiKey": {
+          "deprecated": true,
+          "description": "Deprecated and ignored. Operator endpoints no longer use an API key."
         }
       }
     },

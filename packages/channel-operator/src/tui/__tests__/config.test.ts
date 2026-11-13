@@ -57,7 +57,6 @@ describe("loadTuiAdapterConfig", () => {
       port: 4222,
       basePath: "/operator/gui",
       allowNonLoopback: true,
-      apiKey: "json-redacted-value",
     });
   });
 
@@ -110,7 +109,19 @@ describe("loadTuiAdapterConfig", () => {
 });
 
 describe("redactTuiAdapterConfig", () => {
-  it("redacts the optional API key", () => {
+  it.each([
+    [{}, {}],
+    [{ MONO_AGENT_TUI_API_KEY: "legacy-env" }, {}],
+    [{}, { tui: { apiKey: "legacy-inline" } }],
+    [{ MONO_AGENT_TUI_API_KEY: "legacy-env" }, { tui: { apiKey: "legacy-inline" } }],
+    [{ MONO_AGENT_TUI_API_KEY: "" }, { tui: { apiKey: { obsolete: true } } }],
+  ])("silently ignores obsolete environment/inline keys (%j, %j)", async (env, json) => {
+    const config = await loadTuiAdapterConfig({ env, json });
+    expect(config).not.toHaveProperty("apiKey");
+    expect(JSON.stringify(config)).not.toContain("legacy-");
+  });
+
+  it("ignores the deprecated API key in the compatibility redactor", () => {
     expect(redactTuiAdapterConfig({
       enabled: true,
       host: "127.0.0.1",
@@ -124,7 +135,7 @@ describe("redactTuiAdapterConfig", () => {
       port: 0,
       basePath: "/gui",
       allowNonLoopback: false,
-      apiKey: { present: true, redacted: true },
+      apiKey: { present: false, redacted: true },
     });
   });
 });

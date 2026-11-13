@@ -86,7 +86,7 @@ describe("startTuiAdapter", () => {
     expect(observed?.captureSpeakerKind).toBe("human-turn");
   });
 
-  it("advertises and protects manual compaction without returning the summary", async () => {
+  it("advertises keyless manual compaction without returning the summary", async () => {
     const compactConversation = vi.fn(async () => ({ status: "succeeded" as const, trigger: "manual" as const,
       operationId: "c-1", tokensBefore: 1500, tokensAfter: 600, summary: "PRIVATE SUMMARY" }));
     running = await startTuiAdapter({
@@ -95,13 +95,14 @@ describe("startTuiAdapter", () => {
     const headers = { authorization: "Bearer test-owner", "content-type": "application/json" };
     const path = `${running.baseUrl}/v1/conversations/web%3Aone/compact`;
     expect(((await (await fetch(running.infoUrl, { headers })).json()) as { capabilities: { manualCompaction?: unknown } }).capabilities.manualCompaction).toEqual({ version: 1 });
-    expect((await fetch(path, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" })).status).toBe(401);
+    expect((await fetch(path, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" })).status).toBe(200);
     expect((await fetch(path, { method: "POST", headers, body: '{"unexpected":true}' })).status).toBe(400);
     const response = await fetch(path, { method: "POST", headers, body: "{}" });
     expect(response.status).toBe(200);
     expect(response.headers.get("cache-control")).toContain("no-store");
     expect(await response.json()).toMatchObject({ status: "succeeded", tokensBefore: 1500, tokensAfter: 600 });
-    expect(compactConversation).toHaveBeenCalledExactlyOnceWith("web:one", undefined, expect.any(AbortSignal));
+    expect(compactConversation).toHaveBeenCalledTimes(2);
+    expect(compactConversation).toHaveBeenLastCalledWith("web:one", undefined, expect.any(AbortSignal));
     const withModel = await fetch(path, { method: "POST", headers, body: '{"model":"anthropic:claude-opus-4-8"}' });
     expect(withModel.status).toBe(200);
     expect(compactConversation).toHaveBeenLastCalledWith("web:one", { model: "anthropic:claude-opus-4-8" }, expect.any(AbortSignal));
@@ -278,7 +279,7 @@ describe("startTuiAdapter", () => {
     expect(info).toEqual({
       schema: 1,
       pid: process.pid,
-      capabilities: { attachments: true, restart: { supported: false, reason: "Agent restart requires a configured operator API key." } },
+      capabilities: { attachments: true, restart: { supported: false, reason: "Agent is not a supervised worker." } },
       label: "test-agent",
       model: "claude-fable-5",
     });
@@ -353,7 +354,7 @@ describe("startTuiAdapter", () => {
     });
 
     await expect((await fetch(running.infoUrl)).json()).resolves.toMatchObject({
-      capabilities: { attachments: true, restart: { supported: false, reason: "Agent restart requires a configured operator API key." }, askUser: true, askById: true },
+      capabilities: { attachments: true, restart: { supported: false, reason: "Agent is not a supervised worker." }, askUser: true, askById: true },
     });
     const route = `${running.baseUrl}/v1/conversations/${encodeURIComponent("web:thread/one")}/ask`;
     await expect((await fetch(route)).json()).resolves.toEqual({ ask: snapshot });
@@ -393,7 +394,7 @@ describe("startTuiAdapter", () => {
     expect((await fetch(`${running.baseUrl}/v1/interactions/ask-test`)).status).toBe(501);
   });
 
-  it("serves capability-gated cron reads and authenticated confirmed mutations without changing schema", async () => {
+  it("serves capability-gated cron reads and keyless confirmed mutations without changing schema", async () => {
     let actionsEnabled = false;
     let degradedReason: string | undefined;
     const calls: unknown[] = [];
@@ -494,7 +495,6 @@ describe("startTuiAdapter", () => {
     };
     running = await startTuiAdapter({
       responder: scriptedResponder(async () => ({ text: "ok" })),
-      apiKey: "fixture-secret",
       cron,
     });
     const headers = { authorization: "Bearer fixture-secret" };
@@ -534,7 +534,7 @@ describe("startTuiAdapter", () => {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ idempotencyKey: "manual-one" }),
-    })).status).toBe(401);
+    })).status).toBe(428);
     const confirmation = await fetch(`${running.baseUrl}/v1/cron/jobs/daily%3Abrief/run`, {
       method: "POST",
       headers: { ...headers, "content-type": "application/json" },
@@ -756,9 +756,10 @@ describe("startTuiAdapter", () => {
     }
   });
 
-  it("keeps cron reads keyless only on a keyless operator while refusing mutations", async () => {
+  it("keeps cron reads keyless while the service enforces the action opt-in", async () => {
     const cron = {
       overview: () => ({ generatedAt: "2026-08-14T10:00:00.000Z", actionsEnabled: false, jobs: [] }),
+      runNow: () => { throw new CronOperatorError("actions_disabled", "Cron actions are disabled.", 403); },
       runs: () => ({ runs: [] }),
       configView: () => ({
         id: "cron",
@@ -786,7 +787,7 @@ describe("startTuiAdapter", () => {
     });
     expect(mutation.status).toBe(403);
     await expect(mutation.json()).resolves.toMatchObject({
-      error: { code: "actions_disabled", message: expect.stringContaining("API key") },
+      error: { code: "actions_disabled", message: expect.stringContaining("disabled") },
     });
   });
 
@@ -801,7 +802,7 @@ describe("startTuiAdapter", () => {
     expect(info).toEqual({
       schema: 1,
       pid: process.pid,
-      capabilities: { attachments: true, restart: { supported: false, reason: "Agent restart requires a configured operator API key." } },
+      capabilities: { attachments: true, restart: { supported: false, reason: "Agent is not a supervised worker." } },
       label: "test-agent",
       model: "claude-fable-5",
       effort: "high",
@@ -819,7 +820,7 @@ describe("startTuiAdapter", () => {
     expect(info).toEqual({
       schema: 1,
       pid: process.pid,
-      capabilities: { attachments: true, restart: { supported: false, reason: "Agent restart requires a configured operator API key." } },
+      capabilities: { attachments: true, restart: { supported: false, reason: "Agent is not a supervised worker." } },
       model: "claude-fable-5",
       models: ["claude-fable-5", "codex:gpt-5.5"],
     });
@@ -872,7 +873,7 @@ describe("startTuiAdapter", () => {
     expect(info).toEqual({
       schema: 1,
       pid: process.pid,
-      capabilities: { attachments: true, restart: { supported: false, reason: "Agent restart requires a configured operator API key." } },
+      capabilities: { attachments: true, restart: { supported: false, reason: "Agent is not a supervised worker." } },
       model: "pi:ollama:qwen3.6",
       models: ["pi:ollama:qwen3.6", "pi:lmstudio:qwen3-8b"],
       modelOptions: {
@@ -932,7 +933,7 @@ describe("startTuiAdapter", () => {
     expect(withCatalog.capabilities).toMatchObject({ modelCatalog: { version: 1, maxPageSize: 200 } });
   });
 
-  it("validates, authorizes, and serves the /v1/models catalog through the injected provider", async () => {
+  it("validates and serves the /v1/models catalog through the injected provider", async () => {
     const requests: unknown[] = [];
     running = await startTuiAdapter({
       apiKey: "fixture-secret",
@@ -953,7 +954,7 @@ describe("startTuiAdapter", () => {
     });
     const headers = { authorization: "Bearer fixture-secret" };
 
-    expect((await fetch(`${running.baseUrl}/v1/models?provider=anthropic`)).status).toBe(401);
+    expect((await fetch(`${running.baseUrl}/v1/models?provider=anthropic`)).status).toBe(200);
 
     const ok = await fetch(`${running.baseUrl}/v1/models?provider=anthropic&limit=10`, { headers });
     expect(ok.status).toBe(200);
@@ -967,7 +968,7 @@ describe("startTuiAdapter", () => {
       nextCursor: "claude-sonnet-4-6",
       truncated: true,
     });
-    expect(requests).toEqual([{ provider: "anthropic", limit: 10 }]);
+    expect(requests).toEqual([{ provider: "anthropic", limit: 100 }, { provider: "anthropic", limit: 10 }]);
 
     // Missing provider/q, and out-of-range limit, are client errors.
     expect((await fetch(`${running.baseUrl}/v1/models`, { headers })).status).toBe(400);
@@ -1040,7 +1041,7 @@ describe("startTuiAdapter", () => {
     expect(info).toEqual({
       schema: 1,
       pid: process.pid,
-      capabilities: { attachments: true, restart: { supported: false, reason: "Agent restart requires a configured operator API key." } },
+      capabilities: { attachments: true, restart: { supported: false, reason: "Agent is not a supervised worker." } },
       model: "claude-fable-5",
       modelOptions: { "claude-fable-5": { reasoning: true } },
     });
@@ -1242,7 +1243,7 @@ describe("startTuiAdapter", () => {
     expect(unsupported.status).toBe(501);
   });
 
-  it("advertises and authorizes durable verbatim history append", async () => {
+  it("advertises keyless durable verbatim history append", async () => {
     const recorded: Array<[string, string, string | undefined]> = [];
     running = await startTuiAdapter({
       apiKey: "fixture-secret",
@@ -1260,12 +1261,6 @@ describe("startTuiAdapter", () => {
     expect(info.capabilities).toEqual({ attachments: true, restart: { supported: false, reason: "Agent is not a supervised worker." }, historyAppend: true });
 
     const url = `${running.baseUrl}/v1/conversations/web%3Anotification-1/verbatim`;
-    const unauthorized = await fetch(url, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ text: "Morning brief", idempotencyKey: "cron:job:one" }),
-    });
-    expect(unauthorized.status).toBe(401);
 
     const accepted = await fetch(url, {
       method: "POST",
@@ -1280,7 +1275,7 @@ describe("startTuiAdapter", () => {
     expect(recorded).toEqual([["web:notification-1", "Morning brief", "cron:job:one"]]);
   });
 
-  it("advertises, authorizes, validates, and maps canonical context import results", async () => {
+  it("advertises, validates, and maps canonical context import results", async () => {
     const imported: Array<[string, string, string]> = [];
     running = await startTuiAdapter({
       apiKey: "fixture-secret",
@@ -1303,13 +1298,6 @@ describe("startTuiAdapter", () => {
     expect(info.capabilities).toMatchObject({ contextImport: { version: 1, maxTextBytes: 32_768 } });
 
     const url = `${running.baseUrl}/v1/conversations/web%3Acron%3Ajob-1/context-imports`;
-    const unauthorized = await fetch(url, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ text: "result", idempotencyKey: "run:1" }),
-    });
-    expect(unauthorized.status).toBe(401);
-    expect(unauthorized.headers.get("cache-control")).toBe("private, no-store, max-age=0");
 
     const post = async (body: unknown) => await fetch(url, {
       method: "POST",
@@ -1371,7 +1359,7 @@ describe("startTuiAdapter", () => {
     expect(exactConversationResponse.status).toBe(200);
   });
 
-  it("marks context import parser, authorization, and validation rejections private before parsing", async () => {
+  it("marks context import parser and validation responses private before parsing", async () => {
     const importContext = vi.fn(async () => ({ status: "appended" as const }));
     running = await startTuiAdapter({
       apiKey: "fixture-secret",
@@ -1393,11 +1381,11 @@ describe("startTuiAdapter", () => {
       await request(JSON.stringify({ text: " \t\n", idempotencyKey: "run:1" })),
     ];
 
-    expect(cases.map((response) => response.status)).toEqual([401, 400, 413, 400]);
+    expect(cases.map((response) => response.status)).toEqual([200, 400, 413, 400]);
     for (const response of cases) {
       expect(response.headers.get("cache-control")).toBe("private, no-store, max-age=0");
     }
-    expect(importContext).not.toHaveBeenCalled();
+    expect(importContext).toHaveBeenCalledOnce();
   });
 
   it("keeps context import positively absent for legacy responders", async () => {
@@ -1471,7 +1459,7 @@ describe("startTuiAdapter", () => {
     });
 
     const info = await (await fetch(running.infoUrl)).json() as { capabilities: Record<string, boolean> };
-    expect(info.capabilities).toEqual({ attachments: true, restart: { supported: false, reason: "Agent restart requires a configured operator API key." }, liveInput: true });
+    expect(info.capabilities).toEqual({ attachments: true, restart: { supported: false, reason: "Agent is not a supervised worker." }, liveInput: true });
     const responsePromise = fetch(`${running.baseUrl}/v1/conversations/web%3Athread-1/live-input`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -1515,7 +1503,7 @@ describe("startTuiAdapter", () => {
     });
 
     const info = await (await fetch(running.infoUrl)).json() as { capabilities: Record<string, unknown> };
-    expect(info.capabilities).toEqual({ attachments: true, restart: { supported: false, reason: "Agent restart requires a configured operator API key." } });
+    expect(info.capabilities).toEqual({ attachments: true, restart: { supported: false, reason: "Agent is not a supervised worker." } });
   });
 
   it("holds a Web-targeted offer until the exact turn publishes mailbox ownership", async () => {
@@ -2036,20 +2024,20 @@ describe("startTuiAdapter", () => {
     expect(response.status).toBe(413);
   }, 30_000);
 
-  it("enforces the bearer key on every route when configured", async () => {
+  it("ignores configured obsolete keys and accepts old-console bearer headers", async () => {
     running = await startTuiAdapter({
       apiKey: "fixture-secret",
       responder: scriptedResponder(async () => ({ text: "ok" })),
     });
 
-    expect((await fetch(running.infoUrl)).status).toBe(401);
-    expect((await postTurn(running.baseUrl, { conversationId: "c", text: "hi" })).status).toBe(401);
+    expect((await fetch(running.infoUrl)).status).toBe(200);
+    expect((await postTurn(running.baseUrl, { conversationId: "c", text: "hi" })).status).toBe(200);
     expect(
       (await fetch(running.infoUrl, { headers: { authorization: "Bearer fixture-secret" } })).status,
     ).toBe(200);
   });
 
-  it("authenticates, ownership-checks, and download-hardens reply artifact streams", async () => {
+  it("ownership-checks and download-hardens reply artifact streams", async () => {
     const bytes = Buffer.from("<script>document.cookie</script>");
     const responderWithArtifacts: AgentResponder = {
       respond: async () => ({ text: "ok" }),
@@ -2079,7 +2067,7 @@ describe("startTuiAdapter", () => {
     });
 
     const path = `${running.baseUrl}/v1/conversations/conversation-1/reply-artifacts/artifact-1`;
-    expect((await fetch(path)).status).toBe(401);
+    expect((await fetch(path)).status).toBe(200);
     expect((await fetch(path.replace("conversation-1", "conversation-2"), {
       headers: { authorization: "Bearer secret" },
     })).status).toBe(404);
@@ -2165,7 +2153,7 @@ describe("startTuiAdapter", () => {
     });
 
     const route = `${running.baseUrl}/v1/conversations/conversation-1/mcp-apps/invocation-1`;
-    expect((await fetch(route)).status).toBe(401);
+    expect((await fetch(route)).status).toBe(400);
     expect((await fetch(route, {
       headers: {
         authorization: "Bearer secret",
@@ -2325,10 +2313,10 @@ describe("startTuiAdapter", () => {
     });
     expect(running.port).toBe(boundPort);
     await readFrames(await postTurn(running.baseUrl.replace("0.0.0.0", "127.0.0.1"), {
-      conversationId: "web:nonloopback", text: "hello", client: "web", captureSpeakerKind: "human-turn",
-      metadata: { source: "web", captureSpeakerKind: "human-turn" },
+      conversationId: "web:nonloopback", text: "hello", client: "web", captureSpeakerKind: "trigger",
+      metadata: { source: "web", captureSpeakerKind: "trigger" },
     }));
-    expect(observed?.captureSpeakerKind).toBe("unknown");
+    expect(observed?.captureSpeakerKind).toBe("human-turn");
   });
 
   it("truncates oversized event frames instead of streaming them verbatim", async () => {
@@ -2785,7 +2773,7 @@ describe("startTuiAdapter /v1/info payload fence", () => {
     expect(info.bytes).toBeLessThanOrEqual(MAX_INFO_BODY_BYTES);
     // Schema 1 survives shedding: the console compares it with `!==`.
     expect(info.body.schema).toBe(1);
-    expect(info.body.capabilities).toEqual({ attachments: true, restart: { supported: false, reason: "Agent restart requires a configured operator API key." } });
+    expect(info.body.capabilities).toEqual({ attachments: true, restart: { supported: false, reason: "Agent is not a supervised worker." } });
     // Only the offending field is gone. Shedding in a fixed least-important
     // order would have taken modelOptions, models and providers with it, so a
     // 1.6 MiB skill registry would have cost the console its model picker too.

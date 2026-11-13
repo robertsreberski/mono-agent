@@ -266,7 +266,7 @@ describe("CronChannelHeader", () => {
 
     render(<CronChannelHeader />);
     expandOverview();
-    const reason = screen.getByText(/operator api key/iu);
+    const reason = screen.getByText(/disabled or unavailable/iu);
     expect(reason).toHaveAttribute("role", "status");
     reason.focus();
     expect(reason).toHaveFocus();

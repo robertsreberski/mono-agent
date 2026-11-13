@@ -201,6 +201,16 @@ describe("config reference", () => {
     expect(block.default).toBeUndefined();
   });
 
+  it("tolerates the deprecated ignored operator key without registering it as a resolved field", () => {
+    for (const apiKey of ["fictional-legacy", "", null, { obsolete: true }]) {
+      expect(findUnknownAppConfigPaths({ tui: { apiKey } })).toEqual([]);
+      expect(() => assertKnownAppConfigKeys({ tui: { apiKey } })).not.toThrow();
+    }
+    const schema = buildMonoAgentConfigSchema() as SchemaNode;
+    expect(schema.properties?.tui?.properties?.apiKey).toMatchObject({ deprecated: true, description: expect.stringContaining("ignored") });
+    expect(allConfigReferenceFields()).toContainEqual(expect.objectContaining({ jsonPath: "tui.apiKey", env: "--", description: expect.stringContaining("ignored") }));
+  });
+
   it("accepts the retired monitors block only as deprecated inert configuration", () => {
     const schema = buildMonoAgentConfigSchema();
     expect((schema.properties as Record<string, unknown>).monitors).toEqual({

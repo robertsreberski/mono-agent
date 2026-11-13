@@ -90,7 +90,7 @@ it("stopping disposition prevents publication", async () => {
   expect(authority.accept(token).kind).toBe("refused"); expect(publish).not.toHaveBeenCalled(); expect(latch.exitCode).toBe(0);
 });
 
-it.each([undefined, "wrong"])("rejects a keyless or wrong-key POST before preparation", async (bearer) => {
+it.each([undefined, "wrong"])("prepares and publishes supervised restart with no key or an obsolete wrong bearer", async (bearer) => {
   const prepare = vi.fn(async () => ({ supported: true, publish: vi.fn(), dispose: async () => undefined }));
   const { authority } = fixture(prepare);
   const adapter = await startTuiAdapter({ ...(bearer === undefined ? {} : { apiKey: "fictional-owner" }),
@@ -99,8 +99,8 @@ it.each([undefined, "wrong"])("rejects a keyless or wrong-key POST before prepar
     const response = await fetch(`${adapter.baseUrl}/v1/restart`, { method: "POST", headers: {
       "content-type": "application/json", ...(bearer === undefined ? {} : { authorization: `Bearer ${bearer}` }),
     }, body: "{}" });
-    expect(response.status).toBe(bearer === undefined ? 403 : 401);
-    expect(prepare).not.toHaveBeenCalled();
+    expect(response.status).toBe(202);
+    expect(prepare).toHaveBeenCalledOnce();
   } finally { await adapter.stop(); }
 });
 

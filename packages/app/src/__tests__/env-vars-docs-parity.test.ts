@@ -78,6 +78,8 @@ const CONDITIONAL_MENTION_STRIP_DOCS = [
     ],
   },
 ] as const;
+// Retired inputs stay documented for migration, not as active adapter mappings.
+const IGNORED_LEGACY_ENV_KEYS = new Set(["MONO_AGENT_TUI_API_KEY"]);
 const SHARED_ENV_KEYS_READ_BY_ADAPTERS = new Set(["MONO_AGENT_NAME"]);
 
 function envKeysIn(source: string): string[] {
@@ -257,6 +259,13 @@ describe("env-vars.md <-> code parity", () => {
     }
   });
 
+  it("labels retired operator credentials ignored rather than as an active gate", () => {
+    const doc = readFileSync(join(root, "docs/config/env-vars.md"), "utf8");
+    for (const key of IGNORED_LEGACY_ENV_KEYS) {
+      expect(markdownLineStartingWith(doc, `| \`${key}\` |`)).toContain("Deprecated and ignored");
+    }
+  });
+
   it("documents mention stripping with the loaders' conditional defaults", () => {
     for (const { contract, docs } of CONDITIONAL_MENTION_STRIP_DOCS) {
       for (const [canonicalPath, linePrefix] of docs) {
@@ -276,7 +285,7 @@ describe("env-vars.md <-> code parity", () => {
       // Trailing-underscore tokens are prose wildcards like `MONO_AGENT_TRACE_*`
       // and `MONO_AGENT_LOCAL_PROVIDER_*`; the regex stops at the `*`.
       const unknown = [...docKeys].filter(
-        (key) => !key.endsWith("_") && !code.has(key),
+        (key) => !key.endsWith("_") && !code.has(key) && !IGNORED_LEGACY_ENV_KEYS.has(key),
       );
       expect(unknown).toEqual([]);
     });

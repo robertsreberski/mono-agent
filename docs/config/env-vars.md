@@ -232,7 +232,7 @@ Messenger is loaded through `channels.plugins[]` with `package: "@mono-agent/cha
 | `MONO_AGENT_TUI_PORT` | `tui.port` | Default `0` (ephemeral; published to the trace-source registry). |
 | `MONO_AGENT_TUI_BASE_PATH` | `tui.basePath` | Default `/gui`. |
 | `MONO_AGENT_TUI_ALLOW_NON_LOOPBACK` | `tui.allowNonLoopback` | Required to bind a non-loopback host. |
-| `MONO_AGENT_TUI_API_KEY` | `tui.apiKey` | Optional bearer the console must present. Put the value in `.env`; inline `tui.apiKey` remains accepted for compatibility but is not the documented source-config convention. See [operator stream configuration](/channels/tui/). |
+| `MONO_AGENT_TUI_API_KEY` | `tui.apiKey` | Deprecated and ignored by current agents. For one release, discovery forwards only this legacy key to older agents (selected dotenv, inline, then ambient). See [operator stream configuration](/channels/tui/). |
 | `MONO_AGENT_TUI_REQUEST_TOOL_ENVIRONMENT_ALLOWED_KEYS` | `tui.requestToolEnvironment.allowedKeys` | Comma-separated names an ACP turn may pass to Bash, Exec, and nested subagents. Disabled by default; dangerous loader, shell-startup, home, temp, and PATH keys are rejected. |
 | `MONO_AGENT_TUI_REQUEST_TOOL_ENVIRONMENT_ALLOW_PATH_PREPEND` | `tui.requestToolEnvironment.allowPathPrepend` | Allows an ACP turn to prepend bounded absolute directories to process-tool PATH. Default `false`; request callers can never replace PATH. |
 
@@ -274,7 +274,7 @@ The A2A provider is loaded through `channels.plugins[]` with `package: "@mono-ag
 | Env var | JSON key it overrides | Notes |
 | --- | --- | --- |
 | `MONO_AGENT_CRON_JOBS_JSON` | `cron.jobs[]` | Full JSON array of jobs. |
-| `MONO_AGENT_CRON_OPERATOR_ACTIONS_ENABLED` | `cron.operatorActions.enabled` | Permit API-key-authenticated, explicitly confirmed run-now and runtime enable/disable actions; default `false`. |
+| `MONO_AGENT_CRON_OPERATOR_ACTIONS_ENABLED` | `cron.operatorActions.enabled` | Permit explicitly confirmed run-now and runtime enable/disable actions; default `false`. |
 | `MONO_AGENT_CRON_ENABLED` | `cron.enabled` | Enable the legacy/default single-job form; default `false`. |
 | `MONO_AGENT_CRON_EXPRESSION` | `cron.expression` | Five-field expression for the default single job. |
 | `MONO_AGENT_CRON_TIMEZONE` | `cron.timezone` | IANA timezone for the default single job; default `UTC`. |

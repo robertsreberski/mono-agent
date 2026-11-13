@@ -33,6 +33,7 @@ export type DiscoverAcpBridgeAgentsOptions = Omit<DiscoverOperatorAgentsOptions,
 export interface DiscoveredOperatorAgent {
   readonly source: TraceSourceListItem;
   readonly baseUrl?: string;
+  /** @deprecated Legacy forwarding to older agents only; remove after one published release. */
   readonly apiKey?: string;
   readonly processJobsBearer?: string;
 }
@@ -267,6 +268,8 @@ export function isTrustedOperatorBaseUrl(value: string): boolean {
   }
 }
 
+// One-release compatibility: extract ONLY the legacy operator key, never other dotenv values.
+// Remove this extraction and client header forwarding after one published release.
 async function resolveOperatorApiKey(
   source: TraceSourceListItem,
   env: Readonly<Record<string, string | undefined>>,

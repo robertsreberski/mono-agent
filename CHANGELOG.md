@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Remove operator API-key requirements for console, ACP and peer access,
+  supervised restart, provider management and opted-in cron actions. Ignore
+  obsolete operator keys and headers; retain scoped secrets and forward the
+  legacy key to older agents for one release. Treat admitted operator turns
+  as human turns; authentication is deferred.
+
 - **Breaking:** Protect authenticated retained summaries admitted by a cold native
   seed through restart and subsequent compaction, with branch-local successor coverage.
   Add optional `providerSessionEpoch` to the owned history-store turn contract;
@@ -50,8 +56,7 @@
   exact manual setup steps. Never trigger provider/network/subprocess liveness
   probes from this view; direct live checks to `mono-agent validate`. Keep older
   agents showing as not reporting capabilities; list built-in tracing as already
-  enabled. Keep capability/provider-usage reads valid across unchanged discovery
-  passes.
+  enabled.
 - Add an opt-in browser console handoff after successful guided init, defaulting
   to Not now, with no-login consent, health-gated opening and exact-agent discovery.
   Keep scaffold/non-TTY paths and existing console listeners unchanged; warn

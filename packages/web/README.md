@@ -50,15 +50,14 @@ User Stop also marks a running `AskUser` question as interrupted; answer in a ne
   attribution without exposing raw provider diagnostics.
 - Proxy ephemeral, exact-origin provider-auth status and login sessions to the
   currently connected capability-advertising agent without storing credentials,
-  prompt input, or session projections. The client omits authorization for an
-  agent with no operator API key and sends the discovered bearer when one exists.
-- Restart one selected, keyed, supervised agent from settings or a persisted
+  prompt input, or session projections. Current agents serve these routes keylessly.
+- Restart one selected, supervised agent from settings or a persisted
   `ProposeRestart` reply card. The browser confirms interruptions before POST,
   polls one durable SQLite operation through reload, and reports success only
   after a new process generation on the same source id answers a ready probe.
   Definitive refusal is failure; ambiguous or two-minute-expired requests are
   not confirmed. A model-provided part never chooses the target or grants
-  authority; origin checks and the existing operator bearer remain the boundary.
+  authority; origin checks and the trusted network/OS posture remain the boundary.
 - Let an MCP-capable agent replace the interim first-message title with a short
   semantic title and evolve it after a material topic shift, while treating any
   user rename as a permanent lock.
@@ -507,10 +506,12 @@ Private IP literals, localhost, the machine hostname, and its exact `.local`
 name are accepted as browser hosts. Set `MONO_AGENT_WEB_ALLOWED_HOSTS` to a
 comma-separated list of any additional exact DNS names (for example the node's
 Tailscale DNS name); suffix wildcards are intentionally not trusted. When a
-managed agent protects its loopback operator endpoint, discovery prefers
+legacy agent protects its loopback operator endpoint, discovery prefers
 `MONO_AGENT_TUI_API_KEY` from that agent's attested, owner-owned dotenv file,
 then its config `tui.apiKey`. Only agents publishing neither key use the
-console process's ambient `MONO_AGENT_TUI_API_KEY` as a shared-key fallback.
+console process's ambient `MONO_AGENT_TUI_API_KEY` as a shared-key fallback. This extracts only the legacy key, never other dotenv
+values. Current agents ignore it; remove extraction/header forwarding after one
+published release.
 
 One Dashboard is the console's whole navigation surface: a fixed 340-pixel left
 column on desktop, and the entrance screen on narrow touch screens. Its header
@@ -728,8 +729,7 @@ cannot drain safely within two seconds reports `replacement_timeout`. Secret
 input is cleared before submission. The web
 server requires exact origin, proxies through the agent's ordinary operator
 connection, marks responses no-store, and never reads the Pi auth path. The
-operator request is keyless when that agent has no API key and uses its bearer
-when it does. Auth state is component/agent memory only—not SQLite, thread
+operator request is keyless on current agents. Auth state is component/agent memory only—not SQLite, thread
 history, browser storage, or run artifacts. The console remains a
 trusted-network single-user surface, not a per-human authenticated application.
 
@@ -1008,7 +1008,7 @@ non-v1 text remains ordinary text.
 
 The web HTTP config-view, run-now, and effective-enabled proxies remain available
 for operator clients. Mutations still require same-origin requests, source-qualified
-routing, an operator API key, explicit agent-side opt-in, an idempotency key, and
+routing, explicit agent-side opt-in, an idempotency key, and
 agent-issued confirmation. Runtime enable state, run history, action audit, and
 idempotency are agent-owned; web SQLite is a reconnect/refresh projection.
 
@@ -1068,7 +1068,7 @@ id or raw generation is in the browser DTO. A used proposal carries only the
 **web** operation id so progress survives a reload. Active conversation counts
 are approximate warnings and never admission gates. The console does not add
 human login: its existing trusted-network/OS boundary and browser exact-origin
-checks still apply; web sends the discovered operator bearer to the agent.
+checks still apply.
 
 ### Non-blocking quick replies
 
@@ -1275,7 +1275,7 @@ id discovery no longer reports, are left alone.
 | [`service.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/service.ts) | Application lifecycle for discovery, threads, turns, agent-authored automatic titles, live-input delivery/fallback, attachments, `AskUser` snapshots/submission, provider-auth connection-generation guarding, cancellation, notifications, and invalidation. |
 | [`store.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/store.ts) | Owner-private SQLite schema and transactional persistence, including race-safe automatic-title updates that never overwrite a user rename, and a bounded per-message LRU for on-demand full-thread usage accounting. |
 | [`message-cost.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/message-cost.ts) and [`thread-usage.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/thread-usage.ts) | Browser-safe per-message token/cost rollup and conversation-wide sum, with synchronous delegation as a subset and detached spend added once. |
-| [`operator-client.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/operator-client.ts) | Structured turn streaming, info/capabilities, live-input settlement, pending/submitted `AskUser`, cancellation, durable history append, conditionally bearer-authenticated provider-auth, and owner-authenticated process-job requests over the operator protocol. |
+| [`operator-client.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/operator-client.ts) | Structured turn streaming, info/capabilities, live-input settlement, pending/submitted `AskUser`, cancellation, durable history append, keyless provider-auth, and owner-authenticated process-job requests over the operator protocol. |
 | [`notification-client.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/notification-client.ts) and [`notification-ingress.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/notification-ingress.ts) | Bounded, authenticated cron/webhook delivery and source/thread-bound process-job cards. |
 | [`webapp/`](https://github.com/robertsreberski/mono-agent/tree/main/packages/web/webapp) | Isolated assistant-ui PWA, including the loaded conversation-level process-job stack and live tails, atomic `AskUser` forms, tests, and its own dependency lockfile. |
 

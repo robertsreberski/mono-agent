@@ -14,7 +14,7 @@ async function scenario(options: {
   readonly infoResponse?: (call: number, normal: Response) => Response | Promise<Response> | undefined;
 } = {}) {
   const root = await temporaryRoot(); roots.push(root);
-  let discovered = fakeDiscoveredAgent({ apiKey: "fixture-key" });
+  let discovered = fakeDiscoveredAgent();
   let ready = true;
   let supported = true;
   let infoPidOverride: number | undefined;
@@ -34,7 +34,7 @@ async function scenario(options: {
       }
       if (url.endsWith("/v1/restart")) {
         restartCalls++;
-        expect((init?.headers as Record<string, string>).authorization).toBe("Bearer fixture-key");
+        expect((init?.headers as Record<string, string>).authorization).toBeUndefined();
         return options.response?.() ?? Response.json({ operation: { id: "host-1" }, process: { pid: 123, startedAt: "2026-09-23T10:00:00.000Z" } }, { status: 202 });
       }
       if (url.endsWith("/v1/turns")) {
@@ -362,7 +362,7 @@ describe("transport versus agent error frames", () => {
       try {
         expect(db.prepare("SELECT turn_id FROM parent_turn_interruptions").all()).toHaveLength(0);
         expect(db.prepare("SELECT dispatch_generation, error_code FROM turns WHERE thread_id = ? ORDER BY started_at LIMIT 1")
-          .get(thread.id)).toMatchObject({ dispatch_generation: agentGeneration(fakeDiscoveredAgent({ apiKey: "fixture-key" })), error_code: frameCode ?? "agent_error" });
+          .get(thread.id)).toMatchObject({ dispatch_generation: agentGeneration(fakeDiscoveredAgent()), error_code: frameCode ?? "agent_error" });
         expect(calls).toBe(1);
       } finally { db.close(); }
     } finally { await s.service.stop(); }

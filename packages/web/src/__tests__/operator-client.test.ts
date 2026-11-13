@@ -45,13 +45,13 @@ const replyPartOutcomes = [{
 }];
 
 describe("OperatorClient", () => {
-  it("fails closed on missing/malformed restart capability and preserves verified keyed support", async () => {
+  it("fails closed on missing/malformed restart capability and preserves verified keyless support", async () => {
     for (const capability of [undefined, null, {}, { supported: "true" }, { supported: true, reason: "unexpected" }, { supported: true, url: "http://elsewhere" }]) {
-      const client = new OperatorClient({ baseUrl: "http://127.0.0.1:1234/gui", apiKey: "key",
+      const client = new OperatorClient({ baseUrl: "http://127.0.0.1:1234/gui",
         fetchImpl: async () => Response.json({ schema: 1, pid: 123, capabilities: { restart: capability } }) });
       expect((await client.info()).restart.supported).toBe(false);
     }
-    const client = new OperatorClient({ baseUrl: "http://127.0.0.1:1234/gui", apiKey: "key",
+    const client = new OperatorClient({ baseUrl: "http://127.0.0.1:1234/gui",
       fetchImpl: async () => Response.json({ schema: 1, pid: 123, capabilities: { restart: { supported: true } } }) });
     expect((await client.info()).restart).toEqual({ supported: true });
   });
@@ -59,7 +59,7 @@ describe("OperatorClient", () => {
   it("bounds restart responses and treats unknown outcomes as ambiguous, not refused", async () => {
     const calls: string[] = [];
     let response = Response.json({ operation: { id: "op-1" }, process: { pid: 123, startedAt: "2026-09-23T10:00:00.000Z" } }, { status: 202 });
-    const client = new OperatorClient({ baseUrl: "http://127.0.0.1:1234/gui", apiKey: "key",
+    const client = new OperatorClient({ baseUrl: "http://127.0.0.1:1234/gui",
       fetchImpl: (async (input, init) => { calls.push(String(input)); expect(init?.body).toBe("{}"); return response; }) as typeof fetch });
     await expect(client.restart()).resolves.toEqual({ kind: "accepted", operationId: "op-1", pid: 123 });
     response = Response.json({ operation: { id: "op-1" }, error: { code: "restart_in_progress" } }, { status: 409 });
@@ -430,7 +430,7 @@ describe("OperatorClient", () => {
     });
     await expect(client.info()).resolves.toEqual({
       schema: 1,
-      restart: { supported: false, reason: "Agent restart requires a configured operator API key." },
+      restart: { supported: false, reason: "Agent restart needs a verified process identity." },
       label: "Agent",
       model: "p/m",
       effort: "high",

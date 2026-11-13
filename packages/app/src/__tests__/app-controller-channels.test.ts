@@ -19,7 +19,7 @@ afterEach(async () => {
 });
 
 describe("app channel capability composition", () => {
-  it.each([false, true])("injects restart only into the genuinely keyed app-owned TUI (keyed=%s)", async (keyed) => {
+  it.each([false, true])("injects restart into the app-owned TUI regardless of obsolete keys (keyed=%s)", async (keyed) => {
     const cwd = await mkdtemp(join(tmpdir(), "mono-channel-provider-auth-"));
     fixtures.push(cwd);
     const configReadPath = join(cwd, "mono-agent.config.json");
@@ -65,7 +65,6 @@ describe("app channel capability composition", () => {
       traceabilityStatusValue: {} as never,
       processJobsService: undefined,
       processJobsDegradation: undefined,
-      restartToolKeyed: false,
       restartAuthority: {
         verify: async () => ({ supported: true }),
         accept: () => ({ kind: "accepted", operationId: "fixture" }),
@@ -91,14 +90,8 @@ describe("app channel capability composition", () => {
       await expect(startChannel(controller, driver, "test"))
         .resolves.toMatchObject({ kind: "running" });
       expect(captured?.providerAuth).toBeDefined();
-      if (keyed) {
-        expect(captured?.apiKey).toBe("fixture-owner");
-        expect(captured?.restart).toBe(controller.restartAuthority);
-      } else {
-        expect(captured).not.toHaveProperty("apiKey");
-        expect(captured).not.toHaveProperty("restart");
-      }
-      expect(controller.restartToolKeyed).toBe(keyed);
+      expect(captured).not.toHaveProperty("apiKey");
+      expect(captured?.restart).toBe(controller.restartAuthority);
     } finally {
       await controller.running.get("tui")?.stop();
     }

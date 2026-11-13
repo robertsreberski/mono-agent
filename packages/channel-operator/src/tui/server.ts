@@ -265,6 +265,7 @@ export interface TuiAdapterOptions {
   readonly port?: number;
   readonly basePath?: string;
   readonly allowNonLoopback?: boolean;
+  /** @deprecated Ignored, including incoming Authorization headers on operator routes. */
   readonly apiKey?: string;
   /** Optional loopback-only boundary for ACP request-scoped process-tool env. */
   readonly requestToolEnvironment?: RequestToolEnvironmentConfig;
@@ -309,7 +310,7 @@ export interface TuiAdapterOptions {
   readonly processJobs?: ProcessJobOperator;
   /** Independent owner bearer for process-job routes. Required with processJobs. */
   readonly processJobsBearer?: string;
-  /** Pi credential status/login surface; uses apiKey when the endpoint has one. */
+  /** Pi credential status/login surface; available without an operator key. */
   readonly providerAuth?: ProviderAuthOperator;
   readonly providerUsage?: ProviderUsageOperator;
   /** Present only on a supervised CLI worker. Keyless endpoints cannot use it. */
@@ -364,7 +365,6 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
   const host = options.host ?? DEFAULT_HOST;
   const port = options.port ?? DEFAULT_PORT;
   const basePath = normalizeBasePath(options.basePath ?? DEFAULT_BASE_PATH);
-  const apiKey = normalizeOptionalString(options.apiKey);
   const processJobsBearer = normalizeOptionalString(options.processJobsBearer);
   if ((options.processJobs === undefined) !== (processJobsBearer === undefined)) {
     throw new TuiAdapterError(
@@ -429,9 +429,6 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
   const providerAuthCheckPath = `${providerAuthChecksPath}/:checkId`;
 
   app.get(infoPath, (req, res) => {
-    if (!authorize(req, res, apiKey)) {
-      return;
-    }
     const cronInfo = options.cron === undefined
       ? Promise.resolve({ kind: "absent" } as const)
       : Promise.resolve()
@@ -446,7 +443,7 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
           });
           return { kind: "degraded" } as const;
         });
-    void Promise.all([resolveInfo(options.info), cronInfo, describeRestartSupport(options.restart, apiKey)])
+    void Promise.all([resolveInfo(options.info), cronInfo, describeRestartSupport(options.restart)])
       .then(([info, cronState, restartSupport]) => {
         sendBoundedInfo(res, {
           schema: TUI_WIRE_SCHEMA,
@@ -488,7 +485,6 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
                       status: cronState.overview.degradedReason === undefined ? "ready" : "degraded",
                       read: true,
                       actions: cronState.overview.degradedReason === undefined
-                        && apiKey !== undefined
                         && cronState.overview.actionsEnabled === true,
                     },
                   }),
@@ -530,7 +526,6 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
 
   app.get(`${basePath}/v1/capabilities`, (req, res) => {
     res.setHeader("Cache-Control", "private, no-store, max-age=0");
-    if (!authorize(req, res, apiKey)) return;
     if (options.capabilitySetup === undefined) {
       res.status(501).json({ error: { code: "capabilities_unsupported", message: "This agent version does not report capabilities." } });
       return;
@@ -544,14 +539,8 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
       });
   });
 
-  // The operator key is mandatory here; generic authorize() permits keyless callers.
   // The host commits exit disposition synchronously BEFORE a 202 can be written.
   app.post(`${basePath}/v1/restart`, express.json({ limit: "4kb", strict: true }), (req, res) => {
-    if (apiKey === undefined) {
-      res.status(403).json({ error: { code: "restart_requires_api_key", message: "Agent restart requires a configured operator API key." } });
-      return;
-    }
-    if (!authorize(req, res, apiKey)) return;
     if (req.body === null || typeof req.body !== "object" || Array.isArray(req.body) || Object.keys(req.body as object).length !== 0) {
       res.status(400).json({ error: { code: "invalid_request", message: "Restart requires an empty JSON object." } });
       return;
@@ -592,7 +581,6 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
   });
 
   app.get(modelsPath, (req, res, next) => {
-    if (!authorize(req, res, apiKey)) return;
     if (options.modelCatalog === undefined) {
       sendJsonError(res, 404, new TuiAdapterError("invalid_request", "The model catalog is unavailable."));
       return;
@@ -685,9 +673,6 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
   // Keep the enlarged parser scoped to turn submission. 64 MiB of decoded
   // files expands to about 85.4 MiB in base64, while info/cancel stay bodyless.
   app.post(turnsPath, express.json({ limit: MAX_TURN_BODY_BYTES }), (req, res) => {
-    if (!authorize(req, res, apiKey)) {
-      return;
-    }
     void handleTurn(req, res).catch((error: unknown) => {
       options.logger?.error?.("TUI turn failed before response.", { error: errorToMessage(error) });
       if (!res.headersSent) {
@@ -697,9 +682,6 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
   });
 
   app.post(cancelPath, (req, res) => {
-    if (!authorize(req, res, apiKey)) {
-      return;
-    }
     const rawConversationId = req.params.conversationId;
     const conversationId = normalizeOptionalString(
       typeof rawConversationId === "string" ? rawConversationId : undefined,
@@ -718,7 +700,6 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
   });
 
   app.get(replyArtifactPath, (req, res, next) => {
-    if (!authorize(req, res, apiKey)) return;
     if (typeof options.responder.openReplyArtifact !== "function") {
       sendJsonError(res, 404, new TuiAdapterError("invalid_request", "Reply artifacts are unavailable."));
       return;
@@ -771,7 +752,6 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
   });
 
   app.get(mcpAppPath, (req, res) => {
-    if (!authorize(req, res, apiKey)) return;
     if (typeof options.responder.loadMcpApp !== "function") {
       sendJsonError(res, 404, new TuiAdapterError("invalid_request", "MCP Apps are unavailable."));
       return;
@@ -794,8 +774,7 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
     mcpAppRequestPath,
     express.json({ limit: MAX_MCP_APP_REQUEST_BYTES, strict: true }),
     (req, res) => {
-      if (!authorize(req, res, apiKey)) return;
-      if (typeof options.responder.requestMcpApp !== "function") {
+        if (typeof options.responder.requestMcpApp !== "function") {
         sendJsonError(res, 404, new TuiAdapterError("invalid_request", "MCP Apps are unavailable."));
         return;
       }
@@ -828,9 +807,6 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
   );
 
   app.post(verbatimPath, express.json({ limit: MAX_VERBATIM_BODY_BYTES, strict: true }), (req, res, next) => {
-    if (!authorize(req, res, apiKey)) {
-      return;
-    }
     let body: NormalizedVerbatimBody;
     try {
       body = normalizeVerbatimBody(req.params.conversationId, req.body);
@@ -861,8 +837,7 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
     },
     express.json({ limit: MAX_CONTEXT_IMPORT_BODY_BYTES, strict: true }),
     (req, res, next) => {
-      if (!authorize(req, res, apiKey)) return;
-      if (typeof options.responder.importContext !== "function") {
+        if (typeof options.responder.importContext !== "function") {
         sendContextImportError(
           res,
           501,
@@ -907,7 +882,6 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
 
   app.post(manualCompactionPath, express.json({ limit: "1kb", strict: true }), (req, res) => {
     res.setHeader("Cache-Control", "private, no-store, max-age=0");
-    if (!authorize(req, res, apiKey)) return;
     const id = req.params.conversationId;
     if (typeof id !== "string" || id.length === 0 || id.includes("\0")
       || Buffer.byteLength(id, "utf8") > 4096
@@ -1007,7 +981,6 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
   }
 
   app.post(liveInputPath, express.json({ limit: MAX_LIVE_INPUT_BODY_BYTES, strict: true }), (req, res, next) => {
-    if (!authorize(req, res, apiKey)) return;
     const conversationId = normalizeOptionalString(
       typeof req.params.conversationId === "string" ? req.params.conversationId : undefined,
     );
@@ -1120,7 +1093,6 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
   });
 
   app.get(askPath, (req, res) => {
-    if (!authorize(req, res, apiKey)) return;
     const conversationId = normalizeOptionalString(
       typeof req.params.conversationId === "string" ? req.params.conversationId : undefined,
     );
@@ -1134,7 +1106,6 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
   });
 
   app.post(askPath, express.json({ limit: "64kb" }), (req, res) => {
-    if (!authorize(req, res, apiKey)) return;
     const conversationId = normalizeOptionalString(
       typeof req.params.conversationId === "string" ? req.params.conversationId : undefined,
     );
@@ -1158,7 +1129,6 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
   });
 
   app.get(interactionPath, (req, res) => {
-    if (!authorize(req, res, apiKey)) return;
     const interactionId = normalizeOptionalString(
       typeof req.params.interactionId === "string" ? req.params.interactionId : undefined,
     );
@@ -1176,7 +1146,6 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
   });
 
   app.get(cronOverviewPath, (req, res, next) => {
-    if (!authorize(req, res, apiKey)) return;
     if (options.cron === undefined) {
       sendJsonError(res, 404, new CronOperatorError("unavailable", "Cron operator capability is unavailable.", 404));
       return;
@@ -1187,7 +1156,6 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
   });
 
   app.get(cronRunsPath, (req, res, next) => {
-    if (!authorize(req, res, apiKey)) return;
     if (options.cron === undefined) {
       sendJsonError(res, 404, new CronOperatorError("unavailable", "Cron operator capability is unavailable.", 404));
       return;
@@ -1217,7 +1185,6 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
   });
 
   app.get(cronRunDetailPath, (req, res, next) => {
-    if (!authorize(req, res, apiKey)) return;
     if (options.cron === undefined) {
       sendJsonError(res, 404, new CronOperatorError("unavailable", "Cron operator capability is unavailable.", 404));
       return;
@@ -1234,7 +1201,6 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
   });
 
   app.get(cronConfigViewPath, (req, res, next) => {
-    if (!authorize(req, res, apiKey)) return;
     if (options.cron === undefined) {
       sendJsonError(res, 404, new CronOperatorError("unavailable", "Cron operator capability is unavailable.", 404));
       return;
@@ -1245,7 +1211,6 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
   });
 
   app.post(cronRunNowPath, express.json({ limit: MAX_CRON_ACTION_BODY_BYTES, strict: true }), (req, res, next) => {
-    if (!authorize(req, res, apiKey) || !requireCronActionKey(res, apiKey)) return;
     if (options.cron === undefined) {
       sendJsonError(res, 404, new CronOperatorError("unavailable", "Cron operator capability is unavailable.", 404));
       return;
@@ -1262,7 +1227,6 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
   });
 
   app.post(cronEnabledPath, express.json({ limit: MAX_CRON_ACTION_BODY_BYTES, strict: true }), (req, res, next) => {
-    if (!authorize(req, res, apiKey) || !requireCronActionKey(res, apiKey)) return;
     if (options.cron === undefined) {
       sendJsonError(res, 404, new CronOperatorError("unavailable", "Cron operator capability is unavailable.", 404));
       return;
@@ -1286,7 +1250,7 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
       sendJsonError(res, 404, new TuiAdapterError("invalid_request", "Provider authentication is unavailable."));
       return undefined;
     }
-    return authorize(req, res, apiKey) ? options.providerAuth : undefined;
+    return options.providerAuth;
   };
   const sendProviderAuth = (res: Response, status: number, body: unknown) => {
     res.setHeader("Cache-Control", "private, no-store, max-age=0");
@@ -1298,7 +1262,6 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
     next();
   });
   app.post(`${basePath}/v1/provider-usage/refresh`, express.json({ limit: 1024, strict: true }), (req, res, next) => {
-    if (!authorize(req, res, apiKey)) return;
     if (typeof options.providerUsage?.refresh !== "function") { res.status(409).json({ error: "provider_usage_refresh_unavailable" }); return; }
     const provider = req.query.provider;
     if (Object.keys(req.query).some((key) => key !== "provider") || (provider !== undefined && !isProviderUsageId(provider))
@@ -1310,7 +1273,6 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
 
   app.get(`${basePath}/v1/provider-usage`, (req, res, next) => {
     res.setHeader("Cache-Control", "private, no-store, max-age=0");
-    if (!authorize(req, res, apiKey)) return;
     if (options.providerUsage === undefined) { res.status(503).json({ error: "provider_usage_unavailable" }); return; }
     const provider = req.query.provider;
     if (Object.keys(req.query).some((key) => key !== "provider") || (provider !== undefined && !isProviderUsageId(provider))) {
@@ -1570,9 +1532,9 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
       text: body.text,
       abortSignal: controller.signal,
       metadata: requestMetadata(body, requestId),
-      // Provenance is stamped after authorization from server bind/key state,
-      // never from the client-selected display label or request metadata.
-      captureSpeakerKind: apiKey !== undefined || !boundNonLoopback ? "human-turn" : "unknown",
+      // Every admitted operator turn is attributed to the human owner,
+      // regardless of bind, display label or client-supplied provenance.
+      captureSpeakerKind: "human-turn",
       ...(target === undefined ? {} : {
         onLiveInputOwnership: (event) => {
           if (target?.state === "closed") return;
@@ -2747,16 +2709,6 @@ function cronActionInput(value: unknown): CronOperatorActionInput {
   return { idempotencyKey, ...(confirmationToken === undefined ? {} : { confirmationToken }) };
 }
 
-function requireCronActionKey(res: Response, apiKey: string | undefined): boolean {
-  if (apiKey !== undefined) return true;
-  sendJsonError(
-    res,
-    403,
-    new CronOperatorError("actions_disabled", "Cron actions require an operator API key.", 403),
-  );
-  return false;
-}
-
 function sendCronMutation(
   res: Response,
   result: { readonly kind: "confirmation_required"; readonly confirmation: unknown }
@@ -2799,8 +2751,7 @@ async function boundedRestartVerify(verify: () => Promise<TuiRestartSupport>, de
   } finally { if (timer !== undefined) clearTimeout(timer); }
 }
 
-async function describeRestartSupport(authority: TuiRestartAuthority | undefined, apiKey: string | undefined): Promise<TuiRestartSupport> {
-  if (apiKey === undefined) return { supported: false, reason: "Agent restart requires a configured operator API key." };
+async function describeRestartSupport(authority: TuiRestartAuthority | undefined): Promise<TuiRestartSupport> {
   if (authority === undefined) return { supported: false, reason: "Agent is not a supervised worker." };
   try {
     const support = await boundedRestartVerify(() => authority.verify(), 150);

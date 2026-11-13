@@ -47,7 +47,7 @@ const check: ProviderAuthCheckSessionSnapshot = {
 };
 
 describe("provider auth routes", () => {
-  it("keeps every route bearer-protected when the operator endpoint has an API key", async () => {
+  it("ignores obsolete keys and Authorization headers throughout the lifecycle", async () => {
     const operator: ProviderAuthOperator = {
       status: vi.fn(async () => status),
       start: vi.fn()
@@ -75,13 +75,8 @@ describe("provider auth routes", () => {
     const info = await fetch(`${server.baseUrl}/v1/info`, { headers });
     expect(await info.json()).toMatchObject({ capabilities: { providerAuth: { version: 1, checks: { version: 1 } } } });
     const denied = await fetch(`${server.baseUrl}/v1/provider-auth`);
-    expect(denied.status).toBe(401);
+    expect(denied.status).toBe(200);
     expect(denied.headers.get("cache-control")).toContain("no-store");
-    expect((await fetch(`${server.baseUrl}/v1/provider-auth/sessions`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ providerId: "opencode-go", authType: "api_key", strategy: "api_key_prompt" }),
-    })).status).toBe(401);
     const invalid = await fetch(`${server.baseUrl}/v1/provider-auth/sessions`, {
       method: "POST",
       headers: { ...headers, "content-type": "application/json" },
@@ -112,7 +107,7 @@ describe("provider auth routes", () => {
     expect(operator.start).toHaveBeenCalledTimes(2);
     expect((await fetch(`${server.baseUrl}/v1/provider-auth/sessions/session-1`, {
       headers: { authorization: "Bearer wrong" },
-    })).status).toBe(401);
+    })).status).toBe(200);
     expect(await (await fetch(`${server.baseUrl}/v1/provider-auth/sessions/session-1`, { headers })).json()).toEqual(session);
 
     const secret = "PROVIDER_AUTH_SECRET_SENTINEL";

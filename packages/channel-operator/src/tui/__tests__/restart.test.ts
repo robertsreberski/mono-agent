@@ -29,17 +29,14 @@ function fixture(key = "owner") {
 }
 
 describe("operator restart", () => {
-  it("advertises explicit unsupported status and forbids keyless or unauthenticated POST", async () => {
+  it.each([undefined, "legacy-key"])("restarts keylessly and ignores legacy bearer headers (key=%s)", async (apiKey) => {
     const f = fixture();
-    running = await startTuiAdapter({ responder: { respond: async () => ({ text: "unused" }) }, restart: f.authority });
-    expect(((await (await fetch(running.infoUrl)).json()) as { capabilities: { restart: unknown } }).capabilities.restart).toEqual({ supported: false, reason: "Agent restart requires a configured operator API key." });
-    expect((await f.request()).status).toBe(403);
+    running = await startTuiAdapter({ ...(apiKey === undefined ? {} : { apiKey }), responder: { respond: async () => ({ text: "unused" }) }, restart: f.authority });
+    expect(((await (await fetch(running.infoUrl)).json()) as { capabilities: { restart: unknown } }).capabilities.restart).toEqual({ supported: true });
+    expect((await fetch(`${running.baseUrl}/v1/restart`, { method: "POST", headers: { authorization: "Bearer wrong-legacy-key", "content-type": "application/json" }, body: '{"extra":true}' })).status).toBe(400);
     expect(f.authority.accept).not.toHaveBeenCalled();
-    await running.stop();
-    running = await startTuiAdapter({ apiKey: "owner", responder: { respond: async () => ({ text: "unused" }) }, restart: f.authority });
-    expect(((await (await fetch(running.infoUrl, { headers: { authorization: "Bearer owner" } })).json()) as { capabilities: { restart: unknown } }).capabilities.restart).toEqual({ supported: true });
-    expect((await fetch(`${running.baseUrl}/v1/restart`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" })).status).toBe(401);
-    expect((await fetch(`${running.baseUrl}/v1/restart`, { method: "POST", headers: { authorization: "Bearer owner", "content-type": "application/json" }, body: '{"extra":true}' })).status).toBe(400);
+    expect((await fetch(`${running.baseUrl}/v1/restart`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" })).status).toBe(202);
+    expect(f.authority.accept).toHaveBeenCalledOnce();
   });
 
   it("a policy change after advertisement refuses the POST and later acceptance conflicts with the original id", async () => {

@@ -229,11 +229,11 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
   overrides, idempotency receipts, and audit. An absent store is initialized;
   a present corrupt, insecure, or lease-conflicted store arms no cron jobs and
   surfaces a degraded lifecycle/discovery reason plus an error log. Operator
-  actions are config-opt-in, API-key-protected, and explicitly confirmed; they
+  actions are config-opt-in and explicitly confirmed; they
   never rewrite config, environment, or Markdown job sources.
 - Register the host as a traceability source. Config edits are made directly in
   `mono-agent.config.json` or `IDENTITY.md` and take effect after validation and
-  `mono-agent restart` or a confirmed, authenticated console restart.
+  `mono-agent restart` or a confirmed console restart.
 - Check managed launchd logs with bounded metadata reads every five minutes,
   reconcile installed macOS LaunchAgents at login and hourly, and make `status`
   require agreement between the cached trace and launchd's live PID.
@@ -273,9 +273,9 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
 - Discover and expose one exact running agent through the ACP core-session
   profile with `mono-agent bridge acp`, including durable session resume, while
   preserving agent-owned configuration, workspace, sandbox, tools, MCP servers,
-  and credentials. The bridge and PeerAgent prefer the target's attested dotenv
-  operator key, then its config `tui.apiKey`; the caller's ambient
-  `MONO_AGENT_TUI_API_KEY` is used only when the target publishes no key.
+  and credentials. For one release, the bridge and PeerAgent forward only the
+  legacy `MONO_AGENT_TUI_API_KEY` to older agents (selected dotenv, inline
+  `tui.apiKey`, then ambient); current agents ignore it. Remove forwarding next release.
   Startup failures identify an allowlisted cause and source without forwarding
   raw bridge stderr to PeerAgent.
 
@@ -429,7 +429,7 @@ same CLI.
 
 ### Console restart approvals
 
-A confirmed console restart requires the configured operator API key. The host
+A confirmed console restart requires a verified supervised worker. The host
 validates current config, `.env`, IDENTITY, SOUL and MCP inputs before stopping.
 On managed macOS workers it stages a secret-free owner-private approval below
 `~/.mono-agent/approved-startup/<label>/<generation>.json`, bound to the original
@@ -1017,8 +1017,7 @@ route silently drops a required capability.
 
 Every app-owned TUI/operator endpoint owns an in-memory provider-auth service
 for the web console's Agent settings, with no additional configuration. Its
-routes are keyless when the endpoint has no normal API key and otherwise require
-that bearer. It reports only providers used by effective configured routes and
+routes are keyless. It reports only providers used by effective configured routes and
 keeps credential detection, account API acceptance (`verified_by_account_request`),
 and successful live inference (`verified_by_live_request`) distinct. GitHub
 Copilot and OpenAI Codex use Pi's native device-code flow; Anthropic uses the
@@ -1436,7 +1435,7 @@ existing sanitized unsupported-part fallback if a producer sends the part.
 
 ### Web-console restart proposals
 
-An interactive web turn on a keyed, verified supervised worker may expose the
+An interactive web turn on a verified supervised worker may expose the
 request-scoped `ProposeRestart` tool. It accepts an optional short reason and
 adds at most one bounded `restart_proposal` part directly below that assistant
 reply in the web console. The tool **only proposes**; the human must confirm
@@ -1463,7 +1462,7 @@ operation id and exit code `42` before the operator route may return `202`;
 `app.stop()` and process-lifetime lease release still run gracefully. The
 nonzero exit is necessary for the supervisor's on-failure relaunch; a signal
 before acceptance prevents it and a later signal cannot change it to exit 0.
-Foreground or keyless workers cannot advertise restart. See
+Foreground workers cannot advertise restart. See
 [web-console restart](../../docs/observability/web-console.md#restart-one-agent)
 for operator-facing confirmation and outcomes.
 

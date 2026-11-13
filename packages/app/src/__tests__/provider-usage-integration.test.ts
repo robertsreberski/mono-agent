@@ -187,7 +187,7 @@ describe("ProviderUsage tool", () => {
       expect(vendor).not.toHaveBeenCalled();
       const result = await client.callTool({ name: "ProviderUsage", arguments: { provider: id } });
       expect((await client.callTool({ name: "ProviderUsage", arguments: { provider: "other" } })).isError).toBe(true);
-      expect((await fetch(`${operator.baseUrl}/v1/provider-usage`)).status).toBe(401);
+      expect((await fetch(`${operator.baseUrl}/v1/provider-usage`)).status).toBe(200);
       const headers = { authorization: "Bearer synthetic-owner" };
       expect((await fetch(`${operator.baseUrl}/v1/provider-usage?provider=other`, { headers })).status).toBe(400);
       expect(await (await fetch(`${operator.baseUrl}/v1/info`, { headers })).json()).toMatchObject({ capabilities: { providerUsage: { version: 1, refresh: true } } });
@@ -216,7 +216,7 @@ describe("ProviderUsage tool", () => {
       expect((await new OperatorClient({ baseUrl: operator.baseUrl, apiKey: "synthetic-owner" }).info()).supportsProviderUsageRefresh).toBe(true);
       const post = { method: "POST", headers: { "X-Mono-Agent-Web-Origin": base, "Content-Type": "application/json" }, body: "{}" };
       const refreshUrl = `${base}/api/v1/agents/fixture-agent/provider-usage/refresh`;
-      expect((await fetch(`${operator.baseUrl}/v1/provider-usage/refresh`, { method: "POST" })).status).toBe(401);
+      expect((await fetch(`${operator.baseUrl}/v1/provider-usage/refresh`, { method: "POST" })).status).toBe(400);
       for (const suffix of ["?provider=other", "?provider=anthropic&provider=opencode-go", "?refresh=true"]) {
         expect((await fetch(`${operator.baseUrl}/v1/provider-usage/refresh${suffix}`, { method: "POST", headers })).status).toBe(400);
         expect((await fetch(refreshUrl + suffix, post)).status).toBe(400);

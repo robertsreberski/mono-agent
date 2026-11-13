@@ -18,7 +18,7 @@ export function bridgeStartupExitCode(code: unknown): number {
 export function peerStartupDiagnostic(exitCode: number | null, sourceId: string): string | undefined {
   const cause = Object.entries(STARTUP_EXIT_CODES).find(([, status]) => status === exitCode)?.[0];
   if (cause === undefined) return undefined;
-  const reason = cause === "agent_unauthorized" ? "operator API key was rejected"
+  const reason = cause === "agent_unauthorized" ? "operator endpoint rejected the connection"
     : cause === "source_not_found" ? "source was not found"
       : cause === "source_not_running" ? "source is not running"
         : cause === "operator_unavailable" ? "operator endpoint is unavailable"

@@ -252,7 +252,7 @@ Schema: `https://raw.githubusercontent.com/robertsreberski/mono-agent/main/packa
 | `traceability.sourceLabel` | `string` | `--` | unset | `My Agent` | Configures sourceLabel for the traceability section. |
 | `traceability.staleAfterMs` | `integer` | `--` | 30000 | `30000` | Configures staleAfterMs for the traceability section. |
 | `tui.allowNonLoopback` | `boolean` | `MONO_AGENT_TUI_ALLOW_NON_LOOPBACK` | false | `true` | Configures allowNonLoopback for the tui section. |
-| `tui.apiKey` | `string` | `MONO_AGENT_TUI_API_KEY` | unset | `example` | Secret value for tui.apiKey; prefer the env override. |
+| `tui.apiKey` | `string` | `--` | ignored | `` | Deprecated and ignored, including MONO_AGENT_TUI_API_KEY. Operator routes are keyless; remove this obsolete setting when convenient. |
 | `tui.basePath` | `string` | `MONO_AGENT_TUI_BASE_PATH` | /gui | `/gui` | Configures basePath for the tui section. |
 | `tui.enabled` | `boolean` | `MONO_AGENT_TUI_ENABLED` | true | `true` | Enables the tui capability. |
 | `tui.host` | `string` | `MONO_AGENT_TUI_HOST` | 127.0.0.1 | `127.0.0.1` | Configures host for the tui section. |

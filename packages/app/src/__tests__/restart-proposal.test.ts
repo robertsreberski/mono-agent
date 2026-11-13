@@ -17,12 +17,9 @@ describe("ProposeRestart request-scoped tool", () => {
     expect(isProposeRestartToolAllowed({ allowedTools: [], disallowedTools: [] })).toBe(false);
   });
 
-  it("never installs on non-web, keyless, unsupported or unverifiable turns", async () => {
+  it("never installs on non-web, unsupported or unverifiable turns", async () => {
     const verify = vi.fn(async () => ({ supported: true }));
-    let keyed = false;
-    const service = createRestartProposalService({ authority: { verify }, isKeyed: () => keyed, budget: createReplyPartBudget() });
-    expect((await service.extension(request())).runtimeOptions?.mcpServers).toBeUndefined();
-    keyed = true;
+    const service = createRestartProposalService({ authority: { verify }, budget: createReplyPartBudget() });
     for (const metadata of [
       { source: "telegram", web: { threadId: "one", turnId: "turn-1" } },
       { source: "slack", web: { threadId: "one", turnId: "turn-1" } },
@@ -38,11 +35,11 @@ describe("ProposeRestart request-scoped tool", () => {
     expect(verify).toHaveBeenCalledTimes(1);
   });
 
-  it("records one display-only part for the reply and never invokes lifecycle authority", async () => {
+  it("registers keylessly on supervised interactive web turns and records one display-only part", async () => {
     const beginStop = vi.fn();
     const verify = vi.fn(async () => ({ supported: true }));
     const authority = { verify, beginStop, accept: vi.fn(), processIdentity: vi.fn() };
-    const service = createRestartProposalService({ authority, isKeyed: () => true, budget: createReplyPartBudget() });
+    const service = createRestartProposalService({ authority, budget: createReplyPartBudget() });
     const responder = service.wrapResponder({
       async respond() {
         const extension = await service.extension(request());
