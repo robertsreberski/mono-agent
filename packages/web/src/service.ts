@@ -2141,7 +2141,7 @@ export class WebService {
     if (snapshot.process.pid !== connection.pid) {
       throw new WebConsoleError("agent_generation_changed", "The capability report belongs to another process; reopen settings.", 409);
     }
-    if (this.connections.get(sourceId) !== connection
+    if (this.connections.get(sourceId)?.generation !== connection.generation
       || this.store.getAgent(sourceId)?.generation !== connection.processGeneration) throw new WebConsoleError("agent_generation_changed", "The agent restarted; reopen settings.", 409);
     return snapshot;
   }
@@ -2153,7 +2153,7 @@ export class WebService {
     if (connection.info.supportsProviderUsage !== true) throw new WebConsoleError("provider_usage_unavailable", "This agent does not expose provider usage.", 409);
     if (refresh && connection.info.supportsProviderUsageRefresh !== true) throw new WebConsoleError("provider_usage_refresh_unavailable", "This agent does not support manual usage refresh.", 409);
     const snapshot = await (refresh ? connection.client.refreshProviderUsage(provider, AbortSignal.timeout(15_000)) : connection.client.providerUsage(provider, AbortSignal.timeout(15_000)));
-    if (this.connections.get(sourceId) !== connection
+    if (this.connections.get(sourceId)?.generation !== connection.generation
       || this.store.getAgent(sourceId)?.generation !== connection.processGeneration) throw new WebConsoleError("agent_generation_changed", "The agent restarted; reopen settings.", 409);
     return snapshot;
   }

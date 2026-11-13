@@ -26,7 +26,7 @@ beforeEach(async () => {
 afterEach(async () => { cleanup(); Object.assign(storyStore, initialStore); vi.restoreAllMocks(); await commands.emulateColorScheme(null); });
 function Preview({ width, older = false, degraded = false }: { readonly width: number; readonly older?: boolean; readonly degraded?: boolean }) {
   const runtime = useLocalRuntime({ async *run() { yield { content: [{ type: "text", text: "Synthetic preview only" }] }; } });
-  const selected = agent("garden", { label: "Garden Agent · synthetic", status: degraded ? "degraded" : "online", ...(older || degraded ? {} : { supportsCapabilitySetup: true }) });
+  const selected = agent("garden", { label: "Garden Agent · synthetic", status: degraded ? "degraded" : "online", ...(older ? {} : { supportsCapabilitySetup: true }) });
   Object.assign(storyStore, { selectedAgent: selected, selectedAgentId: selected.sourceId, agents: [selected], visibleAgents: [selected], selectedThread: null, selectedThreadId: null });
   // Same shell, actual Dashboard navigation, header, scrollport and settings
   // screen as the console. Only store/API display data are synthetic.

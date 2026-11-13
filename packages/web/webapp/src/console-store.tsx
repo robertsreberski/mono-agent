@@ -1763,7 +1763,8 @@ function consumeConsoleHandoff(target: string | null): void {
   const url = new URL(window.location.href);
   if (url.searchParams.get("agent") !== target) return;
   url.searchParams.delete("agent");
-  window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
+  const path = `${url.pathname}${url.search}${url.hash}`;
+  window.history.replaceState(routeWriteState(window.history.state, path, "replace"), "", path);
 }
 
 export function ConsoleStoreProvider({ children }: { readonly children: ReactNode }) {

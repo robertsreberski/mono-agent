@@ -299,7 +299,8 @@ manual agent start and offers managed console only with a user manager; other
 platforms use foreground. An existing verified console is reused for either launch choice; none is restarted
 or rebound. Reuse explicitly warns about listeners bound beyond loopback or
 recorded Tailscale routes, naming the listener/route; SSH forwarding hints are
-only shown for loopback. Enter, Ctrl-D and EOF at the consent prompt all mean
+shown for loopback and wildcard binds, targeting loopback. Enter, Ctrl-D and EOF
+at the consent prompt all mean
 Not now. Browser
 opening waits for console health; SSH/headless/open failures print a URL and
 private forwarding instructions. Identity-qualified links wait for that agent's

@@ -48,9 +48,9 @@ describe("guided init console handoff", () => {
   });
   it.each([
     ["127.0.0.1", "exact", "https://garden-console.example.test/", true],
-    ["0.0.0.0", "none", undefined, false],
+    ["0.0.0.0", "none", undefined, true],
     ["192.0.2.20", "none", undefined, false],
-  ] as const)("warns on reused listener %s / route %s and forwards only loopback", async (host, state, routeUrl, forwards) => {
+  ] as const)("warns on reused listener %s / route %s and forwards through loopback when available", async (host, state, routeUrl, forwards) => {
     const write = vi.fn(); const foreground = vi.fn(); const managed = vi.fn();
     const url = `http://${host}:6060/`;
     await offerConsoleHandoff({ ...options, env: { SSH_CONNECTION: "fictional" } }, {
@@ -78,6 +78,18 @@ describe("guided init console handoff", () => {
     expect(open).toHaveBeenCalledWith(`http://${destination}:6060/?agent=fictional-agent&settings=capabilities`);
     expect(write.mock.calls.flat().join("")).toContain(`listener "${host}"`);
     expect(write.mock.calls.flat().join("")).toContain("reachable beyond this computer");
+  });
+  it.each([["0.0.0.0", "127.0.0.1"], ["::", "[::1]"]])("offers a loopback SSH hint for headless wildcard %s without hiding exposure", async (host, destination) => {
+    const write = vi.fn(); const open = vi.fn();
+    await offerConsoleHandoff({ ...options, env: { SSH_CONNECTION: "fictional" } }, {
+      platform: "darwin", choose: async () => "foreground", write, health: async () => true, open,
+      existing: async () => ({ host, url: `http://${host === "::" ? "[::]" : host}:6060/` }),
+    });
+    const output = write.mock.calls.flat().join("");
+    expect(output).toContain(`ssh -N -L 6060:${destination}:6060`);
+    expect(output).toContain(`listener "${host}"`);
+    expect(output).toContain("reachable beyond this computer");
+    expect(open).not.toHaveBeenCalled();
   });
   it.each([["Enter", "\r", false], ["Ctrl-D", "\x04", false], ["EOF", "end", false], ["Ctrl-D on TTY", "\x04", true], ["EOF on TTY", "end", true]] as const)("real Clack prompt maps %s to Not now", async (_label, key, tty) => {
     const setRawMode = vi.fn();

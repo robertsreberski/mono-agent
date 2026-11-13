@@ -97,6 +97,38 @@ describe("web capability proxy", () => {
       await expect(browserApi.capabilitySetup("agent-one", controller.signal)).rejects.toMatchObject({ name: "AbortError" });
     } finally { resetDataUsage(); vi.unstubAllGlobals(); await server.stop(); await adapter.stop(); }
   });
+  it.each(["capabilities", "usage", "usage-refresh"] as const)("accepts an in-flight %s result across discovery of the same process", async (kind) => {
+    const root = await temporaryRoot(); roots.push(root);
+    let discovered = capabilityAgent();
+    let release!: (response: Response) => void;
+    let infoReads = 0;
+    const service = await WebService.create({ stateDir: join(root, "refresh"), discoveryIntervalMs: 0, purgeIntervalMs: 0,
+      discoverImpl: async () => [discovered], fetchImpl: (async (url) => {
+        if (String(url).endsWith("/info")) {
+          infoReads++;
+          return Response.json({ schema: 1, pid: process.pid, capabilities: {
+            capabilitySetup: { version: 1, read: true }, providerUsage: { version: 1, refresh: true },
+          } });
+        }
+        return new Promise<Response>((resolve) => { release = resolve; });
+      }) as typeof fetch,
+    });
+    try {
+      const generation = (await service.bootstrap()).agents[0]!.generation;
+      const pending = kind === "capabilities" ? service.capabilitySetup("agent-one")
+        : service.providerUsage("agent-one", undefined, kind === "usage-refresh");
+      await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+      // A heartbeat reruns discovery and allocates a fresh connection object,
+      // but does not change its process or transport generation.
+      discovered = { ...discovered, source: { ...discovered.source, updatedAt: "2026-08-01T12:00:00Z" } };
+      await service.refreshAgents();
+      expect(infoReads).toBe(2);
+      expect((await service.bootstrap()).agents[0]!.generation).toBe(generation);
+      const result = kind === "capabilities" ? snapshot : { schema: "mono-agent.provider-usage.v1", providers: [] };
+      release(Response.json(result));
+      await expect(pending).resolves.toEqual(result);
+    } finally { await service.stop(); }
+  });
   it("rejects stale generation results and unsupported/offline sources", async () => {
     const root = await temporaryRoot(); roots.push(root);
     let discovered = capabilityAgent();

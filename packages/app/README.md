@@ -383,7 +383,7 @@ platforms offer foreground only. Existing console definitions are preserved:
 a verified running console is reused for either launch choice, but a stopped existing definition needs
 an explicit terminal action. A new managed/foreground listener is loopback-only.
 Reuse warns about non-loopback listeners and existing Tailscale routes; SSH
-forwarding instructions are shown only for loopback listeners. Browser opening
+forwarding instructions target loopback for loopback or wildcard binds. Browser opening
 follows console health confirmation. SSH/headless/open failures
 print the identity-qualified URL and private forwarding instructions. Discovery
 waits for that exact agent instead of selecting another. No extra model turn is

@@ -32,11 +32,14 @@
   exact manual setup steps. Never trigger provider/network/subprocess liveness
   probes from this view; direct live checks to `mono-agent validate`. Keep older
   agents showing as not reporting capabilities; list built-in tracing as already
-  enabled.
+  enabled. Keep capability/provider-usage reads valid across unchanged discovery
+  passes.
 - Add an opt-in browser console handoff after successful guided init, defaulting
   to Not now, with no-login consent, health-gated opening and exact-agent discovery.
   Keep scaffold/non-TTY paths and existing console listeners unchanged; warn
   explicitly when reusing a non-loopback listener or recorded sharing route.
+  Keep loopback forwarding hints for wildcard binds and preserve mobile Back
+  navigation after consuming an exact-agent handoff.
 
 - Add versioned evidence-sensitive conversation ranking with general English
   stop-word filtering, intent-only fallback, bounded correction/event morphology

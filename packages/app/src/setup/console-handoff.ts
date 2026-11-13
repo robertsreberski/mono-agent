@@ -68,6 +68,8 @@ export async function offerConsoleHandoff(
     const target: ConsoleHandoffTarget = typeof value === "string" ? { url: value, host: new URL(value).hostname } : value;
     // Wildcard is an exposure/bind address, never a browser destination.
     const destination = new URL(target.url);
+    const wildcard = ["0.0.0.0", "::", "[::]"].includes(target.host)
+      || ["0.0.0.0", "[::]"].includes(destination.hostname);
     if (destination.hostname === "0.0.0.0") destination.hostname = "127.0.0.1";
     else if (["[::]", "::"].includes(destination.hostname)) destination.hostname = "[::1]";
     const base = destination.href;
@@ -91,9 +93,9 @@ export async function offerConsoleHandoff(
       catch { write("Could not open a browser automatically.\n"); }
     }
     write("Open the URL manually.\n");
-    if (loopback) {
+    if (loopback || wildcard) {
       const port = new URL(base).port || "80";
-      const host = target.host.replace(/^\[|\]$/g, "");
+      const host = (wildcard ? destination.hostname : target.host).replace(/^\[|\]$/g, "");
       const forwardHost = isIP(host) === 6 ? `[${host}]` : host;
       write(`For a remote host, forward the console's loopback port from your own computer: ssh -N -L ${port}:${forwardHost}:${port} <user>@<host>\nKeep the forwarding private; no login is added by forwarding.\n`);
     }
