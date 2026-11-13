@@ -84,7 +84,7 @@ describe("runs list/show diagnostics", () => {
     expect(memory).toMatchObject({ source: "memory", summaryFileName: "memory/mem-run.summary.json" });
   });
 
-  it("shows capped head/tail events with output-boundary redaction, control escaping, and numeric usage", async () => {
+  it.each([172, null])("shows capped events with redaction, numeric usage and final-summary estimate %s", async finalEstimate => {
     const artifacts = await tempDir();
     const longText = "x".repeat(40_000);
     await writeSummary(artifacts, "safe-run", {
@@ -97,6 +97,8 @@ describe("runs list/show diagnostics", () => {
         authorization: 876_543_210,
         api_key: 765_432_109,
         credentialCount: 2,
+        protectedEstimateTokens: 31,
+        finalSummaryEstimateTokens: finalEstimate,
         bearerCount: 1,
         tokenCount: 3,
         note: longText,
@@ -151,6 +153,8 @@ describe("runs list/show diagnostics", () => {
       authorization: "[redacted]",
       api_key: "[redacted]",
       credentialCount: 2,
+      protectedEstimateTokens: 31,
+      finalSummaryEstimateTokens: finalEstimate,
       bearerCount: 1,
       tokenCount: 3,
     });

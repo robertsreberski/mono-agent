@@ -87,7 +87,7 @@ describe("request-local chronology", () => {
     expect(prompt).not.toContain("If something is no longer relevant, you may remove it");
   });
 
-  it("applies the same historical contract to split-prefix requests without changing cap division", async () => {
+  it("applies the same historical contract to split-prefix requests without changing zero-tuple cap division", async () => {
     const captures: any[] = [];
     const caps: number[] = [];
     const result = await compactWithRequest({ messagesToSummarize: [user("History")], turnPrefixMessages: messages,
@@ -97,7 +97,7 @@ describe("request-local chronology", () => {
       return { stopReason: "stop", content: [{ type: "text", text: "Controlled historical summary" }], usage: { input: 10, output: 2, cacheRead: 0, cacheWrite: 0, totalTokens: 12, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
     }, ENGINE_CONTEXT);
     expect(result.ok).toBe(true);
-    expect(caps).toEqual([2000, 1250]);
+    expect(caps).toEqual([2000, 1250]); // No protected tuples: retain legacy per-call targets.
     expect(result.value!.retainedTail).toEqual([user("Tail")]);
     for (const prompt of captures) {
       expect(prompt.startsWith("<conversation>\n")).toBe(true);
@@ -122,7 +122,8 @@ describe("real managed-switch admission through storage capability", () => {
       return { stopReason: "stop", content: [{ type: "text", text: "unused" }], usage: {} };
     }, ENGINE_CONTEXT);
     const prefix = explicit ? 2000 : 0;
-    const exact = inputTokens + prefix + 2000 + 4096;
+    const textTarget = 2000; // Inherited prefix follows legacy caps and bypasses infeasible protection.
+    const exact = inputTokens + prefix + textTarget + 4096;
     const storage = createManagedNativeJournalStorage({ sessionsRoot: "/fictional/unused" });
     const config = { summaryMaxTokens: 2000 };
     expect(await storage.checkInheritedPrefix(source as never, { ...model, contextWindow: exact } as never, config, explicit ? prefix : undefined)).toEqual({ status: "ready" });

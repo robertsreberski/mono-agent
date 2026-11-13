@@ -2,7 +2,7 @@ import type { Context, Model, TextContent } from "@earendil-works/pi-ai";
 import { describe, expect, it, vi } from "vitest";
 import { ENGINE_CONTEXT as BACKGROUND_CONTEXT } from "../../engine/context.js";
 import { compact, serializeConversation } from "../../engine/compaction-kit/compaction.js";
-import { prepareSummaryInput, summaryModels, SUMMARY_FOCUS } from "../../execution/pi/compaction/compaction-summary.js";
+import { prepareSummaryInput, summaryModels, SUMMARY_FOCUS, SUMMARY_FOCUS_VERSION } from "../../execution/pi/compaction/compaction-summary.js";
 
 const user = (text: string) => ({ role: "user", content: [{ type: "text", text }], timestamp: 0 });
 const call = (id: string, name: string, path: string) => ({ role: "assistant", content: [{ type: "toolCall", id, name, arguments: { file_path: path } }], timestamp: 0 });
@@ -150,4 +150,10 @@ it("keeps the useful-answer floor when the kit already clamped a request to mode
     facade, { ...model, maxTokens: 512 }, undefined, undefined, undefined, undefined, BACKGROUND_CONTEXT)).rejects.toThrow("insufficient_summary_headroom");
   expect(target.completeSimple).not.toHaveBeenCalled();
   expect(requests[0]).toMatchObject({ textTargetTokens: 512, minimumAnswerTokens: 1024, providerInvoked: false, costUsd: 0 });
+});
+
+it("pins immutable-event instructions as summary focus v3", () => {
+  expect(SUMMARY_FOCUS_VERSION).toBe(3);
+  expect(SUMMARY_FOCUS).toMatch(/^Mono-agent summary focus v3:/u);
+  expect(SUMMARY_FOCUS).toContain("NEW top-level historical events");
 });

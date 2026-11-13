@@ -16,6 +16,20 @@
   with lossless prefix paging; return `response_capacity` without advancing rows
   when the first result cannot fit. Keep get chunks, existing valid cursors and
   the two-record recovery envelope unchanged.
+- Keep admitted native historical tuples across incremental compaction, with
+  `summary_refused` for lossy protected proactive cuts and
+  `historical_preservation_bypassed` for unfitting history or manual/overflow
+  recovery. Preserve legacy compaction with no protected tuples, add content-free
+  format diagnostics, and record resolutions as new events. Raise
+  `summaryMaxTokens` or start a new session to restore protection after bypass.
+  Keep recovery available after protected output truncation with at most one
+  legacy retry, bound unchanged automatic refusals, and treat empty history as
+  healthy. Keep pending/next-step sections outside all-bold historical headings.
+  Share refusal bounds across idle and mid-run checks, including advancing split
+  cuts, return protected generator truncation as an error result, and retain
+  defined partial usage after recovery.
+  Preserve absent final-summary token estimates as null in run inspection.
+  Cold first extraction and separately generated handoffs remain unprotected.
 
 - Fix baseline E2 replay to retain recorded source tools while keeping probes
   tool-free, and distinguish injected continuity packs from ordinary mentions.

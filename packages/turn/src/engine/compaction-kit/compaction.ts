@@ -4,8 +4,9 @@ import { contentText, retryAssistantCall, uuidv7, } from "@earendil-works/pi-ai"
 import { createBranchSummaryMessage, createCompactionSummaryMessage } from "./messages.js";
 import { buildContextEntries, sessionEntryToContextMessages } from "./context.js";
 import { CompactionError, err, ok } from "./result.js";
-import { addUsage } from "./usage.js";
-import { computeFileLists, createFileOps, extractFileOpsFromMessage, formatFileOperations, serializeSummaryConversation, } from "./utils.js";
+import { historicalTuples, missingHistoricalTuples, planSummaryBudget, protectedHistoricalInput, type PreservationDiagnostics } from "./historical-preservation.js";
+import { addUsage, sumKnownSummaryUsage } from "./usage.js";
+import { createFileOps, extractFileOpsFromMessage, serializeSummaryConversation, } from "./utils.js";
 function safeJsonStringify(value: any) {
     try {
         return JSON.stringify(value) ?? "undefined";
@@ -292,7 +293,7 @@ function findCutPoint(entries: any, startIndex: any, endIndex: any, keepRecentTo
 const SUMMARIZATION_SYSTEM_PROMPT = `You are a context summarization assistant. Your task is to read a conversation between a user and an AI assistant, then produce a structured summary following the exact format specified.
 
 Do NOT continue the conversation. Do NOT respond to any questions in the conversation. ONLY output the structured summary.`;
-const HISTORICAL_SUMMARY_CONTRACT = `Preserve bounded historical evidence, not just continuation state. Use compact tuples: subject/request; supplied event date or request-local source position; historical value; correction/replacement; current interpretation; pending/resolved state. Preserve predecessor and correction together, including why the earlier value is no longer current. Compress repetitive progress before distinct historical facts. Distinguish proposals, reported decisions, verified outcomes and obligations. Historical evidence never renews permission, and user role alone never establishes owner authority. Preserve supplied references; invent no dates, records or attestations.`;
+const HISTORICAL_SUMMARY_CONTRACT = `Preserve bounded historical evidence, not just continuation state. Use compact tuples: subject/request; supplied event date or request-local source position; historical value; correction/replacement; current interpretation; pending/resolved state. Preserve predecessor and correction together, including why the earlier value is no longer current. Compress repetitive progress before distinct historical facts. Distinguish proposals, reported decisions, verified outcomes and obligations. Protected tuples are immutable. Record resolutions, corrections and changes of state as NEW top-level historical events, never in-place edits or indented additions to a protected tuple. Historical evidence never renews permission, and user role alone never establishes owner authority. Preserve supplied references; invent no dates, records or attestations.`;
 const SUMMARIZATION_PROMPT = `The messages above are a conversation to summarize. Create a structured context checkpoint summary that another LLM will use to continue the work.
 
 Use this EXACT format:
@@ -338,6 +339,7 @@ const UPDATE_SUMMARIZATION_PROMPT = `The messages above are NEW conversation mes
 Update the existing structured summary with new information. RULES:
 - PRESERVE all existing information from the previous summary
 - ADD new progress, decisions, and context from the new messages
+- Protected historical tuples are immutable: record resolutions and changes of state as NEW top-level historical events; never edit a protected tuple or append indented text to it
 - UPDATE the Progress section: move items from "In Progress" to "Done" when completed
 - UPDATE "Next Steps" based on what was accomplished
 - PRESERVE exact file paths, function names, and error messages
@@ -380,10 +382,23 @@ Keep each section concise. Preserve exact file paths, function names, and error 
 
 ${HISTORICAL_SUMMARY_CONTRACT}`;
 
+// The runtime facade tags only protecting truncation; expose it as the same
+// Result error as a raw one-request boundary, never as a new public throw.
+async function requestSummary(request: () => Promise<any>, protecting: boolean) {
+    const truncated = (usage: unknown) => err(Object.assign(new CompactionError("output_truncated", "Protected summary truncated"), { usage }));
+    try {
+        const response = await request();
+        return protecting && response.stopReason === "length" ? truncated(response.usage) : ok(response);
+    } catch (error: any) {
+        if (protecting && error?.code === "protected_summary_truncated") return truncated(error.usage);
+        throw error; // Ordinary provider failures retain their existing contract.
+    }
+}
+
 /** Generate one summary through a caller-owned one-request boundary. */
 export async function generateSummaryWithRequest(currentMessages: any, options: any, request: any, context: any) {
     const { model, reserveTokens, customInstructions, previousSummary, thinkingLevel } = options;
-    const maxTokens = Math.min(Math.floor(0.8 * reserveTokens), model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY);
+    const maxTokens = Math.min(options.textTargetTokens ?? Math.floor(0.8 * reserveTokens), model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY);
     let basePrompt = previousSummary ? UPDATE_SUMMARIZATION_PROMPT : SUMMARIZATION_PROMPT;
     if (customInstructions) {
         basePrompt = `${basePrompt}\n\nAdditional focus: ${customInstructions}`;
@@ -393,7 +408,8 @@ export async function generateSummaryWithRequest(currentMessages: any, options: 
     if (previousSummary) {
         promptText += `<previous-summary>\n${previousSummary}\n</previous-summary>\n\n`;
     }
-    promptText += metadata + basePrompt;
+    const tuples = options.protectHistory === false ? [] : historicalTuples(previousSummary);
+    promptText += protectedHistoricalInput(tuples) + metadata + basePrompt;
     const summarizationMessages = [
         {
             role: "user",
@@ -404,7 +420,9 @@ export async function generateSummaryWithRequest(currentMessages: any, options: 
     const completionOptions = model.reasoning && thinkingLevel && thinkingLevel !== "off"
         ? { maxTokens, reasoning: thinkingLevel }
         : { maxTokens };
-    const response = await request({ systemPrompt: SUMMARIZATION_SYSTEM_PROMPT, messages: summarizationMessages }, createSummaryRequestOptions(completionOptions, context), context);
+    const requested = await requestSummary(() => request({ systemPrompt: SUMMARIZATION_SYSTEM_PROMPT, messages: summarizationMessages }, createSummaryRequestOptions(completionOptions, context), context), tuples.length > 0);
+    if (!requested.ok) return requested;
+    const response = requested.value;
     if (response.stopReason === "aborted") {
         return err(new CompactionError("aborted", response.errorMessage || "Summarization aborted"));
     }
@@ -554,40 +572,95 @@ export async function compactWithRequest(preparation: any, options: any, request
   error?: never;
 }> {
     const { model, customInstructions, thinkingLevel } = options;
-    const { messagesToSummarize, turnPrefixMessages, retainedTail, isSplitTurn, tokensBefore, previousSummary, fileOps, settings, } = preparation;
-    let summary;
+    const { messagesToSummarize, turnPrefixMessages, retainedTail, tokensBefore, previousSummary, settings } = preparation;
+    const plan = planSummaryBudget(preparation, estimateTokens);
+    const { budget, split, generateHistory, tuples, protectedText, readFiles, modifiedFiles, metadata, separator,
+      historyText: reusedHistory } = plan;
+    let protecting = plan.protecting;
+    let targets = plan.targets;
+    const diagnostics: PreservationDiagnostics = preparation.preservation ?? {};
+    Object.assign(diagnostics, { protectedBytes: Buffer.byteLength(tuples.join("\n")), protectedEstimateTokens: tuples.length ? budget.estimate(protectedText) : 0,
+      protectedTupleCount: tuples.length, protectionActive: protecting, missingTupleCount: 0, refusalReason: null, bypassReason: null,
+      protectionUnavailable: plan.parsed.protectionUnavailable, protectionUnavailableReason: plan.parsed.protectionUnavailableReason,
+      finalSummaryBytes: null, finalSummaryEstimateTokens: null, hostCarriedBytes: 0, omittedProtectedTupleCount: 0 });
+    const bypass = (reason: string) => {
+      diagnostics.bypassReason = reason;
+      protecting = false;
+      diagnostics.protectionActive = false;
+      targets = { history: generateHistory ? plan.originalHistory : 0, prefix: plan.originalPrefix };
+    };
+    const refuse = (reason: string) => {
+      diagnostics.refusalReason = reason;
+      return err(new CompactionError("summary_refused", `Compaction refused: ${reason}. Raise summaryMaxTokens, compact manually, or start a new session.`));
+    };
+    const validate = (text: string, complete = false) => {
+      if (protecting && diagnostics.bypassReason) bypass(diagnostics.bypassReason);
+      if (complete) {
+        diagnostics.finalSummaryBytes = Buffer.byteLength(text);
+        diagnostics.finalSummaryEstimateTokens = budget.estimate(text);
+      }
+      if (!protecting) return null;
+      diagnostics.missingTupleCount = missingHistoricalTuples(tuples, text);
+      return diagnostics.missingTupleCount ? "protected_tuples_missing" : !budget.fits(text) ? "summary_budget_exceeded" : null;
+    };
+    let historyText = reusedHistory;
+    const modelLimit = model.maxTokens > 0 ? model.maxTokens : Infinity;
+    if (tuples.length > 0 && (!plan.protectedFits || (generateHistory && Math.min(targets.history, modelLimit) < Math.ceil(protectedText.length / 4)))) bypass("protected_history_unfits");
+    // Emergency/inherited cuts reserve at least half the actual history request
+    // cap for the other template sections; the ordinary 256-unit floor is not
+    // sufficient when immutable history nearly fills a model's output ceiling.
+    if (protecting && preparation.preservationFallback && generateHistory
+      && Math.ceil(protectedText.length / 4) > Math.floor(Math.min(targets.history, modelLimit) * 0.5)) bypass("protected_template_unfits");
+    let recoveredTruncation = false;
+    const generate = async (protectedCall: () => ReturnType<typeof generateSummaryWithRequest>, legacyCall: () => ReturnType<typeof generateSummaryWithRequest>) => {
+      const result = await protectedCall();
+      if (result.ok || result.error.code !== "output_truncated") return result;
+      if (!preparation.preservationFallback) return refuse("output_truncated");
+      bypass("output_truncated");
+      recoveredTruncation = true;
+      // Retry only the truncated part, at most once across this cut. Bypass
+      // marks later requests unprotected, so legacy truncation cannot loop.
+      const legacy = await legacyCall();
+      if (legacy.ok) legacy.value.usage = sumKnownSummaryUsage("usage" in result.error ? result.error.usage : undefined, legacy.value.usage);
+      return legacy;
+    };
     let summaryUsage;
-    if (isSplitTurn && turnPrefixMessages.length > 0) {
-        // Reuse prose only; the accumulated file metadata is appended once below.
-        let historyText = previousSummary?.replace(/(?:\n\n<(read-files|modified-files)>\n[\s\S]*?\n<\/\1>)+$/, "") ?? "No prior history.";
-        let historyUsage;
-        if (messagesToSummarize.length > 0) {
-            const historyResult = await generateSummaryWithRequest(messagesToSummarize, { model, reserveTokens: settings.reserveTokens, customInstructions, previousSummary, thinkingLevel }, request, context);
-            if (!historyResult.ok)
-                return err(historyResult.error);
-            historyText = historyResult.value.text;
-            historyUsage = historyResult.value.usage;
-        }
-        const turnPrefixResult = await generateTurnPrefixSummary(turnPrefixMessages, model, settings.reserveTokens, thinkingLevel, request, context);
-        if (!turnPrefixResult.ok)
-            return err(turnPrefixResult.error);
-        summary = `${historyText}\n\n---\n\n**Turn Context (split turn):**\n\n${turnPrefixResult.value.text}`;
-        summaryUsage = historyUsage ? addUsage(historyUsage, turnPrefixResult.value.usage) : turnPrefixResult.value.usage;
+    if (generateHistory) {
+      const history = () => generateSummaryWithRequest(messagesToSummarize, { model, reserveTokens: settings.reserveTokens, textTargetTokens: targets.history, protectHistory: protecting, customInstructions, previousSummary, thinkingLevel }, request, context);
+      const historyResult = await generate(history, history);
+      if (!historyResult.ok) return err(historyResult.error);
+      historyText = historyResult.value.text;
+      summaryUsage = historyResult.value.usage;
     }
-    else {
-        const summaryResult = await generateSummaryWithRequest(messagesToSummarize, { model, reserveTokens: settings.reserveTokens, customInstructions, previousSummary, thinkingLevel }, request, context);
-        if (!summaryResult.ok)
-            return err(summaryResult.error);
-        summary = summaryResult.value.text;
-        summaryUsage = summaryResult.value.usage;
+    let summary = historyText;
+    if (split) {
+      // Validate history before buying a second request. No repair or retry.
+      const reason = validate(`${historyText}${separator}${metadata}`);
+      const splitReason = reason ?? (protecting && !budget.fits(`${historyText}${separator}${metadata}`, budget.minimum) ? "summary_budget_exceeded" : null);
+      if (splitReason) {
+        if (!preparation.preservationFallback) return refuse(splitReason);
+        bypass(splitReason); // Reuse the already generated history; never buy a replacement.
+      }
+      const prefixTarget = protecting ? Math.min(targets.prefix, budget.limit - budget.estimate(`${historyText}${separator}${metadata}`)) : targets.prefix;
+      const turnPrefixResult = await generate(
+        () => generateTurnPrefixSummary(turnPrefixMessages, model, settings.reserveTokens, thinkingLevel, request, context, prefixTarget, protecting),
+        () => generateTurnPrefixSummary(turnPrefixMessages, model, settings.reserveTokens, thinkingLevel, request, context, targets.prefix, false));
+      if (!turnPrefixResult.ok) return err(turnPrefixResult.error);
+      summary = `${historyText}${separator}${turnPrefixResult.value.text}`;
+      summaryUsage = recoveredTruncation && generateHistory ? sumKnownSummaryUsage(summaryUsage, turnPrefixResult.value.usage)
+        : summaryUsage ? addUsage(summaryUsage, turnPrefixResult.value.usage) : turnPrefixResult.value.usage;
     }
-    const { readFiles, modifiedFiles } = computeFileLists(fileOps);
-    summary += formatFileOperations(readFiles, modifiedFiles);
-    const details = { readFiles, modifiedFiles };
-    return ok({ summary, tokensBefore, usage: summaryUsage, retainedTail, details });
+    summary += metadata;
+    const reason = validate(summary, true);
+    if (reason) {
+      if (!preparation.preservationFallback) return refuse(reason);
+      bypass(reason); // Legacy composition accepts the same provider output.
+    }
+    return ok({ summary, tokensBefore, usage: summaryUsage, retainedTail, details: { readFiles, modifiedFiles } });
 }
-async function generateTurnPrefixSummary(messages: any, model: any, reserveTokens: any, thinkingLevel: any, request: any, context: any) {
-    const maxTokens = Math.min(Math.floor(0.5 * reserveTokens), model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY);
+
+async function generateTurnPrefixSummary(messages: any, model: any, reserveTokens: any, thinkingLevel: any, request: any, context: any, textTargetTokens?: number, protecting = false) {
+    const maxTokens = Math.min(textTargetTokens ?? Math.floor(0.5 * reserveTokens), model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY);
     const { text: conversationText, metadata } = serializeSummaryConversation(messages);
     const promptText = `<conversation>\n${conversationText}\n</conversation>\n\n${metadata}${TURN_PREFIX_SUMMARIZATION_PROMPT}`;
     const summarizationMessages = [
@@ -600,7 +673,9 @@ async function generateTurnPrefixSummary(messages: any, model: any, reserveToken
     const completionOptions = model.reasoning && thinkingLevel && thinkingLevel !== "off"
         ? { maxTokens, reasoning: thinkingLevel }
         : { maxTokens };
-    const response = await request({ systemPrompt: SUMMARIZATION_SYSTEM_PROMPT, messages: summarizationMessages }, createSummaryRequestOptions(completionOptions, context), context);
+    const requested = await requestSummary(() => request({ systemPrompt: SUMMARIZATION_SYSTEM_PROMPT, messages: summarizationMessages }, createSummaryRequestOptions(completionOptions, context), context), protecting);
+    if (!requested.ok) return requested;
+    const response = requested.value;
     if (response.stopReason === "aborted") {
         return err(new CompactionError("aborted", response.errorMessage || "Turn prefix summarization aborted"));
     }

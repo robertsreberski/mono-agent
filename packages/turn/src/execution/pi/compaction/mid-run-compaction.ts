@@ -283,6 +283,7 @@ export function createMidRunCompaction(runState: any, { harness, options, refere
       effectivePolicy: policy,
       compactionSettings,
       accounting,
+      runtimeWarnings,
       fixedOverheadTokens,
       beforeAttempt: (hookEvent: any) => {
         const contextBefore = projectContext(hookEvent.branchEntries || [], { includeFailed: true }).messages!;

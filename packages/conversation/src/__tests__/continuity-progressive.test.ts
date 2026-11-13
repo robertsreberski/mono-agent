@@ -79,7 +79,9 @@ it("progresses beyond 512 records, preserves earlier stable entries, and reaches
   await f.writer.persist(binding, { phase: "result", toolCallId: "lookup", toolName: "mail_read", state: "success", content: "Fictional heading.\n\n" + "neutral prose ".repeat(1600) + "FABLE-Z91" }); await f.writer.finishRun(binding, "completed");
   let first: LedgerEntry | undefined;
   for (let i = 0; i < 24; i++) {
-    const result = await f.prepare(); expect(f.reader.ledger(scope), JSON.stringify(result.events)).toBeDefined(); const generation = f.reader.ledger(scope)!.generation;
+    const result = await f.prepare();
+    await f.settleAccounting(); // The preparation RPCs do not drain post-ack exports.
+    expect(f.reader.ledger(scope), JSON.stringify(result.events)).toBeDefined(); const generation = f.reader.ledger(scope)!.generation;
     expect(result.events).toContainEqual(expect.objectContaining({ status: "valid", generationId: generation.id }));
     first ??= generation.entries[0]; expect(generation.entries).toContainEqual(first);
     expect(result.pack()).toContain("### Continuity ledger");

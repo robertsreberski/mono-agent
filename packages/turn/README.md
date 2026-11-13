@@ -32,7 +32,59 @@ See [ledger bounds](../../docs/runtime/continuity-ledger.md).
 
 Compaction asks for historical events/corrections and pending items as compact
 predecessor/current-state tuples, alongside continuation context. This is
-prompt-mediated retention, not verbatim preservation or renewed permission.
+prompt-mediated first extraction, never renewed permission. Native incremental
+cuts additionally protect historical tuple blocks from `previousSummary`. Named,
+JSON-escaped untrusted input precedes task instructions; protected tuples are
+immutable, with resolutions recorded as NEW top-level events. Comparison trims
+only per-line trailing whitespace. Heading case/bold/colon variants are accepted;
+ordinary horizontal rules remain content, while existing split framing ends a
+section. Bold-opened sections also stop at the next bold-only heading or known
+template heading. Empty/placeholder-only sections mean zero tuples without a
+warning; unclosed fences or unparsed non-placeholder history produce content-free
+`protectionUnavailable` diagnostics.
+
+With protected tuples, complete-result estimates share `summaryMaxTokens` and the
+1-MiB record bound; provider text caps use an 85% margin. With zero tuples, legacy
+caps, output acceptance and the savings preview are unchanged. The public
+`compact`/`compactWithRequest` helpers can return `CompactionError.code` equal to
+`summary_refused` for a lossy/oversized/truncated protected candidate. Native
+proactive/threshold cuts refuse without changing history or poisoning the provider
+failure cooldown. Threshold retries retain assistant-progress/growth vetoes.
+Idle and mid-run proactive share a paid-refusal baseline, requiring
+`max(8192, ceil(previousTokens * 0.1))` transcript growth or changed protected
+blocks/model or preservation-affecting summary policy (`summaryMaxTokens`,
+`keepRecentTokens`, `effort`, `compactionMinSavingsTokens`). Other policy changes,
+advancing a split cut, changing controller or fixed overhead cannot repay an
+unchanged refusal.
+Native manual/overflow and inherited-prefix recovery instead bypass protection,
+issuing `historical_preservation_bypassed`: missing/oversized output is reused;
+protected truncation retries only that part once with legacy caps (at most one
+extra request). Zero-tuple and post-bypass legacy-cap truncation still fails and
+is cached by provider failureGuard, unchanged; only protecting truncation is a
+non-cached refusal. Unfitting protection bypasses before dispatch on every trigger;
+emergency/inherited history requests also reserve at least half the cap for the
+other template sections. Protected-input headroom failures drop only the named
+frame before dispatch and use legacy caps. Inherited cuts reach idle proactive or
+threshold, both reported as `proactive`; ready admission cannot add a protection
+veto. Raise `summaryMaxTokens` or start a new session to restore protection;
+manual compaction can recover from automatic refusal.
+
+Content-free `accounting.preservation` diagnostics (present only for protected or
+unavailable history) record sizes/counts, missing tuples, refusal/bypass reason and
+final-summary size separately from provider usage, cost and
+`generatedSummaryTokens`, which account for the bounded truncation retry. Recovered
+cuts keep native `usage` defined: known parts are summed, with `usage.partial: true`
+when any part is missing. Numeric subtotals are not complete billing:
+`accounting.requests` rows retain nullable cost/usage fields such as `costUsd`.
+Aggregate runtime `usage.compaction` and folded `usage` instead mark unknown
+billing with `cost_partial: true` and `cost_usd: null`, exposing `known_cost_usd`
+when a known subtotal exists. No new durable carrier or archive transform is added. Shipping `SUMMARY_FOCUS` v3 names the immutable-event
+instruction policy. `generateSummaryWithRequest` adds the named protected frame
+when supplied admissible history and returns an error Result with
+`CompactionError.code === "output_truncated"` for protected truncation, rather than
+throwing for that outcome. `protectHistory:false` is the unprotected request seam. Cold
+reseeds supply sanitized retained user text, not native `previousSummary`: first
+cold re-extraction and separately generated handoffs are not protected.
 Initial, incremental and split-prefix requests include a whole-entry-bounded
 4-KiB chronology table: request-local message positions, original roles, recorded
 message times when available and exact serialized UTF-8 frame ranges. It adds

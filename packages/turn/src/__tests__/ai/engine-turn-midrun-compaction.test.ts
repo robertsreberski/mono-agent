@@ -17,7 +17,7 @@ type FixtureMessage = UserMessage | ReturnType<typeof assistantMessage>;
 type FixtureEntry = { type: string; id: string; parentId: string | null; timestamp: number; message: FixtureMessage };
 type FixtureCompaction = { summary: string; tokensBefore: number; retainedTail: FixtureMessage[] };
 type FixtureHook = (event: { reason: string; branchEntries: FixtureEntry[]; signal: AbortSignal }) => Promise<{ cancel?: boolean; compaction?: FixtureCompaction } | undefined>;
-type CompactionEvent = { type: string; status: string; trigger: string; tokensAfter: number; tokensBefore: number; accounting: { midRun: boolean } };
+type CompactionEvent = { type: string; status: string; trigger: string; reason?: string; tokensAfter: number; tokensBefore: number; accounting: { midRun: boolean } };
 type Warning = { warning_kind: string };
 type CompactionSettings = { enabled: boolean; reserveTokens: number; keepRecentTokens: number };
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -279,7 +279,7 @@ function entriesFor(messages: FixtureMessage[]) {
   }));
 }
 
-function controllerFixture({ policy: policyOverrides = {}, summary = "## Goal\nshort summary", recordingBarrier = undefined as (() => Promise<void>) | undefined } = {}) {
+function controllerFixture({ policy: policyOverrides = {}, summary = "## Goal\nshort summary", stopReason = "stop", previousSummary = undefined as string | undefined, recordingBarrier = undefined as (() => Promise<void>) | undefined } = {}) {
   const policy = {
     enabled: true,
     contextWindow: 100_000,
@@ -294,7 +294,7 @@ function controllerFixture({ policy: policyOverrides = {}, summary = "## Goal\ns
   const completeSimple = vi.fn(async () => ({
     role: "assistant",
     content: [{ type: "text", text: summary }],
-    stopReason: "stop",
+    stopReason,
     usage: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, totalTokens: 15, cost: { total: 0 } },
   }));
   const subscribers: Array<(event: { type: string; lane: string; reason: string; status: string; entryId: string }) => void> = [];
@@ -308,7 +308,7 @@ function controllerFixture({ policy: policyOverrides = {}, summary = "## Goal\ns
     waitForIdle: vi.fn(),
     prompt: vi.fn(),
     compact: vi.fn(async () => {
-      const entries = entriesFor(transcript);
+      const entries = fixtureEntries();
       const result = await hooks.at(-1)?.({
         reason: "manual", branchEntries: entries, signal: new AbortController().signal,
       });
@@ -345,6 +345,10 @@ function controllerFixture({ policy: policyOverrides = {}, summary = "## Goal\ns
   const runtimeWarnings: Warning[] = [];
   const recorded: CompactionRecordedPayload[] = [];
   const transcript: FixtureMessage[] = [];
+  const fixtureEntries = () => previousSummary === undefined ? entriesFor(transcript) : [
+    { type: "compaction", id: "previous", timestamp: 1, summary: previousSummary, checkpoint: { summaryMessage: { role: "compactionSummary", summary: previousSummary, timestamp: 1, tokensBefore: 10000 } }, tokensBefore: 10000, retainedTail: [], details: {} } as unknown as FixtureEntry,
+    ...entriesFor(transcript),
+  ];
   function commitCompaction(entries: FixtureEntry[], compaction: FixtureCompaction) {
     const timestamp = Date.now();
     const committed = {
@@ -389,7 +393,7 @@ function controllerFixture({ policy: policyOverrides = {}, summary = "## Goal\ns
     // the bridge supplied a compaction, the durable commit Pi performs next —
     // the transcript really is replaced by [summary, ...retainedTail].
     async checkpoint({ reason = "threshold", status = "completed" } = {}) {
-      const entries = entriesFor(transcript);
+      const entries = fixtureEntries();
       const result = await hooks[0]?.({
         reason,
         branchEntries: entries,
@@ -517,9 +521,33 @@ describe("mid-run compaction guards", () => {
     await Promise.resolve(); expect(settled).toBe(false); release(); await disarming; expect(settled).toBe(true);
   });
 
+  it("pays at most one preservation refusal without assistant progress and meaningful growth", async () => {
+    const previousSummary = "## Historical events and corrections\n- Permit; m1; pending; no approval.\n## Pending items\n- None";
+    const fixture = controllerFixture({ previousSummary, summary: "Lossy fictional summary.", policy: { compactionMinSavingsTokens: 1000 } });
+    await fixture.controller.arm();
+    fixture.setTranscript(growingTranscript(2));
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      expect(await fixture.checkpoint()).toEqual({ cancel: true });
+      expect(fixture.summaryRequests()).toBe(1);
+      expect(fixture.events.at(-1)).toMatchObject({ status: "skipped", reason: "protected_tuples_missing" });
+      expect(fixture.runState.compaction.applied).toBe(false);
+    }
+    expect(fixture.recorded).toHaveLength(0);
+    fixture.append(assistantMessage("Small progress."));
+    await fixture.checkpoint();
+    expect(fixture.summaryRequests()).toBe(1);
+    fixture.append(assistantMessage("x".repeat(8000))); // 2,000 tokens pass the local veto, not the shared growth step.
+    await fixture.checkpoint();
+    expect(fixture.summaryRequests()).toBe(1);
+    expect(fixture.events.at(-1)).toMatchObject({ reason: "preservation_growth_required" });
+    fixture.append(assistantMessage("x".repeat(40000)));
+    await fixture.checkpoint();
+    expect(fixture.summaryRequests()).toBe(2);
+    await fixture.controller.disarm();
+  });
+
   it("requires additional growth after a skipped attempt instead of re-paying each round", async () => {
-    // A summary as large as the history it replaces: the projection allows the
-    // attempt, but the rebuilt-context preview proves it saves nothing.
+    // With no protected tuples, keep the legacy savings preview and growth guard.
     const fixture = controllerFixture({ summary: "s".repeat(200_000) });
     await fixture.controller.arm();
     fixture.setTranscript(growingTranscript(2));
@@ -664,4 +692,18 @@ describe("mid-run transcript accounting", () => {
       { type: "compaction", id: "c1", parentId: null, timestamp: 1, summary: "s", retainedTail: contextBefore, checkpoint: { summaryMessage: { role: "compactionSummary", summary: "s", timestamp: 1 } } },
     ], { includeFailed: true }).slice(adjustment.baselineAfter)).toEqual(contextBefore.slice(1));
   });
+});
+
+it.each([false, true])("threshold protected truncation refuses without failure caching or repeated payment, split=%s", async split => {
+  const history = "## Historical events and corrections\n- Permit; m1; pending; no approval.";
+  const fixture = controllerFixture({ previousSummary: history, summary: history, stopReason: "length" });
+  await fixture.controller.arm();
+  fixture.setTranscript([...growingTranscript(6), ...(!split ? [userMessage("x".repeat(40000))] : [])]);
+  for (let checkpoint = 0; checkpoint < 3; checkpoint++) expect(await fixture.checkpoint()).toEqual({ cancel: true });
+  expect(fixture.summaryRequests()).toBe(1);
+  expect(fixture.events.at(-1)).toMatchObject({ status: "skipped", reason: "output_truncated", accounting: { splitTurn: split } });
+  expect(fixture.runtimeWarnings).toContainEqual(expect.objectContaining({ warning_kind: "context_compaction_refused" }));
+  expect(fixture.runtimeWarnings.some(warning => warning.warning_kind === "context_compaction_failed")).toBe(false);
+  expect(fixture.recorded).toHaveLength(0);
+  await fixture.controller.disarm();
 });

@@ -11,6 +11,108 @@ private conversations, and does not change the E2 protocol. The SHA-256 digest i
 descriptive, not covered by that digest; the v2 assertion policy lives in
 `scripts/lib/summary-retention-trial.mjs`. V2 leaves the fixture bytes unchanged.
 
+## Native historical preservation boundary
+
+Native incremental compaction parses historical tuple line blocks, including
+indented/fenced continuations and split sections. Heading matching is
+case-insensitive, with optional bold/colon formatting. Comparison trims trailing
+whitespace per line, but performs no fuzzy semantic matching. Ordinary horizontal
+rules are content; only the existing split separator ends a section at a rule.
+File metadata and headings inside fenced code do not introduce sections.
+A bold-opened historical section ends at the next bold-only heading; known template
+headings also end it, so Pending items and Next Steps are not made immutable.
+Empty and placeholder-only sections (`(none)`, `- (none)`, `None`) mean zero tuples,
+without warnings or preservation accounting. Unclosed fences or non-placeholder
+historical content that parses to nothing produce `protectionUnavailable` plus a
+content-free reason, then use ordinary unprotected compaction.
+
+Prior tuple bytes are JSON-escaped in `<protected-historical-tuples>`, after the
+previous-summary frame and before task instructions. Protected tuples are immutable;
+resolutions and state changes must be NEW top-level historical events, not edits
+or indented additions to old tuples. **Sticky injection risk:** preserving an
+admitted mistake or malicious instruction also re-exposes it on later requests,
+including raw previous-summary prose. Named framing and escaping do not establish
+trust or remove this risk. Historical evidence never grants authority.
+
+When protected tuples exist, `B = effectivePolicy.summaryMaxTokens` bounds the
+shipping `estimateTokens` of the provider-projected complete summary (wrapper,
+reused history, split separator and file metadata included), plus the 1-MiB text
+bound. Known composition is reserved before allocating the history:prefix targets;
+provider caps use `floor(target * 0.85)` to leave estimate margin. Provider
+reasoning/headroom policy stays separate. The first split output is checked before
+the second call, then the complete candidate is checked. With zero protected
+tuples, legacy caps/output acceptance and savings guards remain unchanged.
+
+Liveness takes precedence over preservation. If protected history plus
+`min(256, floor(B/4))` cannot fit, compaction bypasses protection before dispatch
+on every trigger; the request contains no protected frame and uses legacy caps.
+Manual, reactive-overflow and inherited-prefix cuts additionally require the
+immutable historical output to occupy at most 50% of the actual history-request
+cap (including the model ceiling). The other half leaves meaningful space for
+Goal, Progress and the rest of the template; a fixed 256-unit floor alone would
+allow verbatim history to crowd them out. Otherwise these cuts bypass before
+any request (`protected_template_unfits`). If the protected input frame alone
+exhausts input headroom, it is removed before any provider call and legacy policy
+is rechecked (`protected_input_unfits`).
+
+Missing tuples, oversized protected output and protected `stopReason: "length"`
+make proactive/mid-run threshold cuts return `summary_refused`, retaining history
+without a provider-failure cooldown. Refusal is not permission to pay repeatedly:
+threshold cuts keep their existing fresh-assistant and meaningful-growth vetoes.
+Idle and mid-run proactive cuts also share one paid-refusal baseline: retries wait
+for `max(8192, ceil(previousTokens * 0.1))` transcript growth, or changed protected
+blocks/model or the preservation-affecting policy fields `summaryMaxTokens`,
+`keepRecentTokens`, `effort` and `compactionMinSavingsTokens`. Other policy changes
+or a changing split prefix do not reset the baseline, and
+fixed request overhead is not transcript growth. This
+bounded, process-local cache holds at most 2,048 session digests and clears on
+restart; it never gates manual or reactive recovery. An idle refusal followed by
+threshold checkpoints, including a fresh controller on the next turn, pays only
+once across both paths until that shared baseline permits another attempt.
+
+| Automatic protected-refusal case | Summary calls (ordinary / generated split / reused split) |
+| --- | --- |
+| First eligible attempt in a shared growth step | 1 / 1–2 / 1 |
+| Further idle and mid-run checks combined, same protected tuples/model/policy and less than the shared transcript growth | **0 additional**, even as split cuts/prefixes advance or controllers change |
+
+Manual, reactive-overflow and inherited-prefix recovery reuse missing/oversized
+generated output through legacy composition without another call. Protected
+truncation instead retries only the truncated part once with legacy caps and no
+protected frame: at most one extra call per cut, never a new whole-cut retry.
+Later parts are unprotected. Legacy-cap truncation (zero tuples or the retry
+after bypass) still fails and is cached by provider failureGuard, exactly as
+before this guard; only protecting truncation is a non-cached refusal.
+Thus ordinary/split-generated/split-reused cuts use 1/2/1 calls normally, at most
+2/3/2 after protected truncation; automatic first-history refusal uses one call,
+or two if only the split prefix fails. Actual inherited-prefix compaction runs
+through idle proactive or in-run threshold (reported as `proactive`), not only
+manual/overflow: `nonRetainablePrefixLength > 0` enables the same legacy bypass
+so a ready managed-switch admission cannot acquire a preservation veto.
+
+`historical_preservation_bypassed` is a content-free warning with reason and
+remediation: raise `summaryMaxTokens` or start a new session to restore protection.
+Manual compaction can recover a refused automatic cut. `accounting.preservation`
+appears only for protected or unavailable history and records sizes/counts,
+missing counts, active protection, refusal/bypass reason and complete final-summary bytes/estimate
+(null before a complete candidate). No host repair, tuple eviction or new carrier is added. Provider request
+usage/cost and `generatedSummaryTokens` include a truncated request and its bounded
+legacy retry. A recovered cut keeps a defined native `usage` object, summing
+known numeric parts with `usage.partial: true` when any part is missing. These
+numbers are known subtotals, not a complete bill. `accounting.requests` rows keep
+missing cost/usage fields null; aggregate runtime `usage.compaction` and folded
+`usage` report `cost_partial`, `cost_usd` and any `known_cost_usd` separately. Journal
+reload preserves the flag, while provider projection does not expose native
+compaction usage as assistant usage. Accepted text and existing E2 lineage/archive schemas are
+unchanged. Frozen projection accounting without historical tuples gains no new
+key; reviewed immutable-event prompt text is pinned separately.
+
+This guard cannot protect initial extraction, first cold re-extraction without
+native `previousSummary`, sanitization omissions or a separately generated handoff.
+Inherited-prefix admission follows legacy producer viability: any infeasible
+native protection at the actual cut bypasses rather than creating a dead end.
+Retained digests may differ from native digests; cold input contains only sanitized
+retained text and cannot restore removed values.
+
 ## Offline preparation
 
 Build the shipping implementation, then size it without credentials or network:
@@ -25,7 +127,9 @@ The default is the E2 Sol checkpoint model (`openai-codex:gpt-6.1-sol`) and the
 shipping real-summary policy at low effort. `--model provider:id` or
 `--models sol,luna` overrides the selection; `--effort` overrides summary effort.
 Resolved catalog identity, identity digest, rates (including tiers) and effective
-effort are frozen in the output. Each model gets the complete independent matrix;
+effort are frozen in the output. `summaryFocus` records shipping `SUMMARY_FOCUS` v3
+and its SHA-256 digest in each new report and chain; this prompt provenance is
+separate from scorer v2 and the unchanged fixture digest. Each model gets the complete independent matrix;
 a list shares one spend cap, not one budget per model.
 
 The observatory, theatre and coastal-survey conversations each have 12 required
@@ -43,6 +147,20 @@ from durable native checkpoints. A shipping continuity-pack renderer carries onl
 that checkpoint's summary into the next cold journal; it never backfills original
 facts. This isolates summary carriage, not full sidecar publication/recovery.
 No source/answer completions are purchased.
+
+The focused offline integration lane (`runTrialChain` with `coldReseeds: "host"`)
+additionally takes each generated checkpoint through real owned native checkpoint
+preparation/publication, the durable history store and continuity participant,
+the harness pack supplier and `runtime-execution.ts` cold hook, a faux-provider
+runtime seed, and host/runtime restart. It inspects persisted native seed messages
+and separate raw/retained identities. This chain lane passes generated summaries
+unchanged; a separate synthetic `runTrialHostReseed` test adds a fictional private
+path to exercise redaction and verify it is absent from cold seed and restart.
+Its publication fixture injects the already generated summary at the engine's compaction hook;
+it does not purchase another summary. Direct rendered-pack text reseeds and
+no-cold native chains remain isolation/negative controls, not host-path proof.
+The default sizing/paid matrix remains the text-only lane above; frozen facts,
+scorer assertions, tuple inventories and spending policy are unchanged.
 
 The dry run uses retaining controls derived only from each actual request. It
 reports per-model/combined request counts, measured serialized-context bytes,

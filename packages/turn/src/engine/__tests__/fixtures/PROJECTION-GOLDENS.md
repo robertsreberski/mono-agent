@@ -55,6 +55,14 @@ intentional historical-summary instructions, request-local chronology and
 `SUMMARY_FOCUS` v2. Conversation frames, dispatch options and every other captured
 value remain identical to the prior freeze.
 
+The reviewed historical-preservation follow-up selectively refreshes those four
+request strings again for immutable protected tuples and NEW top-level resolution
+events. The re-review refresh changes only the `SUMMARY_FOCUS` label from v2 to
+v3 in those same four strings, making the immutable-event policy unambiguous.
+The guarded refresh confirms no accounting change: zero-tuple compaction
+does not add `preservation`. No journal, projection, import, result, estimator,
+usage or recovery fields were refreshed.
+
 There is no `UPDATE_*` environment switch. The historical archive generator above
 recreates old behavior and is not a current-prompt updater. For a reviewed summary
 instruction change, use this narrower procedure from the repository root. It

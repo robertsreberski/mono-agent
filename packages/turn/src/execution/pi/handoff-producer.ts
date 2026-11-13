@@ -101,11 +101,14 @@ export async function produceNativeHandoffSummary(input: any): Promise<{
  * request; it is not a fake summary or destructive/manual compaction.
  */
 
-export async function checkNativeInheritedPrefix(messages: any[], model: any, compaction: any = {}, prefixTokenCap?: number) {
+export async function checkNativeInheritedPrefix(messages: any[], model: any, compaction: any = {}, prefixTokenCap?: number): Promise<import("../../contracts/native-storage.js").RuntimeHandoffFit> {
   if (prefixTokenCap !== undefined && (!Number.isSafeInteger(prefixTokenCap) || prefixTokenCap < 0 || messages.length !== 0)) throw new TypeError("Invalid inherited-prefix capacity preflight");
   const policy = resolveAgentCompactionPolicy({ compaction }, model);
   const input = prepareSummaryInput({ messagesToSummarize: messages, turnPrefixMessages: [], retainedTail: [],
     fileOps: { read: new Set(), written: new Set(), edited: new Set() } });
+  // This preflight has no native previousSummary. Match legacy producer caps;
+  // actual inherited-prefix compaction bypasses protection if its native block
+  // cannot fit, so admission cannot create a preservation-only dead end.
   const captured = Symbol("summary-context-captured");
   let fit: import("../../contracts/native-storage.js").RuntimeHandoffFit | undefined;
   try {

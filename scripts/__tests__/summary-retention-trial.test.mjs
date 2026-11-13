@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+import { runTrialHostReseed } from "../lib/summary-retention-host.mjs";
 import { describe, expect, it, vi } from "vitest";
 import { spawnSync } from "node:child_process";
 import { mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
@@ -323,6 +325,8 @@ describe("frozen fictional summary qualification", () => {
       expect(result.reseeds).toHaveLength(coldReseeds ? 3 : 0);
       expect(result.checkpoints.map(c => c.isSplitTurn)).toEqual([false, false, true, false]);
       expect(result.pass).toBe(!lossy);
+      expect(result.summaryFocus).toEqual({ version: 3, sha256: createHash("sha256").update(modules.SUMMARY_FOCUS).digest("hex") });
+      expect(result.requests.every(request => request.context.systemPrompt.includes("Mono-agent summary focus v3:"))).toBe(true);
       expect(JSON.stringify(result.requests[0].context)).toContain(fact);
       // No fixture oracle is fed to the control. Once absent from the previous
       // summary AND retained tail, the next shipping request cannot recover it.
@@ -337,6 +341,88 @@ describe("frozen fictional summary qualification", () => {
       const split = result.requests.filter(r => r.stage === 3);
       expect(split.reduce((sum, r) => sum + r.maxTokens, 0)).toBeLessThanOrEqual(2000 + 4096); // shared text cap plus two reasoning allowances
       if (!lossy) expect(result.checkpoints.at(-1).summary).toContain("18 previously; corrected to 16; current 16");
+    }
+  });
+
+  it("integrates store/publication, host pack supplier, real cold hook, native seed and restart", async () => {
+    const modules = await loadTrialModules(); modules.trialEffort = "low";
+    const fixture = (await loadTrialFixtures()).fixtures[0];
+    const [{ model }] = await resolveTrialCatalog(modules, resolveTrialModels());
+    const result = await runTrialChain({ modules, fixture, model, cap: 2000, repetition: 1, coldReseeds: "host",
+      complete: async (_selected, context) => reply(controlSummary(context)) });
+    expect(result.pass).toBe(true);
+    expect(result.reseeds).toHaveLength(3);
+    expect(result.reseeds.every(row => row.lane === "host" && row.runtimeCalls === 2 && row.nativeSha256 === row.retainedSha256)).toBe(true);
+    // Cold seed is ordinary retained user text: no native previousSummary guard
+    // exists on its first re-extraction. Direct text-only lanes remain controls.
+    expect(JSON.stringify(result.requests.find(row => row.stage === 2).context)).not.toContain("<previous-summary>");
+  });
+
+  it("selects the newly created journal even when the source summary spoofs a seed marker", async () => {
+    const engine = await import("@mono-agent/turn/engine");
+    const list = engine.JsonlSessionRepo.prototype.list;
+    // Visit the cold journal before the source: text-based selection would then
+    // overwrite its seed with the unsanitized source containing the same marker.
+    const listing = vi.spyOn(engine.JsonlSessionRepo.prototype, "list").mockImplementation(async function (...args) {
+      return (await list.apply(this, args)).sort((a, b) => b.createdAt - a.createdAt);
+    });
+    try {
+      const removed = "/home/example/private/marker.txt";
+      const seeded = await runTrialHostReseed(`Generated summary evidence\nFictional private path: ${removed}`);
+      expect(JSON.stringify(seeded.seedMessages)).toContain("Fictional resumed answer.");
+      expect(JSON.stringify(seeded.seedMessages)).not.toContain(removed);
+      expect(seeded.redacted).toBe(true);
+    } finally { listing.mockRestore(); }
+  });
+
+  it("removes the host root and closes later resources when cleanup rejects", async () => {
+    const roots = new Set();
+    let runtimeCount = 0;
+    vi.resetModules();
+    vi.doMock("@mono-agent/turn/host", async () => {
+      const actual = await vi.importActual("@mono-agent/turn/host");
+      return { ...actual, createMonoRuntime(options) {
+        roots.add(options.workspace);
+        const runtime = actual.createMonoRuntime(options), cleanupOnly = ++runtimeCount === 2;
+        return { ...runtime, async disposeAllSessions() {
+          await runtime.disposeAllSessions();
+          if (cleanupOnly) throw Error("Fictional cleanup rejection");
+        } };
+      } };
+    });
+    let close;
+    try {
+      const conversation = await import("../../packages/conversation/dist/index.js");
+      close = vi.spyOn(conversation.ToolHistoryWriter.prototype, "close");
+      const { runTrialHostReseed: run } = await import("../lib/summary-retention-host.mjs");
+      await expect(run("Fictional cleanup evidence.")).rejects.toThrow(/cleanup/iu);
+      expect(close).toHaveBeenCalled();
+      expect(close.mock.contexts.every(writer => writer.isClosed)).toBe(true);
+      expect(runtimeCount).toBe(2);
+      expect(roots.size).toBe(1);
+      for (const root of roots) await expect(stat(root)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      close?.mockRestore();
+      vi.doUnmock("@mono-agent/turn/host");
+      vi.resetModules();
+      for (const root of roots) await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("separates native/retained identities and never restores fictional redacted values at cold seed or restart", async () => {
+    const fixture = (await loadTrialFixtures()).fixtures[0];
+    const removed = "/home/example/private/record.txt";
+    const native = `## Historical events and corrections\n${fixture.tuples.map(tuple => tuple.reference).join("\n")}\nPrivate fixture path: ${removed}`;
+    const seeded = await runTrialHostReseed(native);
+    expect(seeded.redacted).toBe(true);
+    expect(seeded.nativeSha256).not.toBe(seeded.retainedSha256);
+    expect(seeded.retainedText).not.toContain(removed);
+    for (const context of [...seeded.contexts, { messages: seeded.seedMessages }]) {
+      expect(JSON.stringify(context)).not.toContain(removed);
+      expect(JSON.stringify(context)).not.toContain(seeded.nativeSha256);
+      const text = context.messages.flatMap(message => typeof message.content === "string" ? [message.content] : (message.content ?? []).filter(part => part.type === "text").map(part => part.text)).join("\n");
+      expect(text).toContain(JSON.stringify(seeded.retainedText));
+      expect(JSON.stringify(context)).toContain(seeded.retainedSha256);
     }
   });
 
@@ -357,11 +443,13 @@ describe("frozen fictional summary qualification", () => {
 
   it("reserves legacy Anthropic's full wire ceiling without adding thinking twice", async () => {
     const report = await runTrial({ dryRun: true, models: "anthropic:claude-haiku-4-5", effort: "high" });
+    expect(report.summaryFocus.version).toBe(3);
+    expect(report.chains.every(chain => chain.summaryFocus.sha256 === report.summaryFocus.sha256)).toBe(true);
     const identity = report.identity[0], measured = report.models[0];
     const requests = report.chains.flatMap(chain => chain.requests);
     expect(report.chains.every(chain => chain.pass)).toBe(true);
     expect(requests[0]).toMatchObject({ maxTokens: 2000, providerMaxTokens: 18384,
-      options: { maxTokens: 2000, reasoning: "high" } });
+      options: { maxTokens: 2000, reasoning: "high" } }); // no prior tuples: legacy cap and reasoning allowance unchanged
     for (const request of requests) {
       expect(request.providerMaxTokens).toBe(request.options.maxTokens + 16384);
       expect(request.providerMaxTokens).toBeGreaterThan(request.maxTokens);

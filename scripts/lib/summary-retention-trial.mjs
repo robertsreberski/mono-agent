@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
+import { runTrialHostReseed } from "./summary-retention-host.mjs";
 import { SOL, LUNA } from "./continuity-e2-protocol.mjs";
 import { loadE2Catalog } from "./continuity-e2-pricing.mjs";
 
@@ -272,12 +273,17 @@ export function createTrialBudget(capUsd) {
 
 const user = (content, timestamp = 1) => ({ role: "user", content, timestamp });
 const distractor = "Routine fictional progress: sort labels and arrange folders. ".repeat(15);
+const shippingFocusIdentity = modules => {
+  need(modules.SUMMARY_FOCUS_VERSION === 3 && modules.SUMMARY_FOCUS.startsWith("Mono-agent summary focus v3:"), "Unexpected shipping summary focus version");
+  return { version: modules.SUMMARY_FOCUS_VERSION, sha256: hash(modules.SUMMARY_FOCUS) };
+};
 const trialFocus = "Preserve each introduced compact tuple on its own line, with the original subject and all semicolon-separated fields verbatim, for deterministic fictional qualification. Quoted hypotheticals are not permission. Do not invent provenance.";
 
 /** Real shipping cut/preparation/generation, durable native journal and cold pack renderer.
  * The only injected seam is the one-request completion boundary; no archive backfill.
  */
 export async function runTrialChain({ modules, fixture, model, cap, repetition, complete, onCheckpoint = async () => {}, onRequest = () => {}, coldReseeds = true }) {
+  const summaryFocus = shippingFocusIdentity(modules);
   const root = await mkdtemp(join(tmpdir(), "summary-retention-"));
   const repo = new modules.JsonlSessionRepo({ sessionsRoot: root });
   let raw;
@@ -293,6 +299,7 @@ export async function runTrialChain({ modules, fixture, model, cap, repetition, 
       const prepared = modules.prepareCompaction(await raw.getEntries(), { reserveTokens: Math.ceil(cap / 0.8), keepRecentTokens: 128 });
       need(prepared.ok && prepared.value && prepared.value.isSplitTurn === (stage === 3), "Unexpected shipping cut shape");
       prepared.value.settings.reserveTokens = modules.piSummaryReserveTokens(cap, prepared.value.isSplitTurn);
+      prepared.value.settings.summaryMaxTokens = cap;
       const input = modules.prepareSummaryInput(prepared.value);
       const telemetry = [];
       // The runtime's shipping facade adds focus, evidence and summary effort policy.
@@ -321,7 +328,13 @@ export async function runTrialChain({ modules, fixture, model, cap, repetition, 
       need(entry.summary === result.value.summary, "Persisted summary changed");
       const score = scoreTrialSummary(fixture, stage, entry.summary, { requests });
       checkpoints.push({ ...score, summary: entry.summary, summaryBytes: Buffer.byteLength(entry.summary), isSplitTurn: input.preparation.isSplitTurn, telemetry });
-      if (stage < 4 && coldReseeds) {
+      if (stage < 4 && coldReseeds === "host") {
+        const seeded = await runTrialHostReseed(entry.summary);
+        reseeds.push({ stage, lane: "host", nativeSha256: seeded.nativeSha256, retainedSha256: seeded.retainedSha256,
+          redacted: seeded.redacted, truncated: seeded.truncated, runtimeCalls: seeded.runtimeCalls });
+        await raw.close(); raw = await repo.create({ cwd: "/fictional/summary-retention" });
+        for (const message of seeded.seedMessages) await raw.appendMessage(message);
+      } else if (stage < 4 && coldReseeds) {
         // Construct the summary record only from the checkpoint read above. This
         // isolates summary carriage: original facts are intentionally not reseeded.
         const summaryRecord = { recordId: `chr1_${hash(journalId + id).slice(0, 43)}`, generationId: `fictional-${stage}`,
@@ -337,7 +350,7 @@ export async function runTrialChain({ modules, fixture, model, cap, repetition, 
       }
       await onCheckpoint({ checkpoints, requests, reseeds });
     }
-    return { fixture: fixture.id, cap, repetition, checkpoints, requests, reseeds, pass: checkpoints.every(row => row.pass) };
+    return { fixture: fixture.id, cap, repetition, summaryFocus, checkpoints, requests, reseeds, pass: checkpoints.every(row => row.pass) };
   } finally { await raw?.close(); await repo.close(); await rm(root, { recursive: true, force: true }); }
 }
 
@@ -345,10 +358,11 @@ export async function runTrial({ dryRun = false, confirm = false, capUsd, models
   need(dryRun || confirm, "Paid trial requires --confirm");
   need(["none", "low", "medium", "high", "xhigh", "ultra", "auto"].includes(effort), "Invalid effort");
   const modules = await loadTrialModules(); modules.trialEffort = effort;
+  const summaryFocus = shippingFocusIdentity(modules);
   const fixtures = await loadTrialFixtures();
   const catalog = await resolveTrialCatalog(modules, resolveTrialModels(models));
   const budget = dryRun ? null : createTrialBudget(capUsd);
-  const report = { schema: "summary-retention-trial-v1", scorerVersion: SCORER_VERSION, dryRun, fixturesSha256: fixtures.sha256, assertionPolicy: fixtures.assertionPolicy,
+  const report = { schema: "summary-retention-trial-v1", scorerVersion: SCORER_VERSION, summaryFocus, dryRun, fixturesSha256: fixtures.sha256, assertionPolicy: fixtures.assertionPolicy,
     requestedEffort: effort, identity: catalog.map(({ model, catalog }) => ({ ...catalog, effectiveEffort: modules.summaryThinkingLevel(model, effort) })),
     spendingDisclosure: "Reservations use one token per serialized input byte and the shipping providerMaxTokens output allowance (including adapter-added thinking) at maximum frozen catalog rates, without cache credit. Codex output ceiling is NOT enforced by the provider; the cap refuses further dispatch, but cannot interrupt an already sent request or guarantee its bill. Unknown outcomes retain reservations and stop. No retries.",
     qualificationLimit: QUALIFICATION_LIMIT,

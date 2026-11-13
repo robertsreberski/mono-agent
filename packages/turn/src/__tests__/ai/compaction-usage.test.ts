@@ -1,3 +1,4 @@
+import { sumKnownSummaryUsage } from "../../engine/compaction-kit/usage.js";
 import { expect, it } from "vitest";
 import { createCompactionUsage, withCompactionUsage, compactionCostEvent, manualCompactionAccounting } from "../../telemetry/compaction-usage.js";
 const request = (requestId: string, costUsd: number | null, status = "rejected") => ({ requestId, model: "faux:summary", status,
@@ -44,4 +45,24 @@ it("excludes never-dispatched summaries from costs and known subtotals", () => {
   expect(collector.slice()).toMatchObject({ cost_usd: 2 });
   collector.add([{ ...request("synthetic:unpriced", null), providerInvoked: true }]);
   expect(collector.slice()).toMatchObject({ cost_usd: null, known_cost_usd: 2 });
+});
+
+const nativeUsage = { input: 10, output: 2, cacheRead: 3, cacheWrite: 4, totalTokens: 19,
+  cost: { input: 1, output: 2, cacheRead: 0.3, cacheWrite: 0.4, total: 3.7 } };
+it("keeps the complete native usage shape when one truncated request is unknown", () => {
+  expect(sumKnownSummaryUsage(undefined, nativeUsage)).toEqual({ ...nativeUsage, partial: true });
+  expect(sumKnownSummaryUsage(undefined, undefined)).toEqual({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 }, partial: true });
+});
+it("sums only known fields, carries partial status and preserves optional native counts", () => {
+  const partial = sumKnownSummaryUsage({ input: 2, output: NaN, cacheRead: -1, cost: { input: 0.1 }, cacheWrite1h: 5 }, nativeUsage);
+  expect(partial).toMatchObject({ input: 12, output: 2, cacheRead: 3, cacheWrite: 4, totalTokens: 21, cacheWrite1h: 5, partial: true });
+  expect(partial.cost.total).toBeCloseTo(3.8);
+  const combined = sumKnownSummaryUsage(partial, { ...nativeUsage, reasoning: 1 });
+  expect(combined).toMatchObject({ input: 22, totalTokens: 40, reasoning: 1, cacheWrite1h: 5, partial: true });
+});
+it("does not mark complete native usage sums partial", () => {
+  const usage = sumKnownSummaryUsage(nativeUsage, nativeUsage);
+  expect(usage).toMatchObject({ input: 20, output: 4, totalTokens: 38, cost: { total: 7.4 } });
+  expect(usage).not.toHaveProperty("partial");
 });

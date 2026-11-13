@@ -6,7 +6,7 @@ import { ENGINE_CONTEXT } from "../context.js";
 import { formatFileOperations } from "../compaction-kit/utils.js";
 
 
-// The upstream fixture continues to pin conversation bytes, cuts, caps and usage.
+// With no protected tuples, preserve upstream conversation bytes, caps, cuts and usage.
 // Only the deliberately changed instructions/metadata have a separate digest pin.
 const legacyRequest = (request: any) => ({ ...request, context: { ...request.context,
   systemPrompt: request.context.systemPrompt?.split("\n\nMono-agent summary focus")[0],
@@ -37,6 +37,8 @@ describe("owned compaction kit vs 0.99.2 baseline", () => {
     const result = await compact(prepared.value!, models,
       { id: "fixture-model", provider: "faux", maxTokens: 4096, reasoning: false },
       "Keep queue details.", "off", undefined, undefined, ENGINE_CONTEXT);
+    expect(requests.map(request => request.options.maxTokens)).toEqual([3200, 2000]);
+    requests.forEach((request, index) => expect(request.options.maxTokens).toBeLessThanOrEqual(baseline.requests[index].options.maxTokens));
     expect(requests.map(legacyRequest)).toEqual(baseline.requests.map(legacyRequest));
     const sources = [prepared.value!.messagesToSummarize, prepared.value!.turnPrefixMessages];
     for (const [index, request] of requests.entries()) {
