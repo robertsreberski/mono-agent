@@ -1057,18 +1057,18 @@ function escapeGitignoreBasename(value: string): string {
 /**
  * Root-anchored ignore rules for the secret file and its same-directory
  * transaction artifacts. The dot-prefixed temporary rule matches the actual
- * `.${basename}.mono-agent-*.tmp` staging name created by atomicReplaceFile;
- * the remaining rules conservatively cover the final name and non-dot
- * variants. Basename metacharacters are escaped so custom dotenv names keep
- * matching literally.
+ * `.${basename}.mono-agent-*.tmp` staging name created by atomicReplaceFile,
+ * and the backup rule matches the non-dot `${basename}.mono-agent-*.backup`
+ * claim name; for `.env` this is byte-identical to the long-standing block so
+ * existing installs are not rewritten. Basename metacharacters are escaped so
+ * custom dotenv names keep matching literally.
  */
 function secretEnvIgnoreRulesFor(envBasename: string): readonly string[] {
   const escaped = escapeGitignoreBasename(envBasename);
   return [
     `/${escaped}`,
-    `/${escaped}.mono-agent-*.tmp`,
-    `/${escaped}.mono-agent-*.backup`,
     `/.${escaped}.mono-agent-*.tmp`,
+    `/${escaped}.mono-agent-*.backup`,
   ];
 }
 

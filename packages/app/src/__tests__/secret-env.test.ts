@@ -29,7 +29,7 @@ import {
 import { initMonoAgentFolder } from "../setup/init.js";
 
 let dir: string;
-const SECRET_IGNORE_BLOCK = "/.env\n/.env.mono-agent-*.tmp\n/.env.mono-agent-*.backup\n/..env.mono-agent-*.tmp\n";
+const SECRET_IGNORE_BLOCK = "/.env\n/..env.mono-agent-*.tmp\n/.env.mono-agent-*.backup\n";
 
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), "agent-app-secret-env-"));
@@ -849,6 +849,24 @@ describe("mergeSecretEnvFile", () => {
     expect(parseEnv(await readFile(envPath, "utf8"))).toMatchObject({ KEEP: "new-value" });
   });
 
+  it("leaves an existing legacy guard untouched by the guard and a merge", async () => {
+    const envPath = join(dir, ".env");
+    const ignorePath = join(dir, ".gitignore");
+    await writeFile(envPath, "KEEP=operator-value\nEMPTY=\n", { mode: 0o600 });
+    await writeFile(ignorePath, SECRET_IGNORE_BLOCK);
+
+    expect(await verifySecretEnvPersistenceGuard(envPath)).toBe(true);
+
+    const result = await mergeSecretEnvFile(envPath, { EMPTY: "filled" });
+
+    expect(parseEnv(await readFile(envPath, "utf8"))).toMatchObject({
+      KEEP: "operator-value",
+      EMPTY: "filled",
+    });
+    expect(await readFile(ignorePath, "utf8")).toBe(SECRET_IGNORE_BLOCK);
+    expect(result.changes).toContainEqual({ path: ignorePath, kind: "unchanged" });
+  });
+
   it("writes basename-scoped ignore rules and guards for a custom dotenv name", async () => {
     const envPath = join(dir, ".env.production");
     await run("git", ["init", "-q"], dir);
@@ -857,9 +875,8 @@ describe("mergeSecretEnvFile", () => {
 
     expect(await readFile(join(dir, ".gitignore"), "utf8")).toBe(
       "/.env.production\n" +
-      "/.env.production.mono-agent-*.tmp\n" +
-      "/.env.production.mono-agent-*.backup\n" +
-      "/..env.production.mono-agent-*.tmp\n",
+      "/..env.production.mono-agent-*.tmp\n" +
+      "/.env.production.mono-agent-*.backup\n",
     );
     expect(parseEnv(await readFile(envPath, "utf8"))).toMatchObject({ TOKEN: "secret-value" });
     expect(await verifySecretEnvPersistenceGuard(envPath)).toBe(true);
@@ -874,9 +891,8 @@ describe("mergeSecretEnvFile", () => {
 
     expect(await readFile(join(dir, ".gitignore"), "utf8")).toBe(
       "/.env\\[prod\\]\n" +
-      "/.env\\[prod\\].mono-agent-*.tmp\n" +
-      "/.env\\[prod\\].mono-agent-*.backup\n" +
-      "/..env\\[prod\\].mono-agent-*.tmp\n",
+      "/..env\\[prod\\].mono-agent-*.tmp\n" +
+      "/.env\\[prod\\].mono-agent-*.backup\n",
     );
     expect(parseEnv(await readFile(envPath, "utf8"))).toMatchObject({ TOKEN: "secret-value" });
     expect(await verifySecretEnvPersistenceGuard(envPath)).toBe(true);
