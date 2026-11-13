@@ -102,10 +102,13 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
   the current logical conversation. Search defaults to 5 results and clamps safe
   integer limits to 1–10 at MCP ingress (invalid types, fractions and non-finite
   values are rejected), returning `requestedLimit` and `effectiveLimit`; cursors
-  bind the effective limit. New ranked searches use evidence-sensitive ranking v2
-  with bounded query-relevant event/correction and short-edit bonuses, lower-weight
-  identifier components and historical echo reduction. Issued ranking-v1 cursors
-  retain the entire v1 pipeline; cursor-envelope versions are unchanged. Ranking
+  bind the effective limit. New ranked searches use content-first ranking v3:
+  distinct full content coverage always outweighs bounded literal intent and local
+  event/correction bonuses. Historical echoes and repetition-suppressed records
+  receive no literal-intent credit. Lower-weight identifier components, short-edit
+  bonuses and historical echo reduction remain bounded. Issued ranking-v1/v2
+  cursors retain their entire original pipeline; cursor-envelope versions are
+  unchanged. Ranking
   and capture order do not establish truth, event dates or renewed permission.
   Read promising hits before reformulating, batch useful
   gets, finish get cursors and page before declaring evidence insufficient.

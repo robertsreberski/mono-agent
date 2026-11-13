@@ -148,7 +148,7 @@ it("keeps first-result and reference consumers on actual returned relevance IDs/
 });
 
 
-it.each(rankingFixture.recovery)("recovers frozen v2 $name sources through installed MCP within R=3", async scenario => {
+it.each(rankingFixture.recovery)("recovers frozen $name sources with fresh v3 searches through installed MCP within R=3", async scenario => {
   const root = await scratch(), modules = await productionModules(ROOT), pi = modules.pi;
   const history = join(root, "history"), conversationId = "fictional-ranking";
   const writer = await modules.conversation.ToolHistoryWriter.open({ root: history, continuityEnabled: true });
@@ -177,7 +177,7 @@ it.each(rankingFixture.recovery)("recovers frozen v2 $name sources through insta
   expect(requests - 1).toBeLessThanOrEqual(scenario.maxRounds);
   expect(result.error).toBeNull(); expect(actor.observed).toHaveLength(requests); expect(route.report().probeRequests).toBe(requests);
   const search = actor.observed[1].bodies.find(body => body?.action === "search");
-  expect(search.rankingVersion).toBe(2); expect(actor.observed[1].visible.join("\n")).toContain('"rankingVersion":2');
+  expect(search.rankingVersion).toBe(3); expect(actor.observed[1].visible.join("\n")).toContain('"rankingVersion":3');
   for (const record of records.slice(0, 2)) {
     expect(search.items.slice(0, scenario.maxSearchRank).map(item => item.recordId)).toContain(record.recordId);
     expect(actor.witness.snapshot().records.find(row => row.recordId === record.recordId)).toMatchObject({ verified: true, chunks: scenario.name === "short-edit" ? 1 : 2, sha256: sha256(record.text) });

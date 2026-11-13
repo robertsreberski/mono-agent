@@ -700,10 +700,10 @@ describe("content-first v3 and frozen issued traversals", () => {
   });
 
   it("caps literal intent once and avoids stop-word and intent-only double counting", () => {
-    const query = contentFirstQuery("historical copper correction changed revised");
-    const score = (text: string) => contentFirstMatch(text, query, "summary")!.score;
-    expect(score("Copper historical correction changed revised.")).toBe(score("Copper historical."));
-    expect(score("Copper historical.") - score("Copper reference.")).toBe(INTENT_MATCH_CAP);
+    const query = contentFirstQuery("earlier copper history originally initially");
+    const score = (text: string) => contentFirstMatch(text, query, "user")!.score;
+    expect(score("Copper earlier history originally initially.")).toBe(score("Copper earlier."));
+    expect(score("Copper earlier.") - score("Copper reference.")).toBe(INTENT_MATCH_CAP);
     expect(contentFirstQuery("what changed moved correction").intentPatterns).toHaveLength(0);
     const stops = contentFirstQuery("what is copper now");
     expect(stops.intentPatterns).toHaveLength(0);
@@ -725,5 +725,59 @@ describe("content-first v3 and frozen issued traversals", () => {
 
   it("rejects unsupported dispatch rather than implicitly falling through to v2", () => {
     expect(() => relevancePipeline(4 as 3, "copper")).toThrow("Unsupported ranking version");
+  });
+});
+
+
+describe("historical echo intent neutrality", () => {
+  it.each(["assistant", "summary"] as const)("withholds intent credit from historical %s records, not just repeated words", kind => {
+    for (const marker of ["earlier", "history", "originally", "initially"]) {
+      const pipeline = relevancePipeline(3, `${marker} copper parcel`);
+      const source = pipeline.match("Copper parcel reference.", "user")!;
+      const neutral = pipeline.match("Copper parcel reference.", kind)!;
+      const echo = pipeline.match(`Copper parcel ${marker}.`, kind)!;
+      expect(echo.score).toBe(neutral.score);
+      expect(source.score).toBeGreaterThan(echo.score);
+      expect(pipeline.match(`Copper parcel ${marker}.`, "user")!.score - source.score).toBe(INTENT_MATCH_CAP);
+    }
+  });
+
+  it.each(["assistant", "summary"] as const)("lets a historical %s win on greater content rather than intent", kind => {
+    const pipeline = relevancePipeline(3, "earlier copper parcel route");
+    expect(pipeline.match("Copper parcel route reference.", kind)!.score)
+      .toBeGreaterThan(pipeline.match("Copper parcel earlier actually changed.", "user")!.score);
+  });
+
+  it.each(["assistant", "summary"] as const)("keeps literal intent for nonhistorical %s records", kind => {
+    const pipeline = relevancePipeline(3, "copper parcel correction");
+    // Quotation framing avoids a local signal bonus, isolating literal intent.
+    expect(pipeline.match('Copper parcel: quoted "correction".', kind)!.score
+      - pipeline.match("Copper parcel reference.", kind)!.score).toBe(INTENT_MATCH_CAP);
+  });
+
+  it("does not let literal intent rescue a repetition flood whose local signals are disabled", () => {
+    const pipeline = relevancePipeline(3, "earlier copper parcel correction");
+    const repeated = "Copper parcel reference. ".repeat(8);
+    expect(pipeline.match(repeated + "Correction.", "user")!.score)
+      .toBe(pipeline.match(repeated, "user")!.score);
+    expect(pipeline.match("Copper parcel reference.", "user")!.score)
+      .toBeGreaterThan(pipeline.match(repeated + "Correction.", "user")!.score);
+  });
+
+  it("keeps correction signals outside the fixed window score-neutral", () => {
+    const scenario = retention4.cases.find(row => row.name === "correction-outside-fixed-window")!;
+    const pipeline = relevancePipeline(3, scenario.query);
+    expect(pipeline.match(scenario.records[0]!.text, "user")!.score)
+      .toBe(pipeline.match(scenario.records[1]!.text, "user")!.score);
+  });
+
+  it("rejects lower-level unsupported cursor versions with no scan or implicit ranker", () => {
+    const f = fixture(); try {
+      f.add("Copper first"); f.add("Copper second");
+      const cursor = f.search("copper", 1).continuation!;
+      const page = searchContinuity(f.db, { ...scope, query: "copper", limit: 1, mode: "relevance",
+        continuation: { ...cursor, rankingVersion: 4 as 3 } });
+      expect(page).toMatchObject({ items: [], degradedReason: "invalid_cursor", scan: { complete: false, records: 0 } });
+    } finally { f.db.close(); }
   });
 });

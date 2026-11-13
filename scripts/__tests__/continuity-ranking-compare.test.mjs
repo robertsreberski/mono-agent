@@ -13,7 +13,7 @@ describe("production ranking comparison", () => {
     expect(report.summary[2].mrr).toBe(1);
   });
 
-  it("enforces aggregate and per-case independent-set nonregression without changing its fixture", () => {
+  it("enforces aggregate and per-case development-set nonregression without changing its fixture", () => {
     const report = compareRankings(loadRankingFixture("continuity-ranking-heldout-independent"));
     for (const row of report.cases) {
       if (row.results[1].rank === 1) expect(row.results[2].rank, row.name).toBe(1);

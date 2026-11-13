@@ -133,13 +133,16 @@ export function contentFirstMatch(text: string, query: ReturnType<typeof content
   const end = retainedPosition(text, phrase ? phrase.index + phrase[0].length : firstEnd, expanded);
   let score = full * CONTENT_MATCH_SCORE + Math.min(600_000, component * 200_000)
     + (phrase ? 100_000 : 0) + Math.max(0, 65_535 - (last - first));
-  if (query.intentPatterns.some(pattern => pattern.test(searchable))) score += INTENT_MATCH_CAP;
-  if (!query.intent) return { score, position: start, end };
   // Only local, bounded evidence around this record's hit is considered. No
   // adjacent-turn inference, event-date interpretation or global echo collection.
-  const context = text.slice(Math.max(0, start - 192), Math.min(text.length, end + 384));
-  const repeats = repeated(firstGlobal, expanded ? context.toLowerCase() : context);
+  const context = query.intent ? text.slice(Math.max(0, start - 192), Math.min(text.length, end + 384)) : "";
+  const repeats = query.intent && repeated(firstGlobal, expanded ? context.toLowerCase() : context);
+  // Literal intent shares the signal qualification gate: historical echoes and
+  // repetition floods cannot regain their disadvantage by repeating intent words.
+  // More full content still wins, independent of this secondary rule.
   const echo = query.historical && echoKinds.has(kind);
+  if (!echo && !repeats && query.intentPatterns.some(pattern => pattern.test(searchable))) score += INTENT_MATCH_CAP;
+  if (!query.intent) return { score, position: start, end };
   const { hasCorrection, hasEvent } = repeats || echo ? { hasCorrection: false, hasEvent: false } : signals(context);
   if (hasCorrection && (query.wantsCorrection || query.historical)) score += 160_000;
   if (hasEvent && query.wantsEvent) score += 80_000;

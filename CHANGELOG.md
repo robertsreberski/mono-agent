@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add content-first conversation-history ranking v3 for fresh searches, with
+  bounded intent credit that cannot rescue historical echoes or repetition floods.
+  Keep issued ranking-v1/v2 cursors on their original pipelines.
+
 - Add dormant retained-summary publication lookup and final-layout selection
   contracts without changing continuity packs, journals or compaction behavior.
 

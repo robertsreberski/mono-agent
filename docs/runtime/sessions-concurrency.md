@@ -239,7 +239,8 @@ hyphenated absent query, in addition to dense, absent, Unicode and historical
 matching queries. An absent result has no
 continuation to measure.
 
-A final-source **pre-commit** run on Node 24.18.0, Apple M3 Max / arm64 /
+The earlier ranking-v2 final-source **pre-commit** run on Node 24.18.0,
+Apple M3 Max / arm64 /
 48 GiB RAM measured the table below. Production sources and benchmark were final;
 only documentation/commit bookkeeping followed this run. These are explicitly
 pre-commit observations, not measurements claimed for a later commit hash.
@@ -254,7 +255,9 @@ pre-commit observations, not measurements claimed for a later commit hash.
 The original requested target was **5 seconds / 64 MiB extra JS heap / 128 MiB
 extra RSS**. The largest declared corpus missed that heap target; the accepted
 **100-MiB heap envelope is a relaxation**, not achievement of the original target.
-That accepted envelope is unchanged for these measurements.
+That accepted envelope is unchanged for these measurements and for ranking v3.
+The table is historical v2 evidence, not a measurement of the v3 default. V3
+requires its own run of the same unmodified workloads against that envelope.
 
 All **60** measurements completed within that accepted envelope:
 **5 seconds, 100 MiB additional JS heap, 128 MiB additional RSS**. Observed maximum
@@ -268,13 +271,23 @@ was 258.666 ms. Cold means reopened SQLite, **not flushed OS cache**. Both 100k 
 qualified post-GC heaps ranged from 6.963 to 6.991 MiB (baseline 6.969 MiB), and
 evidence heaps from 6.983 to 7.011 MiB (baseline 7.016 MiB). No accumulating
 growth was observed in either workload; post-GC results do not exempt peak limits.
-V2 bulk reads keep UTF-8 bodies as external byte buffers until
+V2 and v3 bulk reads keep UTF-8 bodies as external byte buffers until
 each record is decoded, verified and matched; no candidate retains a decoded body.
 Global content/component patterns are compiled once per query; up to four
 identifier components share one alternation, limiting absent lexical matching to
 at most two body scans per content term (32 across 16 terms). V1 traversal is
 unchanged. Measurements are hardware/runtime observations, not universal latency
 or memory guarantees; exhausted scans remain explicitly incomplete.
+
+Fresh ranked searches use content-first v3; issued v1/v2 cursors keep their
+original pipelines. V3 uses 2,000,000 per distinct full content term and a single
+250,000 maximum literal-intent credit, with none for historical echoes or
+repetition-suppressed local signals, and no double counting on intent-only
+fallback. The entire secondary-score spread is below one full content match.
+Local signals stay within the clipped [hit start − 192, hit end + 384] character
+window; common historical words cannot compensate for missing content.
+`node scripts/continuity-ranking-compare.mjs` reports fictional production-pipeline
+ranks and aggregate discovery metrics; it is not a paid-model qualification run.
 
 ### Deterministic cold continuity packs
 

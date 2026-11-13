@@ -28,7 +28,7 @@ export function compareRankings(fixture) {
     const rows = cases.map(row => row.results[index]);
     return { version, cases: rows.length,
       mrr: rows.reduce((total, row) => total + (row.rank === null ? 0 : 1 / row.rank), 0) / rows.length,
-      ...Object.fromEntries([1, 5, 10].map(k => [`top${k}`, rows.filter(row => row.rank !== null && row.rank <= k).length])),
+      ...Object.fromEntries([1, 3, 5, 10].map(k => [`top${k}`, rows.filter(row => row.rank !== null && row.rank <= k).length])),
       allRequiredRecovered: rows.filter(row => row.allRequiredRecovered).length,
       allRequiredTop5: rows.filter(row => row.allRequiredTop5).length };
   });

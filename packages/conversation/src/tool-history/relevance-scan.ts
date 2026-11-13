@@ -22,11 +22,15 @@ interface ScanHooks { now?: () => number; afterManifest?: () => void; afterBatch
 export function searchRelevantContinuity(db: DatabaseSync, input: ContinuitySearchInput, reader: Reader, hooks: ScanHooks = {}): ContinuitySearchPage {
   const now = hooks.now ?? (() => performance.now()), started = now(), deadline = started + 5000;
   const limit = input.limit ?? 5, cursor = input.continuation, rankingVersion = cursor?.rankingVersion ?? 3;
+  const stats = { complete: false, records: 0, bytes: 0, elapsedMs: 0, maxBatchMs: 0, metadataPages: 0, textBatches: 0 };
+  // Validate untrusted cursors before exhaustive dispatch; no implicit fallback.
+  if (rankingVersion !== 1 && rankingVersion !== 2 && rankingVersion !== 3) {
+    stats.elapsedMs = now() - started;
+    return { available: true, items: [], mode: "relevance", scan: stats, degradedReason: "invalid_cursor" };
+  }
   // Dispatch the whole pipeline, including parsing and anchor ordering, once.
-  // Unsupported versions fail below, never silently fall through to another ranker.
   const pipeline = relevancePipeline(rankingVersion, input.query!.trim());
   const { query, compare } = pipeline;
-  const stats = { complete: false, records: 0, bytes: 0, elapsedMs: 0, maxBatchMs: 0, metadataPages: 0, textBatches: 0 };
   const top: Candidate[] = [];
   let watermark = cursor?.watermark ?? Number.MAX_SAFE_INTEGER, observedWatermark = 0, anchorSeen = cursor === undefined;
   const check = () => { if (now() >= deadline) throw new Error("scan_capacity"); };
