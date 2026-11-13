@@ -11,6 +11,14 @@
   without changing pack bytes; refuse corrupt receipt commitments even when the
   source remains available. Carrier-bearing journals require a compatible
   reader; do not downgrade active native journals.
+- Add content-first conversation-history ranking v3 for fresh searches, with
+  bounded intent credit that cannot rescue historical echoes or repetition floods.
+  Match qualified intent across the retained body while keeping correction/event
+  signals local. Keep issued ranking-v1/v2 cursors on their original pipelines and
+  retain v2's bounded clause-split allocation, included in capacity measurements.
+
+- Add dormant retained-summary publication lookup and final-layout selection
+  contracts without changing continuity packs, journals or compaction behavior.
 
 - Add bounded evidence discipline to every `ConversationHistory` response: find
   the distinguishing historical record or say it remains unfound, rather than
