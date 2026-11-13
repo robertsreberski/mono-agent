@@ -52,7 +52,8 @@ vi.mock("../doctor/runtime.js", () => ({
 vi.mock("../doctor/credentials.js", () => ({ credentialsSection: async () => state.section("credentials") }));
 vi.mock("../doctor/context.js", () => ({ contextSection: async () => state.section("context") }));
 vi.mock("../doctor/memory.js", () => ({ memorySection: vi.fn(async () => state.section("memory")) }));
-vi.mock("../doctor/tools.js", () => ({ toolsSection: async () => state.section("tools") }));
+vi.mock("../doctor/observability.js", () => ({ observabilitySection: () => state.section("observability") }));
+vi.mock("../doctor/tools.js", () => ({ toolsSection: async () => ({ ...state.section("tools"), mcp: state.section("mcp") }) }));
 vi.mock("../host/computer-use.js", () => ({ computerUseSection: async () => state.section("computer-use") }));
 vi.mock("../doctor/doctor-session-history.js", () => ({ sessionToolHistorySection: async () => state.section("session-history") }));
 vi.mock("../doctor/web-tools.js", () => ({ webToolsSection: vi.fn(async () => state.section("web-tools")) }));
@@ -81,7 +82,7 @@ const drivers: readonly ChannelDriver[] = [{
 }];
 const input = { cwd: "/fixture", configPath: "/fixture/config.json", env: {}, drivers, liveness: false, allowFilesystemWrites: false };
 const ordered = [
-  "runtime-provenance", "runtime", "credentials", "context", "memory", "tools", "computer-use",
+  "runtime-provenance", "runtime", "credentials", "context", "memory", "tools", "mcp", "observability", "computer-use",
   "session-history", "web-tools", "continuations", "process-jobs", "sandbox", "runs", "launchd-logs", "channel:fixture",
 ];
 
@@ -131,7 +132,7 @@ describe("doctor section aggregation contract", () => {
     expect(state.calls).toEqual([...ordered, "model-cross-check", "tool-cross-check"]);
   });
 
-  it.each(["credentials", "tools", "web-tools", "context", "memory", "sandbox", "channel:fixture", "runs"])(
+  it.each(["credentials", "tools", "mcp", "observability", "web-tools", "context", "memory", "sandbox", "channel:fixture", "runs"])(
     "retains the exact mocked error %s section without dropping or reordering later checks",
     async (id) => {
       state.denied = id;

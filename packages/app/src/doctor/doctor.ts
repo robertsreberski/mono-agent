@@ -1,3 +1,4 @@
+import { observabilitySection } from "./observability.js";
 import { assertSupportedSessionsRoot } from "../conversation-admin/sessions-root.js";
 import { computerUseSection } from "../host/computer-use.js";
 import { join } from "node:path";
@@ -116,7 +117,10 @@ export async function validateMonoAgentFolder(
       liveness,
       allowFilesystemWrites,
     ));
-    sections.push(await toolsSection(coreConfig, options));
+    const tools = await toolsSection(coreConfig, options);
+    const { mcp, ...toolSection } = tools;
+    sections.push(toolSection, mcp);
+    sections.push(observabilitySection());
     sections.push(await computerUseSection(coreConfig.tools.computerUse));
     sections.push(await sessionToolHistorySection({
       historyRoot: join(coreConfig.artifacts.dir, "..", "history"),

@@ -23,7 +23,7 @@ import type { ValidateMonoAgentFolderOptions } from "./options.js";
 import { pathExists, displayReason, displayReferenceOf } from "./format.js";
 import { piModelResolutionIssue } from "./runtime.js";
 
-export async function toolsSection(config: MonoAgentConfig, input: ValidateMonoAgentFolderOptions): Promise<ValidationSection> {
+export async function toolsSection(config: MonoAgentConfig, input: ValidateMonoAgentFolderOptions): Promise<ValidationSection & { readonly mcp: ValidationSection }> {
   const details: string[] = [];
   let status: ValidationStatus = "ok";
 
@@ -156,81 +156,10 @@ export async function toolsSection(config: MonoAgentConfig, input: ValidateMonoA
       details.push(`${renamedToolMessage(name, "disallowedTools")} The old name denies nothing.`);
     }
   }
-  let configuredMcpServerNames: string[] = [];
-  let configuredMcpServers: Record<string, unknown> = {};
-  if (config.tools.mcpConfigPath !== undefined) {
-    if (await pathExists(config.tools.mcpConfigPath)) {
-      details.push(`MCP config: ${config.tools.mcpConfigPath}`);
-      try {
-        const policy = await loadToolPolicyFromJsonFile(config.tools.mcpConfigPath);
-        configuredMcpServers = policy.mcpServers ?? {};
-        configuredMcpServerNames = Object.keys(configuredMcpServers);
-      } catch {
-        status = "error";
-        details.push(`MCP config is malformed or unreadable: ${config.tools.mcpConfigPath}`);
-      }
-    } else {
-      status = "error";
-      details.push(`MCP config file is missing: ${config.tools.mcpConfigPath}`);
-    }
-  }
-  if (config.tools.computerUse !== undefined) {
-    try {
-      assertComputerUseServerNameAvailable(configuredMcpServers);
-      configuredMcpServers[COMPUTER_USE_SERVER_NAME] = { command: config.tools.computerUse.command ?? "cua-driver", args: ["mcp"] };
-      configuredMcpServerNames = Object.keys(configuredMcpServers);
-      details.push("Computer-use MCP server is configured; external MCP tools bypass built-in allow/deny policy.");
-    } catch (error) {
-      status = "error";
-      details.push(error instanceof Error ? error.message : "Computer-use MCP server name collision.");
-    }
-  }
-  for (const serverName of config.tools.mcpRequestContextServers ?? []) {
-    if (!isValidMcpServerName(serverName)) {
-      status = "error";
-      details.push(
-        `tools.mcpRequestContextServers entry "${serverName}" is not a runtime-valid MCP server name (letters, digits, underscores, and hyphens only).`,
-      );
-      continue;
-    }
-    const spec = configuredMcpServers[serverName];
-    if (spec === undefined) {
-      status = "error";
-      details.push(
-        `tools.mcpRequestContextServers names unknown MCP server "${serverName}"; declare it in tools.mcpConfigPath.`,
-      );
-      continue;
-    }
-    if (!isStdioMcpServerSpec(spec)) {
-      status = "error";
-      details.push(
-        `tools.mcpRequestContextServers entry "${serverName}" must reference a stdio MCP server (command/type:stdio), not HTTP/SSE.`,
-      );
-    }
-  }
-  for (const serverName of config.tools.continuationServers ?? []) {
-    if (!isValidMcpServerName(serverName)) {
-      status = "error";
-      details.push(
-        `tools.continuationServers entry "${serverName}" is not a runtime-valid MCP server name (letters, digits, underscores, and hyphens only).`,
-      );
-      continue;
-    }
-    const spec = configuredMcpServers[serverName];
-    if (spec === undefined) {
-      status = "error";
-      details.push(
-        `tools.continuationServers names unknown MCP server "${serverName}"; declare it in tools.mcpConfigPath.`,
-      );
-      continue;
-    }
-    if (classifyContinuationMcpServerTransport(spec) === "unsupported") {
-      status = "error";
-      details.push(
-        `tools.continuationServers entry "${serverName}" must reference a stdio or loopback HTTP MCP server; remote HTTP and SSE are not supported.`,
-      );
-    }
-  }
+  const mcp = await inspectMcpConfiguration(config);
+  const configuredMcpServerNames = mcp.serverNames;
+  details.push(...mcp.section.details);
+  if (mcp.section.status === "error") status = "error";
   const adapterSendTools = await resolveAdapterSendToolsSettings(input, {
     allowedTools: config.tools.allowedTools,
     disallowedTools: config.tools.disallowedTools,
@@ -369,7 +298,7 @@ export async function toolsSection(config: MonoAgentConfig, input: ValidateMonoA
     );
   }
 
-  return { id: "tools", label: "Tools & MCP", status, details };
+  return { id: "tools", label: "Tools & MCP", status, details, mcp: mcp.section };
 }
 
 interface AdapterEndpointRequirement {
@@ -458,4 +387,91 @@ function endpointHost(url: string): string {
   } catch {
     return url;
   }
+}
+
+/** Structured MCP evidence, shared by CLI validation and read-only discovery. */
+async function inspectMcpConfiguration(config: MonoAgentConfig): Promise<{
+  readonly section: ValidationSection;
+  readonly serverNames: readonly string[];
+}> {
+  const details: string[] = [];
+  let status: ValidationStatus = config.tools.mcpConfigPath === undefined
+    && config.tools.computerUse === undefined ? "disabled" : "ok";
+  let configuredMcpServerNames: string[] = [];
+  let configuredMcpServers: Record<string, unknown> = {};
+  if (config.tools.mcpConfigPath !== undefined) {
+    if (await pathExists(config.tools.mcpConfigPath)) {
+      details.push(`MCP config: ${config.tools.mcpConfigPath}`);
+      try {
+        const policy = await loadToolPolicyFromJsonFile(config.tools.mcpConfigPath);
+        configuredMcpServers = policy.mcpServers ?? {};
+        configuredMcpServerNames = Object.keys(configuredMcpServers);
+      } catch {
+        status = "error";
+        details.push(`MCP config is malformed or unreadable: ${config.tools.mcpConfigPath}`);
+      }
+    } else {
+      status = "error";
+      details.push(`MCP config file is missing: ${config.tools.mcpConfigPath}`);
+    }
+  }
+  if (config.tools.computerUse !== undefined) {
+    try {
+      assertComputerUseServerNameAvailable(configuredMcpServers);
+      configuredMcpServers[COMPUTER_USE_SERVER_NAME] = { command: config.tools.computerUse.command ?? "cua-driver", args: ["mcp"] };
+      configuredMcpServerNames = Object.keys(configuredMcpServers);
+      details.push("Computer-use MCP server is configured; external MCP tools bypass built-in allow/deny policy.");
+    } catch (error) {
+      status = "error";
+      details.push(error instanceof Error ? error.message : "Computer-use MCP server name collision.");
+    }
+  }
+  for (const serverName of config.tools.mcpRequestContextServers ?? []) {
+    if (!isValidMcpServerName(serverName)) {
+      status = "error";
+      details.push(
+        `tools.mcpRequestContextServers entry "${serverName}" is not a runtime-valid MCP server name (letters, digits, underscores, and hyphens only).`,
+      );
+      continue;
+    }
+    const spec = configuredMcpServers[serverName];
+    if (spec === undefined) {
+      status = "error";
+      details.push(
+        `tools.mcpRequestContextServers names unknown MCP server "${serverName}"; declare it in tools.mcpConfigPath.`,
+      );
+      continue;
+    }
+    if (!isStdioMcpServerSpec(spec)) {
+      status = "error";
+      details.push(
+        `tools.mcpRequestContextServers entry "${serverName}" must reference a stdio MCP server (command/type:stdio), not HTTP/SSE.`,
+      );
+    }
+  }
+  for (const serverName of config.tools.continuationServers ?? []) {
+    if (!isValidMcpServerName(serverName)) {
+      status = "error";
+      details.push(
+        `tools.continuationServers entry "${serverName}" is not a runtime-valid MCP server name (letters, digits, underscores, and hyphens only).`,
+      );
+      continue;
+    }
+    const spec = configuredMcpServers[serverName];
+    if (spec === undefined) {
+      status = "error";
+      details.push(
+        `tools.continuationServers names unknown MCP server "${serverName}"; declare it in tools.mcpConfigPath.`,
+      );
+      continue;
+    }
+    if (classifyContinuationMcpServerTransport(spec) === "unsupported") {
+      status = "error";
+      details.push(
+        `tools.continuationServers entry "${serverName}" must reference a stdio or loopback HTTP MCP server; remote HTTP and SSE are not supported.`,
+      );
+    }
+  }
+  details.push("External MCP tools bypass built-in allow/deny policy. Server connectivity is not probed by validation.");
+  return { section: { id: "mcp", label: "MCP servers", status, details }, serverNames: configuredMcpServerNames };
 }

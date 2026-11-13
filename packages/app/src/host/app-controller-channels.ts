@@ -1,3 +1,4 @@
+import { createCapabilityStatusService } from "../setup/capability-status.js";
 import type { ProviderUsageOperator } from "@mono-agent/contracts";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import type { TuiRestartAuthority } from "@mono-agent/channel-operator";
@@ -279,6 +280,7 @@ export async function startChannel(controller: ChannelsControllerPort, driver: C
       providerAuth,
       controller.providerUsageFor?.(coreConfig),
       controller.restartAuthority,
+      driver.id === "tui" ? createCapabilityStatusService({ ...input, drivers: controller.drivers }) : undefined,
     );
     const runningChannel = await (appOwnedTuiStart ?? driver.start(channelStartInput));
     if (!isCurrentGeneration()) {
