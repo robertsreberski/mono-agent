@@ -183,3 +183,57 @@ it("leaves confirmed settings pending after a managed restart refusal, with no a
   expect(save).toHaveBeenCalledTimes(1);
   expect(screen.getByText("Saved; applies on next start")).toBeVisible();
 });
+
+// Synthetic Memory flow uses the existing catalog example and the same mocked
+// preview/save/restart boundaries as the cron flow above; no product-only UI.
+for (const width of [390, 1440]) for (const managed of [true, false]) it(`captures the synthetic Memory Enable flow at ${width}px (${managed ? "managed" : "foreground"})`, async () => {
+  await page.viewport(width, width === 390 ? 1900 : 1600);
+  const unconfigured = {
+    ...capabilitySnapshot,
+    cards: capabilitySnapshot.cards.map((card) => card.id === "memory" ? {
+      ...card, status: "disabled" as const, selectedVariant: undefined,
+      evidence: card.evidence.map((item) => ({ ...item, status: "disabled" as const })),
+      variants: card.variants?.map((variant) => ({ ...variant, status: "disabled" as const })),
+    } : card),
+  };
+  const eligible = {
+    ...capabilityActions,
+    actions: capabilityActions.actions.map((action) => action.id === "memory-lite" ? { ...action, available: true, active: false, reason: "eligible" as const } : action),
+  };
+  vi.mocked(api.capabilitySetup).mockResolvedValue(unconfigured);
+  vi.mocked(api.capabilityActions).mockResolvedValue(eligible);
+  const lite = capabilitySnapshot.cards.find((card) => card.id === "memory")!.variants!.find((variant) => variant.id === "memory:lite")!;
+  const example = JSON.parse(lite.steps.find((step) => step.trimStart().startsWith("{"))!) as { memory: unknown };
+  const preview = { action: "memory-lite" as const, process: eligible.process, expectedVersion: "a".repeat(64), changes: [{ field: "memory" as const, value: JSON.stringify(example.memory, null, 2) }], normalizesFormatting: true as const, noOp: false };
+  vi.spyOn(api, "previewCapabilityAction").mockResolvedValue(preview);
+  const save = vi.spyOn(api, "saveCapabilityAction").mockImplementation(async () => {
+    vi.mocked(api.capabilityActions).mockResolvedValue({ ...eligible, actions: eligible.actions.map((action) => action.id === "memory-lite" ? { ...action, reason: "already-configured" as const } : action) });
+    return { action: preview.action, process: preview.process, version: "b".repeat(64), changed: true };
+  });
+  const restart = vi.spyOn(api, "requestAgentRestart");
+  render(<Preview width={width} managed={managed} />);
+  const memory = await screen.findByRole("article", { name: "Memory" });
+  const capture = async (state: string) => {
+    await settleAndReveal(width);
+    expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width);
+    if (shots) await page.screenshot({ path: `${shots}/capabilities-synthetic-enable-flow-${width}-${state}.png` });
+  };
+  const enable = await within(memory).findByRole("button", { name: "Enable Memory Lite…" });
+  expect(enable).toBeVisible();
+  expect(within(memory).getByRole("heading", { name: "Memory" }).parentElement).toHaveTextContent("Disabled");
+  expect(within(memory).queryByText("Active")).toBeNull();
+  if (managed) await capture("eligible");
+  await userEvent.click(enable);
+  expect(within(memory).getByLabelText("Owned-field preview").textContent).toBe(preview.changes[0]!.value);
+  const confirm = within(memory).getByRole("button", { name: "Confirm Save" });
+  expect(confirm).toBeVisible();
+  expect(save).not.toHaveBeenCalled();
+  if (managed) await capture("preview");
+  await userEvent.click(confirm);
+  await within(memory).findByText("Saved; applies on next start");
+  expect(save).toHaveBeenCalledWith("garden", { action: "memory-lite", process: preview.process, expectedVersion: preview.expectedVersion, confirmed: true });
+  expect(restart).not.toHaveBeenCalled();
+  if (managed) await waitFor(() => expect(within(memory).getByRole("button", { name: "Restart to apply…" })).toBeEnabled());
+  else expect(within(memory).queryByRole("button", { name: "Restart to apply…" })).toBeNull();
+  await capture(managed ? "managed-saved" : "foreground-saved");
+});
