@@ -529,7 +529,38 @@ Owner provenance identifies a historical quotation, **not renewed approval**.
 by default. Explicit `mode: "relevance"` adds Unicode-aware partial coverage,
 phrase/proximity ranking, up to two complementary matched-context previews
 (512 total UTF-8 bytes with separate exact retained-byte ranges),
-and typed v2 continuations. Term edges respect Unicode scripts (unspaced scripts
+and typed v2 cursor envelopes. New searches use ranking v2; an issued
+`rankingVersion: 1` cursor retains the complete v1 parser, eligibility, score,
+tie/anchor comparator and traversal, including literal matching. Cursor-envelope
+version and ranking version are separate. Searches disclose `rankingVersion`.
+
+Ranking v2 keeps original content terms, full phrases and exact identifiers
+stronger than expansions. Bounded generic event/correction vocabulary adds
+query-relevant bonuses, not eligibility by itself. Delimiter-separated identifier
+components are lower-weight discovery paths; numeric identifiers keep their full
+spelling (no `ACT-77` → `ACT-770` or arbitrary substring matching). Short relevant
+user edits can receive a bounded bonus, not adjacent-turn interpretation.
+A separate 157-word English function-word list filters content anchors for all
+lexical questions. A content-term match (or its bounded identifier component)
+is required: stop/intent matches cannot substitute for content. If only
+intent/change terms remain, they become literal anchors;
+if none remain, eligibility falls back to v1. Correction signals cover base,
+plural and common inflected forms. Components share one alternation per term,
+not one body scan per component. Generic clause-local negation and clear
+hypothetical/quoted framing suppress bonuses, not a bare `would` or `example`.
+Complementary windows try content before component patterns, never stop/intent
+words. Passive “is/are/was/were (being) used to” frames and short inverted purpose
+questions are not historical; an embedded “that we used to” clause remains
+habitual history.
+Only explicit historical markers select historical ordering; `when`, `first` and
+`before` do not. Historical queries downweight assistant and generated-summary
+echoes (neither earns correction/event bonuses) and repetition, and use older
+capture order for score ties; current-state and literal queries keep newest-first
+ties. Capture order is not event date, source kind is not truth, and ranking
+confers neither authority nor supersession. These heuristics use bounded local
+context rather than collecting whole-corpus duplicate groups.
+
+Term edges respect Unicode scripts (unspaced scripts
 allow letter-run substrings); short Latin/numeric terms do not match inside
 unrelated words/numbers. `preview`/`previewRange` describe the primary window;
 optional `additionalPreviews` contains one separate `preview`/`previewRange`,

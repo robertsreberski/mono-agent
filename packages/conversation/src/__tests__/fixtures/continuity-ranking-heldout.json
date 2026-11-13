@@ -1,0 +1,66 @@
+{
+  "purpose": "Fresh fictional held-out queries and expectations frozen before the review-fix implementation. Numeric weights must not be tuned to these cases.",
+  "cases": [
+    {
+      "name": "ordinary-question-content",
+      "query": "what is the saffron parcel",
+      "records": [
+        { "kind": "user", "text": "Saffron parcel arrives on day 23." },
+        { "kind": "assistant", "text": "What is the plan? It is the weekend." }
+      ],
+      "expectedFirst": 0
+    },
+    {
+      "name": "when-question-current-value",
+      "query": "when is the juniper delivery",
+      "records": [
+        { "kind": "user", "text": "Juniper delivery day 14." },
+        { "kind": "user", "text": "Juniper delivery day 26." }
+      ],
+      "expectedFirst": 1
+    },
+    {
+      "name": "historical-source-over-restatements",
+      "query": "previous willow launch",
+      "records": [
+        { "kind": "user", "text": "Willow launch was scheduled for day 9." },
+        { "kind": "assistant", "text": "Willow launch remains on day 9." },
+        { "kind": "summary", "text": "Willow launch changed to day 9; a recap." },
+        { "kind": "summary", "text": "Willow launch changed to day 9; another recap." },
+        { "kind": "assistant", "text": "Willow launch remains on day 9; another echo." },
+        { "kind": "summary", "text": "Willow launch changed to day 9; the latest recap." }
+      ],
+      "expectedFirst": 0
+    },
+    {
+      "name": "polite-correction-not-hypothetical",
+      "query": "earlier kestrel route edit",
+      "records": [
+        { "kind": "user", "text": "Kestrel route: actually, it would be day 18." },
+        { "kind": "assistant", "text": "Hypothetically, kestrel route might move to day 35." },
+        { "kind": "assistant", "text": "Kestrel route is day 18." },
+        { "kind": "summary", "text": "Kestrel route changed to day 18; derived account." }
+      ],
+      "expectedFirst": 0
+    },
+    {
+      "name": "identifier-request-source",
+      "query": "historical LANTERN_maple-52 request",
+      "records": [
+        { "kind": "user", "text": "Requested LANTERN_maple-52 in amber." },
+        { "kind": "assistant", "text": "Requested LANTERN_maple-520 in amber." },
+        { "kind": "summary", "text": "LANTERN_maple-52 requested amber, a summary." }
+      ],
+      "expectedFirst": 0
+    },
+    {
+      "name": "conditional-framing-versus-event",
+      "query": "earlier quartz shipment change",
+      "records": [
+        { "kind": "user", "text": "Quartz shipment changed to day 21; the crate will arrive then." },
+        { "kind": "user", "text": "If quartz shipment changed to day 88, the crate would arrive later." }
+      ],
+      "expectedFirst": 0
+    }
+  ]
+}

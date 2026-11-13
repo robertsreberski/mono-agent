@@ -6,9 +6,9 @@ import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { ToolHistoryReader, ToolHistoryWriter, continuityGenerationId, continuityRecordId, type ContinuityPreparation } from "@mono-agent/conversation";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createConversationHistoryRuntimeExtension, handleConversationHistoryRequest, isConversationHistoryToolAllowed, CONVERSATION_HISTORY_MCP_SERVER_NAME, CONVERSATION_HISTORY_TOOL_NAME } from "../request-tools/conversation-history.js";
-import { decodeRequestScopedCursor } from "../mcp/request-scoped-mcp.js";
+import { decodeRequestScopedCursor, encodeRequestScopedCursor, requestScopedCursorDigest } from "../mcp/request-scoped-mcp.js";
 import { handleSessionHistoryRequest } from "../request-tools/session-history.js";
 
 const roots: string[] = [], writers = new Set<ToolHistoryWriter>(), clients: Array<() => Promise<void>> = [];
@@ -257,15 +257,47 @@ describe("ConversationHistory scoped evidence", () => {
     const ranked = body(handleConversationHistoryRequest(f.binding, { query: "cobalt observatory", limit: 1 }));
     expect(ranked).toMatchObject({ mode: "relevance", scan: { complete: true, records: 4 } });
     expect(JSON.parse(Buffer.from(ranked.nextCursor, "base64url").toString()).version).toBe(2);
-    for (const patch of [{ rankingVersion: 2 }, { watermark: 0 }, { manifest: sha("wrong") }, { anchor: { recordId: ranked.items[0].recordId, score: 0, ordinal: 1 } }]) {
-      expect(body(handleConversationHistoryRequest(f.binding, { query: "cobalt observatory", limit: 1, cursor: alter(ranked.nextCursor, patch) })).error.code).toBe("invalid_cursor");
-    }
+    // Re-sign mutations so unsupported version 3 reaches the envelope guard,
+    // while supported v1 reaches the reader and rejects the incompatible v2
+    // historical anchor. Ranking v1 itself must remain supported.
+    const tamperQuery = "earlier cobalt observatory";
+    const historical = body(handleConversationHistoryRequest(f.binding, { query: tamperQuery, limit: 1 }));
+    const { digest: _digest, ...originalFields } = decodeRequestScopedCursor(historical.nextCursor)!;
+    const dispatch = vi.spyOn(f.reader, "searchContinuity");
+    try {
+      for (const patch of [{ rankingVersion: 3 }, { rankingVersion: 1 }, { watermark: 0 }, { manifest: sha("wrong") }, { anchor: { recordId: historical.items[0].recordId, score: 0, ordinal: 1 } }]) {
+        dispatch.mockClear();
+        const fields = { ...originalFields, ...patch };
+        const signed = encodeRequestScopedCursor({ ...fields, digest: requestScopedCursorDigest(["conversation-history-v1", logicalId, conversationId, runId, "search-v2", JSON.stringify(fields)]) });
+        expect(body(handleConversationHistoryRequest(f.binding, { query: tamperQuery, limit: 1, cursor: signed })).error.code).toBe("invalid_cursor");
+        if (patch.rankingVersion === 3) expect(dispatch).not.toHaveBeenCalled();
+        if (patch.rankingVersion === 1) expect(dispatch).toHaveBeenCalledTimes(1);
+      }
+    } finally { dispatch.mockRestore(); }
     const literal = body(handleConversationHistoryRequest(f.binding, { query: '"' }));
     expect(literal.mode).toBe("literal"); expect(literal.items).toHaveLength(1);
     await f.writer.close(); writers.delete(f.writer);
     const restarted = { ...f.binding, reader: new ToolHistoryReader(f.root) };
     expect(body(handleConversationHistoryRequest(restarted, { query: "cobalt observatory", limit: 1, cursor: ranked.nextCursor })).items).toHaveLength(1);
     expect(body(handleConversationHistoryRequest(restarted, { action: "search", mode: "relevance" })).error.code).toBe("invalid_query");
+  });
+
+  it("dispatches an issued ranking-v1 cursor without upgrading its pipeline", async () => {
+    const f = await fixture(), input = preparation(["cobalt"]); await publish(f.writer, input);
+    const fields = { version: 2, rankingVersion: 1, queryDigest: requestScopedCursorDigest(["conversation-history-query-v2", "cobalt"]), limit: 5,
+      watermark: 1, manifest: sha("fictional manifest"), anchor: { recordId: input.records[0]!.recordId, ordinal: 1, score: 1_165_535 }, kind: "search" };
+    const cursor = encodeRequestScopedCursor({ ...fields, digest: requestScopedCursorDigest(["conversation-history-v1", logicalId, conversationId, runId, "search-v2", JSON.stringify(fields)]) });
+    let dispatched: number | undefined;
+    const reader = { searchContinuity: (args: Parameters<typeof f.reader.searchContinuity>[0]) => {
+      dispatched = args.continuation?.rankingVersion;
+      return { available: true, items: [], rankingVersion: 1 as const };
+    }, getContinuity: f.reader.getContinuity.bind(f.reader), continuityGaps: f.reader.continuityGaps.bind(f.reader), latestContinuitySummary: f.reader.latestContinuitySummary.bind(f.reader) };
+    const result = handleConversationHistoryRequest({ ...f.binding, reader }, { query: "cobalt", cursor });
+    expect(dispatched).toBe(1); expect(body(result)).toMatchObject({ rankingVersion: 1, available: true });
+    expect(result.content.map(block => block.text).join("\n")).toContain('"rankingVersion":1');
+    expect(body(handleConversationHistoryRequest({ ...f.binding, reader }, { query: "cobalt", cursor: alter(cursor, { rankingVersion: 2 }) })).error.code).toBe("invalid_cursor");
+    const fresh = handleConversationHistoryRequest(f.binding, { query: "cobalt" });
+    expect(body(fresh).rankingVersion).toBe(2); expect(fresh.content.map(block => block.text).join("\n")).toContain('"rankingVersion":2');
   });
 
   it("discloses scan exhaustion and offers explicit browsing, never a purported no-match ranked page", async () => {

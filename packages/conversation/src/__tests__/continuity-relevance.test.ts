@@ -6,16 +6,24 @@ import { getContinuity, searchContinuity } from "../tool-history/continuity-read
 import { searchRelevantContinuity } from "../tool-history/relevance-scan.js";
 import type { ContinuityPreview } from "../index.js";
 import * as relevance from "../tool-history/relevance.js";
+import independentHeldout from "./fixtures/continuity-ranking-heldout-independent.json" with { type: "json" };
+import { englishStopWords } from "../tool-history/relevance-stopwords.js";
+import rankingHeldout from "./fixtures/continuity-ranking-heldout.json" with { type: "json" };
+import { evidenceQuery, evidenceMatch } from "../tool-history/relevance-v2.js";
+import rankingFixture from "./fixtures/continuity-ranking.json" with { type: "json" };
+import { relevancePipeline } from "../tool-history/relevance-pipeline.js";
+import type { ContinuityRelevanceContinuation } from "../tool-history/continuity-contracts.js";
 import { matchedPreview, relevanceMatch, relevanceQuery } from "../tool-history/relevance.js";
 const scope = { logicalConversationId: "fiction", currentConversationId: "fiction#today", currentRunId: "reader" };
 const sha = (s: string) => createHash("sha256").update(s).digest("hex");
 function fixture() {
   const db = new DatabaseSync(":memory:"); createContinuitySchema(db);
   let n = 0;
-  const add = (text: string, state = "committed", logical = scope.logicalConversationId) => {
+  const add = (text: string, state = "committed", logical = scope.logicalConversationId, kind = "assistant") => {
     const gen = `gen-${++n}`, id = continuityRecordId(logical, gen);
     db.prepare("INSERT INTO continuity_generations(generation_id,conversation_id,logical_id,action,preparation_digest,state,created_at_ms) VALUES(?,?,?,'publish','fixture',?,0)").run(gen, `${logical}#today`, logical, state);
     db.prepare("INSERT INTO continuity_records(record_id,generation_id,run_id,kind,seq,finalized,retained_text,text_sha256,original_bytes,retained_bytes,redacted,truncated,provenance,source_json,created_at_ms) VALUES(?,?,'old','assistant',0,?,?,?,?,?,0,0,'assistant','{}',0)").run(id, gen, state === "committed" ? 1 : 0, text, sha(text), Buffer.byteLength(text), Buffer.byteLength(text));
+    db.prepare("UPDATE continuity_records SET kind=?,provenance=? WHERE record_id=?").run(kind, kind === "user" ? "unknown" : "assistant", id);
     return { id, gen };
   };
   const reader = {
@@ -298,5 +306,334 @@ describe("lazy complementary previews", () => {
       expect(page.resumeAfter).toHaveLength(1); expect(page.continuation).toBeUndefined();
       expect(page.resumeAfter![0]!.anchor.recordId).toBe(item.recordId);
     } finally { f.db.close(); }
+  });
+});
+describe("versioned evidence-sensitive ranking (queries frozen before weights)", () => {
+  it.each(rankingFixture.upgrade.v1)("preserves complete pre-upgrade v1 traversal for $query", frozen => {
+    const f = fixture(); try {
+      rankingFixture.upgrade.texts.forEach(text => f.add(text));
+      const seen = [...frozen.firstPage], scores = frozen.scores.slice(0, frozen.firstPage.length);
+      let cursor: ContinuityRelevanceContinuation | undefined = frozen.issuedCursor as ContinuityRelevanceContinuation;
+      for (let pages = 0; cursor && pages < frozen.traversal.length + 1; pages++) {
+        const page = searchContinuity(f.db, { ...scope, query: frozen.query, limit: frozen.limit ?? 2, mode: "relevance", continuation: cursor });
+        expect(page.degradedReason).toBeUndefined(); expect(page.rankingVersion).toBe(1);
+        seen.push(...page.items.map(item => item.recordId)); scores.push(...page.resumeAfter!.map(boundary => boundary.anchor.score));
+        cursor = page.continuation;
+      }
+      expect(cursor, "v1 paging must terminate within the traversal bound").toBeUndefined();
+      expect(seen).toEqual(frozen.traversal); expect(scores).toEqual(frozen.scores);
+      // Independently re-evaluate the complete frozen parser/eligibility/score
+      // and tie comparator, including the page emitted before the upgrade.
+      const pipeline = relevancePipeline(1, frozen.query);
+      const all = rankingFixture.upgrade.texts.flatMap((text, index) => {
+        const match = pipeline.match(text, "assistant");
+        return match ? [{ recordId: continuityRecordId("fiction", `gen-${index + 1}`), ordinal: index + 1, score: match.score }] : [];
+      }).sort(pipeline.compare);
+      expect(all.map(row => row.recordId)).toEqual(frozen.traversal);
+      expect(all.map(row => row.score)).toEqual(frozen.scores);
+    } finally { f.db.close(); }
+  });
+
+  it.each(rankingFixture.recovery)("discovers and completely recovers $name sources in R=3", scenario => {
+    const f = fixture(); try {
+      const retained = scenario.required.map(source => scenario.name === "short-edit" ? source.text : source.text + "\n" + "x".repeat(scenario.recordBytes - Buffer.byteLength(source.text) - 1));
+      const required = retained.map((text, index) => f.add(text, "committed", scope.logicalConversationId, scenario.required[index]!.kind));
+      for (let i = 0; i < scenario.echoCount; i++) f.add(scenario.echo);
+      const page = f.search(scenario.query);
+      expect(page.rankingVersion).toBe(2); expect(page.scan!.complete).toBe(true);
+      for (const source of required) expect(page.items.slice(0, scenario.maxSearchRank).map(item => item.recordId)).toContain(source.id);
+      // One search + batched first reads + batched continuations, not preview
+      // credit or an arbitrary offset. Short edits fit one chunk; other sources
+      // are 12,000 bytes and need both reads.
+      let recoveryRounds = 1; // Search is one tool round; each batched read adds one.
+      const first = required.map(source => getContinuity(f.db, { ...scope, recordId: source.id, chunkBytes: 8192 }));
+      recoveryRounds++;
+      const second = first.map(part => part.nextOffset === undefined ? part : getContinuity(f.db, { ...scope, recordId: part.record!.recordId, chunkBytes: 8192, chunkOffset: part.nextOffset }));
+      if (first.some(part => part.nextOffset !== undefined)) recoveryRounds++;
+      expect(recoveryRounds).toBeLessThanOrEqual(scenario.maxRounds);
+      second.forEach((part, index) => {
+        expect(part.nextOffset).toBeUndefined();
+        const recovered = first[index]!.nextOffset === undefined ? part.chunk! : first[index]!.chunk! + part.chunk!;
+        expect(recovered).toBe(retained[index]); expect(sha(recovered)).toBe(part.record!.sha256);
+      });
+    } finally { f.db.close(); }
+  });
+
+  it("does not promote quotations, hypothetical corrections, irrelevant edits or repetition floods", () => {
+    const f = fixture(); try {
+      const negative = rankingFixture.negative, scenario = rankingFixture.recovery[0]!;
+      const required = scenario.required.map(source => f.add(source.text, "committed", scope.logicalConversationId, source.kind));
+      const irrelevant = f.add(negative.irrelevantEdit, "committed", scope.logicalConversationId, "user");
+      for (let n = 0; n < 24; n++) { f.add(negative.quoted); f.add(negative.hypothetical); f.add(negative.flood.repeat(20)); f.add(negative.flood.repeat(20), "committed", scope.logicalConversationId, "user"); }
+      const page = f.search(negative.historicalQuery);
+      expect(page.items.slice(0, 2).map(item => item.recordId).sort()).toEqual(required.map(source => source.id).sort());
+      expect(page.items.map(item => item.recordId)).not.toContain(irrelevant.id);
+      const pipeline = relevancePipeline(2, negative.historicalQuery);
+      expect(pipeline.match(negative.irrelevantEdit, "user")).toBeUndefined();
+    } finally { f.db.close(); }
+  });
+
+  it.each(rankingFixture.negative.nearMisses)("rejects numeric/identifier substring near-miss $query", ({ query, text }) => {
+    expect(relevancePipeline(2, query).match(text, "user")).toBeUndefined();
+  });
+  it("keeps exact identifiers stronger than bounded components and original coverage stronger than vocabulary", () => {
+    const identifier = relevancePipeline(2, "beacon-27");
+    expect(identifier.match("beacon-27", "user")!.score).toBeGreaterThan(identifier.match("TASK_beacon-27", "user")!.score);
+    expect(relevancePipeline(2, "gatebox").match("release_gatebox", "user")).toBeDefined();
+    expect(relevancePipeline(2, "i\u0307gatebox").match("release_İgatebox", "user")).toBeDefined();
+    expect(relevancePipeline(2, "release_gatebox").match("gatebox", "user")).toBeDefined();
+    const pipeline = relevancePipeline(2, rankingFixture.negative.historicalQuery);
+    expect(pipeline.match("Cobalt delivery.", "assistant")!.score).toBeGreaterThan(pipeline.match("Cobalt correction revised changed instead scheduled requested.", "user")!.score);
+  });
+  it("keeps current-state ordering and literal newest-first behavior, without inferring event dates from captures", () => {
+    const f = fixture(); try {
+      f.add("Cobalt delivery was corrected to day 18."); const latest = f.add("Cobalt delivery is day 18.");
+      expect(f.search(rankingFixture.negative.currentQuery).items[0]!.recordId).toBe(latest.id);
+      const historical = relevancePipeline(2, "historical cobalt"), current = relevancePipeline(2, "current cobalt");
+      const old = { recordId: "a", ordinal: 1, score: 1 }, recent = { recordId: "b", ordinal: 2, score: 1 };
+      expect(historical.compare(old, recent)).toBeLessThan(0); expect(current.compare(old, recent)).toBeGreaterThan(0);
+      expect(relevancePipeline(2, '"').compare(old, recent)).toBeGreaterThan(0);
+    } finally { f.db.close(); }
+  });
+});
+
+
+it("pages historical v2 ties losslessly with versioned anchors and no event-date inference", () => {
+  const f = fixture(); try {
+    const expected = Array.from({ length: 12 }, () => f.add("cobalt launch recap"));
+    let page = f.search("historical cobalt launch", 3);
+    const seen: string[] = [];
+    for (let pages = 0; pages < expected.length + 1; pages++) {
+      seen.push(...page.items.map(item => item.recordId));
+      if (!page.continuation) break;
+      expect(page.continuation.rankingVersion).toBe(2);
+      page = searchContinuity(f.db, { ...scope, query: "historical cobalt launch", limit: 3, mode: "relevance", continuation: page.continuation });
+      expect(page.degradedReason).toBeUndefined();
+    }
+    expect(page.continuation, "v2 paging must terminate within the record bound").toBeUndefined();
+    expect(seen).toEqual(expected.map(source => source.id));
+  } finally { f.db.close(); }
+});
+
+
+it("applies the short-edit bonus only to a short, query-relevant user record", () => {
+  const scenario = rankingFixture.recovery.find(row => row.name === "short-edit")!;
+  const pipeline = relevancePipeline(2, scenario.query), text = scenario.required[1]!.text;
+  expect(pipeline.match(text, "user")!.score).toBeGreaterThan(pipeline.match(text + "\n" + "x".repeat(300), "user")!.score);
+  expect(pipeline.match(rankingFixture.negative.irrelevantEdit, "user")).toBeUndefined();
+});
+
+
+describe("ranking review regressions", () => {
+  it("requires and scores content anchors for non-intent questions, preserving v1 separately", () => {
+    const query = "what is the cobalt order", stopOnly = "What is the plan? It is the weekend.", content = "cobalt order day 18";
+    const modern = relevancePipeline(2, query), legacy = relevancePipeline(1, query);
+    expect(modern.match(stopOnly, "assistant")).toBeUndefined();
+    expect(modern.match(content, "user")).toBeDefined();
+    expect(legacy.match(stopOnly, "assistant")!.score).toBeGreaterThan(legacy.match(content, "user")!.score);
+    expect(relevancePipeline(2, "what is the").match(stopOnly, "user")).toEqual(relevancePipeline(1, "what is the").match(stopOnly, "user"));
+  });
+  it.each(["when is the juniper delivery", "first item in the list", "before release"])("keeps the newest value for current-state query %j", query => {
+    const f = fixture(); try {
+      f.add(`${query}: amber`, "committed", scope.logicalConversationId, "user");
+      const newest = f.add(`${query}: violet`, "committed", scope.logicalConversationId, "user");
+      expect(evidenceQuery(query).historical).toBe(false);
+      expect(f.search(query).items[0]!.recordId).toBe(newest.id);
+    } finally { f.db.close(); }
+  });
+  it("uses only explicit historical markers", () => {
+    for (const marker of ["historical", "history", "original", "originally", "previous", "previously", "earlier", "prior", "initial", "initially", "predecessor", "before-correction", "used to"]) expect(evidenceQuery(`${marker} juniper`).historical).toBe(true);
+    for (const marker of ["when", "first", "before", "old", "past"]) expect(evidenceQuery(`${marker} juniper`).historical).toBe(false);
+  });
+  it("qualifies generic clauses without vetoing polite factual corrections", () => {
+    const q = evidenceQuery("earlier juniper shipment edit");
+    const score = (text: string) => evidenceMatch(text, q, "user")!.score;
+    expect(score("Juniper shipment: actually, it would be day 18.")).toBeGreaterThan(score("Juniper shipment is day 18."));
+    expect(score("Juniper shipment was not changed to day 18.")).toBeLessThan(score("Juniper shipment was changed to day 18."));
+    expect(score("If juniper shipment changed, it would be day 18.")).toBeLessThan(score("Juniper shipment changed to day 18."));
+    expect(score("Juniper shipment changed to day 18; no additional work is authorized.")).toBeGreaterThan(score("Juniper shipment is day 18."));
+    expect(score("Juniper shipment example label was changed to day 18.")).toBeGreaterThan(score("Juniper shipment is day 18."));
+    expect(score('Juniper shipment: quoted "changed to day 99".')).toBeLessThan(score("Juniper shipment changed to day 18."));
+  });
+  it("treats generated summaries as assistant echoes for historical bonuses", () => {
+    const q = evidenceQuery("earlier juniper shipment edit"), text = "Juniper shipment actually changed to day 18.";
+    expect(evidenceMatch(text, q, "summary")!.score).toBe(evidenceMatch(text, q, "assistant")!.score);
+    expect(evidenceMatch(text, q, "summary")!.score).toBeLessThan(evidenceMatch(text, q, "user")!.score);
+  });
+  it("reuses precomputed globals without constructing regexes per record", () => {
+    const q = evidenceQuery("earlier juniper_box shipment edit");
+    expect(q.content.every(entry => entry.global.global)).toBe(true);
+    expect(q.components.every(entry => !entry || entry.global.global)).toBe(true);
+    const spy = vi.spyOn(globalThis, "RegExp");
+    try {
+      for (let n = 0; n < 10; n++) {
+        evidenceMatch("Juniper_box shipment actually changed to day 18.", q, "user");
+        evidenceMatch("Juniper_box shipment ".repeat(20), q, "assistant");
+        evidenceMatch("unrelated material", q, "user");
+      }
+      expect(spy).not.toHaveBeenCalled();
+      expect(q.content.every(entry => entry.global.lastIndex === 0)).toBe(true);
+    } finally { spy.mockRestore(); }
+  });
+});
+
+describe("frozen ranking specification cases (weights unchanged)", () => {
+  it.each(rankingHeldout.cases)("evaluates $name", scenario => {
+    const f = fixture(); try {
+      const ids = scenario.records.map(row => f.add(row.text, "committed", scope.logicalConversationId, row.kind).id);
+      const page = f.search(scenario.query);
+      expect(page.items[0]!.recordId).toBe(ids[scenario.expectedFirst]);
+    } finally { f.db.close(); }
+  });
+});
+
+
+describe("shared v2 retained offset mapping", () => {
+  it.each([
+    { query: "zİ", term: "zİ" },
+    { query: "historical zİ", term: "zİ" },
+    { query: "atlas.zİrecord", term: "zİrecord" },
+  ])("maps $query after earlier lowercase expansions", ({ query, term }) => {
+    const f = fixture(), fold = vi.spyOn(relevance, "matchingText"), offset = vi.spyOn(relevance, "retainedPosition");
+    try {
+      const text = "İ 🔷 background. ".repeat(100) + `\nRetained value: ${term}.`;
+      const match = evidenceMatch(text, evidenceQuery(query), "user")!;
+      expect(fold).toHaveBeenCalledWith(text); expect(offset).toHaveBeenCalledTimes(2);
+      expect(match.position).toBe(text.indexOf(term)); expect(match.end).toBe(match.position + term.length);
+      f.add(text);
+      const item = f.search(query).items[0]!;
+      expect(item.preview).toContain(`Retained value: ${term}`);
+      expect(item.previewRange!.complete).toBe(false);
+      expect(Buffer.from(text).subarray(item.previewRange!.start, item.previewRange!.end).toString()).toBe(item.preview);
+      expect(item.preview).not.toContain("�");
+    } finally { fold.mockRestore(); offset.mockRestore(); f.db.close(); }
+  });
+});
+
+
+describe("general lexical review fixes", () => {
+  it("separates a general English stop list from content and intent", () => {
+    expect(englishStopWords.size).toBeGreaterThanOrEqual(120); expect(englishStopWords.size).toBeLessThanOrEqual(180);
+    for (const query of ["what do you know about these copper samples", "can we have those copper samples from your store with us"]) {
+      const f = fixture(); try {
+        f.add("We know about what you have with us from your store.");
+        const source = f.add("Copper samples are sealed.");
+        expect(f.search(query).items[0]!.recordId).toBe(source.id);
+        expect(evidenceQuery(query).content.some(entry => englishStopWords.has(entry.term))).toBe(false);
+      } finally { f.db.close(); }
+    }
+  });
+  it.each(["what changed", "any corrections?", "postponed"])("retains literal intent anchors for %j", query => {
+    const text = "Corrections: the parcel changed and was postponed.";
+    const f = fixture(); try {
+      const source = f.add(text);
+      expect(relevancePipeline(1, query).match(text, "assistant")).toBeDefined();
+      expect(f.search(query).items[0]!.recordId).toBe(source.id);
+      expect(evidenceQuery(query).patterns).toHaveLength(0);
+    } finally { f.db.close(); }
+  });
+  it("combines at most four components into one query-time pattern per term", () => {
+    const query = evidenceQuery("north-bronze-parcel-route");
+    expect(query.components).toHaveLength(1);
+    expect(query.components[0]!.pattern.test("old_bronze_side")).toBe(true);
+    const spy = vi.spyOn(query.components[0]!.pattern, "exec");
+    evidenceMatch("unrelated body", query, "user"); expect(spy).toHaveBeenCalledTimes(1);
+  });
+  it("spends complementary windows on content, never stop/intent vocabulary", () => {
+    const f = fixture(); try {
+      f.add("copper referent. " + "background ".repeat(70) + "is earlier what the. " + "padding ".repeat(70) + "parcel was moved.");
+      const item = f.search("what is the earlier copper parcel").items[0]!;
+      expect(item.additionalPreviews![0]!.preview).toContain("parcel was moved");
+      expect(item.additionalPreviews![0]!.preview).not.toContain("is earlier what the");
+    } finally { f.db.close(); }
+  });
+  it.each(["change", "changes", "changing", "correct", "corrects", "fix", "fixed", "reschedule", "rescheduled", "move", "moved"])("recognizes general correction morphology %j", word => {
+    const pipeline = relevancePipeline(2, "copper parcel correction");
+    expect(pipeline.match(`Copper parcel: ${word} the date.`, "user")!.score).toBeGreaterThan(pipeline.match("Copper parcel: retain the date.", "user")!.score);
+  });
+  it.each(["is", "are", "was", "were", "has been"])("does not treat auxiliary %j ... used to as habitual history", auxiliary => {
+    expect(evidenceQuery(`what ${auxiliary} copper equipment used to carry`).historical).toBe(false);
+  });
+  it("preserves habitual and explicit historical used-to queries", () => {
+    expect(evidenceQuery("what copper equipment used to carry").historical).toBe(true);
+    expect(evidenceQuery("historical use of what copper equipment is used to carry").historical).toBe(true);
+  });
+});
+
+it("evaluates the frozen independently authored development set with top-1 and MRR nonregression", () => {
+  let v1Reciprocal = 0, v2Reciprocal = 0;
+  for (const scenario of independentHeldout.cases) {
+    const f = fixture(); try {
+      const ids = scenario.records.map(record => f.add(record.text, "committed", scope.logicalConversationId, record.kind).id);
+      const indexed = f.db.prepare("SELECT record_id,kind FROM continuity_records ORDER BY ordinal").all();
+      expect(indexed.map(row => row.record_id)).toEqual(ids);
+      expect(indexed.map(row => row.kind)).toEqual(scenario.records.map(record => record.kind));
+      const results = [1, 2].map(version => {
+        const pipeline = relevancePipeline(version as 1 | 2, scenario.query);
+        const ranked = scenario.records.flatMap((record, index) => {
+          const match = pipeline.match(record.text, record.kind as "user" | "assistant" | "summary");
+          return match ? [{ index, recordId: ids[index]!, ordinal: index + 1, score: match.score }] : [];
+        }).sort(pipeline.compare);
+        const position = ranked.findIndex(record => record.index === scenario.expectedFirst);
+        return { first: ranked[0]?.index ?? null, rank: position === -1 ? null : position + 1, order: ranked.map(record => record.index) };
+      });
+      const [v1, v2] = results;
+      const page = f.search(scenario.query, 10);
+      expect(page.scan!.complete).toBe(true); expect(page.scan!.records).toBe(scenario.records.length);
+      expect(page.items.map(item => ids.indexOf(item.recordId))).toEqual(v2!.order);
+      if (v1!.rank === 1) expect(v2!.rank, scenario.name).toBe(1);
+      v1Reciprocal += v1!.rank === null ? 0 : 1 / v1!.rank;
+      v2Reciprocal += v2!.rank === null ? 0 : 1 / v2!.rank;
+    } finally { f.db.close(); }
+  }
+  expect(v2Reciprocal).toBeGreaterThanOrEqual(v1Reciprocal);
+});
+
+
+describe("general framing review fixes", () => {
+  const pipeline = () => relevancePipeline(2, "earlier copper route correction");
+  const neutral = () => pipeline().match("Copper route reference.", "user")!.score;
+  it.each([["'", "'"], ['"', '"'], ["“", "”"], ["‘", "’"], ["`", "`"]])("distinguishes opening %s and closing %s delimiters", (open, close) => {
+    for (const word of ["cancelled", "canceled", "corrects", "fixing", "rescheduled", "changing", "amends", "postponed", "reported"]) {
+      expect(pipeline().match(`Copper route: ${open}${word}${close} is sample wording.`, "user")!.score).toBe(neutral());
+      expect(pipeline().match(`Copper route ${open}warehouse${close} ${word} the timetable.`, "user")!.score).toBeGreaterThan(neutral());
+      expect(pipeline().match(`Copper route: (${open}${word}${close}) is sample wording.`, "user")!.score).toBe(neutral());
+    }
+  });
+  it.each([
+    "If copper route had already been cancelled, the depot needed a substitute.",
+    "Had copper route been rescheduled, the depot needed a substitute.",
+    "Notes. Had copper route been rescheduled, the depot needed a substitute.",
+    "Were it cancelled, copper route needed a substitute.",
+    "If copper route were moved, the depot needed a substitute.",
+  ])("does not reward conditional framing: %j", text => {
+    expect(pipeline().match(text, "user")!.score).toBe(neutral());
+  });
+  it("does reward a factual past-perfect statement without conditional framing", () => {
+    expect(pipeline().match("Copper route had been moved yesterday.", "user")!.score).toBeGreaterThan(neutral());
+  });
+  it.each(["didn't", "didn’t", "wasn't", "wasn’t", "hasn't", "hasn’t", "can't", "can’t"])("supports negation contraction %j", word => {
+    expect(pipeline().match(`Copper route ${word} actually change the timetable.`, "user")!.score).toBe(neutral());
+  });
+  it.each([
+    "the time was the one that we used to follow",
+    "what was the protocol that we used to follow",
+    "we used to follow copper routing",
+  ])("keeps habitual used-to historical: %j", text => {
+    expect(evidenceQuery(text).historical).toBe(true);
+  });
+  it.each([
+    "the lift is used to transport cargo",
+    "the lifts are being used to transport cargo",
+    "the lift was used to transport cargo",
+    "the lifts were being used to transport cargo",
+    "what is the lift used to transport",
+    "which lift was used to transport cargo",
+  ])("recognizes a narrow purpose/passive frame: %j", text => {
+    expect(evidenceQuery(text).historical).toBe(false);
+  });
+  it("discards tokenized needn't and ain't fragments as stop words", () => {
+    expect(evidenceQuery("we needn’t update the copper route and it ain’t new").content.map(entry => entry.term)).toEqual(["copper", "route", "new"]);
+    expect(englishStopWords.has("needn")).toBe(true); expect(englishStopWords.has("ain")).toBe(true);
   });
 });

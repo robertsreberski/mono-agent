@@ -7,6 +7,7 @@ import { createE2Models, loadE2Estimators, shippingSoul } from "../lib/continuit
 import { historyBody, lookupWitness, referenceReader, scriptedLookupReader, sha256 } from "../lib/continuity-lookup.mjs";
 import { measureSizingRegressions } from "../continuity-lookup-budget.mjs";
 import { createConversationHistoryRuntimeExtension, handleConversationHistoryRequest } from "../../packages/app/dist/request-tools/conversation-history.js";
+import rankingFixture from "../../packages/conversation/src/__tests__/fixtures/continuity-ranking.json" with { type: "json" };
 const ROOT = fileURLToPath(new URL("../../", import.meta.url));
 const cleanup = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
@@ -14,7 +15,7 @@ async function scratch() { const base = join(ROOT, ".worklab-tmp"); await mkdir(
 
 /** A deterministic model-visible actor: no planted IDs, fixture corpus or answer
  * key. It can only use the natural query, public previews and returned actions. */
-function naturalReader(pi, query, path) {
+function naturalReader(pi, query, path, maxSearchRank = 5) {
   let requests = 0;
   const observed = [], witness = lookupWitness(), delivered = new Set();
   return {
@@ -27,7 +28,7 @@ function naturalReader(pi, query, path) {
       let actions;
       if (requests === 1) {
         expect(JSON.stringify(context)).not.toMatch(/chr1_[A-Za-z0-9_-]{43}/u);
-        actions = [{ action: "search", query, limit: 5 }];
+        actions = [{ action: "search", query, limit: maxSearchRank }];
       } else if (requests === 4) {
         expect(context.tools).toEqual([]);
         expect(witness.snapshot().records.every(r => r.verified)).toBe(true);
@@ -35,12 +36,16 @@ function naturalReader(pi, query, path) {
       } else {
         const search = bodies.find(row => row.body?.action === "search")?.body;
         expect(search).toBeTruthy();
-        const selected = search.items.filter(item => /Original report:|Correction:/u.test([item.preview, ...(item.additionalPreviews ?? []).map(window => window.preview)].join("\n")));
+        const selected = path === "ranked" ? search.items.slice(0, maxSearchRank) : search.items.filter(item => /Original report:|Correction:/u.test([item.preview, ...(item.additionalPreviews ?? []).map(window => window.preview)].join("\n")));
         const gets = selected.map(item => search.navigation.nextActions.find(a => a.kind === "get_record" && a.arguments.recordId === item.recordId)?.arguments);
         expect(gets.every(Boolean)).toBe(true);
         if (path === "sequential") actions = [gets[requests - 2]];
         else if (requests === 2) actions = gets;
         else actions = bodies.filter(row => row.body?.action === "get").flatMap(row => row.body.navigation.nextActions.filter(a => a.kind === "next_get_chunk").map(a => a.arguments));
+      }
+      if (path === "ranked" && requests === 3 && actions.length === 0) {
+        expect(witness.snapshot().records.every(row => row.verified)).toBe(true);
+        return pi.fauxAssistantMessage([pi.fauxText("Complete retained evidence recovered; no renewed approval.")]);
       }
       expect(actions.length).toBeGreaterThan(0);
       return pi.fauxAssistantMessage(actions.map((args, index) => pi.fauxToolCall("ConversationHistory", args, { id: `request-${requests}-call-${index}` })), { stopReason: "toolUse" });
@@ -136,3 +141,41 @@ it("keeps first-result and reference consumers on actual returned relevance IDs/
   expect(reference.next({ messages: [] })).toMatchObject({ action: "search" });
   expect(reference.next({}, { action: "search", items: [{ recordId: first }] })).toBeNull();
 });
+
+
+it.each(rankingFixture.recovery)("recovers frozen v2 $name sources through installed MCP within R=3", async scenario => {
+  const root = await scratch(), modules = await productionModules(ROOT), pi = modules.pi;
+  const history = join(root, "history"), conversationId = "fictional-ranking";
+  const writer = await modules.conversation.ToolHistoryWriter.open({ root: history, continuityEnabled: true });
+  cleanup.push(() => writer.close());
+  const texts = scenario.required.map(source => ({ ...source, text: scenario.name === "short-edit" ? source.text : source.text + "\n" + "x".repeat(scenario.recordBytes - Buffer.byteLength(source.text) - 1) }));
+  const sources = [...texts, ...Array.from({ length: scenario.echoCount }, () => ({ kind: "assistant", text: scenario.echo }))];
+  const generationId = modules.conversation.continuityGenerationId();
+  const records = sources.map((source, sequence) => ({ ...source, sequence, recordId: modules.conversation.continuityRecordId(conversationId, `source-${sequence}`),
+    runId: "prior", provenance: source.kind === "user" ? "unknown" : "assistant" }));
+  await writer.prepareContinuity({ generationId, conversationId, logicalConversationId: conversationId, beforeDigest: null, afterDigest: sha256("fixture"), records });
+  await writer.commitContinuity({ generationId, conversationId, canonicalDigest: sha256("fixture") }); await writer.close();
+  const extension = await createConversationHistoryRuntimeExtension({ historyRoot: history })({ runId: "lookup", request: { conversationId, userMessage: "Retrieve retained evidence.", abortSignal: new AbortController().signal }, context: {} });
+  cleanup.push(() => extension.cleanup?.());
+  const estimators = await loadE2Estimators(), soul = await shippingSoul();
+  const faux = pi.fauxProvider({ provider: "faux", models: [{ id: "fictional-ranking", contextWindow: 272000, maxTokens: 8192 }] });
+  const collection = pi.createModels(); collection.setProvider(faux.provider);
+  const actor = naturalReader(pi, scenario.query, "ranked", scenario.maxSearchRank);
+  const route = createE2Models({ pi, estimators, models: [{ model: "faux:fictional-ranking" }], limits: { compactions: 0, probeRequests: 4, sourceRequests: 0 },
+    probeLookupRounds: 3, soul, sourceReply: context => actor.reply(context) });
+  route.setPosition({ probe: true, model: "faux:fictional-ranking", turn: 0, message: 0 });
+  const result = await modules.host.createMonoRuntime({ workspace: root }).run(`## Core Guardrails\n\n${soul.text}`, {
+    model: { provider: "faux", model: "fictional-ranking", reference: "faux:fictional-ranking" }, cwd: root,
+    messages: [{ role: "user", content: scenario.query }], allowedTools: ["ConversationHistory"], ...extension.runtimeOptions,
+    piResolvedModel: faux.getModel(), piResolvedModels: route.decorator(collection), maxTurns: 4, compaction: { enabled: false }, piMaxRetries: 0 });
+  const requests = scenario.name === "short-edit" ? 3 : 4;
+  expect(requests - 1).toBeLessThanOrEqual(scenario.maxRounds);
+  expect(result.error).toBeNull(); expect(actor.observed).toHaveLength(requests); expect(route.report().probeRequests).toBe(requests);
+  const search = actor.observed[1].bodies.find(body => body?.action === "search");
+  expect(search.rankingVersion).toBe(2); expect(actor.observed[1].visible.join("\n")).toContain('"rankingVersion":2');
+  for (const record of records.slice(0, 2)) {
+    expect(search.items.slice(0, scenario.maxSearchRank).map(item => item.recordId)).toContain(record.recordId);
+    expect(actor.witness.snapshot().records.find(row => row.recordId === record.recordId)).toMatchObject({ verified: true, chunks: scenario.name === "short-edit" ? 1 : 2, sha256: sha256(record.text) });
+  }
+  if (requests === 4) expect(actor.observed[3].tools).toEqual([]);
+}, 30000);
