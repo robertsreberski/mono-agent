@@ -1,3 +1,4 @@
+import { isBuiltInMemoryNativeFailure } from "./native-failures.js";
 import { constants } from "node:fs";
 import { access, mkdir, stat } from "node:fs/promises";
 import { join } from "node:path";
@@ -254,19 +255,6 @@ async function builtInMemoryNativeStatus(
     return "[ERROR] Built-in memory database smoke check failed. Rebuild dependencies with the launch runtime; if the runtime is compatible, stop the agent and run `mono-agent memory rebuild`, then re-run `mono-agent validate`.";
   } finally {
     try { database?.close(); } catch { /* best-effort smoke cleanup */ }
-  }
-}
-
-function isBuiltInMemoryNativeFailure(error: unknown): boolean {
-  try {
-    const message = error instanceof Error ? error.message : "";
-    const code = typeof error === "object" && error !== null && "code" in error
-      ? String((error as { readonly code?: unknown }).code ?? "")
-      : "";
-    return /(?:err_(?:dlopen|module_not_found)|module_not_found|better[-_ ]?sqlite|sqlite[-_ ]?vec|node_module_version|native module|dlopen|\.node\b)/iu
-      .test(`${code} ${message}`);
-  } catch {
-    return false;
   }
 }
 

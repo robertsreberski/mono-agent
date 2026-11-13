@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { resolveValidateContext } from "./validate-context.js";
 // Internal command implementation; `cli.ts` remains the stable public/bin facade.
-import { basename, resolve } from "node:path";
+import { resolve } from "node:path";
 import process from "node:process";
 import {
   MANAGED_BACKGROUND_WORKER_ENV,
@@ -41,6 +41,10 @@ import { runSandboxCommand } from "./commands/cli-sandbox-command.js";
 import * as ui from "./ui.js";
 
 export async function runCli(argv: readonly string[]): Promise<number> {
+  if (argv[0] === "preflight") {
+    const { runHostPreflight } = await import("./commands/cli-host-preflight-command.js");
+    return runHostPreflight(argv.slice(1));
+  }
   let args: ParsedCliArgs;
   try {
     args = parseCliArgs(argv);
@@ -223,6 +227,10 @@ export async function runCli(argv: readonly string[]): Promise<number> {
       process.stdout.write(JSON.stringify(result, null, args.json ? undefined : 2) + "\n");
       return 0;
     }
+    case "preflight": {
+      const { runHostPreflight } = await import("./commands/cli-host-preflight-command.js");
+      return runHostPreflight(argv.slice(1));
+    }
     case "validate":
       return await runValidate(args);
     case "auth":
@@ -346,7 +354,7 @@ export async function runCli(argv: readonly string[]): Promise<number> {
 }
 
 export function shouldLoadCommandDotenv(command: ParsedCliArgs["command"]): boolean {
-  return command !== "web" && command !== "bridge";
+  return command !== "preflight" && command !== "web" && command !== "bridge";
 }
 
 /**
@@ -381,20 +389,4 @@ function hasUnsupportedMemoryForgetFlag(argv: readonly string[]): boolean {
     if (token?.startsWith("-") === true) return true;
   }
   return false;
-}
-
-const cliEntryName = process.argv[1] === undefined ? undefined : basename(process.argv[1]);
-const isDirectCliInvocation = cliEntryName === "cli.js" || cliEntryName === "mono-agent";
-if (isDirectCliInvocation) {
-  runCli(process.argv.slice(2))
-    .then((code) => {
-      if (code !== 0) {
-        process.exitCode = code;
-        // The accepted restart armed its shutdown-wide deadline before app.stop().
-      }
-    })
-    .catch((error: unknown) => {
-      process.stderr.write(`${ui.style.red("✗")} ${error instanceof Error ? error.stack ?? error.message : String(error)}\n`);
-      process.exitCode = 1;
-    });
 }

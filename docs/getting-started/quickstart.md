@@ -7,6 +7,11 @@ sidebar:
 
 This page walks from an empty folder to a first conversation in the browser console: the guided `mono-agent init` wizard, the readiness checks it performs, the start path for each platform, and the foreground console. A real model reply still requires provider credentials or a configured local provider.
 
+Before scaffolding, `mono-agent preflight` checks this host from an empty folder
+without config or credentials. Optional capabilities are not required; use
+[installation diagnostics](/getting-started/install/#verify-the-install) for
+native-load repair advice. `doctor` remains the config-aware `validate` alias.
+
 ## The shortest working path
 
 If Node.js and a model provider are already ready, start here:

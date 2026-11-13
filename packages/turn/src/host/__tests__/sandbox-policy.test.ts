@@ -63,6 +63,12 @@ afterEach(async () => {
 });
 
 describe("sandbox policy", () => {
+  it("reports an external availability proof unavailable when cancelled", async () => {
+    const abort = new AbortController();
+    abort.abort();
+    const engine = createSrtSandboxEngine({ command: await fakeSrtExecutable(), signal: abort.signal });
+    await expect(engine.isAvailable()).resolves.toBe(false);
+  });
   it("creates a fail-closed native sandbox with denied network by default", () => {
     const policy = failClosedSandboxPolicy({ root: "/repo/workspace" });
 

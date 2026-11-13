@@ -39,6 +39,14 @@ You do **not** need pnpm to use the published packages — `npm i -g` and `npm e
 The repository includes `.nvmrc`, so source contributors using nvm can run `nvm use` to select the exact minimum version exercised in CI. Newer Node releases remain supported by the `>=24.15.0` package engine range.
 :::
 
+Both shipped CLI entry points reject unsupported Node **before** importing the
+runtime or loading native modules. The error names the found/required versions
+and gives alternatives: `nvm install 24.15.0 && nvm use 24.15.0`,
+`fnm install 24.15.0 && fnm use 24.15.0`, `volta install node@24.15.0`, or the
+[official Node installer](https://nodejs.org/en/download). Selecting Node does
+not rebuild an existing native dependency: after switching Node, stop affected
+agents and reinstall/rebuild with that same Node before restarting them.
+
 ## Install the CLI
 
 Install the `create-mono-agent` installer globally to get the `mono-agent` command on your `PATH`:
@@ -102,11 +110,33 @@ Where no usable service manager exists, the foreground command above is the supp
 
 ## Verify the install
 
-Confirm the CLI resolves and prints its help:
+Confirm the CLI resolves, then check this host from any folder (even an empty one):
 
 ```bash
 mono-agent --help
+mono-agent preflight
+mono-agent preflight --json          # versioned scripting report
+mono-agent preflight --port 5051     # check an alternative console port
 ```
+
+`preflight` never loads agent config, `.env`, credentials, or providers, and
+creates no scaffold. It checks Node/ABI, actually loads better-sqlite3/sqlite-vec
+and sharp in isolated processes, inspects the user service manager and sandbox,
+checks local model-list endpoints, and briefly binds/closes the console port.
+Model probes use only literal loopback defaults, never proxy variables or
+redirects, and perform no inference. Missing optional capabilities are not
+installation requirements: exit `0` means **no errors**, not all capabilities
+available. Every non-ok check includes commands and prerequisites; nothing is
+repaired automatically. `doctor` remains an alias of the config-aware `validate`.
+See the [preflight report contract](/observability/cli-reference/#host-preflight)
+for IDs, statuses, bounds, and exit codes.
+
+For native failures, select supported Node and stop affected running agents
+first. Source installs get a shell-quoted rebuild command derived from the
+executing checkout (not your current folder). Unknown npm layouts get two
+**labelled alternatives**, not a guessed repair: uninstall/reinstall either
+`create-mono-agent` or `@mono-agent/app` at the installed version, using the same
+Node, then rerun preflight. Choose only the alternative matching your install.
 
 The CLI exposes these commands (more detail in the [CLI Reference](/observability/cli-reference/)):
 
@@ -114,6 +144,7 @@ The CLI exposes these commands (more detail in the [CLI Reference](/observabilit
 | --- | --- |
 | `init` | Non-destructive scaffold of a config, `IDENTITY.md`, and `.mono-agent/`. A fresh built-in Journal/BuJo selection also gets one empty provider-free managed generation; pre-existing memory roots are never changed. On a TTY with no flags it runs the step-by-step **wizard** (preset or custom; name/Role, model routes, an optional-capabilities gate for channels/memory that defaults to No, then tools and sandbox); any flag or a non-TTY writes the scaffold silently. `setup` is an alias. |
 | `presets` | List the built-in setup presets (`list`) or show a preset's generated config, `.env.example`, and checklist (`show <id>`). Replaces the removed `recipes` command. |
+| `preflight` | Config-independent host capabilities and native-load checks; accepts `--json` and `--port <n>`. |
 | `validate` | Validate `mono-agent.config.json` and live checks that can be tested safely before starting. |
 | `start` | Start the host for every configured channel as a macOS `launchd` or Linux systemd user service; use `--foreground` where no service manager exists. |
 | `restart` / `stop` / `status` / `logs` | Manage the managed instance (macOS launchd; Linux systemd user service). |

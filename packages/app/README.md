@@ -326,6 +326,21 @@ together in the same lockstep release.
 
 ## Install / Usage
 
+Run `mono-agent preflight [--json] [--port <n>]` from any folder, before creating
+an agent: it checks Node/ABI, isolated better-sqlite3/sqlite-vec and sharp loads,
+user services, local model endpoints, sandbox status, and the console port.
+It never loads config, `.env`, credentials, or providers and never repairs the
+host. Optional capabilities are info/warnings; exit 0 means no errors, 1 errors,
+2 usage error. JSON is versioned (`schemaVersion: 1`, `operation: host-preflight`)
+with stable check IDs and actionable remediation entries. See the
+[CLI preflight contract](../../docs/observability/cli-reference.md#host-preflight).
+`doctor` remains an alias of `validate`, not of host preflight.
+
+Both executable paths check the manifest's Node engine floor before heavyweight
+imports. Unsupported Node prints found/required versions and nvm/fnm/Volta or
+official-installer alternatives; after a Node switch, stop affected agents and
+rebuild/reinstall native dependencies under that same supported Node.
+
 Process-job chains keep the default depth budget of 4 and allow a configured
 ceiling of 64. Request diagnostics remain visible when the budget is exhausted.
 Background Exec/Bash accepts `wake_on_completion: false` for helpers that only
@@ -1778,6 +1793,9 @@ path:
 
 ## Public API
 
+- `@mono-agent/app/node-version-guard`: dependency-free executable guard shared
+  with the installer bin; derives its floor from the installed app manifest.
+
 Web process-job wakes use an optional owner-private v1 admission fence in the
 existing job record. Each attempt is marked before follow-up execution or a
 steer offer; only an exact explicit safe steer refusal releases that marker.
@@ -1853,6 +1871,16 @@ resolveAppTraceStaleAfterMs
 resolveChannelDrivers
 startMonoAgentApp
 validateConsumerContractFixture
+```
+
+**`@mono-agent/app/node-version-guard`**
+
+```text
+guardNodeVersion
+minimumNode
+nodeVersionFailure
+requiredNode
+supportedNode
 ```
 
 <!-- public-api-inventory:end -->

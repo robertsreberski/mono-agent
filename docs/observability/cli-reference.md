@@ -19,10 +19,10 @@ Every command follows one exit-code contract:
 | `1` | Ran but failed — a gate reported errors or an operational error occurred (`ok` is false). |
 | `2` | Usage error — an unknown command/flag, a missing argument, or a flag on a command that does not support it. |
 
-The read/status commands accept `--json` for scripting: `validate`, `config`, `presets`, `status`, `sandbox status`, `install-skill --project --check`, `runs report`, `runs audit`, `memory`, and `continuations`. In `--json` mode:
+The read/status commands accept `--json` for scripting: `preflight`, `validate`, `config`, `presets`, `status`, `sandbox status`, `install-skill --project --check`, `runs report`, `runs audit`, `memory`, and `continuations`. In `--json` mode:
 
 - stdout is exactly one JSON object with a top-level `ok: boolean` and the command-specific payload fields flat beside it (no `{ok, data}` wrapper), with no ANSI and no human prose.
-- When a command fails but can still emit JSON, the object is `{ "ok": false, "error": { "code", "message" } }`.
+- Except for the versioned `preflight` envelope below, when a command fails but can still emit JSON, the object is `{ "ok": false, "error": { "code", "message" } }`.
 - Hints, warnings, and deprecation notices go to stderr, never stdout.
 - Secrets are redacted exactly as the human view redacts them; a raw secret value never appears in JSON output.
 
@@ -76,6 +76,7 @@ command.
 | `presets` | List the built-in setup presets or show a preset's generated config, `.env.example`, and checklist. Replaces the removed `recipes` alias. | `list`, `show <id>`, `--json` |
 | `auth login` | Run bundled Pi OAuth for Anthropic/GitHub Copilot/OpenAI Codex, or explicitly choose ChatGPT OAuth or an API key for `openai`; OpenCode-Go retains its API-key flow. OpenCode-Go uses masked TTY input by default; `--api-key-stdin` is the explicit headless input mode. Pi credentials are promoted under an owner-only lock with stale-lock repair only when safely proven. | `<provider>`, `--pi-auth-path <path>`, `--auth-method oauth|api-key` (`openai`), `--api-key-stdin`, `--config <path>` |
 | `sandbox` | Inspect, install, or functionally prove the pinned SRT runtime. Managed setup is private-cache and macOS-only. | `status`, `setup`, `check`, `--json` (status only) |
+| `preflight` | Check host capabilities without config, credentials, or providers; optional capabilities do not gate success. | `--json`, `--port <n>` |
 | `validate` | Load every config section and report what would run, wait, or fail (`doctor` is an alias), including a read-only exact-byte inventory of this config's managed launchd stdout/stderr and retained generations. With `--preset <id>`, also report whether the preset's promised capabilities are live. | `--preset <id>`, `--consumer <path>`, `--config <path>`, `--env-file <path>`, `--json` |
 | `config` | Print the resolved config field-by-field with each value's source (`env` / `json` / `default`), including every channel section, plus secret-placement warnings. | `--config <path>`, `--env-file <path>`, `--json` |
 | `memory` | Preview, strictly audit, safely maintain, and move the configured memory store and its durable completed-turn intake. | `stats`, `today`, `show`, `search`, `top`, `audit`, `inspect`, `retry`, `resolve`, `rebuild`, `rollback`, `adopt-replay`, `forget`, `export`, `import`; `--strict`, `--limit`, `--bundle`, `--json` |
@@ -95,9 +96,97 @@ command.
 
 Every command is `cli` coverage. `start`, `restart`, `stop`, `status`, and `logs` are the background service commands; `start --foreground` is the cross-platform fallback. `stop`, `logs`, and `start --foreground` are real commands (they were absent from older feature listings).
 
+## Host preflight
+
+```bash
+mono-agent preflight [--json] [--port <n>]
+```
+
+Runs in an empty folder without config, `.env`, credentials, provider imports,
+configured memory, or trace-store access. The guarded executable dispatches it
+before the normal CLI import graph; `doctor` is still the permanent alias of
+`validate` with unchanged output and exit semantics. Both executables reject
+unsupported Node before dispatch, printing found/required versions and Node
+installation commands to stderr (exit `1`, including for `--json`).
+
+`--port` is an integer from 1–65535 (default 5050). No remote endpoint or host
+option exists. `--help`/`-h` and `help preflight` print lightweight help.
+The versioned stdout object in `--json` mode has this shape:
+
+```json
+{
+  "schemaVersion": 1,
+  "operation": "host-preflight",
+  "ok": true,
+  "runtime": {
+    "nodeVersion": "24.15.0",
+    "requiredNode": ">=24.15.0",
+    "nodeAbi": "137",
+    "platform": "linux",
+    "arch": "x64"
+  },
+  "checks": [
+    {
+      "id": "runtime.node",
+      "status": "ok",
+      "code": "node_supported",
+      "message": "Node 24.15.0; required >=24.15.0.",
+      "observed": {},
+      "remediations": []
+    }
+  ]
+}
+```
+
+The example abbreviates `checks`; successful collection always returns these
+stable IDs, in this order:
+
+| ID | What is actually checked |
+| --- | --- |
+| `runtime.node` | Running Node against the app manifest's engine floor. |
+| `runtime.node-abi` | Running ABI identity, not a universal expected ABI. Actual native loads establish compatibility. |
+| `native.memory` | Isolated in-memory better-sqlite3 open, metadata query, sqlite-vec load and version query; no configured store. |
+| `native.sharp` | Isolated tiny image encoding; sharp resolves from turn's installed entry, never from the caller's folder. |
+| `service.manager` | macOS launchd GUI domain or Linux systemd user manager responds; no service mutation. |
+| `models.ollama` | Direct `http://127.0.0.1:11434/api/tags` list response. |
+| `models.lmstudio` | Direct `http://127.0.0.1:1234/v1/models` list response. |
+| `sandbox.runtime` | Existing status machinery in an isolated process: ready/absent/corrupt/unsupported, including external functional proof. |
+| `console.port` | Brief loopback bind/close at the chosen port; a snapshot, not a reservation. |
+
+Statuses are `ok`, `info`, `warning`, `error`. Node/native failures are errors;
+missing optional model servers are informational; service manager, sandbox and
+port limitations are warnings. Top-level `ok` and exit `0` mean **no errors**,
+not that every capability is available. Errors exit `1`; malformed arguments
+exit `2` with the same envelope plus `failure: {code: "usage", message}` and an
+empty `checks` array. Unexpected collector failures also keep the envelope with
+`failure.code: "preflight_failed"`. Human and JSON views use the same report.
+Diagnostic text is bounded; raw native error stacks are not exposed.
+
+Each non-ok check has `remediations` entries with `command`, `explanation`, and
+optional `prerequisite`. Explicit native ABI errors include the running ABI and
+parsed compiled/required ABIs when available. Missing packages, other load
+errors, crashes and timeouts are not automatically called ABI mismatches.
+Rebuild advice uses the executing source checkout; npm repair alternatives are
+explicitly labelled when install ownership cannot be established. Select
+supported Node and stop affected agents before any manual repair.
+
+Model HTTP requests are concurrent, literal IPv4 loopback only, bypass proxy
+environment variables, never follow redirects, have a 1.5-second wall deadline
+and a 64-KiB response limit, and never run inference or download models.
+Subprocess output is capped at 64 KiB; native checks have 10-second deadlines,
+sandbox status a 20-second deadline (plus up to one second for abort/cleanup),
+and service probes a 1.5-second deadline. Sandbox proof temporaries live in a
+parent-owned temporary root removed even after worker failure.
+There is no service install, restart, listener termination, or automatic repair.
+Foreground service alternatives are for use **after scaffolding**. An occupied
+port may already belong to a console; the suggested free port is not reserved.
+macOS sandbox advice uses `sandbox setup`; Linux advice names the pinned
+external SRT and detected prerequisite tools, never macOS-only managed setup.
+Unsupported hosts receive a supported-host/Linux-WSL route instead of a fake fix.
+
 ## `.env` auto-load
 
-On every invocation the CLI loads a dotenv file before dispatching the command. By default it looks for `.env` in the current working directory; pass `--env-file <path>` to point elsewhere. The file is resolved relative to the current folder. For `validate --consumer <path>`, the default `.env` and any relative `--env-file` path are resolved inside the consumer folder, not the caller's current directory.
+The config-independent `preflight` command never loads dotenv and rejects `--env-file`/`--config`. Ordinary config-aware commands load a dotenv file before dispatch; console commands retain their own environment-loading rules. By default it looks for `.env` in the current working directory; pass `--env-file <path>` to point elsewhere. The file is resolved relative to the current folder. For `validate --consumer <path>`, the default `.env` and any relative `--env-file` path are resolved inside the consumer folder, not the caller's current directory.
 
 Variables already present in the process environment are never overwritten, so **exported shell variables win** over the file. A missing or unreadable file is silently ignored — it is not an error.
 

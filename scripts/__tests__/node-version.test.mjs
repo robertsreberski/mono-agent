@@ -1,3 +1,4 @@
+import { readFileSync, readdirSync } from "node:fs";
 import { describe, expect, test } from "vitest";
 
 import {
@@ -33,4 +34,19 @@ describe("Node.js support floor", () => {
     );
     expect(() => parseNodeVersion("current")).toThrow(/Could not parse Node\.js version/u);
   });
+});
+
+test("all workspace engine declarations and runtime guard follow the canonical floor", async () => {
+  const read = (path) => JSON.parse(readFileSync(new URL(path, import.meta.url), "utf8"));
+  expect(readFileSync(new URL("../../.nvmrc", import.meta.url), "utf8").trim().replace(/^v/, "")).toBe(MINIMUM_NODE_VERSION);
+  expect(read("../../package.json").engines.node).toBe(SUPPORTED_NODE_ENGINE);
+  for (const parent of ["packages", "extras"]) {
+    for (const dir of readdirSync(new URL(`../../${parent}/`, import.meta.url), { withFileTypes: true }).filter((d) => d.isDirectory())) {
+      const manifest = read(`../../${parent}/${dir.name}/package.json`);
+      expect(manifest.engines.node).toBe(SUPPORTED_NODE_ENGINE);
+    }
+  }
+  const guard = await import("../../packages/app/dist/node-version-guard.js");
+  expect(guard.requiredNode).toBe(SUPPORTED_NODE_ENGINE);
+  expect(guard.minimumNode).toBe(MINIMUM_NODE_VERSION);
 });
