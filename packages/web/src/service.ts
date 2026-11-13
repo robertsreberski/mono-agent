@@ -127,7 +127,7 @@ import {
   type EffortAdvertisement,
 } from "./effort-ladder.js";
 import { errorCode, errorMessage, WebConsoleError } from "./errors.js";
-import { collectKnownWebSecrets, createSecretSafeWebLogger } from "./log-redaction.js";
+import { collectKnownWebSecrets, createSecretSafeWebLogger, redactWebSecretText } from "./log-redaction.js";
 import { OperatorClient, OperatorTurnFrameError, type OperatorInfo } from "./operator-client.js";
 import { isAskUserToolName } from "./run-activity.js";
 import {
@@ -656,6 +656,8 @@ export class WebService {
   readonly store: WebStore;
   private readonly options: CreateWebServiceOptions;
   private readonly lease: WebStateLease;
+  /** Snapshot of the effective env's credential values for message redaction. */
+  private readonly knownSecrets: readonly string[];
   private readonly transcriptions: WebTranscriptions;
   private readonly subscribers = new Set<(event: WebEvent) => boolean | void>();
   private readonly activeTurns = new Map<string, ActiveTurn>();
@@ -752,12 +754,14 @@ export class WebService {
     pushSubject: string,
     replyAccessKey: Buffer,
     voice: WebVoiceConfig | undefined,
+    knownSecrets: readonly string[] = [],
   ) {
     this.transcriptions = new WebTranscriptions(voice, options.transcriptionFetchImpl);
     this.store = store;
     store.onConversationMarker = ({ threadId, messageId, updatedAt }) => this.emit("message.changed", threadId, { messageId, updatedAt });
     this.lease = lease;
     this.options = options;
+    this.knownSecrets = knownSecrets;
     this.pushIdentity = pushIdentity;
     this.replyAccessKey = replyAccessKey;
     this.attachmentTurnBudget = new WeightedTurnBudget(
@@ -808,7 +812,7 @@ export class WebService {
         "base64url",
       );
       const pushSubject = resolveWebPushSubject(safeOptions.env?.MONO_AGENT_WEB_PUSH_SUBJECT);
-      service = new WebService(store, lease, safeOptions, pushIdentity, pushSubject, replyAccessKey, voice);
+      service = new WebService(store, lease, safeOptions, pushIdentity, pushSubject, replyAccessKey, voice, knownSecrets);
       await store.purgePartialUploadFiles();
       await service.purgeOrphans();
       await service.refreshAgents();
@@ -2978,7 +2982,7 @@ export class WebService {
       const detail = restartSevered
         ? this.store.interruptTurnForRestart(started.turnId)
         : this.store.failTurn(started.turnId, {
-            message: cancelled ? "Turn cancelled." : errorMessage(failure),
+            message: cancelled ? "Turn cancelled." : this.safeTurnFailureMessage(failure),
             ...(connectionLost ? { code: "agent_connection_lost" } : code === undefined ? {} : { code }),
             cancelled,
           });
@@ -2994,6 +2998,16 @@ export class WebService {
       releaseAttachmentBudget?.();
       coalescer.close();
     }
+  }
+
+  /**
+   * Keep turn failures informative without leaking credentials. Reviewed
+   * `WebConsoleError` text is preserved; anything else runs through the same
+   * known-secret redactor as the diagnostic logs, bounded for storage.
+   */
+  private safeTurnFailureMessage(failure: unknown): string {
+    if (failure instanceof WebConsoleError) return failure.message;
+    return redactWebSecretText(errorMessage(failure), this.knownSecrets).slice(0, 1_000);
   }
 
   private launchTurn(

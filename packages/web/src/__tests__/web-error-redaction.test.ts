@@ -11,7 +11,8 @@ import {
   createSecretSafeWebLogger,
   redactWebErrorMessage,
 } from "../log-redaction.js";
-import { startWebServer, type WebServerHandle } from "../server.js";
+import { startWebNotificationIngress } from "../notification-ingress.js";
+import { createWebErrorMiddleware, startWebServer, type WebServerHandle } from "../server.js";
 import { WebService } from "../service.js";
 import { fakeDiscoveredAgent, operatorFetch, temporaryRoot } from "./helpers.js";
 
@@ -139,6 +140,40 @@ describe("web error redaction", () => {
       .toEqual({ retryAfterSeconds: 23, reason: "conversation_not_empty" });
   });
 
+  it("keeps bounded human-readable reasons and drops control characters", () => {
+    expect(sanitizeWebConsoleDetails({ reason: "conversation not empty" }))
+      .toEqual({ reason: "conversation not empty" });
+    expect(sanitizeWebConsoleDetails({ reason: "Wait before retrying (23s)." }))
+      .toEqual({ reason: "Wait before retrying (23s)." });
+    expect(sanitizeWebConsoleDetails({ reason: "bad\nreason" })).toBeUndefined();
+    expect(sanitizeWebConsoleDetails({ reason: "bad\u0000reason" })).toBeUndefined();
+    expect(sanitizeWebConsoleDetails({ reason: "x".repeat(129) })).toBeUndefined();
+  });
+
+  it("maps unsupported content encoding to a distinct fixed 415", async () => {
+    const charsetError = Object.assign(new SyntaxError("unsupported charset"), {
+      status: 415,
+      type: "charset.unsupported",
+    });
+    expect(resolveWebErrorResponse(charsetError)).toMatchObject({
+      status: 415,
+      code: "unsupported_content_encoding",
+      message: "The request body uses an unsupported content encoding.",
+    });
+    const { baseUrl } = await start({ host: "127.0.0.1" });
+    const response = await fetch(`${baseUrl}/api/v1/threads`, {
+      method: "POST",
+      headers: { "content-type": "application/json; charset=iso-8859-1" },
+      body: JSON.stringify({ sourceId: "agent-one" }),
+    });
+    expect(response.status).toBe(415);
+    const body = (await response.json()) as { error: { code: string; message: string } };
+    expect(body.error).toMatchObject({
+      code: "unsupported_content_encoding",
+      message: "The request body uses an unsupported content encoding.",
+    });
+  });
+
   it("maps an unexpected Error with a secret to a fixed 500 with a redacted log", async () => {
     const error = vi.fn();
     const knownSecrets = [FAKE_SECRET];
@@ -156,6 +191,17 @@ describe("web error redaction", () => {
     expect(loggedText(error)).not.toContain(FAKE_SECRET);
     expect(loggedText(error)).not.toContain("fake-bearer-web-secret");
     expect(loggedText(error)).toContain("internal_error");
+  });
+
+  it("closes without a body when headers are already sent", () => {
+    const next = vi.fn();
+    const end = vi.fn();
+    const res = { headersSent: true, writableEnded: false, end } as unknown as Parameters<
+      ReturnType<typeof createWebErrorMiddleware>
+    >[2];
+    createWebErrorMiddleware(undefined, [])(new Error("late failure"), {} as never, res, next);
+    expect(end).toHaveBeenCalledTimes(1);
+    expect(next).not.toHaveBeenCalled();
   });
 
   it("redacts SSE failure logging", () => {
@@ -206,5 +252,111 @@ describe("web error redaction", () => {
     });
     expect(secrets).toContain(FAKE_SECRET);
     expect(redactWebErrorMessage(new Error(FAKE_SECRET), secrets)).not.toContain(FAKE_SECRET);
+  });
+
+  it("collects cookie/session secrets but skips origin lists and PATH", () => {
+    const cookieSecret = "cookie-secret-value-12345";
+    const sessionSecret = "session-secret-value-67890";
+    const secrets = collectKnownWebSecrets({
+      MONO_AGENT_WEB_COOKIE_SECRET: cookieSecret,
+      MONO_AGENT_WEB_SESSION_TOKEN: sessionSecret,
+      MONO_AGENT_WEB_AUTHORIZED_ORIGINS: "https://console.example, https://other.example",
+      PATH: "/usr/bin:/bin",
+    });
+    expect(secrets).toContain(cookieSecret);
+    expect(secrets).toContain(sessionSecret);
+    expect(secrets).not.toContain("https://console.example, https://other.example");
+    expect(secrets).not.toContain("/usr/bin:/bin");
+  });
+
+  it("redacts secrets from persisted turn failure messages", async () => {
+    const turnSecret = "sk-fake-turn-failure-SECRET-99";
+    const root = await temporaryRoot();
+    cleanup.push(root);
+    const service = await WebService.create({
+      stateDir: join(root, "state"),
+      discoveryIntervalMs: 0,
+      purgeIntervalMs: 0,
+      discoverImpl: async () => [fakeDiscoveredAgent()],
+      fetchImpl: operatorFetch({
+        turns: () => {
+          throw new Error(`provider blew up: ${turnSecret}`);
+        },
+      }),
+      env: { ...process.env, MONO_AGENT_WEB_TURN_TOKEN: turnSecret },
+    });
+    try {
+      // Non-WebConsoleError text goes through the known-secret redactor before
+      // storage; reviewed WebConsoleError messages pass through untouched.
+      const redactor = service as unknown as {
+        safeTurnFailureMessage(failure: unknown): string;
+      };
+      const redacted = redactor.safeTurnFailureMessage(new Error(`provider blew up: ${turnSecret}`));
+      expect(redacted).not.toContain(turnSecret);
+      expect(redacted).toContain("[REDACTED_WEB_CREDENTIAL]");
+      expect(redacted).toContain("provider blew up");
+      expect(redactor.safeTurnFailureMessage(
+        new WebConsoleError("reviewed_code", "Reviewed owner message.", 400),
+      )).toBe("Reviewed owner message.");
+      const bounded = redactor.safeTurnFailureMessage(new Error(`x: ${"y".repeat(5_000)}`));
+      expect(bounded.length).toBeLessThanOrEqual(1_000);
+      // End to end: the failed turn carries no secret either.
+      const thread = service.createThread("agent-one");
+      await service.startTurn(thread.id, { text: "hello" });
+      const deadline = Date.now() + 5_000;
+      while (service.store.getThread(thread.id)?.runState.status !== "failed") {
+        if (Date.now() > deadline) throw new Error("Timed out waiting for the failed turn.");
+        await new Promise((resolvePromise) => setTimeout(resolvePromise, 10));
+      }
+      expect(JSON.stringify(service.thread(thread.id).messages)).not.toContain(turnSecret);
+    } finally {
+      await service.stop();
+    }
+  });
+
+  it("uses the server env for notification ingress redaction", async () => {
+    const ingressSecret = "sk-fake-ingress-SECRET-77";
+    const error = vi.fn();
+    const root = await temporaryRoot();
+    cleanup.push(root);
+    const service = await WebService.create({
+      stateDir: join(root, "state"),
+      discoveryIntervalMs: 0,
+      purgeIntervalMs: 0,
+      discoverImpl: async () => [fakeDiscoveredAgent()],
+      fetchImpl: operatorFetch(),
+    });
+    const ingress = await startWebNotificationIngress(
+      service,
+      { error },
+      { MONO_AGENT_TEST_INGRESS_TOKEN: ingressSecret },
+    );
+    try {
+      const record = JSON.parse(
+        await readFile(service.store.paths.notificationIngress, "utf8"),
+      ) as { url: string; token: string };
+      const spy = vi.spyOn(service, "deliverNotification")
+        .mockRejectedValueOnce(new Error(`wake failed: ${ingressSecret}`));
+      const response = await fetch(record.url, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${record.token}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          sourceId: "agent-one",
+          triggerKind: "cron",
+          deliveryKey: "k-1",
+          text: "hello",
+        }),
+      });
+      spy.mockRestore();
+      expect(response.status).toBe(500);
+      expect(JSON.stringify(await response.json())).not.toContain(ingressSecret);
+      expect(loggedText(error)).not.toContain(ingressSecret);
+    } finally {
+      await ingress.stop();
+      await service.stop();
+    }
   });
 });

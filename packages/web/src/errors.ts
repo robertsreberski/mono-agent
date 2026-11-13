@@ -23,8 +23,10 @@ export class WebConsoleError extends Error {
 
 /**
  * Keep only explicitly typed, safe details for browser error bodies.
- * `retryAfterSeconds` drives `Retry-After`; `reason` is a bounded machine
- * string allowlisted by the operator-client contract.
+ * `retryAfterSeconds` drives `Retry-After`; `reason` is a bounded
+ * human-readable string (no control characters or newlines) allowlisted by
+ * the operator-client contract; `operationId` stays a machine string and
+ * `pendingSince` a valid date string.
  */
 export function sanitizeWebConsoleDetails(
   details: Readonly<WebConsoleErrorDetails> | undefined,
@@ -43,7 +45,7 @@ export function sanitizeWebConsoleDetails(
   if (typeof reasonCandidate === "string"
     && reasonCandidate.length >= 1
     && reasonCandidate.length <= 128
-    && /^[A-Za-z0-9_.-]+$/u.test(reasonCandidate)) {
+    && !/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/u.test(reasonCandidate)) {
     reason = reasonCandidate;
   }
   let operationId: string | undefined;
@@ -82,6 +84,7 @@ export interface WebErrorResponse {
 
 const INVALID_JSON_MESSAGE = "The request body is not valid JSON.";
 const REQUEST_TOO_LARGE_MESSAGE = "The request body exceeds the size limit.";
+const UNSUPPORTED_ENCODING_MESSAGE = "The request body uses an unsupported content encoding.";
 const INTERNAL_ERROR_MESSAGE = "Internal server error.";
 
 /**
@@ -104,7 +107,11 @@ export function resolveWebErrorResponse(error: unknown): WebErrorResponse {
     || bodyParserStatus === 413
     || bodyParserStatus === 415;
   const tooLarge = bodyParserStatus === 413 || bodyParserType === "entity.too.large";
-  const malformed = isBodyParserError && !tooLarge;
+  const unsupportedEncoding = !tooLarge
+    && (bodyParserStatus === 415
+      || bodyParserType === "charset.unsupported"
+      || bodyParserType === "encoding.unsupported");
+  const malformed = isBodyParserError && !tooLarge && !unsupportedEncoding;
   if (known) {
     const details = sanitizeWebConsoleDetails(error.details);
     return {
@@ -117,6 +124,9 @@ export function resolveWebErrorResponse(error: unknown): WebErrorResponse {
   }
   if (tooLarge) {
     return { status: 413, code: "request_too_large", message: REQUEST_TOO_LARGE_MESSAGE };
+  }
+  if (unsupportedEncoding) {
+    return { status: 415, code: "unsupported_content_encoding", message: UNSUPPORTED_ENCODING_MESSAGE };
   }
   if (malformed) {
     return { status: 400, code: "invalid_json", message: INVALID_JSON_MESSAGE };

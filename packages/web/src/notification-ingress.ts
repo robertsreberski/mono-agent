@@ -58,8 +58,9 @@ export interface WebNotificationIngressHandle {
 export async function startWebNotificationIngress(
   service: WebService,
   logger?: WebServiceLogger,
+  env?: NodeJS.ProcessEnv | Readonly<Record<string, string | undefined>>,
 ): Promise<WebNotificationIngressHandle> {
-  const knownSecrets = collectKnownWebSecrets(process.env);
+  const knownSecrets = collectKnownWebSecrets(env ?? process.env);
   const safeLogger = createSecretSafeWebLogger(logger, knownSecrets);
   const token = randomBytes(32).toString("base64url");
   const instanceId = randomUUID();

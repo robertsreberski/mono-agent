@@ -81,7 +81,7 @@ import {
   startWebNotificationIngress,
   type WebNotificationIngressHandle,
 } from "./notification-ingress.js";
-import { WebService, type CreateWebServiceOptions, type WebTranscriptShape } from "./service.js";
+import { WebService, type CreateWebServiceOptions, type WebServiceLogger, type WebTranscriptShape } from "./service.js";
 
 export const DEFAULT_WEB_HOST = "0.0.0.0";
 export const DEFAULT_WEB_PORT = 5050;
@@ -146,6 +146,49 @@ export interface WebServerHandle {
   readonly stateDir: string;
   stop(): Promise<void>;
   close(): Promise<void>;
+}
+
+/**
+ * Shared Express error middleware: fixed secret-free bodies, `Retry-After`
+ * from sanitized details only, redacted 5xx diagnostics, and a clean close
+ * when headers are already sent (never Express's default raw-error logging).
+ * Exported for direct headers-sent coverage.
+ */
+export function createWebErrorMiddleware(
+  logger: WebServiceLogger | undefined,
+  knownSecrets: readonly string[],
+) {
+  return (error: unknown, _req: Request, res: Response, _next: NextFunction): void => {
+    // Headers already sent (for example an SSE stream that failed mid-write):
+    // there is no JSON body left to send. Close without falling through to
+    // Express's default raw-error logging.
+    if (res.headersSent) {
+      try {
+        if (!res.writableEnded) res.end();
+      } catch {
+        // Logging is diagnostic and must never break teardown.
+      }
+      return;
+    }
+    const resolved = resolveWebErrorResponse(error);
+    if (resolved.status === 429 && resolved.retryAfterSeconds !== undefined) {
+      res.setHeader("Retry-After", String(resolved.retryAfterSeconds));
+    }
+    if (resolved.status >= 500) {
+      logger?.error?.("Web console request failed.", {
+        error: redactWebErrorMessage(error, knownSecrets),
+        errorCode: resolved.code,
+        status: resolved.status,
+      });
+    }
+    res.status(resolved.status).json({
+      error: {
+        code: resolved.code,
+        message: resolved.message,
+        ...(resolved.details === undefined ? {} : { details: resolved.details }),
+      },
+    });
+  };
 }
 
 export async function startWebServer(options: StartWebServerOptions = {}): Promise<WebServerHandle> {
@@ -1336,37 +1379,7 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
     });
   });
 
-  app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
-    // Headers already sent (for example an SSE stream that failed mid-write):
-    // there is no JSON body left to send. Close without falling through to
-    // Express's default raw-error logging.
-    if (res.headersSent) {
-      try {
-        if (!res.writableEnded) res.end();
-      } catch {
-        // Logging is diagnostic and must never break teardown.
-      }
-      return;
-    }
-    const resolved = resolveWebErrorResponse(error);
-    if (resolved.status === 429 && resolved.retryAfterSeconds !== undefined) {
-      res.setHeader("Retry-After", String(resolved.retryAfterSeconds));
-    }
-    if (resolved.status >= 500) {
-      logger?.error?.("Web console request failed.", {
-        error: redactWebErrorMessage(error, knownSecrets),
-        errorCode: resolved.code,
-        status: resolved.status,
-      });
-    }
-    res.status(resolved.status).json({
-      error: {
-        code: resolved.code,
-        message: resolved.message,
-        ...(resolved.details === undefined ? {} : { details: resolved.details }),
-      },
-    });
-  });
+  app.use(createWebErrorMiddleware(logger, knownSecrets));
 
   const stop = (): Promise<void> => {
     stopPromise ??= (async () => {
@@ -1393,7 +1406,7 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
       listenFailed: (reason) => new WebConsoleError("listen_failed", `Web console failed to listen: ${reason}`, 500),
       noAddress: () => new WebConsoleError("listen_failed", "Web console did not receive a TCP address.", 500),
     });
-    notificationIngress = await startWebNotificationIngress(service, logger);
+    notificationIngress = await startWebNotificationIngress(service, logger, options.env ?? process.env);
     const url = `http://${hostForUrl(host)}:${address.port}/`;
     return {
       url,
