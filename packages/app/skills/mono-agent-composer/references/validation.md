@@ -1,5 +1,13 @@
 # Validation
 
+Before config exists, `mono-agent preflight [--json] [--port <n>]` checks the
+host without loading config, `.env`, credentials, or providers. Its versioned
+host report checks real native loads and optional local capabilities; exit 0
+means no errors, not every optional capability available. Follow its explicit
+remediation commands manually. `doctor` remains an alias of config-aware
+`validate`, not of `preflight`.
+
+
 Use validation that matches the chosen composition path. Do not claim the host works from a typecheck alone.
 
 ## Config Validation (default path)

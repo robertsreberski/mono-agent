@@ -70,6 +70,7 @@ npx create-mono-agent --version
 # Or install globally for the persistent `mono-agent` command:
 npm i -g create-mono-agent
 mono-agent init
+mono-agent preflight              # works before config/scaffold exists
 mono-agent validate
 mono-agent --version
 ```
@@ -81,6 +82,21 @@ yields the same exit status as calling app's bin directly (the bin forwards
 signals without double-signalling the child; see `delegateSignals`). Prefer
 pinning the scoped host directly (`npm i -g @mono-agent/app`) if you don't
 need the installer name.
+
+Both bins first call the app's built-in-only Node guard, before importing the
+resolver/delegator or spawning the app. Unsupported Node reports found/required
+versions and exact nvm/fnm/Volta alternatives plus the official installer URL,
+then exits 1 without a dependency stack. After a Node switch, select supported
+Node, stop affected agents, and reinstall/rebuild under that Node.
+
+`mono-agent preflight [--json] [--port <n>]` is config-independent; it does not
+load `.env`, credentials, or providers. It actually tests native loads in child
+processes and reports optional host capabilities separately from errors.
+`doctor` stays an alias of `validate`. See the
+[preflight contract](../../docs/observability/cli-reference.md#host-preflight).
+Unknown npm layouts receive explicitly labelled repair alternatives for global
+`create-mono-agent` versus direct global `@mono-agent/app`; choose your actual
+installation, not both. No repair is automatic.
 
 ## Architecture
 

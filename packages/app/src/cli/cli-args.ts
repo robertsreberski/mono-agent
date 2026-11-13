@@ -1,3 +1,4 @@
+import { parseHostPreflightArgs } from "./host-preflight-args.js";
 import process from "node:process";
 
 import {
@@ -15,7 +16,7 @@ import { parseWebLogMaintenanceArguments } from "../service/web/web-log-maintena
 
 const WEB_CONSOLE_NAME_MAX_CHARACTERS = 80 satisfies typeof import("@mono-agent/web").WEB_CONSOLE_NAME_MAX_CHARACTERS;
 
-export const PUBLIC_COMMANDS = ["init", "setup", "validate", "doctor", "auth", "sandbox", "config", "presets", "start", "restart", "stop", "status", "logs", "web", "bridge", "install-skill", "runs", "memory", "continuations", "jobs", "web-control"] as const;
+export const PUBLIC_COMMANDS = ["preflight", "init", "setup", "validate", "doctor", "auth", "sandbox", "config", "presets", "start", "restart", "stop", "status", "logs", "web", "bridge", "install-skill", "runs", "memory", "continuations", "jobs", "web-control"] as const;
 const KNOWN_COMMANDS = [
   ...PUBLIC_COMMANDS,
   INTERNAL_LAUNCHD_LOG_MAINTENANCE_COMMAND,
@@ -26,6 +27,7 @@ const KNOWN_COMMANDS = [
 // an allowlist so future commands fail closed until they opt in explicitly. The
 // `install-skill`/`sandbox` entries carry an extra subcommand guard below.
 export const JSON_CAPABLE_COMMANDS = [
+  "preflight",
   "validate",
   "config",
   "presets",
@@ -43,7 +45,7 @@ export const JSON_CAPABLE_COMMANDS = [
 // Human-facing list for the rejection message: the two subcommand-gated surfaces
 // are qualified so the error points at the exact invocation that accepts `--json`.
 const JSON_CAPABLE_COMMANDS_DISPLAY =
-  "validate, config, presets, status, sandbox status, install-skill --project --check, runs, memory, continuations, jobs, web-control, web status";
+  "preflight, validate, config, presets, status, sandbox status, install-skill --project --check, runs, memory, continuations, jobs, web-control, web status";
 
 // Commands removed outright before the KNOWN_COMMANDS gate. Parsing throws with the
 // replacement, and runCli maps that parse error to exit code 2 (usage-error).
@@ -328,6 +330,11 @@ export function firstCliPositional(tokens: readonly string[]): string | undefine
 
 export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   const [command, ...rest] = argv;
+  if (command === "preflight") {
+    const parsed = parseHostPreflightArgs(rest);
+    return { command: parsed.help ? "help" : "preflight", positionals: parsed.help ? ["preflight"] : [],
+      json: parsed.json, port: parsed.port, force: false, foreground: false, follow: false, all: false, dryRun: false, includeMemory: false };
+  }
   // `--help`/`-h` and a bare invocation render the plain grouped summary (no topic).
   if (command === undefined || command === "--help" || command === "-h") {
     return { command: "help", positionals: [], force: false, foreground: false, follow: false, all: false, dryRun: false, includeMemory: false };

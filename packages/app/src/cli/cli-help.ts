@@ -31,6 +31,15 @@ interface HelpEntry {
 
 export const HELP_COMMANDS: readonly HelpEntry[] = [
   {
+    command: "preflight", group: "Check", short: "preflight", json: true,
+    summary: "Check host capabilities without config or credentials.",
+    signature: "mono-agent preflight [--json] [--port <n>]",
+    lines: ["Check Node/ABI, isolated native loads, service manager, local models, sandbox, and console port.",
+      "Works in an empty folder; never loads config, .env, credentials, or providers.",
+      "Optional capabilities are info/warnings. Exit 0: no errors; 1: errors; 2: invalid arguments.",
+      "doctor remains an alias of validate (configured-agent checks)."],
+  },
+  {
     command: "init",
     group: "Setup",
     short: "init",

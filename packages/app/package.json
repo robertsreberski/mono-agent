@@ -20,7 +20,11 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     },
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./node-version-guard": {
+      "types": "./dist/node-version-guard.d.ts",
+      "import": "./dist/node-version-guard.js"
+    }
   },
   "bin": {
     "mono-agent": "./dist/cli.js"

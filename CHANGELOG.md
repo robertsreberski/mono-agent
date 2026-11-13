@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Add an early Node-version guard to both CLI entry points with actionable
+  version-manager commands, before loading configuration or native dependencies.
+  Add `mono-agent preflight [--json] [--port <n>]` for config-independent host
+  checks, isolated native-load diagnostics, and explicit repair alternatives.
+  Keep `doctor` as the unchanged alias of `validate`.
+
 - Add versioned evidence-sensitive conversation ranking with general English
   stop-word filtering, intent-only fallback, bounded correction/event morphology
   and identifier-component discovery. Prefer content in complementary previews,
