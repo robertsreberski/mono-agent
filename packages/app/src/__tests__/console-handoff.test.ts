@@ -7,15 +7,17 @@ describe("guided init console handoff", () => {
   it.each(["darwin", "linux", "win32"] as const)("does nothing without explicit consent on %s", async (platform) => {
     const events: string[] = [];
     const managed = vi.fn(); const foreground = vi.fn(); const open = vi.fn();
+    const choose = vi.fn(async (choices: readonly ConsoleHandoffChoice[]) => {
+      expect(choices[0]).toBe("later");
+      expect(events.join("")).toContain("there is no login");
+      expect(events.join("")).toContain("proxy, tunnel or Serve");
+      return "later" as const;
+    });
     await offerConsoleHandoff(options, {
       existing: async () => undefined, platform, hasUserManager: async () => true,
-      write: (text) => events.push(text), choose: async (choices) => {
-        expect(choices[0]).toBe("later");
-        expect(events.join("")).toContain("there is no login");
-        expect(events.join("")).toContain("proxy, tunnel or Serve");
-        return "later";
-      }, managed, foreground, open,
+      write: (text) => events.push(text), choose, managed, foreground, open,
     });
+    expect(choose).toHaveBeenCalledTimes(1);
     expect(managed).not.toHaveBeenCalled(); expect(foreground).not.toHaveBeenCalled(); expect(open).not.toHaveBeenCalled();
   });
   it.each([
@@ -64,6 +66,18 @@ describe("guided init console handoff", () => {
     if (routeUrl) { expect(output).toContain(routeUrl); expect(output).toContain("state exact"); }
     expect(output.includes("ssh -N -L")).toBe(forwards);
     expect(foreground).not.toHaveBeenCalled(); expect(managed).not.toHaveBeenCalled();
+  });
+  it.each([["0.0.0.0", "127.0.0.1"], ["::", "[::1]"]])("opens wildcard bind %s through loopback %s without hiding exposure", async (host, destination) => {
+    const write = vi.fn(); const open = vi.fn();
+    const health = vi.fn(async () => true);
+    await offerConsoleHandoff(options, {
+      platform: "darwin", choose: async () => "foreground", write, health, open,
+      existing: async () => ({ host, url: `http://${host === "::" ? "[::]" : host}:6060/` }),
+    });
+    expect(health).toHaveBeenCalledWith(`http://${destination}:6060/healthz`);
+    expect(open).toHaveBeenCalledWith(`http://${destination}:6060/?agent=fictional-agent&settings=capabilities`);
+    expect(write.mock.calls.flat().join("")).toContain(`listener "${host}"`);
+    expect(write.mock.calls.flat().join("")).toContain("reachable beyond this computer");
   });
   it.each([["Enter", "\r", false], ["Ctrl-D", "\x04", false], ["EOF", "end", false], ["Ctrl-D on TTY", "\x04", true], ["EOF on TTY", "end", true]] as const)("real Clack prompt maps %s to Not now", async (_label, key, tty) => {
     const setRawMode = vi.fn();

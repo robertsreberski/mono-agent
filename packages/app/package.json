@@ -38,7 +38,7 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
-    "generate:capability-display-fixture": "node scripts/generate-capability-display-fixture.mjs",
+    "generate:capability-display-fixture": "pnpm run build && node scripts/generate-capability-display-fixture.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run"
   },

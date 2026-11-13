@@ -68,10 +68,11 @@ export function capabilityCards(report: ValidationReport, memoryMode?: string): 
     id: "tools", title: "MCP / tools", purpose: "Let the agent use local tools and owner-prepared MCP servers.",
     requirements: ["An explicit built-in tool policy and, for external MCP, an existing validated MCP JSON file. External MCP tools bypass built-in allow/deny rules."],
     usage: "Tool use can add model turns, subprocesses and third-party service costs. External MCP server connectivity is never probed by validation. Computer-use and provider/browser liveness are not probed here; run mono-agent validate in the owner terminal.",
-    ownedConfigPaths: ["tools.allowedTools", "tools.disallowedTools", "tools.mcpConfigPath"],
+    ownedConfigPaths: ["tools.allowedTools", "tools.disallowedTools", "tools.mcpConfigPath", "tools.computerUse"],
     steps: ["Back up mono-agent.config.json; preserve existing deny rules. Merge only the tool names you intend to allow.",
       '{ "tools": { "allowedTools": ["Read", "Glob", "Grep"], "mcpConfigPath": "./mcp.json" } }',
       "Prepare and review mcp.json in the owner terminal before referencing it. Do not run untrusted server commands. Omit mcpConfigPath if you only want built-in tools.",
+      "For optional desktop control, prepare cua-driver and tools.computerUse in the owner terminal; follow https://docs.mono-agent.dev/tools/computer-use/ for installation, permissions and manual checks.",
       "Run mono-agent validate, then mono-agent restart for a managed agent or stop/start in the foreground terminal."],
     status: aggregateCapabilityStatus(toolsEvidence), evidence: toolsEvidence,
   });

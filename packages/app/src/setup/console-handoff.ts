@@ -66,7 +66,11 @@ export async function offerConsoleHandoff(
   if (choice === "later" || !choices.includes(choice)) return;
   const present = async (value: string | ConsoleHandoffTarget) => {
     const target: ConsoleHandoffTarget = typeof value === "string" ? { url: value, host: new URL(value).hostname } : value;
-    const base = target.url;
+    // Wildcard is an exposure/bind address, never a browser destination.
+    const destination = new URL(target.url);
+    if (destination.hostname === "0.0.0.0") destination.hostname = "127.0.0.1";
+    else if (["[::]", "::"].includes(destination.hostname)) destination.hostname = "[::1]";
+    const base = destination.href;
     const loopback = loopbackHost(target.host);
     const recordedRoute = target.routeState !== undefined && !["none", "not-managed"].includes(target.routeState);
     if (!loopback || recordedRoute) {

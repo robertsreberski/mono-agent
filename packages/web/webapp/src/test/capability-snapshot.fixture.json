@@ -265,12 +265,14 @@
       "ownedConfigPaths": [
         "tools.allowedTools",
         "tools.disallowedTools",
-        "tools.mcpConfigPath"
+        "tools.mcpConfigPath",
+        "tools.computerUse"
       ],
       "steps": [
         "Back up mono-agent.config.json; preserve existing deny rules. Merge only the tool names you intend to allow.",
         "{ \"tools\": { \"allowedTools\": [\"Read\", \"Glob\", \"Grep\"], \"mcpConfigPath\": \"./mcp.json\" } }",
         "Prepare and review mcp.json in the owner terminal before referencing it. Do not run untrusted server commands. Omit mcpConfigPath if you only want built-in tools.",
+        "For optional desktop control, prepare cua-driver and tools.computerUse in the owner terminal; follow https://docs.mono-agent.dev/tools/computer-use/ for installation, permissions and manual checks.",
         "Run mono-agent validate, then mono-agent restart for a managed agent or stop/start in the foreground terminal."
       ],
       "status": "error",

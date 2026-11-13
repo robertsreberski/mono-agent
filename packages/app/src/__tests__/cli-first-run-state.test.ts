@@ -208,6 +208,7 @@ function readyReport() {
 }
 
 beforeEach(async () => {
+  mocks.offerConsoleHandoff.mockReset();
   mocks.detectProviderCredentialStatesOverride = undefined;
   delete process.env.MONO_AGENT_TELEGRAM_BOT_TOKEN;
   delete process.env.OPENAI_API_KEY;
