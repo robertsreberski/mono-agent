@@ -339,7 +339,7 @@
       "type": "object",
       "properties": {
         "part": {
-          "$ref": "#/definitions/Extract%3CWebMessagePart%2Cstructure-src_api-contract.ts-4158-4190-src_api-contract.ts-4132-4191-src_api-contract.ts-4117-4191-src_api-contract.ts-4115-4193-src_api-contract.ts-4083-4194-src_api-contract.ts-90-7092-src_api-contract.ts-0-7093%3E"
+          "$ref": "#/definitions/Extract%3CWebMessagePart%2Cstructure-src_api-contract.ts-4495-4527-src_api-contract.ts-4469-4528-src_api-contract.ts-4454-4528-src_api-contract.ts-4452-4530-src_api-contract.ts-4420-4531-src_api-contract.ts-90-7429-src_api-contract.ts-0-7430%3E"
         }
       },
       "required": [
@@ -396,6 +396,21 @@
     },
     "ApiCapabilities": {
       "$ref": "#/definitions/WebCapabilitySetupSnapshot"
+    },
+    "ApiCapabilityActionInput": {
+      "$ref": "#/definitions/CapabilityActionInput"
+    },
+    "ApiCapabilityActionPreview": {
+      "$ref": "#/definitions/CapabilityActionPreview"
+    },
+    "ApiCapabilityActions": {
+      "$ref": "#/definitions/CapabilityActionsSnapshot"
+    },
+    "ApiCapabilityActionSaved": {
+      "$ref": "#/definitions/CapabilityActionSaved"
+    },
+    "ApiCapabilityActionSaveInput": {
+      "$ref": "#/definitions/CapabilityActionSaveInput"
     },
     "ApiCapabilityQuery": {
       "type": "object",
@@ -478,7 +493,7 @@
       "additionalProperties": false
     },
     "ApiCronEnableResult": {
-      "$ref": "#/definitions/WebCronMutationResult%3Cstructure-src_api-contract.ts-2436-2466-src_api-contract.ts-2411-2467-src_api-contract.ts-2379-2468-src_api-contract.ts-90-7092-src_api-contract.ts-0-7093%3E"
+      "$ref": "#/definitions/WebCronMutationResult%3Cstructure-src_api-contract.ts-2773-2803-src_api-contract.ts-2748-2804-src_api-contract.ts-2716-2805-src_api-contract.ts-90-7429-src_api-contract.ts-0-7430%3E"
     },
     "ApiCronOverview": {
       "$ref": "#/definitions/WebCronOverview"
@@ -502,7 +517,7 @@
       "additionalProperties": false
     },
     "ApiCronRunResult": {
-      "$ref": "#/definitions/WebCronMutationResult%3Cstructure-src_api-contract.ts-2340-2377-src_api-contract.ts-2315-2378-src_api-contract.ts-2286-2379-src_api-contract.ts-90-7092-src_api-contract.ts-0-7093%3E"
+      "$ref": "#/definitions/WebCronMutationResult%3Cstructure-src_api-contract.ts-2677-2714-src_api-contract.ts-2652-2715-src_api-contract.ts-2623-2716-src_api-contract.ts-90-7429-src_api-contract.ts-0-7430%3E"
     },
     "ApiCronRuns": {
       "$ref": "#/definitions/WebCronRunPage"
@@ -707,7 +722,7 @@
       "type": "object",
       "properties": {
         "part": {
-          "$ref": "#/definitions/Extract%3CWebMessagePart%2Cstructure-src_api-contract.ts-4350-4379-src_api-contract.ts-4324-4380-src_api-contract.ts-4309-4380-src_api-contract.ts-4307-4382-src_api-contract.ts-4279-4383-src_api-contract.ts-90-7092-src_api-contract.ts-0-7093%3E"
+          "$ref": "#/definitions/Extract%3CWebMessagePart%2Cstructure-src_api-contract.ts-4687-4716-src_api-contract.ts-4661-4717-src_api-contract.ts-4646-4717-src_api-contract.ts-4644-4719-src_api-contract.ts-4616-4720-src_api-contract.ts-90-7429-src_api-contract.ts-0-7430%3E"
         }
       },
       "required": [
@@ -1186,7 +1201,7 @@
       "type": "object",
       "properties": {
         "part": {
-          "$ref": "#/definitions/Extract%3CWebMessagePart%2Cstructure-src_api-contract.ts-3646-3690-src_api-contract.ts-3620-3691-src_api-contract.ts-3605-3691-src_api-contract.ts-3603-3693-src_api-contract.ts-3579-3694-src_api-contract.ts-90-7092-src_api-contract.ts-0-7093%3E"
+          "$ref": "#/definitions/Extract%3CWebMessagePart%2Cstructure-src_api-contract.ts-3983-4027-src_api-contract.ts-3957-4028-src_api-contract.ts-3942-4028-src_api-contract.ts-3940-4030-src_api-contract.ts-3916-4031-src_api-contract.ts-90-7429-src_api-contract.ts-0-7430%3E"
         }
       },
       "required": [
@@ -1234,6 +1249,205 @@
       },
       "required": [
         "schedule"
+      ],
+      "additionalProperties": false
+    },
+    "CapabilityActionId": {
+      "type": "string",
+      "enum": [
+        "memory-lite",
+        "cron-controls"
+      ],
+      "description": "Separate from the v1 read-only discovery snapshot. Never accepts paths or patches."
+    },
+    "CapabilityActionInput": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "$ref": "#/definitions/CapabilityActionId"
+        },
+        "process": {
+          "$ref": "#/definitions/CapabilityActionProcess"
+        }
+      },
+      "required": [
+        "action",
+        "process"
+      ],
+      "additionalProperties": false
+    },
+    "CapabilityActionPreview": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "$ref": "#/definitions/CapabilityActionId"
+        },
+        "process": {
+          "$ref": "#/definitions/CapabilityActionProcess"
+        },
+        "expectedVersion": {
+          "type": "string"
+        },
+        "changes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "field": {
+                "type": "string",
+                "enum": [
+                  "memory",
+                  "cron.operatorActions.enabled"
+                ]
+              },
+              "value": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "field",
+              "value"
+            ],
+            "additionalProperties": false
+          },
+          "description": "Only static, owned values. Never current config, credentials or paths from disk."
+        },
+        "normalizesFormatting": {
+          "type": "boolean",
+          "const": true
+        },
+        "noOp": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "action",
+        "changes",
+        "expectedVersion",
+        "noOp",
+        "normalizesFormatting",
+        "process"
+      ],
+      "additionalProperties": false
+    },
+    "CapabilityActionProcess": {
+      "type": "object",
+      "properties": {
+        "pid": {
+          "type": "number"
+        },
+        "startedAt": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "pid",
+        "startedAt"
+      ],
+      "additionalProperties": false
+    },
+    "CapabilityActionReason": {
+      "type": "string",
+      "enum": [
+        "eligible",
+        "already-configured",
+        "memory-configured",
+        "memory-root-unsafe",
+        "no-valid-jobs",
+        "env-shadowed"
+      ]
+    },
+    "CapabilityActionSaved": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "$ref": "#/definitions/CapabilityActionId"
+        },
+        "process": {
+          "$ref": "#/definitions/CapabilityActionProcess"
+        },
+        "version": {
+          "type": "string"
+        },
+        "changed": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "action",
+        "changed",
+        "process",
+        "version"
+      ],
+      "additionalProperties": false
+    },
+    "CapabilityActionSaveInput": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "$ref": "#/definitions/CapabilityActionId"
+        },
+        "process": {
+          "$ref": "#/definitions/CapabilityActionProcess"
+        },
+        "expectedVersion": {
+          "type": "string"
+        },
+        "confirmed": {
+          "type": "boolean",
+          "const": true
+        }
+      },
+      "required": [
+        "action",
+        "confirmed",
+        "expectedVersion",
+        "process"
+      ],
+      "additionalProperties": false
+    },
+    "CapabilityActionsSnapshot": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "number",
+          "const": 1
+        },
+        "process": {
+          "$ref": "#/definitions/CapabilityActionProcess"
+        },
+        "actions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "$ref": "#/definitions/CapabilityActionId"
+              },
+              "available": {
+                "type": "boolean"
+              },
+              "active": {
+                "type": "boolean"
+              },
+              "reason": {
+                "$ref": "#/definitions/CapabilityActionReason"
+              }
+            },
+            "required": [
+              "id",
+              "available",
+              "active",
+              "reason"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "version",
+        "process",
+        "actions"
       ],
       "additionalProperties": false
     },
@@ -1893,7 +2107,7 @@
       "additionalProperties": false,
       "description": "What an `agents.changed` says about itself.\n\nA pin is a one-field write the writing tab already applied from the PATCH response, so it names the agent and the new state rather than telling every console to re-read the bootstrap, its skills and its cron. Discovery-driven invalidations carry nothing: an agent that appeared, went away, or advertises something different can have changed anything at all."
     },
-    "Extract<WebMessagePart,structure-src_api-contract.ts-3646-3690-src_api-contract.ts-3620-3691-src_api-contract.ts-3605-3691-src_api-contract.ts-3603-3693-src_api-contract.ts-3579-3694-src_api-contract.ts-90-7092-src_api-contract.ts-0-7093>": {
+    "Extract<WebMessagePart,structure-src_api-contract.ts-3983-4027-src_api-contract.ts-3957-4028-src_api-contract.ts-3942-4028-src_api-contract.ts-3940-4030-src_api-contract.ts-3916-4031-src_api-contract.ts-90-7429-src_api-contract.ts-0-7430>": {
       "anyOf": [
         {
           "type": "object",
@@ -2048,7 +2262,7 @@
         }
       ]
     },
-    "Extract<WebMessagePart,structure-src_api-contract.ts-4158-4190-src_api-contract.ts-4132-4191-src_api-contract.ts-4117-4191-src_api-contract.ts-4115-4193-src_api-contract.ts-4083-4194-src_api-contract.ts-90-7092-src_api-contract.ts-0-7093>": {
+    "Extract<WebMessagePart,structure-src_api-contract.ts-4495-4527-src_api-contract.ts-4469-4528-src_api-contract.ts-4454-4528-src_api-contract.ts-4452-4530-src_api-contract.ts-4420-4531-src_api-contract.ts-90-7429-src_api-contract.ts-0-7430>": {
       "type": "object",
       "properties": {
         "type": {
@@ -2096,7 +2310,7 @@
       ],
       "additionalProperties": false
     },
-    "Extract<WebMessagePart,structure-src_api-contract.ts-4350-4379-src_api-contract.ts-4324-4380-src_api-contract.ts-4309-4380-src_api-contract.ts-4307-4382-src_api-contract.ts-4279-4383-src_api-contract.ts-90-7092-src_api-contract.ts-0-7093>": {
+    "Extract<WebMessagePart,structure-src_api-contract.ts-4687-4716-src_api-contract.ts-4661-4717-src_api-contract.ts-4646-4717-src_api-contract.ts-4644-4719-src_api-contract.ts-4616-4720-src_api-contract.ts-90-7429-src_api-contract.ts-0-7430>": {
       "type": "object",
       "properties": {
         "type": {
@@ -4071,6 +4285,10 @@
           "type": "boolean",
           "const": true
         },
+        "supportsCapabilityActions": {
+          "type": "boolean",
+          "const": true
+        },
         "supportsProviderUsage": {
           "type": "boolean",
           "const": true
@@ -4754,7 +4972,7 @@
       ],
       "additionalProperties": false
     },
-    "WebCronMutationResult<structure-src_api-contract.ts-2340-2377-src_api-contract.ts-2315-2378-src_api-contract.ts-2286-2379-src_api-contract.ts-90-7092-src_api-contract.ts-0-7093>": {
+    "WebCronMutationResult<structure-src_api-contract.ts-2677-2714-src_api-contract.ts-2652-2715-src_api-contract.ts-2623-2716-src_api-contract.ts-90-7429-src_api-contract.ts-0-7430>": {
       "anyOf": [
         {
           "type": "object",
@@ -4805,7 +5023,7 @@
         }
       ]
     },
-    "WebCronMutationResult<structure-src_api-contract.ts-2436-2466-src_api-contract.ts-2411-2467-src_api-contract.ts-2379-2468-src_api-contract.ts-90-7092-src_api-contract.ts-0-7093>": {
+    "WebCronMutationResult<structure-src_api-contract.ts-2773-2803-src_api-contract.ts-2748-2804-src_api-contract.ts-2716-2805-src_api-contract.ts-90-7429-src_api-contract.ts-0-7430>": {
       "anyOf": [
         {
           "type": "object",

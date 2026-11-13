@@ -1,3 +1,4 @@
+import { createCapabilityActionsService } from "../setup/capability-actions.js";
 import { createCapabilityStatusService } from "../setup/capability-status.js";
 import type { ProviderUsageOperator } from "@mono-agent/contracts";
 import type { MonoAgentConfig } from "@mono-agent/config";
@@ -32,6 +33,7 @@ export interface ChannelsControllerPort {
   readonly env: Record<string, string | undefined>;
   readonly cwd: string;
   readonly configReadPath: string;
+  readonly configPath: string;
   readonly privateRuntimePaths?: import("../composition/app-config.js").PrivateBackgroundRuntimePaths | undefined;
   readonly logger: MonoAgentAppLogger | undefined;
   readonly drivers: readonly ChannelDriver[];
@@ -279,6 +281,22 @@ export async function startChannel(controller: ChannelsControllerPort, driver: C
       controller.providerUsageFor?.(coreConfig),
       controller.restartAuthority,
       driver.id === "tui" ? createCapabilityStatusService({ ...input, drivers: controller.drivers }) : undefined,
+      driver.id === "tui" ? createCapabilityActionsService({
+        cwd: controller.cwd,
+        configPath: controller.configPath,
+        env: controller.env,
+        drivers: controller.drivers,
+      }, {
+        loadedState: () => ({
+          memory: coreConfig.memory?.mode === "lite",
+          cron: controller.statuses.get("cron")?.kind === "running"
+            && controller.running.get("cron")?.summary.operatorActionsEnabled === true,
+        }),
+        log: (message) => {
+          if (controller.logger?.info) controller.logger.info(message);
+          else console.info(message);
+        },
+      }) : undefined,
     );
     const runningChannel = await (appOwnedTuiStart ?? driver.start(channelStartInput));
     if (!isCurrentGeneration()) {

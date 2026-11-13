@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -20,7 +20,7 @@ afterEach(async () => {
 
 describe("app channel capability composition", () => {
   it.each([false, true])("injects restart into the app-owned TUI regardless of obsolete keys (keyed=%s)", async (keyed) => {
-    const cwd = await mkdtemp(join(tmpdir(), "mono-channel-provider-auth-"));
+    const cwd = await realpath(await mkdtemp(join(tmpdir(), "mono-channel-provider-auth-")));
     fixtures.push(cwd);
     const configReadPath = join(cwd, "mono-agent.config.json");
     await writeFile(configReadPath, JSON.stringify({
@@ -30,6 +30,9 @@ describe("app channel capability composition", () => {
       artifacts: { dir: "./artifacts" },
     }));
 
+    const durable = join(cwd, "durable.json");
+    await writeFile(durable, await readFile(configReadPath));
+    await writeFile(join(cwd, "IDENTITY.md"), "# Synthetic Agent\n");
     let captured: TuiAdapterOptions | undefined;
     const stop = vi.fn(async () => undefined);
     const driver = createTuiChannelDriver({
@@ -54,6 +57,7 @@ describe("app channel capability composition", () => {
       env: keyed ? { MONO_AGENT_TUI_API_KEY: "fixture-owner" } : {},
       cwd,
       configReadPath,
+      configPath: durable,
       logger: undefined,
       drivers: [driver],
       driversById: new Map([[driver.id, driver]]),
@@ -92,13 +96,20 @@ describe("app channel capability composition", () => {
       expect(captured?.providerAuth).toBeDefined();
       expect(captured).not.toHaveProperty("apiKey");
       expect(captured?.restart).toBe(controller.restartAuthority);
+      expect(captured?.capabilityActions).toBeDefined();
+      const before = await readFile(configReadPath);
+      const actions = captured!.capabilityActions!;
+      const p = await actions.preview({ action: "memory-lite", process: (await actions.read()).process });
+      await actions.save({ action: p.action, process: p.process, expectedVersion: p.expectedVersion, confirmed: true });
+      expect(JSON.parse(await readFile(durable, "utf8"))).toHaveProperty("memory.mode", "lite");
+      expect(await readFile(configReadPath)).toEqual(before);
     } finally {
       await controller.running.get("tui")?.stop();
     }
     expect(stop).toHaveBeenCalledOnce();
   });
 
-  it.each(["slack", "third-party"])(
+  it.each(["tui", "slack", "third-party"])(
     "does not pass process-job service authority through the generic %s driver path",
     async (id) => {
       const cwd = await mkdtemp(join(tmpdir(), "mono-channel-capability-"));
@@ -134,6 +145,7 @@ describe("app channel capability composition", () => {
         env: {},
         cwd,
         configReadPath,
+      configPath: configReadPath,
         logger: undefined,
         drivers: [driver],
         driversById: new Map([[id, driver]]),
@@ -143,7 +155,7 @@ describe("app channel capability composition", () => {
         startsInFlight: new Map(),
         stopped: false,
         traceabilityStatusValue: {} as never,
-        processJobsService,
+        processJobsService: id === "tui" ? undefined : processJobsService,
         processJobsDegradation: undefined,
         setStatus(channelId, status) {
           statuses.set(channelId, status);
@@ -164,6 +176,7 @@ describe("app channel capability composition", () => {
         .resolves.toMatchObject({ kind: "running" });
       expect(captured).toBeDefined();
       expect(Reflect.has(captured!, "processJobs")).toBe(false);
+      expect(Reflect.has(captured!, "capabilityActions")).toBe(false);
       expect(Object.values(captured!)).not.toContain(processJobsService);
       expect(JSON.stringify(captured)).not.toContain("owner-token-must-not-leak");
       expect(processJobsService.list).not.toHaveBeenCalled();

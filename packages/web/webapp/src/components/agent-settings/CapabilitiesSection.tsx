@@ -1,6 +1,8 @@
+import type { ReactNode } from "react";
+import { CapabilityActionControls, type CapabilityRestartState } from "./CapabilityActionControls";
 import { useEffect, useRef, useState } from "react";
 import { api } from "../../api";
-import type { AgentSummary, WebCapabilitySetupSnapshot } from "../../types";
+import type { AgentSummary, WebCapabilitySetupSnapshot, WebCapabilityActionsSnapshot } from "../../types";
 
 type Card = WebCapabilitySetupSnapshot["cards"][number];
 const statusLabel = { ok: "Ready", waiting: "Waiting", disabled: "Disabled", error: "Needs attention" } as const;
@@ -54,13 +56,14 @@ function instructionSteps(steps: readonly string[]): InstructionStep[] {
   return result;
 }
 
-export function CapabilityCard({ card }: { readonly card: Card }) {
+export function CapabilityCard({ card, children }: { readonly card: Card; readonly children?: ReactNode }) {
   const [variant, setVariant] = useState(card.selectedVariant ?? card.variants?.[0]?.id);
   const choice = card.variants?.find((item) => item.id === variant) ?? card;
   return <article className="settings-group capability-card" aria-labelledby={`capability-${card.id}`}>
     <div className="capability-heading"><h3 id={`capability-${card.id}`}>{card.title}</h3><Status status={card.status} /></div>
     <p className="capability-purpose" title={card.purpose}>{card.purpose}</p>
     <p className="capability-next"><strong>Next:</strong> {nextStep(card)}</p>
+    {children}
     <details className="capability-details"><summary>Details &amp; manual setup</summary>
       {card.variants && <>
         <label className="capability-choice">Inspect memory tier (read-only)
@@ -84,11 +87,14 @@ export function CapabilityCard({ card }: { readonly card: Card }) {
   </article>;
 }
 
-export function CapabilitiesSection({ agent }: { readonly agent: AgentSummary }) {
+export function CapabilitiesSection({ agent, restart = null }: { readonly agent: AgentSummary; readonly restart?: CapabilityRestartState }) {
   const identity = JSON.stringify([agent.sourceId, agent.generation]);
   const identityRef = useRef(identity);
   const [report, setReport] = useState<{ identity: string; snapshot: WebCapabilitySetupSnapshot } | null>(null);
   const snapshot = report?.identity === identity ? report.snapshot : null;
+  const [actions, setActions] = useState<{ identity: string; snapshot: WebCapabilityActionsSnapshot } | null>(null);
+  const [actionsError, setActionsError] = useState(false);
+  const [saved, setSaved] = useState<Record<string, { startedAt: string; restartId?: string | null; restartAttempted?: boolean }>>({});
   const [error, setError] = useState(false);
   const [revision, setRevision] = useState(0);
   useEffect(() => {
@@ -102,6 +108,15 @@ export function CapabilitiesSection({ agent }: { readonly agent: AgentSummary })
     }
     return () => controller.abort();
   }, [identity, agent.sourceId, agent.status, agent.supportsCapabilitySetup, revision]);
+  useEffect(() => {
+    const controller = new AbortController(); setActionsError(false);
+    if (agent.status === "online" && agent.supportsCapabilityActions === true) {
+      void api.capabilityActions(agent.sourceId, controller.signal).then((snapshot) => { if (!controller.signal.aborted) setActions({ identity, snapshot }); })
+        .catch(() => { if (!controller.signal.aborted) setActionsError(true); });
+    }
+    return () => controller.abort();
+  }, [identity, agent.sourceId, agent.status, agent.supportsCapabilityActions, revision]);
+  const actionSnapshot = agent.supportsCapabilityActions === true && actions?.identity === identity ? actions.snapshot : null;
   if (agent.status === "offline") return <div className="settings-notice">This agent is offline. Capability status is unavailable; no readiness is assumed.</div>;
   if (agent.status === "degraded") return <div className="settings-notice">This agent’s connection is degraded. Capability status cannot be confirmed; check the connection and try again. No readiness is assumed.</div>;
   if (agent.supportsCapabilitySetup !== true) return <div className="settings-notice">This agent version doesn't report capabilities. Update the agent to view readiness and manual setup steps.</div>;
@@ -109,10 +124,15 @@ export function CapabilitiesSection({ agent }: { readonly agent: AgentSummary })
   if (snapshot === null) return error ? errorNotice : <p>Reading capability status…</p>;
   return <>
     {error && errorNotice}
-    <p className="settings-section-summary">Explore optional features and manual setup steps without changing your agent.</p>
+    <p className="settings-section-summary">Explore optional features. Eligible Memory Lite and cron controls can be previewed and saved; other features use manual setup.</p>
     <p className="settings-notice capability-scope">Provider, embedding, browser and server liveness is not probed here. Ready means local configuration checks passed, not live readiness or message delivery. Run <code>mono-agent validate</code> in the owner terminal for live checks.</p>
     <p className="settings-section-summary">Checked <time dateTime={snapshot.observedAt}>{new Date(snapshot.observedAt).toLocaleTimeString()}</time>. {snapshot.observation === "loaded-snapshot" ? "Uses settings from the agent’s last start, not later edits." : "Uses saved settings."} Restart the agent after editing settings or .env. <button type="button" className="settings-button" onClick={() => setRevision((value) => value + 1)}>Refresh capability status</button></p>
-    <div className="capability-grid">{snapshot.cards.map((card) => <CapabilityCard key={card.id} card={card} />)}</div>
+    {agent.supportsCapabilityActions !== true && <p className="settings-notice">This agent version has no console Enable actions. Use manual setup or update the agent.</p>}
+    {actionsError && <p className="settings-notice">Enable availability could not be verified. Refresh capability status; no write is assumed.</p>}
+    <div className="capability-grid">{snapshot.cards.map((card) => {
+      const action = actionSnapshot?.actions.find((item) => item.id === (card.id === "memory" ? "memory-lite" : card.id === "channel:cron" ? "cron-controls" : ""));
+      return <CapabilityCard key={card.id} card={card}>{action && actionSnapshot && <CapabilityActionControls agent={agent} action={action} process={actionSnapshot.process} restart={restart} refresh={() => setRevision((value) => value + 1)} saved={saved[action.id] ?? null} setSaved={(value) => setSaved((prior) => ({ ...prior, [action.id]: value }))} />}</CapabilityCard>;
+    })}</div>
     {snapshot.hostPreflight && <details><summary>Host preflight (optional)</summary><ul>{snapshot.hostPreflight.checks.map((check) => <li key={check.id}>{check.id}: {check.status}</li>)}</ul></details>}
   </>;
 }

@@ -273,8 +273,36 @@ webhook, Telegram, Slack, OpenAI-compatible API, cron, sandbox, MCP/tools and
 built-in tracing. A compact responsive grid shows purpose, status (text and icon)
 and the primary next step; expand a card for requirements, qualitative usage/cost,
 `ok`/`waiting`/`disabled`/`error` evidence and exact manual setup steps. Inspecting a memory tier does not select it for the agent. There is
-no apply action or credential form. Tracing is already enabled; removed external
-exporters cannot be enabled here.
+no credential form. On agents advertising separate Enable support, eligible cards
+have **Enable Memory Lite…** or **Enable cron controls…**. Older agents keep manual
+setup guidance; read-only discovery alone does not imply write support. Tracing
+is already enabled; removed external exporters cannot be enabled here.
+
+Enable first previews only owned fields and the expected config version. Review
+and **Confirm Save** (or Cancel). JSON formatting normalizes to two-space
+indentation. The agent reconstructs and validates the candidate, rejects duplicate
+keys, environment shadowing and stale process/config versions, preserves unrelated
+fields, and saves its durable config—not a managed worker's frozen startup copy.
+It keeps one owner-only, gitignored `<config>.bak` containing exact prior bytes
+(base64) and the intended result hash. This backup can contain existing inline
+secrets: do not share or commit it. Unsafe/tracked backup destinations are refused.
+Safety ignore rules can remain after a refused Save; no config is published
+until validation passes. Official writes are serialized; an abandoned `.write-lock` requires owner-terminal
+inspection after confirming no writer is running. There is no operation journal,
+Undo button, arbitrary patch/path/command input or terminal Enable command.
+
+Memory Lite is offered only when memory is unconfigured and the standard root is
+absent/empty or verified Lite; already-configured Lite is a no-op. No memory data
+is migrated or deleted. Cron controls only saves
+`cron.operatorActions.enabled: true` when valid jobs already exist; it never enables jobs or schedules. Tools,
+webhook and every other card remain guidance-only.
+
+**Saved** is not **Active**. Managed agents reuse the existing Restart confirmation
+and durable tracking; activation needs a fresh startup's loaded-state evidence.
+Foreground/embedded agents show **Saved; applies on next start** and require an
+owner-controlled stop/start. Restart failure leaves saved settings intact; there
+is no automatic rollback. On conflict, refresh and review a new preview. An
+uncertain transport outcome requires inspection before retrying.
 
 Status comes from the agent's read-only `validateMonoAgentFolder` checks with
 `allowFilesystemWrites: false`, `liveness: false` and `subprocessProbes: false`,

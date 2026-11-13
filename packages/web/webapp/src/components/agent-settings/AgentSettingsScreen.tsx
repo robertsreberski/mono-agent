@@ -201,7 +201,7 @@ function SettingsContent({ agent, section, intent, layout, provider, restart, on
           {restart === null ? <div className="settings-row">Checking restart status…</div> : <AgentSection agent={agent} restart={restart} runningCount={runningCount} />}
         </section>
         <section className="settings-page-section" data-settings-target="capabilities" tabIndex={-1} aria-labelledby="settings-capabilities-title"><div className="settings-section-head"><h2 id="settings-capabilities-title" className="settings-section-title">Capabilities</h2></div>
-          <CapabilitiesSection key={`${agent.sourceId}:${agent.generation ?? "unknown"}`} agent={agent} />
+          <CapabilitiesSection key={agent.sourceId} agent={agent} restart={restart} />
         </section>
         <section className="settings-page-section" aria-labelledby="settings-about-title"><div className="settings-section-head"><h2 id="settings-about-title" className="settings-section-title">About</h2></div><AgentAbout agent={agent} /></section>
       </div>

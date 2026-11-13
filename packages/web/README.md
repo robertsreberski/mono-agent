@@ -122,7 +122,8 @@ User Stop also marks a running `AskUser` question as interrupted; answer in a ne
 
 ### Capabilities in agent settings
 
-**Capabilities** is read-only discovery for optional features. The console
+**Capabilities** combines read-only discovery with separately advertised typed
+Enable actions on supporting agents. The console
 feature-detects the selected live agent's `capabilitySetup.version: 1` read claim
 and proxies `GET /api/v1/agents/:id/capabilities` to its operator endpoint. Reads
 require exact origin (native clients can use the existing claimed-origin
@@ -134,7 +135,13 @@ converted into validation statuses.
 
 Cards show purpose, requirements, qualitative usage/cost, validation section
 statuses, and exact manual CLI/config steps. Memory tier choices inspect recipes
-only; there is no apply button, credential input, proposal store or config write.
+only. Separate Enable actions preview and confirm Save for eligible Memory Lite
+and controls for valid existing cron jobs; they never accept arbitrary patches,
+paths, commands or credentials. The agent owns the durable write and private
+backup. Managed agents reuse Restart confirmation/tracking and fresh startup
+verification; foreground/embedded saves remain pending until next start. Restart
+failure never automatically rolls back. Older agents retain manual guidance.
+There is no credential form or proposal store.
 Built-in tracing is already enabled; removed exporters are unsupported. Optional
 host-preflight evidence appears only when explicitly supplied by the agent.
 `?agent=<source-id>&settings=capabilities` is an init handoff link: discovery keeps
@@ -1436,6 +1443,11 @@ WebAgentsChangedPayload
 WebAttachment
 WebBootstrap
 WebBootstrapScope
+WebCapabilityActionInput
+WebCapabilityActionPreview
+WebCapabilityActionSaveInput
+WebCapabilityActionSaved
+WebCapabilityActionsSnapshot
 WebCapabilitySetupSnapshot
 WebConsoleError
 WebConsoleIdentity

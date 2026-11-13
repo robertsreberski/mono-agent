@@ -2,11 +2,11 @@ import { cleanup, render, screen, waitFor, within } from "@testing-library/react
 import { commands, page, userEvent } from "@vitest/browser/context";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AssistantRuntimeProvider, useLocalRuntime } from "@assistant-ui/react";
-import { api } from "./api";
+import { api, ApiError } from "./api";
 import { AgentSettingsScreen } from "./components/agent-settings/AgentSettingsScreen";
 import { Dashboard } from "./components/dashboard/Dashboard";
 import { NotificationsProvider } from "./notifications";
-import { capabilitySnapshot } from "./test/capability-fixtures";
+import { capabilitySnapshot, capabilityActions } from "./test/capability-fixtures";
 import { agent } from "./test/fixtures";
 import { capabilityConsoleStore as storyStore } from "./test/capability-console-store";
 import "./styles.css";
@@ -21,12 +21,13 @@ beforeEach(async () => {
   await commands.prepareCapabilityScreenshots();
   await commands.emulateColorScheme("light");
   vi.spyOn(api, "capabilitySetup").mockResolvedValue(capabilitySnapshot);
+  vi.spyOn(api, "capabilityActions").mockResolvedValue(capabilityActions);
   vi.spyOn(api, "latestAgentRestart").mockResolvedValue(null);
 });
 afterEach(async () => { cleanup(); Object.assign(storyStore, initialStore); vi.restoreAllMocks(); await commands.emulateColorScheme(null); });
-function Preview({ width, older = false, degraded = false }: { readonly width: number; readonly older?: boolean; readonly degraded?: boolean }) {
+function Preview({ width, older = false, degraded = false, managed = false }: { readonly width: number; readonly older?: boolean; readonly degraded?: boolean; readonly managed?: boolean }) {
   const runtime = useLocalRuntime({ async *run() { yield { content: [{ type: "text", text: "Synthetic preview only" }] }; } });
-  const selected = agent("garden", { label: "Garden Agent · synthetic", status: degraded ? "degraded" : "online", ...(older ? {} : { supportsCapabilitySetup: true }) });
+  const selected = agent("garden", { label: "Garden Agent · synthetic", status: degraded ? "degraded" : "online", restart: { supported: managed }, ...(older ? {} : { supportsCapabilitySetup: true, supportsCapabilityActions: true }) });
   Object.assign(storyStore, { selectedAgent: selected, selectedAgentId: selected.sourceId, agents: [selected], visibleAgents: [selected], selectedThread: null, selectedThreadId: null });
   // Same shell, actual Dashboard navigation, header, scrollport and settings
   // screen as the console. Only store/API display data are synthetic.
@@ -112,4 +113,65 @@ for (const width of [390, 1440]) describe(`Capabilities in console settings at $
     for (const heading of screen.getAllByRole("heading", { name: "Garden Agent · synthetic", level: 1 })) expect(heading).toBeVisible();
     if (shots) await page.screenshot({ path: `${shots}/capabilities-synthetic-${width}-older-agent.png` });
   });
+});
+
+for (const managed of [false, true]) it(`confirms/cancels typed saves and shows ${managed ? "managed restart" : "foreground pending"} truth`, async () => {
+  await page.viewport(1440, 1100);
+  const preview = { action: "cron-controls" as const, process: capabilityActions.process, expectedVersion: "a".repeat(64), changes: [{ field: "cron.operatorActions.enabled" as const, value: "true" }], normalizesFormatting: true as const, noOp: false };
+  vi.spyOn(api, "previewCapabilityAction").mockResolvedValue(preview);
+  const save = vi.spyOn(api, "saveCapabilityAction").mockResolvedValue({ action: preview.action, process: preview.process, version: "b".repeat(64), changed: true });
+  const operation = { id: "synthetic-restart", sourceId: "garden", stage: "restarting" as const, requestedAt: "2026-08-01T10:00:00Z", deadline: "2026-08-01T10:02:00Z" };
+  const request = vi.spyOn(api, "requestAgentRestart").mockResolvedValue(operation);
+  vi.spyOn(api, "restartStatus").mockResolvedValue(operation);
+  render(<Preview width={1440} managed={managed} />);
+  const enable = await screen.findByRole("button", { name: "Enable cron controls…" });
+  await userEvent.click(enable);
+  expect(screen.getByLabelText("Owned-field preview").textContent).toBe("true");
+  await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
+  expect(save).not.toHaveBeenCalled(); expect(request).not.toHaveBeenCalled();
+  await userEvent.click(enable); await userEvent.click(screen.getByRole("button", { name: "Confirm Save" }));
+  await screen.findByText("Saved; applies on next start");
+  expect(save).toHaveBeenCalledWith("garden", { action: "cron-controls", process: preview.process, expectedVersion: preview.expectedVersion, confirmed: true });
+  expect(request).not.toHaveBeenCalled();
+  if (managed) {
+    await userEvent.click(screen.getByRole("button", { name: "Restart to apply…" }));
+    expect(screen.getByText(/Restarting may interrupt active conversations/)).toBeVisible();
+    await userEvent.click(screen.getByRole("button", { name: "Confirm restart" }));
+    await screen.findByText("Saved; restarting…"); expect(request).toHaveBeenCalledTimes(1);
+    vi.mocked(api.restartStatus).mockResolvedValue({ ...operation, stage: "back_online", outcome: "success" });
+    await screen.findByText(/Back online\. Refresh capability status/, {}, { timeout: 5000 });
+    // A fresh generation plus agent-owned loaded-state evidence, not a saved DTO, proves activation.
+    vi.mocked(api.capabilityActions).mockResolvedValue({ ...capabilityActions, process: { ...preview.process, startedAt: "2026-08-01T10:01:00Z" }, actions: capabilityActions.actions.map((action) => ({ ...action, active: true })) });
+    await userEvent.click(screen.getByRole("button", { name: "Refresh capability status" }));
+    await waitFor(() => expect(screen.queryByText("Saved; restarting…")).toBeNull());
+    const cron = screen.getByRole("article", { name: "Scheduled jobs (cron)" });
+    expect(within(cron).getByText("Active")).toBeVisible();
+  } else expect(screen.queryByRole("button", { name: "Restart to apply…" })).toBeNull();
+});
+it("refreshes on conflicts and requires another explicit preview instead of retrying a save", async () => {
+  await page.viewport(390, 1000);
+  vi.spyOn(api, "previewCapabilityAction").mockResolvedValue({ action: "cron-controls", process: capabilityActions.process, expectedVersion: "a".repeat(64), changes: [], normalizesFormatting: true, noOp: false });
+  const save = vi.spyOn(api, "saveCapabilityAction").mockRejectedValue(new ApiError("conflict", 409, "capability_action_conflict"));
+  render(<Preview width={390} />);
+  await userEvent.click(await screen.findByRole("button", { name: "Enable cron controls…" }));
+  await userEvent.click(screen.getByRole("button", { name: "Confirm Save" }));
+  await screen.findByRole("alert");
+  expect(screen.getByRole("alert").textContent).toContain("review a new preview");
+  expect(save).toHaveBeenCalledTimes(1); expect(screen.queryByRole("button", { name: "Confirm Save" })).toBeNull();
+});
+
+it("leaves confirmed settings pending after a managed restart refusal, with no automatic rollback", async () => {
+  await page.viewport(1440, 1100);
+  const preview = { action: "cron-controls" as const, process: capabilityActions.process, expectedVersion: "a".repeat(64), changes: [], normalizesFormatting: true as const, noOp: false };
+  vi.spyOn(api, "previewCapabilityAction").mockResolvedValue(preview);
+  const save = vi.spyOn(api, "saveCapabilityAction").mockResolvedValue({ action: preview.action, process: preview.process, version: "b".repeat(64), changed: true });
+  vi.spyOn(api, "requestAgentRestart").mockRejectedValue(new ApiError("Synthetic refusal", 409));
+  render(<Preview width={1440} managed />);
+  await userEvent.click(await screen.findByRole("button", { name: "Enable cron controls…" }));
+  await userEvent.click(screen.getByRole("button", { name: "Confirm Save" }));
+  await userEvent.click(await screen.findByRole("button", { name: "Restart to apply…" }));
+  await userEvent.click(screen.getByRole("button", { name: "Confirm restart" }));
+  await screen.findByText("Restart failed or was not confirmed. Saved settings remain; no automatic rollback.");
+  expect(save).toHaveBeenCalledTimes(1);
+  expect(screen.getByText("Saved; applies on next start")).toBeVisible();
 });

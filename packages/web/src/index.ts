@@ -187,3 +187,5 @@ export type { ConsoleToolScope, ConsoleToolOperation, ConsoleToolName, ExternalC
 export type { WebVoiceConfig } from "./voice-config.js";
 
 export type { WebCapabilitySetupSnapshot } from "./contracts.js";
+
+export type { WebCapabilityActionsSnapshot, WebCapabilityActionInput, WebCapabilityActionSaveInput, WebCapabilityActionPreview, WebCapabilityActionSaved } from "./contracts.js";

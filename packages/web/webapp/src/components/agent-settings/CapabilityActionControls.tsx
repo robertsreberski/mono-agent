@@ -1,0 +1,74 @@
+import { useEffect, useRef, useState } from "react";
+import { api, ApiError } from "../../api";
+import type { AgentSummary, WebCapabilityActionsSnapshot, WebCapabilityActionPreview } from "../../types";
+import type { useRestartOwner } from "./RestartOwner";
+
+type Saved = { startedAt: string; restartId?: string | null; restartAttempted?: boolean };
+type Action = WebCapabilityActionsSnapshot["actions"][number];
+export type CapabilityRestartState = ReturnType<typeof useRestartOwner> | null;
+const reasons = {
+  "eligible": "Review the owned settings before saving.", "already-configured": "Already saved in configuration.",
+  "memory-configured": "Memory is configured. Tier changes require manual preparation; no migration is offered.",
+  "memory-root-unsafe": "The standard memory root is not empty or verified Lite. Inspect it in the owner terminal; no data will be changed.",
+  "no-valid-jobs": "Prepare valid cron jobs first. Enable never creates or enables jobs or schedules.",
+  "env-shadowed": "An environment setting conflicts with this action. Resolve it in the owner terminal.",
+};
+export function CapabilityActionControls({ agent, action, process, restart, refresh, saved, setSaved }: {
+  readonly agent: AgentSummary; readonly action: Action; readonly process: WebCapabilityActionsSnapshot["process"];
+  readonly restart: CapabilityRestartState; readonly refresh: () => void; readonly saved: Saved | null; readonly setSaved: (saved: Saved) => void;
+}) {
+  const [preview, setPreview] = useState<WebCapabilityActionPreview | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const identity = `${agent.sourceId}:${agent.generation}:${process.startedAt}`;
+  const current = useRef(identity); current.current = identity;
+  useEffect(() => { setPreview(null); setBusy(false); setError(null); }, [identity]);
+  const handleError = (error: unknown) => {
+    setPreview(null);
+    if (error instanceof ApiError && error.status === 409) {
+      setError("Settings or process changed. Refreshed availability; review a new preview before saving."); refresh();
+    } else setError("The outcome could not be confirmed. Refresh settings and inspect the saved configuration before retrying; no automatic rollback was attempted.");
+  };
+  const readPreview = async () => {
+    if (busy) return; const owner = identity; setBusy(true); setError(null);
+    try { const result = await api.previewCapabilityAction(agent.sourceId, { action: action.id, process }); if (current.current === owner) setPreview(result); }
+    catch (error) { if (current.current === owner) handleError(error); }
+    finally { if (current.current === owner) setBusy(false); }
+  };
+  const save = async () => {
+    if (busy || preview === null) return; const owner = identity; setBusy(true); setError(null);
+    try {
+      await api.saveCapabilityAction(agent.sourceId, { action: preview.action, process: preview.process, expectedVersion: preview.expectedVersion, confirmed: true });
+      if (current.current !== owner) return;
+      setSaved({ startedAt: process.startedAt, ...(restart?.readState === "ready" ? { restartId: restart.operationId ?? null } : {}) }); setPreview(null); refresh();
+    } catch (error) { if (current.current === owner) handleError(error); }
+    finally { if (current.current === owner) setBusy(false); }
+  };
+  const active = action.active && (saved === null || process.startedAt !== saved.startedAt);
+  const newRestart = saved !== null && saved.restartId !== undefined && restart?.operationId !== undefined && restart.operationId !== saved.restartId;
+  const restarting = (saved?.restartAttempted === true && restart?.requesting === true) || (newRestart && restart?.outcome === undefined);
+  return <div className="capability-action" aria-live="polite">
+    {active ? <p><strong>Active</strong> · Loaded at this start. Check readiness evidence below.</p> : saved !== null || action.reason === "already-configured" ? <>
+      <p><strong>{restarting ? "Saved; restarting…" : "Saved; applies on next start"}</strong></p>
+      {(newRestart || saved?.restartAttempted) && restart?.outcome && restart.outcome !== "success" && <p>Restart failed or was not confirmed. Saved settings remain; no automatic rollback.</p>}
+      {agent.restart?.supported === true && !restarting && <button className="settings-button" type="button" disabled={restart?.readState !== "ready"} onClick={() => {
+        setSaved({ startedAt: saved?.startedAt ?? process.startedAt, restartId: restart?.operationId ?? null, restartAttempted: true });
+        restart?.restartAgain();
+        const target = document.querySelector<HTMLElement>('[data-settings-target="agent"]'); target?.scrollIntoView({ block: "start" }); target?.focus({ preventScroll: true });
+      }}>Restart to apply…</button>}
+      {newRestart && restart?.outcome === "success" && <p>Back online. Refresh capability status to verify activation at the new start.</p>}
+    </> : <>
+      <p>{reasons[action.reason]}</p>
+      {action.available && <button className="settings-button" type="button" disabled={busy} onClick={() => void readPreview()}>{busy ? "Checking…" : action.id === "memory-lite" ? "Enable Memory Lite…" : "Enable cron controls…"}</button>}
+    </>}
+    {preview && <div role="group" aria-label="Confirm capability settings">
+      <p><strong>{preview.noOp ? "Already configured; no write is needed." : "Review changes, then confirm Save."}</strong></p>
+      {preview.changes.map((change) => <div key={change.field}><code>{change.field}</code><pre aria-label="Owned-field preview"><code>{change.value}</code></pre></div>)}
+      <p>JSON formatting normalizes to two-space indentation. Unrelated settings are preserved. One private, ignored .bak keeps the prior bytes. Saving does not restart the agent or activate settings.</p>
+      {preview.action === "cron-controls" && <p>Only operator controls are enabled. Jobs and schedules are unchanged.</p>}
+      <button type="button" className="settings-button" disabled={busy} onClick={() => setPreview(null)}>Cancel</button>{" "}
+      <button type="button" className="settings-button" disabled={busy} onClick={() => void save()}>{busy ? "Saving…" : "Confirm Save"}</button>
+    </div>}
+    {error && <p role="alert">{error}</p>}
+  </div>;
+}

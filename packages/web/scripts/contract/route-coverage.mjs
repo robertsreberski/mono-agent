@@ -23,6 +23,10 @@ export function discoverRoutes(source) {
   const routes = [];
   const verbs = new Set(["get", "post", "put", "patch", "delete", "head", "options", "all"]);
   function visit(node) {
+    // This imported registration owner uses literal routes and the same origin callback.
+    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === "registerCapabilityActionRoutes") {
+      routes.push(...discoverRoutes(readFileSync(new URL("../../src/capability-action-routes.ts", import.meta.url), "utf8")));
+    }
     if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)
       && node.expression.expression.getText(file) === "app" && verbs.has(node.expression.name.text)) {
       const [path, ...handlers] = node.arguments;

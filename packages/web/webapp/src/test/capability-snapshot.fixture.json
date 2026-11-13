@@ -10,7 +10,7 @@
     {
       "id": "memory",
       "title": "Memory",
-      "purpose": "Keep useful information across conversations. Choose a tier to inspect its setup instructions, not to change the agent.",
+      "purpose": "Keep useful information across conversations. Inspect tier instructions below. On supported agents, Enable Memory Lite offers a separate preview and confirmed Save.",
       "requirements": [
         "A writable memory root; Journal and BuJo also need local embeddings."
       ],
@@ -19,7 +19,7 @@
         "memory"
       ],
       "steps": [
-        "In the agent folder, back up mono-agent.config.json. Merge only the shown fields; preserve unrelated settings, existing allowlists and deny rules. Replace every example placeholder before use. This console never applies changes.",
+        "In the agent folder, back up mono-agent.config.json. Merge only the shown fields; preserve unrelated settings, existing allowlists and deny rules. Replace every example placeholder before use. These manual steps do not apply changes. Only agents advertising console Enable support offer typed Memory Lite and cron-control actions.",
         "{\n  \"memory\": {\n    \"mode\": \"lite\",\n    \"path\": \"./.mono-agent/memory\",\n    \"writeMode\": \"append-host-summary\",\n    \"recallTool\": {\n      \"enabled\": true\n    },\n    \"rememberTool\": {\n      \"enabled\": true\n    }\n  }\n}",
         "Run mono-agent validate. Resolve waiting/error findings before starting. Restart a managed agent with mono-agent restart; for foreground use stop/start in its terminal. Validation is readiness evidence, not proof of message delivery."
       ],
@@ -45,7 +45,7 @@
           ],
           "status": "ok",
           "steps": [
-            "In the agent folder, back up mono-agent.config.json. Merge only the shown fields; preserve unrelated settings, existing allowlists and deny rules. Replace every example placeholder before use. This console never applies changes.",
+            "In the agent folder, back up mono-agent.config.json. Merge only the shown fields; preserve unrelated settings, existing allowlists and deny rules. Replace every example placeholder before use. These manual steps do not apply changes. Only agents advertising console Enable support offer typed Memory Lite and cron-control actions.",
             "{\n  \"memory\": {\n    \"mode\": \"lite\",\n    \"path\": \"./.mono-agent/memory\",\n    \"writeMode\": \"append-host-summary\",\n    \"recallTool\": {\n      \"enabled\": true\n    },\n    \"rememberTool\": {\n      \"enabled\": true\n    }\n  }\n}",
             "Run mono-agent validate. Resolve waiting/error findings before starting. Restart a managed agent with mono-agent restart; for foreground use stop/start in its terminal. Validation is readiness evidence, not proof of message delivery."
           ]
@@ -63,7 +63,7 @@
           ],
           "status": "disabled",
           "steps": [
-            "In the agent folder, back up mono-agent.config.json. Merge only the shown fields; preserve unrelated settings, existing allowlists and deny rules. Replace every example placeholder before use. This console never applies changes.",
+            "In the agent folder, back up mono-agent.config.json. Merge only the shown fields; preserve unrelated settings, existing allowlists and deny rules. Replace every example placeholder before use. These manual steps do not apply changes. Only agents advertising console Enable support offer typed Memory Lite and cron-control actions.",
             "{\n  \"memory\": {\n    \"mode\": \"journal\",\n    \"path\": \"./.mono-agent/memory\",\n    \"writeMode\": \"append-host-summary\",\n    \"embeddings\": {\n      \"provider\": \"ollama\",\n      \"endpoint\": \"http://localhost:11434\",\n      \"model\": \"nomic-embed-text:v1.5\",\n      \"dim\": 768\n    },\n    \"recallTool\": {\n      \"enabled\": true\n    },\n    \"rememberTool\": {\n      \"enabled\": true\n    }\n  }\n}",
             "Use this recipe only for a fresh root. Stop the agent before preparing memory: mono-agent stop",
             "Set the actual embedding model, endpoint and dimension; for BuJo set the extraction model too.",
@@ -85,7 +85,7 @@
           ],
           "status": "disabled",
           "steps": [
-            "In the agent folder, back up mono-agent.config.json. Merge only the shown fields; preserve unrelated settings, existing allowlists and deny rules. Replace every example placeholder before use. This console never applies changes.",
+            "In the agent folder, back up mono-agent.config.json. Merge only the shown fields; preserve unrelated settings, existing allowlists and deny rules. Replace every example placeholder before use. These manual steps do not apply changes. Only agents advertising console Enable support offer typed Memory Lite and cron-control actions.",
             "{\n  \"memory\": {\n    \"mode\": \"bujo\",\n    \"path\": \"./.mono-agent/memory\",\n    \"writeMode\": \"capture\",\n    \"embeddings\": {\n      \"provider\": \"ollama\",\n      \"endpoint\": \"http://localhost:11434\",\n      \"model\": \"nomic-embed-text:v1.5\",\n      \"dim\": 768\n    },\n    \"llm\": {\n      \"provider\": \"agent-host\",\n      \"model\": \"openai-codex:gpt-5.6-terra\"\n    },\n    \"recallTool\": {\n      \"enabled\": true\n    },\n    \"rememberTool\": {\n      \"enabled\": true\n    }\n  }\n}",
             "Use this recipe only for a fresh root. Stop the agent before preparing memory: mono-agent stop",
             "Set the actual embedding model, endpoint and dimension; for BuJo set the extraction model too.",
@@ -109,7 +109,7 @@
       ],
       "status": "disabled",
       "steps": [
-        "In the agent folder, back up mono-agent.config.json. Merge only the shown fields; preserve unrelated settings, existing allowlists and deny rules. Replace every example placeholder before use. This console never applies changes.",
+        "In the agent folder, back up mono-agent.config.json. Merge only the shown fields; preserve unrelated settings, existing allowlists and deny rules. Replace every example placeholder before use. These manual steps do not apply changes. Only agents advertising console Enable support offer typed Memory Lite and cron-control actions.",
         "{\n  \"webhook\": {\n    \"enabled\": true\n  }\n}",
         "Run mono-agent validate. Resolve waiting/error findings before starting. Restart a managed agent with mono-agent restart; for foreground use stop/start in its terminal. Validation is readiness evidence, not proof of message delivery."
       ],
@@ -133,7 +133,7 @@
       ],
       "status": "waiting",
       "steps": [
-        "In the agent folder, back up mono-agent.config.json. Merge only the shown fields; preserve unrelated settings, existing allowlists and deny rules. Replace every example placeholder before use. This console never applies changes.",
+        "In the agent folder, back up mono-agent.config.json. Merge only the shown fields; preserve unrelated settings, existing allowlists and deny rules. Replace every example placeholder before use. These manual steps do not apply changes. Only agents advertising console Enable support offer typed Memory Lite and cron-control actions.",
         "{\n  \"telegram\": {\n    \"enabled\": true,\n    \"allowedChatIds\": [\n      \"<TELEGRAM_CHAT_ID>\"\n    ]\n  }\n}",
         "In the owner terminal, set the following placeholders in the owner-only .env. Never paste credentials into this console.",
         "# Telegram bot token from @BotFather",
@@ -160,7 +160,7 @@
       ],
       "status": "disabled",
       "steps": [
-        "In the agent folder, back up mono-agent.config.json. Merge only the shown fields; preserve unrelated settings, existing allowlists and deny rules. Replace every example placeholder before use. This console never applies changes.",
+        "In the agent folder, back up mono-agent.config.json. Merge only the shown fields; preserve unrelated settings, existing allowlists and deny rules. Replace every example placeholder before use. These manual steps do not apply changes. Only agents advertising console Enable support offer typed Memory Lite and cron-control actions.",
         "{\n  \"slack\": {\n    \"enabled\": true,\n    \"allowedChannelIds\": [\n      \"<SLACK_CHANNEL_ID>\"\n    ]\n  }\n}",
         "In the owner terminal, set the following placeholders in the owner-only .env. Never paste credentials into this console.",
         "# Slack Socket Mode tokens",
@@ -188,7 +188,7 @@
       ],
       "status": "disabled",
       "steps": [
-        "In the agent folder, back up mono-agent.config.json. Merge only the shown fields; preserve unrelated settings, existing allowlists and deny rules. Replace every example placeholder before use. This console never applies changes.",
+        "In the agent folder, back up mono-agent.config.json. Merge only the shown fields; preserve unrelated settings, existing allowlists and deny rules. Replace every example placeholder before use. These manual steps do not apply changes. Only agents advertising console Enable support offer typed Memory Lite and cron-control actions.",
         "{\n  \"openaiApi\": {\n    \"enabled\": true\n  }\n}",
         "In the owner terminal, set the following placeholders in the owner-only .env. Never paste credentials into this console.",
         "# Optional bearer required from OpenAI-API clients",
@@ -215,7 +215,7 @@
       ],
       "status": "disabled",
       "steps": [
-        "In the agent folder, back up mono-agent.config.json. Merge only the shown fields; preserve unrelated settings, existing allowlists and deny rules. Replace every example placeholder before use. This console never applies changes.",
+        "In the agent folder, back up mono-agent.config.json. Merge only the shown fields; preserve unrelated settings, existing allowlists and deny rules. Replace every example placeholder before use. These manual steps do not apply changes. Only agents advertising console Enable support offer typed Memory Lite and cron-control actions.",
         "{\n  \"cron\": {\n    \"dir\": \"cron\"\n  }\n}",
         "Create cron/digest.md with the following contents:",
         "---\nexpression: \"0 8 * * *\"\nconversationId: cron-digest\nnotify: true\n---\n\nProduce a concise digest of anything noteworthy since the last run.\nYour final reply is delivered to the user verbatim as the notification — write it as the finished message, with no preface. If nothing is noteworthy, call FinishSilently({}) alone without narration. If that tool is unavailable, reply with exactly NOTHING_TO_REPORT.\n",
@@ -241,7 +241,7 @@
       ],
       "status": "waiting",
       "steps": [
-        "In the agent folder, back up mono-agent.config.json. Merge only the shown fields; preserve unrelated settings, existing allowlists and deny rules. Replace every example placeholder before use. This console never applies changes.",
+        "In the agent folder, back up mono-agent.config.json. Merge only the shown fields; preserve unrelated settings, existing allowlists and deny rules. Replace every example placeholder before use. These manual steps do not apply changes. Only agents advertising console Enable support offer typed Memory Lite and cron-control actions.",
         "{\n  \"sandbox\": {\n    \"mode\": \"native\",\n    \"network\": {\n      \"mode\": \"localhost\"\n    },\n    \"readableRoots\": [\n      \".\"\n    ],\n    \"writableRoots\": [\n      \".\"\n    ],\n    \"fallback\": \"fail-closed\"\n  }\n}",
         "mono-agent sandbox setup",
         "mono-agent sandbox check",

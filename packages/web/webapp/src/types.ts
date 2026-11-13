@@ -167,3 +167,5 @@ export const DEFAULT_UPLOAD_LIMITS: UploadLimits = {
 export type { ProviderUsage, ProviderUsageSnapshot, ProviderUsageId } from "@mono-agent/contracts/provider-usage";
 
 export type { WebCapabilitySetupSnapshot } from "../../src/contracts.js";
+
+export type { WebCapabilityActionsSnapshot, WebCapabilityActionInput, WebCapabilityActionSaveInput, WebCapabilityActionPreview, WebCapabilityActionSaved } from "../../src/contracts.js";

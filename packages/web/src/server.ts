@@ -1,3 +1,4 @@
+import { registerCapabilityActionRoutes } from "./capability-action-routes.js";
 import { voiceFormat, WEB_VOICE_LIMITS } from "./transcription.js";
 import { readVoiceUpload } from "./voice-upload.js";
 import { browserCostWire } from "./cost-wire.js";
@@ -401,6 +402,8 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
         .then((snapshot) => res.json(snapshot)).catch(next);
     } catch (error) { next(error); }
   });
+
+  registerCapabilityActionRoutes(app, service, activeOperations, exactRequestOrigin);
 
   app.get("/api/v1/agents/:id/capabilities", (req, res, next) => {
     res.setHeader("Cache-Control", "private, no-store, max-age=0");

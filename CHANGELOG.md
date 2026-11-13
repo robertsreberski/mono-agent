@@ -17,6 +17,11 @@
   bodies now get fixed messages; known errors keep their reviewed messages
   with only safe details and `Retry-After`.
 
+- Add previewed, confirmed console Enable actions for safe Memory Lite setup
+  and controls for valid existing cron jobs, with private guarded config backups.
+  Keep saved settings pending until a fresh start; reuse managed Restart and
+  retain manual guidance on older agents without enabling jobs or migrating data.
+
 - Remove operator API-key requirements for console, ACP and peer access,
   supervised restart, provider management and opted-in cron actions. Ignore
   obsolete operator keys and headers; retain scoped secrets and forward the

@@ -1,7 +1,8 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { api } from "../../api";
-import { capabilitySnapshot } from "../../test/capability-fixtures";
+import type { CapabilityRestartState } from "./CapabilityActionControls";
+import { capabilitySnapshot, capabilityActions } from "../../test/capability-fixtures";
 import { agent } from "../../test/fixtures";
 import { CapabilityCard, CapabilitiesSection } from "./CapabilitiesSection";
 
@@ -44,7 +45,7 @@ describe("Capabilities section", () => {
     }
     expect(new Set(next).size).toBe(next.length);
     expect(within(screen.getByRole("article", { name: "Slack" })).getByText(/Set the .env tokens and add the slack block/)).toBeTruthy();
-    expect(screen.getByText("Explore optional features and manual setup steps without changing your agent.")).toBeTruthy();
+    expect(screen.getByText(/Explore optional features\. Eligible Memory Lite/)).toBeTruthy();
     expect(screen.queryByText(/durable configuration inputs|loaded runtime/)).toBeNull();
   });
   it("does not request status from offline or older agents", () => {
@@ -95,4 +96,20 @@ describe("Capabilities section", () => {
     fireEvent.click(screen.getByRole("button", { name: "Retry capability status" }));
     await waitFor(() => expect(api.capabilitySetup).toHaveBeenCalledTimes(3));
   });
+});
+
+it("does not mistake a delayed pre-save restart baseline for a new restart", async () => {
+  vi.spyOn(api, "capabilitySetup").mockResolvedValue(capabilitySnapshot);
+  vi.spyOn(api, "capabilityActions").mockResolvedValue({ ...capabilityActions, actions: capabilityActions.actions.map((item) => ({ ...item, active: false, reason: "eligible" as const })) });
+  vi.spyOn(api, "previewCapabilityAction").mockResolvedValue({ action: "memory-lite", process: capabilityActions.process, expectedVersion: "a".repeat(64), changes: [], normalizesFormatting: true, noOp: false });
+  vi.spyOn(api, "saveCapabilityAction").mockResolvedValue({ action: "memory-lite", process: capabilityActions.process, version: "b".repeat(64), changed: true });
+  const selected = agent("garden", { supportsCapabilitySetup: true, supportsCapabilityActions: true, restart: { supported: true } });
+  const view = render(<CapabilitiesSection agent={selected} restart={{ readState: "loading" } as CapabilityRestartState} />);
+  fireEvent.click(await screen.findByRole("button", { name: "Enable Memory Lite…" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Confirm Save" }));
+  await screen.findByText("Saved; applies on next start");
+  expect(screen.getByRole("button", { name: "Restart to apply…" })).toBeDisabled();
+  view.rerender(<CapabilitiesSection agent={selected} restart={{ readState: "ready", operationId: "older-operation", outcome: "success" } as CapabilityRestartState} />);
+  expect(screen.queryByText(/Back online\. Refresh capability status/)).toBeNull();
+  expect(screen.getByText("Saved; applies on next start")).toBeVisible();
 });

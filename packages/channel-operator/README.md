@@ -70,8 +70,13 @@ service omit the capability and return 501. Service failures return sanitized
 The report identifies its process, observation time and loaded-snapshot/durable-input scope;
 it carries four-state section evidence, static guidance and optional
 schema-version-1 `host-preflight` evidence. Missing preflight is not success.
-There are no proposal, apply or config-write routes. Client helpers export the
-same strict decoder from `@mono-agent/channel-operator/client`.
+The discovery snapshot remains unchanged. Separate host-injected
+`CapabilityActionsService` advertises
+`capabilityActions: { version: 1, preview: true, save: true }` and serves keyless `GET /v1/capability-actions` plus typed
+`POST /v1/capability-actions/preview` and `/save`. Save requires explicit
+confirmation, expected config version and process identity; the adapter never
+resolves paths or writes config itself. Older/custom hosts omit the claim and
+return 501. Client helpers export the same strict decoders from `@mono-agent/channel-operator/client`.
 
 ### Conversational endpoints
 
@@ -299,6 +304,16 @@ Every symbol exported by each public code entrypoint is listed below.
 **`@mono-agent/channel-operator`**
 
 ```text
+CapabilityActionError
+CapabilityActionId
+CapabilityActionInput
+CapabilityActionPreview
+CapabilityActionProcess
+CapabilityActionReason
+CapabilityActionSaveInput
+CapabilityActionSaved
+CapabilityActionsService
+CapabilityActionsSnapshot
 CapabilityCard
 CapabilityChoice
 CapabilityEvidence
@@ -326,6 +341,7 @@ DEFAULT_TUI_BASE_PATH
 DEFAULT_TUI_HOST
 DEFAULT_TUI_PORT
 LoadTuiAdapterConfigInput
+MAX_CAPABILITY_ACTION_BYTES
 MAX_CAPABILITY_SETUP_BYTES
 MAX_CRON_OPERATOR_RESPONSE_BYTES
 MAX_CRON_OPERATOR_RUN_PAGE
@@ -357,6 +373,11 @@ TuiSkillInfo
 TuiSkillRegistry
 TuiSkillUnavailableReason
 loadTuiAdapterConfig
+parseCapabilityActionInput
+parseCapabilityActionPreview
+parseCapabilityActionSaveInput
+parseCapabilityActionSaved
+parseCapabilityActionsSnapshot
 parseCapabilitySetupSnapshot
 redactTuiAdapterConfig
 startTuiAdapter
@@ -365,17 +386,33 @@ startTuiAdapter
 **`@mono-agent/channel-operator/client`**
 
 ```text
+CapabilityActionError
+CapabilityActionId
+CapabilityActionInput
+CapabilityActionPreview
+CapabilityActionProcess
+CapabilityActionReason
+CapabilityActionSaveInput
+CapabilityActionSaved
+CapabilityActionsService
+CapabilityActionsSnapshot
 CapabilityCard
 CapabilityChoice
 CapabilityEvidence
 CapabilitySetupService
 CapabilitySetupSnapshot
 CapabilityStatus
+MAX_CAPABILITY_ACTION_BYTES
 MAX_CAPABILITY_SETUP_BYTES
 OperatorStreamFrameTooLargeError
 fetchLongLivedHostWake
 fetchLongLivedTurn
 operatorResponseFromFinishFrame
+parseCapabilityActionInput
+parseCapabilityActionPreview
+parseCapabilityActionSaveInput
+parseCapabilityActionSaved
+parseCapabilityActionsSnapshot
 parseCapabilitySetupSnapshot
 readOperatorStreamFrames
 ```

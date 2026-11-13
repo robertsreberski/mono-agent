@@ -232,7 +232,9 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
   actions are config-opt-in and explicitly confirmed; they
   never rewrite config, environment, or Markdown job sources.
 - Register the host as a traceability source. Config edits are made directly in
-  `mono-agent.config.json` or `IDENTITY.md` and take effect after validation and
+  `mono-agent.config.json` or `IDENTITY.md`, or through separately advertised typed
+  console Enable actions for Memory Lite and existing cron controls. Changes take
+  effect after validation and
   `mono-agent restart` or a confirmed console restart.
 - Check managed launchd logs with bounded metadata reads every five minutes,
   reconcile installed macOS LaunchAgents at login and hourly, and make `status`

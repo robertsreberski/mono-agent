@@ -11,6 +11,13 @@ This playbook wires a timezone-aware cron job to Telegram, Slack, or a new web-c
 Opt in with `notify: true` per cron job (the same model is available to webhook endpoints). On a notify turn the harness injects guidance: the agent's final reply is delivered to the destination as-is (no second LLM turn) and recorded to that conversation's history, so a user's reply resumes with it in context. To say nothing, the agent calls `FinishSilently({})` alone, or replies with exactly `NOTHING_TO_REPORT` if that tool is unavailable — then no notification is sent. Defaults stay off: a job without `notify` delivers nothing.
 :::
 
+On agents that support console Enable, **Agent settings → Capabilities → Enable
+cron controls…** can preview and save `cron.operatorActions.enabled: true` after
+you have prepared valid jobs. This does not enable the jobs or their schedules.
+Save stays pending until a fresh start; use confirmed Restart for managed agents
+or owner-controlled stop/start for foreground hosts. Older agents use manual
+config guidance.
+
 ## Who this is for
 
 Data analysts and operators who want a scheduled briefing pushed to a chat without anyone asking for it — a morning digest that lands every day at a fixed local time.

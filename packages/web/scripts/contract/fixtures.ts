@@ -73,6 +73,11 @@ function fixture<K extends keyof WebApiDtos>(name: string, type: K, value: WebAp
 }
 
 export const FIXTURES = [
+  fixture("capability-actions", "ApiCapabilityActions", { version: 1, process: { pid: 42, startedAt: at }, actions: [{ id: "memory-lite", available: true, active: false, reason: "eligible" }, { id: "cron-controls", available: false, active: false, reason: "no-valid-jobs" }] }),
+  fixture("capability-action-input", "ApiCapabilityActionInput", { action: "memory-lite", process: { pid: 42, startedAt: at } }),
+  fixture("capability-action-save", "ApiCapabilityActionSaveInput", { action: "cron-controls", process: { pid: 42, startedAt: at }, expectedVersion: "a".repeat(64), confirmed: true }),
+  fixture("capability-action-preview", "ApiCapabilityActionPreview", { action: "cron-controls", process: { pid: 42, startedAt: at }, expectedVersion: "a".repeat(64), changes: [{ field: "cron.operatorActions.enabled", value: "true" }], normalizesFormatting: true, noOp: false }),
+  fixture("capability-action-saved", "ApiCapabilityActionSaved", { action: "cron-controls", process: { pid: 42, startedAt: at }, version: "b".repeat(64), changed: true }),
   fixture("voice-captured-submission", "ApiStartSubmission", { submissionId: "11111111-1111-4111-8111-111111111111", text: "A synthetic voice request.", model: "fixture/model", inheritRunSettings: false, context1M: false }),
   fixture("voice-transcription", "ApiTranscription", { text: "Write a short fictional greeting." }),
   fixture("upkeep-message", "ApiMessage", { message: { ...message, parts: [{ type: "telemetry", event: "runtime_telemetry", kind: "continuity_upkeep", data: { kind: "continuity_upkeep", data: { accounting: upkeep } } }] } }),
