@@ -10,8 +10,9 @@ import { writeE2SummaryResult, verifyE2SummaryResult } from "./continuity-e2-sum
 import { assertE2BaselineRequest, bindE2Checkpoint, verifyE2NativeLineage, e2LineageScope, e2PhaseBase } from "./continuity-e2-lineage.mjs";
 import { validE2FailureCause, observeE2NativeCause, captureE2NativeCause, e2ProviderCause, e2CandidateCause } from "./continuity-e2-cause.mjs";
 import { readE2Progress, writeE2PartialScore } from "./continuity-e2-progress.mjs";
-import { E2_RETRY_POLICY, authorizeE2Retry, effectiveE2Summaries, e2RetryCounts } from "./continuity-e2-retry.mjs";
+import { E2_RETRY_POLICY, authorizeE2Retry, effectiveE2Summaries, supersedingE2Summary, e2RetryCounts } from "./continuity-e2-retry.mjs";
 import { e2ReplayArm } from "./continuity-e2-protocol.mjs";
+import { E2_PROTECTION_REFUSALS, e2NativeCompactionSnapshot, e2RefusalCounts } from "./continuity-e2-compaction.mjs";
 const fail = (code = "e2_permit_invalid") => { throw Object.assign(Error(code), { code }); };
 const need = (ok, code) => { if (!ok) fail(code); };
 const count = n => Number.isSafeInteger(n) && n >= 0;
@@ -186,11 +187,18 @@ export const e2ExecutionPolicy = Object.freeze({
         need(previous?.kind === "proof" && previous.phase === "seed" && previous.arm === planned.arm && previous.variant === planned.variant
           && ["completed", "own_abort_after_send"].includes(seed.terminal), "e2_compaction_invalid");
         if (!slot.lineages.proof && seed.lineages?.proof) slot.lineages.proof = structuredClone(seed.lineages.proof);
-        need(!seed.holds.some(h => h.paidRole === "summary") || slot.lineages.proof, "e2_summary_receipt_invalid");
+        need(!effectiveE2Summaries(seed.holds).length || slot.lineages.proof, "e2_summary_receipt_invalid");
       }
     }
     if (p.paidRole === "summary") return scope === undefined ? undefined : { lineageScope: scope, ...(slot.lineages[scope] ? { lineage: structuredClone(slot.lineages[scope]) } : {}) };
     need(!slot.compaction, "e2_compaction_invalid");
+    // Rejected candidates remain authenticated paid evidence, never successors.
+    for (const hold of slot.holds.filter(h => h.summaryReceipt?.rejected)) {
+      need(hold.summaryReceipt.durable === false && E2_PROTECTION_REFUSALS.includes(hold.summaryReceipt.reason)
+        && hold.summaryReceipt.verified && hold.consumed && hold.settlement?.kind === "settled", "e2_summary_receipt_invalid");
+      try { await verifyE2SummaryResult(root, slotId, hold, { schema: hold.summaryReceipt.schema, sha256: hold.summaryReceipt.sha256 }, readPrivate); }
+      catch { fail("e2_summary_receipt_invalid"); }
+    }
     for (const hold of effectiveE2Summaries(slot.holds)) {
       const currentScope = state?.schema === E2_REAL_CONTROLLER && scope === await e2LineageScope({ ...state, pilot }, state.schedule[state.cursor], hold.checkpoint, readArtifact);
       need(hold.summaryReceipt?.verified && hold.summaryReceipt.durable && (!currentScope || slot.lineages?.[scope]), "e2_summary_receipt_invalid");
@@ -259,11 +267,36 @@ export const e2ExecutionPolicy = Object.freeze({
   },
   async compaction(root, slotId, planned, slot, p, readPrivate, state, pilot) {
     const real = state?.schema === E2_REAL_CONTROLLER;
-    need(sameFields(p, real && p?.kind === "durable" ? ["kind", "operationDigest", "checkpoint", "journalId", "checkpointId"] : ["kind", "operationDigest", "checkpoint"]) && /^[a-f0-9]{64}$/u.test(p.operationDigest ?? "")
+    need(sameFields(p, p?.kind === "rejected" ? ["kind", "operationDigest", "checkpoint", "reason"] : real && p?.kind === "durable" ? ["kind", "operationDigest", "checkpoint", "journalId", "checkpointId"] : ["kind", "operationDigest", "checkpoint"]) && /^[a-f0-9]{64}$/u.test(p.operationDigest ?? "")
       && count(p.checkpoint) && slot.holds.every(h => h.settlement) && !slot.terminal, "e2_compaction_invalid");
     if (p.kind === "begin") {
       need(!slot.compaction && !slot.holds.some(h => h.operationDigest === p.operationDigest) && planned.budgets.some(b => b.paidRole === "summary" && b.checkpoint === p.checkpoint), "e2_compaction_invalid");
-      slot.compaction = { operationDigest: p.operationDigest, checkpoint: p.checkpoint };
+      let nativeSnapshot;
+      if (real) {
+        const { guardedAuthorization } = await import("./continuity-guarded-authorization.mjs");
+        nativeSnapshot = await e2NativeCompactionSnapshot(root, { ...state, pilot }, planned, p.checkpoint, guardedAuthorization("e2-validation").readArtifact);
+      }
+      slot.compaction = { operationDigest: p.operationDigest, checkpoint: p.checkpoint, firstRound: slot.holds.length + 1, ...(real ? { nativeSnapshot } : {}) };
+    } else if (p.kind === "rejected") {
+      const pending = slot.compaction;
+      need(real && pending?.operationDigest === p.operationDigest && pending.checkpoint === p.checkpoint
+        && E2_PROTECTION_REFUSALS.includes(p.reason) && !slot.retryPending && pending.nativeSnapshot, "e2_compaction_invalid");
+      const candidates = slot.holds.slice(pending.firstRound - 1);
+      const summaries = effectiveE2Summaries(candidates);
+      need(summaries.length > 0 && candidates.every(h => h.paidRole === "summary" && h.operationDigest === p.operationDigest && h.checkpoint === p.checkpoint
+        && h.consumed && !h.summaryReceipt?.durable && !h.summaryReceipt?.rejected
+        && (summaries.includes(h) || supersedingE2Summary(candidates, h)))
+        && summaries.every(h => h.settlement?.kind === "settled" && h.summaryReceipt?.verified && h.summaryReceipt.durable === false), "e2_summary_receipt_invalid");
+      for (const h of summaries) {
+        try { await verifyE2SummaryResult(root, slotId, h, { schema: h.summaryReceipt.schema, sha256: h.summaryReceipt.sha256 }, readPrivate); }
+        catch { fail("e2_summary_receipt_invalid"); }
+      }
+      const { guardedAuthorization } = await import("./continuity-guarded-authorization.mjs");
+      await e2NativeCompactionSnapshot(root, { ...state, pilot }, planned, p.checkpoint, guardedAuthorization("e2-validation").readArtifact, pending.nativeSnapshot);
+      slot.compactionRefusals ??= [];
+      slot.compactionRefusals.push({ operationDigest: p.operationDigest, checkpoint: p.checkpoint, reason: p.reason, rounds: candidates.map(h => h.round) });
+      summaries.forEach(h => { h.summaryReceipt.rejected = true; h.summaryReceipt.reason = p.reason; });
+      slot.compaction = null;
     } else {
       need(p.kind === "durable" && slot.compaction?.operationDigest === p.operationDigest && slot.compaction.checkpoint === p.checkpoint, "e2_compaction_invalid");
       const summaries = effectiveE2Summaries(slot.holds).filter(h => h.operationDigest === p.operationDigest);
@@ -287,7 +320,7 @@ export const e2ExecutionPolicy = Object.freeze({
     need(slot && planned && slot.slotId === planned.slotId && [...protocol.policy.SLOT_TERMINALS, null].includes(slot.terminal)
       && [null, 0, 1].includes(slot.score), "e2_receipt_invalid");
     const spend = accountRun([slot]);
-    const row = { ...(planned.arm === "baseline" ? { replayArm: "baseline", qualification: false } : {}), retries: e2RetryCounts([slot]), ...(slot.diagnostics && Object.keys(slot.diagnostics).length ? { diagnostics: slot.diagnostics } : {}), schema: protocol.schemas.slotReceipt, slotId: planned.slotId, position: index, terminal: slot.terminal,
+    const row = { ...(planned.arm === "baseline" ? { replayArm: "baseline", qualification: false } : {}), compactionRefusals: e2RefusalCounts([slot]), retries: e2RetryCounts([slot]), ...(slot.diagnostics && Object.keys(slot.diagnostics).length ? { diagnostics: slot.diagnostics } : {}), schema: protocol.schemas.slotReceipt, slotId: planned.slotId, position: index, terminal: slot.terminal,
       score: ["completed", "wrong"].includes(slot.terminal) ? slot.score : null,
       qualityMeasured: state.schema === protocol.policy.REAL_CONTROLLER && slot.holds.length > 0 && ["completed", "wrong"].includes(slot.terminal) && slot.score !== null,
       calls: { admitted: slot.holds.length, consumed: slot.holds.filter(h => h.consumed).length, settled: slot.holds.filter(h => h.settlement).length,
@@ -306,7 +339,7 @@ export const e2ExecutionPolicy = Object.freeze({
       need(count(r.position) && r.position < visited && !seen.has(r.position) && digest(r) === digest(this.slotReceipt(state, r.position, accountRun, protocol)), "e2_receipt_invalid"); seen.add(r.position);
     }
     const spend = accountRun(state.slots);
-    return { ...(state.schedule.some(p => p.arm === "baseline") ? { replayArm: "baseline", qualification: false } : {}), retries: e2RetryCounts(state.slots), schema: protocol.schemas.report, authorization: state.schema === protocol.policy.REAL_CONTROLLER, executionKind: state.schema === protocol.policy.REAL_CONTROLLER ? "authorized-validation" : "faux-only",
+    return { ...(state.schedule.some(p => p.arm === "baseline") ? { replayArm: "baseline", qualification: false } : {}), compactionRefusals: e2RefusalCounts(state.slots), retries: e2RetryCounts(state.slots), schema: protocol.schemas.report, authorization: state.schema === protocol.policy.REAL_CONTROLLER, executionKind: state.schema === protocol.policy.REAL_CONTROLLER ? "authorized-validation" : "faux-only",
       qualityMeasured: receipts.some(r => r.qualityMeasured), schedule: { planned: state.schedule.length, visited, missing: visited - seen.size, remaining: state.schedule.length - visited }, stop: state.stop,
       costs: { unitsPerUSD: protocol.policy.USD_UNITS.toString(), capUnits: state.capUnits, ...Object.fromEntries(Object.entries(spend).filter(([key]) => key.endsWith("Units"))) },
       phases: [...receipts].sort((a, b) => a.position - b.position).map(({ slotId: _slotId, sha256: _sha256, ...r }) => r) };

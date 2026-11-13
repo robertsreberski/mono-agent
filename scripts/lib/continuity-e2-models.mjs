@@ -1,3 +1,4 @@
+import { isE2ProtectionRefusal } from "./continuity-e2-compaction.mjs";
 import { assertE2BaselineRequest } from "./continuity-e2-lineage.mjs";
 // The only inference boundary in C1 is Pi's in-process faux provider.
 import { existsSync } from "node:fs";
@@ -65,7 +66,7 @@ export function createE2Models({ pi, estimators, models, limits, summary = "faux
   if (!["faux-short", "faux-max", "faux-faithful", "real"].includes(summary)) fail("E2_SUMMARY_ROUTE_INVALID");
   const baseline = e2ReplayArm(replayArm) === "baseline";
   const registered = new Set(models.map(m => m.model)), faux = new Map(), lifecycle = new Map();
-  const report = { sourceRequests: 0, probeRequests: 0, summaryRequests: [], compactions: [], requestSizing: [] };
+  const report = { sourceRequests: 0, probeRequests: 0, summaryRequests: [], compactions: [], ...(summary === "real" ? { compactionRefusals: [] } : {}), requestSizing: [] };
   let position = null, sticky = null, positionRequests = 0;
   const refuse = code => { sticky ??= code; fail(sticky); };
   const check = () => { if (sticky) fail(sticky); };
@@ -92,17 +93,19 @@ export function createE2Models({ pi, estimators, models, limits, summary = "faux
     observe(event) {
       check();
       if (event?.type !== "context_compaction") return;
-      paidAdapter?.observe(event);
+      try { paidAdapter?.observe(event); }
+      catch { refuse("E2_COMPACTION_LIFECYCLE_INVALID"); }
       if (event.status === "running") {
-        if (!event.operationId || lifecycle.size || report.compactions.length >= limits.compactions) refuse("E2_COMPACTION_LIMIT");
+        if (!event.operationId || lifecycle.size || report.compactions.length + (report.compactionRefusals?.length ?? 0) >= limits.compactions) refuse("E2_COMPACTION_LIMIT");
         lifecycle.set(event.operationId, { ...position, trigger: event.trigger, requests: 0 });
       } else {
         const receipt = lifecycle.get(event.operationId);
         if (!receipt) refuse("E2_COMPACTION_LIFECYCLE_INVALID");
         lifecycle.delete(event.operationId);
-        if (event.status !== "succeeded") refuse("E2_COMPACTION_NOT_DURABLE");
+        const rejected = summary === "real" && isE2ProtectionRefusal(event);
+        if (event.status !== "succeeded" && !rejected) refuse("E2_COMPACTION_NOT_DURABLE");
         if (!receipt.requests) refuse("E2_COMPACTION_LIFECYCLE_INVALID");
-        report.compactions.push({ turn: receipt.turn, message: receipt.message, trigger: receipt.trigger, requests: receipt.requests, durable: true,
+        (rejected ? report.compactionRefusals : report.compactions).push({ turn: receipt.turn, message: receipt.message, trigger: receipt.trigger, requests: receipt.requests, durable: !rejected, ...(rejected ? { rejected: true, reason: event.reason } : {}),
           policy: Object.fromEntries(["contextWindow", "triggerTokens", "keepRecentTokens", "summaryMaxTokens", "compactionMinSavingsTokens"].map(k => [k, Number.isFinite(event.accounting?.policy?.[k]) ? event.accounting.policy[k] : null])) });
       }
     },

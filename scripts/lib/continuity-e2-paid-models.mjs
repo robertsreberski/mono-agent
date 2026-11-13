@@ -14,6 +14,7 @@ import { e2PhaseWork, e2PhaseBase, validateE2Checkpoint } from "./continuity-e2-
 import { e2FailureCause, e2ProviderCause, e2CandidateCause, E2_NONRETRY_PROVIDER_CLASSES, registerE2CauseObserver } from "./continuity-e2-cause.mjs";
 import { effectiveE2Summaries, E2_RETRY_POLICY } from "./continuity-e2-retry.mjs";
 import { e2ReplayArm, e2ProbeRequestCount, assertE2ReplayBinding } from "./continuity-e2-protocol.mjs";
+import { isE2ProtectionRefusal } from "./continuity-e2-compaction.mjs";
 const need = (ok, code = "e2_permit_invalid") => { if (!ok) throw Object.assign(Error(code), { code }); };
 const core = () => guardedState("e2-validation"), artifacts = () => guardedAuthorization("e2-validation");
 export async function createE2PaidModels(a, safety) {
@@ -144,14 +145,24 @@ export async function createE2PaidModels(a, safety) {
     setPosition(value) { if (stopped) fail(stopped); position = { ...value }; probeRequests = 0; },
     observe(event) {
       if (event?.type !== "context_compaction") return;
-      if (event.status === "running") {
-        need(!lifecycle && typeof event.operationId === "string" && position, "e2_compaction_invalid");
-        lifecycle = { position: { ...position }, checkpoint: checkpoint(position), operationDigest: digest(event.operationId), begun: false };
-      } else {
-        const receipt = lifecycle; need(receipt && receipt.operationDigest === digest(event.operationId), "e2_compaction_invalid"); lifecycle = null;
-        if (!receipt.begun && event.status === "skipped") return;
-        enqueue(async () => { need(event.status === "succeeded" && receipt.begun, "e2_compaction_invalid"); await committed(receipt); });
-      }
+      // Runtime observer fan-out swallows exceptions. Persist failure before
+      // throwing so neither a corrected event nor flush can erase it.
+      try {
+        if (stopped) fail(stopped);
+        if (event.status === "running") {
+          need(!lifecycle && typeof event.operationId === "string" && position, "e2_compaction_invalid");
+          lifecycle = { position: { ...position }, checkpoint: checkpoint(position), operationDigest: digest(event.operationId), begun: false };
+        } else {
+          const receipt = lifecycle; need(receipt && receipt.operationDigest === digest(event.operationId) && !active, "e2_compaction_invalid"); lifecycle = null;
+          if (!receipt.begun && event.status === "skipped") return;
+          enqueue(async () => {
+            need(receipt.begun, "e2_compaction_invalid");
+            if (isE2ProtectionRefusal(event)) {
+              await native.permit.compaction({ kind: "rejected", operationDigest: receipt.operationDigest, checkpoint: receipt.checkpoint, reason: event.reason });
+            } else { need(event.status === "succeeded", "e2_compaction_invalid"); await committed(receipt); }
+          });
+        }
+      } catch { fail("e2_compaction_invalid"); }
     },
     stream(target, model, context, options, role) {
       if (stopped) fail(stopped); need(!active, "e2_concurrent_request"); need(position && ["summary", "probe", "continuation"].includes(role), "e2_method_forbidden");

@@ -1,5 +1,6 @@
 // Controller-owned bounded attempts. Original logical budgets are never expanded.
 import { validE2FailureCause, E2_NONRETRY_PROVIDER_CLASSES } from "./continuity-e2-cause.mjs";
+import { rejectedE2Summary } from "./continuity-e2-compaction.mjs";
 export const E2_RETRY_POLICY = Object.freeze({ schema: "continuity-e2-retry-policy-v1", maxPerRequest: 1, maxPerRun: 8,
   eligibleCauseClasses: Object.freeze(["stream", "http_5xx", "http_429", "empty_final_text", "unowned_aborted_result"]) });
 export function retryCause(cause) {
@@ -28,8 +29,17 @@ export function authorizeE2Retry(state, index, payload) {
   h.retryAuthorized = true; slot.retryPending = h.round;
   return { allowed: true };
 }
+// This is recognition of an already authorized retry-v1 chain, not a retry
+// grant. No failed attempt disappears solely because a later receipt exists.
+export function supersedingE2Summary(holds, h) {
+  if (h.paidRole !== "summary" || h.retryOf || h.retryAuthorized !== true || h.retryCanceled || !h.consumed || !h.summaryPresence
+    || !["lost", "settled"].includes(h.settlement?.kind) || !validE2FailureCause(h.nativeCause, { holds }) || !retryCause(h.nativeCause)) return undefined;
+  return holds.find(r => r.round === h.round + 1 && r.retryOf === h.round && r.paidRole === "summary" && r.consumed
+    && r.settlement?.kind === "settled" && r.summaryReceipt?.verified === true && !r.nativeCause
+    && ["payloadDigest", "model", "checkpoint", "operationDigest", "measuredInputTokens", "reservedUnits"].every(k => r[k] === h[k]));
+}
 export function effectiveE2Summaries(holds) {
-  return holds.filter(h => h.paidRole === "summary" && !holds.some(r => r.round > h.round && (r.retryOf ?? r.round) === (h.retryOf ?? h.round) && r.settlement?.kind === "settled" && r.summaryReceipt?.verified));
+  return holds.filter(h => h.paidRole === "summary" && !rejectedE2Summary(h) && !supersedingE2Summary(holds, h));
 }
 export function e2RetryCounts(slots) {
   const result = { attempted: 0, succeeded: 0, causeClasses: {} };
