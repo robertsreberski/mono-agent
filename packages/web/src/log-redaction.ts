@@ -40,14 +40,19 @@ const NON_SECRET_ENV_KEYS = new Set([
   "MONO_AGENT_WEB_ALLOWED_HOSTS",
 ]);
 
-const SENSITIVE_ENV_KEY = /(?:token|secret|password|passwd|api[_-]?key|client[_-]?secret|access[_-]?key|credential|private[_-]?key|bearer|cookie|session|auth[_-]?(?:token|secret|key))/iu;
+/**
+ * Credential words must end the key (as its final `_`/`-` segment), so
+ * settings such as `CLAUDE_CODE_MAX_OUTPUT_TOKENS` or `SESSION_TIMEOUT_MS` are
+ * never mistaken for credentials and their values never blank diagnostics.
+ */
+const SENSITIVE_ENV_KEY = /(?:^|[_-])(?:token|secret|password|passwd|api[_-]?key|client[_-]?secret|access[_-]?key|credential|private[_-]?key|bearer|cookie|session|auth[_-]?(?:token|secret|key))$/iu;
 
 /**
  * Keys that name an explicit credential: any non-empty value is collected,
  * since discovery accepts short keys (e.g. a short `MONO_AGENT_TUI_API_KEY` is
  * still forwarded as a bearer credential).
  */
-const EXPLICIT_CREDENTIAL_KEY = /(?:api[_-]?key|client[_-]?secret|access[_-]?key|token|secret|password|passwd|credential|private[_-]?key)/iu;
+const EXPLICIT_CREDENTIAL_KEY = /(?:^|[_-])(?:api[_-]?key|client[_-]?secret|access[_-]?key|token|secret|password|passwd|credential|private[_-]?key)$/iu;
 
 /** Collect bounded credential values from the environment for log redaction. */
 export function collectKnownWebSecrets(

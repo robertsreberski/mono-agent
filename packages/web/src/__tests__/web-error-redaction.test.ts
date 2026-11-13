@@ -355,6 +355,15 @@ describe("web error redaction", () => {
     expect(collectKnownWebSecrets({ MONO_AGENT_WEB_SESSION_TICKET: "abcdefg" })).toEqual([]);
   });
 
+  it("does not treat numeric or tuning settings that merely mention a credential word as secrets", () => {
+    expect(collectKnownWebSecrets({
+      CLAUDE_CODE_MAX_OUTPUT_TOKENS: "32000",
+      MAX_TOKENS: "4096",
+      SESSION_TIMEOUT_MS: "86400000",
+      TOKEN_BUDGET_LIMIT: "1000000000",
+    })).toEqual([]);
+  });
+
   it("redacts secrets from persisted turn failure messages", async () => {
     const turnSecret = "sk-fake-turn-failure-SECRET-99";
     const root = await temporaryRoot();
@@ -430,7 +439,8 @@ describe("web error redaction", () => {
     });
     const cause = (failure as { cause?: unknown }).cause;
     expect(cause).toBeInstanceOf(Error);
-    expect(JSON.stringify(cause)).not.toContain(secret);
+    expect((cause as Error).message).not.toContain(secret);
+    expect((cause as Error).stack ?? "").not.toContain(secret);
   });
 
   it("uses the server env for notification ingress redaction", async () => {
