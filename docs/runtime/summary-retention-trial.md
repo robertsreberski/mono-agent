@@ -61,7 +61,9 @@ without a provider-failure cooldown. Refusal is not permission to pay repeatedly
 threshold cuts keep their existing fresh-assistant and meaningful-growth vetoes.
 Idle and mid-run proactive cuts also share one paid-refusal baseline: retries wait
 for `max(8192, ceil(previousTokens * 0.1))` transcript growth, or changed protected
-blocks/model/policy. A changing split prefix does not reset the baseline, and
+blocks/model or the preservation-affecting policy fields `summaryMaxTokens`,
+`keepRecentTokens`, `effort` and `compactionMinSavingsTokens`. Other policy changes
+or a changing split prefix do not reset the baseline, and
 fixed request overhead is not transcript growth. This
 bounded, process-local cache holds at most 2,048 session digests and clears on
 restart; it never gates manual or reactive recovery. An idle refusal followed by
@@ -96,8 +98,9 @@ missing counts, active protection, refusal/bypass reason and complete final-summ
 usage/cost and `generatedSummaryTokens` include a truncated request and its bounded
 legacy retry. A recovered cut keeps a defined native `usage` object, summing
 known numeric parts with `usage.partial: true` when any part is missing. These
-numbers are known subtotals, not a complete bill. Per-request accounting keeps
-missing fields null and reports `cost_partial`/known cost separately; journal
+numbers are known subtotals, not a complete bill. `accounting.requests` rows keep
+missing cost/usage fields null; aggregate runtime `usage.compaction` and folded
+`usage` report `cost_partial`, `cost_usd` and any `known_cost_usd` separately. Journal
 reload preserves the flag, while provider projection does not expose native
 compaction usage as assistant usage. Accepted text and existing E2 lineage/archive schemas are
 unchanged. Frozen projection accounting without historical tuples gains no new
@@ -150,8 +153,10 @@ additionally takes each generated checkpoint through real owned native checkpoin
 preparation/publication, the durable history store and continuity participant,
 the harness pack supplier and `runtime-execution.ts` cold hook, a faux-provider
 runtime seed, and host/runtime restart. It inspects persisted native seed messages
-and separate raw/retained identities, including fictional redaction. Its publication
-fixture injects the already generated summary at the engine's compaction hook;
+and separate raw/retained identities. This chain lane passes generated summaries
+unchanged; a separate synthetic `runTrialHostReseed` test adds a fictional private
+path to exercise redaction and verify it is absent from cold seed and restart.
+Its publication fixture injects the already generated summary at the engine's compaction hook;
 it does not purchase another summary. Direct rendered-pack text reseeds and
 no-cold native chains remain isolation/negative controls, not host-path proof.
 The default sizing/paid matrix remains the text-only lane above; frozen facts,

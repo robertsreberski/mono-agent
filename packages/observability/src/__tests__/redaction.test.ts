@@ -47,6 +47,24 @@ describe("redactJsonValue", () => {
     expect(redactJsonValue({ [key]: "fixture-value" })).toEqual({ [key]: "[redacted]" });
   });
 
+  it("preserves nullable final-summary estimates without exempting secret-bearing values", () => {
+    expect(redactJsonValue({
+      refused: { finalSummaryEstimateTokens: null },
+      generated: { finalSummaryEstimateTokens: 172 },
+      text: { finalSummaryEstimateTokens: "fixture-secret" },
+      object: { finalSummaryEstimateTokens: { token: "fixture-secret" } },
+      flag: { finalSummaryEstimateTokens: false },
+      unrelated: { token: null },
+    })).toEqual({
+      refused: { finalSummaryEstimateTokens: null },
+      generated: { finalSummaryEstimateTokens: 172 },
+      text: { finalSummaryEstimateTokens: "[redacted]" },
+      object: { finalSummaryEstimateTokens: "[redacted]" },
+      flag: { finalSummaryEstimateTokens: "[redacted]" },
+      unrelated: { token: "[redacted]" },
+    });
+  });
+
   it("does not content-scan free text whose object keys are not sensitive", () => {
     const freeText =
       "credential=fixture private_key=fixture client_secret=fixture authorization=Bearer fixture-value";

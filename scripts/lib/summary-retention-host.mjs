@@ -42,7 +42,9 @@ export async function runTrialHostReseed(summary) {
     await turn.recordCompaction({ checkpoint: cut.continuityCheckpoint, task_run_id: "fictional-publication", model: "faux:retention", provider_kind: "pi", trigger: "manual",
       summary, tokens_before: 10000, first_kept_entry_id: null, status: "succeeded", created_at: 1 });
     await driver.endTurn("completed", { text: null, error: null, failureKind: null, cancelled: false, stopReason: "endTurn" });
-    await raw.sync(); await raw.close(); raw = undefined; await repo.close(); repo = undefined;
+    await raw.sync(); await raw.close(); raw = undefined;
+    const beforeColdJournals = new Set((await repo.list()).map(entry => entry.journalId));
+    await repo.close(); repo = undefined;
     await (await turn.prepareCommit([], { providerSessionSynced: true })).commit(); turn = undefined;
     const scope = { logicalConversationId: id, currentConversationId: id, currentRunId: "fictional-read" };
     const retained = reader.snapshotContinuity(scope).records.find(record => record.kind === "summary");
@@ -63,19 +65,16 @@ export async function runTrialHostReseed(summary) {
     const result = await harness.run({ conversationId: id, userMessage: "Resume fictional work.", abortSignal: new AbortController().signal, onEvent: event => events.push(event) });
     need(!result.failure, "Host cold seed failed");
     await harness.dispose(); harness = undefined; await runtime.disposeAllSessions();
-    // Inspect the persisted seed, not just callback text. It must contain the
-    // retained representation and cannot recover redacted native bytes.
+    // Inspect only the journal created by this cold run. Summary text is
+    // untrusted data and can contain the same markers as a rendered seed.
     repo = new engine.JsonlSessionRepo({ sessionsRoot });
-    const metadata = (await repo.list()).find(entry => entry.model?.id === "cold" || entry.modelId === "cold");
-    const entries = await repo.list();
-    let seedMessages;
-    for (const entry of metadata ? [metadata] : entries) {
-      raw = await repo.open(entry);
-      const context = engine.projectContext(await raw.getEntries());
-      if (JSON.stringify(context).includes("Generated summary evidence")) seedMessages = context.messages;
-      await raw.close(); raw = undefined;
-    }
-    need(seedMessages, "Runtime did not persist the cold pack seed");
+    const coldJournals = (await repo.list()).filter(entry => !beforeColdJournals.has(entry.journalId));
+    need(coldJournals.length === 1, "Expected exactly one newly created cold journal");
+    raw = await repo.open(coldJournals[0]);
+    const seedMessages = engine.projectContext(await raw.getEntries()).messages;
+    await raw.close(); raw = undefined;
+    // Validate the retained carrier only after selecting by journal identity.
+    need(seedMessages?.length && JSON.stringify(seedMessages).includes(retained.sha256), "Runtime did not persist the retained cold pack seed");
     await repo.close(); repo = undefined;
     runtime = host.createMonoRuntime({ workspace: root }); harness = makeHarness();
     const restarted = await harness.run({ conversationId: id, userMessage: "Verify fictional restart.", abortSignal: new AbortController().signal, onEvent: event => events.push(event) });
@@ -83,7 +82,16 @@ export async function runTrialHostReseed(summary) {
     return { seedMessages, contexts, retainedText: retained.text, retainedSha256: retained.sha256, nativeSha256: hash(summary),
       redacted: retained.redacted, truncated: retained.truncated, events, runtimeCalls: contexts.length };
   } finally {
-    await harness?.dispose(); await runtime?.disposeAllSessions(); await raw?.close(); await repo?.close(); await turn?.abort(); await writer?.close();
-    await rm(root, { recursive: true, force: true });
+    try {
+      const errors = [];
+      for (const close of [() => harness?.dispose(), () => runtime?.disposeAllSessions(), () => raw?.close(),
+        () => repo?.close(), () => turn?.abort(), () => writer?.close()]) {
+        try { await close(); } catch (error) { errors.push(error); }
+      }
+      if (errors.length === 1) throw errors[0];
+      if (errors.length > 1) throw new AggregateError(errors, "Host lane cleanup failed");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   }
 }

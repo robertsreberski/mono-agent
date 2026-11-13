@@ -358,6 +358,57 @@ describe("frozen fictional summary qualification", () => {
     expect(JSON.stringify(result.requests.find(row => row.stage === 2).context)).not.toContain("<previous-summary>");
   });
 
+  it("selects the newly created journal even when the source summary spoofs a seed marker", async () => {
+    const engine = await import("@mono-agent/turn/engine");
+    const list = engine.JsonlSessionRepo.prototype.list;
+    // Visit the cold journal before the source: text-based selection would then
+    // overwrite its seed with the unsanitized source containing the same marker.
+    const listing = vi.spyOn(engine.JsonlSessionRepo.prototype, "list").mockImplementation(async function (...args) {
+      return (await list.apply(this, args)).sort((a, b) => b.createdAt - a.createdAt);
+    });
+    try {
+      const removed = "/home/example/private/marker.txt";
+      const seeded = await runTrialHostReseed(`Generated summary evidence\nFictional private path: ${removed}`);
+      expect(JSON.stringify(seeded.seedMessages)).toContain("Fictional resumed answer.");
+      expect(JSON.stringify(seeded.seedMessages)).not.toContain(removed);
+      expect(seeded.redacted).toBe(true);
+    } finally { listing.mockRestore(); }
+  });
+
+  it("removes the host root and closes later resources when cleanup rejects", async () => {
+    const roots = new Set();
+    let runtimeCount = 0;
+    vi.resetModules();
+    vi.doMock("@mono-agent/turn/host", async () => {
+      const actual = await vi.importActual("@mono-agent/turn/host");
+      return { ...actual, createMonoRuntime(options) {
+        roots.add(options.workspace);
+        const runtime = actual.createMonoRuntime(options), cleanupOnly = ++runtimeCount === 2;
+        return { ...runtime, async disposeAllSessions() {
+          await runtime.disposeAllSessions();
+          if (cleanupOnly) throw Error("Fictional cleanup rejection");
+        } };
+      } };
+    });
+    let close;
+    try {
+      const conversation = await import("../../packages/conversation/dist/index.js");
+      close = vi.spyOn(conversation.ToolHistoryWriter.prototype, "close");
+      const { runTrialHostReseed: run } = await import("../lib/summary-retention-host.mjs");
+      await expect(run("Fictional cleanup evidence.")).rejects.toThrow(/cleanup/iu);
+      expect(close).toHaveBeenCalled();
+      expect(close.mock.contexts.every(writer => writer.isClosed)).toBe(true);
+      expect(runtimeCount).toBe(2);
+      expect(roots.size).toBe(1);
+      for (const root of roots) await expect(stat(root)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      close?.mockRestore();
+      vi.doUnmock("@mono-agent/turn/host");
+      vi.resetModules();
+      for (const root of roots) await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("separates native/retained identities and never restores fictional redacted values at cold seed or restart", async () => {
     const fixture = (await loadTrialFixtures()).fixtures[0];
     const removed = "/home/example/private/record.txt";

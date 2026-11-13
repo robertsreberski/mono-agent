@@ -52,8 +52,10 @@ proactive/threshold cuts refuse without changing history or poisoning the provid
 failure cooldown. Threshold retries retain assistant-progress/growth vetoes.
 Idle and mid-run proactive share a paid-refusal baseline, requiring
 `max(8192, ceil(previousTokens * 0.1))` transcript growth or changed protected
-blocks/model/policy. Advancing a split cut, changing controller or fixed overhead
-cannot repay an unchanged refusal.
+blocks/model or preservation-affecting summary policy (`summaryMaxTokens`,
+`keepRecentTokens`, `effort`, `compactionMinSavingsTokens`). Other policy changes,
+advancing a split cut, changing controller or fixed overhead cannot repay an
+unchanged refusal.
 Native manual/overflow and inherited-prefix recovery instead bypass protection,
 issuing `historical_preservation_bypassed`: missing/oversized output is reused;
 protected truncation retries only that part once with legacy caps (at most one
@@ -72,9 +74,11 @@ unavailable history) record sizes/counts, missing tuples, refusal/bypass reason 
 final-summary size separately from provider usage, cost and
 `generatedSummaryTokens`, which account for the bounded truncation retry. Recovered
 cuts keep native `usage` defined: known parts are summed, with `usage.partial: true`
-when any part is missing. Numeric subtotals are not complete billing; request rows
-retain null unknowns and mark unknown billing partial. No new durable carrier or
-archive transform is added. Shipping `SUMMARY_FOCUS` v3 names the immutable-event
+when any part is missing. Numeric subtotals are not complete billing:
+`accounting.requests` rows retain nullable cost/usage fields such as `costUsd`.
+Aggregate runtime `usage.compaction` and folded `usage` instead mark unknown
+billing with `cost_partial: true` and `cost_usd: null`, exposing `known_cost_usd`
+when a known subtotal exists. No new durable carrier or archive transform is added. Shipping `SUMMARY_FOCUS` v3 names the immutable-event
 instruction policy. `generateSummaryWithRequest` adds the named protected frame
 when supplied admissible history and returns an error Result with
 `CompactionError.code === "output_truncated"` for protected truncation, rather than

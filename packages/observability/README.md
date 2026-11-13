@@ -29,8 +29,8 @@ free text is scanned for a closed set of high-confidence credential shapes. A
 recognized token-usage keys whose values are finite non-negative numbers;
 mixed, unknown, or string-valued token objects remain fully redacted. Compaction
 metadata also preserves boolean `tokenCountsExact` and null
-`generatedSummaryTokens`/`tailEstimateTokens`; strings or objects under those names
-remain redacted.
+`generatedSummaryTokens`/`tailEstimateTokens`/`finalSummaryEstimateTokens`; strings
+or objects under those names remain redacted.
 Numeric values under matched keys are retained. Current matcher limitations remain follow-up work: space-, dot-, slash-, and colon-separated `private`/`api` + `key` spellings are not matched, while substring matching conservatively redacts string values under benign keys such as `credentialType`, `bearerStatus`, and `privateKeyboard`.
 
 ## Install / Usage

@@ -523,7 +523,7 @@ describe("mid-run compaction guards", () => {
 
   it("pays at most one preservation refusal without assistant progress and meaningful growth", async () => {
     const previousSummary = "## Historical events and corrections\n- Permit; m1; pending; no approval.\n## Pending items\n- None";
-    const fixture = controllerFixture({ previousSummary, summary: "Lossy fictional summary." });
+    const fixture = controllerFixture({ previousSummary, summary: "Lossy fictional summary.", policy: { compactionMinSavingsTokens: 1000 } });
     await fixture.controller.arm();
     fixture.setTranscript(growingTranscript(2));
     for (let attempt = 1; attempt <= 3; attempt++) {
@@ -536,6 +536,10 @@ describe("mid-run compaction guards", () => {
     fixture.append(assistantMessage("Small progress."));
     await fixture.checkpoint();
     expect(fixture.summaryRequests()).toBe(1);
+    fixture.append(assistantMessage("x".repeat(8000))); // 2,000 tokens pass the local veto, not the shared growth step.
+    await fixture.checkpoint();
+    expect(fixture.summaryRequests()).toBe(1);
+    expect(fixture.events.at(-1)).toMatchObject({ reason: "preservation_growth_required" });
     fixture.append(assistantMessage("x".repeat(40000)));
     await fixture.checkpoint();
     expect(fixture.summaryRequests()).toBe(2);

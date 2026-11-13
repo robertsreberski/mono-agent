@@ -21,6 +21,7 @@
   Share refusal bounds across idle and mid-run checks, including advancing split
   cuts, return protected generator truncation as an error result, and retain
   defined partial usage after recovery.
+  Preserve absent final-summary token estimates as null in run inspection.
   Cold first extraction and separately generated handoffs remain unprotected.
 
 - Fix baseline E2 replay to retain recorded source tools while keeping probes
