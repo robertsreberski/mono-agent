@@ -296,6 +296,9 @@ evidence heaps from 6.983 to 7.011 MiB (baseline 7.016 MiB). No accumulating
 growth was observed in either workload; post-GC results do not exempt peak limits.
 V2 and v3 bulk reads keep UTF-8 bodies as external byte buffers until
 each record is decoded, verified and matched; no candidate retains a decoded body.
+V3 adds no new per-record collections beyond v2's bounded clause split in local
+signal qualification. That split still allocates a clause array per evaluated
+record; the capacity measurements above include it.
 Global content/component patterns are compiled once per query; up to four
 identifier components share one alternation, limiting absent lexical matching to
 at most two body scans per content term (32 across 16 terms). V1 traversal is
@@ -307,8 +310,10 @@ original pipelines. V3 uses 2,000,000 per distinct full content term and a singl
 250,000 maximum literal-intent credit, with none for historical echoes or
 repetition-suppressed local signals, and no double counting on intent-only
 fallback. The entire secondary-score spread is below one full content match.
-Local signals stay within the clipped [hit start − 192, hit end + 384] character
-window; common historical words cannot compensate for missing content.
+Qualified literal intent is matched across the whole retained record body, not
+just the signal window. Local correction/event signals and repetition checks use
+the clipped [hit start − 192, hit end + 384] character window. Common historical
+words cannot compensate for missing content.
 `node scripts/continuity-ranking-compare.mjs` reports fictional production-pipeline
 ranks and aggregate discovery metrics; it is not a paid-model qualification run.
 

@@ -99,6 +99,7 @@ function signal(pattern: RegExp, clause: string): boolean {
 }
 function signals(context: string) {
   let hasCorrection = false, hasEvent = false;
+  // Inherited v2 bounded clause-array allocation; included in capacity measurements.
   for (const clause of context.split(/[.!?;\n]+/u)) {
     if (hypothetical.test(clause) || quoted.test(clause)) continue;
     hasCorrection ||= signal(correction, clause);
@@ -133,8 +134,9 @@ export function contentFirstMatch(text: string, query: ReturnType<typeof content
   const end = retainedPosition(text, phrase ? phrase.index + phrase[0].length : firstEnd, expanded);
   let score = full * CONTENT_MATCH_SCORE + Math.min(600_000, component * 200_000)
     + (phrase ? 100_000 : 0) + Math.max(0, 65_535 - (last - first));
-  // Only local, bounded evidence around this record's hit is considered. No
-  // adjacent-turn inference, event-date interpretation or global echo collection.
+  // Correction/event signals and repetition checks use this fixed local window.
+  // Qualified literal intent separately matches the whole record body below.
+  // No adjacent-turn inference, event-date interpretation or global echo collection.
   const context = query.intent ? text.slice(Math.max(0, start - 192), Math.min(text.length, end + 384)) : "";
   const repeats = query.intent && repeated(firstGlobal, expanded ? context.toLowerCase() : context);
   // Literal intent shares the signal qualification gate: historical echoes and

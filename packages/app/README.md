@@ -108,8 +108,11 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
   receive no literal-intent credit. Lower-weight identifier components, short-edit
   bonuses and historical echo reduction remain bounded. Issued ranking-v1/v2
   cursors retain their entire original pipeline; cursor-envelope versions are
-  unchanged. Ranking
-  and capture order do not establish truth, event dates or renewed permission.
+  unchanged. Qualified literal intent matches the whole retained record body;
+  local correction/event signals and repetition checks use the fixed, clipped
+  [hit start − 192, hit end + 384] character window. V3 adds no new per-record
+  collections beyond v2's bounded clause split, included in capacity measurements.
+  Ranking and capture order do not establish truth, event dates or renewed permission.
   Read promising hits before reformulating, batch useful
   gets, finish get cursors and page before declaring evidence insufficient.
   `navigation.nextPage` leads the exhaustive actions in model-visible text.

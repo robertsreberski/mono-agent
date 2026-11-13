@@ -568,9 +568,13 @@ summary echoes and records whose local signals are suppressed by repetition
 receive no literal-intent credit: intent cannot undo those disadvantages.
 More full content still wins, including for summaries that state more of the
 answer. All secondary contributions together range from -220,000 to 1,395,535,
-a spread below one full content match. Signal qualification uses only the fixed,
-clipped [hit start − 192, hit end + 384] character window. Patterns compile on
-the query path, not per record; candidates retain no full bodies.
+a spread below one full content match. Qualified literal intent matches across
+the whole retained record body. Only local correction/event signals and
+repetition checks use the fixed, clipped [hit start − 192, hit end + 384] character
+window. Patterns compile on the query path, not per record; candidates retain no
+full bodies. V3 adds no new per-record collections beyond v2's bounded clause
+split: local signal qualification still allocates a clause array per evaluated
+record, included in the capacity measurements.
 `node scripts/continuity-ranking-compare.mjs` compares the production v1/v2/v3
 pipelines on fictional cases with per-source ranks, MRR, top-1/3/5/10 and
 required-source discovery. These heuristics do not establish truth or authority.
