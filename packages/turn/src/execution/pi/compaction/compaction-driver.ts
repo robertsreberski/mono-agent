@@ -316,7 +316,7 @@ export function createGuardedCompactionHook({
         }
       }
       let settings = compactionSettings;
-      let prepared = prepareCompaction(event.branchEntries, settings, { nonRetainablePrefixLength: event.nonRetainablePrefixLength ?? 0 });
+      let prepared = prepareCompaction(event.branchEntries, settings, { nonRetainablePrefixLength: event.nonRetainablePrefixLength ?? 0, retainedPredecessor: event.retainedPredecessor });
       if (prepared.ok === false) {
         decision = { kind: "failed", error: prepared.error };
         return { cancel: true };
@@ -330,7 +330,7 @@ export function createGuardedCompactionHook({
           ...settings,
           reserveTokens: piSummaryReserveTokens(effectivePolicy.summaryMaxTokens, true),
         };
-        prepared = prepareCompaction(event.branchEntries, settings, { nonRetainablePrefixLength: event.nonRetainablePrefixLength ?? 0 });
+        prepared = prepareCompaction(event.branchEntries, settings, { nonRetainablePrefixLength: event.nonRetainablePrefixLength ?? 0, retainedPredecessor: event.retainedPredecessor });
         if (prepared.ok === false) {
           decision = { kind: "failed", error: prepared.error };
           return { cancel: true };

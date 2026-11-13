@@ -83,7 +83,8 @@ export type RuntimeRunOptions = {
    * primaryAttempt=false forbids buying upkeep. Explicit upkeep may hold the
    * exclusive conversation up to 60s; default is local-only. The target headroom
    * excludes the returned prefix; returned evidence must fit maxTokens. */
-  coldContext?: (budget: { maxTokens: number; reason: string; primaryAttempt: boolean }) => Promise<{ messages: ReadonlyArray<any>; replayMessages?: ReadonlyArray<any> }>;
+  retainedSummaryAccess?: import("./retained-summary.js").RuntimeRetainedSummaryAccess | undefined;
+  coldContext?: ((budget: { maxTokens: number; reason: string; primaryAttempt: boolean }) => Promise<{ messages: ReadonlyArray<any>; replayMessages?: ReadonlyArray<any>; retainedSummary?: import("./retained-summary.js").RuntimeRetainedSummaryCandidate }>) | undefined;
   /**
    * Protected awaited host claim before stateless replay.
    */

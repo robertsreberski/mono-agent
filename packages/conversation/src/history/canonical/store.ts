@@ -1686,7 +1686,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         ...(previousModelKey === undefined ? {} : { previousModelKey }),
         ...(previousModelWasUnbound ? { previousModelWasUnbound: true } : {}),
         ...(historySetAside ? { historySetAside: true as const } : {}),
-        providerSessionRevision: revision,
+        providerSessionRevision: revision, providerSessionEpoch: epoch,
         prepareCommit: async (
           messages: readonly HistoryMessage[],
           options: ProviderSessionTurnCommitOptions,

@@ -48,7 +48,7 @@ export async function resolveSession(state: import("./types.js").PiRunState, par
   const { options, requestedSessionId, providerSessionId, durableRepo, sessionTtlMs, cwd } = params;
   validateNativeSessionAuthority(options, providerSessionId, requestedSessionId);
   const outcome = await storage.resolveSession(state as Parameters<typeof storage.resolveSession>[0], { requestedSessionId, providerSessionId, durableRepo, sessionTtlMs, cwd,
-    access: options.nativeSessionAuthority, projection: options.nativeSessionProjection,
+    access: options.nativeSessionAuthority, projection: options.nativeSessionProjection, retainedSummaryAccess: options.retainedSummaryAccess,
     waitSignal: options.abortSignal instanceof AbortSignal ? options.abortSignal : undefined,
     keepAlive: options.sessionKeepAlive, requireExisting: !!options.sessionTurn?.reconciliation && options.sessionTurn.baseRevision! > 0 } as Parameters<typeof storage.resolveSession>[1]);
   if (outcome.status === "ready") return { done: false };

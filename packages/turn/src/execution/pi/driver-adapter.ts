@@ -19,6 +19,7 @@ export function createHarnessAdapter(session: any, options: any): Promise<{
     setCompactionSettings(settings: any): Promise<void>;
     setMidRunCompactionArmed(value: any): void;
     appendMessage: (message: any) => any;
+    admitRetainedSummary(candidate: any, seedEntryId: string): Promise<void>;
     beginTurn: (id?: any, source?: any, descriptor?: any) => Promise<void>;
     endTurn: (status: any, result?: any) => Promise<void>;
     prompt(text: any, promptOptions?: any): Promise<{
@@ -115,6 +116,7 @@ export async function createHarnessAdapter(session: PiSession, options: PiHarnes
     async setCompactionSettings(settings: any) { driver.setCompactionSettings(settings); },
     setMidRunCompactionArmed(value: boolean) { driver.setMidRunCompactionArmed(value); },
     appendMessage: (message: any) => session.appendMessage(message),
+    admitRetainedSummary: (candidate: any, seedEntryId: string) => driver.admitRetainedSummary(candidate, seedEntryId),
     beginTurn: (id?: any, source?: any, descriptor?: any) => driver.beginTurn(id, source, descriptor),
     endTurn: (status: any, result?: any) => driver.endTurn(status, result),
     async prompt(text: any, promptOptions?: any) {

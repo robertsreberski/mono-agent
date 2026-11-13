@@ -220,7 +220,7 @@ export async function prepareConfiguredModelSwitch(input: {
           await refresh(turn);
           if (!turn.reconciliation) throw new Error("Prepared host requires owned native execution reconciliation");
           const id = turn.providerSessionId;
-          return { reconciliation: turn.reconciliation, assertOwned: () => turn.assertOwned(), turnRevision: turn.providerSessionRevision,
+          return { reconciliation: turn.reconciliation, assertOwned: () => turn.assertOwned(), turnRevision: turn.providerSessionRevision, providerSessionEpoch: turn.providerSessionEpoch,
             sessionId: id, providerSessionId: id, providerAttributionSessionId: id, sessionKeepAlive: true, sessionTurn: turn.reconciliation.descriptor,
             ...(turn.native ? { nativeSessionAuthority: { version: 1 as const, currentHandleId: id, sessionsRoot: host.durableSessionsRoot, hostAuthority: turn.native.authority,
               assertCurrent: async (request: { handleId: string; sessionsRoot: string }) => { await turn.assertOwned(); if (request.handleId !== id || resolve(request.sessionsRoot) !== resolve(host.durableSessionsRoot)) throw new Error("Prepared native current authority changed"); } } } : {}) };

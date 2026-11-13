@@ -296,7 +296,7 @@ export async function runPreparedModelSwitch(input: {
     await input.beforeDispatch?.(turn);
     if (turn.modelKey !== readiness.modelKey) throw new Error("Incoming admission changed the ready native model");
     if (!turn.reconciliation) throw new Error("Incoming switch admission requires native execution reconciliation");
-    return { assertOwned: () => turn.assertOwned(), reconciliation: turn.reconciliation, turnRevision: turn.providerSessionRevision,
+    return { assertOwned: () => turn.assertOwned(), reconciliation: turn.reconciliation, turnRevision: turn.providerSessionRevision, providerSessionEpoch: turn.providerSessionEpoch,
       providerSessionId: turn.providerSessionId, sessionId: turn.providerSessionId, providerAttributionSessionId: turn.providerSessionId,
       sessionKeepAlive: true, sessionTurn: turn.reconciliation.descriptor, nativeSessionAuthority: { version: 1, currentHandleId: turn.providerSessionId, sessionsRoot, hostAuthority: authority,
         assertCurrent: async (request) => { await turn.assertOwned();

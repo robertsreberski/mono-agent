@@ -221,9 +221,9 @@ export function createContinuityPackSupplier(options: ConversationHarnessOptions
   let scope: ContinuitySnapshotInput | undefined;
   let snapshot: ContinuitySnapshot | undefined;
   let summarySelection: RetainedSummarySelection | undefined;
-  const supply = (history: readonly HistoryMessage[], maxTokens: number, reason: string, emit: (event: RuntimeEventLike) => void, onRenderedTools?: (ids: ReadonlySet<string>) => void, conversationHistoryAvailable = false): readonly RuntimeMessage[] => {
+  const render = (history: readonly HistoryMessage[], maxTokens: number, reason: string, emit: (event: RuntimeEventLike) => void, onRenderedTools?: (ids: ReadonlySet<string>) => void, conversationHistoryAvailable = false): { messages: readonly RuntimeMessage[]; summarySelection?: RetainedSummarySelection } => {
     summarySelection = undefined; // Never retain metadata from an earlier attempt/layout.
-    if (toolHistory?.continuityEnabled !== true || toolHistory.packEnabled === false) return [];
+    if (toolHistory?.continuityEnabled !== true || toolHistory.packEnabled === false) return { messages: [] };
     let pack: ContinuityPack;
     if (maxTokens < 500) {
       pack = { tokens: 0, counts: { owner: 0, tool: 0, summary: 0, evidence: 0 }, omitted: 0, unknownOverlap: 0, ownerDeduped: 0, toolReserved: 0, ledgerEntries: 0, degradedReason: "trigger_headroom" };
@@ -256,15 +256,17 @@ export function createContinuityPackSupplier(options: ConversationHarnessOptions
     } catch { /* diagnostics are content-free and best effort */ }
     summarySelection = pack.summarySelection;
     onRenderedTools?.(pack.toolRecordIds ?? new Set());
-    if (pack.text) return [{ role: "user", content: pack.text, timestamp: "1970-01-01T00:00:00.000Z" }];
+    if (pack.text) return { messages: [{ role: "user", content: pack.text, timestamp: "1970-01-01T00:00:00.000Z" }],
+      ...(pack.summarySelection ? { summarySelection: pack.summarySelection } : {}) };
     const retrievalMaySucceed = conversationHistoryAvailable
       && !["purge_pending", "source_changed", "unavailable", "boundary_unavailable"].includes(pack.degradedReason ?? "");
     const gap = retrievalMaySucceed
       ? "Continuity coverage gap: no historical evidence supplied here. ConversationHistory search/get may find retained evidence omitted here; source redaction/truncation is irreversible here. "
       : "Continuity coverage gap: retained evidence unavailable or omitted; use permitted canonical history. No historical evidence supplied. ";
-    return pack.degradedReason && pack.degradedReason !== "trigger_headroom" && maxTokens >= estimate(gap) ? [{ role: "user", content: gap, timestamp: "1970-01-01T00:00:00.000Z" }] : [];
+    return { messages: pack.degradedReason && pack.degradedReason !== "trigger_headroom" && maxTokens >= estimate(gap) ? [{ role: "user", content: gap, timestamp: "1970-01-01T00:00:00.000Z" }] : [] };
   };
-  return Object.assign(supply, { prepare: upkeep.prepare,
+  const supply = (...args: Parameters<typeof render>): readonly RuntimeMessage[] => render(...args).messages;
+  return Object.assign(supply, { render, prepare: upkeep.prepare,
     /** Last renderer output, not injected, not admitted. Shared across attempts;
      * never use this accessor as an attempt-bound injection/admission receipt. */
     lastRenderedSummary: (): RetainedSummarySelection | undefined => summarySelection });

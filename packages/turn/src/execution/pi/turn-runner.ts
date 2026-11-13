@@ -309,6 +309,7 @@ export function buildTurnHarness(runState: any, { session, piModels, model, thin
     setCompactionSettings(settings: any): Promise<void>;
     setMidRunCompactionArmed(value: any): void;
     appendMessage: (message: any) => any;
+    admitRetainedSummary(candidate: any, seedEntryId: string): Promise<void>;
     beginTurn: (id?: any, source?: any, descriptor?: any) => Promise<void>;
     endTurn: (status: any, result?: any) => Promise<void>;
     prompt(text: any, promptOptions?: any): Promise<{
@@ -359,6 +360,7 @@ export async function buildTurnHarness(runState: PiRunState, {
   const harness = await createHarnessAdapter(session, {
     ...(options.continuityRecording ? { continuityRecording: true, onCompactionPreparing: options.onCompactionPreparing } : {}),
     session,
+    retainedSummaryAccess: options.retainedSummaryAccess,
     models: piModels,
     model,
     thinkingLevel,

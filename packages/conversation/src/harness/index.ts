@@ -1468,6 +1468,7 @@ export class ConversationHarnessImpl implements ConversationHarness {
                 reason: coldReason, ...reconstructionFacts(resolved), timestamp: this.nowIso() });
             },
             withContinuityOwner: providerHistoryTurn?.withContinuityOwner ?? exclusiveHistoryTurn?.withContinuityOwner,
+            providerSessionEpoch: providerHistoryTurn?.providerSessionEpoch,
             prepareCompaction: providerHistoryTurn?.prepareCompaction ?? exclusiveHistoryTurn?.prepareCompaction,
             recordCompaction: providerHistoryTurn?.recordCompaction ?? exclusiveHistoryTurn?.recordCompaction,
             ...(exclusiveCapturedHistory === undefined ? {} : { detachedHistoryOverride: exclusiveCapturedHistory }),
@@ -1544,6 +1545,7 @@ export class ConversationHarnessImpl implements ConversationHarness {
                 reason: shouldRetrySessionResumeError(resumeError) ? "resume_error" : "runtime_result", timestamp: this.nowIso() });
             },
             withContinuityOwner: providerHistoryTurn?.withContinuityOwner ?? exclusiveHistoryTurn?.withContinuityOwner,
+            providerSessionEpoch: providerHistoryTurn?.providerSessionEpoch,
             prepareCompaction: providerHistoryTurn?.prepareCompaction ?? exclusiveHistoryTurn?.prepareCompaction,
             recordCompaction: providerHistoryTurn?.recordCompaction ?? exclusiveHistoryTurn?.recordCompaction,
             ...(exclusiveCapturedHistory === undefined ? {} : { detachedHistoryOverride: exclusiveCapturedHistory }),

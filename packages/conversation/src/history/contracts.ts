@@ -82,6 +82,8 @@ export interface ConversationHistoryProviderSessionTurn {
   readonly providerSessionId: string;
   /** Durable transcript revision present before this turn starts. */
   readonly providerSessionRevision: number;
+  /** Real durable canonical epoch; absent on legacy/custom stores (no admission). */
+  readonly providerSessionEpoch?: string;
   /**
    * Stage history and provider-session cleanliness as one atomic replacement.
    * The turn lock remains held until the returned append commits or aborts.

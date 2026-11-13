@@ -3,6 +3,16 @@
 Use this package when you need direct, capability-aware access to mono-agent's
 Pi runtime and the ~39 providers it reaches.
 
+Host-authenticated cold seeds can carry one bounded `retained_summary_admitted`
+metadata receipt. Conversion, headroom acceptance and seed append precede owned
+host-turn admission and sync; text, roles and digest-shaped labels alone confer
+no protection. Reopen requires host authority and exact source resolution until a
+branch-local successor checkpoint covers admission. Rewind reactivates validation;
+a source purged after coverage yields legacy behavior on rewind. No new pins,
+text copies, retry budgets or context limits are introduced. Legacy journals stay
+readable and byte-identical without admission. Older binaries reject the new kind;
+do not downgrade against active carrier journals without approved reconstruction.
+
 ## Category
 
 <!-- package-metadata:start -->

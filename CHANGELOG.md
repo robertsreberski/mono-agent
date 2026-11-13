@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Protect authenticated retained summaries actually admitted by a cold native seed
+  through restart and subsequent compaction, with branch-local successor coverage.
+  Add optional `providerSessionEpoch` to the owned history-store turn contract;
+  stores without the canonical epoch retain legacy behavior. Carrier-bearing
+  journals require a compatible reader; do not downgrade active native journals.
+
 - Add dormant retained-summary publication lookup and final-layout selection
   contracts without changing continuity packs, journals or compaction behavior.
 
