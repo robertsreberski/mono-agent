@@ -69,6 +69,11 @@ before new events. It also bumps the pinned runtime `SUMMARY_FOCUS` identity fro
 v3 to v4 for this policy revision; its instruction body is unchanged. The guarded
 refresh again confirms every other captured field is unchanged.
 
+The standalone-block clarification updates only the `SUMMARY_FOCUS` text in
+those four request strings from v4 to v5. It preserves block boundaries, framing
+and occurrence counts, including repeated provenance and quotations. The guarded
+refresh leaves every other captured field unchanged.
+
 There is no `UPDATE_*` environment switch. The historical archive generator above
 recreates old behavior and is not a current-prompt updater. For a reviewed summary
 instruction change, use this narrower procedure from the repository root. It

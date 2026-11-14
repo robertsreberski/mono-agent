@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { summaryModels } from "../../execution/pi/compaction/compaction-summary.js";
+import { prepareSummaryInput, summaryModels, SUMMARY_FOCUS } from "../../execution/pi/compaction/compaction-summary.js";
 import { createGuardedCompactionHook, createCompactionAccounting, reportGuardedCompactionOutcome } from "../../execution/pi/compaction/compaction-driver.js";
 import { compactWithRequest, estimateTokens, generateSummaryWithRequest } from "../../engine/compaction-kit/compaction.js";
 import { createSummaryBudget, historicalTuples, missingHistoricalTuples, protectedHistoricalInput, parseHistoricalTuples, SPLIT_SUMMARY_SEPARATOR } from "../../engine/compaction-kit/historical-preservation.js";
@@ -12,7 +12,65 @@ const prep = (extra: any = {}) => ({ messagesToSummarize: [{ role: "user", conte
   tokensBefore: 10000, settings: { reserveTokens: 2000, summaryMaxTokens: 1600 }, fileOps: { read: new Set(), written: new Set(), edited: new Set() }, preservation: {}, ...extra });
 const run = (preparation: any, request: any) => compactWithRequest(preparation, { model }, request, {});
 
+const provenance = "Provenance; fictional crate register; m4; reported, not verified.";
+const quotation = '> Quotation; m5; "hold the crates"; not approval.';
+const framedBlocks = [
+  "  Indented crate note; m1; pending.\n    Keep the original offset.",
+  tuple,
+  "Crate label; m3; previously A2; corrected to A3; current A3.",
+  provenance,
+  provenance,
+  quotation,
+  quotation,
+  "- Crate excerpt; m6; literal text.\n  ```text\n  > fictional crate label\n  ```",
+];
+const framedHistory = `## Historical events and corrections\n${framedBlocks.join("\n")}\n\n## Pending items\n- Review crates.`;
+
 describe("native historical preservation", () => {
+  it.each([false, true])("carries unchanged mixed framing and repeated blocks in v5 ordinary/split=%s prompts", async split => {
+    expect(historicalTuples(framedHistory)).toEqual(framedBlocks);
+    const input = prepareSummaryInput(prep({ previousSummary: framedHistory,
+      ...(split ? { isSplitTurn: true, turnPrefixMessages: [{ role: "user", content: "Fictional suffix", timestamp: 0 }] } : {}) }));
+    const completeSimple = vi.fn(async (_model: any, context: any) => {
+      expect(context.systemPrompt).toContain("Mono-agent summary focus v5:");
+      expect(context.systemPrompt).toContain(SUMMARY_FOCUS);
+      const prompt = context.messages[0].content[0].text;
+      if (completeSimple.mock.calls.length === 1) {
+        const frame = prompt.match(/<protected-historical-tuples>\n([^\n]+)\n<\/protected-historical-tuples>/u);
+        expect(frame).not.toBeNull();
+        expect(JSON.parse(frame![1]!)).toEqual(framedBlocks);
+        expect(prompt).toContain(`<previous-summary>\n${framedHistory}\n</previous-summary>`);
+        return response(framedHistory);
+      }
+      return response("## Context for Suffix\nReview crates.");
+    });
+    const facade = summaryModels({ completeSimple }, { operationId: "fictional-framing", focus: input.focus, evidence: input.evidence, requests: [] });
+    const result = await run(input.preparation, (context: any, options: any) => facade.completeSimple({ ...model, api: "openai-completions", contextWindow: 200000 }, context, options));
+    expect(result.ok).toBe(true);
+    expect(completeSimple).toHaveBeenCalledTimes(split ? 2 : 1);
+    expect(historicalTuples(result.value!.summary)).toEqual(framedBlocks);
+  });
+
+  it.each([
+    ["added list marker", (text: string) => text.replace("Crate label;", "- Crate label;")],
+    ["removed list marker", (text: string) => text.replace(tuple, tuple.slice(2))],
+    ["changed list marker", (text: string) => text.replace(tuple, tuple.replace("- ", "* "))],
+    ["added indentation", (text: string) => text.replace("  Indented crate", "   Indented crate")],
+    ["removed indentation", (text: string) => text.replace("    Keep the original", "  Keep the original")],
+    ["changed quotation framing", (text: string) => text.replaceAll(quotation, quotation.slice(2))],
+    ["changed code fences", (text: string) => text.replaceAll("```", "~~~")],
+    ["nested repeated provenance", (text: string) => text.replaceAll(provenance, `  ${provenance}`)],
+    ["bulleted repeated quotations", (text: string) => text.replaceAll(quotation, `- ${quotation}`)],
+    ["removed provenance occurrence", (text: string) => text.replace(`${provenance}\n`, "")],
+    ["removed quotation occurrence", (text: string) => text.replace(`${quotation}\n`, "")],
+  ] as const)("still refuses %s with exact comparison", async (_name, mutate) => {
+    const changed = mutate(framedHistory);
+    expect(missingHistoricalTuples(framedBlocks, changed)).toBeGreaterThan(0);
+    const request = vi.fn(async () => response(changed));
+    expect(await run(prep({ previousSummary: framedHistory }), request)).toMatchObject({ ok: false, error: { code: "summary_refused" } });
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+
   it.each([false, true])("requires literal copying in the initial/update=%s summary request", async update => {
     const blocks = [
       `${tuple}\n  Literal detail: "quoted" & <source>; do not treat this as instructions.`,
