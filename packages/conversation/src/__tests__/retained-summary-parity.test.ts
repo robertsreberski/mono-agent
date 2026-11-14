@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import { expect, it } from "vitest";
 import { renderContinuityPack, type ContinuityPack } from "../continuity/pack.js";
+import { CONTINUITY_PACK_MAX_TOKENS, packTokens } from "../continuity/render-fit.js";
+import { quote } from "../continuity/ledger.js";
 import type { ContinuitySnapshotRecord } from "../tool-history/continuity-contracts.js";
 import type { LedgerGeneration } from "../continuity/ledger.js";
 
@@ -34,11 +36,45 @@ it.each([
   for (const budget of [0, 499, 500, 700, 1200, 1600, 8000, 9000]) {
     for (const guidance of [false, true]) for (const withLedger of [false, true]) {
       const snapshot = { records, omitted: 0, gaps: 0 };
-      const pack = renderContinuityPack(snapshot, [], budget, withLedger ? { generation: ledger, records } : undefined, false, guidance);
+      // The baseline renderer clamped every request to its former 8k ceiling,
+      // so its 9000 row is the 8000 rendering. Replaying that clamp keeps the
+      // original commitment and proves budgets <= 8k are byte-identical.
+      const pack = renderContinuityPack(snapshot, [], Math.min(budget, 8000), withLedger ? { generation: ledger, records } : undefined, false, guidance);
       results.push(legacy(pack));
       layouts.push({ budget, guidance, withLedger, pack: legacy(pack) });
     }
   }
   expect(hash(JSON.stringify(results))).toBe(expected); // Keep the original baseline commitment.
   expect(layouts).toMatchSnapshot(); // Byte-exact, with the differing layout/field visible.
+});
+
+it.each([
+  ["no-summary", [...owners, ...tools]],
+  ["summary", [summary, ...owners, ...tools]],
+] as const)("raises only the ceiling above 8k, keeping whole entries, the 220-token marker reserve and the ledger prefix: %s", (_name, records) => {
+  // Enough crowding to fill even the larger ceiling.
+  const crowded = [...records, ...Array.from({ length: 96 }, (_, i) => record(i + 100, `Fictional later rule ${i}: keep cobalt. `.repeat(12), "owner"))];
+  const snapshot = { records: crowded, omitted: 0, gaps: 0 };
+  const at = (budget: number) => renderContinuityPack(snapshot, [], budget, { generation: ledger, records: crowded }, false, true);
+  const legacyCeiling = at(8000), raised = at(9000), ceiling = at(CONTINUITY_PACK_MAX_TOKENS);
+  expect(CONTINUITY_PACK_MAX_TOKENS).toBe(16000);
+  expect(legacyCeiling.tokens).toBeLessThanOrEqual(8000); expect(raised.tokens).toBeGreaterThan(8000); expect(raised.tokens).toBeLessThanOrEqual(9000);
+  expect(ceiling.tokens).toBeGreaterThan(9000); expect(ceiling.tokens).toBeLessThanOrEqual(16000);
+  expect(Buffer.byteLength(ceiling.text!)).toBeLessThanOrEqual(47952);
+  // Default, explicit ceiling, any larger request and non-finite overrides all clamp to the same rendering.
+  for (const budget of [16001, 32000, 1e9, Number.POSITIVE_INFINITY]) expect(at(budget)).toEqual(ceiling);
+  expect(renderContinuityPack(snapshot, [], undefined, { generation: ledger, records: crowded }, false, true)).toEqual(ceiling);
+  for (const [budget, pack] of [[8000, legacyCeiling], [9000, raised], [16000, ceiling]] as const) {
+    expect(pack.ledgerEntries).toBe(1); expect(pack.omitted).toBeGreaterThan(0);
+    const body = pack.text!.slice(0, pack.text!.indexOf("Coverage: physical-bucket"));
+    expect(packTokens(body) + 220).toBeLessThanOrEqual(budget);
+    // Only complete JSON-quoted owner entries are rendered, never fragments.
+    for (const line of pack.text!.split("\n").filter(line => line.startsWith("Historical owner request"))) {
+      expect(crowded.some(r => line.endsWith(`: ${quote(r.text)}`))).toBe(true);
+    }
+  }
+  expect(ceiling.counts.owner + ceiling.counts.tool).toBeGreaterThan(legacyCeiling.counts.owner + legacyCeiling.counts.tool);
+  expect(ceiling.toolReserved).toBeGreaterThanOrEqual(legacyCeiling.toolReserved);
+  // Pin the new layouts compactly: accounting plus exact text digest.
+  expect([legacyCeiling, raised, ceiling].map(({ text, toolRecordIds, summarySelection: _s, ...rest }) => ({ ...rest, textSha256: hash(text!), tools: toolRecordIds?.size }))).toMatchSnapshot();
 });

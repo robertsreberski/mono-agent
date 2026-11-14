@@ -10,7 +10,7 @@ import { CONTINUITY_REDACTION_OMISSION } from "../tool-history/continuity-payloa
 import { representedContinuityToolRecordIds } from "../harness/turn-continuity.js";
 import type { ConversationHarnessOptions, ConversationHarnessRequest } from "../harness/contracts.js";
 
-import { PACK_HEADER as HEADER, packTokens as estimate, packTokensOfBytes, fitsLedgerPrefix, PACK_RETRIEVAL_GUIDANCE } from "./render-fit.js";
+import { PACK_HEADER as HEADER, packTokens as estimate, packTokensOfBytes, fitsLedgerPrefix, PACK_RETRIEVAL_GUIDANCE, CONTINUITY_PACK_MAX_TOKENS } from "./render-fit.js";
 type Section = "owner" | "tool" | "summary" | "evidence";
 export interface ContinuityPack {
   readonly text?: string;
@@ -31,7 +31,7 @@ export interface ContinuityPack {
 /** Pure, deterministic rendering. No clipping of owner entries or identifiers.
  * A tool result head consists of complete paragraphs only; an oversized first paragraph
  * is omitted rather than turning an identifier or negation into a partial fact. */
-export function renderContinuityPack(snapshot: ContinuitySnapshot, history: readonly HistoryMessage[], maxTokens = 8000, ledger?: { generation: LedgerGeneration; records: readonly { recordId: string; text: string }[] }, upkeepGap = false, conversationHistoryAvailable = false): ContinuityPack {
+export function renderContinuityPack(snapshot: ContinuitySnapshot, history: readonly HistoryMessage[], maxTokens = CONTINUITY_PACK_MAX_TOKENS, ledger?: { generation: LedgerGeneration; records: readonly { recordId: string; text: string }[] }, upkeepGap = false, conversationHistoryAvailable = false): ContinuityPack {
   const counts: Record<Section, number> = { owner: 0, tool: 0, summary: 0, evidence: 0 };
   const toolIds = representedContinuityToolRecordIds(history);
   const inputIds = new Set(history.flatMap(message => {
@@ -49,7 +49,7 @@ export function renderContinuityPack(snapshot: ContinuitySnapshot, history: read
     }
     return !(record.tool && (toolIds.has(record.tool.invocationId) || record.tool.resultId && toolIds.has(record.tool.resultId)));
   });
-  const limit = Math.max(0, Math.min(8000, Math.floor(maxTokens)));
+  const limit = Math.max(0, Math.min(CONTINUITY_PACK_MAX_TOKENS, Math.floor(maxTokens)));
   const derived = ledger?.generation.entries.length ? renderLedger(ledger.generation, ledger.records) : "";
   // An oversized ledger never displaces the whole deterministic fallback. It is
   // all-or-nothing (shared purchase/injection rule) and its omission is disclosed.

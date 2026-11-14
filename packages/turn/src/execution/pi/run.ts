@@ -240,6 +240,12 @@ export function buildRunModels(runtime: PiRuntime, options: PiOptions, runtimeWa
   return withContext1MModels(models, options.customProvider ? undefined : options.context1MModels);
 }
 
+/** Fixed cold continuity-pack (handover) ceiling in estimated tokens, always
+ * lowered by the destination's real headroom below. The conversation renderer
+ * clamps to the same package-local value (continuity/render-fit.ts); its
+ * provider integration test fails if the two drift apart. */
+const CONTINUITY_PACK_MAX_TOKENS = 16_000;
+
 const PROVIDER_CHECK_REQUEST_METHODS = new Set([
   "stream",
   "complete",
@@ -816,7 +822,7 @@ async function executeTrackedPiNativeResponse(systemPrompt: string, options: PiO
           const input = messages.reduce((sum, message) => sum + Number(estimateTokens(message)), 0);
           const window = Math.min(policy.contextWindow, Number(options.compaction?.contextWindowOverride) || runtime.model.contextWindow);
           const reserve = Math.max(4096, Number(runtime.model.maxTokens) || 0) + 4096;
-          const maxTokens = Math.max(0, Math.min(8000, Math.floor(Math.min(window, policy.triggerTokens) - fixed - input - reserve)));
+          const maxTokens = Math.max(0, Math.min(CONTINUITY_PACK_MAX_TOKENS, Math.floor(Math.min(window, policy.triggerTokens) - fixed - input - reserve)));
           const cold = await options.coldContext({ maxTokens: maxTokens < 500 ? 0 : maxTokens, reason: runState.createdOnMiss ? "created_on_miss" : "cold_rebuild", primaryAttempt: true });
           // The general converter invents a blank user placeholder for [].
           // Optional cold evidence has no prompt to fill: empty/non-text entries

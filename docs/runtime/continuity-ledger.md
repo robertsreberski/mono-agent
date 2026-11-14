@@ -282,7 +282,7 @@ covers retained records, not derived entries.
 ### Owner evidence beside a ledger
 
 A shown ledger must not push out the newest owner evidence the no-ledger pack
-would carry, within the same 8,000-token pack and unchanged prefix rule. The renderer first
+would carry, within the same 16,000-token pack ceiling and unchanged prefix rule. The renderer first
 runs the no-ledger selection over the same snapshot and history, including any
 eligible whole pinned summary before tools and owners. The
 owners it admits form the backbone, sorted by host ordinal then record id.
@@ -295,7 +295,7 @@ pinned summary takes first claim only on the headroom left after that prefix;
 it is laid out first, then owners and tools follow their existing layout. A
 summary that fits alone can therefore be omitted beside an admitted ledger.
 Whole-summary carriage includes JSON quotation expansion and prefix/marker costs
-within `min(8000, actual headroom)` estimated tokens. An overflow is counted and
+within `min(16000, actual headroom)` estimated tokens. An overflow is counted and
 disclosed with content-free size/headroom estimates (degraded reason
 `summary_headroom` unless a snapshot, coverage or upkeep reason applies), never
 clipped or replaced with an older summary. Tool reservation uses 40% of the residual usable space;

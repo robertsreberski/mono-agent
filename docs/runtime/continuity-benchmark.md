@@ -668,7 +668,8 @@ refresh clean-head sizing/build bindings before a new registration, with no
 in-flight migration to these contracts.
 
 Controller archive/journal scans and full request serialization are included in
-`node --expose-gc scripts/continuity-relevance-scan.mjs`, retaining the accepted
+`node --expose-gc scripts/continuity-relevance-scan.mjs` (carry fit, carry
+fallback, and a B quotation sized near the 16k pack ceiling), retaining the accepted
 5 s / +100 MiB heap / +128 MiB RSS envelope. Reads remain bounded to 4096 archive
 links, 8192 journal names and 128 MiB total scoped native bytes per scan, including
 start/refusal snapshots. Each bounded read receives only the remaining aggregate
@@ -3086,10 +3087,14 @@ own slot's current/predecessor lineage via the shipping Responses converter and
 checks compaction-style pack encoding; it does not demonstrate a later real
 compaction request carrying the pack. Captured actual summary requests are
 lineage-checked independently.
-Faux-max exercises all-or-nothing omission and content-free size/headroom
-reporting. Record pack estimated-token deltas as cost evidence, not a quality
+Under the 16k ceiling faux-max exercises both outcomes: a maximal summary that
+fits (about 14.6k pack tokens in the offline fixture) is quoted whole, while a
+larger one is omitted whole with content-free size/headroom reporting. Quoting
+can displace pack tool evidence back into the replayed projection, so faux-max
+probe requests grow well beyond the 8k-era estimate; register probe input
+allowances from fresh sizing. Record pack estimated-token deltas as cost evidence, not a quality
 score. The complete JSON-quoted summary must fit after the unchanged admitted
-ledger/header prefix and reserved marker, within `min(8000, actual headroom)`;
+ledger/header prefix and reserved marker, within `min(16000, actual headroom)`;
 no clipping or older substitution is allowed. Per-message replay can pay this
 cost every turn; warm resumes add no second pack. Daily-rollover cross-bucket
 carry and dedicated assistant-commitment lanes are not provided. These retention

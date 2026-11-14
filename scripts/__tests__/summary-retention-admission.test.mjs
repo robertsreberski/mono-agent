@@ -59,7 +59,7 @@ it("keeps a cold-admitted current journal protected through prepared configured 
   expect(await runTrialHostAdmission(summary, { automaticRefusal: true, preparedWake: true })).toEqual({ realPreTurnProtectedRefused: true, runtimeCalls: 3, preparedCurrentJournalProtected: true });
 }, 60000);
 
-// Whole quotation exceeds even the planned 16k presentation ceiling; only the
+// Whole quotation exceeds even the 16k presentation ceiling; only the
 // small protected section belongs in the bounded successor output.
 const largeSummary = `## Goal
 ${"Fictional background detail. ".repeat(2300)}
@@ -74,3 +74,28 @@ it.each([{}, { packDisabled: true }, { preparedCold: true }])("carries an omitte
   expect(result.admissionProof.receiptBytes).toBeLessThanOrEqual(8192);
   if (options.preparedCold) expect(result.admissionProof.preparedRuns).toBeGreaterThanOrEqual(2);
 }, 60000);
+
+// About 10.6k incremental pack tokens once JSON-quoted: omitted by the former
+// 8k ceiling, quoted whole within the 16k ceiling and admitted by B.
+const mediumSummary = `## Goal
+${"Fictional background detail. ".repeat(1000)}
+
+${summary}`;
+it("admits a ~10.6k-token quotation through B at the 16k ceiling that an explicit 8k cap leaves to carry", async () => {
+  const { packTokensOfBytes, PACK_HEADER } = await import("../../packages/conversation/dist/continuity/render-fit.js");
+  const quoted = await runTrialHostAdmission(mediumSummary, { exactSummary: summary, coldBudgetCap: Number.POSITIVE_INFINITY });
+  const cost = packTokensOfBytes(Buffer.byteLength(PACK_HEADER) + Buffer.byteLength(JSON.stringify(quoted.retainedText))) - packTokensOfBytes(Buffer.byteLength(PACK_HEADER));
+  expect(cost).toBeGreaterThan(10_000); expect(cost).toBeLessThan(11_000);
+  expect(quoted.coldBudgets).toEqual([16000]);
+  const seed = JSON.stringify(quoted.seedMessages);
+  expect(seed).toContain(quoted.retainedSha256); expect(seed).not.toContain("Generated summary omitted");
+  expect(seed).toContain(JSON.stringify(JSON.stringify(quoted.retainedText)).slice(1, -1)); // whole quotation, never a fragment
+  expect(quoted.admissionProof).toMatchObject({ kind: "retained_summary_admitted", protectedTupleCount: 31, guardedCalls: 2, lossyRefused: true,
+    exactCommitted: true, unchangedRefusalSuppressed: true, coveredRestartAfterPurge: true, rewindPresentProtected: true, rewindPurgedLegacy: true });
+  expect(quoted.admissionProof.successorAdmissionId).toBe(quoted.admissionProof.admissionId);
+  const capped = await runTrialHostAdmission(mediumSummary, { exactSummary: summary, coldBudgetCap: 8000 });
+  expect(capped.coldBudgets).toEqual([16000]);
+  const cappedSeed = JSON.stringify(capped.seedMessages);
+  expect(cappedSeed).toContain("Generated summary omitted"); expect(cappedSeed).not.toContain("Fictional background detail. Fictional background detail.");
+  expect(capped.admissionProof).toMatchObject({ kind: "reseed_predecessor_admitted", protectedTupleCount: 31, exactCommitted: true });
+}, 120000);

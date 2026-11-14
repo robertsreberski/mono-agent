@@ -10,13 +10,15 @@ import { digest } from "./continuity-recorded-schema.mjs";
 import { convertResponsesMessages } from "../../packages/turn/node_modules/@earendil-works/pi-ai/dist/api/openai-responses-shared.js";
 export async function measureE2ControllerCapacity(root) {
   const measurements = [];
-  for (const fallback of [false, true]) {
-    const base = join(root, `controller-${fallback}`); await mkdir(join(base, "e2-summary-results"), { recursive: true, mode: 0o700 });
+  // Carry fit/fallback plus a B quotation sized near the 16k pack ceiling:
+  // the summary request then serializes a maximal seed and whole predecessor.
+  for (const { carrier, fallback, quotationBackgroundRepeats } of [{ carrier: "carry", fallback: false }, { carrier: "carry", fallback: true }, { carrier: "quotation", fallback: false, quotationBackgroundRepeats: 2000 }]) {
+    const base = join(root, `controller-${carrier}-${fallback}`); await mkdir(join(base, "e2-summary-results"), { recursive: true, mode: 0o700 });
     const planned = { index: 0, kind: "proof", arm: "pressure", variant: "ceiling", phase: "whole" }, slot = { slotId: "a".repeat(64), holds: [], lineages: {} }, state = { schedule: [planned], slots: [slot] };
     const readArtifact = path => readFile(path), readPrivate = async path => JSON.parse(await readFile(path, "utf8"));
     const model = { provider: "openai-codex", id: "gpt-6.1-sol", api: "openai-codex-responses", contextWindow: 272000, maxTokens: 128000 };
     state.summaryPolicies = await e2ProtectedSummaryPolicies([model]);
-    await rehearseE2Protected({ work: e2PhaseWork(base, planned), model, carrier: "carry", fallback,
+    await rehearseE2Protected({ work: e2PhaseWork(base, planned), model, carrier, fallback, ...(quotationBackgroundRepeats ? { quotationBackgroundRepeats } : {}),
       onPublication: async ({ summary, checkpoint }) => {
         const payloadDigest = "b".repeat(64), rawUsage = { input_tokens: 10, output_tokens: 10 };
         const result = await writeE2SummaryResult({ runId: "fictional-capacity", slotId: slot.slotId, e2: { paidRole: "summary", model: checkpoint.model, round: 1, outputRoot: base } },
@@ -40,7 +42,7 @@ export async function measureE2ControllerCapacity(root) {
           const m = process.memoryUsage(); heap = Math.max(heap, m.heapUsed); rss = Math.max(rss, m.rss);
         }
         const elapsedMs = performance.now() - started; global.gc();
-        const result = { workload: "e2-controller-retained-serialization", fallback, cycles: 30, retainedBytes: Buffer.byteLength(active.text), maximumSerializedBytes: maximumBytes,
+        const result = { workload: "e2-controller-retained-serialization", carrier, fallback, cycles: 30, retainedBytes: Buffer.byteLength(active.text), maximumSerializedBytes: maximumBytes,
           elapsedMs, heapDeltaMiB: (heap - before.heapUsed) / 1024 ** 2, rssDeltaMiB: (rss - before.rss) / 1024 ** 2,
           steadyHeapGrowthMiB: (process.memoryUsage().heapUsed - before.heapUsed) / 1024 ** 2 };
         result.acceptedEnvelopeMet = elapsedMs <= 5000 && result.heapDeltaMiB <= 100 && result.rssDeltaMiB <= 128;

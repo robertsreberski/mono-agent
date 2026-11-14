@@ -488,7 +488,7 @@
                   "default": true
                 },
                 "packEnabled": {
-                  "description": "Default-on deterministic continuity evidence at cold canonical-history rebuilds. No model call. At most 8000 estimated tokens, further limited by target headroom; whole owner quotations, finalized tool evidence, latest summary and coverage/omission marker. Subordinate historical requests are not fresh approval. False keeps B1 recording and retrieval but injects no pack; continuity.enabled=false takes precedence. True native resumes get no additional pack. Per-message replay pays pack input tokens each turn. Legacy canonical messages lack exact record identities, so uncertain overlap is retained and reported. Native model-switch handoffs and subagents are unchanged.",
+                  "description": "Default-on deterministic continuity evidence at cold canonical-history rebuilds. No model call. At most 16000 estimated tokens, further limited by target headroom; whole owner quotations, finalized tool evidence, latest summary and coverage/omission marker. Subordinate historical requests are not fresh approval. False keeps B1 recording and retrieval but injects no pack; continuity.enabled=false takes precedence. True native resumes get no additional pack. Per-message replay pays pack input tokens each turn. Legacy canonical messages lack exact record identities, so uncertain overlap is retained and reported. Native model-switch handoffs and subagents are unchanged.",
                   "examples": [
                     true
                   ],
