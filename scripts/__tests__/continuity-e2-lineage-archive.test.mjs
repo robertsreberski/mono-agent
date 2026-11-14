@@ -108,3 +108,12 @@ it("keeps adjacent user wrappers distinct through the installed Responses conver
   expect(input).toHaveLength(2); expect(input.map(i => i.content.length)).toEqual([1, 1]);
   await expect(check(f, lineage, Buffer.from(JSON.stringify({ input })))).rejects.toMatchObject({ code: "e2_summary_receipt_invalid" });
 });
+
+it("reads legacy v1 archives/version-2 references without inventing publication provenance", async () => {
+  const f = await make(), current = await f.bind(), artifact = JSON.parse(await readFile(e2ArchivePath(f.root, current.archiveSha256)));
+  artifact.schema = "continuity-e2-committed-checkpoint-v1"; artifact.lineage.version = 2; delete artifact.provenance;
+  const bytes = Buffer.from(JSON.stringify(artifact) + "\n"), legacy = { ...current, version: 2, archiveSha256: f.digest(bytes) };
+  await writeFile(e2ArchivePath(f.root, legacy.archiveSha256), bytes, { mode: 0o600 }); f.slot.lineages = { proof: legacy };
+  await rm(f.journalPath);
+  await expect(check(f, legacy, body(native(f.assembled)))).resolves.toMatchObject({ native: 1 });
+});

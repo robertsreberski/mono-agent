@@ -35,6 +35,14 @@ export async function installE2NativeRealm(profile) {
   registerHooks({ load(url, context, next) {
     if (url === buildURL) return { format: "module", shortCircuit: true, source: 'export const BUILD_POLICY="fresh-clean-head-agent-app-closure-v1";export const sourceState=()=>({head:"' + "b".repeat(40) + '",dirty:false});export async function verifyRealBuild(){};export async function prepareRealBuild(){throw Error("test_rebuild_forbidden")}' };
     const loaded = next(url, context);
+    if (profile.fault === "checkpoint-read-gap" && url === pathToFileURL(join(profile.root, "scripts/lib/continuity-e2-journals.mjs")).href) {
+      const source = String(loaded.source), marker = "  const changes = await scope.changedFiles();";
+      if (!source.includes(marker)) throw Error("test_checkpoint_gap_missing");
+      // Deterministically enlarge the old ACK/tool-progress race. This is not a
+      // retry, a production delay, or an extra production journal read.
+      return { ...loaded, source: source.replace(marker, '  await new Promise(resolve => setTimeout(resolve, 75));\n' + marker
+        + '\n  await (await import("node:fs/promises")).appendFile(join(work, "checkpoint-read-gap.jsonl"), JSON.stringify({ changedFiles: changes.length }) + "\\n", { mode: 0o600 });') };
+    }
     if (profile.fault === "slow-refusal" && url === pathToFileURL(join(profile.root, "scripts/lib/continuity-e2-phase-child.mjs")).href) {
       const source = String(loaded.source), marker = "    try { await mkdir(base,";
       if (!source.includes(marker)) throw Error("test_refusal_barrier_missing");

@@ -1,7 +1,6 @@
 // Accounted, non-committing product refusals. Never summary-lineage authority.
-import { readdir } from "node:fs/promises";
-import { join } from "node:path";
 import { digest } from "./continuity-recorded-schema.mjs";
+import { e2ActiveBranch, e2JournalScope, readE2Journal } from "./continuity-e2-journals.mjs";
 import { e2LineageScope, e2PhaseWork } from "./continuity-e2-lineage.mjs";
 // Completed-candidate protection refusals only. Product output_truncated is
 // unreachable here: the paid SDK length-failure path stops before a verified
@@ -43,23 +42,20 @@ export async function e2NativeCompactionSnapshot(root, state, planned, checkpoin
 async function nativeSnapshot(root, state, planned, checkpoint, readArtifact, previous) {
   const scope = await e2LineageScope(state, planned, checkpoint, readArtifact);
   const work = e2PhaseWork(root, planned, planned.kind === "replay" ? scope : undefined);
-  let entries;
-  try { entries = await readdir(join(work, "sessions", "journals")); }
+  let directory;
+  try { directory = await e2JournalScope(work); }
   catch (error) { if (!previous && error.code === "ENOENT") return []; throw error; }
-  const names = entries.filter(n => /^[A-Za-z0-9_-]+\.jsonl$/u.test(n)).sort();
+  const names = directory.names;
   // An initial success may create its first journal after begin. A refusal,
   // however, needs a nonempty baseline and must not introduce a new journal.
   need(names.length <= 8192 && (!previous || previous.length > 0 && names.join() === previous.map(p => p.name).join()));
-  const { JournalValidator, validateJournalHeader } = await import(new URL("../../packages/turn/dist/engine/journal-schema.js", import.meta.url).href);
-  const snapshots = [];
+  const snapshots = [], budget = { bytes: 0 };
   for (const [i, name] of names.entries()) {
-    const bytes = await readArtifact(join(work, "sessions", "journals", name), "e2_compaction_invalid", 128 * 1024 * 1024);
-    const lines = bytes.toString("utf8").split("\n"); need(lines.pop() === "" && lines.length > 1 && lines.length <= 1000000);
-    const header = JSON.parse(lines[0]); validateJournalHeader(header); need(header.journalId === name.slice(0, -6) && header.cwd === work);
-    const validator = new JournalValidator(), records = lines.slice(1).map(line => JSON.parse(line));
-    for (const record of records) validator.apply(record);
-    const context = records.filter(r => ["message", "compaction", "rewind", "retained_summary_admitted"].includes(r.kind));
-    const snapshot = { name, lines: lines.length, prefixSha256: digest(lines.join("\n") + "\n"), contextSha256: digest(JSON.stringify(context)), tip: validator.tip };
+    const { validator, records, lines } = await readE2Journal(work, name.slice(0, -6), readArtifact, budget);
+    const context = records.filter(r => ["message", "compaction", "rewind", "retained_summary_admitted", "reseed_predecessor_admitted"].includes(r.kind));
+    const admission = validator.retainedSummaryAdmission, branch = admission ? e2ActiveBranch(validator) : [];
+    const retainedAdmission = Boolean(admission && branch.some(r => r.id === admission.payload.seed.entryId) && !branch.some(r => r.kind === "compaction"));
+    const snapshot = { name, retainedAdmission, lines: lines.length, prefixSha256: digest(lines.join("\n") + "\n"), contextSha256: digest(JSON.stringify(context)), tip: validator.tip };
     if (previous) {
       const prior = previous[i];
       need(lines.length >= prior.lines && digest(lines.slice(0, prior.lines).join("\n") + "\n") === prior.prefixSha256
@@ -67,5 +63,5 @@ async function nativeSnapshot(root, state, planned, checkpoint, readArtifact, pr
     }
     snapshots.push(snapshot);
   }
-  return snapshots;
+  await directory.assertStable(); return snapshots;
 }

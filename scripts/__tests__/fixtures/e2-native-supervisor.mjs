@@ -14,6 +14,10 @@ const profile = JSON.parse(await readFile(process.argv[2], "utf8")), pilot = JSO
 const controller = guardedController("e2-validation"), outputRoot = profile.args.outputRoot, authorization = { schema: E2_AUTHORIZATION_SCHEMA, ...profile.args };
 delete authorization.outputRoot;
 const options = { real: true, pilot, authorization, outputRoot };
+if (profile.scenario?.startsWith("retained-") && !profile.scenario.includes("-default-")) {
+  const { attachE2ProtectedControllerPolicy } = await import("../../lib/continuity-e2-controller-policy.mjs");
+  await attachE2ProtectedControllerPolicy(pilot, pilot.registration.catalog.map(row => ({ provider: row.model.split(":")[0], id: row.model.split(":")[1], contextWindow: row.contextWindow, maxTokens: row.maxTokens })));
+}
 // Keep preparation failures visible in this private fixture instead of a public projection.
 await (await import("../../lib/continuity-guarded-protocols.mjs")).guardedProtocol("e2-validation").hooks.prepareController(options).catch(async error => {
   await writeFile(profile.result, JSON.stringify({ error: error.code ?? error.name, stage: "preparation" }), { mode: 0o600 }); process.exit(1);

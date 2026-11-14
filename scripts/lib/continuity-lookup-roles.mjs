@@ -47,6 +47,8 @@ export const LOOKUP_PILOT_PROTOCOL_FILES = Object.freeze([
   "scripts/lib/continuity-e2-isolation.mjs",
   "scripts/lib/continuity-e2-models.mjs",
   "scripts/lib/continuity-e2-lineage.mjs", "scripts/lib/continuity-e2-compaction.mjs",
+  "scripts/lib/continuity-e2-journals.mjs", "scripts/lib/continuity-e2-protected.mjs",
+  "scripts/lib/continuity-e2-sizing-identity.mjs", "scripts/lib/continuity-e2-capacity.mjs",
   "scripts/lib/continuity-e2-runtime.mjs",
   "scripts/lib/continuity-e2-paid-models.mjs",
   "scripts/lib/continuity-e2-cause.mjs", "scripts/lib/continuity-e2-retry.mjs", "scripts/lib/continuity-e2-progress.mjs",

@@ -1,7 +1,7 @@
 // Closed E2 identity/authorization descriptor. All dispatch crosses the shared guarded native send.
 import { assertE2Safety } from "./continuity-e2-runtime.mjs";
 import { e2ExecutionPolicy } from "./continuity-e2-execution-policy.mjs";
-import { e2CacheAssignment, e2CacheIssuer, e2Watchdog, e2ValidTimeout, e2Work, e2PhaseAssignment } from "./continuity-e2-controller-policy.mjs";
+import { e2CacheAssignment, e2CacheIssuer, e2Watchdog, e2ValidTimeout, e2Work, e2PhaseAssignment, e2ControllerSummaryState } from "./continuity-e2-controller-policy.mjs";
 import * as e2Policy from "./continuity-e2-policy.mjs";
 const freeze = value => { if (value && typeof value === "object") { Object.values(value).forEach(freeze); Object.freeze(value); } return value; };
 const codes = {
@@ -109,7 +109,7 @@ export const e2GuardedProtocol = freeze({
     checkoutPaths: pilot => [pilot.registration.code.path],
     authorizationBinds: (pilot, descriptor, catalog, same) => same(pilot.descriptor, descriptor) && same(pilot.registration.catalog, catalog),
     controllerBindings: async () => (await import("./continuity-e2-controller-policy.mjs")).e2ControllerBindings(),
-    publicState: () => ({}), cacheAssignment: e2CacheAssignment, cacheIssuer: e2CacheIssuer, watchdog: e2Watchdog, validTimeout: e2ValidTimeout,
+    publicState: e2ControllerSummaryState, cacheAssignment: e2CacheAssignment, cacheIssuer: e2CacheIssuer, watchdog: e2Watchdog, validTimeout: e2ValidTimeout,
     work: e2Work, verifyPhaseAssignment: e2PhaseAssignment,
     beforeSchedule: options => { if (options.real !== true) unavailable(); },
     prepareController: async (...args) => (await import("./continuity-e2-controller-policy.mjs")).prepareE2Controller(...args),

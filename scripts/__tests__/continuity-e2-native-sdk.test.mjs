@@ -13,9 +13,12 @@ import { guardedAccounting } from "../lib/continuity-guarded-accounting.mjs";
 import { ROOT } from "../lib/continuity-observation-input.mjs";
 import { parseConversationHistoryText, HISTORY_HEADER, HISTORY_NOTICE } from "../lib/continuity-observation-retrieval.mjs";
 import { FACT, NEXT_ACTION } from "../lib/continuity-e2-tools.mjs";
+import { E2_PROTECTED_TEXT } from "../lib/continuity-e2-protected.mjs";
 import { SOL } from "../lib/continuity-e2-protocol.mjs";
 import { e2NativeFixture, E2_NATIVE_TEST_TIMEOUT_MS } from "./fixtures/e2-native-registration.mjs";
 const roots = [], servers = [];
+const SDK_RETAINED_HISTORY = E2_PROTECTED_TEXT + "\n\nFictional actual SDK history result.";
+const SDK_RETAINED_PREFIX = "Fictional actual SDK prefix result.";
 afterEach(async () => { for (const server of servers.splice(0)) { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); } for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
 function events(text, full = false) {
   const item = { type: "message", id: "msg_fictional", role: "assistant", status: "completed", content: [{ type: "output_text", text, annotations: [] }] };
@@ -119,7 +122,13 @@ async function run({ scenario = "probe", requests = 1, rows = [{ role: "probe", 
         const body = received.at(-1), current = body.input.filter(i => i.role === "user").at(-1)?.content;
         if (arm === "cancel" && JSON.stringify(current).includes("Continue without repeating the completed fictional sentinel")) { response.flushHeaders(); return; }
         response.end(proofReply(body, received.length));
-      } else response.end(events(scenario.startsWith("lineage-pack") ? "Fictional evidence at /home/example/private/file.txt" : "FICTIONAL-SUMMARY-ANSWER-CANARY", scenario === "cap"));
+      } else if (scenario === "ordinary-shipping-event") response.end(events(E2_PROTECTED_TEXT));
+      else if (scenario.startsWith("retained-")) {
+        const text = received.length === 1 ? received[0].input.findLast(i => i.role === "user").content.filter(p => p.type === "input_text").map(p => p.text).join("\n")
+          : scenario.includes("-sdk-") ? received.length === 2 ? SDK_RETAINED_HISTORY : SDK_RETAINED_PREFIX : E2_PROTECTED_TEXT;
+        response.end(events(text));
+      }
+      else response.end(events(scenario.startsWith("lineage-pack") ? "Fictional evidence at /home/example/private/file.txt" : "FICTIONAL-SUMMARY-ANSWER-CANARY", scenario === "cap"));
     } catch (error) { listenerError = error; response.writeHead(500).end(); }
   }); servers.push(server); await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
   const profile = { phaseStartupDelayMs, preload: join(root, "preload.mjs"), crossOutputReuse, root: ROOT, home: fixture.home, args: fixture.args, scenario, requests, reuse, production, fault, retryOnce,
@@ -173,6 +182,116 @@ it("verifies generated output and an actual durable journal before accepting the
   expect(result.received).toHaveLength(2); expect(result.report.stop).toBe("completed"); expect(result.report.phases[0].calls.verifiedSummaries).toBe(1);
   expect(result.wireIdentities.every(h => typeof h.session === "string" && h.session.length > 0 && h.session === h.request)).toBe(true);
 }, E2_NATIVE_TEST_TIMEOUT_MS);
+it("binds ordinary shipping tryCompact event and native journal IDs without requiring equality", async () => {
+  const result = await run({ scenario: "ordinary-shipping-event", rows: [{ role: "summary", model: SOL }, { role: "probe", model: SOL }] });
+  expect(result.report.stop, JSON.stringify(result.report)).toBe("completed"); expect(result.received).toHaveLength(2);
+  const state = JSON.parse(await readFile(join(result.root, "output", "e2-validation-controller.json"), "utf8")), hold = state.slots[0].holds[0];
+  expect(hold.nativeCompaction.nativeOperationDigest).not.toBe(hold.operationDigest); expect(hold.summaryReceipt.durable).toBe(true);
+  expect(hold.retainedPredecessor).toBeUndefined();
+}, E2_NATIVE_TEST_TIMEOUT_MS);
+it.each(["quotation", "carry"].flatMap(carrier => ["exact", "original", "split", "drop", "newline", "whitespace", "forged-fallback"].map(kind => [carrier, kind])))("authenticates retained %s %s through IPC consumption and native send", async (carrier, kind) => {
+  const result = await run({ scenario: `retained-${carrier}-${kind}`, rows: [{ role: "summary", model: "openai-codex:gpt-6-luna" }, { role: "summary", model: SOL }, { role: "probe", model: SOL }] });
+  const preSendRefusal = ["original", "newline", "whitespace", "forged-fallback"].includes(kind), refused = preSendRefusal || kind === "drop";
+  expect(result.report.stop, JSON.stringify(result.report)).toBe(refused ? "e2_summary_receipt_invalid" : "completed");
+  expect(result.received).toHaveLength(preSendRefusal ? 1 : kind === "drop" ? 2 : 3);
+  expect(result.report.phases[0].calls.verifiedSummaries).toBe(refused ? 1 : 2);
+  const state = JSON.parse(await readFile(join(result.root, "output", "e2-validation-controller.json"), "utf8"));
+  const holds = state.slots[0].holds;
+  expect(holds[0].consumed).toBe(true);
+  // Consume is durable before body verification; a refused body retains its
+  // liability but must never reach the native backend.
+  expect(holds[1].consumed).toBe(true);
+  expect(holds[1].nativeCompaction.nativeOperationDigest).not.toBe(holds[1].operationDigest);
+  if (preSendRefusal) expect(holds[1].retainedPredecessor).toBeUndefined();
+  else {
+    expect(holds[1].consumed).toBe(true);
+    expect(holds[1].retainedPredecessor.assembly).toBe(["split", "drop"].includes(kind) ? "split-prefix" : "summary");
+    expect(JSON.stringify(result.received[1])).not.toContain("/home/example/private/");
+  }
+}, E2_NATIVE_TEST_TIMEOUT_MS);
+function expectQuotedFrameBeforeProtection(body, frame) {
+  if (frame === "clean") return;
+  const marker = "<protected-historical-tuples>\n", values = {empty:"[]",malformed:"not-json",competing:'["- Fictional quoted decoy."]'};
+  const text = body.input.flatMap(m=>typeof m.content === "string" ? [m.content] : (m.content??[]).map(p=>p.text??"")).join("\n");
+  const offset = text.indexOf(marker + values[frame] + "\n</protected-historical-tuples>");
+  expect(offset).toBeGreaterThanOrEqual(0);
+  expect(text.lastIndexOf(marker)).toBeGreaterThan(offset); // Genuine structured frame follows the conversation quote.
+}
+const retainedSplitCases = [
+  ...["control", "default"].flatMap(policy => ["quotation", "carry"].map(carrier => [policy, carrier, "clean"])),
+  ...["empty", "malformed", "competing"].map(frame => ["default", "quotation", frame]),
+];
+it.each(retainedSplitCases)("completes a two-response retained split under %s policy with %s carrier and %s quoted frame", async (policy, carrier, frame) => {
+  const scenario = `retained-${policy}-${carrier}-two-split${frame === "clean" ? "" : `-quoted-${frame}`}`;
+  const result = await run({ scenario, rows: [{ role: "summary", model: "openai-codex:gpt-6-luna" }, { role: "summary", model: SOL }, { role: "summary", model: SOL }, { role: "probe", model: SOL }] });
+  expect(result.report.stop,JSON.stringify(result.report)).toBe("completed"); expect(result.received).toHaveLength(4);
+  expect(result.report.phases[0].calls.verifiedSummaries).toBe(3);
+  expectQuotedFrameBeforeProtection(result.received[1],frame);
+  const state = JSON.parse(await readFile(join(result.root,"output/e2-validation-controller.json"),"utf8")), slot = state.slots[0];
+  expect(state.summaryPolicies.source).toBe(policy === "default" ? "bound-build-defaults-v1" : "protected-control-v1");
+  const holds = slot.holds.slice(1,3);
+  expect(holds.map(h=>h.retainedPredecessor.assembly)).toEqual(["summary","split-prefix"]);
+  for (const hold of holds) {
+    expect(hold.consumed).toBe(true); expect(hold.settlement.kind).toBe("settled"); expect(hold.summaryReceipt).toMatchObject({verified:true,durable:true});
+    expect(hold.nativeCompaction.nativeOperationDigest).not.toBe(hold.operationDigest);
+  }
+  expect(holds[0].nativeCompaction.nativeOperationDigest).toBe(holds[1].nativeCompaction.nativeOperationDigest);
+  expect(holds[0].retainedPredecessor.admissionId).toBe(holds[1].retainedPredecessor.admissionId);
+  const lineage = slot.lineages.proof;
+  expect(lineage.generated.map(g=>g.round)).toEqual(holds.map(h=>h.round));
+  const rows = (await readFile(join(e2PhaseWork(join(result.root,"output"),state.schedule[0]),"sessions/journals",`${lineage.journalId}.jsonl`),"utf8")).trimEnd().split("\n").map(JSON.parse);
+  const checkpoint = rows.find(r=>r.id===lineage.checkpointId).payload.compaction.checkpoint;
+  expect(checkpoint.retainedSummaryCoverage.admissionId).toBe(holds[0].retainedPredecessor.admissionId);
+  expect(checkpoint.summaryMessage.summary).toContain("**Turn Context (split turn):**");
+}, E2_NATIVE_TEST_TIMEOUT_MS);
+it.each([["quotation","clean"],["carry","clean"],...["empty","malformed","competing"].map(frame=>["quotation",frame])])("completes retained %s history under production-default policy derivation with %s quoted frame", async (carrier,frame) => {
+  const result = await run({scenario:`retained-default-${carrier}-summary${frame === "clean" ? "" : `-quoted-${frame}`}`, rows:[{role:"summary",model:"openai-codex:gpt-6-luna"},{role:"summary",model:SOL},{role:"probe",model:SOL}]});
+  expect(result.report.stop,JSON.stringify(result.report)).toBe("completed"); expect(result.received).toHaveLength(3);
+  expectQuotedFrameBeforeProtection(result.received[1],frame);
+  const state = JSON.parse(await readFile(join(result.root,"output/e2-validation-controller.json"),"utf8"));
+  expect(state.summaryPolicies.source).toBe("bound-build-defaults-v1");
+  const hold=state.slots[0].holds[1]; expect(hold.retainedPredecessor.assembly).toBe("summary");
+  expect(hold.consumed).toBe(true); expect(hold.summaryReceipt).toMatchObject({verified:true,durable:true});
+  expect(state.slots[0].lineages.proof.generated).toHaveLength(1);
+},E2_NATIVE_TEST_TIMEOUT_MS);
+it.each(["quotation", "carry"].flatMap(carrier => ["summary", "two-split"].map(shape => [carrier, shape])))("composes actual SDK %s %s results with shipping default options", async (carrier, shape) => {
+  const count = shape === "two-split" ? 2 : 1;
+  const result = await run({ scenario: `retained-default-${carrier}-sdk-${shape}`, rows: [
+    { role: "summary", model: "openai-codex:gpt-6-luna" }, ...Array.from({length:count},()=>({role:"summary",model:SOL})), {role:"probe",model:SOL},
+  ] });
+  expect(result.report.stop, JSON.stringify(result.report)).toBe("completed");
+  expect(result.received).toHaveLength(count + 2);
+  const output = join(result.root,"output"), state = JSON.parse(await readFile(join(output,"e2-validation-controller.json"),"utf8")), slot = state.slots[0];
+  expect(state.summaryPolicies.source).toBe("bound-build-defaults-v1");
+  const work = e2PhaseWork(output,state.schedule[0]), route = JSON.parse(await readFile(join(work,"summary-options.json"),"utf8"));
+  expect(route.report.summaryRequests).toHaveLength(count);
+  expect(route.report.compactions).toMatchObject([{requests:count,durable:true}]);
+  expect(route.requests).toHaveLength(count);
+  for (const [i, options] of route.requests.entries()) {
+    expect(options).toMatchObject({method:"completeSimple",reasoning:"low",transport:"sse",maxRetries:0});
+    expect(options.maxTokens).toBeGreaterThan(0); expect(options.maxTokens).toBeLessThan(128000);
+    expect(route.report.summaryRequests[i].maxOutputTokens).toBe(options.maxTokens);
+    expect(result.received[i+1].reasoning.effort).toBe("low"); // Not the fixture's old fixed high effort.
+  }
+  const holds = slot.holds.slice(1,1+count), messages = [];
+  const expected = [SDK_RETAINED_HISTORY,SDK_RETAINED_PREFIX].slice(0,count);
+  for (const [i,hold] of holds.entries()) {
+    expect(hold.consumed).toBe(true); expect(hold.summaryReceipt).toMatchObject({verified:true,durable:true});
+    const artifact = JSON.parse(await readFile(join(output,"e2-summary-results",`${slot.slotId}-${hold.round}.json`),"utf8"));
+    const message = artifact.message; messages.push(message);
+    expect(message.content.filter(p=>p.type==="text").map(p=>p.text).join("\n")).toBe(expected[i]);
+    expect(message.usage).toMatchObject({input:10,output:5}); expect(message.usage.cost.total).toBeGreaterThan(0);
+  }
+  expect(holds.map(h=>h.retainedPredecessor.assembly)).toEqual(count === 2 ? ["summary","split-prefix"] : ["summary"]);
+  const lineage = slot.lineages.proof;
+  expect(lineage.generated).toEqual(holds.map(h=>({round:h.round,sha256:h.summaryReceipt.sha256})));
+  const rows = (await readFile(join(work,"sessions/journals",`${lineage.journalId}.jsonl`),"utf8")).trimEnd().split("\n").map(JSON.parse);
+  const compaction = rows.find(r=>r.id===lineage.checkpointId).payload.compaction;
+  expect(compaction.summary.startsWith(expected.join("\n\n---\n\n**Turn Context (split turn):**\n\n"))).toBe(true);
+  expect(compaction.checkpoint.retainedSummaryCoverage.admissionId).toBe(holds[0].retainedPredecessor.admissionId);
+  expect(compaction.usage).toMatchObject({input:count*10,output:count*5});
+  expect(compaction.usage.cost.total).toBeCloseTo(messages.reduce((n,m)=>n+m.usage.cost.total,0),12);
+}, E2_NATIVE_TEST_TIMEOUT_MS);
 it("stops changed summary text at the real gate without forwarding a probe", async () => {
   const result = await run({ scenario: "lineage-tamper", rows: [{ role: "summary", model: SOL }, { role: "probe", model: SOL }] });
   expect(result.received).toHaveLength(1); expect(result.report.stop).toBe("e2_summary_receipt_invalid");
@@ -204,6 +323,20 @@ it("allows only the registered completed cancellation seed-to-resume transition 
   const result = await run({ production: true, scenario: "proof", arm: "cancel", rows });
   expect(result.report.stop, JSON.stringify(result.report)).toBe("completed"); expect(result.report.phases).toHaveLength(2);
   expect(result.report.phases[1].score).toBe(1); expect(BigInt(result.report.costs.retainedUnits)).toBe(3920000000n);
+}, E2_NATIVE_TEST_TIMEOUT_MS);
+
+it("awaits the native completed-cut ACK before scripted tool progress across a forced read gap", async () => {
+  const rows = [...Array.from({ length: 8 }, () => ({ role: "summary", model: SOL, phase: "seed" })),
+    { role: "continuation", model: SOL, phase: "seed" }, ...Array.from({ length: 8 }, () => ({ role: "continuation", model: SOL, phase: "resume" })),
+    ...Array.from({ length: 8 }, () => ({ role: "probe", model: SOL, phase: "resume" }))];
+  const result = await run({ production: true, scenario: "proof", arm: "cancel", rows, fault: "checkpoint-read-gap" });
+  expect(result.report.stop, JSON.stringify(result.report)).toBe("completed");
+  expect(result.report.phases).toHaveLength(2); expect(result.report.phases[1].score).toBe(1);
+  const state = JSON.parse(await readFile(join(result.root, "output/e2-validation-controller.json"), "utf8"));
+  const scans = (await readFile(join(e2PhaseWork(join(result.root, "output"), state.schedule[0]), "checkpoint-read-gap.jsonl"), "utf8"))
+    .trim().split("\n").map(line => JSON.parse(line));
+  expect(scans.length).toBeGreaterThan(0);
+  expect(scans.every(scan => scan.changedFiles === 0), JSON.stringify(scans)).toBe(true);
 }, E2_NATIVE_TEST_TIMEOUT_MS);
 
 it("replays genuine C1 snapshots and frozen private questions through both pristine checkpoint copies", async () => {

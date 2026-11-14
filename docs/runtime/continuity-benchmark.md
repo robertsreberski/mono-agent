@@ -608,9 +608,77 @@ summary refuses instead of silently creating two different summary draws.
 The shipping default core's raw-source and normalized-text digests are pinned;
 the effective system core must match, without a benchmark-core substitution.
 
+### Protected predecessor lineage and sizing
+
+The controller accepts a retained `<previous-summary>` only after independently
+finding the unique active compaction in the registered journal scope. It checks
+shipping journal/header validation, owner and epoch-derived handle, the actual
+persisted seed, the active branch, and either synced quotation or carry admission.
+It matches the publication's journal/operation/coverage identity against the
+controller-authenticated archive chain, then derives exact retained bytes with
+shipping sanitization. Ordinary native and branch wrappers still require exact
+archived originals; sanitization is not a general lineage alternative.
+
+New committed archives use `continuity-e2-committed-checkpoint-v2` and lineage
+reference version 3, including publication provenance derived at checkpoint
+validation. Legacy v1 archives/version-2 references remain readable. A verified
+retained predecessor is bound to its operation, payload hold and assembly kind;
+every non-opaque predecessor frame must match that retained text, even when an
+archive original would otherwise match. A prefix-only split must contain exactly
+the retained history, split separator, generated prefix and file suffix. Refused candidates never become
+lineage, and refusal snapshots include both admission kinds.
+
+Two additional **local faux-only, key-blind** sizing alternatives use deterministic
+fictional historical blocks, real publication/cold admission/reopen, and shipping
+summary preparation:
+
+```bash
+node scripts/continuity-e2.mjs size --source "$PR_B_OUTPUT" \
+  --protocol "$E2_PROTOCOL" --output "$NEW_PRIVATE_EXACT_OUTPUT" \
+  --summary protected-exact
+node scripts/continuity-e2.mjs size --source "$PR_B_OUTPUT" \
+  --protocol "$E2_PROTOCOL" --output "$NEW_PRIVATE_REFUSAL_OUTPUT" \
+  --summary protected-refusal
+```
+
+`protected-exact` preserves literal framing and repeated blocks.
+`protected-refusal` drops one block, proves noncommit and unchanged-refusal
+suppression, then performs growth-qualified exact work. Neither raises shipping
+retry limits. Each covers quotation and carry, fitted and destination-fallback
+controls for both catalog models. The quotation fallback control uses a smaller
+32k destination; it does not alter replay configuration or product limits. All
+requests are built in full and measured, not estimated by adding a frame size.
+The ordinary replay supplies probe/continuation sizes and counts; the independent
+controls supply additional summary size/count alternatives, not paid phases.
+
+Fresh continuity reports for all four alternatives use `continuity-e2-sizing-v3`;
+protected controls retain contract `continuity-e2-protected-sizing-v1`. Each
+report binds source/protocol/soul digests and exact source-head/code/build-output/
+Node identity, captured before estimator/product module loading and checked again
+after measurement. A changed identity refuses the run. Dirty-tree reports and
+runs with injected product modules support local measurement only; they cannot
+qualify a registration. Legacy v1/v2 reports remain readable for offline
+estimation, but cannot participate in fresh qualification. New continuity
+qualification requires matching clean identities on all four replay alternatives.
+Their per-role/checkpoint counts and largest
+observed full sizes are unioned by maximum, never summed as four paid runs.
+Four replay records plus the four existing proof records retain the eight-file
+limit. Baseline remains short/max only. No sizing record authorizes a paid run;
+refresh clean-head sizing/build bindings before a new registration, with no
+in-flight migration to these contracts.
+
+Controller archive/journal scans and full request serialization are included in
+`node --expose-gc scripts/continuity-relevance-scan.mjs`, retaining the accepted
+5 s / +100 MiB heap / +128 MiB RSS envelope. Reads remain bounded to 4096 archive
+links, 8192 journal names and 128 MiB total scoped native bytes per scan, including
+start/refusal snapshots. Each bounded read receives only the remaining aggregate
+allowance. Directory membership and file identities must remain stable across
+discovery/read; additions, replacements and symlink aliases fail closed.
+
 ### Content-free sizing and deterministic scoring
 
-Private `sizing.json` has schema `continuity-e2-sizing-v1`, source/protocol/soul
+Private `sizing.json` uses schema `continuity-e2-sizing-v3` for fresh continuity
+sizing (`continuity-e2-sizing-v1` for baseline), source/protocol/soul
 digests, the faux scenario and per-branch registered models/limits, trigger
 positions, durable compaction counts, summary-request multiplicity and prepared
 summary input sizes. Each checkpoint includes snapshot digest/file count,

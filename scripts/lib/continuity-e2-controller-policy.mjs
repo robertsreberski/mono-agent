@@ -26,6 +26,22 @@ export function e2PhaseAssignment(a, state) {
   need([E2_FAUX_CONTROLLER, E2_REAL_CONTROLLER].includes(state.schema) && a.pilot.registration.code.path === ROOT
     && same(state.schedule[a.index], a.slot) && state.slots[a.index]?.slotId === a.slotId && !state.slots[a.index].preparation, "e2_preparation_invalid");
 }
+const summaryPolicies = new Map();
+// Only trusted setup calls this; it is not a child/IPC/configuration surface.
+export async function attachE2ProtectedControllerPolicy(pilot, models) {
+  const binding = await (await import("./continuity-e2-summary-plan.mjs")).e2ProtectedSummaryPolicies(models), key = digest(pilot);
+  need(!summaryPolicies.has(key) || digest(summaryPolicies.get(key)) === digest(binding), "e2_summary_receipt_invalid");
+  summaryPolicies.set(key, binding);
+}
+export function e2ControllerSummaryState(pilot) {
+  const binding = summaryPolicies.get(digest(pilot)); need(binding, "e2_summary_receipt_invalid");
+  return { summaryPolicies: structuredClone(binding) };
+}
+async function prepareSummaryPolicies(pilot) {
+  const key = digest(pilot);
+  if (!summaryPolicies.has(key)) summaryPolicies.set(key, await (await import("./continuity-e2-summary-plan.mjs")).e2DefaultSummaryPolicies(pilot));
+  while (summaryPolicies.size > 16) summaryPolicies.delete(summaryPolicies.keys().next().value);
+}
 export async function prepareE2Controller(options) {
   const { pilot, authorization, outputRoot } = options;
   if (options.real !== false) {
@@ -39,6 +55,7 @@ export async function prepareE2Controller(options) {
     need(auth.bindsRegistration(handle, pilot), "e2_authorization_binding_mismatch");
     const { externalDirectory } = await import("./continuity-holdout-files.mjs");
     need(await externalDirectory(outputRoot) === outputRoot, "e2_unsafe_authorization_file");
+    await prepareSummaryPolicies(pilot);
     return { pilot, authorization, outputRoot, real: true, authorizationHandle: handle, schedule: pilot.registration.schedule };
   }
   need(Object.keys(options).sort().join() === "authorization,outputRoot,pilot,real" && pilot?.schema === E2_REGISTRATION_SCHEMA
@@ -57,6 +74,7 @@ export async function prepareE2Controller(options) {
       && s.budgets.every(b => Number.isSafeInteger(b?.maxRequests) && b.maxRequests > 0 && b.maxRequests <= E2_ARTIFACT_LIMITS.requests))
     && new Set(schedule.map(s => s.slotId)).size === schedule.length, "e2_registration_invalid");
   need(await externalDirectory(outputRoot) === outputRoot);
+  await prepareSummaryPolicies(pilot);
   return { pilot, authorization, outputRoot, real: false, authorizationHandle: null, schedule };
 }
 export async function e2ControllerBindings() {
