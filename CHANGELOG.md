@@ -22,6 +22,11 @@
   framework environment names outside each credential’s own default to prevent
   collisions with operational settings.
 
+- Authenticate retained predecessors at the E2 controller's native send gate and
+  bind split-summary reuse to the verified operation and request. Require fresh
+  protected exact/refusal sizing alongside short/max alternatives for continuity
+  qualification, without adding paid runs or changing retry limits.
+
 - Keep whole retained predecessors when removing only the optional protection
   frame makes their summary request fit destination headroom.
 

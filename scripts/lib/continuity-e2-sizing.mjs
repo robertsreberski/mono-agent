@@ -1,4 +1,5 @@
 // Offline sizing normalization. No authorization/credential/registry imports or access.
+import { E2_PROTECTED_SIZING, E2_REPLAY_SCENARIOS } from "./continuity-e2-protected.mjs";
 import { PROTOCOL_SCHEMA, protocolDigest, assertE2CheckpointOrder, assertE2ProbeLookupRounds, SOL, LUNA, e2ReplayArm } from "./continuity-e2-protocol.mjs";
 import { requireE2PaidRole } from "./continuity-e2-roles.mjs";
 import { E2_RETRY_POLICY } from "./continuity-e2-retry.mjs";
@@ -8,6 +9,59 @@ export const E2_MAX_SIZING_RECORDS = E2_INPUT_LIMITS.sizingFiles;
 const need = ok => { if (!ok) throw Object.assign(Error("E2_ESTIMATE_INVALID"), { code: "E2_ESTIMATE_INVALID" }); };
 const ordinal = n => Number.isSafeInteger(n) && n >= 0;
 const hash = s => typeof s === "string" && /^[a-f0-9]{64}$/u.test(s);
+export const isE2ReplaySizing = record => ["continuity-e2-sizing-v1", "continuity-e2-sizing-v2"].includes(record?.schema);
+function protectedControls(sizing) {
+  const p = sizing.protectedSizing;
+  need(sizing.schema === "continuity-e2-sizing-v2" && ["protected-exact", "protected-refusal"].includes(sizing.summary)
+    && p?.contract === E2_PROTECTED_SIZING && typeof p.identity?.sourceHead === "string" && /^[a-f0-9]{40}$/u.test(p.identity.sourceHead)
+    && typeof p.identity.sourceDirty === "boolean" && hash(p.identity.codeSha256) && hash(p.identity.buildOutputSha256)
+    && typeof p.identity.node === "string" && Array.isArray(p.controls) && p.controls.length === 8);
+  const seen = new Set();
+  for (const c of p.controls) {
+    const key = `${c.model}:${c.carrier}:${c.fallback}`, refused = sizing.summary === "protected-refusal" && !c.fallback;
+    need([SOL, LUNA].includes(c.model) && ["quotation", "carry"].includes(c.carrier) && typeof c.fallback === "boolean" && !seen.has(key)); seen.add(key);
+    need(c.admissionKind === (c.carrier === "quotation" ? "retained_summary_admitted" : "reseed_predecessor_admitted")
+      && ordinal(c.retainedBytes) && c.retainedBytes > 0 && c.retainedBytes <= 1024 * 1024 && c.committed === true
+      && c.noncommitObserved === refused && c.unchangedRefusalSuppressed === refused && c.growthQualified === refused
+      && Array.isArray(c.requests) && c.requests.length > 0 && c.requests.length <= 6
+      && c.requests.every(r => r.model === c.model && [null, "summary"].includes(r.paidRole))
+      && c.requests.filter(r => r.paidRole === "summary").length === (refused ? 2 : 1));
+    for (const row of c.requests) sizingRow(row, 0);
+  }
+  return p.controls;
+}
+// Legacy estimates remain readable, but a fresh continuity qualification needs
+// all four alternatives, including real protected publication/admission controls.
+export function requireProtectedE2Sizing(records, registration) {
+  const replay = records.filter(isE2ReplaySizing);
+  if (!replay.length) return;
+  need(E2_REPLAY_SCENARIOS.every(s => replay.some(r => r.summary === s)));
+  for (const record of replay.filter(r => r.summary.startsWith("protected-"))) {
+    protectedControls(record);
+    if (registration) {
+      const i = record.protectedSizing.identity;
+      need(!i.sourceDirty && i.sourceHead === registration.code.revision && i.codeSha256 === registration.code.sha256
+        && i.buildOutputSha256 === registration.build.outputSha256 && i.node === registration.build.node);
+    }
+  }
+}
+// Fund the maximum counts at the largest full observed size, never the sum of
+// independent control runs. Same algebra as the outer four-scenario union.
+function largestUnion(alternatives) {
+  const bound = new Map();
+  for (const rows of alternatives) {
+    const groups = new Map();
+    for (const row of rows) {
+      const key = `${row.checkpoint}:${row.paidRole}:${row.model}`;
+      if (!groups.has(key)) groups.set(key, []); groups.get(key).push(row);
+    }
+    for (const [key, group] of groups) {
+      const prior = bound.get(key), largest = group.reduce((a, b) => a.size.maximum >= b.size.maximum ? a : b);
+      bound.set(key, { count: Math.max(prior?.count ?? 0, group.length), row: prior?.row.size.maximum > largest.size.maximum ? prior.row : largest });
+    }
+  }
+  return [...bound.values()].flatMap(({ count, row }) => Array.from({ length: count }, () => row));
+}
 // This is a metadata-only estimator check, not source/evidence validation or spending authority.
 export function validateE2EstimateProtocol(protocol) {
   assertE2ProbeLookupRounds(protocol?.probeLookupRounds);
@@ -32,8 +86,9 @@ export function normalizeE2Sizing(protocol, sizing, checkpointOffset = 0, replay
   need(e2ReplayArm(sizing?.replayArm) === e2ReplayArm(replayArm) && (!baseline || sizing?.schema === "continuity-e2-sizing-v1" && sizing.qualification === false));
   validateE2EstimateProtocol(protocol); need(ordinal(checkpointOffset) && sizing?.semanticQualification === false && sizing.usage === "estimated-not-measured");
   const requests = [];
-  if (sizing.schema === "continuity-e2-sizing-v1") {
-    need(sizing.protocolDigest === protocolDigest(protocol) && hash(sizing.sourceDigest) && ["faux-short", "faux-max"].includes(sizing.summary)
+  if (isE2ReplaySizing(sizing)) {
+    need(sizing.protocolDigest === protocolDigest(protocol) && hash(sizing.sourceDigest) && E2_REPLAY_SCENARIOS.includes(sizing.summary)
+      && (sizing.schema === "continuity-e2-sizing-v2" || ["faux-short", "faux-max"].includes(sizing.summary))
       && Array.isArray(sizing.branches) && sizing.branches.length === protocol.branches.length);
     let checkpoint = checkpointOffset;
     for (const [index, branch] of sizing.branches.entries()) {
@@ -51,6 +106,15 @@ export function normalizeE2Sizing(protocol, sizing, checkpointOffset = 0, replay
         need(requests.filter(row => row.checkpoint === checkpoint + c && row.paidRole === "probe").length === 2);
       checkpoint += registered.checkpoints.length;
     }
+    if (sizing.schema === "continuity-e2-sizing-v2") {
+      const controls = protectedControls(sizing), alternatives = [requests];
+      for (const c of controls) {
+        const rows = requests.filter(r => r.paidRole !== "summary");
+        for (let i = checkpointOffset; i < checkpoint; i++) rows.push(...c.requests.filter(row => row.paidRole === "summary").map(row => sizingRow(row, i)));
+        alternatives.push(rows);
+      }
+      return { kind: "replay", scenario: sizing.summary, requests: largestUnion(alternatives), checkpoints: checkpoint - checkpointOffset };
+    }
     return { kind: "replay", scenario: sizing.summary, requests, checkpoints: checkpoint - checkpointOffset };
   }
   need(sizing.schema === "continuity-e2-proof-sizing-v1" && sizing.mode === "faux" && ["switch", "cancel", "idle", "pressure"].includes(sizing.arm)
@@ -67,7 +131,7 @@ export function estimateE2SizingSet({ protocol, roles, records, catalog, probeCo
   validateE2EstimateProtocol(protocol); need(Array.isArray(records) && records.length > 0 && records.length <= E2_MAX_SIZING_RECORDS);
   const replay = [], proofs = [], arms = new Set(), scenarios = new Set(); let sourceDigest;
   const replayCheckpoints = protocol.branches.reduce((n, b) => n + b.checkpoints.length, 0);
-  const hasReplay = records.some(r => r?.schema === "continuity-e2-sizing-v1");
+  const hasReplay = records.some(isE2ReplaySizing);
   need(Array.isArray(probeCounts));
   const counts = new Map();
   for (const c of probeCounts) { need(ordinal(c?.checkpoint) && c.checkpoint < replayCheckpoints && ordinal(c.questions) && c.questions <= 48 && !counts.has(c.checkpoint)); counts.set(c.checkpoint, c.questions); }
@@ -75,7 +139,7 @@ export function estimateE2SizingSet({ protocol, roles, records, catalog, probeCo
   const questionCount = [...counts.values()].reduce((n, q) => n + q, 0); need(questionCount <= 48);
   let offset = hasReplay ? replayCheckpoints : 0;
   for (const record of records) {
-    const normalized = normalizeE2Sizing(protocol, record, record.schema === "continuity-e2-sizing-v1" ? 0 : offset, replayArm);
+    const normalized = normalizeE2Sizing(protocol, record, isE2ReplaySizing(record) ? 0 : offset, replayArm);
     if (normalized.kind === "replay") {
       need(!scenarios.has(normalized.scenario) && (sourceDigest === undefined || sourceDigest === record.sourceDigest));
       sourceDigest = record.sourceDigest; scenarios.add(normalized.scenario);
@@ -84,7 +148,7 @@ export function estimateE2SizingSet({ protocol, roles, records, catalog, probeCo
       replay.push(normalized);
     } else { need(!arms.has(normalized.arm)); arms.add(normalized.arm); for (const request of normalized.requests) proofs.push(request); offset += normalized.checkpoints; }
   }
-  // Short/max faux summaries are alternatives, not two paid summary draws. Proof variants are planned distinct runs.
+  // All four replay summaries are alternatives, not extra paid summary draws. Proof variants are planned distinct runs.
   const alternatives = replay.length ? replay : [{ scenario: "proof-only", requests: [] }];
   const estimates = alternatives.map(r => ({ scenario: r.scenario, ...estimateE2Reservations({ roles, requests: [...r.requests, ...proofs], catalog }) }));
   // Registration funds the union of per-role/checkpoint maximum budgets, not a sum

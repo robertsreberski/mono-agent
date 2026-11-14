@@ -1,3 +1,4 @@
+import { E2_REPLAY_SCENARIOS, protectedE2Reply } from "./continuity-e2-protected.mjs";
 import { isE2ProtectionRefusal } from "./continuity-e2-compaction.mjs";
 import { assertE2BaselineRequest } from "./continuity-e2-lineage.mjs";
 // The only inference boundary in C1 is Pi's in-process faux provider.
@@ -63,10 +64,12 @@ export function createE2Models({ pi, estimators, models, limits, summary = "faux
   if (probeLookupRounds !== undefined) assertE2ProbeLookupRounds(probeLookupRounds);
   if (summary === "real") assertE2PhaseAdapter(paidAdapter);
   else if (paidAdapter !== undefined) fail("E2_SUMMARY_ROUTE_INVALID");
-  if (!["faux-short", "faux-max", "faux-faithful", "real"].includes(summary)) fail("E2_SUMMARY_ROUTE_INVALID");
-  const baseline = e2ReplayArm(replayArm) === "baseline";
+  if (![...E2_REPLAY_SCENARIOS, "faux-faithful", "real"].includes(summary)) fail("E2_SUMMARY_ROUTE_INVALID");
+  const baseline = e2ReplayArm(replayArm) === "baseline", protectedMode = summary.startsWith("protected-");
+  if (baseline && protectedMode) fail("E2_SUMMARY_ROUTE_INVALID");
+  let protectedRefused = false;
   const registered = new Set(models.map(m => m.model)), faux = new Map(), lifecycle = new Map();
-  const report = { sourceRequests: 0, probeRequests: 0, summaryRequests: [], compactions: [], ...(summary === "real" ? { compactionRefusals: [] } : {}), requestSizing: [] };
+  const report = { sourceRequests: 0, probeRequests: 0, summaryRequests: [], compactions: [], ...(summary === "real" || protectedMode ? { compactionRefusals: [] } : {}), requestSizing: [] };
   let position = null, sticky = null, positionRequests = 0;
   const refuse = code => { sticky ??= code; fail(sticky); };
   const check = () => { if (sticky) fail(sticky); };
@@ -102,7 +105,7 @@ export function createE2Models({ pi, estimators, models, limits, summary = "faux
         const receipt = lifecycle.get(event.operationId);
         if (!receipt) refuse("E2_COMPACTION_LIFECYCLE_INVALID");
         lifecycle.delete(event.operationId);
-        const rejected = summary === "real" && isE2ProtectionRefusal(event);
+        const rejected = (summary === "real" || protectedMode) && isE2ProtectionRefusal(event);
         if (event.status !== "succeeded" && !rejected) refuse("E2_COMPACTION_NOT_DURABLE");
         if (!receipt.requests) refuse("E2_COMPACTION_LIFECYCLE_INVALID");
         (rejected ? report.compactionRefusals : report.compactions).push({ turn: receipt.turn, message: receipt.message, trigger: receipt.trigger, requests: receipt.requests, durable: !rejected, ...(rejected ? { rejected: true, reason: event.reason } : {}),
@@ -170,7 +173,10 @@ export function createE2Models({ pi, estimators, models, limits, summary = "faux
           const bound = backend(model);
           // Deliberately adversarial to initial-absence proofs: faithfully preserve
           // both target literals whenever the actual summary input contains them.
-          const text = summary === "faux-faithful" ? ["Faithful fictional summary.", ...[FACT, NEXT_ACTION].filter(value => JSON.stringify(context).includes(value))].join("\n") : summary === "faux-short" ? "Faux sizing summary; not a factual answer." : "s".repeat(options.maxTokens * 4);
+          const hasProtection = JSON.stringify(context).includes("<protected-historical-tuples>");
+          const drop = summary === "protected-refusal" && hasProtection && !protectedRefused;
+          if (drop) protectedRefused = true;
+          const text = protectedMode ? protectedE2Reply(context, drop) : summary === "faux-faithful" ? ["Faithful fictional summary.", ...[FACT, NEXT_ACTION].filter(value => JSON.stringify(context).includes(value))].join("\n") : summary === "faux-short" ? "Faux sizing summary; not a factual answer." : "s".repeat(options.maxTokens * 4);
           bound.provider.setResponses([() => estimatedReply(pi, text, context, estimators)]);
           return bound.collection.completeSimple(bound.model, context, options);
         };

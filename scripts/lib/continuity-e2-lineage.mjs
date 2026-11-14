@@ -5,10 +5,11 @@ import { join } from "node:path";
 import { mkdir } from "node:fs/promises";
 import { digest } from "./continuity-recorded-schema.mjs";
 import { digest as canonicalDigest } from "./continuity-dataset.mjs";
+import { readE2Journal, findE2ActiveCompaction, e2ActiveBranch } from "./continuity-e2-journals.mjs";
 import { verifyE2SummaryResult, e2SummaryResultPath } from "./continuity-e2-summary-receipts.mjs";
 const need = ok => { if (!ok) throw Object.assign(Error("e2_summary_receipt_invalid"), { code: "e2_summary_receipt_invalid" }); };
 const token = s => typeof s === "string" && /^[A-Za-z0-9_-]{1,128}$/u.test(s);
-const ARCHIVE_SCHEMA = "continuity-e2-committed-checkpoint-v1", ARCHIVE_BYTES = 8 * 1024 * 1024;
+const ARCHIVE_SCHEMA = "continuity-e2-committed-checkpoint-v2", LEGACY_ARCHIVE_SCHEMA = "continuity-e2-committed-checkpoint-v1", ARCHIVE_BYTES = 8 * 1024 * 1024;
 const hash = s => typeof s === "string" && /^[a-f0-9]{64}$/u.test(s);
 const split = "\n\n---\n\n**Turn Context (split turn):**\n\n";
 export const E2_SUMMARY_PREFIX = "The conversation history before this point was compacted into the following summary:\n\n<summary>\n";
@@ -46,18 +47,20 @@ export async function readE2Checkpoint(root, planned, reference, readArtifact) {
 async function readCheckpoint(root, planned, reference, readArtifact) {
   need(reference && token(reference.journalId) && token(reference.checkpointId));
   const work = e2PhaseWork(root, planned, reference.branch);
-  const bytes = await readArtifact(join(work, "sessions", "journals", `${reference.journalId}.jsonl`), "e2_summary_receipt_invalid", 128 * 1024 * 1024);
-  const lines = bytes.toString("utf8").split("\n"); need(lines.pop() === "" && lines.length > 1 && lines.length <= 1000000);
-  const header = JSON.parse(lines.shift());
-  const { JournalValidator, validateJournalHeader } = await import(new URL("../../packages/turn/dist/engine/journal-schema.js", import.meta.url).href);
-  validateJournalHeader(header); need(header.journalId === reference.journalId && header.cwd === work);
-  const validator = new JournalValidator(), records = lines.map(line => JSON.parse(line));
-  for (const record of records) validator.apply(record);
+  const { header, records, validator } = await readE2Journal(work, reference.journalId, readArtifact);
   const record = records.find(r => r.id === reference.checkpointId), value = record?.payload?.compaction;
   need(record?.kind === "compaction" && (records.filter(r => r.kind === "compaction").at(-1)?.id === record.id) && value?.checkpoint?.summaryMessage?.summary === value.summary && typeof value.summary === "string"
     && value.summary.isWellFormed() && Buffer.byteLength(value.summary) <= 4 * 1024 * 1024 && value.summary.trim()
     && records.some(r => r.kind === "operation_end" && r.operationId === record.operationId && r.payload.status === "completed"));
-  return { summary: value.summary, details: value.details, model: value.checkpoint.model, seq: record.seq, operationId: record.operationId };
+  const { evidenceDigest } = await import(new URL("../../packages/turn/dist/engine/journal-digest.js", import.meta.url).href);
+  const operation = validator.operations.get(record.operationId), binding = validator.turns.get(record.turnId)?.start.payload.binding;
+  const owner = binding ?? records.filter(r => r.kind === "owner_binding" && r.seq < record.seq).at(-1)?.payload;
+  const handle = binding ?? records.filter(r => r.kind === "handle_binding" && r.seq < record.seq && r.payload.handleId === header.id).at(-1)?.payload;
+  const provenance = owner?.kind === "host" && handle && ["continuity:manual", "continuity:pre-turn", "continuity:reactive", "continuity:mid-run"].includes(operation?.start.payload.cause) ? {
+    version: 1, ownerKey: owner.ownerKey, historyBucket: owner.historyBucket, handleId: header.id,
+    sourceDigest: evidenceDigest({ journalId: header.journalId, coverage: value.checkpoint.coverage }),
+  } : null;
+  return { summary: value.summary, details: value.details, model: value.checkpoint.model, seq: record.seq, operationId: record.operationId, provenance };
 }
 // The child may discover a candidate, but only the controller calls bind/write.
 export async function validateE2Checkpoint({ root, state, planned, slot, summaries, reference, readPrivate, readArtifact }) {
@@ -72,13 +75,34 @@ export async function validateE2Checkpoint({ root, state, planned, slot, summari
     const result = await readPrivate(e2SummaryResultPath(root, slot.slotId, hold.round));
     need(`${checkpoint.model?.provider}:${checkpoint.model?.id}` === hold.model); texts.push(responseText(result.message));
   }
+  const retainedHolds = summaries.filter(h => h.retainedPredecessor);
+  need(retainedHolds.every(h => h.retainedPredecessor.operationDigest === digest(checkpoint.operationId)
+    && h.retainedPredecessor.payloadDigest === h.payloadDigest && h.retainedPredecessor.journalId === reference.journalId));
   const suffix = fileSuffix(checkpoint.details);
   let matches = (texts.length === 2 ? texts.join(split) : texts[0]) + suffix === checkpoint.summary;
   if (texts.length === 1) {
     // Restored snapshot probes can restart from an older registered checkpoint;
     // a cold epoch can have no native prior history at all. Neither permits an
     // unverified prefix: all alternatives come from the validated archive chain.
-    matches ||= "No prior history." + split + texts[0] + suffix === checkpoint.summary;
+    if (!retainedHolds.length) matches ||= "No prior history." + split + texts[0] + suffix === checkpoint.summary;
+    if (retainedHolds.length) {
+      const binding = retainedHolds[0].retainedPredecessor;
+      need(retainedHolds.every(h => h.retainedPredecessor.textSha256 === binding.textSha256));
+      let source = prior;
+      while (source && !matches) {
+        const archive = await readE2Archive(root, state, planned.index, scope, source, readArtifact);
+        if (source.archiveSha256 === binding.archiveSha256) {
+          const { retainContinuityText } = await import(new URL("../../packages/conversation/dist/tool-history/continuity-payload.js", import.meta.url).href);
+          const expected = retainContinuityText(archive.summary);
+          need(!expected.truncated && expected.sha256 === binding.textSha256);
+          const history = expected.text.replace(/(?:\n\n<(read-files|modified-files)>\n[\s\S]*?\n<\/\1>)+$/u, "");
+          matches = history + split + texts[0] + suffix === checkpoint.summary;
+        }
+        source = archive.previous;
+      }
+      // A retained history request may not substitute an original archive prefix.
+      need(matches);
+    }
     let predecessor = prior;
     while (predecessor && !matches) {
       const previous = await readE2Archive(root, state, planned.index, scope, predecessor, readArtifact);
@@ -87,7 +111,7 @@ export async function validateE2Checkpoint({ root, state, planned, slot, summari
     }
   }
   need(matches);
-  const lineage = { version: 2, scope, ...(planned.kind === "replay" ? { branch: scope } : {}), phase: planned.index, journalId: reference.journalId, checkpointId: reference.checkpointId,
+  const lineage = { version: 3, scope, ...(planned.kind === "replay" ? { branch: scope } : {}), phase: planned.index, journalId: reference.journalId, checkpointId: reference.checkpointId,
     textSha256: digest(checkpoint.summary), generated: summaries.map(h => ({ round: h.round, sha256: h.summaryReceipt.sha256 })) };
   return { schema: ARCHIVE_SCHEMA, lineage, slotId: slot.slotId, ...checkpoint, previous: slot.lineages?.[scope] ?? null };
 }
@@ -109,7 +133,7 @@ export async function bindE2Checkpoint(options) {
 // Scope and the one registered seed -> resume edge are the only authority paths.
 function assertReference(state, index, scope, reference) {
   const planned = state.schedule[index], owner = state.schedule[reference?.phase];
-  need(reference?.version === 2 && reference.scope === scope && hash(reference.archiveSha256) && hash(reference.textSha256)
+  need([2, 3].includes(reference?.version) && reference.scope === scope && hash(reference.archiveSha256) && hash(reference.textSha256)
     && token(reference.journalId) && token(reference.checkpointId) && Number.isSafeInteger(reference.phase) && reference.phase >= 0 && reference.phase <= index
     && Array.isArray(reference.generated) && reference.generated.length > 0 && reference.generated.length <= 2
     && reference.generated.every(g => Number.isSafeInteger(g.round) && g.round > 0 && hash(g.sha256)));
@@ -127,7 +151,7 @@ export async function readE2Archive(root, state, index, scope, reference, readAr
     const bytes = await readArtifact(e2ArchivePath(root, reference.archiveSha256), "e2_summary_receipt_invalid", ARCHIVE_BYTES);
     need(bytes.length <= ARCHIVE_BYTES && digest(bytes) === reference.archiveSha256);
     const artifact = JSON.parse(bytes), { archiveSha256: _, ...lineage } = reference;
-    need(artifact.schema === ARCHIVE_SCHEMA && canonicalDigest(artifact.lineage) === canonicalDigest(lineage)
+    need((reference.version === 3 ? artifact.schema === ARCHIVE_SCHEMA : artifact.schema === LEGACY_ARCHIVE_SCHEMA) && canonicalDigest(artifact.lineage) === canonicalDigest(lineage)
       && artifact.slotId === state.slots[reference.phase]?.slotId && typeof artifact.summary === "string" && artifact.summary.isWellFormed()
       && Buffer.byteLength(artifact.summary) <= 4 * 1024 * 1024 && digest(artifact.summary) === reference.textSha256
       && token(artifact.operationId) && Number.isSafeInteger(artifact.seq) && artifact.seq >= 0 && artifact.model?.provider && artifact.model?.id);
@@ -135,6 +159,44 @@ export async function readE2Archive(root, state, index, scope, reference, readAr
     need(artifact.previous === null || artifact.previous?.scope === scope);
     return artifact;
   } catch { need(false); }
+}
+// No receipt text/hash grants authority: resolve its source against the already
+// controller-authenticated archive chain, then run shipping retention ourselves.
+async function authenticateRetainedPredecessor(root, state, index, scope, hold, readArtifact) {
+  const planned = state.schedule[index], work = e2PhaseWork(root, planned, scope);
+  const { header, validator, records, operation } = await findE2ActiveCompaction(work, hold.operationDigest, readArtifact);
+  const admission = validator.retainedSummaryAdmission, p = admission?.payload;
+  if (!admission) return undefined;
+  need(admission.seq < operation.start.seq && operation.start.payload.baselineTipId === validator.tip);
+  const { deriveProviderSessionId } = await import(new URL("../../packages/conversation/dist/history/canonical/identity.js", import.meta.url).href);
+  need(p.destination.journalId === header.journalId && p.destination.handleId === header.id
+    && deriveProviderSessionId(p.destination.conversationId, p.destination.epoch) === header.id
+    && validator.owner.kind === "host" && validator.owner.ownerKey === p.destination.logicalConversationId
+    && validator.owner.historyBucket === p.destination.conversationId && validator.handles.has(header.id)
+    && validator.handleBindings.get(header.id)?.authoritative === true);
+  const branch = e2ActiveBranch(validator);
+  need(branch.some(e => e.id === p.seed.entryId) && !branch.some(e => e.kind === "compaction"));
+  const seed = records.find(r => r.id === p.seed.entryId);
+  const { assertRetainedSummarySeed } = await import(new URL("../../packages/turn/dist/engine/retained-summary.js", import.meta.url).href);
+  let source = hold.lineage, seen = new Set();
+  while (source) {
+    need(!seen.has(source.archiveSha256) && seen.size < 4096); seen.add(source.archiveSha256);
+    const archive = await readE2Archive(root, state, index, scope, source, readArtifact), a = archive.provenance;
+    if (source.journalId === p.binding.publication.journalId && archive.operationId === p.binding.publication.operationId) {
+      need(source.version === 3 && a?.version === 1 && a.ownerKey === p.binding.logicalConversationId && a.historyBucket === p.binding.conversationId
+        && a.sourceDigest === p.binding.publication.sourceDigest && deriveProviderSessionId(a.historyBucket, p.binding.sourceEpoch) === a.handleId);
+      const { continuityRecordId } = await import(new URL("../../packages/conversation/dist/tool-history/continuity-storage.js", import.meta.url).href);
+      need(p.binding.recordId === continuityRecordId(a.historyBucket, `summary:${source.journalId}:${archive.operationId}`));
+      const { retainContinuityText } = await import(new URL("../../packages/conversation/dist/tool-history/continuity-payload.js", import.meta.url).href);
+      const retained = retainContinuityText(archive.summary);
+      need(!retained.truncated && retained.sha256 === p.binding.sha256 && Buffer.byteLength(retained.text) === p.binding.retainedBytes);
+      assertRetainedSummarySeed(p, seed?.payload.message, retained.text, admission.kind === "reseed_predecessor_admitted");
+      return { version: 1, operationDigest: hold.operationDigest, payloadDigest: hold.payloadDigest, journalId: header.journalId,
+        admissionId: admission.id, archiveSha256: source.archiveSha256, textSha256: retained.sha256, text: retained.text };
+    }
+    source = archive.previous;
+  }
+  need(false);
 }
 // Parse complete shipping representations. A malformed *claim* refuses instead
 // of silently turning into an apparent absence. Ordinary quoted conversation is
@@ -165,7 +227,7 @@ export function e2BodySummaryRepresentations(body) {
             while (offset >= 0) { found.push({ kind, text: "", source: text, offset, forbidden: true }); offset = text.indexOf(`[${role}]: ${prefix}`, offset + 1); }
           }
         }
-        const frames = [["native", "<previous-summary", "<previous-summary>\n", "\n</previous-summary>"],
+        const frames = [["predecessor", "<previous-summary", "<previous-summary>\n", "\n</previous-summary>"],
           ...text.startsWith("<conversation>\n") ? [["native", `[User]: ${E2_SUMMARY_PREFIX}`, `[User]: ${E2_SUMMARY_PREFIX}`, E2_SUMMARY_SUFFIX],
             ["branch", `[User]: ${E2_BRANCH_PREFIX}`, `[User]: ${E2_BRANCH_PREFIX}`, "</summary>"]] : []];
         for (const [kind, marker, prefix, suffix] of frames) {
@@ -230,9 +292,10 @@ export async function verifyE2NativeLineage(bytes, hold, state, assignment, read
       // This is the shipping retention/redaction function, not an approximation
       // or an allowlist of hashes supplied by the child/continuity sidecar.
       const { retainContinuityText } = await import(new URL("../../packages/conversation/dist/tool-history/continuity-payload.js", import.meta.url).href);
-      const retained = retainContinuityText(artifact.summary); packs.push(retained);
+      const retained = found.some(r => r.kind === "pack") ? retainContinuityText(artifact.summary) : undefined;
+      if (retained) packs.push(retained);
       for (const [i, representation] of found.entries()) if (!representation.serialized && !representation.forbidden && (representation.kind === "pack"
-        ? !retained.truncated && representation.text === retained.text && representation.sha256 === retained.sha256
+        ? retained && !retained.truncated && representation.text === retained.text && representation.sha256 === retained.sha256
         : representation.source ? representation.source.startsWith(representation.prefix + artifact.summary + representation.suffix, representation.offset)
           : representation.text === artifact.summary)) {
           verified.add(i);
@@ -244,6 +307,38 @@ export async function verifyE2NativeLineage(bytes, hold, state, assignment, read
       if (previous && previous.phase !== reference.phase) assertRegisteredPredecessor(state, assignment.index, previous);
       reference = previous;
     }
+    // A sanitized previous-summary is authority only for this live operation and
+    // this exact payload. Ordinary native/branch wrappers never use this path.
+    const unresolved = found.filter((r, i) => r.kind === "predecessor" && !verified.has(i)
+      && !spans.some(s => s.source === r.source && s.start < r.offset && r.offset < s.end));
+    const pending = state.slots[assignment.index].compaction;
+    let retainedRequest = false;
+    if (hold.paidRole === "summary" && hash(hold.operationDigest) && pending?.nativeSnapshot?.some(s => s.retainedAdmission)) {
+      // A prefix-only split request does not contain previous-summary. Recognize
+      // the shipping prefix template only to decide whether to authenticate a
+      // possible reuse; template text itself grants no authority.
+      const { createPrefixSummaryContext } = await import(new URL("../../packages/turn/dist/engine/compaction-kit/compaction.js", import.meta.url).href);
+      const template = createPrefixSummaryContext([]).messages[0].content[0].text.split("</request-local-positions>\n\n")[1];
+      need(template);
+      retainedRequest = found.some(r => r.kind === "predecessor") || (JSON.parse(bytes).input ?? []).some(item =>
+        (typeof item.content === "string" ? [item.content] : (item.content ?? []).map(p => p.text)).some(text => typeof text === "string" && text.endsWith(template)));
+    }
+    if (unresolved.length || retainedRequest) {
+      need(hold.paidRole === "summary" && hash(hold.payloadDigest) && digest(bytes) === hold.payloadDigest);
+      need(pending?.operationDigest === hold.operationDigest && pending.checkpoint === hold.checkpoint);
+      const authenticated = await authenticateRetainedPredecessor(assignment.outputRoot, state, assignment.index, scope, hold, readArtifact);
+      need(!unresolved.length || authenticated);
+      for (const r of unresolved) {
+        need(r.source.startsWith(r.prefix + authenticated.text + r.suffix, r.offset));
+        const i = found.indexOf(r); verified.add(i);
+        spans.push({ source: r.source, start: r.offset, end: r.offset + r.prefix.length + authenticated.text.length + r.suffix.length });
+      }
+      if (authenticated) {
+        const { text: _text, ...binding } = authenticated;
+        if (hold.retainedPredecessor) need(canonicalDigest(hold.retainedPredecessor) === canonicalDigest(binding));
+        hold.retainedPredecessor = binding;
+      }
+    }
     const opaque = new Set();
     for (const [i, r] of found.entries()) if (r.source && spans.some(s => s.source === r.source && s.start < r.offset && r.offset < s.end)) { verified.add(i); opaque.add(i); }
     const expanded = new Map();
@@ -254,7 +349,7 @@ export async function verifyE2NativeLineage(bytes, hold, state, assignment, read
     }
     need(verified.size === found.length); // no-lineage baseline cannot smuggle a summary
     const claims = found.flatMap((r, i) => opaque.has(i) ? [] : expanded.get(i) ?? [r]);
-    return { native: claims.filter(r => r.kind === "native").length, branch: claims.filter(r => r.kind === "branch").length,
+    return { native: claims.filter(r => ["native", "predecessor"].includes(r.kind)).length, branch: claims.filter(r => r.kind === "branch").length,
       pack: claims.filter(r => r.kind === "pack").length, none: claims.length === 0 };
   } catch { need(false); }
 }

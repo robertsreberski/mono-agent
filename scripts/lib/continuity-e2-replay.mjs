@@ -1,3 +1,6 @@
+import { E2_PROTECTED_SIZING, rehearseE2Protected } from "./continuity-e2-protected.mjs";
+import { e2SizingIdentity } from "./continuity-e2-sizing-identity.mjs";
+import { loadE2Catalog } from "./continuity-e2-pricing.mjs";
 import { assertE2BaselineRequest } from "./continuity-e2-lineage.mjs";
 import { assertE2PhaseAdapter } from "./continuity-e2-runtime.mjs";
 // Offline configured replay, with snapshots restored at the same absolute root.
@@ -206,6 +209,8 @@ export function e2ProbeMeasurement() {
 
 /** No real routes, credential lookup overrides, or resolved-model overrides. */
 export async function runE2Sizing({ source, protocol, output, summary = "faux-short", replayArm, modules, onContext = () => {}, onDiagnostic = () => {}, paidAdapter, questions, evaluator, probeReceipts = true }) {
+  const protectedMode = summary.startsWith("protected-");
+  if (protectedMode && (paidAdapter || questions || evaluator || e2ReplayArm(replayArm) === "baseline")) fail("E2_MODELS_SEAM_REFUSED");
   const real = summary === "real", baseline = e2ReplayArm(replayArm) === "baseline";
   if (real && (modules !== undefined || !paidAdapter || !questions || !evaluator)) fail("E2_MODELS_SEAM_REFUSED");
   if (real) assertE2PhaseAdapter(paidAdapter);
@@ -215,7 +220,7 @@ export async function runE2Sizing({ source, protocol, output, summary = "faux-sh
   const estimators = await loadE2Estimators(), soul = await shippingSoul();
   modules ??= await productionModules(ROOT);
   const answers = { schema: "continuity-e2-answers-v1", answers: [] };
-  const report = { schema: real ? "continuity-e2-replay-v1" : "continuity-e2-sizing-v1", ...(baseline ? { replayArm: "baseline", qualification: false } : {}), sourceDigest: digest(JSON.stringify(source)), protocolDigest: protocolDigest(protocol), summary,
+  const report = { schema: real ? "continuity-e2-replay-v1" : protectedMode ? "continuity-e2-sizing-v2" : "continuity-e2-sizing-v1", ...(baseline ? { replayArm: "baseline", qualification: false } : {}), sourceDigest: digest(JSON.stringify(source)), protocolDigest: protocolDigest(protocol), summary,
     soul: { rawDigest: soul.rawDigest, normalizedDigest: soul.normalizedDigest }, usage: "estimated-not-measured", semanticQualification: false, branches: [] };
   await mkdir(output, { mode: 0o700 });
   // One recorder and entry cap per run, not per checkpoint/probe.
@@ -409,6 +414,18 @@ export async function runE2Sizing({ source, protocol, output, summary = "faux-sh
           representationDifferences: transport.observations.filter(o => o.representationDifference).length, unobserved: transport.served.length - observedTools.size }, placeholderCalls: dispatch.count(), steerCount, probeRequests });
         report.branches.push(branchReport);
       } finally { try { await opened?.close(); } finally { await server.close(); } }
+    }
+    if (protectedMode) {
+      const controls = [];
+      for (const catalog of await loadE2Catalog()) for (const carrier of ["quotation", "carry"]) for (const fallback of [false, true]) {
+        const model = { provider: catalog.model.split(":")[0], id: catalog.model.split(":")[1], contextWindow: catalog.contextWindow, maxTokens: catalog.maxTokens };
+        const measured = await rehearseE2Protected({ work: join(output, "protected-controls", `${model.id}-${carrier}-${fallback}`), model, carrier, fallback, refusal: summary === "protected-refusal" });
+        controls.push({ model: catalog.model, carrier, fallback, admissionKind: measured.admissionKind, retainedBytes: measured.retainedBytes,
+          noncommitObserved: measured.noncommitObserved, unchangedRefusalSuppressed: measured.unchangedRefusalSuppressed, growthQualified: measured.growthQualified, committed: measured.committed,
+          requests: [...measured.setupRequests.map(row => ({ role: "setup-scripted", paidRole: null, model: row.model, maxOutputTokens: row.maxOutputTokens, size: sizeContext(row.context, estimators) })),
+            ...measured.requests.map(row => ({ role: "summary", paidRole: "summary", model: row.model, maxOutputTokens: row.maxOutputTokens, size: sizeContext(row.context, estimators) }))] });
+      }
+      report.protectedSizing = { contract: E2_PROTECTED_SIZING, identity: await e2SizingIdentity(), controls };
     }
     await privateModes(output);
     if (!real && retrieval.progressGap()) report.progressGap = retrieval.progressGap();

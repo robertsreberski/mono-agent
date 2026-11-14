@@ -8,7 +8,7 @@ import { validateProtocol, assertE2ProbeLookupRounds, e2ReplayArm, e2ProbeReques
 import { validateE2Questions, scoreE2 } from "./continuity-e2-score.mjs";
 import { SHIPPING_SOUL_RAW, SHIPPING_SOUL_NORMALIZED, shippingSoul } from "./continuity-e2-models.mjs";
 import { loadE2Catalog } from "./continuity-e2-pricing.mjs";
-import { estimateE2SizingSet, normalizeE2Sizing } from "./continuity-e2-sizing.mjs";
+import { estimateE2SizingSet, normalizeE2Sizing, isE2ReplaySizing, requireProtectedE2Sizing } from "./continuity-e2-sizing.mjs";
 import { requireE2PaidRole } from "./continuity-e2-roles.mjs";
 import { E2_REGISTRATION_SCHEMA, E2_PLAN_SCHEMA, E2_ASSUMPTIONS, E2_DEADLINE_LIMITS, E2_PHASE_DOMAIN, E2_INPUT_LIMITS } from "./continuity-e2-policy.mjs";
 import { E2_RETRY_POLICY } from "./continuity-e2-retry.mjs";
@@ -23,7 +23,8 @@ export const E2_PROTOCOL_FILES = Object.freeze([...new Set([...LOOKUP_PILOT_PROT
   "scripts/lib/continuity-e2-routes.mjs", "scripts/lib/continuity-e2-score.mjs", "scripts/lib/continuity-e2-sizing.mjs",
   "scripts/lib/continuity-e2-tools.mjs", "scripts/lib/continuity-e2-registration.mjs", "scripts/lib/continuity-e2-authorization.mjs",
   "scripts/lib/continuity-e2-guarded-protocol.mjs", "scripts/lib/continuity-e2-lineage.mjs", "scripts/lib/continuity-e2-compaction.mjs",
-  "scripts/lib/continuity-e2-runtime.mjs",
+  "scripts/lib/continuity-e2-runtime.mjs", "scripts/lib/continuity-e2-journals.mjs",
+  "scripts/lib/continuity-e2-protected.mjs", "scripts/lib/continuity-e2-capacity.mjs", "scripts/lib/continuity-e2-sizing-identity.mjs",
   "scripts/lib/continuity-e2-paid-models.mjs",
   "scripts/lib/continuity-e2-cause.mjs", "scripts/lib/continuity-e2-retry.mjs", "scripts/lib/continuity-e2-progress.mjs", "scripts/lib/continuity-e2-probe-receipts.mjs",
   "scripts/lib/continuity-e2-phase-child.mjs",
@@ -77,9 +78,9 @@ export function e2PhaseSchedule(protocol, records, probeCounts, replayArm) {
   const baseline = e2ReplayArm(replayArm) === "baseline";
   need(!baseline || records.every(r => r.schema === "continuity-e2-sizing-v1"));
   const phases = [], replays = [], proofs = [], seen = new Set();
-  let offset = records.some(r => r.schema === "continuity-e2-sizing-v1") ? protocol.branches.reduce((n, b) => n + b.checkpoints.length, 0) : 0;
+  let offset = records.some(isE2ReplaySizing) ? protocol.branches.reduce((n, b) => n + b.checkpoints.length, 0) : 0;
   for (const record of records) {
-    const n = normalizeE2Sizing(protocol, record, record.schema === "continuity-e2-sizing-v1" ? 0 : offset, replayArm);
+    const n = normalizeE2Sizing(protocol, record, isE2ReplaySizing(record) ? 0 : offset, replayArm);
     if (n.kind === "replay") { need(!seen.has(n.scenario)); seen.add(n.scenario); replays.push(n.requests); }
     else { need(!seen.has(n.arm)); seen.add(n.arm); proofs.push({ record, normalized: n }); offset += n.checkpoints; }
   }
@@ -144,8 +145,9 @@ export async function validateE2Registration(pilot, { safeRead, safeDirectory })
     const probeCounts = e2ProbeCounts(protocol, questions, evaluator, source, replayArm); need(same(r.probeCounts, probeCounts) && same(r.toolPolicies, e2ToolPolicies(replayArm)));
     need(Array.isArray(r.sizing) && r.sizing.length > 0 && r.sizing.length <= E2_INPUT_LIMITS.sizingFiles);
     const records = []; for (const binding of r.sizing) records.push(await json(binding));
-    for (const record of records) if (record.schema === "continuity-e2-sizing-v1") need(record.sourceDigest === hash(JSON.stringify(source)) && same(record.soul, r.soul));
-    if (records.some(record => record.schema === "continuity-e2-sizing-v1")) need(questions.questions.length > 0);
+    for (const record of records) if (isE2ReplaySizing(record)) need(record.sourceDigest === hash(JSON.stringify(source)) && same(record.soul, r.soul));
+    if (records.some(isE2ReplaySizing)) need(questions.questions.length > 0);
+    if (replayArm !== "baseline") requireProtectedE2Sizing(records, r);
     const estimate = estimateE2SizingSet({ protocol, roles: r.roles, records, catalog: r.catalog, probeCounts, replayArm });
     validateE2ReplayLimits(protocol, records, replayArm);
     need(same(r.schedule, e2PhaseSchedule(protocol, records, probeCounts, replayArm)));
@@ -169,9 +171,9 @@ export async function validateE2Registration(pilot, { safeRead, safeDirectory })
 
 export function validateE2ReplayLimits(protocol, records, replayArm) {
   const requests = e2ProbeRequestCount(protocol, replayArm);
-  for (const record of records.filter(r => r.schema === "continuity-e2-sizing-v1")) {
+  for (const record of records.filter(isE2ReplaySizing)) {
     for (const [index, branch] of record.branches.entries()) {
-      const limits = protocol.branches[index].limits, rows = branch.requestSizing, compactions = branch.compactions ?? [];
+      const limits = protocol.branches[index].limits, rows = branch.requestSizing, compactions = [...(branch.compactions ?? []), ...(branch.compactionRefusals ?? [])];
       need(rows.filter(r => r.paidRole === null).length <= limits.sourceRequests);
       // A replay record sizes two complete probes per checkpoint, regardless of
       // how many real questions will be expanded later. Do not accept an R=1

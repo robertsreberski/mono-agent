@@ -1,3 +1,4 @@
+import { E2_PROTECTED_SIZING } from "../../lib/continuity-e2-protected.mjs";
 import { E2_RETRY_POLICY } from "../../lib/continuity-e2-retry.mjs";
 // Fictional source/build/account artifacts, exclusively beneath the caller's temporary root.
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -45,14 +46,36 @@ export async function e2NativeFixture(root, { arm = "pressure", capUnits = "1000
       component.sizing = await runE2Sizing({ source: trace.source, protocol: trace.protocol, output: join(root, "faux-sizing"), summary: "faux-short", onContext: () => sizingHomes.push(process.env.HOME) });
     } finally { if (previousHome === undefined) delete process.env.HOME; else process.env.HOME = previousHome; }
   }
-  const sizing = [await bind("sizing", component.sizing)], catalog = await loadE2Catalog(), soul = await shippingSoul();
+  // These are deliberately metadata-only synthetic contracts for transport tests;
+  // real protected publication/admission is exercised by protected-sizing.test.
+  const records = [component.sizing];
+  const codeSha256 = await e2CodeDigest();
+  if (replay) {
+    for (const branch of trace.protocol.branches) branch.limits.summaryRequests = 16;
+    // The protocol binding includes the larger fictional test schedule envelope.
+    const { protocolDigest } = await import("../../lib/continuity-e2-protocol.mjs");
+    component.sizing.protocolDigest = protocolDigest(trace.protocol);
+    Object.assign(protocol, await bind("protocol-current", trace.protocol));
+    records.push({ ...structuredClone(component.sizing), summary: "faux-max" });
+    const summaryRow = JSON.parse(await readFile(new URL("./continuity-e2-cap-sizing.json", import.meta.url))).sizing.variants[0].requests.find(r => r.paidRole === "summary");
+    for (const summary of ["protected-exact", "protected-refusal"]) records.push({ ...structuredClone(component.sizing), schema: "continuity-e2-sizing-v2", summary,
+      protectedSizing: { contract: E2_PROTECTED_SIZING, identity: { sourceHead: "b".repeat(40), sourceDirty: false, codeSha256, buildOutputSha256: "a".repeat(64), node: process.version },
+        controls: ["openai-codex:gpt-6.1-sol", "openai-codex:gpt-6-luna"].flatMap(model => ["quotation", "carry"].flatMap(carrier => [false, true].map(fallback => {
+          const refused = summary === "protected-refusal" && !fallback;
+          return { model, carrier, fallback, admissionKind: carrier === "quotation" ? "retained_summary_admitted" : "reseed_predecessor_admitted", retainedBytes: 100,
+            committed: true, noncommitObserved: refused, unchangedRefusalSuppressed: refused, growthQualified: refused,
+            requests: Array.from({ length: refused ? 2 : 1 }, () => { const { ordinal: _ordinal, phase: _phase, ...row } = summaryRow; return { ...row, model }; }) };
+        }))) } });
+  }
+  const sizing = []; for (const [i, record] of records.entries()) sizing.push(await bind(`sizing-${i}`, record));
+  const catalog = await loadE2Catalog(), soul = await shippingSoul();
   const probeCounts = trace.protocol.branches.flatMap(b => b.checkpoints).map((_, checkpoint) => ({ checkpoint, questions: replay && checkpoint === 0 ? 1 : 0, lookupRounds: trace.protocol.probeLookupRounds }));
-  estimateE2SizingSet({ protocol: trace.protocol, roles: component.roles, records: [component.sizing], catalog, probeCounts });
+  estimateE2SizingSet({ protocol: trace.protocol, roles: component.roles, records, catalog, probeCounts });
   const pilot = { schema: E2_REGISTRATION_SCHEMA, registration: {
-    code: { path: ROOT, revision: "b".repeat(40), sha256: await e2CodeDigest() },
+    code: { path: ROOT, revision: "b".repeat(40), sha256: codeSha256 },
     build: { policy: "fresh-clean-head-agent-app-closure-v1", sourceHead: "b".repeat(40), command: ["pnpm", "--filter", "@mono-agent/app...", "run", "build"], packages: ["packages/app", "packages/turn"], outputRoots: ["packages/app/dist", "packages/turn/dist"], outputSha256: "a".repeat(64), node: process.version },
     catalog, source, protocol, probes, keys, soul: { rawDigest: soul.rawDigest, normalizedDigest: soul.normalizedDigest }, roles: component.roles,
-    sizing, probeCounts, schedule: e2PhaseSchedule(trace.protocol, [component.sizing], probeCounts), toolPolicies: E2_TOOL_POLICIES,
+    sizing, probeCounts, schedule: e2PhaseSchedule(trace.protocol, records, probeCounts), toolPolicies: E2_TOOL_POLICIES,
   }, descriptor: { schema: E2_PLAN_SCHEMA, retryPolicy: E2_RETRY_POLICY, assumptions: E2_ASSUMPTIONS, capUnits, deadlines } };
   const outputRoot = join(root, "output"); await mkdir(outputRoot, { mode: 0o700 });
   const credentialPath = join(root, "credential.json"), account = "fictional-e2-account";

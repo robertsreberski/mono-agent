@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 // Fictional, provider-free local capacity measurement. Build conversation first.
+import { measureE2ControllerCapacity } from "./lib/continuity-e2-capacity.mjs";
 import { createHash } from "node:crypto";
 import { chmod, mkdir, mkdtemp, rm } from "node:fs/promises";
 import { cpus, totalmem } from "node:os";
@@ -210,6 +211,9 @@ try {
       result.acceptedEnvelopeMet = result.elapsedMs <= 5000 && result.heapDeltaMiB <= 100 && result.rssDeltaMiB <= 128 && result.steadyHeapGrowthMiB <= 100;
       console.log(JSON.stringify(result)); if (!result.acceptedEnvelopeMet) process.exitCode = 1;
     } finally { await raw.close(); await repo.close(); }
+  }
+  for (const result of await measureE2ControllerCapacity(root)) {
+    console.log(JSON.stringify(result)); if (!result.acceptedEnvelopeMet) process.exitCode = 1;
   }
   console.log(JSON.stringify({ node: process.version, platform: process.platform, arch: process.arch, cpu: cpus()[0]?.model, cores: cpus().length, memoryGiB: totalmem() / 1024 ** 3,
     cacheNote: "cold-connection closes/reopens SQLite; OS filesystem cache is not flushed; warm is an immediate repeat; GC before each sample", allTargetsMet: results.length ? results.every(r => r.targetMet) : null, acceptedEnvelopeMet: results.length ? results.every(r => r.acceptedEnvelopeMet) : null }));

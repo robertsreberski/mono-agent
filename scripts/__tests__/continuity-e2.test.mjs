@@ -392,6 +392,13 @@ it("writes scoring artifacts privately and refuses outputs in the checkout", asy
   expect(await main(["score", "--answers", answers, "--keys", keys, "--output", output], io)).toBe(1); expect(err.pop()).toBe("EEXIST\n");
 });
 const E2_IMPORT_SHAPES = {
+  "scripts/lib/continuity-e2-sizing-identity.mjs": {
+    "node:child_process": "{ execFileSync }", "node:crypto": "{ createHash }", "./memory-e2e-build.mjs": "{ sourceState }",
+  },
+  "scripts/lib/continuity-e2-capacity.mjs": {
+    "./continuity-e2-summary-receipts.mjs": "{ writeE2SummaryResult }",
+    "../../packages/turn/node_modules/@earendil-works/pi-ai/dist/api/openai-responses-shared.js": "{ convertResponsesMessages }",
+  },
   "scripts/lib/continuity-e2-progress.mjs": { "node:crypto": "{ randomUUID }", "node:os": "{ userInfo }" },
   "scripts/continuity-e2.mjs": {
     "./lib/continuity-guarded-protocols.mjs": "{ guardedProtocol }"
@@ -407,6 +414,7 @@ const E2_IMPORT_SHAPES = {
     "./continuity-e2-controller-policy.mjs": "{ e2CacheAssignment }"
   },
   "scripts/lib/continuity-e2-replay.mjs": {
+    "./continuity-e2-sizing-identity.mjs": "{ e2SizingIdentity }",
     "./continuity-e2-probe-receipts.mjs": "{ createE2ProbeReceipts }"
   },
   "scripts/lib/continuity-e2-paid-models.mjs": {
@@ -471,6 +479,30 @@ const E2_IMPORT_SHAPES = {
     "node:dns": "dns",
     "node:dns/promises": "dnsPromises"
   }
+};
+const E2_PROTECTED_IMPORTS = {
+  "scripts/lib/continuity-e2-protected.mjs": {
+    "../../packages/conversation/dist/index.js": ["{ToolHistoryWriter,ToolHistoryReader,createContinuityParticipant,createDurableHistoryStore,createConversationHarness}"],
+    "@mono-agent/turn/engine": ["{JsonlSessionRepo,createRunDriver,projectContext}"],
+    "@mono-agent/turn/host": ["{createMonoRuntime}"],
+    "../../packages/turn/node_modules/@earendil-works/pi-ai/dist/index.js": ["{fauxProvider,createModels,fauxAssistantMessage}"],
+    "../../packages/turn/dist/execution/pi/compaction/compaction-driver.js": ["{tryCompact}"],
+    "../../packages/turn/dist/engine/retained-summary.js": ["{resolveRetainedSummaryAdmission}"],
+    "./continuity-e2-models.mjs": ["{shippingSoul}"],
+  },
+  "scripts/lib/continuity-e2-journals.mjs": {
+    'new URL("../../packages/turn/dist/engine/journal-schema.js", import.meta.url).href': ["{JournalValidator,validateJournalHeader}"],
+  },
+  "scripts/lib/continuity-e2-lineage.mjs": {
+    'new URL("../../packages/turn/dist/engine/journal-digest.js", import.meta.url).href': ["{evidenceDigest}"],
+    'new URL("../../packages/conversation/dist/history/canonical/identity.js", import.meta.url).href': ["{deriveProviderSessionId}"],
+    'new URL("../../packages/turn/dist/engine/retained-summary.js", import.meta.url).href': ["{assertRetainedSummarySeed}"],
+    'new URL("../../packages/conversation/dist/tool-history/continuity-storage.js", import.meta.url).href': ["{continuityRecordId}"],
+    'new URL("../../packages/turn/dist/engine/compaction-kit/compaction.js", import.meta.url).href': ["{createPrefixSummaryContext}"],
+  },
+  "scripts/lib/continuity-e2-sizing-identity.mjs": {
+    "./continuity-e2-registration.mjs": ["{e2CodeDigest}"],
+  },
 };
 const E2_DYNAMIC_SHAPES = {
   "scripts/lib/continuity-e2-compaction.mjs": {
@@ -612,7 +644,9 @@ function assertE2Capabilities(path, source) {
     if (ts.isImportDeclaration(node)) {
       const spec = node.moduleSpecifier.text;
       const proofImports = {
-        "scripts/lib/continuity-e2-replay.mjs": ["./continuity-e2-probe-receipts.mjs"],
+        "scripts/lib/continuity-e2-replay.mjs": ["./continuity-e2-probe-receipts.mjs", "./continuity-e2-sizing-identity.mjs"],
+        "scripts/lib/continuity-e2-sizing-identity.mjs": ["node:child_process", "node:crypto", "./memory-e2e-build.mjs"],
+        "scripts/lib/continuity-e2-capacity.mjs": ["./continuity-e2-summary-receipts.mjs", "../../packages/turn/node_modules/@earendil-works/pi-ai/dist/api/openai-responses-shared.js"],
         "scripts/lib/continuity-e2-progress.mjs": ["node:crypto", "node:os"],
         "scripts/continuity-e2.mjs": ["./lib/continuity-guarded-protocols.mjs"],
         "scripts/lib/continuity-e2-runtime.mjs": ["node:process", "./continuity-dataset.mjs", "./continuity-guarded-state.mjs", "./continuity-guarded-lease.mjs", "./continuity-guarded-models.mjs", "./continuity-guarded-real-capability.mjs", "./continuity-process-identity.mjs", "./continuity-e2-controller-policy.mjs"],
@@ -640,8 +674,9 @@ function assertE2Capabilities(path, source) {
         expect(node.importClause?.getText(ast).replace(/\s/gu, "")).toBe(expected.replace(/\s/gu, ""));
       }
       if (spec === "node:child_process") {
-        expect(node.importClause.namedBindings.elements.map(e => (e.propertyName ?? e.name).text)).toEqual(["spawn"]);
-        expect(node.importClause.namedBindings.elements.map(e => e.name.text)).toEqual(["spawn"]);
+        const names = path === "scripts/lib/continuity-e2-sizing-identity.mjs" ? ["execFileSync"] : ["spawn"];
+        expect(node.importClause.namedBindings.elements.map(e => (e.propertyName ?? e.name).text)).toEqual(names);
+        expect(node.importClause.namedBindings.elements.map(e => e.name.text)).toEqual(names);
       }
       if (spec === "@mono-agent/turn") {
         expect(node.importClause && !node.importClause.name && ts.isNamedImports(node.importClause.namedBindings)).toBe(true);
@@ -659,15 +694,16 @@ function assertE2Capabilities(path, source) {
     if (ts.isCallExpression(node)) {
       if (node.expression.kind === ts.SyntaxKind.ImportKeyword) {
         const value = node.arguments[0];
-        expect(ts.isStringLiteral(value) && ({ "scripts/lib/continuity-e2-models.mjs": ["@mono-agent/turn/engine"], "scripts/continuity-e2.mjs": ["./lib/continuity-e2-replay.mjs", "./lib/continuity-e2-proofs.mjs", "./lib/continuity-e2-paid-entry.mjs"] })[path]?.includes(value.text)
+        expect(Boolean(E2_PROTECTED_IMPORTS[path]?.[ts.isStringLiteral(value) ? value.text : value.getText(ast)])
+          || ts.isStringLiteral(value) && ({ "scripts/lib/continuity-e2-models.mjs": ["@mono-agent/turn/engine"], "scripts/continuity-e2.mjs": ["./lib/continuity-e2-replay.mjs", "./lib/continuity-e2-proofs.mjs", "./lib/continuity-e2-paid-entry.mjs"] })[path]?.includes(value.text)
           || ts.isStringLiteral(value) && ({ "scripts/lib/continuity-e2-runtime.mjs": ["./continuity-guarded-ipc.mjs", "./continuity-guarded-authorization.mjs", "./continuity-e2-paid-models.mjs"], "scripts/lib/continuity-e2-paid-models.mjs": ["./continuity-e2-models.mjs"], "scripts/lib/continuity-e2-phase-child.mjs": ["./continuity-e2-replay.mjs", "./continuity-e2-isolation.mjs", "./continuity-e2-proofs.mjs"], "scripts/lib/continuity-e2-proofs.mjs": ["./continuity-e2-paid-entry.mjs"], "scripts/lib/continuity-e2-controller-policy.mjs": ["./continuity-e2-runtime.mjs", "./continuity-guarded-protocols.mjs", "./continuity-e2-pricing.mjs", "./continuity-e2-registration.mjs", "./continuity-holdout-files.mjs", "./continuity-guarded-state.mjs", "./continuity-guarded-lease.mjs", "./continuity-guarded-child-environment.mjs", "./continuity-guarded-authorization.mjs"], "scripts/lib/continuity-e2-lineage.mjs": ["./continuity-holdout-workflow.mjs"], "scripts/lib/continuity-e2-summary-receipts.mjs": ["./continuity-holdout-workflow.mjs"], "scripts/lib/continuity-e2-execution-policy.mjs": ["./continuity-guarded-authorization.mjs"], "scripts/lib/continuity-e2-authorization.mjs": ["@mono-agent/turn"], "scripts/lib/continuity-e2-guarded-protocol.mjs": ["./continuity-e2-authorization.mjs", "./continuity-e2-controller-policy.mjs", "./continuity-e2-runtime.mjs"] })[path]?.includes(value.text)
           || path === "scripts/lib/continuity-e2-tools.mjs" && ts.isStringLiteral(value) && ["@modelcontextprotocol/sdk/server/index.js", "@modelcontextprotocol/sdk/server/streamableHttp.js", "@modelcontextprotocol/sdk/types.js"].includes(value.text)
           || path === "scripts/lib/continuity-e2-lineage.mjs" && ['new URL("../../packages/turn/dist/engine/journal-schema.js", import.meta.url).href', 'new URL("../../packages/conversation/dist/tool-history/continuity-payload.js", import.meta.url).href'].includes(value.getText(ast))
           || path === "scripts/lib/continuity-e2-compaction.mjs" && value.getText(ast) === 'new URL("../../packages/turn/dist/engine/journal-schema.js", import.meta.url).href'
           || path === "scripts/lib/continuity-e2-models.mjs" && value.getText(ast) === 'new URL("../../packages/turn/dist/agent/compaction.js", import.meta.url).href').toBe(true);
-        if (!ts.isStringLiteral(value) || value.text !== "@mono-agent/turn/engine") {
+        if (!ts.isStringLiteral(value) || value.text !== "@mono-agent/turn/engine" || path === "scripts/lib/continuity-e2-protected.mjs") {
           const specifier = ts.isStringLiteral(value) ? value.text : value.getText(ast);
-          const expected = E2_DYNAMIC_SHAPES[path]?.[specifier];
+          const expected = E2_DYNAMIC_SHAPES[path]?.[specifier] ?? E2_PROTECTED_IMPORTS[path]?.[specifier];
           expect(Array.isArray(expected), `${path}:${value.text}:pinned dynamic import`).toBe(true);
           let shape;
           if (ts.isAwaitExpression(node.parent) && ts.isParenthesizedExpression(node.parent.parent) && ts.isPropertyAccessExpression(node.parent.parent.parent)) {
@@ -706,6 +742,13 @@ function assertE2Capabilities(path, source) {
         || path === "scripts/lib/continuity-e2-proofs.mjs" && name === "spawn";
       if (path === "scripts/lib/continuity-e2-isolation.mjs" && ["fetch", "connect.apply"].includes(name)) {
         expect(node.getText(ast)).toBe(name === "fetch" ? 'fetch(url, { ...init, redirect: "error" })' : "connect.apply(this, args)");
+        expect(counts.get(name)).toBe(1);
+      }
+      if (name === "execFileSync") {
+        expect(path).toBe("scripts/lib/continuity-e2-sizing-identity.mjs");
+        expect(node.arguments[0].getText(ast)).toBe('"pnpm"');
+        expect(node.arguments[1].getText(ast)).toBe('["--filter", "@mono-agent/app...", "list", "--depth", "-1", "--json"]');
+        expect(node.arguments[2].getText(ast)).toBe('{ cwd: ROOT, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }');
         expect(counts.get(name)).toBe(1);
       }
       if (name === "spawn") {

@@ -170,6 +170,10 @@ it("rejects replay source and per-compaction overflow through real registration 
   const originalProtocol = JSON.parse(await readFile(g.pilot.registration.protocol.path, "utf8"));
   const originalSizing = JSON.parse(await readFile(g.pilot.registration.sizing[0].path, "utf8"));
   await expect(guardedAuthorization("e2-validation").validate(g.args)).resolves.toBeDefined();
+  const fullSizing = g.pilot.registration.sizing;
+  g.pilot.registration.sizing = fullSizing.slice(0, 2); await g.persist();
+  await expect(guardedAuthorization("e2-validation").validate(g.args)).rejects.toMatchObject({ code: "e2_registration_invalid" });
+  g.pilot.registration.sizing = fullSizing; await g.persist();
   for (const violation of ["source", "summary"]) {
     const protocol = structuredClone(originalProtocol), sizing = structuredClone(originalSizing), branch = sizing.branches[0];
     if (violation === "source") {
