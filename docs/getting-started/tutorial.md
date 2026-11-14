@@ -40,12 +40,12 @@ The installer downloads an official Node.js `24.15.0`, checks it against nodejs.
 
 ```text
 Installed mono-agent 0.26.0 with private Node 24.15.0 (ABI 137).
-CLI: '/Users/you/.mono-agent/cli/bin/mono-agent'
-Activate in this shell: export PATH='/Users/you/.mono-agent/cli/bin':"$PATH"
-Next: '/Users/you/.mono-agent/cli/bin/mono-agent' init
+CLI: '/Users/example/.mono-agent/cli/bin/mono-agent'
+Activate in this shell: export PATH='/Users/example/.mono-agent/cli/bin':"$PATH"
+Next: '/Users/example/.mono-agent/cli/bin/mono-agent' init
 ```
 
-Your path shows your own home folder in place of `/Users/you`. Run the printed `export PATH=…` line in your terminal (and in the second terminal you will use later), then confirm the command resolves:
+Your path shows your own home folder in place of `/Users/example`. Run the printed `export PATH=…` line in your terminal (and in the second terminal you will use later), then confirm the command resolves:
 
 ```bash
 mono-agent --version
@@ -70,7 +70,7 @@ npm i -g create-mono-agent
 | `required tool missing: <tool>` | Install that tool (for example `curl`, `tar`, or `shasum`/`sha256sum`) and rerun. |
 | `npm installation failed; existing generation preserved.` | Read the npm error above it. Network, proxy, or custom-CA problems are the usual cause; [proxy and CA variables](/getting-started/install/#private-node-installer-macos-and-linux) are supported. If a native dependency had to compile, install a compiler toolchain. |
 | `another installer is active (or a stale ~/.mono-agent/.cli-install-lock needs manual inspection)` | Wait for the other run to finish. Remove the lock directory only after confirming no installer is running. |
-| `Another mono-agent takes precedence: <path>` | An older `mono-agent` is earlier on your `PATH`. Your path shows your own home folder in place of `/Users/you`. Run the printed `export PATH=…` line, or call the absolute CLI path. |
+| `Another mono-agent takes precedence: <path>` | An older `mono-agent` is earlier on your `PATH`. Your path shows your own home folder in place of `/Users/example`. Run the printed `export PATH=…` line, or call the absolute CLI path. |
 
 A failure after the CLI was published leaves it installed and starts no services, so you can fix the problem and rerun the installer.
 
