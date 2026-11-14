@@ -258,7 +258,7 @@ Exact background file bytes are committed with a per-config 256-bit HMAC key sto
 | Topic | Canonical page |
 | --- | --- |
 | Install choices and source builds | [Install & Prerequisites](/getting-started/install/) |
-| Complete first-agent workflow | [Your First Agent](/getting-started/quickstart/) |
+| Complete first-agent workflow | [Tutorial: your first agent](/getting-started/tutorial/) and the [setup reference](/getting-started/quickstart/) |
 | Dotenv precedence and secret fields | [Environment Variables](/config/env-vars/) |
 | Agent-folder ownership and generated paths | [Folder Layout](/config/folder-layout/) |
 | Exact command, readiness, and recovery behavior | [CLI Reference](/observability/cli-reference/) |

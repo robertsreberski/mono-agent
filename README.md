@@ -80,13 +80,13 @@ Want the console to keep running in the background? `mono-agent web start` insta
 
 In the console, **Agent settings → Capabilities** shows every optional feature with its status and setup steps, and can enable Memory Lite, cron controls, and subagents or save channel credentials after a preview. That page ships in the next release; on 0.26.0, or for anything without a button, edit `mono-agent.config.json` instead. The [feature tour](./docs/getting-started/feature-tour.md) shows which route each feature uses.
 
-The same agent is also reachable from enabled communication channels. [Your first agent](./docs/getting-started/quickstart.md) walks the wizard branches, the scriptable webhook smoke request, and the per-platform start paths; [Setup security and managed runtime](./docs/reference/setup-security.md) documents the managed-start and secret-persistence trust model behind them.
+The same agent is also reachable from enabled communication channels. The [setup reference](./docs/getting-started/quickstart.md) walks the wizard branches, the scriptable webhook smoke request, and the per-platform start paths; [Setup security and managed runtime](./docs/reference/setup-security.md) documents the managed-start and secret-persistence trust model behind them.
 
 ## Setup details
 
 Bare `mono-agent init` on a terminal is the guided wizard. It asks for the agent name and the exact Role destined for `IDENTITY.md` → `## Role`, searches the provider catalogs, and then proves every selected route with one disposable no-tool model call, sequentially, with timeouts of 90s for each cloud route and 240s for each local route. An interrupted preflight can resume the routes that already passed under the same non-secret plan fingerprint. On macOS the **Agent ready** gate additionally starts the managed background agent and proves its live snapshot before printing the handoff; on Linux the same route and configuration checks run, and then `init` prints a **Manual start required** handoff instead of installing the systemd user service for you.
 
-Passing any flag, `--yes`, or running without a TTY skips the wizard: `init` writes the scaffold only, runs no readiness proof, starts no process, and never labels the result ready. `--auth` adds provider setup to that automated path. The flags, the files a scaffold writes, the full generated config, and the guided secret handling are documented in [Your first agent](./docs/getting-started/quickstart.md#setup-details-guided-init-flags-and-files).
+Passing any flag, `--yes`, or running without a TTY skips the wizard: `init` writes the scaffold only, runs no readiness proof, starts no process, and never labels the result ready. `--auth` adds provider setup to that automated path. The flags, the files a scaffold writes, the full generated config, and the guided secret handling are documented in the [setup reference](./docs/getting-started/quickstart.md#setup-details-guided-init-flags-and-files).
 
 ## Make it yours
 

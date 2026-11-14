@@ -1991,7 +1991,8 @@ Opt in to metadata-only prompt-cache request fingerprints with
 
 ## Related Documentation
 
-- [Quickstart](https://docs.mono-agent.dev/getting-started/quickstart/)
+- [Tutorial: your first agent](https://docs.mono-agent.dev/getting-started/tutorial/)
+- [Setup reference](https://docs.mono-agent.dev/getting-started/quickstart/)
 - [Agent folder layout](https://docs.mono-agent.dev/config/folder-layout/)
 - [Configuration blueprint](https://docs.mono-agent.dev/config/blueprint/)
 - [CLI reference](https://docs.mono-agent.dev/observability/cli-reference/)
