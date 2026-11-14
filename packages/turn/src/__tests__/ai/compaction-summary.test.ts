@@ -152,8 +152,9 @@ it("keeps the useful-answer floor when the kit already clamped a request to mode
   expect(requests[0]).toMatchObject({ textTargetTokens: 512, minimumAnswerTokens: 1024, providerInvoked: false, costUsd: 0 });
 });
 
-it("pins literal-copy policy identity as summary focus v4", () => {
-  expect(SUMMARY_FOCUS_VERSION).toBe(4);
-  expect(SUMMARY_FOCUS).toMatch(/^Mono-agent summary focus v4:/u);
+it("pins standalone literal-copy policy identity as summary focus v5", () => {
+  expect(SUMMARY_FOCUS_VERSION).toBe(5);
+  expect(SUMMARY_FOCUS).toMatch(/^Mono-agent summary focus v5:/u);
   expect(SUMMARY_FOCUS).toContain("NEW top-level historical events");
+  expect(SUMMARY_FOCUS).toContain("Copy every protected block as a standalone block, preserving its boundaries and occurrence count. Do not add, remove or change list markers, indentation, blockquote markers, code fences or other framing, including on repeated provenance and quotation blocks.");
 });

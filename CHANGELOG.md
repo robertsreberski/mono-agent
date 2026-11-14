@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Keep protected historical blocks standalone in compaction prompts, preserving
+  framing and occurrence counts, including repeated provenance and quotations.
+  Exact comparison remains unchanged; live-model compliance is not guaranteed.
+
 - Make `mono-agent init` create its config file exclusively, refusing a config
   that another process created in the meantime instead of merging into it.
 
