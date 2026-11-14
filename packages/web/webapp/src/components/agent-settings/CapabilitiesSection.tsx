@@ -101,7 +101,9 @@ export function CapabilitiesSection({ agent, restart = null }: { readonly agent:
   const credentialWarning = Object.values(credentialNotices).some((value) => value.sourceId === agent.sourceId && value.notice?.outcome === "unknown") ? <p role="alert">{CREDENTIAL_SAVE_UNCERTAIN}</p> : null;
   const credentialNotice = (card: string) => {
     const stored = credentialNotices[JSON.stringify([agent.sourceId, card])];
-    return stored?.identity === identity || stored?.notice?.outcome === "unknown" ? stored?.notice ?? null : null;
+    if (stored?.identity === identity) return stored.notice;
+    // Preserve ambiguity, not a previous generation’s presence observation.
+    return stored?.notice?.outcome === "unknown" ? { outcome: "unknown" as const, ...(stored.notice.inFlight ? { inFlight: true as const } : {}) } : null;
   };
   const retainCredentialNotice = (card: string, value: CredentialNotice | null) => setCredentialNotices((prior) => ({
     ...prior, [JSON.stringify([agent.sourceId, card])]: { sourceId: agent.sourceId, identity,

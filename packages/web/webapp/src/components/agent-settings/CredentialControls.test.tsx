@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { CapabilitiesSection } from "./CapabilitiesSection";
 import { capabilitySnapshot } from "../../test/capability-fixtures";
@@ -70,6 +70,14 @@ it("preserves uncertainty through a generation change, card remount and delayed 
   await screen.findByRole("form", { name: "Save telegram credentials" }); expect(screen.getByText(/Save outcome uncertain/)).toBeVisible();
   expect((screen.getByLabelText("Bot credential", { selector: "input[name=bot]" }) as HTMLInputElement).value).toBe("");
   expect(document.body.textContent).not.toContain(plantedValue); expect(save).toHaveBeenCalledTimes(1);
+  vi.mocked(api.credentials).mockResolvedValue({ ...view, cards: [{ ...view.cards[0]!, fields: [{ id: "bot", state: "set" }] }] });
+  await waitFor(() => expect(within(screen.getByRole("article", { name: "Telegram" })).getByRole("button", { name: "Refresh credential status" })).toBeEnabled());
+  fireEvent.click(within(screen.getByRole("article", { name: "Telegram" })).getByRole("button", { name: "Refresh credential status" }));
+  await screen.findByText(/Previous outcome was uncertain; status now shows Bot credential: set/);
+  rendered.rerender(<CapabilitiesSection agent={{ ...next, generation: "three" }} />);
+  await screen.findByRole("form", { name: "Save telegram credentials" });
+  expect(screen.queryByText(/Previous outcome was uncertain; status now shows/)).toBeNull();
+  expect(screen.getByText(/Save outcome uncertain/)).toBeVisible(); expect(save).toHaveBeenCalledTimes(1);
 });
 it("treats agent_not_found as a definite refusal", async () => {
   vi.spyOn(api, "credentials").mockResolvedValue(view);
