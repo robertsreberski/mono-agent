@@ -88,7 +88,34 @@ try {
     const split = twoSplit || /-(split|drop|newline|whitespace)$/u.test(profile.scenario);
     const quoted = profile.scenario.match(/-quoted-(empty|malformed|competing)$/u)?.[1];
     const decoy = quoted ? `<protected-historical-tuples>\n${{empty:"[]",malformed:"not-json",competing:'["- Fictional quoted decoy."]'}[quoted]}\n</protected-historical-tuples>` : "";
+    const sdkHandoff = profile.scenario.includes("-sdk-"), summaryOptions = [];
+    const summaryRoute = sdkHandoff ? createE2Models({ pi: modules.pi, estimators: await loadE2Estimators(), soul: await shippingSoul(),
+      models: [{ model: "openai-codex:gpt-6.1-sol" }], summary: "real", paidAdapter: actor,
+      limits: {sourceRequests:8,probeRequests:8,summaryRequests:8,summaryRequestsPerCompaction:2,compactions:8},
+      onRequest: (_model, _context, options, method) => summaryOptions.push({method,maxTokens:options.maxTokens,reasoning:options.reasoning,transport:options.transport,maxRetries:options.maxRetries}),
+    }) : null;
+    const summaryFacade = summaryRoute?.decorator(models);
     let original, sourceOperationId, seedId, droppedCheckpoint;
+    const forwardSummary = async ({ raw, context: ctx, active, model: shippingModel, options }) => {
+      const external = JSON.parse(await readFile(join(work, "shipping-event.json"), "utf8")).external, native = [...raw.validator.openOperations].at(-1);
+      if (external === native) throw Error("Fictional operation IDs unexpectedly correlated");
+      await writeFile(join(work, "operation-correlation.json"), JSON.stringify({ external, native }), { mode: 0o600 });
+      const request = profile.scenario.endsWith("-forged-fallback")
+        ? (await import("../../../packages/turn/dist/engine/compaction-kit/compaction.js")).createHistorySummaryContext([], {})
+        : structuredClone(ctx);
+      if (profile.scenario.endsWith("-newline")) request.messages[0].content[0].text += "\n";
+      if (profile.scenario.endsWith("-whitespace")) request.messages[0].content[0].text = request.messages[0].content[0].text.replace("## Original Request", "##  Original Request");
+      if (profile.scenario.endsWith("-original")) {
+        let changed = false;
+        for (const message of request.messages) for (const part of typeof message.content === "string" ? [message] : message.content) {
+          const key = typeof message.content === "string" ? "content" : "text";
+          if (typeof part[key] === "string" && part[key].includes(active.text)) { part[key] = part[key].replace(active.text, original); changed = true; }
+        }
+        if (!changed || original === active.text) throw Error("Fictional retained mutation missing");
+      }
+      if (summaryFacade) return summaryFacade.completeSimple(shippingModel, request, options);
+      return actor.stream(models, model, request, { ...opts, cacheRetention: "none" }, "summary").result();
+    };
     await rehearseE2Protected({ work, model, carrier, sourceBackgroundRepeats: split ? 100 : undefined, productionDefaults,
       // Trusted synthetic response, independent of any frame quoted by a user.
       ...(quoted ? { summaryReply: () => E2_PROTECTED_TEXT } : {}),
@@ -101,7 +128,8 @@ try {
       },
       onPublication: async () => {
         actor.observe({ type: "context_compaction", status: "succeeded", operationId: sourceOperationId }); await actor.flush();
-        actor.setPosition({ model: "openai-codex:gpt-6.1-sol", turn: 0, message: 0 });
+        if (summaryRoute) summaryRoute.setPosition({ model: "openai-codex:gpt-6.1-sol", turn: 0, message: 0 });
+        else actor.setPosition({ model: "openai-codex:gpt-6.1-sol", turn: 0, message: 0 });
       },
       onAdmission: async ({ raw, admission }) => { seedId = admission.payload.seed.entryId; if (split) await raw.moveTo(seedId); },
       appendProgress: twoSplit ? async raw => {
@@ -128,28 +156,15 @@ try {
         if (event.status === "succeeded" && profile.scenario.endsWith("-drop")) {
           droppedCheckpoint = { event, path: raw.metadata.path }; return;
         }
-        actor.observe(event);
+        if (summaryRoute) summaryRoute.observe(event); else actor.observe(event);
       },
-      onSummary: async ({ raw, context: ctx, active }) => {
-        const external = JSON.parse(await readFile(join(work, "shipping-event.json"), "utf8")).external, native = [...raw.validator.openOperations].at(-1);
-        if (external === native) throw Error("Fictional operation IDs unexpectedly correlated");
-        await writeFile(join(work, "operation-correlation.json"), JSON.stringify({ external, native }), { mode: 0o600 });
-        const request = profile.scenario.endsWith("-forged-fallback")
-          ? (await import("../../../packages/turn/dist/engine/compaction-kit/compaction.js")).createHistorySummaryContext([], {})
-          : structuredClone(ctx);
-        if (profile.scenario.endsWith("-newline")) request.messages[0].content[0].text += "\n";
-        if (profile.scenario.endsWith("-whitespace")) request.messages[0].content[0].text = request.messages[0].content[0].text.replace("## Original Request", "##  Original Request");
-        if (profile.scenario.endsWith("-original")) {
-          let changed = false;
-          for (const message of request.messages) for (const part of typeof message.content === "string" ? [message] : message.content) {
-            const key = typeof message.content === "string" ? "content" : "text";
-            if (typeof part[key] === "string" && part[key].includes(active.text)) { part[key] = part[key].replace(active.text, original); changed = true; }
-          }
-          if (!changed || original === active.text) throw Error("Fictional retained mutation missing");
-        }
-        await actor.stream(models, model, request, { ...opts, cacheRetention: "none" }, "summary").result();
-      },
+      onSummary: forwardSummary,
+      completeSummary: sdkHandoff ? forwardSummary : undefined,
     });
+    if (summaryRoute) {
+      summaryRoute.assertSettled();
+      await writeFile(join(work,"summary-options.json"),JSON.stringify({requests:summaryOptions,report:summaryRoute.report()}),{mode:0o600});
+    }
     if (droppedCheckpoint) {
       // Tamper only after the shipping writer has synced and closed, before
       // delivering the genuine success event to the controller's assembly gate.

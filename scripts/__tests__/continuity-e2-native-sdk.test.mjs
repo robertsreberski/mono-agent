@@ -17,6 +17,8 @@ import { E2_PROTECTED_TEXT } from "../lib/continuity-e2-protected.mjs";
 import { SOL } from "../lib/continuity-e2-protocol.mjs";
 import { e2NativeFixture, E2_NATIVE_TEST_TIMEOUT_MS } from "./fixtures/e2-native-registration.mjs";
 const roots = [], servers = [];
+const SDK_RETAINED_HISTORY = E2_PROTECTED_TEXT + "\n\nFictional actual SDK history result.";
+const SDK_RETAINED_PREFIX = "Fictional actual SDK prefix result.";
 afterEach(async () => { for (const server of servers.splice(0)) { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); } for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
 function events(text, full = false) {
   const item = { type: "message", id: "msg_fictional", role: "assistant", status: "completed", content: [{ type: "output_text", text, annotations: [] }] };
@@ -121,7 +123,11 @@ async function run({ scenario = "probe", requests = 1, rows = [{ role: "probe", 
         if (arm === "cancel" && JSON.stringify(current).includes("Continue without repeating the completed fictional sentinel")) { response.flushHeaders(); return; }
         response.end(proofReply(body, received.length));
       } else if (scenario === "ordinary-shipping-event") response.end(events(E2_PROTECTED_TEXT));
-      else if (scenario.startsWith("retained-")) response.end(events(received.length === 1 ? received[0].input.findLast(i => i.role === "user").content.filter(p => p.type === "input_text").map(p => p.text).join("\n") : E2_PROTECTED_TEXT));
+      else if (scenario.startsWith("retained-")) {
+        const text = received.length === 1 ? received[0].input.findLast(i => i.role === "user").content.filter(p => p.type === "input_text").map(p => p.text).join("\n")
+          : scenario.includes("-sdk-") ? received.length === 2 ? SDK_RETAINED_HISTORY : SDK_RETAINED_PREFIX : E2_PROTECTED_TEXT;
+        response.end(events(text));
+      }
       else response.end(events(scenario.startsWith("lineage-pack") ? "Fictional evidence at /home/example/private/file.txt" : "FICTIONAL-SUMMARY-ANSWER-CANARY", scenario === "cap"));
     } catch (error) { listenerError = error; response.writeHead(500).end(); }
   }); servers.push(server); await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
@@ -248,6 +254,44 @@ it.each([["quotation","clean"],["carry","clean"],...["empty","malformed","compet
   expect(hold.consumed).toBe(true); expect(hold.summaryReceipt).toMatchObject({verified:true,durable:true});
   expect(state.slots[0].lineages.proof.generated).toHaveLength(1);
 },E2_NATIVE_TEST_TIMEOUT_MS);
+it.each(["quotation", "carry"].flatMap(carrier => ["summary", "two-split"].map(shape => [carrier, shape])))("composes actual SDK %s %s results with shipping default options", async (carrier, shape) => {
+  const count = shape === "two-split" ? 2 : 1;
+  const result = await run({ scenario: `retained-default-${carrier}-sdk-${shape}`, rows: [
+    { role: "summary", model: "openai-codex:gpt-6-luna" }, ...Array.from({length:count},()=>({role:"summary",model:SOL})), {role:"probe",model:SOL},
+  ] });
+  expect(result.report.stop, JSON.stringify(result.report)).toBe("completed");
+  expect(result.received).toHaveLength(count + 2);
+  const output = join(result.root,"output"), state = JSON.parse(await readFile(join(output,"e2-validation-controller.json"),"utf8")), slot = state.slots[0];
+  expect(state.summaryPolicies.source).toBe("bound-build-defaults-v1");
+  const work = e2PhaseWork(output,state.schedule[0]), route = JSON.parse(await readFile(join(work,"summary-options.json"),"utf8"));
+  expect(route.report.summaryRequests).toHaveLength(count);
+  expect(route.report.compactions).toMatchObject([{requests:count,durable:true}]);
+  expect(route.requests).toHaveLength(count);
+  for (const [i, options] of route.requests.entries()) {
+    expect(options).toMatchObject({method:"completeSimple",reasoning:"low",transport:"sse",maxRetries:0});
+    expect(options.maxTokens).toBeGreaterThan(0); expect(options.maxTokens).toBeLessThan(128000);
+    expect(route.report.summaryRequests[i].maxOutputTokens).toBe(options.maxTokens);
+    expect(result.received[i+1].reasoning.effort).toBe("low"); // Not the fixture's old fixed high effort.
+  }
+  const holds = slot.holds.slice(1,1+count), messages = [];
+  const expected = [SDK_RETAINED_HISTORY,SDK_RETAINED_PREFIX].slice(0,count);
+  for (const [i,hold] of holds.entries()) {
+    expect(hold.consumed).toBe(true); expect(hold.summaryReceipt).toMatchObject({verified:true,durable:true});
+    const artifact = JSON.parse(await readFile(join(output,"e2-summary-results",`${slot.slotId}-${hold.round}.json`),"utf8"));
+    const message = artifact.message; messages.push(message);
+    expect(message.content.filter(p=>p.type==="text").map(p=>p.text).join("\n")).toBe(expected[i]);
+    expect(message.usage).toMatchObject({input:10,output:5}); expect(message.usage.cost.total).toBeGreaterThan(0);
+  }
+  expect(holds.map(h=>h.retainedPredecessor.assembly)).toEqual(count === 2 ? ["summary","split-prefix"] : ["summary"]);
+  const lineage = slot.lineages.proof;
+  expect(lineage.generated).toEqual(holds.map(h=>({round:h.round,sha256:h.summaryReceipt.sha256})));
+  const rows = (await readFile(join(work,"sessions/journals",`${lineage.journalId}.jsonl`),"utf8")).trimEnd().split("\n").map(JSON.parse);
+  const compaction = rows.find(r=>r.id===lineage.checkpointId).payload.compaction;
+  expect(compaction.summary.startsWith(expected.join("\n\n---\n\n**Turn Context (split turn):**\n\n"))).toBe(true);
+  expect(compaction.checkpoint.retainedSummaryCoverage.admissionId).toBe(holds[0].retainedPredecessor.admissionId);
+  expect(compaction.usage).toMatchObject({input:count*10,output:count*5});
+  expect(compaction.usage.cost.total).toBeCloseTo(messages.reduce((n,m)=>n+m.usage.cost.total,0),12);
+}, E2_NATIVE_TEST_TIMEOUT_MS);
 it("stops changed summary text at the real gate without forwarding a probe", async () => {
   const result = await run({ scenario: "lineage-tamper", rows: [{ role: "summary", model: SOL }, { role: "probe", model: SOL }] });
   expect(result.received).toHaveLength(1); expect(result.report.stop).toBe("e2_summary_receipt_invalid");

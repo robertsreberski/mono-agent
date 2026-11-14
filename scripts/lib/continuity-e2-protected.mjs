@@ -30,9 +30,10 @@ export function protectedE2Reply(context, drop = false) {
 }
 
 /** One independent carrier/fit control. Its rows are alternatives, NOT added
- * paid runs. onPublication/onSummary are test-only observers, never model routes.
+ * paid runs. onPublication/onSummary are test-only observers. completeSummary
+ * optionally exercises an actual SDK response handoff in the native test fixture.
  */
-export async function rehearseE2Protected({ work, model, carrier, fallback = false, refusal = false, onPublication = async () => {}, onSummary = async () => {}, onAdmission = async () => {}, onPublicationPreparing = async () => {}, onEvent = () => {}, appendProgress, prepareInput = input => input, sourceBackgroundRepeats, productionDefaults = false, summaryReply = protectedE2Reply }) {
+export async function rehearseE2Protected({ work, model, carrier, fallback = false, refusal = false, onPublication = async () => {}, onSummary = async () => {}, onAdmission = async () => {}, onPublicationPreparing = async () => {}, onEvent = () => {}, appendProgress, prepareInput = input => input, sourceBackgroundRepeats, productionDefaults = false, summaryReply = protectedE2Reply, completeSummary }) {
   need(["quotation", "carry"].includes(carrier));
   const [{ ToolHistoryWriter, ToolHistoryReader, createContinuityParticipant, createDurableHistoryStore, createConversationHarness },
     { JsonlSessionRepo, createRunDriver, projectContext }, { createMonoRuntime }, { fauxProvider, createModels, fauxAssistantMessage },
@@ -104,9 +105,12 @@ export async function rehearseE2Protected({ work, model, carrier, fallback = fal
     let exact = !refusal, observerError;
     const h = { models: { completeSimple: async (_model, context, options) => {
       requests.push({ model: `${model.provider}:${model.id}`, context: structuredClone(context), maxOutputTokens: options.maxTokens });
-      const text = summaryReply(context, !exact && !fallback);
-      try { await onSummary({ raw, context, text, model: target, options, admission, active }); } catch (error) { observerError = error; throw error; }
-      return fauxAssistantMessage(text);
+      try {
+        if (completeSummary) return await completeSummary({ raw, context, model: target, options, admission, active });
+        const text = summaryReply(context, !exact && !fallback);
+        await onSummary({ raw, context, text, model: target, options, admission, active });
+        return fauxAssistantMessage(text);
+      } catch (error) { observerError = error; throw error; }
     } }, compactionFailureKey: work, getModel: () => target, waitForIdle: () => guarded.waitForIdle(), setCompactionSettings: s => guarded.setCompactionSettings(s),
       subscribe: listener => guarded.subscribe(listener), on: (_type, handler) => guarded.hooks.on("before_compaction", (input, ...args) => handler(prepareInput(input), ...args)), compact: () => guarded.compact() };
     await guarded.beginTurn("fictional-protected-cut", "synthetic", turn.reconciliation.descriptor);

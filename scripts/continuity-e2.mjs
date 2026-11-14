@@ -1,14 +1,14 @@
 #!/usr/bin/env node
 // Offline preparation only. Paid authority is not an argument this CLI accepts.
 // Capture the fork binding before evaluating any other framework/user module.
-import { runE2SizingProcess } from "./lib/continuity-e2-sizing-process.mjs";
+import { runE2SizingProcess, e2SizingErrorDiagnostic } from "./lib/continuity-e2-sizing-process.mjs";
 import { realpathSync, readFileSync, statSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join, resolve } from "node:path";
 import { fail, inputPath } from "./lib/continuity-observation-input.mjs";
 import { privateOutput } from "./lib/continuity-recorded-import.mjs";
 import { MAX_SOURCE_BYTES } from "./lib/continuity-recorded-schema.mjs";
-import { diagnosticRecord, errorDiagnostic, knownRefusalCode } from "./lib/continuity-e2-diagnostics.mjs";
+import { diagnosticRecord, knownRefusalCode } from "./lib/continuity-e2-diagnostics.mjs";
 import { proofRefusalCode } from "./lib/continuity-e2-checks.mjs";
 import { scoreE2 } from "./lib/continuity-e2-score.mjs";
 import { estimateE2SizingSet, E2_MAX_SIZING_RECORDS } from "./lib/continuity-e2-sizing.mjs";
@@ -104,7 +104,7 @@ export async function main(argv, { stdout = s => process.stdout.write(s), stderr
     return 0;
   } catch (error) {
     if (diagnosticPath) {
-      try { const record = diagnosticRecord({ ...diagnostic, ...errorDiagnostic(error) }); record.errorCode ??= proofRefusalCode(error?.code); writeFileSync(diagnosticPath, `${JSON.stringify(record)}\n`, { flag: "wx", mode: 0o600 }); }
+      try { const record = diagnosticRecord({ ...diagnostic, ...e2SizingErrorDiagnostic(error) }); record.errorCode ??= proofRefusalCode(error?.code); writeFileSync(diagnosticPath, `${JSON.stringify(record)}\n`, { flag: "wx", mode: 0o600 }); }
       catch { stderr("E2_DIAGNOSTICS_REFUSED\n"); return 1; }
     }
     const protocol = guardedProtocol("e2-validation"), paidCode = [...Object.values(protocol.codes), ...protocol.policy.PILOT_STOPS, "paid_mode_refused_in_ci"].includes(error?.code) ? error.code : null;

@@ -3,6 +3,7 @@ import { retentionLineage } from "./fixtures/e2-retention-lineage.mjs";
 import { openHarness } from "../lib/continuity-runner.mjs";
 import { afterEach, expect, it, vi } from "vitest";
 import fs from "node:fs";
+import subprocess from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync, rmSync, existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -315,11 +316,20 @@ it.each(["faux-short", "faux-max"])("replays configured shipping compaction with
   expect(later.some(c => c.includes("[recorded attachment: image image/png 456 bytes; bytes unavailable for replay]"))).toBe(true);
   expect(later.every(c => !c.includes("never-open") && !c.includes("Never used filename"))).toBe(true);
   expect(workerSpy).toHaveBeenCalled(); expect(ready).toBe(workerSpy.mock.calls.length); expect(workerErrors).toEqual([]);
+  expect(workerSpy).toHaveBeenCalled(); expect(ready).toBe(workerSpy.mock.calls.length); expect(workerErrors).toEqual([]);
+  expect(rejected).toEqual([]); expect(refusals).toEqual([]); expect(hits.every(c => ["ps", "sysctl"].includes(c))).toBe(true);
+}, 180_000);
+
+// A cold CLI owns a real child. Keep this transport exercise separate from the
+// in-process no-execution/worker drill above; that guard still refuses all forks.
+it.each(["faux-short", "faux-max"])("reports %s source exhaustion through the actual clean child", async summary => {
+  const { source, protocol, dir } = await trace({ padding: true, steer: true });
+  for (const key of ["HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME", "XDG_DATA_HOME", "XDG_CONFIG_HOME"]) vi.stubEnv(key, dir);
   const privateParent = await mkdtemp(join(tmpdir(), "e2-fictional-diagnostics-")); await fs.promises.chmod(privateParent, 0o700); cleanup.push(() => rm(privateParent, { recursive: true, force: true }));
   const frozen = structuredClone(protocol); frozen.branches[0].limits.sourceRequests = 1;
   await writeFile(join(dir, "source.json"), JSON.stringify(source)); await writeFile(join(dir, "protocol.json"), JSON.stringify(frozen));
   const diagnostic = join(privateParent, "refusal.json"), stdout = [], stderr = [];
-  expect(await main(["size", "--source", dir, "--protocol", join(dir, "protocol.json"), "--output", join(privateParent, "new-output"), "--diagnostics", diagnostic], { stdout: t => stdout.push(t), stderr: t => stderr.push(t) })).toBe(1);
+  expect(await main(["size", "--source", dir, "--protocol", join(dir, "protocol.json"), "--output", join(privateParent, "new-output"), "--summary", summary, "--diagnostics", diagnostic], { stdout: t => stdout.push(t), stderr: t => stderr.push(t) })).toBe(1);
   expect(stdout).toEqual([]); expect(stderr).toEqual(["E2_SOURCE_REQUEST_LIMIT\n"]);
   const rawDiagnostic = await readFile(diagnostic, "utf8");
   expect(JSON.parse(rawDiagnostic)).toEqual({ turnOrdinal: 0, replyCursor: 1, replyCount: 3, cancelled: false, aborted: false, failureKind: "provider_unavailable", routeRefusalCode: "E2_SOURCE_REQUEST_LIMIT", errorName: "Error", errorCode: "E2_SOURCE_REQUEST_LIMIT", site: "scripts/lib/continuity-observation-input.mjs:8" });
@@ -331,8 +341,6 @@ it.each(["faux-short", "faux-max"])("replays configured shipping compaction with
   retryArgs[retryArgs.length - 1] = join(dir, "forbidden-diagnostics.json");
   expect(await main(retryArgs, { stdout: t => stdout.push(t), stderr: t => stderr.push(t) })).toBe(1);
   expect(stderr.at(-1)).toBe("RECORDED_OUTPUT_REFUSED\n"); expect(existsSync(join(dir, "forbidden-diagnostics.json"))).toBe(false);
-  expect(workerSpy).toHaveBeenCalled(); expect(ready).toBe(workerSpy.mock.calls.length); expect(workerErrors).toEqual([]);
-  expect(rejected).toEqual([]); expect(refusals).toEqual([]); expect(hits.every(c => ["ps", "sysctl"].includes(c))).toBe(true);
 }, 180_000);
 
 it("keeps faux replay successful when probe receipt I/O fails and publishes only a progress gap", async () => {
@@ -398,15 +406,29 @@ it("writes scoring artifacts privately and refuses outputs in the checkout", asy
   expect(await main(["score", "--answers", answers, "--keys", keys, "--output", output], io)).toBe(1); expect(err.pop()).toBe("EEXIST\n");
 });
 const E2_IMPORT_SHAPES = {
+  "scripts/lib/continuity-e2-summary-plan.mjs": {
+    "./continuity-dataset.mjs": "{ digest }",
+    "./continuity-e2-summary-receipts.mjs": "{ verifyE2SummaryResult, e2SummaryResultPath }",
+  },
+  "scripts/lib/continuity-e2-protected.mjs": {
+    "./continuity-e2-summary-plan.mjs": "{ E2_PROTECTED_POLICY }",
+  },
+  "scripts/lib/continuity-e2-sizing-process.mjs": {
+    "node:child_process": "{ fork }",
+  },
   "scripts/lib/continuity-e2-sizing-identity.mjs": {
     "node:child_process": "{ execFileSync }", "node:crypto": "{ createHash }", "./memory-e2e-build.mjs": "{ sourceState }",
   },
   "scripts/lib/continuity-e2-capacity.mjs": {
+    "./continuity-e2-summary-plan.mjs": "{ e2ProtectedSummaryPolicies }",
+
     "./continuity-e2-summary-receipts.mjs": "{ writeE2SummaryResult }",
     "../../packages/turn/node_modules/@earendil-works/pi-ai/dist/api/openai-responses-shared.js": "{ convertResponsesMessages }",
   },
   "scripts/lib/continuity-e2-progress.mjs": { "node:crypto": "{ randomUUID }", "node:os": "{ userInfo }" },
   "scripts/continuity-e2.mjs": {
+    "./lib/continuity-e2-sizing-process.mjs": "{ runE2SizingProcess, e2SizingErrorDiagnostic }",
+
     "./lib/continuity-guarded-protocols.mjs": "{ guardedProtocol }"
   },
   "scripts/lib/continuity-e2-runtime.mjs": {
@@ -447,12 +469,14 @@ const E2_IMPORT_SHAPES = {
   },
   "scripts/lib/continuity-e2-guarded-protocol.mjs": {
     "./continuity-e2-execution-policy.mjs": "{ e2ExecutionPolicy }",
-    "./continuity-e2-controller-policy.mjs": "{ e2CacheAssignment, e2CacheIssuer, e2Watchdog, e2ValidTimeout, e2Work, e2PhaseAssignment }"
+    "./continuity-e2-controller-policy.mjs": "{ e2CacheAssignment, e2CacheIssuer, e2Watchdog, e2ValidTimeout, e2Work, e2PhaseAssignment, e2ControllerSummaryState }"
   },
   "scripts/lib/continuity-e2-summary-receipts.mjs": {
     "./continuity-dataset.mjs": "{ digest }"
   },
   "scripts/lib/continuity-e2-lineage.mjs": {
+    "./continuity-e2-summary-plan.mjs": "{ deriveE2SummaryRequest }",
+
     "./continuity-dataset.mjs": "{ digest as canonicalDigest }",
     "./continuity-e2-summary-receipts.mjs": "{ verifyE2SummaryResult, e2SummaryResultPath }"
   },
@@ -511,6 +535,47 @@ const E2_PROTECTED_IMPORTS = {
   },
 };
 const E2_DYNAMIC_SHAPES = {
+  "scripts/lib/continuity-e2-sizing-child.mjs": {
+    "./continuity-e2-sizing-identity.mjs": [
+        "{e2SizingIdentity,assertE2SizingIdentity}"
+    ],
+    "./continuity-e2-replay.mjs": [
+        "{runE2Sizing}"
+    ]
+},
+  "scripts/lib/continuity-e2-summary-plan.mjs": {
+    "../../packages/turn/dist/agent/compaction.js": [
+        "{resolveAgentCompactionPolicy}"
+    ],
+    "./continuity-recorded-schema.mjs": [
+        "{digest:bytesDigest}"
+    ],
+    "../../packages/turn/dist/engine/session-store.js": [
+        "{SessionStore}"
+    ],
+    "../../packages/turn/dist/engine/request-projection.js": [
+        "{projectContext}"
+    ],
+    "../../packages/turn/dist/execution/pi/compaction/compaction-driver.js": [
+        "{createCompactionAccounting,createGuardedCompactionHook,piSummaryReserveTokens}"
+    ],
+    "../../packages/turn/dist/engine/compaction-kit/compaction.js": [
+        "{estimateTokens}"
+    ],
+    "../../packages/turn/dist/engine/compaction-kit/historical-preservation.js": [
+        "{planSummaryBudget}"
+    ],
+    "../../packages/turn/dist/execution/pi/compaction/compaction-summary.js": [
+        "{prepareSummaryInput}"
+    ],
+    "../../packages/turn/dist/engine/compaction-kit/usage.js": [
+        "{sumKnownSummaryUsage}"
+    ],
+    "../../packages/turn/node_modules/@earendil-works/pi-ai/dist/api/openai-responses-shared.js": [
+        "{convertResponsesMessages}"
+    ]
+},
+
   "scripts/lib/continuity-e2-compaction.mjs": {
     'new URL("../../packages/turn/dist/engine/journal-schema.js", import.meta.url).href': ["{JournalValidator,validateJournalHeader}"]
   },
@@ -531,6 +596,7 @@ const E2_DYNAMIC_SHAPES = {
       "{runE2Proofs}"
     ],
     "./lib/continuity-e2-replay.mjs": [
+      ".runE2Sizing",
       "{runE2Sizing}"
     ]
   },
@@ -540,6 +606,7 @@ const E2_DYNAMIC_SHAPES = {
     ]
   },
   "scripts/lib/continuity-e2-controller-policy.mjs": {
+    "./continuity-e2-summary-plan.mjs": [".e2ProtectedSummaryPolicies", ".e2DefaultSummaryPolicies"],
     "./continuity-e2-runtime.mjs": [
       ".assertE2Entry"
     ],
@@ -649,28 +716,7 @@ function assertE2Capabilities(path, source) {
   function visit(node) {
     if (ts.isImportDeclaration(node)) {
       const spec = node.moduleSpecifier.text;
-      const proofImports = {
-        "scripts/lib/continuity-e2-replay.mjs": ["./continuity-e2-probe-receipts.mjs", "./continuity-e2-sizing-identity.mjs"],
-        "scripts/lib/continuity-e2-sizing-identity.mjs": ["node:child_process", "node:crypto", "./memory-e2e-build.mjs"],
-        "scripts/lib/continuity-e2-capacity.mjs": ["./continuity-e2-summary-receipts.mjs", "../../packages/turn/node_modules/@earendil-works/pi-ai/dist/api/openai-responses-shared.js"],
-        "scripts/lib/continuity-e2-progress.mjs": ["node:crypto", "node:os"],
-        "scripts/continuity-e2.mjs": ["./lib/continuity-guarded-protocols.mjs"],
-        "scripts/lib/continuity-e2-runtime.mjs": ["node:process", "./continuity-dataset.mjs", "./continuity-guarded-state.mjs", "./continuity-guarded-lease.mjs", "./continuity-guarded-models.mjs", "./continuity-guarded-real-capability.mjs", "./continuity-process-identity.mjs", "./continuity-e2-controller-policy.mjs"],
-        "scripts/lib/continuity-e2-paid-models.mjs": ["@mono-agent/turn", "./continuity-guarded-models.mjs", "./continuity-guarded-state.mjs", "./continuity-guarded-authorization.mjs", "./continuity-dataset.mjs"],
-        "scripts/lib/continuity-e2-phase-child.mjs": ["./continuity-guarded-authorization.mjs"],
-        "scripts/lib/continuity-e2-paid-entry.mjs": ["./continuity-guarded-authorization.mjs", "./continuity-guarded-controller.mjs"],
-        "scripts/lib/continuity-e2-controller-policy.mjs": ["node:crypto", "./continuity-dataset.mjs"],
-        "scripts/lib/continuity-e2-execution-policy.mjs": ["./continuity-dataset.mjs", "./continuity-e2-summary-receipts.mjs"],
-        "scripts/lib/continuity-e2-guarded-protocol.mjs": ["./continuity-e2-execution-policy.mjs", "./continuity-e2-controller-policy.mjs"],
-        "scripts/lib/continuity-e2-summary-receipts.mjs": ["./continuity-dataset.mjs"],
-        "scripts/lib/continuity-e2-lineage.mjs": ["./continuity-dataset.mjs", "./continuity-e2-summary-receipts.mjs"],
-        "scripts/lib/continuity-e2-registration.mjs": ["./continuity-dataset.mjs", "./continuity-lookup-roles.mjs", "./memory-e2e-build.mjs"],
-        "scripts/lib/continuity-e2-authorization.mjs": ["node:process", "./continuity-dataset.mjs"],
-        "scripts/lib/continuity-e2-proofs.mjs": ["node:child_process", "./continuity-lookup.mjs", "./continuity-arms.mjs"],
-        "scripts/lib/continuity-e2-checks.mjs": ["./continuity-arms.mjs"],
-        "scripts/lib/continuity-e2-tools.mjs": ["node:http", "node:crypto"],
-        "scripts/lib/continuity-e2-isolation.mjs": ["./continuity-guarded-real-capability.mjs", "node:net", "node:module", "node:dgram", "node:dns", "node:dns/promises"],
-      };
+      const proofImports = Object.fromEntries(Object.entries(E2_IMPORT_SHAPES).map(([file, imports]) => [file, Object.keys(imports)]));
       const ok = builtins.has(spec) || existing.has(spec) || proofImports[path]?.includes(spec) || /^\.\/(?:lib\/)?continuity-e2-[a-z]+\.mjs$/.test(spec)
         || /^\.\/lib\/continuity-(?:recorded-(?:schema|import)|observation-input)\.mjs$/.test(spec) || product && spec === "../tools/mcp/timeouts.js";
       expect(ok, `${path}:${spec}`).toBe(true);
@@ -680,7 +726,7 @@ function assertE2Capabilities(path, source) {
         expect(node.importClause?.getText(ast).replace(/\s/gu, "")).toBe(expected.replace(/\s/gu, ""));
       }
       if (spec === "node:child_process") {
-        const names = path === "scripts/lib/continuity-e2-sizing-identity.mjs" ? ["execFileSync"] : ["spawn"];
+        const names = path === "scripts/lib/continuity-e2-sizing-identity.mjs" ? ["execFileSync"] : path === "scripts/lib/continuity-e2-sizing-process.mjs" ? ["fork"] : ["spawn"];
         expect(node.importClause.namedBindings.elements.map(e => (e.propertyName ?? e.name).text)).toEqual(names);
         expect(node.importClause.namedBindings.elements.map(e => e.name.text)).toEqual(names);
       }
@@ -701,12 +747,13 @@ function assertE2Capabilities(path, source) {
       if (node.expression.kind === ts.SyntaxKind.ImportKeyword) {
         const value = node.arguments[0];
         expect(Boolean(E2_PROTECTED_IMPORTS[path]?.[ts.isStringLiteral(value) ? value.text : value.getText(ast)])
+          || Boolean(E2_DYNAMIC_SHAPES[path]?.[ts.isStringLiteral(value) ? value.text : value.getText(ast)])
           || ts.isStringLiteral(value) && ({ "scripts/lib/continuity-e2-models.mjs": ["@mono-agent/turn/engine"], "scripts/continuity-e2.mjs": ["./lib/continuity-e2-replay.mjs", "./lib/continuity-e2-proofs.mjs", "./lib/continuity-e2-paid-entry.mjs"] })[path]?.includes(value.text)
           || ts.isStringLiteral(value) && ({ "scripts/lib/continuity-e2-runtime.mjs": ["./continuity-guarded-ipc.mjs", "./continuity-guarded-authorization.mjs", "./continuity-e2-paid-models.mjs"], "scripts/lib/continuity-e2-paid-models.mjs": ["./continuity-e2-models.mjs"], "scripts/lib/continuity-e2-phase-child.mjs": ["./continuity-e2-replay.mjs", "./continuity-e2-isolation.mjs", "./continuity-e2-proofs.mjs"], "scripts/lib/continuity-e2-proofs.mjs": ["./continuity-e2-paid-entry.mjs"], "scripts/lib/continuity-e2-controller-policy.mjs": ["./continuity-e2-runtime.mjs", "./continuity-guarded-protocols.mjs", "./continuity-e2-pricing.mjs", "./continuity-e2-registration.mjs", "./continuity-holdout-files.mjs", "./continuity-guarded-state.mjs", "./continuity-guarded-lease.mjs", "./continuity-guarded-child-environment.mjs", "./continuity-guarded-authorization.mjs"], "scripts/lib/continuity-e2-lineage.mjs": ["./continuity-holdout-workflow.mjs"], "scripts/lib/continuity-e2-summary-receipts.mjs": ["./continuity-holdout-workflow.mjs"], "scripts/lib/continuity-e2-execution-policy.mjs": ["./continuity-guarded-authorization.mjs"], "scripts/lib/continuity-e2-authorization.mjs": ["@mono-agent/turn"], "scripts/lib/continuity-e2-guarded-protocol.mjs": ["./continuity-e2-authorization.mjs", "./continuity-e2-controller-policy.mjs", "./continuity-e2-runtime.mjs"] })[path]?.includes(value.text)
           || path === "scripts/lib/continuity-e2-tools.mjs" && ts.isStringLiteral(value) && ["@modelcontextprotocol/sdk/server/index.js", "@modelcontextprotocol/sdk/server/streamableHttp.js", "@modelcontextprotocol/sdk/types.js"].includes(value.text)
           || path === "scripts/lib/continuity-e2-lineage.mjs" && ['new URL("../../packages/turn/dist/engine/journal-schema.js", import.meta.url).href', 'new URL("../../packages/conversation/dist/tool-history/continuity-payload.js", import.meta.url).href'].includes(value.getText(ast))
           || path === "scripts/lib/continuity-e2-compaction.mjs" && value.getText(ast) === 'new URL("../../packages/turn/dist/engine/journal-schema.js", import.meta.url).href'
-          || path === "scripts/lib/continuity-e2-models.mjs" && value.getText(ast) === 'new URL("../../packages/turn/dist/agent/compaction.js", import.meta.url).href').toBe(true);
+          || path === "scripts/lib/continuity-e2-models.mjs" && value.getText(ast) === 'new URL("../../packages/turn/dist/agent/compaction.js", import.meta.url).href', `${path}:${value.getText(ast)}:registered dynamic import`).toBe(true);
         if (!ts.isStringLiteral(value) || value.text !== "@mono-agent/turn/engine" || path === "scripts/lib/continuity-e2-protected.mjs") {
           const specifier = ts.isStringLiteral(value) ? value.text : value.getText(ast);
           const expected = E2_DYNAMIC_SHAPES[path]?.[specifier] ?? E2_PROTECTED_IMPORTS[path]?.[specifier];
@@ -745,7 +792,8 @@ function assertE2Capabilities(path, source) {
       const regexExec = ts.isPropertyAccessExpression(node.expression) && node.expression.name.text === "exec" && node.expression.expression.kind === ts.SyntaxKind.RegularExpressionLiteral;
       const proofCapability = path === "scripts/lib/continuity-e2-tools.mjs" && name === "server.connect"
         || path === "scripts/lib/continuity-e2-isolation.mjs" && ["connect.apply", "fetch"].includes(name)
-        || path === "scripts/lib/continuity-e2-proofs.mjs" && name === "spawn";
+        || path === "scripts/lib/continuity-e2-proofs.mjs" && name === "spawn"
+        || path === "scripts/lib/continuity-e2-sizing-process.mjs" && name === "fork";
       if (path === "scripts/lib/continuity-e2-isolation.mjs" && ["fetch", "connect.apply"].includes(name)) {
         expect(node.getText(ast)).toBe(name === "fetch" ? 'fetch(url, { ...init, redirect: "error" })' : "connect.apply(this, args)");
         expect(counts.get(name)).toBe(1);
@@ -756,6 +804,15 @@ function assertE2Capabilities(path, source) {
         expect(node.arguments[1].getText(ast)).toBe('["--filter", "@mono-agent/app...", "list", "--depth", "-1", "--json"]');
         expect(node.arguments[2].getText(ast)).toBe('{ cwd: ROOT, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }');
         expect(counts.get(name)).toBe(1);
+      }
+      if (name === "fork") {
+        expect(path).toBe("scripts/lib/continuity-e2-sizing-process.mjs");
+        expect(node.arguments.map(arg => arg.getText(ast).replace(/\s/gu, ""))).toEqual([
+          'fileURLToPath(new URL("./continuity-e2-sizing-child.mjs", import.meta.url))', '[]',
+          '{ execPath: process.execPath, execArgv: [], env, stdio: ["ignore", "ignore", "ignore", "ipc"], serialization: "json", }',
+        ].map(arg => arg.replace(/\s/gu, "")));
+        expect(counts.get(name)).toBe(1);
+        expect(source).toContain("delete env.NODE_OPTIONS;");
       }
       if (name === "spawn") {
         expect(path).toBe("scripts/lib/continuity-e2-proofs.mjs");
@@ -808,6 +865,31 @@ it("pins isolation delegation arguments and refuses duplicate exempt calls", () 
     expectRuleFailure(() => assertE2Capabilities(path, `${source}\n${call};`));
     expectRuleFailure(() => assertE2Capabilities(path, source.replace(call, call.replace("url,", '"https://example.com",').replace("this, args", "this, []"))));
   }
+});
+
+it("pins the sizing fork entry, options and unique call without permitting other process capabilities", () => {
+  const path = "scripts/lib/continuity-e2-sizing-process.mjs", source = readFileSync(join(ROOT, path), "utf8");
+  expect(() => assertE2Capabilities(path, source)).not.toThrow();
+  for (const [from, to] of [
+    ['"./continuity-e2-sizing-child.mjs"', '"./fictional-other-child.mjs"'],
+    ['execArgv: []', 'execArgv: process.execArgv'], ['execPath: process.execPath', 'execPath: "node"'],
+    ['[], {', '["fictional-arg"], {'], ['delete env.NODE_OPTIONS;', ''],
+    ['serialization: "json"', 'serialization: "advanced"'],
+    ['{ fork }', '{ fork as launch }'], ['{ fork }', '{ exec as fork }'],
+  ]) expectRuleFailure(() => assertE2Capabilities(path, source.replace(from, to)));
+  expectRuleFailure(() => assertE2Capabilities(path, source + '\nfork("fictional-child");'));
+  expectRuleFailure(() => assertE2Capabilities("scripts/lib/continuity-e2-replay.mjs", source));
+  expectRuleFailure(() => assertE2Capabilities(path, source + '\nimport { exec } from "node:child_process";'));
+});
+it("pins controller shipping replay imports to their exact named authority", () => {
+  const path = "scripts/lib/continuity-e2-summary-plan.mjs", source = readFileSync(join(ROOT, path), "utf8");
+  expect(() => assertE2Capabilities(path, source)).not.toThrow();
+  for (const [from, to] of [
+    ['{ sumKnownSummaryUsage }', 'usage'], ['{ sumKnownSummaryUsage }', '{ sumKnownSummaryUsage, fictionalExtra }'],
+    ['{ estimateTokens }', '{ estimateTokens: fictionalAlias }'],
+    ['{ planSummaryBudget }', '{ planSummaryBudget, ...rest }'],
+    ['compaction-kit/usage.js', 'compaction-kit/fictional.js'],
+  ]) expectRuleFailure(() => assertE2Capabilities(path, source.replace(from, to)));
 });
 
 it("matches the shipping historical session-boundary context derivation, without relaxing live assertions", async () => {
@@ -866,21 +948,27 @@ it("sanitizes error type/code/site and ignores arbitrary names, codes, outside p
   expect(diagnosticRecord({ errorName: "fictional-canary", errorCode: "E2_FICTIONAL_CANARY", site: "scripts/../fictional-canary.mjs:4" })).toMatchObject({ errorName: "other", errorCode: null, site: null });
   expect(errorDiagnostic(new RangeError("fictional-canary")).errorName).toBe("RangeError");
 });
-it("writes a genuine harness validation TypeError without exposing its message or paths", async () => {
+it.each(["faux-short", "faux-max"])("writes a genuine harness validation TypeError without exposing its message or paths (%s)", async summary => {
   const { source, protocol } = await trace(), parent = await mkdtemp(join(tmpdir(), "e2-fictional-errors-")); await fs.promises.chmod(parent, 0o700); cleanup.push(() => rm(parent, { recursive: true, force: true }));
   await writeFile(join(parent, "source.json"), JSON.stringify(source)); await writeFile(join(parent, "protocol.json"), JSON.stringify(protocol));
-  const replayModule = await import("../lib/continuity-e2-replay.mjs"), { validateRequest } = await import(new URL("../../packages/conversation/dist/harness/validation.js", import.meta.url).href);
-  vi.spyOn(replayModule, "runE2Sizing").mockImplementation(async () => {
-    try { validateRequest({ conversationId: "fictional-canary", userMessage: "" }); } catch (e) { e.message = "fictional-canary /Users/example/private-note"; throw e; }
-  });
+  // A genuine Node child throws the shipping validator's TypeError. Substitute
+  // only the fixture entry, retaining the production fork options and IPC path.
+  const fork = subprocess.fork;
+  const launch = vi.spyOn(subprocess, "fork").mockImplementation((entry, args, options) => {
+    expect(entry).toBe(join(ROOT, "scripts/lib/continuity-e2-sizing-child.mjs"));
+    expect(args).toEqual([]); expect(options.execArgv).toEqual([]);
+    expect(options.env).not.toHaveProperty("NODE_OPTIONS");
+    return fork(new URL("./fixtures/e2-sizing-validation-child.mjs", import.meta.url), args, options);
+  }); syncBuiltinESMExports();
   const out = [], err = [], file = join(parent, "diagnostic.json");
-  expect(await main(["size", "--source", parent, "--protocol", join(parent, "protocol.json"), "--output", join(parent, "result"), "--diagnostics", file], { stdout: s => out.push(s), stderr: s => err.push(s) })).toBe(1);
+  expect(await main(["size", "--source", parent, "--protocol", join(parent, "protocol.json"), "--output", join(parent, "result"), "--diagnostics", file, "--summary", summary], { stdout: s => out.push(s), stderr: s => err.push(s) })).toBe(1);
   expect(out).toEqual([]); expect(err).toEqual(["E2_REFUSED\n"]);
   const raw = await readFile(file, "utf8"), d = JSON.parse(raw);
-  expect(d).toMatchObject({ errorName: "TypeError", errorCode: null }); // Vitest maps the validation frame to src/, which is deliberately ineligible.
-  // The first eligible frame is the test caller. Native dist frames are tested below.
-  expect(d.site).toMatch(/^scripts\/__tests__\/continuity-e2\.test\.mjs:[1-9][0-9]*$/);
-  expect(raw).not.toMatch(/fictional-canary|\/Users\//); expect(fs.statSync(file).mode & 0o777).toBe(0o600);
+  expect(launch).toHaveBeenCalledOnce();
+  expect(d).toMatchObject({ errorName: "TypeError", errorCode: null });
+  if (summary === "faux-short") expect(d.site).toMatch(/^packages\/conversation\/dist\/harness\/validation\.js:[1-9][0-9]*$/);
+  else expect(d.site).toBeNull();
+  expect(raw).not.toMatch(/fictional-canary|FICTIONAL_PRIVATE_CODE|\/Users\//); expect(fs.statSync(file).mode & 0o777).toBe(0o600);
 });
 
 it("selects the first native dist frame before a later script frame", () => {

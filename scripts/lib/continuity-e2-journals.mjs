@@ -115,12 +115,12 @@ export async function findE2ActiveCompaction(work, operationDigest, readArtifact
   if (operationDigest !== undefined) need(/^[a-f0-9]{64}$/u.test(operationDigest ?? "") && digest(live[0].operation.start.operationId) === operationDigest);
   return live[0];
 }
-export function assertE2NativeBinding(binding, journal, externalOperationDigest, payloadDigest) {
-  need(binding?.version === 1 && binding.externalOperationDigest === externalOperationDigest && binding.payloadDigest === payloadDigest
-    && binding.journalId === journal.header.journalId && binding.nativeOperationDigest === digest(journal.operation.start.operationId)
-    && ["directoryDev", "directoryIno", "fileDev", "fileIno"].every(k => binding.identity?.[k] === journal.identity[k])
-    && Number.isSafeInteger(binding.lines) && binding.lines > 1 && journal.lines.length >= binding.lines
-    && digest(journal.lines.slice(0, binding.lines).join("\n") + "\n") === binding.prefixSha256);
+export function assertE2NativeBinding(nativeBinding, journal, externalOperationDigest, payloadDigest) {
+  need(nativeBinding?.version === 1 && nativeBinding.externalOperationDigest === externalOperationDigest && nativeBinding.payloadDigest === payloadDigest
+    && nativeBinding.journalId === journal.header.journalId && nativeBinding.nativeOperationDigest === digest(journal.operation.start.operationId)
+    && ["directoryDev", "directoryIno", "fileDev", "fileIno"].every(k => nativeBinding.identity?.[k] === journal.identity[k])
+    && Number.isSafeInteger(nativeBinding.lines) && nativeBinding.lines > 1 && journal.lines.length >= nativeBinding.lines
+    && digest(journal.lines.slice(0, nativeBinding.lines).join("\n") + "\n") === nativeBinding.prefixSha256);
 }
 export async function bindE2NativeCompaction(work, externalOperationDigest, payloadDigest, readArtifact, previous) {
   need(/^[a-f0-9]{64}$/u.test(externalOperationDigest ?? "") && /^[a-f0-9]{64}$/u.test(payloadDigest ?? ""));
