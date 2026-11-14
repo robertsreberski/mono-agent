@@ -544,6 +544,7 @@ listen
 markSilentTurnAlreadyVisible
 mergeAgentUpkeepAccounting
 mergeForwardedUpkeepAccounting
+mergeSettingsJsonPatch
 normalizeHostForBind
 normalizeOptionalString
 normalizeProcessJobSubagentUsage
@@ -566,6 +567,7 @@ parseProviderAuthSessionStartInput
 parseProviderAuthStatusSnapshot
 parseProviderUsageSnapshot
 peerQuestionStateLabel
+privateTemp
 processJobPublicError
 projectProviderUsage
 projectProviderUsageWindow

@@ -1331,7 +1331,11 @@
         },
         "normalizesFormatting": {
           "type": "boolean",
-          "const": true
+          "description": "Byte-normalizing saves rewrite formatting; Undo publishes the exact prior file."
+        },
+        "exactBytes": {
+          "type": "boolean",
+          "description": "True only when Save publishes the exact prior file, formatting included."
         },
         "noOp": {
           "type": "boolean"
@@ -1340,6 +1344,7 @@
       "required": [
         "action",
         "changes",
+        "exactBytes",
         "expectedVersion",
         "noOp",
         "normalizesFormatting",
@@ -1375,7 +1380,8 @@
         "subagents-denied",
         "subagents-unconfigured",
         "undo-unavailable",
-        "undo-stale"
+        "undo-stale",
+        "candidate-invalid"
       ]
     },
     "CapabilityActionSaved": {

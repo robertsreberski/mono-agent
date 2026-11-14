@@ -194,7 +194,8 @@ export { bearerTokensEqual, generateBearerToken, readAuthorizationBearer } from 
 
 export { sanitizeInboundHttpHeaders } from "./http-headers.js";
 
-export { readSettingsJson, SettingsJsonError, writeSettingsJson } from "./json-source.js";
+export { readSettingsJson, SettingsJsonError, mergeSettingsJsonPatch, writeSettingsJson } from "./json-source.js";
+export { privateTemp } from "./settings-json-files.js";
 
 export type { SettingsJson, SettingsJsonValue } from "./types.js";
 

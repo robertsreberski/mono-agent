@@ -14,9 +14,10 @@ const reasons = {
   "no-valid-jobs": "Prepare valid cron jobs first. Enable never creates or enables jobs or schedules.",
   "env-shadowed": "An environment setting conflicts with this action. Resolve it in the owner terminal.",
   "subagents-denied": "The tool policy denies Agent. Removing denies is out of scope; resolve it in the owner terminal.",
-  "subagents-unconfigured": "Configure at least one subagent profile first. Enable never authors profiles.",
+  "subagents-unconfigured": "Subagents are not configured. Enable never authors profiles; add them first.",
   "undo-unavailable": "No console save is available to undo.",
   "undo-stale": "The configuration changed since the last console save. Undo is unavailable; inspect it in the owner terminal.",
+  "candidate-invalid": "The configuration this would write is no longer valid. Run mono-agent validate in the owner terminal.",
 };
 export function CapabilityActionControls({ agent, action, process, restart, refresh, saved, setSaved, isCurrent = () => true }: {
   readonly agent: AgentSummary; readonly action: Action; readonly process: WebCapabilityActionsSnapshot["process"];
@@ -34,6 +35,9 @@ export function CapabilityActionControls({ agent, action, process, restart, refr
     const code = error instanceof ApiError ? error.code : undefined;
     if (code === "capability_action_unavailable" || code === "capability_actions_unsupported") {
       setError("This action is unavailable. Refresh availability or use manual setup guidance."); refresh();
+    } else if (code === "capability_action_invalid") {
+      // A definite refusal: the candidate no longer validates, so nothing was written and no retry is queued.
+      setError("The configuration this would write is no longer valid. Run mono-agent validate in the owner terminal."); refresh();
     } else if (code === "agent_offline") {
       setError("The agent is offline. Reconnect or use setup guidance in the owner terminal."); refresh();
     } else if (phase === "preview") {
@@ -66,7 +70,8 @@ export function CapabilityActionControls({ agent, action, process, restart, refr
   };
   const active = action.active && (saved === null || process.startedAt !== saved.startedAt);
   const confirmedSave = saved !== null && saved.uncertain !== true && saved.configuredOnly !== true;
-  const unavailable = !action.available && action.reason !== "already-configured";
+  // A consumed Undo slot still owes the saved/restart flow: the certain save takes precedence over the refusal.
+  const unavailable = !action.available && action.reason !== "already-configured" && !(confirmedSave && action.id === "config-undo");
   const enableLabel = action.id === "memory-lite" ? "Enable Memory Lite…" : action.id === "cron-controls" ? "Enable cron controls…" : action.id === "subagents-enable" ? "Enable subagents…" : "Undo last console save…";
   const freshStart = saved !== null && process.startedAt !== saved.startedAt;
   const newRestart = saved !== null && saved.restartId !== undefined && restart?.operationId !== undefined && restart.operationId !== saved.restartId;
@@ -88,10 +93,12 @@ export function CapabilityActionControls({ agent, action, process, restart, refr
     {preview && <div role="group" aria-label="Confirm capability settings">
       <p><strong>{preview.noOp ? "Already configured; no write is needed." : "Review changes, then confirm Save."}</strong></p>
       {preview.changes.map((change) => <div key={change.field}><code>{change.field}</code><pre aria-label="Owned-field preview"><code>{change.value}</code></pre></div>)}
-      <p>JSON formatting normalizes to two-space indentation. Unrelated settings are preserved. One private, ignored .bak keeps the prior bytes. Saving does not restart the agent or activate settings.</p>
+      {preview.exactBytes
+        ? <p>Restores the exact prior file, including its formatting. The one-level slot is consumed; dotenv credentials and memory data are untouched. Saving does not restart the agent or activate settings.</p>
+        : <p>JSON formatting normalizes to two-space indentation. Unrelated settings are preserved. One private, ignored .bak keeps the prior bytes. Saving does not restart the agent or activate settings.</p>}
       {preview.action === "cron-controls" && <p>Only operator controls are enabled. Jobs and schedules are unchanged.</p>}
       {preview.action === "subagents-enable" && <p>Only delegation is enabled. Profiles and deny rules are unchanged.</p>}
-      {preview.action === "config-undo" && <p>Undo restores the exact prior bytes and consumes the one-level slot. Dotenv credentials and memory data are untouched; credential cards may still show set.</p>}
+      {preview.action === "config-undo" && !preview.exactBytes && <p>Undo restores the exact prior bytes and consumes the one-level slot. Dotenv credentials and memory data are untouched; credential cards may still show set.</p>}
       <button type="button" className="settings-button" disabled={busy} onClick={() => setPreview(null)}>Cancel</button>{" "}
       <button type="button" className="settings-button" disabled={busy} onClick={() => void save()}>{busy ? "Saving…" : "Confirm Save"}</button>
     </div>}

@@ -1,5 +1,6 @@
 import { createCredentialSetupService } from "../setup/credential-setup.js";
 import { createCapabilityActionsService } from "../setup/capability-actions.js";
+import { isAgentToolAllowed } from "../tools/known-tools.js";
 import { createCapabilityStatusService } from "../setup/capability-status.js";
 import type { ProviderUsageOperator } from "@mono-agent/contracts";
 import type { MonoAgentConfig } from "@mono-agent/config";
@@ -294,8 +295,7 @@ export async function startChannel(controller: ChannelsControllerPort, driver: C
           cron: controller.statuses.get("cron")?.kind === "running"
             && controller.running.get("cron")?.summary.operatorActionsEnabled === true,
           subagents: coreConfig.subagents?.enabled === true
-            && (coreConfig.tools.allowedTools.includes("*") || coreConfig.tools.allowedTools.includes("Agent"))
-            && !coreConfig.tools.disallowedTools.includes("Agent"),
+            && isAgentToolAllowed(coreConfig.tools.allowedTools, coreConfig.tools.disallowedTools),
         }),
         log: (message) => {
           if (controller.logger?.info) controller.logger.info(message);

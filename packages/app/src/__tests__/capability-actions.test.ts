@@ -189,15 +189,59 @@ async function readSettingsVersion(configPath: string): Promise<string> {
   return (await readSettingsJson(configPath)).version;
 }
 
-it("refuses subagent delegation when denied or when no usable subagents are configured", async () => {
+it("refuses subagent delegation when denied or when no subagents block is configured", async () => {
   const denied = await fixture({ subagents: { definitions: [SUBAGENT_PROFILE] }, tools: { allowedTools: ["Read"], disallowedTools: ["Agent"] } });
   expect((await denied.service.read()).actions.find((action) => action.id === "subagents-enable")).toMatchObject({ available: false, reason: "subagents-denied" });
   await expect(denied.service.preview({ action: "subagents-enable", process: denied.process })).rejects.toMatchObject({ code: "capability_action_unavailable" });
-  for (const extra of [{}, { subagents: { enabled: false } }, { subagents: { definitions: [] } }]) {
-    const f = await fixture(extra);
-    expect((await f.service.read()).actions.find((action) => action.id === "subagents-enable")).toMatchObject({ available: false, reason: "subagents-unconfigured" });
-    await expect(f.service.preview({ action: "subagents-enable", process: f.process })).rejects.toMatchObject({ code: "capability_action_unavailable" });
+  const f = await fixture({ tools: { allowedTools: ["Read"], disallowedTools: ["Bash"] } });
+  expect((await f.service.read()).actions.find((action) => action.id === "subagents-enable")).toMatchObject({ available: false, reason: "subagents-unconfigured" });
+  await expect(f.service.preview({ action: "subagents-enable", process: f.process })).rejects.toMatchObject({ code: "capability_action_unavailable" });
+});
+
+it("accepts zero subagent definitions since general-purpose delegation is usable", async () => {
+  for (const extra of [{ subagents: {} }, { subagents: { enabled: false } }, { subagents: { definitions: [] } }] as const) {
+    const f = await fixture({ ...extra, tools: { allowedTools: ["Read"], disallowedTools: ["Bash"] } });
+    expect((await f.service.read()).actions.find((action) => action.id === "subagents-enable")).toMatchObject({ available: true, reason: "eligible" });
+    const preview = await f.service.preview({ action: "subagents-enable", process: f.process });
+    expect(preview.changes).toEqual([{ field: "subagents.enabled", value: "true" }, { field: "tools.allowedTools", value: "Append \"Agent\"; existing entries and deny rules are unchanged." }]);
+    await f.service.save({ action: preview.action, process: preview.process, expectedVersion: preview.expectedVersion, confirmed: true });
+    expect(JSON.parse(await readFile(f.configPath, "utf8")).subagents).toMatchObject({ enabled: true });
   }
+});
+
+it("appends Agent to a chat-only allowlist without touching denies", async () => {
+  const f = await fixture({ subagents: {}, tools: { allowedTools: [], disallowedTools: ["Bash"] } });
+  const preview = await f.service.preview({ action: "subagents-enable", process: f.process });
+  expect(preview.changes).toEqual([{ field: "subagents.enabled", value: "true" }, { field: "tools.allowedTools", value: "Append \"Agent\"; existing entries and deny rules are unchanged." }]);
+  await f.service.save({ action: preview.action, process: preview.process, expectedVersion: preview.expectedVersion, confirmed: true });
+  expect(JSON.parse(await readFile(f.configPath, "utf8")).tools).toEqual({ allowedTools: ["Agent"], disallowedTools: ["Bash"] });
+});
+
+it("marks an unvalidatable Undo or subagents candidate invalid instead of offering it", async () => {
+  const f = await fixture({ tools: { allowedTools: ["Read"], disallowedTools: ["Bash"] } });
+  const preview = await f.service.preview({ action: "memory-lite", process: f.process });
+  await f.service.save({ action: preview.action, process: preview.process, expectedVersion: preview.expectedVersion, confirmed: true });
+  const version = (await readSettingsVersion(f.configPath));
+  const invalidPrior = JSON.stringify({ runtime: { model: 42 }, context: { identityPath: "IDENTITY.md" } });
+  await writeFile(`${f.configPath}.bak`, JSON.stringify({ version: 1, previousMissing: false, previousBase64: Buffer.from(invalidPrior).toString("base64"), intendedSha256: version }));
+  expect((await f.service.read()).actions.find((action) => action.id === "config-undo")).toMatchObject({ available: false, reason: "candidate-invalid" });
+  await expect(f.service.preview({ action: "config-undo", process: f.process })).rejects.toMatchObject({ code: "capability_action_invalid" });
+  await expect(f.service.save({ action: "config-undo", process: f.process, expectedVersion: version, confirmed: true })).rejects.toMatchObject({ code: "capability_action_invalid" });
+  const stale = await fixture({ subagents: { definitions: [{ name: "researcher", description: "A synthetic researcher.", promptPath: "missing-prompt.md" }] }, tools: { allowedTools: ["Read"], disallowedTools: ["Bash"] } });
+  expect((await stale.service.read()).actions.find((action) => action.id === "subagents-enable")).toMatchObject({ available: false, reason: "candidate-invalid" });
+  await expect(stale.service.preview({ action: "subagents-enable", process: stale.process })).rejects.toMatchObject({ code: "capability_action_invalid" });
+});
+
+it("keeps Enable actions available when the backup slot is unreadable", async () => {
+  const f = await fixture({ tools: { allowedTools: ["Read"], disallowedTools: ["Bash"] } });
+  await mkdir(join(f.cwd, ".mono-agent"));
+  await symlink(join(f.cwd, "IDENTITY.md"), `${f.configPath}.bak`);
+  const actions = (await f.service.read()).actions;
+  expect(actions.find((action) => action.id === "config-undo")).toMatchObject({ available: false, reason: "undo-unavailable" });
+  expect(actions.find((action) => action.id === "memory-lite")).toMatchObject({ available: true, reason: "eligible" });
+  await expect(f.service.preview({ action: "config-undo", process: f.process })).rejects.toMatchObject({ code: "capability_action_unavailable" });
+  const preview = await f.service.preview({ action: "memory-lite", process: f.process });
+  expect(preview.noOp).toBe(false);
 });
 
 it("appends Agent only to a restrictive allowlist, preserving denies and profiles", async () => {

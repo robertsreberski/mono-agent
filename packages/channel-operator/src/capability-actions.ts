@@ -13,7 +13,8 @@ export type CapabilityActionReason =
   | "subagents-denied"
   | "subagents-unconfigured"
   | "undo-unavailable"
-  | "undo-stale";
+  | "undo-stale"
+  | "candidate-invalid";
 export interface CapabilityActionsSnapshot {
   readonly version: 1;
   readonly process: CapabilityActionProcess;
@@ -23,7 +24,10 @@ export interface CapabilityActionPreview extends CapabilityActionInput {
   readonly expectedVersion: string;
   /** Only static, owned values. Never current config, credentials or paths from disk. */
   readonly changes: readonly { readonly field: "memory" | "cron.operatorActions.enabled" | "subagents.enabled" | "tools.allowedTools" | "config"; readonly value: string }[];
-  readonly normalizesFormatting: true;
+  /** Byte-normalizing saves rewrite formatting; Undo publishes the exact prior file. */
+  readonly normalizesFormatting: boolean;
+  /** True only when Save publishes the exact prior file, formatting included. */
+  readonly exactBytes: boolean;
   readonly noOp: boolean;
 }
 export interface CapabilityActionSaved extends CapabilityActionInput { readonly version: string; readonly changed: boolean }
@@ -33,13 +37,13 @@ export interface CapabilityActionsService {
   save(input: CapabilityActionSaveInput): Promise<CapabilityActionSaved>;
 }
 export class CapabilityActionError extends Error {
-  constructor(readonly code: "capability_action_conflict" | "capability_action_unavailable" | "capability_action_failed", readonly status: 409 | 503) {
-    super(code === "capability_action_conflict" ? "Settings or process changed; refresh and review a new preview." : code === "capability_action_unavailable" ? "This action is unavailable; use the manual setup guidance." : "Settings could not be saved; inspect them in the owner terminal before retrying.");
+  constructor(readonly code: "capability_action_conflict" | "capability_action_unavailable" | "capability_action_failed" | "capability_action_invalid", readonly status: 409 | 503) {
+    super(code === "capability_action_conflict" ? "Settings or process changed; refresh and review a new preview." : code === "capability_action_unavailable" ? "This action is unavailable; use the manual setup guidance." : code === "capability_action_invalid" ? "The configuration this would write is no longer valid. Run mono-agent validate in the owner terminal." : "Settings could not be saved; inspect them in the owner terminal before retrying.");
   }
 }
 export const MAX_CAPABILITY_ACTION_BYTES = 16 * 1024;
 const KNOWN_ACTION_IDS = ["memory-lite", "cron-controls", "subagents-enable", "config-undo"] as const;
-const KNOWN_REASONS = ["eligible", "already-configured", "memory-configured", "memory-root-unsafe", "no-valid-jobs", "env-shadowed", "subagents-denied", "subagents-unconfigured", "undo-unavailable", "undo-stale"] as const;
+const KNOWN_REASONS = ["eligible", "already-configured", "memory-configured", "memory-root-unsafe", "no-valid-jobs", "env-shadowed", "subagents-denied", "subagents-unconfigured", "undo-unavailable", "undo-stale", "candidate-invalid"] as const;
 const PREVIEW_FIELDS: Record<CapabilityActionId, readonly string[]> = {
   "memory-lite": ["memory"],
   "cron-controls": ["cron.operatorActions.enabled"],
@@ -81,15 +85,15 @@ export function parseCapabilityActionsSnapshot(value: unknown): CapabilityAction
   return { version: 1, process: processIdentity(r.process), actions };
 }
 export function parseCapabilityActionPreview(value: unknown): CapabilityActionPreview {
-  const r = object(value, ["action", "process", "expectedVersion", "changes", "normalizesFormatting", "noOp"]);
-  if (r.normalizesFormatting !== true || !Array.isArray(r.changes) || r.changes.length > 2) throw new Error("Invalid capability preview.");
+  const r = object(value, ["action", "process", "expectedVersion", "changes", "normalizesFormatting", "exactBytes", "noOp"]);
+  if (typeof r.normalizesFormatting !== "boolean" || typeof r.exactBytes !== "boolean" || !Array.isArray(r.changes) || r.changes.length > 2) throw new Error("Invalid capability preview.");
   const id = action(r.action);
   const changes = r.changes.map((value) => {
     const item = object(value, ["field", "value"]);
     if (!PREVIEW_FIELDS[id].includes(String(item.field)) || typeof item.value !== "string" || item.value.length > 4096) throw new Error("Invalid owned field.");
     return { field: item.field as CapabilityActionPreview["changes"][number]["field"], value: item.value };
   });
-  return { action: id, process: processIdentity(r.process), expectedVersion: version(r.expectedVersion), changes, normalizesFormatting: true, noOp: boolean(r.noOp) };
+  return { action: id, process: processIdentity(r.process), expectedVersion: version(r.expectedVersion), changes, normalizesFormatting: r.normalizesFormatting, exactBytes: r.exactBytes, noOp: boolean(r.noOp) };
 }
 export function parseCapabilityActionSaved(value: unknown): CapabilityActionSaved {
   const r = object(value, ["action", "process", "version", "changed"]);

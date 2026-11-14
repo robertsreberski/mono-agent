@@ -8,7 +8,7 @@ import { fakeDiscoveredAgent, temporaryRoot } from "./helpers.js";
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
 const identity = { pid: process.pid, startedAt: "2026-08-01T09:00:00Z" };
-const preview = { action: "memory-lite" as const, process: identity, expectedVersion: "a".repeat(64), changes: [], normalizesFormatting: true, noOp: true };
+const preview = { action: "memory-lite" as const, process: identity, expectedVersion: "a".repeat(64), changes: [], normalizesFormatting: true, exactBytes: false, noOp: true };
 it("detects preview and save separately from read-only discovery, failing closed on older or malformed claims", async () => {
   for (const claim of [undefined, {}, { version: 1, preview: true }, { version: 2, preview: true, save: true }, { version: 1, preview: true, save: true }]) {
     const client = new OperatorClient({ baseUrl: "http://127.0.0.1:1234/gui", fetchImpl: async () => Response.json({ schema: 1, capabilities: { capabilityActions: claim, capabilitySetup: { version: 1, read: true } } }) });

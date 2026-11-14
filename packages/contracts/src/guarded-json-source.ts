@@ -56,12 +56,29 @@ export async function writeGuardedSettingsJson(
       const backupTemp = await privateTemp(path, `${JSON.stringify({ version: 1, previousMissing: before === undefined, previousBase64: (before?.bytes ?? Buffer.alloc(0)).toString("base64"), intendedSha256: resultHash })}\n`);
       try { await unchanged(backupPath, backupBefore); await rename(backupTemp, backupPath); }
       finally { await unlink(backupTemp).catch(() => undefined); }
-      await assertDirectory();
-      await unchanged(path, before);
-      // Check immediately before rename. Uncooperative editors can still race this
-      // final await; the .bak envelope retains the prior bytes for recovery.
-      await rename(temp, path);
-      await syncDirectory(directoryPath);
+      try {
+        await assertDirectory();
+        await unchanged(path, before);
+        // Check immediately before rename. Uncooperative editors can still race this
+        // final await; the .bak envelope retains the prior bytes for recovery.
+        await rename(temp, path);
+        await syncDirectory(directoryPath);
+      } catch (error) {
+        // A save that never publishes its config must not leave a slot for
+        // bytes no file ever had: restore the previous backup state, or clear
+        // the slot when there was none, before reporting the failure.
+        try {
+          if (backupBefore === undefined) {
+            await unlink(backupPath).catch(() => undefined);
+          } else {
+            const restoreTemp = await privateTemp(path, backupBefore.bytes);
+            try { await rename(restoreTemp, backupPath); }
+            finally { await unlink(restoreTemp).catch(() => undefined); }
+          }
+          await syncDirectory(directoryPath);
+        } catch { /* Best effort: the throw below reports the save failure. */ }
+        throw error;
+      }
     } finally { await unlink(temp).catch(() => undefined); }
     // Logging must not turn a committed write into a reported failure.
     try { guard.log?.("Capability configuration saved; activation requires a fresh start."); } catch { /* committed */ }
@@ -80,18 +97,26 @@ export interface SettingsJsonBackup {
 export type SettingsJsonBackupRead =
   | { readonly status: "missing" }
   | { readonly status: "corrupt" }
+  | { readonly status: "unreadable" }
   | { readonly status: "ok"; readonly backup: SettingsJsonBackup };
 
 const BACKUP_BASE64_RE = /^[A-Za-z0-9+/]*={0,2}$/u;
 
-/** Read-only backup inspection for Undo eligibility; never throws for absent or malformed slots. */
+/** Read-only backup inspection for Undo eligibility. Absent, malformed and unreadable slots degrade only the Undo action, never the Enable actions. */
 export async function readSettingsJsonBackup(path: string): Promise<SettingsJsonBackupRead> {
-  let raw: string;
+  const backupPath = `${resolve(path)}.bak`;
   try {
-    raw = await readFile(`${resolve(path)}.bak`, "utf8");
+    const stat = await lstat(backupPath);
+    if (!stat.isFile()) return { status: "unreadable" };
   } catch (error) {
     if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return { status: "missing" };
-    throw error;
+    return { status: "unreadable" };
+  }
+  let raw: string;
+  try {
+    raw = await readFile(backupPath, "utf8");
+  } catch {
+    return { status: "unreadable" };
   }
   try {
     const parsed: unknown = JSON.parse(raw);
@@ -156,13 +181,27 @@ export async function restoreGuardedSettingsJson(
       await unchanged(backupPath, backupBefore);
       await assertDirectory();
       await unchanged(path, before);
-      // Consume the one-level slot before publication: a crash on either side
-      // leaves no usable backup or a stale-fenced one, never a redo.
-      await unlink(backupPath).catch((error: unknown) => {
-        if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") throw error;
-      });
-      await rename(temp, path);
-      await syncDirectory(directoryPath);
+      // Publish first: a failed rename leaves the config and the slot
+      // untouched, so Undo stays usable and the failure is a definite
+      // refusal, never an uncertain outcome.
+      try {
+        await rename(temp, path);
+      } catch {
+        conflict();
+      }
+      try {
+        await syncDirectory(directoryPath);
+        // Consume the one-level slot only after publication. A crash here
+        // leaves a stale-fenced slot (current bytes no longer match the
+        // recorded result), never a redo: the fence keeps Undo one-level.
+        await unlink(backupPath).catch((error: unknown) => {
+          if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") throw error;
+        });
+        await syncDirectory(directoryPath);
+      } catch (error) {
+        await unlink(backupPath).catch(() => undefined);
+        throw error;
+      }
     } finally { await unlink(temp).catch(() => undefined); }
     // Logging must not turn a committed restore into a reported failure.
     try { guard.log?.("Capability configuration saved; activation requires a fresh start."); } catch { /* committed */ }

@@ -132,7 +132,7 @@ export function CapabilitiesSection({ agent, restart = null }: { readonly agent:
     if (agent.status === "online" && agent.supportsCapabilityActions === true) {
       void api.capabilityActions(agent.sourceId, controller.signal).then((snapshot) => { if (!controller.signal.aborted) {
         setActions({ identity, snapshot });
-        setSaved((prior) => Object.fromEntries(Object.entries(prior).filter(([id, value]) => value.uncertain || snapshot.actions.some((action) => action.id === id && (action.active || action.reason === "already-configured")))));
+        setSaved((prior) => Object.fromEntries(Object.entries(prior).filter(([id, value]) => value.uncertain || id === "config-undo" || snapshot.actions.some((action) => action.id === id && (action.active || action.reason === "already-configured")))));
       } })
         .catch(() => { if (!controller.signal.aborted) setActionsError(true); });
     }
@@ -154,15 +154,24 @@ export function CapabilitiesSection({ agent, restart = null }: { readonly agent:
     {!actionSnapshot && Object.values(saved).some((value) => value.uncertain) && <p role="alert">{CAPABILITY_SAVE_UNCERTAIN}</p>}
     {actionSnapshot && (() => {
       const undo = actionSnapshot.actions.find((item) => item.id === "config-undo");
-      if (undo === undefined || (undo.reason === "undo-unavailable" && !saved[undo.id]?.uncertain)) return null;
+      if (undo === undefined || (undo.reason === "undo-unavailable" && saved[undo.id] == null)) return null;
       return <article className="settings-group capability-card" aria-labelledby="capability-recovery">
         <div className="capability-heading"><h3 id="capability-recovery">Configuration recovery</h3></div>
-        <p className="capability-purpose">One-level Undo of the last console save.{undo.available ? " The saved configuration differs from what the running process loaded." : ""}</p>
+        <p className="capability-purpose">One-level Undo of the last console save.{undo.available ? " A console save is on record and Undo is available." : ""}</p>
         <CapabilityActionControls agent={agent} action={undo} process={actionSnapshot.process} restart={restart} refresh={() => setRevision((value) => value + 1)} saved={saved[undo.id] ?? null} isCurrent={() => currentIdentity.current === identity} setSaved={(value) => setSaved((prior) => ({ ...prior, [undo.id]: currentIdentity.current === identity ? value : { ...value, uncertain: true } }))} />
       </article>;
     })()}
+    {actionSnapshot && (() => {
+      const subagents = actionSnapshot.actions.find((item) => item.id === "subagents-enable");
+      if (subagents === undefined) return null;
+      return <article className="settings-group capability-card" aria-labelledby="capability-subagents">
+        <div className="capability-heading"><h3 id="capability-subagents">Subagents</h3></div>
+        <p className="capability-purpose">Let the agent delegate to its configured subagents. Enable turns on delegation and, only for a restrictive explicit allowlist, adds the Agent tool. Omitted or allow-all policy, deny rules and profiles are never changed.</p>
+        <CapabilityActionControls agent={agent} action={subagents} process={actionSnapshot.process} restart={restart} refresh={() => setRevision((value) => value + 1)} saved={saved[subagents.id] ?? null} isCurrent={() => currentIdentity.current === identity} setSaved={(value) => setSaved((prior) => ({ ...prior, [subagents.id]: currentIdentity.current === identity ? value : { ...value, uncertain: true } }))} />
+      </article>;
+    })()}
     <div className="capability-grid">{snapshot.cards.map((card) => {
-      const action = actionSnapshot?.actions.find((item) => item.id === (card.id === "memory" ? "memory-lite" : card.id === "channel:cron" ? "cron-controls" : card.id === "tools" ? "subagents-enable" : ""));
+      const action = actionSnapshot?.actions.find((item) => item.id === (card.id === "memory" ? "memory-lite" : card.id === "channel:cron" ? "cron-controls" : ""));
       const actionNext = action?.active ? "Inspect readiness evidence below."
         : action?.reason === "already-configured" || (action?.available && saved[action.id] && !saved[action.id]?.uncertain) ? "Check saved settings and activation below; saving does not restart the agent."
         : action?.available ? "Review and Save below, or use manual setup. Saving does not activate the feature." : undefined;

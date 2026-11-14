@@ -319,8 +319,9 @@ Use the existing Restart confirmation when available; foreground saves apply onl
 at the next owner-controlled start. A failed restart never rolls back the save.
 
 Enable first previews only owned fields and the expected config version. Review
-and **Confirm Save** (or Cancel). JSON formatting normalizes to two-space
-indentation. The agent reconstructs and validates the candidate, rejects duplicate
+and **Confirm Save** (or Cancel). Saves normalize JSON formatting to two-space
+indentation, except Undo: the confirm panel says it restores the exact prior
+file, including its formatting. The agent reconstructs and validates the candidate, rejects duplicate
 keys, environment shadowing and stale process/config versions, preserves unrelated
 fields, and saves its durable config—not a managed worker's frozen startup copy.
 It keeps one owner-only `<config>.bak` backup slot containing exact prior bytes
@@ -347,14 +348,16 @@ the prior bytes for owner-controlled recovery. There is no operation journal,
 arbitrary patch/path/command input or terminal Enable command.
 
 A **Configuration recovery** panel offers one-level **Undo last console save…**
-when a console save is on record. Undo restores the exact prior bytes only while
-the saved configuration still hashes to the backup's recorded intended result;
-any later manual edit refuses Undo with a stale warning instead of guessing.
-Undo runs through the same guarded writer, preview, and Restart flow, then
+when a console save is on record. Undo restores the exact prior file, including
+its formatting, only while the saved configuration still hashes to the backup's
+recorded intended result; any later manual edit refuses Undo with a stale warning
+instead of guessing. Undo runs through the same guarded writer, preview, and Restart flow, then
 consumes the slot, so an Undo is never itself undoable and a second Undo is
-refused. It never deletes dotenv credentials or memory data: after Undo,
+refused. A save that fails before publishing leaves no slot for bytes no file
+ever had; a failed Undo publishes nothing and stays retryable. It never deletes dotenv credentials or memory data: after Undo,
 credential cards may still show set. The panel stays hidden while no console
-save is available.
+save is available. A candidate the current validators reject is reported
+as invalid, not offered, with guidance to run `mono-agent validate`.
 
 Memory Lite is offered only when memory is unconfigured and the standard root is
 absent/empty or verified Lite; already-configured Lite is a no-op. No memory data
@@ -363,15 +366,16 @@ is migrated or deleted. Cron controls only saves
 delegation sets `subagents.enabled: true` and appends `Agent` only to a
 restrictive explicit `tools.allowedTools` list; an omitted or `"*"` policy is
 left alone, and deny rules and profiles are never removed. It refuses when the
-policy denies Agent or when no subagent profile is configured. Tools,
+policy denies Agent or when no `subagents` block is configured; zero definitions
+still allow general-purpose delegation. A dedicated **Subagents** card hosts the
+action, separate from the MCP / tools card. Tools,
 webhook and other cards remain guidance-only, except the credential fields described above.
 
 **Saved** is not **Active**. Managed agents reuse the existing Restart confirmation
 and durable tracking; activation needs a fresh startup's loaded-state evidence.
 Foreground/embedded agents show **Saved; applies on next start** and require an
-owner-controlled stop/start. The Capabilities recovery panel shows whether the
-saved configuration differs from what the running process loaded, and offers
-Undo while the save fence holds. Restart failure leaves saved settings intact; there
+owner-controlled stop/start. A console save stays on record in the Capabilities
+recovery panel, which offers Undo while the save fence holds. Restart failure leaves saved settings intact; there
 is no automatic rollback. On conflict, refresh and review a new preview. An
 uncertain transport outcome means a save may have completed and requires
 inspection before retrying. A preview failure means nothing was saved. After an

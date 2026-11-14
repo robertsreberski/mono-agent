@@ -109,8 +109,9 @@ it("retains prior config and recoverable backup on an injected final rename fail
   const f = await fixture();
   await expect(writeSettingsJson({ path: f.path, patch: { added: true }, guarded: { expectedVersion: f.version, validate: async (_candidate, temp) => { await rm(temp); } } })).rejects.toThrow();
   expect(await readFile(f.path, "utf8")).toBe(f.bytes);
-  const backup = JSON.parse(await readFile(`${f.path}.bak`, "utf8"));
-  expect(Buffer.from(backup.previousBase64, "base64").toString()).toBe(f.bytes);
+  // A save that never publishes must not leave a slot: the previous state is
+  // restored, or the slot is cleared when there was none.
+  await expect(readFile(`${f.path}.bak`)).rejects.toMatchObject({ code: "ENOENT" });
   expect((await readdir(f.root)).some((name) => name.endsWith(".tmp") || name.endsWith(".write-lock"))).toBe(false);
 });
 
@@ -118,8 +119,7 @@ it.each(["temp", "backup", "publish"])("preserves durable config on injected %s 
   const f = await fixture(); await writeFile(`${f.path}.bak`, "prior backup", { mode: 0o600 }); failures.stage = stage;
   await expect(writeSettingsJson({ path: f.path, patch: { added: true }, guarded: { expectedVersion: f.version, validate: async () => {} } })).rejects.toThrow();
   expect(await readFile(f.path, "utf8")).toBe(f.bytes);
-  if (stage !== "publish") expect(await readFile(`${f.path}.bak`, "utf8")).toBe("prior backup");
-  else expect(Buffer.from(JSON.parse(await readFile(`${f.path}.bak`, "utf8")).previousBase64, "base64").toString()).toBe(f.bytes);
+  expect(await readFile(`${f.path}.bak`, "utf8")).toBe("prior backup");
   expect((await readdir(f.root)).some((name) => name.endsWith(".tmp") || name.endsWith(".write-lock"))).toBe(false);
 });
 
@@ -192,11 +192,11 @@ it("handles an owner released between open and fstat without refusing the next w
   expect((await readSettingsJson(f.path)).json.handedOff).toBe(true);
 });
 
-it("rechecks config bytes after the final parent identity check, retaining prior backup bytes", async () => {
+it("rechecks config bytes after the final parent identity check, clearing a never-published slot", async () => {
   const f = await fixture(); failures.stage = "final-parent";
   await expect(writeSettingsJson({ path: f.path, patch: { added: true }, guarded: { expectedVersion: f.version, validate: async () => {} } })).rejects.toMatchObject({ code: "config_conflict" });
   expect(await readFile(f.path, "utf8")).toBe('{"manual":true}');
-  expect(Buffer.from(JSON.parse(await readFile(`${f.path}.bak`, "utf8")).previousBase64, "base64").toString()).toBe(f.bytes);
+  await expect(readFile(`${f.path}.bak`)).rejects.toMatchObject({ code: "ENOENT" });
 });
 it("refuses group/world-writable ignore rules even when all required rules already exist", async () => {
   const f = await fixture();
@@ -263,4 +263,34 @@ it("refuses a stale version or an invalid prior without publishing", async () =>
   }
   expect(await readFile(f.path, "utf8")).not.toBe(f.bytes);
   expect((await readdir(f.root)).some((name) => name.endsWith(".tmp") || name.endsWith(".write-lock"))).toBe(false);
+});
+
+it("reports a definite conflict when the restore rename fails, leaving the config and slot usable", async () => {
+  const { readSettingsJsonBackup, restoreGuardedSettingsJson } = await import("../guarded-json-source.js");
+  const f = await fixture();
+  const saved = await writeSettingsJson({ path: f.path, patch: { added: true }, guarded: { expectedVersion: f.version, validate: async () => {} } });
+  failures.stage = "publish";
+  const backup = await readSettingsJsonBackup(f.path);
+  if (backup.status !== "ok") throw new Error("Expected an undoable backup slot.");
+  await expect(restoreGuardedSettingsJson(f.path, Buffer.from(backup.backup.previousBase64, "base64"), { expectedVersion: saved.version, validate: async () => {} })).rejects.toMatchObject({ code: "config_conflict" });
+  expect(await readFile(f.path, "utf8")).not.toBe(f.bytes);
+  // Nothing was published: the slot still fences, so a retry stays available instead of uncertain.
+  const retry = await readSettingsJsonBackup(f.path);
+  expect(retry.status).toBe("ok");
+  if (retry.status === "ok") expect(retry.backup.intendedSha256).toBe(saved.version);
+  expect((await readdir(f.root)).some((name) => name.endsWith(".tmp") || name.endsWith(".write-lock"))).toBe(false);
+});
+
+it.each(["directory", "symlink", "unreadable"])("degrades an %s backup slot to unreadable instead of throwing", async (kind) => {
+  const { readSettingsJsonBackup } = await import("../guarded-json-source.js");
+  const f = await fixture();
+  const target = join(f.root, "other");
+  if (kind === "directory") { await rm(`${f.path}.bak`, { force: true }); await mkdir(`${f.path}.bak`); }
+  else if (kind === "symlink") { await writeFile(target, "other"); await symlink(target, `${f.path}.bak`); }
+  else { await writeFile(`${f.path}.bak`, "prior", { mode: 0o600 }); await chmod(`${f.path}.bak`, 0o000); }
+  try {
+    expect(await readSettingsJsonBackup(f.path)).toEqual({ status: "unreadable" });
+  } finally {
+    if (kind === "unreadable") await chmod(`${f.path}.bak`, 0o600).catch(() => undefined);
+  }
 });

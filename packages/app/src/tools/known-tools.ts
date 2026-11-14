@@ -123,6 +123,21 @@ export function isAllowAllTools(list: readonly string[]): boolean {
   return list.includes(ALLOW_ALL_TOOLS);
 }
 
+/** True when the policy denies the `Agent` delegation tool. Never removed by console actions. */
+export function isAgentToolDenied(disallowedTools: readonly string[]): boolean {
+  return disallowedTools.map(canonicalToolName).includes("Agent");
+}
+
+/**
+ * One predicate for delegation usability, shared by console eligibility, host
+ * loaded-state evidence and doctor. The `Agent` tool is registered only when it
+ * is allowed by policy and not denied; no alias spelling maps to it.
+ */
+export function isAgentToolAllowed(allowedTools: readonly string[], disallowedTools: readonly string[]): boolean {
+  if (isAgentToolDenied(disallowedTools)) return false;
+  return allowedTools.includes(ALLOW_ALL_TOOLS) || allowedTools.includes("Agent");
+}
+
 /** True when `name` targets an MCP server tool (`mcp__…`) — cannot be validated offline. */
 export function isMcpToolName(name: string): boolean {
   return name.startsWith("mcp__");

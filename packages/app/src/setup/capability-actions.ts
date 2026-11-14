@@ -1,21 +1,23 @@
-import { lstat, readdir, realpath } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { lstat, readdir, realpath, unlink } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
-import { readSettingsJson, readSettingsJsonBackup, restoreGuardedSettingsJson, SettingsJsonError, writeSettingsJson, type SettingsJson } from "@mono-agent/contracts";
+import { mergeSettingsJsonPatch, privateTemp, readSettingsJson, readSettingsJsonBackup, restoreGuardedSettingsJson, SettingsJsonError, writeSettingsJson, type SettingsJson } from "@mono-agent/contracts";
 import { loadCronAdapterConfig, validateCronExpression } from "@mono-agent/trigger-cron";
 import {
   CapabilityActionError, parseCapabilityActionInput, parseCapabilityActionSaveInput,
   type CapabilityActionId, type CapabilityActionInput, type CapabilityActionPreview,
   type CapabilityActionReason, type CapabilityActionsService,
 } from "@mono-agent/channel-operator";
-import { canonicalToolName, isAllowAllTools } from "../tools/known-tools.js";
+import { isAgentToolAllowed, isAgentToolDenied, isAllowAllTools } from "../tools/known-tools.js";
 import { validateMonoAgentFolder } from "../doctor/doctor.js";
 import type { ValidateMonoAgentFolderOptions } from "../doctor/options.js";
 import { CAPABILITY_MODULES } from "./modules/catalog.js";
 
 const processIdentity = () => ({ pid: process.pid, startedAt: new Date(performance.timeOrigin).toISOString() });
 const fail = (code: "capability_action_conflict" | "capability_action_unavailable" = "capability_action_unavailable"): never => { throw new CapabilityActionError(code, 409); };
+const invalid = (): never => { throw new CapabilityActionError("capability_action_invalid", 409); };
 const litePatch = CAPABILITY_MODULES.find((module) => module.id === "memory:lite")!.configFragment({});
-const UNDO_PREVIEW_VALUE = "Restore the exact prior bytes from the last console save. One level only; dotenv credentials and memory data are untouched.";
+const UNDO_PREVIEW_VALUE = "Restore the exact prior file, including its formatting. The one-level slot is consumed; dotenv credentials and memory data are untouched.";
 
 /** Never initializes, migrates, repairs, or removes a memory root. */
 async function safeLiteRoot(cwd: string): Promise<boolean> {
@@ -54,8 +56,11 @@ async function safeLiteRoot(cwd: string): Promise<boolean> {
 const record = (value: unknown): Record<string, unknown> | undefined =>
   value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 
+const stringList = (value: unknown): readonly string[] =>
+  Array.isArray(value) && value.every((entry) => typeof entry === "string") ? value as readonly string[] : [];
+
 const deniedAgent = (json: SettingsJson): boolean =>
-  ((record(json.tools)?.disallowedTools as readonly unknown[] | undefined) ?? []).some((entry) => typeof entry === "string" && canonicalToolName(entry) === "Agent");
+  isAgentToolDenied(stringList(record(json.tools)?.disallowedTools));
 
 const rawAllowlist = (json: SettingsJson): readonly string[] | undefined => {
   const tools = record(json.tools);
@@ -64,16 +69,12 @@ const rawAllowlist = (json: SettingsJson): readonly string[] | undefined => {
   return Array.isArray(list) && list.every((entry) => typeof entry === "string") ? list as readonly string[] : undefined;
 };
 
-/** Delegation needs configured profiles; Enable never authors them. */
-const hasUsableSubagents = (json: SettingsJson): boolean => {
-  const subagents = record(json.subagents);
-  const definitions = subagents?.definitions;
-  return subagents !== undefined && Array.isArray(definitions) && definitions.length > 0 && definitions.every((entry) => record(entry) !== undefined);
-};
+/** Delegation with zero definitions still serves general-purpose; Enable never authors profiles. */
+const hasConfiguredSubagents = (json: SettingsJson): boolean => record(json.subagents) !== undefined;
 
 const agentAllowedByRawPolicy = (json: SettingsJson): boolean => {
   const list = rawAllowlist(json);
-  return list === undefined || isAllowAllTools([...list]) || list.includes("Agent");
+  return isAgentToolAllowed(list ?? ["*"], []);
 };
 
 export function createCapabilityActionsService(
@@ -84,25 +85,53 @@ export function createCapabilityActionsService(
   const assertIdentity = (request: CapabilityActionInput): void => {
     if (request.process.pid !== identity.pid || request.process.startedAt !== identity.startedAt) fail("capability_action_conflict");
   };
-  const undoReason = async (json: SettingsJson, version: string): Promise<Extract<CapabilityActionReason, "eligible" | "undo-unavailable" | "undo-stale">> => {
-    const backup = await readSettingsJsonBackup(input.configPath);
-    if (backup.status === "ok" && !backup.backup.previousMissing) {
-      return version === backup.backup.intendedSha256 ? "eligible" : "undo-stale";
-    }
-    return "undo-unavailable";
+  /** One candidate-validation body for both save and Undo, including cron checks. */
+  const validateCandidate = async (candidate: SettingsJson, candidatePath: string): Promise<void> => {
+    // Driver loaders can bind operator registries. Never validate a candidate through live driver instances.
+    const { drivers: _liveDrivers, ...validationInput } = input;
+    const candidateInput = { ...validationInput, configPath: candidatePath };
+    const report = await validateMonoAgentFolder({ ...candidateInput, allowFilesystemWrites: false, liveness: false, subprocessProbes: false });
+    if (!report.structurallyValid) invalid();
+    // Cron's loader owns jobs-dir and inline validation even for embedded hosts without drivers.
+    const cron = await loadCronAdapterConfig({ env: input.env, json: candidate, cwd: input.cwd });
+    if (cron.jobs.some((job) => !validateCronExpression(job.expression, { timezone: job.timezone, hashSeed: job.id }).ok)) invalid();
   };
-  const eligibility = async (action: CapabilityActionId, json: SettingsJson, version?: string): Promise<CapabilityActionReason> => {
+  /** Probe whether the action's candidate would still validate, so read() never offers an unpublishable action. */
+  const candidateValid = async (action: CapabilityActionId, json: SettingsJson): Promise<boolean> => {
+    let candidate: SettingsJson;
+    let serialized: string;
+    if (action === "config-undo") {
+      const backup = await readSettingsJsonBackup(input.configPath);
+      if (backup.status !== "ok" || backup.backup.previousMissing) return false;
+      serialized = Buffer.from(backup.backup.previousBase64, "base64").toString("utf8");
+      try {
+        const parsed: unknown = serialized.trim().length === 0 ? {} : JSON.parse(serialized);
+        if (record(parsed) === undefined) return false;
+        candidate = parsed as SettingsJson;
+      } catch { return false; }
+    } else {
+      candidate = mergeSettingsJsonPatch(json, patchFor(action, json));
+      serialized = `${JSON.stringify(candidate, null, 2)}\n`;
+    }
+    const temp = await privateTemp(input.configPath, serialized);
+    try {
+      await validateCandidate(candidate, temp);
+      return true;
+    } catch { return false; }
+    finally { await unlink(temp).catch(() => undefined); }
+  };
+  const baseEligibility = async (action: CapabilityActionId, json: SettingsJson, version?: string): Promise<CapabilityActionReason> => {
     if (action === "config-undo") {
       if (version === undefined) {
         const source = await readSettingsJson(input.configPath);
         if (source.missing || source.duplicateKeyPaths.length > 0) return "undo-unavailable";
-        return undoReason(json, source.version);
+        return undoFence(source.version);
       }
-      return undoReason(json, version);
+      return undoFence(version);
     }
     if (action === "subagents-enable") {
       if (deniedAgent(json)) return "subagents-denied";
-      if (!hasUsableSubagents(json)) return "subagents-unconfigured";
+      if (!hasConfiguredSubagents(json)) return "subagents-unconfigured";
       const subagents = record(json.subagents);
       if (subagents?.enabled === true && agentAllowedByRawPolicy(json)) return "already-configured";
       return "eligible";
@@ -121,6 +150,21 @@ export function createCapabilityActionsService(
       if (cron.jobs.length === 0 || cron.jobs.some((job) => !validateCronExpression(job.expression, { timezone: job.timezone, hashSeed: job.id }).ok)) return "no-valid-jobs";
       return cron.operatorActionsEnabled === true ? "already-configured" : "eligible";
     } catch { return "no-valid-jobs"; }
+  };
+  /** Fence only: the current bytes must still hash to the backup's recorded result. */
+  const undoFence = async (version: string): Promise<Extract<CapabilityActionReason, "eligible" | "undo-unavailable" | "undo-stale">> => {
+    const backup = await readSettingsJsonBackup(input.configPath);
+    if (backup.status === "missing" || backup.status === "corrupt" || backup.status === "unreadable" || backup.backup.previousMissing) return "undo-unavailable";
+    return version === backup.backup.intendedSha256 ? "eligible" : "undo-stale";
+  };
+  const eligibility = async (action: CapabilityActionId, json: SettingsJson, version?: string): Promise<CapabilityActionReason> => {
+    const reason = await baseEligibility(action, json, version);
+    if (reason !== "eligible") return reason;
+    // E2 actions recheck the publishable candidate so read() never offers an action its save would refuse.
+    if (action === "config-undo" || action === "subagents-enable") {
+      return await candidateValid(action, json) ? "eligible" : "candidate-invalid";
+    }
+    return reason;
   };
   const source = async () => {
     const result = await readSettingsJson(input.configPath);
@@ -155,9 +199,10 @@ export function createCapabilityActionsService(
     const current = await source();
     const reason = await eligibility(request.action, current.json, current.version);
     if (reason === "undo-stale") fail("capability_action_conflict");
+    if (reason === "candidate-invalid") invalid();
     if (reason !== "eligible" && reason !== "already-configured") fail();
     return {
-      ...request, expectedVersion: current.version, normalizesFormatting: true, noOp: reason === "already-configured",
+      ...request, expectedVersion: current.version, normalizesFormatting: request.action !== "config-undo", exactBytes: request.action === "config-undo", noOp: reason === "already-configured",
       changes: reason === "already-configured" ? [] : changesFor(request.action, current.json),
     };
   };
@@ -192,6 +237,8 @@ export function createCapabilityActionsService(
           const envelope = backup.backup;
           if (checked.expectedVersion !== envelope.intendedSha256) fail("capability_action_conflict");
           const prior = Buffer.from(envelope.previousBase64, "base64");
+          // An identical digest means there is nothing to restore; refuse rather than publish.
+          if (createHash("sha256").update(prior).digest("hex") === checked.expectedVersion) fail("capability_action_conflict");
           const saved = await restoreGuardedSettingsJson(input.configPath, prior, {
             expectedVersion: request.expectedVersion,
             log: dependencies.log ?? ((message) => console.info(message)),
@@ -199,12 +246,8 @@ export function createCapabilityActionsService(
               // Recheck the fence under the official writer lock, against the original version.
               const current = await source();
               if (current.version !== request.expectedVersion) fail("capability_action_conflict");
-              if (await eligibility(request.action, current.json, current.version) !== "eligible") fail();
-              // Driver loaders can bind operator registries. Never validate a candidate through live driver instances.
-              const { drivers: _liveDrivers, ...validationInput } = input;
-              const candidateInput = { ...validationInput, configPath: candidatePath };
-              const report = await validateMonoAgentFolder({ ...candidateInput, allowFilesystemWrites: false, liveness: false, subprocessProbes: false });
-              if (!report.structurallyValid) fail();
+              if (await undoFence(current.version) !== "eligible") fail("capability_action_conflict");
+              await validateCandidate(candidate, candidatePath);
             },
           });
           return { action: request.action, process: identity, version: saved.version, changed: true };
@@ -218,15 +261,8 @@ export function createCapabilityActionsService(
           // Recheck eligibility under the official writer lock, against the original version.
           const current = await source();
           if (current.version !== request.expectedVersion) fail("capability_action_conflict");
-          if (await eligibility(request.action, current.json, current.version) !== "eligible") fail();
-          // Driver loaders can bind operator registries. Never validate a candidate through live driver instances.
-          const { drivers: _liveDrivers, ...validationInput } = input;
-          const candidateInput = { ...validationInput, configPath: candidatePath };
-          const report = await validateMonoAgentFolder({ ...candidateInput, allowFilesystemWrites: false, liveness: false, subprocessProbes: false });
-          if (!report.structurallyValid) fail();
-          // Cron's loader owns jobs-dir and inline validation even for embedded hosts without drivers.
-          const cron = await loadCronAdapterConfig({ env: input.env, json: candidate, cwd: input.cwd });
-          if (cron.jobs.some((job) => !validateCronExpression(job.expression, { timezone: job.timezone, hashSeed: job.id }).ok)) fail();
+          if (await baseEligibility(request.action, current.json, current.version) !== "eligible") fail();
+          await validateCandidate(candidate, candidatePath);
         },
       } });
       return { action: request.action, process: identity, version: saved.version, changed: true };

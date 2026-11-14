@@ -284,6 +284,7 @@
           }
         ],
         "normalizesFormatting": true,
+        "exactBytes": false,
         "noOp": false
       }
     },
@@ -313,10 +314,11 @@
         "changes": [
           {
             "field": "config",
-            "value": "Restore the exact prior bytes from the last console save. One level only; dotenv credentials and memory data are untouched."
+            "value": "Restore the exact prior file, including its formatting. The one-level slot is consumed; dotenv credentials and memory data are untouched."
           }
         ],
-        "normalizesFormatting": true,
+        "normalizesFormatting": false,
+        "exactBytes": true,
         "noOp": false
       }
     },
@@ -341,6 +343,7 @@
           }
         ],
         "normalizesFormatting": true,
+        "exactBytes": false,
         "noOp": false
       }
     },

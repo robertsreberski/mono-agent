@@ -42,9 +42,9 @@ it("parses the E2 snapshot with optional newer actions but keeps the E1 pair man
   expect(parseCapabilityActionsSnapshot(full).actions).toHaveLength(4);
   expect(() => parseCapabilityActionsSnapshot({ ...full, actions: full.actions.slice(1) })).toThrow();
   expect(() => parseCapabilityActionsSnapshot({ ...full, actions: [...full.actions, full.actions[0]] })).toThrow();
-  const undo = { action: "config-undo", process: processIdentity, expectedVersion: "a".repeat(64), changes: [{ field: "config", value: "Restore." }], normalizesFormatting: true, noOp: false };
-  expect(parseCapabilityActionPreview(undo).changes).toHaveLength(1);
-  const subagents = { action: "subagents-enable", process: processIdentity, expectedVersion: "a".repeat(64), changes: [{ field: "subagents.enabled", value: "true" }, { field: "tools.allowedTools", value: "Append." }], normalizesFormatting: true, noOp: false };
+  const undo = { action: "config-undo", process: processIdentity, expectedVersion: "a".repeat(64), changes: [{ field: "config", value: "Restore." }], normalizesFormatting: false, exactBytes: true, noOp: false };
+  expect(parseCapabilityActionPreview(undo).exactBytes).toBe(true);
+  const subagents = { action: "subagents-enable", process: processIdentity, expectedVersion: "a".repeat(64), changes: [{ field: "subagents.enabled", value: "true" }, { field: "tools.allowedTools", value: "Append." }], normalizesFormatting: true, exactBytes: false, noOp: false };
   expect(parseCapabilityActionPreview(subagents).changes).toHaveLength(2);
   expect(() => parseCapabilityActionPreview({ ...subagents, changes: [...subagents.changes, ...subagents.changes, ...subagents.changes] })).toThrow();
   expect(() => parseCapabilityActionPreview({ ...undo, changes: [{ field: "memory", value: "x" }] })).toThrow();
