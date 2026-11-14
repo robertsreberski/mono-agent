@@ -13,19 +13,30 @@ export async function e2JournalScope(work) {
   const initial = await lstat(directory); need(initial.isDirectory() && !initial.isSymbolicLink());
   const names = async () => (await readdir(directory)).filter(n => /^[A-Za-z0-9_-]+\.jsonl$/u.test(n)).sort();
   const entries = await names(); need(entries.length <= 8192);
-  const identities = [], inodes = [];
+  const identities = [], inodes = [], sizes = [];
   for (const name of entries) {
     const stat = await lstat(join(directory, name)); need(stat.isFile() && stat.nlink === 1 && !stat.isSymbolicLink());
-    identities.push(identity(stat)); inodes.push({ directoryDev: initial.dev, directoryIno: initial.ino, fileDev: stat.dev, fileIno: stat.ino });
+    identities.push(identity(stat)); sizes.push(stat.size); inodes.push({ directoryDev: initial.dev, directoryIno: initial.ino, fileDev: stat.dev, fileIno: stat.ino });
   }
-  return { names: entries, identity(name) { need(entries.includes(name)); return inodes[entries.indexOf(name)]; }, async assertStable() {
+  async function changedFiles() {
     const final = await lstat(directory);
     need(final.isDirectory() && final.dev === initial.dev && final.ino === initial.ino && final.mtimeMs === initial.mtimeMs && final.ctimeMs === initial.ctimeMs && await realpath(directory) === directory
       && (await names()).join() === entries.join());
+    const changed = [];
     for (const [i, name] of entries.entries()) {
-      const stat = await lstat(join(directory, name)); need(stat.isFile() && stat.nlink === 1 && !stat.isSymbolicLink() && identity(stat) === identities[i]);
+      const stat = await lstat(join(directory, name));
+      need(stat.isFile() && stat.nlink === 1 && !stat.isSymbolicLink() && stat.dev === inodes[i].fileDev && stat.ino === inodes[i].fileIno);
+      if (identity(stat) !== identities[i]) changed.push({ name, stamp: identity(stat), size: stat.size, previousSize: sizes[i] });
     }
-  } };
+    return changed;
+  }
+  return { names: entries, identity(name) { need(entries.includes(name)); return inodes[entries.indexOf(name)]; }, changedFiles,
+    async assertStable(proof) {
+      const changed = await changedFiles();
+      // The only exception is an already observed append that a caller has
+      // authenticated with a single reread. Any subsequent change refuses.
+      need(proof ? changed.length === 1 && changed[0].name === proof.name && changed[0].stamp === proof.stamp : changed.length === 0);
+    } };
 }
 export async function readE2Journal(work, journalId, readArtifact, budget = { bytes: 0 }) {
   need(typeof journalId === "string" && /^[A-Za-z0-9_-]{1,128}$/u.test(journalId));
@@ -48,7 +59,7 @@ export async function readE2Journal(work, journalId, readArtifact, budget = { by
     } else need(p?.projectionBinding === undefined && p?.compaction?.checkpoint?.inheritedCoverage === undefined && p?.artifactRef === undefined);
     validator.apply(record); records.push(record);
   }
-  return { header, validator, records, lines };
+  return { header, validator, records, lines, bytes };
 }
 export function e2ActiveBranch(validator) {
   const chain = [];
@@ -58,10 +69,38 @@ export function e2ActiveBranch(validator) {
   }
   return chain;
 }
-export async function scanE2Journals(work, readArtifact) {
+async function readScopedJournals(work, readArtifact) {
   const scope = await e2JournalScope(work), budget = { bytes: 0 }, journals = [];
   for (const name of scope.names) journals.push({ ...await readE2Journal(work, name.slice(0, -6), readArtifact, budget), identity: scope.identity(name) });
+  return { scope, budget, journals };
+}
+export async function scanE2Journals(work, readArtifact) {
+  const { scope, journals } = await readScopedJournals(work, readArtifact);
   await scope.assertStable(); return journals;
+}
+// Completed-checkpoint assembly alone can prove one append-only lifecycle tail.
+// Hold/consume/discovery scans above remain strict. This is a consistency proof,
+// not a retry: one additional bounded read shares the original aggregate budget.
+export async function scanE2CheckpointJournals(work, readArtifact) {
+  const { scope, budget, journals } = await readScopedJournals(work, readArtifact);
+  need(journals.every(j => [...j.validator.operations.values()].every(op => op.end || op.start.payload.type !== "compaction")));
+  const changes = await scope.changedFiles();
+  if (!changes.length) return journals;
+  need(changes.length === 1 && changes[0].size > changes[0].previousSize);
+  const change = changes[0], index = journals.findIndex(j => j.header.journalId + ".jsonl" === change.name), prior = journals[index];
+  const next = await readE2Journal(work, prior.header.journalId, readArtifact, budget);
+  need(next.bytes.length === change.size && prior.bytes.length >= change.previousSize && next.bytes.length >= prior.bytes.length
+    && next.bytes.subarray(0, prior.bytes.length).equals(prior.bytes) && next.bytes[change.previousSize - 1] === 10
+    && Buffer.from(next.bytes.toString("utf8")).equals(next.bytes));
+  // The append can precede the first read but follow directory discovery. In
+  // that case the reread still authenticates every byte observed the first time.
+  const suffixLines = next.bytes.subarray(change.previousSize).toString("utf8").split("\n");
+  need(suffixLines.pop() === "");
+  const suffix = suffixLines.map(line => JSON.parse(line));
+  need(suffix.length > 0 && suffix.every(r => r.kind !== "compaction" && next.validator.operations.get(r.operationId)?.start.payload.type !== "compaction"));
+  await scope.assertStable(change);
+  journals[index] = { ...next, identity: prior.identity };
+  return journals;
 }
 export async function findE2ActiveCompaction(work, operationDigest, readArtifact) {
   const journals = await scanE2Journals(work, readArtifact), live = [];

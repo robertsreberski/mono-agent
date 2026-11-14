@@ -110,3 +110,120 @@ it("refuses a changed native identity or competing operation at checkpoint assem
   const path = raw.metadata.path, bytes = await readFile(path); await rename(path, path + ".saved"); await writeFile(path, bytes, { mode: 0o600 });
   await expect(readE2Checkpoint(f.root, f.planned, reference, read, [held])).rejects.toMatchObject({ code: "e2_summary_receipt_invalid" });
 });
+
+async function completedFixture() {
+  const f = await fixture(); await oneLive(f);
+  const raw = f.sessions[0], held = await bindE2NativeCompaction(f.work, external, payload, read);
+  const checkpointId = await raw.appendCompaction({ summary: "Fictional completed summary.", retainedTail: [], tokensBefore: 100, details: { readFiles: [], modifiedFiles: [] } });
+  await raw.closeOperation("fictional-compaction-0", "completed"); await raw.sync();
+  return { ...f, raw, held, reference: { journalId: raw.metadata.journalId, checkpointId, checkpoint: 0 } };
+}
+const finish = async f => { await f.raw.endTurn("fictional-turn-0", "completed"); await f.raw.sync(); };
+const checkpoint = (f, reader) => readE2Checkpoint(f.root, f.planned, f.reference, reader, [f.held]);
+it.each(["opened", "completed", "checkpoint"])("refuses a newly %s compaction in the checkpoint suffix without another reread", async kind => {
+  const f = await completedFixture(); let reads = 0;
+  const reader = async (path, ...args) => {
+    const bytes = await read(path, ...args);
+    if (path === f.raw.metadata.path && ++reads === 1) {
+      await f.raw.openOperation("fictional-suffix-compaction", {}, "compaction", "continuity:manual");
+      if (kind === "checkpoint") await f.raw.appendCompaction({ summary: "Fictional successor.", retainedTail: [], tokensBefore: 90, details: { readFiles: [], modifiedFiles: [] } });
+      if (kind !== "opened") await f.raw.closeOperation("fictional-suffix-compaction", "completed");
+      await f.raw.sync();
+    }
+    return bytes;
+  };
+  await expect(checkpoint(f, reader)).rejects.toMatchObject({ code: "e2_summary_receipt_invalid" }); expect(reads).toBe(2);
+});
+it.each(["prefix", "inode", "symlink", "truncated", "invalid-record", "during-proof", "membership", "two-appends"])("refuses checkpoint append ambiguity: %s", async kind => {
+  const f = await completedFixture(); let reads = 0;
+  const reader = async (path, ...args) => {
+    const bytes = await read(path, ...args);
+    if (path === f.raw.metadata.path) {
+      reads++;
+      if (reads === 1) {
+        await finish(f);
+        const full = await readFile(path);
+        if (kind === "prefix") await writeFile(path, Buffer.from(full.toString().replace('{', '{ ')), { mode: 0o600 });
+        if (["inode", "symlink"].includes(kind)) {
+          await rename(path, path + ".saved");
+          if (kind === "inode") await writeFile(path, full, { mode: 0o600 });
+          else await symlink(path + ".saved", path);
+        }
+        if (kind === "truncated") await writeFile(path, full.subarray(0, -2), { mode: 0o600 });
+        if (kind === "invalid-record") await writeFile(path, Buffer.concat([full, Buffer.from('{"kind":"fictional-invalid"}\n')]), { mode: 0o600 });
+        if (kind === "membership") await writeFile(join(f.work, "sessions/journals/fictional-new.jsonl"), full, { mode: 0o600 });
+        if (kind === "two-appends") { await f.sessions[1].beginTurn("fictional-second-append"); await f.sessions[1].sync(); }
+      } else if (reads === 2 && kind === "during-proof") {
+        await f.raw.beginTurn("fictional-later-turn"); await f.raw.sync();
+      }
+    }
+    return bytes;
+  };
+  await expect(checkpoint(f, reader)).rejects.toMatchObject({ code: "e2_summary_receipt_invalid" });
+  expect(reads).toBe(["inode", "symlink", "membership", "two-appends"].includes(kind) ? 1 : 2);
+});
+it("charges the sole checkpoint reread to the same aggregate scan allowance", async () => {
+  const f = await completedFixture(), limits = []; let initial = false;
+  const reader = async (path, code, maximum) => {
+    limits.push(maximum);
+    const logicalSize = limits.length === 3 ? 80 * 1024 * 1024 : 40 * 1024 * 1024;
+    if (logicalSize > maximum) throw Object.assign(Error(code), { code });
+    const bytes = await readFile(path);
+    if (path === f.raw.metadata.path && !initial) { initial = true; await finish(f); }
+    return { length: logicalSize, toString: (...args) => bytes.toString(...args) };
+  };
+  await expect(checkpoint(f, reader)).rejects.toMatchObject({ code: "e2_summary_receipt_invalid" });
+  expect(limits).toEqual([128, 88, 48].map(m => m * 1024 * 1024));
+});
+it("keeps native hold and consume scans strict even for a valid lifecycle append", async () => {
+  const f = await fixture(); await oneLive(f); let mutated = false;
+  const reader = async (path, ...args) => {
+    const bytes = await read(path, ...args);
+    if (!mutated && path === f.sessions[0].metadata.path) { mutated = true; await f.sessions[0].appendMessage({ role: "user", content: "Fictional added input.", timestamp: 2 }); await f.sessions[0].sync(); }
+    return bytes;
+  };
+  await expect(findE2ActiveCompaction(f.work, digest("fictional-compaction-0"), reader)).rejects.toMatchObject({ code: "e2_summary_receipt_invalid" });
+});
+it("proves a shipping lifecycle append after the actual tryCompact success event", async () => {
+  const [{ createRunDriver, projectContext }, { tryCompact }, { fauxAssistantMessage }] = await Promise.all([
+    import("@mono-agent/turn/engine"), import("../../packages/turn/dist/execution/pi/compaction/compaction-driver.js"),
+    import("../../packages/turn/node_modules/@earendil-works/pi-ai/dist/index.js"),
+  ]);
+  const f = await fixture(); await oneLive(f); const raw = f.sessions[0];
+  await raw.closeOperation("fictional-compaction-0", "completed"); await raw.endTurn("fictional-turn-0", "completed");
+  const model = { provider: "openai-codex", id: "gpt-6.1-sol", api: "openai-codex-responses", contextWindow: 272000, maxTokens: 128000 };
+  const driver = createRunDriver(raw, { model, systemPrompt: "Fictional local summary.", tools: [] });
+  await driver.beginTurn("fictional-shipping-lifecycle", "synthetic");
+  for (let i = 0; i < 2; i++) await raw.appendMessage({ role: "user", content: "Fictional ordinary progress. ".repeat(3000), timestamp: 2 });
+  let eventId, held, succeeded = false;
+  const h = { models: { completeSimple: async () => {
+    held = await bindE2NativeCompaction(f.work, digest(eventId), payload, read);
+    return fauxAssistantMessage("Fictional completed summary.");
+  } }, compactionFailureKey: f.work, getModel: () => model, waitForIdle: () => driver.waitForIdle(), setCompactionSettings: settings => driver.setCompactionSettings(settings),
+    subscribe: listener => driver.subscribe(listener), on: (_type, handler) => driver.hooks.on("before_compaction", handler), compact: () => driver.compact() };
+  const result = await tryCompact(h, { trigger: "proactive", onEvent: event => { if (event.status === "running") eventId = event.operationId; if (event.status === "succeeded") succeeded = true; }, runtimeWarnings: [],
+    session: { getEntries: () => raw.getEntries(), buildContext: async () => projectContext(await raw.getEntries()) },
+    policy: { enabled: true, summaryMaxTokens: 3000, keepRecentTokens: 1000, compactionMinSavingsTokens: 0, effort: "none", failureCooldownMs: 900000 } });
+  expect(result.applied).toBe(true); expect(succeeded).toBe(true); expect(held.nativeOperationDigest).not.toBe(digest(eventId));
+  const entry = (await raw.getEntries()).filter(e => e.type === "compaction").at(-1), reference = { journalId: raw.metadata.journalId, checkpointId: entry.id, checkpoint: 0 };
+  let reads = 0;
+  const reader = async (path, ...args) => {
+    const bytes = await read(path, ...args);
+    if (path === raw.metadata.path && ++reads === 1) {
+      expect(succeeded).toBe(true);
+      await driver.endTurn("completed", { text: null, error: null, failureKind: null, cancelled: false, stopReason: "compaction" }); await raw.sync();
+    }
+    return bytes;
+  };
+  await expect(readE2Checkpoint(f.root, f.planned, reference, reader, [held])).resolves.toMatchObject({ summary: "Fictional completed summary." });
+  expect(reads).toBe(2);
+});
+
+it("proves a complete lifecycle append between discovery and the first checkpoint read", async () => {
+  const f = await completedFixture(); let reads = 0;
+  const reader = async (path, ...args) => {
+    if (path === f.raw.metadata.path && ++reads === 1) await finish(f);
+    return read(path, ...args);
+  };
+  await expect(checkpoint(f, reader)).resolves.toMatchObject({ summary: "Fictional completed summary." }); expect(reads).toBe(2);
+});

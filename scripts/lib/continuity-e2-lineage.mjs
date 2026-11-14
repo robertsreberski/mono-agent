@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { mkdir } from "node:fs/promises";
 import { digest } from "./continuity-recorded-schema.mjs";
 import { digest as canonicalDigest } from "./continuity-dataset.mjs";
-import { scanE2Journals, findE2ActiveCompaction, assertE2NativeBinding, e2ActiveBranch } from "./continuity-e2-journals.mjs";
+import { scanE2CheckpointJournals, findE2ActiveCompaction, assertE2NativeBinding, e2ActiveBranch } from "./continuity-e2-journals.mjs";
 import { verifyE2SummaryResult, e2SummaryResultPath } from "./continuity-e2-summary-receipts.mjs";
 const need = ok => { if (!ok) throw Object.assign(Error("e2_summary_receipt_invalid"), { code: "e2_summary_receipt_invalid" }); };
 const token = s => typeof s === "string" && /^[A-Za-z0-9_-]{1,128}$/u.test(s);
@@ -47,7 +47,7 @@ export async function readE2Checkpoint(root, planned, reference, readArtifact, b
 async function readCheckpoint(root, planned, reference, readArtifact, bindings) {
   need(reference && token(reference.journalId) && token(reference.checkpointId));
   const work = e2PhaseWork(root, planned, reference.branch);
-  const journals = await scanE2Journals(work, readArtifact), journal = journals.find(j => j.header.journalId === reference.journalId);
+  const journals = await scanE2CheckpointJournals(work, readArtifact), journal = journals.find(j => j.header.journalId === reference.journalId);
   need(journal && journals.every(j => [...j.validator.operations.values()].every(op => op.end || op.start.payload.type !== "compaction")));
   const { header, records, validator } = journal;
   const record = records.find(r => r.id === reference.checkpointId), value = record?.payload?.compaction;
