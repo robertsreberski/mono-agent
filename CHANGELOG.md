@@ -6,6 +6,11 @@
   framing and occurrence counts, including repeated provenance and quotations.
   Exact comparison remains unchanged; live-model compliance is not guaranteed.
 
+- Add write-only console credential entry for Telegram, Slack and
+  OpenAI-compatible client bearers, with owner-only dotenv persistence,
+  config-only partial-save recovery and explicit next-start activation.
+  Embedded hosts must supply a trusted reloadable `dotenvPath`.
+
 - Make `mono-agent init` create its config file exclusively, refusing a config
   that another process created in the meantime instead of merging into it.
 

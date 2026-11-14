@@ -270,6 +270,19 @@ describe("startMonoAgentApp", () => {
     finally { await app.stop(); }
   });
 
+  it("retains only explicitly supplied reloadable sources on public and direct-controller hosts", async () => {
+    const configPath = await writeConfig(baseConfig());
+    for (const dotenvPath of [undefined, "custom.env"]) {
+      const app = await startMonoAgentApp({ cwd: dir, configPath, env: {}, drivers: [], ...(dotenvPath === undefined ? {} : { dotenvPath }) });
+      try { expect((app as MonoAgentAppController).dotenvPath).toBe(dotenvPath === undefined ? undefined : join(dir, dotenvPath)); }
+      finally { await app.stop(); }
+    }
+    const input = { cwd: dir, configPath, configReadPath: configPath, env: {}, drivers: [], trustedRuntimeReadRoots: [], agentRootOwnership: { agentRoot: dir, release() {} } as never };
+    expect(new MonoAgentAppController(input).dotenvPath).toBeUndefined();
+    expect(new MonoAgentAppController({ ...input, dotenvPath: "custom.env" }).dotenvPath).toBe(join(dir, "custom.env"));
+    expect(() => new MonoAgentAppController({ ...input, dotenvPath: "custom.env", backgroundSnapshot: { dotenvPath: join(dir, ".env") } as BackgroundSnapshot })).toThrow("conflicts");
+  });
+
   it("publishes only the supplied secret-free background snapshot in trace metadata", async () => {
     await writeConfig(baseConfig());
     const backgroundSnapshot: BackgroundSnapshot = {

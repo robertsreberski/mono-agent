@@ -1,0 +1,22 @@
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, expect, it, vi } from "vitest";
+import { CredentialControls } from "./CredentialControls";
+import { api, ApiError } from "../../api";
+import { agent } from "../../test/fixtures";
+import type { WebCredentialSnapshot } from "../../types";
+afterEach(() => { cleanup(); vi.restoreAllMocks(); });
+const view: WebCredentialSnapshot = { version: 1, process: { pid: 42, startedAt: "2026-01-01T00:00:00.000Z" }, fence: "12345678-1234-1234-1234-123456789012", cards: [{ id: "telegram", available: true, reason: "ready", fields: [{ id: "bot", state: "not-set" }], configReady: false, configPending: false }] };
+it("clears DOM on dispatch/failure/navigation, preserves uncertainty and never retries credentials", async () => {
+  vi.spyOn(api, "credentials").mockResolvedValue(view);
+  const save = vi.spyOn(api, "saveCredentials").mockRejectedValue(new ApiError("Unconfirmed", 502, "credential_outcome_unknown"));
+  const plantedValue = ["fictional", "ui", "literal"].join("-");
+  const rendered = render(<CredentialControls agent={agent("fictional")} card="telegram" restart={null} />);
+  const input = await screen.findByLabelText("Bot credential") as HTMLInputElement;
+  fireEvent.change(input, { target: { value: plantedValue } }); fireEvent.submit(screen.getByRole("form"));
+  expect(input.value).toBe(""); await screen.findByRole("alert"); expect(document.body.textContent).not.toContain(plantedValue);
+  await waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+  fireEvent.click(screen.getByRole("button", { name: "Refresh credential status" })); expect(save).toHaveBeenCalledTimes(1);
+  fireEvent.change(await screen.findByLabelText("Bot credential"), { target: { value: plantedValue } });
+  rendered.unmount(); render(<CredentialControls agent={agent("fictional")} card="telegram" restart={null} />);
+  expect((await screen.findByLabelText("Bot credential") as HTMLInputElement).value).toBe(""); expect(save).toHaveBeenCalledTimes(1);
+});

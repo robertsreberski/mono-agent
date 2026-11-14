@@ -342,6 +342,17 @@ together in the same lockstep release.
 
 ## Install / Usage
 
+Console credential cards on supporting hosts accept write-only Telegram/Slack
+credentials and OpenAI-compatible **client** bearers (not model-provider auth).
+The CLI supplies its selected reloadable dotenv path. Embedded hosts must pass
+`dotenvPath` to `startMonoAgentApp`; omission makes credential entry unavailable.
+Saving writes owner-only dotenv first, then guarded configuration, without
+changing the running environment. A confirmed dotenv save with pending config
+can retry configuration alone; an unknown dotenv outcome must never replay
+credentials automatically. Telegram and Slack require explicit allowlists.
+Other catalog credentials still use manual setup.
+
+
 Run `mono-agent preflight [--json] [--port <n>]` from any folder, before creating
 an agent: it checks Node/ABI, isolated better-sqlite3/sqlite-vec and sharp loads,
 user services, local model endpoints, sandbox status, and the console port.

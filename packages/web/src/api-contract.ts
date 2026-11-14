@@ -13,6 +13,10 @@ export interface WebApiDtos {
   readonly ApiAgent: { readonly agent: W.WebAgentSummary };
   readonly ApiPatchAgent: W.PatchWebAgentInput;
   readonly ApiPutRunDefaults: W.PutWebAgentRunSettingsInput;
+  readonly ApiCredentials: W.WebCredentialSnapshot;
+  readonly ApiCredentialSave: W.WebCredentialSaveRequest;
+  readonly ApiCredentialRetry: W.WebCredentialRequest;
+  readonly ApiCredentialSaved: W.WebCredentialSaved;
   readonly ApiCapabilityActions: W.WebCapabilityActionsSnapshot;
   readonly ApiCapabilityActionInput: W.WebCapabilityActionInput;
   readonly ApiCapabilityActionSaveInput: W.WebCapabilityActionSaveInput;

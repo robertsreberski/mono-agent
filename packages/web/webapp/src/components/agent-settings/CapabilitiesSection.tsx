@@ -1,3 +1,4 @@
+import { CredentialControls } from "./CredentialControls";
 import type { ReactNode } from "react";
 import { CapabilityActionControls, CAPABILITY_SAVE_UNCERTAIN, type CapabilityRestartState, type CapabilitySavedState } from "./CapabilityActionControls";
 import { useEffect, useRef, useState } from "react";
@@ -139,7 +140,8 @@ export function CapabilitiesSection({ agent, restart = null }: { readonly agent:
       const actionNext = action?.active ? "Inspect readiness evidence below."
         : action?.reason === "already-configured" || (action?.available && saved[action.id] && !saved[action.id]?.uncertain) ? "Check saved settings and activation below; saving does not restart the agent."
         : action?.available ? "Review and Save below, or use manual setup. Saving does not activate the feature." : undefined;
-      return <CapabilityCard key={`${identity}:${card.id}`} card={card} actionNext={actionNext}>{action && actionSnapshot && <CapabilityActionControls agent={agent} action={action} process={actionSnapshot.process} restart={restart} refresh={() => setRevision((value) => value + 1)} saved={saved[action.id] ?? null} isCurrent={() => currentIdentity.current === identity} setSaved={(value) => setSaved((prior) => ({ ...prior, [action.id]: currentIdentity.current === identity ? value : { ...value, uncertain: true } }))} />}</CapabilityCard>;
+      const credentialCard = card.id === "channel:telegram" ? "telegram" : card.id === "channel:slack" ? "slack" : card.id === "channel:openai-api" ? "openai-api" : null;
+      return <CapabilityCard key={`${agent.sourceId}:${card.id}`} card={card} actionNext={actionNext}>{action && actionSnapshot && <CapabilityActionControls agent={agent} action={action} process={actionSnapshot.process} restart={restart} refresh={() => setRevision((value) => value + 1)} saved={saved[action.id] ?? null} isCurrent={() => currentIdentity.current === identity} setSaved={(value) => setSaved((prior) => ({ ...prior, [action.id]: currentIdentity.current === identity ? value : { ...value, uncertain: true } }))} />}{credentialCard && agent.supportsCredentialSetup === true && <CredentialControls agent={agent} card={credentialCard} restart={restart} />}</CapabilityCard>;
     })}</div>
     {snapshot.hostPreflight && <details><summary>Host preflight (optional)</summary><ul>{snapshot.hostPreflight.checks.map((check) => <li key={check.id}>{check.id}: {check.status}</li>)}</ul></details>}
   </>;

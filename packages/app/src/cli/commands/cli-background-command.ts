@@ -126,6 +126,13 @@ export async function runStart(
   return await runBackgroundCommand(args, "start", env);
 }
 
+/** Select only the actual reloadable CLI source; managed callers supply their verified snapshot. */
+export function foregroundDotenvPath(cwd: string, args: Pick<ParsedCliArgs, "envFile">, snapshot?: BackgroundSnapshot): string {
+  const selected = resolve(cwd, args.envFile ?? ".env");
+  if (snapshot !== undefined && snapshot.dotenvPath !== selected) throw new Error("Reloadable dotenv destination conflicts with the managed startup snapshot.");
+  return snapshot?.dotenvPath ?? selected;
+}
+
 /** Decode the secret-free worker transport and bind it to this exact invocation. */
 export function decodeAndVerifyWorkerSnapshot(
   args: Pick<ParsedCliArgs, "envFile" | "expectedBackgroundSnapshot">,
@@ -468,6 +475,7 @@ async function runForeground(
       activityTracker,
       cwd,
       configPath,
+      dotenvPath: foregroundDotenvPath(cwd, args, backgroundSnapshot),
       ...(runtimeInputs === undefined ? {} : {
         configReadPath: runtimeInputs.configPath,
         privateRuntimePaths: runtimeInputs.privateRuntimePaths,

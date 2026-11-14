@@ -1,3 +1,5 @@
+import { registerCredentialRoutes } from "./credential-routes.js";
+import type { CredentialSetupService } from "../credential-setup.js";
 import { CapabilityActionError, parseCapabilityActionInput, parseCapabilityActionSaveInput, parseCapabilityActionsSnapshot, parseCapabilityActionPreview, parseCapabilityActionSaved, type CapabilityActionsService } from "../capability-actions.js";
 import { parseCapabilitySetupSnapshot, type CapabilitySetupService } from "../capability-setup.js";
 import { isAgentCompactionAccounting } from "@mono-agent/contracts";
@@ -301,6 +303,7 @@ export interface TuiAdapterOptions {
   readonly cron?: CronOperatorService;
   readonly capabilitySetup?: CapabilitySetupService;
   readonly capabilityActions?: CapabilityActionsService;
+  readonly credentialSetup?: CredentialSetupService;
   /** Private app-owned v1 fence; deliberately not an AgentResponder contract. */
   readonly processJobWakeAdmission?: {
     claim(deliveryKey: string, token: string, boundary: string): Promise<boolean>;
@@ -491,6 +494,7 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
                     },
                   }),
             restart: restartSupport,
+            ...(options.credentialSetup === undefined ? {} : { credentialSetup: { version: 1, save: true } }),
             ...(options.capabilityActions === undefined ? {} : { capabilityActions: { version: 1, preview: true, save: true } }),
             ...(options.capabilitySetup === undefined ? {} : {
               capabilitySetup: { version: 1, read: true, propose: false, apply: false },
@@ -526,6 +530,8 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
         sendJsonError(res, 500, error);
       });
   });
+
+  registerCredentialRoutes(app, basePath, options.credentialSetup);
 
   app.use(`${basePath}/v1/capability-actions`, (_req, res, next) => { res.setHeader("Cache-Control", "private, no-store, max-age=0"); next(); });
   for (const operation of ["read", "preview", "save"] as const) {

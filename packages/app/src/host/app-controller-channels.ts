@@ -1,3 +1,4 @@
+import { createCredentialSetupService } from "../setup/credential-setup.js";
 import { createCapabilityActionsService } from "../setup/capability-actions.js";
 import { createCapabilityStatusService } from "../setup/capability-status.js";
 import type { ProviderUsageOperator } from "@mono-agent/contracts";
@@ -34,6 +35,7 @@ export interface ChannelsControllerPort {
   readonly cwd: string;
   readonly configReadPath: string;
   readonly configPath: string;
+  readonly dotenvPath?: string | undefined;
   readonly privateRuntimePaths?: import("../composition/app-config.js").PrivateBackgroundRuntimePaths | undefined;
   readonly logger: MonoAgentAppLogger | undefined;
   readonly drivers: readonly ChannelDriver[];
@@ -296,6 +298,10 @@ export async function startChannel(controller: ChannelsControllerPort, driver: C
           if (controller.logger?.info) controller.logger.info(message);
           else console.info(message);
         },
+      }) : undefined,
+      driver.id === "tui" ? createCredentialSetupService({
+        cwd: controller.cwd, configPath: controller.configPath, env: controller.env,
+        ...(controller.dotenvPath === undefined ? {} : { dotenvPath: controller.dotenvPath }),
       }) : undefined,
     );
     const runningChannel = await (appOwnedTuiStart ?? driver.start(channelStartInput));

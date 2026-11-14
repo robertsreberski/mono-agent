@@ -25,9 +25,9 @@ beforeEach(async () => {
   vi.spyOn(api, "latestAgentRestart").mockResolvedValue(null);
 });
 afterEach(async () => { cleanup(); Object.assign(storyStore, initialStore); vi.restoreAllMocks(); await commands.emulateColorScheme(null); });
-function Preview({ width, older = false, degraded = false, managed = false }: { readonly width: number; readonly older?: boolean; readonly degraded?: boolean; readonly managed?: boolean }) {
+function Preview({ width, older = false, degraded = false, managed = false, credentials = false }: { readonly credentials?: boolean; readonly width: number; readonly older?: boolean; readonly degraded?: boolean; readonly managed?: boolean }) {
   const runtime = useLocalRuntime({ async *run() { yield { content: [{ type: "text", text: "Synthetic preview only" }] }; } });
-  const selected = agent("garden", { label: "Garden Agent · synthetic", status: degraded ? "degraded" : "online", restart: { supported: managed }, ...(older ? {} : { supportsCapabilitySetup: true, supportsCapabilityActions: true }) });
+  const selected = agent("garden", { label: "Garden Agent · synthetic", status: degraded ? "degraded" : "online", restart: { supported: managed }, ...(older ? {} : { supportsCapabilitySetup: true, supportsCapabilityActions: true, ...(credentials ? { supportsCredentialSetup: true } : {}) }) });
   Object.assign(storyStore, { selectedAgent: selected, selectedAgentId: selected.sourceId, agents: [selected], visibleAgents: [selected], selectedThread: null, selectedThreadId: null });
   // Same shell, actual Dashboard navigation, header, scrollport and settings
   // screen as the console. Only store/API display data are synthetic.
@@ -242,4 +242,60 @@ for (const width of [390, 1440]) for (const managed of [true, false]) it(`captur
   if (managed) await waitFor(() => expect(within(memory).getByRole("button", { name: "Restart to apply…" })).toBeEnabled());
   else expect(within(memory).queryByRole("button", { name: "Restart to apply…" })).toBeNull();
   await capture(managed ? "managed-saved" : "foreground-saved");
+});
+
+for (const width of [390, 1440]) for (const state of ["empty", "set-status", "config-pending", "saved-restart", "uncertain"] as const) it(`captures synthetic credential ${state} at ${width}px and clears write-only state`, async () => {
+  await page.viewport(width, width === 390 ? 1900 : 1600);
+  const view: import("./types").WebCredentialSnapshot = {
+    version: 1, process: capabilityActions.process, fence: "12345678-1234-1234-1234-123456789012",
+    cards: [
+      { id: "telegram", available: true, reason: "ready", fields: [{ id: "bot", state: state === "set-status" ? "set" : "not-set" }], configReady: false, configPending: false },
+      { id: "slack", available: true, reason: "ready", fields: [{ id: "bot", state: "not-set" }, { id: "app", state: "not-set" }], configReady: false, configPending: false },
+      { id: "openai-api", available: true, reason: "ready", fields: [{ id: "bearer", state: "not-set" }], configReady: false, configPending: false },
+    ],
+  };
+  vi.spyOn(api, "credentials").mockResolvedValue(view);
+  const plantedValue = ["fictional", "browser", "literal"].join("-");
+  const save = vi.spyOn(api, "saveCredentials").mockImplementation(async () => {
+    expect(Array.from(document.querySelectorAll<HTMLInputElement>('input[type="password"]')).every((field) => field.value === "")).toBe(true);
+    if (state === "uncertain") throw new ApiError("Unconfirmed", 502, "credential_outcome_unknown");
+    vi.mocked(api.credentials).mockResolvedValue({ ...view, cards: view.cards.map((item) => item.id === "telegram" ? { ...item, fields: [{ id: "bot", state: "set" }], configReady: state !== "config-pending", configPending: state === "config-pending" } : item) });
+    return { card: "telegram", process: view.process, outcome: state === "config-pending" ? "saved-config-pending" : "saved" };
+  });
+  const retry = vi.spyOn(api, "retryCredentialConfig").mockImplementation(async () => {
+    vi.mocked(api.credentials).mockResolvedValue({ ...view, cards: view.cards.map((item) => item.id === "telegram" ? { ...item, fields: [{ id: "bot", state: "set" }], configReady: true, configPending: false } : item) });
+    return { card: "telegram", process: view.process, outcome: "saved" };
+  });
+  render(<Preview width={width} credentials managed={state === "saved-restart"} />);
+  const telegram = await screen.findByRole("article", { name: "Telegram" });
+  await within(telegram).findByRole("form", { name: "Save telegram credentials" });
+  const password = within(telegram).getByLabelText("Bot credential") as HTMLInputElement;
+  expect(password.type).toBe("password"); expect(password.value).toBe("");
+  if (!["empty", "set-status"].includes(state)) {
+    await userEvent.type(password, plantedValue);
+    await userEvent.type(within(telegram).getByLabelText("Allowed chat IDs"), "123");
+    await userEvent.click(within(telegram).getByRole("button", { name: "Confirm Save credentials" }));
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+    if (state === "uncertain") await within(telegram).findByRole("alert");
+    else await within(telegram).findByText(state === "config-pending" ? "Saved; config pending." : "Saved; applies on next start.");
+  }
+  await settleAndReveal(width); telegram.scrollIntoView({ block: "start" });
+  expect(telegram.textContent).not.toContain(plantedValue);
+  expect(JSON.stringify(localStorage)).not.toContain(plantedValue); expect(JSON.stringify(sessionStorage)).not.toContain(plantedValue);
+  expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width);
+  if (shots) await page.screenshot({ path: `${shots}/credentials-synthetic-${width}-${state}.png` });
+  if (state === "config-pending") {
+    await userEvent.click(within(telegram).getByRole("button", { name: "Retry configuration only" }));
+    await waitFor(() => expect(retry).toHaveBeenCalledTimes(1));
+    expect(retry.mock.calls[0]?.[1]).not.toHaveProperty("fields"); expect(save).toHaveBeenCalledTimes(1);
+  }
+  if (state === "saved-restart") {
+    await userEvent.click(within(telegram).getByRole("button", { name: "Restart to apply…" }));
+    expect(screen.getByText(/Restarting may interrupt active conversations/)).toBeVisible();
+  }
+  cleanup();
+  render(<Preview width={width} credentials />);
+  const fresh = await screen.findByRole("article", { name: "Telegram" });
+  await waitFor(() => expect((within(fresh).getByLabelText("Bot credential") as HTMLInputElement).value).toBe(""));
+  expect(save).toHaveBeenCalledTimes(["empty", "set-status"].includes(state) ? 0 : 1);
 });

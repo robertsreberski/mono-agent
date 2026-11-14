@@ -65,3 +65,5 @@ export { parseCapabilitySetupSnapshot, MAX_CAPABILITY_SETUP_BYTES } from "./capa
 export type { CapabilityStatus, CapabilityEvidence, CapabilityChoice, CapabilityCard, CapabilitySetupSnapshot, CapabilitySetupService } from "./capability-setup.js";
 
 export * from "./capability-actions.js";
+
+export * from "./credential-setup.js";

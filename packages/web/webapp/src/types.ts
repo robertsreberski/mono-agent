@@ -169,3 +169,8 @@ export type { ProviderUsage, ProviderUsageSnapshot, ProviderUsageId } from "@mon
 export type { WebCapabilitySetupSnapshot } from "../../src/contracts.js";
 
 export type { WebCapabilityActionsSnapshot, WebCapabilityActionInput, WebCapabilityActionSaveInput, WebCapabilityActionPreview, WebCapabilityActionSaved } from "../../src/contracts.js";
+
+export type WebCredentialSnapshot = Wire.WebCredentialSnapshot;
+export type WebCredentialSaveRequest = Wire.WebCredentialSaveRequest;
+export type WebCredentialRequest = Wire.WebCredentialRequest;
+export type WebCredentialSaved = Wire.WebCredentialSaved;

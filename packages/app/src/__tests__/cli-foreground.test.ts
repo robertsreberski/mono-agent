@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { waitForShutdownSignal } from "../cli/commands/cli-background-command.js";
+import { foregroundDotenvPath, waitForShutdownSignal } from "../cli/commands/cli-background-command.js";
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => {
@@ -120,4 +120,15 @@ describe("waitForShutdownSignal", () => {
     await expect(pending).resolves.toBe(1);
     expect(app.stop).toHaveBeenCalledTimes(1);
   });
+});
+
+// The same selector feeds plain CLI, verified launchd and verified systemd app options.
+it("threads the selected CLI dotenv through foreground and both managed worker sources without guessing", () => {
+  expect(foregroundDotenvPath("/fictional", {})).toBe("/fictional/.env");
+  expect(foregroundDotenvPath("/fictional", { envFile: "custom.env" })).toBe("/fictional/custom.env");
+  const snapshot = { schema: "mono-agent.background-snapshot.v1" as const, configPath: "/fictional/config.json", configFingerprint: "synthetic", dotenvPath: "/fictional/custom.env", dotenvFingerprint: "synthetic-hmac", identityPath: "/fictional/IDENTITY.md", identityFingerprint: "synthetic", operationalEnvironmentFingerprint: "synthetic" };
+  for (const _host of ["launchd", "systemd"]) {
+    expect(foregroundDotenvPath("/fictional", { envFile: "custom.env" }, snapshot)).toBe(snapshot.dotenvPath);
+    expect(() => foregroundDotenvPath("/fictional", {}, snapshot)).toThrow("conflicts");
+  }
 });

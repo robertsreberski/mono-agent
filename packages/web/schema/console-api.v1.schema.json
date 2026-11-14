@@ -339,7 +339,7 @@
       "type": "object",
       "properties": {
         "part": {
-          "$ref": "#/definitions/Extract%3CWebMessagePart%2Cstructure-src_api-contract.ts-4495-4527-src_api-contract.ts-4469-4528-src_api-contract.ts-4454-4528-src_api-contract.ts-4452-4530-src_api-contract.ts-4420-4531-src_api-contract.ts-90-7429-src_api-contract.ts-0-7430%3E"
+          "$ref": "#/definitions/Extract%3CWebMessagePart%2Cstructure-src_api-contract.ts-4713-4745-src_api-contract.ts-4687-4746-src_api-contract.ts-4672-4746-src_api-contract.ts-4670-4748-src_api-contract.ts-4638-4749-src_api-contract.ts-90-7647-src_api-contract.ts-0-7648%3E"
         }
       },
       "required": [
@@ -446,6 +446,18 @@
     "ApiCreateWake": {
       "$ref": "#/definitions/WebWakeScheduleDefinition"
     },
+    "ApiCredentialRetry": {
+      "$ref": "#/definitions/CredentialRequest"
+    },
+    "ApiCredentials": {
+      "$ref": "#/definitions/CredentialSnapshot"
+    },
+    "ApiCredentialSave": {
+      "$ref": "#/definitions/CredentialSaveRequest"
+    },
+    "ApiCredentialSaved": {
+      "$ref": "#/definitions/CredentialSaved"
+    },
     "ApiCronAction": {
       "type": "object",
       "properties": {
@@ -493,7 +505,7 @@
       "additionalProperties": false
     },
     "ApiCronEnableResult": {
-      "$ref": "#/definitions/WebCronMutationResult%3Cstructure-src_api-contract.ts-2773-2803-src_api-contract.ts-2748-2804-src_api-contract.ts-2716-2805-src_api-contract.ts-90-7429-src_api-contract.ts-0-7430%3E"
+      "$ref": "#/definitions/WebCronMutationResult%3Cstructure-src_api-contract.ts-2991-3021-src_api-contract.ts-2966-3022-src_api-contract.ts-2934-3023-src_api-contract.ts-90-7647-src_api-contract.ts-0-7648%3E"
     },
     "ApiCronOverview": {
       "$ref": "#/definitions/WebCronOverview"
@@ -517,7 +529,7 @@
       "additionalProperties": false
     },
     "ApiCronRunResult": {
-      "$ref": "#/definitions/WebCronMutationResult%3Cstructure-src_api-contract.ts-2677-2714-src_api-contract.ts-2652-2715-src_api-contract.ts-2623-2716-src_api-contract.ts-90-7429-src_api-contract.ts-0-7430%3E"
+      "$ref": "#/definitions/WebCronMutationResult%3Cstructure-src_api-contract.ts-2895-2932-src_api-contract.ts-2870-2933-src_api-contract.ts-2841-2934-src_api-contract.ts-90-7647-src_api-contract.ts-0-7648%3E"
     },
     "ApiCronRuns": {
       "$ref": "#/definitions/WebCronRunPage"
@@ -722,7 +734,7 @@
       "type": "object",
       "properties": {
         "part": {
-          "$ref": "#/definitions/Extract%3CWebMessagePart%2Cstructure-src_api-contract.ts-4687-4716-src_api-contract.ts-4661-4717-src_api-contract.ts-4646-4717-src_api-contract.ts-4644-4719-src_api-contract.ts-4616-4720-src_api-contract.ts-90-7429-src_api-contract.ts-0-7430%3E"
+          "$ref": "#/definitions/Extract%3CWebMessagePart%2Cstructure-src_api-contract.ts-4905-4934-src_api-contract.ts-4879-4935-src_api-contract.ts-4864-4935-src_api-contract.ts-4862-4937-src_api-contract.ts-4834-4938-src_api-contract.ts-90-7647-src_api-contract.ts-0-7648%3E"
         }
       },
       "required": [
@@ -1201,7 +1213,7 @@
       "type": "object",
       "properties": {
         "part": {
-          "$ref": "#/definitions/Extract%3CWebMessagePart%2Cstructure-src_api-contract.ts-3983-4027-src_api-contract.ts-3957-4028-src_api-contract.ts-3942-4028-src_api-contract.ts-3940-4030-src_api-contract.ts-3916-4031-src_api-contract.ts-90-7429-src_api-contract.ts-0-7430%3E"
+          "$ref": "#/definitions/Extract%3CWebMessagePart%2Cstructure-src_api-contract.ts-4201-4245-src_api-contract.ts-4175-4246-src_api-contract.ts-4160-4246-src_api-contract.ts-4158-4248-src_api-contract.ts-4134-4249-src_api-contract.ts-90-7647-src_api-contract.ts-0-7648%3E"
         }
       },
       "required": [
@@ -1936,6 +1948,179 @@
       ],
       "additionalProperties": false
     },
+    "CredentialCardId": {
+      "type": "string",
+      "enum": [
+        "telegram",
+        "slack",
+        "openai-api"
+      ]
+    },
+    "CredentialCardStatus": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/CredentialCardId"
+        },
+        "available": {
+          "type": "boolean"
+        },
+        "reason": {
+          "type": "string",
+          "enum": [
+            "ready",
+            "no-reloadable-source",
+            "prerequisites",
+            "env-shadowed"
+          ]
+        },
+        "fields": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "$ref": "#/definitions/Exclude%3CCredentialFieldId%2C%22allowedIds%22%3E"
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "set",
+                  "not-set"
+                ]
+              }
+            },
+            "required": [
+              "id",
+              "state"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "configReady": {
+          "type": "boolean"
+        },
+        "configPending": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "available",
+        "reason",
+        "fields",
+        "configReady",
+        "configPending"
+      ],
+      "additionalProperties": false
+    },
+    "CredentialRequest": {
+      "type": "object",
+      "properties": {
+        "card": {
+          "$ref": "#/definitions/CredentialCardId"
+        },
+        "process": {
+          "$ref": "#/definitions/CapabilityActionProcess"
+        },
+        "fence": {
+          "type": "string"
+        },
+        "confirmed": {
+          "type": "boolean",
+          "const": true
+        }
+      },
+      "required": [
+        "card",
+        "process",
+        "fence",
+        "confirmed"
+      ],
+      "additionalProperties": false
+    },
+    "CredentialSaved": {
+      "type": "object",
+      "properties": {
+        "card": {
+          "$ref": "#/definitions/CredentialCardId"
+        },
+        "process": {
+          "$ref": "#/definitions/CapabilityActionProcess"
+        },
+        "outcome": {
+          "type": "string",
+          "enum": [
+            "saved",
+            "saved-config-pending"
+          ]
+        }
+      },
+      "required": [
+        "card",
+        "process",
+        "outcome"
+      ],
+      "additionalProperties": false
+    },
+    "CredentialSaveRequest": {
+      "type": "object",
+      "properties": {
+        "card": {
+          "$ref": "#/definitions/CredentialCardId"
+        },
+        "process": {
+          "$ref": "#/definitions/CapabilityActionProcess"
+        },
+        "fence": {
+          "type": "string"
+        },
+        "confirmed": {
+          "type": "boolean",
+          "const": true
+        },
+        "fields": {
+          "$ref": "#/definitions/Partial%3CRecord%3CCredentialFieldId%2Cstring%3E%3E"
+        }
+      },
+      "required": [
+        "card",
+        "confirmed",
+        "fence",
+        "fields",
+        "process"
+      ],
+      "additionalProperties": false
+    },
+    "CredentialSnapshot": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "number",
+          "const": 1
+        },
+        "process": {
+          "$ref": "#/definitions/CapabilityActionProcess"
+        },
+        "fence": {
+          "type": "string",
+          "description": "Random, process-local concurrency fence. Not a content digest."
+        },
+        "cards": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/CredentialCardStatus"
+          }
+        }
+      },
+      "required": [
+        "version",
+        "process",
+        "fence",
+        "cards"
+      ],
+      "additionalProperties": false
+    },
     "CronOperatorHealth": {
       "type": "string",
       "enum": [
@@ -2078,6 +2263,14 @@
       "$ref": "#/definitions/WebThreadChangedPayload",
       "description": "The payload of every `thread.changed`/`threads.changed` that names a conversation.\n\nThe fresh summary travels WITH the event: one that only named a conversation cost every connected console a page of its bucket to find out what had changed about a row it was already holding. A removal has no summary left to carry, so it says so."
     },
+    "Exclude<CredentialFieldId,\"allowedIds\">": {
+      "type": "string",
+      "enum": [
+        "bot",
+        "app",
+        "bearer"
+      ]
+    },
     "Exclude<ProcessJobState,(\"queued\"|\"starting\"|\"running\")>": {
       "type": "string",
       "enum": [
@@ -2107,7 +2300,7 @@
       "additionalProperties": false,
       "description": "What an `agents.changed` says about itself.\n\nA pin is a one-field write the writing tab already applied from the PATCH response, so it names the agent and the new state rather than telling every console to re-read the bootstrap, its skills and its cron. Discovery-driven invalidations carry nothing: an agent that appeared, went away, or advertises something different can have changed anything at all."
     },
-    "Extract<WebMessagePart,structure-src_api-contract.ts-3983-4027-src_api-contract.ts-3957-4028-src_api-contract.ts-3942-4028-src_api-contract.ts-3940-4030-src_api-contract.ts-3916-4031-src_api-contract.ts-90-7429-src_api-contract.ts-0-7430>": {
+    "Extract<WebMessagePart,structure-src_api-contract.ts-4201-4245-src_api-contract.ts-4175-4246-src_api-contract.ts-4160-4246-src_api-contract.ts-4158-4248-src_api-contract.ts-4134-4249-src_api-contract.ts-90-7647-src_api-contract.ts-0-7648>": {
       "anyOf": [
         {
           "type": "object",
@@ -2262,7 +2455,7 @@
         }
       ]
     },
-    "Extract<WebMessagePart,structure-src_api-contract.ts-4495-4527-src_api-contract.ts-4469-4528-src_api-contract.ts-4454-4528-src_api-contract.ts-4452-4530-src_api-contract.ts-4420-4531-src_api-contract.ts-90-7429-src_api-contract.ts-0-7430>": {
+    "Extract<WebMessagePart,structure-src_api-contract.ts-4713-4745-src_api-contract.ts-4687-4746-src_api-contract.ts-4672-4746-src_api-contract.ts-4670-4748-src_api-contract.ts-4638-4749-src_api-contract.ts-90-7647-src_api-contract.ts-0-7648>": {
       "type": "object",
       "properties": {
         "type": {
@@ -2310,7 +2503,7 @@
       ],
       "additionalProperties": false
     },
-    "Extract<WebMessagePart,structure-src_api-contract.ts-4687-4716-src_api-contract.ts-4661-4717-src_api-contract.ts-4646-4717-src_api-contract.ts-4644-4719-src_api-contract.ts-4616-4720-src_api-contract.ts-90-7429-src_api-contract.ts-0-7430>": {
+    "Extract<WebMessagePart,structure-src_api-contract.ts-4905-4934-src_api-contract.ts-4879-4935-src_api-contract.ts-4864-4935-src_api-contract.ts-4862-4937-src_api-contract.ts-4834-4938-src_api-contract.ts-90-7647-src_api-contract.ts-0-7648>": {
       "type": "object",
       "properties": {
         "type": {
@@ -2388,6 +2581,24 @@
     },
     "Omit<WebMessageChangedPayload,\"deltaDeclined\">": {
       "$ref": "#/definitions/Pick%3CWebMessageChangedPayload%2CExclude%3C(%22messageId%22%7C%22updatedAt%22%7C%22deltaDeclined%22)%2C%22deltaDeclined%22%3E%3E"
+    },
+    "Partial<Record<CredentialFieldId,string>>": {
+      "type": "object",
+      "properties": {
+        "bot": {
+          "type": "string"
+        },
+        "app": {
+          "type": "string"
+        },
+        "bearer": {
+          "type": "string"
+        },
+        "allowedIds": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
     },
     "PatchWebAgentInput": {
       "type": "object",
@@ -4289,6 +4500,10 @@
           "type": "boolean",
           "const": true
         },
+        "supportsCredentialSetup": {
+          "type": "boolean",
+          "const": true
+        },
         "supportsProviderUsage": {
           "type": "boolean",
           "const": true
@@ -4972,7 +5187,7 @@
       ],
       "additionalProperties": false
     },
-    "WebCronMutationResult<structure-src_api-contract.ts-2677-2714-src_api-contract.ts-2652-2715-src_api-contract.ts-2623-2716-src_api-contract.ts-90-7429-src_api-contract.ts-0-7430>": {
+    "WebCronMutationResult<structure-src_api-contract.ts-2895-2932-src_api-contract.ts-2870-2933-src_api-contract.ts-2841-2934-src_api-contract.ts-90-7647-src_api-contract.ts-0-7648>": {
       "anyOf": [
         {
           "type": "object",
@@ -5023,7 +5238,7 @@
         }
       ]
     },
-    "WebCronMutationResult<structure-src_api-contract.ts-2773-2803-src_api-contract.ts-2748-2804-src_api-contract.ts-2716-2805-src_api-contract.ts-90-7429-src_api-contract.ts-0-7430>": {
+    "WebCronMutationResult<structure-src_api-contract.ts-2991-3021-src_api-contract.ts-2966-3022-src_api-contract.ts-2934-3023-src_api-contract.ts-90-7647-src_api-contract.ts-0-7648>": {
       "anyOf": [
         {
           "type": "object",

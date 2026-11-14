@@ -73,6 +73,13 @@ function fixture<K extends keyof WebApiDtos>(name: string, type: K, value: WebAp
 }
 
 export const FIXTURES = [
+  fixture("credentials-status", "ApiCredentials", { version: 1, process: { pid: 42, startedAt: at }, fence: "12345678-1234-1234-1234-123456789012", cards: [
+    { id: "telegram", available: true, reason: "ready", fields: [{ id: "bot", state: "not-set" }], configReady: false, configPending: false },
+    { id: "slack", available: true, reason: "ready", fields: [{ id: "bot", state: "set" }, { id: "app", state: "not-set" }], configReady: false, configPending: true },
+    { id: "openai-api", available: true, reason: "ready", fields: [{ id: "bearer", state: "set" }], configReady: true, configPending: false },
+  ] }),
+  fixture("credentials-config-retry", "ApiCredentialRetry", { card: "slack", process: { pid: 42, startedAt: at }, fence: "12345678-1234-1234-1234-123456789012", confirmed: true }),
+  fixture("credentials-saved", "ApiCredentialSaved", { card: "slack", process: { pid: 42, startedAt: at }, outcome: "saved-config-pending" }),
   fixture("capability-actions", "ApiCapabilityActions", { version: 1, process: { pid: 42, startedAt: at }, actions: [{ id: "memory-lite", available: true, active: false, reason: "eligible" }, { id: "cron-controls", available: false, active: false, reason: "no-valid-jobs" }] }),
   fixture("capability-action-input", "ApiCapabilityActionInput", { action: "memory-lite", process: { pid: 42, startedAt: at } }),
   fixture("capability-action-save", "ApiCapabilityActionSaveInput", { action: "cron-controls", process: { pid: 42, startedAt: at }, expectedVersion: "a".repeat(64), confirmed: true }),

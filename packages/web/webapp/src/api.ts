@@ -1,3 +1,4 @@
+import type { WebCredentialSnapshot, WebCredentialSaveRequest, WebCredentialRequest, WebCredentialSaved } from "./types";
 import type { WebCapabilityActionsSnapshot, WebCapabilityActionInput, WebCapabilityActionSaveInput, WebCapabilityActionPreview, WebCapabilityActionSaved } from "./types.js";
 import type { WebCapabilitySetupSnapshot } from "./types.js";
 import { normalizeBrowserCosts } from "../../src/cost-wire.js";
@@ -865,6 +866,9 @@ export const api = {
     return result.agent;
   },
 
+  credentials: (sourceId: string, signal?: AbortSignal) => request<WebCredentialSnapshot>(`/api/v1/agents/${encodeURIComponent(sourceId)}/credentials`, { headers: { "X-Mono-Agent-Web-Origin": window.location.origin }, signal, cache: "no-store" }),
+  saveCredentials: (sourceId: string, input: WebCredentialSaveRequest) => request<WebCredentialSaved>(`/api/v1/agents/${encodeURIComponent(sourceId)}/credentials/save`, { headers: { "X-Mono-Agent-Web-Origin": window.location.origin }, method: "POST", body: JSON.stringify(input), cache: "no-store" }),
+  retryCredentialConfig: (sourceId: string, input: WebCredentialRequest) => request<WebCredentialSaved>(`/api/v1/agents/${encodeURIComponent(sourceId)}/credentials/retry`, { headers: { "X-Mono-Agent-Web-Origin": window.location.origin }, method: "POST", body: JSON.stringify(input), cache: "no-store" }),
   capabilityActions: (sourceId: string, signal?: AbortSignal) => request<WebCapabilityActionsSnapshot>(`/api/v1/agents/${encodeURIComponent(sourceId)}/capability-actions`, { headers: { "X-Mono-Agent-Web-Origin": window.location.origin }, signal }),
   previewCapabilityAction: (sourceId: string, input: WebCapabilityActionInput) => request<WebCapabilityActionPreview>(`/api/v1/agents/${encodeURIComponent(sourceId)}/capability-actions/preview`, { headers: { "X-Mono-Agent-Web-Origin": window.location.origin }, method: "POST", body: JSON.stringify(input) }),
   saveCapabilityAction: (sourceId: string, input: WebCapabilityActionSaveInput) => request<WebCapabilityActionSaved>(`/api/v1/agents/${encodeURIComponent(sourceId)}/capability-actions/save`, { headers: { "X-Mono-Agent-Web-Origin": window.location.origin }, method: "POST", body: JSON.stringify(input) }),

@@ -141,11 +141,26 @@ paths, commands or credentials. The agent owns the durable write and private
 backup. Managed agents reuse Restart confirmation/tracking and fresh startup
 verification; foreground/embedded saves remain pending until next start. Restart
 failure never automatically rolls back. Older agents retain manual guidance.
-There is no credential form or proposal store.
+Supporting agents additionally offer write-only Telegram/Slack credential fields
+and an OpenAI-compatible client bearer field. These are not model-provider
+credentials. Values are cleared before dispatch, after errors and on navigation,
+and are never stored in browser application state or web SQLite. Status is only
+set/not-set. Confirm Save writes the agent-owned dotenv before guarded config;
+“Saved; config pending” offers config-only retry. An uncertain dotenv outcome is
+not automatically replayed. Use the existing Restart confirmation to activate;
+foreground saves apply on the next owner-controlled start. Other inventory
+credentials retain manual guidance. Browser/request memory necessarily exists;
+this is not a physical-memory-erasure guarantee.
 Built-in tracing is already enabled; removed exporters are unsupported. Optional
 host-preflight evidence appears only when explicitly supplied by the agent.
 `?agent=<source-id>&settings=capabilities` is an init handoff link: discovery keeps
 that target pending instead of silently selecting another agent.
+
+Anyone reaching the console/operator listener can operate the agent and set
+credentials. Local users/processes and sufficiently network-enabled model tools
+can reach it. After restart, dotenv credentials also remain inherited by
+Exec/Bash tools; credential entry does not prevent deliberate tool-driven
+credential access or exfiltration. There is no new authentication layer.
 
 ### Conversation PDF export
 
