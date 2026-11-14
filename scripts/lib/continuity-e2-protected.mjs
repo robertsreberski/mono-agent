@@ -1,3 +1,4 @@
+import { E2_PROTECTED_POLICY } from "./continuity-e2-summary-plan.mjs";
 // Key-blind fictional protected-history rehearsal. All inference is local faux.
 // Publication, cold admission, restart and summary preparation are shipping paths.
 import { mkdir, writeFile } from "node:fs/promises";
@@ -113,7 +114,7 @@ export async function rehearseE2Protected({ work, model, carrier, fallback = fal
     await grow();
     const compact = () => tryCompact(h, { trigger: "proactive", onEvent: e => { events.push(e); onEvent(e, raw); }, runtimeWarnings: warnings,
       session: { getEntries: () => raw.getEntries(), buildContext: async () => projectContext(await raw.getEntries()) },
-      policy: { enabled: true, summaryMaxTokens: 3000, keepRecentTokens: 1000, compactionMinSavingsTokens: 0, effort: "none", failureCooldownMs: 900000 } });
+      policy: E2_PROTECTED_POLICY });
     let result = await compact(), suppressed = false;
     if (observerError) throw observerError;
     if (refusal && !fallback) {

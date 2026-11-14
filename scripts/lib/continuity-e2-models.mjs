@@ -13,10 +13,7 @@ import { FACT, NEXT_ACTION } from "./continuity-e2-tools.mjs";
 
 const paidDecorators = new WeakSet();
 export const isE2PaidDecorator = value => paidDecorators.has(value);
-let estimatorsLoaded = false;
-export const e2EstimatorsLoaded = () => estimatorsLoaded;
 export async function loadE2Estimators() {
-  estimatorsLoaded = true;
   if (!existsSync(new URL("../../packages/turn/dist/agent/compaction.js", import.meta.url))) fail("E2_ESTIMATOR_BUILD_REQUIRED");
   try {
     const [{ estimateFixedOverheadTokens, resolveAgentCompactionPolicy }, engine] = await Promise.all([

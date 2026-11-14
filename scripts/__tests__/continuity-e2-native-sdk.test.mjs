@@ -183,9 +183,9 @@ it("binds ordinary shipping tryCompact event and native journal IDs without requ
   expect(hold.nativeCompaction.nativeOperationDigest).not.toBe(hold.operationDigest); expect(hold.summaryReceipt.durable).toBe(true);
   expect(hold.retainedPredecessor).toBeUndefined();
 }, E2_NATIVE_TEST_TIMEOUT_MS);
-it.each(["quotation", "carry"].flatMap(carrier => ["exact", "original", "split", "drop", "newline", "whitespace"].map(kind => [carrier, kind])))("authenticates retained %s %s through IPC consumption and native send", async (carrier, kind) => {
+it.each(["quotation", "carry"].flatMap(carrier => ["exact", "original", "split", "drop", "newline", "whitespace", "forged-fallback"].map(kind => [carrier, kind])))("authenticates retained %s %s through IPC consumption and native send", async (carrier, kind) => {
   const result = await run({ scenario: `retained-${carrier}-${kind}`, rows: [{ role: "summary", model: "openai-codex:gpt-6-luna" }, { role: "summary", model: SOL }, { role: "probe", model: SOL }] });
-  const preSendRefusal = ["original", "newline", "whitespace"].includes(kind), refused = preSendRefusal || kind === "drop";
+  const preSendRefusal = ["original", "newline", "whitespace", "forged-fallback"].includes(kind), refused = preSendRefusal || kind === "drop";
   expect(result.report.stop, JSON.stringify(result.report)).toBe(refused ? "e2_summary_receipt_invalid" : "completed");
   expect(result.received).toHaveLength(preSendRefusal ? 1 : kind === "drop" ? 2 : 3);
   expect(result.report.phases[0].calls.verifiedSummaries).toBe(refused ? 1 : 2);

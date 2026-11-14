@@ -158,3 +158,45 @@ it("marks warm estimator and product caches non-qualifying before the first capt
   expect(record.qualification).toBe(false);
   expect(() => requireProtectedE2Sizing([record])).toThrow("E2_ESTIMATE_INVALID");
 }, 180000);
+
+
+it("delegates an argv-spoofing warm wrapper to a genuinely clean sizing child", async () => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "e2-delegated-sizing-"))); roots.push(root);
+  const snapshots = join(root, "snapshots"); await mkdir(snapshots);
+  const { source, protocol } = await registrationTrace(snapshots);
+  protocol.probeLookupRounds = 3;
+  for (const branch of protocol.branches) { branch.limits.probeRequests = 64; branch.exclusions.coverage = source.coverage.flatMap((gap, i) => gap.tier === "replay" ? [i] : []); }
+  const input = join(root, "input"); await mkdir(input);
+  await writeFile(join(input,"source.json"), JSON.stringify(source)); await writeFile(join(input,"protocol.json"), JSON.stringify(protocol));
+  const preload = join(root,"fictional-preload.mjs");
+  await writeFile(preload, 'if(process.argv[1]?.endsWith("continuity-e2-sizing-child.mjs")) throw Error("Preload leaked into sizing child");');
+  const cli = join(ROOT, "scripts/continuity-e2.mjs"), output = join(root,"delegated");
+  const code = `
+    const {loadE2Estimators} = await import(${JSON.stringify(pathToFileURL(join(ROOT,"scripts/lib/continuity-e2-models.mjs")).href)});
+    const estimators = await loadE2Estimators();
+    const {default: childProcess} = await import("node:child_process");
+    const {writeFileSync} = await import("node:fs");
+    const {syncBuiltinESMExports} = await import("node:module");
+    const nativeFork = childProcess.fork;
+    childProcess.fork = (entry, args, options) => {
+      if (!entry.endsWith("continuity-e2-sizing-child.mjs") || args.length || options.execPath !== process.execPath || options.execArgv.length || Object.hasOwn(options.env,"NODE_OPTIONS")) throw Error("Sizing fork not clean");
+      const child = nativeFork(entry,args,options);
+      writeFileSync(${JSON.stringify(join(root,"child-proof.json"))},JSON.stringify({child:child.pid,parent:process.pid}));
+      return child;
+    };
+    syncBuiltinESMExports();
+    const {productionModules} = await import(${JSON.stringify(pathToFileURL(join(ROOT,"scripts/lib/continuity-runner.mjs")).href)});
+    await productionModules(${JSON.stringify(ROOT)});
+    estimators.estimateTokens = () => {throw Error("Warm parent estimator reused");};
+    process.execArgv.length = 0;
+    process.argv = [process.execPath, ${JSON.stringify(cli)}, "size", "--source", ${JSON.stringify(input)}, "--protocol", ${JSON.stringify(join(input,"protocol.json"))}, "--output", ${JSON.stringify(output)}, "--summary", "faux-short"];
+    await import(${JSON.stringify(pathToFileURL(cli).href)});
+  `;
+  await promisify(execFile)(process.execPath, ["--input-type=module", "-e", code], { cwd: ROOT,
+    env: { ...process.env, HOME: root, NODE_OPTIONS: `--import=${pathToFileURL(preload).href}` }, maxBuffer: 1024 * 1024 });
+  const record = JSON.parse(await readFile(join(output,"sizing.json"), "utf8"));
+  const proof = JSON.parse(await readFile(join(root,"child-proof.json"),"utf8"));
+  expect(proof.child).not.toBe(proof.parent); expect(proof.child).toBeGreaterThan(1);
+  expect(record.qualification).toBe(true); // Measurement was in the clean child, not the spoofing process.
+  expect(record.sizingIdentity).toMatchObject({ sourceHead: expect.stringMatching(/^[a-f0-9]{40}$/u), buildOutputSha256: expect.stringMatching(/^[a-f0-9]{64}$/u) });
+}, 180000);

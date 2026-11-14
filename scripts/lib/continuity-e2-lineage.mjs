@@ -1,4 +1,5 @@
 // Controller-owned committed-summary lineage. Never trust a child-supplied text hash.
+import { deriveE2SummaryRequest } from "./continuity-e2-summary-plan.mjs";
 import { fail } from "./continuity-observation-input.mjs";
 import { assertE2BaselineContext } from "./continuity-e2-protocol.mjs";
 import { join } from "node:path";
@@ -339,16 +340,9 @@ export async function verifyE2NativeLineage(bytes, hold, state, assignment, read
     }
     need(!unresolved.length || authenticated);
     if (authenticated) {
-      const { createPrefixSummaryContext, createHistorySummaryContext } = await import(new URL("../../packages/turn/dist/engine/compaction-kit/compaction.js", import.meta.url).href);
-      const template = context => context.messages[0].content[0].text.split("</request-local-positions>\n\n")[1];
-      const prefixTemplate = template(createPrefixSummaryContext([])), fallbackTemplate = template(createHistorySummaryContext([], {}));
-      need(prefixTemplate && fallbackTemplate);
-      const prompts = (JSON.parse(bytes).input ?? []).filter(item => item.role === "user").flatMap(item =>
-        typeof item.content === "string" ? [item.content] : (item.content ?? []).filter(p => p.type === "input_text").map(p => p.text))
-        .filter(text => typeof text === "string" && text.includes("</request-local-positions>\n\n"));
-      const prefixOnly = prompts.length === 1 && prompts[0].endsWith(prefixTemplate);
-      const legacyFallback = !predecessors.length && prompts.length === 1 && prompts[0].endsWith(fallbackTemplate);
-      need(predecessors.length > 0 || prefixOnly || legacyFallback);
+      const expected = await deriveE2SummaryRequest({ root: assignment.outputRoot, state, index: assignment.index, hold, native, predecessor: authenticated, readArtifact });
+      const body = JSON.parse(bytes);
+      need(body.instructions === expected.instructions && canonicalDigest(body.input) === canonicalDigest(expected.input));
       // Active retained authority overrides archive-original equality, including
       // otherwise recognized original frames. Unknown/perturbed prefix templates
       // never turn a retained operation into an ordinary generated-only cut.
@@ -357,8 +351,14 @@ export async function verifyE2NativeLineage(bytes, hold, state, assignment, read
         const i = found.indexOf(r); verified.add(i);
         spans.push({ source: r.source, start: r.offset, end: r.offset + r.prefix.length + authenticated.text.length + r.suffix.length });
       }
+      // A prefix can include the already authenticated carry seed itself. Its
+      // native wrapper is authorized by the seed receipt AND the exact replay,
+      // never by the submitted wrapper or by archive-original substitution.
+      const seed = native.records.find(r => r.id === native.validator.retainedSummaryAdmission.payload.seed.entryId);
+      for (const [i, r] of found.entries()) if (r.kind === "native" && r.text === authenticated.text
+        && seed?.payload.message.content === E2_SUMMARY_PREFIX + authenticated.text + E2_SUMMARY_SUFFIX) verified.add(i);
       const { text: _text, ...predecessor } = authenticated;
-      const binding = { ...predecessor, assembly: prefixOnly ? "split-prefix" : legacyFallback ? "legacy-fallback" : "summary" };
+      const binding = { ...predecessor, assembly: expected.assembly };
       if (hold.retainedPredecessor) need(canonicalDigest(hold.retainedPredecessor) === canonicalDigest(binding));
       hold.retainedPredecessor = binding;
     } else need(!hold.retainedPredecessor);

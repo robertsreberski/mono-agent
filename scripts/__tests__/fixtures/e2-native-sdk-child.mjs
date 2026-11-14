@@ -99,12 +99,8 @@ try {
         actor.setPosition({ model: "openai-codex:gpt-6.1-sol", turn: 0, message: 0 });
       },
       onAdmission: async ({ raw, admission }) => { seedId = admission.payload.seed.entryId; if (split) await raw.moveTo(seedId); },
-      // Explicit producer-input fixture for the prefix-only assembly alternative.
-      // Real tryCompact events, native operation, receipt, request and IPC stay
-      // shipping paths; only the already-quoted seed is excluded from new history.
-      prepareInput: split ? input => ({ ...input, branchEntries: input.branchEntries.filter(e => e.id !== seedId), nonRetainablePrefixLength: 0 }) : undefined,
       appendProgress: split ? async raw => {
-        await raw.appendMessage({ role: "user", content: "Fictional prefix. ".repeat(4000), timestamp: 2 });
+        await raw.appendMessage(modules.pi.fauxAssistantMessage("Fictional prefix. ".repeat(4000)));
         await raw.appendMessage(modules.pi.fauxAssistantMessage([modules.pi.fauxToolCall("read", { path: "fictional-public.txt" }, { id: "fictional-read" })]));
         await raw.appendMessage({ role: "toolResult", toolCallId: "fictional-read", toolName: "read", content: [{ type: "text", text: "Fictional read result." }], isError: false, timestamp: 2 });
         await raw.appendMessage(modules.pi.fauxAssistantMessage("Fictional recent suffix. ".repeat(3000)));
@@ -123,7 +119,9 @@ try {
         const external = JSON.parse(await readFile(join(work, "shipping-event.json"), "utf8")).external, native = [...raw.validator.openOperations].at(-1);
         if (external === native) throw Error("Fictional operation IDs unexpectedly correlated");
         await writeFile(join(work, "operation-correlation.json"), JSON.stringify({ external, native }), { mode: 0o600 });
-        const request = structuredClone(ctx);
+        const request = profile.scenario.endsWith("-forged-fallback")
+          ? (await import("../../../packages/turn/dist/engine/compaction-kit/compaction.js")).createHistorySummaryContext([], {})
+          : structuredClone(ctx);
         if (profile.scenario.endsWith("-newline")) request.messages[0].content[0].text += "\n";
         if (profile.scenario.endsWith("-whitespace")) request.messages[0].content[0].text = request.messages[0].content[0].text.replace("## Original Request", "##  Original Request");
         if (profile.scenario.endsWith("-original")) {

@@ -1,7 +1,5 @@
 // Content-free binding to exactly the source and built app closure used in sizing.
 // No rebuild, credential/registry access, provider calls or authorization.
-import { realpathSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { lstat, readFile, readdir } from "node:fs/promises";
@@ -28,20 +26,4 @@ export async function e2SizingIdentity() {
 
 export function assertE2SizingIdentity(before, after) {
   if (!["sourceHead", "sourceDirty", "codeSha256", "buildOutputSha256", "node"].every(key => before[key] === after[key])) throw Error("E2_PROTECTED_SIZING_INVALID");
-}
-
-let firstLoadIdentity;
-const identityKeys = ["sourceHead", "sourceDirty", "codeSha256", "buildOutputSha256", "node"];
-// ESM exposes no complete public cache inventory. Only the direct, preload-free
-// CLI process can prove arbitrary product modules were not imported earlier;
-// embedded/programmatic runs remain useful estimates but never qualify.
-const freshCLI = (() => {
-  try {
-    return process.execArgv.length === 0 && !(process.env.NODE_OPTIONS ?? "").trim()
-      && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(new URL("../continuity-e2.mjs", import.meta.url)));
-  } catch { return false; }
-})();
-export function pinE2SizingLoadIdentity(identity, modulesAlreadyLoaded) {
-  firstLoadIdentity ??= { identity: Object.freeze({ ...identity }), cold: !modulesAlreadyLoaded };
-  return freshCLI && firstLoadIdentity.cold && identityKeys.every(k => firstLoadIdentity.identity[k] === identity[k]);
 }

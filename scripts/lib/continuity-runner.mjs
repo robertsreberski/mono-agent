@@ -45,12 +45,8 @@ export class ContinuityError extends Error {
 }
 export function codeOf(error) { return error instanceof ContinuityError ? error.code : "operation_failed"; }
 
-let modulesLoaded = false;
-export const productionModulesLoaded = () => modulesLoaded;
-
 /** Repository-local built imports, plus Pi's faux provider from the runtime's own exact dependency. */
 export async function productionModules(root) {
-  modulesLoaded = true;
   const piPackage = JSON.parse(await readFile(join(root, "packages/turn/node_modules/@earendil-works/pi-ai/package.json"), "utf8"));
   const entry = piPackage.exports?.["."]?.import;
   if (typeof entry !== "string") throw new ContinuityError("pi_ai_entry_unavailable");

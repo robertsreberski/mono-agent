@@ -1,5 +1,5 @@
 import { E2_PROTECTED_SIZING, rehearseE2Protected } from "./continuity-e2-protected.mjs";
-import { e2SizingIdentity, assertE2SizingIdentity, pinE2SizingLoadIdentity } from "./continuity-e2-sizing-identity.mjs";
+import { e2SizingIdentity, assertE2SizingIdentity } from "./continuity-e2-sizing-identity.mjs";
 import { loadE2Catalog } from "./continuity-e2-pricing.mjs";
 import { assertE2BaselineRequest } from "./continuity-e2-lineage.mjs";
 import { assertE2PhaseAdapter } from "./continuity-e2-runtime.mjs";
@@ -14,8 +14,8 @@ import { diagnosticRecord } from "./continuity-e2-diagnostics.mjs";
 import { webGroups } from "./continuity-recorded-reconcile.mjs";
 import { callKey, digest, validateSource, attachmentReferences } from "./continuity-recorded-schema.mjs";
 import { startRecordedTools, RECORDED_SERVER_NAME } from "./continuity-recorded-tools.mjs";
-import { openHarness, productionModules, productionModulesLoaded } from "./continuity-runner.mjs";
-import { createE2Models, estimatedReply, loadE2Estimators, e2EstimatorsLoaded, shippingSoul, sizeContext } from "./continuity-e2-models.mjs";
+import { openHarness, productionModules } from "./continuity-runner.mjs";
+import { createE2Models, estimatedReply, loadE2Estimators, shippingSoul, sizeContext } from "./continuity-e2-models.mjs";
 import { SOL, parts, protocolDigest, validateProtocol, e2ReplayArm, e2ProbeRequestCount, e2ContinuityPackMessage } from "./continuity-e2-protocol.mjs";
 
 export const PLACEHOLDER = "[recorded result unavailable for replay]";
@@ -218,14 +218,11 @@ export async function runE2Sizing({ source, protocol, output, summary = "faux-sh
   const requestCount = e2ProbeRequestCount(protocol, replayArm);
   if (real) await paidAdapter.assertReplay({ source, protocol, questions, evaluator, output, replayArm });
   // Attest before any estimator/product module load, not after observations.
-  const injectedModules = modules !== undefined;
-  const modulesAlreadyLoaded = e2EstimatorsLoaded() || productionModulesLoaded();
   const sizingIdentity = !real && !baseline ? await e2SizingIdentity() : undefined;
-  const coldIdentity = sizingIdentity ? pinE2SizingLoadIdentity(sizingIdentity, modulesAlreadyLoaded || e2EstimatorsLoaded() || productionModulesLoaded()) : false;
   const estimators = await loadE2Estimators(), soul = await shippingSoul();
   modules ??= await productionModules(ROOT);
   const answers = { schema: "continuity-e2-answers-v1", answers: [] };
-  const report = { schema: real ? "continuity-e2-replay-v1" : baseline ? "continuity-e2-sizing-v1" : "continuity-e2-sizing-v3", ...(baseline ? { replayArm: "baseline", qualification: false } : sizingIdentity ? { sizingIdentity, qualification: !injectedModules && coldIdentity } : {}), sourceDigest: digest(JSON.stringify(source)), protocolDigest: protocolDigest(protocol), summary,
+  const report = { schema: real ? "continuity-e2-replay-v1" : baseline ? "continuity-e2-sizing-v1" : "continuity-e2-sizing-v3", ...(baseline ? { replayArm: "baseline", qualification: false } : sizingIdentity ? { sizingIdentity, qualification: false } : {}), sourceDigest: digest(JSON.stringify(source)), protocolDigest: protocolDigest(protocol), summary,
     soul: { rawDigest: soul.rawDigest, normalizedDigest: soul.normalizedDigest }, usage: "estimated-not-measured", semanticQualification: false, branches: [] };
   await mkdir(output, { mode: 0o700 });
   // One recorder and entry cap per run, not per checkpoint/probe.

@@ -1,6 +1,7 @@
 // Provider-free controller scan/serialization capacity alongside the runtime lane.
 import { mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { e2ProtectedSummaryPolicies } from "./continuity-e2-summary-plan.mjs";
 import { rehearseE2Protected } from "./continuity-e2-protected.mjs";
 import { bindE2Checkpoint, e2PhaseWork, verifyE2NativeLineage } from "./continuity-e2-lineage.mjs";
 import { bindE2NativeCompaction } from "./continuity-e2-journals.mjs";
@@ -14,6 +15,7 @@ export async function measureE2ControllerCapacity(root) {
     const planned = { index: 0, kind: "proof", arm: "pressure", variant: "ceiling", phase: "whole" }, slot = { slotId: "a".repeat(64), holds: [], lineages: {} }, state = { schedule: [planned], slots: [slot] };
     const readArtifact = path => readFile(path), readPrivate = async path => JSON.parse(await readFile(path, "utf8"));
     const model = { provider: "openai-codex", id: "gpt-6.1-sol", api: "openai-codex-responses", contextWindow: 272000, maxTokens: 128000 };
+    state.summaryPolicies = await e2ProtectedSummaryPolicies([model]);
     await rehearseE2Protected({ work: e2PhaseWork(base, planned), model, carrier: "carry", fallback,
       onPublication: async ({ summary, checkpoint }) => {
         const payloadDigest = "b".repeat(64), rawUsage = { input_tokens: 10, output_tokens: 10 };
@@ -31,7 +33,7 @@ export async function measureE2ControllerCapacity(root) {
           const bytes = Buffer.from(JSON.stringify({ model: model.id, stream: true, store: false, instructions: context.systemPrompt,
             input: convertResponsesMessages({ ...model, input: ["text"] }, context, new Set(["openai-codex"]), { includeSystemPrompt: false }) }));
           maximumBytes = Math.max(maximumBytes, bytes.length);
-          const hold = { paidRole: "summary", checkpoint: 0, operationDigest, lineageScope: "proof", lineage: slot.lineages.proof, payloadDigest: digest(bytes) };
+          const hold = { model: `${model.provider}:${model.id}`, paidRole: "summary", checkpoint: 0, operationDigest, lineageScope: "proof", lineage: slot.lineages.proof, payloadDigest: digest(bytes) };
           hold.nativeCompaction = await bindE2NativeCompaction(e2PhaseWork(base, planned), operationDigest, hold.payloadDigest, readArtifact);
           await verifyE2NativeLineage(bytes, hold, state, { outputRoot: base, index: 0 }, readArtifact);
           if (fallback ? hold.retainedPredecessor?.assembly !== "legacy-fallback" : hold.retainedPredecessor?.textSha256 !== digest(active.text)) throw Error("controller_capacity_lineage_failed");
