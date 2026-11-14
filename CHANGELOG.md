@@ -5,7 +5,9 @@
 - Add write-only credentials for prepared A2A providers, Journal/BuJo embeddings,
   Parallel search/fetch and exact-hosted Ollama search. Preserve custom environment
   names, keyless/local behavior, tool policy and existing memory roots; retain
-  config-only recovery, explicit Restart and older-console compatibility.
+  config-only recovery, explicit Restart and older-console compatibility. Reject
+  framework environment names outside each credential’s own default to prevent
+  collisions with operational settings.
 
 - Keep whole retained predecessors when removing only the optional protection
   frame makes their summary request fit destination headroom.

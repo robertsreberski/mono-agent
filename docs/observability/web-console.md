@@ -295,7 +295,8 @@ the next start, but never installs or enables the provider. Embeddings require a
 existing valid Journal/BuJo managed root; Save never creates or migrates it.
 Existing custom `apiKeyEnv` references are preserved, with selected-action defaults
 `MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY`, shared `PARALLEL_API_KEY`, and `OLLAMA_API_KEY`.
-Reserved operational or other credential destinations are refused. Local/keyless
+All `MONO_AGENT_*` names except the selected credential’s own default are
+reserved; operational, allowlist and other credential destinations are refused. Local/keyless
 embeddings stay unchanged. Parallel stays anonymous without an explicit Save.
 Ollama entry is offered only for the exact `https://ollama.com` origin, not local,
 custom or lookalike servers. Web tools must already select the provider and allow

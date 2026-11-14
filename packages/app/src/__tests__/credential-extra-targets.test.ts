@@ -145,3 +145,20 @@ it("rejects whole-token collisions with the nonsecret environment reference, not
   await expect(readFile(f.dotenvPath)).rejects.toMatchObject({ code: "ENOENT" });
   expect(await service.save({ ...base, fields: { credential: "PARALLEL_API_KEY-with-fictional-suffix" } })).toMatchObject({ outcome: "saved" });
 });
+
+it.each((["embeddings", "parallel-search", "parallel-fetch", "ollama-search"] as const).flatMap((card) => [
+  "MONO_AGENT_A2A_ENABLED", "MONO_AGENT_A2A_REQUIRE_BEARER",
+  "MONO_AGENT_TELEGRAM_ALLOWED_CHAT_IDS", "MONO_AGENT_SLACK_ALLOWED_CHANNEL_IDS",
+  "MONO_AGENT_A2A_CONSUMER_BEARER_TOKEN", "MONO_AGENT_SLACK_APP_TOKEN", "MONO_AGENT_FUTURE_SETTING",
+].map((name) => ({ card, name }))))("refuses $card entry/save into $name before any persistence", async ({ card, name }) => {
+  const f = await fixture(card, name), initial = await readFile(f.configPath, "utf8");
+  const merge = vi.fn(mergeSecretEnvFile), writeConfig = vi.fn(writeSettingsJson);
+  const service = createCredentialSetupService(f, { merge, writeConfig }), view = await service.read();
+  expect(view.cards.find((item) => item.id === card)).toMatchObject({ available: false, reason: "invalid-destination", configReady: false });
+  await expect(service.save(await request(service, card))).rejects.toMatchObject({ code: "credential_unavailable", message: "credential_unavailable" });
+  expect(merge).not.toHaveBeenCalled(); expect(writeConfig).not.toHaveBeenCalled();
+  expect(await readFile(f.configPath, "utf8")).toBe(initial);
+  await expect(readFile(f.dotenvPath)).rejects.toMatchObject({ code: "ENOENT" });
+  await expect(readFile(`${f.configPath}.bak`)).rejects.toMatchObject({ code: "ENOENT" });
+  expect(JSON.stringify(view)).not.toContain(plantedValue);
+});

@@ -363,8 +363,9 @@ anonymous unless Save is explicitly selected; search/fetch share `PARALLEL_API_K
 by default. Hosted Ollama is eligible only at the exact `https://ollama.com`
 origin, never a local or custom server. Existing valid custom `apiKeyEnv` names
 are retained; missing names use `MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY`,
-`PARALLEL_API_KEY` or `OLLAMA_API_KEY` only when Save is selected. Operational and
-cross-credential reserved destinations require terminal resolution. Provider
+`PARALLEL_API_KEY` or `OLLAMA_API_KEY` only when Save is selected. The entire
+`MONO_AGENT_*` namespace is reserved except each credential’s own default key;
+operational, allowlist and cross-credential destinations require terminal resolution. Provider
 selection and tool allow/deny rules are prerequisites, not changed by Save.
 
 
