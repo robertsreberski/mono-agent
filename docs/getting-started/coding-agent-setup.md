@@ -41,7 +41,7 @@ By default this targets both Claude Code and Codex. Use `--target claude` or `--
 | `<target> CLI is unavailable; pair later with: <command>` | That harness CLI is not on your `PATH`. The skill was still installed; run the printed command after installing the harness. |
 | `Cannot pair mono-agent-docs: none of the selected harness CLIs (…) are available on PATH.` | Install Claude Code or Codex first, or rerun with `--no-docs-mcp` to install only the skill. |
 | `Cannot pair mono-agent-docs because npx is not available on PATH.` | The docs server runs through `npx` from your own Node.js. The private installer's Node is not on your `PATH`, so install Node.js and npm, or use `--no-docs-mcp`. |
-| The skill already exists | `install-skill` never overwrites an existing copy. Rerun with `--force` to replace it (for example after upgrading the CLI). |
+| `Destination <path> already exists. Re-run with --force to overwrite.` | `install-skill` never overwrites an existing copy. Rerun with `--force` to replace it, for example after upgrading the CLI. |
 
 [Documentation MCP companion](/tools/documentation-mcp/) covers manual registration, version matching, and diagnostics.
 

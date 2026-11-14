@@ -40,12 +40,12 @@ The installer downloads an official Node.js `24.15.0`, checks it against nodejs.
 
 ```text
 Installed mono-agent 0.26.0 with private Node 24.15.0 (ABI 137).
-CLI: '/Users/morgan/.mono-agent/cli/bin/mono-agent'
-Activate in this shell: export PATH='/Users/morgan/.mono-agent/cli/bin':"$PATH"
-Next: '/Users/morgan/.mono-agent/cli/bin/mono-agent' init
+CLI: '/Users/you/.mono-agent/cli/bin/mono-agent'
+Activate in this shell: export PATH='/Users/you/.mono-agent/cli/bin':"$PATH"
+Next: '/Users/you/.mono-agent/cli/bin/mono-agent' init
 ```
 
-Run the printed `export PATH=…` line in your terminal (and in the second terminal you will use later), then confirm the command resolves:
+Your path shows your own home folder in place of `/Users/you`. Run the printed `export PATH=…` line in your terminal (and in the second terminal you will use later), then confirm the command resolves:
 
 ```bash
 mono-agent --version
@@ -70,7 +70,7 @@ npm i -g create-mono-agent
 | `required tool missing: <tool>` | Install that tool (for example `curl`, `tar`, or `shasum`/`sha256sum`) and rerun. |
 | `npm installation failed; existing generation preserved.` | Read the npm error above it. Network, proxy, or custom-CA problems are the usual cause; [proxy and CA variables](/getting-started/install/#private-node-installer-macos-and-linux) are supported. If a native dependency had to compile, install a compiler toolchain. |
 | `another installer is active (or a stale ~/.mono-agent/.cli-install-lock needs manual inspection)` | Wait for the other run to finish. Remove the lock directory only after confirming no installer is running. |
-| `Another mono-agent takes precedence: <path>` | An older `mono-agent` is earlier on your `PATH`. Run the printed `export PATH=…` line, or call the absolute CLI path. |
+| `Another mono-agent takes precedence: <path>` | An older `mono-agent` is earlier on your `PATH`. Your path shows your own home folder in place of `/Users/you`. Run the printed `export PATH=…` line, or call the absolute CLI path. |
 
 A failure after the CLI was published leaves it installed and starts no services, so you can fix the problem and rerun the installer.
 
@@ -179,7 +179,7 @@ Then start the browser console in terminal 2 and leave it open:
 mono-agent web run --loopback
 ```
 
-Open `http://127.0.0.1:5050`. **You should see** the console with your agent in the sidebar. Select the agent, type in the **Message …** box at the bottom, and send with ⌘↵ (macOS) or Ctrl+↵, or the send button. The reply appears in the conversation. Conversations live in the console service, so refreshing or closing the tab does not stop a running turn.
+Open `http://127.0.0.1:5050`. **You should see** the console with your agent in the sidebar. Select the agent, type in the **Message …** box at the bottom, and send with ⌘↵ (macOS) or Ctrl+↵, or the **Send message** button. The reply appears in the conversation. Conversations live in the console service, so refreshing or closing the tab does not stop a running turn.
 
 ![The mono-agent browser console with a synthetic conversation: the agent list and recent conversations on the left, the conversation in the middle, and the message composer with the current model at the bottom.](../assets/getting-started/console-conversation.png)
 
@@ -200,7 +200,7 @@ Open `http://127.0.0.1:5050`. **You should see** the console with your agent in 
 
 *Needs the next release or a [source build](#run-this-tutorial-from-source) for both the agent and the console.*
 
-Open the **Agent settings** button (the sliders icon at the top of the sidebar) and scroll to **Capabilities**. You can also open `http://127.0.0.1:5050/?settings=capabilities` directly.
+Select the **Agent settings** button at the top of the sidebar (a sliders icon next to the **New conversation** `+` button; its tooltip reads "Agent settings") and scroll to **Capabilities**. With the agent selected, you can also open `http://127.0.0.1:5050/?settings=capabilities` directly; to open a specific agent's page, use `http://127.0.0.1:5050/?agent=<source-id>&settings=capabilities`, the link shape the `init` console handoff opens.
 
 **You should see** one card per optional feature: memory, webhook, Telegram, Slack, the OpenAI-compatible API, scheduled jobs (cron), the A2A provider, the sandbox, MCP / tools, built-in tracing, and a separate Subagents card. Each card shows a status (**Ready**, **Waiting**, **Disabled**, or **Needs attention**), a short **Next:** hint, and **Details & manual setup** with the exact config and `.env` steps.
 

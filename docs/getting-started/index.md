@@ -15,12 +15,16 @@ The latest published release is `0.26.0` (registry checked 2026-10-20; all 20 cu
 
 ## The path
 
+The pages in this section, in sidebar order:
+
 1. **Tutorial** — five steps from a new computer to a first conversation in the browser console, then one optional feature turned on.
 2. **Feature tour** — what an agent can do, and whether each feature is turned on in the console, in the config, or with a CLI command.
-3. **Web workspace** — learn the console you will spend most of your time in: threads, attachments, notifications, and service lifecycle.
-4. **Concepts** — understand the moving parts so the rest of the docs make sense.
+3. **Set up with a coding agent** — let Claude Code or Codex do the setup with the bundled composer skill.
+4. **Install** — reference for every install route.
+5. **Setup reference** — reference for `init`, `validate`, and start paths.
+6. **Concepts** — understand the moving parts so the rest of the docs make sense.
 
-Prefer to delegate? A coding agent such as Claude Code or Codex can do the setup with the bundled composer skill.
+After the tutorial, most of your time is in the [web workspace](/observability/web-console/): threads, attachments, notifications, and service lifecycle.
 
 ## Pages
 
