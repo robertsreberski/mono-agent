@@ -20,6 +20,11 @@ const EXCLUDE_TOP = new Set(['superpowers', 'skills']);
 rmSync(DEST, { recursive: true, force: true });
 mkdirSync(DEST, { recursive: true });
 
+// Images are mirrored too, so a page can reference a screenshot with a relative
+// path (for example `../assets/getting-started/x.png`) that resolves both on
+// GitHub and in the built site, where Astro optimizes referenced images.
+const IMAGE = /\.(?:png|jpe?g|webp|gif|svg)$/i;
+
 let count = 0;
 cpSync(SRC, DEST, {
   recursive: true,
@@ -28,9 +33,9 @@ cpSync(SRC, DEST, {
     if (rel === '') return true;
     if (EXCLUDE_TOP.has(rel.split(sep)[0])) return false;
     if (statSync(src).isDirectory()) return true;
-    const keep = src.endsWith('.md') || src.endsWith('.mdx');
-    if (keep) count++;
-    return keep;
+    const markdown = src.endsWith('.md') || src.endsWith('.mdx');
+    if (markdown) count++;
+    return markdown || IMAGE.test(src);
   },
 });
 

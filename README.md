@@ -26,7 +26,7 @@ Projects and tags help organize the browser workspace, with project context avai
 
 ## Release status
 
-The published baseline checked on 2026-10-20 is **`create-mono-agent@0.26.0`**; all 20 current catalog packages have npm `latest` set to `0.26.0`. The package renames and framework, Phoenix/OTLP, Supermemory, and terminal-renderer retirements are included in the published release. Retired npm names are deprecated but remain installable. Read the [versioned release notes](https://github.com/robertsreberski/mono-agent/releases/tag/v0.26.0) before upgrading, and [Release status](./docs/reference/release-status.md) for the verified source boundary.
+The published baseline checked on 2026-10-20 is **`create-mono-agent@0.26.0`**; all 20 current catalog packages have npm `latest` set to `0.26.0`. The package renames and framework, Phoenix/OTLP, Supermemory, and terminal-renderer retirements are included in the published release. Retired npm names are deprecated but remain installable. Read the [versioned release notes](https://github.com/robertsreberski/mono-agent/releases/tag/v0.26.0) before upgrading, and [Release status](./docs/reference/release-status.md) for the verified source boundary. The Node-version guard, `mono-agent preflight`, and the console Capabilities page (Enable actions, credential fields, Undo) are on `main` only until the next release.
 
 ## Quickstart: An Agent Folder From One Config File
 
@@ -34,7 +34,7 @@ Any folder — empty or already holding knowledge (`AGENTS.md`, `CLAUDE.md`, doc
 
 Guided setup is authentic and not instant: it signs you in to the provider you choose and makes one real model request for every selected route to prove the route answers. That can take several minutes and counts as usage on your account. Running with flags, `--yes`, or without a TTY skips all of it and writes the scaffold only; add `--auth` if you want provider setup on that automated path too. [Setup details](#setup-details) list the exact deadlines, flags, and files.
 
-
+New to mono-agent? The [step-by-step tutorial](./docs/getting-started/tutorial.md) walks the same path with what you should see at each step and what to do when one fails. A coding agent such as Claude Code or Codex can also [do the setup for you](./docs/getting-started/coding-agent-setup.md).
 
 ### 1. Install the CLI
 
@@ -42,7 +42,7 @@ Guided setup is authentic and not instant: it signs you in to the provider you c
 curl -fsSL https://mono-agent.dev/install.sh | sh
 ```
 
-On macOS and glibc Linux, the script installs private Node and `create-mono-agent` under `~/.mono-agent/cli`; activate the printed PATH before using `mono-agent`. It edits no shell files by default. For inspect-first use, download the script, read it, then run it. Prefer managing your own Node with `npm i -g create-mono-agent`, Windows, or a pinned install? [Install & prerequisites](./docs/getting-started/install.md) covers `npm create`, `npm exec`, the scoped package, and building from source.
+On macOS and glibc Linux, the script installs private Node and the latest published `create-mono-agent` under `~/.mono-agent/cli`; activate the printed PATH before using `mono-agent`. It edits no shell files by default. Published 0.26.0 predates host preflight, so the installer warns that preflight is unavailable and finishes normally. For inspect-first use, download the script, read it, then run it. Prefer managing your own Node with `npm i -g create-mono-agent`, Windows, or a pinned install? [Install & prerequisites](./docs/getting-started/install.md) covers `npm create`, `npm exec`, the scoped package, and building from source.
 
 ### 2. Create the agent folder
 
@@ -76,13 +76,17 @@ Open <http://127.0.0.1:5050>, choose the running agent, and start a conversation
 
 Want the console to keep running in the background? `mono-agent web start` installs it as a service instead, bound to the same loopback listener; widen it explicitly with `--host`. On macOS, managed startup re-verifies an existing mono-agent-owned Tailscale Serve route and publishes a new one only with `--share-tailnet`, and other proxies and routes are not inspected — so neither the bind nor the absence of an owned route makes a console local. There is still no application login, so anyone who can reach it can operate the discovered agents. `web run` never configures Serve and never removes a route; only `web stop` removes the exact route mono-agent owns. [Install & prerequisites](./docs/getting-started/install.md#run-the-browser-console) covers both modes and how to check the effective URLs.
 
-The same agent is also reachable from enabled communication channels. [Your first agent](./docs/getting-started/quickstart.md) walks the wizard branches, the scriptable webhook smoke request, and the per-platform start paths; [Setup security and managed runtime](./docs/reference/setup-security.md) documents the managed-start and secret-persistence trust model behind them.
+### 5. Turn on optional features
+
+In the console, **Agent settings → Capabilities** shows every optional feature with its status and setup steps, and can enable Memory Lite, cron controls, and subagents or save channel credentials after a preview. That page ships in the next release; on 0.26.0, or for anything without a button, edit `mono-agent.config.json` instead. The [feature tour](./docs/getting-started/feature-tour.md) shows which route each feature uses.
+
+The same agent is also reachable from enabled communication channels. The [setup reference](./docs/getting-started/quickstart.md) walks the wizard branches, the scriptable webhook smoke request, and the per-platform start paths; [Setup security and managed runtime](./docs/reference/setup-security.md) documents the managed-start and secret-persistence trust model behind them.
 
 ## Setup details
 
 Bare `mono-agent init` on a terminal is the guided wizard. It asks for the agent name and the exact Role destined for `IDENTITY.md` → `## Role`, searches the provider catalogs, and then proves every selected route with one disposable no-tool model call, sequentially, with timeouts of 90s for each cloud route and 240s for each local route. An interrupted preflight can resume the routes that already passed under the same non-secret plan fingerprint. On macOS the **Agent ready** gate additionally starts the managed background agent and proves its live snapshot before printing the handoff; on Linux the same route and configuration checks run, and then `init` prints a **Manual start required** handoff instead of installing the systemd user service for you.
 
-Passing any flag, `--yes`, or running without a TTY skips the wizard: `init` writes the scaffold only, runs no readiness proof, starts no process, and never labels the result ready. `--auth` adds provider setup to that automated path. The flags, the files a scaffold writes, the full generated config, and the guided secret handling are documented in [Your first agent](./docs/getting-started/quickstart.md#setup-details-guided-init-flags-and-files).
+Passing any flag, `--yes`, or running without a TTY skips the wizard: `init` writes the scaffold only, runs no readiness proof, starts no process, and never labels the result ready. `--auth` adds provider setup to that automated path. The flags, the files a scaffold writes, the full generated config, and the guided secret handling are documented in the [setup reference](./docs/getting-started/quickstart.md#setup-details-guided-init-flags-and-files).
 
 ## Make it yours
 

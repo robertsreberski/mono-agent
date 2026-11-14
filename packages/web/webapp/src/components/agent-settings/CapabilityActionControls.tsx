@@ -14,7 +14,7 @@ const reasons = {
   "no-valid-jobs": "Prepare valid cron jobs first. Enable never creates or enables jobs or schedules.",
   "env-shadowed": "An environment setting conflicts with this action. Resolve it in the owner terminal.",
   "subagents-denied": "The tool policy denies Agent. Removing denies is out of scope; resolve it in the owner terminal.",
-  "subagents-unconfigured": "Subagents are not configured. Enable never authors profiles; add them first.",
+  "subagents-unconfigured": "No subagents block is configured. Add one to the config first; profiles are optional and Enable never authors them.",
   "undo-unavailable": "No console save is available to undo.",
   "undo-stale": "The configuration changed since the last console save. Undo is unavailable; inspect it in the owner terminal.",
   "candidate-invalid": "The configuration this would write is no longer valid. Run mono-agent validate in the owner terminal.",

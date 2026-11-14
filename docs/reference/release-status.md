@@ -34,6 +34,19 @@ Neither the 0.26.0 console nor the current source console has application login.
 
 Current `main` carries unreleased package behavior after `v0.26.0`: an early Node-version guard and `mono-agent preflight`, shipping in the next package release. The Node requirement itself remains `>=24.15.0`; the guard improves early diagnostics. These package changes are not in published 0.26.0.
 
+The same next release also carries these console and setup changes, none of which are in published 0.26.0:
+
+| Change | Where it shows up |
+| --- | --- |
+| Capabilities page (read-only feature status and manual setup steps) | **Agent settings → Capabilities** in the browser console |
+| Enable actions for Memory Lite, cron operator controls, and subagents | Capabilities cards, with preview, **Confirm Save**, and Restart |
+| Write-only credential fields for Telegram, Slack, the OpenAI-compatible client bearer, A2A, Journal/BuJo embeddings, Parallel, and hosted Ollama search | Capabilities cards |
+| One-level configuration Undo | The **Configuration recovery** panel on the Capabilities page |
+| Optional console handoff after guided `init` | The **Open the browser console?** prompt at the end of guided setup |
+| Operator API key removed from console, ACP, peer, and cron operator access | No key to configure; obsolete keys are ignored |
+
+Both the agent and the console must run a version with these changes. A source-built console connected to a 0.26.0 agent shows that the agent does not report capabilities. The [tutorial](/getting-started/tutorial/#run-this-tutorial-from-source) shows how to run the whole path from a source build, and the [feature tour](/getting-started/feature-tour/) gives the config route that works on 0.26.0.
+
 The shell installer is served from the site, not npm, and installs the published CLI; its deployment does not mean the source-only package behavior has shipped. See [Install & prerequisites](/getting-started/install/) for the private runtime and legacy-preflight warning.
 
 Post-release tooling also deprecated 32 retired npm names. The registry now marks those names deprecated with migration pointers; their published versions remain installable. Deprecation does not update installed agents or migrate consumer configuration.
@@ -48,7 +61,7 @@ For consumers skipping earlier releases, read [Framework simplification migratio
 
 ## Run a source build
 
-The published-baseline capabilities above do not require a source build. To evaluate the unreleased Node-version guard and host preflight before the next package release, use a source build. The [unreleased-build instructions](/getting-started/install/#run-an-unreleased-build) cover the build, the exact `packages/app/dist/cli.js` entry point, and the caveats. A source build is not the published, versioned artifact that other agents pin.
+The published-baseline capabilities above do not require a source build. To evaluate the unreleased Node-version guard, host preflight, or the console Capabilities page before the next package release, use a source build for both the agent and the console. The [unreleased-build instructions](/getting-started/install/#run-an-unreleased-build) cover the build, the exact `packages/app/dist/cli.js` entry point, and the caveats. A source build is not the published, versioned artifact that other agents pin.
 
 ## How this page is kept honest
 

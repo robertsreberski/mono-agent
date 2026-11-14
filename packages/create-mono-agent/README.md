@@ -163,7 +163,8 @@ decision is whether the installer basename should request implicit `init`, the
 
 ## Related Documentation
 
-- [Create your first agent](https://docs.mono-agent.dev/getting-started/quickstart/)
+- [Create your first agent](https://docs.mono-agent.dev/getting-started/tutorial/)
+- [Setup reference](https://docs.mono-agent.dev/getting-started/quickstart/)
 - [CLI reference](https://docs.mono-agent.dev/observability/cli-reference/)
 - [Agent folder layout](https://docs.mono-agent.dev/config/folder-layout/)
 - [`@mono-agent/app` package](https://github.com/robertsreberski/mono-agent/tree/main/packages/app)
