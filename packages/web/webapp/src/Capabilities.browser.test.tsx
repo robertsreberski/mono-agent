@@ -335,3 +335,99 @@ for (const width of [390, 1440]) for (const card of ["a2a", "embeddings", "paral
   section.scrollIntoView({ block: "center" });
   if (shots) await page.screenshot({ path: `${shots}/credentials-synthetic-${width}-${card}-${state}.png` });
 });
+
+const undoableActions = {
+  ...capabilityActions,
+  actions: capabilityActions.actions.map((item) => item.id === "config-undo" ? { ...item, available: true, reason: "eligible" as const } : item.id === "subagents-enable" ? { ...item, available: true, reason: "eligible" as const } : item),
+};
+const staleUndoActions = {
+  ...capabilityActions,
+  actions: capabilityActions.actions.map((item) => item.id === "config-undo" ? { ...item, available: false, reason: "undo-stale" as const } : item.id === "subagents-enable" ? { ...item, available: true, reason: "eligible" as const } : item),
+};
+const undoPreview = { action: "config-undo" as const, process: capabilityActions.process, expectedVersion: "a".repeat(64), changes: [{ field: "config" as const, value: "Restore the exact prior bytes from the last console save. One level only; dotenv credentials and memory data are untouched." }], normalizesFormatting: true as const, noOp: false };
+const subagentsPreview = { action: "subagents-enable" as const, process: capabilityActions.process, expectedVersion: "a".repeat(64), changes: [{ field: "subagents.enabled" as const, value: "true" }, { field: "tools.allowedTools" as const, value: "Append \"Agent\"; existing entries and deny rules are unchanged." }], normalizesFormatting: true as const, noOp: false };
+function mockE2Previews() {
+  vi.spyOn(api, "previewCapabilityAction").mockImplementation(async (_sourceId, input) => {
+    if (input.action === "config-undo") return undoPreview;
+    if (input.action === "subagents-enable") return subagentsPreview;
+    throw new ApiError("Unsupported synthetic action", 400);
+  });
+}
+
+for (const width of [390, 1440]) it(`offers one-level Undo and consumes the slot at ${width}px`, async () => {
+  await page.viewport(width, width === 390 ? 1900 : 1600);
+  vi.mocked(api.capabilitySetup).mockResolvedValue(capabilitySnapshot);
+  vi.mocked(api.capabilityActions).mockResolvedValue(undoableActions);
+  mockE2Previews();
+  const save = vi.spyOn(api, "saveCapabilityAction").mockImplementation(async () => {
+    vi.mocked(api.capabilityActions).mockResolvedValue({ ...undoableActions, actions: undoableActions.actions.map((item) => item.id === "config-undo" ? { ...item, available: false, reason: "undo-unavailable" as const } : item) });
+    return { action: "config-undo", process: capabilityActions.process, version: "b".repeat(64), changed: true };
+  });
+  render(<Preview width={width} />);
+  const recovery = await screen.findByRole("article", { name: "Configuration recovery" });
+  expect(within(recovery).getByText(/differs from what the running process loaded/)).toBeVisible();
+  if (shots) { recovery.scrollIntoView({ block: "start" }); await page.screenshot({ path: `${shots}/e2-undo-offered-${width}.png` }); }
+  await userEvent.click(within(recovery).getByRole("button", { name: "Undo last console save…" }));
+  expect(within(recovery).getByLabelText("Owned-field preview").textContent).toContain("exact prior bytes");
+  if (shots) { recovery.scrollIntoView({ block: "start" }); await page.screenshot({ path: `${shots}/e2-undo-preview-${width}.png` }); }
+  await userEvent.click(within(recovery).getByRole("button", { name: "Confirm Save" }));
+  expect(save).toHaveBeenCalledWith("garden", { action: "config-undo", process: undoPreview.process, expectedVersion: undoPreview.expectedVersion, confirmed: true });
+  await within(recovery).findByText("Saved; applies on next start");
+  expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width);
+});
+
+for (const width of [390, 1440]) it(`refuses Undo after a manual edit without offering a write at ${width}px`, async () => {
+  await page.viewport(width, width === 390 ? 1900 : 1600);
+  vi.mocked(api.capabilitySetup).mockResolvedValue(capabilitySnapshot);
+  vi.mocked(api.capabilityActions).mockResolvedValue(staleUndoActions);
+  mockE2Previews();
+  render(<Preview width={width} />);
+  const recovery = await screen.findByRole("article", { name: "Configuration recovery" });
+  expect(within(recovery).getByText(/changed since the last console save/)).toBeVisible();
+  expect(within(recovery).queryByRole("button", { name: "Undo last console save…" })).toBeNull();
+  expect(within(recovery).queryByRole("button", { name: "Confirm Save" })).toBeNull();
+  expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width);
+  if (shots) { recovery.scrollIntoView({ block: "start" }); await page.screenshot({ path: `${shots}/e2-undo-refused-${width}.png` }); }
+});
+
+for (const width of [390, 1440]) it(`previews subagents Enable without touching profiles or denies at ${width}px`, async () => {
+  await page.viewport(width, width === 390 ? 1900 : 1600);
+  vi.mocked(api.capabilitySetup).mockResolvedValue(capabilitySnapshot);
+  vi.mocked(api.capabilityActions).mockResolvedValue(undoableActions);
+  mockE2Previews();
+  vi.spyOn(api, "saveCapabilityAction").mockImplementation(async () => {
+    vi.mocked(api.capabilityActions).mockResolvedValue({ ...undoableActions, actions: undoableActions.actions.map((item) => item.id === "subagents-enable" ? { ...item, reason: "already-configured" as const } : item) });
+    return { action: "subagents-enable", process: capabilityActions.process, version: "b".repeat(64), changed: true };
+  });
+  render(<Preview width={width} />);
+  const tools = await screen.findByRole("article", { name: "MCP / tools" });
+  await userEvent.click(within(tools).getByRole("button", { name: "Enable subagents…" }));
+  expect(within(tools).getAllByLabelText("Owned-field preview").map((node) => node.textContent)).toEqual(["true", "Append \"Agent\"; existing entries and deny rules are unchanged."]);
+  expect(within(tools).getByText("Only delegation is enabled. Profiles and deny rules are unchanged.")).toBeVisible();
+  expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width);
+  if (shots) { tools.scrollIntoView({ block: "start" }); await page.screenshot({ path: `${shots}/e2-subagents-preview-${width}.png` }); }
+  await userEvent.click(within(tools).getByRole("button", { name: "Confirm Save" }));
+  await within(tools).findByText("Saved; applies on next start");
+});
+
+for (const width of [390, 1440]) it(`reports saved-not-active after a new start without promising the next one at ${width}px`, async () => {
+  await page.viewport(width, width === 390 ? 1900 : 1600);
+  vi.mocked(api.capabilitySetup).mockResolvedValue(eligibleCronSnapshot);
+  vi.mocked(api.capabilityActions).mockResolvedValue(eligibleCronActions);
+  const preview = { action: "cron-controls" as const, process: capabilityActions.process, expectedVersion: "a".repeat(64), changes: [], normalizesFormatting: true as const, noOp: false };
+  vi.spyOn(api, "previewCapabilityAction").mockResolvedValue(preview);
+  vi.spyOn(api, "saveCapabilityAction").mockImplementation(async () => {
+    vi.mocked(api.capabilityActions).mockResolvedValue({ ...eligibleCronActions, actions: eligibleCronActions.actions.map((item) => item.id === "cron-controls" ? { ...item, reason: "already-configured" as const } : item) });
+    return { action: "cron-controls", process: capabilityActions.process, version: "b".repeat(64), changed: true };
+  });
+  render(<Preview width={width} />);
+  await userEvent.click(await screen.findByRole("button", { name: "Enable cron controls…" }));
+  await userEvent.click(screen.getByRole("button", { name: "Confirm Save" }));
+  await screen.findByText("Saved; applies on next start");
+  vi.mocked(api.capabilityActions).mockResolvedValue({ ...eligibleCronActions, process: { ...capabilityActions.process, startedAt: "2026-08-01T10:01:00Z" }, actions: eligibleCronActions.actions.map((item) => item.id === "cron-controls" ? { ...item, active: false, reason: "already-configured" as const } : item) });
+  await userEvent.click(screen.getByRole("button", { name: "Refresh capability status" }));
+  const cron = await screen.findByRole("article", { name: "Scheduled jobs (cron)" });
+  expect(within(cron).getByText("Saved, but not active at this start — check evidence")).toBeVisible();
+  expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width);
+  if (shots) { cron.scrollIntoView({ block: "start" }); await page.screenshot({ path: `${shots}/e2-saved-not-active-${width}.png` }); }
+});

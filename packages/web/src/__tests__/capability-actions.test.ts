@@ -27,7 +27,7 @@ for (const operation of ["read", "preview", "save"] as const) it.each([false, tr
     await vi.waitFor(() => expect(release).toBeTypeOf("function"));
     discovered = { ...discovered, source: { ...discovered.source, updatedAt: "2026-08-01T12:00:00Z", ...(restarted ? { pid: process.pid + 1, startedAt: "2026-08-01T12:00:00Z" } : {}) } };
     await service.refreshAgents();
-    const result = operation === "read" ? { version: 1, process: identity, actions: [{ id: "memory-lite", available: true, active: false, reason: "eligible" }, { id: "cron-controls", available: false, active: false, reason: "no-valid-jobs" }] } : operation === "preview" ? preview : { action: preview.action, process: identity, version: preview.expectedVersion, changed: false };
+    const result = operation === "read" ? { version: 1, process: identity, actions: [{ id: "memory-lite", available: true, active: false, reason: "eligible" }, { id: "cron-controls", available: false, active: false, reason: "no-valid-jobs" }, { id: "subagents-enable", available: true, active: false, reason: "eligible" }, { id: "config-undo", available: true, active: false, reason: "eligible" }] } : operation === "preview" ? preview : { action: preview.action, process: identity, version: preview.expectedVersion, changed: false };
     release(Response.json(result));
     if (restarted) await expect(work).rejects.toMatchObject({ code: "agent_generation_changed" }); else await expect(work).resolves.toEqual(result);
   } finally { await service.stop(); }
@@ -92,7 +92,7 @@ it("rejects a read snapshot from a different start even when the PID is unchange
   const initial = fakeDiscoveredAgent();
   let discovered = { ...initial, source: { ...initial.source, ...identity } };
   const service = await WebService.create({ stateDir: join(root, "state"), discoveryIntervalMs: 0, purgeIntervalMs: 0, discoverImpl: async () => [discovered],
-    fetchImpl: (async (url) => String(url).endsWith("/info") ? Response.json({ schema: 1, pid: identity.pid, capabilities: { capabilityActions: { version: 1, preview: true, save: true } } }) : Response.json({ version: 1, process: { ...identity, startedAt: "2026-08-01T10:00:00Z" }, actions: [{ id: "memory-lite", available: true, active: false, reason: "eligible" }, { id: "cron-controls", available: false, active: false, reason: "no-valid-jobs" }] })) as typeof fetch });
+    fetchImpl: (async (url) => String(url).endsWith("/info") ? Response.json({ schema: 1, pid: identity.pid, capabilities: { capabilityActions: { version: 1, preview: true, save: true } } }) : Response.json({ version: 1, process: { ...identity, startedAt: "2026-08-01T10:00:00Z" }, actions: [{ id: "memory-lite", available: true, active: false, reason: "eligible" }, { id: "cron-controls", available: false, active: false, reason: "no-valid-jobs" }, { id: "subagents-enable", available: true, active: false, reason: "eligible" }, { id: "config-undo", available: true, active: false, reason: "eligible" }] })) as typeof fetch });
   try {
     await expect(service.capabilityActions("agent-one", "read")).rejects.toMatchObject({ code: "agent_generation_changed" });
     discovered = { ...discovered, source: { ...discovered.source, startedAt: "2026-08-01T10:00:00Z" } };

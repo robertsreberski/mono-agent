@@ -293,6 +293,9 @@ export async function startChannel(controller: ChannelsControllerPort, driver: C
           memory: coreConfig.memory?.mode === "lite",
           cron: controller.statuses.get("cron")?.kind === "running"
             && controller.running.get("cron")?.summary.operatorActionsEnabled === true,
+          subagents: coreConfig.subagents?.enabled === true
+            && (coreConfig.tools.allowedTools.includes("*") || coreConfig.tools.allowedTools.includes("Agent"))
+            && !coreConfig.tools.disallowedTools.includes("Agent"),
         }),
         log: (message) => {
           if (controller.logger?.info) controller.logger.info(message);

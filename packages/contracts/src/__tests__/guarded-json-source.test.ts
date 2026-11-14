@@ -209,3 +209,58 @@ it("refuses group/world-writable ignore rules even when all required rules alrea
     expect((await readdir(f.root)).some((name) => name.endsWith(".tmp") || name.endsWith(".write-lock"))).toBe(false);
   }
 });
+
+it("reads the backup slot without throwing for missing or malformed envelopes", async () => {
+  const { readSettingsJsonBackup } = await import("../guarded-json-source.js");
+  const f = await fixture();
+  expect(await readSettingsJsonBackup(f.path)).toEqual({ status: "missing" });
+  await writeFile(`${f.path}.bak`, "not json", { mode: 0o600 });
+  expect(await readSettingsJsonBackup(f.path)).toEqual({ status: "corrupt" });
+  for (const envelope of [{ version: 1 }, { version: 1, previousMissing: false, previousBase64: "!!!", intendedSha256: "a".repeat(64) }, { version: 1, previousMissing: false, previousBase64: "", intendedSha256: "short", extra: true }]) {
+    await writeFile(`${f.path}.bak`, JSON.stringify(envelope));
+    expect(await readSettingsJsonBackup(f.path)).toEqual({ status: "corrupt" });
+  }
+  await writeSettingsJson({ path: f.path, patch: { added: true }, guarded: { expectedVersion: f.version, validate: async () => {} } });
+  const backup = await readSettingsJsonBackup(f.path);
+  expect(backup.status).toBe("ok");
+  if (backup.status === "ok") {
+    expect(backup.backup.previousMissing).toBe(false);
+    expect(Buffer.from(backup.backup.previousBase64, "base64").toString()).toBe(f.bytes);
+  }
+});
+
+it("restores exact prior bytes through the guarded protocol and consumes the slot", async () => {
+  const { readSettingsJsonBackup, restoreGuardedSettingsJson } = await import("../guarded-json-source.js");
+  const root = await realpath(await mkdtemp(join(tmpdir(), "guarded-restore-"))); roots.push(root);
+  const path = join(root, "config.json");
+  const original = '{\r\n  "unrelated": { "keep": true },\r\n  "credential": "fictional-inline-value"\r\n}\r\n';
+  await writeFile(path, original);
+  const version = (await readSettingsJson(path)).version;
+  const saved = await writeSettingsJson({ path, patch: { unrelated: { added: 1 } }, guarded: { expectedVersion: version, validate: async () => {} } });
+  expect(await readFile(path, "utf8")).not.toBe(original);
+  const backup = await readSettingsJsonBackup(path);
+  if (backup.status !== "ok") throw new Error("Expected an undoable backup slot.");
+  const restored = await restoreGuardedSettingsJson(path, Buffer.from(backup.backup.previousBase64, "base64"), {
+    expectedVersion: saved.version, validate: async (candidate, candidatePath) => {
+      expect(candidate).toEqual(JSON.parse(original));
+      expect(JSON.parse(await readFile(candidatePath, "utf8"))).toEqual(candidate);
+    },
+  });
+  expect(await readFile(path, "utf8")).toBe(original);
+  expect(restored.version).toBe(version);
+  expect(await readSettingsJsonBackup(path)).toEqual({ status: "missing" });
+  expect((await readdir(root)).some((name) => name.endsWith(".tmp") || name.endsWith(".write-lock"))).toBe(false);
+});
+
+it("refuses a stale version or an invalid prior without publishing", async () => {
+  const { restoreGuardedSettingsJson } = await import("../guarded-json-source.js");
+  const f = await fixture();
+  const saved = await writeSettingsJson({ path: f.path, patch: { added: true }, guarded: { expectedVersion: f.version, validate: async () => {} } });
+  expect(saved.version).not.toBe(f.version);
+  await expect(restoreGuardedSettingsJson(f.path, Buffer.from(f.bytes), { expectedVersion: f.version, validate: async () => {} })).rejects.toMatchObject({ code: "config_conflict" });
+  for (const prior of ['not json', '{"a":1,"a":2}', '[1,2]', '""']) {
+    await expect(restoreGuardedSettingsJson(f.path, Buffer.from(prior), { expectedVersion: saved.version, validate: async () => {} })).rejects.toMatchObject({ code: "unsafe_config_write" });
+  }
+  expect(await readFile(f.path, "utf8")).not.toBe(f.bytes);
+  expect((await readdir(f.root)).some((name) => name.endsWith(".tmp") || name.endsWith(".write-lock"))).toBe(false);
+});

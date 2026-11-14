@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { lstat, realpath, rename, unlink } from "node:fs/promises";
+import { lstat, readFile, realpath, rename, unlink } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { snapshot, unchanged, privateTemp, protectBackup } from "./settings-json-files.js";
 import { syncDirectory } from "./sync-directory.js";
@@ -64,6 +64,107 @@ export async function writeGuardedSettingsJson(
       await syncDirectory(directoryPath);
     } finally { await unlink(temp).catch(() => undefined); }
     // Logging must not turn a committed write into a reported failure.
+    try { guard.log?.("Capability configuration saved; activation requires a fresh start."); } catch { /* committed */ }
+    return { version: resultHash };
+  });
+}
+
+/** The single private backup slot published by a guarded console save. */
+export interface SettingsJsonBackup {
+  readonly version: 1;
+  readonly previousMissing: boolean;
+  readonly previousBase64: string;
+  readonly intendedSha256: string;
+}
+
+export type SettingsJsonBackupRead =
+  | { readonly status: "missing" }
+  | { readonly status: "corrupt" }
+  | { readonly status: "ok"; readonly backup: SettingsJsonBackup };
+
+const BACKUP_BASE64_RE = /^[A-Za-z0-9+/]*={0,2}$/u;
+
+/** Read-only backup inspection for Undo eligibility; never throws for absent or malformed slots. */
+export async function readSettingsJsonBackup(path: string): Promise<SettingsJsonBackupRead> {
+  let raw: string;
+  try {
+    raw = await readFile(`${resolve(path)}.bak`, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return { status: "missing" };
+    throw error;
+  }
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Not a backup envelope.");
+    const record = parsed as Record<string, unknown>;
+    if (record.version !== 1 || typeof record.previousMissing !== "boolean"
+      || typeof record.previousBase64 !== "string" || !BACKUP_BASE64_RE.test(record.previousBase64)
+      || record.previousBase64.length % 4 !== 0
+      || typeof record.intendedSha256 !== "string" || !/^[a-f0-9]{64}$/u.test(record.intendedSha256)
+      || Object.keys(record).some((key) => !["version", "previousMissing", "previousBase64", "intendedSha256"].includes(key))) {
+      throw new Error("Not a backup envelope.");
+    }
+    return { status: "ok", backup: { version: 1, previousMissing: record.previousMissing, previousBase64: record.previousBase64, intendedSha256: record.intendedSha256 } };
+  } catch {
+    return { status: "corrupt" };
+  }
+}
+
+/**
+ * One-level Undo: publish the exact prior bytes through the guarded protocol,
+ * then consume the backup slot so an Undo is never itself undoable. The fence
+ * (current bytes must still hash to the backup's intended result) is checked by
+ * the caller during preview and rechecked here under the writer lock.
+ */
+export async function restoreGuardedSettingsJson(
+  path: string, prior: Buffer, guard: GuardedSettingsJsonWrite,
+): Promise<{ readonly version: string }> {
+  path = resolve(path);
+  const directoryPath = dirname(path);
+  const directoryIdentity = await lstat(directoryPath);
+  const assertDirectory = async (): Promise<void> => {
+    const current = await lstat(directoryPath);
+    if (!current.isDirectory() || current.dev !== directoryIdentity.dev || current.ino !== directoryIdentity.ino
+      || (current.mode & 0o022) !== 0 || (process.getuid !== undefined && current.uid !== process.getuid())
+      || await realpath(directoryPath) !== directoryPath) refuse();
+  };
+  await assertDirectory();
+  return await withSettingsJsonLock(path, async () => {
+    const before = await snapshot(path);
+    const version = before === undefined ? "" : digest(before.bytes);
+    if (version !== guard.expectedVersion) conflict();
+    const source = await readSettingsJson(path);
+    if (source.version !== version) conflict();
+    if (source.duplicateKeyPaths.length > 0) refuse();
+    const text = prior.toString("utf8");
+    let candidate: unknown;
+    try {
+      candidate = text.trim().length === 0 ? {} : JSON.parse(text);
+    } catch { refuse(); }
+    if (candidate === null || typeof candidate !== "object" || Array.isArray(candidate)) refuse();
+    if (findDuplicateJsonKeyPaths(text.trim().length === 0 ? "{}" : text).length > 0) refuse();
+    const resultHash = digest(prior);
+    // Ignore secret-bearing candidate temps before they exist, not only before backup publication.
+    await protectBackup(path);
+    const temp = await privateTemp(path, prior);
+    try {
+      await guard.validate(candidate as SettingsJson, temp);
+      await unchanged(path, before);
+      await protectBackup(path);
+      const backupPath = `${path}.bak`;
+      const backupBefore = await snapshot(backupPath);
+      await unchanged(backupPath, backupBefore);
+      await assertDirectory();
+      await unchanged(path, before);
+      // Consume the one-level slot before publication: a crash on either side
+      // leaves no usable backup or a stale-fenced one, never a redo.
+      await unlink(backupPath).catch((error: unknown) => {
+        if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") throw error;
+      });
+      await rename(temp, path);
+      await syncDirectory(directoryPath);
+    } finally { await unlink(temp).catch(() => undefined); }
+    // Logging must not turn a committed restore into a reported failure.
     try { guard.log?.("Capability configuration saved; activation requires a fresh start."); } catch { /* committed */ }
     return { version: resultHash };
   });

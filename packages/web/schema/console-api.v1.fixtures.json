@@ -227,6 +227,18 @@
             "available": false,
             "active": false,
             "reason": "no-valid-jobs"
+          },
+          {
+            "id": "subagents-enable",
+            "available": false,
+            "active": false,
+            "reason": "subagents-unconfigured"
+          },
+          {
+            "id": "config-undo",
+            "available": false,
+            "active": false,
+            "reason": "undo-unavailable"
           }
         ]
       }
@@ -286,6 +298,50 @@
         },
         "version": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
         "changed": true
+      }
+    },
+    {
+      "name": "capability-action-undo-preview",
+      "type": "ApiCapabilityActionPreview",
+      "value": {
+        "action": "config-undo",
+        "process": {
+          "pid": 42,
+          "startedAt": "2030-01-02T12:00:00.000Z"
+        },
+        "expectedVersion": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "changes": [
+          {
+            "field": "config",
+            "value": "Restore the exact prior bytes from the last console save. One level only; dotenv credentials and memory data are untouched."
+          }
+        ],
+        "normalizesFormatting": true,
+        "noOp": false
+      }
+    },
+    {
+      "name": "capability-action-subagents-preview",
+      "type": "ApiCapabilityActionPreview",
+      "value": {
+        "action": "subagents-enable",
+        "process": {
+          "pid": 42,
+          "startedAt": "2030-01-02T12:00:00.000Z"
+        },
+        "expectedVersion": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "changes": [
+          {
+            "field": "subagents.enabled",
+            "value": "true"
+          },
+          {
+            "field": "tools.allowedTools",
+            "value": "Append \"Agent\"; existing entries and deny rules are unchanged."
+          }
+        ],
+        "normalizesFormatting": true,
+        "noOp": false
       }
     },
     {

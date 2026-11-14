@@ -1268,7 +1268,9 @@
       "type": "string",
       "enum": [
         "memory-lite",
-        "cron-controls"
+        "cron-controls",
+        "subagents-enable",
+        "config-undo"
       ],
       "description": "Separate from the v1 read-only discovery snapshot. Never accepts paths or patches."
     },
@@ -1309,7 +1311,10 @@
                 "type": "string",
                 "enum": [
                   "memory",
-                  "cron.operatorActions.enabled"
+                  "cron.operatorActions.enabled",
+                  "subagents.enabled",
+                  "tools.allowedTools",
+                  "config"
                 ]
               },
               "value": {
@@ -1366,7 +1371,11 @@
         "memory-configured",
         "memory-root-unsafe",
         "no-valid-jobs",
-        "env-shadowed"
+        "env-shadowed",
+        "subagents-denied",
+        "subagents-unconfigured",
+        "undo-unavailable",
+        "undo-stale"
       ]
     },
     "CapabilityActionSaved": {

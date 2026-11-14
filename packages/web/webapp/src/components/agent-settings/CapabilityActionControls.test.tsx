@@ -99,3 +99,34 @@ it("does not attribute pre-existing pending configuration to a console Save", ()
   expect(screen.getByText("Configured; not active at this start")).toBeVisible();
   expect(api.saveCapabilityAction).not.toHaveBeenCalled();
 });
+
+it("labels subagents and undo actions with their own confirm copy", async () => {
+  function Variant({ target }: { readonly target: (typeof eligibleCronActions.actions)[number] }) {
+    const [saved, setSaved] = useState<CapabilitySavedState | null>(null);
+    return <CapabilityActionControls agent={agent("garden", { restart: { supported: false } })} action={target} process={eligibleCronActions.process} restart={null} refresh={refresh} saved={saved} setSaved={setSaved} />;
+  }
+  const subAction = { ...eligibleCronActions.actions.find((item) => item.id === "subagents-enable")!, available: true, reason: "eligible" as const };
+  const subPreview = { action: "subagents-enable" as const, process: eligibleCronActions.process, expectedVersion: "a".repeat(64), changes: [{ field: "subagents.enabled" as const, value: "true" }], normalizesFormatting: true as const, noOp: false };
+  vi.mocked(api.previewCapabilityAction).mockResolvedValue(subPreview as never);
+  const view = render(<Variant target={subAction} />);
+  fireEvent.click(await screen.findByRole("button", { name: "Enable subagents…" }));
+  await screen.findByText("Only delegation is enabled. Profiles and deny rules are unchanged.");
+  const undoAction = { ...eligibleCronActions.actions.find((item) => item.id === "config-undo")!, available: true, reason: "eligible" as const };
+  const undoPreview = { action: "config-undo" as const, process: eligibleCronActions.process, expectedVersion: "a".repeat(64), changes: [{ field: "config" as const, value: "Restore." }], normalizesFormatting: true as const, noOp: false };
+  vi.mocked(api.previewCapabilityAction).mockResolvedValue(undoPreview as never);
+  view.rerender(<Variant target={undoAction} />);
+  fireEvent.click(await screen.findByRole("button", { name: "Undo last console save…" }));
+  await screen.findByText(/Dotenv credentials and memory data are untouched/);
+});
+
+it.each([["subagents-denied", "The tool policy denies Agent"], ["subagents-unconfigured", "Configure at least one subagent profile first"], ["undo-stale", "changed since the last console save"], ["undo-unavailable", "No console save is available"]] as const)("explains a %s refusal without offering a write", (reason, copy) => {
+  function Variant({ target }: { readonly target: (typeof eligibleCronActions.actions)[number] }) {
+    const [saved, setSaved] = useState<CapabilitySavedState | null>(null);
+    return <CapabilityActionControls agent={agent("garden", { restart: { supported: false } })} action={target} process={eligibleCronActions.process} restart={null} refresh={refresh} saved={saved} setSaved={setSaved} />;
+  }
+  const id = reason.startsWith("undo") ? "config-undo" : "subagents-enable";
+  const refused = { ...eligibleCronActions.actions.find((item) => item.id === id)!, available: false, active: false, reason };
+  render(<Variant target={refused} />);
+  expect(screen.getByText(new RegExp(copy))).toBeVisible();
+  expect(screen.queryByRole("button", { name: /Enable|Undo/ })).toBeNull();
+});

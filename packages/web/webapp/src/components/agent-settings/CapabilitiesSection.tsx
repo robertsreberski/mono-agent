@@ -146,14 +146,23 @@ export function CapabilitiesSection({ agent, restart = null }: { readonly agent:
   if (snapshot === null) return <>{credentialWarning}{error ? errorNotice : <p>Reading capability status…</p>}</>;
   return <>
     {error && errorNotice}
-    <p className="settings-section-summary">Explore optional features. Eligible Memory Lite and cron controls can be previewed and saved. Supported cards also offer write-only credential entry; other setup uses manual instructions.</p>
+    <p className="settings-section-summary">Explore optional features. Eligible Memory Lite, cron controls and subagent delegation can be previewed and saved. A recovery panel offers one-level Undo when a console save is available. Supported cards also offer write-only credential entry; other setup uses manual instructions.</p>
     <p className="settings-notice capability-scope">Provider, embedding, browser and server liveness is not probed here. Ready means local configuration checks passed, not live readiness or message delivery. Run <code>mono-agent validate</code> in the owner terminal for live checks.</p>
     <p className="settings-section-summary">Checked <time dateTime={snapshot.observedAt}>{new Date(snapshot.observedAt).toLocaleTimeString()}</time>. {snapshot.observation === "loaded-snapshot" ? "Uses settings from the agent’s last start, not later edits." : "Uses saved settings."} Restart the agent after editing settings or .env. <button type="button" className="settings-button" onClick={() => setRevision((value) => value + 1)}>Refresh capability status</button></p>
     {agent.supportsCapabilityActions !== true && <p className="settings-notice">This agent version has no console Enable actions. Use manual setup or update the agent.</p>}
     {actionsError && <p className="settings-notice">Enable availability could not be verified. Refresh capability status; no write is assumed.</p>}
     {!actionSnapshot && Object.values(saved).some((value) => value.uncertain) && <p role="alert">{CAPABILITY_SAVE_UNCERTAIN}</p>}
+    {actionSnapshot && (() => {
+      const undo = actionSnapshot.actions.find((item) => item.id === "config-undo");
+      if (undo === undefined || (undo.reason === "undo-unavailable" && !saved[undo.id]?.uncertain)) return null;
+      return <article className="settings-group capability-card" aria-labelledby="capability-recovery">
+        <div className="capability-heading"><h3 id="capability-recovery">Configuration recovery</h3></div>
+        <p className="capability-purpose">One-level Undo of the last console save.{undo.available ? " The saved configuration differs from what the running process loaded." : ""}</p>
+        <CapabilityActionControls agent={agent} action={undo} process={actionSnapshot.process} restart={restart} refresh={() => setRevision((value) => value + 1)} saved={saved[undo.id] ?? null} isCurrent={() => currentIdentity.current === identity} setSaved={(value) => setSaved((prior) => ({ ...prior, [undo.id]: currentIdentity.current === identity ? value : { ...value, uncertain: true } }))} />
+      </article>;
+    })()}
     <div className="capability-grid">{snapshot.cards.map((card) => {
-      const action = actionSnapshot?.actions.find((item) => item.id === (card.id === "memory" ? "memory-lite" : card.id === "channel:cron" ? "cron-controls" : ""));
+      const action = actionSnapshot?.actions.find((item) => item.id === (card.id === "memory" ? "memory-lite" : card.id === "channel:cron" ? "cron-controls" : card.id === "tools" ? "subagents-enable" : ""));
       const actionNext = action?.active ? "Inspect readiness evidence below."
         : action?.reason === "already-configured" || (action?.available && saved[action.id] && !saved[action.id]?.uncertain) ? "Check saved settings and activation below; saving does not restart the agent."
         : action?.available ? "Review and Save below, or use manual setup. Saving does not activate the feature." : undefined;

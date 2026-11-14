@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- Add one-level console configuration Undo with a saved-versus-active recovery
+  display. Undo restores the exact prior bytes only while the saved
+  configuration still matches the backup's recorded result, then consumes the
+  slot so a second Undo is refused; dotenv credentials and memory data are
+  never deleted. It reuses the guarded writer, preview, and existing Restart
+  flow.
+
+- Add console subagent delegation enablement. It sets `subagents.enabled` and
+  appends `Agent` only to a restrictive explicit `tools.allowedTools` list,
+  preserving omitted/`"*"` policy, deny rules and profiles. It refuses when
+  the policy denies `Agent` or no subagent profile is configured.
+
 - Add write-only credentials for prepared A2A providers, Journal/BuJo embeddings,
   Parallel search/fetch and exact-hosted Ollama search. Preserve custom environment
   names, keyless/local behavior, tool policy and existing memory roots; retain

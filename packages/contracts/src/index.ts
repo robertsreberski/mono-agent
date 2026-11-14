@@ -359,4 +359,5 @@ export type { AgentUpkeepAccounting } from "./upkeep-accounting.js";
 export { deriveUpkeepAccounting, forwardUpkeepAccounting, parseForwardedUpkeepAccounting, mergeForwardedUpkeepAccounting } from "./upkeep-accounting.js";
 export type { ForwardedUpkeepAccounting } from "./upkeep-accounting.js";
 
-export type { GuardedSettingsJsonWrite } from "./guarded-json-source.js";
+export type { GuardedSettingsJsonWrite, SettingsJsonBackup, SettingsJsonBackupRead } from "./guarded-json-source.js";
+export { readSettingsJsonBackup, restoreGuardedSettingsJson } from "./guarded-json-source.js";

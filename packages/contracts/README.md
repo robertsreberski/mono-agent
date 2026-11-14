@@ -495,6 +495,8 @@ SecretSafeLogSink
 SessionToolHistoryEventMetadata
 SessionToolHistoryTerminalState
 SettingsJson
+SettingsJsonBackup
+SettingsJsonBackupRead
 SettingsJsonError
 SettingsJsonValue
 agentAttachmentKindFromMimeType
@@ -577,9 +579,11 @@ readRecord
 readRequired
 readSafeDataProperty
 readSettingsJson
+readSettingsJsonBackup
 readString
 redactedSecret
 registerNativeNotifyRequest
+restoreGuardedSettingsJson
 sanitizeInboundHttpHeaders
 sanitizeReplyPartDeliveryOutcomes
 sanitizeRestartProposalReason

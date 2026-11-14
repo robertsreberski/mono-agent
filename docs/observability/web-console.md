@@ -273,7 +273,8 @@ webhook, Telegram, Slack, OpenAI-compatible API, cron, sandbox, MCP/tools and
 built-in tracing. A compact responsive grid shows purpose, status (text and icon)
 and the primary next step; expand a card for requirements, qualitative usage/cost,
 `ok`/`waiting`/`disabled`/`error` evidence and exact manual setup steps. Inspecting a memory tier does not select it for the agent. On agents advertising separate Enable support, eligible cards
-have **Enable Memory Lite…** or **Enable cron controls…**. Older agents keep manual
+have **Enable Memory Lite…**, **Enable cron controls…** or **Enable subagents…**, and a recovery
+panel offers **Undo last console save…** while the save fence holds. Older agents keep manual
 setup guidance; read-only discovery alone does not imply write support. Tracing
 is already enabled; removed external exporters cannot be enabled here.
 
@@ -343,18 +344,34 @@ owner-terminal inspection. Identity and bytes are rechecked immediately before
 rename, but editors that ignore the lock can still race that final check. This
 is not an atomic compare-and-swap against manual edits; the `.bak` envelope holds
 the prior bytes for owner-controlled recovery. There is no operation journal,
-Undo button, arbitrary patch/path/command input or terminal Enable command.
+arbitrary patch/path/command input or terminal Enable command.
+
+A **Configuration recovery** panel offers one-level **Undo last console save…**
+when a console save is on record. Undo restores the exact prior bytes only while
+the saved configuration still hashes to the backup's recorded intended result;
+any later manual edit refuses Undo with a stale warning instead of guessing.
+Undo runs through the same guarded writer, preview, and Restart flow, then
+consumes the slot, so an Undo is never itself undoable and a second Undo is
+refused. It never deletes dotenv credentials or memory data: after Undo,
+credential cards may still show set. The panel stays hidden while no console
+save is available.
 
 Memory Lite is offered only when memory is unconfigured and the standard root is
 absent/empty or verified Lite; already-configured Lite is a no-op. No memory data
 is migrated or deleted. Cron controls only saves
-`cron.operatorActions.enabled: true` when valid jobs already exist; it never enables jobs or schedules. Tools,
+`cron.operatorActions.enabled: true` when valid jobs already exist; it never enables jobs or schedules. Subagent
+delegation sets `subagents.enabled: true` and appends `Agent` only to a
+restrictive explicit `tools.allowedTools` list; an omitted or `"*"` policy is
+left alone, and deny rules and profiles are never removed. It refuses when the
+policy denies Agent or when no subagent profile is configured. Tools,
 webhook and other cards remain guidance-only, except the credential fields described above.
 
 **Saved** is not **Active**. Managed agents reuse the existing Restart confirmation
 and durable tracking; activation needs a fresh startup's loaded-state evidence.
 Foreground/embedded agents show **Saved; applies on next start** and require an
-owner-controlled stop/start. Restart failure leaves saved settings intact; there
+owner-controlled stop/start. The Capabilities recovery panel shows whether the
+saved configuration differs from what the running process loaded, and offers
+Undo while the save fence holds. Restart failure leaves saved settings intact; there
 is no automatic rollback. On conflict, refresh and review a new preview. An
 uncertain transport outcome means a save may have completed and requires
 inspection before retrying. A preview failure means nothing was saved. After an
