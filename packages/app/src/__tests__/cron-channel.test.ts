@@ -994,7 +994,7 @@ describe("cron channel driver — durable effective state", () => {
     const running = await driver.start({ ...baseInput, config });
 
     expect(captured?.jobs).toEqual([expect.objectContaining({ id: "j", enabled: false })]);
-    expect(running.summary).toEqual({ jobs: 0, configuredJobs: 1 });
+    expect(running.summary).toEqual({ jobs: 0, configuredJobs: 1, operatorActionsEnabled: true });
   });
 
   it("starts a config-disabled job when the agent-owned runtime override enables it", async () => {
@@ -1021,7 +1021,7 @@ describe("cron channel driver — durable effective state", () => {
     const running = await driver.start({ ...baseInput, config });
 
     expect(captured?.jobs).toEqual([expect.objectContaining({ id: "j", enabled: true })]);
-    expect(running.summary).toEqual({ jobs: 1, configuredJobs: 1 });
+    expect(running.summary).toEqual({ jobs: 1, configuredJobs: 1, operatorActionsEnabled: false });
   });
 
   it("publishes an immutable replacement summary after an effective-enable action", async () => {
@@ -1049,8 +1049,8 @@ describe("cron channel driver — durable effective state", () => {
       confirmationToken: confirmation.confirmation.token,
     })).toMatchObject({ kind: "completed", value: { job: { effectiveEnabled: false } } });
 
-    expect(onSummaryChanged).toHaveBeenCalledWith({ jobs: 0, configuredJobs: 1 });
-    expect(running.summary).toEqual({ jobs: 1, configuredJobs: 1 });
+    expect(onSummaryChanged).toHaveBeenCalledWith({ jobs: 0, configuredJobs: 1, operatorActionsEnabled: true });
+    expect(running.summary).toEqual({ jobs: 1, configuredJobs: 1, operatorActionsEnabled: true });
   });
 
   it("disables operator actions immediately when the running scheduler degrades", async () => {
@@ -1158,7 +1158,7 @@ describe("cron channel driver — durable effective state", () => {
     });
 
     expect(captured?.jobs).toEqual([expect.objectContaining({ id: "j", enabled: false })]);
-    expect(running.summary).toEqual({ jobs: 0, configuredJobs: 1 });
+    expect(running.summary).toEqual({ jobs: 0, configuredJobs: 1, operatorActionsEnabled: false });
     expect(onDegraded).toHaveBeenCalledWith("state marker is corrupt");
     captured?.onDegraded?.("runtime store failed");
     expect(onDegraded).toHaveBeenLastCalledWith("runtime store failed");

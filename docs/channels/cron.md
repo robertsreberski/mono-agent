@@ -12,6 +12,18 @@ host-identified cron turns, including run-now. If Remember is enabled, the host
 provides manual-write guidance in that turn's session context. Other turns retain
 their configured capture behavior; see [capture and recall](/memory/capture-and-recall/).
 
+## Enable operator controls from the console
+
+On supporting agents, **Agent settings → Capabilities → Enable cron controls…**
+previews and saves only `cron.operatorActions.enabled: true`. Valid existing
+inline or Markdown jobs are required, even if every job is disabled. It does not
+create jobs, enable schedules, edit prompts or change runtime enable overrides.
+Any non-empty `MONO_AGENT_CRON_*` environment override must be resolved in the
+owner terminal. Save remains pending
+until a fresh start; managed agents reuse confirmed Restart and foreground hosts
+require stop/start. Older agents retain manual config guidance. The later **Run
+now** and **Enable/Disable** job actions still require their own confirmation.
+
 ## What a cron job is
 
 Each tick invokes the responder with the job's `prompt` text, exactly as if a message arrived on a channel. The result is produced inside the agent process. If you want a scheduled message to reach the user, prefer native cron notification with `notify: true`: the agent writes the final answer once, and the app delivers it to Telegram, Slack, or a new web-console conversation after the run succeeds.
@@ -202,7 +214,7 @@ Every attempted gate is recorded per firing — verdicts, timeouts, cancellation
 
 The web console has a dedicated **Automations** navigation destination populated from the agent-scoped overview, independently of the loaded Chats page. It lists configured jobs before their first run and shows each overview job once with its id, human-language cadence/timezone, enabled state, last or active run, and agent-authored next run. The list sorts by most recent invocation, newest first (completion, then start, then admission stamp, with a deterministic job-id fallback); jobs that never ran trail the invoked ones. Selecting a row opens the existing stable `/agents/<sourceId>/cron/<jobId>` read-only history route, and opening that route directly selects Automations navigation. Loading, unsupported, unavailable, saved-snapshot, empty, and truncated states remain distinct. A saved overview and cached history remain readable while the agent is offline or lacks current cron capability, but stale schedule state is labelled, not actionable, and never presented as a live next-run prediction. Chats requests use a server-side scope that excludes cron channels before search, limits, and cursors are applied; webhook conversations remain Chats, and unscoped API callers retain the backward-compatible mixed listing.
 
-The web cron header shows schedule, timezone, effective state, last and next run, and health from the agent-authored overview. **Run now** and **Enable/Disable** use the existing confirmation, authentication, idempotency, and capability gates. They remain visible but disabled with the authoritative reason when the live agent does not allow actions. **View config** opens the existing redacted, read-only configuration view whenever live cron reads are available. The console never reads `source.configPath`, edits configuration, computes a next run, or treats stale snapshot data as actionable; agents without current cron capability remain readable through cached history.
+The web cron header shows schedule, timezone, effective state, last and next run, and health from the agent-authored overview. **Run now** and **Enable/Disable** use the existing confirmation, authentication, idempotency, and capability gates. They remain visible but disabled with the authoritative reason when the live agent does not allow actions. **View config** opens the existing redacted, read-only configuration view whenever live cron reads are available. The console never reads `source.configPath` or computes a next run, and never treats stale snapshot data as actionable; agents without current cron capability remain readable through cached history.
 
 The running agent remains authoritative for configured/effective state, last and next run, health, run records, the redacted configuration view, and all action outcomes.
 

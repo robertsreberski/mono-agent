@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Make `mono-agent init` create its config file exclusively, refusing a config
+  that another process created in the meantime instead of merging into it.
+
+- Fix guarded configuration publication on Windows and protect lock artifacts
+  before creation. Keep uncertain Enable saves visible across agent changes,
+  reconcile saved controls with fresh availability, and distinguish existing
+  configuration from a console Save.
+
 - Keep protected historical blocks literal in compaction summary instructions:
   require unchanged copies before new events, not rewritten or merged history.
   Retain exact preservation checks; live-model compliance is not guaranteed.
@@ -16,6 +24,15 @@
   error text or secrets. Malformed, oversized and wrongly encoded request
   bodies now get fixed messages; known errors keep their reviewed messages
   with only safe details and `Retry-After`.
+
+- Recover interrupted configuration writers with owner-aware locks and bounded
+  waits. In Enable controls, distinguish unconfirmed saves from inactive starts
+  and show activation evidence once.
+
+- Add previewed, confirmed console Enable actions for safe Memory Lite setup
+  and controls for valid existing cron jobs, with private guarded config backups.
+  Keep saved settings pending until a fresh start; reuse managed Restart and
+  retain manual guidance on older agents without enabling jobs or migrating data.
 
 - Remove operator API-key requirements for console, ACP and peer access,
   supervised restart, provider management and opted-in cron actions. Ignore

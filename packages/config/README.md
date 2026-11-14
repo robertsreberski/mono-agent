@@ -43,6 +43,18 @@ Core settings resolve from `mono-agent.config.json`, then built-in defaults.
 file contributes an empty JSON source. Duplicate object keys are returned as
 `duplicateKeyPaths` by `readMonoAgentConfigJson`; loading warns and retains JSON's
 last-value-wins result. App's validate/doctor treats these as errors.
+`writeMonoAgentConfigJson` keeps existing sparse-patch behavior by default. Its
+optional `guarded` mode requires an expected sha256 version and a whole-candidate
+validator, uses unique same-directory private temps and a guarded rename, and
+keeps one private ignored `.bak` envelope (exact prior bytes plus intended hash).
+The slot is replaced, not accumulated as history. Unsafe destinations and
+duplicate keys are refused; tracked backups and effective ignore rules are
+checked when Git is available in a repository. Missing Git skips only that check,
+not owner-only file permissions. Official writes queue locally and use an atomic
+try-lock across processes: complete PID/start metadata permits dead-owner
+recovery, with up to 1.5 seconds of bounded waiting for live holders. Unknown
+ownership fails closed rather than being reclaimed by age.
+App owns action eligibility, environment-shadow checks and full validators.
 
 Continuity upkeep and ledger reading remain opt-in. The extraction model view
 shows `conversation model` unless `runtime.session.continuity.upkeep.extractionModel`

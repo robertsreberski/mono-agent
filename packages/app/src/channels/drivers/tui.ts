@@ -264,6 +264,7 @@ interface AppOwnedTuiChannelDriver extends ChannelDriver<TuiAdapterConfig> {
     providerUsage?: ProviderUsageOperator,
     restart?: TuiRestartAuthority,
     capabilitySetup?: TuiAdapterOptions["capabilitySetup"],
+    capabilityActions?: TuiAdapterOptions["capabilityActions"],
   ): Promise<RunningChannel>;
 }
 
@@ -282,6 +283,7 @@ export function startAppOwnedTuiChannel(
   providerUsage?: ProviderUsageOperator,
   restart?: TuiRestartAuthority,
   capabilitySetup?: TuiAdapterOptions["capabilitySetup"],
+  capabilityActions?: TuiAdapterOptions["capabilityActions"],
 ): Promise<RunningChannel> | undefined {
   if (!appOwnedTuiDrivers.has(driver)) return undefined;
   return (driver as AppOwnedTuiChannelDriver)[APP_OWNED_TUI_START](
@@ -291,6 +293,7 @@ export function startAppOwnedTuiChannel(
     providerUsage,
     restart,
     capabilitySetup,
+    capabilityActions,
   );
 }
 
@@ -324,7 +327,7 @@ export function createTuiChannelDriver(
     async start(input) {
       return await this[APP_OWNED_TUI_START](input, undefined, undefined, undefined);
     },
-    async [APP_OWNED_TUI_START](input, processJobs, providerAuth, providerUsage, restart, capabilitySetup) {
+    async [APP_OWNED_TUI_START](input, processJobs, providerAuth, providerUsage, restart, capabilitySetup, capabilityActions) {
       const adapterModule = await loadTuiModule();
       const adapterFactory = overrides.adapterFactory ?? adapterModule.startTuiAdapter;
       const deliverNotification = overrides.deliverNotification ?? deliverWebNotification;
@@ -533,6 +536,7 @@ export function createTuiChannelDriver(
               ...(processJobs.wakeAdmission === undefined ? {} : { processJobWakeAdmission: processJobs.wakeAdmission }) }),
         ...(providerAuth === undefined ? {} : { providerAuth }),
         ...(capabilitySetup === undefined ? {} : { capabilitySetup }),
+        ...(capabilityActions === undefined ? {} : { capabilityActions }),
         ...(providerUsage === undefined ? {} : { providerUsage }),
         ...(restart === undefined ? {} : { restart }),
         ...(input.interaction === undefined ? {} : { interaction: input.interaction }),

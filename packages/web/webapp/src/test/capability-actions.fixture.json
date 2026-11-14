@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "process": {
+    "pid": 42,
+    "startedAt": "2026-08-01T09:00:00Z"
+  },
+  "actions": [
+    {
+      "id": "memory-lite",
+      "available": true,
+      "active": true,
+      "reason": "already-configured"
+    },
+    {
+      "id": "cron-controls",
+      "available": false,
+      "active": false,
+      "reason": "no-valid-jobs"
+    }
+  ]
+}

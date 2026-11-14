@@ -13,6 +13,17 @@ only `memory.mode` and the optional embeddings/LLM blocks differ.
 For a compact capability and dependency comparison, see
 [Local memory tiers and custom stores](/memory/backends-comparison/).
 
+## Enable Lite from the console
+
+Supporting agents offer **Agent settings → Capabilities → Enable Memory Lite…**
+with an owned-field preview and confirmed Save. Memory must be unconfigured and
+`./.mono-agent/memory` absent, empty, or verified as an existing Lite root.
+Already-configured Lite is a no-op. Unknown or semantic roots are refused: no
+migration or deletion is performed. Journal/BuJo and custom setup remain manual.
+Saving is pending until a fresh start; use the existing confirmed Restart for a
+managed agent, or stop/start foreground/embedded hosts yourself. Older agents
+show manual guidance. See [console Enable safety](/observability/web-console/#discover-optional-capabilities).
+
 ## Memory Tiers
 
 | Capability | `lite` | `journal` | `bujo` |

@@ -209,6 +209,7 @@ export interface WebAgentSummary {
   readonly supportsProviderAuth?: true;
   readonly supportsManualCompaction?: true;
   readonly supportsCapabilitySetup?: true;
+  readonly supportsCapabilityActions?: true;
   readonly supportsProviderUsage?: true;
   readonly supportsProviderUsageRefresh?: true;
   /** Additive explicit live-check action; passive status remains traffic-free. */
@@ -1446,3 +1447,5 @@ export interface CreateWebUploadInput {
   readonly contentType: string;
   readonly sizeBytes?: number;
 }
+
+export type { CapabilityActionsSnapshot as WebCapabilityActionsSnapshot, CapabilityActionInput as WebCapabilityActionInput, CapabilityActionSaveInput as WebCapabilityActionSaveInput, CapabilityActionPreview as WebCapabilityActionPreview, CapabilityActionSaved as WebCapabilityActionSaved } from "@mono-agent/channel-operator/client";

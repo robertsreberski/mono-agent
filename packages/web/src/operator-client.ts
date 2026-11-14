@@ -1,3 +1,4 @@
+import { parseCapabilityActionsSnapshot, parseCapabilityActionPreview, parseCapabilityActionSaved, MAX_CAPABILITY_ACTION_BYTES, type CapabilityActionInput, type CapabilityActionSaveInput } from "@mono-agent/channel-operator/client";
 import { parseCapabilitySetupSnapshot, MAX_CAPABILITY_SETUP_BYTES, type CapabilitySetupSnapshot } from "@mono-agent/channel-operator/client";
 import { isAgentCompactionAccounting, parseProviderUsageSnapshot, type ProviderUsageId, type ProviderUsageSnapshot } from "@mono-agent/contracts";
 import {
@@ -152,6 +153,7 @@ export interface OperatorInfo {
   /** Always fail closed on older or malformed producers. */
   readonly restart: OperatorRestartSupport;
   readonly supportsCapabilitySetup?: true;
+  readonly supportsCapabilityActions?: true;
   readonly schema: number;
   readonly pid?: number;
   readonly label?: string;
@@ -312,6 +314,7 @@ export class OperatorClient {
       ...(mcpApps === undefined ? {} : { mcpApps }),
       ...(cron?.read === true ? { cron: { read: true, actions: cron.actions === true } } : {}),
       ...(capabilities?.jobs === true ? { supportsJobs: true } : {}),
+      ...(record(capabilities?.capabilityActions)?.version === 1 && record(capabilities?.capabilityActions)?.preview === true && record(capabilities?.capabilityActions)?.save === true ? { supportsCapabilityActions: true as const } : {}),
       ...(record(capabilities?.capabilitySetup)?.version === 1
         && record(capabilities?.capabilitySetup)?.read === true ? { supportsCapabilitySetup: true as const } : {}),
       ...(record(capabilities?.providerUsage)?.version === 1 ? {
@@ -364,6 +367,28 @@ export class OperatorClient {
       return { kind: "refused", reason: boundedRestartReason(error?.message) };
     }
     throw new WebConsoleError("restart_unconfirmed", "The restart response could not be confirmed.", 502);
+  }
+
+  async capabilityActions(...args: [operation: "read"] | [operation: "preview", input: CapabilityActionInput] | [operation: "save", input: CapabilityActionSaveInput]) {
+    const [operation, input] = args;
+    const failures: Readonly<Record<string, { readonly status: number; readonly message: string }>> = {
+      capability_action_conflict: { status: 409, message: "Settings or process changed; refresh and review a new preview." },
+      capability_action_unavailable: { status: 409, message: "This action is unavailable; use manual setup guidance." },
+      capability_action_failed: { status: 503, message: "Settings could not be confirmed; inspect them before retrying." },
+      capability_actions_unsupported: { status: 501, message: "Update the agent to enable features from the console." },
+    };
+    try {
+      const response = await this.request(`${this.baseUrl}/v1/capability-actions${operation === "read" ? "" : `/${operation}`}`, {
+        method: operation === "read" ? "GET" : "POST", headers: this.headers(operation !== "read"),
+        ...(input === undefined ? {} : { body: JSON.stringify(input) }), signal: AbortSignal.timeout(35_000),
+      }, new Map(Object.entries(failures).map(([code, failure]) => [code, failure.status])));
+      const value: unknown = JSON.parse(await readBoundedBody(response, MAX_CAPABILITY_ACTION_BYTES, "operator_capability_actions_too_large"));
+      return operation === "read" ? parseCapabilityActionsSnapshot(value) : operation === "preview" ? parseCapabilityActionPreview(value) : parseCapabilityActionSaved(value);
+    } catch (error) {
+      const known = error instanceof WebConsoleError ? failures[error.code] : undefined;
+      if (known !== undefined && error instanceof WebConsoleError && known.status === error.status) throw new WebConsoleError(error.code, known.message, known.status);
+      throw new WebConsoleError("capability_action_failed", "Capability action outcome could not be confirmed; refresh and inspect settings before retrying.", 502);
+    }
   }
 
   async capabilitySetup(signal?: AbortSignal): Promise<CapabilitySetupSnapshot> {

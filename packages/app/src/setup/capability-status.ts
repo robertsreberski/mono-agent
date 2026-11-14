@@ -27,7 +27,7 @@ function moduleChoice(module: CapabilityModule, status: CapabilityStatus): Capab
     requirements: discovery.requirements, usage: discovery.usage + (module.id === "sandbox" ? " Native sandbox availability/enforcement is not probed here; run mono-agent validate in the owner terminal." : "") + (module.kind === "memory" && module.id !== "memory:lite" ? " Embedding/model liveness is not probed here; run mono-agent validate in the owner terminal." : ""),
     ownedConfigPaths: discovery.ownedConfigPaths, status,
     steps: [
-      "In the agent folder, back up mono-agent.config.json. Merge only the shown fields; preserve unrelated settings, existing allowlists and deny rules. Replace every example placeholder before use. This console never applies changes.",
+      "In the agent folder, back up mono-agent.config.json. Merge only the shown fields; preserve unrelated settings, existing allowlists and deny rules. Replace every example placeholder before use. These manual steps do not apply changes. Only agents advertising console Enable support offer typed Memory Lite and cron-control actions.",
       JSON.stringify(module.configFragment(values), null, 2),
       ...(module.inputs.some((input) => input.secret)
         ? ["In the owner terminal, set the following placeholders in the owner-only .env. Never paste credentials into this console.", ...(module.envExampleLines?.(values) ?? [])] : []),
@@ -52,7 +52,7 @@ export function capabilityCards(report: ValidationReport, memoryMode?: string): 
     moduleChoice(module, module.id === `memory:${memoryMode}` ? aggregateCapabilityStatus(memoryEvidence) : "disabled"));
   const selected = variants.find((variant) => variant.id === `memory:${memoryMode}`);
   const cards: CapabilityCard[] = [{
-    id: "memory", title: "Memory", purpose: "Keep useful information across conversations. Choose a tier to inspect its setup instructions, not to change the agent.",
+    id: "memory", title: "Memory", purpose: "Keep useful information across conversations. Inspect tier instructions below. On supported agents, Enable Memory Lite offers a separate preview and confirmed Save.",
     requirements: ["A writable memory root; Journal and BuJo also need local embeddings."],
     usage: "Lite stays local. Journal adds embeddings. BuJo also uses extraction-model tokens.",
     ownedConfigPaths: ["memory"], steps: selected?.steps ?? ["Choose Lite, Journal or BuJo to see manual setup instructions."],

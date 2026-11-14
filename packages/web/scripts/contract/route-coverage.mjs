@@ -20,9 +20,28 @@ function proxyPath() {
 /** Discover registrations independently of the manifest. Middleware is not a route. */
 export function discoverRoutes(source) {
   const file = ts.createSourceFile("server.ts", source, ts.ScriptTarget.Latest, true);
+  // Bind identifiers without resolving/executing imports. A matching spelling
+  // is not authority: aliases are accepted, local/shadowed declarations are not.
+  const options = { noResolve: true, noLib: true };
+  const host = ts.createCompilerHost(options);
+  host.getSourceFile = (name) => name === "server.ts" ? file : undefined;
+  const checker = ts.createProgram(["server.ts"], options, host).getTypeChecker();
+  function isCapabilityRegistrar(identifier) {
+    const declaration = checker.getSymbolAtLocation(identifier)?.declarations?.[0];
+    if (!declaration || !ts.isImportSpecifier(declaration) || declaration.isTypeOnly
+      || (declaration.propertyName ?? declaration.name).text !== "registerCapabilityActionRoutes") return false;
+    const clause = declaration.parent.parent;
+    return !clause.isTypeOnly && ts.isImportDeclaration(clause.parent)
+      && ts.isStringLiteral(clause.parent.moduleSpecifier)
+      && clause.parent.moduleSpecifier.text === "./capability-action-routes.js";
+  }
   const routes = [];
   const verbs = new Set(["get", "post", "put", "patch", "delete", "head", "options", "all"]);
   function visit(node) {
+    // This imported registration owner uses literal routes and the same origin callback.
+    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && isCapabilityRegistrar(node.expression)) {
+      routes.push(...discoverRoutes(readFileSync(new URL("../../src/capability-action-routes.ts", import.meta.url), "utf8")));
+    }
     if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)
       && node.expression.expression.getText(file) === "app" && verbs.has(node.expression.name.text)) {
       const [path, ...handlers] = node.arguments;

@@ -398,6 +398,7 @@ DEFAULT_AGENT_ATTACHMENT_MIME_ALLOWLIST
 DEFAULT_EMPTY_FINAL_TEXT
 DEFAULT_MAX_MESSAGE_CHARS
 ForwardedUpkeepAccounting
+GuardedSettingsJsonWrite
 HostWakeDeliveryResult
 HostWakeDisposition
 InternalProcessJobTool
@@ -587,6 +588,7 @@ setToolActivityPathRoots
 splitTextByCodePoints
 splitTextForChat
 suppressesNotification
+syncDirectory
 toolNameLeaf
 unsupportedReplyPartDeliveryOutcomes
 writeSettingsJson

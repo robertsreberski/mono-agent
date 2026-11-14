@@ -26,6 +26,16 @@ mono-agent web run --loopback      # foreground browser console; keep this termi
 
 Open `http://127.0.0.1:5050`, pick the agent, and send a message. Guided setup is authentic and not instant: it signs you in to the provider you choose and makes one real model request for every selected route to prove the route answers, which can take several minutes and counts as usage on your account. The [platform table](#how-the-agent-runs-on-your-platform) below says what to run instead of `status` on Linux and on hosts without a service manager; [Setup details](#setup-details-guided-init-flags-and-files) has the deadlines, flags, and generated files.
 
+### Enable optional features later
+
+Open **Agent settings → Capabilities** in the [web console](/observability/web-console/#discover-optional-capabilities).
+New agents can offer a preview and confirmed Save for Memory Lite and controls
+for valid existing cron jobs. Older agents show manual guidance instead. Lite
+never migrates existing data; cron Enable never enables schedules or jobs.
+Save is pending until a fresh start. Managed agents offer the existing confirmed
+Restart flow; foreground/embedded agents require owner-controlled stop/start.
+Tools and webhook setup remain manual. There is no terminal Enable command.
+
 ### How the agent runs on your platform
 
 | Situation | The agent | The console |

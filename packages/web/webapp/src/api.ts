@@ -1,3 +1,4 @@
+import type { WebCapabilityActionsSnapshot, WebCapabilityActionInput, WebCapabilityActionSaveInput, WebCapabilityActionPreview, WebCapabilityActionSaved } from "./types.js";
 import type { WebCapabilitySetupSnapshot } from "./types.js";
 import { normalizeBrowserCosts } from "../../src/cost-wire.js";
 import { parseProviderUsageSnapshot } from "@mono-agent/contracts/provider-usage";
@@ -864,6 +865,9 @@ export const api = {
     return result.agent;
   },
 
+  capabilityActions: (sourceId: string, signal?: AbortSignal) => request<WebCapabilityActionsSnapshot>(`/api/v1/agents/${encodeURIComponent(sourceId)}/capability-actions`, { headers: { "X-Mono-Agent-Web-Origin": window.location.origin }, signal }),
+  previewCapabilityAction: (sourceId: string, input: WebCapabilityActionInput) => request<WebCapabilityActionPreview>(`/api/v1/agents/${encodeURIComponent(sourceId)}/capability-actions/preview`, { headers: { "X-Mono-Agent-Web-Origin": window.location.origin }, method: "POST", body: JSON.stringify(input) }),
+  saveCapabilityAction: (sourceId: string, input: WebCapabilityActionSaveInput) => request<WebCapabilityActionSaved>(`/api/v1/agents/${encodeURIComponent(sourceId)}/capability-actions/save`, { headers: { "X-Mono-Agent-Web-Origin": window.location.origin }, method: "POST", body: JSON.stringify(input) }),
   capabilitySetup: (sourceId: string, signal?: AbortSignal) => request<WebCapabilitySetupSnapshot>(
     `/api/v1/agents/${encodeURIComponent(sourceId)}/capabilities`,
     { headers: { "X-Mono-Agent-Web-Origin": window.location.origin }, ...(signal === undefined ? {} : { signal }) },

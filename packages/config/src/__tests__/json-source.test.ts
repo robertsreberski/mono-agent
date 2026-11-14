@@ -414,3 +414,14 @@ describe("retired scheduling key diagnostics", () => {
     throw new Error("Expected retired-field refusal");
   });
 });
+
+it("preserves guarded version-conflict and unsafe-write categories through the config adapter", async () => {
+  const { realpath } = await import("node:fs/promises");
+  const path = join(await realpath(dir), "config.json");
+  await writeFile(path, "{}");
+  await expect(writeMonoAgentConfigJson({ path, patch: {}, guarded: { expectedVersion: "0".repeat(64), validate: async () => {} } })).rejects.toMatchObject({ code: "config_conflict" });
+  const version = (await readMonoAgentConfigJson(path)).version;
+  await writeFile(join(dir, ".gitignore"), "", { mode: 0o666 });
+  const { chmod } = await import("node:fs/promises"); await chmod(join(dir, ".gitignore"), 0o666);
+  await expect(writeMonoAgentConfigJson({ path, patch: {}, guarded: { expectedVersion: version, validate: async () => {} } })).rejects.toMatchObject({ code: "unsafe_config_write" });
+});

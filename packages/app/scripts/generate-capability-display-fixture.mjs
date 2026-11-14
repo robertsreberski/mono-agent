@@ -20,3 +20,13 @@ const snapshot = {
 const target = new URL("../../web/webapp/src/test/capability-snapshot.fixture.json", import.meta.url);
 await writeFile(target, JSON.stringify(snapshot, null, 2) + "\n");
 console.info("Generated synthetic Capabilities display data from the real app catalog.");
+
+const actions = {
+  version: 1, process: snapshot.process,
+  actions: [
+    { id: "memory-lite", available: true, active: true, reason: "already-configured" },
+    // The synthetic cron card has no jobs, unlike the separate eligible-job flow fixtures.
+    { id: "cron-controls", available: false, active: false, reason: "no-valid-jobs" },
+  ],
+};
+await writeFile(new URL("../../web/webapp/src/test/capability-actions.fixture.json", import.meta.url), JSON.stringify(actions, null, 2) + "\n");

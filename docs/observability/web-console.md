@@ -273,13 +273,59 @@ webhook, Telegram, Slack, OpenAI-compatible API, cron, sandbox, MCP/tools and
 built-in tracing. A compact responsive grid shows purpose, status (text and icon)
 and the primary next step; expand a card for requirements, qualitative usage/cost,
 `ok`/`waiting`/`disabled`/`error` evidence and exact manual setup steps. Inspecting a memory tier does not select it for the agent. There is
-no apply action or credential form. Tracing is already enabled; removed external
-exporters cannot be enabled here.
+no credential form. On agents advertising separate Enable support, eligible cards
+have **Enable Memory Lite…** or **Enable cron controls…**. Older agents keep manual
+setup guidance; read-only discovery alone does not imply write support. Tracing
+is already enabled; removed external exporters cannot be enabled here.
+
+Enable first previews only owned fields and the expected config version. Review
+and **Confirm Save** (or Cancel). JSON formatting normalizes to two-space
+indentation. The agent reconstructs and validates the candidate, rejects duplicate
+keys, environment shadowing and stale process/config versions, preserves unrelated
+fields, and saves its durable config—not a managed worker's frozen startup copy.
+It keeps one owner-only `<config>.bak` backup slot containing exact prior bytes
+(base64) and the intended result hash. This backup can contain existing inline
+secrets: do not share or commit it. Unsafe backup destinations are refused.
+Safety ignore rules can remain after a refused Save; no config is published
+until validation passes. Each new Save replaces that single slot; it is not a
+multi-version history. When Git is available in a repository, tracked backups
+are refused and effective ignore rules are checked. Without Git or outside a
+repository, the Git check is skipped; files remain owner-only (0600), with local
+ignore rules. Verify backup tracking before later committing the agent folder.
+
+Ignore protection is installed before lock/staging directories exist, including
+for legacy official writers; writable-by-other-accounts ignore files are refused.
+Official writes queue within one process. Across processes they use an atomic
+try-lock, recover provably dead owners (PID plus start identity), and wait up to
+1.5 seconds for a live holder before reporting a conflict. A live lock is
+published with complete owner metadata; abandoned empty locks can be removed
+safely. Unverifiable or malformed ownership is never guessed away and may need
+owner-terminal inspection. Identity and bytes are rechecked immediately before
+rename, but editors that ignore the lock can still race that final check. This
+is not an atomic compare-and-swap against manual edits; the `.bak` envelope holds
+the prior bytes for owner-controlled recovery. There is no operation journal,
+Undo button, arbitrary patch/path/command input or terminal Enable command.
+
+Memory Lite is offered only when memory is unconfigured and the standard root is
+absent/empty or verified Lite; already-configured Lite is a no-op. No memory data
+is migrated or deleted. Cron controls only saves
+`cron.operatorActions.enabled: true` when valid jobs already exist; it never enables jobs or schedules. Tools,
+webhook and every other card remain guidance-only.
+
+**Saved** is not **Active**. Managed agents reuse the existing Restart confirmation
+and durable tracking; activation needs a fresh startup's loaded-state evidence.
+Foreground/embedded agents show **Saved; applies on next start** and require an
+owner-controlled stop/start. Restart failure leaves saved settings intact; there
+is no automatic rollback. On conflict, refresh and review a new preview. An
+uncertain transport outcome means a save may have completed and requires
+inspection before retrying. A preview failure means nothing was saved. After an
+observed new start without activation, the card says saved but not active; it
+does not keep promising the next start.
 
 Status comes from the agent's read-only `validateMonoAgentFolder` checks with
 `allowFilesystemWrites: false`, `liveness: false` and `subprocessProbes: false`,
 not browser-side guesses.
-The console never initiates provider/network/subprocess liveness probes. Ready
+Read-only capability status never initiates provider/network/subprocess liveness probes. Ready
 means local configuration checks passed, not live readiness: embedding/model,
 browser/provider connectivity, computer-use executables and native sandbox
 availability/enforcement are explicitly not probed here. Run

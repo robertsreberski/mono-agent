@@ -1,3 +1,4 @@
+import { CapabilityActionError, parseCapabilityActionInput, parseCapabilityActionSaveInput, parseCapabilityActionsSnapshot, parseCapabilityActionPreview, parseCapabilityActionSaved, type CapabilityActionsService } from "../capability-actions.js";
 import { parseCapabilitySetupSnapshot, type CapabilitySetupService } from "../capability-setup.js";
 import { isAgentCompactionAccounting } from "@mono-agent/contracts";
 import { isProviderUsageId, parseProviderUsageSnapshot, type ProviderUsageOperator } from "@mono-agent/contracts";
@@ -299,6 +300,7 @@ export interface TuiAdapterOptions {
   /** Agent-owned cron truth and controls. Absent on older/non-cron hosts. */
   readonly cron?: CronOperatorService;
   readonly capabilitySetup?: CapabilitySetupService;
+  readonly capabilityActions?: CapabilityActionsService;
   /** Private app-owned v1 fence; deliberately not an AgentResponder contract. */
   readonly processJobWakeAdmission?: {
     claim(deliveryKey: string, token: string, boundary: string): Promise<boolean>;
@@ -489,6 +491,7 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
                     },
                   }),
             restart: restartSupport,
+            ...(options.capabilityActions === undefined ? {} : { capabilityActions: { version: 1, preview: true, save: true } }),
             ...(options.capabilitySetup === undefined ? {} : {
               capabilitySetup: { version: 1, read: true, propose: false, apply: false },
             }),
@@ -523,6 +526,33 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
         sendJsonError(res, 500, error);
       });
   });
+
+  app.use(`${basePath}/v1/capability-actions`, (_req, res, next) => { res.setHeader("Cache-Control", "private, no-store, max-age=0"); next(); });
+  for (const operation of ["read", "preview", "save"] as const) {
+    const handler = (req: Request, res: Response): void => {
+      res.setHeader("Cache-Control", "private, no-store, max-age=0");
+      const service = options.capabilityActions;
+      if (service === undefined) { res.status(501).json({ error: { code: "capability_actions_unsupported", message: "Update the agent to enable features from the console." } }); return; }
+      if (Object.keys(req.query).length !== 0) { res.status(400).json({ error: { code: "invalid_capability_action", message: "Invalid capability action." } }); return; }
+      let work: Promise<unknown>;
+      try {
+        work = operation === "read" ? service.read().then(parseCapabilityActionsSnapshot)
+          : operation === "preview" ? service.preview(parseCapabilityActionInput(req.body)).then(parseCapabilityActionPreview)
+          : service.save(parseCapabilityActionSaveInput(req.body)).then(parseCapabilityActionSaved);
+      } catch { res.status(400).json({ error: { code: "invalid_capability_action", message: "Invalid capability action." } }); return; }
+      void work.then((result) => res.json(result)).catch((error: unknown) => {
+        const safe = error instanceof CapabilityActionError ? error : new CapabilityActionError("capability_action_failed", 503);
+        res.status(safe.status).json({ error: { code: safe.code, message: safe.message } });
+      });
+    };
+    if (operation === "read") app.get(`${basePath}/v1/capability-actions`, handler);
+    else app.post(`${basePath}/v1/capability-actions/${operation}`, express.json({ limit: "1kb", strict: true }), handler, (error: unknown, _req: Request, res: Response, next: NextFunction) => {
+      const parser = error as { status?: unknown; type?: unknown } | null;
+      if (parser?.status === 413 || parser?.type === "entity.too.large") { next(error); return; }
+      // Keep malformed action bodies out of SyntaxError diagnostic responses.
+      res.status(400).json({ error: { code: "invalid_capability_action", message: "Invalid capability action." } });
+    });
+  }
 
   app.get(`${basePath}/v1/capabilities`, (req, res) => {
     res.setHeader("Cache-Control", "private, no-store, max-age=0");

@@ -1,3 +1,4 @@
+import type { GuardedSettingsJsonWrite } from "@mono-agent/contracts";
 import { readSettingsJson, SettingsJsonError, writeSettingsJson } from "@mono-agent/contracts";
 
 import { MonoAgentConfigError } from "./errors.js";
@@ -7,7 +8,7 @@ import type { MonoAgentConfigJson } from "./json-types.js";
 
 interface ReadMonoAgentConfigJsonResult {
   readonly json: MonoAgentConfigJson;
-  /** sha-256 of the parsed content (or empty string when the file is missing). */
+  /** sha-256 of the source text (or empty string when the file is missing). */
   readonly version: string;
   /** Absolute path actually read. */
   readonly path: string;
@@ -38,18 +39,23 @@ export async function readMonoAgentConfigJson(path: string): Promise<ReadMonoAge
 /**
  * Write a sparse JSON patch through the generic settings writer. It writes to
  * `<path>.tmp`, renames over the target and attempts to set mode 0o600. It does
- * not fsync; failure cleanup attempts to unlink the temporary file.
+ * not fsync; failure cleanup attempts to unlink the temporary file. Optional
+ * `guarded` enables expected-version validation, private backup and guarded
+ * publication without changing the default sparse-patch behavior.
  */
 export async function writeMonoAgentConfigJson(input: {
   readonly path: string;
   readonly patch: MonoAgentConfigJson;
+  readonly guarded?: GuardedSettingsJsonWrite;
 }): Promise<{ readonly version: string }> {
   try {
     return await writeSettingsJson({
       path: input.path,
       patch: input.patch,
+      ...(input.guarded === undefined ? {} : { guarded: input.guarded }),
     });
   } catch (error) {
+    if (error instanceof SettingsJsonError && ["config_conflict", "unsafe_config_write"].includes(error.code)) throw error;
     throw toConfigError(error, input.path);
   }
 }

@@ -1,3 +1,4 @@
+import { parseCapabilityActionInput, parseCapabilityActionSaveInput, type CapabilityActionInput, type CapabilityActionSaveInput } from "@mono-agent/channel-operator/client";
 import type { CapabilitySetupSnapshot } from "@mono-agent/channel-operator/client";
 import { constants as pdfFsConstants } from "node:fs";
 import { open as openPdfAttachment } from "node:fs/promises";
@@ -567,6 +568,7 @@ interface AgentConnection {
   readonly pid: number | undefined;
   /** Process-only identity, never the endpoint-plus-process connection digest. */
   readonly processGeneration: string;
+  readonly startedAt: string;
   /** Process plus endpoint identity; unlike a summary generation, an endpoint move retires this client. */
   readonly generation: string;
 }
@@ -944,6 +946,7 @@ export class WebService {
       ...(providerAuth ? { supportsProviderAuth: true as const } : {}),
       ...(connection?.info.supportsManualCompaction === true ? { supportsManualCompaction: true as const } : {}),
       ...(capabilitySetup ? { supportsCapabilitySetup: true as const } : {}),
+      ...(connection?.info.supportsCapabilityActions === true ? { supportsCapabilityActions: true as const } : {}),
       ...(providerUsage ? { supportsProviderUsage: true as const } : {}),
       ...(providerUsage && connection?.info.supportsProviderUsageRefresh === true ? { supportsProviderUsageRefresh: true as const } : {}),
       ...(providerAuthChecks ? { supportsProviderAuthChecks: true as const } : {}),
@@ -959,6 +962,7 @@ export class WebService {
     return [
       JSON.stringify(projected.restart),
       projected.supportsCapabilitySetup === true ? "capabilitySetup" : "",
+      projected.supportsCapabilityActions === true ? "capabilityActions" : "",
       projected.supportsProviderUsage === true ? "providerUsage" : "",
       projected.supportsProviderUsageRefresh === true ? "providerUsageRefresh" : "",
       projected.supportsProviderAuth === true ? "providerAuth" : "",
@@ -2142,6 +2146,22 @@ export class WebService {
     // unconditionally. Generation 1's ladder then judged generation 2's turns.
     this.admitModelPage(sourceId, generation, page);
     return page;
+  }
+
+  async capabilityActions(sourceId: string, operation: "read" | "preview" | "save", raw?: CapabilityActionInput | CapabilityActionSaveInput) {
+    if (this.store.getAgent(sourceId) === undefined) throw new WebConsoleError("agent_not_found", "Agent not found.", 404);
+    const connection = this.connections.get(sourceId);
+    if (connection === undefined) throw new WebConsoleError("agent_offline", "This agent is offline.", 409);
+    if (connection.info.supportsCapabilityActions !== true) throw new WebConsoleError("capability_actions_unsupported", "Update the agent to enable features from the console.", 409);
+    if (connection.pid === undefined || connection.info.pid !== connection.pid) throw new WebConsoleError("agent_generation_changed", "Reopen settings to verify the agent process.", 409);
+    const input = operation === "read" ? undefined : operation === "preview" ? parseCapabilityActionInput(raw) : parseCapabilityActionSaveInput(raw);
+    if (input !== undefined && input.process.pid !== connection.pid) throw new WebConsoleError("agent_generation_changed", "The agent restarted; reopen settings.", 409);
+    const result = operation === "read" ? await connection.client.capabilityActions("read")
+      : operation === "preview" ? await connection.client.capabilityActions("preview", parseCapabilityActionInput(raw))
+      : await connection.client.capabilityActions("save", parseCapabilityActionSaveInput(raw));
+    if (result.process.pid !== connection.pid || result.process.startedAt !== connection.startedAt || (input !== undefined && (result.process.startedAt !== input.process.startedAt || !("action" in result) || result.action !== input.action)) || this.connections.get(sourceId)?.generation !== connection.generation
+      || this.store.getAgent(sourceId)?.generation !== connection.processGeneration) throw new WebConsoleError("agent_generation_changed", "The agent restarted; reopen settings. A submitted save may have completed.", 409);
+    return result;
   }
 
   async capabilitySetup(sourceId: string): Promise<CapabilitySetupSnapshot> {
@@ -3955,7 +3975,7 @@ export class WebService {
         // so the next failure starts a fresh count rather than resuming one
         // from a stall that this pass has just disproved.
         this.probeFailures.delete(agent.source.sourceId);
-        nextConnections.set(agent.source.sourceId, { client, info, pid: agent.source.pid, generation: connectionGeneration, processGeneration: generation });
+        nextConnections.set(agent.source.sourceId, { client, info, pid: agent.source.pid, startedAt: agent.source.startedAt, generation: connectionGeneration, processGeneration: generation });
         this.clientProcessGeneration.set(client, generation);
         this.clientConnectionGeneration.set(client, connectionGeneration);
         this.seedModelCatalogFromOptions(agent.source.sourceId, generation, info.modelOptions);

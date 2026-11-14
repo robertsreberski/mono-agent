@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { capabilityCards, aggregateCapabilityStatus, createCapabilityStatusService } from "../setup/capability-status.js";
+import { createCapabilityActionsService } from "../setup/capability-actions.js";
 import { validateMonoAgentFolder } from "../doctor/doctor.js";
 import type { ValidationReport } from "../doctor/doctor-types.js";
 
@@ -42,6 +43,13 @@ describe("read-only capabilities", () => {
     const display = JSON.parse(await readFile(new URL("../../../web/webapp/src/test/capability-snapshot.fixture.json", import.meta.url), "utf8")) as Awaited<ReturnType<ReturnType<typeof createCapabilityStatusService>["read"]>>;
     const sections = new Map(display.cards.flatMap((card) => card.evidence.map((item) => [item.id, { ...item, label: item.id, details: [] }] as const)));
     expect(display.cards).toEqual(capabilityCards({ sections: [...sections.values()], ok: false, structurallyValid: false, operationallyReady: false }, "lite"));
+  });
+  it("drift-checks generated action metadata against the real app for the paired Lite/no-jobs display", async () => {
+    const input = await fixture();
+    await writeFile(input.configPath, JSON.stringify({ memory: { mode: "lite", path: "./.mono-agent/memory" } }));
+    const actions = await createCapabilityActionsService(input, { loadedState: () => ({ memory: true, cron: false }) }).read();
+    const display = JSON.parse(await readFile(new URL("../../../web/webapp/src/test/capability-actions.fixture.json", import.meta.url), "utf8")) as typeof actions;
+    expect(display.actions).toEqual(actions.actions);
   });
   it("coalesces checks, caches briefly, and always overrides write permission", async () => {
     const input = await fixture();

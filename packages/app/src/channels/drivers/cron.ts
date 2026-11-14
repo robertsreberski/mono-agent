@@ -253,6 +253,7 @@ export function createCronChannelDriver(
       const currentSummary = (): Record<string, unknown> => ({
         jobs: adapter.snapshots().filter((job) => job.effectiveEnabled).length,
         configuredJobs: adapter.jobs.length,
+        operatorActionsEnabled: input.config.operatorActionsEnabled === true,
       });
       const summary = currentSummary();
       operatorRegistry.bind(createCronOperatorService({

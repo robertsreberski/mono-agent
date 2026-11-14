@@ -2,6 +2,88 @@
   "version": 1,
   "fixtures": [
     {
+      "name": "capability-actions",
+      "type": "ApiCapabilityActions",
+      "value": {
+        "version": 1,
+        "process": {
+          "pid": 42,
+          "startedAt": "2030-01-02T12:00:00.000Z"
+        },
+        "actions": [
+          {
+            "id": "memory-lite",
+            "available": true,
+            "active": false,
+            "reason": "eligible"
+          },
+          {
+            "id": "cron-controls",
+            "available": false,
+            "active": false,
+            "reason": "no-valid-jobs"
+          }
+        ]
+      }
+    },
+    {
+      "name": "capability-action-input",
+      "type": "ApiCapabilityActionInput",
+      "value": {
+        "action": "memory-lite",
+        "process": {
+          "pid": 42,
+          "startedAt": "2030-01-02T12:00:00.000Z"
+        }
+      }
+    },
+    {
+      "name": "capability-action-save",
+      "type": "ApiCapabilityActionSaveInput",
+      "value": {
+        "action": "cron-controls",
+        "process": {
+          "pid": 42,
+          "startedAt": "2030-01-02T12:00:00.000Z"
+        },
+        "expectedVersion": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "confirmed": true
+      }
+    },
+    {
+      "name": "capability-action-preview",
+      "type": "ApiCapabilityActionPreview",
+      "value": {
+        "action": "cron-controls",
+        "process": {
+          "pid": 42,
+          "startedAt": "2030-01-02T12:00:00.000Z"
+        },
+        "expectedVersion": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "changes": [
+          {
+            "field": "cron.operatorActions.enabled",
+            "value": "true"
+          }
+        ],
+        "normalizesFormatting": true,
+        "noOp": false
+      }
+    },
+    {
+      "name": "capability-action-saved",
+      "type": "ApiCapabilityActionSaved",
+      "value": {
+        "action": "cron-controls",
+        "process": {
+          "pid": 42,
+          "startedAt": "2030-01-02T12:00:00.000Z"
+        },
+        "version": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "changed": true
+      }
+    },
+    {
       "name": "voice-captured-submission",
       "type": "ApiStartSubmission",
       "value": {

@@ -1086,6 +1086,41 @@ describe("mergeSecretEnvFile", () => {
 });
 
 describe("initMonoAgentFolder secret outcome", () => {
+  it.each([false, true])("does not change config-lock ignore rules during secret-free init (existing ignore=%s)", async (existingIgnore) => {
+    const ignorePath = join(dir, ".gitignore");
+    if (existingIgnore) await writeFile(ignorePath, "build/\n");
+    const result = await initMonoAgentFolder({ dir });
+
+    if (existingIgnore) expect(await readFile(ignorePath, "utf8")).toBe("build/\n");
+    else await expect(readFile(ignorePath, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    expect(result.created).not.toContain(ignorePath);
+    expect(result.changes.filter((change) => change.path === ignorePath)).toEqual([]);
+    expect((await readdir(dir)).filter((name) => name.endsWith(".write-lock") || name.endsWith(".tmp"))).toEqual([]);
+  });
+
+  it("matches dry-run ignore creation with one applied creation outcome", async () => {
+    const ignorePath = join(dir, ".gitignore");
+    const secretValues = { INIT_SAMPLE: "fixture" };
+    const plan = await initMonoAgentFolder({ dir, secretValues, dryRun: true });
+    expect(plan.changes.filter((change) => change.path === ignorePath)).toEqual([{ path: ignorePath, kind: "planned-create" }]);
+    await expect(readFile(ignorePath, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+
+    const result = await initMonoAgentFolder({ dir, secretValues });
+    expect(result.created.filter((path) => path === ignorePath)).toEqual([ignorePath]);
+    expect(result.changes.filter((change) => change.path === ignorePath)).toEqual([{ path: ignorePath, kind: "created" }]);
+    expect(await readFile(ignorePath, "utf8")).not.toContain("mono-agent.config.json.write-lock");
+  });
+
+  it("reports an existing ignore update without claiming creation", async () => {
+    const ignorePath = join(dir, ".gitignore");
+    await writeFile(ignorePath, "build/\n");
+    const result = await initMonoAgentFolder({ dir, secretValues: { INIT_SAMPLE: "fixture" } });
+
+    expect(result.created).not.toContain(ignorePath);
+    expect(result.changes.filter((change) => change.path === ignorePath)).toEqual([{ path: ignorePath, kind: "updated" }]);
+    expect(await readFile(ignorePath, "utf8")).toMatch(/^build\/\n/u);
+  });
+
   it("reports applied secret and ignore-file changes without exposing values", async () => {
     const envPath = join(dir, ".env");
     const result = await initMonoAgentFolder({ dir, secretValues: { TOKEN: "secret-value" } });

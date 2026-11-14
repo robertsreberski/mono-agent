@@ -13,6 +13,11 @@ export interface WebApiDtos {
   readonly ApiAgent: { readonly agent: W.WebAgentSummary };
   readonly ApiPatchAgent: W.PatchWebAgentInput;
   readonly ApiPutRunDefaults: W.PutWebAgentRunSettingsInput;
+  readonly ApiCapabilityActions: W.WebCapabilityActionsSnapshot;
+  readonly ApiCapabilityActionInput: W.WebCapabilityActionInput;
+  readonly ApiCapabilityActionSaveInput: W.WebCapabilityActionSaveInput;
+  readonly ApiCapabilityActionPreview: W.WebCapabilityActionPreview;
+  readonly ApiCapabilityActionSaved: W.WebCapabilityActionSaved;
   readonly ApiCapabilities: W.WebCapabilitySetupSnapshot;
   readonly ApiProviderUsage: C.ProviderUsageSnapshot;
   readonly ApiProviderQuery: { readonly provider?: C.ProviderUsageId };
