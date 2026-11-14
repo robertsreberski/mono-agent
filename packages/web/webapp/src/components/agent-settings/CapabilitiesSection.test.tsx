@@ -46,6 +46,7 @@ describe("Capabilities section", () => {
     expect(new Set(next).size).toBe(next.length);
     expect(within(screen.getByRole("article", { name: "Slack" })).getByText(/Set the .env tokens and add the slack block/)).toBeTruthy();
     expect(screen.getByText(/Explore optional features\. Eligible Memory Lite/)).toBeTruthy();
+    expect(screen.getByText(/Supported cards also offer write-only credential entry/)).toBeVisible();
     expect(screen.queryByText(/durable configuration inputs|loaded runtime/)).toBeNull();
   });
   it("does not request status from offline or older agents", () => {

@@ -146,7 +146,7 @@ export function CapabilitiesSection({ agent, restart = null }: { readonly agent:
   if (snapshot === null) return <>{credentialWarning}{error ? errorNotice : <p>Reading capability status…</p>}</>;
   return <>
     {error && errorNotice}
-    <p className="settings-section-summary">Explore optional features. Eligible Memory Lite and cron controls can be previewed and saved; other features use manual setup.</p>
+    <p className="settings-section-summary">Explore optional features. Eligible Memory Lite and cron controls can be previewed and saved. Supported cards also offer write-only credential entry; other setup uses manual instructions.</p>
     <p className="settings-notice capability-scope">Provider, embedding, browser and server liveness is not probed here. Ready means local configuration checks passed, not live readiness or message delivery. Run <code>mono-agent validate</code> in the owner terminal for live checks.</p>
     <p className="settings-section-summary">Checked <time dateTime={snapshot.observedAt}>{new Date(snapshot.observedAt).toLocaleTimeString()}</time>. {snapshot.observation === "loaded-snapshot" ? "Uses settings from the agent’s last start, not later edits." : "Uses saved settings."} Restart the agent after editing settings or .env. <button type="button" className="settings-button" onClick={() => setRevision((value) => value + 1)}>Refresh capability status</button></p>
     {agent.supportsCapabilityActions !== true && <p className="settings-notice">This agent version has no console Enable actions. Use manual setup or update the agent.</p>}
