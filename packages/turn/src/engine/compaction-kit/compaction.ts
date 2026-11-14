@@ -4,7 +4,7 @@ import { contentText, retryAssistantCall, uuidv7, } from "@earendil-works/pi-ai"
 import { createBranchSummaryMessage, createCompactionSummaryMessage } from "./messages.js";
 import { buildContextEntries, sessionEntryToContextMessages } from "./context.js";
 import { CompactionError, err, ok } from "./result.js";
-import { historicalTuples, missingHistoricalTuples, planSummaryBudget, protectedHistoricalInput, type PreservationDiagnostics } from "./historical-preservation.js";
+import { historicalTuples, missingHistoricalTuples, planSummaryBudget, planSummaryProtection, protectedHistoricalInput, type PreservationDiagnostics } from "./historical-preservation.js";
 import { addUsage, sumKnownSummaryUsage } from "./usage.js";
 import { createFileOps, extractFileOpsFromMessage, serializeSummaryConversation, } from "./utils.js";
 function safeJsonStringify(value: any) {
@@ -612,13 +612,8 @@ export async function compactWithRequest(preparation: any, options: any, request
       return diagnostics.missingTupleCount ? "protected_tuples_missing" : !budget.fits(text) ? "summary_budget_exceeded" : null;
     };
     let historyText = reusedHistory;
-    const modelLimit = model.maxTokens > 0 ? model.maxTokens : Infinity;
-    if (tuples.length > 0 && (!plan.protectedFits || (generateHistory && Math.min(targets.history, modelLimit) < Math.ceil(protectedText.length / 4)))) bypass("protected_history_unfits");
-    // Emergency/inherited cuts reserve at least half the actual history request
-    // cap for the other template sections; the ordinary 256-unit floor is not
-    // sufficient when immutable history nearly fills a model's output ceiling.
-    if (protecting && preparation.preservationFallback && generateHistory
-      && Math.ceil(protectedText.length / 4) > Math.floor(Math.min(targets.history, modelLimit) * 0.5)) bypass("protected_template_unfits");
+    const protection = planSummaryProtection(plan, model, preparation.preservationFallback);
+    if (protection.bypassReason) bypass(protection.bypassReason);
     let recoveredTruncation = false;
     const generate = async (protectedCall: () => ReturnType<typeof generateSummaryWithRequest>, legacyCall: () => ReturnType<typeof generateSummaryWithRequest>) => {
       const result = await protectedCall();

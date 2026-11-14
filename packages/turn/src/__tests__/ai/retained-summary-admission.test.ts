@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { JsonlSessionRepo } from "../../engine/session-store.js";
 import { createHash } from "node:crypto";
 import { createModels, fauxProvider, fauxAssistantMessage, fauxText } from "@earendil-works/pi-ai";
-import { generateEngineTurnResponse } from "../../execution/pi/run.js";
+import { generateEngineTurnResponse, preparePiNativeDispatch } from "../../execution/pi/run.js";
 import { nativeSessionRegistry } from "../../engine/session-lifecycle.js";
 import { expect, it, vi } from "vitest";
 import { MemorySessionRepo } from "../../engine/session-store.js";
@@ -357,4 +357,78 @@ it.each([true, false])("looks up carry only after cold resolution, never warm re
     if (hasSeed) expect(raw.validator.retainedSummaryAdmission.kind).toBe("reseed_predecessor_admitted");
     await raw.close(); await repo.close();
   } finally { nativeSessionRegistry.delete(handle); await rm(root, { recursive: true, force: true }); }
+});
+
+it.each([false, true].flatMap(quotation => [false, true].map(rewound => ({ quotation, rewound }))))("prepared admission requires initialized epoch, not an empty rewound branch: quotation=$quotation rewound=$rewound", async ({ quotation, rewound }) => {
+  const root = await mkdtemp(join(tmpdir(), "retained-initialized-epoch-"));
+  const handle = "d".repeat(64);
+  const hostAuthority = { version: 1 as const, rootId: "1".repeat(64), authorityId: "2".repeat(64), ownerKey: "fiction", historyBucket: "fiction:bucket" };
+  const repo = new JsonlSessionRepo({ sessionsRoot: root });
+  const raw = await repo.create({ id: handle, hostAuthority, assertOwned: async () => {} });
+  const eligibleForReseed = vi.fn(async () => binding);
+  const coldContext = vi.fn(async () => ({ messages: [{ role: "user", content: pack }], retainedSummary: candidate }));
+  const access = { destination: { logicalConversationId: "fiction", conversationId: "fiction:bucket", epoch: "destination", handleId: handle },
+    assertCurrent: async () => {}, resolve: async () => ({ text }), eligibleForReseed };
+  const faux = fauxProvider({ models: [{ id: "fixture" }], tokensPerSecond: 1000000 });
+  const models = createModels(); models.setProvider(faux.provider);
+  faux.setResponses([fauxAssistantMessage([fauxText("Fictional continued answer.")]), fauxAssistantMessage([fauxText("Fictional resumed answer.")])]);
+  const descriptor = { kind: "host" as const, ownerKey: "fiction", historyBucket: "fiction:bucket", handleId: handle, turnId: "prepared-turn", baseRevision: rewound ? 1 : 0,
+    reconciliation: { version: 1 as const, purpose: "execution" as const, fenceDigest: "c".repeat(64), initialInputId: "fictional-input" } };
+  try {
+    if (rewound) {
+      const driver = createRunDriver(raw, { model: faux.getModel(), models, tools: [] });
+      await driver.beginTurn("previous-turn", "host", { ...descriptor, turnId: "previous-turn", baseRevision: 0 });
+      expect((await driver.prompt("Fictional completed request.")).status).toBe("completed");
+      await driver.endTurn("completed", { text: "Fictional continued answer.", error: null, failureKind: null, cancelled: false, stopReason: "stop" });
+      await raw.moveTo(null);
+      expect(raw.seq).toBeGreaterThan(4);
+      expect([...raw.validator.turns.values()].some((turn: any) => turn.start.payload.binding?.baseRevision === 0 && turn.end?.payload.status === "completed")).toBe(true);
+    } else expect(raw.seq).toBe(4);
+    expect((await raw.getEntries())).toHaveLength(0);
+    expect(raw.validator.retainedSummaryAdmission).toBeFalsy();
+    await raw.close();
+    const lease = await preparePiNativeDispatch("Fictional rules", {
+      model: { provider: "faux", model: "fixture", reference: "faux:fixture" }, piResolvedModel: faux.getModel(), piResolvedModels: models,
+      effort: "none", allowedTools: [], sessionsRoot: root, compaction: { enabled: false },
+      retainedSummaryAccess: access, ...(quotation ? { coldContext } : {}),
+      messages: [{ role: "user", content: "Fictional canonical replay." }, { role: "assistant", content: "Fictional prior answer." }, { role: "user", content: "Continue." }],
+    });
+    let result;
+    try { result = await lease.run({ sessionId: handle, providerSessionId: handle, sessionKeepAlive: true, sessionTurn: descriptor,
+      nativeSessionAuthority: { version: 1, currentHandleId: handle, sessionsRoot: root, hostAuthority, assertCurrent: async () => {} } }); }
+    finally { await lease.close(); }
+    expect(result.error).toBeNull();
+    expect(result.runtimeWarnings).not.toContainEqual(expect.objectContaining({ warning_kind: "retained_summary_admission_skipped" }));
+    const reopened = await repo.open(await repo.find(handle));
+    try {
+      if (rewound) {
+        expect(reopened.validator.retainedSummaryAdmission).toBeFalsy();
+        expect(JSON.stringify(await reopened.getEntries())).not.toContain("Fictional canonical replay.");
+      } else expect(reopened.validator.retainedSummaryAdmission.kind).toBe(quotation ? "retained_summary_admitted" : "reseed_predecessor_admitted");
+      expect(eligibleForReseed).toHaveBeenCalledTimes(rewound ? 0 : 1);
+      expect(coldContext).toHaveBeenCalledTimes(!rewound && quotation ? 1 : 0);
+    } finally { await reopened.close(); }
+  } finally { nativeSessionRegistry.delete(handle); await repo.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+it.each([false, true].flatMap(carry => ["logicalConversationId", "conversationId"].map(scope => ({ carry, scope }))))("guarded receipt binds retained-source owner/bucket before schema validation: carry=$carry scope=$scope", async ({ carry, scope }) => {
+  const repo = new MemorySessionRepo();
+  const raw = await repo.create({ id: "fiction-handle", hostAuthority: { version: 1, rootId: "1".repeat(64), authorityId: "2".repeat(64), ownerKey: "fiction", historyBucket: "fiction:bucket" }, assertOwned: async () => {} });
+  const seed = await raw.appendMessage({ role: "user", content: pack, timestamp: 0 });
+  const access = { destination: { logicalConversationId: "fiction", conversationId: "fiction:bucket", epoch: "destination-epoch", handleId: raw.metadata.id }, assertCurrent: async () => {}, resolve: async () => ({ text }) };
+  const driver = createRunDriver(raw, { model, retainedSummaryAccess: access });
+  try {
+    await driver.beginTurn("guarded-turn", "host", { kind: "host", ownerKey: "fiction", historyBucket: "fiction:bucket", handleId: raw.metadata.id, turnId: "guarded-turn", baseRevision: 0 });
+    await driver.admitRetainedSummary(carry ? { binding } : candidate, seed);
+    const admission = raw.validator.retainedSummaryAdmission;
+    expect(admission.kind).toBe(carry ? "reseed_predecessor_admitted" : "retained_summary_admitted");
+    const forged = structuredClone(admission);
+    forged.payload.binding[scope] = forged.payload.destination[scope] = "fictional-other-scope";
+    expect(validRetainedSummaryReceipt(forged.payload, carry)).toBe(true);
+    const validate = vi.spyOn(raw.validator, "validate");
+    expect(() => raw.validateRecord(forged)).toThrow("Invalid mono-agent harness session binding");
+    expect(validate).not.toHaveBeenCalled();
+    validate.mockRestore();
+    await driver.endTurn("completed");
+  } finally { await raw.close(); }
 });

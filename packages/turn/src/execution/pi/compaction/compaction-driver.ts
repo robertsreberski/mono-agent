@@ -6,7 +6,7 @@
 
 import { createHistorySummaryContext, createPrefixSummaryContext, calculateContextTokens, compact as compactPreparedContext, estimateContextTokens, estimateTokens, getLastAssistantUsage, prepareCompaction, shouldCompact } from "../../../engine/compaction-kit/compaction.js";
 import { ENGINE_CONTEXT as BACKGROUND_CONTEXT } from "../../../engine/context.js";
-import { planSummaryBudget } from "../../../engine/compaction-kit/historical-preservation.js";
+import { planSummaryBudget, planSummaryProtection } from "../../../engine/compaction-kit/historical-preservation.js";
 import { assembleSummaryContext, prepareSummaryInput, summaryModels } from "./compaction-summary.js";
 import { compactionFailureGuard } from "./compaction-failures.js";
 import { summaryRequestOptions, summaryThinkingLevel } from "./summary-policy.js";
@@ -369,19 +369,24 @@ export function createGuardedCompactionHook({
       let input = prepareSummaryInput(prepared.value);
       accounting.preparation = input.metadata;
       input.preparation.settings = { ...input.preparation.settings, summaryMaxTokens: effectivePolicy.summaryMaxTokens };
+      const preservationFallback = trigger === "manual" || trigger === "reactive_overflow" || event.nonRetainablePrefixLength > 0;
       let summaryBudget = planSummaryBudget(input.preparation, estimateTokens);
       let retainedAuthorityUsed = !!event.retainedPredecessor;
       if (retainedAuthorityUsed && input.preparation.previousSummary === event.retainedPredecessor.text) {
         const model = harness.getModel();
+        const protection = planSummaryProtection(summaryBudget, model, preservationFallback);
+        const minimum = Math.min(MIN_ANSWER_TOKENS, protection.bypassReason
+          ? summaryBudget.split ? summaryBudget.originalPrefix : summaryBudget.originalHistory
+          : summaryBudget.minimumTextTarget);
         // Preflight every actual request before buying the first one. This uses
         // the same structured builders, augmentation and provider policy as dispatch.
         const fits = (context: any, target: number) => summaryRequestOptions(model,
           assembleSummaryContext(context, input.focus, input.evidence),
           { maxTokens: Math.min(target, model.maxTokens > 0 ? model.maxTokens : Infinity) }, effectivePolicy.effort,
-          Math.min(MIN_ANSWER_TOKENS, summaryBudget.minimumTextTarget)).canDispatch;
+          minimum).canDispatch;
         const historyFits = !summaryBudget.generateHistory || fits(createHistorySummaryContext(input.preparation.messagesToSummarize,
-          { previousSummary: input.preparation.previousSummary, customInstructions: event.customInstructions }), summaryBudget.targets.history);
-        const prefixFits = !summaryBudget.split || fits(createPrefixSummaryContext(input.preparation.turnPrefixMessages), summaryBudget.targets.prefix);
+          { previousSummary: input.preparation.previousSummary, customInstructions: event.customInstructions, protectHistory: protection.protecting }), protection.targets.history);
+        const prefixFits = !summaryBudget.split || fits(createPrefixSummaryContext(input.preparation.turnPrefixMessages), protection.targets.prefix);
         // Split reuse can commit the predecessor without a history request. Its
         // entire reused envelope must fit even if there are zero parsed tuples.
         const reusedFits = summaryBudget.generateHistory || summaryBudget.budget.fits(
@@ -407,7 +412,7 @@ export function createGuardedCompactionHook({
       // Inherited-prefix cuts are first reached through idle proactive or the
       // threshold hook (also labelled proactive), not just manual/overflow.
       // A ready managed-switch admission must not acquire a preservation veto.
-      input.preparation.preservationFallback = trigger === "manual" || trigger === "reactive_overflow" || event.nonRetainablePrefixLength > 0;
+      input.preparation.preservationFallback = preservationFallback;
       // Idle and threshold hooks share one paid-refusal baseline, including
       // across controllers/turns. Stable transcript counts avoid counting the
       // idle-only pending user turn as growth when mid-run is armed. A moving

@@ -795,7 +795,7 @@ async function executeTrackedPiNativeResponse(systemPrompt: string, options: PiO
       : splitPromptMessages(options.messages, runtime.model);
     runState.sessionBaselineCount = (await runState.session!.buildContext()).messages.length;
     if (!options.nativeSessionProjection && (!requestedSessionId || runState.createdOnMiss
-      || control && options.nativeSessionAuthority && runState.sessionBaselineCount === 0)) {
+      || control && options.nativeSessionAuthority && runState.initializedEpoch)) {
       // Late, owner-held lookup after actual fresh/create-on-miss resolution,
       // independent of pack configuration and prepared-message projection.
       try { reseedBinding = await options.retainedSummaryAccess?.eligibleForReseed?.(); }

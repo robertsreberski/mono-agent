@@ -59,6 +59,12 @@ function checkRecordAuthority(session: any, record: any): void {
       || record?.payload?.artifactRef !== undefined) corruptBinding();
     return;
   }
+  if (["retained_summary_admitted", "reseed_predecessor_admitted"].includes(record?.kind)) {
+    // Receipt binding names the retained source, not a host-turn owner binding.
+    if (record.payload?.binding?.logicalConversationId !== authority.ownerKey
+      || record.payload?.binding?.conversationId !== authority.historyBucket) corruptBinding();
+    return;
+  }
   const owner = record?.kind === "owner_binding" ? record.payload : record?.payload?.binding;
   if (owner && owner.kind !== "unbound"
     && (owner.kind !== "host" || owner.ownerKey !== authority.ownerKey || owner.historyBucket !== authority.historyBucket)) corruptBinding();

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Require proven cold creation or an initialized epoch for retained-summary
+  quotation admission; an empty rewound branch cannot acquire new authority.
+- Fix retained-summary quotation admission on guarded production native journals,
+  where header ownership checks previously skipped valid cold receipts.
+
 - **Breaking:** Keep an authenticated retained compaction predecessor across cold
   reseeds even when its whole quotation cannot fit the continuity pack, including
   prepared missing-session reconstruction and pack-disabled replay. Bind one
