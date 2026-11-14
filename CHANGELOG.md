@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Keep whole retained predecessors when removing only the optional protection
+  frame makes their summary request fit destination headroom.
+
 - Require proven cold creation or an initialized epoch for retained-summary
   quotation admission; an empty rewound branch cannot acquire new authority.
 - Fix retained-summary quotation admission on guarded production native journals,

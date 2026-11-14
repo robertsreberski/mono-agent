@@ -7,6 +7,7 @@ import { JsonlSessionRepo } from "../../engine/session-store.js";
 import { createHash } from "node:crypto";
 import { createModels, fauxProvider, fauxAssistantMessage, fauxText } from "@earendil-works/pi-ai";
 import { generateEngineTurnResponse, preparePiNativeDispatch } from "../../execution/pi/run.js";
+import { refreshProviderSession } from "../../runtime/session-fanout.js";
 import { nativeSessionRegistry } from "../../engine/session-lifecycle.js";
 import { expect, it, vi } from "vitest";
 import { MemorySessionRepo } from "../../engine/session-store.js";
@@ -431,4 +432,59 @@ it.each([false, true].flatMap(carry => ["logicalConversationId", "conversationId
     validate.mockRestore();
     await driver.endTurn("completed");
   } finally { await raw.close(); }
+});
+
+it.each([false, true].flatMap(prepared => [false, true].map(quotation => ({ prepared, quotation }))))("used journal cannot acquire admission on real durable reopen: prepared=$prepared quotation=$quotation", async ({ prepared, quotation }) => {
+  const root = await mkdtemp(join(tmpdir(), "retained-used-reopen-")), handle = "e".repeat(64);
+  const repo = new JsonlSessionRepo({ sessionsRoot: root });
+  const hostAuthority = { version: 1 as const, rootId: "1".repeat(64), authorityId: "2".repeat(64), ownerKey: "fiction", historyBucket: "fiction:bucket" };
+  const authority = { version: 1 as const, currentHandleId: handle, sessionsRoot: root, hostAuthority, assertCurrent: async () => {} };
+  const faux = fauxProvider({ models: [{ id: "fixture" }], tokensPerSecond: 1000000 });
+  const models = createModels(); models.setProvider(faux.provider);
+  faux.setResponses([fauxAssistantMessage([fauxText("Fictional first reply.")]), fauxAssistantMessage([fauxText("Fictional resumed reply.")])]);
+  const eligibleForReseed = vi.fn(async () => binding);
+  const coldContext = vi.fn(async () => ({ messages: [{ role: "user", content: pack }], retainedSummary: candidate }));
+  const access = { destination: { logicalConversationId: "fiction", conversationId: "fiction:bucket", epoch: "destination", handleId: handle },
+    assertCurrent: async () => {}, resolve: async () => ({ text }), eligibleForReseed };
+  const run = async (second: boolean) => {
+    const descriptor = { kind: "host" as const, ownerKey: "fiction", historyBucket: "fiction:bucket", handleId: handle,
+      turnId: second ? "resumed-turn" : "initial-turn", baseRevision: second ? 1 : 0,
+      reconciliation: { version: 1 as const, purpose: "execution" as const, fenceDigest: "c".repeat(64), initialInputId: second ? "resumed-input" : "initial-input" } };
+    const options = { model: { provider: "faux", model: "fixture", reference: "faux:fixture" }, piResolvedModel: faux.getModel(), piResolvedModels: models,
+      effort: "none", allowedTools: [], sessionsRoot: root, compaction: { enabled: false },
+      ...(second ? { retainedSummaryAccess: access, ...(quotation ? { coldContext } : {}) } : {}),
+      messages: [{ role: "user", content: second ? "Fictional forbidden second seed." : "Fictional initial seed." },
+        { role: "assistant", content: "Fictional earlier answer." }, { role: "user", content: "Continue." }] };
+    const dispatch = { sessionId: handle, providerSessionId: handle, sessionKeepAlive: true, sessionTurn: descriptor,
+      ...(prepared ? { nativeSessionAuthority: authority } : {}) };
+    if (!prepared) return generateEngineTurnResponse("Fictional rules", { ...options, ...dispatch });
+    // A prepared lease is single-use: the second lease dispatches into the same
+    // journal already used by the first, rather than replaying an idle initializer.
+    const lease = await preparePiNativeDispatch("Fictional rules", options);
+    try { return await lease.run(dispatch); } finally { await lease.close(); }
+  };
+  try {
+    if (prepared) {
+      const raw = await repo.create({ id: handle, hostAuthority, assertOwned: async () => {} });
+      await raw.close();
+    }
+    expect((await run(false)).error).toBeNull();
+    await refreshProviderSession(handle); // No registry hit can disguise a disk reopen.
+    expect(nativeSessionRegistry.get(handle)).toBeUndefined();
+    const used = await repo.open(await repo.find(handle));
+    expect(used.seq).toBeGreaterThan(4); expect((await used.getEntries()).length).toBeGreaterThan(0);
+    expect(used.validator.retainedSummaryAdmission).toBeFalsy(); await used.close();
+    const result = await run(true);
+    expect(result.error).toBeNull(); expect(faux.state.callCount).toBe(2);
+    expect(eligibleForReseed).not.toHaveBeenCalled(); expect(coldContext).not.toHaveBeenCalled();
+    expect(result.runtimeWarnings).not.toContainEqual(expect.objectContaining({ warning_kind: "retained_summary_admission_skipped" }));
+    await refreshProviderSession(handle);
+    const reopened = await repo.open(await repo.find(handle));
+    try {
+      expect(reopened.validator.retainedSummaryAdmission).toBeFalsy();
+      const entries = JSON.stringify(await reopened.getEntries());
+      expect(entries).toContain("Fictional first reply."); expect(entries).toContain("Fictional resumed reply.");
+      expect(entries).not.toContain("Fictional forbidden second seed.");
+    } finally { await reopened.close(); }
+  } finally { await refreshProviderSession(handle); await repo.close(); await rm(root, { recursive: true, force: true }); }
 });

@@ -598,3 +598,34 @@ it.each([100, 300])("preflights the effective bypass frame at the exact destinat
     expect((await low.raw.getEntries()).at(-1).checkpoint.retainedSummaryCoverage.admissionId).toBe(low.raw.validator.retainedSummaryAdmission.id);
   } finally { await high.close(); await low.close(); }
 });
+
+it("keeps the whole carry when only the dispatch frame-only input fallback fits", async () => {
+  const source = `## Historical events and corrections\n- Fictional condition; ${"recorded evidence. ".repeat(40)}\n## Pending items\n- Review.`;
+  const high = await fixture(source, false, "carry");
+  const low = await fixture(source, false, "carry");
+  try {
+    await high.grow(); high.completeSimple.mockResolvedValue(answer(source));
+    expect((await high.compact("proactive")).applied).toBe(true);
+    const framed = high.completeSimple.mock.calls[0]![1];
+    const recorded = high.events.at(-1).accounting.requests[0];
+    expect(high.events.at(-1).accounting.preservation.bypassReason).toBeNull();
+    const frame = protectedHistoricalInput(historicalTuples(source));
+    expect(framed.messages[0].content[0].text).toContain(frame);
+    const unframed = structuredClone(framed);
+    unframed.messages[0].content[0].text = unframed.messages[0].content[0].text.replace(frame, "");
+    const model = low.harness.getModel(), legacyMinimum = low.policy.summaryMaxTokens;
+    model.contextWindow = estimateProviderContext(unframed).tokens + 4096 + legacyMinimum;
+    expect(summaryRequestOptions(model, framed, { maxTokens: recorded.textTargetTokens }, "none", recorded.minimumAnswerTokens).canDispatch).toBe(false);
+    expect(summaryRequestOptions(model, unframed, { maxTokens: legacyMinimum }, "none", legacyMinimum).canDispatch).toBe(true);
+    await low.grow();
+    expect((await low.compact("proactive")).applied).toBe(true);
+    expect(low.completeSimple).toHaveBeenCalledOnce();
+    const actual = low.completeSimple.mock.calls[0]![1].messages[0].content[0].text;
+    expect(actual).toContain(`<previous-summary>\n${source}\n</previous-summary>`);
+    expect(actual).not.toContain("<protected-historical-tuples>");
+    expect(low.events.at(-1).accounting.preservation.bypassReason).toBe("protected_input_unfits");
+    expect(low.events.at(-1).accounting.requests[0]).toMatchObject({ minimumAnswerTokens: legacyMinimum, textTargetTokens: legacyMinimum, providerInvoked: true });
+    expect(low.warnings).not.toContainEqual(expect.objectContaining({ warning_kind: "retained_summary_legacy_fallback" }));
+    expect((await low.raw.getEntries()).at(-1).checkpoint.retainedSummaryCoverage.admissionId).toBe(low.raw.validator.retainedSummaryAdmission.id);
+  } finally { await high.close(); await low.close(); }
+});

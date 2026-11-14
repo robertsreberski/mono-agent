@@ -7,9 +7,9 @@
 import { createHistorySummaryContext, createPrefixSummaryContext, calculateContextTokens, compact as compactPreparedContext, estimateContextTokens, estimateTokens, getLastAssistantUsage, prepareCompaction, shouldCompact } from "../../../engine/compaction-kit/compaction.js";
 import { ENGINE_CONTEXT as BACKGROUND_CONTEXT } from "../../../engine/context.js";
 import { planSummaryBudget, planSummaryProtection } from "../../../engine/compaction-kit/historical-preservation.js";
-import { assembleSummaryContext, prepareSummaryInput, summaryModels } from "./compaction-summary.js";
+import { assembleSummaryContext, prepareSummaryInput, prepareSummaryRequest, summaryModels } from "./compaction-summary.js";
 import { compactionFailureGuard } from "./compaction-failures.js";
-import { summaryRequestOptions, summaryThinkingLevel } from "./summary-policy.js";
+import { summaryThinkingLevel } from "./summary-policy.js";
 import { clearProactivePreservationRefusal, proactivePreservationGuard } from "./preservation-refusals.js";
 import { randomUUID, createHash } from "node:crypto";
 import { MIN_ANSWER_TOKENS } from "@earendil-works/pi-ai/api/simple-options";
@@ -375,18 +375,22 @@ export function createGuardedCompactionHook({
       if (retainedAuthorityUsed && input.preparation.previousSummary === event.retainedPredecessor.text) {
         const model = harness.getModel();
         const protection = planSummaryProtection(summaryBudget, model, preservationFallback);
-        const minimum = Math.min(MIN_ANSWER_TOKENS, protection.bypassReason
-          ? summaryBudget.split ? summaryBudget.originalPrefix : summaryBudget.originalHistory
-          : summaryBudget.minimumTextTarget);
-        // Preflight every actual request before buying the first one. This uses
-        // the same structured builders, augmentation and provider policy as dispatch.
-        const fits = (context: any, target: number) => summaryRequestOptions(model,
+        const preservation = { bypassReason: protection.bypassReason, protectionActive: protection.protecting,
+          protectedTupleCount: summaryBudget.tuples.length };
+        // Preflight shares dispatch's frame-only fallback and restored legacy
+        // targets/minimum, before considering removal of the whole predecessor.
+        const fits = (context: any, target: number, legacyTarget: number) => prepareSummaryRequest(model,
           assembleSummaryContext(context, input.focus, input.evidence),
           { maxTokens: Math.min(target, model.maxTokens > 0 ? model.maxTokens : Infinity) }, effectivePolicy.effort,
-          minimum).canDispatch;
+          Math.min(MIN_ANSWER_TOKENS, summaryBudget.minimumTextTarget),
+          { preservation, textTargetTokens: legacyTarget,
+            minimumAnswerTokens: Math.min(MIN_ANSWER_TOKENS, summaryBudget.split ? summaryBudget.originalPrefix : summaryBudget.originalHistory) }).policy.canDispatch;
         const historyFits = !summaryBudget.generateHistory || fits(createHistorySummaryContext(input.preparation.messagesToSummarize,
-          { previousSummary: input.preparation.previousSummary, customInstructions: event.customInstructions, protectHistory: protection.protecting }), protection.targets.history);
-        const prefixFits = !summaryBudget.split || fits(createPrefixSummaryContext(input.preparation.turnPrefixMessages), protection.targets.prefix);
+          { previousSummary: input.preparation.previousSummary, customInstructions: event.customInstructions, protectHistory: protection.protecting }),
+          protection.targets.history, summaryBudget.originalHistory);
+        // A history input fallback also bypasses protection before a split prefix.
+        const prefixFits = !summaryBudget.split || fits(createPrefixSummaryContext(input.preparation.turnPrefixMessages),
+          preservation.bypassReason ? summaryBudget.originalPrefix : protection.targets.prefix, summaryBudget.originalPrefix);
         // Split reuse can commit the predecessor without a history request. Its
         // entire reused envelope must fit even if there are zero parsed tuples.
         const reusedFits = summaryBudget.generateHistory || summaryBudget.budget.fits(
