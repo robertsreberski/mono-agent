@@ -32,7 +32,7 @@ export function protectedE2Reply(context, drop = false) {
 /** One independent carrier/fit control. Its rows are alternatives, NOT added
  * paid runs. onPublication/onSummary are test-only observers, never model routes.
  */
-export async function rehearseE2Protected({ work, model, carrier, fallback = false, refusal = false, onPublication = async () => {}, onSummary = async () => {}, onAdmission = async () => {}, onPublicationPreparing = async () => {}, onEvent = () => {}, appendProgress, prepareInput = input => input, sourceBackgroundRepeats }) {
+export async function rehearseE2Protected({ work, model, carrier, fallback = false, refusal = false, onPublication = async () => {}, onSummary = async () => {}, onAdmission = async () => {}, onPublicationPreparing = async () => {}, onEvent = () => {}, appendProgress, prepareInput = input => input, sourceBackgroundRepeats, productionDefaults = false, summaryReply = protectedE2Reply }) {
   need(["quotation", "carry"].includes(carrier));
   const [{ ToolHistoryWriter, ToolHistoryReader, createContinuityParticipant, createDurableHistoryStore, createConversationHarness },
     { JsonlSessionRepo, createRunDriver, projectContext }, { createMonoRuntime }, { fauxProvider, createModels, fauxAssistantMessage },
@@ -99,12 +99,12 @@ export async function rehearseE2Protected({ work, model, carrier, fallback = fal
     const admission = raw.validator.retainedSummaryAdmission, active = await resolveRetainedSummaryAdmission(raw, access);
     need(admission?.kind === (carrier === "quotation" ? "retained_summary_admitted" : "reseed_predecessor_admitted") && active);
     await onAdmission({ raw, admission, active, turn, access });
-    const target = faux.getModel(), soul = await shippingSoul();
+    const target = productionDefaults ? { ...faux.getModel(), ...model } : faux.getModel(), soul = await shippingSoul();
     const guarded = createRunDriver(raw, { model: target, systemPrompt: soul.text, tools: [], retainedSummaryAccess: access });
     let exact = !refusal, observerError;
     const h = { models: { completeSimple: async (_model, context, options) => {
       requests.push({ model: `${model.provider}:${model.id}`, context: structuredClone(context), maxOutputTokens: options.maxTokens });
-      const text = protectedE2Reply(context, !exact && !fallback);
+      const text = summaryReply(context, !exact && !fallback);
       try { await onSummary({ raw, context, text, model: target, options, admission, active }); } catch (error) { observerError = error; throw error; }
       return fauxAssistantMessage(text);
     } }, compactionFailureKey: work, getModel: () => target, waitForIdle: () => guarded.waitForIdle(), setCompactionSettings: s => guarded.setCompactionSettings(s),
@@ -114,7 +114,7 @@ export async function rehearseE2Protected({ work, model, carrier, fallback = fal
     await grow();
     const compact = () => tryCompact(h, { trigger: "proactive", onEvent: e => { events.push(e); onEvent(e, raw); }, runtimeWarnings: warnings,
       session: { getEntries: () => raw.getEntries(), buildContext: async () => projectContext(await raw.getEntries()) },
-      policy: E2_PROTECTED_POLICY });
+      policy: productionDefaults ? {} : E2_PROTECTED_POLICY });
     let result = await compact(), suppressed = false;
     if (observerError) throw observerError;
     if (refusal && !fallback) {

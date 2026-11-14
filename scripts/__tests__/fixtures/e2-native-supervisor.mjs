@@ -14,7 +14,7 @@ const profile = JSON.parse(await readFile(process.argv[2], "utf8")), pilot = JSO
 const controller = guardedController("e2-validation"), outputRoot = profile.args.outputRoot, authorization = { schema: E2_AUTHORIZATION_SCHEMA, ...profile.args };
 delete authorization.outputRoot;
 const options = { real: true, pilot, authorization, outputRoot };
-if (profile.scenario?.startsWith("retained-")) {
+if (profile.scenario?.startsWith("retained-") && !profile.scenario.includes("-default-")) {
   const { attachE2ProtectedControllerPolicy } = await import("../../lib/continuity-e2-controller-policy.mjs");
   await attachE2ProtectedControllerPolicy(pilot, pilot.registration.catalog.map(row => ({ provider: row.model.split(":")[0], id: row.model.split(":")[1], contextWindow: row.contextWindow, maxTokens: row.maxTokens })));
 }

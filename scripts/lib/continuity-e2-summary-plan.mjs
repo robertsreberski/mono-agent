@@ -45,10 +45,11 @@ export async function deriveE2SummaryRequest({ root, state, index, hold, native,
   const key = digest([hold.nativeCompaction.prefixSha256, hold.nativeCompaction.nativeOperationDigest, binding, predecessor.textSha256,
     previous.map(h => h.summaryReceipt.sha256)]);
   if (plans.has(key)) return plans.get(key);
-  const [{ SessionStore }, { projectContext }, driver, kit, preservation, summary, { convertResponsesMessages }] = await Promise.all([
+  const [{ SessionStore }, { projectContext }, driver, kit, preservation, summary, usage, { convertResponsesMessages }] = await Promise.all([
     import("../../packages/turn/dist/engine/session-store.js"), import("../../packages/turn/dist/engine/request-projection.js"),
     import("../../packages/turn/dist/execution/pi/compaction/compaction-driver.js"), import("../../packages/turn/dist/engine/compaction-kit/compaction.js"),
     import("../../packages/turn/dist/engine/compaction-kit/historical-preservation.js"), import("../../packages/turn/dist/execution/pi/compaction/compaction-summary.js"),
+    import("../../packages/turn/dist/engine/compaction-kit/usage.js"),
     import("../../packages/turn/node_modules/@earendil-works/pi-ai/dist/api/openai-responses-shared.js"),
   ]);
   const store = new SessionStore(native.header, native.records, undefined, () => {});
@@ -59,15 +60,16 @@ export async function deriveE2SummaryRequest({ root, state, index, hold, native,
     await verifyE2SummaryResult(root, slot.slotId, prior, { schema: prior.summaryReceipt.schema, sha256: prior.summaryReceipt.sha256 }, readPrivate);
     replies.push((await readPrivate(e2SummaryResultPath(root, slot.slotId, prior.round))).message);
   }
-  let generateHistory;
+  let budgetPlan;
   const harness = { getModel: () => model, models: { completeSimple: async (_model, context) => {
     requests.push(context);
     if (replies[requests.length - 1]) return replies[requests.length - 1];
-    // Deterministic placeholder only to finish the pure shipping preparation.
-    // It copies the shipping protected frame; it is not inference or evidence.
-    const frame = context.messages.flatMap(m => m.content ?? []).find(p => p.type === "text" && /<protected-historical-tuples>\n/u.test(p.text));
-    const blocks = frame ? JSON.parse(/<protected-historical-tuples>\n([^\n]*)\n<\/protected-historical-tuples>/u.exec(frame.text)[1]) : [];
-    return { role: "assistant", content: [{ type: "text", text: "## Historical events and corrections\n" + (blocks.join("\n") || "Controller preflight placeholder.") }], stopReason: "stop", usage: {} };
+    // Use the structured shipping plan, never a frame quoted in conversation.
+    // Only a generated history needs to copy tuples; a prefix follows generated
+    // or reused history that already owns them. No inference or evidence here.
+    const history = requests.length === 1 && budgetPlan.generateHistory && accounting.preservation?.protectionActive;
+    const text = history ? budgetPlan.protectedText : "Controller preflight placeholder.";
+    return { role: "assistant", content: [{ type: "text", text: text || "Controller preflight placeholder." }], stopReason: "stop", usage: usage.sumKnownSummaryUsage() };
   } } };
   const trigger = binding.trigger;
   const hook = driver.createGuardedCompactionHook({ harness, trigger, operationId: native.operation.start.operationId, effectivePolicy: policy,
@@ -75,14 +77,14 @@ export async function deriveE2SummaryRequest({ root, state, index, hold, native,
     accounting, runtimeWarnings: warnings, beforeSummary: ({ prepared }) => {
       const input = summary.prepareSummaryInput(prepared);
       input.preparation.settings = { ...input.preparation.settings, summaryMaxTokens: policy.summaryMaxTokens };
-      generateHistory = preservation.planSummaryBudget(input.preparation, kit.estimateTokens).generateHistory;
+      budgetPlan = preservation.planSummaryBudget(input.preparation, kit.estimateTokens);
     } });
   const result = await hook.handler({ branchEntries, retainedPredecessor: { admissionId: predecessor.admissionId, text: predecessor.text }, nonRetainablePrefixLength: 0 });
   need(result.compaction && hook.getDecision()?.kind === "accepted" && requests.length > previous.length);
   const fallback = warnings.some(w => w.warning_kind === "retained_summary_legacy_fallback");
   need(fallback === (result.retainedAuthorityUsed === false));
   const context = requests[previous.length];
-  const plan = { assembly: fallback ? "legacy-fallback" : accounting.splitTurn && (!generateHistory || previous.length > 0) ? "split-prefix" : "summary",
+  const plan = { assembly: fallback ? "legacy-fallback" : accounting.splitTurn && (!budgetPlan.generateHistory || previous.length > 0) ? "split-prefix" : "summary",
     instructions: context.systemPrompt, input: convertResponsesMessages({ ...model, input: ["text"] }, context, new Set(["openai-codex"]), { includeSystemPrompt: false }) };
   plans.set(key, plan); while (plans.size > 4) plans.delete(plans.keys().next().value);
   return plan;

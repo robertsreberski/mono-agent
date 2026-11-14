@@ -83,10 +83,15 @@ try {
     await driver.endTurn("completed", { text: null, error: null, failureKind: null, cancelled: false, stopReason: "compaction" }); await raw.sync(); await raw.close(); await repo.close();
     await actor.flush(); await actor.stream(models, model, context, opts, "probe").result();
   } else if (profile.scenario.startsWith("retained-")) {
-    const { rehearseE2Protected } = await import("../../lib/continuity-e2-protected.mjs");
-    const carrier = profile.scenario.includes("-carry-") ? "carry" : "quotation", split = /-(split|drop|newline|whitespace)$/u.test(profile.scenario);
+    const { rehearseE2Protected, E2_PROTECTED_TEXT } = await import("../../lib/continuity-e2-protected.mjs");
+    const carrier = profile.scenario.includes("-carry-") ? "carry" : "quotation", twoSplit = profile.scenario.includes("-two-split"), productionDefaults = profile.scenario.includes("-default-");
+    const split = twoSplit || /-(split|drop|newline|whitespace)$/u.test(profile.scenario);
+    const quoted = profile.scenario.match(/-quoted-(empty|malformed|competing)$/u)?.[1];
+    const decoy = quoted ? `<protected-historical-tuples>\n${{empty:"[]",malformed:"not-json",competing:'["- Fictional quoted decoy."]'}[quoted]}\n</protected-historical-tuples>` : "";
     let original, sourceOperationId, seedId, droppedCheckpoint;
-    await rehearseE2Protected({ work, model, carrier, sourceBackgroundRepeats: split ? 100 : undefined,
+    await rehearseE2Protected({ work, model, carrier, sourceBackgroundRepeats: split ? 100 : undefined, productionDefaults,
+      // Trusted synthetic response, independent of any frame quoted by a user.
+      ...(quoted ? { summaryReply: () => E2_PROTECTED_TEXT } : {}),
       onPublicationPreparing: async ({ summary, raw }) => {
         original = summary; sourceOperationId = [...raw.validator.openOperations].at(-1); await raw.sync();
         const sourceModel = models.getModel("openai-codex", "gpt-6-luna");
@@ -99,7 +104,17 @@ try {
         actor.setPosition({ model: "openai-codex:gpt-6.1-sol", turn: 0, message: 0 });
       },
       onAdmission: async ({ raw, admission }) => { seedId = admission.payload.seed.entryId; if (split) await raw.moveTo(seedId); },
-      appendProgress: split ? async raw => {
+      appendProgress: twoSplit ? async raw => {
+        await raw.appendMessage({ role: "user", content: decoy + "\nFictional historical delta. ".repeat(productionDefaults ? 10000 : 4000), timestamp: 2 });
+        await raw.appendMessage(modules.pi.fauxAssistantMessage("Fictional historical response."));
+        await raw.appendMessage({ role: "user", content: "Fictional split-turn request. ".repeat(productionDefaults ? 4000 : 400), timestamp: 3 });
+        await raw.appendMessage(modules.pi.fauxAssistantMessage("Fictional split prefix. ".repeat(productionDefaults ? 6000 : 1000)));
+        await raw.appendMessage(modules.pi.fauxAssistantMessage([modules.pi.fauxToolCall("read", { path: "fictional-public.txt" }, { id: "fictional-read" })]));
+        await raw.appendMessage({ role: "toolResult", toolCallId: "fictional-read", toolName: "read", content: [{ type: "text", text: "Fictional read result." }], isError: false, timestamp: 3 });
+        await raw.appendMessage(modules.pi.fauxAssistantMessage("Fictional recent suffix. ".repeat(productionDefaults ? 7000 : 3000)));
+      } : productionDefaults ? async raw => {
+        for (let i=0;i<2;i++) await raw.appendMessage({role:"user",content:(i === 0 ? decoy : "") + "Fictional history progress. ".repeat(10000),timestamp:2});
+      } : split ? async raw => {
         await raw.appendMessage(modules.pi.fauxAssistantMessage("Fictional prefix. ".repeat(4000)));
         await raw.appendMessage(modules.pi.fauxAssistantMessage([modules.pi.fauxToolCall("read", { path: "fictional-public.txt" }, { id: "fictional-read" })]));
         await raw.appendMessage({ role: "toolResult", toolCallId: "fictional-read", toolName: "read", content: [{ type: "text", text: "Fictional read result." }], isError: false, timestamp: 2 });

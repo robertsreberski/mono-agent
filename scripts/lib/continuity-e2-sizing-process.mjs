@@ -1,4 +1,6 @@
 // Qualifying sizing is always delegated, never inferred from mutable argv/env.
+// Trust boundary: warm caches and accidental preloads, not a hostile parent
+// monkeypatching Node builtins. The CLI imports this binding first.
 import { fork } from "node:child_process";
 import { fileURLToPath } from "node:url";
 export async function runE2SizingProcess(input, onDiagnostic) {

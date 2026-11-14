@@ -203,6 +203,51 @@ it.each(["quotation", "carry"].flatMap(carrier => ["exact", "original", "split",
     expect(JSON.stringify(result.received[1])).not.toContain("/home/example/private/");
   }
 }, E2_NATIVE_TEST_TIMEOUT_MS);
+function expectQuotedFrameBeforeProtection(body, frame) {
+  if (frame === "clean") return;
+  const marker = "<protected-historical-tuples>\n", values = {empty:"[]",malformed:"not-json",competing:'["- Fictional quoted decoy."]'};
+  const text = body.input.flatMap(m=>typeof m.content === "string" ? [m.content] : (m.content??[]).map(p=>p.text??"")).join("\n");
+  const offset = text.indexOf(marker + values[frame] + "\n</protected-historical-tuples>");
+  expect(offset).toBeGreaterThanOrEqual(0);
+  expect(text.lastIndexOf(marker)).toBeGreaterThan(offset); // Genuine structured frame follows the conversation quote.
+}
+const retainedSplitCases = [
+  ...["control", "default"].flatMap(policy => ["quotation", "carry"].map(carrier => [policy, carrier, "clean"])),
+  ...["empty", "malformed", "competing"].map(frame => ["default", "quotation", frame]),
+];
+it.each(retainedSplitCases)("completes a two-response retained split under %s policy with %s carrier and %s quoted frame", async (policy, carrier, frame) => {
+  const scenario = `retained-${policy}-${carrier}-two-split${frame === "clean" ? "" : `-quoted-${frame}`}`;
+  const result = await run({ scenario, rows: [{ role: "summary", model: "openai-codex:gpt-6-luna" }, { role: "summary", model: SOL }, { role: "summary", model: SOL }, { role: "probe", model: SOL }] });
+  expect(result.report.stop,JSON.stringify(result.report)).toBe("completed"); expect(result.received).toHaveLength(4);
+  expect(result.report.phases[0].calls.verifiedSummaries).toBe(3);
+  expectQuotedFrameBeforeProtection(result.received[1],frame);
+  const state = JSON.parse(await readFile(join(result.root,"output/e2-validation-controller.json"),"utf8")), slot = state.slots[0];
+  expect(state.summaryPolicies.source).toBe(policy === "default" ? "bound-build-defaults-v1" : "protected-control-v1");
+  const holds = slot.holds.slice(1,3);
+  expect(holds.map(h=>h.retainedPredecessor.assembly)).toEqual(["summary","split-prefix"]);
+  for (const hold of holds) {
+    expect(hold.consumed).toBe(true); expect(hold.settlement.kind).toBe("settled"); expect(hold.summaryReceipt).toMatchObject({verified:true,durable:true});
+    expect(hold.nativeCompaction.nativeOperationDigest).not.toBe(hold.operationDigest);
+  }
+  expect(holds[0].nativeCompaction.nativeOperationDigest).toBe(holds[1].nativeCompaction.nativeOperationDigest);
+  expect(holds[0].retainedPredecessor.admissionId).toBe(holds[1].retainedPredecessor.admissionId);
+  const lineage = slot.lineages.proof;
+  expect(lineage.generated.map(g=>g.round)).toEqual(holds.map(h=>h.round));
+  const rows = (await readFile(join(e2PhaseWork(join(result.root,"output"),state.schedule[0]),"sessions/journals",`${lineage.journalId}.jsonl`),"utf8")).trimEnd().split("\n").map(JSON.parse);
+  const checkpoint = rows.find(r=>r.id===lineage.checkpointId).payload.compaction.checkpoint;
+  expect(checkpoint.retainedSummaryCoverage.admissionId).toBe(holds[0].retainedPredecessor.admissionId);
+  expect(checkpoint.summaryMessage.summary).toContain("**Turn Context (split turn):**");
+}, E2_NATIVE_TEST_TIMEOUT_MS);
+it.each([["quotation","clean"],["carry","clean"],...["empty","malformed","competing"].map(frame=>["quotation",frame])])("completes retained %s history under production-default policy derivation with %s quoted frame", async (carrier,frame) => {
+  const result = await run({scenario:`retained-default-${carrier}-summary${frame === "clean" ? "" : `-quoted-${frame}`}`, rows:[{role:"summary",model:"openai-codex:gpt-6-luna"},{role:"summary",model:SOL},{role:"probe",model:SOL}]});
+  expect(result.report.stop,JSON.stringify(result.report)).toBe("completed"); expect(result.received).toHaveLength(3);
+  expectQuotedFrameBeforeProtection(result.received[1],frame);
+  const state = JSON.parse(await readFile(join(result.root,"output/e2-validation-controller.json"),"utf8"));
+  expect(state.summaryPolicies.source).toBe("bound-build-defaults-v1");
+  const hold=state.slots[0].holds[1]; expect(hold.retainedPredecessor.assembly).toBe("summary");
+  expect(hold.consumed).toBe(true); expect(hold.summaryReceipt).toMatchObject({verified:true,durable:true});
+  expect(state.slots[0].lineages.proof.generated).toHaveLength(1);
+},E2_NATIVE_TEST_TIMEOUT_MS);
 it("stops changed summary text at the real gate without forwarding a probe", async () => {
   const result = await run({ scenario: "lineage-tamper", rows: [{ role: "summary", model: SOL }, { role: "probe", model: SOL }] });
   expect(result.received).toHaveLength(1); expect(result.report.stop).toBe("e2_summary_receipt_invalid");

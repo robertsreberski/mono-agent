@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // Offline preparation only. Paid authority is not an argument this CLI accepts.
+// Capture the fork binding before evaluating any other framework/user module.
+import { runE2SizingProcess } from "./lib/continuity-e2-sizing-process.mjs";
 import { realpathSync, readFileSync, statSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join, resolve } from "node:path";
@@ -88,7 +90,7 @@ export async function main(argv, { stdout = s => process.stdout.write(s), stderr
       const onDiagnostic = value => { diagnostic = diagnosticRecord(value); };
       const report = input.replayArm === "baseline"
         ? await (await import("./lib/continuity-e2-replay.mjs")).runE2Sizing({ ...input, onDiagnostic })
-        : await (await import("./lib/continuity-e2-sizing-process.mjs")).runE2SizingProcess(input, onDiagnostic);
+        : await runE2SizingProcess(input, onDiagnostic);
       stdout(`${JSON.stringify({ schema: report.schema, branches: report.branches.length, checkpoints: report.branches.reduce((n, b) => n + b.checkpoints.length, 0), summaryRequests: report.branches.reduce((n, b) => n + b.summaryRequests.length, 0) })}\n`);
     } else {
       const answers = inputPath(process.cwd(), args.answers), keys = inputPath(process.cwd(), args.keys), output = privateOutput(args.output, [answers, keys]);
