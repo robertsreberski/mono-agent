@@ -32,7 +32,7 @@ describe("read-only capabilities", () => {
     expect(aggregateCapabilityStatus([{ id: "a", status: "disabled" }])).toBe("disabled");
     expect(aggregateCapabilityStatus([{ id: "a", status: "waiting" }, { id: "b", status: "error" }])).toBe("error");
     const cards = capabilityCards(report, "journal");
-    expect(cards).toHaveLength(9);
+    expect(cards).toHaveLength(10);
     expect(cards[0]?.selectedVariant).toBe("memory:journal");
     expect(cards[0]?.variants?.map((choice) => choice.status)).toEqual(["disabled", "waiting", "disabled"]);
     expect(cards.find((card) => card.id === "tools")?.status).toBe("error");
@@ -158,7 +158,7 @@ describe("read-only capabilities", () => {
     const snapshot = await createCapabilityStatusService(input).read();
     for (const card of snapshot.cards) {
       for (const evidence of card.evidence) {
-        expect(evidence.status).toBe(doctor.sections.find((section) => section.id === evidence.id)?.status);
+        expect(evidence.status).toBe((doctor.sections.find((section) => section.id === evidence.id)?.status ?? "waiting"));
       }
       expect(card.status).toBe(aggregateCapabilityStatus(card.evidence));
     }

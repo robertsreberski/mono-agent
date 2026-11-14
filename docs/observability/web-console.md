@@ -285,8 +285,22 @@ then writes the selected owner-only dotenv and guarded config. It never changes
 the running environment. Embedded hosts without an explicitly supplied reloadable
 `dotenvPath` report unavailable. Shell-shadowed credentials require owner-terminal
 resolution. Noncredential environment overrides are non-blocking: a note explains
-that Save does not change overridden settings. Other credential types retain
-manual setup.
+that Save does not change overridden settings. Unavailable targets retain manual
+setup guidance.
+
+Additional credential fields cover prepared A2A providers, Journal/BuJo embeddings,
+Parallel search/fetch and hosted Ollama search. A2A requires an installed plugin,
+enabled endpoint, Agent Card and skill; Save can require its optional bearer on
+the next start, but never installs or enables the provider. Embeddings require an
+existing valid Journal/BuJo managed root; Save never creates or migrates it.
+Existing custom `apiKeyEnv` references are preserved, with selected-action defaults
+`MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY`, shared `PARALLEL_API_KEY`, and `OLLAMA_API_KEY`.
+All `MONO_AGENT_*` names except the selected credential’s own default are
+reserved; operational, allowlist and other credential destinations are refused. Local/keyless
+embeddings stay unchanged. Parallel stays anonymous without an explicit Save.
+Ollama entry is offered only for the exact `https://ollama.com` origin, not local,
+custom or lookalike servers. Web tools must already select the provider and allow
+the corresponding tool; Save changes neither selection nor allow/deny rules.
 
 Status exposes only set/not-set, not values or lengths. Fields clear before
 request dispatch, on failure and on navigation; no credentials enter web storage,

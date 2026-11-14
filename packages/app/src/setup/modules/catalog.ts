@@ -270,6 +270,7 @@ const channelCron: CapabilityModule = {
 
 const channelA2a: CapabilityModule = {
   id: "channel:a2a",
+  discovery: { requirements: ["An installed @mono-agent/channel-a2a plugin with a prepared provider endpoint, Agent Card and skill."], usage: "Provider requests may use model tokens. Credential entry never installs or enables the provider.", ownedConfigPaths: ["channels.plugins"] },
   kind: "channel",
   title: "A2A provider",
   summary: "Expose the agent over A2A (Agent Card + provider endpoint).",

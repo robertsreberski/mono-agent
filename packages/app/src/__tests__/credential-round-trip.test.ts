@@ -31,9 +31,17 @@ it("round-trips console credentials to the selected dotenv without exposing plan
     const url = `${web.url}api/v1/agents/fictional/credentials`, headers = { Origin: new URL(web.url).origin, "Content-Type": "application/json" };
     const status = await fetch(url, { headers }); expect(status.status).toBe(200);
     const view = await status.json() as CredentialSnapshot;
+    expect(view.cards).toHaveLength(8);
     const save = await fetch(`${url}/save`, { method: "POST", headers, body: JSON.stringify({ card: "openai-api", process: view.process, fence: view.fence, confirmed: true, fields: { bearer: plantedValue } }) });
     expect(save.status).toBe(200); expect(await save.json()).toMatchObject({ outcome: "saved" });
     expect(await readFile(dotenvPath, "utf8")).toContain(plantedValue);
+    const refreshed = await (await fetch(url, { headers })).json() as CredentialSnapshot;
+    const extraSave = await fetch(`${url}/save`, { method: "POST", headers, body: JSON.stringify({ card: "parallel-search", process: refreshed.process, fence: refreshed.fence, confirmed: true, fields: { credential: plantedValue } }) });
+    expect(extraSave.status).toBe(200); expect(await extraSave.json()).toMatchObject({ outcome: "saved" });
+    expect((app as MonoAgentAppController).env.PARALLEL_API_KEY).toBeUndefined();
+    const operatorUrl = (app as MonoAgentAppController).running.get("tui")!.summary.baseUrl;
+    const legacy = await (await fetch(`${operatorUrl}/v1/credentials`)).json() as CredentialSnapshot; expect(legacy.cards.map((card) => card.id)).toEqual(["telegram", "slack", "openai-api"]);
+    const extended = await (await fetch(`${operatorUrl}/v1/credentials`, { headers: { "X-Mono-Agent-Credential-Inventory": "extended" } })).json() as CredentialSnapshot; expect(extended.cards).toHaveLength(8);
     const after = await (await fetch(url, { headers })).text(); expect(after).not.toContain(plantedValue);
     expect(await (await fetch(`${web.url}api/v1/agents`)).text()).not.toContain(plantedValue);
     await app.applyConfigChange("synthetic-refresh");
@@ -45,6 +53,7 @@ it("round-trips console credentials to the selected dotenv without exposing plan
     await app.stop();
     const restarted = await startMonoAgentApp({ cwd: root, configPath, dotenvPath, env: parseEnv(await readFile(dotenvPath, "utf8")), drivers: [createOpenAIApiChannelDriver()], logger: { error: (...args) => logs.push(args), warn: (...args) => logs.push(args), info: (...args) => logs.push(args) } });
     cleanup.push(() => restarted.stop());
+    expect((restarted as MonoAgentAppController).env.PARALLEL_API_KEY).toBe(plantedValue);
     const endpoint = (restarted as MonoAgentAppController).running.get("openai-api")?.summary.baseUrl;
     expect(typeof endpoint).toBe("string");
     expect((await fetch(`${endpoint}/models`)).status).toBe(401);

@@ -1,7 +1,7 @@
 import { request } from "node:http";
 import { afterEach, expect, it, vi } from "vitest";
 import { startTuiAdapter } from "../index.js";
-import { CREDENTIAL_CARDS, parseCredentialSaveRequest, parseCredentialSnapshot, type CredentialSetupService } from "../credential-setup.js";
+import { CREDENTIAL_CARDS, parseCredentialSaveRequest, parseCredentialSnapshot, type CredentialSetupService, type CredentialSnapshot } from "../credential-setup.js";
 const cleanup: Array<() => Promise<void>> = [];
 afterEach(async () => { for (const stop of cleanup.splice(0)) await stop(); });
 const identity = { pid: process.pid, startedAt: new Date(performance.timeOrigin).toISOString() };
@@ -47,7 +47,20 @@ it.each(["save", "retry"] as const)("isolates %s parser/service failures with no
 });
 
 it("accepts only the fixed non-blocking override flag, never an override value or diagnostic", () => {
-  const snapshot = { version: 1, process: identity, fence, cards: CREDENTIAL_CARDS.map((id) => ({ id, available: true, reason: "ready", configReady: false, configPending: false, environmentOverrides: true, fields: (id === "slack" ? ["bot", "app"] : id === "telegram" ? ["bot"] : ["bearer"]).map((id) => ({ id, state: "not-set" })) })) };
+  const snapshot = { version: 1, process: identity, fence, cards: CREDENTIAL_CARDS.map((id) => ({ id, available: true, reason: "ready", configReady: false, configPending: false, environmentOverrides: true, fields: (id === "slack" ? ["bot", "app"] : id === "telegram" ? ["bot"] : ["openai-api", "a2a"].includes(id) ? ["bearer"] : ["credential"]).map((id) => ({ id, state: "not-set" })) })) };
   expect(parseCredentialSnapshot(snapshot).cards.every((card) => card.environmentOverrides === true)).toBe(true);
   for (const value of [false, plantedValue, { value: plantedValue }]) expect(() => parseCredentialSnapshot({ ...snapshot, cards: snapshot.cards.map((card) => ({ ...card, environmentOverrides: value })) })).toThrow();
+});
+
+it("negotiates extended inventory while preserving the strict three-card legacy response", async () => {
+  const snapshot: CredentialSnapshot = { version: 1, process: identity, fence, cards: CREDENTIAL_CARDS.map((id) => ({ id, available: true, reason: "ready", configReady: false, configPending: false, fields: (id === "slack" ? ["bot", "app"] as const : id === "telegram" ? ["bot"] as const : ["openai-api", "a2a"].includes(id) ? ["bearer"] as const : ["credential"] as const).map((id) => ({ id, state: "not-set" as const })) })) };
+  const service: CredentialSetupService = { read: async () => snapshot, save: async () => { throw new Error("No save"); }, retry: async () => { throw new Error("No retry"); } };
+  const adapter = await startTuiAdapter({ port: 0, responder: { respond: async () => ({ text: "No calls" }) }, credentialSetup: service }); cleanup.push(() => adapter.stop());
+  for (const extended of [false, true]) {
+    const response = await fetch(`${adapter.baseUrl}/v1/credentials`, { headers: extended ? { "X-Mono-Agent-Credential-Inventory": "extended" } : {} });
+    expect(response.status).toBe(200); expect(response.headers.get("cache-control")).toContain("no-store");
+    const decoded = parseCredentialSnapshot(await response.json()); expect(decoded.cards).toHaveLength(extended ? 8 : 3);
+  }
+  expect(() => parseCredentialSnapshot({ ...snapshot, cards: snapshot.cards.slice(0, 4) })).toThrow();
+  expect(() => parseCredentialSnapshot({ ...snapshot, cards: snapshot.cards.slice(3, 6) })).toThrow();
 });

@@ -153,8 +153,15 @@ not proof of which value was saved. Noncredential environment overrides are
 non-blocking and are not changed by Save. Telegram/Slack accept existing explicit
 allow-all settings, but the console never sets them. Fields are bounded to
 4096 UTF-8 bytes on both client and server. Use the existing Restart confirmation to activate;
-foreground saves apply on the next owner-controlled start. Other inventory
-credentials retain manual guidance. Browser/request memory necessarily exists;
+foreground saves apply on the next owner-controlled start. Prepared A2A,
+Journal/BuJo embeddings, Parallel search/fetch and exact-hosted-Ollama credentials
+use the same workflow. Save never installs/enables A2A, creates/migrates memory
+roots, changes a provider selection or relaxes tool policy. Local/keyless
+embeddings and local Ollama remain keyless. Parallel stays anonymous unless the
+owner selects Save; its default key is shared by search/fetch, while existing
+custom references are preserved. New proxies negotiate the extended inventory; older
+agents retain the three-card status contract and unsupported actions show manual
+guidance. Browser/request memory necessarily exists;
 this is not a physical-memory-erasure guarantee.
 Built-in tracing is already enabled; removed exporters are unsupported. Optional
 host-preflight evidence appears only when explicitly supplied by the agent.

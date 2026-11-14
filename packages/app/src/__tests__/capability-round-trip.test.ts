@@ -24,13 +24,13 @@ it("round-trips a throwaway agent's real doctor status through operator and web,
     // The same validator as CLI validate, explicitly without network/subprocess
     // liveness probes. The ordinary CLI command intentionally probes more.
     const validated = await validateMonoAgentFolder({ cwd: root, configPath, env: process.env, allowFilesystemWrites: false, liveness: false, subprocessProbes: false });
-    expect(shown.cards).toHaveLength(9);
+    expect(shown.cards).toHaveLength(10);
     for (const card of shown.cards) for (const evidence of card.evidence) {
-      expect(evidence.status, `${card.id} / ${evidence.id}`).toBe(validated.sections.find((section) => section.id === evidence.id)?.status);
+      expect(evidence.status, `${card.id} / ${evidence.id}`).toBe(validated.sections.find((section) => section.id === evidence.id)?.status ?? "waiting");
     }
     expect(shown.cards.find((card) => card.id === "tracing")?.status).toBe("ok");
     expect(shown.cards.find((card) => card.id === "tools")?.status).toBe("error");
     expect(await readFile(configPath)).toEqual(before);
-    console.info("Capability round-trip: fictional Garden Agent; real liveness-off doctor, operator HTTP and web HTTP; 9 cards matched validate sections; no model call or config write.");
+    console.info("Capability round-trip: fictional Garden Agent; real liveness-off doctor, operator HTTP and web HTTP; 10 cards matched validate sections (unprepared plugins remain waiting); no model call or config write.");
   } finally { await web.stop(); await adapter.stop(); await rm(root, { recursive: true, force: true }); }
 }, 90_000);

@@ -73,6 +73,16 @@ function fixture<K extends keyof WebApiDtos>(name: string, type: K, value: WebAp
 }
 
 export const FIXTURES = [
+  fixture("credentials-extended-status", "ApiCredentials", { version: 1, process: { pid: 42, startedAt: at }, fence: "12345678-1234-1234-1234-123456789012", cards: [
+    { id: "telegram", available: true, reason: "ready", fields: [{ id: "bot", state: "not-set" }], configReady: false, configPending: false },
+    { id: "slack", available: true, reason: "ready", fields: [{ id: "bot", state: "set" }, { id: "app", state: "not-set" }], configReady: false, configPending: false },
+    { id: "openai-api", available: true, reason: "ready", fields: [{ id: "bearer", state: "set" }], configReady: true, configPending: false },
+    { id: "a2a", available: false, reason: "plugin-required", fields: [{ id: "bearer", state: "not-set" }], configReady: false, configPending: false },
+    { id: "embeddings", available: false, reason: "memory-required", fields: [{ id: "credential", state: "not-set" }], configReady: false, configPending: false },
+    { id: "parallel-search", available: true, reason: "ready", fields: [{ id: "credential", state: "set" }], configReady: true, configPending: false },
+    { id: "parallel-fetch", available: true, reason: "ready", fields: [{ id: "credential", state: "set" }], configReady: false, configPending: true },
+    { id: "ollama-search", available: false, reason: "endpoint-required", fields: [{ id: "credential", state: "not-set" }], configReady: false, configPending: false },
+  ] }),
   fixture("credentials-status", "ApiCredentials", { version: 1, process: { pid: 42, startedAt: at }, fence: "12345678-1234-1234-1234-123456789012", cards: [
     { id: "telegram", available: true, reason: "ready", fields: [{ id: "bot", state: "not-set" }], configReady: false, configPending: false },
     { id: "slack", available: true, reason: "ready", fields: [{ id: "bot", state: "set" }, { id: "app", state: "not-set" }], configReady: false, configPending: true },

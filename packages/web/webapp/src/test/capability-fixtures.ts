@@ -27,5 +27,7 @@ export const credentialSnapshot: import("../types").WebCredentialSnapshot = {
     { id: "telegram", available: true, reason: "ready", fields: [{ id: "bot", state: "not-set" }], configReady: false, configPending: false },
     { id: "slack", available: true, reason: "ready", fields: [{ id: "bot", state: "not-set" }, { id: "app", state: "not-set" }], configReady: false, configPending: false },
     { id: "openai-api", available: true, reason: "ready", fields: [{ id: "bearer", state: "not-set" }], configReady: false, configPending: false },
+    { id: "a2a", available: true, reason: "ready", fields: [{ id: "bearer", state: "not-set" }], configReady: false, configPending: false },
+    ...(["embeddings", "parallel-search", "parallel-fetch", "ollama-search"] as const).map((id) => ({ id, available: true, reason: "ready" as const, fields: [{ id: "credential" as const, state: "not-set" as const }], configReady: false, configPending: false })),
   ],
 };

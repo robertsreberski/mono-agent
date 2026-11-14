@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 import { CapabilityActionControls, CAPABILITY_SAVE_UNCERTAIN, type CapabilityRestartState, type CapabilitySavedState } from "./CapabilityActionControls";
 import { useEffect, useRef, useState } from "react";
 import { api } from "../../api";
-import type { AgentSummary, WebCapabilitySetupSnapshot, WebCapabilityActionsSnapshot } from "../../types";
+import type { AgentSummary, WebCapabilitySetupSnapshot, WebCapabilityActionsSnapshot, WebCredentialSaveRequest } from "../../types";
 
 type Card = WebCapabilitySetupSnapshot["cards"][number];
 const statusLabel = { ok: "Ready", waiting: "Waiting", disabled: "Disabled", error: "Needs attention" } as const;
@@ -88,6 +88,11 @@ export function CapabilityCard({ card, children, actionNext }: { readonly card: 
   </article>;
 }
 
+const credentialCardsFor: Readonly<Record<string, readonly WebCredentialSaveRequest["card"][]>> = {
+  "channel:telegram": ["telegram"], "channel:slack": ["slack"], "channel:openai-api": ["openai-api"],
+  "channel:a2a": ["a2a"], memory: ["embeddings"], tools: ["parallel-search", "parallel-fetch", "ollama-search"],
+};
+
 export function CapabilitiesSection({ agent, restart = null }: { readonly agent: AgentSummary; readonly restart?: CapabilityRestartState }) {
   const identity = JSON.stringify([agent.sourceId, agent.generation]);
   const identityRef = useRef(identity);
@@ -141,7 +146,7 @@ export function CapabilitiesSection({ agent, restart = null }: { readonly agent:
   if (snapshot === null) return <>{credentialWarning}{error ? errorNotice : <p>Reading capability status…</p>}</>;
   return <>
     {error && errorNotice}
-    <p className="settings-section-summary">Explore optional features. Eligible Memory Lite and cron controls can be previewed and saved; other features use manual setup.</p>
+    <p className="settings-section-summary">Explore optional features. Eligible Memory Lite and cron controls can be previewed and saved. Supported cards also offer write-only credential entry; other setup uses manual instructions.</p>
     <p className="settings-notice capability-scope">Provider, embedding, browser and server liveness is not probed here. Ready means local configuration checks passed, not live readiness or message delivery. Run <code>mono-agent validate</code> in the owner terminal for live checks.</p>
     <p className="settings-section-summary">Checked <time dateTime={snapshot.observedAt}>{new Date(snapshot.observedAt).toLocaleTimeString()}</time>. {snapshot.observation === "loaded-snapshot" ? "Uses settings from the agent’s last start, not later edits." : "Uses saved settings."} Restart the agent after editing settings or .env. <button type="button" className="settings-button" onClick={() => setRevision((value) => value + 1)}>Refresh capability status</button></p>
     {agent.supportsCapabilityActions !== true && <p className="settings-notice">This agent version has no console Enable actions. Use manual setup or update the agent.</p>}
@@ -152,8 +157,8 @@ export function CapabilitiesSection({ agent, restart = null }: { readonly agent:
       const actionNext = action?.active ? "Inspect readiness evidence below."
         : action?.reason === "already-configured" || (action?.available && saved[action.id] && !saved[action.id]?.uncertain) ? "Check saved settings and activation below; saving does not restart the agent."
         : action?.available ? "Review and Save below, or use manual setup. Saving does not activate the feature." : undefined;
-      const credentialCard = card.id === "channel:telegram" ? "telegram" : card.id === "channel:slack" ? "slack" : card.id === "channel:openai-api" ? "openai-api" : null;
-      return <CapabilityCard key={`${agent.sourceId}:${card.id}`} card={card} actionNext={actionNext}>{action && actionSnapshot && <CapabilityActionControls agent={agent} action={action} process={actionSnapshot.process} restart={restart} refresh={() => setRevision((value) => value + 1)} saved={saved[action.id] ?? null} isCurrent={() => currentIdentity.current === identity} setSaved={(value) => setSaved((prior) => ({ ...prior, [action.id]: currentIdentity.current === identity ? value : { ...value, uncertain: true } }))} />}{credentialCard && agent.supportsCredentialSetup === true && <CredentialControls agent={agent} card={credentialCard} restart={restart} notice={credentialNotice(credentialCard)} setNotice={(value) => retainCredentialNotice(credentialCard, value)} />}</CapabilityCard>;
+      const credentialCards = credentialCardsFor[card.id] ?? [];
+      return <CapabilityCard key={`${agent.sourceId}:${card.id}`} card={card} actionNext={actionNext}>{action && actionSnapshot && <CapabilityActionControls agent={agent} action={action} process={actionSnapshot.process} restart={restart} refresh={() => setRevision((value) => value + 1)} saved={saved[action.id] ?? null} isCurrent={() => currentIdentity.current === identity} setSaved={(value) => setSaved((prior) => ({ ...prior, [action.id]: currentIdentity.current === identity ? value : { ...value, uncertain: true } }))} />}{agent.supportsCredentialSetup === true && credentialCards.map((credentialCard) => <CredentialControls key={credentialCard} agent={agent} card={credentialCard} restart={restart} notice={credentialNotice(credentialCard)} setNotice={(value) => retainCredentialNotice(credentialCard, value)} />)}</CapabilityCard>;
     })}</div>
     {snapshot.hostPreflight && <details><summary>Host preflight (optional)</summary><ul>{snapshot.hostPreflight.checks.map((check) => <li key={check.id}>{check.id}: {check.status}</li>)}</ul></details>}
   </>;

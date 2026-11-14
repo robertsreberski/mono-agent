@@ -353,7 +353,20 @@ credentials automatically. Telegram and Slack require allowlists or an existing
 explicit allow-all setting; the console never sets allow-all flags. Noncredential
 environment overrides are noted without blocking entry or changing overridden
 settings. Exact credential environment overrides still require terminal resolution.
-Other catalog credentials still use manual setup.
+Prepared hosts also offer A2A provider bearers, Journal/BuJo embedding keys,
+Parallel search/fetch keys and hosted Ollama search keys. A2A must already have an
+installed plugin and enabled endpoint/Agent Card/skill; Save can require the
+bearer but never installs or enables the provider. Embedding Save changes only
+the environment reference on an existing valid managed root, never its tier,
+identity or data. Local/keyless embeddings stay unchanged. Parallel remains
+anonymous unless Save is explicitly selected; search/fetch share `PARALLEL_API_KEY`
+by default. Hosted Ollama is eligible only at the exact `https://ollama.com`
+origin, never a local or custom server. Existing valid custom `apiKeyEnv` names
+are retained; missing names use `MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY`,
+`PARALLEL_API_KEY` or `OLLAMA_API_KEY` only when Save is selected. The entire
+`MONO_AGENT_*` namespace is reserved except each credential’s own default key;
+operational, allowlist and cross-credential destinations require terminal resolution. Provider
+selection and tool allow/deny rules are prerequisites, not changed by Save.
 
 
 Run `mono-agent preflight [--json] [--port <n>]` from any folder, before creating
