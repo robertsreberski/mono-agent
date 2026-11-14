@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { ALLOW_ALL_TOOLS, baseConfig, BUILTIN_TOOL_NAMES, APP_TOOL_NAMES, type CapabilityModule, DEFAULT_MODEL, DEFAULT_SAFE_TOOLS, resolveModuleInputs } from "../setup/modules/index.js";
-import { isAllowAllTools, isKnownToolName, isMcpToolName, suggestToolName } from "../tools/known-tools.js";
+import { isAgentToolAllowed, isAgentToolDenied, isAllowAllTools, isKnownToolName, isMcpToolName, suggestToolName } from "../tools/known-tools.js";
 
 /** A minimal module fixture used only to exercise resolveModuleInputs. */
 const fixtureModule: CapabilityModule = {
@@ -169,4 +169,14 @@ describe("known-tools", () => {
     expect(suggestToolName("BASH")).toBe("Bash");
     expect(suggestToolName("zzz")).toBeUndefined();
   });
+});
+
+it("shares one delegation predicate across eligibility, loaded state and doctor", () => {
+  expect(isAgentToolDenied(["Agent"])).toBe(true);
+  expect(isAgentToolDenied(["Bash"])).toBe(false);
+  expect(isAgentToolAllowed(["*"], [])).toBe(true);
+  expect(isAgentToolAllowed(["Read"], [])).toBe(false);
+  expect(isAgentToolAllowed(["Read", "Agent"], [])).toBe(true);
+  expect(isAgentToolAllowed(["*"], ["Agent"])).toBe(false);
+  expect(isAgentToolAllowed(["Read", "Agent"], ["Agent"])).toBe(false);
 });

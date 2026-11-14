@@ -102,7 +102,7 @@ describe("Capabilities section", () => {
 it("does not mistake a delayed pre-save restart baseline for a new restart", async () => {
   vi.spyOn(api, "capabilitySetup").mockResolvedValue(eligibleCronSnapshot);
   vi.spyOn(api, "capabilityActions").mockResolvedValue(eligibleCronActions);
-  vi.spyOn(api, "previewCapabilityAction").mockResolvedValue({ action: "cron-controls", process: capabilityActions.process, expectedVersion: "a".repeat(64), changes: [], normalizesFormatting: true, noOp: false });
+  vi.spyOn(api, "previewCapabilityAction").mockResolvedValue({ action: "cron-controls", process: capabilityActions.process, expectedVersion: "a".repeat(64), changes: [], normalizesFormatting: true, exactBytes: false, noOp: false });
   vi.spyOn(api, "saveCapabilityAction").mockImplementation(async () => {
     vi.mocked(api.capabilityActions).mockResolvedValue({ ...eligibleCronActions, actions: eligibleCronActions.actions.map((action) => action.id === "cron-controls" ? { ...action, reason: "already-configured" as const } : action) });
     return { action: "cron-controls", process: capabilityActions.process, version: "b".repeat(64), changed: true };
@@ -158,7 +158,7 @@ it("removes stale Enable controls when refreshing availability fails", async () 
 it.each(["env-shadowed", "no-valid-jobs", "eligible"] as const)("reconciles a confirmed Save with fresh %s eligibility", async (reason) => {
   vi.spyOn(api, "capabilitySetup").mockResolvedValue(eligibleCronSnapshot);
   vi.spyOn(api, "capabilityActions").mockResolvedValue(eligibleCronActions);
-  vi.spyOn(api, "previewCapabilityAction").mockResolvedValue({ action: "cron-controls", process: capabilityActions.process, expectedVersion: "a".repeat(64), changes: [], normalizesFormatting: true, noOp: false });
+  vi.spyOn(api, "previewCapabilityAction").mockResolvedValue({ action: "cron-controls", process: capabilityActions.process, expectedVersion: "a".repeat(64), changes: [], normalizesFormatting: true, exactBytes: false, noOp: false });
   vi.spyOn(api, "saveCapabilityAction").mockImplementation(async () => {
     vi.mocked(api.capabilityActions).mockResolvedValue({ ...eligibleCronActions, actions: eligibleCronActions.actions.map((action) => action.id === "cron-controls" ? { ...action, reason: "already-configured" as const } : action) });
     return { action: "cron-controls", process: capabilityActions.process, version: "b".repeat(64), changed: true };
@@ -178,7 +178,7 @@ it.each(["env-shadowed", "no-valid-jobs", "eligible"] as const)("reconciles a co
 it.each(["resolved", "rejected"])("retains a %s stale Save even when generation remounts controls and availability fails", async (outcome) => {
   vi.spyOn(api, "capabilitySetup").mockResolvedValue(eligibleCronSnapshot);
   vi.spyOn(api, "capabilityActions").mockResolvedValueOnce(eligibleCronActions).mockRejectedValue(new Error("Fictional unavailable response"));
-  vi.spyOn(api, "previewCapabilityAction").mockResolvedValue({ action: "cron-controls", process: capabilityActions.process, expectedVersion: "a".repeat(64), changes: [], normalizesFormatting: true, noOp: false });
+  vi.spyOn(api, "previewCapabilityAction").mockResolvedValue({ action: "cron-controls", process: capabilityActions.process, expectedVersion: "a".repeat(64), changes: [], normalizesFormatting: true, exactBytes: false, noOp: false });
   let finish!: () => void;
   vi.spyOn(api, "saveCapabilityAction").mockImplementation(() => new Promise((resolve, reject) => {
     finish = () => outcome === "resolved" ? resolve({ action: "cron-controls", process: capabilityActions.process, version: "b".repeat(64), changed: true }) : reject(new ApiError("Fictional stale response", 409, "capability_action_conflict"));
@@ -200,4 +200,14 @@ it("resets the inspected Memory tier for a new generation without resetting pare
   fireEvent.change(await screen.findByLabelText("Inspect memory tier (read-only)"), { target: { value: "memory:journal" } });
   view.rerender(<CapabilitiesSection agent={{ ...selected, generation: "new" }} />);
   expect(await screen.findByLabelText("Inspect memory tier (read-only)")).toHaveValue(capabilitySnapshot.cards[0]!.selectedVariant);
+});
+
+it("renders no recovery panel for a snapshot without the Undo action", async () => {
+  const three = { ...eligibleCronActions, actions: eligibleCronActions.actions.filter((item) => item.id !== "config-undo") };
+  vi.spyOn(api, "capabilitySetup").mockResolvedValue(eligibleCronSnapshot);
+  vi.spyOn(api, "capabilityActions").mockResolvedValue(three);
+  render(<CapabilitiesSection agent={agent("garden", { supportsCapabilitySetup: true, supportsCapabilityActions: true })} />);
+  await screen.findByRole("button", { name: "Enable cron controls…" });
+  expect(screen.queryByRole("article", { name: "Configuration recovery" })).toBeNull();
+  expect(screen.getByRole("article", { name: "Subagents" })).toBeVisible();
 });

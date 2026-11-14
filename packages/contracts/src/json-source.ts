@@ -36,13 +36,18 @@ export async function writeSettingsJson(input: {
 
 async function mergePatch(path: string, patch: SettingsJson): Promise<SettingsJson> {
   const existing = (await readSettingsJson(path)).json;
-  return deepMergeObject(existing, patch) as SettingsJson;
+  return mergeSettingsJsonPatch(existing, patch);
 }
 
 /**
- * Recursively merge a sparse patch onto an existing object. Plain-object values
- * merge in place; `undefined` deletes a key; everything else replaces.
+ * Apply a sparse patch with the writer's merge semantics, without touching
+ * disk. Plain-object values merge in place; `undefined` deletes a key;
+ * everything else replaces. Lets callers preview the exact candidate a
+ * guarded save would validate.
  */
+export function mergeSettingsJsonPatch(existing: SettingsJson, patch: SettingsJson): SettingsJson {
+  return deepMergeObject(existing, patch) as SettingsJson;
+}
 function deepMergeObject(
   existing: Record<string, unknown>,
   patch: Record<string, unknown>,

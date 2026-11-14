@@ -132,7 +132,7 @@ export function CapabilitiesSection({ agent, restart = null }: { readonly agent:
     if (agent.status === "online" && agent.supportsCapabilityActions === true) {
       void api.capabilityActions(agent.sourceId, controller.signal).then((snapshot) => { if (!controller.signal.aborted) {
         setActions({ identity, snapshot });
-        setSaved((prior) => Object.fromEntries(Object.entries(prior).filter(([id, value]) => value.uncertain || snapshot.actions.some((action) => action.id === id && (action.active || action.reason === "already-configured")))));
+        setSaved((prior) => Object.fromEntries(Object.entries(prior).filter(([id, value]) => value.uncertain || id === "config-undo" || snapshot.actions.some((action) => action.id === id && (action.active || action.reason === "already-configured")))));
       } })
         .catch(() => { if (!controller.signal.aborted) setActionsError(true); });
     }
@@ -146,12 +146,47 @@ export function CapabilitiesSection({ agent, restart = null }: { readonly agent:
   if (snapshot === null) return <>{credentialWarning}{error ? errorNotice : <p>Reading capability status…</p>}</>;
   return <>
     {error && errorNotice}
-    <p className="settings-section-summary">Explore optional features. Eligible Memory Lite and cron controls can be previewed and saved. Supported cards also offer write-only credential entry; other setup uses manual instructions.</p>
+    <p className="settings-section-summary">Explore optional features. Eligible Memory Lite, cron controls and subagent delegation can be previewed and saved. A recovery panel offers one-level Undo when a console save is available. Supported cards also offer write-only credential entry; other setup uses manual instructions.</p>
     <p className="settings-notice capability-scope">Provider, embedding, browser and server liveness is not probed here. Ready means local configuration checks passed, not live readiness or message delivery. Run <code>mono-agent validate</code> in the owner terminal for live checks.</p>
     <p className="settings-section-summary">Checked <time dateTime={snapshot.observedAt}>{new Date(snapshot.observedAt).toLocaleTimeString()}</time>. {snapshot.observation === "loaded-snapshot" ? "Uses settings from the agent’s last start, not later edits." : "Uses saved settings."} Restart the agent after editing settings or .env. <button type="button" className="settings-button" onClick={() => setRevision((value) => value + 1)}>Refresh capability status</button></p>
     {agent.supportsCapabilityActions !== true && <p className="settings-notice">This agent version has no console Enable actions. Use manual setup or update the agent.</p>}
     {actionsError && <p className="settings-notice">Enable availability could not be verified. Refresh capability status; no write is assumed.</p>}
     {!actionSnapshot && Object.values(saved).some((value) => value.uncertain) && <p role="alert">{CAPABILITY_SAVE_UNCERTAIN}</p>}
+    {actionSnapshot && (() => {
+      const undo = actionSnapshot.actions.find((item) => item.id === "config-undo");
+      if (undo === undefined || (undo.reason === "undo-unavailable" && saved[undo.id] == null)) return null;
+      return <article className="settings-group capability-card" aria-labelledby="capability-recovery">
+        <div className="capability-heading"><h3 id="capability-recovery">Configuration recovery</h3></div>
+        <p className="capability-purpose">One-level Undo of the last console save.{undo.available ? " A console save is on record and Undo is available." : ""}</p>
+        <CapabilityActionControls agent={agent} action={undo} process={actionSnapshot.process} restart={restart} refresh={() => setRevision((value) => value + 1)} saved={saved[undo.id] ?? null} isCurrent={() => currentIdentity.current === identity} setSaved={(value) => setSaved((prior) => ({ ...prior, [undo.id]: currentIdentity.current === identity ? value : { ...value, uncertain: true } }))} />
+      </article>;
+    })()}
+    {actionSnapshot && (() => {
+      const subagents = actionSnapshot.actions.find((item) => item.id === "subagents-enable");
+      if (subagents === undefined) return null;
+      // Same predicate as the loaded-state evidence: Enabled only when the
+      // running process actually registered delegation.
+      const status = subagents.active ? "Enabled" : subagents.reason === "subagents-denied" || subagents.reason === "candidate-invalid" ? "Needs attention" : "Disabled";
+      const statusClass = status === "Enabled" ? "is-ok" : status === "Disabled" ? "is-disabled" : "is-error";
+      const statusIcon = status === "Enabled" ? "✓" : status === "Disabled" ? "−" : "!";
+      return <article className="settings-group capability-card" aria-labelledby="capability-subagents">
+        <div className="capability-heading"><h3 id="capability-subagents">Subagents</h3><span className={`capability-status ${statusClass}`}><span aria-hidden="true">{statusIcon}</span> {status}</span></div>
+        <p className="capability-purpose">Let the agent delegate to its configured subagents. Enable turns on delegation and, only for a restrictive explicit allowlist, adds the Agent tool. Omitted or allow-all policy, deny rules and profiles are never changed.</p>
+        <CapabilityActionControls agent={agent} action={subagents} process={actionSnapshot.process} restart={restart} refresh={() => setRevision((value) => value + 1)} saved={saved[subagents.id] ?? null} isCurrent={() => currentIdentity.current === identity} setSaved={(value) => setSaved((prior) => ({ ...prior, [subagents.id]: currentIdentity.current === identity ? value : { ...value, uncertain: true } }))} />
+        <details className="capability-details"><summary>Details & manual setup</summary>
+          <h4>Manual config</h4>
+          <p>Back up <code>mono-agent.config.json</code> first. Set <code>subagents.enabled</code> to <code>true</code> and, only for a restrictive explicit allowlist, add <code>Agent</code>. An omitted or <code>"*"</code> policy needs no change. Never remove deny rules. Run <code>mono-agent validate</code>, then restart.</p>
+          <pre aria-label="JSON configuration example"><code>{`{
+  "subagents": {
+    "enabled": true
+  },
+  "tools": {
+    "allowedTools": ["Read", "Glob", "Grep", "Agent"]
+  }
+}`}</code></pre>
+        </details>
+      </article>;
+    })()}
     <div className="capability-grid">{snapshot.cards.map((card) => {
       const action = actionSnapshot?.actions.find((item) => item.id === (card.id === "memory" ? "memory-lite" : card.id === "channel:cron" ? "cron-controls" : ""));
       const actionNext = action?.active ? "Inspect readiness evidence below."

@@ -1268,7 +1268,9 @@
       "type": "string",
       "enum": [
         "memory-lite",
-        "cron-controls"
+        "cron-controls",
+        "subagents-enable",
+        "config-undo"
       ],
       "description": "Separate from the v1 read-only discovery snapshot. Never accepts paths or patches."
     },
@@ -1309,7 +1311,10 @@
                 "type": "string",
                 "enum": [
                   "memory",
-                  "cron.operatorActions.enabled"
+                  "cron.operatorActions.enabled",
+                  "subagents.enabled",
+                  "tools.allowedTools",
+                  "config"
                 ]
               },
               "value": {
@@ -1326,7 +1331,11 @@
         },
         "normalizesFormatting": {
           "type": "boolean",
-          "const": true
+          "description": "Byte-normalizing saves rewrite formatting; Undo publishes the exact prior file."
+        },
+        "exactBytes": {
+          "type": "boolean",
+          "description": "True only when Save publishes the exact prior file, formatting included."
         },
         "noOp": {
           "type": "boolean"
@@ -1335,6 +1344,7 @@
       "required": [
         "action",
         "changes",
+        "exactBytes",
         "expectedVersion",
         "noOp",
         "normalizesFormatting",
@@ -1366,7 +1376,12 @@
         "memory-configured",
         "memory-root-unsafe",
         "no-valid-jobs",
-        "env-shadowed"
+        "env-shadowed",
+        "subagents-denied",
+        "subagents-unconfigured",
+        "undo-unavailable",
+        "undo-stale",
+        "candidate-invalid"
       ]
     },
     "CapabilityActionSaved": {

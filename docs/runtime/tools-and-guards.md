@@ -30,7 +30,12 @@ rejects invalid/sensitive forms, and a peer request is not owner approval. See
 `Agent` lets the main agent hand a self-contained task to a helper that works
 independently and reports back. It exists only on the pi runtime, and only when
 `subagents.enabled` is true **and** `Agent` appears in `tools.allowedTools` —
-`mono-agent validate` warns when one half is configured without the other.
+`mono-agent validate` warns when one half is configured without the other. The
+console Capabilities screen offers the same two halves as one **Enable
+subagents…** action on its **Subagents** card: it sets `subagents.enabled` and,
+only for a restrictive explicit allowlist, appends `Agent`, while omitted or
+allow-all policy, deny rules and profiles stay untouched. It refuses when the
+policy denies `Agent` or when no `subagents` block is configured.
 
 ```json
 {

@@ -31,3 +31,21 @@ it("exposes keyless bounded typed actions, rejects invalid JSON and never return
     const info = await (await fetch(adapter.infoUrl)).json() as { capabilities: Record<string, unknown> }; expect(info.capabilities.capabilityActions).toEqual({ version: 1, preview: true, save: true }); expect(info.capabilities.capabilitySetup).toBeUndefined();
   } finally { await adapter.stop(); }
 });
+it("parses the E2 snapshot with optional newer actions but keeps the E1 pair mandatory", async () => {
+  const { parseCapabilityActionsSnapshot, parseCapabilityActionPreview } = await import("../capability-actions.js");
+  const full = { version: 1, process: processIdentity, actions: [
+    { id: "memory-lite", available: true, active: false, reason: "eligible" },
+    { id: "cron-controls", available: false, active: false, reason: "no-valid-jobs" },
+    { id: "subagents-enable", available: true, active: false, reason: "eligible" },
+    { id: "config-undo", available: true, active: false, reason: "eligible" },
+  ] };
+  expect(parseCapabilityActionsSnapshot(full).actions).toHaveLength(4);
+  expect(() => parseCapabilityActionsSnapshot({ ...full, actions: full.actions.slice(1) })).toThrow();
+  expect(() => parseCapabilityActionsSnapshot({ ...full, actions: [...full.actions, full.actions[0]] })).toThrow();
+  const undo = { action: "config-undo", process: processIdentity, expectedVersion: "a".repeat(64), changes: [{ field: "config", value: "Restore." }], normalizesFormatting: false, exactBytes: true, noOp: false };
+  expect(parseCapabilityActionPreview(undo).exactBytes).toBe(true);
+  const subagents = { action: "subagents-enable", process: processIdentity, expectedVersion: "a".repeat(64), changes: [{ field: "subagents.enabled", value: "true" }, { field: "tools.allowedTools", value: "Append." }], normalizesFormatting: true, exactBytes: false, noOp: false };
+  expect(parseCapabilityActionPreview(subagents).changes).toHaveLength(2);
+  expect(() => parseCapabilityActionPreview({ ...subagents, changes: [...subagents.changes, ...subagents.changes, ...subagents.changes] })).toThrow();
+  expect(() => parseCapabilityActionPreview({ ...undo, changes: [{ field: "memory", value: "x" }] })).toThrow();
+});
