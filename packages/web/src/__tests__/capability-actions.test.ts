@@ -34,7 +34,7 @@ for (const operation of ["read", "preview", "save"] as const) it.each([false, tr
 });
 
 it("never forwards diagnostic prose from upstream action failures or transport errors", async () => {
-  for (const [code, status] of [["capability_action_conflict", 409], ["capability_action_unavailable", 409], ["capability_action_failed", 503], ["capability_actions_unsupported", 501], ["unknown", 500]] as const) {
+  for (const [code, status] of [["capability_action_conflict", 409], ["capability_action_unavailable", 409], ["capability_action_invalid", 409], ["capability_action_failed", 503], ["capability_actions_unsupported", 501], ["unknown", 500]] as const) {
     const client = new OperatorClient({ baseUrl: "http://127.0.0.1:1234/gui", fetchImpl: async () => Response.json({ error: { code, message: "fictional-private-diagnostic" } }, { status }) });
     await expect(client.capabilityActions("read")).rejects.toMatchObject({ status: code === "unknown" ? 502 : status, message: expect.not.stringContaining("fictional-private-diagnostic") });
   }
@@ -60,7 +60,7 @@ it("preserves fixed action failures without forwarding upstream prose or details
   const base = `${web.url}api/v1/agents/agent-one/capability-actions`;
   const headers = { Origin: new URL(web.url).origin, "Content-Type": "application/json" };
   try {
-    for (const [code, status] of [["capability_action_conflict", 409], ["capability_action_unavailable", 409], ["capability_action_failed", 503], ["capability_actions_unsupported", 501], ["unknown", 500]] as const) {
+    for (const [code, status] of [["capability_action_conflict", 409], ["capability_action_unavailable", 409], ["capability_action_invalid", 409], ["capability_action_failed", 503], ["capability_actions_unsupported", 501], ["unknown", 500]] as const) {
       failure = { code, status };
       for (const operation of ["read", "preview", "save"] as const) {
         const body = { action: preview.action, process: identity, ...(operation === "save" ? { expectedVersion: preview.expectedVersion, confirmed: true } : {}) };

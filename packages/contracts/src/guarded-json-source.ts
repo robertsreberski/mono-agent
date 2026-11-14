@@ -56,27 +56,31 @@ export async function writeGuardedSettingsJson(
       const backupTemp = await privateTemp(path, `${JSON.stringify({ version: 1, previousMissing: before === undefined, previousBase64: (before?.bytes ?? Buffer.alloc(0)).toString("base64"), intendedSha256: resultHash })}\n`);
       try { await unchanged(backupPath, backupBefore); await rename(backupTemp, backupPath); }
       finally { await unlink(backupTemp).catch(() => undefined); }
+      let published = false;
       try {
         await assertDirectory();
         await unchanged(path, before);
         // Check immediately before rename. Uncooperative editors can still race this
         // final await; the .bak envelope retains the prior bytes for recovery.
         await rename(temp, path);
+        published = true;
         await syncDirectory(directoryPath);
       } catch (error) {
         // A save that never publishes its config must not leave a slot for
-        // bytes no file ever had: restore the previous backup state, or clear
-        // the slot when there was none, before reporting the failure.
-        try {
-          if (backupBefore === undefined) {
-            await unlink(backupPath).catch(() => undefined);
-          } else {
-            const restoreTemp = await privateTemp(path, backupBefore.bytes);
-            try { await rename(restoreTemp, backupPath); }
-            finally { await unlink(restoreTemp).catch(() => undefined); }
-          }
-          await syncDirectory(directoryPath);
-        } catch { /* Best effort: the throw below reports the save failure. */ }
+        // bytes no file ever had. Once the rename commits, the new envelope
+        // stays: the published config keeps its matching Undo slot.
+        if (!published) {
+          try {
+            if (backupBefore === undefined) {
+              await unlink(backupPath).catch(() => undefined);
+            } else {
+              const restoreTemp = await privateTemp(path, backupBefore.bytes);
+              try { await rename(restoreTemp, backupPath); }
+              finally { await unlink(restoreTemp).catch(() => undefined); }
+            }
+            await syncDirectory(directoryPath);
+          } catch { /* Best effort: the throw below reports the save failure. */ }
+        }
         throw error;
       }
     } finally { await unlink(temp).catch(() => undefined); }
@@ -189,19 +193,17 @@ export async function restoreGuardedSettingsJson(
       } catch {
         conflict();
       }
+      // The rename committed, so the restore definitely published: finish
+      // best-effort and report success, never uncertainty. The slot is
+      // consumed when possible; a leftover slot stays stale-fenced, which
+      // still refuses a redo.
+      try { await syncDirectory(directoryPath); } catch { /* Durability best-effort; the restore already published. */ }
       try {
-        await syncDirectory(directoryPath);
-        // Consume the one-level slot only after publication. A crash here
-        // leaves a stale-fenced slot (current bytes no longer match the
-        // recorded result), never a redo: the fence keeps Undo one-level.
         await unlink(backupPath).catch((error: unknown) => {
           if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") throw error;
         });
-        await syncDirectory(directoryPath);
-      } catch (error) {
-        await unlink(backupPath).catch(() => undefined);
-        throw error;
-      }
+      } catch { /* Stale-fenced leftover; the fence keeps Undo one-level. */ }
+      try { await syncDirectory(directoryPath); } catch { /* Durability best-effort; the restore already published. */ }
     } finally { await unlink(temp).catch(() => undefined); }
     // Logging must not turn a committed restore into a reported failure.
     try { guard.log?.("Capability configuration saved; activation requires a fresh start."); } catch { /* committed */ }

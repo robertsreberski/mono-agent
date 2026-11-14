@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { lstat, readdir, realpath, unlink } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
-import { mergeSettingsJsonPatch, privateTemp, readSettingsJson, readSettingsJsonBackup, restoreGuardedSettingsJson, SettingsJsonError, writeSettingsJson, type SettingsJson } from "@mono-agent/contracts";
+import { mergeSettingsJsonPatch, privateTemp, readSettingsJson, readSettingsJsonBackup, restoreGuardedSettingsJson, SettingsJsonError, writeSettingsJson, type SettingsJson, type SettingsJsonBackupRead } from "@mono-agent/contracts";
 import { loadCronAdapterConfig, validateCronExpression } from "@mono-agent/trigger-cron";
 import {
   CapabilityActionError, parseCapabilityActionInput, parseCapabilityActionSaveInput,
@@ -97,12 +97,11 @@ export function createCapabilityActionsService(
     if (cron.jobs.some((job) => !validateCronExpression(job.expression, { timezone: job.timezone, hashSeed: job.id }).ok)) invalid();
   };
   /** Probe whether the action's candidate would still validate, so read() never offers an unpublishable action. */
-  const candidateValid = async (action: CapabilityActionId, json: SettingsJson): Promise<boolean> => {
+  const candidateProbe = async (action: Extract<CapabilityActionId, "config-undo" | "subagents-enable">, json: SettingsJson, backup: SettingsJsonBackupRead | undefined): Promise<boolean> => {
     let candidate: SettingsJson;
     let serialized: string;
     if (action === "config-undo") {
-      const backup = await readSettingsJsonBackup(input.configPath);
-      if (backup.status !== "ok" || backup.backup.previousMissing) return false;
+      if (backup?.status !== "ok" || backup.backup.previousMissing) return false;
       serialized = Buffer.from(backup.backup.previousBase64, "base64").toString("utf8");
       try {
         const parsed: unknown = serialized.trim().length === 0 ? {} : JSON.parse(serialized);
@@ -117,8 +116,33 @@ export function createCapabilityActionsService(
     try {
       await validateCandidate(candidate, temp);
       return true;
+    } finally { await unlink(temp).catch(() => undefined); }
+  };
+  /**
+   * Cached probe keyed by config version (and the backup slot for Undo), so
+   * repeated refreshes do not revalidate. Any probe failure — temp creation,
+   * backup read, or validation — degrades only that action, never the panel.
+   */
+  const probeCache = new Map<string, boolean>();
+  const candidateValid = async (action: Extract<CapabilityActionId, "config-undo" | "subagents-enable">, json: SettingsJson, version: string): Promise<boolean> => {
+    let backup: SettingsJsonBackupRead | undefined;
+    let key: string;
+    try {
+      if (action === "config-undo") {
+        backup = await readSettingsJsonBackup(input.configPath);
+        if (backup.status !== "ok" || backup.backup.previousMissing) return false;
+        const backupDigest = createHash("sha256").update(backup.backup.previousBase64).digest("hex");
+        key = `config-undo:${version}:${backup.backup.intendedSha256}:${backupDigest}`;
+      } else {
+        key = `subagents-enable:${version}`;
+      }
+      const cached = probeCache.get(key);
+      if (cached !== undefined) return cached;
+      const result = await candidateProbe(action, json, backup);
+      if (probeCache.size > 64) probeCache.clear();
+      probeCache.set(key, result);
+      return result;
     } catch { return false; }
-    finally { await unlink(temp).catch(() => undefined); }
   };
   const baseEligibility = async (action: CapabilityActionId, json: SettingsJson, version?: string): Promise<CapabilityActionReason> => {
     if (action === "config-undo") {
@@ -162,7 +186,8 @@ export function createCapabilityActionsService(
     if (reason !== "eligible") return reason;
     // E2 actions recheck the publishable candidate so read() never offers an action its save would refuse.
     if (action === "config-undo" || action === "subagents-enable") {
-      return await candidateValid(action, json) ? "eligible" : "candidate-invalid";
+      const probedVersion = version ?? (await source()).version;
+      return await candidateValid(action, json, probedVersion) ? "eligible" : "candidate-invalid";
     }
     return reason;
   };

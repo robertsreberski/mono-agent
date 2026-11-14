@@ -26,6 +26,15 @@ vi.mock("node:fs/promises", async (importOriginal) => {
     open: async (...args: Parameters<typeof fs.open>) => {
       if (["ELOOP", "EMLINK"].includes(failures.stage) && String(args[0]).endsWith("config.json")) throw Object.assign(new Error("fictional system diagnostic"), { code: failures.stage });
       if (failures.stage === "temp" && String(args[0]).includes(".mono-agent-")) throw new Error("injected temp failure");
+      if (failures.stage === "sync") {
+        try {
+          // Only the published config directory sync fails; lock-staging
+          // syncs must succeed so the write reaches publication.
+          if (!String(args[0]).includes(".mono-agent-") && (await fs.lstat(String(args[0]))).isDirectory()) throw Object.assign(new Error("injected sync failure"), { code: "EIO" });
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException)?.code === "EIO") throw error;
+        }
+      }
       const handle = await fs.open(...args);
       if (failures.stage === "released-owner" && String(args[0]).includes(".write-lock/owner-")) {
         failures.stage = "";
@@ -293,4 +302,30 @@ it.each(["directory", "symlink", "unreadable"])("degrades an %s backup slot to u
   } finally {
     if (kind === "unreadable") await chmod(`${f.path}.bak`, 0o600).catch(() => undefined);
   }
+});
+
+it("keeps the new backup envelope when only the post-publish sync fails", async () => {
+  const f = await fixture();
+  await writeFile(join(f.root, ".gitignore"), "/config.json.bak\n/config.json.tmp\n/config.json.mono-agent-*.tmp\n/config.json.write-lock/\n");
+  failures.stage = "sync";
+  await expect(writeSettingsJson({ path: f.path, patch: { added: true }, guarded: { expectedVersion: f.version, validate: async () => {} } })).rejects.toThrow();
+  const published = JSON.parse(await readFile(f.path, "utf8"));
+  expect(published).toMatchObject({ unrelated: { keep: true }, added: true });
+  const backup = JSON.parse(await readFile(`${f.path}.bak`, "utf8"));
+  expect(backup.intendedSha256).toBe(createHash("sha256").update(await readFile(f.path)).digest("hex"));
+  expect(Buffer.from(backup.previousBase64, "base64").toString()).toBe(f.bytes);
+  expect((await readdir(f.root)).some((name) => name.endsWith(".tmp") || name.endsWith(".write-lock"))).toBe(false);
+});
+
+it("reports a committed restore as success when the directory sync fails", async () => {
+  const { readSettingsJsonBackup, restoreGuardedSettingsJson } = await import("../guarded-json-source.js");
+  const f = await fixture();
+  const saved = await writeSettingsJson({ path: f.path, patch: { added: true }, guarded: { expectedVersion: f.version, validate: async () => {} } });
+  const backup = await readSettingsJsonBackup(f.path);
+  if (backup.status !== "ok") throw new Error("Expected an undoable backup slot.");
+  failures.stage = "sync";
+  const restored = await restoreGuardedSettingsJson(f.path, Buffer.from(backup.backup.previousBase64, "base64"), { expectedVersion: saved.version, validate: async () => {} });
+  expect(restored.version).toBe(f.version);
+  expect(await readFile(f.path, "utf8")).toBe(f.bytes);
+  expect(await readSettingsJsonBackup(f.path)).toEqual({ status: "missing" });
 });

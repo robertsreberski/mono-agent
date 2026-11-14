@@ -164,10 +164,27 @@ export function CapabilitiesSection({ agent, restart = null }: { readonly agent:
     {actionSnapshot && (() => {
       const subagents = actionSnapshot.actions.find((item) => item.id === "subagents-enable");
       if (subagents === undefined) return null;
+      // Same predicate as the loaded-state evidence: Enabled only when the
+      // running process actually registered delegation.
+      const status = subagents.active ? "Enabled" : subagents.reason === "subagents-denied" || subagents.reason === "candidate-invalid" ? "Needs attention" : "Disabled";
+      const statusClass = status === "Enabled" ? "is-ok" : status === "Disabled" ? "is-disabled" : "is-error";
+      const statusIcon = status === "Enabled" ? "✓" : status === "Disabled" ? "−" : "!";
       return <article className="settings-group capability-card" aria-labelledby="capability-subagents">
-        <div className="capability-heading"><h3 id="capability-subagents">Subagents</h3></div>
+        <div className="capability-heading"><h3 id="capability-subagents">Subagents</h3><span className={`capability-status ${statusClass}`}><span aria-hidden="true">{statusIcon}</span> {status}</span></div>
         <p className="capability-purpose">Let the agent delegate to its configured subagents. Enable turns on delegation and, only for a restrictive explicit allowlist, adds the Agent tool. Omitted or allow-all policy, deny rules and profiles are never changed.</p>
         <CapabilityActionControls agent={agent} action={subagents} process={actionSnapshot.process} restart={restart} refresh={() => setRevision((value) => value + 1)} saved={saved[subagents.id] ?? null} isCurrent={() => currentIdentity.current === identity} setSaved={(value) => setSaved((prior) => ({ ...prior, [subagents.id]: currentIdentity.current === identity ? value : { ...value, uncertain: true } }))} />
+        <details className="capability-details"><summary>Details & manual setup</summary>
+          <h4>Manual config</h4>
+          <p>Back up <code>mono-agent.config.json</code> first. Set <code>subagents.enabled</code> to <code>true</code> and, only for a restrictive explicit allowlist, add <code>Agent</code>. An omitted or <code>"*"</code> policy needs no change. Never remove deny rules. Run <code>mono-agent validate</code>, then restart.</p>
+          <pre aria-label="JSON configuration example"><code>{`{
+  "subagents": {
+    "enabled": true
+  },
+  "tools": {
+    "allowedTools": ["Read", "Glob", "Grep", "Agent"]
+  }
+}`}</code></pre>
+        </details>
       </article>;
     })()}
     <div className="capability-grid">{snapshot.cards.map((card) => {

@@ -372,7 +372,7 @@ for (const width of [390, 1440]) it(`offers one-level Undo and consumes the slot
   expect(within(recovery).getByText(/A console save is on record and Undo is available/)).toBeVisible();
   if (shots) { recovery.scrollIntoView({ block: "start" }); await page.screenshot({ path: `${shots}/e2-undo-offered-${width}.png` }); }
   await userEvent.click(within(recovery).getByRole("button", { name: "Undo last console save…" }));
-  expect(within(recovery).getByLabelText("Owned-field preview").textContent).toContain("exact prior bytes");
+  expect(within(recovery).getByLabelText("Owned-field preview").textContent).toContain("exact prior file");
   if (shots) { recovery.scrollIntoView({ block: "start" }); await page.screenshot({ path: `${shots}/e2-undo-preview-${width}.png` }); }
   await userEvent.click(within(recovery).getByRole("button", { name: "Confirm Save" }));
   expect(save).toHaveBeenCalledWith("garden", { action: "config-undo", process: undoPreview.process, expectedVersion: undoPreview.expectedVersion, confirmed: true });
@@ -406,7 +406,9 @@ for (const width of [390, 1440]) it(`previews subagents Enable without touching 
   render(<Preview width={width} />);
   const subagents = await screen.findByRole("article", { name: "Subagents" });
   await userEvent.click(within(subagents).getByRole("button", { name: "Enable subagents…" }));
-  expect(within(subagents).getAllByLabelText("Owned-field preview").map((node) => node.textContent)).toEqual(["true", "Append \"Agent\"; existing entries and deny rules are unchanged."]);
+  const previews = within(subagents).getAllByLabelText("Owned-field preview");
+  expect(previews.map((node) => node.textContent)).toEqual(["true", "Append \"Agent\"; existing entries and deny rules are unchanged."]);
+  for (const preview of previews) expect(preview.scrollWidth).toBeLessThanOrEqual(preview.clientWidth + 1);
   expect(within(subagents).getByText("Only delegation is enabled. Profiles and deny rules are unchanged.")).toBeVisible();
   expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width);
   if (shots) { subagents.scrollIntoView({ block: "start" }); await page.screenshot({ path: `${shots}/e2-subagents-preview-${width}.png` }); }
