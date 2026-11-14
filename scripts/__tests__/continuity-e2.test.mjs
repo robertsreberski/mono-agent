@@ -146,6 +146,51 @@ async function adapter(overrides = {}, routeOptions = {}) {
   const models = route.decorator({ getModel: () => model });
   return { route, models, model, soul };
 }
+it.each(["sourceReply", "sourceContext"])("names the coded %s refusal cause and keeps it sticky", async hook => {
+  const inner = Object.assign(new Error("Fictional inner text /fictional/private.txt"), { code: "E2_PROOF_RECOVERY_FAILED" });
+  const a = await adapter({}, { [hook]: () => { throw inner; } });
+  const context = { systemPrompt: `## Core Guardrails\n\n${a.soul.text}`, messages: [] };
+  const error = await (async () => {
+    for await (const _event of a.models.streamSimple(a.model, context)) { /* drain the faux request */ }
+    a.route.assertSettled();
+  })().catch(error => error);
+  expect(() => { throw error; }).toThrow("E2_SOURCE_REPLY_REFUSED (cause: E2_PROOF_RECOVERY_FAILED)");
+  expect(error).toMatchObject({ code: "E2_SOURCE_REPLY_REFUSED", causeCode: "E2_PROOF_RECOVERY_FAILED" });
+  expect(error.message).not.toContain(inner.message); expect(error.cause).toBeUndefined();
+  inner.code = "E2_OTHER_FAILURE";
+  for (const repeat of [() => a.route.assertSettled(), () => a.route.setPosition({}), () => a.models.stream()]) {
+    expect(repeat).toThrow(error.message);
+    try { repeat(); } catch (repeated) { expect(repeated).toMatchObject({ code: error.code, causeCode: error.causeCode }); }
+  }
+  expect(a.route.refusalCode()).toBe("E2_SOURCE_REPLY_REFUSED");
+  expect(errorDiagnostic(error).errorCode).toBe("E2_SOURCE_REPLY_REFUSED");
+  expect(diagnosticRecord({ routeRefusalCode: a.route.refusalCode() }).routeRefusalCode).toBe("E2_SOURCE_REPLY_REFUSED");
+});
+it.each(["sourceReply", "sourceContext"])("redacts uncoded and invalid %s refusal causes", async hook => {
+  for (const code of [undefined, "Fictional inner text /fictional/private.txt", "lowercase", "AB", "A".repeat(65), "E2_CODE\n", 123]) {
+    const inner = Object.assign(new Error("Fictional inner text /fictional/private.txt"), { code });
+    const a = await adapter({}, { [hook]: () => { throw inner; } });
+    const context = { systemPrompt: `## Core Guardrails\n\n${a.soul.text}`, messages: [] };
+    const error = await (async () => {
+      for await (const _event of a.models.streamSimple(a.model, context)) { /* drain the faux request */ }
+      a.route.assertSettled();
+    })().catch(error => error);
+    expect(error).toMatchObject({ code: "E2_SOURCE_REPLY_REFUSED", message: "E2_SOURCE_REPLY_REFUSED (cause: UNCODED)", causeCode: "UNCODED" });
+    expect(error.cause).toBeUndefined();
+    expect(() => a.route.assertSettled()).toThrow("E2_SOURCE_REPLY_REFUSED (cause: UNCODED)");
+  }
+});
+it.each(["sourceReply", "sourceContext"])("keeps allowlisted %s refusal codes unchanged", async hook => {
+  const code = hook === "sourceReply" ? "E2_STEER_INVALID" : "E2_STEER_NOT_DELIVERED";
+  const a = await adapter({}, { [hook]: () => { throw Object.assign(new Error("Fictional inner text"), { code }); } });
+  const context = { systemPrompt: `## Core Guardrails\n\n${a.soul.text}`, messages: [] };
+  const error = await (async () => {
+    for await (const _event of a.models.streamSimple(a.model, context)) { /* drain the faux request */ }
+    a.route.assertSettled();
+  })().catch(error => error);
+  expect(error).toMatchObject({ code, message: code }); expect(error.causeCode).toBeUndefined();
+  expect(() => a.models.stream()).toThrow(code); expect(a.route.refusalCode()).toBe(code);
+});
 it("requires a branded paid adapter and refuses summary markers, lifecycle bypasses and other request methods", async () => {
   expect(() => createE2Models({ summary: "real" })).toThrow("e2_pilot_capability_invalid");
   expect(() => createE2Models({ summary: "real", paidAdapter: { stream() {} } })).toThrow("e2_pilot_capability_invalid");

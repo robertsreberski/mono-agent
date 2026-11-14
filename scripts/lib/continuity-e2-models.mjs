@@ -67,9 +67,18 @@ export function createE2Models({ pi, estimators, models, limits, summary = "faux
   const baseline = e2ReplayArm(replayArm) === "baseline";
   const registered = new Set(models.map(m => m.model)), faux = new Map(), lifecycle = new Map();
   const report = { sourceRequests: 0, probeRequests: 0, summaryRequests: [], compactions: [], ...(summary === "real" ? { compactionRefusals: [] } : {}), requestSizing: [] };
-  let position = null, sticky = null, positionRequests = 0;
-  const refuse = code => { sticky ??= code; fail(sticky); };
-  const check = () => { if (sticky) fail(sticky); };
+  let position = null, sticky = null, stickyCauseCode, positionRequests = 0;
+  const throwSticky = () => {
+    if (!stickyCauseCode) fail(sticky);
+    throw Object.assign(new Error(`${sticky} (cause: ${stickyCauseCode})`), { code: sticky, causeCode: stickyCauseCode });
+  };
+  const refuse = (code, causeCode) => { if (sticky == null) { sticky = code; stickyCauseCode = causeCode; } throwSticky(); };
+  const check = () => { if (sticky) throwSticky(); };
+  const sourceCauseCode = error => {
+    const code = error?.code;
+    // Compare the full match too: the end anchor alone permits a trailing newline.
+    return typeof code === "string" && code.match(/^[A-Z][A-Z0-9_]{2,63}$/)?.[0] === code ? code : "UNCODED";
+  };
   const sourceCodes = new Set(["E2_SOURCE_REQUEST_LIMIT", "E2_TOOL_CALL_MISMATCH", "E2_STEER_INVALID", "E2_STEER_REFUSED", "E2_STEER_NOT_DELIVERED"]);
   const keyOf = model => `${model?.provider}:${model?.id}`;
   function backend(model) {
@@ -138,12 +147,17 @@ export function createE2Models({ pi, estimators, models, limits, summary = "faux
           if (position.probe) {
             if (++report.probeRequests > limits.probeRequests) refuse("E2_PROBE_REQUEST_LIMIT");
           } else if (++report.sourceRequests > limits.sourceRequests) refuse("E2_SOURCE_REQUEST_LIMIT");
-          try { assertEffectiveSoul(context, soul); sourceContext(context); } catch (error) { refuse(error?.code === "E2_SOUL_MISMATCH" || ["E2_PROBE_REQUEST_LIMIT", "E2_PROBE_TOOLS_REFUSED", "E2_STEER_NOT_DELIVERED"].includes(error?.code) ? error.code : "E2_SOURCE_REPLY_REFUSED"); }
+          try { assertEffectiveSoul(context, soul); sourceContext(context); } catch (error) {
+            const known = error?.code === "E2_SOUL_MISMATCH" || ["E2_PROBE_REQUEST_LIMIT", "E2_PROBE_TOOLS_REFUSED", "E2_STEER_NOT_DELIVERED"].includes(error?.code);
+            refuse(known ? error.code : "E2_SOURCE_REPLY_REFUSED", known ? undefined : sourceCauseCode(error));
+          }
           const paidRole = position.probe ? (positionRequests++ === 0 ? "probe" : "continuation") : position.paidRole ?? null;
           report.requestSizing.push({ turn: position.turn, message: position.message, role: paidRole ?? "setup-scripted", paidRole,
             model: keyOf(model), maxOutputTokens: options?.maxTokens ?? model.maxTokens, size: sizeContext(context, estimators) });
           if (summary === "real" && paidRole !== null) return paidAdapter.stream(original, model, context, options, paidRole);
-          const bound = backend(model); bound.provider.setResponses([async () => { try { return await sourceReply(context); } catch (error) { refuse(sourceCodes.has(error?.code) ? error.code : "E2_SOURCE_REPLY_REFUSED"); } }]);
+          const bound = backend(model); bound.provider.setResponses([async () => { try { return await sourceReply(context); } catch (error) {
+            refuse(sourceCodes.has(error?.code) ? error.code : "E2_SOURCE_REPLY_REFUSED", sourceCodes.has(error?.code) ? undefined : sourceCauseCode(error));
+          } }]);
           return bound.collection.streamSimple(bound.model, context, options);
         };
         if (method === "completeSimple") return async (model, context, options = {}) => {
