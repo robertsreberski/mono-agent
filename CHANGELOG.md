@@ -2,9 +2,8 @@
 
 ## Unreleased
 
-- Fix init summaries to report ignore-file creation by secret persistence
-  accurately. Publish new configs exclusively without patch-writer lock side
-  effects, and refuse concurrent config replacement.
+- Make `mono-agent init` create its config file exclusively, refusing a config
+  that another process created in the meantime instead of merging into it.
 
 - Fix guarded configuration publication on Windows and protect lock artifacts
   before creation. Keep uncertain Enable saves visible across agent changes,
