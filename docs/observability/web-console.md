@@ -293,12 +293,17 @@ are refused and effective ignore rules are checked. Without Git or outside a
 repository, the Git check is skipped; files remain owner-only (0600), with local
 ignore rules. Verify backup tracking before later committing the agent folder.
 
+Ignore protection is installed before lock/staging directories exist, including
+for legacy official writers; writable-by-other-accounts ignore files are refused.
 Official writes queue within one process. Across processes they use an atomic
 try-lock, recover provably dead owners (PID plus start identity), and wait up to
 1.5 seconds for a live holder before reporting a conflict. A live lock is
 published with complete owner metadata; abandoned empty locks can be removed
 safely. Unverifiable or malformed ownership is never guessed away and may need
-owner-terminal inspection. There is no operation journal,
+owner-terminal inspection. Identity and bytes are rechecked immediately before
+rename, but editors that ignore the lock can still race that final check. This
+is not an atomic compare-and-swap against manual edits; the `.bak` envelope holds
+the prior bytes for owner-controlled recovery. There is no operation journal,
 Undo button, arbitrary patch/path/command input or terminal Enable command.
 
 Memory Lite is offered only when memory is unconfigured and the standard root is

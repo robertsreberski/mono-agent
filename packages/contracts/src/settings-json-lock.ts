@@ -5,6 +5,8 @@ import { lstat, mkdir, open, readFile, readdir, rename, rmdir, unlink } from "no
 import { resolve } from "node:path";
 import { setTimeout as wait } from "node:timers/promises";
 import { promisify } from "node:util";
+import { protectSettingsJsonArtifacts } from "./settings-json-files.js";
+import { syncDirectory } from "./sync-directory.js";
 import { SettingsJsonError } from "./json-read.js";
 
 const run = promisify(execFile);
@@ -50,10 +52,6 @@ async function gone(owner: Owner): Promise<boolean> {
   if (missingProcess(owner.pid)) return true;
   const actual = owner.processStartId === undefined ? undefined : await processStartId(owner.pid);
   return actual !== undefined && actual !== owner.processStartId;
-}
-async function syncDirectory(path: string): Promise<void> {
-  const handle = await open(path, constants.O_RDONLY);
-  try { await handle.sync(); } finally { await handle.close(); }
 }
 async function removeOwner(lock: string, name: string): Promise<void> {
   // Unique owner names matter: another reclaimer cannot unlink a successor's owner.
@@ -103,6 +101,7 @@ export async function withSettingsJsonLock<T>(path: string, work: () => Promise<
   let acquired = false;
   let preparedCreated = false;
   try {
+    await protectSettingsJsonArtifacts(path);
     const identity = await (ownStartId ??= processStartId(process.pid));
     const owner: Owner = { version: 1, token, pid: process.pid, startedAt: new Date(performance.timeOrigin).toISOString(), createdAt: new Date().toISOString(), ...(identity === undefined ? {} : { processStartId: identity }) };
     // Publish a complete nonempty directory, never mkdir(lock) followed by a crash-prone owner write.

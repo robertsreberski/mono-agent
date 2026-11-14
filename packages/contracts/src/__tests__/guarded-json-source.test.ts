@@ -1,5 +1,5 @@
 import { execFileSync, spawn } from "node:child_process";
-import { mkdtemp, mkdir, readFile, realpath, rm, writeFile, stat, symlink, link, readdir } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, realpath, rm, writeFile, stat, chmod, symlink, link, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
@@ -9,6 +9,20 @@ const failures = vi.hoisted(() => ({ stage: "" }));
 vi.mock("node:fs/promises", async (importOriginal) => {
   const fs = await importOriginal<typeof import("node:fs/promises")>();
   return { ...fs,
+    lstat: async (...args: Parameters<typeof fs.lstat>) => {
+      if (failures.stage === "edit-parent" && !String(args[0]).endsWith("config.json")) {
+        failures.stage = ""; await fs.writeFile(join(String(args[0]), "config.json"), '{"manual":true}');
+      }
+      return fs.lstat(...args);
+    },
+    mkdir: async (...args: Parameters<typeof fs.mkdir>) => {
+      if (String(args[0]).includes(".mono-agent-") && String(args[0]).endsWith(".tmp")) {
+        const ignore = await fs.readFile(join(String(args[0]).slice(0, String(args[0]).lastIndexOf("/")), ".gitignore"), "utf8");
+        expect(ignore).toContain("/config.json.write-lock/\n");
+        expect(ignore).toContain("/config.json.mono-agent-*.tmp\n");
+      }
+      return fs.mkdir(...args);
+    },
     open: async (...args: Parameters<typeof fs.open>) => {
       if (["ELOOP", "EMLINK"].includes(failures.stage) && String(args[0]).endsWith("config.json")) throw Object.assign(new Error("fictional system diagnostic"), { code: failures.stage });
       if (failures.stage === "temp" && String(args[0]).includes(".mono-agent-")) throw new Error("injected temp failure");
@@ -22,7 +36,9 @@ vi.mock("node:fs/promises", async (importOriginal) => {
     },
     rename: async (...args: Parameters<typeof fs.rename>) => {
       if ((failures.stage === "backup" && String(args[1]).endsWith(".bak")) || (failures.stage === "publish" && String(args[1]).endsWith("config.json"))) throw new Error("injected rename failure");
-      return await fs.rename(...args);
+      const result = await fs.rename(...args);
+      if (failures.stage === "final-parent" && String(args[1]).endsWith(".bak")) failures.stage = "edit-parent";
+      return result;
     },
   };
 });
@@ -58,14 +74,14 @@ it("rejects stale versions, duplicate keys (including escaped aliases), and vali
     const f = await fixture(kind === "duplicates" ? '{"a":1,"\\u0061":2}' : undefined);
     await expect(writeSettingsJson({ path: f.path, patch: { added: true }, guarded: { expectedVersion: kind === "version" ? "0".repeat(64) : f.version, validate: async () => { if (kind === "validator") throw new Error("injected validation failure"); } } })).rejects.toThrow();
     expect(await readFile(f.path, "utf8")).toBe(f.bytes);
-    expect(await readdir(f.root)).toEqual(kind === "validator" ? [".gitignore", "config.json"] : ["config.json"]);
+    expect((await readdir(f.root)).sort()).toEqual([".gitignore", "config.json"]);
   }
 });
 it("detects a concurrent manual edit at publication and cleans temporary files", async () => {
   const f = await fixture();
   await expect(writeSettingsJson({ path: f.path, patch: { added: true }, guarded: { expectedVersion: f.version, validate: async () => { await writeFile(f.path, '{"manual":true}'); } } })).rejects.toMatchObject({ code: "config_conflict" });
   expect(await readFile(f.path, "utf8")).toBe('{"manual":true}');
-  expect(await readdir(f.root)).toEqual([".gitignore", "config.json"]);
+  expect((await readdir(f.root)).sort()).toEqual([".gitignore", "config.json"]);
 });
 it("serializes official writers across the same config, including legacy callers", async () => {
   const f = await fixture(); let release!: () => void; let entered!: () => void;
@@ -174,4 +190,22 @@ it("handles an owner released between open and fstat without refusing the next w
   const f = await fixture(); await abandonedLock(f.path, process.pid); failures.stage = "released-owner";
   await writeSettingsJson({ path: f.path, patch: { handedOff: true } });
   expect((await readSettingsJson(f.path)).json.handedOff).toBe(true);
+});
+
+it("rechecks config bytes after the final parent identity check, retaining prior backup bytes", async () => {
+  const f = await fixture(); failures.stage = "final-parent";
+  await expect(writeSettingsJson({ path: f.path, patch: { added: true }, guarded: { expectedVersion: f.version, validate: async () => {} } })).rejects.toMatchObject({ code: "config_conflict" });
+  expect(await readFile(f.path, "utf8")).toBe('{"manual":true}');
+  expect(Buffer.from(JSON.parse(await readFile(`${f.path}.bak`, "utf8")).previousBase64, "base64").toString()).toBe(f.bytes);
+});
+it("refuses group/world-writable ignore rules even when all required rules already exist", async () => {
+  const f = await fixture();
+  await writeSettingsJson({ path: f.path, patch: { first: true } });
+  const before = await readFile(f.path);
+  for (const mode of [0o620, 0o602]) {
+    await chmod(join(f.root, ".gitignore"), mode);
+    await expect(writeSettingsJson({ path: f.path, patch: { second: true }, guarded: { expectedVersion: (await readSettingsJson(f.path)).version, validate: async () => {} } })).rejects.toMatchObject({ code: "unsafe_config_write" });
+    expect(await readFile(f.path)).toEqual(before);
+    expect((await readdir(f.root)).some((name) => name.endsWith(".tmp") || name.endsWith(".write-lock"))).toBe(false);
+  }
 });

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Fix guarded configuration publication on Windows and protect lock artifacts
+  before creation. Keep uncertain Enable saves visible across agent changes,
+  reconcile saved controls with fresh availability, and distinguish existing
+  configuration from a console Save.
+
 - Keep protected historical blocks literal in compaction summary instructions:
   require unchanged copies before new events, not rewritten or merged history.
   Retain exact preservation checks; live-model compliance is not guaranteed.

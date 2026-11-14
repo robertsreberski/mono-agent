@@ -21,7 +21,9 @@ async function safeLiteRoot(cwd: string): Promise<boolean> {
   try {
     // Refuse symlink ancestors, including the standard parent when the root is absent.
     for (const path of [cwd, dirname(root), root]) {
-      try { if (await realpath(path) !== path) return false; }
+      try {
+        if ((await lstat(path)).isSymbolicLink() || await realpath(path) !== path) return false;
+      }
       catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") return false; }
     }
     const stat = await lstat(root).catch((error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return undefined; throw error; });

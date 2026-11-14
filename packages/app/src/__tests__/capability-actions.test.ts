@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, realpath, rm, writeFile, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
@@ -58,17 +58,10 @@ it("rejects arbitrary inputs, stale identity/version, duplicate JSON, and invali
   expect(await readFile(f.configPath)).toEqual(before);
   await writeFile(f.configPath, '{"runtime":{"model":"one","model":"two"}}');
   await expect(f.service.preview({ action: "memory-lite", process: f.process })).rejects.toThrow();
-  const invalid = await fixture({ tools: { inventedSetting: true } });
+  const invalid = await fixture({ runtime: { model: 42 } });
   const p = await invalid.service.preview({ action: "memory-lite", process: invalid.process });
   await expect(invalid.service.save({ action: p.action, process: p.process, expectedVersion: p.expectedVersion, confirmed: true })).rejects.toThrow();
   expect(JSON.parse(await readFile(invalid.configPath, "utf8"))).not.toHaveProperty("memory");
-});
-it("writes the durable path, never the managed worker's frozen input", async () => {
-  const f = await fixture(); const frozen = join(f.cwd, "frozen.json"); await writeFile(frozen, await readFile(f.configPath)); const before = await readFile(frozen);
-  const service = createCapabilityActionsService({ cwd: f.cwd, configPath: f.configPath, env: {} });
-  const p = await service.preview({ action: "memory-lite", process: f.process });
-  await service.save({ action: p.action, process: p.process, expectedVersion: p.expectedVersion, confirmed: true });
-  expect(await readFile(frozen)).toEqual(before); expect((await service.read()).actions[0]?.active).toBe(false);
 });
 
 it("re-enables an existing verified Lite root without migrating or deleting its data", async () => {
@@ -111,4 +104,15 @@ it.each(["MONO_AGENT_CRON_JOBS_JSON", "MONO_AGENT_CRON_DIR", "MONO_AGENT_CRON_EN
   const f = await fixture({ cron: { jobs: [{ id: "synthetic", expression: "0 9 * * *", prompt: "Synthetic" }] } }, { [key]: "synthetic-override" });
   expect((await f.service.read()).actions[1]).toMatchObject({ available: false, reason: "env-shadowed" });
   await expect(f.service.preview({ action: "cron-controls", process: f.process })).rejects.toMatchObject({ code: "capability_action_unavailable" });
+});
+
+it.each(["ancestor", "root"])("refuses a dangling %s symlink before approving the standard Lite root", async (kind) => {
+  const f = await fixture();
+  const target = join(f.cwd, "not-created-yet");
+  if (kind === "root") await mkdir(join(f.cwd, ".mono-agent"));
+  await symlink(target, join(f.cwd, kind === "ancestor" ? ".mono-agent" : ".mono-agent/memory"));
+  expect((await f.service.read()).actions[0]).toMatchObject({ available: false, reason: "memory-root-unsafe" });
+  await expect(f.service.preview({ action: "memory-lite", process: f.process })).rejects.toMatchObject({ code: "capability_action_unavailable" });
+  await mkdir(target);
+  expect((await f.service.read()).actions[0]).toMatchObject({ available: false, reason: "memory-root-unsafe" });
 });

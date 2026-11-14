@@ -588,6 +588,7 @@ setToolActivityPathRoots
 splitTextByCodePoints
 splitTextForChat
 suppressesNotification
+syncDirectory
 toolNameLeaf
 unsupportedReplyPartDeliveryOutcomes
 writeSettingsJson

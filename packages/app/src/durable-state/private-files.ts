@@ -1,6 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import { constants as fsConstants, type Stats } from "node:fs";
 import { chmod, lstat, mkdir, open, rename, rm } from "node:fs/promises";
+import { syncDirectory } from "@mono-agent/contracts";
+export { syncDirectory } from "@mono-agent/contracts";
 import { dirname, join } from "node:path";
 export async function ensureOwnerOnlyDirectory(path: string): Promise<void> {
   await mkdir(path, { recursive: true, mode: 0o700 });
@@ -80,27 +82,6 @@ export async function readBoundedOwnerOnlyFileWithStats(
     return { text: body.toString("utf8"), bytes: body.byteLength };
   } finally {
     await handle?.close().catch(() => undefined);
-  }
-}
-
-export async function syncDirectory(path: string): Promise<void> {
-  let directory: Awaited<ReturnType<typeof open>> | undefined;
-  try {
-    directory = await open(path, "r");
-    await directory.sync();
-  } catch (error) {
-    if (process.platform === "win32"
-      && isObject(error)
-      && (error.code === "EISDIR"
-        || error.code === "EPERM"
-        || error.code === "EACCES"
-        || error.code === "EINVAL"
-        || error.code === "EBADF")) {
-      return;
-    }
-    throw error;
-  } finally {
-    await directory?.close().catch(() => undefined);
   }
 }
 

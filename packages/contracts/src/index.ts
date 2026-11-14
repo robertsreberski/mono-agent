@@ -1,3 +1,4 @@
+export { syncDirectory } from "./sync-directory.js";
 
 
 export { createLogRedactor, isSafePrototypeInstance, readSafeDataProperty } from "./log-redaction.js";

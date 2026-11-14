@@ -55,6 +55,7 @@ export async function writeMonoAgentConfigJson(input: {
       ...(input.guarded === undefined ? {} : { guarded: input.guarded }),
     });
   } catch (error) {
+    if (error instanceof SettingsJsonError && ["config_conflict", "unsafe_config_write"].includes(error.code)) throw error;
     throw toConfigError(error, input.path);
   }
 }

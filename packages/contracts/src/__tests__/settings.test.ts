@@ -106,7 +106,7 @@ describe("writeSettingsJson atomic write", () => {
 
     const entries = await readdir(join(dir, "nested"));
     expect(entries.filter((entry) => entry.endsWith(".tmp"))).toEqual([]);
-    expect(entries).toEqual([basename(path)]);
+    expect(entries.sort()).toEqual([".gitignore", basename(path)].sort());
   });
 
   it("returns a content version hash", async () => {
