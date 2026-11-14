@@ -1,10 +1,10 @@
 // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
-exports[`owned compaction kit vs 0.99.2 baseline > matches baseline-main manual split-turn compaction through the complete runtime > added summary request input tokens 1`] = `1590`;
+exports[`owned compaction kit vs 0.99.2 baseline > matches baseline-main manual split-turn compaction through the complete runtime > added summary request input tokens 1`] = `1720`;
 
 exports[`owned compaction kit vs 0.99.2 baseline > matches baseline-main manual split-turn compaction through the complete runtime > history-preserving runtime request contract 1`] = `
 [
-  "9cde3721175b864eb64112347949b819be851152bb41bfdb08c5977fbb92dd1a",
-  "0d5dcc917e4e124c926e8cc0d6ed6225bfdcf4b7d7880dc5b502cc845a089023",
+  "675e69d97a887e7d91f044ac5d4bb6b6c24607091c05b53b1af8deb4b1dbcb47",
+  "06abe64116ebd8c0ac0e7c6d48dbc7bba75f821559e389a3cef78cbd0993e4b2",
 ]
 `;

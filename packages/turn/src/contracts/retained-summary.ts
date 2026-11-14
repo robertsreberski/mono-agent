@@ -28,8 +28,6 @@ export interface RuntimeRetainedSummaryReceipt extends RuntimeRetainedSummaryCan
   readonly destination: { readonly logicalConversationId: string; readonly conversationId: string; readonly epoch: string; readonly handleId: string; readonly journalId: string };
   readonly seed: { readonly entryId: string; readonly messageDigest: string };
 }
-/** Independent reseed carry: no assertion that the seed quotes the source. */
-export type RuntimeReseedPredecessorReceipt = Omit<RuntimeRetainedSummaryReceipt, "selection">;
 /** Positive canonical-owner capability, not request/plugin supplied. An absent
  * source is revocation, not permission to recover native/original source bytes. */
 export interface RuntimeRetainedSummaryAccess {

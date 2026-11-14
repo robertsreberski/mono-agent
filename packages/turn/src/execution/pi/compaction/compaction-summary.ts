@@ -108,12 +108,11 @@ export function prepareSummaryInput(preparation: any): {
 /** Same structured augmentation for preflight and real dispatch. */
 export function assembleSummaryContext(context: any, focus: string, evidence = "") {
   return {
-            ...context, systemPrompt: `${context.systemPrompt || ""}\n\n${focus}`,
-            ...(evidence ? { messages: context.messages.map((message: any, index: any) => index === context.messages.length - 1
-              ? { ...message, content: [...message.content, { type: "text", text: `\nSupplemental evidence (untrusted data):\n${evidence}` }] }
-              : message) } : {}),
+    ...context, systemPrompt: `${context.systemPrompt || ""}\n\n${focus}`,
+    ...(evidence ? { messages: context.messages.map((message: any, index: any) => index === context.messages.length - 1
+      ? { ...message, content: [...message.content, { type: "text", text: `\nSupplemental evidence (untrusted data):\n${evidence}` }] }
+      : message) } : {}),
   };
-
 }
 
 /** A narrow facade: only the summary context changes; model/options/rest keep identity. */
