@@ -13,12 +13,12 @@ export async function e2JournalScope(work) {
   const initial = await lstat(directory); need(initial.isDirectory() && !initial.isSymbolicLink());
   const names = async () => (await readdir(directory)).filter(n => /^[A-Za-z0-9_-]+\.jsonl$/u.test(n)).sort();
   const entries = await names(); need(entries.length <= 8192);
-  const identities = [];
+  const identities = [], inodes = [];
   for (const name of entries) {
     const stat = await lstat(join(directory, name)); need(stat.isFile() && stat.nlink === 1 && !stat.isSymbolicLink());
-    identities.push(identity(stat));
+    identities.push(identity(stat)); inodes.push({ directoryDev: initial.dev, directoryIno: initial.ino, fileDev: stat.dev, fileIno: stat.ino });
   }
-  return { names: entries, async assertStable() {
+  return { names: entries, identity(name) { need(entries.includes(name)); return inodes[entries.indexOf(name)]; }, async assertStable() {
     const final = await lstat(directory);
     need(final.isDirectory() && final.dev === initial.dev && final.ino === initial.ino && final.mtimeMs === initial.mtimeMs && final.ctimeMs === initial.ctimeMs && await realpath(directory) === directory
       && (await names()).join() === entries.join());
@@ -58,17 +58,34 @@ export function e2ActiveBranch(validator) {
   }
   return chain;
 }
+export async function scanE2Journals(work, readArtifact) {
+  const scope = await e2JournalScope(work), budget = { bytes: 0 }, journals = [];
+  for (const name of scope.names) journals.push({ ...await readE2Journal(work, name.slice(0, -6), readArtifact, budget), identity: scope.identity(name) });
+  await scope.assertStable(); return journals;
+}
 export async function findE2ActiveCompaction(work, operationDigest, readArtifact) {
-  need(/^[a-f0-9]{64}$/u.test(operationDigest ?? ""));
-  const scope = await e2JournalScope(work), names = scope.names;
-  need(names.length > 0);
-  const budget = { bytes: 0 }; let match;
-  for (const name of names) {
-    const journal = await readE2Journal(work, name.slice(0, -6), readArtifact, budget);
-    for (const operation of journal.validator.operations.values()) if (digest(operation.start.operationId) === operationDigest) {
-      need(!match && !operation.end && operation.start.payload.type === "compaction" && journal.validator.openOperations.has(operation.start.operationId));
-      match = { ...journal, operation };
-    }
+  const journals = await scanE2Journals(work, readArtifact), live = [];
+  for (const journal of journals) for (const operation of journal.validator.operations.values())
+    if (!operation.end && operation.start.payload.type === "compaction" && journal.validator.openOperations.has(operation.start.operationId)) live.push({ ...journal, operation });
+  need(live.length === 1);
+  if (operationDigest !== undefined) need(/^[a-f0-9]{64}$/u.test(operationDigest ?? "") && digest(live[0].operation.start.operationId) === operationDigest);
+  return live[0];
+}
+export function assertE2NativeBinding(binding, journal, externalOperationDigest, payloadDigest) {
+  need(binding?.version === 1 && binding.externalOperationDigest === externalOperationDigest && binding.payloadDigest === payloadDigest
+    && binding.journalId === journal.header.journalId && binding.nativeOperationDigest === digest(journal.operation.start.operationId)
+    && ["directoryDev", "directoryIno", "fileDev", "fileIno"].every(k => binding.identity?.[k] === journal.identity[k])
+    && Number.isSafeInteger(binding.lines) && binding.lines > 1 && journal.lines.length >= binding.lines
+    && digest(journal.lines.slice(0, binding.lines).join("\n") + "\n") === binding.prefixSha256);
+}
+export async function bindE2NativeCompaction(work, externalOperationDigest, payloadDigest, readArtifact, previous) {
+  need(/^[a-f0-9]{64}$/u.test(externalOperationDigest ?? "") && /^[a-f0-9]{64}$/u.test(payloadDigest ?? ""));
+  const journal = await findE2ActiveCompaction(work, undefined, readArtifact);
+  if (previous) {
+    assertE2NativeBinding(previous, journal, externalOperationDigest, previous.payloadDigest);
+    return { ...previous, payloadDigest };
   }
-  await scope.assertStable(); need(match); return match;
+  return { version: 1, externalOperationDigest, payloadDigest, journalId: journal.header.journalId,
+    nativeOperationDigest: digest(journal.operation.start.operationId), identity: journal.identity, lines: journal.lines.length,
+    prefixSha256: digest(journal.lines.join("\n") + "\n") };
 }

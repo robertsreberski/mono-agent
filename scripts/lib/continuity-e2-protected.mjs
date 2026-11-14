@@ -31,7 +31,7 @@ export function protectedE2Reply(context, drop = false) {
 /** One independent carrier/fit control. Its rows are alternatives, NOT added
  * paid runs. onPublication/onSummary are test-only observers, never model routes.
  */
-export async function rehearseE2Protected({ work, model, carrier, fallback = false, refusal = false, onPublication = async () => {}, onSummary = async () => {}, onAdmission = async () => {} }) {
+export async function rehearseE2Protected({ work, model, carrier, fallback = false, refusal = false, onPublication = async () => {}, onSummary = async () => {}, onAdmission = async () => {}, onPublicationPreparing = async () => {}, onEvent = () => {}, appendProgress, prepareInput = input => input, sourceBackgroundRepeats }) {
   need(["quotation", "carry"].includes(carrier));
   const [{ ToolHistoryWriter, ToolHistoryReader, createContinuityParticipant, createDurableHistoryStore, createConversationHarness },
     { JsonlSessionRepo, createRunDriver, projectContext }, { createMonoRuntime }, { fauxProvider, createModels, fauxAssistantMessage },
@@ -43,7 +43,7 @@ export async function rehearseE2Protected({ work, model, carrier, fallback = fal
   ]);
   await mkdir(work, { recursive: true, mode: 0o700 });
   const historyRoot = join(work, "history"), sessionsRoot = join(work, "sessions"), id = "web:fictional-protected-sizing", sourceKey = `openai-codex:${model.id === "gpt-6.1-sol" ? "gpt-6-luna" : "gpt-6.1-sol"}`;
-  const summary = (carrier === "carry" || fallback ? `## Goal\n${"Fictional background. ".repeat(carrier === "quotation" ? 650 : fallback ? 47000 : 3200)}\n\n` : "") + E2_PROTECTED_TEXT + "\nFictional reference: /home/example/private/marker.txt";
+  const summary = (carrier === "carry" || fallback ? `## Goal\n${"Fictional background. ".repeat(sourceBackgroundRepeats ?? (carrier === "quotation" ? 650 : fallback ? 47000 : 3200))}\n\n` : "") + E2_PROTECTED_TEXT + "\nFictional reference: /home/example/private/marker.txt";
   let writer, repo, raw, turn, runtime, harness;
   const requests = [], setupRequests = [], events = [], warnings = [];
   try {
@@ -60,7 +60,10 @@ export async function rehearseE2Protected({ work, model, carrier, fallback = fal
     await raw.appendMessage({ role: "user", content: "Fictional source already summarized.", timestamp: 1 });
     const sourceModel = { provider: "openai-codex", id: sourceKey.split(":")[1], api: "openai-codex-responses" };
     const driver = createRunDriver(raw, { model: sourceModel, systemPrompt: "Fictional", tools: [], continuityRecording: true, onCompactionPreparing: turn.prepareCompaction });
-    driver.hooks.on("before_compaction", () => ({ compaction: { summary, tokensBefore: 10000, retainedTail: [], details: { readFiles: [], modifiedFiles: [] } } }));
+    driver.hooks.on("before_compaction", async () => {
+      await onPublicationPreparing({ summary, raw, model: sourceModel });
+      return { compaction: { summary, tokensBefore: 10000, retainedTail: [], details: { readFiles: [], modifiedFiles: [] } } };
+    });
     await driver.beginTurn("fictional-publication", "synthetic", turn.reconciliation.descriptor);
     const cut = await driver.compact({ continuityTrigger: "manual" });
     await turn.recordCompaction({ checkpoint: cut.continuityCheckpoint, task_run_id: "fictional-publication", model: sourceKey, provider_kind: "pi", trigger: "manual", summary, tokens_before: 10000, first_kept_entry_id: null, status: "succeeded", created_at: 1 });
@@ -104,11 +107,11 @@ export async function rehearseE2Protected({ work, model, carrier, fallback = fal
       try { await onSummary({ raw, context, text, model: target, options, admission, active }); } catch (error) { observerError = error; throw error; }
       return fauxAssistantMessage(text);
     } }, compactionFailureKey: work, getModel: () => target, waitForIdle: () => guarded.waitForIdle(), setCompactionSettings: s => guarded.setCompactionSettings(s),
-      subscribe: listener => guarded.subscribe(listener), on: (_type, handler) => guarded.hooks.on("before_compaction", handler), compact: () => guarded.compact() };
+      subscribe: listener => guarded.subscribe(listener), on: (_type, handler) => guarded.hooks.on("before_compaction", (input, ...args) => handler(prepareInput(input), ...args)), compact: () => guarded.compact() };
     await guarded.beginTurn("fictional-protected-cut", "synthetic", turn.reconciliation.descriptor);
-    const grow = async () => { for (let i = 0; i < 2; i++) await raw.appendMessage({ role: "user", content: "Fictional progress. ".repeat(fallback && carrier === "quotation" ? 3000 : 2000), timestamp: 2 }); };
+    const grow = async () => { if (appendProgress) return appendProgress(raw); for (let i = 0; i < 2; i++) await raw.appendMessage({ role: "user", content: "Fictional progress. ".repeat(fallback && carrier === "quotation" ? 3000 : 2000), timestamp: 2 }); };
     await grow();
-    const compact = () => tryCompact(h, { trigger: "proactive", onEvent: e => events.push(e), runtimeWarnings: warnings,
+    const compact = () => tryCompact(h, { trigger: "proactive", onEvent: e => { events.push(e); onEvent(e, raw); }, runtimeWarnings: warnings,
       session: { getEntries: () => raw.getEntries(), buildContext: async () => projectContext(await raw.getEntries()) },
       policy: { enabled: true, summaryMaxTokens: 3000, keepRecentTokens: 1000, compactionMinSavingsTokens: 0, effort: "none", failureCooldownMs: 900000 } });
     let result = await compact(), suppressed = false;

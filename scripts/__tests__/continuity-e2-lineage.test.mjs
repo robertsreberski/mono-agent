@@ -138,7 +138,21 @@ it.each(["probe", "summary"])("binds a resume compaction after the seed when its
   for (const h of f.slot.holds) h.summaryReceipt.durable = true;
   const planned = { ...f.planned, index: 1, phase: "resume" }, slot = { slotId: "c".repeat(64), holds: [] };
   const state = { ...f.state, schema: E2_REAL_CONTROLLER, cursor: 1, schedule: [f.planned, planned], slots: [f.slot, slot] };
-  await e2ExecutionPolicy.beforeAdmission(f.root, slot.slotId, slot, { paidRole, checkpoint: 0 }, readPrivate, state, {});
+  let pending;
+  if (paidRole === "summary") {
+    const repo = new JsonlSessionRepo({ sessionsRoot: join(f.work, "sessions") }), session = await repo.open(f.metadata);
+    await session.beginTurn("fictional-resume-admission"); await session.openOperation("fictional-resume-native", {}, "compaction", "continuity:manual"); await session.sync();
+    slot.compaction = { checkpoint: 0, operationDigest: digest("fictional-resume-external") };
+    pending = { repo, session };
+  }
+  try {
+    await e2ExecutionPolicy.beforeAdmission(f.root, slot.slotId, slot, { paidRole, checkpoint: 0, payloadDigest: digest("fictional-resume-payload") }, readPrivate, state, {});
+  } finally {
+    if (pending) {
+      await pending.session.closeOperation("fictional-resume-native", "completed"); await pending.session.endTurn("fictional-resume-admission", "completed");
+      await pending.session.sync(); await pending.session.close(); await pending.repo.close();
+    }
+  }
   expect(slot.lineages.proof).toEqual(prior);
   const next = await nextCompaction(f, slot);
   const lineage = await bindE2Checkpoint({ root: f.root, state, planned, slot, summaries: [next.hold], reference: next.reference, readPrivate, readArtifact });

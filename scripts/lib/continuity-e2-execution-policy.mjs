@@ -7,11 +7,12 @@ import { E2_PERMIT_CONTRACT, E2_GUARD_CONTRACT, E2_REAL_CONTROLLER } from "./con
 import { validateE2Sizing } from "./continuity-e2-estimate.mjs";
 import { E2_PAID_ROLES } from "./continuity-e2-roles.mjs";
 import { writeE2SummaryResult, verifyE2SummaryResult } from "./continuity-e2-summary-receipts.mjs";
-import { assertE2BaselineRequest, bindE2Checkpoint, verifyE2NativeLineage, e2LineageScope, e2PhaseBase } from "./continuity-e2-lineage.mjs";
+import { assertE2BaselineRequest, bindE2Checkpoint, verifyE2NativeLineage, e2LineageScope, e2PhaseBase, e2PhaseWork } from "./continuity-e2-lineage.mjs";
 import { validE2FailureCause, observeE2NativeCause, captureE2NativeCause, e2ProviderCause, e2CandidateCause } from "./continuity-e2-cause.mjs";
 import { readE2Progress, writeE2PartialScore } from "./continuity-e2-progress.mjs";
 import { E2_RETRY_POLICY, authorizeE2Retry, effectiveE2Summaries, supersedingE2Summary, e2RetryCounts } from "./continuity-e2-retry.mjs";
 import { e2ReplayArm } from "./continuity-e2-protocol.mjs";
+import { bindE2NativeCompaction } from "./continuity-e2-journals.mjs";
 import { E2_PROTECTION_REFUSALS, e2NativeCompactionSnapshot, e2RefusalCounts } from "./continuity-e2-compaction.mjs";
 const fail = (code = "e2_permit_invalid") => { throw Object.assign(Error(code), { code }); };
 const need = (ok, code) => { if (!ok) fail(code); };
@@ -190,7 +191,14 @@ export const e2ExecutionPolicy = Object.freeze({
         need(!effectiveE2Summaries(seed.holds).length || slot.lineages.proof, "e2_summary_receipt_invalid");
       }
     }
-    if (p.paidRole === "summary") return scope === undefined ? undefined : { lineageScope: scope, ...(slot.lineages[scope] ? { lineage: structuredClone(slot.lineages[scope]) } : {}) };
+    if (p.paidRole === "summary") {
+      if (scope === undefined) return undefined;
+      need(slot.compaction?.checkpoint === p.checkpoint, "e2_summary_receipt_invalid");
+      const planned = state.schedule[state.cursor];
+      const nativeCompaction = await bindE2NativeCompaction(e2PhaseWork(root, planned, scope), slot.compaction.operationDigest, p.payloadDigest, readArtifact, slot.compaction.nativeBinding);
+      slot.compaction.nativeBinding ??= structuredClone(nativeCompaction);
+      return { nativeCompaction, lineageScope: scope, ...(slot.lineages[scope] ? { lineage: structuredClone(slot.lineages[scope]) } : {}) };
+    }
     need(!slot.compaction, "e2_compaction_invalid");
     // Rejected candidates remain authenticated paid evidence, never successors.
     for (const hold of slot.holds.filter(h => h.summaryReceipt?.rejected)) {
@@ -262,6 +270,7 @@ export const e2ExecutionPolicy = Object.freeze({
     const bytes = Buffer.from(p.body, "base64");
     need(bytes.toString("base64") === p.body && rawDigest(bytes) === hold.payloadDigest, "e2_summary_receipt_invalid");
     this.assertBody(bytes, hold);
+    need(hold.paidRole !== "summary" || hold.nativeCompaction, "e2_summary_receipt_invalid");
     const { guardedAuthorization } = await import("./continuity-guarded-authorization.mjs");
     hold.summaryPresence = await verifyE2NativeLineage(bytes, hold, state, { outputRoot: root, index }, guardedAuthorization("e2-validation").readArtifact);
   },

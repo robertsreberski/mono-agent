@@ -120,7 +120,8 @@ async function run({ scenario = "probe", requests = 1, rows = [{ role: "probe", 
         const body = received.at(-1), current = body.input.filter(i => i.role === "user").at(-1)?.content;
         if (arm === "cancel" && JSON.stringify(current).includes("Continue without repeating the completed fictional sentinel")) { response.flushHeaders(); return; }
         response.end(proofReply(body, received.length));
-      } else if (scenario.startsWith("retained-")) response.end(events(received.length === 1 ? received[0].input.findLast(i => i.role === "user").content.filter(p => p.type === "input_text").map(p => p.text).join("\n") : E2_PROTECTED_TEXT));
+      } else if (scenario === "ordinary-shipping-event") response.end(events(E2_PROTECTED_TEXT));
+      else if (scenario.startsWith("retained-")) response.end(events(received.length === 1 ? received[0].input.findLast(i => i.role === "user").content.filter(p => p.type === "input_text").map(p => p.text).join("\n") : E2_PROTECTED_TEXT));
       else response.end(events(scenario.startsWith("lineage-pack") ? "Fictional evidence at /home/example/private/file.txt" : "FICTIONAL-SUMMARY-ANSWER-CANARY", scenario === "cap"));
     } catch (error) { listenerError = error; response.writeHead(500).end(); }
   }); servers.push(server); await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
@@ -175,10 +176,17 @@ it("verifies generated output and an actual durable journal before accepting the
   expect(result.received).toHaveLength(2); expect(result.report.stop).toBe("completed"); expect(result.report.phases[0].calls.verifiedSummaries).toBe(1);
   expect(result.wireIdentities.every(h => typeof h.session === "string" && h.session.length > 0 && h.session === h.request)).toBe(true);
 }, E2_NATIVE_TEST_TIMEOUT_MS);
+it("binds ordinary shipping tryCompact event and native journal IDs without requiring equality", async () => {
+  const result = await run({ scenario: "ordinary-shipping-event", rows: [{ role: "summary", model: SOL }, { role: "probe", model: SOL }] });
+  expect(result.report.stop, JSON.stringify(result.report)).toBe("completed"); expect(result.received).toHaveLength(2);
+  const state = JSON.parse(await readFile(join(result.root, "output", "e2-validation-controller.json"), "utf8")), hold = state.slots[0].holds[0];
+  expect(hold.nativeCompaction.nativeOperationDigest).not.toBe(hold.operationDigest); expect(hold.summaryReceipt.durable).toBe(true);
+  expect(hold.retainedPredecessor).toBeUndefined();
+}, E2_NATIVE_TEST_TIMEOUT_MS);
 it.each(["quotation", "carry"].flatMap(carrier => ["exact", "original", "split", "drop"].map(kind => [carrier, kind])))("authenticates retained %s %s through IPC consumption and native send", async (carrier, kind) => {
   const result = await run({ scenario: `retained-${carrier}-${kind}`, rows: [{ role: "summary", model: "openai-codex:gpt-6-luna" }, { role: "summary", model: SOL }, { role: "probe", model: SOL }] });
   const refused = ["original", "drop"].includes(kind);
-  expect(result.report.stop, JSON.stringify(result)).toBe(refused ? "e2_summary_receipt_invalid" : "completed");
+  expect(result.report.stop, JSON.stringify(result.report)).toBe(refused ? "e2_summary_receipt_invalid" : "completed");
   expect(result.received).toHaveLength(kind === "original" ? 1 : kind === "drop" ? 2 : 3);
   expect(result.report.phases[0].calls.verifiedSummaries).toBe(refused ? 1 : 2);
   const state = JSON.parse(await readFile(join(result.root, "output", "e2-validation-controller.json"), "utf8"));
@@ -187,6 +195,7 @@ it.each(["quotation", "carry"].flatMap(carrier => ["exact", "original", "split",
   // Consume is durable before body verification; a refused body retains its
   // liability but must never reach the native backend.
   expect(holds[1].consumed).toBe(true);
+  expect(holds[1].nativeCompaction.nativeOperationDigest).not.toBe(holds[1].operationDigest);
   if (kind === "original") expect(holds[1].retainedPredecessor).toBeUndefined();
   else {
     expect(holds[1].consumed).toBe(true);

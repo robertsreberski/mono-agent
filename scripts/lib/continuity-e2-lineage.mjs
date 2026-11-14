@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { mkdir } from "node:fs/promises";
 import { digest } from "./continuity-recorded-schema.mjs";
 import { digest as canonicalDigest } from "./continuity-dataset.mjs";
-import { readE2Journal, findE2ActiveCompaction, e2ActiveBranch } from "./continuity-e2-journals.mjs";
+import { scanE2Journals, findE2ActiveCompaction, assertE2NativeBinding, e2ActiveBranch } from "./continuity-e2-journals.mjs";
 import { verifyE2SummaryResult, e2SummaryResultPath } from "./continuity-e2-summary-receipts.mjs";
 const need = ok => { if (!ok) throw Object.assign(Error("e2_summary_receipt_invalid"), { code: "e2_summary_receipt_invalid" }); };
 const token = s => typeof s === "string" && /^[A-Za-z0-9_-]{1,128}$/u.test(s);
@@ -40,20 +40,24 @@ function fileSuffix(details) {
   return [["read-files", details.readFiles], ["modified-files", details.modifiedFiles]]
     .map(([tag, paths]) => paths.length ? `\n\n<${tag}>\n${paths.join("\n")}\n</${tag}>` : "").join("");
 }
-export async function readE2Checkpoint(root, planned, reference, readArtifact) {
-  try { return await readCheckpoint(root, planned, reference, readArtifact); }
+export async function readE2Checkpoint(root, planned, reference, readArtifact, bindings = []) {
+  try { return await readCheckpoint(root, planned, reference, readArtifact, bindings); }
   catch { need(false); }
 }
-async function readCheckpoint(root, planned, reference, readArtifact) {
+async function readCheckpoint(root, planned, reference, readArtifact, bindings) {
   need(reference && token(reference.journalId) && token(reference.checkpointId));
   const work = e2PhaseWork(root, planned, reference.branch);
-  const { header, records, validator } = await readE2Journal(work, reference.journalId, readArtifact);
+  const journals = await scanE2Journals(work, readArtifact), journal = journals.find(j => j.header.journalId === reference.journalId);
+  need(journal && journals.every(j => [...j.validator.operations.values()].every(op => op.end || op.start.payload.type !== "compaction")));
+  const { header, records, validator } = journal;
   const record = records.find(r => r.id === reference.checkpointId), value = record?.payload?.compaction;
   need(record?.kind === "compaction" && (records.filter(r => r.kind === "compaction").at(-1)?.id === record.id) && value?.checkpoint?.summaryMessage?.summary === value.summary && typeof value.summary === "string"
     && value.summary.isWellFormed() && Buffer.byteLength(value.summary) <= 4 * 1024 * 1024 && value.summary.trim()
     && records.some(r => r.kind === "operation_end" && r.operationId === record.operationId && r.payload.status === "completed"));
   const { evidenceDigest } = await import(new URL("../../packages/turn/dist/engine/journal-digest.js", import.meta.url).href);
-  const operation = validator.operations.get(record.operationId), binding = validator.turns.get(record.turnId)?.start.payload.binding;
+  const operation = validator.operations.get(record.operationId);
+  for (const held of bindings) assertE2NativeBinding(held, { ...journal, operation }, held.externalOperationDigest, held.payloadDigest);
+  const binding = validator.turns.get(record.turnId)?.start.payload.binding;
   const owner = binding ?? records.filter(r => r.kind === "owner_binding" && r.seq < record.seq).at(-1)?.payload;
   const handle = binding ?? records.filter(r => r.kind === "handle_binding" && r.seq < record.seq && r.payload.handleId === header.id).at(-1)?.payload;
   const provenance = owner?.kind === "host" && handle && ["continuity:manual", "continuity:pre-turn", "continuity:reactive", "continuity:mid-run"].includes(operation?.start.payload.cause) ? {
@@ -66,7 +70,9 @@ async function readCheckpoint(root, planned, reference, readArtifact) {
 export async function validateE2Checkpoint({ root, state, planned, slot, summaries, reference, readPrivate, readArtifact }) {
   const scope = await e2LineageScope(state, planned, reference.checkpoint, readArtifact);
   reference = { ...reference, ...(planned.kind === "replay" ? { branch: scope } : {}) };
-  const checkpoint = await readE2Checkpoint(root, planned, reference, readArtifact), texts = [];
+  const checkpoint = await readE2Checkpoint(root, planned, reference, readArtifact, summaries.filter(h => h.nativeCompaction).map(h => {
+    need(h.nativeCompaction.externalOperationDigest === h.operationDigest && h.nativeCompaction.payloadDigest === h.payloadDigest); return h.nativeCompaction;
+  })), texts = [];
   const prior = slot.lineages?.[scope];
   if (prior) await verifyE2NativeLineage(Buffer.from('{"input":[]}'), { lineageScope: scope, lineage: prior }, state, { outputRoot: root, index: planned.index }, readArtifact);
   need(summaries.length > 0 && summaries.length <= 2 && !(state.slots ?? []).some(s => s.checkpoints?.some(c => c.journalId === reference.journalId && c.checkpointId === reference.checkpointId)));
@@ -76,7 +82,7 @@ export async function validateE2Checkpoint({ root, state, planned, slot, summari
     need(`${checkpoint.model?.provider}:${checkpoint.model?.id}` === hold.model); texts.push(responseText(result.message));
   }
   const retainedHolds = summaries.filter(h => h.retainedPredecessor);
-  need(retainedHolds.every(h => ["summary", "split-prefix"].includes(h.retainedPredecessor.assembly) && h.retainedPredecessor.operationDigest === digest(checkpoint.operationId)
+  need(retainedHolds.every(h => ["summary", "split-prefix"].includes(h.retainedPredecessor.assembly) && h.retainedPredecessor.operationDigest === h.operationDigest && h.retainedPredecessor.nativeOperationDigest === digest(checkpoint.operationId)
     && h.retainedPredecessor.payloadDigest === h.payloadDigest && h.retainedPredecessor.journalId === reference.journalId));
   const suffix = fileSuffix(checkpoint.details);
   let matches = (texts.length === 2 ? texts.join(split) : texts[0]) + suffix === checkpoint.summary;
@@ -164,9 +170,9 @@ export async function readE2Archive(root, state, index, scope, reference, readAr
 }
 // No receipt text/hash grants authority: resolve its source against the already
 // controller-authenticated archive chain, then run shipping retention ourselves.
-async function authenticateRetainedPredecessor(root, state, index, scope, hold, readArtifact) {
-  const planned = state.schedule[index], work = e2PhaseWork(root, planned, scope);
-  const { header, validator, records, operation } = await findE2ActiveCompaction(work, hold.operationDigest, readArtifact);
+async function authenticateRetainedPredecessor(root, state, index, scope, hold, readArtifact, native) {
+  need(native && hold.nativeCompaction);
+  const { header, validator, records, operation } = native;
   const admission = validator.retainedSummaryAdmission, p = admission?.payload;
   if (!admission) return undefined;
   need(admission.seq < operation.start.seq && operation.start.payload.baselineTipId === validator.tip);
@@ -193,7 +199,7 @@ async function authenticateRetainedPredecessor(root, state, index, scope, hold, 
       const retained = retainContinuityText(archive.summary);
       need(!retained.truncated && retained.sha256 === p.binding.sha256 && Buffer.byteLength(retained.text) === p.binding.retainedBytes);
       assertRetainedSummarySeed(p, seed?.payload.message, retained.text, admission.kind === "reseed_predecessor_admitted");
-      return { version: 1, operationDigest: hold.operationDigest, payloadDigest: hold.payloadDigest, journalId: header.journalId,
+      return { version: 2, operationDigest: hold.operationDigest, nativeOperationDigest: hold.nativeCompaction.nativeOperationDigest, payloadDigest: hold.payloadDigest, journalId: header.journalId,
         admissionId: admission.id, archiveSha256: source.archiveSha256, textSha256: retained.sha256, text: retained.text };
     }
     source = archive.previous;
@@ -285,6 +291,11 @@ export async function verifyE2NativeLineage(bytes, hold, state, assignment, read
   try {
     const scope = hold.lineageScope;
     need(["proof", 0, 1].includes(scope) && canonicalDigest(hold.lineage ?? null) === canonicalDigest(state.slots[assignment.index].lineages?.[scope] ?? null));
+    let native;
+    if (hold.nativeCompaction) {
+      native = await findE2ActiveCompaction(e2PhaseWork(assignment.outputRoot, state.schedule[assignment.index], scope), hold.nativeCompaction.nativeOperationDigest, readArtifact);
+      assertE2NativeBinding(hold.nativeCompaction, native, hold.operationDigest, hold.payloadDigest);
+    }
     const found = e2BodySummaryRepresentations(JSON.parse(bytes)), verified = new Set(), seen = new Set(), spans = [], packs = [];
     let reference = hold.lineage;
     assertRegisteredPredecessor(state, assignment.index, reference);
@@ -331,7 +342,7 @@ export async function verifyE2NativeLineage(bytes, hold, state, assignment, read
     if (unresolved.length || retainedRequest) {
       need(hold.paidRole === "summary" && hash(hold.payloadDigest) && digest(bytes) === hold.payloadDigest);
       need(pending?.operationDigest === hold.operationDigest && pending.checkpoint === hold.checkpoint);
-      const authenticated = await authenticateRetainedPredecessor(assignment.outputRoot, state, assignment.index, scope, hold, readArtifact);
+      const authenticated = await authenticateRetainedPredecessor(assignment.outputRoot, state, assignment.index, scope, hold, readArtifact, native);
       need(!unresolved.length || authenticated);
       // Active retained authority overrides archive-original equality for every
       // non-opaque predecessor frame, not just previously unresolved frames.

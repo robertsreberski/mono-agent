@@ -3,6 +3,7 @@ import { mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { rehearseE2Protected } from "./continuity-e2-protected.mjs";
 import { bindE2Checkpoint, e2PhaseWork, verifyE2NativeLineage } from "./continuity-e2-lineage.mjs";
+import { bindE2NativeCompaction } from "./continuity-e2-journals.mjs";
 import { writeE2SummaryResult } from "./continuity-e2-summary-receipts.mjs";
 import { digest } from "./continuity-recorded-schema.mjs";
 import { convertResponsesMessages } from "../../packages/turn/node_modules/@earendil-works/pi-ai/dist/api/openai-responses-shared.js";
@@ -31,6 +32,7 @@ export async function measureE2ControllerCapacity(root) {
             input: convertResponsesMessages({ ...model, input: ["text"] }, context, new Set(["openai-codex"]), { includeSystemPrompt: false }) }));
           maximumBytes = Math.max(maximumBytes, bytes.length);
           const hold = { paidRole: "summary", checkpoint: 0, operationDigest, lineageScope: "proof", lineage: slot.lineages.proof, payloadDigest: digest(bytes) };
+          hold.nativeCompaction = await bindE2NativeCompaction(e2PhaseWork(base, planned), operationDigest, hold.payloadDigest, readArtifact);
           await verifyE2NativeLineage(bytes, hold, state, { outputRoot: base, index: 0 }, readArtifact);
           if (fallback ? hold.retainedPredecessor !== undefined : hold.retainedPredecessor?.textSha256 !== digest(active.text)) throw Error("controller_capacity_lineage_failed");
           const m = process.memoryUsage(); heap = Math.max(heap, m.heapUsed); rss = Math.max(rss, m.rss);

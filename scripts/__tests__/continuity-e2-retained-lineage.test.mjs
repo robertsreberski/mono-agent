@@ -8,6 +8,7 @@ import https from "node:https";
 import { syncBuiltinESMExports } from "node:module";
 import { rehearseE2Protected, E2_PROTECTED_TEXT } from "../lib/continuity-e2-protected.mjs";
 import { bindE2Checkpoint, e2PhaseWork, E2_SUMMARY_PREFIX, E2_SUMMARY_SUFFIX, E2_BRANCH_PREFIX } from "../lib/continuity-e2-lineage.mjs";
+import { bindE2NativeCompaction } from "../lib/continuity-e2-journals.mjs";
 import { e2NativeCompactionSnapshot } from "../lib/continuity-e2-compaction.mjs";
 import { e2ExecutionPolicy } from "../lib/continuity-e2-execution-policy.mjs";
 import { writeE2SummaryResult } from "../lib/continuity-e2-summary-receipts.mjs";
@@ -44,7 +45,8 @@ async function fixture(carrier, hooks = {}) {
     let bytes = wire(context); const operationId = [...raw.validator.openOperations].at(-1), operationDigest = digest(operationId);
     slot.compaction = { checkpoint: 0, operationDigest, nativeSnapshot: [{ retainedAdmission: true }] };
     const hold = await resultHold(text, `${model.provider}:${model.id}`, digest(bytes), { operationDigest });
-    const change = await mutate({ bytes, hold, slot, state, raw, work }); if (change) { bytes = change; hold.payloadDigest = digest(bytes); }
+    hold.nativeCompaction = await bindE2NativeCompaction(work, operationDigest, hold.payloadDigest, readArtifact);
+    const change = await mutate({ bytes, hold, slot, state, raw, work }); if (change) { bytes = change; hold.payloadDigest = digest(bytes); hold.nativeCompaction.payloadDigest = hold.payloadDigest; }
     await e2ExecutionPolicy.verifyBody(root, hold, state, 0, { permit: { epoch: "fictional", permitId: "fictional" }, body: bytes.toString("base64") });
     return hold;
   };
