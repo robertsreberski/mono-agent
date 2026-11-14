@@ -1997,6 +1997,11 @@
             "additionalProperties": false
           }
         },
+        "environmentOverrides": {
+          "type": "boolean",
+          "const": true,
+          "description": "Non-blocking: environment-owned configuration fields are not changed by Save."
+        },
         "configReady": {
           "type": "boolean"
         },

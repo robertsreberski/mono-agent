@@ -8,19 +8,21 @@ import { createServer, request } from "node:http";
 import { expect, it, vi } from "vitest";
 import { registerCredentialRoutes } from "../credential-routes.js";
 
-it("parses credentials before the global parser, bounds chunked/encoded/malformed bodies and sanitizes proxy failures without logging", async () => {
+it.each(["save", "retry"] as const)("parses credential %s before the global parser, bounds chunked/encoded/malformed bodies and sanitizes proxy failures without logging", async (operation) => {
   const plantedValue = ["fictional", "proxy", "literal"].join("-");
-  const credentials = vi.fn(async () => { throw new Error(plantedValue); });
+  const credentials = vi.fn(async (): Promise<unknown> => { throw new Error(plantedValue); });
   const active = new Set<Promise<unknown>>(); const app = express(); const globalParser = vi.fn();
   registerCredentialRoutes(app, { credentials } as unknown as WebService, active, (req) => { if (req.headers.origin !== "https://console.invalid") throw new Error(plantedValue); });
   app.use(express.json({ limit: "256kb" }), globalParser);
   const server = createServer(app); await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const address = server.address(); if (address === null || typeof address === "string") throw new Error("Missing listener");
-  const url = `http://127.0.0.1:${address.port}/api/v1/agents/fictional/credentials/save`;
-  const body = JSON.stringify({ card: "openai-api", process: { pid: 42, startedAt: "2026-01-01T00:00:00.000Z" }, fence: "12345678-1234-1234-1234-123456789012", confirmed: true, fields: { bearer: plantedValue } });
+  const url = `http://127.0.0.1:${address.port}/api/v1/agents/fictional/credentials/${operation}`;
+  const body = JSON.stringify({ card: "openai-api", process: { pid: 42, startedAt: "2026-01-01T00:00:00.000Z" }, fence: "12345678-1234-1234-1234-123456789012", confirmed: true, ...(operation === "save" ? { fields: { bearer: plantedValue } } : {}) });
   const headers = { "Content-Type": "application/json", Origin: "https://console.invalid" };
   try {
-    for (const [data, extra, code] of [[body, {}, 502], [`{"fields":"${plantedValue}`, {}, 400], [" ".repeat(16385), {}, 413], [body, { "Content-Encoding": "br" }, 415], [body, { "Content-Type": "application/json; charset=utf-16" }, 400], [body, { Origin: "https://foreign.invalid" }, 403]] as const) {
+    credentials.mockResolvedValueOnce({ version: 1, process: { pid: 42, startedAt: "2026-01-01T00:00:00.000Z" }, fence: "12345678-1234-1234-1234-123456789012", cards: ["telegram", "slack", "openai-api"].map((id) => ({ id, available: true, reason: "ready", configReady: false, configPending: false, environmentOverrides: true, fields: (id === "slack" ? ["bot", "app"] : id === "telegram" ? ["bot"] : ["bearer"]).map((id) => ({ id, state: "not-set" })) })) });
+    const read = await fetch(url.replace(/\/(?:save|retry)$/u, ""), { headers }); expect(read.status).toBe(200); expect(read.headers.get("cache-control")).toContain("no-store"); expect(await read.text()).not.toContain(plantedValue);
+    for (const [data, extra, code] of [[body, {}, 502], [JSON.stringify({ ...JSON.parse(body), fields: { bearer: "x".repeat(4097) } }), {}, 400], [`{"fields":"${plantedValue}`, {}, 400], [" ".repeat(16385), {}, 413], [body, { "Content-Encoding": "br" }, 415], [body, { "Content-Type": "application/json; charset=utf-16" }, 400], [body, { Origin: "https://foreign.invalid" }, 403]] as const) {
       const response = await fetch(url, { method: "POST", headers: { ...headers, ...extra }, body: data }); expect(response.status).toBe(code); expect(response.headers.get("cache-control")).toContain("no-store"); expect(await response.text()).not.toContain(plantedValue);
     }
     const chunked = await new Promise<{ status: number; body: string; cache: string | undefined }>((resolve, reject) => {
@@ -28,7 +30,7 @@ it("parses credentials before the global parser, bounds chunked/encoded/malforme
       req.on("error", reject); req.write(' {"fields":"'); req.write(plantedValue); req.end('"' + " ".repeat(17000));
     });
     expect(chunked.status).toBe(413); expect(chunked.cache).toContain("no-store"); expect(chunked.body).not.toContain(plantedValue);
-    expect(globalParser).not.toHaveBeenCalled(); expect(credentials).toHaveBeenCalledTimes(1); expect(active.size).toBe(0);
+    expect(globalParser).not.toHaveBeenCalled(); expect(credentials).toHaveBeenCalledTimes(2); expect(active.size).toBe(0);
   } finally { await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve())); }
 });
 

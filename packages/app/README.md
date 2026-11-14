@@ -349,7 +349,10 @@ The CLI supplies its selected reloadable dotenv path. Embedded hosts must pass
 Saving writes owner-only dotenv first, then guarded configuration, without
 changing the running environment. A confirmed dotenv save with pending config
 can retry configuration alone; an unknown dotenv outcome must never replay
-credentials automatically. Telegram and Slack require explicit allowlists.
+credentials automatically. Telegram and Slack require allowlists or an existing
+explicit allow-all setting; the console never sets allow-all flags. Noncredential
+environment overrides are noted without blocking entry or changing overridden
+settings. Exact credential environment overrides still require terminal resolution.
 Other catalog credentials still use manual setup.
 
 

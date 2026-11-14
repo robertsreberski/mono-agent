@@ -85,7 +85,10 @@ An optional app-owned `CredentialSetupService` advertises
 returns only set/not-set credential states, safe prerequisites and an opaque,
 process-local concurrency fence. Typed `POST /v1/credentials/save` requires
 confirmation, full process identity and that fence. `/retry` retries only known
-pending configuration without credentials. No reveal route exists. The isolated
+pending configuration without credentials. A non-blocking `environmentOverrides`
+flag reports environment-owned settings without exposing names or values; Save
+does not change those fields. Only shadowed credential destinations block entry.
+No reveal route exists. The isolated
 parser accepts uncompressed JSON up to 16 KiB with at most three typed fields,
 each up to 4 KiB UTF-8; every route response is no-store. Failures contain fixed
 prose, never request bytes or exception details. Hosts without the service do

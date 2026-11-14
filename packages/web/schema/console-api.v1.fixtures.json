@@ -46,6 +46,7 @@
             "id": "openai-api",
             "available": true,
             "reason": "ready",
+            "environmentOverrides": true,
             "fields": [
               {
                 "id": "bearer",

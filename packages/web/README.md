@@ -147,7 +147,12 @@ credentials. Values are cleared before dispatch, after errors and on navigation,
 and are never stored in browser application state or web SQLite. Status is only
 set/not-set. Confirm Save writes the agent-owned dotenv before guarded config;
 “Saved; config pending” offers config-only retry. An uncertain dotenv outcome is
-not automatically replayed. Use the existing Restart confirmation to activate;
+not automatically replayed. Uncertainty survives generation-driven card remounts;
+an explicit status refresh shows current presence alongside a dismissible note,
+not proof of which value was saved. Noncredential environment overrides are
+non-blocking and are not changed by Save. Telegram/Slack accept existing explicit
+allow-all settings, but the console never sets them. Fields are bounded to
+4096 UTF-8 bytes on both client and server. Use the existing Restart confirmation to activate;
 foreground saves apply on the next owner-controlled start. Other inventory
 credentials retain manual guidance. Browser/request memory necessarily exists;
 this is not a physical-memory-erasure guarantee.

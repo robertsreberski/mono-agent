@@ -15,6 +15,8 @@ export interface CredentialCardStatus {
   readonly available: boolean;
   readonly reason: "ready" | "no-reloadable-source" | "prerequisites" | "env-shadowed";
   readonly fields: readonly { readonly id: Exclude<CredentialFieldId, "allowedIds">; readonly state: "set" | "not-set" }[];
+  /** Non-blocking: environment-owned configuration fields are not changed by Save. */
+  readonly environmentOverrides?: true;
   readonly configReady: boolean;
   readonly configPending: boolean;
 }
@@ -68,9 +70,9 @@ export function parseCredentialSnapshot(value: unknown): CredentialSnapshot {
   const r = record(value, ["version", "process", "fence", "cards"]);
   if (r.version !== 1 || !Array.isArray(r.cards) || r.cards.length !== 3) throw new Error("Invalid credential status.");
   const cards = r.cards.map((raw): CredentialCardStatus => {
-    const c = record(raw, ["id", "available", "reason", "fields", "configReady", "configPending"]);
+    const c = record(raw, ["id", "available", "reason", "fields", "environmentOverrides", "configReady", "configPending"]);
     const id = card(c.id);
-    if (typeof c.available !== "boolean" || typeof c.configReady !== "boolean" || typeof c.configPending !== "boolean" || !["ready", "no-reloadable-source", "prerequisites", "env-shadowed"].includes(String(c.reason)) || !Array.isArray(c.fields)) throw new Error("Invalid credential status.");
+    if ((c.environmentOverrides !== undefined && c.environmentOverrides !== true) || typeof c.available !== "boolean" || typeof c.configReady !== "boolean" || typeof c.configPending !== "boolean" || !["ready", "no-reloadable-source", "prerequisites", "env-shadowed"].includes(String(c.reason)) || !Array.isArray(c.fields)) throw new Error("Invalid credential status.");
     const expected = id === "slack" ? ["bot", "app"] : id === "telegram" ? ["bot"] : ["bearer"];
     const fields = c.fields.map((raw): CredentialCardStatus["fields"][number] => {
       const f = record(raw, ["id", "state"]);
@@ -78,7 +80,7 @@ export function parseCredentialSnapshot(value: unknown): CredentialSnapshot {
       return { id: f.id as "bot" | "app" | "bearer", state: f.state };
     });
     if (fields.length !== expected.length || new Set(fields.map((field) => field.id)).size !== expected.length) throw new Error("Invalid credential fields.");
-    return { id, available: c.available, reason: c.reason as CredentialCardStatus["reason"], fields, configReady: c.configReady, configPending: c.configPending };
+    return { id, ...(c.environmentOverrides === true ? { environmentOverrides: true as const } : {}), available: c.available, reason: c.reason as CredentialCardStatus["reason"], fields, configReady: c.configReady, configPending: c.configPending };
   });
   if (new Set(cards.map((c) => c.id)).size !== 3) throw new Error("Duplicate credential card.");
   return { version: 1, process: identity(r.process), fence: fence(r.fence), cards };
