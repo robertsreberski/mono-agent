@@ -325,6 +325,20 @@ it("allows only the registered completed cancellation seed-to-resume transition 
   expect(result.report.phases[1].score).toBe(1); expect(BigInt(result.report.costs.retainedUnits)).toBe(3920000000n);
 }, E2_NATIVE_TEST_TIMEOUT_MS);
 
+it("awaits the native completed-cut ACK before scripted tool progress across a forced read gap", async () => {
+  const rows = [...Array.from({ length: 8 }, () => ({ role: "summary", model: SOL, phase: "seed" })),
+    { role: "continuation", model: SOL, phase: "seed" }, ...Array.from({ length: 8 }, () => ({ role: "continuation", model: SOL, phase: "resume" })),
+    ...Array.from({ length: 8 }, () => ({ role: "probe", model: SOL, phase: "resume" }))];
+  const result = await run({ production: true, scenario: "proof", arm: "cancel", rows, fault: "checkpoint-read-gap" });
+  expect(result.report.stop, JSON.stringify(result.report)).toBe("completed");
+  expect(result.report.phases).toHaveLength(2); expect(result.report.phases[1].score).toBe(1);
+  const state = JSON.parse(await readFile(join(result.root, "output/e2-validation-controller.json"), "utf8"));
+  const scans = (await readFile(join(e2PhaseWork(join(result.root, "output"), state.schedule[0]), "checkpoint-read-gap.jsonl"), "utf8"))
+    .trim().split("\n").map(line => JSON.parse(line));
+  expect(scans.length).toBeGreaterThan(0);
+  expect(scans.every(scan => scan.changedFiles === 0), JSON.stringify(scans)).toBe(true);
+}, E2_NATIVE_TEST_TIMEOUT_MS);
+
 it("replays genuine C1 snapshots and frozen private questions through both pristine checkpoint copies", async () => {
   const result = await run({ production: true, replay: true });
   expect(result.report.stop, JSON.stringify(result.report)).toBe("completed"); expect(result.received).toHaveLength(2);

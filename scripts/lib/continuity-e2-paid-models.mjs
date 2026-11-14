@@ -132,7 +132,27 @@ export async function createE2PaidModels(a, safety) {
           need(change && Object.keys(change).every(name => ["piModelsDecorator", "mcpServers", "observers", "allowedTools", "skills"].includes(name))
             && isE2PaidDecorator(change.piModelsDecorator) && change.skills?.length === 0, "e2_unguarded_dispatch");
           if (baseline) need(change.allowedTools?.length === 0 && !Object.hasOwn(change.mcpServers ?? {}, "mono-agent-conversation-history"), "e2_preparation_invalid");
-          return target.run(prompt, { ...options, ...change });
+          // The conversation harness owns this recorder. With its preparation
+          // callback present, native compaction_end awaits it before resuming an
+          // already-produced tool batch (not merely the next paid model call).
+          const recorder = options.onCompactionRecorded, preparing = options.onCompactionPreparing;
+          need(baseline || typeof recorder === "function" && typeof preparing === "function", "e2_preparation_invalid");
+          const recordingAbort = new AbortController();
+          return target.run(prompt, { ...options, ...change, ...(baseline ? {} : {
+            abortSignal: AbortSignal.any([options.abortSignal, recordingAbort.signal]),
+            onCompactionRecorded: async record => {
+              try {
+                await recorder(record);
+                await barrier; // Completed-cut ACK, including controller authentication.
+                if (stopped) fail(stopped);
+              } catch (error) {
+                // Shipping recorders fail open as warnings. Abort this E2 run so
+                // a rejected ACK cannot release the waiting tool/context work.
+                recordingAbort.abort(error);
+                fail(error?.code ?? "e2_compaction_invalid");
+              }
+            },
+          }) });
         };
         if (typeof key === "symbol" || ["then", "toJSON"].includes(key)) return undefined;
         need(["sessionTurnReconciliation", "configureTools", "disposeAllSessions", "disposeSession", "invalidateSession", "retireDurableSession", "syncSession", "refreshSession", "recoverSession", "reconcileSessionTurn", "compact"].includes(key), "e2_method_forbidden");
