@@ -7,6 +7,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { parseCliArgs } from "../cli/cli-args.js";
 import { effectiveFirstRunEnvironment } from "../setup/first-run-readiness.js";
 import { runFlagsInit } from "../setup/flags-init.js";
+import { initMonoAgentFolder } from "../setup/init.js";
 import { createMonoAgentConfigExclusively } from "../setup/scaffold-files.js";
 import { runProviderSetupBeforeInit } from "../setup/provider-setup-gate.js";
 
@@ -81,4 +82,17 @@ it("preserves a concurrent config writer at the no-clobber publication boundary"
   expect(publication.writes).toBe(1);
   expect(await readFile(path, "utf8")).toBe(publication.contents);
   expect(await readdir(root)).toEqual(["mono-agent.config.json"]);
+});
+
+it("ordinary init refuses a concurrent config without creating config-lock artifacts", async () => {
+  const root = await mkdtemp(join(tmpdir(), "mono-agent-init-guarantee-"));
+  roots.push(root);
+  const path = join(root, "mono-agent.config.json");
+  publication.target = path;
+  publication.contents = '{"name":"concurrent fixture"}\n';
+
+  await expect(initMonoAgentFolder({ dir: root })).rejects.toMatchObject({ code: "EEXIST" });
+  expect(publication.writes).toBe(1);
+  expect(await readFile(path, "utf8")).toBe(publication.contents);
+  expect((await readdir(root)).filter((name) => name === ".gitignore" || name.endsWith(".tmp") || name.endsWith(".write-lock"))).toEqual([]);
 });

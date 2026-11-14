@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Fix init summaries to report ignore-file creation by secret persistence
+  accurately. Publish new configs exclusively without patch-writer lock side
+  effects, and refuse concurrent config replacement.
+
 - Fix guarded configuration publication on Windows and protect lock artifacts
   before creation. Keep uncertain Enable saves visible across agent changes,
   reconcile saved controls with fresh availability, and distinguish existing

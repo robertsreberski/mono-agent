@@ -3,8 +3,6 @@ import type { InitMonoAgentFolderOptions, InitMonoAgentFolderResult } from "./sc
 import { lstat, writeFile } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 
-import { writeMonoAgentConfigJson } from "@mono-agent/config";
-
 import { composeWizardPlan, defaultAnswers, humanizeAgentName } from "./wizard/answers.js";
 import type { ComposeContext } from "./wizard-types.js";
 import {
@@ -132,7 +130,9 @@ export async function initMonoAgentFolder(
   } else {
     const configPlanned = await planFile(
       configPath,
-      () => writeMonoAgentConfigJson({ path: configPath, patch: plan.configJson }),
+      // Creation needs no patch-writer lock (or its ignore-file side effects).
+      // The exclusive publisher also refuses a config created concurrently.
+      () => createMonoAgentConfigExclusively(configPath, plan.configJson),
     );
     configCreatedByThisInit = !dryRun && configPlanned;
   }
