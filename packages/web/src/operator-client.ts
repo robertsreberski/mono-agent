@@ -369,7 +369,8 @@ export class OperatorClient {
     throw new WebConsoleError("restart_unconfirmed", "The restart response could not be confirmed.", 502);
   }
 
-  async capabilityActions(operation: "read" | "preview" | "save", input?: CapabilityActionInput | CapabilityActionSaveInput) {
+  async capabilityActions(...args: [operation: "read"] | [operation: "preview", input: CapabilityActionInput] | [operation: "save", input: CapabilityActionSaveInput]) {
+    const [operation, input] = args;
     const failures: Readonly<Record<string, { readonly status: number; readonly message: string }>> = {
       capability_action_conflict: { status: 409, message: "Settings or process changed; refresh and review a new preview." },
       capability_action_unavailable: { status: 409, message: "This action is unavailable; use manual setup guidance." },

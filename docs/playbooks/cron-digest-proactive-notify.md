@@ -13,7 +13,9 @@ Opt in with `notify: true` per cron job (the same model is available to webhook 
 
 On agents that support console Enable, **Agent settings → Capabilities → Enable
 cron controls…** can preview and save `cron.operatorActions.enabled: true` after
-you have prepared valid jobs. This does not enable the jobs or their schedules.
+you have prepared valid jobs. Any non-empty `MONO_AGENT_CRON_*` environment
+override makes the action unavailable; resolve the override in the owner terminal
+first. This does not enable the jobs or their schedules.
 Save stays pending until a fresh start; use confirmed Restart for managed agents
 or owner-controlled stop/start for foreground hosts. Older agents use manual
 config guidance.

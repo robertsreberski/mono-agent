@@ -12,7 +12,7 @@ export function registerCapabilityActionRoutes(app: Express, service: WebService
     try { input = operation === "read" ? undefined : operation === "preview" ? parseCapabilityActionInput(req.body) : parseCapabilityActionSaveInput(req.body); }
     catch { throw new WebConsoleError("invalid_request", "Invalid capability action.", 400); }
     const sourceId = req.params.id;
-    if (typeof sourceId !== "string") throw new WebConsoleError("invalid_request", "Invalid agent.", 400);
+    if (typeof sourceId !== "string" || sourceId.length === 0 || sourceId.length > 512) throw new WebConsoleError("invalid_request", "Invalid agent.", 400);
     const work = service.capabilityActions(sourceId, operation, input);
     active.add(work);
     void work.then((result) => res.json(result)).catch(next).finally(() => active.delete(work));

@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { api } from "../../api";
+import { api, ApiError } from "../../api";
 import type { CapabilityRestartState } from "./CapabilityActionControls";
 import { capabilitySnapshot, capabilityActions, eligibleCronSnapshot, eligibleCronActions } from "../../test/capability-fixtures";
 import { agent } from "../../test/fixtures";
@@ -102,7 +102,10 @@ it("does not mistake a delayed pre-save restart baseline for a new restart", asy
   vi.spyOn(api, "capabilitySetup").mockResolvedValue(eligibleCronSnapshot);
   vi.spyOn(api, "capabilityActions").mockResolvedValue(eligibleCronActions);
   vi.spyOn(api, "previewCapabilityAction").mockResolvedValue({ action: "cron-controls", process: capabilityActions.process, expectedVersion: "a".repeat(64), changes: [], normalizesFormatting: true, noOp: false });
-  vi.spyOn(api, "saveCapabilityAction").mockResolvedValue({ action: "cron-controls", process: capabilityActions.process, version: "b".repeat(64), changed: true });
+  vi.spyOn(api, "saveCapabilityAction").mockImplementation(async () => {
+    vi.mocked(api.capabilityActions).mockResolvedValue({ ...eligibleCronActions, actions: eligibleCronActions.actions.map((action) => action.id === "cron-controls" ? { ...action, reason: "already-configured" as const } : action) });
+    return { action: "cron-controls", process: capabilityActions.process, version: "b".repeat(64), changed: true };
+  });
   const selected = agent("garden", { supportsCapabilitySetup: true, supportsCapabilityActions: true, restart: { supported: true } });
   const view = render(<CapabilitiesSection agent={selected} restart={{ readState: "loading" } as CapabilityRestartState} />);
   fireEvent.click(await screen.findByRole("button", { name: "Enable cron controls…" }));
@@ -140,4 +143,60 @@ it("shows loaded-at-start evidence once on an active Memory card", async () => {
   const memory = screen.getByRole("article", { name: "Memory" });
   expect(within(memory).getAllByText(/Loaded at this start/)).toHaveLength(1);
   expect(memory.querySelector(".capability-next")!.textContent).toBe("Next: Inspect readiness evidence below.");
+});
+
+it("removes stale Enable controls when refreshing availability fails", async () => {
+  vi.spyOn(api, "capabilitySetup").mockResolvedValue(eligibleCronSnapshot);
+  vi.spyOn(api, "capabilityActions").mockResolvedValueOnce(eligibleCronActions).mockRejectedValue(new Error("Fictional unavailable response"));
+  render(<CapabilitiesSection agent={agent("garden", { supportsCapabilitySetup: true, supportsCapabilityActions: true })} />);
+  await screen.findByRole("button", { name: "Enable cron controls…" });
+  fireEvent.click(screen.getByRole("button", { name: "Refresh capability status" }));
+  await screen.findByText(/Enable availability could not be verified/);
+  expect(screen.queryByRole("button", { name: "Enable cron controls…" })).toBeNull();
+});
+it.each(["env-shadowed", "no-valid-jobs", "eligible"] as const)("reconciles a confirmed Save with fresh %s eligibility", async (reason) => {
+  vi.spyOn(api, "capabilitySetup").mockResolvedValue(eligibleCronSnapshot);
+  vi.spyOn(api, "capabilityActions").mockResolvedValue(eligibleCronActions);
+  vi.spyOn(api, "previewCapabilityAction").mockResolvedValue({ action: "cron-controls", process: capabilityActions.process, expectedVersion: "a".repeat(64), changes: [], normalizesFormatting: true, noOp: false });
+  vi.spyOn(api, "saveCapabilityAction").mockImplementation(async () => {
+    vi.mocked(api.capabilityActions).mockResolvedValue({ ...eligibleCronActions, actions: eligibleCronActions.actions.map((action) => action.id === "cron-controls" ? { ...action, reason: "already-configured" as const } : action) });
+    return { action: "cron-controls", process: capabilityActions.process, version: "b".repeat(64), changed: true };
+  });
+  render(<CapabilitiesSection agent={agent("garden", { supportsCapabilitySetup: true, supportsCapabilityActions: true, restart: { supported: true } })} restart={{ readState: "ready" } as CapabilityRestartState} />);
+  fireEvent.click(await screen.findByRole("button", { name: "Enable cron controls…" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Confirm Save" }));
+  await screen.findByRole("button", { name: "Restart to apply…" });
+  vi.mocked(api.capabilityActions).mockResolvedValue({ ...eligibleCronActions, actions: eligibleCronActions.actions.map((action) => action.id === "cron-controls" ? { ...action, reason, available: reason === "eligible" } : action) });
+  fireEvent.click(screen.getByRole("button", { name: "Refresh capability status" }));
+  await waitFor(() => expect(screen.queryByText("Saved; applies on next start")).toBeNull());
+  await waitFor(() => expect(api.capabilityActions).toHaveBeenCalledTimes(3));
+  expect(screen.queryByRole("button", { name: "Restart to apply…" })).toBeNull();
+  if (reason === "eligible") await screen.findByRole("button", { name: "Enable cron controls…" });
+  else await screen.findByText(reason === "env-shadowed" ? /Resolve it in the owner terminal/ : /Prepare valid cron jobs first/);
+});
+it.each(["resolved", "rejected"])("retains a %s stale Save even when generation remounts controls and availability fails", async (outcome) => {
+  vi.spyOn(api, "capabilitySetup").mockResolvedValue(eligibleCronSnapshot);
+  vi.spyOn(api, "capabilityActions").mockResolvedValueOnce(eligibleCronActions).mockRejectedValue(new Error("Fictional unavailable response"));
+  vi.spyOn(api, "previewCapabilityAction").mockResolvedValue({ action: "cron-controls", process: capabilityActions.process, expectedVersion: "a".repeat(64), changes: [], normalizesFormatting: true, noOp: false });
+  let finish!: () => void;
+  vi.spyOn(api, "saveCapabilityAction").mockImplementation(() => new Promise((resolve, reject) => {
+    finish = () => outcome === "resolved" ? resolve({ action: "cron-controls", process: capabilityActions.process, version: "b".repeat(64), changed: true }) : reject(new ApiError("Fictional stale response", 409, "capability_action_conflict"));
+  }));
+  const selected = agent("garden", { generation: "old", supportsCapabilitySetup: true, supportsCapabilityActions: true });
+  const view = render(<CapabilitiesSection agent={selected} />);
+  fireEvent.click(await screen.findByRole("button", { name: "Enable cron controls…" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Confirm Save" }));
+  view.rerender(<CapabilitiesSection agent={{ ...selected, generation: "new" }} />);
+  await screen.findByText(/Enable availability could not be verified/);
+  await act(async () => finish());
+  expect(await screen.findByRole("alert")).toHaveTextContent("A save may have completed; inspect the configuration before retrying");
+  expect(screen.queryByRole("button", { name: "Enable cron controls…" })).toBeNull();
+});
+it("resets the inspected Memory tier for a new generation without resetting parent action state", async () => {
+  vi.spyOn(api, "capabilitySetup").mockResolvedValue(capabilitySnapshot);
+  const selected = agent("garden", { generation: "old", supportsCapabilitySetup: true });
+  const view = render(<CapabilitiesSection agent={selected} />);
+  fireEvent.change(await screen.findByLabelText("Inspect memory tier (read-only)"), { target: { value: "memory:journal" } });
+  view.rerender(<CapabilitiesSection agent={{ ...selected, generation: "new" }} />);
+  expect(await screen.findByLabelText("Inspect memory tier (read-only)")).toHaveValue(capabilitySnapshot.cards[0]!.selectedVariant);
 });

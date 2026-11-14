@@ -122,8 +122,11 @@ for (const managed of [false, true]) it(`confirms/cancels typed saves and shows 
   vi.mocked(api.capabilitySetup).mockResolvedValue(eligibleCronSnapshot);
   vi.mocked(api.capabilityActions).mockResolvedValue(eligibleCronActions);
   const preview = { action: "cron-controls" as const, process: capabilityActions.process, expectedVersion: "a".repeat(64), changes: [{ field: "cron.operatorActions.enabled" as const, value: "true" }], normalizesFormatting: true as const, noOp: false };
-  vi.spyOn(api, "previewCapabilityAction").mockResolvedValue(preview);
-  const save = vi.spyOn(api, "saveCapabilityAction").mockResolvedValue({ action: preview.action, process: preview.process, version: "b".repeat(64), changed: true });
+  vi.spyOn(api, "previewCapabilityAction").mockImplementation(async (sourceId, input) => { expect(sourceId).toBe("garden"); expect(input).toEqual({ action: preview.action, process: preview.process }); return preview; });
+  const save = vi.spyOn(api, "saveCapabilityAction").mockImplementation(async () => {
+    vi.mocked(api.capabilityActions).mockResolvedValue({ ...eligibleCronActions, actions: eligibleCronActions.actions.map((action) => action.id === "cron-controls" ? { ...action, reason: "already-configured" as const } : action) });
+    return { action: preview.action, process: preview.process, version: "b".repeat(64), changed: true };
+  });
   const operation = { id: "synthetic-restart", sourceId: "garden", stage: "restarting" as const, requestedAt: "2026-08-01T10:00:00Z", deadline: "2026-08-01T10:02:00Z" };
   const request = vi.spyOn(api, "requestAgentRestart").mockResolvedValue(operation);
   vi.spyOn(api, "restartStatus").mockResolvedValue(operation);
@@ -171,8 +174,11 @@ it("leaves confirmed settings pending after a managed restart refusal, with no a
   vi.mocked(api.capabilitySetup).mockResolvedValue(eligibleCronSnapshot);
   vi.mocked(api.capabilityActions).mockResolvedValue(eligibleCronActions);
   const preview = { action: "cron-controls" as const, process: capabilityActions.process, expectedVersion: "a".repeat(64), changes: [], normalizesFormatting: true as const, noOp: false };
-  vi.spyOn(api, "previewCapabilityAction").mockResolvedValue(preview);
-  const save = vi.spyOn(api, "saveCapabilityAction").mockResolvedValue({ action: preview.action, process: preview.process, version: "b".repeat(64), changed: true });
+  vi.spyOn(api, "previewCapabilityAction").mockImplementation(async (sourceId, input) => { expect(sourceId).toBe("garden"); expect(input).toEqual({ action: preview.action, process: preview.process }); return preview; });
+  const save = vi.spyOn(api, "saveCapabilityAction").mockImplementation(async () => {
+    vi.mocked(api.capabilityActions).mockResolvedValue({ ...eligibleCronActions, actions: eligibleCronActions.actions.map((action) => action.id === "cron-controls" ? { ...action, reason: "already-configured" as const } : action) });
+    return { action: preview.action, process: preview.process, version: "b".repeat(64), changed: true };
+  });
   vi.spyOn(api, "requestAgentRestart").mockRejectedValue(new ApiError("Synthetic refusal", 409));
   render(<Preview width={1440} managed />);
   await userEvent.click(await screen.findByRole("button", { name: "Enable cron controls…" }));
@@ -205,7 +211,7 @@ for (const width of [390, 1440]) for (const managed of [true, false]) it(`captur
   const lite = capabilitySnapshot.cards.find((card) => card.id === "memory")!.variants!.find((variant) => variant.id === "memory:lite")!;
   const example = JSON.parse(lite.steps.find((step) => step.trimStart().startsWith("{"))!) as { memory: unknown };
   const preview = { action: "memory-lite" as const, process: eligible.process, expectedVersion: "a".repeat(64), changes: [{ field: "memory" as const, value: JSON.stringify(example.memory, null, 2) }], normalizesFormatting: true as const, noOp: false };
-  vi.spyOn(api, "previewCapabilityAction").mockResolvedValue(preview);
+  vi.spyOn(api, "previewCapabilityAction").mockImplementation(async (sourceId, input) => { expect(sourceId).toBe("garden"); expect(input).toEqual({ action: preview.action, process: preview.process }); return preview; });
   const save = vi.spyOn(api, "saveCapabilityAction").mockImplementation(async () => {
     vi.mocked(api.capabilityActions).mockResolvedValue({ ...eligible, actions: eligible.actions.map((action) => action.id === "memory-lite" ? { ...action, reason: "already-configured" as const } : action) });
     return { action: preview.action, process: preview.process, version: "b".repeat(64), changed: true };

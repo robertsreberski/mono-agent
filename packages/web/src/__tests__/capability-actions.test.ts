@@ -18,7 +18,7 @@ it("detects preview and save separately from read-only discovery, failing closed
 });
 for (const operation of ["read", "preview", "save"] as const) it.each([false, true])(`${operation} compares generations, not connection object identity (restart=%s)`, async (restarted) => {
   const root = await temporaryRoot(); roots.push(root);
-  const initial = fakeDiscoveredAgent(); let discovered = { ...initial, source: { ...initial.source, pid: process.pid } };
+  const initial = fakeDiscoveredAgent(); let discovered = { ...initial, source: { ...initial.source, pid: process.pid, startedAt: identity.startedAt } };
   let release!: (response: Response) => void;
   const service = await WebService.create({ stateDir: join(root, "state"), discoveryIntervalMs: 0, purgeIntervalMs: 0, discoverImpl: async () => [discovered],
     fetchImpl: (async (url) => String(url).endsWith("/info") ? Response.json({ schema: 1, pid: discovered.source.pid, capabilities: { capabilityActions: { version: 1, preview: true, save: true } } }) : new Promise<Response>((resolve) => { release = resolve; })) as typeof fetch });
@@ -86,3 +86,36 @@ it("preserves fixed action failures without forwarding upstream prose or details
     expect(JSON.stringify(log.mock.calls)).not.toContain(plantedValue);
   } finally { await web.stop(); }
 });
+
+it("rejects a read snapshot from a different start even when the PID is unchanged", async () => {
+  const root = await temporaryRoot(); roots.push(root);
+  const initial = fakeDiscoveredAgent();
+  let discovered = { ...initial, source: { ...initial.source, ...identity } };
+  const service = await WebService.create({ stateDir: join(root, "state"), discoveryIntervalMs: 0, purgeIntervalMs: 0, discoverImpl: async () => [discovered],
+    fetchImpl: (async (url) => String(url).endsWith("/info") ? Response.json({ schema: 1, pid: identity.pid, capabilities: { capabilityActions: { version: 1, preview: true, save: true } } }) : Response.json({ version: 1, process: { ...identity, startedAt: "2026-08-01T10:00:00Z" }, actions: [{ id: "memory-lite", available: true, active: false, reason: "eligible" }, { id: "cron-controls", available: false, active: false, reason: "no-valid-jobs" }] })) as typeof fetch });
+  try {
+    await expect(service.capabilityActions("agent-one", "read")).rejects.toMatchObject({ code: "agent_generation_changed" });
+    discovered = { ...discovered, source: { ...discovered.source, startedAt: "2026-08-01T10:00:00Z" } };
+    await service.refreshAgents();
+    await expect(service.capabilityActions("agent-one", "read")).resolves.toMatchObject({ process: { ...identity, startedAt: discovered.source.startedAt } });
+  }
+  finally { await service.stop(); }
+});
+it("bounds capability action agent IDs before calling discovery or the service", async () => {
+  const root = await temporaryRoot(); roots.push(root);
+  const web = await startWebServer({ port: 0, voice: false, stateDir: join(root, "state"), discoveryIntervalMs: 0, purgeIntervalMs: 0, discoverImpl: async () => [] });
+  try {
+    const response = await fetch(`${web.url}api/v1/agents/${"x".repeat(513)}/capability-actions`, { headers: { Origin: new URL(web.url).origin } });
+    expect(response.status).toBe(400);
+  } finally { await web.stop(); }
+});
+// These type-only contracts are checked by the web package's typecheck lane.
+function invalidCapabilityActionCalls(client: OperatorClient) {
+  // @ts-expect-error A read never accepts a body.
+  void client.capabilityActions("read", { action: preview.action, process: identity });
+  // @ts-expect-error Save requires confirmed input.
+  void client.capabilityActions("save");
+  // @ts-expect-error A preview input is not a confirmed Save.
+  void client.capabilityActions("save", { action: preview.action, process: identity });
+}
+void invalidCapabilityActionCalls;

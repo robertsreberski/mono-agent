@@ -128,6 +128,8 @@ export async function startTraceability(controller: TraceabilityControllerPort, 
       label,
       artifactDir,
       pid: process.pid,
+      // Match action process identity, not the later registry publication time.
+      startedAt: new Date(performance.timeOrigin).toISOString(),
       transports: controller.activeTransports(),
       configPath: controller.configPath,
       metadata: controller.traceMetadata(reason),

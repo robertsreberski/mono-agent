@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { CapabilityActionControls, type CapabilityRestartState, type CapabilitySavedState } from "./CapabilityActionControls";
+import { CapabilityActionControls, CAPABILITY_SAVE_UNCERTAIN, type CapabilityRestartState, type CapabilitySavedState } from "./CapabilityActionControls";
 import { useEffect, useRef, useState } from "react";
 import { api } from "../../api";
 import type { AgentSummary, WebCapabilitySetupSnapshot, WebCapabilityActionsSnapshot } from "../../types";
@@ -90,6 +90,7 @@ export function CapabilityCard({ card, children, actionNext }: { readonly card: 
 export function CapabilitiesSection({ agent, restart = null }: { readonly agent: AgentSummary; readonly restart?: CapabilityRestartState }) {
   const identity = JSON.stringify([agent.sourceId, agent.generation]);
   const identityRef = useRef(identity);
+  const currentIdentity = useRef(identity); currentIdentity.current = identity;
   const [report, setReport] = useState<{ identity: string; snapshot: WebCapabilitySetupSnapshot } | null>(null);
   const snapshot = report?.identity === identity ? report.snapshot : null;
   const [actions, setActions] = useState<{ identity: string; snapshot: WebCapabilityActionsSnapshot } | null>(null);
@@ -109,9 +110,12 @@ export function CapabilitiesSection({ agent, restart = null }: { readonly agent:
     return () => controller.abort();
   }, [identity, agent.sourceId, agent.status, agent.supportsCapabilitySetup, revision]);
   useEffect(() => {
-    const controller = new AbortController(); setActionsError(false);
+    const controller = new AbortController(); setActionsError(false); setActions(null);
     if (agent.status === "online" && agent.supportsCapabilityActions === true) {
-      void api.capabilityActions(agent.sourceId, controller.signal).then((snapshot) => { if (!controller.signal.aborted) setActions({ identity, snapshot }); })
+      void api.capabilityActions(agent.sourceId, controller.signal).then((snapshot) => { if (!controller.signal.aborted) {
+        setActions({ identity, snapshot });
+        setSaved((prior) => Object.fromEntries(Object.entries(prior).filter(([id, value]) => value.uncertain || snapshot.actions.some((action) => action.id === id && (action.active || action.reason === "already-configured")))));
+      } })
         .catch(() => { if (!controller.signal.aborted) setActionsError(true); });
     }
     return () => controller.abort();
@@ -129,12 +133,13 @@ export function CapabilitiesSection({ agent, restart = null }: { readonly agent:
     <p className="settings-section-summary">Checked <time dateTime={snapshot.observedAt}>{new Date(snapshot.observedAt).toLocaleTimeString()}</time>. {snapshot.observation === "loaded-snapshot" ? "Uses settings from the agent’s last start, not later edits." : "Uses saved settings."} Restart the agent after editing settings or .env. <button type="button" className="settings-button" onClick={() => setRevision((value) => value + 1)}>Refresh capability status</button></p>
     {agent.supportsCapabilityActions !== true && <p className="settings-notice">This agent version has no console Enable actions. Use manual setup or update the agent.</p>}
     {actionsError && <p className="settings-notice">Enable availability could not be verified. Refresh capability status; no write is assumed.</p>}
+    {!actionSnapshot && Object.values(saved).some((value) => value.uncertain) && <p role="alert">{CAPABILITY_SAVE_UNCERTAIN}</p>}
     <div className="capability-grid">{snapshot.cards.map((card) => {
       const action = actionSnapshot?.actions.find((item) => item.id === (card.id === "memory" ? "memory-lite" : card.id === "channel:cron" ? "cron-controls" : ""));
       const actionNext = action?.active ? "Inspect readiness evidence below."
-        : action?.reason === "already-configured" || (action && saved[action.id] && !saved[action.id]?.uncertain) ? "Check saved settings and activation below; saving does not restart the agent."
+        : action?.reason === "already-configured" || (action?.available && saved[action.id] && !saved[action.id]?.uncertain) ? "Check saved settings and activation below; saving does not restart the agent."
         : action?.available ? "Review and Save below, or use manual setup. Saving does not activate the feature." : undefined;
-      return <CapabilityCard key={card.id} card={card} actionNext={actionNext}>{action && actionSnapshot && <CapabilityActionControls agent={agent} action={action} process={actionSnapshot.process} restart={restart} refresh={() => setRevision((value) => value + 1)} saved={saved[action.id] ?? null} setSaved={(value) => setSaved((prior) => ({ ...prior, [action.id]: value }))} />}</CapabilityCard>;
+      return <CapabilityCard key={`${identity}:${card.id}`} card={card} actionNext={actionNext}>{action && actionSnapshot && <CapabilityActionControls agent={agent} action={action} process={actionSnapshot.process} restart={restart} refresh={() => setRevision((value) => value + 1)} saved={saved[action.id] ?? null} isCurrent={() => currentIdentity.current === identity} setSaved={(value) => setSaved((prior) => ({ ...prior, [action.id]: currentIdentity.current === identity ? value : { ...value, uncertain: true } }))} />}</CapabilityCard>;
     })}</div>
     {snapshot.hostPreflight && <details><summary>Host preflight (optional)</summary><ul>{snapshot.hostPreflight.checks.map((check) => <li key={check.id}>{check.id}: {check.status}</li>)}</ul></details>}
   </>;

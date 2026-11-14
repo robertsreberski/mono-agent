@@ -135,6 +135,8 @@ describe("app channel capability composition", () => {
       };
       const processJobsService = {
         operatorToken: "owner-token-must-not-leak",
+        settings: { stateDir: join(cwd, "process-jobs") },
+        health: { state: "healthy", quarantinedTransactions: 0 },
         list: vi.fn(async () => []),
         get: vi.fn(async () => undefined),
         cancel: vi.fn(async () => { throw new Error("must not run"); }),
@@ -145,7 +147,7 @@ describe("app channel capability composition", () => {
         env: {},
         cwd,
         configReadPath,
-      configPath: configReadPath,
+        configPath: configReadPath,
         logger: undefined,
         drivers: [driver],
         driversById: new Map([[id, driver]]),
@@ -155,7 +157,7 @@ describe("app channel capability composition", () => {
         startsInFlight: new Map(),
         stopped: false,
         traceabilityStatusValue: {} as never,
-        processJobsService: id === "tui" ? undefined : processJobsService,
+        processJobsService,
         processJobsDegradation: undefined,
         setStatus(channelId, status) {
           statuses.set(channelId, status);

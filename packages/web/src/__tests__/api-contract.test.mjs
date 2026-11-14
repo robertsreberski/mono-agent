@@ -87,3 +87,13 @@ describe("published console API v1", () => {
     expect(() => assertRouteCoverage(server.replace('app.get("/api/v1/bootstrap", (req, res, next) => {', 'app.get("/api/v1/bootstrap", (req, res, next) => { exactRequestOrigin(req);'), manifest.routes)).toThrow(/origin=GET \/api\/v1\/bootstrap/);
   });
 });
+
+it("binds capability route expansion to the actual non-shadowed imported registrar", () => {
+  for (const source of [
+    "function registerCapabilityActionRoutes() {} registerCapabilityActionRoutes(app);",
+    'import { registerCapabilityActionRoutes } from "./other.js"; registerCapabilityActionRoutes(app);',
+    'import { registerCapabilityActionRoutes } from "./capability-action-routes.js"; function local(registerCapabilityActionRoutes) { registerCapabilityActionRoutes(app); }',
+    'import type { registerCapabilityActionRoutes } from "./capability-action-routes.js"; registerCapabilityActionRoutes(app);',
+  ]) expect(discoverRoutes(source)).toEqual([]);
+  expect(discoverRoutes('import { registerCapabilityActionRoutes as register } from "./capability-action-routes.js"; register(app);')).toHaveLength(3);
+});

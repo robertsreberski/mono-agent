@@ -546,7 +546,12 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
       });
     };
     if (operation === "read") app.get(`${basePath}/v1/capability-actions`, handler);
-    else app.post(`${basePath}/v1/capability-actions/${operation}`, express.json({ limit: "1kb", strict: true }), handler, (_error: unknown, _req: Request, res: Response, _next: NextFunction) => { res.status(400).json({ error: { code: "invalid_capability_action", message: "Invalid capability action." } }); });
+    else app.post(`${basePath}/v1/capability-actions/${operation}`, express.json({ limit: "1kb", strict: true }), handler, (error: unknown, _req: Request, res: Response, next: NextFunction) => {
+      const parser = error as { status?: unknown; type?: unknown } | null;
+      if (parser?.status === 413 || parser?.type === "entity.too.large") { next(error); return; }
+      // Keep malformed action bodies out of SyntaxError diagnostic responses.
+      res.status(400).json({ error: { code: "invalid_capability_action", message: "Invalid capability action." } });
+    });
   }
 
   app.get(`${basePath}/v1/capabilities`, (req, res) => {
