@@ -1,11 +1,15 @@
 ---
-title: "Your First Agent"
-description: "Create, validate, and start a first mono-agent, then hold your first browser conversation with the foreground console."
+title: "Setup reference"
+description: "Reference for creating, validating, and starting a mono-agent: every guided init branch, platform start path, validate status, init flag, and generated file."
 sidebar:
-  order: 2
+  order: 5
 ---
 
-This page walks from an empty folder to a first conversation in the browser console: the guided `mono-agent init` wizard, the readiness checks it performs, the start path for each platform, and the foreground console. A real model reply still requires provider credentials or a configured local provider.
+This is the reference for creating and starting an agent: the guided `mono-agent init` wizard and the readiness checks it performs, the start path for each platform, `validate` statuses, init flags, and the files a scaffold writes. A real model reply still requires provider credentials or a configured local provider.
+
+:::tip[New to mono-agent?]
+Follow [Tutorial: your first agent](/getting-started/tutorial/) for a guided five-step walkthrough with screenshots, then come back here for details. [Set up with a coding agent](/getting-started/coding-agent-setup/) covers letting Claude Code or Codex do the setup.
+:::
 
 Before scaffolding, `mono-agent preflight` checks this host from an empty folder
 without config or credentials. Optional capabilities are not required; use
@@ -29,12 +33,16 @@ Open `http://127.0.0.1:5050`, pick the agent, and send a message. Guided setup i
 ### Enable optional features later
 
 Open **Agent settings → Capabilities** in the [web console](/observability/web-console/#discover-optional-capabilities).
-New agents can offer a preview and confirmed Save for Memory Lite and controls
-for valid existing cron jobs. Older agents show manual guidance instead. Lite
-never migrates existing data; cron Enable never enables schedules or jobs.
-Save is pending until a fresh start. Managed agents offer the existing confirmed
-Restart flow; foreground/embedded agents require owner-controlled stop/start.
-Tools and webhook setup remain manual. There is no terminal Enable command.
+Supporting agents offer a preview and confirmed Save for Memory Lite, controls
+for valid existing cron jobs, and subagent delegation, plus write-only credential
+fields and one-level Undo. Older agents, including published 0.26.0, show manual
+guidance instead. Lite never migrates existing data; cron Enable never enables
+schedules or jobs. Save is pending until a fresh start. Managed agents offer the
+existing confirmed Restart flow; foreground/embedded agents require
+owner-controlled stop/start. Tools and webhook setup remain manual. There is no
+terminal Enable command. [Tutorial step 5](/getting-started/tutorial/#5-turn-on-one-feature-from-the-capabilities-page)
+walks one Enable end to end, and the [feature tour](/getting-started/feature-tour/)
+marks which features the console can turn on.
 
 ### How the agent runs on your platform
 

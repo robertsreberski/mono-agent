@@ -11,18 +11,21 @@ What makes it configurable rather than hand-built is one `mono-agent.config.json
 
 ## Start here
 
+Follow [Tutorial: your first agent](/getting-started/tutorial/): five steps from a new computer to a first conversation in the browser console, with what to see and what to do when a step fails. Then use the [feature tour](/getting-started/feature-tour/) to see what else the agent can do and where each feature is turned on, or [let a coding agent do the setup](/getting-started/coding-agent-setup/). The short version:
+
 ```bash
-npm i -g create-mono-agent     # Node.js >= 24.15.0; no pnpm required
+curl -fsSL https://mono-agent.dev/install.sh | sh   # macOS/glibc Linux; private Node, no sudo
+# or, with your own Node.js >= 24.15.0 (including Windows): npm i -g create-mono-agent
 mkdir my-agent && cd my-agent
 mono-agent init                # guided wizard on a TTY; scaffold-only with flags
 mono-agent start               # background service on macOS and Linux
 mono-agent web run --loopback  # foreground console; keep this terminal open
 ```
 
-Then open `http://127.0.0.1:5050`, choose the agent, and start a conversation. `web run` binds the console's HTTP listener to this computer and configures no proxy route, but it does not remove one that already exists — an earlier managed start, a Serve handler, or your own proxy can still make it reachable elsewhere, so check `tailscale serve status` or your proxy before treating the console as local-only. The managed `mono-agent web start` service runs in the background with the same fresh loopback bind, and on macOS it re-verifies an existing mono-agent-owned Tailscale Serve route or publishes a new one only with `--share-tailnet`; other proxies and routes are not inspected, so no bind alone proves local-only access. Neither mode has an application login. [Getting Started → Quickstart](/getting-started/quickstart/) explains every branch of that path, including what a bare `init` proves before it calls the agent ready, and [Install & prerequisites](/getting-started/install/) covers both console modes, pinned installs, one-shot scaffolding, and source builds.
+Then open `http://127.0.0.1:5050`, choose the agent, and start a conversation. `web run` binds the console's HTTP listener to this computer and configures no proxy route, but it does not remove one that already exists — an earlier managed start, a Serve handler, or your own proxy can still make it reachable elsewhere, so check `tailscale serve status` or your proxy before treating the console as local-only. The managed `mono-agent web start` service runs in the background with the same fresh loopback bind, and on macOS it re-verifies an existing mono-agent-owned Tailscale Serve route or publishes a new one only with `--share-tailnet`; other proxies and routes are not inspected, so no bind alone proves local-only access. Neither mode has an application login. The [setup reference](/getting-started/quickstart/) explains every branch of that path, including what a bare `init` proves before it calls the agent ready, and [Install & prerequisites](/getting-started/install/) covers both console modes, pinned installs, one-shot scaffolding, and source builds.
 
 :::caution[These docs describe `main`, not the latest release]
-The latest published npm release is `create-mono-agent@0.26.0` (registry checked 2026-10-20; all 20 current catalog packages are at `0.26.0`). It includes the package renames and framework, Phoenix/OTLP, Supermemory, and terminal-renderer retirements. Retired npm names are deprecated but remain installable. [Release status](/reference/release-status/) covers the upgrade boundary and the current source delta.
+The latest published npm release is `create-mono-agent@0.26.0` (registry checked 2026-10-20; all 20 current catalog packages are at `0.26.0`). It includes the package renames and framework, Phoenix/OTLP, Supermemory, and terminal-renderer retirements. Retired npm names are deprecated but remain installable. Host preflight and the console Capabilities page with its Enable actions, credential fields, and Undo are on `main` only and ship in the next release. [Release status](/reference/release-status/) covers the upgrade boundary and the current source delta.
 :::
 
 ## What you get
@@ -48,7 +51,7 @@ Core model selection stays in JSON. The enabled Telegram adapter can read `MONO_
 
 ## Site map
 
-- **[Getting Started](/getting-started/)** — install the CLI, scaffold a config, and hold your first browser conversation.
+- **[Getting Started](/getting-started/)** — the tutorial, a feature tour, coding-agent setup, and the install and setup references.
 - **[Web workspace](/observability/web-console/)** — persistent threads, attachments, notifications, projects, and service lifecycle for the browser console.
 - **[Config](/config/)** — the `mono-agent.config.json` blueprint, env-var precedence, and folder layout.
 - **[Runtime](/runtime/)** — Pi runtime and model references, fallback chains, local providers, effort/permissions, sessions, concurrency, and tool guards.

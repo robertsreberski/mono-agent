@@ -2,10 +2,10 @@
 title: "Install & Prerequisites"
 description: "Install the mono-agent CLI, start the browser console, or run an unreleased build from source."
 sidebar:
-  order: 1
+  order: 4
 ---
 
-This page covers the recommended way to install the `mono-agent` CLI, what the browser console needs, and how to run an unreleased build straight from a clone of the repo.
+This page is the install reference: every way to install the `mono-agent` CLI, what the browser console needs, and how to run an unreleased build straight from a clone of the repo. For a guided walkthrough from a new computer to a first conversation, start with [Tutorial: your first agent](/getting-started/tutorial/).
 
 The shipped command line lives in `@mono-agent/app`: the config-first host that reads one `mono-agent.config.json` and hosts every channel. The always-on browser console lives in `@mono-agent/web`. For convenience there is an unscoped **`create-mono-agent`** installer that puts the natural `mono-agent` command on your `PATH`; both installer bins delegate to `@mono-agent/app`, and only the `create-mono-agent` name adds the npm-init routing described below. All publish under the `@mono-agent/*` scope on npm.
 
@@ -14,7 +14,7 @@ The bare `mono-agent` npm name isn't ours — npm rejects it as too similar to a
 :::
 
 :::note[Published release: 0.26.0]
-All 20 current catalog packages have npm `latest` set to `0.26.0` (registry checked 2026-10-20). Current `main` carries unreleased package behavior after `v0.26.0`: an early Node-version guard and `mono-agent preflight`, shipping in the next package release. [Release status](/reference/release-status/) covers the package renames, deprecated-but-installable old npm names, and the upgrade boundary. Use a [source build](#run-an-unreleased-build) only when evaluating later unreleased changes.
+All 20 current catalog packages have npm `latest` set to `0.26.0` (registry checked 2026-10-20). Current `main` carries unreleased package behavior after `v0.26.0`: an early Node-version guard and `mono-agent preflight`, shipping in the next package release. The console Capabilities page with its Enable actions, credential fields and Undo is also source-only until then. [Release status](/reference/release-status/) covers the package renames, deprecated-but-installable old npm names, and the upgrade boundary. Use a [source build](#run-an-unreleased-build) only when evaluating later unreleased changes.
 :::
 
 ## Prerequisites
@@ -306,7 +306,7 @@ mono-agent init --preset telegram-assistant --yes   # scaffold from a preset
 mono-agent presets list                             # browse the built-in presets first
 ```
 
-Then continue with the [Quickstart](/getting-started/quickstart/) to start the agent and hold your first conversation. For the full key reference, see [Config Blueprint](/config/blueprint/) and [Environment Variables](/config/env-vars/).
+Then continue with [tutorial step 4](/getting-started/tutorial/#4-start-the-console-and-send-a-first-message) to start the console and hold your first conversation, or the [setup reference](/getting-started/quickstart/) for every start path. For the full key reference, see [Config Blueprint](/config/blueprint/) and [Environment Variables](/config/env-vars/).
 
 ## Updating
 

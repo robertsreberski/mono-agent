@@ -341,11 +341,22 @@ batch get then batch continuation for two retained records nominally at most
 16,381 bytes. Larger or boundary-split records can need more rounds. Ledger upkeep stays opt-in and
 retrieval adds no extraction purchase.
 
-### Read-only optional-feature discovery
+### Optional-feature discovery and console Enable
 
 The browser's Agent settings → Capabilities shows readiness from agent-side
 validation and manual CLI/config steps for memory tiers, built-in channels,
-sandbox, MCP/tools and already-enabled tracing. It does not write configuration
-or collect secrets. Successful guided init offers a consent-first console handoff
+sandbox, MCP/tools and already-enabled tracing. Status reads never write
+configuration. Separately, supporting agents offer previewed, confirmed saves
+for exactly three actions: Memory Lite (`memory` block, only when memory is
+unconfigured), cron operator controls (`cron.operatorActions.enabled`, only with
+valid existing jobs) and subagent delegation (`subagents.enabled`, plus `Agent`
+only in a restrictive explicit allowlist). Write-only credential fields store
+Telegram, Slack, OpenAI-compatible client-bearer, A2A bearer, Journal/BuJo
+embeddings, Parallel and hosted Ollama search secrets in the agent's dotenv;
+the Telegram/Slack/OpenAI-compatible saves also set that channel's `enabled`
+and, for Telegram/Slack, the entered allowlist. A one-level Undo restores the exact previous config file. Every
+save applies only at the next start. Everything else, and every agent that does
+not report capabilities, stays config-first: there is no terminal Enable
+command. Successful guided init offers a consent-first console handoff
 (default Not now); flag/non-TTY scaffolding remains unchanged. Agent-qualified
 handoff links wait for exact discovery instead of selecting another agent.

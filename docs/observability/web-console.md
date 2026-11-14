@@ -276,14 +276,20 @@ and the primary next step; expand a card for requirements, qualitative usage/cos
 have **Enable Memory Lite…**, **Enable cron controls…** or **Enable subagents…**, and a recovery
 panel offers **Undo last console save…** while the save fence holds. Older agents keep manual
 setup guidance; read-only discovery alone does not imply write support. Tracing
-is already enabled; removed external exporters cannot be enabled here.
+is already enabled; removed external exporters cannot be enabled here. For a
+screenshot walkthrough of one Enable, see
+[tutorial step 5](/getting-started/tutorial/#5-turn-on-one-feature-from-the-capabilities-page);
+the [feature tour](/getting-started/feature-tour/) maps every feature to its console
+or config route.
 
 Supporting agents also advertise write-only credential entry for Telegram, Slack
 and the OpenAI-compatible channel’s **client bearer**, not model-provider auth.
 Telegram/Slack need allowlists or an existing explicit allow-all setting; the
 console never sets allow-all flags. Blank credential fields preserve saved values. **Confirm Save credentials** first prevalidates local prerequisites,
-then writes the selected owner-only dotenv and guarded config. It never changes
-the running environment. Embedded hosts without an explicitly supplied reloadable
+then writes the selected owner-only dotenv and guarded config. For Telegram, Slack
+and the OpenAI-compatible channel, that config change sets the channel's `enabled`
+flag (unless an environment variable controls it) and, for Telegram and Slack, the
+entered allowlist. It never changes the running environment. Embedded hosts without an explicitly supplied reloadable
 `dotenvPath` report unavailable. Shell-shadowed credentials require owner-terminal
 resolution. Noncredential environment overrides are non-blocking: a note explains
 that Save does not change overridden settings. Unavailable targets retain manual

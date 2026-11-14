@@ -2,7 +2,7 @@
 title: "Core Concepts"
 description: "Understand mono-agent's config-first model, runtime boundaries, channels, tools, context, and optional services."
 sidebar:
-  order: 3
+  order: 6
 ---
 
 This page defines the mental model behind mono-agent: one config file, one agent definition, per-channel responders, and explicit runtime boundaries. The config tool surface defaults open; sandboxing and channel allowlists are the separate controls that constrain side effects, and guided init reconfirms allow-all when no sandbox is selected. Read it once and the rest of the docs will line up.

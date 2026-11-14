@@ -5,27 +5,32 @@ sidebar:
   order: 0
 ---
 
-This section takes you from an empty folder to an agent you are talking to in the browser. The recommended path installs the published CLI, scaffolds an agent with the guided `init`, starts it (guided macOS setup starts it for you; Linux and hosts without a service manager start it manually), and opens the foreground web console. Channel setup, memory tiers, and observability are optional next steps, not prerequisites.
+This section takes you from a new computer to an agent you are talking to in the browser. Start with the [tutorial](/getting-started/tutorial/): it installs the CLI with the one-line installer, checks the host, scaffolds an agent with the guided `init`, starts the browser console for a first conversation, and turns on one optional feature from the Capabilities page. Channel setup, memory tiers, and observability are optional next steps, not prerequisites.
 
 Bare `mono-agent init` on a TTY names the agent, searches the provider catalogs, and runs a real no-tool check for every selected route; on macOS the strict **Agent ready** gate then also starts the managed agent and proves its live snapshot, while other platforms stop at a manual-start handoff; flag/non-TTY init creates a scaffold only. mono-agent remains config-first: one `mono-agent.config.json`, driven by the CLI.
 
 :::note
-The latest published release is `0.26.0` (registry checked 2026-10-20; all 20 current catalog packages). Current `main` carries unreleased package behavior after `v0.26.0`: an early Node-version guard and `mono-agent preflight`, shipping in the next package release. See [Release status](/reference/release-status/) for the upgrade boundary and any later source-only changes.
+The latest published release is `0.26.0` (registry checked 2026-10-20; all 20 current catalog packages). Current `main` carries unreleased package behavior after `v0.26.0`: an early Node-version guard and `mono-agent preflight`, shipping in the next package release. The browser console's Capabilities page, its Enable actions, write-only credential fields and Undo, and the console handoff at the end of guided `init` are also source-only until then. See [Release status](/reference/release-status/) for the upgrade boundary and any later source-only changes.
 :::
 
 ## The path
 
-1. **Install** — put the published `mono-agent` CLI on your `PATH`, or build the source CLI if you need unreleased behavior.
-2. **Quickstart** — run guided init, understand catalog/auth/route verification and the full-agent gate, then start the agent and your first browser conversation.
+1. **Tutorial** — five steps from a new computer to a first conversation in the browser console, then one optional feature turned on.
+2. **Feature tour** — what an agent can do, and whether each feature is turned on in the console, in the config, or with a CLI command.
 3. **Web workspace** — learn the console you will spend most of your time in: threads, attachments, notifications, and service lifecycle.
 4. **Concepts** — understand the moving parts so the rest of the docs make sense.
+
+Prefer to delegate? A coding agent such as Claude Code or Codex can do the setup with the bundled composer skill.
 
 ## Pages
 
 | Page | What it covers |
 | --- | --- |
-| [Install](/getting-started/install/) | Install the `mono-agent` CLI, confirm your toolchain, run the browser console in the foreground (or as a service), and update or build from source. |
-| [Quickstart](/getting-started/quickstart/) | Scaffold a `mono-agent.config.json`, validate it, start the agent on your platform, and hold the first conversation in the browser. |
+| [Tutorial: your first agent](/getting-started/tutorial/) | The guided path: installer, host preflight, guided `init`, the browser console, and one Enable action on the Capabilities page, with what to do when a step fails. |
+| [Feature tour](/getting-started/feature-tour/) | What an agent can do and where each feature is turned on: console Enable, credential fields, config, or CLI. |
+| [Set up with a coding agent](/getting-started/coding-agent-setup/) | Let Claude Code, Codex, or another coding agent build the agent with `mono-agent install-skill`, the composer skill, and the docs MCP server. |
+| [Install](/getting-started/install/) | Reference for every install route: the private-Node installer, npm, `npm create`, pinned versions, updating, and building from source. |
+| [Setup reference](/getting-started/quickstart/) | Reference for guided and scaffold-only `init`, `validate` statuses, start paths per platform, init flags, and generated files. |
 | [Concepts](/getting-started/concepts/) | The core model — agent, runtime, channels, tools, memory, and context — and how config maps onto them. |
 
 ## Where to go next
