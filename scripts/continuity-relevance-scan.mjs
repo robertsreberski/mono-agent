@@ -11,8 +11,9 @@ import { CONTINUITY_USER_VERSION } from "../packages/conversation/dist/tool-hist
 import { ToolHistoryReader } from "../packages/conversation/dist/tool-history/reader.js";
 import { TOOL_HISTORY_APPLICATION_ID } from "../packages/conversation/dist/tool-history/contracts.js";
 import { createDurableHistoryStore } from "../packages/conversation/dist/history/canonical/store.js";
-import { MemorySessionRepo, createRunDriver } from "@mono-agent/turn/engine";
+import { JsonlSessionRepo, MemorySessionRepo, createRunDriver } from "@mono-agent/turn/engine";
 import { resolveRetainedSummaryAdmission } from "../packages/turn/dist/engine/retained-summary.js";
+import { tryCompact } from "../packages/turn/dist/execution/pi/compaction/compaction-driver.js";
 import { searchRelevantContinuity } from "../packages/conversation/dist/tool-history/relevance-scan.js";
 if (typeof global.gc !== "function") throw new Error("Run this measurement with node --expose-gc.");
 const manyAbsentTerms = Array.from({ length: 16 }, (_, index) => `${String.fromCharCode(97 + index)}quartz-velvet-prairie`).join(" ");
@@ -158,6 +159,57 @@ try {
         } finally { await driver.close(); await raw.close(); await repo.close(); await owner.abort(); }
       }
     }
+  }
+  // Metadata-only carry, real disk reopen/rewind/cut and full shipping request
+  // serialization. The near-1MiB source tests fallback; the >16k source fits.
+  for (const fallback of [false, true]) {
+    const repo = new JsonlSessionRepo({ sessionsRoot: join(root, `carry-${fallback}`) });
+    let raw = await repo.create({ id: `fictional-carry-${fallback}` });
+    const retained = `## Goal\n${"Fictional capacity background. ".repeat(fallback ? 33000 : 2100)}\n\n## Historical events and corrections\n- Fictional decision; cobalt chosen.\n`;
+    const exact = "## Historical events and corrections\n- Fictional decision; cobalt chosen.\n";
+    const binding = { version: 1, logicalConversationId: "fictional-carry", conversationId: "fictional-carry", recordId: "record", generationId: "generation",
+      sha256: sha(retained), retainedBytes: Buffer.byteLength(retained), sourceEpoch: "source", sourceRevision: 1,
+      publication: { journalId: "source-journal", operationId: "source-cut", sourceDigest: sha("coverage"), summaryDigest: sha(retained) } };
+    const access = { destination: { logicalConversationId: "fictional-carry", conversationId: "fictional-carry", epoch: "destination", handleId: raw.metadata.id },
+      assertCurrent: async () => {}, resolve: async () => ({ text: retained }) };
+    const model = { provider: "faux", id: "capacity", api: "faux-api", contextWindow: 100000, maxTokens: 10000 };
+    const seed = await raw.appendMessage({ role: "user", content: "Fictional pack. ".repeat(4000).slice(0, 47952), timestamp: 1 });
+    const metadata = raw.metadata;
+    let driver = createRunDriver(raw, { model, retainedSummaryAccess: access });
+    await driver.beginTurn("fictional-carry-admission", "host", { kind: "host", ownerKey: "fictional-carry", historyBucket: "fictional-carry", handleId: metadata.id, turnId: "fictional-carry-admission", baseRevision: 0 });
+    await driver.admitRetainedSummary({ binding }, seed);
+    if (!raw.validator.retainedSummaryAdmission) throw Error("capacity_carry_admission_missing");
+    await driver.endTurn("completed"); await raw.close();
+    global.gc(); const baseline = process.memoryUsage(), started = performance.now();
+    let peakHeap = baseline.heapUsed, peakRss = baseline.rss, requestCount = 0, maxSerializedBytes = 0, firstSteadyHeap;
+    const samples = [];
+    try {
+      for (let restart = 0; restart < 30; restart++) {
+        raw = await repo.open(metadata); await raw.moveTo(seed);
+        driver = createRunDriver(raw, { model, retainedSummaryAccess: access });
+        for (let index = 0; index < 2; index++) await raw.appendMessage({ role: "user", content: "Fictional capacity progress. ".repeat(1800), timestamp: 2 });
+        const warnings = [], harness = { compactionFailureKey: root, getModel: () => model, waitForIdle: () => driver.waitForIdle(),
+          setCompactionSettings: settings => driver.setCompactionSettings(settings), subscribe: listener => driver.subscribe(listener),
+          on: (_type, handler) => driver.hooks.on("before_compaction", handler), compact: () => driver.compact(), models: { completeSimple: async (_model, context) => {
+            requestCount++; maxSerializedBytes = Math.max(maxSerializedBytes, Buffer.byteLength(JSON.stringify(context)));
+            const m = process.memoryUsage(); peakHeap = Math.max(peakHeap, m.heapUsed); peakRss = Math.max(peakRss, m.rss);
+            return { role: "assistant", stopReason: "stop", content: [{ type: "text", text: exact }] };
+          } } };
+        const result = await tryCompact(harness, { trigger: "proactive", runtimeWarnings: warnings, session: raw,
+          policy: { enabled: true, summaryMaxTokens: 3000, keepRecentTokens: 1000, compactionMinSavingsTokens: 0, effort: "none" } });
+        const cut = (await raw.getEntries()).at(-1);
+        if (!result.applied || Boolean(cut.checkpoint?.retainedSummaryCoverage) === fallback) throw Error("capacity_carry_cut_invalid");
+        if (warnings.some(row => row.warning_kind === "retained_summary_legacy_fallback") !== fallback) throw Error("capacity_carry_fallback_invalid");
+        await raw.close();
+        await new Promise(resolve => setImmediate(resolve)); global.gc();
+        const heap = process.memoryUsage().heapUsed; firstSteadyHeap ??= heap; samples.push(heap);
+      }
+      const result = { carryRestartsAndCuts: 30, fallback, retainedBytes: Buffer.byteLength(retained), packBytes: 47952, requestCount, maxSerializedBytes,
+        elapsedMs: performance.now() - started, heapDeltaMiB: (peakHeap - baseline.heapUsed) / 1024 ** 2, rssDeltaMiB: (peakRss - baseline.rss) / 1024 ** 2,
+        steadyHeapGrowthMiB: (samples.at(-1) - firstSteadyHeap) / 1024 ** 2 };
+      result.acceptedEnvelopeMet = result.elapsedMs <= 5000 && result.heapDeltaMiB <= 100 && result.rssDeltaMiB <= 128 && result.steadyHeapGrowthMiB <= 100;
+      console.log(JSON.stringify(result)); if (!result.acceptedEnvelopeMet) process.exitCode = 1;
+    } finally { await raw.close(); await repo.close(); }
   }
   console.log(JSON.stringify({ node: process.version, platform: process.platform, arch: process.arch, cpu: cpus()[0]?.model, cores: cpus().length, memoryGiB: totalmem() / 1024 ** 3,
     cacheNote: "cold-connection closes/reopens SQLite; OS filesystem cache is not flushed; warm is an immediate repeat; GC before each sample", allTargetsMet: results.length ? results.every(r => r.targetMet) : null, acceptedEnvelopeMet: results.length ? results.every(r => r.acceptedEnvelopeMet) : null }));

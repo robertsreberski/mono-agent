@@ -50,13 +50,19 @@ async function authorizeGuardedDeletion(header: any, options: any): Promise<void
   await options.assertOwned();
 }
 function checkRecordAuthority(session: any, record: any): void {
-  if (record?.kind === "retained_summary_admitted" && (record.payload?.destination?.handleId !== session.metadata.id
+  if (["retained_summary_admitted", "reseed_predecessor_admitted"].includes(record?.kind) && (record.payload?.destination?.handleId !== session.metadata.id
     || record.payload?.destination?.journalId !== session.metadata.journalId)) corruptBinding();
   const authority = sessionAuthorities.get(session);
   if (!authority) {
     if (record?.payload?.projectionBinding !== undefined
       || record?.payload?.compaction?.checkpoint?.inheritedCoverage !== undefined
       || record?.payload?.artifactRef !== undefined) corruptBinding();
+    return;
+  }
+  if (["retained_summary_admitted", "reseed_predecessor_admitted"].includes(record?.kind)) {
+    // Receipt binding names the retained source, not a host-turn owner binding.
+    if (record.payload?.binding?.logicalConversationId !== authority.ownerKey
+      || record.payload?.binding?.conversationId !== authority.historyBucket) corruptBinding();
     return;
   }
   const owner = record?.kind === "owner_binding" ? record.payload : record?.payload?.binding;

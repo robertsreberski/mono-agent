@@ -32,6 +32,7 @@ export interface RuntimeRetainedSummaryReceipt extends RuntimeRetainedSummaryCan
  * source is revocation, not permission to recover native/original source bytes. */
 export interface RuntimeRetainedSummaryAccess {
   readonly destination: Omit<RuntimeRetainedSummaryReceipt["destination"], "journalId">;
+  eligibleForReseed?(): Promise<RuntimeRetainedSummaryBinding | undefined>;
   assertCurrent(): Promise<void>;
   resolve(binding: RuntimeRetainedSummaryBinding): Promise<{ readonly text: string } | undefined>;
 }

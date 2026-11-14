@@ -16,13 +16,23 @@ warnings or run-option policy. Process-wide provider fan-out stays in runtime.
 `retained_summary_admitted` is a closed, version-1 metadata payload inside the
 schema-2 journal. It binds source publication/retained bytes, renderer UTF-8 entry
 and pack hashes, destination canonical epoch/owner/physical bucket/handle/journal,
-and the actual persisted seed-entry ID/message digest. Exactly one is allowed;
+and the actual persisted seed-entry ID/message digest.
+`reseed_predecessor_admitted` is a separate closed version-1 payload with the same
+binding, destination and seed, but **no selection**: it authenticates a committed
+retained predecessor without claiming it was quoted. Exactly one receipt across
+both kinds is allowed;
 it must follow synthetic seed appends and host beginTurn/owner binding, precede
 operations, and sync before compaction or provider dispatch. IDs allow up to
 4,096 UTF-8 bytes within the overall 8-KiB metadata bound. Invalid/unavailable
 candidates before the write emit `retained_summary_admission_skipped` and keep
 legacy execution; write/fsync failures remain storage failures. No text copy or pin
 is stored. Orphan seeds and interrupted host-turn starts confer no protection.
+
+Late `eligibleForReseed()` runs under the canonical owner only after real fresh
+or create-on-miss resolution, with no inherited projection. It is independent of
+pack suppliers. Prepared dispatch installs this capability after its actual
+destination epoch/descriptor is ready. A true warm resume never admits again;
+without a real persisted synthetic seed anchor, admission is skipped.
 
 Host selection travels with that call's exact messages, not mutable supplier
 state. The host-only resolver is protected from request/private-route overrides
@@ -45,7 +55,17 @@ The authenticated predecessor enters ordinary and split preparation before
 summary-input/budget planning. Native checkpoint predecessors take precedence over
 cold sources, including repaired projections. Existing refusal identities, paid
 ceilings, manual/reactive and inherited-prefix bypasses and capacity bounds stay
-unchanged. No-admission journal bytes/projections remain unchanged. Legacy journals
+unchanged. Before any summary call, retained-only input is checked through the
+actual ordinary/split request builders and provider headroom policy, including
+focus, evidence, conversation/pack, whole predecessor, protected frame and
+output/thinking reserves. Split reused-history output envelopes are checked too.
+If it cannot fit, preparation/targets/requests are rebuilt without the retained
+predecessor or its generated frame; a content-free
+`retained_summary_legacy_fallback` warning reports `destination_headroom`. That
+cut records no retained coverage. Legacy input can still fail its existing fit
+checks; if no cut commits, the receipt remains active for reconsideration.
+Native/inherited predecessor rules do not change.
+No-admission journal bytes/projections remain unchanged. Legacy journals
 are forward-readable; old readers reject the new closed kind. Binary downgrade
 against carrier-bearing journals requires a separately approved reconstruction/reset.
 

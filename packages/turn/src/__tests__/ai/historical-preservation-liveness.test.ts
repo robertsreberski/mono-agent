@@ -16,11 +16,13 @@ import { createMidRunCompaction } from "../../execution/pi/compaction/mid-run-co
 import { createCompactionUsage, manualCompactionAccounting } from "../../telemetry/compaction-usage.js";
 import { tryCompact, runReactiveCompaction } from "../../execution/pi/compaction/compaction-driver.js";
 
+import { historicalTuples, protectedHistoricalInput } from "../../engine/compaction-kit/historical-preservation.js";
+
 const tuple = "- Permit; m1; pending; no approval.";
 const history = `## Historical events and corrections\n${tuple}\n## Pending items\n- None`;
 const answer = (text: string) => ({ role: "assistant", stopReason: "stop", content: [{ type: "text", text }], usage: { input: 1, output: 1, totalTokens: 2, cacheRead: 0, cacheWrite: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } });
 
-async function fixture(summary = history, inherited = false, admitted = false) {
+async function fixture(summary = history, inherited = false, admitted: boolean | "carry" = false, seedText?: string) {
   const inheritedProjection = { messages: [{ role: "user", content: "Fictional inherited prefix.", timestamp: 1 }], coverage: { version: 1, sources: [{ journalId: "frozen", sourceTipId: "tip", sourceSeq: 7, sourceDigest: "3".repeat(64) }] } };
   const root = await mkdtemp(join(tmpdir(), "historical-liveness-"));
   const repo = new JsonlSessionRepo({ sessionsRoot: root });
@@ -32,9 +34,10 @@ async function fixture(summary = history, inherited = false, admitted = false) {
       sha256: hash(summary), retainedBytes: Buffer.byteLength(summary), sourceEpoch: "source", sourceRevision: 1,
       publication: { journalId: "source-journal", operationId: "source-cut", sourceDigest: hash("coverage"), summaryDigest: hash(summary) } };
     const entry = `Generated summary evidence id="record" sha256="${hash(summary)}": ${JSON.stringify(summary)}\n`;
-    seed = await raw.appendMessage({ role: "user", content: entry, timestamp: 1 });
+    seed = await raw.appendMessage({ role: "user", content: seedText ?? (admitted === "carry" ? "Fictional canonical replay." : entry), timestamp: 1 });
     candidate = { binding, selection: { recordId: binding.recordId, generationId: binding.generationId, sha256: binding.sha256,
       retainedBytes: binding.retainedBytes, packSha256: hash(entry), entry: { startByte: 0, endByte: Buffer.byteLength(entry), sha256: hash(entry) } } };
+    if (admitted === "carry") delete candidate.selection;
     access = { destination: { logicalConversationId: "fictional-owner", conversationId: "fictional-bucket", epoch: "destination", handleId: raw.metadata.id },
       assertCurrent: async () => {}, resolve: async () => ({ text: summary }) };
   } else await raw.appendCompaction({ summary, tokensBefore: 10000, retainedTail: [], details: { readFiles: [], modifiedFiles: [] } });
@@ -483,4 +486,146 @@ it("applies a cut without retained coverage when source disappears after the sum
     expect(await resolveRetainedSummaryAdmission(f.raw, f.access, warn)).toBeUndefined();
     expect(resolve).toHaveBeenCalledTimes(2); expect(warn).not.toHaveBeenCalled(); expect(warnings).toHaveLength(1);
   } finally { await f.close(); }
+});
+
+// The pack remains ordinary conversation data even at the future 16k ceiling.
+// It is not the omitted predecessor, and PR2 does not raise the shipping cap.
+it.each(["proactive", "manual", "reactive_overflow"].flatMap(trigger => [false, true].map(split => ({ trigger, split }))))("drops a retained-only predecessor before any dispatch: $trigger split=$split", async ({ trigger, split }) => {
+  const source = `## Goal
+${"Fictional source detail. ".repeat(18000)}
+
+${history}`;
+  const maximalPack = "Fictional pack evidence. ".repeat(2100).slice(0, 47952);
+  const f = await fixture(source, false, "carry", maximalPack);
+  try {
+    f.harness.getModel().contextWindow = 50000;
+    await f.grow();
+    if (split) await f.raw.appendMessage({ role: "assistant", content: [{ type: "text", text: "Fictional suffix. ".repeat(2000) }], timestamp: 3 });
+    f.completeSimple.mockImplementation(async (_model, context) => {
+      const text = JSON.stringify(context);
+      expect(text).not.toContain("<previous-summary>");
+      expect(text).not.toContain("<protected-historical-tuples>");
+      expect(text).not.toContain("Fictional source detail.");
+      expect(f.warnings).toContainEqual(expect.objectContaining({ warning_kind: "retained_summary_legacy_fallback", reason: "destination_headroom" }));
+      return answer("Legacy compacted context.");
+    });
+    expect((await f.compact(trigger)).applied).toBe(true);
+    expect(f.completeSimple).toHaveBeenCalledTimes(split ? 2 : 1);
+    const cut = (await f.raw.getEntries()).filter((entry: any) => entry.type === "compaction").at(-1);
+    expect(cut.checkpoint.retainedSummaryCoverage).toBeUndefined();
+    expect(f.raw.validator.retainedSummaryAdmission.kind).toBe("reseed_predecessor_admitted");
+    // Branch-local native precedence, then rewind to the still-active receipt.
+    expect(await resolveRetainedSummaryAdmission(f.raw, f.access)).toBeUndefined();
+    await f.raw.moveTo(f.raw.validator.retainedSummaryAdmission.payload.seed.entryId);
+    expect((await resolveRetainedSummaryAdmission(f.raw, f.access))?.text).toBe(source);
+  } finally { await f.close(); }
+});
+it("drops an oversized retained split-reuse output envelope before dispatch, even with zero tuples", async () => {
+  const f = await fixture(`## Goal
+${"Fictional reused history. ".repeat(2000)}`, false, "carry", "Fictional canonical prefix. ".repeat(400));
+  try {
+    // Keep the seed inside the turn prefix; no separate history call is needed.
+    await f.raw.appendMessage({ role: "assistant", content: [{ type: "text", text: "Fictional suffix. ".repeat(2000) }], timestamp: 3 });
+    const result = await f.compact("proactive");
+    expect(result.applied).toBe(true);
+    expect(f.completeSimple).toHaveBeenCalledTimes(1);
+    expect(f.warnings).toContainEqual(expect.objectContaining({ warning_kind: "retained_summary_legacy_fallback", reason: "destination_headroom" }));
+    expect((await f.raw.getEntries()).at(-1).checkpoint.retainedSummaryCoverage).toBeUndefined();
+  } finally { await f.close(); }
+});
+
+it.each(["proactive", "manual", "reactive_overflow"].flatMap(trigger => [false, true].map(split => ({ trigger, split }))))("keeps a fitted whole carry with maximal pack protected and covered: $trigger split=$split", async ({ trigger, split }) => {
+  const source = `## Goal
+${"Fictional source detail. ".repeat(2600)}
+
+${history}`;
+  const f = await fixture(source, false, "carry", "Fictional pack evidence. ".repeat(2100).slice(0, 47952));
+  try {
+    await f.grow();
+    if (split) await f.raw.appendMessage({ role: "assistant", content: [{ type: "text", text: "Fictional suffix. ".repeat(2000) }], timestamp: 3 });
+    f.completeSimple.mockImplementation(async () => answer(history));
+    expect((await f.compact(trigger)).applied).toBe(true);
+    expect(f.completeSimple).toHaveBeenCalledTimes(split ? 2 : 1);
+    expect(JSON.stringify(f.completeSimple.mock.calls[0]![1])).toContain("<previous-summary>");
+    expect(JSON.stringify(f.completeSimple.mock.calls[0]![1])).toContain("<protected-historical-tuples>");
+    expect(f.warnings).not.toContainEqual(expect.objectContaining({ warning_kind: "retained_summary_legacy_fallback" }));
+    expect((await f.raw.getEntries()).at(-1).checkpoint.retainedSummaryCoverage.admissionId).toBe(f.raw.validator.retainedSummaryAdmission.id);
+  } finally { await f.close(); }
+});
+it("retains a carry for reconsideration when even the legacy request cannot fit", async () => {
+  const f = await fixture(`## Goal
+${"Fictional source detail. ".repeat(3000)}
+
+${history}`, false, "carry", "Fictional pack. ".repeat(3000));
+  try {
+    f.harness.getModel().contextWindow = 2000; await f.grow();
+    expect((await f.compact("proactive")).applied).toBe(false);
+    expect(f.completeSimple).not.toHaveBeenCalled();
+    expect(f.events.at(-1).reason).toBe("insufficient_summary_headroom");
+    expect((await f.raw.getEntries()).some((entry: any) => entry.type === "compaction")).toBe(false);
+    expect((await resolveRetainedSummaryAdmission(f.raw, f.access))?.admissionId).toBe(f.raw.validator.retainedSummaryAdmission.id);
+  } finally { await f.close(); }
+});
+
+it.each([100, 300])("preflights the effective bypass frame at the exact destination boundary (tuple size=%s)", async repeats => {
+  const source = `## Historical events and corrections\n- Fictional condition; ${"recorded evidence. ".repeat(repeats)}\n## Pending items\n- Review.`;
+  const high = await fixture(source, false, "carry");
+  const low = await fixture(source, false, "carry");
+  const reason = repeats === 100 ? "protected_template_unfits" : "protected_history_unfits";
+  try {
+    await high.grow();
+    expect((await high.compact("manual")).applied).toBe(true);
+    const context = high.completeSimple.mock.calls[0]![1];
+    const recorded = high.events.at(-1).accounting.requests[0];
+    expect(high.events.at(-1).accounting.preservation.bypassReason).toBe(reason);
+    expect(context.messages[0].content[0].text).toContain(`<previous-summary>\n${source}\n</previous-summary>`);
+    expect(JSON.stringify(context)).not.toContain("<protected-historical-tuples>");
+    const model = low.harness.getModel();
+    model.contextWindow = estimateProviderContext(context).tokens + 4096 + recorded.minimumAnswerTokens;
+    const options = { maxTokens: recorded.textTargetTokens };
+    expect(summaryRequestOptions(model, context, options, "none", recorded.minimumAnswerTokens).canDispatch).toBe(true);
+    const framed = structuredClone(context);
+    framed.messages[0].content[0].text = framed.messages[0].content[0].text.replace("</previous-summary>\n\n",
+      `</previous-summary>\n\n${protectedHistoricalInput(historicalTuples(source))}`);
+    expect(summaryRequestOptions(model, framed, options, "none", recorded.minimumAnswerTokens).canDispatch).toBe(false);
+    await low.grow();
+    expect((await low.compact("manual")).applied).toBe(true);
+    expect(low.completeSimple).toHaveBeenCalledOnce();
+    expect(low.completeSimple.mock.calls[0]![1].messages[0].content[0].text).toContain(`<previous-summary>\n${source}\n</previous-summary>`);
+    expect(JSON.stringify(low.completeSimple.mock.calls[0]![1])).not.toContain("<protected-historical-tuples>");
+    expect(low.warnings).not.toContainEqual(expect.objectContaining({ warning_kind: "retained_summary_legacy_fallback" }));
+    expect(low.events.at(-1).accounting.preservation.bypassReason).toBe(reason);
+    expect((await low.raw.getEntries()).at(-1).checkpoint.retainedSummaryCoverage.admissionId).toBe(low.raw.validator.retainedSummaryAdmission.id);
+  } finally { await high.close(); await low.close(); }
+});
+
+it("keeps the whole carry when only the dispatch frame-only input fallback fits", async () => {
+  const source = `## Historical events and corrections\n- Fictional condition; ${"recorded evidence. ".repeat(40)}\n## Pending items\n- Review.`;
+  const high = await fixture(source, false, "carry");
+  const low = await fixture(source, false, "carry");
+  try {
+    await high.grow(); high.completeSimple.mockResolvedValue(answer(source));
+    expect((await high.compact("proactive")).applied).toBe(true);
+    const framed = high.completeSimple.mock.calls[0]![1];
+    const recorded = high.events.at(-1).accounting.requests[0];
+    expect(high.events.at(-1).accounting.preservation.bypassReason).toBeNull();
+    const frame = protectedHistoricalInput(historicalTuples(source));
+    expect(framed.messages[0].content[0].text).toContain(frame);
+    const unframed = structuredClone(framed);
+    unframed.messages[0].content[0].text = unframed.messages[0].content[0].text.replace(frame, "");
+    const model = low.harness.getModel(), legacyMinimum = low.policy.summaryMaxTokens;
+    model.contextWindow = estimateProviderContext(unframed).tokens + 4096 + legacyMinimum;
+    expect(summaryRequestOptions(model, framed, { maxTokens: recorded.textTargetTokens }, "none", recorded.minimumAnswerTokens).canDispatch).toBe(false);
+    expect(summaryRequestOptions(model, unframed, { maxTokens: legacyMinimum }, "none", legacyMinimum).canDispatch).toBe(true);
+    await low.grow();
+    expect((await low.compact("proactive")).applied).toBe(true);
+    expect(low.completeSimple).toHaveBeenCalledOnce();
+    const actual = low.completeSimple.mock.calls[0]![1].messages[0].content[0].text;
+    expect(actual).toContain(`<previous-summary>\n${source}\n</previous-summary>`);
+    expect(actual).not.toContain("<protected-historical-tuples>");
+    expect(low.events.at(-1).accounting.preservation.bypassReason).toBe("protected_input_unfits");
+    expect(low.events.at(-1).accounting.requests[0]).toMatchObject({ minimumAnswerTokens: legacyMinimum, textTargetTokens: legacyMinimum, providerInvoked: true });
+    expect(low.warnings).not.toContainEqual(expect.objectContaining({ warning_kind: "retained_summary_legacy_fallback" }));
+    expect((await low.raw.getEntries()).at(-1).checkpoint.retainedSummaryCoverage.admissionId).toBe(low.raw.validator.retainedSummaryAdmission.id);
+  } finally { await high.close(); await low.close(); }
 });

@@ -549,6 +549,7 @@ async function executeHarnessRuntime(preparation: PreparationControl | undefined
       const retainedAccess = (epoch: string | undefined, handleId: string | undefined, owner: HarnessRuntimeRouting["withContinuityOwner"]): RuntimeRunOptions["retainedSummaryAccess"] =>
         epoch && handleId && owner && options.toolHistory?.continuityEnabled === true && !sessionIsolated ? {
           destination: { logicalConversationId: retainedScope.logicalConversationId, conversationId: request.conversationId, epoch, handleId },
+          eligibleForReseed: async () => await owner(async () => options.toolHistory!.reader.eligibleRetainedSummary(retainedScope)?.binding),
           assertCurrent: async () => { await owner(async () => { request.abortSignal.throwIfAborted(); }); },
           resolve: async binding => await owner(async () => options.toolHistory!.reader.resolveRetainedSummary(retainedScope, binding)),
         } : undefined;

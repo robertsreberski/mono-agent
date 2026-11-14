@@ -107,6 +107,8 @@ export function createRunDriver(store: any, options: any): {
   async function admitRetainedSummary(candidate: any, seedEntryId: string): Promise<void> {
     const access = options.retainedSummaryAccess;
     let receipt;
+    const carry = candidate?.selection === undefined;
+    const kind = carry ? "reseed_predecessor_admitted" : "retained_summary_admitted";
     // Until the write is admitted there is no authority to preserve. Optional
     // evidence validation must not turn an otherwise valid cold turn into failure.
     try {
@@ -115,19 +117,19 @@ export function createRunDriver(store: any, options: any): {
       const seed = await store.getEntry(seedEntryId);
       receipt = { version: 1, ...structuredClone(candidate), destination: { ...access.destination, journalId: store.metadata.journalId },
         seed: { entryId: seedEntryId, messageDigest: evidenceDigest(seed?.message) } };
-      assertRetainedSummarySeed(receipt, seed?.message);
+      assertRetainedSummarySeed(receipt, seed?.message, undefined, carry);
       const proof = await access.resolve(receipt.binding);
       await access.assertCurrent();
       if (!proof) throw new Error("Retained source unavailable");
-      assertRetainedSummarySeed(receipt, seed?.message, proof.text);
+      assertRetainedSummarySeed(receipt, seed?.message, proof.text, carry);
       store.validateRecord({ schemaVersion: 2, id: randomUUID(), parentId: store.validator.parentId, seq: store.seq + 1,
-        timestamp: Date.now(), turnId, kind: "retained_summary_admitted", payload: receipt });
+        timestamp: Date.now(), turnId, kind, payload: receipt });
     } catch {
       publish({ type: "warning", code: "retained_summary_admission_skipped", message: "Optional retained summary admission skipped; continuing with legacy context." });
       return;
     }
     // Storage failures and the durability barrier are not optional fallbacks.
-    await store.write("retained_summary_admitted", receipt);
+    await store.write(kind, receipt);
     await barrier();
   }
   async function endTurn(status: any, result?: any): Promise<void> {
@@ -346,7 +348,7 @@ export function createRunDriver(store: any, options: any): {
         if (context.abortSignal.aborted) throw new Error("Pi compaction aborted during evidence preparation.");
         if (store.tip !== source.sourceTipId) throw new Error("Compaction source advanced during evidence preparation.");
       }
-      let retainedSummaryCoverage = retainedPredecessor ? { version: 1, admissionId: retainedPredecessor.admissionId }
+      let retainedSummaryCoverage = retainedPredecessor && decision.retainedAuthorityUsed !== false ? { version: 1, admissionId: retainedPredecessor.admissionId }
         : nativeEntries.filter((prior: any) => prior.type === "compaction" && prior.checkpoint?.retainedSummaryCoverage).at(-1)?.checkpoint.retainedSummaryCoverage;
       // Recheck source/ownership after the awaited summary call, before a cut.
       if (retainedPredecessor) {

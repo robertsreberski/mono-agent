@@ -219,6 +219,7 @@ export async function resolveSession(runState: NativeSessionState, {
     };
 }> {
   const waitContext = waitSignal ? { abortSignal: waitSignal } : ENGINE_CONTEXT;
+  runState.initializedEpoch = false;
   if (access) await assertNativeSessionAccess(access, "open", durableRepo.root);
   // Resume check first: a session miss must stay cheap (no tool/MCP/harness
   // init). This mirrors the legacy bridge's fail-fast contract.
@@ -298,6 +299,15 @@ export async function resolveSession(runState: NativeSessionState, {
           if (access) await assertNativeProjectionBinding(raw, projection);
         } catch (error) { await raw.close(); throw error; }
         runState.session = createPiSessionAdapter(raw);
+        // Prepared cold reconstruction atomically publishes these four initialization
+        // records before runtime opens the epoch. Empty context alone is not proof:
+        // a rewind leaves all prior records (and a higher sequence) in the journal.
+        const initialTurn = raw.validator.turns.values().next().value;
+        runState.initializedEpoch = raw.seq === 4 && raw.validator.turns.size === 1
+          && raw.entries.size === 0 && raw.tip === null
+          && initialTurn?.start.seq === 1 && initialTurn.start.payload.identitySource === "synthetic"
+          && initialTurn.start.payload.config.cause === "initialize" && initialTurn.end?.seq === 4
+          && initialTurn.end.payload.status === "completed" && raw.validator.owner.kind === "unbound";
         // Import publishes a new versioned pathname; the registry must sync and
         // retire that file, never the archived legacy pathname.
         claimed.entry.metadata = raw.metadata;
@@ -616,6 +626,7 @@ export type NativeSessionState = {
     reservation?: any;
     ephemeralSessionRepo?: any;
     createdOnMiss?: boolean;
+    initializedEpoch?: boolean;
     baselineLeafId?: string | null;
     hasBaselineLeaf?: boolean;
     preserveTurnEvidence?: boolean;

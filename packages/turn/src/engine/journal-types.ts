@@ -6,7 +6,7 @@ export const JOURNAL_FORMAT = "mono-harness";
 export const JOURNAL_KINDS = Object.freeze([
   "turn_start", "turn_end", "operation_start", "operation_end", "message",
   "tool_call", "tool_result", "compaction", "interruption", "rewind", "model_change",
-  "input_queued", "input_consumed", "retained_summary_admitted", "owner_binding", "handle_binding", "handle_retired",
+  "input_queued", "input_consumed", "retained_summary_admitted", "reseed_predecessor_admitted", "owner_binding", "handle_binding", "handle_retired",
 ] as const);
 
 export type JournalKind = typeof JOURNAL_KINDS[number];

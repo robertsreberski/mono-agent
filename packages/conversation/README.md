@@ -42,6 +42,18 @@ attempts. Export contention is not an integrity failure; exhausted/cancelled
 reads remain unavailable and never authorize a purchase. Synchronous pack reads
 omit a temporarily unavailable ledger without latching a corruption warning.
 
+Cold native reseeds can carry one authenticated retained publication independently
+of continuity-pack presentation. Under the exclusive canonical owner,
+`eligibleForReseed()` supplies only the pinned eligible binding; exact publication
+resolution is repeated before the metadata-only native receipt is written and
+synced. This covers ordinary model changes, prepared missing-journal cold
+reconstruction (after the actual epoch is bound), and pack-disabled canonical
+replay. It does not promote arbitrary pack text, admit on warm resume, extend
+source retention or change managed inherited handoffs. Native checkpoints win;
+source loss keeps legacy availability. A retained predecessor that cannot fit the
+destination summary request is omitted whole before dispatch with a content-free
+warning and no retained coverage; pack and output limits remain unchanged.
+
 ## Install / Usage
 
 ```bash

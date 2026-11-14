@@ -389,8 +389,9 @@ it.each([false, true])("keeps the exact retained pack through source retirement/
   const eligibility = vi.spyOn(f.reader, "eligibleRetainedSummary");
   if (eligibilityFails) eligibility.mockImplementation(() => { throw new Error("Fictional lookup details must stay private."); });
   await f.restart(); await f.run(current, "faux:other");
-  expect(eligibility).toHaveBeenCalledOnce();
-  expect(f.events.filter(event => event.warning_kind === "retained_summary_admission_skipped")).toHaveLength(eligibilityFails ? 1 : 0);
+  // Late carry eligibility is independent of the quotation supplier lookup.
+  expect(eligibility).toHaveBeenCalledTimes(2);
+  expect(f.events.filter(event => event.warning_kind === "retained_summary_admission_skipped")).toHaveLength(eligibilityFails ? 2 : 0);
   expect(JSON.stringify(f.events)).not.toContain("lookup details");
   await expect(readFile(sourcePath)).rejects.toMatchObject({ code: "ENOENT" });
   const packText = (f.requests.at(-1) as { messages: { content: unknown }[] }).messages.map(m => typeof m.content === "string" ? m.content : JSON.stringify(m.content)).join("\n");

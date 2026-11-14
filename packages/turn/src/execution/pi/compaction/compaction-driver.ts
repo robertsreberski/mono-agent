@@ -4,10 +4,10 @@
 // runtime owns triggers, fixed overhead, savings and one overflow-recovery attempt.
 // Mid-run compaction reuses these guards at completed model/tool boundaries.
 
-import { calculateContextTokens, compact as compactPreparedContext, estimateContextTokens, estimateTokens, getLastAssistantUsage, prepareCompaction, shouldCompact } from "../../../engine/compaction-kit/compaction.js";
+import { createHistorySummaryContext, createPrefixSummaryContext, calculateContextTokens, compact as compactPreparedContext, estimateContextTokens, estimateTokens, getLastAssistantUsage, prepareCompaction, shouldCompact } from "../../../engine/compaction-kit/compaction.js";
 import { ENGINE_CONTEXT as BACKGROUND_CONTEXT } from "../../../engine/context.js";
-import { planSummaryBudget } from "../../../engine/compaction-kit/historical-preservation.js";
-import { prepareSummaryInput, summaryModels } from "./compaction-summary.js";
+import { planSummaryBudget, planSummaryProtection } from "../../../engine/compaction-kit/historical-preservation.js";
+import { assembleSummaryContext, prepareSummaryInput, prepareSummaryRequest, summaryModels } from "./compaction-summary.js";
 import { compactionFailureGuard } from "./compaction-failures.js";
 import { summaryThinkingLevel } from "./summary-policy.js";
 import { clearProactivePreservationRefusal, proactivePreservationGuard } from "./preservation-refusals.js";
@@ -303,7 +303,7 @@ export function createGuardedCompactionHook({
   beforeSummary = null,
 }: any) {
   let decision: { kind: string; reason?: string; tokensBefore?: number | null; tokensAfter?: number | null; savings?: number | null; firstKeptEntryId?: string | null; retainedTailLength?: number; compaction?: any; error?: any; warn?: boolean; retryAfterMs?: number; growthRequiredTokens?: number; } | null = null;
-  const handler = async (event: any) => {
+  const handler = async (event: any): Promise<{ cancel?: boolean; compaction?: any; retainedAuthorityUsed?: boolean }> => {
     decision = null;
     let failureGuard = null;
     let preservationGuard: ReturnType<typeof proactivePreservationGuard> | null = null;
@@ -366,16 +366,57 @@ export function createGuardedCompactionHook({
         return { cancel: true };
       }
       accounting.tailEstimateTokens = prepared.value.retainedTail.reduce((sum: any, message: any) => sum + estimateTokens(message), 0);
-      const input = prepareSummaryInput(prepared.value);
+      let input = prepareSummaryInput(prepared.value);
       accounting.preparation = input.metadata;
       input.preparation.settings = { ...input.preparation.settings, summaryMaxTokens: effectivePolicy.summaryMaxTokens };
-      const summaryBudget = planSummaryBudget(input.preparation, estimateTokens);
+      const preservationFallback = trigger === "manual" || trigger === "reactive_overflow" || event.nonRetainablePrefixLength > 0;
+      let summaryBudget = planSummaryBudget(input.preparation, estimateTokens);
+      let retainedAuthorityUsed = !!event.retainedPredecessor;
+      if (retainedAuthorityUsed && input.preparation.previousSummary === event.retainedPredecessor.text) {
+        const model = harness.getModel();
+        const protection = planSummaryProtection(summaryBudget, model, preservationFallback);
+        const preservation = { bypassReason: protection.bypassReason, protectionActive: protection.protecting,
+          protectedTupleCount: summaryBudget.tuples.length };
+        // Preflight shares dispatch's frame-only fallback and restored legacy
+        // targets/minimum, before considering removal of the whole predecessor.
+        const fits = (context: any, target: number, legacyTarget: number) => prepareSummaryRequest(model,
+          assembleSummaryContext(context, input.focus, input.evidence),
+          { maxTokens: Math.min(target, model.maxTokens > 0 ? model.maxTokens : Infinity) }, effectivePolicy.effort,
+          Math.min(MIN_ANSWER_TOKENS, summaryBudget.minimumTextTarget),
+          { preservation, textTargetTokens: legacyTarget,
+            minimumAnswerTokens: Math.min(MIN_ANSWER_TOKENS, summaryBudget.split ? summaryBudget.originalPrefix : summaryBudget.originalHistory) }).policy.canDispatch;
+        const historyFits = !summaryBudget.generateHistory || fits(createHistorySummaryContext(input.preparation.messagesToSummarize,
+          { previousSummary: input.preparation.previousSummary, customInstructions: event.customInstructions, protectHistory: protection.protecting }),
+          protection.targets.history, summaryBudget.originalHistory);
+        // A history input fallback also bypasses protection before a split prefix.
+        const prefixFits = !summaryBudget.split || fits(createPrefixSummaryContext(input.preparation.turnPrefixMessages),
+          preservation.bypassReason ? summaryBudget.originalPrefix : protection.targets.prefix, summaryBudget.originalPrefix);
+        // Split reuse can commit the predecessor without a history request. Its
+        // entire reused envelope must fit even if there are zero parsed tuples.
+        const reusedFits = summaryBudget.generateHistory || summaryBudget.budget.fits(
+          `${summaryBudget.historyText}${summaryBudget.separator}${summaryBudget.metadata}`, summaryBudget.budget.minimum);
+        if (!historyFits || !prefixFits || !reusedFits) {
+          retainedAuthorityUsed = false;
+          const legacy = prepareCompaction(event.branchEntries, settings, { nonRetainablePrefixLength: event.nonRetainablePrefixLength ?? 0 });
+          if (!legacy.ok || !legacy.value) {
+            decision = { kind: "failed", error: legacy.error };
+            return { cancel: true };
+          }
+          prepared = legacy;
+          input = prepareSummaryInput(legacy.value);
+          input.preparation.settings = { ...input.preparation.settings, summaryMaxTokens: effectivePolicy.summaryMaxTokens };
+          summaryBudget = planSummaryBudget(input.preparation, estimateTokens);
+          accounting.preparation = input.metadata;
+          runtimeWarnings?.push({ warning_kind: "retained_summary_legacy_fallback", reason: "destination_headroom",
+            message: "Retained summary protection unavailable; continuing with legacy context." });
+        }
+      }
       input.preparation.preservation = {};
       if (summaryBudget.tuples.length || summaryBudget.parsed.protectionUnavailable) accounting.preservation = input.preparation.preservation;
       // Inherited-prefix cuts are first reached through idle proactive or the
       // threshold hook (also labelled proactive), not just manual/overflow.
       // A ready managed-switch admission must not acquire a preservation veto.
-      input.preparation.preservationFallback = trigger === "manual" || trigger === "reactive_overflow" || event.nonRetainablePrefixLength > 0;
+      input.preparation.preservationFallback = preservationFallback;
       // Idle and threshold hooks share one paid-refusal baseline, including
       // across controllers/turns. Stable transcript counts avoid counting the
       // idle-only pending user turn as growth when mid-run is armed. A moving
@@ -443,7 +484,7 @@ export function createGuardedCompactionHook({
         retainedTailLength: compacted.value.retainedTail.length,
         compaction: compacted.value,
       };
-      return { compaction: compacted.value };
+      return { compaction: compacted.value, ...(event.retainedPredecessor ? { retainedAuthorityUsed } : {}) };
     } catch (error) {
       decision = { kind: accounting.requests.at(-1)?.reason === "insufficient_summary_headroom" ? "headroom_unavailable" : "failed", error };
       return { cancel: true };

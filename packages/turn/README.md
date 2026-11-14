@@ -19,10 +19,19 @@ Catalog responsibility: Owns the Pi model-run loop, native journals/storage and 
 Implements the Pi runtime and its typed host integration. The `./host` entrypoint constructs a protected runtime behind host contracts. Pi-owned stdio children enforce optional mono-agent sandbox policy through an injectable `RuntimeSandbox` seam (a fail-closed passthrough by default; `@mono-agent/turn/host` injects the real implementation). Every route in a fallback chain is Pi-native and shares one contract; no route silently drops required capabilities.
 
 A cold seed is the host's initial replay into a fresh native session. It can
-carry one `retained_summary_admitted` receipt after conversion/headroom checks,
+carry one `retained_summary_admitted` quotation receipt after conversion/headroom
+checks, or a distinct `reseed_predecessor_admitted` carry when the authenticated
+whole source is not quoted (including pack-disabled/prepared cold replay), after
 seed persistence and admission under the host's exclusive canonical turn claim.
 The receipt is synced before dispatch; copied text or digest-shaped labels alone
 confer no protection. Invalid pre-write candidates keep legacy context.
+The carry requires a real persisted seed anchor and the actual canonical
+owner/epoch, independent of pack text; true warm resumes never acquire it.
+Retained-only predecessors that cannot fit destination summary input or reused
+output envelopes are omitted whole, along with their generated protection frame,
+before dispatch. This content-free `retained_summary_legacy_fallback` warning uses
+reason `destination_headroom`; the cut gets no retained coverage. Legacy input
+keeps its existing failure behavior if it also cannot fit.
 
 Until a native checkpoint on the active branch covers that receipt, source,
 resolver or optional owner loss emits `retained_summary_legacy_fallback` and runs
@@ -109,8 +118,10 @@ remain immutable; new events are separate. `generateSummaryWithRequest` adds the
 when supplied admissible history and returns an error Result with
 `CompactionError.code === "output_truncated"` for protected truncation, rather than
 throwing for that outcome. `protectHistory:false` is the unprotected request seam. Cold
-reseeds supply sanitized retained user text, not native `previousSummary`: first
-cold re-extraction and separately generated handoffs are not protected.
+reseeds without authenticated admission supply ordinary sanitized retained user
+text, not protected `previousSummary`; an admitted quotation or independent carry
+can instead supply the sanitized protected predecessor. Separately generated
+handoffs are unchanged.
 Initial, incremental and split-prefix requests include a whole-entry-bounded
 4-KiB chronology table: request-local message positions, original roles, recorded
 message times when available and exact serialized UTF-8 frame ranges. It adds

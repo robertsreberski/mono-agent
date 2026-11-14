@@ -159,3 +159,16 @@ export function planSummaryBudget(preparation: SummaryBudgetPreparation, estimat
   const minimumTextTarget = Math.min(...[generateHistory ? requestTargets.history : Infinity, split ? requestTargets.prefix : Infinity]);
   return { budget, split, generateHistory, tuples, protectedText, readFiles, modifiedFiles, metadata, historyText, separator, targets: requestTargets, originalHistory, originalPrefix, protecting, protectedFits, parsed, minimumTextTarget };
 }
+
+/** Deterministic pre-request bypass state shared by generation and fit preflight. */
+export function planSummaryProtection(plan: ReturnType<typeof planSummaryBudget>, model: { maxTokens: number }, preservationFallback = false) {
+  const modelLimit = model.maxTokens > 0 ? model.maxTokens : Infinity;
+  let bypassReason: string | null = null;
+  if (plan.tuples.length > 0 && (!plan.protectedFits || (plan.generateHistory
+    && Math.min(plan.targets.history, modelLimit) < Math.ceil(plan.protectedText.length / 4)))) bypassReason = "protected_history_unfits";
+  // Emergency/inherited cuts reserve half the actual request cap for the template.
+  if (!bypassReason && plan.protecting && preservationFallback && plan.generateHistory
+    && Math.ceil(plan.protectedText.length / 4) > Math.floor(Math.min(plan.targets.history, modelLimit) * 0.5)) bypassReason = "protected_template_unfits";
+  return { protecting: plan.protecting && !bypassReason, bypassReason,
+    targets: bypassReason ? { history: plan.generateHistory ? plan.originalHistory : 0, prefix: plan.originalPrefix } : plan.targets };
+}
