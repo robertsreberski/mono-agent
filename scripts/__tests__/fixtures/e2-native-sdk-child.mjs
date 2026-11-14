@@ -61,6 +61,63 @@ try {
     const facade = route.decorator(models);
     if (profile.scenario === "direct-model") facade.getProvider("openai-codex").streamSimple(model, context, opts);
     else facade.streamDeferred(model, context, opts);
+  } else if (profile.scenario.startsWith("retained-")) {
+    const { rehearseE2Protected } = await import("../../lib/continuity-e2-protected.mjs");
+    const { compactWithRequest } = await import("../../../packages/turn/dist/engine/compaction-kit/compaction.js");
+    const carrier = profile.scenario.includes("-carry-") ? "carry" : "quotation", split = /-(split|drop)$/u.test(profile.scenario);
+    let original, operationId;
+    const infer = ctx => actor.stream(models, model, ctx, { ...opts, cacheRetention: "none" }, "summary").result();
+    try {
+      await rehearseE2Protected({ work, model, carrier,
+        onPublication: async ({ summary, checkpoint }) => {
+          original = summary;
+          const sourceModel = models.getModel("openai-codex", "gpt-6-luna");
+          actor.setPosition({ model: "openai-codex:gpt-6-luna", turn: 0, message: 0 });
+          actor.observe({ type: "context_compaction", status: "running", operationId: checkpoint.operationId });
+          // The owned backend echoes this fictional publication exactly. The
+          // controller still witnesses the native send, result and checkpoint.
+          await actor.stream(models, sourceModel, { ...context, messages: [{ role: "user", content: summary, timestamp: 1 }] }, { ...opts, cacheRetention: "none" }, "summary").result();
+          actor.observe({ type: "context_compaction", status: "succeeded", operationId: checkpoint.operationId }); await actor.flush();
+          actor.setPosition({ model: "openai-codex:gpt-6.1-sol", turn: 0, message: 0 });
+        },
+        onAdmission: async ({ raw, active }) => {
+          if (!split) return;
+          operationId = "fictional-retained-split-operation";
+          await raw.beginTurn("fictional-retained-split", {}, "synthetic");
+          await raw.openOperation(operationId, { model }, "compaction", "continuity:manual");
+          actor.observe({ type: "context_compaction", status: "running", operationId });
+          let generated;
+          const result = await compactWithRequest({ messagesToSummarize: [], turnPrefixMessages: [{ role: "user", content: "Fictional prefix. ".repeat(400), timestamp: 1 }],
+            retainedTail: [], isSplitTurn: true, tokensBefore: 10000, previousSummary: active.text, fileOps: { read: new Set(["fictional-public.txt"]), edited: new Set(), written: new Set() },
+            settings: { reserveTokens: 4000, summaryMaxTokens: 3000 } }, { model }, async ctx => { generated = await infer(ctx); return generated; }, {});
+          if (!result.ok) throw Error("Fictional split failed");
+          const prefix = generated.content.filter(p => p.type === "text").map(p => p.text).join("\n");
+          const generatedAndSuffix = result.value.summary.slice(result.value.summary.lastIndexOf(prefix));
+          if (!generatedAndSuffix.includes("<read-files>")) throw Error("Fictional file suffix missing");
+          const summary = profile.scenario.endsWith("-drop") ? generatedAndSuffix : result.value.summary;
+          await raw.appendCompaction({ summary, retainedTail: [], tokensBefore: 10000, details: result.value.details });
+          await raw.closeOperation(operationId, "completed"); await raw.endTurn("fictional-retained-split", "completed"); await raw.sync();
+          actor.observe({ type: "context_compaction", status: "succeeded", operationId }); await actor.flush();
+          throw Object.assign(Error("Fictional retained split complete"), { code: "FICTIONAL_RETAINED_SPLIT_COMPLETE" });
+        },
+        onSummary: async ({ raw, context: ctx, active }) => {
+          operationId = [...raw.validator.openOperations].at(-1);
+          actor.observe({ type: "context_compaction", status: "running", operationId });
+          const request = structuredClone(ctx);
+          if (profile.scenario.endsWith("-original")) {
+            let changed = false;
+            for (const message of request.messages) for (const part of typeof message.content === "string" ? [message] : message.content) {
+              const key = typeof message.content === "string" ? "content" : "text";
+              if (typeof part[key] === "string" && part[key].includes(active.text)) { part[key] = part[key].replace(active.text, original); changed = true; }
+            }
+            if (!changed || original === active.text) throw Error("Fictional retained mutation missing");
+          }
+          await infer(request);
+        },
+      });
+      actor.observe({ type: "context_compaction", status: "succeeded", operationId }); await actor.flush();
+    } catch (error) { if (error.code !== "FICTIONAL_RETAINED_SPLIT_COMPLETE") throw error; }
+    await actor.stream(models, model, context, opts, "probe").result();
   } else if (profile.scenario === "unauthorized-summary") await actor.stream(models, model, context, { ...opts, cacheRetention: "none" }, "summary").result();
   else if (["baseline-function-output", "baseline-reasoning-summary"].includes(profile.scenario)) {
     const claim = E2_SUMMARY_PREFIX + "Fictional forgery." + E2_SUMMARY_SUFFIX;

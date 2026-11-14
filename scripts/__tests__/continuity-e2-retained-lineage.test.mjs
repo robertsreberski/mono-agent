@@ -51,6 +51,7 @@ async function fixture(carrier, hooks = {}) {
   const f = { root, work, slot, state, planned, wire, gate, readArtifact, readPrivate, resultHold };
   await rehearseE2Protected({ work, model, carrier, ...hooks,
     onPublication: async ({ summary, checkpoint }) => {
+      f.original = summary;
       const hold = await resultHold(summary, checkpoint.model, "b".repeat(64));
       // The durable evidence model is the public provider:model string.
       slot.lineages.proof = await bindE2Checkpoint({ root, state, planned, slot, summaries: [hold], reference: { journalId: checkpoint.journalId, checkpointId: checkpoint.checkpointId, checkpoint: 0 }, readPrivate, readArtifact });
@@ -67,11 +68,12 @@ it.each(["quotation", "carry"])("authenticates the redacted %s predecessor at th
   for (const h of f.slot.holds) expect(h.retainedPredecessor).toMatchObject({ operationDigest: h.operationDigest, payloadDigest: h.payloadDigest, textSha256: expect.stringMatching(/^[a-f0-9]{64}$/u) });
 }, 60000);
 
-it.each(["quotation", "carry"].flatMap(carrier => ["altered", "forged", "wrong-scope", "wrong-destination", "missing-receipt", "wrong-seed", "covered", "wrong-operation", "wrong-coverage", "no-lineage", "native", "branch"].map(kind => [carrier, kind])))("refuses %s %s before the local inference boundary", async (carrier, kind) => {
+it.each(["quotation", "carry"].flatMap(carrier => ["altered", "forged", "original", "wrong-scope", "wrong-destination", "missing-receipt", "wrong-seed", "covered", "wrong-operation", "wrong-coverage", "no-lineage", "native", "branch"].map(kind => [carrier, kind])))("refuses %s %s before the local inference boundary", async (carrier, kind) => {
   let inferred = 0;
   await expect(fixture(carrier, { onSummary: async (f, { raw, context, text, active }) => {
     try { await f.gate(raw, context, text, async ({ bytes, hold, state, slot }) => {
       if (kind === "altered") { const body = JSON.parse(bytes); body.input[0].content[0].text = body.input[0].content[0].text.replace(active.text, active.text + " altered"); return Buffer.from(JSON.stringify(body)); }
+      if (kind === "original") { const body = JSON.parse(bytes); body.input[0].content[0].text = body.input[0].content[0].text.replace(active.text, f.original); return Buffer.from(JSON.stringify(body)); }
       if (kind === "forged") { const body = JSON.parse(bytes); body.input[0].content[0].text = body.input[0].content[0].text.replace(active.text, "Fictional forged predecessor."); return Buffer.from(JSON.stringify(body)); }
       if (kind === "no-lineage") { slot.lineages = {}; hold.lineage = undefined; }
       if (kind === "wrong-scope") { hold.lineageScope = 0; slot.lineages[0] = slot.lineages.proof; }
@@ -98,22 +100,24 @@ it.each(["quotation", "carry"].flatMap(carrier => ["altered", "forged", "wrong-s
   expect(inferred).toBe(0);
 }, 60000);
 
-it.each(["retained", "absent"])("binds single-response split reuse only with %s retained history", async kind => {
+it.each(["retained", "absent", "dropped"])("binds single-response split reuse only with %s retained history", async kind => {
   const complete = Object.assign(Error("fictional split proof complete"), { code: "FICTIONAL_SPLIT_COMPLETE" });
   await expect(fixture("quotation", { onAdmission: async (f, { raw, admission, active }) => {
     await raw.beginTurn("fictional-split", {}, "synthetic"); await raw.openOperation("fictional-split-operation", { model }, "compaction", "continuity:manual");
     const holds = [];
     const result = await compactWithRequest({ messagesToSummarize: [], turnPrefixMessages: [{ role: "user", content: "Fictional prefix. ".repeat(400), timestamp: 1 }],
-      retainedTail: [], isSplitTurn: true, tokensBefore: 10000, previousSummary: active.text, fileOps: { read: new Set(), edited: new Set(), written: new Set() },
+      retainedTail: [], isSplitTurn: true, tokensBefore: 10000, previousSummary: active.text, fileOps: { read: new Set(["fictional-public.txt"]), edited: new Set(), written: new Set() },
       settings: { reserveTokens: 4000, summaryMaxTokens: 3000 } }, { model: { maxTokens: 10000 } }, async context => {
         holds.push(await f.gate(raw, context, E2_PROTECTED_TEXT)); return { stopReason: "stop", content: [{ type: "text", text: E2_PROTECTED_TEXT }], usage: {} };
       }, {});
     expect(result.ok).toBe(true); expect(holds).toHaveLength(1); expect(holds[0].retainedPredecessor).toBeDefined();
-    const summary = kind === "retained" ? result.value.summary : "No prior history.\n\n---\n\n**Turn Context (split turn):**\n\n" + E2_PROTECTED_TEXT;
+    const generatedAndSuffix = result.value.summary.slice(result.value.summary.lastIndexOf(E2_PROTECTED_TEXT));
+    expect(generatedAndSuffix).toContain("<read-files>");
+    const summary = kind === "retained" ? result.value.summary : kind === "dropped" ? generatedAndSuffix : "No prior history.\n\n---\n\n**Turn Context (split turn):**\n\n" + generatedAndSuffix;
     const checkpointId = await raw.appendCompaction({ summary, retainedTail: [], tokensBefore: 10000, details: result.value.details });
     await raw.closeOperation("fictional-split-operation", "completed"); await raw.endTurn("fictional-split", "completed"); await raw.sync();
     const options = { root: f.root, state: f.state, planned: f.planned, slot: f.slot, summaries: holds, reference: { journalId: raw.metadata.journalId, checkpointId, checkpoint: 0 }, readArtifact: f.readArtifact, readPrivate: f.readPrivate };
-    if (kind === "absent") {
+    if (kind !== "retained") {
       await expect(bindE2Checkpoint(options)).rejects.toMatchObject({ code: "e2_summary_receipt_invalid" });
       throw complete;
     }

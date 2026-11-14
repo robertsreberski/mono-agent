@@ -9,10 +9,10 @@ export const E2_MAX_SIZING_RECORDS = E2_INPUT_LIMITS.sizingFiles;
 const need = ok => { if (!ok) throw Object.assign(Error("E2_ESTIMATE_INVALID"), { code: "E2_ESTIMATE_INVALID" }); };
 const ordinal = n => Number.isSafeInteger(n) && n >= 0;
 const hash = s => typeof s === "string" && /^[a-f0-9]{64}$/u.test(s);
-export const isE2ReplaySizing = record => ["continuity-e2-sizing-v1", "continuity-e2-sizing-v2"].includes(record?.schema);
+export const isE2ReplaySizing = record => ["continuity-e2-sizing-v1", "continuity-e2-sizing-v2", "continuity-e2-sizing-v3"].includes(record?.schema);
 function protectedControls(sizing) {
   const p = sizing.protectedSizing;
-  need(sizing.schema === "continuity-e2-sizing-v2" && ["protected-exact", "protected-refusal"].includes(sizing.summary)
+  need(["continuity-e2-sizing-v2", "continuity-e2-sizing-v3"].includes(sizing.schema) && ["protected-exact", "protected-refusal"].includes(sizing.summary)
     && p?.contract === E2_PROTECTED_SIZING && typeof p.identity?.sourceHead === "string" && /^[a-f0-9]{40}$/u.test(p.identity.sourceHead)
     && typeof p.identity.sourceDirty === "boolean" && hash(p.identity.codeSha256) && hash(p.identity.buildOutputSha256)
     && typeof p.identity.node === "string" && Array.isArray(p.controls) && p.controls.length === 8);
@@ -36,13 +36,19 @@ export function requireProtectedE2Sizing(records, registration) {
   const replay = records.filter(isE2ReplaySizing);
   if (!replay.length) return;
   need(E2_REPLAY_SCENARIOS.every(s => replay.some(r => r.summary === s)));
-  for (const record of replay.filter(r => r.summary.startsWith("protected-"))) {
-    protectedControls(record);
-    if (registration) {
-      const i = record.protectedSizing.identity;
-      need(!i.sourceDirty && i.sourceHead === registration.code.revision && i.codeSha256 === registration.code.sha256
-        && i.buildOutputSha256 === registration.build.outputSha256 && i.node === registration.build.node);
+  const keys = ["sourceHead", "sourceDirty", "codeSha256", "buildOutputSha256", "node"], first = replay[0].sizingIdentity;
+  for (const record of replay) {
+    const i = record.sizingIdentity;
+    need(record.schema === "continuity-e2-sizing-v3" && record.qualification === true && i
+      && /^[a-f0-9]{40}$/u.test(i.sourceHead ?? "") && typeof i.sourceDirty === "boolean"
+      && hash(i.codeSha256) && hash(i.buildOutputSha256) && typeof i.node === "string"
+      && keys.every(key => i[key] === first?.[key]));
+    if (record.summary.startsWith("protected-")) {
+      protectedControls(record);
+      need(keys.every(key => record.protectedSizing.identity[key] === i[key]));
     }
+    if (registration) need(!i.sourceDirty && i.sourceHead === registration.code.revision && i.codeSha256 === registration.code.sha256
+      && i.buildOutputSha256 === registration.build.outputSha256 && i.node === registration.build.node);
   }
 }
 // Fund the maximum counts at the largest full observed size, never the sum of
@@ -88,7 +94,7 @@ export function normalizeE2Sizing(protocol, sizing, checkpointOffset = 0, replay
   const requests = [];
   if (isE2ReplaySizing(sizing)) {
     need(sizing.protocolDigest === protocolDigest(protocol) && hash(sizing.sourceDigest) && E2_REPLAY_SCENARIOS.includes(sizing.summary)
-      && (sizing.schema === "continuity-e2-sizing-v2" || ["faux-short", "faux-max"].includes(sizing.summary))
+      && (sizing.schema !== "continuity-e2-sizing-v1" || ["faux-short", "faux-max"].includes(sizing.summary))
       && Array.isArray(sizing.branches) && sizing.branches.length === protocol.branches.length);
     let checkpoint = checkpointOffset;
     for (const [index, branch] of sizing.branches.entries()) {
@@ -106,7 +112,7 @@ export function normalizeE2Sizing(protocol, sizing, checkpointOffset = 0, replay
         need(requests.filter(row => row.checkpoint === checkpoint + c && row.paidRole === "probe").length === 2);
       checkpoint += registered.checkpoints.length;
     }
-    if (sizing.schema === "continuity-e2-sizing-v2") {
+    if (sizing.summary.startsWith("protected-")) {
       const controls = protectedControls(sizing), alternatives = [requests];
       for (const c of controls) {
         const rows = requests.filter(r => r.paidRole !== "summary");

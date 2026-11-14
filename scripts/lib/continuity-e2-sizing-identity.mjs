@@ -23,3 +23,7 @@ export async function e2SizingIdentity() {
   if (before.head !== after.head || before.dirty !== after.dirty) throw Error("E2_PROTECTED_SIZING_INVALID");
   return { sourceHead: before.head, sourceDirty: before.dirty, codeSha256, buildOutputSha256: hash.digest("hex"), node: process.version };
 }
+
+export function assertE2SizingIdentity(before, after) {
+  if (!["sourceHead", "sourceDirty", "codeSha256", "buildOutputSha256", "node"].every(key => before[key] === after[key])) throw Error("E2_PROTECTED_SIZING_INVALID");
+}

@@ -76,7 +76,7 @@ export async function validateE2Checkpoint({ root, state, planned, slot, summari
     need(`${checkpoint.model?.provider}:${checkpoint.model?.id}` === hold.model); texts.push(responseText(result.message));
   }
   const retainedHolds = summaries.filter(h => h.retainedPredecessor);
-  need(retainedHolds.every(h => h.retainedPredecessor.operationDigest === digest(checkpoint.operationId)
+  need(retainedHolds.every(h => ["summary", "split-prefix"].includes(h.retainedPredecessor.assembly) && h.retainedPredecessor.operationDigest === digest(checkpoint.operationId)
     && h.retainedPredecessor.payloadDigest === h.payloadDigest && h.retainedPredecessor.journalId === reference.journalId));
   const suffix = fileSuffix(checkpoint.details);
   let matches = (texts.length === 2 ? texts.join(split) : texts[0]) + suffix === checkpoint.summary;
@@ -87,7 +87,9 @@ export async function validateE2Checkpoint({ root, state, planned, slot, summari
     if (!retainedHolds.length) matches ||= "No prior history." + split + texts[0] + suffix === checkpoint.summary;
     if (retainedHolds.length) {
       const binding = retainedHolds[0].retainedPredecessor;
-      need(retainedHolds.every(h => h.retainedPredecessor.textSha256 === binding.textSha256));
+      need(["summary", "split-prefix"].includes(binding.assembly));
+      if (binding.assembly === "split-prefix") matches = false;
+      need(retainedHolds.every(h => h.retainedPredecessor.textSha256 === binding.textSha256 && h.retainedPredecessor.assembly === binding.assembly));
       let source = prior;
       while (source && !matches) {
         const archive = await readE2Archive(root, state, planned.index, scope, source, readArtifact);
@@ -175,7 +177,7 @@ async function authenticateRetainedPredecessor(root, state, index, scope, hold, 
     && validator.owner.historyBucket === p.destination.conversationId && validator.handles.has(header.id)
     && validator.handleBindings.get(header.id)?.authoritative === true);
   const branch = e2ActiveBranch(validator);
-  need(branch.some(e => e.id === p.seed.entryId) && !branch.some(e => e.kind === "compaction"));
+  if (!branch.some(e => e.id === p.seed.entryId) || branch.some(e => e.kind === "compaction")) return undefined;
   const seed = records.find(r => r.id === p.seed.entryId);
   const { assertRetainedSummarySeed } = await import(new URL("../../packages/turn/dist/engine/retained-summary.js", import.meta.url).href);
   let source = hold.lineage, seen = new Set();
@@ -309,32 +311,38 @@ export async function verifyE2NativeLineage(bytes, hold, state, assignment, read
     }
     // A sanitized previous-summary is authority only for this live operation and
     // this exact payload. Ordinary native/branch wrappers never use this path.
-    const unresolved = found.filter((r, i) => r.kind === "predecessor" && !verified.has(i)
+    const predecessors = found.filter(r => r.kind === "predecessor"
       && !spans.some(s => s.source === r.source && s.start < r.offset && r.offset < s.end));
+    const unresolved = predecessors.filter(r => !verified.has(found.indexOf(r)));
     const pending = state.slots[assignment.index].compaction;
-    let retainedRequest = false;
-    if (hold.paidRole === "summary" && hash(hold.operationDigest) && pending?.nativeSnapshot?.some(s => s.retainedAdmission)) {
+    let retainedRequest = false, prefixOnly = false;
+    if (hold.paidRole === "summary" && hash(hold.operationDigest)) {
       // A prefix-only split request does not contain previous-summary. Recognize
       // the shipping prefix template only to decide whether to authenticate a
-      // possible reuse; template text itself grants no authority.
+      // possible reuse; template text itself grants no authority. A begin-time
+      // snapshot is not sufficient: the scoped directory may have changed since.
       const { createPrefixSummaryContext } = await import(new URL("../../packages/turn/dist/engine/compaction-kit/compaction.js", import.meta.url).href);
       const template = createPrefixSummaryContext([]).messages[0].content[0].text.split("</request-local-positions>\n\n")[1];
       need(template);
-      retainedRequest = found.some(r => r.kind === "predecessor") || (JSON.parse(bytes).input ?? []).some(item =>
+      prefixOnly = (JSON.parse(bytes).input ?? []).some(item =>
         (typeof item.content === "string" ? [item.content] : (item.content ?? []).map(p => p.text)).some(text => typeof text === "string" && text.endsWith(template)));
+      retainedRequest = predecessors.length > 0 || prefixOnly;
     }
     if (unresolved.length || retainedRequest) {
       need(hold.paidRole === "summary" && hash(hold.payloadDigest) && digest(bytes) === hold.payloadDigest);
       need(pending?.operationDigest === hold.operationDigest && pending.checkpoint === hold.checkpoint);
       const authenticated = await authenticateRetainedPredecessor(assignment.outputRoot, state, assignment.index, scope, hold, readArtifact);
       need(!unresolved.length || authenticated);
-      for (const r of unresolved) {
+      // Active retained authority overrides archive-original equality for every
+      // non-opaque predecessor frame, not just previously unresolved frames.
+      for (const r of authenticated ? predecessors : unresolved) {
         need(r.source.startsWith(r.prefix + authenticated.text + r.suffix, r.offset));
         const i = found.indexOf(r); verified.add(i);
         spans.push({ source: r.source, start: r.offset, end: r.offset + r.prefix.length + authenticated.text.length + r.suffix.length });
       }
       if (authenticated) {
-        const { text: _text, ...binding } = authenticated;
+        const { text: _text, ...predecessor } = authenticated;
+        const binding = { ...predecessor, assembly: prefixOnly ? "split-prefix" : "summary" };
         if (hold.retainedPredecessor) need(canonicalDigest(hold.retainedPredecessor) === canonicalDigest(binding));
         hold.retainedPredecessor = binding;
       }

@@ -56,9 +56,11 @@ export async function e2NativeFixture(root, { arm = "pressure", capUnits = "1000
     const { protocolDigest } = await import("../../lib/continuity-e2-protocol.mjs");
     component.sizing.protocolDigest = protocolDigest(trace.protocol);
     Object.assign(protocol, await bind("protocol-current", trace.protocol));
+    component.sizing.sizingIdentity = { sourceHead: "b".repeat(40), sourceDirty: false, codeSha256, buildOutputSha256: "a".repeat(64), node: process.version };
+    component.sizing.qualification = true;
     records.push({ ...structuredClone(component.sizing), summary: "faux-max" });
     const summaryRow = JSON.parse(await readFile(new URL("./continuity-e2-cap-sizing.json", import.meta.url))).sizing.variants[0].requests.find(r => r.paidRole === "summary");
-    for (const summary of ["protected-exact", "protected-refusal"]) records.push({ ...structuredClone(component.sizing), schema: "continuity-e2-sizing-v2", summary,
+    for (const summary of ["protected-exact", "protected-refusal"]) records.push({ ...structuredClone(component.sizing), schema: "continuity-e2-sizing-v3", summary,
       protectedSizing: { contract: E2_PROTECTED_SIZING, identity: { sourceHead: "b".repeat(40), sourceDirty: false, codeSha256, buildOutputSha256: "a".repeat(64), node: process.version },
         controls: ["openai-codex:gpt-6.1-sol", "openai-codex:gpt-6-luna"].flatMap(model => ["quotation", "carry"].flatMap(carrier => [false, true].map(fallback => {
           const refused = summary === "protected-refusal" && !fallback;

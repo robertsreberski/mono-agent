@@ -1,3 +1,4 @@
+import * as sizingIdentity from "../lib/continuity-e2-sizing-identity.mjs";
 import { retentionLineage } from "./fixtures/e2-retention-lineage.mjs";
 import { openHarness } from "../lib/continuity-runner.mjs";
 import { afterEach, expect, it, vi } from "vitest";
@@ -211,6 +212,10 @@ it.each(["faux-short", "faux-max"])("replays configured shipping compaction with
   const realFetch = globalThis.fetch;
   vi.stubGlobal("fetch", (url, init) => { if (new URL(String(url)).hostname !== "127.0.0.1") { rejected.push("fetch"); throw Error("fictional_egress_denied"); } return realFetch(url, init); });
   vi.stubGlobal("WebSocket", class { constructor() { throw Error("fictional_egress_denied"); } });
+  // The injected-module run is explicitly non-qualifying. Freeze a real
+  // content-only identity before the no-execution drill; do not broaden its guard.
+  const identity = await sizingIdentity.e2SizingIdentity();
+  vi.spyOn(sizingIdentity, "e2SizingIdentity").mockResolvedValue(identity);
   const hits = [], refusals = [], workerErrors = []; cleanup.push(installProcessGuard({ hit: c => hits.push(c), refuse: () => refusals.push("process") }));
   const RealWorker = workerThreads.Worker; let ready = 0;
   const workerSpy = vi.spyOn(workerThreads, "Worker").mockImplementation(function (url, options = {}) {
@@ -223,6 +228,7 @@ it.each(["faux-short", "faux-max"])("replays configured shipping compaction with
   const contexts = [];
   const lineage = await retentionLineage(dir, protocol);
   const report = await runE2Sizing({ source, protocol, output: join(dir, "work", "replay"), summary, modules: lineage.modules, onContext: c => contexts.push(structuredClone(c)) });
+  expect(report.qualification).toBe(false);
   expect(lineage.checkpoints.length).toBeGreaterThanOrEqual(2);
   for (const { branch, reference } of lineage.checkpoints) expect(existsSync(join(dir, "work", "replay", `branch-${branch}`, "work", "sessions", "journals", `${reference.journalId}.jsonl`))).toBe(false);
   const verified = await lineage.verify(contexts);
@@ -414,7 +420,7 @@ const E2_IMPORT_SHAPES = {
     "./continuity-e2-controller-policy.mjs": "{ e2CacheAssignment }"
   },
   "scripts/lib/continuity-e2-replay.mjs": {
-    "./continuity-e2-sizing-identity.mjs": "{ e2SizingIdentity }",
+    "./continuity-e2-sizing-identity.mjs": "{ e2SizingIdentity, assertE2SizingIdentity }",
     "./continuity-e2-probe-receipts.mjs": "{ createE2ProbeReceipts }"
   },
   "scripts/lib/continuity-e2-paid-models.mjs": {

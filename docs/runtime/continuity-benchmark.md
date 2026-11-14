@@ -622,8 +622,10 @@ archived originals; sanitization is not a general lineage alternative.
 New committed archives use `continuity-e2-committed-checkpoint-v2` and lineage
 reference version 3, including publication provenance derived at checkpoint
 validation. Legacy v1 archives/version-2 references remain readable. A verified
-retained predecessor is bound to its operation and payload hold; single-response
-split assembly may reuse only that history. Refused candidates never become
+retained predecessor is bound to its operation, payload hold and assembly kind;
+every non-opaque predecessor frame must match that retained text, even when an
+archive original would otherwise match. A prefix-only split must contain exactly
+the retained history, split separator, generated prefix and file suffix. Refused candidates never become
 lineage, and refusal snapshots include both admission kinds.
 
 Two additional **local faux-only, key-blind** sizing alternatives use deterministic
@@ -649,12 +651,16 @@ requests are built in full and measured, not estimated by adding a frame size.
 The ordinary replay supplies probe/continuation sizes and counts; the independent
 controls supply additional summary size/count alternatives, not paid phases.
 
-Protected reports use `continuity-e2-sizing-v2` with contract
-`continuity-e2-protected-sizing-v1`, source/protocol/soul digests and exact
-source-head/code/build-output/Node identity. Dirty-tree reports support local
-measurement only; they cannot qualify a registration. Legacy short/max records
-remain readable for offline estimation. New continuity qualification requires
-all four replay alternatives. Their per-role/checkpoint counts and largest
+Fresh continuity reports for all four alternatives use `continuity-e2-sizing-v3`;
+protected controls retain contract `continuity-e2-protected-sizing-v1`. Each
+report binds source/protocol/soul digests and exact source-head/code/build-output/
+Node identity, captured before estimator/product module loading and checked again
+after measurement. A changed identity refuses the run. Dirty-tree reports and
+runs with injected product modules support local measurement only; they cannot
+qualify a registration. Legacy v1/v2 reports remain readable for offline
+estimation, but cannot participate in fresh qualification. New continuity
+qualification requires matching clean identities on all four replay alternatives.
+Their per-role/checkpoint counts and largest
 observed full sizes are unioned by maximum, never summed as four paid runs.
 Four replay records plus the four existing proof records retain the eight-file
 limit. Baseline remains short/max only. No sizing record authorizes a paid run;
@@ -664,11 +670,15 @@ in-flight migration to these contracts.
 Controller archive/journal scans and full request serialization are included in
 `node --expose-gc scripts/continuity-relevance-scan.mjs`, retaining the accepted
 5 s / +100 MiB heap / +128 MiB RSS envelope. Reads remain bounded to 4096 archive
-links, 8192 journal names and 128 MiB total scoped native bytes per scan.
+links, 8192 journal names and 128 MiB total scoped native bytes per scan, including
+start/refusal snapshots. Each bounded read receives only the remaining aggregate
+allowance. Directory membership and file identities must remain stable across
+discovery/read; additions, replacements and symlink aliases fail closed.
 
 ### Content-free sizing and deterministic scoring
 
-Private `sizing.json` has schema `continuity-e2-sizing-v1`, source/protocol/soul
+Private `sizing.json` uses schema `continuity-e2-sizing-v3` for fresh continuity
+sizing (`continuity-e2-sizing-v1` for baseline), source/protocol/soul
 digests, the faux scenario and per-branch registered models/limits, trigger
 positions, durable compaction counts, summary-request multiplicity and prepared
 summary input sizes. Each checkpoint includes snapshot digest/file count,

@@ -168,27 +168,47 @@ it("rejects replay source and per-compaction overflow through real registration 
   const root = join(f.root, "replay-preflight"); await mkdir(root, { mode: 0o700 });
   const g = await e2NativeFixture(root, { replay: true });
   const originalProtocol = JSON.parse(await readFile(g.pilot.registration.protocol.path, "utf8"));
-  const originalSizing = JSON.parse(await readFile(g.pilot.registration.sizing[0].path, "utf8"));
+  const originalRecords = await Promise.all(g.pilot.registration.sizing.map(async binding => JSON.parse(await readFile(binding.path, "utf8"))));
   await expect(guardedAuthorization("e2-validation").validate(g.args)).resolves.toBeDefined();
   const fullSizing = g.pilot.registration.sizing;
   g.pilot.registration.sizing = fullSizing.slice(0, 2); await g.persist();
   await expect(guardedAuthorization("e2-validation").validate(g.args)).rejects.toMatchObject({ code: "e2_registration_invalid" });
   g.pilot.registration.sizing = fullSizing; await g.persist();
+  for (const [index, mutate] of [
+    [0, r => { r.sizingIdentity.buildOutputSha256 = "f".repeat(64); }],
+    [1, r => { r.sizingIdentity.sourceHead = "f".repeat(40); }],
+    [0, r => { r.schema = "continuity-e2-sizing-v1"; delete r.sizingIdentity; }],
+    [2, r => { r.qualification = false; }],
+  ]) {
+    const binding = fullSizing[index], record = structuredClone(originalRecords[index]); mutate(record);
+    let raw = JSON.stringify(record); await writeFile(binding.path, raw); binding.sha256 = hash(raw); await g.persist();
+    await expect(guardedAuthorization("e2-validation").validate(g.args)).rejects.toMatchObject({ code: "e2_registration_invalid" });
+    raw = JSON.stringify(originalRecords[index]); await writeFile(binding.path, raw); binding.sha256 = hash(raw); await g.persist();
+  }
   for (const violation of ["source", "summary"]) {
-    const protocol = structuredClone(originalProtocol), sizing = structuredClone(originalSizing), branch = sizing.branches[0];
+    const protocol = structuredClone(originalProtocol), records = structuredClone(originalRecords), branch = records[0].branches[0];
+    let ceiling;
     if (violation === "source") {
-      const count = branch.requestSizing.filter(r => r.paidRole === null).length; expect(count).toBeGreaterThan(1);
-      protocol.branches[0].limits.sourceRequests = count - 1;
+      ceiling = branch.requestSizing.filter(r => r.paidRole === null).length; expect(ceiling).toBeGreaterThan(1);
+      protocol.branches[0].limits.sourceRequests = ceiling;
     } else {
-      protocol.branches[0].limits.summaryRequestsPerCompaction = 1;
+      ceiling = 2; protocol.branches[0].limits.summaryRequestsPerCompaction = ceiling;
       const row = { ...branch.requestSizing[0], role: "summary", paidRole: "summary", model: "openai-codex:gpt-6.1-sol" };
       branch.requestSizing.push(row, structuredClone(row)); branch.compactions = [{ requests: 2 }];
     }
-    const rawProtocol = JSON.stringify(protocol); await writeFile(g.pilot.registration.protocol.path, rawProtocol); g.pilot.registration.protocol.sha256 = hash(rawProtocol);
-    sizing.protocolDigest = protocolDigest(protocol);
-    const rawSizing = JSON.stringify(sizing); await writeFile(g.pilot.registration.sizing[0].path, rawSizing); g.pilot.registration.sizing[0].sha256 = hash(rawSizing);
-    g.pilot.registration.schedule = e2PhaseSchedule(protocol, [sizing], g.pilot.registration.probeCounts); await g.persist();
-    await expect(guardedAuthorization("e2-validation").validate(g.args)).rejects.toMatchObject({ code: "e2_registration_invalid" });
+    const persist = async () => {
+      const rawProtocol = JSON.stringify(protocol); await writeFile(g.pilot.registration.protocol.path, rawProtocol); g.pilot.registration.protocol.sha256 = hash(rawProtocol);
+      for (const [index, sizing] of records.entries()) {
+        sizing.protocolDigest = protocolDigest(protocol);
+        const raw = JSON.stringify(sizing); await writeFile(g.pilot.registration.sizing[index].path, raw); g.pilot.registration.sizing[index].sha256 = hash(raw);
+      }
+      g.pilot.registration.schedule = e2PhaseSchedule(protocol, records, g.pilot.registration.probeCounts); await g.persist();
+    };
+    // Positive control: every scenario/digest/schedule agrees. Then alter only
+    // the relevant numeric ceiling, rebinding ALL dependent artifacts identically.
+    await persist(); await expect(guardedAuthorization("e2-validation").validate(g.args)).resolves.toBeDefined();
+    protocol.branches[0].limits[violation === "source" ? "sourceRequests" : "summaryRequestsPerCompaction"] = ceiling - 1;
+    await persist(); await expect(guardedAuthorization("e2-validation").validate(g.args)).rejects.toMatchObject({ code: "e2_registration_invalid" });
     expect(await readdir(g.home)).toEqual([]); expect(await readdir(g.args.outputRoot)).toEqual([]);
   }
 }, E2_NATIVE_TEST_TIMEOUT_MS);

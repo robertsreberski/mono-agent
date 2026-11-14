@@ -1,5 +1,5 @@
 import { E2_PROTECTED_SIZING, rehearseE2Protected } from "./continuity-e2-protected.mjs";
-import { e2SizingIdentity } from "./continuity-e2-sizing-identity.mjs";
+import { e2SizingIdentity, assertE2SizingIdentity } from "./continuity-e2-sizing-identity.mjs";
 import { loadE2Catalog } from "./continuity-e2-pricing.mjs";
 import { assertE2BaselineRequest } from "./continuity-e2-lineage.mjs";
 import { assertE2PhaseAdapter } from "./continuity-e2-runtime.mjs";
@@ -217,10 +217,13 @@ export async function runE2Sizing({ source, protocol, output, summary = "faux-sh
   protocol = validateProtocol(protocol, source);
   const requestCount = e2ProbeRequestCount(protocol, replayArm);
   if (real) await paidAdapter.assertReplay({ source, protocol, questions, evaluator, output, replayArm });
+  // Attest before any estimator/product module load, not after observations.
+  const injectedModules = modules !== undefined;
+  const sizingIdentity = !real && !baseline ? await e2SizingIdentity() : undefined;
   const estimators = await loadE2Estimators(), soul = await shippingSoul();
   modules ??= await productionModules(ROOT);
   const answers = { schema: "continuity-e2-answers-v1", answers: [] };
-  const report = { schema: real ? "continuity-e2-replay-v1" : protectedMode ? "continuity-e2-sizing-v2" : "continuity-e2-sizing-v1", ...(baseline ? { replayArm: "baseline", qualification: false } : {}), sourceDigest: digest(JSON.stringify(source)), protocolDigest: protocolDigest(protocol), summary,
+  const report = { schema: real ? "continuity-e2-replay-v1" : baseline ? "continuity-e2-sizing-v1" : "continuity-e2-sizing-v3", ...(baseline ? { replayArm: "baseline", qualification: false } : sizingIdentity ? { sizingIdentity, qualification: !injectedModules } : {}), sourceDigest: digest(JSON.stringify(source)), protocolDigest: protocolDigest(protocol), summary,
     soul: { rawDigest: soul.rawDigest, normalizedDigest: soul.normalizedDigest }, usage: "estimated-not-measured", semanticQualification: false, branches: [] };
   await mkdir(output, { mode: 0o700 });
   // One recorder and entry cap per run, not per checkpoint/probe.
@@ -425,8 +428,9 @@ export async function runE2Sizing({ source, protocol, output, summary = "faux-sh
           requests: [...measured.setupRequests.map(row => ({ role: "setup-scripted", paidRole: null, model: row.model, maxOutputTokens: row.maxOutputTokens, size: sizeContext(row.context, estimators) })),
             ...measured.requests.map(row => ({ role: "summary", paidRole: "summary", model: row.model, maxOutputTokens: row.maxOutputTokens, size: sizeContext(row.context, estimators) }))] });
       }
-      report.protectedSizing = { contract: E2_PROTECTED_SIZING, identity: await e2SizingIdentity(), controls };
+      report.protectedSizing = { contract: E2_PROTECTED_SIZING, identity: sizingIdentity, controls };
     }
+    if (sizingIdentity) assertE2SizingIdentity(sizingIdentity, await e2SizingIdentity());
     await privateModes(output);
     if (!real && retrieval.progressGap()) report.progressGap = retrieval.progressGap();
     if (real) {
